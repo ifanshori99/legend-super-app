@@ -7,8 +7,19 @@
 // order/FK parents of the POS tables do not have to be built for a read test.
 //
 // TL-09 (get_my_payslip) is not registered (no payslip storage exists), so it
-// has no test here. TL-07, TL-08 and TL-12 have no data source yet: they are
-// tested for their access rules and the empty contract shape.
+// has no test here. TL-07, TL-08 and TL-12 are tested for their access rules
+// and against real rows seeded here (customers/tiers, shift assignments,
+// shareholder allocations and distribution runs), including rows of another
+// tenant and rows the caller may not see (small segments, drafts, other
+// employees, unpaid or unapproved shares).
+//
+// Assumptions (spec/brief leave these open):
+// - TL-07 labels a tier segment with the tier name (never with free text typed
+//   by a customer); customers are tenant-wide, so there is no outlet reach test.
+// - TL-08 start/end times are outlet-local (Asia/Jakarta, +07:00), HH:MM.
+// - TL-12 shows only PAID distribution statements (the same set
+//   getMyProfitShareService returns); amount == the statement's gross (the
+//   seeded tax is 0, so gross == net), sharePct == share_bp / 100.
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -26,6 +37,7 @@ import {
 } from "../services/ai-tools/read-b/tl-10-search-sop.ts";
 import type { AiToolContext } from "../services/ai-tools/types.ts";
 import { resolveAccessSnapshot } from "../services/permission-resolver.ts";
+import { getMyProfitShareService } from "../services/profit-share-distribution.service.ts";
 
 const fx = cafeLegendAccessFixtures;
 const tenantId = cafeLegendPlatformFixtures.tenant.id;
@@ -100,6 +112,7 @@ type ToolOut = {
   rows: ToolRow[];
   sources: ToolRow[];
   shifts: ToolRow[];
+  segmentBy?: string;
   segments: unknown[];
   distributions: unknown[];
   truncated: boolean;
@@ -119,6 +132,28 @@ async function call(
 }
 
 const forbidden = { code: "AI_TOOL_FORBIDDEN", status: 403 };
+
+type Segment = {
+  code: string;
+  label: string;
+  customerCount: number;
+  avgSpendIdr: number;
+};
+type ShiftRow = {
+  shiftId: string;
+  employeeId: string;
+  employeeName: string;
+  outletId: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+};
+type DistributionRow = {
+  periodLabel: string;
+  sharePct: string;
+  amountIdr: number;
+  status: string;
+};
 
 // ---- Seeds -----------------------------------------------------------------
 
@@ -374,9 +409,750 @@ async function seedDiscounts(
   );
 }
 
+// ---- Behaviour seeds: TL-07 customers, TL-08 shifts, TL-12 profit share -----
+// All rows are written with `session_replication_role = replica` (no FK or
+// append-only trigger setup needed); CHECK constraints still apply.
+
+const rbSuffix = randomUUID().slice(0, 6);
+const PII_NAME = "Pelanggan Rahasia RB";
+const goldName = `RB Emas ${rbSuffix}`;
+const silverName = `RB Perak ${rbSuffix}`;
+const foreignTierName = `RB Asing ${rbSuffix}`;
+// Mean is exactly 350000.
+const GOLD_SPENDS = [200_000, 300_000, 350_000, 350_000, 400_000, 500_000];
+const createdTiers: { tenant: string; id: string }[] = [];
+
+async function seedTier(
+  tenant: string,
+  name: string,
+  rank: number,
+): Promise<string> {
+  const id = randomUUID();
+  await asOwner(
+    tenant,
+    (client) =>
+      client.query(
+        `INSERT INTO loyalty_tiers
+           (id, tenant_id, name, rank, threshold_spend_idr, threshold_visits, benefits, is_active)
+         VALUES ($1, $2, $3, $4, 1000000000, 1000000, $5::jsonb, true)`,
+        [
+          id,
+          tenant,
+          name,
+          rank,
+          JSON.stringify({
+            pointsMultiplierBp: 10_000,
+            birthdayRewardPoints: 0,
+            reservationPriority: false,
+            exclusivePromotions: false,
+            facilityFreeAccessQuota: 0,
+          }),
+        ],
+      ),
+    true,
+  );
+  createdTiers.push({ tenant, id });
+  return id;
+}
+
+async function seedCustomers(
+  tenant: string,
+  tierId: string | null,
+  spends: number[],
+  lastVisitAt = "2026-10-20T03:00:00Z",
+  visits = 3,
+) {
+  await asOwner(
+    tenant,
+    async (client) => {
+      for (const spend of spends)
+        await client.query(
+          `INSERT INTO customer_profiles
+             (id, tenant_id, name, membership_status, whatsapp_verified_at, lifetime_spend_idr,
+              visits_count, first_visit_at, last_visit_at, tier_id)
+           VALUES ($1, $2, $3, 'active', '2026-01-02T00:00:00Z', $4, $5, '2026-01-05T03:00:00Z', $6, $7)`,
+          [randomUUID(), tenant, PII_NAME, spend, visits, lastVisitAt, tierId],
+        );
+    },
+    true,
+  );
+}
+
+const SHIFT_SEED = "rb-shift-seed";
+let foreignEmployeeId = "";
+let outletC = "";
+const wib = (date: string, time: string) =>
+  new Date(`${date}T${time}:00+07:00`).toISOString();
+
+async function seedShift(
+  tenant: string,
+  outletId: string,
+  employee: string,
+  date: string,
+  start: string,
+  end: string,
+  status: "published" | "draft" = "published",
+) {
+  await asOwner(
+    tenant,
+    (client) =>
+      client.query(
+        `INSERT INTO shift_assignments
+           (id, tenant_id, outlet_id, employee_id, business_date, segments, break_minutes, status, source,
+            published_by, published_at, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, 0, $7, 'user', $8, $9, $10)`,
+        [
+          randomUUID(),
+          tenant,
+          outletId,
+          employee,
+          date,
+          JSON.stringify([
+            { startsAt: wib(date, start), endsAt: wib(date, end) },
+          ]),
+          status,
+          status === "draft" ? null : publisher,
+          status === "draft" ? null : "2026-10-01T00:00:00Z",
+          SHIFT_SEED,
+        ],
+      ),
+    true,
+  );
+}
+
+// Fixture users need DB role assignments because listShiftAssignments reads
+// them from the database, not from the in-memory fixtures. Custom roles with
+// exactly the permission the tool needs keep this independent of templates.
+// valid_from is before fx.now (the tool's clock), not before the wall clock.
+const grantedUsers: string[] = [];
+const grantedRoles: string[] = [];
+async function grantPermission(
+  userId: string,
+  permission: string,
+  outletScope: string | null,
+) {
+  const roleId = randomUUID();
+  await asOwner(tenantId, async (client) => {
+    await client.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, permissions, allowed_scope_types)
+       VALUES ($1, $2, $3, false, $4, $5)`,
+      [
+        roleId,
+        tenantId,
+        `RB jadwal ${roleId.slice(0, 8)}`,
+        JSON.stringify([permission]),
+        JSON.stringify(["tenant", "outlet"]),
+      ],
+    );
+    await client.query(
+      `INSERT INTO role_assignments
+         (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+       VALUES ($1, $2, $3, $4, $5, '2026-01-01T00:00:00Z', $2)`,
+      [
+        tenantId,
+        userId,
+        roleId,
+        outletScope ? "outlet" : "tenant",
+        outletScope,
+      ],
+    );
+  });
+  grantedRoles.push(roleId);
+  grantedUsers.push(userId);
+}
+
+const psTrack = new Map<
+  string,
+  { entityIds: string[]; holderIds: string[]; legalIds: string[] }
+>();
+function tracked(tenant: string) {
+  let found = psTrack.get(tenant);
+  if (!found) {
+    found = { entityIds: [], holderIds: [], legalIds: [] };
+    psTrack.set(tenant, found);
+  }
+  return found;
+}
+
+async function seedHolder(
+  tenant: string,
+  userId: string,
+  name: string,
+): Promise<string> {
+  const id = randomUUID();
+  await asOwner(
+    tenant,
+    (client) =>
+      client.query(
+        `INSERT INTO shareholders (tenant_id, id, user_id, name, type, status, created_by)
+         VALUES ($1, $2, $3, $4, 'person', 'active', $5)`,
+        [tenant, id, userId, name, randomUUID()],
+      ),
+    true,
+  );
+  tracked(tenant).holderIds.push(id);
+  return id;
+}
+
+async function seedEntity(
+  tenant: string,
+  status: "approved" | "pending_approval",
+  allocations: { holderId: string; bp: number }[],
+): Promise<string> {
+  const legalId = randomUUID();
+  const entityId = randomUUID();
+  const decided = status === "approved";
+  await asOwner(
+    tenant,
+    async (client) => {
+      await client.query(
+        "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, $3, false)",
+        [legalId, tenant, `RB PT ${legalId.slice(0, 8)}`],
+      );
+      await client.query(
+        `INSERT INTO profit_entities
+           (tenant_id, id, name, type, legal_entity_id, reserve_bp, frequency, tax_withholding_bp, created_by)
+         VALUES ($1, $2, $3, 'legal_entity', $4, 0, 'quarterly', 0, $5)`,
+        [
+          tenant,
+          entityId,
+          `RB entitas ${entityId.slice(0, 6)}`,
+          legalId,
+          randomUUID(),
+        ],
+      );
+      await client.query(
+        `INSERT INTO share_allocation_versions
+           (tenant_id, profit_entity_id, version, effective_from, status, requested_by, decided_by,
+            decided_at, idempotency_key)
+         VALUES ($1, $2, 1, '2025-01-01', $3, $7, $4, $5, $6)`,
+        [
+          tenant,
+          entityId,
+          status,
+          decided ? randomUUID() : null,
+          decided ? "2025-01-01T00:00:00Z" : null,
+          `rb-${randomUUID()}`,
+          randomUUID(),
+        ],
+      );
+      for (const [position, row] of allocations.entries())
+        await client.query(
+          `INSERT INTO share_allocations
+             (tenant_id, profit_entity_id, version, shareholder_id, share_bp, position)
+           VALUES ($1, $2, 1, $3, $4, $5)`,
+          [tenant, entityId, row.holderId, row.bp, position],
+        );
+    },
+    true,
+  );
+  tracked(tenant).entityIds.push(entityId);
+  tracked(tenant).legalIds.push(legalId);
+  return entityId;
+}
+
+/** Tax is 0, so gross == net. distributable = profit - reserve = sum of gross. */
+async function seedRun(
+  tenant: string,
+  entityId: string,
+  run: {
+    period: string;
+    profit: number;
+    reserve: number;
+    status: "approved" | "paid";
+    linePaid: boolean;
+    lines: { holderId: string; userId: string; bp: number; gross: number }[];
+  },
+) {
+  const runId = randomUUID();
+  const distributable = run.profit - run.reserve;
+  const paid = run.status === "paid";
+  await asOwner(
+    tenant,
+    async (client) => {
+      await client.query(
+        `INSERT INTO distribution_runs
+           (tenant_id, id, profit_entity_id, fiscal_period_id, fiscal_period_version, period, type, basis,
+            status, share_version, period_net_profit_idr, reserve_idr, distributable_idr, total_gross_idr,
+            total_tax_withheld_idr, total_net_idr, unabsorbed_idr, carry_deducted_idr, tax_withholding_bp,
+            requested_by, approved_by, approved_at, paid_at, journal_entry_id, idempotency_key)
+         VALUES ($1, $2, $3, $4, 1, $5, 'regular', 'closed_period_net_profit', $6, 1, $7, $8, $9, $9,
+                 0, $9, 0, 0, 0, $13, $14, '2026-01-01T00:00:00Z', $10, $11, $12)`,
+        [
+          tenant,
+          runId,
+          entityId,
+          randomUUID(),
+          run.period,
+          run.status,
+          run.profit,
+          run.reserve,
+          distributable,
+          paid ? "2026-01-02T00:00:00Z" : null,
+          paid ? randomUUID() : null,
+          `rb-${randomUUID()}`,
+          randomUUID(),
+          randomUUID(),
+        ],
+      );
+      for (const [position, line] of run.lines.entries())
+        await client.query(
+          `INSERT INTO distribution_lines
+             (tenant_id, distribution_run_id, shareholder_id, share_bp, gross_idr, tax_withheld_idr, net_idr,
+              carry_deducted_idr, payment_status, payment_ref, paid_at, paid_by, recipient_user_id, position)
+           VALUES ($1, $2, $3, $4, $5, 0, $5, 0, $6, $7, $8, $9, $10, $11)`,
+          [
+            tenant,
+            runId,
+            line.holderId,
+            line.bp,
+            line.gross,
+            run.linePaid ? "paid" : "pending",
+            run.linePaid ? "RB-REF" : null,
+            run.linePaid ? "2026-01-02T00:00:00Z" : null,
+            run.linePaid ? randomUUID() : null,
+            line.userId,
+            position,
+          ],
+        );
+    },
+    true,
+  );
+}
+
+const holderBUser = randomUUID();
+const behaviorUsers = [
+  fx.users.hr.id,
+  fx.users.outletManager.id,
+  fx.users.shareholder.id,
+  holderBUser,
+];
+
+async function seedBehavior() {
+  for (const id of behaviorUsers) await seedUser(id);
+
+  // TL-07: gold (6), silver (4: under the minimum), an untiered cohort of 8
+  // identical customers (lands in one segment for any bucket rule) and a
+  // foreign tenant's tier with 8 customers.
+  const gold = await seedTier(tenantId, goldName, 9101);
+  const silver = await seedTier(tenantId, silverName, 9102);
+  const foreignTier = await seedTier(otherTenant, foreignTierName, 9101);
+  await seedCustomers(tenantId, gold, GOLD_SPENDS);
+  await seedCustomers(tenantId, silver, [900_000, 900_000, 900_000, 900_000]);
+  await seedCustomers(
+    tenantId,
+    null,
+    Array<number>(8).fill(2_000_000),
+    "2026-10-30T03:00:00Z",
+    9,
+  );
+  await seedCustomers(otherTenant, foreignTier, Array<number>(8).fill(777_000));
+
+  // TL-08 shifts. WIB outlet-local times.
+  await grantPermission(fx.users.hr.id, "hr.schedule.manage", null);
+  await grantPermission(
+    fx.users.outletManager.id,
+    "hr.schedule.manage",
+    outletA,
+  );
+  await grantPermission(fx.users.employee.id, "self.schedule.view", outletA);
+  foreignEmployeeId = randomUUID();
+  await asOwner(
+    otherTenant,
+    (client) =>
+      client.query(
+        `INSERT INTO employees (id, tenant_id, user_id, employee_no, full_name, home_outlet_id,
+                                employment_type, join_date, status)
+         VALUES ($1, $2, NULL, $3, 'Karyawan Asing RB', $4, 'pkwtt', '2025-03-01', 'active')`,
+        [
+          foreignEmployeeId,
+          otherTenant,
+          `RBF-${rbSuffix.toUpperCase()}`,
+          otherOutlet,
+        ],
+      ),
+    true,
+  );
+  // The outlet manager's tool reach is outlet A only (in-memory outlet_manager
+  // snapshot). A second DB assignment gives them outlet B in the HRIS
+  // service; the tool must still not report outlet B.
+  await grantPermission(
+    fx.users.outletManager.id,
+    "hr.schedule.manage",
+    outletB,
+  );
+  // Row-cap case: a third outlet with 260 shifts in the week of 2026-11-02.
+  outletC = randomUUID();
+  await owner.query(
+    `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours)
+     SELECT $1, tenant_id, brand_id, legal_entity_id, $3, 'Outlet RB C', address, 'Asia/Jakarta', opening_hours
+       FROM outlets WHERE id = $2`,
+    [outletC, outletA, `RBC-${rbSuffix}`.toUpperCase()],
+  );
+  await asOwner(
+    tenantId,
+    (client) =>
+      client.query(
+        `INSERT INTO shift_assignments
+           (id, tenant_id, outlet_id, employee_id, business_date, segments, break_minutes, status, source,
+            published_by, published_at, created_by)
+         SELECT gen_random_uuid(), $1, $2, $3, '2026-11-03', $4::jsonb, 0, 'published', 'user', $5,
+                '2026-10-01T00:00:00Z', $6
+           FROM generate_series(1, 260)`,
+        [
+          tenantId,
+          outletC,
+          otherEmployeeId,
+          JSON.stringify([
+            {
+              startsAt: wib("2026-11-03", "07:00"),
+              endsAt: wib("2026-11-03", "15:00"),
+            },
+          ]),
+          publisher,
+          SHIFT_SEED,
+        ],
+      ),
+    true,
+  );
+  await seedShift(
+    tenantId,
+    outletA,
+    employeeId,
+    "2026-11-04",
+    "08:00",
+    "16:00",
+  );
+  await seedShift(
+    tenantId,
+    outletB,
+    kitchenLeadEmployeeId,
+    "2026-11-05",
+    "09:00",
+    "17:00",
+  );
+  await seedShift(
+    tenantId,
+    outletA,
+    employeeId,
+    "2026-10-06",
+    "08:00",
+    "16:00",
+  );
+  await seedShift(
+    tenantId,
+    outletA,
+    employeeId,
+    "2026-10-07",
+    "09:00",
+    "17:00",
+    "draft",
+  );
+  await seedShift(
+    tenantId,
+    outletA,
+    employeeId,
+    "2026-10-20",
+    "08:00",
+    "16:00",
+  );
+  await seedShift(
+    tenantId,
+    outletA,
+    otherEmployeeId,
+    "2026-10-06",
+    "10:00",
+    "18:00",
+  );
+  await seedShift(
+    tenantId,
+    outletB,
+    kitchenLeadEmployeeId,
+    "2026-10-08",
+    "06:00",
+    "14:00",
+  );
+  await seedShift(
+    otherTenant,
+    otherOutlet,
+    foreignEmployeeId,
+    "2026-10-09",
+    "05:30",
+    "13:30",
+  );
+
+  // TL-12: holder A is the shareholder fixture user, B another person.
+  // Entity 1 (approved 60/40): paid 2026-03, paid 2026-09, paid 2025-12 and
+  // an approved run (2026-06) whose lines are NOT paid. Entity 2 has only a
+  // pending (unapproved) version giving A 33.33%. The foreign tenant pays the
+  // same login 9,999,000 in 2026-04.
+  const holderA = await seedHolder(
+    tenantId,
+    fx.users.shareholder.id,
+    "RB Pemegang A",
+  );
+  const holderB = await seedHolder(tenantId, holderBUser, "RB Pemegang B");
+  const entity = await seedEntity(tenantId, "approved", [
+    { holderId: holderA, bp: 6000 },
+    { holderId: holderB, bp: 4000 },
+  ]);
+  const split = (a: number, b: number) => [
+    { holderId: holderA, userId: fx.users.shareholder.id, bp: 6000, gross: a },
+    { holderId: holderB, userId: holderBUser, bp: 4000, gross: b },
+  ];
+  await seedRun(tenantId, entity, {
+    period: "2026-03",
+    profit: 12_000_000,
+    reserve: 2_000_000,
+    status: "paid",
+    linePaid: true,
+    lines: split(6_000_000, 4_000_000),
+  });
+  await seedRun(tenantId, entity, {
+    period: "2026-09",
+    profit: 9_000_000,
+    reserve: 1_500_000,
+    status: "paid",
+    linePaid: true,
+    lines: split(4_500_000, 3_000_000),
+  });
+  await seedRun(tenantId, entity, {
+    period: "2025-12",
+    profit: 6_000_000,
+    reserve: 1_000_000,
+    status: "paid",
+    linePaid: true,
+    lines: split(3_000_000, 2_000_000),
+  });
+  await seedRun(tenantId, entity, {
+    period: "2026-06",
+    profit: 8_000_000,
+    reserve: 1_000_000,
+    status: "approved",
+    linePaid: false,
+    lines: split(4_200_000, 2_800_000),
+  });
+  // Two entities paying the same holder in 2027-03.
+  const entity2 = await seedEntity(tenantId, "approved", [
+    { holderId: holderA, bp: 5000 },
+    { holderId: holderB, bp: 5000 },
+  ]);
+  await seedRun(tenantId, entity, {
+    period: "2027-03",
+    profit: 3_000_000,
+    reserve: 0,
+    status: "paid",
+    linePaid: true,
+    lines: split(1_800_000, 1_200_000),
+  });
+  await seedRun(tenantId, entity2, {
+    period: "2027-03",
+    profit: 2_000_000,
+    reserve: 0,
+    status: "paid",
+    linePaid: true,
+    lines: [
+      {
+        holderId: holderA,
+        userId: fx.users.shareholder.id,
+        bp: 5000,
+        gross: 1_000_000,
+      },
+      { holderId: holderB, userId: holderBUser, bp: 5000, gross: 1_000_000 },
+    ],
+  });
+  await seedEntity(tenantId, "pending_approval", [
+    { holderId: holderA, bp: 3333 },
+    { holderId: holderB, bp: 6667 },
+  ]);
+  const foreignHolder = await seedHolder(
+    otherTenant,
+    fx.users.shareholder.id,
+    "RB Pemegang Asing",
+  );
+  const foreignEntity = await seedEntity(otherTenant, "approved", [
+    { holderId: foreignHolder, bp: 10_000 },
+  ]);
+  await seedRun(otherTenant, foreignEntity, {
+    period: "2026-04",
+    profit: 10_999_000,
+    reserve: 1_000_000,
+    status: "paid",
+    linePaid: true,
+    lines: [
+      {
+        holderId: foreignHolder,
+        userId: fx.users.shareholder.id,
+        bp: 10_000,
+        gross: 9_999_000,
+      },
+    ],
+  });
+}
+
+async function cleanupBehavior() {
+  for (const [tenant, ids] of psTrack)
+    await asOwner(
+      tenant,
+      async (client) => {
+        await client.query(
+          `DELETE FROM distribution_lines WHERE tenant_id = $1 AND distribution_run_id IN
+             (SELECT id FROM distribution_runs WHERE tenant_id = $1 AND profit_entity_id = ANY($2))`,
+          [tenant, ids.entityIds],
+        );
+        for (const table of [
+          "distribution_runs",
+          "share_allocations",
+          "share_allocation_versions",
+        ])
+          await client.query(
+            `DELETE FROM ${table} WHERE tenant_id = $1 AND profit_entity_id = ANY($2)`,
+            [tenant, ids.entityIds],
+          );
+        await client.query(
+          "DELETE FROM profit_entities WHERE tenant_id = $1 AND id = ANY($2)",
+          [tenant, ids.entityIds],
+        );
+        await client.query(
+          "DELETE FROM shareholders WHERE tenant_id = $1 AND id = ANY($2)",
+          [tenant, ids.holderIds],
+        );
+        await client.query(
+          "DELETE FROM legal_entities WHERE tenant_id = $1 AND id = ANY($2)",
+          [tenant, ids.legalIds],
+        );
+      },
+      true,
+    );
+  for (const tenant of [tenantId, otherTenant])
+    await asOwner(
+      tenant,
+      async (client) => {
+        await client.query(
+          "DELETE FROM shift_assignments WHERE tenant_id = $1 AND created_by = $2",
+          [tenant, SHIFT_SEED],
+        );
+        await client.query(
+          "DELETE FROM customer_profiles WHERE tenant_id = $1 AND name = $2",
+          [tenant, PII_NAME],
+        );
+      },
+      true,
+    );
+  if (outletC)
+    await owner.query("DELETE FROM outlets WHERE tenant_id = $1 AND id = $2", [
+      tenantId,
+      outletC,
+    ]);
+  if (foreignEmployeeId)
+    await asOwner(
+      otherTenant,
+      (client) =>
+        client.query("DELETE FROM employees WHERE tenant_id = $1 AND id = $2", [
+          otherTenant,
+          foreignEmployeeId,
+        ]),
+      true,
+    );
+  for (const tier of createdTiers)
+    await asOwner(
+      tier.tenant,
+      (client) =>
+        client.query(
+          "DELETE FROM loyalty_tiers WHERE tenant_id = $1 AND id = $2",
+          [tier.tenant, tier.id],
+        ),
+      true,
+    );
+  await asOwner(tenantId, (client) =>
+    client.query(
+      "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = ANY($2)",
+      [tenantId, grantedUsers],
+    ),
+  );
+  await asOwner(tenantId, (client) =>
+    client.query("DELETE FROM roles WHERE tenant_id = $1 AND id = ANY($2)", [
+      tenantId,
+      grantedRoles,
+    ]),
+  );
+  await owner.query('DELETE FROM "user" WHERE id = ANY($1)', [behaviorUsers]);
+}
+
 let facilityA: SeededFacility;
 const PERIOD = { from: "2026-10-05", to: "2026-10-05" };
 const ANOMALY_PERIOD = { from: "2026-09-15", to: "2026-09-21" };
+const cashShiftIds: string[] = [];
+
+async function seedCashVariance(tenant: string, outlet: string) {
+  await asOwner(tenant, async (client) => {
+    for (const [at, variance] of [
+      ["2026-09-10T05:00:00Z", 10000],
+      ["2026-09-17T05:00:00Z", -10000],
+      ["2026-09-18T05:00:00Z", 20000],
+      ["2026-09-19T05:00:00Z", -30000],
+    ] as const) {
+      const shift = randomUUID();
+      cashShiftIds.push(shift);
+      const count = randomUUID();
+      const cashier = fx.users.employee.id;
+      await client.query(
+        `INSERT INTO pos_shifts (id, tenant_id, outlet_id, device_id, cashier_id,
+          business_date, status, opened_at, opening_float_idr, open_key, open_fingerprint)
+         VALUES ($1, $2, $3, $4, $5, $6::timestamptz::date, 'open', $6, 100000, $7, $8)`,
+        [
+          shift,
+          tenant,
+          outlet,
+          randomUUID(),
+          cashier,
+          at,
+          randomUUID(),
+          "a".repeat(64),
+        ],
+      );
+      await client.query(
+        `INSERT INTO pos_shift_counts (id, tenant_id, outlet_id, shift_id, sequence,
+          counts, counts_fingerprint, counted_idr, expected_idr, variance_idr,
+          submitted_by, submitted_at, forced, idempotency_key, request_fingerprint)
+         VALUES ($1, $2, $3, $4, 1, '[]', $5, $6, 100000, $7, $8, $9, false, $10, $5)`,
+        [
+          count,
+          tenant,
+          outlet,
+          shift,
+          "b".repeat(64),
+          100000 + variance,
+          variance,
+          cashier,
+          at,
+          randomUUID(),
+        ],
+      );
+      await client.query(
+        `UPDATE pos_shifts SET status='closed', expected_idr=100000, counted_idr=$3,
+          variance_idr=$4, variance_note='Selisih', counts='[]', count_id=$5,
+          approved_by=$6, approval_request_id=$7, approval_override_id=$8,
+          approved_at=$9, closed_at=$9, closed_by=$10, close_key=$11, close_fingerprint=$12
+         WHERE tenant_id=$1 AND id=$2`,
+        [
+          tenant,
+          shift,
+          100000 + variance,
+          variance,
+          count,
+          publisher,
+          randomUUID(),
+          randomUUID(),
+          at,
+          cashier,
+          randomUUID(),
+          "c".repeat(64),
+        ],
+      );
+    }
+  });
+}
 
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
@@ -533,11 +1309,32 @@ beforeAll(async () => {
   await seedWaste(tenantId, outletA, inPeriod.slice(0, 3), 100_000);
   await seedWaste(tenantId, outletA, ["2026-09-10T05:00:00Z"], 100_000);
   await seedDiscounts(tenantId, outletA, inPeriod.slice(0, 3), 20_000);
+  await seedCashVariance(tenantId, outletA);
+  await seedCashVariance(tenantId, outletB);
+  await seedCashVariance(otherTenant, otherOutlet);
   // Below the minimum event count: never reported.
   await seedVoids(tenantId, outletB, ["2026-09-10T05:00:00Z"]);
+
+  await seedBehavior();
 });
 
 afterAll(async () => {
+  await cleanupBehavior();
+  for (const tenant of [tenantId, otherTenant])
+    await asOwner(
+      tenant,
+      async (client) => {
+        await client.query(
+          "DELETE FROM pos_shift_counts WHERE tenant_id = $1 AND shift_id = ANY($2)",
+          [tenant, cashShiftIds],
+        );
+        await client.query(
+          "DELETE FROM pos_shifts WHERE tenant_id = $1 AND id = ANY($2)",
+          [tenant, cashShiftIds],
+        );
+      },
+      true,
+    );
   await asOwner(
     tenantId,
     async (client) => {
@@ -635,12 +1432,51 @@ describe("readToolsB registry", () => {
 // ---- TL-07 -----------------------------------------------------------------
 
 describe("TL-07 get_customer_segments", () => {
-  it("marketing gets an aggregate-only shape with a source", async () => {
+  const find = (segments: Segment[], name: string) =>
+    segments.find((s) => s.label.includes(name) || s.code.includes(name));
+
+  it("marketing sees own-tenant tier segments with count and average spend, aggregate only", async () => {
     const out = await call("TL-07", "marketing", { segmentBy: "tier" });
-    expect(out.segments).toEqual([]);
-    expect(out.sources).toHaveLength(1);
-    expect(JSON.stringify(out)).not.toMatch(/email|phone|nama/i);
+    const segments = out.segments as Segment[];
+    const gold = find(segments, goldName);
+    expect(gold).toMatchObject({ customerCount: 6, avgSpendIdr: 350_000 });
+    expect(out.sources.length).toBeGreaterThanOrEqual(1);
+    // No identity or contact field, no customer-typed text.
+    expect(JSON.stringify(out)).not.toMatch(/Rahasia|email|phone|whatsapp/i);
+    for (const segment of segments)
+      expect(Object.keys(segment).sort()).toEqual([
+        "avgSpendIdr",
+        "code",
+        "customerCount",
+        "label",
+      ]);
   });
+
+  it("never returns a segment under the minimum size, nor another tenant's tier", async () => {
+    const out = await call("TL-07", "marketing", { segmentBy: "tier" });
+    const segments = out.segments as Segment[];
+    // Silver has 4 customers (< CUSTOMER_SEGMENT_MIN_SIZE = 5).
+    expect(find(segments, silverName)).toBeUndefined();
+    // The foreign tenant's tier has 8 customers but is not ours.
+    expect(find(segments, foreignTierName)).toBeUndefined();
+    for (const segment of segments)
+      expect(segment.customerCount).toBeGreaterThanOrEqual(5);
+  });
+
+  it.each(["recency", "frequency", "spend"] as const)(
+    "segments by %s: non-empty, every segment at or above the minimum, no identity",
+    async (segmentBy) => {
+      const out = await call("TL-07", "marketing", { segmentBy });
+      const segments = out.segments as Segment[];
+      expect(out.segmentBy).toBe(segmentBy);
+      // The 8 untiered customers share spend, visits and last visit.
+      expect(segments.length).toBeGreaterThan(0);
+      expect(segments.some((s) => s.customerCount >= 8)).toBe(true);
+      for (const segment of segments)
+        expect(segment.customerCount).toBeGreaterThanOrEqual(5);
+      expect(JSON.stringify(out)).not.toMatch(/Rahasia/);
+    },
+  );
 
   it("a role without crm.customer.view is forbidden", async () => {
     await expect(
@@ -653,13 +1489,20 @@ describe("TL-07 get_customer_segments", () => {
 
 describe("TL-08 get_shift_schedule", () => {
   const period = { from: "2026-10-05", to: "2026-10-11" };
+  const rowsOf = (out: ToolOut) => out.shifts as unknown as ShiftRow[];
+  const key = (row: ShiftRow) => `${row.date} ${row.startTime}-${row.endTime}`;
 
-  it("an employee reads their own schedule (no id, or their own id)", async () => {
-    expect((await call("TL-08", "employee", { period })).shifts).toEqual([]);
-    expect(
-      (await call("TL-08", "employee", { period, employeeId: employeeId }))
-        .truncated,
-    ).toBe(false);
+  it("an employee reads only their own published shifts of the period (no id, or their own id)", async () => {
+    for (const input of [{ period }, { period, employeeId }]) {
+      const out = await call("TL-08", "employee", input);
+      const rows = rowsOf(out);
+      // One published shift in the week; the draft (10-07), the shift outside
+      // the period (10-20) and the colleague's shift (10-06 10:00) are absent.
+      expect(rows.map(key)).toEqual(["2026-10-06 08:00-16:00"]);
+      expect(rows[0]!.employeeId.toLowerCase()).toBe(employeeId.toLowerCase());
+      expect(rows[0]!.outletId.toLowerCase()).toBe(outletA.toLowerCase());
+      expect(out.truncated).toBe(false);
+    }
   });
 
   it("an employee asking for another employee is forbidden, never rewritten", async () => {
@@ -668,10 +1511,78 @@ describe("TL-08 get_shift_schedule", () => {
     ).rejects.toMatchObject(forbidden);
   });
 
-  it("a manager with hr.schedule.manage reads outlets they reach", async () => {
+  it("a manager with hr.schedule.manage reads every outlet of the tenant, sorted, never another tenant", async () => {
+    const out = await call("TL-08", "hr", { period });
+    const rows = rowsOf(out);
+    const keys = rows.map(key);
+    expect(keys).toEqual(
+      expect.arrayContaining([
+        "2026-10-06 08:00-16:00",
+        "2026-10-06 10:00-18:00",
+        "2026-10-08 06:00-14:00",
+      ]),
+    );
+    // Outside the period, and the foreign tenant's 05:30 shift of 10-09.
+    expect(keys.some((k) => k.startsWith("2026-10-20"))).toBe(false);
+    expect(keys).not.toContain("2026-10-09 05:30-13:30");
+    expect(rows.some((r) => r.outletId.toLowerCase() === otherOutlet)).toBe(
+      false,
+    );
+    expect(JSON.stringify(out)).not.toContain("Karyawan Asing");
+    const order = rows.map((r) => `${r.date} ${r.startTime}`);
+    expect(order).toEqual([...order].sort());
+    expect(out.truncated).toBe(false);
+  });
+
+  it("a manager can narrow to an outlet in reach", async () => {
+    const out = await call("TL-08", "hr", { period, outletIds: [outletB] });
+    const rows = rowsOf(out);
+    expect(rows.map(key)).toContain("2026-10-08 06:00-14:00");
+    for (const row of rows)
+      expect(row.outletId.toLowerCase()).toBe(outletB.toLowerCase());
+  });
+
+  it("an outlet manager sees only their outlet and is denied another outlet filter", async () => {
+    const out = await call("TL-08", "outletManager", { period });
+    const rows = rowsOf(out);
+    expect(rows.map(key)).toContain("2026-10-06 10:00-18:00");
+    for (const row of rows)
+      expect(row.outletId.toLowerCase()).toBe(outletA.toLowerCase());
+    await expect(
+      call("TL-08", "outletManager", { period, outletIds: [outletB] }),
+    ).rejects.toMatchObject(forbidden);
+  });
+
+  it("an outlet manager with a second assignment at outlet B still sees no outlet B shift", async () => {
+    // Outlet B holds a shift (10-08 06:00-14:00) that the HRIS service would
+    // return for this user's DB assignment; the tool reach is outlet A only.
+    const out = await call("TL-08", "outletManager", { period });
+    const rows = rowsOf(out);
+    expect(rows.map(key)).toContain("2026-10-06 10:00-18:00");
+    expect(rows.map(key)).not.toContain("2026-10-08 06:00-14:00");
     expect(
-      (await call("TL-08", "hr", { period, outletIds: [outletA] })).truncated,
+      rows.some((r) => r.outletId.toLowerCase() === outletB.toLowerCase()),
     ).toBe(false);
+  });
+
+  it("filtering to two outlets is not made truncated by many rows of a third outlet", async () => {
+    const out = await call("TL-08", "hr", {
+      period: { from: "2026-11-02", to: "2026-11-08" },
+      outletIds: [outletA, outletB],
+    });
+    expect(rowsOf(out).map(key)).toEqual([
+      "2026-11-04 08:00-16:00",
+      "2026-11-05 09:00-17:00",
+    ]);
+    expect(out.truncated).toBe(false);
+  });
+
+  it("a week without shifts is an empty, non-truncated list", async () => {
+    const out = await call("TL-08", "hr", {
+      period: { from: "2026-12-07", to: "2026-12-13" },
+    });
+    expect(out.shifts).toEqual([]);
+    expect(out.truncated).toBe(false);
   });
 
   it("a role with neither schedule permission is forbidden", async () => {
@@ -882,14 +1793,28 @@ describe("TL-11 get_anomalies", () => {
     ).rejects.toMatchObject(forbidden);
   });
 
-  it("never reports another tenant's events and ignores types it cannot measure", async () => {
+  it("reports saved cash variance and respects tenant and outlet reach", async () => {
     const out = await call("TL-11", "owner", { period: ANOMALY_PERIOD });
     expect(out.anomalies.some((a) => a.outletId === otherOutlet)).toBe(false);
     const cash = await call("TL-11", "owner", {
       period: ANOMALY_PERIOD,
       types: ["cash_variance"],
     });
-    expect(cash.anomalies).toEqual([]);
+    expect(
+      cash.anomalies
+        .map((a) => [a.outletId, a.observedValue, a.baselineValue])
+        .sort(),
+    ).toEqual(
+      [
+        [outletA, "60000.0000", "10000.0000"],
+        [outletB, "60000.0000", "10000.0000"],
+      ].sort(),
+    );
+    const own = await call("TL-11", "outletManager", {
+      period: ANOMALY_PERIOD,
+      types: ["cash_variance"],
+    });
+    expect(own.anomalies.map((a) => a.outletId)).toEqual([outletA]);
   });
 
   it("does not report a quiet outlet or period", async () => {
@@ -909,12 +1834,113 @@ describe("TL-11 get_anomalies", () => {
 // ---- TL-12 -----------------------------------------------------------------
 
 describe("TL-12 get_my_profit_share", () => {
-  it("the shareholder gets only their own (here: empty) distributions, finality final", async () => {
+  const shareholderScope = () => {
+    const scope = ctxFor("shareholder").access.contextFor(
+      "profit_share.own.view",
+      { type: "tenant" },
+    );
+    if (!scope) throw new Error("shareholder lacks profit_share.own.view");
+    return scope;
+  };
+  const rowsOf = (out: ToolOut) => out.distributions as DistributionRow[];
+  /** What the finance service says the shareholder was paid in a year. */
+  const serviceStatements = async (year: number) => {
+    const mine = await getMyProfitShareService(
+      shareholderScope(),
+      fx.users.shareholder.id,
+      fx.now,
+    );
+    return mine.distributionHistory.filter((s) =>
+      s.period.startsWith(`${year}-`),
+    );
+  };
+  const pairs = (rows: { amount: number; bp: number }[]) =>
+    rows.map((r) => `${r.amount}@${r.bp}`).sort();
+
+  it("returns exactly the paid amounts and shares of getMyProfitShareService for the year", async () => {
+    const expected = await serviceStatements(2026);
+    // Guard against a vacuous test: two paid statements were seeded for 2026.
+    expect(expected.map((s) => Number(s.grossIdr)).sort()).toEqual([
+      4_500_000, 6_000_000,
+    ]);
     const out = await call("TL-12", "shareholder", { year: 2026 });
-    expect(out.distributions).toEqual([]);
+    const rows = rowsOf(out);
+    expect(
+      pairs(
+        rows.map((r) => ({
+          amount: r.amountIdr,
+          bp: Math.round(Number(r.sharePct) * 100),
+        })),
+      ),
+    ).toEqual(
+      pairs(expected.map((s) => ({ amount: Number(s.netIdr), bp: s.shareBp }))),
+    );
+    for (const row of rows) {
+      expect(row.status).toBe("paid");
+      expect(row.periodLabel).toMatch(/2026/);
+    }
+    expect(out.truncated).toBe(false);
     expect(out.sources[0]).toMatchObject({
       finality: "final",
       period: { from: "2026-01-01", to: "2026-12-31" },
+    });
+  });
+
+  it("filters by year; the default year is the year of now", async () => {
+    const y2025 = rowsOf(await call("TL-12", "shareholder", { year: 2025 }));
+    expect(y2025.map((r) => r.amountIdr)).toEqual([3_000_000]);
+    const dflt = rowsOf(await call("TL-12", "shareholder", {}));
+    expect(dflt.map((r) => r.amountIdr).sort()).toEqual([4_500_000, 6_000_000]);
+  });
+
+  it("defaults to the Jakarta year at 03:00 WIB on New Year's Day", async () => {
+    const handler = readToolsB["TL-12"];
+    if (!handler) throw new Error("No handler for TL-12");
+    const ctx = {
+      ...ctxFor("shareholder"),
+      now: new Date("2025-12-31T20:00:00Z"),
+    };
+    const output = AI_TOOL_IO["TL-12"].output.parse(await handler(ctx, {}));
+    expect(output.sources[0]?.period).toEqual({
+      from: "2026-01-01",
+      to: "2026-12-31",
+    });
+  });
+
+  it("shows nothing for unpaid lines, unapproved shares, other holders or another tenant", async () => {
+    const text = JSON.stringify(
+      await call("TL-12", "shareholder", { year: 2026 }),
+    );
+    // 4,200,000: own line of an approved run that is not paid yet.
+    // 2,800,000 / 4,000,000 / 3,000,000: the other shareholder's lines.
+    // 9,999,000: the same login's line in another tenant.
+    for (const amount of [
+      "4200000",
+      "2800000",
+      "4000000",
+      "3000000",
+      "9999000",
+    ])
+      expect(text).not.toMatch(new RegExp(`\\b${amount}\\b`));
+    // 33.33%: only in a version that was never approved.
+    expect(text).not.toMatch(/33\.33/);
+    expect(text).not.toMatch(/Pemegang/);
+  });
+
+  it("a shareholder in two entities gets two different labels for the same period", async () => {
+    const rows = rowsOf(await call("TL-12", "shareholder", { year: 2027 }));
+    expect(rows.map((r) => r.amountIdr).sort()).toEqual([1_000_000, 1_800_000]);
+    for (const row of rows)
+      expect(row.periodLabel).toMatch(/^Bagi hasil 2027-03 · \S/);
+    expect(new Set(rows.map((r) => r.periodLabel)).size).toBe(2);
+  });
+
+  it("a year without paid distributions is an empty list with a source", async () => {
+    const out = await call("TL-12", "shareholder", { year: 2029 });
+    expect(out.distributions).toEqual([]);
+    expect(out.truncated).toBe(false);
+    expect(out.sources[0]).toMatchObject({
+      period: { from: "2029-01-01", to: "2029-12-31" },
     });
   });
 

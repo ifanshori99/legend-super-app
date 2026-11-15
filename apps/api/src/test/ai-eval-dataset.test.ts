@@ -152,6 +152,18 @@ describe("AI eval dataset: tools", () => {
       (name): name is string => Boolean(name),
     );
 
+  it("keeps manager anomaly case ids mapped to their expected tool and type", () => {
+    for (const [id, type] of [
+      ["manager-num-023", "void"],
+      ["manager-num-024", "refund"],
+      ["manager-num-025", "cash_variance"],
+    ]) {
+      const item = evalCases.find((entry) => entry.id === id);
+      expect(item?.expectTool?.name, id).toBe("get_anomalies");
+      expect(item?.expectTool?.args.types, id).toEqual([type]);
+    }
+  });
+
   it("references only tools that exist in the catalog", () => {
     for (const item of evalCases)
       for (const name of toolRefs(item))

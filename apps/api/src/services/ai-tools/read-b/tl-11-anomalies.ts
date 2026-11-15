@@ -3,10 +3,7 @@
 // the same length (the baseline). A row is raised when the period holds at
 // least MIN_EVENTS events and the observed value is at least twice the
 // baseline. Observed/baseline are counts for void and refund, and rupiah for
-// discount and ingredient_usage (waste value + negative stock-count variance).
-//
-// GAP: `cash_variance` has no data source yet (no cashier drawer close table),
-// so that type never produces a row.
+// discount, cash_variance and ingredient_usage (waste value + negative stock-count variance).
 import { sql } from "drizzle-orm";
 import {
   ANOMALY_TYPES,
@@ -126,7 +123,14 @@ async function windowStat(
       };
     }
     case "cash_variance":
-      return NONE;
+      return one(
+        tx,
+        sql`select count(*)::int c, coalesce(sum(abs(variance_idr)), 0)::float8 v, max(closed_at) m
+          from pos_shifts
+          where tenant_id = ${tenantId}::uuid and outlet_id = ${outletId}::uuid
+            and status = 'closed' and variance_idr <> 0
+            and closed_at >= ${from}::timestamptz and closed_at < ${to}::timestamptz`,
+      );
     default:
       return NONE;
   }
@@ -192,7 +196,6 @@ export const getAnomalies: AiToolHandler = async (ctx, raw) => {
         end: businessDayRange(baselinePeriod.to as BusinessDate, clock).end,
       };
       for (const type of types) {
-        if (type === "cash_variance") continue;
         const observed = await windowStat(
           tx,
           tenantId,

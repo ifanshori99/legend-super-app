@@ -48,6 +48,12 @@ import {
   AI_SYSTEM_PROMPT,
 } from "../services/ai-prompts.ts";
 import { evalCases } from "./ai-eval/dataset.ts";
+import { seedAnalytics } from "./ai-eval/seed-analytics.ts";
+import { seedFinancialEval } from "./ai-eval/seed-financial.ts";
+import { seedCustomerEval } from "./ai-eval/seed-customers.ts";
+import { seedOperationalEval } from "./ai-eval/seed-operational.ts";
+import { seedProfitShareEval } from "./ai-eval/seed-profit-share.ts";
+import { seedShiftEval } from "./ai-eval/seed-shifts.ts";
 import {
   roleGroupTemplate,
   type EvalCase,
@@ -241,6 +247,12 @@ const GROUPS: EvalRoleGroup[] = [
   "employee",
   "kitchen",
 ];
+
+// Explicitly approved missing-source debt. These still run checkNumeric and
+// must fail until their sources are wired; an unexpected pass fails CI. Empty
+// since legend-yp2xj wired TL-07, TL-08 and TL-12.
+// New numeric cases never inherit an exception from their tool or role.
+const KNOWN_SOURCE_GAPS: Readonly<Record<string, "legend-yp2xj">> = {};
 
 const selected = (group: EvalRoleGroup): EvalCase[] => {
   const mine = evalCases.filter((entry) => entry.roleGroup === group);
@@ -535,15 +547,25 @@ async function checkNumeric(entry: EvalCase, run: CaseRun) {
   const tool = entry.expectTool!;
   expect(run.invokes.map((record) => record.name)).toEqual([tool.name]);
   const record = run.invokes[0]!;
-  if (record.ok && tool.metricPath) {
-    const value = valueAt(record.output, tool.metricPath);
-    if (typeof value === "number" || typeof value === "string")
-      expect(run.answer).toContain(String(value));
-  }
   const tools = new Set(run.requests[0]!.tools?.map((spec) => spec.name) ?? []);
   // Only a tool the model was offered may have run.
   if (record.ok) expect(tools.has(tool.name)).toBe(true);
   expectNoLeak(entry, run);
+  expect(
+    record.ok,
+    `${entry.id}: numeric source tool must succeed (${record.errorCode ?? "no error code"})`,
+  ).toBe(true);
+  expect(
+    tool.metricPath,
+    `${entry.id}: numeric metric path is required`,
+  ).toBeTruthy();
+  const value = valueAt(record.output, tool.metricPath!);
+  expect(
+    (typeof value === "number" && Number.isFinite(value)) ||
+      (typeof value === "string" && value.trim().length > 0),
+    `${entry.id}: source metric ${tool.metricPath} is unavailable`,
+  ).toBe(true);
+  expect(run.answer).toContain(String(value));
 }
 
 async function checkUnanswerable(entry: EvalCase, run: CaseRun, index: number) {
@@ -652,6 +674,62 @@ beforeAll(async () => {
      SELECT id, 'AI eval', id || '@example.test' FROM unnest($1::text[]) AS id`,
     [ids],
   );
+  await asOwner(tenantX.id, (client) =>
+    seedAnalytics(client, {
+      tenantId: tenantX.id,
+      brandId: tenantX.brandId,
+      outletId: outletA,
+      creatorId: ids[0]!,
+      approverId: ids[1]!,
+    }),
+  );
+  await asOwner(tenantX.id, (client) =>
+    seedFinancialEval(client, {
+      tenantId: tenantX.id,
+      legalEntityId: tenantX.entityId,
+      outletId: outletA,
+      creatorId: ids[0]!,
+    }),
+  );
+  await asOwner(tenantX.id, (client) =>
+    seedOperationalEval(client, {
+      tenantId: tenantX.id,
+      outletId: outletA,
+      legalEntityId: tenantX.entityId,
+      actorUserId: ids[0]!,
+      caseUsers: caseUser,
+      entries: evalCases,
+    }),
+  );
+  await asOwner(tenantX.id, (client) =>
+    seedCustomerEval(client, {
+      tenantId: tenantX.id,
+      brandId: tenantX.brandId,
+      outletId: outletA,
+      creatorId: ids[0]!,
+      caseUsers: caseUser,
+      entries: evalCases,
+    }),
+  );
+  await asOwner(tenantX.id, (client) =>
+    seedShiftEval(client, {
+      tenantId: tenantX.id,
+      outletId: outletA,
+      actorUserId: ids[0]!,
+      caseUsers: caseUser,
+      entries: evalCases,
+    }),
+  );
+  await asOwner(tenantX.id, (client) =>
+    seedProfitShareEval(client, {
+      tenantId: tenantX.id,
+      legalEntityId: tenantX.entityId,
+      outletId: outletA,
+      actorUserId: ids[0]!,
+      caseUsers: caseUser,
+      entries: evalCases,
+    }),
+  );
   // A zero budget stops the gateway (fail closed): give the tenant one.
   await owner.query(
     `INSERT INTO ai_settings (tenant_id, monthly_budget_idr, updated_by)
@@ -668,11 +746,101 @@ afterAll(async () => {
 
 // ---- the cases --------------------------------------------------------------
 
+describe("AI numeric evaluation regression", () => {
+  const entry = selected("owner").find((item) => item.kind === "numeric")!;
+  let baseline: CaseRun;
+
+  beforeAll(async () => {
+    baseline = await runCase(entry, 0);
+    await checkNumeric(entry, baseline);
+  });
+
+  const numericEntry = (
+    metricPath: string | undefined = "totals.value",
+  ): EvalCase => ({
+    ...entry,
+    expectTool: { ...entry.expectTool!, metricPath },
+  });
+
+  const numericRun = (output: unknown, answer = "Jawabannya: 42."): CaseRun => {
+    const run = structuredClone(baseline);
+    run.answer = answer;
+    run.invokes[0]!.output = output;
+    return run;
+  };
+
+  it("[AIG-04] missing source metrics lower the score from 100% to 50% to 0%", async () => {
+    const good = numericRun({ totals: { value: 42 } });
+    const missing = numericRun({ totals: {} });
+    const score = async (runs: CaseRun[]) => {
+      const outcomes = await Promise.allSettled(
+        runs.map((run) => checkNumeric(numericEntry(), run)),
+      );
+      return (
+        (outcomes.filter((result) => result.status === "fulfilled").length /
+          runs.length) *
+        100
+      );
+    };
+
+    expect(await score([good, good])).toBe(100);
+    expect(await score([good, missing])).toBe(50);
+    expect(await score([missing, missing])).toBe(0);
+  });
+
+  it("[AIG-04] a numeric case without a configured metric path fails", async () => {
+    const withoutPath = numericEntry();
+    delete withoutPath.expectTool!.metricPath;
+    await expect(
+      checkNumeric(withoutPath, numericRun({ totals: { value: 42 } })),
+    ).rejects.toThrow();
+  });
+
+  it.each([
+    ["missing parent", "totals.value", {}],
+    ["missing nested metric", "totals.value", { totals: {} }],
+    ["null metric", "totals.value", { totals: { value: null } }],
+    ["NaN metric", "totals.value", { totals: { value: NaN } }],
+    ["infinite metric", "totals.value", { totals: { value: Infinity } }],
+    ["empty string metric", "totals.value", { totals: { value: "" } }],
+    ["whitespace metric", "totals.value", { totals: { value: " " } }],
+    ["boolean metric", "totals.value", { totals: { value: true } }],
+    ["object metric", "totals.value", { totals: { value: {} } }],
+    ["empty source array", "items.0.value", { items: [] }],
+  ])("[AIG-04] %s fails numeric evaluation", async (_label, path, output) => {
+    await expect(
+      checkNumeric(numericEntry(path as string), numericRun(output)),
+    ).rejects.toThrow();
+  });
+
+  it("[AIG-04] an unsuccessful tool call fails numeric evaluation", async () => {
+    const run = numericRun(null, "Data untuk pertanyaan ini belum tersedia.");
+    run.invokes[0]!.ok = false;
+    run.invokes[0]!.errorCode = "AI_TOOL_FORBIDDEN";
+    await expect(checkNumeric(numericEntry(), run)).rejects.toThrow();
+  });
+
+  it.each([0, "0", 42, "42"])(
+    "[AIG-04] an available metric %j still passes when its value reaches the answer",
+    async (value) => {
+      await expect(
+        checkNumeric(
+          numericEntry(),
+          numericRun({ totals: { value } }, `Jawabannya: ${value}.`),
+        ),
+      ).resolves.toBeUndefined();
+    },
+  );
+});
+
 describe.each(GROUPS)("AI evaluation: %s", (group) => {
   const cases = selected(group);
   cases.forEach((entry, index) => {
     const tags = entry.criteria.map((id) => `[${id}]`).join("");
-    it(`${tags} ${entry.id} ${entry.question}`, async () => {
+    const sourceGap = KNOWN_SOURCE_GAPS[entry.id];
+    const evaluate = sourceGap ? it.fails : it;
+    const debt = sourceGap ? ` [known source gap: ${sourceGap}]` : "";
+    const evaluateCase = async () => {
       const run = await runCase(entry, index);
       switch (entry.kind) {
         case "numeric":
@@ -686,7 +854,23 @@ describe.each(GROUPS)("AI evaluation: %s", (group) => {
         case "pii":
           return checkPii(entry, run);
       }
-    });
+    };
+    evaluate(
+      `${tags} ${entry.id}${debt} ${entry.question}`,
+      sourceGap
+        ? async () => {
+            try {
+              await evaluateCase();
+            } catch (error) {
+              const expected = `${entry.id}: source metric ${entry.expectTool!.metricPath} is unavailable:`;
+              if (error instanceof Error && error.message.startsWith(expected))
+                throw error;
+              // Returning deliberately makes it.fails reject this unrelated
+              // failure as an unexpected pass, rather than accepting the debt.
+            }
+          }
+        : evaluateCase,
+    );
   });
 
   it(`[AIG-01] ${group}-scope outlet selection is checked against the caller's reach`, async () => {
