@@ -41,6 +41,8 @@ Induk lebih dulu. Migrasi dinomori ulang dari ujung m1 saat batch disusun.
 - `fix/receipt-run-861` c5fe91cc3 (base ce90d9b1b = tip rantai EDC `fix/edc-so-829`, sudah di 64g; architect xhigh, gagal-dulu). Masuk setelah 64g.
 - `fix/edc-failover-861` e688b53bd (prioritas 2, CTO G4j04; base ce90d9b1b; fail-stop saat kunci hilang; architect xhigh 2 putaran). Masuk setelah 64g, satu batch dengan `fix/receipt-run-861` (sama-sama basis rantai EDC). Cabang uang: bukti tes tak ada pihak dibayar lebih tetap berlaku. Kedua cabang bercabang dari ce90d9b1b, bukan saling induk; cek konflik berkas EDC saat merge.
 
+- Flake gerbang (taruh di depan batch berikut): `fix/flake-station-printer-887` 3ab003ad9 (test saja, legend-ea9sf).
+
 ### 2. Uang dan data pribadi
 
 - Rantai PII (setelah `ws/traceability-strict`, sudah di m1): `fix/ai-tool-result-pii` de5af1cf8, lalu `fix/mcp-tool-result-pii` 60f8cd7f4, lalu `fix/pii-salary-false-positive` 2012b53b2 (harus setelah mcp-tool-result-pii).
