@@ -538,6 +538,77 @@ function historyBatch(): PayrollDisbursementBatchDto {
 const refuse = (status: number, code: string, message: string) =>
   new ApiError(status, code, message);
 
+// ---- Password step-up emulation ---------------------------------------------------
+
+/** `sessionStorage.payoutMockStepUp = "password"` turns the emulation on. */
+const STEP_UP_KEY = "payoutMockStepUp";
+const MOCK_RIGHT_PASSWORD = "benar-123";
+const MOCK_WRONG_LIMIT = 5;
+let wrongPasswordStreak = 0;
+
+type PayoutMockAction = "approve" | "export" | "config";
+type PayoutMockCalls = Record<PayoutMockAction, number>;
+
+declare global {
+  interface Window {
+    /** Handler runs that got past the step-up (double-submit proof). */
+    __payoutMockCalls?: PayoutMockCalls;
+  }
+}
+
+/**
+ * Mirrors the server's stepUp + passwordStepUp for the three money actions.
+ * Off by default: only `payoutMockStepUp === "password"` changes behaviour.
+ */
+function passwordStepUp(
+  action: PayoutMockAction,
+  password: string | undefined,
+) {
+  if (typeof window === "undefined") return;
+  let enabled = false;
+  try {
+    enabled = window.sessionStorage.getItem(STEP_UP_KEY) === "password";
+  } catch {
+    // Storage blocked: treat as off.
+  }
+  if (enabled) {
+    // Once locked, even the right password is refused (server lockout).
+    if (wrongPasswordStreak > MOCK_WRONG_LIMIT)
+      throw refuse(
+        429,
+        "REAUTH_PASSWORD_LOCKED",
+        "Terlalu banyak percobaan password. Coba lagi nanti.",
+      );
+    if (password === undefined || password === "")
+      throw refuse(
+        401,
+        "REAUTH_REQUIRED",
+        "Verifikasi ulang diperlukan untuk tindakan ini.",
+      );
+    if (password !== MOCK_RIGHT_PASSWORD) {
+      wrongPasswordStreak += 1;
+      if (wrongPasswordStreak > MOCK_WRONG_LIMIT)
+        throw refuse(
+          429,
+          "REAUTH_PASSWORD_LOCKED",
+          "Terlalu banyak percobaan password. Coba lagi nanti.",
+        );
+      throw refuse(
+        403,
+        "REAUTH_PASSWORD_INVALID",
+        "Password salah. Periksa lalu coba lagi.",
+      );
+    }
+    wrongPasswordStreak = 0;
+  }
+  const calls = (window.__payoutMockCalls ??= {
+    approve: 0,
+    export: 0,
+    config: 0,
+  });
+  calls[action] += 1;
+}
+
 function find(batchId: string): PayrollDisbursementBatchDto {
   const found = state().batches.find((row) => row.id === batchId);
   if (!found)
@@ -628,6 +699,7 @@ registerMock(getPayoutConfig, ({ params }) => ({
 }));
 
 registerMock(upsertPayoutConfig, ({ params, body }) => {
+  passwordStepUp("config", body.password);
   if (body.method === "duitku")
     throw refuse(
       409,
@@ -795,6 +867,7 @@ registerMock(approveDisbursementBatch, ({ params, body }) => {
     const log = window as unknown as { __payoutApproveCalls?: string[] };
     log.__payoutApproveCalls = [...(log.__payoutApproveCalls ?? []), params.id];
   }
+  passwordStepUp("approve", body.password);
   const current = find(params.id);
   if (current.status !== "pending_approval")
     throw refuse(
@@ -872,7 +945,8 @@ registerMock(cancelDisbursementBatch, ({ params, body }) => {
   };
 });
 
-registerMock(exportDisbursementBatch, ({ params }) => {
+registerMock(exportDisbursementBatch, ({ params, body }) => {
+  passwordStepUp("export", body.password);
   const current = find(params.id);
   if (current.status === "exported" && current.exportedAt !== null)
     throw refuse(

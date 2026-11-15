@@ -111,7 +111,7 @@ function ApprovalBatch({
   const accounts = usePayoutSourceAccounts(batchEntityId).data ?? [];
   const approve = useApproveBatch();
   const userNames = usePayoutUserNames();
-  const stepUp = useStepUp();
+  const stepUp = useStepUp({ acceptsPassword: true });
   const [checked, setChecked] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   // Frozen at approval (from the batch); until then the settings' account,
@@ -131,6 +131,9 @@ function ApprovalBatch({
     | { batchId: string; contentHash: string | null; sourceId: string | null }
     | undefined
   >(undefined);
+  // isPending flips a macrotask late: a fast double click would run the money
+  // action twice, so a ref closes the gap until the request settles.
+  const inFlightRef = React.useRef(false);
   const resetStepUp = stepUp.reset;
   React.useEffect(() => {
     const confirmed = confirmedRef.current;
@@ -226,8 +229,16 @@ function ApprovalBatch({
   else if (!checked)
     blockKey = "payrollPayoutReview.approval.blocked.needCheck";
 
-  const submit = () => {
-    if (!batch.contentHash || approve.isPending || noSnapshotCount > 0) return;
+  // The password only lives in the panel for the one retry: it is sent as an
+  // argument, never kept in state, logged or stored.
+  const submit = (password?: string) => {
+    if (
+      !batch.contentHash ||
+      inFlightRef.current ||
+      approve.isPending ||
+      noSnapshotCount > 0
+    )
+      return;
     // A re-read in flight is not a reason to drop a verified retry: the server
     // compares the id and refuses a stale one.
     if (sourceUnknown) {
@@ -250,11 +261,13 @@ function ApprovalBatch({
       return;
     }
     setError(null);
+    inFlightRef.current = true;
     approve.mutate(
       {
         batchId: confirmed.batchId,
         contentHash: batch.contentHash,
         sourceBankAccountId: confirmed.sourceId,
+        ...(password ? { password } : {}),
       },
       {
         onSuccess: () => {
@@ -283,6 +296,9 @@ function ApprovalBatch({
             void query.refetch();
           }
           setError(payoutErrorMessage(failure, t));
+        },
+        onSettled: () => {
+          inFlightRef.current = false;
         },
       },
     );
@@ -376,7 +392,8 @@ function ApprovalBatch({
           blockKey={blockKey}
           blockParams={{ count: noSnapshotCount }}
           busy={approve.isPending && !stepUp.active}
-          onApprove={submit}
+          stepUpActive={stepUp.active}
+          onApprove={() => submit()}
           showApprove={pendingApproval}
         >
           {pendingApproval && stepUp.active && (

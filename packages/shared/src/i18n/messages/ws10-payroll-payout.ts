@@ -153,8 +153,11 @@ export const payrollPayoutMessages = {
     configDisabled: "Pencairan PT ini belum diaktifkan di Pengaturan PT.",
     mfaRequired:
       "Verifikasi dua langkah diperlukan untuk tindakan ini. Verifikasi lalu coba lagi.",
-    reauthRequired: "Masukkan kata sandi akun Anda untuk melanjutkan.",
+    reauthRequired:
+      "Verifikasi ulang diperlukan. Masukkan kode autentikator atau kata sandi akun Anda, lalu coba lagi.",
     reauthPasswordInvalid: "Kata sandi salah. Periksa lalu coba lagi.",
+    reauthPasswordLocked:
+      "Terlalu banyak percobaan kata sandi. Coba lagi beberapa menit lagi.",
     approvalExpired:
       "Persetujuan sudah kedaluwarsa. Ajukan ulang pencairannya.",
     hashMismatch:

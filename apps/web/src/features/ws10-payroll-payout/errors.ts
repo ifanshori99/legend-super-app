@@ -14,6 +14,7 @@ const CODE_KEYS: Record<string, MessageKey> = {
   MFA_REQUIRED: "payrollPayout.error.mfaRequired",
   REAUTH_REQUIRED: "payrollPayout.error.reauthRequired",
   REAUTH_PASSWORD_INVALID: "payrollPayout.error.reauthPasswordInvalid",
+  REAUTH_PASSWORD_LOCKED: "payrollPayout.error.reauthPasswordLocked",
   PAYOUT_APPROVAL_EXPIRED: "payrollPayout.error.approvalExpired",
   PAYOUT_HASH_MISMATCH: "payrollPayout.error.hashMismatch",
   PAYOUT_BATCH_STATE: "payrollPayout.error.batchState",
