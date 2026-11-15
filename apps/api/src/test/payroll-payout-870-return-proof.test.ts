@@ -17,9 +17,9 @@
 // - Control: ONE proof K for several items in the SAME operation (same request,
 //   both steps) stays valid and journals every item exactly once (a bank result
 //   report with several rows is legitimate, design 296).
-// - Control: uploading identical bytes again yields a different key (fixtures
-//   model it as another file name). That is not a bypass of the binding: B with
-//   the new key K2 is its own operation and passes.
+// - Re-uploading identical bytes yields a different key, but the proof is the
+//   same: it is refused (see the "second-opinion F2" tests at the end, which use
+//   the real upload service). Different bytes are a different proof and pass.
 //
 // Assumptions:
 // - Which of B's two steps is refused is not specified; the test only requires
@@ -29,8 +29,13 @@
 //   non-requesters work; they are the pair used by payroll-payout-gl.test.ts).
 // - Cross-tenant/batch keys are already refused by the existing evidence tests
 //   and are not repeated here.
+import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { FakeObjectStorage } from "@starter/shared/adapters";
+import { NoopMalwareScanner } from "../services/core-image.ts";
+import { uploadPayoutEvidence } from "../services/payroll-payout-evidence-upload.service.ts";
 import { returnManualItems } from "../services/payroll-payout-manual.service.ts";
+import { validPdfBytes } from "./helpers/pdf-fixtures.ts";
 import {
   ANDI,
   APP,
@@ -57,6 +62,7 @@ const returnWith = (
   itemIds: string[],
   by: string,
   evidenceKey: string,
+  store: ReturnType<typeof W.proofs> = W.proofs(),
 ) =>
   W.inTx((tx) =>
     returnManualItems(
@@ -68,7 +74,7 @@ const returnWith = (
         evidenceKey,
         note: "Bank mengembalikan dana, rekening tujuan ditutup",
       } as never,
-      W.proofs(),
+      store,
     ),
   );
 /** Both steps of one return operation. */
@@ -76,9 +82,10 @@ async function returnBothSteps(
   batchId: string,
   itemIds: string[],
   evidenceKey: string,
+  store: ReturnType<typeof W.proofs> = W.proofs(),
 ) {
-  await returnWith(batchId, itemIds, APP, evidenceKey);
-  await returnWith(batchId, itemIds, APP3, evidenceKey);
+  await returnWith(batchId, itemIds, APP, evidenceKey, store);
+  await returnWith(batchId, itemIds, APP3, evidenceKey, store);
 }
 
 /** Three items paid in one batch (Budi = A, Siti = B, Andi = C). */
@@ -111,6 +118,38 @@ async function afterReturnOfA() {
   await returnBothSteps(paid.batchId, [idOf(paid.a)], k);
   expect((await W.itemOfPerson(paid.batchId, BUDI)).status).toBe("returned");
   return { ...paid, k };
+}
+
+// Real uploads (second-opinion 870 follow-up, F2). The fixture storage above
+// fakes keys; here the REAL upload service writes to a storage that keeps the
+// bytes, so identical bytes uploaded twice give two different UUID keys.
+const real = (() => {
+  const storage = new FakeObjectStorage();
+  return {
+    storage,
+    store: () => ({ storage, context: W.scope() }),
+  };
+})();
+/** A valid PDF; `label` plus a random marker make the bytes unique per call (fingerprints persist per tenant). */
+const pdf = (label: string) =>
+  validPdfBytes({ marker: `${label} ${randomUUID()}` });
+const upload = async (batchId: string, bytes: Uint8Array) =>
+  (
+    await uploadPayoutEvidence(W.scope(), batchId, bytes, {
+      storage: real.storage,
+      scanner: new NoopMalwareScanner(),
+    })
+  ).evidenceKey;
+/** A and B paid in one batch; A returned (both steps) with a REAL upload of `bytes`. Returns K. */
+async function afterRealReturnOfA(bytes?: Uint8Array) {
+  const paid = await paidBatch();
+  const content = bytes ?? (await pdf("dana-kembali-A"));
+  const k = await upload(paid.batchId, content);
+  await returnBothSteps(paid.batchId, [idOf(paid.a)], k, real.store());
+  expect((await W.itemOfPerson(paid.batchId, BUDI)).status, "premise").toBe(
+    "returned",
+  );
+  return { ...paid, k, content };
 }
 
 describe("legend-w3691: a return proof is bound to one return operation", () => {
@@ -177,12 +216,11 @@ describe("legend-w3691: a return proof is bound to one return operation", () => 
     expect(await W.countJournals(returnKey(idOf(b)))).toBe(1);
   });
 
-  it("[w3691-control-new-key-new-operation] a re-uploaded proof has a different key (K2); B returned in its own operation with K2 passes, so the binding is per operation, not a ban on proofs", async () => {
-    const { batchId, b, k } = await afterReturnOfA();
-    const k2 = uploadEvidence(batchId, "dana-kembali-A-unggah-ulang.pdf");
-    expect(k2).not.toBe(k);
+  it("[w3691-control-different-bytes-accepted] a genuinely different proof (different PDF bytes, own upload) for B's own return operation is accepted: the binding is per proof content, not a ban on proofs", async () => {
+    const { batchId, b } = await afterRealReturnOfA();
+    const kB = await upload(batchId, await pdf("dana-kembali-B"));
 
-    await returnBothSteps(batchId, [idOf(b)], k2);
+    await returnBothSteps(batchId, [idOf(b)], kB, real.store());
 
     expect((await W.itemOfPerson(batchId, SITI)).status).toBe("returned");
     expect(await W.journalByKey(returnKey(idOf(b)))).toEqual({
@@ -387,5 +425,130 @@ describe("review F4: return claims cannot be rewritten", () => {
       expect(error!.code).toBe("23514");
       expect(error!.message).toContain("PAYOUT-31");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Second-opinion 870 follow-up, F2 (P2, legend-w3691): uploading the SAME proof
+// bytes again must not bypass the return claim.
+//
+// Rule (decision of the brief): the proof is identified by the SHA-256 of the
+// uploaded bytes, stored at upload time; a claim is refused when its proof
+// fingerprint was already consumed by a return in the same tenant. Expected
+// refusal: 409 PAYOUT_RETURN_PROOF_REUSED, nothing changes.
+//
+// Assumptions:
+// - Which step of the second operation is refused is not specified: at least
+//   one step must be refused, and every refusal must be that 409 code.
+// - One bank report covering A and B returned in ONE operation (same item set)
+//   stays valid (control b).
+// - Legacy fixture keys (no stored fingerprint) are not touched by these tests.
+// - Fingerprints persist per tenant, so every test uploads unique bytes.
+// ---------------------------------------------------------------------------
+
+async function expectReuseRefused(steps: (() => Promise<unknown>)[]) {
+  const failures: Awaited<ReturnType<typeof W.httpFailure>>[] = [];
+  for (const step of steps) failures.push(await W.httpFailure(step()));
+  expect(
+    failures.some((error) => error !== null),
+    "re-uploading the same bytes must not make a consumed proof usable again",
+  ).toBe(true);
+  for (const error of failures.filter((e) => e !== null)) {
+    expect(error!.status).toBe(409);
+    expect(error!.code).toBe("PAYOUT_RETURN_PROOF_REUSED");
+  }
+}
+
+describe("second-opinion F2 (legend-w3691): a re-uploaded copy of a consumed return proof", () => {
+  it("[so-f2-reupload-same-batch] A returned with K; the identical PDF uploaded again (K2) cannot return B: 409 PAYOUT_RETURN_PROOF_REUSED, B stays succeeded, no return journal, not offered to a follow-up batch", async () => {
+    const { runId, batchId, b, k, content } = await afterRealReturnOfA();
+    const k2 = await upload(batchId, content);
+    expect(k2, "premise: a new key for the same bytes").not.toBe(k);
+
+    await expectReuseRefused([
+      () => returnWith(batchId, [idOf(b)], APP, k2, real.store()),
+      () => returnWith(batchId, [idOf(b)], APP3, k2, real.store()),
+    ]);
+
+    expect((await W.itemOfPerson(batchId, SITI)).status).toBe("succeeded");
+    expect(await W.countJournals(returnKey(idOf(b)))).toBe(0);
+    const followUp = await W.createBatch(runId);
+    expect((await W.itemsOf(followUp)).map((i) => i.employee_id)).toEqual([
+      BUDI.id,
+    ]);
+  });
+
+  it("[so-f2-reupload-other-batch] cross batch: the identical PDF uploaded to ANOTHER batch of the same tenant cannot return that batch's item: 409 PAYOUT_RETURN_PROOF_REUSED, the item stays succeeded", async () => {
+    const first = await afterRealReturnOfA();
+    const other = await paidBatch();
+    const k2 = await upload(other.batchId, first.content);
+
+    await expectReuseRefused([
+      () => returnWith(other.batchId, [idOf(other.b)], APP, k2, real.store()),
+      () => returnWith(other.batchId, [idOf(other.b)], APP3, k2, real.store()),
+    ]);
+
+    expect((await W.itemOfPerson(other.batchId, SITI)).status).toBe(
+      "succeeded",
+    );
+    expect(await W.countJournals(returnKey(idOf(other.b)))).toBe(0);
+  });
+
+  it("[so-f2-control-one-report-two-items] control: one real bank report K covering A and B returned in ONE operation is valid, each item journaled once", async () => {
+    const { batchId, a, b, c } = await paidBatch();
+    const k = await upload(batchId, await pdf("dana-kembali-AB"));
+
+    await returnBothSteps(batchId, [idOf(a), idOf(b)], k, real.store());
+
+    expect((await W.itemOfPerson(batchId, BUDI)).status).toBe("returned");
+    expect((await W.itemOfPerson(batchId, SITI)).status).toBe("returned");
+    expect((await W.itemOfPerson(batchId, ANDI)).status).toBe("succeeded");
+    expect(await W.countJournals(returnKey(idOf(a)))).toBe(1);
+    expect(await W.countJournals(returnKey(idOf(b)))).toBe(1);
+    expect(await W.countJournals(returnKey(idOf(c)))).toBe(0);
+  });
+
+  it("[so-f2-reupload-as-payment-confirmation] the identical PDF of a consumed return proof, uploaded again (K2), is refused as the payment proof of another exported item: 409 PAYOUT_RETURN_PROOF_REUSED, the item stays exported", async () => {
+    const { batchId, b, c } = await paidAbPendingC();
+    const content = await pdf("dana-kembali-B");
+    const k = await upload(batchId, content);
+    await returnBothSteps(batchId, [idOf(b)], k, real.store());
+    expect((await W.itemOfPerson(batchId, SITI)).status, "premise").toBe(
+      "returned",
+    );
+    const k2 = await upload(batchId, content);
+
+    await W.expectRefused(
+      W.confirm(
+        batchId,
+        [
+          {
+            itemId: idOf(c),
+            result: "succeeded",
+            bankRef: `BCA-${batchId.slice(0, 8)}-C`,
+            evidenceKey: k2,
+          },
+        ],
+        APP3,
+        real.store(),
+      ),
+      { status: 409, code: "PAYOUT_RETURN_PROOF_REUSED" },
+    );
+    expect((await W.itemOfPerson(batchId, ANDI)).status).toBe("exported");
+  });
+
+  it("[so-f2-reupload-as-resolution] the identical PDF of a consumed return proof, uploaded again (K2), cannot resolve another exported item as failed: 409 PAYOUT_RETURN_PROOF_REUSED, the item stays exported", async () => {
+    const { batchId, b, c } = await paidAbPendingC();
+    const content = await pdf("dana-kembali-B");
+    const k = await upload(batchId, content);
+    await returnBothSteps(batchId, [idOf(b)], k, real.store());
+    const k2 = await upload(batchId, content);
+
+    await expectReuseRefused([
+      () => W.resolve(batchId, [idOf(c)], "failed", APP, k2, real.store()),
+      () => W.resolve(batchId, [idOf(c)], "failed", APP3, k2, real.store()),
+    ]);
+
+    expect((await W.itemOfPerson(batchId, ANDI)).status).toBe("exported");
   });
 });

@@ -24,8 +24,12 @@
 //   plus the kind check below.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { createUlid } from "@starter/shared/core";
+import { createUlid, userIdSchema } from "@starter/shared/core";
 import { payrollLocked } from "@starter/shared/hris/payroll";
+import { db } from "../db/index.ts";
+import { replaceAccountMappingsForEntity } from "../services/accounting-accounts.service.ts";
+import { appendOutbox, consumeOutbox } from "../services/core-outbox.ts";
+import { deliverPayrollGlEvent } from "../services/payroll-gl-consumer.ts";
 import * as glService from "../services/payroll-payout-gl.service.ts";
 import {
   ANDI,
@@ -461,5 +465,255 @@ describe("review F2: overpaid while the lock journal is still pending", () => {
     expect(
       await W.countJournals(`payroll-payout-overpaid:${idOf(budiFirst)}`),
     ).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Second-opinion 870 follow-up, F1 (P1, legend-2aspe): accounting switched off
+// between the handover and the lock consumer.
+//
+// Scenario: accounting is on, the `payroll.locked` outbox event is not consumed
+// yet, a cash handover is confirmed => `settle_pending`. THEN the accounting
+// module is switched off (tenant feature flags, the same switch
+// payroll-gl-consumer.test.ts uses). The REAL consumer path (`consumeOutbox`
+// with the GL consumer as callback, like the worker) then handles the locked
+// event. Money already left: the lock journal must still post and the pending
+// settle must resolve to `settle` (cash credited exactly the net, 2103 net zero
+// for the run). Switching accounting on again and consuming/replaying adds no
+// journal. The flag still decides NEW payroll: with no pending settlement for
+// the run the locked event stays `ignored` and posts nothing (control).
+//
+// Assumptions: the module switch is `tenants.feature_flags.modules` without
+// "accounting"; the flags are restored in `finally`. The outbox row is created
+// through `appendOutbox` (destination `cloud-sync`, like the real lock).
+// ---------------------------------------------------------------------------
+
+const CONSUME_NOW = new Date("2026-11-30T03:00:00Z");
+
+async function queueLockedViaOutbox(runId: string, slips: Slip[]) {
+  const event = lockedEnvelope(runId, slips);
+  const outboxId = createUlid();
+  await W.inTx((tx) =>
+    appendOutbox(tx, W.scope(), {
+      id: outboxId,
+      event,
+      destination: "cloud-sync",
+      direction: null,
+      peerId: null,
+    }),
+  );
+  return { event, outboxId };
+}
+
+/** The real consumer path: consumeOutbox with the payroll GL consumer as the callback. */
+async function consumeLocked(outboxId: string) {
+  let result: { status: string } | undefined;
+  const consumed = await consumeOutbox(db, W.scope(), {
+    outboxId,
+    authorize: async () => true,
+    deliver: async (
+      event: unknown,
+      _key: string,
+      tx: Parameters<typeof deliverPayrollGlEvent>[2],
+    ) => {
+      result = (await deliverPayrollGlEvent(
+        W.scope(),
+        event as Parameters<typeof deliverPayrollGlEvent>[1],
+        tx,
+        CONSUME_NOW,
+      )) as { status: string };
+    },
+  });
+  return { consumed, result };
+}
+
+async function tenantFlags() {
+  const rows = await W.owner.query(
+    "SELECT feature_flags AS flags FROM tenants WHERE id = $1",
+    [tenantId()],
+  );
+  return rows.rows[0]!.flags as { modules: string[] } & Record<string, unknown>;
+}
+async function setFlags(flags: unknown) {
+  await W.owner.query(
+    "UPDATE tenants SET feature_flags = $2::jsonb WHERE id = $1",
+    [tenantId(), JSON.stringify(flags)],
+  );
+}
+/** Runs `work` with the accounting module switched off, always restoring the flags. */
+async function withAccountingOff<T>(work: () => Promise<T>) {
+  const original = await tenantFlags();
+  expect(original.modules, "premise: accounting is on").toContain("accounting");
+  await setFlags({
+    ...original,
+    modules: original.modules.filter((m) => m !== "accounting"),
+  });
+  try {
+    return await work();
+  } finally {
+    await setFlags(original);
+  }
+}
+const journalCountOfEntity = async () =>
+  Number(
+    (
+      await W.rowsOf(
+        `SELECT count(*)::int AS n FROM journal_entries WHERE tenant_id = $1 AND legal_entity_id = $2`,
+        [tenantId(), W.entityId()],
+      )
+    )[0]!.n,
+  );
+
+describe("second-opinion F1 (legend-2aspe): accounting switched off before the lock consumer runs", () => {
+  it("[so-f1-pending-survives-accounting-off] pending settle + accounting switched off + real consumer: lock journal posts, pending resolves to settle, cash credited exactly the net, 2103 net zero; switching on and replaying adds nothing", async () => {
+    const before = {
+      cash: await account("1102"),
+      payable: await account("2103"),
+    };
+    const slips = [cash(CASHIER, 1_000_000)];
+    const runId = await W.seedRun(slips);
+    const { outboxId, event } = await queueLockedViaOutbox(runId, slips);
+    const batchId = await W.approvedBatch(runId, "cash");
+    const items = await W.itemsOf(batchId);
+    await W.handover(
+      batchId,
+      items.map((i) => i.id as string),
+      APP2,
+    );
+    expect(
+      (await W.postingsOf(batchId))[0]!.kind,
+      "premise: stored as pending",
+    ).toBe("settle_pending");
+
+    const outcome = await withAccountingOff(() => consumeLocked(outboxId));
+    expect(
+      outcome.result?.status,
+      "money already left: the locked event must not be dropped as ignored",
+    ).toBe("posted");
+
+    const postings = await W.postingsOf(batchId);
+    expect(postings).toHaveLength(1);
+    expect(postings[0]!.kind, "pending resolved").toBe("settle");
+    expect((await account("1102")).credit - before.cash.credit).toBe(1_000_000);
+    expect(
+      (await account("2103")).balance - before.payable.balance,
+      "salaries payable is net zero for the run",
+    ).toBe(0);
+
+    // Accounting on again: consume and replay add no journal and no posting.
+    const journals = await journalCountOfEntity();
+    await consumeLocked(outboxId);
+    await W.deliverGl(event);
+    expect(await journalCountOfEntity()).toBe(journals);
+    expect(await W.postingsOf(batchId)).toHaveLength(1);
+    expect((await account("1102")).credit - before.cash.credit).toBe(1_000_000);
+    expect((await account("2103")).balance - before.payable.balance).toBe(0);
+  });
+
+  it("[so-f1-control-off-without-pending-ignored] control: accounting off and NO pending settlement for the run: the locked event is ignored and nothing is posted", async () => {
+    const slips = [cash(CASHIER, 600_000)];
+    const runId = await W.seedRun(slips);
+    const { outboxId } = await queueLockedViaOutbox(runId, slips);
+    const journals = await journalCountOfEntity();
+
+    const outcome = await withAccountingOff(() => consumeLocked(outboxId));
+
+    expect(outcome.result?.status).toBe("ignored");
+    expect(await journalCountOfEntity()).toBe(journals);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Second-opinion 870 follow-up, F3 (P2, legend-cnpap): a pending cash
+// settlement follows the cash account of the moment the money was handed over,
+// not a petty_cash mapping changed afterwards.
+//
+// Scenario: `petty_cash` -> cash account A (1102). Cash handover of Rp1.000.000
+// is confirmed while the lock event is still queued => `settle_pending`. Before
+// the consumer runs, finance replaces the `petty_cash` mapping with another
+// active cash account B. After the lock consumer runs, the credit of exactly
+// the net is on A, B has no lines, the posting is `settle`, and a second
+// consumer run adds no journal. The mapping is restored in `finally`.
+// ---------------------------------------------------------------------------
+
+describe("second-opinion F3 (legend-cnpap): pending cash settlement keeps the cash account of the handover", () => {
+  it("[so-f3-pending-cash-keeps-source-account] mapping petty_cash A -> B before the lock consumer: credit lands on A, B untouched, posting settle, a second run adds nothing", async () => {
+    const slips = [cash(CASHIER, 1_000_000)];
+    const runId = await W.seedRun(slips);
+    const { outboxId, event } = await queueLockedViaOutbox(runId, slips);
+    const batchId = await W.approvedBatch(runId, "cash");
+    const items = await W.itemsOf(batchId);
+    await W.handover(
+      batchId,
+      items.map((i) => i.id as string),
+      APP2,
+    );
+    expect(
+      (await W.postingsOf(batchId))[0]!.kind,
+      "premise: stored as pending",
+    ).toBe("settle_pending");
+
+    const mappings = (
+      await W.rowsOf(
+        `SELECT role, account_id FROM account_mappings WHERE tenant_id = $1 AND legal_entity_id = $2`,
+        [tenantId(), W.entityId()],
+      )
+    ).map((m) => ({
+      role: m.role as string,
+      accountId: m.account_id as string,
+    }));
+    expect(mappings.some((m) => m.role === "petty_cash")).toBe(true);
+    const [b] = await W.rowsOf(
+      `INSERT INTO chart_of_accounts
+         (tenant_id, legal_entity_id, code, name, type, report_group, parent_id, is_active)
+       VALUES ($1, $2, '1109', 'Kas Kecil Baru', 'asset', 'cash_and_equivalents', NULL, true)
+       RETURNING id`,
+      [tenantId(), W.entityId()],
+    );
+    const actorId = userIdSchema.parse(randomUUID());
+    await W.owner.query(
+      `INSERT INTO "user" (id, name, email) VALUES ($1, 'Finance 870', $2)`,
+      [actorId, `${actorId}@example.test`],
+    );
+    const replace = (list: { role: string; accountId: string }[]) =>
+      replaceAccountMappingsForEntity(
+        W.scope(),
+        W.entityId(),
+        { mappings: list } as Parameters<
+          typeof replaceAccountMappingsForEntity
+        >[2],
+        actorId,
+      );
+    const beforeA = await account("1102");
+    await replace(
+      mappings.map((m) =>
+        m.role === "petty_cash" ? { ...m, accountId: b!.id as string } : m,
+      ),
+    );
+    try {
+      const first = await consumeLocked(outboxId);
+      expect(first.result?.status).toBe("posted");
+      const journals = await journalCountOfEntity();
+      await consumeLocked(outboxId);
+      await W.deliverGl(event);
+      expect(
+        await journalCountOfEntity(),
+        "no journal added by the second run",
+      ).toBe(journals);
+    } finally {
+      await replace(mappings);
+    }
+
+    const postings = await W.postingsOf(batchId);
+    expect(postings).toHaveLength(1);
+    expect(postings[0]!.kind).toBe("settle");
+    expect(
+      (await account("1102")).credit - beforeA.credit,
+      "the cash that left (account A) is credited exactly the net",
+    ).toBe(1_000_000);
+    expect(
+      await account("1109"),
+      "the new cash account never paid this money",
+    ).toEqual({ debit: 0, credit: 0, balance: 0 });
   });
 });
