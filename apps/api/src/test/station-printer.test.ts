@@ -464,13 +464,19 @@ describe("legend-e087 station printerDeviceId", () => {
     const q = await seedDevice(tenantId, outletA, "printer");
     const stationId = await insertStation(p);
     const cook = await stationClient(stationId);
+    await asOwnerTenant(tenantId, (client) =>
+      client.query("UPDATE stations SET updated_at = $1 WHERE id = $2", [
+        new Date("2000-01-01T00:00:00.000Z"),
+        stationId,
+      ]),
+    );
     const t0 = await stationStamp(stationId);
-    await new Promise((resolve) => setTimeout(resolve, 5));
     await updateStation(tenantContext(), userId, stationId, {
       printerDeviceId: q,
       expectedUpdatedAt: t0,
     });
     const t1 = await stationStamp(stationId);
+    expect(t1).not.toBe(t0);
 
     const res = await cook
       .patch(`/api/menu/stations/${stationId}`)
