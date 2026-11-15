@@ -564,12 +564,13 @@ describe("D (legend-vvzij): settle_skipped becomes settle when the lock journal 
     expect(replayed.payable.balance - before.payable.balance).toBe(0);
   });
 
-  // Assumption: with settle_skipped the fee is recorded as posted (fee_posted =
-  // true) at confirmation although nothing was journaled, so the later settle
-  // must NOT try to journal the fee; a missing bank_charges mapping is then
-  // irrelevant and must not stall the consumer. No fee journal is expected.
-  it("[d-bank-skipped-fee-mapping-missing] bank confirmed with accounting off (settle_skipped, fee > 0, fee_posted true), then the bank_charges mapping is removed and the locked event is consumed: the consumer does not throw, the posting becomes settle, the bank is credited exactly the net (no fee), 2103 is net zero, and no fee journal exists", async () => {
-    const before = await snapshot();
+  // Assumption: a settle_skipped bank posting with a fee > 0 only becomes a
+  // settle when the bank_charges mapping exists (the fee must then be journaled
+  // too). While the mapping is missing the posting stays settle_skipped, nothing
+  // is journaled for the settle or the fee, fee_posted is left untouched and
+  // neither the consumer nor a resolve throws. Once the mapping is back, the
+  // pending-settle resolve turns it into settle, journaling net and fee once.
+  async function bankSkippedWithLockQueued() {
     const slips = [bank(BUDI, NET_BANK)];
     const runId = await W.seedRun(slips);
     const batchId = await W.exportedBatch(runId);
@@ -582,9 +583,30 @@ describe("D (legend-vvzij): settle_skipped becomes settle when the lock journal 
       "settle_skipped",
     );
     expect(skipped!.fee_posted, "premise: fee recorded as posted").toBe(true);
-    const { outboxId } = await queueLockedViaOutbox(runId, slips);
+    const { outboxId, event } = await queueLockedViaOutbox(runId, slips);
+    return { slips, runId, batchId, outboxId, event };
+  }
+  const resolveSettles = (runId: string) =>
+    W.inTx((tx: Tx) =>
+      (
+        glService as unknown as {
+          resolvePendingSettles: (
+            tx: Tx,
+            tenantId: string,
+            runId: string,
+          ) => Promise<unknown>;
+        }
+      ).resolvePendingSettles(tx, tenantId(), runId),
+    );
+
+  it("[d-bank-skipped-fee-mapping-missing] bank confirmed with accounting off (settle_skipped, fee > 0, fee_posted true), then the bank_charges mapping is removed and the locked event is consumed: the consumer does not throw, the lock is journaled, the posting stays settle_skipped without settle or fee journal, fee_posted stays true and the bank is not credited; with the mapping back the resolve makes it settle: net and fee credited to the bank once, 2103 net zero, replays add nothing", async () => {
+    const before = await snapshot();
+    const { slips, runId, batchId, outboxId, event } =
+      await bankSkippedWithLockQueued();
 
     const restore = await removeMapping("bank_charges");
+    let skippedKey = "";
+    let skippedFeeKey = "";
     try {
       const outcome = await consumeLocked(outboxId);
       expect(
@@ -592,24 +614,86 @@ describe("D (legend-vvzij): settle_skipped becomes settle when the lock journal 
         "the consumer must not throw or stall on a missing fee mapping",
       ).toBe("posted");
       await W.deliverGl(W.paidEnvelope(runId, slips, { settledPerItem: true }));
+
+      const postings = await W.postingsOf(batchId);
+      expect(postings).toHaveLength(1);
+      expect(postings[0]!.kind, "stays settle_skipped").toBe("settle_skipped");
+      expect(postings[0]!.fee_posted, "fee_posted untouched").toBe(true);
+      skippedKey = postings[0]!.journal_key as string;
+      skippedFeeKey = feeKey(postings[0]!);
+      expect(await W.journalByKey(skippedKey)).toBe(undefined);
+      expect(await W.journalByKey(skippedFeeKey)).toBe(undefined);
+      const mid = await snapshot();
+      expect(
+        mid.payable.credit - before.payable.credit,
+        "the lock journal is posted (2103 credited the run's net)",
+      ).toBe(NET_BANK);
+      expect(mid.bank.credit - before.bank.credit, "bank not credited").toBe(0);
+      expect(mid.fee.debit - before.fee.debit).toBe(0);
     } finally {
       await restore();
     }
 
+    await resolveSettles(runId);
     const postings = await W.postingsOf(batchId);
     expect(postings).toHaveLength(1);
-    expect(postings[0]!.kind, "skipped resolved to settle").toBe("settle");
+    expect(postings[0]!.kind, "resolved to settle").toBe("settle");
+    expect(postings[0]!.fee_posted).toBe(true);
     expect(await W.journalByKey(postings[0]!.journal_key as string)).toEqual({
       "2103": { debit: NET_BANK, credit: 0 },
       "1103": { debit: 0, credit: NET_BANK },
     });
-    expect(await W.journalByKey(feeKey(postings[0]!))).toBe(undefined);
+    expect(await W.journalByKey(feeKey(postings[0]!))).toEqual(feeJournal);
+    expect(await W.countJournals(feeKey(postings[0]!))).toBe(1);
     const after = await snapshot();
-    expect(after.bank.credit - before.bank.credit, "net only, no fee").toBe(
-      NET_BANK,
-    );
-    expect(after.fee.debit - before.fee.debit).toBe(0);
+    expect(after.bank.credit - before.bank.credit).toBe(NET_BANK + FEE);
+    expect(after.fee.debit - before.fee.debit).toBe(FEE);
     expect(after.payable.balance - before.payable.balance).toBe(0);
+
+    // Replays add nothing.
+    const journals = await journalCountOfEntity();
+    await resolveSettles(runId);
+    await consumeLocked(outboxId);
+    await W.deliverGl(event);
+    expect(await journalCountOfEntity(), "replay adds no journal").toBe(
+      journals,
+    );
+    expect(await W.countJournals(postings[0]!.journal_key as string)).toBe(1);
+    expect(await W.countJournals(feeKey(postings[0]!))).toBe(1);
+    expect(await W.postingsOf(batchId)).toHaveLength(1);
+    const replayed = await snapshot();
+    expect(replayed.bank.credit - before.bank.credit).toBe(NET_BANK + FEE);
+    expect(replayed.payable.balance - before.payable.balance).toBe(0);
+  });
+
+  it("[d-bank-skipped-fee-mapping-missing-repeat-resolve] bank_charges mapping missing: the lock is consumed and the resolve is repeated without the mapping: nothing throws, the posting stays settle_skipped and no settle or fee journal appears", async () => {
+    const before = await snapshot();
+    const { runId, batchId, outboxId } = await bankSkippedWithLockQueued();
+
+    const restore = await removeMapping("bank_charges");
+    try {
+      const outcome = await consumeLocked(outboxId);
+      expect(outcome.result?.status).toBe("posted");
+      const journals = await journalCountOfEntity();
+      await resolveSettles(runId);
+      await resolveSettles(runId);
+      await Promise.all([resolveSettles(runId), resolveSettles(runId)]);
+
+      const postings = await W.postingsOf(batchId);
+      expect(postings).toHaveLength(1);
+      expect(postings[0]!.kind).toBe("settle_skipped");
+      expect(postings[0]!.fee_posted).toBe(true);
+      expect(await W.journalByKey(postings[0]!.journal_key as string)).toBe(
+        undefined,
+      );
+      expect(await W.journalByKey(feeKey(postings[0]!))).toBe(undefined);
+      expect(await journalCountOfEntity(), "no journal added").toBe(journals);
+      const after = await snapshot();
+      expect(after.bank.credit - before.bank.credit).toBe(0);
+      expect(after.fee.debit - before.fee.debit).toBe(0);
+    } finally {
+      await restore();
+    }
   });
 
   it("[d-cash-skipped-no-petty-cash-mapping-stays] no petty_cash mapping at the handover and none when the locked event is consumed (nothing frozen, nothing to fall back on): the consumer does not throw, the lock journal still posts, the posting stays settle_skipped and cash is not credited", async () => {

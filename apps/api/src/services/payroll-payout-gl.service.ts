@@ -727,6 +727,31 @@ export async function resolvePendingSettles(
       // stalls the consumer.
       const wasSkipped = posting.kind === "settle_skipped";
       if (wasSkipped && netIdr === 0) continue;
+      // A skipped posting that owes a bank fee turns into a settle only while
+      // the fee can be journaled with it. No bank charges mapping: it stays
+      // `settle_skipped`, `fee_posted` untouched, nothing is posted, and a later
+      // resolve (consumer replay, settle, repost) does it all once the mapping
+      // is back. The consumer never throws and the outbox is not held.
+      if (
+        wasSkipped &&
+        openPostingTotal(posting, tenantId, "feeIdr") > 0 &&
+        !(await journalKeyExists(
+          tx,
+          tenantId,
+          payoutGlKeys.fee(posting.itemSetHash),
+        )) &&
+        !(await bankChargesMapped(tx, tenantId, batch.legalEntityId))
+      ) {
+        logger.warn(
+          {
+            tenantId,
+            batchId: batch.id,
+            reason: "skipped_settle_no_fee_mapping",
+          },
+          "payout skipped settlement left as is: bank charges mapping missing",
+        );
+        continue;
+      }
       const accountOverrides = wasSkipped
         ? await skippedSettleOverride(tx, tenantId, batch, posting)
         : await pendingSettleOverride(tx, tenantId, batch, posting);
