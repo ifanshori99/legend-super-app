@@ -1,3 +1,11 @@
+## Perbaikan temuan second opinion payout (engineer, cabang `fix/payout-second-opinion-870`, 15 Nov 2026 09:11-09:55 WIB, brief 870)
+
+- Sudah: legend-2aspe `settle_pending` (settlement menunggu jurnal `payroll.locked`, diselesaikan idempoten oleh consumer, sumber bank beku, tanpa jurnal ganda); legend-yjbjb POST ekspor bank lama selalu 409 `LEGACY_BANK_EXPORT_DISABLED` (GET arsip tetap); legend-w3691 bukti return diikat ke satu operasi (tabel `payroll_payout_return_claims`, konsumsi atomik, `PAYOUT_RETURN_PROOF_REUSED`).
+- Review architect xhigh 2 putaran: 4 celah uang dibetulkan (pending macet bila rekening dinonaktifkan, overpaid saat jurnal kunci tertunda `PAYOUT_LOCK_JOURNAL_PENDING`, bukti dipakai lintas resolve/return/konfirmasi, claim tanpa guard tulis).
+- Migrasi: `0368_payout_pending_settle_return_claims` (nomor berikutnya di basis; merge train menomori ulang). Basis: `ghostex/pemindai-bersama-bukti-payout-m6` (53b0db393) + gap web `a9657bd37` tidak ikut (hanya web).
+- Gate: 27 file test terarah 372 lulus, text-contract dan contract 864 lulus, prettier + eslint bersih, typecheck API 0, `db:generate` kosong.
+- Berikut: UI `ws10-payroll-run` masih memanggil POST ekspor lama (`api.ts:240`); daftar item return setengah jalan sebelum deploy (F5).
+
 ## M6 pemindai bersama bukti payout + capabilities (engineer, cabang `ws/storage-scanner-pdf`, 14-15 Nov 2026 23:20-00:40 WIB)
 
 - Sudah: legend-egrrp (ba10ec7f4) `scanUploadBytes` dipakai `uploadStorage`, dokumen pemegang saham, dan `uploadPayoutEvidence`; `GET /api/storage/capabilities`; pemilih bukti payout web hanya menawarkan PDF bila `documentsAccepted`.
