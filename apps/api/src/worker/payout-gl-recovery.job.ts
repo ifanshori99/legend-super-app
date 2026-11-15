@@ -5,13 +5,17 @@
 // charges mapping coming back, a frozen source account being reactivated, or
 // finance recording a missing source. Nothing replays the GL consumer for those,
 // so this sweep (one tenant per call, tenant-wide worker context) walks the
-// payout recovery list and runs `recoverPayoutGlOfBatch` for each batch in its
+// retryable payout batches and runs `recoverPayoutGlOfBatch` for each in its
 // own transaction:
 // - idempotent: the recovery takes the batch advisory lock, journals under the
 //   posting's own keys and flips each posting once, so overlapping ticks or two
 //   workers replay and add nothing;
-// - bounded: at most 200 retryable batches per tick per tenant, oldest first
-//   (batches that only a human clears are not listed for the sweep);
+// - bounded and fair (legend-la22h): at most 200 retryable batches per tick per
+//   tenant, chosen by batch id after a per-tenant cursor that wraps around, so
+//   a batch that stays blocked in front never starves the ones behind it, and
+//   every batch gets a turn within ceil(batches / limit) ticks (batches that
+//   only a human clears are not listed and never use up the limit; the cursor
+//   is in memory, a restart only starts again from the first batch);
 // - fail closed per batch: a configuration that still blocks the batch is
 //   skipped by the recovery itself, any other error rolls back that batch only
 //   and the next tick tries again. It never blocks the other batches or the
@@ -24,12 +28,20 @@ import {
 import { db } from "../db";
 import { withTenant } from "../db/tenant.ts";
 import {
-  listPayoutRecovery,
+  listRecoveryBatchIds,
   recoverPayoutGlOfBatch,
 } from "../services/payroll-payout-gl.service.ts";
 
 /** Batches one tick handles per tenant; the rest wait for the next tick. */
 export const PAYOUT_GL_RECOVERY_BATCHES_PER_TICK = 200;
+
+/** Last batch id each tenant's sweep handled (in memory; see the header). */
+const recoveryCursors = new Map<string, string>();
+
+/** Test helper: forget every tenant's sweep cursor. */
+export function __resetRecoveryCursorsForTest(): void {
+  recoveryCursors.clear();
+}
 
 export type PayoutGlRecoveryResult = {
   /** Batches the sweep looked at. */
@@ -52,19 +64,27 @@ export async function runPayoutGlRecoverySweep(
     throw new Error("Payout GL recovery requires tenant-wide scope");
   const tenantId = context.tenant.tenantId;
   const batchLimit = options.batchLimit ?? PAYOUT_GL_RECOVERY_BATCHES_PER_TICK;
-  // Only retryable rows, filtered before the cap: batches that wait for a
-  // human (accounting_was_off, source_account_unknown) never use up the tick
-  // and are never locked. The list is oldest posting first.
-  const rows = await withTenant(db, context, (tx) =>
-    listPayoutRecovery(tx, tenantId, {
-      retryableOnly: true,
-      maxBatches: batchLimit,
-    }),
-  );
-  const batchIds = [...new Set(rows.map((row) => row.batchId))].slice(
-    0,
-    batchLimit,
-  );
+  // Batches with at least one retryable posting, after the tenant's cursor;
+  // when the tail is short the list wraps to the first batches.
+  const cursor = recoveryCursors.get(tenantId) ?? null;
+  const batchIds = await withTenant(db, context, async (tx) => {
+    const ids = await listRecoveryBatchIds(tx, tenantId, {
+      after: cursor,
+      limit: batchLimit,
+    });
+    if (ids.length < batchLimit && cursor !== null) {
+      const wrapped = await listRecoveryBatchIds(tx, tenantId, {
+        after: null,
+        limit: batchLimit - ids.length,
+      });
+      for (const id of wrapped) if (!ids.includes(id)) ids.push(id);
+    }
+    return ids;
+  });
+  // The next tick starts after the last batch handled (or from the start).
+  const last = batchIds.at(-1);
+  if (last === undefined) recoveryCursors.delete(tenantId);
+  else recoveryCursors.set(tenantId, last);
   let resolved = 0;
   let feesReposted = 0;
   let failed = 0;

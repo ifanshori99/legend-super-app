@@ -31,8 +31,20 @@
 //   GL not owned by an active bank account, posting of another batch, frozen
 //   bank batch) is asserted as "a 4xx and nothing changed"; 409 is asserted
 //   only where the brief names it (bank batch with a frozen source).
-// - The route needs no extra step-up beyond what the sibling finance routes
-//   use; the finance client enrolls MFA like the other payout HTTP tests.
+// - Brief 883 (legend-6ae7e, legend-hblpg): the route has the same step-up as
+//   confirm-cash. The body carries `password` (the current account password,
+//   optional in the schema): a session whose second factor only comes from the
+//   MFA enrollment (never passed a challenge at sign-in) must send it, else
+//   401 REAUTH_REQUIRED; a wrong password is refused (401 or 403); a session
+//   with a fresh real challenge (factor older than the session, as in
+//   payroll-payout-evidence.test.ts) may omit it. The default `finance` client
+//   is enrollment-only, so every call of it sends the password. Refusals change
+//   nothing: no source, no journal, no credit, no audit row.
+// - hblpg: the person who requested the batch (batch.requested_by) cannot record
+//   its payout source: 403 PAYOUT_SOURCE_SELF_RECORD, nothing changes; another
+//   approver records it once. The requester is modelled by setting
+//   `requested_by` of the batch to the user id of an HTTP client (triggers off,
+//   like the other fixtures that rewrite pre-existing rows).
 // - "Cash handed over with accounting off" = tenant feature flag without
 //   "accounting" (as in payroll-payout-877-gl-fee-skipped.test.ts). The
 //   `payroll.locked` outbox row is queued AFTER the handover and consumed with
@@ -94,7 +106,9 @@ afterAll(async () => {
 type Client = Awaited<ReturnType<typeof W.signedInClient>>["client"];
 let finance: Client;
 let viewer: Client;
-async function financeClient(label: string) {
+const PASSWORD = "Test-password-123!";
+/** Signed in, granted the disburse permission, TOTP enrolled and verified in this session (enrollment-only). */
+async function enrolledFinance(label: string) {
   const { client, userId } = await W.signedInClient(`Src881 ${label}`);
   await W.grantRole(userId, ["payroll.view", "payroll.disburse.approve"]);
   const enrolled = await client
@@ -112,7 +126,39 @@ async function financeClient(label: string) {
     .set(originHeader)
     .send({ factorId, code: totpCode(secretBase32, totpStep(new Date())) });
   expect(verified.status, JSON.stringify(verified.body)).toBe(200);
-  return client;
+  return { client, userId, factorId, secretBase32 };
+}
+async function financeClient(label: string) {
+  return (await enrolledFinance(label)).client;
+}
+/**
+ * Finance with a real challenge: the factor existed before the session
+ * (backdated), so verifying a code stamps `mfa_challenge_verified_at` and the
+ * password is not asked (same set-up as payroll-payout-evidence.test.ts).
+ */
+async function challengedFinance(label: string) {
+  const person = await enrolledFinance(label);
+  await mfaOwner.query(
+    `UPDATE mfa_factors SET created_at = now() - interval '1 day', verified_at = now() - interval '1 day' WHERE id = $1`,
+    [person.factorId],
+  );
+  const challenged = await person.client
+    .post("/api/auth/mfa/verify")
+    .set(originHeader)
+    .send({
+      factorId: person.factorId,
+      code: totpCode(person.secretBase32, totpStep(new Date()) + 1),
+    });
+  expect(challenged.status, JSON.stringify(challenged.body)).toBe(200);
+  const stamp = await mfaOwner.query(
+    `SELECT mfa_challenge_verified_at FROM "session" WHERE revoked_at IS NULL AND user_id = $1`,
+    [person.userId],
+  );
+  expect(
+    stamp.rows[0]?.mfa_challenge_verified_at,
+    "premise: a real challenge stamped the session",
+  ).not.toBeNull();
+  return person;
 }
 beforeAll(async () => {
   finance = await financeClient("Finance");
@@ -416,17 +462,21 @@ async function listedRow(postingId: string) {
   return (list.body.data as Row[]).find((row) => row.postingId === postingId);
 }
 
+/** `password` defaults to the account password (step-up like confirm-cash); `null` omits it. */
 const postSource = (
   client: Client,
   batchId: string,
   postingId: string,
   glAccountId: unknown,
   headers: Record<string, string> = originHeader,
+  password: string | null = PASSWORD,
 ) =>
   client
     .post(`${BASE}/${batchId}/postings/${postingId}/source`)
     .set(headers)
-    .send({ glAccountId });
+    .send(password === null ? { glAccountId } : { glAccountId, password });
+
+const errorCodeOf = (body: { error?: { code?: string } }) => body.error?.code;
 
 const auditCountOf = async (batchId: string) =>
   Number(
@@ -752,7 +802,8 @@ describe("zlcsd: finance records the real source (POST .../postings/:postingId/s
         (await postSource(finance, batchId, postingId, await accountId("1201")))
           .status,
       );
-      // The disburse permission without a fresh second factor (as confirm-cash).
+      // The disburse permission without any second factor, even with the
+      // password (as confirm-cash).
       const noMfa = await W.signedInClient("Src881 NoMfa");
       await W.grantRole(noMfa.userId, [
         "payroll.view",
@@ -926,5 +977,231 @@ describe("zlcsd: finance records the real source (POST .../postings/:postingId/s
     expect(unchanged!.kind).toBe("settle_skipped");
     expect(unchanged!.source_gl_account_id).toBe(null);
     expect(await journalCount()).toBe(journals);
+  });
+});
+
+// =========================================================================
+// Step-up and requester separation (brief 883: legend-6ae7e, legend-hblpg)
+// =========================================================================
+
+async function expectNothingRecorded(
+  batchId: string,
+  before: Awaited<ReturnType<typeof snapshot>>,
+  journals: number,
+) {
+  const [unchanged] = await W.postingsOf(batchId);
+  expect(unchanged!.kind, "still held").toBe("settle_skipped");
+  expect(unchanged!.source_gl_account_id, "no source recorded").toBe(null);
+  expect(await journalCount(), "nothing journaled").toBe(journals);
+  expect(await auditCountOf(batchId), "no audit row").toBe(0);
+  const after = await snapshot();
+  expect(after.c1101.credit - before.c1101.credit, "1101 not credited").toBe(0);
+  expect(after.cash.credit - before.cash.credit, "1102 not credited").toBe(0);
+}
+
+describe("6ae7e: recording a payout source needs the same step-up as confirm-cash", () => {
+  it("[6ae7e-source-enrollment-only-needs-password] a session whose second factor only comes from the MFA enrollment is refused without the password (401 REAUTH_REQUIRED) and with a wrong one: no source, no journal, no credit, no audit; with the right password the source is recorded and credited exactly once", async () => {
+    const before = await snapshot();
+    const { batchId, net, held } = await heldCashWithoutSource();
+    const postingId = held.id as string;
+    const x = await accountId("1101");
+    const journals = await journalCount();
+    const { client, userId } = await enrolledFinance("EnrollmentOnly");
+    const stamp = await mfaOwner.query(
+      `SELECT mfa_verified_at, mfa_challenge_verified_at FROM "session" WHERE revoked_at IS NULL AND user_id = $1`,
+      [userId],
+    );
+    expect(
+      stamp.rows[0]?.mfa_verified_at,
+      "premise: the enrollment stamped a fresh second factor",
+    ).not.toBeNull();
+    expect(
+      stamp.rows[0]?.mfa_challenge_verified_at,
+      "premise: no challenge was ever passed",
+    ).toBeNull();
+
+    const without = await postSource(
+      client,
+      batchId,
+      postingId,
+      x,
+      originHeader,
+      null,
+    );
+    expect(without.status, JSON.stringify(without.body)).toBe(401);
+    expect(errorCodeOf(without.body)).toBe("REAUTH_REQUIRED");
+    await expectNothingRecorded(batchId, before, journals);
+
+    const wrong = await postSource(
+      client,
+      batchId,
+      postingId,
+      x,
+      originHeader,
+      "Salah-password-999!",
+    );
+    expect([401, 403], JSON.stringify(wrong.body)).toContain(wrong.status);
+    await expectNothingRecorded(batchId, before, journals);
+
+    const ok = await postSource(client, batchId, postingId, x);
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+    expect(await auditCountOf(batchId), "one audit row").toBe(1);
+    const [settled] = await W.postingsOf(batchId);
+    expect(settled!.kind).toBe("settle");
+    expect(settled!.source_gl_account_id).toBe(x);
+    expect(await W.journalByKey(settled!.journal_key as string)).toEqual({
+      "2103": { debit: net, credit: 0 },
+      "1101": { debit: 0, credit: net },
+    });
+    expect(await W.countJournals(settled!.journal_key as string)).toBe(1);
+    const after = await snapshot();
+    expect(after.c1101.credit - before.c1101.credit).toBe(net);
+    expect(after.cash.credit - before.cash.credit).toBe(0);
+  });
+
+  it("[6ae7e-source-challenged-session-skips-password] a session that passed a real second-factor challenge (factor older than the session) records the source without the password, exactly once", async () => {
+    const before = await snapshot();
+    const { batchId, net, held } = await heldCashWithoutSource();
+    const postingId = held.id as string;
+    const x = await accountId("1101");
+    const { client } = await challengedFinance("Challenged");
+
+    const res = await postSource(
+      client,
+      batchId,
+      postingId,
+      x,
+      originHeader,
+      null,
+    );
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(await auditCountOf(batchId)).toBe(1);
+    const [settled] = await W.postingsOf(batchId);
+    expect(settled!.kind).toBe("settle");
+    expect(settled!.source_gl_account_id).toBe(x);
+    expect(await W.countJournals(settled!.journal_key as string)).toBe(1);
+
+    const journals = await journalCount();
+    const again = await postSource(
+      client,
+      batchId,
+      postingId,
+      x,
+      originHeader,
+      null,
+    );
+    expect([200, 409]).toContain(again.status);
+    expect(await journalCount(), "no second credit").toBe(journals);
+    const after = await snapshot();
+    expect(after.c1101.credit - before.c1101.credit).toBe(net);
+    expect(await auditCountOf(batchId), "still one audit row").toBe(1);
+  });
+
+  it("[6ae7e-source-stale-challenge-needs-password] a challenge stamp older than 15 minutes no longer skips the password: refused 401 REAUTH_REQUIRED and nothing changes; with the password it goes through", async () => {
+    const before = await snapshot();
+    const { batchId, held } = await heldCashWithoutSource();
+    const postingId = held.id as string;
+    const x = await accountId("1101");
+    const journals = await journalCount();
+    const { client, userId } = await challengedFinance("StaleChallenge");
+    const moved = await mfaOwner.query(
+      `UPDATE "session" SET mfa_challenge_verified_at = now() - interval '16 minutes'
+        WHERE revoked_at IS NULL AND user_id = $1 AND mfa_challenge_verified_at IS NOT NULL`,
+      [userId],
+    );
+    expect(moved.rowCount, "premise: the challenge stamped the session").toBe(
+      1,
+    );
+
+    const stale = await postSource(
+      client,
+      batchId,
+      postingId,
+      x,
+      originHeader,
+      null,
+    );
+    expect(stale.status, JSON.stringify(stale.body)).toBe(401);
+    expect(errorCodeOf(stale.body)).toBe("REAUTH_REQUIRED");
+    await expectNothingRecorded(batchId, before, journals);
+
+    const ok = await postSource(client, batchId, postingId, x);
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+    expect((await W.postingsOf(batchId))[0]!.kind).toBe("settle");
+  });
+});
+
+describe("hblpg: the batch requester cannot record the payout source", () => {
+  it("[hblpg-source-requester-refused-other-approver-ok] the person who requested the batch gets 403 PAYOUT_SOURCE_SELF_RECORD even with the right password and a valid account: no source, no journal, no credit, no audit; a different approver then records it and it is credited exactly once", async () => {
+    const before = await snapshot();
+    const { batchId, net, held } = await heldCashWithoutSource();
+    const postingId = held.id as string;
+    const x = await accountId("1101");
+    const requester = await enrolledFinance("Requester");
+    await W.asTenant(
+      (c) =>
+        c.query(
+          `UPDATE payroll_disbursement_batches SET requested_by = $2 WHERE id = $1`,
+          [batchId, requester.userId],
+        ),
+      true,
+    );
+    expect(
+      (await W.batchById(batchId)).requested_by,
+      "premise: the HTTP user requested the batch",
+    ).toBe(requester.userId);
+    expect(
+      (await W.batchById(batchId)).approved_by,
+      "premise: someone else approved it",
+    ).not.toBe(requester.userId);
+    const journals = await journalCount();
+
+    const refusedRes = await postSource(
+      requester.client,
+      batchId,
+      postingId,
+      x,
+    );
+    expect(refusedRes.status, JSON.stringify(refusedRes.body)).toBe(403);
+    expect(errorCodeOf(refusedRes.body)).toBe("PAYOUT_SOURCE_SELF_RECORD");
+    // A second try and a parallel pair change nothing either.
+    await Promise.all([
+      postSource(requester.client, batchId, postingId, x),
+      postSource(requester.client, batchId, postingId, await accountId("1102")),
+    ]);
+    await sweep();
+    await expectNothingRecorded(batchId, before, journals);
+    expect(
+      await listedRow(postingId),
+      "still waiting for finance",
+    ).toMatchObject({
+      batchId,
+      netIdr: net,
+      reason: "source_account_unknown",
+    });
+
+    // Another approver (not the requester) records it.
+    const ok = await postSource(finance, batchId, postingId, x);
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+    expect(await auditCountOf(batchId), "one audit row").toBe(1);
+    const [settled] = await W.postingsOf(batchId);
+    expect(settled!.kind).toBe("settle");
+    expect(settled!.source_gl_account_id).toBe(x);
+    expect(await W.journalByKey(settled!.journal_key as string)).toEqual({
+      "2103": { debit: net, credit: 0 },
+      "1101": { debit: 0, credit: net },
+    });
+    expect(await W.countJournals(settled!.journal_key as string)).toBe(1);
+
+    const settledJournals = await journalCount();
+    const again = await postSource(finance, batchId, postingId, x);
+    expect([200, 409]).toContain(again.status);
+    const retry = await postSource(requester.client, batchId, postingId, x);
+    refused(retry.status);
+    expect(await journalCount(), "no second credit").toBe(settledJournals);
+    const after = await snapshot();
+    expect(after.c1101.credit - before.c1101.credit).toBe(net);
+    expect(after.cash.credit - before.cash.credit).toBe(0);
+    expect(await auditCountOf(batchId), "still one audit row").toBe(1);
   });
 });

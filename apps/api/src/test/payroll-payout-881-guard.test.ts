@@ -10,6 +10,16 @@
 //   unresolved settle (pending/skipped) and on no other kind; it can never be
 //   replaced or cleared, and it cannot ride along with another column change.
 //
+// - Migration 0627 (legend-5vb7y) also checks the lines of that journal: debits
+//   equal credits and are above zero, every debit is on the salaries payable
+//   account (2103) of the entity, every credit is on the source account of the
+//   money (the GL account of the bank account frozen on the batch). A journal
+//   with the right header but the wrong accounts, or reversed, is refused.
+//   Not verifiable in SQL: the principal amount (sealed in the posting), and
+//   the `payroll.paid` rule origin (no column marks it). Not covered here: the
+//   cash source branch (posting.source_gl_account_id) and an unbalanced
+//   journal or one with no lines (the ledger refuses to commit them).
+//
 // Everything runs as `legend_app` with the tenant context (the role the API
 // uses). Postings are seeded by the migration owner (no service involved) on a
 // real approved batch of the payout fixtures.
@@ -30,6 +40,8 @@ let runId = "";
 let periodId = "";
 let accountA = "";
 let accountB = "";
+let salariesPayableId = "";
+let sourceGlId = "";
 const foreignTenantIds: string[] = [];
 const bentJournalKeys: string[] = [];
 
@@ -44,6 +56,21 @@ beforeAll(async () => {
   );
   accountA = accounts.find((a) => a.code === "1102")!.id as string;
   accountB = accounts.find((a) => a.code === "1103")!.id as string;
+  salariesPayableId = (
+    await W.rowsOf(
+      `SELECT account_id FROM account_mappings
+        WHERE tenant_id = $1 AND legal_entity_id = $2 AND role = 'salaries_payable'`,
+      [tenantId(), W.entityId()],
+    )
+  )[0]!.account_id as string;
+  sourceGlId = (
+    await W.rowsOf(
+      `SELECT ba.gl_account_id FROM payroll_disbursement_batches b
+         JOIN bank_accounts ba ON ba.tenant_id = b.tenant_id AND ba.id = b.source_bank_account_id
+        WHERE b.tenant_id = $1 AND b.id = $2`,
+      [tenantId(), batchId],
+    )
+  )[0]!.gl_account_id as string;
   periodId = (
     await W.rowsOf(
       `SELECT id FROM fiscal_periods
@@ -144,11 +171,24 @@ async function insertBentJournal(
   }
 }
 
+type Line = { accountId: string; debit: number; credit: number };
+
+/** The journal the payout service posts: Dr salaries payable, Cr source. */
+const rightLines = (): Line[] => [
+  { accountId: salariesPayableId, debit: 1000, credit: 0 },
+  { accountId: sourceGlId, debit: 0, credit: 1000 },
+];
+
 /**
  * A balanced settle-like journal as the app role. By default it is a journal
- * the guard accepts: entity and payroll run of the fixture batch.
+ * the guard accepts: entity and payroll run of the fixture batch, Dr salaries
+ * payable (2103) and Cr the frozen source account of the batch.
  */
-async function insertJournal(client: PoolClient, key: string): Promise<void> {
+async function insertJournal(
+  client: PoolClient,
+  key: string,
+  lines: Line[] = rightLines(),
+): Promise<void> {
   const { rows } = await client.query<{ id: string }>(
     `INSERT INTO journal_entries
        (tenant_id, legal_entity_id, entry_date, fiscal_period_id, source_type,
@@ -167,12 +207,13 @@ async function insertJournal(client: PoolClient, key: string): Promise<void> {
     ],
   );
   const entryId = rows[0]!.id;
-  await client.query(
-    `INSERT INTO journal_lines
-       (tenant_id, entry_id, account_id, line_no, debit_idr, credit_idr, outlet_id)
-     VALUES ($1, $2, $3, 1, 1000, 0, NULL), ($1, $2, $4, 2, 0, 1000, NULL)`,
-    [tenantId(), entryId, accountA, accountB],
-  );
+  for (const [index, line] of lines.entries())
+    await client.query(
+      `INSERT INTO journal_lines
+         (tenant_id, entry_id, account_id, line_no, debit_idr, credit_idr, outlet_id)
+       VALUES ($1, $2, $3, $4, $5, $6, NULL)`,
+      [tenantId(), entryId, line.accountId, index + 1, line.debit, line.credit],
+    );
 }
 
 /** A journal of ANOTHER tenant under `key` (owner, row security bypassed). */
@@ -222,9 +263,10 @@ async function tryUpdate(
   set: string,
   params: unknown[] = [],
   journalKeys: string[] = [],
+  lines?: Line[],
 ): Promise<Attempt> {
   return withAppRole(async (client) => {
-    for (const key of journalKeys) await insertJournal(client, key);
+    for (const key of journalKeys) await insertJournal(client, key, lines);
     await client.query("SAVEPOINT guard_try");
     let code: string | undefined;
     try {
@@ -368,6 +410,84 @@ describe("legend-63qhw: kind flip to settle needs the settle journal", () => {
     expect(result.code).toBe(GUARD_CODE);
     expect(result.row.kind).toBe(from);
   });
+});
+
+describe("legend-5vb7y: the lines of the settle journal", () => {
+  // Any account of the entity that is neither 2103 nor the frozen source.
+  const otherAccountId = () =>
+    [accountA, accountB].find((id) => id !== sourceGlId)!;
+  const wrongShapes: [string, () => Line[]][] = [
+    [
+      "debits an account other than salaries payable",
+      () => [
+        { accountId: otherAccountId(), debit: 1000, credit: 0 },
+        { accountId: sourceGlId, debit: 0, credit: 1000 },
+      ],
+    ],
+    [
+      "credits an account other than the frozen source",
+      () => [
+        { accountId: salariesPayableId, debit: 1000, credit: 0 },
+        { accountId: otherAccountId(), debit: 0, credit: 1000 },
+      ],
+    ],
+    [
+      "is reversed (debit on the source, credit on salaries payable)",
+      () => [
+        { accountId: sourceGlId, debit: 1000, credit: 0 },
+        { accountId: salariesPayableId, debit: 0, credit: 1000 },
+      ],
+    ],
+    [
+      "has an extra debit line on another account",
+      () => [
+        { accountId: salariesPayableId, debit: 600, credit: 0 },
+        { accountId: otherAccountId(), debit: 400, credit: 0 },
+        { accountId: sourceGlId, debit: 0, credit: 1000 },
+      ],
+    ],
+    [
+      "splits the credit over the source and another account",
+      () => [
+        { accountId: salariesPayableId, debit: 1000, credit: 0 },
+        { accountId: sourceGlId, debit: 0, credit: 600 },
+        { accountId: otherAccountId(), debit: 0, credit: 400 },
+      ],
+    ],
+  ];
+
+  it.each(["settle_skipped", "settle_pending"] as const)(
+    "accepts %s -> settle with Dr salaries payable / Cr frozen source",
+    async (kind) => {
+      const posting = await seedPosting(kind);
+      const result = await tryUpdate(
+        posting.id,
+        "kind = 'settle'",
+        [],
+        [posting.journalKey],
+        rightLines(),
+      );
+      expect(result.code).toBeUndefined();
+      expect(result.row.kind).toBe("settle");
+    },
+  );
+
+  it.each(wrongShapes)(
+    "refuses the flip when the journal under the right header %s",
+    async (_label, shape) => {
+      const posting = await seedPosting("settle_skipped");
+      const result = await tryUpdate(
+        posting.id,
+        "kind = 'settle'",
+        [],
+        [posting.journalKey],
+        shape(),
+      );
+      expect(result.code).toBe(GUARD_CODE);
+      expect(result.row.kind).toBe("settle_skipped");
+      expect((await committedRow(posting.id)).kind).toBe("settle_skipped");
+    },
+  );
 });
 
 describe("legend-63qhw: source account of an unresolved settle", () => {

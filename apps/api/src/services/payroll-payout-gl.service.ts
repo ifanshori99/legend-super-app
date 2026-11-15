@@ -61,7 +61,7 @@
 // every row and every journal. Amounts are sealed; nothing here logs one.
 
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { AccountingError } from "@starter/shared/accounting";
 import type { TenantId } from "@starter/shared/core";
 import {
@@ -1103,6 +1103,9 @@ async function postFeeOfPosting(
       now,
     );
   }
+  // A historical row is already true and stays true (the guard trigger refuses
+  // true -> false); only a false row is flipped.
+  if (posting.feePosted) return;
   const flipped = await tx
     .update(payrollPayoutGlPostings)
     .set({ feePosted: true })
@@ -1127,18 +1130,25 @@ async function unpostedFeePostings(
   tenantId: TenantId,
   batchId: string,
 ): Promise<FeePosting[]> {
-  return tx
+  const rows = await tx
     .select()
     .from(payrollPayoutGlPostings)
     .where(
       and(
         eq(payrollPayoutGlPostings.tenantId, tenantId),
         eq(payrollPayoutGlPostings.batchId, batchId),
+        // Only `fee_posted = false`. A historical `settle_skipped` row flagged
+        // posted without a fee journal (legend-qq68t) is listed for finance
+        // (`accounting_was_off`) but never journaled by the worker or by a
+        // batch re-post: the opening balance may already hold its fee, so a
+        // journal would double the expense. A per-posting action waits for the
+        // founder's decision.
         eq(payrollPayoutGlPostings.feePosted, false),
       ),
     )
     .orderBy(asc(payrollPayoutGlPostings.id))
     .for("update");
+  return rows;
 }
 
 /**
@@ -1147,7 +1157,9 @@ async function unpostedFeePostings(
  * `payroll-payout-fee:<item_set_hash>`, then `fee_posted = true`. Exactly once:
  * the batch advisory lock serializes callers, a caller that waited finds no
  * posting left, and the journal key is the second guard. A mapping or source
- * account that is still missing answers 409 and posts nothing.
+ * account that is still missing answers 409 and posts nothing. A historical
+ * `settle_skipped` row flagged posted without a fee journal (legend-qq68t) is
+ * NOT journaled here: it stays visible in the list only.
  */
 export async function repostSkippedFees(
   tx: Tx,
@@ -1328,7 +1340,9 @@ export async function payoutRecoveryReason(
   const feeIdr = postingFeeIdr(posting, tenantId);
   const feeOwed =
     feeIdr > 0 &&
-    (!posting.feePosted || (owed && posting.kind === "settle_skipped")) &&
+    // A skipped settlement owes its fee journal even with `fee_posted = true`
+    // (owed: the resolver journals it; not owed: historical data, legend-qq68t).
+    (!posting.feePosted || posting.kind === "settle_skipped") &&
     !(await journalKeyExists(
       tx,
       tenantId,
@@ -1417,8 +1431,11 @@ async function feeSourceReason(
 
 /** Most rows `listPayoutRecovery` answers, oldest first. */
 const RECOVERY_LIST_LIMIT = 500;
-/** SQL rows read per page while `listPayoutRecovery` filters and counts. */
+/** SQL rows read per page while the recovery lists filter and count. */
 const RECOVERY_PAGE_SIZE = 200;
+/** Default and maximum rows of one `listPayoutRecoveryPage` page. */
+const RECOVERY_PAGE_DEFAULT = 100;
+const RECOVERY_PAGE_MAX = 200;
 
 /**
  * Reasons only a human clears: no configuration change or event brings the
@@ -1429,6 +1446,109 @@ const PERMANENT_RECOVERY_REASONS: ReadonlySet<PayoutRecoveryReason> = new Set([
   "source_account_unknown",
 ]);
 
+/** SQL: the fee journal of the posting does not exist (key `payroll-payout-fee:<hash>`). */
+const feeJournalMissingSql = sql`NOT EXISTS (SELECT 1 FROM ${journalEntries} WHERE ${journalEntries.tenantId} = ${payrollPayoutGlPostings.tenantId} AND ${journalEntries.idempotencyKey} = ${payoutGlKeys.fee("")} || ${payrollPayoutGlPostings.itemSetHash})`;
+
+/**
+ * SQL pre-filter of the recovery list (postings joined to their batch): a fee
+ * not journaled, a pending/skipped settlement whose lock journal exists, or a
+ * historical `settle_skipped` row (`fee_posted = true` from before the flag was
+ * strict) whose fee journal is missing (legend-qq68t). The exact test, which
+ * needs the sealed amounts, is `openRecoveryReason`.
+ */
+function recoveryCandidateWhere(tenantId: TenantId) {
+  return and(
+    eq(payrollPayoutGlPostings.tenantId, tenantId),
+    or(
+      eq(payrollPayoutGlPostings.feePosted, false),
+      // A pending/skipped settlement is only open once the run's lock
+      // journal exists (its net is sealed, so the net > 0 test is in code).
+      and(
+        inArray(payrollPayoutGlPostings.kind, [
+          "settle_pending",
+          "settle_skipped",
+        ]),
+        sql`EXISTS (SELECT 1 FROM ${journalEntries} WHERE ${journalEntries.tenantId} = ${payrollPayoutGlPostings.tenantId} AND ${journalEntries.idempotencyKey} = ${payrollGlKeys.locked("")} || ${payrollDisbursementBatches.payrollRunId}::text)`,
+      ),
+      // Historical row: bank batches only. Cash has no bank fee, and without
+      // this join every cash payment made while accounting was off would be
+      // scanned forever. The fee is sealed, so SQL cannot see fee > 0: a bank
+      // `settle_skipped` row with a zero fee is still scanned (known limit; the
+      // exact test in `openRecoveryReason` drops it). No date cutoff.
+      and(
+        eq(payrollPayoutGlPostings.kind, "settle_skipped"),
+        ne(payrollDisbursementBatches.channel, "cash"),
+        feeJournalMissingSql,
+      ),
+    ),
+  );
+}
+
+const recoveryBatchJoin = and(
+  eq(payrollDisbursementBatches.tenantId, payrollPayoutGlPostings.tenantId),
+  eq(payrollDisbursementBatches.id, payrollPayoutGlPostings.batchId),
+);
+
+const recoveryBatchColumns = {
+  payrollRunId: payrollDisbursementBatches.payrollRunId,
+  channel: payrollDisbursementBatches.channel,
+  legalEntityId: payrollDisbursementBatches.legalEntityId,
+  sourceBankAccountId: payrollDisbursementBatches.sourceBankAccountId,
+};
+
+/**
+ * Why the posting is open, or null when it is not. A `fee_posted = true` row is
+ * open only while a settlement is owed or, for a `settle_skipped` row with a
+ * fee, while its fee journal does not exist (historical data; it is listed as
+ * `accounting_was_off`; it is visible only, nothing journals it).
+ */
+async function openRecoveryReason(
+  tx: Tx,
+  tenantId: TenantId,
+  posting: FeePosting,
+  batch: RecoveryBatch,
+): Promise<PayoutRecoveryReason | null> {
+  if (
+    posting.feePosted &&
+    !(await settleOwed(tx, tenantId, batch, posting)) &&
+    !(await historicalFeeMissing(tx, tenantId, posting))
+  )
+    return null;
+  return payoutRecoveryReason(tx, tenantId, batch, posting);
+}
+
+async function historicalFeeMissing(
+  tx: Tx,
+  tenantId: TenantId,
+  posting: FeePosting,
+): Promise<boolean> {
+  return (
+    posting.feePosted &&
+    posting.kind === "settle_skipped" &&
+    postingFeeIdr(posting, tenantId) > 0 &&
+    !(await journalKeyExists(
+      tx,
+      tenantId,
+      payoutGlKeys.fee(posting.itemSetHash),
+    ))
+  );
+}
+
+function recoveryRowOf(
+  tenantId: TenantId,
+  posting: FeePosting,
+  reason: PayoutRecoveryReason,
+): PayoutRecoveryRow {
+  return {
+    postingId: posting.id,
+    batchId: posting.batchId,
+    feeIdr: postingFeeIdr(posting, tenantId),
+    netIdr: openPostingTotal(posting, tenantId, "netIdr"),
+    kind: posting.kind,
+    reason,
+  };
+}
+
 export type ListPayoutRecoveryOptions = {
   /** Drop the rows that need a human (the sweep); default: every open row. */
   retryableOnly?: boolean;
@@ -1438,12 +1558,15 @@ export type ListPayoutRecoveryOptions = {
 
 /**
  * Postings finance still has to look at: a bank fee not journaled
- * (`fee_posted = false`), or a pending/skipped settlement with a real net whose
- * lock journal exists but that is not a `settle` yet.
+ * (`fee_posted = false`), a pending/skipped settlement with a real net whose
+ * lock journal exists but that is not a `settle` yet, or a historical
+ * `settle_skipped` row without its fee journal.
  *
  * The reason is computed per row and `retryableOnly` drops permanent rows
  * BEFORE any limit: the SQL is paged, so the limit counts the rows (or batches)
- * that are answered, never rows that are skipped.
+ * that are answered, never rows that are skipped. This is the whole list kept
+ * for internal use and older tests; the finance screen pages it with
+ * `listPayoutRecoveryPage`.
  */
 export async function listPayoutRecovery(
   tx: Tx,
@@ -1457,41 +1580,11 @@ export async function listPayoutRecovery(
     const rows = await tx
       .select({
         posting: payrollPayoutGlPostings,
-        batch: {
-          payrollRunId: payrollDisbursementBatches.payrollRunId,
-          channel: payrollDisbursementBatches.channel,
-          legalEntityId: payrollDisbursementBatches.legalEntityId,
-          sourceBankAccountId: payrollDisbursementBatches.sourceBankAccountId,
-        },
+        batch: recoveryBatchColumns,
       })
       .from(payrollPayoutGlPostings)
-      .innerJoin(
-        payrollDisbursementBatches,
-        and(
-          eq(
-            payrollDisbursementBatches.tenantId,
-            payrollPayoutGlPostings.tenantId,
-          ),
-          eq(payrollDisbursementBatches.id, payrollPayoutGlPostings.batchId),
-        ),
-      )
-      .where(
-        and(
-          eq(payrollPayoutGlPostings.tenantId, scoped),
-          or(
-            eq(payrollPayoutGlPostings.feePosted, false),
-            // A pending/skipped settlement is only open once the run's lock
-            // journal exists (its net is sealed, so the net > 0 test is below).
-            and(
-              inArray(payrollPayoutGlPostings.kind, [
-                "settle_pending",
-                "settle_skipped",
-              ]),
-              sql`EXISTS (SELECT 1 FROM ${journalEntries} WHERE ${journalEntries.tenantId} = ${payrollPayoutGlPostings.tenantId} AND ${journalEntries.idempotencyKey} = ${payrollGlKeys.locked("")} || ${payrollDisbursementBatches.payrollRunId}::text)`,
-            ),
-          ),
-        ),
-      )
+      .innerJoin(payrollDisbursementBatches, recoveryBatchJoin)
+      .where(recoveryCandidateWhere(scoped))
       .orderBy(
         asc(payrollPayoutGlPostings.postedAt),
         asc(payrollPayoutGlPostings.id),
@@ -1499,9 +1592,8 @@ export async function listPayoutRecovery(
       .limit(RECOVERY_PAGE_SIZE)
       .offset(offset);
     for (const { posting, batch } of rows) {
-      if (posting.feePosted && !(await settleOwed(tx, scoped, batch, posting)))
-        continue;
-      const reason = await payoutRecoveryReason(tx, scoped, batch, posting);
+      const reason = await openRecoveryReason(tx, scoped, posting, batch);
+      if (reason === null) continue;
       if (options.retryableOnly && PERMANENT_RECOVERY_REASONS.has(reason))
         continue;
       if (
@@ -1511,17 +1603,227 @@ export async function listPayoutRecovery(
       )
         continue;
       batchIds.add(posting.batchId);
-      out.push({
-        postingId: posting.id,
-        batchId: posting.batchId,
-        feeIdr: postingFeeIdr(posting, scoped),
-        netIdr: openPostingTotal(posting, scoped, "netIdr"),
-        kind: posting.kind,
-        reason,
-      });
+      out.push(recoveryRowOf(scoped, posting, reason));
       if (out.length >= RECOVERY_LIST_LIMIT) return out;
     }
     if (rows.length < RECOVERY_PAGE_SIZE) return out;
+  }
+}
+
+/**
+ * True when some open posting of the batch waits for something that can still
+ * change by itself (a reason the sweep may retry). Every posting of the batch
+ * is looked at (paged, no cap) and the scan stops at the first retryable one.
+ */
+async function batchHasRetryableRow(
+  tx: Tx,
+  tenantId: TenantId,
+  batchId: string,
+): Promise<boolean> {
+  for (let offset = 0; ; offset += RECOVERY_PAGE_SIZE) {
+    const rows = await tx
+      .select({
+        posting: payrollPayoutGlPostings,
+        batch: recoveryBatchColumns,
+      })
+      .from(payrollPayoutGlPostings)
+      .innerJoin(payrollDisbursementBatches, recoveryBatchJoin)
+      .where(
+        and(
+          recoveryCandidateWhere(tenantId),
+          eq(payrollPayoutGlPostings.batchId, batchId),
+        ),
+      )
+      .orderBy(
+        asc(payrollPayoutGlPostings.postedAt),
+        asc(payrollPayoutGlPostings.id),
+      )
+      .limit(RECOVERY_PAGE_SIZE)
+      .offset(offset);
+    for (const { posting, batch } of rows) {
+      const reason = await openRecoveryReason(tx, tenantId, posting, batch);
+      if (reason !== null && !PERMANENT_RECOVERY_REASONS.has(reason))
+        return true;
+    }
+    if (rows.length < RECOVERY_PAGE_SIZE) return false;
+  }
+}
+
+/**
+ * The batches the recovery sweep may work on (legend-la22h): ids in ascending
+ * order, strictly after `after`, that have an open posting AND at least one
+ * posting with a retryable reason. Batches only a human clears are never
+ * listed, so they do not use up the sweep's limit. The sweep selects BATCHES
+ * (not postings) and rotates `after`, so a batch that stays blocked in front
+ * cannot starve the ones behind it. SQL is paged by 200 batch ids.
+ */
+export async function listRecoveryBatchIds(
+  tx: Tx,
+  tenantId: string,
+  options: { after: string | null; limit: number },
+): Promise<string[]> {
+  const scoped = tenantId as TenantId;
+  const out: string[] = [];
+  let cursor =
+    options.after !== null && UUID.test(options.after) ? options.after : null;
+  while (out.length < options.limit) {
+    const page = await tx
+      .selectDistinct({ batchId: payrollPayoutGlPostings.batchId })
+      .from(payrollPayoutGlPostings)
+      .innerJoin(payrollDisbursementBatches, recoveryBatchJoin)
+      .where(
+        and(
+          recoveryCandidateWhere(scoped),
+          cursor === null
+            ? undefined
+            : sql`${payrollPayoutGlPostings.batchId} > ${cursor}::uuid`,
+        ),
+      )
+      .orderBy(asc(payrollPayoutGlPostings.batchId))
+      .limit(RECOVERY_PAGE_SIZE);
+    for (const { batchId } of page) {
+      cursor = batchId;
+      if (!(await batchHasRetryableRow(tx, scoped, batchId))) continue;
+      out.push(batchId);
+      if (out.length >= options.limit) return out;
+    }
+    if (page.length < RECOVERY_PAGE_SIZE) return out;
+  }
+  return out;
+}
+
+const invalidRecoveryCursor = () =>
+  payoutRefuse(422, "VALIDATION_ERROR", "Kursor tidak valid.");
+const TIMESTAMPTZ_TEXT =
+  /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d{1,6})?([+-]\d{2}(:\d{2})?)?$/;
+
+/**
+ * The pattern passes month 13 or day 32, which the `::timestamptz` cast would
+ * refuse with a 500: check the date and time parts round-trip as a real date.
+ */
+function isRealTimestampText(text: string): boolean {
+  const [, y, mo, d, h, mi, sec] =
+    /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})/.exec(text) ?? [];
+  if (y === undefined) return false;
+  const parts = [y, mo, d, h, mi, sec].map(Number) as [
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+  ];
+  const probe = new Date(
+    Date.UTC(parts[0], parts[1] - 1, parts[2], parts[3], parts[4], parts[5]),
+  );
+  if (
+    probe.getUTCFullYear() !== parts[0] ||
+    probe.getUTCMonth() !== parts[1] - 1 ||
+    probe.getUTCDate() !== parts[2] ||
+    probe.getUTCHours() !== parts[3] ||
+    probe.getUTCMinutes() !== parts[4] ||
+    probe.getUTCSeconds() !== parts[5]
+  )
+    return false;
+  const zone = /([+-])(\d{2})(?::(\d{2}))?$/.exec(text.slice(19));
+  return zone === null || (Number(zone[2]) <= 15 && Number(zone[3] ?? 0) < 60);
+}
+
+/** Opaque cursor of (posted_at text, id): the text keeps microseconds. */
+function encodeRecoveryCursor(postedAt: string, id: string): string {
+  return Buffer.from(JSON.stringify([postedAt, id]), "utf8").toString(
+    "base64url",
+  );
+}
+
+function decodeRecoveryCursor(
+  cursor: string | undefined,
+): { postedAt: string; id: string } | null {
+  if (cursor === undefined || cursor === "") return null;
+  let keys: unknown;
+  try {
+    keys = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+  } catch {
+    throw invalidRecoveryCursor();
+  }
+  if (
+    !Array.isArray(keys) ||
+    keys.length !== 2 ||
+    typeof keys[0] !== "string" ||
+    typeof keys[1] !== "string" ||
+    !TIMESTAMPTZ_TEXT.test(keys[0]) ||
+    !UUID.test(keys[1]) ||
+    !isRealTimestampText(keys[0])
+  )
+    throw invalidRecoveryCursor();
+  return { postedAt: keys[0], id: keys[1] };
+}
+
+export type PayoutRecoveryPage = {
+  rows: PayoutRecoveryRow[];
+  /** Opaque cursor for the next page; null when this is the last one. */
+  next: string | null;
+};
+
+/**
+ * One page of the recovery list for finance (legend-i612a), oldest posting
+ * first, keyset-paged on (posted_at, id) with an opaque cursor. `limit`
+ * defaults to 100 and is capped at 200. No row is silently dropped: a page
+ * that ends before the list does carries a `next` cursor, and the last page
+ * has `next = null` (the cursor is only issued when one more open row exists).
+ */
+export async function listPayoutRecoveryPage(
+  tx: Tx,
+  tenantId: string,
+  options: { after?: string; limit?: number } = {},
+): Promise<PayoutRecoveryPage> {
+  const scoped = tenantId as TenantId;
+  const limit = Math.min(
+    RECOVERY_PAGE_MAX,
+    Math.max(1, Math.trunc(options.limit ?? RECOVERY_PAGE_DEFAULT)),
+  );
+  let cursor = decodeRecoveryCursor(options.after);
+  const rows: PayoutRecoveryRow[] = [];
+  let lastKey: { postedAt: string; id: string } | null = null;
+  const postedAtText = sql<string>`${payrollPayoutGlPostings.postedAt}::text`;
+  for (;;) {
+    const page = await tx
+      .select({
+        posting: payrollPayoutGlPostings,
+        batch: recoveryBatchColumns,
+        postedAtText,
+      })
+      .from(payrollPayoutGlPostings)
+      .innerJoin(payrollDisbursementBatches, recoveryBatchJoin)
+      .where(
+        and(
+          recoveryCandidateWhere(scoped),
+          cursor === null
+            ? undefined
+            : sql`(${payrollPayoutGlPostings.postedAt}, ${payrollPayoutGlPostings.id}) > (${cursor.postedAt}::timestamptz, ${cursor.id}::uuid)`,
+        ),
+      )
+      .orderBy(
+        asc(payrollPayoutGlPostings.postedAt),
+        asc(payrollPayoutGlPostings.id),
+      )
+      .limit(RECOVERY_PAGE_SIZE);
+    for (const { posting, batch, postedAtText: postedAt } of page) {
+      cursor = { postedAt, id: posting.id };
+      const reason = await openRecoveryReason(tx, scoped, posting, batch);
+      if (reason === null) continue;
+      if (rows.length >= limit)
+        // One more open row exists: hand out the cursor of the last row kept.
+        return {
+          rows,
+          next: lastKey
+            ? encodeRecoveryCursor(lastKey.postedAt, lastKey.id)
+            : null,
+        };
+      rows.push(recoveryRowOf(scoped, posting, reason));
+      lastKey = cursor;
+    }
+    if (page.length < RECOVERY_PAGE_SIZE) return { rows, next: null };
   }
 }
 

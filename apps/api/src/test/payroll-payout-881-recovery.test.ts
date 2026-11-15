@@ -35,15 +35,19 @@
 // - The sweep return value is not asserted (only that it does not throw).
 // - The strict endpoint `POST .../repost-fees` stays 409 while the bank_charges
 //   mapping is missing (existing behavior of the 8codi hardening tests).
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Pool } from "pg";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createUlid } from "@starter/shared/core";
 import { payrollLocked } from "@starter/shared/hris/payroll";
 import { db } from "../db/index.ts";
 import { appendOutbox, consumeOutbox } from "../services/core-outbox.ts";
 import { deliverPayrollGlEvent } from "../services/payroll-gl-consumer.ts";
-import { runPayoutGlRecoverySweep } from "../worker/payout-gl-recovery.job.ts";
+import {
+  __resetRecoveryCursorsForTest,
+  runPayoutGlRecoverySweep,
+} from "../worker/payout-gl-recovery.job.ts";
+import { openPayrollValue, sealPayrollValue } from "../lib/payroll-sealed.ts";
 import { totpCode, totpStep } from "../lib/totp.ts";
 import { originHeader } from "./helpers.ts";
 import {
@@ -68,6 +72,14 @@ const NET = 1_000_000;
 const NOW = new Date("2026-11-30T03:00:00Z");
 
 const sweep = () => runPayoutGlRecoverySweep(W.scope(), NOW);
+/** One tick that handles at most one batch (the fairness cursor decides which). */
+const tickOne = () =>
+  runPayoutGlRecoverySweep(W.scope(), NOW, { batchLimit: 1 });
+
+// The fairness cursor is in-memory per tenant; every test starts from the top.
+beforeEach(() => {
+  __resetRecoveryCursorsForTest();
+});
 
 // ---- Finance client (permission + MFA, as the other payout HTTP tests) -------
 const mfaOwner = new Pool({
@@ -925,5 +937,529 @@ describe("881c: batches that wait for a human do not use up the sweep", () => {
     expect(await listedRow(older.posting.id as string)).toMatchObject({
       reason: "accounting_was_off",
     });
+  });
+});
+
+// =========================================================================
+// Brief 883 (second opinion on 881): la22h (fair sweep), qq68t (historical
+// rows), i612a (paged list)
+//
+// Assumptions (spec silent):
+// - la22h: "a batch held for a retryable reason" is a cash batch whose posting
+//   is frozen on an INACTIVE GL account (reason source_account_inactive, the
+//   sweep retries it every tick). It is modelled by pointing that posting's
+//   source_gl_account_id at the inactive account 1101 (owner, triggers off).
+//   The ready batch is a cash batch frozen on 1102 whose lock was consumed
+//   while 1102 was inactive; 1102 is active again afterwards.
+// - la22h: the held batch is the one with the SMALLER batch id (the sweep walks
+//   batch ids in ascending order, wrapping around with a per-tenant cursor).
+// - la22h: with N retryable batches and a tick cap of C, every batch gets a
+//   turn within ceil(N / C) ticks (here N = 2, C = 1: two ticks).
+// - qq68t: a historical row is `settle_skipped`, fee > 0, `fee_posted = true`
+//   but NO fee journal (written by an older version). It is modelled by setting
+//   fee_posted = true on the posting of `bankSkippedFeeOwed()` (owner). The
+//   "mark done without journal" (opening balance) choice is a business
+//   decision and is NOT tested.
+// - i612a: the list is paged with `?after=<opaque cursor>&limit=<1..200>` and
+//   answers `{ data, next }` (default limit 100, max 200, next null at the
+//   end). Many listed rows are made by cloning one real posting row (new id,
+//   hash and journal key; same batch, same sealed amount).
+// =========================================================================
+
+async function accountId(code: string) {
+  const [row] = await W.rowsOf(
+    `SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND legal_entity_id = $2 AND code = $3`,
+    [tenantId(), W.entityId(), code],
+  );
+  return row!.id as string;
+}
+
+/** Owner, triggers off: point the posting at another source GL account. */
+const setPostingSource = (postingId: string, glAccountId: string) =>
+  W.asTenant(
+    (c) =>
+      c.query(
+        `UPDATE payroll_payout_gl_postings SET source_gl_account_id = $3
+          WHERE tenant_id = $1 AND id = $2`,
+        [tenantId(), postingId, glAccountId],
+      ),
+    true,
+  );
+
+/** Owner, triggers off: remove cloned posting rows. */
+const deletePostings = (ids: string[]) =>
+  W.asTenant(
+    (c) =>
+      c.query(
+        `DELETE FROM payroll_payout_gl_postings
+          WHERE tenant_id = $1 AND id = ANY($2::uuid[])`,
+        [tenantId(), ids],
+      ),
+    true,
+  );
+
+/** `count` copies of a real posting row (same batch and amount, new id/hash/journal key, total sealed for its own id). */
+async function clonePosting(postingId: string, count: number) {
+  const columns = await W.rowsOf(
+    `SELECT column_name FROM information_schema.columns
+      WHERE table_schema = ANY (current_schemas(false))
+        AND table_name = 'payroll_payout_gl_postings'
+        AND is_generated = 'NEVER' AND identity_generation IS NULL
+      ORDER BY ordinal_position`,
+  );
+  const names = columns.map((c) => c.column_name as string);
+  const target = names.map((n) => `"${n}"`).join(", ");
+  const source = names
+    .map((n) =>
+      n === "id"
+        ? "$3::uuid"
+        : n === "item_set_hash"
+          ? "$4::text"
+          : n === "journal_key"
+            ? "$5::text"
+            : n === "total_encrypted"
+              ? "$6::bytea"
+              : `p."${n}"`,
+    )
+    .join(", ");
+  const bindingOf = (rowId: string) => ({
+    tenantId: tenantId(),
+    table: "payroll_payout_gl_postings" as const,
+    rowId,
+    field: "total" as const,
+  });
+  const [original] = await W.rowsOf(
+    `SELECT total_encrypted, pii_key_version FROM payroll_payout_gl_postings
+      WHERE tenant_id = $1 AND id = $2`,
+    [tenantId(), postingId],
+  );
+  const plain = openPayrollValue(
+    original!.total_encrypted as Buffer,
+    bindingOf(postingId),
+    Number(original!.pii_key_version),
+  );
+  return W.asTenant(async (c) => {
+    const ids: string[] = [];
+    for (let g = 1; g <= count; g += 1) {
+      const id = randomUUID();
+      const hash = createHash("sha256")
+        .update(`${postingId}:${g}:${randomUUID()}`)
+        .digest("hex");
+      await c.query(
+        `INSERT INTO payroll_payout_gl_postings (${target})
+         SELECT ${source}
+           FROM payroll_payout_gl_postings p
+          WHERE p.tenant_id = $1 AND p.id = $2`,
+        [
+          tenantId(),
+          postingId,
+          id,
+          hash,
+          `payroll-payout:${hash}`,
+          sealPayrollValue(
+            plain,
+            bindingOf(id),
+            Number(original!.pii_key_version),
+          ),
+        ],
+      );
+      ids.push(id);
+    }
+    return ids;
+  });
+}
+
+/** Cash handed over with accounting off, lock event queued and not yet consumed. */
+async function cashSkippedWithLock() {
+  const slips = [cash(CASHIER, NET)];
+  const runId = await W.seedRun(slips);
+  const batchId = await W.approvedBatch(runId, "cash");
+  const itemIds = (await W.itemsOf(batchId)).map((i) => i.id as string);
+  await withAccountingOff(() => W.handover(batchId, itemIds, APP2));
+  const [posting] = await W.postingsOf(batchId);
+  expect(posting!.kind, "premise: final settle_skipped").toBe("settle_skipped");
+  const { outboxId } = await queueLockedViaOutbox(runId, slips);
+  return { runId, batchId, posting: posting!, outboxId };
+}
+
+/**
+ * Two cash batches with their lock journals posted and both settlements held:
+ * `held` (the smaller batch id, first in the sweep order) waits for an
+ * inactive source (1101, source_account_inactive) and stays held; `ready` (the
+ * larger id) was only held while 1102 was inactive and is recoverable now.
+ * The caller must run `reactivate1101` when done.
+ */
+async function heldAndReadyCash() {
+  const first = await cashSkippedWithLock();
+  const second = await cashSkippedWithLock();
+  const [held, ready] =
+    first.batchId < second.batchId ? [first, second] : [second, first];
+  const originalSource = held.posting.source_gl_account_id as string;
+  expect(originalSource, "premise: the frozen source is recorded").toBeTruthy();
+  const reactivate1101 = await deactivateGlAccount("1101");
+  const reactivate1102 = await deactivateGlAccount("1102");
+  let ok = false;
+  try {
+    await setPostingSource(held.posting.id as string, await accountId("1101"));
+    expect((await consumeLocked(held.outboxId))?.status).toBe("posted");
+    expect((await consumeLocked(ready.outboxId))?.status).toBe("posted");
+    ok = true;
+  } finally {
+    await reactivate1102();
+    if (!ok) await reactivate1101();
+  }
+  for (const side of [held, ready]) {
+    const [stored] = await W.postingsOf(side.batchId);
+    expect(stored!.kind, "premise: still settle_skipped").toBe(
+      "settle_skipped",
+    );
+    expect(await W.journalByKey(stored!.journal_key as string)).toBeUndefined();
+  }
+  expect(await listedRow(held.posting.id as string)).toMatchObject({
+    batchId: held.batchId,
+    reason: "source_account_inactive",
+  });
+  expect(await listedRow(ready.posting.id as string)).toMatchObject({
+    batchId: ready.batchId,
+    reason: "awaiting_resolve",
+  });
+  return { held, ready, originalSource, reactivate1101 };
+}
+
+const cashJournal = {
+  "2103": { debit: NET, credit: 0 },
+  "1102": { debit: 0, credit: NET },
+};
+
+describe("la22h: the sweep gives every retryable batch a turn", () => {
+  it("[la22h-held-batch-in-front-does-not-starve-next] tick cap of one batch, the first batch (smaller id) stays held on an inactive source, the second is ready: within two ticks the second is settled exactly once (more and parallel ticks add nothing), the held one is untouched until its source is fixed and is then settled once too", async () => {
+    const before = await snapshot();
+    const beforeOther = await account("1101");
+    const { held, ready, originalSource, reactivate1101 } =
+      await heldAndReadyCash();
+    try {
+      await tickOne();
+      await tickOne();
+
+      const [done] = await W.postingsOf(ready.batchId);
+      expect(done!.kind, "the ready batch got its turn").toBe("settle");
+      expect(await W.journalByKey(done!.journal_key as string)).toEqual(
+        cashJournal,
+      );
+      expect(await W.countJournals(done!.journal_key as string)).toBe(1);
+      const [stillHeld] = await W.postingsOf(held.batchId);
+      expect(stillHeld!.kind).toBe("settle_skipped");
+      expect(
+        await W.journalByKey(stillHeld!.journal_key as string),
+      ).toBeUndefined();
+      expect(await listedRow(held.posting.id as string)).toMatchObject({
+        reason: "source_account_inactive",
+      });
+      expect(await listedRow(ready.posting.id as string)).toBeUndefined();
+
+      // More ticks, also parallel ones: nothing is journaled twice.
+      const journals = await journalCountOfEntity();
+      await tickOne();
+      await tickOne();
+      await Promise.all([tickOne(), tickOne()]);
+      expect(await journalCountOfEntity(), "no further journal").toBe(journals);
+      expect(await W.countJournals(done!.journal_key as string)).toBe(1);
+      const mid = await snapshot();
+      expect(mid.cash.credit - before.cash.credit, "1102 credited once").toBe(
+        NET,
+      );
+      expect(
+        (await account("1101")).credit - beforeOther.credit,
+        "the inactive source is not credited",
+      ).toBe(0);
+
+      // The held batch's source is fixed: it is settled by the next ticks, once.
+      await setPostingSource(held.posting.id as string, originalSource);
+      await tickOne();
+      await tickOne();
+      const [fixed] = await W.postingsOf(held.batchId);
+      expect(fixed!.kind).toBe("settle");
+      expect(await W.journalByKey(fixed!.journal_key as string)).toEqual(
+        cashJournal,
+      );
+      expect(await W.countJournals(fixed!.journal_key as string)).toBe(1);
+      await Promise.all([tickOne(), tickOne()]);
+      expect(await W.countJournals(fixed!.journal_key as string)).toBe(1);
+      expect(await W.countJournals(done!.journal_key as string)).toBe(1);
+      const after = await snapshot();
+      expect(after.cash.credit - before.cash.credit).toBe(2 * NET);
+      expect(after.payable.balance - before.payable.balance).toBe(0);
+      expect(await listedRow(held.posting.id as string)).toBeUndefined();
+    } finally {
+      await reactivate1101();
+    }
+  });
+
+  it("[la22h-held-batch-with-over-500-postings-does-not-monopolize] the first batch (smaller id) is held and has 501 postings, the second batch is ready: one normal sweep still settles the second batch exactly once and leaves all 501 held postings untouched", async () => {
+    const before = await snapshot();
+    const { held, ready, originalSource, reactivate1101 } =
+      await heldAndReadyCash();
+    let clones: string[] = [];
+    try {
+      clones = await clonePosting(held.posting.id as string, 500);
+      expect(clones).toHaveLength(500);
+      const heldCount = async () =>
+        Number(
+          (
+            await W.rowsOf(
+              `SELECT count(*)::int AS n FROM payroll_payout_gl_postings
+                WHERE tenant_id = $1 AND batch_id = $2 AND kind = 'settle_skipped'`,
+              [tenantId(), held.batchId],
+            )
+          )[0]!.n,
+        );
+      expect(await heldCount(), "premise: 501 held postings").toBe(501);
+
+      await sweep();
+
+      const [done] = await W.postingsOf(ready.batchId);
+      expect(done!.kind, "the ready batch is not starved").toBe("settle");
+      expect(await W.journalByKey(done!.journal_key as string)).toEqual(
+        cashJournal,
+      );
+      expect(await W.countJournals(done!.journal_key as string)).toBe(1);
+      expect(await heldCount(), "held postings untouched").toBe(501);
+      expect(
+        (await snapshot()).cash.credit - before.cash.credit,
+        "1102 credited once",
+      ).toBe(NET);
+
+      await sweep();
+      await Promise.all([sweep(), sweep()]);
+      expect(await W.countJournals(done!.journal_key as string)).toBe(1);
+      expect(await heldCount()).toBe(501);
+    } finally {
+      await deletePostings(clones);
+      await setPostingSource(held.posting.id as string, originalSource);
+      await reactivate1101();
+    }
+
+    // Cleanup proof: with the clones gone and the source fixed, the held batch settles once.
+    await sweep();
+    const [fixed] = await W.postingsOf(held.batchId);
+    expect(fixed!.kind).toBe("settle");
+    expect(await W.countJournals(fixed!.journal_key as string)).toBe(1);
+    expect((await snapshot()).cash.credit - before.cash.credit).toBe(2 * NET);
+  });
+});
+
+describe("qq68t: historical skipped rows with fee_posted = true but no fee journal", () => {
+  it("[qq68t-historical-fee-flag-without-journal-visible-never-journaled] a settle_skipped bank posting from an older version (fee_posted true, no fee journal) is listed as accounting_was_off, neither the worker nor the batch repost-fees journals its fee (it stays listed); only the owed settlement resolving after the lock brings its fee, once", async () => {
+    const before = await snapshot();
+    const { batchId, posting, outboxId } = await bankSkippedFeeOwed();
+    await W.asTenant(
+      (c) =>
+        c.query(
+          `UPDATE payroll_payout_gl_postings SET fee_posted = true
+            WHERE tenant_id = $1 AND id = $2`,
+          [tenantId(), posting.id],
+        ),
+      true,
+    );
+    expect(
+      (await W.postingsOf(batchId))[0]!.fee_posted,
+      "premise: historical flag",
+    ).toBe(true);
+    expect(await W.journalByKey(feeKey(posting))).toBeUndefined();
+
+    // Visible to finance although the flag claims the fee is done.
+    expect(await listedRow(posting.id as string)).toMatchObject({
+      postingId: posting.id,
+      batchId,
+      feeIdr: FEE,
+      netIdr: NET,
+      kind: "settle_skipped",
+      reason: "accounting_was_off",
+    });
+
+    // The worker does not decide on it.
+    const journals = await journalCountOfEntity();
+    await sweep();
+    await Promise.all([sweep(), sweep()]);
+    expect(await journalCountOfEntity(), "the sweep journals nothing").toBe(
+      journals,
+    );
+    expect(await W.journalByKey(feeKey(posting))).toBeUndefined();
+    expect((await W.postingsOf(batchId))[0]!.fee_posted).toBe(true);
+    expect(await listedRow(posting.id as string)).toBeDefined();
+
+    // The batch repost does not journal it either (a double expense risk).
+    const repost = await (
+      await finance()
+    )
+      .post(`${BASE}/${batchId}/repost-fees`)
+      .set(originHeader)
+      .send({});
+    expect(repost.status, JSON.stringify(repost.body)).toBe(200);
+    expect(repost.body.data.reposted).toBe(0);
+    expect(await W.journalByKey(feeKey(posting))).toBeUndefined();
+    expect(await W.countJournals(feeKey(posting))).toBe(0);
+    expect((await W.postingsOf(batchId))[0]!.fee_posted).toBe(true);
+    expect((await snapshot()).fee.debit - before.fee.debit).toBe(0);
+    expect(
+      await listedRow(posting.id as string),
+      "still listed after the repost",
+    ).toMatchObject({ reason: "accounting_was_off" });
+
+    // The lock arrives later: the owed settlement resolves and its fee follows
+    // it (the resolver, once, same key); that is the settle path, not the repost.
+    expect((await consumeLocked(outboxId))?.status).toBe("posted");
+    await sweep();
+    const [done] = await W.postingsOf(batchId);
+    expect(done!.kind).toBe("settle");
+    expect(await W.countJournals(feeKey(done!))).toBe(1);
+    expect(await W.countJournals(done!.journal_key as string)).toBe(1);
+    const after = await snapshot();
+    expect(after.fee.debit - before.fee.debit).toBe(FEE);
+    expect(after.payable.balance - before.payable.balance).toBe(0);
+  });
+
+  it("[qq68t-batch-repost-journals-only-the-current-fee] one batch holds a current unposted fee (fee_posted false) and a historical one (fee_posted true, no journal): one repost-fees journals only the current fee, once", async () => {
+    const before = await snapshot();
+    const { batchId, posting } = await bankSkippedFeeOwed();
+    const [clone] = await clonePosting(posting.id as string, 1);
+    try {
+      await W.asTenant(
+        (c) =>
+          c.query(
+            `UPDATE payroll_payout_gl_postings SET fee_posted = true
+              WHERE tenant_id = $1 AND id = $2`,
+            [tenantId(), posting.id],
+          ),
+        true,
+      );
+      const postings = await W.postingsOf(batchId);
+      const current = postings.find((p) => p.id === clone)!;
+      const historical = postings.find((p) => p.id === posting.id)!;
+      expect(current.fee_posted, "premise: current").toBe(false);
+      expect(historical.fee_posted, "premise: historical").toBe(true);
+
+      const repost = await (
+        await finance()
+      )
+        .post(`${BASE}/${batchId}/repost-fees`)
+        .set(originHeader)
+        .send({});
+      expect(repost.status, JSON.stringify(repost.body)).toBe(200);
+      expect(repost.body.data.reposted).toBe(1);
+      expect(await W.countJournals(feeKey(current))).toBe(1);
+      expect(await W.countJournals(feeKey(historical))).toBe(0);
+      const after = await snapshot();
+      expect(after.fee.debit - before.fee.debit).toBe(FEE);
+      expect(after.bank.credit - before.bank.credit).toBe(FEE);
+
+      // Repeating adds nothing.
+      await (
+        await finance()
+      )
+        .post(`${BASE}/${batchId}/repost-fees`)
+        .set(originHeader)
+        .send({});
+      expect(await W.countJournals(feeKey(current))).toBe(1);
+      expect(await W.countJournals(feeKey(historical))).toBe(0);
+      expect(
+        await listedRow(posting.id as string),
+        "the historical row stays listed",
+      ).toMatchObject({ reason: "accounting_was_off" });
+    } finally {
+      await deletePostings([clone!]);
+    }
+  });
+
+  it("[qq68t-cash-skipped-not-listed-or-scanned] a cash settle_skipped posting (accounting off, no fee) is not listed and the sweep journals nothing for it before its lock", async () => {
+    const { batchId, posting } = await cashSkippedWithLock();
+    expect(await listedRow(posting.id as string)).toBeUndefined();
+    const journals = await journalCountOfEntity();
+    await sweep();
+    expect(await journalCountOfEntity()).toBe(journals);
+    const [stored] = await W.postingsOf(batchId);
+    expect(stored!.kind).toBe("settle_skipped");
+    expect(await listedRow(posting.id as string)).toBeUndefined();
+  });
+});
+
+describe("i612a: cursor validation", () => {
+  it("[i612a-impossible-date-cursor-422] an `after` cursor with an impossible date answers 422, not 500", async () => {
+    const encode = (postedAt: string) =>
+      Buffer.from(JSON.stringify([postedAt, randomUUID()]), "utf8").toString(
+        "base64url",
+      );
+    const client = await finance();
+    for (const bad of [
+      "2026-13-01 10:00:00+00",
+      "2026-02-30 10:00:00+00",
+      "2026-11-15 25:00:00+00",
+      "2026-11-15 10:61:00+00",
+    ]) {
+      const res = await client.get(
+        `${LIST}?after=${encodeURIComponent(encode(bad))}`,
+      );
+      expect(res.status, `${bad}: ${JSON.stringify(res.body)}`).toBe(422);
+    }
+    const ok = await client.get(
+      `${LIST}?after=${encodeURIComponent(encode("2026-11-15 10:00:00.123456+00"))}`,
+    );
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+  });
+});
+
+describe("i612a: the recovery list is paged and every row is reachable", () => {
+  it("[i612a-501-cases-reachable-with-cursor] 501 listed cases: following `next` with limit 200 reaches every one exactly once, the default page holds at most 100 rows with a next cursor, `data` is an array and `next` is null on the last page, limits outside 1..200 are refused", async () => {
+    const { posting } = await bankSkippedFeeOwed();
+    const original = posting.id as string;
+    const clones = await clonePosting(original, 500);
+    try {
+      expect(clones).toHaveLength(500);
+      const expected = [original, ...clones];
+      const client = await finance();
+
+      const first = await client.get(LIST);
+      expect(first.status, JSON.stringify(first.body)).toBe(200);
+      expect(Array.isArray(first.body.data)).toBe(true);
+      expect(
+        (first.body.data as Row[]).length,
+        "default page size",
+      ).toBeLessThanOrEqual(100);
+      expect(first.body.next, "more rows follow").toEqual(expect.any(String));
+
+      const seen: string[] = [];
+      let after: string | null = null;
+      let pages = 0;
+      do {
+        const url: string =
+          after === null
+            ? `${LIST}?limit=200`
+            : `${LIST}?limit=200&after=${encodeURIComponent(after)}`;
+        const res = await client.get(url);
+        expect(res.status, JSON.stringify(res.body)).toBe(200);
+        const rows = res.body.data as Row[];
+        expect(Array.isArray(rows)).toBe(true);
+        expect(rows.length).toBeLessThanOrEqual(200);
+        seen.push(...rows.map((row) => row.postingId as string));
+        after = (res.body.next ?? null) as string | null;
+        pages += 1;
+        expect(pages, "the cursor terminates").toBeLessThan(50);
+      } while (after !== null);
+
+      expect(new Set(seen).size, "no row twice").toBe(seen.length);
+      expect(seen.length).toBeGreaterThanOrEqual(501);
+      expect(
+        expected.filter((id) => !seen.includes(id)),
+        "every one of the 501 cases is reachable",
+      ).toEqual([]);
+
+      for (const bad of ["0", "201", "-1", "abc"]) {
+        const res = await client.get(`${LIST}?limit=${bad}`);
+        expect(res.status, `limit=${bad}`).toBeGreaterThanOrEqual(400);
+        expect(res.status, `limit=${bad}`).toBeLessThan(500);
+      }
+    } finally {
+      await deletePostings(clones);
+    }
   });
 });

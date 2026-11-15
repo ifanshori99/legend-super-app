@@ -84,6 +84,14 @@ export async function recordPostingSource(
 ): Promise<RecordPostingSourceResult> {
   const tenantId = actor.tenantId as TenantId;
   const batch = await loadBatchRunFirst(tx, actor.tenantId, batchId);
+  // The requester never names the source of their own batch (legend-hblpg):
+  // refused before any lock, source, journal or audit row is touched.
+  if (batch.requestedBy === actor.userId)
+    throw payoutRefuse(
+      403,
+      "PAYOUT_SOURCE_SELF_RECORD",
+      "Pembuat batch tidak boleh mencatat sumber dana batchnya sendiri.",
+    );
   await tx.execute(
     sql`SELECT pg_advisory_xact_lock(hashtext(${`payroll-payout-gl:${tenantId}:${batch.id}`}))`,
   );

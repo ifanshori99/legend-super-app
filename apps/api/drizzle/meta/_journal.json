@@ -2507,6 +2507,13 @@
       "when": 1794900000000,
       "tag": "0626_payout_recovery_source_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 372,
+      "version": "7",
+      "when": 1795000000000,
+      "tag": "0627_payout_settle_guard_lines",
+      "breakpoints": true
     }
   ]
 }

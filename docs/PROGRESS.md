@@ -5571,3 +5571,13 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - 63qhw: trigger guard menolak `settle_pending/settle_skipped -> settle` tanpa jurnal tenant+journal_key+entity+run yang cocok; `source_gl_account_id` hanya null -> nilai pada pending/skipped (grant kolom ke legend_app).
 - Review architect xhigh: F1-F7, semua dibetulkan (F1 uang, F2 AccountingError, F3 sumber beku, F4 audit+step-up+tipe akun, F5 cloud only, F6 batas+SQL, F7 trigger entity/run).
 
+## 15 Nov: second opinion delta payout GL (brief 883), cabang `fix/payout-gl-877`
+- Kartu legend-la22h (P1), legend-6ae7e (P1), legend-qq68t, legend-i612a, legend-hblpg, legend-5vb7y (P2). Dari tip 61102bff0. Migrasi 0627.
+- la22h: sweep memilih BATCH lewat cursor per tenant (dalam memori, wrap ke awal), semua posting batch dihitung tanpa batas 500; batch tertahan permanen tidak memakai batas; tiap batch dapat giliran dalam ceil(M/batchLimit) tick. Cursor hilang saat worker restart (mulai dari batch pertama lagi).
+- 6ae7e: endpoint sumber payout memakai `stepUp` + `passwordStepUp` seperti confirm-cash; MFA hasil enroll di sesi yang sama tidak cukup tanpa password.
+- hblpg: pemohon batch tidak boleh mencatat sumber (403 PAYOUT_SOURCE_SELF_RECORD), sebelum lock/sumber/jurnal/audit.
+- qq68t: baris `settle_skipped` bank fee_posted=true tanpa jurnal biaya terlihat di daftar (reason accounting_was_off); worker dan repost massal TIDAK menjurnalnya (saldo pembukaan mungkin sudah memuat biaya). Keputusan "tandai selesai tanpa jurnal" dan tindakan per posting menunggu founder.
+- i612a: GET /payout-fee-reposts berhalaman (`after`, `limit` 1..200, default 100, respons `{data, next}`), cursor (posted_at,id), cursor rusak 422.
+- 5vb7y: trigger 0627 memeriksa isi jurnal settle: debit=kredit>0, debit hanya 2103 (mapping entitas), kredit hanya akun sumber (GL rekening bank beku, atau sumber posting untuk kas). Nominal pokok tersegel (tak terbaca SQL) dan asal aturan `payroll.paid` (tak ada kolom penanda) tidak bisa diverifikasi di SQL.
+- Review architect xhigh: semua area benar; dua P2 (scan historis tanpa batas pada kas, repost massal menjurnal biaya historis) dan satu rendah (tanggal mustahil di cursor) diperbaiki.
+- Bukti: tes baru merah di 61102bff0 (16 gagal dari 64), hijau sesudah; 29 berkas payout/GL 433 lulus (1 dilewati); typecheck API dan web exit 0; `pnpm db:generate` kosong.

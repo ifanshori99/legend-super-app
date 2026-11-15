@@ -82,6 +82,22 @@ export const payoutPostingParamsSchema = z.strictObject({
  */
 export const recordPostingSourceInputSchema = z.strictObject({
   glAccountId: z.uuid(),
+  // Asked again when the session's second factor only comes from the first MFA
+  // enrollment (legend-658, L5), same as confirm-cash. Never logged.
+  password: z.string().min(1).max(128).optional(),
+});
+/** Page size of the payout recovery list (settlements and fees waiting). */
+export const PAYOUT_RECOVERY_LIMIT_MAX = 200;
+export const PAYOUT_RECOVERY_LIMIT_DEFAULT = 100;
+/** Query of the recovery list: opaque cursor from `next`, page size 1..200. */
+export const listPayoutRecoveryQuerySchema = z.strictObject({
+  after: z.string().min(1).max(200).optional(),
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(PAYOUT_RECOVERY_LIMIT_MAX)
+    .optional(),
 });
 /** Query of the proof read path: the key an upload returned (shape is checked by the API). */
 export const payoutEvidenceReadQuerySchema = z.strictObject({

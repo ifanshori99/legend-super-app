@@ -17,6 +17,7 @@ import {
   createDisbursementBatchInputSchema,
   payoutBatchParamsSchema,
   listPayoutBatchesQuerySchema,
+  listPayoutRecoveryQuerySchema,
   payoutLegalEntityParamsSchema,
   payoutPostingParamsSchema,
   payoutRunParamsSchema,
@@ -40,7 +41,7 @@ import {
 } from "../middleware/permissions.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
 import {
-  listPayoutRecovery,
+  listPayoutRecoveryPage,
   repostSkippedFees,
 } from "../services/payroll-payout-gl.service.ts";
 import { recordPostingSource } from "../services/payroll-payout-source.service.ts";
@@ -381,11 +382,12 @@ payrollPayoutRouter.get(
   requireTenantContext,
   requireTenantPermission("payroll.view"),
   async (req, res) => {
+    const query = listPayoutRecoveryQuerySchema.parse(req.query);
     const { context, actor } = actorOf(req);
-    const data = await withTenant(db, context, (tx) =>
-      listPayoutRecovery(tx, actor.tenantId),
+    const page = await withTenant(db, context, (tx) =>
+      listPayoutRecoveryPage(tx, actor.tenantId, query),
     );
-    res.json({ data });
+    res.json({ data: page.rows, next: page.next });
   },
 );
 
@@ -420,6 +422,7 @@ payrollPayoutRouter.post(
   requireTenantPermission("payroll.disburse.approve"),
   stepUp,
   jsonBody,
+  passwordStepUp,
   async (req, res) => {
     const { id, postingId } = payoutPostingParamsSchema.parse(req.params);
     const input = recordPostingSourceInputSchema.parse(req.body);
