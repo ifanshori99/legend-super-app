@@ -251,25 +251,20 @@ export const payrollRunMessages = {
     download: "Unduh",
     bankTitle: "Transfer bank",
     bankBody:
-      "Hanya slip dengan pembayaran transfer yang masuk berkas; totalnya harus sama dengan neto transfer run (PAYR-04).",
-    bankFormat: "Format bank",
-    bankCreate: "Buat berkas transfer",
-    bankCreated: "Berkas transfer dibuat.",
-    bankLockedHint: "Berkas transfer tersedia setelah payroll dikunci.",
+      "Gaji dibayar lewat batch pencairan yang disetujui dua orang. Berkas transfer lama tetap bisa diunduh di sini sebagai arsip.",
+    bankPayoutBody:
+      "Buat batch, setujui, lalu ekspor berkas transfer dari batch itu di layar Pencairan gaji.",
+    bankPayoutLink: "Buka pencairan gaji",
+    bankArchiveTitle: "Arsip berkas lama",
+    bankArchiveNeedLock: "Unduh arsip butuh izin payroll.lock.",
+    bankLockedHint: "Pencairan tersedia setelah payroll dikunci.",
     taxLockedHint:
       "Dokumen pajak tersedia setelah payroll disetujui dua tingkat dan dikunci.",
     bankExpected: "Neto transfer run: {total}",
     bankMatches: "Berkas cocok dengan run",
     bankMismatch: "Berkas belum cocok",
-    bankEmpty: "Belum ada berkas transfer untuk run ini.",
+    bankEmpty: "Belum ada arsip berkas transfer untuk run ini.",
     bankRow: "{format} · {rows} baris",
-    format: {
-      generic_csv: "CSV umum",
-      bca: "BCA",
-      mandiri: "Mandiri",
-      bni: "BNI",
-      bjb: "BJB",
-    },
     taxTitle: "Dokumen pajak",
     taxBody:
       "Bukti potong PPh 21 bulanan atau tahunan untuk diimpor ke Coretax DJP.",
@@ -340,6 +335,8 @@ export const payrollRunMessages = {
       "Payroll harus disetujui HR dan Finance/Owner sebelum dikunci.",
     frozen: "Payroll yang sudah dikunci tidak dapat diubah.",
     bankFileMismatch: "Total berkas transfer tidak sama dengan gaji bersih.",
+    legacyBankExport:
+      "Berkas transfer dari layar ini sudah tidak dipakai. Bayar gaji lewat batch pencairan di layar Pencairan gaji.",
     snapshot: "Versi tarif yang dipakai payroll ini tidak tersedia.",
     poolTransition: "Perubahan status pool service charge tidak diizinkan.",
     idempotency: "Kunci idempotensi sudah dipakai untuk permintaan lain.",

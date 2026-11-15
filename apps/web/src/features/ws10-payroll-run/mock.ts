@@ -40,15 +40,13 @@ import { holdsAny } from "@/lib/areas/guard";
 import { paginateFixture } from "@/lib/mock/paginate";
 import { registerMock } from "@/lib/mock/registry";
 import { createMockStore } from "@/lib/mock/store";
-import { decimal4Schema, sumIdr } from "@starter/shared/core";
+import { decimal4Schema } from "@starter/shared/core";
 import { cafeLegendHrisFixtures } from "@starter/shared/hris";
 import {
   applyPayrollRunCommand,
   approvePayrollRunFinal,
   approvePayrollRunHr,
   approveServiceChargePool,
-  assertBankFileMatchesRun,
-  bankTransferFileSchema,
   cafeLegendPayrollFixtures,
   calculateServiceChargePool,
   createBankTransferFile,
@@ -661,77 +659,14 @@ registerMock(listPayrollRunPayslips, ({ params, query, scenario }) => {
 
 // ---- Exports -------------------------------------------------------------
 
-async function sha256Hex(text: string): Promise<string> {
-  // `crypto.subtle` is absent on an insecure (LAN http) origin; the mock then
-  // uses a deterministic 64-hex stand-in. It is a demo checksum, not a digest.
-  if (globalThis.crypto?.subtle) {
-    const bytes = new TextEncoder().encode(text);
-    const digest = await crypto.subtle.digest("SHA-256", bytes);
-    return Array.from(new Uint8Array(digest))
-      .map((byte) => byte.toString(16).padStart(2, "0"))
-      .join("");
-  }
-  const fnv = (seed: number) => {
-    let hash = seed >>> 0;
-    for (const char of text) {
-      hash ^= char.codePointAt(0) ?? 0;
-      hash = Math.imul(hash, 0x01000193) >>> 0;
-    }
-    return hash.toString(16).padStart(8, "0");
-  };
-  return [0x811c9dc5, 0x9e3779b9, 0x85ebca6b, 0xc2b2ae35]
-    .map((seed) => fnv(seed))
-    .join("")
-    .padEnd(64, "0")
-    .slice(0, 64);
-}
-
-registerMock(createBankTransferFile, async ({ params, body }) => {
-  // Bank account numbers and net pay per person: payroll.lock only (contract
-  // route table), and only for a run approved twice and locked.
-  requirePermission(LOCK);
-  const run = requireRun(params.payrollRunId);
-  if (run.status !== "locked" && run.status !== "paid")
-    invalid("Berkas transfer dibuat setelah payroll dikunci.");
-  if (run.totals === null) invalid("Payroll belum punya hasil simulasi.");
-  const slips = state().payslips.filter((slip) => slip.payrollRunId === run.id);
-  const bankSlips = slips.filter(
-    (slip) => slip.paymentMethod === "bank_transfer" && slip.netIdr > 0,
+registerMock(createBankTransferFile, () => {
+  // Mirrors the API: the legacy per-run bank file is disabled; payouts go
+  // through the disbursement batch.
+  throw new ApiError(
+    409,
+    "LEGACY_BANK_EXPORT_DISABLED",
+    "Berkas transfer bank lama dinonaktifkan. Gunakan batch pencairan.",
   );
-  contract(() =>
-    assertBankFileMatchesRun(
-      bankSlips.map((slip) => ({
-        employeeId: slip.employeeId,
-        amountIdr: slip.netIdr,
-      })),
-      slips,
-      run.totals!,
-    ),
-  );
-  const csv = [
-    "employee_no,employee_name,bank_account,amount_idr",
-    ...bankSlips.map(
-      (slip) => `${slip.employeeNo},"${slip.employeeName}",,${slip.netIdr}`,
-    ),
-  ].join("\n");
-  const checksum = await sha256Hex(csv);
-  const file = once(body.idempotencyKey, body, () =>
-    bankTransferFileSchema.parse({
-      id: newUuid(),
-      tenantId: tenant.id,
-      payrollRunId: run.id,
-      format: body.format,
-      rowCount: bankSlips.length,
-      totalIdr: sumIdr(bankSlips.map((slip) => slip.netIdr)),
-      checksumSha256: checksum,
-      fileUrl: `https://files.legend.example/signed/payroll-${run.periodStart}-${body.format}.csv?sig=demo`,
-      createdBy: currentActor(),
-      createdAt: now(),
-    }),
-  );
-  if (!state().bankFiles.some((row) => row.id === file.id))
-    store.set({ ...state(), bankFiles: [...state().bankFiles, file] });
-  return { data: file };
 });
 
 registerMock(listBankTransferFiles, ({ params, query, scenario }) => {

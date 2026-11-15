@@ -16,7 +16,6 @@ import {
   approvePayrollRunHr,
   approveServiceChargePool,
   calculateServiceChargePool,
-  createBankTransferFile,
   createPayrollRun,
   createPayrollTaxExport,
   createServiceChargePool,
@@ -43,9 +42,6 @@ type BodyOf<E extends AnyEndpoint> = EndpointInput<E>["body"];
 
 // Request bodies the screens build (mints its idempotency key per attempt).
 export type CreateRunInput = BodyOf<typeof createPayrollRun>;
-export type CreateBankFileFormat = BodyOf<
-  typeof createBankTransferFile
->["format"];
 export type CreateTaxExportInput = BodyOf<typeof createPayrollTaxExport>;
 export type CreatePoolInput = BodyOf<typeof createServiceChargePool>;
 
@@ -231,18 +227,6 @@ export async function decideReversal(
 }
 
 // ---- Exports ------------------------------------------------------------
-
-export async function createBankFile(
-  runId: string,
-  format: BodyOf<typeof createBankTransferFile>["format"],
-  idempotencyKey: string,
-) {
-  const response = await callEndpoint(createBankTransferFile, {
-    params: { payrollRunId: runId },
-    body: { format, idempotencyKey },
-  });
-  return response.data;
-}
 
 export async function createTaxExport(
   body: BodyOf<typeof createPayrollTaxExport>,

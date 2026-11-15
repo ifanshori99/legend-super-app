@@ -9,6 +9,7 @@ const CODE_KEYS: Record<string, MessageKey> = {
   PAYROLL_RUN_NOT_APPROVED: "payrollRun.error.notApproved",
   PAYROLL_RUN_FROZEN: "payrollRun.error.frozen",
   PAYROLL_BANK_FILE_MISMATCH: "payrollRun.error.bankFileMismatch",
+  LEGACY_BANK_EXPORT_DISABLED: "payrollRun.error.legacyBankExport",
   PAYROLL_SNAPSHOT_MISMATCH: "payrollRun.error.snapshot",
   PAYROLL_INVALID_TRANSITION: "payrollRun.error.poolTransition",
   IDEMPOTENCY_KEY_REUSED: "payrollRun.error.idempotency",
