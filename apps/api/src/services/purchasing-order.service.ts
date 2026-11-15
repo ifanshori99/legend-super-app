@@ -22,7 +22,7 @@
 //   transactional outbox.
 
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, lt, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, lt, ne, or, sql, type SQL } from "drizzle-orm";
 import {
   businessDateOf,
   CoreError,
@@ -55,6 +55,8 @@ import { db } from "../db/index.ts";
 import { approvalRequests } from "../db/schema/platform-approval.ts";
 import {
   purchaseOrderLines,
+  purchaseInvoiceLines,
+  purchaseInvoices,
   purchaseOrders,
   purchaseRequests,
   purchasingDocumentSequences,
@@ -161,9 +163,42 @@ async function loadLines(tx: Tx, orderId: string): Promise<LineRow[]> {
 }
 
 async function detailOf(tx: Tx, row: OrderRow): Promise<PurchaseOrderDetail> {
+  // Match uses the same reservation rule: held invoices still consume the
+  // accepted quantity, and rejected invoices release it. Keep numeric SUM as
+  // decimal text so quantities never pass through floating point arithmetic.
+  const invoiced = await tx
+    .select({
+      lineId: purchaseInvoiceLines.purchaseOrderLineId,
+      quantity: sql<string>`sum(${purchaseInvoiceLines.quantity})::text`,
+    })
+    .from(purchaseInvoiceLines)
+    .innerJoin(
+      purchaseInvoices,
+      and(
+        eq(purchaseInvoices.tenantId, purchaseInvoiceLines.tenantId),
+        eq(purchaseInvoices.id, purchaseInvoiceLines.purchaseInvoiceId),
+      ),
+    )
+    .where(
+      and(
+        eq(purchaseInvoices.tenantId, row.tenantId),
+        eq(purchaseInvoices.purchaseOrderId, row.id),
+        eq(purchaseInvoiceLines.kind, "goods"),
+        ne(purchaseInvoices.status, "rejected"),
+      ),
+    )
+    .groupBy(purchaseInvoiceLines.purchaseOrderLineId);
+  const invoicedByLine = new Map(
+    invoiced.map((line) => [line.lineId, line.quantity]),
+  );
   return purchaseOrderDetailSchema.parse({
     purchaseOrder: await loadPurchaseOrder(tx, row),
-    lines: (await loadLines(tx, row.id)).map(toLine),
+    lines: (await loadLines(tx, row.id)).map((line) => ({
+      ...toLine(line),
+      quantityInvoiced: formatDecimal4(
+        parseDecimal4(invoicedByLine.get(line.id) ?? "0.0000"),
+      ),
+    })),
   });
 }
 

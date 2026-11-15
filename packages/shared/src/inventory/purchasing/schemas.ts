@@ -599,6 +599,8 @@ export const purchaseOrderLineSchema = z.strictObject({
   purchaseOrderId: purchaseOrderIdSchema,
   inventoryItemId: inventoryItemIdSchema,
   quantity: positiveDecimal4Schema,
+  /** Goods quantities reserved by invoices that have not been rejected. */
+  quantityInvoiced: nonnegativeDecimal4Schema.default(formatDecimal4(0n)),
   uomId: uomIdSchema,
   unitPriceIdr: nonnegativeDecimal4Schema,
   lineTotalIdr: nonnegativeIdrSchema,
@@ -1207,6 +1209,8 @@ export const threeWayMatchRowSchema = z.strictObject({
   kind: supplierInvoiceLineKindSchema,
   orderedQty: nonnegativeDecimal4Schema.nullable(),
   acceptedQty: nonnegativeDecimal4Schema.nullable(),
+  /** Available before this line, excluding this invoice from prior invoices. */
+  remainingInvoiceableQty: nonnegativeDecimal4Schema.nullable().default(null),
   invoicedQty: positiveDecimal4Schema,
   orderedUnitPriceIdr: nonnegativeDecimal4Schema.nullable(),
   invoicedUnitPriceIdr: nonnegativeDecimal4Schema,
@@ -1352,6 +1356,7 @@ export function threeWayMatch(
         kind: line.kind,
         orderedQty: null,
         acceptedQty: null,
+        remainingInvoiceableQty: null,
         invoicedQty: line.quantity,
         orderedUnitPriceIdr: null,
         invoicedUnitPriceIdr: line.unitPriceIdr,
@@ -1360,6 +1365,7 @@ export function threeWayMatch(
         issues,
       };
     const accepted = acceptedByLine.get(orderLine.id) ?? 0n;
+    const remaining = accepted - (invoicedByLine.get(orderLine.id) ?? 0n);
     if (line.kind === "goods") {
       const billed =
         (invoicedByLine.get(orderLine.id) ?? 0n) + parseDecimal4(line.quantity);
@@ -1396,6 +1402,7 @@ export function threeWayMatch(
       kind: line.kind,
       orderedQty: orderLine.quantity,
       acceptedQty: formatDecimal4(accepted),
+      remainingInvoiceableQty: formatDecimal4(remaining > 0n ? remaining : 0n),
       invoicedQty: line.quantity,
       orderedUnitPriceIdr: orderLine.unitPriceIdr,
       invoicedUnitPriceIdr: line.unitPriceIdr,

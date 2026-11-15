@@ -94,7 +94,7 @@ const PAYMENT_METHODS: readonly SupplierPaymentMethod[] = [
   "virtual_account",
 ];
 
-function MatchStatusPill({
+export function MatchStatusPill({
   status,
 }: {
   status: "pending" | "matched" | "discrepancy";
@@ -565,7 +565,25 @@ function InvoiceDetailDialog({
                             ) : (
                               <StatusPill status="danger">
                                 {row.issues
-                                  .map((issue) => t(MATCH_ISSUE_LABEL[issue]))
+                                  .map((issue) =>
+                                    issue === "quantity_exceeds_receipt" &&
+                                    row.remainingInvoiceableQty !== null
+                                      ? t(
+                                          "inventoryReceiving.invoices.issue.quantity_exceeds_receipt_remaining",
+                                          {
+                                            quantity:
+                                              unit === ""
+                                                ? formatQuantity(
+                                                    row.remainingInvoiceableQty,
+                                                  )
+                                                : formatQuantityWithUnit(
+                                                    row.remainingInvoiceableQty,
+                                                    unit,
+                                                  ),
+                                          },
+                                        )
+                                      : t(MATCH_ISSUE_LABEL[issue]),
+                                  )
                                   .join(" · ")}
                               </StatusPill>
                             )}
@@ -866,6 +884,14 @@ function InvoiceListContent({ canPay }: { canPay: boolean }) {
           onChange: setSearch,
           label: t("common.search"),
         }}
+        actions={
+          <Button asChild>
+            <Link to="/kelola/pengadaan/faktur/baru">
+              <ReceiptText aria-hidden="true" />
+              {t("inventoryInvoiceEntry.newInvoice")}
+            </Link>
+          </Button>
+        }
         empty={{
           title: t("inventoryReceiving.invoices.emptyTitle"),
           description: t("inventoryReceiving.invoices.emptyHint"),

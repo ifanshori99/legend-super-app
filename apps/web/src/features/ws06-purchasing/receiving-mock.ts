@@ -449,7 +449,8 @@ registerMock(createSupplierInvoice, ({ body, headers }) =>
           totalIdr: invoicedGoodsIdr + servicesIdr,
           payableIdr: invoicedGoodsIdr + servicesIdr,
           paidIdr: 0,
-          outstandingIdr: invoicedGoodsIdr + servicesIdr,
+          // A held invoice is not a payable yet (schema: outstanding = 0).
+          outstandingIdr: 0,
           status: "held",
           matchStatus: "pending",
           matchedAt: null,
@@ -483,7 +484,8 @@ registerMock(createSupplierInvoice, ({ body, headers }) =>
         totalIdr,
         payableIdr,
         paidIdr: 0,
-        outstandingIdr: payableIdr,
+        // A held invoice is not a payable yet (schema: outstanding = 0).
+        outstandingIdr: 0,
         status: "held",
         matchStatus: "pending",
         matchedAt: null,
@@ -520,6 +522,10 @@ registerMock(postSupplierInvoiceMatch, ({ params, body, headers }) =>
       const invoice = supplierInvoiceSchema.parse({
         ...detail.invoice,
         status: match.status === "matched" ? "matched" : "held",
+        outstandingIdr:
+          match.status === "matched"
+            ? subtractIdr(detail.invoice.payableIdr, detail.invoice.paidIdr)
+            : 0,
         matchStatus: match.status,
         matchedAt: now(),
         matchNote: note === "" ? null : note,
@@ -547,6 +553,10 @@ function decideHeldInvoice(
   detail.invoice = supplierInvoiceSchema.parse({
     ...detail.invoice,
     status: decision,
+    outstandingIdr:
+      decision === "released"
+        ? subtractIdr(detail.invoice.payableIdr, detail.invoice.paidIdr)
+        : 0,
     matchStatus: decision === "released" ? "matched" : "discrepancy",
     matchedAt: detail.invoice.matchedAt ?? now(),
     matchNote: detail.invoice.matchNote ?? note,
