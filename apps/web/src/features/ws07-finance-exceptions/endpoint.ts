@@ -31,6 +31,18 @@ export const financeExceptionsResponseSchema = z.strictObject({
       refId: z.string(),
       amountIdr: z.number().int().nullable(),
       detail: z.string().nullable(),
+      receiptPending: z
+        .strictObject({
+          orderId: z.string().nullable(),
+          intentId: z.string().nullable(),
+          outboxState: z.enum([
+            "pending",
+            "dead_lettered",
+            "delivered",
+            "missing",
+          ]),
+        })
+        .optional(),
     }),
   ),
   truncated: z.boolean(),

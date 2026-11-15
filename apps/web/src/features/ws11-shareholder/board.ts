@@ -3,7 +3,9 @@
 // periods; the running period is always labelled estimate. No React and no
 // browser API, so tests/ws11-shareholder.test.mjs can load this file in Node.
 import {
+  REPORT_AGGREGATE_VIEW_PERMISSION,
   dashboardTileReport,
+  reportAcceptsAggregateView,
   reportPermittedFor,
   type DashboardLayout,
   type DashboardTile,
@@ -143,10 +145,11 @@ export function shareholderRunInputs(
 
 /**
  * Drill-down link to a tile's source report. Report pages live in the kelola
- * area, which needs dashboard.management.view; a shareholder does not hold it,
- * so the link stays hidden until the report route for shareholders is decided
- * (bead legend-5bjh). Once it can open the page, report.aggregate.view opens
- * only aggregate reports (SH-01: no employee, customer or member split).
+ * area, which needs dashboard.management.view; a shareholder does not hold it.
+ * The area guard lets report.aggregate.view open only the aggregate reports
+ * (lib/areas/kelola-guard.ts, bead legend-5bjh), so the link shows for those
+ * and stays hidden for any other report (SH-01: no employee, customer or
+ * member split).
  */
 export const REPORT_AREA_PERMISSION = "dashboard.management.view";
 
@@ -155,9 +158,14 @@ export function permittedReportPath(
   permissions: readonly string[],
 ): string | null {
   const report = dashboardTileReport(tile);
-  if (report === null || !permissions.includes(REPORT_AREA_PERMISSION))
-    return null;
-  return reportPermittedFor(report, permissions) ? report.route : null;
+  if (report === null || !reportPermittedFor(report, permissions)) return null;
+  if (permissions.includes(REPORT_AREA_PERMISSION)) return report.route;
+  // No kelola area: only an aggregate report opens, on report.aggregate.view
+  // (lib/areas/kelola-guard.ts, legend-5bjh).
+  return reportAcceptsAggregateView(report) &&
+    permissions.includes(REPORT_AGGREGATE_VIEW_PERMISSION)
+    ? report.route
+    : null;
 }
 
 export function metricCell(

@@ -91,13 +91,15 @@ export function refundLabelKey(status: RefundStatus): MessageKey {
 }
 
 export function unallocatedTone(status: UnallocatedStatus): StatusTone {
-  return status === "open" ? "warning" : "success";
+  return status === "resolved" ? "success" : "warning";
 }
 
 export function unallocatedLabelKey(status: UnallocatedStatus): MessageKey {
   return status === "open"
     ? "paymentAdmin.unallocated.statusOpen"
-    : "paymentAdmin.unallocated.statusResolved";
+    : status === "needs_review"
+      ? "paymentAdmin.unallocated.statusNeedsReview"
+      : "paymentAdmin.unallocated.statusResolved";
 }
 
 export function reconciliationTone(

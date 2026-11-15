@@ -158,6 +158,16 @@ export type FinanceExceptionItemDto = {
   /** Whole rupiah; null when the row has no amount or it is unreadable. */
   amountIdr: number | null;
   detail: string | null;
+  /** Only on `receipt_pending_stale` (legend-z13t): what the sale waits for. */
+  receiptPending?: FinanceExceptionReceiptPendingDto;
+};
+
+/** The order, its payment intent and the state of that intent's payment.paid. */
+export type FinanceExceptionReceiptPendingDto = {
+  orderId: string | null;
+  intentId: string | null;
+  /** `missing` = no payment.paid outbox row was found for the intent. */
+  outboxState: "pending" | "dead_lettered" | "delivered" | "missing";
 };
 
 export type FinanceExceptionSummaryDto = {

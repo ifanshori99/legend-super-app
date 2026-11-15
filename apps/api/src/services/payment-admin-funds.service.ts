@@ -89,7 +89,16 @@ const ambiguous = () =>
     "Payment evidence cannot represent this unallocated amount.",
   );
 
-async function view(tx: Tx, context: ScopedTenantContext, id: string) {
+// `lenient` (list only): a fund whose evidence is ambiguous is returned with
+// status "needs_review" instead of failing the whole list (legend-ftqf). It is
+// read-only here: the resolve path stays strict and still answers 409, so a
+// needs_review fund can never be refunded or credited.
+async function view(
+  tx: Tx,
+  context: ScopedTenantContext,
+  id: string,
+  lenient = false,
+) {
   const result = await tx.execute(sql`
     SELECT f.*, i.method, l.reference, l.total_idr AS bill_total_idr,
       o.name AS outlet_name, u.name AS resolved_by_name,
@@ -108,38 +117,44 @@ async function view(tx: Tx, context: ScopedTenantContext, id: string) {
   const r = result.rows[0];
   if (!r) throw new HttpError(404, "NOT_FOUND", "Unallocated funds not found.");
   // A fund never holds more than the provider transaction that brought it in.
-  if (
+  let needsReview =
     r.evidence_amount !== null &&
-    Number(r.amount_idr) > Number(r.evidence_amount)
-  )
-    throw ambiguous();
+    Number(r.amount_idr) > Number(r.evidence_amount);
   const bill = await billFundsState(tx, context, String(r.payment_intent_id));
-  if (!bill || bill.fundsTotalIdr !== bill.excessIdr) throw ambiguous();
-  const parsed = unallocatedFundViewSchema.safeParse({
-    id: r.id,
-    tenantId: r.tenant_id,
-    outletId: r.outlet_id,
-    paymentIntentId: r.payment_intent_id,
-    amountIdr: Number(r.amount_idr),
-    reason: r.reason,
-    approvalRef: r.approval_ref,
-    resolution: r.resolution,
-    resolvedBy: r.resolved_by,
-    paymentReference: r.reference,
-    method: r.method,
-    paidAmountIdr: Number(r.paid_amount),
-    billTotalIdr: Number(r.bill_total_idr),
-    outletName: r.outlet_name,
-    status: r.resolution ? "resolved" : "open",
-    detectedAt: new Date(String(r.created_at)).toISOString(),
-    resolvedByName: r.resolved_by_name,
-    resolvedAt: r.resolved_at
-      ? new Date(String(r.resolved_at)).toISOString()
-      : null,
-    note: r.note,
-  });
-  if (!parsed.success) throw ambiguous();
-  return parsed.data;
+  if (!bill || bill.fundsTotalIdr !== bill.excessIdr) needsReview = true;
+  if (needsReview && !lenient) throw ambiguous();
+  const build = (status: "open" | "resolved" | "needs_review") =>
+    unallocatedFundViewSchema.safeParse({
+      id: r.id,
+      tenantId: r.tenant_id,
+      outletId: r.outlet_id,
+      paymentIntentId: r.payment_intent_id,
+      amountIdr: Number(r.amount_idr),
+      reason: r.reason,
+      approvalRef: r.approval_ref,
+      resolution: r.resolution,
+      resolvedBy: r.resolved_by,
+      paymentReference: r.reference,
+      method: r.method,
+      paidAmountIdr: Number(r.paid_amount),
+      billTotalIdr: Number(r.bill_total_idr),
+      outletName: r.outlet_name,
+      status,
+      detectedAt: new Date(String(r.created_at)).toISOString(),
+      resolvedByName: r.resolved_by_name,
+      resolvedAt: r.resolved_at
+        ? new Date(String(r.resolved_at)).toISOString()
+        : null,
+      note: r.note,
+    });
+  const parsed = needsReview
+    ? build("needs_review")
+    : build(r.resolution ? "resolved" : "open");
+  if (parsed.success) return parsed.data;
+  // Evidence that does not fit the view contract is flagged, not hidden.
+  const flagged = lenient ? build("needs_review") : parsed;
+  if (!flagged.success) throw ambiguous();
+  return flagged.data;
 }
 
 export async function listUnallocatedFunds(
@@ -192,7 +207,7 @@ export async function listUnallocatedFunds(
     const page = rows.slice(0, query.limit);
     const last = page.at(-1);
     const data = [];
-    for (const row of page) data.push(await view(tx, context, row.id));
+    for (const row of page) data.push(await view(tx, context, row.id, true));
     return {
       data,
       meta: {

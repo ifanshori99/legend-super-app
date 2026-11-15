@@ -18,6 +18,7 @@ import type { FinanceExceptionItemDto } from "@starter/shared/types";
 import {
   KIND_HELP_KEYS,
   KIND_LABEL_KEYS,
+  OUTBOX_STATE_KEYS,
   detailKey,
   formatOccurred,
   refTypeKey,
@@ -110,6 +111,34 @@ function Reference({ item }: { item: FinanceExceptionItemDto }) {
                     : item.detail}
               </dd>
             </div>
+          )}
+          {item.receiptPending && (
+            <>
+              <div>
+                <dt className="text-xs text-muted-foreground">
+                  {t("financeExceptions.details.receiptOrder")}
+                </dt>
+                <dd className="font-mono text-xs break-all">
+                  {item.receiptPending.orderId ??
+                    t("financeExceptions.details.receiptNone")}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs text-muted-foreground">
+                  {t("financeExceptions.details.receiptIntent")}
+                </dt>
+                <dd className="font-mono text-xs break-all">
+                  {item.receiptPending.intentId ??
+                    t("financeExceptions.details.receiptNone")}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs text-muted-foreground">
+                  {t("financeExceptions.details.receiptOutbox")}
+                </dt>
+                <dd>{t(OUTBOX_STATE_KEYS[item.receiptPending.outboxState])}</dd>
+              </div>
+            </>
           )}
         </dl>
       </div>

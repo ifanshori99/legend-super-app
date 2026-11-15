@@ -1,5 +1,5 @@
 // Finance exceptions list (bead legend-4oclu; brief
-// docs/briefs/662-finance-exceptions-contract.md). Read-only: five kinds of
+// docs/briefs/662-finance-exceptions-contract.md). Read-only: six kinds of
 // rows finance must look at, each from its own source table and each listed
 // exactly once. Every query filters `tenant_id` from the session context and
 // the caller's outlet reach; no payload or bank data leaves this file.
@@ -8,6 +8,8 @@
 //   MAX_ITEMS of them, so a cut list never changes the totals.
 // - Edge rows are dated in their outlet's time zone (orders: their business
 //   date). A payout posting has no outlet and is dated in Asia/Jakarta.
+// - `receipt_pending_stale` is not dated by the window: it lists every parked
+//   auto-journal still waiting for its receipt a day after its first failure.
 // - The payout kind is tenant-wide, so it is shown only to a caller without
 //   an outlet limit and never when an outlet filter is asked for.
 
@@ -21,17 +23,20 @@ import {
 } from "@starter/shared/core";
 import type {
   FinanceExceptionItemDto,
+  FinanceExceptionReceiptPendingDto,
   FinanceExceptionSummaryDto,
   FinanceExceptionsDto,
 } from "@starter/shared/types";
 import {
   FINANCE_EXCEPTIONS_MAX_ITEMS,
+  RECEIPT_PENDING_STALE_AFTER_HOURS,
   type FinanceExceptionKind,
   type FinanceExceptionsQuery,
 } from "@starter/shared/validators/finance-exceptions";
 import { db } from "../db";
 import { withTenant } from "../db/tenant.ts";
 import { openPayrollValue } from "../lib/payroll-sealed.ts";
+import { EVENT_DESTINATION } from "./payment-support.ts";
 
 type Row = Record<string, unknown>;
 const rowsOf = (result: unknown): Row[] =>
@@ -270,6 +275,351 @@ async function voidUnsupported(tx: Executor, scope: Scope): Promise<Collected> {
   };
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+type OutboxState = FinanceExceptionReceiptPendingDto["outboxState"];
+/** Worst state wins when an intent has more than one payment.paid row. */
+const OUTBOX_RANK: Record<OutboxState, number> = {
+  delivered: 0,
+  missing: 1,
+  pending: 2,
+  dead_lettered: 3,
+};
+
+/**
+ * Parked auto-journals waiting for a receipt (AUTO_JOURNAL_RECEIPT_PENDING)
+ * for more than a day since their first failure (legend-z13t). Not dated by
+ * the window. Each row carries its order, its payment intent and the state of
+ * that intent's payment.paid outbox row (what the sweep waits for). The amount
+ * is the payment intent's amount_idr, falling back to the order total when the
+ * intent is not found (per tenant and outlet of the parked row). The order
+ * id sits in the payload as a ULID, so orders are looked up like
+ * voidUnsupported does. Read-only.
+ */
+async function receiptPendingStale(
+  tx: Executor,
+  scope: Scope,
+): Promise<Collected> {
+  const parked = rowsOf(
+    await tx.execute(
+      sql`SELECT p.idempotency_key AS ref_id, p.outlet_id, p.first_failed_at AS occurred_at,
+                 p.event_name, p.payload ->> 'refundId' AS refund_id,
+                 p.payload ->> 'orderId' AS order_ulid,
+                 coalesce(p.payload ->> 'paymentIntentId', p.payload ->> 'intentId') AS payload_intent
+            FROM auto_journal_parked p
+           WHERE p.tenant_id = ${scope.tenantId}::uuid
+             AND p.error_code = 'AUTO_JOURNAL_RECEIPT_PENDING'
+             AND p.first_failed_at < now() - make_interval(hours => ${RECEIPT_PENDING_STALE_AFTER_HOURS}::int)
+             AND ${outletClause(sql`p.outlet_id`, scope.reach)}
+           ORDER BY p.first_failed_at DESC, p.idempotency_key DESC`,
+    ),
+  );
+  const orderUuids = new Map<string, string>();
+  for (const row of parked) {
+    const ulid = row.order_ulid;
+    if (typeof ulid !== "string") continue;
+    try {
+      orderUuids.set(ulid, ulidToUuid(ulid));
+    } catch {
+      // Not a ULID: no order to find.
+    }
+  }
+  const orders = new Map<string, { total: number; intentId: string | null }>();
+  if (orderUuids.size > 0) {
+    const found = rowsOf(
+      await tx.execute(
+        sql`SELECT id::text AS id, outlet_id::text AS outlet_id, total_idr,
+                   payment_intent_id::text AS intent_id
+              FROM orders
+             WHERE tenant_id = ${scope.tenantId}::uuid
+               AND outlet_id IN (${sql.join(
+                 [...new Set(parked.map((row) => String(row.outlet_id)))].map(
+                   (id) => sql`${id}::uuid`,
+                 ),
+                 sql`, `,
+               )})
+               AND id IN (${sql.join(
+                 [...new Set(orderUuids.values())].map(
+                   (id) => sql`${id}::uuid`,
+                 ),
+                 sql`, `,
+               )})`,
+      ),
+    );
+    for (const row of found)
+      orders.set(`${String(row.outlet_id)}:${String(row.id)}`, {
+        total: num(row.total_idr),
+        intentId: (row.intent_id as string | null) ?? null,
+      });
+  }
+  // A POS sale pays through pos_order_tenders (orders.payment_intent_id is
+  // null for POS); an order may carry several intents (replaced QR, split).
+  // Only captured tenders count: the journal waits for those alone.
+  const tenderIntents = new Map<string, string[]>();
+  if (orderUuids.size > 0) {
+    const tenders = rowsOf(
+      await tx.execute(
+        sql`SELECT order_id::text AS order_id, outlet_id::text AS outlet_id,
+                   payment_intent_id::text AS intent_id
+              FROM pos_order_tenders
+             WHERE tenant_id = ${scope.tenantId}::uuid
+               AND outlet_id IN (${sql.join(
+                 [...new Set(parked.map((row) => String(row.outlet_id)))].map(
+                   (id) => sql`${id}::uuid`,
+                 ),
+                 sql`, `,
+               )})
+               AND order_id IN (${sql.join(
+                 [...new Set(orderUuids.values())].map(
+                   (id) => sql`${id}::uuid`,
+                 ),
+                 sql`, `,
+               )})
+               AND payment_intent_id IS NOT NULL
+               AND status = 'captured'
+             ORDER BY requested_at, id`,
+      ),
+    );
+    for (const row of tenders) {
+      const key = `${String(row.outlet_id)}:${String(row.order_id)}`;
+      const list = tenderIntents.get(key) ?? [];
+      list.push(String(row.intent_id).toLowerCase());
+      tenderIntents.set(key, list);
+    }
+  }
+  // Mirror sessionDepositAt's receipt graph without its locks or posting
+  // checks. A reused DP can connect this sale to receipts on an older session.
+  // Keep the sale bound in SQL so credit uses after it (even by a microsecond)
+  // cannot make an unrelated receipt appear in this read-only report.
+  const depositIntents = new Map<string, string[]>();
+  if (orderUuids.size > 0) {
+    const deposits = rowsOf(
+      await tx.execute(sql`
+        WITH RECURSIVE scoped_orders AS (
+          SELECT o.id, o.tenant_id, o.outlet_id, o.table_session_id, o.deposit_applied_idr,
+                 CASE WHEN EXISTS (SELECT 1 FROM pos_orders sp
+                         WHERE sp.tenant_id = o.tenant_id AND sp.order_id = o.id)
+                      THEN (SELECT sp.completed_at FROM pos_orders sp
+                         WHERE sp.tenant_id = o.tenant_id AND sp.order_id = o.id)
+                      WHEN o.channel IN ('qr', 'facility') AND o.payment_mode = 'pay_first'
+                      THEN o.fired_at END AS sale_at
+            FROM orders o
+           WHERE o.tenant_id = ${scope.tenantId}::uuid
+             AND ${outletClause(sql`o.outlet_id`, [
+               ...new Set(parked.map((row) => String(row.outlet_id))),
+             ])}
+             AND o.id IN (${sql.join(
+               [...new Set(orderUuids.values())].map((id) => sql`${id}::uuid`),
+               sql`, `,
+             )})
+        ), sources AS (
+          SELECT o.id AS order_id, o.outlet_id, a.table_session_id AS session_id,
+                 a.payment_intent_id AS intent_id
+            FROM scoped_orders o
+            JOIN reservation_deposit_allocations a
+              ON a.tenant_id = o.tenant_id AND a.outlet_id = o.outlet_id
+           WHERE o.deposit_applied_idr > 0
+          UNION
+          SELECT o.id, o.outlet_id, u.table_session_id, r.payment_intent_id
+            FROM scoped_orders o
+            JOIN reservation_customer_credit_uses u
+              ON u.tenant_id = o.tenant_id AND u.outlet_id = o.outlet_id
+            JOIN reservation_deposit_remainders r
+              ON r.tenant_id = u.tenant_id AND r.outlet_id = u.outlet_id
+             AND r.id = u.remainder_id
+           WHERE o.deposit_applied_idr > 0 AND u.created_at < o.sale_at
+        ), connected(order_id, outlet_id, node) AS (
+          SELECT o.id, o.outlet_id, 's:' || o.table_session_id::text
+            FROM scoped_orders o
+           WHERE o.deposit_applied_idr > 0 AND o.table_session_id IS NOT NULL
+             AND o.sale_at IS NOT NULL
+          UNION
+          SELECT c.order_id, c.outlet_id,
+                 CASE WHEN c.node = 's:' || s.session_id::text
+                      THEN 'i:' || s.intent_id::text
+                      ELSE 's:' || s.session_id::text END
+            FROM connected c
+            JOIN sources s ON s.order_id = c.order_id AND s.outlet_id = c.outlet_id
+             AND (c.node = 's:' || s.session_id::text OR c.node = 'i:' || s.intent_id::text)
+        )
+        SELECT c.order_id::text AS order_id, c.outlet_id::text AS outlet_id,
+               substring(c.node from 3) AS intent_id, NULL::text AS refund_id
+          FROM connected c WHERE left(c.node, 1) = 'i'
+        UNION
+        SELECT d.order_id::text, d.outlet_id::text, d.payment_intent_id::text,
+               d.pos_refund_id::text
+          FROM scoped_orders o
+          JOIN pos_deposit_refunds d ON d.tenant_id = o.tenant_id
+           AND d.outlet_id = o.outlet_id AND d.order_id = o.id
+        ORDER BY order_id, outlet_id, intent_id, refund_id
+      `),
+    );
+    for (const row of deposits) {
+      const key = `${String(row.outlet_id)}:${String(row.order_id)}:${row.refund_id ?? "sale"}`;
+      const list = depositIntents.get(key) ?? [];
+      list.push(String(row.intent_id).toLowerCase());
+      depositIntents.set(key, list);
+    }
+  }
+  const resolved = parked.map((row) => {
+    const orderUuid =
+      typeof row.order_ulid === "string"
+        ? orderUuids.get(row.order_ulid)
+        : undefined;
+    const order =
+      orderUuid === undefined
+        ? undefined
+        : orders.get(`${String(row.outlet_id)}:${orderUuid}`);
+    const payloadIntent =
+      typeof row.payload_intent === "string" && UUID.test(row.payload_intent)
+        ? row.payload_intent.toLowerCase()
+        : null;
+    // A parked event that names its intent waits for that intent only; other
+    // tenders of the order must not take its place.
+    const fromTenders =
+      payloadIntent === null && orderUuid !== undefined
+        ? (tenderIntents.get(`${String(row.outlet_id)}:${orderUuid}`) ?? [])
+        : [];
+    const depositSource =
+      row.event_name === "order.paid"
+        ? "sale"
+        : typeof row.refund_id === "string" && UUID.test(row.refund_id)
+          ? row.refund_id.toLowerCase()
+          : null;
+    const fromDeposits =
+      payloadIntent === null &&
+      orderUuid !== undefined &&
+      depositSource !== null
+        ? (depositIntents.get(
+            `${String(row.outlet_id)}:${orderUuid}:${depositSource}`,
+          ) ?? [])
+        : [];
+    const candidates = [
+      ...new Set(
+        (payloadIntent === null
+          ? [
+              order?.intentId?.toLowerCase() ?? null,
+              ...fromTenders,
+              ...fromDeposits,
+            ]
+          : [payloadIntent]
+        ).filter((id): id is string => id !== null),
+      ),
+    ];
+    return {
+      row,
+      orderId: orderUuid ?? null,
+      total: order?.total ?? null,
+      candidates,
+      contributionCandidates: new Set([...fromTenders, ...fromDeposits]),
+    };
+  });
+  const states = new Map<string, OutboxState>();
+  const intentAmounts = new Map<string, number>();
+  const intentIds = [...new Set(resolved.flatMap((entry) => entry.candidates))];
+  if (intentIds.length > 0) {
+    const outletIds = [...new Set(parked.map((row) => String(row.outlet_id)))];
+    const intents = rowsOf(
+      await tx.execute(
+        sql`SELECT id::text AS id, outlet_id::text AS outlet_id, amount_idr
+              FROM payment_intents
+             WHERE tenant_id = ${scope.tenantId}::uuid
+               AND outlet_id IN (${sql.join(
+                 outletIds.map((id) => sql`${id}::uuid`),
+                 sql`, `,
+               )})
+               AND id IN (${sql.join(
+                 intentIds.map((id) => sql`${id}::uuid`),
+                 sql`, `,
+               )})`,
+      ),
+    );
+    for (const row of intents)
+      intentAmounts.set(
+        `${String(row.outlet_id)}:${String(row.id)}`,
+        num(row.amount_idr),
+      );
+    const outbox = rowsOf(
+      await tx.execute(
+        sql`SELECT aggregate_id::text AS intent_id, outlet_id::text AS outlet_id,
+                   status, dead_lettered_at
+              FROM domain_event_outbox
+             WHERE tenant_id = ${scope.tenantId}::uuid
+               AND outlet_id IN (${sql.join(
+                 [...new Set(parked.map((row) => String(row.outlet_id)))].map(
+                   (id) => sql`${id}::uuid`,
+                 ),
+                 sql`, `,
+               )})
+               AND destination = ${EVENT_DESTINATION}
+               AND aggregate_type = 'payment'
+               AND event ->> 'name' = 'payment.paid'
+               AND aggregate_id IN (${sql.join(
+                 intentIds.map((id) => sql`${id}::uuid`),
+                 sql`, `,
+               )})`,
+      ),
+    );
+    for (const row of outbox) {
+      const state: OutboxState =
+        row.dead_lettered_at !== null && row.dead_lettered_at !== undefined
+          ? "dead_lettered"
+          : row.status === "delivered"
+            ? "delivered"
+            : "pending";
+      const key = `${String(row.outlet_id)}:${String(row.intent_id)}`;
+      const seen = states.get(key);
+      if (seen === undefined || OUTBOX_RANK[state] > OUTBOX_RANK[seen])
+        states.set(key, state);
+    }
+  }
+  const items = resolved.map(
+    ({ row, orderId, total, candidates, contributionCandidates }) => {
+      // One item per parked sale: show the intent whose outbox row matters most
+      // (dead_lettered, then pending, then missing, then delivered); ties keep
+      // the candidate order (order, tenders, DP; a payload intent stands alone).
+      let intentId: string | null = null;
+      let outboxState: OutboxState = "missing";
+      for (const candidate of candidates) {
+        const state =
+          states.get(`${String(row.outlet_id)}:${candidate}`) ?? "missing";
+        if (
+          intentId === null ||
+          OUTBOX_RANK[state] > OUTBOX_RANK[outboxState]
+        ) {
+          intentId = candidate;
+          outboxState = state;
+        }
+      }
+      // An intent from a tender or DP source is one share of a split payment: the
+      // sale is worth the order total. A payload or embedded intent keeps its
+      // own amount.
+      const intentAmount =
+        intentId && !contributionCandidates.has(intentId)
+          ? intentAmounts.get(`${String(row.outlet_id)}:${intentId}`)
+          : undefined;
+      return {
+        ...toItem("receipt_pending_stale", "auto_journal", {
+          ...row,
+          amount: intentAmount ?? total,
+        }),
+        receiptPending: {
+          orderId,
+          intentId,
+          outboxState,
+        } satisfies FinanceExceptionReceiptPendingDto,
+      };
+    },
+  );
+  return {
+    kind: "receipt_pending_stale",
+    count: items.length,
+    knownAmountCount: items.filter((item) => item.amountIdr !== null).length,
+    amountIdr: items.reduce((sum, item) => sum + (item.amountIdr ?? 0), 0),
+    items,
+  };
+}
+
 /** Whole-rupiah fee of a posting; an unreadable or tampered value is null. */
 function postingFee(
   tenantId: string,
@@ -369,6 +719,8 @@ export async function listFinanceExceptions(
       parts.push(await receiptSkipped(tx, scope));
     if (wants("edge_link_dead_letter"))
       parts.push(await linkDeadLetters(tx, scope));
+    if (wants("receipt_pending_stale"))
+      parts.push(await receiptPendingStale(tx, scope));
     if (includePayout) parts.push(await payoutFeeNotPosted(tx, scope));
     return parts;
   });
