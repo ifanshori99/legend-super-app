@@ -449,6 +449,17 @@ Ringkasan untuk host edge di outlet. Langkah lengkap ada di `deploy/edge/README.
 - **Kunci publik seal datang lewat snapshot.** Edge menyegel selfie dengan kunci publik cloud dari snapshot data orang (`edge_people_sync_state.selfie_seal_public_key`, `selfie_seal_kid`). Tidak ada kunci yang disalin manual ke disk edge.
 - **Edge tidak pernah memegang kunci privat.** `ATTENDANCE_SELFIE_SEAL_KEYS` dan `ATTENDANCE_SELFIE_SEAL_ACTIVE_KID` hanya ada di cloud. Prosedur kunci produksi ada di section "Attendance selfie seal key" di atas, jangan diduplikasi.
 
+### EDC agent (legend-kwy6d)
+
+Agen EDC (mesin kartu) jalan di proses edge, bukan di worker cloud, karena edge yang memegang perangkat. Dihidupkan dengan `EDC_AGENT_ENABLED=true` (default mati) di file env edge. Identitas tenant dan outlet diambil dari kredensial node, tidak pernah dari request. Registry produksi tidak punya simulator; adapter bank menyusul (legend-vpx), jadi sebelum itu setiap bank dijawab `EDC_PROVIDER_UNKNOWN` dan tidak ada transaksi yang dikirim.
+
+- **Satu agent per outlet.** Agen mengambil advisory lock Postgres untuk outletnya. Proses kedua untuk outlet yang sama gagal start (`EDC_AGENT_NOT_READY`): kegagalan itu dicatat, edge tetap jalan tanpa agen EDC dan mencoba lagi dengan backoff (lihat Retry).
+- **Standby tidak menjalankan.** Hanya node `EDGE_NODE_ROLE=primary` yang memulai agen. Standby tidak pernah membuka pertukaran dengan terminal.
+- **Siapa yang merestart.** Bila kunci outlet hilang saat ada sale di kawat, agen mengakhiri proses (`process.exit(1)`) supaya proses lain tidak mengirim sale yang sama. Supervisor wajib menyalakannya lagi: systemd `Restart=always` dengan `RestartSec` (contoh `deploy/edge/legend-edge.service`), atau `restart: always` bila edge jalan di Docker. Tanpa supervisor, EDC mati sampai ada yang menyalakan edge.
+- **Marker kawat dibiarkan.** Saat proses mati, `sale_wire_open_at` pada transaksi tetap ada. Hanya proses yang sudah lewat jendela late-response yang membersihkannya (sapuan agen tiap 60 detik). Restart cepat tidak membersihkannya dan tidak mengirim ulang sale itu: baris `pending` milik proses mati menjadi `unknown` untuk rekonsiliasi.
+- **Shutdown.** Agen berhenti sebelum runtime edge dan menunggu sale yang sedang di kawat sampai `saleTimeoutMs` (120 detik). Dengan EDC aktif, timer paksa di `server.ts` adalah `saleTimeoutMs` + 10 detik (130 detik), bukan 5 detik, dan `TimeoutStopSec` unit systemd harus lebih besar (contoh: 150). Memotongnya TIDAK aman: bukti approval sale yang sedang di kawat bisa hilang. Matinya proses memang melepas lock outlet dan marker kawat tetap sampai jendela late-response lewat, tetapi itu hanya mencegah sale kedua, bukan menyimpan hasil sale pertama. Deploy edge berarti menunggu sampai 2 menit bila ada sale berjalan.
+- **Retry.** Start yang gagal (outlet dipegang proses lain yang sedang mati, database mati) dan kunci outlet yang hilang tanpa sale di kawat tidak mematikan agen untuk selamanya: edge membangun agen baru dan mencoba lagi dengan backoff (1 detik, berlipat, maksimum 30 detik) sampai edge berhenti. Selama itu `getEdgeEdcAgent()` null. Unit systemd memakai `StartLimitIntervalSec=0` di `[Unit]` supaya restart setelah fail-stop tidak pernah berhenti.
+
 ## Support read_write owner approval release (legend-c9kbk)
 
 From migration `0160_support_access_requests`, a Super Admin's read_write support session needs the tenant owner's approval first (founder Q37). Release it like this:

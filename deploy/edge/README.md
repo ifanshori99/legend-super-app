@@ -11,6 +11,7 @@ background: `docs/design/hris-edge-replication.md`.
 - `test-check-edge-host.sh`: stubbed test for the preflight (`sh deploy/edge/test-check-edge-host.sh`).
 - `chrony.conf.example`: NTP client configuration.
 - `Caddyfile.edge.example`: HTTPS front for outlet devices.
+- `legend-edge.service`: example systemd unit (`Restart=always`), required when `EDC_AGENT_ENABLED=true`.
 
 ## Host requirements
 
