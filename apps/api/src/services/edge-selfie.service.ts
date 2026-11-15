@@ -43,7 +43,11 @@ import {
   importSealPublicKey,
   sealSelfie,
 } from "../lib/selfie-seal";
-import { processImageFull, type MalwareScanner } from "./core-image";
+import {
+  processImageFull,
+  withScanTenant,
+  type MalwareScanner,
+} from "./core-image";
 import type { StorageAuthorization } from "./core-storage";
 import { findActiveDeviceForToken } from "./device-registry-check";
 import { assertLivePinProof } from "./staff-pin-proof.service";
@@ -305,7 +309,11 @@ export async function uploadEdgeSelfie(
   // the seal, when the file length is known.
   if (used >= deps.maxBytes) throw fullDisk();
 
-  const { full } = await processImageFull(bytes, policy.maxBytes, deps.scanner);
+  const { full } = await processImageFull(
+    bytes,
+    policy.maxBytes,
+    withScanTenant(deps.scanner, context.tenant.tenantId),
+  );
   const id = randomUUID();
   const tenantId = context.tenant.tenantId;
   let sealed: Buffer;
