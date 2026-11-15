@@ -68,6 +68,9 @@ export const hrisRequestsEmployeeMessages = {
       "Jenis ini memerlukan lampiran (misalnya surat dokter), dan unggah lampiran belum tersedia di layar ini. Pengajuan belum bisa dikirim, hubungi supervisor Anda.",
     attachmentLabel: "Lampiran",
     attachmentHint: "PDF, JPEG, PNG, atau WebP; maksimum 10 MB.",
+    attachmentPhotosHint: "JPEG, PNG, atau WebP; maksimum 10 MB.",
+    attachmentPhotoOnly:
+      "PDF belum dapat diunggah. Pilih foto JPEG, PNG, atau WebP.",
     errors: {
       typeRequired: "Pilih jenis cuti atau izin.",
       attachmentBlocked:
