@@ -103,6 +103,7 @@ import { payrollServiceChargeRouter } from "./payroll-service-charge.routes";
 import { payrollRapelRouter } from "./payroll-rapel.routes";
 import { payrollPayoutRouter } from "./payroll-payout.routes";
 import { payrollPayoutReturnRouter } from "./payroll-payout-return.routes";
+import { payrollPayoutOverpaidRouter } from "./payroll-payout-overpaid.routes";
 import { payrollRunsRouter } from "./payroll-runs.routes";
 import {
   payrollMyReimbursementsRouter,
@@ -419,6 +420,7 @@ apiRouter.use("/hris/payroll/runs", payrollRunsRouter);
 // `/payout-configs`, `/runs/:id/disbursement-batches`, `/disbursement-batches`.
 apiRouter.use("/hris/payroll", payrollPayoutRouter);
 apiRouter.use("/hris/payroll", payrollPayoutReturnRouter);
+apiRouter.use("/hris/payroll", payrollPayoutOverpaidRouter);
 apiRouter.use(
   "/hris/payroll/reimbursement-categories",
   payrollReimbursementCategoriesRouter,

@@ -20,6 +20,11 @@
 //   cash source branch (posting.source_gl_account_id) and an unbalanced
 //   journal or one with no lines (the ledger refuses to commit them).
 //
+// - Migration 0632 freezes the salaries payable account on the posting: the flip
+//   is checked against it, so the seeded postings carry the mapped account.
+// - Migration 0634 lets `fee_posted` go false -> true only with the fee journal
+//   of the posting (see payroll-payout-888-guards.test.ts for the refusals).
+//
 // Everything runs as `legend_app` with the tenant context (the role the API
 // uses). Postings are seeded by the migration owner (no service involved) on a
 // real approved batch of the payout fixtures.
@@ -103,7 +108,7 @@ afterAll(async () => {
   }
 });
 
-type Seeded = { id: string; journalKey: string };
+type Seeded = { id: string; journalKey: string; feeKey: string };
 
 /** One posting row of the fixture batch, inserted as the migration owner. */
 async function seedPosting(
@@ -117,12 +122,22 @@ async function seedPosting(
     await c.query(
       `INSERT INTO payroll_payout_gl_postings
          (id, tenant_id, batch_id, kind, item_set_hash, journal_key,
-          total_encrypted, pii_key_version, fee_posted, source_gl_account_id)
-       VALUES ($1, $2, $3, $4, $5, $6, '\\x00', 1, true, $7)`,
-      [id, tenantId(), batchId, kind, hash, journalKey, sourceGlAccountId],
+          total_encrypted, pii_key_version, fee_posted, source_gl_account_id,
+          salaries_payable_account_id)
+       VALUES ($1, $2, $3, $4, $5, $6, '\\x00', 1, true, $7, $8)`,
+      [
+        id,
+        tenantId(),
+        batchId,
+        kind,
+        hash,
+        journalKey,
+        sourceGlAccountId,
+        salariesPayableId,
+      ],
     );
   });
-  return { id, journalKey };
+  return { id, journalKey, feeKey: `payroll-payout-fee:${hash}` };
 }
 
 /** Journal fields a test may bend away from the posting's own batch. */
@@ -571,7 +586,7 @@ describe("legend-63qhw: source account of an unresolved settle", () => {
     expect(result.row.source_gl_account_id).toBeNull();
   });
 
-  it("keeps the earlier fee-posted move (false -> true) allowed on its own", async () => {
+  it("keeps the earlier fee-posted move (false -> true) allowed with its fee journal", async () => {
     const posting = await seedPosting("settle_skipped");
     await W.asTenant(
       (c) =>
@@ -581,7 +596,13 @@ describe("legend-63qhw: source account of an unresolved settle", () => {
         ),
       true,
     );
-    const result = await tryUpdate(posting.id, "fee_posted = true");
+    // Since 0634 the flip also needs the fee journal of the posting.
+    const result = await tryUpdate(
+      posting.id,
+      "fee_posted = true",
+      [],
+      [posting.feeKey],
+    );
     expect(result.code).toBeUndefined();
   });
 });

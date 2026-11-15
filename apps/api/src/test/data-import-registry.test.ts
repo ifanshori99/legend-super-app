@@ -37,6 +37,8 @@ const registeredFiles = new Set<string>(sources.map(([, s]) => s.file));
 // Files whose name looks like an importer but that never write imported data.
 // Each entry needs a reason; adding a real writer here defeats the guard.
 const NOT_A_WRITER: Record<string, string> = {
+  "apps/api/src/worker/payout-evidence-backfill.job.ts":
+    "worker sweep (legend-8vcsg): fills the missing SHA-256 hashes of payout proofs that already exist, read from their own stored objects, into the tenant's own evidence-file and return-claim rows (NULL to a value only); imports no data from outside",
   "apps/api/src/services/menu-import-parse.ts":
     "pure spreadsheet/CSV parser: returns rows, performs no database write",
   "apps/api/src/config/data-import.ts":
@@ -229,6 +231,9 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
   // founder Q6 (15 Nov 2026, 864)
   "0378_ai_assistant_auto_enable.sql":
     "switches on the ai_assistant module (feature_flags.modules) for active tenants whose plan is an active package that includes ai_assistant and that already used AI (an ok tanya_ai or mcp usage event, or a user message); idempotent, skips tenants that already have the module, touches no limits, plan or integration providers, writes one tenant.module_auto_enabled audit row per changed tenant; FORCE RLS lifted for the statements that read audit_logs, ai_usage_events and ai_messages and restored",
+  // legend-wcd24 (888)
+  "0632_payout_frozen_payable_account.sql":
+    "backfills payroll_payout_gl_postings.salaries_payable_account_id (the salaries payable account the lock journal of the run credited, read from that journal's own account snapshot) and payable_account_hold (uncertain accounts are held for finance reconciliation) on existing settle postings only; changes no amount, journal or other column; the posting guard trigger is disabled for those two statements and re-enabled, FORCE RLS lifted on the posting, chart, journal and batch tables for the migration transaction and restored",
 };
 
 // Entrypoints that open a database pool but import no data.

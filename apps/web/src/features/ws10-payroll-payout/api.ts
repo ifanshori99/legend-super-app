@@ -381,11 +381,12 @@ function saveBlob(blob: Blob, filename: string) {
 export async function postExportBatch(
   batchId: string,
   bankFormat: PayoutBankFormat | null = null,
+  password?: string,
 ): Promise<ExportedFile> {
   if (API_MOCK) {
     const { data } = await callEndpoint(exportDisbursementBatch, {
       params: { id: batchId },
-      body: {},
+      body: password ? { password } : {},
     });
     saveBlob(
       new Blob([data.content], { type: data.contentType }),
@@ -403,7 +404,7 @@ export async function postExportBatch(
       method: "POST",
       credentials: "include",
       headers: { "content-type": "application/json" },
-      body: "{}",
+      body: JSON.stringify(password ? { password } : {}),
     });
   } catch {
     throw new ApiError(0, "NETWORK_ERROR", NETWORK_ERROR_MESSAGE);

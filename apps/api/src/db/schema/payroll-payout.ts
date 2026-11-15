@@ -14,6 +14,7 @@
 // 0343-0346 (no DELETE for the app role: a disbursement row is never erased).
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   boolean,
   check,
   customType,
@@ -174,6 +175,9 @@ const PAYOUT_HALT_REASONS = [
   "config_disabled",
 ] as const;
 const SHA256_FORMAT = "'^[a-f0-9]{64}$'";
+/** SHA-256 of zero bytes: recorded for an empty proof object, never matched. */
+const EMPTY_CONTENT_SHA256 =
+  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 export const payrollDisbursementBatches = pgTable(
   "payroll_disbursement_batches",
@@ -377,6 +381,31 @@ export const payrollPayoutGlPostings = pgTable(
      * that was not pending cash.
      */
     sourceGlAccountId: uuid("source_gl_account_id"),
+    /**
+     * The `salaries_payable` GL account the run's lock journal credited
+     * (legend-wcd24, migration 0632), frozen on the posting. Settle and return
+     * use this account, never today's mapping, so a later remap cannot move the
+     * debit or reopen the payable on another account. Null while the lock
+     * journal does not exist yet (pending/skipped) or when it cannot be proven.
+     */
+    salariesPayableAccountId: uuid("salaries_payable_account_id"),
+    /**
+     * True when the payable account of a settled posting is uncertain (lock
+     * journal without a provable account, or the settle journal debited another
+     * account than the lock credited). Set by the 0632 backfill only. A held
+     * posting refuses new returns and is listed for finance reconciliation.
+     */
+    payableAccountHold: boolean("payable_account_hold")
+      .notNull()
+      .default(false),
+    /**
+     * The principal (net) of the group in plain, written once with the posting
+     * (legend-8vcsg, migration 0634). The guard compares the debit total of the
+     * settle journal with it when a pending/skipped settlement flips to
+     * `settle`; the sealed total cannot be opened in SQL. Null only on rows
+     * written before the migration.
+     */
+    settleNetIdr: bigint("settle_net_idr", { mode: "number" }),
   },
   (table) => [
     unique("payroll_payout_gl_postings_tenant_id_key").on(
@@ -402,6 +431,11 @@ export const payrollPayoutGlPostings = pgTable(
       foreignColumns: [chartOfAccounts.tenantId, chartOfAccounts.id],
     }),
     foreignKey({
+      name: "payroll_payout_gl_postings_payable_account_fk",
+      columns: [table.tenantId, table.salariesPayableAccountId],
+      foreignColumns: [chartOfAccounts.tenantId, chartOfAccounts.id],
+    }),
+    foreignKey({
       name: "payroll_payout_gl_postings_batch_fk",
       columns: [table.tenantId, table.batchId],
       foreignColumns: [
@@ -420,6 +454,10 @@ export const payrollPayoutGlPostings = pgTable(
     check(
       "payroll_payout_gl_postings_key_version_check",
       sql`${table.piiKeyVersion} >= 1`,
+    ),
+    check(
+      "payroll_payout_gl_postings_settle_net_check",
+      sql`${table.settleNetIdr} IS NULL OR ${table.settleNetIdr} >= 0`,
     ),
   ],
 );
@@ -440,6 +478,15 @@ export const payrollPayoutEvidenceFiles = pgTable(
     batchId: uuid("batch_id").notNull(),
     evidenceKey: varchar("evidence_key", { length: 500 }).notNull(),
     contentSha256: varchar("content_sha256", { length: 64 }).notNull(),
+    /**
+     * SHA-256 of the bytes as STORED (legend-8vcsg). A JPEG or PNG is re-encoded
+     * before it is stored, so downloading the stored object and uploading it
+     * again gives a file whose original-bytes hash is this value, not
+     * `content_sha256`; a proof is reused when ANY of its two hashes meets ANY
+     * hash of a used proof. For a PDF both hashes are equal. Null only until the
+     * fingerprint job (or the first use of the proof) has read the object.
+     */
+    storedSha256: varchar("stored_sha256", { length: 64 }),
     createdBy: actor("created_by").notNull(),
     createdAt: createdAt(),
   },
@@ -456,6 +503,10 @@ export const payrollPayoutEvidenceFiles = pgTable(
       table.tenantId,
       table.contentSha256,
     ),
+    index("payroll_payout_evidence_files_tenant_stored_sha_idx").on(
+      table.tenantId,
+      table.storedSha256,
+    ),
     foreignKey({
       name: "payroll_payout_evidence_files_batch_fk",
       columns: [table.tenantId, table.batchId],
@@ -467,6 +518,10 @@ export const payrollPayoutEvidenceFiles = pgTable(
     check(
       "payroll_payout_evidence_files_sha_check",
       sql`${table.contentSha256} ~ ${sql.raw(SHA256_FORMAT)}`,
+    ),
+    check(
+      "payroll_payout_evidence_files_stored_sha_check",
+      sql`${table.storedSha256} IS NULL OR ${table.storedSha256} ~ ${sql.raw(SHA256_FORMAT)}`,
     ),
   ],
 );
@@ -511,6 +566,13 @@ export const payrollPayoutReturnClaims = pgTable(
      * proof uploaded before fingerprints existed.
      */
     contentSha256: varchar("content_sha256", { length: 64 }),
+    /**
+     * SHA-256 of the proof as stored (legend-8vcsg), copied from its upload
+     * record: the second hash of the same proof. Null for a proof whose claim
+     * predates it; the reuse check then reads the hashes from the proof's
+     * upload record instead.
+     */
+    storedSha256: varchar("stored_sha256", { length: 64 }),
   },
   (table) => [
     unique("payroll_payout_return_claims_tenant_id_key").on(
@@ -528,10 +590,21 @@ export const payrollPayoutReturnClaims = pgTable(
     ),
     uniqueIndex("payroll_payout_return_claims_content_sha_key")
       .on(table.tenantId, table.contentSha256)
-      .where(sql`${table.contentSha256} IS NOT NULL`),
+      .where(
+        sql`${table.contentSha256} IS NOT NULL AND ${table.contentSha256} <> ${sql.raw(`'${EMPTY_CONTENT_SHA256}'`)}`,
+      ),
+    uniqueIndex("payroll_payout_return_claims_stored_sha_key")
+      .on(table.tenantId, table.storedSha256)
+      .where(
+        sql`${table.storedSha256} IS NOT NULL AND ${table.storedSha256} <> ${sql.raw(`'${EMPTY_CONTENT_SHA256}'`)}`,
+      ),
     check(
       "payroll_payout_return_claims_sha_check",
       sql`${table.contentSha256} IS NULL OR ${table.contentSha256} ~ ${sql.raw(SHA256_FORMAT)}`,
+    ),
+    check(
+      "payroll_payout_return_claims_stored_sha_check",
+      sql`${table.storedSha256} IS NULL OR ${table.storedSha256} ~ ${sql.raw(SHA256_FORMAT)}`,
     ),
     index("payroll_payout_return_claims_tenant_batch_idx").on(
       table.tenantId,
@@ -820,6 +893,83 @@ export const payrollDisbursementItems = pgTable(
     check(
       "payroll_disbursement_items_resolution_outcome_check",
       sql`${table.resolutionOutcome} IS NULL OR (${table.resolutionOutcome} IN ('failed', 'not_sent') AND ${table.resolvedBy} IS NOT NULL)`,
+    ),
+  ],
+);
+
+// ------------------------------------------------------- overpaid proposals
+
+export const PAYOUT_OVERPAID_PROPOSAL_STATUSES = [
+  "proposed",
+  "recorded",
+] as const;
+export type PayoutOverpaidProposalStatus =
+  (typeof PAYOUT_OVERPAID_PROPOSAL_STATUSES)[number];
+
+/**
+ * Two-person record of a transfer that turned out paid twice (legend-v6gtp,
+ * migration 0633). Step one (a non-requester) proposes with proof and note and
+ * the item stays `failed`; step two (a DIFFERENT person) records the overpaid
+ * item and the proposal becomes `recorded`. One proposal per item, ever. Never
+ * deleted; the database guard allows only a re-proposal by the same person and
+ * the move to `recorded` by someone else.
+ */
+export const payrollPayoutOverpaidProposals = pgTable(
+  "payroll_payout_overpaid_proposals",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    batchId: uuid("batch_id").notNull(),
+    itemId: uuid("item_id").notNull(),
+    evidenceKey: varchar("evidence_key", { length: 500 }).notNull(),
+    note: varchar("note", { length: 500 }).notNull(),
+    status: varchar("status", { length: 8 })
+      .$type<PayoutOverpaidProposalStatus>()
+      .notNull()
+      .default("proposed"),
+    proposedBy: actor("proposed_by").notNull(),
+    proposedAt: timestamp("proposed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    recordedBy: actor("recorded_by"),
+    recordedAt: timestamp("recorded_at", { withTimezone: true }),
+  },
+  (table) => [
+    unique("payroll_payout_overpaid_proposals_tenant_id_key").on(
+      table.tenantId,
+      table.id,
+    ),
+    unique("payroll_payout_overpaid_proposals_item_key").on(
+      table.tenantId,
+      table.itemId,
+    ),
+    index("payroll_payout_overpaid_proposals_tenant_batch_idx").on(
+      table.tenantId,
+      table.batchId,
+    ),
+    foreignKey({
+      name: "payroll_payout_overpaid_proposals_batch_fk",
+      columns: [table.tenantId, table.batchId],
+      foreignColumns: [
+        payrollDisbursementBatches.tenantId,
+        payrollDisbursementBatches.id,
+      ],
+    }),
+    foreignKey({
+      name: "payroll_payout_overpaid_proposals_item_fk",
+      columns: [table.tenantId, table.itemId],
+      foreignColumns: [
+        payrollDisbursementItems.tenantId,
+        payrollDisbursementItems.id,
+      ],
+    }),
+    check(
+      "payroll_payout_overpaid_proposals_status_check",
+      sql`${table.status} IN (${inList(PAYOUT_OVERPAID_PROPOSAL_STATUSES)})`,
+    ),
+    check(
+      "payroll_payout_overpaid_proposals_recorded_check",
+      sql`(${table.status} = 'proposed' AND ${table.recordedBy} IS NULL AND ${table.recordedAt} IS NULL) OR (${table.status} = 'recorded' AND ${table.recordedBy} IS NOT NULL AND ${table.recordedAt} IS NOT NULL AND ${table.recordedBy} <> ${table.proposedBy})`,
     ),
   ],
 );
