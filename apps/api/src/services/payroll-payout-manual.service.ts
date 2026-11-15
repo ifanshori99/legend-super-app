@@ -40,7 +40,7 @@
 // logged and never put in an error.
 
 import { createHash } from "node:crypto";
-import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { TenantId, UserId } from "@starter/shared/core";
 import type { PayrollRunId } from "@starter/shared/hris/payroll";
 import {
@@ -52,6 +52,7 @@ import {
   payrollDisbursementBatches,
   payrollDisbursementItems,
   payrollPayoutConfigs,
+  payrollPayoutReturnClaims,
 } from "../db/schema/payroll-payout.ts";
 import {
   getBankFormatter,
@@ -953,6 +954,110 @@ export async function resolveManualItems(
   return { batchStatus: closed ?? batch.status, resolved, proposed };
 }
 
+const refuseReusedReturnProof = () =>
+  refuse(
+    409,
+    "PAYOUT_RETURN_PROOF_REUSED",
+    "Bukti pengembalian ini sudah dipakai untuk pengembalian lain. Unggah bukti dana kembali yang sesuai dengan item ini.",
+  );
+
+/**
+ * Binds the return proof to ONE return operation (legend-w3691). The claim of
+ * a proof key records the item set of the request that first used it; only an
+ * identical item set can continue it, and step two consumes it atomically
+ * (conditional UPDATE) before the items move. Returns the claim id.
+ */
+async function bindReturnClaim(
+  tx: Tx,
+  actor: Actor,
+  batch: BatchRow,
+  evidence: string,
+  rows: readonly ItemRow[],
+  secondStep: boolean,
+  now: Date,
+): Promise<string> {
+  const tenantId = actor.tenantId as TenantId;
+  const hash = createHash("sha256")
+    .update(
+      rows
+        .map((row) => row.id)
+        .sort()
+        .join("\n"),
+    )
+    .digest("hex");
+  const [existing] = await tx
+    .select()
+    .from(payrollPayoutReturnClaims)
+    .where(
+      and(
+        eq(payrollPayoutReturnClaims.tenantId, tenantId),
+        eq(payrollPayoutReturnClaims.evidenceKey, evidence),
+      ),
+    )
+    .for("update");
+  let claim = existing;
+  if (claim) {
+    // Step two continues the claim its own step one created, nothing else.
+    if (secondStep && rows.some((row) => row.returnClaimId !== claim!.id))
+      throw refuseReusedReturnProof();
+  } else {
+    // A return proposal from before claims existed has no claim row. Its key
+    // may already have released other items, so it is trusted only when no item
+    // outside this request holds the same key.
+    const [foreign] = await tx
+      .select({ id: payrollDisbursementItems.id })
+      .from(payrollDisbursementItems)
+      .where(
+        and(
+          eq(payrollDisbursementItems.tenantId, tenantId),
+          eq(payrollDisbursementItems.returnEvidenceKey, evidence),
+          notInArray(
+            payrollDisbursementItems.id,
+            rows.map((row) => row.id),
+          ),
+        ),
+      )
+      .limit(1);
+    if (foreign) throw refuseReusedReturnProof();
+    if (secondStep && rows.some((row) => row.returnClaimId !== null))
+      throw refuseReusedReturnProof();
+    [claim] = await tx
+      .insert(payrollPayoutReturnClaims)
+      .values({
+        tenantId,
+        batchId: batch.id,
+        evidenceKey: evidence,
+        itemSetHash: hash,
+        status: "open",
+        createdBy: actor.userId as UserId,
+        createdAt: now,
+      })
+      .returning();
+  }
+  if (
+    !claim ||
+    claim.batchId !== batch.id ||
+    claim.itemSetHash !== hash ||
+    claim.status !== "open"
+  )
+    throw refuseReusedReturnProof();
+  if (secondStep) {
+    const consumed = await tx
+      .update(payrollPayoutReturnClaims)
+      .set({ status: "consumed", consumedAt: now })
+      .where(
+        and(
+          eq(payrollPayoutReturnClaims.tenantId, tenantId),
+          eq(payrollPayoutReturnClaims.id, claim.id),
+          eq(payrollPayoutReturnClaims.status, "open"),
+        ),
+      )
+      .returning({ id: payrollPayoutReturnClaims.id });
+    if (consumed.length !== 1) throw refuseReusedReturnProof();
+  }
+  return claim.id;
+}
+
 /**
  * Funds came back after a paid transfer (design 7.8): moves `succeeded` items
  * to `returned` and reverses their net in the ledger, once. Same two-person
@@ -1018,17 +1123,37 @@ export async function returnManualItems(
       );
   }
 
-  let returned = 0;
-  let proposed = 0;
+  // The second person confirms the same evidence the first one recorded.
   for (const row of rows) {
-    const secondStep = row.returnedBy !== null;
-    // The second person confirms the same evidence the first one recorded.
-    if (secondStep && row.returnEvidenceKey !== evidence)
+    if (row.returnedBy !== null && row.returnEvidenceKey !== evidence)
       throw refuse(
         409,
         "PAYOUT_RETURN_EVIDENCE_MISMATCH",
         "Bukti pengembalian harus sama dengan bukti yang dicatat orang pertama.",
       );
+  }
+  // One request is one operation: every item in the same step (w3691).
+  const secondSteps = rows.filter((row) => row.returnedBy !== null).length;
+  if (secondSteps !== 0 && secondSteps !== rows.length)
+    throw refuse(
+      409,
+      "PAYOUT_ITEM_NOT_CONFIRMABLE",
+      "Semua item dalam satu pengembalian harus berada pada langkah yang sama.",
+    );
+  const claimId = await bindReturnClaim(
+    tx,
+    actor,
+    batch,
+    evidence,
+    rows,
+    secondSteps > 0,
+    now,
+  );
+
+  let returned = 0;
+  let proposed = 0;
+  for (const row of rows) {
+    const secondStep = row.returnedBy !== null;
     const updated = secondStep
       ? await tx
           .update(payrollDisbursementItems)
@@ -1055,6 +1180,7 @@ export async function returnManualItems(
             returnedBy: actor.userId as UserId,
             returnEvidenceKey: evidence,
             returnNote: note,
+            returnClaimId: claimId,
             updatedAt: now,
           })
           .where(

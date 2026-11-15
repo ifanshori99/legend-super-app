@@ -35,6 +35,7 @@ import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { idr } from "@starter/shared/core";
 import {
+  PayrollError,
   bankTransferFileSchema,
   cafeLegendPayrollFixtures,
   payrollConfigSnapshotSchema,
@@ -58,7 +59,9 @@ import {
   PAYROLL_SEAL_KEY_VERSION,
 } from "../lib/payroll-sealed.ts";
 import { db } from "../db/index.ts";
+import { HttpError } from "../lib/http-error.ts";
 import { withTenant } from "../db/tenant.ts";
+import { createBankTransferFile } from "../services/payroll-export.service.ts";
 import { finalizePayrollRapelRunInTransaction } from "../services/payroll-rapel-finalize.service.ts";
 import {
   openPayeeBankSnapshot,
@@ -125,8 +128,6 @@ const entityId = randomUUID();
 const policyId = randomUUID();
 
 const key = () => `bank-snapshot-${randomUUID()}`;
-const runPath = (runId: string) =>
-  `/api/hris/payroll/runs/${runId}/bank-transfer-files`;
 
 async function asTenant<T>(
   tenantId: string,
@@ -726,11 +727,38 @@ function downloadCsv(fileUrl: string): string {
     : Buffer.from(object!.content).toString("utf8");
 }
 
-const exportRun = (runId: string, idempotencyKey: string = key()) =>
-  exporter
-    .post(runPath(runId))
-    .set(originHeader)
-    .send({ format: "generic_csv", idempotencyKey });
+// The legacy POST route is closed (legend-yjbjb: 409
+// LEGACY_BANK_EXPORT_DISABLED, covered by payroll-payout-870-legacy-export), so
+// the internal bank file builder is driven directly. The result keeps the old
+// response shape ({ status, body, text }) so the assertions below are unchanged.
+type ExportRunResult = {
+  status: number;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  body: { data?: any; error?: { code: string; message: string } };
+  text: string;
+};
+
+async function exportRun(
+  runId: string,
+  idempotencyKey: string = key(),
+): Promise<ExportRunResult> {
+  try {
+    const data = await createBankTransferFile(
+      context,
+      exporterUserId,
+      runId as never,
+      { format: "generic_csv", idempotencyKey },
+      storageRuntime,
+    );
+    const body = { data: JSON.parse(JSON.stringify(data)) };
+    return { status: 201, body, text: JSON.stringify(body) };
+  } catch (error) {
+    if (!(error instanceof PayrollError || error instanceof HttpError))
+      throw error;
+    const body = { error: { code: error.code, message: error.message } };
+    return { status: error.status, body, text: JSON.stringify(body) };
+  }
+}
 
 async function exportOk(runId: string) {
   const response = await exportRun(runId);
@@ -922,8 +950,8 @@ describe("a run locked before the snapshot existed", () => {
 
     const response = await exportRun(runId);
     expect(response.status, JSON.stringify(response.body)).toBe(422);
-    expect(response.body.error.code).toBe("PAYROLL_BANK_SNAPSHOT_MISSING");
-    const message = String(response.body.error.message ?? "");
+    expect(response.body.error?.code).toBe("PAYROLL_BANK_SNAPSHOT_MISSING");
+    const message = String(response.body.error?.message ?? "");
     expect(message.length).toBeGreaterThan(10);
     // Clear Indonesian text: not an English or empty fallback.
     expect(message).toMatch(
@@ -946,7 +974,7 @@ describe("a run locked before the snapshot existed", () => {
 
     const response = await exportRun(runId);
     expect(response.status, JSON.stringify(response.body)).toBe(422);
-    expect(response.body.error.code).toBe("PAYROLL_BANK_SNAPSHOT_MISSING");
+    expect(response.body.error?.code).toBe("PAYROLL_BANK_SNAPSHOT_MISSING");
     expect(response.text).not.toContain(newAccount);
     expect(await bankFileCount(runId)).toBe(0);
     expect(storedKeysOf(runId)).toEqual([]);

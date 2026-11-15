@@ -406,6 +406,11 @@ function toBankFile(row: BankFileRowRecord, fileUrl: string): BankTransferFile {
   });
 }
 
+/**
+ * Internal/legacy bank file builder. NOT routed: POST bank-transfer-files
+ * answers 409 LEGACY_BANK_EXPORT_DISABLED (bead legend-yjbjb); payment files
+ * come from approved payout batches. Kept exported for internal callers only.
+ */
 export async function createBankTransferFile(
   context: ScopedTenantContext,
   actorUserId: string,

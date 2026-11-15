@@ -207,7 +207,6 @@ async function grantRole(userId: string, permissions: string[]) {
 }
 
 type Client = Awaited<ReturnType<typeof signedInClient>>["client"];
-let exporter: Client;
 let hr: Client;
 let exporterUserId: string;
 
@@ -585,7 +584,6 @@ beforeAll(async () => {
     // permission, must refuse the same person deciding (403 NOT_DISTINCT).
     "payroll.cancel.approve",
   ]);
-  exporter = lock.client;
   exporterUserId = lock.userId;
   const hrUser = await signedInClient("Run lock HR");
   await grantRole(hrUser.userId, ["hr.employee.manage", "hr.employee.view"]);
@@ -896,25 +894,39 @@ describe("run reversal", () => {
 // ---- 4. [reversal-after-bank-file] ---------------------------------------------------
 //
 // ASSUMPTIONS
-//  - [reversal-after-bank-file] The bank file is made through the real export
-//    endpoint (201); for the decide step the file row is inserted with SQL
-//    after the request, so the test does not depend on whether the export
-//    endpoint itself refuses a run with a pending reversal.
+//  - [reversal-after-bank-file] The legacy export endpoint is closed (legend-yjbjb:
+//    409 LEGACY_BANK_EXPORT_DISABLED), so the bank file row is always inserted
+//    with SQL (an archive file from before the cutover); for the decide step it
+//    is inserted after the request.
 //  - The two-run December case ([lock-december-two-runs], formerly a refusal)
 //    is now a success and lives in payroll-pph21-december-runs.test.ts.
 
 describe("[reversal-after-bank-file] reversal is refused once a bank file exists", () => {
-  it("request is refused 409 PAYROLL_RUN_REVERSAL_BLOCKED after the bank file was created through the export endpoint", async () => {
+  it("request is refused 409 PAYROLL_RUN_REVERSAL_BLOCKED once an archived bank file exists for the run", async () => {
     const world = await makeWorld();
     await makeEmployee(world);
     const run = await approvedRun(world, NOV(THR_PAY));
     await lockRun(run.runId);
 
-    const made = await exporter
-      .post(`/api/hris/payroll/runs/${run.runId}/bank-transfer-files`)
-      .set(originHeader)
-      .send({ format: "generic_csv", idempotencyKey: key() });
-    expect(made.status, JSON.stringify(made.body)).toBe(201);
+    // The legacy export endpoint is closed (legend-yjbjb, 409
+    // LEGACY_BANK_EXPORT_DISABLED); a bank file made before the cutover is an
+    // archive row, so it is inserted with SQL.
+    await asTenant(
+      (conn) =>
+        conn.query(
+          `INSERT INTO bank_transfer_files
+             (tenant_id, payroll_run_id, format, row_count, total_idr, checksum_sha256, object_key, created_by)
+           VALUES ($1, $2, 'generic_csv', 1, 1, $3, $4, $5)`,
+          [
+            tenant.id,
+            run.runId,
+            "a".repeat(64),
+            `run-lock-test/${run.runId}.csv`,
+            exporterUserId,
+          ],
+        ),
+      true,
+    );
 
     const refused = await failureOf(requestReversal(run.runId, exporterUserId));
     expect(

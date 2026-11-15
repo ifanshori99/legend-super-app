@@ -25,6 +25,13 @@
 // - A run without a locked journal (accounting switched on after the lock) has
 //   no payable to settle: the items are linked to a `settle_skipped` posting,
 //   no salary journal is posted, and the settle never retries.
+// - A run whose `payroll.locked` event still waits in the outbox (accounting
+//   on, the lock journal not posted yet, legend-2aspe) is NOT skipped: the items
+//   are linked to a `settle_pending` posting (no journal yet). The GL consumer
+//   calls `resolvePendingSettles` right after it posts the locked journal: the
+//   payout journal then posts under the same settle key (Cr source account
+//   exactly the sealed net, clears 2103) and the posting becomes `settle`. A
+//   replay finds no pending posting and adds nothing.
 // - `payroll.paid` leaves the outbox once, when the run turned paid, with
 //   `settledPerItem: true`: the GL consumer posts nothing for it.
 //
@@ -35,10 +42,16 @@
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { TenantId } from "@starter/shared/core";
-import { payrollPaid, type PayrollRunType } from "@starter/shared/hris/payroll";
+import {
+  payrollPaid,
+  type PayrollRunId,
+  type PayrollRunType,
+} from "@starter/shared/hris/payroll";
 import { journalEntries } from "../db/schema/index.ts";
+import { domainEventOutbox } from "../db/schema/core-events.ts";
 import { payrollRuns } from "../db/schema/payroll.ts";
 import {
+  payrollDisbursementBatches,
   payrollDisbursementItems,
   payrollPayoutGlPostings,
   type PayoutPostingKind,
@@ -168,6 +181,32 @@ async function runHasLockedJournal(
 }
 
 /**
+ * True while the run's `payroll.locked` event is still in the outbox (not
+ * delivered): the lock happened, the GL consumer has not posted its journal
+ * yet. A delivered event that left no journal (all-zero run, accounting off at
+ * that time) is not pending.
+ */
+async function runLockPending(
+  tx: Tx,
+  tenantId: TenantId,
+  runId: string,
+): Promise<boolean> {
+  const [row] = await tx
+    .select({ id: domainEventOutbox.id })
+    .from(domainEventOutbox)
+    .where(
+      and(
+        eq(domainEventOutbox.tenantId, tenantId),
+        eq(domainEventOutbox.aggregateId, runId),
+        sql`${domainEventOutbox.status} <> 'delivered'`,
+        sql`${domainEventOutbox.event}->>'name' = 'payroll.locked'`,
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
+}
+
+/**
  * Settles every `succeeded` item of the batch that has no posting yet.
  * Idempotent and safe to call from confirm, cash handover, return and replay:
  * a second call (also a concurrent one, after it waited on the lock) finds
@@ -184,6 +223,9 @@ export async function settleBatchPayouts(
   await tx.execute(
     sql`SELECT pg_advisory_xact_lock(hashtext(${`payroll-payout-gl:${tenantId}:${batch.id}`}))`,
   );
+  // A pending settlement whose locked journal exists by now resolves first
+  // (the consumer normally does it; this is the retry when it could not).
+  await resolvePendingSettles(tx, tenantId, batch.payrollRunId, now, batch.id);
   const items = await tx
     .select()
     .from(payrollDisbursementItems)
@@ -211,7 +253,18 @@ export async function settleBatchPayouts(
   const journalKey = payoutGlKeys.settle(hash);
   const journaled =
     netIdr > 0 && (await runHasLockedJournal(tx, tenantId, batch.payrollRunId));
-  const kind: PayoutPostingKind = journaled ? "settle" : "settle_skipped";
+  // Accounting on and the locked event still queued: keep the settlement
+  // pending (legend-2aspe) instead of dropping it as `settle_skipped`.
+  const pending =
+    !journaled &&
+    netIdr > 0 &&
+    (await accountingEnabled(tx, tenantId)) &&
+    (await runLockPending(tx, tenantId, batch.payrollRunId));
+  const kind: PayoutPostingKind = journaled
+    ? "settle"
+    : pending
+      ? "settle_pending"
+      : "settle_skipped";
 
   // Fail closed on the source account BEFORE the journal branch (legend-ijhe3):
   // with accounting on, an unusable source is refused whether or not the run
@@ -330,6 +383,132 @@ export async function settleBatchPayouts(
       "Status batch berubah saat diproses. Coba lagi.",
     );
   return { postingId, kind, settled: items.length };
+}
+
+/**
+ * Resolves every `settle_pending` posting of the run once its `payroll.locked`
+ * journal exists (legend-2aspe): posts the payout journal under the posting's
+ * own settle key (Cr the source account exactly the sealed net, Dr 2103), then
+ * flips the posting to `settle`. Called by the GL consumer right after it posts
+ * the locked journal, and by `settleBatchPayouts` as a retry. Idempotent: a
+ * second call finds nothing pending; the journal key and the conditional flip
+ * are the further guards. `onlyBatchId` limits it to one batch (the settle
+ * holds that batch's lock only, so it never waits on another batch's lock). An item returned while pending gets its return
+ * journal now, so the ledger still equals the money moved. A source account
+ * that is unusable at this moment leaves the posting pending (logged), so the
+ * locked journal is never blocked by it.
+ */
+export async function resolvePendingSettles(
+  tx: Tx,
+  tenantId: TenantId,
+  runId: PayrollRunId,
+  now = new Date(),
+  onlyBatchId?: string,
+): Promise<{ resolved: number }> {
+  if (!(await runHasLockedJournal(tx, tenantId, runId))) return { resolved: 0 };
+  const batches = await tx
+    .select()
+    .from(payrollDisbursementBatches)
+    .where(
+      and(
+        eq(payrollDisbursementBatches.tenantId, tenantId),
+        eq(payrollDisbursementBatches.payrollRunId, runId),
+        onlyBatchId === undefined
+          ? undefined
+          : eq(payrollDisbursementBatches.id, onlyBatchId),
+      ),
+    )
+    .orderBy(asc(payrollDisbursementBatches.id));
+  const context = payoutScope(tenantId);
+  const entryDate = payrollEntryDateOf(now.toISOString());
+  let resolved = 0;
+  for (const batch of batches) {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtext(${`payroll-payout-gl:${tenantId}:${batch.id}`}))`,
+    );
+    const postings = await tx
+      .select()
+      .from(payrollPayoutGlPostings)
+      .where(
+        and(
+          eq(payrollPayoutGlPostings.tenantId, tenantId),
+          eq(payrollPayoutGlPostings.batchId, batch.id),
+          eq(payrollPayoutGlPostings.kind, "settle_pending"),
+        ),
+      )
+      .orderBy(asc(payrollPayoutGlPostings.id))
+      .for("update");
+    for (const posting of postings) {
+      const netIdr = openPostingTotal(posting, tenantId, "netIdr");
+      const accountOverrides = await sourceBankOverride(tx, tenantId, batch, {
+        optional: true,
+      });
+      if (accountOverrides === null) {
+        logger.warn(
+          { tenantId, batchId: batch.id, reason: "pending_settle_no_source" },
+          "pending payout settlement not resolved: source account missing",
+        );
+        continue;
+      }
+      await postJournalFromRuleInTransaction(
+        tx,
+        context,
+        {
+          eventName: "payroll.paid",
+          variant: batch.channel === "cash" ? "payout_cash" : "payout_bank",
+          amounts: { netIdr },
+          legalEntityId: batch.legalEntityId,
+          outletId: null,
+          entryDate,
+          sourceId: batch.payrollRunId,
+          postedBy: null,
+          idempotencyKey: posting.journalKey,
+          accountOverrides,
+        },
+        now,
+      );
+      const flipped = await tx
+        .update(payrollPayoutGlPostings)
+        .set({ kind: "settle" })
+        .where(
+          and(
+            eq(payrollPayoutGlPostings.tenantId, tenantId),
+            eq(payrollPayoutGlPostings.id, posting.id),
+            eq(payrollPayoutGlPostings.kind, "settle_pending"),
+          ),
+        )
+        .returning({ id: payrollPayoutGlPostings.id });
+      if (flipped.length !== 1)
+        throw payoutRefuse(
+          409,
+          "PAYOUT_BATCH_STATE_CHANGED",
+          "Status batch berubah saat diproses. Coba lagi.",
+        );
+      // Items returned while the settlement was pending had no return journal
+      // (nothing was booked to reverse): post it now, once (key = the item).
+      const returned = await tx
+        .select()
+        .from(payrollDisbursementItems)
+        .where(
+          and(
+            eq(payrollDisbursementItems.tenantId, tenantId),
+            eq(payrollDisbursementItems.glPostingId, posting.id),
+            eq(payrollDisbursementItems.status, "returned"),
+          ),
+        )
+        .orderBy(asc(payrollDisbursementItems.id));
+      for (const item of returned)
+        await postPayoutReturn(
+          tx,
+          { tenantId, userId: "system" },
+          batch,
+          item,
+          now,
+        );
+      resolved += 1;
+    }
+  }
+  return { resolved };
 }
 
 /**
@@ -462,10 +641,11 @@ const postingTotalBinding = (tenantId: string, rowId: string) => ({
   field: "total" as const,
 });
 
-/** Stored whole-rupiah fee of a posting; a tampered value throws. */
-function postingFeeIdr(
+/** Stored whole-rupiah total (`netIdr` or `feeIdr`) of a posting; a tampered value throws. */
+function openPostingTotal(
   posting: { id: string; totalEncrypted: Buffer; piiKeyVersion: number },
   tenantId: string,
+  field: "netIdr" | "feeIdr",
 ): number {
   return safeAmount(() => {
     const total = JSON.parse(
@@ -474,10 +654,15 @@ function postingFeeIdr(
         postingTotalBinding(tenantId, posting.id),
         posting.piiKeyVersion,
       ),
-    ) as { feeIdr?: unknown };
-    return Number(total.feeIdr);
+    ) as Record<string, unknown>;
+    return Number(total[field]);
   });
 }
+
+const postingFeeIdr = (
+  posting: { id: string; totalEncrypted: Buffer; piiKeyVersion: number },
+  tenantId: string,
+): number => openPostingTotal(posting, tenantId, "feeIdr");
 
 /**
  * Journals the bank fee of every posting of the batch that skipped it

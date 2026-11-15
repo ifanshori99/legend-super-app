@@ -327,6 +327,7 @@ export const payrollDisbursementBatches = pgTable(
 
 export const PAYOUT_POSTING_KINDS = [
   "settle",
+  "settle_pending",
   "settle_skipped",
   "return",
   "overpaid",
@@ -338,6 +339,10 @@ export type PayoutPostingKind = (typeof PAYOUT_POSTING_KINDS)[number];
  * `journal_key` equals the idempotency key of the journal entry
  * (`payroll-payout:<item_set_hash>`); a `settle_skipped` row has no journal
  * (the run had no locked entry) and is kept so the same items never retry.
+ * A `settle_pending` row (legend-2aspe) has no journal yet either: accounting
+ * is on and the run's `payroll.locked` event is still waiting in the outbox.
+ * The GL consumer resolves it when the locked journal posts (journal under the
+ * same key, kind flipped to `settle`).
  * Items point at their row through `payroll_disbursement_items.gl_posting_id`.
  */
 export const payrollPayoutGlPostings = pgTable(
@@ -400,6 +405,80 @@ export const payrollPayoutGlPostings = pgTable(
     check(
       "payroll_payout_gl_postings_key_version_check",
       sql`${table.piiKeyVersion} >= 1`,
+    ),
+  ],
+);
+
+// ------------------------------------------------------------- return claims
+
+export const PAYOUT_RETURN_CLAIM_STATUSES = ["open", "consumed"] as const;
+export type PayoutReturnClaimStatus =
+  (typeof PAYOUT_RETURN_CLAIM_STATUSES)[number];
+
+/**
+ * A return payment proof is bound to ONE return operation (legend-w3691): the
+ * claim ties the stored proof (`evidence_key`) to the item set of the request
+ * that first used it. Step one of the two-person return creates it `open`,
+ * step two consumes it atomically in the same transaction that moves the items
+ * to `returned`. A different item set, or a consumed claim, can never reuse the
+ * key (`UNIQUE (tenant_id, evidence_key)`), so one transfer's proof cannot
+ * release another person's payslip for a second payment. No amount is stored:
+ * the items' own sealed amounts are frozen and the hash fixes the item set.
+ */
+export const payrollPayoutReturnClaims = pgTable(
+  "payroll_payout_return_claims",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    batchId: uuid("batch_id").notNull(),
+    evidenceKey: varchar("evidence_key", { length: 500 }).notNull(),
+    /** SHA-256 of the sorted item ids of the return request. */
+    itemSetHash: varchar("item_set_hash", { length: 64 }).notNull(),
+    status: varchar("status", { length: 8 })
+      .$type<PayoutReturnClaimStatus>()
+      .notNull()
+      .default("open"),
+    createdBy: actor("created_by").notNull(),
+    createdAt: createdAt(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  },
+  (table) => [
+    unique("payroll_payout_return_claims_tenant_id_key").on(
+      table.tenantId,
+      table.id,
+    ),
+    unique("payroll_payout_return_claims_tenant_batch_id_key").on(
+      table.tenantId,
+      table.batchId,
+      table.id,
+    ),
+    unique("payroll_payout_return_claims_evidence_key").on(
+      table.tenantId,
+      table.evidenceKey,
+    ),
+    index("payroll_payout_return_claims_tenant_batch_idx").on(
+      table.tenantId,
+      table.batchId,
+    ),
+    foreignKey({
+      name: "payroll_payout_return_claims_batch_fk",
+      columns: [table.tenantId, table.batchId],
+      foreignColumns: [
+        payrollDisbursementBatches.tenantId,
+        payrollDisbursementBatches.id,
+      ],
+    }),
+    check(
+      "payroll_payout_return_claims_status_check",
+      sql`${table.status} IN (${inList(PAYOUT_RETURN_CLAIM_STATUSES)})`,
+    ),
+    check(
+      "payroll_payout_return_claims_hash_check",
+      sql`${table.itemSetHash} ~ ${sql.raw(SHA256_FORMAT)}`,
+    ),
+    check(
+      "payroll_payout_return_claims_consumed_check",
+      sql`(${table.status} = 'open' AND ${table.consumedAt} IS NULL) OR (${table.status} = 'consumed' AND ${table.consumedAt} IS NOT NULL)`,
     ),
   ],
 );
@@ -514,6 +593,8 @@ export const payrollDisbursementItems = pgTable(
     returnedBy2: actor("returned_by_2"),
     returnEvidenceKey: varchar("return_evidence_key", { length: 500 }),
     returnNote: varchar("return_note", { length: 500 }),
+    /** The return operation whose proof this return belongs to (w3691). */
+    returnClaimId: uuid("return_claim_id"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -580,6 +661,15 @@ export const payrollDisbursementItems = pgTable(
         payrollPayoutGlPostings.tenantId,
         payrollPayoutGlPostings.batchId,
         payrollPayoutGlPostings.id,
+      ],
+    }),
+    foreignKey({
+      name: "payroll_disbursement_items_return_claim_fk",
+      columns: [table.tenantId, table.batchId, table.returnClaimId],
+      foreignColumns: [
+        payrollPayoutReturnClaims.tenantId,
+        payrollPayoutReturnClaims.batchId,
+        payrollPayoutReturnClaims.id,
       ],
     }),
     foreignKey({

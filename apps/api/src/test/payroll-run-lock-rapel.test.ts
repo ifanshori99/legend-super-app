@@ -80,6 +80,7 @@ import {
   openRunResult,
   sealRunResult,
 } from "../services/payroll-run-simulate.service.ts";
+import { createBankTransferFile } from "../services/payroll-export.service.ts";
 import { finalizePayrollRapelRunInTransaction } from "../services/payroll-rapel-finalize.service.ts";
 import {
   REFERENCE_PPH21_ANNUAL,
@@ -159,8 +160,6 @@ const key = () => `lock-rapel-${randomUUID()}`;
 const simulatePath = (runId: string) =>
   `/api/hris/payroll/runs/${runId}/simulate`;
 const lockPath = (runId: string) => `/api/hris/payroll/runs/${runId}/lock`;
-const bankFilePath = (runId: string) =>
-  `/api/hris/payroll/runs/${runId}/bank-transfer-files`;
 const RAPEL_ROOT = "/api/hris/payroll/rapel";
 const TAX_EXPORT_PATH = "/api/hris/payroll/tax-exports";
 
@@ -983,13 +982,20 @@ describe("legend-ele0u rapel runs lock through the general run lock", () => {
     expect(totals.pph21Idr).toBe(pph21);
     expect(totals.bankTransferIdr).toBe(calc.netIdr);
 
-    // Bank export: file total == totals.bankTransferIdr (PAYR-04).
-    const exported = await post(exporter, bankFilePath(s.runId), {
-      format: "generic_csv",
-      idempotencyKey: key(),
-    });
-    expect(exported.status, JSON.stringify(exported.body)).toBe(201);
-    const file = bankTransferFileSchema.parse(exported.body.data);
+    // Bank export: file total == totals.bankTransferIdr (PAYR-04). The legacy
+    // POST route is closed (legend-yjbjb: 409 LEGACY_BANK_EXPORT_DISABLED, see
+    // payroll-payout-870-legacy-export), so the internal builder is called
+    // directly.
+    const exported = await createBankTransferFile(
+      context,
+      exporterUserId,
+      s.runId as never,
+      { format: "generic_csv", idempotencyKey: key() },
+      storageRuntime,
+    );
+    const file = bankTransferFileSchema.parse(
+      JSON.parse(JSON.stringify(exported)),
+    );
     expect(file.totalIdr).toBe(totals.bankTransferIdr);
     expect(file.rowCount).toBe(1);
   });

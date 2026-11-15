@@ -14,7 +14,9 @@
 //   service charge payout debits salary_expense, never revenue. Other types
 //   (liability, or a legacy mapping saved before the type guard) debit the
 //   mapped account, where the POS credited it. No service_charge mapping: the base rule, which then fails
-//   ACCOUNT_MAPPING_MISSING when the service charge is above 0.
+//   ACCOUNT_MAPPING_MISSING when the service charge is above 0. After the journal
+//   it resolves the run's `settle_pending` payout postings
+//   (`resolvePendingSettles`, legend-2aspe).
 // - `payroll.paid`: Dr salaries_payable net, Cr bank / petty_cash, on the
 //   business date of the payment. With `settledPerItem: true` it posts nothing:
 //   the payout settle (payroll-payout-gl.service.ts) journaled every item. Skipped when the run has no locked entry
@@ -295,6 +297,17 @@ export async function deliverPayrollGlEvent(
         postedBy: null,
         idempotencyKey: payrollGlKeys.locked(payload.payrollRunId),
       },
+      now,
+    );
+    // Payouts settled before this journal existed wait as `settle_pending`
+    // (legend-2aspe): post them now that the payable is booked. Loaded on
+    // demand: the payout GL service imports this module.
+    const { resolvePendingSettles } =
+      await import("./payroll-payout-gl.service.ts");
+    await resolvePendingSettles(
+      tx,
+      context.tenant.tenantId,
+      payload.payrollRunId,
       now,
     );
     return { status: "posted", journalEntryId: entry.id };
