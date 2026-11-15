@@ -28,7 +28,7 @@ import {
   type PayoutEvidenceStore,
 } from "./payroll-payout-evidence.ts";
 import { recordOverpaidItem } from "./payroll-payout-overpaid.service.ts";
-import { proofBoundToCorrection } from "./payroll-payout-proof-fingerprint.service.ts";
+import { bindProofToOperation } from "./payroll-payout-proof-binding.service.ts";
 import {
   loadBatchRunFirst,
   payoutRefuse,
@@ -154,17 +154,20 @@ export async function recordOverpaidItems(
       "Pengaju batch tidak boleh mencatat pembayaran ganda dari batchnya sendiri.",
     );
 
-  // A proof bound to a failed-item correction backs nothing else (legend-mejr2).
-  if (
-    await proofBoundToCorrection(tx, proofs, tenantId, batch.id, evidence, now)
-  )
-    throw payoutRefuse(
-      409,
-      "PAYOUT_CORRECTION_PROOF_REUSED",
-      "Bukti ini sudah dipakai untuk koreksi item gagal. Unggah bukti transfer yang sesuai dengan pembayaran ganda ini.",
-    );
-
   const rows = await loadFailedItems(tx, tenantId, batch.id, input.itemIds);
+  // One proof backs ONE operation (legend-so897): bound to this overpaid record
+  // (batch and item set) at both steps, before anything is written, under its
+  // hash locks (lock order: run row, batch row, item rows, proof advisory). A
+  // proof of a return, a correction or another overpaid record is refused.
+  const operationItemIds = rows.map((row) => row.id);
+  await bindProofToOperation(tx, proofs, tenantId, {
+    kind: "overpaid",
+    batchId: batch.id,
+    evidenceKey: evidence,
+    itemIds: operationItemIds,
+    actorId: userId,
+    now,
+  });
   const proposals: ProposalRow[] = await tx
     .select()
     .from(payrollPayoutOverpaidProposals)
@@ -216,7 +219,7 @@ export async function recordOverpaidItems(
         tx,
         actor,
         row.id,
-        { evidenceKey: evidence, note },
+        { evidenceKey: evidence, note, operationItemIds },
         proofs,
         now,
       );

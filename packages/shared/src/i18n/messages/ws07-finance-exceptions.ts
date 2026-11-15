@@ -13,6 +13,7 @@ export const financeExceptionsMessages = {
     edge_link_dead_letter: "Link edge dead-letter",
     payout_fee_not_posted: "Biaya payout belum dijurnal",
     receipt_pending_stale: "Jurnal penjualan menunggu struk lebih dari 1 hari",
+    payout_proof_stuck: "Bukti payout tertahan pemeriksaan",
   },
   kindHelp: {
     edge_tax_unsnapshotted:
@@ -27,6 +28,8 @@ export const financeExceptionsMessages = {
       "Biaya transfer pencairan gaji belum masuk jurnal. Berlaku untuk seluruh PT.",
     receipt_pending_stale:
       "Jurnal otomatis tertahan karena pembayaran gateway belum dijurnal lebih dari 1 hari. Tidak mengikuti rentang tanggal; cek status pengiriman pembayaran di bawah.",
+    payout_proof_stuck:
+      "Bukti bank pencairan gaji belum bisa diperiksa: berkasnya tidak terbaca atau sama dengan bukti lain. Pengembalian dengan bukti baru tetap ditahan. Berlaku untuk seluruh PT dan tidak mengikuti rentang tanggal.",
   },
   refTypes: {
     order: "Order edge",
@@ -34,12 +37,17 @@ export const financeExceptionsMessages = {
     receipt_skip: "Struk dilewati",
     link_event: "Kejadian tautan",
     payout_posting: "Jurnal pencairan gaji",
+    payout_proof: "Bukti pencairan gaji",
   },
   refTypeUnknown: "Sumber lain",
   details: {
     tax_missing: "Pajak tidak ada pada data edge.",
     tax_mismatch: "Pajak pada data edge tidak cocok dengan total order.",
     batchPrefix: "Batch pencairan",
+    proofUnreadable: "Berkas bukti tidak terbaca di penyimpanan.",
+    proofHashConflict: "Isi berkas sama dengan bukti lain yang sudah dipakai.",
+    proofLegacyDuplicate:
+      "Bukti lama ini sudah dipakai operasi lain; langkah berikutnya ditolak.",
     receiptOrder: "Order",
     receiptIntent: "Tagihan pembayaran",
     receiptOutbox: "Status pembayaran lunas",

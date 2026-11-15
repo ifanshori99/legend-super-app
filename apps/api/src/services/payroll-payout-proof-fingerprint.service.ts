@@ -15,9 +15,10 @@
 // item evidence key without a record gets one). The state "backfill not
 // finished" is derived from the data, not stored (`countFingerprintTargets`):
 // a return claim lacking a hash, a proof record lacking the stored hash, or an
-// item evidence key without a record. While any exists, a RETURN with a proof
-// that carries a fingerprint is refused (fail closed;
-// payroll-payout-manual.service.ts); confirm and resolve are never held. A
+// item evidence key without a record, or an operation proof key without a
+// binding (legend-so897). While any exists, a return, an overpaid record or a
+// correction is refused (fail closed; payroll-payout-proof-binding.service.ts);
+// confirm and resolve are never held. A
 // target that cannot be completed (object missing, or a claim hash that already
 // belongs to another claim) stays on purpose: the tenant stays closed and the
 // job names the counts, for a human to settle.
@@ -43,25 +44,29 @@ import { writeFileRecord } from "./payroll-payout-proof-backfill.service.ts";
 export const EMPTY_CONTENT_SHA256 =
   "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
-/** Transaction-scoped lock on one proof content, so two operations cannot both pass the reuse checks. */
-export async function lockProofFingerprint(
-  tx: Tx,
-  tenantId: TenantId,
-  sha: string,
-): Promise<void> {
+/**
+ * Transaction-scoped lock on one proof content, so two operations cannot both
+ * pass the reuse checks. The key carries no tenant (legend-so897 F2): a proof
+ * hash belongs to one binding across all tenants, and advisory locks are
+ * cluster-wide, so two PTs using the same bytes serialize here too.
+ */
+export async function lockProofFingerprint(tx: Tx, sha: string): Promise<void> {
   await tx.execute(
-    sql`SELECT pg_advisory_xact_lock(hashtext(${`payout-proof:${tenantId}:${sha}`}))`,
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`payout-proof:${sha}`}, 0))`,
   );
 }
 
-/** Locks every hash once, in ascending order (two operations over shared files cannot deadlock). */
+/**
+ * Locks every hash once, in ascending order (two operations over shared files
+ * cannot deadlock). `tenantId` is kept for the callers; it is not in the key.
+ */
 export async function lockProofFingerprints(
   tx: Tx,
   tenantId: TenantId,
   shas: Iterable<string>,
 ): Promise<void> {
   for (const sha of [...new Set(shas)].sort())
-    await lockProofFingerprint(tx, tenantId, sha);
+    await lockProofFingerprint(tx, sha);
 }
 
 /** The recorded hashes of an evidence key; null for a proof without a record (a legacy key nothing has read yet). */
@@ -131,6 +136,11 @@ export type FingerprintTargetCounts = {
   readonly filesWithoutStoredHash: number;
   /** Evidence keys of items (resolve, confirm, return) without any proof record. */
   readonly itemKeysWithoutRecord: number;
+  /**
+   * Evidence keys of operations (return claims, item return proofs, corrections,
+   * overpaid proposals) without a proof binding of that key (legend-so897 F1).
+   */
+  readonly opKeysWithoutBinding: number;
   readonly total: number;
 };
 
@@ -138,9 +148,11 @@ export type FingerprintTargetCounts = {
 const TARGET_COUNT_CAP = 1000;
 
 /**
- * The gate and the backfill job use the same three sets: a return claim without
+ * The gate and the backfill job use the same four sets: a return claim without
  * a hash, a proof record without the stored hash, an item evidence key without a
- * record. A return with a fingerprinted proof waits while any is non-empty.
+ * record, an operation proof key without a binding. A return, overpaid record or
+ * correction waits while any is non-empty
+ * (payroll-payout-proof-binding.service.ts).
  */
 export async function countFingerprintTargets(
   tx: Tx,
@@ -167,11 +179,28 @@ export async function countFingerprintTargets(
       LIMIT ${TARGET_COUNT_CAP}
     ) t`,
   );
+  const opKeysWithoutBinding = await count(
+    sql`SELECT count(*)::int AS n FROM (
+      SELECT k FROM (
+        SELECT evidence_key AS k FROM payroll_payout_return_claims WHERE tenant_id = ${tenantId}
+        UNION SELECT return_evidence_key FROM payroll_disbursement_items WHERE tenant_id = ${tenantId} AND return_evidence_key IS NOT NULL
+        UNION SELECT evidence_key FROM payroll_payout_failed_corrections WHERE tenant_id = ${tenantId}
+        UNION SELECT evidence_key FROM payroll_payout_overpaid_proposals WHERE tenant_id = ${tenantId}
+      ) keys
+      WHERE NOT EXISTS (SELECT 1 FROM payroll_payout_proof_bindings b WHERE b.tenant_id = ${tenantId} AND b.evidence_key = keys.k)
+      LIMIT ${TARGET_COUNT_CAP}
+    ) t`,
+  );
   return {
     claimsWithoutHash,
     filesWithoutStoredHash,
     itemKeysWithoutRecord,
-    total: claimsWithoutHash + filesWithoutStoredHash + itemKeysWithoutRecord,
+    opKeysWithoutBinding,
+    total:
+      claimsWithoutHash +
+      filesWithoutStoredHash +
+      itemKeysWithoutRecord +
+      opKeysWithoutBinding,
   };
 }
 
@@ -230,36 +259,6 @@ export async function correctionHoldingProof(
     )
     .limit(1);
   return row !== undefined;
-}
-
-/**
- * For a flow that is NOT the correction itself (the overpaid record): records
- * the proof's fingerprint, holds its locks, and says whether a failed-item
- * correction already holds it. Call under the run and batch locks; the caller
- * refuses when true. Symmetric to the correction's own reuse checks.
- */
-export async function proofBoundToCorrection(
-  tx: Tx,
-  store: {
-    readonly storage: ObjectStorage | null | undefined;
-    readonly context: ScopedTenantContext;
-  },
-  tenantId: TenantId,
-  batchId: string,
-  evidence: string,
-  now: Date,
-): Promise<boolean> {
-  await ensureProofFingerprintRecord(
-    tx,
-    store,
-    tenantId,
-    batchId,
-    evidence,
-    now,
-  );
-  const shas = await proofFingerprints(tx, tenantId, evidence);
-  await lockProofFingerprints(tx, tenantId, shas);
-  return correctionHoldingProof(tx, tenantId, evidence, shas);
 }
 
 // The sweep itself lives in payroll-payout-proof-backfill.service.ts; it is

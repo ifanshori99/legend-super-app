@@ -20,8 +20,9 @@
 // genuinely different file) is still accepted.
 //
 // Assumptions (the finding is silent, stated so they can be contested):
-// - Refusal of a re-uploaded copy is the existing 409 PAYOUT_RETURN_PROOF_REUSED
-//   (the 870 follow-up tests pin the same code). Which of the two steps of the
+// - Refusal of a re-uploaded copy is 409 PAYOUT_PROOF_REUSED for a return (the
+//   proof binding of legend-so897 refuses first) and the existing 409
+//   PAYOUT_RETURN_PROOF_REUSED for a resolution or confirmation. Which of the two steps of the
 //   second operation is refused is not pinned: at least one is, every refusal is
 //   that code, and the end state is unchanged.
 // - The fail-closed refusal while the backfill is not finished is any 4xx/5xx
@@ -204,8 +205,15 @@ async function paidAbPendingC() {
   };
 }
 
-/** At least one step is refused, and every refusal is 409 PAYOUT_RETURN_PROOF_REUSED. */
-async function expectReuseRefused(steps: (() => Promise<unknown>)[]) {
+/**
+ * At least one step is refused, and every refusal is 409 PAYOUT_PROOF_REUSED
+ * (legend-so897: the proof binding of a return refuses first). A resolution is
+ * not bound and keeps the return-proof code.
+ */
+async function expectReuseRefused(
+  steps: (() => Promise<unknown>)[],
+  code = "PAYOUT_PROOF_REUSED",
+) {
   const failures: Awaited<ReturnType<typeof W.httpFailure>>[] = [];
   for (const step of steps) failures.push(await W.httpFailure(step()));
   expect(
@@ -214,7 +222,7 @@ async function expectReuseRefused(steps: (() => Promise<unknown>)[]) {
   ).toBe(true);
   for (const error of failures.filter((e) => e !== null)) {
     expect(error!.status).toBe(409);
-    expect(error!.code).toBe("PAYOUT_RETURN_PROOF_REUSED");
+    expect(error!.code).toBe(code);
   }
 }
 
@@ -308,10 +316,13 @@ describe("legend-8vcsg finding 1: the stored (re-encoded) copy of a used proof i
     );
     const k2 = await upload(batchId, await storedBytes(k));
 
-    await expectReuseRefused([
-      () => W.resolve(batchId, [idOf(c)], "failed", APP, k2, real.store()),
-      () => W.resolve(batchId, [idOf(c)], "failed", APP3, k2, real.store()),
-    ]);
+    await expectReuseRefused(
+      [
+        () => W.resolve(batchId, [idOf(c)], "failed", APP, k2, real.store()),
+        () => W.resolve(batchId, [idOf(c)], "failed", APP3, k2, real.store()),
+      ],
+      "PAYOUT_RETURN_PROOF_REUSED",
+    );
     expect((await W.itemOfPerson(batchId, ANDI)).status).toBe("exported");
   });
 

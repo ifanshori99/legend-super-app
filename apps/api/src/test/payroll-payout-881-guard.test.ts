@@ -46,6 +46,7 @@ let periodId = "";
 let accountA = "";
 let accountB = "";
 let salariesPayableId = "";
+let bankChargesId = "";
 let sourceGlId = "";
 const foreignTenantIds: string[] = [];
 const bentJournalKeys: string[] = [];
@@ -65,6 +66,13 @@ beforeAll(async () => {
     await W.rowsOf(
       `SELECT account_id FROM account_mappings
         WHERE tenant_id = $1 AND legal_entity_id = $2 AND role = 'salaries_payable'`,
+      [tenantId(), W.entityId()],
+    )
+  )[0]!.account_id as string;
+  bankChargesId = (
+    await W.rowsOf(
+      `SELECT account_id FROM account_mappings
+        WHERE tenant_id = $1 AND legal_entity_id = $2 AND role = 'bank_charges'`,
       [tenantId(), W.entityId()],
     )
   )[0]!.account_id as string;
@@ -114,6 +122,7 @@ type Seeded = { id: string; journalKey: string; feeKey: string };
 async function seedPosting(
   kind: Kind,
   sourceGlAccountId: string | null = null,
+  feeIdr = 0,
 ): Promise<Seeded> {
   const id = randomUUID();
   const hash = randomBytes(32).toString("hex");
@@ -123,8 +132,8 @@ async function seedPosting(
       `INSERT INTO payroll_payout_gl_postings
          (id, tenant_id, batch_id, kind, item_set_hash, journal_key,
           total_encrypted, pii_key_version, fee_posted, source_gl_account_id,
-          salaries_payable_account_id)
-       VALUES ($1, $2, $3, $4, $5, $6, '\\x00', 1, true, $7, $8)`,
+          salaries_payable_account_id, settle_net_idr, fee_idr)
+       VALUES ($1, $2, $3, $4, $5, $6, '\\x00', 1, true, $7, $8, 1000, $9)`,
       [
         id,
         tenantId(),
@@ -134,6 +143,7 @@ async function seedPosting(
         journalKey,
         sourceGlAccountId,
         salariesPayableId,
+        feeIdr,
       ],
     );
   });
@@ -587,7 +597,7 @@ describe("legend-63qhw: source account of an unresolved settle", () => {
   });
 
   it("keeps the earlier fee-posted move (false -> true) allowed with its fee journal", async () => {
-    const posting = await seedPosting("settle_skipped");
+    const posting = await seedPosting("settle_skipped", null, 1000);
     await W.asTenant(
       (c) =>
         c.query(
@@ -596,12 +606,17 @@ describe("legend-63qhw: source account of an unresolved settle", () => {
         ),
       true,
     );
-    // Since 0634 the flip also needs the fee journal of the posting.
+    // Since 0639 the flip needs the fee journal of the posting on the real
+    // accounts and for its fee: Dr bank charges / Cr the frozen source.
     const result = await tryUpdate(
       posting.id,
       "fee_posted = true",
       [],
       [posting.feeKey],
+      [
+        { accountId: bankChargesId, debit: 1000, credit: 0 },
+        { accountId: sourceGlId, debit: 0, credit: 1000 },
+      ],
     );
     expect(result.code).toBeUndefined();
   });

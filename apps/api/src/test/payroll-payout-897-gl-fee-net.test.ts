@@ -324,16 +324,20 @@ describe("897 fee_posted flip needs the real fee amount on the real accounts (F6
   });
 
   it("[897-fee-flip-accepted-once] the exact fee (Dr 8101 / Cr frozen source, Rp5.000) lets the flag turn true once; a second flip attempt changes nothing and no second fee is booked", async () => {
+    // Drain fees still owed by postings the tests above left deferred, so the
+    // sweep below only has this posting to look at.
+    await sweep();
     const ctx = await bankSettledFeeDeferred();
     const source = await sourceGlOf(ctx.batchId);
+    // feeSpec books a normal settlement of its own for the real header, so the
+    // balance is read after it.
+    const spec = await feeSpec(ctx, [
+      { accountId: bankChargesId, debit: FEE, credit: 0 },
+      { accountId: source, debit: 0, credit: FEE },
+    ]);
     const before = await balance("8101");
 
-    const code = await tryFlip(ctx.posting.id as string, [
-      await feeSpec(ctx, [
-        { accountId: bankChargesId, debit: FEE, credit: 0 },
-        { accountId: source, debit: 0, credit: FEE },
-      ]),
-    ]);
+    const code = await tryFlip(ctx.posting.id as string, [spec]);
 
     expect(code).toBeUndefined();
     expect((await committedRow(ctx.posting.id as string)).fee_posted).toBe(

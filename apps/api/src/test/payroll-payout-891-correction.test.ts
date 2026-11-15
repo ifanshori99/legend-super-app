@@ -23,7 +23,7 @@
 //   (a paid sibling is the overpaid path).
 // - The proof is bound to ONE correction and is refused when it is already a
 //   return claim, an overpaid proposal or another correction: 409
-//   PAYOUT_CORRECTION_PROOF_REUSED.
+//   PAYOUT_PROOF_REUSED (legend-so897: one code for the three operations).
 // - After a correction no retry/follow-up batch can be created (409, never 500).
 // - A correction racing a retry: exactly one wins. Two corrections racing: one
 //   journal. Replays book nothing more.
@@ -494,7 +494,7 @@ const expectNotCorrectable = (res: Res, label = "") => {
 };
 const expectProofReused = (res: Res, label = "") => {
   expect(res.status, `${label} ${JSON.stringify(res.body)}`).toBe(409);
-  expect(errorCodeOf(res.body), label).toBe("PAYOUT_CORRECTION_PROOF_REUSED");
+  expect(errorCodeOf(res.body), label).toBe("PAYOUT_PROOF_REUSED");
 };
 
 // ---- State checks -----------------------------------------------------------------
@@ -866,7 +866,7 @@ describe("correcting a failed transfer over HTTP: two different people (legend-m
 // =========================================================================
 
 describe("correcting a failed transfer over HTTP: a proof is used once (legend-mejr2)", () => {
-  it("[891-proof-reuse-return] a proof that started a return of another item cannot back a correction: 409 PAYOUT_CORRECTION_PROOF_REUSED, nothing recorded; another proof works", async () => {
+  it("[891-proof-reuse-return] a proof that started a return of another item cannot back a correction: 409 PAYOUT_PROOF_REUSED, nothing recorded; another proof works", async () => {
     const { requester, first } = await trio("ReuseRet");
     const world = await failedWorld(requester);
     const snap = await snapshotOf(world);
@@ -953,7 +953,7 @@ describe("correcting a failed transfer over HTTP: a proof is used once (legend-m
     expect(moved["1103"]).toEqual({ debit: 0, credit: ANDI_NET + FEE });
   });
 
-  it("[891-proof-reuse-overpaid] a proof of an overpaid proposal cannot back a correction: 409 PAYOUT_CORRECTION_PROOF_REUSED, nothing recorded; another proof works", async () => {
+  it("[891-proof-reuse-overpaid] a proof of an overpaid proposal cannot back a correction: 409 PAYOUT_PROOF_REUSED, nothing recorded; another proof works", async () => {
     const { requester, first, second } = await trio("ReuseOver");
     const world = await failedWorld(requester, { failed: [BUDI, ANDI] });
     // A follow-up batch for both; Andi's retry is paid, Budi's retry fails again:
@@ -1000,7 +1000,7 @@ describe("correcting a failed transfer over HTTP: a proof is used once (legend-m
     );
   });
 
-  it("[891-proof-reuse-overpaid-reverse] a proof bound to a correction cannot back the overpaid record of another item: 409 PAYOUT_CORRECTION_PROOF_REUSED, nothing recorded; another proof works", async () => {
+  it("[891-proof-reuse-overpaid-reverse] a proof bound to a correction cannot back the overpaid record of another item: 409 PAYOUT_PROOF_REUSED, nothing recorded; another proof works", async () => {
     const { requester, first, second } = await trio("ReuseOverRev");
     const world = await failedWorld(requester, { failed: [BUDI, ANDI] });
     const followUp = await W.exportedBatch(world.runId);
@@ -1032,7 +1032,7 @@ describe("correcting a failed transfer over HTTP: a proof is used once (legend-m
 
     const refused = await overpaid(second, key);
     expect(refused.status, JSON.stringify(refused.body)).toBe(409);
-    expect(errorCodeOf(refused.body)).toBe("PAYOUT_CORRECTION_PROOF_REUSED");
+    expect(errorCodeOf(refused.body)).toBe("PAYOUT_PROOF_REUSED");
     expect((await W.itemOfPerson(world.batchId, ANDI)).status).toBe("failed");
     expect(
       await countOf(
@@ -1721,9 +1721,19 @@ describe("correcting a failed transfer: the database guard (legend-mejr2)", () =
     expect(forged!.code).toBe("23514");
     expect(await correctionRows(world.budi)).toHaveLength(0);
 
-    expect(await insert("proposed", null), "an open proposal is fine").toBe(
-      null,
-    );
-    expect((await correctionRows(world.budi))[0]!.status).toBe("proposed");
+    try {
+      expect(await insert("proposed", null), "an open proposal is fine").toBe(
+        null,
+      );
+      expect((await correctionRows(world.budi))[0]!.status).toBe("proposed");
+    } finally {
+      // The SQL proposal has no proof binding: left behind it would hold every
+      // later payout operation of the shared fixture tenant (legend-so897 gate).
+      await W.owner.query(
+        `DELETE FROM payroll_payout_failed_corrections
+          WHERE tenant_id = $1 AND item_id = $2`,
+        [W.tenantId, world.budi],
+      );
+    }
   });
 });

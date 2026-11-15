@@ -10,6 +10,7 @@ export const FINANCE_EXCEPTION_KINDS = [
   "edge_link_dead_letter",
   "payout_fee_not_posted",
   "receipt_pending_stale",
+  "payout_proof_stuck",
 ] as const;
 export type FinanceExceptionKind = (typeof FINANCE_EXCEPTION_KINDS)[number];
 

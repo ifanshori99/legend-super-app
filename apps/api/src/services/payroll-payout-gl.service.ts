@@ -236,6 +236,50 @@ async function journalKeyExists(
 }
 
 /**
+ * True when the fee journal of the posting moves exactly its fee on the right
+ * accounts (897 F6): the same check the posting guard runs before it lets
+ * `fee_posted` turn true. Run before every flip so a journal that fails it is
+ * left for finance instead of answering a guard error.
+ */
+async function feeJournalOk(
+  tx: Tx,
+  tenantId: TenantId,
+  postingId: string,
+): Promise<boolean> {
+  const result = await tx.execute<{ ok: boolean }>(
+    sql`SELECT app.payout_fee_journal_ok(${tenantId}::uuid, ${postingId}::uuid) AS ok`,
+  );
+  return result.rows[0]?.ok === true;
+}
+
+const PAYOUT_FEE_JOURNAL_MISMATCH = {
+  code: "PAYOUT_FEE_JOURNAL_MISMATCH",
+  message:
+    "Jurnal biaya transfer batch ini tidak cocok dengan nominal atau akun yang seharusnya, jadi tidak ditandai selesai. Hubungi tim keuangan.",
+} as const;
+
+/**
+ * True while the posting's fee is owed in the journal but its fee journal
+ * exists and fails `feeJournalOk`: permanent, a human decides.
+ */
+async function feeJournalMismatched(
+  tx: Tx,
+  tenantId: TenantId,
+  posting: FeePosting,
+): Promise<boolean> {
+  return (
+    !posting.feePosted &&
+    postingFeeIdr(posting, tenantId) > 0 &&
+    (await journalKeyExists(
+      tx,
+      tenantId,
+      payoutGlKeys.fee(posting.itemSetHash),
+    )) &&
+    !(await feeJournalOk(tx, tenantId, posting.id))
+  );
+}
+
+/**
  * True while the run's `payroll.locked` event is still in the outbox (not
  * delivered): the lock happened, the GL consumer has not posted its journal
  * yet. A delivered event that left no journal (all-zero run, accounting off at
@@ -1024,8 +1068,19 @@ async function resolveOnePosting(
         { tenantId, batchId: batch.id, reason: "fee_skipped_no_mapping" },
         "payout fee not posted: bank charges mapping missing",
       );
-    // Only false -> true: the posting guard refuses the other direction.
-    if (feeMapped && !posting.feePosted)
+    // Only false -> true: the posting guard refuses the other direction. A
+    // fee journal that fails the amount/account check never flips the flag:
+    // it stays owed for finance (`fee_journal_mismatch`).
+    if (
+      feeMapped &&
+      !posting.feePosted &&
+      !(await feeJournalOk(tx, tenantId, posting.id))
+    )
+      logger.warn(
+        { tenantId, batchId: batch.id, reason: "fee_journal_mismatch" },
+        "payout fee flag left false: fee journal does not match the posting",
+      );
+    else if (feeMapped && !posting.feePosted)
       await tx
         .update(payrollPayoutGlPostings)
         .set({ feePosted: true })
@@ -1311,6 +1366,12 @@ async function postFeeOfPosting(
   // A historical row is already true and stays true (the guard trigger refuses
   // true -> false); only a false row is flipped.
   if (posting.feePosted) return;
+  if (feeIdr > 0 && !(await feeJournalOk(tx, tenantId, posting.id)))
+    throw payoutRefuse(
+      409,
+      PAYOUT_FEE_JOURNAL_MISMATCH.code,
+      PAYOUT_FEE_JOURNAL_MISMATCH.message,
+    );
   const flipped = await tx
     .update(payrollPayoutGlPostings)
     .set({ feePosted: true })
@@ -1509,6 +1570,7 @@ export type PayoutRecoveryReason =
   | "source_account_inactive"
   | "payable_account_unknown"
   | "payable_account_inactive"
+  | "fee_journal_mismatch"
   | "awaiting_resolve";
 
 export type PayoutRecoveryRow = {
@@ -1560,6 +1622,9 @@ export async function payoutRecoveryReason(
 ): Promise<PayoutRecoveryReason> {
   // Settled but the payable account is uncertain (0632): finance reconciles.
   if (posting.payableAccountHold) return "payable_account_unknown";
+  // The fee journal exists but fails the amount/account check: permanent.
+  if (await feeJournalMismatched(tx, tenantId, posting))
+    return "fee_journal_mismatch";
   const owed = await settleOwed(tx, tenantId, batch, posting);
   const feeIdr = postingFeeIdr(posting, tenantId);
   const feeOwed =

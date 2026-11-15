@@ -16,8 +16,9 @@
 //   is the file name, so "bukti-a" and "bukti-b" are two distinct files that
 //   both batches reference.
 // - A legitimate refusal is HttpError status 409.
-// - Deterministic test: the lock key looks like `payout-proof:<tenant>:<sha>`
-//   (per the brief) and is taken with tx.execute. The sha is the 64-hex SHA-256
+// - Deterministic test: the lock key looks like `payout-proof:<sha>` (global
+//   since legend-so897 F2: no tenant, so two PTs serialize on the same bytes)
+//   and is taken with tx.execute. The sha is the 64-hex SHA-256
 //   of the file content. Locks must be taken in ascending sha order (string
 //   order of the hex), each sha exactly once. The recording test runs the
 //   confirmation inside a transaction that is rolled back on purpose, so the
@@ -172,7 +173,7 @@ async function recordedProofLocks(
           return (...args: unknown[]) => {
             const text = flatten(args[0]);
             if (text.includes("payout-proof:")) {
-              expect(text, "lock key must carry the tenant").toContain(
+              expect(text, "lock key is global: no tenant").not.toContain(
                 W.tenantId,
               );
               const sha = text.match(/[0-9a-f]{64}/)?.[0];

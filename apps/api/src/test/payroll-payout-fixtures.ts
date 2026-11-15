@@ -95,14 +95,21 @@ export const evidenceKeyFor = (
  * Payment-proof storage of the fixtures (legend-01gg8): resolve, return,
  * confirm and the overpaid record accept a key only when its object is stored.
  * `uploadEvidence` stages one, the way a real upload would; any other key is
- * "not found". Only `get` is implemented (the existence probe).
+ * "not found". Only `get` is implemented (the existence probe and the
+ * fingerprint read).
  */
 const stagedProofs = new Set<string>();
 const proofStorage = {
   async get(_context, input) {
     if (!stagedProofs.has(`${input.tenantId}/${input.key}`))
       throw new CoreError("NOT_FOUND", "Objek tidak ditemukan.");
-    return { ...input, contentType: "application/pdf", content: "" };
+    // Distinct, non-empty bytes per key: an empty object is no proof
+    // (legend-so897 F3), and two staged keys are two different documents.
+    return {
+      ...input,
+      contentType: "application/pdf",
+      content: `fixture proof ${input.tenantId}/${input.key}`,
+    };
   },
 } as ObjectStorage;
 /** Stores a proof for the batch and returns its key (the fixture tenant). */
