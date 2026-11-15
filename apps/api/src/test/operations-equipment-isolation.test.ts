@@ -216,13 +216,31 @@ async function tenantBClient() {
   return result;
 }
 
-async function storedMedia(outletId: string = outletA.id): Promise<string> {
+/**
+ * A stored breakdown photo as the upload flow leaves it: uploaded by the acting
+ * user, source kind `maintenance_ticket`, not yet attached (legend-mg2bz). A
+ * ticket consumes its photos, so each ticket needs its own.
+ */
+async function storedMedia(
+  actorUserId: string,
+  outletId: string = outletA.id,
+  sourceKind: string = "maintenance_ticket",
+): Promise<string> {
   const id = randomUUID();
   await asTenant((client) =>
     client.query(
-      `INSERT INTO core_storage_objects (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes)
-       VALUES ($1, $2, $3, 'document', $4, 'image/webp', 1024)`,
-      [tenant.id, outletId, id, `legend-o032/${id}.webp`],
+      `INSERT INTO core_storage_objects
+         (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes,
+          owner_user_id, uploaded_by, source_kind)
+       VALUES ($1, $2, $3, 'receipt', $4, 'image/webp', 1024, $5, $5, $6)`,
+      [
+        tenant.id,
+        outletId,
+        id,
+        `legend-o032/${id}.webp`,
+        actorUserId,
+        sourceKind,
+      ],
     ),
   );
   createdMediaIds.push(id);
@@ -418,7 +436,7 @@ beforeAll(async () => {
   );
 
   // Tenant A rows that the attackers aim at.
-  const { client } = await ownerClient();
+  const { client, userId: ticketReporter } = await ownerClient();
   fx.itemId = await createMenuItem("Es Kopi Isolasi Uji");
   fx.machineName = `Mesin Isolasi ${randomUUID().slice(0, 8)}`;
   const created = await machine(client, fx.machineName, [fx.itemId]);
@@ -427,7 +445,7 @@ beforeAll(async () => {
   fx.outletBMachineId = (
     await machine(client, "Mesin Outlet B Uji", [], outletB.id)
   ).id;
-  fx.mediaId = await storedMedia();
+  fx.mediaId = await storedMedia(ticketReporter);
 
   const ticket = await client
     .post(ticketPath())
@@ -951,7 +969,7 @@ describe("Permissions (legend-o032, F41, F45, OPS-05)", () => {
 
 describe("Breakdown ticket and menu availability (legend-o032, OPS-04)", () => {
   it("[legend-o032][OPS-04] a breakdown ticket fills disabled_item_ids and sells out linked items; repair restores them but never a manual 86", async () => {
-    const { client } = await ownerClient();
+    const { client, userId } = await ownerClient();
     const automatic = await createMenuItem("Latte Isolasi Uji");
     const manual = await createMenuItem("Croissant 86 Isolasi Uji");
     await asTenant((db) =>
@@ -965,13 +983,16 @@ describe("Breakdown ticket and menu availability (legend-o032, OPS-04)", () => {
       automatic,
       manual,
     ]);
-    const media = await storedMedia();
 
     // A ticket that does not mark the machine broken changes nothing.
     const note = await client
       .post(ticketPath())
       .set(originHeader)
-      .send(ticketBody(grinder.id, media, { marksEquipmentBroken: false }));
+      .send(
+        ticketBody(grinder.id, await storedMedia(userId), {
+          marksEquipmentBroken: false,
+        }),
+      );
     expect(note.status, JSON.stringify(note.body)).toBe(201);
     createdTicketIds.push(note.body.data.id as string);
     expect((await equipmentRow(grinder.id))?.status).toBe("operational");
@@ -982,7 +1003,11 @@ describe("Breakdown ticket and menu availability (legend-o032, OPS-04)", () => {
     const broken = await client
       .post(ticketPath())
       .set(originHeader)
-      .send(ticketBody(grinder.id, media, { marksEquipmentBroken: true }));
+      .send(
+        ticketBody(grinder.id, await storedMedia(userId), {
+          marksEquipmentBroken: true,
+        }),
+      );
     expect(broken.status, JSON.stringify(broken.body)).toBe(201);
     createdTicketIds.push(broken.body.data.id as string);
 
@@ -1018,17 +1043,20 @@ describe("Breakdown ticket and menu availability (legend-o032, OPS-04)", () => {
   });
 
   it("[legend-o032][OPS-04] an item linked to two broken machines returns only after the last repair", async () => {
-    const { client } = await ownerClient();
+    const { client, userId } = await ownerClient();
     const shared = await createMenuItem("Cappuccino Bersama Isolasi");
     const left = await machine(client, "Espresso Kiri Isolasi", [shared]);
     const right = await machine(client, "Espresso Kanan Isolasi", [shared]);
-    const media = await storedMedia();
 
     for (const id of [left.id, right.id]) {
       const ticket = await client
         .post(ticketPath())
         .set(originHeader)
-        .send(ticketBody(id, media, { marksEquipmentBroken: true }));
+        .send(
+          ticketBody(id, await storedMedia(userId), {
+            marksEquipmentBroken: true,
+          }),
+        );
       expect(ticket.status, JSON.stringify(ticket.body)).toBe(201);
       createdTicketIds.push(ticket.body.data.id as string);
     }

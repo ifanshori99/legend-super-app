@@ -25,7 +25,6 @@ import {
   desc,
   eq,
   gt,
-  inArray,
   isNull,
   lt,
   lte,
@@ -71,7 +70,6 @@ import {
   type ChecklistTemplate,
 } from "@starter/shared/operations";
 import { db } from "../db/index.ts";
-import { coreStorageObjects } from "../db/schema/core-storage.ts";
 import {
   opsChecklistRuns,
   opsChecklistTemplates,
@@ -80,6 +78,10 @@ import { roleAssignments, roles } from "../db/schema/platform-access.ts";
 import { outlets } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
+import {
+  assertFacilityEvidenceBindable,
+  linkFacilityEvidence,
+} from "./facility-evidence-media.ts";
 import { zonedInstant } from "./facility-rules.ts";
 import { minutesOfDay } from "./menu-availability.ts";
 import { assertOutletPermission, type Tx } from "./menu-internals.ts";
@@ -344,37 +346,6 @@ async function assertRoleInTenant(
     .limit(1);
   if (!role)
     throw new HttpError(422, "VALIDATION_ERROR", "Role tidak ditemukan.");
-}
-
-/**
- * OPS-01 evidence must be a real stored object of THIS tenant and the run's
- * outlet: an arbitrary UUID (or another tenant's/outlet's object id) would
- * satisfy the evidence gate without any photo or signature behind it.
- */
-async function assertEvidenceInOutlet(
-  tx: Tx,
-  tenantId: string,
-  outletId: string,
-  mediaIds: readonly string[],
-): Promise<void> {
-  const ids = [...new Set(mediaIds)];
-  if (ids.length === 0) return;
-  const rows = await tx
-    .select({ id: coreStorageObjects.id })
-    .from(coreStorageObjects)
-    .where(
-      and(
-        eq(coreStorageObjects.tenantId, tenantId),
-        eq(coreStorageObjects.outletId, outletId),
-        inArray(coreStorageObjects.id, ids),
-      ),
-    );
-  if (rows.length !== ids.length)
-    throw new HttpError(
-      422,
-      "VALIDATION_ERROR",
-      "Foto atau tanda tangan tidak ditemukan. Unggah ulang lalu coba lagi.",
-    );
 }
 
 // --------------------------------------------------------------- templates
@@ -814,10 +785,22 @@ export async function recordChecklistItemResult(
         "CHECKLIST_ITEM_INCOMPLETE",
         "Butir checklist belum lengkap. Lengkapi foto, angka, atau tanda tangan yang diminta.",
       );
-    await assertEvidenceInOutlet(tx, context.tenant.tenantId, run.outletId, [
+    // legend-mg2bz: evidence must be the actor's own checklist upload at this
+    // outlet and not attached to another document.
+    const evidenceIds = [
       ...result.photoMediaIds,
       ...(result.signatureMediaId === null ? [] : [result.signatureMediaId]),
-    ]);
+    ];
+    await assertFacilityEvidenceBindable(tx, {
+      tenantId: context.tenant.tenantId,
+      outletId: run.outletId,
+      actorUserId: actor,
+      sourceKind: "checklist_evidence",
+      sourceId: run.id,
+      mediaIds: evidenceIds,
+      message:
+        "Foto atau tanda tangan tidak ditemukan. Unggah ulang lalu coba lagi.",
+    });
     const index = run.results.findIndex((entry) => entry.itemId === item.id);
     const results =
       index >= 0
@@ -835,6 +818,14 @@ export async function recordChecklistItemResult(
         ),
       )
       .returning();
+    await linkFacilityEvidence(tx, {
+      tenantId: context.tenant.tenantId,
+      outletId: run.outletId,
+      actorUserId: actor,
+      sourceKind: "checklist_evidence",
+      sourceId: run.id,
+      mediaIds: evidenceIds,
+    });
     await storeIdempotentResult(tx, context, {
       key: input.idempotencyKey,
       fingerprint,

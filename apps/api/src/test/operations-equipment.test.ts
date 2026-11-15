@@ -118,18 +118,52 @@ async function outletClient(outletId: string) {
   return result;
 }
 
-/** A stored breakdown photo in one outlet of the tenant (core storage). */
-async function storedMedia(outletId: string = outletA.id): Promise<string> {
+/**
+ * A stored breakdown photo in one outlet of the tenant (core storage), as the
+ * upload flow leaves it: uploaded by `actorUserId`, bound to a source kind and
+ * not yet attached to a document (legend-mg2bz).
+ */
+async function storedMedia(
+  actorUserId: string,
+  options: {
+    outletId?: string;
+    sourceKind?: string;
+    sourceId?: string | null;
+    uploadedBy?: string;
+  } = {},
+): Promise<string> {
   const id = randomUUID();
+  const sourceKind = options.sourceKind ?? "maintenance_ticket";
   await asTenant((client) =>
     client.query(
-      `INSERT INTO core_storage_objects (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes)
-       VALUES ($1, $2, $3, 'document', $4, 'image/webp', 1024)`,
-      [tenant.id, outletId, id, `legend-i57s/${id}.webp`],
+      `INSERT INTO core_storage_objects
+         (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes,
+          owner_user_id, uploaded_by, source_kind, source_id)
+       VALUES ($1, $2, $3, 'receipt', $4, 'image/webp', 1024, $5, $6, $7, $8)`,
+      [
+        tenant.id,
+        options.outletId ?? outletA.id,
+        id,
+        `legend-i57s/${id}.webp`,
+        actorUserId,
+        options.uploadedBy ?? actorUserId,
+        sourceKind,
+        options.sourceId ?? null,
+      ],
     ),
   );
   createdMediaIds.push(id);
   return id;
+}
+
+async function mediaSourceId(mediaId: string) {
+  const { rows } = await asTenant((client) =>
+    client.query(
+      "SELECT source_id::text AS source_id FROM core_storage_objects WHERE tenant_id = $1 AND id = $2",
+      [tenant.id, mediaId],
+    ),
+  );
+  return rows[0]?.source_id as string | null | undefined;
 }
 
 async function itemAvailabilityStatus(menuItemId: string) {
@@ -462,10 +496,10 @@ describe("Operations equipment OPS-04 restore rules (legend-i57s)", () => {
   });
 
   it("[legend-i57s][OPS-04] a breakdown ticket follows the equipment machine (retired / planned maintenance -> 409)", async () => {
-    const { client } = await ownerClient();
+    const { client, userId } = await ownerClient();
     const item = await createMenuItem("Roti Bakar Uji");
     const toaster = await createMachine(client, "Pemanggang Uji", [item]);
-    const photo = await storedMedia();
+    const photo = await storedMedia(userId);
     const ticketBody = () => ({
       outletId: outletA.id,
       equipmentId: toaster,
@@ -534,6 +568,7 @@ describe("Operations maintenance API (legend-i57s)", () => {
     ticketEquipmentId = equipmentId;
     createdEquipmentIds.push(equipmentId);
 
+    const firstPhoto = await storedMedia(userId);
     const created = await client
       .post(ticketPath())
       .set(originHeader)
@@ -542,7 +577,7 @@ describe("Operations maintenance API (legend-i57s)", () => {
         equipmentId,
         urgency: "critical",
         description: "Mesin mengeluarkan suara keras dan tidak memanas.",
-        mediaIds: [await storedMedia()],
+        mediaIds: [firstPhoto],
         marksEquipmentBroken: true,
         idempotencyKey: nextKey(),
       });
@@ -550,6 +585,8 @@ describe("Operations maintenance API (legend-i57s)", () => {
     createMaintenanceTicket.response.parse(created.body);
     ticketId = created.body.data.id as string;
     createdTicketIds.push(ticketId);
+    // The photo is now attached to the ticket it documents (legend-mg2bz).
+    expect(await mediaSourceId(firstPhoto)).toBe(ticketId);
     expect(created.body.data.status).toBe("reported");
     expect(created.body.data.marksEquipmentBroken).toBe(true);
     expect(created.body.data.reportedBy).toBe(userId);
@@ -629,7 +666,7 @@ describe("Operations maintenance API (legend-i57s)", () => {
   });
 
   it("[legend-i57s][F41] a breakdown ticket requires at least one photo", async () => {
-    const { client } = await ownerClient();
+    const { client, userId } = await ownerClient();
     const noPhoto = await client.post(ticketPath()).set(originHeader).send({
       outletId: outletA.id,
       equipmentId,
@@ -654,7 +691,10 @@ describe("Operations maintenance API (legend-i57s)", () => {
     expect(missingMedia.status).toBe(422);
 
     // A photo id must be an object stored for THIS tenant and outlet.
-    for (const mediaId of [randomUUID(), await storedMedia(outletB.id)]) {
+    for (const mediaId of [
+      randomUUID(),
+      await storedMedia(userId, { outletId: outletB.id }),
+    ]) {
       const foreign = await client
         .post(ticketPath())
         .set(originHeader)
@@ -669,6 +709,113 @@ describe("Operations maintenance API (legend-i57s)", () => {
       expect(foreign.status, JSON.stringify(foreign.body)).toBe(422);
       expect(foreign.body.error.code).toBe("VALIDATION_ERROR");
     }
+  });
+
+  // Brief 796 (legend-mg2bz): ticket evidence must be the reporter's own
+  // upload of source kind `maintenance_ticket`, stored in the ticket's outlet
+  // and not attached to another document. Any failure is a generic 422
+  // VALIDATION_ERROR and no ticket is stored.
+  it("[legend-mg2bz][F41] a ticket rejects photos that are not the reporter's own, wrong-kind or already attached", async () => {
+    const { client, userId } = await ownerClient();
+    const colleague = await ownerClient();
+    const otherDocument = randomUUID();
+    const attachedElsewhere = await storedMedia(userId, {
+      sourceId: otherDocument,
+    });
+    const rejected: Record<string, string> = {
+      "a colleague's photo from the same outlet": await storedMedia(
+        colleague.userId,
+      ),
+      "a photo of the wrong source kind": await storedMedia(userId, {
+        sourceKind: "checklist_evidence",
+      }),
+      "a photo already attached to another document": attachedElsewhere,
+    };
+    const marker = `Bukti ditolak ${randomUUID()}`;
+    for (const [label, mediaId] of Object.entries(rejected)) {
+      const response = await client
+        .post(ticketPath())
+        .set(originHeader)
+        .send({
+          outletId: outletA.id,
+          equipmentId,
+          urgency: "high",
+          description: marker,
+          mediaIds: [mediaId],
+          idempotencyKey: nextKey(),
+        });
+      expect(
+        response.status,
+        `${label}: ${JSON.stringify(response.body)}`,
+      ).toBe(422);
+      expect(response.body.error.code, label).toBe("VALIDATION_ERROR");
+      // The refused file stays as it was: never attached to a ticket of ours.
+      expect(await mediaSourceId(mediaId), label).toBe(
+        mediaId === attachedElsewhere ? otherDocument : null,
+      );
+    }
+    // One good photo next to a colleague's photo still refuses the whole ticket.
+    const mixed = await client
+      .post(ticketPath())
+      .set(originHeader)
+      .send({
+        outletId: outletA.id,
+        equipmentId,
+        urgency: "high",
+        description: marker,
+        mediaIds: [
+          await storedMedia(userId),
+          rejected["a colleague's photo from the same outlet"],
+        ],
+        idempotencyKey: nextKey(),
+      });
+    expect(mixed.status, JSON.stringify(mixed.body)).toBe(422);
+    expect(mixed.body.error.code).toBe("VALIDATION_ERROR");
+
+    const stored = await asTenant((db) =>
+      db.query(
+        "SELECT count(*)::int AS n FROM maintenance_tickets WHERE tenant_id = $1 AND description = $2",
+        [tenant.id, marker],
+      ),
+    );
+    expect(stored.rows[0].n).toBe(0);
+  });
+
+  it("[legend-mg2bz][F41] the reporter's own maintenance_ticket photo is accepted, attached to the ticket and not reusable", async () => {
+    const { client, userId } = await ownerClient();
+    const photo = await storedMedia(userId);
+    expect(await mediaSourceId(photo)).toBeNull();
+    const created = await client
+      .post(ticketPath())
+      .set(originHeader)
+      .send({
+        outletId: outletA.id,
+        equipmentId,
+        urgency: "medium",
+        description: `Foto sendiri ${randomUUID()}`,
+        mediaIds: [photo],
+        idempotencyKey: nextKey(),
+      });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const newTicketId = created.body.data.id as string;
+    createdTicketIds.push(newTicketId);
+    expect(await mediaSourceId(photo)).toBe(newTicketId);
+
+    // The same file cannot document a second ticket.
+    const reused = await client
+      .post(ticketPath())
+      .set(originHeader)
+      .send({
+        outletId: outletA.id,
+        equipmentId,
+        urgency: "medium",
+        description: `Foto dipakai ulang ${randomUUID()}`,
+        mediaIds: [photo],
+        idempotencyKey: nextKey(),
+      });
+    expect(reused.status, JSON.stringify(reused.body)).toBe(422);
+    expect(reused.body.error.code).toBe("VALIDATION_ERROR");
+    expect(await mediaSourceId(photo)).toBe(newTicketId);
   });
 
   it("[legend-i57s][F41] creates a maintenance schedule and lists it by equipment and due date", async () => {
