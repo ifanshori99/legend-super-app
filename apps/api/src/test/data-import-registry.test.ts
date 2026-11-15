@@ -49,6 +49,8 @@ const NOT_A_WRITER: Record<string, string> = {
     "cloud-side export: only reads and signs the bundle that edge/bootstrap.ts writes",
   "apps/api/src/routes/menu-import.routes.ts":
     "HTTP route only: delegates to menu-import.service.ts, which calls the guard",
+  "apps/api/src/scripts/metrics-daily-backfill.ts":
+    "release-only replay (legend-ka1hg): recomputes metrics_daily for past outlet days from the tenant's own source rows through the metric service (same locks and upserts as the live sweep), tenant by tenant, with --dry-run; imports no external data",
   "apps/api/src/db/backfill-employee-managers.ts":
     "one-off repair of employees.manager_id on existing rows (legend-qhqf8): dry-run by default, --apply writes only HR-reviewed before/after tuples from a manifest, one audit row each; imports no data",
 };
@@ -263,6 +265,8 @@ const POOL_OPENERS_NOT_IMPORTERS: Record<string, string> = {
 const SCRIPT_NAME_ALLOWLIST: Record<string, string> = {
   "package.json#db:backfill-defaults":
     "runs the registered, guarded source backfill.tenant-defaults (root alias)",
+  "apps/api/package.json#metrics:backfill":
+    "release-only recompute of derived metrics_daily from existing source rows (legend-ka1hg), --dry-run available; not an importer, no external data",
   "apps/api/package.json#db:backfill-employee-managers":
     "one-off repair of employees.manager_id from an HR-reviewed manifest (dry-run by default); not an importer, listed in POOL_OPENERS_NOT_IMPORTERS",
   "apps/api/package.json#db:backfill-defaults":
