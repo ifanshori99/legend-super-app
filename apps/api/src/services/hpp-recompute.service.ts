@@ -411,7 +411,7 @@ async function lockOutletState(
 }
 
 /**
- * Full rebuild of every outlet of the tenant that was never rebuilt (no state
+ * Full rebuild of every non-closed outlet of the tenant that was never rebuilt (no state
  * row, or a row only created by a lock) or is stale. The queue content does not
  * matter. Each outlet in its own transaction; one failing outlet does not stop
  * the others, the first error is rethrown at the end.
@@ -428,6 +428,8 @@ async function rebuildStaleOutlets(
       LEFT JOIN hpp_outlet_state s
         ON s.tenant_id = o.tenant_id AND s.outlet_id = o.id
       WHERE o.tenant_id = ${tenantId}::uuid
+        -- Closed outlets are skipped (bead legend-wa9k9); reopening marks stale.
+        AND o.status <> 'closed'
         AND (
           s.outlet_id IS NULL OR s.rebuilt_at IS NULL OR s.stale_at IS NOT NULL
           -- A live dine_in price list became effective after the last rebuild

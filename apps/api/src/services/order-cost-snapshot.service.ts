@@ -90,20 +90,26 @@ async function computeInSavepoint(
   // its recipe line's location when that is a location of this outlet, else the
   // sale location (same resolver as the deduction, including the fallback for a
   // line location of another outlet). A draw with no location makes its line
-  // unknown (null).
+  // unknown (null), and so does an own but inactive recipe-line location: the
+  // deduction refuses it (`recipe_error`), so no stock leaves and no HPP applies.
+  // Same for an inactive sale location used as the fallback (`no_sale_location`).
   const draws = outcomes.flatMap((outcome) =>
     outcome.ok ? outcome.draws : [],
   );
-  const ownLocations = await outletLocationStates(
-    tx,
-    tenantId,
-    outletId,
-    draws.flatMap((draw) => draw.locationId ?? []),
-  );
-  const locationOf = (draw: { locationId: string | null }) =>
-    draw.locationId !== null && ownLocations.has(draw.locationId)
-      ? draw.locationId
-      : saleLocationId;
+  const ownLocations = await outletLocationStates(tx, tenantId, outletId, [
+    ...draws.flatMap((draw) => draw.locationId ?? []),
+    ...(saleLocationId === null ? [] : [saleLocationId]),
+  ]);
+  const usableSaleLocationId =
+    saleLocationId !== null && ownLocations.get(saleLocationId) === true
+      ? saleLocationId
+      : null;
+  const locationOf = (draw: { locationId: string | null }) => {
+    if (draw.locationId === null) return usableSaleLocationId;
+    const active = ownLocations.get(draw.locationId);
+    if (active === undefined) return usableSaleLocationId;
+    return active ? draw.locationId : null;
+  };
   const locationIds = [
     ...new Set(draws.flatMap((draw) => locationOf(draw) ?? [])),
   ];

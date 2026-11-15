@@ -386,6 +386,9 @@ const purchaseReturnRecordedSchema = z.object({
   // Signed: billed value minus order-price value of the invoiced part. Events
   // recorded before legend-5b7uf lack it and replay as 0.
   returnPriceVarianceIdr: idr.default(0),
+  // Signed: lines at receipt cost minus qty x moving average before the
+  // return (legend-uloj6). Events recorded before it lack it and replay as 0.
+  movingAvgVarianceIdr: idr.default(0),
   ppnIdr: idr.nonnegative(),
   returnedAt: time,
 });
@@ -2190,7 +2193,9 @@ export async function autoJournalFactOf(
     // outlet business date of returnedAt.
     case "purchase_return.recorded": {
       const p = purchaseReturnRecordedSchema.parse(stored.payload);
-      if (p.valueIdr === 0) return null;
+      // A zero-price line still moves GL inventory to the moving average: only
+      // skip when the variance pair is zero too (legend-uloj6).
+      if (p.valueIdr === 0 && p.movingAvgVarianceIdr === 0) return null;
       if (p.valueIdr !== p.uninvoicedValueIdr + p.invoicedValueIdr)
         throw new AutoJournalPayloadInvalid(
           "purchase_return valueIdr differs from its uninvoiced and invoiced parts",
@@ -2219,6 +2224,7 @@ export async function autoJournalFactOf(
           debitNoteIdr,
           valueIdr: p.valueIdr,
           returnPriceVarianceIdr: p.returnPriceVarianceIdr,
+          returnMovingAvgVarianceIdr: p.movingAvgVarianceIdr,
           ppnIdr: p.ppnIdr,
         },
         ...(debitNoteIdr > 0

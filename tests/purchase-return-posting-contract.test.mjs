@@ -271,6 +271,7 @@ describe("posting rules (Potongan A.3 to A.5)", () => {
     "grni",
     "accounts_payable",
     "inventory",
+    "inventory_price_variance",
     "ppn_input",
     "petty_purchase_expense",
     "petty_cash",
@@ -309,6 +310,7 @@ describe("posting rules (Potongan A.3 to A.5)", () => {
       uninvoicedValueIdr: 185_000,
       debitNoteIdr: 0,
       returnPriceVarianceIdr: 0,
+      returnMovingAvgVarianceIdr: 0,
       valueIdr: 185_000,
       ppnIdr: 0,
     });
@@ -325,6 +327,7 @@ describe("posting rules (Potongan A.3 to A.5)", () => {
       uninvoicedValueIdr: 0,
       debitNoteIdr: 111_000,
       returnPriceVarianceIdr: 0,
+      returnMovingAvgVarianceIdr: 0,
       valueIdr: 100_000,
       ppnIdr: 11_000,
     });
@@ -341,6 +344,7 @@ describe("posting rules (Potongan A.3 to A.5)", () => {
       uninvoicedValueIdr: 0,
       debitNoteIdr: 100_000,
       returnPriceVarianceIdr: 0,
+      returnMovingAvgVarianceIdr: 0,
       valueIdr: 100_000,
       ppnIdr: 0,
     });
@@ -357,6 +361,7 @@ describe("posting rules (Potongan A.3 to A.5)", () => {
       uninvoicedValueIdr: 60_000,
       debitNoteIdr: 44_400,
       returnPriceVarianceIdr: 0,
+      returnMovingAvgVarianceIdr: 0,
       valueIdr: 100_000,
       ppnIdr: 4_400,
     });
@@ -386,6 +391,7 @@ describe("posting rules (Potongan A.3 to A.5)", () => {
       [
         "debitNoteIdr",
         "ppnIdr",
+        "returnMovingAvgVarianceIdr",
         "returnPriceVarianceIdr",
         "uninvoicedValueIdr",
         "valueIdr",
@@ -395,6 +401,61 @@ describe("posting rules (Potongan A.3 to A.5)", () => {
       acc.postingRuleAmountKeys(ruleOf("petty_purchase.recorded")),
       ["amountIdr"],
     );
+  });
+
+  test("PRP-RULE-09 a moving-average variance on a return moves the inventory credit to Dr inventory / Cr inventory_price_variance, signed and balanced (legend-uloj6)", () => {
+    const amounts = (returnMovingAvgVarianceIdr) => ({
+      uninvoicedValueIdr: 185_000,
+      debitNoteIdr: 0,
+      returnPriceVarianceIdr: 0,
+      returnMovingAvgVarianceIdr,
+      valueIdr: 185_000,
+      ppnIdr: 0,
+    });
+    /** `[role, debit, credit]` of the variance pair, plus the full lines. */
+    const rows = (lines) =>
+      lines.map((line) => [
+        line.accountId.replace("account-of-", ""),
+        line.debitIdr,
+        line.creditIdr,
+      ]);
+    const sorted = (list) => list.map(String).sort();
+
+    // Positive: Dr inventory / Cr inventory_price_variance on top of the
+    // order-price credit to inventory.
+    const positive = build("purchase_return.recorded", amounts(5_000));
+    assert.deepEqual(
+      sorted(rows(positive)),
+      sorted([
+        ["grni", 185_000, 0],
+        ["inventory", 0, 185_000],
+        ["inventory", 5_000, 0],
+        ["inventory_price_variance", 0, 5_000],
+      ]),
+    );
+    assertBalanced(positive);
+
+    // Negative: both variance lines flip sides.
+    const negative = build("purchase_return.recorded", amounts(-5_000));
+    assert.deepEqual(
+      sorted(rows(negative)),
+      sorted([
+        ["grni", 185_000, 0],
+        ["inventory", 0, 185_000],
+        ["inventory", 0, 5_000],
+        ["inventory_price_variance", 5_000, 0],
+      ]),
+    );
+    assertBalanced(negative);
+
+    // Zero: no variance lines at all.
+    const zero = build("purchase_return.recorded", amounts(0));
+    assert.deepEqual(byRole(zero), {
+      grni: [185_000, 0],
+      inventory: [0, 185_000],
+    });
+    assert.equal(zero.length, 2);
+    assertBalanced(zero);
   });
 
   test("PRP-RULE-08 goods_receipt.recorded keeps its own purchase rule and has no purchase_return effect (out of scope, card legend-29vw)", () => {

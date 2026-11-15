@@ -2556,6 +2556,20 @@
       "when": 1794700000000,
       "tag": "0378_ai_assistant_auto_enable",
       "breakpoints": true
+    },
+    {
+      "idx": 379,
+      "version": "7",
+      "when": 1794700001000,
+      "tag": "0379_stock_ledger_item_cost_idx",
+      "breakpoints": true
+    },
+    {
+      "idx": 380,
+      "version": "7",
+      "when": 1794700002000,
+      "tag": "0380_inventory_price_variance",
+      "breakpoints": true
     }
   ]
 }

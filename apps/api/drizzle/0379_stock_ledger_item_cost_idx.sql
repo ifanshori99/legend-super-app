@@ -1,0 +1,1 @@
+CREATE INDEX "stock_ledger_tenant_item_cost_idx" ON "stock_ledger" USING btree ("tenant_id","inventory_item_id","occurred_at","id") WHERE "stock_ledger"."unit_cost_idr" > 0;

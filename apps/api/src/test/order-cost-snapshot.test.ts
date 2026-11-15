@@ -1141,7 +1141,67 @@ describe("legend-u4js6 HPP snapshot per order line", () => {
     expect(result).toEqual([null, 5_800]);
   }, 60_000);
 
-  it("HPP-SNAP-09 QR orders (with a modifier) and delivery orders (base recipe only) store their line cost", async () => {
+  // legend-xtuik. The deduction (planDeduction) answers `recipe_error` and
+  // takes no stock when a recipe line names an own-outlet location that is
+  // inactive. The snapshot must then be NULL (unknown), not a cost for stock
+  // that is never drawn. Assumption: an inactive own location is unusable
+  // exactly as for the deduction; no fallback to the sale location.
+  it("HPP-SNAP-16 a draw from an own but inactive recipe-line location gives NULL, an active one is costed at that location", async () => {
+    const kit = await latteKit(A);
+    const bar2 = await newLocation(A);
+    await receive(A, bar2, kit.beans, "1000.0000", "150.0000");
+    // The Latte's bean line is drawn from bar2 instead of the sale location.
+    await q(
+      A,
+      `UPDATE recipe_lines SET deduction_location_id = $3
+        WHERE tenant_id = $1 AND recipe_id = $2 AND component_id = $4`,
+      [A.tenantId, kit.recipe, bar2, kit.beans],
+    );
+    const lines = [
+      { menuItemId: kit.latte, variantId: null, modifierIds: [], quantity: 1 },
+    ];
+    const cost = () =>
+      withTenant(db, ctxOf(A), (tx) =>
+        computeLineCostSnapshots(tx, ctxOf(A), outletOf(A), lines),
+      );
+
+    // Control: active bar2. 18 g x Rp150 (bar2) + 200 ml x Rp20 (sale location).
+    expect(await cost()).toEqual([6_700]);
+
+    await q(
+      A,
+      "UPDATE stock_locations SET is_active = false WHERE tenant_id = $1 AND id = $2",
+      [A.tenantId, bar2],
+    );
+    // Not the sale-location fallback (5.800), not bar2's cost (6.700).
+    expect(await cost()).toEqual([null]);
+  }, 60_000);
+
+  // legend-xtuik. planDeduction answers `no_sale_location` and takes no stock
+  // when a draw falls back to the outlet sale location and that location is
+  // inactive. The snapshot must then be NULL, not a cost for stock never drawn.
+  it("HPP-SNAP-17 an inactive sale location gives NULL for draws that fall back to it, an active one is costed", async () => {
+    const kit = await latteKit(A);
+    const lines = [
+      { menuItemId: kit.latte, variantId: null, modifierIds: [], quantity: 1 },
+    ];
+    const cost = () =>
+      withTenant(db, ctxOf(A), (tx) =>
+        computeLineCostSnapshots(tx, ctxOf(A), outletOf(A), lines),
+      );
+
+    // Control: active sale location, 18 g x Rp100 + 200 ml x Rp20.
+    expect(await cost()).toEqual([5_800]);
+
+    await q(
+      A,
+      "UPDATE stock_locations SET is_active = false WHERE tenant_id = $1 AND id = $2",
+      [A.tenantId, kit.location],
+    );
+    expect(await cost()).toEqual([null]);
+  }, 60_000);
+
+  it("HPP-SNAP-09QR orders (with a modifier) and delivery orders (base recipe only) store their line cost", async () => {
     const kit = await latteKit(A);
 
     // QR: 2 lattes with an extra shot = 2 x (5.800 + 900).

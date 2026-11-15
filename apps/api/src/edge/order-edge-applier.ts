@@ -14,6 +14,13 @@
 // and can never double. No ledger row yet -> the column stays NULL (never
 // guessed). Only this module writes the column. The value is informational
 // (HPP); it is never a payment, refund or GL source.
+//
+// legend-8qm1d: when the order is voided (a parked `order.voided` exists), its
+// `return` rows (stock given back, valued at their own unit cost) are
+// subtracted from the sale cost before the single rounding, clamped at 0. The
+// result is still an assignment, so a replayed return row never subtracts
+// twice, and a void before or after its return rows converges to one value.
+// Without a parked void the return rows are ignored.
 import { and, eq, inArray } from "drizzle-orm";
 import {
   CoreError,
@@ -45,6 +52,8 @@ export const ORDER_VOIDED_EVENT = "order.voided";
 /** Ledger source type and movement type of an order's recipe deduction. */
 const ORDER_SOURCE_TYPE = "order";
 const SALE_MOVEMENT_TYPE = "sale";
+/** legend-8qm1d: a voided order's stock given back (positive quantity). */
+const RETURN_MOVEMENT_TYPE = "return";
 
 /** Any hex 8-4-4-4-12 value; ULID-derived ids are not RFC-versioned uuids. */
 const DB_UUID_PATTERN =
@@ -90,8 +99,27 @@ export async function recomputeEdgeOrderCost(
         inArray(edgeDeferredEvents.aggregateId, orderIdForms(orderId)),
       ),
     );
+  if (parked.length === 0) return;
+  const [voided] = await tx
+    .select({ eventId: edgeDeferredEvents.eventId })
+    .from(edgeDeferredEvents)
+    .where(
+      and(
+        eq(edgeDeferredEvents.tenantId, tenantId),
+        eq(edgeDeferredEvents.aggregateType, ORDER_AGGREGATE),
+        eq(edgeDeferredEvents.eventName, ORDER_VOIDED_EVENT),
+        inArray(edgeDeferredEvents.aggregateId, orderIdForms(orderId)),
+      ),
+    )
+    .limit(1);
   for (const row of parked) {
-    const total = await sumOrderSaleCost(tx, tenantId, row.outletId, dbId);
+    const total = await sumOrderSaleCost(
+      tx,
+      tenantId,
+      row.outletId,
+      dbId,
+      voided !== undefined,
+    );
     if (total === null) continue;
     await tx
       .update(edgeDeferredEvents)
@@ -105,15 +133,20 @@ export async function recomputeEdgeOrderCost(
   }
 }
 
-/** Σ |quantity| x unit cost of the order's sale rows, rounded once; null = no rows. */
+/**
+ * Σ |quantity| x unit cost of the order's sale rows, minus (voided only) the
+ * same for its return rows, clamped at 0, rounded once; null = no sale rows.
+ */
 async function sumOrderSaleCost(
   tx: EdgeTx,
   tenantId: TenantId,
   outletId: OutletId,
   orderDbId: string,
+  voided: boolean,
 ): Promise<number | null> {
   const rows = await tx
     .select({
+      movementType: stockLedger.movementType,
       quantity: stockLedger.quantity,
       unitCostIdr: stockLedger.unitCostIdr,
     })
@@ -124,17 +157,27 @@ async function sumOrderSaleCost(
         eq(stockLedger.outletId, outletId),
         eq(stockLedger.sourceType, ORDER_SOURCE_TYPE),
         eq(stockLedger.sourceId, orderDbId),
-        eq(stockLedger.movementType, SALE_MOVEMENT_TYPE),
+        inArray(stockLedger.movementType, [
+          SALE_MOVEMENT_TYPE,
+          RETURN_MOVEMENT_TYPE,
+        ]),
       ),
     );
-  if (rows.length === 0) return null;
-  let scaled = 0n;
+  let sold = 0n;
+  let returned = 0n;
+  let hasSale = false;
   for (const row of rows) {
     const quantity = parseDecimal4(row.quantity);
-    scaled +=
+    const value =
       (quantity < 0n ? -quantity : quantity) * parseDecimal4(row.unitCostIdr);
+    if (row.movementType === SALE_MOVEMENT_TYPE) {
+      hasSale = true;
+      sold += value;
+    } else returned += value;
   }
-  return scaledCostToIdr(scaled);
+  if (!hasSale) return null;
+  const net = voided ? sold - returned : sold;
+  return scaledCostToIdr(net < 0n ? 0n : net);
 }
 
 // Stable identity: the hook registry treats a different hook as a wiring bug.
@@ -164,12 +207,19 @@ const ingestAfterOrderVoidedParked: EdgeParkedEventHook = async (
   meta,
 ) => {
   await ingestEdgeOrderVoided(tx, event, meta);
+  // legend-8qm1d: the void is parked now; net the order's return rows.
+  await recomputeEdgeOrderCost(
+    tx,
+    meta.context.tenant.tenantId,
+    event.aggregateId,
+  );
 };
 
 /**
  * Cloud boot (registerEdgeLink): after `order.paid` is parked, recompute its
  * cost snapshot from the order's stock rows already received, then ingest
- * the order; `order.voided` ingests the void. Idempotent.
+ * the order; `order.voided` ingests the void, then recomputes the cost net of
+ * returns. Idempotent.
  * Call alongside registerPosDeferredEdgeApplier.
  */
 export function registerOrderEdgeApplier(): void {

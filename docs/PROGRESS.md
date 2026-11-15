@@ -36,6 +36,23 @@
 - legend-2uqcd, legend-cgduz: sudah di 87284cbb7 (ws/tax-menu-keyrotation), tidak diulang.
 - Bukti: 32 file test terarah, 608 lulus; typecheck api hijau; review architect xhigh, temuan F1/F2/F6/F7 diperbaiki.
 - Berikut: merge train; migrasi 0368-0439 yang masuk setelah 0440 harus dinomori ulang (drizzle melewati `when` lebih lama).
+## Brief 857 A: perbaikan P2 architect (15 Nov 2026)
+
+- `inventory_price_variance` dibatasi ke akun expense/revenue melalui `POSTING_ROLE_ALLOWED_TYPES`. Akun neraca tidak boleh menjadi tujuan selisih retur, agar nilai persediaan dan utang pemasok tidak ikut berubah. Tidak mengerjakan P3.
+- Test gagal-dulu valid: 2 kasus asset/liability gagal karena pemetaan masih diterima, 11 kasus lama lulus (`/tmp/legend-857-arch-a-red.log`). Test membuktikan penolakan 422 menjaga mapping, stok, saldo persediaan/AP, serta jurnal tetap utuh. Expense/revenue kustom dan penolakan akun induk tetap diuji.
+- Review fix A/B konteks segar tanpa temuan. Final `LEGEND_TEST_FILES="src/test/purchase-return-avg-variance.test.ts src/test/accounting-role-mapping-types.test.ts tests/accounting-contract.test.mjs tests/purchase-return-posting-contract.test.mjs tests/legend-fzvh-account-mappings-ui.test.mjs" heavy pnpm test`: 123 test root dan 37 test API lulus. Log `/tmp/legend-857-arch-a-final-test.log`.
+- `heavy pnpm -r --workspace-concurrency=1 --filter @starter/shared --filter @starter/api --filter @starter/web typecheck` lulus berurutan setelah patch final; log `/tmp/legend-857-arch-a-final-typecheck.log`.
+- `pnpm exec eslint packages/shared/src/accounting/coa.ts apps/api/src/test/purchase-return-avg-variance.test.ts` dan `pnpm exec prettier --check packages/shared/src/accounting/coa.ts apps/api/src/test/purchase-return-avg-variance.test.ts docs/PROGRESS.md` hijau. Diff-check hijau; tidak ada migrasi baru atau perubahan UI/P3.
+- Subagent gelombang perbaikan: total 7, puncak 6 bersamaan; token heavy test-writer A/B bergantian. Biaya/rata-rata paralel Codex tidak tersedia dari alat pelaporan Claude.
+
+## Brief 857 A: inventori dan pemetaan akun retur (Codex engineer, 15 Nov 2026)
+
+- Base awal worktree `b42619abc` sama dengan `milestone/m1`. Histori seluruh ref untuk `legend-7l2bq`, `legend-mksir`, dan `legend-1get7` tidak menemukan perbaikan ber-ID tersebut. Ekspor `.beads/issues.jsonl` dan `docs/CONTRACT.md` tidak tersedia; tidak menjalankan `bd` sesuai batas peran Codex.
+- CTO mengoreksi base: cabang A memuat `fix/hpp-return-rounding-853` (digabung agar riwayat remote tetap fast-forward tanpa force); kartu DP terpisah di `fix/finance-dp-857` dari `fix/finance-exc-tender-intent-853` (`704a8919a`). Detail kartu tersedia di `ux/customer-order-benchmark:docs/briefs/857-kartu-detail.md`.
+- `legend-7l2bq`: test penjaga POS riil lulus pada base tanpa perubahan kode inventori. Order tetap completed, HPP baris lokasi nonaktif `NULL`, sibling sehat bernilai; replay consumer menyimpan tepat satu deduction skipped, tanpa pengurangan stok atau jurnal parsial. Sesuai instruksi CTO, produksi inventori tidak diubah.
+- `legend-mksir`: baseline menunjukkan pemetaan akun revenue ditolak karena validasi expense. Setelah review architect, role `inventory_price_variance` menerima expense/revenue saja; akun aktif tanpa anak tetap wajib. Test mencakup expense/revenue kustom, penolakan akun induk dengan mapping lama tetap utuh, jurnal seimbang, perubahan AP tepat, dan replay tepat sekali. Mapping kosong tetap perlu dipilih lewat Pengaturan Akun; tidak ada backfill atau migrasi baru.
+- Baseline dua file: 22 lulus/2 gagal (revenue gagal sesuai bug, satu ekspektasi fixture inventory sudah dikoreksi). Final `LEGEND_TEST_FILES="src/test/recipe-pos-hpp.test.ts src/test/purchase-return-avg-variance.test.ts src/test/recipe-swap-same-line.test.ts src/test/accounting-role-mapping-types.test.ts tests/accounting-contract.test.mjs tests/purchase-return-posting-contract.test.mjs tests/legend-fzvh-account-mappings-ui.test.mjs" heavy pnpm test`: 123 test root dan 53 test API lulus (session 67588). `heavy pnpm -r --workspace-concurrency=1 --filter @starter/shared --filter @starter/api typecheck` lulus (session 81533). ESLint, Prettier, dan diff-check file berubah hijau. Reviewer A tanpa temuan. Tidak ada perubahan schema/migrasi baru; gate penuh/build/e2e tidak dijalankan di thread ini.
+- Subagent: total 8, puncak 6 bersamaan; token heavy test-writer A dan test-writer B bergantian. Alat biaya tidak menemukan transkrip Codex; parallel-report hanya membaca sesi Claude sehingga rata-rata dan biaya sesi ini tidak tersedia.
 
 ## Merge train batch64c (merge train, `int/batch64c` dari `origin/milestone/m1` 9b8433f69, 14 Nov 2026 18:50-20:50 WIB)
 

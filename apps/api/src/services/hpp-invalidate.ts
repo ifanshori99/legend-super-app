@@ -9,6 +9,14 @@
 // A rebuild clears `stale_at` only while it holds the `hpp_outlet_state` row
 // lock it took BEFORE reading its inputs. A mark that commits later waits on
 // that lock and sets `stale_at` again, so a change is never lost.
+//
+// Closed outlets (`outlets.status = 'closed'`, bead legend-wa9k9) are marked
+// too: marking is cheap, and it takes the `hpp_outlet_state` row lock, so a
+// change racing with `restoreOutlet` plus a rebuild cannot leave an active
+// outlet with an outdated cost and no stale flag. Closed outlets are marked but
+// not rebuilt (the skip lives in hpp-recompute.service.ts). Reopening an outlet
+// also marks it stale in the same transaction (platform-org.service.ts
+// `restoreOutlet`), so a cost is never left older than the data it was built from.
 
 import { sql } from "drizzle-orm";
 import type { TenantId } from "@starter/shared/core";
