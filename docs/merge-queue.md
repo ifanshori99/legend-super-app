@@ -43,6 +43,7 @@ Induk lebih dulu. Migrasi dinomori ulang dari ujung m1 saat batch disusun.
 
 - Flake gerbang (taruh di depan batch berikut): `fix/flake-station-printer-887` 3ab003ad9 (test saja, legend-ea9sf). Lalu `fix/flake-guest-menu-543rh` 30e4177a9 (test saja, legend-543rh, 3x hijau).
 - Payout akhir (DEPAN batch berikut setelah batch72; uang, penghalang rilis): `fix/payout-failed-correction-891` 8f7c91126 (sudah memuat `fix/payout-area-final-888` 036979292 dan m1 9ad4dcee7; migrasi sementara 0631-0636 = journal idx 389-394; architect xhigh tiap cabang, P1 tertutup; kartu w5yx6, v6gtp, wcd24, 8vcsg, mejr2), lalu `ui/payout-password-stepup-890` 9aa50713b (web, legend-caobb; reviewer OK, 12 e2e mock). Second opinion Codex 888+891 jalan paralel, hanya menahan gerbang rilis.
+- Payout SO-895 (setelah batch73 memuat 891): `fix/payout-so895-897` 1c3067deb (di atas 891; migrasi sementara 0637-0640 = journal idx 395-398; architect xhigh tanpa P1; kartu klr99, v2dco). Batas diterima CTO: baris fee/settle historis NULL tidak dicek nominal (belum ada data production). Rilis: job backfill bukti harus selesai sebelum return/overpaid/koreksi dibuka (409 PENDING sampai itu). Second opinion Codex 897 jalan paralel.
 
 ### 2. Uang dan data pribadi
 
