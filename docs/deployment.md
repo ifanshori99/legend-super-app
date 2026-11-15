@@ -656,6 +656,7 @@ Known limits of push registration:
   which another user signs in on the same browser and never opens `/fasilitas`.
   The previous user's alarm (while still on duty and authorized) keeps showing
   until 30 days pass or the new user registers.
+
 `DOIT_REFUNDS_ENABLED` must have the same value in `api.env` and `worker.env`
 (legend-3gna): the API queues approved refunds and the worker pays them, so a
 split would queue refunds nobody pays, or pay refunds the API treats as off.
