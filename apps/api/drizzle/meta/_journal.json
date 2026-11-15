@@ -2710,6 +2710,48 @@
       "when": 1795000000642,
       "tag": "0642_payout_gl_commit_checks",
       "breakpoints": true
+    },
+    {
+      "idx": 401,
+      "version": "7",
+      "when": 1795000000643,
+      "tag": "0643_payout_gl_insert_commit_check",
+      "breakpoints": true
+    },
+    {
+      "idx": 402,
+      "version": "7",
+      "when": 1795000000644,
+      "tag": "0644_payout_trusted_role",
+      "breakpoints": true
+    },
+    {
+      "idx": 403,
+      "version": "7",
+      "when": 1795000000645,
+      "tag": "0645_payout_trusted_binding",
+      "breakpoints": true
+    },
+    {
+      "idx": 404,
+      "version": "7",
+      "when": 1795000000646,
+      "tag": "0646_payout_posting_source_trusted",
+      "breakpoints": true
+    },
+    {
+      "idx": 405,
+      "version": "7",
+      "when": 1795000000647,
+      "tag": "0647_payout_proof_closures",
+      "breakpoints": true
+    },
+    {
+      "idx": 406,
+      "version": "7",
+      "when": 1795000000648,
+      "tag": "0648_payout_trusted_transitions",
+      "breakpoints": true
     }
   ]
 }

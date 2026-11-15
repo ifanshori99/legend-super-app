@@ -12,8 +12,10 @@
 //   by another person with the SAME proof, moves each item `failed ->
 //   succeeded` and settles it. Neither person may be the batch requester or one
 //   of the two who resolved the item as failed (403). The database repeats all
-//   of it (migrations 0635, 0636): `failed -> succeeded` exists only with
-//   `app.payout_correction` set and a `corrected` row of the item.
+//   of it (migrations 0635, 0636, 0644, 0645): both steps are written only by
+//   the trusted functions `app.payout_correction_propose` / `_approve` (owned
+//   by `legend_payout`, which check actor and session); `legend_app` cannot
+//   write the corrections or move `failed -> succeeded` itself.
 // - The proof is bound to ONE operation: its key and both hashes (uploaded and
 //   stored bytes) must not back a return claim, an overpaid proposal, another
 //   correction, or any item's payment, resolution or return proof (409
@@ -29,7 +31,6 @@
 //   retry or a new batch for it is refused (409, no second transfer).
 // - One request is one operation: every item is in the same step.
 
-import { randomUUID } from "node:crypto";
 import { and, eq, inArray, notInArray, or, sql } from "drizzle-orm";
 import type { TenantId, UserId } from "@starter/shared/core";
 import {
@@ -124,6 +125,37 @@ function isProofUniqueViolation(error: unknown): boolean {
     current = (current as { cause?: unknown }).cause;
   }
   return false;
+}
+
+/** Array literal for a `uuid[]` parameter (ids come from locked rows). */
+const uuidArray = (ids: readonly string[]) => `{${ids.join(",")}}`;
+
+/** Step one in SQL: writes the proposals, returns the operation id. */
+async function callCorrectionPropose(
+  tx: Tx,
+  actor: Actor,
+  batchId: string,
+  itemIds: readonly string[],
+  evidence: string,
+  note: string,
+): Promise<string> {
+  const result = await tx.execute(
+    sql`SELECT app.payout_correction_propose(${batchId}::uuid, ${uuidArray(itemIds)}::uuid[], ${evidence}::varchar, ${note}, ${actor.userId}, ${actor.sessionId}) AS id`,
+  );
+  return (result.rows[0] as { id: string }).id;
+}
+
+/** Step two in SQL: corrects every item of the operation, returns how many. */
+async function callCorrectionApprove(
+  tx: Tx,
+  actor: Actor,
+  operationId: string,
+  evidence: string,
+): Promise<number> {
+  const result = await tx.execute(
+    sql`SELECT app.payout_correction_approve(${operationId}::uuid, ${evidence}::varchar, ${actor.userId}, ${actor.sessionId}) AS moved`,
+  );
+  return Number((result.rows[0] as { moved: number }).moved);
 }
 
 /** Items of the request, locked, all of this batch and all still `failed`. */
@@ -425,58 +457,22 @@ export async function correctFailedItems(
           "Pengusul koreksi tidak memenuhi syarat dua orang berbeda.",
         );
     }
-    const byItem = new Map(proposals.map((p) => [p.itemId, p]));
-    for (const row of rows) {
-      const proposal = byItem.get(row.id)!;
-      const marked = await tx
-        .update(payrollPayoutFailedCorrections)
-        .set({ status: "corrected", correctedBy: userId, correctedAt: now })
-        .where(
-          and(
-            eq(payrollPayoutFailedCorrections.tenantId, tenantId),
-            eq(payrollPayoutFailedCorrections.id, proposal.id),
-            eq(payrollPayoutFailedCorrections.status, "proposed"),
-          ),
-        )
-        .returning({ id: payrollPayoutFailedCorrections.id });
-      if (marked.length !== 1)
-        throw payoutRefuse(
-          409,
-          "PAYOUT_BATCH_STATE_CHANGED",
-          "Status item berubah saat diproses. Coba lagi.",
-        );
-      // The database allows failed -> succeeded only inside this transaction,
-      // for an item with a corrected row.
-      await tx.execute(
-        sql`SELECT set_config('app.payout_correction', 'on', true)`,
+    // The trusted function re-checks everything in SQL (two people, proof,
+    // binding), marks the proposals corrected and moves `failed -> succeeded`
+    // (migration 0645); no GUC is an authorisation any more.
+    const moved = await callCorrectionApprove(
+      tx,
+      actor,
+      proposals[0]!.operationId,
+      evidence,
+    );
+    if (moved !== rows.length)
+      throw payoutRefuse(
+        409,
+        "PAYOUT_BATCH_STATE_CHANGED",
+        "Status item berubah saat diproses. Coba lagi.",
       );
-      const moved = await tx
-        .update(payrollDisbursementItems)
-        .set({
-          status: "succeeded",
-          confirmedBy: userId,
-          confirmationRef: `correction:${proposal.id}`,
-          confirmationEvidenceKey: evidence,
-          settledAt: now,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(payrollDisbursementItems.tenantId, tenantId),
-            eq(payrollDisbursementItems.id, row.id),
-            eq(payrollDisbursementItems.status, "failed"),
-          ),
-        )
-        .returning({ id: payrollDisbursementItems.id });
-      await tx.execute(
-        sql`SELECT set_config('app.payout_correction', 'off', true)`,
-      );
-      if (moved.length !== 1)
-        throw payoutRefuse(
-          409,
-          "PAYOUT_BATCH_STATE_CHANGED",
-          "Status item berubah saat diproses. Coba lagi.",
-        );
+    for (const row of rows)
       await recordPayoutAudit(tx, actor, {
         action: "payroll.disbursement.item_corrected",
         objectType: "payroll_disbursement_item",
@@ -485,7 +481,6 @@ export async function correctFailedItems(
         before: { status: "failed" },
         after: { status: "succeeded", evidenceKey: evidence },
       });
-    }
     // The journal, once: Dr the frozen salaries payable / Cr the source account.
     await settleAndMaybePay(tx, actor, batch, now);
     return {
@@ -505,55 +500,10 @@ export async function correctFailedItems(
       "PAYOUT_CORRECTION_SAME_PERSON",
       "Anda sudah mengajukan koreksi ini. Langkah kedua harus dilakukan orang lain.",
     );
-  const stored = record.stored;
-  const byItem = new Map(proposals.map((p) => [p.itemId, p]));
   try {
-    const operationId = proposals[0]?.operationId ?? randomUUID();
-    for (const [index, row] of rows.entries()) {
-      const existing = byItem.get(row.id);
-      if (existing) {
-        const updated = await tx
-          .update(payrollPayoutFailedCorrections)
-          .set({
-            evidenceKey: evidence,
-            contentSha256: record.content,
-            storedSha256: stored,
-            note,
-            proposedAt: now,
-          })
-          .where(
-            and(
-              eq(payrollPayoutFailedCorrections.tenantId, tenantId),
-              eq(payrollPayoutFailedCorrections.id, existing.id),
-              eq(payrollPayoutFailedCorrections.status, "proposed"),
-              eq(payrollPayoutFailedCorrections.proposedBy, userId),
-            ),
-          )
-          .returning({ id: payrollPayoutFailedCorrections.id });
-        if (updated.length !== 1)
-          throw payoutRefuse(
-            409,
-            "PAYOUT_BATCH_STATE_CHANGED",
-            "Status item berubah saat diproses. Coba lagi.",
-          );
-      } else {
-        // The first row of the operation carries the operation's own id.
-        await tx.insert(payrollPayoutFailedCorrections).values({
-          id: index === 0 ? operationId : randomUUID(),
-          tenantId,
-          batchId: batch.id,
-          itemId: row.id,
-          operationId,
-          evidenceKey: evidence,
-          contentSha256: record.content,
-          storedSha256: stored,
-          note,
-          status: "proposed",
-          proposedBy: userId,
-          proposedAt: now,
-        });
-      }
-    }
+    // One call writes (or replaces, for the same person) the proposal of every
+    // item; the proof hashes are read from the stored record in SQL.
+    await callCorrectionPropose(tx, actor, batch.id, itemIds, evidence, note);
   } catch (error) {
     if (isProofUniqueViolation(error)) throw proofReused();
     throw error;

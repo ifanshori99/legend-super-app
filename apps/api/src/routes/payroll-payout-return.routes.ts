@@ -29,6 +29,7 @@ import {
   PAYOUT_STEP_UP_MAX_AGE_MINUTES,
   payoutEvidenceStoreOf,
 } from "../services/payroll-payout-evidence.ts";
+import { payoutGuardErrorMapper } from "../services/payroll-payout.service.ts";
 
 export const payrollPayoutReturnRouter = Router();
 
@@ -41,7 +42,11 @@ function actorOf(req: Request) {
   const context = getScopedTenantContext(req);
   return {
     context,
-    actor: { tenantId: context.tenant.tenantId, userId: getAuth(req).user.id },
+    actor: {
+      tenantId: context.tenant.tenantId,
+      userId: getAuth(req).user.id,
+      sessionId: getAuth(req).session.id,
+    },
   };
 }
 
@@ -70,3 +75,6 @@ payrollPayoutReturnRouter.post(
     res.json({ data });
   },
 );
+
+// 905: a guard or deferred commit check refusal (23514) answers 409.
+payrollPayoutReturnRouter.use(payoutGuardErrorMapper);

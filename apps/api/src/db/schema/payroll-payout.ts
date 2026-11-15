@@ -1318,3 +1318,207 @@ export const payrollPayoutProofBackfillStuck = pgTable(
     ),
   ],
 );
+
+// ------------------------------------------------- trusted boundary (905)
+
+export const PAYOUT_ATTESTATION_KINDS = [
+  "correction",
+  "overpaid",
+  "return",
+  "posting_source",
+  "closure",
+] as const;
+export type PayoutAttestationKind = (typeof PAYOUT_ATTESTATION_KINDS)[number];
+
+export const PAYOUT_ATTESTATION_STEPS = [
+  "propose",
+  "approve",
+  "record",
+  "confirm",
+] as const;
+export type PayoutAttestationStep = (typeof PAYOUT_ATTESTATION_STEPS)[number];
+
+/**
+ * Who did each step of a correction, an overpaid record, a return, a posting
+ * source fill or a proof closure (migration 0644): the actor, the live MFA
+ * session and the permission snapshot, written by the trusted functions of the
+ * payout role only. The app role reads it; the nightly reconciliation checks it
+ * (two attestations from different sessions, fresh step-up). Never deleted.
+ */
+export const payrollPayoutAttestations = pgTable(
+  "payroll_payout_attestations",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    kind: varchar("kind", { length: 16 })
+      .$type<PayoutAttestationKind>()
+      .notNull(),
+    operationId: uuid("operation_id").notNull(),
+    step: varchar("step", { length: 8 })
+      .$type<PayoutAttestationStep>()
+      .notNull(),
+    batchId: uuid("batch_id").notNull(),
+    itemIds: uuid("item_ids")
+      .array()
+      .notNull()
+      .default(sql`'{}'::uuid[]`),
+    evidenceKey: varchar("evidence_key", { length: 500 }),
+    bindingId: uuid("binding_id"),
+    actor: actor("actor").notNull(),
+    sessionId: text("session_id").notNull(),
+    sessionCreatedAt: timestamp("session_created_at", {
+      withTimezone: true,
+    }).notNull(),
+    mfaVerifiedAt: timestamp("mfa_verified_at", {
+      withTimezone: true,
+    }).notNull(),
+    assertion: jsonb("assertion")
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
+    attestedAt: timestamp("attested_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    txid: bigint("txid", { mode: "number" })
+      .notNull()
+      .default(sql`pg_catalog.txid_current()`),
+  },
+  (table) => [
+    unique("payroll_payout_attestations_tenant_id_key").on(
+      table.tenantId,
+      table.id,
+    ),
+    unique("payroll_payout_attestations_step_key").on(
+      table.tenantId,
+      table.kind,
+      table.operationId,
+      table.step,
+    ),
+    index("payroll_payout_attestations_tenant_batch_idx").on(
+      table.tenantId,
+      table.batchId,
+    ),
+    foreignKey({
+      name: "payroll_payout_attestations_batch_fk",
+      columns: [table.tenantId, table.batchId],
+      foreignColumns: [
+        payrollDisbursementBatches.tenantId,
+        payrollDisbursementBatches.id,
+      ],
+    }),
+    foreignKey({
+      name: "payroll_payout_attestations_binding_fk",
+      columns: [table.tenantId, table.bindingId],
+      foreignColumns: [
+        payrollPayoutProofBindings.tenantId,
+        payrollPayoutProofBindings.id,
+      ],
+    }),
+    check(
+      "payroll_payout_attestations_kind_check",
+      sql`${table.kind} IN (${inList(PAYOUT_ATTESTATION_KINDS)})`,
+    ),
+    check(
+      "payroll_payout_attestations_step_check",
+      sql`${table.step} IN (${inList(PAYOUT_ATTESTATION_STEPS)})`,
+    ),
+  ],
+);
+
+/**
+ * What the nightly reconciliation flagged (migration 0644, written by
+ * `app.payout_recon_flag`): insert-only. A flagged slip gets no new attempt
+ * until finance has looked (retry hold, per payslip).
+ */
+export const payrollPayoutReconExceptions = pgTable(
+  "payroll_payout_recon_exceptions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    kind: varchar("kind", { length: 16 })
+      .$type<PayoutAttestationKind>()
+      .notNull(),
+    operationId: uuid("operation_id").notNull(),
+    itemId: uuid("item_id").notNull(),
+    payslipId: uuid("payslip_id").notNull().$type<PayslipId>(),
+    reason: varchar("reason", { length: 200 }).notNull(),
+    flaggedAt: timestamp("flagged_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    unique("payroll_payout_recon_exceptions_tenant_id_key").on(
+      table.tenantId,
+      table.id,
+    ),
+    unique("payroll_payout_recon_exceptions_flag_key").on(
+      table.tenantId,
+      table.kind,
+      table.operationId,
+      table.itemId,
+      table.reason,
+    ),
+    index("payroll_payout_recon_exceptions_tenant_item_idx").on(
+      table.tenantId,
+      table.itemId,
+    ),
+    index("payroll_payout_recon_exceptions_tenant_payslip_idx").on(
+      table.tenantId,
+      table.payslipId,
+    ),
+    foreignKey({
+      name: "payroll_payout_recon_exceptions_item_fk",
+      columns: [table.tenantId, table.itemId],
+      foreignColumns: [
+        payrollDisbursementItems.tenantId,
+        payrollDisbursementItems.id,
+      ],
+    }),
+    foreignKey({
+      name: "payroll_payout_recon_exceptions_payslip_fk",
+      columns: [table.tenantId, table.payslipId],
+      foreignColumns: [payslips.tenantId, payslips.id],
+    }),
+    check(
+      "payroll_payout_recon_exceptions_kind_check",
+      sql`${table.kind} IN (${inList(PAYOUT_ATTESTATION_KINDS)})`,
+    ),
+  ],
+);
+
+/**
+ * Two-person closure of a stuck proof key (migrations 0644, 0647): the
+ * proposer and the closer are different finance people; closing freezes the
+ * key for good and lets the global proof gate go back to false. Never deleted.
+ */
+export const payrollPayoutProofClosures = pgTable(
+  "payroll_payout_proof_closures",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    evidenceKey: varchar("evidence_key", { length: 500 }).notNull(),
+    note: varchar("note", { length: 500 }).notNull(),
+    proposedBy: actor("proposed_by").notNull(),
+    proposedSessionId: text("proposed_session_id"),
+    proposedAt: timestamp("proposed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    closedBy: actor("closed_by"),
+    closedSessionId: text("closed_session_id"),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+  },
+  (table) => [
+    unique("payroll_payout_proof_closures_tenant_id_key").on(
+      table.tenantId,
+      table.id,
+    ),
+    unique("payroll_payout_proof_closures_evidence_key").on(
+      table.tenantId,
+      table.evidenceKey,
+    ),
+    check(
+      "payroll_payout_proof_closures_closed_check",
+      sql`(${table.closedAt} IS NULL AND ${table.closedBy} IS NULL) OR (${table.closedAt} IS NOT NULL AND ${table.closedBy} IS NOT NULL AND ${table.closedBy} <> ${table.proposedBy})`,
+    ),
+  ],
+);

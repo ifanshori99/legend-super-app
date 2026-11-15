@@ -21,7 +21,8 @@
 // refused 409 PAYOUT_CHANNEL_NOT_AVAILABLE.
 
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import type { ErrorRequestHandler } from "express";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { maskAccountNumber } from "@starter/shared/accounting";
 import {
   createUlid,
@@ -74,7 +75,16 @@ import {
   configuredSourceBankAccountId,
 } from "./payroll-payout-setup.ts";
 
-export type PayoutActor = { tenantId: string; userId: string };
+/**
+ * The verified caller. `sessionId` is the Better Auth session of the request:
+ * the trusted payout functions (migration 0644+) re-check it in SQL (alive,
+ * owned by the user, fresh MFA) and store it in the attestation.
+ */
+export type PayoutActor = {
+  tenantId: string;
+  userId: string;
+  sessionId: string;
+};
 export type BatchRow = typeof payrollDisbursementBatches.$inferSelect;
 export type ItemRow = typeof payrollDisbursementItems.$inferSelect;
 
@@ -107,6 +117,40 @@ export const payoutRefuse = (
   code: string,
   message: string,
 ): HttpError => new HttpError(status, code, message);
+
+/** Postgres check_violation (23514), also behind a driver wrapper. */
+function checkViolation(error: unknown, depth = 0): boolean {
+  if (depth > 4 || typeof error !== "object" || error === null) return false;
+  const candidate = error as { code?: unknown; cause?: unknown };
+  return (
+    candidate.code === "23514" || checkViolation(candidate.cause, depth + 1)
+  );
+}
+
+/**
+ * A payout guard or deferred commit check (trigger or trusted function, code
+ * 23514) refused the change: the client sees a 409, never the raw database
+ * error. Returns null for every other error. The database text is not echoed.
+ */
+export function payoutGuardViolation(error: unknown): HttpError | null {
+  if (!checkViolation(error)) return null;
+  return payoutRefuse(
+    409,
+    "PAYOUT_GUARD_REFUSED",
+    "Perubahan ditolak oleh aturan pembayaran. Muat ulang dan coba lagi.",
+  );
+}
+
+/**
+ * Router-level error middleware: mount last on each payout router so a 23514
+ * raised inside a handler or at COMMIT (deferred checks) answers 409.
+ */
+export const payoutGuardErrorMapper: ErrorRequestHandler = (
+  error,
+  _req,
+  _res,
+  next,
+) => next(payoutGuardViolation(error) ?? error);
 
 const asTenant = (tenantId: string) => tenantId as TenantId;
 const asUser = (userId: string) => userId as UserId;
@@ -692,6 +736,31 @@ type PlannedItem = {
 };
 
 /**
+ * Slip ids with an open row in `payroll_payout_recon_exceptions` (migration
+ * 0644, insert-only) on one of their items. Every row counts as open: the table
+ * has no clear step yet, and when unsure the slip stays held.
+ */
+async function slipsHeldByReconException(
+  tx: Tx,
+  tenantId: string,
+  payslipIds: string[],
+): Promise<Set<string>> {
+  if (payslipIds.length === 0) return new Set();
+  const rows = await tx.execute<{ payslip_id: string }>(
+    sql`SELECT DISTINCT i.payslip_id
+          FROM payroll_payout_recon_exceptions e
+          JOIN payroll_disbursement_items i
+            ON i.tenant_id = e.tenant_id AND i.id = e.item_id
+         WHERE e.tenant_id = ${tenantId}
+           AND i.payslip_id IN (${sql.join(
+             payslipIds.map((id) => sql`${id}`),
+             sql`, `,
+           )})`,
+  );
+  return new Set(rows.rows.map((row) => row.payslip_id));
+}
+
+/**
  * Creates a draft batch for a `locked` run (or a follow-up batch for a `paid`
  * run that already has batches). `cash` takes the cash payslips, `manual_bank`
  * the bank_transfer payslips and needs the PT config enabled. Only slips with
@@ -863,7 +932,16 @@ export async function createDisbursementBatch(
       history.set(item.payslipId, seen);
     }
   }
+  // 905: a slip with an open reconciliation exception on any of its attempts
+  // is held from retry (a new attempt could pay it twice). The insert guard
+  // refuses it in SQL as well; this keeps the batch from failing on it.
+  const held = await slipsHeldByReconException(
+    tx,
+    tenantId,
+    slips.map((slip) => slip.id),
+  );
   const open = slips.filter((slip) => {
+    if (held.has(slip.id)) return false;
     const seen = history.get(slip.id);
     if (!seen) return true;
     return (

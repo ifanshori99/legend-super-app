@@ -117,6 +117,38 @@ export type PayrollPayoutProposalDto = {
   proposedAt: string;
 };
 
+/** One proof key the fingerprint backfill left stuck, with its closure if any (905 card 3). */
+export type PayoutStuckProof = {
+  evidenceKey: string;
+  batchId: string;
+  reason:
+    | "unreadable"
+    | "hash_conflict"
+    | "legacy_duplicate"
+    | "shared_key"
+    | "bind_failed";
+  attempts: number;
+  firstSeenAt: string;
+  closure: {
+    id: string;
+    stage: "proposed" | "closed";
+    proposedAt: string;
+    closedAt: string | null;
+  } | null;
+};
+
+/** Result of proposing or approving the closure of a stuck proof key. */
+export type PayoutProofClosureProposedDto = {
+  closureId: string;
+  stage: "proposed";
+};
+export type PayoutProofClosureClosedDto = {
+  closureId: string;
+  stage: "closed";
+  /** True while some proof (this tenant or any other) still holds the global gate. */
+  gatePending: boolean;
+};
+
 /** A disbursement batch for one payroll run. totalIdr is the sum of items. */
 export type PayrollDisbursementBatchDto = {
   id: string;

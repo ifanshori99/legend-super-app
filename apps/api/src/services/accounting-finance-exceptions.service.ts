@@ -18,6 +18,10 @@
 //   The reason (`detail`) is one of unreadable, hash_conflict, legacy_duplicate,
 //   shared_key (more than one operation over one proof; never auto-resolved) or
 //   bind_failed (legend-p2v4s).
+// - `payout_recon_flag` (legend-i01jp, bead 905) is tenant-wide and standing
+//   too: every difference the nightly trusted-boundary recon flagged
+//   (`payroll_payout_recon_exceptions`, insert-only, so a flag stays listed).
+//   The reason is the detail; the ref is the flagged item.
 
 import { sql, type SQL } from "drizzle-orm";
 import {
@@ -722,6 +726,38 @@ async function payoutProofStuck(
   };
 }
 
+/** Differences the nightly payout recon flagged (own tenant, standing). */
+async function payoutReconFlags(
+  tx: Executor,
+  scope: Scope,
+): Promise<Collected> {
+  const rows = rowsOf(
+    await tx.execute(
+      sql`SELECT e.item_id::text AS ref_id, e.reason AS detail,
+                 e.flagged_at AS occurred_at
+            FROM payroll_payout_recon_exceptions e
+           WHERE e.tenant_id = ${scope.tenantId}::uuid
+           ORDER BY e.flagged_at DESC, e.id DESC`,
+    ),
+  );
+  const items = rows.map((row) =>
+    toItem("payout_recon_flag", "payout_recon", {
+      occurred_at: row.occurred_at,
+      ref_id: row.ref_id,
+      outlet_id: null,
+      detail: row.detail,
+      amount: null,
+    }),
+  );
+  return {
+    kind: "payout_recon_flag",
+    count: items.length,
+    knownAmountCount: 0,
+    amountIdr: 0,
+    items,
+  };
+}
+
 /**
  * The exceptions of the window for the caller's outlets. Read-only. A tenant
  * wide caller also sees the outlet-less payout kind (unless it filters by an
@@ -746,6 +782,7 @@ export async function listFinanceExceptions(
     context.outletScope.kind === "tenant" && query.outletId === undefined;
   const includePayout = wants("payout_fee_not_posted") && tenantWide;
   const includeProofStuck = wants("payout_proof_stuck") && tenantWide;
+  const includeReconFlags = wants("payout_recon_flag") && tenantWide;
 
   const collected = await withTenant(db, context, async (tx) => {
     const parts: Collected[] = [];
@@ -761,6 +798,7 @@ export async function listFinanceExceptions(
       parts.push(await receiptPendingStale(tx, scope));
     if (includePayout) parts.push(await payoutFeeNotPosted(tx, scope));
     if (includeProofStuck) parts.push(await payoutProofStuck(tx, scope));
+    if (includeReconFlags) parts.push(await payoutReconFlags(tx, scope));
     return parts;
   });
 

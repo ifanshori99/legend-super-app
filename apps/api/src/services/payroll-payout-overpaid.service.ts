@@ -21,8 +21,8 @@
 //   payout step) and the item is read FOR UPDATE; a replay or a concurrent
 //   call finds an item that is no longer `failed` and is refused. The journal
 //   key and the unique `journal_key` of the posting are the second and third
-//   guard. The database allows `failed -> overpaid` only while this code has
-//   set `app.payout_overpaid` for its transaction (migration 0351).
+//   guard. The database allows `failed -> overpaid` only through the trusted
+//   function `app.payout_overpaid_record` (migrations 0644-0645).
 
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, ne, sql } from "drizzle-orm";
@@ -357,26 +357,12 @@ export async function recordOverpaidItem(
     settleNetIdr: netIdr,
     feeIdr,
   });
-  // The database allows failed -> overpaid only inside this transaction.
-  await tx.execute(sql`SELECT set_config('app.payout_overpaid', 'on', true)`);
-  const moved = await tx
-    .update(payrollDisbursementItems)
-    .set({ status: "overpaid", glPostingId: postingId, updatedAt: now })
-    .where(
-      and(
-        eq(payrollDisbursementItems.tenantId, tenantId),
-        eq(payrollDisbursementItems.id, item.id),
-        eq(payrollDisbursementItems.status, "failed"),
-      ),
-    )
-    .returning({ id: payrollDisbursementItems.id });
-  await tx.execute(sql`SELECT set_config('app.payout_overpaid', 'off', true)`);
-  if (moved.length !== 1)
-    throw payoutRefuse(
-      409,
-      "PAYOUT_BATCH_STATE_CHANGED",
-      "Status item berubah saat diproses. Coba lagi.",
-    );
+  // Trusted function (migration 0645): re-checks the item, the two people, the
+  // proof and the posting, marks the proposal recorded and moves
+  // `failed -> overpaid` linked to the posting. No GUC is an authorisation.
+  await tx.execute(
+    sql`SELECT app.payout_overpaid_record(${item.id}::uuid, ${evidence}::varchar, ${postingId}::uuid, ${actor.userId}, ${actor.sessionId})`,
+  );
   await recordPayoutAudit(tx, actor, {
     action: "payroll.disbursement.item_overpaid",
     objectType: "payroll_disbursement_item",

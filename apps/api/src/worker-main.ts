@@ -144,6 +144,7 @@ import { runMetricsDailyJob } from "./worker/metrics-daily.job.ts";
 import { runDueDepreciation } from "./worker/accounting-depreciation.job.ts";
 import { runPayoutEvidenceBackfillSweep } from "./worker/payout-evidence-backfill.job.ts";
 import { runPayoutGlRecoverySweep } from "./worker/payout-gl-recovery.job.ts";
+import { runPayoutTrustedReconSweep } from "./worker/payout-trusted-recon.job.ts";
 import { runPaymentGatewayPollJob } from "./worker/payment-gateway-poll.job.ts";
 import { expireDueIntents } from "./services/payment.service.ts";
 import { createDuitkuGateway } from "./services/payment-duitku.ts";
@@ -598,6 +599,17 @@ const relay = createRelayRuntime({
         });
       } catch {
         console.error("Payout evidence backfill sweep failed");
+      }
+      // Trusted payout boundary (legend-i01jp): once a day, re-checks every
+      // corrected / overpaid / returned item and recorded posting source
+      // against its attestations, audit rows, binding, proof file and journal;
+      // a difference is flagged for finance. Read-only apart from the flag.
+      try {
+        await runPayoutTrustedReconSweep(context, new Date(), {
+          storage: payoutEvidenceStorage,
+        });
+      } catch {
+        console.error("Payout trusted recon sweep failed");
       }
     }
     // PAY-02/03 (legend-b9i): settle pending intents whose DOIT webhook never

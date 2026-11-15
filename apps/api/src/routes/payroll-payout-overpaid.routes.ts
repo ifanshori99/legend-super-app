@@ -30,6 +30,7 @@ import {
   payoutEvidenceStoreOf,
 } from "../services/payroll-payout-evidence.ts";
 import { recordOverpaidItems } from "../services/payroll-payout-overpaid-route.service.ts";
+import { payoutGuardErrorMapper } from "../services/payroll-payout.service.ts";
 
 export const payrollPayoutOverpaidRouter = Router();
 
@@ -42,7 +43,11 @@ function actorOf(req: Request) {
   const context = getScopedTenantContext(req);
   return {
     context,
-    actor: { tenantId: context.tenant.tenantId, userId: getAuth(req).user.id },
+    actor: {
+      tenantId: context.tenant.tenantId,
+      userId: getAuth(req).user.id,
+      sessionId: getAuth(req).session.id,
+    },
   };
 }
 
@@ -71,3 +76,6 @@ payrollPayoutOverpaidRouter.post(
     res.json({ data });
   },
 );
+
+// 905: a guard or deferred commit check refusal (23514) answers 409.
+payrollPayoutOverpaidRouter.use(payoutGuardErrorMapper);

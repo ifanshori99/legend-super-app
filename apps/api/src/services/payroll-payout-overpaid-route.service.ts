@@ -5,8 +5,10 @@
 // - Same two-person rule as resolve and return. Step one, by a non-requester,
 //   writes a proposal (proof + note) and the item stays `failed`: no journal.
 //   Step two, by a DIFFERENT non-requester with the SAME proof, calls
-//   `recordOverpaidItem` for each item and marks the proposal `recorded`.
-//   The database guard repeats the rule (migration 0633).
+//   `recordOverpaidItem` for each item; the trusted function
+//   `app.payout_overpaid_record` marks the proposal `recorded`. The database
+//   repeats the rule (migrations 0633, 0644, 0645): the proposal step is the
+//   trusted `app.payout_overpaid_propose`, `legend_app` has no DML here.
 // - Exactly once: the run and batch are locked first (same order as every
 //   payout step), so two callers are serialized; a replay finds an item that is
 //   no longer `failed` and is refused (409) with nothing changed. The journal
@@ -15,7 +17,7 @@
 //   (not `succeeded`) is refused: record it once that attempt is paid.
 // - One request is one operation: every item is in the same step.
 
-import { and, eq, inArray, ne } from "drizzle-orm";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import type { TenantId, UserId } from "@starter/shared/core";
 import type { RecordOverpaidItemsInput } from "@starter/shared/validators/payroll-payout";
 import {
@@ -181,7 +183,6 @@ export async function recordOverpaidItems(
       ),
     )
     .for("update");
-  const byItem = new Map(proposals.map((p) => [p.itemId, p]));
   // One request is one operation: all items without a proposal, or all with.
   if (proposals.length !== 0 && proposals.length !== rows.length)
     throw payoutRefuse(
@@ -223,23 +224,6 @@ export async function recordOverpaidItems(
         proofs,
         now,
       );
-      const marked = await tx
-        .update(payrollPayoutOverpaidProposals)
-        .set({ status: "recorded", recordedBy: userId, recordedAt: now })
-        .where(
-          and(
-            eq(payrollPayoutOverpaidProposals.tenantId, tenantId),
-            eq(payrollPayoutOverpaidProposals.id, byItem.get(row.id)!.id),
-            eq(payrollPayoutOverpaidProposals.status, "proposed"),
-          ),
-        )
-        .returning({ id: payrollPayoutOverpaidProposals.id });
-      if (marked.length !== 1)
-        throw payoutRefuse(
-          409,
-          "PAYOUT_BATCH_STATE_CHANGED",
-          "Status item berubah saat diproses. Coba lagi.",
-        );
       recorded += 1;
     }
     return {
@@ -260,40 +244,11 @@ export async function recordOverpaidItems(
       "Anda sudah mengajukan pencatatan ini. Langkah kedua harus dilakukan orang lain.",
     );
   await assertOtherAttemptPaid(tx, tenantId, rows);
-  for (const row of rows) {
-    const existing = byItem.get(row.id);
-    if (existing) {
-      const updated = await tx
-        .update(payrollPayoutOverpaidProposals)
-        .set({ evidenceKey: evidence, note, proposedAt: now })
-        .where(
-          and(
-            eq(payrollPayoutOverpaidProposals.tenantId, tenantId),
-            eq(payrollPayoutOverpaidProposals.id, existing.id),
-            eq(payrollPayoutOverpaidProposals.status, "proposed"),
-            eq(payrollPayoutOverpaidProposals.proposedBy, userId),
-          ),
-        )
-        .returning({ id: payrollPayoutOverpaidProposals.id });
-      if (updated.length !== 1)
-        throw payoutRefuse(
-          409,
-          "PAYOUT_BATCH_STATE_CHANGED",
-          "Status item berubah saat diproses. Coba lagi.",
-        );
-    } else {
-      await tx.insert(payrollPayoutOverpaidProposals).values({
-        tenantId,
-        batchId: batch.id,
-        itemId: row.id,
-        evidenceKey: evidence,
-        note,
-        status: "proposed",
-        proposedBy: userId,
-        proposedAt: now,
-      });
-    }
-  }
+  // One trusted call writes (or replaces, for the same person) the proposal of
+  // every item; no direct DML on the proposals (migration 0645).
+  await tx.execute(
+    sql`SELECT app.payout_overpaid_propose(${batch.id}::uuid, ${`{${operationItemIds.join(",")}}`}::uuid[], ${evidence}::varchar, ${note}, ${actor.userId}, ${actor.sessionId})`,
+  );
   await recordPayoutAudit(tx, actor, {
     action: "payroll.disbursement.overpaid_proposed",
     objectType: "payroll_disbursement_batch",

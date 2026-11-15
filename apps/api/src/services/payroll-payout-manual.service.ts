@@ -1119,10 +1119,13 @@ const refuseReusedReturnProof = () =>
   );
 
 /**
- * Binds the return proof to ONE return operation (legend-w3691). The claim of
- * a proof key records the item set of the request that first used it; only an
- * identical item set can continue it, and step two consumes it atomically
- * (conditional UPDATE) before the items move. Returns the claim id.
+ * Checks the return proof for ONE return operation (legend-w3691) and binds it
+ * (`app.payout_bind_proof`). The claim of a proof key records the item set of
+ * the request that first used it; only an identical item set can continue it.
+ * The claim itself is written and consumed by the trusted functions
+ * `app.payout_return_propose` and `app.payout_return_confirm` (legend-i01jp:
+ * the application role has no DML on return claims). Returns the open claim of
+ * the key, or null when step one has not written it yet.
  */
 async function bindReturnClaim(
   tx: Tx,
@@ -1133,7 +1136,7 @@ async function bindReturnClaim(
   secondStep: boolean,
   now: Date,
   proofs: PayoutEvidenceStore,
-): Promise<string> {
+): Promise<string | null> {
   const tenantId = actor.tenantId as TenantId;
   const hash = createHash("sha256")
     .update(
@@ -1211,76 +1214,44 @@ async function bindReturnClaim(
       ),
     )
     .for("update");
-  let claim = existing;
+  const claim = existing;
   if (claim) {
     // Step two continues the claim its own step one created, nothing else.
-    if (secondStep && rows.some((row) => row.returnClaimId !== claim!.id))
+    if (secondStep && rows.some((row) => row.returnClaimId !== claim.id))
       throw refuseReusedReturnProof();
-  } else {
-    // A return proposal from before claims existed has no claim row. Its key
-    // may already have released other items, so it is trusted only when no item
-    // outside this request holds the same key.
-    const [foreign] = await tx
-      .select({ id: payrollDisbursementItems.id })
-      .from(payrollDisbursementItems)
-      .where(
-        and(
-          eq(payrollDisbursementItems.tenantId, tenantId),
-          eq(payrollDisbursementItems.returnEvidenceKey, evidence),
-          notInArray(
-            payrollDisbursementItems.id,
-            rows.map((row) => row.id),
-          ),
-        ),
-      )
-      .limit(1);
-    if (foreign) throw refuseReusedReturnProof();
-    if (secondStep && rows.some((row) => row.returnClaimId !== null))
+    if (
+      claim.batchId !== batch.id ||
+      claim.itemSetHash !== hash ||
+      claim.status !== "open"
+    )
       throw refuseReusedReturnProof();
-    try {
-      [claim] = await tx
-        .insert(payrollPayoutReturnClaims)
-        .values({
-          tenantId,
-          batchId: batch.id,
-          evidenceKey: evidence,
-          itemSetHash: hash,
-          status: "open",
-          createdBy: actor.userId as UserId,
-          createdAt: now,
-          contentSha256: record.content,
-          storedSha256: record.stored,
-        })
-        .returning();
-    } catch (error) {
-      // Race backstop: another operation claimed the same file content.
-      if (isReturnClaimShaViolation(error)) throw refuseReusedReturnProof();
-      throw error;
-    }
+    return claim.id;
   }
-  if (
-    !claim ||
-    claim.batchId !== batch.id ||
-    claim.itemSetHash !== hash ||
-    claim.status !== "open"
-  )
-    throw refuseReusedReturnProof();
-  if (secondStep) {
-    const consumed = await tx
-      .update(payrollPayoutReturnClaims)
-      .set({ status: "consumed", consumedAt: now })
-      .where(
-        and(
-          eq(payrollPayoutReturnClaims.tenantId, tenantId),
-          eq(payrollPayoutReturnClaims.id, claim.id),
-          eq(payrollPayoutReturnClaims.status, "open"),
+  // A return proposal from before claims existed has no claim row. Its key
+  // may already have released other items, so it is trusted only when no item
+  // outside this request holds the same key.
+  const [foreign] = await tx
+    .select({ id: payrollDisbursementItems.id })
+    .from(payrollDisbursementItems)
+    .where(
+      and(
+        eq(payrollDisbursementItems.tenantId, tenantId),
+        eq(payrollDisbursementItems.returnEvidenceKey, evidence),
+        notInArray(
+          payrollDisbursementItems.id,
+          rows.map((row) => row.id),
         ),
-      )
-      .returning({ id: payrollPayoutReturnClaims.id });
-    if (consumed.length !== 1) throw refuseReusedReturnProof();
-  }
-  return claim.id;
+      ),
+    )
+    .limit(1);
+  if (foreign) throw refuseReusedReturnProof();
+  if (secondStep) throw refuseReusedReturnProof();
+  return null;
 }
+
+/** A uuid[] literal for a trusted function (ids come from loaded rows). */
+const uuidArray = (ids: readonly string[]) =>
+  sql`${`{${ids.join(",")}}`}::uuid[]`;
 
 /**
  * Funds came back after a paid transfer (design 7.8): moves `succeeded` items
@@ -1364,70 +1335,52 @@ export async function returnManualItems(
       "PAYOUT_ITEM_NOT_CONFIRMABLE",
       "Semua item dalam satu pengembalian harus berada pada langkah yang sama.",
     );
+  const secondStep = secondSteps > 0;
   const claimId = await bindReturnClaim(
     tx,
     actor,
     batch,
     evidence,
     rows,
-    secondSteps > 0,
+    secondStep,
     now,
     proofs,
   );
 
+  // Both steps run in the trusted functions (legend-i01jp): they re-check the
+  // item status, the two people, the binding and the gates in SQL and write
+  // the claim and the return columns (the application role cannot).
+  const itemIds = rows.map((row) => row.id);
   let returned = 0;
   let proposed = 0;
-  for (const row of rows) {
-    const secondStep = row.returnedBy !== null;
-    const updated = secondStep
-      ? await tx
-          .update(payrollDisbursementItems)
-          .set({
-            returnedBy2: actor.userId as UserId,
-            status: "returned",
-            returnedAt: now,
-            updatedAt: now,
-          })
-          .where(
-            and(
-              eq(payrollDisbursementItems.tenantId, tenantId),
-              eq(payrollDisbursementItems.batchId, batch.id),
-              eq(payrollDisbursementItems.id, row.id),
-              eq(payrollDisbursementItems.status, "succeeded"),
-              eq(payrollDisbursementItems.returnedBy, row.returnedBy!),
-              isNull(payrollDisbursementItems.returnedBy2),
-            ),
-          )
-          .returning({ id: payrollDisbursementItems.id })
-      : await tx
-          .update(payrollDisbursementItems)
-          .set({
-            returnedBy: actor.userId as UserId,
-            returnEvidenceKey: evidence,
-            returnNote: note,
-            returnClaimId: claimId,
-            updatedAt: now,
-          })
-          .where(
-            and(
-              eq(payrollDisbursementItems.tenantId, tenantId),
-              eq(payrollDisbursementItems.batchId, batch.id),
-              eq(payrollDisbursementItems.id, row.id),
-              eq(payrollDisbursementItems.status, "succeeded"),
-              isNull(payrollDisbursementItems.returnedBy),
-            ),
-          )
-          .returning({ id: payrollDisbursementItems.id });
-    if (updated.length !== 1)
+  if (!secondStep) {
+    try {
+      await tx.transaction((savepoint) =>
+        savepoint.execute(
+          sql`SELECT app.payout_return_propose(${batch.id}::uuid, ${uuidArray(itemIds)}, ${evidence}::varchar, ${note}, ${actor.userId}, ${actor.sessionId})`,
+        ),
+      );
+    } catch (error) {
+      // Race backstop: another operation claimed the same file content.
+      if (isReturnClaimShaViolation(error)) throw refuseReusedReturnProof();
+      throw error;
+    }
+    proposed = rows.length;
+  } else {
+    if (claimId === null) throw refuseReusedReturnProof();
+    const confirmed = await tx.execute<{ moved: number }>(
+      sql`SELECT app.payout_return_confirm(${claimId}::uuid, ${evidence}::varchar, ${actor.userId}, ${actor.sessionId}) AS moved`,
+    );
+    if (Number(confirmed.rows[0]?.moved) !== rows.length)
       throw refuse(
         409,
         "PAYOUT_ITEM_NOT_CONFIRMABLE",
         "Ada item yang belum dibayar atau sudah dikembalikan.",
       );
-    if (secondStep) {
+    for (const row of rows) {
       await postPayoutReturn(tx, actor, batch, row, now);
       returned += 1;
-    } else proposed += 1;
+    }
   }
   await auditBatch(
     tx,

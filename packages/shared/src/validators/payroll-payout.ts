@@ -287,6 +287,37 @@ export const confirmCashHandoverInputSchema = z
     message: "Each item may appear once.",
   });
 
+// Closing a stuck proof key (legend-6htrf, 905 card 3). Two different finance
+// people with a fresh password step-up: the first proposes with a note, the
+// second approves. The key stays bound forever; nothing new is paid over it.
+export const PAYOUT_STUCK_PROOF_LIMIT_MAX = 100;
+export const PAYOUT_STUCK_PROOF_LIMIT_DEFAULT = 50;
+/** Query of the stuck proof list: opaque cursor from `nextCursor`, page size 1..100. */
+export const listPayoutStuckProofsQuerySchema = z.strictObject({
+  cursor: z.string().min(1).max(1024).optional(),
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(PAYOUT_STUCK_PROOF_LIMIT_MAX)
+    .default(PAYOUT_STUCK_PROOF_LIMIT_DEFAULT),
+});
+export type ListPayoutStuckProofsQuery = z.infer<
+  typeof listPayoutStuckProofsQuerySchema
+>;
+export const proposePayoutProofClosureSchema = z.strictObject({
+  evidenceKey: text(500),
+  note: text(500),
+  password: reauthPasswordSchema,
+});
+export type ProposePayoutProofClosureInput = z.infer<
+  typeof proposePayoutProofClosureSchema
+>;
+export const approvePayoutProofClosureSchema = z.strictObject({
+  password: reauthPasswordSchema,
+});
+export const payoutProofClosureParamsSchema = z.strictObject({ id: z.uuid() });
+
 // Batch list across runs (legend-396pf): newest first, cursor paged, optional
 // legal entity and status filters. Tenant comes from the session.
 export const PAYOUT_BATCH_LIST_LIMIT_MAX = 20;
