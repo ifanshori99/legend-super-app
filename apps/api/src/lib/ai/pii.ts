@@ -38,11 +38,10 @@ const PATTERNS: [PiiKind, RegExp][] = [
     "bank_account",
     /\b(?:rek(?:ening)?\.?|no\.?\s*rek\.?|account(?:\s+(?:no|number))?\.?|acc\.?\s*no\.?)\s*(?:[A-Za-z]{2,12}\s+)?:?\s*\d[\d\s.-]{7,20}\d/gi,
   ],
-  // Salary or payroll words followed by an amount: "gaji Rp 8.500.000",
-  // "salary: 12000000", "THP 7,5jt". Words may sit up to a few tokens away.
+  // Salary context is separate from its amount so dates and words stay intact.
   [
     "salary",
-    /\b(?:gaji|salary|thp|take[\s-]?home(?:[\s-]?pay)?|payroll|upah|penghasilan)\b[^\d\n]{0,25}(?:rp\.?\s*)?\d[\d.,]*(?:\s*(?:jt|juta|rb|ribu|k|m))?/gi,
+    /\b(?:gaji|salary|thp|take[\s-]?home(?:[\s-]?pay)?|payroll|upah|penghasilan)\b/gi,
   ],
   // No word character or hyphen directly before the number: a UUID segment or
   // a longer digit string must not be read as a phone number.
@@ -56,14 +55,65 @@ export type PiiFinding = {
   end: number;
 };
 
+const DATE_MONTH =
+  "(?:jan(?:uari|uary)?|feb(?:ruari|ruary)?|mar(?:et|ch)?|apr(?:il)?|mei|may|jun[ie]?|jul[iy]?|agu(?:stus)?|aug(?:ust)?|sep(?:t(?:ember)?)?|okt(?:ober)?|oct(?:ober)?|nov(?:ember)?|des(?:ember)?|dec(?:ember)?)";
+const SALARY_DATES = new RegExp(
+  `\\b(?:(?:19|20)\\d{2}[-/.]\\d{1,2}[-/.]\\d{1,2}|(?:19|20)\\d{2}[-/]\\d{1,2}|\\d{1,2}[-/.]\\d{1,2}[-/.](?:\\d{2}|(?:19|20)\\d{2})|${DATE_MONTH}\\.?\\s+\\d{1,2}(?:,?\\s+(?:19|20)\\d{2})?|\\d{1,2}\\s+${DATE_MONTH}\\.?(?:\\s+(?:19|20)\\d{2})?|${DATE_MONTH}\\.?\\s+(?:19|20)\\d{2})\\b`,
+  "gi",
+);
+
+function salaryAmountAfter(
+  text: string,
+  contextEnd: number,
+): PiiFinding | null {
+  const newline = text.indexOf("\n", contextEnd);
+  const tail = text.slice(contextEnd, newline < 0 ? undefined : newline);
+  // A title/date is not salary PII. Explicit currency or a magnitude suffix
+  // still wins, including small amounts such as "Rp 2026".
+  const dates = [...tail.matchAll(SALARY_DATES)];
+  for (const match of tail.matchAll(
+    /(?:\brp\.?\s*)?\d(?:[\d.,]*\d)?(?:\s*(?:juta|jt|ribu|rb|k|m)\b)?/gi,
+  )) {
+    const offset = match.index ?? 0;
+    const amount = match[0];
+    const explicitAmount = /^(?:rp\.?)/i.test(amount) || /[a-z]$/i.test(amount);
+    if (
+      !explicitAmount &&
+      dates.some((date) => {
+        const dateStart = date.index ?? 0;
+        return (
+          offset >= dateStart &&
+          offset + amount.length <= dateStart + date[0].length
+        );
+      })
+    )
+      continue;
+    const skippedDateLength = dates.reduce((length, date) => {
+      const dateEnd = (date.index ?? 0) + date[0].length;
+      return dateEnd <= offset ? length + date[0].length : length;
+    }, 0);
+    if (offset - skippedDateLength > 25) break;
+    const start = contextEnd + offset;
+    return { kind: "salary", text: amount, start, end: start + amount.length };
+  }
+  return null;
+}
+
 function findAll(text: string): PiiFinding[] {
   const findings: PiiFinding[] = [];
   for (const [kind, pattern] of PATTERNS)
     for (const match of text.matchAll(pattern)) {
-      const start = match.index ?? 0;
-      const end = start + match[0].length;
+      let start = match.index ?? 0;
+      let value = match[0];
+      if (kind === "salary") {
+        const amount = salaryAmountAfter(text, start + value.length);
+        if (!amount) continue;
+        start = amount.start;
+        value = amount.text;
+      }
+      const end = start + value.length;
       if (findings.some((f) => start < f.end && end > f.start)) continue;
-      findings.push({ kind, text: match[0], start, end });
+      findings.push({ kind, text: value, start, end });
     }
   return findings.sort((a, b) => a.start - b.start);
 }
