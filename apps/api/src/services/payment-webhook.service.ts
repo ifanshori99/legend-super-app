@@ -593,7 +593,7 @@ async function recordUnsettledFunds(
 ): Promise<void> {
   const paid = settledAmount(event);
   if (paid === null) return;
-  await recordUnsettledGatewayFunds(
+  const onRecord = await recordUnsettledGatewayFunds(
     context,
     intent,
     {
@@ -606,7 +606,8 @@ async function recordUnsettledFunds(
     now,
   );
   // SO-896 P2-3: parked money ends the closed code (the poll does the same).
-  await markGatewayReconciled(context, intent, now);
+  // SO-896 P1-2: only when the money is on record (written or found).
+  if (onRecord) await markGatewayReconciled(context, intent, now);
 }
 
 /** A 409 from `confirmPayment` is a deterministic lifecycle decision, never

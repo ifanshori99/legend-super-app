@@ -251,8 +251,8 @@ async function handleRejectedConfirmation(
     error instanceof PaymentConfirmationRejected
       ? error.decisionCode
       : "CONFLICT";
-  if (decision === "AMOUNT_MISMATCH" || decision === "BILL_CLOSED")
-    await recordUnsettledGatewayFunds(
+  if (decision === "AMOUNT_MISMATCH" || decision === "BILL_CLOSED") {
+    const onRecord = await recordUnsettledGatewayFunds(
       context,
       intent,
       {
@@ -264,9 +264,10 @@ async function handleRejectedConfirmation(
       },
       now,
     );
-  // SO-896 P2-3: parked money ends the closed code (the poll does the same).
-  if (decision === "AMOUNT_MISMATCH" || decision === "BILL_CLOSED")
-    await markGatewayReconciled(context, intent, now);
+    // SO-896 P2-3: parked money ends the closed code (the poll does the same).
+    // SO-896 P1-2: only when the money is on record, not for a zero amount.
+    if (onRecord) await markGatewayReconciled(context, intent, now);
+  }
   return `REJECTED_${decision}`;
 }
 
@@ -385,7 +386,17 @@ async function processStoredCallback(
       const amountsAgree =
         Number(fields.amount) === answer.amountIdr &&
         answer.amountIdr === Number(intent.amountIdr);
-      if (!amountsAgree) {
+      if (!(answer.amountIdr > 0)) {
+        // SO-896 P1-2: "paid" without a positive amount proves no money. It is
+        // not a mismatch verdict: nothing is held or recorded, the intent stays
+        // as it is (and polled) and the row stays retryable.
+        outcome = "failed";
+        code = "PAID_AMOUNT_UNREADABLE";
+        logger.warn(
+          { intentId: intent.id, eventId: row.eventId, code },
+          "Duitku status says paid without a positive amount; retrying",
+        );
+      } else if (!amountsAgree) {
         outcome = "failed";
         code = "REJECTED_AMOUNT_MISMATCH";
         await holdGatewayAmountMismatch(

@@ -1210,29 +1210,35 @@ type UnsettledGatewayFunds = {
   receivedAt: Date;
 };
 
+/** Returns whether the money is on record (newly written, or found from an
+ * earlier delivery of the same provider transaction). False means no positive
+ * amount: nothing is recorded and the code must not be marked final (SO-896
+ * P1-2). */
 export async function recordUnsettledGatewayFunds(
   context: ScopedTenantContext,
   intent: PaymentIntentRow,
   funds: UnsettledGatewayFunds,
   now: Date,
-): Promise<void> {
-  await withTenant(db, context, (tx) =>
+): Promise<boolean> {
+  const outcome = await withTenant(db, context, (tx) =>
     recordUnsettledGatewayFundsInTx(tx, context, intent, funds, now),
   );
+  return outcome !== "none";
 }
 
 /** The same recording inside the caller's transaction (and lock order).
- * Returns false when nothing was recorded (a replay of the same provider
- * transaction, or no money). */
+ * Returns `inserted` for newly written funds, `found` for a replay of the same
+ * provider transaction (already on record), and `none` when there is no
+ * positive amount (nothing recorded, nothing to call final). */
 async function recordUnsettledGatewayFundsInTx(
   tx: Tx,
   context: ScopedTenantContext,
   intent: PaymentIntentRow,
   funds: UnsettledGatewayFunds,
   now: Date,
-): Promise<boolean> {
+): Promise<"inserted" | "found" | "none"> {
   const paid = funds.paidAmountIdr;
-  if (!(paid > 0)) return false;
+  if (!(paid > 0)) return "none";
   const reason =
     paid > Number(intent.amountIdr) ? "overpayment" : "double_payment";
   {
@@ -1257,7 +1263,7 @@ async function recordUnsettledGatewayFundsInTx(
         ],
       })
       .returning({ id: paymentEvidence.id });
-    if (!inserted) return false;
+    if (!inserted) return "found";
     const [fund] = await tx
       .insert(paymentUnallocatedFunds)
       .values({
@@ -1318,7 +1324,7 @@ async function recordUnsettledGatewayFundsInTx(
       ["status", "unallocatedIdr", "providerRef"],
     );
   }
-  return true;
+  return "inserted";
 }
 
 const MISMATCH_HELD_ACTION = "payment.amount_mismatch_held";
@@ -1368,7 +1374,10 @@ export async function holdGatewayAmountMismatch(
 ): Promise<{ held: boolean; intentStatus: PaymentIntentRow["status"] }> {
   return withTenant(db, context, async (tx) => {
     const [probe] = await tx
-      .select({ paymentLinkId: paymentIntents.paymentLinkId })
+      .select({
+        paymentLinkId: paymentIntents.paymentLinkId,
+        status: paymentIntents.status,
+      })
       .from(paymentIntents)
       .where(
         and(
@@ -1377,6 +1386,10 @@ export async function holdGatewayAmountMismatch(
         ),
       );
     if (!probe) throw new HttpError(404, "NOT_FOUND", "Payment not found.");
+    // SO-896 P1: no positive amount proves no money. Not a mismatch verdict:
+    // touch nothing (no status, audit or event change).
+    if (!(input.paidAmountIdr > 0))
+      return { held: false, intentStatus: probe.status };
     await lockBillOwner(tx, context, probe.paymentLinkId);
     await tx
       .select({ id: paymentLinks.id })
@@ -1467,12 +1480,14 @@ export async function holdGatewayAmountMismatch(
     // The money that arrived on an expired code ends it for good (as the poll
     // does when it parks): else it stays live after the money is refunded and
     // blocks the replacement code.
-    if (wasExpired)
+    // SO-896 P1-2: only when money is on record; an answer without a positive
+    // amount proves nothing and the code stays in the poll.
+    if (wasExpired && inserted !== "none")
       await markGatewayReconciledInTx(tx, context, current.id, now);
     // legend-baz8i: newly parked money for a POS QRIS hold alerts the cashier
     // and the manager. The hold stays as is (the manager releases it); a
     // replay (not inserted) parks and alerts nothing more.
-    if (inserted) {
+    if (inserted === "inserted") {
       const [hold] = await tx
         .select({
           id: posQrisHolds.id,
@@ -1612,7 +1627,11 @@ async function syncPendingIntentDetailed(
     // Gateway outage: the stored status stays; the link view reports it down.
     gatewayError = true;
   }
-  if (providerStatus?.status === "paid" && providerStatus.amountIdr !== null) {
+  if (
+    providerStatus?.status === "paid" &&
+    providerStatus.amountIdr !== null &&
+    providerStatus.amountIdr > 0
+  ) {
     // Fail closed: a status answer without the settled amount proves nothing
     // about how much arrived; the verified webhook settles it instead (PAY-02).
     const paidAt = plausiblePaidAt(
@@ -1653,7 +1672,7 @@ async function syncPendingIntentDetailed(
       // the intent is expired or the error surfaces, so a lost webhook never
       // loses funds.
       if (parksFunds(error)) {
-        await recordUnsettledGatewayFunds(
+        fundsParked = await recordUnsettledGatewayFunds(
           context,
           intent,
           {
@@ -1665,7 +1684,6 @@ async function syncPendingIntentDetailed(
           },
           now,
         );
-        fundsParked = true;
       }
       // Past expiry a rejected settlement (409) must not surface on the link
       // view: fall through and expire the intent instead.
@@ -1687,7 +1705,8 @@ async function syncPendingIntentDetailed(
       settlementFailed ||
       (providerStatus.status !== "paid" && !aboutThisCode) ||
       providerStatus.status === "pending" ||
-      (providerStatus.status === "paid" && providerStatus.amountIdr === null);
+      (providerStatus.status === "paid" &&
+        (providerStatus.amountIdr === null || providerStatus.amountIdr <= 0));
     if (inconclusive) {
       // Money may have arrived: keep reconciling until the window closes.
       if (now.getTime() - intent.expiresAt.getTime() < GATEWAY_POLL_WINDOW_MS)
@@ -1996,7 +2015,7 @@ async function parkWhenQrisHoldRefusesInTx(
       now,
     );
     // A replay of the same provider transaction records and alerts nothing.
-    if (!inserted) return { kind: "replay" };
+    if (inserted !== "inserted") return { kind: "replay" };
     await alertQrisFundsParked(tx, context, intent, hold, paid.amountIdr, now);
     return {
       kind: "reject",
@@ -2733,6 +2752,9 @@ async function syncExpiredIntentPayment(
   }
   if (providerStatus.status !== "paid" || providerStatus.amountIdr === null)
     return { intent, gatewayError: false };
+  // SO-896 P1-2: a paid answer without a positive amount proves no money and
+  // is not final: nothing is held or recorded and the code stays in the poll.
+  if (!(providerStatus.amountIdr > 0)) return { intent, gatewayError: false };
   const paidAt = plausiblePaidAt(providerStatus.paidAt, intent.createdAt, now);
   try {
     await assertStrictAmount(
@@ -2762,7 +2784,7 @@ async function syncExpiredIntentPayment(
     return { intent: settled, gatewayError: false };
   } catch (error) {
     if (parksFunds(error)) {
-      await recordUnsettledGatewayFunds(
+      const onRecord = await recordUnsettledGatewayFunds(
         context,
         intent,
         {
@@ -2774,7 +2796,9 @@ async function syncExpiredIntentPayment(
         },
         now,
       );
-      await markGatewayReconciled(context, intent, now);
+      // SO-896 P1-2: final only when the money is on record (written now or
+      // found); a paid answer without a positive amount keeps the code polled.
+      if (onRecord) await markGatewayReconciled(context, intent, now);
       return { intent, gatewayError: false };
     }
     throw error;

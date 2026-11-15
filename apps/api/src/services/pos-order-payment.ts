@@ -284,10 +284,16 @@ export async function addPosTender(
         await assertNoOpenEdcRequest(tx, context, order);
         // SO-896 (legend-o6q8i): guest money of an earlier QR sits parked
         // open (e.g. paid late after a force release): no second payment.
+        // A hand-keyed (standalone) card/QR tender is a new payment too: it
+        // refuses here, before settlePosEdcStandalone spends the override or
+        // writes the EDC ledger. Only an ECR request already running
+        // (settlesEcrRequest) skips this guard (founder Q7).
         if (
           input.method === "cash" ||
           input.method === "qris" ||
-          input.method === "points"
+          input.method === "points" ||
+          ((input.method === "edc_card" || input.method === "edc_qris") &&
+            input.standalone)
         )
           await assertNoOpenFundsOfPosOrderTx(tx, tenantId, order);
       } else {
