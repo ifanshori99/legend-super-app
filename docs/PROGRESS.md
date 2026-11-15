@@ -1708,3 +1708,4 @@ Langkah berikut CTO baru:
 - Rem Q11 tetap: merge queue > 20 → hanya kartu rilis-kritis/uang. Cron push/akun/retro berjalan di sesi lama; sesi baru pasang ulang.
 
 - 05:54 Founder Q13: terima jeda kuota akun Claude #1 (~20:30 16 Nov s.d. 17 Nov 18:00), tanpa biaya tambahan. Tag berikut Q14.
+- 06:11 SO QRIS 896 (Codex #7): 2 P1, 0 P2/P3. Perbaikan brief 903 (Sonnet G6peu). Keputusan CTO: standalone EDC ikut guard dana terbuka; paid nominal nol bukan final.
