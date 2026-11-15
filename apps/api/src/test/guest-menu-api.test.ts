@@ -7,14 +7,13 @@
 // reach a guest: the QR order menu and the public website menu skip them.
 //
 // Runs the real Express app and PostgreSQL (disposable server from `pnpm
-// test`): the QR token is signed for the seeded tenant and the rows are seeded
+// test`): the QR token is signed for an isolated tenant and the rows are seeded
 // as the tenant owner, because the write API refuses exactly this state.
 
 import { randomUUID } from "node:crypto";
 import { Pool, type Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { FakeObjectStorage } from "@starter/shared/adapters";
-import { cafeLegendFixtures } from "@starter/shared/core";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app";
 import { NoopMalwareScanner } from "../services/core-image";
@@ -25,14 +24,15 @@ import {
   createIsolatedTenant,
   dropIsolatedTenant,
   owner,
+  type IsolatedTenant,
 } from "./floor-test-helpers";
 
 const app = createApp();
-const { tenant, brand, outlets } = cafeLegendFixtures;
-const tenantId = tenant.id;
-const brandId = brand.id;
-const outletId = outlets[0].id;
-const hostname = cafeLegendPlatformFixtures.domains[0].hostname as string;
+let isolatedTenant: IsolatedTenant;
+let tenantId: string;
+let brandId: string;
+let outletId: string;
+let hostname: string;
 
 const pool = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
@@ -73,6 +73,10 @@ async function asTenant<T>(run: (client: Client) => Promise<T>): Promise<T> {
 }
 
 beforeAll(async () => {
+  isolatedTenant = await createIsolatedTenant(
+    `guest-menu-${randomUUID().slice(0, 8)}`,
+  );
+  ({ tenantId, brandId, outletId, hostname } = isolatedTenant);
   qrToken = signTableQrToken({
     tenantId,
     outletId,
@@ -205,6 +209,7 @@ afterAll(async () => {
       ids.taxRule,
     ]);
   });
+  await dropIsolatedTenant(isolatedTenant);
   await pool.end();
 });
 
@@ -259,8 +264,6 @@ describe("guest menu reads (Q23 legend-qf0i)", () => {
       pricesIncludeTaxAndService: false,
       serviceChargeBp: 500,
     });
-    // Other suites leave published rules on the seeded tenant, so the read
-    // must carry this one rather than exactly one.
     expect(menu.pricing.taxes).toContainEqual({
       name: "PBJT Uji Q23",
       rateBp: 1000,
@@ -383,9 +386,17 @@ describe("guest menu photo and theme (legend-tct6, legend-8qri)", () => {
              (id, tenant_id, brand_id, version, tokens, font_family, corners,
               contrast_check_passed, status, created_by, activated_at)
            SELECT $1, $2, $3, COALESCE(MAX(version), 0) + 1,
-                  '{"light":{},"dark":{}}', 'inter', 'soft', true, 'active', $4, now()
+                  $4, $5, $6, true, 'active', $7, now()
              FROM tenant_themes WHERE tenant_id = $2 AND brand_id = $3`,
-          [themeId, tenantId, brandId, randomUUID()],
+          [
+            themeId,
+            tenantId,
+            brandId,
+            JSON.stringify(cafeLegendPlatformFixtures.themes[0].tokens),
+            cafeLegendPlatformFixtures.themes[0].fontFamily,
+            cafeLegendPlatformFixtures.themes[0].corners,
+            randomUUID(),
+          ],
         );
       }
       await db.query(
