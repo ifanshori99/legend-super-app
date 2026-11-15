@@ -789,12 +789,8 @@ export async function confirmManualItems(
       strict: false,
     },
   );
-  // Already held by the call above: a re-entrant no-op kept as the guard.
-  const proofShas = new Set<string>();
-  for (const key of proofKeys)
-    for (const sha of await proofFingerprints(tx, tenantId, key))
-      proofShas.add(sha);
-  await lockProofFingerprints(tx, tenantId, proofShas);
+  // The call above holds the lock of every hash these records carry (a hash
+  // outside it is 409 PENDING), so each proof is locked once, in sha order.
   for (const key of proofKeys)
     await assertProofNotUsedForReturn(tx, tenantId, key, true);
 

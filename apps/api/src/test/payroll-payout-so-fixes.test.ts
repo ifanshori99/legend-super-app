@@ -717,6 +717,17 @@ describe("Architect findings on the frozen source", () => {
     expect(posting!.kind).toBe("settle_skipped");
     expect(posting!.fee_posted).toBe(false);
     await clearFrozenSource(batchId);
+    // A posting from before the freeze carries no source either; since 900 F4
+    // the service records the frozen account on every new posting, so the
+    // fixture clears it too (triggers off) to stay a faithful old row.
+    await W.asTenant(
+      (c) =>
+        c.query(
+          `UPDATE payroll_payout_gl_postings SET source_gl_account_id = NULL WHERE id = $1`,
+          [posting!.id],
+        ),
+      true,
+    );
     await W.expectRefused(repostSkippedFees(batchId), {
       status: 409,
       code: SOURCE_CODE,

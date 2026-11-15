@@ -466,4 +466,47 @@ describe("897 review fixes: phase 2 reaches every key the gate counts", () => {
     }
     expect(await financeStuck()).toContain(key);
   });
+  it("[900-backfill-waits-for-batch-lock] the backfill takes the batch row before the hash locks and the proof record: while another transaction holds the batch FOR UPDATE it waits, then finishes after the commit (no deadlock)", async () => {
+    const { batchId } = await paidBatch();
+    const key = await uploadTo(batchId, await pdf("kunci-batch"));
+    await insertLegacyClaims(batchId, [key], 1_000);
+
+    const raw = await W.owner.connect();
+    try {
+      await raw.query("BEGIN");
+      await raw.query(
+        `SELECT 1 FROM payroll_disbursement_batches
+          WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
+        [W.tenantId, batchId],
+      );
+      const rawPid = Number(
+        (await raw.query("SELECT pg_backend_pid() AS pid")).rows[0].pid,
+      );
+      let settled = false;
+      const swept = sweep().finally(() => {
+        settled = true;
+      });
+      let blocked = false;
+      for (let i = 0; i < 100 && !blocked && !settled; i++) {
+        blocked =
+          Number(
+            (
+              await W.owner.query(
+                `SELECT count(*)::int AS n FROM pg_stat_activity
+                  WHERE wait_event_type = 'Lock' AND $1 = ANY(pg_blocking_pids(pid))`,
+                [rawPid],
+              )
+            ).rows[0].n,
+          ) > 0;
+        if (!blocked) await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(blocked, "the backfill waits for the batch row").toBe(true);
+      await raw.query("COMMIT");
+      await swept;
+    } finally {
+      await raw.query("ROLLBACK").catch(() => undefined);
+      raw.release();
+    }
+    expect(await claimsWithHash([key]), "the claim got its hashes").toBe(1);
+  });
 });

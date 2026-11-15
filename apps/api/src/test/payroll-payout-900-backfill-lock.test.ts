@@ -10,12 +10,17 @@
 //   they are backed off) still reaches the valid ones behind them. The failing
 //   ones are listed as stuck rows with reason `bind_failed`, and the global
 //   gate still counts them (fail closed).
-// - F7 one lock order. Every path that writes a proof fingerprint takes the
-//   advisory hash locks (sorted, the union of all keys of the call) BEFORE it
-//   writes the evidence_files row. A rival that holds the hash lock first and
-//   then writes the same row therefore waits instead of deadlocking: no 40P01,
-//   both sides commit, exactly one record per key. Proven for a confirmation, a
-//   resolution and a confirmation with several proofs.
+// - F7 one lock order: batch row, then the advisory hash locks (sorted, the
+//   union of all keys of the call), then the evidence_files row. Confirm and
+//   resolve already hold the batch row (FOR UPDATE) when they reach the hash
+//   locks; the backfill locks the batch row FOR UPDATE before the hash locks
+//   (CTO decision, option b: an evidence_files insert takes FOR KEY SHARE on
+//   its batch through the foreign key, so a rival holding a hash lock without
+//   the batch row deadlocks against a confirmation). A rival in the backfill's
+//   order and a service call therefore queue on the batch row instead of
+//   deadlocking: no 40P01, both sides commit, exactly one record per key.
+//   Proven for a confirmation, a resolution and a confirmation with several
+//   proofs.
 //
 // Assumptions (the design names them, stated so they can be contested):
 // - Stuck reason `bind_failed` (mode retry, backed off by `next_attempt_at`).
@@ -23,12 +28,14 @@
 //   hashes and an upload record but have no binding (what phase 2 selects);
 //   historical corrections would need full correction worlds, which add
 //   nothing to the fairness rule being proven. Built as the table owner.
-// - The rival is a raw pg client, no service hook: BEGIN, advisory lock
+// - The rival is a raw pg client, no service hook, in the backfill's order:
+//   BEGIN, the proof's batch row FOR UPDATE, advisory lock
 //   `pg_advisory_xact_lock(hashtextextended('payout-proof:' || sha, 0))`
 //   (documented in payroll-payout-877-proof-lock-order), wait until the service
-//   shows an ungranted advisory lock in pg_locks, then INSERT the
-//   evidence_files row of the proof and COMMIT. On 1c3067deb the service writes
-//   the row first and waits for the lock second, so PostgreSQL reports 40P01.
+//   is blocked by the rival (pg_blocking_pids), then INSERT the
+//   evidence_files row of the proof and COMMIT. A rival holding only the
+//   hash lock (the backfill before the CTO decision) deadlocks with the
+//   service's batch row lock: 40P01.
 // - A legacy proof is an uploaded object whose evidence_files record was
 //   removed (no fingerprint yet).
 import { createHash, randomUUID } from "node:crypto";
@@ -249,9 +256,10 @@ const recordsOf = async (keys: string[]) =>
   );
 
 /**
- * Rival raw client (the backfill's lock order): hash locks first, then, once
- * the service waits for a lock, the fingerprint rows; then commit. Runs `work`
- * (the service call) in parallel and returns how both sides ended.
+ * Rival raw client (the backfill's lock order): the batch row FOR UPDATE, the
+ * hash locks, then, once the service waits for a lock, the fingerprint rows;
+ * then commit. Runs `work` (the service call) in parallel and returns how
+ * both sides ended.
  */
 async function barrier(proofs: Proof[], work: () => Promise<unknown>) {
   const raw: PoolClient = await W.owner.connect();
@@ -264,6 +272,16 @@ async function barrier(proofs: Proof[], work: () => Promise<unknown>) {
     await raw.query("SELECT set_config('app.tenant_id', $1, true)", [
       W.tenantId,
     ]);
+    // The backfill's order: the batch row before the hash locks.
+    await raw.query(
+      `SELECT b.id FROM payroll_disbursement_batches b
+        WHERE b.tenant_id = $1::uuid
+          AND EXISTS (SELECT 1 FROM unnest($2::text[]) AS k(key)
+                       WHERE k.key LIKE '%/' || b.id::text || '/%')
+        ORDER BY b.id
+        FOR UPDATE`,
+      [W.tenantId, proofs.map((p) => p.key)],
+    );
     const shas = [...new Set(proofs.map((p) => sha256(p.bytes)))].sort();
     for (const sha of shas)
       await raw.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
@@ -288,8 +306,8 @@ async function barrier(proofs: Proof[], work: () => Promise<unknown>) {
         Number(
           (
             await W.owner.query(
-              `SELECT count(*)::int AS n FROM pg_locks
-                WHERE locktype = 'advisory' AND NOT granted AND pid <> $1`,
+              `SELECT count(*)::int AS n FROM pg_stat_activity
+                WHERE $1 = ANY(pg_blocking_pids(pid))`,
               [rawPid],
             )
           ).rows[0].n,
@@ -324,7 +342,7 @@ async function barrier(proofs: Proof[], work: () => Promise<unknown>) {
 function expectNoDeadlock(outcome: Awaited<ReturnType<typeof barrier>>) {
   expect(
     outcome.waiting,
-    "premise: the service waits for the hash lock before it writes",
+    "premise: the service waits for the rival before it writes",
   ).toBe(true);
   expect(
     outcome.rival,

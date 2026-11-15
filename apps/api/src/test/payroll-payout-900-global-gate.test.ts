@@ -160,17 +160,26 @@ afterEach(async () => {
     await c.query(
       `DELETE FROM payroll_payout_proof_hashes
         WHERE binding_id IN (SELECT id FROM payroll_payout_proof_bindings
-                              WHERE tenant_id = $1 AND evidence_key = ANY($2::text[]))`,
+                              WHERE tenant_id = $1 AND evidence_key = ANY($2::text[])
+                                AND NOT EXISTS (SELECT 1 FROM payroll_disbursement_items fi
+                         WHERE fi.tenant_id = $1 AND fi.status = 'returned'
+                           AND fi.return_evidence_key = payroll_payout_proof_bindings.evidence_key))`,
       [W.tenantId, keys],
     );
     await c.query(
       `DELETE FROM payroll_payout_proof_bindings
-        WHERE tenant_id = $1 AND evidence_key = ANY($2::text[])`,
+        WHERE tenant_id = $1 AND evidence_key = ANY($2::text[])
+          AND NOT EXISTS (SELECT 1 FROM payroll_disbursement_items fi
+                         WHERE fi.tenant_id = $1 AND fi.status = 'returned'
+                           AND fi.return_evidence_key = payroll_payout_proof_bindings.evidence_key)`,
       [W.tenantId, keys],
     );
     await c.query(
       `DELETE FROM payroll_payout_return_claims
-        WHERE tenant_id = $1 AND evidence_key = ANY($2::text[])`,
+        WHERE tenant_id = $1 AND evidence_key = ANY($2::text[])
+          AND NOT EXISTS (SELECT 1 FROM payroll_disbursement_items fi
+                         WHERE fi.tenant_id = $1 AND fi.status = 'returned'
+                           AND fi.return_evidence_key = payroll_payout_return_claims.evidence_key)`,
       [W.tenantId, keys],
     );
     await c.query(`DELETE FROM ${STUCK} WHERE evidence_key = ANY($1::text[])`, [
@@ -186,6 +195,29 @@ afterEach(async () => {
     await c.query(
       "DELETE FROM payroll_payout_proof_hash_contests WHERE sha256 = ANY($1::varchar[])",
       [shas],
+    );
+    // (A finished return - item 'returned' - keeps its claim and binding: it is
+    // accounted for and the item cannot be reset.)
+    // A test's own history must not outlive it: the gate is global, so one
+    // leftover unaccounted operation (an item that still points at a deleted
+    // claim's key, an overpaid or correction record whose binding is gone)
+    // would hold every later test of every file that shares this database.
+    await c.query(
+      `UPDATE payroll_disbursement_items
+          SET return_evidence_key = NULL, returned_by = NULL, returned_by_2 = NULL,
+              return_note = NULL
+        WHERE tenant_id = $1 AND return_evidence_key = ANY($2::text[]) AND status = 'succeeded'`,
+      [W.tenantId, keys],
+    );
+    await c.query(
+      `DELETE FROM payroll_payout_overpaid_proposals
+        WHERE tenant_id = $1 AND evidence_key = ANY($2::text[])`,
+      [W.tenantId, keys],
+    );
+    await c.query(
+      `DELETE FROM payroll_payout_failed_corrections
+        WHERE tenant_id = $1 AND evidence_key = ANY($2::text[])`,
+      [W.tenantId, keys],
     );
   }, true);
 });
@@ -843,9 +875,9 @@ describe("900 the backfill gate is global (F1)", () => {
     const keyB = trackKey(await historicalClaimOfB(b, await pdf("bool-b")));
     // B's own stuck and binding rows (owner, guards off).
     await W.owner.query(
-      `INSERT INTO ${STUCK} (tenant_id, evidence_key, reason)
-       VALUES ($1, $2, 'unreadable')`,
-      [b.tenant, keyB],
+      `INSERT INTO ${STUCK} (tenant_id, batch_id, evidence_key, reason)
+       VALUES ($1, $2, $3, 'unreadable')`,
+      [b.tenant, b.batch, keyB],
     );
 
     const result = await withAppRole(async (client) => {
@@ -1001,8 +1033,11 @@ describe("900 operations that share one key are all listed and the key is blocke
     expect(await itemState(w.siti), "items unchanged").toEqual(itemBefore);
 
     // The gate itself stays clear: another key is not held.
-    const other = trackKey(await uploadTo(w.batchId, await pdf("kunci-lain")));
-    await returnCall(w, [w.budi], APP, other);
+    // (A fresh all-paid batch: in this one Budi and Andi failed and Siti is
+    // the open return.)
+    const c = await world(requester, { failed: [] });
+    const other = trackKey(await uploadTo(c.batchId, await pdf("kunci-lain")));
+    await returnCall(c, [c.budi], APP, other);
     expect(await claims(other)).toBe(1);
   });
 

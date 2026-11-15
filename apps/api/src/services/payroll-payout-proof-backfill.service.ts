@@ -362,6 +362,32 @@ export async function listStuckProofs(
   );
 }
 
+/**
+ * Lock order (legend-p2v4s F7): run, batch, items, proof advisory locks, rows.
+ * The confirm and resolve paths hold their batch row FOR UPDATE and then wait
+ * for the hash locks; a row that points at the batch (the proof record, a
+ * binding, a stuck row) needs a key share lock on it. So every backfill path
+ * takes the batch rows (sorted by id) BEFORE the hash locks, never after.
+ * Re-entrant inside one transaction.
+ */
+export async function lockBatchesBeforeHashes(
+  tx: Tx,
+  tenantId: TenantId,
+  batchIds: readonly string[],
+): Promise<void> {
+  const ids = [...new Set(batchIds)].sort();
+  if (ids.length === 0) return;
+  await tx.execute(sql`
+    SELECT id FROM payroll_disbursement_batches
+     WHERE tenant_id = ${tenantId}::uuid
+       AND id IN (${sql.join(
+         ids.map((id) => sql`${id}::uuid`),
+         sql`, `,
+       )})
+     ORDER BY id
+       FOR UPDATE`);
+}
+
 /** Fills the missing hashes of one key's file row and claim, under its hash locks. */
 export async function completeKey(
   tx: Tx,
@@ -373,6 +399,7 @@ export async function completeKey(
 ): Promise<{ file: boolean; claim: boolean; conflict: boolean }> {
   // The stored bytes are the one hash every case has; the upload hash of an
   // old image is unknown (only the stored copy is left), so it takes the same.
+  await lockBatchesBeforeHashes(tx, tenantId, [batchId]);
   const known = await proofFingerprints(tx, tenantId, key);
   await lockProofFingerprints(tx, tenantId, [storedSha, ...known]);
   const file = await writeFileRecord(
@@ -540,6 +567,7 @@ export const bindHistoricalOperation: HistoricalProofBinder = async (
   operation,
   now,
 ) => {
+  await lockBatchesBeforeHashes(tx, tenantId, [operation.batchId]);
   await lockProofFingerprints(tx, tenantId, [
     operation.contentSha256,
     operation.storedSha256,
@@ -689,6 +717,12 @@ async function bindKey(
   now: Date,
 ): Promise<HistoricalBindOutcome | "shared_key"> {
   const key = group[0]!.evidenceKey;
+  // Batch rows first (sorted), then the hash locks of the binder, then rows.
+  await lockBatchesBeforeHashes(
+    tx,
+    tenantId,
+    group.map((o) => o.batchId),
+  );
   // The earliest operation that can be bound (both hashes known) gets the key.
   const candidate = group.find(
     (o) => o.contentSha256 !== null && o.storedSha256 !== null,
