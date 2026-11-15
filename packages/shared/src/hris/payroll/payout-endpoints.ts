@@ -19,12 +19,15 @@ import {
   cancelDisbursementBatchInputSchema,
   confirmCashHandoverInputSchema,
   confirmManualItemsInputSchema,
+  correctFailedItemsSchema,
   createDisbursementBatchInputSchema,
+  exportDisbursementBatchInputSchema,
   listPayoutBatchesQuerySchema,
   payoutBatchParamsSchema,
   payoutEvidenceReadQuerySchema,
   payoutLegalEntityParamsSchema,
   payoutRunParamsSchema,
+  recordOverpaidItemsSchema,
   resolveManualItemsSchema,
   returnManualItemsSchema,
   upsertPayoutConfigInputSchema,
@@ -214,7 +217,7 @@ export const exportDisbursementBatch = defineEndpoint({
   method: "POST",
   path: `${BASE}/disbursement-batches/:id/export`,
   params: payoutBatchParamsSchema,
-  body: emptyBody,
+  body: exportDisbursementBatchInputSchema,
   response: z.object({
     data: z.object({
       filename: z.string(),
@@ -267,6 +270,53 @@ export const returnDisbursementItems = defineEndpoint({
     data: z.object({
       batchStatus: z.enum(PAYOUT_BATCH_STATUSES),
       returned: z.number().int(),
+      proposed: z.number().int(),
+    }),
+  }),
+});
+
+/**
+ * A transfer closed as `failed` turned out to have reached the employee after
+ * another attempt of the same payslip was paid (payroll.disburse.approve +
+ * step-up MFA + password after an enrollment-only stamp). Two different
+ * non-requesters give the same evidence: the first only proposes (`proposed`),
+ * the second moves each item to `overpaid` and posts the employee receivable
+ * once (`recorded`). It never pays anything again.
+ */
+export const recordOverpaidDisbursementItems = defineEndpoint({
+  method: "POST",
+  path: `${BASE}/disbursement-batches/:id/overpaid`,
+  params: payoutBatchParamsSchema,
+  body: recordOverpaidItemsSchema,
+  response: z.object({
+    data: z.object({
+      batchStatus: z.enum(PAYOUT_BATCH_STATUSES),
+      stage: z.enum(["proposed", "recorded"]),
+      recorded: z.number().int(),
+      proposed: z.number().int(),
+    }),
+  }),
+});
+
+/**
+ * A transfer closed as `failed` (resolution final, no later successful payment
+ * of the same payslip) turned out to have reached the employee (legend-mejr2;
+ * payroll.disburse.approve + step-up MFA + password). Two different people,
+ * neither the failed-resolution maker nor the batch requester, give the same
+ * bank proof: the first only proposes (`proposed`), the second moves each item
+ * to `succeeded` and settles the frozen payable once (`corrected`). It never
+ * pays anything again.
+ */
+export const correctFailedDisbursementItems = defineEndpoint({
+  method: "POST",
+  path: `${BASE}/disbursement-batches/:id/correct-failed`,
+  params: payoutBatchParamsSchema,
+  body: correctFailedItemsSchema,
+  response: z.object({
+    data: z.object({
+      batchStatus: z.enum(PAYOUT_BATCH_STATUSES),
+      stage: z.enum(["proposed", "corrected"]),
+      corrected: z.number().int(),
       proposed: z.number().int(),
     }),
   }),

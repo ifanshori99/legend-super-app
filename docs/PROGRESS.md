@@ -6048,6 +6048,25 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Perbaikan integrasi: edge-worker-cloud-sweeps-gate.test.ts memasukkan runPayoutGlRecoverySweep (sapuan baru 877, dibatasi cloud-only) ke daftar sapuan yang dipatok; menambah asersi, tidak melonggarkan. Komentar nomor lama di 0384, 0385, dan payroll-payout-881-guard.test.ts disesuaikan.
 - Gerbang: links, lint, typecheck, root test hijau; set cepat 205 berkas: satu merah (gate sapuan di atas), dibetulkan, lulus. Run penuh (00:29-01:44; run pertama ditolak heavy exit 73 karena interupsi saya sendiri, diulang dengan HEAVY_ALLOW_RETRY=1 untuk kegagalan lingkungan): 19715 lulus, 1 gagal = station-printer.test.ts:479 (409 CONFLICT dapat 200, jeda 5 ms). Tanpa kartu saat gagal; sendirian 3 dari 3 hijau; kartu flake P2 legend-ea9sf dibuat. Tes tidak dilonggarkan.
 - Biaya: session-usage total 8509k (batch69 7202k, jadi batch70 sekitar 1307k); parallel-report sesi merge-train 1163 menit, 3 spawn subagent.
+
+## 2026-11-16: Perbaikan second opinion akhir payout (888, cabang fix/payout-area-final-888, base m1 1a1480016)
+
+- Kartu: legend-w5yx6 (step-up), legend-v6gtp (transfer ganda), legend-wcd24 (utang gaji), legend-8vcsg (bukti, overpaid saat accounting mati, guard fee_posted dan nominal 0385).
+- Migrasi sementara (merge train harus menomori ulang): 0631 sidik jari byte tersimpan, 0632 akun utang gaji beku, 0633 proposal overpaid, 0634 guard fee dan nominal settle. Snapshot 0634 menggantikan 0387 sebagai dasar db:generate (kosong).
+- Keputusan: approve/config/export memakai step-up MFA + password; route baru POST /disbursement-batches/:id/overpaid (dua orang, bukti sama); akun utang dibekukan di posting dan dipakai settle/resolve/return/overpaid; sidik jari ganda (asli + tersimpan) dan gerbang fail-closed untuk return selama backfill tenant belum selesai; lockJournalPending mengikuti consumer; guard fee_posted mensyaratkan jurnal biaya cocok; guard settle membandingkan nominal (kolom settle_net_idr).
+- Bukti: 5 berkas test baru merah di base (55 gagal, 8 kontrol lulus), hijau sesudah; 43 berkas payout/GL/registry 697 lulus; test root kontrak 220 lulus; typecheck api dan web hijau; db:generate kosong.
+- Terbuka (tindak lanjut): layar finance untuk bukti yang tertahan backfill dan baris utang gaji yang ditahan; UI web belum punya kolom password untuk approve/config/export; baris settle sebelum 0634 tanpa settle_net_idr melewati cek nominal; guard fee tidak membandingkan nominal biaya; transfer ganda tanpa percobaan susulan yang berhasil ditolak (perlu keputusan CTO).
+
+## 2026-11-16: Koreksi payout failed menjadi succeeded (891, cabang fix/payout-failed-correction-891, di atas 888 bddf9bf6c)
+
+- Kartu: legend-mejr2 (review). Kartu lanjutan web: legend-xvhd9 (layar koreksi; belum dikerjakan).
+- Keputusan CTO opsi B: transfer pertama yang berhasil belakangan tanpa retry dikoreksi dari failed ke succeeded tanpa pembayaran baru; jurnal settle (dan fee) terbit sekali lewat jalur settle biasa.
+- Jalur baru: POST /payroll/payout/disbursement-batches/:id/correct-failed. Dua orang berbeda (bukan pemohon batch dan bukan dua orang yang menyelesaikan item sebagai failed), satu item per panggilan, satu bukti bank yang sama di kedua langkah, step-up MFA + password. Hanya run `locked` atau `paid` (409 PAYOUT_RUN_NOT_PAYABLE); item lain untuk slip yang sama harus tidak ada yang hidup atau lunas.
+- Migrasi sementara (merge train harus menomori ulang): 0635 tabel payroll_payout_failed_corrections + guard (INSERT hanya `proposed`; UPDATE hanya proposed->corrected oleh orang lain atau pembaruan proposal oleh pengusul), 0636 guard item failed->succeeded (butuh baris koreksi `corrected`, setelan app.payout_correction, run locked/paid, tak ada percobaan lain). Snapshot 0636 menggantikan 0634.
+- Bukti: 32 test 891 merah di base (29 gagal, 0 lulus; test run-reversed, insert-guard dan 3 lain ditambah sesudah review) dan hijau (32/32); uji mutasi: tanpa cek run di service atau di 0636 test run-reversed gagal, guard INSERT dibuka test db-guard-insert gagal; 53 berkas payout/GL/registry/rls 928 lulus; test root hris/access/accounting 161 lulus; typecheck api dan web exit 0; db:generate kosong.
+- Review architect xhigh: 1 P1 (koreksi pada run yang direversal) dan 4 P2; P1, P2 overpaid-vs-bukti-koreksi, P2 guard INSERT, P2 gerbang fingerprint dibetulkan. Tidak dikerjakan: P2 batch tetap partially_failed (closeBatchWhenDone tidak berlaku dari status itu, PAYOUT-02 final); pembukuan dan status item benar.
+- Terbuka: layar web koreksi (legend-xvhd9); batch tetap partially_failed setelah semua item succeeded (hanya pelaporan).
+
 ## 2026-11-15: batas scan clamd bersamaan + backpressure (legend-1rtm1)
 
 - Cabang: `fix/clamd-scan-limit`, base `53b0db393` (ws/storage-scanner-pdf).

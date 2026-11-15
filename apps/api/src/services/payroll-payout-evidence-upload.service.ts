@@ -8,12 +8,14 @@
 // manual bank batch in a state where resolve or return can run takes a proof.
 // JPEG and PNG are decoded and re-encoded (metadata such as EXIF/GPS dropped);
 // the stored bytes and `sizeBytes` are the re-encoded ones. PDF is stored as is.
-// Fingerprint (legend-w3691): the SHA-256 of the ORIGINAL uploaded bytes goes
-// into `payroll_payout_evidence_files` BEFORE the object is stored, in its own
-// tenant transaction. A failed insert refuses the upload, so a stored proof
-// never lacks its fingerprint; a fingerprint without an object (the put
-// failed) is harmless. A return claim reads it to refuse the same file content
-// under a new key (payroll-payout-manual.service.ts).
+// Fingerprint (legend-w3691, legend-8vcsg): the SHA-256 of the ORIGINAL uploaded
+// bytes AND of the bytes as STORED (the re-encoded image; equal to the first for
+// a PDF) go into `payroll_payout_evidence_files` BEFORE the object is stored, in
+// its own tenant transaction. A failed insert refuses the upload, so a stored
+// proof never lacks its fingerprint; a fingerprint without an object (the put
+// failed) is harmless. A return claim reads both to refuse the same file
+// content, or the downloaded stored copy of it, under a new key
+// (payroll-payout-manual.service.ts).
 
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
@@ -198,12 +200,14 @@ export async function uploadPayoutEvidence(
   // Fingerprint first: if this insert fails the upload is refused and no
   // object exists, so a stored proof can never be used without a fingerprint.
   const contentSha256 = createHash("sha256").update(bytes).digest("hex");
+  const storedSha256 = createHash("sha256").update(stored).digest("hex");
   await withTenant(db, context, (tx) =>
     tx.insert(payrollPayoutEvidenceFiles).values({
       tenantId,
       batchId: batch.id,
       evidenceKey,
       contentSha256,
+      storedSha256,
       createdBy: (deps.userId ?? "system") as UserId,
     }),
   );

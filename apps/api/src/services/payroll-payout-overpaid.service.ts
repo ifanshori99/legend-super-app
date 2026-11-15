@@ -39,6 +39,7 @@ import {
 import { postJournalFromRuleInTransaction } from "./accounting-journal.service.ts";
 import type { Tx } from "./hris-access.ts";
 import { lockJournalPending } from "./payroll-payout-gl.service.ts";
+import { proofBoundToCorrection } from "./payroll-payout-proof-fingerprint.service.ts";
 import { payrollEntryDateOf, payrollGlKeys } from "./payroll-gl-consumer.ts";
 import {
   assertEvidenceKeyForBatchStored,
@@ -135,6 +136,17 @@ export async function recordOverpaidItem(
       409,
       "PAYOUT_CHANNEL_MISMATCH",
       "Pembayaran ganda hanya bisa dicatat untuk transfer bank manual.",
+    );
+  // A proof bound to a failed-item correction backs nothing else: one bank
+  // proof must not carry both a correction of one item and a double payment of
+  // another (legend-mejr2).
+  if (
+    await proofBoundToCorrection(tx, proofs, tenantId, batch.id, evidence, now)
+  )
+    throw payoutRefuse(
+      409,
+      "PAYOUT_CORRECTION_PROOF_REUSED",
+      "Bukti ini sudah dipakai untuk koreksi item gagal. Unggah bukti transfer yang sesuai dengan pembayaran ganda ini.",
     );
 
   const [item] = await tx
@@ -336,6 +348,7 @@ export async function recordOverpaidItem(
     ),
     piiKeyVersion: PAYROLL_SEAL_KEY_VERSION,
     postedAt: now,
+    settleNetIdr: netIdr,
   });
   // The database allows failed -> overpaid only inside this transaction.
   await tx.execute(sql`SELECT set_config('app.payout_overpaid', 'on', true)`);

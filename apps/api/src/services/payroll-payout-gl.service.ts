@@ -53,6 +53,14 @@
 //   off) is turned into `settle` the same way once the consumer has posted the
 //   lock journal (legend-vvzij), so 2103 of that batch does not stay open. If
 //   no source account can be resolved, it stays skipped.
+// - The salaries payable account is the one the run's LOCK journal credited
+//   (legend-wcd24, migration 0632), frozen on the posting
+//   (`salaries_payable_account_id`). Settle, resolve of a pending settle and
+//   return use it through the `salaries_payable` account override, never
+//   today's mapping. Taken from the lock journal's account snapshot; not
+//   provable (or not postable) keeps a settlement pending, and a settled legacy
+//   posting whose account is uncertain is held (`payable_account_hold`): its
+//   return is refused (409) and the list shows `payable_account_unknown`.
 // - `payroll.paid` leaves the outbox once, when the run turned paid, with
 //   `settledPerItem: true`: the GL consumer posts nothing for it.
 //
@@ -69,7 +77,11 @@ import {
   type PayrollRunId,
   type PayrollRunType,
 } from "@starter/shared/hris/payroll";
-import { accountMappings, journalEntries } from "../db/schema/index.ts";
+import {
+  accountMappings,
+  journalEntries,
+  journalLines,
+} from "../db/schema/index.ts";
 import { bankAccounts } from "../db/schema/accounting-cash-bank.ts";
 import { domainEventOutbox } from "../db/schema/core-events.ts";
 import { payrollRuns } from "../db/schema/payroll.ts";
@@ -250,10 +262,12 @@ async function runLockPending(
 }
 
 /**
- * True while the run's locked journal is missing but will come: accounting is
- * on and `payroll.locked` is still in the outbox. A journal that cannot be
- * posted now (overpaid second transfer) must wait for it, or its net never
- * reaches the GL.
+ * True while the run's locked journal is missing but its `payroll.locked` event
+ * is still in the outbox, whatever the accounting switch says now. A journal
+ * that cannot be posted now (overpaid second transfer) must wait for it: the
+ * event may be posted later (accounting switched on again, or a pending
+ * settlement), and a second transfer recorded meanwhile would never reach the
+ * GL (legend-8vcsg). A delivered event that left no journal is not pending.
  */
 export async function lockJournalPending(
   tx: Tx,
@@ -262,7 +276,6 @@ export async function lockJournalPending(
 ): Promise<boolean> {
   return (
     !(await runHasLockedJournal(tx, tenantId, runId)) &&
-    (await accountingEnabled(tx, tenantId)) &&
     (await runLockPending(tx, tenantId, runId))
   );
 }
@@ -378,6 +391,151 @@ async function postingSource(
   };
 }
 
+/** Why the salaries payable account of a settlement cannot be used (yet). */
+export type PayableAccountReason =
+  "payable_account_unknown" | "payable_account_inactive";
+
+type PayableAccount =
+  | { ok: true; accountId: string }
+  | { ok: false; reason: PayableAccountReason; accountId: string | null };
+
+/**
+ * The `salaries_payable` account the run's lock journal credited, or null when
+ * it cannot be proven (legend-wcd24). The journal's own account snapshot
+ * (written with the journal by the rule path) names the account; it is accepted
+ * only when the journal has a credit line on it and no OTHER account is credited
+ * the same amount, so the role cannot be confused with another liability. Never
+ * today's mapping: a later remap does not move the payable.
+ */
+async function lockJournalPayableAccount(
+  tx: Tx,
+  tenantId: TenantId,
+  legalEntityId: string,
+  runId: string,
+): Promise<string | null> {
+  const [entry] = await tx
+    .select({
+      id: journalEntries.id,
+      snapshot: journalEntries.postingAccountSnapshot,
+    })
+    .from(journalEntries)
+    .where(
+      and(
+        eq(journalEntries.tenantId, tenantId),
+        eq(journalEntries.idempotencyKey, payrollGlKeys.locked(runId)),
+        eq(journalEntries.legalEntityId, legalEntityId),
+        eq(journalEntries.sourceType, "payroll"),
+      ),
+    )
+    .limit(1);
+  const candidate = entry?.snapshot?.salaries_payable;
+  if (
+    entry === undefined ||
+    typeof candidate !== "string" ||
+    !UUID.test(candidate)
+  )
+    return null;
+  const credits = await tx
+    .select({
+      accountId: journalLines.accountId,
+      credit: journalLines.creditIdr,
+    })
+    .from(journalLines)
+    .where(
+      and(
+        eq(journalLines.tenantId, tenantId),
+        eq(journalLines.entryId, entry.id),
+        sql`${journalLines.creditIdr} > 0`,
+      ),
+    );
+  let credited = 0;
+  for (const line of credits)
+    if (line.accountId === candidate) credited += Number(line.credit);
+  if (credited <= 0) return null;
+  if (
+    credits.some(
+      (line) =>
+        line.accountId !== candidate && Number(line.credit) === credited,
+    )
+  )
+    return null;
+  return candidate;
+}
+
+/**
+ * The salaries payable account a settlement of this run debits (legend-wcd24):
+ * the one frozen on the posting, else the one the lock journal credited; never
+ * today's mapping. `posting` is null for a settlement not recorded yet. Held
+ * (`payable_account_hold`) or unprovable: unknown; found but not postable now:
+ * inactive (it resolves once finance activates it). Read-only.
+ */
+async function payableAccountOf(
+  tx: Tx,
+  tenantId: TenantId,
+  batch: Pick<BatchRow, "legalEntityId" | "payrollRunId">,
+  posting: {
+    salariesPayableAccountId: string | null;
+    payableAccountHold: boolean;
+  } | null,
+): Promise<PayableAccount> {
+  if (posting?.payableAccountHold)
+    return { ok: false, reason: "payable_account_unknown", accountId: null };
+  const accountId =
+    posting?.salariesPayableAccountId ??
+    (await lockJournalPayableAccount(
+      tx,
+      tenantId,
+      batch.legalEntityId,
+      batch.payrollRunId,
+    ));
+  if (accountId === null)
+    return { ok: false, reason: "payable_account_unknown", accountId: null };
+  if (!(await glAccountPostable(tx, tenantId, batch.legalEntityId, accountId)))
+    return { ok: false, reason: "payable_account_inactive", accountId };
+  return { ok: true, accountId };
+}
+
+/** Records the proven payable account on a posting, once (NULL -> account). */
+async function freezePayableAccount(
+  tx: Tx,
+  tenantId: TenantId,
+  postingId: string,
+  accountId: string,
+): Promise<void> {
+  await tx
+    .update(payrollPayoutGlPostings)
+    .set({ salariesPayableAccountId: accountId })
+    .where(
+      and(
+        eq(payrollPayoutGlPostings.tenantId, tenantId),
+        eq(payrollPayoutGlPostings.id, postingId),
+        isNull(payrollPayoutGlPostings.salariesPayableAccountId),
+        eq(payrollPayoutGlPostings.payableAccountHold, false),
+      ),
+    );
+}
+
+/**
+ * Pending/skipped settlement with a real net and an existing lock journal whose
+ * payable account is not usable: its fee must not run ahead of the salary
+ * journal it belongs to (the posting stays whole in the recovery list).
+ */
+async function settleBlockedByPayable(
+  tx: Tx,
+  tenantId: TenantId,
+  batch: Pick<BatchRow, "legalEntityId" | "payrollRunId">,
+  posting: FeePosting,
+  hasLock: boolean,
+): Promise<boolean> {
+  if (
+    !hasLock ||
+    (posting.kind !== "settle_pending" && posting.kind !== "settle_skipped") ||
+    openPostingTotal(posting, tenantId, "netIdr") === 0
+  )
+    return false;
+  return !(await payableAccountOf(tx, tenantId, batch, posting)).ok;
+}
+
 /**
  * Settles every `succeeded` item of the batch that has no posting yet.
  * Idempotent and safe to call from confirm, cash handover, return and replay:
@@ -421,8 +579,16 @@ export async function settleBatchPayouts(
   }
   const hash = itemSetHash(items.map((item) => item.id));
   const journalKey = payoutGlKeys.settle(hash);
-  const journaled =
+  const lockExists =
     netIdr > 0 && (await runHasLockedJournal(tx, tenantId, batch.payrollRunId));
+  // The payable account is the one the LOCK journal credited, never today's
+  // mapping (legend-wcd24). A lock journal whose account cannot be proven or is
+  // not postable keeps the settlement pending: money already left, nothing is
+  // guessed, finance sees it in the recovery list.
+  const payable = lockExists
+    ? await payableAccountOf(tx, tenantId, batch, null)
+    : null;
+  const journaled = payable?.ok === true;
   // Locked event still queued and accounting on, or accounting switched off
   // after an earlier batch of the same run went pending (the consumer then
   // posts the lock journal and resolves it): keep this settlement pending too
@@ -432,9 +598,10 @@ export async function settleBatchPayouts(
   const pending =
     !journaled &&
     netIdr > 0 &&
-    (await runLockPending(tx, tenantId, batch.payrollRunId)) &&
-    (accountingOn ||
-      (await runHasPendingSettle(tx, tenantId, batch.payrollRunId)));
+    (lockExists ||
+      ((await runLockPending(tx, tenantId, batch.payrollRunId)) &&
+        (accountingOn ||
+          (await runHasPendingSettle(tx, tenantId, batch.payrollRunId)))));
   const kind: PayoutPostingKind = journaled
     ? "settle"
     : pending
@@ -513,7 +680,7 @@ export async function settleBatchPayouts(
     const entryDate = payrollEntryDateOf(now.toISOString());
     const accountOverrides =
       (await sourceBankOverride(tx, tenantId, batch)) ?? undefined;
-    if (journaled)
+    if (payable?.ok)
       await postJournalFromRuleInTransaction(
         tx,
         context,
@@ -527,7 +694,10 @@ export async function settleBatchPayouts(
           sourceId: batch.payrollRunId,
           postedBy: null,
           idempotencyKey: journalKey,
-          accountOverrides,
+          accountOverrides: {
+            ...accountOverrides,
+            salaries_payable: payable.accountId,
+          },
         },
         now,
       );
@@ -573,6 +743,8 @@ export async function settleBatchPayouts(
     postedAt: now,
     feePosted,
     sourceGlAccountId: pendingCashAccountId,
+    salariesPayableAccountId: payable?.accountId ?? null,
+    settleNetIdr: netIdr,
   });
   const linked = await tx
     .update(payrollDisbursementItems)
@@ -738,6 +910,19 @@ async function resolveOnePosting(
     return false;
   }
   const accountOverrides = source.overrides;
+  // The payable account frozen on the posting, else the one the lock journal
+  // credited; never today's mapping (legend-wcd24). Not provable or not
+  // postable: the posting is left as is and finance sees why.
+  const payable = await payableAccountOf(tx, tenantId, batch, posting);
+  if (!payable.ok) {
+    logger.warn(
+      { tenantId, batchId: batch.id, reason: payable.reason },
+      "payout settlement left as is: salaries payable account not usable",
+    );
+    return false;
+  }
+  if (posting.salariesPayableAccountId === null)
+    await freezePayableAccount(tx, tenantId, posting.id, payable.accountId);
   await postJournalFromRuleInTransaction(
     tx,
     context,
@@ -751,7 +936,10 @@ async function resolveOnePosting(
       sourceId: batch.payrollRunId,
       postedBy: null,
       idempotencyKey: posting.journalKey,
-      accountOverrides,
+      accountOverrides: {
+        ...accountOverrides,
+        salaries_payable: payable.accountId,
+      },
     },
     now,
   );
@@ -874,6 +1062,9 @@ export async function postPayoutReturn(
     .select({
       kind: payrollPayoutGlPostings.kind,
       journalKey: payrollPayoutGlPostings.journalKey,
+      salariesPayableAccountId:
+        payrollPayoutGlPostings.salariesPayableAccountId,
+      payableAccountHold: payrollPayoutGlPostings.payableAccountHold,
     })
     .from(payrollPayoutGlPostings)
     .where(
@@ -886,6 +1077,16 @@ export async function postPayoutReturn(
   if (!posting || posting.kind !== "settle") return;
   const netIdr = safeAmount(() => openItemAmount(item));
   if (netIdr === 0) return;
+  // The return reopens the payable the settle paid off: the account frozen on
+  // the posting, never today's mapping (legend-wcd24). A posting whose account
+  // is uncertain (held for reconciliation) refuses, so no return is booked on a
+  // guessed account; nothing is recorded and finance sees the posting listed.
+  if (posting.payableAccountHold || posting.salariesPayableAccountId === null)
+    throw payoutRefuse(
+      409,
+      "PAYOUT_PAYABLE_ACCOUNT_UNKNOWN",
+      "Akun utang gaji batch ini belum pasti, jadi pengembalian belum bisa dijurnal. Minta finance merekonsiliasi dulu.",
+    );
   const settledBank = await settledSourceAccount(
     tx,
     tenantId,
@@ -905,7 +1106,10 @@ export async function postPayoutReturn(
       sourceId: batch.payrollRunId,
       postedBy: null,
       idempotencyKey: payoutGlKeys.return(item.id),
-      accountOverrides: { bank: settledBank },
+      accountOverrides: {
+        bank: settledBank,
+        salaries_payable: posting.salariesPayableAccountId,
+      },
     },
     now,
   );
@@ -1190,6 +1394,17 @@ export async function repostSkippedFees(
     );
   await assertManualPayoutSetup(tx, tenantId, batch.legalEntityId);
 
+  // A fee never runs ahead of the salary journal it belongs to: a settlement
+  // whose payable account is not usable blocks the re-post (legend-wcd24).
+  const hasLock = await runHasLockedJournal(tx, tenantId, batch.payrollRunId);
+  for (const posting of postings)
+    if (await settleBlockedByPayable(tx, tenantId, batch, posting, hasLock))
+      throw payoutRefuse(
+        409,
+        "PAYOUT_PAYABLE_ACCOUNT_UNKNOWN",
+        "Akun utang gaji batch ini belum pasti atau tidak aktif, jadi biaya transfer belum bisa dijurnal.",
+      );
+
   let reposted = 0;
   for (const posting of postings) {
     await postFeeOfPosting(tx, tenantId, batch, posting, now);
@@ -1227,6 +1442,10 @@ async function repostFeesSoft(
   let reposted = 0;
   for (const posting of postings) {
     if (posting.kind === "settle_skipped" && !hasLock) continue;
+    // Never ahead of the salary journal: a settlement whose payable account is
+    // not usable keeps its fee owed too (legend-wcd24).
+    if (await settleBlockedByPayable(tx, tenantId, batch, posting, hasLock))
+      continue;
     try {
       await tx.transaction((savepoint) =>
         postFeeOfPosting(savepoint, tenantId, batch, posting, now),
@@ -1287,6 +1506,8 @@ export type PayoutRecoveryReason =
   | "accounting_was_off"
   | "source_account_unknown"
   | "source_account_inactive"
+  | "payable_account_unknown"
+  | "payable_account_inactive"
   | "awaiting_resolve";
 
 export type PayoutRecoveryRow = {
@@ -1336,6 +1557,8 @@ export async function payoutRecoveryReason(
   batch: RecoveryBatch,
   posting: FeePosting,
 ): Promise<PayoutRecoveryReason> {
+  // Settled but the payable account is uncertain (0632): finance reconciles.
+  if (posting.payableAccountHold) return "payable_account_unknown";
   const owed = await settleOwed(tx, tenantId, batch, posting);
   const feeIdr = postingFeeIdr(posting, tenantId);
   const feeOwed =
@@ -1355,6 +1578,8 @@ export async function payoutRecoveryReason(
       return "bank_charges_missing";
     const source = await postingSource(tx, tenantId, batch, posting);
     if (!source.ok) return source.reason;
+    const payable = await payableAccountOf(tx, tenantId, batch, posting);
+    if (!payable.ok) return payable.reason;
     return chargesMissing ? "bank_charges_missing" : "awaiting_resolve";
   }
   if (feeOwed) {
@@ -1444,6 +1669,7 @@ const RECOVERY_PAGE_MAX = 200;
 const PERMANENT_RECOVERY_REASONS: ReadonlySet<PayoutRecoveryReason> = new Set([
   "accounting_was_off",
   "source_account_unknown",
+  "payable_account_unknown",
 ]);
 
 /** SQL: the fee journal of the posting does not exist (key `payroll-payout-fee:<hash>`). */
@@ -1461,6 +1687,8 @@ function recoveryCandidateWhere(tenantId: TenantId) {
     eq(payrollPayoutGlPostings.tenantId, tenantId),
     or(
       eq(payrollPayoutGlPostings.feePosted, false),
+      // Settled, but the payable account is uncertain (0632): reconciliation.
+      eq(payrollPayoutGlPostings.payableAccountHold, true),
       // A pending/skipped settlement is only open once the run's lock
       // journal exists (its net is sealed, so the net > 0 test is in code).
       and(
@@ -1509,6 +1737,7 @@ async function openRecoveryReason(
   batch: RecoveryBatch,
 ): Promise<PayoutRecoveryReason | null> {
   if (
+    !posting.payableAccountHold &&
     posting.feePosted &&
     !(await settleOwed(tx, tenantId, batch, posting)) &&
     !(await historicalFeeMissing(tx, tenantId, posting))

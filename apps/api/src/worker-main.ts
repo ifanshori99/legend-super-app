@@ -1,5 +1,6 @@
 import "./load-env";
 import { Pool } from "pg";
+import type { ObjectStorage } from "@starter/shared/adapters";
 import { assertDeploymentEnv } from "@starter/shared/env";
 import {
   CONTROL_PLANE_DESTINATION,
@@ -141,6 +142,7 @@ import { runAiAnomalyJob } from "./worker/ai-anomaly.job.ts";
 import { runAiDailySummaryJob } from "./worker/ai-daily-summary.job.ts";
 import { runMetricsDailyJob } from "./worker/metrics-daily.job.ts";
 import { runDueDepreciation } from "./worker/accounting-depreciation.job.ts";
+import { runPayoutEvidenceBackfillSweep } from "./worker/payout-evidence-backfill.job.ts";
 import { runPayoutGlRecoverySweep } from "./worker/payout-gl-recovery.job.ts";
 import { runPaymentGatewayPollJob } from "./worker/payment-gateway-poll.job.ts";
 import { expireDueIntents } from "./services/payment.service.ts";
@@ -238,6 +240,9 @@ if (env.DUITKU_CALLBACK_BASE_URL && env.DUITKU_RETURN_URL)
       returnUrl: env.DUITKU_RETURN_URL,
     }),
   );
+// Object storage for the payout proof backfill; set once the storage runtime is
+// built at start-up (null without STORAGE_*).
+let payoutEvidenceStorage: ObjectStorage | null = null;
 const registry = new Pool({
   connectionString: workerUrl,
   max: 1,
@@ -588,6 +593,17 @@ const relay = createRelayRuntime({
         await runPayoutGlRecoverySweep(context, new Date());
       } catch {
         console.error("Payout GL recovery sweep failed");
+      }
+      // Payout proofs from before the stored-byte fingerprints (legend-8vcsg):
+      // fills in their hashes so a re-upload is recognised; until it has, the
+      // tenant refuses new proofs for returns (fail closed). Needs the object
+      // storage; without STORAGE_* nothing runs and the tenants stay closed.
+      try {
+        await runPayoutEvidenceBackfillSweep(context, new Date(), {
+          storage: payoutEvidenceStorage,
+        });
+      } catch {
+        console.error("Payout evidence backfill sweep failed");
       }
     }
     // PAY-02/03 (legend-b9i): settle pending intents whose DOIT webhook never
@@ -968,6 +984,7 @@ try {
     consoleLikeLog(logger),
   );
   if (storageRuntime) {
+    payoutEvidenceStorage = storageRuntime.storage;
     await registerAttendanceSelfiePurgeJob({
       boss,
       storage: storageRuntime.storage,

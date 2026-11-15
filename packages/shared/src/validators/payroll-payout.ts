@@ -111,8 +111,13 @@ export const payoutBankFormatSchema = z.enum(PAYOUT_BANK_FORMATS);
 /** SHA-256 hex of the ordered batch items, as shown to the approver. */
 export const payoutContentHashSchema = z.string().regex(/^[0-9a-f]{64}$/);
 
+// The current account password, asked again when the session's second factor
+// only comes from the first MFA enrollment (legend-658, L5). Never logged.
+const reauthPasswordSchema = z.string().min(1).max(128).optional();
+
 export const upsertPayoutConfigInputSchema = z
   .strictObject({
+    password: reauthPasswordSchema,
     method: payoutMethodSchema,
     integrationId: z.uuid().nullable(),
     manualSourceBankAccountId: z.uuid(),
@@ -151,6 +156,12 @@ export const createDisbursementBatchInputSchema = z.strictObject({
 export const approveDisbursementBatchInputSchema = z.strictObject({
   contentHash: payoutContentHashSchema,
   sourceBankAccountId: z.uuid().nullable(),
+  password: reauthPasswordSchema,
+});
+
+// The export body carries only the re-authentication password (legend-w5yx6).
+export const exportDisbursementBatchInputSchema = z.strictObject({
+  password: reauthPasswordSchema,
 });
 
 export const cancelDisbursementBatchInputSchema = z.strictObject({
@@ -165,10 +176,6 @@ const confirmResultSchema = z.strictObject({
   bankRef: text(64),
   evidenceKey: text(200).optional(),
 });
-
-// The current account password, asked again when the session's second factor
-// only comes from the first MFA enrollment (legend-658, L5). Never logged.
-const reauthPasswordSchema = z.string().min(1).max(128).optional();
 
 export const confirmManualItemsInputSchema = z
   .strictObject({
@@ -224,6 +231,42 @@ export const withdrawResolutionSchema = z
 export const returnManualItemsSchema = z
   .strictObject({
     itemIds: z.array(z.uuid()).min(1).max(1000),
+    evidenceKey: text(200),
+    note: text(500),
+    password: reauthPasswordSchema,
+  })
+  .refine((value) => new Set(value.itemIds).size === value.itemIds.length, {
+    path: ["itemIds"],
+    message: "Each item may appear once.",
+  });
+
+// A transfer reported paid twice after the first attempt was closed as failed
+// and a later attempt succeeded (legend-v6gtp). Two different non-requesters
+// each call this with the same evidence; the second one records the overpaid
+// items (receivable journal). Nothing is paid again by this call.
+export const PAYOUT_OVERPAID_ITEMS_MAX = 50;
+export const recordOverpaidItemsSchema = z
+  .strictObject({
+    itemIds: z.array(z.uuid()).min(1).max(PAYOUT_OVERPAID_ITEMS_MAX),
+    evidenceKey: text(200),
+    note: text(500),
+    password: reauthPasswordSchema,
+  })
+  .refine((value) => new Set(value.itemIds).size === value.itemIds.length, {
+    path: ["itemIds"],
+    message: "Each item may appear once.",
+  });
+
+// A transfer closed as `failed` (resolution final) that never got a later
+// successful payment is corrected to `succeeded` once the bank proof shows it
+// reached the employee (legend-mejr2). Two different people give the same
+// evidence; the second one flips the items and settles the payable once.
+// Nothing is paid again by this call. One bank proof proves one transfer, so
+// one call corrects exactly one item.
+export const PAYOUT_CORRECT_FAILED_ITEMS_MAX = 1;
+export const correctFailedItemsSchema = z
+  .strictObject({
+    itemIds: z.array(z.uuid()).min(1).max(PAYOUT_CORRECT_FAILED_ITEMS_MAX),
     evidenceKey: text(200),
     note: text(500),
     password: reauthPasswordSchema,
@@ -290,6 +333,10 @@ export type ConfirmManualItemsInput = z.infer<
 export type ResolveManualItemsInput = z.infer<typeof resolveManualItemsSchema>;
 export type WithdrawResolutionInput = z.infer<typeof withdrawResolutionSchema>;
 export type ReturnManualItemsInput = z.infer<typeof returnManualItemsSchema>;
+export type RecordOverpaidItemsInput = z.infer<
+  typeof recordOverpaidItemsSchema
+>;
+export type CorrectFailedItemsInput = z.infer<typeof correctFailedItemsSchema>;
 export type ConfirmCashHandoverInput = z.infer<
   typeof confirmCashHandoverInputSchema
 >;

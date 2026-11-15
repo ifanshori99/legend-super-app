@@ -333,16 +333,26 @@ export function useCancelBatch() {
   });
 }
 
-/** `mutate({ batchId })`: downloads the bank file, once. */
+/** `mutate({ batchId, password? })`: downloads the bank file, once. */
 export function useExportBatch() {
   const refresh = useRefreshPayout();
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ batchId }: { batchId: string }) => {
+    mutationFn: ({
+      batchId,
+      password,
+    }: {
+      batchId: string;
+      password?: string;
+    }) => {
       const cached = queryClient.getQueryData<{
         data: { bankFormat: PayoutBankFormat | null };
       }>(endpointQueryKey(getDisbursementBatch, { params: { id: batchId } }));
-      return api.postExportBatch(batchId, cached?.data.bankFormat ?? null);
+      return api.postExportBatch(
+        batchId,
+        cached?.data.bankFormat ?? null,
+        password,
+      );
     },
     onSettled: refresh,
   });

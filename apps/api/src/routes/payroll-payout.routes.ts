@@ -3,7 +3,9 @@
 // docs/design/payroll-disbursement.md. Mounted at `/api/hris/payroll`; guards
 // sit on each route so every other payroll path falls through untouched.
 // Money moves only behind a tenant permission AND a recent second factor
-// (`requireTenantStepUpMfa`): config write, approve, export, confirm. Each
+// (`requireTenantStepUpMfa`) plus the account password when that factor only
+// comes from enrollment (`requireTenantStepUpPassword`): config write, approve,
+// export, confirm. Each
 // handler is one transaction, so the export state change is committed before
 // the file leaves the server (a second download answers 409).
 
@@ -15,6 +17,7 @@ import {
   confirmCashHandoverInputSchema,
   confirmManualItemsInputSchema,
   createDisbursementBatchInputSchema,
+  exportDisbursementBatchInputSchema,
   payoutBatchParamsSchema,
   listPayoutBatchesQuerySchema,
   listPayoutRecoveryQuerySchema,
@@ -75,8 +78,9 @@ export const payrollPayoutRouter = Router();
 const stepUp = requireTenantStepUpMfa({
   maxAgeMinutes: PAYOUT_STEP_UP_MAX_AGE_MINUTES,
 });
-// Confirm, resolve and cash handover: the account password again when the
-// second factor stamp comes from enrollment alone (legend-658, L5).
+// Config, approve, export, confirm, resolve and cash handover: the account
+// password again when the second factor stamp comes from enrollment alone
+// (legend-658, L5; legend-w5yx6).
 const passwordStepUp = requireTenantStepUpPassword();
 
 function actorOf(req: Request) {
@@ -110,6 +114,7 @@ payrollPayoutRouter.put(
   requireTenantPermission("payroll.payout.configure"),
   stepUp,
   jsonBody,
+  passwordStepUp,
   async (req, res) => {
     const { legalEntityId } = payoutLegalEntityParamsSchema.parse(req.params);
     const input = upsertPayoutConfigInputSchema.parse(req.body);
@@ -212,6 +217,7 @@ payrollPayoutRouter.post(
   requireTenantPermission("payroll.disburse.approve"),
   stepUp,
   jsonBody,
+  passwordStepUp,
   async (req, res) => {
     const { id } = payoutBatchParamsSchema.parse(req.params);
     const { contentHash, sourceBankAccountId } =
@@ -255,8 +261,10 @@ payrollPayoutRouter.post(
   requireTenantPermission("payroll.disburse.request"),
   stepUp,
   jsonBody,
+  passwordStepUp,
   async (req, res) => {
     const { id } = payoutBatchParamsSchema.parse(req.params);
+    exportDisbursementBatchInputSchema.parse(req.body);
     const { context, actor } = actorOf(req);
     // Respond only after the transaction committed the export state.
     const file = await withTenant(db, context, (tx) =>
@@ -373,7 +381,9 @@ payrollPayoutRouter.post(
 
 // Bank fee of a settled group that was not journaled (legend-8codi): finance
 // sees the list and re-posts it once the bank charges mapping is back. It only
-// books the fee already stored as expense, so no second factor.
+// books the fee already stored as expense (no amount is taken from the request
+// and no money moves), so it takes no MFA or password step-up, unlike the
+// approve, confirm, return, resolve and source routes above.
 // The list also holds settlements still waiting for money to reach the GL
 // (legend-pfk3q), each with the `reason` it waits.
 payrollPayoutRouter.get(
