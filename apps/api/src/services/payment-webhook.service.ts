@@ -64,6 +64,7 @@ import { recordAudit } from "./core-audit";
 import {
   applyGatewayFailure,
   confirmPayment,
+  markGatewayReconciled,
   recordUnsettledGatewayFunds,
 } from "./payment.service";
 import { decidePaymentConfirmation } from "./payment-lifecycle";
@@ -604,6 +605,8 @@ async function recordUnsettledFunds(
     },
     now,
   );
+  // SO-896 P2-3: parked money ends the closed code (the poll does the same).
+  await markGatewayReconciled(context, intent, now);
 }
 
 /** A 409 from `confirmPayment` is a deterministic lifecycle decision, never

@@ -11,13 +11,14 @@
 
 import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import { HttpError } from "../lib/http-error.ts";
-import type { TenantId } from "@starter/shared/core";
+import type { OutletId, TenantId } from "@starter/shared/core";
 import {
   billSplits,
   paymentIntents,
   paymentUnallocatedFunds,
 } from "../db/schema/index.ts";
 import { posOrderTenders } from "../db/schema/pos-order.ts";
+import { orders } from "../db/schema/qr-order.ts";
 import { posQrisHolds } from "../db/schema/pos-qris-hold.ts";
 import type { Tx } from "./menu-internals.ts";
 
@@ -114,4 +115,29 @@ export async function assertNoOpenFundsOfPosOrderTx(
       "FUNDS_UNRESOLVED",
       "Uang pelanggan dari pembayaran QRIS sebelumnya masih tersimpan; kembalikan atau selesaikan dulu sebelum menerima pembayaran baru.",
     );
+}
+
+/**
+ * The same refusal for a card (ECR) sale about to START, found by the bill's
+ * number (the sale's `reference`). The caller holds the (tenant,
+ * outlet:reference) advisory lock; no order lock is taken. A reference with no
+ * order passes here: the payable check owns that refusal.
+ */
+export async function assertNoOpenFundsForEdcSaleTx(
+  tx: Tx,
+  tenantId: TenantId,
+  input: { readonly outletId: OutletId; readonly reference: string },
+): Promise<void> {
+  const [order] = await tx
+    .select({ id: orders.id, paymentLinkId: orders.paymentLinkId })
+    .from(orders)
+    .where(
+      and(
+        eq(orders.tenantId, tenantId),
+        eq(orders.outletId, input.outletId),
+        eq(orders.number, input.reference),
+      ),
+    )
+    .limit(1);
+  if (order) await assertNoOpenFundsOfPosOrderTx(tx, tenantId, order);
 }

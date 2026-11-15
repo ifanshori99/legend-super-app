@@ -284,7 +284,11 @@ export async function addPosTender(
         await assertNoOpenEdcRequest(tx, context, order);
         // SO-896 (legend-o6q8i): guest money of an earlier QR sits parked
         // open (e.g. paid late after a force release): no second payment.
-        if (input.method === "cash" || input.method === "qris")
+        if (
+          input.method === "cash" ||
+          input.method === "qris" ||
+          input.method === "points"
+        )
           await assertNoOpenFundsOfPosOrderTx(tx, tenantId, order);
       } else {
         const lockedHolds = await lockHoldsOfOrder(tx, tenantId, order.id);

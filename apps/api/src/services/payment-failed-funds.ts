@@ -9,14 +9,11 @@
 // code, or the guest pays twice. No intent status is proof the money is back, so
 // only `paid` is left out (its money is allocated to the bill).
 
-import { and, eq, exists, inArray, ne, or, sql } from "drizzle-orm";
+import { and, eq, exists, ne, sql } from "drizzle-orm";
 import type { TenantId } from "@starter/shared/core";
-import {
-  billSplits,
-  paymentIntents,
-  paymentUnallocatedFunds,
-} from "../db/schema/index.ts";
+import { paymentIntents, paymentUnallocatedFunds } from "../db/schema/index.ts";
 import type { Tx } from "./menu-internals.ts";
+import { openFundOfPosOrderTx } from "./pos-order-open-funds.ts";
 
 function intentWithOpenFund() {
   return and(
@@ -30,43 +27,18 @@ function intentWithOpenFund() {
   );
 }
 
-/** A code of the order (any status but paid) whose money is still unresolved. ANY
- * code counts: a whole-order code, a part code, even of a part voided since
- * (SO-889). Found through the order's link or through its split parts, voided
- * ones included, so a re-split or a whole-order payment cannot step around it. */
+/** Open parked money of the order, whichever intent holds it: a whole-order
+ * code, a part code (even of a part voided since, SO-889), and, SO-896, the
+ * intent of a POS tender or QR hold (a manager force release voids the tender,
+ * a late payment is then parked on its intent). Same scope as the POS tender
+ * guard (`openFundOfPosOrderTx`), so a re-split, a part or a whole-order code
+ * cannot step around money parked on a tender. */
 export async function failedOrderCodeWithOpenFundTx(
   tx: Tx,
   tenantId: TenantId,
   order: { id: string; paymentLinkId: string | null },
 ): Promise<{ id: string } | null> {
-  const [code] = await tx
-    .select({ id: paymentIntents.id })
-    .from(paymentIntents)
-    .where(
-      and(
-        eq(paymentIntents.tenantId, tenantId),
-        or(
-          order.paymentLinkId === null
-            ? undefined
-            : eq(paymentIntents.paymentLinkId, order.paymentLinkId),
-          inArray(
-            paymentIntents.billSplitId,
-            tx
-              .select({ id: billSplits.id })
-              .from(billSplits)
-              .where(
-                and(
-                  eq(billSplits.tenantId, tenantId),
-                  eq(billSplits.orderId, order.id),
-                ),
-              ),
-          ),
-        ),
-        intentWithOpenFund(),
-      ),
-    )
-    .limit(1);
-  return code ?? null;
+  return openFundOfPosOrderTx(tx, tenantId, order);
 }
 
 /** A code of one split part (any status but paid) whose money is still unresolved. */

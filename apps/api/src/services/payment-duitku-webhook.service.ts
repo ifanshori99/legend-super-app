@@ -49,6 +49,7 @@ import {
   confirmPayment,
   holdGatewayAmountMismatch,
   PaymentConfirmationRejected,
+  markGatewayReconciled,
   recordUnsettledGatewayFunds,
 } from "./payment.service";
 import {
@@ -263,6 +264,9 @@ async function handleRejectedConfirmation(
       },
       now,
     );
+  // SO-896 P2-3: parked money ends the closed code (the poll does the same).
+  if (decision === "AMOUNT_MISMATCH" || decision === "BILL_CLOSED")
+    await markGatewayReconciled(context, intent, now);
   return `REJECTED_${decision}`;
 }
 

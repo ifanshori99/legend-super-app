@@ -86,6 +86,7 @@ import {
   assertPaymentPermission,
   uniqueViolation,
 } from "../../services/payment-support.ts";
+import { assertNoOpenFundsForEdcSaleTx } from "../../services/pos-order-open-funds.ts";
 import {
   assertEdcSaleBillPayable,
   assertNoActiveQrisHoldForEdcSale,
@@ -1618,6 +1619,14 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
         // (the tender would be refused while the hold is active). Same advisory
         // lock as the QR issue, so no QR and sale both pass; no order lock.
         await assertNoActiveQrisHoldForEdcSale(tx, ctx, {
+          outletId: input.outletId,
+          reference: input.reference,
+        });
+        // SO-896 (legend-o6q8i): a force released QR leaves no active hold but
+        // may leave the guest's money parked open; a card sale now would charge
+        // the guest twice (the card tender is exempt at booking, Q7). 409
+        // FUNDS_UNRESOLVED before the terminal is asked.
+        await assertNoOpenFundsForEdcSaleTx(tx, ctx.tenant.tenantId, {
           outletId: input.outletId,
           reference: input.reference,
         });

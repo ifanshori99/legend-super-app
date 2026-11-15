@@ -666,12 +666,19 @@ export async function createGuestPayment(
             );
           // SO-885 legend-0owye: money of a failed code of this part is still
           // parked; the part is not charged again before it is returned.
+          // SO-896: money parked anywhere on the bill (a POS tender, another
+          // part, the whole-order code) blocks a part code as well.
           if (
-            await failedPartCodeWithOpenFundTx(
+            (await failedPartCodeWithOpenFundTx(
               tx,
               context.tenant.tenantId,
               part.id,
-            )
+            )) ||
+            (await failedOrderCodeWithOpenFundTx(
+              tx,
+              context.tenant.tenantId,
+              order,
+            ))
           )
             throw new HttpError(
               409,

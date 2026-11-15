@@ -1392,6 +1392,10 @@ export async function holdGatewayAmountMismatch(
     if (!current) throw new HttpError(404, "NOT_FOUND", "Payment not found.");
     let status = current.status;
     let held = false;
+    // SO-896 P2-3: a code that was already `expired` (superseded, voided, timed
+    // out) is over once its money arrived. A `pending` one fails here and, like
+    // any failed code, stays live until the provider answers final.
+    const wasExpired = status === "expired";
     if (status === "pending" || status === "expired") {
       await tx
         .update(paymentIntents)
@@ -1460,6 +1464,11 @@ export async function holdGatewayAmountMismatch(
       },
       now,
     );
+    // The money that arrived on an expired code ends it for good (as the poll
+    // does when it parks): else it stays live after the money is refunded and
+    // blocks the replacement code.
+    if (wasExpired)
+      await markGatewayReconciledInTx(tx, context, current.id, now);
     // legend-baz8i: newly parked money for a POS QRIS hold alerts the cashier
     // and the manager. The hold stays as is (the manager releases it); a
     // replay (not inserted) parks and alerts nothing more.
@@ -2780,24 +2789,34 @@ async function syncExpiredIntentPayment(
  * without proof, so a settled one is left as the lifecycle wrote it and a
  * replay changes nothing.
  */
-async function markGatewayReconciled(
+export async function markGatewayReconciled(
   context: ScopedTenantContext,
   intent: PaymentIntentRow,
   now: Date,
 ): Promise<void> {
   await withTenant(db, context, async (tx) =>
-    tx
-      .update(paymentIntents)
-      .set({ providerFinalAt: now })
-      .where(
-        and(
-          eq(paymentIntents.tenantId, context.tenant.tenantId),
-          eq(paymentIntents.id, intent.id),
-          inArray(paymentIntents.status, ["expired", "failed"]),
-          isNull(paymentIntents.providerFinalAt),
-        ),
-      ),
+    markGatewayReconciledInTx(tx, context, intent.id, now),
   );
+}
+
+/** The same mark inside the caller's transaction (and lock order). */
+async function markGatewayReconciledInTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  intentId: string,
+  now: Date,
+): Promise<void> {
+  await tx
+    .update(paymentIntents)
+    .set({ providerFinalAt: now })
+    .where(
+      and(
+        eq(paymentIntents.tenantId, context.tenant.tenantId),
+        eq(paymentIntents.id, intentId),
+        inArray(paymentIntents.status, ["expired", "failed"]),
+        isNull(paymentIntents.providerFinalAt),
+      ),
+    );
 }
 
 /** Frees the polling lease of `ids`, but only where it is still the one this

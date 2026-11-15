@@ -1180,6 +1180,13 @@ describe("Codex P2 a late payment settles only an open bill", () => {
     expect(await linkPaidIdr(bill.linkId)).toBe(BILL_TOTAL);
     expect(await unallocatedIdr(bill.intentId)).toBe(BILL_TOTAL);
     expect(await evidenceCount(bill.intentId)).toBe(1);
+    // SO-896 P2-3: the parked money is the provider's final answer for this
+    // code; without `provider_final_at` the expired code would stay live.
+    const { rows } = await owner.query<{ final: boolean }>(
+      "SELECT provider_final_at IS NOT NULL AS final FROM payment_intents WHERE id = $1",
+      [bill.intentId],
+    );
+    expect(rows[0]!.final).toBe(true);
   });
 
   it("the poller applies the same rules: a closed bill or an amount off the bill parks the money", async () => {
