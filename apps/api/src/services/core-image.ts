@@ -3,13 +3,20 @@ import { HttpError } from "../lib/http-error.ts";
 import { logger } from "../lib/logger";
 import { assertSafePdf } from "./pdf-safety.ts";
 
+/** Who the scan is for; lets a scanner cap concurrent scans per tenant. */
+export interface ScanContext {
+  tenantKey?: string;
+}
+
 /** Replace the no-op with an actual scanner before relying on malware detection. */
 export interface MalwareScanner {
   /** Resolves only when the object is accepted; rejects on detection or failure.
    * A detection MUST throw `HttpError(422, ...)`. Any other error is treated as
    * the scanner being unavailable (503), which a scanner with
-   * `failOpenForImages` lets an image skip. */
-  scan(bytes: Uint8Array): Promise<void>;
+   * `failOpenForImages` lets an image skip. A scanner that is busy MAY throw
+   * `HttpError(503, "SCANNER_OVERLOADED")`, which is passed on as is and never
+   * skipped. */
+  scan(bytes: Uint8Array, context?: ScanContext): Promise<void>;
   /** False when this scanner cannot vet non-image documents (PDF); uploads of
    * those are refused. Absent means true. */
   readonly acceptsDocuments?: boolean;
@@ -25,11 +32,18 @@ export interface MalwareScanner {
 export async function scanUpload(
   scanner: MalwareScanner,
   bytes: Uint8Array,
+  context?: ScanContext,
 ): Promise<void> {
   try {
-    await scanner.scan(bytes);
+    await scanner.scan(bytes, context);
   } catch (error) {
     if (error instanceof HttpError && error.status === 422) throw error;
+    if (
+      error instanceof HttpError &&
+      error.status === 503 &&
+      error.code === "SCANNER_OVERLOADED"
+    )
+      throw error;
     throw new HttpError(
       503,
       "SCANNER_UNAVAILABLE",
@@ -55,18 +69,21 @@ export function assertScannerAcceptsDocuments(scanner: MalwareScanner): void {
 
 /** An image may pass while the scanner is unavailable only when the scanner
  * opted in (`failOpenForImages`): the re-encode that follows strips everything
- * but pixels. A detection (422) is never skipped. */
+ * but pixels. A detection (422) is never skipped, and neither is an overloaded
+ * scanner (SCANNER_OVERLOADED): that is refused with 503. */
 async function scanImageBytes(
   scanner: MalwareScanner,
   bytes: Uint8Array,
+  context?: ScanContext,
 ): Promise<void> {
   try {
-    await scanUpload(scanner, bytes);
+    await scanUpload(scanner, bytes, context);
   } catch (error) {
     if (
       scanner.failOpenForImages === true &&
       error instanceof HttpError &&
-      error.status === 503
+      error.status === 503 &&
+      error.code === "SCANNER_UNAVAILABLE"
     )
       logger.warn(
         {},
@@ -87,17 +104,23 @@ export type UploadBytesKind = "image" | "pdf";
  */
 export async function scanUploadBytes(
   bytes: Uint8Array,
-  options: { kind: UploadBytesKind; scanner: MalwareScanner; maxBytes: number },
+  options: {
+    kind: UploadBytesKind;
+    scanner: MalwareScanner;
+    maxBytes: number;
+    tenantKey?: string;
+  },
 ): Promise<{ pageCount?: number }> {
+  const context: ScanContext = { tenantKey: options.tenantKey };
   if (options.kind === "image") {
-    await scanImageBytes(options.scanner, bytes);
+    await scanImageBytes(options.scanner, bytes, context);
     return {};
   }
   assertScannerAcceptsDocuments(options.scanner);
   const { pageCount } = await assertSafePdf(bytes, {
     maxBytes: options.maxBytes,
   });
-  await scanUpload(options.scanner, bytes);
+  await scanUpload(options.scanner, bytes, context);
   return { pageCount };
 }
 
@@ -150,6 +173,24 @@ function imageMagic(bytes: Buffer): "jpeg" | "png" | "webp" | null {
   )
     return "webp";
   return null;
+}
+
+/** The same scanner, but every scan counts against `tenantKey`'s share of the
+ * concurrent-scan limit. For paths that reach the scanner through
+ * `processImage*`, which take no scan context (legend-1rtm1). */
+export function withScanTenant(
+  scanner: MalwareScanner,
+  tenantKey: string,
+): MalwareScanner {
+  return {
+    acceptsDocuments: scanner.acceptsDocuments,
+    failOpenForImages: scanner.failOpenForImages,
+    scan: (bytes, context) =>
+      scanner.scan(bytes, {
+        ...context,
+        tenantKey: context?.tenantKey ?? tenantKey,
+      }),
+  };
 }
 
 /** PRD §2, §7: scan input, decode and re-encode to remove EXIF/GPS. */

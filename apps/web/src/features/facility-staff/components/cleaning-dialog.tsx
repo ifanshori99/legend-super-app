@@ -3,13 +3,10 @@
 // photo. The unit only returns to `available` when the contract machine accepts
 // the complete call, and the board refetches on success.
 //
-// The photo is a local preview only: the screen stores a UUID media id in the
-// ticket's `mediaIds` (the contract shape), but no storage upload exists yet —
-// the WS-00 upload transport is the same open item as the waste photo
-// (bead legend-7nv1). Type and size are guarded here so the later upload only
-// ever receives a photo the storage adapter accepts.
+// The photo is uploaded to storage (sourceKind `cleaning_task`) as soon as it
+// is picked; the ticket's `mediaIds` carries the id the API returned, and
+// completing is blocked while an upload is running or failed.
 import * as React from "react";
-import { X } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -21,17 +18,17 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { FormField } from "@/components/ui/form-field";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { MediaPlate } from "@/components/ui/media-plate";
 import { useToast } from "@/components/ui/toast";
 import {
   cleaningTaskStatus,
   type CleaningTask,
 } from "@starter/shared/facility";
-import { newIdempotencyKey } from "@/lib/idempotency";
-import { useOnline } from "@/lib/use-online";
+import { normalizeImageFile, uploadStorageFile } from "@/features/storage/api";
+import {
+  PhotoField,
+  photoUploadErrorKey,
+} from "@/features/ws06-inventory/components/photo-field";
 import { useCompleteCleaningTask, useStartCleaningTask } from "../hooks.ts";
 import {
   CHECKLIST_KEYS,
@@ -40,9 +37,6 @@ import {
 } from "../view.ts";
 
 type Checks = Record<CleaningChecklistKey, boolean>;
-
-const PHOTO_MAX_BYTES = 5 * 1024 * 1024;
-const PHOTO_TYPES = ["image/jpeg", "image/png", "image/webp"];
 
 function initialChecks(task: CleaningTask): Checks {
   const checks = Object.fromEntries(
@@ -69,20 +63,59 @@ export function CleaningDialog({
     () => cleaningTaskStatus(task) !== "pending",
   );
   const [checks, setChecks] = React.useState<Checks>(() => initialChecks(task));
-  const [photo, setPhoto] = React.useState<{
-    url: string;
-    mediaId: string;
-  } | null>(null);
+  const [photo, setPhoto] = React.useState<File | null>(null);
+  const [mediaId, setMediaId] = React.useState<string | null>(null);
+  const [isUploading, setIsUploading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [photoError, setPhotoError] = React.useState<string | null>(null);
-  const online = useOnline();
-  const photoInputRef = React.useRef<HTMLInputElement>(null);
+  const uploadController = React.useRef<AbortController | null>(null);
   const checklistTitleId = React.useId();
 
-  React.useEffect(() => {
-    if (!photo) return;
-    return () => URL.revokeObjectURL(photo.url);
-  }, [photo]);
+  React.useEffect(() => () => uploadController.current?.abort(), []);
+
+  const photoPending = isUploading || Boolean(photo && !mediaId);
+
+  async function uploadPhoto(file: File) {
+    uploadController.current?.abort();
+    const controller = new AbortController();
+    uploadController.current = controller;
+    setMediaId(null);
+    setPhotoError(null);
+    setIsUploading(true);
+    try {
+      const uploaded = await uploadStorageFile({
+        purpose: "receipt",
+        sourceKind: "cleaning_task",
+        outletId: task.outletId,
+        file: await normalizeImageFile(file),
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
+      setMediaId(uploaded.id);
+    } catch (caught) {
+      if (controller.signal.aborted) return;
+      setPhotoError(t(photoUploadErrorKey(caught)));
+    } finally {
+      if (uploadController.current === controller) {
+        uploadController.current = null;
+        setIsUploading(false);
+      }
+    }
+  }
+
+  function pickPhoto(file: File) {
+    setPhoto(file);
+    void uploadPhoto(file);
+  }
+
+  function clearPhoto() {
+    uploadController.current?.abort();
+    uploadController.current = null;
+    setPhoto(null);
+    setMediaId(null);
+    setIsUploading(false);
+    setPhotoError(null);
+  }
 
   const allChecked = CHECKLIST_KEYS.every((key) => checks[key]);
 
@@ -111,6 +144,7 @@ export function CleaningDialog({
       setError(t("facilityStaff.cleaning.dialog.mustStart"));
       return;
     }
+    if (photoPending) return;
     if (!allChecked) {
       setError(t("facilityStaff.cleaning.dialog.incomplete"));
       return;
@@ -124,7 +158,7 @@ export function CleaningDialog({
             done: true,
             note: null,
           })),
-          mediaIds: photo ? [photo.mediaId] : undefined,
+          mediaIds: mediaId ? [mediaId] : undefined,
         },
       },
       {
@@ -195,81 +229,28 @@ export function CleaningDialog({
           </div>
         </section>
 
-        <FormField
+        <PhotoField
           label={t("facilityStaff.cleaning.dialog.photoLabel")}
           hint={t("facilityStaff.cleaning.dialog.photoHint")}
+          mediaId={mediaId}
+          isUploading={isUploading}
+          disabled={complete.isPending}
           error={photoError ?? undefined}
-        >
-          <Input
-            ref={photoInputRef}
-            type="file"
-            accept={PHOTO_TYPES.join(",")}
-            capture="environment"
-            data-slot="cleaning-photo-input"
-            onChange={(event) => {
-              const file = event.target.files?.[0];
-              if (!file) return;
-              // `accept` is only a hint to the picker; guard the real file.
-              const reject = !PHOTO_TYPES.includes(file.type)
-                ? t("facilityStaff.cleaning.dialog.photoWrongType")
-                : file.size > PHOTO_MAX_BYTES
-                  ? t("facilityStaff.cleaning.dialog.photoTooLarge")
-                  : null;
-              if (reject) {
-                setPhotoError(reject);
-                event.target.value = "";
-                return;
-              }
-              setPhotoError(null);
-              setPhoto({
-                url: URL.createObjectURL(file),
-                // Mock-only media id: the stored contract value is a uuid; the
-                // real upload replaces it with the storage adapter's id.
-                mediaId: newIdempotencyKey(),
-              });
-            }}
-          />
-        </FormField>
-
-        {photo && !online && (
-          <p
-            role="status"
-            data-slot="cleaning-photo-offline"
-            className="text-sm text-warning"
-          >
-            {t("facilityStaff.cleaning.dialog.photoOffline")}
-          </p>
-        )}
-
-        {photo && (
-          <div className="grid max-w-xs gap-2">
-            <MediaPlate
-              src={photo.url}
-              alt={t("facilityStaff.cleaning.dialog.photoAlt", {
-                unit: unitCode,
-              })}
-              ratio="card"
-            />
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="justify-self-start"
-              onClick={() => {
-                setPhoto(null);
-                // Clear the picker too, so its file name does not linger.
-                if (photoInputRef.current) photoInputRef.current.value = "";
-              }}
-            >
-              <X aria-hidden="true" />
-              {t("facilityStaff.cleaning.dialog.removePhoto")}
-            </Button>
-          </div>
-        )}
+          capture="environment"
+          onSelect={pickPhoto}
+          onClear={clearPhoto}
+          onRetry={photo ? () => void uploadPhoto(photo) : undefined}
+        />
 
         {error && (
           <p role="alert" className="text-sm font-medium text-danger">
             {error}
+          </p>
+        )}
+
+        {started && photoPending && !isUploading && (
+          <p className="text-sm text-muted-foreground">
+            {t("facilityStaff.cleaning.dialog.photoFailedBlock")}
           </p>
         )}
 
@@ -281,6 +262,7 @@ export function CleaningDialog({
             <Button
               type="button"
               loading={complete.isPending}
+              disabled={photoPending}
               onClick={handleComplete}
             >
               {t("facilityStaff.cleaning.dialog.submitComplete")}

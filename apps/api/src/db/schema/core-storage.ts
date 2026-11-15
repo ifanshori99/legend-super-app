@@ -53,7 +53,7 @@ export const coreStorageObjects = pgTable(
   (table) => [
     check(
       "core_storage_objects_source_kind_check",
-      sql`${table.sourceKind} IS NULL OR ${table.sourceKind} IN ('purchase_invoice', 'goods_receipt', 'expense', 'cash_deposit', 'reimbursement', 'attendance', 'employee_document', 'employment_contract', 'leave_request', 'menu_item', 'petty_purchase', 'waste_log')`,
+      sql`${table.sourceKind} IS NULL OR ${table.sourceKind} IN ('purchase_invoice', 'goods_receipt', 'expense', 'cash_deposit', 'reimbursement', 'attendance', 'employee_document', 'employment_contract', 'leave_request', 'menu_item', 'petty_purchase', 'waste_log', 'cleaning_task', 'maintenance_ticket', 'checklist_evidence')`,
     ),
     check(
       "core_storage_objects_source_check",

@@ -346,6 +346,7 @@ export function ChecklistRunPage({ runId }: { runId: string }) {
               <li key={item.id} className="min-w-0">
                 <ChecklistItemCard
                   runId={run.id}
+                  outletId={run.outletId}
                   item={item}
                   result={resultOf(run, item.id)}
                   editable={run.status === "in_progress"}
@@ -372,6 +373,7 @@ export function ChecklistRunPage({ runId }: { runId: string }) {
               <li key={item.id} className="min-w-0">
                 <ChecklistItemCard
                   runId={run.id}
+                  outletId={run.outletId}
                   item={item}
                   result={resultOf(run, item.id)}
                   editable={false}

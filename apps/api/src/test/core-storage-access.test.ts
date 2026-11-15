@@ -1,8 +1,9 @@
 // Storage request resolver (beads legend-tiie, legend-pszrm): upload/read
 // authorization is decided per purpose, per action and per outlet from the
 // caller's real role assignments. Reads are decided per stored object: the
-// owner can always read, otherwise the caller needs a review code for the
-// object's source kind over its outlet; legacy rows (no source kind) fall back
+// owner reads only while they still hold a code of the kind over the outlet,
+// otherwise the caller needs a review code for the object's source kind over
+// its outlet; legacy rows (no source kind) fall back
 // to the strict manager codes. Real Better Auth session, PostgreSQL and RLS;
 // a probe router calls the resolver the way core-storage.routes.ts does.
 // Every refusal has a positive control first.
@@ -379,6 +380,13 @@ describe("legend-tiie storage request resolver", () => {
         scope: { type: "outlet", id: outletB },
       },
     ]);
+    // legend-9ujp5: the requester must hold self.leave.request at the outlet.
+    const leaveEmployeeA = await signedIn("LegacyLeaveEmployeeA", [
+      {
+        permissions: ["self.leave.request"],
+        scope: { type: "outlet", id: outletA },
+      },
+    ]);
     const employeeId = randomUUID();
     const typeId = randomUUID();
     const requestIds: string[] = [];
@@ -391,7 +399,7 @@ describe("legend-tiie storage request resolver", () => {
           [
             employeeId,
             tenantId,
-            userIds.get(employeeA),
+            userIds.get(leaveEmployeeA),
             `L-${employeeId.slice(0, 8).toUpperCase()}`,
             outletA,
           ],
@@ -429,11 +437,11 @@ describe("legend-tiie storage request resolver", () => {
               employeeId,
               typeId,
               sourceKind === null ? object.id.toUpperCase() : object.id,
-              userIds.get(employeeA),
+              userIds.get(leaveEmployeeA),
             ],
           );
         });
-        expectAllowed(await read(employeeA, object));
+        expectAllowed(await read(leaveEmployeeA, object));
         expectAllowed(await read(approverA, object));
         expectDenied(await read(approverB, object));
         expectDenied(await read(otherEmployeeA, object));
@@ -456,6 +464,147 @@ describe("legend-tiie storage request resolver", () => {
         );
       });
     }
+  });
+
+  // ---- legend-9ujp5: leave attachment read needs live grants ----
+  // Assumptions: the requester reads only while holding self.leave.request at
+  // the leave's outlet; the approver only with hr.leave.approve at that outlet.
+  // Revoking = deleting the user's role_assignments. The attachment is a legacy
+  // object (no source kind) so the leave reference alone decides.
+  async function withLeaveAttachment(
+    requester: Actor,
+    work: (object: StoredObject) => Promise<void>,
+  ) {
+    const employeeId = randomUUID();
+    const typeId = randomUUID();
+    const requestId = randomUUID();
+    try {
+      const object = await seedObject({
+        purpose: "document",
+        outletId: outletA,
+        owner: otherEmployeeA,
+      });
+      await asOwner(async (client) => {
+        await client.query(
+          `INSERT INTO employees
+          (id, tenant_id, user_id, employee_no, full_name, home_outlet_id, employment_type, join_date)
+          VALUES ($1,$2,$3,$4,'Leave employee',$5,'pkwtt','2024-01-01')`,
+          [
+            employeeId,
+            tenantId,
+            userIds.get(requester),
+            `L-${employeeId.slice(0, 8).toUpperCase()}`,
+            outletA,
+          ],
+        );
+        await client.query(
+          `INSERT INTO leave_types
+          (id, tenant_id, code, name, paid, requires_attachment, policy)
+          VALUES ($1,$2,$3,'Leave',true,true,'{}')`,
+          [typeId, tenantId, `L-${typeId.slice(0, 8)}`],
+        );
+        await client.query(
+          `INSERT INTO leave_requests
+          (id, tenant_id, outlet_id, employee_id, leave_type_id, period_year,
+           start_date, end_date, days, attachment_key, requested_by)
+          VALUES ($1,$2,$3,$4,$5,2032,'2032-03-20','2032-03-20',1,$6,$7)`,
+          [
+            requestId,
+            tenantId,
+            outletA,
+            employeeId,
+            typeId,
+            object.id,
+            userIds.get(requester),
+          ],
+        );
+      });
+      await work(object);
+    } finally {
+      await asOwner(async (client) => {
+        await client.query(
+          "DELETE FROM leave_requests WHERE tenant_id = $1 AND id = $2",
+          [tenantId, requestId],
+        );
+        await client.query(
+          "DELETE FROM employees WHERE tenant_id = $1 AND id = $2",
+          [tenantId, employeeId],
+        );
+        await client.query(
+          "DELETE FROM leave_types WHERE tenant_id = $1 AND id = $2",
+          [tenantId, typeId],
+        );
+      });
+    }
+  }
+
+  it("legend-9ujp5 leave attachment: requester is refused once self.leave.request is revoked", async () => {
+    const requester = await signedIn("RevokedLeaveRequester", [
+      {
+        permissions: ["self.leave.request"],
+        scope: { type: "outlet", id: outletA },
+      },
+    ]);
+    await withLeaveAttachment(requester, async (object) => {
+      // Positive control: the requester with the live grant reads it.
+      expectAllowed(await read(requester, object));
+      await asOwner(async (client) => {
+        await client.query(
+          "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = $2",
+          [tenantId, userIds.get(requester)],
+        );
+      });
+      expectDenied(await read(requester, object));
+    });
+  });
+
+  it("legend-9ujp5 leave attachment: requester holding self.leave.request only at another outlet is refused", async () => {
+    const requester = await signedIn("OtherOutletLeaveRequester", [
+      {
+        permissions: ["self.leave.request"],
+        scope: { type: "outlet", id: outletB },
+      },
+    ]);
+    await withLeaveAttachment(requester, async (object) => {
+      expectDenied(await read(requester, object));
+    });
+  });
+
+  it("legend-9ujp5 leave attachment: requester with an active self.leave.request reads it", async () => {
+    const requester = await signedIn("ActiveLeaveRequester", [
+      {
+        permissions: ["self.leave.request"],
+        scope: { type: "outlet", id: outletA },
+      },
+    ]);
+    await withLeaveAttachment(requester, async (object) => {
+      expectAllowed(await read(requester, object));
+    });
+  });
+
+  it("legend-9ujp5 leave attachment: approver at the leave's outlet reads it, approver at another outlet is refused", async () => {
+    const requester = await signedIn("ApproverCaseLeaveRequester", [
+      {
+        permissions: ["self.leave.request"],
+        scope: { type: "outlet", id: outletA },
+      },
+    ]);
+    const approverAtLeaveOutlet = await signedIn("LeaveApproverSameOutlet", [
+      {
+        permissions: ["hr.leave.approve"],
+        scope: { type: "outlet", id: outletA },
+      },
+    ]);
+    const approverAtOtherOutlet = await signedIn("LeaveApproverOtherOutlet", [
+      {
+        permissions: ["hr.leave.approve"],
+        scope: { type: "outlet", id: outletB },
+      },
+    ]);
+    await withLeaveAttachment(requester, async (object) => {
+      expectAllowed(await read(approverAtLeaveOutlet, object));
+      expectDenied(await read(approverAtOtherOutlet, object));
+    });
   });
 
   it("lets a tenant-wide menu manager upload a menu photo at any outlet", async () => {
@@ -718,5 +867,251 @@ describe("legend-tiie storage request resolver", () => {
     // employeeA holds both codes, so only the kind/purpose mismatch refuses.
     expectDenied(await upload(employeeA, "selfie", outletA, "reimbursement"));
     expectDenied(await upload(employeeA, "receipt", outletA, "attendance"));
+  });
+
+  // ---- legend-792: owner read needs a live grant; per-kind facility rules ----
+  // Assumption: the facility photo kinds are stored with purpose "receipt"
+  // (packages/shared storage source-kind map). Revoking = deleting the user's
+  // role_assignments. Legacy rows (no kind) fall back to the legacy purpose
+  // code (selfie: self.attendance.clock); a legacy receipt has no upload code.
+  const atOutlet = (permissions: string[], outlet: string) => [
+    { permissions, scope: { type: "outlet", id: outlet } as Scope },
+  ];
+  async function revokeAll(actor: Actor) {
+    await asOwner(async (client) => {
+      await client.query(
+        "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = $2",
+        [tenantId, userIds.get(actor)],
+      );
+    });
+  }
+
+  const ownerKinds = [
+    ["reimbursement", "self.reimbursement.request"],
+    ["maintenance_ticket", "ops.equipment.maintain"],
+    ["checklist_evidence", "ops.checklist.complete"],
+    ["cleaning_task", "facility.booth.operate"],
+  ] as const;
+
+  for (const [kind, code] of ownerKinds) {
+    it(`legend-792 ${kind}: owner is refused once ${code} is revoked`, async () => {
+      const ownerUser = await signedIn(
+        `Revoked-${kind}`,
+        atOutlet([code], outletA),
+      );
+      const object = await seedObject({
+        purpose: "receipt",
+        outletId: outletA,
+        owner: ownerUser,
+        sourceKind: kind,
+      });
+      // Positive control: the owner with the live grant reads it.
+      expectAllowed(await read(ownerUser, object));
+      await revokeAll(ownerUser);
+      expectDenied(await read(ownerUser, object));
+    });
+
+    it(`legend-792 ${kind}: owner with the code only at another outlet is refused`, async () => {
+      const ownerUser = await signedIn(
+        `OtherOutlet-${kind}`,
+        atOutlet([code], outletB),
+      );
+      const atB = await seedObject({
+        purpose: "receipt",
+        outletId: outletB,
+        owner: ownerUser,
+        sourceKind: kind,
+      });
+      const atA = await seedObject({
+        purpose: "receipt",
+        outletId: outletA,
+        owner: ownerUser,
+        sourceKind: kind,
+      });
+      // Positive control: own object at the outlet where the grant lives.
+      expectAllowed(await read(ownerUser, atB));
+      expectDenied(await read(ownerUser, atA));
+    });
+  }
+
+  it("legend-792 legacy selfie (no kind): owner is refused once the legacy code is revoked", async () => {
+    const ownerUser = await signedIn(
+      "RevokedLegacySelfie",
+      atOutlet(["self.attendance.clock"], outletA),
+    );
+    const legacy = await seedObject({
+      purpose: "selfie",
+      outletId: outletA,
+      owner: ownerUser,
+    });
+    expectAllowed(await read(ownerUser, legacy));
+    await revokeAll(ownerUser);
+    expectDenied(await read(ownerUser, legacy));
+  });
+
+  it("legend-792 legacy selfie: owner with the legacy code only at another outlet is refused", async () => {
+    const ownerUser = await signedIn(
+      "OtherOutletLegacySelfie",
+      atOutlet(["self.attendance.clock"], outletB),
+    );
+    const atB = await seedObject({
+      purpose: "selfie",
+      outletId: outletB,
+      owner: ownerUser,
+    });
+    const atA = await seedObject({
+      purpose: "selfie",
+      outletId: outletA,
+      owner: ownerUser,
+    });
+    expectAllowed(await read(ownerUser, atB));
+    expectDenied(await read(ownerUser, atA));
+  });
+
+  it("legend-792 maintenance_ticket: any ops.equipment.maintain holder or facility manager at the outlet reads it", async () => {
+    const reporter = await signedIn(
+      "TicketReporter",
+      atOutlet(["ops.equipment.maintain"], outletA),
+    );
+    const teammateA = await signedIn(
+      "TicketTeammateA",
+      atOutlet(["ops.equipment.maintain"], outletA),
+    );
+    const teammateB = await signedIn(
+      "TicketTeammateB",
+      atOutlet(["ops.equipment.maintain"], outletB),
+    );
+    const facilityManagerA = await signedIn(
+      "TicketFacilityManagerA",
+      atOutlet(["facility.config.manage"], outletA),
+    );
+    const checklistStaffA = await signedIn(
+      "TicketChecklistStaffA",
+      atOutlet(["ops.checklist.complete"], outletA),
+    );
+    const ticket = await seedObject({
+      purpose: "receipt",
+      outletId: outletA,
+      owner: reporter,
+      sourceKind: "maintenance_ticket",
+    });
+    // Positive controls: owner, and the teammate who did not upload it.
+    expectAllowed(await read(reporter, ticket));
+    expectAllowed(await read(teammateA, ticket));
+    expectAllowed(await read(facilityManagerA, ticket));
+    // Denials: the same code at another outlet, and a different feature's code.
+    expectDenied(await read(teammateB, ticket));
+    expectDenied(await read(checklistStaffA, ticket));
+  });
+
+  it("legend-792 checklist_evidence: only the active owner or an ops.checklist.manage holder reads it", async () => {
+    const completer = await signedIn(
+      "EvidenceOwner",
+      atOutlet(["ops.checklist.complete"], outletA),
+    );
+    const otherCompleter = await signedIn(
+      "EvidenceOtherCompleter",
+      atOutlet(["ops.checklist.complete"], outletA),
+    );
+    const managerA = await signedIn(
+      "EvidenceManagerA",
+      atOutlet(["ops.checklist.manage"], outletA),
+    );
+    const managerB = await signedIn(
+      "EvidenceManagerB",
+      atOutlet(["ops.checklist.manage"], outletB),
+    );
+    const evidenceA = await seedObject({
+      purpose: "receipt",
+      outletId: outletA,
+      owner: completer,
+      sourceKind: "checklist_evidence",
+    });
+    const evidenceB = await seedObject({
+      purpose: "receipt",
+      outletId: outletB,
+      owner: completer,
+      sourceKind: "checklist_evidence",
+    });
+    // Positive controls.
+    expectAllowed(await read(completer, evidenceA));
+    expectAllowed(await read(managerA, evidenceA));
+    expectAllowed(await read(managerB, evidenceB));
+    // Denials: peer with the same code, manager of the other outlet.
+    expectDenied(await read(otherCompleter, evidenceA));
+    expectDenied(await read(managerB, evidenceA));
+    expectDenied(await read(managerA, evidenceB));
+  });
+
+  it("legend-792 cleaning_task: only the active owner or a facility.config.manage holder reads it", async () => {
+    const operator = await signedIn(
+      "CleaningOwner",
+      atOutlet(["facility.booth.operate"], outletA),
+    );
+    const otherOperator = await signedIn(
+      "CleaningOtherOperator",
+      atOutlet(["facility.booth.operate"], outletA),
+    );
+    const managerA = await signedIn(
+      "CleaningManagerA",
+      atOutlet(["facility.config.manage"], outletA),
+    );
+    const managerB = await signedIn(
+      "CleaningManagerB",
+      atOutlet(["facility.config.manage"], outletB),
+    );
+    const taskA = await seedObject({
+      purpose: "receipt",
+      outletId: outletA,
+      owner: operator,
+      sourceKind: "cleaning_task",
+    });
+    const taskB = await seedObject({
+      purpose: "receipt",
+      outletId: outletB,
+      owner: operator,
+      sourceKind: "cleaning_task",
+    });
+    expectAllowed(await read(operator, taskA));
+    expectAllowed(await read(managerA, taskA));
+    expectAllowed(await read(managerB, taskB));
+    expectDenied(await read(otherOperator, taskA));
+    expectDenied(await read(managerB, taskA));
+    expectDenied(await read(managerA, taskB));
+  });
+
+  it("legend-792 facility kinds: an object of the second tenant is refused for a tenant-wide holder", async () => {
+    const wide = await signedIn("FacilityTenantWide", [
+      {
+        permissions: [
+          "ops.equipment.maintain",
+          "ops.checklist.manage",
+          "facility.config.manage",
+        ],
+        scope: { type: "tenant" },
+      },
+    ]);
+    for (const kind of [
+      "maintenance_ticket",
+      "checklist_evidence",
+      "cleaning_task",
+    ]) {
+      const own = await seedObject({
+        purpose: "receipt",
+        outletId: outletA,
+        owner: null,
+        sourceKind: kind,
+      });
+      // Positive control: same caller reads the tenant A object.
+      expectAllowed(await read(wide, own));
+      const foreign = await seedObject({
+        purpose: "receipt",
+        outletId: tenantB.outletId,
+        tenantId: tenantB.tenantId,
+        owner: null,
+        sourceKind: kind,
+      });
+      expectDenied(await read(wide, foreign));
+    }
   });
 });

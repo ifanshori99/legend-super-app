@@ -27,18 +27,14 @@ import {
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
-import { API_MOCK } from "@/lib/api/mock-flag";
 import { ApiError } from "@/lib/api/errors";
+import { normalizeImageFile, uploadStorageFile } from "@/features/storage/api";
 import { useTenantContext } from "@/lib/tenant-context";
 import { useInventoryItems, useStockLocations, useUnits } from "../hooks";
 import { useCreateWasteLog, useMenuItems } from "../opname-hooks";
 import { LIST_LIMIT } from "../lib";
 import { WASTE_REASONS, wasteReasonKey } from "../opname-lib";
-import {
-  PhotoField,
-  WASTE_PHOTO_MAX_BYTES,
-  WASTE_PHOTO_TYPES,
-} from "./photo-field";
+import { PhotoField, photoUploadErrorKey } from "./photo-field";
 import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 const QTY_PATTERN = /^\d{1,10}(\.\d{1,4})?$/;
@@ -71,7 +67,9 @@ export function WasteFormDialog({
   const [reason, setReason] = React.useState<WasteReason | "">("");
   const [note, setNote] = React.useState("");
   const [photo, setPhoto] = React.useState<File | null>(null);
-  const [previewUrl, setPreviewUrl] = React.useState<string | null>(null);
+  const [mediaId, setMediaId] = React.useState<string | null>(null);
+  const [isUploading, setIsUploading] = React.useState(false);
+  const uploadController = React.useRef<AbortController | null>(null);
   const [errors, setErrors] = React.useState<
     Record<string, string | undefined>
   >({});
@@ -113,16 +111,16 @@ export function WasteFormDialog({
       : t("waste.unit.portion");
 
   React.useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      uploadController.current?.abort();
+      uploadController.current = null;
+      setIsUploading(false);
+      return;
+    }
     idempotencyKey.current = newIdempotencyKey();
   }, [open]);
 
-  React.useEffect(
-    () => () => {
-      if (previewUrl) URL.revokeObjectURL(previewUrl);
-    },
-    [previewUrl],
-  );
+  React.useEffect(() => () => uploadController.current?.abort(), []);
 
   function resetForm() {
     setTargetType("inventory_item");
@@ -130,13 +128,13 @@ export function WasteFormDialog({
     setQuantity("");
     setReason("");
     setNote("");
+    uploadController.current?.abort();
+    uploadController.current = null;
     setPhoto(null);
+    setMediaId(null);
+    setIsUploading(false);
     setErrors({});
     setFormError(undefined);
-    if (previewUrl) {
-      URL.revokeObjectURL(previewUrl);
-      setPreviewUrl(null);
-    }
   }
 
   function close() {
@@ -144,39 +142,57 @@ export function WasteFormDialog({
     onOpenChange(false);
   }
 
-  function pickPhoto(file: File) {
-    if (!WASTE_PHOTO_TYPES.includes(file.type)) {
-      setErrors((current) => ({
-        ...current,
-        photo: t("waste.form.photoInvalid"),
-      }));
-      return;
-    }
-    if (file.size > WASTE_PHOTO_MAX_BYTES) {
-      setErrors((current) => ({
-        ...current,
-        photo: t("waste.form.photoTooLarge"),
-      }));
-      return;
-    }
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
+  async function pickPhoto(file: File) {
+    uploadController.current?.abort();
+    uploadController.current = null;
+    setIsUploading(false);
+    setMediaId(null);
     setPhoto(file);
-    setPreviewUrl(URL.createObjectURL(file));
+    if (!outlet) return;
+    const controller = new AbortController();
+    uploadController.current = controller;
+    setIsUploading(true);
     setErrors((current) => {
       const next = { ...current };
       delete next.photo;
       return next;
     });
+    try {
+      const uploaded = await uploadStorageFile({
+        purpose: "receipt",
+        sourceKind: "waste_log",
+        outletId: outlet.id,
+        file: await normalizeImageFile(file),
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
+      setMediaId(uploaded.id);
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      setErrors((current) => ({
+        ...current,
+        photo: t(photoUploadErrorKey(error)),
+      }));
+    } finally {
+      if (uploadController.current === controller) {
+        uploadController.current = null;
+        setIsUploading(false);
+      }
+    }
   }
 
   function clearPhoto() {
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    uploadController.current?.abort();
+    uploadController.current = null;
     setPhoto(null);
-    setPreviewUrl(null);
+    setMediaId(null);
+    setIsUploading(false);
+    setErrors((current) => ({ ...current, photo: undefined }));
   }
 
   function submit(event: React.FormEvent) {
     event.preventDefault();
+    if (isUploading || createWaste.isPending || (photo && !mediaId)) return;
     const nextErrors: Record<string, string | undefined> = {};
     if (effectiveLocationId === "")
       nextErrors.location = t("waste.form.errorLocation");
@@ -197,9 +213,7 @@ export function WasteFormDialog({
         targetId,
         quantity: normalized,
         reason: reason as WasteReason,
-        // The media transport is not built yet (bead legend-7nv1): mock mode
-        // mints the id the contract expects and keeps the preview local.
-        mediaId: photo && API_MOCK ? newIdempotencyKey() : null,
+        mediaId,
         note: note.trim() === "" ? null : note.trim(),
         idempotencyKey: idempotencyKey.current,
       },
@@ -222,6 +236,7 @@ export function WasteFormDialog({
     <Dialog
       open={open}
       onOpenChange={(next) => {
+        if (isUploading || createWaste.isPending) return;
         if (!next) close();
         else onOpenChange(true);
       }}
@@ -378,10 +393,13 @@ export function WasteFormDialog({
           </FormField>
 
           <PhotoField
-            previewUrl={previewUrl}
+            mediaId={mediaId}
+            isUploading={isUploading}
+            disabled={!outlet || createWaste.isPending}
             error={errors.photo}
             onSelect={pickPhoto}
             onClear={clearPhoto}
+            onRetry={photo ? () => void pickPhoto(photo) : undefined}
           />
 
           {formError && (
@@ -391,13 +409,18 @@ export function WasteFormDialog({
           )}
 
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={close}>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={close}
+              disabled={isUploading || createWaste.isPending}
+            >
               {t("waste.form.cancel")}
             </Button>
             <Button
               type="submit"
-              loading={createWaste.isPending}
-              disabled={!outlet}
+              loading={createWaste.isPending || isUploading}
+              disabled={!outlet || isUploading || Boolean(photo && !mediaId)}
             >
               {t("waste.form.submit")}
             </Button>

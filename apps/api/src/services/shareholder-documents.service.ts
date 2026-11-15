@@ -187,6 +187,7 @@ export async function uploadShareholderDocumentFileService(
     kind: "pdf",
     scanner: deps.scanner,
     maxBytes: MAX_PDF_BYTES,
+    tenantKey: context.tenant.tenantId,
   });
   const id = randomUUID();
   const fileKey = `shareholder-documents/${id}.pdf`;

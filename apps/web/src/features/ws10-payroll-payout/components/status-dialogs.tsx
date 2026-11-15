@@ -27,7 +27,7 @@ import { Input } from "@/components/ui/input";
 import { Money } from "@/components/ui/money";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
-import { useStorageCapabilities } from "../../storage/hooks";
+import { useStorageCapabilities } from "../../storage/capabilities";
 import { formatDateTime } from "../../ws10-payroll-run/lib";
 import { evidenceUploadMessage } from "../errors";
 import {

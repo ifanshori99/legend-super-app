@@ -122,6 +122,17 @@
   --skeleton: #6f6c67;
 }
 
+/* Signature pad (checklist signature evidence). The exported PNG is a stored
+ * document, so ink and paper are fixed black on white in every theme and
+ * density; a themed ink would vanish on a dark or tenant background. */
+:root,
+[data-theme],
+[data-tenant],
+[data-density] {
+  --signature-ink: #000000;
+  --signature-paper: #ffffff;
+}
+
 /* Elevation (DESIGN.md §6). Resting surfaces stay flat; `card` lift is for
  * interactive states only (hover, selected, dragging, sticky summary);
  * `overlay` is for menus, dialogs, sheets, toasts. Re-declared on every

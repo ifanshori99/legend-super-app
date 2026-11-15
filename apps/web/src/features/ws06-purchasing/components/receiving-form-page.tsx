@@ -5,8 +5,7 @@
 // never exceed the ordered quantity (`assertGoodsReceiptMatchesOrder` in the
 // contract; the mock and API enforce the same rule).
 //
-// The photo upload transport has no endpoint yet, so the picked photo stays a
-// data URL in local state and only a media id is sent (reported as a gap).
+// Photo evidence is uploaded before saving; receipts only receive storage ids.
 import * as React from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { ArrowLeft, PackageCheck } from "lucide-react";
@@ -37,11 +36,12 @@ import {
   goodsReceiptValueIdr,
 } from "@starter/shared/inventory";
 import type { PurchaseOrderLine } from "@starter/shared/inventory";
-import { PhotoField } from "../../ws06-inventory/components/photo-field.tsx";
 import {
-  WASTE_PHOTO_MAX_BYTES,
-  WASTE_PHOTO_TYPES,
+  PhotoField,
+  photoUploadErrorKey,
 } from "../../ws06-inventory/components/photo-field.tsx";
+import { normalizeImageFile } from "../../storage/api.ts";
+import { useUploadStorageFile } from "../../storage/hooks.ts";
 import { quantityFromInput } from "../../ws06-inventory/lib.ts";
 import {
   useAttemptKey,
@@ -67,7 +67,6 @@ import {
   useSuppliers,
   useUoms,
 } from "../hooks.ts";
-import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 const RECEIVABLE_STATUSES = ["approved", "sent", "partially_received"] as const;
 
@@ -79,8 +78,6 @@ type LineDraft = {
   expiresOn: string;
   locationId: string;
 };
-
-type PhotoDraft = { previewUrl: string; mediaId: string };
 
 function emptyDraft(locationId: string): LineDraft {
   return {
@@ -111,6 +108,7 @@ function ReceivingFormContent() {
   const navigate = useNavigate();
   const attempt = useAttemptKey();
   const createReceipt = useCreateGoodsReceipt();
+  const uploadPhoto = useUploadStorageFile();
 
   const orders = usePurchaseOrders(outletId);
   const suppliers = useSuppliers();
@@ -142,11 +140,16 @@ function ReceivingFormContent() {
     {},
   );
   const [formError, setFormError] = React.useState<string | undefined>();
-  const [photo, setPhoto] = React.useState<PhotoDraft | null>(null);
+  const [photoMediaId, setPhotoMediaId] = React.useState<string | null>(null);
+  const [photoFile, setPhotoFile] = React.useState<File | null>(null);
+  const [isPhotoUploading, setIsPhotoUploading] = React.useState(false);
   const [photoError, setPhotoError] = React.useState<string | undefined>();
+  const photoUploadController = React.useRef<AbortController | null>(null);
   const [receivedOn, setReceivedOn] = React.useState(() => todayBusinessDate());
   const [qcNotes, setQcNotes] = React.useState("");
   const [note, setNote] = React.useState("");
+
+  React.useEffect(() => () => photoUploadController.current?.abort(), []);
 
   function chooseOrder(value: string) {
     setOrderChoice(value);
@@ -172,24 +175,44 @@ function ReceivingFormContent() {
     setFormError(undefined);
   }
 
-  function selectPhoto(file: File) {
+  async function selectPhoto(file: File) {
+    if (!outlet) return;
+    photoUploadController.current?.abort();
+    const controller = new AbortController();
+    photoUploadController.current = controller;
+    setPhotoFile(file);
+    setPhotoMediaId(null);
     setPhotoError(undefined);
-    if (!WASTE_PHOTO_TYPES.includes(file.type)) {
-      setPhotoError(t("inventoryReceiving.receiving.form.photoInvalid"));
-      return;
+    setIsPhotoUploading(true);
+    try {
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        throw new ApiError(0, "NETWORK_ERROR", "offline");
+      }
+      const fileToUpload = await normalizeImageFile(file);
+      if (controller.signal.aborted) return;
+      const object = await uploadPhoto.mutateAsync({
+        purpose: "receipt",
+        sourceKind: "goods_receipt",
+        outletId: outlet.id,
+        file: fileToUpload,
+        signal: controller.signal,
+      });
+      if (!controller.signal.aborted) setPhotoMediaId(object.id);
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        setPhotoError(t(photoUploadErrorKey(error)));
+      }
+    } finally {
+      if (!controller.signal.aborted) setIsPhotoUploading(false);
     }
-    if (file.size > WASTE_PHOTO_MAX_BYTES) {
-      setPhotoError(t("inventoryReceiving.receiving.form.photoTooLarge"));
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result !== "string") return;
-      setPhoto({ previewUrl: reader.result, mediaId: newIdempotencyKey() });
-    };
-    reader.onerror = () =>
-      setPhotoError(t("inventoryReceiving.receiving.form.photoInvalid"));
-    reader.readAsDataURL(file);
+  }
+
+  function clearPhoto() {
+    photoUploadController.current?.abort();
+    setPhotoMediaId(null);
+    setPhotoFile(null);
+    setPhotoError(undefined);
+    setIsPhotoUploading(false);
   }
 
   const orderLines = React.useMemo(
@@ -229,7 +252,8 @@ function ReceivingFormContent() {
   }, [drafts, orderLines]);
 
   function submit() {
-    if (!outletId) return;
+    if (!outletId || isPhotoUploading || photoError || createReceipt.isPending)
+      return;
     const errors: Record<string, string> = {};
     const parsedLines: {
       line: PurchaseOrderLine;
@@ -339,7 +363,7 @@ function ReceivingFormContent() {
       purchaseOrderId: orderId,
       receivedOn: receivedOn === "" ? undefined : receivedOn,
       qcNotes: composedQcNotes === "" ? null : composedQcNotes,
-      mediaIds: photo ? [photo.mediaId] : [],
+      mediaIds: photoMediaId ? [photoMediaId] : [],
       note: note.trim() === "" ? null : note.trim(),
       lines: parsedLines.map((line) => ({
         purchaseOrderLineId: line.line.id,
@@ -727,13 +751,17 @@ function ReceivingFormContent() {
             <PhotoField
               label={t("inventoryReceiving.receiving.form.photoSection")}
               hint={t("inventoryReceiving.receiving.form.photoHint")}
-              previewUrl={photo?.previewUrl ?? null}
+              mediaId={photoMediaId}
+              isUploading={isPhotoUploading}
+              disabled={createReceipt.isPending}
               error={photoError}
               onSelect={selectPhoto}
-              onClear={() => {
-                setPhoto(null);
-                setPhotoError(undefined);
-              }}
+              onRetry={
+                photoFile && photoError
+                  ? () => void selectPhoto(photoFile)
+                  : undefined
+              }
+              onClear={clearPhoto}
             />
             <FormField label={t("inventoryReceiving.receiving.form.qcNotes")}>
               <Textarea
@@ -778,6 +806,7 @@ function ReceivingFormContent() {
               <Button
                 type="button"
                 loading={createReceipt.isPending}
+                disabled={isPhotoUploading || Boolean(photoError)}
                 onClick={submit}
               >
                 <PackageCheck aria-hidden="true" />

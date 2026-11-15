@@ -608,3 +608,151 @@ test("payout resolve shows a clear message when the server says the evidence dif
   // Nothing was recorded.
   await expect(page.getByText(/Hasil tercatat/)).toHaveCount(0);
 });
+
+// ---------------------------------------------------------------------------
+// legend-uzd4t: the approval confirmation belongs to one batch.
+// Bug: moving from batch A to batch B (same PT, same source account) with the
+// approval tab still mounted kept the ticked review checkbox and the open
+// MFA panel of A on screen for B, so B could be approved with A's confirmation.
+//
+// ASSUMPTIONS (spec is silent):
+// - `?mock=two-pending` adds batch 203 (Rp3.500.000, asked by finance) next to
+//   batch 201 (Rp21.500.000). The approve mock logs every call it receives in
+//   window.__payoutApproveCalls (batch ids); failNext errors do not reach it.
+// - The move is a same-document history step (pushState + popstate, then the
+//   browser's back/forward), never a reload: a reload resets state and would
+//   hide the bug.
+// - After the move the person must tick again: checkbox unticked, no
+//   verification panel, approve button disabled, no approve request sent for
+//   either batch (the money-limiting rule).
+// ---------------------------------------------------------------------------
+
+const TWO_PENDING = {
+  a: "00000000-0000-4000-8000-000000000201",
+  b: "00000000-0000-4000-8000-000000000203",
+} as const;
+
+const approvalUrl = (batch: string) =>
+  `${ROUTE}?tab=approval&batch=${batch}&mock=two-pending`;
+
+/** Same-document navigation, as the router's own history steps do. */
+async function stepToBatch(page: Page, batch: string) {
+  await page.evaluate((url) => {
+    window.history.pushState(window.history.state, "", url);
+    window.dispatchEvent(
+      new PopStateEvent("popstate", { state: window.history.state }),
+    );
+  }, approvalUrl(batch));
+  await expect(page).toHaveURL(new RegExp(`batch=${batch}`));
+}
+
+async function approveCalls(page: Page) {
+  return page.evaluate(
+    () =>
+      (window as unknown as { __payoutApproveCalls?: string[] })
+        .__payoutApproveCalls ?? [],
+  );
+}
+
+/** Loads A, visits B once (so both are cached), then returns to A. */
+async function openBatchAWithBCached(page: Page) {
+  await page.goto(approvalUrl(TWO_PENDING.a), { waitUntil: "networkidle" });
+  await expect(page.getByText(/Rp\s?21\.500\.000/).first()).toBeVisible({
+    timeout: COLD_START_TIMEOUT_MS,
+  });
+  await stepToBatch(page, TWO_PENDING.b);
+  await expect(page.getByText(/Rp\s?3\.500\.000/).first()).toBeVisible();
+  await page.goBack();
+  await expect(page).toHaveURL(new RegExp(`batch=${TWO_PENDING.a}`));
+  await expect(page.getByText(/Rp\s?21\.500\.000/).first()).toBeVisible();
+}
+
+test("legend-uzd4t: the ticked check and the MFA panel of batch A do not carry over to batch B", async ({
+  page,
+}) => {
+  await openBatchAWithBCached(page);
+  const approve = page.getByRole("button", { name: /Verifikasi & setujui/i });
+  await page.getByRole("checkbox").first().check();
+  await expect(approve).toBeEnabled();
+  await failNext(page, {
+    status: 401,
+    code: "MFA_REQUIRED",
+    message: "Verifikasi MFA diperlukan.",
+  });
+  await approve.click();
+  await expect(page.getByTestId("payout-verify")).toBeVisible();
+
+  // Forward to B, still on the approval tab.
+  await page.goForward();
+  await expect(page).toHaveURL(new RegExp(`batch=${TWO_PENDING.b}`));
+  await expect(page.getByText(/Rp\s?3\.500\.000/).first()).toBeVisible();
+
+  await expect(page.getByTestId("payout-verify")).toHaveCount(0);
+  await expect(page.getByRole("checkbox").first()).not.toBeChecked();
+  await expect(approve).toBeDisabled();
+  await expect(page.getByText(/berhasil disetujui/i)).toHaveCount(0);
+  expect(await approveCalls(page)).toEqual([]);
+
+  // B can still be approved, but only after its own tick: the button wakes up.
+  await page.getByRole("checkbox").first().check();
+  await expect(approve).toBeEnabled();
+  expect(await approveCalls(page)).toEqual([]);
+});
+
+test("legend-uzd4t: a stale batch hash asks for a new check instead of resending the old one", async ({
+  page,
+}) => {
+  await openBatchAWithBCached(page);
+  const approve = page.getByRole("button", { name: /Verifikasi & setujui/i });
+  await page.getByRole("checkbox").first().check();
+  await expect(approve).toBeEnabled();
+  await failNext(page, {
+    status: 409,
+    code: "PAYOUT_HASH_MISMATCH",
+    message: "Isi batch berubah. Muat ulang lalu periksa lagi.",
+  });
+  await approve.click();
+  await expect(page.getByText(/Isi pencairan berubah/i).first()).toBeVisible();
+  // The old confirmation is gone: unticked, button off, nothing was approved.
+  await expect(page.getByRole("checkbox").first()).not.toBeChecked();
+  await expect(approve).toBeDisabled();
+  await expect(page.getByTestId("payout-verify")).toHaveCount(0);
+});
+
+test("legend-uzd4t: a verification still running for batch A approves nothing once the person is on batch B", async ({
+  page,
+}) => {
+  await openBatchAWithBCached(page);
+  const approve = page.getByRole("button", { name: /Verifikasi & setujui/i });
+  await page.getByRole("checkbox").first().check();
+  await failNext(page, {
+    status: 401,
+    code: "MFA_REQUIRED",
+    message: "Verifikasi MFA diperlukan.",
+  });
+  await approve.click();
+  const panel = page.getByTestId("payout-verify");
+  await expect(panel).toBeVisible();
+
+  // Slow every answer, send the code of A, and move to B before it returns.
+  await page.evaluate(() =>
+    (
+      window as unknown as {
+        __legendMock: { setLatencyMs: (ms: number) => void };
+      }
+    ).__legendMock.setLatencyMs(500),
+  );
+  await panel.getByRole("textbox").fill("123456");
+  await panel.getByRole("textbox").press("Enter");
+  await page.goForward();
+  await expect(page).toHaveURL(new RegExp(`batch=${TWO_PENDING.b}`));
+  await expect(page.getByText(/Rp\s?3\.500\.000/).first()).toBeVisible();
+
+  // The slow answer would land well inside this window (verify 500 ms, then an
+  // approve request 500 ms). Waiting is the only way to observe "nothing sent".
+  await page.waitForTimeout(2500);
+  expect(await approveCalls(page)).toEqual([]);
+  await expect(page.getByText(/berhasil disetujui/i)).toHaveCount(0);
+  await expect(page.getByTestId("approval-done")).toHaveCount(0);
+  await expect(approve).toBeDisabled();
+});

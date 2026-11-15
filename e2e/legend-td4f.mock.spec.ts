@@ -20,6 +20,10 @@ const CLEANING_RUN_ID = "00000000-0000-4000-8000-000000008203";
 // The opening template (cafeLegendOperationsFixtures.checklistTemplates).
 const OPENING_TEMPLATE_ID = "00000000-0000-4000-8000-000000008101";
 
+// The photo is decoded and re-encoded in the browser before upload, so the
+// fixture must be a real image (arbitrary bytes are rejected as unreadable).
+const REAL_PHOTO = "apps/web/demo/sample/menu/croissant-mentega.jpg";
+
 const BOARD_HEADING = "Checklist operasional";
 
 async function queuedAnswerCount(page: Page) {
@@ -101,14 +105,9 @@ test("OPS-01 records photo, number and signature evidence then completes the che
   const photoItem = page
     .locator('[data-slot="checklist-item"]')
     .filter({ hasText: "Cek semua pintu dan jendela terkunci" });
-  await photoItem.locator('input[type="file"]').setInputFiles({
-    name: "pintu-belakang.jpg",
-    mimeType: "image/jpeg",
-    buffer: Buffer.from("foto-pintu-belakang"),
-  });
-  await expect(
-    photoItem.locator('[data-slot="checklist-photo-preview"]'),
-  ).toBeVisible();
+  await photoItem.locator('input[type="file"]').setInputFiles(REAL_PHOTO);
+  // The photo is uploaded (mock storage) and the API-minted id is kept.
+  await expect(photoItem.getByText("Foto terunggah.")).toBeVisible();
   await photoItem.getByRole("button", { name: "Tandai selesai" }).click();
   await expect(photoItem.getByText("Selesai", { exact: true })).toBeVisible();
 
@@ -116,7 +115,18 @@ test("OPS-01 records photo, number and signature evidence then completes the che
     .locator('[data-slot="checklist-item"]')
     .filter({ hasText: "Rekap kas akhir shift" });
   await cashItem.getByLabel("Angka", { exact: true }).fill("500000");
+  // Drawn ink is uploaded as the signature image (a typed name alone is also
+  // accepted: it is rendered onto the pad; covered in legend-wf37).
   await cashItem.getByLabel("Nama penanda tangan").fill("Yusuf Hidayat");
+  const pad = cashItem.getByRole("img", { name: "Tanda tangan" });
+  await pad.scrollIntoViewIfNeeded();
+  const box = await pad.boundingBox();
+  if (!box) throw new Error("The signature pad has no layout box.");
+  await page.mouse.move(box.x + 20, box.y + 40);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 80, box.y + 90, { steps: 8 });
+  await page.mouse.move(box.x + 140, box.y + 50, { steps: 8 });
+  await page.mouse.up();
   await cashItem.getByRole("button", { name: "Tandai selesai" }).click();
   await expect(cashItem.getByText("Selesai", { exact: true })).toBeVisible();
 

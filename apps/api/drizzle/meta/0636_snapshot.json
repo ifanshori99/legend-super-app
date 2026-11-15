@@ -1,6 +1,6 @@
 {
-  "id": "bc918d9b-cebd-46ec-ad3b-7e6808aa56b4",
-  "prevId": "11b11df8-98fe-44f6-bade-7267b0b3f2ad",
+  "id": "cbf9b66c-b5eb-4164-924d-3d79c7208fed",
+  "prevId": "5229f02e-db61-47c6-baea-894a95fec89c",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -7612,7 +7612,7 @@
       "checkConstraints": {
         "core_storage_objects_source_kind_check": {
           "name": "core_storage_objects_source_kind_check",
-          "value": "\"core_storage_objects\".\"source_kind\" IS NULL OR \"core_storage_objects\".\"source_kind\" IN ('purchase_invoice', 'goods_receipt', 'expense', 'cash_deposit', 'reimbursement', 'attendance', 'employee_document', 'employment_contract', 'leave_request', 'menu_item', 'petty_purchase', 'waste_log')"
+          "value": "\"core_storage_objects\".\"source_kind\" IS NULL OR \"core_storage_objects\".\"source_kind\" IN ('purchase_invoice', 'goods_receipt', 'expense', 'cash_deposit', 'reimbursement', 'attendance', 'employee_document', 'employment_contract', 'leave_request', 'menu_item', 'petty_purchase', 'waste_log', 'cleaning_task', 'maintenance_ticket', 'checklist_evidence')"
         },
         "core_storage_objects_source_check": {
           "name": "core_storage_objects_source_check",
