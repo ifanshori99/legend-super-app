@@ -15,17 +15,20 @@ type Database = NodePgDatabase<typeof schema>;
 type Options = { destinations?: readonly string[] };
 
 export const BLOCKED_ALERT_BATCH_SIZE = 100;
-// Per-process cursor ensures persistent failures in an early batch do not starve
-// later heads. It is an optimization, so losing it on restart is safe.
-const sweepCursors = new Map<string, string>();
+// A fixed upper bound makes each cycle finite even while new heads arrive.
+// Failed heads are retried on the next cycle; later heads still get a turn.
+// This is an optimization, so losing the cursor on restart is safe.
+type SweepCursor = { afterId: string; throughId: string };
+const sweepCursors = new Map<string, SweepCursor>();
 const MAX_SWEEP_CURSORS = 1000;
 
 /** Heads that are dead and actually hold at least one later event. */
 function blockedHeadsQuery(
   context: ScopedTenantContext,
   options: Options,
-  select: "rows" | "count",
+  select: "rows" | "count" | "last",
   afterId?: string,
+  throughId?: string,
 ) {
   const outletFilter =
     context.outletScope.kind === "tenant"
@@ -46,17 +49,20 @@ function blockedHeadsQuery(
     to_json(o.aggregate_id::text)::text || ',' || to_json(o.sequence::text)::text || ',' ||
     o.dispatch_generation::text || ']', 'UTF8')), 'hex') from 1 for 32)::uuid`;
   const pendingOnly =
-    select === "rows"
+    select !== "count"
       ? sql`AND NOT EXISTS (
     SELECT 1 FROM notification_outbox n
     WHERE n.tenant_id = o.tenant_id AND n.source_event_id = ${alertId}
   )`
       : sql``;
   const cursorFilter = afterId ? sql`AND o.id > ${afterId}::uuid` : sql``;
+  const endFilter = throughId ? sql`AND o.id <= ${throughId}::uuid` : sql``;
   const batch =
-    select === "rows"
-      ? sql`ORDER BY o.id LIMIT ${BLOCKED_ALERT_BATCH_SIZE}`
-      : sql``;
+    select === "count"
+      ? sql``
+      : select === "last"
+        ? sql`ORDER BY o.id DESC LIMIT 1`
+        : sql`ORDER BY o.id LIMIT ${BLOCKED_ALERT_BATCH_SIZE}`;
   return sql`
       SELECT ${columns}
       FROM domain_event_outbox o
@@ -71,6 +77,7 @@ function blockedHeadsQuery(
             AND later.sequence > o.sequence AND later.status <> 'delivered')
         ${pendingOnly}
         ${cursorFilter}
+        ${endFilter}
       ${batch}
     `;
 }
@@ -101,14 +108,38 @@ export async function alertBlockedOutboxAggregates(
     options.destinations,
   ]);
   const cursor = sweepCursors.get(cursorKey);
-  const heads = await withTenant(database, context, async (tx) => {
-    const page = (
-      await tx.execute(blockedHeadsQuery(context, options, "rows", cursor))
-    ).rows;
-    if (page.length || !cursor) return page;
-    return (await tx.execute(blockedHeadsQuery(context, options, "rows"))).rows;
-  });
-  if (heads.length) {
+  const { heads, throughId } = await withTenant(
+    database,
+    context,
+    async (tx) => {
+      if (cursor) {
+        const page = (
+          await tx.execute(
+            blockedHeadsQuery(
+              context,
+              options,
+              "rows",
+              cursor.afterId,
+              cursor.throughId,
+            ),
+          )
+        ).rows;
+        if (page.length) return { heads: page, throughId: cursor.throughId };
+      }
+      const last = (
+        await tx.execute(blockedHeadsQuery(context, options, "last"))
+      ).rows[0];
+      if (!last) return { heads: [], throughId: undefined };
+      const endId = String(last.id);
+      const page = (
+        await tx.execute(
+          blockedHeadsQuery(context, options, "rows", undefined, endId),
+        )
+      ).rows;
+      return { heads: page, throughId: endId };
+    },
+  );
+  if (heads.length && throughId) {
     if (
       !sweepCursors.has(cursorKey) &&
       sweepCursors.size >= MAX_SWEEP_CURSORS
@@ -116,7 +147,10 @@ export async function alertBlockedOutboxAggregates(
       const oldest = sweepCursors.keys().next().value;
       if (oldest !== undefined) sweepCursors.delete(oldest);
     }
-    sweepCursors.set(cursorKey, String(heads[heads.length - 1]?.id));
+    sweepCursors.set(cursorKey, {
+      afterId: String(heads[heads.length - 1]?.id),
+      throughId,
+    });
   } else {
     sweepCursors.delete(cursorKey);
   }

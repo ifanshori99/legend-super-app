@@ -6090,3 +6090,9 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Daftar `KNOWN_SOURCE_GAPS` kosong: 34 kasus (owner-num-023..025, shareholder-num-015..028, manager-num-020..022, employee-num-001..014) lulus sebagai test biasa. Seed baru: `ai-eval/seed-customers.ts`, `seed-shifts.ts`, `seed-profit-share.ts`.
 - Review architect: 2 temuan nyata TL-08 (jangkauan outlet bocor saat tanpa filter, pemotongan sebelum filter) dan 1 label TL-12 ambigu: sudah dibetulkan dan diberi test. Tahun default TL-12 memakai UTC (sudah ada sebelumnya): belum diubah.
 - Bukti: `ai-eval.test.ts` + `ai-tools-read-b.test.ts` 426/426 lewat `heavy`, typecheck API EXIT 0, eslint dan prettier hijau.
+## 2026-11-14: Outbox dead alert fairness (legend-o2iul)
+
+- Cabang `fix/outbox-dead-alert-fairness`, dasar `origin/milestone/m1` (`9b8433f69`). Cursor putaran menyimpan batas ID tertinggi agar kedatangan head baru tidak menunda retry alarm lama tanpa batas; batas 100 head dan deduplikasi advisory lock tetap berlaku. Tidak ada migrasi.
+- Bukti gagal-dulu: test retry dengan head baru tiap sweep gagal karena alarm lama hanya dicoba sekali (harus dua kali); 17 test lama hijau. Dua regresi kini mencakup 101 head baru per sweep dan sweep bersamaan atas alarm belum terkirim.
+- Review independen satu subagent bersih. ESLint dan Prettier dua file TypeScript hijau; `LEGEND_TEST_FILES=src/test/edge-event-class.test.ts heavy pnpm test` hijau 19/19 (34,91 detik); `heavy pnpm --filter @starter/api typecheck` hijau (satu run). Gate penuh/build tidak dijalankan sesuai brief terarah; milik merge train. Prettier `docs/PROGRESS.md` merah juga pada versi HEAD/base; format dokumen lama tidak diubah.
+- Subagent: total 4 (2 Explore, 1 test-writer, 1 reviewer), puncak 3 bersamaan; token heavy dipegang parent. session-usage.py tidak menemukan transkrip Codex; parallel-report hanya membaca sesi Claude, biaya/token dan rata-rata Codex tidak tersedia.

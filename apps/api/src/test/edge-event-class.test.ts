@@ -285,6 +285,7 @@ async function createFixture() {
 async function createBlockedHead(
   context: ReturnType<typeof establishScopedTenantContext>,
   destination: string,
+  firstId = createUlid(),
 ) {
   const first = edgeEvent("order.paid", "order");
   const second = {
@@ -292,7 +293,6 @@ async function createBlockedHead(
     aggregateId: first.aggregateId,
     sequence: 2,
   };
-  const firstId = createUlid();
   for (const [id, event] of [
     [firstId, first],
     [createUlid(), second],
@@ -310,6 +310,7 @@ async function createBlockedHead(
   expect(
     await markOutboxDead(db, context, { outboxId: firstId, generation: 0 }),
   ).toBe(true);
+  return firstId;
 }
 
 beforeAll(async () => {
@@ -843,6 +844,123 @@ describe("legend-eadm D alarm storm and once-only path", () => {
       destinations: [destination],
     });
     expect(await notificationCount()).toBe(before + 101);
+  }, 120_000);
+
+  it("legend-o2iul retries an old failed alarm while every sweep gains a newer blocked head", async () => {
+    const context = establishScopedTenantContext(
+      establishTenantContext({ tenantId, brandId: null, source: "domain" }),
+      { kind: "tenant" },
+    );
+    const destination = "test-o2iul-continuous-heads";
+    const options = { destinations: [destination] };
+    const firstTime = Date.now();
+    const oldHead = await createBlockedHead(
+      context,
+      destination,
+      createUlid(firstTime),
+    );
+    const before = await notificationCount();
+    const notify = vi
+      .spyOn(conflictAlerts, "notifyOutletSupervisors")
+      .mockRejectedValueOnce(new Error("notification unavailable"));
+    try {
+      await alertBlockedOutboxAggregates(db, context, options);
+      expect(notify).toHaveBeenCalledTimes(1);
+      expect(await notificationCount()).toBe(before);
+
+      // A cursor that only wraps after an empty page never revisits oldHead:
+      // every sweep below has a fresh head above the previous cursor.
+      const retrySweepLimit = 3;
+      for (let sweep = 1; sweep <= retrySweepLimit; sweep++) {
+        await createBlockedHead(
+          context,
+          destination,
+          createUlid(firstTime + sweep),
+        );
+        await alertBlockedOutboxAggregates(db, context, options);
+      }
+      const oldAttempts = notify.mock.calls.filter(
+        ([, , alert]) => alert.payload.outboxId === oldHead,
+      );
+      expect(oldAttempts).toHaveLength(2);
+      expect(await notificationCount()).toBe(before + retrySweepLimit + 1);
+
+      // The durable marker must prevent another send after the retry succeeds,
+      // including two simultaneous sweeps discovering the same incident.
+      await createBlockedHead(
+        context,
+        destination,
+        createUlid(firstTime + retrySweepLimit + 1),
+      );
+      await Promise.all([
+        alertBlockedOutboxAggregates(db, context, options),
+        alertBlockedOutboxAggregates(db, context, options),
+      ]);
+      expect(notify).toHaveBeenCalledTimes(retrySweepLimit + 3);
+      expect(await notificationCount()).toBe(before + retrySweepLimit + 2);
+      const duplicates = await owner.query<{ source_event_id: string }>(
+        `SELECT source_event_id FROM notification_outbox
+          WHERE tenant_id = $1 AND event_type = 'edge_outbox.blocked'
+            AND payload->>'destination' = $2
+          GROUP BY source_event_id HAVING count(*) > 1`,
+        [tenantId, destination],
+      );
+      expect(duplicates.rows).toHaveLength(0);
+    } finally {
+      notify.mockRestore();
+    }
+  });
+
+  it("legend-o2iul retries old alarms even when new arrivals keep every page full", async () => {
+    const context = establishScopedTenantContext(
+      establishTenantContext({ tenantId, brandId: null, source: "domain" }),
+      { kind: "tenant" },
+    );
+    const destination = "test-o2iul-continuous-full-pages";
+    const options = { destinations: [destination] };
+    const firstTime = Date.now();
+    const oldHead = await createBlockedHead(
+      context,
+      destination,
+      createUlid(firstTime),
+    );
+    const notify = vi
+      .spyOn(conflictAlerts, "notifyOutletSupervisors")
+      .mockRejectedValueOnce(new Error("notification unavailable"));
+    try {
+      await alertBlockedOutboxAggregates(db, context, options);
+      expect(notify).toHaveBeenCalledTimes(1);
+      // More than one batch arrives before every sweep. A short-page-only
+      // wrap would still leave the old failed alarm behind indefinitely.
+      const arrivalsPerSweep = 101;
+      for (let sweep = 0; sweep < 3; sweep++) {
+        for (let arrival = 1; arrival <= arrivalsPerSweep; arrival++) {
+          await createBlockedHead(
+            context,
+            destination,
+            createUlid(firstTime + sweep * arrivalsPerSweep + arrival),
+          );
+        }
+        await alertBlockedOutboxAggregates(db, context, options);
+      }
+      const oldAttempts = notify.mock.calls.filter(
+        ([, , alert]) => alert.payload.outboxId === oldHead,
+      );
+      expect(oldAttempts).toHaveLength(2);
+      const oldMarkers = await count(
+        `SELECT count(*)::int AS n FROM notification_outbox
+          WHERE tenant_id = $1 AND event_type = 'edge_outbox.blocked'
+            AND payload->>'outboxId' = $2`,
+        [tenantId, oldHead],
+      );
+      expect(oldMarkers).toBe(1);
+      const successfulAttempts = notify.mock.calls
+        .slice(1)
+        .map(([, , alert]) => alert.payload.outboxId);
+      expect(new Set(successfulAttempts).size).toBe(successfulAttempts.length);
+    } finally {
+      notify.mockRestore();
+    }
   }, 120_000);
 
   it("legend-mciif logs missing recipients once across sweeps", async () => {
