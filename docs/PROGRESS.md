@@ -5581,3 +5581,4 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - 5vb7y: trigger 0627 memeriksa isi jurnal settle: debit=kredit>0, debit hanya 2103 (mapping entitas), kredit hanya akun sumber (GL rekening bank beku, atau sumber posting untuk kas). Nominal pokok tersegel (tak terbaca SQL) dan asal aturan `payroll.paid` (tak ada kolom penanda) tidak bisa diverifikasi di SQL.
 - Review architect xhigh: semua area benar; dua P2 (scan historis tanpa batas pada kas, repost massal menjurnal biaya historis) dan satu rendah (tanggal mustahil di cursor) diperbaiki.
 - Bukti: tes baru merah di 61102bff0 (16 gagal dari 64), hijau sesudah; 29 berkas payout/GL 433 lulus (1 dilewati); typecheck API dan web exit 0; `pnpm db:generate` kosong.
+- Biaya brief 883: sesi total biaya* 15730k (utama sonnet 7066k, subagent sonnet 6636k, opus 1653k, haiku 376k); 42 subagent, puncak 5 bersamaan, rata-rata 0.89 per agent; 171 menit sesi. Commit 20aa65b1c.
