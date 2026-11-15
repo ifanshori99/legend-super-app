@@ -1,3 +1,12 @@
+## 889 Perbaikan review architect atas gerbang 885 (engineer, cabang `fix/qris-hold-so-879`, 16 Nov 2026)
+- Selesai (review architect xhigh atas 61989ceae..HEAD, dua putaran):
+  - P1 poll starvation: kode pending diproses sebelum expired; budget error per provider DAN per kind; budget waktu terpisah (tes `qris-hold-so885-b-poll-fair` tqkbb-9).
+  - P1 `assertSplitMutableTx` + bayar seluruh order: kode apa pun (seluruh-order/part/void) gagal dengan dana terparkir terbuka -> 409 `FUNDS_UNRESOLVED` (`qris-hold-so889-split-funds`, skenario A, B1, B2).
+  - P1 baru dari review: jawaban final penyedia (Duitku '02', DOIT expired/failed) baru bukti mati bila `now >= expiresAt + HOLD_CLOSE_MARGIN_MS` (D-03); predikat bersama `providerAnswerFinal` di 4 jalur (`qris-hold-so889-final-after-expiry`, 8 tes).
+  - P2: `releasePosQris` 409 `FUNDS_UNRESOLVED` bila dana terparkir terbuka; `cancelSupersededAtGateway` wajib baca status sesudah cancel; intent failed ber-ref tetap hidup sampai expiresAt+margin (`qris-hold-so889-p2-release-cancel`, 5 tes). Tes lama `pos-qris-hold-review` diubah: rilis dengan dana 30k terparkir kini 409.
+- Gate: 187 berkas hijau (3182 tes), kontrak root 870, typecheck API+web, prettier/eslint, `db:generate` kosong. Tanpa migrasi baru.
+- Terbuka: kode expired yang provider-nya selalu error tidak pernah final -> tagihan tertahan (`ORDER_CODE_ACTIVE`/`SPLIT_LOCKED`), tanpa jalan keluar staf untuk VA (QR punya force release Q93). Butuh keputusan CTO. `hasOpenIntent` di `qr-order-consumers.ts:442` masih pakai waktu lokal (void order dengan VA lalu refund otomatis; hanya biaya, bukan uang hilang). Belum direview: `worker-main.ts`, `notification-adapters.ts`, `packages/shared/src/pos/*`, `payment-webhook.service.ts` selain Duitku. Tidak ada celah di `cancel` produksi saat ini (tak ada gateway ber-cancel).
+
 ## 885 Perbaikan second opinion QRIS 879 (engineer, legend-m7tnt tqkbb 0owye adiov 05pjx m8jax, cabang `fix/qris-hold-so-879` dari fd4427fd1, 16 Nov 2026)
 - Selesai: 4 P1 + 05pjx + m8jax. Prinsip CTO: waktu lokal bukan bukti kode mati; hanya jawaban final penyedia atau uang yang sudah direkonsiliasi.
   - A (m7tnt): penutupan reservasi butuh bukti penyedia atas semua intent DP (pending/expired/superseded/failed) + dana tak teralokasi; selain itu 409 `PAYMENT_PROVIDER_UNCONFIRMED`.
