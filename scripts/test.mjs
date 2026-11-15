@@ -157,7 +157,13 @@ try {
       ? process.env.LEGEND_TEST_FILES.trim().split(/\s+/)
       : undefined;
     const rootFiles = selected?.filter((file) => file.endsWith(".test.mjs"));
-    const apiFiles = selected?.filter((file) => !file.endsWith(".test.mjs"));
+    const webFiles = selected?.filter((file) =>
+      file.startsWith("apps/web/test/"),
+    );
+    const apiFiles = selected?.filter(
+      (file) =>
+        !file.endsWith(".test.mjs") && !file.startsWith("apps/web/test/"),
+    );
     const files = selected
       ? rootFiles
       : readdirSync(resolve(root, "tests"))
@@ -174,6 +180,26 @@ try {
         "node:test",
         process.execPath,
         ["--test", ...concurrencyArgs, ...files],
+        testEnv,
+      );
+    // Web unit tests (apps/web/test) borrow the API package's vitest binary,
+    // see apps/web/vitest.config.mjs. They are quick, so they run before the API run.
+    if (!selected || webFiles.length)
+      await runTestStep(
+        "vitest web",
+        pnpmCommand(),
+        [
+          "--filter",
+          "@starter/api",
+          "exec",
+          "vitest",
+          "run",
+          "--root",
+          "../web",
+          "--config",
+          "../web/vitest.config.mjs",
+          ...(webFiles ?? []).map((file) => file.replace("apps/web/", "")),
+        ],
         testEnv,
       );
     // Root tests run first (they take minutes); the long API vitest run goes
