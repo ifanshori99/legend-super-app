@@ -31,6 +31,7 @@ import {
 export const BILL_IDR = 33_000;
 const SUPERVISOR_PIN = "582914";
 export const OPENED_ALERT_TITLE = "QRIS dirilis, uang belum terkonfirmasi";
+export const UNRECORDED_ALERT_TITLE = "QRIS dibayar, uang belum tercatat";
 export const FUNDS_ALERT_TITLE = "Uang QRIS perlu dikembalikan";
 
 export function releaseKit(fx: HoldFixture) {

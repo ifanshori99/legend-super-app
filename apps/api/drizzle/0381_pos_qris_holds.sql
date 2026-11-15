@@ -70,6 +70,9 @@ ALTER TABLE public.payment_intents NO FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
 ALTER TABLE public.bill_splits NO FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
+-- so-885 legend-0owye: the failed-intent backfill reads unresolved funds.
+ALTER TABLE public.payment_unallocated_funds NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
 DO $$
 DECLARE dup text;
 BEGIN
@@ -244,6 +247,8 @@ WHERE t.method = 'qris' AND t.payment_link_id IS NOT NULL
   AND NOT EXISTS (
     SELECT 1 FROM public.pos_qris_holds h
     WHERE h.tenant_id = i.tenant_id AND h.payment_intent_id = i.id);
+--> statement-breakpoint
+ALTER TABLE public.payment_unallocated_funds FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
 ALTER TABLE public.bill_splits FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint

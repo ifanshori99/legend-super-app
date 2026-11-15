@@ -19,6 +19,7 @@ import {
 import {
   BILL_IDR,
   FUNDS_ALERT_TITLE,
+  UNRECORDED_ALERT_TITLE,
   evidenceRows,
   hoursAfter,
   notificationCount,
@@ -193,5 +194,29 @@ describe("SO-885 D-04 final non-paid answers and unknown answers", () => {
     // Not due yet: a non-forced run right after reads nothing.
     await runRecon(fx, hoursAfter(releasedAt, 2), { force: false });
     expect(fx.gateway.readsOf(qr.intentId).length).toBe(reads);
+  });
+});
+
+describe("SO-885 D-06 the provider says paid but nothing can be recorded", () => {
+  it("D-06 staff are alerted once per row; the row stays open and keeps asking", async () => {
+    const { qr, releasedAt } = await kit.forceRelease({ rawStatus: "01" });
+    // Paid with an amount the money path refuses (not a positive amount).
+    fx.gateway.script(qr.intentId, { status: "paid", amountIdr: 0 });
+    const before = await notificationCount(fx, UNRECORDED_ALERT_TITLE);
+    await runRecon(fx, hoursAfter(releasedAt, 1));
+    const first = await notificationCount(fx, UNRECORDED_ALERT_TITLE);
+    expect(first).toBeGreaterThan(before);
+    await runRecon(fx, hoursAfter(releasedAt, 2));
+    await runRecon(fx, hoursAfter(releasedAt, 3));
+    expect(await notificationCount(fx, UNRECORDED_ALERT_TITLE)).toBe(first);
+    const [row] = await reconRows(fx, qr.intentId);
+    expect(row?.status).toBe("open");
+    expect(row?.attempts).toBe(3);
+    expect(await evidenceRows(fx, qr.intentId)).toEqual([]);
+    // Recovery: a proper paid answer is recorded once and the row resolves.
+    fx.gateway.script(qr.intentId, { status: "paid" });
+    await runRecon(fx, hoursAfter(releasedAt, 4));
+    await expectRecordedOnce(qr.intentId);
+    expect((await reconRows(fx, qr.intentId))[0]?.status).toBe("resolved");
   });
 });

@@ -100,10 +100,6 @@ async function inRolledBackTx<T>(
   try {
     await client.query("BEGIN");
     await client.query("SET LOCAL lock_timeout = '10s'");
-    await client.query(
-      "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
-      [fx.tenant.tenantId],
-    );
     return await work(client);
   } finally {
     await client.query("ROLLBACK");
@@ -119,8 +115,41 @@ async function removeHolds(client: PoolClient) {
   await client.query("SET LOCAL session_replication_role = origin");
 }
 
+/** Tables the backfill reads or writes; the migrator owns them (0381 lifts
+ * FORCE on the ones that exist before it, `pos_qris_holds` is new). */
+const BACKFILL_TABLES = [
+  "orders",
+  "pos_orders",
+  "pos_order_tenders",
+  "payment_intents",
+  "bill_splits",
+  "payment_unallocated_funds",
+  "pos_qris_holds",
+];
+
+/**
+ * Runs the backfill the way production does: as a plain table owner (NOSUPERUSER,
+ * NOBYPASSRLS) with NO tenant context (`app.tenant_id` unset, so any read of a
+ * table that is still FORCE RLS throws in `app.require_tenant_id()`). Role,
+ * ownership and the RLS state are set up inside the rolled-back transaction.
+ */
 async function runBackfill(client: PoolClient) {
+  await client.query(
+    "CREATE ROLE so885c_migrator NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOLOGIN",
+  );
+  for (const table of BACKFILL_TABLES)
+    await client.query(`ALTER TABLE public.${table} OWNER TO so885c_migrator`);
+  // The holds table is brand new when 0381 runs: no RLS yet.
+  await client.query(
+    "ALTER TABLE public.pos_qris_holds NO FORCE ROW LEVEL SECURITY",
+  );
+  await client.query("GRANT USAGE ON SCHEMA public, app TO so885c_migrator");
+  // 0382/0383 (freeze and display triggers) do not exist yet when 0381 runs.
+  await client.query("SET LOCAL session_replication_role = replica");
+  await client.query("SET LOCAL ROLE so885c_migrator");
   for (const statement of backfill) await client.query(statement);
+  await client.query("RESET ROLE");
+  await client.query("SET LOCAL session_replication_role = origin");
 }
 
 async function asM1<T>(client: PoolClient, work: () => Promise<T>) {

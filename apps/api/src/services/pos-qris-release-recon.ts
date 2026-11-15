@@ -28,6 +28,7 @@ import {
   type PosQrisReconStatus,
 } from "../db/schema/pos-qris-release-recon.ts";
 import { withTenant } from "../db/tenant.ts";
+import { posQrisHolds } from "../db/schema/pos-qris-hold.ts";
 import type { Tx } from "./menu-internals.ts";
 import { notifyOutletSupervisors } from "./edge-sync-conflict-alert.ts";
 import { paymentGatewayFor } from "./payment-gateway.ts";
@@ -238,6 +239,13 @@ async function decide(
   return { kind: "open", seen: answer.status };
 }
 
+/** The provider says the QR was paid but no money could be recorded. */
+const PAID_UNRECORDED = new Set([
+  "paid_not_recorded",
+  "settlement_failed",
+  "paid_without_amount",
+]);
+
 /** Checks one queue row now. Returns its status afterwards (null: gone). */
 export async function reconcileReleasedQris(
   context: ScopedTenantContext,
@@ -283,6 +291,43 @@ export async function reconcileReleasedQris(
         ),
       )
       .returning({ status: posQrisReleaseReconciliations.status });
+    // Paid at the provider, nothing recorded: tell staff once per row, when
+    // this state is first seen (the row update and the alert commit together;
+    // the notification consumer dedupes on the event id, so it is not the row id).
+    if (
+      updated &&
+      outcome.kind === "open" &&
+      PAID_UNRECORDED.has(outcome.seen) &&
+      !PAID_UNRECORDED.has(row.lastProviderStatus ?? "")
+    ) {
+      const [hold] = await tx
+        .select({ openedBy: posQrisHolds.openedBy })
+        .from(posQrisHolds)
+        .where(
+          and(
+            eq(posQrisHolds.tenantId, tenantId),
+            eq(posQrisHolds.id, row.holdId),
+          ),
+        );
+      await notifyOutletSupervisors(
+        tx,
+        context,
+        {
+          tenantId,
+          outletId: row.outletId as OutletId,
+          alsoOwners: true,
+          alsoUserIds: hold?.openedBy ? [hold.openedBy] : [],
+          id: createUlid(now.getTime()),
+          eventName: "pos_qris_release_reconciliation.unrecorded",
+          aggregateType: "pos_qris_release_reconciliation",
+          aggregateId: row.id,
+          payload: { reconciliationId: row.id, holdId: row.holdId },
+          title: "QRIS dibayar, uang belum tercatat",
+          body: "Penyedia menjawab QRIS yang sudah dirilis ini dibayar, tetapi uangnya belum bisa dicatat. Sistem terus mencoba; periksa antrean rekonsiliasi QRIS.",
+        },
+        now,
+      );
+    }
     return updated?.status ?? "resolved";
   });
 }

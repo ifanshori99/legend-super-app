@@ -344,6 +344,55 @@ describe("legend-tqkbb VA without provider proof keeps its code collectible", ()
     expect(next.body.data.id).not.toBe(aId);
   });
 
+  it("tqkbb-7 the provider says PAID but the confirmation is refused (untrusted): no final proof, A stays collectible and in the poll, replacement refused", async () => {
+    const { guest, order } = await guestOrder();
+    const a = await payWhole(guest, order.id, "va");
+    expect(a.status, JSON.stringify(a.body)).toBe(201);
+    const aId = a.body.data.id as string;
+    const requestsBefore = fx.gateway.requests.length;
+
+    // The lifecycle refuses a gateway_status confirmation for this intent
+    // (a method the gateway cannot prove): UNTRUSTED_CONFIRMATION.
+    await owner.query(
+      `UPDATE payment_intents SET method='cash',
+              created_at = now() - interval '2 hours',
+              expires_at = now() - interval '1 hour'
+        WHERE tenant_id=$1 AND id=$2`,
+      [fx.tenant.tenantId, aId],
+    );
+    fx.gateway.script(aId, { status: "paid" });
+    const t0 = new Date();
+    await poll(t0);
+    const reads = fx.gateway.readsOf(aId).length;
+    expect(reads).toBeGreaterThan(0);
+    // Restore the method so the guest views and requests below parse.
+    await owner.query(
+      "UPDATE payment_intents SET method='va' WHERE tenant_id=$1 AND id=$2",
+      [fx.tenant.tenantId, aId],
+    );
+
+    const { rows } = await owner.query<{ provider_final_at: Date | null }>(
+      "SELECT provider_final_at FROM payment_intents WHERE tenant_id=$1 AND id=$2",
+      [fx.tenant.tenantId, aId],
+    );
+    expect(
+      rows[0]!.provider_final_at,
+      "a refused paid is not final",
+    ).toBeNull();
+
+    const qr = await payWhole(guest, order.id, "qris");
+    expect(qr.status, JSON.stringify(qr.body)).toBe(409);
+    const va = await payWhole(guest, order.id, "va");
+    expect(va.status, JSON.stringify(va.body)).toBe(409);
+    expect(fx.gateway.requests.length).toBe(requestsBefore);
+
+    await poll(new Date(t0.getTime() + 2 * HOUR));
+    expect(
+      fx.gateway.readsOf(aId).length,
+      "A is still in the poll",
+    ).toBeGreaterThan(reads);
+  });
+
   it("tqkbb-6 the poll window constant is still 24 hours (the test lapses 25)", () => {
     expect(GATEWAY_POLL_WINDOW_MS).toBe(24 * HOUR);
   });

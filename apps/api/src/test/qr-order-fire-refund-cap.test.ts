@@ -611,11 +611,12 @@ describe("QR order fire versus refunds committed on the payer intent (legend-9vz
     const guest = await seatAtNewTable();
     const { orderId, totalIdr } = await placeOrder(guest);
     // Code A is a VA: a QR A would hold the bill and refuse B until the
-    // provider proves A dead (legend-kf104). A lapsed past the late-payment
-    // grace, so the replacement B is allowed.
+    // provider proves A dead (legend-kf104). A lapsed and the provider answered
+    // final for it (SO-885), so the replacement B is allowed.
     const intentA = await openPayment(guest, orderId, "va");
     await owner.query(
-      `UPDATE payment_intents SET status = 'expired', expires_at = now() - interval '10 minutes'
+      `UPDATE payment_intents SET status = 'expired', expires_at = now() - interval '10 minutes',
+              provider_final_at = now()
         WHERE tenant_id = $1 AND id = $2`,
       [tenant.tenantId, intentA],
     );
@@ -652,7 +653,8 @@ describe("QR order fire versus refunds committed on the payer intent (legend-9vz
     // its hold (legend-kf104) freezes the order against a void.
     const intentA = await openPayment(guest, orderId, "va");
     await owner.query(
-      `UPDATE payment_intents SET status = 'expired', expires_at = now() - interval '10 minutes'
+      `UPDATE payment_intents SET status = 'expired', expires_at = now() - interval '10 minutes',
+              provider_final_at = now()
         WHERE tenant_id = $1 AND id = $2`,
       [tenant.tenantId, intentA],
     );

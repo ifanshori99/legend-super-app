@@ -477,11 +477,13 @@ describe("QR pay-first sale emits order.paid (legend-9pz9)", () => {
     const { orderId, totalIdr } = await placeOrder(guest);
     // The old code is a VA: a QR old code would hold the bill and refuse the
     // fresh code until the provider proves it dead (legend-kf104). It lapsed
-    // past the late-payment grace, so a replacement is allowed.
+    // and the provider answered final for it (SO-885: the clock alone is not
+    // proof), so a replacement is allowed.
     const oldIntent = await openPayment(guest, orderId, "va");
     // The first code lapses; the guest opens a fresh one.
     await owner.query(
-      `UPDATE payment_intents SET status = 'expired', expires_at = now() - interval '10 minutes'
+      `UPDATE payment_intents SET status = 'expired', expires_at = now() - interval '10 minutes',
+              provider_final_at = now()
         WHERE tenant_id = $1 AND id = $2`,
       [tenant.tenantId, oldIntent],
     );
