@@ -29,9 +29,9 @@ CREATE TABLE "pos_qris_holds" (
 	CONSTRAINT "pos_qris_holds_intent_key" UNIQUE("tenant_id","payment_intent_id"),
 	CONSTRAINT "pos_qris_holds_tender_key" UNIQUE("tenant_id","tender_id"),
 	CONSTRAINT "pos_qris_holds_amount_check" CHECK ("pos_qris_holds"."amount_idr" > 0),
-	CONSTRAINT "pos_qris_holds_target_check" CHECK ("pos_qris_holds"."tender_id" IS NOT NULL OR "pos_qris_holds"."bill_split_id" IS NOT NULL),
+	CONSTRAINT "pos_qris_holds_target_check" CHECK ("pos_qris_holds"."tender_id" IS NOT NULL OR "pos_qris_holds"."bill_split_id" IS NOT NULL OR "pos_qris_holds"."opened_by" IS NULL),
 	CONSTRAINT "pos_qris_holds_state_check" CHECK ("pos_qris_holds"."state" IN ('open', 'cancelling', 'paid', 'closed')),
-	CONSTRAINT "pos_qris_holds_basis_check" CHECK ("pos_qris_holds"."backfilled" OR "pos_qris_holds"."bill_split_id" IS NOT NULL OR ("pos_qris_holds"."basis_total_idr" IS NOT NULL AND "pos_qris_holds"."basis_deposit_idr" IS NOT NULL AND "pos_qris_holds"."basis_captured_idr" IS NOT NULL AND "pos_qris_holds"."amount_idr" = "pos_qris_holds"."basis_total_idr" - "pos_qris_holds"."basis_deposit_idr" - "pos_qris_holds"."basis_captured_idr")),
+	CONSTRAINT "pos_qris_holds_basis_check" CHECK ("pos_qris_holds"."backfilled" OR "pos_qris_holds"."tender_id" IS NULL OR ("pos_qris_holds"."basis_total_idr" IS NOT NULL AND "pos_qris_holds"."basis_deposit_idr" IS NOT NULL AND "pos_qris_holds"."basis_captured_idr" IS NOT NULL AND "pos_qris_holds"."amount_idr" = "pos_qris_holds"."basis_total_idr" - "pos_qris_holds"."basis_deposit_idr" - "pos_qris_holds"."basis_captured_idr")),
 	CONSTRAINT "pos_qris_holds_cancel_pair_check" CHECK (("pos_qris_holds"."cancel_requested_at" IS NULL) = ("pos_qris_holds"."cancel_requested_by" IS NULL)),
 	CONSTRAINT "pos_qris_holds_closed_check" CHECK (("pos_qris_holds"."state" IN ('open', 'cancelling')) = ("pos_qris_holds"."closed_at" IS NULL)),
 	CONSTRAINT "pos_qris_holds_close_reason_check" CHECK (("pos_qris_holds"."close_reason" IS NULL OR "pos_qris_holds"."close_reason" IN ('provider_paid', 'provider_expired', 'provider_failed', 'provider_cancelled', 'force_released')) AND (("pos_qris_holds"."state" IN ('paid', 'closed')) = ("pos_qris_holds"."close_reason" IS NOT NULL)))
@@ -47,7 +47,7 @@ CREATE TABLE "pos_qris_holds" (
 	CONSTRAINT "pos_qris_holds_intent_fk" FOREIGN KEY ("tenant_id","payment_intent_id") REFERENCES "public"."payment_intents"("tenant_id","id") ON DELETE no action ON UPDATE no action
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX "pos_qris_holds_active_order_key" ON "pos_qris_holds" USING btree ("tenant_id","order_id") WHERE "pos_qris_holds"."state" IN ('open', 'cancelling');
+CREATE UNIQUE INDEX "pos_qris_holds_active_order_key" ON "pos_qris_holds" USING btree ("tenant_id","order_id") WHERE "pos_qris_holds"."state" IN ('open', 'cancelling') AND NOT "pos_qris_holds"."backfilled";
 --> statement-breakpoint
 CREATE INDEX "pos_qris_holds_due_idx" ON "pos_qris_holds" USING btree ("state","next_check_at") WHERE "pos_qris_holds"."state" IN ('open', 'cancelling');
 --> statement-breakpoint
@@ -125,6 +125,99 @@ JOIN public.bill_splits bs
   ON bs.tenant_id = i.tenant_id AND bs.id = i.bill_split_id
 WHERE i.bill_split_id IS NOT NULL AND i.method = 'qris'
   AND i.status = 'pending' AND i.provider_ref IS NOT NULL;
+--> statement-breakpoint
+-- Ambiguous history (so-879 ota0l): a provider code the system stopped
+-- collecting locally is not proof the provider stopped. For a bill that is not
+-- final yet, every QRIS code with a provider_ref and no proof of payment that
+-- (a) belongs to a POS QRIS tender voided or failed locally, or (b) is an
+-- expired/superseded guest split-part code, (c) is a guest order-wide code
+-- (pending, expired or superseded) or (d) a sibling code of a POS tender's
+-- link, gets its own open backfilled hold (one per payment intent; the per-bill
+-- unique index only counts non-backfilled holds). The hold check job closes
+-- each one only on provider proof. Final bills are skipped (a late payment
+-- there is refunded as unallocated funds). The one-collectible-QR guard above
+-- is not widened.
+INSERT INTO public.pos_qris_holds
+  (tenant_id, id, outlet_id, order_id, tender_id, payment_intent_id,
+   amount_idr, backfilled, state, opened_at, opened_by, next_check_at)
+SELECT t.tenant_id, gen_random_uuid(), t.outlet_id, t.order_id, t.id,
+       t.payment_intent_id, t.amount_idr, true, 'open', t.requested_at,
+       coalesce(po.cashier_id, t.captured_by), now()
+FROM public.pos_order_tenders t
+JOIN public.payment_intents i
+  ON i.tenant_id = t.tenant_id AND i.id = t.payment_intent_id
+JOIN public.pos_orders po
+  ON po.tenant_id = t.tenant_id AND po.order_id = t.order_id
+JOIN public.orders o
+  ON o.tenant_id = t.tenant_id AND o.id = t.order_id
+WHERE t.method = 'qris' AND t.status IN ('voided', 'failed')
+  AND t.payment_link_id IS NOT NULL
+  AND i.method = 'qris' AND i.provider_ref IS NOT NULL
+  AND i.status IN ('pending', 'expired')
+  AND o.status NOT IN ('completed', 'voided')
+  AND NOT EXISTS (
+    SELECT 1 FROM public.pos_qris_holds h
+    WHERE h.tenant_id = i.tenant_id
+      AND (h.payment_intent_id = i.id OR h.tender_id = t.id));
+--> statement-breakpoint
+INSERT INTO public.pos_qris_holds
+  (tenant_id, id, outlet_id, order_id, tender_id, payment_intent_id,
+   bill_split_id, amount_idr, backfilled, state, opened_at, opened_by,
+   next_check_at)
+SELECT i.tenant_id, gen_random_uuid(), i.outlet_id, bs.order_id, NULL,
+       i.id, i.bill_split_id, i.amount_idr, true, 'open', i.created_at,
+       NULL, now()
+FROM public.payment_intents i
+JOIN public.bill_splits bs
+  ON bs.tenant_id = i.tenant_id AND bs.id = i.bill_split_id
+JOIN public.orders o
+  ON o.tenant_id = bs.tenant_id AND o.id = bs.order_id
+WHERE i.bill_split_id IS NOT NULL AND i.method = 'qris'
+  AND i.status = 'expired' AND i.provider_ref IS NOT NULL
+  AND o.status NOT IN ('completed', 'voided')
+  AND NOT EXISTS (
+    SELECT 1 FROM public.pos_qris_holds h
+    WHERE h.tenant_id = i.tenant_id AND h.payment_intent_id = i.id);
+--> statement-breakpoint
+INSERT INTO public.pos_qris_holds
+  (tenant_id, id, outlet_id, order_id, tender_id, payment_intent_id,
+   amount_idr, backfilled, state, opened_at, opened_by, next_check_at)
+SELECT i.tenant_id, gen_random_uuid(), i.outlet_id, o.id, NULL, i.id,
+       i.amount_idr, true, 'open', i.created_at, NULL, now()
+FROM public.payment_intents i
+JOIN public.orders o
+  ON o.tenant_id = i.tenant_id AND o.payment_link_id = i.payment_link_id
+WHERE i.bill_split_id IS NULL AND i.method = 'qris'
+  AND i.status IN ('pending', 'expired') AND i.provider_ref IS NOT NULL
+  AND o.status NOT IN ('completed', 'voided')
+  AND NOT EXISTS (
+    SELECT 1 FROM public.pos_order_tenders t
+    WHERE t.tenant_id = i.tenant_id AND t.payment_intent_id = i.id)
+  AND NOT EXISTS (
+    SELECT 1 FROM public.pos_qris_holds h
+    WHERE h.tenant_id = i.tenant_id AND h.payment_intent_id = i.id);
+--> statement-breakpoint
+INSERT INTO public.pos_qris_holds
+  (tenant_id, id, outlet_id, order_id, tender_id, payment_intent_id,
+   amount_idr, backfilled, state, opened_at, opened_by, next_check_at)
+SELECT i.tenant_id, gen_random_uuid(), i.outlet_id, t.order_id, NULL, i.id,
+       i.amount_idr, true, 'open', i.created_at, NULL, now()
+FROM public.pos_order_tenders t
+JOIN public.payment_intents i
+  ON i.tenant_id = t.tenant_id AND i.payment_link_id = t.payment_link_id
+JOIN public.orders o
+  ON o.tenant_id = t.tenant_id AND o.id = t.order_id
+WHERE t.method = 'qris' AND t.payment_link_id IS NOT NULL
+  AND i.id <> coalesce(t.payment_intent_id, '00000000-0000-0000-0000-000000000000'::uuid)
+  AND i.bill_split_id IS NULL AND i.method = 'qris'
+  AND i.status IN ('pending', 'expired') AND i.provider_ref IS NOT NULL
+  AND o.status NOT IN ('completed', 'voided')
+  AND NOT EXISTS (
+    SELECT 1 FROM public.pos_order_tenders t2
+    WHERE t2.tenant_id = i.tenant_id AND t2.payment_intent_id = i.id)
+  AND NOT EXISTS (
+    SELECT 1 FROM public.pos_qris_holds h
+    WHERE h.tenant_id = i.tenant_id AND h.payment_intent_id = i.id);
 --> statement-breakpoint
 ALTER TABLE public.bill_splits FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint

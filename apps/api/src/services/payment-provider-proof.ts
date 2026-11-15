@@ -7,7 +7,7 @@
 // the normal settlement path, an unclear answer holds the cancel (fail-closed),
 // and only a provider that holds no money lets the caller cancel locally.
 
-import { and, eq, isNotNull } from "drizzle-orm";
+import { and, eq, inArray, isNotNull } from "drizzle-orm";
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { db } from "../db/index.ts";
 import { paymentIntents } from "../db/schema/index.ts";
@@ -27,14 +27,17 @@ const unconfirmed = () =>
   );
 
 /**
- * Asks the provider about every `pending` intent of the link that already
- * reached it (`provider_ref` set; an intent without one is local only).
+ * Asks the provider about every `pending` or `expired` intent of the link that
+ * already reached it (`provider_ref` set; an intent without one is local only).
+ * An `expired` intent is only expired LOCALLY (superseded by a newer code, or
+ * closed before its code lapsed): the provider code may still be payable, so
+ * it is asked too (legend-9ho2v).
  *
  * - `paid` for the same reference: settles it once through
  *   `settleGatewayIntentNow` (idempotent: payment applied to the bill or parked
  *   as unallocated funds) and the verdict is `settled`; the caller must not
  *   cancel locally and re-reads its own state. The intent is re-read after
- *   settling; if it is still `pending` the payment was not applied.
+ *   settling; if its status did not change the payment was not applied.
  * - the provider call fails, or answers about another reference, or settling a
  *   paid answer fails or leaves the intent `pending`: throws 409
  *   `PAYMENT_PROVIDER_UNCONFIRMED`; nothing is cancelled and nothing is
@@ -60,7 +63,7 @@ export async function confirmLinkUnpaidAtProvider(
         and(
           eq(paymentIntents.tenantId, tenantId),
           eq(paymentIntents.paymentLinkId, linkId),
-          eq(paymentIntents.status, "pending"),
+          inArray(paymentIntents.status, ["pending", "expired"]),
           isNotNull(paymentIntents.providerRef),
         ),
       ),
@@ -98,7 +101,7 @@ export async function confirmLinkUnpaidAtProvider(
         throw unconfirmed();
       }
       // `settleGatewayIntentNow` asks the provider again and can return without
-      // error while the intent stays `pending` (second answer failed, or paid
+      // error while the intent keeps its status (second answer failed, or paid
       // without an amount). Only a re-read proves the payment was applied.
       const [reread] = await withTenant(db, context, async (tx) =>
         tx
@@ -111,7 +114,7 @@ export async function confirmLinkUnpaidAtProvider(
             ),
           ),
       );
-      if (!reread || reread.status === "pending") throw unconfirmed();
+      if (!reread || reread.status === intent.status) throw unconfirmed();
       verdict = "settled";
     }
   }

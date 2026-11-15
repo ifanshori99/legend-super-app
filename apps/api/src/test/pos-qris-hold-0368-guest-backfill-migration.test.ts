@@ -36,6 +36,8 @@ import { owner } from "./floor-test-helpers.ts";
 import { secretFor } from "./payer-secret-helpers.ts";
 import {
   holdFixture,
+  issueQris,
+  newSubmittedOrder,
   resetHoldPorts,
   type HoldFixture,
 } from "./pos-qris-hold-test-helpers.ts";
@@ -287,6 +289,239 @@ describe("legend-eh9i4 A2 migration 0368 guest QRIS backfill", () => {
         payment_intent_id: qr.intentId,
         bill_split_id: qr.parts[0]!.id,
       });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// so-879 ota0l: the backfill must also hold every provider code that may still
+// be collectible although the system stopped collecting it locally (voided POS
+// tender, expired or superseded split code), on bills that are not final yet.
+
+/** Plain writes to history rows, with the guard triggers off (rolled back). */
+async function rawHistory(client: PoolClient, text: string, params: unknown[]) {
+  await client.query("SET LOCAL session_replication_role = replica");
+  await client.query(text, params);
+  await client.query("SET LOCAL session_replication_role = origin");
+}
+
+async function expireIntent(client: PoolClient, intentId: string) {
+  await rawHistory(
+    client,
+    `UPDATE payment_intents SET status='expired', provider_ref=coalesce(provider_ref, $3)
+      WHERE tenant_id=$1 AND id=$2`,
+    [fx.tenant.tenantId, intentId, `879-ref-${randomUUID()}`],
+  );
+}
+
+/** A POS QRIS bill whose tender the system voided locally while the provider
+ *  code was never cancelled: tender voided, intent still pending at the provider. */
+async function voidedTenderWithLiveCode() {
+  const order = await newSubmittedOrder(fx);
+  const qr = await issueQris(fx, order.id);
+  return {
+    orderId: ulidToUuid(order.id),
+    tenderId: qr.tenderId,
+    intentId: qr.intentId,
+    amountIdr: qr.amountIdr,
+  };
+}
+
+async function voidTenderLocally(
+  client: PoolClient,
+  tenderId: string,
+  intentId: string,
+) {
+  await rawHistory(
+    client,
+    `UPDATE pos_order_tenders SET status='voided', resolved_at=now()
+      WHERE tenant_id=$1 AND id=$2`,
+    [fx.tenant.tenantId, tenderId],
+  );
+  await setProviderRef(client, intentId, `879-ref-${randomUUID()}`);
+}
+
+async function holdsOfOrder(client: PoolClient, orderId: string) {
+  const { rows } = await client.query<{
+    payment_intent_id: string;
+    tender_id: string | null;
+    bill_split_id: string | null;
+    state: string;
+    backfilled: boolean;
+    amount_idr: string;
+    next_check_at: Date | null;
+  }>(
+    `SELECT payment_intent_id::text, tender_id::text, bill_split_id::text, state,
+            backfilled, amount_idr::text, next_check_at
+       FROM pos_qris_holds WHERE tenant_id=$1 AND order_id=$2
+      ORDER BY payment_intent_id`,
+    [fx.tenant.tenantId, orderId],
+  );
+  return rows;
+}
+
+describe("so-879 ota0l backfill of ambiguous provider codes", () => {
+  it("the per-bill unique index only counts non-backfilled active holds", async () => {
+    const { rows } = await owner.query<{ indexdef: string }>(
+      `SELECT indexdef FROM pg_indexes
+        WHERE tablename='pos_qris_holds' AND indexname='pos_qris_holds_active_order_key'`,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.indexdef).toMatch(/NOT backfilled/i);
+    expect(sql0368).toMatch(/AND NOT "pos_qris_holds"\."backfilled"/);
+  });
+
+  it("a voided POS tender whose provider code is not proven dead gets an open backfilled hold", async () => {
+    const bill = await voidedTenderWithLiveCode();
+    await inRolledBackTx(async (client) => {
+      await removeHolds(client);
+      await voidTenderLocally(client, bill.tenderId, bill.intentId);
+      await runBackfill(client);
+      const holds = await holdsOfOrder(client, bill.orderId);
+      expect(
+        holds,
+        "the voided tender's live provider code must freeze the bill",
+      ).toHaveLength(1);
+      expect(holds[0]).toMatchObject({
+        payment_intent_id: bill.intentId,
+        tender_id: bill.tenderId,
+        state: "open",
+        backfilled: true,
+      });
+      expect(Number(holds[0]!.amount_idr)).toBe(bill.amountIdr);
+      expect(holds[0]!.next_check_at).not.toBeNull();
+    });
+  });
+
+  it("an expired (superseded) provider code of a voided tender is also held", async () => {
+    const bill = await voidedTenderWithLiveCode();
+    await inRolledBackTx(async (client) => {
+      await removeHolds(client);
+      await voidTenderLocally(client, bill.tenderId, bill.intentId);
+      await expireIntent(client, bill.intentId);
+      await runBackfill(client);
+      const holds = await holdsOfOrder(client, bill.orderId);
+      expect(holds).toHaveLength(1);
+      expect(holds[0]).toMatchObject({
+        payment_intent_id: bill.intentId,
+        state: "open",
+        backfilled: true,
+      });
+    });
+  });
+
+  it("a provider code that failed or has no provider_ref is not held", async () => {
+    const bill = await voidedTenderWithLiveCode();
+    await inRolledBackTx(async (client) => {
+      await removeHolds(client);
+      await voidTenderLocally(client, bill.tenderId, bill.intentId);
+      await rawHistory(
+        client,
+        `UPDATE payment_intents SET status='failed' WHERE tenant_id=$1 AND id=$2`,
+        [fx.tenant.tenantId, bill.intentId],
+      );
+      await runBackfill(client);
+      expect(await holdsOfOrder(client, bill.orderId)).toHaveLength(0);
+    });
+    await inRolledBackTx(async (client) => {
+      await removeHolds(client);
+      await voidTenderLocally(client, bill.tenderId, bill.intentId);
+      await setProviderRef(client, bill.intentId, null);
+      await runBackfill(client);
+      expect(await holdsOfOrder(client, bill.orderId)).toHaveLength(0);
+    });
+  });
+
+  it("a final bill is skipped: no hold for its voided tender or expired split code", async () => {
+    const bill = await voidedTenderWithLiveCode();
+    const qr = await guestSplitWithQr();
+    await inRolledBackTx(async (client) => {
+      await removeHolds(client);
+      await voidTenderLocally(client, bill.tenderId, bill.intentId);
+      await expireIntent(client, qr.intentId);
+      for (const orderId of [bill.orderId, qr.orderId])
+        await rawHistory(
+          client,
+          `UPDATE orders SET status='completed' WHERE tenant_id=$1 AND id=$2`,
+          [fx.tenant.tenantId, orderId],
+        );
+      await runBackfill(client);
+      expect(await holdsOfOrder(client, bill.orderId)).toHaveLength(0);
+      expect(await holdsOfOrder(client, qr.orderId)).toHaveLength(0);
+    });
+  });
+
+  it("an expired split code gets an open backfilled hold with its bill_split_id", async () => {
+    const qr = await guestSplitWithQr();
+    await inRolledBackTx(async (client) => {
+      await removeHolds(client);
+      await expireIntent(client, qr.intentId);
+      await runBackfill(client);
+      const holds = await holdsOfOrder(client, qr.orderId);
+      expect(holds).toHaveLength(1);
+      expect(holds[0]).toMatchObject({
+        payment_intent_id: qr.intentId,
+        tender_id: null,
+        bill_split_id: qr.parts[0]!.id,
+        state: "open",
+        backfilled: true,
+      });
+      expect(Number(holds[0]!.amount_idr)).toBe(qr.intentAmount);
+    });
+  });
+
+  it("two ambiguous codes on one bill each get a hold and the one-collectible guard stays quiet", async () => {
+    const qr = await guestSplitWithQr();
+    await inRolledBackTx(async (client) => {
+      await removeHolds(client);
+      await setProviderRef(client, qr.intentId, `879-ref-${randomUUID()}`);
+      await cloneIntentOntoPart(client, qr.intentId, qr.parts[1]!.id);
+      await rawHistory(
+        client,
+        `UPDATE payment_intents SET status='expired'
+          WHERE tenant_id=$1 AND bill_split_id IN ($2, $3)`,
+        [fx.tenant.tenantId, qr.parts[0]!.id, qr.parts[1]!.id],
+      );
+      await runBackfill(client);
+      const holds = await holdsOfOrder(client, qr.orderId);
+      expect(holds).toHaveLength(2);
+      expect(holds.every((h) => h.backfilled && h.state === "open")).toBe(true);
+      expect(new Set(holds.map((h) => h.payment_intent_id)).size).toBe(2);
+    });
+  });
+
+  it("one collectible code plus one ambiguous code on a bill: both held, the guard counts only the collectible", async () => {
+    const qr = await guestSplitWithQr();
+    await inRolledBackTx(async (client) => {
+      await removeHolds(client);
+      await setProviderRef(client, qr.intentId, `879-ref-${randomUUID()}`);
+      await cloneIntentOntoPart(client, qr.intentId, qr.parts[1]!.id);
+      await rawHistory(
+        client,
+        `UPDATE payment_intents SET status='expired'
+          WHERE tenant_id=$1 AND bill_split_id=$2`,
+        [fx.tenant.tenantId, qr.parts[1]!.id],
+      );
+      await runBackfill(client);
+      expect(await holdsOfOrder(client, qr.orderId)).toHaveLength(2);
+    });
+  });
+
+  it("running the backfill twice does not duplicate a hold per intent", async () => {
+    const qr = await guestSplitWithQr();
+    await inRolledBackTx(async (client) => {
+      await removeHolds(client);
+      await expireIntent(client, qr.intentId);
+      await runBackfill(client);
+      await client.query("SAVEPOINT again");
+      let raised = false;
+      try {
+        await runBackfill(client);
+      } catch {
+        raised = true;
+      }
+      if (raised) await client.query("ROLLBACK TO SAVEPOINT again");
+      expect(await holdsOfOrder(client, qr.orderId)).toHaveLength(1);
     });
   });
 });

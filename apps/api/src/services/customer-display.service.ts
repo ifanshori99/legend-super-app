@@ -220,6 +220,11 @@ export async function reservePairSlot(
         "TERMINAL_DEVICE_REQUIRED",
         "Pairing dilakukan dari perangkat kasir yang terdaftar.",
       );
+    // One slot decision at a time per outlet: parallel guesses would otherwise
+    // each count before the others commit and all slip under the limit.
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`customer-display-pair-slot:${tenantId}:${outletId}`}, 0))`,
+    );
     const [slot] = await tx
       .insert(customerDisplayPairAttempts)
       .values({ tenantId, outletId, terminalDeviceId, attemptedAt: now })
@@ -651,6 +656,9 @@ async function buildState(tx: Tx, pairing: PairingRow, now: Date) {
     outletId: pairing.outletId,
     terminalDeviceId: pairing.terminalDeviceId,
     displayDeviceId: pairing.displayDeviceId,
+    // No promotion source exists yet; a paired display has no pairing code.
+    promotions: [],
+    pairingCode: null,
     version: Number(session?.version ?? 0),
     updatedAt: (session?.updatedAt ?? pairing.pairedAt).toISOString(),
   };

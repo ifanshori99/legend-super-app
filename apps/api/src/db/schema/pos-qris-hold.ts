@@ -1,7 +1,8 @@
 // QRIS hold (design legend-yhia9 D-01/D-02/D-03): while a POS QRIS tender is
 // collectible at the provider, the bill's money is frozen. One row per issued
-// QR tender, never deleted. The partial unique index allows one active hold
-// (open/cancelling) per bill. Transitions and the freeze of the bill, its
+// QR tender, never deleted. The partial unique index allows one active
+// non-backfilled hold (open/cancelling) per bill; backfilled holds (one per
+// provider code that may still be collectible, migration 0379) may be many. Transitions and the freeze of the bill, its
 // tenders and the hold itself are database triggers in pos-qris-hold.custom.sql.
 import { sql } from "drizzle-orm";
 import {
@@ -57,7 +58,7 @@ export const posQrisHolds = pgTable(
     id: ulidInUuid("id").notNull(),
     outletId: outletIdColumn(() => outlets.id).notNull(),
     orderId: ulidInUuid("order_id").notNull(),
-    /** NULL only for a guest split-bill QR (`billSplitId` set): no POS tender. */
+    /** NULL only for a guest QR (split part, or the whole order): no POS tender. */
     tenderId: uuid("tender_id"),
     paymentIntentId: uuid("payment_intent_id").notNull(),
     billSplitId: uuid("bill_split_id"),
@@ -73,7 +74,7 @@ export const posQrisHolds = pgTable(
     backfilled: boolean("backfilled").notNull().default(false),
     state: text("state").$type<PosQrisHoldState>().notNull(),
     openedAt: timestamp("opened_at", { withTimezone: true }).notNull(),
-    /** Staff who issued the QR. NULL only for a guest split-bill QR. */
+    /** Staff who issued the QR. NULL only for a guest QR. */
     openedBy: text("opened_by").references(() => user.id),
     cancelRequestedAt: timestamp("cancel_requested_at", {
       withTimezone: true,
@@ -123,14 +124,16 @@ export const posQrisHolds = pgTable(
     }),
     uniqueIndex("pos_qris_holds_active_order_key")
       .on(table.tenantId, table.orderId)
-      .where(sql`${table.state} IN ('open', 'cancelling')`),
+      .where(
+        sql`${table.state} IN ('open', 'cancelling') AND NOT ${table.backfilled}`,
+      ),
     index("pos_qris_holds_due_idx")
       .on(table.state, table.nextCheckAt)
       .where(sql`${table.state} IN ('open', 'cancelling')`),
     check("pos_qris_holds_amount_check", sql`${table.amountIdr} > 0`),
     check(
       "pos_qris_holds_target_check",
-      sql`${table.tenderId} IS NOT NULL OR ${table.billSplitId} IS NOT NULL`,
+      sql`${table.tenderId} IS NOT NULL OR ${table.billSplitId} IS NOT NULL OR ${table.openedBy} IS NULL`,
     ),
     check(
       "pos_qris_holds_state_check",
@@ -138,7 +141,7 @@ export const posQrisHolds = pgTable(
     ),
     check(
       "pos_qris_holds_basis_check",
-      sql`${table.backfilled} OR ${table.billSplitId} IS NOT NULL OR (${table.basisTotalIdr} IS NOT NULL AND ${table.basisDepositIdr} IS NOT NULL AND ${table.basisCapturedIdr} IS NOT NULL AND ${table.amountIdr} = ${table.basisTotalIdr} - ${table.basisDepositIdr} - ${table.basisCapturedIdr})`,
+      sql`${table.backfilled} OR ${table.tenderId} IS NULL OR (${table.basisTotalIdr} IS NOT NULL AND ${table.basisDepositIdr} IS NOT NULL AND ${table.basisCapturedIdr} IS NOT NULL AND ${table.amountIdr} = ${table.basisTotalIdr} - ${table.basisDepositIdr} - ${table.basisCapturedIdr})`,
     ),
     check(
       "pos_qris_holds_cancel_pair_check",

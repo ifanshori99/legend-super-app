@@ -12,7 +12,7 @@
 // pos_orders -> pos_qris_holds -> pos_order_tenders -> payment_links ->
 // payment_intents -> funds/refunds. Every writer below follows it.
 
-import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
   CoreError,
   createUlid,
@@ -34,6 +34,7 @@ import {
   type PosQrisHoldCloseReason,
 } from "../db/schema/pos-qris-hold.ts";
 import { withTenant } from "../db/tenant.ts";
+import { HttpError } from "../lib/http-error.ts";
 import type { Tx } from "./menu-internals.ts";
 import {
   cancelPaymentLinkInTx,
@@ -70,7 +71,12 @@ const isActive = (hold: Pick<HoldRow, "state">) =>
 
 // ---- Guard ------------------------------------------------------------------
 
-/** The hold of the bill that still gates its money, if any. */
+/**
+ * A hold of the bill that still gates its money, if any. A bill may carry
+ * several active backfilled holds (one per provider code that may still be
+ * collectible, migration 0379): any active hold freezes the bill, so callers
+ * only ask whether one exists. The oldest is returned, so the answer is stable.
+ */
 export async function activeHoldOf(
   tx: Tx,
   tenantId: TenantId,
@@ -85,7 +91,9 @@ export async function activeHoldOf(
         eq(posQrisHolds.orderId, orderId),
         inArray(posQrisHolds.state, [...ACTIVE_STATES]),
       ),
-    );
+    )
+    .orderBy(posQrisHolds.id)
+    .limit(1);
   return hold ?? null;
 }
 
@@ -166,21 +174,21 @@ export async function openQrisHold(
 }
 
 /**
- * A guest split-bill QR (`POST /table-sessions/:id/payments`, target split)
- * has no POS tender, so its hold has `tenderId` null and `billSplitId` set.
- * Same transaction as the split intent; the caller holds the order lock. The
- * basis is stored for the record, but its amount is one part of the bill, so
- * the 0368 equation check is not asked of it. `openedBy` stays null: a guest
- * is not a staff user.
+ * A guest QR (`POST /table-sessions/:id/payments`) has no POS tender, so its
+ * hold has `tenderId` null: `billSplitId` set for a split-bill part, null for
+ * the whole-order code (legend-kf104). Same transaction as the intent; the
+ * caller holds the order lock. The basis is stored for the record, but a part
+ * is one share of the bill, so the 0368 equation check is not asked of a
+ * guest hold. `openedBy` stays null: a guest is not a staff user.
  */
-export async function openSplitQrisHold(
+export async function openGuestQrisHold(
   tx: Tx,
   input: {
     order: Pick<
       OrderRow,
       "tenantId" | "id" | "outletId" | "totalIdr" | "depositAppliedIdr"
     >;
-    billSplitId: string;
+    billSplitId: string | null;
     intentId: string;
     amount: number;
     now?: Date;
@@ -212,11 +220,22 @@ export async function openSplitQrisHold(
   return row;
 }
 
+/** A guest split-bill QR: the hold of one part (see `openGuestQrisHold`). */
+export function openSplitQrisHold(
+  tx: Tx,
+  input: Omit<Parameters<typeof openGuestQrisHold>[1], "billSplitId"> & {
+    billSplitId: string;
+  },
+): Promise<HoldRow> {
+  return openGuestQrisHold(tx, input);
+}
+
 /**
- * The provider reported this guest split intent paid: its hold, if any, ends
- * `paid` (never moves money by itself; the payment path books it). Call before
- * anything that the 0369 triggers refuse while the hold is active. Only split
- * holds: a POS hold ends in the POS paid handler together with its tender.
+ * The provider reported this guest intent paid: its hold, if any, ends `paid`
+ * (never moves money by itself; the payment path books it). Call before
+ * anything that the 0369 triggers refuse while the hold is active. Only guest
+ * holds (split part or whole order, no tender): a POS hold ends in the POS
+ * paid handler together with its tender.
  * Returns true when a hold was moved.
  */
 export async function markSplitQrisHoldPaidByIntentTx(
@@ -238,7 +257,7 @@ export async function markSplitQrisHoldPaidByIntentTx(
       and(
         eq(posQrisHolds.tenantId, tenantId),
         eq(posQrisHolds.paymentIntentId, intentId),
-        isNotNull(posQrisHolds.billSplitId),
+        isNull(posQrisHolds.tenderId),
         inArray(posQrisHolds.state, [...ACTIVE_STATES]),
       ),
     )
@@ -390,6 +409,48 @@ export async function closeQrisHoldTx(
   return true;
 }
 
+function paidQrisReleaseError(): CoreError {
+  return new CoreError(
+    "CONFLICT",
+    "QRIS ini sudah dibayar pelanggan, tidak bisa dirilis.",
+  );
+}
+
+/**
+ * Money of one QR that was APPLIED to the bill: payment evidence beyond what
+ * sits in unallocated funds (parked money cannot be paid again on this QR).
+ * Locks the intent row, so a settlement in flight finishes first. Call it under
+ * the orders / pos_orders / hold locks, right before any close (legend-zff37).
+ */
+async function appliedQrisMoneyTx(
+  tx: Tx,
+  tenantId: TenantId,
+  intentId: string,
+): Promise<boolean> {
+  await tx
+    .select({ id: paymentIntents.id })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, tenantId),
+        eq(paymentIntents.id, intentId),
+      ),
+    )
+    .for("update");
+  const result = await tx.execute(sql`
+    SELECT
+      (SELECT coalesce(sum(e.amount_idr), 0)::bigint FROM payment_evidence e
+        WHERE e.tenant_id = ${tenantId}
+          AND e.payment_intent_id = ${intentId}) AS evidence,
+      (SELECT coalesce(sum(f.amount_idr), 0)::bigint FROM payment_unallocated_funds f
+        WHERE f.tenant_id = ${tenantId}
+          AND f.payment_intent_id = ${intentId}) AS parked
+  `);
+  const row = result.rows[0] as
+    { evidence: string | number; parked: string | number } | undefined;
+  return Number(row?.evidence ?? 0) > Number(row?.parked ?? 0);
+}
+
 // ---- Read model -------------------------------------------------------------
 
 async function holdDto(
@@ -433,12 +494,18 @@ async function newestHold(
         eq(posQrisHolds.orderId, orderId),
       ),
     )
-    .orderBy(desc(posQrisHolds.openedAt), desc(posQrisHolds.id))
+    // An active hold first (several backfilled ones may be active at once),
+    // then the newest.
+    .orderBy(
+      desc(sql`(${posQrisHolds.state} IN ('open', 'cancelling'))`),
+      desc(posQrisHolds.openedAt),
+      desc(posQrisHolds.id),
+    )
     .limit(1);
   return hold ?? null;
 }
 
-/** GET .../qris: the newest hold of the bill. */
+/** GET .../qris: the active hold of the bill, else the newest. */
 export async function getPosQrisHold(
   context: ScopedTenantContext,
   outletId: OutletId,
@@ -476,7 +543,7 @@ export async function cancelPosQris(
   input: { idempotencyKey: string },
   now = new Date(),
 ): Promise<PosQrisHold> {
-  let holdId: string | null = null;
+  const cancelledIds: string[] = [];
   const result = await mutatePosOrder(
     context,
     caller,
@@ -491,58 +558,69 @@ export async function cancelPosQris(
       const { order } = locked;
       const tenantId = context.tenant.tenantId;
       const holds = await lockHoldsOfOrder(tx, tenantId, order.id);
-      const hold = holds.at(-1);
-      if (!hold) throw notFound("Pesanan ini belum punya QRIS.");
-      if (hold.state !== "open") return holdDto(tx, tenantId, hold);
-      const [updated] = await tx
-        .update(posQrisHolds)
-        .set({
-          state: "cancelling",
-          cancelRequestedAt: now,
-          cancelRequestedBy: caller.userId,
-          nextCheckAt: now,
-        })
-        .where(
-          and(
-            eq(posQrisHolds.tenantId, tenantId),
-            eq(posQrisHolds.id, hold.id),
-            eq(posQrisHolds.state, "open"),
-          ),
-        )
-        .returning();
-      if (!updated) throw new Error("QRIS hold cancel returned no row");
-      holdId = updated.id;
-      await appendOrderEvent(tx, context, {
-        order,
-        type: "order.qris_cancel_requested",
-        payload: { holdId: updated.id, tenderId: updated.tenderId },
-        caller,
-        now,
-      });
-      await auditPos(
-        tx,
-        context,
-        {
-          action: "pos_qris_hold.cancel_requested",
+      // The cashier cancels the bill's QR: every open hold (a bill may carry
+      // several backfilled ones) goes to `cancelling`; each closes on its own
+      // provider proof.
+      const newest = holds.at(-1);
+      if (!newest) throw notFound("Pesanan ini belum punya QRIS.");
+      const open = holds.filter((h) => h.state === "open");
+      if (open.length === 0)
+        return holdDto(tx, tenantId, holds.find(isActive) ?? newest);
+      let first: HoldRow | null = null;
+      for (const hold of open) {
+        const [updated] = await tx
+          .update(posQrisHolds)
+          .set({
+            state: "cancelling",
+            cancelRequestedAt: now,
+            cancelRequestedBy: caller.userId,
+            nextCheckAt: now,
+          })
+          .where(
+            and(
+              eq(posQrisHolds.tenantId, tenantId),
+              eq(posQrisHolds.id, hold.id),
+              eq(posQrisHolds.state, "open"),
+            ),
+          )
+          .returning();
+        if (!updated) throw new Error("QRIS hold cancel returned no row");
+        cancelledIds.push(updated.id);
+        first ??= updated;
+        await appendOrderEvent(tx, context, {
           order,
+          type: "order.qris_cancel_requested",
+          payload: { holdId: updated.id, tenderId: updated.tenderId },
           caller,
-          before: { id: order.id, holdId: hold.id, state: "open" },
-          after: { id: order.id, holdId: hold.id, state: "cancelling" },
-          objectType: "pos_qris_hold",
-          objectId: hold.id,
-        },
-        now,
-      );
-      return holdDto(tx, tenantId, updated);
+          now,
+        });
+        await auditPos(
+          tx,
+          context,
+          {
+            action: "pos_qris_hold.cancel_requested",
+            order,
+            caller,
+            before: { id: order.id, holdId: hold.id, state: "open" },
+            after: { id: order.id, holdId: hold.id, state: "cancelling" },
+            objectType: "pos_qris_hold",
+            objectId: hold.id,
+          },
+          now,
+        );
+      }
+      return holdDto(tx, tenantId, first ?? newest);
     },
   );
-  if (holdId === null) return result;
+  if (cancelledIds.length === 0) return result;
   // One immediate status read after commit. The provider failing is not the
   // cashier's failure: the hold stays frozen and the job asks again.
-  try {
-    await checkQrisHold(context, holdId, now);
-  } catch {
-    // Intentionally ignored; see above.
+  for (const holdId of cancelledIds) {
+    try {
+      await checkQrisHold(context, holdId, now);
+    } catch {
+      // Intentionally ignored; see above.
+    }
   }
   return withTenant(db, context, async (tx) => {
     const hold = await newestHold(tx, context.tenant.tenantId, orderId);
@@ -630,7 +708,8 @@ export async function checkQrisHold(
       : answer.status === "expired" || answer.status === "failed");
   const provenAt = intent.expiresAt.getTime() + HOLD_CLOSE_MARGIN_MS;
   const proof = dead && now.getTime() >= provenAt;
-  return withTenant(db, context, async (tx) => {
+  let settleAfter = false;
+  const state = await withTenant(db, context, async (tx) => {
     // A guest split-bill hold has no POS row: lock the bill (orders) only.
     const split = target.hold.tenderId === null;
     let order: OrderRow;
@@ -664,7 +743,14 @@ export async function checkQrisHold(
       )
       .for("update");
     if (!hold || !isActive(hold)) return hold?.state ?? null;
-    if (proof && answer) {
+    // Re-read the money under the locks: a payment committed after the provider
+    // read (or a stale expired answer) must never close the hold (legend-zff37).
+    const paidUnderLock =
+      proof && answer
+        ? await appliedQrisMoneyTx(tx, tenantId, intent.id)
+        : false;
+    if (paidUnderLock) settleAfter = true;
+    if (proof && answer && !paidUnderLock) {
       const failed = answer.status === "failed";
       await closeQrisHoldTx(tx, context, {
         order,
@@ -737,6 +823,15 @@ export async function checkQrisHold(
       );
     return hold.state;
   });
+  if (settleAfter) {
+    // Money was recorded: finish the payment (capture once) outside the locks.
+    try {
+      await settleGatewayIntentNow(context, intent.id, now);
+    } catch {
+      // The next check retries.
+    }
+  }
+  return state;
 }
 
 // ---- Manager release (Q93) ----------------------------------------------------
@@ -761,7 +856,10 @@ export async function releasePosQris(
   // the customer paid, the payment is settled and the release is refused.
   const waiting = await withTenant(db, context, async (tx) => {
     const [row] = await tx
-      .select({ paymentIntentId: posQrisHolds.paymentIntentId })
+      .select({
+        paymentIntentId: posQrisHolds.paymentIntentId,
+        tenderId: posQrisHolds.tenderId,
+      })
       .from(posQrisHolds)
       .where(
         and(
@@ -770,8 +868,28 @@ export async function releasePosQris(
           inArray(posQrisHolds.state, [...ACTIVE_STATES]),
         ),
       );
-    return row ?? null;
+    if (!row) return null;
+    const [pos] = await tx
+      .select({ id: posOrders.orderId })
+      .from(posOrders)
+      .where(
+        and(
+          eq(posOrders.tenantId, context.tenant.tenantId),
+          eq(posOrders.orderId, orderId),
+        ),
+      );
+    return { ...row, hasPos: pos !== undefined };
   });
+  // legend-kf104: a guest hold (no tender) of a bill without a POS row has no
+  // approval record to spend and no tender to void, so a manager cannot release
+  // it. Only the hold check job closes it, on provider proof it is dead or
+  // paid. Nothing is read from the provider and nothing moves.
+  if (waiting && waiting.tenderId === null && !waiting.hasPos)
+    throw new HttpError(
+      409,
+      "QRIS_HOLD_ACTIVE",
+      "QR tamu hanya ditutup oleh pengecekan penyedia setelah terbukti kedaluwarsa atau dibayar; manajer tidak bisa merilisnya.",
+    );
   if (waiting) {
     // Provider paid and nothing recorded yet: apply or park it first.
     try {
@@ -781,100 +899,107 @@ export async function releasePosQris(
     }
     // Refuse only when money of this QR was APPLIED to the bill (evidence
     // beyond what sits in unallocated funds). Parked money cannot be paid
-    // again on this QR, so the manager may release.
-    const money = await withTenant(db, context, async (tx) => {
-      const result = await tx.execute(sql`
-        SELECT
-          (SELECT coalesce(sum(e.amount_idr), 0)::bigint FROM payment_evidence e
-            WHERE e.tenant_id = ${context.tenant.tenantId}
-              AND e.payment_intent_id = ${waiting.paymentIntentId}) AS evidence,
-          (SELECT coalesce(sum(f.amount_idr), 0)::bigint FROM payment_unallocated_funds f
-            WHERE f.tenant_id = ${context.tenant.tenantId}
-              AND f.payment_intent_id = ${waiting.paymentIntentId}) AS parked
-      `);
-      const row = result.rows[0] as
-        { evidence: string | number; parked: string | number } | undefined;
-      return row ?? { evidence: 0, parked: 0 };
-    });
-    if (Number(money.evidence) > Number(money.parked))
-      throw new CoreError(
-        "CONFLICT",
-        "QRIS ini sudah dibayar pelanggan, tidak bisa dirilis.",
-      );
+    // again on this QR, so the manager may release. Read again under the
+    // locks below: this early read is only a shortcut.
+    const applied = await withTenant(db, context, (tx) =>
+      appliedQrisMoneyTx(tx, context.tenant.tenantId, waiting.paymentIntentId),
+    );
+    if (applied) throw paidQrisReleaseError();
   }
-  return mutatePosOrder(
-    context,
-    caller,
-    {
-      outletId,
-      orderId,
-      key: idempotencyKey,
-      operation: "order.qris_release",
-      request,
-    },
-    async (tx, locked) => {
-      const { order, pos } = locked;
-      const tenantId = context.tenant.tenantId;
-      const holds = await lockHoldsOfOrder(tx, tenantId, order.id);
-      const hold = holds.find(isActive);
-      if (!hold)
-        throw new CoreError("CONFLICT", "Tidak ada QRIS yang perlu dirilis.");
-      const [intent] = await tx
-        .select({ expiresAt: paymentIntents.expiresAt })
-        .from(paymentIntents)
-        .where(
-          and(
-            eq(paymentIntents.tenantId, tenantId),
-            eq(paymentIntents.id, hold.paymentIntentId),
-          ),
-        );
-      if (
-        !intent ||
-        now.getTime() < intent.expiresAt.getTime() + HOLD_RELEASE_AFTER_MS
-      )
-        throw new CoreError(
-          "CONFLICT",
-          "QRIS baru boleh dirilis 30 menit setelah kedaluwarsa.",
-        );
-      const override = await consumeApproval(tx, context, {
-        action: "void",
-        purpose: "qris_release",
+  let paidIntentId: string | null = null;
+  try {
+    return await mutatePosOrder(
+      context,
+      caller,
+      {
         outletId,
-        orderId: order.id,
-        objectType: "order",
-        objectId: order.id,
-        requesterId: caller.userId,
-        approvedBy: input.approvedBy,
-        overrideId: input.overrideId,
-        minValueIdr: hold.amountIdr,
-        deviceId: caller.deviceId,
-        now,
-      });
-      await closeQrisHoldTx(tx, context, {
-        order,
-        pos,
-        hold,
-        reason: "force_released",
-        evidence: {
+        orderId,
+        key: idempotencyKey,
+        operation: "order.qris_release",
+        request,
+      },
+      async (tx, locked) => {
+        const { order, pos } = locked;
+        const tenantId = context.tenant.tenantId;
+        const holds = await lockHoldsOfOrder(tx, tenantId, order.id);
+        const hold = holds.find(isActive);
+        if (!hold)
+          throw new CoreError("CONFLICT", "Tidak ada QRIS yang perlu dirilis.");
+        // Money re-read under the order / hold / intent locks (legend-zff37): a
+        // payment that committed after the early read refuses the release. The
+        // transaction rolls back (no void, no refund); the payment is finished
+        // below, outside the locks.
+        if (await appliedQrisMoneyTx(tx, tenantId, hold.paymentIntentId)) {
+          paidIntentId = hold.paymentIntentId;
+          throw paidQrisReleaseError();
+        }
+        const [intent] = await tx
+          .select({ expiresAt: paymentIntents.expiresAt })
+          .from(paymentIntents)
+          .where(
+            and(
+              eq(paymentIntents.tenantId, tenantId),
+              eq(paymentIntents.id, hold.paymentIntentId),
+            ),
+          );
+        if (
+          !intent ||
+          now.getTime() < intent.expiresAt.getTime() + HOLD_RELEASE_AFTER_MS
+        )
+          throw new CoreError(
+            "CONFLICT",
+            "QRIS baru boleh dirilis 30 menit setelah kedaluwarsa.",
+          );
+        const override = await consumeApproval(tx, context, {
+          action: "void",
+          purpose: "qris_release",
+          outletId,
+          orderId: order.id,
+          objectType: "order",
+          objectId: order.id,
+          requesterId: caller.userId,
           approvedBy: input.approvedBy,
-          overrideId: override.id,
-          releasedBy: caller.userId,
-          releasedAt: now.toISOString(),
-        },
-        caller,
-        auditAction: "pos_qris_hold.force_released",
-        now,
-      });
-      const [released] = await tx
-        .select()
-        .from(posQrisHolds)
-        .where(
-          and(
-            eq(posQrisHolds.tenantId, tenantId),
-            eq(posQrisHolds.id, hold.id),
-          ),
-        );
-      return holdDto(tx, tenantId, released ?? hold);
-    },
-  );
+          overrideId: input.overrideId,
+          minValueIdr: hold.amountIdr,
+          deviceId: caller.deviceId,
+          now,
+        });
+        await closeQrisHoldTx(tx, context, {
+          order,
+          pos,
+          hold,
+          reason: "force_released",
+          evidence: {
+            approvedBy: input.approvedBy,
+            overrideId: override.id,
+            releasedBy: caller.userId,
+            releasedAt: now.toISOString(),
+          },
+          caller,
+          auditAction: "pos_qris_hold.force_released",
+          now,
+        });
+        const [released] = await tx
+          .select()
+          .from(posQrisHolds)
+          .where(
+            and(
+              eq(posQrisHolds.tenantId, tenantId),
+              eq(posQrisHolds.id, hold.id),
+            ),
+          );
+        return holdDto(tx, tenantId, released ?? hold);
+      },
+    );
+  } catch (error) {
+    if (paidIntentId !== null) {
+      // Finish the payment (capture once); the bill stays frozen until then.
+      try {
+        await settleGatewayIntentNow(context, paidIntentId, now);
+      } catch {
+        // Already recorded; the consumer or the next check finishes it.
+      }
+    }
+    throw error;
+  }
 }

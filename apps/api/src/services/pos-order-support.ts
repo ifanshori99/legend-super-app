@@ -503,6 +503,43 @@ export async function assertEdcSaleBillPayable(
     throw new EdcError("EDC_AMOUNT_MISMATCH");
 }
 
+/**
+ * legend-yhia9 / legend-w0ows: a card sale may not START while the bill has a
+ * QR that can still be paid (the terminal would take money the tender step
+ * refuses to book while the hold is active). Only for the write-ahead of a new
+ * sale: booking or reconciling a sale that already ran must never call this
+ * (the card wins, founder Q7). The caller holds the (tenant, outlet:reference)
+ * advisory lock, the lock `addPosTender` takes before it issues a QR, so a QR
+ * and a new sale never both pass; the order row is not locked here (lock
+ * order), the hold rows are only read.
+ */
+export async function assertNoActiveQrisHoldForEdcSale(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: { readonly outletId: OutletId; readonly reference: string },
+): Promise<void> {
+  const [active] = await tx
+    .select({ id: posQrisHolds.id })
+    .from(posQrisHolds)
+    .innerJoin(
+      orders,
+      and(
+        eq(orders.tenantId, posQrisHolds.tenantId),
+        eq(orders.id, posQrisHolds.orderId),
+      ),
+    )
+    .where(
+      and(
+        eq(posQrisHolds.tenantId, context.tenant.tenantId),
+        eq(orders.outletId, input.outletId),
+        eq(orders.number, input.reference),
+        inArray(posQrisHolds.state, ["open", "cancelling"]),
+      ),
+    )
+    .limit(1);
+  if (active) throw new PosError("QRIS_HOLD_ACTIVE");
+}
+
 /** Stale-screen guard (contract `expectedStatus`): 412 when it moved on. */
 export function assertExpectedStatus(
   order: OrderRow,

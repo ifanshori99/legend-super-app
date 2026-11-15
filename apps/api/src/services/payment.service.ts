@@ -1660,6 +1660,32 @@ export async function getIntentView(
   const parsedToken = paymentLinkTokenSchema.parse(token);
   const { intent } = await loadIntent(context, parsedToken, intentId, now);
   const current = await syncPendingIntent(context, intent, now);
+  return shownIntentView(current, now);
+}
+
+/**
+ * legend-eqeu7: `getIntentView` asks the provider and settles a paid answer
+ * (`applyConfirmation` opens its own transaction and waits for the bill
+ * owner's row lock), so it must never run in a transaction that already holds
+ * that lock. A caller that holds the lock first syncs with `getIntentView`
+ * outside it, then reads again under the lock with this: stored state only,
+ * no provider call and no settlement.
+ */
+export async function readIntentView(
+  context: ScopedTenantContext,
+  token: string,
+  intentId: string,
+  now = new Date(),
+): Promise<CustomerPaymentIntent> {
+  const parsedToken = paymentLinkTokenSchema.parse(token);
+  const { intent } = await loadIntent(context, parsedToken, intentId, now);
+  return shownIntentView(intent, now);
+}
+
+function shownIntentView(
+  current: PaymentIntentRow,
+  now: Date,
+): CustomerPaymentIntent {
   // A lapsed code the gateway has not confirmed yet stays `pending` in the
   // database for reconciliation; the guest sees it as expired.
   const shown: PaymentIntentRow =
@@ -1813,6 +1839,7 @@ async function parkWhenQrisHoldRefusesInTx(
       state: posQrisHolds.state,
       amountIdr: posQrisHolds.amountIdr,
       openedBy: posQrisHolds.openedBy,
+      closeEvidence: posQrisHolds.closeEvidence,
     })
     .from(posQrisHolds)
     .where(
@@ -1823,6 +1850,14 @@ async function parkWhenQrisHoldRefusesInTx(
     );
   if (!hold || hold.state === "paid") return null;
   const mismatch = paid.amountIdr !== Number(hold.amountIdr);
+  // legend-w0ows (founder Q7): a hold ended because a card sale booked the
+  // bill is not parked; the payment settles like any payment on a voided
+  // tender, so the late-payment path refunds the customer in full.
+  const endedByCardSale =
+    hold.state === "closed" &&
+    (hold.closeEvidence as { anomaly?: unknown } | null)?.anomaly ===
+      "card_sale_booked";
+  if (endedByCardSale && !mismatch) return null;
   if (hold.state !== "closed" && !mismatch) return null;
   {
     const inserted = await recordUnsettledGatewayFundsInTx(

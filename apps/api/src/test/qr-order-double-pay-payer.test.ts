@@ -108,7 +108,7 @@ const ALL_DAY = [
 ];
 const ADMIN = "/api/payments/admin";
 
-/** QRIS gateway double (the guest pays by QRIS in both attempts). */
+/** Gateway double: QRIS, or a Mandiri VA for code A (see `orderPaidTwice`). */
 class FakeGateway implements PaymentGatewayPort {
   readonly provider = "doit";
   created = 0;
@@ -117,11 +117,19 @@ class FakeGateway implements PaymentGatewayPort {
   }
   async createIntent(input: GatewayIntentRequest) {
     this.created += 1;
-    const instructions: PaymentInstructions = {
-      method: "qris",
-      qrPayload: "00020101021226FAKEQRDOUBLE",
-      issuer: null,
-    };
+    const instructions: PaymentInstructions =
+      input.method === "va"
+        ? {
+            method: "va",
+            channelCode: input.channelCode ?? "bmri",
+            channelName: "Mandiri",
+            virtualAccountNumber: "8808123456789012",
+          }
+        : {
+            method: "qris",
+            qrPayload: "00020101021226FAKEQRDOUBLE",
+            issuer: null,
+          };
     return {
       providerRef: `QDP-${randomBytes(6).toString("hex")}-${this.created}`,
       instructions,
@@ -135,8 +143,8 @@ class FakeGateway implements PaymentGatewayPort {
       amountIdr: null,
     };
   }
-  async channels() {
-    return [];
+  async channels(_context: unknown, method: string) {
+    return method === "va" ? [{ code: "bmri", name: "Mandiri" }] : [];
   }
 }
 const gateway = new FakeGateway();
@@ -222,10 +230,11 @@ function as(guest: Guest) {
         expectedCartVersion,
         idempotencyKey: randomUUID(),
       }),
-    pay: (orderId: string) =>
+    pay: (orderId: string, method: "qris" | "va" = "qris") =>
       auth(client.post(`${base}/payments`)).send({
         target: { kind: "order", orderId },
-        method: "qris",
+        method,
+        ...(method === "va" ? { bankCode: "bmri" } : {}),
         idempotencyKey: randomUUID(),
       }),
   };
@@ -243,18 +252,26 @@ async function placeOrder(guest: Guest) {
   };
 }
 
-async function openPayment(guest: Guest, orderId: string): Promise<string> {
-  const paid = await as(guest).pay(orderId);
+async function openPayment(
+  guest: Guest,
+  orderId: string,
+  method: "qris" | "va" = "qris",
+): Promise<string> {
+  const paid = await as(guest).pay(orderId, method);
   expect(paid.status).toBe(201);
   expect(paid.body.data.status).toBe("pending");
   return paid.body.data.id as string;
 }
 
 /** A verified webhook settlement (the trusted source). */
-async function settle(intentId: string, amountIdr: number) {
+async function settle(
+  intentId: string,
+  amountIdr: number,
+  method: "qris" | "va" = "qris",
+) {
   await confirmPayment(contextOf(tenant.tenantId), intentId, {
     source: "verified_webhook",
-    method: "qris",
+    method,
     amountIdr,
     providerRef: `WEBHOOK-${randomBytes(6).toString("hex")}`,
     at: new Date().toISOString(),
@@ -607,7 +624,9 @@ describe("QR order paid twice keeps the first code as payer (legend-mks0q)", () 
       const { orderId, totalIdr } = await placeOrder(guest);
 
       // Code A is superseded by code B (A lapses, the guest opens B) ...
-      const intentA = await openPayment(guest, orderId);
+      // Code A is a VA, not a QR: a QR A would hold the bill and refuse B until
+      // the provider proves A dead (legend-kf104, qris-hold-so879-a-kf104 test).
+      const intentA = await openPayment(guest, orderId, "va");
       await owner.query(
         `UPDATE payment_intents SET status = 'expired', expires_at = now() - interval '1 minute'
           WHERE tenant_id = $1 AND id = $2`,
@@ -618,7 +637,7 @@ describe("QR order paid twice keeps the first code as payer (legend-mks0q)", () 
 
       // ... yet the guest pays both: A settles first, then B, before the
       // order is fired.
-      await settle(intentA, totalIdr);
+      await settle(intentA, totalIdr, "va");
       await settle(intentB, totalIdr);
       const eventA = await onlyPaidEvent(intentA);
       const eventB = await onlyPaidEvent(intentB);
@@ -707,14 +726,15 @@ async function orderPaidTwice() {
   await freshWorld();
   const guest = await seatAtNewTable();
   const { orderId, totalIdr } = await placeOrder(guest);
-  const intentA = await openPayment(guest, orderId);
+  // A is a VA: a QR A now holds the bill and refuses B (legend-kf104 test).
+  const intentA = await openPayment(guest, orderId, "va");
   await owner.query(
     `UPDATE payment_intents SET status = 'expired', expires_at = now() - interval '1 minute'
       WHERE tenant_id = $1 AND id = $2`,
     [tenant.tenantId, intentA],
   );
   const intentB = await openPayment(guest, orderId);
-  await settle(intentA, totalIdr);
+  await settle(intentA, totalIdr, "va");
   await settle(intentB, totalIdr);
   return {
     orderId,

@@ -86,7 +86,10 @@ import {
   assertPaymentPermission,
   uniqueViolation,
 } from "../../services/payment-support.ts";
-import { assertEdcSaleBillPayable } from "../../services/pos-order-support.ts";
+import {
+  assertEdcSaleBillPayable,
+  assertNoActiveQrisHoldForEdcSale,
+} from "../../services/pos-order-support.ts";
 import { emitEdcTransactionEvent } from "./events.ts";
 import { EDC_LATE_RESPONSE_WINDOW_MS } from "./late-response.ts";
 import type { EdcProviderRegistry } from "./registry.ts";
@@ -1610,6 +1613,13 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
           outletId: input.outletId,
           reference: input.reference,
           amountIdr: input.amountIdr,
+        });
+        // legend-w0ows: a bill with a collectible QR cannot start a card sale
+        // (the tender would be refused while the hold is active). Same advisory
+        // lock as the QR issue, so no QR and sale both pass; no order lock.
+        await assertNoActiveQrisHoldForEdcSale(tx, ctx, {
+          outletId: input.outletId,
+          reference: input.reference,
         });
         // The terminal is read again here, locked against a concurrent edit
         // (`FOR KEY SHARE` conflicts with the admin's `FOR UPDATE`): the sale

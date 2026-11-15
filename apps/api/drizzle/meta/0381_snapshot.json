@@ -1,6 +1,6 @@
 {
-  "id": "529b64ed-0e10-4562-9e94-d441bdda6a97",
-  "prevId": "bb9ac76e-cb7a-4e7a-baf8-f118b667f0f5",
+  "id": "ee8c177b-8bfd-4b5b-8a3a-a782244dc407",
+  "prevId": "529b64ed-0e10-4562-9e94-d441bdda6a97",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -52957,7 +52957,7 @@
             }
           ],
           "isUnique": true,
-          "where": "\"pos_qris_holds\".\"state\" IN ('open', 'cancelling')",
+          "where": "\"pos_qris_holds\".\"state\" IN ('open', 'cancelling') AND NOT \"pos_qris_holds\".\"backfilled\"",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -53149,7 +53149,7 @@
         },
         "pos_qris_holds_target_check": {
           "name": "pos_qris_holds_target_check",
-          "value": "\"pos_qris_holds\".\"tender_id\" IS NOT NULL OR \"pos_qris_holds\".\"bill_split_id\" IS NOT NULL"
+          "value": "\"pos_qris_holds\".\"tender_id\" IS NOT NULL OR \"pos_qris_holds\".\"bill_split_id\" IS NOT NULL OR \"pos_qris_holds\".\"opened_by\" IS NULL"
         },
         "pos_qris_holds_state_check": {
           "name": "pos_qris_holds_state_check",
@@ -53157,7 +53157,7 @@
         },
         "pos_qris_holds_basis_check": {
           "name": "pos_qris_holds_basis_check",
-          "value": "\"pos_qris_holds\".\"backfilled\" OR \"pos_qris_holds\".\"bill_split_id\" IS NOT NULL OR (\"pos_qris_holds\".\"basis_total_idr\" IS NOT NULL AND \"pos_qris_holds\".\"basis_deposit_idr\" IS NOT NULL AND \"pos_qris_holds\".\"basis_captured_idr\" IS NOT NULL AND \"pos_qris_holds\".\"amount_idr\" = \"pos_qris_holds\".\"basis_total_idr\" - \"pos_qris_holds\".\"basis_deposit_idr\" - \"pos_qris_holds\".\"basis_captured_idr\")"
+          "value": "\"pos_qris_holds\".\"backfilled\" OR \"pos_qris_holds\".\"tender_id\" IS NULL OR (\"pos_qris_holds\".\"basis_total_idr\" IS NOT NULL AND \"pos_qris_holds\".\"basis_deposit_idr\" IS NOT NULL AND \"pos_qris_holds\".\"basis_captured_idr\" IS NOT NULL AND \"pos_qris_holds\".\"amount_idr\" = \"pos_qris_holds\".\"basis_total_idr\" - \"pos_qris_holds\".\"basis_deposit_idr\" - \"pos_qris_holds\".\"basis_captured_idr\")"
         },
         "pos_qris_holds_cancel_pair_check": {
           "name": "pos_qris_holds_cancel_pair_check",

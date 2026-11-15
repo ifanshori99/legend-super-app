@@ -67,6 +67,7 @@ import { freshDetail, mutatePosOrder } from "./pos-order.service.ts";
 import {
   POS_QRIS_LIFETIME_MS,
   assertNoActiveQrisHold,
+  closeQrisHoldTx,
   lockHoldsOfOrder,
   openQrisHold,
 } from "./pos-qris-hold.ts";
@@ -254,14 +255,12 @@ export async function addPosTender(
       request,
     },
     async (tx, locked) => {
-      const { order, pos } = locked;
+      const { order } = locked;
+      let { pos } = locked;
       const tenantId = context.tenant.tenantId;
       assertExpectedStatus(order, input.expectedStatus);
       assertMutable(order);
       assertPosOrderSettleable({ status: order.status });
-      // legend-yhia9 D-01: while a QR can still be paid the bill is frozen, so
-      // no other tender and no second QR (the 0369 trigger is the backstop).
-      await assertNoActiveQrisHold(tx, context, order.id);
       // EDC-01 (legend-ig2sl): an open or unbooked ECR sale already asked the
       // terminal for this bill; another tender would be a second payment. Only
       // the ECR tender that carries that request's id settles it.
@@ -269,7 +268,50 @@ export async function addPosTender(
         input.edcTransactionId != null &&
         !input.standalone &&
         (input.method === "edc_card" || input.method === "edc_qris");
-      if (!settlesEcrRequest) await assertNoOpenEdcRequest(tx, context, order);
+      // legend-yhia9 D-01: while a QR can still be paid the bill is frozen, so
+      // no other tender and no second QR (the 0369 trigger is the backstop).
+      // legend-w0ows: not for the tender that books a card sale already sent
+      // to the terminal (the card wins, founder Q7). The agent refuses to START
+      // a sale while a hold is active, so a hold seen here came in while the
+      // sale ran: it ends first (QR tender voided, link closed locally), then
+      // the card tender books. Lock order: orders -> pos_orders -> holds ->
+      // EDC advisory -> tender. A QR paid at the provider later meets a voided
+      // tender and is refunded in full (late payment), never kept.
+      if (!settlesEcrRequest) {
+        await assertNoActiveQrisHold(tx, context, order.id);
+        await assertNoOpenEdcRequest(tx, context, order);
+      } else {
+        const holds = await lockHoldsOfOrder(tx, tenantId, order.id);
+        await hasOpenEdcRequest(tx, context, order);
+        for (const hold of holds) {
+          if (hold.state !== "open" && hold.state !== "cancelling") continue;
+          await closeQrisHoldTx(tx, context, {
+            order,
+            pos,
+            hold,
+            reason: "force_released",
+            evidence: {
+              anomaly: "card_sale_booked",
+              edcTransactionId: input.edcTransactionId ?? null,
+            },
+            caller,
+            auditAction: "pos_qris_hold.closed_by_card_sale",
+            now,
+          });
+          // The close bumped the POS version; the tender below bumps it again
+          // from the fresh row (compare-and-set).
+          const [fresh] = await tx
+            .select()
+            .from(posOrders)
+            .where(
+              and(
+                eq(posOrders.tenantId, tenantId),
+                eq(posOrders.orderId, order.id),
+              ),
+            );
+          if (fresh) pos = fresh;
+        }
+      }
       // Native POS payments use tender-level links. A legacy order-level
       // link can still collect through its public token or a remote code,
       // even after a nominal expiry, so do not open a second payment source.
@@ -906,6 +948,7 @@ export async function handlePosPaymentPaid(
         pos,
         paymentLinkId: payload.data.paymentLinkId,
         intentId: paid.id,
+        tenderId: tender.id,
         reason: "edc_request_open",
         now: at,
         linkClosedAt: now,
