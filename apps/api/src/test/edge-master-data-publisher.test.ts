@@ -112,9 +112,15 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await closeOwnerPool();
-  await closeAppPool();
-  await cloud.cleanup();
+  try {
+    await closeOwnerPool();
+  } finally {
+    try {
+      await closeAppPool();
+    } finally {
+      await cloud.cleanup();
+    }
+  }
 });
 
 describe("legend-3k41y master-data publication", () => {
