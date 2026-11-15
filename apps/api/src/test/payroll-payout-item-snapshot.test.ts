@@ -192,8 +192,13 @@ describe("legend-2bl54 item bank snapshot", () => {
       lastFour(BUDI.account),
     );
 
+    // The fixture account is random digits: when its last four are 9999 a fixed
+    // "****9999" would be a no-op UPDATE and the trigger would rightly not fire
+    // (about 1 run in 10,000). Pick a value that always differs from the stored one.
+    const differentMask =
+      row!.masked_account_number === "****9999" ? "****0000" : "****9999";
     for (const [column, value] of [
-      ["masked_account_number", "****9999"],
+      ["masked_account_number", differentMask],
       ["account_holder_name", "Orang Lain"],
     ] as const) {
       const error = await W.asTenant((c) =>
