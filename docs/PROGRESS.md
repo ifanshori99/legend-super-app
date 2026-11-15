@@ -1,3 +1,18 @@
+## 885 Perbaikan second opinion QRIS 879 (engineer, legend-m7tnt tqkbb 0owye adiov 05pjx m8jax, cabang `fix/qris-hold-so-879` dari fd4427fd1, 16 Nov 2026)
+- Selesai: 4 P1 + 05pjx + m8jax. Prinsip CTO: waktu lokal bukan bukti kode mati; hanya jawaban final penyedia atau uang yang sudah direkonsiliasi.
+  - A (m7tnt): penutupan reservasi butuh bukti penyedia atas semua intent DP (pending/expired/superseded/failed) + dana tak teralokasi; selain itu 409 `PAYMENT_PROVIDER_UNCONFIRMED`.
+  - B (tqkbb): `payment_intents.provider_final_at` (0629); intent expired berkode tetap hidup dan tetap di-poll sampai final; ganti kode VA dan ubah split ditolak sampai final.
+  - C (0owye): backfill 0381 menahan intent failed dengan dana tak teralokasi terbuka (4 bentuk); guard `FUNDS_UNRESOLVED`; job cek ulang tiap 30 menit.
+  - D (adiov): antrean `pos_qris_release_reconciliations` (0628), worker, rute GET `/qris/reconciliations`; uang yang ditemukan dicatat tepat sekali (evidence, dana tak teralokasi, event, alert).
+  - E (05pjx): refund failed menahan order QR awaiting_payment, terlihat di alert/daftar, ajukan ulang lewat approval refund; eskalasi `failed_holds_order` (0630).
+  - F (m8jax): sweep dengan kursor adil per tenant (paling lama dulu).
+- Migrasi: 0628, 0629, 0630 (sementara; 0381/0382 bentrok dengan batch69 m1, merge train wajib renumber). 0381 diedit di tempat (belum pernah diterapkan di tempat lain).
+- Tes: berkas baru `qris-hold-so885-*`; semua merah dulu lalu hijau. Gate: 184 berkas QRIS hold/qr-order/payment/reservasi/registry/migrasi/refund hijau (183 lulus, 1 skip), 870 tes kontrak root hijau, typecheck API+web, prettier, eslint, `db:generate` kosong.
+- Tes yang sudah merah di fd4427fd1 (bukan regresi 885) dibereskan juga: ws03-guest-va, bill-split-sweep, late-payment-refund-refile (pindah ke VA karena hold QR menahan void), accounting-refund-gateway-historic-tax-map (premis jurnal berubah di 769e3fa44/09852742f).
+- Review: architect xhigh; P1-1 (RLS 0381) dan P1-2 (`provider_final_at` pada paid ditolak) + 2 P2 sudah dibetulkan.
+- Biaya sesi (session-usage): total 30.1M (utama 4.07M, subagent 26.0M); 35 subagent, maks 8 paralel, rata 0.37 berjalan per agent; 334 menit.
+- Sisa/risiko: penyedia yang tak pernah menjawab final menahan penggantian tanpa batas (pengecualian Q93 lewat force release + antrean); kursor sweep di memori saja; jalur reservasi masih memakai waktu lokal (`reservation-core.ts`, `reservation-deposit-resend.ts`) -> kartu baru.
+
 ## 868 API daftar rekonsiliasi EDC (engineer, legend-p98qi, cabang dari `ui/edc-rekonsiliasi-865` 5fb5f8273, 15 Nov 2026)
 
 - `GET /api/payments/admin/edc/reconciliation-queue` (payment-admin.routes.ts, `listEdcReconciliationQueueForActor` di services/edc-reconciliation.service.ts). Kontrak shared tidak diubah; aksi yang diizinkan diturunkan klien dari field (status, needsReconciliation, saleWireOpenAt, dispatchedAt) lewat `reconciliationGate`. Isi: sale dengan needs_reconciliation ATAU status unknown (unknown <10 menit ikut, terkunci di klien). Tanpa `outletId`: `requireMenuPermission("payment.reconcile")` + jangkauan outlet `payment.reconcile` dihitung service (grant lain, mis. kasir-only, tidak menambah); dengan `outletId`: `requireOutletPermission`. Tenant + outlet difilter di SQL, `q` di-escape, urut createdAt desc + id desc, cursor dibulatkan ms, cursor rusak 422, tender dimuat satu query. Tanpa migrasi.
