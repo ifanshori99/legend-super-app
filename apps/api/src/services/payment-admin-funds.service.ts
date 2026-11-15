@@ -140,6 +140,7 @@ async function view(
       billTotalIdr: Number(r.bill_total_idr),
       outletName: r.outlet_name,
       status,
+      evidenceMismatch: needsReview,
       detectedAt: new Date(String(r.created_at)).toISOString(),
       resolvedByName: r.resolved_by_name,
       resolvedAt: r.resolved_at
@@ -147,9 +148,9 @@ async function view(
         : null,
       note: r.note,
     });
-  const parsed = needsReview
-    ? build("needs_review")
-    : build(r.resolution ? "resolved" : "open");
+  const parsed = r.resolution
+    ? build("resolved")
+    : build(needsReview ? "needs_review" : "open");
   if (parsed.success) return parsed.data;
   // Evidence that does not fit the view contract is flagged, not hidden.
   const flagged = lenient ? build("needs_review") : parsed;

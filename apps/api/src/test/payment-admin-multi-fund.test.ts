@@ -339,6 +339,11 @@ describe("legend-knev multi-fund unallocated resolve", () => {
     expect(list.status).toBe(200);
     const listed = (list.body.data as { id: string }[]).map((f) => f.id);
     expect(listed).toEqual(expect.arrayContaining(bill.fundIds));
+    for (const fundId of bill.fundIds) {
+      expect(
+        list.body.data.find((fund: { id: string }) => fund.id === fundId),
+      ).toMatchObject({ evidenceMismatch: false });
+    }
 
     expect((await resolve(bill.fundIds[0]!)).status).toBe(200);
     expect((await resolve(bill.fundIds[1]!)).status).toBe(200);
@@ -421,6 +426,52 @@ describe("legend-knev multi-fund unallocated resolve", () => {
     expect(await refundsOf(bill.fundIds)).toEqual([]);
     expect(await fundRows(bill.fundIds)).toEqual(before);
   });
+
+  it.each([
+    ["refund", 110_000],
+    ["credit", 110_000],
+    ["refund", 10_000],
+    ["credit", 10_000],
+  ] as const)(
+    "legend-s3ex8 a %s-resolved fund stays resolved with changed evidence of %i and cannot pay again",
+    async (resolution, evidenceAmount) => {
+      const bill = await seedBill({
+        total: 100_000,
+        evidences: [120_000],
+        funds: [{ amount: 20_000, evidence: 0 }],
+      });
+      // Seed the historical closed state directly: the credit endpoint returns
+      // 503 until its approved ledger adapter is available. This tests display
+      // of existing resolved funds without claiming a credit payout succeeded.
+      await owner.query(
+        `UPDATE payment_unallocated_funds
+         SET resolution = $2, resolved_at = now(), resolved_by = $3
+         WHERE id = $1`,
+        [bill.fundIds[0], resolution, userId],
+      );
+      await owner.query(
+        "UPDATE payment_evidence SET amount_idr = $2 WHERE id = $1",
+        [bill.evidenceIds[0], evidenceAmount],
+      );
+      const before = await fundRows(bill.fundIds);
+      const refundsBefore = await refundsOf(bill.fundIds);
+      const list = await listFundIds();
+      expect(list.status).toBe(200);
+      expect(statusOf(list, bill.fundIds[0]!)).toBe("resolved");
+      expect(
+        list.body.data.find(
+          (fund: { id: string }) => fund.id === bill.fundIds[0],
+        ),
+      ).toMatchObject({
+        amountIdr: 20_000,
+        paidAmountIdr: evidenceAmount,
+        evidenceMismatch: true,
+      });
+      expect((await resolve(bill.fundIds[0]!)).status).toBe(409);
+      expect(await fundRows(bill.fundIds)).toEqual(before);
+      expect(await refundsOf(bill.fundIds)).toEqual(refundsBefore);
+    },
+  );
 
   it("MF-14 one inconsistent bill does not hide the healthy ones: list 200, healthy open, bad needs_review, nobody paid more", async () => {
     // legend-ftqf. Healthy bill: evidence 120k on a 100k bill, fund 20k.

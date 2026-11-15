@@ -407,6 +407,7 @@ export const unallocatedFundViewSchema = z
     billTotalIdr: positiveIdr,
     outletName: ref,
     status: unallocatedStatusSchema,
+    evidenceMismatch: z.boolean(),
     detectedAt: isoDateTimeSchema,
     resolvedByName: ref.nullable(),
     resolvedAt: isoDateTimeSchema.nullable(),
@@ -416,13 +417,12 @@ export const unallocatedFundViewSchema = z
   // (overpaid, double-paid or underpaid). A bill may carry several funds, one
   // per provider evidence (legend-knev); the server refuses a bill whose funds
   // do not add up to exactly what arrived minus what was applied.
-  .refine(
-    (f) => f.status === "needs_review" || f.amountIdr <= f.paidAmountIdr,
-    {
-      path: ["amountIdr"],
-      message: "amount must not exceed the amount paid",
-    },
-  );
+  // Resolved funds retain their historical amount when evidence changes;
+  // this view never authorizes another refund or credit (legend-s3ex8).
+  .refine((f) => f.status !== "open" || f.amountIdr <= f.paidAmountIdr, {
+    path: ["amountIdr"],
+    message: "amount must not exceed the amount paid",
+  });
 export type UnallocatedFundView = z.infer<typeof unallocatedFundViewSchema>;
 
 /** Money moves (refund or credit), so the write carries an idempotency key. */
@@ -1191,6 +1191,7 @@ const unallocatedFixtures = [
 ].map((fund) =>
   unallocatedFundViewSchema.parse({
     ...fund,
+    evidenceMismatch: false,
     tenantId,
     outletId: bandungId,
     outletName: bandung.name,

@@ -143,6 +143,11 @@ export function UnallocatedPanel() {
                 <StatusPill status={unallocatedTone(fund.status)}>
                   {t(unallocatedLabelKey(fund.status))}
                 </StatusPill>
+                {fund.evidenceMismatch && (
+                  <StatusPill status="warning">
+                    {t("paymentAdmin.unallocated.evidenceMismatch")}
+                  </StatusPill>
+                )}
                 {fund.status === "open" && (
                   <Button
                     type="button"
