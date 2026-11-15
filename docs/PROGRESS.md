@@ -1679,3 +1679,4 @@ Langkah berikut CTO baru:
 - cleanup-ssd berjalan (disk 23 GB). Founder Q8 (W15) masih terbuka; tag Q berikut Q10.
 - 09:57 CTO G471b: W2 870 selesai (fix/payout-second-opinion-870 9f75ea558, antre). Bead baru 66xzn (UI 409), 0go0p (cek data rilis), rhbpb (P3), 7t2vv (Codex ulang). Mulai G6w2r UI 871 (Sonnet #1), G71j3 Codex 872.
 - 10:13 CTO G471b: batch66 di m1 479a99525 (flake baru ygty4/9jhvz/ju62a); tutup 0a1r1, 0m495, xdlxa, zafqj. Batch67 gate berjalan. 870/871 ditahan sampai 873.
+- 19:54 CTO G471b: akun #1 error langganan (payment past due) ~10:53-19:50, semua thread #1 berhenti. G1d06 + G2ct7 dipindah ke #2. G2ec1 QRIS ditahan. Retro 13:43/16:43/19:43 dilewati (kuota). Founder Q10 setuju: aturan 7 standing instructions (tanpa kabar antara). Q11: rem tetap.
