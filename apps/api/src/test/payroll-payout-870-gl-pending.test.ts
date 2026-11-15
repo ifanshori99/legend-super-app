@@ -717,3 +717,237 @@ describe("second-opinion F3 (legend-cnpap): pending cash settlement keeps the ca
     ).toEqual({ debit: 0, credit: 0, balance: 0 });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Architect review round 2 (legend-2aspe follow-up), brief-873-round2.
+//
+// R1 (P2): the SECOND batch of the same run, handed over after accounting was
+// switched off, must also be stored as `settle_pending` while the run already
+// has a pending settle (the consumer will post the run's lock journal and
+// resolve A; B left open would leave 2103 open and cash overstated). The
+// fail-closed source checks still apply to that pending-by-run case.
+// R6 (P3): a pending cash settlement needs its frozen source: an inactive or
+// header (parent) petty_cash account is refused 409 PAYOUT_SOURCE_ACCOUNT_MISSING
+// at handover, nothing recorded.
+// R3b (P3): a pending CASH posting whose frozen account is gone (NULL) must not
+// fall back to today's mapping: it stays unresolved (fail closed).
+//
+// Assumptions: "same run, second batch" is modelled with a MIXED run (cash batch
+// A, then bank batch B) because the fixtures create one batch per channel;
+// the rule is per run, not per channel. Batch B is created and exported while
+// accounting is still on (only the confirmation happens with accounting off).
+// For R3b the consumer's own error handling is not specified, so the test
+// asserts only the outcome: the posting is not resolved to `settle` and the
+// cash account is not credited.
+// ---------------------------------------------------------------------------
+
+async function currentSourceBankId() {
+  const [config] = await W.rowsOf(
+    `SELECT manual_source_bank_account_id AS id FROM payroll_payout_configs
+      WHERE tenant_id = $1 AND legal_entity_id = $2`,
+    [tenantId(), W.entityId()],
+  );
+  return config!.id as string;
+}
+const setBankActive = (id: string, active: boolean) =>
+  W.asTenant(
+    (c) =>
+      c.query(`UPDATE bank_accounts SET is_active = $2 WHERE id = $1`, [
+        id,
+        active,
+      ]),
+    true,
+  );
+
+/** Account `code` becomes inactive or a header (it gets a child). Returns the restore. */
+async function breakGlAccount(code: string, how: "inactive" | "header") {
+  if (how === "inactive") {
+    const setActive = (active: boolean) =>
+      W.asTenant(
+        (c) =>
+          c.query(
+            `UPDATE chart_of_accounts SET is_active = $3
+              WHERE tenant_id = $1 AND legal_entity_id = $2 AND code = $4`,
+            [tenantId(), W.entityId(), active, code],
+          ),
+        true,
+      );
+    await setActive(false);
+    return () => setActive(true);
+  }
+  const [child] = await W.rowsOf(
+    `INSERT INTO chart_of_accounts
+       (tenant_id, legal_entity_id, code, name, type, report_group, parent_id)
+     SELECT tenant_id, legal_entity_id, $3 || '9', 'Anak Uji', type, report_group, id
+       FROM chart_of_accounts
+      WHERE tenant_id = $1 AND legal_entity_id = $2 AND code = $3
+     RETURNING id`,
+    [tenantId(), W.entityId(), code],
+  );
+  return () =>
+    W.asTenant(
+      (c) => c.query(`DELETE FROM chart_of_accounts WHERE id = $1`, [child!.id]),
+      true,
+    );
+}
+
+/** Mixed run: cash batch A handed over while the lock is queued (pending); bank batch B approved and exported. */
+async function pendingCashThenExportedBank() {
+  const slips = [cash(CASHIER, 1_000_000), bank(BUDI, 2_000_000)];
+  const runId = await W.seedRun(slips);
+  const { outboxId, event } = await queueLockedViaOutbox(runId, slips);
+  const batchA = await W.approvedBatch(runId, "cash");
+  const itemsA = await W.itemsOf(batchA);
+  await W.handover(
+    batchA,
+    itemsA.map((i) => i.id as string),
+    APP2,
+  );
+  expect(
+    (await W.postingsOf(batchA))[0]!.kind,
+    "premise: A stored as pending",
+  ).toBe("settle_pending");
+  const batchB = await W.exportedBatch(runId);
+  return { runId, slips, outboxId, event, batchA, batchB };
+}
+
+describe("round 2 R1: second batch of the run after accounting was switched off", () => {
+  it("[r2-r1-second-batch-pending-accounting-off] A pending, accounting off, B confirmed: B is settle_pending (not skipped); the consumer resolves both; cash and bank credited exactly their nets, 2103 net zero", async () => {
+    const before = {
+      cash: await account("1102"),
+      payable: await account("2103"),
+    };
+    const { runId, slips, outboxId, event, batchA, batchB } =
+      await pendingCashThenExportedBank();
+    const itemsB = await W.itemsOf(batchB);
+
+    const outcome = await withAccountingOff(async () => {
+      await W.confirm(batchB, W.succeedItems(batchB, itemsB));
+      const kindOfB = (await W.postingsOf(batchB)).map((p) => p.kind);
+      expect(
+        kindOfB,
+        "B must wait for the run's lock journal like A, not be recorded as skipped",
+      ).toEqual(["settle_pending"]);
+      return consumeLocked(outboxId);
+    });
+    expect(outcome.result?.status).toBe("posted");
+    await W.deliverGl(W.paidEnvelope(runId, slips, { settledPerItem: true }));
+
+    const [postingA] = await W.postingsOf(batchA);
+    const [postingB] = await W.postingsOf(batchB);
+    expect(postingA!.kind).toBe("settle");
+    expect(postingB!.kind).toBe("settle");
+    expect(await W.journalByKey(postingA!.journal_key as string)).toEqual({
+      "2103": { debit: 1_000_000, credit: 0 },
+      "1102": { debit: 0, credit: 1_000_000 },
+    });
+    expect(await W.journalByKey(postingB!.journal_key as string)).toEqual({
+      "2103": { debit: 2_000_000, credit: 0 },
+      "1103": { debit: 0, credit: 2_000_000 },
+    });
+    expect((await account("1102")).credit - before.cash.credit).toBe(1_000_000);
+    expect(
+      (await account("2103")).balance - before.payable.balance,
+      "2103 is net zero for the run: B is not left open",
+    ).toBe(0);
+
+    // Replays add nothing.
+    const journals = await journalCountOfEntity();
+    await consumeLocked(outboxId);
+    await W.deliverGl(event);
+    expect(await journalCountOfEntity()).toBe(journals);
+  });
+
+  it("[r2-r1-second-batch-source-still-checked] A pending, accounting off, B's source bank account inactive: the confirmation is refused 409 PAYOUT_SOURCE_ACCOUNT_MISSING and nothing is recorded (pending needs its frozen source)", async () => {
+    const { batchB } = await pendingCashThenExportedBank();
+    const itemsB = await W.itemsOf(batchB);
+    const sourceId = await currentSourceBankId();
+
+    await setBankActive(sourceId, false);
+    try {
+      const error = await withAccountingOff(() =>
+        W.httpFailure(W.confirm(batchB, W.succeedItems(batchB, itemsB))),
+      );
+      expect(error, "the confirmation must be refused").not.toBeNull();
+      expect(error!.status).toBe(409);
+      expect(error!.code).toBe("PAYOUT_SOURCE_ACCOUNT_MISSING");
+    } finally {
+      await setBankActive(sourceId, true);
+    }
+    expect(await W.postingsOf(batchB)).toHaveLength(0);
+    for (const item of await W.itemsOf(batchB))
+      expect(item.status, "no item was recorded as paid").toBe("exported");
+  });
+});
+
+describe("round 2 R6: frozen cash account must be active and postable at handover", () => {
+  for (const how of ["inactive", "header"] as const) {
+    it(`[r2-r6-cash-account-${how}-refused] petty_cash mapped to a ${how} account while the lock is queued: the handover is refused 409 PAYOUT_SOURCE_ACCOUNT_MISSING and nothing is recorded; once fixed it is pending as usual`, async () => {
+      const slips = [cash(CASHIER, 800_000)];
+      const runId = await W.seedRun(slips);
+      await queueLockedEvent(runId, slips);
+      const batchId = await W.approvedBatch(runId, "cash");
+      const itemIds = (await W.itemsOf(batchId)).map((i) => i.id as string);
+
+      const restore = await breakGlAccount("1102", how);
+      try {
+        const error = await W.httpFailure(W.handover(batchId, itemIds, APP2));
+        expect(error, "the handover must be refused").not.toBeNull();
+        expect(error!.status).toBe(409);
+        expect(error!.code).toBe("PAYOUT_SOURCE_ACCOUNT_MISSING");
+        expect(await W.postingsOf(batchId)).toHaveLength(0);
+        for (const item of await W.itemsOf(batchId))
+          expect(item.status, "no item was handed over").not.toBe("paid");
+      } finally {
+        await restore();
+      }
+
+      await W.handover(batchId, itemIds, APP2);
+      const postings = await W.postingsOf(batchId);
+      expect(postings).toHaveLength(1);
+      expect(postings[0]!.kind).toBe("settle_pending");
+    });
+  }
+});
+
+describe("round 2 R3b: pending cash posting without a frozen account fails closed", () => {
+  it("[r2-r3b-null-frozen-cash-no-mapping-fallback] a pending cash posting whose frozen source account is NULL is not resolved with today's petty_cash mapping: it stays unresolved and cash is not credited", async () => {
+    const before = { cash: await account("1102") };
+    const slips = [cash(CASHIER, 1_000_000)];
+    const runId = await W.seedRun(slips);
+    const { outboxId } = await queueLockedViaOutbox(runId, slips);
+    const batchId = await W.approvedBatch(runId, "cash");
+    const items = await W.itemsOf(batchId);
+    await W.handover(
+      batchId,
+      items.map((i) => i.id as string),
+      APP2,
+    );
+    const [pending] = await W.postingsOf(batchId);
+    expect(pending!.kind, "premise: stored as pending").toBe("settle_pending");
+    // A pending posting from before the freeze (or lost account): triggers off.
+    await W.asTenant(
+      (c) =>
+        c.query(
+          `UPDATE payroll_payout_gl_postings SET source_gl_account_id = NULL
+            WHERE tenant_id = $1 AND id = $2`,
+          [tenantId(), pending!.id],
+        ),
+      true,
+    );
+
+    // The consumer may fail or leave it pending; either way it must not settle.
+    await consumeLocked(outboxId).catch(() => undefined);
+
+    const postings = await W.postingsOf(batchId);
+    expect(postings).toHaveLength(1);
+    expect(
+      postings[0]!.kind,
+      "no silent fallback to the current petty_cash mapping",
+    ).toBe("settle_pending");
+    expect(
+      (await account("1102")).credit - before.cash.credit,
+      "cash is not credited from an account nobody froze",
+    ).toBe(0);
+  });
+});
