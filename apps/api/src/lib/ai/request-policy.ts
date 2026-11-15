@@ -5,6 +5,7 @@ import {
   type AiModelCapabilities,
   type AiReasoningEffort,
 } from "@starter/shared/ai";
+import { redactToolResultContent } from "./pii.ts";
 import type { AiChatMessage, AiCompletionRequest } from "./types.ts";
 
 const EFFORTS: readonly AiReasoningEffort[] = ["low", "medium", "high"];
@@ -114,6 +115,23 @@ export function trimMessagesToContext(
   return retained;
 }
 
+/**
+ * Single choke point for AIG-02: every provider request passes through
+ * prepareAiRequest, so tool results are masked here for every caller
+ * (orchestrator, drafts, system calls). The user still sees the unmasked
+ * result; only what is sent to the provider is redacted.
+ */
+function redactToolResults(messages: AiChatMessage[]): AiChatMessage[] {
+  return messages.map((message) => ({
+    ...message,
+    content: message.content.map((block) =>
+      block.type === "tool_result"
+        ? { ...block, content: redactToolResultContent(block.content) }
+        : block,
+    ),
+  }));
+}
+
 export function prepareAiRequest(
   request: AiCompletionRequest,
   capabilities: AiModelCapabilities,
@@ -150,7 +168,7 @@ export function prepareAiRequest(
     tools,
     maxTokens,
     messages: trimMessagesToContext(
-      request.messages,
+      redactToolResults(request.messages),
       capabilities.contextWindow,
       maxTokens,
       request.system,
