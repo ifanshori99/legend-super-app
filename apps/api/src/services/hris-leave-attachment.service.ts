@@ -18,9 +18,14 @@ export async function uploadLeaveAttachment(
 ): Promise<{ attachmentUploadRef: string }> {
   const home = await withTenant(db, context, async (tx) => {
     const access = await loadHrisAccess(tx, context, actorUserId);
+    // Live self.leave.request grant at the leave's own (home) outlet, so the
+    // upload ref can only be used where the link will actually open (legend-bkd76).
     if (
       !access.own ||
-      !access.snapshot.permissions.includes("self.leave.request")
+      !access.snapshot.allows("self.leave.request", {
+        type: "outlet",
+        id: access.own.homeOutletId,
+      })
     )
       throw forbidden();
     const [employee] = await tx
