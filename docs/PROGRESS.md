@@ -1,3 +1,14 @@
+## 896 QRIS area akhir: 5 P1 second opinion + temuan architect (engineer, legend-ad95t xg6qk 5h8ob o6q8i la1yk, cabang `fix/qris-hold-so-879`, 16 Nov 2026)
+- Selesai (dari c2902fa4e):
+  - ad95t/xg6qk: poll memuat intent `failed` non-final (providerRef, provider_final_at NULL, tanpa hold tertutup); paid tercatat/diparkir tepat sekali; klausa waktu lokal dihapus dari payment-live-code (kode mati hanya oleh providerAnswerFinal/rekonsiliasi); jawaban final wajib providerRef sama; `qris-hold-so896-poll-failed` (11 tes, 9 merah dulu). Lease baris pending yang terlewat sudah dilepas di `finally` (tanpa perubahan kode).
+  - 5h8ob: dana terbuka dihitung untuk intent status apa pun (kecuali paid) -> 409 `FUNDS_UNRESOLVED` (`qris-hold-so896-open-funds`).
+  - o6q8i: tender POS (tunai/QR/points) menolak bila ada dana terbuka dari semua tender/hold/intent order (`pos-order-open-funds.ts`, `qris-hold-so896-pos-open-funds`); EDC pembukuan tetap dikecualikan.
+  - la1yk: DOIT yang ditarik dari paket tetap memverifikasi webhook dan poll intent tersimpan (`forStoredIntent` di payment-doit.ts, payment-webhook.service.ts dua tempat); penerbitan baru tetap ditolak (`qris-hold-so896-doit-stored`).
+  - Architect P2: cakupan dana tender POS di guard tamu/split; mulai penjualan kartu ECR menolak dana terbuka (`edge/edc/agent.ts`); jalur parkir webhook DOIT/Duitku menandai kode final (`qris-hold-so896-p2-parking`, `qris-hold-so896-edc-open-funds`).
+- Tes lama disesuaikan tanpa melemahkan uang: pos-qris-hold-anomaly QH-14 (QR baru ditolak selagi dana terparkir), so889-p2, so885-c, payment-terminal-paid, payment-duitku-webhook.
+- Gate: 193 berkas (3211 tes), kontrak 870, typecheck API+web, prettier/eslint 60 berkas, `db:generate` kosong. Tanpa migrasi.
+- Terbuka: VA tanpa jawaban final -> legend-5wn1e. Skenario kode tamu vs tender POS pada order sama tak terjangkau lewat rute (guard defensif, tes memanggil guard langsung; P2-1 tak sempat diperlihatkan merah). Mismatch pada kode pending sengaja tetap hidup sampai penyedia final. Second opinion Codex berikutnya atas diff c2902fa4e..HEAD (CTO). Satu agen sempat `git stash` lalu memulihkan; satu agen menghentikan satu proses tes miliknya.
+
 ## 889 Perbaikan review architect atas gerbang 885 (engineer, cabang `fix/qris-hold-so-879`, 16 Nov 2026)
 - Selesai (review architect xhigh atas 61989ceae..HEAD, dua putaran):
   - P1 poll starvation: kode pending diproses sebelum expired; budget error per provider DAN per kind; budget waktu terpisah (tes `qris-hold-so885-b-poll-fair` tqkbb-9).
