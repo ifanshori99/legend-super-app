@@ -20,7 +20,7 @@
 // - "Backfill statements" = every statement of the QRIS hold migration from the
 //   first `NO FORCE ROW LEVEL SECURITY` up to the statement that restores
 //   `FORCE ROW LEVEL SECURITY` (same as the sibling test). The migration is
-//   edited in place (tag 0379) per the brief; if the engineer moves the new rule
+//   edited in place (tag 0381) per the brief; if the engineer moves the new rule
 //   to a later migration, add its tag to EXTRA_TAGS below.
 // - A code is "ambiguous" when its intent has a provider_ref, is not paid, and
 //   nothing proves the provider closed it. The m1 shape marks the intent
@@ -61,7 +61,7 @@ import {
 
 vi.setConfig({ testTimeout: 120_000 });
 
-const TAG = "0379_pos_qris_holds";
+const TAG = "0381_pos_qris_holds";
 const EXTRA_TAGS: string[] = [];
 const BILL_IDR = 33_000;
 const SUPERVISOR_PIN = "582914";

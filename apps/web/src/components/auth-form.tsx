@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { Link, useNavigate, useRouter } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, LoaderCircle } from "lucide-react";
 import { authClient } from "@/lib/auth-client";
 import { endActingStaffMode } from "@/lib/api/acting-staff";
@@ -8,11 +9,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { siteConfig } from "@/config/site";
 import { postLoginPath } from "@/lib/areas/post-login";
+import { hrisKeys } from "@/features/ws10-hris-employee/queries";
 
 export function AuthForm({ mode }: { mode: "sign-in" | "sign-up" }) {
   const signingUp = mode === "sign-up";
   const router = useRouter();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
 
@@ -44,6 +47,9 @@ export function AuthForm({ mode }: { mode: "sign-in" | "sign-up" }) {
       }
       // A new login starts without the previous one's POS cashier hold.
       endActingStaffMode();
+      // A different account may sign in on this tab: drop the employee data
+      // cached for whoever used it before.
+      queryClient.removeQueries({ queryKey: hrisKeys.all });
       // Re-run route guards with the new cookie, then move to the app.
       await router.invalidate();
       // The root context now holds the new session's access.

@@ -82,8 +82,12 @@ export async function applyEdgeStockMoved(
   );
 
   // legend-pd9t: an order's sale row changes the cost snapshot of its parked
-  // order.paid. Also on a replay: the recompute assigns, so it never doubles.
-  if (payload.sourceType === "order" && payload.movementType === "sale")
+  // order.paid; legend-8qm1d: so does a return row (netted once voided).
+  // Also on a replay: the recompute assigns, so it never doubles.
+  if (
+    payload.sourceType === "order" &&
+    (payload.movementType === "sale" || payload.movementType === "return")
+  )
     await recomputeEdgeOrderCost(tx, tenantId, payload.sourceId);
 }
 

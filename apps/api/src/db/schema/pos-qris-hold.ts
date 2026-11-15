@@ -2,7 +2,7 @@
 // collectible at the provider, the bill's money is frozen. One row per issued
 // QR tender, never deleted. The partial unique index allows one active
 // non-backfilled hold (open/cancelling) per bill; backfilled holds (one per
-// provider code that may still be collectible, migration 0379) may be many. Transitions and the freeze of the bill, its
+// provider code that may still be collectible, migration 0381) may be many. Transitions and the freeze of the bill, its
 // tenders and the hold itself are database triggers in pos-qris-hold.custom.sql.
 import { sql } from "drizzle-orm";
 import {

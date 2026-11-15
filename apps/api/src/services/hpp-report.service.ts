@@ -16,7 +16,7 @@
 //   definition as the `cogs` metric source in metric-sources/menu-cogs.ts).
 //   A business date follows the outlet clock (day = [cutoff, next cutoff)).
 
-import { and, asc, eq, sql, type SQL } from "drizzle-orm";
+import { and, asc, eq, ne, sql, type SQL } from "drizzle-orm";
 import type { z } from "zod";
 import { AccessError } from "@starter/shared/access";
 import {
@@ -186,7 +186,13 @@ async function reachableCoverage(
   const outletRows = await tx
     .select({ id: outlets.id, brandId: outlets.brandId })
     .from(outlets)
-    .where(eq(outlets.tenantId, context.tenant.tenantId));
+    .where(
+      and(
+        eq(outlets.tenantId, context.tenant.tenantId),
+        // Closed outlets do not count toward coverage (bead legend-wa9k9).
+        ne(outlets.status, "closed"),
+      ),
+    );
   const tenantWide = snapshot.allows(COST_PERMISSION, { type: "tenant" });
   const brandIds: string[] = [];
   const reached: CoverageReach["outlets"] = [];

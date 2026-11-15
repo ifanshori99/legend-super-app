@@ -206,6 +206,8 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "appends accounting.cash_bank.approve, accounting.cash_bank.limit.manage and accounting.cash_bank.record to the stored owner and finance template role rows of existing tenants; idempotent, no duplicates, never touches tenant_admin, another template or a custom role; each tenant is named (app.tenant_id) before its roles rows are touched, FORCE RLS stays on",
   "0335_purchase_price_variance.sql":
     "adds account 5105 Selisih Harga Pembelian and its purchase_price_variance mapping to every already provisioned (tenant, legal entity) pair; idempotent, never updates or deletes an existing account or mapping, no amount or journal touched; FORCE RLS lifted for the backfill and restored",
+  "0380_inventory_price_variance.sql":
+    "adds account 5106 Selisih Harga Persediaan and its inventory_price_variance mapping to every already provisioned (tenant, legal entity) pair (legend-uloj6); idempotent, never updates or deletes an existing account or mapping, no amount or journal touched; FORCE RLS lifted for the backfill and restored",
   "0337_edge_printer_sync_guards.sql":
     "trigger function bodies only: stamp sync_txid on edge_printers and edge_printer_tombstones at runtime and write a tombstone row when a printer is deleted; the migration itself rewrites no existing row and imports nothing",
   "0348_payout_gl_postings.sql":
@@ -227,9 +229,9 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
   // founder Q6 (15 Nov 2026, 864)
   "0378_ai_assistant_auto_enable.sql":
     "switches on the ai_assistant module (feature_flags.modules) for active tenants whose plan is an active package that includes ai_assistant and that already used AI (an ok tanya_ai or mcp usage event, or a user message); idempotent, skips tenants that already have the module, touches no limits, plan or integration providers, writes one tenant.module_auto_enabled audit row per changed tenant; FORCE RLS lifted for the statements that read audit_logs, ai_usage_events and ai_messages and restored",
-  "0379_pos_qris_holds.sql":
+  "0381_pos_qris_holds.sql":
     "backfills one open pos_qris_holds row (backfilled = true) for each existing authorized QRIS tender with an unpaid payment link and for each pending QRIS bill-split intent, aborting first if a bill has more than one collectible QRIS, plus one open backfilled hold per ambiguous provider code (QRIS intent with a provider_ref, not paid or failed, of a voided or failed POS QRIS tender, an expired split part, a guest order-wide code, or a sibling code on a POS tender's link) on a bill that is not completed or voided; only inserts into the new table, edits no existing row, no amount touched; FORCE RLS lifted on bill_splits, payment_intents, pos_order_tenders and pos_orders for those statements and restored",
-  "0381_pos_customer_display.sql":
+  "0383_pos_customer_display.sql":
     "no backfill: the only UPDATE statements are trigger bodies that bump customer_display_sessions.version when the selected order, QRIS hold or tender changes at runtime; touches no existing row at migration time, no amount touched",
 };
 

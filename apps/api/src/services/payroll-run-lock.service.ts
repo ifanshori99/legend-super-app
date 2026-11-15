@@ -39,7 +39,7 @@
 // slip that has its same-transaction finalization receipt.
 
 import { isDeepStrictEqual } from "node:util";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, max, ne } from "drizzle-orm";
 import {
   createUlid,
   isoDateTimeSchema,
@@ -92,7 +92,7 @@ import { emitPayrollEvent } from "./payroll-events.ts";
 import {
   expectedReceivableCollection,
   loadMonthPriorRunIds,
-  loadOpenPph21Receivables,
+  loadPph21ReceivableBalances,
   loadTaxYearPriors,
   lockPayrollRunMonth,
   lockPph21ReceivableScope,
@@ -522,7 +522,7 @@ export async function lockPayrollRunInTransaction(
   // balance open NOW allows (earlier locked/paid runs of this legal entity,
   // under the receivable lock). Another run that collected it first, a
   // reversed run, or an entity change makes the stored collection stale.
-  const openNow = await loadOpenPph21Receivables(
+  const balancesNow = await loadPph21ReceivableBalances(
     tx,
     {
       tenantId,
@@ -536,9 +536,22 @@ export async function lockPayrollRunInTransaction(
   for (const entry of plan) {
     const { expectedIdr, storedIdr } = expectedReceivableCollection(
       entry.calculation,
-      openNow.get(entry.employeeId) ?? 0,
+      balancesNow.open.get(entry.employeeId) ?? 0,
     );
     if (expectedIdr !== storedIdr) throw resultStale();
+    // The balance carried on the payslip (legend-2fk79) is what later runs
+    // trust: it must be the whole balance open now, minus this collection,
+    // plus what this payslip raises. A payslip simulated before the field
+    // existed carries none and is not checked.
+    const carried = entry.calculation.pph21ReceivableOpenAfterIdr;
+    if (
+      carried !== undefined &&
+      carried !==
+        (balancesNow.total.get(entry.employeeId) ?? 0) -
+          storedIdr +
+          (entry.calculation.tax.pph21ReceivableIdr ?? 0)
+    )
+      throw resultStale();
   }
 
   const tables = await loadPinnedPph21Tables(tx, tenantId, {
@@ -619,10 +632,29 @@ export async function lockPayrollRunInTransaction(
       for (const priorRunId of priorOf(entry).runIds) edgeIds.add(priorRunId);
   const monthPriorRunIds = [...edgeIds].sort();
 
+  // The lock time is the order the latest-balance fast path trusts (legend-2fk79).
+  // Taken now, after the receivable lock: it sorts strictly after every run of
+  // this legal entity locked before, whatever the clock says. The same value
+  // goes to the run, the event and the audit row.
+  const [latestLock] = await tx
+    .select({ at: max(payrollRuns.lockedAt) })
+    .from(payrollRuns)
+    .where(
+      and(
+        eq(payrollRuns.tenantId, tenantId),
+        eq(payrollRuns.legalEntityId, month.legalEntityId),
+        ne(payrollRuns.id, runId),
+      ),
+    );
+  const lockedAt =
+    latestLock?.at != null && latestLock.at.getTime() >= now.getTime()
+      ? new Date(latestLock.at.getTime() + 1)
+      : now;
+
   // All checks done: the writes. Order: status, receipts, payslips.
   const updated = await tx
     .update(payrollRuns)
-    .set({ status: "locked", lockedBy: actor, lockedAt: now, updatedAt: now })
+    .set({ status: "locked", lockedBy: actor, lockedAt, updatedAt: now })
     .where(
       and(
         eq(payrollRuns.tenantId, tenantId),
@@ -710,15 +742,15 @@ export async function lockPayrollRunInTransaction(
       payDate: run.payDate,
       totals,
       lockedBy: actor,
-      lockedAt: at,
+      lockedAt: isoDateTimeSchema.parse(lockedAt.toISOString()),
     },
-    now,
+    now: lockedAt,
   });
   await recordAudit(
     tx,
     context,
     {
-      id: createUlid(now.getTime()),
+      id: createUlid(lockedAt.getTime()),
       tenantId,
       outletId: null,
       actorType: "user",
@@ -735,7 +767,7 @@ export async function lockPayrollRunInTransaction(
       ipHash: null,
       sensitiveAccess: false,
       retentionClass: "audit_2y",
-      createdAt: now.toISOString(),
+      createdAt: lockedAt.toISOString(),
     },
     ["employeeCount", "bankSnapshotCount"],
   );

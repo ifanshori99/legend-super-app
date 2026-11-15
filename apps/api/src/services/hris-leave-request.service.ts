@@ -855,6 +855,9 @@ export async function createLeaveRequest(
           "IDEMPOTENCY_KEY_REUSED",
           "Idempotency key already used for a different request.",
         );
+      // The employee moved to another outlet since the first create: do not
+      // hand back a request that belongs to the old outlet.
+      if (lower(replayed.outletId) !== lower(home)) throw forbidden();
       return presentRequest(tx, scoped, access, replayed, signer, now);
     }
 
@@ -1126,9 +1129,11 @@ export async function decideLeaveRequest(
     if (input.action === "cancel") {
       const isOwn =
         access.own !== null && lower(access.own.id) === lower(row.employeeId);
+      // Self-cancel needs the live self grant at the leave's outlet (a revoked
+      // or other-outlet grant with a still-valid scope must not cancel).
       if (
-        !isOwn &&
-        !access.permissionsAt(row.outletId).includes(HRIS_MANAGE_CODE)
+        !access.permissionsAt(row.outletId).includes(HRIS_MANAGE_CODE) &&
+        !(isOwn && access.snapshot.allows("self.leave.request", at))
       )
         throw forbidden();
     } else if (!access.snapshot.allows("hr.leave.approve", at)) {

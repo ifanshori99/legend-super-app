@@ -2561,21 +2561,35 @@
       "idx": 379,
       "version": "7",
       "when": 1794700001000,
-      "tag": "0379_pos_qris_holds",
+      "tag": "0379_stock_ledger_item_cost_idx",
       "breakpoints": true
     },
     {
       "idx": 380,
       "version": "7",
       "when": 1794700002000,
-      "tag": "0380_pos_qris_hold_freeze",
+      "tag": "0380_inventory_price_variance",
       "breakpoints": true
     },
     {
       "idx": 381,
       "version": "7",
       "when": 1794700003000,
-      "tag": "0381_pos_customer_display",
+      "tag": "0381_pos_qris_holds",
+      "breakpoints": true
+    },
+    {
+      "idx": 382,
+      "version": "7",
+      "when": 1794700004000,
+      "tag": "0382_pos_qris_hold_freeze",
+      "breakpoints": true
+    },
+    {
+      "idx": 383,
+      "version": "7",
+      "when": 1794700005000,
+      "tag": "0383_pos_customer_display",
       "breakpoints": true
     }
   ]

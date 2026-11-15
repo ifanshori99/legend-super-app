@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
+import type { PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { outletIdSchema, tenantIdSchema } from "@starter/shared/core";
 import { eventEnvelopeSchema } from "@starter/shared/events";
-import { db } from "../db/index.ts";
+import { db, pool } from "../db/index.ts";
 import { logger } from "../lib/logger.ts";
 import { registerEdgeNode } from "../services/edge-node.service.ts";
 import {
@@ -12,6 +13,13 @@ import {
 } from "../services/edge-master-data-publisher.ts";
 import { settleCloud } from "./helpers/catalog-cloud.ts";
 import { createWorld, owner, type World } from "./member-loyalty-helpers.ts";
+
+// The real worker scans every active node, so unrelated suites must not add
+// work to its timed discovery assertion or hold back its commit-safe boundary.
+const cloud = await vi.hoisted(async () => {
+  const { createCatalogCloud } = await import("./helpers/catalog-database.ts");
+  return createCatalogCloud();
+});
 
 let world: World;
 let foreign: World;
@@ -52,6 +60,37 @@ async function events(edgeNodeId: string) {
   return rows.rows.map(({ event }) => eventEnvelopeSchema.parse(event));
 }
 
+function trackPool(connectionPool: typeof owner) {
+  // pg-pool can resolve end() after removing idle clients from its list but
+  // before their sockets close. The public remove event follows client.end's
+  // callback. Track identities before the first query, including clients
+  // already being removed when end() starts, before dropping the database.
+  const clients = new Set<PoolClient>();
+  let onEmpty: (() => void) | undefined;
+  const onConnect = (client: PoolClient) => clients.add(client);
+  const onRemove = (client: PoolClient) => {
+    clients.delete(client);
+    if (clients.size === 0) onEmpty?.();
+  };
+  connectionPool.on("connect", onConnect);
+  connectionPool.on("remove", onRemove);
+  return async () => {
+    try {
+      await connectionPool.end();
+      if (clients.size > 0)
+        await new Promise<void>((resolve) => {
+          onEmpty = resolve;
+        });
+    } finally {
+      connectionPool.off("connect", onConnect);
+      connectionPool.off("remove", onRemove);
+    }
+  };
+}
+
+const closeOwnerPool = trackPool(owner);
+const closeAppPool = trackPool(pool);
+
 beforeAll(async () => {
   world = await createWorld();
   foreign = await createWorld();
@@ -72,9 +111,27 @@ beforeAll(async () => {
   nodeForeign = await node(foreign, foreign.outletA);
 });
 
-afterAll(async () => owner.end());
+afterAll(async () => {
+  try {
+    await closeOwnerPool();
+  } finally {
+    try {
+      await closeAppPool();
+    } finally {
+      await cloud.cleanup();
+    }
+  }
+});
 
 describe("legend-3k41y master-data publication", () => {
+  it("isolates the worker sweep from other catalog suites", async () => {
+    const result = await owner.query("SELECT current_database() AS name");
+    const appResult = await pool.query("SELECT current_database() AS name");
+    expect(result.rows[0].name).toBe(cloud.name);
+    expect(appResult.rows[0].name).toBe(cloud.name);
+    expect(`/${cloud.name}`).not.toBe(cloud.parentDatabaseName);
+  });
+
   it("blocks a changed brand once while allowing another node and a reprovisioned node", async () => {
     const local = await createWorld();
     const oldNode = await node(local, local.outletA);

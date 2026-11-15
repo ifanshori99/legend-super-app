@@ -164,6 +164,12 @@ export type ComposePayslipInput = {
    * collected on it.
    */
   openReceivableIdr?: Idr | number;
+  /**
+   * Whole open receivable of the employee before this payslip, whatever the
+   * pay date (the carry written on the payslip). At least `openReceivableIdr`
+   * (which only counts what this payslip may collect); absent = the same.
+   */
+  totalOpenReceivableIdr?: Idr | number;
 };
 
 /** The full payslip body of one employee (see the header). */
@@ -218,6 +224,12 @@ export function composePayslipCalculation(
     bpjs: [...input.bpjs],
     tax,
     paymentMethod: input.paymentMethod,
+    // Receivable still open after this payslip: the whole earlier balance
+    // minus what this payslip collects plus what it raises itself.
+    pph21ReceivableOpenAfterIdr:
+      (input.totalOpenReceivableIdr ?? input.openReceivableIdr ?? 0) -
+      receivableCollection.collectedIdr +
+      (tax.pph21ReceivableIdr ?? 0),
   });
   if (!parsed.success) throw new RangeError("Composed payslip does not add up");
   return parsed.data;

@@ -809,7 +809,15 @@ registerMock(reopenQuarantinedRefund, ({ params, body }) =>
 
 registerMock(listUnallocatedFunds, ({ query, scenario }) => {
   const { funds } = store.get();
-  const filtered = funds.filter(
+  const rows =
+    scenario === "resolved-evidence-mismatch"
+      ? funds.map((fund) =>
+          fund.status === "resolved"
+            ? { ...fund, evidenceMismatch: true }
+            : fund,
+        )
+      : funds;
+  const filtered = rows.filter(
     (fund) =>
       (!query.outletId || fund.outletId === query.outletId) &&
       (!query.status || fund.status === query.status),

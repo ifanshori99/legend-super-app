@@ -85,14 +85,13 @@ describe("decision 1: shareholder-linked reports take report.aggregate.view, agg
         report.code,
       );
     }
-    // The link also needs the kelola area permission (legend-5bjh).
+    // The link opens with or without the kelola area permission (legend-5bjh).
     const opened = [...AGGREGATE, board.REPORT_AREA_PERMISSION];
     for (const tile of layout.tiles)
       if (tile.kind === "metric") {
         assert.ok(board.permittedReportPath(tile, opened) !== null, tile.key);
-        assert.equal(
-          board.permittedReportPath(tile, AGGREGATE),
-          null,
+        assert.ok(
+          board.permittedReportPath(tile, AGGREGATE) !== null,
           tile.key,
         );
       }

@@ -21,26 +21,13 @@ export const HISTORY_PAGE_SIZE = 30;
 export const HOME_CORRECTION_LIMIT = 3;
 export const HOME_ANNOUNCEMENT_LIMIT = 3;
 
-export const hrisKeys = {
-  all: ["hris"] as const,
-  profile: () => [...hrisKeys.all, "profile"] as const,
-  dayLogs: (employeeId: string, businessDate: string) =>
-    [...hrisKeys.all, "day-logs", employeeId, businessDate] as const,
-  logPages: (employeeId: string) =>
-    [...hrisKeys.all, "log-pages", employeeId] as const,
-  correctionPages: (employeeId: string) =>
-    [...hrisKeys.all, "correction-pages", employeeId] as const,
-  pendingCorrections: (employeeId: string) =>
-    [...hrisKeys.all, "corrections", "pending", employeeId] as const,
-  shifts: (employeeId: string, from: string, to: string) =>
-    [...hrisKeys.all, "shifts", employeeId, from, to] as const,
-  announcements: () => [...hrisKeys.all, "announcements"] as const,
-  positions: () => [...hrisKeys.all, "positions"] as const,
-};
+import { hrisKeys } from "./keys.ts";
 
-export function myHrisProfileQuery() {
+export { hrisKeys };
+
+export function myHrisProfileQuery(userId: string) {
   return queryOptions({
-    queryKey: hrisKeys.profile(),
+    queryKey: hrisKeys.profile(userId),
     queryFn: ({ signal }) => fetchMyHrisProfile(signal),
     staleTime: 5 * 60_000,
   });

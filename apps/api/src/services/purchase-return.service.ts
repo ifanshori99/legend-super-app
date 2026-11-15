@@ -46,6 +46,7 @@ import {
   businessDateOf,
   CoreError,
   createUlid,
+  type Decimal4,
   divideRounded,
   encodeCursor,
   extendCostIdr,
@@ -691,6 +692,7 @@ async function appendReturnRecordedEvent(
   tx: Tx,
   context: ScopedTenantContext,
   row: ReturnRow,
+  movingAvgVarianceIdr: number,
 ): Promise<void> {
   const name = "purchase_return.recorded";
   const returnedAt = row.returnedAt.toISOString();
@@ -717,6 +719,7 @@ async function appendReturnRecordedEvent(
       uninvoicedValueIdr: row.uninvoicedValueIdr,
       invoicedValueIdr: row.invoicedValueIdr,
       returnPriceVarianceIdr: row.priceVarianceIdr,
+      movingAvgVarianceIdr,
       ppnIdr: row.ppnIdr,
       returnedBy: row.returnedBy,
       returnedAt,
@@ -1054,10 +1057,20 @@ export async function createPurchaseReturn(
           (wantedByStock.get(stockKey) ?? 0n) + parseDecimal4(line.quantity),
         );
       }
+      // Moving average of each balance before the return, read under the
+      // location lock above. A return moves stock out at the receipt cost but
+      // leaves the average alone, so it is valid for every line of that stock.
+      const avgByStock = new Map<
+        string,
+        { qtyBefore: bigint; avgCostIdr: Decimal4 }
+      >();
       for (const [stockKey, wanted] of wantedByStock) {
         const [locationId, itemId] = stockKey.split(":") as [string, string];
         const [balance] = await tx
-          .select({ quantity: stockBalances.quantity })
+          .select({
+            quantity: stockBalances.quantity,
+            avgCostIdr: stockBalances.avgCostIdr,
+          })
           .from(stockBalances)
           .where(
             and(
@@ -1068,7 +1081,44 @@ export async function createPurchaseReturn(
           );
         if (!balance || parseDecimal4(balance.quantity) < wanted)
           throw insufficientStock(itemId);
+        avgByStock.set(stockKey, {
+          qtyBefore: parseDecimal4(balance.quantity),
+          avgCostIdr: balance.avgCostIdr,
+        });
       }
+      // D per balance = sum of line values at receipt cost - (value of the
+      // balance before - value of the balance after), both valued at the
+      // average. Rounding once per balance, not per line, keeps the GL
+      // inventory credit equal to what the sub-ledger drops even when stock is
+      // returned in steps down to zero (legend-uloj6).
+      const lineValueByStock = new Map<string, number>();
+      for (const line of stockOrder) {
+        const stockKey = `${line.locationId}:${line.inventoryItemId}`;
+        lineValueByStock.set(
+          stockKey,
+          (lineValueByStock.get(stockKey) ?? 0) + line.lineValueIdr,
+        );
+      }
+      const movingAvgVarianceIdr = guardMoneyMath(() => {
+        let total = 0;
+        for (const [stockKey, lineValue] of lineValueByStock) {
+          const { qtyBefore, avgCostIdr } = avgByStock.get(stockKey)!;
+          const wanted = wantedByStock.get(stockKey)!;
+          total +=
+            lineValue -
+            (extendCostIdr(
+              formatDecimal4(qtyBefore),
+              avgCostIdr,
+              ROUNDING_MODE,
+            ) -
+              extendCostIdr(
+                formatDecimal4(qtyBefore - wanted),
+                avgCostIdr,
+                ROUNDING_MODE,
+              ));
+        }
+        return total;
+      });
       for (const line of stockOrder)
         await recordStockMovementInTransaction(tx, context, {
           outletId: input.outletId,
@@ -1105,7 +1155,7 @@ export async function createPurchaseReturn(
         },
         safeFields: RETURN_AUDIT_FIELDS,
       });
-      await appendReturnRecordedEvent(tx, context, row!);
+      await appendReturnRecordedEvent(tx, context, row!, movingAvgVarianceIdr);
       await completePurchasingIdempotency(tx, context, claim, detail);
       return detail;
     });

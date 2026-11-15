@@ -129,19 +129,22 @@ describe("shareholder dashboard · SH-02 own data only", () => {
     }
   });
 
-  test("SH-01: a shareholder gets no report link until the report route for shareholders is decided (legend-5bjh)", () => {
+  test("SH-01: a shareholder links only to aggregate reports, without the kelola permission (legend-5bjh)", () => {
     const permissions = roleTemplate("shareholder").permissions;
     assert.deepEqual(
       permissions.filter((code) => code.startsWith("report.")),
       ["report.aggregate.view"],
     );
     assert.equal(permissions.includes(board.REPORT_AREA_PERMISSION), false);
-    for (const tile of layout.tiles)
-      assert.equal(
-        board.permittedReportPath(tile, permissions),
-        null,
-        tile.key,
-      );
+    for (const tile of layout.tiles) {
+      const path = board.permittedReportPath(tile, permissions);
+      const report =
+        tile.kind === "metric" ? dashboard.reportByCode(tile.reportCode) : null;
+      if (report === null) assert.equal(path, null, tile.key);
+      else if (dashboard.reportAcceptsAggregateView(report))
+        assert.equal(path, report.route, tile.key);
+      else assert.equal(path, null, tile.key);
+    }
   });
 
   test("SH-01: once the report area opens, a tile links only to an aggregate report", () => {

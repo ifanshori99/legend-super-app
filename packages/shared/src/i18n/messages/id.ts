@@ -1358,9 +1358,22 @@ export const id = {
       queuedHint: "Pengajuan terkirim otomatis saat internet tersedia.",
       errorTitle: "Pengajuan gagal dikirim",
       errorHint: "Periksa koneksi lalu coba lagi. Tidak ada pengajuan ganda.",
+      queueFull:
+        "Antrean penuh oleh pengajuan yang ditolak. Buang atau ubah salah satunya dulu.",
       noLog: "Absen tidak tercatat",
       replayDropped:
-        "{count} pengajuan dari antrean ditolak server. Periksa riwayat koreksi lalu ajukan ulang bila perlu.",
+        "{count} pengajuan dari antrean ditolak server. Buka Beranda untuk coba lagi, ubah, atau buang.",
+      refused: "Ditolak",
+      refusedReason: "Alasan server: {reason}",
+      refusedNoReason: "Server tidak memberi alasan.",
+      retry: "Coba lagi",
+      retryLaterTitle: "Belum terkirim",
+      retryLater:
+        "Koneksi atau server bermasalah. Pengajuan tetap tersimpan di perangkat.",
+      edit: "Ubah",
+      discard: "Buang",
+      editTitle: "Ubah pengajuan koreksi",
+      editHint: "Perbaiki isian lalu kirim ulang. Pengajuan lama diganti.",
       cancel: "Batal",
     },
     state: {
@@ -1483,6 +1496,7 @@ export const id = {
       payment_failover: "Gateway pembayaran",
       kitchen_alert: "Peringatan dapur",
       tenant_invitation: "Undangan admin",
+      hr_settlement: "Penyelesaian karyawan keluar",
     },
     inbox: {
       heading: "Kotak masuk",
@@ -1869,6 +1883,10 @@ export const id = {
       resolved: "Dana {amount} diselesaikan.",
       statusOpen: "Belum diselesaikan",
       statusResolved: "Selesai",
+      statusNeedsReview: "Perlu dicek",
+      evidenceMismatch: "Bukti berubah",
+      needsReviewHint:
+        "Bukti pembayaran belum cocok dengan dana ini. Dana tidak bisa diselesaikan sampai bukti diperiksa.",
       filter: "Filter status dana",
       allStatuses: "Semua status",
       emptyTitle: "Tidak ada dana belum teralokasi",

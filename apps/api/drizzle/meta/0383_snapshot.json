@@ -1,6 +1,6 @@
 {
-  "id": "ee8c177b-8bfd-4b5b-8a3a-a782244dc407",
-  "prevId": "bb9ac76e-cb7a-4e7a-baf8-f118b667f0f5",
+  "id": "cc89b452-b6f1-4838-9787-83823c7f2c7e",
+  "prevId": "e96359ae-7b51-4801-b69c-a022ee46d2af",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -9522,6 +9522,40 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "stock_ledger_tenant_item_cost_idx": {
+          "name": "stock_ledger_tenant_item_cost_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "inventory_item_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "occurred_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"stock_ledger\".\"unit_cost_idr\" > 0",
           "concurrently": false,
           "method": "btree",
           "with": {}

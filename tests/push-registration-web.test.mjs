@@ -309,6 +309,7 @@ describe("legend-ofq4f device token dialog keeps the token on request", () => {
 describe("legend-ofq4f sign-out revokes the push subscription first", () => {
   function signOutClick() {
     const calls = [];
+    const removed = [];
     const recorder = (name) =>
       new Proxy(
         {},
@@ -332,6 +333,17 @@ describe("legend-ofq4f sign-out revokes the push subscription first", () => {
           useRouter: () => ({ invalidate: async () => {} }),
           useNavigate: () => async () => {},
         },
+        "@tanstack/react-query": {
+          useQueryClient: () => ({
+            removeQueries: (filters) => {
+              calls.push("removeQueries");
+              removed.push(filters);
+            },
+          }),
+        },
+        "@/features/ws10-hris-employee/queries": {
+          hrisKeys: { all: ["hris"] },
+        },
         "lucide-react": { LogOut: "LogOut" },
         "@/components/ui/button": { Button: "Button" },
         "@/lib/auth-client": {
@@ -348,7 +360,7 @@ describe("legend-ofq4f sign-out revokes the push subscription first", () => {
     );
     SignOutButton();
     const button = tree.find((node) => node.type === "Button");
-    return { click: () => button.props.onClick(), calls };
+    return { click: () => button.props.onClick(), calls, removed };
   }
 
   test("a push cleanup call happens before authClient.signOut", async () => {
@@ -361,6 +373,16 @@ describe("legend-ofq4f sign-out revokes the push subscription first", () => {
         .slice(0, signOutAt)
         .some((call) => /notifications|push/i.test(call)),
       `push cleanup must run before signOut, saw ${JSON.stringify(calls)}`,
+    );
+  });
+
+  test("the cached employee data is dropped after a successful sign-out", async () => {
+    const { click, calls, removed } = signOutClick();
+    await click();
+    assert.deepEqual(removed, [{ queryKey: ["hris"] }]);
+    assert.ok(
+      calls.indexOf("removeQueries") > calls.indexOf("signOut"),
+      `removeQueries must follow signOut, saw ${JSON.stringify(calls)}`,
     );
   });
 });

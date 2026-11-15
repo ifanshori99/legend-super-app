@@ -332,6 +332,12 @@ const PAYSLIP_COLUMNS = {
  * Refuse while this run raised a receivable for an employee that another live
  * (locked or paid) run collected from: reversing would leave that collection
  * without its receivable and the employee short-paid.
+ *
+ * Also refuse while a live run locked LATER carries the open balance for an
+ * employee this run raised or collected a receivable for
+ * (`pph21ReceivableOpenAfterIdr`, legend-2fk79): that carried balance counts
+ * this run and would go stale. Reverse the later run first. Refusing never
+ * pays anyone more.
  */
 async function assertNoCollectedReceivable(
   tx: Tx,
@@ -344,16 +350,41 @@ async function assertNoCollectedReceivable(
     .where(
       and(eq(payslips.tenantId, tenantId), eq(payslips.payrollRunId, runId)),
     );
+  const mineCalculations = mine.map((row) => ({
+    employeeId: row.employeeId,
+    calc: openCalculation(row),
+  }));
   const raised = [
     ...new Set(
-      mine
-        .filter((row) => (openCalculation(row).tax.pph21ReceivableIdr ?? 0) > 0)
-        .map((row) => row.employeeId),
+      mineCalculations
+        .filter(({ calc }) => (calc.tax.pph21ReceivableIdr ?? 0) > 0)
+        .map(({ employeeId }) => employeeId),
     ),
   ];
-  if (raised.length === 0) return;
+  const touched = [
+    ...new Set(
+      mineCalculations
+        .filter(
+          ({ calc }) =>
+            (calc.tax.pph21ReceivableIdr ?? 0) > 0 ||
+            calc.lines.some(
+              (line) =>
+                line.category === "pph21_receivable" && line.amountIdr > 0,
+            ),
+        )
+        .map(({ employeeId }) => employeeId),
+    ),
+  ];
+  if (touched.length === 0) return;
+  const [thisRun] = await tx
+    .select({
+      lockedAt: payrollRuns.lockedAt,
+      legalEntityId: payrollRuns.legalEntityId,
+    })
+    .from(payrollRuns)
+    .where(and(eq(payrollRuns.tenantId, tenantId), eq(payrollRuns.id, runId)));
   const others = await tx
-    .select(PAYSLIP_COLUMNS)
+    .select({ ...PAYSLIP_COLUMNS, runLockedAt: payrollRuns.lockedAt })
     .from(payslips)
     .innerJoin(
       payrollRuns,
@@ -366,17 +397,34 @@ async function assertNoCollectedReceivable(
       and(
         eq(payslips.tenantId, tenantId),
         ne(payrollRuns.id, runId),
+        // Only the legal entity being reversed: the receivable is per entity.
+        // Without the run row, stay unfiltered (refuses more, never less).
+        thisRun
+          ? eq(payrollRuns.legalEntityId, thisRun.legalEntityId)
+          : undefined,
         inArray(payrollRuns.status, ["locked", "paid"]),
-        inArray(payslips.employeeId, raised),
+        inArray(payslips.employeeId, touched),
       ),
     );
   for (const row of others) {
-    const collected = openCalculation(row).lines.some(
-      (line) => line.category === "pph21_receivable" && line.amountIdr > 0,
-    );
+    const calc = openCalculation(row);
+    const collected =
+      raised.includes(row.employeeId) &&
+      calc.lines.some(
+        (line) => line.category === "pph21_receivable" && line.amountIdr > 0,
+      );
     if (collected)
       throw reversalBlocked(
         "Kekurangan PPh 21 dari payroll ini sudah ditagih di payroll lain. Batalkan payroll yang menagihnya dulu.",
+      );
+    // A missing lock time on either side cannot prove the order: refuse.
+    const later =
+      thisRun?.lockedAt == null ||
+      row.runLockedAt === null ||
+      row.runLockedAt > thisRun.lockedAt;
+    if (later && calc.pph21ReceivableOpenAfterIdr !== undefined)
+      throw reversalBlocked(
+        "Saldo kekurangan PPh 21 karyawan sudah dibawa oleh payroll yang dikunci setelahnya. Batalkan payroll yang lebih baru dulu.",
       );
   }
 }

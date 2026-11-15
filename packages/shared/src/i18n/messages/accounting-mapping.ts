@@ -114,6 +114,7 @@ export const accountingMappingMessages = {
     waste_expense: "Beban waste",
     inventory_adjustment: "Penyesuaian persediaan",
     purchase_price_variance: "Selisih harga pembelian",
+    inventory_price_variance: "Selisih harga persediaan",
     petty_purchase_expense: "Beban pembelian kas kecil",
     salary_expense: "Beban gaji",
     reimbursement_expense: "Beban penggantian biaya",

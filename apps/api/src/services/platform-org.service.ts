@@ -74,6 +74,7 @@ import { seedTenantRoleTemplates } from "./access.service.ts";
 import { recordAudit } from "./audit-writer.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { appendControlPlaneEvent } from "./control-plane-events.ts";
+import { markHppStale } from "./hpp-invalidate.ts";
 import { toOutlet } from "./org.service.ts";
 import { provisionStandardUoms } from "./inventory-provisioning.service.ts";
 import { provisionFirstTenantAdmin } from "./platform-admin-provision.service.ts";
@@ -658,6 +659,12 @@ export async function restoreOutlet(
       })
       .where(and(eq(outlets.tenantId, tenantId), eq(outlets.id, outletId)))
       .returning();
+    // legend-wa9k9: HPP skipped this outlet while closed. Mark it stale in the
+    // same transaction so the next tick rebuilds it from current data.
+    await markHppStale(tx, {
+      tenantId: tenantIdSchema.parse(tenantId),
+      outletId,
+    });
     const [edge] = await tx
       .select({ total: count() })
       .from(edgeNodes)

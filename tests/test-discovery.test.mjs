@@ -24,6 +24,8 @@ test("every test file is collected by a runner", () => {
       !/^tests\/[^/]+\.test\.mjs$/.test(file) &&
       !/^apps\/api\/src\/.+\.test\.ts$/.test(file) &&
       !/^scripts\/ci\/[^/]+\.test\.mjs$/.test(file) &&
+      // scripts/test.mjs runs these with the web vitest config.
+      !/^apps\/web\/test\/.+\.test\.ts$/.test(file) &&
       !(
         /^e2e\/.+\.test\.(mjs|ts|tsx)$/.test(file) &&
         !/node:test/.test(readFileSync(resolve(root, file), "utf8"))
@@ -32,6 +34,6 @@ test("every test file is collected by a runner", () => {
   assert.deepEqual(
     orphaned,
     [],
-    `Test di luar jangkauan runner:\n${orphaned.join("\n")}\nPindahkan ke tests/*.test.mjs, apps/api/src/**/*.test.ts, scripts/ci/*.test.mjs, atau e2e/**/*.test.{mjs,ts,tsx} untuk Playwright sesuai runner.`,
+    `Test di luar jangkauan runner:\n${orphaned.join("\n")}\nPindahkan ke tests/*.test.mjs, apps/api/src/**/*.test.ts, scripts/ci/*.test.mjs, apps/web/test/**/*.test.ts, atau e2e/**/*.test.{mjs,ts,tsx} untuk Playwright sesuai runner.`,
   );
 });

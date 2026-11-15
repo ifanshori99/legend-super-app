@@ -2,7 +2,10 @@
 // window (business dates, Asia/Jakarta), kind and reference labels, summary
 // shaping, and the Jakarta time label. No React: loadable in Node tests.
 import type { MessageKey } from "@starter/shared/i18n";
-import type { FinanceExceptionSummaryDto } from "@starter/shared/types";
+import type {
+  FinanceExceptionItemDto,
+  FinanceExceptionSummaryDto,
+} from "@starter/shared/types";
 import {
   FINANCE_EXCEPTION_KINDS,
   FINANCE_EXCEPTIONS_MAX_DAYS,
@@ -38,6 +41,7 @@ export const KIND_LABEL_KEYS: Record<FinanceExceptionKind, MessageKey> = {
   edge_receipt_skipped: "financeExceptions.kinds.edge_receipt_skipped",
   edge_link_dead_letter: "financeExceptions.kinds.edge_link_dead_letter",
   payout_fee_not_posted: "financeExceptions.kinds.payout_fee_not_posted",
+  receipt_pending_stale: "financeExceptions.kinds.receipt_pending_stale",
 };
 
 export const KIND_HELP_KEYS: Record<FinanceExceptionKind, MessageKey> = {
@@ -46,6 +50,7 @@ export const KIND_HELP_KEYS: Record<FinanceExceptionKind, MessageKey> = {
   edge_receipt_skipped: "financeExceptions.kindHelp.edge_receipt_skipped",
   edge_link_dead_letter: "financeExceptions.kindHelp.edge_link_dead_letter",
   payout_fee_not_posted: "financeExceptions.kindHelp.payout_fee_not_posted",
+  receipt_pending_stale: "financeExceptions.kindHelp.receipt_pending_stale",
 };
 
 const REF_TYPE_KEYS: Record<string, MessageKey> = {
@@ -54,6 +59,16 @@ const REF_TYPE_KEYS: Record<string, MessageKey> = {
   receipt_skip: "financeExceptions.refTypes.receipt_skip",
   link_event: "financeExceptions.refTypes.link_event",
   payout_posting: "financeExceptions.refTypes.payout_posting",
+};
+
+export const OUTBOX_STATE_KEYS: Record<
+  NonNullable<FinanceExceptionItemDto["receiptPending"]>["outboxState"],
+  MessageKey
+> = {
+  pending: "financeExceptions.details.outbox.pending",
+  dead_lettered: "financeExceptions.details.outbox.dead_lettered",
+  delivered: "financeExceptions.details.outbox.delivered",
+  missing: "financeExceptions.details.outbox.missing",
 };
 
 const DETAIL_KEYS: Record<string, MessageKey> = {

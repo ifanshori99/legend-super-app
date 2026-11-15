@@ -9,8 +9,16 @@ export const FINANCE_EXCEPTION_KINDS = [
   "edge_receipt_skipped",
   "edge_link_dead_letter",
   "payout_fee_not_posted",
+  "receipt_pending_stale",
 ] as const;
 export type FinanceExceptionKind = (typeof FINANCE_EXCEPTION_KINDS)[number];
+
+/**
+ * `receipt_pending_stale` (legend-z13t) ignores the date window: a parked
+ * auto-journal waiting for its receipt for more than this long is listed
+ * whatever day it first failed.
+ */
+export const RECEIPT_PENDING_STALE_AFTER_HOURS = 24;
 
 /** The widest window one request may cover. */
 export const FINANCE_EXCEPTIONS_MAX_DAYS = 92;

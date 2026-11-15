@@ -74,7 +74,7 @@ const isActive = (hold: Pick<HoldRow, "state">) =>
 /**
  * A hold of the bill that still gates its money, if any. A bill may carry
  * several active backfilled holds (one per provider code that may still be
- * collectible, migration 0379): any active hold freezes the bill, so callers
+ * collectible, migration 0381): any active hold freezes the bill, so callers
  * only ask whether one exists. The oldest is returned, so the answer is stable.
  */
 export async function activeHoldOf(

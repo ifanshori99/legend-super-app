@@ -714,11 +714,23 @@ export async function lockPph21ReceivableScope(
  * here. A run never collects backwards: only a receivable raised by a run with
  * `pay_date <= payDate` counts, so open = min(raisedAll - collectedAll,
  * max(0, raisedEligible - collectedAll)) (collections of ANY date are
- * subtracted, so nothing is collected twice). Calls `invalid()` and throws its error on an unreadable payslip, a
- * payslip of another employee or an inconsistent balance (fail closed). Never
- * echoes a value.
+ * subtracted, so nothing is collected twice).
+ *
+ * `open` is what a run paying on `payDate` may collect; `total` is the whole
+ * balance whatever the pay date (the carry a new payslip writes in
+ * `pph21ReceivableOpenAfterIdr`). Employees with a zero balance are absent from
+ * both.
+ *
+ * Fast path (legend-2fk79): when every earlier payslip of the employee is paid
+ * on or before `payDate` (nothing is held back, open = total) and the payslip
+ * of the run locked last carries `pph21ReceivableOpenAfterIdr`, that field is
+ * the balance and only that one payslip is opened. Anything else (an older
+ * payslip without the field, a payslip paid after `payDate`, a tie on the lock
+ * time) reads the full history as before. Calls `invalid()` and throws its
+ * error on an unreadable payslip, a payslip of another employee or an
+ * inconsistent balance (fail closed). Never echoes a value.
  */
-export async function loadOpenPph21Receivables(
+export async function loadPph21ReceivableBalances(
   tx: Tx,
   input: {
     tenantId: TenantId;
@@ -728,9 +740,11 @@ export async function loadOpenPph21Receivables(
     employeeIds: readonly string[];
   },
   invalid: () => Error,
-): Promise<Map<string, number>> {
+): Promise<{ open: Map<string, number>; total: Map<string, number> }> {
   const { tenantId } = input;
-  if (input.employeeIds.length === 0) return new Map();
+  const open = new Map<string, number>();
+  const total = new Map<string, number>();
+  if (input.employeeIds.length === 0) return { open, total };
   const rows = await tx
     .select({
       id: payslips.id,
@@ -739,6 +753,7 @@ export async function loadOpenPph21Receivables(
       calculationEncrypted: payslips.calculationEncrypted,
       piiKeyVersion: payslips.piiKeyVersion,
       runPayDate: payrollRuns.payDate,
+      runLockedAt: payrollRuns.lockedAt,
     })
     .from(payslips)
     .innerJoin(
@@ -757,11 +772,8 @@ export async function loadOpenPph21Receivables(
         inArray(payslips.employeeId, [...input.employeeIds]),
       ),
     );
-  const byEmployee = new Map<
-    string,
-    { calc: PayslipCalculation; eligible: boolean }[]
-  >();
-  for (const row of rows) {
+  type Row = (typeof rows)[number];
+  const readCalc = (row: Row): PayslipCalculation => {
     let calc: PayslipCalculation;
     try {
       calc = payslipCalculationSchema.parse(
@@ -782,13 +794,50 @@ export async function loadOpenPph21Receivables(
       throw invalid();
     }
     if (calc.employeeId !== row.employeeId) throw invalid();
-    byEmployee.set(row.employeeId, [
-      ...(byEmployee.get(row.employeeId) ?? []),
-      { calc, eligible: row.runPayDate <= input.payDate },
+    return calc;
+  };
+  const rowsByEmployee = new Map<string, Row[]>();
+  for (const row of rows)
+    rowsByEmployee.set(row.employeeId, [
+      ...(rowsByEmployee.get(row.employeeId) ?? []),
+      row,
     ]);
-  }
-  const openByEmployee = new Map<string, number>();
-  for (const [employeeId, slips] of byEmployee) {
+  for (const [employeeId, employeeRows] of rowsByEmployee) {
+    // Fast path: the payslip of the run locked last, alone, when nothing is
+    // held back by the pay date rule.
+    const lockedLast = employeeRows.reduce<Row | null>((best, row) => {
+      if (row.runLockedAt === null) return best;
+      return best === null ||
+        (best.runLockedAt !== null && row.runLockedAt > best.runLockedAt)
+        ? row
+        : best;
+    }, null);
+    const uniqueLast =
+      lockedLast !== null &&
+      employeeRows.every(
+        (row) =>
+          row === lockedLast ||
+          (row.runLockedAt !== null &&
+            row.runLockedAt < lockedLast.runLockedAt!),
+      );
+    if (
+      lockedLast !== null &&
+      uniqueLast &&
+      employeeRows.every((row) => row.runPayDate <= input.payDate)
+    ) {
+      const carried = readCalc(lockedLast).pph21ReceivableOpenAfterIdr;
+      if (carried !== undefined) {
+        if (carried > 0) {
+          open.set(employeeId, carried);
+          total.set(employeeId, carried);
+        }
+        continue;
+      }
+    }
+    const slips = employeeRows.map((row) => ({
+      calc: readCalc(row),
+      eligible: row.runPayDate <= input.payDate,
+    }));
     let fullOpen: number;
     try {
       // Integrity over ALL slips stays fail closed.
@@ -804,10 +853,23 @@ export async function loadOpenPph21Receivables(
         if (line.category === "pph21_receivable")
           collectedAll += line.amountIdr;
     }
-    const open = Math.min(fullOpen, Math.max(0, raisedEligible - collectedAll));
-    if (open > 0) openByEmployee.set(employeeId, open);
+    const collectable = Math.min(
+      fullOpen,
+      Math.max(0, raisedEligible - collectedAll),
+    );
+    if (collectable > 0) open.set(employeeId, collectable);
+    if (fullOpen > 0) total.set(employeeId, fullOpen);
   }
-  return openByEmployee;
+  return { open, total };
+}
+
+/** The open receivable a run paying on `payDate` may collect, per employee. */
+export async function loadOpenPph21Receivables(
+  tx: Tx,
+  input: Parameters<typeof loadPph21ReceivableBalances>[1],
+  invalid: () => Error,
+): Promise<Map<string, number>> {
+  return (await loadPph21ReceivableBalances(tx, input, invalid)).open;
 }
 
 /**

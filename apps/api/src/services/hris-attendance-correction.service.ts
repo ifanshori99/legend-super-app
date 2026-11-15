@@ -328,6 +328,18 @@ export async function requestAttendanceCorrection(
     const access = await loadHrisAccess(tx, context, actorUserId, now);
     if (access.own === null || !access.snapshot.permissions.includes(SELF_CODE))
       throw forbidden();
+    // The browser pre-check is advisory; the session is the authority. A tab
+    // that was opened by another account must not file under this session
+    // (legend-2boxs). Runs before any read or write of idempotency state.
+    if (
+      input.expectedEmployeeId !== undefined &&
+      lower(input.expectedEmployeeId) !== lower(access.own.id)
+    )
+      throw new HttpError(
+        409,
+        "ATTENDANCE_CORRECTION_IDENTITY_MISMATCH",
+        "Sesi ini bukan milik karyawan yang mengajukan koreksi. Muat ulang halaman.",
+      );
     if (input.attendanceLogId !== null) {
       const [log] = await tx
         .select({
@@ -366,6 +378,17 @@ export async function requestAttendanceCorrection(
     const own = access.own;
     if (own === null || !access.snapshot.permissions.includes(SELF_CODE))
       throw forbidden();
+    // Re-check inside the write transaction: HR may relink the account to
+    // another employee between the gate and here (legend-2boxs).
+    if (
+      input.expectedEmployeeId !== undefined &&
+      lower(input.expectedEmployeeId) !== lower(own.id)
+    )
+      throw new HttpError(
+        409,
+        "ATTENDANCE_CORRECTION_IDENTITY_MISMATCH",
+        "Sesi ini bukan milik karyawan yang mengajukan koreksi. Muat ulang halaman.",
+      );
     const tenantId = scoped.tenant.tenantId;
     const [employee] = await tx
       .select({ status: employees.status })

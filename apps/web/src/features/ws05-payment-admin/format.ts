@@ -91,13 +91,15 @@ export function refundLabelKey(status: RefundStatus): MessageKey {
 }
 
 export function unallocatedTone(status: UnallocatedStatus): StatusTone {
-  return status === "open" ? "warning" : "success";
+  return status === "resolved" ? "success" : "warning";
 }
 
 export function unallocatedLabelKey(status: UnallocatedStatus): MessageKey {
   return status === "open"
     ? "paymentAdmin.unallocated.statusOpen"
-    : "paymentAdmin.unallocated.statusResolved";
+    : status === "needs_review"
+      ? "paymentAdmin.unallocated.statusNeedsReview"
+      : "paymentAdmin.unallocated.statusResolved";
 }
 
 export function reconciliationTone(
@@ -139,7 +141,11 @@ export function filterUnallocated(
   status: UnallocatedStatus | "all",
 ): UnallocatedFundView[] {
   if (status === "all") return [...rows];
-  return rows.filter((row) => row.status === status);
+  return rows.filter(
+    (row) =>
+      row.status === status ||
+      (status === "needs_review" && row.evidenceMismatch),
+  );
 }
 
 export function filterReconciliationCases(

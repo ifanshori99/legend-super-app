@@ -716,6 +716,7 @@ test("HR event payloads are catalogued on WS-10 and carry no PII", () => {
     "shift.cancelled",
     "leave.approved",
     "leave.changed",
+    "leave.rededucted_after_settlement",
   ]);
   for (const name of hris.hrisEventNames) {
     const entry = eventCatalogByName.get(name);

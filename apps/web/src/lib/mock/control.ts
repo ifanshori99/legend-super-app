@@ -12,6 +12,7 @@ export const MOCK_SCENARIOS = [
   "slow",
   "error",
   "offline",
+  "resolved-evidence-mismatch",
   /**
    * legend-qf0i: the demo catalogue gives every item a photo, so the pre-Q23
    * "active item without a photo" case needs its own scenario. It adds one
