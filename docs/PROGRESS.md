@@ -5789,3 +5789,10 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Timer paksa shutdown edge = saleTimeoutMs + 10 dtk bila EDC aktif (review architect: 5 dtk memotong bukti approval).
 - Tes: edc-agent-867 (17), edc-runtime-867 (9), 12 berkas EDC 165/165 hijau, typecheck api hijau, prettier+eslint hijau. Satu run awal gagal sekali di edc-agent.test.ts:616 (timing cancel), hijau di 2 run ulang.
 - Review architect xhigh: 5 temuan dibetulkan (unlock macet, salah-positif heartbeat, EDC mati permanen, timer paksa, StartLimit di unit).
+
+## 2026-11-15: Merge train batch67 (int/batch67, base m1 479a99525)
+
+- Isi (2 cabang ujung): fix/edc-agent-867 569a56005 (agen EDC dan runtime edge, unit systemd), ghostex/4eda746b 4db4c178e (API 868 antrean rekonsiliasi EDC + UI 865). Tanpa migrasi. Satu konflik: docs/PROGRESS.md (dua sisi dipertahankan).
+- Gerbang: links, lint (2 peringatan lama), typecheck api+web, tes kontrak root 891/891 (termasuk edc-reconciliation-gate), set cepat dengan semua edc-* + edge-* + *migration* + notification*: 2800 hijau, 1 merah = flake legend-8p74m (edge-master-data-publisher).
+- Run penuh (10:27-11:42): 19186 lulus, 0 tes gagal, 1 Unhandled Error pg 57P01 dari edge-recipes-protocol-compat.test.ts (teardown), vitest exit 1. Berkas itu dari m1 dan tidak disentuh batch ini; sendirian 1 dari 6 run kena error sama, run terakhir 3x berturut-turut hijau. Kartu flake baru legend-4ge79 (P2). Tes tidak dilonggarkan.
+- Biaya: dicatat di entri batch berikut (sesi dipindah akun).
