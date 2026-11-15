@@ -21,3 +21,14 @@ Tidak ada pemanggil `createEdcAgent` di kode produksi (hanya tes). Pasang di pro
 2. Marker kawat (`sale_wire_open_at`) tidak dibersihkan proses lain sebelum jendela late-response lewat.
 3. Bukti approval tersimpan (row approved, bukan unknown) bila adapter sudah menjawab.
 Bila ragu: aturan yang membatasi pembayaran; bawa ke CTO.
+
+## Ronde 2: temuan architect (perbaiki semua)
+Bagian A (agent.ts + apps/api/src/test/edc-agent-867.test.ts saja):
+- A1 `releaseOutlet`: `pg_advisory_unlock` tanpa timeout bisa menggantung bila koneksi mati diam-diam / probe heartbeat macet di antrean klien. Beri timeout (pakai lockHeartbeatTimeoutMs), habis -> `client.release(err)` (hancurkan koneksi, kunci lepas). Tes: unlock macet -> stop() selesai.
+- A2 Heartbeat salah-positif: default `lockHeartbeatTimeoutMs` 15_000, dan kunci dianggap hilang baru setelah 2 probe gagal/timeout berturut-turut (counter di startHeartbeat; probe sukses reset). Update tes yang terpengaruh tanpa melemahkan maksudnya (jelaskan).
+- A3 Opsi baru `onOutletLost?: (info:{tenantId;outletId}) => void`, dipanggil dari `lost` bila TIDAK ada liveCalls (bila ada, tetap onFatal saja). Tes.
+- A4 `onFatal` bawaan: panggil `logger.flush?.()` sebelum process.exit(1) bila ada.
+Bagian B (runtime.ts, server.ts, deploy/edge/legend-edge.service, docs/deployment.md, edc-runtime-867.test.ts, env.ts bila perlu):
+- B1 Timer paksa shutdown di server.ts memotong `edcAgent.stop()` padahal sale bisa di kawat sampai saleTimeoutMs (120s): bukti approval hilang saat deploy. Bila EDC aktif: timer paksa = saleTimeoutMs + 10s; `TimeoutStopSec` unit lebih besar; perbaiki klaim "aman" di docs/komentar.
+- B2 runtime.ts: start gagal / kunci hilang tanpa live call -> jangan mati permanen: ulang `agent.start(ctx)` dengan backoff (pola wifi agent, defaultWifiLockRetryDelayMs di edge/runtime.ts), pakai `onOutletLost` dari A3 (antarmuka: opsi di createEdcAgent deps). Berhenti saat stop. Tes.
+- B3 Unit systemd: StartLimitIntervalSec=0 di [Unit] (bukan [Service]).
