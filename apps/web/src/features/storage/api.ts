@@ -1,7 +1,6 @@
 import { apiErrorBodySchema } from "@starter/shared/core";
 import {
   createStorageSignedUrl,
-  getStorageCapabilities,
   storagePurposePolicy,
   uploadStorageMetadataSchema,
   uploadStorageObject,
@@ -10,7 +9,6 @@ import {
   type UploadStorageMetadata,
 } from "@starter/shared/storage";
 import { ApiError, NETWORK_ERROR_MESSAGE } from "@/lib/api/errors";
-import { callEndpoint } from "@/lib/api/endpoint";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { API_URL } from "@/lib/env";
 import { IMAGE_MAX_BYTES } from "./image";
@@ -180,7 +178,3 @@ export async function fetchStorageObjectUrl(
     }),
   ).data;
 }
-
-// What the upload pipeline accepts (e.g. whether PDFs may be offered).
-export const fetchStorageCapabilities = (signal?: AbortSignal) =>
-  callEndpoint(getStorageCapabilities, {}, { signal });

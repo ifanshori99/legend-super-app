@@ -1,7 +1,7 @@
 import { queryOptions } from "@tanstack/react-query";
 import type { StorageVariant } from "@starter/shared/storage";
 import { ApiError } from "@/lib/api/errors";
-import { fetchStorageCapabilities, fetchStorageObjectUrl } from "./api";
+import { fetchStorageObjectUrl } from "./api";
 
 export const STORAGE_URL_REFRESH_MARGIN_MS = 30_000;
 
@@ -56,11 +56,3 @@ export function storageObjectUrlQuery(
     retry: false,
   });
 }
-
-/** The server's setup changes on a deploy, not during a session. */
-export const storageCapabilitiesQuery = () =>
-  queryOptions({
-    queryKey: ["storage-capabilities"] as const,
-    queryFn: ({ signal }) => fetchStorageCapabilities(signal),
-    staleTime: 5 * 60 * 1000,
-  });

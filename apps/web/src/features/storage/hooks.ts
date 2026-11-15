@@ -2,7 +2,7 @@ import { useCallback, useSyncExternalStore } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import type { StorageVariant } from "@starter/shared/storage";
 import { uploadStorageFile } from "./api";
-import { storageCapabilitiesQuery, storageObjectUrlQuery } from "./queries";
+import { storageObjectUrlQuery } from "./queries";
 
 function unexpiredSnapshot(expiresAt: string | undefined): boolean {
   return expiresAt !== undefined && Date.parse(expiresAt) > Date.now();
@@ -52,13 +52,5 @@ export function useStorageObjectUrl(
     onError: () => {
       if (objectId) void query.refetch();
     },
-  };
-}
-
-/** Loading or failed reads as "no PDF": the safe side, photos only. */
-export function useStorageCapabilities() {
-  const query = useQuery(storageCapabilitiesQuery());
-  return {
-    documentsAccepted: query.data?.data.documentsAccepted === true,
   };
 }
