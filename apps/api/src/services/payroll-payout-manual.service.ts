@@ -34,6 +34,12 @@
 //   (`assertEvidenceKeyForBatchStored`) and must exist in the storage, checked
 //   before any row is written. The second resolve step must carry the same key
 //   as the first.
+// - A proof is also identified by the SHA-256 of its uploaded bytes
+//   (`payroll_payout_evidence_files`, legend-w3691): a return claim stores it,
+//   and the same file content under a new key (a re-upload) is refused as
+//   reused (409 PAYOUT_RETURN_PROOF_REUSED), across batches of the tenant; a
+//   partial unique index backs this up. A proof without a stored fingerprint
+//   (uploaded before it existed) keeps the key-only check.
 //
 // Lock order: the run row, then the batch row (`loadBatchRunFirst`), same as
 // create, submit and approve. Account numbers are never
@@ -46,6 +52,7 @@ import {
   eq,
   inArray,
   isNull,
+  ne,
   notInArray,
   or,
   sql,
@@ -61,6 +68,7 @@ import {
   payrollDisbursementBatches,
   payrollDisbursementItems,
   payrollPayoutConfigs,
+  payrollPayoutEvidenceFiles,
   payrollPayoutReturnClaims,
 } from "../db/schema/payroll-payout.ts";
 import {
@@ -1002,6 +1010,55 @@ async function assertProofNotUsedForReturn(
     )
     .limit(1);
   if (proofUsed || claimUsed) throw refuseReusedReturnProof();
+  // The same file content under another key (a re-upload) is the same proof.
+  const sha = await evidenceFingerprint(tx, tenantId, evidence);
+  if (sha === null) return;
+  const [shaClaimed] = await tx
+    .select({ id: payrollPayoutReturnClaims.id })
+    .from(payrollPayoutReturnClaims)
+    .where(
+      and(
+        eq(payrollPayoutReturnClaims.tenantId, tenantId),
+        eq(payrollPayoutReturnClaims.contentSha256, sha),
+      ),
+    )
+    .limit(1);
+  if (shaClaimed) throw refuseReusedReturnProof();
+}
+
+/** SHA-256 stored at upload for an evidence key; null for a proof without one (legacy). */
+async function evidenceFingerprint(
+  tx: Tx,
+  tenantId: TenantId,
+  evidence: string,
+): Promise<string | null> {
+  const [file] = await tx
+    .select({ sha: payrollPayoutEvidenceFiles.contentSha256 })
+    .from(payrollPayoutEvidenceFiles)
+    .where(
+      and(
+        eq(payrollPayoutEvidenceFiles.tenantId, tenantId),
+        eq(payrollPayoutEvidenceFiles.evidenceKey, evidence),
+      ),
+    );
+  return file?.sha ?? null;
+}
+
+function isReturnClaimShaViolation(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current; depth++) {
+    const { code, constraint } = current as {
+      code?: unknown;
+      constraint?: unknown;
+    };
+    if (
+      code === "23505" &&
+      constraint === "payroll_payout_return_claims_content_sha_key"
+    )
+      return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
 }
 
 const refuseReusedReturnProof = () =>
@@ -1051,6 +1108,50 @@ async function bindReturnClaim(
     )
     .limit(1);
   if (otherFlow) throw refuseReusedReturnProof();
+  const sha = await evidenceFingerprint(tx, tenantId, evidence);
+  if (sha !== null) {
+    // The same file content under ANOTHER key must not already back another
+    // return claim, nor any item's payment confirmation or resolution.
+    const [shaClaimed] = await tx
+      .select({ id: payrollPayoutReturnClaims.id })
+      .from(payrollPayoutReturnClaims)
+      .where(
+        and(
+          eq(payrollPayoutReturnClaims.tenantId, tenantId),
+          eq(payrollPayoutReturnClaims.contentSha256, sha),
+          ne(payrollPayoutReturnClaims.evidenceKey, evidence),
+        ),
+      )
+      .limit(1);
+    if (shaClaimed) throw refuseReusedReturnProof();
+    const twins = await tx
+      .select({ key: payrollPayoutEvidenceFiles.evidenceKey })
+      .from(payrollPayoutEvidenceFiles)
+      .where(
+        and(
+          eq(payrollPayoutEvidenceFiles.tenantId, tenantId),
+          eq(payrollPayoutEvidenceFiles.contentSha256, sha),
+          ne(payrollPayoutEvidenceFiles.evidenceKey, evidence),
+        ),
+      );
+    if (twins.length > 0) {
+      const keys = twins.map((twin) => twin.key);
+      const [twinFlow] = await tx
+        .select({ id: payrollDisbursementItems.id })
+        .from(payrollDisbursementItems)
+        .where(
+          and(
+            eq(payrollDisbursementItems.tenantId, tenantId),
+            or(
+              inArray(payrollDisbursementItems.resolutionEvidenceKey, keys),
+              inArray(payrollDisbursementItems.confirmationEvidenceKey, keys),
+            ),
+          ),
+        )
+        .limit(1);
+      if (twinFlow) throw refuseReusedReturnProof();
+    }
+  }
   const [existing] = await tx
     .select()
     .from(payrollPayoutReturnClaims)
@@ -1087,18 +1188,25 @@ async function bindReturnClaim(
     if (foreign) throw refuseReusedReturnProof();
     if (secondStep && rows.some((row) => row.returnClaimId !== null))
       throw refuseReusedReturnProof();
-    [claim] = await tx
-      .insert(payrollPayoutReturnClaims)
-      .values({
-        tenantId,
-        batchId: batch.id,
-        evidenceKey: evidence,
-        itemSetHash: hash,
-        status: "open",
-        createdBy: actor.userId as UserId,
-        createdAt: now,
-      })
-      .returning();
+    try {
+      [claim] = await tx
+        .insert(payrollPayoutReturnClaims)
+        .values({
+          tenantId,
+          batchId: batch.id,
+          evidenceKey: evidence,
+          itemSetHash: hash,
+          status: "open",
+          createdBy: actor.userId as UserId,
+          createdAt: now,
+          contentSha256: sha,
+        })
+        .returning();
+    } catch (error) {
+      // Race backstop: another operation claimed the same file content.
+      if (isReturnClaimShaViolation(error)) throw refuseReusedReturnProof();
+      throw error;
+    }
   }
   if (
     !claim ||

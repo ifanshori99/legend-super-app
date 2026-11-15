@@ -38,6 +38,7 @@
 //   PAYOUT_EVIDENCE_INVALID 422 as resolve (same assertEvidenceKeyForBatch).
 // - Empty file: 422, size above PAYOUT_EVIDENCE_MAX_BYTES: 413, bytes that are
 //   not pdf/jpeg/png (whatever the declared type says): 415, as the brief says.
+import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import sharp from "sharp";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -630,7 +631,13 @@ describe("legend-zoqh1 upload payment proof for resolve and return", () => {
     await W.confirm(a.batchId, W.succeedItems(a.batchId, a.items));
     await W.confirm(b.batchId, W.succeedItems(b.batchId, b.items));
     const who = await approver();
-    const ownRes = await upload(who, a.batchId, pdfBytes());
+    // Unique content: a return claim keeps its file fingerprint for good, so a
+    // fixed PDF would collide with the claim of an earlier run (legend-w3691).
+    const ownRes = await upload(
+      who,
+      a.batchId,
+      Buffer.from(await validPdfBytes({ marker: `kembali-a ${randomUUID()}` })),
+    );
     expect(ownRes.status, JSON.stringify(ownRes.body)).toBe(201);
     const keyOfA = ownRes.body.data.evidenceKey as string;
     const returnWith = (batchId: string, itemId: string, by: string) =>

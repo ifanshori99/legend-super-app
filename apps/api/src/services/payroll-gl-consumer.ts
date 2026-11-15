@@ -6,6 +6,10 @@
 // accounting module on are bridged; others are `ignored`. Paid and reversed
 // follow the locked entry instead: once a run's journal exists they post even
 // if the module was switched off since. An all-zero journal is `skipped`.
+// `payroll.locked` follows a pending payout too: when the run already has a
+// `settle_pending` payout posting (money left before this journal), it is posted
+// and resolved even if the module was switched off since (legend-2aspe); the
+// flag only decides NEW payroll, so with no pending settlement it is `ignored`.
 //
 // - `payroll.locked`: the run journal (`payroll.locked` rule) on the period
 //   end, amounts from `payrollJournalAmounts(totals)`. When the entity's
@@ -267,11 +271,20 @@ export async function deliverPayrollGlEvent(
   assertTrustedScopedContext(context);
   // Paid and reversed follow the locked entry, not the current flag: once the
   // run's payable is booked, switching accounting off later must not leave
-  // 2103 open (paid) or the run journal standing (reversed).
+  // 2103 open (paid) or the run journal standing (reversed). A locked event
+  // follows a pending payout settlement the same way (legend-2aspe): the money
+  // already left, so its journal is posted and the pending settle resolved.
   const followsLock =
     event.name === payrollPaid.name || event.name === payrollReversed.name;
-  if (!followsLock && !(await accountingEnabled(tx, context)))
-    return { status: "ignored" };
+  if (!followsLock && !(await accountingEnabled(tx, context))) {
+    if (event.name !== payrollLocked.name) return { status: "ignored" };
+    // Loaded on demand: the payout GL service imports this module.
+    const { runHasPendingSettle } =
+      await import("./payroll-payout-gl.service.ts");
+    const { payrollRunId } = payrollLocked.payloadSchema.parse(event.payload);
+    if (!(await runHasPendingSettle(tx, context.tenant.tenantId, payrollRunId)))
+      return { status: "ignored" };
+  }
 
   if (event.name === payrollLocked.name) {
     const payload = payrollLocked.payloadSchema.parse(event.payload);

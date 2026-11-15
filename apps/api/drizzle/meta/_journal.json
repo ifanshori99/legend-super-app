@@ -2486,6 +2486,13 @@
       "when": 1794709210795,
       "tag": "0368_payout_pending_settle_return_claims",
       "breakpoints": true
+    },
+    {
+      "idx": 369,
+      "version": "7",
+      "when": 1794712541377,
+      "tag": "0369_payout_proof_fingerprint_frozen_cash",
+      "breakpoints": true
     }
   ]
 }

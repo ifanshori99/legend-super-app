@@ -31,7 +31,15 @@
 //   calls `resolvePendingSettles` right after it posts the locked journal: the
 //   payout journal then posts under the same settle key (Cr source account
 //   exactly the sealed net, clears 2103) and the posting becomes `settle`. A
-//   replay finds no pending posting and adds nothing.
+//   replay finds no pending posting and adds nothing. The pending resolution
+//   never depends on the accounting flag: money already left, so the consumer
+//   still journals the lock of a run that has a pending settlement even if
+//   accounting was switched off afterwards (`runHasPendingSettle`, legend-2aspe).
+//   A pending CASH settlement stores the petty cash account mapped at the
+//   handover (`source_gl_account_id`, legend-cnpap) and resolves to it, not to
+//   a mapping changed later; a missing cash mapping refuses 409
+//   PAYOUT_SOURCE_ACCOUNT_MISSING before anything is recorded. A legacy pending
+//   cash posting without it falls back to the mapping of the moment.
 // - `payroll.paid` leaves the outbox once, when the run turned paid, with
 //   `settledPerItem: true`: the GL consumer posts nothing for it.
 //
@@ -47,7 +55,7 @@ import {
   type PayrollRunId,
   type PayrollRunType,
 } from "@starter/shared/hris/payroll";
-import { journalEntries } from "../db/schema/index.ts";
+import { accountMappings, journalEntries } from "../db/schema/index.ts";
 import { bankAccounts } from "../db/schema/accounting-cash-bank.ts";
 import { domainEventOutbox } from "../db/schema/core-events.ts";
 import { payrollRuns } from "../db/schema/payroll.ts";
@@ -226,19 +234,84 @@ export async function lockJournalPending(
 }
 
 /**
- * The `bank` override of a pending settlement: the GL account of the bank
- * account frozen on the batch, read WITHOUT the active filter. The money left
- * from that account, so a company bank account deactivated since then must not
- * strand the settlement. A batch without a frozen account follows the config
- * (it has nothing else). Throws 409 when nothing resolves, so the consumer
+ * True when the run has at least one `settle_pending` payout posting: money
+ * already left for a payable whose lock journal is not posted yet. The GL
+ * consumer then journals `payroll.locked` even with accounting switched off
+ * since (legend-2aspe); the flag only decides NEW payroll.
+ */
+export async function runHasPendingSettle(
+  tx: Tx,
+  tenantId: TenantId,
+  runId: PayrollRunId,
+): Promise<boolean> {
+  const [row] = await tx
+    .select({ id: payrollPayoutGlPostings.id })
+    .from(payrollPayoutGlPostings)
+    .innerJoin(
+      payrollDisbursementBatches,
+      and(
+        eq(
+          payrollDisbursementBatches.tenantId,
+          payrollPayoutGlPostings.tenantId,
+        ),
+        eq(payrollDisbursementBatches.id, payrollPayoutGlPostings.batchId),
+      ),
+    )
+    .where(
+      and(
+        eq(payrollPayoutGlPostings.tenantId, tenantId),
+        eq(payrollPayoutGlPostings.kind, "settle_pending"),
+        eq(payrollDisbursementBatches.payrollRunId, runId),
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
+}
+
+/**
+ * The GL account the `petty_cash` role maps to for the entity right now, or
+ * null when there is none. A pending cash settlement stores it at the handover
+ * (legend-cnpap).
+ */
+async function mappedPettyCashAccount(
+  tx: Tx,
+  tenantId: TenantId,
+  legalEntityId: string,
+): Promise<string | null> {
+  const [row] = await tx
+    .select({ accountId: accountMappings.accountId })
+    .from(accountMappings)
+    .where(
+      and(
+        eq(accountMappings.tenantId, tenantId),
+        eq(accountMappings.legalEntityId, legalEntityId),
+        eq(accountMappings.role, "petty_cash"),
+      ),
+    )
+    .limit(1);
+  return row?.accountId ?? null;
+}
+
+/**
+ * The account override of a pending settlement. Bank: the GL account of the
+ * bank account frozen on the batch, read WITHOUT the active filter. The money
+ * left from that account, so a company bank account deactivated since then must
+ * not strand the settlement. A batch without a frozen account follows the config
+ * (it has nothing else). Cash: the petty cash account stored on the posting at
+ * the handover (legend-cnpap); a legacy posting without one follows today's
+ * mapping (undefined). Throws 409 when nothing resolves, so the consumer
  * retries instead of leaving 2103 open for good.
  */
 async function pendingSettleOverride(
   tx: Tx,
   tenantId: TenantId,
   batch: Pick<BatchRow, "channel" | "legalEntityId" | "sourceBankAccountId">,
-): Promise<Partial<Record<"bank", string>> | undefined> {
-  if (batch.channel === "cash") return undefined;
+  posting: { sourceGlAccountId: string | null },
+): Promise<Partial<Record<"bank" | "petty_cash", string>> | undefined> {
+  if (batch.channel === "cash")
+    return posting.sourceGlAccountId === null
+      ? undefined
+      : { petty_cash: posting.sourceGlAccountId };
   if (batch.sourceBankAccountId !== null) {
     const [row] = await tx
       .select({ glAccountId: bankAccounts.glAccountId })
@@ -337,6 +410,24 @@ export async function settleBatchPayouts(
       ? "settle_pending"
       : "settle_skipped";
 
+  // A pending CASH settlement remembers the petty cash account of this moment
+  // (legend-cnpap): the lock consumer may run after finance remapped the role.
+  // No mapping: refuse, nothing is recorded (same code as a missing bank).
+  let pendingCashAccountId: string | null = null;
+  if (kind === "settle_pending" && batch.channel === "cash") {
+    pendingCashAccountId = await mappedPettyCashAccount(
+      tx,
+      tenantId,
+      batch.legalEntityId,
+    );
+    if (pendingCashAccountId === null)
+      throw payoutRefuse(
+        409,
+        PAYOUT_SOURCE_ACCOUNT_MISSING.code,
+        PAYOUT_SOURCE_ACCOUNT_MISSING.message,
+      );
+  }
+
   // Fail closed on the source account BEFORE the journal branch (legend-ijhe3):
   // with accounting on, an unusable source is refused whether or not the run
   // has a locked journal, so it is never turned into `settle_skipped`. Nothing
@@ -428,6 +519,7 @@ export async function settleBatchPayouts(
     piiKeyVersion: PAYROLL_SEAL_KEY_VERSION,
     postedAt: now,
     feePosted,
+    sourceGlAccountId: pendingCashAccountId,
   });
   const linked = await tx
     .update(payrollDisbursementItems)
@@ -512,7 +604,12 @@ export async function resolvePendingSettles(
       .for("update");
     for (const posting of postings) {
       const netIdr = openPostingTotal(posting, tenantId, "netIdr");
-      const accountOverrides = await pendingSettleOverride(tx, tenantId, batch);
+      const accountOverrides = await pendingSettleOverride(
+        tx,
+        tenantId,
+        batch,
+        posting,
+      );
       await postJournalFromRuleInTransaction(
         tx,
         context,

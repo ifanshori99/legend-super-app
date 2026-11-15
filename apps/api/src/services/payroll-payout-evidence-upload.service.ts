@@ -8,14 +8,21 @@
 // manual bank batch in a state where resolve or return can run takes a proof.
 // JPEG and PNG are decoded and re-encoded (metadata such as EXIF/GPS dropped);
 // the stored bytes and `sizeBytes` are the re-encoded ones. PDF is stored as is.
+// Fingerprint (legend-w3691): the SHA-256 of the ORIGINAL uploaded bytes goes
+// into `payroll_payout_evidence_files` BEFORE the object is stored, in its own
+// tenant transaction. A failed insert refuses the upload, so a stored proof
+// never lacks its fingerprint; a fingerprint without an object (the put
+// failed) is harmless. A return claim reads it to refuse the same file content
+// under a new key (payroll-payout-manual.service.ts).
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import sharp from "sharp";
 import type { ObjectStorage } from "@starter/shared/adapters";
 import {
   assertTrustedScopedContext,
   type ScopedTenantContext,
+  type UserId,
 } from "@starter/shared/core";
 import {
   PAYOUT_EVIDENCE_MAX_BYTES,
@@ -23,7 +30,10 @@ import {
 } from "@starter/shared/validators/payroll-payout";
 import type { PayrollPayoutEvidenceUploadDto } from "@starter/shared/types";
 import { db } from "../db/index.ts";
-import { payrollDisbursementBatches } from "../db/schema/payroll-payout.ts";
+import {
+  payrollDisbursementBatches,
+  payrollPayoutEvidenceFiles,
+} from "../db/schema/payroll-payout.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { scanUploadBytes, type MalwareScanner } from "./core-image.ts";
@@ -92,7 +102,12 @@ export async function uploadPayoutEvidence(
   context: ScopedTenantContext,
   batchId: string,
   bytes: Uint8Array,
-  deps: { storage: ObjectStorage; scanner: MalwareScanner },
+  deps: {
+    storage: ObjectStorage;
+    scanner: MalwareScanner;
+    /** Verified user id of the uploader (the route always passes it). */
+    userId?: string;
+  },
 ): Promise<PayrollPayoutEvidenceUploadDto> {
   assertTrustedScopedContext(context);
   const tenantId = context.tenant.tenantId;
@@ -178,6 +193,18 @@ export async function uploadPayoutEvidence(
   const evidenceKey = assertEvidenceKeyForBatch(
     { tenantId, batchId: batch.id },
     `tenants/${tenantId}/payroll-payout/${batch.id}/${id}.${KINDS[contentType].extension}`,
+  );
+  // Fingerprint first: if this insert fails the upload is refused and no
+  // object exists, so a stored proof can never be used without a fingerprint.
+  const contentSha256 = createHash("sha256").update(bytes).digest("hex");
+  await withTenant(db, context, (tx) =>
+    tx.insert(payrollPayoutEvidenceFiles).values({
+      tenantId,
+      batchId: batch.id,
+      evidenceKey,
+      contentSha256,
+      createdBy: (deps.userId ?? "system") as UserId,
+    }),
   );
   await deps.storage.put(context, {
     tenantId,

@@ -17,7 +17,7 @@ import {
   payoutEvidenceReadQuerySchema,
 } from "@starter/shared/validators/payroll-payout";
 import { HttpError } from "../lib/http-error.ts";
-import { requireAuth } from "../middleware/auth.ts";
+import { getAuth, requireAuth } from "../middleware/auth.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
   requireTenantStepUpMfa,
@@ -134,7 +134,11 @@ export function createPayrollPayoutEvidenceRouter(options: {
         getScopedTenantContext(req),
         id,
         req.file.buffer,
-        { storage: storage(), scanner: scanner() },
+        {
+          storage: storage(),
+          scanner: scanner(),
+          userId: getAuth(req).user.id,
+        },
       );
       res.status(201).json({ data });
     },

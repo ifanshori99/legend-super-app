@@ -32,6 +32,7 @@ import {
 import type { UserId } from "@starter/shared/core";
 import type { PayrollRunId, PayslipId } from "@starter/shared/hris/payroll";
 import { idrColumn, tenantIdColumn } from "../columns.ts";
+import { chartOfAccounts } from "./accounting.ts";
 import { bankAccounts } from "./accounting-cash-bank.ts";
 import { employees } from "./hris.ts";
 import { payrollRuns, payslipBankSnapshots, payslips } from "./payroll.ts";
@@ -367,6 +368,15 @@ export const payrollPayoutGlPostings = pgTable(
      * (`repostSkippedFees`); the fee journal key is `payroll-payout-fee:<hash>`.
      */
     feePosted: boolean("fee_posted").notNull().default(true),
+    /**
+     * Cash source GL account frozen when a cash settlement is recorded as
+     * `settle_pending` (legend-cnpap): the account that was mapped to
+     * `petty_cash` when the money left. The resolver credits this account, not
+     * the mapping of the day the lock journal finally posts. Null for bank
+     * settlements (their source is frozen on the batch) and for any posting
+     * that was not pending cash.
+     */
+    sourceGlAccountId: uuid("source_gl_account_id"),
   },
   (table) => [
     unique("payroll_payout_gl_postings_tenant_id_key").on(
@@ -387,6 +397,11 @@ export const payrollPayoutGlPostings = pgTable(
       table.batchId,
     ),
     foreignKey({
+      name: "payroll_payout_gl_postings_source_account_fk",
+      columns: [table.tenantId, table.sourceGlAccountId],
+      foreignColumns: [chartOfAccounts.tenantId, chartOfAccounts.id],
+    }),
+    foreignKey({
       name: "payroll_payout_gl_postings_batch_fk",
       columns: [table.tenantId, table.batchId],
       foreignColumns: [
@@ -405,6 +420,53 @@ export const payrollPayoutGlPostings = pgTable(
     check(
       "payroll_payout_gl_postings_key_version_check",
       sql`${table.piiKeyVersion} >= 1`,
+    ),
+  ],
+);
+
+// ------------------------------------------------------------ evidence files
+
+/**
+ * One row per stored payout proof (legend-w3691): the SHA-256 of the file
+ * content as uploaded, written by the upload service in the same request that
+ * stores the object. A return claim reads it to refuse the same file content a
+ * second time, whatever new key a re-upload received. Append only.
+ */
+export const payrollPayoutEvidenceFiles = pgTable(
+  "payroll_payout_evidence_files",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    batchId: uuid("batch_id").notNull(),
+    evidenceKey: varchar("evidence_key", { length: 500 }).notNull(),
+    contentSha256: varchar("content_sha256", { length: 64 }).notNull(),
+    createdBy: actor("created_by").notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    unique("payroll_payout_evidence_files_tenant_id_key").on(
+      table.tenantId,
+      table.id,
+    ),
+    unique("payroll_payout_evidence_files_evidence_key").on(
+      table.tenantId,
+      table.evidenceKey,
+    ),
+    index("payroll_payout_evidence_files_tenant_sha_idx").on(
+      table.tenantId,
+      table.contentSha256,
+    ),
+    foreignKey({
+      name: "payroll_payout_evidence_files_batch_fk",
+      columns: [table.tenantId, table.batchId],
+      foreignColumns: [
+        payrollDisbursementBatches.tenantId,
+        payrollDisbursementBatches.id,
+      ],
+    }),
+    check(
+      "payroll_payout_evidence_files_sha_check",
+      sql`${table.contentSha256} ~ ${sql.raw(SHA256_FORMAT)}`,
     ),
   ],
 );
@@ -441,6 +503,14 @@ export const payrollPayoutReturnClaims = pgTable(
     createdBy: actor("created_by").notNull(),
     createdAt: createdAt(),
     consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    /**
+     * SHA-256 of the proof file's content, copied from its upload record
+     * (`payroll_payout_evidence_files`, legend-w3691). One file content is
+     * claimed by ONE return operation per tenant, so uploading the same report
+     * again (a new evidence key) cannot free another payslip. Null only for a
+     * proof uploaded before fingerprints existed.
+     */
+    contentSha256: varchar("content_sha256", { length: 64 }),
   },
   (table) => [
     unique("payroll_payout_return_claims_tenant_id_key").on(
@@ -455,6 +525,13 @@ export const payrollPayoutReturnClaims = pgTable(
     unique("payroll_payout_return_claims_evidence_key").on(
       table.tenantId,
       table.evidenceKey,
+    ),
+    uniqueIndex("payroll_payout_return_claims_content_sha_key")
+      .on(table.tenantId, table.contentSha256)
+      .where(sql`${table.contentSha256} IS NOT NULL`),
+    check(
+      "payroll_payout_return_claims_sha_check",
+      sql`${table.contentSha256} IS NULL OR ${table.contentSha256} ~ ${sql.raw(SHA256_FORMAT)}`,
     ),
     index("payroll_payout_return_claims_tenant_batch_idx").on(
       table.tenantId,
