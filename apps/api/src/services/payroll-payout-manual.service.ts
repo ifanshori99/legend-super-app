@@ -751,8 +751,21 @@ export async function confirmManualItems(
     input.results.map((result) => result.itemId),
     "exported",
   );
-  for (const key of new Set(evidenceByItem.values()))
-    if (key !== null) await assertProofNotUsedForReturn(tx, tenantId, key);
+  // Take every proof advisory lock in sorted fingerprint order first: two
+  // confirmations that share files in opposite order would otherwise deadlock
+  // (40P01) while each holds one lock and waits for the other.
+  const proofKeys = [...new Set(evidenceByItem.values())].filter(
+    (key): key is string => key !== null,
+  );
+  const proofShas = new Set<string>();
+  for (const key of proofKeys) {
+    const sha = await evidenceFingerprint(tx, tenantId, key);
+    if (sha !== null) proofShas.add(sha);
+  }
+  for (const sha of [...proofShas].sort())
+    await lockProofFingerprint(tx, tenantId, sha);
+  for (const key of proofKeys)
+    await assertProofNotUsedForReturn(tx, tenantId, key, true);
 
   let confirmed = 0;
   for (const result of input.results) {
@@ -988,11 +1001,13 @@ async function assertProofNotUsedForReturn(
   tx: Tx,
   tenantId: TenantId,
   evidence: string,
+  preLocked = false,
 ): Promise<void> {
   const sha = await evidenceFingerprint(tx, tenantId, evidence);
   // Two batches racing on the same file content serialize here (lock order:
-  // run row, batch row, batch advisory, proof advisory).
-  if (sha !== null) await lockProofFingerprint(tx, tenantId, sha);
+  // run row, batch row, batch advisory, proof advisory). A caller with several
+  // proofs locks them itself in sorted order and passes preLocked.
+  if (sha !== null && !preLocked) await lockProofFingerprint(tx, tenantId, sha);
   const [proofUsed] = await tx
     .select({ id: payrollDisbursementItems.id })
     .from(payrollDisbursementItems)

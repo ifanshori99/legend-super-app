@@ -17,8 +17,11 @@ import {
   createDisbursementBatchInputSchema,
   payoutBatchParamsSchema,
   listPayoutBatchesQuerySchema,
+  listPayoutRecoveryQuerySchema,
   payoutLegalEntityParamsSchema,
+  payoutPostingParamsSchema,
   payoutRunParamsSchema,
+  recordPostingSourceInputSchema,
   resolveManualItemsSchema,
   upsertPayoutConfigInputSchema,
   withdrawResolutionSchema,
@@ -38,9 +41,10 @@ import {
 } from "../middleware/permissions.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
 import {
-  listSkippedFees,
+  listPayoutRecoveryPage,
   repostSkippedFees,
 } from "../services/payroll-payout-gl.service.ts";
+import { recordPostingSource } from "../services/payroll-payout-source.service.ts";
 import { listPayoutBatches } from "../services/payroll-payout-batch-list.service.ts";
 import {
   getPayoutConfig,
@@ -370,17 +374,20 @@ payrollPayoutRouter.post(
 // Bank fee of a settled group that was not journaled (legend-8codi): finance
 // sees the list and re-posts it once the bank charges mapping is back. It only
 // books the fee already stored as expense, so no second factor.
+// The list also holds settlements still waiting for money to reach the GL
+// (legend-pfk3q), each with the `reason` it waits.
 payrollPayoutRouter.get(
   "/payout-fee-reposts",
   requireAuth,
   requireTenantContext,
   requireTenantPermission("payroll.view"),
   async (req, res) => {
+    const query = listPayoutRecoveryQuerySchema.parse(req.query);
     const { context, actor } = actorOf(req);
-    const data = await withTenant(db, context, (tx) =>
-      listSkippedFees(tx, actor.tenantId),
+    const page = await withTenant(db, context, (tx) =>
+      listPayoutRecoveryPage(tx, actor.tenantId, query),
     );
-    res.json({ data });
+    res.json({ data: page.rows, next: page.next });
   },
 );
 
@@ -397,6 +404,31 @@ payrollPayoutRouter.post(
     const { context, actor } = actorOf(req);
     const data = await withTenant(db, context, (tx) =>
       repostSkippedFees(tx, actor, id),
+    );
+    res.json({ data });
+  },
+);
+
+// Source account of a pending/skipped settlement that has none (legend-zlcsd):
+// finance names the GL account the money left from, once, and the settlement
+// resolves in the same transaction. Same guard as the fee re-post: it credits
+// an account, so the disburse permission plus the second factor (same as
+// confirm-cash) and an audit row.
+payrollPayoutRouter.post(
+  "/disbursement-batches/:id/postings/:postingId/source",
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  requireTenantPermission("payroll.disburse.approve"),
+  stepUp,
+  jsonBody,
+  passwordStepUp,
+  async (req, res) => {
+    const { id, postingId } = payoutPostingParamsSchema.parse(req.params);
+    const input = recordPostingSourceInputSchema.parse(req.body);
+    const { context, actor } = actorOf(req);
+    const data = await withTenant(db, context, (tx) =>
+      recordPostingSource(tx, actor, id, postingId, input.glAccountId),
     );
     res.json({ data });
   },
