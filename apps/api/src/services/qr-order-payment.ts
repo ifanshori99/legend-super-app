@@ -23,7 +23,17 @@
 //   before a verified payment (ORD-02).
 
 import { createHash, timingSafeEqual } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  gt,
+  isNotNull,
+  isNull,
+  notExists,
+  or,
+  sql,
+} from "drizzle-orm";
 import {
   CoreError,
   uuidSchema,
@@ -47,6 +57,7 @@ import { db } from "../db/index.ts";
 import { paymentIntents } from "../db/schema/index.ts";
 import { orderIssueCharges } from "../db/schema/kds-issues.ts";
 import { billSplits } from "../db/schema/bill-splits.ts";
+import { posQrisHolds } from "../db/schema/pos-qris-hold.ts";
 import { orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
@@ -75,7 +86,10 @@ import {
   openGuestQrisHold,
   openSplitQrisHold,
 } from "./pos-qris-hold.ts";
-import { handleQrOrderPaymentPaid } from "./qr-order-consumers.ts";
+import {
+  handleQrOrderPaymentPaid,
+  LATE_PAYMENT_GRACE_MS,
+} from "./qr-order-consumers.ts";
 import {
   loadQrZoneOfSession,
   lockGuestSessionForPayment,
@@ -343,6 +357,60 @@ function sameHash(stored: string, candidate: string): boolean {
   const a = Buffer.from(stored);
   const b = Buffer.from(candidate);
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/**
+ * legend-kf104: the whole-order code of the bill that may still take money:
+ * any `pending` code (a lapsed one stays pending until the gateway answers),
+ * or a superseded/expired one the gateway received, until its own expiry plus
+ * the late-payment grace (the gateway cancel is best effort). A code whose QR
+ * hold the provider proved dead (hold `closed`) is dead. Same rule as
+ * `partLiveCodeTx` for a split part, so a VA, a bank change or a QR never
+ * replaces a code that may still be paid (two collectible codes of one bill).
+ */
+async function orderLiveCodeTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  paymentLinkId: string,
+  now: Date,
+): Promise<{ id: string } | null> {
+  const tenantId = context.tenant.tenantId;
+  const [code] = await tx
+    .select({ id: paymentIntents.id })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, tenantId),
+        eq(paymentIntents.paymentLinkId, paymentLinkId),
+        isNull(paymentIntents.billSplitId),
+        or(
+          eq(paymentIntents.status, "pending"),
+          and(
+            eq(paymentIntents.status, "expired"),
+            isNotNull(paymentIntents.providerRef),
+            gt(
+              paymentIntents.expiresAt,
+              new Date(now.getTime() - LATE_PAYMENT_GRACE_MS),
+            ),
+          ),
+        ),
+        notExists(
+          tx
+            .select({ one: sql`1` })
+            .from(posQrisHolds)
+            .where(
+              and(
+                eq(posQrisHolds.tenantId, tenantId),
+                eq(posQrisHolds.paymentIntentId, paymentIntents.id),
+                eq(posQrisHolds.state, "closed"),
+              ),
+            ),
+        ),
+      ),
+    )
+    .orderBy(desc(paymentIntents.createdAt))
+    .limit(1);
+  return code ?? null;
 }
 
 /**
@@ -702,6 +770,18 @@ export async function createGuestPayment(
             409,
             "QRIS_HOLD_ACTIVE",
             "Kode QR sebelumnya masih bisa dibayar. Tunggu sampai dibayar atau berakhir dulu.",
+          );
+        // A VA (no hold), or a code past its expiry that the gateway may
+        // still accept, is held to the same rule: no replacement while it may
+        // be paid, whatever method the guest now asks for.
+        if (
+          order.paymentLinkId !== null &&
+          (await orderLiveCodeTx(tx, context, order.paymentLinkId, now))
+        )
+          throw new HttpError(
+            409,
+            "ORDER_CODE_ACTIVE",
+            "Kode pembayaran sebelumnya masih berlaku; selesaikan atau tunggu sampai berakhir.",
           );
         if (parsed.method === "qris")
           await assertNoOpenCardSale(tx, context, order);

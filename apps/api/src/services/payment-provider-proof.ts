@@ -16,6 +16,7 @@ import { HttpError } from "../lib/http-error";
 import { logger } from "../lib/logger";
 import { settleGatewayIntentNow } from "./payment.service.ts";
 import { paymentGatewayFor } from "./payment-gateway.ts";
+import { HOLD_CLOSE_MARGIN_MS } from "./pos-qris-hold.ts";
 
 export type LinkProviderVerdict = "unpaid" | "settled";
 
@@ -42,10 +43,15 @@ const unconfirmed = () =>
  *   paid answer fails or leaves the intent `pending`: throws 409
  *   `PAYMENT_PROVIDER_UNCONFIRMED`; nothing is cancelled and nothing is
  *   refunded.
- * - `pending` / `expired` / `failed`: no money at the provider; nothing is
- *   sent to the provider. This helper never cancels the code there: the caller
- *   may still reject the close, and the webhook and the poller still catch a
- *   late payment.
+ * - a `pending` intent answered `pending` / `expired` / `failed`: no money at
+ *   the provider; nothing is sent to the provider. This helper never cancels
+ *   the code there: the caller may still reject the close, and the webhook and
+ *   the poller still catch a late payment.
+ * - a locally `expired` intent (so-879 P3) is safe only when the provider says
+ *   `expired` / `failed`, or when its own `expires_at` + 60 s
+ *   (`HOLD_CLOSE_MARGIN_MS`) has passed (the code lapsed on its own). A
+ *   `pending` answer for a code that has not lapsed yet means the customer can
+ *   still pay it: throws 409 `PAYMENT_PROVIDER_UNCONFIRMED`.
  *
  * `unpaid` only when every intent is safe to cancel locally.
  */
@@ -116,7 +122,17 @@ export async function confirmLinkUnpaidAtProvider(
       );
       if (!reread || reread.status === intent.status) throw unconfirmed();
       verdict = "settled";
+      continue;
     }
+    // A code only expired in our books (superseded, or closed before it
+    // lapsed) is still payable while the provider says pending and its own
+    // lifetime has not run out: no proof that it holds no money.
+    if (
+      intent.status === "expired" &&
+      answer.status === "pending" &&
+      now.getTime() < intent.expiresAt.getTime() + HOLD_CLOSE_MARGIN_MS
+    )
+      throw unconfirmed();
   }
   return verdict;
 }

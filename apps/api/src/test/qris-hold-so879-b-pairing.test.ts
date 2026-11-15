@@ -60,7 +60,13 @@ async function newDevice(
     client.query(
       `INSERT INTO devices (id, tenant_id, outlet_id, type, label, token_issued_at)
        VALUES ($1, $2, $3, $4, $5, now() - interval '1 minute')`,
-      [id, fx.tenant.tenantId, outletId, type, `${type} so879 ${id.slice(0, 8)}`],
+      [
+        id,
+        fx.tenant.tenantId,
+        outletId,
+        type,
+        `${type} so879 ${id.slice(0, 8)}`,
+      ],
     ),
   );
   known.set(id, { tenantId: fx.tenant.tenantId, outletId });

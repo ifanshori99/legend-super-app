@@ -219,9 +219,10 @@ async function refundedTotal(intentId: string) {
 
 function expectNoDeadlock(...results: unknown[]) {
   for (const r of results)
-    expect(String((r as { error?: unknown })?.error ?? ""), "lock cycle").not.toMatch(
-      /deadlock|40P01/i,
-    );
+    expect(
+      String((r as { error?: unknown })?.error ?? ""),
+      "lock cycle",
+    ).not.toMatch(/deadlock|40P01/i);
 }
 
 // -------------------------------------------------------------------- tests
@@ -273,9 +274,10 @@ describe("legend-w0ows card sale vs collectible QR", () => {
     if (read.status === 201) {
       const intentId = read.body.data.tender.paymentIntentId as string;
       await payNotice(fx, intentId, BILL);
-      expect(await capturedIdr(fx, order.id), "QR captured with card open").toBe(
-        0,
-      );
+      expect(
+        await capturedIdr(fx, order.id),
+        "QR captured with card open",
+      ).toBe(0);
       expect(await refundedTotal(intentId), "QR refunded in full").toBe(BILL);
       expect((await readHold(fx, order.id))?.state).not.toBe("open");
     } else {

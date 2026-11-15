@@ -103,17 +103,18 @@ describe("legend-5ailc void of an unpaid QR order while a split QR is collectibl
     expect((await readHold(fx, order.id))?.state).toBe("open");
     const before = await snapshot();
 
-    const failure = await voidUnpaidQrOrder(
-      fx.context,
-      order.id,
-      { reason: "Staf membatalkan pesanan", actorUserId: fx.staff.userId },
-    ).then(
+    const failure = await voidUnpaidQrOrder(fx.context, order.id, {
+      reason: "Staf membatalkan pesanan",
+      actorUserId: fx.staff.userId,
+    }).then(
       () => null,
       (error: unknown) => error,
     );
 
-    expect(failure, "void of a bill with a collectible QR must be refused")
-      .not.toBeNull();
+    expect(
+      failure,
+      "void of a bill with a collectible QR must be refused",
+    ).not.toBeNull();
     const e = failure as { code?: unknown; status?: unknown; message?: string };
     expect(e.code, String(e.message)).toBe("QRIS_HOLD_ACTIVE");
     expect(e.code).not.toBe("23514");

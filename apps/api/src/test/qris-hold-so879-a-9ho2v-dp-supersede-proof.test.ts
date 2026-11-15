@@ -75,6 +75,7 @@ import {
   settleCall,
   type ScriptedGateway,
 } from "./payment-link-cancel-provider-helpers.ts";
+import { enableVaBank } from "./qris-hold-so879-va-gateway.ts";
 
 const WIB = "Asia/Jakarta";
 const DP_IDR = 100_000;
@@ -109,31 +110,6 @@ async function asOwner<T>(run: (client: PoolClient) => Promise<T>): Promise<T> {
   }
 }
 
-/** The scripted gateway also offers one VA bank, so the guest can switch. */
-function enableVa(gateway: ScriptedGateway) {
-  const create = gateway.createIntent.bind(gateway);
-  gateway.createIntent = async (input) => {
-    const base = await create(input);
-    return input.method === "va"
-      ? {
-          ...base,
-          instructions: {
-            method: "va" as const,
-            channelCode: input.channelCode ?? "bmri",
-            channelName: "Mandiri",
-            virtualAccountNumber: "8808123456789012",
-          },
-        }
-      : base;
-  };
-  (
-    gateway as unknown as {
-      channels: (c: unknown, method: string) => Promise<unknown[]>;
-    }
-  ).channels = async (_context, method) =>
-    method === "va" ? [{ code: "bmri", name: "Mandiri" }] : [];
-}
-
 let staff: Staff;
 let gateway: ScriptedGateway;
 const zoneIds: string[] = [];
@@ -148,7 +124,7 @@ beforeAll(async () => {
     label: "Rsv 9ho2v Proof",
   });
   gateway = installScriptedGateway();
-  enableVa(gateway);
+  enableVaBank(gateway);
   setReservationDepositPort(createPaymentReservationDepositPort());
   await asOwner(async (client) => {
     await client.query(

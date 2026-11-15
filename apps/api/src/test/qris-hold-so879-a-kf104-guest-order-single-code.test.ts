@@ -44,6 +44,7 @@ import {
   unallocatedFunds,
   type HoldFixture,
 } from "./pos-qris-hold-test-helpers.ts";
+import { enableVaBank } from "./qris-hold-so879-va-gateway.ts";
 
 vi.setConfig({ testTimeout: 120_000 });
 const BILL_IDR = 33_000;
@@ -53,27 +54,7 @@ let gw: ScriptedGateway;
 beforeAll(async () => {
   fx = await holdFixture("qris-hold-so879-kf104");
   gw = new ScriptedGateway("doit");
-  const create = gw.createIntent.bind(gw);
-  gw.createIntent = async (input) => {
-    const base = await create(input);
-    return input.method === "va"
-      ? {
-          ...base,
-          instructions: {
-            method: "va" as const,
-            channelCode: input.channelCode ?? "bmri",
-            channelName: "Mandiri",
-            virtualAccountNumber: "8808123456789012",
-          },
-        }
-      : base;
-  };
-  (
-    gw as unknown as {
-      channels: (c: unknown, method: string) => Promise<unknown[]>;
-    }
-  ).channels = async (_context, method) =>
-    method === "va" ? [{ code: "bmri", name: "Mandiri" }] : [];
+  enableVaBank(gw);
   setPaymentGateway(gw);
 });
 afterAll(async () => {
@@ -411,5 +392,28 @@ describe("legend-kf104 one collectible code per guest bill", () => {
     expect(
       (await readHolds(fx, order.id)).map((h) => [h.state, h.closeReason]),
     ).toEqual([["closed", "provider_expired"]]);
+  });
+
+  it("legend-kf104 VA -> QRIS: a VA has no hold, yet a QR is refused while the VA may still be paid; the VA alone settles the bill, paid once", async () => {
+    const { guest, order } = await guestOrder();
+    const requestsBefore = gw.requests.length;
+    const va = await payWhole(guest, order.id, "va");
+    expect(va.status, JSON.stringify(va.body)).toBe(201);
+    const vaId = va.body.data.id as string;
+
+    const qr = await payWhole(guest, order.id, "qris");
+    expect(
+      qr.status,
+      `a QR must not replace a live VA: ${JSON.stringify(qr.body)}`,
+    ).toBe(409);
+    expect(gw.requests.length, "no QR code at the provider").toBe(
+      requestsBefore + 1,
+    );
+    expect((await intentRow(vaId)).status).toBe("pending");
+
+    await payAndDeliver(vaId, "va", BILL_IDR);
+    expect(await orderStatus(order.id)).not.toBe("awaiting_payment");
+    expect(await unallocatedFunds(fx, vaId)).toEqual([]);
+    expect(await refundsOfIntent(fx, vaId)).toEqual([]);
   });
 });

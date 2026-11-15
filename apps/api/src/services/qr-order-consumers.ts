@@ -43,7 +43,7 @@
 //   voided by `sweepUnpaidQrOrders` (relay tick), which also covers guests
 //   who stop polling (no expiry event is produced then).
 
-import { and, asc, eq, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, lte, notExists, sql } from "drizzle-orm";
 import { uuidSchema, z, type ScopedTenantContext } from "@starter/shared/core";
 import type { EventEnvelope } from "@starter/shared/events";
 import { PosError } from "@starter/shared/pos";
@@ -55,6 +55,7 @@ import {
   paymentLinks,
   tableSessions,
 } from "../db/schema/index.ts";
+import { posQrisHolds } from "../db/schema/pos-qris-hold.ts";
 import { orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { logger } from "../lib/logger.ts";
@@ -429,6 +430,11 @@ async function voidAndNotify(
  * the consumption transaction stays clean: the order is left awaiting payment
  * (false), the event is consumed, and the relay sweep retries the void once
  * the request is final. Any other error propagates.
+ *
+ * legend-kf104: the same for 409 QRIS_HOLD_ACTIVE (a QR of the bill can still
+ * be paid). The hold check job closes the hold on provider proof, which emits
+ * `payment.expired` for the code and wakes this consumer again; the sweep
+ * (which skips such orders) is the safety net.
  */
 async function voidUnlessEdcOpen(
   tx: Tx,
@@ -441,11 +447,14 @@ async function voidUnlessEdcOpen(
     await voidAndNotify(tx, context, order, reason, now);
     return true;
   } catch (error) {
-    if (!(error instanceof PosError) || error.code !== "EDC_REQUEST_OPEN")
+    if (
+      !(error instanceof PosError) ||
+      (error.code !== "EDC_REQUEST_OPEN" && error.code !== "QRIS_HOLD_ACTIVE")
+    )
       throw error;
     logger.warn(
-      { orderId: order.id, reason },
-      "unpaid QR order not voided: EDC request still open",
+      { orderId: order.id, reason, why: error.code },
+      "unpaid QR order not voided: card sale or QR hold still open",
     );
     return false;
   }
@@ -886,6 +895,20 @@ export async function sweepUnpaidQrOrders(
           eq(orders.channel, "qr"),
           inArray(orders.status, ["awaiting_payment"]),
           lte(orders.placedAt, new Date(now.getTime() - LATE_PAYMENT_GRACE_MS)),
+          // legend-kf104: a bill whose QR can still be paid cannot be voided;
+          // it must not fill the oldest-first window and starve the others.
+          notExists(
+            db
+              .select({ one: sql`1` })
+              .from(posQrisHolds)
+              .where(
+                and(
+                  eq(posQrisHolds.tenantId, orders.tenantId),
+                  eq(posQrisHolds.orderId, orders.id),
+                  inArray(posQrisHolds.state, ["open", "cancelling"]),
+                ),
+              ),
+          ),
         ),
       )
       .orderBy(asc(orders.placedAt), asc(orders.id))

@@ -69,6 +69,7 @@ import {
   assertNoActiveQrisHold,
   closeQrisHoldTx,
   lockHoldsOfOrder,
+  markQrisHoldsPaidByIntentTx,
   openQrisHold,
 } from "./pos-qris-hold.ts";
 import {
@@ -281,8 +282,22 @@ export async function addPosTender(
         await assertNoActiveQrisHold(tx, context, order.id);
         await assertNoOpenEdcRequest(tx, context, order);
       } else {
-        const holds = await lockHoldsOfOrder(tx, tenantId, order.id);
+        const lockedHolds = await lockHoldsOfOrder(tx, tenantId, order.id);
         await hasOpenEdcRequest(tx, context, order);
+        // so-879 P1: the 0380 trigger refuses a tender void while ANY other
+        // hold of the bill is active, so the hold whose tender is still
+        // `authorized` closes last; the others (voided tender, no tender) end
+        // first and touch no tender.
+        const waitingTenderIds = new Set(
+          (await tendersOf(tx, context, order.id))
+            .filter((row) => row.status === "authorized")
+            .map((row) => row.id),
+        );
+        const holds = [...lockedHolds].sort(
+          (a, b) =>
+            Number(a.tenderId !== null && waitingTenderIds.has(a.tenderId)) -
+            Number(b.tenderId !== null && waitingTenderIds.has(b.tenderId)),
+        );
         for (const hold of holds) {
           if (hold.state !== "open" && hold.state !== "cancelling") continue;
           await closeQrisHoldTx(tx, context, {
@@ -809,6 +824,20 @@ export async function handlePosPaymentPaid(
     if (!pos) return;
     // legend-yhia9 lock order: orders -> pos_orders -> pos_qris_holds -> tender.
     const holds = await lockHoldsOfOrder(tx, tenantId, order.id);
+    // so-879 P1: the intent that was paid ends its own active hold(s) first,
+    // by intent and not by tender, and before any branch that only refunds
+    // (tender already voided, order final). A hold of a code that is paid is
+    // dead; left `open` it would freeze the bill for good (the 0380 trigger
+    // refuses every later tender change while any hold is active). Another
+    // QR's hold stays: its code may still be collected. `holds` above is the
+    // state before this, which the basis check below still needs.
+    await markQrisHoldsPaidByIntentTx(
+      tx,
+      tenantId,
+      payload.data.intentId,
+      now,
+      { providerRef: payload.data.providerRef ?? null },
+    );
     // legend-56gg2: EDC advisory lock (same order as addPosTender), taken
     // before the tender row; decided below once the intent is known.
     const edcOpen = await hasOpenEdcRequest(tx, context, order);

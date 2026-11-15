@@ -265,6 +265,46 @@ export async function markSplitQrisHoldPaidByIntentTx(
   return rows.length > 0;
 }
 
+/**
+ * The provider reported this intent paid (so-879 P1): every active hold of THIS
+ * intent ends `paid`, whatever its tender is (a backfilled hold of a code whose
+ * tender was voided locally, or a sibling code with no tender). A paid code
+ * cannot be paid again, so it no longer gates the bill; any other QR of the
+ * bill keeps its own hold. Only an intent that really is paid (the money is
+ * recorded on it) moves a hold: a wrong-amount payment parked as unallocated
+ * funds leaves the intent as it was and the hold active. Never moves money.
+ * Call under the orders / pos_orders / hold locks. Returns the moved hold ids.
+ */
+export async function markQrisHoldsPaidByIntentTx(
+  tx: Tx,
+  tenantId: TenantId,
+  intentId: string,
+  now: Date,
+  evidence: Record<string, unknown> = {},
+): Promise<string[]> {
+  const rows = await tx
+    .update(posQrisHolds)
+    .set({
+      state: "paid",
+      closedAt: now,
+      closeReason: "provider_paid",
+      closeEvidence: { intentId, ...evidence },
+      nextCheckAt: null,
+    })
+    .where(
+      and(
+        eq(posQrisHolds.tenantId, tenantId),
+        eq(posQrisHolds.paymentIntentId, intentId),
+        inArray(posQrisHolds.state, [...ACTIVE_STATES]),
+        sql`EXISTS (SELECT 1 FROM payment_intents i
+          WHERE i.tenant_id = ${tenantId} AND i.id = ${intentId}
+            AND i.status IN ('paid', 'partially_refunded', 'refunded'))`,
+      ),
+    )
+    .returning({ id: posQrisHolds.id });
+  return rows.map((row) => row.id);
+}
+
 // ---- Close ------------------------------------------------------------------
 
 /**
@@ -743,6 +783,40 @@ export async function checkQrisHold(
       )
       .for("update");
     if (!hold || !isActive(hold)) return hold?.state ?? null;
+    // so-879 P1: the provider says this QR was paid and the money is recorded
+    // (read under the locks). A hold whose tender can no longer take it (none,
+    // or not `authorized`: voided locally before the cutover, or a sibling
+    // code) is not ended by the payment.paid consumer, which refunds that
+    // money and leaves the hold; it would freeze the bill for good. The code
+    // is paid, so it is dead: the hold ends `paid`. A hold whose tender is
+    // still `authorized` ends with that tender's capture, as before.
+    if (
+      answer?.status === "paid" &&
+      sameReference &&
+      (await appliedQrisMoneyTx(tx, tenantId, intent.id))
+    ) {
+      const tenderStatus =
+        hold.tenderId === null
+          ? null
+          : ((
+              await tx
+                .select({ status: posOrderTenders.status })
+                .from(posOrderTenders)
+                .where(
+                  and(
+                    eq(posOrderTenders.tenantId, tenantId),
+                    eq(posOrderTenders.id, hold.tenderId),
+                  ),
+                )
+            )[0]?.status ?? null);
+      if (tenderStatus !== "authorized") {
+        await markQrisHoldsPaidByIntentTx(tx, tenantId, intent.id, now, {
+          providerRef: intent.providerRef,
+          checkedAt: now.toISOString(),
+        });
+        return "paid";
+      }
+    }
     // Re-read the money under the locks: a payment committed after the provider
     // read (or a stale expired answer) must never close the hold (legend-zff37).
     const paidUnderLock =

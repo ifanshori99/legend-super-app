@@ -9,23 +9,29 @@
 //  payment: release refused, payment completed (captured once), no tender void,
 //  no refund."
 //
-// Barrier (no sleeps, no fake timers): the test holds the order row lock from
-// its own connection, starts the release (or the hold check job) and waits until
-// PostgreSQL reports that request as blocked by that lock. The request has then
-// done everything it does before it needs the order lock, so whatever it read
-// without the lock is stale. Only then the "webhook" commits (confirmPayment,
-// consumer withheld), the lock is dropped and the request continues.
+// Barrier (no sleeps, no fake timers). The real webhook needs the order lock
+// too, so it cannot commit while the test holds that lock. Instead:
+//  1. the payment is recorded for real (confirmPayment, consumer withheld) and
+//     the rows it wrote are snapshotted (evidence, intent and link changes,
+//     outbox events), then put back to the state before the payment;
+//  2. a separate connection C takes the order row lock;
+//  3. the release (or the hold check job) starts and the test waits until
+//     PostgreSQL reports it blocked by C: everything it read before needing the
+//     order lock shows NO payment (stale);
+//  4. inside C's own transaction the snapshotted rows are written back (the
+//     payment "commits") and C commits, which frees the lock.
+// The request then continues and must see the payment under its lock.
 //
 // Assumptions:
 // - A refused release is 409 (CoreError CONFLICT), per the brief.
-// - "Webhook commit" = confirmPayment with the consumer (`handlePosPaymentPaid`)
-//   withheld (`deliveries: 0`); the consumer runs afterwards, twice (replay).
+// - The consumer (`handlePosPaymentPaid`) runs only after the race, twice
+//   (replay), and captures the payment once.
 // - Manager release goes through an approved pos-overrides row of action "void"
 //   (same assumption as pos-qris-hold-anomaly.test.ts).
-// - The webhook's payment time is before the QR's original expiry (the provider
-//   took the money in time; only its notice is late).
+// - The payment time is before the QR's original expiry (the provider took the
+//   money in time; only its notice is late).
 // - The job scenario needs an "expired" answer that contradicts the payment
-//   (stale answer): the gateway says DOIT `expired` while the webhook commits.
+//   (stale answer): the gateway says DOIT `expired` although the money is in.
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { tenantIdSchema, ulidToUuid, userIdSchema } from "@starter/shared/core";
@@ -71,10 +77,139 @@ afterAll(async () => {
 
 // ------------------------------------------------------------------ barrier
 
-/** Holds the row lock of the order from a separate connection. */
+type Row = Record<string, unknown>;
+type PaymentRows = {
+  intentBefore: Row;
+  intentAfter: Row;
+  linkBefore: Row;
+  linkAfter: Row;
+  evidence: Row[];
+  outbox: Row[];
+};
+
+const asParam = (value: unknown) =>
+  value !== null &&
+  typeof value === "object" &&
+  !(value instanceof Date) &&
+  !Array.isArray(value)
+    ? JSON.stringify(value)
+    : value;
+
+async function selectRow(table: string, id: unknown) {
+  const { rows } = await owner.query(
+    `SELECT * FROM ${table} WHERE tenant_id=$1 AND id=$2`,
+    [fx.tenant.tenantId, id],
+  );
+  return rows[0] as Row;
+}
+
+async function insertRow(
+  client: { query: (text: string, params?: unknown[]) => Promise<unknown> },
+  table: string,
+  row: Row,
+) {
+  const cols = Object.keys(row);
+  await client.query(
+    `INSERT INTO ${table} (${cols.map((c) => `"${c}"`).join(",")})
+     VALUES (${cols.map((_, i) => `$${i + 1}`).join(",")})`,
+    cols.map((c) => asParam(row[c])),
+  );
+}
+
+async function setColumns(
+  client: { query: (text: string, params?: unknown[]) => Promise<unknown> },
+  table: string,
+  id: unknown,
+  from: Row,
+  to: Row,
+) {
+  const changed = Object.keys(to).filter(
+    (c) => JSON.stringify(from[c]) !== JSON.stringify(to[c]),
+  );
+  if (changed.length === 0) return;
+  await client.query(
+    `UPDATE ${table} SET ${changed.map((c, i) => `"${c}"=$${i + 3}`).join(",")}
+      WHERE tenant_id=$1 AND id=$2`,
+    [fx.tenant.tenantId, id, ...changed.map((c) => asParam(to[c]))],
+  );
+}
+
+/** Records the payment for real, snapshots what it wrote, then puts the
+ * database back to the state before the payment (no evidence, no event). */
+async function recordThenUndoPayment(
+  qr: IssuedQris,
+  paidAt: Date,
+): Promise<PaymentRows> {
+  const intentBefore = await selectRow("payment_intents", qr.intentId);
+  const linkId = intentBefore.payment_link_id as string;
+  const linkBefore = await selectRow("payment_links", linkId);
+  const outboxBefore = await owner.query<{ id: string }>(
+    `SELECT id::text FROM domain_event_outbox
+      WHERE tenant_id=$1 AND event->'payload'->>'intentId'=$2`,
+    [fx.tenant.tenantId, qr.intentId],
+  );
+  await payNotice(fx, qr.intentId, BILL_IDR, paidAt, qr.providerRef!, {
+    deliveries: 0,
+  });
+  const intentAfter = await selectRow("payment_intents", qr.intentId);
+  const linkAfter = await selectRow("payment_links", linkId);
+  const evidence = (
+    await owner.query(
+      `SELECT * FROM payment_evidence WHERE tenant_id=$1 AND payment_intent_id=$2`,
+      [fx.tenant.tenantId, qr.intentId],
+    )
+  ).rows as Row[];
+  const known = new Set(outboxBefore.rows.map((r) => r.id));
+  const outbox = (
+    (
+      await owner.query(
+        `SELECT * FROM domain_event_outbox
+          WHERE tenant_id=$1 AND event->'payload'->>'intentId'=$2`,
+        [fx.tenant.tenantId, qr.intentId],
+      )
+    ).rows as Row[]
+  ).filter((r) => !known.has(String(r.id)));
+  expect(evidence, "the payment wrote evidence").toHaveLength(1);
+  expect(outbox.length, "the payment wrote its event").toBeGreaterThan(0);
+
+  const undo = await owner.connect();
+  try {
+    await undo.query("BEGIN");
+    await undo.query("SET LOCAL session_replication_role = replica");
+    await undo.query(
+      `DELETE FROM domain_event_outbox WHERE tenant_id=$1 AND id = ANY($2::uuid[])`,
+      [fx.tenant.tenantId, outbox.map((r) => r.id)],
+    );
+    await undo.query(
+      `DELETE FROM payment_evidence WHERE tenant_id=$1 AND payment_intent_id=$2`,
+      [fx.tenant.tenantId, qr.intentId],
+    );
+    await setColumns(
+      undo,
+      "payment_intents",
+      qr.intentId,
+      intentAfter,
+      intentBefore,
+    );
+    await setColumns(undo, "payment_links", linkId, linkAfter, linkBefore);
+    await undo.query("COMMIT");
+  } catch (error) {
+    await undo.query("ROLLBACK");
+    throw error;
+  } finally {
+    undo.release();
+  }
+  return { intentBefore, intentAfter, linkBefore, linkAfter, evidence, outbox };
+}
+
+/** Connection C: holds the order row lock until `commitPayment`. */
 async function lockOrderRow(orderId: string) {
   const client = await owner.connect();
   await client.query("BEGIN");
+  await client.query(
+    "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+    [fx.tenant.tenantId],
+  );
   await client.query(
     "SELECT 1 FROM orders WHERE tenant_id=$1 AND id=$2 FOR UPDATE",
     [fx.tenant.tenantId, ulidToUuid(orderId)],
@@ -83,17 +218,46 @@ async function lockOrderRow(orderId: string) {
     "SELECT pg_backend_pid() AS pid",
   );
   let done = false;
+  const finish = async (work: () => Promise<void>) => {
+    if (done) return;
+    done = true;
+    try {
+      await work();
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  };
   return {
     pid: rows[0]!.pid,
-    async drop() {
-      if (done) return;
-      done = true;
-      try {
-        await client.query("COMMIT");
-      } finally {
-        client.release();
-      }
-    },
+    /** The payment commits inside C's own transaction, then C commits. */
+    commitPayment: (payment: PaymentRows, intentId: string) =>
+      finish(async () => {
+        const linkId = payment.intentBefore.payment_link_id;
+        await setColumns(
+          client,
+          "payment_intents",
+          intentId,
+          payment.intentBefore,
+          payment.intentAfter,
+        );
+        await setColumns(
+          client,
+          "payment_links",
+          linkId,
+          payment.linkBefore,
+          payment.linkAfter,
+        );
+        for (const row of payment.evidence)
+          await insertRow(client, "payment_evidence", row);
+        for (const row of payment.outbox)
+          await insertRow(client, "domain_event_outbox", row);
+      }),
+    /** Frees the lock without a payment (cleanup when the test fails early). */
+    abort: () => finish(async () => undefined),
   };
 }
 
@@ -112,24 +276,6 @@ async function waitUntilBlockedBy(pid: number, what: string, ms = 15_000) {
   throw new Error(
     `${what} never waited for the order lock (barrier not reached)`,
   );
-}
-
-/** Runs `work` and fails with a clear message when it is stuck behind the lock. */
-async function within<T>(ms: number, what: string, work: Promise<T>) {
-  let timer: NodeJS.Timeout | undefined;
-  try {
-    return await Promise.race([
-      work,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(`${what} did not finish within ${ms} ms`)),
-          ms,
-        );
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
 }
 
 // -------------------------------------------------------------- manager flow
@@ -243,31 +389,23 @@ async function expectPaidExactlyOnce(orderId: string, qr: IssuedQris) {
 // -------------------------------------------------------------------- tests
 
 describe("legend-zff37 release re-reads the payment under the order lock", () => {
-  it("legend-zff37 manual release: the webhook commits after the release's first look -> release is refused (409), tender stays, payment captured once, no refund", async () => {
+  it("legend-zff37 manual release: the payment commits after the release's first look -> release is refused (409), tender stays, payment captured once, no refund", async () => {
     const order = await newSubmittedOrder(fx, 0);
     const qr = await issueQris(fx, order.id);
     expect(qr.amountIdr).toBe(BILL_IDR);
     const paidAt = new Date(qr.expiresAt.getTime() - 30_000);
+    const payment = await recordThenUndoPayment(qr, paidAt);
     await backdateExpiry(qr, HOLD_RELEASE_AFTER_MIN + 1);
     const approval = await managerApproval(order.id);
 
     const lock = await lockOrderRow(order.id);
-    let releasing: ReturnType<typeof postRelease> extends PromiseLike<infer R>
-      ? Promise<R>
-      : never;
+    let releasing: Promise<Awaited<ReturnType<typeof postRelease>>>;
     try {
       releasing = (async () => postRelease(fx, order.id, approval))();
       await waitUntilBlockedBy(lock.pid, "the release");
-      // The provider payment commits now; the consumer is held back.
-      await within(
-        15_000,
-        "the webhook commit",
-        payNotice(fx, qr.intentId, BILL_IDR, paidAt, qr.providerRef!, {
-          deliveries: 0,
-        }),
-      );
+      await lock.commitPayment(payment, qr.intentId);
     } finally {
-      await lock.drop();
+      await lock.abort();
     }
     const released = await releasing;
 
@@ -293,10 +431,12 @@ describe("legend-zff37 release re-reads the payment under the order lock", () =>
     await expectPaidExactlyOnce(order.id, qr);
   });
 
-  it("legend-zff37 hold check job: a stale 'expired' answer while the webhook commits -> the job does not close the hold or void the tender; payment captured once", async () => {
+  it("legend-zff37 hold check job: a stale 'expired' answer while the payment commits -> the job does not close the hold or void the tender; payment captured once", async () => {
     const order = await newSubmittedOrder(fx, 0);
     const qr = await issueQris(fx, order.id);
     expect(qr.amountIdr).toBe(BILL_IDR);
+    const paidAt = new Date(qr.expiresAt.getTime() - 30_000);
+    const payment = await recordThenUndoPayment(qr, paidAt);
     const cancel = await postCancel(fx, order.id);
     expect(cancel.status, JSON.stringify(cancel.body)).toBe(202);
     // The provider answer is stale: it says expired although the money is in.
@@ -304,22 +444,15 @@ describe("legend-zff37 release re-reads the payment under the order lock", () =>
     const jobAt = new Date(
       qr.expiresAt.getTime() + (HOLD_CLOSE_MARGIN_S + 1) * 1000,
     );
-    const paidAt = new Date(qr.expiresAt.getTime() - 30_000);
 
     const lock = await lockOrderRow(order.id);
     let running: Promise<unknown>;
     try {
       running = (async () => runHoldCheck(fx, jobAt))();
       await waitUntilBlockedBy(lock.pid, "the hold check job");
-      await within(
-        15_000,
-        "the webhook commit",
-        payNotice(fx, qr.intentId, BILL_IDR, paidAt, qr.providerRef!, {
-          deliveries: 0,
-        }),
-      );
+      await lock.commitPayment(payment, qr.intentId);
     } finally {
-      await lock.drop();
+      await lock.abort();
     }
     await running;
 
