@@ -1203,6 +1203,31 @@ export const payrollPayoutProofHashes = pgTable(
   ],
 );
 
+/**
+ * Global (no tenant) list of contested proof hashes (legend-so897 review P2-1,
+ * migration 0640): a hash a `legacy_duplicate` binding found already held by
+ * another binding, in any tenant. No step of any operation over a contested
+ * hash goes on (409 PAYOUT_PROOF_REUSED), so an open operation that won the
+ * backfill cannot finish on a proof that already backed another PT's money.
+ * Same access as `payroll_payout_proof_hashes`: written only by the claim
+ * trigger, read only through `app.payout_proof_contested(shas)` (yes or no).
+ */
+export const payrollPayoutProofHashContests = pgTable(
+  "payroll_payout_proof_hash_contests",
+  {
+    sha256: varchar("sha256", { length: 64 }).primaryKey(),
+    contestedAt: timestamp("contested_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    check(
+      "payroll_payout_proof_hash_contests_sha_check",
+      sql`${table.sha256} ~ ${sql.raw(SHA256_FORMAT)}`,
+    ),
+  ],
+);
+
 // ------------------------------------------------------ proof backfill stuck
 
 export const PAYOUT_PROOF_STUCK_REASONS = [

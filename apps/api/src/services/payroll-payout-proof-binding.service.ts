@@ -20,7 +20,7 @@
 // (409 PAYOUT_PROOF_FINGERPRINT_PENDING) and nothing is written.
 
 import { createHash } from "node:crypto";
-import { and, eq, inArray, or } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 import type { TenantId, UserId } from "@starter/shared/core";
 import {
   payrollPayoutProofBindings,
@@ -102,6 +102,12 @@ export async function requireProofFingerprintRecord(
     } catch {
       throw fingerprintPending();
     }
+    // Same order as the backfill's completeKey: the hash locks (sorted) before
+    // the record's unique key, else the two can deadlock on a legacy key.
+    await lockProofFingerprints(tx, tenantId, [
+      storedSha,
+      ...(record ? [record.content] : []),
+    ]);
     await writeFileRecord(tx, tenantId, batchId, key, storedSha, now);
     record = await proofFingerprintRecord(tx, tenantId, key);
   }
@@ -136,6 +142,18 @@ function isProofClaimViolation(error: unknown): boolean {
   return false;
 }
 
+/** True when a legacy duplicate in any tenant contested one of these hashes (migration 0640; says nothing about the holder). */
+async function proofContested(
+  tx: Tx,
+  shas: readonly string[],
+): Promise<boolean> {
+  if (shas.length === 0) return false;
+  const result = await tx.execute<{ contested: boolean }>(
+    sql`SELECT app.payout_proof_contested(${`{${shas.join(",")}}`}::varchar[]) AS contested`,
+  );
+  return result.rows[0]?.contested === true;
+}
+
 export type ProofOperation = {
   readonly kind: PayoutProofBindingKind;
   readonly batchId: string;
@@ -157,7 +175,8 @@ export type BoundProof = ProofFingerprint & {
  * the proof's advisory locks itself (sorted), then holds the tenant while older
  * operations still lack a binding or a fingerprint (409 PENDING). Throws 409
  * PAYOUT_PROOF_REUSED when the proof backs any other operation, here or in
- * another tenant, or a historical duplicate.
+ * another tenant, or a historical duplicate, or a legacy duplicate contested
+ * its hashes in any tenant.
  */
 export async function bindProofToOperation(
   tx: Tx,
@@ -187,6 +206,10 @@ export async function bindProofToOperation(
   // binding, the checks below cannot see them, so a new operation waits.
   if ((await countFingerprintTargets(tx, tenantId)).total > 0)
     throw fingerprintsHeld();
+  // A legacy duplicate somewhere (any tenant) found these bytes already held:
+  // the proof backed two operations before the bindings, so no step of any
+  // operation over it goes on, the holder's own included (review P2-1).
+  if (await proofContested(tx, shas)) throw refuseProofReused();
 
   const itemSetHash = itemSetHashOf(op.itemIds);
   const held = await tx

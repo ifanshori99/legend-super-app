@@ -16,8 +16,8 @@
 //   closed) and is counted in the result for a human;
 // - fair (legend-so897): such a key is listed in the stuck table with a growing
 //   retry delay, so the next sweeps reach the keys behind it; finance sees the
-//   list as the exception kind `payout_proof_stuck`, and the log below names
-//   the stuck keys with their reasons;
+//   list as the exception kind `payout_proof_stuck`; the log below carries
+//   counts only, no keys;
 // - phase 2 then binds the operations from before the proof bindings (overpaid,
 //   return, correction), so one proof cannot back a second operation.
 
@@ -26,16 +26,15 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import type { ObjectStorage } from "@starter/shared/adapters";
+import { db } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
 import {
   backfillProofFingerprints,
   bindHistoricalOperations,
   type HistoricalBindingResult,
-  listStuckProofs,
   type ProofFingerprintBackfillResult,
 } from "../services/payroll-payout-proof-backfill.service.ts";
-
-/** Stuck proofs named in one log line; the rest are counted. */
-const LOGGED_STUCK_PROOFS = 10;
+import { countFingerprintTargets } from "../services/payroll-payout-proof-fingerprint.service.ts";
 
 export type PayoutEvidenceBackfillResult = ProofFingerprintBackfillResult & {
   /** Phase 2: historical operations bound this run. */
@@ -74,20 +73,17 @@ export async function runPayoutEvidenceBackfillSweep(
     now,
   );
   const binding = await bindHistoricalOperations(context, now);
-  const result = { ...fingerprints, binding };
+  // Phase 2 changed the operation keys without a binding: count them again.
+  const held = await withTenant(db, context, (tx) =>
+    countFingerprintTargets(tx, context.tenant.tenantId),
+  );
+  const result = { ...fingerprints, binding, held };
   // The tenant stays closed for returns with a new proof (CTO, legend-8vcsg).
-  // The log names the stuck keys and their reasons (rows of the stuck table);
-  // finance sees the same list as the exception kind payout_proof_stuck.
-  if (result.held.total > 0 || result.stuck > 0) {
-    const stuck = await listStuckProofs(context, LOGGED_STUCK_PROOFS);
-    const named = stuck
-      .map(
-        (row) => `${row.evidenceKey} (${row.reason}, attempts ${row.attempts})`,
-      )
-      .join("; ");
+  // The log carries counts only: the keys and their reasons are on the finance
+  // list (exception kind payout_proof_stuck), not in the log.
+  if (result.held.total > 0 || result.stuck > 0 || binding.failed > 0)
     console.error(
-      `Payout evidence backfill: returns with a new proof are held (claims without hash ${result.held.claimsWithoutHash}, proof records without stored hash ${result.held.filesWithoutStoredHash}, item proof keys without record ${result.held.itemKeysWithoutRecord}, operation proofs without binding ${result.held.opKeysWithoutBinding}; unreadable objects ${result.unreadable}, hash conflicts ${result.conflicts}, stuck ${result.stuck}${named ? `: ${named}` : ""})`,
+      `Payout evidence backfill: returns with a new proof are held (claims without hash ${result.held.claimsWithoutHash}, proof records without stored hash ${result.held.filesWithoutStoredHash}, item proof keys without record ${result.held.itemKeysWithoutRecord}, operation proofs without binding ${result.held.opKeysWithoutBinding}; unreadable objects ${result.unreadable}, hash conflicts ${result.conflicts}, stuck ${result.stuck}, bindings failed ${binding.failed})`,
     );
-  }
   return result;
 }

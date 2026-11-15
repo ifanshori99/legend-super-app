@@ -625,13 +625,29 @@ export async function bindHistoricalOperations(
             now,
             "listed",
           );
+        else await resolveStuck(tx, tenantId, operation.evidenceKey, now);
         return result;
       });
       bound += outcome === "bound" ? 1 : 0;
       legacyDuplicates += outcome === "legacy_duplicate" ? 1 : 0;
     } catch {
       // Left unbound (the tenant stays held); the next operations still run.
+      // The key is listed (retry mode: attempts and a growing delay) so finance
+      // sees it; a failing list write must not stop the other operations. The
+      // schema has no reason of its own for a failed binding, so it is listed
+      // as "unreadable": the proof could not be processed.
       failed += 1;
+      await withTenant(db, context, (tx) =>
+        markStuck(
+          tx,
+          tenantId,
+          operation.batchId,
+          operation.evidenceKey,
+          "unreadable",
+          now,
+          "retry",
+        ),
+      ).catch(() => undefined);
     }
   }
   return { operations: operations.length, bound, legacyDuplicates, failed };
@@ -698,6 +714,61 @@ async function unboundOperations(
         contentSha256: claim.content,
         storedSha256: claim.stored,
         createdBy: claim.createdBy,
+      });
+  // Item returns from before the claims (pre-0381): the item carries the proof
+  // key and no claim row exists. The items that share the key and batch are one
+  // operation; the proof record must have its stored hash (phase 1 done).
+  const legacyReturns = await tx
+    .select({
+      batchId: payrollDisbursementItems.batchId,
+      evidenceKey: sql<string>`${payrollDisbursementItems.returnEvidenceKey}`,
+      content: payrollPayoutEvidenceFiles.contentSha256,
+      stored: payrollPayoutEvidenceFiles.storedSha256,
+      createdBy: sql<string>`min(coalesce(${payrollDisbursementItems.returnedBy}, ${payrollDisbursementItems.returnedBy2}, 'legacy-backfill'))`,
+      itemIds: sql<string[]>`array_agg(${payrollDisbursementItems.id}::text)`,
+      firstAt: sql<Date>`min(${payrollDisbursementItems.createdAt})`,
+    })
+    .from(payrollDisbursementItems)
+    .innerJoin(
+      payrollPayoutEvidenceFiles,
+      and(
+        eq(
+          payrollPayoutEvidenceFiles.tenantId,
+          payrollDisbursementItems.tenantId,
+        ),
+        eq(
+          payrollPayoutEvidenceFiles.evidenceKey,
+          payrollDisbursementItems.returnEvidenceKey,
+        ),
+      ),
+    )
+    .where(
+      and(
+        eq(payrollDisbursementItems.tenantId, tenantId),
+        isNotNull(payrollDisbursementItems.returnEvidenceKey),
+        isNotNull(payrollPayoutEvidenceFiles.storedSha256),
+        sql`NOT EXISTS (SELECT 1 FROM payroll_payout_return_claims c WHERE c.tenant_id = ${payrollDisbursementItems.tenantId} AND c.evidence_key = ${payrollDisbursementItems.returnEvidenceKey})`,
+        unbound("payroll_disbursement_items", "return_evidence_key"),
+      ),
+    )
+    .groupBy(
+      payrollDisbursementItems.batchId,
+      payrollDisbursementItems.returnEvidenceKey,
+      payrollPayoutEvidenceFiles.contentSha256,
+      payrollPayoutEvidenceFiles.storedSha256,
+    )
+    .orderBy(sql`min(${payrollDisbursementItems.createdAt})`)
+    .limit(limit);
+  for (const group of legacyReturns)
+    if (group.stored !== null)
+      add({
+        kind: "return",
+        batchId: group.batchId,
+        itemSetHash: itemSetHashOf(group.itemIds),
+        evidenceKey: group.evidenceKey,
+        contentSha256: group.content,
+        storedSha256: group.stored,
+        createdBy: group.createdBy,
       });
   // Corrections: the first row of a request holds the proof and its hashes; the
   // items of the request are the rows that share its operation id.

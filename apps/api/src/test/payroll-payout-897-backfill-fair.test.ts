@@ -28,12 +28,13 @@
 //   what migration 0382 left behind: hashes NULL and no evidence_files record,
 //   written by the table owner with triggers off.
 import { createHash, randomUUID } from "node:crypto";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeObjectStorage } from "@starter/shared/adapters";
 import { NoopMalwareScanner } from "../services/core-image.ts";
 import { listFinanceExceptions } from "../services/accounting-finance-exceptions.service.ts";
 import { uploadPayoutEvidence } from "../services/payroll-payout-evidence-upload.service.ts";
 import { returnManualItems } from "../services/payroll-payout-manual.service.ts";
+import { bindHistoricalOperations } from "../services/payroll-payout-proof-backfill.service.ts";
 import { runPayoutEvidenceBackfillSweep } from "../worker/payout-evidence-backfill.job.ts";
 import { validPdfBytes } from "./helpers/pdf-fixtures.ts";
 import {
@@ -333,5 +334,124 @@ describe("897 the backfill is fair when the oldest proofs cannot be processed (F
     expect(kept, "the stuck row is kept").toHaveLength(1);
     expect(kept[0]!.resolved_at, "marked resolved").not.toBeNull();
     expect(await financeStuck()).not.toContain(key);
+  });
+});
+
+// ----------------------------------------- review-fix round (P2-2, P3-1, P3-3)
+
+const BINDINGS = "payroll_payout_proof_bindings";
+const bindingsOf = (key: string) =>
+  W.rowsOf(
+    `SELECT kind, legacy_duplicate FROM ${BINDINGS} WHERE tenant_id = $1 AND evidence_key = $2`,
+    [W.tenantId, key],
+  );
+const opKeysWithoutBinding = async () =>
+  Number(
+    (
+      await W.inTx(async (tx) => {
+        const { countFingerprintTargets } =
+          await import("../services/payroll-payout-proof-fingerprint.service.ts");
+        return countFingerprintTargets(tx, W.tenantId as never);
+      })
+    ).opKeysWithoutBinding,
+  );
+
+/**
+ * An item returned (or proposed) before claims existed (pre-0381): the item
+ * carries return_evidence_key, there is no claim row. Built as the table owner
+ * with triggers off. The returned undo resets it, so no later test is held.
+ */
+async function legacyItemReturn(batchId: string, itemId: string, key: string) {
+  usedKeys.push(key);
+  await W.asTenant(
+    (c) =>
+      c.query(
+        `UPDATE payroll_disbursement_items
+            SET return_evidence_key = $3, returned_by = 'legacy-897',
+                return_note = 'Dana kembali sebelum klaim'
+          WHERE tenant_id = $1 AND id = $2`,
+        [W.tenantId, itemId, key],
+      ),
+    true,
+  );
+  return async () => {
+    await W.asTenant(async (c) => {
+      await c.query(
+        `UPDATE payroll_disbursement_items
+            SET return_evidence_key = NULL, returned_by = NULL, return_note = NULL
+          WHERE tenant_id = $1 AND id = $2`,
+        [W.tenantId, itemId],
+      );
+      await c.query(
+        `DELETE FROM ${STUCK} WHERE tenant_id = $1 AND evidence_key = $2`,
+        [W.tenantId, key],
+      );
+    }, true);
+  };
+}
+
+describe("897 review fixes: phase 2 reaches every key the gate counts", () => {
+  it("[897-legacy-item-return-bound] an item return key from before claims (no claim row) is bound by phase 2, so the gate stops counting it", async () => {
+    const { batchId, siti } = await paidBatch();
+    const key = await uploadTo(batchId, await pdf("item-lama"));
+    const undo = await legacyItemReturn(batchId, idOf(siti), key);
+    try {
+      expect(await opKeysWithoutBinding(), "premise: the gate counts it").toBe(
+        1,
+      );
+      const first = await sweep();
+      await sweep();
+
+      expect(await bindingsOf(key), "bound as a return").toEqual([
+        expect.objectContaining({ kind: "return", legacy_duplicate: false }),
+      ]);
+      expect(await opKeysWithoutBinding()).toBe(0);
+      // P3-1: the result of this very run is already recounted.
+      expect(first.held.opKeysWithoutBinding).toBe(0);
+    } finally {
+      await undo();
+    }
+  });
+
+  it("[897-binder-throw-listed] a binder that throws writes a stuck row for the key (listed for finance, backed off), and a later good run binds it and resolves the row", async () => {
+    const { batchId, siti } = await paidBatch();
+    const key = await uploadTo(batchId, await pdf("binder-gagal"));
+    const undo = await legacyItemReturn(batchId, idOf(siti), key);
+    try {
+      const failed = await bindHistoricalOperations(W.scope(), new Date(), {
+        binder: async () => {
+          throw new Error("PAYOUT-35 guard mismatch");
+        },
+      });
+      expect(failed.failed).toBeGreaterThanOrEqual(1);
+      const stuck = await stuckRows([key]);
+      expect(stuck, "the failing key is listed").toHaveLength(1);
+      expect(Number(stuck[0]!.attempts)).toBeGreaterThanOrEqual(1);
+      expect(await financeStuck()).toContain(key);
+      expect(await bindingsOf(key)).toHaveLength(0);
+
+      await bindHistoricalOperations(W.scope(), new Date());
+      expect(await bindingsOf(key)).toHaveLength(1);
+      expect(await stuckRows([key]), "resolved once bound").toHaveLength(0);
+    } finally {
+      await undo();
+    }
+  });
+
+  it("[897-log-no-keys] the job log carries counts only: a stuck key is not named in it (it stays on the finance list)", async () => {
+    const { batchId } = await paidBatch();
+    const key = missingKey(batchId, "log");
+    await insertLegacyClaims(batchId, [key], 1_000);
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await sweep();
+      const logged = spy.mock.calls.map((call) => call.join(" ")).join("\n");
+      expect(logged, "the held line is still written").toContain("stuck 1");
+      expect(logged).not.toContain(key);
+      expect(logged).not.toContain(W.tenantId);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await financeStuck()).toContain(key);
   });
 });

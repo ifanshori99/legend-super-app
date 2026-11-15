@@ -2689,6 +2689,13 @@
       "when": 1795000000639,
       "tag": "0639_payout_posting_fee_idr",
       "breakpoints": true
+    },
+    {
+      "idx": 398,
+      "version": "7",
+      "when": 1795000000640,
+      "tag": "0640_payout_proof_hash_contests",
+      "breakpoints": true
     }
   ]
 }

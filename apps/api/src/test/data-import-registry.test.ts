@@ -239,6 +239,8 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
   // legend-so897 (897)
   "0637_payout_proof_bindings.sql":
     "trigger body only: the SECURITY DEFINER AFTER INSERT trigger on payroll_payout_proof_bindings copies the new binding's own proof hashes into the global payroll_payout_proof_hashes (ON CONFLICT DO NOTHING; a hash held by another binding refuses the binding); no backfill, no existing row edited, no amount touched",
+  "0640_payout_proof_hash_contests.sql":
+    "trigger body only: the 0637 claim trigger, re-created, also records in the global payroll_payout_proof_hash_contests each hash a new legacy_duplicate binding finds already held (ON CONFLICT DO NOTHING); no backfill, no existing row edited, no amount touched",
 };
 
 // Entrypoints that open a database pool but import no data.
