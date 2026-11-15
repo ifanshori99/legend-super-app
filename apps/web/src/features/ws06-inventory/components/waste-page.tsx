@@ -33,6 +33,7 @@ import {
   WASTE_REASONS,
 } from "../opname-lib";
 import { WasteFormDialog } from "./waste-form-dialog";
+import { StoragePhoto } from "./photo-field";
 import { useTenantContext } from "@/lib/tenant-context";
 
 const ALL = "all";
@@ -239,6 +240,12 @@ function WasteContent({ canRecord }: { canRecord: boolean }) {
                       <span className="min-w-0 truncate">{log.note}</span>
                     )}
                   </div>
+                  {log.mediaId && (
+                    <StoragePhoto
+                      mediaId={log.mediaId}
+                      className="size-24 rounded-field border object-cover"
+                    />
+                  )}
                 </li>
               );
             })}

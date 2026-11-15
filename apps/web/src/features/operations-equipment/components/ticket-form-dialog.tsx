@@ -2,10 +2,10 @@
 // vendor and estimated cost, plus the OPS-04 switch that marks the equipment
 // broken and disables its mapped menu items.
 //
-// The photo is a local preview only: the contract wants media ids, and the
-// real media-upload endpoint is not part of this bead. The mock mints a media
-// id for the selected file; wiring the upload is a reported follow-up.
+// The photo is uploaded to private storage as soon as it is picked; the ticket
+// sends the object id the upload returns, and submit waits for the upload.
 import * as React from "react";
+import { outletIdSchema } from "@starter/shared/core";
 import {
   createMaintenanceTicketInputSchema,
   type Equipment,
@@ -28,7 +28,6 @@ import {
 import { FormField } from "@/components/ui/form-field";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { MediaPlate } from "@/components/ui/media-plate";
 import {
   Select,
   SelectContent,
@@ -38,7 +37,11 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
-import { newIdempotencyKey } from "@/lib/idempotency";
+import { normalizeImageFile, uploadStorageFile } from "@/features/storage/api";
+import {
+  PhotoField,
+  photoUploadErrorKey,
+} from "@/features/ws06-inventory/components/photo-field";
 import { URGENCY_KEYS, toWholeRupiah } from "../lib.ts";
 import { useAttemptKey, useCreateTicket } from "../hooks.ts";
 
@@ -78,8 +81,15 @@ export function TicketFormDialog({
   const [cost, setCost] = React.useState("");
   const [marksBroken, setMarksBroken] = React.useState(true);
   const [file, setFile] = React.useState<File | null>(null);
-  const [previewUrl, setPreviewUrl] = React.useState<string | null>(null);
+  const [mediaId, setMediaId] = React.useState<string | null>(null);
+  const [isUploading, setIsUploading] = React.useState(false);
+  const [photoError, setPhotoError] = React.useState<string | undefined>();
+  const [photoMissing, setPhotoMissing] = React.useState(false);
+  const photoButton = React.useRef<HTMLButtonElement>(null);
   const [error, setError] = React.useState<string | null>(null);
+  const uploadController = React.useRef<AbortController | null>(null);
+
+  React.useEffect(() => () => uploadController.current?.abort(), []);
 
   React.useEffect(() => {
     if (!open) return;
@@ -92,24 +102,56 @@ export function TicketFormDialog({
     setVendorId("none");
     setCost("");
     setMarksBroken(true);
+    uploadController.current?.abort();
+    uploadController.current = null;
     setFile(null);
+    setMediaId(null);
+    setIsUploading(false);
+    setPhotoError(undefined);
+    setPhotoMissing(false);
     setError(null);
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [open, defaultEquipmentId, equipmentOptions]);
 
-  React.useEffect(() => {
-    // The preview URL is an external resource owned by the file input: create
-    // it when the file changes and revoke it on cleanup.
-    /* eslint-disable react-hooks/set-state-in-effect */
-    if (!file) {
-      setPreviewUrl(null);
-      return;
+  async function pickPhoto(next: File) {
+    uploadController.current?.abort();
+    const controller = new AbortController();
+    uploadController.current = controller;
+    setFile(next);
+    setMediaId(null);
+    setPhotoError(undefined);
+    setPhotoMissing(false);
+    setError(null);
+    setIsUploading(true);
+    try {
+      const uploaded = await uploadStorageFile({
+        purpose: "receipt",
+        sourceKind: "maintenance_ticket",
+        outletId: outletIdSchema.parse(outletId),
+        file: await normalizeImageFile(next),
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
+      setMediaId(uploaded.id);
+    } catch (caught) {
+      if (controller.signal.aborted) return;
+      setPhotoError(t(photoUploadErrorKey(caught)));
+    } finally {
+      if (uploadController.current === controller) {
+        uploadController.current = null;
+        setIsUploading(false);
+      }
     }
-    const url = URL.createObjectURL(file);
-    setPreviewUrl(url);
-    /* eslint-enable react-hooks/set-state-in-effect */
-    return () => URL.revokeObjectURL(url);
-  }, [file]);
+  }
+
+  function clearPhoto() {
+    uploadController.current?.abort();
+    uploadController.current = null;
+    setFile(null);
+    setMediaId(null);
+    setIsUploading(false);
+    setPhotoError(undefined);
+  }
 
   const selectedEquipment =
     equipmentOptions.find((row) => row.id === equipmentId) ?? null;
@@ -122,8 +164,12 @@ export function TicketFormDialog({
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setError(null);
-    if (!file) {
-      setError(t("opsEquipment.equipment.ticketForm.photoMissing"));
+    if (isUploading) return;
+    if (!file || !mediaId) {
+      // The error sits next to the photo field: a failed upload already shows
+      // its own message there, a missing photo gets the "attach" one.
+      if (!photoError) setPhotoMissing(true);
+      photoButton.current?.focus();
       return;
     }
     const costIdr = toWholeRupiah(cost);
@@ -142,10 +188,8 @@ export function TicketFormDialog({
     };
     const parsed = createMaintenanceTicketInputSchema.safeParse({
       ...payload,
-      // Mock-only media id: a real flow uploads the photo first and sends the
-      // media id the upload endpoint returns (follow-up).
-      mediaIds: [newIdempotencyKey()],
-      idempotencyKey: attempt.keyFor(payload),
+      mediaIds: [mediaId],
+      idempotencyKey: attempt.keyFor({ ...payload, mediaIds: [mediaId] }),
     });
     if (!parsed.success) {
       setError(t("opsEquipment.equipment.ticketForm.invalid"));
@@ -238,34 +282,25 @@ export function TicketFormDialog({
               rows={3}
             />
           </FormField>
-          <FormField
+          <PhotoField
             label={t("opsEquipment.equipment.ticketForm.photo")}
             hint={t("opsEquipment.equipment.ticketForm.photoHint")}
+            mediaId={mediaId}
+            isUploading={isUploading}
+            disabled={create.isPending}
+            error={
+              photoError ??
+              (photoMissing
+                ? t("opsEquipment.equipment.ticketForm.photoMissing")
+                : undefined)
+            }
             required
-          >
-            <Input
-              type="file"
-              accept="image/*"
-              onChange={(event) => setFile(event.target.files?.[0] ?? null)}
-            />
-          </FormField>
-          {file && (
-            <div className="grid gap-2" data-slot="ticket-photo-preview">
-              <MediaPlate
-                src={previewUrl}
-                alt={t("opsEquipment.equipment.ticketForm.photoAlt", {
-                  name: file.name,
-                })}
-                ratio="card"
-                className="max-w-48"
-              />
-              <p className="text-sm text-muted-foreground">
-                {t("opsEquipment.equipment.ticketForm.photoSelected", {
-                  name: file.name,
-                })}
-              </p>
-            </div>
-          )}
+            capture="environment"
+            chooseRef={photoButton}
+            onSelect={(next) => void pickPhoto(next)}
+            onClear={clearPhoto}
+            onRetry={file ? () => void pickPhoto(file) : undefined}
+          />
           <div className="grid gap-4 sm:grid-cols-2">
             <FormField label={t("opsEquipment.equipment.ticketForm.vendor")}>
               <Select value={vendorId} onValueChange={setVendorId}>
@@ -361,7 +396,11 @@ export function TicketFormDialog({
             </p>
           )}
           <DialogFooter>
-            <Button type="submit" loading={create.isPending}>
+            <Button
+              type="submit"
+              loading={create.isPending}
+              disabled={isUploading}
+            >
               {t("opsEquipment.equipment.ticketForm.save")}
             </Button>
             <Button

@@ -448,6 +448,17 @@ const schema = z
     CLAMD_TIMEOUT_MS: blankToUndefined(
       z.coerce.number().int().min(1000).max(60_000).default(15_000),
     ),
+    // Scan concurrency caps (legend-1rtm1): beyond them uploads wait in a small
+    // queue, then are refused with 503 SCANNER_OVERLOADED.
+    CLAMD_MAX_CONCURRENT: blankToUndefined(
+      z.coerce.number().int().min(1).max(64).default(4),
+    ),
+    CLAMD_MAX_PER_TENANT: blankToUndefined(
+      z.coerce.number().int().min(1).max(32).default(2),
+    ),
+    CLAMD_MAX_QUEUED: blankToUndefined(
+      z.coerce.number().int().min(0).max(256).default(8),
+    ),
     // Google sign-in for customers (legend-k2l, AUTH-05). Both or neither: with
     // neither set Google sign-in is OFF (no provider is registered in
     // lib/auth.ts); one without the other refuses to boot (below).

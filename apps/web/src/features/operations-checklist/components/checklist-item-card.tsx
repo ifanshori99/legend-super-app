@@ -5,7 +5,7 @@
 // safest reading and is stated in the report). Finished items are read-only:
 // changing an answer needs an API rule that does not exist yet.
 import * as React from "react";
-import { AlertTriangle, Camera, Check, PenLine, Trash2 } from "lucide-react";
+import { AlertTriangle, Camera, Check, PenLine } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Badge, StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -20,12 +20,14 @@ import {
 import { FormField } from "@/components/ui/form-field";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import type { OutletId } from "@starter/shared/core";
 import type { MessageKey } from "@starter/shared/i18n";
 import type {
   ChecklistItem,
   ChecklistItemResult,
 } from "@starter/shared/operations";
-import { newIdempotencyKey } from "@/lib/idempotency";
+import { normalizeImageFile, uploadStorageFile } from "@/features/storage/api";
+import { ApiError } from "@/lib/api/errors";
 import { useOnline } from "@/lib/use-online";
 import {
   evidenceSummary,
@@ -35,7 +37,23 @@ import {
 } from "../logic.ts";
 import { useRecordChecklistItemResult } from "../hooks.ts";
 import type { ChecklistAnswerQueueView } from "../use-answer-queue.ts";
-import { SignatureField } from "./signature-field.tsx";
+import {
+  PhotoField,
+  photoUploadErrorKey,
+} from "../../ws06-inventory/components/photo-field.tsx";
+import { SignatureField, type SignatureHandle } from "./signature-field.tsx";
+
+function signatureUploadErrorKey(error: unknown): MessageKey {
+  if (error instanceof ApiError) {
+    if (error.status === 0)
+      return "opsChecklist.run.item.signatureUploadOffline";
+    if (error.status === 503)
+      return "opsChecklist.run.item.signatureUploadUnavailable";
+  }
+  if (error instanceof TypeError)
+    return "opsChecklist.run.item.signatureUploadOffline";
+  return "opsChecklist.run.item.signatureUploadFailed";
+}
 
 type FieldErrors = {
   photo?: string;
@@ -46,6 +64,7 @@ type FieldErrors = {
 
 export function ChecklistItemCard({
   runId,
+  outletId,
   item,
   result,
   editable,
@@ -53,6 +72,7 @@ export function ChecklistItemCard({
   answerQueue,
 }: {
   runId: string;
+  outletId: OutletId;
   item: ChecklistItem;
   result: ChecklistItemResult | undefined;
   /** True only while the run is in progress (the machine's write window). */
@@ -64,17 +84,26 @@ export function ChecklistItemCard({
   const record = useRecordChecklistItemResult(runId);
   const online = useOnline();
   const headingId = React.useId();
-  const fileInput = React.useRef<HTMLInputElement>(null);
+  const signatureHandle = React.useRef<SignatureHandle>(null);
+  const photoController = React.useRef<AbortController | null>(null);
+  const signatureController = React.useRef<AbortController | null>(null);
+  // The uploaded signature is reused by a retry while the drawing is unchanged.
+  const signatureUpload = React.useRef<{
+    revision: string;
+    mediaId: string;
+  } | null>(null);
 
   const [numberValue, setNumberValue] = React.useState("");
   const [note, setNote] = React.useState("");
   const [signerName, setSignerName] = React.useState("");
   const [hasInk, setHasInk] = React.useState(false);
-  const [photo, setPhoto] = React.useState<{
-    mediaId: string;
-    url: string;
-    name: string;
-  } | null>(null);
+  const [photo, setPhoto] = React.useState<File | null>(null);
+  const [photoMediaId, setPhotoMediaId] = React.useState<string | null>(null);
+  const [photoUploading, setPhotoUploading] = React.useState(false);
+  const [signatureUploading, setSignatureUploading] = React.useState(false);
+  const [signatureRetry, setSignatureRetry] = React.useState<
+    "done" | "failed" | null
+  >(null);
   const [errors, setErrors] = React.useState<FieldErrors>({});
   const [saveErrorKey, setSaveErrorKey] = React.useState<MessageKey | null>(
     null,
@@ -89,11 +118,14 @@ export function ChecklistItemCard({
   const [discarding, setDiscarding] = React.useState(false);
   const [discardError, setDiscardError] = React.useState<string | null>(null);
 
-  // Local preview only: a mock media id stands in until upload wiring lands.
-  React.useEffect(() => {
-    if (!photo) return;
-    return () => URL.revokeObjectURL(photo.url);
-  }, [photo]);
+  // Leaving the screen cancels any upload still in flight.
+  React.useEffect(
+    () => () => {
+      photoController.current?.abort();
+      signatureController.current?.abort();
+    },
+    [],
+  );
 
   const requiresPhoto = item.requiredEvidence.includes("photo");
   const requiresNumber = item.requiredEvidence.includes("number");
@@ -123,23 +155,113 @@ export function ChecklistItemCard({
     }
   }
 
-  function handleFile(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    setPhoto({
-      mediaId: newIdempotencyKey(),
-      url: URL.createObjectURL(file),
-      name: file.name,
-    });
+  async function pickPhoto(file: File) {
+    photoController.current?.abort();
+    const controller = new AbortController();
+    photoController.current = controller;
+    setPhoto(file);
+    setPhotoMediaId(null);
+    setPhotoUploading(true);
     setErrors((current) => ({ ...current, photo: undefined }));
-    // Allow re-picking the same file.
-    event.target.value = "";
+    try {
+      const uploaded = await uploadStorageFile({
+        purpose: "receipt",
+        sourceKind: "checklist_evidence",
+        outletId,
+        file: await normalizeImageFile(file),
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
+      setPhotoMediaId(uploaded.id);
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      setErrors((current) => ({
+        ...current,
+        photo: t(photoUploadErrorKey(error)),
+      }));
+    } finally {
+      if (photoController.current === controller) {
+        photoController.current = null;
+        setPhotoUploading(false);
+      }
+    }
   }
 
-  function save(status: "done" | "failed") {
+  function clearPhoto() {
+    photoController.current?.abort();
+    photoController.current = null;
+    setPhoto(null);
+    setPhotoMediaId(null);
+    setPhotoUploading(false);
+    setErrors((current) => ({ ...current, photo: undefined }));
+  }
+
+  // Uploads the drawn signature as a PNG and returns the API's object id, or
+  // null after showing why it failed (the user retries with the same buttons).
+  async function uploadSignature(
+    status: "done" | "failed",
+  ): Promise<string | null> {
+    const handle = signatureHandle.current;
+    if (!handle) return null;
+    const revision = handle.revision();
+    const cached = signatureUpload.current;
+    if (cached && cached.revision === revision) return cached.mediaId;
+    signatureController.current?.abort();
+    const controller = new AbortController();
+    signatureController.current = controller;
+    setSignatureUploading(true);
+    try {
+      const blob = await handle.exportPng();
+      if (blob === null) {
+        setErrors((current) => ({
+          ...current,
+          signature: t("opsChecklist.run.item.evidenceMissing"),
+        }));
+        return null;
+      }
+      const uploaded = await uploadStorageFile({
+        purpose: "receipt",
+        sourceKind: "checklist_evidence",
+        outletId,
+        file: blob,
+        filename: "tanda-tangan.png",
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return null;
+      // The pad is locked while uploading; if the drawing or name changed
+      // anyway, this image is stale and must not be recorded or cached.
+      if (handle.revision() !== revision) {
+        setErrors((current) => ({
+          ...current,
+          signature: t("opsChecklist.run.item.signatureChanged"),
+        }));
+        setSignatureRetry(status);
+        return null;
+      }
+      signatureUpload.current = { revision, mediaId: uploaded.id };
+      return uploaded.id;
+    } catch (error) {
+      if (controller.signal.aborted) return null;
+      setErrors((current) => ({
+        ...current,
+        signature: t(signatureUploadErrorKey(error)),
+      }));
+      setSignatureRetry(status);
+      return null;
+    } finally {
+      if (signatureController.current === controller) {
+        signatureController.current = null;
+        setSignatureUploading(false);
+      }
+    }
+  }
+
+  async function save(status: "done" | "failed") {
+    if (photoUploading || signatureUploading) return;
     const nextErrors: FieldErrors = {};
-    if (requiresPhoto && photo === null)
-      nextErrors.photo = t("opsChecklist.run.item.evidenceMissing");
+    if (requiresPhoto && photoMediaId === null)
+      nextErrors.photo =
+        errors.photo ?? t("opsChecklist.run.item.evidenceMissing");
     const normalizedNumber = normalizeDecimalInput(numberValue);
     if (requiresNumber) {
       if (numberValue.trim() === "")
@@ -154,6 +276,7 @@ export function ChecklistItemCard({
     setErrors(nextErrors);
     setSaveErrorKey(null);
     setQueueSaveError(null);
+    setSignatureRetry(null);
     if (
       Object.values(nextErrors).some(Boolean) ||
       (!online && (requiresMedia || !answerQueue?.ready))
@@ -181,17 +304,22 @@ export function ChecklistItemCard({
         .finally(() => setPendingStatus(null));
       return;
     }
+    let signatureMediaId: string | null = null;
+    if (requiresSignature) {
+      signatureMediaId = await uploadSignature(status);
+      if (signatureMediaId === null) {
+        setPendingStatus(null);
+        return;
+      }
+    }
     record.mutate(
       {
         itemId: item.id,
         status,
         numberValue: requiresNumber ? normalizedNumber : null,
         note: note.trim() === "" ? null : note.trim(),
-        photoMediaIds: photo === null ? [] : [photo.mediaId],
-        signatureMediaId:
-          requiresSignature && (hasInk || signerName.trim() !== "")
-            ? newIdempotencyKey()
-            : null,
+        photoMediaIds: photoMediaId === null ? [] : [photoMediaId],
+        signatureMediaId,
       },
       {
         onSuccess: () => {
@@ -379,65 +507,19 @@ export function ChecklistItemCard({
       ) : conflicts.length > 0 ? null : editable ? (
         <div className="grid gap-3" data-slot="checklist-item-evidence">
           {requiresPhoto && (
-            <div className="grid gap-1.5">
-              <input
-                ref={fileInput}
-                type="file"
-                accept="image/*"
-                className="sr-only"
-                tabIndex={-1}
-                aria-hidden="true"
-                data-slot="checklist-photo-input"
-                onChange={handleFile}
-              />
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => fileInput.current?.click()}
-                >
-                  <Camera aria-hidden="true" />
-                  {photo
-                    ? t("opsChecklist.run.item.photoReplace")
-                    : t("opsChecklist.run.item.photoAction")}
-                </Button>
-                {photo && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setPhoto(null)}
-                  >
-                    <Trash2 aria-hidden="true" />
-                    {t("opsChecklist.run.item.photoRemove")}
-                  </Button>
-                )}
-              </div>
-              {photo && (
-                <div className="grid gap-1">
-                  <img
-                    src={photo.url}
-                    alt={t("opsChecklist.run.item.photoPreviewAlt", {
-                      label: item.label,
-                    })}
-                    data-slot="checklist-photo-preview"
-                    className="max-h-48 w-full rounded-media border-(length:--border-w) border-border object-cover"
-                  />
-                  <p className="text-sm leading-5 text-muted-foreground">
-                    {t("opsChecklist.run.item.photoMockNote")}
-                  </p>
-                </div>
-              )}
-              {errors.photo && (
-                <p
-                  role="alert"
-                  className="text-sm leading-5 font-medium text-danger"
-                >
-                  {errors.photo}
-                </p>
-              )}
-            </div>
+            <PhotoField
+              label={t("opsChecklist.run.evidence.photo")}
+              capture="environment"
+              contextLabel={item.label}
+              hint={t("opsChecklist.run.item.photoHint")}
+              mediaId={photoMediaId}
+              isUploading={photoUploading}
+              disabled={pendingStatus !== null}
+              error={errors.photo}
+              onSelect={(file) => void pickPhoto(file)}
+              onClear={clearPhoto}
+              onRetry={photo ? () => void pickPhoto(photo) : undefined}
+            />
           )}
 
           {requiresNumber && (
@@ -459,19 +541,41 @@ export function ChecklistItemCard({
           )}
 
           {requiresSignature && (
-            <div className="grid gap-1.5">
+            <div
+              className="grid gap-1.5"
+              aria-busy={signatureUploading}
+              data-slot="checklist-signature-upload"
+            >
               <SignatureField
+                handleRef={signatureHandle}
                 hasInk={hasInk}
-                onInkChange={setHasInk}
-                signerName={signerName}
-                onSignerNameChange={(value) => {
-                  setSignerName(value);
+                disabled={signatureUploading || pendingStatus !== null}
+                onInkChange={(value) => {
+                  setHasInk(value);
                   setErrors((current) => ({
                     ...current,
                     signature: undefined,
                   }));
+                  setSignatureRetry(null);
+                }}
+                signerName={signerName}
+                onSignerNameChange={(name) => {
+                  setSignerName(name);
+                  setErrors((current) => ({
+                    ...current,
+                    signature: undefined,
+                  }));
+                  setSignatureRetry(null);
                 }}
               />
+              {signatureUploading && (
+                <p
+                  role="status"
+                  className="text-sm leading-5 text-muted-foreground"
+                >
+                  {t("opsChecklist.run.item.signatureUploading")}
+                </p>
+              )}
               {errors.signature && (
                 <p
                   role="alert"
@@ -479,6 +583,18 @@ export function ChecklistItemCard({
                 >
                   {errors.signature}
                 </p>
+              )}
+              {errors.signature && signatureRetry && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="justify-self-start"
+                  disabled={pendingStatus !== null || signatureUploading}
+                  onClick={() => void save(signatureRetry)}
+                >
+                  {t("common.retry")}
+                </Button>
               )}
             </div>
           )}
@@ -529,9 +645,11 @@ export function ChecklistItemCard({
               loading={pendingStatus === "done"}
               disabled={
                 pendingStatus !== null ||
+                photoUploading ||
+                signatureUploading ||
                 (requiresMedia ? !online : !answerQueue?.ready && !online)
               }
-              onClick={() => save("done")}
+              onClick={() => void save("done")}
             >
               <Check aria-hidden="true" />
               {t("opsChecklist.run.item.done")}
@@ -543,9 +661,11 @@ export function ChecklistItemCard({
               loading={pendingStatus === "failed"}
               disabled={
                 pendingStatus !== null ||
+                photoUploading ||
+                signatureUploading ||
                 (requiresMedia ? !online : !answerQueue?.ready && !online)
               }
-              onClick={() => save("failed")}
+              onClick={() => void save("failed")}
             >
               <AlertTriangle aria-hidden="true" />
               {t("opsChecklist.run.item.failed")}

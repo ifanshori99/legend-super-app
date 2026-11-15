@@ -24,6 +24,7 @@ import { coreStorageObjects } from "../db/schema/core-storage";
 import { withTenant } from "../db/tenant";
 import {
   processImage,
+  withScanTenant,
   scanUploadBytes,
   type MalwareScanner,
 } from "./core-image";
@@ -94,12 +95,17 @@ export async function uploadStorage(
       kind: "pdf",
       scanner: deps.scanner,
       maxBytes: policy.maxBytes,
+      tenantKey: context.tenant.tenantId,
     });
     logger.info({ pageCount }, "storage pdf checked");
     contentType = "application/pdf";
     full = bytes;
   } else {
-    const image = await processImage(bytes, policy.maxBytes, deps.scanner);
+    const image = await processImage(
+      bytes,
+      policy.maxBytes,
+      withScanTenant(deps.scanner, context.tenant.tenantId),
+    );
     full = image.full.bytes;
     thumbnail = image.thumbnail.bytes;
     contentType = image.full.contentType;

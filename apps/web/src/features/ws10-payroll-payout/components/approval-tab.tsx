@@ -61,7 +61,12 @@ export function ApprovalTab(props: ApprovalTabProps) {
       />
     );
   }
-  return <ApprovalBatch {...props} batchId={props.batchId} />;
+  // One mount per batch: the check, the step-up panel and a verification
+  // still running belong to the batch they were made for and must not follow
+  // the person to another one (legend-uzd4t).
+  return (
+    <ApprovalBatch key={props.batchId} {...props} batchId={props.batchId} />
+  );
 }
 
 function ApprovalSkeleton() {
@@ -118,22 +123,42 @@ function ApprovalBatch({
   const sourceId = manualBank
     ? (frozenSourceId ?? config?.manualSourceBankAccountId ?? null)
     : null;
-  // The account the person confirmed when ticking the check. Only this id is
-  // ever sent, also on the retry after step-up (MFA).
-  const confirmedSourceRef = React.useRef<string | null | undefined>(undefined);
+  // What the person confirmed when ticking the check: this batch, its content
+  // and the source account on screen. Only this tuple is ever sent, also on the
+  // retry after step-up (MFA); any change of the three asks for a new check.
+  const contentHash = query.data?.contentHash ?? null;
+  const confirmedRef = React.useRef<
+    | { batchId: string; contentHash: string | null; sourceId: string | null }
+    | undefined
+  >(undefined);
   const resetStepUp = stepUp.reset;
   React.useEffect(() => {
-    const confirmed = confirmedSourceRef.current;
-    if (confirmed === undefined || confirmed === sourceId) return;
-    // The account on screen moved after it was confirmed: ask for a new check.
-    confirmedSourceRef.current = undefined;
+    const confirmed = confirmedRef.current;
+    if (
+      confirmed === undefined ||
+      (confirmed.batchId === batchId &&
+        confirmed.contentHash === contentHash &&
+        confirmed.sourceId === sourceId)
+    )
+      return;
+    // What is on screen moved after it was confirmed: ask for a new check.
+    const sourceMoved = confirmed.sourceId !== sourceId;
+    confirmedRef.current = undefined;
     setChecked(false);
     resetStepUp();
-    setError(t("payrollPayoutReview.approval.sourceChanged"));
+    setError(
+      t(
+        sourceMoved
+          ? "payrollPayoutReview.approval.sourceChanged"
+          : "payrollPayoutReview.approval.contentChanged",
+      ),
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sourceId]);
+  }, [batchId, contentHash, sourceId]);
   const onCheckedChange = (value: boolean) => {
-    confirmedSourceRef.current = value ? sourceId : undefined;
+    confirmedRef.current = value
+      ? { batchId, contentHash, sourceId }
+      : undefined;
     setChecked(value);
   };
 
@@ -209,20 +234,32 @@ function ApprovalBatch({
       setError(t("payrollPayoutReview.approval.blocked.sourceUnknown"));
       return;
     }
-    // Only the account the person confirmed, never the one on screen now.
-    const confirmedSourceId = confirmedSourceRef.current;
-    if (confirmedSourceId === undefined) return;
+    // Only what the person confirmed, and only while the screen still shows it
+    // (a retry captured before the screen moved must not go out).
+    const confirmed = confirmedRef.current;
+    if (confirmed === undefined) return;
+    if (
+      confirmed.batchId !== batch.id ||
+      confirmed.contentHash !== batch.contentHash ||
+      confirmed.sourceId !== sourceId
+    ) {
+      confirmedRef.current = undefined;
+      setChecked(false);
+      stepUp.reset();
+      setError(t("payrollPayoutReview.approval.contentChanged"));
+      return;
+    }
     setError(null);
     approve.mutate(
       {
-        batchId: batch.id,
+        batchId: confirmed.batchId,
         contentHash: batch.contentHash,
-        sourceBankAccountId: confirmedSourceId,
+        sourceBankAccountId: confirmed.sourceId,
       },
       {
         onSuccess: () => {
           stepUp.reset();
-          confirmedSourceRef.current = undefined;
+          confirmedRef.current = undefined;
           setChecked(false);
           toast({
             title: t("payrollPayoutReview.approval.success"),
@@ -233,11 +270,14 @@ function ApprovalBatch({
           if (stepUp.capture(failure)) return;
           if (
             failure instanceof ApiError &&
-            failure.code === "PAYOUT_SOURCE_MISMATCH"
+            (failure.code === "PAYOUT_SOURCE_MISMATCH" ||
+              failure.code === "PAYOUT_HASH_MISMATCH")
           ) {
-            // The settings moved: read them again and ask for a new check.
+            // The settings or the batch moved: read them again and ask for a
+            // new check. Keeping the old confirmation would resend the same
+            // stale value forever.
             stepUp.reset();
-            confirmedSourceRef.current = undefined;
+            confirmedRef.current = undefined;
             setChecked(false);
             void configQuery.refetch();
             void query.refetch();

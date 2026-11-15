@@ -530,8 +530,16 @@ async function presentRequest(
   signer: HrisFileSigner,
   now: Date,
 ): Promise<LeaveRequest> {
+  // The requester needs a live self.leave.request grant at the leave's
+  // outlet (same rule as the storage read route, legend-9ujp5); otherwise an
+  // approver at that outlet. The row itself stays visible either way.
   const canOpenAttachment =
-    (access.own !== null && lower(access.own.id) === lower(row.employeeId)) ||
+    (access.own !== null &&
+      lower(access.own.id) === lower(row.employeeId) &&
+      access.snapshot.allows("self.leave.request", {
+        type: "outlet",
+        id: row.outletId,
+      })) ||
     access.snapshot.allows("hr.leave.approve", {
       type: "outlet",
       id: row.outletId,
@@ -792,9 +800,14 @@ export async function createLeaveRequest(
   // is opened under (approval rows are outlet-owned).
   const home = await withTenant(db, context, async (tx) => {
     const access = await loadHrisAccess(tx, context, actorUserId, now);
+    // A live self.leave.request grant at the leave's own (home) outlet, the
+    // same rule presentRequest and the storage read route use (legend-bkd76).
     if (
       access.own === null ||
-      !access.snapshot.permissions.includes("self.leave.request")
+      !access.snapshot.allows("self.leave.request", {
+        type: "outlet",
+        id: access.own.homeOutletId,
+      })
     )
       throw forbidden();
     return access.own.homeOutletId;
@@ -807,7 +820,10 @@ export async function createLeaveRequest(
     if (
       own === null ||
       lower(own.homeOutletId) !== lower(home) ||
-      !access.snapshot.permissions.includes("self.leave.request")
+      !access.snapshot.allows("self.leave.request", {
+        type: "outlet",
+        id: home,
+      })
     )
       throw forbidden();
     const tenantId = scoped.tenant.tenantId;

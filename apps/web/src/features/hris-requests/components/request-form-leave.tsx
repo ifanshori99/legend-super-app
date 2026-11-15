@@ -18,7 +18,9 @@ import {
   useLeaveBalances,
   useLeaveTypes,
 } from "@/features/hris-requests/hooks";
-import { uploadLeaveFile } from "../leave-upload.ts";
+import { isLeavePdf, uploadLeaveFile } from "../leave-upload.ts";
+import { useStorageCapabilities } from "@/features/hris-requests/storage-capabilities/hooks";
+import { ApiError } from "@/lib/api/errors";
 import { formatBusinessDate } from "@/features/ws10-payslip/format";
 import {
   formatDays,
@@ -51,6 +53,7 @@ export function RequestFormLeave({
   const t = useT();
   const typesQuery = useLeaveTypes();
   const balancesQuery = useLeaveBalances();
+  const { documentsAccepted } = useStorageCapabilities();
   const [leaveTypeId, setLeaveTypeId] = useState("");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
@@ -95,8 +98,12 @@ export function RequestFormLeave({
       setUploading(true);
       try {
         payload.attachmentUploadRef = await uploadLeaveFile(file);
-      } catch {
-        setFileError("Lampiran gagal diunggah. Coba lagi.");
+      } catch (error) {
+        setFileError(
+          error instanceof ApiError && error.code === "SCANNER_UNAVAILABLE"
+            ? t("hrisRequestsEmployee.leave.attachmentPhotoOnly")
+            : "Lampiran gagal diunggah. Coba lagi.",
+        );
         return;
       } finally {
         setUploading(false);
@@ -234,13 +241,28 @@ export function RequestFormLeave({
         label={t("hrisRequestsEmployee.leave.attachmentLabel")}
         required={selected?.requiresAttachment}
         error={fileError || undefined}
-        hint={t("hrisRequestsEmployee.leave.attachmentHint")}
+        hint={t(
+          documentsAccepted
+            ? "hrisRequestsEmployee.leave.attachmentHint"
+            : "hrisRequestsEmployee.leave.attachmentPhotosHint",
+        )}
       >
         <Input
           type="file"
-          accept="application/pdf,image/jpeg,image/png,image/webp"
+          accept={
+            documentsAccepted
+              ? "application/pdf,image/jpeg,image/png,image/webp"
+              : "image/jpeg,image/png,image/webp"
+          }
           onChange={(event) => {
-            setFile(event.target.files?.[0] ?? null);
+            const next = event.target.files?.[0] ?? null;
+            if (next && isLeavePdf(next) && !documentsAccepted) {
+              setFile(null);
+              event.target.value = "";
+              setFileError(t("hrisRequestsEmployee.leave.attachmentPhotoOnly"));
+              return;
+            }
+            setFile(next);
             setFileError("");
           }}
         />

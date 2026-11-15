@@ -171,6 +171,9 @@ export function createMalwareScannerFromEnv(
       host,
       port: clamdNumber(source, "CLAMD_PORT", 3310, 1, 65_535),
       timeoutMs: clamdNumber(source, "CLAMD_TIMEOUT_MS", 15_000, 1000, 60_000),
+      maxConcurrent: clamdNumber(source, "CLAMD_MAX_CONCURRENT", 4, 1, 64),
+      maxPerTenant: clamdNumber(source, "CLAMD_MAX_PER_TENANT", 2, 1, 32),
+      maxQueued: clamdNumber(source, "CLAMD_MAX_QUEUED", 8, 0, 256),
     });
   return new NoopMalwareScanner({
     acceptsDocuments: source.NODE_ENV !== "production",

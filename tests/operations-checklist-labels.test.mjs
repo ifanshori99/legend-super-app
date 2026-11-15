@@ -65,6 +65,28 @@ registerHooks({
           url: stub("export const useOnline = () => true;"),
           shortCircuit: true,
         };
+      // Storage client and photo field pull extensionless imports; the label
+      // assertions never upload, so minimal stubs are enough.
+      if (specifier === "@/features/storage/api")
+        return {
+          url: stub(
+            [
+              "export const normalizeImageFile = async (file) => file;",
+              "export const uploadStorageFile = async () => ({});",
+            ].join("\n"),
+          ),
+          shortCircuit: true,
+        };
+      if (specifier === "../../ws06-inventory/components/photo-field.tsx")
+        return {
+          url: stub(
+            [
+              "export const PhotoField = () => null;",
+              'export const photoUploadErrorKey = () => "common.error";',
+            ].join("\n"),
+          ),
+          shortCircuit: true,
+        };
     }
     if (context.parentURL === dialogUrl) {
       if (specifier === "@/components/ui/dialog")

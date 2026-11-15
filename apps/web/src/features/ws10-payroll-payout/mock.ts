@@ -23,6 +23,11 @@
 // proposal (failed, with a proof key of the batch) on the exported item and a
 // return proposal on the manually confirmed one, both by the other known user.
 // The second step must send the same proof key (409 *_EVIDENCE_MISMATCH).
+// `?mock=two-pending` adds a second pending-approval manual batch (203, its own
+// run, same PT and same source account, asked by finance) next to batch 201, so
+// a spec can move from one batch to the other with the approval tab still open.
+// Every call of the approve endpoint is also logged in
+// `window.__payoutApproveCalls` (batch ids), to prove nothing was sent.
 // Bank items carry the locked payee snapshot (name + "****1234"); cash items
 // carry none. Resolve and return need two different people: the first call
 // only proposes, so a single mock user always gets `proposed: 1`.
@@ -78,6 +83,9 @@ export const MOCK_PAYOUT_IDS = {
   runStatus: uid(100),
   batchApproval: uid(201),
   batchStatus: uid(202),
+  /** `two-pending` only: a second batch awaiting approval (own run). */
+  runTwoPending: uid(103),
+  batchTwoPending: uid(203),
 } as const;
 
 const ACCOUNTS = [
@@ -347,7 +355,21 @@ function seedBatches(): PayrollDisbursementBatchDto[] {
       bankCode: null,
     }),
   ];
+  const t = MOCK_PAYOUT_IDS.batchTwoPending;
+  const twoItems = [
+    item(3001, t, 306, 2_000_000),
+    item(3002, t, 307, 1_500_000),
+  ];
   return [
+    batch(t, MOCK_PAYOUT_IDS.runTwoPending, twoItems, {
+      status: "pending_approval",
+      // Asked by finance, so the default mock user (HR) may approve it.
+      requestedBy: userIds.financeApprover,
+      // Older than batch 201, so 201 stays the default batch of the tab.
+      requestedAt: "2026-11-14T02:00:00.000Z",
+      contentHash: hashOf(twoItems),
+      approvalExpiresAt: "2026-11-16T02:15:00.000Z",
+    }),
     batch(
       MOCK_PAYOUT_IDS.batchApproval,
       MOCK_PAYOUT_IDS.runApproval,
@@ -423,11 +445,12 @@ type PayoutScenario =
   | "legacy-account"
   | "batches-paged"
   | "batches-paged-open"
-  | "resolve-proposal";
+  | "resolve-proposal"
+  | "two-pending";
 let rememberedScenario: PayoutScenario | null = null;
 
 /**
- * `?mock=legacy-account|batches-paged|batches-paged-open|resolve-proposal`. The shared scenario list does not know
+ * `?mock=legacy-account|batches-paged|batches-paged-open|resolve-proposal|two-pending`. The shared scenario list does not know
  * them, so they are read from the URL here and kept for the page's lifetime.
  */
 function payoutScenario(): PayoutScenario | null {
@@ -437,13 +460,19 @@ function payoutScenario(): PayoutScenario | null {
       value === "legacy-account" ||
       value === "batches-paged" ||
       value === "batches-paged-open" ||
-      value === "resolve-proposal"
+      value === "resolve-proposal" ||
+      value === "two-pending"
     )
       rememberedScenario = value;
     else if (value !== null) rememberedScenario = null;
   }
   return rememberedScenario;
 }
+
+/** Batch 203 is seeded always but only exists in the `two-pending` scenario. */
+const visible = (row: PayrollDisbursementBatchDto) =>
+  row.id !== MOCK_PAYOUT_IDS.batchTwoPending ||
+  payoutScenario() === "two-pending";
 
 /** What the screens read: `legacy-account` strips one locked account. */
 function view(row: PayrollDisbursementBatchDto): PayrollDisbursementBatchDto {
@@ -639,7 +668,9 @@ registerMock(listRunDisbursementBatches, ({ params, scenario }) => ({
     scenario === "empty"
       ? []
       : state()
-          .batches.filter((row) => row.payrollRunId === params.id)
+          .batches.filter(
+            (row) => row.payrollRunId === params.id && visible(row),
+          )
           .map(view),
 }));
 
@@ -649,6 +680,7 @@ registerMock(listPayoutBatches, ({ query, scenario }) => {
   const rows = state()
     .batches.filter(
       (row) =>
+        visible(row) &&
         (query.legalEntityId === undefined ||
           row.legalEntityId === query.legalEntityId) &&
         (query.status === undefined || row.status === query.status),
@@ -694,9 +726,12 @@ registerMock(listPayoutBatches, ({ query, scenario }) => {
   };
 });
 
-registerMock(getDisbursementBatch, ({ params }) => ({
-  data: view(find(params.id)),
-}));
+registerMock(getDisbursementBatch, ({ params }) => {
+  const found = find(params.id);
+  if (!visible(found))
+    throw refuse(404, "NOT_FOUND", "Batch pencairan tidak ditemukan.");
+  return { data: view(found) };
+});
 
 registerMock(createDisbursementBatch, ({ params, body }) => {
   if (body.channel === "duitku")
@@ -756,6 +791,10 @@ registerMock(submitDisbursementBatch, ({ params }) => {
 });
 
 registerMock(approveDisbursementBatch, ({ params, body }) => {
+  if (typeof window !== "undefined") {
+    const log = window as unknown as { __payoutApproveCalls?: string[] };
+    log.__payoutApproveCalls = [...(log.__payoutApproveCalls ?? []), params.id];
+  }
   const current = find(params.id);
   if (current.status !== "pending_approval")
     throw refuse(

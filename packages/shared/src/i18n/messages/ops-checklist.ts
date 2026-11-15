@@ -120,22 +120,27 @@ export const opsChecklistMessages = {
       signature: "Tanda tangan",
     },
     item: {
-      photoAction: "Pilih foto",
-      photoReplace: "Ganti foto",
-      photoRemove: "Hapus foto",
-      photoPreviewAlt: "Pratinjau foto butir {label}",
-      photoMockNote: "Pratinjau lokal; unggah media menyusul.",
+      photoHint:
+        "Pilih foto kamera atau galeri sebagai bukti butir ini. Foto diperkecil sebelum diunggah.",
       photoStored: "{count} foto tersimpan",
       numberLabel: "Angka",
       numberHint: "Pakai titik untuk desimal, misalnya 3.5.",
       numberInvalid: "Masukkan angka yang valid.",
       signatureLabel: "Tanda tangan",
       signatureHint:
-        "Coret di kotak atau tulis nama lengkap di kolom alternatif.",
+        "Coret di kotak untuk menandatangani, atau ketik nama di bawah jika tidak bisa mencoret.",
+      signatureUploading: "Tanda tangan sedang diunggah. Tunggu sebentar.",
+      signatureUploadFailed:
+        "Tanda tangan belum terunggah. Coba lagi atau coret ulang.",
+      signatureUploadOffline:
+        "Tanda tangan belum terunggah. Periksa koneksi internet lalu coba lagi.",
+      signatureUploadUnavailable:
+        "Tanda tangan belum terunggah. Penyimpanan atau pemeriksa berkas sedang tidak tersedia. Coba lagi.",
       signatureClear: "Hapus tanda tangan",
+      signatureChanged: "Tanda tangan berubah saat diunggah. Coba simpan lagi.",
       signatureName: "Nama penanda tangan",
       signatureNameHint:
-        "Alternatif aksesibel bila coret di layar sulit dilakukan.",
+        "Tanpa coretan, nama ini dipakai sebagai tanda tangan.",
       note: "Catatan",
       noteHint: "Wajib diisi saat menandai gagal.",
       noteRequired: "Catatan wajib diisi saat menandai gagal.",

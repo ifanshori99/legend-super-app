@@ -171,6 +171,7 @@ export async function uploadPayoutEvidence(
       kind: contentType === "application/pdf" ? "pdf" : "image",
       scanner: deps.scanner,
       maxBytes: PAYOUT_EVIDENCE_MAX_BYTES,
+      tenantKey: tenantId,
     });
   } catch (error) {
     if (error instanceof HttpError && error.status === 422)

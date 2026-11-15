@@ -272,13 +272,24 @@ export const wasteMessages = {
       "Jelaskan singkat penyebabnya, misalnya susu pecah saat shift pagi.",
     photo: "Foto bukti",
     photoHint:
-      "Opsional. JPEG, PNG, atau WebP maksimal 5 MB. Foto membantu audit waste.",
+      "Opsional. Pilih foto kamera atau galeri. Foto diperkecil sebelum diunggah dan membantu audit waste.",
     photoChoose: "Pilih foto",
     photoChange: "Ganti foto",
     photoRemove: "Hapus foto",
-    photoAlt: "Pratinjau foto bukti waste",
-    photoTooLarge: "Foto lebih dari 5 MB. Pilih berkas yang lebih kecil.",
-    photoInvalid: "Berkas harus berupa gambar JPEG, PNG, atau WebP.",
+    photoAlt: "Pratinjau foto bukti",
+    photoTooLarge:
+      "Foto masih lebih dari 5 MB setelah diperkecil. Pilih foto lain.",
+    photoInvalid:
+      "Foto tidak bisa dibaca. Pilih foto lain dari kamera atau galeri.",
+    photoUploading: "Foto sedang diunggah. Tunggu sebelum menyimpan.",
+    photoUploaded: "Foto terunggah.",
+    photoCancelUpload: "Batalkan unggah",
+    photoUploadUnavailable:
+      "Foto belum terunggah. Penyimpanan atau pemeriksa berkas sedang tidak tersedia. Coba lagi.",
+    photoUploadOffline:
+      "Foto belum terunggah. Periksa koneksi internet lalu coba lagi.",
+    photoUploadFailed: "Foto belum terunggah. Coba lagi atau pilih foto lain.",
+    photoReadFailed: "Foto belum bisa ditampilkan. Coba muat lagi.",
     submit: "Simpan catatan",
     cancel: "Batal",
     errorTarget: "Pilih bahan atau menu yang terbuang.",

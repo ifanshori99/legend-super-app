@@ -27,7 +27,14 @@ import {
 } from "@starter/shared/core/server";
 import { outletIdSchema } from "@starter/shared/core";
 import * as schema from "../db/schema";
-import { NoopMalwareScanner } from "../services/core-image";
+import {
+  NoopMalwareScanner,
+  type MalwareScanner,
+} from "../services/core-image";
+import { ClamdMalwareScanner } from "../services/clamd-scanner";
+import { uploadStorage } from "../services/core-storage";
+import { FakeObjectStorage } from "@starter/shared/adapters";
+import { startFakeClamd } from "./helpers/fake-clamd";
 import { openSelfie } from "../lib/selfie-seal";
 import { uploadEdgeSelfie } from "../services/edge-selfie.service";
 
@@ -171,6 +178,7 @@ const upload = (
     authorize?: () => Promise<boolean>;
     actorUserId?: string;
     scopeOutletIds?: string[];
+    scanner?: MalwareScanner;
   },
 ) =>
   uploadEdgeSelfie(
@@ -194,7 +202,7 @@ const upload = (
     {
       authorize: options.authorize ?? (async () => true),
       actorUserId: options.actorUserId ?? randomUUID(),
-      scanner: new NoopMalwareScanner(),
+      scanner: options.scanner ?? new NoopMalwareScanner(),
       dir: options.dir,
       maxBytes: options.maxBytes ?? 1024 * 1024 * 1024,
     } as never,
@@ -556,4 +564,39 @@ it("T5 edge selfie upload budget is tenant-wide, not limited to the caller's out
     }),
   ).rejects.toMatchObject({ status: 507, code: "EDGE_SELFIE_STORAGE_FULL" });
   expect(filesIn(dir)).toEqual([]);
+});
+
+it("isolates scanner capacity between logo uploads and edge selfies by tenant", async () => {
+  const other = await seedOutlet();
+  const server = await startFakeClamd({ kind: "silent" });
+  const scanner = new ClamdMalwareScanner({
+    host: "127.0.0.1",
+    port: server.port,
+    timeoutMs: 10000,
+    maxConcurrent: 3,
+    maxQueued: 0,
+    maxPerTenant: 1,
+  });
+  const bytes = await jpegWithExif();
+  const logo = (tenantId: string) =>
+    uploadStorage(db, context(tenantId), { purpose: "brand_logo" }, bytes, {
+      storage: new FakeObjectStorage(),
+      scanner,
+      authorize: async () => true,
+      actorUserId: randomUUID(),
+    });
+  const first = logo(sealed.tenantId).catch(() => undefined);
+  try {
+    await vi.waitFor(() => expect(server.sessions).toHaveLength(1));
+    server.setBehavior({ kind: "reply", reply: "stream: OK\0" });
+    await expect(logo(other.tenantId)).resolves.toBeDefined();
+    const dir = newDir();
+    await expect(upload(sealed, bytes, { dir, scanner })).rejects.toMatchObject(
+      { status: 503, code: "SCANNER_OVERLOADED" },
+    );
+    expect(filesIn(dir)).toEqual([]);
+  } finally {
+    await server.close();
+    await first;
+  }
 });
