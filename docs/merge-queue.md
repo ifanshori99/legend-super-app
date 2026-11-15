@@ -42,7 +42,7 @@ Induk lebih dulu. Migrasi dinomori ulang dari ujung m1 saat batch disusun.
 - `fix/edc-failover-861` e688b53bd (prioritas 2, CTO G4j04; base ce90d9b1b; fail-stop saat kunci hilang; architect xhigh 2 putaran). Masuk setelah 64g, satu batch dengan `fix/receipt-run-861` (sama-sama basis rantai EDC). Cabang uang: bukti tes tak ada pihak dibayar lebih tetap berlaku. Kedua cabang bercabang dari ce90d9b1b, bukan saling induk; cek konflik berkas EDC saat merge.
 
 - Flake gerbang (taruh di depan batch berikut): `fix/flake-station-printer-887` 3ab003ad9 (test saja, legend-ea9sf). Lalu `fix/flake-guest-menu-543rh` 30e4177a9 (test saja, legend-543rh, 3x hijau).
-- Payout akhir DITAHAN (tunggu batch71 + merge m1 + 891): `fix/payout-area-final-888` bddf9bf6c (migrasi 0631-0634, architect xhigh tanpa P1; kartu w5yx6, v6gtp, wcd24, 8vcsg), lalu `fix/payout-failed-correction-891` (legend-mejr2, sedang dikerjakan), lalu `ui/payout-password-stepup-890` 9aa50713b (web, legend-caobb; reviewer OK, 12 e2e mock; belum diuji ke API nyata). Satu batch, urutan itu.
+- Payout akhir (DEPAN batch berikut setelah batch72; uang, penghalang rilis): `fix/payout-failed-correction-891` 8f7c91126 (sudah memuat `fix/payout-area-final-888` 036979292 dan m1 9ad4dcee7; migrasi sementara 0631-0636 = journal idx 389-394; architect xhigh tiap cabang, P1 tertutup; kartu w5yx6, v6gtp, wcd24, 8vcsg, mejr2), lalu `ui/payout-password-stepup-890` 9aa50713b (web, legend-caobb; reviewer OK, 12 e2e mock). Second opinion Codex 888+891 jalan paralel, hanya menahan gerbang rilis.
 
 ### 2. Uang dan data pribadi
 
