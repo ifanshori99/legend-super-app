@@ -745,6 +745,7 @@ export async function settleBatchPayouts(
     sourceGlAccountId: pendingCashAccountId,
     salariesPayableAccountId: payable?.accountId ?? null,
     settleNetIdr: netIdr,
+    feeIdr,
   });
   const linked = await tx
     .update(payrollDisbursementItems)

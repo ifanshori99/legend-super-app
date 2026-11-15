@@ -174,6 +174,10 @@ describe("legend-m007 FORCE ROW LEVEL SECURITY after all migrations", () => {
     // legend-111j: member_profile_user_index (0203), same TEN-02 exception.
     "member_profile_user_index",
     "payment_link_tokens",
+    // legend-so897: payroll_payout_proof_hashes (0637), global owner of each
+    // payout proof hash across tenants; no policy, no app-role privilege,
+    // written only by a SECURITY DEFINER trigger (pattern of delivery_store_index).
+    "payroll_payout_proof_hashes",
     "tenant_domains",
   ];
 

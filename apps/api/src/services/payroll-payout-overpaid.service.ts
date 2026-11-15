@@ -349,6 +349,7 @@ export async function recordOverpaidItem(
     piiKeyVersion: PAYROLL_SEAL_KEY_VERSION,
     postedAt: now,
     settleNetIdr: netIdr,
+    feeIdr,
   });
   // The database allows failed -> overpaid only inside this transaction.
   await tx.execute(sql`SELECT set_config('app.payout_overpaid', 'on', true)`);

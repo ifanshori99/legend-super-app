@@ -406,6 +406,14 @@ export const payrollPayoutGlPostings = pgTable(
      * written before the migration.
      */
     settleNetIdr: bigint("settle_net_idr", { mode: "number" }),
+    /**
+     * The bank fee of the group in plain, written once with the posting
+     * (legend-so897 F6, migration 0639). The guard compares the debit total of
+     * the fee journal with it when `fee_posted` flips to true. Every new row
+     * carries it and `settle_net_idr` (insert guard, PAYOUT-36); null only on
+     * rows written before the migration.
+     */
+    feeIdr: bigint("fee_idr", { mode: "number" }),
   },
   (table) => [
     unique("payroll_payout_gl_postings_tenant_id_key").on(
@@ -458,6 +466,10 @@ export const payrollPayoutGlPostings = pgTable(
     check(
       "payroll_payout_gl_postings_settle_net_check",
       sql`${table.settleNetIdr} IS NULL OR ${table.settleNetIdr} >= 0`,
+    ),
+    check(
+      "payroll_payout_gl_postings_fee_check",
+      sql`${table.feeIdr} IS NULL OR ${table.feeIdr} >= 0`,
     ),
   ],
 );
@@ -1077,6 +1089,189 @@ export const payrollPayoutFailedCorrections = pgTable(
     check(
       "payroll_payout_failed_corrections_corrected_check",
       sql`(${table.status} = 'proposed' AND ${table.correctedBy} IS NULL AND ${table.correctedAt} IS NULL) OR (${table.status} = 'corrected' AND ${table.correctedBy} IS NOT NULL AND ${table.correctedAt} IS NOT NULL AND ${table.correctedBy} <> ${table.proposedBy})`,
+    ),
+  ],
+);
+
+// ------------------------------------------------------------ proof bindings
+
+export const PAYOUT_PROOF_BINDING_KINDS = [
+  "overpaid",
+  "return",
+  "correction",
+] as const;
+export type PayoutProofBindingKind =
+  (typeof PAYOUT_PROOF_BINDING_KINDS)[number];
+
+/**
+ * One proof = one operation (legend-so897 F1, migration 0637). Every proof used
+ * by an overpaid record, a return or a failed-item correction gets exactly one
+ * row: the operation is (kind, batch, item set). Both steps of the operation
+ * bind before they write anything, so step two reuses the row of step one and
+ * any other operation (another kind, batch or item set) is refused, by the
+ * evidence key or by either hash. The hashes are those of the proof's upload
+ * record (the insert guard compares them). Never updated, never deleted.
+ * `legacy_duplicate` marks a historical operation whose proof was already held
+ * by another one (written by the backfill only, and only for a hash that is
+ * already held): such an operation is refused at its next step.
+ */
+export const payrollPayoutProofBindings = pgTable(
+  "payroll_payout_proof_bindings",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    batchId: uuid("batch_id").notNull(),
+    kind: varchar("kind", { length: 10 })
+      .$type<PayoutProofBindingKind>()
+      .notNull(),
+    /** SHA-256 of the sorted item ids of the operation, joined by "\n". */
+    itemSetHash: varchar("item_set_hash", { length: 64 }).notNull(),
+    evidenceKey: varchar("evidence_key", { length: 500 }).notNull(),
+    contentSha256: varchar("content_sha256", { length: 64 }).notNull(),
+    storedSha256: varchar("stored_sha256", { length: 64 }).notNull(),
+    legacyDuplicate: boolean("legacy_duplicate").notNull().default(false),
+    createdBy: actor("created_by").notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    unique("payroll_payout_proof_bindings_tenant_id_key").on(
+      table.tenantId,
+      table.id,
+    ),
+    unique("payroll_payout_proof_bindings_evidence_key").on(
+      table.tenantId,
+      table.evidenceKey,
+    ),
+    index("payroll_payout_proof_bindings_tenant_batch_idx").on(
+      table.tenantId,
+      table.batchId,
+    ),
+    index("payroll_payout_proof_bindings_tenant_content_sha_idx").on(
+      table.tenantId,
+      table.contentSha256,
+    ),
+    index("payroll_payout_proof_bindings_tenant_stored_sha_idx").on(
+      table.tenantId,
+      table.storedSha256,
+    ),
+    foreignKey({
+      name: "payroll_payout_proof_bindings_batch_fk",
+      columns: [table.tenantId, table.batchId],
+      foreignColumns: [
+        payrollDisbursementBatches.tenantId,
+        payrollDisbursementBatches.id,
+      ],
+    }),
+    check(
+      "payroll_payout_proof_bindings_kind_check",
+      sql`${table.kind} IN (${inList(PAYOUT_PROOF_BINDING_KINDS)})`,
+    ),
+    check(
+      "payroll_payout_proof_bindings_hash_check",
+      sql`${table.itemSetHash} ~ ${sql.raw(SHA256_FORMAT)}`,
+    ),
+    check(
+      "payroll_payout_proof_bindings_sha_check",
+      sql`${table.contentSha256} ~ ${sql.raw(SHA256_FORMAT)} AND ${table.storedSha256} ~ ${sql.raw(SHA256_FORMAT)}`,
+    ),
+  ],
+);
+
+/**
+ * Global (no tenant) owner of every proof hash (legend-so897 F2, migration
+ * 0637): one hash belongs to ONE binding across all tenants, so the same bank
+ * report cannot back an operation in two PTs. Row level security is enabled
+ * with no policy and the app role has no privilege at all: only the SECURITY
+ * DEFINER trigger on `payroll_payout_proof_bindings` writes it, and nothing
+ * reads it (the app never learns who holds a hash). The hash of zero bytes is
+ * never stored.
+ */
+export const payrollPayoutProofHashes = pgTable(
+  "payroll_payout_proof_hashes",
+  {
+    sha256: varchar("sha256", { length: 64 }).primaryKey(),
+    bindingId: uuid("binding_id").notNull(),
+    claimedAt: timestamp("claimed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    check(
+      "payroll_payout_proof_hashes_sha_check",
+      sql`${table.sha256} ~ ${sql.raw(SHA256_FORMAT)}`,
+    ),
+  ],
+);
+
+// ------------------------------------------------------ proof backfill stuck
+
+export const PAYOUT_PROOF_STUCK_REASONS = [
+  "unreadable",
+  "hash_conflict",
+  "legacy_duplicate",
+] as const;
+export type PayoutProofStuckReason =
+  (typeof PAYOUT_PROOF_STUCK_REASONS)[number];
+
+/**
+ * A proof key the fingerprint job could not complete (legend-so897 F4,
+ * migration 0638): its object cannot be read, or its hash already belongs to
+ * another proof. One row per key; each failed attempt pushes `next_attempt_at`
+ * back (capped), so the job moves on to the next targets instead of retrying
+ * the same window forever. The gate still holds the tenant while the target
+ * exists (fail closed). `resolved_at` is set when a later sweep completes the
+ * key. Listed for finance; never deleted.
+ */
+export const payrollPayoutProofBackfillStuck = pgTable(
+  "payroll_payout_proof_backfill_stuck",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    batchId: uuid("batch_id").notNull(),
+    evidenceKey: varchar("evidence_key", { length: 500 }).notNull(),
+    reason: varchar("reason", { length: 16 })
+      .$type<PayoutProofStuckReason>()
+      .notNull(),
+    attempts: integer("attempts").notNull().default(1),
+    firstSeenAt: timestamp("first_seen_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  },
+  (table) => [
+    unique("payroll_payout_proof_backfill_stuck_tenant_id_key").on(
+      table.tenantId,
+      table.id,
+    ),
+    unique("payroll_payout_proof_backfill_stuck_evidence_key").on(
+      table.tenantId,
+      table.evidenceKey,
+    ),
+    index("payroll_payout_proof_backfill_stuck_tenant_next_idx").on(
+      table.tenantId,
+      table.nextAttemptAt,
+    ),
+    foreignKey({
+      name: "payroll_payout_proof_backfill_stuck_batch_fk",
+      columns: [table.tenantId, table.batchId],
+      foreignColumns: [
+        payrollDisbursementBatches.tenantId,
+        payrollDisbursementBatches.id,
+      ],
+    }),
+    check(
+      "payroll_payout_proof_backfill_stuck_reason_check",
+      sql`${table.reason} IN (${inList(PAYOUT_PROOF_STUCK_REASONS)})`,
+    ),
+    check(
+      "payroll_payout_proof_backfill_stuck_attempts_check",
+      sql`${table.attempts} >= 1`,
     ),
   ],
 );
