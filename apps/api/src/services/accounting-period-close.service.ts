@@ -42,7 +42,7 @@ import {
   CoreError,
   DEFAULT_BUSINESS_DAY_CLOCK,
   idempotencyKeySchema,
-  idr,
+  idrFromBigInt,
   type Idr,
   type ScopedTenantContext,
   type UserId,
@@ -289,9 +289,29 @@ async function cumulativeBalances(
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
     .map(([accountId, sum]) => ({
       accountId,
-      debitIdr: idr(Number(sum.debit)),
-      creditIdr: idr(Number(sum.credit)),
+      debitIdr: balanceIdr(sum.debit),
+      creditIdr: balanceIdr(sum.credit),
     }));
+}
+
+/**
+ * Exact bigint -> Idr for a cumulative balance. Above 2^53 - 1 a snapshot
+ * line cannot hold the figure exactly (Idr is a safe integer), and rounding
+ * it would corrupt the ledger snapshot, so the close is refused instead
+ * (legend-4lft). The surrounding transaction rolls back: nothing is written.
+ */
+function balanceIdr(value: bigint): Idr {
+  try {
+    return idrFromBigInt(value);
+  } catch (error) {
+    if (error instanceof RangeError)
+      throw new HttpError(
+        422,
+        "PERIOD_BALANCE_OVERFLOW",
+        "An account balance is too large to snapshot exactly; the period was not closed.",
+      );
+    throw error;
+  }
 }
 
 /**
