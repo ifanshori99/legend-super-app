@@ -57,6 +57,7 @@ Induk lebih dulu. Migrasi dinomori ulang dari ujung m1 saat batch disusun.
 - Uang (prioritas 4, CTO G4j04): `fix/s3ex8-859` 8b5050243 (setelah induk `ghostex/845-finance-view-access` 43e9824fa; architect xhigh + perbaikan P2 sesuai resep, evidenceMismatch).
 - Akses/migrasi (prioritas 4, CTO G4j04, 15 Nov): `fix/ai-modul-otomatis-864` b6483d4ea (dari m1 d1ad35802). Migrasi data `0451_ai_assistant_auto_enable` (sementara; nomori ulang dari ujung m1, snapshot ada). Architect xhigh. Antre setelah batch65.
 - Akses (prioritas 3, CTO G4j04, 15 Nov; wajib rilis legend-xdlxa): `fix/push-reregister-863` 355abf918 (dari m1 d1ad35802). Migrasi 0373 (fungsi SECURITY DEFINER `app.push_endpoint_owned_by_other`) BENTROK nomor dengan rantai edge: nomori ulang dari ujung batch (journal + snapshot). Architect high. Antre setelah batch65.
+- Test uang (CTO G471b, 15 Nov; tanpa migrasi): `fix/flake-866` 5c9d29ec4 (flake uang 866, oracle lebih ketat + afterAll try/finally; review sonnet OK). Setelah merge tutup legend-5tu68, legend-8p74m.
 - Semua cabang uang: bukti tes tak ada pihak dibayar lebih dan outlet tak rugi; sebelum merge baca ringkasan architect di kartu bead.
 
 ### 3. Sisanya (cabang tanpa migrasi boleh digabung ke batch yang sama bila tidak tumpang tindih)
