@@ -28,6 +28,7 @@ import {
   type PayoutEvidenceStore,
 } from "./payroll-payout-evidence.ts";
 import { recordOverpaidItem } from "./payroll-payout-overpaid.service.ts";
+import { proofBoundToCorrection } from "./payroll-payout-proof-fingerprint.service.ts";
 import {
   loadBatchRunFirst,
   payoutRefuse,
@@ -151,6 +152,16 @@ export async function recordOverpaidItems(
       403,
       "PAYOUT_OVERPAID_REQUESTER",
       "Pengaju batch tidak boleh mencatat pembayaran ganda dari batchnya sendiri.",
+    );
+
+  // A proof bound to a failed-item correction backs nothing else (legend-mejr2).
+  if (
+    await proofBoundToCorrection(tx, proofs, tenantId, batch.id, evidence, now)
+  )
+    throw payoutRefuse(
+      409,
+      "PAYOUT_CORRECTION_PROOF_REUSED",
+      "Bukti ini sudah dipakai untuk koreksi item gagal. Unggah bukti transfer yang sesuai dengan pembayaran ganda ini.",
     );
 
   const rows = await loadFailedItems(tx, tenantId, batch.id, input.itemIds);

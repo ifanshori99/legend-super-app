@@ -43,6 +43,7 @@ import { db } from "../db/index.ts";
 import {
   payrollDisbursementItems,
   payrollPayoutEvidenceFiles,
+  payrollPayoutFailedCorrections,
   payrollPayoutReturnClaims,
 } from "../db/schema/payroll-payout.ts";
 import { withTenant } from "../db/tenant.ts";
@@ -212,6 +213,68 @@ export async function claimHoldingFingerprint(
     )
     .limit(1);
   return claim !== undefined;
+}
+
+/**
+ * True when a failed-item correction (legend-mejr2), proposed or approved,
+ * already holds this proof: by its key, or by either hash (the same file under
+ * a new key). A proof bound to one correction backs nothing else.
+ */
+export async function correctionHoldingProof(
+  tx: Tx,
+  tenantId: TenantId,
+  evidence: string,
+  shas: readonly string[],
+): Promise<boolean> {
+  const [row] = await tx
+    .select({ id: payrollPayoutFailedCorrections.id })
+    .from(payrollPayoutFailedCorrections)
+    .where(
+      and(
+        eq(payrollPayoutFailedCorrections.tenantId, tenantId),
+        or(
+          eq(payrollPayoutFailedCorrections.evidenceKey, evidence),
+          shas.length > 0
+            ? inArray(payrollPayoutFailedCorrections.contentSha256, [...shas])
+            : undefined,
+          shas.length > 0
+            ? inArray(payrollPayoutFailedCorrections.storedSha256, [...shas])
+            : undefined,
+        ),
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
+}
+
+/**
+ * For a flow that is NOT the correction itself (the overpaid record): records
+ * the proof's fingerprint, holds its locks, and says whether a failed-item
+ * correction already holds it. Call under the run and batch locks; the caller
+ * refuses when true. Symmetric to the correction's own reuse checks.
+ */
+export async function proofBoundToCorrection(
+  tx: Tx,
+  store: {
+    readonly storage: ObjectStorage | null | undefined;
+    readonly context: ScopedTenantContext;
+  },
+  tenantId: TenantId,
+  batchId: string,
+  evidence: string,
+  now: Date,
+): Promise<boolean> {
+  await ensureProofFingerprintRecord(
+    tx,
+    store,
+    tenantId,
+    batchId,
+    evidence,
+    now,
+  );
+  const shas = await proofFingerprints(tx, tenantId, evidence);
+  await lockProofFingerprints(tx, tenantId, shas);
+  return correctionHoldingProof(tx, tenantId, evidence, shas);
 }
 
 export type ProofFingerprintBackfillResult = {

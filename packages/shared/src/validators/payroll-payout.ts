@@ -257,6 +257,25 @@ export const recordOverpaidItemsSchema = z
     message: "Each item may appear once.",
   });
 
+// A transfer closed as `failed` (resolution final) that never got a later
+// successful payment is corrected to `succeeded` once the bank proof shows it
+// reached the employee (legend-mejr2). Two different people give the same
+// evidence; the second one flips the items and settles the payable once.
+// Nothing is paid again by this call. One bank proof proves one transfer, so
+// one call corrects exactly one item.
+export const PAYOUT_CORRECT_FAILED_ITEMS_MAX = 1;
+export const correctFailedItemsSchema = z
+  .strictObject({
+    itemIds: z.array(z.uuid()).min(1).max(PAYOUT_CORRECT_FAILED_ITEMS_MAX),
+    evidenceKey: text(200),
+    note: text(500),
+    password: reauthPasswordSchema,
+  })
+  .refine((value) => new Set(value.itemIds).size === value.itemIds.length, {
+    path: ["itemIds"],
+    message: "Each item may appear once.",
+  });
+
 export const confirmCashHandoverInputSchema = z
   .strictObject({
     itemIds: z.array(z.uuid()).min(1).max(1000),
@@ -317,6 +336,7 @@ export type ReturnManualItemsInput = z.infer<typeof returnManualItemsSchema>;
 export type RecordOverpaidItemsInput = z.infer<
   typeof recordOverpaidItemsSchema
 >;
+export type CorrectFailedItemsInput = z.infer<typeof correctFailedItemsSchema>;
 export type ConfirmCashHandoverInput = z.infer<
   typeof confirmCashHandoverInputSchema
 >;

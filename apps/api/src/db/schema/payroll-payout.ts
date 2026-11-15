@@ -973,3 +973,110 @@ export const payrollPayoutOverpaidProposals = pgTable(
     ),
   ],
 );
+
+// ------------------------------------------------------- failed corrections
+
+export const PAYOUT_FAILED_CORRECTION_STATUSES = [
+  "proposed",
+  "corrected",
+] as const;
+export type PayoutFailedCorrectionStatus =
+  (typeof PAYOUT_FAILED_CORRECTION_STATUSES)[number];
+
+/**
+ * Two-person correction of a `failed` item that did reach the employee after
+ * all, with no other attempt paid (legend-mejr2, migration 0635/0636). Step one
+ * (a non-requester who resolved nothing of the item) proposes with a bank proof
+ * and a note and the item stays `failed`; step two (a DIFFERENT person with the
+ * same restrictions and the same proof) marks the row `corrected` and, in the
+ * same transaction, moves the item `failed -> succeeded` (the database allows
+ * that move only for a `corrected` row) and settles it once. The proof is bound
+ * to ONE operation: all items of one request share an `operation_id` (the id of
+ * the first row), and the hashes of the proof are unique per tenant over those
+ * first rows. Never deleted.
+ */
+export const payrollPayoutFailedCorrections = pgTable(
+  "payroll_payout_failed_corrections",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    batchId: uuid("batch_id").notNull(),
+    itemId: uuid("item_id").notNull(),
+    /** The id of the first row of the request this row belongs to. */
+    operationId: uuid("operation_id").notNull(),
+    evidenceKey: varchar("evidence_key", { length: 500 }).notNull(),
+    /** SHA-256 of the proof as uploaded and as stored (the empty hash is not matched). */
+    contentSha256: varchar("content_sha256", { length: 64 }).notNull(),
+    storedSha256: varchar("stored_sha256", { length: 64 }).notNull(),
+    note: varchar("note", { length: 500 }).notNull(),
+    status: varchar("status", { length: 9 })
+      .$type<PayoutFailedCorrectionStatus>()
+      .notNull()
+      .default("proposed"),
+    proposedBy: actor("proposed_by").notNull(),
+    proposedAt: timestamp("proposed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    correctedBy: actor("corrected_by"),
+    correctedAt: timestamp("corrected_at", { withTimezone: true }),
+  },
+  (table) => [
+    unique("payroll_payout_failed_corrections_tenant_id_key").on(
+      table.tenantId,
+      table.id,
+    ),
+    unique("payroll_payout_failed_corrections_item_key").on(
+      table.tenantId,
+      table.itemId,
+    ),
+    uniqueIndex("payroll_payout_failed_corrections_evidence_key")
+      .on(table.tenantId, table.evidenceKey)
+      .where(sql`${table.operationId} = ${table.id}`),
+    uniqueIndex("payroll_payout_failed_corrections_content_sha_key")
+      .on(table.tenantId, table.contentSha256)
+      .where(
+        sql`${table.operationId} = ${table.id} AND ${table.contentSha256} <> ${sql.raw(`'${EMPTY_CONTENT_SHA256}'`)}`,
+      ),
+    uniqueIndex("payroll_payout_failed_corrections_stored_sha_key")
+      .on(table.tenantId, table.storedSha256)
+      .where(
+        sql`${table.operationId} = ${table.id} AND ${table.storedSha256} <> ${sql.raw(`'${EMPTY_CONTENT_SHA256}'`)}`,
+      ),
+    index("payroll_payout_failed_corrections_tenant_batch_idx").on(
+      table.tenantId,
+      table.batchId,
+    ),
+    index("payroll_payout_failed_corrections_tenant_operation_idx").on(
+      table.tenantId,
+      table.operationId,
+    ),
+    foreignKey({
+      name: "payroll_payout_failed_corrections_batch_fk",
+      columns: [table.tenantId, table.batchId],
+      foreignColumns: [
+        payrollDisbursementBatches.tenantId,
+        payrollDisbursementBatches.id,
+      ],
+    }),
+    foreignKey({
+      name: "payroll_payout_failed_corrections_item_fk",
+      columns: [table.tenantId, table.itemId],
+      foreignColumns: [
+        payrollDisbursementItems.tenantId,
+        payrollDisbursementItems.id,
+      ],
+    }),
+    check(
+      "payroll_payout_failed_corrections_status_check",
+      sql`${table.status} IN (${inList(PAYOUT_FAILED_CORRECTION_STATUSES)})`,
+    ),
+    check(
+      "payroll_payout_failed_corrections_sha_check",
+      sql`${table.contentSha256} ~ ${sql.raw(SHA256_FORMAT)} AND ${table.storedSha256} ~ ${sql.raw(SHA256_FORMAT)}`,
+    ),
+    check(
+      "payroll_payout_failed_corrections_corrected_check",
+      sql`(${table.status} = 'proposed' AND ${table.correctedBy} IS NULL AND ${table.correctedAt} IS NULL) OR (${table.status} = 'corrected' AND ${table.correctedBy} IS NOT NULL AND ${table.correctedAt} IS NOT NULL AND ${table.correctedBy} <> ${table.proposedBy})`,
+    ),
+  ],
+);

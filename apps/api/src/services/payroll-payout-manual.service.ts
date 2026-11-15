@@ -85,6 +85,7 @@ import { openPayrollValue } from "../lib/payroll-sealed.ts";
 import type { Tx } from "./hris-access.ts";
 import {
   claimHoldingFingerprint,
+  correctionHoldingProof,
   ensureProofFingerprintRecord,
   countFingerprintTargets,
   lockProofFingerprints,
@@ -611,7 +612,7 @@ async function closeBatchWhenDone(
  * After items became `succeeded`: journal them (once), then turn the run paid
  * when every payslip is paid and announce it. Same transaction as the caller.
  */
-async function settleAndMaybePay(
+export async function settleAndMaybePay(
   tx: Tx,
   actor: Actor,
   batch: BatchRow,
@@ -1062,6 +1063,9 @@ async function assertProofNotUsedForReturn(
     )
     .limit(1);
   if (proofUsed || claimUsed) throw refuseReusedReturnProof();
+  // A proof bound to a failed-item correction backs nothing else (legend-mejr2).
+  if (await correctionHoldingProof(tx, tenantId, evidence, shas))
+    throw refuseReusedReturnProof();
   // The same file content under another key (a re-upload, or the downloaded
   // stored copy of an image) is the same proof.
   if (shas.length === 0) return;
@@ -1188,6 +1192,8 @@ async function bindReturnClaim(
     )
     .limit(1);
   if (otherFlow) throw refuseReusedReturnProof();
+  if (await correctionHoldingProof(tx, tenantId, evidence, shas))
+    throw refuseReusedReturnProof();
   if (shas.length > 0) {
     // The same file content under ANOTHER key (a re-upload, or the downloaded
     // stored copy of an image: either hash meets either hash) must not already

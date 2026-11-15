@@ -2647,6 +2647,20 @@
       "when": 1795000000634,
       "tag": "0634_payout_guard_fee_and_amount",
       "breakpoints": true
+    },
+    {
+      "idx": 392,
+      "version": "7",
+      "when": 1795000000635,
+      "tag": "0635_payout_failed_corrections",
+      "breakpoints": true
+    },
+    {
+      "idx": 393,
+      "version": "7",
+      "when": 1795000000636,
+      "tag": "0636_payout_failed_correction_guard",
+      "breakpoints": true
     }
   ]
 }
