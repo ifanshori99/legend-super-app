@@ -200,6 +200,7 @@ import { Route as KelolaKelolaPelangganCustomerProfileIdRouteImport } from './ro
 import { Route as KelolaKelolaPelangganSegmenRouteImport } from './routes/_kelola/kelola.pelanggan.segmen'
 import { Route as KelolaKelolaPelatihanIndexRouteImport } from './routes/_kelola/kelola.pelatihan.index'
 import { Route as KelolaKelolaPelatihanTrainingIdRouteImport } from './routes/_kelola/kelola.pelatihan.$trainingId'
+import { Route as KelolaKelolaPembayaranEdcRekonsiliasiRouteImport } from './routes/_kelola/kelola.pembayaran_.edc-rekonsiliasi'
 import { Route as KelolaKelolaPengadaanFakturRouteImport } from './routes/_kelola/kelola.pengadaan_.faktur'
 import { Route as KelolaKelolaPengadaanKecilRouteImport } from './routes/_kelola/kelola.pengadaan_.kecil'
 import { Route as KelolaKelolaPengadaanReturRouteImport } from './routes/_kelola/kelola.pengadaan_.retur'
@@ -1415,6 +1416,12 @@ const KelolaKelolaPelatihanTrainingIdRoute =
   KelolaKelolaPelatihanTrainingIdRouteImport.update({
     id: '/kelola/pelatihan/$trainingId',
     path: '/kelola/pelatihan/$trainingId',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaKelolaPembayaranEdcRekonsiliasiRoute =
+  KelolaKelolaPembayaranEdcRekonsiliasiRouteImport.update({
+    id: '/kelola/pembayaran_/edc-rekonsiliasi',
+    path: '/kelola/pembayaran/edc-rekonsiliasi',
     getParentRoute: () => KelolaRoute,
   } as any)
 const KelolaKelolaPengadaanFakturRoute =
@@ -2711,6 +2718,7 @@ export interface FileRoutesByFullPath {
   '/kelola/pelanggan/$customerProfileId': typeof KelolaKelolaPelangganCustomerProfileIdRoute
   '/kelola/pelanggan/segmen': typeof KelolaKelolaPelangganSegmenRoute
   '/kelola/pelatihan/$trainingId': typeof KelolaKelolaPelatihanTrainingIdRoute
+  '/kelola/pembayaran/edc-rekonsiliasi': typeof KelolaKelolaPembayaranEdcRekonsiliasiRoute
   '/kelola/pengadaan/faktur': typeof KelolaKelolaPengadaanFakturRoute
   '/kelola/pengadaan/kecil': typeof KelolaKelolaPengadaanKecilRoute
   '/kelola/pengadaan/retur': typeof KelolaKelolaPengadaanReturRoute
@@ -3082,6 +3090,7 @@ export interface FileRoutesByTo {
   '/kelola/pelanggan/$customerProfileId': typeof KelolaKelolaPelangganCustomerProfileIdRoute
   '/kelola/pelanggan/segmen': typeof KelolaKelolaPelangganSegmenRoute
   '/kelola/pelatihan/$trainingId': typeof KelolaKelolaPelatihanTrainingIdRoute
+  '/kelola/pembayaran/edc-rekonsiliasi': typeof KelolaKelolaPembayaranEdcRekonsiliasiRoute
   '/kelola/pengadaan/faktur': typeof KelolaKelolaPengadaanFakturRoute
   '/kelola/pengadaan/kecil': typeof KelolaKelolaPengadaanKecilRoute
   '/kelola/pengadaan/retur': typeof KelolaKelolaPengadaanReturRoute
@@ -3468,6 +3477,7 @@ export interface FileRoutesById {
   '/_kelola/kelola/pelanggan/$customerProfileId': typeof KelolaKelolaPelangganCustomerProfileIdRoute
   '/_kelola/kelola/pelanggan/segmen': typeof KelolaKelolaPelangganSegmenRoute
   '/_kelola/kelola/pelatihan/$trainingId': typeof KelolaKelolaPelatihanTrainingIdRoute
+  '/_kelola/kelola/pembayaran_/edc-rekonsiliasi': typeof KelolaKelolaPembayaranEdcRekonsiliasiRoute
   '/_kelola/kelola/pengadaan_/faktur': typeof KelolaKelolaPengadaanFakturRoute
   '/_kelola/kelola/pengadaan_/kecil': typeof KelolaKelolaPengadaanKecilRoute
   '/_kelola/kelola/pengadaan_/retur': typeof KelolaKelolaPengadaanReturRoute
@@ -3845,6 +3855,7 @@ export interface FileRouteTypes {
     | '/kelola/pelanggan/$customerProfileId'
     | '/kelola/pelanggan/segmen'
     | '/kelola/pelatihan/$trainingId'
+    | '/kelola/pembayaran/edc-rekonsiliasi'
     | '/kelola/pengadaan/faktur'
     | '/kelola/pengadaan/kecil'
     | '/kelola/pengadaan/retur'
@@ -4216,6 +4227,7 @@ export interface FileRouteTypes {
     | '/kelola/pelanggan/$customerProfileId'
     | '/kelola/pelanggan/segmen'
     | '/kelola/pelatihan/$trainingId'
+    | '/kelola/pembayaran/edc-rekonsiliasi'
     | '/kelola/pengadaan/faktur'
     | '/kelola/pengadaan/kecil'
     | '/kelola/pengadaan/retur'
@@ -4601,6 +4613,7 @@ export interface FileRouteTypes {
     | '/_kelola/kelola/pelanggan/$customerProfileId'
     | '/_kelola/kelola/pelanggan/segmen'
     | '/_kelola/kelola/pelatihan/$trainingId'
+    | '/_kelola/kelola/pembayaran_/edc-rekonsiliasi'
     | '/_kelola/kelola/pengadaan_/faktur'
     | '/_kelola/kelola/pengadaan_/kecil'
     | '/_kelola/kelola/pengadaan_/retur'
@@ -6173,6 +6186,13 @@ declare module '@tanstack/react-router' {
       path: '/kelola/pelatihan/$trainingId'
       fullPath: '/kelola/pelatihan/$trainingId'
       preLoaderRoute: typeof KelolaKelolaPelatihanTrainingIdRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/pembayaran_/edc-rekonsiliasi': {
+      id: '/_kelola/kelola/pembayaran_/edc-rekonsiliasi'
+      path: '/kelola/pembayaran/edc-rekonsiliasi'
+      fullPath: '/kelola/pembayaran/edc-rekonsiliasi'
+      preLoaderRoute: typeof KelolaKelolaPembayaranEdcRekonsiliasiRouteImport
       parentRoute: typeof KelolaRoute
     }
     '/_kelola/kelola/pengadaan_/faktur': {
@@ -7749,6 +7769,7 @@ interface KelolaRouteChildren {
   KelolaKelolaPelangganCustomerProfileIdRoute: typeof KelolaKelolaPelangganCustomerProfileIdRoute
   KelolaKelolaPelangganSegmenRoute: typeof KelolaKelolaPelangganSegmenRoute
   KelolaKelolaPelatihanTrainingIdRoute: typeof KelolaKelolaPelatihanTrainingIdRoute
+  KelolaKelolaPembayaranEdcRekonsiliasiRoute: typeof KelolaKelolaPembayaranEdcRekonsiliasiRoute
   KelolaKelolaPengadaanFakturRoute: typeof KelolaKelolaPengadaanFakturRoute
   KelolaKelolaPengadaanKecilRoute: typeof KelolaKelolaPengadaanKecilRoute
   KelolaKelolaPengadaanReturRoute: typeof KelolaKelolaPengadaanReturRoute
@@ -8013,6 +8034,8 @@ const KelolaRouteChildren: KelolaRouteChildren = {
     KelolaKelolaPelangganCustomerProfileIdRoute,
   KelolaKelolaPelangganSegmenRoute: KelolaKelolaPelangganSegmenRoute,
   KelolaKelolaPelatihanTrainingIdRoute: KelolaKelolaPelatihanTrainingIdRoute,
+  KelolaKelolaPembayaranEdcRekonsiliasiRoute:
+    KelolaKelolaPembayaranEdcRekonsiliasiRoute,
   KelolaKelolaPengadaanFakturRoute: KelolaKelolaPengadaanFakturRoute,
   KelolaKelolaPengadaanKecilRoute: KelolaKelolaPengadaanKecilRoute,
   KelolaKelolaPengadaanReturRoute: KelolaKelolaPengadaanReturRoute,

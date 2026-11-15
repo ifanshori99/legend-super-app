@@ -25,6 +25,12 @@ import {
 import { refundEscalationReasonSchema } from "./refund-events.ts";
 import { defineEndpoint } from "../api/endpoint.ts";
 import {
+  edcTransactionSchema,
+  edcTransactionStatusSchema,
+  resolveEdcReconciliationBodySchema,
+  resolveEdcReconciliationParamsSchema,
+} from "../edc/index.ts";
+import {
   edcTerminalSchema,
   paymentMethodSchema,
   refundSchema,
@@ -178,6 +184,28 @@ export const updateEdcCashierDefaultInputSchema = clientInputSchema({
 });
 export type UpdateEdcCashierDefaultInput = z.infer<
   typeof updateEdcCashierDefaultInputSchema
+>;
+
+/**
+ * One flagged (or stuck `unknown`) ECR sale in the reconciliation queue, with
+ * the labels the screen needs. Proposed contract (legend-khi8n): the list
+ * endpoint below has no backend yet; a separate card builds it.
+ */
+export const edcReconciliationQueueItemSchema = z.strictObject({
+  transaction: edcTransactionSchema,
+  outletName: ref,
+  cashierName: ref.nullable(),
+  /** "EDC-SNP-02 · BCA" */
+  terminalLabel: ref,
+  /** Bill the sale was for, e.g. "INV-1511-084". */
+  billNumber: ref.nullable(),
+  /** What is still unpaid on the bill; null when the bill is unknown. */
+  remainingIdr: idrSchema.nullable(),
+  /** Set while the terminal is still processing the sale (adapter call open). */
+  saleWireOpenAt: isoDateTimeSchema.nullable(),
+});
+export type EdcReconciliationQueueItem = z.infer<
+  typeof edcReconciliationQueueItemSchema
 >;
 
 // ---- Refunds (PRD "Refund": full/partial, gateway or manual + approval) --
@@ -713,6 +741,32 @@ export const updateEdcCashierDefault = defineEndpoint({
   params: cashierParams,
   body: updateEdcCashierDefaultInputSchema,
   response: dataResponseSchema(edcCashierDefaultSchema),
+});
+
+/**
+ * Queue of ECR sales waiting for a person (payment.reconcile). Proposed
+ * contract (legend-khi8n): backend not built yet, the web mock serves it.
+ */
+export const listEdcReconciliationQueue = defineEndpoint({
+  method: "GET",
+  path: `${ADMIN}/edc/reconciliation-queue`,
+  query: cursorPageQuerySchema.extend({
+    ...outletFilter,
+    status: edcTransactionStatusSchema.optional(),
+    q: z.string().trim().max(100).optional(),
+  }),
+  response: cursorPageSchema(edcReconciliationQueueItemSchema),
+});
+/**
+ * Clears one flagged sale after the terminal was checked (legend-x9zmq). It
+ * does not book a payment: the cashier's ECR tender stays the only record.
+ */
+export const resolveEdcReconciliation = defineEndpoint({
+  method: "POST",
+  path: `${ADMIN}/edc/transactions/:id/reconciliation`,
+  params: resolveEdcReconciliationParamsSchema,
+  body: resolveEdcReconciliationBodySchema,
+  response: dataResponseSchema(edcTransactionSchema),
 });
 
 export const listRefunds = defineEndpoint({
