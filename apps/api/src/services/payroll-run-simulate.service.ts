@@ -108,7 +108,7 @@ import {
 } from "./payroll-run-compose.ts";
 import {
   calculatePayrollRunTax,
-  loadOpenPph21Receivables,
+  loadPph21ReceivableBalances,
   loadTaxYearPriors,
   lockPayrollRunMonth,
   type PayrollRunTaxEmployee,
@@ -703,7 +703,7 @@ export async function simulatePayrollRunInTransaction(
 
   // Open PPh 21 receivable to collect on this run's payslips (fail closed on
   // unreadable or inconsistent earlier payslips).
-  const openReceivableById = await loadOpenPph21Receivables(
+  const receivableBalances = await loadPph21ReceivableBalances(
     tx,
     {
       tenantId,
@@ -714,6 +714,7 @@ export async function simulatePayrollRunInTransaction(
     },
     simulateUnsupported,
   );
+  const openReceivableById = receivableBalances.open;
 
   const lastTaxPeriodOf = (endDate: string | null) =>
     run.payDate.slice(5, 7) === "12" ||
@@ -859,6 +860,8 @@ export async function simulatePayrollRunInTransaction(
       tax: computed.tax,
       paymentMethod: entry.paymentMethod,
       openReceivableIdr: openReceivableById.get(entry.member.id) ?? 0,
+      totalOpenReceivableIdr:
+        receivableBalances.total.get(entry.member.id) ?? 0,
     });
     results.push({
       entry,

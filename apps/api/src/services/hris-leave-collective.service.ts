@@ -64,10 +64,13 @@ import {
   formatDecimal4,
   localDateOf,
   parseDecimal4,
+  userIdSchema,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
+  finalSettlementSummarySchema,
   leavePolicySchema,
+  leaveRedeductedAfterSettlement,
   leaveSettingsSchema,
   type LeaveAccrualRunResult,
   type LeaveSettings,
@@ -76,6 +79,7 @@ import {
 import { db } from "../db/index.ts";
 import { employees } from "../db/schema/hris.ts";
 import { attendanceLogs } from "../db/schema/hris-attendance.ts";
+import { hrisOffboardings } from "../db/schema/hris-lifecycle.ts";
 import {
   holidays,
   hrisLeaveSettings,
@@ -87,6 +91,7 @@ import {
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
+import { appendOutbox } from "./core-outbox.ts";
 import {
   HRIS_AUDIT_SAFE_FIELDS,
   HRIS_MANAGE_CODE,
@@ -131,6 +136,8 @@ const COLLECTIVE_AUDIT_SAFE_FIELDS = [
   "reversed",
   "rededucted",
   "carryReduced",
+  "offboardingId",
+  "days",
 ] as const;
 
 // ----------------------------------------------------------------- access
@@ -541,8 +548,10 @@ async function reverseDeductedDay(
  * below zero (every payout clamps remaining at 0, so a negative balance only
  * restricts payment, and `used` keeps matching the ledger); that case is
  * audited. When the carry-over of the day's year
- * already ran, the next year's carried-over days lose the day too (clamped at
- * 0, audited) so it is not paid through the carry. Same locks as the reversal:
+ * already ran, the next year's carried-over days lose the day too, only when
+ * the day was inside the carried days (not when the cap kept it out), and the
+ * cut follows into later years whose carry ran (clamped at 0, audited) so it
+ * is not paid through the carry. Same locks as the reversal:
  * the caller's employee lock, the collective holiday rows FOR SHARE, the
  * balance FOR UPDATE, then the ledger. Returns the days taken back (0 or 1).
  */
@@ -655,35 +664,95 @@ export async function redeductCollectiveLeaveForRejectedDay(
       parseDecimal4(balance.pendingDays) <
     0n;
   // The day's year is closed (carry-over into the next year ran): the day was
-  // given back before that and may sit in the next year's carried days.
-  const [carryRow] = await tx
-    .select({ days: leaveAccruals.days })
-    .from(leaveAccruals)
-    .where(
-      and(
-        eq(leaveAccruals.tenantId, tenantId),
-        eq(leaveAccruals.employeeId, employeeId),
-        eq(leaveAccruals.leaveTypeId, deducted.leaveTypeId),
-        eq(leaveAccruals.kind, "carry_over"),
-        eq(leaveAccruals.period, String(year + 1)),
-      ),
-    )
-    .limit(1);
-  let carryReducedFrom: string | null = null; // next year's carry before the cut
-  if (carryRow && parseDecimal4(carryRow.days) > 0n) {
+  // given back before that and may sit in the next years' carried days. Carry
+  // of a year is min(remaining of the year before, the cap at that time) (see
+  // carryOverLeave). The cap at that time is the carry ledger row of the year
+  // (C), not the policy now: the policy may have changed since. A carry is cut
+  // only by the part of the day that was really inside it: nothing when C kept
+  // the day out. A year whose carry was cut passes the cut on to the following
+  // year's carry the same way.
+  const carriedFrom = (
+    from: typeof locked,
+    toYear: number,
+    ledgerCarry: bigint,
+  ) => {
+    const available =
+      parseDecimal4(from.entitledDays) +
+      usableCarriedOverDays(from, `${toYear}-01-01`) -
+      parseDecimal4(from.usedDays) -
+      parseDecimal4(from.pendingDays);
+    return available <= 0n
+      ? 0n
+      : available < ledgerCarry
+        ? available
+        : ledgerCarry;
+  };
+  let carryReduced = false;
+  let before = locked; // balance of the year before the carry, pre-cut
+  let after: typeof locked = balance; // the same balance, post-cut
+  // Balance rows this deduction changed, per year: before and after, for the
+  // exit-year remaining leave (legend-jitc3). `rawCarryBefore/After` is the
+  // carry the settlement snapshot saw (raw, before any expiry forfeit): the
+  // bill is computed on it (legend-852), never on the carry in force now.
+  const changedYears = new Map<
+    number,
+    {
+      before: typeof locked;
+      after: typeof locked;
+      rawCarryBefore: bigint;
+      rawCarryAfter: bigint;
+    }
+  >();
+  const yearRawCarry = parseDecimal4(locked.carriedOverDays);
+  changedYears.set(year, {
+    before: locked,
+    after: balance,
+    rawCarryBefore: yearRawCarry,
+    rawCarryAfter: yearRawCarry,
+  });
+  for (let toYear = year + 1; ; toYear += 1) {
+    const [carryRow] = await tx
+      .select({ days: leaveAccruals.days })
+      .from(leaveAccruals)
+      .where(
+        and(
+          eq(leaveAccruals.tenantId, tenantId),
+          eq(leaveAccruals.employeeId, employeeId),
+          eq(leaveAccruals.leaveTypeId, deducted.leaveTypeId),
+          eq(leaveAccruals.kind, "carry_over"),
+          eq(leaveAccruals.period, String(toYear)),
+        ),
+      )
+      .limit(1);
+    if (!carryRow || parseDecimal4(carryRow.days) <= 0n) break;
+    const ledgerCarry = parseDecimal4(carryRow.days);
+    const cut =
+      carriedFrom(before, toYear, ledgerCarry) -
+      carriedFrom(after, toYear, ledgerCarry);
+    if (cut <= 0n) break;
     const next = await lockBalanceForUpdate(
       tx,
       tenantId,
       employeeId,
       deducted.leaveTypeId,
-      year + 1,
+      toYear,
     );
-    if (next && parseDecimal4(next.carriedOverDays) > 0n) {
-      carryReducedFrom = next.carriedOverDays;
-      await tx
+    if (!next) break;
+    // legend-852: the carry the settlement saw (raw, before any expiry
+    // forfeit) before and after this day, derived from the year before. The
+    // stored carry is only lowered to the raw carry after the day. Days the
+    // expiry job forfeited (stored below raw) thus absorb the cuts cumulatively
+    // over rejects and are never counted twice. The raw pair also feeds the
+    // bill after a settlement.
+    const rawCarryBefore = carriedFrom(before, toYear, ledgerCarry);
+    const rawCarryAfter = carriedFrom(after, toYear, ledgerCarry);
+    const storedCarry = parseDecimal4(next.carriedOverDays);
+    let nextAfter = next;
+    if (storedCarry > rawCarryAfter) {
+      const [cutRow] = await tx
         .update(leaveBalances)
         .set({
-          carriedOverDays: sql`GREATEST(${leaveBalances.carriedOverDays} - ${formatDecimal4(ONE_DAY)}::numeric, 0)`,
+          carriedOverDays: formatDecimal4(rawCarryAfter),
           updatedAt: now,
         })
         .where(
@@ -691,8 +760,21 @@ export async function redeductCollectiveLeaveForRejectedDay(
             eq(leaveBalances.tenantId, tenantId),
             eq(leaveBalances.id, next.id),
           ),
-        );
+        )
+        .returning();
+      if (!cutRow) throw new Error("Leave balance update returned no row");
+      carryReduced = true;
+      nextAfter = cutRow;
     }
+    changedYears.set(toYear, {
+      before: next,
+      after: nextAfter,
+      rawCarryBefore,
+      rawCarryAfter,
+    });
+    // The next year's carry follows the raw carry of this one.
+    before = { ...next, carriedOverDays: formatDecimal4(rawCarryBefore) };
+    after = { ...next, carriedOverDays: formatDecimal4(rawCarryAfter) };
   }
   await audit(tx, context, actor, now, {
     action: "hris.leave_collective.rededucted",
@@ -703,9 +785,130 @@ export async function redeductCollectiveLeaveForRejectedDay(
       periodYear: year,
       rededucted: 1,
       ...(negative ? { negative: 1 } : {}),
-      ...(carryReducedFrom !== null ? { carryReduced: 1 } : {}),
+      ...(carryReduced ? { carryReduced: 1 } : {}),
     },
   });
+  // legend-jitc3: the employee's offboarding is already completed, so the
+  // frozen settlement snapshot cannot take this day. It is NOT changed and no
+  // receivable is created: the extra day is audited and HR is told through one
+  // notification (billed by hand). The ledger claim above makes it once per day.
+  const [settled] = await tx
+    .select({
+      id: hrisOffboardings.id,
+      lastWorkingDate: hrisOffboardings.lastWorkingDate,
+      settlementSnapshot: hrisOffboardings.settlementSnapshot,
+    })
+    .from(hrisOffboardings)
+    .where(
+      and(
+        eq(hrisOffboardings.tenantId, tenantId),
+        eq(hrisOffboardings.employeeId, employeeId),
+        eq(hrisOffboardings.status, "completed"),
+      ),
+    )
+    .limit(1)
+    .for("share");
+  if (settled) {
+    // The settlement snapshot only counts the remaining leave of the exit year
+    // (min 0): the days owed are what this deduction took off that remainder.
+    // The carry used is bounded by the carry the frozen snapshot paid out for
+    // this leave type and exit year (legend-852): never the stored carry or the
+    // expiry ledger, which can bill too much or lose the bill. No snapshot row
+    // for this leave type: nothing was paid out, so nothing is billed.
+    const exitYear = Number(settled.lastWorkingDate.slice(0, 4));
+    const exitRows = changedYears.get(exitYear);
+    const snapshot = finalSettlementSummarySchema.parse({
+      ...settled.settlementSnapshot,
+      frozen: true,
+    });
+    const snapshotRow = snapshot.leave.find(
+      (row) =>
+        row.leaveTypeId === deducted.leaveTypeId && row.periodYear === exitYear,
+    );
+    const remainingOf = (row: typeof locked, carry: bigint) => {
+      const left =
+        parseDecimal4(row.entitledDays) +
+        carry -
+        parseDecimal4(row.usedDays) -
+        parseDecimal4(row.pendingDays);
+      return left > 0n ? left : 0n;
+    };
+    const minOf = (a: bigint, b: bigint) => (a < b ? a : b);
+    let settledDays = 0n;
+    if (exitRows && snapshotRow) {
+      const snapshotCarry = parseDecimal4(snapshotRow.carriedOverDays);
+      // What the frozen settlement paid for this leave type and exit year: the
+      // bill never exceeds it.
+      const paid = parseDecimal4(snapshotRow.remainingDays);
+      // Deducted year is the exit year: its carry is not cut by this day.
+      const sameYear = year === exitYear;
+      const remBefore = remainingOf(
+        exitRows.before,
+        sameYear
+          ? snapshotCarry
+          : minOf(snapshotCarry, exitRows.rawCarryBefore),
+      );
+      const remAfter = remainingOf(
+        exitRows.after,
+        sameYear ? snapshotCarry : minOf(snapshotCarry, exitRows.rawCarryAfter),
+      );
+      settledDays = minOf(remBefore, paid) - minOf(remAfter, paid);
+    }
+    await audit(tx, context, actor, now, {
+      action: "hris.leave_collective.rededucted_after_settlement",
+      objectType: "leave_collective",
+      objectId: createUlid(now.getTime()),
+      after: {
+        offboardingId: settled.id,
+        date,
+        periodYear: year,
+        days: Number(formatDecimal4(settledDays)),
+      },
+    });
+    if (settledDays <= 0n) return 1;
+    // Always the home outlet, never the attendance log outlet: the HR inbox of
+    // the home outlet must show this notification.
+    const [employee] = await tx
+      .select({ homeOutletId: employees.homeOutletId })
+      .from(employees)
+      .where(
+        and(eq(employees.tenantId, tenantId), eq(employees.id, employeeId)),
+      )
+      .limit(1);
+    const outletId = employee?.homeOutletId;
+    if (!outletId) throw new Error("Employee missing for rededuction event");
+    const ledgerId = claimed[0]!.id;
+    const event = leaveRedeductedAfterSettlement.envelopeSchema.parse({
+      id: createUlid(now.getTime()),
+      tenantId,
+      outletId,
+      name: leaveRedeductedAfterSettlement.name,
+      version: leaveRedeductedAfterSettlement.version,
+      aggregateType: leaveRedeductedAfterSettlement.entry.aggregateType,
+      aggregateId: ledgerId,
+      sequence: 1,
+      occurredAt: now.toISOString(),
+      actor: { type: "user", id: userIdSchema.parse(actorUserId) },
+      deviceId: null,
+      idempotencyKey: `${leaveRedeductedAfterSettlement.name}:${ledgerId}`,
+      payloadSchemaRef: leaveRedeductedAfterSettlement.payloadSchemaRef,
+      payload: {
+        offboardingId: settled.id,
+        employeeId,
+        outletId,
+        date,
+        periodYear: year,
+        days: formatDecimal4(settledDays),
+      },
+    });
+    await appendOutbox(tx, context, {
+      id: createUlid(now.getTime()),
+      event,
+      destination: "notification",
+      direction: null,
+      peerId: null,
+    });
+  }
   return 1;
 }
 

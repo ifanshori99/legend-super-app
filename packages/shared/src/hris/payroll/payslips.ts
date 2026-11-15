@@ -173,6 +173,12 @@ const calculationShape = {
   bpjs: z.array(payslipBpjsLineSchema).max(BPJS_TABLE_TYPES.length),
   tax: payslipTaxSchema,
   paymentMethod: payslipPaymentMethodSchema,
+  /**
+   * PPh 21 receivable of the employee still open after this payslip (raised
+   * minus collected, 0 when paid off). Written on payslips sealed from
+   * legend-2fk79 on; absent on older ones (the loader then reads the history).
+   */
+  pph21ReceivableOpenAfterIdr: nonNegativeIdr.optional(),
 } as const;
 
 type CalculationLike = {

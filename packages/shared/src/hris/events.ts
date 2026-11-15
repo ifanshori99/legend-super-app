@@ -21,6 +21,7 @@ import {
   attendanceLogIdSchema,
   employeeIdSchema,
   leaveRequestIdSchema,
+  offboardingIdSchema,
   leaveTypeIdSchema,
   shiftAssignmentIdSchema,
   shiftTemplateIdSchema,
@@ -154,12 +155,33 @@ export const leaveChanged = defineDomainEvent({
   }),
 });
 
+/**
+ * Emitted when a collective leave day is deducted again (an accepted clock-in
+ * was rejected) for an employee whose offboarding is already `completed`
+ * (legend-jitc3). The frozen settlement snapshot is NOT changed and no
+ * receivable is created: the event tells HR the employee owes `days` more, to
+ * be billed by hand. `aggregateId` is the rededuction ledger row. Ids, dates
+ * and days only: no name, pay or reason text.
+ */
+export const leaveRedeductedAfterSettlement = defineDomainEvent({
+  name: "leave.rededucted_after_settlement",
+  payload: z.strictObject({
+    offboardingId: offboardingIdSchema,
+    employeeId: employeeIdSchema,
+    outletId: outletIdSchema,
+    date: businessDateSchema,
+    periodYear: z.number().int().min(2000).max(2100),
+    days: decimal4Schema,
+  }),
+});
+
 export const hrisDomainEvents = [
   attendanceLogged,
   shiftPublished,
   shiftCancelled,
   leaveApproved,
   leaveChanged,
+  leaveRedeductedAfterSettlement,
 ] as const;
 
 export const hrisEventNames = hrisDomainEvents.map((event) => event.name);

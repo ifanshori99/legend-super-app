@@ -216,6 +216,15 @@ export const NOTIFICATION_CATEGORY_CATALOG = {
     defaultChannels: ["email"],
     prd: "TEN-01",
   },
+  // legend-jitc3: HR hears that a collective leave day was deducted again for
+  // an employee whose offboarding is already settled (bill by hand).
+  hr_settlement: {
+    audience: "staff",
+    realtime: false,
+    bypassQuietHours: false,
+    defaultChannels: ["web_push"],
+    prd: "§3 F28 Offboarding; legend-jitc3",
+  },
   // legend-078b: a QR line with no kitchen station, or a kitchen void of a QR
   // order. Not `waiter_call` (a guest request) or `order_ready` (a done order).
   kitchen_alert: {
