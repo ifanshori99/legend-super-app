@@ -8,6 +8,7 @@ import { useT } from "@/components/i18n";
 import { StatusPill, type StatusKind } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Money } from "@/components/ui/money";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
   TableBody,
@@ -69,6 +70,13 @@ function StatusCell({
 }) {
   const t = useT();
   const gate = nowMs === null ? null : reconciliationGate(item, nowMs);
+  // Before the client clock exists, an unknown sale that may turn out "too
+  // early" keeps room for its second line so the card does not grow later.
+  const mayBeTooEarly =
+    nowMs === null &&
+    item.transaction.status === "unknown" &&
+    item.transaction.dispatchedAt !== null &&
+    item.saleWireOpenAt === null;
   if (gate?.kind === "wire-open") {
     return (
       <StatusPill status="warning" icon={Clock}>
@@ -89,10 +97,19 @@ function StatusCell({
     );
   }
   const { kind, icon } = statusVisual(item.transaction.status);
-  return (
+  const pill = (
     <StatusPill status={kind} icon={icon}>
       {t(STATUS_KEYS[item.transaction.status])}
     </StatusPill>
+  );
+  if (!mayBeTooEarly) return pill;
+  return (
+    <div className="grid justify-items-start gap-1">
+      {pill}
+      <span aria-hidden="true" className="invisible text-sm">
+        {"\u00a0"}
+      </span>
+    </div>
   );
 }
 
@@ -114,6 +131,81 @@ function AgeText({
         hours: Math.floor(total / 60),
         minutes: total % 60,
       })}
+    </>
+  );
+}
+
+/**
+ * Loading placeholder with the same box model as the cards below md (and a
+ * plain row stack from md up), so the list does not jump when data arrives.
+ */
+export function EdcReconciliationQueueSkeleton({
+  cards = 2,
+  rows = 4,
+}: {
+  cards?: number;
+  rows?: number;
+}) {
+  const t = useT();
+  const field = (label: MessageKey) => (
+    <div className="min-w-0">
+      <dt className="text-sm text-muted-foreground">{t(label)}</dt>
+      <dd className="font-semibold">
+        <Skeleton className="w-20">
+          <span className="invisible">{"\u00a0"}</span>
+        </Skeleton>
+      </dd>
+    </div>
+  );
+  return (
+    <>
+      <div className="hidden md:block">
+        <div className="h-row border-b" />
+        {Array.from({ length: rows }, (_, i) => (
+          <div
+            key={i}
+            className="flex h-row items-center border-b px-4 py-2.5 last:border-0"
+          >
+            <Skeleton className="w-full">
+              <span className="invisible">{"\u00a0"}</span>
+            </Skeleton>
+          </div>
+        ))}
+      </div>
+      <ul className="divide-y divide-border md:hidden">
+        {Array.from({ length: cards }, (_, i) => (
+          <li key={i} className="grid gap-3 p-card">
+            <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
+              <div className="min-w-0">
+                <div className="font-semibold">
+                  <Skeleton className="w-28">
+                    <span className="invisible">{"\u00a0"}</span>
+                  </Skeleton>
+                </div>
+                <div className="text-sm">
+                  <Skeleton className="mt-0.5 w-24">
+                    <span className="invisible">{"\u00a0"}</span>
+                  </Skeleton>
+                </div>
+              </div>
+              <Skeleton className="rounded-full">
+                <span className="invisible">
+                  <StatusPill status="warning" icon={Clock}>
+                    {t("edcRecon.queue.status.unknown")}
+                  </StatusPill>
+                </span>
+              </Skeleton>
+            </div>
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-3">
+              {field("edcRecon.queue.field.amount")}
+              {field("edcRecon.queue.field.cashier")}
+              {field("edcRecon.queue.field.time")}
+              {field("edcRecon.queue.field.age")}
+            </dl>
+            <Skeleton className="h-control w-full" />
+          </li>
+        ))}
+      </ul>
     </>
   );
 }

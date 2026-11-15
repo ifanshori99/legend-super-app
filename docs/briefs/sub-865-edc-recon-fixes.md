@@ -27,3 +27,22 @@ Konteks: `docs/briefs/sub-865-edc-recon-ui.md`. Fitur `apps/web/src/features/edc
 10. Checkbox konfirmasi: satu `<label className="flex min-h-11 items-start gap-3 py-2">` membungkus kotak + teks (target ≥44 px).
 11. Kirim dengan error: fokus ke field pertama yang tidak valid.
 12. Judul detail `h3` (halaman sudah punya h2 daftar). Penghitung catatan diikat ke textarea lewat `aria-describedby`.
+
+# Putaran 2 (perbandingan mockup, impeccable-finish-reviewer)
+
+Screenshot acuan: `docs/screenshots/edc-reconciliation/`; mockup `design/mockups/payments/edc-reconciliation/`. Jangan jalankan tsc/test; eslint + prettier --write file sendiri.
+
+## V1: queue-page.tsx, edc-recon-queue.ts
+
+1. Hapus kicker uppercase di atas judul (~229, `type-eyebrow`): ganti teks biasa `text-xs text-muted-foreground` sentence case.
+2. Card di dalam card (~359): `DataTableShell` dibungkus wrapper ber-border lagi. Satu permukaan saja, desktop dan mobile.
+3. Band info (~249) biru → petrol tint (token primary-subtle/brand yang ada di `apps/web/src/styles`), cek kontras ≥ 4,5:1 light+dark dengan token yang ada.
+4. Setelah `onResolved` (dialog ditutup): banner status (`role="status"`) di atas daftar "<ID> diselesaikan: Approved/Declined", bisa ditutup, hilang saat pilih transaksi lain. Butuh info outcome: ubah `onResolved` jadi `onResolved(result: { id: string; outcome: "approved"|"declined" })` — V2 menyesuaikan pemanggil di detail/confirm-dialog.
+
+## V2: detail.tsx, resolve-form.tsx, confirm-dialog.tsx, edc-recon-resolve.ts, features/edc-reconciliation/mock.ts, e2e/edc-reconciliation.mock.spec.ts (hanya asersi yang terdampak)
+
+5. `ReceiptRow` `dd`: `font-mono tabular-nums`, label tetap sans.
+6. Heading seksi detail ("Ringkasan & bukti", "Tentukan hasil rekonsiliasi") → `text-base font-semibold`; judul transaksi tetap paling atas hierarki.
+7. Baris identitas: nama kasir di mock jangan memuat kata "Kasir" (mock: "Dimas", "Rani", "Sari"); baris identitas "Outlet · Kasir Dimas · waktu". Sesuaikan asersi e2e yang memakai "Dimas Kasir" dsb.
+8. Data mock trace konsisten dengan struk/catatan (mis. EDC-1048 trace "004821", bukan "T1048"); dialog ringkasan menampilkan trace transaksi (bukan id).
+9. Panggil `onResolved({ id: displayId(tx), outcome })` sesuai tanda tangan baru dari V1.

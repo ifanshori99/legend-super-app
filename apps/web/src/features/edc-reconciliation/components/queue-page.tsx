@@ -5,7 +5,7 @@
 // button back. Resolving never books a payment; the cashier tender stays the
 // only record (explained in the confirm dialog).
 import * as React from "react";
-import { ArrowLeft, RotateCw } from "lucide-react";
+import { ArrowLeft, RotateCw, X } from "lucide-react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
@@ -26,7 +26,10 @@ import { API_MOCK } from "@/lib/api/mock-flag";
 import type { EdcReconciliationQueueItem } from "@starter/shared/payment/admin";
 import { useEdcReconciliationQueue } from "../hooks";
 import { EdcReconciliationDetail } from "./detail";
-import { EdcReconciliationQueueList } from "./queue-list";
+import {
+  EdcReconciliationQueueList,
+  EdcReconciliationQueueSkeleton,
+} from "./queue-list";
 
 const ALL = "all";
 export const QUEUE_STATUS_FILTERS = [
@@ -206,6 +209,13 @@ export function EdcReconciliationPage() {
   };
   const showDetail = search.tx !== undefined;
 
+  // After a resolve: a dismissible status line above the list. It goes away
+  // when another sale is picked (onSelect).
+  const [resolved, setResolved] = React.useState<{
+    id: string;
+    outcome: "approved" | "declined";
+  } | null>(null);
+
   return (
     <section
       aria-labelledby="edc-recon-title"
@@ -226,7 +236,7 @@ export function EdcReconciliationPage() {
 
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div className="grid min-w-0 gap-1">
-          <p className="type-eyebrow text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             {t("edcRecon.queue.eyebrow")}
           </p>
           <h2
@@ -246,7 +256,7 @@ export function EdcReconciliationPage() {
 
       <p
         role="note"
-        className="rounded-container border-(length:--border-w) bg-info-subtle px-4 py-3 text-sm leading-5 text-info"
+        className="rounded-container border-(length:--border-w) bg-primary-tint px-4 py-3 text-sm leading-5 text-primary"
       >
         {t("edcRecon.queue.accessBand")}
       </p>
@@ -345,6 +355,31 @@ export function EdcReconciliationPage() {
           </Button>
         </div>
 
+        {resolved && (
+          <div
+            role="status"
+            className="flex items-center justify-between gap-3 rounded-container border-(length:--border-w) bg-success-subtle px-4 py-3 text-sm leading-5 text-success"
+          >
+            <p className="min-w-0">
+              {t("edcRecon.queue.resolvedBanner", {
+                id: resolved.id,
+                outcome: t(
+                  `edcRecon.queue.resolvedOutcome.${resolved.outcome}`,
+                ),
+              })}
+            </p>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label={t("common.close")}
+              onClick={() => setResolved(null)}
+            >
+              <X aria-hidden="true" />
+            </Button>
+          </div>
+        )}
+
         {staleError && (
           <div
             role="alert"
@@ -358,15 +393,20 @@ export function EdcReconciliationPage() {
         )}
 
         <DataTableShell
+          bare
           title={t("edcRecon.queue.card.title")}
+          // Loading keeps the header line (non-breaking space) and the footer
+          // note, and draws card-shaped placeholders as `children`, so the
+          // swap to real rows does not move anything (CLS).
           description={
             state === "ready" || state === "empty"
               ? t("edcRecon.queue.card.count", { count: items.length })
-              : undefined
+              : state === "loading"
+                ? "\u00a0"
+                : undefined
           }
-          state={state}
-          rowCount={items.length}
-          loadingRows={4}
+          state={state === "loading" ? "ready" : state}
+          rowCount={state === "loading" ? undefined : items.length}
           error={queue.error}
           onRetry={reload}
           errorCopy={{
@@ -383,12 +423,22 @@ export function EdcReconciliationPage() {
             ),
           }}
         >
-          <EdcReconciliationQueueList
-            items={items}
-            nowMs={nowMs}
-            selectedId={search.tx}
-            onSelect={(id) => update({ tx: id })}
-          />
+          {state === "loading" ? (
+            <div aria-busy="true">
+              <span className="sr-only">{t("edcRecon.queue.loading")}</span>
+              <EdcReconciliationQueueSkeleton />
+            </div>
+          ) : (
+            <EdcReconciliationQueueList
+              items={items}
+              nowMs={nowMs}
+              selectedId={search.tx}
+              onSelect={(id) => {
+                setResolved(null);
+                update({ tx: id });
+              }}
+            />
+          )}
           <p className="border-t px-4 py-3 text-sm text-muted-foreground">
             {t("edcRecon.queue.card.ageNote")}
             {API_MOCK ? ` ${t("edcRecon.queue.card.sampleNote")}` : ""}
@@ -416,8 +466,9 @@ export function EdcReconciliationPage() {
             <EdcReconciliationDetail
               key={selected.transaction.id}
               item={selected}
-              onResolved={() => {
+              onResolved={(result) => {
                 focusTitleAfterResolve.current = true;
+                setResolved(result);
                 update({ tx: undefined });
               }}
             />

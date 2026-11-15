@@ -78,5 +78,10 @@ export const edcReconQueueMessages = {
     stale:
       "Daftar belum berhasil diperbarui. Data di bawah mungkin sudah berubah, jangan jadikan dasar keputusan sebelum dimuat ulang.",
   },
+  resolvedBanner: "{id} diselesaikan: {outcome}",
+  resolvedOutcome: {
+    approved: "Approved",
+    declined: "Declined",
+  },
   loading: "Memuat transaksi ditandai…",
 } as const;

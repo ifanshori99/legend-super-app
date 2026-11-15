@@ -29,6 +29,7 @@ const OUTLET_NAMES: Record<string, string> = {
 
 type Seed = {
   n: string;
+  trace: string;
   outletId: string;
   cashier: string;
   terminal: string;
@@ -46,8 +47,9 @@ type Seed = {
 const SEEDS: Seed[] = [
   {
     n: "1048",
+    trace: "004821",
     outletId: SENOPATI,
-    cashier: "Dimas Kasir",
+    cashier: "Dimas",
     terminal: "EDC-SNP-02",
     terminalNo: "02",
     bank: "bca",
@@ -59,8 +61,9 @@ const SEEDS: Seed[] = [
   },
   {
     n: "1052",
+    trace: "004837",
     outletId: KEMANG,
-    cashier: "Rani Kasir",
+    cashier: "Rani",
     terminal: "EDC-KMG-01",
     terminalNo: "01",
     bank: "mandiri",
@@ -77,8 +80,9 @@ const SEEDS: Seed[] = [
   },
   {
     n: "1057",
+    trace: "004852",
     outletId: SENOPATI,
-    cashier: "Sari Kasir",
+    cashier: "Sari",
     terminal: "EDC-SNP-01",
     terminalNo: "01",
     bank: "bca",
@@ -90,8 +94,9 @@ const SEEDS: Seed[] = [
   },
   {
     n: "1061",
+    trace: "004866",
     outletId: KEMANG,
-    cashier: "Rani Kasir",
+    cashier: "Rani",
     terminal: "EDC-KMG-01",
     terminalNo: "01",
     bank: "mandiri",
@@ -104,8 +109,9 @@ const SEEDS: Seed[] = [
   },
   {
     n: "1063",
+    trace: "004871",
     outletId: SENOPATI,
-    cashier: "Dimas Kasir",
+    cashier: "Dimas",
     terminal: "EDC-SNP-02",
     terminalNo: "02",
     bank: "bca",
@@ -135,7 +141,7 @@ function buildItem(seed: Seed, nowMs: number): EdcReconciliationQueueItem {
       amountIdr: seed.amountIdr,
       method: "card",
       status: seed.status,
-      trace: `T${seed.n}`,
+      trace: seed.trace,
       approvalCode: seed.result?.approvalCode ?? null,
       rrn: seed.result?.rrn ?? null,
       cardType: seed.result ? "Visa" : null,

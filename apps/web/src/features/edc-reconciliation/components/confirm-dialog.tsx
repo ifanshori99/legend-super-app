@@ -123,7 +123,10 @@ export function ConfirmDialog({
   draft: ResolveDraft;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onResolved: () => void;
+  onResolved: (result: {
+    id: string;
+    outcome: EdcReconciliationOutcome;
+  }) => void;
 }) {
   const t = useT();
   const resolve = useResolveEdcReconciliation();
@@ -190,7 +193,7 @@ export function ConfirmDialog({
 
   const finish = () => {
     changeOpen(false);
-    onResolved();
+    onResolved({ id: displayId(tx), outcome: draft.outcome });
   };
 
   return (

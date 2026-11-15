@@ -101,7 +101,10 @@ export function ResolveForm({
 }: {
   item: EdcReconciliationQueueItem;
   gate: ReconciliationGate;
-  onResolved: () => void;
+  onResolved: (result: {
+    id: string;
+    outcome: EdcReconciliationOutcome;
+  }) => void;
 }) {
   const t = useT();
   const tx = item.transaction;
@@ -235,7 +238,7 @@ export function ResolveForm({
       className="grid content-start gap-4"
     >
       <div className="grid gap-1">
-        <h4 id={`${uid}-title`} className="type-title">
+        <h4 id={`${uid}-title`} className="text-base font-semibold">
           {t(key("form.title"))}
         </h4>
         <p className="text-sm text-muted-foreground">{t(key("form.intro"))}</p>

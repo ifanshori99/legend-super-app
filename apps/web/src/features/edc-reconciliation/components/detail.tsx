@@ -134,7 +134,7 @@ function ReceiptRow({
   return (
     <div className="flex items-baseline justify-between gap-4 py-1">
       <dt className="text-sm text-muted-foreground">{label}</dt>
-      <dd className="tabular text-right text-sm font-medium break-all">
+      <dd className="text-right font-mono text-sm font-medium tabular-nums break-all">
         {children}
       </dd>
     </div>
@@ -146,7 +146,10 @@ export function EdcReconciliationDetail({
   onResolved,
 }: {
   item: EdcReconciliationQueueItem;
-  onResolved: () => void;
+  onResolved: (result: {
+    id: string;
+    outcome: "approved" | "declined";
+  }) => void;
 }) {
   const t = useT();
   const nowMs = useNowMs();
@@ -198,7 +201,7 @@ export function EdcReconciliationDetail({
           aria-labelledby={`${titleId}-evidence`}
           className="grid content-start gap-4 p-4 sm:p-5"
         >
-          <h4 id={`${titleId}-evidence`} className="type-title">
+          <h4 id={`${titleId}-evidence`} className="text-base font-semibold">
             {t(key("summary.title"))}
           </h4>
           <dl className="grid grid-cols-2 gap-x-4 gap-y-3">
