@@ -13,7 +13,8 @@
 // 4. one document makes one journal (retry of a parked entry posts once; a
 //    purchase entry has no journal of its own and its own journal is single).
 // Invariant after every scenario: balance = sum(topup) - sum(return) -
-// sum(purchase), never negative, and the last entry's balance_after equals it.
+// sum(purchase), never negative, and every balance_after forms a complete
+// balance-transition chain from zero to the current fund balance.
 //
 // Assumptions where the design is silent:
 // - Success is 201 for a create; a replay answers 200 or 201 with the same id;
@@ -316,8 +317,8 @@ async function recordedEventCount(): Promise<number> {
 
 /**
  * Founder invariant, checked after each scenario: the fund balance is exactly
- * topups - returns - purchases, never negative, the ledger's last
- * balance_after matches, and every movement has exactly the journal its
+ * topups - returns - purchases, never negative, every ledger snapshot belongs
+ * to a complete balance chain, and every movement has exactly the journal its
  * status says (posted: one; parked: none; purchase: none of its own here).
  */
 async function expectLedgerConsistent(outletId: string): Promise<void> {
@@ -332,8 +333,7 @@ async function expectLedgerConsistent(outletId: string): Promise<void> {
   expect(fund!.balance).toBeGreaterThanOrEqual(0);
   for (const row of entries)
     expect(row.balance_after).toBeGreaterThanOrEqual(0);
-  if (entries.length > 0)
-    expect(entries[entries.length - 1]!.balance_after).toBe(fund!.balance);
+  expectBalanceChain(entries, fund!.balance);
   for (const row of entries) {
     if (row.kind === "purchase") {
       expect(row.journal_entry_id).toBeNull();
@@ -346,6 +346,84 @@ async function expectLedgerConsistent(outletId: string): Promise<void> {
     );
   }
 }
+
+type BalanceSnapshot = Pick<EntryRow, "kind" | "amount" | "balance_after">;
+type BalanceEdge = { before: number; after: number };
+
+/**
+ * created_at is transaction start, and a UUID tie-break is random; neither
+ * defines the order of serialized fund writes. Instead every snapshot must
+ * fit a complete trail of balance transitions, with each row used once.
+ * Hierholzer's traversal handles repeated balances without a greedy dead end.
+ */
+function expectBalanceChain(
+  entries: readonly BalanceSnapshot[],
+  finalBalance: number,
+): void {
+  const outgoing = new Map<number, BalanceEdge[]>();
+  for (const row of entries) {
+    const delta = row.kind === "topup" ? row.amount : -row.amount;
+    const before = row.balance_after - delta;
+    const edges = outgoing.get(before) ?? [];
+    edges.push({ before, after: row.balance_after });
+    outgoing.set(before, edges);
+  }
+
+  const balances = [0];
+  const traversing: BalanceEdge[] = [];
+  const reversed: BalanceEdge[] = [];
+  while (balances.length > 0) {
+    const edge = outgoing.get(balances[balances.length - 1]!)?.pop();
+    if (edge) {
+      balances.push(edge.after);
+      traversing.push(edge);
+    } else {
+      balances.pop();
+      const finished = traversing.pop();
+      if (finished) reversed.push(finished);
+    }
+  }
+
+  expect(
+    reversed,
+    "every ledger snapshot belongs to the balance chain",
+  ).toHaveLength(entries.length);
+  let balance = 0;
+  for (const edge of reversed.reverse()) {
+    expect(edge.before, "snapshot begins at the preceding balance").toBe(
+      balance,
+    );
+    expect(edge.after).toBeGreaterThanOrEqual(0);
+    balance = edge.after;
+  }
+  expect(balance, "last balance transition equals the fund balance").toBe(
+    finalBalance,
+  );
+}
+
+describe("legend-5tu68 balance snapshot oracle", () => {
+  const cycle: BalanceSnapshot[] = [
+    { kind: "topup", amount: 10, balance_after: 10 },
+    { kind: "return", amount: 10, balance_after: 0 },
+    { kind: "topup", amount: 20, balance_after: 20 },
+    { kind: "purchase", amount: 5, balance_after: 15 },
+  ];
+
+  it("uses every snapshot when a repeated balance has a cycle and an exit", () => {
+    expectBalanceChain(cycle, 15);
+  });
+
+  it("rejects a corrupted intermediate snapshot even when the net amount and final balance agree", () => {
+    const corrupted = cycle.map((row, index) =>
+      index === 0 ? { ...row, balance_after: 11 } : row,
+    );
+    expect(() => expectBalanceChain(corrupted, 15)).toThrow();
+  });
+
+  it("rejects a fund balance that differs from the final snapshot", () => {
+    expect(() => expectBalanceChain(cycle, 16)).toThrow();
+  });
+});
 
 // ---- consumer delivery (as purchase-return-petty-e2e.test.ts) ---------------
 
@@ -945,6 +1023,32 @@ describe("legend-4961 one document, one journal (money rule 4)", () => {
     await expectLedgerConsistent(outletId);
   });
 
+  it("[legend-5tu68] ledger consistency follows balance transitions when transaction timestamps run backwards", async () => {
+    const outletId = await freshOutlet();
+    const topupId = await fundWith(outletId, 100_000);
+    const purchase = await buy(await purchaseBody(outletId, 40_000));
+    expect(purchase.status, JSON.stringify(purchase.body)).toBe(201);
+    expect(await balanceOf(outletId)).toBe(60_000);
+
+    // Model the Colima clock stepping backwards between these serial writes
+    // (legend-4fzhu): the purchase can have an earlier created_at than its
+    // topup. PostgreSQL now() also records transaction start, before acquiring
+    // the fund lock in concurrent scenarios. Neither timestamp ordering case
+    // changes the exact balance snapshots that must form a complete chain.
+    await owner.query(
+      `UPDATE petty_cash_entries
+          SET created_at = CASE WHEN id = $3
+            THEN '2026-01-01T00:00:01Z'::timestamptz
+            ELSE '2026-01-01T00:00:00Z'::timestamptz END
+        WHERE tenant_id = $1 AND outlet_id = $2`,
+      [tenantId, outletId, topupId],
+    );
+    const entries = await entryRows(outletId);
+    expect(entries.map((row) => row.kind)).toEqual(["purchase", "topup"]);
+    expect(entries.map((row) => row.balance_after)).toEqual([60_000, 100_000]);
+    await expectLedgerConsistent(outletId);
+  });
+
   it("[legend-4961-PC-23] an outlet without a fund is refused: 422 PETTY_CASH_FUND_REQUIRED, no purchase, no ledger entry, no event, no journal, no fund appears", async () => {
     const outletId = await freshOutlet();
     const events = await recordedEventCount();
@@ -1256,6 +1360,19 @@ describe("legend-4961 reading funds and entries (empty and filled states)", () =
     expect(returnRes.status).toBe(201);
     const purchase = await buy(await purchaseBody(outletId, 10_000));
     expect(purchase.status, JSON.stringify(purchase.body)).toBe(201);
+
+    // Test the API's timestamp ordering and cursor against explicit fixture
+    // times, independently of Colima's wall-clock corrections (legend-4fzhu).
+    const ordered = await owner.query(
+      `UPDATE petty_cash_entries
+          SET created_at = CASE kind
+            WHEN 'topup' THEN '2026-01-01T00:00:00Z'::timestamptz
+            WHEN 'return' THEN '2026-01-01T00:00:01Z'::timestamptz
+            WHEN 'purchase' THEN '2026-01-01T00:00:02Z'::timestamptz END
+        WHERE tenant_id = $1 AND outlet_id = $2`,
+      [tenantId, outletId],
+    );
+    expect(ordered.rowCount).toBe(3);
 
     const query = { outletId, from: daysAgo(30), to: daysAgo(-2), limit: 100 };
     const all = await listEntries(finance, query);
