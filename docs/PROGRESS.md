@@ -6111,3 +6111,9 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Migrasi sementara (merge train menomori ulang): 0641 gerbang global + kunci bersama + kolom stuck, 0642 cek commit fee/settle + sumber beku; snapshot 0642. 0643 tidak dipakai.
 - Bukti: 16 test 900 baru: 11 merah dan 5 lulus di base 1c3067deb (alasan benar: fungsi 42883 dan kolom 42703 tidak ada, guard commit tidak menembak, pending lintas PT tidak ditolak; yang lulus = kontrol race-sweep, fee-control, dan 3 lock-order yang baru membuktikan deadlock di model kunci batch), lalu hijau. 49 berkas payout/GL/registry/rls: 48 lulus 1 skip, 751 test lulus, exit 0 (log suite2); prettier, eslint, typecheck api dan web, db:generate ("No schema changes") semua exit 0 (log final-static).
 - Biaya: session-usage total 33986k sampai akhir 900 (sesi mencakup 888, 891, 897, 900); parallel-report: 51 subagent total, puncak 8 bersamaan, rata-rata 0.73 berjalan per agent.
+
+## 2026-11-16: Second opinion akhir payout 900 (904)
+
+- Audit baca-saja `1c3067deb..a06c6bdd4` (kode d252a28ef, migrasi 0641–0642), cabang `qa/second-opinion-payout-900`; laporan `docs/qa/second-opinion-payout-900.md`.
+- Tidak ditemukan P0/P1 baru yang konkret; dua P1 897 dan lima skenario P2 yang ditugaskan tertutup pada audit statis. Dua P2 residual SQL: INSERT posting langsung melewati cek jurnal commit, dan sumber cash/non-frozen historis NULL masih dapat diisi sembarang akun. Koreksi palsu SQL tetap dikecualikan sesuai keputusan CTO (`legend-i01jp`).
+- Tiga subagent Codex paralel; kode/test/data tidak diubah. PostgreSQL, test, race, dan build tidak dijalankan ulang; hasil ini bukan klaim gate runtime hijau. Validasi dokumen: rujukan berkas/baris dan `git diff --check`.
