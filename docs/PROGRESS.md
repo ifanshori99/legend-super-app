@@ -1,3 +1,10 @@
+## 865 UI rekonsiliasi EDC (ui-engineer, legend-khi8n, cabang `ui/edc-rekonsiliasi-865` dari `origin/milestone/m1` d1ad35802, 15 Nov 2026)
+
+- Sudah: layar `/kelola/pembayaran/edc-rekonsiliasi` (Owner/Finance, guard `payment.reconcile`), daftar flagged + unknown tanpa flag (terkunci sampai 10 menit), bukti, penyelesaian approved/declined dengan konfirmasi + step-up MFA, terkunci selama `saleWireOpenAt`. Link dari tab EDC. Commit de82fb7e2, dee7fa9e5.
+- Kontrak GET `listEdcReconciliationQueue` (`packages/shared/src/payment/admin.ts`) masih mock-only: backend di legend-p98qi. POST memakai route yang sudah ada.
+- Cek: typecheck web+shared, eslint, prettier, test terarah 124/124, e2e mock 31/31, ui-check 16 kondisi axe 0 serious/critical (1280/390), Lighthouse A11y 100 BP 100 Perf 66 (sama dengan halaman pembanding `/kelola/pembayaran`: TBT/CLS dari bundle dan shell app, bukan layar ini).
+- Berikut: review founder (gerbang B), backend legend-p98qi.
+
 ## Merge train batch64g (merge train, `int/batch64g` dari `origin/milestone/m1` e38e43b4b, 15 Nov 2026)
 
 - Sudah: 4 cabang tip masuk berurutan: `fix/panic-device-cross-tenant` (seluruh rantai panic: `ui/panic-copy-subnav`, `ghostex/157120a3`, `ws/panic-push-registration`, device-revoke), `ui/staff-subnav-tablet-44`, `ws/traceability-strict`, `fix/edc-so-829` (seluruh rantai EDC). Migrasi dinomori ulang 0369-0372 setelah 0368 (`0369_push_subscription_scope`, `0370_panic_push_second_opinion`, `0371_push_devices_cross_tenant`, `0372_edc_sale_wire_open`); snapshot dibangun ulang (0372, prevId = snapshot 0368); `db:generate` kosong, `check-journal` ok. Konflik `apps/web/src/lib/api/client.ts`: dua impor dipertahankan. Komentar kode yang menyebut nomor lama diperbarui.
