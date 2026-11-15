@@ -1,5 +1,6 @@
 import type { z } from "zod";
 import { callEndpoint } from "@/lib/api/endpoint";
+import { listPushDevices } from "@starter/shared/identity";
 import * as notification from "@starter/shared/notification";
 
 // One caller per notification endpoint of @starter/shared/notification (bead
@@ -49,3 +50,10 @@ export const deletePushSubscription = (subscriptionId: string) =>
   callEndpoint(notification.removePushSubscription, {
     params: { subscriptionId },
   });
+
+/**
+ * This account's deliverable push devices (the server's own view). Used to
+ * confirm that this browser's stored subscription id is still registered.
+ */
+export const fetchOwnPushDevices = (signal?: AbortSignal) =>
+  callEndpoint(listPushDevices, undefined, { signal });

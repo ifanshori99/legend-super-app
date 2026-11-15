@@ -482,14 +482,21 @@ export function createNotificationService(
                 throw denied();
               outletId = body.outletId;
             }
-            // The same browser endpoint now belongs to this account: any other
-            // account's row for it, in any tenant, must not keep receiving
-            // alarms. The function (owner rights: RLS hides other tenants)
-            // takes an advisory lock per endpoint, so concurrent registrations
-            // of one endpoint serialise and only the last owner keeps a row.
-            await tx.execute(
-              sql`SELECT app.claim_push_endpoint(${context.tenant.tenantId}::uuid,${userId}::uuid,${sealed.endpointHash})`,
+            // A browser endpoint belongs to the account that registered it
+            // first. Another account's row for it, in any tenant, is never
+            // moved or deleted: the registration is refused. The function
+            // (owner rights: RLS hides other tenants) takes an advisory lock
+            // per endpoint, so concurrent registrations of one endpoint
+            // serialise. The same account may register again (upsert below).
+            const owned = await tx.execute(
+              sql`SELECT app.push_endpoint_owned_by_other(${userId}::uuid,${sealed.endpointHash}) AS owned`,
             );
+            if (owned.rows[0]?.owned === true)
+              throw new HttpError(
+                409,
+                "PUSH_SUBSCRIPTION_OWNED_BY_OTHER",
+                "Perangkat ini sudah terdaftar untuk akun lain. Keluar dari akun itu lebih dulu.",
+              );
             const id = randomUUID();
             // Only a verified registration (live session) stamps
             // registered_at; without a caller the row stays NULL and the

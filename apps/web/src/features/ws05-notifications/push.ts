@@ -18,6 +18,8 @@ export type PushState =
   | "checking"
   | "inactive"
   | "active"
+  | "reregistering"
+  | "needs-reregister"
   | "blocked"
   | "unsupported"
   | "unavailable"
@@ -239,6 +241,9 @@ export async function subscribeThisBrowser(
   // The signed-in user. An existing browser subscription registered by anyone
   // else (or by nobody we know) is dropped and replaced by a fresh endpoint.
   ownerUserId: string,
+  // Automatic sync only: a browser with no recorded owner keeps its existing
+  // subscription (same endpoint) and the server decides whether it may claim it.
+  options?: { adoptUnowned?: boolean },
 ): Promise<PushSubscriptionInput> {
   const label = deviceLabel();
   const scope = outletId === undefined ? {} : { outletId };
@@ -254,10 +259,16 @@ export async function subscribeThisBrowser(
   await navigator.serviceWorker.register("/sw.js");
   const registration = await navigator.serviceWorker.ready;
   let existing = await registration.pushManager.getSubscription();
-  if (existing && readPushOwner() !== ownerUserId) {
+  const owner = readPushOwner();
+  const adopt = options?.adoptUnowned === true && owner === null;
+  if (existing && owner !== ownerUserId && !adopt) {
     await existing.unsubscribe();
     existing = null;
   }
+  // Automatic sync never creates a subscription: with nothing to adopt there
+  // is no endpoint to register.
+  if (options?.adoptUnowned === true && !existing)
+    throw new Error("PUSH_NO_SUBSCRIPTION");
   const subscription =
     existing ??
     (await registration.pushManager.subscribe({

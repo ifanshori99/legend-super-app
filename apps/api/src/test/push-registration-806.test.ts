@@ -15,9 +15,10 @@
 //    then deleted) so session_id is NULL, but that still belongs to the user.
 //  - The error body is `{ error: { code } }`; DEVICE_TOKEN_INVALID is the
 //    code the brief fixes for a token older than the device generation.
-//  - Both of two parallel registrations of the same endpoint may answer 200
-//    (the loser's row is simply claimed away); only "no 5xx, exactly one row"
-//    is asserted.
+//  - Of two parallel registrations of the same endpoint by different users
+//    (864 / delta 2), one wins (200) and the other is refused (409
+//    PUSH_SUBSCRIPTION_OWNED_BY_OTHER); only "no 5xx, exactly one row" is
+//    asserted.
 //  - Reissue goes through the service function issueDeviceToken (the same
 //    entry other tests use), with the old token minted 60 s in the past and
 //    the device floor placed before it, so no second-boundary timing matters.
@@ -580,30 +581,30 @@ describe("legend-806 P1-2 registration with a device token", () => {
 });
 
 describe("legend-806 P1-3 one endpoint, one owner", () => {
-  it("the same endpoint registered from another tenant leaves only the last owner's row", async () => {
+  it("the same endpoint registered from another tenant is refused (409) and the first owner's row stays", async () => {
     const inA = await member(tenantA, outletA);
     const inB = await member(tenantB, tenantB.outletId);
     const endpoint = `https://fcm.googleapis.com/fcm/send/${randomUUID()}`;
 
     const first = await postAs(tenantA, inA, subscriptionBody({}, endpoint));
     expect(first.status, first.text).toBe(200);
-    const [firstRow] = await rowsOf(inA.userId);
-    expect(firstRow).toBeDefined();
-    expect(await rowsOfHash(firstRow!.endpoint_hash)).toHaveLength(1);
+    const before = await rowsOf(inA.userId);
+    expect(before).toHaveLength(1);
 
     const second = await postAs(tenantB, inB, subscriptionBody({}, endpoint));
-    expect(second.status, second.text).toBe(200);
+    expect(second.status, second.text).toBe(409);
+    expect(second.body.error.code).toBe("PUSH_SUBSCRIPTION_OWNED_BY_OTHER");
 
-    const holders = await rowsOfHash(firstRow!.endpoint_hash);
+    const holders = await rowsOfHash(before[0]!.endpoint_hash);
     expect(holders).toHaveLength(1);
     expect(holders[0]).toMatchObject({
-      user_id: inB.userId,
-      tenant_id: tenantB.tenantId,
+      user_id: inA.userId,
+      tenant_id: tenantA.tenantId,
     });
-    expect(await rowsOf(inA.userId)).toEqual([]);
+    expect(await rowsOf(inB.userId)).toEqual([]);
   });
 
-  it("registering the endpoint again from the first tenant hands it back (last owner wins both ways)", async () => {
+  it("the second tenant's user is refused both ways: the first owner keeps the endpoint", async () => {
     const inA = await member(tenantA, outletA);
     const inB = await member(tenantB, tenantB.outletId);
     const endpoint = `https://fcm.googleapis.com/fcm/send/${randomUUID()}`;
@@ -611,14 +612,13 @@ describe("legend-806 P1-3 one endpoint, one owner", () => {
       (await postAs(tenantB, inB, subscriptionBody({}, endpoint))).status,
     ).toBe(200);
     const [bRow] = await rowsOf(inB.userId);
-    expect(
-      (await postAs(tenantA, inA, subscriptionBody({}, endpoint))).status,
-    ).toBe(200);
+    const refused = await postAs(tenantA, inA, subscriptionBody({}, endpoint));
+    expect(refused.status, refused.text).toBe(409);
 
     const holders = await rowsOfHash(bRow!.endpoint_hash);
     expect(holders).toHaveLength(1);
-    expect(holders[0]!.user_id).toBe(inA.userId);
-    expect(await rowsOf(inB.userId)).toEqual([]);
+    expect(holders[0]!.user_id).toBe(inB.userId);
+    expect(await rowsOf(inA.userId)).toEqual([]);
   });
 
   it("the same user re-registering the same endpoint keeps one row and is not removed by the claim", async () => {
@@ -633,9 +633,9 @@ describe("legend-806 P1-3 one endpoint, one owner", () => {
     expect(await rowsOf(staff.userId)).toHaveLength(1);
   });
 
-  // T-A4: a claim removes other accounts' rows for the endpoint, in any
-  // tenant, but never the claiming account's own rows in its other tenants.
-  it("one account in two tenants keeps one row per tenant for the same endpoint; another account taking the endpoint removes both", async () => {
+  // T-A4 (changed by 863 delta 2): another account can no longer take the
+  // endpoint; the owner's rows in all tenants stay, the other account gets 409.
+  it("one account in two tenants keeps one row per tenant for the same endpoint; another account trying to take the endpoint is refused and both rows stay", async () => {
     const dual = await member(tenantA, outletA);
     await joinTenant(dual, tenantB, tenantB.outletId);
     const endpoint = `https://fcm.googleapis.com/fcm/send/${randomUUID()}`;
@@ -654,12 +654,14 @@ describe("legend-806 P1-3 one endpoint, one owner", () => {
 
     const other = await member(tenantA, outletA);
     const taken = await postAs(tenantA, other, subscriptionBody({}, endpoint));
-    expect(taken.status, taken.text).toBe(200);
+    expect(taken.status, taken.text).toBe(409);
+    expect(taken.body.error.code).toBe("PUSH_SUBSCRIPTION_OWNED_BY_OTHER");
 
-    expect(await rowsOf(dual.userId)).toEqual([]);
+    expect(await rowsOf(dual.userId)).toEqual(rows);
     const holders = await rowsOfHash(rows[0]!.endpoint_hash);
-    expect(holders).toHaveLength(1);
-    expect(holders[0]!.user_id).toBe(other.userId);
+    expect(holders).toHaveLength(2);
+    expect(holders.every((row) => row.user_id === dual.userId)).toBe(true);
+    expect(await rowsOf(other.userId)).toEqual([]);
   });
 
   it("two users of one tenant registering the same endpoint in parallel end with exactly one row", async () => {

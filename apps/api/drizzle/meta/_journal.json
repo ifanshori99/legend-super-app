@@ -2542,6 +2542,13 @@
       "when": 1794688197727,
       "tag": "0376_edge_link_slots",
       "breakpoints": true
+    },
+    {
+      "idx": 377,
+      "version": "7",
+      "when": 1794690000000,
+      "tag": "0377_push_endpoint_owner_guard",
+      "breakpoints": true
     }
   ]
 }

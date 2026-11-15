@@ -556,7 +556,7 @@ describe("legend-ofq4f POST /api/notifications/push-subscriptions", () => {
     );
   });
 
-  it("the same browser endpoint registered by another account removes the first account's row", async () => {
+  it("the same browser endpoint registered by another account is refused (409) and the first account's row stays untouched", async () => {
     const first = await member(tenantA, {
       permissions: [RESPOND],
       outlet: outletA,
@@ -569,13 +569,14 @@ describe("legend-ofq4f POST /api/notifications/push-subscriptions", () => {
     expect((await post(first, subscriptionBody({}, endpoint))).status).toBe(
       200,
     );
-    expect(await rowsOf(first.userId)).toHaveLength(1);
+    const before = await rowsOf(first.userId);
+    expect(before).toHaveLength(1);
 
-    expect((await post(second, subscriptionBody({}, endpoint))).status).toBe(
-      200,
-    );
-    expect(await rowsOf(first.userId)).toEqual([]);
-    expect(await rowsOf(second.userId)).toHaveLength(1);
+    const refused = await post(second, subscriptionBody({}, endpoint));
+    expect(refused.status, refused.text).toBe(409);
+    expect(refused.body.error.code).toBe("PUSH_SUBSCRIPTION_OWNED_BY_OTHER");
+    expect(await rowsOf(first.userId)).toEqual(before);
+    expect(await rowsOf(second.userId)).toEqual([]);
   });
 
   it("the subscription goes away with the login session (signing out)", async () => {

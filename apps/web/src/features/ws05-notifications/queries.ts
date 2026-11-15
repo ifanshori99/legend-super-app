@@ -1,5 +1,7 @@
 import { endpointQueryKey, endpointQueryOptions } from "@/lib/api/endpoint";
+import { listPushDevices } from "@starter/shared/identity";
 import * as notification from "@starter/shared/notification";
+import { fetchOwnPushDevices } from "./api";
 
 // Query keys and options for the notification center. Every key starts with
 // the endpoint id, so one invalidateQueries({ queryKey: [id] }) refreshes
@@ -54,3 +56,14 @@ export const pushPublicKeyQuery = () => ({
 
 export const notificationPolicyQuery = () =>
   endpointQueryOptions(notification.getNotificationPolicy);
+
+/**
+ * The server's list of deliverable push devices. Always fetched fresh: a
+ * cached answer would hide a registration that just lapsed or was renewed.
+ */
+export const pushDevicesQuery = () => ({
+  queryKey: endpointQueryKey(listPushDevices),
+  queryFn: ({ signal }: { signal: AbortSignal }) => fetchOwnPushDevices(signal),
+  staleTime: 0,
+  retry: false,
+});
