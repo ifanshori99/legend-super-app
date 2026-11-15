@@ -1,3 +1,10 @@
+## Second opinion ulang payout 870 (audit 872, 15 November 2026)
+
+- Selesai: Audit baca-saja `53b0db393...9f75ea558` pada cabang `audit/payout-870-872`; laporan `docs/qa/second-opinion-payout-870.md`. Tidak mengubah kode produk atau checkout utama.
+- Hasil: 1 P1 dan 2 P2. `legend-yjbjb` tertutup pada jalur HTTP; `legend-2aspe` masih macet bila accounting dimatikan sebelum consumer lock; `legend-w3691` masih menerima unggahan ulang bukti dengan key baru; `legend-cnpap` mencatat pending cash yang mengikuti mapping kas baru. Tahan gerbang uang untuk perbaikan dan test regresi terarah.
+- Verifikasi: Diff/caller/trigger/RLS dan rantai skenario diperiksa ulang secara statis; test produk, build, migrasi, browser dan heavy tidak dijalankan. Tiga subagent Codex, puncak tiga. session-usage tidak menemukan transkrip; parallel-report hanya membaca sesi Claude lain, sehingga biaya dan rata-rata sesi ini tidak tersedia.
+- Berikut: CTO menugaskan perbaikan tiga temuan; laporan ini tidak menutup bug perbaikan lama. Tidak push, merge atau deploy.
+
 ## Perbaikan temuan second opinion payout (engineer, cabang `fix/payout-second-opinion-870`, 15 Nov 2026 09:11-09:55 WIB, brief 870)
 
 - Sudah: legend-2aspe `settle_pending` (settlement menunggu jurnal `payroll.locked`, diselesaikan idempoten oleh consumer, sumber bank beku, tanpa jurnal ganda); legend-yjbjb POST ekspor bank lama selalu 409 `LEGACY_BANK_EXPORT_DISABLED` (GET arsip tetap); legend-w3691 bukti return diikat ke satu operasi (tabel `payroll_payout_return_claims`, konsumsi atomik, `PAYOUT_RETURN_PROOF_REUSED`).
