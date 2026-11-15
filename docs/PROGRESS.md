@@ -73,3 +73,10 @@ Diperbarui 2026-11-08 oleh CTO (coordinator Ghostex, sesi "CTO legend"). Founder
 ## Vendor (gelombang ini)
 
 - Claude: benchmark, engineer, reviewer (3 tugas). Codex: designer (2 putaran), second-opinion (3 tugas).
+
+
+## 15 November 2026 — 869 second opinion payout
+
+Audit read-only selesai atas origin/milestone/m1 `46f9d1bca726073b91e899f40987e3d37c313ef9` dan tujuh tip payout setelah fetch. Laporan: `docs/qa/second-opinion-payout.md`, berisi peta service/route/GL, rentang commit, skenario gagal dan usul test. Dua P1: event lock GL terlambat membuat settlement gaji hilang (`legend-2aspe`), serta export bank legacy melewati approval dan tidak cocok dengan settlement batch (`legend-yjbjb`). Satu P2: claim bukti return tidak mencegah penggunaan ulang pada operasi berbeda (`legend-w3691`). Audit dilacak `legend-1gj8d`; perbaikan dan test regresi mengikuti tiga issue tersebut. Binding UI `a9657bd37` sudah memperbaiki masalah yang diketahui tetapi masih perlu ikut kandidat rilis.
+
+Verifikasi statis melalui SHA beku, ancestry, diff dan kode pendukung; tiga subagent Codex, puncak tiga paralel. Tidak menjalankan test/build/heavy atau mengubah kode produk. Duitku payout masih ditolak dan 13 it.todo bukan bukti integrasi aman. Session-usage tidak menemukan transkrip Codex; parallel-report hanya mencakup Claude, sehingga biaya dan rata-rata paralel audit tidak tersedia. Tidak push/merge.
