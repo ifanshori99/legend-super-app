@@ -3,6 +3,7 @@
 import {
   useInfiniteQuery,
   useMutation,
+  useQueries,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
@@ -17,6 +18,7 @@ import type {
   DeliveryOrderStatus,
   DeliveryPlatform,
   DeliveryReconciliationQuery,
+  MapDeliveryOrderLinesInput,
   ResolveDeliveryOrderSyncInput,
   SetDeliveryChannelStateInput,
   UpdateDeliveryOrderStatusInput,
@@ -27,6 +29,7 @@ import { DELIVERY_ORDER_PAGE_SIZE } from "./lib";
 import {
   DELIVERY_REFETCH_MS,
   channelsQuery,
+  itemVariantsQuery,
   menuItemsQuery,
   orderQuery,
   priceListItemsQuery,
@@ -37,6 +40,7 @@ import {
 export type DeliveryOrderFilters = {
   platform?: DeliveryPlatform;
   status?: DeliveryOrderStatus;
+  attention?: "true" | "false";
 };
 
 function useInvalidate(endpoints: readonly AnyEndpoint[]) {
@@ -62,7 +66,7 @@ export function useChannels(outletId: string | undefined) {
 
 /**
  * Incoming orders, newest first, as an infinite cursor list. Filters are part
- * of the key, so switching the status or platform starts a clean page chain.
+ * of the key, so switching any filter starts a clean page chain.
  */
 export function useDeliveryOrders(
   outletId: string | undefined,
@@ -112,6 +116,19 @@ export function useReconciliation(
 
 export function useMenuItems(enabled = true) {
   return useQuery({ ...menuItemsQuery(), enabled });
+}
+
+/**
+ * Variants of each picked menu item, in the same order as `itemIds`; a `null`
+ * entry (nothing picked yet) stays idle.
+ */
+export function useItemVariantsFor(itemIds: readonly (string | null)[]) {
+  return useQueries({
+    queries: itemIds.map((itemId) => ({
+      ...itemVariantsQuery(itemId ?? ""),
+      enabled: itemId !== null,
+    })),
+  });
 }
 
 /**
@@ -216,6 +233,26 @@ export function useResolveOrderSync() {
       body: ResolveDeliveryOrderSyncInput;
     }) =>
       api.resolveOrderSync(
+        {
+          outletId: input.outletId,
+          deliveryOrderId: input.deliveryOrderId,
+        },
+        input.body,
+      ),
+    onSettled: () => refresh(),
+  });
+}
+
+/** legend-5d76: staff map the unmatched lines of a needs_review order. */
+export function useMapOrderLines() {
+  const refresh = useInvalidate(ORDER_WRITES);
+  return useMutation({
+    mutationFn: (input: {
+      outletId: string;
+      deliveryOrderId: string;
+      body: MapDeliveryOrderLinesInput;
+    }) =>
+      api.mapOrderLines(
         {
           outletId: input.outletId,
           deliveryOrderId: input.deliveryOrderId,

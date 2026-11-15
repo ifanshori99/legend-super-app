@@ -73,10 +73,12 @@ export function OrdersTab({
   );
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
   const [manualOpen, setManualOpen] = React.useState(false);
+  const [attentionOnly, setAttentionOnly] = React.useState(false);
 
   const orders = useDeliveryOrders(outletId, {
     platform: platform === ALL ? undefined : platform,
     status: status === ALL ? undefined : status,
+    attention: attentionOnly ? "true" : undefined,
   });
   const rows = orders.data?.pages.flatMap((page) => page.data) ?? [];
   const state: DataState = orders.isPending
@@ -114,9 +116,9 @@ export function OrdersTab({
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
               <Select
                 value={platform}
-                onValueChange={(value) =>
-                  setPlatform(value as DeliveryPlatform | typeof ALL)
-                }
+                onValueChange={(value) => {
+                  setPlatform(value as DeliveryPlatform | typeof ALL);
+                }}
               >
                 <SelectTrigger
                   aria-label={t("deliveryOps.pesanan.filterPlatform")}
@@ -137,9 +139,9 @@ export function OrdersTab({
               </Select>
               <Select
                 value={status}
-                onValueChange={(value) =>
-                  setStatus(value as DeliveryOrderStatus | typeof ALL)
-                }
+                onValueChange={(value) => {
+                  setStatus(value as DeliveryOrderStatus | typeof ALL);
+                }}
               >
                 <SelectTrigger
                   aria-label={t("deliveryOps.pesanan.filterStatus")}
@@ -158,6 +160,17 @@ export function OrdersTab({
                   ))}
                 </SelectContent>
               </Select>
+              <Button
+                type="button"
+                size="sm"
+                variant={attentionOnly ? "default" : "outline"}
+                aria-pressed={attentionOnly}
+                onClick={() => {
+                  setAttentionOnly((value) => !value);
+                }}
+              >
+                {t("deliveryOps.pesanan.filterAttention")}
+              </Button>
               <Button
                 type="button"
                 size="sm"

@@ -15,6 +15,28 @@ const f = delivery.cafeLegendDeliveryFixtures;
 const ids = delivery.deliveryFixtureIds;
 const menuItemId = "00000000-0000-4000-8000-000000001200";
 
+test("legend-5v8sm delivery attention query uses explicit booleans and rejects ambiguous values", () => {
+  assert.equal(
+    delivery.listDeliveryOrdersQuerySchema.parse({ attention: "true" })
+      .attention,
+    true,
+  );
+  assert.equal(
+    delivery.listDeliveryOrdersQuerySchema.parse({ attention: "false" })
+      .attention,
+    false,
+  );
+  assert.equal(
+    delivery.listDeliveryOrdersQuerySchema.parse({}).attention,
+    undefined,
+  );
+  assert.equal(
+    delivery.listDeliveryOrdersQuerySchema.safeParse({ attention: "yes" })
+      .success,
+    false,
+  );
+});
+
 test("F20 Cafe Legend delivery channel fixtures parse (§6.G delivery_channel_orders)", () => {
   delivery.deliveryFixtureSchema.parse(f);
   assert.equal(f.channels.length, 3);

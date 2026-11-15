@@ -10,6 +10,7 @@ import {
   getDeliveryReconciliation as getDeliveryReconciliationEndpoint,
   listDeliveryChannels as listDeliveryChannelsEndpoint,
   listDeliveryOrders as listDeliveryOrdersEndpoint,
+  mapDeliveryOrderLines as mapDeliveryOrderLinesEndpoint,
   resendDeliveryOrderSync as resendDeliveryOrderSyncEndpoint,
   resolveDeliveryOrderSync as resolveDeliveryOrderSyncEndpoint,
   setDeliveryChannelState as setDeliveryChannelStateEndpoint,
@@ -20,6 +21,7 @@ import {
   listItems as listItemsEndpoint,
   listPriceListItems as listPriceListItemsEndpoint,
   listPriceLists as listPriceListsEndpoint,
+  listVariants as listVariantsEndpoint,
 } from "@starter/shared/menu";
 import { callEndpoint } from "@/lib/api/endpoint";
 import type { CallOptions } from "@/lib/api/endpoint";
@@ -123,6 +125,15 @@ export const resolveOrderSync = async (
     )
   ).data;
 
+/** Staff map the unmatched lines of a needs_review order; the server injects it. */
+export const mapOrderLines = async (
+  params: Params<typeof mapDeliveryOrderLinesEndpoint>,
+  body: Body<typeof mapDeliveryOrderLinesEndpoint>,
+  options?: CallOptions,
+) =>
+  (await callEndpoint(mapDeliveryOrderLinesEndpoint, { params, body }, options))
+    .data;
+
 export const fetchReconciliation = async (
   params: Params<typeof getDeliveryReconciliationEndpoint>,
   query: Query<typeof getDeliveryReconciliationEndpoint>,
@@ -145,6 +156,17 @@ export const fetchMenuItems = (
   query: Query<typeof listItemsEndpoint>,
   options?: CallOptions,
 ) => callEndpoint(listItemsEndpoint, { query }, options);
+
+/** Variants of one menu item: the mapping picker asks for one when it exists. */
+export const fetchItemVariants = (
+  params: Params<typeof listVariantsEndpoint>,
+  options?: CallOptions,
+) =>
+  callEndpoint(
+    listVariantsEndpoint,
+    { params, query: { limit: DELIVERY_LIST_LIMIT } },
+    options,
+  );
 
 /**
  * The platform's channel price list (WS-03 "harga per kanal"). Shown read-only

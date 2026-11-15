@@ -359,6 +359,7 @@ export type LinkDeliveryChannelInput = z.infer<
 export const listDeliveryOrdersQuerySchema = z.strictObject({
   platform: deliveryPlatformSchema.optional(),
   status: deliveryOrderStatusSchema.optional(),
+  attention: z.stringbool({ truthy: ["true"], falsy: ["false"] }).optional(),
   cursor: z.string().min(1).max(1024).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(25),
 });
@@ -424,6 +425,39 @@ export const resolveDeliveryOrderSyncInputSchema = clientInputSchema({
 });
 export type ResolveDeliveryOrderSyncInput = z.infer<
   typeof resolveDeliveryOrderSyncInputSchema
+>;
+
+/**
+ * Staff map the unmatched or sold_out lines of a needs_review order (webhook
+ * lines that did not match the menu or whose item sold out) to menu items and
+ * inject it into the KDS (legend-5d76). Only unmatched or sold_out lines are
+ * mapped; the order total stays the platform's (lines keep the platform
+ * price), so the mapping never changes what the platform pays.
+ */
+export const mapDeliveryOrderLinesInputSchema = clientInputSchema({
+  mappings: z
+    .array(
+      z.strictObject({
+        lineNo: z.number().int().min(1).max(200),
+        /**
+         * The platform item id of the line as staff saw it. The server
+         * compares it with the stored line; a different one (the webhook
+         * changed the order meanwhile) answers 409 DELIVERY_ORDER_CHANGED.
+         */
+        externalItemId: reference.nullable(),
+        menuItemId: uuidSchema,
+        variantId: uuidSchema.nullable().optional(),
+      }),
+    )
+    .min(1)
+    .max(200)
+    .refine(
+      (rows) => new Set(rows.map((row) => row.lineNo)).size === rows.length,
+      { message: "A line is mapped once" },
+    ),
+});
+export type MapDeliveryOrderLinesInput = z.infer<
+  typeof mapDeliveryOrderLinesInputSchema
 >;
 
 // ---- Commission reconciliation (§3.23 "Rekonsiliasi Komisi") --------------

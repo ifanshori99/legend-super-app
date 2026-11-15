@@ -18,6 +18,8 @@ export const deliveryErrorHttpStatus = {
   DELIVERY_CHANNEL_UNKNOWN: 404,
   /** The order is not flagged `needs_action` (already synced, resending, or never failed). */
   DELIVERY_SYNC_NOT_PENDING: 409,
+  /** The order's lines changed (webhook) after staff looked; nothing was injected. */
+  DELIVERY_ORDER_CHANGED: 409,
 } as const satisfies Record<string, number>;
 
 export type DeliveryErrorCode = keyof typeof deliveryErrorHttpStatus;
@@ -42,6 +44,8 @@ export const deliveryErrorMessages: Record<DeliveryErrorCode, string> = {
   DELIVERY_CHANNEL_UNKNOWN: "Kanal pengiriman ini belum terhubung.",
   DELIVERY_SYNC_NOT_PENDING:
     "Pesanan ini tidak sedang menunggu tindakan sinkronisasi platform.",
+  DELIVERY_ORDER_CHANGED:
+    "Item pesanan berubah dari platform. Muat ulang pesanan lalu petakan lagi.",
 };
 
 /** Domain error for delivery channel rules. */

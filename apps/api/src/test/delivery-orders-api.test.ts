@@ -9,7 +9,11 @@ import { randomUUID } from "node:crypto";
 import type { Express } from "express";
 import type { PoolClient } from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { tenantIdSchema, ulidToUuid } from "@starter/shared/core";
+import {
+  outletIdSchema,
+  tenantIdSchema,
+  ulidToUuid,
+} from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -19,11 +23,15 @@ import {
   PERMISSION_CODES,
   tenantPermissionCodeSchema,
 } from "@starter/shared/access";
-import { deliveryChannelOrderSchema } from "@starter/shared/delivery";
+import {
+  deliveryChannelOrderSchema,
+  listDeliveryOrdersQuerySchema,
+} from "@starter/shared/delivery";
 import { createApp } from "../app.ts";
 import { db as appDb } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { setDeliveryChannelAdapter } from "../services/delivery-ports.ts";
+import { listDeliveryOrders } from "../services/delivery-orders.service.ts";
 import { deliverDeliveryChannelEvent } from "../services/delivery-sync-consumer.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import { createIsolatedTenant, owner } from "./floor-test-helpers.ts";
@@ -253,6 +261,105 @@ describe("delivery orders: manual order, list and detail", () => {
     const res = await get(`/delivery-orders/${randomUUID()}`);
     expect(res.status).toBe(404);
     expect(errorCode(res.body)).toBe("DELIVERY_ORDER_NOT_FOUND");
+  });
+
+  it("legend-5v8sm filters attention before pagination and keeps the existing review predicate", async () => {
+    const sync = await seedPlatformOrder();
+    const unmatched = await seedPlatformOrder();
+    const soldOut = await seedPlatformOrder();
+    const terminalUnmatched = await seedPlatformOrder("cancelled");
+    const priceMismatch = await seedPlatformOrder();
+    const retrying = await seedPlatformOrder();
+    const ordinary = await seedPlatformOrder();
+    const injected = await manualOrder(1);
+    const ids = [
+      sync,
+      unmatched,
+      soldOut,
+      terminalUnmatched,
+      priceMismatch,
+      retrying,
+      ordinary,
+      injected.id,
+    ];
+    await asOwnerTenant(async (db) => {
+      for (const [index, id] of ids.entries()) {
+        await db.query(
+          "UPDATE delivery_channel_orders SET received_at = '2090-01-01'::timestamptz + $3 * interval '1 minute' WHERE tenant_id = $1 AND id = $2",
+          [tenant.tenantId, id, index],
+        );
+      }
+      await db.query(
+        "UPDATE delivery_channel_orders SET platform_sync_state = 'needs_action' WHERE tenant_id = $1 AND id = $2",
+        [tenant.tenantId, sync],
+      );
+      await db.query(
+        "UPDATE delivery_channel_orders SET platform_sync_state = 'retrying', platform_sync_action = 'accept_order', platform_sync_status = 'accepted', platform_sync_next_at = now() WHERE tenant_id = $1 AND id = $2",
+        [tenant.tenantId, retrying],
+      );
+      for (const id of [unmatched, terminalUnmatched]) {
+        await db.query(
+          `UPDATE delivery_channel_orders
+           SET lines = jsonb_set(jsonb_set(jsonb_set(lines, '{0,mapping}', '"unmatched"'), '{0,menuItemId}', 'null'), '{0,channelPriceIdr}', 'null')
+           WHERE tenant_id = $1 AND id = $2`,
+          [tenant.tenantId, id],
+        );
+      }
+      await db.query(
+        "UPDATE delivery_channel_orders SET status = 'received' WHERE tenant_id = $1 AND id = $2",
+        [tenant.tenantId, injected.id],
+      );
+      await db.query(
+        `UPDATE delivery_channel_orders SET lines = jsonb_set(lines, '{0,mapping}', '"sold_out"') WHERE tenant_id = $1 AND id = ANY($2::uuid[])`,
+        [tenant.tenantId, [soldOut, injected.id]],
+      );
+      await db.query(
+        "UPDATE delivery_channel_orders SET closed_at = now() WHERE tenant_id = $1 AND id = $2",
+        [tenant.tenantId, terminalUnmatched],
+      );
+      await db.query(
+        `UPDATE delivery_channel_orders SET lines = jsonb_set(jsonb_set(lines, '{0,mapping}', '"price_mismatch"'), '{0,channelPriceIdr}', '24000') WHERE tenant_id = $1 AND id = $2`,
+        [tenant.tenantId, priceMismatch],
+      );
+    });
+
+    const context = establishScopedTenantContext(
+      establishTenantContext({
+        tenantId: tenantIdSchema.parse(tenant.tenantId),
+        brandId: null,
+        source: "session",
+      }),
+      { kind: "tenant" },
+    );
+    const attentionQuery = {
+      ...listDeliveryOrdersQuerySchema.parse({ limit: 1 }),
+      attention: true,
+    };
+    const servicePage = await listDeliveryOrders(
+      context,
+      outletIdSchema.parse(tenant.outletId),
+      attentionQuery,
+    );
+    expect(servicePage.data.map((order) => order.id)).toEqual([soldOut]);
+
+    const found: string[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < 3; page++) {
+      const response = await get(
+        `/delivery-orders?attention=true&limit=1${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+      );
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(response.body.data).toHaveLength(1);
+      found.push(response.body.data[0].id);
+      cursor = response.body.meta.nextCursor;
+    }
+    expect(found).toEqual([soldOut, unmatched, sync]);
+    expect(cursor).toBeNull();
+    const unfiltered = await get("/delivery-orders?attention=false&limit=1");
+    expect(unfiltered.status, JSON.stringify(unfiltered.body)).toBe(200);
+    expect(unfiltered.body.data[0].id).toBe(injected.id);
+    const invalid = await get("/delivery-orders?attention=yes");
+    expect([400, 422]).toContain(invalid.status);
   });
 });
 

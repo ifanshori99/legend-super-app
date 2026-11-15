@@ -87,6 +87,7 @@ export function deliveryErrorKey(error: unknown): MessageKey {
     case "DELIVERY_MAPPING_INCOMPLETE":
     case "DELIVERY_CHANNEL_UNKNOWN":
     case "DELIVERY_SYNC_NOT_PENDING":
+    case "DELIVERY_ORDER_CHANGED":
       return `deliveryOps.errors.${code}`;
     default:
       return "deliveryOps.errors.fallback";
@@ -145,8 +146,31 @@ export function orderHasPriceMismatch(order: DeliveryChannelOrder): boolean {
   return order.lines.some((line) => line.mapping === "price_mismatch");
 }
 
+/** A line staff must map before the order can reach the kitchen. */
+export function lineNeedsMapping(line: DeliveryChannelOrder["lines"][number]) {
+  return line.mapping === "unmatched" || line.mapping === "sold_out";
+}
+
+/** Any line that blocks the kitchen: unmatched, or matched to a sold-out item. */
 export function orderHasUnmatchedLine(order: DeliveryChannelOrder): boolean {
-  return order.lines.some((line) => line.mapping === "unmatched");
+  return order.lines.some(lineNeedsMapping);
+}
+
+/**
+ * legend-5d76: a webhook order that did not match the menu waits for staff
+ * (status `received`, no internal order yet, a line still unmatched or sold out).
+ */
+export function orderNeedsReview(order: DeliveryChannelOrder): boolean {
+  return (
+    order.status === "received" &&
+    order.orderId === null &&
+    orderHasUnmatchedLine(order)
+  );
+}
+
+/** The "Perlu tindakan" filter of the order list. */
+export function orderNeedsAttention(order: DeliveryChannelOrder): boolean {
+  return order.platformSync === "needs_action" || orderNeedsReview(order);
 }
 
 // ---- Channel state --------------------------------------------------------

@@ -456,7 +456,7 @@ async function cancelFromPlatform(
  * `accepted` through the delivery machine. A refused or failed adapter call
  * leaves the order `received` for staff to accept by hand; it never throws.
  */
-async function autoAccept(
+export async function autoAccept(
   context: ScopedTenantContext,
   row: DeliveryChannelOrderRow,
   now: Date,
