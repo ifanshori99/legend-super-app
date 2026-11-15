@@ -742,8 +742,11 @@ test("legend-uzd4t: a verification still running for batch A approves nothing on
       }
     ).__legendMock.setLatencyMs(500),
   );
-  await panel.getByRole("textbox").fill("123456");
-  await panel.getByRole("textbox").press("Enter");
+  // The panel also holds the password field (step-up by password, legend-caobb):
+  // the code of the authenticator app goes in the one-time-code input.
+  const code = panel.locator('input[autocomplete="one-time-code"]');
+  await code.fill("123456");
+  await code.press("Enter");
   await page.goForward();
   await expect(page).toHaveURL(new RegExp(`batch=${TWO_PENDING.b}`));
   await expect(page.getByText(/Rp\s?3\.500\.000/).first()).toBeVisible();
