@@ -293,6 +293,43 @@ describe("review F3: a proof is not reusable across resolve and return flows", (
   });
 });
 
+// Review round 2, F6: the same binding applies to payment confirmation. A key
+// used by step 1 of a return of B must not be accepted as the payment proof of
+// another exported item C. Assumptions: the confirmer is the second approver
+// (APP3); the refusal is 409 PAYOUT_RETURN_PROOF_REUSED; the refused confirm
+// leaves C exported, and the return of B can then be finished with the same K.
+describe("review F6: a return proof is not reusable as a payment confirmation proof", () => {
+  it("[f6-confirm-with-return-proof] K started the return of B; confirming exported C with K is refused (409 PAYOUT_RETURN_PROOF_REUSED), C stays exported; step 2 of B with K still succeeds with one return journal", async () => {
+    const { batchId, b, c } = await paidAbPendingC();
+    const k = uploadEvidence(batchId, "dana-kembali-B.pdf");
+    await returnWith(batchId, [idOf(b)], APP, k);
+
+    await W.expectRefused(
+      W.confirm(
+        batchId,
+        [
+          {
+            itemId: idOf(c),
+            result: "succeeded",
+            bankRef: `BCA-${batchId.slice(0, 8)}-C`,
+            evidenceKey: k,
+          },
+        ],
+        APP3,
+      ),
+      { status: 409, code: "PAYOUT_RETURN_PROOF_REUSED" },
+    );
+    expect(
+      (await W.itemOfPerson(batchId, ANDI)).status,
+      "C is not marked paid with a return proof",
+    ).toBe("exported");
+
+    await returnWith(batchId, [idOf(b)], APP3, k);
+    expect((await W.itemOfPerson(batchId, SITI)).status).toBe("returned");
+    expect(await W.countJournals(returnKey(idOf(b)))).toBe(1);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Review round 1, F4 (P3): the claims table has a write guard (like the GL
 // postings guard). Only `open -> consumed` with consumed_at set and every
