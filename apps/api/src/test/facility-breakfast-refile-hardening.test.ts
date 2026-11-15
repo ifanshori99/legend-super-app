@@ -14,7 +14,7 @@
 // exactly once, the total never exceeds what was paid, replays add nothing and
 // both refunds can be approved; BRK-REFILE-09 controls (R fails before the late
 // refund exists -> one refund of the whole payment, no extra; the re-filed refund
-// that fails is not re-filed again).
+// that fails at the provider is NOT re-filed: follow-up list + alarm).
 //
 // Assumptions:
 // - The brief's "bayar 100.000" is the order total computed by the server
@@ -166,6 +166,28 @@ async function expectCapped(intentId: string, paidIdr: number) {
   const rows = await refundDetailsOf(world, intentId);
   expect(liveSum(rows), JSON.stringify(rows)).toBeLessThanOrEqual(paidIdr);
   return rows;
+}
+
+/** Audit rows `payment.refund_followup_required` of one refund (the alarm record). */
+async function auditCount(refundId: string) {
+  const { rows } = await owner.query<{ id: string }>(
+    `SELECT id FROM audit_logs
+      WHERE tenant_id = $1 AND event->>'objectId' = $2
+        AND event->>'action' = 'payment.refund_followup_required'`,
+    [world.tenant.tenantId, refundId],
+  );
+  return rows.length;
+}
+
+/** Refund alarms (in-app notifications) the approver holds in this tenant. */
+async function alarmCount() {
+  const { rows } = await owner.query<{ id: string }>(
+    `SELECT id FROM notifications
+      WHERE tenant_id = $1 AND user_id = $2
+        AND (title || ' ' || body) ~* 'pengembalian|refund'`,
+    [world.tenant.tenantId, approverUserId],
+  );
+  return rows.length;
 }
 
 const approve = (refundId: string) =>
@@ -431,7 +453,7 @@ describe("BRK-REFILE-09 controls", () => {
     expect(liveSum(rows)).toBe(paid);
   });
 
-  it("BRK-REFILE-09 the re-filed late refund that fails is not filed again (no loop)", async () => {
+  it("BRK-REFILE-09 the re-filed late refund that fails at the provider is NOT re-filed: the money stays capped (CTO 15 Nov, legend-weuo2)", async () => {
     const { order, lateIntentId } = await lateIntentWorld("after_cancel");
     const paid = order.totalIdr;
     const r = await approvedAdminRefund(lateIntentId);
@@ -457,8 +479,59 @@ describe("BRK-REFILE-09 controls", () => {
     }
     await settleRefundFromChain(world.context, refiled!.id);
 
+    // CTO decision 15 Nov: a provider decline of a system refund is not
+    // re-filed (a new request could pay twice). It waits for a person; the
+    // list/alarm/audit part is BRK-REFILE-09b below.
     const after = await expectCapped(lateIntentId, paid);
-    expect(after).toHaveLength(before.length);
+    expect(
+      after,
+      "a provider-declined system refund was re-filed",
+    ).toHaveLength(before.length);
     expect(after.find((row) => row.id === refiled!.id)?.status).toBe("failed");
+    expect(liveSum(after)).toBeLessThanOrEqual(paid);
+  });
+
+  // Brief 850 v2: the declined refund must show in the follow-up list with one
+  // alarm and one audit row. Here a sibling late refund (the rest of the
+  // payment) is still pending, so a live refund exists; the part R held is
+  // owed to the guest but nobody is told. Separate test: it fails only on the
+  // follow-up, not on the money rule above.
+  it("BRK-REFILE-09b the declined re-filed late refund is listed (failure_needs_person) with one alarm and one audit row even while a sibling refund is pending", async () => {
+    const { order, lateIntentId } = await lateIntentWorld("after_cancel");
+    const paid = order.totalIdr;
+    const r = await approvedAdminRefund(lateIntentId);
+    await deliver(world, await paidEvent(world, lateIntentId));
+    await providerFails(r.providerRef);
+    const before = await expectCapped(lateIntentId, paid);
+    const refiled = before.find(
+      (row) =>
+        row.requestedBy === SYSTEM && row.amount === R_IDR && isLive(row),
+    );
+    expect(refiled, "no re-filed refund to fail").toBeDefined();
+    const alarmsBefore = await alarmCount();
+
+    const fake = new FakeRefundGateway();
+    fake.enqueue("failed");
+    setPaymentRefundGateway(fake);
+    try {
+      const response = await approve(refiled!.id);
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+    } finally {
+      setPaymentRefundGateway(null);
+    }
+    await settleRefundFromChain(world.context, refiled!.id);
+
+    const list = await approver
+      .get(`${ADMIN}/refunds/follow-ups?limit=100`)
+      .set(world.headers)
+      .set(originHeader);
+    expect(list.status, JSON.stringify(list.body)).toBe(200);
+    const items = (
+      list.body.data as { id: string; blockedReason?: string }[]
+    ).filter((item) => item.id === refiled!.id);
+    expect(items).toHaveLength(1);
+    expect(items[0]!.blockedReason).toBe("failure_needs_person");
+    expect(await auditCount(refiled!.id)).toBe(1);
+    expect(await alarmCount()).toBe(alarmsBefore + 1);
   });
 });

@@ -684,6 +684,12 @@ async function failRefund(
       await import("./order-recovery-refund.ts");
     await refileRecoveryRefundAfterFailure(tx, context, updated, input.now);
   }
+  // legend-weuo2: every re-file path above has run. A failed system refund
+  // (facility, QR) that leaves the guest owed money with nothing live to cover
+  // it is raised to a person: alarm, audit row, follow-up list.
+  const { settleSystemRefundFailure } =
+    await import("./system-refund-followup.ts");
+  await settleSystemRefundFailure(tx, context, updated, input.now);
   return updated;
 }
 
@@ -693,8 +699,12 @@ async function failRefund(
  * (qr-order-late-payment.ts), and that request may have found nothing left.
  * When the refund that took the money fails, the guest is owed it again: file
  * a new request under its own key. A failed late-payment refund is not
- * re-filed (no loop: it stays failed for a person to settle), nor is a fund
- * refund or an intent that has no QR late-payment request on a voided order.
+ * re-filed while it is a system refund that may still be (legend-weuo2: only
+ * a failure a new request can fix (not a rejection), at most
+ * `MAX_SYSTEM_REFUND_REFILE_ATTEMPTS` failures per intent, see
+ * system-refund-followup.ts); the rest stays failed for a person (alarm and
+ * follow-up list). A fund refund and an intent that has no QR late-payment
+ * request on a voided order are not re-filed either.
  * Lazy import: qr-order-late-payment imports this module (cycle).
  */
 async function refileQrLatePaymentAfterFailure(
@@ -704,6 +714,12 @@ async function refileQrLatePaymentAfterFailure(
   now: Date,
 ): Promise<void> {
   if (refund.unallocatedFundId !== null) return;
+  const { systemRefundMayRefile } = await import("./system-refund-followup.ts");
+  if (
+    refund.requestedBy === "system:qr" &&
+    !(await systemRefundMayRefile(tx, refund))
+  )
+    return;
   const base = `qr-late-payment-refund:${refund.paymentIntentId}`;
   const keys = await tx.execute(sql`
     SELECT key, response->>'refundId' AS refund_id
@@ -712,7 +728,6 @@ async function refileQrLatePaymentAfterFailure(
        AND (key = ${base} OR key LIKE ${`${base}:%`})
   `);
   if (keys.rows.length === 0) return;
-  if (keys.rows.some((row) => row.refund_id === refund.id)) return;
   const [intent] = await tx
     .select({ paymentLinkId: paymentIntents.paymentLinkId })
     .from(paymentIntents)

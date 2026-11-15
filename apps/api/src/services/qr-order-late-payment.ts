@@ -109,7 +109,12 @@ export async function requestQrLatePaymentRefund(
       // above is used once, so a pending refund rejected or failed later would
       // never be returned to the guest. Its approval fails `cap_exceeded`.
       const pending = await pendingRefundIdr(tx, tenantId, intent.id);
-      const amount = cap - (reserved - pending);
+      // A re-file (keySuffix) subtracts pending too: it only files the real
+      // remainder, so live refunds never exceed what was paid (legend-weuo2).
+      const amount =
+        input.keySuffix === undefined
+          ? cap - (reserved - pending)
+          : cap - reserved;
       if (amount <= 0n) return { refundId: null };
       const [inserted] = await tx
         .insert(paymentRefunds)

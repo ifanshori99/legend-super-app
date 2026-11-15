@@ -23,6 +23,7 @@ import * as reconciliation from "../services/payment-admin-reconciliation.servic
 import * as corrections from "../services/payment-reconciliation-correction.service.ts";
 import * as settlementImport from "../services/payment-settlement-import.service.ts";
 import * as refunds from "../services/payment-refund.service.ts";
+import * as followups from "../services/system-refund-followup.ts";
 
 export const paymentAdminRouter = Router();
 paymentAdminRouter.use(requireAuth, requireTrustedOrigin, requireTenantContext);
@@ -246,6 +247,19 @@ paymentAdminRouter.get(
         scope(req),
         actor(req),
         contract.listRefunds.query.parse(req.query),
+      ),
+    );
+  },
+);
+paymentAdminRouter.get(
+  route(contract.listRefundFollowups.path),
+  viewQuery,
+  async (req, res) => {
+    res.json(
+      await followups.listRefundFollowups(
+        scope(req),
+        actor(req),
+        contract.listRefundFollowups.query.parse(req.query),
       ),
     );
   },
