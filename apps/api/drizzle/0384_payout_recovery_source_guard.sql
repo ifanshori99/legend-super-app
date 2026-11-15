@@ -10,7 +10,7 @@
 --    (NULL -> account), by the finance step that supplies a missing source.
 --    It can never be replaced, and no other kind may take it.
 -- Everything else about a posting stays frozen (PAYOUT-30), as in 0348/0350/
--- 0368/0620. The journal check runs as the caller, under the same tenant row
+-- 0381/0383. The journal check runs as the caller, under the same tenant row
 -- level security context as the update itself.
 GRANT UPDATE (source_gl_account_id) ON TABLE public.payroll_payout_gl_postings TO legend_app;
 --> statement-breakpoint

@@ -1,4 +1,4 @@
-// Brief payout GL 881, P2 (legend-63qhw): migration 0626 tightens the guard
+// Brief payout GL 881, P2 (legend-63qhw): migration 0384 tightens the guard
 // trigger of `payroll_payout_gl_postings` for the application role.
 //
 // - The kind flip `settle_pending|settle_skipped -> settle` is only allowed when
@@ -10,7 +10,7 @@
 //   unresolved settle (pending/skipped) and on no other kind; it can never be
 //   replaced or cleared, and it cannot ride along with another column change.
 //
-// - Migration 0627 (legend-5vb7y) also checks the lines of that journal: debits
+// - Migration 0385 (legend-5vb7y) also checks the lines of that journal: debits
 //   equal credits and are above zero, every debit is on the salaries payable
 //   account (2103) of the entity, every credit is on the source account of the
 //   money (the GL account of the bank account frozen on the batch). A journal

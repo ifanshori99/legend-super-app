@@ -1,7 +1,7 @@
 -- legend-5vb7y: the kind flip to `settle` (from `settle_pending` or
 -- `settle_skipped`) also checks the CONTENT of the settle journal, not only its
 -- header (tenant, key, legal entity, source type `payroll`, run as source id,
--- as in 0626). The journal must:
+-- as in 0384). The journal must:
 --   (a) have lines with total debit = total credit > 0;
 --   (b) debit only the salaries payable account (role `salaries_payable`,
 --       2103) mapped for the entity: a reversed journal (debit on the source)
