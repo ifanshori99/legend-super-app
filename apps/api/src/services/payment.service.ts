@@ -2794,8 +2794,10 @@ export async function settleGatewayIntentNow(
  * retries. Past expiry a code is asked again only after the backoff (half the
  * time since expiry, at most `GATEWAY_POLL_MAX_BACKOFF_MS`). Intents are taken least-recently-polled first and each attempt
  * stamps `gateway_polled_at`, so a few failing intents cannot starve the rest.
- * A run stops after its time budget; a provider with three gateway errors in a row (the
- * gateway is down).
+ * Live (pending) codes are all processed before any expired code. Each kind
+ * has its own time budget, and a provider with three gateway errors in a row
+ * (the gateway is down) is skipped per kind, so failing expired codes never
+ * starve a live one.
  */
 export async function pollPendingGatewayIntents(
   context: ScopedTenantContext,
@@ -2881,10 +2883,14 @@ export async function pollPendingGatewayIntents(
       )
       .returning();
     // `returning` has no order, and the per-provider windows come back grouped
-    // by provider. Process in one global least-recently-polled-first order
+    // by provider. SO-885: every live (pending) code goes before any expired
+    // code; inside each kind, one global least-recently-polled-first order
     // (never polled first, then oldest) so a slow provider that uses up the
     // time budget cannot keep another provider's rows behind its own forever.
     return claimed.sort((a, b) => {
+      const ak = a.status === "pending" ? 0 : 1;
+      const bk = b.status === "pending" ? 0 : 1;
+      if (ak !== bk) return ak - bk;
       const ap = a.gatewayPolledAt?.getTime() ?? Number.NEGATIVE_INFINITY;
       const bp = b.gatewayPolledAt?.getTime() ?? Number.NEGATIVE_INFINITY;
       if (ap !== bp) return ap < bp ? -1 : 1;
@@ -2893,14 +2899,21 @@ export async function pollPendingGatewayIntents(
   });
   let checked = 0;
   let settled = 0;
-  // Error budget per provider: one down gateway never stops another's poll.
+  // Error budget per provider AND per kind: one down gateway never stops
+  // another's poll, and failing expired codes never use up the budget of the
+  // live (pending) codes of the same provider. Each kind also has its own time
+  // budget, started when the kind's first row is reached.
   const consecutiveErrors = new Map<string, number>();
-  const startedAt = Date.now();
+  const kindStartedAt = new Map<string, number>();
   try {
     for (const row of pending) {
-      if (Date.now() - startedAt >= GATEWAY_POLL_BUDGET_MS) break;
+      const kind = row.status === "pending" ? "pending" : "expired";
+      const startedAt = kindStartedAt.get(kind) ?? Date.now();
+      kindStartedAt.set(kind, startedAt);
+      if (Date.now() - startedAt >= GATEWAY_POLL_BUDGET_MS) continue;
+      const budgetKey = `${row.provider}:${kind}`;
       if (
-        (consecutiveErrors.get(row.provider) ?? 0) >=
+        (consecutiveErrors.get(budgetKey) ?? 0) >=
         GATEWAY_POLL_MAX_CONSECUTIVE_ERRORS
       )
         continue;
@@ -2932,10 +2945,8 @@ export async function pollPendingGatewayIntents(
             ? await syncExpiredIntentPayment(outletContext, row, now)
             : await syncPendingIntentDetailed(outletContext, row, now);
         consecutiveErrors.set(
-          row.provider,
-          result.gatewayError
-            ? (consecutiveErrors.get(row.provider) ?? 0) + 1
-            : 0,
+          budgetKey,
+          result.gatewayError ? (consecutiveErrors.get(budgetKey) ?? 0) + 1 : 0,
         );
         if (
           row.status !== result.intent.status &&

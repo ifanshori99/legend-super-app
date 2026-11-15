@@ -1,12 +1,13 @@
 // legend-tqkbb (SO-885 B, review P2-1): migration 0629 has no backfill, so old
 // `expired` intents with a provider reference and no final proof enter the poll.
 // They must never delay a live (`pending`) code: the poll gives pending codes
-// their own quota and processes them first.
+// their own quota, processes ALL of them before any expired code, and keeps
+// separate error and time budgets per kind.
 //
 // Assumptions:
-// - Both bills are guest VA orders; X is made an old expired code never polled,
-//   Y a pending code polled an hour ago. Old ordering (least recently polled
-//   first, never-polled first) would pick X for a limit of 1.
+// - Every bill is a guest VA order. Expired codes are made old and never
+//   polled; the pending code was polled an hour ago, so a plain least-recently-
+//   polled-first order would put every expired code in front of it.
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { setPaymentGateway } from "../services/payment-gateway.ts";
@@ -45,24 +46,38 @@ async function vaCode() {
   return paid.body.data.id as string;
 }
 
-describe("legend-tqkbb poll fairness between live and old expired codes", () => {
-  it("tqkbb-8 a backlog of expired codes without final proof does not delay a live pending code (limit 1 still asks the pending one)", async () => {
-    const x = await vaCode();
-    const y = await vaCode();
+async function age(expired: string[], pending: string[]) {
+  for (const id of expired)
     await owner.query(
       `UPDATE payment_intents
           SET status='expired', created_at = now() - interval '3 hours',
               expires_at = now() - interval '2 hours', gateway_polled_at = NULL
         WHERE tenant_id=$1 AND id=$2`,
-      [fx.tenant.tenantId, x],
+      [fx.tenant.tenantId, id],
     );
+  for (const id of pending)
     await owner.query(
       `UPDATE payment_intents
           SET created_at = now() - interval '10 minutes',
               gateway_polled_at = now() - interval '1 hour'
         WHERE tenant_id=$1 AND id=$2`,
-      [fx.tenant.tenantId, y],
+      [fx.tenant.tenantId, id],
     );
+}
+
+async function statusOf(id: string) {
+  const { rows } = await owner.query(
+    `SELECT status FROM payment_intents WHERE tenant_id=$1 AND id=$2`,
+    [fx.tenant.tenantId, id],
+  );
+  return rows[0].status as string;
+}
+
+describe("legend-tqkbb poll fairness between live and old expired codes", () => {
+  it("tqkbb-8 a backlog of expired codes without final proof does not delay a live pending code (limit 1 still asks the pending one)", async () => {
+    const x = await vaCode();
+    const y = await vaCode();
+    await age([x], [y]);
 
     const readsY = fx.gateway.readsOf(y).length;
     const readsX = fx.gateway.readsOf(x).length;
@@ -76,5 +91,26 @@ describe("legend-tqkbb poll fairness between live and old expired codes", () => 
       fx.gateway.readsOf(x).length,
       "the expired code has its own quota",
     ).toBeGreaterThan(readsX);
+  });
+
+  it("tqkbb-9 three expired codes whose gateway read throws never stop a live pending code that paid from settling in the same run", async () => {
+    const expired = [await vaCode(), await vaCode(), await vaCode()];
+    const live = await vaCode();
+    await age(expired, [live]);
+    for (const id of expired) fx.gateway.script(id, { error: "5xx" });
+    fx.gateway.script(live, { rawStatus: "00" });
+
+    const result = await pollPendingGatewayIntents(fx.context, new Date());
+
+    expect(
+      await statusOf(live),
+      "the pending code is processed before any expired code and settles",
+    ).toBe("paid");
+    expect(result.settled).toBeGreaterThanOrEqual(1);
+    for (const id of expired)
+      expect(
+        fx.gateway.readsOf(id).length,
+        "expired codes are still asked after the pending ones",
+      ).toBeGreaterThan(0);
   });
 });

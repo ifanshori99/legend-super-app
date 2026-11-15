@@ -63,6 +63,7 @@ import { logger } from "../lib/logger.ts";
 import { openSecret, sealSecret } from "../lib/secrets.ts";
 import type { Tx } from "./menu-internals.ts";
 import { activeHoldOf } from "./pos-qris-hold.ts";
+import { failedOrderCodeWithOpenFundTx } from "./payment-failed-funds.ts";
 import { expiredCodeMayStillPay } from "./payment-live-code.ts";
 import {
   getSessionBill,
@@ -226,6 +227,15 @@ export async function assertSplitMutableTx(
   if (await activeHoldOf(tx, tenantId, order.id))
     throw locked(
       "Ada QR pembayaran yang masih bisa dibayar; tunggu sampai dibayar atau berakhir.",
+    );
+  // SO-889: a failed code of the order (whole-order or any part, voided or
+  // not) whose money is still parked blocks a new split and a whole-order
+  // payment until it is refunded or credited; else the guest pays twice.
+  if (await failedOrderCodeWithOpenFundTx(tx, tenantId, order))
+    throw new HttpError(
+      409,
+      "FUNDS_UNRESOLVED",
+      "Uang dari pembayaran sebelumnya belum dikembalikan; selesaikan dulu sebelum membayar lagi.",
     );
   if (order.paymentLinkId === null) return;
   const [link] = await tx

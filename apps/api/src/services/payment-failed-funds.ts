@@ -6,9 +6,13 @@
 // refunded or credited (`resolved_at` set) the bill must not ask for a new
 // code, or the guest pays twice. `failed` alone is no proof the money is back.
 
-import { and, eq, exists, isNull, sql } from "drizzle-orm";
+import { and, eq, exists, inArray, or, sql } from "drizzle-orm";
 import type { TenantId } from "@starter/shared/core";
-import { paymentIntents, paymentUnallocatedFunds } from "../db/schema/index.ts";
+import {
+  billSplits,
+  paymentIntents,
+  paymentUnallocatedFunds,
+} from "../db/schema/index.ts";
 import type { Tx } from "./menu-internals.ts";
 
 function failedWithOpenFund() {
@@ -23,12 +27,14 @@ function failedWithOpenFund() {
   );
 }
 
-/** A failed code of the order's link (whole-order codes only) whose money is
- * still unresolved, if any. */
+/** A failed code of the order whose money is still unresolved, if any. ANY
+ * code counts: a whole-order code, a part code, even of a part voided since
+ * (SO-889). Found through the order's link or through its split parts, voided
+ * ones included, so a re-split or a whole-order payment cannot step around it. */
 export async function failedOrderCodeWithOpenFundTx(
   tx: Tx,
   tenantId: TenantId,
-  paymentLinkId: string,
+  order: { id: string; paymentLinkId: string | null },
 ): Promise<{ id: string } | null> {
   const [code] = await tx
     .select({ id: paymentIntents.id })
@@ -36,8 +42,23 @@ export async function failedOrderCodeWithOpenFundTx(
     .where(
       and(
         eq(paymentIntents.tenantId, tenantId),
-        eq(paymentIntents.paymentLinkId, paymentLinkId),
-        isNull(paymentIntents.billSplitId),
+        or(
+          order.paymentLinkId === null
+            ? undefined
+            : eq(paymentIntents.paymentLinkId, order.paymentLinkId),
+          inArray(
+            paymentIntents.billSplitId,
+            tx
+              .select({ id: billSplits.id })
+              .from(billSplits)
+              .where(
+                and(
+                  eq(billSplits.tenantId, tenantId),
+                  eq(billSplits.orderId, order.id),
+                ),
+              ),
+          ),
+        ),
         failedWithOpenFund(),
       ),
     )

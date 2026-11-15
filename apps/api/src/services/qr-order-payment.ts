@@ -772,12 +772,11 @@ export async function createGuestPayment(
         // SO-885 legend-0owye: a code closed `failed` by an amount mismatch
         // still has the guest's money parked; no new code until it is returned.
         if (
-          order.paymentLinkId !== null &&
-          (await failedOrderCodeWithOpenFundTx(
+          await failedOrderCodeWithOpenFundTx(
             tx,
             context.tenant.tenantId,
-            order.paymentLinkId,
-          ))
+            order,
+          )
         )
           throw new HttpError(
             409,
