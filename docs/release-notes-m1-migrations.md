@@ -7,6 +7,21 @@ Dikumpulkan oleh merge train. Bagian "Batch ini" sudah ada di cabang ini. Bagian
 - Deploy cloud (API) lebih dulu, baru edge. Edge mengirim `receiptSequences=1`; cloud lama menjawab 400.
 - Migrasi harus naik berurutan: 0165, 0166, 0167, 0168, 0169, 0170, lalu 0171 dst. Drizzle hanya menjalankan migrasi dengan `when` lebih besar dari yang terakhir diterapkan.
 
+### Backfill riwayat metrik WS-11 (legend-ka1hg)
+
+Setelah migrasi dan API terbaru terpasang, jalankan backfill sebelum pembaca laporan WS-11 dipakai. Jalankan dari root checkout rilis dengan konfigurasi database API untuk lingkungan tujuan. Pilih `--from` sebagai tanggal bisnis paling awal yang perlu dimasukkan (format `YYYY-MM-DD`); untuk seluruh riwayat, gunakan tanggal bisnis sumber paling awal, bukan tanggal deploy.
+
+```bash
+pnpm --filter @starter/api metrics:backfill -- --from 2020-01-01 --dry-run
+pnpm --filter @starter/api metrics:backfill -- --from 2020-01-01
+```
+
+Ganti tanggal contoh sesuai riwayat sumber. Untuk memeriksa dan memproses satu tenant lebih dulu, tambahkan `--tenant <slug>` pada kedua perintah. Tanpa `--tenant`, skrip memproses seluruh tenant. `--dry-run` hanya menghitung rencana kerja dan tidak menulis `metrics_daily`.
+
+Rentang berjalan dari `--from` sampai tanggal bisnis saat proses dimulai, inklusif, memakai zona waktu dan batas pergantian hari masing-masing outlet. Hari bisnis yang masih berjalan tetap mengikuti aturan estimasi/finalitas metrik yang ada. Tanggal tidak valid atau di masa depan ditolak. Outlet yang sudah ditutup tetap disertakan untuk riwayatnya.
+
+Skrip memanggil `recomputeMetricsDaily` per tenant, outlet, dan hari secara berurutan; halaman tenant dan outlet dibatasi 25 baris. Hari tanpa sumber data dilewati, sehingga nilai metrik lama pada hari itu tidak diubah. Log hanya memuat ID tenant dan angka; jangan menambahkan nama pelanggan, nilai rahasia, atau connection string ke catatan operator. Kode keluar `0` berarti selesai, `1` berarti ada kegagalan pemrosesan, dan `2` berarti masukan ditolak. Periksa `failedDays`; bila ada kegagalan, selesaikan penyebabnya lalu jalankan ulang dengan tanggal dan tenant yang sama. Backfill idempoten, sehingga pengulangan aman dan tidak menggandakan hasil. Jangan menghapus `metrics_daily` untuk mengulang proses. Langkah ini juga mengisi enam kode jumlah fasilitas yang disyaratkan batch41.
+
 ## Batch ini (0167 sampai 0170)
 
 - 0167 `0167_payroll_core` (legend-gfcr): tabel inti payroll, RLS, trigger penjaga. Tidak ada langkah khusus.
@@ -130,16 +145,16 @@ Dikumpulkan oleh merge train. Bagian "Batch ini" sudah ada di cabang ini. Bagian
 
 Migrasi baru (idx 209 sampai 216, rapat, `when` naik). Penomoran akhir berbeda dari nama di cabang asal:
 
-| Akhir | Tag | Nama lama di cabang | Cabang | `when` |
-|---|---|---|---|---|
-| 0209 | `0209_crm_feedback_segments` | sama | ws/ts50-customer360 | 1794288000000 |
-| 0210 | `0210_loyalty_tiers_referrals` | sama | ws/3zd1-tiers-expiry | 1794289000000 |
-| 0211 | `0211_platform_payment_gateways` | sama | ws/gateway-plan-revoke | 1794290000000 |
-| 0212 | `0212_failed_item_recovery` | 0214 | ws/swap-stock | 1794293000000 |
-| 0213 | `0213_facility_entitlement_ledger` | 0215 | ws/facility-entitlements | 1794294000000 |
-| 0214 | `0214_order_pacing` | 0216 | ws/kitchen-load-admin | 1794295000000 |
-| 0215 | `0215_hris_attendance` | 0217 | ws/storage-wire | 1794296000000 |
-| 0216 | `0216_wifi_quota_engine` | 0218 | ws/wifi-edge | 1794297000000 |
+| Akhir | Tag                                | Nama lama di cabang | Cabang                   | `when`        |
+| ----- | ---------------------------------- | ------------------- | ------------------------ | ------------- |
+| 0209  | `0209_crm_feedback_segments`       | sama                | ws/ts50-customer360      | 1794288000000 |
+| 0210  | `0210_loyalty_tiers_referrals`     | sama                | ws/3zd1-tiers-expiry     | 1794289000000 |
+| 0211  | `0211_platform_payment_gateways`   | sama                | ws/gateway-plan-revoke   | 1794290000000 |
+| 0212  | `0212_failed_item_recovery`        | 0214                | ws/swap-stock            | 1794293000000 |
+| 0213  | `0213_facility_entitlement_ledger` | 0215                | ws/facility-entitlements | 1794294000000 |
+| 0214  | `0214_order_pacing`                | 0216                | ws/kitchen-load-admin    | 1794295000000 |
+| 0215  | `0215_hris_attendance`             | 0217                | ws/storage-wire          | 1794296000000 |
+| 0216  | `0216_wifi_quota_engine`           | 0218                | ws/wifi-edge             | 1794297000000 |
 
 - Nomor 0217 dan seterusnya dipakai batch47a (lihat bagian "Tambahan batch47a" di bawah).
 - Rantai: 0208 -> 0209 -> ... -> 0216. `prevId` tiap snapshot disambung ulang dan tiap snapshot berisi skema kumulatif. `pnpm db:generate` kosong.
@@ -148,12 +163,14 @@ Migrasi baru (idx 209 sampai 216, rapat, `when` naik). Penomoran akhir berbeda d
 - Pembaruan nama: komentar di `apology-vouchers.ts/.custom.sql`, `facility-entitlement.custom.sql`, `facility-entitlement-migration.test.ts`, `kds-pacing.custom.sql` dan baris `docs/PROGRESS.md` ikut dinomori ulang.
 
 Perlu backfill atau konfigurasi:
+
 - **Gateway Duitku (0211):** butuh kunci sandbox dari founder, belum ada. Tanpa kunci gateway tidak bisa diaktifkan.
 - **Storage PDF:** upload PDF ditolak 503 di production selama scanner masih noop (`ws/storage-wire`).
 - **Jurnal koreksi otomatis:** perilaku jurnal koreksi berjalan otomatis sesudah deploy (tidak ada tombol); periksa jurnal koreksi pertama.
 - Tier loyalti dan job harian tier/kedaluwarsa poin (0210) berjalan di relay worker per tenant per hari.
 
 Perilaku berubah:
+
 - `ws/swap-stock`: swap mengembalikan stok lini lama dan menarik stok pengganti; lini swap gratis dikeluarkan dari laporan penjualan.
 - Kuota Wi-Fi harian (0216) bergerak mengikuti pembayaran dan refund order member.
 - krvk7 (peran kustom tanpa backfill) tidak termasuk batch ini.
@@ -164,20 +181,20 @@ Perbaikan isi di luar konflik: lihat laporan merge train batch46 (FORCE RLS di a
 
 Nomor sementara dari cabang dinomori ulang rapat sesudah 0216, urut merge. `when` naik 1000000 per migrasi; snapshot dibuat ulang dari skema gabungan; `pnpm db:generate` kosong sesudah tiap merge.
 
-| Akhir | Tag | Nomor lama di cabang | Cabang | `when` |
-|---|---|---|---|---|
-| 0217 | `0217_profit_share` | 0219 | ws/profit-share | 1794298000000 |
-| 0218 | `0218_profit_share_unabsorbed` | 0221 | ws/8s992-profit-rules | 1794299000000 |
-| 0219 | `0219_profit_share_carry` | 0224 | ws/lzvh0-unabsorbed-carry | 1794300000000 |
-| 0220 | `0220_payment_refund_order_issue` | 0222 | ws/94q2l-impl | 1794301000000 |
-| 0221 | `0221_k2l_member_signin_identity` | 0220 | ws/k2l-followup | 1794302000000 |
-| 0222 | `0222_wa_login_reply_policies` | 0226 | ws/dn4-wa-replies | 1794303000000 |
-| 0223 | `0223_swap_return_park` | 0228 | ws/nzbi8-swap-stock-park | 1794304000000 |
-| 0224 | `0224_wifi_quota_apply_queue` | 0220 | ws/oeqme-wifi-queue | 1794305000000 |
-| 0225 | `0225_edge_staff_pin_peppers` | 0225 | ws/ideif-edge-pepper | 1794306000000 |
-| 0226 | `0226_hris_edge_replication` | 0227 | ws/hwn02-hris-edge-schema (lewat ye4j1) | 1794307000000 |
-| 0227 | `0227_edge_selfie_rejected_at` | 0233 | ws/hubzo-selfie-worker | 1794308000000 |
-| 0228 | `0228_tax_reports` | 0235 | ws/gmww-accounting-deltas | 1794309000000 |
+| Akhir | Tag                               | Nomor lama di cabang | Cabang                                  | `when`        |
+| ----- | --------------------------------- | -------------------- | --------------------------------------- | ------------- |
+| 0217  | `0217_profit_share`               | 0219                 | ws/profit-share                         | 1794298000000 |
+| 0218  | `0218_profit_share_unabsorbed`    | 0221                 | ws/8s992-profit-rules                   | 1794299000000 |
+| 0219  | `0219_profit_share_carry`         | 0224                 | ws/lzvh0-unabsorbed-carry               | 1794300000000 |
+| 0220  | `0220_payment_refund_order_issue` | 0222                 | ws/94q2l-impl                           | 1794301000000 |
+| 0221  | `0221_k2l_member_signin_identity` | 0220                 | ws/k2l-followup                         | 1794302000000 |
+| 0222  | `0222_wa_login_reply_policies`    | 0226                 | ws/dn4-wa-replies                       | 1794303000000 |
+| 0223  | `0223_swap_return_park`           | 0228                 | ws/nzbi8-swap-stock-park                | 1794304000000 |
+| 0224  | `0224_wifi_quota_apply_queue`     | 0220                 | ws/oeqme-wifi-queue                     | 1794305000000 |
+| 0225  | `0225_edge_staff_pin_peppers`     | 0225                 | ws/ideif-edge-pepper                    | 1794306000000 |
+| 0226  | `0226_hris_edge_replication`      | 0227                 | ws/hwn02-hris-edge-schema (lewat ye4j1) | 1794307000000 |
+| 0227  | `0227_edge_selfie_rejected_at`    | 0233                 | ws/hubzo-selfie-worker                  | 1794308000000 |
+| 0228  | `0228_tax_reports`                | 0235                 | ws/gmww-accounting-deltas               | 1794309000000 |
 
 - Tanpa migrasi baru: ws/0w2wy-docs-storage, ws/n6fek-recovery-refund-metrics, ws/mz15j-paid-check, ws/eirhm-menu-print-cleanup, ws/5tmye-whitelabel-flaky, ws/hris-edge-design, ws/cku1m-qr-v2, ws/tkycp-people-pull. Tidak ikut: ws/u37u3 (menunggu review founder), tip j6cyb dan i83ls. ws/svy91-edge-ops (94db22c1, tanpa migrasi) ikut.
 - `ws/94q2l-impl` mengubah `failed_item_recovery` di tempat; di m1 berkas itu `0212_failed_item_recovery.sql`, dan versi m1 (FK inline) dipakai. m1 tidak tercatat pernah diterapkan ke DB bersama, jadi ubah di tempat aman; kalau ternyata sudah diterapkan ke satu DB, DB itu harus dibuat ulang atau diperbaiki manual.
@@ -189,14 +206,14 @@ Nomor sementara dari cabang dinomori ulang rapat sesudah 0216, urut merge. `when
 
 Nomor sementara dari cabang dinomori ulang rapat sesudah 0228, urut merge. `when` naik 1000000 per migrasi mulai 1794310000000; snapshot dibuat ulang dari skema gabungan (0229 dibangun dari 0230 dengan mencabut delta forward migration); `pnpm db:generate` kosong sesudah tiap merge. m1 belum pernah diterapkan ke DB bersama (`docs/deployment.md`), jadi 0229 dan forward migration 0230 dipakai apa adanya, tidak digabung.
 
-| Akhir | Tag | Nomor lama di cabang | Cabang | `when` |
-|---|---|---|---|---|
-| 0229 | `0229_order_issue_refund_rejected` | 0229 (`when` lama 1794308000000 lebih kecil dari 0228, dinaikkan) | ws/i83ls-fix | 1794310000000 |
-| 0230 | `0230_order_issue_charge_cash` | 0244 | ws/i83ls-fix | 1794311000000 |
-| 0231 | `0231_tax_report_revisions` | 0242 | ws/r3i8w-tax-reports | 1794312000000 |
-| 0232 | `0232_pos_acting_staff` | 0243 | ws/aruta-pos-pin | 1794313000000 |
-| 0233 | `0233_mfa_recovery_codes` | 0239 | ws/omp4-mfa-recovery | 1794314000000 |
-| 0234 | `0234_uom_is_system` | 0245 | ws/ie6m-uom-write | 1794315000000 |
+| Akhir | Tag                                | Nomor lama di cabang                                              | Cabang               | `when`        |
+| ----- | ---------------------------------- | ----------------------------------------------------------------- | -------------------- | ------------- |
+| 0229  | `0229_order_issue_refund_rejected` | 0229 (`when` lama 1794308000000 lebih kecil dari 0228, dinaikkan) | ws/i83ls-fix         | 1794310000000 |
+| 0230  | `0230_order_issue_charge_cash`     | 0244                                                              | ws/i83ls-fix         | 1794311000000 |
+| 0231  | `0231_tax_report_revisions`        | 0242                                                              | ws/r3i8w-tax-reports | 1794312000000 |
+| 0232  | `0232_pos_acting_staff`            | 0243                                                              | ws/aruta-pos-pin     | 1794313000000 |
+| 0233  | `0233_mfa_recovery_codes`          | 0239                                                              | ws/omp4-mfa-recovery | 1794314000000 |
+| 0234  | `0234_uom_is_system`               | 0245                                                              | ws/ie6m-uom-write    | 1794315000000 |
 
 - Tanpa migrasi baru: ws/94q2l-impl (hanya kode refund), ws/tct8-config-codecs. omp4 dan ie6m masing-masing hanya satu migrasi (nomor 0240 dan 0246 pada brief tidak ada).
 - **SQL diubah oleh merge train:** 0230 kini mengangkat FORCE RLS `order_issue_charges` dan `cash_movements` sebelum menambah FK, lalu memulihkannya di akhir (pola 2, `docs/plan/contracts.md`): tanpa itu migrasi gagal untuk pemilik tabel non-superuser (`edge-received-events-migration.test.ts`). 0232 menulis semua FK `pos_acting_staff` inline di `CREATE TABLE` (pola legend-436yt), tanpa angkat NO FORCE/FORCE; skema akhir identik.
@@ -207,15 +224,15 @@ Nomor sementara dari cabang dinomori ulang rapat sesudah 0228, urut merge. `when
 
 Nomor sementara dari cabang dinomori ulang rapat sesudah 0234, urut merge. `when` naik 1000000 per migrasi mulai 1794316000000; snapshot dibuat ulang dari skema gabungan dengan `scripts/migration-renumber.mjs` (`node scripts/migration-renumber.mjs check --from-idx 235` memeriksa nomor, `when` dan rantai `prevId`). `db:generate` kosong sesudah tiap merge.
 
-| Akhir | Tag | Nomor lama di cabang | Cabang | `when` |
-|---|---|---|---|---|
-| 0235 | `0235_staff_pin_proofs` | 0241 | ws/u7g9w-pin-proof | 1794316000000 |
-| 0236 | `0236_user_pin_throttle` | 0258 | ws/jmsdx-pepper (memuat vfj7z) | 1794317000000 |
-| 0237 | `0237_table_claim_points` | 0236 | ws/split-claim-hide (juga ada di claim-payer-secret dan cpq2) | 1794318000000 |
-| 0238 | `0238_claim_payer_secret` | 0255 | ws/claim-payer-secret | 1794319000000 |
-| 0239 | `0239_profit_share_recipient_versions` | 0252 | ws/tm6pp-seed-policy (memuat 33im6) | 1794320000000 |
-| 0240 | `0240_share_version_approval` | 0256 | ws/tm6pp-seed-policy | 1794321000000 |
-| 0241 | `0241_shareholder_version_approval_policy` | 0259 | ws/tm6pp-seed-policy | 1794322000000 |
+| Akhir | Tag                                        | Nomor lama di cabang | Cabang                                                        | `when`        |
+| ----- | ------------------------------------------ | -------------------- | ------------------------------------------------------------- | ------------- |
+| 0235  | `0235_staff_pin_proofs`                    | 0241                 | ws/u7g9w-pin-proof                                            | 1794316000000 |
+| 0236  | `0236_user_pin_throttle`                   | 0258                 | ws/jmsdx-pepper (memuat vfj7z)                                | 1794317000000 |
+| 0237  | `0237_table_claim_points`                  | 0236                 | ws/split-claim-hide (juga ada di claim-payer-secret dan cpq2) | 1794318000000 |
+| 0238  | `0238_claim_payer_secret`                  | 0255                 | ws/claim-payer-secret                                         | 1794319000000 |
+| 0239  | `0239_profit_share_recipient_versions`     | 0252                 | ws/tm6pp-seed-policy (memuat 33im6)                           | 1794320000000 |
+| 0240  | `0240_share_version_approval`              | 0256                 | ws/tm6pp-seed-policy                                          | 1794321000000 |
+| 0241  | `0241_shareholder_version_approval_policy` | 0259                 | ws/tm6pp-seed-policy                                          | 1794322000000 |
 
 - Tanpa migrasi baru: ws/ptn11-acting-staff-w2, ws/kxoyf-pos-swap, ws/w5by9-expiry-fifo. ws/cpq2-qr-read-models sudah termuat lewat split-claim-hide (migrasi `table_claim_points` yang sama di tiga cabang, isinya identik, satu salinan dipakai).
 - **SQL diubah oleh merge train:** 0239 memindahkan dua FK `shareholder_recipient_versions` (tenant dan shareholder) ke dalam `CREATE TABLE` (pola 1, `docs/plan/contracts.md`). Pengangkatan dan pemulihan FORCE RLS di 0239, 0241 dan 0217 sudah dari cabang asal dan dipertahankan. Temuan architect: backfill 0239 juga mematikan sementara trigger `distribution_lines_totals_trg` (trigger tertunda dari 0217), karena kalau tidak dia berjalan saat commit tanpa konteks tenant dan membatalkan migrasi untuk pemilik non-superuser yang sudah punya baris `distribution_lines`; nama pengaturan sementara di 0237 kini `legend.lock_timeout_before_0237`.
@@ -230,13 +247,13 @@ Nomor sementara dari cabang dinomori ulang rapat sesudah 0234, urut merge. `when
 
 Nomor sementara dari cabang dinomori ulang rapat sesudah 0241, urut merge. `when` naik 1000000 per migrasi mulai 1794323000000; snapshot dibuat ulang dari skema gabungan dengan `scripts/migration-renumber.mjs` (`node scripts/migration-renumber.mjs check --from-idx 242`). `db:generate` kosong sesudah tiap merge.
 
-| Akhir | Tag | Nomor lama di cabang | Cabang | `when` |
-|---|---|---|---|---|
-| 0242 | `0242_tenant_config_templates` | 0259 | ws/tenant-config-export | 1794323000000 |
-| 0243 | `0243_tenant_config_rls` | 0260 | ws/tenant-config-export | 1794324000000 |
-| 0244 | `0244_edge_print` | 0261 | ws/print-agent | 1794325000000 |
-| 0245 | `0245_edge_print_rls` | 0262 | ws/print-agent | 1794326000000 |
-| 0246 | `0246_payslip_pins` | 0257 | ws/hris-pii-pin | 1794327000000 |
+| Akhir | Tag                            | Nomor lama di cabang | Cabang                  | `when`        |
+| ----- | ------------------------------ | -------------------- | ----------------------- | ------------- |
+| 0242  | `0242_tenant_config_templates` | 0259                 | ws/tenant-config-export | 1794323000000 |
+| 0243  | `0243_tenant_config_rls`       | 0260                 | ws/tenant-config-export | 1794324000000 |
+| 0244  | `0244_edge_print`              | 0261                 | ws/print-agent          | 1794325000000 |
+| 0245  | `0245_edge_print_rls`          | 0262                 | ws/print-agent          | 1794326000000 |
+| 0246  | `0246_payslip_pins`            | 0257                 | ws/hris-pii-pin         | 1794327000000 |
 
 - Tanpa migrasi baru: ws/fe-small-tests, ws/u37u3-platform-sync, ws/fe-badge-theme, ws/ws01-staff-access, ws/ebt9f-me-outlets, ws/outlet-context-rollout, ws/duitku-codex-fix, ws/s5jup-duitku, ws/refund-recovery-fix.
 - **SQL diubah oleh merge train (temuan architect):** 0244 memindahkan lima FK ke `outlets` dan 0246 memindahkan dua FK ke `employees` ke dalam `CREATE TABLE` (pola 1, `docs/plan/contracts.md`); tanpa itu migrasi gagal untuk pemilik tanpa BYPASSRLS (`tenant context is required`). 0245 menambah `REVOKE DELETE, TRUNCATE` pada `edge_print_alerts` dan `edge_print_jobs` (kode tidak pernah menghapus baris di sana). Komentar penomoran di `0245` dan `edge-print.custom.sql` diperbarui.
@@ -247,11 +264,11 @@ Nomor sementara dari cabang dinomori ulang rapat sesudah 0241, urut merge. `when
 
 Nomor sementara dinomori ulang rapat sesudah 0246, urut merge. `when` naik 1000000 per migrasi mulai 1794328000000. `pnpm db:generate` kosong dan `node scripts/migration-renumber.mjs check --from-idx 242` hijau setelah tiap merge.
 
-| Akhir | Tag | Nomor lama di cabang | Cabang | `when` |
-|---|---|---|---|---|
-| 0247 | `0247_sole_owner_self_approval` | 0270 | ws/owner-self-approve (juga termuat di ws/inbox-self-approve dan ws/ps-405) | 1794328000000 |
-| 0248 | `0248_payroll_reseal_keys` | 0272 | ws/snhxw-payroll-keys | 1794329000000 |
-| 0249 | `0249_backfill_marketing_opt_in_from_consents` | 0242 | fix/codex-411-loyalty-consent | 1794330000000 |
+| Akhir | Tag                                            | Nomor lama di cabang | Cabang                                                                      | `when`        |
+| ----- | ---------------------------------------------- | -------------------- | --------------------------------------------------------------------------- | ------------- |
+| 0247  | `0247_sole_owner_self_approval`                | 0270                 | ws/owner-self-approve (juga termuat di ws/inbox-self-approve dan ws/ps-405) | 1794328000000 |
+| 0248  | `0248_payroll_reseal_keys`                     | 0272                 | ws/snhxw-payroll-keys                                                       | 1794329000000 |
+| 0249  | `0249_backfill_marketing_opt_in_from_consents` | 0242                 | fix/codex-411-loyalty-consent                                               | 1794330000000 |
 
 - Tanpa migrasi baru: ws/tenant-config-followups, ws/outlet-followups, ws/duitku-406, fix/codex-418-pin, fix/codex-414-hris-attendance, fix/codex-415-wifi, ws/ekxy2-void-line (memuat fix/codex-419-table-merge).
 - 0248 tidak punya perubahan skema (hanya GRANT kolom dan ganti fungsi), jadi snapshot 0248 disalin dari 0247 dengan `id`/`prevId` baru dan entri jurnal ditulis manual. Sama untuk 0249 (data saja).
@@ -264,13 +281,13 @@ Nomor sementara dinomori ulang rapat sesudah 0246, urut merge. `when` naik 10000
 
 Migrasi 0250 sampai 0254 (batch48f) ada di entri PROGRESS batch48f.
 
-| Akhir | Tag | Nomor lama di cabang | Cabang | `when` |
-|---|---|---|---|---|
-| 0255 | `0255_drop_payslip_pin_reset_challenges` | 0273 | ws/9h2oj-wa-reset (juga memuat ur82k) | 1794336000000 |
-| 0256 | `0256_approved_leaves_on` | 0276 | ws/5nt2z-leave-partial | 1794337000000 |
-| 0257 | `0257_flag_attendance_for_leave` | 0277 | ws/5nt2z-leave-partial | 1794338000000 |
-| 0258 | `0258_leave_clash_backfill` | 0278 | ws/5nt2z-leave-partial | 1794339000000 |
-| 0259 | `0259_hpp_recompute` | 0278 | ws/2qq-hpp-recompute | 1794340000000 |
+| Akhir | Tag                                      | Nomor lama di cabang | Cabang                                | `when`        |
+| ----- | ---------------------------------------- | -------------------- | ------------------------------------- | ------------- |
+| 0255  | `0255_drop_payslip_pin_reset_challenges` | 0273                 | ws/9h2oj-wa-reset (juga memuat ur82k) | 1794336000000 |
+| 0256  | `0256_approved_leaves_on`                | 0276                 | ws/5nt2z-leave-partial                | 1794337000000 |
+| 0257  | `0257_flag_attendance_for_leave`         | 0277                 | ws/5nt2z-leave-partial                | 1794338000000 |
+| 0258  | `0258_leave_clash_backfill`              | 0278                 | ws/5nt2z-leave-partial                | 1794339000000 |
+| 0259  | `0259_hpp_recompute`                     | 0278                 | ws/2qq-hpp-recompute                  | 1794340000000 |
 
 - 0256, 0257, 0258 tidak punya perubahan skema: snapshot disalin dari 0255 dengan `id`/`prevId` baru dan entri jurnal ditulis manual. `db:generate` kosong.
 - **SQL diubah oleh merge train:** 0259, tujuh FK `menu_costs` dipindah ke dalam `CREATE TABLE` (outlets FORCE RLS; `ADD CONSTRAINT` oleh migrator non-superuser gagal 42501).
