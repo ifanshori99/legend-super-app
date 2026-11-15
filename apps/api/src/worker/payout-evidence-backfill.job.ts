@@ -62,6 +62,7 @@ export async function runPayoutEvidenceBackfillSweep(
       claimsWithoutHash: 0,
       filesWithoutStoredHash: 0,
       itemKeysWithoutRecord: 0,
+      opKeysWithoutBinding: 0,
       total: 0,
     },
   };
@@ -85,7 +86,7 @@ export async function runPayoutEvidenceBackfillSweep(
       )
       .join("; ");
     console.error(
-      `Payout evidence backfill: returns with a new proof are held (claims without hash ${result.held.claimsWithoutHash}, proof records without stored hash ${result.held.filesWithoutStoredHash}, item proof keys without record ${result.held.itemKeysWithoutRecord}; unreadable objects ${result.unreadable}, hash conflicts ${result.conflicts}, stuck ${result.stuck}${named ? `: ${named}` : ""})`,
+      `Payout evidence backfill: returns with a new proof are held (claims without hash ${result.held.claimsWithoutHash}, proof records without stored hash ${result.held.filesWithoutStoredHash}, item proof keys without record ${result.held.itemKeysWithoutRecord}, operation proofs without binding ${result.held.opKeysWithoutBinding}; unreadable objects ${result.unreadable}, hash conflicts ${result.conflicts}, stuck ${result.stuck}${named ? `: ${named}` : ""})`,
     );
   }
   return result;
