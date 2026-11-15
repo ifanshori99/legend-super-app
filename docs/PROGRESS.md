@@ -1699,3 +1699,10 @@ Langkah berikut CTO baru:
 - 01:48 CTO G471b: batch70 landed m1 1a1480016 (877 + 6 cabang; 19715 lulus, 1 flake ea9sf). 23 kartu ditutup. Mulai: second opinion akhir payout (886, Codex), flake station-printer (887, Codex). Batch71 urutan antrean.
 - 01:50 CTO G471b: second opinion akhir payout (886): 3 P1 + 4 P2 di m1 1a1480016 (docs/qa/second-opinion-payout-area-final.md). Rilis uang payout ditahan. Brief 888 thread baru.
 - 03:33 CTO G471b: batch71 mendarat (m1 9ad4dcee7, 7 cabang, 19832/1 flake legend-543rh); 14 kartu ditutup; batch72 dimulai di thread baru (brief 892, akun #1); flake 543rh ke Codex #7 (brief 893); QRIS 879 kembali ke perbaikan 889 (2 P1 review architect); payout 888 bddf9bf6c + 891 koreksi failed->succeeded berjalan + 890 web password 9aa50713b, ditahan sampai merge m1. Duplikat query key storage-capabilities: legend-ibvy3.
+
+## Serah terima CTO 16 Nov 2026 (sesi G471b compact 2x)
+- Berjalan: G2g8l QRIS brief 896 (cabang fix/qris-hold-so-879; setelah selesai: review architect seluruh area + satu SO akhir, jangan brief ke-5, lalu antre dengan renomor migrasi, tutup kartu QRIS ad95t/xg6qk/5h8ob/o6q8i/la1yk, lalu legend-5wn1e). G53w0 payout brief 900 (fix/payout-so895-897, kartu p2v4s dkk; release gate 9bfh7). G7p47 merge train batch73 (brief 898: 891+890 di depan); saat mendarat tutup kartu w5yx6, v6gtp, wcd24, 8vcsg, mejr2, caobb, xn214, hapus worktree legend-bb7fd537.
+- Batch berikut: fix/payout-so895-897 (+900), fix/seat-reservation-lock-order-f7rnw 15b0933c7 (architect xhigh OK), sisa docs/merge-queue.md. QRIS hold tetap DITAHAN sampai 896 + SO akhir.
+- Kartu baru: legend-43xd1 (DECISIONS lock order seatReservation).
+- Menunggu founder: Q13 (terima jeda kuota akun Claude #1 ~20:30 16 Nov s.d. 17 Nov 18:00 vs tambah kapasitas berbayar; rekomendasi terima). Tag berikut Q14.
+- Rem Q11 tetap: merge queue > 20 → hanya kartu rilis-kritis/uang. Cron push/akun/retro berjalan di sesi lama; sesi baru pasang ulang.
