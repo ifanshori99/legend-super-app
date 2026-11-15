@@ -626,10 +626,12 @@ describe("QR order paid twice keeps the first code as payer (legend-mks0q)", () 
       // Code A is superseded by code B (A lapses, the guest opens B) ...
       // Code A is a VA, not a QR: a QR A would hold the bill and refuse B until
       // the provider proves A dead (legend-kf104, qris-hold-so879-a-kf104 test).
-      // A is expired past the late-payment grace (a replacement waits for it).
+      // A is expired and the provider answered final for it (SO-885: a
+      // replacement waits for that proof, not for the clock).
       const intentA = await openPayment(guest, orderId, "va");
       await owner.query(
-        `UPDATE payment_intents SET status = 'expired', expires_at = now() - interval '10 minutes'
+        `UPDATE payment_intents SET status = 'expired', expires_at = now() - interval '10 minutes',
+               provider_final_at = now()
           WHERE tenant_id = $1 AND id = $2`,
         [tenant.tenantId, intentA],
       );
@@ -728,10 +730,12 @@ async function orderPaidTwice() {
   const guest = await seatAtNewTable();
   const { orderId, totalIdr } = await placeOrder(guest);
   // A is a VA: a QR A now holds the bill and refuses B (legend-kf104 test).
-  // A is expired past the late-payment grace (a replacement waits for it).
+  // A is expired and the provider answered final for it (SO-885: a
+  // replacement waits for that proof, not for the clock).
   const intentA = await openPayment(guest, orderId, "va");
   await owner.query(
-    `UPDATE payment_intents SET status = 'expired', expires_at = now() - interval '10 minutes'
+    `UPDATE payment_intents SET status = 'expired', expires_at = now() - interval '10 minutes',
+               provider_final_at = now()
       WHERE tenant_id = $1 AND id = $2`,
     [tenant.tenantId, intentA],
   );

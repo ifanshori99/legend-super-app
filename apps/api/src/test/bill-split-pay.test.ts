@@ -287,7 +287,9 @@ async function openCode(
  */
 async function lapseCode(intentId: string) {
   await owner.query(
-    "UPDATE payment_intents SET status = 'expired', expires_at = now() - interval '1 hour' WHERE tenant_id = $1 AND id = $2",
+    // The gateway double answers `expired` for it (below): the provider's
+    // final proof, which is what SO-885 requires before a code counts as dead.
+    "UPDATE payment_intents SET status = 'expired', expires_at = now() - interval '1 hour', provider_final_at = now() WHERE tenant_id = $1 AND id = $2",
     [tenant.tenantId, intentId],
   );
   const { rows } = await owner.query<{ provider_ref: string }>(

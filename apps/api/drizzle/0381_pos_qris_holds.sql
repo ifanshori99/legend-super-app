@@ -137,6 +137,13 @@ WHERE i.bill_split_id IS NOT NULL AND i.method = 'qris'
 -- each one only on provider proof. Final bills are skipped (a late payment
 -- there is refunded as unallocated funds). The one-collectible-QR guard above
 -- is not widened.
+-- so-885 legend-0owye: a `failed` intent is not proof either. On m1 an amount
+-- mismatch (Duitku) marks the intent `failed` AND parks the paid money in
+-- payment_unallocated_funds. Such an intent with an UNRESOLVED fund (no refund
+-- or credit yet) is held in every shape below (tender, split part, whole
+-- order, sibling code), so the guest is not asked to pay the bill again before
+-- the parked money is returned. The hold check job ends it once every fund of
+-- the intent is resolved; a failed intent without an open fund stays unheld.
 INSERT INTO public.pos_qris_holds
   (tenant_id, id, outlet_id, order_id, tender_id, payment_intent_id,
    amount_idr, backfilled, state, opened_at, opened_by, next_check_at)
@@ -153,7 +160,11 @@ JOIN public.orders o
 WHERE t.method = 'qris' AND t.status IN ('voided', 'failed')
   AND t.payment_link_id IS NOT NULL
   AND i.method = 'qris' AND i.provider_ref IS NOT NULL
-  AND i.status IN ('pending', 'expired')
+  AND (i.status IN ('pending', 'expired')
+    OR (i.status = 'failed' AND EXISTS (
+    SELECT 1 FROM public.payment_unallocated_funds f
+    WHERE f.tenant_id = i.tenant_id AND f.payment_intent_id = i.id
+      AND f.resolved_at IS NULL)))
   AND o.status NOT IN ('completed', 'voided')
   AND NOT EXISTS (
     SELECT 1 FROM public.pos_qris_holds h
@@ -173,7 +184,12 @@ JOIN public.bill_splits bs
 JOIN public.orders o
   ON o.tenant_id = bs.tenant_id AND o.id = bs.order_id
 WHERE i.bill_split_id IS NOT NULL AND i.method = 'qris'
-  AND i.status = 'expired' AND i.provider_ref IS NOT NULL
+  AND (i.status = 'expired'
+    OR (i.status = 'failed' AND EXISTS (
+    SELECT 1 FROM public.payment_unallocated_funds f
+    WHERE f.tenant_id = i.tenant_id AND f.payment_intent_id = i.id
+      AND f.resolved_at IS NULL)))
+  AND i.provider_ref IS NOT NULL
   AND o.status NOT IN ('completed', 'voided')
   AND NOT EXISTS (
     SELECT 1 FROM public.pos_qris_holds h
@@ -188,7 +204,12 @@ FROM public.payment_intents i
 JOIN public.orders o
   ON o.tenant_id = i.tenant_id AND o.payment_link_id = i.payment_link_id
 WHERE i.bill_split_id IS NULL AND i.method = 'qris'
-  AND i.status IN ('pending', 'expired') AND i.provider_ref IS NOT NULL
+  AND (i.status IN ('pending', 'expired')
+    OR (i.status = 'failed' AND EXISTS (
+    SELECT 1 FROM public.payment_unallocated_funds f
+    WHERE f.tenant_id = i.tenant_id AND f.payment_intent_id = i.id
+      AND f.resolved_at IS NULL)))
+  AND i.provider_ref IS NOT NULL
   AND o.status NOT IN ('completed', 'voided')
   AND NOT EXISTS (
     SELECT 1 FROM public.pos_order_tenders t
@@ -210,7 +231,12 @@ JOIN public.orders o
 WHERE t.method = 'qris' AND t.payment_link_id IS NOT NULL
   AND i.id <> coalesce(t.payment_intent_id, '00000000-0000-0000-0000-000000000000'::uuid)
   AND i.bill_split_id IS NULL AND i.method = 'qris'
-  AND i.status IN ('pending', 'expired') AND i.provider_ref IS NOT NULL
+  AND (i.status IN ('pending', 'expired')
+    OR (i.status = 'failed' AND EXISTS (
+    SELECT 1 FROM public.payment_unallocated_funds f
+    WHERE f.tenant_id = i.tenant_id AND f.payment_intent_id = i.id
+      AND f.resolved_at IS NULL)))
+  AND i.provider_ref IS NOT NULL
   AND o.status NOT IN ('completed', 'voided')
   AND NOT EXISTS (
     SELECT 1 FROM public.pos_order_tenders t2

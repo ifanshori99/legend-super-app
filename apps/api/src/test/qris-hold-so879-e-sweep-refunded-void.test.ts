@@ -79,7 +79,8 @@ async function world() {
   expect(a.status, JSON.stringify(a.body)).toBe(201);
   const aId = a.body.data.id as string;
   await owner.query(
-    `UPDATE payment_intents SET status='expired', expires_at = now() - interval '10 minutes'
+    `UPDATE payment_intents SET status='expired', expires_at = now() - interval '10 minutes',
+            provider_final_at = now()
       WHERE tenant_id=$1 AND id=$2`,
     [fx.tenant.tenantId, aId],
   );
@@ -394,7 +395,8 @@ describe("SO-879 sweep voids a fully paid QR order only when the money is refund
     expect(a.status, JSON.stringify(a.body)).toBe(201);
     const aId = a.body.data.id as string;
     await owner.query(
-      `UPDATE payment_intents SET status='expired', expires_at = now() - interval '10 minutes'
+      `UPDATE payment_intents SET status='expired', expires_at = now() - interval '10 minutes',
+            provider_final_at = now()
         WHERE tenant_id=$1 AND id=$2`,
       [fx.tenant.tenantId, aId],
     );

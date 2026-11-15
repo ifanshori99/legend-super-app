@@ -492,6 +492,50 @@ async function appliedQrisMoneyTx(
   return Number(row?.evidence ?? 0) > Number(row?.parked ?? 0);
 }
 
+/** so-885 legend-0owye: how soon a backfilled hold with parked money is read again. */
+const PARKED_BACKFILLED_RECHECK_MS = 30 * 60_000;
+
+/** Unallocated funds of one intent: how many rows and how many are unresolved. */
+async function unallocatedFundsOfIntentTx(
+  tx: Tx,
+  tenantId: TenantId,
+  intentId: string,
+): Promise<{ total: number; open: number }> {
+  const rows = await tx
+    .select({ resolvedAt: paymentUnallocatedFunds.resolvedAt })
+    .from(paymentUnallocatedFunds)
+    .where(
+      and(
+        eq(paymentUnallocatedFunds.tenantId, tenantId),
+        eq(paymentUnallocatedFunds.paymentIntentId, intentId),
+      ),
+    );
+  return {
+    total: rows.length,
+    open: rows.filter((row) => row.resolvedAt === null).length,
+  };
+}
+
+/** The intent is `failed` and none of its provider money was applied to the
+ * bill (all of it sits in unallocated funds). Locks the intent row. */
+async function failedIntentWithoutAppliedMoneyTx(
+  tx: Tx,
+  tenantId: TenantId,
+  intentId: string,
+): Promise<boolean> {
+  if (await appliedQrisMoneyTx(tx, tenantId, intentId)) return false;
+  const [intent] = await tx
+    .select({ status: paymentIntents.status })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, tenantId),
+        eq(paymentIntents.id, intentId),
+      ),
+    );
+  return intent?.status === "failed";
+}
+
 // ---- Read model -------------------------------------------------------------
 
 async function holdDto(
@@ -818,6 +862,34 @@ export async function checkQrisHold(
         return "paid";
       }
     }
+    // so-885 legend-0owye: money of this code parked as unallocated funds
+    // (an amount mismatch marked the intent `failed`). The hold is not ended
+    // by the provider while any of it is unresolved; a backfilled hold ends
+    // once every fund was refunded or credited, with no provider read needed.
+    const funds = await unallocatedFundsOfIntentTx(tx, tenantId, intent.id);
+    if (
+      hold.backfilled &&
+      funds.total > 0 &&
+      funds.open === 0 &&
+      (await failedIntentWithoutAppliedMoneyTx(tx, tenantId, intent.id))
+    ) {
+      await closeQrisHoldTx(tx, context, {
+        order,
+        pos,
+        hold,
+        reason: "provider_failed",
+        evidence: {
+          basis: "unallocated_funds_resolved",
+          providerRef: intent.providerRef,
+          funds: funds.total,
+          checkedAt: now.toISOString(),
+        },
+        caller: null,
+        auditAction: "pos_qris_hold.closed_funds_resolved",
+        now,
+      });
+      return "closed";
+    }
     // Re-read the money under the locks: a payment committed after the provider
     // read (or a stale expired answer) must never close the hold (legend-zff37).
     const paidUnderLock =
@@ -825,7 +897,7 @@ export async function checkQrisHold(
         ? await appliedQrisMoneyTx(tx, tenantId, intent.id)
         : false;
     if (paidUnderLock) settleAfter = true;
-    if (proof && answer && !paidUnderLock) {
+    if (proof && answer && !paidUnderLock && funds.open === 0) {
       const failed = answer.status === "failed";
       await closeQrisHoldTx(tx, context, {
         order,
@@ -846,26 +918,22 @@ export async function checkQrisHold(
       return "closed";
     }
     // Money of this QR already parked (wrong amount): nothing more can be
-    // learned from the provider, so stop reading it every few minutes. The
-    // hold stays active until the manager releases it.
-    const [parkedRow] = await tx
-      .select({ id: paymentUnallocatedFunds.id })
-      .from(paymentUnallocatedFunds)
-      .where(
-        and(
-          eq(paymentUnallocatedFunds.tenantId, tenantId),
-          eq(paymentUnallocatedFunds.paymentIntentId, intent.id),
-        ),
-      )
-      .limit(1);
-    const parked = parkedRow !== undefined;
+    // learned from the provider, so stop reading it every few minutes. A
+    // manager releases the hold; a backfilled hold (no POS screen leads to it)
+    // is looked at again soon, since it ends when the parked money is returned.
+    const parked = funds.total > 0;
     await tx
       .update(posQrisHolds)
       .set({
         lastCheckedAt: now,
         checkAttempts: hold.checkAttempts + 1,
         nextCheckAt: parked
-          ? new Date(now.getTime() + 24 * 3_600_000)
+          ? new Date(
+              now.getTime() +
+                (hold.backfilled
+                  ? PARKED_BACKFILLED_RECHECK_MS
+                  : 24 * 3_600_000),
+            )
           : nextHoldCheckAt(intent.expiresAt, now),
       })
       .where(

@@ -99,6 +99,7 @@ import {
   outletGatewayHealth,
   selectGatewayForNewIntent,
 } from "./payment-gateway-select";
+import { expiredCodeMayStillPay } from "./payment-live-code";
 import {
   onlinePaymentMethodSchema,
   resolveRoutingRule,
@@ -681,6 +682,19 @@ async function cancelSupersededAtGateway(
     if (!gateway.cancel) continue;
     try {
       await gateway.cancel(context, intent);
+      // The provider closed the code: final proof (SO-885).
+      await withTenant(db, context, async (tx) =>
+        tx
+          .update(paymentIntents)
+          .set({ providerFinalAt: new Date() })
+          .where(
+            and(
+              eq(paymentIntents.tenantId, context.tenant.tenantId),
+              eq(paymentIntents.id, intent.intentId),
+              isNull(paymentIntents.providerFinalAt),
+            ),
+          ),
+      );
     } catch (error) {
       // Identifiers only.
       logger.warn(
@@ -966,11 +980,18 @@ async function expireIntent(
   /** Also writes an audit row in the same transaction (an expiry the gateway
    * never confirmed, see `syncPendingIntentDetailed`). */
   audit?: { action: string; reason: string },
+  /** SO-885: the PROVIDER answered final (or the money was reconciled). A
+   * local timeout never sets it. */
+  providerFinal = false,
 ): Promise<void> {
   await withTenant(db, context, async (tx) => {
     const updated = await tx
       .update(paymentIntents)
-      .set({ status: "expired", updatedAt: now })
+      .set({
+        status: "expired",
+        updatedAt: now,
+        ...(providerFinal ? { providerFinalAt: now } : {}),
+      })
       .where(
         and(
           eq(paymentIntents.tenantId, context.tenant.tenantId),
@@ -1085,7 +1106,7 @@ async function failIntent(
   await withTenant(db, context, async (tx) => {
     const updated = await tx
       .update(paymentIntents)
-      .set({ status: "failed", updatedAt: now })
+      .set({ status: "failed", updatedAt: now, providerFinalAt: now })
       .where(
         and(
           eq(paymentIntents.tenantId, context.tenant.tenantId),
@@ -1619,7 +1640,8 @@ async function syncPendingIntentDetailed(
         gatewayError,
       };
     }
-    await expireIntent(context, intent, now, "timeout");
+    // The provider answered definitively (expired / failed / paid and parked).
+    await expireIntent(context, intent, now, "timeout", undefined, true);
     return {
       intent: { ...intent, status: "expired", updatedAt: now },
       gatewayError,
@@ -1627,7 +1649,7 @@ async function syncPendingIntentDetailed(
   }
   if (providerStatus === undefined) return { intent, gatewayError };
   if (providerStatus.status === "expired") {
-    await expireIntent(context, intent, now, "gateway");
+    await expireIntent(context, intent, now, "gateway", undefined, true);
     return {
       intent: { ...intent, status: "expired", updatedAt: now },
       gatewayError: false,
@@ -2543,8 +2565,12 @@ export async function applyGatewayFailure(
   assertOutletInScope(context.outletScope, intent.outletId);
   if (intent.status === "pending") {
     if (outcome === "expired")
-      await expireIntent(context, intent, now, "gateway");
+      await expireIntent(context, intent, now, "gateway", undefined, true);
     else await failIntent(context, intent, now);
+  } else if (intent.status === "expired") {
+    // A superseded / timed-out code: the provider's verified final answer is
+    // the proof it is dead (SO-885).
+    await markGatewayReconciled(context, intent, now);
   }
   const current = (await load()) ?? intent;
   return toPaymentIntent(current);
@@ -2639,28 +2665,27 @@ async function syncExpiredIntentPayment(
 }
 
 /**
- * Ends the poll of an expired intent once the gateway answered definitively
- * after its code lapsed: `updated_at` moves past `expires_at`, which takes the
- * row out of the poller's "closed before its code lapsed" selection. Before
- * the code lapses nothing changes (the code is still payable). Touches only an
- * `expired` row, so a settled one is left as the lifecycle wrote it.
+ * SO-885: the provider answered final for an `expired` intent (expired /
+ * failed) or its money was reconciled: sets `provider_final_at`, which ends
+ * the poll of the code and lets a replacement code or a split change open.
+ * Local time never calls this. Touches only an `expired` row without proof, so
+ * a settled one is left as the lifecycle wrote it and a replay changes nothing.
  */
 async function markGatewayReconciled(
   context: ScopedTenantContext,
   intent: PaymentIntentRow,
   now: Date,
 ): Promise<void> {
-  if (intent.expiresAt > now) return;
   await withTenant(db, context, async (tx) =>
     tx
       .update(paymentIntents)
-      .set({ updatedAt: now })
+      .set({ providerFinalAt: now })
       .where(
         and(
           eq(paymentIntents.tenantId, context.tenant.tenantId),
           eq(paymentIntents.id, intent.id),
           eq(paymentIntents.status, "expired"),
-          lt(paymentIntents.updatedAt, paymentIntents.expiresAt),
+          isNull(paymentIntents.providerFinalAt),
         ),
       ),
   );
@@ -2756,7 +2781,6 @@ export async function pollPendingGatewayIntents(
   const providers = registeredGatewayProviders();
   if (providers.length === 0) return { checked: 0, settled: 0 };
   const cutoff = new Date(now.getTime() - GATEWAY_POLL_GRACE_MS);
-  const windowStart = new Date(now.getTime() - GATEWAY_POLL_WINDOW_MS);
   const nowAt = sql`${now.toISOString()}::timestamptz`;
   // Before expiry every run asks; past it, only once the backoff has passed.
   const backoffDue = or(
@@ -2788,16 +2812,9 @@ export async function pollPendingGatewayIntents(
             ),
             or(
               eq(paymentIntents.status, "pending"),
-              and(
-                eq(paymentIntents.status, "expired"),
-                or(
-                  gt(paymentIntents.expiresAt, cutoff),
-                  and(
-                    lt(paymentIntents.updatedAt, paymentIntents.expiresAt),
-                    gt(paymentIntents.expiresAt, windowStart),
-                  ),
-                ),
-              ),
+              // SO-885: an expired code stays in the poll until the provider
+              // answers final, however long ago it lapsed (no window).
+              expiredCodeMayStillPay(),
             ),
             backoffDue,
             eq(paymentIntents.provider, provider),

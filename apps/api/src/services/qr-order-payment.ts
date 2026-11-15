@@ -23,17 +23,7 @@
 //   before a verified payment (ORD-02).
 
 import { createHash, timingSafeEqual } from "node:crypto";
-import {
-  and,
-  desc,
-  eq,
-  gt,
-  isNotNull,
-  isNull,
-  notExists,
-  or,
-  sql,
-} from "drizzle-orm";
+import { and, desc, eq, isNull, or } from "drizzle-orm";
 import {
   CoreError,
   uuidSchema,
@@ -57,13 +47,13 @@ import { db } from "../db/index.ts";
 import { paymentIntents } from "../db/schema/index.ts";
 import { orderIssueCharges } from "../db/schema/kds-issues.ts";
 import { billSplits } from "../db/schema/bill-splits.ts";
-import { posQrisHolds } from "../db/schema/pos-qris-hold.ts";
 import { orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { openSecret, sealSecret } from "../lib/secrets.ts";
 import type { Tx } from "./menu-internals.ts";
 import { paymentGatewayFor } from "./payment-gateway.ts";
+import { expiredCodeMayStillPay, noClosedHold } from "./payment-live-code.ts";
 import { selectGatewayForNewIntent } from "./payment-gateway-select.ts";
 import { resolveRoutingRule } from "./payment-routing.service.ts";
 import {
@@ -80,16 +70,17 @@ import {
   getIntentView,
   readIntentView,
 } from "./payment.service.ts";
+import {
+  failedOrderCodeWithOpenFundTx,
+  failedPartCodeWithOpenFundTx,
+} from "./payment-failed-funds.ts";
 import { hasOpenEdcRequest } from "./pos-order-support.ts";
 import {
   activeHoldOf,
   openGuestQrisHold,
   openSplitQrisHold,
 } from "./pos-qris-hold.ts";
-import {
-  handleQrOrderPaymentPaid,
-  LATE_PAYMENT_GRACE_MS,
-} from "./qr-order-consumers.ts";
+import { handleQrOrderPaymentPaid } from "./qr-order-consumers.ts";
 import {
   loadQrZoneOfSession,
   lockGuestSessionForPayment,
@@ -362,8 +353,9 @@ function sameHash(stored: string, candidate: string): boolean {
 /**
  * legend-kf104: the whole-order code of the bill that may still take money:
  * any `pending` code (a lapsed one stays pending until the gateway answers),
- * or a superseded/expired one the gateway received, until its own expiry plus
- * the late-payment grace (the gateway cancel is best effort). A code whose QR
+ * or an `expired` one the gateway received until the PROVIDER answered final
+ * or its money was reconciled (SO-885, `expiredCodeMayStillPay`: the gateway
+ * cancel is best effort and a local timeout is not proof). A code whose QR
  * hold the provider proved dead (hold `closed`) is dead. Same rule as
  * `partLiveCodeTx` for a split part, so a VA, a bank change or a QR never
  * replaces a code that may still be paid (two collectible codes of one bill).
@@ -372,7 +364,6 @@ async function orderLiveCodeTx(
   tx: Tx,
   context: ScopedTenantContext,
   paymentLinkId: string,
-  now: Date,
 ): Promise<{ id: string } | null> {
   const tenantId = context.tenant.tenantId;
   const [code] = await tx
@@ -384,27 +375,8 @@ async function orderLiveCodeTx(
         eq(paymentIntents.paymentLinkId, paymentLinkId),
         isNull(paymentIntents.billSplitId),
         or(
-          eq(paymentIntents.status, "pending"),
-          and(
-            eq(paymentIntents.status, "expired"),
-            isNotNull(paymentIntents.providerRef),
-            gt(
-              paymentIntents.expiresAt,
-              new Date(now.getTime() - LATE_PAYMENT_GRACE_MS),
-            ),
-          ),
-        ),
-        notExists(
-          tx
-            .select({ one: sql`1` })
-            .from(posQrisHolds)
-            .where(
-              and(
-                eq(posQrisHolds.tenantId, tenantId),
-                eq(posQrisHolds.paymentIntentId, paymentIntents.id),
-                eq(posQrisHolds.state, "closed"),
-              ),
-            ),
+          and(eq(paymentIntents.status, "pending"), noClosedHold),
+          expiredCodeMayStillPay(),
         ),
       ),
     )
@@ -485,7 +457,7 @@ async function syncCodesOutsideLock(
         );
       if (part?.paymentIntentId) codeIds.add(part.paymentIntentId);
       if (part) {
-        const live = await partLiveCodeTx(tx, context, part.id, now);
+        const live = await partLiveCodeTx(tx, context, part.id);
         if (live !== null) codeIds.add(live.id);
       }
     }
@@ -609,7 +581,7 @@ export async function createGuestPayment(
                 "SPLIT_PART_PAID",
                 "Bagian tagihan ini sudah dibayar oleh tamu lain.",
               );
-            if ((await partLiveCodeTx(tx, context, part.id, now)) !== null)
+            if ((await partLiveCodeTx(tx, context, part.id)) !== null)
               throw new HttpError(
                 409,
                 "SPLIT_CODE_ACTIVE",
@@ -654,7 +626,7 @@ export async function createGuestPayment(
               });
           }
           const live = payer
-            ? await partLiveCodeTx(tx, context, part.id, now)
+            ? await partLiveCodeTx(tx, context, part.id)
             : null;
           if (live !== null) {
             // No payer hash yet means no payer: a live code here is an orphan
@@ -686,6 +658,20 @@ export async function createGuestPayment(
               409,
               "QRIS_HOLD_ACTIVE",
               "QR bagian lain masih bisa dibayar. Tunggu sampai dibayar atau berakhir dulu.",
+            );
+          // SO-885 legend-0owye: money of a failed code of this part is still
+          // parked; the part is not charged again before it is returned.
+          if (
+            await failedPartCodeWithOpenFundTx(
+              tx,
+              context.tenant.tenantId,
+              part.id,
+            )
+          )
+            throw new HttpError(
+              409,
+              "FUNDS_UNRESOLVED",
+              "Uang dari pembayaran sebelumnya belum dikembalikan; selesaikan dulu sebelum membayar lagi.",
             );
           if (parsed.method === "qris")
             await assertNoOpenCardSale(tx, context, order);
@@ -739,7 +725,7 @@ export async function createGuestPayment(
         // Paying the whole order replaces a split that nobody has paid or
         // started paying (assertSplitMutableTx throws SPLIT_LOCKED otherwise).
         if ((await listLiveSplitsTx(tx, context, order.id)).length > 0) {
-          await assertSplitMutableTx(tx, context, order, now);
+          await assertSplitMutableTx(tx, context, order);
           await voidLiveSplitsTx(tx, context, order.id, now);
         }
         // One live code per order: a second payer asking for the same
@@ -776,12 +762,27 @@ export async function createGuestPayment(
         // be paid, whatever method the guest now asks for.
         if (
           order.paymentLinkId !== null &&
-          (await orderLiveCodeTx(tx, context, order.paymentLinkId, now))
+          (await orderLiveCodeTx(tx, context, order.paymentLinkId))
         )
           throw new HttpError(
             409,
             "ORDER_CODE_ACTIVE",
             "Kode pembayaran sebelumnya masih berlaku; selesaikan atau tunggu sampai berakhir.",
+          );
+        // SO-885 legend-0owye: a code closed `failed` by an amount mismatch
+        // still has the guest's money parked; no new code until it is returned.
+        if (
+          order.paymentLinkId !== null &&
+          (await failedOrderCodeWithOpenFundTx(
+            tx,
+            context.tenant.tenantId,
+            order.paymentLinkId,
+          ))
+        )
+          throw new HttpError(
+            409,
+            "FUNDS_UNRESOLVED",
+            "Uang dari pembayaran sebelumnya belum dikembalikan; selesaikan dulu sebelum membayar lagi.",
           );
         if (parsed.method === "qris")
           await assertNoOpenCardSale(tx, context, order);
