@@ -48,6 +48,7 @@ import {
   type PayrollRunType,
 } from "@starter/shared/hris/payroll";
 import { journalEntries } from "../db/schema/index.ts";
+import { bankAccounts } from "../db/schema/accounting-cash-bank.ts";
 import { domainEventOutbox } from "../db/schema/core-events.ts";
 import { payrollRuns } from "../db/schema/payroll.ts";
 import {
@@ -204,6 +205,69 @@ async function runLockPending(
     )
     .limit(1);
   return row !== undefined;
+}
+
+/**
+ * True while the run's locked journal is missing but will come: accounting is
+ * on and `payroll.locked` is still in the outbox. A journal that cannot be
+ * posted now (overpaid second transfer) must wait for it, or its net never
+ * reaches the GL.
+ */
+export async function lockJournalPending(
+  tx: Tx,
+  tenantId: TenantId,
+  runId: string,
+): Promise<boolean> {
+  return (
+    !(await runHasLockedJournal(tx, tenantId, runId)) &&
+    (await accountingEnabled(tx, tenantId)) &&
+    (await runLockPending(tx, tenantId, runId))
+  );
+}
+
+/**
+ * The `bank` override of a pending settlement: the GL account of the bank
+ * account frozen on the batch, read WITHOUT the active filter. The money left
+ * from that account, so a company bank account deactivated since then must not
+ * strand the settlement. A batch without a frozen account follows the config
+ * (it has nothing else). Throws 409 when nothing resolves, so the consumer
+ * retries instead of leaving 2103 open for good.
+ */
+async function pendingSettleOverride(
+  tx: Tx,
+  tenantId: TenantId,
+  batch: Pick<BatchRow, "channel" | "legalEntityId" | "sourceBankAccountId">,
+): Promise<Partial<Record<"bank", string>> | undefined> {
+  if (batch.channel === "cash") return undefined;
+  if (batch.sourceBankAccountId !== null) {
+    const [row] = await tx
+      .select({ glAccountId: bankAccounts.glAccountId })
+      .from(bankAccounts)
+      .where(
+        and(
+          eq(bankAccounts.tenantId, tenantId),
+          eq(bankAccounts.legalEntityId, batch.legalEntityId),
+          eq(bankAccounts.id, batch.sourceBankAccountId),
+        ),
+      )
+      .limit(1);
+    if (row) return { bank: row.glAccountId };
+    throw payoutRefuse(
+      409,
+      PAYOUT_SOURCE_ACCOUNT_MISSING.code,
+      PAYOUT_SOURCE_ACCOUNT_MISSING.message,
+    );
+  }
+  const legacy = await sourceBankOverride(tx, tenantId, batch, {
+    optional: true,
+  });
+  if (legacy === null)
+    throw payoutRefuse(
+      409,
+      PAYOUT_SOURCE_ACCOUNT_MISSING.code,
+      PAYOUT_SOURCE_ACCOUNT_MISSING.message,
+    );
+  return legacy;
 }
 
 /**
@@ -394,9 +458,10 @@ export async function settleBatchPayouts(
  * second call finds nothing pending; the journal key and the conditional flip
  * are the further guards. `onlyBatchId` limits it to one batch (the settle
  * holds that batch's lock only, so it never waits on another batch's lock). An item returned while pending gets its return
- * journal now, so the ledger still equals the money moved. A source account
- * that is unusable at this moment leaves the posting pending (logged), so the
- * locked journal is never blocked by it.
+ * journal now, so the ledger still equals the money moved. The credit goes to
+ * the batch's frozen source account even if it was deactivated since; when no
+ * account resolves at all it throws, so the consumer retries and the outbox
+ * fails loudly instead of leaving the posting pending forever.
  */
 export async function resolvePendingSettles(
   tx: Tx,
@@ -440,16 +505,7 @@ export async function resolvePendingSettles(
       .for("update");
     for (const posting of postings) {
       const netIdr = openPostingTotal(posting, tenantId, "netIdr");
-      const accountOverrides = await sourceBankOverride(tx, tenantId, batch, {
-        optional: true,
-      });
-      if (accountOverrides === null) {
-        logger.warn(
-          { tenantId, batchId: batch.id, reason: "pending_settle_no_source" },
-          "pending payout settlement not resolved: source account missing",
-        );
-        continue;
-      }
+      const accountOverrides = await pendingSettleOverride(tx, tenantId, batch);
       await postJournalFromRuleInTransaction(
         tx,
         context,
@@ -683,6 +739,9 @@ export async function repostSkippedFees(
   await tx.execute(
     sql`SELECT pg_advisory_xact_lock(hashtext(${`payroll-payout-gl:${tenantId}:${batch.id}`}))`,
   );
+  // A pending settlement whose locked journal exists by now resolves first, so
+  // the fee re-post never runs ahead of the salary journal it belongs to.
+  await resolvePendingSettles(tx, tenantId, batch.payrollRunId, now, batch.id);
   const postings = await tx
     .select()
     .from(payrollPayoutGlPostings)

@@ -63,3 +63,23 @@ END $$;
 --> statement-breakpoint
 ALTER TABLE "payroll_payout_gl_postings" DROP CONSTRAINT "payroll_payout_gl_postings_kind_check";--> statement-breakpoint
 ALTER TABLE "payroll_payout_gl_postings" ADD CONSTRAINT "payroll_payout_gl_postings_kind_check" CHECK ("payroll_payout_gl_postings"."kind" IN ('settle', 'settle_pending', 'settle_skipped', 'return', 'overpaid'));
+--> statement-breakpoint
+-- A claim moves only open -> consumed (consumed_at set); every other column and
+-- every other change is refused, as for the GL postings (0348).
+CREATE OR REPLACE FUNCTION app.payroll_payout_return_claims_guard() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+  IF OLD.status = 'open' AND NEW.status = 'consumed' AND NEW.consumed_at IS NOT NULL
+    AND (to_jsonb(NEW) - 'status' - 'consumed_at')
+      IS NOT DISTINCT FROM (to_jsonb(OLD) - 'status' - 'consumed_at') THEN
+    RETURN NEW;
+  END IF;
+  RAISE EXCEPTION 'PAYOUT-31: return claim % cannot change', OLD.id
+    USING ERRCODE = '23514';
+END $$;
+--> statement-breakpoint
+DROP TRIGGER IF EXISTS payroll_payout_return_claims_guard_trg ON public.payroll_payout_return_claims;
+--> statement-breakpoint
+CREATE TRIGGER payroll_payout_return_claims_guard_trg
+  BEFORE UPDATE ON public.payroll_payout_return_claims
+  FOR EACH ROW EXECUTE FUNCTION app.payroll_payout_return_claims_guard();

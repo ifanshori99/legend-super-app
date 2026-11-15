@@ -40,7 +40,16 @@
 // logged and never put in an error.
 
 import { createHash } from "node:crypto";
-import { and, asc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  inArray,
+  isNull,
+  notInArray,
+  or,
+  sql,
+} from "drizzle-orm";
 import type { TenantId, UserId } from "@starter/shared/core";
 import type { PayrollRunId } from "@starter/shared/hris/payroll";
 import {
@@ -884,6 +893,31 @@ export async function resolveManualItems(
       );
   }
 
+  // A proof that frees items as failed must not already be a return proof or a
+  // return claim (review F3). It MAY equal a payment-confirmation proof: one
+  // bank result report legitimately covers paid and failed lines of a batch.
+  const [proofUsed] = await tx
+    .select({ id: payrollDisbursementItems.id })
+    .from(payrollDisbursementItems)
+    .where(
+      and(
+        eq(payrollDisbursementItems.tenantId, tenantId),
+        eq(payrollDisbursementItems.returnEvidenceKey, evidence),
+      ),
+    )
+    .limit(1);
+  const [claimUsed] = await tx
+    .select({ id: payrollPayoutReturnClaims.id })
+    .from(payrollPayoutReturnClaims)
+    .where(
+      and(
+        eq(payrollPayoutReturnClaims.tenantId, tenantId),
+        eq(payrollPayoutReturnClaims.evidenceKey, evidence),
+      ),
+    )
+    .limit(1);
+  if (proofUsed || claimUsed) throw refuseReusedReturnProof();
+
   let resolved = 0;
   let proposed = 0;
   for (const row of rows) {
@@ -985,6 +1019,22 @@ async function bindReturnClaim(
         .join("\n"),
     )
     .digest("hex");
+  // The proof must not already free or confirm any item (review F3): a proof
+  // that resolved a payslip as failed cannot also return another one.
+  const [otherFlow] = await tx
+    .select({ id: payrollDisbursementItems.id })
+    .from(payrollDisbursementItems)
+    .where(
+      and(
+        eq(payrollDisbursementItems.tenantId, tenantId),
+        or(
+          eq(payrollDisbursementItems.resolutionEvidenceKey, evidence),
+          eq(payrollDisbursementItems.confirmationEvidenceKey, evidence),
+        ),
+      ),
+    )
+    .limit(1);
+  if (otherFlow) throw refuseReusedReturnProof();
   const [existing] = await tx
     .select()
     .from(payrollPayoutReturnClaims)
