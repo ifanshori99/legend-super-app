@@ -1,0 +1,6 @@
+# 886 Second opinion akhir area payout di m1 (gerbang rilis uang)
+Peran: second-opinion (baca ~/.agents/team/roles/second-opinion.md). Uang, migrasi, akses: effort xhigh. Read-only, tanpa edit kode produk. Hapus worktree-mu sendiri setelah laporan di-push.
+Repo: /Users/ifanshori99/Projects/legend super app/legend. Cakupan: seluruh kode payout dan GL payroll di `origin/milestone/m1` (tip 1a1480016), yang kini memuat 870, 871, 877 (perbaikan 881/883). Laporan sebelumnya (jangan ulang yang sudah tertutup, tapi verifikasi penutupannya): `docs/qa/second-opinion-payout.md`, `second-opinion-payout-870.md`, `second-opinion-payout-gl-877.md`, `second-opinion-payout-gl-881.md`.
+Cari, dengan kode hasil gabungan (interaksi antar cabang): pihak dibayar lebih atau dua kali; approval yang bisa dilewati atau disetujui pembuat sendiri; bukti transfer dipakai ulang; jurnal GL tidak seimbang, ganda, hilang, atau tidak cocok dengan uang yang bergerak; sweep pemulihan yang tidak adil atau tersembunyi; step-up yang lemah; isolasi tenant; migrasi 0381-0385 dan trigger guard.
+Tanpa heavy kecuali benar perlu satu test terarah.
+Hasil: `docs/qa/second-opinion-payout-area-final.md` (P0-P3, berkas:baris, skenario, usul test), commit ke cabang baru `qa/second-opinion-payout-area-final`, push tanpa force. Lapor sekali saat selesai.
