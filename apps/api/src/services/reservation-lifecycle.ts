@@ -71,7 +71,10 @@ import {
 } from "./reservation-plan.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import { cancelPaymentLinkInTx } from "./payment.service.ts";
-import { confirmLinkUnpaidAtProvider } from "./payment-provider-proof.ts";
+import {
+  assertDepositLinkProvenInTx,
+  confirmDepositLinkUnpaidAtProvider,
+} from "./payment-provider-proof.ts";
 import { sessionDepositCredit } from "./reservation-deposit-credit.ts";
 import { requestDepositRefund } from "./reservation-refunds.ts";
 import {
@@ -482,8 +485,14 @@ async function closeReservation(
       .limit(1);
     return found?.linkId ?? null;
   });
-  if (depositLinkId !== null)
-    await confirmLinkUnpaidAtProvider(context, depositLinkId, now);
+  // legend-m7tnt: fail closed. Every DP code (pending, expired, superseded,
+  // failed) is asked, a `pending` answer holds the close at any local status,
+  // and unresolved unallocated funds hold it until reconciled.
+  const askedIntentIds =
+    depositLinkId === null
+      ? []
+      : (await confirmDepositLinkUnpaidAtProvider(context, depositLinkId, now))
+          .askedIntentIds;
   const done = await withTenant(db, context, async (tx) => {
     await assertPermission(
       tx,
@@ -512,6 +521,15 @@ async function closeReservation(
     // intent and the paid-deposit path applies) or waits for this transaction
     // and finds the booking closed.
     const dpLink = await lockDepositLink(tx, context, row);
+    // legend-m7tnt: re-check under the lock what the provider proof read
+    // outside it (a code opened since, funds parked since).
+    if (row.depositPaymentLinkId !== null)
+      await assertDepositLinkProvenInTx(
+        tx,
+        context,
+        row.depositPaymentLinkId,
+        askedIntentIds,
+      );
     row = await reconcileDeposit(tx, context, row, now);
     // legend-em6p: the DP intent is locked after the reservation row
     // (reservations -> payment_intents) and the close time taken under it, so

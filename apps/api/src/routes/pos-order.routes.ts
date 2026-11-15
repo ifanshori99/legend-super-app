@@ -36,6 +36,7 @@ import {
   getPosOrder,
   getPosOrderActionAvailability,
   getPosQris,
+  listPosQrisReconciliations,
   listPosOrderEvents,
   listPosOrders,
   refundPosOrder,
@@ -66,6 +67,7 @@ import * as discounts from "../services/pos-order-discounts.ts";
 import { addPosTender as addPosTenderService } from "../services/pos-order-payment.ts";
 import * as pos from "../services/pos-order.service.ts";
 import * as qrisHold from "../services/pos-qris-hold.ts";
+import { listPosQrisReconciliations as listPosQrisReconciliationsService } from "../services/pos-qris-release-recon.ts";
 import { readNextPickupCall } from "../services/pickup.service.ts";
 import { getPosCatalog as getPosCatalogService } from "../services/pos-catalog.service.ts";
 import type { MenuMediaUrls } from "../services/menu-internals.ts";
@@ -90,6 +92,7 @@ const pay = can("pos.payment.accept");
 const discount = can("pos.discount.apply");
 const voids = can("pos.void.request");
 const refund = can("pos.refund.request");
+const reconcile = can("payment.reconcile");
 
 /** `If-Match: "3"` (or `3`) → 3; absent → null; anything else → 412. */
 function expectedVersion(req: Request): number | null {
@@ -413,6 +416,19 @@ posOrderRouter.get("/orders/:orderId/qris", view, async (req, res) => {
       getScopedTenantContext(req),
       outletId,
       orderId,
+    ),
+  });
+});
+
+// legend-adiov: force released QR codes still being reconciled (staff view).
+posOrderRouter.get("/qris/reconciliations", reconcile, async (req, res) => {
+  const { outletId } = listPosQrisReconciliations.params.parse(req.params);
+  const query = listPosQrisReconciliations.query.parse(req.query);
+  res.json({
+    data: await listPosQrisReconciliationsService(
+      getScopedTenantContext(req),
+      outletId,
+      query.status,
     ),
   });
 });

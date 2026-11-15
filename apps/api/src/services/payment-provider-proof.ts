@@ -7,15 +7,16 @@
 // the normal settlement path, an unclear answer holds the cancel (fail-closed),
 // and only a provider that holds no money lets the caller cancel locally.
 
-import { and, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, ne } from "drizzle-orm";
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { db } from "../db/index.ts";
-import { paymentIntents } from "../db/schema/index.ts";
+import { paymentIntents, paymentUnallocatedFunds } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error";
 import { logger } from "../lib/logger";
 import { settleGatewayIntentNow } from "./payment.service.ts";
 import { paymentGatewayFor } from "./payment-gateway.ts";
+import type { Tx } from "./permission-resolver.ts";
 import { HOLD_CLOSE_MARGIN_MS } from "./pos-qris-hold.ts";
 
 export type LinkProviderVerdict = "unpaid" | "settled";
@@ -55,11 +56,110 @@ const unconfirmed = () =>
  *
  * `unpaid` only when every intent is safe to cancel locally.
  */
-export async function confirmLinkUnpaidAtProvider(
+export function confirmLinkUnpaidAtProvider(
   context: ScopedTenantContext,
   linkId: string,
   now: Date,
 ): Promise<LinkProviderVerdict> {
+  return askProviderAboutLink(context, linkId, now, false).then(
+    (proof) => proof.verdict,
+  );
+}
+
+/**
+ * Fail-closed variant for closing a reservation whose DP is on the link
+ * (legend-m7tnt, so-879 P1). Local time is never proof that a code is dead:
+ *
+ * - every intent that reached the provider is asked, whatever its local
+ *   status (`pending`, `expired`, superseded, `failed`);
+ * - a `pending` answer is refused (409 `PAYMENT_PROVIDER_UNCONFIRMED`) for
+ *   every one of them, before and after expiry + margin; only a final
+ *   `expired` / `failed` / `cancelled` answer, or money applied once, proves a
+ *   code holds nothing;
+ * - an answer `paid` for an intent that stays `failed` (amount mismatch) is
+ *   accepted only when its money was recorded as unallocated funds;
+ * - unallocated funds of a non-paid intent of the link that are not resolved
+ *   yet (refunded or credited) refuse the close until they are reconciled.
+ *
+ * Returns the ids of the intents asked, for `assertDepositLinkProvenInTx`.
+ */
+export async function confirmDepositLinkUnpaidAtProvider(
+  context: ScopedTenantContext,
+  linkId: string,
+  now: Date,
+): Promise<{ verdict: LinkProviderVerdict; askedIntentIds: string[] }> {
+  const proof = await askProviderAboutLink(context, linkId, now, true);
+  await withTenant(db, context, (tx) =>
+    assertNoOpenFundsOfLink(tx, context, linkId),
+  );
+  return proof;
+}
+
+/**
+ * Re-checks under the caller's lock (reservation, then DP link) what the
+ * provider proof read outside it: an intent of the link that was not asked
+ * (opened since), or unallocated funds that are not resolved yet, refuse the
+ * close with 409 `PAYMENT_PROVIDER_UNCONFIRMED`.
+ */
+export async function assertDepositLinkProvenInTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  linkId: string,
+  askedIntentIds: readonly string[],
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const intents = await tx
+    .select({ id: paymentIntents.id })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, tenantId),
+        eq(paymentIntents.paymentLinkId, linkId),
+        inArray(paymentIntents.status, ["pending", "expired", "failed"]),
+        isNotNull(paymentIntents.providerRef),
+      ),
+    );
+  if (intents.some((intent) => !askedIntentIds.includes(intent.id)))
+    throw unconfirmed();
+  await assertNoOpenFundsOfLink(tx, context, linkId);
+}
+
+async function assertNoOpenFundsOfLink(
+  tx: Tx,
+  context: ScopedTenantContext,
+  linkId: string,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const [open] = await tx
+    .select({ id: paymentUnallocatedFunds.id })
+    .from(paymentUnallocatedFunds)
+    .innerJoin(
+      paymentIntents,
+      and(
+        eq(paymentIntents.tenantId, paymentUnallocatedFunds.tenantId),
+        eq(paymentIntents.id, paymentUnallocatedFunds.paymentIntentId),
+      ),
+    )
+    .where(
+      and(
+        eq(paymentUnallocatedFunds.tenantId, tenantId),
+        eq(paymentIntents.paymentLinkId, linkId),
+        // Money on a paid intent is a double payment or an overpayment next to
+        // the settled DP; it does not change what the DP itself holds.
+        ne(paymentIntents.status, "paid"),
+        isNull(paymentUnallocatedFunds.resolvedAt),
+      ),
+    )
+    .limit(1);
+  if (open) throw unconfirmed();
+}
+
+async function askProviderAboutLink(
+  context: ScopedTenantContext,
+  linkId: string,
+  now: Date,
+  strict: boolean,
+): Promise<{ verdict: LinkProviderVerdict; askedIntentIds: string[] }> {
   const tenantId = context.tenant.tenantId;
   const intents = await withTenant(db, context, async (tx) =>
     tx
@@ -69,15 +169,20 @@ export async function confirmLinkUnpaidAtProvider(
         and(
           eq(paymentIntents.tenantId, tenantId),
           eq(paymentIntents.paymentLinkId, linkId),
-          inArray(paymentIntents.status, ["pending", "expired"]),
+          inArray(
+            paymentIntents.status,
+            strict ? ["pending", "expired", "failed"] : ["pending", "expired"],
+          ),
           isNotNull(paymentIntents.providerRef),
         ),
       ),
   );
+  const askedIntentIds: string[] = [];
   let verdict: LinkProviderVerdict = "unpaid";
   for (const intent of intents) {
     const providerRef = intent.providerRef;
     if (providerRef === null) continue;
+    askedIntentIds.push(intent.id);
     const gateway = paymentGatewayFor(intent.provider);
     let answer: Awaited<ReturnType<typeof gateway.getStatus>>;
     try {
@@ -120,10 +225,20 @@ export async function confirmLinkUnpaidAtProvider(
             ),
           ),
       );
-      if (!reread || reread.status === intent.status) throw unconfirmed();
+      if (!reread) throw unconfirmed();
+      if (reread.status === intent.status) {
+        // An intent that was already `failed` (amount mismatch) stays failed;
+        // its money is accounted when it was parked as unallocated funds
+        // (open ones are refused by the funds check).
+        if (!(strict && intent.status === "failed")) throw unconfirmed();
+        if (!(await hasParkedFunds(context, intent.id))) throw unconfirmed();
+      }
       verdict = "settled";
       continue;
     }
+    // Strict: a `pending` answer is never proof of a dead code, whatever the
+    // local status and clock say.
+    if (strict && answer.status === "pending") throw unconfirmed();
     // A code only expired in our books (superseded, or closed before it
     // lapsed) is still payable while the provider says pending and its own
     // lifetime has not run out: no proof that it holds no money.
@@ -134,5 +249,24 @@ export async function confirmLinkUnpaidAtProvider(
     )
       throw unconfirmed();
   }
-  return verdict;
+  return { verdict, askedIntentIds };
+}
+
+async function hasParkedFunds(
+  context: ScopedTenantContext,
+  intentId: string,
+): Promise<boolean> {
+  const rows = await withTenant(db, context, async (tx) =>
+    tx
+      .select({ id: paymentUnallocatedFunds.id })
+      .from(paymentUnallocatedFunds)
+      .where(
+        and(
+          eq(paymentUnallocatedFunds.tenantId, context.tenant.tenantId),
+          eq(paymentUnallocatedFunds.paymentIntentId, intentId),
+        ),
+      )
+      .limit(1),
+  );
+  return rows.length > 0;
 }

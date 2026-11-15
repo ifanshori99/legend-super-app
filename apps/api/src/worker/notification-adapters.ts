@@ -843,6 +843,8 @@ function refundEscalatedBody(reason: RefundEscalationReason): string {
       return "Ada refund yang sudah disetujui tetapi pengembalian dananya belum selesai di penyedia pembayaran. Mohon ditinjau.";
     case "payout_stalled":
       return "Ada refund yang sudah disetujui tetapi pembayarannya tertahan dan perlu ditangani manual. Mohon ditinjau.";
+    case "failed_holds_order":
+      return "Ada refund yang gagal dan menahan pesanan QR yang belum dibayar. Mohon ditinjau dan setujui pengajuan ulangnya.";
     default: {
       const unreachable: never = reason;
       return unreachable;
@@ -884,7 +886,10 @@ async function refundEscalatedRule(input: RuleInput): Promise<Rule> {
     userIds,
     content: {
       category: "approval_request",
-      title: "Refund menunggu terlalu lama",
+      title:
+        payload.reason === "failed_holds_order"
+          ? "Refund gagal menahan pesanan"
+          : "Refund menunggu terlalu lama",
       body: refundEscalatedBody(payload.reason),
       link: null,
     },

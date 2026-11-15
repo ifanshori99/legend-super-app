@@ -44,6 +44,7 @@ import { paymentGatewayFor } from "./payment-gateway.ts";
 import { appendPaymentEvent } from "./payment-support.ts";
 import { notifyOutletSupervisors } from "./edge-sync-conflict-alert.ts";
 import { mutatePosOrder } from "./pos-order.service.ts";
+import { openReleaseReconciliationTx } from "./pos-qris-release-recon.ts";
 import {
   appendOrderEvent,
   auditPos,
@@ -1051,6 +1052,14 @@ export async function releasePosQris(
           },
           caller,
           auditAction: "pos_qris_hold.force_released",
+          now,
+        });
+        // legend-adiov: no provider proof, so the QR may still be paid. A
+        // durable row keeps asking the provider until it answers for good.
+        await openReleaseReconciliationTx(tx, context, {
+          hold,
+          reason: "force_released",
+          callerUserId: caller.userId,
           now,
         });
         const [released] = await tx

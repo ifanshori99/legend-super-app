@@ -5,6 +5,11 @@
 // 409 PAYMENT_PROVIDER_UNCONFIRMED). Safe only when the provider says
 // expired/failed, or the code's own expires_at + 60 s has passed.
 //
+// 885 card A: this file covers the lenient helper `confirmLinkUnpaidAtProvider`
+// (breakfast, charge, session close). Reservation cancel / no-show uses the
+// fail-closed variant (any `pending` answer holds), tested in
+// qris-hold-so885-a-dp-proof.test.ts; nothing here was weakened.
+//
 // Run just this file:
 //   LEGEND_TEST_FILES="src/test/qris-hold-so879-c-proof-pending.test.ts" heavy pnpm test
 import { randomUUID } from "node:crypto";

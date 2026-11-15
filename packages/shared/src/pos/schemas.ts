@@ -1882,6 +1882,30 @@ export const posQrisHoldSchema = z.strictObject({
 });
 export type PosQrisHold = z.infer<typeof posQrisHoldSchema>;
 
+/**
+ * legend-adiov: a force released QRIS the system keeps asking the provider
+ * about until it answers for good. Staff read the queue; there is no UI yet.
+ */
+export const posQrisReconciliationStatusSchema = z.enum(["open", "resolved"]);
+export const posQrisReconciliationSchema = z.strictObject({
+  id: z.string().min(1),
+  outletId: z.string().min(1),
+  holdId: z.string().min(1),
+  paymentIntentId: uuidSchema,
+  status: posQrisReconciliationStatusSchema,
+  reason: z.string().min(1),
+  attempts: z.number().int().min(0),
+  nextCheckAt: isoDateTimeSchema,
+  lastCheckedAt: isoDateTimeSchema.nullable(),
+  lastProviderStatus: z.string().nullable(),
+  createdAt: isoDateTimeSchema,
+  resolvedAt: isoDateTimeSchema.nullable(),
+  resolution: z
+    .enum(["paid_recorded", "provider_expired", "provider_failed"])
+    .nullable(),
+});
+export type PosQrisReconciliation = z.infer<typeof posQrisReconciliationSchema>;
+
 // ---- Documents: receipt, kuitansi, invoice (POS-07, F43/F44) --------------
 
 export const posDocumentLineSchema = z

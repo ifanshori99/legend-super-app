@@ -7,7 +7,16 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import * as contract from "@starter/shared/payment/admin";
-import { and, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  or,
+  sql,
+} from "drizzle-orm";
 import type { z } from "zod";
 import { db } from "../db/index.ts";
 import {
@@ -26,6 +35,7 @@ import {
   approveRefund as approveRefundWithPayout,
   openRefundChainAtRequest,
 } from "./payment-refund.service.ts";
+import { failedRefundHoldsOrderSql } from "./payment-refund-failed-open.ts";
 import { netPosTendersOfIntentSql } from "./pos-intent-attribution.ts";
 import { depositInUseOfIntent } from "./reservation-deposit-credit.ts";
 import {
@@ -678,10 +688,23 @@ export async function listRefunds(
             : undefined,
           query.status ? eq(paymentRefunds.status, query.status) : undefined,
           query.escalated === "true"
-            ? // Open cases only: a completed or failed refund needs no one any more.
+            ? // Open cases only: a completed or failed refund needs no one any
+              // more, except a failed one that still holds an awaiting_payment
+              // QR order (SO-885 legend-05pjx).
               and(
                 isNotNull(paymentRefunds.escalatedAt),
-                inArray(paymentRefunds.status, ["pending", "approved"]),
+                or(
+                  inArray(paymentRefunds.status, ["pending", "approved"]),
+                  and(
+                    eq(paymentRefunds.escalationReason, "failed_holds_order"),
+                    failedRefundHoldsOrderSql({
+                      tenantId: sql`${paymentRefunds.tenantId}`,
+                      paymentIntentId: sql`${paymentRefunds.paymentIntentId}`,
+                      unallocatedFundId: sql`${paymentRefunds.unallocatedFundId}`,
+                      status: sql`${paymentRefunds.status}`,
+                    }),
+                  ),
+                ),
               )
             : query.escalated === "false"
               ? isNull(paymentRefunds.escalatedAt)

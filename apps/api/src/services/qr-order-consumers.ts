@@ -43,7 +43,16 @@
 //   voided by `sweepUnpaidQrOrders` (relay tick), which also covers guests
 //   who stop polling (no expiry event is produced then).
 
-import { and, asc, eq, inArray, lte, notExists, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  inArray,
+  lte,
+  notExists,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import { uuidSchema, z, type ScopedTenantContext } from "@starter/shared/core";
 import type { EventEnvelope } from "@starter/shared/events";
 import type { PaymentStatus } from "@starter/shared/payment";
@@ -68,6 +77,10 @@ import {
 } from "./bill-split.service.ts";
 import type { Tx } from "./menu-internals.ts";
 import { refundableBalance } from "./payment-admin.service.ts";
+import {
+  failedRefundOpenSql,
+  refundColumnsOf,
+} from "./payment-refund-failed-open.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import { listSessionDepositSources } from "./reservation-deposit-credit.ts";
 import { pendingRefundIdr } from "./pos-order-late-payment.ts";
@@ -139,7 +152,7 @@ export type UnpaidQrOrderState = {
    * that state holds no guest money any more.
    */
   readonly netCapturedZero: boolean;
-  /** A refund of the link is pending, approved but not paid out, or failed. */
+  /** A refund of the link is pending, approved but not paid out, or failed (and not yet replaced by a completed one). */
   readonly anyRefundOpen: boolean;
   /** End of the last payment window: max(placed at, last code expiry). */
   readonly windowClosedAt: Date;
@@ -262,7 +275,8 @@ async function supersededIntentIds(
  * intent's COMPLETED refunds (of any kind) cover everything that came in for
  * it; an intent still marked paid with no evidence is unknown, so not zero.
  * `anyRefundOpen`: any refund of the link that is not completed (pending,
- * approved but not paid out, failed). Both answer the safe way on doubt.
+ * approved but not paid out, or failed and not yet replaced by a completed
+ * refund; SO-885 legend-05pjx). Both answer the safe way on doubt.
  */
 async function refundPositionOfLink(
   tx: Tx,
@@ -298,7 +312,8 @@ async function refundPositionOfLink(
            (SELECT count(*) FROM payment_refunds r
              WHERE r.tenant_id = i.tenant_id
                AND r.payment_intent_id = i.id
-               AND r.status <> 'completed')::text AS open_refunds
+               AND (r.status IN ('pending', 'approved')
+                    OR ${failedRefundOpenSql({ ...refundColumnsOf("r"), status: sql.raw("r.status") })}))::text AS open_refunds
       FROM payment_intents i
      WHERE i.tenant_id = ${tenantId}
        AND i.payment_link_id = ${paymentLinkId}`);
@@ -989,46 +1004,95 @@ export async function handleQrOrderPaymentClosed(
 // ---- Sweep (relay tick) ---------------------------------------------------------
 
 /**
+ * Rotating cursor of the sweep, per tenant (SO-885 legend-m8jax, as the payout
+ * recovery sweep, legend-la22h): the (placed at, id) of the last order looked
+ * at. The next round starts after it and wraps to the oldest when the tail is
+ * short, so orders that stay kept (a paid bill with a failed refund, a code
+ * still inside its grace) in front of the window cannot starve the abandoned
+ * ones behind them; every order gets a turn within ceil(orders / limit) rounds.
+ * Process memory only: a restart starts again from the oldest, which is safe
+ * (each order is decided again under its row lock).
+ */
+const sweepCursors = new Map<string, { placedAt: string; id: string }>();
+
+/** Test hook: forget the sweep cursor of one tenant (or all). */
+export function resetUnpaidQrSweepCursor(tenantId?: string): void {
+  if (tenantId === undefined) sweepCursors.clear();
+  else sweepCursors.delete(tenantId);
+}
+
+/**
  * Voids unpaid pay-first QR orders whose payment window closed (abandoned,
  * link expired, attempts exhausted or session closed) — the safety net for
  * guests who stop polling, when no expiry event is ever produced. Each order
  * is decided and voided in its own transaction under its row lock; a second
- * run finds it voided and releases nothing again.
+ * run finds it voided and releases nothing again. Candidates are read oldest
+ * first after a rotating per-tenant cursor (`sweepCursors`), `limit` per round.
  */
 export async function sweepUnpaidQrOrders(
   context: ScopedTenantContext,
   now = new Date(),
   limit = 100,
 ): Promise<{ voided: number }> {
-  const candidates = await withTenant(db, context, (tx) =>
-    tx
-      .select({ id: orders.id })
-      .from(orders)
-      .where(
-        and(
-          eq(orders.tenantId, context.tenant.tenantId),
-          eq(orders.channel, "qr"),
-          inArray(orders.status, ["awaiting_payment"]),
-          lte(orders.placedAt, new Date(now.getTime() - LATE_PAYMENT_GRACE_MS)),
-          // legend-kf104: a bill whose QR can still be paid cannot be voided;
-          // it must not fill the oldest-first window and starve the others.
-          notExists(
-            db
-              .select({ one: sql`1` })
-              .from(posQrisHolds)
-              .where(
-                and(
-                  eq(posQrisHolds.tenantId, orders.tenantId),
-                  eq(posQrisHolds.orderId, orders.id),
-                  inArray(posQrisHolds.state, ["open", "cancelling"]),
+  const tenantId = context.tenant.tenantId;
+  const cursor = sweepCursors.get(tenantId);
+  const readCandidates = (range: SQL | undefined, max: number) =>
+    withTenant(db, context, (tx) =>
+      tx
+        .select({
+          id: orders.id,
+          // Raw uuid text: `orders.id` is a ULID in a uuid column.
+          rawId: sql<string>`${orders.id}::text`,
+          placedAt: sql<string>`${orders.placedAt}::text`,
+        })
+        .from(orders)
+        .where(
+          and(
+            eq(orders.tenantId, tenantId),
+            eq(orders.channel, "qr"),
+            inArray(orders.status, ["awaiting_payment"]),
+            lte(
+              orders.placedAt,
+              new Date(now.getTime() - LATE_PAYMENT_GRACE_MS),
+            ),
+            // legend-kf104: a bill whose QR can still be paid cannot be voided;
+            // it must not fill the oldest-first window and starve the others.
+            notExists(
+              db
+                .select({ one: sql`1` })
+                .from(posQrisHolds)
+                .where(
+                  and(
+                    eq(posQrisHolds.tenantId, orders.tenantId),
+                    eq(posQrisHolds.orderId, orders.id),
+                    inArray(posQrisHolds.state, ["open", "cancelling"]),
+                  ),
                 ),
-              ),
+            ),
+            range,
           ),
-        ),
-      )
-      .orderBy(asc(orders.placedAt), asc(orders.id))
-      .limit(limit),
+        )
+        .orderBy(asc(orders.placedAt), asc(orders.id))
+        .limit(max),
+    );
+  const candidates = await readCandidates(
+    cursor
+      ? sql`(${orders.placedAt}, ${orders.id}) > (${cursor.placedAt}::timestamptz, ${cursor.id}::uuid)`
+      : undefined,
+    limit,
   );
+  if (cursor && candidates.length < limit) {
+    // The tail is short: wrap to the oldest (up to and including the cursor).
+    const seen = new Set(candidates.map((row) => row.id));
+    const wrapped = await readCandidates(
+      sql`(${orders.placedAt}, ${orders.id}) <= (${cursor.placedAt}::timestamptz, ${cursor.id}::uuid)`,
+      limit - candidates.length,
+    );
+    for (const row of wrapped) if (!seen.has(row.id)) candidates.push(row);
+  }
+  const last = candidates.at(-1);
+  if (last === undefined) sweepCursors.delete(tenantId);
+  else sweepCursors.set(tenantId, { placedAt: last.placedAt, id: last.rawId });
   let voided = 0;
   for (const candidate of candidates) {
     const done = await withTenant(db, context, async (tx) => {

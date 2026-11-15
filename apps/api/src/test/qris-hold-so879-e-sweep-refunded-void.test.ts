@@ -6,7 +6,7 @@
 //     closed (no pending intent inside the grace, no open/cancelling hold),
 // (2) the net money captured is 0: every payment that came in has a COMPLETED
 //     refund of at least its amount, and
-// (3) no refund is pending, approved-but-unpaid or failed.
+// (3) no refund is pending, approved-but-unpaid or failed (a failed one replaced by a completed refund no longer counts, SO-885).
 // Any doubt keeps the order. The void is idempotent: a second sweep neither
 // voids nor refunds again.
 //
@@ -243,7 +243,7 @@ describe("SO-879 sweep voids a fully paid QR order only when the money is refund
     expect(await refundsOfIntent(fx, w.aId)).toHaveLength(2);
   });
 
-  it("(c) A's refund failed: the order is kept; a failed row next to a completed full refund is still kept", async () => {
+  it("(c) A's refund failed: the order is kept; a failed row next to a completed full refund no longer holds it (SO-885 legend-05pjx)", async () => {
     const failedOnly = await world();
     await paidAThen(failedOnly, () =>
       refundRow(failedOnly.aId, 10_000, "approved"),
@@ -267,7 +267,9 @@ describe("SO-879 sweep voids a fully paid QR order only when the money is refund
     expect((await orderRow(failedOnly.orderId)).status).toBe(
       "awaiting_payment",
     );
-    expect((await orderRow(both.orderId)).status).toBe("awaiting_payment");
+    // SO-885: the completed full refund replaced the failed row: nothing is
+    // captured and no refund is open any more, so the order is voided.
+    expect((await orderRow(both.orderId)).status).toBe("voided");
   });
 
   it("(d) B is still alive (hold open, provider says pending): the order is kept even though A is fully refunded", async () => {

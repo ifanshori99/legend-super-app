@@ -59,6 +59,8 @@ import {
   posOrderStatusSchema,
   posOrderSummarySchema,
   posQrisHoldSchema,
+  posQrisReconciliationSchema,
+  posQrisReconciliationStatusSchema,
   posReceiptIdSchema,
   posReceiptIssueResultSchema,
   posRefundItemSchema,
@@ -324,6 +326,20 @@ export const getPosQris = defineEndpoint({
   path: "/api/outlets/:outletId/pos/orders/:orderId/qris",
   params: orderParams,
   response: dataResponseSchema(posQrisHoldSchema),
+});
+
+/**
+ * legend-adiov: force released QRIS codes still being reconciled with the
+ * provider (default `open`; at most 200, newest first).
+ */
+export const listPosQrisReconciliations = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/pos/qris/reconciliations",
+  params: outletParams,
+  query: z.strictObject({
+    status: posQrisReconciliationStatusSchema.optional(),
+  }),
+  response: dataResponseSchema(z.array(posQrisReconciliationSchema)),
 });
 
 /**
