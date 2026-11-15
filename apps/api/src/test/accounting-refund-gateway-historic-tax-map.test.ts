@@ -15,15 +15,22 @@
 // - Parked code is ACCOUNT_MAPPING_MISSING and the row is retryable, so the
 //   sweep can post the same event once the mapping is fixed (same convention as
 //   accounting-refund-payout-map-race.test.ts, case 2).
-// - A gateway tender without a payment intent is a valid sale and refund (as in
-//   accounting-auto-journal.test.ts AJ-REFUND-01): the sale debits
-//   gateway_clearing, the refund credits customer_deposit.
+// - The gateway tender names a payment intent whose receipt (payment.paid) is
+//   posted. Since legend-2jyr/27mt the refund is split per intent: a refund of a
+//   posted-receipt intent credits customer_deposit (owed until a payout), while
+//   an intentless tender (or an intent without receipt) only reverses
+//   gateway_clearing and has no payout to guard. The payout-credit guard under
+//   test therefore needs the intent, else no refund ever credits customer_deposit.
 // - Money proof: no journal row is added by the parked delivery, neither the
 //   tax account A nor B moves, exactly one parked row exists, and after the
 //   mapping is restored the sweep posts the refund exactly once (payout credit
 //   == sale total, never more).
+import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { EventEnvelope } from "@starter/shared/events";
+import {
+  eventEnvelopeSchema,
+  type EventEnvelope,
+} from "@starter/shared/events";
 import { retryParkedAutoJournals } from "../services/accounting-auto-journal-consumer.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
@@ -37,6 +44,7 @@ import {
   orderPaid,
   orderRefunded,
   owner,
+  post,
   seedPosOrder,
   totalOf,
   ulidToUuid,
@@ -64,12 +72,78 @@ const sale: Sale = {
 };
 const SALE_TOTAL = totalOf(sale); // 100.000
 
-/** The sale: one captured QRIS tender (no intent), paid event in gateway. */
+/** A paid QRIS intent with its payment link (as accounting-auto-journal-refund-split). */
+async function seedIntent(world: World): Promise<string> {
+  const linkId = randomUUID();
+  const intentId = randomUUID();
+  await owner.query(
+    `INSERT INTO payment_links (id, tenant_id, outlet_id, token_hash, reference, subtotal_idr, total_idr, paid_idr, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $6, $6, 'seed')`,
+    [
+      linkId,
+      world.tenant.id,
+      world.outletId,
+      randomBytes(32).toString("hex"),
+      `HT-${linkId.slice(0, 8)}`,
+      SALE_TOTAL,
+    ],
+  );
+  await owner.query(
+    `INSERT INTO payment_intents
+       (id, tenant_id, outlet_id, payment_link_id, method, provider, amount_idr, idempotency_key,
+        status, paid_at, instructions, expires_at)
+     VALUES ($1, $2, $3, $4, 'qris', 'doit', $5, $6, 'paid', $7,
+             '{"method":"qris","qrPayload":"test","issuer":null}', now())`,
+    [
+      intentId,
+      world.tenant.id,
+      world.outletId,
+      linkId,
+      SALE_TOTAL,
+      `ht-${intentId}`,
+      "2026-10-15T05:00:00.000Z",
+    ],
+  );
+  return intentId;
+}
+
+function paymentPaid(world: World, intentId: string): EventEnvelope {
+  const id = createUlid();
+  return eventEnvelopeSchema.parse({
+    id,
+    tenantId: world.tenant.id,
+    outletId: world.outletId,
+    name: "payment.paid",
+    version: 1,
+    aggregateType: "payment",
+    aggregateId: intentId,
+    sequence: 1,
+    occurredAt: "2026-10-15T05:00:00.000Z",
+    actor: { type: "system" },
+    idempotencyKey: `ht-test-${id}`,
+    payloadSchemaRef: "payment.paid.v1",
+    payload: {
+      intentId,
+      method: "qris",
+      provider: "doit",
+      receivedIdr: SALE_TOTAL,
+      paidAt: "2026-10-15T05:00:00.000Z",
+      late: false,
+    },
+  });
+}
+
+/**
+ * The sale: one captured QRIS tender of a paid intent whose receipt is posted
+ * (journal 1: Dr gateway_clearing, Cr customer_deposit), paid event in gateway.
+ */
 async function seedGatewaySale(
   world: World,
 ): Promise<{ orderUlid: string; paid: EventEnvelope }> {
   const orderUlid = createUlid();
   await seedPosOrder(world, orderUlid, sale);
+  const intentId = await seedIntent(world);
+  await post(world, paymentPaid(world, intentId));
   // seedPosOrder books a cash tender; make it a gateway tender.
   // The order is already final (immutable trigger), so switch triggers off for
   // this one seeding statement; setup only, same rows the sale would have had.
@@ -77,9 +151,10 @@ async function seedGatewaySale(
     await client.query("SET LOCAL session_replication_role = replica");
     await client.query(
       `UPDATE pos_order_tenders
-          SET method = 'qris', provider = 'doit', received_idr = NULL, change_idr = NULL
+          SET method = 'qris', provider = 'doit', received_idr = NULL, change_idr = NULL,
+              payment_intent_id = $3
         WHERE tenant_id = $1 AND order_id = $2`,
-      [world.tenant.id, ulidToUuid(orderUlid)],
+      [world.tenant.id, ulidToUuid(orderUlid), intentId],
     );
   });
   const event = orderPaid(world, orderUlid, sale);
@@ -208,7 +283,7 @@ describe("legend-5i6k1 gateway refund vs current + historical tax account", () =
 
     expect(outcomeOf(result)).toBe("parked:ACCOUNT_MAPPING_MISSING");
     // No party paid more: no refund journal, no line on A or B.
-    expect(await journalCount(world)).toBe(1);
+    expect(await journalCount(world)).toBe(2);
     expect(await accountBalance(world, accountA)).toEqual(before.a);
     expect(await accountBalance(world, accountB)).toEqual(before.b);
     // Parked exactly once.
@@ -220,7 +295,7 @@ describe("legend-5i6k1 gateway refund vs current + historical tax account", () =
 
     // Delivering the same event again does not park a second row.
     await deliver(world, gatewayRefund(world, orderUlid));
-    expect(await journalCount(world)).toBe(1);
+    expect(await journalCount(world)).toBe(2);
   });
 
   it("case 2: customer_deposit remapped onto account A (the account the sale booked tax on), pbjt moved to B: the refund is parked, A is not credited", async () => {
@@ -244,7 +319,7 @@ describe("legend-5i6k1 gateway refund vs current + historical tax account", () =
     // Already refused today (with AUTO_JOURNAL_PAYLOAD_INVALID), so this case is
     // a regression guard, not fail-first: only "parked, never posted" is pinned.
     expect(result.status).toBe("parked");
-    expect(await journalCount(world)).toBe(1);
+    expect(await journalCount(world)).toBe(2);
     expect(await accountBalance(world, accountA)).toEqual(before.a);
     expect(await accountBalance(world, accountB)).toEqual(before.b);
     expect((await parkedRows(world)).rows).toHaveLength(1);
@@ -271,12 +346,12 @@ describe("legend-5i6k1 gateway refund vs current + historical tax account", () =
       await retryParkedAutoJournals(contextOf(world.tenant), later(48)),
     ).toEqual({ posted: 1, stillParked: 0, failed: 0 });
     expect((await parkedRows(world)).rows).toEqual([]);
-    expect(await journalCount(world)).toBe(2);
+    expect(await journalCount(world)).toBe(3);
     expect(
       (await retryParkedAutoJournals(contextOf(world.tenant), later(96)))
         .posted,
     ).toBe(0);
-    expect(await journalCount(world)).toBe(2);
+    expect(await journalCount(world)).toBe(3);
 
     expect(await refundPayoutCredit(world)).toBe(SALE_TOTAL);
     // Outlet not at a loss: the gateway money taken in is still in clearing,

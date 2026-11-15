@@ -41,6 +41,7 @@ import { deliverOrderPaymentEvent } from "../services/order-payment-consumers.ts
 import {
   setPaymentGateway,
   type GatewayIntentRequest,
+  type OnlinePaymentMethod,
   type PaymentGatewayPort,
 } from "../services/payment-gateway.ts";
 import { setPaymentRefundGateway } from "../services/payment-refund-gateway.ts";
@@ -84,7 +85,13 @@ const ALL_DAY = [
 ];
 const MINUTE = 60_000;
 
-/** QRIS gateway double; `status` is what the status poll answers. */
+/**
+ * Gateway double offering a VA bank; `status` is what the status poll answers.
+ * The late-paid QR order uses a VA: a QRIS code of a guest bill has a QR hold
+ * (SO-885), which freezes the bill until the provider proves the code dead and
+ * then parks any later payment as unallocated funds instead of settling it.
+ * A VA has no hold, so the late settlement path under test is reachable.
+ */
 class FakeGateway implements PaymentGatewayPort {
   readonly provider = "doit";
   created = 0;
@@ -94,11 +101,19 @@ class FakeGateway implements PaymentGatewayPort {
   }
   async createIntent(input: GatewayIntentRequest) {
     this.created += 1;
-    const instructions: PaymentInstructions = {
-      method: "qris",
-      qrPayload: "00020101021226FAKEQRLATE",
-      issuer: null,
-    };
+    const instructions: PaymentInstructions =
+      input.method === "va"
+        ? {
+            method: "va",
+            channelCode: "bmri",
+            channelName: "Mandiri",
+            virtualAccountNumber: `8808${String(this.created).padStart(8, "0")}`,
+          }
+        : {
+            method: "qris",
+            qrPayload: "00020101021226FAKEQRLATE",
+            issuer: null,
+          };
     return {
       providerRef: `QLP-${randomBytes(6).toString("hex")}-${this.created}`,
       instructions,
@@ -112,8 +127,8 @@ class FakeGateway implements PaymentGatewayPort {
       amountIdr: null,
     };
   }
-  async channels() {
-    return [];
+  async channels(_context: ScopedTenantContext, method: OnlinePaymentMethod) {
+    return method === "va" ? [{ code: "bmri", name: "Mandiri" }] : [];
   }
 }
 const gateway = new FakeGateway();
@@ -197,7 +212,8 @@ function as(guest: Guest) {
     pay: (orderId: string) =>
       auth(client.post(`${base}/payments`)).send({
         target: { kind: "order", orderId },
-        method: "qris",
+        method: "va",
+        bankCode: "bmri",
         idempotencyKey: randomUUID(),
       }),
   };
@@ -230,7 +246,7 @@ async function settle(
 ) {
   await confirmPayment(contextOf(tenant.tenantId), intentId, {
     source: "verified_webhook",
-    method: "qris",
+    method: "va",
     amountIdr,
     providerRef,
     at: new Date().toISOString(),

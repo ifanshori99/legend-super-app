@@ -51,6 +51,7 @@ import {
 } from "../services/payment-gateway.ts";
 import { confirmPayment } from "../services/payment.service.ts";
 import { sweepUnpaidQrOrders } from "../services/qr-order-consumers.ts";
+import { runPosQrisHoldCheckJob } from "../worker/pos-qris-hold-check.job.ts";
 import { qrOrderSettlementLookup } from "../services/qr-order.service.ts";
 import { setTableSessionSettlementLookup } from "../services/table-session.service.ts";
 import { getSplitClaimByToken } from "../services/bill-split.service.ts";
@@ -91,6 +92,9 @@ const ALL_DAY = [
 class FakeGateway implements PaymentGatewayPort {
   readonly provider = "doit";
   created = 0;
+  /** Codes the provider answers final (expired) for (SO-885: only a provider
+   * answer proves a code dead; the local expiry never does). */
+  readonly expiredRefs = new Set<string>();
   async health() {
     return { status: "available" as const };
   }
@@ -109,7 +113,9 @@ class FakeGateway implements PaymentGatewayPort {
   }
   async getStatus(input: { providerRef: string }) {
     return {
-      status: "pending" as const,
+      status: this.expiredRefs.has(input.providerRef)
+        ? ("expired" as const)
+        : ("pending" as const),
       providerRef: input.providerRef,
       amountIdr: null,
     };
@@ -236,6 +242,23 @@ async function openCode(guest: Guest, part: Part): Promise<string> {
   const response = await as(guest).paySplit(part.id);
   expect(response.status, JSON.stringify(response.body)).toBe(201);
   return response.body.data.id as string;
+}
+
+/**
+ * SO-885: the provider answers final (expired) for the code and the QR hold
+ * check ran past its life + margin, so the hold is closed on provider proof
+ * (the lapsed local expiry alone keeps the hold, and the order, alive).
+ */
+async function providerClosesCodes(intentIds: string[], at: Date) {
+  const { rows } = await owner.query<{ provider_ref: string }>(
+    `SELECT provider_ref FROM payment_intents
+      WHERE tenant_id = $1 AND id = ANY($2::uuid[])`,
+    [tenant.tenantId, intentIds],
+  );
+  for (const row of rows) gateway.expiredRefs.add(row.provider_ref);
+  await runPosQrisHoldCheckJob(contextOf(tenant.tenantId), at, {
+    force: true,
+  });
 }
 
 async function settle(intentId: string, amountIdr: number) {
@@ -432,6 +455,7 @@ describe("Split bill sweep (legend-ms3, ORD-06)", () => {
     );
     const context = contextOf(tenant.tenantId);
     const at = new Date(Date.now() + 5 * MINUTE);
+    await providerClosesCodes([unpaid2], at);
     await sweepUnpaidQrOrders(context, at);
 
     expect((await orderRow(w.orderId)).status).toBe("voided");
@@ -479,6 +503,7 @@ describe("Split bill sweep (legend-ms3, ORD-06)", () => {
     );
     const context = contextOf(tenant.tenantId);
     const at = new Date(Date.now() + 5 * MINUTE);
+    await providerClosesCodes([unpaid2], at);
     await sweepUnpaidQrOrders(context, at);
 
     expect((await orderRow(w.orderId)).status).toBe("voided");
