@@ -216,22 +216,6 @@ export function useDecideReversal() {
 
 // ---- Exports -------------------------------------------------------------
 
-export function useCreateBankFile() {
-  const refresh = useRefresh([listBankTransferFiles]);
-  return useMutation({
-    mutationFn: (variables: {
-      runId: string;
-      format: api.CreateBankFileFormat;
-    }) =>
-      api.createBankFile(
-        variables.runId,
-        variables.format,
-        newIdempotencyKey(),
-      ),
-    onSuccess: () => refresh(),
-  });
-}
-
 export function useCreateTaxExport() {
   return useMutation({
     mutationFn: (body: api.CreateTaxExportInput) => api.createTaxExport(body),

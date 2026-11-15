@@ -1,15 +1,14 @@
-// Exports of a locked run (Alur K step 4-5, PAYR-04): the bank transfer file,
-// the tax export (bukti potong / monthly PPh 21), and the payslip list. A bank
-// file exists only for a locked (or paid) run, and its total is the run's
-// bank-transfer net — the strip in the card compares the two instead of
-// trusting the file.
+// Exports of a locked run (Alur K step 4-5, PAYR-04): the bank transfer card,
+// the tax export (bukti potong / monthly PPh 21), and the payslip list. Salary
+// is paid only through an approved payout batch (legend-66xzn: the legacy
+// bank-file POST answers 409 LEGACY_BANK_EXPORT_DISABLED), so the bank card
+// links to the payout screen and keeps the archive of earlier files, whose
+// total the strip compares with the run's bank-transfer net.
 import * as React from "react";
-import { Download, FileSpreadsheet, Landmark, ReceiptText } from "lucide-react";
-import type { MessageKey } from "@starter/shared/i18n";
+import { Download, Landmark, ReceiptText } from "lucide-react";
+import { Link } from "@tanstack/react-router";
 import { formatRupiah } from "@starter/shared/i18n";
 import {
-  BANK_TRANSFER_FORMATS,
-  bankTransferFormatSchema,
   payrollTaxExportKindSchema,
   type BankTransferFile,
   type PayrollRun,
@@ -51,21 +50,8 @@ import {
 import { useToast } from "@/components/ui/toast";
 import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 import { payrollErrorMessage } from "../errors";
-import {
-  useCreateBankFile,
-  useCreateTaxExport,
-  useRunPayslips,
-} from "../hooks";
+import { useCreateTaxExport, useRunPayslips } from "../hooks";
 import { formatDateTime } from "../lib";
-import type { CreateBankFileFormat } from "../api";
-
-const FORMAT_LABEL: Record<CreateBankFileFormat, MessageKey> = {
-  generic_csv: "payrollRun.exports.format.generic_csv",
-  bca: "payrollRun.exports.format.bca",
-  mandiri: "payrollRun.exports.format.mandiri",
-  bni: "payrollRun.exports.format.bni",
-  bjb: "payrollRun.exports.format.bjb",
-};
 
 const MONTHLY_PERIOD = /^\d{4}-(0[1-9]|1[0-2])$/;
 const ANNUAL_PERIOD = /^\d{4}$/;
@@ -94,11 +80,6 @@ function BankCard({
   canExport: boolean;
 }) {
   const t = useT();
-  const toast = useToast();
-  const createFile = useCreateBankFile();
-  const [format, setFormat] =
-    React.useState<CreateBankFileFormat>("generic_csv");
-  const [error, setError] = React.useState<string | null>(null);
   const exportable = run.status === "locked" || run.status === "paid";
   const expected = run.totals?.bankTransferIdr ?? null;
   const latest = [...files].sort((a, b) =>
@@ -106,22 +87,6 @@ function BankCard({
   )[0];
   const matches =
     latest !== undefined && expected !== null && latest.totalIdr === expected;
-
-  function submit() {
-    setError(null);
-    createFile.mutate(
-      { runId: run.id, format },
-      {
-        onSuccess: () => {
-          toast({
-            title: t("payrollRun.exports.bankCreated"),
-            tone: "success",
-          });
-        },
-        onError: (cause) => setError(payrollErrorMessage(cause, t)),
-      },
-    );
-  }
 
   return (
     <Card>
@@ -136,74 +101,50 @@ function BankCard({
         <CardDescription>{t("payrollRun.exports.bankBody")}</CardDescription>
       </CardHeader>
       <CardContent className="grid gap-3">
-        {!canExport ? (
-          <p className="text-sm leading-5 text-muted-foreground">
-            {t("payrollRun.exports.needLock")}
-          </p>
-        ) : !exportable ? (
+        {!exportable ? (
           <p className="text-sm leading-5 text-muted-foreground">
             {t("payrollRun.exports.bankLockedHint")}
           </p>
         ) : (
-          <div className="flex flex-wrap items-end gap-2">
-            <FormField
-              label={t("payrollRun.exports.bankFormat")}
-              className="min-w-40"
-            >
-              <Select
-                value={format}
-                onValueChange={(value) => {
-                  const parsed = bankTransferFormatSchema.safeParse(value);
-                  if (parsed.success) setFormat(parsed.data);
-                }}
+          <>
+            <p className="text-sm leading-5 text-muted-foreground">
+              {t("payrollRun.exports.bankPayoutBody")}
+            </p>
+            <Button asChild size="sm" className="w-full sm:w-fit">
+              <Link
+                to="/kelola/payroll/pencairan"
+                search={{ tab: "runs", entity: run.legalEntityId }}
               >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {BANK_TRANSFER_FORMATS.map((value) => (
-                    <SelectItem key={value} value={value}>
-                      {t(FORMAT_LABEL[value])}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </FormField>
-            <Button
-              type="button"
-              size="sm"
-              loading={createFile.isPending}
-              onClick={submit}
-            >
-              <FileSpreadsheet aria-hidden="true" />
-              {t("payrollRun.exports.bankCreate")}
+                {t("payrollRun.exports.bankPayoutLink")}
+              </Link>
             </Button>
-          </div>
+          </>
         )}
 
-        {expected !== null && (
+        {files.length > 0 && (
+          <h3 className="mt-2 text-sm font-semibold">
+            {t("payrollRun.exports.bankArchiveTitle")}
+          </h3>
+        )}
+        {latest && expected !== null && (
           <div className="flex flex-wrap items-center gap-2 text-sm">
             <span className="text-muted-foreground">
               {t("payrollRun.exports.bankExpected", {
                 total: formatRupiah(expected),
               })}
             </span>
-            {latest && (
-              <StatusPill status={matches ? "success" : "warning"}>
-                {matches
-                  ? t("payrollRun.exports.bankMatches")
-                  : t("payrollRun.exports.bankMismatch")}
-              </StatusPill>
-            )}
+            <StatusPill status={matches ? "success" : "warning"}>
+              {matches
+                ? t("payrollRun.exports.bankMatches")
+                : t("payrollRun.exports.bankMismatch")}
+            </StatusPill>
           </div>
         )}
-
-        {error && (
-          <p role="alert" className="text-sm font-medium text-danger">
-            {error}
+        {files.length > 0 && !canExport && (
+          <p className="text-sm leading-5 text-muted-foreground">
+            {t("payrollRun.exports.bankArchiveNeedLock")}
           </p>
         )}
-
         {files.length === 0 ? (
           <p className="text-sm leading-5 text-muted-foreground">
             {t("payrollRun.exports.bankEmpty")}

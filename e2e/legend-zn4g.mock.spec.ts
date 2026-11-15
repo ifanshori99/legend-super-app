@@ -121,12 +121,18 @@ test("PAYR-01 PAYR-04 the November run: delta review, two approvals, lock, paid,
   await submitDialog(page, "Tandai sudah dibayar", "Tandai dibayar");
   await expect(statusBand(page)).toContainText("Sudah dibayar");
 
-  // PAYR-04: the bank file rows are the run's bank-transfer payslips and its
-  // total matches the run, so the card confirms the match instead of trusting
-  // the file.
-  await page.getByRole("button", { name: "Buat berkas transfer" }).click();
-  await expect(page.getByText(/GENERIC_CSV · \d+ baris/)).toBeVisible();
-  await expect(page.getByText("Berkas cocok dengan run")).toBeVisible();
+  // legend-66xzn: salary is paid only through an approved payout batch, so the
+  // bank card links to the payout screen instead of offering the retired
+  // bank-file button (the API answers 409 LEGACY_BANK_EXPORT_DISABLED).
+  await expect(
+    page.getByRole("button", { name: "Buat berkas transfer" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("link", { name: "Buka pencairan gaji" }),
+  ).toHaveAttribute("href", /\/kelola\/payroll\/pencairan\?.*tab=runs/);
+  await expect(
+    page.getByText("Belum ada arsip berkas transfer untuk run ini."),
+  ).toBeVisible();
 
   await page.getByRole("button", { name: "Buat dokumen pajak" }).click();
   await expect(page.getByText("Dokumen 2026-11 siap diunduh")).toBeVisible();
