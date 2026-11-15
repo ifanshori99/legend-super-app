@@ -366,6 +366,13 @@ const schema = z
       .max(255)
       .regex(/^[\w.+-]+$/)
       .default("dev"),
+    // EDC agent on the primary edge node (legend-kwy6d): off by default. Turn
+    // on only on the one node that holds the outlet's terminals, with a
+    // supervisor that restarts it (deploy/edge/legend-edge.service).
+    EDC_AGENT_ENABLED: z
+      .enum(["true", "false", "1", "0"])
+      .optional()
+      .transform((value) => value === "true" || value === "1"),
     // Edge selfie store: sealed LSS1 files wait here until the cloud takes
     // them. EDGE_SELFIE_MAX_BYTES caps the bytes of files not yet uploaded.
     EDGE_SELFIE_DIR: z.string().min(1).default("/var/lib/legend/edge-selfies"),

@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="ghostex-page" content="v2">
+<title>Rekonsiliasi EDC: review layar akhir</title>
+<style>
+  .gx-figure img { border: 1px solid var(--gx-line); border-radius: 8px; }
+</style>
+</head>
+<body>
+<gx-questions submit="Kirim ke CTO">
+  <header>
+    <span class="gx-eyebrow">Pembayaran · review gerbang B</span>
+    <h1>Rekonsiliasi EDC: review layar akhir</h1>
+    <p class="gx-lede">Layar untuk Owner atau Finance Manager memeriksa transaksi kartu EDC yang ditandai lalu menetapkan Approved atau Declined. Layar ini tidak mencatat pembayaran, pencatatan tetap lewat kasir.</p>
+    <div class="gx-chips">
+      <span class="gx-chip"><b>8</b> layar dibandingkan</span>
+      <span class="gx-chip"><b>31</b> tes layar lulus</span>
+      <span class="gx-chip"><b>0</b> masalah aksesibilitas serius</span>
+      <span class="gx-chip">Data contoh</span>
+    </div>
+  </header>
+
+  <gx-wide>
+<h2>Daftar transaksi</h2>
+<p>Daftar transaksi kartu EDC yang ditandai untuk diperiksa. Pemeriksa memilih satu baris untuk membuka detailnya.</p>
+<gx-tabs>
+  <div data-tab="Desktop 1280"><div class="gx-grid" style="--gx-grid-min:300px"><figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/design/mockups/payments/edc-reconciliation/edc-reconciliation-desktop.png" alt="Daftar transaksi, mockup"><figcaption>Mockup</figcaption></figure><figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/docs/review/img/edc-rekonsiliasi-865/list-normal-1280.png" alt="Daftar transaksi, hasil akhir"><figcaption>Hasil akhir</figcaption></figure></div></div>
+  <div data-tab="Ponsel 390"><div class="gx-grid"><figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/design/mockups/payments/edc-reconciliation/edc-reconciliation-mobile.png" alt="Daftar transaksi, mockup"><figcaption>Mockup</figcaption></figure><figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/docs/screenshots/edc-reconciliation/list-normal-390.png" alt="Daftar transaksi, hasil akhir"><figcaption>Hasil akhir</figcaption></figure></div></div>
+</gx-tabs>
+
+<h2>Daftar kosong</h2>
+<p>Tampilan bila tidak ada transaksi yang perlu diperiksa. Tidak ada yang harus dikerjakan.</p>
+<gx-tabs>
+  <div data-tab="Desktop 1280"><div class="gx-grid" style="--gx-grid-min:300px"><figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/design/mockups/payments/edc-reconciliation/empty-desktop.png" alt="Daftar kosong, mockup"><figcaption>Mockup</figcaption></figure><figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/docs/review/img/edc-rekonsiliasi-865/list-empty-1280.png" alt="Daftar kosong, hasil akhir"><figcaption>Hasil akhir</figcaption></figure></div></div>
+  <div data-tab="Ponsel 390"><div class="gx-grid"><figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/design/mockups/payments/edc-reconciliation/empty-mobile.png" alt="Daftar kosong, mockup"><figcaption>Mockup</figcaption></figure><figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/docs/screenshots/edc-reconciliation/list-empty-390.png" alt="Daftar kosong, hasil akhir"><figcaption>Hasil akhir</figcaption></figure></div></div>
+</gx-tabs>
+
+<h2>Daftar gagal dimuat</h2>
+<p>Tampilan bila daftar gagal diambil dari server. Ada tombol untuk mencoba lagi.</p>
+<gx-tabs>
+  <div data-tab="Desktop 1280"><div class="gx-grid" style="--gx-grid-min:300px"><figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/design/mockups/payments/edc-reconciliation/error-desktop.png" alt="Daftar gagal dimuat, mockup"><figcaption>Mockup</figcaption></figure><figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/docs/review/img/edc-rekonsiliasi-865/list-error-1280.png" alt="Daftar gagal dimuat, hasil akhir"><figcaption>Hasil akhir</figcaption></figure></div></div>
+  <div data-tab="Ponsel 390"><div class="gx-grid"><figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/design/mockups/payments/edc-reconciliation/error-mobile.png" alt="Daftar gagal dimuat, mockup"><figcaption>Mockup</figcaption></figure><figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/docs/screenshots/edc-reconciliation/list-error-390.png" alt="Daftar gagal dimuat, hasil akhir"><figcaption>Hasil akhir</figcaption></figure></div></div>
+</gx-tabs>
+
+<h2>Detail transaksi Unknown</h2>
+<p>Detail satu transaksi yang hasilnya belum jelas (Unknown). Pemeriksa memilih Approved atau Declined dan mengetik nominal dari bukti yang dipegang.</p>
+<gx-tabs>
+  <div data-tab="Desktop 1280"><div class="gx-grid" style="--gx-grid-min:300px"><figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/design/mockups/payments/edc-reconciliation/detail-desktop.png" alt="Detail transaksi Unknown, mockup"><figcaption>Mockup</figcaption></figure><figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/docs/review/img/edc-rekonsiliasi-865/detail-unknown-1280.png" alt="Detail transaksi Unknown, hasil akhir"><figcaption>Hasil akhir</figcaption></figure></div></div>
+  <div data-tab="Ponsel 390"><div class="gx-grid"><figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/design/mockups/payments/edc-reconciliation/detail-mobile.png" alt="Detail transaksi Unknown, mockup"><figcaption>Mockup</figcaption></figure><figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/docs/screenshots/edc-reconciliation/detail-unknown-390.png" alt="Detail transaksi Unknown, hasil akhir"><figcaption>Hasil akhir</figcaption></figure></div></div>
+</gx-tabs>
+
+<h2>Terminal masih memproses (terkunci)</h2>
+<p>Mesin EDC masih memproses transaksi ini, jadi penyelesaian dikunci sampai terminal selesai.</p>
+<gx-tabs>
+  <div data-tab="Desktop 1280"><div class="gx-grid" style="--gx-grid-min:300px"><figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/design/mockups/payments/edc-reconciliation/waiting-desktop.png" alt="Terminal masih memproses (terkunci), mockup"><figcaption>Mockup</figcaption></figure><figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/docs/review/img/edc-rekonsiliasi-865/detail-wire-locked-1280.png" alt="Terminal masih memproses (terkunci), hasil akhir"><figcaption>Hasil akhir</figcaption></figure></div></div>
+  <div data-tab="Ponsel 390"><div class="gx-grid"><figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/design/mockups/payments/edc-reconciliation/waiting-mobile.png" alt="Terminal masih memproses (terkunci), mockup"><figcaption>Mockup</figcaption></figure><figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/docs/screenshots/edc-reconciliation/detail-wire-locked-390.png" alt="Terminal masih memproses (terkunci), hasil akhir"><figcaption>Hasil akhir</figcaption></figure></div></div>
+</gx-tabs>
+
+<h2>Konfirmasi penyelesaian</h2>
+<p>Dialog konfirmasi terakhir sebelum keputusan disimpan, supaya tidak salah klik.</p>
+<gx-tabs>
+  <div data-tab="Desktop 1280"><div class="gx-grid" style="--gx-grid-min:300px"><figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/design/mockups/payments/edc-reconciliation/confirmation-desktop.png" alt="Konfirmasi penyelesaian, mockup"><figcaption>Mockup</figcaption></figure><figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/docs/screenshots/edc-reconciliation/resolve-confirm-1280.png" alt="Konfirmasi penyelesaian, hasil akhir"><figcaption>Hasil akhir</figcaption></figure></div></div>
+  <div data-tab="Ponsel 390"><div class="gx-grid"><figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/design/mockups/payments/edc-reconciliation/confirmation-mobile.png" alt="Konfirmasi penyelesaian, mockup"><figcaption>Mockup</figcaption></figure><figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/docs/screenshots/edc-reconciliation/resolve-confirm-390.png" alt="Konfirmasi penyelesaian, hasil akhir"><figcaption>Hasil akhir</figcaption></figure></div></div>
+</gx-tabs>
+
+<h2>Gagal menyimpan</h2>
+<p>Tampilan bila keputusan gagal disimpan. Isian tetap ada dan bisa dicoba lagi.</p>
+<gx-tabs>
+  <div data-tab="Desktop 1280"><div class="gx-grid" style="--gx-grid-min:300px"><figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/design/mockups/payments/edc-reconciliation/save-error-desktop.png" alt="Gagal menyimpan, mockup"><figcaption>Mockup</figcaption></figure><figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/docs/screenshots/edc-reconciliation/resolve-save-error-1280.png" alt="Gagal menyimpan, hasil akhir"><figcaption>Hasil akhir</figcaption></figure></div></div>
+  <div data-tab="Ponsel 390"><div class="gx-grid"><figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/design/mockups/payments/edc-reconciliation/save-error-mobile.png" alt="Gagal menyimpan, mockup"><figcaption>Mockup</figcaption></figure><figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/docs/screenshots/edc-reconciliation/resolve-save-error-390.png" alt="Gagal menyimpan, hasil akhir"><figcaption>Hasil akhir</figcaption></figure></div></div>
+</gx-tabs>
+
+<h2>Berhasil</h2>
+<p>Tampilan setelah keputusan tersimpan, berisi ringkasan hasilnya.</p>
+<gx-tabs>
+  <div data-tab="Desktop 1280"><div class="gx-grid" style="--gx-grid-min:300px"><figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/design/mockups/payments/edc-reconciliation/success-desktop.png" alt="Berhasil, mockup"><figcaption>Mockup</figcaption></figure><figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/docs/review/img/edc-rekonsiliasi-865/resolve-done-1280.png" alt="Berhasil, hasil akhir"><figcaption>Hasil akhir</figcaption></figure></div></div>
+  <div data-tab="Ponsel 390"><div class="gx-grid"><figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/design/mockups/payments/edc-reconciliation/success-mobile.png" alt="Berhasil, mockup"><figcaption>Mockup</figcaption></figure><figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/docs/screenshots/edc-reconciliation/resolve-done-390.png" alt="Berhasil, hasil akhir"><figcaption>Hasil akhir</figcaption></figure></div></div>
+</gx-tabs>
+
+  </gx-wide>
+
+  <h2>Kondisi tambahan (tidak ada di mockup)</h2>
+  <p>Empat kondisi yang muncul di layar akhir tapi tidak digambar di mockup.</p>
+  <div class="gx-grid">
+<figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/docs/screenshots/edc-reconciliation/list-loading-390.png" alt="Daftar saat sedang memuat."><figcaption>Daftar saat sedang memuat.</figcaption></figure>
+<figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/docs/screenshots/edc-reconciliation/detail-too-early-390.png" alt="Detail transaksi yang terlalu baru, belum boleh diselesaikan."><figcaption>Detail transaksi yang terlalu baru, belum boleh diselesaikan.</figcaption></figure>
+<figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/docs/screenshots/edc-reconciliation/resolve-mfa-390.png" alt="Kode MFA diminta hanya bila server menolak karena sesi belum MFA."><figcaption>Kode MFA diminta hanya bila server menolak karena sesi belum MFA.</figcaption></figure>
+<figure class="gx-figure"><img src="/Users/ifanshori99/Projects/legend super app/legend-657a7596/docs/screenshots/edc-reconciliation/resolve-amount-mismatch-390.png" alt="Peringatan bila nominal yang diketik beda dengan nominal permintaan."><figcaption>Peringatan bila nominal yang diketik beda dengan nominal permintaan.</figcaption></figure>
+  </div>
+
+  <h2>Empat hal yang sengaja beda dari mockup</h2>
+  <div class="gx-grid">
+    <div class="gx-card"><h3>1. Hasil dan nominal tidak terisi otomatis</h3><p>Pada transaksi Unknown, pemeriksa harus memilih hasil dan mengetik nominal dari bukti sendiri. Kalau sistem mengisi duluan, orang bisa asal klik setuju tanpa melihat bukti, dan itu bisa merugikan outlet.</p></div>
+    <div class="gx-card"><h3>2. Kode MFA hanya diminta kalau perlu</h3><p>Mockup selalu menampilkan kolom kode. Sekarang kolom muncul hanya bila server menolak karena sesi belum MFA, jadi pemilik yang sudah MFA tidak mengetik dua kali. Keamanan tetap dijaga server.</p></div>
+    <div class="gx-card"><h3>3. Label nominal: "Nominal permintaan"</h3><p>Data yang kita terima hanya nominal yang diminta ke mesin EDC, bukan angka tercetak di struk. Label dibuat jujur supaya tidak salah baca.</p></div>
+    <div class="gx-card"><h3>4. Tombol "Muat ulang status terminal" tidak dibuat</h3><p>Belum ada perintah ke mesin EDC untuk menanyakan status ulang dari layar ini. Pakai tombol "Muat ulang" di daftar. Tombol yang tidak bekerja lebih membingungkan.</p></div>
+  </div>
+  <div class="gx-callout" data-tone="warn">Layar ini masih memakai data contoh. Daftar transaksi asli menunggu satu endpoint backend (kartu legend-p98qi) sebelum bisa dipakai di outlet.</div>
+
+  <gx-question tag="Q9" title="Layar rekonsiliasi EDC ini disetujui?">
+    <gx-choice value="setuju" recommended>Setuju<small>Layar sudah sesuai mockup, empat bedanya masuk akal.</small></gx-choice>
+    <gx-choice value="ada perubahan">Ada perubahan<small>Tulis perubahannya di kotak catatan.</small></gx-choice>
+  </gx-question>
+</gx-questions>
+</body>
+</html>

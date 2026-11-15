@@ -63,6 +63,7 @@ export function VerifyPanel({
   error,
   onVerified,
   onCancel,
+  copy,
 }: {
   needs: StepUpNeeds;
   busy: boolean;
@@ -72,6 +73,8 @@ export function VerifyPanel({
   onVerified: (password?: string) => void;
   /** Leave the step-up without sending anything. */
   onCancel?: () => void;
+  /** Other screens swap the payout wording for their own (already translated). */
+  copy?: { title?: string; mfaHint?: string };
 }) {
   const t = useT();
   const factor = useTotpFactor(needs.mfa);
@@ -130,7 +133,7 @@ export function VerifyPanel({
   const codeFirst = needsCode && Boolean(factor.totp);
   return (
     <form
-      aria-label={t("payrollPayoutReview.verify.title")}
+      aria-label={copy?.title ?? t("payrollPayoutReview.verify.title")}
       data-testid="payout-verify"
       noValidate
       onSubmit={(event) => {
@@ -141,11 +144,11 @@ export function VerifyPanel({
     >
       <p className="flex items-center gap-2 text-sm font-semibold">
         <ShieldCheck className="size-4" aria-hidden="true" />
-        {t("payrollPayoutReview.verify.title")}
+        {copy?.title ?? t("payrollPayoutReview.verify.title")}
       </p>
       {needs.mfa && (
         <p className="text-sm text-muted-foreground">
-          {t("payrollPayoutReview.verify.mfaHint")}
+          {copy?.mfaHint ?? t("payrollPayoutReview.verify.mfaHint")}
         </p>
       )}
       {needs.password && (

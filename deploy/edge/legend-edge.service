@@ -1,0 +1,29 @@
+# Example systemd unit for the outlet edge API (legend-kwy6d, sub-brief 867).
+# Copy to /etc/systemd/system/legend-edge.service and adapt paths and user.
+#
+# Restart=always is required when EDC_AGENT_ENABLED=true: the EDC agent exits
+# the process (code 1) when it loses its outlet lock with a sale on the wire,
+# and this unit is what brings it back. See docs/deployment.md, "EDC agent".
+[Unit]
+Description=Legend edge API (outlet)
+After=network-online.target postgresql.service
+Wants=network-online.target
+# Never give up restarting: a fail-stop exit must always come back. systemd
+# reads this from [Unit], not [Service].
+StartLimitIntervalSec=0
+
+[Service]
+User=legend
+Group=legend
+WorkingDirectory=/opt/legend
+EnvironmentFile=/etc/legend/edge/api.env
+ExecStart=/usr/bin/node apps/api/dist/server.js
+Restart=always
+RestartSec=5
+# Shutdown waits for a sale on the wire (EDC sale timeout 120 s; the API force
+# timer is 130 s with EDC on). Must stay larger than that, or SIGKILL loses the
+# approval evidence of the sale.
+TimeoutStopSec=150
+
+[Install]
+WantedBy=multi-user.target

@@ -1,3 +1,18 @@
+## 868 API daftar rekonsiliasi EDC (engineer, legend-p98qi, cabang dari `ui/edc-rekonsiliasi-865` 5fb5f8273, 15 Nov 2026)
+
+- `GET /api/payments/admin/edc/reconciliation-queue` (payment-admin.routes.ts, `listEdcReconciliationQueueForActor` di services/edc-reconciliation.service.ts). Kontrak shared tidak diubah; aksi yang diizinkan diturunkan klien dari field (status, needsReconciliation, saleWireOpenAt, dispatchedAt) lewat `reconciliationGate`. Isi: sale dengan needs_reconciliation ATAU status unknown (unknown <10 menit ikut, terkunci di klien). Tanpa `outletId`: `requireMenuPermission("payment.reconcile")` + jangkauan outlet `payment.reconcile` dihitung service (grant lain, mis. kasir-only, tidak menambah); dengan `outletId`: `requireOutletPermission`. Tenant + outlet difilter di SQL, `q` di-escape, urut createdAt desc + id desc, cursor dibulatkan ms, cursor rusak 422, tender dimuat satu query. Tanpa migrasi.
+- Web: antrean mengambil halaman berurutan sampai nextCursor habis (maks 20 halaman x 100). Layar belum menandai bila terpotong.
+- Bukti gagal-dulu: di HEAD bersih 39 dari 41 gagal 404 (2 lulus: 401 anonim dan outletId tenant lain). Hijau: queue + POST resolve 86/86, tsc api dan web, eslint+prettier file berubah, e2e mock EDC 31/31.
+- Review architect (xhigh): tanpa kebocoran tenant/outlet dan tanpa PAN; temuan 1 (403 untuk Finance brand), 2 (baris >100 tersembunyi), 3 (N+1), 4 (cursor 500) dibetulkan. Temuan 5 (indeks parsial untuk query ini) jadi bead lanjutan.
+- Subagent: total 9 (Explore 3, test-writer 1, implementer 4, architect 1), puncak 3 bersamaan, token heavy dipegang engineer.
+
+## 865 UI rekonsiliasi EDC (ui-engineer, legend-khi8n, cabang `ui/edc-rekonsiliasi-865` dari `origin/milestone/m1` d1ad35802, 15 Nov 2026)
+
+- Sudah: layar `/kelola/pembayaran/edc-rekonsiliasi` (Owner/Finance, guard `payment.reconcile`), daftar flagged + unknown tanpa flag (terkunci sampai 10 menit), bukti, penyelesaian approved/declined dengan konfirmasi + step-up MFA, terkunci selama `saleWireOpenAt`. Link dari tab EDC. Commit de82fb7e2, dee7fa9e5.
+- Kontrak GET `listEdcReconciliationQueue` (`packages/shared/src/payment/admin.ts`) masih mock-only: backend di legend-p98qi. POST memakai route yang sudah ada.
+- Cek: typecheck web+shared, eslint, prettier, test terarah 124/124, e2e mock 31/31, ui-check 16 kondisi axe 0 serious/critical (1280/390), Lighthouse A11y 100 BP 100 Perf 66 (sama dengan halaman pembanding `/kelola/pembayaran`: TBT/CLS dari bundle dan shell app, bukan layar ini).
+- Berikut: review founder (gerbang B), backend legend-p98qi.
+
 ## Merge train batch64g (merge train, `int/batch64g` dari `origin/milestone/m1` e38e43b4b, 15 Nov 2026)
 
 - Sudah: 4 cabang tip masuk berurutan: `fix/panic-device-cross-tenant` (seluruh rantai panic: `ui/panic-copy-subnav`, `ghostex/157120a3`, `ws/panic-push-registration`, device-revoke), `ui/staff-subnav-tablet-44`, `ws/traceability-strict`, `fix/edc-so-829` (seluruh rantai EDC). Migrasi dinomori ulang 0369-0372 setelah 0368 (`0369_push_subscription_scope`, `0370_panic_push_second_opinion`, `0371_push_devices_cross_tenant`, `0372_edc_sale_wire_open`); snapshot dibangun ulang (0372, prevId = snapshot 0368); `db:generate` kosong, `check-journal` ok. Konflik `apps/web/src/lib/api/client.ts`: dua impor dipertahankan. Komentar kode yang menyebut nomor lama diperbarui.
@@ -5853,3 +5868,15 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Subagent wave P2: 6 diaktifkan, puncak 5 bersamaan; keseluruhan thread 859 tetap 7 subagent unik. Token heavy hanya dipegang `test_writer`, kini dilepas; tidak ada job latar tersisa. Metrik pemakaian akhir diperbarui parent; tidak mengarang biaya, token, atau rata-rata Codex yang tidak tersedia.
 - Pengukuran akhir diperbarui parent pukul 04:18 WIB: session-usage tetap tidak menemukan transkrip Codex dan parallel-report hanya membaca thread Claude lain. Snapshot kuota akhir (awal P2 tidak diukur): Claude #1 pemakaian 5 jam/7 hari 18%/49%, #2 75%/85%, #3 0%/96%; Codex #2–#8 pemakaian 7 hari 100%/92%/93%/89%/98%/42%/52%, seluruh pemakaian 5 jam 0% atau jendela tidak tersedia. Snapshot akun #8 sebelumnya pukul 04:02 adalah 51%; selisih ini bukan pengukuran biaya P2.
 - Semua gate terarah selesai. Suite penuh dan build tidak dijalankan pada tindak lanjut ini. Commit/push ditangani parent; child tidak melakukan commit, push, merge, atau deploy.
+## 2026-11-15: EDC agent heartbeat, hitungan live, pemasangan edge (legend-agran, legend-h4c2f, legend-kwy6d, cabang fix/edc-agent-867)
+- agran: heartbeat `SELECT 1` per kunci outlet (default 10 dtk, timeout 15 dtk, hilang setelah 2 probe gagal berturut), unlock punya timeout; opsi `onOutletLost`. h4c2f: `liveWires` hanya panggilan yang masih menunggu adapter; tulis bukti approval setelah jawaban tidak memicu exit (drain `wires` tetap menunggunya). kwy6d: agent dipasang di proses EDGE (bukan worker cloud: edge pemegang terminal), `EDC_AGENT_ENABLED` default mati, `edge/edc/runtime.ts` (retry backoff), unit `deploy/edge/legend-edge.service`, bagian EDC di docs/deployment.md.
+- Timer paksa shutdown edge = saleTimeoutMs + 10 dtk bila EDC aktif (review architect: 5 dtk memotong bukti approval).
+- Tes: edc-agent-867 (17), edc-runtime-867 (9), 12 berkas EDC 165/165 hijau, typecheck api hijau, prettier+eslint hijau. Satu run awal gagal sekali di edc-agent.test.ts:616 (timing cancel), hijau di 2 run ulang.
+- Review architect xhigh: 5 temuan dibetulkan (unlock macet, salah-positif heartbeat, EDC mati permanen, timer paksa, StartLimit di unit).
+
+## 2026-11-15: Merge train batch67 (int/batch67, base m1 479a99525)
+
+- Isi (2 cabang ujung): fix/edc-agent-867 569a56005 (agen EDC dan runtime edge, unit systemd), ghostex/4eda746b 4db4c178e (API 868 antrean rekonsiliasi EDC + UI 865). Tanpa migrasi. Satu konflik: docs/PROGRESS.md (dua sisi dipertahankan).
+- Gerbang: links, lint (2 peringatan lama), typecheck api+web, tes kontrak root 891/891 (termasuk edc-reconciliation-gate), set cepat dengan semua edc-* + edge-* + *migration* + notification*: 2800 hijau, 1 merah = flake legend-8p74m (edge-master-data-publisher).
+- Run penuh (10:27-11:42): 19186 lulus, 0 tes gagal, 1 Unhandled Error pg 57P01 dari edge-recipes-protocol-compat.test.ts (teardown), vitest exit 1. Berkas itu dari m1 dan tidak disentuh batch ini; sendirian 1 dari 6 run kena error sama, run terakhir 3x berturut-turut hijau. Kartu flake baru legend-4ge79 (P2). Tes tidak dilonggarkan.
+- Biaya: dicatat di entri batch berikut (sesi dipindah akun).

@@ -127,6 +127,21 @@ export type EdcAgentDeps = {
    * process once they are past the late-response window (see
    * `clearStaleWireOpen`). Default 60s; 0 turns the sweep off. */
   staleWireSweepMs?: number;
+  /** How often `SELECT 1` is run on the outlet lock connection to notice a
+   * connection that died silently (NAT drop, host crash: no 'error'/'end').
+   * A failed or timed out probe is a lost lock. Default 10s; 0 turns it off. */
+  lockHeartbeatMs?: number;
+  /** A heartbeat probe that has not answered after this long counts as
+   * failed; the lock is declared lost after two failed probes in a row (one
+   * slow probe is not a dead connection). Also the limit on the unlock query
+   * of `releaseOutlet`: past it the connection is destroyed, which drops the
+   * lock all the same. Default 15s. */
+  lockHeartbeatTimeoutMs?: number;
+  /** Called when the outlet lock is lost and this process has NO adapter call
+   * on the wire for that outlet (with one, `onFatal` is called instead). The
+   * outlet is simply not ready any more: the caller can start the agent again
+   * later. */
+  onOutletLost?: (info: { tenantId: string; outletId: string }) => void;
   /** Called when the outlet lock is lost while this process still has an
    * adapter call on the wire for that outlet (`liveCalls` > 0). Default:
    * `logger.fatal` then `process.exit(1)`, so the supervisor restarts the
@@ -534,6 +549,8 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
   const notFoundTrustWindowMs =
     deps.notFoundTrustWindowMs ?? DEFAULT_NOT_FOUND_TRUST_WINDOW_MS;
   const staleWireSweepMs = deps.staleWireSweepMs ?? 60_000;
+  const lockHeartbeatMs = deps.lockHeartbeatMs ?? 10_000;
+  const lockHeartbeatTimeoutMs = deps.lockHeartbeatTimeoutMs ?? 15_000;
   const onFatal =
     deps.onFatal ??
     ((info: { tenantId: string; outletId: string; liveCalls: number }) => {
@@ -541,6 +558,8 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
         info,
         "EDC agent lost its outlet lock with adapter calls still on the wire: exiting",
       );
+      // The fatal line must reach the log before the process is gone.
+      logger.flush?.();
       process.exit(1);
     });
   const now = deps.now ?? (() => new Date());
@@ -593,10 +612,21 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
    * waits for them too: a call that outlived its timeout is still the
    * terminal's business. */
   const wires = new Map<string, Set<Promise<unknown>>>();
+  /** Only the adapter calls of `wires` that still wait for the terminal, per
+   * outlet. These are the "live" calls of a lost lock (fail-stop); a DB write
+   * after the adapter answered is in `wires` (stop waits for it) but not here,
+   * so exiting never cuts the approval evidence. */
+  const liveWires = new Map<string, Set<Promise<unknown>>>();
+  /** Heartbeat timer per owned outlet lock, by tenant+outlet. */
+  const heartbeats = new Map<string, ReturnType<typeof setInterval>>();
 
-  function trackWire(key: string, call: Promise<unknown>): void {
-    const set = wires.get(key) ?? new Set<Promise<unknown>>();
-    wires.set(key, set);
+  function addTracked(
+    map: Map<string, Set<Promise<unknown>>>,
+    key: string,
+    call: Promise<unknown>,
+  ): void {
+    const set = map.get(key) ?? new Set<Promise<unknown>>();
+    map.set(key, set);
     const settled = call.then(
       () => undefined,
       () => undefined,
@@ -604,8 +634,66 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
     set.add(settled);
     void settled.then(() => {
       set.delete(settled);
-      if (set.size === 0 && wires.get(key) === set) wires.delete(key);
+      if (set.size === 0 && map.get(key) === set) map.delete(key);
     });
+  }
+
+  /** `call` is awaited by `stop`. `adapter` (default: `call` itself) is the
+   * part of it that still waits for the terminal; only that counts as live. */
+  function trackWire(
+    key: string,
+    call: Promise<unknown>,
+    adapter: Promise<unknown> = call,
+  ): void {
+    addTracked(wires, key, call);
+    addTracked(liveWires, key, adapter);
+  }
+
+  function stopHeartbeat(key: string): void {
+    const timer = heartbeats.get(key);
+    if (timer === undefined) return;
+    clearInterval(timer);
+    heartbeats.delete(key);
+  }
+
+  /** `SELECT 1` on the lock connection on a timer; two probes in a row that
+   * fail or do not answer in time are a lost lock (`entry.lost`), a probe that
+   * answers resets the count. One probe at a time. */
+  function startHeartbeat(
+    key: string,
+    entry: { client: PoolClient; lost: () => void },
+  ): void {
+    stopHeartbeat(key);
+    if (lockHeartbeatMs <= 0) return;
+    let running = false;
+    let failures = 0;
+    const timer = setInterval(() => {
+      if (running || locks.get(key) !== entry) return;
+      running = true;
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const timedOut = new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error("EDC lock heartbeat timed out")),
+          lockHeartbeatTimeoutMs,
+        );
+      });
+      Promise.race([entry.client.query("SELECT 1"), timedOut])
+        .then(
+          () => {
+            failures = 0;
+          },
+          () => {
+            failures += 1;
+            if (failures >= 2 && locks.get(key) === entry) entry.lost();
+          },
+        )
+        .finally(() => {
+          clearTimeout(timeout);
+          running = false;
+        });
+    }, lockHeartbeatMs);
+    timer.unref();
+    heartbeats.set(key, timer);
   }
 
   /** Same tick as the wire: refuses unless the instance that began the
@@ -690,15 +778,29 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
     // The lock was lost during the drain: `lost` already released the client.
     if (locks.get(key) !== entry) return;
     locks.delete(key);
+    stopHeartbeat(key);
     let broken: Error | undefined;
+    let unlockTimer: ReturnType<typeof setTimeout> | undefined;
     try {
-      await entry.client.query(
-        "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
-        [entry.lockName],
-      );
+      // A connection that died silently never answers (nor does a client
+      // queue stuck behind a probe): bounded, then the connection is destroyed.
+      await Promise.race([
+        entry.client.query(
+          "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
+          [entry.lockName],
+        ),
+        new Promise<never>((_resolve, reject) => {
+          unlockTimer = setTimeout(
+            () => reject(new Error("EDC lock release timed out")),
+            lockHeartbeatTimeoutMs,
+          );
+        }),
+      ]);
     } catch (error) {
       // Destroying the connection drops the session lock all the same.
       broken = error instanceof Error ? error : new Error(String(error));
+    } finally {
+      clearTimeout(unlockTimer);
     }
     // The client goes back to the pool: drop our listeners so they do not
     // pile up on a reused connection.
@@ -724,6 +826,7 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
       locks.delete(key);
       if (owned.get(key)?.client === client) owned.delete(key);
       stopSweep(key);
+      stopHeartbeat(key);
       logger.error(
         { tenantId, outletId },
         "EDC agent lost its database connection: outlet is no longer ready",
@@ -733,8 +836,9 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
       client.release(new Error("EDC outlet lock connection lost"));
       // Another process can take the outlet now; a call of ours still on the
       // wire would run next to it. Stop the process instead of going on.
-      const liveCalls = wires.get(key)?.size ?? 0;
+      const liveCalls = liveWires.get(key)?.size ?? 0;
       if (liveCalls > 0) onFatal({ tenantId, outletId, liveCalls });
+      else deps.onOutletLost?.({ tenantId, outletId });
     };
     client.on("error", lost);
     client.on("end", lost);
@@ -760,6 +864,7 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
     const entry = { client, lockName, lost };
     owned.set(key, entry);
     locks.set(key, entry);
+    startHeartbeat(key, entry);
   }
 
   /** Runs `run` as the only ECR exchange on the terminal. `hold` runs the
@@ -1388,7 +1493,7 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
               () => clearSaleWireOpen(ctx, claimed),
             )
             .finally(() => wireOpen.delete(claimed.id));
-          trackWire(key, late);
+          trackWire(key, late, call);
         }
         clearWire = !wireStillOpen;
       }

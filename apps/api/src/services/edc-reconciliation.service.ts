@@ -17,13 +17,30 @@
 // - Needs a second factor on the session (MFA_REQUIRED), as manual refund settle.
 // - A final decline/cancel/fail never flips to approved (late approval): the
 //   charge must be voided at the terminal and then resolved as declined.
-import { and, eq, ne, notInArray, sql } from "drizzle-orm";
-import { AccessError } from "@starter/shared/access";
+import {
+  and,
+  asc,
+  eq,
+  ilike,
+  inArray,
+  ne,
+  notInArray,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
+import { AccessError, outletReachOf } from "@starter/shared/access";
 import {
   CoreError,
   assertOutletInScope,
   assertTrustedScopedContext,
   createUlid,
+  decodeCursor,
+  encodeCursor,
+  outletIdsForQuery,
+  userIdSchema,
+  uuidSchema,
+  type CursorPage,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
@@ -36,19 +53,36 @@ import {
   type EdcTransaction,
 } from "@starter/shared/edc";
 import type { EdcTransactionEventName } from "@starter/shared/edc/events";
+import {
+  edcReconciliationQueueItemSchema,
+  listEdcReconciliationQueue,
+  type EdcReconciliationQueueItem,
+} from "@starter/shared/payment/admin";
 import { db } from "../db/index.ts";
 import { edcTransactions } from "../db/schema/edc.ts";
-import { posOrderTenders } from "../db/schema/pos-order.ts";
+import { paymentEdcTerminals } from "../db/schema/payment-admin.ts";
+import { outlets } from "../db/schema/platform-org.ts";
+import { posOrderTenders, posOrders } from "../db/schema/pos-order.ts";
+import { orders } from "../db/schema/qr-order.ts";
+import { user } from "../db/schema/user.ts";
 import { withTenant } from "../db/tenant.ts";
 import { emitEdcTransactionEvent } from "../edge/edc/events.ts";
 import {
   EDC_LATE_RESPONSE_WINDOW_MS,
   lateResponsePossible,
 } from "../edge/edc/late-response.ts";
+import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { assertPaymentPermission } from "./payment-support.ts";
-import type { Tx } from "./permission-resolver.ts";
-import { assertEdcSaleBillPayable } from "./pos-order-support.ts";
+import {
+  loadTenantAccessInTransaction,
+  type Tx,
+} from "./permission-resolver.ts";
+import {
+  assertEdcSaleBillPayable,
+  remainingIdr,
+  type TenderRow,
+} from "./pos-order-support.ts";
 
 export type ResolveEdcReconciliationInput = {
   edcTransactionId: string;
@@ -405,5 +439,246 @@ export async function resolveEdcReconciliationForActor(
       },
       now,
     );
+  });
+}
+
+export type EdcReconciliationQueueQuery = ReturnType<
+  typeof listEdcReconciliationQueue.query.parse
+>;
+
+const BANK_LABEL: Record<string, string> = {
+  bca: "BCA",
+  mandiri: "Mandiri",
+  bni: "BNI",
+  bjb: "BJB",
+};
+
+const outletIn = (column: SQL, ids: readonly string[]) =>
+  ids.length === 0
+    ? sql`FALSE`
+    : sql`${column} IN (${sql.join(
+        ids.map((id) => sql`${id}::uuid`),
+        sql`, `,
+      )})`;
+
+/**
+ * Queue for the reconciliation screen (legend-p98qi): ECR sales a person must
+ * look at. A row is listed when it is flagged `needs_reconciliation` or is
+ * `unknown`; an unknown row younger than the late-response window is listed
+ * too (the client shows it locked, resolve refuses it with CONFLICT). The
+ * fields that decide the allowed action (status, flag, saleWireOpenAt,
+ * dispatchedAt) are returned as stored: this read grants nothing, the POST
+ * resolve rules stay the only authority.
+ *
+ * Tenant and outlet scope are filtered in SQL (`context.outletScope`); an
+ * outlet outside the scope is rejected by `outletIdsForQuery`, never answered
+ * with another outlet's rows.
+ */
+export async function listEdcReconciliationQueueForActor(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  input: unknown,
+  now = new Date(),
+): Promise<CursorPage<EdcReconciliationQueueItem>> {
+  assertTrustedScopedContext(context);
+  const query = listEdcReconciliationQueue.query.parse(input);
+  const scoped = outletIdsForQuery(
+    context.outletScope,
+    query.outletId ? [query.outletId] : undefined,
+  );
+  let cursorKeys: [string, string] | null = null;
+  if (query.cursor) {
+    // A malformed cursor is a contract error (422), never a 500.
+    try {
+      const [created, id] = decodeCursor(query.cursor);
+      if (
+        typeof created !== "string" ||
+        typeof id !== "string" ||
+        !uuidSchema.safeParse(id).success ||
+        !Number.isFinite(Date.parse(created))
+      )
+        throw new RangeError("Invalid cursor");
+      cursorKeys = [created, id];
+    } catch (error) {
+      if (!(error instanceof RangeError || error instanceof SyntaxError))
+        throw error;
+      throw new HttpError(422, "VALIDATION_ERROR", "Invalid cursor.");
+    }
+  }
+  return withTenant(db, context, async (tx) => {
+    let outletIds: readonly string[] | null; // null = every outlet of the tenant
+    if (query.outletId) {
+      await assertPaymentPermission(
+        tx,
+        context,
+        actorUserId,
+        "payment.reconcile",
+        { type: "outlet", id: query.outletId },
+        now,
+      );
+      outletIds = scoped.kind === "all" ? null : scoped.outletIds;
+    } else {
+      // No outlet asked: a brand- or outlet-scoped Finance still lists the
+      // outlets its own payment.reconcile grant reaches (a tenant-wide check
+      // would 403 it). Only that permission's reach is used, never the wider
+      // outletScope of the context: the two are intersected.
+      const data = await loadTenantAccessInTransaction(
+        tx,
+        context,
+        actorUserId,
+      );
+      const reach = outletReachOf({
+        principal: {
+          tenantId: context.tenant.tenantId,
+          userId: userIdSchema.parse(actorUserId),
+          assignments: data.assignments,
+        },
+        roles: data.roles,
+        org: data.org,
+        now,
+        permission: "payment.reconcile",
+      });
+      if (reach === null)
+        throw new AccessError(
+          "PERMISSION_DENIED",
+          "Your account cannot perform this action.",
+        );
+      if (reach.kind === "tenant") {
+        outletIds = scoped.kind === "all" ? null : scoped.outletIds;
+      } else {
+        const allowed = new Set(reach.outletIds.map((id) => id.toLowerCase()));
+        outletIds = (
+          scoped.kind === "all"
+            ? reach.outletIds
+            : scoped.outletIds.filter((id) => allowed.has(id.toLowerCase()))
+        ).map((id) => id.toLowerCase());
+      }
+    }
+    // Milliseconds on both sides: the cursor carries a JS Date, so a row with
+    // microseconds must not compare greater than its own cursor.
+    const createdMs = sql`date_trunc('milliseconds', ${edcTransactions.createdAt})`;
+    const cursor: SQL = cursorKeys
+      ? sql`(${createdMs}, ${edcTransactions.id}) < (${cursorKeys[0]}::timestamptz, ${cursorKeys[1]}::uuid)`
+      : sql`TRUE`;
+    const pattern = query.q
+      ? `%${query.q.replaceAll(/[%_\\]/g, "\\$&")}%`
+      : null;
+    const rows = await tx
+      .select({
+        row: edcTransactions,
+        outletName: outlets.name,
+        terminalCode: paymentEdcTerminals.terminalId,
+        order: orders,
+        cashierName: user.name,
+      })
+      .from(edcTransactions)
+      .innerJoin(
+        outlets,
+        and(
+          eq(outlets.tenantId, edcTransactions.tenantId),
+          eq(outlets.id, edcTransactions.outletId),
+        ),
+      )
+      .leftJoin(
+        paymentEdcTerminals,
+        and(
+          eq(paymentEdcTerminals.tenantId, edcTransactions.tenantId),
+          eq(paymentEdcTerminals.id, edcTransactions.terminalId),
+        ),
+      )
+      // (tenant, outlet, number) is unique: at most one bill per sale.
+      .leftJoin(
+        orders,
+        and(
+          eq(orders.tenantId, edcTransactions.tenantId),
+          eq(orders.outletId, edcTransactions.outletId),
+          eq(orders.number, edcTransactions.reference),
+        ),
+      )
+      .leftJoin(
+        posOrders,
+        and(
+          eq(posOrders.tenantId, orders.tenantId),
+          eq(posOrders.orderId, orders.id),
+        ),
+      )
+      .leftJoin(user, eq(user.id, posOrders.cashierId))
+      .where(
+        and(
+          eq(edcTransactions.tenantId, context.tenant.tenantId),
+          eq(edcTransactions.type, "sale"),
+          or(
+            eq(edcTransactions.needsReconciliation, true),
+            eq(edcTransactions.status, "unknown"),
+          ),
+          outletIds === null
+            ? sql`TRUE`
+            : outletIn(sql`${edcTransactions.outletId}`, outletIds),
+          query.status ? eq(edcTransactions.status, query.status) : sql`TRUE`,
+          pattern
+            ? or(
+                ilike(edcTransactions.reference, pattern),
+                ilike(edcTransactions.invoiceNo, pattern),
+                ilike(orders.number, pattern),
+                ilike(paymentEdcTerminals.terminalId, pattern),
+              )
+            : sql`TRUE`,
+          cursor,
+        ),
+      )
+      .orderBy(sql`${createdMs} DESC`, sql`${edcTransactions.id} DESC`)
+      .limit(query.limit + 1);
+
+    const page = rows.slice(0, query.limit);
+    // One query for every bill's tenders (no per-row N+1), grouped in memory.
+    const orderIds = [
+      ...new Set(page.flatMap(({ order }) => (order ? [order.id] : []))),
+    ];
+    const tendersByOrder = new Map<string, TenderRow[]>();
+    if (orderIds.length > 0) {
+      const tenderRows = await tx
+        .select()
+        .from(posOrderTenders)
+        .where(
+          and(
+            eq(posOrderTenders.tenantId, context.tenant.tenantId),
+            inArray(posOrderTenders.orderId, orderIds),
+          ),
+        )
+        .orderBy(asc(posOrderTenders.requestedAt), asc(posOrderTenders.id));
+      for (const tender of tenderRows) {
+        const list = tendersByOrder.get(tender.orderId);
+        if (list) list.push(tender);
+        else tendersByOrder.set(tender.orderId, [tender]);
+      }
+    }
+    const data: EdcReconciliationQueueItem[] = [];
+    for (const { row, outletName, terminalCode, order, cashierName } of page) {
+      const tenders = order ? (tendersByOrder.get(order.id) ?? []) : [];
+      data.push(
+        edcReconciliationQueueItemSchema.parse({
+          transaction: toDto(row),
+          outletName,
+          cashierName: cashierName?.trim().slice(0, 100) || null,
+          terminalLabel: `${terminalCode ?? row.terminalId} · ${
+            BANK_LABEL[row.bank] ?? row.bank.toUpperCase()
+          }`,
+          billNumber: order?.number ?? null,
+          remainingIdr: order ? remainingIdr(order, tenders) : null,
+          saleWireOpenAt: row.saleWireOpenAt?.toISOString() ?? null,
+        }),
+      );
+    }
+    const last = page.at(-1)?.row;
+    return {
+      data,
+      meta: {
+        limit: query.limit,
+        nextCursor:
+          rows.length > query.limit && last
+            ? encodeCursor([last.createdAt.toISOString(), last.id])
+            : null,
+      },
+    };
   });
 }
