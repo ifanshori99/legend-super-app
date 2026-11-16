@@ -168,6 +168,8 @@ async function insertStorageObject(
   tenantId: string,
   outletId: string,
   purpose: string,
+  // The uploader; a receipt only links its own recorder's photos.
+  ownerUserId: string = receiver.userId,
 ): Promise<string> {
   const id = randomUUID();
   const client = await owner.connect();
@@ -175,9 +177,9 @@ async function insertStorageObject(
     await client.query("BEGIN");
     await client.query("SET LOCAL session_replication_role = replica");
     await client.query(
-      `INSERT INTO core_storage_objects (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes)
-       VALUES ($1, $2, $3, $4, $5, 'image/webp', 1024)`,
-      [tenantId, outletId, id, purpose, `legend-o1o4s/${id}.webp`],
+      `INSERT INTO core_storage_objects (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes, owner_user_id)
+       VALUES ($1, $2, $3, $4, $5, 'image/webp', 1024, $6)`,
+      [tenantId, outletId, id, purpose, `legend-o1o4s/${id}.webp`, ownerUserId],
     );
     await client.query("COMMIT");
   } catch (error) {
@@ -807,14 +809,26 @@ describe("o1o4s-GR goods receipt: partial, QC, photos", () => {
 
   it("[o1o4s-GR-5] photos: another tenant's, another outlet's or a wrong-purpose object is refused; own receipt photos are kept in order", async () => {
     const fx = await seedFixture();
-    const photoA1 = await insertStorageObject(tenantA, outletA, "receipt");
-    const photoA2 = await insertStorageObject(tenantA, outletA, "receipt");
+    const photoA1 = await insertStorageObject(
+      tenantA,
+      outletA,
+      "goods_receipt_photo",
+    );
+    const photoA2 = await insertStorageObject(
+      tenantA,
+      outletA,
+      "goods_receipt_photo",
+    );
     const foreignTenant = await insertStorageObject(
       tenantB,
       outletA,
-      "receipt",
+      "goods_receipt_photo",
     );
-    const otherOutlet = await insertStorageObject(tenantA, outletB, "receipt");
+    const otherOutlet = await insertStorageObject(
+      tenantA,
+      outletB,
+      "goods_receipt_photo",
+    );
     const wrongPurpose = await insertStorageObject(
       tenantA,
       outletA,
@@ -929,7 +943,9 @@ describe("o1o4s-GR goods receipt: partial, QC, photos", () => {
     const created = await receive(
       receiver.client,
       receiptBody(fx, [rl(fx.flourLine, fx.location, "2.0000")], {
-        mediaIds: [await insertStorageObject(tenantA, outletA, "receipt")],
+        mediaIds: [
+          await insertStorageObject(tenantA, outletA, "goods_receipt_photo"),
+        ],
       }),
     );
     expect(created.status).toBe(201);
@@ -1052,9 +1068,9 @@ describe("o1o4s-GR goods receipt: partial, QC, photos", () => {
   it("[o1o4s-GR-10] photo order is kept as sent (first is the cover) and duplicates are removed", async () => {
     const fx = await seedFixture();
     const [p1, p2, p3] = [
-      await insertStorageObject(tenantA, outletA, "receipt"),
-      await insertStorageObject(tenantA, outletA, "receipt"),
-      await insertStorageObject(tenantA, outletA, "receipt"),
+      await insertStorageObject(tenantA, outletA, "goods_receipt_photo"),
+      await insertStorageObject(tenantA, outletA, "goods_receipt_photo"),
+      await insertStorageObject(tenantA, outletA, "goods_receipt_photo"),
     ] as [string, string, string];
     const created = await receive(
       receiver.client,
@@ -1078,8 +1094,16 @@ describe("o1o4s-GR goods receipt: partial, QC, photos", () => {
 
   it("[o1o4s-GR-11] a receipt photo already attached to an earlier goods receipt is refused", async () => {
     const fx = await seedFixture();
-    const used = await insertStorageObject(tenantA, outletA, "receipt");
-    const fresh = await insertStorageObject(tenantA, outletA, "receipt");
+    const used = await insertStorageObject(
+      tenantA,
+      outletA,
+      "goods_receipt_photo",
+    );
+    const fresh = await insertStorageObject(
+      tenantA,
+      outletA,
+      "goods_receipt_photo",
+    );
     const first = await receive(
       receiver.client,
       receiptBody(fx, [rl(fx.flourLine, fx.location, "1.0000")], {

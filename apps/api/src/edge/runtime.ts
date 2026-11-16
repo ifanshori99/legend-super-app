@@ -134,6 +134,7 @@ import {
 import { withTenant } from "../db/tenant.ts";
 import {
   notifyEdgeCatalogStale,
+  notifyEdgeDeviceRegistryHardStale,
   notifyOutletSupervisors,
 } from "../services/edge-sync-conflict-alert.ts";
 import { parseEdgeRuntimeConfig } from "./config.ts";
@@ -376,6 +377,54 @@ let registryPuller: DeviceRegistryPuller | null = null;
 /** Device-registry pull state (edge only); null on the cloud or before boot. */
 export function getDeviceRegistrySyncState(): DeviceRegistrySyncState | null {
   return registryPuller?.getState() ?? null;
+}
+
+/**
+ * legend-2lgu: this edge's device-registry replica passed the hard limit, so
+ * new device sessions are refused. False on the cloud and before boot.
+ */
+export function isDeviceRegistryHardStale(now: Date = new Date()): boolean {
+  return state.edgeMode && (registryPuller?.isHardStale(now) ?? false);
+}
+
+let hardStaleAlertedKey: string | null = null;
+
+/**
+ * legend-2lgu: tell the outlet's supervisors and owners the replica is hard
+ * stale. Called on the puller's transition and on every refused new session;
+ * once per outlet and UTC day here (and by the alert's stable id in the
+ * database). Never throws: a failed alert must not change the 503.
+ */
+export async function reportDeviceRegistryHardStale(
+  now: Date = new Date(),
+): Promise<void> {
+  const identity = state.identity;
+  const puller = registryPuller;
+  if (!state.edgeMode || !identity || !puller) return;
+  const key = `${identity.scope.outletId}:${now.toISOString().slice(0, 10)}`;
+  if (hardStaleAlertedKey === key) return;
+  hardStaleAlertedKey = key;
+  const registry = puller.getState();
+  try {
+    await withTenant(db, identity.context, (tx) =>
+      notifyEdgeDeviceRegistryHardStale(
+        tx,
+        identity.context,
+        {
+          tenantId: identity.context.tenant.tenantId,
+          outletId: outletIdSchema.parse(identity.scope.outletId),
+          edgeNodeId: identity.scope.edgeNodeId,
+          maxStaleSeconds: registry.maxStaleSeconds,
+          lastPulledAt: registry.lastSuccessAt,
+        },
+        now,
+      ),
+    );
+  } catch (error) {
+    // Try again on the next refusal or transition.
+    hardStaleAlertedKey = null;
+    logger.warn(safeError(error), "Edge device registry alert failed");
+  }
 }
 
 let catalogFreshness: CatalogFreshnessTracker | null = null;
@@ -875,6 +924,7 @@ export async function startEdgeRuntime(
   }
   const identity = { context: local.context, scope: local.scope };
   state = { edgeMode: true, identity, link: disconnected };
+  hardStaleAlertedKey = null;
   // legend-ideif: from here on pin hashing uses only the outlet peppers the
   // cloud sent (none yet = fail closed). Restore the sealed ones from the
   // database so a restart verifies pins offline; rows sealed under a rotated
@@ -1098,6 +1148,7 @@ export async function startEdgeRuntime(
       ),
     intervalMs: config.deviceSyncIntervalMs,
     staleAfterMs: config.deviceSyncStaleAfterMs,
+    hardStaleAfterMs: config.deviceRegistryMaxStaleMs,
     maxBackoffMs: Math.max(
       config.deviceSyncIntervalMs,
       MIN_MAX_PULL_BACKOFF_MS,
@@ -1108,6 +1159,14 @@ export async function startEdgeRuntime(
           "Edge device registry replica is stale; device revocations may be missing",
         );
       else logger.info("Edge device registry replica is fresh again");
+    },
+    onHardStaleChange: (hardStale) => {
+      if (hardStale) {
+        logger.error(
+          "Edge device registry replica is past its hard limit; new device sessions are refused",
+        );
+        void reportDeviceRegistryHardStale();
+      } else logger.info("Edge device registry replica is within its limit");
     },
     onError: (error) =>
       logger.warn(safeError(error), "Edge device registry pull failed"),

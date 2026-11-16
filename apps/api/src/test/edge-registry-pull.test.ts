@@ -630,6 +630,10 @@ describe("EDG-03 staleness is visible on /api/edge/status", () => {
     expect(status.deviceRegistry).toEqual({
       lastPulledAt: null,
       stale: true,
+      // legend-2lgu: never pulled, but only just booted: not hard stale; the
+      // default limit is 72 hours.
+      hardStale: false,
+      maxStaleSeconds: 72 * 3600,
       receiptSequencesRefused: 0,
       receiptSequencesRefusedAt: null,
       receiptRunAlert: false,

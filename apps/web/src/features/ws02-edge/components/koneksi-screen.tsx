@@ -16,7 +16,7 @@ import { useToast } from "@/components/ui/toast";
 import { useOnline } from "@/lib/use-online";
 import { DeviceAlerts } from "./device-alerts.tsx";
 import { useEdgeStatus, useSetTrainingMode } from "../hooks.ts";
-import { formatClock, EDGE_ROLE_LABEL } from "../logic.ts";
+import { formatAlertTime, formatClock, EDGE_ROLE_LABEL } from "../logic.ts";
 import { PrintQueueButton } from "./print-queue-drawer.tsx";
 import { ReceiptRunAlert } from "./receipt-run-alert.tsx";
 import { WaiterOrderNotice } from "./waiter-order-notice.tsx";
@@ -73,6 +73,9 @@ export function KoneksiScreen({
 
   const heartbeat = formatClock(data?.edgeNode?.lastHeartbeatAt ?? null);
   const lastSynced = formatClock(data?.lastSyncedAt ?? null);
+
+  const registry = data?.deviceRegistry;
+  const registryPulled = formatAlertTime(registry?.lastPulledAt ?? null);
 
   const runAlert = data?.deviceRegistry?.receiptRunAlert === true;
   // Confirms a manual refresh that found no receipt-run alert (legend-s7szu).
@@ -213,6 +216,33 @@ export function KoneksiScreen({
                   ? t("edge.syncPending", { count: data.pendingEventCount })
                   : t("edge.syncClear")}
               </span>
+            </StatusRow>
+
+            <StatusRow
+              label={t("deviceRegistry.staleNotice.rowLabel")}
+              hint={
+                registryPulled
+                  ? t("deviceRegistry.staleNotice.rowPulled", {
+                      time: registryPulled,
+                    })
+                  : t("deviceRegistry.staleNotice.rowNever")
+              }
+            >
+              <StatusPill
+                status={
+                  registry?.hardStale === true
+                    ? "danger"
+                    : registry?.stale === true
+                      ? "warning"
+                      : "success"
+                }
+              >
+                {registry?.hardStale === true
+                  ? t("deviceRegistry.staleNotice.rowHard")
+                  : registry?.stale === true
+                    ? t("deviceRegistry.staleNotice.rowStale")
+                    : t("deviceRegistry.staleNotice.rowFresh")}
+              </StatusPill>
             </StatusRow>
 
             <StatusRow label={t("edge.deviceLabel")}>

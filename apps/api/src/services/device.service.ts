@@ -69,7 +69,11 @@ import {
   signDeviceToken,
   verifyDeviceToken,
 } from "../lib/device-token.ts";
-import { getEdgeRuntimeState } from "../edge/runtime.ts";
+import {
+  getEdgeRuntimeState,
+  isDeviceRegistryHardStale,
+  reportDeviceRegistryHardStale,
+} from "../edge/runtime.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { findTenantContext } from "../middleware/tenant.ts";
 import { recordAudit } from "./audit-writer.ts";
@@ -194,6 +198,27 @@ function mintForRow(
   );
 }
 
+/** A heartbeat this recent means the device already has a running session. */
+const DEVICE_LIVE_SESSION_WINDOW_MS = 5 * 60_000;
+
+export const EDGE_DEVICE_REGISTRY_STALE_CODE = "EDGE_DEVICE_REGISTRY_STALE";
+
+/**
+ * legend-2lgu: an edge whose device-registry replica is past its hard limit
+ * refuses NEW device sessions (enroll, token, first heartbeat): a revocation
+ * may be missing. Running sessions are never cut (see `heartbeatDevice`).
+ * No-op on the cloud. Alerts the outlet's supervisors (once a day).
+ */
+async function assertDeviceRegistryFresh(now: Date): Promise<void> {
+  if (!isDeviceRegistryHardStale(now)) return;
+  await reportDeviceRegistryHardStale(now);
+  throw new HttpError(
+    503,
+    EDGE_DEVICE_REGISTRY_STALE_CODE,
+    "Data perangkat di edge sudah terlalu lama tidak diperbarui dari cloud. Sambungkan edge ke cloud, lalu coba lagi.",
+  );
+}
+
 export type EnrollDeviceInput = {
   outletId: string;
   type: DeviceType;
@@ -209,6 +234,7 @@ export async function enrollDevice(
   now: Date = new Date(),
 ): Promise<{ device: Device; token: string }> {
   assertTrustedScopedContext(context);
+  await assertDeviceRegistryFresh(now);
   const outletId = outletIdSchema.parse(input.outletId);
   assertOutletInScope(context.outletScope, outletId);
   const tenantId = context.tenant.tenantId;
@@ -343,6 +369,7 @@ export async function issueDeviceToken(
   now: Date = new Date(),
 ): Promise<{ device: Device; token: string }> {
   assertTrustedScopedContext(context);
+  await assertDeviceRegistryFresh(now);
   const tenantId = context.tenant.tenantId;
   return withTenant(db, context, async (tx) => {
     const [current] = await tx
@@ -820,6 +847,14 @@ async function heartbeatDevice(
     identity ? { outletId: identity.scope.outletId } : undefined,
   );
   if (!device) throw heartbeatRefused();
+  // legend-2lgu: only a NEW session is gated. A device that reported within
+  // the live window keeps running through a hard-stale replica.
+  const now = new Date();
+  const hasLiveSession =
+    device.lastSeenAt !== null &&
+    now.getTime() - device.lastSeenAt.getTime() <=
+      DEVICE_LIVE_SESSION_WINDOW_MS;
+  if (!hasLiveSession) await assertDeviceRegistryFresh(now);
   return {
     tenant: establishTenantContext({
       tenantId: payload.tenantId,
