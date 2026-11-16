@@ -46,7 +46,10 @@ export function newCustomerSession(at: Date): Session {
   });
 }
 
-function customerAuthView(session: Session): CurrentAuthView {
+function customerAuthView(
+  session: Session,
+  whatsAppVerified = true,
+): CurrentAuthView {
   return currentAuthViewSchema.parse({
     user: customerUser,
     identities: idFx.identities.filter(
@@ -56,7 +59,7 @@ function customerAuthView(session: Session): CurrentAuthView {
     session,
     mfaRequired: false,
     mfaEnrollmentRequired: false,
-    whatsAppVerified: true,
+    whatsAppVerified,
   });
 }
 
@@ -67,8 +70,21 @@ export function customerCurrentAuthMock({ scenario }: { scenario: string }): {
   // `empty`: no session in this browser — the link prompt's signed-out state.
   if (scenario === "empty")
     throw new ApiError(401, "UNAUTHORIZED", "Belum masuk.");
+  // `wa-unverified*` / `wa-verified`: the member WhatsApp prompt (legend-vnvg).
+  // Unset, the customer is verified and the fixture view keeps its own value.
+  const forceUnverified =
+    scenario === "wa-unverified" || scenario === "wa-unverified-empty";
   if (auth.get() === "customer")
-    return { data: customerAuthView(newCustomerSession(new Date())) };
+    return {
+      data: customerAuthView(newCustomerSession(new Date()), !forceUnverified),
+    };
+  if (forceUnverified || scenario === "wa-verified")
+    return {
+      data: {
+        ...idFx.currentAuth,
+        whatsAppVerified: scenario === "wa-verified",
+      },
+    };
   return { data: idFx.currentAuth };
 }
 

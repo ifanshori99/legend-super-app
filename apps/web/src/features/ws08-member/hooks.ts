@@ -1,5 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ConsentPurpose } from "@starter/shared/crm";
+import { errorCode } from "@/features/ws01-login/flow";
+import { useCurrentAuth } from "@/features/ws01-login/hooks";
 import { MEMBER_PAGE_SIZE, requestRedemption, saveMemberConsent } from "./api";
 import {
   memberFavoritesQuery,
@@ -15,6 +17,28 @@ import {
 // Components only touch member data through these hooks; keys, cache updates
 // and invalidation live here. Lists use `useQuery` (not suspense) so every
 // section can show its own loading, empty and error states.
+
+export type WhatsAppLinkState =
+  | { status: "checking" }
+  | { status: "error"; retry: () => void }
+  | { status: "unlinked" }
+  | { status: "linked" };
+
+/**
+ * Whether the signed-in member has a verified WhatsApp number (AUTH-07). A
+ * visitor without a session gets "linked": the prompt would only lead to the
+ * sign-in screen, and the member screens already handle that case themselves.
+ */
+export function useWhatsAppLink(): WhatsAppLinkState {
+  const auth = useCurrentAuth();
+  if (auth.isPending) return { status: "checking" };
+  if (auth.isError) {
+    return errorCode(auth.error) === "UNAUTHORIZED"
+      ? { status: "linked" }
+      : { status: "error", retry: () => void auth.refetch() };
+  }
+  return { status: auth.data.whatsAppVerified ? "linked" : "unlinked" };
+}
 
 export function useMemberOverview() {
   return useQuery(memberOverviewQuery());

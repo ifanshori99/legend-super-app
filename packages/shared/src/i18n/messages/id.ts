@@ -2122,6 +2122,19 @@ export const id = {
         "Tanpa persetujuan program, poin tidak dapat dikumpulkan dan keanggotaan kembali menunggu verifikasi.",
       backToOverview: "Kembali ke ringkasan",
     },
+    // Ajakan menautkan WhatsApp di layar member (legend-vnvg, AUTH-07):
+    // tampil hanya selama getCurrentAuth.whatsAppVerified false.
+    whatsapp: {
+      eyebrow: "WhatsApp belum terhubung",
+      title: "Hubungkan WhatsApp",
+      body: "Hubungkan WhatsApp untuk menukar poin dan menerima info poin.",
+      action: "Hubungkan WhatsApp",
+      hint: "Kamu akan melanjutkan verifikasi melalui WhatsApp.",
+      loading: "Memuat status WhatsApp",
+      errorTitle: "Status WhatsApp belum dapat diperiksa",
+      errorHint: "Periksa koneksi kamu, lalu coba lagi.",
+      historyEmpty: "Hubungkan WhatsApp untuk mulai mengumpulkan poin.",
+    },
     points: {
       title: "Poin saya",
       balance: "Saldo poin",

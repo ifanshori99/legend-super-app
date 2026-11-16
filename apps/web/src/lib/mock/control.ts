@@ -21,6 +21,12 @@ export const MOCK_SCENARIOS = [
    * guest read hides it.
    */
   "photo-missing",
+  /** legend-vnvg: the signed-in member has no verified WhatsApp number yet. */
+  "wa-unverified",
+  /** legend-vnvg: the identity fixture view with its WhatsApp number verified. */
+  "wa-verified",
+  /** legend-vnvg: unverified WhatsApp and an empty point ledger. */
+  "wa-unverified-empty",
 ] as const;
 export type MockScenario = (typeof MOCK_SCENARIOS)[number];
 

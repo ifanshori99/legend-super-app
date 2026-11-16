@@ -17,7 +17,7 @@ export function paginateFixture<T>(
   idOf: (item: T) => string,
   scenario: MockScenario = "normal",
 ): CursorPage<T> {
-  if (scenario === "empty")
+  if (scenario === "empty" || scenario === "wa-unverified-empty")
     return { data: [], meta: { limit: query.limit, nextCursor: null } };
   let start = 0;
   if (query.cursor !== undefined) {

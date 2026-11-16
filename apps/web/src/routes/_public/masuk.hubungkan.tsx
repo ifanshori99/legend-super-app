@@ -1,5 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { createTranslator } from "@starter/shared/i18n";
+import {
+  linkWhatsAppSearch,
+  memberReturnPath,
+} from "@/features/ws01-login/flow";
 import { LinkWhatsAppScreen } from "@/features/ws01-login/components/link-whatsapp";
 
 // "/masuk/hubungkan" — attach a WhatsApp number to the signed-in account (PRD
@@ -8,6 +12,7 @@ import { LinkWhatsAppScreen } from "@/features/ws01-login/components/link-whatsa
 const t = createTranslator();
 
 export const Route = createFileRoute("/_public/masuk/hubungkan")({
+  validateSearch: linkWhatsAppSearch,
   headers: () => ({ "Cache-Control": "private, no-store" }),
   head: () => ({
     meta: [
@@ -24,5 +29,6 @@ export const Route = createFileRoute("/_public/masuk/hubungkan")({
 });
 
 function LinkRoute() {
-  return <LinkWhatsAppScreen />;
+  const search = Route.useSearch();
+  return <LinkWhatsAppScreen returnTo={memberReturnPath(search.lanjut)} />;
 }

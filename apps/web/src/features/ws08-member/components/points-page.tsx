@@ -3,11 +3,12 @@ import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { MEMBER_PAGE_SIZE } from "../api";
-import { useMemberOverview, useMemberPoints } from "../hooks";
+import { useMemberOverview, useMemberPoints, useWhatsAppLink } from "../hooks";
 import { LedgerList } from "./ledger-list";
 import { ListSkeleton } from "./list-skeleton";
 import { MemberPageHeader } from "./page-header";
 import { PointsCard } from "./points-card";
+import { WhatsAppLinkPrompt } from "./whatsapp-link-prompt";
 
 // PRD §3.20 "Poin": the member's balance and the append-only ledger behind it.
 export function MemberPointsPage() {
@@ -15,6 +16,7 @@ export function MemberPointsPage() {
   const [limit, setLimit] = useState(MEMBER_PAGE_SIZE);
   const overviewQuery = useMemberOverview();
   const pointsQuery = useMemberPoints(limit);
+  const whatsApp = useWhatsAppLink();
 
   return (
     <div className="grid gap-6">
@@ -24,6 +26,8 @@ export function MemberPointsPage() {
           months: overviewQuery.data?.program.expiryMonths ?? 12,
         })}
       />
+
+      <WhatsAppLinkPrompt state={whatsApp} />
 
       {overviewQuery.isPending ? (
         <ListSkeleton rows={2} />
@@ -46,7 +50,13 @@ export function MemberPointsPage() {
         ) : pointsQuery.isError ? (
           <ErrorState onRetry={() => pointsQuery.refetch()} />
         ) : pointsQuery.data.data.length === 0 ? (
-          <EmptyState title={t("member.points.historyEmpty")} />
+          <EmptyState
+            title={
+              whatsApp.status === "unlinked"
+                ? t("member.whatsapp.historyEmpty")
+                : t("member.points.historyEmpty")
+            }
+          />
         ) : (
           <>
             <LedgerList entries={pointsQuery.data.data} />
