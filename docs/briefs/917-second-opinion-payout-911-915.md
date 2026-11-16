@@ -1,0 +1,6 @@
+# 917 Second opinion payout 911+915 (gerbang rilis uang + akses)
+Peran: second-opinion (baca ~/.agents/team/roles/second-opinion.md). Effort xhigh. Read-only.
+Repo /Users/ifanshori99/Projects/legend super app/legend. Diff: `git diff 5eeaa683d..origin/ghostex/915-payout-grant-lanjutan` (911 grant sekali pakai via `legend_payout_grantor`, migrasi sementara 0652-0659; 915 grantor wajib, withdraw proposal, log persetujuan + notifikasi). Laporan SO sebelumnya (jangan diulang): `git show origin/qa/second-opinion-payout-905:docs/qa/second-opinion-payout-905.md`.
+Sisa yang sudah diterima CTO (jangan dilaporkan ulang): legend-7gghu pemalsuan baris sesi oleh `legend_app` (dideteksi, tidak dicegah); legend-l2zru "bukan saya" belum dibangun; pengecualian edge/worker dari grantor wajib.
+Cari: grant dipakai ulang/lintas operasi/lintas tenant, grant terbit tanpa verifikasi password sah, aktor sama lolos dua langkah, withdraw melepas hold atau membuka bayar ulang, recon salah hitung withdraw, log persetujuan bisa diubah/dihapus `legend_app`, notifikasi salah penerima atau bocor nominal, migrasi gagal untuk migrator non-superuser, start production tanpa grantor di api.
+Hasil: `docs/qa/second-opinion-payout-911-915.md` di worktree-mu (P0-P3, berkas:baris, skenario, usul test), commit dan push cabang qa tanpa force. Lapor hanya saat selesai.
