@@ -6616,3 +6616,132 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Bukti gagal-dulu komponen: awal 12/12 gagal; perluasan 16/28 gagal; regresi lintas mutasi 8/44 gagal; regresi tiga langkah 2/46 gagal. Satu reviewer menemukan galat lama muncul kembali setelah keberhasilan yang diikuti refresh baru; penanda keberhasilan menetap memperbaikinya, cek ulang reviewer tanpa temuan tersisa.
 - Verifikasi akhir setelah perbaikan: komponen 46/46, `node --test tests/text-contract.test.mjs` 11/11, `node --test tests/ws05-payment-link.test.mjs` 9/9; Prettier + ESLint lima berkas kode/test hijau; `heavy pnpm --filter @starter/web typecheck` exit 0. Test dijalankan melalui `heavy` oleh test-runner tunggal. Tidak menjalankan build, browser visual, atau e2e pada slice pesan ini.
 - Subagent Codex: total 5 (2 Explore/implementer, 1 test-writer, 1 reviewer, 1 test-runner), puncak 4 bersamaan; token heavy bergantian test-writer lalu test-runner. `parallel-report` hanya mendeteksi sesi Claude, bukan subagent Codex ini; biaya/token sesi Codex tidak tersedia dari laporan tersebut.
+
+## 2026-11-16: Payout grant lanjutan sebelum rilis (915, cabang ghostex/915-payout-grant-lanjutan, di atas 3cfecb901)
+
+- Kartu: legend-786te, legend-xatux, legend-7gghu. Desain: docs/briefs/915/ (brief.md, design-xatux.md, design-7gghu.md).
+- 786te: PAYOUT_GRANTOR_DATABASE_URL WAJIB di production (env gagal start bila kosong; doctor, check-compose-env, provision-roles.sh, runtime.env.example, docs/deployment.md diperbarui). Dev dan test tetap boleh SET LOCAL ROLE. Review architect menemukan P1: worker mengimpor skema env yang sama tetapi memang tidak boleh menerima URL ini (check-compose melarangnya), jadi worker produksi tidak akan start. Diperbaiki: worker (bercirikan WORKER_DATABASE_URL, api dilarang memilikinya) dan edge (EDGE_MODE, tidak melayani rute payroll) dikecualikan; api tetap wajib. Test env ditambah.
+- xatux: rute batalkan (withdraw) usulan koreksi/overpaid yang masih terbuka. Fungsi tepercaya `app.payout_correction_withdraw` dan `app.payout_overpaid_withdraw` + grant langkah `withdraw`; status `withdrawn`; unik hidup per slip; bukti pada usulan yang dibatalkan tetap terpakai (PAYOUT-75) sehingga batalkan TIDAK melepas hold penutupan; hanya pengaju batch ditolak; tombol "Batalkan usulan" di UI status dengan teks di katalog. Recon: attestation withdraw dicek (grant_mismatch) dan tidak dihitung sebagai dua langkah.
+- 7gghu (diterima sebagai sisa rilis, dengan deteksi): tabel `payroll_payout_approval_log` (append-only, pemilik legend_payout, legend_app hanya SELECT), tiap grant yang dipakai untuk persetujuan payout dicatat oleh `app.payout_attest`; sweep worker `payout-approval-receipt` mengirim notifikasi ke penyetuju sebenarnya (in-app + email lewat outbox, tanpa nominal, penerima dari log bukan payload). Kanal WhatsApp belum (kontrak melarang WhatsApp sebagai default). "Bukan saya" + bekukan batch: kartu lanjutan legend-l2zru.
+- Migrasi sementara (merge train menomori ulang): 0658 withdraw, 0659 approval log; snapshot 0659.
+- Review architect xhigh: P1-1 worker (diperbaiki), P2-1 edge (diperbaiki), P3 recon withdraw tanpa operasi (diperbaiki), P3 PAYOUT-70 di withdraw (diperbaiki); P3 sisa: kanal WA, teks "(0 item)" untuk closure/posting_source, test rantai utuh sweep->outbox->consumer. Tidak ada P1/P2 tersisa dari review.
+- Bukti: env.test 7 -> 9 test; payroll-payout-915-withdraw 42 test (fail-first: 40 lulus, 2 gagal pada kode lama); approval-log 10 test; tests/db-role-provisioning 57 lulus 1 skip; 64 berkas payout 775 test lulus (sebelum commit 32c774673); setelah commit terakhir 32c774673: 55 berkas payout+env, 54 lulus 1 skip, 707 test lulus, eslint bersih, typecheck api dan web exit 0.
+- Biaya: session-usage total 15380k (24 subagent, sesi ini); parallel-report: 66 menit, puncak 5 bersamaan, rata-rata 1.17 berjalan per agent.
+
+## 2026-11-16: 918 payout 3 P2 second opinion 917 + l2zru (cabang ghostex/918-payout-3-p2-l2zru-bekukan-batch, di atas cbc98a31f)
+
+- Kartu: legend-87dur, legend-fwx7l, legend-9n1mu, legend-l2zru. Desain l2zru: docs/briefs/918/design-l2zru.md (architect xhigh).
+- 87dur: recon tidak lagi menandai binding bukti yang ditarik (withdraw tanpa langkah selesai) sebagai binding_duplicate; histori dan larangan pakai ulang bukti tetap.
+- fwx7l: `provisionMigrator` menerima grantorUrl dan memberi migrator ADMIN (INHERIT/SET FALSE) atas login dan grup grantor yang sudah ada; job `--migrator` meneruskan PAYOUT_GRANTOR_DATABASE_URL; fixture GRANT manual dihapus.
+- 9n1mu: WORKER_DATABASE_URL tidak lagi membebaskan kewajiban grantor; worker menandai diri lewat kode (`src/role-worker.ts`, impor pertama di worker-main). Edge tetap lewat EDGE_MODE (tidak melayani rute payroll; tidak ada entrypoint edge terpisah).
+- l2zru: penyetuju asli membuka halaman tanda terima (`/tanda-terima/payroll/:logId`, route top-level, cukup login) dan menekan "Bukan saya" (password sungguhan, tanpa syarat MFA/izin payroll) -> sengketa append-only (`payroll_payout_batch_disputes`), batch beku: grant tak bisa diterbitkan, 17 fungsi tepercaya + settle ditolak PAYOUT-79 lewat `payout_grant_consume`/`payout_attest`/`payout_run_settle`, trigger batches/items/bank_transfer_files/gl_postings, reversal run ditolak, batch saudara (payslip sama) ikut beku. Buka beku: Owner atau Finance Manager (salah satu), alasan 10-500 karakter, bukan pelaku/penyetuju/pengaju (termasuk batch saudara), tarik klaim sendiri hanya dari sesi yang sama; tercatat di `payroll_payout_batch_unfreezes` (append-only). Batch exported/terkirim: finance exception `payout_batch_disputed`. Notifikasi owner/finance + disputant (kategori payout_receipt). Teks di katalog text-contract.
+- Migrasi sementara (merge train menomori ulang): 0660 (tabel, fungsi disown/unfreeze, assert_open), 0661 (guard). Migrasi 0658/0659 ditambahkan ke data-import-registry.
+- Review architect xhigh: ronde 1 P1 sibling-batch dibayar ganda + 2 P2 + 3 P3 (diperbaiki), ronde 2 P1 reversal run + P2 unfreeze sibling (diperbaiki), ronde 3 tanpa P1/P2, 3 P3 (diperbaiki).
+- Bukti: env.test 12/12; 915-withdraw+911 recon 45/45; db-role-provisioning 60 lulus (fixture manual hilang); 918-disown 41 + 918-review test; mutasi (payout_batch_frozen selalu false) membuat 26 dari 49 test merah; 98 berkas payout/env/registry/provisioning/text-contract: 1666 lulus, 8 skip, 13 todo, exit 0 (setelah commit 95a250ef4); prettier, eslint, typecheck api dan web, db:generate "No schema changes" hijau.
+- Sisa: flake setup `PAYOUT_BATCH_STATE` (409) sesekali di fixture 915-withdraw (3 kali terlihat, hilang di run ulang); kanal WA; persetujuan utama (`approvedBy`) tak lewat grant sehingga tak bisa di-disown; UI belum dilihat di browser; DB lokal worktree yang sudah menjalankan 0660/0661 lama perlu dibuat ulang.
+- Biaya: session-usage total 13425k; parallel-report: 87 menit, 26 subagent, puncak 5, rata-rata 0.87 berjalan.
+
+## 2026-11-16: 920 perbaikan second opinion 919 payout beku (cabang ghostex/a3e53ecc, di atas ffd47408f)
+
+- Sumber: docs/qa/second-opinion-payout-918.md (origin/qa/second-opinion-payout-918): 2 P1 + 1 P2. Desain: architect xhigh (kunci run).
+- P1-1: unfreeze (dan "Bukan saya") wajib password: rute `passwordOnly`, `app.payout_grant_issue` menolak grant `unfreeze` selain method `password` (PAYOUT-72). Grant sekali pakai lewat grantor sudah ada di 918; yang kurang adalah syarat password (cookie + challenge MFA segar tidak cukup lagi). Pengecualian klaim sendiri otomatis hanya dengan password.
+- P1-2: baris `payroll_runs` jadi kunci induk pembekuan; urutan semua jalur run -> batch -> item -> advisory GL. `app.payout_lock_run_of_batch` dipanggil di `assert_open`, disown, unfreeze; `payout_run_settle` mulai dari `assert_open` (urutan batch->run lama dibuang, bukan lagi deadlock) dan mengembalikan false (bukan RAISE) bila batch lain beku; cek beku diulang setelah kunci (`assertBatchOpenUnderRunLock` di submit/approve/cancel/export/cash handover). Reversal dan retry sudah terserialisasi lewat kunci run.
+- P2: `resolvePendingSettles` dan `recoverPayoutGlOfBatch` melewati batch beku (log `batch_frozen`), consumer `payroll.locked` mengunci run dulu; jurnal lock dan batch sehat tetap tercatat, trigger posting 0661 tetap ketat. Setelah unfreeze, `catchUpAfterUnfreeze` memulihkan GL batch + saudara yang tak beku lagi (savepoint) dan memanggil `settleRunAndAnnounce`.
+- Review architect xhigh: ronde 1 P1 (unfreeze dua sengketa saling beku batal selamanya karena batch sendiri ditambah manual ke daftar catch-up; diperbaiki, test `920-mutual-unfreeze`), ronde 2 tanpa P1/P2; 2 P3 (actor event payroll.paid = pembuka beku; UI minta password lewat satu 401 tambahan).
+- Migrasi sementara: 0662_payout_freeze_run_lock (tanpa tabel baru, jadi tanpa FK); snapshot 0662; db:generate kosong.
+- Bukti: 5 berkas test 920 (unfreeze-password, sibling-lock, frozen-gl, mutual-unfreeze): gagal-dulu 12 merah pada base, hijau setelah; mutual-unfreeze merah 2/2 dengan baris bug dikembalikan. 47 berkas payout (870/877/881/888/891/897/900/905/911/915/918/920, approval-log, core, gl, evidence): 613 lulus, 5 skip. Guard migrator non-superuser (edge-received-events-migration + migration-fk-force-rls): 20 lulus. Typecheck penuh root (turbo + tsc) exit 0. Test 918-review: helper unfreeze pindah dari mfa_challenge ke password (aturan baru).
+- Sisa: UI freeze-banner harus selalu meminta password (kini lewat 401 REAUTH); persetujuan utama `approvedBy` belum lewat grant (legend-xp8mc).
+- Biaya: session-usage total 5709k (subagent sonnet 2262k, opus 1609k, sesi ini); parallel-report: 32 menit, 14 spawn, puncak 4 bersamaan, rata-rata 1.05 berjalan per agent. Beads: legend-920 kartu dibuat (lihat bd list).
+
+## 2026-11-16: 923 payout deadlock catch-up dan bukti historis (legend-yd9u2)
+
+- Cabang `ghostex/923-payout-deadlock-lock-order`, basis tepat `d06e5a269`; sumber temuan `origin/qa/second-opinion-payout-920:docs/qa/second-opinion-payout-920.md`.
+- Investigasi dua Explore: worker mengunci batch A lalu B tanpa run, sementara unfreeze memegang run+B sebelum catch-up A. Kontrak item memastikan batch saudara satu payslip berada di run yang sama.
+- Worker kini mengunci semua run terkait urut ID sebelum batch urut ID; SQL unfreeze mengunci seluruh batch run urut ID sebelum target dan catch-up. Aturan pembayaran, pembekuan, bukti, grant, dan jurnal tetap. Migrasi sementara `0663_payout_backfill_unfreeze_lock_order` hanya mengganti fungsi unfreeze; snapshot skema identik selain ID rantai, tanpa tabel/FK baru. Registry turut mengakui migrasi basis 0662 yang sebelumnya belum tercatat.
+- Bukti gagal-dulu pada basis: 3 merah/1 hijau, termasuk PostgreSQL `40P01` nyata di barrier catch-up batch A; log `/tmp/payout923-red.log`. Test menggunakan SQL unfreeze dan worker asli, dengan kunci batch catch-up lewat pg manual; pemulihan GL layanan lengkap tetap diuji suite 920.
+- Setelah perbaikan: 4 berkas/73 test hijau, termasuk 7 kasus 923 (dua urutan transaksi, batch terurut, run sebelum batch di dua fase worker, beberapa run terurut, kontrol tenant lain), registry dan guard migrasi. Saldo net/fee serta posting/jurnal tetap, unfreeze tercatat sekali. Log `/tmp/payout923-green.log`.
+- Review independen Codex: tanpa temuan P0/P1/P2/P3 tersisa; celah kontrol multi-run/tenant ditutup dan impor helper fixture yang salah diperbaiki. Architect Claude menyusul sebelum gerbang rilis, sesuai brief karena kuota.
+- Pra-commit: ESLint tiga berkas TS berubah hijau; `db:generate` kosong; `heavy pnpm --filter @starter/api typecheck` sekali, exit 0. Prettier dan whitespace diperiksa sebelum commit. Gate semua payout lewat heavy dilakukan setelah commit terakhir; hasil akhir dicatat di komentar `legend-yd9u2` dan laporan handoff. Gate penuh/build/e2e milik merge train; tidak merge/deploy.
+- Subagent: total 6 unik (Explore 2, test-writer, implementer, reviewer independen, test-runner), puncak 4 bersamaan; token heavy test-writer untuk merah, lalu test-runner untuk hijau dan gate akhir, tidak bersamaan. `session-usage.py` tidak menemukan transkrip Codex; `parallel-report` hanya membaca Claude, sehingga biaya/token dan rata-rata native Codex tidak tersedia.
+
+## 2026-11-16: 924 Merge train batch77 payout (berjalan)
+
+- Basis `origin/milestone/m1` `650ef5c78`; integrasi `int/batch77`, hanya rantai `ghostex/923-payout-deadlock-lock-order` `d289f5255` (915/918/920/923; 911 sudah m1). Dua opsi antrean bentrok, `fix/e2e-m1-858` dikecualikan sesuai brief.
+- Rencana: selesaikan konflik dengan mempertahankan tambahan m1 dan payout, nomor ulang 0658–0663 menjadi 0425–0430 beserta snapshot/referensi, lengkapi grantor harness; fast scanner+payout, lint, typecheck, e2e, build, full test melalui heavy. Tanpa main/deploy/force push.
+- Kartu `legend-xfypk`; review khusus resolusi/rechain, bukan review ulang cabang. Hasil gate dan SHA pendaratan ditambahkan setelah bukti tersedia.
+
+### Batch77 berhenti pada gate awal (16 Nov 2026)
+
+- Migrasi 0658→0425 proposal_withdraw, 0659→0426 approval_log, 0660→0427 batch_disputes, 0661→0428 freeze_guards, 0662→0429 freeze_run_lock, 0663→0430 backfill_unfreeze_lock_order. Snapshot direplay dari 0424 m1 (469→472 tabel), bukan hanya mengganti prevId; review independen rechain dan union konflik bersih. `heavy pnpm db:generate` exit 0, No schema changes; `/tmp/batch77-db-generate.log`.
+- Harness test/e2e dan dev:prepare kini menghasilkan/provision login grantor terpisah `legend_grant_<hex>` anggota grup NOLOGIN `legend_payout_grantor`; .env.example/doctor sesuai. Focused regression merah-dulu lalu 16/16 hijau via heavy; `/tmp/batch77-grantor-{red,green}.log` dan `/tmp/batch77-dev-grantor-red.log`. Koneksi grantor nyata, dev prepare dan setup Docker penuh belum dibuktikan.
+- Gate cabang berhenti sebelum fast: ESLint 79 authored files gagal `apps/api/src/test/payroll-payout-920-frozen-gl.test.ts:155` (`Snapshot` unused; sudah ada di source d289f5255). Prettier 86 files gagal lima brief sumber: docs/briefs/915/{brief,design-7gghu,design-xatux}.md dan docs/briefs/918/{brief,design-l2zru}.md. Log `/tmp/batch77-eslint.log`, `/tmp/batch77-prettier.log`. Sesuai roles/merge-train.md, source dikembalikan ke CTO/pemilik cabang; tidak meneruskan gate berikut di atas lint merah.
+- Fast manifest runner 211 berkas (56 root/154 API/1 web), tetapi belum dieksekusi; lint penuh, typecheck, e2e, build, full run belum berjalan. Tidak ada kegagalan tes uang dari batch ini karena tes integrasi belum dimulai.
+- Belum mendarat/commit/push; m1 tetap 650ef5c78. Tidak ada kartu payout ditutup atau dikomentari sebagai mendarat. Worktree int/batch77 dipertahankan untuk perbaikan source, docs/merge-queue.md utama tidak diubah.
+- Subagent Codex 6 unik, puncak 4 aktif bersamaan (Explore cabang/migrasi/gate, implementer konflik, test-runner, reviewer; ada follow-up pada agent yang sama). session-usage tidak menemukan transkrip native Codex; parallel-report hanya sesi Claude, sehingga biaya/token/rata-rata native Codex tidak tersedia.
+
+### Batch77 dilanjutkan atas keputusan CTO
+
+- CTO mengizinkan merge train menghapus tipe Snapshot tak dipakai dan memformat lima brief sumber sebagai satu commit `chore: lint/format batch77 sources`, karena thread pemilik sudah ditutup. Tidak mengubah logika.
+- Integrasi/rechain/grantor harness dicatat sebagai merge checkpoint; gate dilanjutkan dari per-branch lint/format, fast scanner+payout/payroll/finance-exception, lint, typecheck, e2e, build, full run lewat heavy oleh satu test-runner. Kegagalan uang menghentikan pendaratan untuk laporan CTO.
+
+- Checkpoint integrasi `4afb37f57`, commit lint/format tepat enam berkas `3ef964f63`. Review delta lint bersih (hanya penghapusan type unused dan normalisasi Markdown); manifest runner211 diverifikasi lengkap/unik: 56 root,154 API,1 web. Gate dimulai kembali setelah lint sumber diperbaiki.
+
+- Per-branch ulang: Prettier86 authored dan ESLint79 authored hijau (5 detik), log `/tmp/batch77-{prettier,eslint}-resume.log`. Fast211 berjalan; dua kontrol setup `db-role-provisioning-baseline.test.mjs` gagal karena fixture env whitelist belum memberikan URL grantor wajib, sebelum assertion audit PUBLIC EXECUTE/pg_init_privs. Diagnosis reviewer mengonfirmasi fixture/CLI identik source d289f5255. Fixture diperbarui terarah tanpa melemahkan assertion; belum ada bukti kegagalan invariant uang.
+
+- Fast pertama exit1 dalam146 detik: root999 kasus,996 lulus/2 gagal/1 skip; hanya dua setup fixture baseline, web/API belum dimulai. Reviewer menyetujui penambahan login grantor acak per scratch DB dan cleanup role, seluruh assertion audit tetap. Targeted baseline dijalankan sebelum fast ulang.
+
+- `LEGEND_TEST_FILES=tests/db-role-provisioning-baseline.test.mjs heavy pnpm test` hijau13/13,28 detik termasuk setup/cleanup DB; `/tmp/batch77-baseline-green.log`. Prettier/ESLint patch dan review independen bersih. Fast211 ulang log `/tmp/batch77-fast2.log`. Gate tambahan `heavy pnpm test:setup` disisipkan sesudah typecheck karena harness setup berubah.
+
+- Fast2 root hijau:1010 kasus,1009 lulus/0 gagal/1 skip dalam143,7 detik; web1 berkas hijau. API154 berkas berjalan. Log `/tmp/batch77-fast2.log`; belum ada kegagalan uang pada checkpoint ini.
+
+- Fast2 checkpoint API:1784 tes lulus teramati pada66 berkas, tanpa gagal; mencakup frozen-source GL, jurnal/header tidak valid, recon overpaid/koreksi tanpa jurnal. Root/web tetap hijau. Gate sesudah fast belum dimulai.
+
+- Fast2 selesai exit1 dalam792 detik: root1009 lulus/1 skip, web29/29, API152 berkas lulus/1 gagal/1 skip;2732 tes lulus/1 gagal/19 skip/13 todo. Seluruh payout/payroll/finance-exception hijau. Satu kegagalan non-uang `device-registry.test.ts:413` F5 heartbeat time cap (`capped` false vs true); diagnosis jam dan riwayat flake dilakukan sebelum gate lanjut. Container disposable dibersihkan, belum lint/typecheck.
+
+- F5 diagnosis: service membatasi `last_seen_at` memakai waktu Node yang juga dikirim sebagai response `serverTime`, sedangkan test membandingkan terhadap PostgreSQL `now()` tanpa toleransi. Selisih jam kecil dapat memberi false failure. Test/service identik m1 dan source; kegagalan sama tercatat batch64b tetapi tidak ditemukan kartu flake tepat, jadi tidak memakai pengecualian full-run. Kartu `legend-g868k` dibuat untuk mengikat assertion ke `serverTime` operasi yang sama; perilaku produksi tetap. Targeted seluruh device registry3× lalu full tetap wajib.
+
+- Patch F5 test-only direview bersih: timestamp cap dibandingkan dengan response serverTime dari operasi yang sama, bukan PostgreSQL now; future+1jam, forward dan anti-mundur tetap diuji, tanpa toleransi. Seluruh device-registry39/39 hijau tiga run berturut,14 detik/run termasuk DB setup/cleanup, `/tmp/batch77-device-green-{1,2,3}.log`. Fast ditutup dengan rerun file gagal; tidak memakai pengecualian full-run. Lanjut `heavy pnpm run lint`, log `/tmp/batch77-lint.log`.
+
+- F5 fix commit `5ff839db0`; `heavy pnpm run lint` exit0 dalam50 detik,0 error/2 warning hook dependency lama di profit-share distributions-page:42 dan shareholders-page:68 (di luar diff). Log `/tmp/batch77-lint.log`. `heavy pnpm run typecheck` berjalan, `/tmp/batch77-typecheck.log`.
+
+- `heavy pnpm run typecheck` exit0 dalam54 detik: API/shared/web3/3 cache-miss sukses beserta root tsc. Log `/tmp/batch77-typecheck.log`. `heavy pnpm test:setup` mulai pada fresh variant dengan cleanup otomatis; e2e/build/full mengikuti setelah hijau.
+
+- `heavy pnpm test:setup` exit0 dalam35 detik: fresh/repeat setup, persistensi DB dan grantor check lulus; container/volume disposable dan temp variant dibersihkan, disk15GiB. `heavy pnpm test:e2e` mulai (build produksi+Playwright), `/tmp/batch77-e2e.log`.
+
+- `heavy pnpm test:e2e` exit0 dalam40 detik termasuk production build; Playwright18 passed/1 skipped (19 total),1 worker,25,5 detik; DB disposable dibersihkan. Log `/tmp/batch77-e2e.log`. `heavy pnpm build` berjalan, `/tmp/batch77-build.log`, lalu colima-up dan full test wajib.
+
+- `heavy pnpm build` exit0 dalam6 detik,2/2 tasks sukses (cache0); `/tmp/batch77-build.log`. colima-up dijalankan, lalu full run pertama `LEGEND_TEST_CONCURRENCY=2 heavy pnpm run test` (root→web→API) dimulai, `/tmp/batch77-full.log`; full belum selesai.
+- Audit residual setup menemukan Lighthouse CI harness (`scripts/ci/lighthouse.mjs`) belum memasok grantor saat menjalankan API production; di luar gate924/test/e2e/dev-prepare yang diminta, dicatat sebagai follow-up terpisah, tanpa perubahan kode/gerbang Lighthouse pada batch ini.
+
+- Full run pertama checkpoint: root3469 kasus,3468 lulus/0 gagal/1 skip dalam150,4 detik; web unit lulus, API penuh mulai. Tidak ada kegagalan full pada checkpoint ini.
+
+- Full web tepat3 berkas/92 tes hijau. Full API denominator1349 berkas (include src/**/*.test.ts), checkpoint2126 tes lulus teramati pada35 berkas, tanpa gagal; termasuk withdraw payout, closure hold, captured tender merge/move guard dan refund event replay tanpa double pay. Full masih berjalan.
+
+- Full API checkpoint3433 tes lulus teramati pada89/1349 berkas, tanpa gagal. Invariant payout tepat-sekali, bukti belum diunggah, persetujuan dua orang dan jurnal retur ikut hijau; full run pertama masih berjalan.
+
+- Full API checkpoint4193 tes lulus teramati pada126/1349 berkas, tanpa gagal; rapel tanpa double-pay dan receipt-required guards hijau. Full job masih aktif, kode tetap `5ff839db0`; checkpoint berikut hanya dokumentasi. Follow-up Lighthouse dicatat di `legend-kj50i` dan tetap terbuka.
+
+- Full API checkpoint6668 tes lulus teramati pada297/1349 berkas, tanpa gagal; payment retry/worker race tepat-sekali, cash handover proof guard, recovery subtotal/total dan paid-intent ikut hijau. Worktree int/batch77 dikunci sementara agar cleanup lain tidak menghapus gate aktif; dibuka hanya setelah landing/selesai.
+
+- Full API checkpoint9227 tes lulus teramati pada376/1349 berkas, tanpa gagal; referral refund/reject/replay tidak melebihi bonus asal, restore serentak tepat-sekali, PPh21 payer-balance/reference ikut hijau. Build meregenerasi routeTree.gen.ts dengan hanya4 baris kosong dihapus; reviewer memastikan seluruh baris berisi teks identik (tanpa perubahan route/tipe/perilaku), artefak disimpan. Remote m1 tetap650ef5c78 pada pengecekan17:51.
+
+- Full API checkpoint11183 tes lulus teramati pada464/1349 berkas, tanpa gagal. F5 device-registry patch juga telah lulus dalam full; refund DP serentak dibatasi sisa DP, gateway DP+line collision ditolak tanpa write, migrasi laporan pajak menjaga data. Full pertama masih aktif, disk sekitar15GiB.
+
+- Full API checkpoint13248 tes lulus teramati pada550/1349 berkas, tanpa gagal. QR/VA setelah paid tidak melunasi ganda dan funds-unresolved menahan tender; daily-summary sekali per hari dengan isolasi outlet/tenant hijau. Full pertama masih berjalan.
+
+- Full API checkpoint14650 tes lulus teramati pada645/1349 berkas, tanpa gagal. Suite data-key rotation (kasus10–25 detik) sudah lewat; AI action scope/disabled-module guards hijau. Full tetap sehat/berjalan, belum ada rerun penuh.
+
+- Full API checkpoint16308 tes lulus teramati pada769/1349 berkas, tanpa gagal. Tenant RLS/foreign-ID guards, POS receipt-gap, edge trusted-clock MFA/session dan QR expired+extra-paid diparkir tepat-sekali tanpa melunasi order ikut hijau. Full pertama tetap aktif.
+
+- Full API checkpoint17827 tes lulus teramati pada927/1349 berkas, tanpa gagal. PIN approval perangkat sekali-pakai termasuk paralel A/B/C, reschedule cek-waktu sesudah lock dan menjaga DP, storage ownership serta menu-import tenant/draft preservation ikut hijau. Full pertama masih aktif.
+
+- Full API checkpoint19389 tes lulus teramati pada1100/1349 berkas, tanpa gagal. ClamAV concurrency/TTL, edge promo clock proof, KDS auth/count-transition dan shareholder approval-policy preserving settings ikut hijau. Full pertama tetap berjalan.
+
+### Batch77 gate akhir hijau
+
+- Full pertama `LEGEND_TEST_CONCURRENCY=2 heavy pnpm run test` exit0 dalam5731 detik (95m31s): root3468 lulus/1 skip; web3 berkas/92 lulus; API1347 berkas lulus/2 skip,20854 tes lulus/46 skip/16 todo (20916 kasus). `/tmp/batch77-full.log`. Container/network PostgreSQL disposable dibersihkan; heavy tidak punya job aktif. Warning pg client.query concurrency/deprecation tidak menggagalkan suite. Tidak memakai pengecualian atau rerun penuh.
+- Gate selesai: fast scanner+payout/payroll/finance-exception dengan rerun berkas gagal (fixture grantor13/13; F5 device registry39/39×3), lint50 detik, typecheck54 detik, test:setup35 detik, e2e40 detik (18 pass/1 skip), build6 detik dan full5731 detik. Seluruh test uang hijau; tidak ada aturan pembayaran/jurnal yang dilonggarkan.
+- Perbaikan sumber enam berkas `3ef964f63`; fixture grantor audit `f183d952f`; assertion jam F5 test-only `5ff839db0`; integrasi/rechain/harness `4afb37f57`. Review konflik/rechain, harness dan seluruh delta test bersih. `db:generate` kosong. Artefak generator hanya4 blank-line deletion, tanpa semantik berubah.
+- Kuota observasi awal→akhir: Claude#1 5h0→0%/7d91→91%, #2 0→0%/93→93%, #3 0→0%/96→96%; Codex#2 5h0→0%/7d100→100%, #3 0→0%/92→92%, #4 0→0%/93→93%, #5 0→0%/89→89%; Codex#6 tanpa5h/7d99→99%, #7 tanpa5h/54→54%, #8 (sesi ini) tanpa5h/60→62%. Tidak ada kapasitas berbayar tambahan.
+- Subagent6 unik, puncak4 bersamaan, seluruhnya Codex; follow-up memakai agent yang sama. session-usage tidak menemukan transkrip Codex dan parallel-report hanya membaca Claude, jadi biaya/token serta rata-rata native Codex tidak tersedia.
+- Fetch akhir tetap `origin/milestone/m1`650ef5c78 dan ancestor HEAD; pendaratan memakai merge --no-ff int/batch77 ke milestone/m1 tanpa main/deploy/force push. Sesudah push: komentari enam kartu yang diminta, tutup sembilan kartu implementasi selesai beserta kartu merge/F5, pertahankan xp8mc/ijaxi serta follow-up Lighthouse kj50i terbuka; bersihkan hanya worktree/cabang int batch77 dan edit antrean checkout utama tanpa commit.

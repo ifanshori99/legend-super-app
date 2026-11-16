@@ -101,13 +101,13 @@ export type PayrollPayoutEvidenceReadDto = {
 
 /**
  * One manual step waiting for its second person (legend-t58lr): a resolve
- * (`failed` or `not_sent`) or the return of a paid item. `outcome` is null for
- * a return. `proposedAt` is the item's last update, which the first step set.
+ * (`failed` or `not_sent`), the return of a paid item, or an open correction or
+ * overpaid proposal. `outcome` is null for all but a resolve. `proposedAt` is the item's last update, which the first step set.
  */
 export type PayrollPayoutProposalDto = {
   itemId: string;
   employeeId: string;
-  kind: "resolve" | "return";
+  kind: "resolve" | "return" | "correction" | "overpaid";
   outcome: "failed" | "not_sent" | null;
   evidenceKey: string | null;
   note: string | null;
@@ -115,6 +115,11 @@ export type PayrollPayoutProposalDto = {
   /** user.name, only for a user with a role assignment in this tenant; else null. */
   proposedByName: string | null;
   proposedAt: string;
+  /**
+   * Only for `correction` and `overpaid` (legend-xatux): every item of the
+   * proposal, sorted; `itemId` is the first. A withdraw names exactly this set.
+   */
+  groupItemIds?: string[];
 };
 
 /** One proof key the fingerprint backfill left stuck, with its closure if any (905 card 3). */
@@ -149,6 +154,63 @@ export type PayoutProofClosureClosedDto = {
   gatePending: boolean;
 };
 
+/**
+ * One open "not me" claim on a batch (legend-l2zru). `reason` is the
+ * disputant's own words; the claimant's identity is shown only to the claimant.
+ */
+export type PayoutBatchDisputeDto = {
+  id: string;
+  /**
+   * The batch the claim was filed on. It is the batch to unfreeze; it differs
+   * from the batch shown when this one is frozen through a sibling (a retry
+   * batch of the same payslip).
+   */
+  batchId: string;
+  logId: string;
+  /** ISO datetime of the claim. */
+  createdAt: string;
+  /** Batch status when the batch was frozen. */
+  batchStatusAt: string;
+  reason: string | null;
+  /** True when the caller filed this claim. */
+  mine: boolean;
+};
+
+/** A batch is frozen while it has a dispute with no unfreeze row. */
+export type PayoutBatchFreezeDto = {
+  frozen: boolean;
+  /** Open disputes only; empty when not frozen. */
+  disputes: PayoutBatchDisputeDto[];
+};
+
+/**
+ * One payout step logged on the login of the caller (GET
+ * /payout-approval-log/:logId): the page the receipt notification links to.
+ * No amount, name or account number.
+ */
+export type PayoutApprovalLogDto = {
+  id: string;
+  batchId: string;
+  kind:
+    | "correction"
+    | "overpaid"
+    | "return"
+    | "posting_source"
+    | "closure"
+    | "resolve"
+    | "bank_confirm";
+  step: "propose" | "approve" | "record" | "confirm" | "withdraw";
+  itemCount: number;
+  /** Payroll period label of the batch, as in the receipt notification. */
+  period: string;
+  /** ISO datetime the step was logged. */
+  loggedAt: string;
+  /** True once the caller has already said "not me" for this step. */
+  disowned: boolean;
+  /** The batch is frozen now (by this claim or another). */
+  batchFrozen: boolean;
+};
+
 /** A disbursement batch for one payroll run. totalIdr is the sum of items. */
 export type PayrollDisbursementBatchDto = {
   id: string;
@@ -176,6 +238,7 @@ export type PayrollDisbursementBatchDto = {
   cancelReason: string | null;
   createdAt: string;
   updatedAt: string;
+  freeze: PayoutBatchFreezeDto;
   items: PayrollDisbursementItemDto[];
 };
 

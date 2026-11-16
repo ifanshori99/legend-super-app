@@ -27,6 +27,8 @@ const CODE_KEYS: Record<string, MessageKey> = {
   PAYOUT_RUN_ALREADY_PAID: "payrollPayout.error.runAlreadyPaid",
   PAYOUT_EXPORT_FILE_LOST: "payrollPayout.error.exportFileLost",
   PAYOUT_BATCH_ALREADY_OPEN: "payrollPayout.error.batchAlreadyOpen",
+  PAYOUT_BATCH_FROZEN: "payrollPayout.error.batchFrozen",
+  PAYOUT_UNFREEZE_REFUSED: "payrollPayout.error.unfreezeRefused",
   PAYOUT_SOURCE_MISMATCH: "payrollPayoutReview.error.sourceMismatch",
   PAYOUT_EVIDENCE_REJECTED: "payrollPayoutReview.error.evidenceRejected",
   PAYOUT_RESOLVE_SAME_PERSON: "payrollPayoutReview.error.resolveSamePerson",
@@ -37,6 +39,12 @@ const CODE_KEYS: Record<string, MessageKey> = {
   PAYOUT_RETURN_EVIDENCE_MISMATCH:
     "payrollPayoutReview.error.returnEvidenceMismatch",
   PAYOUT_RETURN_SAME_PERSON: "payrollPayoutReview.error.returnSamePerson",
+  PAYOUT_PROPOSAL_NOT_WITHDRAWABLE:
+    "payrollPayoutReview.error.proposalNotWithdrawable",
+  PAYOUT_PROOF_SPENT_BY_WITHDRAWN:
+    "payrollPayoutReview.error.proofSpentByWithdrawn",
+  PAYOUT_REQUESTER_CANNOT_WITHDRAW:
+    "payrollPayoutReview.error.requesterCannotWithdraw",
   NETWORK_ERROR: "payrollPayout.error.offline",
   FORBIDDEN: "payrollPayout.error.forbidden",
 };

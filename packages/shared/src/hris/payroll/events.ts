@@ -21,6 +21,9 @@ import { employeeIdSchema } from "../ids.ts";
 import {
   bankTransferFileIdSchema,
   employeeLoanIdSchema,
+  payoutApprovalLogIdSchema,
+  payoutBatchDisputeIdSchema,
+  payoutBatchUnfreezeIdSchema,
   payrollRunIdSchema,
   payslipIdSchema,
   reimbursementCategoryIdSchema,
@@ -159,6 +162,41 @@ export const reimbursementPaid = defineDomainEvent({
     }),
 });
 
+/**
+ * A payout step was attested under a one-time grant (legend-7gghu): the person
+ * behind the step hears about it outside the session that made it. The payload
+ * is the log row id ONLY: the recipient, the kind, the step, the batch and the
+ * item count are re-read from the append-only log, so a forged event cannot
+ * name another recipient. No amount, name or account (the batch total is
+ * sealed). `aggregateId` is the log row.
+ */
+export const payoutStepAttested = defineDomainEvent({
+  name: "payout.step_attested",
+  payload: z.strictObject({ logId: payoutApprovalLogIdSchema }),
+});
+
+/**
+ * Someone said "not me" about a payout step and froze the batch
+ * (legend-l2zru). The payload is the dispute row id ONLY: the batch, the
+ * disputant and the status at that moment are re-read from the append-only
+ * dispute table, so a forged event cannot name a recipient. No amount, name or
+ * account. `aggregateId` is the dispute row.
+ */
+export const payoutBatchDisputed = defineDomainEvent({
+  name: "payout.batch_disputed",
+  payload: z.strictObject({ disputeId: payoutBatchDisputeIdSchema }),
+});
+
+/**
+ * An owner or finance user lifted a batch freeze (legend-l2zru). The payload
+ * is the unfreeze row id ONLY, same rule as `payout.batch_disputed`.
+ * `aggregateId` is the unfreeze row.
+ */
+export const payoutBatchUnfrozen = defineDomainEvent({
+  name: "payout.batch_unfrozen",
+  payload: z.strictObject({ unfreezeId: payoutBatchUnfreezeIdSchema }),
+});
+
 export const payrollDomainEvents = [
   payrollLocked,
   payrollPaid,
@@ -166,6 +204,9 @@ export const payrollDomainEvents = [
   payslipCreated,
   employeeLoanDisbursed,
   reimbursementPaid,
+  payoutStepAttested,
+  payoutBatchDisputed,
+  payoutBatchUnfrozen,
 ] as const;
 
 export const payrollEventNames = payrollDomainEvents.map((event) => event.name);

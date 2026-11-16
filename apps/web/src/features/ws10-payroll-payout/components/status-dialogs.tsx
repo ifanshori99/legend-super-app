@@ -1,7 +1,8 @@
 // Dialogs of the Status tab: record a manual transfer result (paid with a bank
 // reference; failed / not sent with a proof photo and a note, uploaded first),
 // record funds that came back after a paid transfer (proof photo and note),
-// confirm a cash hand-over, and read one item's detail. Money results ask for
+// take back a first-person correction or overpaid proposal, confirm a cash
+// hand-over, and read one item's detail. Money results ask for
 // a step-up when the server says so; the server's refusal is always shown in
 // the dialog.
 import * as React from "react";
@@ -37,6 +38,7 @@ import {
   useResolveBatch,
   useReturnBatch,
   useUploadPayoutEvidence,
+  useWithdrawProposal,
 } from "../hooks";
 import { itemStatusMeta } from "../lib";
 import { VerifyPanel, useStepUp } from "./approval-verify";
@@ -327,9 +329,13 @@ function ProposalPanel({
   const outcomeKey =
     proposal.kind === "return"
       ? "payrollPayoutReview.result.proposal.outcomeReturn"
-      : proposal.outcome === "not_sent"
-        ? "payrollPayoutReview.result.proposal.outcomeNotSent"
-        : "payrollPayoutReview.result.proposal.outcomeFailed";
+      : proposal.kind === "correction"
+        ? "payrollPayoutReview.result.proposal.outcomeCorrection"
+        : proposal.kind === "overpaid"
+          ? "payrollPayoutReview.result.proposal.outcomeOverpaid"
+          : proposal.outcome === "not_sent"
+            ? "payrollPayoutReview.result.proposal.outcomeNotSent"
+            : "payrollPayoutReview.result.proposal.outcomeFailed";
   const evidenceKey = proposal.evidenceKey;
   const view = () => {
     if (!evidenceKey || open.isPending) return;
@@ -903,6 +909,144 @@ export function ReturnDialog({
                 disabled={waiting}
               >
                 {t("payrollPayoutReview.result.returnSubmit")}
+              </Button>
+            </DialogFooter>
+          </form>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * Takes back the first person's correction or overpaid proposal. It pays
+ * nothing and changes no item; the proof is spent, so a new proposal needs a
+ * new one. Every item of the proposal's group goes together. Asks the
+ * step-up when the server says so.
+ */
+export function WithdrawProposalDialog({
+  batchId,
+  item,
+  person,
+  proposal,
+  mine,
+  onClose,
+}: {
+  batchId: string;
+  item: PayrollDisbursementItemDto;
+  person: Person;
+  /** A correction or overpaid proposal; `groupItemIds` all go together. */
+  proposal: PayrollPayoutProposalDto;
+  /** True when the signed-in user made that proposal. */
+  mine: boolean;
+  onClose: () => void;
+}) {
+  const t = useT();
+  const toast = useToast();
+  const withdraw = useWithdrawProposal();
+  const stepUp = useStepUp({ acceptsPassword: true });
+  const [error, setError] = React.useState<string | null>(null);
+  const kind = proposal.kind === "overpaid" ? "overpaid" : "correction";
+  const groupItemIds = proposal.groupItemIds ?? [proposal.itemId];
+  const count = groupItemIds.length;
+
+  const submit = (password?: string) => {
+    if (withdraw.isPending) return;
+    setError(null);
+    withdraw.mutate(
+      { batchId, kind, itemIds: groupItemIds, password },
+      {
+        onSuccess: () => {
+          toast({
+            title: t("payrollPayoutReview.result.withdrawDone"),
+            tone: "success",
+          });
+          onClose();
+        },
+        onError: (failure) => {
+          if (stepUp.capture(failure)) return;
+          setError(reviewErrorMessage(failure, t));
+        },
+      },
+    );
+  };
+
+  const fields = (
+    <div className="grid gap-3">
+      <p
+        data-testid="payout-withdraw-warning"
+        className="rounded-container bg-warning-subtle p-3 text-sm text-foreground"
+      >
+        {t("payrollPayoutReview.result.withdrawWarning")}
+      </p>
+      {count > 1 && (
+        <p
+          data-testid="payout-withdraw-group"
+          className="text-sm text-muted-foreground"
+        >
+          {t("payrollPayoutReview.result.withdrawGroup", { count })}
+        </p>
+      )}
+      <ProposalPanel batchId={batchId} proposal={proposal} mine={mine} />
+    </div>
+  );
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent data-testid="payout-withdraw-dialog">
+        <DialogHeader>
+          <DialogTitle>
+            {t("payrollPayoutReview.result.withdrawTitle")}
+          </DialogTitle>
+          <DialogDescription>
+            {t("payrollPayoutReview.result.withdrawDescription", {
+              name: person.name,
+              amount: formatRupiah(item.amountIdr),
+            })}
+          </DialogDescription>
+        </DialogHeader>
+        {stepUp.active ? (
+          <>
+            {fields}
+            <VerifyPanel
+              key={stepUp.round}
+              needs={stepUp.needs}
+              busy={withdraw.isPending}
+              error={error}
+              onVerified={submit}
+              onCancel={onClose}
+            />
+          </>
+        ) : (
+          <form
+            noValidate
+            className="grid gap-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              submit();
+            }}
+          >
+            {fields}
+            {error && (
+              <p role="alert" className="text-sm font-medium text-danger">
+                {error}
+              </p>
+            )}
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                className="min-h-11"
+                onClick={onClose}
+              >
+                {t("payrollPayoutReview.result.cancel")}
+              </Button>
+              <Button
+                type="submit"
+                className="min-h-11"
+                loading={withdraw.isPending}
+              >
+                {t("payrollPayoutReview.result.withdrawSubmit")}
               </Button>
             </DialogFooter>
           </form>

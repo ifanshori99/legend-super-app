@@ -227,18 +227,22 @@ export type PayoutReauthMethod = "mfa_challenge" | "password";
  * - wrong: 403 REAUTH_PASSWORD_INVALID
  * - five wrong in 15 minutes: 429 REAUTH_PASSWORD_LOCKED
  * Returns the branch that passed: "mfa_challenge" or "password".
+ * `passwordOnly` skips the challenge shortcut: the account password is always
+ * verified and the branch is always "password" (the "not me" disown, whose
+ * grant accepts no other method; legend-l2zru).
  */
 export async function assertPayoutReauth(input: {
   readonly userId: string;
   readonly sessionId: string;
   readonly password: string | undefined;
   readonly now?: Date;
+  readonly passwordOnly?: boolean;
 }): Promise<PayoutReauthMethod> {
   const row = await loadSessionRow(input.sessionId);
   if (!row || row.userId !== input.userId)
     throw new HttpError(401, "UNAUTHORIZED", "Sesi berakhir. Masuk lagi.");
   const nowMs = (input.now ?? new Date()).getTime();
-  if (row.mfaChallengeVerifiedAt !== null) {
+  if (!input.passwordOnly && row.mfaChallengeVerifiedAt !== null) {
     const ageMs = nowMs - row.mfaChallengeVerifiedAt.getTime();
     if (ageMs >= 0 && ageMs <= PAYOUT_STEP_UP_MAX_AGE_MINUTES * 60_000)
       return "mfa_challenge";

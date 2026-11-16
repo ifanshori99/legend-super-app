@@ -402,13 +402,17 @@ describe("F5 heartbeat and offline detection", () => {
     });
     expect((await lastSeen(device.id))?.getTime()).toBe(first!.getTime());
 
-    // A heartbeat claiming the future is capped at the server clock.
-    await heartbeat(token, {
+    // Compare against this heartbeat's application clock, also returned to the
+    // device; PostgreSQL's clock may differ from the Node process clock.
+    const future = await heartbeat(token, {
       occurredAt: new Date(Date.now() + hourMs).toISOString(),
     });
+    expect(future.status).toBe(200);
+    const serverTime = new Date(future.body.data.serverTime);
+    expect(Number.isNaN(serverTime.getTime())).toBe(false);
     const capped = await asOwner(
-      "SELECT last_seen_at <= now() AS capped, last_seen_at >= $2 AS forward FROM devices WHERE id = $1",
-      [device.id, first],
+      "SELECT last_seen_at <= $3 AS capped, last_seen_at >= $2 AS forward FROM devices WHERE id = $1",
+      [device.id, first, serverTime],
     );
     expect(capped.rows[0]).toEqual({ capped: true, forward: true });
   });

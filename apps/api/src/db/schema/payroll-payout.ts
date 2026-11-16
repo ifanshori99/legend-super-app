@@ -915,6 +915,7 @@ export const payrollDisbursementItems = pgTable(
 export const PAYOUT_OVERPAID_PROPOSAL_STATUSES = [
   "proposed",
   "recorded",
+  "withdrawn",
 ] as const;
 export type PayoutOverpaidProposalStatus =
   (typeof PAYOUT_OVERPAID_PROPOSAL_STATUSES)[number];
@@ -923,9 +924,11 @@ export type PayoutOverpaidProposalStatus =
  * Two-person record of a transfer that turned out paid twice (legend-v6gtp,
  * migration 0391). Step one (a non-requester) proposes with proof and note and
  * the item stays `failed`; step two (a DIFFERENT person) records the overpaid
- * item and the proposal becomes `recorded`. One proposal per item, ever. Never
- * deleted; the database guard allows only a re-proposal by the same person and
- * the move to `recorded` by someone else.
+ * item and the proposal becomes `recorded`. One live (non-withdrawn) proposal
+ * per item. Never deleted; a proposal can end as `withdrawn` (migration 0425,
+ * the payout role only, the item is untouched). The database guard allows only
+ * a re-proposal by the same person, the move to `recorded` by someone else and
+ * the move to `withdrawn`.
  */
 export const payrollPayoutOverpaidProposals = pgTable(
   "payroll_payout_overpaid_proposals",
@@ -936,7 +939,7 @@ export const payrollPayoutOverpaidProposals = pgTable(
     itemId: uuid("item_id").notNull(),
     evidenceKey: varchar("evidence_key", { length: 500 }).notNull(),
     note: varchar("note", { length: 500 }).notNull(),
-    status: varchar("status", { length: 8 })
+    status: varchar("status", { length: 9 })
       .$type<PayoutOverpaidProposalStatus>()
       .notNull()
       .default("proposed"),
@@ -946,16 +949,19 @@ export const payrollPayoutOverpaidProposals = pgTable(
       .defaultNow(),
     recordedBy: actor("recorded_by"),
     recordedAt: timestamp("recorded_at", { withTimezone: true }),
+    // A withdrawn proposal stays as a row (migration 0425); only the payout role
+    // writes it, through the withdraw functions.
+    withdrawnBy: actor("withdrawn_by"),
+    withdrawnAt: timestamp("withdrawn_at", { withTimezone: true }),
   },
   (table) => [
     unique("payroll_payout_overpaid_proposals_tenant_id_key").on(
       table.tenantId,
       table.id,
     ),
-    unique("payroll_payout_overpaid_proposals_item_key").on(
-      table.tenantId,
-      table.itemId,
-    ),
+    uniqueIndex("payroll_payout_overpaid_proposals_item_live_key")
+      .on(table.tenantId, table.itemId)
+      .where(sql`${table.status} <> 'withdrawn'`),
     index("payroll_payout_overpaid_proposals_tenant_batch_idx").on(
       table.tenantId,
       table.batchId,
@@ -982,7 +988,7 @@ export const payrollPayoutOverpaidProposals = pgTable(
     ),
     check(
       "payroll_payout_overpaid_proposals_recorded_check",
-      sql`(${table.status} = 'proposed' AND ${table.recordedBy} IS NULL AND ${table.recordedAt} IS NULL) OR (${table.status} = 'recorded' AND ${table.recordedBy} IS NOT NULL AND ${table.recordedAt} IS NOT NULL AND ${table.recordedBy} <> ${table.proposedBy})`,
+      sql`(${table.status} = 'proposed' AND ${table.recordedBy} IS NULL AND ${table.recordedAt} IS NULL AND ${table.withdrawnBy} IS NULL AND ${table.withdrawnAt} IS NULL) OR (${table.status} = 'recorded' AND ${table.recordedBy} IS NOT NULL AND ${table.recordedAt} IS NOT NULL AND ${table.recordedBy} <> ${table.proposedBy} AND ${table.withdrawnBy} IS NULL AND ${table.withdrawnAt} IS NULL) OR (${table.status} = 'withdrawn' AND ${table.recordedBy} IS NULL AND ${table.recordedAt} IS NULL AND ${table.withdrawnBy} IS NOT NULL AND ${table.withdrawnAt} IS NOT NULL)`,
     ),
   ],
 );
@@ -992,6 +998,7 @@ export const payrollPayoutOverpaidProposals = pgTable(
 export const PAYOUT_FAILED_CORRECTION_STATUSES = [
   "proposed",
   "corrected",
+  "withdrawn",
 ] as const;
 export type PayoutFailedCorrectionStatus =
   (typeof PAYOUT_FAILED_CORRECTION_STATUSES)[number];
@@ -1006,7 +1013,9 @@ export type PayoutFailedCorrectionStatus =
  * that move only for a `corrected` row) and settles it once. The proof is bound
  * to ONE operation: all items of one request share an `operation_id` (the id of
  * the first row), and the hashes of the proof are unique per tenant over those
- * first rows. Never deleted.
+ * first rows. Never deleted; a proposal can end as `withdrawn` (migration 0425,
+ * the payout role only, the item is untouched) and its proof is spent for good.
+ * One live (non-withdrawn) row per item.
  */
 export const payrollPayoutFailedCorrections = pgTable(
   "payroll_payout_failed_corrections",
@@ -1032,16 +1041,19 @@ export const payrollPayoutFailedCorrections = pgTable(
       .defaultNow(),
     correctedBy: actor("corrected_by"),
     correctedAt: timestamp("corrected_at", { withTimezone: true }),
+    // A withdrawn proposal stays as a row (migration 0425); only the payout role
+    // writes it, through the withdraw functions.
+    withdrawnBy: actor("withdrawn_by"),
+    withdrawnAt: timestamp("withdrawn_at", { withTimezone: true }),
   },
   (table) => [
     unique("payroll_payout_failed_corrections_tenant_id_key").on(
       table.tenantId,
       table.id,
     ),
-    unique("payroll_payout_failed_corrections_item_key").on(
-      table.tenantId,
-      table.itemId,
-    ),
+    uniqueIndex("payroll_payout_failed_corrections_item_live_key")
+      .on(table.tenantId, table.itemId)
+      .where(sql`${table.status} <> 'withdrawn'`),
     uniqueIndex("payroll_payout_failed_corrections_evidence_key")
       .on(table.tenantId, table.evidenceKey)
       .where(sql`${table.operationId} = ${table.id}`),
@@ -1089,7 +1101,7 @@ export const payrollPayoutFailedCorrections = pgTable(
     ),
     check(
       "payroll_payout_failed_corrections_corrected_check",
-      sql`(${table.status} = 'proposed' AND ${table.correctedBy} IS NULL AND ${table.correctedAt} IS NULL) OR (${table.status} = 'corrected' AND ${table.correctedBy} IS NOT NULL AND ${table.correctedAt} IS NOT NULL AND ${table.correctedBy} <> ${table.proposedBy})`,
+      sql`(${table.status} = 'proposed' AND ${table.correctedBy} IS NULL AND ${table.correctedAt} IS NULL AND ${table.withdrawnBy} IS NULL AND ${table.withdrawnAt} IS NULL) OR (${table.status} = 'corrected' AND ${table.correctedBy} IS NOT NULL AND ${table.correctedAt} IS NOT NULL AND ${table.correctedBy} <> ${table.proposedBy} AND ${table.withdrawnBy} IS NULL AND ${table.withdrawnAt} IS NULL) OR (${table.status} = 'withdrawn' AND ${table.correctedBy} IS NULL AND ${table.correctedAt} IS NULL AND ${table.withdrawnBy} IS NOT NULL AND ${table.withdrawnAt} IS NOT NULL)`,
     ),
   ],
 );
@@ -1337,8 +1349,20 @@ export const PAYOUT_ATTESTATION_STEPS = [
   "approve",
   "record",
   "confirm",
+  "withdraw",
 ] as const;
 export type PayoutAttestationStep = (typeof PAYOUT_ATTESTATION_STEPS)[number];
+
+/**
+ * Grant kinds: the attestation kinds plus `disown` and `unfreeze` (migration
+ * 0427, legend-l2zru), which attest nothing: they write the dispute tables.
+ */
+export const PAYOUT_GRANT_KINDS = [
+  ...PAYOUT_ATTESTATION_KINDS,
+  "disown",
+  "unfreeze",
+] as const;
+export type PayoutGrantKind = (typeof PAYOUT_GRANT_KINDS)[number];
 
 export const PAYOUT_GRANT_METHODS = ["password", "mfa_challenge"] as const;
 export type PayoutGrantMethod = (typeof PAYOUT_GRANT_METHODS)[number];
@@ -1357,9 +1381,7 @@ export const payrollPayoutGrants = pgTable(
     id: uuid("id").defaultRandom().primaryKey(),
     tenantId: tenantIdColumn(() => tenants.id).notNull(),
     secretSha256: varchar("secret_sha256", { length: 64 }).notNull(),
-    kind: varchar("kind", { length: 16 })
-      .$type<PayoutAttestationKind>()
-      .notNull(),
+    kind: varchar("kind", { length: 16 }).$type<PayoutGrantKind>().notNull(),
     step: varchar("step", { length: 8 })
       .$type<PayoutAttestationStep>()
       .notNull(),
@@ -1405,11 +1427,11 @@ export const payrollPayoutGrants = pgTable(
     }),
     check(
       "payroll_payout_grants_kind_check",
-      sql`${table.kind} IN (${inList(PAYOUT_ATTESTATION_KINDS)})`,
+      sql`${table.kind} IN (${inList(PAYOUT_GRANT_KINDS)})`,
     ),
     check(
       "payroll_payout_grants_detail_check",
-      sql`(${table.kind} = 'resolve' AND ${table.detail} IN ('failed', 'not_sent')) OR (${table.kind} = 'bank_confirm' AND ${table.detail} = 'succeeded') OR (${table.kind} NOT IN ('resolve', 'bank_confirm') AND ${table.detail} IS NULL)`,
+      sql`(${table.kind} = 'resolve' AND ${table.detail} IN ('failed', 'not_sent')) OR (${table.kind} = 'bank_confirm' AND ${table.detail} = 'succeeded') OR (${table.kind} IN ('disown', 'unfreeze') AND ${table.detail} ~ '^[0-9a-f]{64}$') OR (${table.kind} NOT IN ('resolve', 'bank_confirm', 'disown', 'unfreeze') AND ${table.detail} IS NULL)`,
     ),
     check(
       "payroll_payout_grants_step_check",
@@ -1539,6 +1561,209 @@ export const payrollPayoutAttestations = pgTable(
     check(
       "payroll_payout_attestations_step_check",
       sql`${table.step} IN (${inList(PAYOUT_ATTESTATION_STEPS)})`,
+    ),
+  ],
+);
+
+/**
+ * Append-only receipt of every attested payout step (migration 0426,
+ * legend-7gghu): one row per grant, written by `app.payout_attest` only (owned
+ * by the migrator, INSERT for the payout role, SELECT for the app role; UPDATE,
+ * DELETE and TRUNCATE are refused by triggers). The actor and session come from
+ * the grant row. No amount: the batch total is sealed. The worker sweeps it
+ * into the `payout.step_attested` notification to the actor.
+ */
+export const payrollPayoutApprovalLog = pgTable(
+  "payroll_payout_approval_log",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    grantId: uuid("grant_id").notNull(),
+    attestationId: uuid("attestation_id").notNull(),
+    kind: varchar("kind", { length: 16 })
+      .$type<PayoutAttestationKind>()
+      .notNull(),
+    step: varchar("step", { length: 8 })
+      .$type<PayoutAttestationStep>()
+      .notNull(),
+    operationId: uuid("operation_id").notNull(),
+    batchId: uuid("batch_id").notNull(),
+    itemCount: integer("item_count").notNull(),
+    actor: actor("actor").notNull(),
+    sessionId: text("session_id").notNull(),
+    loggedAt: timestamp("logged_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    txid: bigint("txid", { mode: "number" })
+      .notNull()
+      .default(sql`pg_catalog.txid_current()`),
+  },
+  (table) => [
+    unique("payroll_payout_approval_log_tenant_id_key").on(
+      table.tenantId,
+      table.id,
+    ),
+    unique("payroll_payout_approval_log_grant_key").on(
+      table.tenantId,
+      table.grantId,
+    ),
+    index("payroll_payout_approval_log_tenant_logged_idx").on(
+      table.tenantId,
+      table.loggedAt,
+    ),
+    foreignKey({
+      name: "payroll_payout_approval_log_grant_fk",
+      columns: [table.tenantId, table.grantId],
+      foreignColumns: [payrollPayoutGrants.tenantId, payrollPayoutGrants.id],
+    }),
+    foreignKey({
+      name: "payroll_payout_approval_log_batch_fk",
+      columns: [table.tenantId, table.batchId],
+      foreignColumns: [
+        payrollDisbursementBatches.tenantId,
+        payrollDisbursementBatches.id,
+      ],
+    }),
+  ],
+);
+
+/**
+ * "Not me" disputes (migration 0427, legend-l2zru): append-only. A person who
+ * finds an approval in their name that they did not make disowns that log row
+ * (`app.payout_approval_disown`); the batch is frozen while a dispute has no
+ * row in `payroll_payout_batch_unfreezes`. Written by the payout role only;
+ * the app role reads. UPDATE, DELETE and TRUNCATE are refused by triggers
+ * (PAYOUT-80). No amount.
+ */
+export const payrollPayoutBatchDisputes = pgTable(
+  "payroll_payout_batch_disputes",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    batchId: uuid("batch_id").notNull(),
+    logId: uuid("log_id").notNull(),
+    grantId: uuid("grant_id").notNull(),
+    actor: actor("actor").notNull(),
+    sessionId: text("session_id").notNull(),
+    reason: varchar("reason", { length: 500 }),
+    /** Status of the batch at the moment of the dispute. */
+    batchStatusAt: varchar("batch_status_at", { length: 16 })
+      .$type<PayoutBatchStatus>()
+      .notNull(),
+    createdAt: createdAt(),
+    txid: bigint("txid", { mode: "number" })
+      .notNull()
+      .default(sql`pg_catalog.txid_current()`),
+  },
+  (table) => [
+    unique("payroll_payout_batch_disputes_tenant_id_key").on(
+      table.tenantId,
+      table.id,
+    ),
+    unique("payroll_payout_batch_disputes_tenant_id_batch_key").on(
+      table.tenantId,
+      table.id,
+      table.batchId,
+    ),
+    unique("payroll_payout_batch_disputes_grant_key").on(
+      table.tenantId,
+      table.grantId,
+    ),
+    index("payroll_payout_batch_disputes_tenant_batch_idx").on(
+      table.tenantId,
+      table.batchId,
+    ),
+    // Not unique: after an unfreeze the same log row may be disowned again; one
+    // OPEN dispute per log row is kept by `app.payout_approval_disown`.
+    index("payroll_payout_batch_disputes_tenant_log_idx").on(
+      table.tenantId,
+      table.logId,
+    ),
+    foreignKey({
+      name: "payroll_payout_batch_disputes_batch_fk",
+      columns: [table.tenantId, table.batchId],
+      foreignColumns: [
+        payrollDisbursementBatches.tenantId,
+        payrollDisbursementBatches.id,
+      ],
+    }),
+    foreignKey({
+      name: "payroll_payout_batch_disputes_log_fk",
+      columns: [table.tenantId, table.logId],
+      foreignColumns: [
+        payrollPayoutApprovalLog.tenantId,
+        payrollPayoutApprovalLog.id,
+      ],
+    }),
+    foreignKey({
+      name: "payroll_payout_batch_disputes_grant_fk",
+      columns: [table.tenantId, table.grantId],
+      foreignColumns: [payrollPayoutGrants.tenantId, payrollPayoutGrants.id],
+    }),
+  ],
+);
+
+/**
+ * Release of a dispute (migration 0427): one row per dispute, written by
+ * `app.payout_batch_unfreeze` (payout role) for an owner or finance person who
+ * took no part in the batch. Append-only like the disputes (PAYOUT-80). The
+ * reason (10 to 500 characters) is the result of finance's check at the bank.
+ */
+export const payrollPayoutBatchUnfreezes = pgTable(
+  "payroll_payout_batch_unfreezes",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    batchId: uuid("batch_id").notNull(),
+    disputeId: uuid("dispute_id").notNull(),
+    grantId: uuid("grant_id").notNull(),
+    actor: actor("actor").notNull(),
+    sessionId: text("session_id").notNull(),
+    roleTemplate: varchar("role_template", { length: 8 }).notNull(),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    createdAt: createdAt(),
+    txid: bigint("txid", { mode: "number" })
+      .notNull()
+      .default(sql`pg_catalog.txid_current()`),
+  },
+  (table) => [
+    unique("payroll_payout_batch_unfreezes_dispute_key").on(
+      table.tenantId,
+      table.disputeId,
+    ),
+    index("payroll_payout_batch_unfreezes_tenant_batch_idx").on(
+      table.tenantId,
+      table.batchId,
+    ),
+    foreignKey({
+      name: "payroll_payout_batch_unfreezes_dispute_fk",
+      columns: [table.tenantId, table.disputeId, table.batchId],
+      foreignColumns: [
+        payrollPayoutBatchDisputes.tenantId,
+        payrollPayoutBatchDisputes.id,
+        payrollPayoutBatchDisputes.batchId,
+      ],
+    }),
+    foreignKey({
+      name: "payroll_payout_batch_unfreezes_batch_fk",
+      columns: [table.tenantId, table.batchId],
+      foreignColumns: [
+        payrollDisbursementBatches.tenantId,
+        payrollDisbursementBatches.id,
+      ],
+    }),
+    foreignKey({
+      name: "payroll_payout_batch_unfreezes_grant_fk",
+      columns: [table.tenantId, table.grantId],
+      foreignColumns: [payrollPayoutGrants.tenantId, payrollPayoutGrants.id],
+    }),
+    check(
+      "payroll_payout_batch_unfreezes_role_check",
+      sql`${table.roleTemplate} IN ('owner', 'finance')`,
+    ),
+    check(
+      "payroll_payout_batch_unfreezes_reason_check",
+      sql`pg_catalog.char_length(pg_catalog.btrim(${table.reason})) >= 10`,
     ),
   ],
 );

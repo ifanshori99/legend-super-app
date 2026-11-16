@@ -365,8 +365,9 @@ export async function listStuckProofs(
  * Lock order (legend-p2v4s F7): run, batch, items, proof advisory locks, rows.
  * The confirm and resolve paths hold their batch row FOR UPDATE and then wait
  * for the hash locks; a row that points at the batch (the proof record, a
- * binding, a stuck row) needs a key share lock on it. So every backfill path
- * takes the batch rows (sorted by id) BEFORE the hash locks, never after.
+ * binding, a stuck row) needs a key share lock on it. Every backfill path takes
+ * all related runs (sorted by id), then batches (sorted by id), BEFORE the hash
+ * locks. The run locks also serialize historical binding with unfreeze catch-up.
  * Re-entrant inside one transaction.
  */
 export async function lockBatchesBeforeHashes(
@@ -376,6 +377,18 @@ export async function lockBatchesBeforeHashes(
 ): Promise<void> {
   const ids = [...new Set(batchIds)].sort();
   if (ids.length === 0) return;
+  await tx.execute(sql`
+    SELECT r.id FROM payroll_runs r
+     WHERE r.tenant_id = ${tenantId}::uuid
+       AND EXISTS (
+         SELECT 1 FROM payroll_disbursement_batches b
+          WHERE b.tenant_id = r.tenant_id AND b.payroll_run_id = r.id
+            AND b.id IN (${sql.join(
+              ids.map((id) => sql`${id}::uuid`),
+              sql`, `,
+            )}))
+     ORDER BY r.id
+       FOR UPDATE`);
   await tx.execute(sql`
     SELECT id FROM payroll_disbursement_batches
      WHERE tenant_id = ${tenantId}::uuid
@@ -748,7 +761,7 @@ async function bindKey(
   now: Date,
 ): Promise<HistoricalBindOutcome | "shared_key"> {
   const key = group[0]!.evidenceKey;
-  // Batch rows first (sorted), then the hash locks of the binder, then rows.
+  // Runs first (sorted), then batches (sorted), binder hash locks, and rows.
   await lockBatchesBeforeHashes(
     tx,
     tenantId,

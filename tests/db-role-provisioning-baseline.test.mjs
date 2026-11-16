@@ -68,6 +68,7 @@ test("legend-2ywn role audit refuses PUBLIC EXECUTE on administrative built-ins 
   const adminUrl = withDatabase(shared, database).toString();
   const appName = `legend_runtime_${hex(8)}`;
   const workerName = `legend_worker_${hex(8)}`;
+  const grantorName = `legend_grant_${hex(8)}`;
   const appUrl = login(adminUrl, appName);
   const workerUrl = login(adminUrl, workerName);
   const quiet = (url) => {
@@ -81,7 +82,7 @@ test("legend-2ywn role audit refuses PUBLIC EXECUTE on administrative built-ins 
   t.after(async () => {
     await admin.end();
     await cluster.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
-    for (const role of [appName, workerName])
+    for (const role of [appName, workerName, grantorName])
       await cluster.query(`DROP ROLE IF EXISTS "${role}"`);
     await cluster.end();
   });
@@ -102,6 +103,7 @@ test("legend-2ywn role audit refuses PUBLIC EXECUTE on administrative built-ins 
     MIGRATION_DATABASE_URL: adminUrl,
     APP_DATABASE_URL: appUrl,
     WORKER_DATABASE_URL: workerUrl,
+    PAYOUT_GRANTOR_DATABASE_URL: login(adminUrl, grantorName),
   };
   const provisioned = runJob(env);
   assert.equal(provisioned.status, 0, provisioned.stderr);
@@ -280,10 +282,12 @@ test("legend-2ywn an empty pg_init_privs baseline fails closed", async (t) => {
   const adminUrl = withDatabase(shared, database).toString();
   const appName = `legend_runtime_${hex(8)}`;
   const workerName = `legend_worker_${hex(8)}`;
+  const grantorName = `legend_grant_${hex(8)}`;
   const env = {
     MIGRATION_DATABASE_URL: adminUrl,
     APP_DATABASE_URL: login(adminUrl, appName),
     WORKER_DATABASE_URL: login(adminUrl, workerName),
+    PAYOUT_GRANTOR_DATABASE_URL: login(adminUrl, grantorName),
   };
   const quiet = (url) => {
     const pool = new Pool({ connectionString: url, max: 1 });
@@ -296,7 +300,7 @@ test("legend-2ywn an empty pg_init_privs baseline fails closed", async (t) => {
   t.after(async () => {
     await admin.end();
     await cluster.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
-    for (const role of [appName, workerName])
+    for (const role of [appName, workerName, grantorName])
       await cluster.query(`DROP ROLE IF EXISTS "${role}"`);
     await cluster.end();
   });

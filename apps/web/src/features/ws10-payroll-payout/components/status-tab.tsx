@@ -28,9 +28,16 @@ import {
   DetailDialog,
   ResultDialog,
   ReturnDialog,
+  WithdrawProposalDialog,
 } from "./status-dialogs";
 import { VerifyPanel, useStepUp } from "./approval-verify";
-import { StatusList, proposalFor, type RowAction } from "./status-items";
+import { FreezeBadge, FreezeBanner } from "./freeze-banner";
+import {
+  StatusList,
+  proposalFor,
+  withdrawableProposal,
+  type RowAction,
+} from "./status-items";
 import { summarizeGroups } from "./status-groups";
 import { StatusSummary } from "./status-summary";
 
@@ -84,7 +91,7 @@ function StatusSkeleton() {
 }
 
 type ActiveDialog = {
-  kind: "record" | "cash" | "detail" | "return";
+  kind: "record" | "cash" | "detail" | "return" | "withdraw";
   item: PayrollDisbursementItemDto;
 } | null;
 
@@ -134,6 +141,12 @@ function StatusBatch({
   const blockKey = isCreator ? "creator" : !canRecord ? "access" : null;
   // Funds that came back are recorded for a manual transfer that was paid.
   const canReturn = batch.channel === "manual_bank" && access.canApprove;
+  // The proposer or another approver takes back a proposal; the creator never.
+  const withdrawBlockKey = isCreator
+    ? "creator"
+    : !access.canApprove
+      ? "access"
+      : null;
   const canExport =
     batch.channel === "manual_bank" &&
     batch.status === "approved" &&
@@ -142,6 +155,10 @@ function StatusBatch({
   const onAction = (action: RowAction, item: PayrollDisbursementItemDto) => {
     if (action === "check") {
       void query.refetch();
+      return;
+    }
+    if (action === "withdraw") {
+      if (withdrawBlockKey === null) setDialog({ kind: "withdraw", item });
       return;
     }
     if (action === "record" || action === "cash") {
@@ -200,6 +217,10 @@ function StatusBatch({
     const found = proposalFor(proposals, item.id);
     return found?.kind === kind ? found : undefined;
   };
+  const withdrawing =
+    dialog?.kind === "withdraw"
+      ? withdrawableProposal(proposals, dialog.item.id)
+      : undefined;
   const isMine = (item: PayrollDisbursementItemDto) =>
     proposalFor(proposals, item.id)?.proposedBy === currentUserId;
 
@@ -224,10 +245,15 @@ function StatusBatch({
               })}
           </p>
         </div>
-        <Badge tone={batchStatusMeta(batch.status).kind}>
-          {t(batchStatusMeta(batch.status).labelKey)}
-        </Badge>
+        <div className="flex flex-wrap items-center gap-2">
+          <FreezeBadge batch={batch} />
+          <Badge tone={batchStatusMeta(batch.status).kind}>
+            {t(batchStatusMeta(batch.status).labelKey)}
+          </Badge>
+        </div>
       </header>
+
+      <FreezeBanner batch={batch} canUnfreeze={access.canApprove} />
 
       {showOverpaid && (
         <div
@@ -361,6 +387,7 @@ function StatusBatch({
             canRecord={canRecord}
             recordBlockKey={blockKey}
             proposals={proposals}
+            withdrawBlockKey={withdrawBlockKey}
             onAction={onAction}
           />
         )}
@@ -404,6 +431,16 @@ function StatusBatch({
               ? () => setDialog({ kind: "return", item: dialog.item })
               : undefined
           }
+        />
+      )}
+      {dialog?.kind === "withdraw" && withdrawing && (
+        <WithdrawProposalDialog
+          batchId={batch.id}
+          item={dialog.item}
+          person={line(dialog.item)}
+          proposal={withdrawing}
+          mine={isMine(dialog.item)}
+          onClose={closeDialog}
         />
       )}
       {dialog?.kind === "return" && (

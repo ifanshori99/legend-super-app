@@ -9,7 +9,11 @@ import {
   loadEnvironment,
   root,
 } from "./lib.mjs";
-import { databaseUrl, databaseError } from "./postgres.mjs";
+import {
+  databaseUrl,
+  databaseError,
+  managesLocalDatabase,
+} from "./postgres.mjs";
 import { verifyDevelopmentPublicSite } from "./dev-public-site.mjs";
 
 let failures = 0;
@@ -46,6 +50,17 @@ await check("Auth secret", () => {
   if ((process.env.BETTER_AUTH_SECRET?.length ?? 0) < 32)
     throw new Error(
       "Run pnpm run setup or set BETTER_AUTH_SECRET to 32+ characters.",
+    );
+});
+await check("Payout grantor login", () => {
+  // Production requires it; managed development provisions the same restricted
+  // login so payout steps never depend on an owner-role fallback.
+  if (
+    (process.env.NODE_ENV === "production" || managesLocalDatabase()) &&
+    !process.env.PAYOUT_GRANTOR_DATABASE_URL
+  )
+    throw new Error(
+      "Run pnpm dev:prepare for managed development, or set PAYOUT_GRANTOR_DATABASE_URL to a provisioned legend_grant_* login in production.",
     );
 });
 await check("API and web origins", () => {

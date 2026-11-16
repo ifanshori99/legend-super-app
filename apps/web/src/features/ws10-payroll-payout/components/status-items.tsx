@@ -49,7 +49,22 @@ export function proposalFor(
 }
 
 export type RowAction =
-  "record" | "cash" | "check" | "detail" | "evidence" | "review";
+  "record" | "cash" | "check" | "detail" | "evidence" | "review" | "withdraw";
+
+/**
+ * A step-one correction or overpaid proposal on this item that its maker or
+ * another approver may take back. Resolve and return proposals are not
+ * withdrawn here.
+ */
+export function withdrawableProposal(
+  proposals: ProposalMap | undefined,
+  itemId: string,
+): PayrollPayoutProposalDto | undefined {
+  const found = proposalFor(proposals, itemId);
+  return found?.kind === "correction" || found?.kind === "overpaid"
+    ? found
+    : undefined;
+}
 
 export function rowAction(
   item: PayrollDisbursementItemDto,
@@ -75,6 +90,7 @@ export function StatusList({
   canRecord,
   recordBlockKey,
   proposals,
+  withdrawBlockKey,
   onAction,
 }: {
   batch: PayrollDisbursementBatchDto;
@@ -84,11 +100,14 @@ export function StatusList({
   recordBlockKey: "creator" | "access" | null;
   /** Items waiting for the second person get a small marker. */
   proposals?: ProposalMap;
+  /** Why the withdraw button is off (creator, no access); null = on. */
+  withdrawBlockKey: "creator" | "access" | null;
   onAction: (action: RowAction, item: PayrollDisbursementItemDto) => void;
 }) {
   const t = useT();
   const line = useEmployeeLine();
   const blockText = useBlockText(recordBlockKey).text;
+  const withdrawBlockText = useWithdrawBlockText(withdrawBlockKey);
 
   const subText = (item: PayrollDisbursementItemDto): string => {
     const group = itemGroup(item, batch);
@@ -164,26 +183,52 @@ export function StatusList({
     layout: "table" | "card",
   ) => {
     const kind = rowAction(item, batch);
-    if (!kind) return null;
+    const withdrawing = withdrawableProposal(proposals, item.id) !== undefined;
+    if (!kind && !withdrawing) return null;
     const moneyAction = kind === "record" || kind === "cash";
     const blocked = moneyAction && !canRecord;
+    const withdrawBlocked = withdrawBlockKey !== null;
     // The table and the cards both render: one DOM id per layout.
     const reasonId = `status-block-${layout}-${item.id}`;
+    const withdrawReasonId = `status-withdraw-block-${layout}-${item.id}`;
     return (
       <div className="grid justify-items-start gap-1">
-        <Button
-          type="button"
-          variant="outline"
-          className="min-h-11 w-fit"
-          disabled={blocked}
-          aria-describedby={blocked ? reasonId : undefined}
-          onClick={() => onAction(kind, item)}
-        >
-          {t(`payrollPayoutReview.status.action.${kind}`)}
-        </Button>
+        {kind && (
+          <Button
+            type="button"
+            variant="outline"
+            className="min-h-11 w-fit"
+            disabled={blocked}
+            aria-describedby={blocked ? reasonId : undefined}
+            onClick={() => onAction(kind, item)}
+          >
+            {t(`payrollPayoutReview.status.action.${kind}`)}
+          </Button>
+        )}
         {blocked && blockText && (
           <p id={reasonId} className="max-w-56 text-xs text-muted-foreground">
             {blockText}
+          </p>
+        )}
+        {withdrawing && (
+          <Button
+            type="button"
+            variant="ghost"
+            className="min-h-11 w-fit"
+            data-testid={`payout-withdraw-${item.id}`}
+            disabled={withdrawBlocked}
+            aria-describedby={withdrawBlocked ? withdrawReasonId : undefined}
+            onClick={() => onAction("withdraw", item)}
+          >
+            {t("payrollPayoutReview.status.action.withdraw")}
+          </Button>
+        )}
+        {withdrawing && withdrawBlocked && withdrawBlockText && (
+          <p
+            id={withdrawReasonId}
+            className="max-w-56 text-xs text-muted-foreground"
+          >
+            {withdrawBlockText}
           </p>
         )}
       </div>
@@ -283,4 +328,14 @@ export function useBlockText(key: "creator" | "access" | null) {
     [key, t],
   );
   return { key, text } as const;
+}
+
+/** Text for the withdraw-button block key (creator / no access). */
+function useWithdrawBlockText(key: "creator" | "access" | null) {
+  const t = useT();
+  return key === "creator"
+    ? t("payrollPayoutReview.status.action.blockedWithdrawCreator")
+    : key === "access"
+      ? t("payrollPayoutReview.status.action.blockedWithdrawAccess")
+      : null;
 }

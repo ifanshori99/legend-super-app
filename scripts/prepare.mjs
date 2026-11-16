@@ -1,6 +1,6 @@
 import { assertNode, prepareEnvironment, runPnpm, root } from "./lib.mjs";
 import { managesLocalDatabase } from "./postgres.mjs";
-import { provisionAppRole } from "./provision-app-role.mjs";
+import { provisionRoles } from "./provision-app-role.mjs";
 import { prepareDevelopmentPublicSite } from "./dev-public-site.mjs";
 import { randomBytes } from "node:crypto";
 import { appendFileSync } from "node:fs";
@@ -41,11 +41,29 @@ try {
         { mode: 0o600 },
       );
     }
-    await provisionAppRole(
-      process.env.MIGRATION_DATABASE_URL || process.env.DATABASE_URL,
-      process.env.APP_DATABASE_URL,
+    if (!process.env.PAYOUT_GRANTOR_DATABASE_URL) {
+      const grantor = new URL(
+        process.env.MIGRATION_DATABASE_URL || process.env.DATABASE_URL,
+      );
+      grantor.username = `legend_grant_${randomBytes(8).toString("hex")}`;
+      grantor.password = randomBytes(24).toString("hex");
+      process.env.PAYOUT_GRANTOR_DATABASE_URL = grantor.toString();
+      appendFileSync(
+        resolve(root, ".env.local"),
+        `\nPAYOUT_GRANTOR_DATABASE_URL="${grantor.toString()}"\n`,
+        { mode: 0o600 },
+      );
+    }
+    await provisionRoles({
+      adminUrl: process.env.MIGRATION_DATABASE_URL || process.env.DATABASE_URL,
+      appUrl: process.env.APP_DATABASE_URL,
+      workerUrl: process.env.WORKER_DATABASE_URL || undefined,
+      maintenanceUrl: process.env.MAINTENANCE_DATABASE_URL || undefined,
+      grantorUrl: process.env.PAYOUT_GRANTOR_DATABASE_URL,
+    });
+    console.log(
+      "Restricted application and payout grantor database logins provisioned.",
     );
-    console.log("Restricted application database login provisioned.");
   } else if (!process.env.APP_DATABASE_URL) {
     throw new Error(
       "Set APP_DATABASE_URL to a pre-provisioned restricted application login for an external database.",

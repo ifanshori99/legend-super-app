@@ -13,6 +13,7 @@ import {
 } from "@tanstack/react-query";
 import {
   getDisbursementBatch,
+  getPayoutApprovalLog,
   getPayoutConfig,
   listPayoutBatches,
   listResolutionProposals,
@@ -31,14 +32,18 @@ import type {
   ConfirmCashInput,
   ConfirmItemsInput,
   CreateBatchInput,
+  DisownApprovalInput,
   PayableRun,
   PayoutEmployee,
   ResolveItemsInput,
   ReturnItemsInput,
+  UnfreezeBatchInput,
   UpsertConfigInput,
+  WithdrawProposalInput,
 } from "./api";
 import { maskedAccountDisplay } from "./lib";
 import {
+  approvalLogQuery,
   batchQuery,
   configQuery,
   employeesQuery,
@@ -104,6 +109,14 @@ export function usePayableRuns(legalEntityId: string | undefined) {
 
 export function useRunBatches(runId: string | undefined) {
   return useQuery({ ...runBatchesQuery(runId ?? ""), enabled: Boolean(runId) });
+}
+
+/** One logged payout step of the caller; 404 for anyone else's. */
+export function useApprovalLog(logId: string | undefined) {
+  return useQuery({
+    ...approvalLogQuery(logId ?? ""),
+    enabled: Boolean(logId),
+  });
 }
 
 export function useBatch(batchId: string | undefined) {
@@ -265,6 +278,7 @@ function useRefreshPayout() {
         queryKey: [listResolutionProposals.id],
       }),
       queryClient.invalidateQueries({ queryKey: [payoutKeys.all[0]] }),
+      queryClient.invalidateQueries({ queryKey: [getPayoutApprovalLog.id] }),
     ]);
 }
 
@@ -371,6 +385,29 @@ export function useConfirmBatch() {
   });
 }
 
+/** `mutate({ logId, password?, reason? })`: freezes the batch of that step. */
+export function useDisownApproval() {
+  const refresh = useRefreshPayout();
+  return useMutation({
+    mutationFn: ({ logId, ...body }: { logId: string } & DisownApprovalInput) =>
+      api.postDisownApproval(logId, body),
+    onSuccess: refresh,
+  });
+}
+
+/** `mutate({ batchId, reason, password? })`: lifts every open freeze. */
+export function useUnfreezeBatch() {
+  const refresh = useRefreshPayout();
+  return useMutation({
+    mutationFn: ({
+      batchId,
+      ...body
+    }: { batchId: string } & UnfreezeBatchInput) =>
+      api.postUnfreezeBatch(batchId, body),
+    onSuccess: refresh,
+  });
+}
+
 /** `mutate({ batchId, itemIds, outcome, evidenceKey, note, password? })`; `data.proposed` counts first proposals, `data.resolved` items moved. */
 export function useResolveBatch() {
   const refresh = useRefreshPayout();
@@ -420,6 +457,30 @@ export function useReturnBatch() {
       ...body
     }: { batchId: string } & ReturnItemsInput) =>
       api.postReturnItems(batchId, body),
+    onSuccess: refresh,
+  });
+}
+
+/**
+ * `mutate({ batchId, kind, itemIds, password? })`: takes back the first
+ * person's correction or overpaid proposal (`itemIds` = all of its group).
+ * Pays nothing and changes no item; the proof is spent. Refreshes the batch
+ * and the proposal list.
+ */
+export function useWithdrawProposal() {
+  const refresh = useRefreshPayout();
+  return useMutation({
+    mutationFn: ({
+      batchId,
+      kind,
+      ...body
+    }: {
+      batchId: string;
+      kind: "correction" | "overpaid";
+    } & WithdrawProposalInput) =>
+      kind === "correction"
+        ? api.postWithdrawCorrection(batchId, body)
+        : api.postWithdrawOverpaid(batchId, body),
     onSuccess: refresh,
   });
 }

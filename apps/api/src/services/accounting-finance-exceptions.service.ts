@@ -51,6 +51,10 @@ import { db } from "../db";
 import { withTenant } from "../db/tenant.ts";
 import { openPayrollValue } from "../lib/payroll-sealed.ts";
 import { EVENT_DESTINATION } from "./payment-support.ts";
+import {
+  disputeFreezesBatchSql,
+  disputeIsOpenSql,
+} from "./payroll-payout-freeze-sql.ts";
 
 type Row = Record<string, unknown>;
 const rowsOf = (result: unknown): Row[] =>
@@ -835,6 +839,51 @@ async function payoutReconFlags(
 }
 
 /**
+ * Payout batches frozen by a "not me" dispute (legend-l2zru), standing until
+ * the unfreeze rows cover every dispute. One row per frozen batch, a batch that
+ * shares a payslip with a disputed batch included (the same rule as
+ * `app.payout_batch_frozen`); `detail` is the batch status when it was first
+ * disputed, so finance knows to check the bank for a batch that was already
+ * exported, sending or completed.
+ */
+async function payoutBatchDisputed(
+  tx: Executor,
+  scope: Scope,
+): Promise<Collected> {
+  const rows = rowsOf(
+    await tx.execute(
+      sql`SELECT b.id::text AS ref_id,
+                 (array_agg(d.batch_status_at ORDER BY d.created_at, d.id))[1] AS detail,
+                 min(d.created_at) AS occurred_at
+            FROM payroll_disbursement_batches b
+            JOIN payroll_payout_batch_disputes d
+              ON d.tenant_id = b.tenant_id
+             AND ${disputeIsOpenSql}
+             AND ${disputeFreezesBatchSql(sql`b.id`)}
+           WHERE b.tenant_id = ${scope.tenantId}::uuid
+           GROUP BY b.id
+           ORDER BY min(d.created_at) DESC, b.id DESC`,
+    ),
+  );
+  const items = rows.map((row) =>
+    toItem("payout_batch_disputed", "payout_batch_dispute", {
+      occurred_at: row.occurred_at,
+      ref_id: row.ref_id,
+      outlet_id: null,
+      detail: row.detail,
+      amount: null,
+    }),
+  );
+  return {
+    kind: "payout_batch_disputed",
+    count: items.length,
+    knownAmountCount: 0,
+    amountIdr: 0,
+    items,
+  };
+}
+
+/**
  * The exceptions of the window for the caller's outlets. Read-only. A tenant
  * wide caller also sees the outlet-less payout kind (unless it filters by an
  * outlet); an outlet outside the caller's reach shows nothing.
@@ -859,6 +908,7 @@ export async function listFinanceExceptions(
   const includePayout = wants("payout_fee_not_posted") && tenantWide;
   const includeProofStuck = wants("payout_proof_stuck") && tenantWide;
   const includeReconFlags = wants("payout_recon_flag") && tenantWide;
+  const includeBatchDisputed = wants("payout_batch_disputed") && tenantWide;
 
   const collected = await withTenant(db, context, async (tx) => {
     const parts: Collected[] = [];
@@ -877,6 +927,7 @@ export async function listFinanceExceptions(
     if (includePayout) parts.push(await payoutFeeNotPosted(tx, scope));
     if (includeProofStuck) parts.push(await payoutProofStuck(tx, scope));
     if (includeReconFlags) parts.push(await payoutReconFlags(tx, scope));
+    if (includeBatchDisputed) parts.push(await payoutBatchDisputed(tx, scope));
     return parts;
   });
 

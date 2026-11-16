@@ -10,6 +10,7 @@ import { Router, type Request } from "express";
 import {
   payoutBatchParamsSchema,
   recordOverpaidItemsSchema,
+  withdrawPayoutProposalSchema,
 } from "@starter/shared/validators/payroll-payout";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
@@ -31,6 +32,7 @@ import {
   payoutEvidenceStoreOf,
 } from "../services/payroll-payout-evidence.ts";
 import { recordOverpaidItems } from "../services/payroll-payout-overpaid-route.service.ts";
+import { withdrawOverpaidProposal } from "../services/payroll-payout-proposal-withdraw.service.ts";
 import { payoutGuardErrorMapper } from "../services/payroll-payout.service.ts";
 
 export const payrollPayoutOverpaidRouter = Router();
@@ -74,6 +76,29 @@ payrollPayoutOverpaidRouter.post(
         input,
         payoutEvidenceStoreOf(req, context),
       ),
+    );
+    res.json({ data });
+  },
+);
+
+// Takes back an open step-one proposal (legend-xatux): the items stay `failed`,
+// nothing is paid, and the proof cannot be used again. The proposer or another
+// approver may call it, never the batch requester.
+payrollPayoutOverpaidRouter.post(
+  "/disbursement-batches/:id/overpaid/withdraw",
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  requireTenantPermission("payroll.disburse.approve"),
+  stepUp,
+  jsonBody,
+  passwordStepUp,
+  async (req, res) => {
+    const { id } = payoutBatchParamsSchema.parse(req.params);
+    const input = withdrawPayoutProposalSchema.parse(req.body);
+    const { context, actor } = actorOf(req);
+    const data = await withTenant(db, context, (tx) =>
+      withdrawOverpaidProposal(tx, actor, id, input),
     );
     res.json({ data });
   },

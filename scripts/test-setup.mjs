@@ -14,6 +14,10 @@ for (const key of Object.keys(env)) {
     /^(POSTGRES_|COMPOSE_|BETTER_AUTH_|STARTER_TEST_|PG|npm_)/.test(key) ||
     [
       "DATABASE_URL",
+      "APP_DATABASE_URL",
+      "WORKER_DATABASE_URL",
+      "MAINTENANCE_DATABASE_URL",
+      "PAYOUT_GRANTOR_DATABASE_URL",
       "MIGRATION_DATABASE_URL",
       "WEB_URL",
       "VITE_API_URL",
@@ -89,6 +93,12 @@ try {
   );
   await pnpm("setup");
   const first = readFileSync(resolve(target, ".env.local"), "utf8");
+  assert.ok(
+    /^PAYOUT_GRANTOR_DATABASE_URL="postgresql:\/\/legend_grant_[a-f0-9]{16}:/m.test(
+      first,
+    ),
+    "Fresh setup did not provision a payout grantor login.",
+  );
   await checkData(true);
   await pnpm("setup");
   assert.ok(

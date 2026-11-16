@@ -191,10 +191,11 @@ export function requireTenantStepUpMfa(
  * real second-factor challenge goes through without a password; one whose MFA
  * stamp comes from enrollment alone needs it (401 REAUTH_REQUIRED when absent,
  * 403 REAUTH_PASSWORD_INVALID when wrong). The route schema, not this
- * middleware, validates the rest of the body.
+ * middleware, validates the rest of the body. `passwordOnly` never takes the
+ * challenge shortcut: the password is always checked (legend-l2zru disown).
  */
 export function requireTenantStepUpPassword(
-  options: { readonly now?: Clock } = {},
+  options: { readonly now?: Clock; readonly passwordOnly?: boolean } = {},
 ): RequestHandler {
   const clock = options.now ?? (() => new Date());
   return async (req, _res, next) => {
@@ -210,6 +211,7 @@ export function requireTenantStepUpPassword(
       sessionId: auth.session.id,
       password: typeof password === "string" ? password : undefined,
       now,
+      passwordOnly: options.passwordOnly,
     });
     payoutStepUps.set(req, {
       userId: auth.user.id,
