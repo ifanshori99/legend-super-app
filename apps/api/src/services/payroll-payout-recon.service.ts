@@ -47,7 +47,7 @@ export type PayoutReconKind =
 
 /** Kinds a flag can carry: the operations above plus the grant-checked steps. */
 export type PayoutReconFlagKind =
-  PayoutReconKind | "closure" | "resolve" | "bank_confirm";
+  PayoutReconKind | "closure" | "resolve" | "bank_confirm" | "batch_approve";
 
 export type PayoutReconReason =
   | "attestation_count"

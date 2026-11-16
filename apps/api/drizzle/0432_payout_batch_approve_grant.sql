@@ -28,6 +28,7 @@
 --    only the columns legend_app may read; SECURITY DEFINER, owned by the
 --    migrator like the other table guards. It fires before the freeze (0428),
 --    guard (0344) and source freeze (0355) triggers (trigger name order).
+-- 5. app.payout_recon_flag (0421 body): also accepts kind batch_approve.
 -- Error codes: PAYOUT-83 (23514) the batch approval needs its consumed grant,
 -- or the batch is not waiting for approval.
 -- Ownership: the migrator holds no INHERIT on the payout role, so the functions
@@ -231,6 +232,40 @@ END $$;
 REVOKE ALL ON FUNCTION app.payout_batch_approve_attest(uuid, text) FROM PUBLIC;
 --> statement-breakpoint
 GRANT EXECUTE ON FUNCTION app.payout_batch_approve_attest(uuid, text) TO legend_app;
+--> statement-breakpoint
+
+-- Nightly reconciliation flag: the 0421 body with batch_approve in the accepted
+-- list. Signature and ACL stay.
+CREATE OR REPLACE FUNCTION app.payout_recon_flag(
+  p_tenant uuid, p_kind text, p_operation uuid, p_item uuid, p_reason text
+) RETURNS void
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+DECLARE
+  v_payslip uuid;
+BEGIN
+  IF p_tenant IS DISTINCT FROM app.require_tenant_id() THEN
+    RAISE EXCEPTION 'PAYOUT-68: a flag is raised in the tenant in force only'
+      USING ERRCODE = '23514';
+  END IF;
+  IF p_kind IS NULL OR p_kind NOT IN ('correction', 'overpaid', 'return', 'posting_source', 'closure', 'resolve', 'bank_confirm', 'batch_approve')
+    OR p_operation IS NULL OR p_reason IS NULL OR pg_catalog.btrim(p_reason) = '' THEN
+    RAISE EXCEPTION 'PAYOUT-68: the flag needs a kind, an operation and a reason'
+      USING ERRCODE = '23514';
+  END IF;
+  SELECT i.payslip_id INTO v_payslip
+    FROM public.payroll_disbursement_items i
+   WHERE i.tenant_id = p_tenant AND i.id = p_item;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'PAYOUT-68: the flagged item is not an item of the tenant'
+      USING ERRCODE = '23514';
+  END IF;
+  INSERT INTO public.payroll_payout_recon_exceptions (
+    tenant_id, kind, operation_id, item_id, payslip_id, reason, flagged_at)
+  VALUES (
+    p_tenant, p_kind, p_operation, p_item, v_payslip,
+    pg_catalog.left(p_reason, 200), pg_catalog.statement_timestamp())
+  ON CONFLICT ON CONSTRAINT payroll_payout_recon_exceptions_flag_key DO NOTHING;
+END $$;
 --> statement-breakpoint
 RESET ROLE;
 --> statement-breakpoint
