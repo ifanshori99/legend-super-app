@@ -4,11 +4,14 @@ import { DEFAULT_LOCALE } from "@starter/shared/i18n";
 import { KITCHEN_TIME_ZONE } from "./outlet.ts";
 
 /** 10:52 — a clock time on today's board. */
-export function formatOutletTime(iso: string): string {
+export function formatOutletTime(
+  iso: string,
+  timeZone: string = KITCHEN_TIME_ZONE,
+): string {
   return new Intl.DateTimeFormat(DEFAULT_LOCALE, {
     hour: "2-digit",
     minute: "2-digit",
-    timeZone: KITCHEN_TIME_ZONE,
+    timeZone,
   }).format(new Date(iso));
 }
 

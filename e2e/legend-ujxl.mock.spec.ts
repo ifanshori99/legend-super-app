@@ -54,7 +54,7 @@ test("Q21 · the station switch is a neutral segmented control, not buttons", as
   // Each station carries its live queue count (DESIGN.md §5: a station group
   // with counts, selected in ink — never an accent-filled chip).
   await expect(
-    stations.getByRole("radio", { name: /^Kopi \(\d+\)$/ }),
+    stations.getByRole("radio", { name: /^Kopi \d+$/ }),
   ).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Kopi", exact: true }),

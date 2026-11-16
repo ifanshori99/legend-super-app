@@ -13,11 +13,16 @@ import { useT } from "@/components/i18n";
 import { AreaGateScreen } from "@/components/layout/area-gate-screen";
 import { AREA_ICONS } from "@/components/layout/area-icons";
 import { OfflineBannerSlot } from "@/components/layout/offline-banner-slot";
-import { OutletPicker } from "@/components/layout/outlet-picker";
+import { OutletList, OutletPicker } from "@/components/layout/outlet-picker";
 import { RouterShellLink } from "@/components/layout/router-link";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { CustomerShell } from "@/components/shells/customer-shell";
 import { ManagementShell } from "@/components/shells/management-shell";
+import {
+  OperationsScreenProvider,
+  resolveOperationsTitle,
+  useOperationsScreenValue,
+} from "@/components/shells/operations-screen";
 import { OperationsShell } from "@/components/shells/operations-shell";
 import { SignOutButton } from "@/components/sign-out-button";
 import { Link } from "@tanstack/react-router";
@@ -160,6 +165,51 @@ export function AreaFrame(props: AreaFrameProps) {
   );
 }
 
+/**
+ * Operations shell fed by the screen: a screen that calls
+ * useOperationsScreen names itself in the status bar and adds its actions
+ * before the theme toggle; otherwise the status bar shows the area name.
+ */
+function OperationsFrame({
+  areaTitle,
+  staffName,
+  online,
+  forcedMode,
+  outletControl,
+  outletSheetControl,
+  children,
+}: {
+  areaTitle: string;
+  staffName?: string;
+  online: boolean;
+  forcedMode?: "dark";
+  outletControl: ReactNode;
+  outletSheetControl: ReactNode;
+  children: ReactNode;
+}) {
+  const screen = useOperationsScreenValue();
+  return (
+    <OperationsShell
+      title={resolveOperationsTitle(screen, areaTitle)}
+      staffName={staffName}
+      online={online}
+      mode={forcedMode}
+      outletControl={outletControl}
+      outletSheetControl={outletSheetControl}
+      actions={
+        screen.actions || !forcedMode ? (
+          <>
+            {screen.actions}
+            {forcedMode ? null : <ThemeToggle className="max-sm:size-11" />}
+          </>
+        ) : null
+      }
+    >
+      <div className="h-full overflow-y-auto p-4">{children}</div>
+    </OperationsShell>
+  );
+}
+
 function AreaFrameBody({
   area,
   access,
@@ -229,20 +279,30 @@ function AreaFrameBody({
     outletChoice(outlets) === "multiple" &&
     (definition.shell === "operations" ||
       (area === "kelola" && kelolaUsesOutletContext(pathname)));
+  const pickOutlet = (outletId: string) => {
+    onSelectOutlet(outletId);
+    const name = outlets.find((row) => row.id === outletId)?.name;
+    if (name) setAnnouncement(t("area.outletChanged", { name }));
+  };
+  // The operations shell hides the Select below `sm`; phones pick in a sheet.
   const outletPicker = showOutletPicker ? (
     <OutletPicker
       outlets={outlets}
       value={selectedOutletId}
-      onChange={(outletId) => {
-        onSelectOutlet(outletId);
-        const name = outlets.find((row) => row.id === outletId)?.name;
-        if (name) setAnnouncement(t("area.outletChanged", { name }));
-      }}
+      onChange={pickOutlet}
       className={
-        definition.shell === "operations" ? "max-sm:w-full" : undefined
+        definition.shell === "operations" ? "max-sm:hidden" : undefined
       }
     />
   ) : null;
+  const outletSheetList =
+    showOutletPicker && definition.shell === "operations" ? (
+      <OutletList
+        outlets={outlets}
+        value={selectedOutletId}
+        onChange={pickOutlet}
+      />
+    ) : null;
   // A Kelola screen that works in the selected outlet has nothing to load for
   // an account with no outlet (a new tenant): point to where the first outlet
   // is created instead of leaving a skeleton that never resolves.
@@ -347,16 +407,18 @@ function AreaFrameBody({
 
   if (definition.shell === "operations") {
     return (
-      <OperationsShell
-        title={t(definition.nameKey)}
-        staffName={session?.user.name}
-        online={online}
-        mode={definition.forcedMode}
-        outletControl={outletPicker}
-        actions={definition.forcedMode ? null : <ThemeToggle />}
-      >
-        <div className="h-full overflow-y-auto p-4">{body}</div>
-      </OperationsShell>
+      <OperationsScreenProvider>
+        <OperationsFrame
+          areaTitle={t(definition.nameKey)}
+          staffName={session?.user.name}
+          online={online}
+          forcedMode={definition.forcedMode}
+          outletControl={outletPicker}
+          outletSheetControl={outletSheetList}
+        >
+          {body}
+        </OperationsFrame>
+      </OperationsScreenProvider>
     );
   }
 

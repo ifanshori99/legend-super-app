@@ -1985,6 +1985,12 @@ export const id = {
       emptyHint:
         "POS, captain order, papan bilik, dan checklist operasional tampil di sini.",
       outletUnset: "Outlet belum dipilih",
+      outletButton: "Rincian outlet {name}",
+      sheetTitle: "Outlet dan petugas",
+      sheetDescription: "Rincian tempat kerja Anda saat ini.",
+      sheetOutlet: "Outlet",
+      sheetStation: "Stasiun",
+      sheetStaff: "Petugas",
     },
     kitchen: {
       name: "Dapur",
