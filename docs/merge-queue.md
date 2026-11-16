@@ -2,6 +2,16 @@
 
 Ditulis oleh merge train batch64g. Sumber: pesan CTO G6evw, G6w9t, G4j04. Tip SHA di bawah dicatat saat pesan CTO; ambil tip terbaru (`git fetch`, lalu `git rev-parse origin/<cabang>`) sebelum menyusun batch, karena banyak cabang dipin ulang.
 
+## Sudah mendarat 16 Nov
+
+- Batch73 -> m1 719171d33. Batch74 -> m1 40f6f3c95: payout-so895-897 (migrasi 0395-0400), qris-hold-so-879 (0401-0406), seat-reservation-lock-order-f7rnw, kecil-859 (0407), print-alert-supervisor, print-agent-kds-retry (0408). Jangan antre ulang.
+
+## Batch75 (berikut, basis m1 40f6f3c95)
+
+- `fix/payout-trusted-boundary-905` (setelah perbaikan 911 selesai; migrasi sementara 0643-0651+ dinomori ulang mulai 0409). Second opinion 909 + perbaikan 911.
+- `fix/qr-va-queue-after-paid-xzu4l` (setelah perbaikan 912 selesai; memuat QRIS 785b3b453 + VA 906 + 908; menggantikan `fix/va-staff-exit-5wn1e`, jangan merge itu terpisah; migrasi sementara 0631_payment_va_releases dinomori ulang).
+- `fix/e2e-m1-858` 3272f4dee: konflik dengan e2e mock m1 (legend-jemae) di 3 spec; perlu rebase dulu.
+
 ## Aturan tetap
 
 - Maks 7 cabang per batch. Gate: `node scripts/check-workspace-links.mjs`, `heavy pnpm run lint`, `heavy pnpm run typecheck`, `heavy pnpm run test`. Maks 2 run penuh gagal per batch, lalu berhenti dan lapor.
@@ -20,7 +30,7 @@ Ditulis oleh merge train batch64g. Sumber: pesan CTO G6evw, G6w9t, G4j04. Tip SH
 
 ## Sudah di m1
 
-64a, 64b, 64d, 64c, 64e (7aacd9f68), 64f (e38e43b4b). 64g (lihat bagian status 64g di bawah): panic chain (fix/panic-device-cross-tenant), ui/staff-subnav-tablet-44, ws/traceability-strict, fix/edc-so-829 (seluruh rantai EDC). Migrasi 0369-0372 (0372_edc_sale_wire_open). Tip m1 setelah 64g: d1ad35802 (gerbang penuh run 3 hijau; 0369 memakai Pattern 2).
+64a, 64b, 64d, 64c, 64e (7aacd9f68), 64f (e38e43b4b). 64g (lihat bagian status 64g di bawah): panic chain (fix/panic-device-cross-tenant), ui/staff-subnav-tablet-44, ws/traceability-strict, fix/edc-so-829 (seluruh rantai EDC). Migrasi 0369-0372 (0372_edc_sale_wire_open). Tip m1 setelah 64g: d1ad35802 (gerbang penuh run 3 hijau; 0369 memakai Pattern 2). Batch72 (m1 42f349c36) dan batch73 (m1 719171d33): 891 + 890 (migrasi 0389-0394), selfie-scanner, edge-node-domain-rate + tenant-domain-audit, metrics-daily-backfill, esnvi-859, 5v8sm-859, flake 887/543rh.
 
 ## Urutan prioritas (otoritas G4j04)
 
@@ -42,8 +52,6 @@ Induk lebih dulu. Migrasi dinomori ulang dari ujung m1 saat batch disusun.
 - `fix/edc-failover-861` e688b53bd (prioritas 2, CTO G4j04; base ce90d9b1b; fail-stop saat kunci hilang; architect xhigh 2 putaran). Masuk setelah 64g, satu batch dengan `fix/receipt-run-861` (sama-sama basis rantai EDC). Cabang uang: bukti tes tak ada pihak dibayar lebih tetap berlaku. Kedua cabang bercabang dari ce90d9b1b, bukan saling induk; cek konflik berkas EDC saat merge.
 
 - Flake gerbang (taruh di depan batch berikut): `fix/flake-station-printer-887` 3ab003ad9 (test saja, legend-ea9sf). Lalu `fix/flake-guest-menu-543rh` 30e4177a9 (test saja, legend-543rh, 3x hijau).
-- Payout akhir (DEPAN batch berikut setelah batch72; uang, penghalang rilis): `fix/payout-failed-correction-891` 8f7c91126 (sudah memuat `fix/payout-area-final-888` 036979292 dan m1 9ad4dcee7; migrasi sementara 0631-0636 = journal idx 389-394; architect xhigh tiap cabang, P1 tertutup; kartu w5yx6, v6gtp, wcd24, 8vcsg, mejr2), lalu `ui/payout-password-stepup-890` 9aa50713b (web, legend-caobb; reviewer OK, 12 e2e mock). Second opinion Codex 888+891 jalan paralel, hanya menahan gerbang rilis.
-- Uang (reservasi): `fix/seat-reservation-lock-order-f7rnw` 15b0933c7 (legend-f7rnw; race deposit vs refund, architect xhigh OK; tanpa migrasi).
 - Payout SO-895 (setelah batch73 memuat 891): `fix/payout-so895-897` a06c6bdd4 (16 Nov: memuat perbaikan 900, kode d252a28ef; di atas 891; migrasi sementara 0637-0642 = journal idx 395-400, 0643 tidak dipakai; 900 architect xhigh 0 P1/P2, 751 test 49 berkas; kartu p2v4s; architect xhigh tanpa P1; kartu klr99, v2dco). Batas diterima CTO: baris fee/settle historis NULL tidak dicek nominal (belum ada data production). Rilis: job backfill bukti harus selesai sebelum return/overpaid/koreksi dibuka (409 PENDING sampai itu). Second opinion Codex 897 jalan paralel.
 
 ### 2. Uang dan data pribadi
@@ -72,15 +80,13 @@ Induk lebih dulu. Migrasi dinomori ulang dari ujung m1 saat batch disusun.
 
 - Rantai scanner (satu batch, urut): `ws/storage-scanner-pdf` 53b0db393 (bila migrasi: nomori ulang dari 0380) -> `fix/clamd-scan-limit` 5e19187b1 -> `fix/clamd-scan-tenant-images` cefbdf1d1 -> `fix/leave-form-pdf-capabilities` 50ea9b5c3 (harus setelah atau satu batch dengan storage-scanner-pdf) -> `fix/edge-selfie-scanner` 4c0b5a6c9 (setelah rantai scanner). Juga `fix/storage-scanner-typed-error` d4c02fa0a.
 - Rantai AI: `ws/ai-eval-missing-metric` e7668d647 -> `fix/ai-sources-tl07-08-12` fb00a4c24 -> `fix/ai-eval-anomaly-year` 64cfad39e.
-- Domain/edge-node: `ws/tenant-domain-audit` ad6c16b86 -> `ws/edge-node-domain-rate` 35b69d1c7 (setelah tenant-domain-audit). `ws/metrics-daily-backfill` a98fa1039.
 - EDC lain: `fix/edc-bill-lock` 8185a7ebd (konflik `docs/PROGRESS.md`: simpan keduanya), `fix/edc-followups` bdae5b4a2, `fix/edc-qris-confirm-lock` 7e32d2707 (cek `merge-base`; 64g sudah memuat rantai sampai fix/edc-so-829).
 - QRIS: `ghostex/775-qris-hold-c1` (sebelum `ws/edge-kds-stations`), `fix/outbox-dead-alert-fairness`.
 - QRIS hold SIAP (16 Nov: 896 + SO akhir 902 [2 P1] + perbaikan 903, architect xhigh 2 ronde 0 P1, 543 test area; tip 785b3b453, tanpa migrasi baru sejak 896; kartu 896 ad95t/xg6qk/5h8ob/o6q8i/la1yk tutup setelah merge): `fix/qris-hold-so-879` (memuat C1+C2/C3+m1; menggantikan `ghostex/775-qris-hold-c1` dan `ghostex/qris-hold-dp-c2-c3`, jangan merge keduanya terpisah). Tip fd4427fd1 (7 temuan 878 + void order refund penuh; 180 berkas test, architect xhigh; sudah memuat m1 2bf32cd92). Migrasi 0381-0383 bentrok dengan batch69 (0381/0382): nomori ulang setelah batch69 masuk. Beberapa test m1 disesuaikan ke aturan hold (QR→VA), assertion uang tidak dilemahkan. Tutup legend-yhia9.2/.3/.4, zff37, ota0l, w0ows, 9ho2v, kf104, eqeu7, 5ailc setelah merge. Catatan lama: `ghostex/qris-hold-dp-c2-c3` 6cfe64ba6 tepat setelah `ghostex/775-qris-hold-c1` 1275f0123 (architect xhigh 2 ronde OK, 260/260 test, tanpa migrasi baru). Saat merge: tambahkan guard hold (409 `QRIS_HOLD_ACTIVE`) ke penulisan orders di `qr-order.service.ts` m1 setelah 5dcc1cfd9 (sekitar baris 1629, 2128, 2569; kartu `legend-5ailc`), supaya bukan 500. Tutup `legend-yhia9.2/.3/.4` setelah merge.
 - Cuti/fasilitas/pemasok: `fix/leave-attachment-active-permission` f161bcca7 -> `fix/leave-create-outlet-permission` 043a8cb23 (setelah leave-attachment); `fix/facility-evidence-bind-source` ca9a7c0f4 dan `fix/supplier-invoice-invoiced-qty` 5cccfd4b9 (setelah induknya); `ghostex/upload-foto-fasilitas-sungguhan` b961fdcc7 (migrasi 0376; nomori ulang); `ghostex/layar-input-faktur-pemasok` 882900f6a.
 - UI: `ghostex/ajakan-wa-poin-grid-qr-meja` bcfbdf011; `ghostex/780-ui-operasional-kecil` (cek konflik dengan `fix/e2e-mock-support-access` c3cef7cb4 di `e2e/legend-ujxl.mock.spec.ts`); `fix/ops-statusbar-contrast` b1af31c1b (setelah 780) -> `ui/ops-statusbar-mobile` ca0b1bf0a (setelah ops-statusbar-contrast); `ui/member-whatsapp-link` c3e616ddb (Q29 disetujui; risiko konflik teks di `packages/shared/src/i18n/messages/id.ts` dengan ajakan-wa-poin-grid-qr-meja); `ghostex/846-delivery-needs-review-layar` 66d1fbf35; `ghostex/52c30e92` 9fc198918; `ghostex/19eebc7a` 738731095; `ghostex/5ce165c2` 2f62ed4be.
-- `fix/print-alert-supervisor` 7fcfdb369 -> `fix/print-agent-kds-retry` 5fd8a215b (migrasi 0378; setelah print-alert-supervisor).
 - `ws/doit-refund-hardening` 72805cd6f (tanpa migrasi). `ws/criteria-*`: pakai `ws/traceability-strict` ce9337bf4 (sudah di m1), jangan ambil `criteria-pph21`, `criteria-pay-edc`, `criteria-ai-mcp` lama.
-- Prioritas rendah, tingkat S (CTO G4j04): `fix/esnvi-859` 3809a8f67 (setelah induk `fix/hris-so-852`); `fix/5v8sm-859` 7c2686919 (setelah induk `ghostex/846-delivery-needs-review-layar`). `fix/s3ex8-859` sudah diantre di bagian uang (lihat di bawah).
+- Prioritas rendah, tingkat S: `fix/esnvi-859` dan `fix/5v8sm-859` sudah di m1 (batch73). `fix/s3ex8-859` sudah diantre di bagian uang.
 - Prioritas rendah: `fix/kecil-859` f561df281 (migrasi 0448, index `push_subscriptions(user_id)`), `fix/e2e-m1-858` 3272f4dee (e2e saja: delivery e8oa, POS koreksi mzg/rx0h, PAY-04 sgg; kredit tamu `test.fixme` legend-whd5c; tingkat S, paling akhir).
 
 ## Cabang yang ditahan atau dijatuhkan

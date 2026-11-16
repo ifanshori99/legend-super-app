@@ -1,0 +1,6 @@
+# 913 Second opinion interaksi QRIS hold x refund ulang weuo2 di m1 (gerbang rilis uang)
+Peran: second-opinion (baca ~/.agents/team/roles/second-opinion.md). Uang: effort xhigh. Read-only.
+Repo /Users/ifanshori99/Projects/legend super app/legend, basis `origin/milestone/m1` 40f6f3c95 (batch74). Cabang QRIS hold (`fix/qris-hold-so-879`, migrasi m1 0401-0406, guard 409 `QRIS_HOLD_ACTIVE` di `qr-order.service.ts`, kartu legend-kf104) baru bertemu weuo2 (refund sistem diajukan ulang hanya sebesar sisa saldo) dan legend-1vm1 (poll window ganti bank). Merge train mengubah dua test, bukan kode: `qris-hold-so885-e` kasus (c) dan `payment-gateway-poll-window`; lihat `git log -3 --stat 40f6f3c95` dan commit 1f2956980.
+Yang sudah di-SO sendiri-sendiri (jangan diulang): isi cabang QRIS hold (SO 902/903), VA 906/908 (SO 910, perbaikan 912 berjalan).
+Cari hanya interaksi: refund ganda atau kurang saat hold + refund ulang sisa; order dibatalkan sementara refund sebagian masih tertunda; uang telat di kode lama setelah ganti bank tercatat dua kali atau hilang; apakah perubahan dua test menutupi bug nyata; jalur lain yang masih bisa membuat kode baru saat kode lama mungkin dibayar; lock order baru.
+Hasil: `docs/qa/second-opinion-qris-hold-weuo2-m1.md` di worktree-mu (P0-P3, berkas:baris, skenario, usul test), commit dan push cabang qa tanpa force. Lapor hanya saat selesai.
