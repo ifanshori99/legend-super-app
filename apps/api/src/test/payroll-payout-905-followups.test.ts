@@ -637,8 +637,8 @@ describe("905 follow-up P2-4: a closed proof key cannot finish a resolve that fr
 
       // 905: W.resolve calls the service directly, so the Express mapper that
       // turns the guard's 23514 into 409 (payoutGuardErrorMapper) is not in
-      // the path. Either form is the refusal: a 4xx HttpError, or the raw
-      // PostgreSQL check violation 23514 from the 0649(c) guard.
+      // the path. Either form is the refusal: the PAYOUT-72 message of the
+      // 0649(c) guard, or an HttpError with code PAYOUT_GUARD_REFUSED.
       const refusal = (await W.resolve(
         w.batchId,
         [w.itemId],
@@ -651,18 +651,18 @@ describe("905 follow-up P2-4: a closed proof key cannot finish a resolve that fr
       )) as {
         status?: number;
         code?: string;
-        cause?: { code?: string };
+        message?: string;
+        cause?: { code?: string; message?: string };
       } | null;
       expect(refusal, "the call must be refused").not.toBeNull();
       const refusedHttp =
-        refusal instanceof HttpError &&
-        refusal.status >= 400 &&
-        refusal.status < 500;
+        refusal instanceof HttpError && refusal.code === "PAYOUT_GUARD_REFUSED";
       const refusedPg =
-        refusal?.code === "23514" || refusal?.cause?.code === "23514";
+        (refusal?.message?.includes("PAYOUT-72") ?? false) ||
+        (refusal?.cause?.message?.includes("PAYOUT-72") ?? false);
       expect(
         refusedHttp || refusedPg,
-        `a 4xx HttpError or a 23514 check violation: ${String(refusal)}`,
+        `PAYOUT-72 or PAYOUT_GUARD_REFUSED: ${String(refusal)}`,
       ).toBe(true);
       const after = await itemOf(w.itemId);
       expect(after.status, "the slip is not released for a retry").toBe(

@@ -12,8 +12,8 @@ GRANT UPDATE (updated_at) ON TABLE public.payroll_disbursement_batches TO legend
 -- looks for the settlement fee journal ('payroll-payout-fee:' || item_set_hash),
 -- which only a settle / settle_pending / settle_skipped posting has: the fee of
 -- an overpaid record has its own journal key ('payroll-payout-overpaid-fee:...',
--- checked by app.payout_item_journal_ok in the item money commit check, 0648)
--- and return / correction postings carry the default fee_posted = true without a
+-- NOT checked at commit: app.payout_item_journal_ok does not cover it; follow-up
+-- bead legend-d9pxr) and return / correction postings carry the default fee_posted = true without a
 -- settlement fee journal. Their INSERT therefore failed at COMMIT (PAYOUT-37).
 -- The fee branch now applies to the settlement kinds only; the settle branch
 -- (kind = 'settle') is unchanged. Function body only, no row edited.

@@ -1,9 +1,9 @@
 ## 905 Payout batas tulis tepercaya + penutupan bukti macet (engineer, legend-i01jp/kjht5/6htrf, cabang `fix/payout-trusted-boundary-905` dari a06c6bdd4, 16 Nov 2026)
 
-- Sudah: desain architect xhigh (`docs/briefs/905/design.md`); role `legend_payout` + fungsi SECURITY DEFINER (0644-0648), deferred INSERT check posting (0643), tindak lanjut review awal architect (0649); service memanggil fungsi; API tutup bukti macet dua orang; recon malam `payout-trusted-recon`; test 905 (trusted-boundary, gl-insert, posting-source, proof-closure, recon, followups).
-- Sedang: fixer menghijaukan suite payout (putaran 2: 172 gagal, akar grant legend_payout kurang).
-- Berikut: pra-gate (prettier, eslint, typecheck api+web, db:generate kosong), architect xhigh final, push.
-- Keputusan: status item tetap di-grant ke legend_app, transisi uang dijaga guard `current_user = legend_payout` (A1: semua keluar dari succeeded/overpaid/returned); return legacy tanpa claim di langkah 2 ditolak; batas recon = `app.payout_trusted_since()`; P2-3 retry/resolve → bead legend-r86qa.
+- Sudah: role `legend_payout` + fungsi SECURITY DEFINER untuk koreksi/overpaid/return/binding/sumber posting (0644-0648), cek INSERT posting saat COMMIT (0643), tindak lanjut review awal architect (0649), grant kunci batch (0650), cek hash binding untuk recon (0651); service memanggil fungsi; API tutup bukti macet dua orang; recon malam `payout-trusted-recon` (+ sapuan `operation_missing`); suite payout 618 lulus / 0 gagal; pra-gate lulus; architect xhigh final 0 P1 0 P2, 4 P3 (P3-4 dibetulkan, sisanya bead).
+- Berikut: merge train renumber migrasi 0643-0651; second-opinion Codex area payout sebelum gerbang rilis.
+- Keputusan: guard `current_user = legend_payout` (A1: semua keluar dari succeeded/overpaid/returned); return legacy tanpa claim di langkah 2 ditolak; batas recon `app.payout_trusted_since()`; sesi yang sudah logout bukan selisih recon; 0650(b) mempersempit cek fee 0643 ke jenis settle (architect: perlu, tidak melonggarkan dibanding base).
+- Bead tindak lanjut: legend-r86qa (retry/resolve masih dipercaya ke legend_app), legend-izza4 (GUC settle), legend-xbagc (tutup flag recon), legend-d9pxr (jurnal fee overpaid), legend-d023k (mapping historis recon), legend-y2lk2 (recon closure).
 
 ## 868 API daftar rekonsiliasi EDC (engineer, legend-p98qi, cabang dari `ui/edc-rekonsiliasi-865` 5fb5f8273, 15 Nov 2026)
 
