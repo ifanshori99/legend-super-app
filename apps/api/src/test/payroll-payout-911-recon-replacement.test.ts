@@ -472,11 +472,14 @@ async function forgeSecondBinding(batchId: string, key: string) {
   expect(rows, "premise: the second binding is on record").toHaveLength(1);
 }
 
-const tenantExceptionCount = async () =>
+// Scoped to the world's own item: other files share the tenant and may leave
+// their own recon rows behind.
+const tenantExceptionCount = async (itemId: string) =>
   (
     await W.rowsOf(
-      `SELECT count(*)::int AS n FROM ${EXCEPTIONS} WHERE tenant_id = $1`,
-      [W.tenantId],
+      `SELECT count(*)::int AS n FROM ${EXCEPTIONS}
+        WHERE tenant_id = $1 AND item_id = $2`,
+      [W.tenantId, itemId],
     )
   )[0]!.n as number;
 
@@ -491,7 +494,7 @@ describe("911 recon: legit proposal evidence replacement", () => {
     await runRecon();
     await expectNotFlagged(w.itemId, "replaced proof, one completed operation");
     expect(
-      await tenantExceptionCount(),
+      await tenantExceptionCount(w.itemId),
       "no recon exception at all for the legit replacement",
     ).toBe(0);
     expect(

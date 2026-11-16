@@ -239,6 +239,12 @@ async function cleanBatches(ids: string[]) {
                               WHERE tenant_id = $1 AND batch_id = ANY($2))`,
       [W.tenantId, ids],
     );
+    await c.query(
+      `DELETE FROM payroll_payout_recon_exceptions
+        WHERE tenant_id = $1 AND item_id IN (SELECT id FROM payroll_disbursement_items
+                                              WHERE tenant_id = $1 AND batch_id = ANY($2))`,
+      [W.tenantId, ids],
+    );
     for (const table of [
       "payroll_payout_proof_bindings",
       "payroll_payout_failed_corrections",
