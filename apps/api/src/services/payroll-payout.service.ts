@@ -231,8 +231,8 @@ export function payoutGuardViolation(error: unknown): HttpError | null {
   if (sqlStateOf(error) === "42501" && messageHas(error, /PAYOUT-84:/))
     return payoutRefuse(
       403,
-      "PAYOUT_DISOWNER_REAPPROVE",
-      "Anda sudah menyangkal persetujuan batch ini, jadi tidak boleh menyetujuinya lagi.",
+      "PAYOUT_DISOWNER_REFUSED",
+      'Anda sudah menyatakan "bukan saya" pada persetujuan batch ini, jadi tidak boleh menyetujuinya lagi.',
     );
   // PAYOUT-6x (42501), e.g. PAYOUT-64: a separation-of-duties or step order
   // refusal (same person twice, requester, first step not attested).

@@ -131,13 +131,6 @@ function issueError(error: unknown): unknown {
         "Pembuat batch tidak boleh menyetujui batchnya sendiri.",
       );
     case "84":
-      // The disowner of a batch main approval cannot approve it again.
-      return new HttpError(
-        403,
-        "PAYOUT_DISOWNER_REAPPROVE",
-        "Anda sudah menyangkal persetujuan batch ini, jadi tidak boleh menyetujuinya lagi.",
-      );
-    case "84":
       // The person who said "not me" to a main approval cannot approve it again.
       return new HttpError(
         403,

@@ -125,19 +125,25 @@ const approvalColumns = (batch: Row) => ({
 });
 
 /** One statement per approval column: a valid value, no status change. */
-const CHANGES: { column: string; set: string }[] = [
+const CHANGES: { column: string; set: string; control?: true }[] = [
   { column: "approved_by", set: "approved_by = $3" },
   { column: "approved_at", set: "approved_at = now() + interval '1 hour'" },
   {
     column: "approval_expires_at",
     set: "approval_expires_at = now() + interval '30 days'",
   },
-  { column: "source_bank_account_id", set: "source_bank_account_id = NULL" },
+  // Control, not fail-first: PAYOUT-07 (0355) already froze the source account
+  // before this card; kept so the whole set of approval columns stays covered.
+  {
+    column: "source_bank_account_id",
+    set: "source_bank_account_id = NULL",
+    control: true,
+  },
 ];
 
 async function expectGuarded(status: Status) {
   const { batchId, before } = await batchIn(status);
-  for (const { column, set } of CHANGES) {
+  for (const { column, set, control } of CHANGES) {
     // Without a $3 in the SET list the parameter would be unused: always bind it.
     const sql = `UPDATE payroll_disbursement_batches SET ${set}
                   WHERE tenant_id = $1 AND id = $2 AND $3::text IS NOT NULL`;
@@ -146,7 +152,7 @@ async function expectGuarded(status: Status) {
       const outcome = await probe(role, sql, [W.tenantId, batchId, APP2]);
       expect(
         outcome.code,
-        `${status} / ${who}: changing ${column} without the grant must be refused`,
+        `${status} / ${who}: changing ${column} without the grant must be refused${control ? " (control: PAYOUT-07)" : ""}`,
       ).toBeDefined();
       if (role === null)
         expect(
@@ -170,7 +176,10 @@ beforeAll(() => {
 afterAll(async () => {
   if (batchIds.length === 0) return;
   await W.asTenant(async (c) => {
-    for (const table of ["payroll_payout_approval_log", "payroll_payout_grants"])
+    for (const table of [
+      "payroll_payout_approval_log",
+      "payroll_payout_grants",
+    ])
       await c.query(
         `DELETE FROM ${table} WHERE tenant_id = $1 AND batch_id = ANY($2::uuid[])`,
         [W.tenantId, batchIds],
@@ -185,6 +194,28 @@ describe("947 approval columns need the trusted path", () => {
 
   it("[947-approved-approval-columns-guarded] same guard on an approved batch (any status, not only halted)", async () => {
     await expectGuarded("approved");
+  });
+
+  it("[947-approved-reopen-without-unfreeze-refused] direct SQL approved -> pending_approval with the approval columns cleared, with no unfreeze, is refused for legend_app and for the owner (PAYOUT-83); the row stays", async () => {
+    const { batchId, before } = await batchIn("approved");
+    const sql = `UPDATE payroll_disbursement_batches
+                    SET status = 'pending_approval', approved_by = NULL, approved_at = NULL,
+                        approval_expires_at = NULL, source_bank_account_id = NULL
+                  WHERE tenant_id = $1 AND id = $2`;
+    for (const role of ["legend_app", null] as const) {
+      const outcome = await probe(role, sql, [W.tenantId, batchId]);
+      expect(
+        outcome.code,
+        `${role ?? "owner"}: reopening without an unfreeze must be refused`,
+      ).toBeDefined();
+      if (role === null)
+        expect(outcome.message, "owner: refused by PAYOUT-83").toMatch(
+          /PAYOUT-83/,
+        );
+    }
+    const after = await W.batchById(batchId);
+    expect(after.status).toBe("approved");
+    expect(approvalColumns(after)).toEqual(approvalColumns(before));
   });
 
   it("[947-normal-approval-still-works] control: a normal approval through the service (grant spent in the same transaction) is not blocked by the guard", async () => {

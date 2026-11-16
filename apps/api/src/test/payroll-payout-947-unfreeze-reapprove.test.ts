@@ -51,6 +51,9 @@ import {
   actorOf,
   bank,
   BUDI,
+  CASHIER,
+  SITI,
+  cash,
   installPayoutWorld,
   type Row,
 } from "./payroll-payout-fixtures.ts";
@@ -226,9 +229,17 @@ const grantsOf = (batchId: string, userId: string) =>
 /** What must not move before a new approval: bank files, paid items, payout journals. */
 async function moneyOf(runId: string, batchId: string) {
   return {
+    // Bank files: batches of the run that were exported (exported_at set).
     files: await count(
-      `SELECT count(*)::int AS n FROM bank_transfer_files WHERE tenant_id = $1 AND payroll_run_id = $2`,
+      `SELECT count(*)::int AS n FROM payroll_disbursement_batches
+        WHERE tenant_id = $1 AND payroll_run_id = $2 AND exported_at IS NOT NULL`,
       [W.tenantId, runId],
+    ),
+    // Items of the batch that are paid or on their way.
+    inflight: await count(
+      `SELECT count(*)::int AS n FROM payroll_disbursement_items
+        WHERE tenant_id = $1 AND batch_id = $2 AND status IN ('succeeded', 'sending')`,
+      [W.tenantId, batchId],
     ),
     succeeded: await count(
       `SELECT count(*)::int AS n FROM payroll_disbursement_items
@@ -276,14 +287,19 @@ type World = {
 };
 
 /** Created and submitted by `requester`, approved by `approverA` (main approval, logged). */
-async function approvedWorld(): Promise<World> {
-  const slips = [bank(BUDI, NET)];
+async function approvedWorld(
+  channel: "manual_bank" | "cash" = "manual_bank",
+): Promise<World> {
+  const slips =
+    channel === "cash"
+      ? [cash(CASHIER, NET), cash(SITI, NET)]
+      : [bank(BUDI, NET)];
   const runId = await W.seedRun(slips);
   await W.postLockedJournal(runId, slips);
   await W.inTx((tx) =>
     createDisbursementBatch(tx, actorOf(requester.userId), {
       payrollRunId: runId,
-      channel: "manual_bank",
+      channel,
     } as never),
   );
   const [row] = await W.rowsOf(
@@ -352,7 +368,12 @@ async function expectReopened(w: World) {
 }
 
 /** The approval of `who` is refused by the service; nothing is written. */
-async function expectApprovalRefused(who: Person, w: World, label: string) {
+async function expectApprovalRefused(
+  who: Person,
+  w: World,
+  label: string,
+  code: string,
+) {
   const logsBefore = (await logsOf(w.batchId)).length;
   const spentBefore = await spentGrantsOf(w.batchId);
   const error = await approveAs(who, w).then(
@@ -364,6 +385,7 @@ async function expectApprovalRefused(who: Person, w: World, label: string) {
   );
   expect((error as HttpError).status, label).toBeGreaterThanOrEqual(400);
   expect((error as HttpError).status, label).toBeLessThan(500);
+  expect((error as HttpError).code, `${label}: refusal code`).toBe(code);
   const batch = await W.batchById(w.batchId);
   expect(batch.status, `${label}: stays pending`).toBe("pending_approval");
   expect(batch.approved_by, label).toBeNull();
@@ -376,7 +398,12 @@ async function expectApprovalRefused(who: Person, w: World, label: string) {
 }
 
 /** The grantor refuses a batch_approve grant to `who` (PAYOUT-nn), no grant row. */
-async function expectGrantRefused(who: Person, w: World, label: string) {
+async function expectGrantRefused(
+  who: Person,
+  w: World,
+  label: string,
+  sqlCode: string,
+) {
   const before = await grantsOf(w.batchId, who.userId);
   const issued = await issueGrant({
     kind: "batch_approve",
@@ -385,7 +412,7 @@ async function expectGrantRefused(who: Person, w: World, label: string) {
     batchId: w.batchId,
   });
   expect(issued.grant, `${label}: no grant is issued`).toBeUndefined();
-  expect(issued.message, label).toMatch(/PAYOUT-\d+:/);
+  expect(issued.message, label).toContain(`${sqlCode}:`);
   expect(await grantsOf(w.batchId, who.userId), `${label}: no grant row`).toBe(
     before,
   );
@@ -474,11 +501,26 @@ describe("947 the new approval needs somebody else", () => {
     await expectReopened(w);
 
     // Grant issue (database): refused for the requester and the disputant.
-    await expectGrantRefused(approverA, w, "disputant and first approver");
-    await expectGrantRefused(requester, w, "requester");
+    await expectGrantRefused(
+      approverA,
+      w,
+      "disputant and first approver",
+      "PAYOUT-84",
+    );
+    await expectGrantRefused(requester, w, "requester", "PAYOUT-16");
     // Service: refused for both, nothing written.
-    await expectApprovalRefused(approverA, w, "disputant and first approver");
-    await expectApprovalRefused(requester, w, "requester");
+    await expectApprovalRefused(
+      approverA,
+      w,
+      "disputant and first approver",
+      "PAYOUT_DISOWNER_REFUSED",
+    );
+    await expectApprovalRefused(
+      requester,
+      w,
+      "requester",
+      "PAYOUT_SELF_APPROVAL",
+    );
 
     // Control: a different person can (so the refusals above are about the person).
     const spentBefore = await spentGrantsOf(w.batchId);
@@ -512,13 +554,13 @@ describe("947 the new approval needs somebody else", () => {
     await expectReopened(w);
     expect(await unfreezesOf(w.batchId), "two unfreezes").toBe(2);
 
-    for (const [who, label] of [
-      [approverA, "first disputant"],
-      [approverC, "second disputant"],
-      [requester, "requester"],
+    for (const [who, label, sqlCode, code] of [
+      [approverA, "first disputant", "PAYOUT-84", "PAYOUT_DISOWNER_REFUSED"],
+      [approverC, "second disputant", "PAYOUT-84", "PAYOUT_DISOWNER_REFUSED"],
+      [requester, "requester", "PAYOUT-16", "PAYOUT_SELF_APPROVAL"],
     ] as const) {
-      await expectGrantRefused(who, w, label);
-      await expectApprovalRefused(who, w, label);
+      await expectGrantRefused(who, w, label, sqlCode);
+      await expectApprovalRefused(who, w, label, code);
     }
 
     await approveAs(approverD, w);
@@ -549,6 +591,48 @@ describe("947 only an approved batch is reopened", () => {
     expect((await W.itemsOf(w.batchId)).map((i) => i.status)).toEqual(
       itemsBefore,
     );
+  });
+});
+
+describe("947 cash already handed over: the batch is stopped, not reopened", () => {
+  it("[947-cash-partial-stops-batch] a cash batch with one item handed over: 'not me' then unfreeze closes it partially_failed, the other item is not_sent, nobody is paid more, the approval stays", async () => {
+    const w = await approvedWorld("cash");
+    const [paid, rest] = await W.itemsOf(w.batchId);
+    expect(rest, "premise: two cash items").toBeTruthy();
+    await W.handover(w.batchId, [paid!.id as string], approverC.userId);
+    const approved = await W.batchById(w.batchId);
+    expect(approved.status, "premise: still approved").toBe("approved");
+    const money = await moneyOf(w.runId, w.batchId);
+    expect(money.succeeded, "premise: one item handed over").toBe(1);
+
+    await disownAndUnfreeze(approverA, outsideOwner, w);
+
+    const batch = await W.batchById(w.batchId);
+    expect(batch.status, "closed, not reopened").toBe("partially_failed");
+    expect(batch.approved_by, "approval columns untouched").toBe(
+      approverA.userId,
+    );
+    expect(batch.approved_at).toEqual(approved.approved_at);
+    expect(batch.approval_expires_at).toEqual(approved.approval_expires_at);
+    const items = await W.itemsOf(w.batchId);
+    const byId = new Map(items.map((i) => [i.id, i.status]));
+    expect(byId.get(paid!.id), "the handed over item stays paid").toBe(
+      "succeeded",
+    );
+    expect(byId.get(rest!.id), "the other item is stopped").toBe("not_sent");
+    expect(
+      await moneyOf(w.runId, w.batchId),
+      "nobody is paid more, nothing new leaves the batch",
+    ).toEqual(money);
+    // No new approval can move it any more.
+    const error = await approveAs(approverC, w).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(error, "approving a stopped batch is refused").toBeInstanceOf(
+      HttpError,
+    );
+    expect((await W.batchById(w.batchId)).status).toBe("partially_failed");
   });
 });
 

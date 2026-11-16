@@ -7,6 +7,10 @@
 --    transaction: approved_by, approved_at, approval_expires_at and
 --    source_bank_account_id are cleared, its approved items are prepared again.
 --    Every other status is left alone (exported or paid money is not touched).
+--    Exception: when an item is already past approved (cash handed over), the
+--    batch is not reopened (it could never finish): its approved items become
+--    not_sent and it closes partially_failed (as the cancel path), approval
+--    columns unchanged.
 --    The trace: the unfreeze row, its dispute and the append-only log row stay.
 -- 2. Proof of the reopening. app.payout_unfreeze_revert_proof(tenant, batch) is
 --    true only when payroll_payout_batch_unfreezes holds a row of this very
@@ -640,7 +644,7 @@ CREATE OR REPLACE FUNCTION app.payroll_disbursement_batches_freeze_guard() RETUR
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 BEGIN
   -- (947) the reopening only takes power away, so a sibling's freeze does not stop it.
-  IF OLD.status = 'approved' AND NEW.status = 'pending_approval'
+  IF OLD.status = 'approved' AND NEW.status IN ('pending_approval', 'partially_failed')
     AND current_user = 'legend_payout'
     AND (to_jsonb(NEW) - 'updated_at' - 'status' - 'approved_by' - 'approved_at' - 'approval_expires_at' - 'source_bank_account_id') IS NOT DISTINCT FROM (to_jsonb(OLD) - 'updated_at' - 'status' - 'approved_by' - 'approved_at' - 'approval_expires_at' - 'source_bank_account_id')
     AND app.payout_unfreeze_revert_proof(NEW.tenant_id, NEW.id) THEN
@@ -666,11 +670,11 @@ BEGIN
     LOOP
       PERFORM app.payout_batch_assert_open_nolock(NEW.tenant_id, v_batch);
     END LOOP;
-  ELSIF OLD.status = 'approved' AND NEW.status = 'prepared'
+  ELSIF OLD.status = 'approved' AND NEW.status IN ('prepared', 'not_sent')
     AND current_user = 'legend_payout'
     AND (to_jsonb(NEW) - 'updated_at' - 'status') IS NOT DISTINCT FROM (to_jsonb(OLD) - 'updated_at' - 'status')
     AND app.payout_unfreeze_revert_proof(NEW.tenant_id, NEW.batch_id) THEN
-    -- (947) the reopening of the batch (see the batch freeze guard).
+    -- (947) the reopening or the stop of the batch (see the batch freeze guard).
     RETURN NEW;
   ELSE
     IF OLD.status IS DISTINCT FROM NEW.status
@@ -896,6 +900,7 @@ DECLARE
   v_mine integer;
   v_involved boolean;
   v_rows integer;
+  v_partial boolean;
   v_now timestamptz := pg_catalog.clock_timestamp();
 BEGIN
   IF p_reason IS NULL OR pg_catalog.char_length(pg_catalog.btrim(p_reason)) < 10
@@ -1012,14 +1017,31 @@ BEGIN
   -- the source account are cleared, and its approved items are prepared again.
   -- A batch in any other status keeps it. The trace stays: the unfreeze row just
   -- written, its dispute and the append-only batch_approve log row.
+  -- Cash already handed over (an item past approved, e.g. succeeded) cannot be
+  -- taken back, and a reopened batch could never finish: the rule that limits
+  -- payment applies, as in the cancel path: the approved items are stopped
+  -- (not_sent), the batch closes partially_failed, the approval columns stay.
   IF v_batch.status = 'approved' AND app.payout_unfreeze_revert_proof(v_tenant, p_batch) THEN
-    UPDATE public.payroll_disbursement_batches b
-       SET status = 'pending_approval', approved_by = NULL, approved_at = NULL,
-           approval_expires_at = NULL, source_bank_account_id = NULL, updated_at = v_now
-     WHERE b.tenant_id = v_tenant AND b.id = p_batch AND b.status = 'approved';
-    UPDATE public.payroll_disbursement_items i
-       SET status = 'prepared', updated_at = v_now
-     WHERE i.tenant_id = v_tenant AND i.batch_id = p_batch AND i.status = 'approved';
+    v_partial := EXISTS (
+      SELECT 1 FROM public.payroll_disbursement_items i
+       WHERE i.tenant_id = v_tenant AND i.batch_id = p_batch
+         AND i.status NOT IN ('approved', 'prepared', 'cancelled'));
+    IF v_partial THEN
+      UPDATE public.payroll_disbursement_items i
+         SET status = 'not_sent', updated_at = v_now
+       WHERE i.tenant_id = v_tenant AND i.batch_id = p_batch AND i.status = 'approved';
+      UPDATE public.payroll_disbursement_batches b
+         SET status = 'partially_failed', updated_at = v_now
+       WHERE b.tenant_id = v_tenant AND b.id = p_batch AND b.status = 'approved';
+    ELSE
+      UPDATE public.payroll_disbursement_batches b
+         SET status = 'pending_approval', approved_by = NULL, approved_at = NULL,
+             approval_expires_at = NULL, source_bank_account_id = NULL, updated_at = v_now
+       WHERE b.tenant_id = v_tenant AND b.id = p_batch AND b.status = 'approved';
+      UPDATE public.payroll_disbursement_items i
+         SET status = 'prepared', updated_at = v_now
+       WHERE i.tenant_id = v_tenant AND i.batch_id = p_batch AND i.status = 'approved';
+    END IF;
   END IF;
   RETURN v_rows;
 END $$;

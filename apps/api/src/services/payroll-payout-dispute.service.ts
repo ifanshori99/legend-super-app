@@ -311,9 +311,13 @@ export async function unfreezeDisbursementBatch(
     throw disputeError(error);
   }
   // The SQL function reopens an approved batch whose main approval was disowned
-  // ("not me"): same transaction, so before/after status are consistent.
+  // ("not me"): same transaction, so before/after status are consistent. When
+  // cash was already handed over it stops the batch (partially_failed) instead.
   const after = await readBatch(tx, actor.tenantId, batch.id);
-  if (batch.status === "approved" && after.status === "pending_approval") {
+  if (
+    batch.status === "approved" &&
+    (after.status === "pending_approval" || after.status === "partially_failed")
+  ) {
     const lifted = await tx
       .select({ id: payrollPayoutBatchUnfreezes.disputeId })
       .from(payrollPayoutBatchUnfreezes)
@@ -326,7 +330,10 @@ export async function unfreezeDisbursementBatch(
       );
     for (const row of lifted) {
       await recordPayoutAudit(tx, actor, {
-        action: "payroll.disbursement.batch_reopened",
+        action:
+          after.status === "pending_approval"
+            ? "payroll.disbursement.batch_reopened"
+            : "payroll.disbursement.batch_stopped",
         objectType: "payroll_disbursement_batch",
         objectId: batch.id,
         reason,
