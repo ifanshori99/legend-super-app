@@ -1,3 +1,10 @@
+## 913 Second opinion interaksi QRIS hold × weuo2 pada m1 batch74 (16 Nov 2026)
+
+- Basis `40f6f3c95`; laporan read-only `docs/qa/second-opinion-qris-hold-weuo2-m1.md` pada cabang `qa/second-opinion-qris-weuo2-913`.
+- Satu P1 baru `legend-ek1wt`: token pembayaran breakfast sah melewati hold backfill melalui API create/refresh umum; kode kedua dapat diterbitkan sebelum kode lama final. Menahan gerbang rilis uang; perbaikan kode belum dikerjakan dalam SO.
+- Tidak ditemukan bug baru pada refund ulang sisa, pembatalan dengan refund tertunda, atau siklus kunci yang diperiksa. Penyesuaian dua test memiliki batas cakupan yang dijelaskan dalam laporan.
+- Test terarah lewat satu runner `heavy`: 4 berkas / 20 test lulus (22,43 detik); test reproduksi P1 dan konkurensi baru belum dijalankan. Tiga subagent Codex, puncak tiga bersamaan; tanpa gate penuh/build/e2e. Biaya/token sesi tidak tersedia dari runner ini.
+
 ## 896 QRIS area akhir: 5 P1 second opinion + temuan architect (engineer, legend-ad95t xg6qk 5h8ob o6q8i la1yk, cabang `fix/qris-hold-so-879`, 16 Nov 2026)
 - Selesai (dari c2902fa4e):
   - ad95t/xg6qk: poll memuat intent `failed` non-final (providerRef, provider_final_at NULL, tanpa hold tertutup); paid tercatat/diparkir tepat sekali; klausa waktu lokal dihapus dari payment-live-code (kode mati hanya oleh providerAnswerFinal/rekonsiliasi); jawaban final wajib providerRef sama; `qris-hold-so896-poll-failed` (11 tes, 9 merah dulu). Lease baris pending yang terlewat sudah dilepas di `finally` (tanpa perubahan kode).
