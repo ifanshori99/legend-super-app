@@ -33,6 +33,14 @@ beforeAll(async () => {
       "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
       [tenantId],
     );
+    // Only one active primary node may exist per outlet. A test file that ran
+    // earlier in the same database can have left its node active (the order of
+    // files is not fixed), so retire any such node before adding this one.
+    await client.query(
+      `UPDATE edge_nodes SET status = 'revoked', revoked_at = now()
+        WHERE tenant_id = $1 AND outlet_id = $2 AND role = 'primary' AND status = 'active'`,
+      [tenantId, outletId],
+    );
     await client.query(
       `INSERT INTO edge_nodes (id, tenant_id, outlet_id, role, status, label, credential_hash)
        VALUES ($1, $2, $3, 'primary', 'active', $4, $5)`,
@@ -48,6 +56,24 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // Do not leave an active primary node behind for the next file (see above).
+  const client = await owner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+      [tenantId],
+    );
+    await client.query(
+      "UPDATE edge_nodes SET status = 'revoked', revoked_at = now() WHERE id = $1 AND status = 'active'",
+      [nodeId],
+    );
+    await client.query("COMMIT");
+  } catch {
+    await client.query("ROLLBACK");
+  } finally {
+    client.release();
+  }
   await owner.end();
 });
 

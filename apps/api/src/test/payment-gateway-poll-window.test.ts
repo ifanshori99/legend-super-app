@@ -385,9 +385,19 @@ describe("a VA paid late after the guest switched bank", () => {
     const guest = await seatAtNewTable();
     const { orderId, totalIdr } = await placeOrder(guest);
     const first = await as(guest).pay(orderId, "va", "bmri");
+    const oldId = first.body.data.id as string;
+    // QRIS hold rule (legend-kf104): a replacement code is refused while the
+    // old one may still be paid, so a guest can only switch bank once the
+    // provider has declared the old code final. The old code is then dead for
+    // us; the test below models the provider paying it anyway (the defensive
+    // double-payment path that books one refund).
+    await owner.query(
+      `UPDATE payment_intents SET status = 'expired', provider_final_at = now()
+        WHERE tenant_id = $1 AND id = $2`,
+      [tenant.tenantId, oldId],
+    );
     const second = await as(guest).pay(orderId, "va", "bnia");
     expect(second.status).toBe(201);
-    const oldId = first.body.data.id as string;
     const newId = second.body.data.id as string;
     // Supersede only expires the old code in our database.
     expect((await intentRow(oldId)).status).toBe("expired");
