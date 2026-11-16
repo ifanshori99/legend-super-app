@@ -1735,3 +1735,4 @@ Langkah berikut CTO baru:
 - 14:30 Batch75 mendarat m1 2cd7c7564 (911 + 5 cabang UI; migrasi 0409-0423; 6 kartu ditutup). SO 919: 2 P1 (buka beku tanpa step-up; ekspor saudara tidak terserialisasi) + 1 P2 (posting beku). Perbaikan 920 Sonnet #1. Batch76 setelah 920: 918-chain + guest-916.
 - 15:04 920 selesai: ghostex/920-payout-fix-so919-freeze d06e5a269 (unfreeze password-only, kunci run run->batch->item->GL, GL batch beku ditunda lalu dipulihkan; 613 test). SO 922 Codex #7. Disk 15 GB setelah cache dibersihkan.
 - 15:04 920 selesai: ghostex/920-payout-fix-so919-freeze d06e5a269 (unfreeze password-only, kunci run run->batch->item->GL, GL batch beku ditunda lalu dipulihkan; 613 test). SO 922 Codex #7. Disk 15 GB setelah cache dibersihkan.
+- 15:11 SO 922 (Codex #7): 1 P2 legend-yd9u2 (deadlock catch-up unfreeze vs worker bukti historis). Ditunda sampai batch76 mendarat (disk 14 GB, #1 91%): perbaikan lalu batch77 rantai payout 920.
