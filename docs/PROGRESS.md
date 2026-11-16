@@ -6924,3 +6924,11 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 - Subagent follow-up: total 7, puncak 6 bersamaan; satu token heavy pada `followup_runner`. Laporan token/biaya Codex tidak tersedia melalui helper sesi Claude.
 
 - Review AC14 direproduksi melalui event/receipt asli: HTTP dengan versi di bawah receipt yang lebih baru sempat mengubah tambahan KDS. Bukti RED 1 gagal/27 lulus ada di `/tmp/930-kds-followup-receipt-red.log`; perbaikan membatasi enrichment dengan versi receipt node yang sama, tetap mengizinkan versi sama, dan tidak menyentuh field inti. Narrowing tipe pada dua assertion test baru juga diperbaiki tanpa cast.
+
+
+### 932 — Merge train batch80 KDS stations r2 (17 Nov 2026)
+
+- Basis tip remote `70bba542d`; integrasi `int/batch80`, worktree `/Users/ifanshori99/Projects/legend super app/legend-batch80` agar bind mount Colima tersedia. Isi tepat satu cabang `ws/edge-kds-stations-r2` `91c7f9d8b`; audit ancestry tidak menemukan tambahan SIAP di luar tiga cabang yang dilarang. Kartu train `legend-qhsex`.
+- Merge `6eda83b1b`: konflik hanya append `docs/PROGRESS.md`, kedua sisi dipertahankan. Migrasi `0431_device_scanner_status` tetap 0431 karena m1 berujung0430; snapshot0431 sudah berantai ke id snapshot0430 dan hanya menambah dua kolom nullable/check scanner perangkat. Reviewer integrasi memeriksa resolusi dan metadata; runner membuktikan db:generate kosong sebelum gate.
+- Rencana gate berurutan: format/lint berkas berubah dan db:generate; fast root scanner single-path/contract/registry + text-contract serta area edge/KDS/catalog/heartbeat; workspace links/lint penuh; typecheck; e2e produksi; build; full test melalui heavy. Satu test-runner memegang token berat; tidak menjalankan pnpm check monolitik. Tidak ke main/deploy/force push.
+- Subagent awal tiga native Codex (dua Explore, satu test-runner; Explore migrasi berlanjut reviewer integrasi), puncak tiga. session-usage tidak menemukan transkrip native Codex, parallel-report hanya menghitung Claude; biaya/token/rata-rata native tidak tersedia.
