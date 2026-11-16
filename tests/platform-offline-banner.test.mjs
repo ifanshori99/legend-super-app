@@ -49,10 +49,11 @@ registerHooks({
       "@/features/ws02-edge/hooks":
         "export const useCloudConnection = () => false;",
       "@/components/layout/area-icons": "export const AREA_ICONS = {};",
+      "@/components/layout/outlet-picker":
+        "export const OutletPicker = ({children}) => children ?? null; export const OutletList = ({children}) => children ?? null;",
     };
     const frameComponents = {
       "@/components/layout/area-gate-screen": "AreaGateScreen",
-      "@/components/layout/outlet-picker": "OutletPicker",
       "@/features/ws05-notifications/components/push-auto-register":
         "PushAutoRegister",
       "@/components/layout/router-link": "RouterShellLink",
