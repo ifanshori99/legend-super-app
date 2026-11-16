@@ -1,8 +1,8 @@
-# Antrean merge train (serah terima, 16 Nov 2026)
+# Antrean merge train (serah terima, 17 Nov 2026)
 
 Ditulis oleh merge train batch64g. Sumber: pesan CTO G6evw, G6w9t, G4j04. Tip SHA di bawah dicatat saat pesan CTO; ambil tip terbaru (`git fetch`, lalu `git rev-parse origin/<cabang>`) sebelum menyusun batch, karena banyak cabang dipin ulang.
 
-## Sudah mendarat 16 Nov
+## Sudah mendarat 16–17 Nov
 
 - Batch73 -> m1 719171d33. Batch74 -> m1 40f6f3c95: payout-so895-897 (migrasi 0395-0400), qris-hold-so-879 (0401-0406), seat-reservation-lock-order-f7rnw, kecil-859 (0407), print-alert-supervisor, print-agent-kds-retry (0408). Jangan antre ulang.
 
@@ -14,16 +14,15 @@ Ditulis oleh merge train batch64g. Sumber: pesan CTO G6evw, G6w9t, G4j04. Tip SH
 
 - Batch78 -> m1 a8e6036abf3a609557eb3fae03c00ed3e37368c0 (merge pendaratan `792577ef5`): `fix/925-ci-grantor-withdraw-flake` 953effb41 dan `fix/e2e-m1-858-r2` c12914ea6. Tanpa migrasi; ujung tetap 0430. Gate hijau: fast scanner root/API + seluruh pemakai fixture payout, lint, typecheck, e2e produksi 18 lulus/1 skip, mock 35 lulus/1 skip, build, full run pertama 24.418 lulus (20.855 API + 3.471 root + 92 web), tanpa rerun atau pengecualian flake. Ditutup: `legend-kj50i`, `legend-61umg`, `legend-y4f3l`, `legend-42v4v`. Jangan antre kedua cabang atau `fix/e2e-m1-858` lama ulang.
 
-## Antrean tersisa setelah batch78
+- Batch79 -> m1 70bba542dbb6cc1110b929d724130e74c34326ce (merge pendaratan `b132b71ff`): `ws/928-edge-print-alert` b158f09c2, `fix/844-ui-delivery-r2` 40d434c3a, `fix/0y8tf-zvz-port` 84c48ca1d. Tanpa migrasi; ujung tetap 0430. Fast383 berkas termasuk67 kontrak pemindai, lint, typecheck, e2e produksi18 lulus/1 skip+mock25/25, build dan full gabungan24474 lulus/47 skip/16 todo hijau. Full dipulihkan dari bind mount Colima /private/tmp dengan relokasi ke /Users dan rerun hanya berkas gagal, tanpa patch; seluruh web/API dilanjutkan. Ditutup: `legend-2lp.2`, `legend-2lp.4`, `legend-2lp.5`, `legend-4lm6`, `legend-0y8tf`, `legend-sgvw0`, `legend-xz3ll`. `legend-d6d1` tetap parsial. Jangan antre ulang tiga cabang ini. Rilis cloud dulu, lalu edge.
 
-- `fix/844-ui-delivery-r2` 40d434c3a SIAP batch79 (port 5ce165c2; tanpa migrasi).
-- `fix/0y8tf-zvz-port` 84c48ca1d SIAP batch79 (legend-0y8tf; tanpa migrasi).
+## Antrean tersisa setelah batch79
+
 - `ws/edge-kds-stations-r2` 91c7f9d8b SIAP batch80 (protokol v3 field opsional + resync sekali per revisi; migrasi sementara 0431, renumber dari ujung m1). Cabang lama `ws/edge-kds-stations` dan `ghostex/5ce165c2` jangan diambil.
-- `ws/928-edge-print-alert` b158f09c2 SIAP batch79 (2lp.2, 2lp.4, 2lp.5, 4lm6; tanpa migrasi; 381 test). Rilis: cloud dulu, lalu edge.
 - `ws/edge-kds-stations` 6e393095c: belum masuk; perlu penyelesaian konflik edge/KDS dan rechain migrasi 0371 dari ujung m1. Tidak memenuhi syarat tambahan tanpa bentrok batch78.
 - `ghostex/5ce165c2` 2f62ed4be: belum masuk; perlu penyelesaian konflik KDS/delivery/e2e. Tidak memenuhi syarat tambahan tanpa bentrok batch78.
 - Rujukan cabang lain pada “Urutan prioritas” sudah menjadi ancestor m1 saat audit batch78; periksa ancestry sebelum mengantre ulang.
-- `legend-0y8tf` tetap terbuka: perbaikan `ujxl` sudah mendarat terpisah, tetapi `zvz` masih versi sebelum `c3cef7cb4` dan perlu port. `legend-whd5c` tetap terbuka untuk adapter kredit tamu (`test.fixme`).
+- `legend-whd5c` tetap terbuka untuk adapter kredit tamu (`test.fixme`).
 
 ## Aturan tetap
 
@@ -111,7 +110,7 @@ Induk lebih dulu. Migrasi dinomori ulang dari ujung m1 saat batch disusun.
 
 ## Catatan migrasi
 
-- Nomor terakhir di m1 setelah batch78: 0430 (`0430_payout_backfill_unfreeze_lock_order`). Entri sementara dari brief CTO (0373-0385, 0440, 0448) hanyalah nomor kerja; nomor akhir mengikuti ujung m1 saat merge.
+- Nomor terakhir di m1 setelah batch79: 0430 (`0430_payout_backfill_unfreeze_lock_order`). Entri sementara dari brief CTO (0373-0385, 0440, 0448) hanyalah nomor kerja; nomor akhir mengikuti ujung m1 saat merge.
 - Migrasi data (`0377_recipes_resync_edges` dll.) dikunci per nama berkas di `data-import-registry.test.ts`.
 - Peringatan check-journal terbuka: migrasi 0369 menambah FK `push_subscriptions_device_fk` pada tabel lama tanpa NOT VALID. Catat untuk review sebelum rilis.
 
