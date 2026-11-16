@@ -622,12 +622,36 @@ describe("duitku adapter: getStatus", () => {
     }
   });
 
-  it("refuses a status that carries another reference", async () => {
+  it("reports a paid status under another reference as an extra payment, still pending", async () => {
     const { fn } = fakeFetch({
       transactionStatus: (call) =>
         json({
           merchantOrderId: call.body.merchantOrderId,
           statusCode: "00",
+          reference: "OTHER-REF",
+          amount: "50000",
+        }),
+    });
+    expect(
+      await gateway({ fetch: fn }).port.getStatus(statusRequest()),
+    ).toEqual({
+      status: "pending",
+      providerRef: "REF-1",
+      amountIdr: null,
+      paidAt: null,
+      rawStatus: "00",
+      extraPayments: [
+        { providerRef: "OTHER-REF", amountIdr: 50_000, paidAt: null },
+      ],
+    });
+  });
+
+  it("refuses an unpaid status that carries another reference", async () => {
+    const { fn } = fakeFetch({
+      transactionStatus: (call) =>
+        json({
+          merchantOrderId: call.body.merchantOrderId,
+          statusCode: "01",
           reference: "OTHER-REF",
           amount: "50000",
         }),

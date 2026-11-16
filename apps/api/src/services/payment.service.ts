@@ -1232,7 +1232,7 @@ export async function recordUnsettledGatewayFunds(
  * Returns `inserted` for newly written funds, `found` for a replay of the same
  * provider transaction (already on record), and `none` when there is no
  * positive amount (nothing recorded, nothing to call final). */
-async function recordUnsettledGatewayFundsInTx(
+export async function recordUnsettledGatewayFundsInTx(
   tx: Tx,
   context: ScopedTenantContext,
   intent: PaymentIntentRow,

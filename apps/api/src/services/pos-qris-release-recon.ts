@@ -31,17 +31,24 @@ import { withTenant } from "../db/tenant.ts";
 import { posQrisHolds } from "../db/schema/pos-qris-hold.ts";
 import type { Tx } from "./menu-internals.ts";
 import { notifyOutletSupervisors } from "./edge-sync-conflict-alert.ts";
-import { paymentGatewayFor } from "./payment-gateway.ts";
+import {
+  paymentGatewayFor,
+  type GatewayPaymentStatus,
+} from "./payment-gateway.ts";
 import { plausiblePaidAt } from "./payment-paid-at.ts";
 import {
   PaymentConfirmationRejected,
   confirmPayment,
+  recordUnsettledGatewayFundsInTx,
 } from "./payment.service.ts";
 
 /** Same margin as the hold check (D-03): an answer before it proves nothing. */
 const CLOSE_MARGIN_MS = 60_000;
 const FIRST_CHECK_MS = 2 * 60_000;
 const MAX_BACKOFF_MS = 60 * 60_000;
+/** Hard stop (legend-xzu4l): a row is never asked longer than this, whatever
+ * the provider says about the code. */
+const MAX_WATCH_MS = 7 * 24 * 60 * 60_000;
 
 /** 2, 4, 8 ... minutes, then every hour for as long as the provider is silent. */
 export function nextReconCheckAt(attempts: number, now: Date): Date {
@@ -154,12 +161,77 @@ async function recordedMoney(
 }
 
 /**
+ * A provider payment on the code other than the one the intent was minted for
+ * (legend-xzu4l): parked as unallocated funds, keyed by that provider
+ * transaction, so poll and webhook together park it exactly once. It never
+ * settles the bill. Staff are alerted only when the money is newly parked.
+ * Returns false when parking failed (the row stays open and is asked again).
+ */
+async function parkExtraPayments(
+  context: ScopedTenantContext,
+  intent: typeof paymentIntents.$inferSelect,
+  extras: NonNullable<GatewayPaymentStatus["extraPayments"]>,
+  now: Date,
+): Promise<boolean> {
+  try {
+    for (const extra of extras) {
+      if (!(extra.amountIdr > 0)) continue;
+      await withTenant(db, context, async (tx) => {
+        const outcome = await recordUnsettledGatewayFundsInTx(
+          tx,
+          context,
+          intent,
+          {
+            provider: intent.provider,
+            providerRef: extra.providerRef,
+            source: "gateway_status",
+            paidAmountIdr: extra.amountIdr,
+            receivedAt: new Date(
+              plausiblePaidAt(extra.paidAt, intent.createdAt, now),
+            ),
+          },
+          now,
+        );
+        if (outcome !== "inserted") return;
+        await notifyOutletSupervisors(
+          tx,
+          context,
+          {
+            tenantId: context.tenant.tenantId,
+            outletId: intent.outletId as OutletId,
+            alsoOwners: true,
+            alsoUserIds: [],
+            id: createUlid(now.getTime()),
+            eventName: "payment_intent.extra_funds_parked",
+            aggregateType: "payment_intent",
+            aggregateId: intent.id,
+            payload: { intentId: intent.id, providerRef: extra.providerRef },
+            title: "Uang tambahan masuk di kode pembayaran",
+            body: `Penyedia mencatat pembayaran tambahan Rp${extra.amountIdr} pada kode yang sama. Uang ditahan di dana belum teralokasi; kembalikan ke pembayar.`,
+          },
+          now,
+        );
+      });
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Asks the provider once about one queue row and decides. Shared with the VA
  * staff release queue (legend-5wn1e): only the row's intent id is used.
+ *
+ * legend-xzu4l: a recorded payment does NOT close the row. The code stays live
+ * at the provider until it lapses, so a second payment with a lost webhook can
+ * still arrive; the row keeps asking (backoff) until the code is closed at the
+ * provider (its expiry plus margin, or a final expired/failed answer) or the
+ * hard watch limit passes. Extra provider transactions are parked, never paid.
  */
 export async function decide(
   context: ScopedTenantContext,
-  row: { paymentIntentId: string },
+  row: { paymentIntentId: string; createdAt?: Date },
   now: Date,
 ): Promise<Outcome> {
   const [intent] = await withTenant(db, context, (tx) =>
@@ -196,6 +268,19 @@ export async function decide(
   }
   if (answer.providerRef !== intent.providerRef)
     return { kind: "open", seen: "other_reference" };
+  if (
+    answer.extraPayments &&
+    answer.extraPayments.length > 0 &&
+    !(await parkExtraPayments(outletContext, intent, answer.extraPayments, now))
+  )
+    return { kind: "open", seen: "extra_funds_not_parked" };
+  const expired = now.getTime() >= intent.expiresAt.getTime() + CLOSE_MARGIN_MS;
+  // The code is closed at the provider once it lapsed (this answer is the one
+  // asked after that), or the row hit the hard watch limit.
+  const codeClosed =
+    expired ||
+    (row.createdAt !== undefined &&
+      now.getTime() >= row.createdAt.getTime() + MAX_WATCH_MS);
   if (answer.status === "paid") {
     if (answer.amountIdr === null)
       return { kind: "open", seen: "paid_without_amount" };
@@ -221,20 +306,41 @@ export async function decide(
           return { kind: "open", seen: "settlement_failed" };
       }
     }
-    return (await recordedMoney(context, intent.id))
+    if (!(await recordedMoney(context, intent.id)))
+      return { kind: "open", seen: "paid_not_recorded" };
+    return codeClosed
       ? { kind: "resolved", resolution: "paid_recorded", seen: "paid" }
-      : { kind: "open", seen: "paid_not_recorded" };
+      : { kind: "open", seen: "paid" };
   }
   const dead =
-    now.getTime() >= intent.expiresAt.getTime() + CLOSE_MARGIN_MS &&
+    expired &&
     (intent.provider === "duitku"
       ? answer.rawStatus === "02"
       : answer.status === "expired" || answer.status === "failed");
-  if (dead)
+  if (dead) {
+    // Money already on record for this code (an earlier paid answer, a webhook)
+    // keeps the paid resolution: the code ending later does not undo it.
+    if (await recordedMoney(context, intent.id))
+      return {
+        kind: "resolved",
+        resolution: "paid_recorded",
+        seen: answer.status,
+      };
     return {
       kind: "resolved",
       resolution:
         answer.status === "failed" ? "provider_failed" : "provider_expired",
+      seen: answer.status,
+    };
+  }
+  // Hard limit with no final answer: close as expired, never as paid unless
+  // money is on record.
+  if (codeClosed && !expired)
+    return {
+      kind: "resolved",
+      resolution: (await recordedMoney(context, intent.id))
+        ? "paid_recorded"
+        : "provider_expired",
       seen: answer.status,
     };
   return { kind: "open", seen: answer.status };

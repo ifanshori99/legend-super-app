@@ -94,6 +94,15 @@ export type GatewayPaymentStatus = {
    * (design legend-yhia9 D-03), so the code is carried as evidence. Optional:
    * DOIT and test doubles written before it stay valid. */
   readonly rawStatus?: string;
+  /** Other provider transactions already paid on the same code, apart from
+   * `providerRef` (a code can be paid again under a new provider reference).
+   * The caller parks each one as unallocated funds; it never settles the
+   * bill with them. Optional: gateways that cannot see them leave it out. */
+  readonly extraPayments?: ReadonlyArray<{
+    readonly providerRef: string;
+    readonly amountIdr: number;
+    readonly paidAt?: string | null;
+  }>;
 };
 
 /** A code that was replaced by another one on the same bill. */

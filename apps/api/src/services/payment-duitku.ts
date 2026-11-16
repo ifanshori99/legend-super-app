@@ -468,8 +468,27 @@ export function createDuitkuGateway(
           merchantOrderId: input.intentId,
           fetch: doFetch,
         });
-        // An answer about another Duitku payment must never move this one.
-        if (answer.reference !== input.providerRef) continue;
+        if (answer.reference !== input.providerRef) {
+          // An answer about another Duitku payment must never move this one,
+          // but money already paid under it is reported so it can be parked.
+          if (answer.status === "paid") {
+            return {
+              status: "pending",
+              providerRef: input.providerRef,
+              amountIdr: null,
+              paidAt: null,
+              rawStatus: answer.statusCode,
+              extraPayments: [
+                {
+                  providerRef: answer.reference,
+                  amountIdr: answer.amountIdr,
+                  paidAt: null,
+                },
+              ],
+            };
+          }
+          continue;
+        }
         return {
           status:
             answer.status === "paid"
