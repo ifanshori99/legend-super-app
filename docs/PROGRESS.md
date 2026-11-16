@@ -6875,3 +6875,5 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 - Full resume checkpoint: API12839 test lulus teramati pada520/1353 berkas, tanpa gagal; web92/92 tetap hijau. KDS swap/fire lock-order, payout overpaid tanpa bayar ulang/booking tambahan, pembulatan retur pembelian dan proof-closure reauth ikut lewat. Tidak ada perubahan kode atau ulang suite.
 
 - Full resume checkpoint: API13810 test lulus teramati pada573/1353 berkas, tanpa gagal; web92/92 tetap hijau. Payout proof byte-binding, fingerprint lintas item/batch, trusted correction replay dan consumed-return-proof ikut lewat. Beberapa kasus payout memerlukan beberapa detik per test; proses tetap aktif.
+
+- Full resume checkpoint: API15516 test lulus teramati pada730/1353 berkas, tanpa gagal; web92/92 tetap hijau. Rotasi data-key dengan kasus11–27detik selesai, support read-only menolak mutasi, QRIS wrong-amount hold dan POS refund paid cap ikut lewat.
