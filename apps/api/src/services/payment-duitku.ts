@@ -443,6 +443,14 @@ export function createDuitkuGateway(
     };
   }
 
+  function extraList(extras: Map<string, number>) {
+    return [...extras].map(([providerRef, amountIdr]) => ({
+      providerRef,
+      amountIdr,
+      paidAt: null,
+    }));
+  }
+
   async function getStatus(input: {
     context: ScopedTenantContext;
     outletId?: string;
@@ -461,6 +469,11 @@ export function createDuitkuGateway(
     // code is unknown to the current one: while the previous generation is in
     // grace, ask once with it (D18).
     let failure: unknown = duitkuUnavailable();
+    // Paid transactions under another reference: never move this payment, but
+    // reported so they can be parked. Collected over every credential set,
+    // because a later set may still answer for this payment's own reference.
+    const extras = new Map<string, number>();
+    let extraStatusCode = "";
     for (const creds of resolved.credentials) {
       try {
         const answer = await duitkuTransactionStatus({
@@ -468,8 +481,17 @@ export function createDuitkuGateway(
           merchantOrderId: input.intentId,
           fetch: doFetch,
         });
-        // An answer about another Duitku payment must never move this one.
-        if (answer.reference !== input.providerRef) continue;
+        if (answer.reference !== input.providerRef) {
+          if (
+            answer.status === "paid" &&
+            answer.reference !== null &&
+            answer.reference !== ""
+          ) {
+            extras.set(answer.reference, answer.amountIdr);
+            extraStatusCode = answer.statusCode;
+          }
+          continue;
+        }
         return {
           status:
             answer.status === "paid"
@@ -481,11 +503,21 @@ export function createDuitkuGateway(
           amountIdr: answer.status === "paid" ? answer.amountIdr : null,
           paidAt: null,
           rawStatus: answer.statusCode,
+          ...(extras.size > 0 ? { extraPayments: extraList(extras) } : {}),
         };
       } catch (error) {
         failure = error;
       }
     }
+    if (extras.size > 0)
+      return {
+        status: "pending",
+        providerRef: input.providerRef,
+        amountIdr: null,
+        paidAt: null,
+        rawStatus: extraStatusCode,
+        extraPayments: extraList(extras),
+      };
     throw failure;
   }
 

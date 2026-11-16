@@ -15,6 +15,8 @@ export const financeExceptionsMessages = {
     receipt_pending_stale: "Jurnal penjualan menunggu struk lebih dari 1 hari",
     payout_proof_stuck: "Bukti payout tertahan pemeriksaan",
     payout_recon_flag: "Selisih rekonsiliasi payout",
+    release_recon_unproven:
+      "Kode QRIS/VA yang dilepas belum terbukti mati lebih dari 3 hari",
   },
   kindHelp: {
     edge_tax_unsnapshotted:
@@ -33,6 +35,8 @@ export const financeExceptionsMessages = {
       "Bukti bank pencairan gaji belum bisa diperiksa: berkasnya tidak terbaca atau sama dengan bukti lain. Pengembalian dengan bukti baru tetap ditahan. Berlaku untuk seluruh PT dan tidak mengikuti rentang tanggal.",
     payout_recon_flag:
       "Pemeriksaan malam menemukan langkah koreksi, pembayaran ganda, pengembalian, atau akun sumber pencairan gaji yang tidak cocok dengan catatan dua orang, bukti, atau jurnalnya. Slip terkait ditahan dari pencairan ulang. Berlaku untuk seluruh PT dan tidak mengikuti rentang tanggal.",
+    release_recon_unproven:
+      "Kode QRIS atau VA yang dilepas manual masih belum dijawab final oleh penyedia setelah lebih dari 3 hari. Antrean terus bertanya tiap hari dan tidak menutup baris tanpa bukti, jadi uang masih bisa masuk ke kode ini. Tidak mengikuti rentang tanggal.",
   },
   refTypes: {
     order: "Order edge",
@@ -42,6 +46,8 @@ export const financeExceptionsMessages = {
     payout_posting: "Jurnal pencairan gaji",
     payout_proof: "Bukti pencairan gaji",
     payout_recon: "Rekonsiliasi pencairan gaji",
+    qris_release_recon: "Antrean cek QRIS dilepas",
+    va_release_recon: "Antrean cek VA dilepas",
   },
   refTypeUnknown: "Sumber lain",
   details: {

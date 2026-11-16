@@ -67,6 +67,7 @@ import {
   requestQrDoublePaymentRefund,
   requestQrLatePaymentRefund,
 } from "./qr-order-late-payment.ts";
+import { assertNoActiveQrisHold } from "./pos-qris-hold.ts";
 import { notifyQrOrderChange } from "./qr-order-realtime-signal.ts";
 import {
   loadQrZoneOfSession,
@@ -326,6 +327,9 @@ export async function createIssueChargePayment(
           )
             return guestPaymentDto(current, target);
         }
+        // legend-ek1wt: a charge code is a code issuer too; while a QR of the
+        // order's bill can still be paid, no new code (409 QRIS_HOLD_ACTIVE).
+        await assertNoActiveQrisHold(tx, context, charge.orderId);
         const intent = await createIntent(
           context,
           token,
@@ -345,6 +349,7 @@ export async function createIssueChargePayment(
             }),
           },
           now,
+          { orderLockedByCaller: true },
         );
         await tx
           .update(orderIssueCharges)

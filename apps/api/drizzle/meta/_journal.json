@@ -2871,6 +2871,13 @@
       "when": 1795000000038,
       "tag": "0423_payout_run_settle",
       "breakpoints": true
+    },
+    {
+      "idx": 424,
+      "version": "7",
+      "when": 1795000000039,
+      "tag": "0424_payment_va_releases",
+      "breakpoints": true
     }
   ]
 }

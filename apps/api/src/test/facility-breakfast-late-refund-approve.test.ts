@@ -49,6 +49,7 @@ import {
   memberApi,
   newMember,
   openIntent,
+  openSecondIntent,
   owner,
   paidEvent,
   payLink,
@@ -194,7 +195,7 @@ async function lateIntentWorld(scenario: "after_fired" | "after_cancel") {
   if (scenario === "after_fired") {
     // Both codes exist before the link is paid (opening one afterwards is 409).
     const first = await openIntent(world, token);
-    const late = await openIntent(world, token);
+    const late = await openSecondIntent(world, token);
     await settle(world, first.id, order.totalIdr);
     await deliver(world, await paidEvent(world, first.id));
     expect((await staffFire(world, order.id)).status).toBe(200);

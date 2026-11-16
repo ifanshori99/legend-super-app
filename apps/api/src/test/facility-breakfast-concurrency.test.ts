@@ -40,6 +40,7 @@ import {
   memberApi,
   newMember,
   openIntent,
+  openSecondIntent,
   owner,
   paidEvent,
   payIntent,
@@ -236,7 +237,7 @@ describe("BRK-CONC-02 two intents settled at the same time are paid once", () =>
     const { member, ticketId, order } = await placed();
     const token = await payLink(world, member, ticketId, order.id);
     const a = await openIntent(world, token);
-    const b = await openIntent(world, token);
+    const b = await openSecondIntent(world, token);
     await settle(world, a.id, order.totalIdr);
     await settle(world, b.id, order.totalIdr);
     const eventA = await paidEvent(world, a.id);
@@ -271,9 +272,11 @@ describe("BRK-CONC-02 two intents settled at the same time are paid once", () =>
       };
     })();
     // The guest opened two codes before paying: both intents exist before the
-    // link is paid (opening one after payment is refused with 409).
+    // link is paid (opening one after payment is refused with 409). The first
+    // code is final at the provider before the second opens; its late payment
+    // is still valid.
     const first = await openIntent(world, token);
-    const second = await openIntent(world, token);
+    const second = await openSecondIntent(world, token);
     await settle(world, first.id, order.totalIdr);
     await deliver(world, await paidEvent(world, first.id));
     await settle(world, second.id, order.totalIdr);

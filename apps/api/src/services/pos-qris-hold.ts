@@ -12,7 +12,7 @@
 // pos_orders -> pos_qris_holds -> pos_order_tenders -> payment_links ->
 // payment_intents -> funds/refunds. Every writer below follows it.
 
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import {
   CoreError,
   createUlid,
@@ -91,6 +91,37 @@ export async function activeHoldOf(
         eq(posQrisHolds.tenantId, tenantId),
         eq(posQrisHolds.orderId, orderId),
         inArray(posQrisHolds.state, [...ACTIVE_STATES]),
+      ),
+    )
+    .orderBy(posQrisHolds.id)
+    .limit(1);
+  return hold ?? null;
+}
+
+/**
+ * Variant of `activeHoldOf` for issuing a code of one bill-split part: a hold
+ * of another part (`billSplitId` set and different) does not gate this part's
+ * money, so only a bill-level hold (`billSplitId IS NULL`) or a hold of the
+ * same part counts. Whole-bill callers keep using `activeHoldOf`.
+ */
+export async function activeHoldBlockingSplitPart(
+  tx: Tx,
+  tenantId: TenantId,
+  orderId: string,
+  billSplitId: string,
+): Promise<HoldRow | null> {
+  const [hold] = await tx
+    .select()
+    .from(posQrisHolds)
+    .where(
+      and(
+        eq(posQrisHolds.tenantId, tenantId),
+        eq(posQrisHolds.orderId, orderId),
+        inArray(posQrisHolds.state, [...ACTIVE_STATES]),
+        or(
+          isNull(posQrisHolds.billSplitId),
+          eq(posQrisHolds.billSplitId, billSplitId),
+        ),
       ),
     )
     .orderBy(posQrisHolds.id)
@@ -463,7 +494,7 @@ function paidQrisReleaseError(): CoreError {
  * Locks the intent row, so a settlement in flight finishes first. Call it under
  * the orders / pos_orders / hold locks, right before any close (legend-zff37).
  */
-async function appliedQrisMoneyTx(
+export async function appliedQrisMoneyTx(
   tx: Tx,
   tenantId: TenantId,
   intentId: string,
@@ -496,7 +527,7 @@ async function appliedQrisMoneyTx(
 const PARKED_BACKFILLED_RECHECK_MS = 30 * 60_000;
 
 /** Unallocated funds of one intent: how many rows and how many are unresolved. */
-async function unallocatedFundsOfIntentTx(
+export async function unallocatedFundsOfIntentTx(
   tx: Tx,
   tenantId: TenantId,
   intentId: string,
@@ -788,6 +819,7 @@ export async function checkQrisHold(
   const dead =
     answer !== null &&
     sameReference &&
+    !answer.extraPayments?.length &&
     (intent.provider === "duitku"
       ? answer.rawStatus === "02"
       : answer.status === "expired" || answer.status === "failed");

@@ -90,6 +90,8 @@ export * from "./pos-parked-order";
 // QRIS hold (legend-yhia9): freezes a bill while its QR is collectible.
 export * from "./pos-qris-hold";
 export * from "./pos-qris-release-recon";
+// VA staff release (legend-5wn1e): audit + provider check queue.
+export * from "./payment-va-release";
 export * from "./customer-display";
 // TEN-09 tenant config templates + import runs (legend-34c).
 export * from "./platform-config";

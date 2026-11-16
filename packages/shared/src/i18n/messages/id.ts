@@ -1725,6 +1725,11 @@ export const id = {
     linkNotFound: "Tautan pembayaran tidak ditemukan",
     linkNotFoundHint: "Minta tautan baru dari kasir atau dari pesananmu.",
     alreadyPaid: "Tagihan ini sudah lunas.",
+    codeStillActive:
+      "Kode pembayaran sebelumnya masih aktif. Selesaikan pembayaran dengan kode tersebut atau tunggu hingga kedaluwarsa sebelum mengganti metode.",
+    fundsUnresolved:
+      "Pembayaran sebelumnya masih diperiksa. Jangan bayar lagi sampai status pembayaran dipastikan. Hubungi kasir untuk bantuan.",
+    previousCodeReference: "Kode pembayaran sebelumnya (referensi)",
     methodInvalid:
       "Metode atau bank yang dipilih belum tersedia. Pilih yang lain.",
     actionFailed: "Permintaan belum bisa diproses. Coba lagi.",

@@ -26,6 +26,7 @@ import {
   type OutletId,
   type ScopedTenantContext,
 } from "@starter/shared/core";
+import { PosError } from "@starter/shared/pos";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
 import {
   customerPaymentIntentSchema,
@@ -69,7 +70,11 @@ import {
   paymentUnallocatedFunds,
 } from "../db/schema";
 import { auditLogs } from "../db/schema/core-audit";
+import { assertNoOpenFundsOfPosOrderTx } from "./pos-order-open-funds.ts";
+import { orders } from "../db/schema/qr-order.ts";
+import { orderIssueCharges } from "../db/schema/kds-issues.ts";
 import { posQrisHolds } from "../db/schema/pos-qris-hold.ts";
+import { paymentVaReleases } from "../db/schema/payment-va-release.ts";
 import { notifyOutletSupervisors } from "./edge-sync-conflict-alert.ts";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
@@ -89,10 +94,15 @@ import {
 } from "./payment-late-settlement";
 import { plausiblePaidAt } from "./payment-paid-at";
 import {
+  activeHoldBlockingSplitPart,
+  assertNoActiveQrisHold,
+} from "./pos-qris-hold.ts";
+import {
   paymentGatewayFor,
   registeredGatewayProviders,
   type GatewayCancelRequest,
   type GatewayIntent,
+  type GatewayPaymentStatus,
   type OnlinePaymentMethod,
 } from "./payment-gateway";
 import {
@@ -102,6 +112,8 @@ import {
 import {
   expiredCodeMayStillPay,
   failedCodeNotFinal,
+  liveCodeWhere,
+  noVaRelease,
   providerAnswerFinal,
 } from "./payment-live-code";
 import {
@@ -714,6 +726,7 @@ async function cancelSupersededAtGateway(
       });
       if (
         answer.providerRef !== intent.providerRef ||
+        answer.extraPayments?.length ||
         !providerAnswerFinal(
           { provider: intent.provider, expiresAt: row.expiresAt },
           answer,
@@ -744,6 +757,17 @@ async function cancelSupersededAtGateway(
 }
 
 /**
+ * legend-154wr: `orderLockedByCaller` is set only by a caller whose own
+ * transaction already holds the order row lock (`FOR UPDATE`) and ran the hold
+ * and live code guards under it (the QR guest, the split part, the cashier QR,
+ * the recovery charge). `createIntentCore` opens its own transaction on another
+ * connection, so locking the same row again there would wait on the caller
+ * forever. Every other caller (public token route, refresh) leaves it unset and
+ * the intent transaction locks the order itself.
+ */
+export type CreateIntentOptions = { orderLockedByCaller?: boolean };
+
+/**
  * Creates one payable intent. The amount is the link's outstanding balance
  * (PAY-01); any previous pending code is superseded, so one bill never shows
  * two live codes.
@@ -753,9 +777,10 @@ export async function createIntent(
   token: string,
   input: CreatePaymentIntentInput,
   now = new Date(),
+  options: CreateIntentOptions = {},
 ): Promise<CustomerPaymentIntent> {
   const parsed = createPaymentIntentInputSchema.parse(input);
-  return createIntentCore(context, token, parsed, now, null);
+  return createIntentCore(context, token, parsed, now, null, options);
 }
 
 /**
@@ -769,9 +794,150 @@ export async function createSplitPartIntent(
   input: CreatePaymentIntentInput,
   part: { billSplitId: string; amountIdr: number },
   now = new Date(),
+  options: CreateIntentOptions = {},
 ): Promise<CustomerPaymentIntent> {
   const parsed = createPaymentIntentInputSchema.parse(input);
-  return createIntentCore(context, token, parsed, now, part);
+  return createIntentCore(context, token, parsed, now, part, options);
+}
+
+/**
+ * The order a link bills: an order's own link (`orders.payment_link_id`) or the
+ * order of a recovery charge whose link it is. Null for any other link
+ * (deposit, reservation), which no order guard applies to.
+ */
+async function linkOrderIdTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  paymentLinkId: string,
+): Promise<string | null> {
+  const [order] = await tx
+    .select({ id: orders.id })
+    .from(orders)
+    .where(
+      and(
+        eq(orders.tenantId, context.tenant.tenantId),
+        eq(orders.paymentLinkId, paymentLinkId),
+      ),
+    )
+    .limit(1);
+  if (order) return order.id;
+  // A recovery charge link belongs to the charge, not to `orders`; its code is
+  // gated by the charge's order, also inside the transaction.
+  const [charge] = await tx
+    .select({ orderId: orderIssueCharges.orderId })
+    .from(orderIssueCharges)
+    .where(
+      and(
+        eq(orderIssueCharges.tenantId, context.tenant.tenantId),
+        eq(orderIssueCharges.paymentLinkId, paymentLinkId),
+      ),
+    )
+    .limit(1);
+  return charge?.orderId ?? null;
+}
+
+/**
+ * legend-154wr: locks the billed order's row, the first lock of the documented
+ * order (`pos-qris-hold.ts`: orders, pos_orders, pos_qris_holds, tenders,
+ * payment_links, payment_intents). A hold opener locks the order first, so a
+ * hold either committed before this lock (the guards below see it) or waits
+ * for this transaction (its own guard then sees the new code). Reads after the
+ * lock see fresh rows (READ COMMITTED).
+ */
+async function lockLinkOrderTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  paymentLinkId: string,
+): Promise<void> {
+  const orderId = await linkOrderIdTx(tx, context, paymentLinkId);
+  if (orderId === null) return;
+  await tx
+    .select({ id: orders.id })
+    .from(orders)
+    .where(
+      and(eq(orders.tenantId, context.tenant.tenantId), eq(orders.id, orderId)),
+    )
+    .for("update");
+}
+
+/**
+ * legend-ek1wt + legend-4n8rs: every code of an order's (or recovery charge's)
+ * link goes through here, whoever issues it (public token, refresh, breakfast,
+ * recovery charge, cashier, QR guest). Two refusals:
+ * - QRIS hold (409 QRIS_HOLD_ACTIVE): while a QR of the bill can still be
+ *   paid. For a split part (`billSplitId` set) only a bill-level hold or a
+ *   hold of that same part refuses; a hold of another part never gates this
+ *   part. Without a part every active hold refuses.
+ * - Live code (409 ORDER_CODE_ACTIVE without a part, SPLIT_CODE_ACTIVE with
+ *   one): a VA or QR of the link that may still take money (`liveCodeWhere`:
+ *   pending, or expired / failed and the provider has not answered final, not
+ *   released) blocks a new code. A part is blocked by a live code of that part
+ *   or a bill-level one (`bill_split_id` null); a code of another part never
+ *   gates it. Without a part any live code of the link blocks.
+ * Only a link that belongs to an order or charge is checked. A code that was
+ * only locally superseded keeps `providerRef`, so it stays live until final;
+ * a `pending` code is live even before it has a `providerRef`. Open parked
+ * money on the bill refuses with 409 FUNDS_UNRESOLVED (a failed code with
+ * parked money is not "live" by `liveCodeWhere`, so this guard covers it). An
+ * idempotent replay returns before this runs. The caller holds the order row
+ * lock (`lockLinkOrderTx`, or `orderLockedByCaller`) when the check must be
+ * race free; the check also runs once before any provider call.
+ */
+async function assertLinkOrderCanIssueTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  paymentLinkId: string,
+  billSplitId: string | null,
+): Promise<void> {
+  const orderId = await linkOrderIdTx(tx, context, paymentLinkId);
+  if (orderId === null) return;
+  if (billSplitId === null) {
+    await assertNoActiveQrisHold(tx, context, orderId);
+  } else if (
+    await activeHoldBlockingSplitPart(
+      tx,
+      context.tenant.tenantId,
+      orderId,
+      billSplitId,
+    )
+  )
+    throw new PosError("QRIS_HOLD_ACTIVE");
+  const [live] = await tx
+    .select({ id: paymentIntents.id })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, context.tenant.tenantId),
+        eq(paymentIntents.paymentLinkId, paymentLinkId),
+        billSplitId === null
+          ? undefined
+          : or(
+              eq(paymentIntents.billSplitId, billSplitId),
+              isNull(paymentIntents.billSplitId),
+            ),
+        liveCodeWhere(),
+      ),
+    )
+    .limit(1);
+  if (live)
+    throw billSplitId === null
+      ? new HttpError(
+          409,
+          "ORDER_CODE_ACTIVE",
+          "Kode pembayaran sebelumnya masih berlaku; selesaikan atau tunggu sampai berakhir.",
+        )
+      : new HttpError(
+          409,
+          "SPLIT_CODE_ACTIVE",
+          "Kode pembayaran bagian ini masih berlaku; selesaikan atau tunggu sampai berakhir.",
+        );
+  // Parked money still open on the bill (a failed code that may still pay
+  // does not count as live while its money is parked): the same refusal the
+  // guest, part and POS paths give, so no second collectible code appears.
+  await assertNoOpenFundsOfPosOrderTx(tx, context.tenant.tenantId, {
+    id: orderId,
+    paymentLinkId,
+  });
 }
 
 async function createIntentCore(
@@ -780,6 +946,7 @@ async function createIntentCore(
   parsed: CreatePaymentIntentInput,
   now: Date,
   part: SplitPartTarget | null,
+  options: CreateIntentOptions = {},
 ): Promise<CustomerPaymentIntent> {
   const plan = await readIntentPlan(context, token, parsed, now, part);
   if (plan.existing) return toCustomerIntent(plan.existing);
@@ -789,6 +956,16 @@ async function createIntentCore(
 
   if (!plan.routing)
     throw new Error("Payment intent plan has neither an intent nor a route");
+  // legend-ek1wt / legend-4n8rs: refused before any provider call (checked
+  // again, under the order lock, inside the intent transaction below).
+  await withTenant(db, context, (tx) =>
+    assertLinkOrderCanIssueTx(
+      tx,
+      context,
+      plan.link.id,
+      part?.billSplitId ?? null,
+    ),
+  );
   const selected = await selectGatewayForNewIntent(
     context,
     plan.link.outletId,
@@ -849,6 +1026,12 @@ async function createIntentCore(
   let superseded: GatewayCancelRequest[] = [];
   try {
     const stored = await withTenant(db, context, async (tx) => {
+      // legend-154wr: the order row lock comes first (before the link lock
+      // below), so a hold opener and this issuer serialize on the order and the
+      // guards read after it see each other's committed rows. A caller that
+      // already holds the lock on its own connection skips it.
+      if (options.orderLockedByCaller !== true)
+        await lockLinkOrderTx(tx, context, plan.link.id);
       // Re-check inside the transaction: a concurrent retry may have won.
       const [existing] = await tx
         .select()
@@ -909,6 +1092,15 @@ async function createIntentCore(
           "CONFLICT",
           "This bill changed while the payment was prepared. Reload and try again.",
         );
+      // legend-ek1wt / legend-4n8rs: a hold or a live code may have appeared
+      // while the code was being minted; the code just minted is then never
+      // stored.
+      await assertLinkOrderCanIssueTx(
+        tx,
+        context,
+        plan.link.id,
+        part?.billSplitId ?? null,
+      );
       superseded = await supersedePending(
         tx,
         context,
@@ -1230,7 +1422,7 @@ export async function recordUnsettledGatewayFunds(
  * Returns `inserted` for newly written funds, `found` for a replay of the same
  * provider transaction (already on record), and `none` when there is no
  * positive amount (nothing recorded, nothing to call final). */
-async function recordUnsettledGatewayFundsInTx(
+export async function recordUnsettledGatewayFundsInTx(
   tx: Tx,
   context: ScopedTenantContext,
   intent: PaymentIntentRow,
@@ -1534,6 +1726,17 @@ type SyncResult = {
   gatewayError: boolean;
 };
 
+/** What a sync run read from the provider, filled in while it runs so a caller
+ * that needs the answer (912 P1-1: a staff VA release) still has it when the
+ * settlement itself throws. `answer` stays unset when the provider was not
+ * asked or did not answer. */
+type ProviderProbe = { answer?: GatewayPaymentStatus };
+
+/** 912 P1-1: how the provider answered a read made by
+ * `settleGatewayIntentNowDetailed`. Only `not_paid` is a read answer that
+ * proves the customer has not paid this code. */
+export type GatewayIntentVerdict = "paid" | "not_paid" | "unread";
+
 /**
  * Gateways whose status answer settles only the exact bill, and whose late
  * payment settles only an open bill (Codex legend-rgddb, CTO decision): any
@@ -1583,6 +1786,46 @@ const parksFunds = (error: unknown): boolean =>
     error.decisionCode === "BILL_CLOSED");
 
 /**
+ * legend-p5xrv: every further provider transaction reported with a status
+ * answer (`extraPayments`, another reference paid on the same code) is parked as
+ * unallocated funds, exactly once per provider + providerRef (the evidence row
+ * is unique), never settling the bill. A failure here only delays the parking:
+ * the next poll reads the same answer again.
+ */
+async function parkExtraPaymentsOfAnswer(
+  context: ScopedTenantContext,
+  intent: PaymentIntentRow,
+  answer: GatewayPaymentStatus,
+  now: Date,
+): Promise<void> {
+  for (const extra of answer.extraPayments ?? []) {
+    if (!(extra.amountIdr > 0) || extra.providerRef === intent.providerRef)
+      continue;
+    try {
+      await recordUnsettledGatewayFunds(
+        context,
+        intent,
+        {
+          provider: intent.provider,
+          providerRef: extra.providerRef,
+          source: "gateway_status",
+          paidAmountIdr: extra.amountIdr,
+          receivedAt: new Date(
+            plausiblePaidAt(extra.paidAt, intent.createdAt, now),
+          ),
+        },
+        now,
+      );
+    } catch (error) {
+      logger.warn(
+        { err: error, intentId: intent.id },
+        "Payment: parking an extra provider transaction failed",
+      );
+    }
+  }
+}
+
+/**
  * Applies a provider status without inventing one (PAY-02). Past its expiry a
  * pending intent with a provider reference asks the gateway first: money may
  * have arrived after the code lapsed, and the lifecycle flags that as a late
@@ -1599,6 +1842,7 @@ async function syncPendingIntentDetailed(
   context: ScopedTenantContext,
   intent: PaymentIntentRow,
   now: Date,
+  probe?: ProviderProbe,
 ): Promise<SyncResult> {
   if (intent.status !== "pending") return { intent, gatewayError: false };
   const pastExpiry = intent.expiresAt <= now;
@@ -1623,9 +1867,15 @@ async function syncPendingIntentDetailed(
       providerRef: intent.providerRef,
       intentId: intent.id,
     });
+    if (probe) probe.answer = providerStatus;
   } catch {
     // Gateway outage: the stored status stays; the link view reports it down.
     gatewayError = true;
+  }
+  // legend-p5xrv: the other transactions of the answer are parked first, so
+  // the code's own settlement (or its refusal) never loses them.
+  if (providerStatus) {
+    await parkExtraPaymentsOfAnswer(context, intent, providerStatus, now);
   }
   if (
     providerStatus?.status === "paid" &&
@@ -1728,6 +1978,7 @@ async function syncPendingIntentDetailed(
     const providerFinal =
       (providerStatus !== undefined &&
         aboutThisCode &&
+        !providerStatus.extraPayments?.length &&
         providerAnswerFinal(intent, providerStatus, now)) ||
       fundsParked;
     await expireIntent(
@@ -1756,7 +2007,9 @@ async function syncPendingIntentDetailed(
       now,
       "gateway",
       undefined,
-      aboutThisCode && providerAnswerFinal(intent, providerStatus, now),
+      aboutThisCode &&
+        !providerStatus.extraPayments?.length &&
+        providerAnswerFinal(intent, providerStatus, now),
     );
     return {
       intent: { ...intent, status: "expired", updatedAt: now },
@@ -1768,7 +2021,9 @@ async function syncPendingIntentDetailed(
       context,
       intent,
       now,
-      aboutThisCode && providerAnswerFinal(intent, providerStatus, now),
+      aboutThisCode &&
+        !providerStatus.extraPayments?.length &&
+        providerAnswerFinal(intent, providerStatus, now),
     );
     return {
       intent: { ...intent, status: "failed", updatedAt: now },
@@ -1968,6 +2223,62 @@ async function parkWhenQrisHoldRefusesInTx(
   | { kind: "replay" }
   | { kind: "reject"; code: "AMOUNT_MISMATCH" | "BILL_CLOSED" }
 > {
+  // legend-5wn1e: a VA code staff released (supervisor override, no provider
+  // proof) never settles the bill again: money that arrives for it is always
+  // parked as unallocated funds, keyed by the provider transaction, so webhook
+  // and poll together park it exactly once and the order cannot be paid twice.
+  const [vaRelease] = await tx
+    .select({
+      id: paymentVaReleases.id,
+      releasedBy: paymentVaReleases.releasedBy,
+    })
+    .from(paymentVaReleases)
+    .where(
+      and(
+        eq(paymentVaReleases.tenantId, context.tenant.tenantId),
+        eq(paymentVaReleases.paymentIntentId, intent.id),
+      ),
+    );
+  if (vaRelease) {
+    const inserted = await recordUnsettledGatewayFundsInTx(
+      tx,
+      context,
+      intent,
+      {
+        provider: intent.provider,
+        providerRef: paid.providerRef,
+        source:
+          paid.source === "verified_webhook"
+            ? "verified_webhook"
+            : "gateway_status",
+        paidAmountIdr: paid.amountIdr,
+        receivedAt:
+          paid.source === "verified_webhook" ? now : new Date(paid.at),
+      },
+      now,
+    );
+    // A replay of the same provider transaction records and alerts nothing.
+    if (inserted !== "inserted") return { kind: "replay" };
+    await notifyOutletSupervisors(
+      tx,
+      context,
+      {
+        tenantId: context.tenant.tenantId,
+        outletId: intent.outletId as OutletId,
+        alsoOwners: true,
+        alsoUserIds: vaRelease.releasedBy ? [vaRelease.releasedBy] : [],
+        id: createUlid(now.getTime()),
+        eventName: "payment_va_funds.parked",
+        aggregateType: "payment_va_funds",
+        aggregateId: intent.id,
+        payload: { intentId: intent.id, releaseId: vaRelease.id },
+        title: "Uang VA perlu dikembalikan",
+        body: `Pembayaran VA Rp${paid.amountIdr} masuk untuk kode VA yang sudah dirilis staf. Uang ditahan di dana belum teralokasi; kembalikan ke pembayar.`,
+      },
+      now,
+    );
+    return { kind: "reject", code: "BILL_CLOSED" };
+  }
   const [hold] = await tx
     .select({
       id: posQrisHolds.id,
@@ -2505,7 +2816,7 @@ async function applyConfirmation(
   if (holdRefusal)
     throw new PaymentConfirmationRejected(
       holdRefusal,
-      "This QRIS payment cannot settle its bill; the money is parked.",
+      "This payment cannot settle its bill; the money is parked.",
     );
   return applied;
 }
@@ -2727,6 +3038,7 @@ async function syncExpiredIntentPayment(
   context: ScopedTenantContext,
   intent: PaymentIntentRow,
   now: Date,
+  probe?: ProviderProbe,
 ): Promise<SyncResult> {
   if (!isClosedPollable(intent) || intent.providerRef === null)
     return { intent, gatewayError: false };
@@ -2739,9 +3051,14 @@ async function syncExpiredIntentPayment(
       providerRef: intent.providerRef,
       intentId: intent.id,
     });
+    if (probe) probe.answer = providerStatus;
   } catch {
     return { intent, gatewayError: true };
   }
+  // 912 P2-1 / legend-p5xrv: other transactions of the answer are parked once
+  // (the evidence row is unique per provider + providerRef), never settling the
+  // order, before the code's own answer is looked at.
+  await parkExtraPaymentsOfAnswer(context, intent, providerStatus, now);
   if (
     providerStatus.status === "expired" ||
     providerStatus.status === "failed"
@@ -2750,6 +3067,7 @@ async function syncExpiredIntentPayment(
     // that the poll keeps asking.
     if (
       providerStatus.providerRef === intent.providerRef &&
+      !providerStatus.extraPayments?.length &&
       providerAnswerFinal(intent, providerStatus, now)
     )
       await markGatewayReconciled(context, intent, now);
@@ -2887,6 +3205,30 @@ export async function settleGatewayIntentNow(
   intentId: string,
   now = new Date(),
 ): Promise<boolean> {
+  const outcome = await settleGatewayIntentNowDetailed(context, intentId, now);
+  if ("error" in outcome) throw outcome.error;
+  return outcome.settled;
+}
+
+/**
+ * `settleGatewayIntentNow` plus how the provider answered (912 P1-1). The
+ * verdict is `paid` for any paid answer about the code (whatever its amount, and
+ * whether or not the bookkeeping succeeded) and for an answer that carries
+ * `extraPayments` (another reference paid on the same code), `not_paid` only for a read answer
+ * about this very code that is pending / expired / failed, and `unread` for
+ * everything else: an error, a code the provider never received, an answer about
+ * another reference. The verdict is read even when the settlement throws; the
+ * error is then returned, not thrown, so the caller decides.
+ */
+export async function settleGatewayIntentNowDetailed(
+  context: ScopedTenantContext,
+  intentId: string,
+  now = new Date(),
+): Promise<{
+  settled: boolean;
+  verdict: GatewayIntentVerdict;
+  error?: unknown;
+}> {
   const [row] = await withTenant(db, context, async (tx) =>
     tx
       .select()
@@ -2898,7 +3240,8 @@ export async function settleGatewayIntentNow(
         ),
       ),
   );
-  if (!row || row.providerRef === null) return false;
+  if (!row || row.providerRef === null)
+    return { settled: false, verdict: "unread" };
   const outletContext =
     context.outletScope.kind === "tenant"
       ? establishScopedTenantContext(context.tenant, {
@@ -2906,13 +3249,32 @@ export async function settleGatewayIntentNow(
           outletIds: [row.outletId],
         })
       : context;
-  const result = isClosedPollable(row)
-    ? await syncExpiredIntentPayment(outletContext, row, now)
-    : await syncPendingIntentDetailed(outletContext, row, now);
-  return (
+  const probe: ProviderProbe = {};
+  let result: SyncResult | undefined;
+  let error: unknown;
+  try {
+    result = isClosedPollable(row)
+      ? await syncExpiredIntentPayment(outletContext, row, now, probe)
+      : await syncPendingIntentDetailed(outletContext, row, now, probe);
+  } catch (caught) {
+    error = caught;
+  }
+  const answer = probe.answer;
+  const verdict: GatewayIntentVerdict =
+    answer === undefined
+      ? "unread"
+      : answer.status === "paid" || answer.extraPayments?.length
+        ? "paid"
+        : answer.providerRef === row.providerRef
+          ? "not_paid"
+          : "unread";
+  const settled =
+    result !== undefined &&
     row.status !== result.intent.status &&
-    (SETTLED_STATUSES as readonly string[]).includes(result.intent.status)
-  );
+    (SETTLED_STATUSES as readonly string[]).includes(result.intent.status);
+  return error === undefined
+    ? { settled, verdict }
+    : { settled, verdict, error };
 }
 
 /**
@@ -2975,7 +3337,7 @@ export async function pollPendingGatewayIntents(
               // An expired or failed code stays in the poll until the provider
               // answers final, however long ago it lapsed (no window).
               kind === "pending"
-                ? eq(paymentIntents.status, "pending")
+                ? and(eq(paymentIntents.status, "pending"), noVaRelease)
                 : or(expiredCodeMayStillPay(), failedCodeNotFinal()),
               backoffDue,
               eq(paymentIntents.provider, provider),

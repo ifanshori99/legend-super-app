@@ -12,6 +12,7 @@ export const FINANCE_EXCEPTION_KINDS = [
   "receipt_pending_stale",
   "payout_proof_stuck",
   "payout_recon_flag",
+  "release_recon_unproven",
 ] as const;
 export type FinanceExceptionKind = (typeof FINANCE_EXCEPTION_KINDS)[number];
 
@@ -21,6 +22,15 @@ export type FinanceExceptionKind = (typeof FINANCE_EXCEPTION_KINDS)[number];
  * whatever day it first failed.
  */
 export const RECEIPT_PENDING_STALE_AFTER_HOURS = 24;
+
+/**
+ * `release_recon_unproven` (legend-912 P1-2) ignores the date window too: a
+ * released QRIS hold or VA code whose reconciliation row is still open after
+ * this long has no provider proof that the code is dead. The queue never
+ * closes such a row on a timer; finance reads it here. Mirrors the QRIS
+ * recon's `PAID_WATCH_MS` (72 hours).
+ */
+export const RELEASE_RECON_UNPROVEN_AFTER_HOURS = 72;
 
 /** The widest window one request may cover. */
 export const FINANCE_EXCEPTIONS_MAX_DAYS = 92;

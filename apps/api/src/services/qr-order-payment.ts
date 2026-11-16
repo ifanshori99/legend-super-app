@@ -23,7 +23,7 @@
 //   before a verified payment (ORD-02).
 
 import { createHash, timingSafeEqual } from "node:crypto";
-import { and, desc, eq, isNull, or } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import {
   CoreError,
   uuidSchema,
@@ -53,11 +53,7 @@ import { HttpError } from "../lib/http-error.ts";
 import { openSecret, sealSecret } from "../lib/secrets.ts";
 import type { Tx } from "./menu-internals.ts";
 import { paymentGatewayFor } from "./payment-gateway.ts";
-import {
-  expiredCodeMayStillPay,
-  failedCodeMayStillPay,
-  noClosedHold,
-} from "./payment-live-code.ts";
+import { liveCodeWhere } from "./payment-live-code.ts";
 import { selectGatewayForNewIntent } from "./payment-gateway-select.ts";
 import { resolveRoutingRule } from "./payment-routing.service.ts";
 import {
@@ -378,11 +374,7 @@ async function orderLiveCodeTx(
         eq(paymentIntents.tenantId, tenantId),
         eq(paymentIntents.paymentLinkId, paymentLinkId),
         isNull(paymentIntents.billSplitId),
-        or(
-          and(eq(paymentIntents.status, "pending"), noClosedHold),
-          expiredCodeMayStillPay(),
-          failedCodeMayStillPay(),
-        ),
+        liveCodeWhere(),
       ),
     )
     .orderBy(desc(paymentIntents.createdAt))
@@ -704,6 +696,7 @@ export async function createGuestPayment(
             },
             { billSplitId: part.id, amountIdr: part.amountIdr },
             now,
+            { orderLockedByCaller: true },
           );
           if (parsed.method === "qris")
             await openSplitQrisHold(tx, {
@@ -817,6 +810,7 @@ export async function createGuestPayment(
             }),
           },
           now,
+          { orderLockedByCaller: true },
         );
         if (parsed.method === "qris")
           await openGuestQrisHold(tx, {

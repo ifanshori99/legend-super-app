@@ -22,12 +22,17 @@ import { orders } from "../db/schema/qr-order.ts";
 import { posQrisHolds } from "../db/schema/pos-qris-hold.ts";
 import type { Tx } from "./menu-internals.ts";
 
-/** An open parked fund of any tender, hold, link or split intent of the bill. */
-export async function openFundOfPosOrderTx(
+/**
+ * Ids of every intent that can belong to the bill: tender intents (voided
+ * tenders included), hold intents, intents of the tenders' and the order's
+ * payment links, and intents of split parts. A subquery, for use in any
+ * `inArray` of the same transaction.
+ */
+export function intentIdsOfPosOrder(
   tx: Tx,
   tenantId: TenantId,
   order: { id: string; paymentLinkId: string | null },
-): Promise<{ id: string } | null> {
+) {
   const tenderLinks = tx
     .select({ id: posOrderTenders.paymentLinkId })
     .from(posOrderTenders)
@@ -37,6 +42,64 @@ export async function openFundOfPosOrderTx(
         eq(posOrderTenders.orderId, order.id),
       ),
     );
+  return tx
+    .select({ id: paymentIntents.id })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, tenantId),
+        or(
+          inArray(
+            paymentIntents.id,
+            tx
+              .select({ id: posOrderTenders.paymentIntentId })
+              .from(posOrderTenders)
+              .where(
+                and(
+                  eq(posOrderTenders.tenantId, tenantId),
+                  eq(posOrderTenders.orderId, order.id),
+                ),
+              ),
+          ),
+          inArray(
+            paymentIntents.id,
+            tx
+              .select({ id: posQrisHolds.paymentIntentId })
+              .from(posQrisHolds)
+              .where(
+                and(
+                  eq(posQrisHolds.tenantId, tenantId),
+                  eq(posQrisHolds.orderId, order.id),
+                ),
+              ),
+          ),
+          inArray(paymentIntents.paymentLinkId, tenderLinks),
+          order.paymentLinkId === null
+            ? undefined
+            : eq(paymentIntents.paymentLinkId, order.paymentLinkId),
+          inArray(
+            paymentIntents.billSplitId,
+            tx
+              .select({ id: billSplits.id })
+              .from(billSplits)
+              .where(
+                and(
+                  eq(billSplits.tenantId, tenantId),
+                  eq(billSplits.orderId, order.id),
+                ),
+              ),
+          ),
+        ),
+      ),
+    );
+}
+
+/** An open parked fund of any tender, hold, link or split intent of the bill. */
+export async function openFundOfPosOrderTx(
+  tx: Tx,
+  tenantId: TenantId,
+  order: { id: string; paymentLinkId: string | null },
+): Promise<{ id: string } | null> {
   const [fund] = await tx
     .select({ id: paymentUnallocatedFunds.id })
     .from(paymentUnallocatedFunds)
@@ -46,56 +109,7 @@ export async function openFundOfPosOrderTx(
         isNull(paymentUnallocatedFunds.resolvedAt),
         inArray(
           paymentUnallocatedFunds.paymentIntentId,
-          tx
-            .select({ id: paymentIntents.id })
-            .from(paymentIntents)
-            .where(
-              and(
-                eq(paymentIntents.tenantId, tenantId),
-                or(
-                  inArray(
-                    paymentIntents.id,
-                    tx
-                      .select({ id: posOrderTenders.paymentIntentId })
-                      .from(posOrderTenders)
-                      .where(
-                        and(
-                          eq(posOrderTenders.tenantId, tenantId),
-                          eq(posOrderTenders.orderId, order.id),
-                        ),
-                      ),
-                  ),
-                  inArray(
-                    paymentIntents.id,
-                    tx
-                      .select({ id: posQrisHolds.paymentIntentId })
-                      .from(posQrisHolds)
-                      .where(
-                        and(
-                          eq(posQrisHolds.tenantId, tenantId),
-                          eq(posQrisHolds.orderId, order.id),
-                        ),
-                      ),
-                  ),
-                  inArray(paymentIntents.paymentLinkId, tenderLinks),
-                  order.paymentLinkId === null
-                    ? undefined
-                    : eq(paymentIntents.paymentLinkId, order.paymentLinkId),
-                  inArray(
-                    paymentIntents.billSplitId,
-                    tx
-                      .select({ id: billSplits.id })
-                      .from(billSplits)
-                      .where(
-                        and(
-                          eq(billSplits.tenantId, tenantId),
-                          eq(billSplits.orderId, order.id),
-                        ),
-                      ),
-                  ),
-                ),
-              ),
-            ),
+          intentIdsOfPosOrder(tx, tenantId, order),
         ),
       ),
     )

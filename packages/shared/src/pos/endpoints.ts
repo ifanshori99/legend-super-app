@@ -63,6 +63,8 @@ import {
   posOrderSummarySchema,
   posQrisHoldSchema,
   posQrisReconciliationSchema,
+  posVaReleaseReasonSchema,
+  posVaReleaseSchema,
   posQrisReconciliationStatusSchema,
   posReceiptIdSchema,
   posReceiptIssueResultSchema,
@@ -365,6 +367,26 @@ export const releasePosQris = defineEndpoint({
     idempotencyKey: idempotencyKeySchema,
   }),
   response: dataResponseSchema(posQrisHoldSchema),
+});
+
+/**
+ * legend-5wn1e: a supervisor releases a virtual account code the provider has
+ * not answered final for, with a pos-overrides approval and a reason, only from
+ * 30 minutes after the code lapsed. Money paid on that code afterwards is
+ * parked as unallocated funds, never applied to the bill.
+ */
+export const releasePosVa = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/orders/:orderId/va/release",
+  params: orderParams,
+  body: clientInputSchema({
+    paymentIntentId: uuidSchema,
+    approvedBy: userIdSchema,
+    overrideId: posOverrideIdSchema,
+    idempotencyKey: idempotencyKeySchema,
+    reason: posVaReleaseReasonSchema,
+  }),
+  response: dataResponseSchema(posVaReleaseSchema),
 });
 
 /**

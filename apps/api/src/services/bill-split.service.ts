@@ -64,10 +64,7 @@ import { openSecret, sealSecret } from "../lib/secrets.ts";
 import type { Tx } from "./menu-internals.ts";
 import { activeHoldOf } from "./pos-qris-hold.ts";
 import { failedOrderCodeWithOpenFundTx } from "./payment-failed-funds.ts";
-import {
-  expiredCodeMayStillPay,
-  failedCodeMayStillPay,
-} from "./payment-live-code.ts";
+import { liveCodeWhere } from "./payment-live-code.ts";
 import {
   getSessionBill,
   lockGuestSessionForPayment,
@@ -184,22 +181,6 @@ export async function listSessionSplitDtosTx(
 }
 
 // ---- Guards -------------------------------------------------------------------------
-
-/**
- * A code that may still take money. Any `pending` code, whatever its expiry:
- * a lapsed one stays pending until reconciliation hears the gateway's final
- * answer, and it may turn out paid (payment.service.ts `supersedePending`). And
- * an `expired` code the gateway received until the PROVIDER answered final or
- * its money was reconciled (SO-885, `expiredCodeMayStillPay`): the gateway
- * cancel is best effort and the local timeout is not proof.
- */
-function liveCodeWhere() {
-  return or(
-    eq(paymentIntents.status, "pending"),
-    expiredCodeMayStillPay(),
-    failedCodeMayStillPay(),
-  );
-}
 
 /**
  * The split can change only while no money moved: 409 `SPLIT_LOCKED` when a

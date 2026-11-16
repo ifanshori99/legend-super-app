@@ -622,12 +622,51 @@ describe("duitku adapter: getStatus", () => {
     }
   });
 
-  it("refuses a status that carries another reference", async () => {
+  it("reports a paid status under another reference as an extra payment, still pending", async () => {
     const { fn } = fakeFetch({
       transactionStatus: (call) =>
         json({
           merchantOrderId: call.body.merchantOrderId,
           statusCode: "00",
+          reference: "OTHER-REF",
+          amount: "50000",
+        }),
+    });
+    expect(
+      await gateway({ fetch: fn }).port.getStatus(statusRequest()),
+    ).toEqual({
+      status: "pending",
+      providerRef: "REF-1",
+      amountIdr: null,
+      paidAt: null,
+      rawStatus: "00",
+      extraPayments: [
+        { providerRef: "OTHER-REF", amountIdr: 50_000, paidAt: null },
+      ],
+    });
+  });
+
+  it("refuses a paid status without a reference: nothing to park", async () => {
+    const { fn } = fakeFetch({
+      transactionStatus: (call) =>
+        json({
+          merchantOrderId: call.body.merchantOrderId,
+          statusCode: "00",
+          amount: "50000",
+        }),
+    });
+    await expectCoreError(
+      gateway({ fetch: fn }).port.getStatus(statusRequest()),
+      "SERVICE_UNAVAILABLE",
+    );
+  });
+
+  it("refuses an unpaid status that carries another reference", async () => {
+    const { fn } = fakeFetch({
+      transactionStatus: (call) =>
+        json({
+          merchantOrderId: call.body.merchantOrderId,
+          statusCode: "01",
           reference: "OTHER-REF",
           amount: "50000",
         }),
@@ -700,6 +739,65 @@ describe("duitku adapter: getStatus", () => {
       expect(calls[1]?.body.signature).toBe(
         hmac(`DS1234${INTENT_ID}`, OLD_API_KEY),
       );
+    });
+
+    it("keeps an extra payment from the current credentials and answers for its own reference with the previous ones", async () => {
+      const { fn, calls } = fakeFetch({
+        transactionStatus: (call) =>
+          call.body.merchantCode === "DS1234"
+            ? json({
+                merchantOrderId: call.body.merchantOrderId,
+                statusCode: "01",
+                reference: "REF-1",
+                amount: "50000",
+              })
+            : json({
+                merchantOrderId: call.body.merchantOrderId,
+                statusCode: "00",
+                reference: "OTHER-REF",
+                amount: "7000",
+              }),
+      });
+      expect(
+        await gateway({ fetch: fn, row: rotated() }).port.getStatus(
+          statusRequest(),
+        ),
+      ).toEqual({
+        status: "pending",
+        providerRef: "REF-1",
+        amountIdr: null,
+        paidAt: null,
+        rawStatus: "01",
+        extraPayments: [
+          { providerRef: "OTHER-REF", amountIdr: 7_000, paidAt: null },
+        ],
+      });
+      expect(calls).toHaveLength(2);
+    });
+
+    it("reports the extra payment alone when no credentials answer for its own reference", async () => {
+      const { fn } = fakeFetch({
+        transactionStatus: (call) =>
+          call.body.merchantCode === "DS1234"
+            ? json({ statusCode: "01", statusMessage: "not found" }, 404)
+            : json({
+                merchantOrderId: call.body.merchantOrderId,
+                statusCode: "00",
+                reference: "OTHER-REF",
+                amount: "7000",
+              }),
+      });
+      expect(
+        await gateway({ fetch: fn, row: rotated() }).port.getStatus(
+          statusRequest(),
+        ),
+      ).toMatchObject({
+        status: "pending",
+        providerRef: "REF-1",
+        extraPayments: [
+          { providerRef: "OTHER-REF", amountIdr: 7_000, paidAt: null },
+        ],
+      });
     });
 
     it("does not retry after the grace window", async () => {

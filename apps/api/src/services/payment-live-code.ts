@@ -14,15 +14,23 @@
 // change guards (`bill-split.service.ts`) and the poll selector
 // (`payment.service.ts`), so they can never disagree.
 
-import { and, eq, isNotNull, isNull, sql, type SQL } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, or, sql, type SQL } from "drizzle-orm";
 import { paymentIntents } from "../db/schema/index.ts";
 import { HOLD_CLOSE_MARGIN_MS } from "./pos-qris-hold.ts";
 
-/** No closed QR hold on the intent. Raw SQL so it works in any query. */
-export const noClosedHold: SQL = sql`not exists (select 1 from pos_qris_holds h
+/**
+ * No closed QR hold and no staff VA release on the intent: nothing proved or
+ * declared the code dead. Raw SQL so it works in any query.
+ */
+export const noVaRelease: SQL = sql`(not exists (select 1 from payment_va_releases r
+  where r.tenant_id = ${paymentIntents.tenantId}
+    and r.payment_intent_id = ${paymentIntents.id}))`;
+
+export const noClosedHold: SQL = sql`(not exists (select 1 from pos_qris_holds h
   where h.tenant_id = ${paymentIntents.tenantId}
     and h.payment_intent_id = ${paymentIntents.id}
-    and h.state = 'closed')`;
+    and h.state = 'closed')
+  and ${noVaRelease})`;
 
 /**
  * An `expired` (locally superseded, voided or timed out) code the provider
@@ -68,6 +76,23 @@ export function failedCodeMayStillPay(): SQL {
       where f.tenant_id = ${paymentIntents.tenantId}
         and f.payment_intent_id = ${paymentIntents.id}
         and f.resolved_at is null)`,
+  )!;
+}
+
+/**
+ * A code that may still take money: any `pending` code whatever its expiry
+ * (a lapsed one stays pending until the gateway answers final) unless the hold
+ * or a staff release proved it dead, or an `expired` / `failed` code the
+ * provider received and has not declared final. One predicate for every
+ * "is the old code still collectible" guard: the whole-order guard
+ * (`orderLiveCodeTx`), the split guards (`bill-split.service.ts`) and the
+ * code issue guard (`assertLinkOrderCanIssueTx`, legend-4n8rs).
+ */
+export function liveCodeWhere(): SQL {
+  return or(
+    and(eq(paymentIntents.status, "pending"), noClosedHold),
+    expiredCodeMayStillPay(),
+    failedCodeMayStillPay(),
   )!;
 }
 

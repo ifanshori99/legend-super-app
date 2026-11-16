@@ -10,6 +10,9 @@
 //   date). A payout posting has no outlet and is dated in Asia/Jakarta.
 // - `receipt_pending_stale` is not dated by the window: it lists every parked
 //   auto-journal still waiting for its receipt a day after its first failure.
+// - `release_recon_unproven` is not dated by the window either: it lists every
+//   QRIS or VA release reconciliation row still open after
+//   RELEASE_RECON_UNPROVEN_AFTER_HOURS, i.e. no provider proof the code is dead.
 // - The payout kind is tenant-wide, so it is shown only to a caller without
 //   an outlet limit and never when an outlet filter is asked for.
 // - `payout_proof_stuck` (legend-so897) is tenant-wide like the payout kind and
@@ -40,6 +43,7 @@ import type {
 import {
   FINANCE_EXCEPTIONS_MAX_ITEMS,
   RECEIPT_PENDING_STALE_AFTER_HOURS,
+  RELEASE_RECON_UNPROVEN_AFTER_HOURS,
   type FinanceExceptionKind,
   type FinanceExceptionsQuery,
 } from "@starter/shared/validators/finance-exceptions";
@@ -630,6 +634,78 @@ async function receiptPendingStale(
   };
 }
 
+/**
+ * Released QRIS holds and VA codes whose reconciliation row is still open
+ * after RELEASE_RECON_UNPROVEN_AFTER_HOURS (legend-912 P1-2). The queue closes
+ * a row only on provider proof, never on a timer, so a row this old is money
+ * that may still arrive on a dead code. Rows whose last_provider_status is
+ * 'paid' (money already recorded; the queue only keeps asking every 24 hours)
+ * are excluded from the list and from the count and total, so the list holds
+ * only money not yet recorded or unreadable. Not dated by the window. One item
+ * per row; the amount is the payment intent's amount_idr (null if not found).
+ * Read-only.
+ */
+async function releaseReconUnproven(
+  tx: Executor,
+  scope: Scope,
+): Promise<Collected> {
+  const old = (alias: string) =>
+    sql`${sql.raw(alias)}.created_at <= now() - make_interval(hours => ${RELEASE_RECON_UNPROVEN_AFTER_HOURS}::int)`;
+  const qr = await collectSql(
+    tx,
+    "release_recon_unproven",
+    "qris_release_recon",
+    {
+      from: sql`pos_qris_release_reconciliations r
+                LEFT JOIN payment_intents pi
+                  ON pi.tenant_id = r.tenant_id AND pi.id = r.payment_intent_id`,
+      where: sql`r.tenant_id = ${scope.tenantId}::uuid
+      AND r.status = 'open'
+      AND r.last_provider_status IS DISTINCT FROM 'paid'
+      AND ${old("r")}
+      AND ${outletClause(sql`r.outlet_id`, scope.reach)}`,
+      at: sql`r.created_at`,
+      outlet: sql`r.outlet_id`,
+      ref: sql`r.id::text`,
+      amount: sql`pi.amount_idr`,
+      detail: sql`r.last_provider_status`,
+    },
+  );
+  const va = await collectSql(
+    tx,
+    "release_recon_unproven",
+    "va_release_recon",
+    {
+      from: sql`payment_va_releases r
+                LEFT JOIN payment_intents pi
+                  ON pi.tenant_id = r.tenant_id AND pi.id = r.payment_intent_id`,
+      where: sql`r.tenant_id = ${scope.tenantId}::uuid
+      AND r.status = 'open'
+      AND r.last_provider_status IS DISTINCT FROM 'paid'
+      AND ${old("r")}
+      AND ${outletClause(sql`r.outlet_id`, scope.reach)}`,
+      at: sql`r.created_at`,
+      outlet: sql`r.outlet_id`,
+      ref: sql`r.id::text`,
+      amount: sql`pi.amount_idr`,
+      detail: sql`r.last_provider_status`,
+    },
+  );
+  return {
+    kind: "release_recon_unproven",
+    count: qr.count + va.count,
+    knownAmountCount: qr.knownAmountCount + va.knownAmountCount,
+    amountIdr: qr.amountIdr + va.amountIdr,
+    items: [...qr.items, ...va.items]
+      .sort(
+        (a, b) =>
+          Date.parse(b.occurredAt) - Date.parse(a.occurredAt) ||
+          (a.refId < b.refId ? 1 : a.refId > b.refId ? -1 : 0),
+      )
+      .slice(0, MAX_ITEMS + 1),
+  };
+}
+
 /** Whole-rupiah fee of a posting; an unreadable or tampered value is null. */
 function postingFee(
   tenantId: string,
@@ -796,6 +872,8 @@ export async function listFinanceExceptions(
       parts.push(await linkDeadLetters(tx, scope));
     if (wants("receipt_pending_stale"))
       parts.push(await receiptPendingStale(tx, scope));
+    if (wants("release_recon_unproven"))
+      parts.push(await releaseReconUnproven(tx, scope));
     if (includePayout) parts.push(await payoutFeeNotPosted(tx, scope));
     if (includeProofStuck) parts.push(await payoutProofStuck(tx, scope));
     if (includeReconFlags) parts.push(await payoutReconFlags(tx, scope));

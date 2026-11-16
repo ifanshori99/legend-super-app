@@ -510,6 +510,7 @@ export async function addPosTender(
               ).toISOString(),
             },
             now,
+            { orderLockedByCaller: true },
           );
           const tenderId = randomUUID();
           [inserted] = await tx

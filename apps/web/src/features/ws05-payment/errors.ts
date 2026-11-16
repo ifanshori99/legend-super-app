@@ -26,6 +26,12 @@ export function paymentErrorKey(error: unknown): MessageKey {
         return "payment.linkNotFoundHint";
       case "CONFLICT":
         return "payment.alreadyPaid";
+      case "ORDER_CODE_ACTIVE":
+      case "SPLIT_CODE_ACTIVE":
+      case "QRIS_HOLD_ACTIVE":
+        return "payment.codeStillActive";
+      case "FUNDS_UNRESOLVED":
+        return "payment.fundsUnresolved";
       case "VALIDATION_ERROR":
         return "payment.methodInvalid";
       case "SERVICE_UNAVAILABLE":

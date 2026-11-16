@@ -148,6 +148,7 @@ import { runPayoutTrustedReconSweep } from "./worker/payout-trusted-recon.job.ts
 import { runPaymentGatewayPollJob } from "./worker/payment-gateway-poll.job.ts";
 import { runPosQrisHoldCheckJob } from "./worker/pos-qris-hold-check.job.ts";
 import { runPosQrisReleaseReconJob } from "./worker/pos-qris-release-recon.job.ts";
+import { runPaymentVaReleaseReconJob } from "./worker/payment-va-release-recon.job.ts";
 import { expireDueIntents } from "./services/payment.service.ts";
 import { createDuitkuGateway } from "./services/payment-duitku.ts";
 import { registerPaymentGateway } from "./services/payment-gateway.ts";
@@ -640,6 +641,13 @@ const relay = createRelayRuntime({
       await runPosQrisReleaseReconJob(context, new Date());
     } catch {
       console.error("QRIS release reconciliation sweep failed");
+    }
+    // legend-5wn1e: the same for every VA code staff released without a
+    // provider-final answer; found money is parked once, never settles the bill.
+    try {
+      await runPaymentVaReleaseReconJob(context, new Date());
+    } catch {
+      console.error("VA release reconciliation sweep failed");
     }
     // legend-jf4i (PRD §3.13 Siklus Pembayaran): expire pending intents whose
     // time is up and emit payment.expired, so a code lapses without a guest

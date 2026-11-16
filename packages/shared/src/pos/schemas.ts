@@ -1927,6 +1927,38 @@ export const posQrisReconciliationSchema = z.strictObject({
 });
 export type PosQrisReconciliation = z.infer<typeof posQrisReconciliationSchema>;
 
+/**
+ * legend-5wn1e: the written reason of a VA release, 3..300 characters counted
+ * in code points (the database check uses char_length, not UTF-16 units).
+ */
+export const posVaReleaseReasonSchema = z
+  .string()
+  .trim()
+  .refine((value) => {
+    const length = [...value].length;
+    return length >= 3 && length <= 300;
+  }, "Alasan pelepasan wajib diisi (3 sampai 300 karakter).");
+
+/** legend-5wn1e: a supervisor released a VA code without provider proof. */
+export const posVaReleaseSchema = z.strictObject({
+  id: z.string().min(1),
+  outletId: z.string().min(1),
+  orderId: z.string().min(1),
+  paymentIntentId: uuidSchema,
+  status: posQrisReconciliationStatusSchema,
+  reason: posVaReleaseReasonSchema,
+  releasedBy: z.string().min(1),
+  approvedBy: z.string().min(1),
+  attempts: z.number().int().min(0),
+  nextCheckAt: isoDateTimeSchema,
+  createdAt: isoDateTimeSchema,
+  resolvedAt: isoDateTimeSchema.nullable(),
+  resolution: z
+    .enum(["paid_recorded", "provider_expired", "provider_failed"])
+    .nullable(),
+});
+export type PosVaRelease = z.infer<typeof posVaReleaseSchema>;
+
 // ---- Documents: receipt, kuitansi, invoice (POS-07, F43/F44) --------------
 
 export const posDocumentLineSchema = z

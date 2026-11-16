@@ -516,7 +516,11 @@ export async function payLink(
   return token!;
 }
 
-/** The guest opens a QRIS intent on the link (a new one supersedes the previous). */
+/**
+ * The guest opens a QRIS intent on the link. It does not replace an earlier
+ * pending code: while one can still be paid a new one is refused 409
+ * ORDER_CODE_ACTIVE. Use `openSecondIntent` when a test needs a second code.
+ */
 export async function openIntent(
   world: BreakfastWorld,
   token: string,
@@ -534,6 +538,27 @@ export async function openIntent(
     id: response.body.data.id as string,
     amountIdr: response.body.data.amountIdr as number,
   };
+}
+
+/**
+ * The guest opens a second code on the link after the earlier one became final
+ * at the provider (a new code on a still-payable one is refused 409
+ * ORDER_CODE_ACTIVE). Every pending, not-final code of the world's tenant is
+ * made final first (status expired, provider_final_at now); a later webhook
+ * settlement of the earlier code is still a valid late payment.
+ */
+export async function openSecondIntent(
+  world: BreakfastWorld,
+  token: string,
+): Promise<{ id: string; amountIdr: number }> {
+  await floorOwner.query(
+    `UPDATE payment_intents
+        SET status = 'expired', provider_final_at = now(),
+            expires_at = LEAST(expires_at, now() - interval '1 minute')
+      WHERE tenant_id = $1 AND status = 'pending' AND provider_final_at IS NULL`,
+    [world.tenant.tenantId],
+  );
+  return openIntent(world, token);
 }
 
 /** A verified webhook settlement (the only trusted source). */
