@@ -8,12 +8,12 @@ Ditulis oleh merge train batch64g. Sumber: pesan CTO G6evw, G6w9t, G4j04. Tip SH
 
 - Batch75 -> m1 2cd7c7564: `ghostex/911-payout-905-perbaikan-p1-p2` 3cfecb901, `ghostex/ajakan-wa-poin-grid-qr-meja` bcfbdf011, `ui/ops-statusbar-mobile` ca0b1bf0a (memuat 780 + ops-statusbar-contrast), `ui/member-whatsapp-link` c3e616ddb, `ghostex/52c30e92` 9fc198918, `ghostex/19eebc7a` 738731095. Migrasi 0643-0657 -> 0409-0423. Gate akhir Retro37 hijau; fullrun ketiga tidak dimulai sesuai ralat CTO. Jangan antre ulang.
 
-## Batch76 (berikut, basis m1 2cd7c7564)
+- Batch76 -> m1 650ef5c7879ccb8ee8bfc0ffef0408e455f0d691: `fix/guest-active-code-916` 1fec4716d, memuat QR/VA `c35d1c794` + VA906 `73eb73dc3` + queue908 + 912. Migrasi `0631_payment_va_releases` -> `0424_payment_va_releases`; snapshot berbasis0423 menjaga seluruh tabel m1. Fast282file, lint, typecheck, e2e18pass/1skip+build, db:generate kosong, fullrun#1 API20721/root3460/web92 hijau. Tanpa perbaikan test. Jangan antre QR/VA atau staff-exit906 terpisah. Kartu154wr tetapopen; sisa idempotensi yehnr ke legend-gp3fw(P3).
 
-- `ghostex/915-payout-grant-lanjutan` cbc98a31f (di atas 911; migrasi sementara 0658-0659): batch76 setelah SO 917 dan perbaikannya.
-- `ghostex/923-payout-deadlock-lock-order` d289f5255 (memuat 911-915-918-920-923; migrasi sementara 0658-0663; SIAP batch77; review architect Claude menyusul di legend-ijaxi). Baris 918 lama: ffd47408f ( di atas 915; migrasi sementara 0660-0661, diedit di tempat selama dev): batch76 setelah SO 919. Ambil cabang ini saja (memuat 915).
-- `fix/qr-va-queue-after-paid-xzu4l` c35d1c794 SIAP untuk batch76 (912 tiga putaran + ek1wt + 4n8rs + 154wr; tanpa migrasi baru; memuat QRIS 785b3b453 + VA 906 + 908; menggantikan `fix/va-staff-exit-5wn1e`, jangan merge itu terpisah; migrasi sementara 0631_payment_va_releases dinomori ulang).
-- `fix/guest-active-code-916` 1fec4716d SIAP batch76, ditumpuk di atas qr-va (pesan tamu 409, web saja; menggantikan qr-va bila diambil bersama).
+## Batch77 (berikut, basis m1 650ef5c78)
+
+- `ghostex/915-payout-grant-lanjutan` cbc98a31f (di atas 911; migrasi sementara 0658-0659): sudah termuat dalam rantai923; jangan merge terpisah.
+- `ghostex/923-payout-deadlock-lock-order` d289f5255 (memuat 911-915-918-920-923; migrasi sementara 0658-0663; SIAP batch77; review architect Claude menyusul di legend-ijaxi). Baris 918 lama: ffd47408f ( di atas 915; migrasi sementara 0660-0661, diedit di tempat selama dev): batch berikut setelah review; ikuti tip923 terbaru. Ambil cabang ini saja (memuat 915).
 - `fix/e2e-m1-858` 3272f4dee: konflik dengan e2e mock m1 (legend-jemae) di 3 spec; perlu rebase dulu.
 
 ## Aturan tetap
@@ -102,7 +102,7 @@ Induk lebih dulu. Migrasi dinomori ulang dari ujung m1 saat batch disusun.
 
 ## Catatan migrasi
 
-- Nomor terakhir di m1 setelah 64g: 0372 (`0372_edc_sale_wire_open`). Entri sementara dari brief CTO (0373-0385, 0440, 0448) hanyalah nomor kerja; nomor akhir mengikuti ujung m1 saat merge.
+- Nomor terakhir di m1 setelah batch76: 0424 (`0424_payment_va_releases`). Entri sementara dari brief CTO (0373-0385, 0440, 0448) hanyalah nomor kerja; nomor akhir mengikuti ujung m1 saat merge.
 - Migrasi data (`0377_recipes_resync_edges` dll.) dikunci per nama berkas di `data-import-registry.test.ts`.
 - Peringatan check-journal terbuka: migrasi 0369 menambah FK `push_subscriptions_device_fk` pada tabel lama tanpa NOT VALID. Catat untuk review sebelum rilis.
 
