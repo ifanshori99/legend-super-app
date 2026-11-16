@@ -628,8 +628,11 @@ async function receiptPendingStale(
  * Released QRIS holds and VA codes whose reconciliation row is still open
  * after RELEASE_RECON_UNPROVEN_AFTER_HOURS (legend-912 P1-2). The queue closes
  * a row only on provider proof, never on a timer, so a row this old is money
- * that may still arrive on a dead code. Not dated by the window. One item per
- * row; the amount is the payment intent's amount_idr (null if not found).
+ * that may still arrive on a dead code. Rows whose last_provider_status is
+ * 'paid' (money already recorded; the queue only keeps asking every 24 hours)
+ * are excluded from the list and from the count and total, so the list holds
+ * only money not yet recorded or unreadable. Not dated by the window. One item
+ * per row; the amount is the payment intent's amount_idr (null if not found).
  * Read-only.
  */
 async function releaseReconUnproven(
@@ -648,6 +651,7 @@ async function releaseReconUnproven(
                   ON pi.tenant_id = r.tenant_id AND pi.id = r.payment_intent_id`,
       where: sql`r.tenant_id = ${scope.tenantId}::uuid
       AND r.status = 'open'
+      AND r.last_provider_status IS DISTINCT FROM 'paid'
       AND ${old("r")}
       AND ${outletClause(sql`r.outlet_id`, scope.reach)}`,
       at: sql`r.created_at`,
@@ -667,6 +671,7 @@ async function releaseReconUnproven(
                   ON pi.tenant_id = r.tenant_id AND pi.id = r.payment_intent_id`,
       where: sql`r.tenant_id = ${scope.tenantId}::uuid
       AND r.status = 'open'
+      AND r.last_provider_status IS DISTINCT FROM 'paid'
       AND ${old("r")}
       AND ${outletClause(sql`r.outlet_id`, scope.reach)}`,
       at: sql`r.created_at`,

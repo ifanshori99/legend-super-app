@@ -26,6 +26,7 @@ import {
   type OutletId,
   type ScopedTenantContext,
 } from "@starter/shared/core";
+import { PosError } from "@starter/shared/pos";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
 import {
   customerPaymentIntentSchema,
@@ -69,6 +70,7 @@ import {
   paymentUnallocatedFunds,
 } from "../db/schema";
 import { auditLogs } from "../db/schema/core-audit";
+import { orders } from "../db/schema/qr-order.ts";
 import { posQrisHolds } from "../db/schema/pos-qris-hold.ts";
 import { paymentVaReleases } from "../db/schema/payment-va-release.ts";
 import { notifyOutletSupervisors } from "./edge-sync-conflict-alert.ts";
@@ -89,6 +91,10 @@ import {
   lockBillOwner,
 } from "./payment-late-settlement";
 import { plausiblePaidAt } from "./payment-paid-at";
+import {
+  activeHoldBlockingSplitPart,
+  assertNoActiveQrisHold,
+} from "./pos-qris-hold.ts";
 import {
   paymentGatewayFor,
   registeredGatewayProviders,
@@ -778,6 +784,50 @@ export async function createSplitPartIntent(
   return createIntentCore(context, token, parsed, now, part);
 }
 
+/**
+ * legend-ek1wt: a code of an order's public link is a code issuer like the QR
+ * guest and the cashier, so it honors the same QRIS hold guard: while a QR of
+ * the bill can still be paid, no new code is issued (409 QRIS_HOLD_ACTIVE).
+ * Only a link that is an order's (`orders.payment_link_id`) is checked. For a
+ * split part (`billSplitId` set) only a bill-level hold or a hold of that same
+ * part refuses; a hold of another part never gates this part. Without a part
+ * every active hold refuses. The order row is not locked here and the link
+ * lock does not stop a hold opener (it locks the order, not the link); locking
+ * `orders` from here would risk a deadlock against the lock order, so the
+ * database trigger of migration 0369 stays the backstop for that race.
+ */
+async function assertLinkOrderNoQrisHold(
+  tx: Tx,
+  context: ScopedTenantContext,
+  paymentLinkId: string,
+  billSplitId: string | null,
+): Promise<void> {
+  const [order] = await tx
+    .select({ id: orders.id })
+    .from(orders)
+    .where(
+      and(
+        eq(orders.tenantId, context.tenant.tenantId),
+        eq(orders.paymentLinkId, paymentLinkId),
+      ),
+    )
+    .limit(1);
+  if (!order) return;
+  if (billSplitId === null) {
+    await assertNoActiveQrisHold(tx, context, order.id);
+    return;
+  }
+  if (
+    await activeHoldBlockingSplitPart(
+      tx,
+      context.tenant.tenantId,
+      order.id,
+      billSplitId,
+    )
+  )
+    throw new PosError("QRIS_HOLD_ACTIVE");
+}
+
 async function createIntentCore(
   context: ScopedTenantContext,
   token: string,
@@ -793,6 +843,16 @@ async function createIntentCore(
 
   if (!plan.routing)
     throw new Error("Payment intent plan has neither an intent nor a route");
+  // legend-ek1wt: refused before any provider call (checked again inside the
+  // intent transaction below).
+  await withTenant(db, context, (tx) =>
+    assertLinkOrderNoQrisHold(
+      tx,
+      context,
+      plan.link.id,
+      part?.billSplitId ?? null,
+    ),
+  );
   const selected = await selectGatewayForNewIntent(
     context,
     plan.link.outletId,
@@ -913,6 +973,14 @@ async function createIntentCore(
           "CONFLICT",
           "This bill changed while the payment was prepared. Reload and try again.",
         );
+      // legend-ek1wt: a hold may have opened while the code was being minted;
+      // the code just minted is then never stored.
+      await assertLinkOrderNoQrisHold(
+        tx,
+        context,
+        plan.link.id,
+        part?.billSplitId ?? null,
+      );
       superseded = await supersedePending(
         tx,
         context,

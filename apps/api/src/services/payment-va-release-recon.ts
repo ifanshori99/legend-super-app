@@ -121,7 +121,12 @@ export async function reconcileReleasedVa(
           and(
             eq(paymentIntents.tenantId, tenantId),
             eq(paymentIntents.id, row.paymentIntentId),
-            inArray(paymentIntents.status, ["pending", "expired", "failed"]),
+            inArray(paymentIntents.status, [
+              "pending",
+              "paid",
+              "expired",
+              "failed",
+            ]),
             isNull(paymentIntents.providerFinalAt),
           ),
         ),

@@ -265,13 +265,17 @@ async function parkExtraPayments(
  * Asks the provider once about one queue row and decides. Shared with the VA
  * staff release queue (legend-5wn1e): only the row's intent id is used.
  *
- * legend-xzu4l: a recorded payment does NOT close the row. A second payment
- * with a lost webhook can still arrive, and the row opens after the code
- * lapsed, so expiry proves nothing. The row keeps asking (backoff) until the
- * provider answers expired/failed for good. legend-912 P1-2: no timer closes
- * it; past 72 h (paid) or 7 days it is only asked every 24 h. Extra provider
- * transactions are parked, never paid; the row is final only once every
- * positive extra is parked.
+ * legend-xzu4l: for DOIT a recorded payment does NOT close the row. A second
+ * payment with a lost webhook can still arrive, and the row opens after the
+ * code lapsed, so expiry proves nothing. The row keeps asking (backoff) until
+ * the provider answers expired/failed for good. legend-912 P1-2: no timer
+ * closes it; past 72 h (paid) or 7 days it is only asked every 24 h. Extra
+ * provider transactions are parked, never paid; the row is final only once
+ * every positive extra is parked.
+ *
+ * legend-912 round 2: Duitku has one transaction per order and answers paid
+ * forever, so a Duitku paid answer with the money recorded (positive amount)
+ * and every extra parked is final proof and closes the row.
  */
 export async function decide(
   context: ScopedTenantContext,
@@ -360,7 +364,16 @@ export async function decide(
       return { kind: "open", seen: "paid_not_recorded" };
     if (!extrasRecorded)
       return { kind: "open", seen: "extra_funds_not_parked" };
-    // Paid is not proof the code is closed: a later transaction can still
+    // Duitku is one transaction per order: a recorded positive paid answer with
+    // every extra parked is final (legend-912 round 2).
+    if (intent.provider === "duitku")
+      return {
+        kind: "resolved",
+        resolution: "paid_recorded",
+        seen: answer.status,
+        final: true,
+      };
+    // DOIT: paid is not proof the code is closed: a later transaction can still
     // arrive. Asked on, less often after 72 h.
     return stillOpen("paid", PAID_WATCH_MS);
   }

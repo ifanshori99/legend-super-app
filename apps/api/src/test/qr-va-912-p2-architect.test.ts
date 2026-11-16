@@ -36,10 +36,10 @@
 //   (VA: runPaymentVaReleaseReconJob, QR: runPosQrisReleaseReconJob) runs with
 //   an injected `now` (minutes after the release) and `force: true`. The
 //   ordinary poll does not warn about extras: only released codes do.
-// - The staff warning is observed as a NEW notification row of the tenant during
-//   one queue run (the spec names the reason code `extra_funds_not_parked`, not
-//   a title), as in qr-va-912-p1-3. Absence is asserted only for the control
-//   (pending, no extras).
+// - The staff warning is observed as NEW in-app notifications titled "VA/QRIS
+//   dibayar, uang belum tercatat" during one queue run (see
+//   `subjectNotifications`: they carry no subject id, so the run delta is used).
+//   Absence is asserted only for the control (pending, no extras).
 // - "Parking fails" is simulated with a DB trigger that rejects inserts into
 //   payment_unallocated_funds for one intent, dropped after the first poll. Only
 //   funds and `payment.funds_unallocated` events are asserted for that case (not
@@ -67,9 +67,7 @@ import {
   type ProviderAnswer,
 } from "./pos-qris-hold-test-helpers.ts";
 import {
-  UNRECORDED_ALERT_TITLE,
   evidenceRows,
-  notificationCount,
   outboxCountOf,
   releaseKit,
   runRecon,
@@ -216,10 +214,26 @@ async function settled(kind: Kind, s: Subject): Promise<number> {
   return (await intentRow(s.intentId)).status === "paid" ? s.amount : 0;
 }
 
-async function allNotifications(): Promise<number> {
+/**
+ * Staff warnings "paid at the provider, money not recorded" (VA or QRIS), as the
+ * user sees them: in-app notifications for the outlet's supervisors titled
+ * "VA dibayar, uang belum tercatat" / "QRIS dibayar, uang belum tercatat".
+ * Assumption (the spec names the reason code `extra_funds_not_parked`, not the
+ * row shape): the notification carries no subject id (no link, id-free body),
+ * so a warning is attributed to a subject by the DELTA across one queue run
+ * made right after setting up that subject's own answer; the warning fires only
+ * when a row first reaches the state, so other subjects' rows cannot add to it.
+ */
+const WARNING_TITLES = [
+  "VA dibayar, uang belum tercatat",
+  "QRIS dibayar, uang belum tercatat",
+];
+async function subjectNotifications(): Promise<number> {
   const { rows } = await owner.query<{ n: number }>(
-    "SELECT count(*)::int AS n FROM notifications WHERE tenant_id=$1",
-    [fx.tenant.tenantId],
+    `SELECT count(*)::int AS n
+       FROM notifications n
+      WHERE n.tenant_id = $1 AND n.title = ANY($2::text[])`,
+    [fx.tenant.tenantId, WARNING_TITLES],
   );
   return rows[0]!.n;
 }
@@ -538,16 +552,16 @@ const releasedQrKind: ReleasedKind = {
 
 const after = (base: Date, ms: number) => new Date(base.getTime() + ms);
 
-/** Run the queue once; how many new notification rows staff got from it, and
- * how many of them carry the QR "paid, money not recorded" title. */
-async function reconAndCountWarnings(kind: ReleasedKind, now: Date) {
-  const before = await allNotifications();
-  const beforeQr = await notificationCount(fx, UNRECORDED_ALERT_TITLE);
+/** Run the queue once; how many new notification rows about THIS subject staff
+ * got from it. */
+async function reconAndCountWarnings(
+  kind: ReleasedKind,
+  s: Subject,
+  now: Date,
+) {
+  const before = await subjectNotifications();
   await kind.recon(now);
-  return {
-    any: (await allNotifications()) - before,
-    qrTitle: (await notificationCount(fx, UNRECORDED_ALERT_TITLE)) - beforeQr,
-  };
+  return { any: (await subjectNotifications()) - before };
 }
 
 describe.each([releasedVaKind, releasedQrKind])(
@@ -570,7 +584,7 @@ describe.each([releasedVaKind, releasedQrKind])(
         const b = extra(0);
         answer(s, { rawStatus: "01" }, [b]);
 
-        const warned = await reconAndCountWarnings(kind, next());
+        const warned = await reconAndCountWarnings(kind, s, next());
         expect(
           warned.any,
           "staff warning (extra_funds_not_parked)",
@@ -601,9 +615,9 @@ describe.each([releasedVaKind, releasedQrKind])(
           `CREATE TRIGGER ${TRIGGER} BEFORE INSERT ON payment_unallocated_funds
              FOR EACH ROW EXECUTE FUNCTION ${TRIGGER}('${s.intentId}')`,
         );
-        let warned: { any: number; qrTitle: number };
+        let warned: { any: number };
         try {
-          warned = await reconAndCountWarnings(kind, next());
+          warned = await reconAndCountWarnings(kind, s, next());
           expect(await unallocatedFunds(fx, s.intentId)).toEqual([]);
           expect(
             await outboxCountOf(fx, "payment.funds_unallocated", s.intentId),
@@ -640,8 +654,8 @@ describe.each([releasedVaKind, releasedQrKind])(
         const s = await kind.open();
         const next = clock(s);
         answer(s, { rawStatus: "01" });
-        expect((await reconAndCountWarnings(kind, next())).any).toBe(0);
-        expect((await reconAndCountWarnings(kind, next())).any).toBe(0);
+        expect((await reconAndCountWarnings(kind, s, next())).any).toBe(0);
+        expect((await reconAndCountWarnings(kind, s, next())).any).toBe(0);
         await expectNothingParked(s);
         expect(await kind.settled(s)).toBe(0);
       },
