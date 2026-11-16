@@ -3,6 +3,8 @@ import { after, test } from "node:test";
 import { componentHarness } from "./844-component-harness.mjs";
 
 const harness = componentHarness((specifier, parent) => {
+  if (specifier === "@/components/shells/operations-screen")
+    return "export const useOperationsScreen = () => {};";
   if (specifier === "../hooks.ts" && parent.includes("ws04-kitchen-config"))
     return "export const useMenuStations = () => ({data: []}); export const useOrderIssues = () => ({data: {data: globalThis.__844Data.issues, meta: {nextCursor: null}}});";
   if (specifier === "@tanstack/react-router")
