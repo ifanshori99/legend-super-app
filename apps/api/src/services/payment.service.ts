@@ -737,7 +737,7 @@ async function cancelSupersededAtGateway(
       await withTenant(db, context, async (tx) =>
         tx
           .update(paymentIntents)
-          .set({ providerFinalAt: now })
+          .set({ providerFinalAt: now, providerAnsweredAt: now })
           .where(
             and(
               eq(paymentIntents.tenantId, context.tenant.tenantId),
@@ -1221,6 +1221,11 @@ async function expireIntent(
         status: "expired",
         updatedAt: now,
         ...(providerFinal ? { providerFinalAt: now } : {}),
+        // legend-3wpf: a `gateway` expiry is the provider's own answer, final
+        // or not; a local timeout never says the provider answered.
+        ...(providerFinal || reason === "gateway"
+          ? { providerAnsweredAt: now }
+          : {}),
       })
       .where(
         and(
@@ -1240,32 +1245,48 @@ async function expireIntent(
       now,
     });
     if (!audit) return;
-    await recordAudit(
-      tx,
-      context,
-      {
-        id: createUlid(now.getTime()),
-        tenantId: context.tenant.tenantId,
-        outletId: intent.outletId,
-        actorType: "system",
-        actorId: null,
-        deviceId: null,
-        action: audit.action,
-        objectType: "payment_intent",
-        objectId: intent.id,
-        reason: audit.reason,
-        maskedChanges: {
-          before: { status: "pending" },
-          after: { status: "expired", providerRef: intent.providerRef },
-        },
-        ipHash: null,
-        sensitiveAccess: false,
-        retentionClass: "audit_2y",
-        createdAt: now.toISOString(),
-      },
-      ["status", "providerRef"],
-    );
+    await recordIntentAudit(tx, context, intent, now, audit, "pending");
   });
+}
+
+/** Audit row of an intent's reconciliation outcome; `fromStatus` is the status
+ * the intent had (and, for a closed code, keeps). */
+async function recordIntentAudit(
+  tx: Tx,
+  context: ScopedTenantContext,
+  intent: PaymentIntentRow,
+  now: Date,
+  audit: { action: string; reason: string },
+  fromStatus: "pending" | "expired" | "failed",
+): Promise<void> {
+  await recordAudit(
+    tx,
+    context,
+    {
+      id: createUlid(now.getTime()),
+      tenantId: context.tenant.tenantId,
+      outletId: intent.outletId,
+      actorType: "system",
+      actorId: null,
+      deviceId: null,
+      action: audit.action,
+      objectType: "payment_intent",
+      objectId: intent.id,
+      reason: audit.reason,
+      maskedChanges: {
+        before: { status: fromStatus },
+        after: {
+          status: fromStatus === "pending" ? "expired" : fromStatus,
+          providerRef: intent.providerRef,
+        },
+      },
+      ipHash: null,
+      sensitiveAccess: false,
+      retentionClass: "audit_2y",
+      createdAt: now.toISOString(),
+    },
+    ["status", "providerRef"],
+  );
 }
 
 /**
@@ -1343,6 +1364,8 @@ async function failIntent(
         status: "failed",
         updatedAt: now,
         ...(providerFinal ? { providerFinalAt: now } : {}),
+        // legend-3wpf: `failIntent` only ever applies a provider answer.
+        providerAnsweredAt: now,
       })
       .where(
         and(
@@ -2891,18 +2914,21 @@ export async function requestPayAtCashier(
  * Expires every pending intent whose time is up (PRD "Siklus Pembayaran").
  * Safe to call repeatedly; each row transitions once and emits one event.
  *
- * `leaveGatewayReconciling` (the worker sweep, legend-jf4i) skips a code the
- * installed gateway issued (provider + provider reference): money may still
+ * Always safe (legend-3wpf, was the opt-in `leaveGatewayReconciling` of the
+ * worker sweep, legend-jf4i): a code the installed gateway issued (provider +
+ * provider reference) is skipped, whatever the caller passes. Money may still
  * land after it lapsed, so the polling fallback keeps asking and expires it as
  * `timeout` (audited) once `GATEWAY_POLL_WINDOW_MS` has passed. Only codes with
- * no gateway behind them lapse here.
+ * no gateway behind them lapse here. `_options` is kept so callers that still
+ * pass `leaveGatewayReconciling` compile; it changes nothing.
  */
 export async function expireDueIntents(
   context: ScopedTenantContext,
   now = new Date(),
   limit = 200,
-  options: { leaveGatewayReconciling?: boolean } = {},
+  _options: { leaveGatewayReconciling?: boolean } = {},
 ): Promise<{ expired: number }> {
+  void _options;
   const providers = registeredGatewayProviders();
   const gatewayOwned = and(
     isNotNull(paymentIntents.providerRef),
@@ -2919,7 +2945,7 @@ export async function expireDueIntents(
           eq(paymentIntents.tenantId, context.tenant.tenantId),
           eq(paymentIntents.status, "pending"),
           lte(paymentIntents.expiresAt, now),
-          options.leaveGatewayReconciling ? not(gatewayOwned!) : undefined,
+          not(gatewayOwned!),
         ),
       )
       .orderBy(asc(paymentIntents.expiresAt))
@@ -2939,9 +2965,13 @@ export async function expireDueIntents(
  * polling fallback asks the gateway (PRD PAY-02/03). */
 export const GATEWAY_POLL_GRACE_MS = 60_000;
 
-/** How long past its expiry a gateway code is still reconciled. A pending
- * intent the gateway never answered for is expired as `timeout` (audited)
- * after it; an expired (superseded) code is no longer asked about.
+/** How long past its expiry a gateway code may go without a final provider
+ * answer before staff are alerted. A pending intent the gateway never answered
+ * for is expired as `timeout` (audited) after it; an expired / failed
+ * (superseded) code gets one `payment.reconciliation_timed_out` audit row from
+ * the poll (legend-3wpf). Neither stops the polling: the code is not marked
+ * final and is asked again, with backoff, until the provider answers final, so
+ * money that lands late is still recorded (SO-885).
  *
  * Must stay >= the life of a DOIT virtual account (180 minutes). DOIT has no
  * documented cancel call, so a VA the guest abandoned by switching bank stays
@@ -3029,19 +3059,63 @@ function isClosedPollable(intent: { status: string }): boolean {
  * underpayment is parked as unallocated funds, any other answer changes
  * nothing (never re-expires, never emits events).
  *
- * Such an intent was closed before its code lapsed (`updated_at <
- * expires_at`), and the poller keeps asking until a definitive answer arrives
- * after the code lapsed (see `markGatewayReconciled`); a gateway error, or a
- * provider still reporting `pending`, keeps it in the poll.
+ * The poller keeps asking until a definitive answer arrives after the code
+ * lapsed (see `markGatewayReconciled`, which stores `provider_final_at` and
+ * `provider_answered_at`); a gateway error, or a provider still reporting
+ * `pending`, keeps it in the poll. A poll run (`options.auditTimeout`) past
+ * `expires_at + GATEWAY_POLL_WINDOW_MS` without a final answer writes one
+ * `payment.reconciliation_timed_out` audit row per code (an existing row of the
+ * same object and action suppresses it); the code is not marked final and
+ * keeps being polled and blocking a replacement code exactly as before.
  */
 async function syncExpiredIntentPayment(
   context: ScopedTenantContext,
   intent: PaymentIntentRow,
   now: Date,
   probe?: ProviderProbe,
+  options: { auditTimeout?: boolean } = {},
 ): Promise<SyncResult> {
   if (!isClosedPollable(intent) || intent.providerRef === null)
     return { intent, gatewayError: false };
+  // No final answer past the window: one audit row per code (the pending-code
+  // path may already have written it), the polling goes on.
+  const timedOut = async (gatewayError: boolean): Promise<SyncResult> => {
+    if (
+      options.auditTimeout &&
+      now.getTime() - intent.expiresAt.getTime() >= GATEWAY_POLL_WINDOW_MS
+    )
+      await withTenant(db, context, async (tx) => {
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(hashtextextended(${`legend:payment-timeout-audit:${context.tenant.tenantId}:${intent.id}`}, 0))`,
+        );
+        const [seen] = await tx
+          .select({ id: auditLogs.id })
+          .from(auditLogs)
+          .where(
+            and(
+              eq(auditLogs.tenantId, context.tenant.tenantId),
+              sql`${auditLogs.event}->>'action' = ${"payment.reconciliation_timed_out"}`,
+              sql`${auditLogs.event}->>'objectId' = ${intent.id}`,
+            ),
+          )
+          .limit(1);
+        if (seen) return;
+        await recordIntentAudit(
+          tx,
+          context,
+          intent,
+          now,
+          {
+            action: "payment.reconciliation_timed_out",
+            reason: gatewayError
+              ? "gateway_unreachable"
+              : "gateway_unconfirmed",
+          },
+          intent.status as "expired" | "failed",
+        );
+      });
+    return { intent, gatewayError };
+  };
   let providerStatus;
   try {
     providerStatus = await paymentGatewayFor(intent.provider).getStatus({
@@ -3053,7 +3127,7 @@ async function syncExpiredIntentPayment(
     });
     if (probe) probe.answer = providerStatus;
   } catch {
-    return { intent, gatewayError: true };
+    return timedOut(true);
   }
   // 912 P2-1 / legend-p5xrv: other transactions of the answer are parked once
   // (the evidence row is unique per provider + providerRef), never settling the
@@ -3069,15 +3143,20 @@ async function syncExpiredIntentPayment(
       providerStatus.providerRef === intent.providerRef &&
       !providerStatus.extraPayments?.length &&
       providerAnswerFinal(intent, providerStatus, now)
-    )
+    ) {
       await markGatewayReconciled(context, intent, now);
-    return { intent, gatewayError: false };
+      return { intent, gatewayError: false };
+    }
+    // legend-3wpf: the provider did answer about this code (not final yet).
+    if (providerStatus.providerRef === intent.providerRef)
+      await markProviderAnswered(context, intent.id, now);
+    return timedOut(false);
   }
   if (providerStatus.status !== "paid" || providerStatus.amountIdr === null)
-    return { intent, gatewayError: false };
+    return timedOut(false);
   // SO-896 P1-2: a paid answer without a positive amount proves no money and
   // is not final: nothing is held or recorded and the code stays in the poll.
-  if (!(providerStatus.amountIdr > 0)) return { intent, gatewayError: false };
+  if (!(providerStatus.amountIdr > 0)) return timedOut(false);
   const paidAt = plausiblePaidAt(providerStatus.paidAt, intent.createdAt, now);
   try {
     await assertStrictAmount(
@@ -3121,11 +3200,36 @@ async function syncExpiredIntentPayment(
       );
       // SO-896 P1-2: final only when the money is on record (written now or
       // found); a paid answer without a positive amount keeps the code polled.
-      if (onRecord) await markGatewayReconciled(context, intent, now);
-      return { intent, gatewayError: false };
+      if (onRecord) {
+        await markGatewayReconciled(context, intent, now);
+        return { intent, gatewayError: false };
+      }
+      return timedOut(false);
     }
     throw error;
   }
+}
+
+/** legend-3wpf: stores that the provider answered about the code (terminal
+ * status, not necessarily final). Keeps the first answer; a replay changes
+ * nothing. */
+async function markProviderAnswered(
+  context: ScopedTenantContext,
+  intentId: string,
+  now: Date,
+): Promise<void> {
+  await withTenant(db, context, async (tx) =>
+    tx
+      .update(paymentIntents)
+      .set({ providerAnsweredAt: now })
+      .where(
+        and(
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          eq(paymentIntents.id, intentId),
+          isNull(paymentIntents.providerAnsweredAt),
+        ),
+      ),
+  );
 }
 
 /**
@@ -3155,7 +3259,7 @@ async function markGatewayReconciledInTx(
 ): Promise<void> {
   await tx
     .update(paymentIntents)
-    .set({ providerFinalAt: now })
+    .set({ providerFinalAt: now, providerAnsweredAt: now })
     .where(
       and(
         eq(paymentIntents.tenantId, context.tenant.tenantId),
@@ -3284,7 +3388,7 @@ export async function settleGatewayIntentNowDetailed(
  * expired intents whose gateway code is still payable (superseded by a newer
  * code) are asked too, and so are expired intents closed before their code
  * lapsed that have no definitive answer yet (up to `GATEWAY_POLL_WINDOW_MS`
- * past expiry). A gateway error leaves the intent untouched; the next run
+ * past expiry, then once more for the timeout audit). A gateway error leaves the intent untouched; the next run
  * retries. Past expiry a code is asked again only after the backoff (half the
  * time since expiry, at most `GATEWAY_POLL_MAX_BACKOFF_MS`). Intents are taken least-recently-polled first and each attempt
  * stamps `gateway_polled_at`, so a few failing intents cannot starve the rest.
@@ -3335,7 +3439,8 @@ export async function pollPendingGatewayIntents(
                 lte(paymentIntents.gatewayPollLeaseUntil, leaseNow),
               ),
               // An expired or failed code stays in the poll until the provider
-              // answers final, however long ago it lapsed (no window).
+              // answers final, however long ago it lapsed (no window: money
+              // that lands on a code nobody asks about is never recorded).
               kind === "pending"
                 ? and(eq(paymentIntents.status, "pending"), noVaRelease)
                 : or(expiredCodeMayStillPay(), failedCodeNotFinal()),
@@ -3435,7 +3540,9 @@ export async function pollPendingGatewayIntents(
               })
             : context;
         const result = isClosedPollable(row)
-          ? await syncExpiredIntentPayment(outletContext, row, now)
+          ? await syncExpiredIntentPayment(outletContext, row, now, undefined, {
+              auditTimeout: true,
+            })
           : await syncPendingIntentDetailed(outletContext, row, now);
         consecutiveErrors.set(
           budgetKey,

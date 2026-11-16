@@ -278,6 +278,9 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "function bodies only, no row edited by the migration: app.payout_grant_issue (grantor login), app.payout_correction_propose, app.payout_overpaid_propose and the withdraw functions (payout role) insert a grant or a proposal, or mark an open correction or overpaid proposal withdrawn, when called; a withdrawn proposal stays as a row and the item is untouched; the migration itself writes no row and changes no amount",
   "0426_payout_approval_log.sql":
     "creates the append-only payroll_payout_approval_log table and replaces the function body of app.payout_attest (payout role), which inserts an attestation and a log row when called; the migration itself writes no row and changes no amount",
+  // legend-3wpf (941 card C)
+  "0434_payment_intent_provider_answered.sql":
+    "adds the nullable payment_intents.provider_answered_at column and backfills it from provider_final_at on the rows that already have one (the provider already answered final, a copy of an existing value, NULL to a value only); no amount, status or bill touched, so nobody is paid more",
   // legend-yd9u2 (923)
   "0430_payout_backfill_unfreeze_lock_order.sql":
     "function body only, no row edited by the migration: app.payout_batch_unfreeze acquires same-run batches in id order before its target; it keeps the existing grant, dispute and unfreeze rules and changes no amount",

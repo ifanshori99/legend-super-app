@@ -217,6 +217,14 @@ export const paymentIntents = pgTable(
      * it: an `expired` code with a provider reference and no value here may
      * still take money, so nothing replaces it and the poller keeps asking. */
     providerFinalAt: timestamp("provider_final_at", { withTimezone: true }),
+    /** legend-3wpf: when the PROVIDER first answered about this code with a
+     * terminal status (expired, failed, refunded) or its money was reconciled.
+     * Unlike `provider_final_at` it is also set by an answer given before the
+     * code lapsed (a retryable attempt). Never inferred from `updated_at`,
+     * which any unrelated touch of the row moves. Null = no answer yet. */
+    providerAnsweredAt: timestamp("provider_answered_at", {
+      withTimezone: true,
+    }),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
