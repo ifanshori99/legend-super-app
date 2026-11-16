@@ -202,7 +202,8 @@ async function unfreeze(
     sessionId,
     batchId,
     detail: sha256(UNFREEZE_REASON),
-    method: "mfa_challenge",
+    // 920: the unfreeze grant accepts the password step-up only.
+    method: "password",
   });
   if (!issued.grant)
     return { grant: false, message: issued.message, outcome: undefined };

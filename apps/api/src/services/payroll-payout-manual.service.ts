@@ -108,6 +108,7 @@ import {
   frozenSourceGlAccount,
 } from "./payroll-payout-setup.ts";
 import {
+  assertBatchOpenUnderRunLock,
   computeBatchContentHash,
   loadBatchRunFirst,
   openItemAmount,
@@ -192,6 +193,7 @@ export async function exportManualBatch(
 ): Promise<ManualExportFile> {
   const tenantId = actor.tenantId as TenantId;
   const batch = await loadBatchRunFirst(tx, actor.tenantId, batchId);
+  await assertBatchOpenUnderRunLock(tx, actor.tenantId, batchId);
   if (batch.channel !== "manual_bank")
     throw refuse(
       409,
@@ -605,6 +607,21 @@ export async function settleAndMaybePay(
   now: Date,
 ): Promise<boolean> {
   await settleBatchPayouts(tx, actor, batch.id, now);
+  return settleRunAndAnnounce(tx, actor, batch, now);
+}
+
+/**
+ * Turns the run paid when every payslip is paid and announces it (once). The
+ * caller holds the run and batch locks. Exported for the unfreeze (920): a
+ * sibling batch that confirmed healthy while a dispute froze the run is settled
+ * here once the freeze ends.
+ */
+export async function settleRunAndAnnounce(
+  tx: Tx,
+  actor: Actor,
+  batch: BatchRow,
+  now: Date,
+): Promise<boolean> {
   const runPaid = await settleRunWhenAllPaid(tx, actor, batch);
   if (runPaid) await emitPayoutRunPaid(tx, actor, batch, now);
   return runPaid;
@@ -1559,6 +1576,7 @@ export async function confirmCashHandover(
 ): Promise<{ batchStatus: BatchRow["status"]; runPaid: boolean }> {
   const tenantId = actor.tenantId as TenantId;
   const batch = await loadBatchRunFirst(tx, actor.tenantId, batchId);
+  await assertBatchOpenUnderRunLock(tx, actor.tenantId, batchId);
   if (batch.channel !== "cash")
     throw refuse(
       409,

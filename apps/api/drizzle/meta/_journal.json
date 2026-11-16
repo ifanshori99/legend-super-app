@@ -2843,6 +2843,13 @@
       "when": 1795000000661,
       "tag": "0661_payout_batch_freeze_guards",
       "breakpoints": true
+    },
+    {
+      "idx": 420,
+      "version": "7",
+      "when": 1795000000662,
+      "tag": "0662_payout_freeze_run_lock",
+      "breakpoints": true
     }
   ]
 }

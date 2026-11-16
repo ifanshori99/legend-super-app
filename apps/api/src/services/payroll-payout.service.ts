@@ -5,7 +5,11 @@
 //
 // Trusted in-transaction writers: the caller wraps `withTenant`, a throw rolls
 // back everything. Lock order everywhere: payroll run row, then the batch row,
-// then items (`loadBatchRunFirst` does this for a batch that already exists).
+// then items, then the batch advisory lock of the GL (`loadBatchRunFirst` does
+// this for a batch that already exists). The run row is also the parent lock of
+// a freeze (920): once the run and batch rows are held, `assertBatchOpenUnderRunLock`
+// re-reads the freeze state, because a dispute committed while this step waited
+// for the lock is visible only to a statement that starts after it.
 // The database is the net (partial unique indexes, CHECKs and the guard
 // triggers of migration 0344); these functions choose the happy path and give
 // every refusal a readable code.
@@ -544,6 +548,30 @@ export async function loadBatchForUpdate(
     .for("update");
   if (!row) throw batchNotFound();
   return row;
+}
+
+/**
+ * Freeze check that must run AFTER the run and batch rows are locked (920).
+ * The early `assertBatchNotFrozen` runs before the lock and can pass while a
+ * "not me" dispute commits; under READ COMMITTED this statement starts after the
+ * wait and sees it. Same refusal as the early check (409 PAYOUT_BATCH_FROZEN;
+ * the database's PAYOUT-79 answers alike). It reads only: the caller holds the
+ * locks, so it never takes one.
+ */
+export async function assertBatchOpenUnderRunLock(
+  tx: Tx,
+  tenantId: string,
+  batchId: string,
+): Promise<void> {
+  try {
+    await tx.transaction((savepoint) =>
+      savepoint.execute(
+        sql`SELECT app.payout_batch_assert_open_nolock(${tenantId}::uuid, ${batchId}::uuid)`,
+      ),
+    );
+  } catch (error) {
+    throw payoutGuardViolation(error) ?? error;
+  }
 }
 
 /**
@@ -1423,6 +1451,7 @@ export async function submitDisbursementBatch(
   // Lock order: run row first, then the batch row (create does the same).
   await assertRunPayable(tx, tenantId, peek.payrollRunId);
   const batch = await loadBatchForUpdate(tx, tenantId, batchId);
+  await assertBatchOpenUnderRunLock(tx, tenantId, batchId);
   if (batch.status !== "draft")
     throw payoutRefuse(
       409,
@@ -1539,6 +1568,7 @@ export async function approveDisbursementBatch(
   await assertBatchNotFrozen(tx, tenantId, batchId);
   await assertRunPayable(tx, tenantId, peek.payrollRunId);
   const batch = await loadBatchForUpdate(tx, tenantId, batchId);
+  await assertBatchOpenUnderRunLock(tx, tenantId, batchId);
   if (batch.status !== "pending_approval")
     throw payoutRefuse(
       409,
@@ -1685,6 +1715,7 @@ export async function cancelDisbursementBatch(
     );
   await assertBatchNotFrozen(tx, tenantId, batchId);
   const batch = await loadBatchRunFirst(tx, tenantId, batchId);
+  await assertBatchOpenUnderRunLock(tx, tenantId, batchId);
   if (
     batch.status !== "draft" &&
     batch.status !== "pending_approval" &&

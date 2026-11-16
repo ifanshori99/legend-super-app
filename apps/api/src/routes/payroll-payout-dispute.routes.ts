@@ -50,7 +50,10 @@ export const payrollPayoutDisputeRouter = Router();
 const stepUp = requireTenantStepUpMfa({
   maxAgeMinutes: PAYOUT_STEP_UP_MAX_AGE_MINUTES,
 });
-const passwordStepUp = requireTenantStepUpPassword();
+// Unfreeze (920): the account password is always verified, like the disown. A
+// fresh MFA challenge on a stolen session cookie must not reopen a batch, so the
+// grant of kind unfreeze accepts the password only too.
+const passwordStepUp = requireTenantStepUpPassword({ passwordOnly: true });
 // Disown: no MFA age and no challenge shortcut. The account password is always
 // verified, so an approver whose role or second factor an attacker removed can
 // still say "not me" (the grant of kind disown accepts the password only).

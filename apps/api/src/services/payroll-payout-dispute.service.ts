@@ -24,6 +24,9 @@ import {
   payrollPayoutBatchDisputes,
 } from "../db/schema/payroll-payout.ts";
 import { payrollRuns } from "../db/schema/payroll.ts";
+import { AccountingError } from "@starter/shared/accounting";
+import { HttpError } from "../lib/http-error.ts";
+import { logger } from "../lib/logger.ts";
 import type { Tx } from "./hris-access.ts";
 import {
   isPayoutUuid,
@@ -34,6 +37,8 @@ import {
   type PayoutActor,
 } from "./payroll-payout.service.ts";
 import { batchIsNotFrozenSql } from "./payroll-payout-freeze-sql.ts";
+import { recoverPayoutGlOfBatch } from "./payroll-payout-gl.service.ts";
+import { settleRunAndAnnounce } from "./payroll-payout-manual.service.ts";
 
 const logNotFound = () =>
   payoutRefuse(
@@ -214,6 +219,57 @@ export async function disownPayoutApproval(
 export type UnfreezeResult = { released: number };
 
 /**
+ * After a freeze ended (920): the batch and the batches that shared a payslip
+ * with it (and are not frozen by another dispute) may have had their GL postings
+ * and the run's `paid` turn held back while the dispute was open. Recover each
+ * one in a savepoint (a posting that is not ready stays for the recovery job,
+ * it never blocks the unfreeze), then try to turn the run paid. Lock order is
+ * kept: the unfreeze SQL already holds the run row; batches go in id order.
+ */
+async function catchUpAfterUnfreeze(
+  tx: Tx,
+  actor: PayoutActor,
+  batchId: string,
+): Promise<void> {
+  const tenantId = actor.tenantId;
+  const result = await tx.execute(sql`
+    SELECT DISTINCT b.id
+      FROM payroll_disbursement_items mine
+      JOIN payroll_disbursement_items sibling
+        ON sibling.tenant_id = mine.tenant_id
+       AND sibling.payslip_id = mine.payslip_id
+      JOIN payroll_disbursement_batches b
+        ON b.tenant_id = sibling.tenant_id AND b.id = sibling.batch_id
+     WHERE mine.tenant_id = ${tenantId}::uuid AND mine.batch_id = ${batchId}::uuid
+       AND ${batchIsNotFrozenSql(tenantId, sql`b.id`)}
+     ORDER BY b.id`);
+  // The query already holds the batch itself (it shares its own payslips) when
+  // it is not frozen. Never add it by hand: a batch still frozen through the
+  // dispute of a sibling must not reach `payout_run_settle` (PAYOUT-79 would
+  // roll the whole unfreeze back and two mutual disputes could never be lifted).
+  const ids = new Set((result.rows as { id: string }[]).map((r) => r.id));
+  let announced = false;
+  for (const id of [...ids].sort()) {
+    try {
+      await tx.transaction((savepoint) =>
+        recoverPayoutGlOfBatch(savepoint, tenantId as TenantId, id),
+      );
+    } catch (error) {
+      if (!(error instanceof HttpError || error instanceof AccountingError))
+        throw error;
+      logger.warn(
+        { tenantId, batchId: id, reason: "unfreeze_recovery_not_ready" },
+        "payout GL recovery after unfreeze left for later",
+      );
+    }
+    if (announced) continue;
+    const row = await readBatch(tx, tenantId, id);
+    if (row.status === "completed" || row.status === "partially_failed")
+      announced = await settleRunAndAnnounce(tx, actor, row, new Date());
+  }
+}
+
+/**
  * Releases every open dispute of the batch. The reason (10 to 500 characters)
  * is the result of finance's check at the bank. The function refuses anyone
  * who took part in the batch (409 PAYOUT_UNFREEZE_REFUSED), except a person
@@ -253,6 +309,7 @@ export async function unfreezeDisbursementBatch(
   } catch (error) {
     throw disputeError(error);
   }
+  await catchUpAfterUnfreeze(tx, actor, batch.id);
   await recordPayoutAudit(tx, actor, {
     action: "payroll.disbursement.batch_unfrozen",
     objectType: "payroll_disbursement_batch",

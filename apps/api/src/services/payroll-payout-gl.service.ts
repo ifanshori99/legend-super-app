@@ -904,6 +904,14 @@ export async function resolvePendingSettles(
   onlyBatchId?: string,
   options: { isolate?: boolean } = {},
 ): Promise<{ resolved: number }> {
+  // Run row first (920): same order as every payout path (run, batch, item,
+  // advisory GL); the frozen check below then sees any dispute that committed
+  // while this waited for the lock.
+  await tx
+    .select({ id: payrollRuns.id })
+    .from(payrollRuns)
+    .where(and(eq(payrollRuns.tenantId, tenantId), eq(payrollRuns.id, runId)))
+    .for("update");
   if (!(await runHasLockedJournal(tx, tenantId, runId))) return { resolved: 0 };
   const batches = await tx
     .select()
@@ -921,6 +929,15 @@ export async function resolvePendingSettles(
   let resolved = 0;
   for (const batch of batches) {
     await lockBatchPayoutGl(tx, tenantId, batch.id);
+    // A frozen batch sends no new money: its settle waits for the unfreeze
+    // (the posting trigger of 0661 stays strict). The healthy siblings go on.
+    if (await batchIsFrozen(tx, tenantId, batch.id)) {
+      logger.warn(
+        { tenantId, batchId: batch.id, reason: "batch_frozen" },
+        "payout settlement held: batch is frozen",
+      );
+      continue;
+    }
     const postings = await tx
       .select()
       .from(payrollPayoutGlPostings)
@@ -960,6 +977,18 @@ export async function resolvePendingSettles(
     }
   }
   return { resolved };
+}
+
+/** True when the batch is frozen (own dispute or a sibling's), read now. */
+async function batchIsFrozen(
+  tx: Tx,
+  tenantId: TenantId,
+  batchId: string,
+): Promise<boolean> {
+  const result = await tx.execute<{ ok: boolean }>(
+    sql`SELECT ${batchIsNotFrozenSql(tenantId, sql`${batchId}::uuid`)} AS ok`,
+  );
+  return result.rows[0]?.ok === false;
 }
 
 /** Resolves one pending/skipped posting; false when it was left as is. */
@@ -1642,6 +1671,9 @@ export async function recoverPayoutGlOfBatch(
     batch.id,
     { isolate: true },
   );
+  // A frozen batch posts no fee either; the recovery after the unfreeze does.
+  if (await batchIsFrozen(tx, tenantId, batch.id))
+    return { resolved, feesReposted: 0 };
   const feesReposted = await repostFeesSoft(tx, tenantId, batch, now);
   return { resolved, feesReposted };
 }

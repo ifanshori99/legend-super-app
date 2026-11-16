@@ -306,6 +306,19 @@ export async function deliverPayrollGlEvent(
     // An all-zero run has no journal (a journal needs two lines); paid and
     // reversed then find no locked entry and skip.
     if (allZero(amounts)) return { status: "skipped" };
+    // Run row first (920): the lock journal and the pending settles it
+    // resolves follow the same order as every payout path (run, batch, item,
+    // advisory GL), so a dispute or unfreeze committing meanwhile is seen.
+    await tx
+      .select({ id: payrollRuns.id })
+      .from(payrollRuns)
+      .where(
+        and(
+          eq(payrollRuns.tenantId, context.tenant.tenantId),
+          eq(payrollRuns.id, payload.payrollRunId),
+        ),
+      )
+      .for("update");
     const entry = await postJournalFromRuleInTransaction(
       tx,
       context,
