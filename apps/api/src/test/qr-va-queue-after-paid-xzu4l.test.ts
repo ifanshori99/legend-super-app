@@ -42,6 +42,7 @@ import type { GatewayPaymentStatus } from "../services/payment-gateway.ts";
 import {
   confirmPayment,
   holdGatewayAmountMismatch,
+  pollPendingGatewayIntents,
 } from "../services/payment.service.ts";
 import { owner } from "./floor-test-helpers.ts";
 import {
@@ -736,3 +737,45 @@ describe.each([vaKind, qrKind])(
     );
   },
 );
+
+describe("legend-xzu4l poll of a pending code: extras keep the own answer non-final", () => {
+  async function pendingVa() {
+    const guest = await fx.newGuest();
+    const order = await fx.qrOrder(guest);
+    const created = await vaReplace(guest, order.id, "va");
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const s: Subject = {
+      intentId: created.body.data.id as string,
+      providerRef: "",
+      amount: 0,
+      orderId: order.id,
+      guest,
+      t0: new Date(),
+    };
+    const { rows } = await owner.query<{ provider_ref: string }>(
+      "SELECT provider_ref FROM payment_intents WHERE tenant_id=$1 AND id=$2",
+      [fx.tenant.tenantId, s.intentId],
+    );
+    s.providerRef = rows[0]!.provider_ref;
+    return s;
+  }
+  const pastMargin = async (s: Subject) =>
+    after(await intentExpiry(s.intentId), 61_000);
+
+  it("own answer expired + another reference paid: provider_final_at stays null; the same answer without extras is final", async () => {
+    const withExtras = await pendingVa();
+    answer(withExtras, { rawStatus: "02" }, [extra()]);
+    await pollPendingGatewayIntents(
+      fx.context,
+      await pastMargin(withExtras),
+      200,
+    );
+    expect(await providerFinal(withExtras), "extras: not final").toBe(false);
+
+    const control = await pendingVa();
+    answer(control, { rawStatus: "02" });
+    await pollPendingGatewayIntents(fx.context, await pastMargin(control), 200);
+    expect(await providerFinal(control), "control: final").toBe(true);
+    extrasByRef.delete(withExtras.providerRef);
+  });
+});

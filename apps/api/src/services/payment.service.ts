@@ -1731,6 +1731,7 @@ async function syncPendingIntentDetailed(
     const providerFinal =
       (providerStatus !== undefined &&
         aboutThisCode &&
+        !providerStatus.extraPayments?.length &&
         providerAnswerFinal(intent, providerStatus, now)) ||
       fundsParked;
     await expireIntent(
@@ -1759,7 +1760,9 @@ async function syncPendingIntentDetailed(
       now,
       "gateway",
       undefined,
-      aboutThisCode && providerAnswerFinal(intent, providerStatus, now),
+      aboutThisCode &&
+        !providerStatus.extraPayments?.length &&
+        providerAnswerFinal(intent, providerStatus, now),
     );
     return {
       intent: { ...intent, status: "expired", updatedAt: now },
@@ -1771,7 +1774,9 @@ async function syncPendingIntentDetailed(
       context,
       intent,
       now,
-      aboutThisCode && providerAnswerFinal(intent, providerStatus, now),
+      aboutThisCode &&
+        !providerStatus.extraPayments?.length &&
+        providerAnswerFinal(intent, providerStatus, now),
     );
     return {
       intent: { ...intent, status: "failed", updatedAt: now },
