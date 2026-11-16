@@ -9,6 +9,7 @@
 // database. Without LEGEND_MOCK_WEB_URL every test skips, so `pnpm test:e2e`
 // (production build, mock compiled out) never fails on it.
 import { expect, test, type Page } from "@playwright/test";
+import { cafeLegendAccountingFixtures } from "../packages/shared/src/accounting/fixtures.ts";
 import { captureScreenshot } from "./screenshots.ts";
 
 const base = process.env.LEGEND_MOCK_WEB_URL;
@@ -33,7 +34,7 @@ const RANGE = { from: "2026-11-01", to: "2026-11-30" } as const;
 const CLOSED_OCTOBER = { from: "2026-10-01", to: "2026-10-31" } as const;
 const MOCK_ACTOR_KEY = "legend-mock-accounting-actor";
 /** The corrections in the fixture: the final internet bill lands on 6106. */
-const INTERNET_CORRECTION = "e1000000-0000-4000-8000-00000000000d";
+const INTERNET_CORRECTION = cafeLegendAccountingFixtures.entries.internet.id;
 
 async function open(page: Page, path: string) {
   await page.clock.setFixedTime(FIXTURE_NOW);
