@@ -6720,3 +6720,28 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Full API checkpoint3433 tes lulus teramati pada89/1349 berkas, tanpa gagal. Invariant payout tepat-sekali, bukti belum diunggah, persetujuan dua orang dan jurnal retur ikut hijau; full run pertama masih berjalan.
 
 - Full API checkpoint4193 tes lulus teramati pada126/1349 berkas, tanpa gagal; rapel tanpa double-pay dan receipt-required guards hijau. Full job masih aktif, kode tetap `5ff839db0`; checkpoint berikut hanya dokumentasi. Follow-up Lighthouse dicatat di `legend-kj50i` dan tetap terbuka.
+
+- Full API checkpoint6668 tes lulus teramati pada297/1349 berkas, tanpa gagal; payment retry/worker race tepat-sekali, cash handover proof guard, recovery subtotal/total dan paid-intent ikut hijau. Worktree int/batch77 dikunci sementara agar cleanup lain tidak menghapus gate aktif; dibuka hanya setelah landing/selesai.
+
+- Full API checkpoint9227 tes lulus teramati pada376/1349 berkas, tanpa gagal; referral refund/reject/replay tidak melebihi bonus asal, restore serentak tepat-sekali, PPh21 payer-balance/reference ikut hijau. Build meregenerasi routeTree.gen.ts dengan hanya4 baris kosong dihapus; reviewer memastikan seluruh baris berisi teks identik (tanpa perubahan route/tipe/perilaku), artefak disimpan. Remote m1 tetap650ef5c78 pada pengecekan17:51.
+
+- Full API checkpoint11183 tes lulus teramati pada464/1349 berkas, tanpa gagal. F5 device-registry patch juga telah lulus dalam full; refund DP serentak dibatasi sisa DP, gateway DP+line collision ditolak tanpa write, migrasi laporan pajak menjaga data. Full pertama masih aktif, disk sekitar15GiB.
+
+- Full API checkpoint13248 tes lulus teramati pada550/1349 berkas, tanpa gagal. QR/VA setelah paid tidak melunasi ganda dan funds-unresolved menahan tender; daily-summary sekali per hari dengan isolasi outlet/tenant hijau. Full pertama masih berjalan.
+
+- Full API checkpoint14650 tes lulus teramati pada645/1349 berkas, tanpa gagal. Suite data-key rotation (kasus10–25 detik) sudah lewat; AI action scope/disabled-module guards hijau. Full tetap sehat/berjalan, belum ada rerun penuh.
+
+- Full API checkpoint16308 tes lulus teramati pada769/1349 berkas, tanpa gagal. Tenant RLS/foreign-ID guards, POS receipt-gap, edge trusted-clock MFA/session dan QR expired+extra-paid diparkir tepat-sekali tanpa melunasi order ikut hijau. Full pertama tetap aktif.
+
+- Full API checkpoint17827 tes lulus teramati pada927/1349 berkas, tanpa gagal. PIN approval perangkat sekali-pakai termasuk paralel A/B/C, reschedule cek-waktu sesudah lock dan menjaga DP, storage ownership serta menu-import tenant/draft preservation ikut hijau. Full pertama masih aktif.
+
+- Full API checkpoint19389 tes lulus teramati pada1100/1349 berkas, tanpa gagal. ClamAV concurrency/TTL, edge promo clock proof, KDS auth/count-transition dan shareholder approval-policy preserving settings ikut hijau. Full pertama tetap berjalan.
+
+### Batch77 gate akhir hijau
+
+- Full pertama `LEGEND_TEST_CONCURRENCY=2 heavy pnpm run test` exit0 dalam5731 detik (95m31s): root3468 lulus/1 skip; web3 berkas/92 lulus; API1347 berkas lulus/2 skip,20854 tes lulus/46 skip/16 todo (20916 kasus). `/tmp/batch77-full.log`. Container/network PostgreSQL disposable dibersihkan; heavy tidak punya job aktif. Warning pg client.query concurrency/deprecation tidak menggagalkan suite. Tidak memakai pengecualian atau rerun penuh.
+- Gate selesai: fast scanner+payout/payroll/finance-exception dengan rerun berkas gagal (fixture grantor13/13; F5 device registry39/39×3), lint50 detik, typecheck54 detik, test:setup35 detik, e2e40 detik (18 pass/1 skip), build6 detik dan full5731 detik. Seluruh test uang hijau; tidak ada aturan pembayaran/jurnal yang dilonggarkan.
+- Perbaikan sumber enam berkas `3ef964f63`; fixture grantor audit `f183d952f`; assertion jam F5 test-only `5ff839db0`; integrasi/rechain/harness `4afb37f57`. Review konflik/rechain, harness dan seluruh delta test bersih. `db:generate` kosong. Artefak generator hanya4 blank-line deletion, tanpa semantik berubah.
+- Kuota observasi awal→akhir: Claude#1 5h0→0%/7d91→91%, #2 0→0%/93→93%, #3 0→0%/96→96%; Codex#2 5h0→0%/7d100→100%, #3 0→0%/92→92%, #4 0→0%/93→93%, #5 0→0%/89→89%; Codex#6 tanpa5h/7d99→99%, #7 tanpa5h/54→54%, #8 (sesi ini) tanpa5h/60→62%. Tidak ada kapasitas berbayar tambahan.
+- Subagent6 unik, puncak4 bersamaan, seluruhnya Codex; follow-up memakai agent yang sama. session-usage tidak menemukan transkrip Codex dan parallel-report hanya membaca Claude, jadi biaya/token serta rata-rata native Codex tidak tersedia.
+- Fetch akhir tetap `origin/milestone/m1`650ef5c78 dan ancestor HEAD; pendaratan dilakukan fast-forward tanpa main/deploy/force push. Sesudah push: komentari enam kartu yang diminta, tutup sembilan kartu implementasi selesai beserta kartu merge/F5, pertahankan xp8mc/ijaxi serta follow-up Lighthouse kj50i terbuka; bersihkan hanya worktree/cabang int batch77 dan edit antrean checkout utama tanpa commit.
