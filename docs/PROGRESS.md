@@ -6879,3 +6879,5 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 - Full resume checkpoint: API15516 test lulus teramati pada730/1353 berkas, tanpa gagal; web92/92 tetap hijau. Rotasi data-key dengan kasus11–27detik selesai, support read-only menolak mutasi, QRIS wrong-amount hold dan POS refund paid cap ikut lewat.
 
 - Full resume checkpoint: API16641 test lulus teramati pada863/1353 berkas, tanpa gagal; web92/92 tetap hijau. Payout proof cross-batch guards, katalog kasir, revoked HRIS replay, atomic edge brand admission dan IPv6 rate-limit ikut lewat. Warning pg concurrent-client-query lama tidak menggagalkan suite.
+
+- Full resume checkpoint: API19118 test lulus teramati pada1102/1353 berkas, tanpa gagal; web92/92 tetap hijau. Retur pembelian kumulatif PPN tidak melebihi faktur, active-outlet scope, reversal penyusutan dan concurrent chart-account guards ikut lewat. Full belum selesai dan m1 belum berubah.
