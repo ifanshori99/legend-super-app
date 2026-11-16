@@ -21,6 +21,8 @@ type Option<T extends string> = {
   icon?: LucideIcon;
   /** Optional count chip after the label. Undefined renders no chip. */
   count?: number;
+  /** Not selectable (dimmed, skipped by the keyboard). */
+  disabled?: boolean;
 };
 
 function SegmentedControl<T extends string>({
@@ -52,12 +54,19 @@ function SegmentedControl<T extends string>({
       )}
     >
       {options.map(
-        ({ value: optionValue, label: optionLabel, icon: Icon, count }) => (
+        ({
+          value: optionValue,
+          label: optionLabel,
+          icon: Icon,
+          count,
+          disabled,
+        }) => (
           <RadioGroup.Item
             key={optionValue}
             value={optionValue}
+            disabled={disabled}
             className={cn(
-              "group/seg inline-flex min-h-[calc(var(--control-h-sm)-0.5rem)] shrink-0 items-center gap-1.5 rounded-[max(calc(var(--control-radius)-0.25rem),0.25rem)] px-3 text-sm font-medium whitespace-nowrap text-muted-foreground transition-colors duration-(--duration-fast) hover:text-foreground data-[state=checked]:font-semibold",
+              "group/seg disabled:pointer-events-none disabled:opacity-50 inline-flex min-h-[calc(var(--control-h-sm)-0.5rem)] shrink-0 items-center gap-1.5 rounded-[max(calc(var(--control-radius)-0.25rem),0.25rem)] px-3 text-sm font-medium whitespace-nowrap text-muted-foreground transition-colors duration-(--duration-fast) hover:text-foreground data-[state=checked]:font-semibold",
               selection === "ink"
                 ? "data-[state=checked]:bg-foreground data-[state=checked]:text-background data-[state=checked]:shadow-raised"
                 : "data-[state=checked]:bg-card data-[state=checked]:text-foreground data-[state=checked]:shadow-[inset_0_0_0_1px_var(--border),var(--elevation-hairline)]",

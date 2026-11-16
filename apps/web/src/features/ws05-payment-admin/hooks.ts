@@ -1,6 +1,12 @@
 // Cached payment back-office data and mutations. Components never call
 // apiFetch directly; each mutation invalidates the endpoint prefix it changes.
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import { orgEndpoints } from "@starter/shared/platform";
 import type {
   ApproveRefundInput,
   CreateEdcTerminalInput,
@@ -37,6 +43,7 @@ import {
   retryRefundPayout,
   saveEdcCashierDefault,
   savePaymentRoute,
+  testIntegrationConnection,
 } from "./api";
 import {
   cashierDefaultsQuery,
@@ -51,7 +58,11 @@ import {
 
 /** The routing screen edits the tenant default or one outlet's overrides. */
 export function usePaymentRouting(outletId: string | null) {
-  return useQuery(routingQuery(outletId === null ? {} : { outletId }));
+  return useQuery({
+    ...routingQuery(outletId === null ? {} : { outletId }),
+    // Switching scope keeps the old list on screen instead of blanking the panel.
+    placeholderData: keepPreviousData,
+  });
 }
 
 export function useUpdatePaymentRoute() {
@@ -269,5 +280,23 @@ export function useResolveReconciliationCase() {
           queryKey: [getReconciliationSummaryEndpoint.id],
         }),
       ]),
+  });
+}
+
+/**
+ * Tests the stored Duitku credentials. The answer carries no secret; the API
+ * also stamps `lastCheckedAt`/`lastErrorCode` on the row, so the integrations
+ * list is refetched to show the new status.
+ */
+export function useTestIntegrationConnection() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    gcTime: 0,
+    mutationFn: (integrationId: string) =>
+      testIntegrationConnection(integrationId),
+    onSuccess: () =>
+      queryClient.invalidateQueries({
+        queryKey: [orgEndpoints.listIntegrations.id],
+      }),
   });
 }

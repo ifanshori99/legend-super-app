@@ -2,7 +2,13 @@
 // feature's UI"). Components never call these directly: they use the hooks in
 // ./hooks.ts, which own cache keys and invalidation. The mock in ./mock.ts
 // serves the same contracts when VITE_API_MOCK=true.
+import { defineEndpoint } from "@starter/shared/api";
 import type { AnyEndpoint, EndpointInput } from "@starter/shared/api";
+import { dataResponseSchema, z } from "@starter/shared/core";
+import {
+  integrationConnectionTestSchema,
+  tenantIntegrationIdSchema,
+} from "@starter/shared/platform";
 import {
   approveRefund as approveRefundEndpoint,
   createEdcTerminal as createEdcTerminalEndpoint,
@@ -159,3 +165,20 @@ export const resolveReconciliationCase = (
     { params, body },
     { headers: { "Idempotency-Key": idempotencyKey } },
   );
+
+// ---- Duitku credentials (sub-302 D16) ------------------------------------
+
+// The API serves POST /api/org/integrations/:integrationId/test but the shared
+// `orgEndpoints` does not declare it yet, so this feature declares it with the
+// contract's own schemas (same pattern as ws01-tenant-settings/endpoints.ts).
+export const testIntegrationConnectionEndpoint = defineEndpoint({
+  method: "POST",
+  path: "/api/org/integrations/:integrationId/test",
+  params: z.strictObject({ integrationId: tenantIntegrationIdSchema }),
+  response: dataResponseSchema(integrationConnectionTestSchema),
+});
+
+export const testIntegrationConnection = (integrationId: string) =>
+  callEndpoint(testIntegrationConnectionEndpoint, {
+    params: { integrationId },
+  });

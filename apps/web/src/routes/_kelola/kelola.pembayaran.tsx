@@ -3,6 +3,7 @@ import { PaymentAdminPage } from "@/features/ws05-payment-admin/components/payme
 import { paymentAdminGuard } from "@/features/ws05-payment-admin/guard";
 import {
   PAYMENT_ADMIN_PERMISSIONS,
+  ROUTING_MANAGE_PERMISSION,
   isMockScenarioRequest,
 } from "@/features/ws05-payment-admin/lib";
 import { routingQuery } from "@/features/ws05-payment-admin/queries";
@@ -15,8 +16,12 @@ export const Route = createFileRoute("/_kelola/kelola/pembayaran")({
   beforeLoad: paymentAdminGuard(PAYMENT_ADMIN_PERMISSIONS),
   // Mock mode serves the clickable demo: let the browser fetch so ?mock=empty
   // and ?mock=error apply instead of hydrating the server's fixture render.
+  // Routing GET needs org.settings.manage (sub-302 D14): without it the loader
+  // must not fetch (it would 403 and break the other tabs).
   loader: ({ context, location }) =>
-    API_MOCK || isMockScenarioRequest(location.searchStr)
+    API_MOCK ||
+    isMockScenarioRequest(location.searchStr) ||
+    !context.access.permissions.includes(ROUTING_MANAGE_PERMISSION)
       ? undefined
       : context.queryClient.ensureQueryData(routingQuery({})),
   component: PaymentAdminPage,
