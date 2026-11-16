@@ -6683,3 +6683,11 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 
 - CTO mengizinkan merge train menghapus tipe Snapshot tak dipakai dan memformat lima brief sumber sebagai satu commit `chore: lint/format batch77 sources`, karena thread pemilik sudah ditutup. Tidak mengubah logika.
 - Integrasi/rechain/grantor harness dicatat sebagai merge checkpoint; gate dilanjutkan dari per-branch lint/format, fast scanner+payout/payroll/finance-exception, lint, typecheck, e2e, build, full run lewat heavy oleh satu test-runner. Kegagalan uang menghentikan pendaratan untuk laporan CTO.
+
+- Checkpoint integrasi `4afb37f57`, commit lint/format tepat enam berkas `3ef964f63`. Review delta lint bersih (hanya penghapusan type unused dan normalisasi Markdown); manifest runner211 diverifikasi lengkap/unik: 56 root,154 API,1 web. Gate dimulai kembali setelah lint sumber diperbaiki.
+
+- Per-branch ulang: Prettier86 authored dan ESLint79 authored hijau (5 detik), log `/tmp/batch77-{prettier,eslint}-resume.log`. Fast211 berjalan; dua kontrol setup `db-role-provisioning-baseline.test.mjs` gagal karena fixture env whitelist belum memberikan URL grantor wajib, sebelum assertion audit PUBLIC EXECUTE/pg_init_privs. Diagnosis reviewer mengonfirmasi fixture/CLI identik source d289f5255. Fixture diperbarui terarah tanpa melemahkan assertion; belum ada bukti kegagalan invariant uang.
+
+- Fast pertama exit1 dalam146 detik: root999 kasus,996 lulus/2 gagal/1 skip; hanya dua setup fixture baseline, web/API belum dimulai. Reviewer menyetujui penambahan login grantor acak per scratch DB dan cleanup role, seluruh assertion audit tetap. Targeted baseline dijalankan sebelum fast ulang.
+
+- `LEGEND_TEST_FILES=tests/db-role-provisioning-baseline.test.mjs heavy pnpm test` hijau13/13,28 detik termasuk setup/cleanup DB; `/tmp/batch77-baseline-green.log`. Prettier/ESLint patch dan review independen bersih. Fast211 ulang log `/tmp/batch77-fast2.log`. Gate tambahan `heavy pnpm test:setup` disisipkan sesudah typecheck karena harness setup berubah.
