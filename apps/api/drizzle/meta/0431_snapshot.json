@@ -1,6 +1,6 @@
 {
-  "id": "b1d5971b-d496-4a9e-975b-a7289b5d94a5",
-  "prevId": "d100dcd1-bbb9-483b-a6f3-1b2cdd4f9c50",
+  "id": "db6919c8-47fc-47b7-9ece-ff5f811f24f0",
+  "prevId": "bf54a7f3-2518-4738-8bb6-7ef9eb14c7b8",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -3020,6 +3020,21 @@
           ],
           "onDelete": "no action",
           "onUpdate": "no action"
+        },
+        "item_variants_recipe_fk": {
+          "name": "item_variants_recipe_fk",
+          "tableFrom": "item_variants",
+          "tableTo": "recipes",
+          "columnsFrom": [
+            "tenant_id",
+            "recipe_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -3993,6 +4008,21 @@
           ],
           "onDelete": "no action",
           "onUpdate": "no action"
+        },
+        "menu_items_recipe_fk": {
+          "name": "menu_items_recipe_fk",
+          "tableFrom": "menu_items",
+          "tableTo": "recipes",
+          "columnsFrom": [
+            "tenant_id",
+            "recipe_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -4429,6 +4459,21 @@
           "columnsFrom": [
             "tenant_id",
             "station_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "modifiers_recipe_fk": {
+          "name": "modifiers_recipe_fk",
+          "tableFrom": "modifiers",
+          "tableTo": "recipes",
+          "columnsFrom": [
+            "tenant_id",
+            "recipe_id"
           ],
           "columnsTo": [
             "tenant_id",
@@ -5273,6 +5318,19 @@
           "primaryKey": false,
           "notNull": false
         },
+        "verification_attempts": {
+          "name": "verification_attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "verification_window_started_at": {
+          "name": "verification_window_started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -5399,6 +5457,10 @@
       },
       "policies": {},
       "checkConstraints": {
+        "tenant_domains_verification_attempts_check": {
+          "name": "tenant_domains_verification_attempts_check",
+          "value": "\"tenant_domains\".\"verification_attempts\" BETWEEN 0 AND 5"
+        },
         "tenant_domains_kind_check": {
           "name": "tenant_domains_kind_check",
           "value": "\"tenant_domains\".\"kind\" IN ('platform_subdomain', 'custom')"
@@ -7550,7 +7612,7 @@
       "checkConstraints": {
         "core_storage_objects_source_kind_check": {
           "name": "core_storage_objects_source_kind_check",
-          "value": "\"core_storage_objects\".\"source_kind\" IS NULL OR \"core_storage_objects\".\"source_kind\" IN ('purchase_invoice', 'goods_receipt', 'expense', 'cash_deposit', 'reimbursement', 'attendance', 'employee_document', 'employment_contract', 'leave_request', 'menu_item', 'petty_purchase', 'waste_log')"
+          "value": "\"core_storage_objects\".\"source_kind\" IS NULL OR \"core_storage_objects\".\"source_kind\" IN ('purchase_invoice', 'goods_receipt', 'expense', 'cash_deposit', 'reimbursement', 'attendance', 'employee_document', 'employment_contract', 'leave_request', 'menu_item', 'petty_purchase', 'waste_log', 'cleaning_task', 'maintenance_ticket', 'checklist_evidence')"
         },
         "core_storage_objects_source_check": {
           "name": "core_storage_objects_source_check",
@@ -7635,6 +7697,13 @@
           "type": "varchar(255)",
           "primaryKey": false,
           "notNull": false
+        },
+        "delivered_push_subscription_ids": {
+          "name": "delivered_push_subscription_ids",
+          "type": "uuid[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::uuid[]"
         },
         "error_code": {
           "name": "error_code",
@@ -8339,12 +8408,42 @@
           "primaryKey": false,
           "notNull": false
         },
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "device_id": {
+          "name": "device_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "device_token_issued_at": {
+          "name": "device_token_issued_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "registered_at": {
+          "name": "registered_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         },
         "last_success_at": {
           "name": "last_success_at",
@@ -8353,8 +8452,112 @@
           "notNull": false
         }
       },
-      "indexes": {},
-      "foreignKeys": {},
+      "indexes": {
+        "push_subscriptions_user_idx": {
+          "name": "push_subscriptions_user_idx",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "push_subscriptions_user_outlet_idx": {
+          "name": "push_subscriptions_user_outlet_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "outlet_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "push_subscriptions_session_idx": {
+          "name": "push_subscriptions_session_idx",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "push_subscriptions_session_id_session_id_fk": {
+          "name": "push_subscriptions_session_id_session_id_fk",
+          "tableFrom": "push_subscriptions",
+          "tableTo": "session",
+          "columnsFrom": [
+            "session_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "push_subscriptions_outlet_fk": {
+          "name": "push_subscriptions_outlet_fk",
+          "tableFrom": "push_subscriptions",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "push_subscriptions_device_fk": {
+          "name": "push_subscriptions_device_fk",
+          "tableFrom": "push_subscriptions",
+          "tableTo": "devices",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id",
+            "device_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "outlet_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {
         "push_subscriptions_tenant_id_id_pk": {
           "name": "push_subscriptions_tenant_id_id_pk",
@@ -9351,6 +9554,40 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "stock_ledger_tenant_item_cost_idx": {
+          "name": "stock_ledger_tenant_item_cost_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "inventory_item_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "occurred_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"stock_ledger\".\"unit_cost_idr\" > 0",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -11364,6 +11601,12 @@
         },
         "gateway_poll_lease_until": {
           "name": "gateway_poll_lease_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "provider_final_at": {
+          "name": "provider_final_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
@@ -16419,6 +16662,276 @@
       },
       "isRLSEnabled": false
     },
+    "public.payment_reconciliation_corrections": {
+      "name": "payment_reconciliation_corrections",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "case_id": {
+          "name": "case_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "settlement_id": {
+          "name": "settlement_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "settlement_line_id": {
+          "name": "settlement_line_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "mismatch_case_id": {
+          "name": "mismatch_case_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source": {
+          "name": "source",
+          "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reference": {
+          "name": "reference",
+          "type": "varchar(100)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "written_off_idr": {
+          "name": "written_off_idr",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "received_idr": {
+          "name": "received_idr",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'open'"
+        },
+        "decision": {
+          "name": "decision",
+          "type": "varchar(30)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "approval_chain_id": {
+          "name": "approval_chain_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "requested_by": {
+          "name": "requested_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "approved_by": {
+          "name": "approved_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "resolved_by": {
+          "name": "resolved_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "resolved_at": {
+          "name": "resolved_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "note": {
+          "name": "note",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "payment_reconciliation_corrections_status_idx": {
+          "name": "payment_reconciliation_corrections_status_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "outlet_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "payment_reconciliation_corrections_tenant_id_tenants_id_fk": {
+          "name": "payment_reconciliation_corrections_tenant_id_tenants_id_fk",
+          "tableFrom": "payment_reconciliation_corrections",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payment_reconciliation_corrections_outlet_id_outlets_id_fk": {
+          "name": "payment_reconciliation_corrections_outlet_id_outlets_id_fk",
+          "tableFrom": "payment_reconciliation_corrections",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payment_reconciliation_corrections_outlet_fk": {
+          "name": "payment_reconciliation_corrections_outlet_fk",
+          "tableFrom": "payment_reconciliation_corrections",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payment_reconciliation_corrections_case_fk": {
+          "name": "payment_reconciliation_corrections_case_fk",
+          "tableFrom": "payment_reconciliation_corrections",
+          "tableTo": "payment_reconciliation_cases",
+          "columnsFrom": [
+            "tenant_id",
+            "case_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payment_reconciliation_corrections_mismatch_case_fk": {
+          "name": "payment_reconciliation_corrections_mismatch_case_fk",
+          "tableFrom": "payment_reconciliation_corrections",
+          "tableTo": "payment_reconciliation_cases",
+          "columnsFrom": [
+            "tenant_id",
+            "mismatch_case_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "payment_reconciliation_corrections_tenant_id_key": {
+          "name": "payment_reconciliation_corrections_tenant_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        },
+        "payment_reconciliation_corrections_case_key": {
+          "name": "payment_reconciliation_corrections_case_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "case_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "payment_reconciliation_corrections_source_check": {
+          "name": "payment_reconciliation_corrections_source_check",
+          "value": "\"payment_reconciliation_corrections\".\"source\" IN ('gateway','edc')"
+        },
+        "payment_reconciliation_corrections_status_check": {
+          "name": "payment_reconciliation_corrections_status_check",
+          "value": "\"payment_reconciliation_corrections\".\"status\" IN ('open','pending_approval','resolved')"
+        },
+        "payment_reconciliation_corrections_decision_check": {
+          "name": "payment_reconciliation_corrections_decision_check",
+          "value": "\"payment_reconciliation_corrections\".\"decision\" IS NULL OR \"payment_reconciliation_corrections\".\"decision\" IN ('reverse_write_off','keep_write_off')"
+        },
+        "payment_reconciliation_corrections_amount_check": {
+          "name": "payment_reconciliation_corrections_amount_check",
+          "value": "\"payment_reconciliation_corrections\".\"written_off_idr\" >= 0 AND \"payment_reconciliation_corrections\".\"received_idr\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.payment_refund_escalation_settings": {
       "name": "payment_refund_escalation_settings",
       "schema": "",
@@ -16955,7 +17468,7 @@
         },
         "payment_refunds_escalation_reason_check": {
           "name": "payment_refunds_escalation_reason_check",
-          "value": "\"payment_refunds\".\"escalation_reason\" IS NULL OR \"payment_refunds\".\"escalation_reason\" IN ('pending_unapproved','provider_pending','payout_stalled')"
+          "value": "\"payment_refunds\".\"escalation_reason\" IS NULL OR \"payment_refunds\".\"escalation_reason\" IN ('pending_unapproved','provider_pending','payout_stalled','failed_holds_order')"
         },
         "payment_refunds_escalation_pair_check": {
           "name": "payment_refunds_escalation_pair_check",
@@ -46174,7 +46687,7 @@
         },
         "edge_link_dead_letters_reason_check": {
           "name": "edge_link_dead_letters_reason_check",
-          "value": "\"edge_link_dead_letters\".\"reason\" IN ('frame_too_large')"
+          "value": "\"edge_link_dead_letters\".\"reason\" IN ('frame_too_large', 'brand_moved')"
         },
         "edge_link_dead_letters_size_check": {
           "name": "edge_link_dead_letters_size_check",
@@ -46446,6 +46959,121 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.edge_catalog_publisher_cursors": {
+      "name": "edge_catalog_publisher_cursors",
+      "schema": "",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "edge_node_id": {
+          "name": "edge_node_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "brand_id": {
+          "name": "brand_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "stream": {
+          "name": "stream",
+          "type": "varchar(40)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "watermark": {
+          "name": "watermark",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "blocked_at": {
+          "name": "blocked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "edge_catalog_publisher_cursors_tenant_id_tenants_id_fk": {
+          "name": "edge_catalog_publisher_cursors_tenant_id_tenants_id_fk",
+          "tableFrom": "edge_catalog_publisher_cursors",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "edge_catalog_publisher_cursors_outlet_id_outlets_id_fk": {
+          "name": "edge_catalog_publisher_cursors_outlet_id_outlets_id_fk",
+          "tableFrom": "edge_catalog_publisher_cursors",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "edge_catalog_publisher_cursors_edge_node_fk": {
+          "name": "edge_catalog_publisher_cursors_edge_node_fk",
+          "tableFrom": "edge_catalog_publisher_cursors",
+          "tableTo": "edge_nodes",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id",
+            "edge_node_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "outlet_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "edge_catalog_publisher_cursors_tenant_id_edge_node_id_stream_pk": {
+          "name": "edge_catalog_publisher_cursors_tenant_id_edge_node_id_stream_pk",
+          "columns": [
+            "tenant_id",
+            "edge_node_id",
+            "stream"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.edge_inbound_events": {
       "name": "edge_inbound_events",
       "schema": "",
@@ -46634,7 +47262,122 @@
         },
         "edge_inbound_events_outcome_check": {
           "name": "edge_inbound_events_outcome_check",
-          "value": "\"edge_inbound_events\".\"outcome\" IN ('applied', 'superseded', 'conflict')"
+          "value": "\"edge_inbound_events\".\"outcome\" IN ('applied', 'superseded', 'conflict', 'deferred')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.edge_link_slots": {
+      "name": "edge_link_slots",
+      "schema": "",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "edge_node_id": {
+          "name": "edge_node_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "direction": {
+          "name": "direction",
+          "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "link_seq": {
+          "name": "link_seq",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "event_id": {
+          "name": "event_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "edge_link_slots_tenant_id_tenants_id_fk": {
+          "name": "edge_link_slots_tenant_id_tenants_id_fk",
+          "tableFrom": "edge_link_slots",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "edge_link_slots_outlet_id_outlets_id_fk": {
+          "name": "edge_link_slots_outlet_id_outlets_id_fk",
+          "tableFrom": "edge_link_slots",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "edge_link_slots_edge_node_fk": {
+          "name": "edge_link_slots_edge_node_fk",
+          "tableFrom": "edge_link_slots",
+          "tableTo": "edge_nodes",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id",
+            "edge_node_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "outlet_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "edge_link_slots_tenant_id_edge_node_id_direction_link_seq_pk": {
+          "name": "edge_link_slots_tenant_id_edge_node_id_direction_link_seq_pk",
+          "columns": [
+            "tenant_id",
+            "edge_node_id",
+            "direction",
+            "link_seq"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "edge_link_slots_direction_check": {
+          "name": "edge_link_slots_direction_check",
+          "value": "\"edge_link_slots\".\"direction\" IN ('edge_to_cloud', 'cloud_to_edge')"
         }
       },
       "isRLSEnabled": false
@@ -48530,6 +49273,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "notification_enqueued_at": {
+          "name": "notification_enqueued_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "acknowledged_at": {
           "name": "acknowledged_at",
           "type": "timestamp with time zone",
@@ -48574,6 +49323,40 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "edge_print_alerts_pending_notification_idx": {
+          "name": "edge_print_alerts_pending_notification_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "outlet_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "occurred_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"edge_print_alerts\".\"notification_enqueued_at\" IS NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -48994,6 +49777,100 @@
           "value": "(\"edge_print_jobs\".\"status\" = 'printed') = (\"edge_print_jobs\".\"printed_at\" IS NOT NULL)"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.edge_printer_delete_versions": {
+      "name": "edge_printer_delete_versions",
+      "schema": "",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "printer_id": {
+          "name": "printer_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "version": {
+          "name": "version",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "edge_printer_delete_versions_tenant_id_tenants_id_fk": {
+          "name": "edge_printer_delete_versions_tenant_id_tenants_id_fk",
+          "tableFrom": "edge_printer_delete_versions",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "edge_printer_delete_versions_outlet_id_outlets_id_fk": {
+          "name": "edge_printer_delete_versions_outlet_id_outlets_id_fk",
+          "tableFrom": "edge_printer_delete_versions",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "edge_printer_delete_versions_outlet_fk": {
+          "name": "edge_printer_delete_versions_outlet_fk",
+          "tableFrom": "edge_printer_delete_versions",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "edge_printer_delete_versions_tenant_id_printer_id_pk": {
+          "name": "edge_printer_delete_versions_tenant_id_printer_id_pk",
+          "columns": [
+            "tenant_id",
+            "printer_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.edge_printer_tombstones": {
@@ -50137,7 +51014,7 @@
       "checkConstraints": {
         "pos_order_approval_uses_purpose_check": {
           "name": "pos_order_approval_uses_purpose_check",
-          "value": "\"pos_order_approval_uses\".\"purpose\" IN ('order_void', 'item_void', 'discount', 'correction_void', 'refund', 'edc_standalone')"
+          "value": "\"pos_order_approval_uses\".\"purpose\" IN ('order_void', 'item_void', 'discount', 'correction_void', 'refund', 'edc_standalone', 'qris_release')"
         }
       },
       "isRLSEnabled": false
@@ -52025,6 +52902,1278 @@
         "pos_parked_orders_snapshot_check": {
           "name": "pos_parked_orders_snapshot_check",
           "value": "jsonb_typeof(\"pos_parked_orders\".\"snapshot\") = 'object' AND jsonb_typeof(\"pos_parked_orders\".\"snapshot\"->'items') = 'array'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.pos_qris_holds": {
+      "name": "pos_qris_holds",
+      "schema": "",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "order_id": {
+          "name": "order_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "tender_id": {
+          "name": "tender_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "payment_intent_id": {
+          "name": "payment_intent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "bill_split_id": {
+          "name": "bill_split_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "amount_idr": {
+          "name": "amount_idr",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "basis_total_idr": {
+          "name": "basis_total_idr",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "basis_deposit_idr": {
+          "name": "basis_deposit_idr",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "basis_captured_idr": {
+          "name": "basis_captured_idr",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "backfilled": {
+          "name": "backfilled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "opened_at": {
+          "name": "opened_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "opened_by": {
+          "name": "opened_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cancel_requested_at": {
+          "name": "cancel_requested_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cancel_requested_by": {
+          "name": "cancel_requested_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_checked_at": {
+          "name": "last_checked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "check_attempts": {
+          "name": "check_attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "next_check_at": {
+          "name": "next_check_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "closed_at": {
+          "name": "closed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "close_reason": {
+          "name": "close_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "close_evidence": {
+          "name": "close_evidence",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "pos_qris_holds_active_order_key": {
+          "name": "pos_qris_holds_active_order_key",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "order_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"pos_qris_holds\".\"state\" IN ('open', 'cancelling') AND NOT \"pos_qris_holds\".\"backfilled\"",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "pos_qris_holds_due_idx": {
+          "name": "pos_qris_holds_due_idx",
+          "columns": [
+            {
+              "expression": "state",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "next_check_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"pos_qris_holds\".\"state\" IN ('open', 'cancelling')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "pos_qris_holds_tenant_id_tenants_id_fk": {
+          "name": "pos_qris_holds_tenant_id_tenants_id_fk",
+          "tableFrom": "pos_qris_holds",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "pos_qris_holds_outlet_id_outlets_id_fk": {
+          "name": "pos_qris_holds_outlet_id_outlets_id_fk",
+          "tableFrom": "pos_qris_holds",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "pos_qris_holds_opened_by_user_id_fk": {
+          "name": "pos_qris_holds_opened_by_user_id_fk",
+          "tableFrom": "pos_qris_holds",
+          "tableTo": "user",
+          "columnsFrom": [
+            "opened_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "pos_qris_holds_cancel_requested_by_user_id_fk": {
+          "name": "pos_qris_holds_cancel_requested_by_user_id_fk",
+          "tableFrom": "pos_qris_holds",
+          "tableTo": "user",
+          "columnsFrom": [
+            "cancel_requested_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "pos_qris_holds_outlet_fk": {
+          "name": "pos_qris_holds_outlet_fk",
+          "tableFrom": "pos_qris_holds",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "pos_qris_holds_order_fk": {
+          "name": "pos_qris_holds_order_fk",
+          "tableFrom": "pos_qris_holds",
+          "tableTo": "orders",
+          "columnsFrom": [
+            "tenant_id",
+            "order_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "pos_qris_holds_tender_fk": {
+          "name": "pos_qris_holds_tender_fk",
+          "tableFrom": "pos_qris_holds",
+          "tableTo": "pos_order_tenders",
+          "columnsFrom": [
+            "tenant_id",
+            "tender_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "pos_qris_holds_bill_split_fk": {
+          "name": "pos_qris_holds_bill_split_fk",
+          "tableFrom": "pos_qris_holds",
+          "tableTo": "bill_splits",
+          "columnsFrom": [
+            "tenant_id",
+            "bill_split_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "pos_qris_holds_intent_fk": {
+          "name": "pos_qris_holds_intent_fk",
+          "tableFrom": "pos_qris_holds",
+          "tableTo": "payment_intents",
+          "columnsFrom": [
+            "tenant_id",
+            "payment_intent_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "pos_qris_holds_pkey": {
+          "name": "pos_qris_holds_pkey",
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {
+        "pos_qris_holds_intent_key": {
+          "name": "pos_qris_holds_intent_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "payment_intent_id"
+          ]
+        },
+        "pos_qris_holds_tender_key": {
+          "name": "pos_qris_holds_tender_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "tender_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "pos_qris_holds_amount_check": {
+          "name": "pos_qris_holds_amount_check",
+          "value": "\"pos_qris_holds\".\"amount_idr\" > 0"
+        },
+        "pos_qris_holds_target_check": {
+          "name": "pos_qris_holds_target_check",
+          "value": "\"pos_qris_holds\".\"tender_id\" IS NOT NULL OR \"pos_qris_holds\".\"bill_split_id\" IS NOT NULL OR \"pos_qris_holds\".\"opened_by\" IS NULL"
+        },
+        "pos_qris_holds_state_check": {
+          "name": "pos_qris_holds_state_check",
+          "value": "\"pos_qris_holds\".\"state\" IN ('open', 'cancelling', 'paid', 'closed')"
+        },
+        "pos_qris_holds_basis_check": {
+          "name": "pos_qris_holds_basis_check",
+          "value": "\"pos_qris_holds\".\"backfilled\" OR \"pos_qris_holds\".\"tender_id\" IS NULL OR (\"pos_qris_holds\".\"basis_total_idr\" IS NOT NULL AND \"pos_qris_holds\".\"basis_deposit_idr\" IS NOT NULL AND \"pos_qris_holds\".\"basis_captured_idr\" IS NOT NULL AND \"pos_qris_holds\".\"amount_idr\" = \"pos_qris_holds\".\"basis_total_idr\" - \"pos_qris_holds\".\"basis_deposit_idr\" - \"pos_qris_holds\".\"basis_captured_idr\")"
+        },
+        "pos_qris_holds_cancel_pair_check": {
+          "name": "pos_qris_holds_cancel_pair_check",
+          "value": "(\"pos_qris_holds\".\"cancel_requested_at\" IS NULL) = (\"pos_qris_holds\".\"cancel_requested_by\" IS NULL)"
+        },
+        "pos_qris_holds_closed_check": {
+          "name": "pos_qris_holds_closed_check",
+          "value": "(\"pos_qris_holds\".\"state\" IN ('open', 'cancelling')) = (\"pos_qris_holds\".\"closed_at\" IS NULL)"
+        },
+        "pos_qris_holds_close_reason_check": {
+          "name": "pos_qris_holds_close_reason_check",
+          "value": "(\"pos_qris_holds\".\"close_reason\" IS NULL OR \"pos_qris_holds\".\"close_reason\" IN ('provider_paid', 'provider_expired', 'provider_failed', 'provider_cancelled', 'force_released')) AND ((\"pos_qris_holds\".\"state\" IN ('paid', 'closed')) = (\"pos_qris_holds\".\"close_reason\" IS NOT NULL))"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.pos_qris_release_reconciliations": {
+      "name": "pos_qris_release_reconciliations",
+      "schema": "",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "hold_id": {
+          "name": "hold_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "payment_intent_id": {
+          "name": "payment_intent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "attempts": {
+          "name": "attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "next_check_at": {
+          "name": "next_check_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "last_checked_at": {
+          "name": "last_checked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_provider_status": {
+          "name": "last_provider_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "resolved_at": {
+          "name": "resolved_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "resolution": {
+          "name": "resolution",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "pos_qris_release_reconciliations_due_idx": {
+          "name": "pos_qris_release_reconciliations_due_idx",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "next_check_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"pos_qris_release_reconciliations\".\"status\" = 'open'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "pos_qris_release_reconciliations_tenant_id_tenants_id_fk": {
+          "name": "pos_qris_release_reconciliations_tenant_id_tenants_id_fk",
+          "tableFrom": "pos_qris_release_reconciliations",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "pos_qris_release_reconciliations_outlet_id_outlets_id_fk": {
+          "name": "pos_qris_release_reconciliations_outlet_id_outlets_id_fk",
+          "tableFrom": "pos_qris_release_reconciliations",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "pos_qris_release_reconciliations_outlet_fk": {
+          "name": "pos_qris_release_reconciliations_outlet_fk",
+          "tableFrom": "pos_qris_release_reconciliations",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "pos_qris_release_reconciliations_hold_fk": {
+          "name": "pos_qris_release_reconciliations_hold_fk",
+          "tableFrom": "pos_qris_release_reconciliations",
+          "tableTo": "pos_qris_holds",
+          "columnsFrom": [
+            "tenant_id",
+            "hold_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "pos_qris_release_reconciliations_intent_fk": {
+          "name": "pos_qris_release_reconciliations_intent_fk",
+          "tableFrom": "pos_qris_release_reconciliations",
+          "tableTo": "payment_intents",
+          "columnsFrom": [
+            "tenant_id",
+            "payment_intent_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "pos_qris_release_reconciliations_pkey": {
+          "name": "pos_qris_release_reconciliations_pkey",
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {
+        "pos_qris_release_reconciliations_hold_key": {
+          "name": "pos_qris_release_reconciliations_hold_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "hold_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "pos_qris_release_reconciliations_status_check": {
+          "name": "pos_qris_release_reconciliations_status_check",
+          "value": "\"pos_qris_release_reconciliations\".\"status\" IN ('open', 'resolved')"
+        },
+        "pos_qris_release_reconciliations_attempts_check": {
+          "name": "pos_qris_release_reconciliations_attempts_check",
+          "value": "\"pos_qris_release_reconciliations\".\"attempts\" >= 0"
+        },
+        "pos_qris_release_reconciliations_resolved_check": {
+          "name": "pos_qris_release_reconciliations_resolved_check",
+          "value": "(\"pos_qris_release_reconciliations\".\"status\" = 'resolved') = (\"pos_qris_release_reconciliations\".\"resolved_at\" IS NOT NULL AND \"pos_qris_release_reconciliations\".\"resolution\" IS NOT NULL)"
+        },
+        "pos_qris_release_reconciliations_resolution_check": {
+          "name": "pos_qris_release_reconciliations_resolution_check",
+          "value": "\"pos_qris_release_reconciliations\".\"resolution\" IS NULL OR \"pos_qris_release_reconciliations\".\"resolution\" IN ('paid_recorded', 'provider_expired', 'provider_failed')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.customer_display_pair_attempts": {
+      "name": "customer_display_pair_attempts",
+      "schema": "",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "terminal_device_id": {
+          "name": "terminal_device_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "attempted_at": {
+          "name": "attempted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "customer_display_pair_attempts_terminal_idx": {
+          "name": "customer_display_pair_attempts_terminal_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "terminal_device_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "attempted_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "customer_display_pair_attempts_outlet_idx": {
+          "name": "customer_display_pair_attempts_outlet_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "outlet_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "attempted_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "customer_display_pair_attempts_tenant_id_tenants_id_fk": {
+          "name": "customer_display_pair_attempts_tenant_id_tenants_id_fk",
+          "tableFrom": "customer_display_pair_attempts",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "customer_display_pair_attempts_outlet_id_outlets_id_fk": {
+          "name": "customer_display_pair_attempts_outlet_id_outlets_id_fk",
+          "tableFrom": "customer_display_pair_attempts",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "customer_display_pair_attempts_terminal_fk": {
+          "name": "customer_display_pair_attempts_terminal_fk",
+          "tableFrom": "customer_display_pair_attempts",
+          "tableTo": "devices",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id",
+            "terminal_device_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "outlet_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "customer_display_pair_attempts_pkey": {
+          "name": "customer_display_pair_attempts_pkey",
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.customer_display_pairing_codes": {
+      "name": "customer_display_pairing_codes",
+      "schema": "",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "display_device_id": {
+          "name": "display_device_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "code_hash": {
+          "name": "code_hash",
+          "type": "bytea",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "consumed_at": {
+          "name": "consumed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "customer_display_pairing_codes_live_code_key": {
+          "name": "customer_display_pairing_codes_live_code_key",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "outlet_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "code_hash",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"customer_display_pairing_codes\".\"consumed_at\" IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "customer_display_pairing_codes_live_display_key": {
+          "name": "customer_display_pairing_codes_live_display_key",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "display_device_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"customer_display_pairing_codes\".\"consumed_at\" IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "customer_display_pairing_codes_tenant_id_tenants_id_fk": {
+          "name": "customer_display_pairing_codes_tenant_id_tenants_id_fk",
+          "tableFrom": "customer_display_pairing_codes",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "customer_display_pairing_codes_outlet_id_outlets_id_fk": {
+          "name": "customer_display_pairing_codes_outlet_id_outlets_id_fk",
+          "tableFrom": "customer_display_pairing_codes",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "customer_display_pairing_codes_device_fk": {
+          "name": "customer_display_pairing_codes_device_fk",
+          "tableFrom": "customer_display_pairing_codes",
+          "tableTo": "devices",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id",
+            "display_device_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "outlet_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "customer_display_pairing_codes_pkey": {
+          "name": "customer_display_pairing_codes_pkey",
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "customer_display_pairing_codes_hash_check": {
+          "name": "customer_display_pairing_codes_hash_check",
+          "value": "octet_length(\"customer_display_pairing_codes\".\"code_hash\") = 32"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.customer_display_pairings": {
+      "name": "customer_display_pairings",
+      "schema": "",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "terminal_device_id": {
+          "name": "terminal_device_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "display_device_id": {
+          "name": "display_device_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        },
+        "paired_at": {
+          "name": "paired_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "paired_by": {
+          "name": "paired_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revoked_by": {
+          "name": "revoked_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "customer_display_pairings_active_display_key": {
+          "name": "customer_display_pairings_active_display_key",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "display_device_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"customer_display_pairings\".\"status\" = 'active'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "customer_display_pairings_active_terminal_key": {
+          "name": "customer_display_pairings_active_terminal_key",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "terminal_device_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"customer_display_pairings\".\"status\" = 'active'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "customer_display_pairings_tenant_id_tenants_id_fk": {
+          "name": "customer_display_pairings_tenant_id_tenants_id_fk",
+          "tableFrom": "customer_display_pairings",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "customer_display_pairings_outlet_id_outlets_id_fk": {
+          "name": "customer_display_pairings_outlet_id_outlets_id_fk",
+          "tableFrom": "customer_display_pairings",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "customer_display_pairings_terminal_fk": {
+          "name": "customer_display_pairings_terminal_fk",
+          "tableFrom": "customer_display_pairings",
+          "tableTo": "devices",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id",
+            "terminal_device_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "outlet_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "customer_display_pairings_display_fk": {
+          "name": "customer_display_pairings_display_fk",
+          "tableFrom": "customer_display_pairings",
+          "tableTo": "devices",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id",
+            "display_device_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "outlet_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "customer_display_pairings_pkey": {
+          "name": "customer_display_pairings_pkey",
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "customer_display_pairings_status_check": {
+          "name": "customer_display_pairings_status_check",
+          "value": "\"customer_display_pairings\".\"status\" IN ('active', 'revoked') AND ((\"customer_display_pairings\".\"status\" = 'revoked') = (\"customer_display_pairings\".\"revoked_at\" IS NOT NULL))"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.customer_display_sessions": {
+      "name": "customer_display_sessions",
+      "schema": "",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "terminal_device_id": {
+          "name": "terminal_device_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "selected_order_id": {
+          "name": "selected_order_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "version": {
+          "name": "version",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "customer_display_sessions_order_idx": {
+          "name": "customer_display_sessions_order_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "selected_order_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"customer_display_sessions\".\"selected_order_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "customer_display_sessions_tenant_id_tenants_id_fk": {
+          "name": "customer_display_sessions_tenant_id_tenants_id_fk",
+          "tableFrom": "customer_display_sessions",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "customer_display_sessions_outlet_id_outlets_id_fk": {
+          "name": "customer_display_sessions_outlet_id_outlets_id_fk",
+          "tableFrom": "customer_display_sessions",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "customer_display_sessions_terminal_fk": {
+          "name": "customer_display_sessions_terminal_fk",
+          "tableFrom": "customer_display_sessions",
+          "tableTo": "devices",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id",
+            "terminal_device_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "outlet_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "customer_display_sessions_order_fk": {
+          "name": "customer_display_sessions_order_fk",
+          "tableFrom": "customer_display_sessions",
+          "tableTo": "orders",
+          "columnsFrom": [
+            "tenant_id",
+            "selected_order_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "customer_display_sessions_pkey": {
+          "name": "customer_display_sessions_pkey",
+          "columns": [
+            "tenant_id",
+            "terminal_device_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "customer_display_sessions_version_check": {
+          "name": "customer_display_sessions_version_check",
+          "value": "\"customer_display_sessions\".\"version\" >= 0"
         }
       },
       "isRLSEnabled": false
@@ -66091,6 +68240,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "account_holder_name": {
+          "name": "account_holder_name",
+          "type": "varchar(150)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "masked_account_number": {
+          "name": "masked_account_number",
+          "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "bank_code": {
           "name": "bank_code",
           "type": "varchar(3)",
@@ -66239,6 +68400,12 @@
         "return_note": {
           "name": "return_note",
           "type": "varchar(500)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "return_claim_id": {
+          "name": "return_claim_id",
+          "type": "uuid",
           "primaryKey": false,
           "notNull": false
         },
@@ -66424,6 +68591,23 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
+        "payroll_disbursement_items_return_claim_fk": {
+          "name": "payroll_disbursement_items_return_claim_fk",
+          "tableFrom": "payroll_disbursement_items",
+          "tableTo": "payroll_payout_return_claims",
+          "columnsFrom": [
+            "tenant_id",
+            "batch_id",
+            "return_claim_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "batch_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
         "payroll_disbursement_items_bank_snapshot_fk": {
           "name": "payroll_disbursement_items_bank_snapshot_fk",
           "tableFrom": "payroll_disbursement_items",
@@ -66502,6 +68686,10 @@
           "name": "payroll_disbursement_items_key_version_check",
           "value": "\"payroll_disbursement_items\".\"pii_key_version\" >= 1"
         },
+        "payroll_disbursement_items_payee_display_check": {
+          "name": "payroll_disbursement_items_payee_display_check",
+          "value": "(\"payroll_disbursement_items\".\"channel\" = 'cash' AND \"payroll_disbursement_items\".\"account_holder_name\" IS NULL AND \"payroll_disbursement_items\".\"masked_account_number\" IS NULL) OR (\"payroll_disbursement_items\".\"channel\" <> 'cash' AND (\"payroll_disbursement_items\".\"masked_account_number\" IS NULL OR \"payroll_disbursement_items\".\"masked_account_number\" ~ '^\\*{4}[0-9]{4}$'))"
+        },
         "payroll_disbursement_items_bank_code_check": {
           "name": "payroll_disbursement_items_bank_code_check",
           "value": "\"payroll_disbursement_items\".\"bank_code\" IS NULL OR \"payroll_disbursement_items\".\"bank_code\" ~ '^[0-9]{3}$'"
@@ -66529,6 +68717,251 @@
         "payroll_disbursement_items_resolution_outcome_check": {
           "name": "payroll_disbursement_items_resolution_outcome_check",
           "value": "\"payroll_disbursement_items\".\"resolution_outcome\" IS NULL OR (\"payroll_disbursement_items\".\"resolution_outcome\" IN ('failed', 'not_sent') AND \"payroll_disbursement_items\".\"resolved_by\" IS NOT NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.payroll_payout_attestations": {
+      "name": "payroll_payout_attestations",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "operation_id": {
+          "name": "operation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "step": {
+          "name": "step",
+          "type": "varchar(8)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "batch_id": {
+          "name": "batch_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "item_ids": {
+          "name": "item_ids",
+          "type": "uuid[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::uuid[]"
+        },
+        "evidence_key": {
+          "name": "evidence_key",
+          "type": "varchar(500)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "binding_id": {
+          "name": "binding_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "grant_id": {
+          "name": "grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "actor": {
+          "name": "actor",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "session_created_at": {
+          "name": "session_created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "mfa_verified_at": {
+          "name": "mfa_verified_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "assertion": {
+          "name": "assertion",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "attested_at": {
+          "name": "attested_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "txid": {
+          "name": "txid",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "pg_catalog.txid_current()"
+        }
+      },
+      "indexes": {
+        "payroll_payout_attestations_tenant_batch_idx": {
+          "name": "payroll_payout_attestations_tenant_batch_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "batch_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "payroll_payout_attestations_tenant_id_tenants_id_fk": {
+          "name": "payroll_payout_attestations_tenant_id_tenants_id_fk",
+          "tableFrom": "payroll_payout_attestations",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payroll_payout_attestations_batch_fk": {
+          "name": "payroll_payout_attestations_batch_fk",
+          "tableFrom": "payroll_payout_attestations",
+          "tableTo": "payroll_disbursement_batches",
+          "columnsFrom": [
+            "tenant_id",
+            "batch_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payroll_payout_attestations_binding_fk": {
+          "name": "payroll_payout_attestations_binding_fk",
+          "tableFrom": "payroll_payout_attestations",
+          "tableTo": "payroll_payout_proof_bindings",
+          "columnsFrom": [
+            "tenant_id",
+            "binding_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payroll_payout_attestations_grant_fk": {
+          "name": "payroll_payout_attestations_grant_fk",
+          "tableFrom": "payroll_payout_attestations",
+          "tableTo": "payroll_payout_grants",
+          "columnsFrom": [
+            "tenant_id",
+            "grant_id",
+            "kind",
+            "step",
+            "actor",
+            "session_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id",
+            "kind",
+            "step",
+            "actor",
+            "session_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "payroll_payout_attestations_tenant_id_key": {
+          "name": "payroll_payout_attestations_tenant_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        },
+        "payroll_payout_attestations_step_key": {
+          "name": "payroll_payout_attestations_step_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "kind",
+            "operation_id",
+            "step"
+          ]
+        },
+        "payroll_payout_attestations_grant_key": {
+          "name": "payroll_payout_attestations_grant_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "grant_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "payroll_payout_attestations_kind_check": {
+          "name": "payroll_payout_attestations_kind_check",
+          "value": "\"payroll_payout_attestations\".\"kind\" IN ('correction', 'overpaid', 'return', 'posting_source', 'closure', 'resolve', 'bank_confirm')"
+        },
+        "payroll_payout_attestations_step_check": {
+          "name": "payroll_payout_attestations_step_check",
+          "value": "\"payroll_payout_attestations\".\"step\" IN ('propose', 'approve', 'record', 'confirm', 'withdraw')"
         }
       },
       "isRLSEnabled": false
@@ -66738,6 +69171,476 @@
       },
       "isRLSEnabled": false
     },
+    "public.payroll_payout_evidence_files": {
+      "name": "payroll_payout_evidence_files",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "batch_id": {
+          "name": "batch_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "evidence_key": {
+          "name": "evidence_key",
+          "type": "varchar(500)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content_sha256": {
+          "name": "content_sha256",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "stored_sha256": {
+          "name": "stored_sha256",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "payroll_payout_evidence_files_tenant_sha_idx": {
+          "name": "payroll_payout_evidence_files_tenant_sha_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "content_sha256",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "payroll_payout_evidence_files_tenant_stored_sha_idx": {
+          "name": "payroll_payout_evidence_files_tenant_stored_sha_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "stored_sha256",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "payroll_payout_evidence_files_tenant_id_tenants_id_fk": {
+          "name": "payroll_payout_evidence_files_tenant_id_tenants_id_fk",
+          "tableFrom": "payroll_payout_evidence_files",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payroll_payout_evidence_files_batch_fk": {
+          "name": "payroll_payout_evidence_files_batch_fk",
+          "tableFrom": "payroll_payout_evidence_files",
+          "tableTo": "payroll_disbursement_batches",
+          "columnsFrom": [
+            "tenant_id",
+            "batch_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "payroll_payout_evidence_files_tenant_id_key": {
+          "name": "payroll_payout_evidence_files_tenant_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        },
+        "payroll_payout_evidence_files_evidence_key": {
+          "name": "payroll_payout_evidence_files_evidence_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "evidence_key"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "payroll_payout_evidence_files_sha_check": {
+          "name": "payroll_payout_evidence_files_sha_check",
+          "value": "\"payroll_payout_evidence_files\".\"content_sha256\" ~ '^[a-f0-9]{64}$'"
+        },
+        "payroll_payout_evidence_files_stored_sha_check": {
+          "name": "payroll_payout_evidence_files_stored_sha_check",
+          "value": "\"payroll_payout_evidence_files\".\"stored_sha256\" IS NULL OR \"payroll_payout_evidence_files\".\"stored_sha256\" ~ '^[a-f0-9]{64}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.payroll_payout_failed_corrections": {
+      "name": "payroll_payout_failed_corrections",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "batch_id": {
+          "name": "batch_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "item_id": {
+          "name": "item_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "operation_id": {
+          "name": "operation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "evidence_key": {
+          "name": "evidence_key",
+          "type": "varchar(500)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content_sha256": {
+          "name": "content_sha256",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "stored_sha256": {
+          "name": "stored_sha256",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "note": {
+          "name": "note",
+          "type": "varchar(500)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(9)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'proposed'"
+        },
+        "proposed_by": {
+          "name": "proposed_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "proposed_at": {
+          "name": "proposed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "corrected_by": {
+          "name": "corrected_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "corrected_at": {
+          "name": "corrected_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "withdrawn_by": {
+          "name": "withdrawn_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "withdrawn_at": {
+          "name": "withdrawn_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "payroll_payout_failed_corrections_item_live_key": {
+          "name": "payroll_payout_failed_corrections_item_live_key",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "item_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"payroll_payout_failed_corrections\".\"status\" <> 'withdrawn'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "payroll_payout_failed_corrections_evidence_key": {
+          "name": "payroll_payout_failed_corrections_evidence_key",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "evidence_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"payroll_payout_failed_corrections\".\"operation_id\" = \"payroll_payout_failed_corrections\".\"id\"",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "payroll_payout_failed_corrections_content_sha_key": {
+          "name": "payroll_payout_failed_corrections_content_sha_key",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "content_sha256",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"payroll_payout_failed_corrections\".\"operation_id\" = \"payroll_payout_failed_corrections\".\"id\" AND \"payroll_payout_failed_corrections\".\"content_sha256\" <> 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "payroll_payout_failed_corrections_stored_sha_key": {
+          "name": "payroll_payout_failed_corrections_stored_sha_key",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "stored_sha256",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"payroll_payout_failed_corrections\".\"operation_id\" = \"payroll_payout_failed_corrections\".\"id\" AND \"payroll_payout_failed_corrections\".\"stored_sha256\" <> 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "payroll_payout_failed_corrections_tenant_batch_idx": {
+          "name": "payroll_payout_failed_corrections_tenant_batch_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "batch_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "payroll_payout_failed_corrections_tenant_operation_idx": {
+          "name": "payroll_payout_failed_corrections_tenant_operation_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "operation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "payroll_payout_failed_corrections_tenant_id_tenants_id_fk": {
+          "name": "payroll_payout_failed_corrections_tenant_id_tenants_id_fk",
+          "tableFrom": "payroll_payout_failed_corrections",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payroll_payout_failed_corrections_batch_fk": {
+          "name": "payroll_payout_failed_corrections_batch_fk",
+          "tableFrom": "payroll_payout_failed_corrections",
+          "tableTo": "payroll_disbursement_batches",
+          "columnsFrom": [
+            "tenant_id",
+            "batch_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payroll_payout_failed_corrections_item_fk": {
+          "name": "payroll_payout_failed_corrections_item_fk",
+          "tableFrom": "payroll_payout_failed_corrections",
+          "tableTo": "payroll_disbursement_items",
+          "columnsFrom": [
+            "tenant_id",
+            "item_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "payroll_payout_failed_corrections_tenant_id_key": {
+          "name": "payroll_payout_failed_corrections_tenant_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "payroll_payout_failed_corrections_status_check": {
+          "name": "payroll_payout_failed_corrections_status_check",
+          "value": "\"payroll_payout_failed_corrections\".\"status\" IN ('proposed', 'corrected', 'withdrawn')"
+        },
+        "payroll_payout_failed_corrections_sha_check": {
+          "name": "payroll_payout_failed_corrections_sha_check",
+          "value": "\"payroll_payout_failed_corrections\".\"content_sha256\" ~ '^[a-f0-9]{64}$' AND \"payroll_payout_failed_corrections\".\"stored_sha256\" ~ '^[a-f0-9]{64}$'"
+        },
+        "payroll_payout_failed_corrections_corrected_check": {
+          "name": "payroll_payout_failed_corrections_corrected_check",
+          "value": "(\"payroll_payout_failed_corrections\".\"status\" = 'proposed' AND \"payroll_payout_failed_corrections\".\"corrected_by\" IS NULL AND \"payroll_payout_failed_corrections\".\"corrected_at\" IS NULL AND \"payroll_payout_failed_corrections\".\"withdrawn_by\" IS NULL AND \"payroll_payout_failed_corrections\".\"withdrawn_at\" IS NULL) OR (\"payroll_payout_failed_corrections\".\"status\" = 'corrected' AND \"payroll_payout_failed_corrections\".\"corrected_by\" IS NOT NULL AND \"payroll_payout_failed_corrections\".\"corrected_at\" IS NOT NULL AND \"payroll_payout_failed_corrections\".\"corrected_by\" <> \"payroll_payout_failed_corrections\".\"proposed_by\" AND \"payroll_payout_failed_corrections\".\"withdrawn_by\" IS NULL AND \"payroll_payout_failed_corrections\".\"withdrawn_at\" IS NULL) OR (\"payroll_payout_failed_corrections\".\"status\" = 'withdrawn' AND \"payroll_payout_failed_corrections\".\"corrected_by\" IS NULL AND \"payroll_payout_failed_corrections\".\"corrected_at\" IS NULL AND \"payroll_payout_failed_corrections\".\"withdrawn_by\" IS NOT NULL AND \"payroll_payout_failed_corrections\".\"withdrawn_at\" IS NOT NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.payroll_payout_gl_postings": {
       "name": "payroll_payout_gl_postings",
       "schema": "",
@@ -66804,6 +69707,37 @@
           "primaryKey": false,
           "notNull": true,
           "default": true
+        },
+        "source_gl_account_id": {
+          "name": "source_gl_account_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "salaries_payable_account_id": {
+          "name": "salaries_payable_account_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "payable_account_hold": {
+          "name": "payable_account_hold",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "settle_net_idr": {
+          "name": "settle_net_idr",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "fee_idr": {
+          "name": "fee_idr",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -66838,6 +69772,36 @@
             "tenant_id"
           ],
           "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payroll_payout_gl_postings_source_account_fk": {
+          "name": "payroll_payout_gl_postings_source_account_fk",
+          "tableFrom": "payroll_payout_gl_postings",
+          "tableTo": "chart_of_accounts",
+          "columnsFrom": [
+            "tenant_id",
+            "source_gl_account_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payroll_payout_gl_postings_payable_account_fk": {
+          "name": "payroll_payout_gl_postings_payable_account_fk",
+          "tableFrom": "payroll_payout_gl_postings",
+          "tableTo": "chart_of_accounts",
+          "columnsFrom": [
+            "tenant_id",
+            "salaries_payable_account_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
             "id"
           ],
           "onDelete": "no action",
@@ -66891,7 +69855,7 @@
       "checkConstraints": {
         "payroll_payout_gl_postings_kind_check": {
           "name": "payroll_payout_gl_postings_kind_check",
-          "value": "\"payroll_payout_gl_postings\".\"kind\" IN ('settle', 'settle_skipped', 'return', 'overpaid')"
+          "value": "\"payroll_payout_gl_postings\".\"kind\" IN ('settle', 'settle_pending', 'settle_skipped', 'return', 'overpaid')"
         },
         "payroll_payout_gl_postings_hash_check": {
           "name": "payroll_payout_gl_postings_hash_check",
@@ -66900,6 +69864,1391 @@
         "payroll_payout_gl_postings_key_version_check": {
           "name": "payroll_payout_gl_postings_key_version_check",
           "value": "\"payroll_payout_gl_postings\".\"pii_key_version\" >= 1"
+        },
+        "payroll_payout_gl_postings_settle_net_check": {
+          "name": "payroll_payout_gl_postings_settle_net_check",
+          "value": "\"payroll_payout_gl_postings\".\"settle_net_idr\" IS NULL OR \"payroll_payout_gl_postings\".\"settle_net_idr\" >= 0"
+        },
+        "payroll_payout_gl_postings_fee_check": {
+          "name": "payroll_payout_gl_postings_fee_check",
+          "value": "\"payroll_payout_gl_postings\".\"fee_idr\" IS NULL OR \"payroll_payout_gl_postings\".\"fee_idr\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.payroll_payout_grants": {
+      "name": "payroll_payout_grants",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "secret_sha256": {
+          "name": "secret_sha256",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "step": {
+          "name": "step",
+          "type": "varchar(8)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "batch_id": {
+          "name": "batch_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "item_set_hash": {
+          "name": "item_set_hash",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "evidence_key": {
+          "name": "evidence_key",
+          "type": "varchar(500)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ref_id": {
+          "name": "ref_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "target_id": {
+          "name": "target_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "detail": {
+          "name": "detail",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "actor": {
+          "name": "actor",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "step_up_method": {
+          "name": "step_up_method",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "assertion": {
+          "name": "assertion",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "issued_at": {
+          "name": "issued_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "consumed_at": {
+          "name": "consumed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "consumed_txid": {
+          "name": "consumed_txid",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "payroll_payout_grants_tenant_batch_idx": {
+          "name": "payroll_payout_grants_tenant_batch_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "batch_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "payroll_payout_grants_tenant_id_tenants_id_fk": {
+          "name": "payroll_payout_grants_tenant_id_tenants_id_fk",
+          "tableFrom": "payroll_payout_grants",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payroll_payout_grants_batch_fk": {
+          "name": "payroll_payout_grants_batch_fk",
+          "tableFrom": "payroll_payout_grants",
+          "tableTo": "payroll_disbursement_batches",
+          "columnsFrom": [
+            "tenant_id",
+            "batch_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "payroll_payout_grants_tenant_id_key": {
+          "name": "payroll_payout_grants_tenant_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        },
+        "payroll_payout_grants_secret_key": {
+          "name": "payroll_payout_grants_secret_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "secret_sha256"
+          ]
+        },
+        "payroll_payout_grants_attest_key": {
+          "name": "payroll_payout_grants_attest_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id",
+            "kind",
+            "step",
+            "actor",
+            "session_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "payroll_payout_grants_kind_check": {
+          "name": "payroll_payout_grants_kind_check",
+          "value": "\"payroll_payout_grants\".\"kind\" IN ('correction', 'overpaid', 'return', 'posting_source', 'closure', 'resolve', 'bank_confirm', 'disown', 'unfreeze')"
+        },
+        "payroll_payout_grants_detail_check": {
+          "name": "payroll_payout_grants_detail_check",
+          "value": "(\"payroll_payout_grants\".\"kind\" = 'resolve' AND \"payroll_payout_grants\".\"detail\" IN ('failed', 'not_sent')) OR (\"payroll_payout_grants\".\"kind\" = 'bank_confirm' AND \"payroll_payout_grants\".\"detail\" = 'succeeded') OR (\"payroll_payout_grants\".\"kind\" IN ('disown', 'unfreeze') AND \"payroll_payout_grants\".\"detail\" ~ '^[0-9a-f]{64}$') OR (\"payroll_payout_grants\".\"kind\" NOT IN ('resolve', 'bank_confirm', 'disown', 'unfreeze') AND \"payroll_payout_grants\".\"detail\" IS NULL)"
+        },
+        "payroll_payout_grants_step_check": {
+          "name": "payroll_payout_grants_step_check",
+          "value": "\"payroll_payout_grants\".\"step\" IN ('propose', 'approve', 'record', 'confirm', 'withdraw')"
+        },
+        "payroll_payout_grants_method_check": {
+          "name": "payroll_payout_grants_method_check",
+          "value": "\"payroll_payout_grants\".\"step_up_method\" IN ('password', 'mfa_challenge')"
+        },
+        "payroll_payout_grants_expiry_check": {
+          "name": "payroll_payout_grants_expiry_check",
+          "value": "\"payroll_payout_grants\".\"expires_at\" > \"payroll_payout_grants\".\"issued_at\" AND \"payroll_payout_grants\".\"expires_at\" <= \"payroll_payout_grants\".\"issued_at\" + interval '2 minutes'"
+        },
+        "payroll_payout_grants_consumed_check": {
+          "name": "payroll_payout_grants_consumed_check",
+          "value": "(\"payroll_payout_grants\".\"consumed_at\" IS NULL) = (\"payroll_payout_grants\".\"consumed_txid\" IS NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.payroll_payout_overpaid_proposals": {
+      "name": "payroll_payout_overpaid_proposals",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "batch_id": {
+          "name": "batch_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "item_id": {
+          "name": "item_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "evidence_key": {
+          "name": "evidence_key",
+          "type": "varchar(500)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "note": {
+          "name": "note",
+          "type": "varchar(500)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(9)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'proposed'"
+        },
+        "proposed_by": {
+          "name": "proposed_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "proposed_at": {
+          "name": "proposed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "recorded_by": {
+          "name": "recorded_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "recorded_at": {
+          "name": "recorded_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "withdrawn_by": {
+          "name": "withdrawn_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "withdrawn_at": {
+          "name": "withdrawn_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "payroll_payout_overpaid_proposals_item_live_key": {
+          "name": "payroll_payout_overpaid_proposals_item_live_key",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "item_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"payroll_payout_overpaid_proposals\".\"status\" <> 'withdrawn'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "payroll_payout_overpaid_proposals_tenant_batch_idx": {
+          "name": "payroll_payout_overpaid_proposals_tenant_batch_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "batch_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "payroll_payout_overpaid_proposals_tenant_id_tenants_id_fk": {
+          "name": "payroll_payout_overpaid_proposals_tenant_id_tenants_id_fk",
+          "tableFrom": "payroll_payout_overpaid_proposals",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payroll_payout_overpaid_proposals_batch_fk": {
+          "name": "payroll_payout_overpaid_proposals_batch_fk",
+          "tableFrom": "payroll_payout_overpaid_proposals",
+          "tableTo": "payroll_disbursement_batches",
+          "columnsFrom": [
+            "tenant_id",
+            "batch_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payroll_payout_overpaid_proposals_item_fk": {
+          "name": "payroll_payout_overpaid_proposals_item_fk",
+          "tableFrom": "payroll_payout_overpaid_proposals",
+          "tableTo": "payroll_disbursement_items",
+          "columnsFrom": [
+            "tenant_id",
+            "item_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "payroll_payout_overpaid_proposals_tenant_id_key": {
+          "name": "payroll_payout_overpaid_proposals_tenant_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "payroll_payout_overpaid_proposals_status_check": {
+          "name": "payroll_payout_overpaid_proposals_status_check",
+          "value": "\"payroll_payout_overpaid_proposals\".\"status\" IN ('proposed', 'recorded', 'withdrawn')"
+        },
+        "payroll_payout_overpaid_proposals_recorded_check": {
+          "name": "payroll_payout_overpaid_proposals_recorded_check",
+          "value": "(\"payroll_payout_overpaid_proposals\".\"status\" = 'proposed' AND \"payroll_payout_overpaid_proposals\".\"recorded_by\" IS NULL AND \"payroll_payout_overpaid_proposals\".\"recorded_at\" IS NULL AND \"payroll_payout_overpaid_proposals\".\"withdrawn_by\" IS NULL AND \"payroll_payout_overpaid_proposals\".\"withdrawn_at\" IS NULL) OR (\"payroll_payout_overpaid_proposals\".\"status\" = 'recorded' AND \"payroll_payout_overpaid_proposals\".\"recorded_by\" IS NOT NULL AND \"payroll_payout_overpaid_proposals\".\"recorded_at\" IS NOT NULL AND \"payroll_payout_overpaid_proposals\".\"recorded_by\" <> \"payroll_payout_overpaid_proposals\".\"proposed_by\" AND \"payroll_payout_overpaid_proposals\".\"withdrawn_by\" IS NULL AND \"payroll_payout_overpaid_proposals\".\"withdrawn_at\" IS NULL) OR (\"payroll_payout_overpaid_proposals\".\"status\" = 'withdrawn' AND \"payroll_payout_overpaid_proposals\".\"recorded_by\" IS NULL AND \"payroll_payout_overpaid_proposals\".\"recorded_at\" IS NULL AND \"payroll_payout_overpaid_proposals\".\"withdrawn_by\" IS NOT NULL AND \"payroll_payout_overpaid_proposals\".\"withdrawn_at\" IS NOT NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.payroll_payout_proof_backfill_stuck": {
+      "name": "payroll_payout_proof_backfill_stuck",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "batch_id": {
+          "name": "batch_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "evidence_key": {
+          "name": "evidence_key",
+          "type": "varchar(500)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reason": {
+          "name": "reason",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "attempts": {
+          "name": "attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "first_seen_at": {
+          "name": "first_seen_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "last_attempt_at": {
+          "name": "last_attempt_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "next_attempt_at": {
+          "name": "next_attempt_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "resolved_at": {
+          "name": "resolved_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "operations": {
+          "name": "operations",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        }
+      },
+      "indexes": {
+        "payroll_payout_proof_backfill_stuck_tenant_next_idx": {
+          "name": "payroll_payout_proof_backfill_stuck_tenant_next_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "next_attempt_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "payroll_payout_proof_backfill_stuck_tenant_id_tenants_id_fk": {
+          "name": "payroll_payout_proof_backfill_stuck_tenant_id_tenants_id_fk",
+          "tableFrom": "payroll_payout_proof_backfill_stuck",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payroll_payout_proof_backfill_stuck_batch_fk": {
+          "name": "payroll_payout_proof_backfill_stuck_batch_fk",
+          "tableFrom": "payroll_payout_proof_backfill_stuck",
+          "tableTo": "payroll_disbursement_batches",
+          "columnsFrom": [
+            "tenant_id",
+            "batch_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "payroll_payout_proof_backfill_stuck_tenant_id_key": {
+          "name": "payroll_payout_proof_backfill_stuck_tenant_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        },
+        "payroll_payout_proof_backfill_stuck_evidence_key": {
+          "name": "payroll_payout_proof_backfill_stuck_evidence_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "evidence_key"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "payroll_payout_proof_backfill_stuck_reason_check": {
+          "name": "payroll_payout_proof_backfill_stuck_reason_check",
+          "value": "\"payroll_payout_proof_backfill_stuck\".\"reason\" IN ('unreadable', 'hash_conflict', 'legacy_duplicate', 'shared_key', 'bind_failed')"
+        },
+        "payroll_payout_proof_backfill_stuck_attempts_check": {
+          "name": "payroll_payout_proof_backfill_stuck_attempts_check",
+          "value": "\"payroll_payout_proof_backfill_stuck\".\"attempts\" >= 1"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.payroll_payout_proof_bindings": {
+      "name": "payroll_payout_proof_bindings",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "batch_id": {
+          "name": "batch_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "varchar(10)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "item_set_hash": {
+          "name": "item_set_hash",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "evidence_key": {
+          "name": "evidence_key",
+          "type": "varchar(500)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content_sha256": {
+          "name": "content_sha256",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "stored_sha256": {
+          "name": "stored_sha256",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "legacy_duplicate": {
+          "name": "legacy_duplicate",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "payroll_payout_proof_bindings_tenant_batch_idx": {
+          "name": "payroll_payout_proof_bindings_tenant_batch_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "batch_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "payroll_payout_proof_bindings_tenant_content_sha_idx": {
+          "name": "payroll_payout_proof_bindings_tenant_content_sha_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "content_sha256",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "payroll_payout_proof_bindings_tenant_stored_sha_idx": {
+          "name": "payroll_payout_proof_bindings_tenant_stored_sha_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "stored_sha256",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "payroll_payout_proof_bindings_tenant_id_tenants_id_fk": {
+          "name": "payroll_payout_proof_bindings_tenant_id_tenants_id_fk",
+          "tableFrom": "payroll_payout_proof_bindings",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payroll_payout_proof_bindings_batch_fk": {
+          "name": "payroll_payout_proof_bindings_batch_fk",
+          "tableFrom": "payroll_payout_proof_bindings",
+          "tableTo": "payroll_disbursement_batches",
+          "columnsFrom": [
+            "tenant_id",
+            "batch_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "payroll_payout_proof_bindings_tenant_id_key": {
+          "name": "payroll_payout_proof_bindings_tenant_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        },
+        "payroll_payout_proof_bindings_evidence_key": {
+          "name": "payroll_payout_proof_bindings_evidence_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "evidence_key"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "payroll_payout_proof_bindings_kind_check": {
+          "name": "payroll_payout_proof_bindings_kind_check",
+          "value": "\"payroll_payout_proof_bindings\".\"kind\" IN ('overpaid', 'return', 'correction')"
+        },
+        "payroll_payout_proof_bindings_hash_check": {
+          "name": "payroll_payout_proof_bindings_hash_check",
+          "value": "\"payroll_payout_proof_bindings\".\"item_set_hash\" ~ '^[a-f0-9]{64}$'"
+        },
+        "payroll_payout_proof_bindings_sha_check": {
+          "name": "payroll_payout_proof_bindings_sha_check",
+          "value": "\"payroll_payout_proof_bindings\".\"content_sha256\" ~ '^[a-f0-9]{64}$' AND \"payroll_payout_proof_bindings\".\"stored_sha256\" ~ '^[a-f0-9]{64}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.payroll_payout_proof_closures": {
+      "name": "payroll_payout_proof_closures",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "evidence_key": {
+          "name": "evidence_key",
+          "type": "varchar(500)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "note": {
+          "name": "note",
+          "type": "varchar(500)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "proposed_by": {
+          "name": "proposed_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "proposed_session_id": {
+          "name": "proposed_session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "proposed_at": {
+          "name": "proposed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "closed_by": {
+          "name": "closed_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "closed_session_id": {
+          "name": "closed_session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "closed_at": {
+          "name": "closed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "payroll_payout_proof_closures_tenant_id_tenants_id_fk": {
+          "name": "payroll_payout_proof_closures_tenant_id_tenants_id_fk",
+          "tableFrom": "payroll_payout_proof_closures",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "payroll_payout_proof_closures_tenant_id_key": {
+          "name": "payroll_payout_proof_closures_tenant_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        },
+        "payroll_payout_proof_closures_evidence_key": {
+          "name": "payroll_payout_proof_closures_evidence_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "evidence_key"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "payroll_payout_proof_closures_closed_check": {
+          "name": "payroll_payout_proof_closures_closed_check",
+          "value": "(\"payroll_payout_proof_closures\".\"closed_at\" IS NULL AND \"payroll_payout_proof_closures\".\"closed_by\" IS NULL) OR (\"payroll_payout_proof_closures\".\"closed_at\" IS NOT NULL AND \"payroll_payout_proof_closures\".\"closed_by\" IS NOT NULL AND \"payroll_payout_proof_closures\".\"closed_by\" <> \"payroll_payout_proof_closures\".\"proposed_by\")"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.payroll_payout_proof_hash_contests": {
+      "name": "payroll_payout_proof_hash_contests",
+      "schema": "",
+      "columns": {
+        "sha256": {
+          "name": "sha256",
+          "type": "varchar(64)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "contested_at": {
+          "name": "contested_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "payroll_payout_proof_hash_contests_sha_check": {
+          "name": "payroll_payout_proof_hash_contests_sha_check",
+          "value": "\"payroll_payout_proof_hash_contests\".\"sha256\" ~ '^[a-f0-9]{64}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.payroll_payout_proof_hashes": {
+      "name": "payroll_payout_proof_hashes",
+      "schema": "",
+      "columns": {
+        "sha256": {
+          "name": "sha256",
+          "type": "varchar(64)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "binding_id": {
+          "name": "binding_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "claimed_at": {
+          "name": "claimed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "payroll_payout_proof_hashes_sha_check": {
+          "name": "payroll_payout_proof_hashes_sha_check",
+          "value": "\"payroll_payout_proof_hashes\".\"sha256\" ~ '^[a-f0-9]{64}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.payroll_payout_recon_exceptions": {
+      "name": "payroll_payout_recon_exceptions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "operation_id": {
+          "name": "operation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "item_id": {
+          "name": "item_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "payslip_id": {
+          "name": "payslip_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reason": {
+          "name": "reason",
+          "type": "varchar(200)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "flagged_at": {
+          "name": "flagged_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "payroll_payout_recon_exceptions_tenant_item_idx": {
+          "name": "payroll_payout_recon_exceptions_tenant_item_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "item_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "payroll_payout_recon_exceptions_tenant_payslip_idx": {
+          "name": "payroll_payout_recon_exceptions_tenant_payslip_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "payslip_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "payroll_payout_recon_exceptions_tenant_id_tenants_id_fk": {
+          "name": "payroll_payout_recon_exceptions_tenant_id_tenants_id_fk",
+          "tableFrom": "payroll_payout_recon_exceptions",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payroll_payout_recon_exceptions_item_fk": {
+          "name": "payroll_payout_recon_exceptions_item_fk",
+          "tableFrom": "payroll_payout_recon_exceptions",
+          "tableTo": "payroll_disbursement_items",
+          "columnsFrom": [
+            "tenant_id",
+            "item_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payroll_payout_recon_exceptions_payslip_fk": {
+          "name": "payroll_payout_recon_exceptions_payslip_fk",
+          "tableFrom": "payroll_payout_recon_exceptions",
+          "tableTo": "payslips",
+          "columnsFrom": [
+            "tenant_id",
+            "payslip_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "payroll_payout_recon_exceptions_tenant_id_key": {
+          "name": "payroll_payout_recon_exceptions_tenant_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        },
+        "payroll_payout_recon_exceptions_flag_key": {
+          "name": "payroll_payout_recon_exceptions_flag_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "kind",
+            "operation_id",
+            "item_id",
+            "reason"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "payroll_payout_recon_exceptions_kind_check": {
+          "name": "payroll_payout_recon_exceptions_kind_check",
+          "value": "\"payroll_payout_recon_exceptions\".\"kind\" IN ('correction', 'overpaid', 'return', 'posting_source', 'closure', 'resolve', 'bank_confirm')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.payroll_payout_return_claims": {
+      "name": "payroll_payout_return_claims",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "batch_id": {
+          "name": "batch_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "evidence_key": {
+          "name": "evidence_key",
+          "type": "varchar(500)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "item_set_hash": {
+          "name": "item_set_hash",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(8)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'open'"
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "consumed_at": {
+          "name": "consumed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "content_sha256": {
+          "name": "content_sha256",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "stored_sha256": {
+          "name": "stored_sha256",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "payroll_payout_return_claims_content_sha_key": {
+          "name": "payroll_payout_return_claims_content_sha_key",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "content_sha256",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"payroll_payout_return_claims\".\"content_sha256\" IS NOT NULL AND \"payroll_payout_return_claims\".\"content_sha256\" <> 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "payroll_payout_return_claims_stored_sha_key": {
+          "name": "payroll_payout_return_claims_stored_sha_key",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "stored_sha256",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"payroll_payout_return_claims\".\"stored_sha256\" IS NOT NULL AND \"payroll_payout_return_claims\".\"stored_sha256\" <> 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "payroll_payout_return_claims_tenant_batch_idx": {
+          "name": "payroll_payout_return_claims_tenant_batch_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "batch_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "payroll_payout_return_claims_tenant_id_tenants_id_fk": {
+          "name": "payroll_payout_return_claims_tenant_id_tenants_id_fk",
+          "tableFrom": "payroll_payout_return_claims",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payroll_payout_return_claims_batch_fk": {
+          "name": "payroll_payout_return_claims_batch_fk",
+          "tableFrom": "payroll_payout_return_claims",
+          "tableTo": "payroll_disbursement_batches",
+          "columnsFrom": [
+            "tenant_id",
+            "batch_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "payroll_payout_return_claims_tenant_id_key": {
+          "name": "payroll_payout_return_claims_tenant_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        },
+        "payroll_payout_return_claims_tenant_batch_id_key": {
+          "name": "payroll_payout_return_claims_tenant_batch_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "batch_id",
+            "id"
+          ]
+        },
+        "payroll_payout_return_claims_evidence_key": {
+          "name": "payroll_payout_return_claims_evidence_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "evidence_key"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "payroll_payout_return_claims_sha_check": {
+          "name": "payroll_payout_return_claims_sha_check",
+          "value": "\"payroll_payout_return_claims\".\"content_sha256\" IS NULL OR \"payroll_payout_return_claims\".\"content_sha256\" ~ '^[a-f0-9]{64}$'"
+        },
+        "payroll_payout_return_claims_stored_sha_check": {
+          "name": "payroll_payout_return_claims_stored_sha_check",
+          "value": "\"payroll_payout_return_claims\".\"stored_sha256\" IS NULL OR \"payroll_payout_return_claims\".\"stored_sha256\" ~ '^[a-f0-9]{64}$'"
+        },
+        "payroll_payout_return_claims_status_check": {
+          "name": "payroll_payout_return_claims_status_check",
+          "value": "\"payroll_payout_return_claims\".\"status\" IN ('open', 'consumed')"
+        },
+        "payroll_payout_return_claims_hash_check": {
+          "name": "payroll_payout_return_claims_hash_check",
+          "value": "\"payroll_payout_return_claims\".\"item_set_hash\" ~ '^[a-f0-9]{64}$'"
+        },
+        "payroll_payout_return_claims_consumed_check": {
+          "name": "payroll_payout_return_claims_consumed_check",
+          "value": "(\"payroll_payout_return_claims\".\"status\" = 'open' AND \"payroll_payout_return_claims\".\"consumed_at\" IS NULL) OR (\"payroll_payout_return_claims\".\"status\" = 'consumed' AND \"payroll_payout_return_claims\".\"consumed_at\" IS NOT NULL)"
         }
       },
       "isRLSEnabled": false
@@ -67209,6 +71558,12 @@
         "dispatch_batch_no": {
           "name": "dispatch_batch_no",
           "type": "varchar(20)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sale_wire_open_at": {
+          "name": "sale_wire_open_at",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
@@ -88596,6 +92951,834 @@
         "panic_receiver_sessions_revoke_pair_check": {
           "name": "panic_receiver_sessions_revoke_pair_check",
           "value": "(\"panic_receiver_sessions\".\"revoked_at\" IS NULL) = (\"panic_receiver_sessions\".\"revoke_reason\" IS NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.payment_va_releases": {
+      "name": "payment_va_releases",
+      "schema": "",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outlet_id": {
+          "name": "outlet_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "payment_intent_id": {
+          "name": "payment_intent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "order_id": {
+          "name": "order_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "released_by": {
+          "name": "released_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "approved_by": {
+          "name": "approved_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "override_id": {
+          "name": "override_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "attempts": {
+          "name": "attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "next_check_at": {
+          "name": "next_check_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "last_checked_at": {
+          "name": "last_checked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_provider_status": {
+          "name": "last_provider_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "resolved_at": {
+          "name": "resolved_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "resolution": {
+          "name": "resolution",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "payment_va_releases_due_idx": {
+          "name": "payment_va_releases_due_idx",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "next_check_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"payment_va_releases\".\"status\" = 'open'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "payment_va_releases_tenant_id_tenants_id_fk": {
+          "name": "payment_va_releases_tenant_id_tenants_id_fk",
+          "tableFrom": "payment_va_releases",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payment_va_releases_outlet_id_outlets_id_fk": {
+          "name": "payment_va_releases_outlet_id_outlets_id_fk",
+          "tableFrom": "payment_va_releases",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payment_va_releases_outlet_fk": {
+          "name": "payment_va_releases_outlet_fk",
+          "tableFrom": "payment_va_releases",
+          "tableTo": "outlets",
+          "columnsFrom": [
+            "tenant_id",
+            "outlet_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payment_va_releases_intent_fk": {
+          "name": "payment_va_releases_intent_fk",
+          "tableFrom": "payment_va_releases",
+          "tableTo": "payment_intents",
+          "columnsFrom": [
+            "tenant_id",
+            "payment_intent_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payment_va_releases_order_fk": {
+          "name": "payment_va_releases_order_fk",
+          "tableFrom": "payment_va_releases",
+          "tableTo": "orders",
+          "columnsFrom": [
+            "tenant_id",
+            "order_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "payment_va_releases_pkey": {
+          "name": "payment_va_releases_pkey",
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {
+        "payment_va_releases_intent_key": {
+          "name": "payment_va_releases_intent_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "payment_intent_id"
+          ]
+        },
+        "payment_va_releases_override_key": {
+          "name": "payment_va_releases_override_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "override_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "payment_va_releases_status_check": {
+          "name": "payment_va_releases_status_check",
+          "value": "\"payment_va_releases\".\"status\" IN ('open', 'resolved')"
+        },
+        "payment_va_releases_attempts_check": {
+          "name": "payment_va_releases_attempts_check",
+          "value": "\"payment_va_releases\".\"attempts\" >= 0"
+        },
+        "payment_va_releases_reason_check": {
+          "name": "payment_va_releases_reason_check",
+          "value": "char_length(\"payment_va_releases\".\"reason\") BETWEEN 3 AND 300 AND \"payment_va_releases\".\"reason\" = btrim(\"payment_va_releases\".\"reason\")"
+        },
+        "payment_va_releases_resolved_check": {
+          "name": "payment_va_releases_resolved_check",
+          "value": "(\"payment_va_releases\".\"status\" = 'resolved') = (\"payment_va_releases\".\"resolved_at\" IS NOT NULL AND \"payment_va_releases\".\"resolution\" IS NOT NULL)"
+        },
+        "payment_va_releases_resolution_check": {
+          "name": "payment_va_releases_resolution_check",
+          "value": "\"payment_va_releases\".\"resolution\" IS NULL OR \"payment_va_releases\".\"resolution\" IN ('paid_recorded', 'provider_expired', 'provider_failed')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.payroll_payout_approval_log": {
+      "name": "payroll_payout_approval_log",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "grant_id": {
+          "name": "grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "attestation_id": {
+          "name": "attestation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "step": {
+          "name": "step",
+          "type": "varchar(8)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "operation_id": {
+          "name": "operation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "batch_id": {
+          "name": "batch_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "item_count": {
+          "name": "item_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor": {
+          "name": "actor",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "logged_at": {
+          "name": "logged_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "txid": {
+          "name": "txid",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "pg_catalog.txid_current()"
+        }
+      },
+      "indexes": {
+        "payroll_payout_approval_log_tenant_logged_idx": {
+          "name": "payroll_payout_approval_log_tenant_logged_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "logged_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "payroll_payout_approval_log_tenant_id_tenants_id_fk": {
+          "name": "payroll_payout_approval_log_tenant_id_tenants_id_fk",
+          "tableFrom": "payroll_payout_approval_log",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payroll_payout_approval_log_grant_fk": {
+          "name": "payroll_payout_approval_log_grant_fk",
+          "tableFrom": "payroll_payout_approval_log",
+          "tableTo": "payroll_payout_grants",
+          "columnsFrom": [
+            "tenant_id",
+            "grant_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payroll_payout_approval_log_batch_fk": {
+          "name": "payroll_payout_approval_log_batch_fk",
+          "tableFrom": "payroll_payout_approval_log",
+          "tableTo": "payroll_disbursement_batches",
+          "columnsFrom": [
+            "tenant_id",
+            "batch_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "payroll_payout_approval_log_tenant_id_key": {
+          "name": "payroll_payout_approval_log_tenant_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        },
+        "payroll_payout_approval_log_grant_key": {
+          "name": "payroll_payout_approval_log_grant_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "grant_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.payroll_payout_batch_disputes": {
+      "name": "payroll_payout_batch_disputes",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "batch_id": {
+          "name": "batch_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "log_id": {
+          "name": "log_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "grant_id": {
+          "name": "grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor": {
+          "name": "actor",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reason": {
+          "name": "reason",
+          "type": "varchar(500)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "batch_status_at": {
+          "name": "batch_status_at",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "txid": {
+          "name": "txid",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "pg_catalog.txid_current()"
+        }
+      },
+      "indexes": {
+        "payroll_payout_batch_disputes_tenant_batch_idx": {
+          "name": "payroll_payout_batch_disputes_tenant_batch_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "batch_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "payroll_payout_batch_disputes_tenant_log_idx": {
+          "name": "payroll_payout_batch_disputes_tenant_log_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "log_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "payroll_payout_batch_disputes_tenant_id_tenants_id_fk": {
+          "name": "payroll_payout_batch_disputes_tenant_id_tenants_id_fk",
+          "tableFrom": "payroll_payout_batch_disputes",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payroll_payout_batch_disputes_batch_fk": {
+          "name": "payroll_payout_batch_disputes_batch_fk",
+          "tableFrom": "payroll_payout_batch_disputes",
+          "tableTo": "payroll_disbursement_batches",
+          "columnsFrom": [
+            "tenant_id",
+            "batch_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payroll_payout_batch_disputes_log_fk": {
+          "name": "payroll_payout_batch_disputes_log_fk",
+          "tableFrom": "payroll_payout_batch_disputes",
+          "tableTo": "payroll_payout_approval_log",
+          "columnsFrom": [
+            "tenant_id",
+            "log_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payroll_payout_batch_disputes_grant_fk": {
+          "name": "payroll_payout_batch_disputes_grant_fk",
+          "tableFrom": "payroll_payout_batch_disputes",
+          "tableTo": "payroll_payout_grants",
+          "columnsFrom": [
+            "tenant_id",
+            "grant_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "payroll_payout_batch_disputes_tenant_id_key": {
+          "name": "payroll_payout_batch_disputes_tenant_id_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id"
+          ]
+        },
+        "payroll_payout_batch_disputes_tenant_id_batch_key": {
+          "name": "payroll_payout_batch_disputes_tenant_id_batch_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "id",
+            "batch_id"
+          ]
+        },
+        "payroll_payout_batch_disputes_grant_key": {
+          "name": "payroll_payout_batch_disputes_grant_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "grant_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.payroll_payout_batch_unfreezes": {
+      "name": "payroll_payout_batch_unfreezes",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "batch_id": {
+          "name": "batch_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "dispute_id": {
+          "name": "dispute_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "grant_id": {
+          "name": "grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor": {
+          "name": "actor",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "role_template": {
+          "name": "role_template",
+          "type": "varchar(8)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reason": {
+          "name": "reason",
+          "type": "varchar(500)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "txid": {
+          "name": "txid",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "pg_catalog.txid_current()"
+        }
+      },
+      "indexes": {
+        "payroll_payout_batch_unfreezes_tenant_batch_idx": {
+          "name": "payroll_payout_batch_unfreezes_tenant_batch_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "batch_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "payroll_payout_batch_unfreezes_tenant_id_tenants_id_fk": {
+          "name": "payroll_payout_batch_unfreezes_tenant_id_tenants_id_fk",
+          "tableFrom": "payroll_payout_batch_unfreezes",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payroll_payout_batch_unfreezes_dispute_fk": {
+          "name": "payroll_payout_batch_unfreezes_dispute_fk",
+          "tableFrom": "payroll_payout_batch_unfreezes",
+          "tableTo": "payroll_payout_batch_disputes",
+          "columnsFrom": [
+            "tenant_id",
+            "dispute_id",
+            "batch_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id",
+            "batch_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payroll_payout_batch_unfreezes_batch_fk": {
+          "name": "payroll_payout_batch_unfreezes_batch_fk",
+          "tableFrom": "payroll_payout_batch_unfreezes",
+          "tableTo": "payroll_disbursement_batches",
+          "columnsFrom": [
+            "tenant_id",
+            "batch_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payroll_payout_batch_unfreezes_grant_fk": {
+          "name": "payroll_payout_batch_unfreezes_grant_fk",
+          "tableFrom": "payroll_payout_batch_unfreezes",
+          "tableTo": "payroll_payout_grants",
+          "columnsFrom": [
+            "tenant_id",
+            "grant_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "payroll_payout_batch_unfreezes_dispute_key": {
+          "name": "payroll_payout_batch_unfreezes_dispute_key",
+          "nullsNotDistinct": false,
+          "columns": [
+            "tenant_id",
+            "dispute_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "payroll_payout_batch_unfreezes_role_check": {
+          "name": "payroll_payout_batch_unfreezes_role_check",
+          "value": "\"payroll_payout_batch_unfreezes\".\"role_template\" IN ('owner', 'finance')"
+        },
+        "payroll_payout_batch_unfreezes_reason_check": {
+          "name": "payroll_payout_batch_unfreezes_reason_check",
+          "value": "pg_catalog.char_length(pg_catalog.btrim(\"payroll_payout_batch_unfreezes\".\"reason\")) >= 10"
         }
       },
       "isRLSEnabled": false

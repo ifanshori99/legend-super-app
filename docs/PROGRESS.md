@@ -6782,3 +6782,10 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Bukti: gagal-dulu di base 30 test (6 edge-catalog-sync, 24 kds-scanner-status; sebab field hilang, 422 `scanner`, 404 route); hijau 118/118 pada dua berkas itu + 228 pada enam berkas terarah (edge-catalog-sync, kds-scanner-status, catalog-puller, edge-catalog-loop, data-import-registry, kds-station-config); typecheck api dan shared hijau; node --test tes kontrak root 863 hijau; prettier dan eslint 12 berkas hijau. Review architect high: 1 bug (protokol), 2 risiko, celah test, semua dibetulkan.
 - Belum: second-opinion Codex; shell perangkat yang benar-benar mengirim `scanner` (di luar repo ini); web masih memakai mock status pemindai (KDS_SCANNER_STATUS_AVAILABLE).
 - Subagent: total 15 (Explore 4, test-writer 2, implementer 3, architect 1, test-runner 5), puncak 2 bersamaan, token heavy dipegang test-runner. Antre heavy rata-rata 30 menit (typecheck).
+
+## 2026-11-16: Port 930 KDS stations ke m1 (legend-i78o6, legend-40nvj)
+
+- Cabang `ws/edge-kds-stations-r2` dari `origin/milestone/m1` `a8e6036ab`; empat commit sumber `df98632c7`, `c7deffb65`, `5b6145c1d`, `6e393095c` dipertahankan melalui cherry-pick. Tidak merge ke m1 atau mengubah cabang sumber.
+- Konflik catalog mengikuti m1: validasi cloud tetap strict, parser edge tetap kompatibel; recipe lintas brand v3 dan guard node m1 tetap dipakai. Field station KDS ikut v3; permintaan v2/tanpa versi tidak menerima field baru, sesuai sumber.
+- Migrasi sementara `0431_device_scanner_status`: hanya dua kolom nullable dan check pada tabel devices. Snapshot menyalin 0430 lalu menambah hanya kedua kolom/check; prevId mereferensikan id snapshot 0430, tanpa snapshot sumber 0371 yang usang.
+- Bukti sumber gagal-dulu 30 test tercatat di entri asli di atas. Pemeriksaan setelah commit port dilakukan oleh test-runner thread 930; hasil dicatat pada laporan handoff. Tidak ada aturan uang atau akses baru.

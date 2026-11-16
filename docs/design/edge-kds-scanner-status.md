@@ -29,7 +29,7 @@ agent), jadi perangkat yang melapor.
    juga mengirim satu heartbeat segera saat status pemindai berubah, supaya
    "terputus" tampil dalam hitungan detik, bukan menunggu siklus berikut.
 4. **Penyimpanan**: dua kolom nullable di `devices`: `scanner_status`
-   (`connected`/`disconnected`, CHECK) dan `scanner_observed_at`. Migrasi 0371.
+   (`connected`/`disconnected`, CHECK) dan `scanner_observed_at`. Migrasi 0431 (port sementara di atas milestone/m1 0430).
    Heartbeat tanpa field `scanner` tidak mengubah kedua kolom itu.
 5. **Pembaca**: `GET /api/outlets/:outletId/kitchen/scanner-status` (kontrak yang
    sudah diharapkan web), izin `kds.station.manage` atau izin baca KDS yang sudah
@@ -38,9 +38,9 @@ agent), jadi perangkat yang melapor.
    - ada perangkat dengan `scanner_status = connected` -> `connected`
    - ada perangkat hidup tetapi semuanya `disconnected` -> `disconnected`
    - tidak ada perangkat hidup yang pernah melapor pemindai -> `unknown`
-   Nilai `unknown` ditambahkan ke enum respons (web sudah memperlakukannya
-   begitu). Perangkat yang mati (heartbeat basi) tidak dihitung, jadi tablet
-   mati tidak membuat status "connected" palsu.
+     Nilai `unknown` ditambahkan ke enum respons (web sudah memperlakukannya
+     begitu). Perangkat yang mati (heartbeat basi) tidak dihitung, jadi tablet
+     mati tidak membuat status "connected" palsu.
 6. **Tidak ikut sinkron master data**: ini data ukur perangkat (seperti
    `last_seen_at`), bukan master data; tidak ada event edge baru.
 
