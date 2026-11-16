@@ -150,11 +150,10 @@ function hasActiveStaffLabel(): boolean {
 export const ACTING_STAFF_HELD_MESSAGE =
   "Kasir aktif sudah kedaluwarsa. Masukkan PIN lagi.";
 
-// POS calls only: /api/outlets/<id>/pos..., /api/pos-overrides... and
-// /api/pos/orders/<id>/customer. Every other path keeps the session owner as
-// the actor.
+// Cashier calls: POS, floor/table management and kitchen routes. Table sessions
+// include guest QR calls, so only their staff actions carry the cashier token.
 const POS_PATH =
-  /^\/api\/(?:outlets\/[^/]+\/pos(?:\/|$)|pos-overrides(?:\/|$)|pos\/orders\/[^/]+\/customer\/?$)/;
+  /^\/api\/(?:outlets\/[^/]+\/(?:pos|kitchen)(?:\/|$)|(?:floor|tables|table-links|pos-overrides)(?:\/|$)|table-sessions\/[^/]+\/(?:confirm|close|move|merge|move-items|open-bill)\/?$|pos\/orders\/[^/]+\/customer\/?$)/;
 
 /**
  * Headers for a `method` call to `path`. Returns null when the call must be

@@ -28,6 +28,8 @@ export const tenantSettingsMessages = {
     forbidden: "Akun Anda tidak berhak mengubah pengaturan ini.",
     notFound: "Data tidak ditemukan. Muat ulang halaman lalu coba lagi.",
     conflict: "Data sudah berubah di tempat lain. Muat ulang lalu coba lagi.",
+    whatsappNumberTaken:
+      "Nomor WhatsApp ini sudah dipakai tenant lain. Gunakan nomor lain.",
     invalid: "Isian belum benar. Periksa kolom yang ditandai.",
     themeContrast:
       "Kontras tema di bawah WCAG 2.2 AA, jadi tema tidak dapat disimpan. Ubah warna lalu coba lagi.",
