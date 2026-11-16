@@ -6861,3 +6861,5 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 - Targeted `LEGEND_TEST_FILES=tests/db-role-provisioning.test.mjs heavy pnpm test` exit0 dalam135,0 detik:60 lulus/1 skip/0 gagal, termasuk Compose in-image checker yang gagal karena mount. Tidak mengubah kode atau assertion. Full1 dilanjutkan dengan manifest `/tmp/batch79-full-resume-files.txt`1356 berkas unik:3 web +1353 API, include cocok dengan konfigurasi Vitest; root hijau tidak diulang. Log `/tmp/batch79-full-resume.log`.
 
 - Full resume checkpoint: seluruh web3 berkas/92 test hijau; API1953 test lulus teramati pada37/1353 berkas, tanpa gagal. Pemeriksaan KDS no-write untuk transisi tidak sah, pembatasan QRIS lintas tagihan, isolasi roster dan properti jurnal payroll2500 variasi ikut hijau. Full masih aktif dan tidak ada perubahan kode.
+
+- Full resume checkpoint: API4326 test lulus teramati pada133/1353 berkas, tanpa gagal; web92/92 tetap hijau. Retry alarm edge, rekonsiliasi serentak satu event, faktur pemasok replay dan isolasi tenant ikut lewat. Tidak ada run penuh kedua atau perubahan kode.
