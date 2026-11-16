@@ -1,7 +1,7 @@
 -- legend-l2zru (918), file 2 of 2: a frozen batch refuses every payout step.
 -- File 1 (0660) made app.payout_batch_assert_open(tenant, batch): it returns
 -- when the batch is NULL or has no open dispute, and it raises PAYOUT-79 (batch
--- frozen) after taking FOR KEY SHARE on the batch row, so it serialises with the
+-- frozen) after taking FOR UPDATE on the batch row, so it serialises with the
 -- disown function (FOR UPDATE). This file calls it from every place a payout
 -- step can happen. The row triggers call the lock-free twin
 -- app.payout_batch_assert_open_nolock (they already hold a row, and the project
@@ -126,6 +126,67 @@ CREATE TRIGGER payroll_payout_gl_postings_freeze_trg
 CREATE TRIGGER payroll_payout_gl_postings_freeze_upd_trg
   BEFORE UPDATE ON public.payroll_payout_gl_postings
   FOR EACH ROW EXECUTE FUNCTION app.payroll_payout_gl_postings_freeze_guard();
+--> statement-breakpoint
+-- ---------------------------------------------------------------------------
+-- app.payroll_runs_payout_guard (0657 body; the migrator owns it, as in 0344,
+-- so it is replaced before the payout role is assumed). New: a run cannot be
+-- reversed while any batch of it is frozen (PAYOUT-79, the lock-free check, so
+-- the trigger takes no batch lock). A failed or returned item does not stop the
+-- reversal on its own; a "not me" claim on one of its payments must be cleared
+-- first, or the reversal would free the period under an open dispute.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION app.payroll_runs_payout_guard() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+DECLARE
+  v_batch uuid;
+BEGIN
+  IF NEW.status = 'reversed' THEN
+    IF EXISTS (
+      SELECT 1 FROM public.payroll_disbursement_batches b
+        WHERE b.tenant_id = NEW.tenant_id AND b.payroll_run_id = NEW.id
+          AND b.status NOT IN ('completed', 'partially_failed', 'cancelled')
+    ) OR EXISTS (
+      SELECT 1 FROM public.payroll_disbursement_items i
+        WHERE i.tenant_id = NEW.tenant_id AND i.payroll_run_id = NEW.id
+          AND i.status IN ('sending', 'exported', 'unknown', 'succeeded')
+    ) THEN
+      RAISE EXCEPTION 'PAYOUT-21: payroll run % has a payout in progress or paid items and cannot be reversed', NEW.id
+        USING ERRCODE = '23514';
+    END IF;
+    FOR v_batch IN
+      SELECT b.id FROM public.payroll_disbursement_batches b
+       WHERE b.tenant_id = NEW.tenant_id AND b.payroll_run_id = NEW.id
+       ORDER BY b.id
+    LOOP
+      PERFORM app.payout_batch_assert_open_nolock(NEW.tenant_id, v_batch);
+    END LOOP;
+  ELSIF NEW.status = 'paid' THEN
+    IF current_user IS DISTINCT FROM 'legend_payout' AND EXISTS (
+      SELECT 1 FROM public.payroll_disbursement_batches b
+        WHERE b.tenant_id = NEW.tenant_id AND b.payroll_run_id = NEW.id
+          AND b.status <> 'cancelled'
+    ) THEN
+      RAISE EXCEPTION 'PAYOUT-22: payroll run % has disbursement batches and becomes paid only when its items are paid', NEW.id
+        USING ERRCODE = '23514';
+    END IF;
+    -- L3: even the payout settle code cannot mark a run paid while a payment
+    -- of it is still open. (That every net pay slip has a succeeded item is not
+    -- checkable here: the net amount is sealed; the settle code checks it.)
+    IF EXISTS (
+      SELECT 1 FROM public.payroll_disbursement_batches b
+        WHERE b.tenant_id = NEW.tenant_id AND b.payroll_run_id = NEW.id
+          AND b.status IN ('pending_approval', 'approved', 'sending', 'exported')
+    ) OR EXISTS (
+      SELECT 1 FROM public.payroll_disbursement_items i
+        WHERE i.tenant_id = NEW.tenant_id AND i.payroll_run_id = NEW.id
+          AND i.status IN ('approved', 'sending', 'exported', 'unknown')
+    ) THEN
+      RAISE EXCEPTION 'PAYOUT-23: payroll run % has a payout that is still open and cannot become paid', NEW.id
+        USING ERRCODE = '23514';
+    END IF;
+  END IF;
+  RETURN NEW;
+END $$;
 --> statement-breakpoint
 GRANT legend_payout TO CURRENT_USER WITH INHERIT FALSE, SET TRUE;
 --> statement-breakpoint

@@ -47,6 +47,10 @@ import { db } from "../db";
 import { withTenant } from "../db/tenant.ts";
 import { openPayrollValue } from "../lib/payroll-sealed.ts";
 import { EVENT_DESTINATION } from "./payment-support.ts";
+import {
+  disputeFreezesBatchSql,
+  disputeIsOpenSql,
+} from "./payroll-payout-freeze-sql.ts";
 
 type Row = Record<string, unknown>;
 const rowsOf = (result: unknown): Row[] =>
@@ -760,9 +764,11 @@ async function payoutReconFlags(
 
 /**
  * Payout batches frozen by a "not me" dispute (legend-l2zru), standing until
- * the unfreeze rows cover every dispute. One row per frozen batch; `detail` is
- * the batch status when it was first disputed, so finance knows to check the
- * bank for a batch that was already exported, sending or completed.
+ * the unfreeze rows cover every dispute. One row per frozen batch, a batch that
+ * shares a payslip with a disputed batch included (the same rule as
+ * `app.payout_batch_frozen`); `detail` is the batch status when it was first
+ * disputed, so finance knows to check the bank for a batch that was already
+ * exported, sending or completed.
  */
 async function payoutBatchDisputed(
   tx: Executor,
@@ -770,16 +776,17 @@ async function payoutBatchDisputed(
 ): Promise<Collected> {
   const rows = rowsOf(
     await tx.execute(
-      sql`SELECT d.batch_id::text AS ref_id,
+      sql`SELECT b.id::text AS ref_id,
                  (array_agg(d.batch_status_at ORDER BY d.created_at, d.id))[1] AS detail,
                  min(d.created_at) AS occurred_at
-            FROM payroll_payout_batch_disputes d
-           WHERE d.tenant_id = ${scope.tenantId}::uuid
-             AND NOT EXISTS (
-               SELECT 1 FROM payroll_payout_batch_unfreezes u
-                WHERE u.tenant_id = d.tenant_id AND u.dispute_id = d.id)
-           GROUP BY d.batch_id
-           ORDER BY min(d.created_at) DESC, d.batch_id DESC`,
+            FROM payroll_disbursement_batches b
+            JOIN payroll_payout_batch_disputes d
+              ON d.tenant_id = b.tenant_id
+             AND ${disputeIsOpenSql}
+             AND ${disputeFreezesBatchSql(sql`b.id`)}
+           WHERE b.tenant_id = ${scope.tenantId}::uuid
+           GROUP BY b.id
+           ORDER BY min(d.created_at) DESC, b.id DESC`,
     ),
   );
   const items = rows.map((row) =>

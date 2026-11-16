@@ -10,9 +10,12 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  assertBatchNotFrozen,
   createDisbursementBatch,
+  getDisbursementBatch,
   submitDisbursementBatch,
 } from "../services/payroll-payout.service.ts";
+import { requestPayrollRunReversalInTransaction } from "../services/payroll-run-reversal.service.ts";
 import {
   actorOf,
   APP,
@@ -345,7 +348,9 @@ describe("918 review P1: a retry batch of a disputed payslip is frozen too", () 
       () => "",
       (error: unknown) => messageChain(error),
     );
-    expect(submit, "C cannot be submitted").toMatch(/PAYOUT-79:/);
+    // The service now asks the sibling-aware freeze first (friendly 409
+    // PAYOUT_BATCH_FROZEN); the database says PAYOUT-79 for the same step.
+    expect(submit, "C cannot be submitted").toMatch(/PAYOUT-79:|dibekukan/);
 
     const released = await unfreeze(
       outsideFinance.userId,
@@ -474,5 +479,130 @@ describe("918 review P3: postings", () => {
     const frozen = await touch();
     expect(frozen.code, "frozen: refused").toBeDefined();
     expect(frozen.message).toMatch(/PAYOUT-79:/);
+  });
+});
+
+// =========================================================================
+// Round 2: the reversal of a run, the "took no part" rule, and one answer for
+// every reader of the freeze
+// =========================================================================
+
+/** A draft retry batch of the run of `w`, made by `by` (the sibling of w's batch). */
+async function retryBatch(w: World, by: string): Promise<string> {
+  await W.inTx((tx) =>
+    createDisbursementBatch(tx, actorOf(by), {
+      payrollRunId: w.runId,
+      channel: "manual_bank",
+    } as never),
+  );
+  const [row] = await W.rowsOf(
+    `SELECT id FROM payroll_disbursement_batches
+      WHERE tenant_id = $1 AND payroll_run_id = $2 AND id <> $3 ORDER BY created_at DESC LIMIT 1`,
+    [W.tenantId, w.runId, w.batchId],
+  );
+  const id = row!.id as string;
+  batchIds.push(id);
+  return id;
+}
+
+describe("918 review round 2", () => {
+  it("[918r-run-reversal-frozen] a run with a frozen batch cannot be reversed (SQL PAYOUT-79, service 409 PAYOUT_BATCH_FROZEN); a run with a free batch can be asked", async () => {
+    const locker = await makePerson("Locker");
+    await W.grantRole(locker.userId, [
+      "payroll.lock",
+      "payroll.cancel.approve",
+    ]);
+    const request = (runId: string) =>
+      W.inTx((tx) =>
+        requestPayrollRunReversalInTransaction(
+          tx,
+          W.scope(),
+          locker.userId,
+          runId as never,
+          "Uji pembalikan payroll dengan batch beku",
+        ),
+      );
+    const reversal = JSON.stringify({
+      status: "approved",
+      reason: "Uji langsung lewat SQL",
+      requestedBy: "req-user",
+      requestedAt: "2041-11-30T00:00:00.000Z",
+      decidedBy: "dec-user",
+      decidedAt: "2041-11-30T00:01:00.000Z",
+    });
+    const reverse = (runId: string) =>
+      probe(
+        `UPDATE payroll_runs SET status = 'reversed', reversal = $3::jsonb WHERE tenant_id = $1 AND id = $2`,
+        [W.tenantId, runId, reversal],
+      );
+
+    const free = await failedWorld();
+    await expect(request(free.runId), "control: asked").resolves.toBeTruthy();
+
+    const frozen = await failedWorld();
+    await disown(
+      a.userId,
+      frozen.batchId,
+      await logOf(frozen.batchId, a.userId),
+    );
+    const sql = await reverse(frozen.runId);
+    expect(sql.code, "SQL: refused").toBeDefined();
+    expect(sql.message).toMatch(/PAYOUT-79:/);
+    const error: unknown = await request(frozen.runId).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(error, "service: refused").not.toBeNull();
+    expect(error).toMatchObject({
+      status: 409,
+      code: "PAYOUT_BATCH_FROZEN",
+    });
+  });
+
+  it("[918r-unfreeze-sibling-participant] a person who requested the retry batch of the same payslip cannot unfreeze the disputed batch; an outsider can", async () => {
+    const sibling = await makePerson("Sibling requester", "finance");
+    const w = await failedWorld();
+    await retryBatch(w, sibling.userId);
+    await disown(a.userId, w.batchId, await logOf(w.batchId, a.userId));
+
+    const refused = await unfreeze(
+      sibling.userId,
+      sessionOf(sibling.userId),
+      w.batchId,
+    );
+    if (refused.outcome) {
+      expect(refused.outcome.code, "must be refused").toBeDefined();
+      expect(refused.outcome.message).toMatch(/PAYOUT-82:/);
+    } else expect(refused.message).toMatch(/PAYOUT-8[0-9]:/);
+    expect(await openDisputes(w.batchId), "still frozen").toBe(1);
+
+    const ok = await unfreeze(
+      outsideFinance.userId,
+      sessionOf(outsideFinance.userId),
+      w.batchId,
+    );
+    expect(ok.outcome?.code, ok.message).toBe(undefined);
+    expect(await openDisputes(w.batchId)).toBe(0);
+  });
+
+  it("[918r-freeze-one-answer] the retry batch shows as frozen to the service and the batch DTO, with the claim that freezes it", async () => {
+    const w = await failedWorld();
+    const cId = await retryBatch(w, APP);
+    await W.inTx((tx) => assertBatchNotFrozen(tx, W.tenantId, cId));
+    await disown(a.userId, w.batchId, await logOf(w.batchId, a.userId));
+
+    const error: unknown = await W.inTx((tx) =>
+      assertBatchNotFrozen(tx, W.tenantId, cId),
+    ).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(error).toMatchObject({ status: 409, code: "PAYOUT_BATCH_FROZEN" });
+    const dto = await W.inTx((tx) =>
+      getDisbursementBatch(tx, W.tenantId, cId, a.userId),
+    );
+    expect(dto.freeze.frozen, "frozen through its sibling").toBe(true);
+    expect(dto.freeze.disputes).toHaveLength(1);
+    expect(dto.freeze.disputes[0]!.mine).toBe(true);
   });
 });

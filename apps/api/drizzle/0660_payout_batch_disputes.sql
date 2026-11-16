@@ -242,6 +242,10 @@ BEGIN
   IF p_batch IS NULL THEN
     RETURN;
   END IF;
+  IF p_tenant IS DISTINCT FROM app.require_tenant_id() THEN
+    RAISE EXCEPTION 'PAYOUT-79: the tenant is not the tenant in force'
+      USING ERRCODE = '42501';
+  END IF;
   PERFORM 1
     FROM public.payroll_disbursement_batches b
    WHERE b.tenant_id = p_tenant AND b.id = p_batch
@@ -262,6 +266,10 @@ LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
 BEGIN
   IF p_batch IS NULL THEN
     RETURN;
+  END IF;
+  IF p_tenant IS DISTINCT FROM app.require_tenant_id() THEN
+    RAISE EXCEPTION 'PAYOUT-79: the tenant is not the tenant in force'
+      USING ERRCODE = '42501';
   END IF;
   IF app.payout_batch_frozen(p_tenant, p_batch) THEN
     RAISE EXCEPTION 'PAYOUT-79: the payout batch is frozen, a dispute on it is open'
@@ -457,7 +465,8 @@ GRANT EXECUTE ON FUNCTION app.payout_approval_disown(uuid, text, text) TO legend
 -- enough. The approver must hold an active tenant-scope owner or finance role
 -- and must have taken no part in the batch: not its requester, approver or
 -- exporter, not a confirmer or resolver of any item, not the actor of any log
--- row. One exception: the approver is the disputant of every open dispute (a
+-- row (and the same for every batch that shares a payslip with it, such as a
+-- retry batch). One exception: the approver is the disputant of every open dispute (a
 -- person withdrawing their own claim). The reason is the finance check result.
 -- ---------------------------------------------------------------------------
 CREATE FUNCTION app.payout_batch_unfreeze(p_batch uuid, p_grant text, p_reason text)
@@ -522,22 +531,43 @@ BEGIN
     RAISE EXCEPTION 'PAYOUT-82: the payout batch has no open dispute'
       USING ERRCODE = '23514';
   END IF;
-  v_involved := COALESCE(
-       v_batch.requested_by = v_actor OR v_batch.approved_by = v_actor
-       OR v_batch.exported_by = v_actor, false)
-    OR EXISTS (
+  -- "Took part" covers every batch that shares a payslip with this one (the
+  -- retry batch of the same pay, made before or after the claim), not only
+  -- this batch: the person who asked for or approved the sibling batch moved
+  -- the same pay.
+  v_involved := EXISTS (
+      WITH related AS (
+        SELECT p_batch AS batch_id
+        UNION
+        SELECT sibling.batch_id
+          FROM public.payroll_disbursement_items mine
+          JOIN public.payroll_disbursement_items sibling
+            ON sibling.tenant_id = mine.tenant_id
+           AND sibling.payslip_id = mine.payslip_id
+         WHERE mine.tenant_id = v_tenant AND mine.batch_id = p_batch
+      )
+      SELECT 1 FROM public.payroll_disbursement_batches rb
+        JOIN related r ON r.batch_id = rb.id
+       WHERE rb.tenant_id = v_tenant
+         AND (rb.requested_by = v_actor OR rb.approved_by = v_actor
+              OR rb.exported_by = v_actor)
+      UNION ALL
       SELECT 1 FROM public.payroll_disbursement_items i
-       WHERE i.tenant_id = v_tenant AND i.batch_id = p_batch
+        JOIN related r ON r.batch_id = i.batch_id
+       WHERE i.tenant_id = v_tenant
          AND (i.confirmed_by = v_actor OR i.resolved_by = v_actor
               OR i.resolved_by_2 = v_actor OR i.returned_by = v_actor
-              OR i.returned_by_2 = v_actor))
-    OR EXISTS (
+              OR i.returned_by_2 = v_actor)
+      UNION ALL
       SELECT 1 FROM public.payroll_payout_approval_log l
-       WHERE l.tenant_id = v_tenant AND l.batch_id = p_batch AND l.actor = v_actor)
-    OR EXISTS (
+        JOIN related r ON r.batch_id = l.batch_id
+       WHERE l.tenant_id = v_tenant AND l.actor = v_actor
+      UNION ALL
       -- Steps attested before the approval log existed (0659).
-      SELECT 1 FROM public.payroll_payout_attestations a
-       WHERE a.tenant_id = v_tenant AND a.batch_id = p_batch AND a.actor = v_actor);
+      SELECT 1 FROM public.payroll_payout_attestations att
+        JOIN related r ON r.batch_id = att.batch_id
+       WHERE att.tenant_id = v_tenant AND att.actor = v_actor
+  );
   IF v_involved AND v_mine <> v_open THEN
     RAISE EXCEPTION 'PAYOUT-82: a person who took part in this batch cannot unfreeze it'
       USING ERRCODE = '42501';

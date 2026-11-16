@@ -48,8 +48,6 @@ import type {
 import {
   payrollDisbursementBatches,
   payrollDisbursementItems,
-  payrollPayoutBatchDisputes,
-  payrollPayoutBatchUnfreezes,
   payrollPayoutConfigs,
   PAYOUT_LIVE_ITEM_STATUSES,
   type PayoutChannel,
@@ -666,45 +664,73 @@ export async function assertManualConfigEnabled(
 
 // ------------------------------------------------------------------- freeze
 
-/** Open dispute = a dispute row with no unfreeze row (migration 0660). */
-const openDisputeWhere = (tenantId: string) =>
-  and(
-    eq(payrollPayoutBatchDisputes.tenantId, asTenant(tenantId)),
-    sql`NOT EXISTS (
-      SELECT 1 FROM ${payrollPayoutBatchUnfreezes} u
-       WHERE u.tenant_id = ${payrollPayoutBatchDisputes.tenantId}
-         AND u.dispute_id = ${payrollPayoutBatchDisputes.id})`,
-  );
+/**
+ * Open disputes that freeze `batchIds`, one row per (batch, dispute): the
+ * dispute of the batch itself, or of any batch sharing a payslip with it (a
+ * retry batch of the same pay). Same rule as `app.payout_batch_frozen`
+ * (migration 0660). Open dispute = a dispute row with no unfreeze row.
+ */
+async function openFreezingDisputes(
+  tx: Tx,
+  tenantId: string,
+  batchIds: readonly string[],
+) {
+  const ids = batchIds.filter((id) => UUID_FORMAT.test(id));
+  if (ids.length === 0) return [];
+  const result = await tx.execute(sql`
+    SELECT t.batch_id::text AS target_batch_id, d.id::text AS id,
+           d.log_id::text AS log_id, d.actor AS actor, d.reason AS reason,
+           d.batch_status_at AS batch_status_at, d.created_at AS created_at
+      FROM unnest(${`{${ids.join(",")}}`}::uuid[]) AS t(batch_id)
+      JOIN payroll_payout_batch_disputes d
+        ON d.tenant_id = ${tenantId}::uuid
+       AND NOT EXISTS (
+         SELECT 1 FROM payroll_payout_batch_unfreezes u
+          WHERE u.tenant_id = d.tenant_id AND u.dispute_id = d.id)
+       AND (d.batch_id = t.batch_id
+         OR EXISTS (
+           SELECT 1
+             FROM payroll_disbursement_items mine
+             JOIN payroll_disbursement_items sibling
+               ON sibling.tenant_id = mine.tenant_id
+              AND sibling.payslip_id = mine.payslip_id
+            WHERE mine.tenant_id = d.tenant_id AND mine.batch_id = t.batch_id
+              AND sibling.batch_id = d.batch_id))
+     ORDER BY d.created_at, d.id`);
+  return (
+    result.rows as {
+      target_batch_id: string;
+      id: string;
+      log_id: string;
+      actor: string;
+      reason: string;
+      batch_status_at: string;
+      created_at: Date | string;
+    }[]
+  ).map((row) => ({ ...row, created_at: new Date(row.created_at) }));
+}
 
 /**
  * Friendly early refusal for a frozen batch (409 PAYOUT_BATCH_FROZEN), checked
  * before a grant is issued. The database refuses the same step with PAYOUT-79
- * (`payoutGuardViolation` answers it alike), so this is not the net.
+ * (`payoutGuardViolation` answers it alike), so this is not the net. A batch
+ * that shares a payslip with a disputed batch is frozen too.
  */
 export async function assertBatchNotFrozen(
   tx: Tx,
   tenantId: string,
   batchId: string,
 ): Promise<void> {
-  if (!UUID_FORMAT.test(batchId)) return;
-  const [open] = await tx
-    .select({ id: payrollPayoutBatchDisputes.id })
-    .from(payrollPayoutBatchDisputes)
-    .where(
-      and(
-        openDisputeWhere(tenantId),
-        eq(payrollPayoutBatchDisputes.batchId, batchId),
-      ),
-    )
-    .limit(1);
-  if (open) throw batchFrozen();
+  const open = await openFreezingDisputes(tx, tenantId, [batchId]);
+  if (open.length > 0) throw batchFrozen();
 }
 
 const NOT_FROZEN: PayoutBatchFreezeDto = { frozen: false, disputes: [] };
 
 /**
- * Freeze state of many batches in one query: open disputes only. `viewerId`
- * marks the claims the caller filed (`mine`); nobody else's identity is read.
+ * Freeze state of many batches in one query: open disputes only, including
+ * those that freeze a batch through a sibling. `viewerId` marks the claims the
+ * caller filed (`mine`); nobody else's identity is read.
  */
 export async function loadBatchFreezes(
   tx: Tx,
@@ -714,38 +740,22 @@ export async function loadBatchFreezes(
 ): Promise<Map<string, PayoutBatchFreezeDto>> {
   const out = new Map<string, PayoutBatchFreezeDto>();
   if (batchIds.length === 0) return out;
-  const rows = await tx
-    .select({
-      id: payrollPayoutBatchDisputes.id,
-      batchId: payrollPayoutBatchDisputes.batchId,
-      logId: payrollPayoutBatchDisputes.logId,
-      actor: payrollPayoutBatchDisputes.actor,
-      reason: payrollPayoutBatchDisputes.reason,
-      batchStatusAt: payrollPayoutBatchDisputes.batchStatusAt,
-      createdAt: payrollPayoutBatchDisputes.createdAt,
-    })
-    .from(payrollPayoutBatchDisputes)
-    .where(
-      and(
-        openDisputeWhere(tenantId),
-        inArray(payrollPayoutBatchDisputes.batchId, [...batchIds]),
-      ),
-    )
-    .orderBy(
-      asc(payrollPayoutBatchDisputes.createdAt),
-      asc(payrollPayoutBatchDisputes.id),
-    );
+  const rows = await openFreezingDisputes(tx, tenantId, batchIds);
   for (const row of rows) {
-    const freeze = out.get(row.batchId) ?? { frozen: true, disputes: [] };
+    const freeze = out.get(row.target_batch_id) ?? {
+      frozen: true,
+      disputes: [],
+    };
     freeze.disputes.push({
       id: row.id,
-      logId: row.logId,
-      createdAt: row.createdAt.toISOString(),
-      batchStatusAt: row.batchStatusAt,
+      logId: row.log_id,
+      createdAt: row.created_at.toISOString(),
+      batchStatusAt:
+        row.batch_status_at as PayoutBatchFreezeDto["disputes"][number]["batchStatusAt"],
       reason: row.reason,
       mine: viewerId !== undefined && row.actor === viewerId,
     });
-    out.set(row.batchId, freeze);
+    out.set(row.target_batch_id, freeze);
   }
   return out;
 }

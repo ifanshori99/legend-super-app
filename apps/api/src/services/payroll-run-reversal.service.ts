@@ -19,7 +19,7 @@
 // line) from the same employee: the collection would be left without its
 // receivable. The collecting run has to be reversed first.
 
-import { and, eq, inArray, ne, notInArray } from "drizzle-orm";
+import { and, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
 import {
   createUlid,
   type ScopedTenantContext,
@@ -54,6 +54,10 @@ import { recordAudit } from "./core-audit.ts";
 import type { Tx } from "./hris-access.ts";
 import { assertPayrollTenantCan } from "./payroll-access.ts";
 import { emitPayrollEvent } from "./payroll-events.ts";
+import {
+  disputeFreezesBatchSql,
+  disputeIsOpenSql,
+} from "./payroll-payout-freeze-sql.ts";
 import {
   lockPayrollRunMonth,
   lockPph21ReceivableScope,
@@ -219,8 +223,10 @@ async function assertNoBankFile(
 /**
  * A disbursement batch in progress, or any item that is on its way or paid,
  * means money may have left: freeing the period would let a rerun pay the same
- * people twice (legend-wnkep.1 R11). The database trigger
- * `payroll_runs_payout_guard_trg` is the net; this gives the clear message.
+ * people twice (legend-wnkep.1 R11). A batch frozen by a "not me" claim
+ * (legend-l2zru) also blocks it, even when all its items failed: the claim must
+ * be cleared first. The database trigger `payroll_runs_payout_guard_trg` is the
+ * net; this gives the clear message.
  */
 async function assertNoPayoutBatch(
   tx: Tx,
@@ -258,6 +264,21 @@ async function assertNoPayoutBatch(
       ),
     )
     .limit(1);
+  const frozen = await tx.execute(sql`
+    SELECT b.id FROM payroll_disbursement_batches b
+     WHERE b.tenant_id = ${tenantId}::uuid AND b.payroll_run_id = ${runId}::uuid
+       AND EXISTS (
+         SELECT 1 FROM payroll_payout_batch_disputes d
+          WHERE d.tenant_id = b.tenant_id
+            AND ${disputeIsOpenSql}
+            AND ${disputeFreezesBatchSql(sql`b.id`)})
+     LIMIT 1`);
+  if (frozen.rows.length > 0)
+    throw new HttpError(
+      409,
+      "PAYOUT_BATCH_FROZEN",
+      'Batch pembayaran payroll ini dibekukan karena ada pengakuan "bukan saya". Finance perlu memeriksanya dan membuka pembekuan.',
+    );
   if (openBatch || movedItem)
     throw new HttpError(
       409,

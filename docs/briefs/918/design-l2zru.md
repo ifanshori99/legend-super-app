@@ -51,7 +51,7 @@ Batch dianggap beku bila ada baris sengketa yang belum punya baris pembukaan.
 
 ## Satu helper dan daftar penolakan
 
-**Helper:** `app.payout_batch_assert_open(p_tenant, p_batch)`. Bila batch NULL langsung lolos. Mengambil kunci `FOR KEY SHARE` pada batch (bentrok dengan FOR UPDATE milik disown), lalu menolak dengan PAYOUT-79 bila ada sengketa terbuka. EXECUTE untuk `legend_app` dan `legend_payout`.
+**Helper:** `app.payout_batch_assert_open(p_tenant, p_batch)`. Bila batch NULL langsung lolos. Mengambil kunci `FOR UPDATE` pada batch (serial dengan disown; bukan KEY SHARE, supaya langkah yang kemudian mengunci baris itu FOR UPDATE tidak menunggu dirinya sendiri), lalu menolak dengan PAYOUT-79 bila ada sengketa terbuka. EXECUTE untuk `legend_app` dan `legend_payout`.
 
 **Dipanggil di:**
 1. `payout_grant_consume` (0653), di semua kind kecuali disown/unfreeze. Ini menolak di awal.

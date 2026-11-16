@@ -112,6 +112,7 @@ import {
   type ItemRow,
   type PayoutActor as Actor,
 } from "./payroll-payout.service.ts";
+import { batchIsNotFrozenSql } from "./payroll-payout-freeze-sql.ts";
 import {
   PAYOUT_BANK_CHARGES_MAPPING_MISSING,
   PAYOUT_SOURCE_ACCOUNT_MISSING,
@@ -2065,15 +2066,10 @@ export async function listRecoveryBatchIds(
           cursor === null
             ? undefined
             : sql`${payrollPayoutGlPostings.batchId} > ${cursor}::uuid`,
-          // A frozen batch (an open "not me" dispute, legend-l2zru) is for a
-          // person to clear: the sweep neither retries nor lists it.
-          sql`NOT EXISTS (
-            SELECT 1 FROM payroll_payout_batch_disputes d
-             WHERE d.tenant_id = ${scoped}::uuid
-               AND d.batch_id = ${payrollPayoutGlPostings.batchId}
-               AND NOT EXISTS (
-                 SELECT 1 FROM payroll_payout_batch_unfreezes u
-                  WHERE u.tenant_id = d.tenant_id AND u.dispute_id = d.id))`,
+          // A frozen batch (an open "not me" dispute on it or on a batch of
+          // the same payslips, legend-l2zru) is for a person to clear: the
+          // sweep neither retries nor lists it.
+          batchIsNotFrozenSql(scoped, sql`${payrollPayoutGlPostings.batchId}`),
         ),
       )
       .orderBy(asc(payrollPayoutGlPostings.batchId))
