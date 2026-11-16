@@ -121,7 +121,7 @@ describe("print supervisor alert wiring", () => {
     },
   );
 
-  it("does not queue recovery or KDS alerts as printer failures", async () => {
+  it("does not queue recovery or successful fallback alerts as failures", async () => {
     const enqueue = vi
       .spyOn(queue, "enqueueEdgeEvent")
       .mockResolvedValue({ linkSeq: 1, duplicate: false });
@@ -132,7 +132,6 @@ describe("print supervisor alert wiring", () => {
     );
     for (const kind of [
       "printer_online",
-      "kds_down",
       "kds_up",
       "fallback_printed",
     ] as const) {

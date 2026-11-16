@@ -124,6 +124,7 @@ import {
 } from "./permission-resolver.ts";
 import { revokeActingStaffForDevice } from "./pos-acting-staff-revoke.ts";
 import { POS_OVERRIDE_SOURCE_MODULE } from "./staff-override.service.ts";
+import { enqueueClosedShiftReport } from "./pos-shift-print.ts";
 
 export type { ShiftCaller } from "./pos-shift-support.ts";
 
@@ -1289,6 +1290,8 @@ export async function closePosShift(
           "Kunci idempotensi sudah dipakai untuk permintaan lain.",
         );
       // The closer is the shift's cashier: blind replay (legend-4wrfd).
+      // Recover a missed print enqueue using the original deterministic key.
+      await enqueueClosedShiftReport(tx, context, shift, caller.userId);
       return shiftDto(shift, undefined, { blind: true });
     }
     // legend-yhia9 D-01: a QR this cashier issued can still be paid, so the
@@ -1571,6 +1574,7 @@ async function writeClose(
     },
     now,
   );
+  await enqueueClosedShiftReport(tx, context, row, caller.userId);
   return dto;
 }
 
@@ -1625,6 +1629,7 @@ export async function forceClosePosShift(
           "IDEMPOTENCY_KEY_REUSED",
           "Kunci idempotensi sudah dipakai untuk permintaan lain.",
         );
+      await enqueueClosedShiftReport(tx, context, shift, caller.userId);
       return shiftDto(shift);
     }
     // The witness is a third person.

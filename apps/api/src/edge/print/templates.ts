@@ -2,6 +2,7 @@
 // "Print Agent", §3 F12 "Fallback Cetak"): customer receipt, KDS station
 // ticket and shift closing report. Pure: the same input always yields the
 // same bytes. Every template starts with init and ends with feed + cut.
+import { messagesId } from "@starter/shared/i18n";
 import {
   EscPosBuilder,
   formatDateTime,
@@ -64,6 +65,13 @@ export function renderReceipt(
   width: PaperWidth,
 ): Uint8Array {
   const b = new EscPosBuilder().init();
+  if (data.status === "voided") {
+    b.align("center")
+      .bold(true)
+      .line(messagesId.deviceRegistry.receiptPrintLabels.voided)
+      .bold(false)
+      .align("left");
+  }
   if (data.trainingMode) {
     b.align("center").bold(true);
     wrapped(b, TRAINING_BANNER, width);
@@ -100,6 +108,12 @@ export function renderReceipt(
     b.columns("Service", formatRupiah(data.serviceCharge), width);
   }
   if (data.tax) b.columns("Pajak", formatRupiah(data.tax), width);
+  if (data.rounding)
+    b.columns(
+      messagesId.deviceRegistry.receiptPrintLabels.rounding,
+      formatRupiah(data.rounding),
+      width,
+    );
   b.bold(true).columns("TOTAL", formatRupiah(data.total), width).bold(false);
 
   if (data.payments.length > 0) b.divider("-", width);

@@ -216,59 +216,75 @@ it.each(["queue unavailable", "transaction rollback"] as const)(
   },
 );
 
-it("sweeps only pending alerts in the agent tenant and outlet", async () => {
-  const localSubject = randomUUID();
-  const otherSubject = randomUUID();
-  const otherOutletContext = edgeNodeContext({
-    tenantId,
-    outletId: cafeLegendFixtures.outlets[1].id,
-  });
-  const unavailable = async () => {
-    throw new Error("outbound queue unavailable");
-  };
-  for (const [scope, subjectId] of [
-    [context, localSubject],
-    [otherOutletContext, otherSubject],
-  ] as const) {
-    await createDbPrintStore({ db, context: scope }).recordAlert(
-      {
-        kind: "printer_offline",
-        subjectId,
-        stationId: null,
-        detail: {},
-        occurredAt: new Date(),
-      },
-      unavailable,
-    );
-  }
-
-  const transport = new FakePrinterTransport();
-  const sweep = async (scope: typeof context) => {
-    const agent = createPrintAgent({
-      store: {
-        ...createDbPrintStore({ db, context: scope }),
-        listPrinters: async () => [],
-      },
-      transportFor: () => transport,
-      notify: createPrintAlertNotifier(scope, outletId, nodeId),
+it.each(["printer_offline", "kds_down"] as const)(
+  "sweeps only pending %s alerts in the agent tenant and outlet",
+  async (kind) => {
+    const localSubject = randomUUID();
+    const otherSubject = randomUUID();
+    const otherOutletContext = edgeNodeContext({
+      tenantId,
+      outletId: cafeLegendFixtures.outlets[1].id,
     });
-    try {
-      await agent.tick();
-    } finally {
-      await agent.stop();
+    const unavailable = async () => {
+      throw new Error("outbound queue unavailable");
+    };
+    for (const [scope, subjectId] of [
+      [context, localSubject],
+      [otherOutletContext, otherSubject],
+    ] as const) {
+      await createDbPrintStore({ db, context: scope }).recordAlert(
+        {
+          kind,
+          subjectId,
+          stationId: null,
+          detail: {},
+          occurredAt: new Date(),
+        },
+        unavailable,
+      );
     }
-  };
 
-  await sweep(
-    edgeNodeContext({ tenantId: tenantIdSchema.parse(randomUUID()), outletId }),
-  );
-  expect((await readDelivery(localSubject)).events).toHaveLength(0);
-  expect((await readDelivery(otherSubject)).events).toHaveLength(0);
+    const transport = new FakePrinterTransport();
+    const sweep = async (scope: typeof context) => {
+      const agent = createPrintAgent({
+        store: {
+          ...createDbPrintStore({ db, context: scope }),
+          listPrinters: async () => [],
+        },
+        transportFor: () => transport,
+        notify: createPrintAlertNotifier(scope, outletId, nodeId),
+      });
+      try {
+        await agent.tick();
+      } finally {
+        await agent.stop();
+      }
+    };
 
-  await sweep(context);
-  expect((await readDelivery(localSubject)).events).toHaveLength(1);
-  const hidden = await readDelivery(otherSubject);
-  expect(hidden.alerts).toHaveLength(1);
-  expect(hidden.alerts[0]!.notification_enqueued_at).toBeNull();
-  expect(hidden.events).toHaveLength(0);
-});
+    await sweep(
+      edgeNodeContext({
+        tenantId: tenantIdSchema.parse(randomUUID()),
+        outletId,
+      }),
+    );
+    expect((await readDelivery(localSubject)).events).toHaveLength(0);
+    expect((await readDelivery(otherSubject)).events).toHaveLength(0);
+
+    await sweep(context);
+    const delivered = await readDelivery(localSubject);
+    expect(delivered.events).toHaveLength(1);
+    expect(delivered.alerts[0]!.notification_enqueued_at).toBeInstanceOf(Date);
+    expect(delivered.events[0]!.event).toMatchObject({
+      id: uuidToUlid(delivered.alerts[0]!.id),
+      aggregateId: uuidToUlid(delivered.alerts[0]!.id),
+      payload: { kind, subjectId: localSubject },
+    });
+    // A second agent instance reads the delivery marker from persistent state.
+    await sweep(context);
+    expect((await readDelivery(localSubject)).events).toHaveLength(1);
+    const hidden = await readDelivery(otherSubject);
+    expect(hidden.alerts).toHaveLength(1);
+    expect(hidden.alerts[0]!.notification_enqueued_at).toBeNull();
+    expect(hidden.events).toHaveLength(0);
+  },
+);

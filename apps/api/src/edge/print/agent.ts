@@ -467,7 +467,10 @@ export function createPrintAgent(options: PrintAgentOptions) {
     kickAll();
   }
 
-  async function enqueue(job: NewPrintJob): Promise<PrintJobRecord> {
+  async function enqueue(
+    job: NewPrintJob,
+    tx?: EdgeTx,
+  ): Promise<PrintJobRecord> {
     const printer = await store.getPrinter(job.printerId);
     if (!printer) {
       throw new CoreError("NOT_FOUND", "Printer tidak ditemukan.");
@@ -487,7 +490,11 @@ export function createPrintAgent(options: PrintAgentOptions) {
         };
       }
     }
-    const { job: record } = await store.enqueue(routed);
+    const { job: record } = await store.enqueue(routed, tx);
+    // A POS producer can persist its document and job in one transaction.
+    // The background loop only sees committed rows; never dispatch or reroute
+    // a job through another connection before that transaction commits.
+    if (tx) return record;
     // Race: the printer may have gone offline while the job was being saved,
     // after its offline reroute already ran. Move the job to the fallback.
     if (isDown(target) && target.fallbackPrinterId) {

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { CoreError } from "@starter/shared/core";
 import type { EventEnvelope } from "@starter/shared/events";
+import { messagesId } from "@starter/shared/i18n";
 import { notifyOutletSupervisors } from "../../services/edge-sync-conflict-alert.ts";
 import type { EdgeTx } from "../../services/edge-queue.service.ts";
 import {
@@ -11,7 +12,7 @@ import { assertEdgeEventScope } from "../deferred-event-applier.ts";
 import type { EdgeApplyMeta } from "../ports.ts";
 
 const payloadSchema = z.strictObject({
-  kind: z.enum(["printer_offline", "job_failed"]),
+  kind: z.enum(["printer_offline", "job_failed", "kds_down"]),
   subjectId: z
     .string()
     .regex(
@@ -34,6 +35,7 @@ export async function applyPrintAlertRaised(
     event.sequence !== 1
   )
     throw new CoreError("VALIDATION_ERROR", "Invalid print alert event");
+  const copy = messagesId.deviceRegistry.printAlerts[payload.data.kind];
   await notifyOutletSupervisors(
     tx,
     meta.context,
@@ -46,14 +48,8 @@ export async function applyPrintAlertRaised(
       aggregateType: event.aggregateType,
       aggregateId: event.aggregateId,
       payload: payload.data,
-      title:
-        payload.data.kind === "printer_offline"
-          ? "Printer tidak terhubung"
-          : "Cetak gagal",
-      body:
-        payload.data.kind === "printer_offline"
-          ? "Printer tidak terhubung. Periksa printer dan antrean cetak."
-          : "Tugas cetak gagal atau macet. Periksa printer dan hasil cetak sebelum mencoba lagi.",
+      title: copy.title,
+      body: copy.body,
     },
     new Date(event.occurredAt),
   );
