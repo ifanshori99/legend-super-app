@@ -32,9 +32,10 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { Express } from "express";
 import type { PoolClient } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   tenantIdSchema,
+  outletIdSchema,
   ulidToUuid,
   uuidToUlid,
   userIdSchema,
@@ -59,6 +60,14 @@ import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
+import {
+  getEdgeRuntimeState,
+  setEdgeRuntimeStateForTests,
+} from "../edge/runtime.ts";
+import { createPrintAgent } from "../edge/print/agent.ts";
+import * as printRuntime from "../edge/print/runtime.ts";
+import { createDbPrintStore } from "../edge/print/store.ts";
+import { FakePrinterTransport } from "../edge/print/transport.ts";
 import { signDeviceToken } from "../lib/device-token.ts";
 import { createDeviceOutletResolver } from "../services/device-outlet-resolver.ts";
 import { setDeviceOutletResolver } from "../services/device-pin.service.ts";
@@ -77,6 +86,7 @@ import {
 import { runPosReceiptEmailJob } from "../worker/pos-receipt-email.job.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import { seedEconomicDepositRefund } from "./dp-economic-refund-fixture.ts";
+import { issueReceiptDeliveries } from "../services/pos-receipt-delivery.service.ts";
 import {
   createIsolatedTenant,
   fixtures,
@@ -3085,3 +3095,77 @@ async function completedSaleAs(who: Member, outletId: string): Promise<string> {
   expect(completed.status, JSON.stringify(completed.body)).toBe(200);
   return orderId;
 }
+
+describe("legend-2lp.2 receipt delivery with the real edge queue", () => {
+  it("commits one receipt job with its delivery and prints the frozen sale once", async () => {
+    const outletId = outletIdSchema.parse(await freshOutlet());
+    const { orderId } = await completedSale(outletId);
+    const printerId = randomUUID();
+    await rows(
+      `INSERT INTO edge_printers
+         (id, tenant_id, outlet_id, label, role, transport, host, port, paper_width)
+       VALUES ($1, $2, $3, 'Receipt 928', 'receipt', 'network', '192.168.1.50', 9100, 48)
+       RETURNING id`,
+      [printerId, tenant.tenantId, outletId],
+    );
+    const context = establishScopedTenantContext(
+      tenantContext(tenant.tenantId).tenant,
+      { kind: "outlets", outletIds: [outletId] },
+    );
+    const store = createDbPrintStore({ db, context });
+    const transport = new FakePrinterTransport();
+    const printer = createPrintAgent({ store, transportFor: () => transport });
+    const originalRuntime = getEdgeRuntimeState();
+    const getAgent = vi
+      .spyOn(printRuntime, "getEdgePrintAgent")
+      .mockReturnValue(printer);
+    setEdgeRuntimeStateForTests({
+      ...originalRuntime,
+      edgeMode: true,
+      identity: {
+        context,
+        scope: {
+          tenantId: context.tenant.tenantId,
+          outletId,
+          edgeNodeId: randomUUID(),
+        },
+      },
+    });
+    const caller = { userId: userIdSchema.parse(cashier.userId) };
+    const request = {
+      deliveries: ["print"] as const,
+      idempotencyKey: randomUUID(),
+    };
+    try {
+      const issued = await issueReceiptDeliveries(
+        context,
+        caller,
+        outletId,
+        orderId,
+        request,
+      );
+      await issueReceiptDeliveries(context, caller, outletId, orderId, request);
+      const queued = await store.listJobs({ limit: 10 });
+      expect(queued.items).toHaveLength(1);
+      expect(queued.items[0]).toMatchObject({
+        printerId,
+        kind: "receipt",
+        sourceRef: issued.receipt.number,
+        status: "queued",
+      });
+      expect(transport.printed).toHaveLength(0);
+      await printer.drain(printerId);
+      expect(transport.printed).toHaveLength(1);
+      const text = Buffer.from(transport.printed[0]!).toString("latin1");
+      expect(text).toContain(OUTLET_NAME);
+      expect(text.replace(/\s+/g, " ")).toContain(OUTLET_ADDRESS);
+      expect(text).toContain(issued.receipt.number);
+      expect(text).toContain("Kopi Susu");
+      expect(text).not.toContain("CETAK ULANG");
+    } finally {
+      await printer.stop();
+      getAgent.mockRestore();
+      setEdgeRuntimeStateForTests(originalRuntime);
+    }
+  });
+});

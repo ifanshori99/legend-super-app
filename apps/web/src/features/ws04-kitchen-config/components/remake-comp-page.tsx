@@ -6,7 +6,7 @@ import { formatNumber } from "@starter/shared/i18n";
 import type { MessageKey } from "@starter/shared/i18n";
 import {
   stationIdSchema,
-  type OrderIssue,
+  type OrderIssueView,
   type OrderIssueType,
 } from "@starter/shared/kitchen";
 import { useT } from "@/components/i18n";
@@ -35,7 +35,6 @@ import {
 import { useMenuStations, useOrderIssues } from "../hooks.ts";
 import type { OrderIssueQuery } from "../api.ts";
 import { formatOutletDateTime } from "../format.ts";
-import { shortRef } from "../lib.ts";
 
 const ALL = "all";
 
@@ -56,7 +55,7 @@ const TYPE_TONE: Record<
   unfulfillable: "danger",
 };
 
-const REASON_LABEL: Record<OrderIssue["reason"], MessageKey> = {
+const REASON_LABEL: Record<OrderIssueView["reason"], MessageKey> = {
   wrong_order: "kitchenConfig.remake.reasons.wrong_order",
   quality: "kitchenConfig.remake.reasons.quality",
   late: "kitchenConfig.remake.reasons.late",
@@ -66,7 +65,7 @@ const REASON_LABEL: Record<OrderIssue["reason"], MessageKey> = {
 };
 
 const RESOLUTION_LABEL: Record<
-  NonNullable<OrderIssue["resolution"]>,
+  NonNullable<OrderIssueView["resolution"]>,
   MessageKey
 > = {
   swap: "kitchenConfig.remake.resolutions.swap",
@@ -111,7 +110,7 @@ export function RemakeCompPage() {
     resetPages();
   }
 
-  function stationLabel(issue: OrderIssue): string {
+  function stationLabel(issue: OrderIssueView): string {
     if (issue.stationId === null) return t("kitchenConfig.remake.noStation");
     return (
       stationNames.get(issue.stationId) ??
@@ -119,34 +118,25 @@ export function RemakeCompPage() {
     );
   }
 
-  function typeBadge(issue: OrderIssue) {
+  function typeBadge(issue: OrderIssueView) {
     return (
       <Badge tone={TYPE_TONE[issue.type]}>{t(TYPE_LABEL[issue.type])}</Badge>
     );
   }
 
-  function staffRef(issue: OrderIssue) {
-    if (issue.employeeId === null)
+  function staffRef(issue: OrderIssueView) {
+    if (issue.employeeName === null)
       return <span className="text-muted-foreground">—</span>;
-    return (
-      <span className="tabular" title={issue.employeeId}>
-        {t("kitchenConfig.remake.employeeRef", {
-          ref: shortRef(issue.employeeId),
-        })}
-      </span>
-    );
+    return <span className="break-words">{issue.employeeName}</span>;
   }
 
-  function staffCell(issue: OrderIssue) {
+  function staffCell(issue: OrderIssueView) {
     return (
       <span className="inline-flex flex-wrap items-center gap-1.5">
         {staffRef(issue)}
-        {issue.approvedBy !== null && (
+        {issue.approvedByName !== null && (
           <span className="text-xs text-muted-foreground">
-            {t("kitchenConfig.remake.approved")}{" "}
-            {t("kitchenConfig.remake.employeeRef", {
-              ref: shortRef(issue.approvedBy),
-            })}
+            {t("kitchenConfig.remake.approved")} {issue.approvedByName}
           </span>
         )}
       </span>
@@ -283,12 +273,15 @@ export function RemakeCompPage() {
                       </span>
                       <span className="block text-xs text-muted-foreground">
                         {t("kitchenConfig.remake.orderRef", {
-                          ref: shortRef(issue.orderId, 6),
+                          ref: issue.orderLabel,
                         })}
                       </span>
                     </TableCell>
                     <TableCell>{typeBadge(issue)}</TableCell>
                     <TableCell className="max-w-72">
+                      <span className="block font-medium break-words">
+                        {issue.itemName}
+                      </span>
                       <span className="block font-medium">
                         {t(REASON_LABEL[issue.reason])}
                       </span>
@@ -325,6 +318,14 @@ export function RemakeCompPage() {
                   </span>
                 </div>
                 <div className="grid gap-0.5">
+                  <span className="font-medium break-words">
+                    {issue.itemName}
+                  </span>
+                  <span className="text-sm text-muted-foreground break-words">
+                    {t("kitchenConfig.remake.orderRef", {
+                      ref: issue.orderLabel,
+                    })}
+                  </span>
                   <span className="font-medium">
                     {t(REASON_LABEL[issue.reason])}
                   </span>
@@ -347,15 +348,13 @@ export function RemakeCompPage() {
                     </dt>
                     <dd className="min-w-0">{staffRef(issue)}</dd>
                   </div>
-                  {issue.approvedBy !== null && (
+                  {issue.approvedByName !== null && (
                     <div className="col-span-2 flex min-w-0 gap-1">
                       <dt className="text-muted-foreground">
                         {t("kitchenConfig.remake.approved")}:
                       </dt>
-                      <dd className="min-w-0">
-                        {t("kitchenConfig.remake.employeeRef", {
-                          ref: shortRef(issue.approvedBy),
-                        })}
+                      <dd className="min-w-0 break-words">
+                        {issue.approvedByName}
                       </dd>
                     </div>
                   )}

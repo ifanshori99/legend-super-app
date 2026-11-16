@@ -153,7 +153,10 @@ export interface PrintStore {
     at: Date,
   ): Promise<void>;
   /** Idempotent on (outlet, idempotencyKey): `created` false returns the existing job. */
-  enqueue(job: NewPrintJob): Promise<{ job: PrintJobRecord; created: boolean }>;
+  enqueue(
+    job: NewPrintJob,
+    tx?: EdgeTx,
+  ): Promise<{ job: PrintJobRecord; created: boolean }>;
   /**
    * Claims the oldest queued job of the printer (created_at, id order):
    * queued → printing, attempts + 1. Uses FOR UPDATE SKIP LOCKED so two
@@ -230,6 +233,10 @@ export type ReceiptData = {
   serviceCharge?: number;
   tax?: number;
   total: number;
+  /** Stored adjustment, not recalculated by the print template. */
+  rounding?: number;
+  /** Voided receipts retain their number but must be visibly invalid. */
+  status?: "issued" | "voided";
   payments: { method: string; amount: number }[];
   change?: number;
   footer?: string | null;

@@ -25,6 +25,7 @@ import {
 } from "@starter/shared/menu";
 import { callEndpoint } from "@/lib/api/endpoint";
 import type { CallOptions } from "@/lib/api/endpoint";
+import { ApiError } from "@/lib/api/errors";
 
 type Body<E extends AnyEndpoint> = EndpointInput<E>["body"];
 type Params<E extends AnyEndpoint> = EndpointInput<E>["params"];
@@ -32,6 +33,27 @@ type Query<E extends AnyEndpoint> = EndpointInput<E>["query"];
 
 /** Channels, the live orders behind the review hints, menu picks. */
 export const DELIVERY_LIST_LIMIT = 100;
+const MANUAL_MENU_MAX_PAGES = 50;
+
+function recordMenuContinuation(
+  cursor: string,
+  pagesRead: number,
+  seenCursors: Set<string>,
+) {
+  if (seenCursors.has(cursor))
+    throw new ApiError(
+      502,
+      "RESPONSE_SHAPE_INVALID",
+      "Menu pagination returned a repeated cursor.",
+    );
+  if (pagesRead >= MANUAL_MENU_MAX_PAGES)
+    throw new ApiError(
+      502,
+      "RESPONSE_SHAPE_INVALID",
+      "Menu pagination requires more than 50 pages; the list is incomplete.",
+    );
+  seenCursors.add(cursor);
+}
 
 export const fetchChannels = async (
   params: Params<typeof listDeliveryChannelsEndpoint>,
@@ -152,10 +174,29 @@ export const fetchReconciliation = async (
  * office (its mock is registered by `features/ws03-menu/mock.ts`): the manual
  * form never invents a menu of its own.
  */
-export const fetchMenuItems = (
+export const fetchMenuItems = async (
   query: Query<typeof listItemsEndpoint>,
   options?: CallOptions,
-) => callEndpoint(listItemsEndpoint, { query }, options);
+) => {
+  let page = await callEndpoint(listItemsEndpoint, { query }, options);
+  const data = [...page.data];
+  let pagesRead = 1;
+  const seenCursors = new Set<string>(
+    query.cursor === undefined ? [] : [query.cursor],
+  );
+  while (page.meta.nextCursor) {
+    const cursor = page.meta.nextCursor;
+    recordMenuContinuation(cursor, pagesRead, seenCursors);
+    page = await callEndpoint(
+      listItemsEndpoint,
+      { query: { ...query, cursor } },
+      options,
+    );
+    pagesRead += 1;
+    data.push(...page.data);
+  }
+  return { ...page, data };
+};
 
 /** Variants of one menu item: the mapping picker asks for one when it exists. */
 export const fetchItemVariants = (
@@ -177,12 +218,31 @@ export const fetchPriceLists = (
   options?: CallOptions,
 ) => callEndpoint(listPriceListsEndpoint, { query }, options);
 
-export const fetchPriceListItems = (
+export const fetchPriceListItems = async (
   params: Params<typeof listPriceListItemsEndpoint>,
   options?: CallOptions,
-) =>
-  callEndpoint(
+) => {
+  let page = await callEndpoint(
     listPriceListItemsEndpoint,
     { params, query: { limit: DELIVERY_LIST_LIMIT } },
     options,
   );
+  const data = [...page.data];
+  let pagesRead = 1;
+  const seenCursors = new Set<string>();
+  while (page.meta.nextCursor) {
+    const cursor = page.meta.nextCursor;
+    recordMenuContinuation(cursor, pagesRead, seenCursors);
+    page = await callEndpoint(
+      listPriceListItemsEndpoint,
+      {
+        params,
+        query: { limit: DELIVERY_LIST_LIMIT, cursor },
+      },
+      options,
+    );
+    pagesRead += 1;
+    data.push(...page.data);
+  }
+  return { ...page, data };
+};

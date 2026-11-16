@@ -39,7 +39,15 @@ import { ApiError } from "../../lib/api/errors.ts";
 import { newIdempotencyKey } from "../../lib/idempotency.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
-import { DEFAULT_DURATION, instantAt, minutesOfDay } from "./lib.ts";
+import { registerExternalPaymentLink } from "../../lib/mock/payment-link-bridge.ts";
+import {
+  DEFAULT_DURATION,
+  depositToken,
+  instantAt,
+  minutesOfDay,
+  readConfirmation,
+  saveConfirmation,
+} from "./lib.ts";
 
 const fixtures = cafeLegendReservationFixtures;
 const outlet = cafeLegendFixtures.outlets[0];
@@ -175,6 +183,39 @@ const waitlistReplays = createMockStore(
 const waitlistEntries = createMockStore(() =>
   structuredClone(fixtures.waitlist),
 );
+
+/** The saved confirmation outlives the in-memory bridge after a page reload. */
+function registerDepositPayment(created: ReservationCreated): void {
+  if (!created.deposit || created.reservation.status !== "pending_deposit")
+    return;
+  const token = depositToken(created.deposit.paymentPath);
+  if (!token) return;
+  registerExternalPaymentLink({
+    token,
+    reference: `Reservasi ${created.reservation.id.slice(-8)}`,
+    subtotalIdr: created.deposit.amountIdr,
+    taxIdr: 0,
+    returnPath: "/reservasi",
+    onPaid: () => {
+      if (created.reservation.status !== "pending_deposit") return;
+      created.reservation = reservationCreatedSchema.parse({
+        ...created,
+        reservation: {
+          ...created.reservation,
+          depositPaymentId: newIdempotencyKey(),
+          depositStatus: "paid",
+          status: "confirmed",
+          updatedAt: new Date().toISOString(),
+        },
+      }).reservation;
+      if (readConfirmation()?.reservation.id === created.reservation.id)
+        saveConfirmation(created);
+    },
+  });
+}
+
+const restoredConfirmation = readConfirmation();
+if (restoredConfirmation) registerDepositPayment(restoredConfirmation);
 
 // ---- Public endpoints -----------------------------------------------------
 
@@ -315,6 +356,8 @@ registerMock(
           }
         : null,
     });
+
+    registerDepositPayment(created);
 
     if (key !== undefined) bookings.set(bookings.get().set(key, created));
     return { data: created };

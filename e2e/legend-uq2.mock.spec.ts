@@ -84,9 +84,9 @@ test("KDS-07 · remake and comp log shows reason, staff and ingredient cost", as
   const table = page.getByRole("table");
   await expect(table).toContainText("Terlambat");
   await expect(table).toContainText("Ayam kembali dingin saat disajikan");
-  await expect(table).toContainText("Staf 0500");
+  await expect(table).toContainText("Budi Santoso");
   await expect(table).toContainText("12.500");
-  await expect(table).toContainText("Disetujui Staf 0503");
+  await expect(table).toContainText("Disetujui Rina Pratama");
 
   await page.getByRole("combobox", { name: "Jenis" }).click();
   await page.getByRole("option", { name: "Remake" }).click();

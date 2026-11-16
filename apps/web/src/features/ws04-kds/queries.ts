@@ -4,6 +4,7 @@ import {
   fetchBoard,
   fetchScannerStatus,
   fetchStationLabels,
+  fetchStationSummary,
   fetchStations,
 } from "./api.ts";
 import { KDS_SCANNER_STATUS_AVAILABLE } from "./contract-gap.ts";
@@ -18,6 +19,8 @@ export const kdsKeys = {
     ["kds", outletId, "stations"] as const,
   stationLabels: (outletId: string | undefined) =>
     ["kds", outletId, "station-labels"] as const,
+  stationSummary: (outletId: string | undefined) =>
+    ["kds", outletId, "station-summary"] as const,
   scannerStatus: (outletId: string | undefined) =>
     ["kds", outletId, "scanner-status"] as const,
   board: (
@@ -49,6 +52,14 @@ export const boardQuery = (
       ? ({ signal }) => fetchBoard(outletId, stationId, signal)
       : skipToken,
     refetchInterval: 2000,
+  });
+export const stationSummaryQuery = (outletId: string | undefined) =>
+  queryOptions({
+    queryKey: kdsKeys.stationSummary(outletId),
+    queryFn: outletId
+      ? ({ signal }) => fetchStationSummary(outletId, signal)
+      : skipToken,
+    refetchInterval: 30_000,
   });
 // No endpoint answers outside mock mode (contract-gap.ts): the query stays off
 // and the screen reads the scanner as "unknown" instead of faking a status.

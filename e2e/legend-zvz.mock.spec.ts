@@ -23,7 +23,7 @@ test("F12 · Expo shows a complete order with every station and its runner", asy
   ).toBeVisible();
   const ready = page.locator('[data-slot="expo-ticket"][data-complete="true"]');
   await expect(ready).toHaveCount(1);
-  await expect(ready).toContainText("Antrean 14");
+  await expect(ready).toContainText("Antrean A-014");
   await expect(ready).toContainText("1 dari 1 stasiun selesai");
   await expect(ready).toContainText("Runner: Rizky Alfian");
   await expect(ready).toContainText("Takeaway");
@@ -60,7 +60,7 @@ test("KDS-03 · Expo marks a station ticket cancelled after it was fired", async
   await page.goto("/expo");
   const cancelled = page
     .locator('[data-slot="expo-ticket"]')
-    .filter({ hasText: "Antrean 13" });
+    .filter({ hasText: "Antrean A-013" });
   await expect(cancelled).toContainText("Nonkopi");
   await expect(cancelled).toContainText("Dibatalkan");
 });
@@ -83,16 +83,16 @@ test("F12 · Pickup display calls a waiting number and lists it as called", asyn
 }) => {
   await page.goto("/pickup");
   const waiting = page.getByRole("region", { name: /Menunggu siap/ });
-  await expect(waiting).toContainText("12");
+  await expect(waiting).toContainText("A-012");
 
-  await page.getByRole("button", { name: "Panggil nomor 12" }).click();
+  await page.getByRole("button", { name: "Panggil nomor A-012" }).click();
 
   const called = page.getByRole("region", { name: /Nomor dipanggil/ });
-  await expect(called).toContainText("12");
+  await expect(called).toContainText("A-012");
   await expect(called).toContainText("GoFood");
   await expect(called).toContainText("Dipanggil");
   await expect(
-    page.getByRole("button", { name: "Panggil nomor 12" }),
+    page.getByRole("button", { name: "Panggil nomor A-012" }),
   ).toHaveCount(0);
 });
 
