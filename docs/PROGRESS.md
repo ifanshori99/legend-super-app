@@ -6848,3 +6848,7 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 - Fast383 selesai hijau exit0 dalam1359,4 detik (22m39s): root1141/1141; API317 berkas lulus,4850 test lulus/8 skip/1 todo (4859 kasus). Seluruh67 kontrak pemindai tercakup. Container disposable dibersihkan. Lanjut lint penuh lalu typecheck, log `/tmp/batch79-{lint,typecheck}.log`.
 
 - Lint penuh `heavy pnpm run lint` exit0 dalam52,9 detik:0 error/2 warning hook dependency lama profit-share distributions-page:42 dan shareholders-page:68 di luar diff. Typecheck `heavy pnpm run typecheck` exit0 dalam70,0 detik: API/shared/web3/3 cache-miss dan root tsc hijau. Real e2e lalu empat mock spec berubah dimulai; `/tmp/batch79-{lint,typecheck,e2e}.log`.
+
+- Real e2e `heavy pnpm test:e2e` exit0 dalam41,3 detik termasuk build produksi; Playwright18 lulus/1 skip,25,5 detik. Empat mock spec berubah844/uq2/xm4y/zvz exit0 dalam130,7 detik,25/25 lulus termasuk visual390light/dark1440; warning hidrasi tidak menggagalkan test. Explicit `heavy pnpm build` exit0 dalam5,8 detik,2/2 tugas (1cached). Log `/tmp/batch79-{e2e,e2e-mock,build}.log`. Berikut colima-up dan full pertama `LEGEND_TEST_CONCURRENCY=2 heavy pnpm run test`, `/tmp/batch79-full.log`.
+
+- Subagent pada checkpoint ini4 unik, puncak2 bersamaan (dua Explore, satu reviewer konflik, satu test-runner; follow-up memakai identitas sama). `session-usage.py` tidak menemukan transkrip Codex; `parallel-report` hanya membaca sesi Claude, sehingga biaya/token serta rata-rata native Codex tidak tersedia. Tidak menambah layanan berbayar.
