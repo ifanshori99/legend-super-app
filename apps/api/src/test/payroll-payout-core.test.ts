@@ -85,6 +85,7 @@ import {
 } from "../services/payroll-payout.service.ts";
 import { requestPayrollRunReversalInTransaction } from "../services/payroll-run-reversal.service.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
+import { testGrantIssuer } from "./payroll-payout-fixtures.ts";
 
 const app = createApp();
 const tenant = cafeLegendPlatformFixtures.tenant;
@@ -97,7 +98,18 @@ const owner = new Pool({
 const otherTenant = randomUUID();
 const REQ = `payout-req-${randomUUID()}`;
 const APP = `payout-app-${randomUUID()}`;
-const actor = (userId: string) => ({ tenantId: tenant.id as string, userId });
+const sessionIdOf = (userId: string) => `payout-core-session-${userId}`;
+// The approval spends a step-up grant (legend-xp8mc), so the actor carries a
+// session id and the test grant issuer (live session, fresh MFA: see APP in
+// `beforeAll`).
+const actor = (userId: string) => {
+  const base = {
+    tenantId: tenant.id as string,
+    userId,
+    sessionId: sessionIdOf(userId),
+  };
+  return { ...base, grants: testGrantIssuer(base) };
+};
 
 const scope = () =>
   establishScopedTenantContext(
@@ -563,6 +575,21 @@ beforeAll(async () => {
   await grantRole(hrUser.userId, ["hr.employee.manage", "hr.employee.view"]);
   hr = hrUser.client;
 
+  // The approver of the main approval: what `app.payout_assert_actor` checks
+  // (user row, live session with fresh MFA, payroll.disburse.approve).
+  await owner.query(
+    `INSERT INTO "user" (id, name, email, email_verified)
+     VALUES ($1, 'Payout core approver', $2, true)`,
+    [APP, `${APP}@payout-core.test`],
+  );
+  await owner.query(
+    `INSERT INTO session (id, expires_at, token, user_id, tenant_id, mfa_verified_at)
+     VALUES ($1, now() + interval '1 day', $2, $3, $4, now())`,
+    [sessionIdOf(APP), randomUUID(), APP, tenant.id],
+  );
+  createdUsers.push(APP);
+  await grantRole(APP, ["payroll.disburse.approve"]);
+
   await asTenant(async (c) => {
     await c.query(
       `INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'PT Payout Core', false)`,
@@ -735,6 +762,8 @@ afterAll(async () => {
   await owner.query("DELETE FROM tenant_integrations WHERE id = ANY($1)", [
     createdIntegrations,
   ]);
+  await owner.query("DELETE FROM session WHERE id = $1", [sessionIdOf(APP)]);
+  await owner.query(`DELETE FROM "user" WHERE id = $1`, [APP]);
   if (otherTenantCreated)
     await owner.query("DELETE FROM tenants WHERE id = $1", [otherTenant]);
   await owner.end();

@@ -32,9 +32,18 @@
 // - Case 4 uses the SQL of 918 (`app.payout_approval_disown`, password grant
 //   of the actor, ref = log id, detail = sha256(reason)); the freeze is seen
 //   as one open dispute row and a refused trusted step (409) on the batch.
+// - Concurrency (P2-1, architect finding on commit 28d672f8c): two approvals at
+//   the same moment must never end in a database deadlock (40P01) turned into
+//   a 500. Same batch: exactly one wins, the other is a clean 409 (the batch is
+//   no longer pending), one log row, one spent grant. Sibling batches (same run,
+//   channels manual_bank and cash, so both can be open at once): the brief says
+//   only "no 500"; assumed they are independent approvals, so each call either
+//   succeeds or is a 409, at least one succeeds, and every batch, log row and
+//   spent grant agrees with who succeeded. Each scenario runs ROUNDS times with
+//   fresh worlds to make a lock-order bug show; outcomes, not timing, decide.
 // - Case 5: a refused self-approval (PAYOUT_SELF_APPROVAL) leaves no log row
 //   and no spent grant; the second person is logged as the actor.
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { HttpError } from "../lib/http-error.ts";
 import {
@@ -45,10 +54,13 @@ import type { PayoutGrantBinding } from "../services/payroll-payout-grant.servic
 import { exportManualBatch } from "../services/payroll-payout-manual.service.ts";
 import {
   APP,
+  APP2,
   BUDI,
+  CASHIER,
   REQ,
   actorOf,
   bank,
+  cash,
   installPayoutWorld,
   type Row,
 } from "./payroll-payout-fixtures.ts";
@@ -56,7 +68,6 @@ import {
 const W = installPayoutWorld("934main");
 const LOG = "payroll_payout_approval_log";
 const REASON = "Bukan saya yang menyetujui batch ini, akun saya dipakai orang";
-const hex = () => randomBytes(32).toString("hex");
 const sha = (secret: string) =>
   createHash("sha256").update(Buffer.from(secret, "hex")).digest("hex");
 const sha256Text = (text: string) =>
@@ -426,5 +437,118 @@ describe("934 the two-person rule stays", () => {
     expect(logs, "the second person's approval is logged").toHaveLength(1);
     expect(logs[0]!.actor).toBe(APP);
     expect(second.issued, "with a grant of its own").toHaveLength(1);
+  });
+});
+
+// ---- Concurrent approvals (P2-1) ----------------------------------------------------------
+
+const ROUNDS = 3;
+const messageChain = (error: unknown, depth = 0): string => {
+  if (depth > 4 || typeof error !== "object" || error === null) return "";
+  const e = error as { message?: unknown; code?: unknown; cause?: unknown };
+  return `${typeof e.message === "string" ? e.message : ""} ${
+    typeof e.code === "string" ? e.code : ""
+  } ${messageChain(e.cause, depth + 1)}`;
+};
+
+/** Every rejection must be a clean 409 HttpError: never a 500, never a deadlock. */
+function expectClean409(reason: unknown) {
+  expect(
+    messageChain(reason),
+    "no deadlock or serialization failure",
+  ).not.toMatch(/40P01|40001|deadlock detected|could not serialize/i);
+  expect(reason, "a refusal, not a crash").toBeInstanceOf(HttpError);
+  expect((reason as HttpError).status).toBe(409);
+}
+
+/** One run with a bank slip and a cash slip: two sibling batches, both pending. */
+async function pendingSiblings() {
+  const runId = await W.seedRun([
+    bank(BUDI, 4_000_000),
+    cash(CASHIER, 2_000_000),
+  ]);
+  const bankBatch = await W.createBatch(runId, "manual_bank");
+  const cashBatch = await W.createBatch(runId, "cash");
+  batchIds.push(bankBatch, cashBatch);
+  for (const id of [bankBatch, cashBatch])
+    await W.inTx((tx) => submitDisbursementBatch(tx, actorOf(REQ), id));
+  const [source] = await W.rowsOf(
+    `SELECT manual_source_bank_account_id AS id FROM payroll_payout_configs
+      WHERE tenant_id = $1 AND legal_entity_id = $2`,
+    [W.tenantId, W.entityId()],
+  );
+  const world = (batchId: string, sourceId: string | null) => ({
+    batchId,
+    hash: "" as string,
+    source: sourceId as string,
+  });
+  const bankW = world(bankBatch, source!.id as string);
+  bankW.hash = (await W.batchById(bankBatch)).content_hash as string;
+  const cashW = world(cashBatch, null);
+  cashW.hash = (await W.batchById(cashBatch)).content_hash as string;
+  return { bankW, cashW };
+}
+
+describe("934 two approvals at the same moment", () => {
+  it("[934-concurrent-same-batch] two people approve the same batch together: one succeeds, the other gets 409 (not 500, not a deadlock); one log row, one spent grant, the winner is the approver", async () => {
+    for (let round = 0; round < ROUNDS; round++) {
+      const w = await pendingBatch();
+      const first = spyActor(APP);
+      const second = spyActor(APP2);
+      const results = await Promise.allSettled([
+        approveAs(first.actor, w),
+        approveAs(second.actor, w),
+      ]);
+      const won = results.filter((r) => r.status === "fulfilled");
+      const lost = results.filter(
+        (r): r is PromiseRejectedResult => r.status === "rejected",
+      );
+      expect(won, `round ${round}: exactly one approval wins`).toHaveLength(1);
+      expect(lost, `round ${round}: exactly one is refused`).toHaveLength(1);
+      expectClean409(lost[0]!.reason);
+
+      const winner = results[0]!.status === "fulfilled" ? APP : APP2;
+      const batch = await W.batchById(w.batchId);
+      expect(batch.status).toBe("approved");
+      expect(batch.approved_by, "the winner is the approver").toBe(winner);
+      const logs = await logsOf(w.batchId);
+      expect(logs, "one log row").toHaveLength(1);
+      expect(logs[0]!.actor).toBe(winner);
+      expect(await spentGrantsOf(w.batchId), "one spent grant").toBe(1);
+    }
+  });
+
+  it("[934-concurrent-sibling-batches] two sibling batches of one run (bank and cash) approved together: no 500, no deadlock; every batch, log row and spent grant agrees with who succeeded", async () => {
+    for (let round = 0; round < ROUNDS; round++) {
+      const { bankW, cashW } = await pendingSiblings();
+      const results = await Promise.allSettled([
+        approveAs(spyActor(APP).actor, bankW),
+        approveAs(spyActor(APP2).actor, cashW),
+      ]);
+      const worlds = [bankW, cashW];
+      const approvers = [APP, APP2];
+      expect(
+        results.filter((r) => r.status === "fulfilled").length,
+        `round ${round}: at least one approval succeeds`,
+      ).toBeGreaterThanOrEqual(1);
+      for (const [i, result] of results.entries()) {
+        const batch = await W.batchById(worlds[i]!.batchId);
+        const logs = await logsOf(worlds[i]!.batchId);
+        if (result.status === "rejected") {
+          expectClean409(result.reason);
+          expect(batch.status, "a refused approval changes nothing").toBe(
+            "pending_approval",
+          );
+          expect(logs).toHaveLength(0);
+          expect(await spentGrantsOf(worlds[i]!.batchId)).toBe(0);
+        } else {
+          expect(batch.status).toBe("approved");
+          expect(batch.approved_by).toBe(approvers[i]);
+          expect(logs, "one log row").toHaveLength(1);
+          expect(logs[0]!.actor).toBe(approvers[i]);
+          expect(await spentGrantsOf(worlds[i]!.batchId)).toBe(1);
+        }
+      }
+    }
   });
 });

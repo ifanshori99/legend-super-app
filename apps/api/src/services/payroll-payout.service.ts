@@ -643,13 +643,19 @@ async function lockRun(
   return run;
 }
 
-/** Step gate: the run must still be locked (or paid, for a follow-up batch). */
+/**
+ * Step gate: the run must still be locked (or paid, for a follow-up batch).
+ * `mode` is the run lock: `share` by default; a step that spends a trusted
+ * grant (approve) takes `update`, because the database function asks for the
+ * run `FOR UPDATE` and a share lock held by two callers would deadlock.
+ */
 export async function assertRunPayable(
   tx: Tx,
   tenantId: string,
   runId: string,
+  mode: "update" | "share" = "share",
 ): Promise<void> {
-  const run = await lockRun(tx, tenantId, runId, "share");
+  const run = await lockRun(tx, tenantId, runId, mode);
   if (run.status !== "locked" && run.status !== "paid")
     throw payoutRefuse(
       409,
@@ -1566,7 +1572,6 @@ export async function approveDisbursementBatch(
   const tenantId = actor.tenantId;
   const peek = await readBatch(tx, tenantId, batchId);
   await assertBatchNotFrozen(tx, tenantId, batchId);
-  await assertRunPayable(tx, tenantId, peek.payrollRunId);
   // Same answers as the checks under the lock, so the grant (which the
   // database issues only for a pending batch of another requester) is never
   // the first thing to refuse them.
@@ -1583,7 +1588,7 @@ export async function approveDisbursementBatch(
       "Pembuat batch tidak boleh menyetujui batchnya sendiri.",
     );
   // The main approval spends one step-up grant (legend-xp8mc): issued before
-  // the batch lock, like the correction grant. No session or step-up: refused
+  // any lock, like the correction grant. No session or step-up: refused
   // 401 before anything is written.
   const approveGrant = await payoutTrustedGrant(actor, {
     kind: "batch_approve",
@@ -1594,6 +1599,10 @@ export async function approveDisbursementBatch(
     refId: null,
     targetId: null,
   });
+  // Lock order as `loadBatchRunFirst`: run `update` (the attest function
+  // asks for it, so a `share` lock here would deadlock two approvals), then
+  // the batch row. The second approval of a batch waits, then sees 409.
+  await assertRunPayable(tx, tenantId, peek.payrollRunId, "update");
   const batch = await loadBatchForUpdate(tx, tenantId, batchId);
   await assertBatchOpenUnderRunLock(tx, tenantId, batchId);
   if (batch.status !== "pending_approval")
