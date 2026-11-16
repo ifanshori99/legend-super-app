@@ -99,6 +99,7 @@ import {
 } from "../db/schema";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
+import { markMatchStaleForReversedJournal } from "./accounting-bank-recon-stale.service";
 import { assertPeriodOpenForPosting } from "./accounting-period.service";
 import {
   auditAccountingChange,
@@ -1204,5 +1205,19 @@ export async function reverseJournalInTransaction(
       reversalEntryId: entry.id,
     },
   });
+  // ACC-04: a bank match of the reversed journal turns stale and opens a case.
+  await markMatchStaleForReversedJournal(
+    tx,
+    context,
+    {
+      legalEntityId: row.legalEntityId,
+      outletId: row.outletId,
+      journalEntryId: entryId,
+      reversalEntryId: entry.id,
+      reversedBy: input.postedBy,
+      reason: input.reason,
+    },
+    now,
+  );
   return entry;
 }
