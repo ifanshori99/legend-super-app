@@ -389,10 +389,7 @@ export function useConfirmBatch() {
 export function useDisownApproval() {
   const refresh = useRefreshPayout();
   return useMutation({
-    mutationFn: ({
-      logId,
-      ...body
-    }: { logId: string } & DisownApprovalInput) =>
+    mutationFn: ({ logId, ...body }: { logId: string } & DisownApprovalInput) =>
       api.postDisownApproval(logId, body),
     onSuccess: refresh,
   });

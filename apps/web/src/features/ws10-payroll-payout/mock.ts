@@ -1160,9 +1160,7 @@ registerMock(getPayoutApprovalLog, ({ params }) => {
       itemCount: found.items.length,
       period: "1 sampai 30 November 2026",
       loggedAt: found.updatedAt,
-      disowned: found.freeze.disputes.some(
-        (row) => row.logId === params.logId,
-      ),
+      disowned: found.freeze.disputes.some((row) => row.logId === params.logId),
       batchFrozen: found.freeze.frozen,
     },
   };

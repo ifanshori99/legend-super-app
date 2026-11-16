@@ -137,9 +137,9 @@ describe("API environment", () => {
       expect(
         worker.slice(0, marker).every((spec) => /load-env/.test(spec)),
       ).toBe(true);
-      expect(importsOf("server.ts").some((spec) => /role-worker/.test(spec))).toBe(
-        false,
-      );
+      expect(
+        importsOf("server.ts").some((spec) => /role-worker/.test(spec)),
+      ).toBe(false);
     });
 
     it("lets an outlet edge node start in production without it", () => {

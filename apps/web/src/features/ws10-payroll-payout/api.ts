@@ -304,16 +304,12 @@ export const postReturnItems = (batchId: string, body: ReturnItemsInput) =>
   callEndpoint(returnDisbursementItems, { params: { id: batchId }, body });
 
 /** "Not me": freezes the batch of that logged step. Repeating is harmless. */
-export const postDisownApproval = (
-  logId: string,
-  body: DisownApprovalInput,
-) => callEndpoint(disownPayoutApproval, { params: { logId }, body });
+export const postDisownApproval = (logId: string, body: DisownApprovalInput) =>
+  callEndpoint(disownPayoutApproval, { params: { logId }, body });
 
 /** Releases every open "not me" claim of the batch. */
-export const postUnfreezeBatch = (
-  batchId: string,
-  body: UnfreezeBatchInput,
-) => callEndpoint(unfreezeDisbursementBatch, { params: { id: batchId }, body });
+export const postUnfreezeBatch = (batchId: string, body: UnfreezeBatchInput) =>
+  callEndpoint(unfreezeDisbursementBatch, { params: { id: batchId }, body });
 
 /** Takes back a step-one proposal that corrects a failed item. */
 export const postWithdrawCorrection = (

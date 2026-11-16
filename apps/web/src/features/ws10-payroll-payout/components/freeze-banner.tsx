@@ -53,7 +53,9 @@ export function FreezeBanner({
   const [open, setOpen] = React.useState(false);
   if (!batch.freeze.frozen) return null;
   const { disputes } = batch.freeze;
-  const sent = disputes.some((row) => SENT_STATUSES.includes(row.batchStatusAt));
+  const sent = disputes.some((row) =>
+    SENT_STATUSES.includes(row.batchStatusAt),
+  );
   return (
     <section
       role="alert"
