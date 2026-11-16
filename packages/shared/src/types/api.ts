@@ -198,7 +198,8 @@ export type PayoutApprovalLogDto = {
     | "posting_source"
     | "closure"
     | "resolve"
-    | "bank_confirm";
+    | "bank_confirm"
+    | "batch_approve";
   step: "propose" | "approve" | "record" | "confirm" | "withdraw";
   itemCount: number;
   /** Payroll period label of the batch, as in the receipt notification. */

@@ -1567,6 +1567,33 @@ export async function approveDisbursementBatch(
   const peek = await readBatch(tx, tenantId, batchId);
   await assertBatchNotFrozen(tx, tenantId, batchId);
   await assertRunPayable(tx, tenantId, peek.payrollRunId);
+  // Same answers as the checks under the lock, so the grant (which the
+  // database issues only for a pending batch of another requester) is never
+  // the first thing to refuse them.
+  if (peek.status !== "pending_approval")
+    throw payoutRefuse(
+      409,
+      "PAYOUT_BATCH_STATE",
+      "Batch belum diajukan atau sudah diproses.",
+    );
+  if (peek.requestedBy === actor.userId)
+    throw payoutRefuse(
+      403,
+      "PAYOUT_SELF_APPROVAL",
+      "Pembuat batch tidak boleh menyetujui batchnya sendiri.",
+    );
+  // The main approval spends one step-up grant (legend-xp8mc): issued before
+  // the batch lock, like the correction grant. No session or step-up: refused
+  // 401 before anything is written.
+  const approveGrant = await payoutTrustedGrant(actor, {
+    kind: "batch_approve",
+    step: "approve",
+    batchId,
+    itemIds: [],
+    evidenceKey: null,
+    refId: null,
+    targetId: null,
+  });
   const batch = await loadBatchForUpdate(tx, tenantId, batchId);
   await assertBatchOpenUnderRunLock(tx, tenantId, batchId);
   if (batch.status !== "pending_approval")
@@ -1633,6 +1660,12 @@ export async function approveDisbursementBatch(
       "PAYOUT_HASH_MISMATCH",
       "Isi batch berubah sejak diajukan. Buka ulang batch lalu setujui.",
     );
+
+  // Spends the grant and writes the append-only approval log row, so the
+  // "not me" notice reaches the approver of the main approval too.
+  await tx.execute(
+    sql`SELECT app.payout_batch_approve_attest(${batchId}::uuid, ${approveGrant}) AS grant_id`,
+  );
 
   const now = new Date();
   const expires = new Date(

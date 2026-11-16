@@ -105,6 +105,7 @@ export const payoutApprovalLogSchema = z.object({
     "closure",
     "resolve",
     "bank_confirm",
+    "batch_approve",
   ]),
   step: z.enum(["propose", "approve", "record", "confirm", "withdraw"]),
   itemCount: z.number().int(),

@@ -30,6 +30,7 @@ export type PayoutGrantBinding = {
     | "posting_source"
     | "resolve"
     | "bank_confirm"
+    | "batch_approve"
     | "disown"
     | "unfreeze";
   step: "propose" | "approve" | "record" | "confirm" | "withdraw";

@@ -1341,6 +1341,7 @@ export const PAYOUT_ATTESTATION_KINDS = [
   "closure",
   "resolve",
   "bank_confirm",
+  "batch_approve",
 ] as const;
 export type PayoutAttestationKind = (typeof PAYOUT_ATTESTATION_KINDS)[number];
 
