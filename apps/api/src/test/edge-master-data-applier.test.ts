@@ -197,6 +197,76 @@ async function receipts() {
 }
 
 describe("CTO-930 event-backed station KDS enrichment", () => {
+  it("AC14 an applied receipt newer than the local row prevents stale HTTP KDS enrichment after a skipped name collision", async () => {
+    const initial = station({ name: "Held receipt station A", syncTxid: "1" });
+    const nameOwner = station({
+      name: "Held receipt occupied X",
+      syncTxid: "3",
+    });
+    await deliver(catalogEvent(initial), catalogEvent(nameOwner));
+    await deliver(
+      catalogEvent({ ...initial, name: nameOwner.name, syncTxid: "2" }),
+    );
+
+    // The real event path acknowledges A@2, but cannot displace B@3 from
+    // the unique station name. Its held receipt is newer than A's row.
+    expect(await storedStation(initial.id)).toMatchObject({
+      name: "Held receipt station A",
+      sync_txid: "1",
+    });
+    expect(await storedStation(nameOwner.id)).toMatchObject({
+      name: "Held receipt occupied X",
+      sync_txid: "3",
+    });
+    const before = await receipts();
+    expect(before).toMatchObject([
+      { aggregate_sequence: 1, outcome: "applied" },
+      { aggregate_sequence: 3, outcome: "applied" },
+      { aggregate_sequence: 2, outcome: "applied" },
+    ]);
+    const coreBefore = await storedStation(initial.id);
+    const result = await pullCatalog({
+      database: db,
+      context: node.context,
+      edgeNodeId: node.scope.edgeNodeId,
+      streams: ["stations"],
+      fetchPage: async (stream) => ({
+        protocolVersion: 3,
+        stream,
+        records: [
+          {
+            ...initial,
+            displayOrder: 17,
+            isActive: false,
+            autoPrintFallback: true,
+          },
+        ],
+        nextCursor: encodeCursor(["cat2", "1", String(initial.id)]),
+        hasMore: false,
+      }),
+    });
+    expect(result.streams.stations?.error).toBeUndefined();
+    const config = (
+      await owner.query(
+        `SELECT display_order, is_active, auto_print_fallback FROM stations
+       WHERE tenant_id = $1 AND id = $2`,
+        [world.tenantId, initial.id],
+      )
+    ).rows[0];
+    expect(config).toEqual({
+      display_order: 0,
+      is_active: true,
+      auto_print_fallback: false,
+    });
+    expect(await storedStation(initial.id)).toEqual(coreBefore);
+    expect(await storedStation(nameOwner.id)).toMatchObject({
+      name: "Held receipt occupied X",
+      sync_txid: "3",
+    });
+    expect(await receipts()).toEqual(before);
+    expect(await store().lastReceivedInbound()).toBe(3);
+  });
+
   it("AC13 equal HTTP enrichment cannot change configuration on a locally tombstoned station", async () => {
     const record = station({ name: "Tombstone event base", syncTxid: "8" });
     await deliver(catalogEvent(record));

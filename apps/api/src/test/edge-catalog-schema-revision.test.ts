@@ -276,7 +276,10 @@ describe("CTO-930 compatibility / legend-i78o6", () => {
           protocolVersion,
         }),
       });
-      const record = page.records.find((row) => row.id === stationId);
+      const record = stationSyncRecordSchema
+        .array()
+        .parse(page.records)
+        .find((row) => row.id === stationId);
       expect(record).toMatchObject({
         displayOrder: 17,
         isActive: false,
@@ -294,7 +297,10 @@ describe("CTO-930 compatibility / legend-i78o6", () => {
       outletId: outletIdSchema.parse(outletId),
       query: catalogSyncQuerySchema.parse({ stream: "stations" }),
     });
-    const legacy = legacyPage.records.find((row) => row.id === stationId);
+    const legacy = stationSyncRecordSchema
+      .array()
+      .parse(legacyPage.records)
+      .find((row) => row.id === stationId);
     expect(legacy).not.toHaveProperty("displayOrder");
     expect(legacy).not.toHaveProperty("isActive");
     expect(legacy).not.toHaveProperty("autoPrintFallback");

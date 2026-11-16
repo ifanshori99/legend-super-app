@@ -6800,3 +6800,5 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Bukti RED bersih: 11 kegagalan semantik yang diharapkan, 117 lulus dari 128 test; tanpa kesalahan fixture. Log `/tmp/930-kds-followup-red-clean.log`. Gate akhir disimpan pada `/tmp/930-kds-followup-verification.txt` setelah commit final.
 - Tidak ada migrasi SQL baru; migrasi scanner sementara 0431 tetap. Cabang delivery dan zvz tidak disentuh. Tidak merge/deploy; push KDS tanpa force sesudah gate akhir.
 - Subagent follow-up: total 7, puncak 6 bersamaan; satu token heavy pada `followup_runner`. Laporan token/biaya Codex tidak tersedia melalui helper sesi Claude.
+
+- Review AC14 direproduksi melalui event/receipt asli: HTTP dengan versi di bawah receipt yang lebih baru sempat mengubah tambahan KDS. Bukti RED 1 gagal/27 lulus ada di `/tmp/930-kds-followup-receipt-red.log`; perbaikan membatasi enrichment dengan versi receipt node yang sama, tetap mengizinkan versi sama, dan tidak menyentuh field inti. Narrowing tipe pada dua assertion test baru juga diperbaiki tanpa cast.

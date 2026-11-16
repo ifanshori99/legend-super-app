@@ -761,6 +761,7 @@ async function pullStream(
       if (stream === "stations")
         await enrichCatalogStationFields(tx, {
           tenantId,
+          edgeNodeId: options.edgeNodeId,
           stream,
           records: page.records,
         });

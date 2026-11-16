@@ -220,11 +220,11 @@ function stationKdsValues(record: CatalogSyncRecordOf<"stations">) {
  * Legacy station events omit the optional KDS additions. An HTTP page may fill
  * those fields at the exact same cloud version, even when its core record is
  * held by an event receipt. Never revive a tombstone or alter core fields,
- * timestamps or versions; older HTTP records remain refused by the caller.
+ * timestamps or versions; a newer held receipt also refuses the enrichment.
  */
 export async function enrichCatalogStationFields(
   tx: Tx,
-  input: ApplyCatalogRecordsInput<"stations">,
+  input: ApplyCatalogRecordsInput<"stations"> & { readonly edgeNodeId: string },
 ): Promise<void> {
   const records = parseRecords(
     "stations",
@@ -233,9 +233,19 @@ export async function enrichCatalogStationFields(
     (record) => record.id,
   );
   await lockCatalogStream(tx, input.tenantId, "stations");
+  const held = await heldCatalogEventVersions(
+    tx,
+    input.tenantId,
+    input.edgeNodeId,
+  );
   const t = stations;
   for (const record of records) {
     if (record.deletedAt !== null) continue;
+    const heldVersion = held.get(
+      catalogRecordIdFromKeys("stations", [record.id]),
+    );
+    if (heldVersion !== undefined && heldVersion > BigInt(record.syncTxid))
+      continue;
     const values = stationKdsValues(record);
     if (Object.keys(values).length === 0) continue;
     await tx
