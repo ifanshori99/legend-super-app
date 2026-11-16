@@ -1043,13 +1043,13 @@ export const id = {
     qrDescription:
       "Buat dan cetak stiker QR permanen untuk setiap meja di outlet ini.",
     qrHint:
-      "QR hanya ditampilkan sekali setelah dibuat. Simpan atau cetak labelnya sekarang.",
+      "QR meja bersifat tetap. Cetak ulang kapan saja, stiker lama tetap berlaku.",
     qrTableTitle: "Daftar meja",
     qrEmptyTitle: "Belum ada meja",
     qrEmptyHint:
       "Tambahkan meja di denah lebih dulu, lalu buat QR-nya di halaman ini.",
     qrIssue: "Buat QR",
-    qrReissue: "Buat ulang",
+    qrReissue: "Muat ulang QR",
     qrIssueSelected: "Buat QR ({count})",
     qrPrint: "Cetak label",
     qrSelectAll: "Pilih semua meja",

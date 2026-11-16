@@ -170,19 +170,75 @@ test.describe("legend-th7 · floor plan & table editor", () => {
     ).toBeVisible();
     // One label per issued table, each with a scannable QR image and the URL.
     await expect(page.getByText("Pindai untuk memesan")).toHaveCount(2);
+    // The brand line on each sticker is the outlet name, not "Legend" (Q33).
+    await expect(
+      page
+        .locator(".floor-print-sheet article")
+        .getByText("Cafe Legend Bandung"),
+    ).toHaveCount(2);
     await expect(page.getByText(/^https:\/\/.+\/t\/v1\./)).toHaveCount(2);
     await expect(
       page.getByRole("img", { name: "Meja A01", exact: true }),
     ).toBeVisible();
     // Re-issuing a label is offered once a table has one.
     await expect(
-      page.getByRole("button", { name: "Buat ulang" }).first(),
+      page.getByRole("button", { name: "Muat ulang QR" }).first(),
     ).toBeVisible();
     await expect(
       page.getByRole("button", { name: "Cetak label" }),
     ).toBeVisible();
 
     expect(errors).toEqual([]);
+  });
+
+  test("ORD-04 the printed QR sheet lays labels in two columns on A4", async ({
+    page,
+  }) => {
+    // Assumption: the 2-column grid is the element holding the labels (the
+    // parent of each article inside .floor-print-sheet), not the sheet root.
+    await page.goto("/kelola/meja/qr?mock=normal", NAV);
+    await expect(page.getByText("Belum ada label")).toBeVisible();
+    for (const name of ["A01", "B01", "A02"]) {
+      await page.getByRole("checkbox", { name: `Pilih meja ${name}` }).check();
+    }
+    await page.getByRole("button", { name: "Buat QR (3)" }).click();
+    await expect(
+      page.getByRole("heading", { name: "Label siap cetak" }),
+    ).toBeVisible();
+    await expect(page.getByText("Pindai untuk memesan")).toHaveCount(3);
+
+    await page.setViewportSize({ width: 794, height: 1123 });
+    await page.emulateMedia({ media: "print" });
+
+    const sheet = page.locator(".floor-print-sheet");
+    const labels = sheet.locator("article");
+    await expect(labels).toHaveCount(3);
+
+    const columns = await labels
+      .first()
+      .locator("..")
+      .evaluate(
+        (el) =>
+          getComputedStyle(el).gridTemplateColumns.split(" ").filter(Boolean)
+            .length,
+      );
+    expect(columns).toBe(2);
+
+    const sheetBox = await sheet.boundingBox();
+    expect(sheetBox).not.toBeNull();
+    for (let i = 0; i < 3; i++) {
+      const box = await labels.nth(i).boundingBox();
+      expect(box).not.toBeNull();
+      expect(box!.x).toBeGreaterThanOrEqual(sheetBox!.x - 1);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(
+        sheetBox!.x + sheetBox!.width + 1,
+      );
+    }
+
+    // The on-screen header of the sheet does not print.
+    await expect(
+      page.getByRole("button", { name: "Cetak label" }),
+    ).toBeHidden();
   });
 
   test("F9 empty and error states are honest, with a way forward", async ({

@@ -28,27 +28,27 @@ import {
 } from "@/components/ui/table";
 import { useToast } from "@/components/ui/toast";
 import type { ApiError } from "@/lib/api/errors";
+import { useTenantContext } from "@/lib/tenant-context";
 import { useCurrentFloor, useIssueTableQr } from "../hooks";
 import { matchesTableQuery, sortZones, tablesOfZone } from "../lib";
 import { QrLabel } from "./qr-label";
-
-/** Print only the label sheet; the shell around it stays out of the paper. */
-const PRINT_STYLE = `@media print {
-  body * { visibility: hidden; }
-  .floor-print-sheet, .floor-print-sheet * { visibility: visible; }
-  .floor-print-sheet { position: absolute; top: 0; left: 0; right: 0; padding: 12mm; }
-}`;
+import { QR_SHEET_GRID_CLASS, QR_SHEET_PRINT_STYLE } from "./qr-sheet-print";
 
 function QrPage() {
   const t = useT();
   const toast = useToast();
   const floor = useCurrentFloor();
   const issueQr = useIssueTableQr();
+  // Stickers carry the outlet name (founder Q33), read from the tenant context
+  // the shell already provides; no outlet in scope means no brand line.
+  const outletName = useTenantContext().outlet?.name ?? "";
 
   const [search, setSearch] = React.useState("");
   const [zoneFilter, setZoneFilter] = React.useState<string | null>(null);
   const [selectedIds, setSelectedIds] = React.useState<string[]>([]);
   const [labels, setLabels] = React.useState<Record<string, TableQr>>({});
+  // Only the row being issued shows a spinner, the other rows stay usable.
+  const [pendingIds, setPendingIds] = React.useState<string[]>([]);
 
   const zones = React.useMemo(
     () => sortZones(floor.data?.zones ?? []),
@@ -67,7 +67,31 @@ function QrPage() {
   );
   const zoneName = (id: string) =>
     zones.find((zone) => zone.id === id)?.name ?? "";
-  const issued = Object.values(labels);
+  // Labels follow the table order, not the order they were issued in, so a
+  // reprint never moves a sticker to another place on the sheet.
+  const issued = tables.flatMap((table) =>
+    labels[table.id] ? [labels[table.id]] : [],
+  );
+  // The sheet sits below the long table list: when it first appears, bring it
+  // into view and move focus to its title. Later reprints leave the scroll
+  // position alone so a row of reprints does not throw the page around.
+  const hadSheet = React.useRef(false);
+  React.useEffect(() => {
+    const hasSheet = issued.length > 0;
+    if (hasSheet && !hadSheet.current) {
+      const title = document.getElementById("floor-labels-title");
+      const reduced = window.matchMedia(
+        "(prefers-reduced-motion: reduce)",
+      ).matches;
+      title?.scrollIntoView({
+        behavior: reduced ? "auto" : "smooth",
+        block: "start",
+      });
+      title?.focus({ preventScroll: true });
+    }
+    hadSheet.current = hasSheet;
+  }, [issued.length]);
+  const busy = pendingIds.length > 0;
   const state: DataState = floor.isPending
     ? "loading"
     : floor.isError
@@ -98,6 +122,7 @@ function QrPage() {
       toast({ title: t("floorEditor.qrNothingSelected"), tone: "info" });
       return;
     }
+    setPendingIds(tableIds);
     try {
       const next: Record<string, TableQr> = {};
       // One request per table, in order, so a slow API is not flooded.
@@ -118,12 +143,14 @@ function QrPage() {
         description: (error as ApiError).message,
         tone: "danger",
       });
+    } finally {
+      setPendingIds([]);
     }
   };
 
   return (
     <div className="grid grid-cols-[minmax(0,1fr)] gap-5">
-      <style>{PRINT_STYLE}</style>
+      <style>{QR_SHEET_PRINT_STYLE}</style>
 
       <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
@@ -142,8 +169,8 @@ function QrPage() {
           <Button
             variant="outline"
             onClick={() => void issue(selectedIds)}
-            loading={issueQr.isPending}
-            disabled={tables.length === 0}
+            loading={pendingIds.length > 1}
+            disabled={tables.length === 0 || busy}
           >
             <QrCode aria-hidden="true" />
             {selectedIds.length > 0
@@ -274,7 +301,8 @@ function QrPage() {
                       type="button"
                       variant="outline"
                       size="sm"
-                      loading={issueQr.isPending}
+                      loading={pendingIds.includes(table.id)}
+                      disabled={busy}
                       onClick={() => void issue([table.id])}
                     >
                       {labels[table.id]
@@ -301,7 +329,11 @@ function QrPage() {
       {issued.length > 0 && (
         <ThemeScope mode="light" className="floor-print-sheet grid gap-3">
           <div className="flex flex-wrap items-center justify-between gap-2 print:hidden">
-            <h2 id="floor-labels-title" className="type-title">
+            <h2
+              id="floor-labels-title"
+              tabIndex={-1}
+              className="type-title outline-none"
+            >
               {t("floorEditor.qrPreviewTitle")}
             </h2>
             <Button onClick={() => window.print()}>
@@ -309,7 +341,7 @@ function QrPage() {
               {t("floorEditor.qrPrint")}
             </Button>
           </div>
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 print:grid-cols-2">
+          <div className={QR_SHEET_GRID_CLASS}>
             {issued.map((qr) => {
               const table = tables.find((entry) => entry.id === qr.tableId);
               if (!table) return null;
@@ -319,7 +351,7 @@ function QrPage() {
                   qr={qr}
                   table={table}
                   zone={zones.find((zone) => zone.id === table.zoneId)}
-                  brand={t("app.defaultBrand")}
+                  brand={outletName}
                 />
               );
             })}
