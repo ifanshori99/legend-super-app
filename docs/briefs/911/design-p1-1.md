@@ -5,7 +5,7 @@ Status: architect decision, 16 Nov 2026. Scope: finding P1-1 of the second opini
 ## 1. Decisions
 
 D1. **The authority is a separate database login, not `legend_app`.** A new NOLOGIN group `legend_payout_grantor` may only EXECUTE `app.payout_grant_issue(...)`. A LOGIN member `legend_grant_<16 hex>` is provisioned by `provision-roles` (same pattern as the maintenance login `legend_maint_*`, migration 0187). The API reaches it through its own small pool (`PAYOUT_GRANTOR_DATABASE_URL`). `legend_app` cannot issue a grant, cannot read the grant hash and cannot write the grant table. The secret that `legend_app` lacks is the grantor login password. That password is held only in the runtime environment and is sent as a SCRAM verifier, like the other logins.
-  Why not an HMAC key: no pgcrypto in this database; key material would have to be copied into a table and passed in SQL text (logs). A login is the boring, proven pattern in this repo.
+Why not an HMAC key: no pgcrypto in this database; key material would have to be copied into a table and passed in SQL text (logs). A login is the boring, proven pattern in this repo.
 
 D2. **The grant replaces `(p_actor, p_session)` in every trusted step function.** The new signatures take `p_grant text`. The function reads the actor and session from the consumed grant row. `legend_app` can no longer name an actor or a session at all. `app.payout_assert_actor` stays and runs on the grant's actor/session (live session, MFA at most 15 minutes old, permission).
 
@@ -109,21 +109,22 @@ Numbering: take the **next free numbers after the other 911 migrations** (P1-2, 
    - internal `app.payout_attest(uuid, text, uuid, text, uuid, uuid[], varchar, uuid, text, text, jsonb)`
 2. Create the new ones (bodies = latest bodies after P1-2/P2-3, with only these edits: consume first, then `payout_assert_actor` on the grant's actor/session, `p_actor` becomes `v_actor` everywhere, attestation through `payout_attest` with the grant id):
 
-   | New signature | Grant binding (kind, step, batch, items, key, ref, target) |
-   |---|---|
-   | `payout_correction_propose(p_batch uuid, p_item_ids uuid[], p_key varchar, p_note text, p_grant text) RETURNS uuid` | correction, propose, p_batch, p_item_ids, p_key, NULL, NULL |
-   | `payout_correction_approve(p_operation uuid, p_key varchar, p_grant text) RETURNS integer` | correction, approve, batch of op, items of op, p_key, p_operation, NULL |
-   | `payout_overpaid_propose(p_batch uuid, p_item_ids uuid[], p_key varchar, p_note text, p_grant text) RETURNS uuid` | overpaid, propose, p_batch, p_item_ids, p_key, NULL, NULL |
-   | `payout_overpaid_record(p_item uuid, p_key varchar, p_posting uuid, p_grant text) RETURNS void` | overpaid, record, batch of item, {p_item}, p_key, p_posting, NULL |
-   | `payout_return_propose(p_batch uuid, p_item_ids uuid[], p_key varchar, p_note text, p_grant text) RETURNS uuid` | return, propose, p_batch, p_item_ids, p_key, NULL, NULL |
-   | `payout_return_confirm(p_claim uuid, p_key varchar, p_grant text) RETURNS integer` | return, confirm, batch of claim, items of claim, p_key, p_claim, NULL |
-   | `payout_proof_closure_propose(p_key varchar, p_note text, p_grant text) RETURNS uuid` | closure, propose, stuck.batch_id, {}, p_key, NULL, NULL |
-   | `payout_proof_closure_approve(p_closure uuid, p_grant text) RETURNS boolean` | closure, approve, stuck.batch_id, {}, closure key, p_closure, NULL |
-   | `payout_posting_record_source(p_batch uuid, p_posting uuid, p_gl_account uuid, p_grant text) RETURNS void` | posting_source, record, p_batch, {}, NULL, p_posting, p_gl_account |
+   | New signature                                                                                                                                                                                     | Grant binding (kind, step, batch, items, key, ref, target)                                                             |
+   | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+   | `payout_correction_propose(p_batch uuid, p_item_ids uuid[], p_key varchar, p_note text, p_grant text) RETURNS uuid`                                                                               | correction, propose, p_batch, p_item_ids, p_key, NULL, NULL                                                            |
+   | `payout_correction_approve(p_operation uuid, p_key varchar, p_grant text) RETURNS integer`                                                                                                        | correction, approve, batch of op, items of op, p_key, p_operation, NULL                                                |
+   | `payout_overpaid_propose(p_batch uuid, p_item_ids uuid[], p_key varchar, p_note text, p_grant text) RETURNS uuid`                                                                                 | overpaid, propose, p_batch, p_item_ids, p_key, NULL, NULL                                                              |
+   | `payout_overpaid_record(p_item uuid, p_key varchar, p_posting uuid, p_grant text) RETURNS void`                                                                                                   | overpaid, record, batch of item, {p_item}, p_key, p_posting, NULL                                                      |
+   | `payout_return_propose(p_batch uuid, p_item_ids uuid[], p_key varchar, p_note text, p_grant text) RETURNS uuid`                                                                                   | return, propose, p_batch, p_item_ids, p_key, NULL, NULL                                                                |
+   | `payout_return_confirm(p_claim uuid, p_key varchar, p_grant text) RETURNS integer`                                                                                                                | return, confirm, batch of claim, items of claim, p_key, p_claim, NULL                                                  |
+   | `payout_proof_closure_propose(p_key varchar, p_note text, p_grant text) RETURNS uuid`                                                                                                             | closure, propose, stuck.batch_id, {}, p_key, NULL, NULL                                                                |
+   | `payout_proof_closure_approve(p_closure uuid, p_grant text) RETURNS boolean`                                                                                                                      | closure, approve, stuck.batch_id, {}, closure key, p_closure, NULL                                                     |
+   | `payout_posting_record_source(p_batch uuid, p_posting uuid, p_gl_account uuid, p_grant text) RETURNS void`                                                                                        | posting_source, record, p_batch, {}, NULL, p_posting, p_gl_account                                                     |
    | internal `payout_attest(p_tenant uuid, p_kind text, p_operation uuid, p_step text, p_batch uuid, p_item_ids uuid[], p_key varchar, p_binding uuid, p_grant uuid, p_assertion jsonb) RETURNS void` | reads actor/session from the grant row; sets `grant_id`; ON CONFLICT replacement of 'propose' also replaces `grant_id` |
 
    `detail` is NULL for all nine. Closure functions and the posting source now write their attestation through `payout_attest` (one writer). Step-two functions (correction approve, overpaid record, return confirm, closure approve) refuse when the step-one attestation of the operation has `grant_id IS NULL`: `PAYOUT-71` (23514).
    An idempotent early return (closure already proposed / already closed) happens after the consume: the grant is spent, nothing else changes.
+
 3. `REVOKE ALL ... FROM PUBLIC` and `GRANT EXECUTE ... TO legend_app` on the nine public ones; nothing on `payout_attest`.
 4. Last: `ALTER TABLE payroll_payout_attestations ADD CONSTRAINT payroll_payout_attestations_grant_check CHECK (grant_id IS NOT NULL OR attested_at < app.payout_grants_since());`
 5. Ownership dance.
@@ -143,10 +144,16 @@ New and changed files, in order:
    export type PayoutGrantBinding = {
      kind: "correction" | "overpaid" | "return" | "closure" | "posting_source";
      step: "propose" | "approve" | "record" | "confirm";
-     batchId: string | null; itemIds: readonly string[]; evidenceKey: string | null;
-     refId: string | null; targetId: string | null; detail?: string | null;
+     batchId: string | null;
+     itemIds: readonly string[];
+     evidenceKey: string | null;
+     refId: string | null;
+     targetId: string | null;
+     detail?: string | null;
    };
-   export type PayoutGrantIssuer = { issue(binding: PayoutGrantBinding): Promise<string> };
+   export type PayoutGrantIssuer = {
+     issue(binding: PayoutGrantBinding): Promise<string>;
+   };
    export function payoutGrantIssuerOf(req: Request): PayoutGrantIssuer;
    ```
    `issue` refuses (401 `REAUTH_REQUIRED`) when no step-up record exists for `req`, when it belongs to another user or session than `getAuth(req)`, or when it is older than `PAYOUT_STEP_UP_MAX_AGE_MINUTES`. It answers 503 `PAYOUT_STEP_GRANT_UNAVAILABLE` when no grantor pool is configured. Otherwise, one short transaction on the grantor pool: `set_config('app.tenant_id', tenant, true)`, `SELECT app.payout_grant_issue(...)`, COMMIT. It returns the secret. Never log the binding together with the secret; never put the secret in an error.

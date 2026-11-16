@@ -797,7 +797,7 @@ login created in the previous section, not the bootstrap superuser.
 | `legend_runtime_<16 hex>` | `APP_DATABASE_URL` (api.env, worker.env; `DATABASE_URL` equal) | Member of `legend_app` only: read and write tenant tables through forced RLS. Not superuser, no `BYPASSRLS`, owns nothing, cannot create or alter objects.                                    |
 | `legend_worker_<16 hex>`  | `WORKER_DATABASE_URL` (worker.env only)                        | Owns only the `pgboss` queue schema and reads `app.active_tenant_registry`. No access to domain tables.                                                                                       |
 | `legend_maint_<16 hex>`   | `MAINTENANCE_DATABASE_URL` (worker.env only, optional here)    | Member of `legend_maintenance` only: no table or sequence rights, runs just `app.audit_retention_due_tenants()` and `app.purge_audit_retention_batch()` (audit retention purge, legend-usyi). |
-| `legend_grant_<16 hex>`   | `PAYOUT_GRANTOR_DATABASE_URL` (api.env only, optional here)    | Member of `legend_payout_grantor` only: no table or sequence rights, runs just `app.payout_grant_issue()` (one-time payout step grants, legend-911). `legend_app` cannot issue a grant. |
+| `legend_grant_<16 hex>`   | `PAYOUT_GRANTOR_DATABASE_URL` (api.env only, optional here)    | Member of `legend_payout_grantor` only: no table or sequence rights, runs just `app.payout_grant_issue()` (one-time payout step grants, legend-911). `legend_app` cannot issue a grant.       |
 
 Both the application login and the queue login get
 `idle_in_transaction_session_timeout = '5min'` from the job (legend-9h0kg), so
