@@ -601,6 +601,14 @@
 
 # PROGRESS — Legend Super App
 
+## Merge train batch78 — 927 — 16 Nov 2026
+
+- Basis terbaru `origin/milestone/m1` `7b7cc52df`; integrasi `int/batch78`.
+- Dua cabang masuk tanpa konflik: `fix/925-ci-grantor-withdraw-flake` `953effb41` dan `fix/e2e-m1-858-r2` `c12914ea6`. Cabang 858 lama tidak diambil.
+- Tidak ada migrasi baru; ujung journal tetap `0430_payout_backfill_unfreeze_lock_order`. Tambahan antrean tidak memenuhi syarat tanpa bentrok: `ws/edge-kds-stations` dan `ghostex/5ce165c2` butuh resolusi terpisah; prioritas lainnya sudah ancestor m1.
+- Gate berurutan berjalan lewat satu test-runner: fast scanner root/API (`*single-path*`, `*contract*`, `*registry*`) dan area payout/Lighthouse, lint, typecheck, e2e, build, full test. Semua kerja berat lewat `heavy`; log `/tmp/legend-batch78`.
+- Subagent Codex: 3 total, puncak 3 (2 Explore read-only, 1 test-runner). Isi sumber tidak direview ulang karena merge bersih.
+
 ## Test infra legend-xu9he + legend-3mgje (Codex, ws/test-infra-flakes, 2026-11-11)
 
 - Basis: `origin/milestone/m1` `7917440a`, brief 527. Scope hanya test/fixture dan skrip runner; tidak ada kode produk/migrasi berubah.
