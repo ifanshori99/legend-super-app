@@ -6701,3 +6701,22 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - F5 diagnosis: service membatasi `last_seen_at` memakai waktu Node yang juga dikirim sebagai response `serverTime`, sedangkan test membandingkan terhadap PostgreSQL `now()` tanpa toleransi. Selisih jam kecil dapat memberi false failure. Test/service identik m1 dan source; kegagalan sama tercatat batch64b tetapi tidak ditemukan kartu flake tepat, jadi tidak memakai pengecualian full-run. Kartu `legend-g868k` dibuat untuk mengikat assertion ke `serverTime` operasi yang sama; perilaku produksi tetap. Targeted seluruh device registry3× lalu full tetap wajib.
 
 - Patch F5 test-only direview bersih: timestamp cap dibandingkan dengan response serverTime dari operasi yang sama, bukan PostgreSQL now; future+1jam, forward dan anti-mundur tetap diuji, tanpa toleransi. Seluruh device-registry39/39 hijau tiga run berturut,14 detik/run termasuk DB setup/cleanup, `/tmp/batch77-device-green-{1,2,3}.log`. Fast ditutup dengan rerun file gagal; tidak memakai pengecualian full-run. Lanjut `heavy pnpm run lint`, log `/tmp/batch77-lint.log`.
+
+- F5 fix commit `5ff839db0`; `heavy pnpm run lint` exit0 dalam50 detik,0 error/2 warning hook dependency lama di profit-share distributions-page:42 dan shareholders-page:68 (di luar diff). Log `/tmp/batch77-lint.log`. `heavy pnpm run typecheck` berjalan, `/tmp/batch77-typecheck.log`.
+
+- `heavy pnpm run typecheck` exit0 dalam54 detik: API/shared/web3/3 cache-miss sukses beserta root tsc. Log `/tmp/batch77-typecheck.log`. `heavy pnpm test:setup` mulai pada fresh variant dengan cleanup otomatis; e2e/build/full mengikuti setelah hijau.
+
+- `heavy pnpm test:setup` exit0 dalam35 detik: fresh/repeat setup, persistensi DB dan grantor check lulus; container/volume disposable dan temp variant dibersihkan, disk15GiB. `heavy pnpm test:e2e` mulai (build produksi+Playwright), `/tmp/batch77-e2e.log`.
+
+- `heavy pnpm test:e2e` exit0 dalam40 detik termasuk production build; Playwright18 passed/1 skipped (19 total),1 worker,25,5 detik; DB disposable dibersihkan. Log `/tmp/batch77-e2e.log`. `heavy pnpm build` berjalan, `/tmp/batch77-build.log`, lalu colima-up dan full test wajib.
+
+- `heavy pnpm build` exit0 dalam6 detik,2/2 tasks sukses (cache0); `/tmp/batch77-build.log`. colima-up dijalankan, lalu full run pertama `LEGEND_TEST_CONCURRENCY=2 heavy pnpm run test` (root→web→API) dimulai, `/tmp/batch77-full.log`; full belum selesai.
+- Audit residual setup menemukan Lighthouse CI harness (`scripts/ci/lighthouse.mjs`) belum memasok grantor saat menjalankan API production; di luar gate924/test/e2e/dev-prepare yang diminta, dicatat sebagai follow-up terpisah, tanpa perubahan kode/gerbang Lighthouse pada batch ini.
+
+- Full run pertama checkpoint: root3469 kasus,3468 lulus/0 gagal/1 skip dalam150,4 detik; web unit lulus, API penuh mulai. Tidak ada kegagalan full pada checkpoint ini.
+
+- Full web tepat3 berkas/92 tes hijau. Full API denominator1349 berkas (include src/**/*.test.ts), checkpoint2126 tes lulus teramati pada35 berkas, tanpa gagal; termasuk withdraw payout, closure hold, captured tender merge/move guard dan refund event replay tanpa double pay. Full masih berjalan.
+
+- Full API checkpoint3433 tes lulus teramati pada89/1349 berkas, tanpa gagal. Invariant payout tepat-sekali, bukti belum diunggah, persetujuan dua orang dan jurnal retur ikut hijau; full run pertama masih berjalan.
+
+- Full API checkpoint4193 tes lulus teramati pada126/1349 berkas, tanpa gagal; rapel tanpa double-pay dan receipt-required guards hijau. Full job masih aktif, kode tetap `5ff839db0`; checkpoint berikut hanya dokumentasi. Follow-up Lighthouse dicatat di `legend-kj50i` dan tetap terbuka.
