@@ -16,11 +16,13 @@ Ditulis oleh merge train batch64g. Sumber: pesan CTO G6evw, G6w9t, G4j04. Tip SH
 
 - Batch79 -> m1 70bba542dbb6cc1110b929d724130e74c34326ce (merge pendaratan `b132b71ff`): `ws/928-edge-print-alert` b158f09c2, `fix/844-ui-delivery-r2` 40d434c3a, `fix/0y8tf-zvz-port` 84c48ca1d. Tanpa migrasi; ujung tetap 0430. Fast383 berkas termasuk67 kontrak pemindai, lint, typecheck, e2e produksi18 lulus/1 skip+mock25/25, build dan full gabungan24474 lulus/47 skip/16 todo hijau. Full dipulihkan dari bind mount Colima /private/tmp dengan relokasi ke /Users dan rerun hanya berkas gagal, tanpa patch; seluruh web/API dilanjutkan. Ditutup: `legend-2lp.2`, `legend-2lp.4`, `legend-2lp.5`, `legend-4lm6`, `legend-0y8tf`, `legend-sgvw0`, `legend-xz3ll`. `legend-d6d1` tetap parsial. Jangan antre ulang tiga cabang ini. Rilis cloud dulu, lalu edge.
 
-## Antrean tersisa setelah batch79
+- Batch80 -> m1 c17c60df7ca80f4dc4af8de06faae4e43d40ac80: `ws/edge-kds-stations-r2` 91c7f9d8b, satu cabang (audit ancestry: tidak ada tambahan SIAP). Migrasi `0431_device_scanner_status` -> `0431_device_scanner_status`; snapshot0431 berantai ke0430, db:generate kosong/check-journal hijau. Gate hijau: fast307 (seluruh68 pemindai) root913+API4029, lint, typecheck, e2e produksi18 lulus/1 skip, build; full pertama24527 lulus/47 skip/16 todo (API20932+root3503+web92), tanpa rerun/patch/pengecualian flake. Ditutup: `legend-i78o6`, `legend-40nvj`, `legend-qhsex`. Jangan antre ulang r2 atau cabang sumber lama. Rilis cloud dulu, lalu edge; shell eksternal dan mock web tetap batas integrasi.
 
-- `ws/edge-kds-stations-r2` 91c7f9d8b SIAP batch80 (protokol v3 field opsional + resync sekali per revisi; migrasi sementara 0431, renumber dari ujung m1). Cabang lama `ws/edge-kds-stations` dan `ghostex/5ce165c2` jangan diambil.
-- `ws/edge-kds-stations` 6e393095c: belum masuk; perlu penyelesaian konflik edge/KDS dan rechain migrasi 0371 dari ujung m1. Tidak memenuhi syarat tambahan tanpa bentrok batch78.
-- `ghostex/5ce165c2` 2f62ed4be: belum masuk; perlu penyelesaian konflik KDS/delivery/e2e. Tidak memenuhi syarat tambahan tanpa bentrok batch78.
+## Antrean tersisa setelah batch80
+
+- Tidak ada cabang SIAP tambahan yang belum menjadi ancestor m1 pada audit batch80. Periksa ancestry lagi bila ada tip baru.
+- `ws/edge-kds-stations` 6e393095c: jangan diambil; sudah digantikan port r2 batch80, bukan cabang SIAP baru.
+- `ghostex/5ce165c2` 2f62ed4be: jangan diambil; port UI/delivery sudah batch79, sisa zona/waitlist tetap legend-d6d1.
 - Rujukan cabang lain pada “Urutan prioritas” sudah menjadi ancestor m1 saat audit batch78; periksa ancestry sebelum mengantre ulang.
 - `legend-whd5c` tetap terbuka untuk adapter kredit tamu (`test.fixme`).
 
@@ -110,7 +112,7 @@ Induk lebih dulu. Migrasi dinomori ulang dari ujung m1 saat batch disusun.
 
 ## Catatan migrasi
 
-- Nomor terakhir di m1 setelah batch79: 0430 (`0430_payout_backfill_unfreeze_lock_order`). Entri sementara dari brief CTO (0373-0385, 0440, 0448) hanyalah nomor kerja; nomor akhir mengikuti ujung m1 saat merge.
+- Nomor terakhir di m1 setelah batch80: 0431 (`0431_device_scanner_status`); nomor berikut 0432. Entri sementara dari brief CTO (0373-0385, 0440, 0448) hanyalah nomor kerja; nomor akhir mengikuti ujung m1 saat merge.
 - Migrasi data (`0377_recipes_resync_edges` dll.) dikunci per nama berkas di `data-import-registry.test.ts`.
 - Peringatan check-journal terbuka: migrasi 0369 menambah FK `push_subscriptions_device_fk` pada tabel lama tanpa NOT VALID. Catat untuk review sebelum rilis.
 
