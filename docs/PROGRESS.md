@@ -4,6 +4,7 @@
 - Berikut: merge train renumber migrasi 0643-0651; second-opinion Codex area payout sebelum gerbang rilis.
 - Keputusan: guard `current_user = legend_payout` (A1: semua keluar dari succeeded/overpaid/returned); return legacy tanpa claim di langkah 2 ditolak; batas recon `app.payout_trusted_since()`; sesi yang sudah logout bukan selisih recon; 0650(b) mempersempit cek fee 0643 ke jenis settle (architect: perlu, tidak melonggarkan dibanding base).
 - Bead tindak lanjut: legend-r86qa (retry/resolve masih dipercaya ke legend_app), legend-izza4 (GUC settle), legend-xbagc (tutup flag recon), legend-d9pxr (jurnal fee overpaid), legend-d023k (mapping historis recon), legend-y2lk2 (recon closure).
+- Biaya: 127 menit, 38 subagent (puncak 7, rata 0.98 berjalan), semua vendor Claude (opus utama 184 req, sonnet 665, opus sub 303, haiku 54), biaya* 20.6M.
 
 ## 868 API daftar rekonsiliasi EDC (engineer, legend-p98qi, cabang dari `ui/edc-rekonsiliasi-865` 5fb5f8273, 15 Nov 2026)
 
