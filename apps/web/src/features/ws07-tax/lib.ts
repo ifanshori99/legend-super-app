@@ -316,6 +316,14 @@ const TAX_ERROR_KEYS = {
   INVALID_TRANSITION: "accounting.tax.errors.invalidTransition",
   PERIOD_NOT_CLOSED: "accounting.tax.errors.periodNotClosed",
   TAX_REPORT_NOT_APPLICABLE: "accounting.tax.errors.notApplicable",
+  TAX_REPORT_SUPERSEDED: "accounting.tax.errors.superseded",
+  TAX_REPORT_STALE: "accounting.tax.errors.stale",
+  TAX_REPORT_CORRECTION_REASON_REQUIRED:
+    "accounting.tax.errors.correctionReasonRequired",
+  TAX_REPORT_SOURCE_UNAVAILABLE: "accounting.tax.errors.sourceUnavailable",
+  TAX_REPORT_AMOUNT_MISMATCH: "accounting.tax.errors.amountMismatch",
+  TAX_REPORT_NOT_FOUND: "accounting.tax.errors.notFound",
+  TAX_REPORT_NO_CHANGE: "accounting.tax.errors.noChange",
 } as const;
 
 /** API error code → catalog key; every refusal the screen can hit is mapped. */
