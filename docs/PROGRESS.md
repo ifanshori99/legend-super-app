@@ -6791,3 +6791,12 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Bukti sumber gagal-dulu 30 test tercatat di entri asli di atas. Pemeriksaan setelah commit port dilakukan oleh test-runner thread 930; hasil dicatat pada laporan handoff. Tidak ada aturan uang atau akses baru.
 - Penyesuaian fixture m1: test kontrak root gagal karena tiga field station baru belum ada. Fixture station pada edge-master-data-contract, edge-master-data-applier, dan edge-snapshot-tolerant dilengkapi nilai default, tanpa mengubah assertion atau perilaku produk.
 - Catatan review: reviewer thread menemukan celah replay saat upgrade yang diwarisi commit sumber; port ini tidak merancang ulang perilaku di luar sumber. Tahan kesiapan merge/rilis sampai CTO menindaklanjuti temuan. Urutan rollout tetap cloud dahulu, lalu edge; pemeriksaan test-runner setelah commit fixture terakhir masih menunggu.
+
+## CTO-930 follow-up: kompatibilitas station dan resync skema katalog
+
+- Keputusan CTO: protokol tetap v3 dan minimum pembaca cloud kembali ke v2 sesuai m1. `displayOrder`, `isActive`, dan `autoPrintFallback` menjadi tambahan opsional; field yang tidak dikirim tidak menimpa nilai lokal. Ekspor tanpa parameter versi tetap memakai bentuk m1 untuk publisher event lama yang strict.
+- Edge menyimpan revisi skema katalog lokal (revisi kode 1), terpisah dari versi protokol. Marker applied/pending memakai tabel checkpoint yang sudah ada; upgrade mengosongkan hanya cursor katalog yang sudah ada satu kali secara atomik. Kegagalan, backlog, restart, dan panggilan parsial tidak boleh mengesahkan revisi; init, deferred-reference, receipt, dan marker revisi yang lebih baru tetap dijaga.
+- HTTP boleh melengkapi hanya tiga tambahan KDS pada station hidup dengan syncTxid yang persis sama; field inti, timestamp, versi, tenant/outlet, receipt, dan tombstone tidak boleh dilonggarkan. Ini juga menjaga pembaruan sesudah event lama yang tidak membawa tambahan KDS.
+- Bukti RED bersih: 11 kegagalan semantik yang diharapkan, 117 lulus dari 128 test; tanpa kesalahan fixture. Log `/tmp/930-kds-followup-red-clean.log`. Gate akhir disimpan pada `/tmp/930-kds-followup-verification.txt` setelah commit final.
+- Tidak ada migrasi SQL baru; migrasi scanner sementara 0431 tetap. Cabang delivery dan zvz tidak disentuh. Tidak merge/deploy; push KDS tanpa force sesudah gate akhir.
+- Subagent follow-up: total 7, puncak 6 bersamaan; satu token heavy pada `followup_runner`. Laporan token/biaya Codex tidak tersedia melalui helper sesi Claude.

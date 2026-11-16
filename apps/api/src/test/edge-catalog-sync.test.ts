@@ -2230,7 +2230,7 @@ describe("i78o6 station KDS config travels cloud -> edge", () => {
     expect(() => catalogSyncPageSchema.parse(page)).not.toThrow();
   });
 
-  it("i78o6 protocol v3 carries the three fields; v2 and no parameter get the station without them", async () => {
+  it("i78o6 protocol v2 and v3 carry optional fields; no parameter keeps the legacy event shape", async () => {
     const changed = {
       displayOrder: 7,
       isActive: false,
@@ -2251,7 +2251,8 @@ describe("i78o6 station KDS config travels cloud -> edge", () => {
       return page.records.find((r) => r.id === ids.stn1)!;
     };
     expect(cfgOf(await ask(3))).toEqual(changed);
-    for (const version of [2, undefined]) {
+    expect(cfgOf(await ask(2))).toEqual(changed);
+    for (const version of [undefined]) {
       const rec = await ask(version);
       expect(rec).toBeDefined();
       expect(rec).not.toHaveProperty("displayOrder");

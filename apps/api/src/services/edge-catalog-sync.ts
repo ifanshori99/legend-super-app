@@ -47,7 +47,6 @@
 
 import {
   CATALOG_PROTOCOL_VERSION,
-  CATALOG_STATION_KDS_FIELDS_MIN_VERSION,
   STATION_KDS_FIELDS,
   catalogSyncCloudPageSchema,
   catalogSyncQuerySchema,
@@ -835,9 +834,8 @@ const scanners: Record<
  * The page version for an edge that understands up to `requested`: the lower
  * of that and this cloud's own. A newer edge gets this cloud's version (it
  * decides whether it can read it); an older one gets its own. Version 3
- * widens the recipe stream to every brand and adds the KDS station fields.
- * A v2 edge or one without the parameter keeps its brand-filtered recipes
- * and station shape without the KDS fields.
+ * widens the recipe stream to every brand. A v2 edge or one without the
+ * parameter keeps its brand-filtered recipes.
  */
 export function negotiateCatalogProtocolVersion(requested: number): number {
   return Math.min(requested, CATALOG_PROTOCOL_VERSION);
@@ -973,20 +971,17 @@ export async function listCatalogRecordsSinceTx(
     nextCursor: lastMark ?? input.query.since ?? null,
     hasMore: rows.length > limit,
   });
-  // Station KDS fields (v3) only for an edge that asked for v3 or newer. An
-  // older edge (v2 or no parameter) has a strict station schema without them.
-  if (
-    full.stream === "stations" &&
-    (stamped ?? 0) < CATALOG_STATION_KDS_FIELDS_MIN_VERSION
-  ) {
+  // Versioned HTTP readers tolerate optional station additions. Preserve the
+  // legacy unversioned shape used by the strict catalog event publisher.
+  if (full.stream === "stations" && stamped === undefined) {
     return {
       ...full,
       records: full.records.map((record) => {
-        const legacy: Record<string, unknown> = { ...record };
+        const legacy = { ...record };
         for (const field of STATION_KDS_FIELDS) delete legacy[field];
         return legacy;
       }),
-    } as unknown as CatalogSyncPage;
+    };
   }
   return full;
 }

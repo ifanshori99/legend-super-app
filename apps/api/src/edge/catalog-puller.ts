@@ -65,6 +65,7 @@ import { isCatalogSyncCursorError } from "../services/edge-catalog-sync.ts";
 import {
   applyCatalogRecords,
   CatalogMissingRefError,
+  enrichCatalogStationFields,
   filterCatalogRecordsAfterEvents,
   lockCatalogStream,
   repairCategoryParents,
@@ -86,6 +87,11 @@ type Database = typeof db;
 const DEFAULT_MAX_PAGES = 1_000;
 /** The only cursor tag this edge understands (see the header). */
 const CATALOG_CURSOR_TAG = "cat2";
+
+/** Local catalog shape, independent of the backwards-compatible wire protocol. */
+export const CATALOG_SCHEMA_REVISION = 1;
+const SCHEMA_REVISION_CHECKPOINT = "catalog:schema-revision";
+const SCHEMA_PENDING_CHECKPOINT = "catalog:schema-pending";
 
 /** Pending category parents live in a checkpoint row of their own. */
 const PARENTS_CHECKPOINT = "catalog:menu_categories:parents";
@@ -367,6 +373,130 @@ function saveCatalogCheckpoint(
   );
 }
 
+async function lockCatalogSchemaRevision(
+  tx: Tx,
+  options: PullCatalogOptions,
+): Promise<void> {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtextextended(${`edge-catalog-schema:${options.context.tenant.tenantId}:${options.edgeNodeId}`.toLowerCase()}, 0))`,
+  );
+}
+
+async function loadCatalogSchemaRevision(
+  tx: Tx,
+  edgeNodeId: string,
+  stream: typeof SCHEMA_REVISION_CHECKPOINT | typeof SCHEMA_PENDING_CHECKPOINT,
+): Promise<number> {
+  const [row] = await tx
+    .select({ watermark: edgePullCheckpoints.watermark })
+    .from(edgePullCheckpoints)
+    .where(
+      and(
+        eq(edgePullCheckpoints.edgeNodeId, edgeNodeId),
+        eq(edgePullCheckpoints.stream, stream),
+      ),
+    )
+    .limit(1);
+  const value = row?.watermark;
+  if (value === undefined || value === null || !/^\d+$/.test(value)) return 0;
+  const revision = Number(value);
+  return Number.isSafeInteger(revision) ? revision : 0;
+}
+
+/**
+ * Reset just the HTTP cursors once per upgrade. The pending marker and resets
+ * commit together, so retries and restarts continue their already-applied pages.
+ * Initialization, deferred references and held event receipts remain intact.
+ */
+async function prepareCatalogSchemaRevision(
+  options: PullCatalogOptions,
+): Promise<boolean> {
+  return withTenant(options.database ?? db, options.context, async (tx) => {
+    await lockCatalogSchemaRevision(tx, options);
+    const applied = await loadCatalogSchemaRevision(
+      tx,
+      options.edgeNodeId,
+      SCHEMA_REVISION_CHECKPOINT,
+    );
+    if (applied >= CATALOG_SCHEMA_REVISION) return false;
+    const pending = await loadCatalogSchemaRevision(
+      tx,
+      options.edgeNodeId,
+      SCHEMA_PENDING_CHECKPOINT,
+    );
+    if (pending > CATALOG_SCHEMA_REVISION) return false;
+    if (pending === CATALOG_SCHEMA_REVISION) return true;
+    const now = (options.now ?? (() => new Date()))();
+    for (const stream of CATALOG_SYNC_STREAMS) {
+      await lockCatalogStream(tx, options.context.tenant.tenantId, stream);
+      if (isPromoStream(stream))
+        markPromoCatalogStreamPending(catalogCheckpointStream(stream));
+      // A stream that has never committed a page must still have no cursor
+      // row if its first fetch/apply fails. Only rewind existing checkpoints.
+      await tx
+        .update(edgePullCheckpoints)
+        .set({
+          watermark: null,
+          lastSuccessAt: PROMO_INVALIDATED_AT,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(edgePullCheckpoints.edgeNodeId, options.edgeNodeId),
+            eq(edgePullCheckpoints.stream, catalogCheckpointStream(stream)),
+          ),
+        );
+    }
+    await saveCheckpointRow(
+      tx,
+      options.edgeNodeId,
+      SCHEMA_PENDING_CHECKPOINT,
+      String(CATALOG_SCHEMA_REVISION),
+      now,
+    );
+    return true;
+  });
+}
+
+/** Certify only a complete canonical pull, never a subset, failed page or backlog. */
+async function completeCatalogSchemaRevision(
+  options: PullCatalogOptions,
+): Promise<void> {
+  await withTenant(options.database ?? db, options.context, async (tx) => {
+    await lockCatalogSchemaRevision(tx, options);
+    const applied = await loadCatalogSchemaRevision(
+      tx,
+      options.edgeNodeId,
+      SCHEMA_REVISION_CHECKPOINT,
+    );
+    const pending = await loadCatalogSchemaRevision(
+      tx,
+      options.edgeNodeId,
+      SCHEMA_PENDING_CHECKPOINT,
+    );
+    if (
+      applied >= CATALOG_SCHEMA_REVISION ||
+      pending !== CATALOG_SCHEMA_REVISION
+    )
+      return;
+    await saveCheckpointRow(
+      tx,
+      options.edgeNodeId,
+      SCHEMA_REVISION_CHECKPOINT,
+      String(CATALOG_SCHEMA_REVISION),
+      (options.now ?? (() => new Date()))(),
+    );
+    await tx
+      .delete(edgePullCheckpoints)
+      .where(
+        and(
+          eq(edgePullCheckpoints.edgeNodeId, options.edgeNodeId),
+          eq(edgePullCheckpoints.stream, SCHEMA_PENDING_CHECKPOINT),
+        ),
+      );
+  });
+}
+
 /**
  * Normalize local bootstrap stamps once, before either receive path writes
  * cloud versions. Kept separate from the HTTP cursor (including an empty
@@ -626,6 +756,14 @@ async function pullStream(
         )
           await resetCatalogSyncTxid(tx, tenantId, stream, options.edgeNodeId);
       }
+      // Canonical station events carry the original v3 shape. An equal-version
+      // HTTP row can fill only its optional KDS settings before receipt filtering.
+      if (stream === "stations")
+        await enrichCatalogStationFields(tx, {
+          tenantId,
+          stream,
+          records: page.records,
+        });
       const records = await filterCatalogRecordsAfterEvents(tx, {
         tenantId,
         edgeNodeId: options.edgeNodeId,
@@ -830,6 +968,11 @@ async function runCatalogPull(
   oneOutlet(options.context);
   const database = options.database ?? db;
   const streams = options.streams ?? CATALOG_SYNC_STREAMS;
+  const fullCatalog =
+    streams.length === CATALOG_SYNC_STREAMS.length &&
+    CATALOG_SYNC_STREAMS.every((stream) => streams.includes(stream));
+  const schemaRevisionPending =
+    fullCatalog && (await prepareCatalogSchemaRevision(options));
   const results: Partial<Record<CatalogSyncStream, CatalogStreamPullResult>> =
     {};
   const total = {
@@ -963,5 +1106,15 @@ async function runCatalogPull(
     total.pages += progress.pages;
     total.backlog = total.backlog || progress.backlog;
   }
+  if (
+    schemaRevisionPending &&
+    CATALOG_SYNC_STREAMS.every((stream) => {
+      const result = results[stream];
+      return (
+        result !== undefined && result.error === undefined && !result.backlog
+      );
+    })
+  )
+    await completeCatalogSchemaRevision(options);
   return { streams: results, ...total };
 }

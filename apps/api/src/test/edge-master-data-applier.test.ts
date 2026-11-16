@@ -196,6 +196,156 @@ async function receipts() {
   }));
 }
 
+describe("CTO-930 event-backed station KDS enrichment", () => {
+  it("AC13 equal HTTP enrichment cannot change configuration on a locally tombstoned station", async () => {
+    const record = station({ name: "Tombstone event base", syncTxid: "8" });
+    await deliver(catalogEvent(record));
+    await deliver(catalogEvent({ ...record, syncTxid: "9", deletedAt: NOW }));
+    const before = await receipts();
+    const result = await pullCatalog({
+      database: db,
+      context: node.context,
+      edgeNodeId: node.scope.edgeNodeId,
+      streams: ["stations"],
+      fetchPage: async (stream) => ({
+        protocolVersion: 3,
+        stream,
+        records: [
+          {
+            ...record,
+            syncTxid: "9",
+            displayOrder: 17,
+            isActive: false,
+            autoPrintFallback: true,
+          },
+        ],
+        nextCursor: encodeCursor(["cat2", "9", String(record.id)]),
+        hasMore: false,
+      }),
+    });
+    expect(result.streams.stations?.error).toBeUndefined();
+    const local = (
+      await owner.query(
+        `SELECT display_order, is_active, auto_print_fallback, deleted_at,
+       sync_txid::text FROM stations WHERE tenant_id = $1 AND id = $2`,
+        [world.tenantId, record.id],
+      )
+    ).rows[0];
+    expect(local).toMatchObject({
+      display_order: 0,
+      is_active: true,
+      auto_print_fallback: false,
+      sync_txid: "9",
+    });
+    expect(local.deleted_at).not.toBeNull();
+    expect(await receipts()).toEqual(before);
+  });
+
+  it("AC11 equal HTTP txid enriches optional fields while preserving receipt, base state, deletion and version", async () => {
+    const record = station({ name: "Authoritative event base", syncTxid: "9" });
+    await deliver(catalogEvent(record));
+    const before = await receipts();
+    const coreBefore = await storedStation(record.id);
+    const timestamps = async () =>
+      (
+        await owner.query(
+          `SELECT created_at, updated_at FROM stations
+           WHERE tenant_id = $1 AND id = $2`,
+          [world.tenantId, record.id],
+        )
+      ).rows[0];
+    const timestampsBefore = await timestamps();
+    const fetchRecord = async (incoming: CatalogRecord) =>
+      pullCatalog({
+        database: db,
+        context: node.context,
+        edgeNodeId: node.scope.edgeNodeId,
+        streams: ["stations"],
+        fetchPage: async (stream) => ({
+          protocolVersion: 3,
+          stream,
+          records: [incoming],
+          nextCursor: encodeCursor([
+            "cat2",
+            String(incoming.syncTxid),
+            String(record.id),
+          ]),
+          hasMore: false,
+        }),
+      });
+    const config = async () =>
+      (
+        await owner.query(
+          `SELECT display_order, is_active, auto_print_fallback FROM stations
+         WHERE tenant_id = $1 AND id = $2`,
+          [world.tenantId, record.id],
+        )
+      ).rows[0];
+    const enriched = {
+      ...record,
+      name: "HTTP base must not win",
+      type: "hot_kitchen",
+      printerDeviceId: randomUUID(),
+      targetSeconds: 900,
+      createdAt: "2026-11-15T12:00:00.000Z",
+      updatedAt: "2026-11-16T12:00:00.000Z",
+      displayOrder: 17,
+      isActive: false,
+      autoPrintFallback: true,
+    };
+    const result = await fetchRecord(enriched);
+    expect(result.streams.stations?.error).toBeUndefined();
+    expect(await config()).toEqual({
+      display_order: 17,
+      is_active: false,
+      auto_print_fallback: true,
+    });
+    expect(await storedStation(record.id)).toMatchObject({
+      name: "Authoritative event base",
+      target_seconds: 120,
+      deleted_at: null,
+      sync_txid: "9",
+    });
+    expect(await storedStation(record.id)).toEqual(coreBefore);
+    expect(await timestamps()).toEqual(timestampsBefore);
+
+    // An older payload and an equal-version tombstone cannot use enrichment
+    // to overwrite live station configuration or bypass the receipt guard.
+    for (const incoming of [
+      {
+        ...enriched,
+        syncTxid: "8",
+        displayOrder: 1,
+        isActive: true,
+        autoPrintFallback: false,
+      },
+      {
+        ...enriched,
+        deletedAt: NOW,
+        displayOrder: 2,
+        isActive: true,
+        autoPrintFallback: false,
+      },
+    ]) {
+      await fetchRecord(incoming);
+      expect(await config()).toEqual({
+        display_order: 17,
+        is_active: false,
+        auto_print_fallback: true,
+      });
+      expect(await storedStation(record.id)).toMatchObject({
+        name: "Authoritative event base",
+        deleted_at: null,
+        sync_txid: "9",
+      });
+      expect(await storedStation(record.id)).toEqual(coreBefore);
+      expect(await timestamps()).toEqual(timestampsBefore);
+    }
+    expect(await receipts()).toEqual(before);
+    expect(await store().lastReceivedInbound()).toBe(1);
+  });
+});
+
 describe("legend-3x9l full-state master-data down-sync", () => {
   it("defers a missing item without blocking later records and wakes after commit", async () => {
     const record = {
