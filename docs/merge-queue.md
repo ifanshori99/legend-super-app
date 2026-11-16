@@ -16,6 +16,7 @@ Ditulis oleh merge train batch64g. Sumber: pesan CTO G6evw, G6w9t, G4j04. Tip SH
 
 ## Antrean tersisa setelah batch78
 
+- `ws/928-edge-print-alert` b158f09c2 SIAP batch79 (2lp.2, 2lp.4, 2lp.5, 4lm6; tanpa migrasi; 381 test). Rilis: cloud dulu, lalu edge.
 - `ws/edge-kds-stations` 6e393095c: belum masuk; perlu penyelesaian konflik edge/KDS dan rechain migrasi 0371 dari ujung m1. Tidak memenuhi syarat tambahan tanpa bentrok batch78.
 - `ghostex/5ce165c2` 2f62ed4be: belum masuk; perlu penyelesaian konflik KDS/delivery/e2e. Tidak memenuhi syarat tambahan tanpa bentrok batch78.
 - Rujukan cabang lain pada “Urutan prioritas” sudah menjadi ancestor m1 saat audit batch78; periksa ancestry sebelum mengantre ulang.
