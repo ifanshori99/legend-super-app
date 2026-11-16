@@ -1,3 +1,11 @@
+## 934 Persetujuan utama batch payout lewat grant + log (legend-xp8mc, 17 Nov 2026)
+
+- Cabang ghostex/934-payout-persetujuan-utama-grant dari milestone/m1 c17c60df7, tip 0c5f37cef (6 commit, push tanpa force). Migrasi sementara 0432_payout_batch_approve_grant.sql.
+- Perubahan: grant sekali pakai baru kind batch_approve (step approve) wajib untuk persetujuan utama batch; app.payout_batch_approve_attest memakai grant dan menulis attestation + baris payroll_payout_approval_log lewat app.payout_attest, sehingga notifikasi dan "Bukan saya" berlaku untuk persetujuan utama. Trigger PAYOUT-83 menolak status pending_approval ke approved tanpa grant terpakai di transaksi yang sama (juga lewat SQL langsung). Aturan dua orang tetap (tolak di grant_issue, consume, service, dan CHECK). Urutan kunci approve: grant, run (update), batch, sama dengan disown/unfreeze. Recon (app.payout_recon_flag dan loadWithdrawals) ikut memeriksa grant persetujuan utama. Kalah balapan menjawab 409.
+- Bukti: 5 test gagal-dulu di HEAD lalu hijau, plus 2 test konkurensi dan 1 test recon; suite payout 65 file 965 lulus (0 gagal), typecheck penuh hijau, db:generate kosong, migrator non-superuser 12/12, root text-contract + access-i18n 16/16. Test 918/920 disesuaikan: approver kini aktor log.
+- Architect xhigh: pass 1 tanpa P1, dua P2 (kunci run SHARE ke UPDATE bisa deadlock; fixture core tanpa grant), keduanya ditutup; pass 2 tanpa P1/P2.
+- Subagent: total 23, puncak 4 bersamaan, token heavy dipegang test-runner.
+
 ## 925 Harness Lighthouse dan fixture withdrawal (16 Nov 2026)
 
 - Basis milestone/m1 7b7cc52df, cabang fix/925-ci-grantor-withdraw-flake. Dua kartu dikerjakan terpisah: legend-kj50i oleh lighthouse, legend-61umg oleh flake; test_runner memegang satu token heavy dan reviewer memeriksa diff.
