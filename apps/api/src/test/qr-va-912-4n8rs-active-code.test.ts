@@ -271,6 +271,145 @@ describe("legend-4n8rs A: public token of a POS bill with an active VA code", ()
   });
 });
 
+// ------------------------------------------- A2. failed code with parked money
+
+describe("legend-4n8rs A2: public token, failed code that is not final and has parked money", () => {
+  let fx: HoldFixture;
+  beforeAll(async () => {
+    fx = await holdFixture("qr-va-912-4n8rs-a2");
+    enableVaBank(fx.gateway);
+    setPaymentGateway(fx.gateway);
+  }, 180_000);
+  afterAll(() => {
+    resetHoldPorts();
+  });
+
+  /** 409 with body.error.code FUNDS_UNRESOLVED (parked money owed back first). */
+  function expectFundsUnresolved(response: { status: number; body: unknown }) {
+    expect(response.status, JSON.stringify(response.body)).toBe(409);
+    const error = (response.body as { error?: { code?: string } }).error;
+    expect(error?.code, JSON.stringify(response.body)).toBe("FUNDS_UNRESOLVED");
+  }
+
+  /**
+   * A bill with its token, and a code on its link that is status failed with a
+   * provider reference and no provider_final_at (the provider may still take
+   * money on it), plus an open parked fund (resolved_at null) on that code.
+   */
+  async function billWithFailedCodeAndFunds() {
+    const order = await newSubmittedOrder(fx, 0);
+    const { token, linkId } = await bindLinkToOrder(fx, order);
+    const tenantId = fx.tenant.tenantId;
+    const intentId = await asOwnerTenant(tenantId, (client) =>
+      seedLiveCode(client, {
+        tenantId,
+        outletId: fx.tenant.outletId,
+        linkId,
+        amountIdr: order.totalIdr,
+        method: "qris",
+      }),
+    );
+    await owner.query(
+      `UPDATE payment_intents SET status = 'failed'
+        WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, intentId],
+    );
+    await owner.query(
+      `INSERT INTO payment_unallocated_funds
+         (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason)
+       VALUES ($1, $2, $3, $4, 10000, 'overpayment')`,
+      [randomUUID(), tenantId, fx.tenant.outletId, intentId],
+    );
+    return { order, token, linkId, intentId };
+  }
+
+  it("legend-4n8rs POST links/:token/intents is refused 409 FUNDS_UNRESOLVED while a failed, not-final code has open parked money: no provider call, no new intent", async () => {
+    const { token, linkId, intentId } = await billWithFailedCodeAndFunds();
+    const tenantId = fx.tenant.tenantId;
+    const created = fx.gateway.requests.length;
+    const intents = await intentCount(tenantId);
+    const before = await intentRow(tenantId, intentId);
+
+    for (const body of [vaBody(), qrisBody()]) {
+      const refused = await agent(fx.app)
+        .post(`/api/payments/links/${token}/intents`)
+        .send(body);
+      expectFundsUnresolved(refused);
+    }
+    expect(fx.gateway.requests.length, "no code asked from the provider").toBe(
+      created,
+    );
+    expect(await intentCount(tenantId), "no new intent").toBe(intents);
+    expect(await intentsOnLink(tenantId, linkId)).toEqual([intentId]);
+    expect(await intentRow(tenantId, intentId)).toEqual(before);
+  });
+
+  it("legend-4n8rs POST links/:token/intents/:intentId/refresh is refused 409 FUNDS_UNRESOLVED while a failed, not-final code on the link has open parked money", async () => {
+    const { order, token, linkId, intentId } =
+      await billWithFailedCodeAndFunds();
+    const tenantId = fx.tenant.tenantId;
+    // A local expired code without a provider reference: what a guest refreshes.
+    const expiredId = randomUUID();
+    await owner.query(
+      `INSERT INTO payment_intents
+         (id, tenant_id, outlet_id, payment_link_id, method, provider,
+          amount_idr, idempotency_key, status, instructions, expires_at)
+       VALUES ($1, $2, $3, $4, 'qris', 'doit', $5, $6, 'expired', $7::jsonb,
+               now() - interval '20 minutes')`,
+      [
+        expiredId,
+        tenantId,
+        fx.tenant.outletId,
+        linkId,
+        order.totalIdr,
+        `r3b-${expiredId}`,
+        JSON.stringify({
+          method: "qris",
+          qrPayload: "00020101021226OLDQR",
+          issuer: null,
+        }),
+      ],
+    );
+    const created = fx.gateway.requests.length;
+    const intents = await intentCount(tenantId);
+    const before = await intentRow(tenantId, intentId);
+
+    const refused = await agent(fx.app).post(
+      `/api/payments/links/${token}/intents/${expiredId}/refresh`,
+    );
+    expectFundsUnresolved(refused);
+    expect(fx.gateway.requests.length, "no code asked from the provider").toBe(
+      created,
+    );
+    expect(await intentCount(tenantId), "no new intent").toBe(intents);
+    expect(await intentRow(tenantId, intentId)).toEqual(before);
+  });
+
+  it("legend-4n8rs control: the parked money is resolved and the failed code is final at the provider, a new code is issued 201", async () => {
+    const { token, intentId } = await billWithFailedCodeAndFunds();
+    const tenantId = fx.tenant.tenantId;
+    await owner.query(
+      `UPDATE payment_unallocated_funds
+          SET resolution = 'refund', resolved_by = 'test', resolved_at = now()
+        WHERE tenant_id = $1 AND payment_intent_id = $2`,
+      [tenantId, intentId],
+    );
+    await owner.query(
+      `UPDATE payment_intents SET provider_final_at = now()
+        WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, intentId],
+    );
+    const created = fx.gateway.requests.length;
+
+    const issued = await agent(fx.app)
+      .post(`/api/payments/links/${token}/intents`)
+      .send(qrisBody());
+    expect(issued.status, JSON.stringify(issued.body)).toBe(201);
+    expect(fx.gateway.requests.length).toBe(created + 1);
+    expect(issued.body.data.id).not.toBe(intentId);
+  });
+});
+
 // ------------------------------------------------------- B. breakfast token
 
 describe("legend-4n8rs B: breakfast order token with an active code", () => {

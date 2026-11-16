@@ -70,6 +70,7 @@ import {
   paymentUnallocatedFunds,
 } from "../db/schema";
 import { auditLogs } from "../db/schema/core-audit";
+import { assertNoOpenFundsOfPosOrderTx } from "./pos-order-open-funds.ts";
 import { orders } from "../db/schema/qr-order.ts";
 import { orderIssueCharges } from "../db/schema/kds-issues.ts";
 import { posQrisHolds } from "../db/schema/pos-qris-hold.ts";
@@ -875,7 +876,9 @@ async function lockLinkOrderTx(
  *   gates it. Without a part any live code of the link blocks.
  * Only a link that belongs to an order or charge is checked. A code that was
  * only locally superseded keeps `providerRef`, so it stays live until final;
- * a local code without `providerRef` is not live and may be replaced. An
+ * a `pending` code is live even before it has a `providerRef`. Open parked
+ * money on the bill refuses with 409 FUNDS_UNRESOLVED (a failed code with
+ * parked money is not "live" by `liveCodeWhere`, so this guard covers it). An
  * idempotent replay returns before this runs. The caller holds the order row
  * lock (`lockLinkOrderTx`, or `orderLockedByCaller`) when the check must be
  * race free; the check also runs once before any provider call.
@@ -928,6 +931,13 @@ async function assertLinkOrderCanIssueTx(
           "SPLIT_CODE_ACTIVE",
           "Kode pembayaran bagian ini masih berlaku; selesaikan atau tunggu sampai berakhir.",
         );
+  // Parked money still open on the bill (a failed code that may still pay
+  // does not count as live while its money is parked): the same refusal the
+  // guest, part and POS paths give, so no second collectible code appears.
+  await assertNoOpenFundsOfPosOrderTx(tx, context.tenant.tenantId, {
+    id: orderId,
+    paymentLinkId,
+  });
 }
 
 async function createIntentCore(

@@ -50,6 +50,7 @@ import {
   memberApi,
   newMember,
   openIntent,
+  openSecondIntent,
   orderItemFireStatuses,
   paidEvent,
   payIntent,
@@ -426,7 +427,7 @@ describe("BRK-PAY-02 double payment never marks paid twice", () => {
       const token = await payLink(world, member, ticketId, order.id);
       // The guest opens a second code on the same link and pays both.
       const a = await openIntent(world, token);
-      const b = await openIntent(world, token);
+      const b = await openSecondIntent(world, token);
       expect(b.id).not.toBe(a.id);
       await settle(world, a.id, order.totalIdr);
       await settle(world, b.id, order.totalIdr);
@@ -472,7 +473,7 @@ describe("BRK-PAY-02 double payment never marks paid twice", () => {
     // The guest opened two codes before paying; both intents exist before the
     // link is paid (opening one after payment is refused with 409).
     const first = await openIntent(world, token);
-    const late = await openIntent(world, token);
+    const late = await openSecondIntent(world, token);
     await settle(world, first.id, order.totalIdr);
     await deliver(world, await paidEvent(world, first.id));
     expect((await staffFire(world, order.id)).status).toBe(200);
