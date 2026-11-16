@@ -248,7 +248,10 @@ export function periodFigures(range: DateRange): Figures {
     const spec: DerivedSpec = DERIVED[key];
     figures[key] =
       spec.snapshot !== undefined
-        ? Math.round(spec.snapshot * dayFactor(range.endDate))
+        ? Math.round(
+            spec.snapshot *
+              dayFactor(key === "members" ? BUSINESS_DATE : range.endDate),
+          )
         : Math.round(atoms[spec.from] * (spec.ratio ?? 0));
   }
   const profile = profileOf(range, atoms);
@@ -348,7 +351,10 @@ function metricRef(code: string) {
     id: definition.id,
     code: definition.code,
     version: definition.version,
-    name: definition.name,
+    name:
+      code === "active_members"
+        ? `${definition.name} (saat ini)`
+        : definition.name,
     ownerModule: definition.ownerModule,
     formula: definition.formula,
     unit: definition.unit,
@@ -400,6 +406,7 @@ function buildRun(
         // SH-02: final only for a closed period, and for closed-period-only
         // figures only once the books of that period are closed.
         const official =
+          ref.code !== "active_members" &&
           closed &&
           (accountingClosed ||
             (ref.officiality !== "closed_period_only" &&

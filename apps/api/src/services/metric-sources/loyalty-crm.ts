@@ -20,14 +20,19 @@
 //   voucher without a promotion. Note this key is not the POS discount code
 //   `discount_amount` splits by.
 //
-// Not built, answered `unavailable` / `source_not_built`:
-// - active_members: a member's status and home outlet have no history, so a
-//   past day cannot be answered, and a member without `home_outlet_id` has no
-//   outlet. Needs a founder/CTO decision (see the bead comment).
+// Current reader (not persisted as a historical outlet-day):
+// - active_members: current active profiles, by current home outlet and tier.
+//   Tenant totals include members without a home outlet; an outlet filter
+//   excludes them, and an outlet split names their group `unassigned`.
+//   The engine labels this `saat ini`, never a historic/final balance.
+//
+// Not built, answered `unavailable` / `dimension_not_supported`:
 // - points_redeemed: redeem rows of `point_ledger` are written without an
 //   outlet or business date (the member app redeems, no till is involved);
 //   only `reward_redemptions.fulfilled_outlet_id` names an outlet, at pickup.
-//   Which outlet and day own a redeemed point is a decision, not a guess.
+//   Neither pickup nor created_at is the missing redemption attribution.
+//   Follow-up legend-iuhjc owns that gap; this reader never guesses or drops
+//   unattributed rows from a purported complete total.
 //
 // Dimension values are ids: tier id, promotion or voucher id.
 
@@ -39,6 +44,7 @@ import {
 } from "@starter/shared/core";
 import { outletBusinessDayClock } from "../outlet-clock";
 import type {
+  CurrentMetricReader,
   DailyComputeInput,
   DailyMetricReader,
   DailyMetricValue,
@@ -69,6 +75,45 @@ const countValue = (value: number): DailyMetricValue["value"] => ({
 });
 
 export const TIER_UNASSIGNED = "unassigned";
+
+// ---- current membership (no status or home-outlet history exists) ----------
+
+const activeMembersReader: CurrentMetricReader = {
+  dimensions: ["outlet", "customer_tier"],
+  async compute(input) {
+    const outlet =
+      input.outletFilter.kind === "all"
+        ? sql`true`
+        : input.outletFilter.outletIds.length === 0
+          ? sql`false`
+          : sql`home_outlet_id IN (${sql.join(
+              input.outletFilter.outletIds.map((id) => sql`${id}::uuid`),
+              sql`, `,
+            )})`;
+    const result = await input.tx.execute(sql`
+      SELECT home_outlet_id::text AS outlet, tier_id::text AS tier,
+             count(*) AS n
+        FROM customer_profiles
+       WHERE tenant_id = ${input.tenantId}::uuid
+         AND membership_status = 'active'
+         AND ${outlet}
+       GROUP BY home_outlet_id, tier_id
+       ORDER BY home_outlet_id, tier_id`);
+    return result.rows.map((row) => ({
+      dimensions: [
+        {
+          key: "outlet" as const,
+          value: row.outlet ? String(row.outlet) : "unassigned",
+        },
+        {
+          key: "customer_tier" as const,
+          value: row.tier ? String(row.tier) : TIER_UNASSIGNED,
+        },
+      ],
+      value: countValue(Number(row.n)),
+    }));
+  },
+};
 
 // ---- customers: new and returning ------------------------------------------
 
@@ -224,20 +269,20 @@ function dailySources(reader: DailyMetricReader): MetricSource[] {
   }));
 }
 
-const unavailable = (code: string): MetricSource => ({
-  kind: "unavailable",
-  code,
-  reason: "source_not_built",
-});
-
 export const loyaltyCrmSources: MetricSourceFamilyModule = {
   family: "loyalty-crm",
   sources: [
     ...dailySources(customerReader),
     ...dailySources(reviewReader),
     ...dailySources(promoCostReader),
-    unavailable("active_members"),
-    unavailable("points_redeemed"),
+    { kind: "current", code: "active_members", reader: activeMembersReader },
+    {
+      kind: "unavailable",
+      code: "points_redeemed",
+      reason: "dimension_not_supported",
+      message:
+        "Baris penukaran poin belum menyimpan outlet dan tanggal bisnis penukaran; rincian periode/outlet belum tersedia.",
+    },
   ],
   splits: [],
 };

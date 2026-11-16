@@ -107,6 +107,7 @@ import {
 import {
   metricSourceOf,
   metricSplitOf,
+  type CurrentMetricReader,
   type DailyMetricReader,
   type MetricSource,
   type MetricSplitSource,
@@ -1016,7 +1017,8 @@ function shapeOf(
 }
 
 type Plan =
-  | { kind: "unavailable"; reason: MetricUnavailableReason }
+  | { kind: "unavailable"; reason: MetricUnavailableReason; message?: string }
+  | { kind: "current"; reader: CurrentMetricReader }
   | { kind: "gl"; gl: GlMetricSource; split: MetricSplitSource | null }
   | {
       kind: "daily";
@@ -1054,7 +1056,26 @@ function planOf(
     const source = sources.sourceOf(code);
     switch (source.kind) {
       case "unavailable":
-        return { kind: "unavailable", reason: source.reason };
+        return {
+          kind: "unavailable",
+          reason: source.reason,
+          ...(source.message ? { message: source.message } : {}),
+        };
+      case "current": {
+        const keys = [
+          ...(shape.byOutlet ? ["outlet"] : []),
+          shape.splitKey,
+          shape.filter?.key,
+        ].filter((key): key is string => key != null);
+        if (
+          keys.some(
+            (key) =>
+              !(source.reader.dimensions as readonly string[]).includes(key),
+          )
+        )
+          return NOT_SUPPORTED;
+        return { kind: "current", reader: source.reader };
+      }
       case "gl": {
         // The ledger cannot filter by a non-outlet dimension.
         if (shape.filter) return NOT_SUPPORTED;
@@ -1215,6 +1236,14 @@ export async function evaluateMetrics(
   const plans = new Map<string, Plan>();
   for (const definition of definitions)
     planOf(definition.code, shape, sources, plans);
+  const responseDefinition = (
+    definition: MetricDefinition,
+  ): MetricDefinitionRef => {
+    const ref = definitionRef(definition);
+    return plans.get(definition.code)?.kind === "current"
+      ? { ...ref, name: `${ref.name} (saat ini)` }
+      : ref;
+  };
   const officialityOf = (code: string): MetricOfficiality => {
     const plan = plans.get(code);
     if (plan?.kind === "gl") return "closed_period_only";
@@ -1265,13 +1294,71 @@ export async function evaluateMetrics(
     for (const definition of definitions)
       if (
         plans.get(definition.code)?.kind !== "unavailable" &&
-        finalityOf(range, officialityOf(definition.code)) !== "final"
+        (plans.get(definition.code)?.kind === "current" ||
+          finalityOf(range, officialityOf(definition.code)) !== "final")
       )
         throw new HttpError(
           409,
           "PERIOD_NOT_CLOSED",
           "Angka resmi hanya tersedia untuk periode yang sudah ditutup.",
         );
+
+  // Current balances are read once in this same tenant snapshot, never from
+  // historical daily rows. Only the last requested bucket carries this value;
+  // earlier buckets and period comparisons have no historic balance to show.
+  const currentGroups = new Map<string, Group[]>();
+  for (const [code, plan] of plans) {
+    if (plan.kind !== "current") continue;
+    const rows = await plan.reader.compute({ tx, tenantId, outletFilter, now });
+    const values = new Map<
+      string,
+      { dims: MetricDimensionValue[]; native: bigint }
+    >();
+    if (!shape.byOutlet && shape.splitKey === null)
+      values.set("", { dims: [], native: 0n });
+    for (const row of rows) {
+      if (row.value.unit !== definitionOf(code).unit)
+        throw new Error(
+          "Current metric reader value unit differs from the definition",
+        );
+      const dimension = (key: string) =>
+        row.dimensions.find((dim) => dim.key === key);
+      if (
+        shape.filter &&
+        !shape.filter.values.has(dimension(shape.filter.key)?.value ?? "")
+      )
+        continue;
+      const dims: MetricDimensionValue[] = [];
+      for (const key of [
+        ...(shape.byOutlet ? ["outlet"] : []),
+        ...(shape.splitKey ? [shape.splitKey] : []),
+      ]) {
+        const value = dimension(key);
+        if (!value)
+          throw new Error("Current metric reader omitted a declared dimension");
+        dims.push(value);
+      }
+      const key = groupKeyOf(dims);
+      const group = values.get(key) ?? { dims, native: 0n };
+      group.native += nativeOf(row.value);
+      values.set(key, group);
+    }
+    currentGroups.set(
+      code,
+      [...values.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([, group]) => ({
+          dims: group.dims,
+          cells: ranges.map((_, at) => ({
+            value:
+              at === currentCount - 1
+                ? valueOf(definitionOf(code).unit, group.native)
+                : null,
+            final: false,
+          })),
+        })),
+    );
+  }
 
   // One ledger read for every ledger code (inputs of derived codes included).
   const glPlans = [...plans.values()].flatMap((plan) =>
@@ -1681,6 +1768,9 @@ export async function evaluateMetrics(
       case "unavailable":
         groups = [];
         break;
+      case "current":
+        groups = currentGroups.get(code) ?? [];
+        break;
       case "gl":
         groups = ledgerGroups(code, plan);
         break;
@@ -1776,13 +1866,13 @@ export async function evaluateMetrics(
   const availability: MetricAvailability[] = [];
   for (const definition of definitions) {
     const plan = plans.get(definition.code)!;
-    const ref = definitionRef(definition);
+    const ref = responseDefinition(definition);
     if (plan.kind === "unavailable") {
       availability.push({
         metricCode: definition.code,
         status: "unavailable",
         reason: plan.reason,
-        message: METRIC_UNAVAILABLE_MESSAGES[plan.reason],
+        message: plan.message ?? METRIC_UNAVAILABLE_MESSAGES[plan.reason],
       });
       // "Belum tersedia": null points, never a zero.
       if (request.groupBy.length === 0) {
@@ -1840,7 +1930,7 @@ export async function evaluateMetrics(
       if (row.range < currentCount && (latest === null || row.date > latest))
         latest = row.date;
   return {
-    definitions: definitions.map(definitionRef),
+    definitions: definitions.map(responseDefinition),
     series,
     availability,
     period: {
@@ -1852,8 +1942,9 @@ export async function evaluateMetrics(
     },
     outletFilter,
     accountingPeriods: books.periods,
-    dataThrough: (latest ??
-      (range.end < today ? range.end : today)) as BusinessDate,
+    dataThrough: (currentGroups.size > 0
+      ? today
+      : (latest ?? (range.end < today ? range.end : today))) as BusinessDate,
   };
 }
 
