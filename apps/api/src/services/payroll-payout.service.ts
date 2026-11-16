@@ -227,6 +227,13 @@ export function payoutGuardViolation(error: unknown): HttpError | null {
       "PAYOUT_STEP_GRANT_INVALID",
       "Izin langkah pembayaran kedaluwarsa. Coba lagi.",
     );
+  // PAYOUT-84 (42501): the disowner of a batch main approval approves again.
+  if (sqlStateOf(error) === "42501" && messageHas(error, /PAYOUT-84:/))
+    return payoutRefuse(
+      403,
+      "PAYOUT_DISOWNER_REAPPROVE",
+      "Anda sudah menyangkal persetujuan batch ini, jadi tidak boleh menyetujuinya lagi.",
+    );
   // PAYOUT-6x (42501), e.g. PAYOUT-64: a separation-of-duties or step order
   // refusal (same person twice, requester, first step not attested).
   if (sqlStateOf(error) === "42501" && messageHas(error, /PAYOUT-6\d:/))
@@ -1588,6 +1595,17 @@ export async function approveDisbursementBatch(
       403,
       "PAYOUT_SELF_APPROVAL",
       "Pembuat batch tidak boleh menyetujui batchnya sendiri.",
+    );
+  // Whoever said "not me" to a main approval of this batch cannot approve it
+  // again (legend-s20iu, PAYOUT-84); the grant and the attest refuse the same.
+  const disowned = await tx.execute(
+    sql`SELECT app.payout_batch_approval_disowned_by(${tenantId}::uuid, ${batchId}::uuid, ${actor.userId}::text) AS disowned`,
+  );
+  if ((disowned.rows[0] as { disowned: boolean }).disowned)
+    throw payoutRefuse(
+      403,
+      "PAYOUT_DISOWNER_REFUSED",
+      'Anda sudah menyatakan "bukan saya" pada persetujuan batch ini, jadi tidak boleh menyetujuinya lagi.',
     );
   // The main approval spends one step-up grant (legend-xp8mc): issued before
   // any lock, like the correction grant. No session or step-up: refused
