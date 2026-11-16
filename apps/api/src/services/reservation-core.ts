@@ -729,37 +729,56 @@ export async function loadDepositState(
  * settlement that committed first is visible and one that has not yet locked
  * the reservation waits behind this transaction. Returns the first intent of
  * the link that still holds money (`paid` / `partially_refunded`), if any.
- * No-op without a DP link (legacy rows keep `deposit_payment_id` only).
+ * Also locks the recorded intent, including legacy rows without a DP link, in
+ * the same ascending order as the link's intents.
  */
 export async function lockDepositLink(
   tx: Tx,
   context: ScopedTenantContext,
   row: ReservationRow,
 ): Promise<{ heldIntentId: string | null }> {
-  if (row.depositPaymentLinkId === null) return { heldIntentId: null };
+  if (row.depositPaymentLinkId === null && row.depositPaymentId === null)
+    return { heldIntentId: null };
   const tenantId = context.tenant.tenantId;
-  await tx
-    .select({ id: paymentLinks.id })
-    .from(paymentLinks)
-    .where(
-      and(
-        eq(paymentLinks.tenantId, tenantId),
-        eq(paymentLinks.id, row.depositPaymentLinkId),
-      ),
-    )
-    .for("update");
+  if (row.depositPaymentLinkId !== null)
+    await tx
+      .select({ id: paymentLinks.id })
+      .from(paymentLinks)
+      .where(
+        and(
+          eq(paymentLinks.tenantId, tenantId),
+          eq(paymentLinks.id, row.depositPaymentLinkId),
+        ),
+      )
+      .for("update");
   const intents = await tx
-    .select({ id: paymentIntents.id, status: paymentIntents.status })
+    .select({
+      id: paymentIntents.id,
+      status: paymentIntents.status,
+      paymentLinkId: paymentIntents.paymentLinkId,
+    })
     .from(paymentIntents)
     .where(
       and(
         eq(paymentIntents.tenantId, tenantId),
-        eq(paymentIntents.paymentLinkId, row.depositPaymentLinkId),
+        or(
+          row.depositPaymentLinkId === null
+            ? undefined
+            : eq(paymentIntents.paymentLinkId, row.depositPaymentLinkId),
+          row.depositPaymentId === null
+            ? undefined
+            : eq(paymentIntents.id, row.depositPaymentId),
+        ),
       ),
     )
     .orderBy(asc(paymentIntents.id))
     .for("update");
-  const held = intents.find((intent) => depositHoldsFunds(intent.status));
+  const held = intents.find(
+    (intent) =>
+      intent.paymentLinkId === row.depositPaymentLinkId &&
+      row.depositPaymentLinkId !== null &&
+      depositHoldsFunds(intent.status),
+  );
   return { heldIntentId: held?.id ?? null };
 }
 

@@ -335,6 +335,8 @@ export async function seatReservation(
         return seatReservationResultSchema.parse(claim.response);
       await lockOutletHolds(tx, context, outletId);
       let row = await lockReservation(tx, context, outletId, reservationId);
+      // Serialize the deposit snapshot with settlement and refund writers.
+      await lockDepositLink(tx, context, row);
       row = await reconcileDeposit(tx, context, row, now);
       if (row.status === "pending_deposit")
         throw new ReservationError("RESERVATION_DEPOSIT_UNPAID");

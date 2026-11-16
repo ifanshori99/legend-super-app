@@ -229,6 +229,10 @@ afterAll(async () => {
       [seededTenantId, seededOutletA],
     );
     await client.query(
+      "DELETE FROM payment_refunds WHERE tenant_id = $1 AND payment_intent_id = ANY($2)",
+      [seededTenantId, intentIds],
+    );
+    await client.query(
       "DELETE FROM payment_intents WHERE tenant_id = $1 AND id = ANY($2)",
       [seededTenantId, intentIds],
     );
@@ -346,6 +350,85 @@ describe("RSV-02 multi-table seating", () => {
 });
 
 describe("RSV-02 DP credit on the bill", () => {
+  it("legend-f7rnw seating waits for the deposit intent lock before reading its balance", async () => {
+    await setPolicy("required", 150_000);
+    const holder = await owner.connect();
+    let seating: ReturnType<typeof seat> | undefined;
+    try {
+      const f = await floor(1);
+      const created = await book(f.zoneId, "2027-04-07");
+      const intentId = randomUUID();
+      await asOwner(async (client) => {
+        await client.query(
+          `INSERT INTO payment_intents
+             (id, tenant_id, outlet_id, payment_link_id, reservation_id, method, provider, amount_idr,
+              idempotency_key, status, instructions, expires_at, paid_at)
+           VALUES ($1, $2, $3, $4, $5, 'qris', 'duitku', 150000, $6, 'paid',
+                   '{"method":"qris","qrPayload":"00020101021226TEST","issuer":null}', now() + interval '1 hour', now())`,
+          [
+            intentId,
+            seededTenantId,
+            outletA,
+            created.deposit!.paymentLinkId,
+            created.reservation.id,
+            `seat-pay-${intentId}`,
+          ],
+        );
+        await client.query(
+          "UPDATE reservations SET status = 'confirmed', deposit_payment_id = $1 WHERE id = $2",
+          [intentId, created.reservation.id],
+        );
+      });
+      intentIds.push(intentId);
+      await holder.query("BEGIN");
+      await holder.query(
+        "SELECT id FROM payment_intents WHERE id = $1 FOR UPDATE",
+        [intentId],
+      );
+      await holder.query(
+        "INSERT INTO payment_refunds (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status, requested_by) VALUES ($1, $2, $3, $4, 50000, 'Test refund', 'pending', 'seat-test')",
+        [randomUUID(), seededTenantId, outletA, intentId],
+      );
+      const { rows } = await holder.query<{ pid: number }>(
+        "SELECT pg_backend_pid() AS pid",
+      );
+      let settled = false;
+      seating = seat(created.reservation.id, [f.tables[0]!.id]);
+      void seating.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      let blocked = false;
+      for (let i = 0; i < 100 && !settled && !blocked; i += 1) {
+        const result = await owner.query<{ blocked: boolean }>(
+          "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))) AS blocked",
+          [rows[0]!.pid],
+        );
+        blocked = result.rows[0]!.blocked;
+        if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      await holder.query("COMMIT");
+      const seated = await seating;
+      const allocation = await asOwner((client) =>
+        client.query<{ amount_idr: string }>(
+          "SELECT amount_idr FROM reservation_deposit_allocations WHERE table_session_id = $1",
+          [seated.tableSessionId],
+        ),
+      );
+      expect(Number(allocation.rows[0]?.amount_idr)).toBe(100_000);
+      expect(blocked, "seating must wait for the locked intent").toBe(true);
+    } finally {
+      await holder.query("ROLLBACK");
+      holder.release();
+      await seating?.catch(() => undefined);
+      await setPolicy("none");
+    }
+  });
+
   it("RSV-02 seating allocates the paid DP and depositCreditForSession returns it", async () => {
     await setPolicy("required", 150_000);
     try {
