@@ -106,6 +106,7 @@ import { payrollPayoutReturnRouter } from "./payroll-payout-return.routes";
 import { payrollPayoutOverpaidRouter } from "./payroll-payout-overpaid.routes";
 import { payrollPayoutCorrectionRouter } from "./payroll-payout-correction.routes";
 import { payrollPayoutProofClosureRouter } from "./payroll-payout-proof-closure.routes";
+import { payrollPayoutDisputeRouter } from "./payroll-payout-dispute.routes";
 import { payrollRunsRouter } from "./payroll-runs.routes";
 import {
   payrollMyReimbursementsRouter,
@@ -429,6 +430,7 @@ apiRouter.use("/hris/payroll", payrollPayoutReturnRouter);
 apiRouter.use("/hris/payroll", payrollPayoutOverpaidRouter);
 apiRouter.use("/hris/payroll", payrollPayoutCorrectionRouter);
 apiRouter.use("/hris/payroll", payrollPayoutProofClosureRouter);
+apiRouter.use("/hris/payroll", payrollPayoutDisputeRouter);
 apiRouter.use(
   "/hris/payroll/reimbursement-categories",
   payrollReimbursementCategoriesRouter,

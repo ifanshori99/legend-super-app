@@ -17,6 +17,7 @@ import {
 } from "../db/schema/payroll-payout.ts";
 import type { Tx } from "./hris-access.ts";
 import {
+  loadBatchFreezes,
   payoutRefuse,
   toBatchDto,
   type ItemRow,
@@ -71,6 +72,7 @@ export async function listPayoutBatches(
   tx: Tx,
   tenantId: string,
   query: ListPayoutBatchesQuery,
+  viewerId?: string,
 ): Promise<{
   items: PayrollDisbursementBatchDto[];
   nextCursor: string | null;
@@ -127,10 +129,20 @@ export async function listPayoutBatches(
       else itemsByBatch.set(item.batchId, [item]);
     }
   }
+  const freezes = await loadBatchFreezes(
+    tx,
+    tenantId,
+    page.map((entry) => entry.batch.id),
+    viewerId,
+  );
   const last = page.at(-1);
   return {
     items: page.map((entry) =>
-      toBatchDto(entry.batch, itemsByBatch.get(entry.batch.id) ?? []),
+      toBatchDto(
+        entry.batch,
+        itemsByBatch.get(entry.batch.id) ?? [],
+        freezes.get(entry.batch.id),
+      ),
     ),
     nextCursor:
       rows.length > query.limit && last

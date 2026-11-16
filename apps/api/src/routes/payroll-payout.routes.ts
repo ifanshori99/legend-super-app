@@ -142,7 +142,7 @@ payrollPayoutRouter.get(
     const query = listPayoutBatchesQuerySchema.parse(req.query);
     const { context, actor } = actorOf(req);
     const page = await withTenant(db, context, (tx) =>
-      listPayoutBatches(tx, actor.tenantId, query),
+      listPayoutBatches(tx, actor.tenantId, query, actor.userId),
     );
     res.json({
       data: page.items,
@@ -160,7 +160,7 @@ payrollPayoutRouter.get(
     const { id } = payoutRunParamsSchema.parse(req.params);
     const { context, actor } = actorOf(req);
     const data = await withTenant(db, context, (tx) =>
-      listDisbursementBatches(tx, actor.tenantId, id),
+      listDisbursementBatches(tx, actor.tenantId, id, actor.userId),
     );
     res.json({ data });
   },
@@ -193,7 +193,7 @@ payrollPayoutRouter.get(
     const { id } = payoutBatchParamsSchema.parse(req.params);
     const { context, actor } = actorOf(req);
     const data = await withTenant(db, context, (tx) =>
-      getDisbursementBatch(tx, actor.tenantId, id),
+      getDisbursementBatch(tx, actor.tenantId, id, actor.userId),
     );
     res.json({ data });
   },

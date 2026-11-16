@@ -135,6 +135,32 @@ export const payrollPayoutMessages = {
         "Tidak ada pencairan yang berubah. Periksa koneksi lalu coba lagi.",
     },
   },
+  freeze: {
+    badge: "Dibekukan",
+    banner: {
+      title: "Pencairan ini dibekukan",
+      body: "Ada yang menyatakan langkah atas namanya bukan dilakukan olehnya. Tidak ada langkah baru yang bisa dilakukan sampai pembekuan dibuka.",
+      sentNote:
+        "Pencairan ini sudah dikirim ke bank. Periksa mutasi bank sebelum membuka pembekuan.",
+      disputes: "{count} pernyataan “bukan saya”",
+      mine: "Pernyataan Anda",
+      other: "Pernyataan orang lain",
+      noReason: "Tanpa catatan",
+    },
+    unfreeze: {
+      action: "Buka pembekuan",
+      title: "Buka pembekuan pencairan",
+      description:
+        "Hanya pemilik usaha atau finance yang tidak terlibat di pencairan ini yang bisa membukanya. Pastikan penyebabnya sudah diperiksa.",
+      reasonLabel: "Alasan pembukaan",
+      reasonHint: "10 sampai 500 karakter. Alasan ini dicatat.",
+      reasonShort: "Alasan minimal 10 karakter.",
+      confirm: "Buka pembekuan",
+      confirming: "Membuka…",
+      cancel: "Batal",
+      done: "Pembekuan dibuka.",
+    },
+  },
   error: {
     generic: "Permintaan gagal. Tidak ada uang yang bergerak. Coba lagi.",
     offline: "Tidak ada koneksi ke server. Periksa jaringan lalu coba lagi.",
@@ -175,5 +201,10 @@ export const payrollPayoutMessages = {
       "Berkas sudah dibuat server tetapi gagal tersimpan di perangkat ini, dan hanya bisa diunduh sekali. Hubungi admin.",
     batchAlreadyOpen:
       "Periode gaji ini sudah punya pencairan yang sedang berjalan.",
+    batchFrozen:
+      "Pencairan ini dibekukan karena ada pernyataan “bukan saya”. Tidak ada uang yang bergerak. Buka pembekuan dulu.",
+    unfreezeRefused:
+      "Anda tidak bisa membuka pembekuan ini. Pemilik usaha atau finance yang tidak terlibat di pencairan ini yang bisa membukanya.",
+    unfreezeNothing: "Tidak ada pembekuan yang perlu dibuka.",
   },
 } as const;

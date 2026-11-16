@@ -45,6 +45,7 @@ export const KIND_LABEL_KEYS: Record<FinanceExceptionKind, MessageKey> = {
   payout_proof_stuck: "financeExceptions.kinds.payout_proof_stuck",
   payout_recon_flag: "financeExceptions.kinds.payout_recon_flag",
   release_recon_unproven: "financeExceptions.kinds.release_recon_unproven",
+  payout_batch_disputed: "financeExceptions.kinds.payout_batch_disputed",
 };
 
 export const KIND_HELP_KEYS: Record<FinanceExceptionKind, MessageKey> = {
@@ -57,6 +58,7 @@ export const KIND_HELP_KEYS: Record<FinanceExceptionKind, MessageKey> = {
   payout_proof_stuck: "financeExceptions.kindHelp.payout_proof_stuck",
   payout_recon_flag: "financeExceptions.kindHelp.payout_recon_flag",
   release_recon_unproven: "financeExceptions.kindHelp.release_recon_unproven",
+  payout_batch_disputed: "financeExceptions.kindHelp.payout_batch_disputed",
 };
 
 const REF_TYPE_KEYS: Record<string, MessageKey> = {
@@ -69,6 +71,7 @@ const REF_TYPE_KEYS: Record<string, MessageKey> = {
   payout_recon: "financeExceptions.refTypes.payout_recon",
   qris_release_recon: "financeExceptions.refTypes.qris_release_recon",
   va_release_recon: "financeExceptions.refTypes.va_release_recon",
+  payout_batch_dispute: "financeExceptions.refTypes.payout_batch_dispute",
 };
 
 export const OUTBOX_STATE_KEYS: Record<

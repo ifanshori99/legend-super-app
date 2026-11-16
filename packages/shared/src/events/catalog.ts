@@ -53,7 +53,7 @@ const namesByWorkstream = {
   "WS-09":
     "facility_entitlement.issued facility_entitlement.expired facility_entitlement.revoked access_ticket.issued access_ticket.redeemed access_event.recorded facility_session.started facility_session.ended cleaning_task.created subscription.billed wifi_quota.updated facility_incident.raised panic_alert.raised panic_alert.pressed panic_alert.delivered panic_alert.acknowledged panic_alert.resolved",
   "WS-10":
-    "employee.updated attendance.logged shift.published shift.cancelled leave.approved leave.changed leave.rededucted_after_settlement payslip.created payroll.locked payroll.paid payroll.reversed employee_loan.disbursed reimbursement.paid",
+    "employee.updated attendance.logged shift.published shift.cancelled leave.approved leave.changed leave.rededucted_after_settlement payslip.created payroll.locked payroll.paid payroll.reversed employee_loan.disbursed reimbursement.paid payout.step_attested payout.batch_disputed payout.batch_unfrozen",
   "WS-11": "metrics.aggregated report.generated",
   "WS-12":
     "ai_job.completed action_request.rejected action_request.failed action_request.expired ai_conversation.deleted mcp_client.registered mcp_client.approved mcp_client.revoked mcp_token.issued mcp_token.revoked ai_settings.updated ai_budget.threshold_reached ai_tool.invoked ai_insight.anomaly_detected ai_insight.daily_summary_ready",

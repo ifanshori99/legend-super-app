@@ -16,13 +16,14 @@ const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 // or child test process is started by these dispatch tests.
 async function dispatch(
   env = {},
-  { apiStatus = 0, rootStatus = 0, exitCode } = {},
+  { apiStatus = 0, rootStatus = 0, exitCode, mode = "unit" } = {},
 ) {
   const calls = [];
   const messages = [];
   const cleanup = [];
+  const provisioned = [];
   const fakeProcess = {
-    argv: ["node", "scripts/test.mjs", "unit"],
+    argv: ["node", "scripts/test.mjs", mode],
     env,
     platform: "darwin",
     execPath: "/test/node",
@@ -62,6 +63,7 @@ async function dispatch(
     pnpmCommand: () => "pnpm",
     root: "/test/project",
     provisionAppRole: async () => {},
+    provisionRoles: async (options) => provisioned.push(options),
     legacySweepMinutes: () => 30,
     ownerLabelValue: () => "test-owner",
     removeProject: () => true,
@@ -71,7 +73,7 @@ async function dispatch(
     ...Object.values(dependencies),
   );
   assert.equal(fakeProcess.exitCode, exitCode, "Runner exit status");
-  return Object.assign(calls, { messages, cleanup });
+  return Object.assign(calls, { messages, cleanup, provisioned });
 }
 
 const apiCall = (calls) =>
@@ -226,4 +228,41 @@ test("Compose creates and health-checks the configured database name", () => {
     compose,
     /pg_isready -U starter_test -d \$\{LEGEND_TEST_DB_NAME:-starter_test\}/,
   );
+});
+
+test("Unit and production browser runs provision an isolated payout grantor", async () => {
+  const external =
+    "postgresql://legend_grant_ffffffffffffffff:external@outside.invalid/production";
+  for (const mode of ["unit", "e2e"]) {
+    const calls = await dispatch(
+      { PAYOUT_GRANTOR_DATABASE_URL: external },
+      { mode },
+    );
+    const seeded = calls.find((call) =>
+      call.args.includes("src/db/seed-dev-tenant.ts"),
+    );
+    const grantor = new URL(seeded.env.PAYOUT_GRANTOR_DATABASE_URL);
+    const application = new URL(seeded.env.APP_DATABASE_URL);
+    assert.match(grantor.username, /^legend_grant_[a-f0-9]{16}$/);
+    assert.equal(grantor.host, application.host);
+    assert.equal(grantor.pathname, application.pathname);
+    assert.notEqual(grantor.username, application.username);
+    assert.notEqual(grantor.href, external);
+    assert.equal(calls.provisioned.length, 1);
+    assert.equal(calls.provisioned[0].grantorUrl, grantor.href);
+    assert.equal(calls.provisioned[0].appUrl, application.href);
+    assert.equal(
+      calls.provisioned[0].adminUrl,
+      seeded.env.MIGRATION_DATABASE_URL,
+    );
+    if (mode === "e2e") {
+      const browser = calls.find((call) =>
+        call.args.some((arg) => arg.endsWith("playwright/test/cli.js")),
+      );
+      assert.equal(browser.env.PAYOUT_GRANTOR_DATABASE_URL, grantor.href);
+      const build = calls.find((call) => call.args.join(" ") === "run build");
+      assert.equal(build.env.PAYOUT_GRANTOR_DATABASE_URL, grantor.href);
+      assert.equal(build.env.NODE_ENV, "production");
+    }
+  }
 });

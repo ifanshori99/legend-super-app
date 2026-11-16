@@ -21,12 +21,11 @@
 # only. It is validated and provisioned when present; the cloud worker refuses
 # to start in production without it.
 #
-# The optional PAYOUT_GRANTOR_DATABASE_URL (api.env only, legend-911) is the
-# payout step grant login: legend_grant_<16 hex>, member of
-# legend_payout_grantor only. It is validated and provisioned when present.
-# Without it the API still starts, but every payout money step (correction,
-# overpaid, return, proof closure, posting source) answers 503
-# PAYOUT_STEP_GRANT_UNAVAILABLE: set it before payouts are used.
+# The required PAYOUT_GRANTOR_DATABASE_URL (api.env only, legend-911,
+# required since legend-786te) is the payout step grant login:
+# legend_grant_<16 hex>, member of legend_payout_grantor only. It is validated
+# and provisioned on every run; the API refuses to start in production without
+# it.
 #
 # The restricted URLs are read from the same api.env and worker.env the
 # services use, so the database always matches them. They travel to the job
@@ -150,10 +149,8 @@ fi
 [ -z "$maintenance_url" ] || { [ "$maintenance_url" != "$app_url" ] && [ "$maintenance_url" != "$worker_url" ]; } ||
   fail "the maintenance login must differ from the application and queue logins."
 grantor_url=$(value_of "$api_env" PAYOUT_GRANTOR_DATABASE_URL)
-if [ -z "$grantor_url" ] && defines "$api_env" PAYOUT_GRANTOR_DATABASE_URL; then
-  fail "PAYOUT_GRANTOR_DATABASE_URL in api.env is empty; set the payout grantor login or remove the line."
-fi
-[ -z "$grantor_url" ] || { [ "$grantor_url" != "$app_url" ] && [ "$grantor_url" != "$worker_url" ] && [ "$grantor_url" != "$maintenance_url" ]; } ||
+[ -n "$grantor_url" ] || fail "api.env must set PAYOUT_GRANTOR_DATABASE_URL to the payout grantor login."
+{ [ "$grantor_url" != "$app_url" ] && [ "$grantor_url" != "$worker_url" ] && [ "$grantor_url" != "$maintenance_url" ]; } ||
   fail "the payout grantor login must differ from the application, queue and maintenance logins."
 
 # The same format the job enforces, so a typo fails here and not after the
@@ -173,13 +170,11 @@ if [ -n "$maintenance_url" ]; then
   [ "$maintenance_endpoint" = "$app_endpoint" ] ||
     fail "MAINTENANCE_DATABASE_URL must name the same host, port and database as APP_DATABASE_URL."
 fi
-if [ -n "$grantor_url" ]; then
-  grantor_endpoint=$(endpoint_of "$grantor_url" 'legend_grant_[a-f0-9]{16}' '[a-f0-9]{48}' 0)
-  [ -n "$grantor_endpoint" ] ||
-    fail "PAYOUT_GRANTOR_DATABASE_URL must look like postgresql://legend_grant_<16 hex>:<48 hex>@host:port/database, with nothing after the database name."
-  [ "$grantor_endpoint" = "$app_endpoint" ] ||
-    fail "PAYOUT_GRANTOR_DATABASE_URL must name the same host, port and database as APP_DATABASE_URL."
-fi
+grantor_endpoint=$(endpoint_of "$grantor_url" 'legend_grant_[a-f0-9]{16}' '[a-f0-9]{48}' 0)
+[ -n "$grantor_endpoint" ] ||
+  fail "PAYOUT_GRANTOR_DATABASE_URL must look like postgresql://legend_grant_<16 hex>:<48 hex>@host:port/database, with nothing after the database name."
+[ "$grantor_endpoint" = "$app_endpoint" ] ||
+  fail "PAYOUT_GRANTOR_DATABASE_URL must name the same host, port and database as APP_DATABASE_URL."
 migration_url=$(value_of "$migrator_env" MIGRATION_DATABASE_URL)
 if [ -n "$migration_url" ]; then
   [ "$(endpoint_of "$migration_url" '[^:@/]+' '[^@/]*' 1)" = "$app_endpoint" ] ||
@@ -245,11 +240,9 @@ compose config --format json 2>/dev/null | (
     export MAINTENANCE_DATABASE_URL
     set -- "$@" -e MAINTENANCE_DATABASE_URL
   fi
-  if [ -n "$grantor_url" ]; then
-    PAYOUT_GRANTOR_DATABASE_URL=$grantor_url
-    export PAYOUT_GRANTOR_DATABASE_URL
-    set -- "$@" -e PAYOUT_GRANTOR_DATABASE_URL
-  fi
+  PAYOUT_GRANTOR_DATABASE_URL=$grantor_url
+  export PAYOUT_GRANTOR_DATABASE_URL
+  set -- "$@" -e PAYOUT_GRANTOR_DATABASE_URL
   docker run --rm -i --network none "$@" \
     -v "$script_dir/check-compose-env.mjs:/tmp/check-compose-env.mjs:ro" \
     --entrypoint node "$migrator_image" /tmp/check-compose-env.mjs
@@ -281,10 +274,8 @@ if [ -n "$maintenance_url" ]; then
   MAINTENANCE_DATABASE_URL=$maintenance_url
   export MAINTENANCE_DATABASE_URL
 fi
-if [ -n "$grantor_url" ]; then
-  PAYOUT_GRANTOR_DATABASE_URL=$grantor_url
-  export PAYOUT_GRANTOR_DATABASE_URL
-fi
+PAYOUT_GRANTOR_DATABASE_URL=$grantor_url
+export PAYOUT_GRANTOR_DATABASE_URL
 if [ "$mode" = audit ]; then
   compose --profile provisioning run --rm provision-roles node dist/provision-roles.js --audit
   exit 0

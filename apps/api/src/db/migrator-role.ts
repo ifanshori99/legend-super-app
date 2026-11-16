@@ -14,6 +14,7 @@
 import { Client, type ClientBase } from "pg";
 import {
   APP_LOGIN,
+  GRANTOR_LOGIN,
   PASSWORD,
   ProvisionError,
   WORKER_LOGIN,
@@ -139,6 +140,7 @@ export async function provisionMigrator(options: {
   migratorUrl: string;
   appUrl?: string;
   workerUrl?: string;
+  grantorUrl?: string;
 }): Promise<{ user: string; outcome: "created" | "updated" }> {
   const { bootstrap } = options;
   const restricted = [
@@ -148,6 +150,13 @@ export async function provisionMigrator(options: {
     options.workerUrl &&
       parseLogin(options.migratorUrl, options.workerUrl, WORKER_LOGIN, "queue")
         .user,
+    options.grantorUrl &&
+      parseLogin(
+        options.migratorUrl,
+        options.grantorUrl,
+        GRANTOR_LOGIN,
+        "payout grantor",
+      ).user,
   ].filter((name): name is string => !!name);
   const url = parseUrl(options.migratorUrl, "migration");
   const user = decode(url.username, "migration");
@@ -207,6 +216,10 @@ export async function provisionMigrator(options: {
       await grantAdminOnExistingRoles(client, user, [
         "legend_app",
         "legend_payout",
+        // The grantor group and login (legend-fwx7l): a bootstrap superuser may
+        // have created them, and the non-superuser migrator re-keys the login
+        // and adds it to the group only with ADMIN on both.
+        "legend_payout_grantor",
         ...restricted,
       ]);
       return { outcome, database } as const;

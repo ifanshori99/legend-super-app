@@ -33,6 +33,7 @@ import {
 } from "./payroll-payout-evidence.ts";
 import { recordOverpaidItem } from "./payroll-payout-overpaid.service.ts";
 import { bindProofToOperation } from "./payroll-payout-proof-binding.service.ts";
+import { proofSpentByWithdrawn } from "./payroll-payout-proposal-withdraw.service.ts";
 import {
   isPayoutUuid,
   isProposalReplaceViolation,
@@ -168,6 +169,8 @@ async function issueOverpaidGrants(
       and(
         eq(payrollPayoutOverpaidProposals.tenantId, tenantId),
         inArray(payrollPayoutOverpaidProposals.itemId, [...itemIds]),
+        // A withdrawn proposal is over (legend-xatux): a new one starts anew.
+        ne(payrollPayoutOverpaidProposals.status, "withdrawn"),
       ),
     );
   const stepTwo =
@@ -280,6 +283,7 @@ export async function recordOverpaidItems(
           payrollPayoutOverpaidProposals.itemId,
           rows.map((row) => row.id),
         ),
+        ne(payrollPayoutOverpaidProposals.status, "withdrawn"),
       ),
     );
   // One request is one operation: all items without a proposal, or all with.
@@ -357,7 +361,7 @@ export async function recordOverpaidItems(
     );
   } catch (error) {
     if (isProposalReplaceViolation(error)) throw proposalReplaceRefused();
-    throw error;
+    throw proofSpentByWithdrawn(error) ?? error;
   }
   await recordPayoutAudit(tx, actor, {
     action: "payroll.disbursement.overpaid_proposed",

@@ -3,6 +3,7 @@
 import { infiniteQueryOptions, queryOptions } from "@tanstack/react-query";
 import {
   getDisbursementBatch,
+  getPayoutApprovalLog,
   getPayoutConfig,
   listPayoutBatches,
   listResolutionProposals,
@@ -101,6 +102,15 @@ export const batchQuery = (batchId: string) =>
     }),
     queryFn: ({ signal }) => api.fetchBatch(batchId, signal),
     select: (response) => response.data,
+  });
+
+export const approvalLogQuery = (logId: string) =>
+  queryOptions({
+    queryKey: endpointQueryKey(getPayoutApprovalLog, { params: { logId } }),
+    queryFn: ({ signal }) => api.fetchApprovalLog(logId, signal),
+    select: (response) => response.data,
+    // A 404 means "not yours or not there"; asking again changes nothing.
+    retry: false,
   });
 
 export const resolutionProposalsQuery = (batchId: string) =>

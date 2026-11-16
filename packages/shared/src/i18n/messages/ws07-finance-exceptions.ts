@@ -17,6 +17,7 @@ export const financeExceptionsMessages = {
     payout_recon_flag: "Selisih rekonsiliasi payout",
     release_recon_unproven:
       "Kode QRIS/VA yang dilepas belum terbukti mati lebih dari 3 hari",
+    payout_batch_disputed: "Pencairan dibekukan (bukan saya)",
   },
   kindHelp: {
     edge_tax_unsnapshotted:
@@ -37,6 +38,8 @@ export const financeExceptionsMessages = {
       "Pemeriksaan malam menemukan langkah koreksi, pembayaran ganda, pengembalian, atau akun sumber pencairan gaji yang tidak cocok dengan catatan dua orang, bukti, atau jurnalnya. Slip terkait ditahan dari pencairan ulang. Berlaku untuk seluruh PT dan tidak mengikuti rentang tanggal.",
     release_recon_unproven:
       "Kode QRIS atau VA yang dilepas manual masih belum dijawab final oleh penyedia setelah lebih dari 3 hari. Antrean terus bertanya tiap hari dan tidak menutup baris tanpa bukti, jadi uang masih bisa masuk ke kode ini. Tidak mengikuti rentang tanggal.",
+    payout_batch_disputed:
+      "Seseorang menyatakan langkah pencairan gaji atas namanya bukan dilakukan olehnya, jadi pencairan itu dibekukan. Selama beku, tidak ada langkah baru yang bisa dilakukan. Bila pencairan sudah dikirim ke bank, periksa mutasi bank. Berlaku untuk seluruh PT dan tampil sampai pembekuan dibuka.",
   },
   refTypes: {
     order: "Order edge",
@@ -48,12 +51,14 @@ export const financeExceptionsMessages = {
     payout_recon: "Rekonsiliasi pencairan gaji",
     qris_release_recon: "Antrean cek QRIS dilepas",
     va_release_recon: "Antrean cek VA dilepas",
+    payout_batch_dispute: "Sengketa pencairan gaji",
   },
   refTypeUnknown: "Sumber lain",
   details: {
     tax_missing: "Pajak tidak ada pada data edge.",
     tax_mismatch: "Pajak pada data edge tidak cocok dengan total order.",
     batchPrefix: "Batch pencairan",
+    disputedBatchStatusAt: "Status pencairan saat dibekukan: {status}",
     proofUnreadable: "Berkas bukti tidak terbaca di penyimpanan.",
     proofHashConflict: "Isi berkas sama dengan bukti lain yang sudah dipakai.",
     proofLegacyDuplicate:
