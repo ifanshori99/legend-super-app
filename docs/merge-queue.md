@@ -20,6 +20,7 @@ Ditulis oleh merge train batch64g. Sumber: pesan CTO G6evw, G6w9t, G4j04. Tip SH
 
 ## Antrean tersisa setelah batch80
 
+- `ghostex/935-foto-penerimaan-stale-edge` 8a661cd90 SIAP batch berikut (K akses: iy5l0 foto + 5v7oq purpose/umur + 2lgu batas basi edge; tanpa migrasi; architect xhigh P1 dibetulkan; deploy API+web bersamaan; second-opinion akses sebelum rilis).
 - `fix/938-loyalty-current-metrics` 7d173a189 SIAP batch berikut (legend-eqdcd active_members; tanpa migrasi; 115 test).
 - `ghostex/bf531619` 784facadd SIAP batch berikut (legend-0cnqt outbox ekspor pajak + i18n; tanpa migrasi; 272 API + 35 root).
 - Tidak ada cabang SIAP tambahan yang belum menjadi ancestor m1 pada audit batch80. Periksa ancestry lagi bila ada tip baru.
