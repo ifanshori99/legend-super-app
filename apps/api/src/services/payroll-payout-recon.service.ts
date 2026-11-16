@@ -65,6 +65,8 @@ export type PayoutReconReason =
 
 /** MFA must be at most this old when the step was attested. */
 const MFA_MAX_AGE_MS = 15 * 60_000;
+/** Clock skew allowed on top of the MFA age limit. */
+const MFA_AGE_TOLERANCE_MS = 2 * 60_000;
 
 export const PAYOUT_RECON_OPERATIONS_PER_PAGE = 200;
 
@@ -688,9 +690,11 @@ function evaluate(
       add(subject, "attestation_same_session");
     if (
       atts.some((a) => {
+        // A signed-out user has no live session row: that is not a mismatch.
+        // Compare with the attestation snapshot only when a row exists.
         const s = facts.sessions.get(a.sessionId);
+        if (!s) return false;
         return (
-          !s ||
           s.userId !== a.actor ||
           s.createdAt !== a.sessionCreatedAt ||
           s.mfaVerifiedAt === null ||
@@ -706,7 +710,8 @@ function evaluate(
           a.mfaVerifiedAt === null ||
           a.attestedAt === null ||
           a.mfaVerifiedAt > a.attestedAt ||
-          a.attestedAt - a.mfaVerifiedAt > MFA_MAX_AGE_MS,
+          a.attestedAt - a.mfaVerifiedAt >
+            MFA_MAX_AGE_MS + MFA_AGE_TOLERANCE_MS,
       )
     )
       add(subject, "mfa_stale");

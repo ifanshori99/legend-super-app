@@ -1066,7 +1066,9 @@ async function clonePosting(postingId: string, count: number) {
       ids.push(id);
     }
     return ids;
-  });
+    // 905: the clones are history copies with a source; the insert guard (PAYOUT-70)
+    // would refuse a source on a new row, so triggers are off (replica) as in 881-guard.
+  }, true);
 }
 
 /** Cash handed over with accounting off, lock event queued and not yet consumed. */

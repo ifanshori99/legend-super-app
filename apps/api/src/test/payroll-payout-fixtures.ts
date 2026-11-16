@@ -1046,11 +1046,54 @@ export function installPayoutWorld(label: string) {
     );
   }
 
+  /**
+   * 905: a pre-claim historical return. The trusted binder (app.payout_backfill_bind)
+   * recomputes the item set hash from real items, so a legacy claim needs a real
+   * item behind its key. Clones `itemId` as a `returned` item (replica: triggers
+   * off, the clone is history, not a new payment) with `return_evidence_key = key`
+   * and returns the hash of that one-item set (what the claim must carry).
+   */
+  async function legacyReturnItem(itemId: string, key: string) {
+    return asTenant(async (c) => {
+      await c.query(
+        `CREATE TEMP TABLE legacy_clone ON COMMIT DROP AS
+           SELECT * FROM payroll_disbursement_items WHERE id = $1`,
+        [itemId],
+      );
+      await c.query(
+        `UPDATE legacy_clone SET id = gen_random_uuid(),
+                attempt_no = 1000 + floor(random() * 1000000)::int,
+                status = 'returned', return_evidence_key = $1,
+                returned_by = COALESCE(returned_by, 'legacy-905'),
+                return_note = COALESCE(return_note, 'legacy 905'),
+                returned_by_2 = COALESCE(returned_by_2, 'legacy-905-b'),
+                returned_at = COALESCE(returned_at, now())`,
+        [key],
+      );
+      await c.query(
+        `UPDATE legacy_clone SET idempotency_key = 'payslip:' || payslip_id::text || ':attempt:' || attempt_no::text`,
+      );
+      const id = (
+        await c.query(`SELECT id::text AS id FROM legacy_clone`)
+      ).rows[0].id as string;
+      await c.query(
+        `INSERT INTO payroll_disbursement_items SELECT * FROM legacy_clone`,
+      );
+      return (
+        await c.query(
+          `SELECT encode(sha256(convert_to($1::text, 'UTF8')), 'hex') AS h`,
+          [id],
+        )
+      ).rows[0].h as string;
+    }, true);
+  }
+
   return {
     app,
     owner,
     tenantId: tenant.id as string,
     proposeOverpaid,
+    legacyReturnItem,
     entityId: () => entityId,
     scope,
     inTx,

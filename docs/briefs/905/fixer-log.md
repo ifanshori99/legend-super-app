@@ -39,3 +39,30 @@ Wrapper overpaid + `proposeOverpaid` ditulis setelah r5 selesai, jadi 13 tes ove
 - Jalankan fail-first `src/test/payroll-payout-905-followups.test.ts` dua kali: sekali dengan entri journal 0649 dan 0650 dihapus sementara (salin `drizzle/meta/_journal.json` dulu, pulihkan, pastikan `git diff` journal hanya menambah 0650), sekali penuh. Catat hasil.
 - Jangan commit. Laporkan pelonggaran 0650(b) ke CTO/architect.
 - `docs/PROGRESS.md` berstatus modified tetapi bukan dari saya.
+
+---
+# Putaran 6-7 (fixer lanjutan, 16 Nov). Hitungan terkini
+
+**r7 (suite penuh 47 berkas): 32 gagal / 586 lulus / 13 todo** (log `$S/r7.log`). Sebelumnya r5 = 46 gagal / 572 lulus. Tidak ada perubahan SQL/service baru. Tidak commit.
+Catatan: jalankan suite dari root repo (bukan `apps/api`; dari `apps/api` vitest berjalan tanpa env dan menjalankan semua tes).
+
+## Perubahan tes baru (semua `905:`)
+- `payroll-payout-fixtures.ts`: helper baru `W.legacyReturnItem(itemId, key)`: klon item sebagai `returned` (replica, trigger mati; `attempt_no` acak >= 1000, `idempotency_key` mengikuti CHECK, `return_note` terisi) dengan `return_evidence_key = key`; mengembalikan hash set satu item. Sebab: `app.payout_backfill_bind` menghitung ulang hash dari item nyata, klaim legacy dengan hash acak tidak pernah bisa diikat.
+- `897-backfill-fair.test.ts`: `insertLegacyClaims(..., realItems = true)` memakai helper di atas (kunci yang memang harus gagal/hilang diberi `false`).
+- `900-backfill-lock.test.ts` (`900-phase2-fair`): kunci `ok` memakai item nyata. LULUS sekarang.
+- `900-global-gate.test.ts`: `historicalClaimOfB` menyisipkan item `returned` untuk tenant B (klon dari batch A, replica) dan klaim memakai hash item itu; `tenantB` mengembalikan `sourceBatch`; cleanup menghapus `payroll_disbursement_items` B.
+- `881-recovery.test.ts`: `clonePosting` berjalan dengan `asTenant(..., true)` (replica; PAYOUT-70). Kedua tes 881-recovery (la22h, qq68t) LULUS (qq68t adalah efek berantai la22h).
+
+## Sisa gagal r7 (32), menurut berkas
+- 897-backfill-fair `897-log-no-keys` (1): kunci hilang; setelah saya beri `realItems=false` masih gagal di r7 (belum diselidiki; mungkin dua klaim lintas tes/`stuck 1` tidak muncul).
+- 900-global-gate (2): `gate-other-tenant-history-holds`, `half-finished-cross-tenant`: setelah sapuan B masih `PAYOUT_PROOF_FINGERPRINT_PENDING`, bukan REUSED. Item B kini ada; dugaan: sapuan B tidak memfingerprint/mengikat (hak B pada `payroll_disbursement_items`? atau klaim B tanpa baris `evidence_files` + objek storage di scope B). Perlu diselidiki.
+- 888-guards (2) `overpaid-accounting-off-*`, hardening `overpaid-slip-not-open`, so-fixes `overpaid-frozen-source-inactive`, source-active `overpaid-inactive-source` (5): wrapper overpaid dua langkah (lihat "Belum diuji" di atas); sekarang terbukti sebagian gagal.
+- 905-followups (3 dari 7): `fu-correction-two-items-control` (batas itemIds maks 1), `fu-closed-key-resolve-failed`/`-not_sent` (23514 mentah vs HttpError). Keputusan belum diambil.
+- 905-posting-source (3), 905-proof-closure (7), 905-recon (9): tidak disentuh. Catatan: `payroll-payout-recon.service.ts` dan `payroll-payout-proof-closure.routes.ts` sedang diedit implementer lain (perintah CTO), tidak saya sentuh; kegagalan recon/closure kemungkinan butuh perubahan di sana.
+- core `l4-succeeded-frozen`, hardening `db-return-two-people` (2): harapan lama; sesuaikan ke 23514 PAYOUT-60 (belum dikerjakan).
+
+## Fail-first followups (`905-followups.test.ts`)
+- Tanpa entri journal 0649 dan 0650 (sementara dihapus, journal dipulihkan, `git diff` journal bersih): **6 gagal / 1 lulus** (insert-cash-foreign-source-held, -settled, correction-needs-own-posting, correction-two-items-control, closed-key-resolve-failed x2).
+- Penuh (dengan 0649+0650, di r7): **3 gagal / 4 lulus** (tiga yang tercantum di atas, semua butuh keputusan, bukan bug SQL).
+
+## Pelonggaran 0650(b) tetap harus dilaporkan ke CTO/architect (lihat atas).

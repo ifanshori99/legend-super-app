@@ -33,6 +33,7 @@ import {
   listStuckProofs,
   proposeProofClosure,
 } from "../services/payroll-payout-proof-closure.service.ts";
+import { payoutGuardErrorMapper } from "../services/payroll-payout.service.ts";
 
 export const payrollPayoutProofClosureRouter = Router();
 
@@ -111,3 +112,6 @@ payrollPayoutProofClosureRouter.post(
     res.json({ data });
   },
 );
+
+// 905: a guard or deferred commit check refusal (23514) answers 409.
+payrollPayoutProofClosureRouter.use(payoutGuardErrorMapper);
