@@ -6846,3 +6846,5 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 - Fast checkpoint lanjutan: API4494 test lulus teramati pada251/317 berkas, tanpa gagal; root1141/1141 tetap hijau. Tidak ada perubahan kode selama gerbang. Log `/tmp/batch79-fast.log`; tahap selanjutnya tetap berurutan setelah fast selesai.
 
 - Fast383 selesai hijau exit0 dalam1359,4 detik (22m39s): root1141/1141; API317 berkas lulus,4850 test lulus/8 skip/1 todo (4859 kasus). Seluruh67 kontrak pemindai tercakup. Container disposable dibersihkan. Lanjut lint penuh lalu typecheck, log `/tmp/batch79-{lint,typecheck}.log`.
+
+- Lint penuh `heavy pnpm run lint` exit0 dalam52,9 detik:0 error/2 warning hook dependency lama profit-share distributions-page:42 dan shareholders-page:68 di luar diff. Typecheck `heavy pnpm run typecheck` exit0 dalam70,0 detik: API/shared/web3/3 cache-miss dan root tsc hijau. Real e2e lalu empat mock spec berubah dimulai; `/tmp/batch79-{lint,typecheck,e2e}.log`.
