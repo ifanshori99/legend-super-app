@@ -15,8 +15,8 @@
 //   reversed, debits = |difference|, used by no other case, deposit or match).
 // - Locks: the entity lock `acc-cashbank:<tenant>:<entity>` comes first, then
 //   the row locks, like every other cash & bank writer.
-// - Due date: server constant of 7 days until the finance policy carries
-//   `reconciliationPolicy.caseDueDays` (architect resolution Q2).
+// - Due date: the tenant finance policy `reconciliationPolicy.caseDueDays`
+//   (default 7) read when the case opens; an open case keeps its dueAt.
 
 import {
   and,
@@ -32,7 +32,6 @@ import {
 import {
   AccountingError,
   reconciliationCaseActionInputSchema,
-  reconciliationPolicySchema,
   transitionReconciliationCase,
   openReconciliationCaseInputSchema,
   type ReconciliationCase,
@@ -74,6 +73,7 @@ import {
   outletVisible,
   type TenantTransaction,
 } from "./accounting-ap-fa-shared.ts";
+import { loadReconciliationPolicyInTx } from "./accounting-finance-policy.service.ts";
 import {
   notFound,
   reconciliationCaseDto,
@@ -82,11 +82,6 @@ import { requireLegalEntity } from "./accounting-shared.ts";
 
 const CASE_NOT_FOUND = "Kasus rekonsiliasi";
 const DAY_MS = 86_400_000;
-
-/** Server constant until the finance policy carries the due days (Q2). */
-const RECONCILIATION_POLICY = reconciliationPolicySchema.parse({
-  caseDueDays: 7,
-});
 
 const CURSOR_AT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
 const invalidCursor = () =>
@@ -290,6 +285,10 @@ export async function openReconciliationCase(
       async () => {
         const tenantId = context.tenant.tenantId;
         const now = new Date();
+        const { caseDueDays } = await loadReconciliationPolicyInTx(
+          tx,
+          tenantId,
+        );
         await requireLegalEntity(tx, tenantId, input.legalEntityId);
         if (input.outletId !== null) {
           const [outlet] = await tx
@@ -333,9 +332,7 @@ export async function openReconciliationCase(
             differenceIdr: input.differenceIdr,
             ownerId: input.ownerId,
             status: "open",
-            dueAt: new Date(
-              now.getTime() + RECONCILIATION_POLICY.caseDueDays * DAY_MS,
-            ),
+            dueAt: new Date(now.getTime() + caseDueDays * DAY_MS),
             refs: input.refs,
             idempotencyKey: input.idempotencyKey,
             openedBy: actorId,

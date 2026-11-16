@@ -558,6 +558,7 @@ export type ReconciliationCase = z.infer<typeof reconciliationCaseSchema>;
 export const reconciliationPolicySchema = z.strictObject({
   caseDueDays: z.number().int().min(1).max(60),
 });
+export type ReconciliationPolicy = z.infer<typeof reconciliationPolicySchema>;
 
 export type ReconciliationCaseAction =
   | { type: "start"; actorId: UserId }

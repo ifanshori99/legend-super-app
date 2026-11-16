@@ -129,9 +129,18 @@ const put = (cookie: string, body: unknown, tenantHeader?: string) => {
     .send(body as object);
   return tenantHeader ? call.set("x-test-tenant", tenantHeader) : call;
 };
-const policy = (maxDaysUndeposited: number, dateToleranceDays: number) => ({
+// legend-fnxl.9: the policy also carries reconciliationPolicy.caseDueDays (the
+// bank reconciliation case due-days, default 7, 1..60 like
+// reconciliationPolicySchema). Assumption: PUT replaces the whole policy, so the
+// body must carry it too; the helper therefore always sends it (default 7).
+const policy = (
+  maxDaysUndeposited: number,
+  dateToleranceDays: number,
+  caseDueDays = 7,
+) => ({
   cashDepositPolicy: { maxDaysUndeposited },
   matchingPolicy: { dateToleranceDays },
+  reconciliationPolicy: { caseDueDays },
 });
 
 async function newTenant() {
@@ -144,6 +153,14 @@ async function newTenant() {
     [id, `fpol-${unique()}`, tenantId],
   );
   return id;
+}
+
+async function dueDaysColumn(tenant: string): Promise<number | null> {
+  const { rows } = await owner.query<{ recon_case_due_days: number }>(
+    "SELECT recon_case_due_days FROM finance_policies WHERE tenant_id = $1",
+    [tenant],
+  );
+  return rows[0]?.recon_case_due_days ?? null;
 }
 
 async function policyRow(tenant: string) {
@@ -232,8 +249,9 @@ describe("legend-pxcs finance policy (ACC-04 tolerance, ACC-05 batas hari)", () 
       `SELECT event FROM audit_logs
         WHERE tenant_id = $1 AND event->>'action' = 'accounting.finance_policy.updated'
           AND event->>'objectId' = $1::text
+          AND event->>'actorId' = $2
         ORDER BY event->>'createdAt' DESC, id DESC`,
-      [tenantId],
+      [tenantId, finance.userId],
     );
     expect(audit.rowCount).toBe(3);
     expect(audit.rows[0]!.event).toMatchObject({
@@ -370,5 +388,106 @@ describe("legend-pxcs finance policy (ACC-04 tolerance, ACC-05 batas hari)", () 
     expect(await policyRow(tenantId)).toMatchObject({
       max_days_undeposited: 9,
     });
+  });
+
+  // ---------------------------------------------------------------- legend-fnxl.9
+  it("fnxl.9 GET defaults reconciliationPolicy.caseDueDays to 7 and the shared default carries it", async () => {
+    await owner.query("DELETE FROM finance_policies WHERE tenant_id = $1", [
+      tenantId,
+    ]);
+    expect(DEFAULT_FINANCE_POLICY.reconciliationPolicy).toEqual({
+      caseDueDays: 7,
+    });
+    const response = await get(finance.cookie);
+    expect(response.status).toBe(200);
+    expect(response.body.data.reconciliationPolicy).toEqual({ caseDueDays: 7 });
+    expect(await policyRow(tenantId)).toBeNull();
+  });
+
+  it("fnxl.9 PUT stores caseDueDays in recon_case_due_days, accepts the 1 and 60 limits, GET reads it back", async () => {
+    const saved = await put(finance.cookie, policy(2, 2, 14));
+    expect(saved.status).toBe(200);
+    expect(saved.body).toEqual({ data: policy(2, 2, 14) });
+    expect(await dueDaysColumn(tenantId)).toBe(14);
+    expect((await get(finance.cookie)).body).toEqual({
+      data: policy(2, 2, 14),
+    });
+
+    expect((await put(finance.cookie, policy(2, 2, 1))).status).toBe(200);
+    expect(await dueDaysColumn(tenantId)).toBe(1);
+    expect((await put(finance.cookie, policy(2, 2, 60))).status).toBe(200);
+    expect(await dueDaysColumn(tenantId)).toBe(60);
+    expect((await get(finance.cookie)).body).toEqual({
+      data: policy(2, 2, 60),
+    });
+  });
+
+  it("fnxl.9 PUT with caseDueDays outside 1..60, fractional, text or a foreign field is refused (422) and changes nothing", async () => {
+    await put(finance.cookie, policy(4, 6, 10));
+    const withDue = (reconciliationPolicy: unknown) => ({
+      cashDepositPolicy: { maxDaysUndeposited: 4 },
+      matchingPolicy: { dateToleranceDays: 6 },
+      reconciliationPolicy,
+    });
+    const bad: unknown[] = [
+      policy(4, 6, 0),
+      policy(4, 6, 61),
+      policy(4, 6, -3),
+      policy(4, 6, 7.5),
+      withDue({ caseDueDays: "7" }),
+      withDue({ caseDueDays: null }),
+      withDue({}),
+      withDue({ caseDueDays: 7, extra: true }),
+      {
+        cashDepositPolicy: { maxDaysUndeposited: 4 },
+        matchingPolicy: { dateToleranceDays: 6 },
+      },
+    ];
+    for (const body of bad) {
+      const response = await put(finance.cookie, body);
+      expect(response.status, JSON.stringify(body)).toBe(422);
+    }
+    expect(await dueDaysColumn(tenantId)).toBe(10);
+    expect((await get(finance.cookie)).body).toEqual({
+      data: policy(4, 6, 10),
+    });
+  });
+
+  it("fnxl.9 the database refuses recon_case_due_days outside 1..60 (CHECK) and defaults a new row to 7", async () => {
+    const other = await newTenant();
+    await owner.query("INSERT INTO finance_policies (tenant_id) VALUES ($1)", [
+      other,
+    ]);
+    expect(await dueDaysColumn(other)).toBe(7);
+    for (const value of [0, 61]) {
+      await expect(
+        owner.query(
+          "UPDATE finance_policies SET recon_case_due_days = $2 WHERE tenant_id = $1",
+          [other, value],
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+    }
+    expect(await dueDaysColumn(other)).toBe(7);
+  });
+
+  it("fnxl.9 caseDueDays is per tenant: another tenant keeps 7 and its own value stays its own", async () => {
+    await put(finance.cookie, policy(2, 2, 21));
+    const other = await newTenant();
+    expect((await getFinancePolicy(scope(other))).reconciliationPolicy).toEqual(
+      { caseDueDays: 7 },
+    );
+    await putFinancePolicy(scope(other), policy(2, 2, 3), actor);
+    expect(await getFinancePolicy(scope(other))).toEqual(policy(2, 2, 3));
+    expect(await getFinancePolicy(scope())).toEqual(policy(2, 2, 21));
+    expect(await dueDaysColumn(tenantId)).toBe(21);
+    expect(await dueDaysColumn(other)).toBe(3);
+  });
+
+  it("fnxl.9 without the permission a PUT of caseDueDays answers 403 and stores nothing (no new role, accounting.reconcile unchanged)", async () => {
+    await put(finance.cookie, policy(2, 2, 9));
+    const stranger = await signedIn();
+    expect((await put(stranger.cookie, policy(2, 2, 30))).status).toBe(403);
+    expect((await get(stranger.cookie)).status).toBe(403);
+    expect(await dueDaysColumn(tenantId)).toBe(9);
   });
 });

@@ -19,6 +19,7 @@ import {
   type CashDepositPolicy,
   type FinancePolicy,
   type MatchingPolicy,
+  type ReconciliationPolicy,
 } from "@starter/shared/accounting";
 import {
   assertTrustedScopedContext,
@@ -34,7 +35,11 @@ import { recordAudit } from "./core-audit.ts";
 import type { TenantTransaction } from "./accounting-shared.ts";
 
 /** Field names the policy audit row may keep unmasked (default-deny). */
-const AUDIT_SAFE_FIELDS = ["maxDaysUndeposited", "dateToleranceDays"] as const;
+const AUDIT_SAFE_FIELDS = [
+  "maxDaysUndeposited",
+  "dateToleranceDays",
+  "caseDueDays",
+] as const;
 
 function defaultPolicy(): FinancePolicy {
   return financePolicySchema.parse(DEFAULT_FINANCE_POLICY);
@@ -48,6 +53,7 @@ async function readPolicy(
     .select({
       maxDaysUndeposited: financePolicies.maxDaysUndeposited,
       dateToleranceDays: financePolicies.bankMatchingDateToleranceDays,
+      caseDueDays: financePolicies.reconCaseDueDays,
     })
     .from(financePolicies)
     .where(eq(financePolicies.tenantId, tenantId))
@@ -56,7 +62,19 @@ async function readPolicy(
   return financePolicySchema.parse({
     cashDepositPolicy: { maxDaysUndeposited: row.maxDaysUndeposited },
     matchingPolicy: { dateToleranceDays: row.dateToleranceDays },
+    reconciliationPolicy: { caseDueDays: row.caseDueDays },
   });
+}
+
+/**
+ * legend-fnxl.9: the due-days a new reconciliation case gets, read inside the
+ * caller's transaction (no row = the shared default of 7).
+ */
+export async function loadReconciliationPolicyInTx(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+): Promise<ReconciliationPolicy> {
+  return (await readPolicy(tx, tenantId)).reconciliationPolicy;
 }
 
 /** The tenant's policy, or the defaults when none was saved. */
@@ -97,6 +115,7 @@ export async function putFinancePolicy(
     const values = {
       bankMatchingDateToleranceDays: input.matchingPolicy.dateToleranceDays,
       maxDaysUndeposited: input.cashDepositPolicy.maxDaysUndeposited,
+      reconCaseDueDays: input.reconciliationPolicy.caseDueDays,
       updatedBy: actorId,
       updatedAt: now,
     };
@@ -119,8 +138,16 @@ export async function putFinancePolicy(
         objectId: tenantId,
         reason: null,
         maskedChanges: {
-          before: { ...before.cashDepositPolicy, ...before.matchingPolicy },
-          after: { ...input.cashDepositPolicy, ...input.matchingPolicy },
+          before: {
+            ...before.cashDepositPolicy,
+            ...before.matchingPolicy,
+            ...before.reconciliationPolicy,
+          },
+          after: {
+            ...input.cashDepositPolicy,
+            ...input.matchingPolicy,
+            ...input.reconciliationPolicy,
+          },
         },
         ipHash: null,
         sensitiveAccess: false,
