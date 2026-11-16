@@ -101,3 +101,26 @@ Catatan: jalankan suite dari root repo (bukan `apps/api`; dari `apps/api` vitest
 - 905-proof-closure (7): belum diselidiki. Saat berjalan bersama recon lama, gagal juga sendiri-sendiri (t6); sebagian mungkin akibat kebocoran gerbang dari cleanup recon yang sekarang diperbaiki. Ukur ulang dulu.
 - 900-global-gate (2), 897 `[897-log-no-keys]` (1): belum disentuh.
 - Suite penuh belum dijalankan ulang setelah perubahan fixer 3.
+
+## Keputusan engineer untuk fixer 4 (16 Nov)
+- `[905-recon-pre-boundary-skipped]`: brief kartu 1 meminta recon atas TIAP item overpaid/returned, bukan hanya yang punya baris operasi. Tambah sumber recon di `payroll-payout-recon.service.ts`: item `status IN ('overpaid','returned')` dengan `updated_at >= app.payout_trusted_since()` tanpa baris operasi yang cocok (overpaid_proposals / return_claims untuk item itu) → flag (kind baru mis. `no_operation`, alasan jelas). Pre-boundary dilewati. Detektif saja, tidak mengubah uang. Item `succeeded` hasil koreksi tetap lewat tabel koreksi (tidak bisa dibedakan dari settle biasa tanpa baris operasi).
+- Lalu: `tampered-proof`, 905-proof-closure (7), 900-global-gate (2), `897-log-no-keys`, lalu suite payout penuh.
+
+# Putaran fixer 4 (16 Nov)
+
+## Perubahan
+- `[905-recon-pre-boundary-skipped]`: sumber recon baru di `payroll-payout-recon.service.ts` `listOperations`: item `overpaid`/`returned` dengan `updated_at >= since` tanpa proposal `recorded` / claim `consumed` → operasi `missing` (kind `overpaid`/`return`, operation_id = item id), `evaluate` hanya memberi reason baru `operation_missing`. Tanpa migrasi (kind tetap dalam CHECK). Detektif saja.
+- `[905-recon-tampered-proof]`: akar = `proof_hashes` global tak terbaca legend_app (0637 REVOKE ALL), recon tak pernah memeriksanya. Migrasi baru `0651_payout_recon_proof_hashes.sql` (+ entri journal): fungsi baca-saja SECURITY DEFINER `app.payout_proof_hashes_held(key)` (pola `payout_proof_contested` 0640), benar bila tiap hash non-kosong binding non-legacy kunci itu masih dipegang binding itu. Recon: hasil false → `binding_mismatch`. Tanpa penulisan baris; tidak perlu entri `MIGRATION_DATA_STATEMENTS`. Perlu dilaporkan ke CTO (migrasi baru, bukan grant).
+
+## Hasil terarah fixer 4
+- t2 (`905-recon` + `905-proof-closure`, log `$S/f4-t2.log`): recon **10/10 lulus**; closure **5 lulus / 7 gagal** (sama seperti sebelumnya).
+
+## 905-proof-closure (7): akar ditemukan, perbaikan BELUM dibuat (butuh keputusan)
+- Helper tes `stuck()` hanya menyisipkan baris `payroll_payout_proof_backfill_stuck`. `app.payout_proof_tenant_pending()` (0641:92, versi 0647:35) tidak pernah membaca tabel stuck: gerbang hanya tertahan oleh klaim tanpa hash, `evidence_files.stored_sha256 IS NULL`, kunci item tanpa evidence_file, atau operasi tanpa binding. Jadi premis "stuck keys hold the gate" salah sejak awal; 4 tes "expected false to be true", `tenant-scope` (gatePending) dan dua tes money (setelah close, gerbang/penolakan kunci tidak terjadi seperti diharapkan) mengikuti dari itu.
+- Pilihan A (tes, komentar `905:`): `stuck()` juga membuat keadaan tertunda yang nyata untuk kunci itu, mis. baris `payroll_payout_evidence_files` (owner, `W.asTenant(...,true)`) dengan `stored_sha256 NULL` untuk `unreadable`, atau binding/kunci item sesuai reason. Tidak mengubah SQL.
+- Pilihan B (SQL, migrasi baru): baris stuck belum resolved dan kunci belum ditutup ikut menahan `payout_proof_tenant_pending()`. Lebih ketat, tapi berisiko menahan gerbang global di berkas 897/900/followups yang meninggalkan baris stuck.
+- Saran saya: A (cocok dengan aturan "test salah asumsi bentuk data"). Keputusan ke engineer/CTO.
+
+## Belum dikerjakan
+- 905-proof-closure (lihat atas), 900-global-gate (2), `897-log-no-keys`, suite payout penuh, `tsc` (belum dijalankan untuk perubahan recon; perubahan kecil, tipe `Operation.missing` dan reason baru).
+- Migrasi baru `0651` perlu dilaporkan ke CTO/architect (fungsi baca-saja, bukan grant; di luar aturan "grant lewat 0650").

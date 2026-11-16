@@ -13,6 +13,8 @@
 //   read again and hashed matches its record; the journal exists, is not
 //   reversed and its debit equals the decrypted net of the item (or of the
 //   settle group, for a correction);
+// - for each overpaid / returned item without such an operation (moved there
+//   by a direct write): flagged `operation_missing`;
 // - for each recorded posting source: its attestation, session and audit row.
 // A difference calls `app.payout_recon_flag` (insert-only) once per item and
 // reason; the flag holds the payslip's retry and is listed as the finance
@@ -61,7 +63,8 @@ export type PayoutReconReason =
   | "journal_missing"
   | "journal_reversed"
   | "net_unreadable"
-  | "net_mismatch";
+  | "net_mismatch"
+  | "operation_missing";
 
 /** MFA must be at most this old when the step was attested. */
 const MFA_MAX_AGE_MS = 15 * 60_000;
@@ -113,6 +116,11 @@ type Operation = {
   itemIds: string[];
   /** Items that reached their final state through the trusted functions. */
   terminalItemIds: string[];
+  /**
+   * An overpaid / returned item with no recorded proposal or consumed claim:
+   * the operation id is the item id and nothing else is checked.
+   */
+  missing: boolean;
 };
 
 /** The operations after `after`, in a stable order, newest rule set first. */
@@ -130,7 +138,8 @@ async function listOperations(
                array_agg(c.item_id::text ORDER BY c.item_id) AS item_ids,
                coalesce(array_agg(c.item_id::text ORDER BY c.item_id)
                  FILTER (WHERE c.status = 'corrected'), ARRAY[]::text[]) AS terminal_item_ids,
-               'correction:' || c.operation_id::text AS sort_key
+               'correction:' || c.operation_id::text AS sort_key,
+               false AS missing
           FROM payroll_payout_failed_corrections c
          WHERE c.tenant_id = ${tenantId}::uuid
          GROUP BY c.operation_id, c.batch_id
@@ -141,7 +150,7 @@ async function listOperations(
                array_agg(p.item_id::text ORDER BY p.item_id),
                coalesce(array_agg(p.item_id::text ORDER BY p.item_id)
                  FILTER (WHERE p.status = 'recorded'), ARRAY[]::text[]),
-               'overpaid:' || (array_agg(p.id ORDER BY p.id))[1]::text
+               'overpaid:' || (array_agg(p.id ORDER BY p.id))[1]::text, false
           FROM payroll_payout_overpaid_proposals p
          WHERE p.tenant_id = ${tenantId}::uuid
          GROUP BY p.batch_id, p.evidence_key
@@ -155,13 +164,14 @@ async function listOperations(
                            FROM payroll_disbursement_items i
                           WHERE i.tenant_id = c.tenant_id AND i.return_claim_id = c.id
                             AND i.status = 'returned'), ARRAY[]::text[]),
-               'return:' || c.id::text
+               'return:' || c.id::text, false
           FROM payroll_payout_return_claims c
          WHERE c.tenant_id = ${tenantId}::uuid AND c.status = 'consumed'
            AND c.consumed_at >= ${since}::timestamptz
         UNION ALL
         SELECT 'posting_source'::text, p.id::text, p.batch_id::text, NULL::text,
-               ARRAY[]::text[], ARRAY[]::text[], 'posting_source:' || p.id::text
+               ARRAY[]::text[], ARRAY[]::text[], 'posting_source:' || p.id::text,
+               false
           FROM payroll_payout_gl_postings p
          WHERE p.tenant_id = ${tenantId}::uuid
            AND (EXISTS (SELECT 1 FROM payroll_payout_attestations a
@@ -196,6 +206,25 @@ async function listOperations(
                                     WHERE c.tenant_id = b.tenant_id
                                       AND c.legal_entity_id = b.legal_entity_id)
                            END))))
+        UNION ALL
+        -- Every overpaid / returned item, not only those with an operation row:
+        -- one moved there after the boundary without a recorded proposal or a
+        -- consumed claim bypassed the trusted functions.
+        SELECT CASE WHEN i.status = 'overpaid' THEN 'overpaid' ELSE 'return' END::text,
+               i.id::text, i.batch_id::text, NULL::text,
+               ARRAY[i.id::text], ARRAY[i.id::text], 'missing:' || i.id::text, true
+          FROM payroll_disbursement_items i
+         WHERE i.tenant_id = ${tenantId}::uuid
+           AND i.status IN ('overpaid', 'returned')
+           AND i.updated_at >= ${since}::timestamptz
+           AND NOT (CASE WHEN i.status = 'overpaid'
+             THEN EXISTS (SELECT 1 FROM payroll_payout_overpaid_proposals p
+                           WHERE p.tenant_id = i.tenant_id AND p.item_id = i.id
+                             AND p.status = 'recorded')
+             ELSE EXISTS (SELECT 1 FROM payroll_payout_return_claims c
+                           WHERE c.tenant_id = i.tenant_id AND c.id = i.return_claim_id
+                             AND c.status = 'consumed')
+           END)
       ) ops
       WHERE ${options.after === null ? sql`TRUE` : sql`ops.sort_key > ${options.after}`}
       ORDER BY ops.sort_key
@@ -210,6 +239,7 @@ async function listOperations(
     sortKey: String(row.sort_key),
     itemIds: list(row.item_ids),
     terminalItemIds: list(row.terminal_item_ids),
+    missing: row.missing === true,
   }));
 }
 
@@ -267,6 +297,8 @@ type Facts = {
   sessions: Map<string, SessionRow>;
   bindings: Binding[];
   contested: Map<string, boolean>;
+  /** Per key: every hash of its binding is still claimed by that binding. */
+  hashesHeld: Map<string, boolean>;
   records: Map<string, FileRecord>;
   audits: AuditRow[];
   journals: Map<string, Journal>;
@@ -387,6 +419,7 @@ async function loadFacts(
   }));
   // Only a yes or no is available for a hash (the global contest list).
   const contested = new Map<string, boolean>();
+  const hashesHeld = new Map<string, boolean>();
   for (const binding of bindings) {
     if (!keys.includes(binding.evidenceKey)) continue;
     const answer = rowsOf(
@@ -395,6 +428,12 @@ async function loadFacts(
       ),
     )[0];
     contested.set(binding.evidenceKey, answer?.contested === true);
+    const held = rowsOf(
+      await tx.execute(
+        sql`SELECT app.payout_proof_hashes_held(${binding.evidenceKey}) AS held`,
+      ),
+    )[0];
+    hashesHeld.set(binding.evidenceKey, held?.held === true);
   }
 
   const records = new Map<string, FileRecord>();
@@ -610,6 +649,7 @@ async function loadFacts(
     sessions,
     bindings,
     contested,
+    hashesHeld,
     records,
     audits,
     journals,
@@ -637,6 +677,13 @@ function evaluate(
   facts: Facts,
   fileOf: ReadonlyMap<string, FileState>,
 ): Flag[] {
+  if (op.missing)
+    return op.terminalItemIds.map((itemId) => ({
+      kind: op.kind,
+      operationId: op.operationId,
+      itemId,
+      reason: "operation_missing",
+    }));
   const flags: Flag[] = [];
   const add = (itemId: string | null, reason: PayoutReconReason) => {
     if (itemId === null) {
@@ -751,6 +798,7 @@ function evaluate(
         own.batchId !== op.batchId ||
         own.itemSetHash !== setHash ||
         own.legacyDuplicate ||
+        facts.hashesHeld.get(op.evidenceKey) !== true ||
         (record !== undefined &&
           (own.contentSha256 !== record.content ||
             (record.stored !== null && own.storedSha256 !== record.stored)))
