@@ -6863,3 +6863,5 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 - Full resume checkpoint: seluruh web3 berkas/92 test hijau; API1953 test lulus teramati pada37/1353 berkas, tanpa gagal. Pemeriksaan KDS no-write untuk transisi tidak sah, pembatasan QRIS lintas tagihan, isolasi roster dan properti jurnal payroll2500 variasi ikut hijau. Full masih aktif dan tidak ada perubahan kode.
 
 - Full resume checkpoint: API4326 test lulus teramati pada133/1353 berkas, tanpa gagal; web92/92 tetap hijau. Retry alarm edge, rekonsiliasi serentak satu event, faktur pemasok replay dan isolasi tenant ikut lewat. Tidak ada run penuh kedua atau perubahan kode.
+
+- Full resume checkpoint: API6543 test lulus teramati pada254/1353 berkas, tanpa gagal; web92/92 tetap hijau. Offline edge clock menolak promo/voucher berisiko tanpa write uang, EDC cancel serialization, isolasi CRM dan aktor merge/move ikut lewat. Kode tetap identik checkpoint integrasi; hanya dokumentasi progress bertambah.
