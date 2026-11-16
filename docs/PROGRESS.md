@@ -6935,3 +6935,5 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 
 - Checkpoint awal: dev:prepare dan doctor hijau; `heavy pnpm db:generate` exit0 (10,4detik), tidak ada perubahan skema. Prettier21 berkas didukung (selain arsip PROGRESS yang sudah merah di baseline) dan ESLint diff exit0 (2,2detik). Reviewer integrasi bersih: seluruh append kedua sisi dipertahankan, journal0..430 byte-identik, prevId0431 benar ke0430; tidak ada perubahan selain dua kolom scanner/check.
 - Manifest `/tmp/batch80-fast-files.txt`307 berkas (52 root+255 API, termasuk12 unit edge), mencakup seluruh68 pemindai single-path/contract/registry. Root fase fast hijau; API area sedang berjalan. Log `/tmp/batch80-fast.log`; hasil tahap disimpan runner pada `/tmp/batch80-gate-results.json`.
+
+- Fast307 selesai exit0 dalam856,9detik (14m17s): root913/913; API255 berkas,4029 lulus/8 skip. Seluruh68 pemindai tercakup. Workspace links exit0. Lanjut lint penuh kemudian typecheck; tidak ada perubahan kode selama gate. Log `/tmp/batch80-fast.log`, hasil `/tmp/batch80-gate-results.json`.
