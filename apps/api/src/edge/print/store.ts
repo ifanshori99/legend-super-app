@@ -375,8 +375,8 @@ export function createDbPrintStore(options: DbPrintStoreOptions): PrintStore {
       });
     },
 
-    async enqueue(job: NewPrintJob) {
-      return run(async (tx) => {
+    async enqueue(job: NewPrintJob, callerTx?: Tx) {
+      const save = async (tx: Tx) => {
         if (!(await printerExists(tx, job.printerId))) throw printerNotFound();
         const createdAt = now();
         const inserted = await tx
@@ -419,7 +419,8 @@ export function createDbPrintStore(options: DbPrintStoreOptions): PrintStore {
           )
           .limit(1);
         return { job: toJobRecord(existing[0]!), created: false };
-      });
+      };
+      return callerTx ? save(callerTx) : run(save);
     },
 
     async claimNext(printerId) {
@@ -654,7 +655,11 @@ export function createDbPrintStore(options: DbPrintStoreOptions): PrintStore {
             and(
               alertScope(),
               isNull(edgePrintAlerts.notificationEnqueuedAt),
-              inArray(edgePrintAlerts.kind, ["printer_offline", "job_failed"]),
+              inArray(edgePrintAlerts.kind, [
+                "printer_offline",
+                "job_failed",
+                "kds_down",
+              ]),
             ),
           )
           .orderBy(asc(edgePrintAlerts.occurredAt), asc(edgePrintAlerts.id))

@@ -53,6 +53,7 @@ import {
 } from "./pos-receipt-document.ts";
 import { maskEmail } from "./pos-receipt-email.ts";
 import { renderDocumentPdf } from "./pos-receipt-pdf.ts";
+import { enqueueReceiptOnEdge } from "./pos-receipt-edge-print.ts";
 import {
   findReceiptById,
   findReceiptByNumber,
@@ -381,6 +382,7 @@ export async function issueReceiptDeliveries(
     let receipt = await findReceiptForOrder(tx, context, orderId);
     if (!receipt)
       throw new CoreError("CONFLICT", "Struk pesanan ini belum diterbitkan.");
+    let printDocument: ReceiptDocument | undefined;
 
     if (channels.includes("print")) {
       const printRows = await tx
@@ -407,6 +409,16 @@ export async function issueReceiptDeliveries(
       // POS-06: a print after the first one is a reprint.
       if (created && hadPrint && receipt.reprintCount < MAX_REPRINT_COUNT)
         receipt = await markReceiptReprinted(tx, context, receipt.id);
+      if (created) {
+        printDocument = await buildReceiptDocument(tx, context, receipt);
+        await enqueueReceiptOnEdge(
+          tx,
+          context,
+          printDocument,
+          requestedBy,
+          key,
+        );
+      }
     }
     if (channels.includes("link")) {
       await ensureReceiptLink(tx, context, receipt, key, requestedBy, now);
@@ -434,7 +446,8 @@ export async function issueReceiptDeliveries(
     const linkRow = await linkOf(tx, context, receipt.id, key);
     return posReceiptIssueResultSchema.parse({
       receipt,
-      document: await buildReceiptDocument(tx, context, receipt),
+      document:
+        printDocument ?? (await buildReceiptDocument(tx, context, receipt)),
       deliveries: await deliveriesOf(tx, context, receipt.id, key),
       link: linkRow ? toLink(linkRow) : null,
     });

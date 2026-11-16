@@ -40,7 +40,12 @@ export function createPrintAlertNotifier(
 ): PrintAlertNotifier {
   const eventIds = new WeakMap<object, string>();
   return async (alert, tx) => {
-    if (alert.kind !== "printer_offline" && alert.kind !== "job_failed") return;
+    if (
+      alert.kind !== "printer_offline" &&
+      alert.kind !== "job_failed" &&
+      alert.kind !== "kds_down"
+    )
+      return;
     const id = alert.id ?? eventIds.get(alert) ?? createUlid();
     eventIds.set(alert, id);
     const enqueue = (tx: EdgeTx) =>

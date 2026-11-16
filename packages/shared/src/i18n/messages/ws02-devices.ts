@@ -84,6 +84,32 @@ export const deviceRegistryMessages = {
     revoked: "Dicabut",
   },
 
+  printAlerts: {
+    printer_offline: {
+      title: "Printer tidak terhubung",
+      body: "Printer tidak terhubung. Periksa printer dan antrean cetak.",
+    },
+    job_failed: {
+      title: "Cetak gagal",
+      body: "Tugas cetak gagal atau macet. Periksa printer dan hasil cetak sebelum mencoba lagi.",
+    },
+    kds_down: {
+      title: "Layar KDS tidak terhubung",
+      body: "Layar KDS tidak terhubung. Periksa daya, jaringan, dan antrean cetak cadangan stasiun.",
+    },
+  },
+
+  receiptPrintErrors: {
+    agentUnavailable:
+      "Agen cetak outlet belum siap. Coba lagi setelah perangkat terhubung.",
+    wrongOutlet: "Struk hanya dapat dicetak pada edge node outlet asal.",
+  },
+
+  receiptPrintLabels: {
+    voided: "DIBATALKAN",
+    rounding: "Pembulatan",
+  },
+
   training: {
     on: "Latihan",
     off: "Normal",
