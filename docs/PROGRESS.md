@@ -6937,3 +6937,6 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 - Manifest `/tmp/batch80-fast-files.txt`307 berkas (52 root+255 API, termasuk12 unit edge), mencakup seluruh68 pemindai single-path/contract/registry. Root fase fast hijau; API area sedang berjalan. Log `/tmp/batch80-fast.log`; hasil tahap disimpan runner pada `/tmp/batch80-gate-results.json`.
 
 - Fast307 selesai exit0 dalam856,9detik (14m17s): root913/913; API255 berkas,4029 lulus/8 skip. Seluruh68 pemindai tercakup. Workspace links exit0. Lanjut lint penuh kemudian typecheck; tidak ada perubahan kode selama gate. Log `/tmp/batch80-fast.log`, hasil `/tmp/batch80-gate-results.json`.
+
+- Lint penuh exit0 (50,9detik):0 error/2 warning hook dependency lama pada profit-share distributions-page:42 dan shareholders-page:68, sama batch79. Typecheck penuh exit0 (51,4detik): API/shared/web3/3 cache-miss + root tsc. E2e produksi exit0 (40,8detik),18 lulus/1 skip; explicit build exit0 (5,8detik),2/2 cache-miss. Semua melalui satu runner/heavy; `/tmp/batch80-{lint,typecheck,e2e,build}.log`.
+- Colima-up exit0; full test pertama dimulai di latar melalui `LEGEND_TEST_CONCURRENCY=2 heavy pnpm run test`, log `/tmp/batch80-full.log`. Belum landing sampai exit full run dan fetch akhir terverifikasi.
