@@ -6,8 +6,8 @@
 // Thresholds live in scripts/ci/lighthouse.config.mjs. The servers start the way
 // playwright.config.ts starts them (production builds, same ports) against a
 // disposable PostgreSQL server. Set STARTER_TEST_DATABASE_URL and
-// STARTER_TEST_RUN (and optionally APP_DATABASE_URL) to reuse an already
-// migrated and seeded test database instead of starting one with Docker.
+// STARTER_TEST_RUN, PAYOUT_GRANTOR_DATABASE_URL (and optionally APP_DATABASE_URL)
+// to reuse an already migrated and seeded test database instead of Docker.
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
@@ -21,7 +21,7 @@ import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pnpmCommand, root } from "../lib.mjs";
-import { provisionAppRole } from "../provision-app-role.mjs";
+import { provisionRoles } from "../provision-app-role.mjs";
 import { ownerLabelValue, removeProject } from "../test-sweep.mjs";
 import * as config from "./lighthouse.config.mjs";
 import {
@@ -57,7 +57,7 @@ if (dryRun) {
       tenantHostname,
       database: reuseDatabase
         ? "reuse STARTER_TEST_DATABASE_URL (must be migrated and seeded)"
-        : "start a disposable PostgreSQL with Docker, migrate, provision the app role, seed the tenant",
+        : "start a disposable PostgreSQL with Docker, migrate, provision the app and payout grantor roles, seed the tenant",
     }),
   );
   process.exit(0);
@@ -171,11 +171,16 @@ async function prepareDatabase(baseEnv) {
       throw new Error(
         "STARTER_TEST_RUN must start with starter-pg-test- when STARTER_TEST_DATABASE_URL is set.",
       );
+    if (!process.env.PAYOUT_GRANTOR_DATABASE_URL?.trim())
+      throw new Error(
+        "PAYOUT_GRANTOR_DATABASE_URL is required when reusing a test database.",
+      );
     return {
       ...baseEnv,
       MIGRATION_DATABASE_URL: process.env.MIGRATION_DATABASE_URL ?? url,
       APP_DATABASE_URL: process.env.APP_DATABASE_URL ?? url,
       DATABASE_URL: process.env.APP_DATABASE_URL ?? url,
+      PAYOUT_GRANTOR_DATABASE_URL: process.env.PAYOUT_GRANTOR_DATABASE_URL,
     };
   }
   const project = `starter-pg-test-${randomBytes(8).toString("hex")}`;
@@ -212,16 +217,24 @@ async function prepareDatabase(baseEnv) {
   const appUrl = new URL(url);
   appUrl.username = `legend_runtime_${randomBytes(8).toString("hex")}`;
   appUrl.password = randomBytes(24).toString("hex");
+  const grantorUrl = new URL(url);
+  grantorUrl.username = `legend_grant_${randomBytes(8).toString("hex")}`;
+  grantorUrl.password = randomBytes(24).toString("hex");
   const env = {
     ...dockerEnv,
     DATABASE_URL: appUrl.toString(),
     APP_DATABASE_URL: appUrl.toString(),
+    PAYOUT_GRANTOR_DATABASE_URL: grantorUrl.toString(),
     MIGRATION_DATABASE_URL: url,
     STARTER_TEST_DATABASE_URL: url,
     STARTER_TEST_RUN: project,
   };
   await run(pnpmCommand(), ["run", "db:migrate"], env);
-  await provisionAppRole(url, appUrl.toString());
+  await provisionRoles({
+    adminUrl: url,
+    appUrl: appUrl.toString(),
+    grantorUrl: grantorUrl.toString(),
+  });
   await run(
     pnpmCommand(),
     ["--filter", "@starter/api", "exec", "tsx", "src/db/seed-dev-tenant.ts"],
