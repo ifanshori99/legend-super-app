@@ -358,18 +358,13 @@ async function failedWorld(
   const slips = people.map((p) => bank(p, NET));
   const runId = await W.seedRun(slips);
   await W.postLockedJournal(runId, slips);
-  await W.inTx((tx) =>
+  const batch = await W.inTx((tx) =>
     createDisbursementBatch(tx, actorOf(requester.userId), {
       payrollRunId: runId,
       channel: "manual_bank",
     } as never),
   );
-  const [batch] = await W.rowsOf(
-    `SELECT id FROM payroll_disbursement_batches
-      WHERE tenant_id = $1 AND payroll_run_id = $2 ORDER BY created_at DESC LIMIT 1`,
-    [W.tenantId, runId],
-  );
-  const batchId = batch!.id as string;
+  const batchId = batch.id;
   batchIds.push(batchId);
   await W.inTx((tx) =>
     submitDisbursementBatch(tx, actorOf(requester.userId), batchId),
@@ -411,6 +406,45 @@ async function failedWorld(
   }
   return { runId, batchId, itemIds, itemId: itemIds[0]! };
 }
+
+describe("915: payout fixture selects the batch it just created", () => {
+  it("[915-withdraw-fixture-created-batch] exports the new retry even when the failed batch sorts later by creation time, without paying either attempt", async () => {
+    const w = await failedWorld();
+    // Simulate wall-clock reordering. A timestamp is not the identity of the
+    // batch returned by createDisbursementBatch, even across committed steps.
+    await W.asTenant(
+      (c) =>
+        c.query(
+          `UPDATE payroll_disbursement_batches
+              SET created_at = created_at + interval '1 day'
+            WHERE tenant_id = $1 AND id = $2`,
+          [W.tenantId, w.batchId],
+        ),
+      true,
+    );
+
+    const retryId = await W.exportedBatch(w.runId);
+    batchIds.push(retryId);
+    expect(retryId, "the newly created retry, not the failed batch").not.toBe(
+      w.batchId,
+    );
+    expect((await W.batchById(retryId)).status).toBe("exported");
+    expect(await itemStatus(w.itemId), "the failed attempt stays failed").toBe(
+      "failed",
+    );
+    const items = await W.itemsOf(retryId);
+    expect(items).toHaveLength(1);
+    expect(items[0]!.status).toBe("exported");
+    expect(items[0]!.attempt_no).toBe(2);
+    expect(await W.postingsOf(w.batchId), "no original payout posting").toEqual(
+      [],
+    );
+    expect(await W.postingsOf(retryId), "no retry payout posting").toEqual([]);
+    expect(await W.paidEventsOf(w.runId), "the payroll is not paid").toEqual(
+      [],
+    );
+  });
+});
 
 // ---- HTTP calls -----------------------------------------------------------------------------
 

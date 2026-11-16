@@ -742,15 +742,6 @@ export function installPayoutWorld(label: string) {
 
   // ---- Payout rows ----------------------------------------------------------
 
-  const batchRow = async (runId: string, channel = "manual_bank") =>
-    (
-      await rowsOf(
-        `SELECT * FROM payroll_disbursement_batches
-          WHERE tenant_id = $1 AND payroll_run_id = $2 AND channel = $3
-          ORDER BY created_at DESC LIMIT 1`,
-        [tenant.id, runId, channel],
-      )
-    )[0];
   const batchById = async (batchId: string) =>
     (
       await rowsOf("SELECT * FROM payroll_disbursement_batches WHERE id = $1", [
@@ -795,13 +786,15 @@ export function installPayoutWorld(label: string) {
   // ---- Service flow ---------------------------------------------------------
 
   async function createBatch(runId: string, channel = "manual_bank") {
-    await inTx((tx) =>
+    const batch = await inTx((tx) =>
       createDisbursementBatch(tx, actorOf(REQ), {
         payrollRunId: runId,
         channel,
       } as never),
     );
-    return (await batchRow(runId, channel))!.id as string;
+    // Creation timestamps can sort an older attempt after this one. Continue
+    // with the exact batch the committed creation returned, not a latest row.
+    return batch.id;
   }
   async function approvedBatch(runId: string, channel = "manual_bank") {
     const id = await createBatch(runId, channel);
