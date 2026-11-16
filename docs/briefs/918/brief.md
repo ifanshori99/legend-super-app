@@ -19,3 +19,5 @@ Aturan uang: tidak ada pihak dibayar lebih, outlet tidak rugi; ragu -> aturan ya
 
 ## legend-l2zru
 Lihat docs/briefs/918/design-l2zru.md (dibuat setelah peta).
+
+Desain lengkap l2zru (architect, 16 Nov): docs/briefs/918/design-l2zru.md. Pembagian: A1 migrasi 0660 (tabel, grant kind, payout_grant_issue, assert_open, disown, unfreeze) + drizzle schema + journal/meta; A2 migrasi 0661_payout_batch_freeze_guards.sql (panggilan assert_open di payout_grant_consume, payout_attest, payout_run_settle, trigger batches/items/bank_transfer_files/gl_postings; hanya SQL, jurnal didaftar koordinator); B shared validators/DTO/i18n teks; D events/catalog/notification schema + worker job + rule notifikasi + finance exception kind; C service/rute/error map (setelah A1,B); E web (setelah B). Test: apps/api/src/test/payroll-payout-918-disown.test.ts.
