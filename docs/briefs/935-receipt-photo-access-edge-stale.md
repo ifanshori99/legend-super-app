@@ -1,0 +1,7 @@
+# 935 Akses foto penerimaan (legend-iy5l0) + batas basi perangkat edge (legend-2lgu)
+Peran: engineer (baca ~/.agents/team/roles/engineer.md). Sonnet 5.5 high. Akses: architect xhigh. Dua bagian file terpisah, jalankan paralel (Explore per bagian, test-writer gagal-dulu, satu implementer per bagian, test-runner, architect atas diff gabungan). Lapor sekali. Typecheck penuh sekali sebelum lapor.
+Cabang: worktree-mu dari `milestone/m1` (c17c60df7); commit dan push tanpa force. Migrasi sementara mulai 0440. Tidak merge, tidak deploy.
+Bagian A legend-iy5l0: kunci sumber foto penerimaan barang (follow-up reviewer 929): hanya tenant/outlet pemilik dan peran berizin yang bisa membaca/menautkan foto; filter kepemilikan di SQL; ID foto dari tenant lain ditolak. Lihat `bd show legend-iy5l0` dan cabang `ws/929-stock-photo-transport` docs.
+Bagian B legend-2lgu: lihat komentar CTO di kartu. Batas keras replika registry perangkat basi (default 72 jam, setting `EDGE_DEVICE_REGISTRY_MAX_STALE_SECONDS` divalidasi di config/env): lewat batas, edge menolak sesi perangkat baru dengan pesan jelas dan memunculkan alert; sesi berjalan tidak diputus mendadak di tengah transaksi. Panel edge web menampilkan status basi (sudah ada `deviceRegistry.stale` di edge-status.service.ts) dengan teks terdaftar di katalog (text-contract).
+Bukti: test gagal-dulu lalu hijau per bagian, test area lewat heavy setelah commit terakhir, pra-gate AGENTS.md, architect xhigh tanpa P1.
+Laporan: SHA, migrasi, test, temuan architect, angka subagent. Komentari kedua kartu.

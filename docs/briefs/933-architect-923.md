@@ -1,0 +1,5 @@
+# 933 Review architect atas 923 payout deadlock (legend-ijaxi)
+Peran: architect (baca ~/.agents/team/roles/architect.md). Opus 5.5 effort xhigh (uang). Read-only; tanpa worktree baru bila bisa (pakai `git show`/`git diff` ke origin).
+Diff: `git diff d06e5a269..d289f5255` (923, dikerjakan Codex saat kuota Claude habis; sudah di m1 c17c60df7, migrasi sekarang 0430). Konteks: urutan kunci run -> batch (urut id) -> item -> advisory GL; SO 922 di `origin/qa/second-opinion-payout-920:docs/qa/second-opinion-payout-920.md`.
+Cari: urutan kunci yang masih terbalik di semua jalur payout (catch-up unfreeze, worker bukti historis, consumer `payroll.locked`, recon, retry, reversal, settle), deadlock/livelock, langkah uang lolos saat beku, GL ganda/hilang, lintas tenant, test 40P01 yang benar-benar deterministik.
+Hasil: `docs/qa/architect-923.md` (P0-P3, berkas:baris, skenario, usul test) di cabang `qa/architect-923` dari m1, push tanpa force. Komentari legend-ijaxi. Lapor sekali: jumlah temuan per tingkat.
