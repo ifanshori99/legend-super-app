@@ -27,6 +27,7 @@ import {
   taxReportAmountIdr,
   taxReportExportSchema,
   taxReportSchema,
+  taxReportExportedEvent,
   transitionTaxReport,
   type TaxReport,
   type TaxReportLine,
@@ -36,6 +37,7 @@ import {
 import {
   assertTrustedScopedContext,
   CoreError,
+  createUlid,
   idr,
   type ScopedTenantContext,
   type UserId,
@@ -60,6 +62,7 @@ import {
   type TaxLineSource,
 } from "./accounting-tax-line-source";
 import type { StorageRuntime } from "./core-storage-runtime";
+import { appendOutbox } from "./core-outbox";
 
 export type { TaxLineSource } from "./accounting-tax-line-source";
 
@@ -569,6 +572,37 @@ export async function exportTaxReport(
           lineTaxIds: taxIds.lines.size,
           taxpayerIncluded: taxIds.taxpayer !== null,
         },
+      });
+      // The report lock and file-key replay guard allow exactly one event for
+      // this report revision. Roll back the event with the export on failure.
+      const event = taxReportExportedEvent.envelopeSchema.parse({
+        id: createUlid(now.getTime()),
+        tenantId,
+        outletId: null,
+        name: "tax_report.exported",
+        version: 1,
+        aggregateType: "tax_report",
+        aggregateId: exported.id,
+        sequence: 1,
+        occurredAt: now.toISOString(),
+        actor: { type: "user", id: actorId },
+        deviceId: null,
+        idempotencyKey: `tax_report.exported:${exported.id}`,
+        payloadSchemaRef: taxReportExportedEvent.payloadSchemaRef,
+        payload: {
+          taxReportId: exported.id,
+          legalEntityId: exported.legalEntityId,
+          type: exported.type,
+          period: exported.period,
+          amountIdr: exported.amountIdr,
+        },
+      });
+      await appendOutbox(tx, context, {
+        id: createUlid(now.getTime()),
+        event,
+        destination: "cloud-sync",
+        direction: null,
+        peerId: null,
       });
       return exported;
     } catch (error) {
