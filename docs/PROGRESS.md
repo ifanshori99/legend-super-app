@@ -6869,3 +6869,5 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 - Full resume checkpoint: API8197 test lulus teramati pada311/1353 berkas, tanpa gagal; web92/92 tetap hijau. Penarikan payout, koreksi payout yang terbayar, KDS reconnect tanpa duplikasi dan panic relay fallback15detik ikut lewat. Worktree tetap terkunci selama test aktif.
 
 - Full resume checkpoint: API10037 test lulus teramati pada364/1353 berkas, tanpa gagal; web92/92 tetap hijau. Recovery refund four-eyes, POS EDC nominal lock, Coretax mismatch dan alarm receipt/retry ikut lewat. Full masih berjalan; belum mendarat.
+
+- Full resume checkpoint: API11568 test lulus teramati pada447/1353 berkas, tanpa gagal; web92/92 tetap hijau. QR double-pay refund tepat-sekali, dana QR ekstra menahan tender, MFA writeoff dan DP refundable net-of-applied/pending-refund ikut lewat.
