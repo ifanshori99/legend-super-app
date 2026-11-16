@@ -1,3 +1,11 @@
+## Batch76 gate pra-full hijau (16 Nov 2026)
+
+- Commit integrasi559269b1b; reviewer konteks segar atas tiga resolusi konflik dan rechain migrasi: 0 blocker. SQL identik, seluruh468 tabel m1 terjaga; tambah hanya payment_va_releases.
+- Fast282 berkas via LEGEND_TEST_FILES heavy pnpm test: root1045 lulus, web46 lulus, API3541 lulus/12skip (222file lulus/1skip), 18m02. Semua pola single-path/contract/registry serta QR/VA/payment/bill-split/breakfast/recovery/pos-order dan worker sweeps tercakup.
+- Workspace links+heavy lint hijau50,4dtk (0error,2warning lama); heavy typecheck3paket+root hijau53,4dtk; heavy test:e2e produksi18pass/1skip+kedua build hijau42,4dtk; heavy db:generate kosong10,6dtk dan hashDrizzle tidak berubah. Log /tmp/batch76-{fast,lint,typecheck,e2e,generate}.log, semuaexit0.
+- Prettier+ESLint seluruh kode berubah hijau. Brief908 dirapikan format saja. PROGRESS punya masalahformat baseline m1; dokumen lama tidak dirombak. RouteTree hanya kehilangan empatblankline saatbuild, dipulihkan. Tidak ada perbaikan test/produk pada merge train sejauh ini.
+- Sisa backend idempotensi yehnr disimpan ke legend-gp3fw(P3) agar penutupan kartuUI sesuai brief921 tidak menghilangkan pekerjaan; legend-154wr tetapopen. Fullrun berikutnya belum diklaim hijau.
+
 ## Batch76 QR/VA disiapkan (921, 16 Nov 2026)
 
 - Basis origin/milestone/m1 terbaru 2cd7c7564; hanya fix/guest-active-code-916 1fec4716d (memuat c35d1c794, VA906/908/912, pesan tamu916). UI844 tidak diambil karena konflik e2e; payout915/918 dan e2e858 dikecualikan sesuai brief.
