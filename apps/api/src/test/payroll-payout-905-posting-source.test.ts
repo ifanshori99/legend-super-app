@@ -340,8 +340,9 @@ const fillSource = (postingId: string, glAccountId: string) =>
 
 describe("905 a held posting's source is not filled by the app role (card 2b)", () => {
   it("[905-source-direct-fill-other-account-refused] legend_app fills account B (1101, not the cash origin) into a held cash posting: the stored source stays NULL and nothing is journaled", async () => {
-    const before = await journalCount();
     const { held } = await heldCashWithoutSource();
+    // 905: counted after the setup, which posts the lock journal itself.
+    const before = await journalCount();
     const b = await accountId("1101");
 
     await fillSource(held.id as string, b);
@@ -366,8 +367,9 @@ describe("905 a held posting's source is not filled by the app role (card 2b)", 
   });
 
   it("[905-source-direct-fill-and-settle-refused] legend_app fills B, journals Dr 2103 / Cr B for the net and flips the posting to settle in one transaction: the COMMIT fails; the posting stays held with no source and no journal", async () => {
-    const before = await journalCount();
     const { held, runId } = await heldCashWithoutSource();
+    // 905: counted after the setup, which posts the lock journal itself.
+    const before = await journalCount();
     const id = held.id as string;
     const key = held.journal_key as string;
     const b = await accountId("1101");
@@ -426,8 +428,9 @@ describe("905 a held posting's source is not filled by the app role (card 2b)", 
 
 describe("905 app.payout_posting_record_source checks who calls it (card 2b)", () => {
   it("[905-source-function-forged-actor-refused] legend_app calls the function with an invented actor and session, then with a real user and an invented session: both are refused by the actor check and nothing is stored or journaled", async () => {
-    const before = await journalCount();
     const { held, batchId } = await heldCashWithoutSource();
+    // 905: counted after the setup, which posts the lock journal itself.
+    const before = await journalCount();
     const b = await accountId("1101");
 
     for (const [actor, session] of [
@@ -444,10 +447,13 @@ describe("905 app.payout_posting_record_source checks who calls it (card 2b)", (
       expect(result.code, "the function exists (missing behaviour)").not.toBe(
         "42883",
       );
+      // 905: app.payout_assert_actor itself raises 42501 (PAYOUT-39 unknown
+      // actor, PAYOUT-40 no live session), so the code alone cannot tell a
+      // missing EXECUTE grant from the actor check: the message does.
       expect(
-        result.code,
+        result.message,
         "the app role may call it; the actor check refuses",
-      ).not.toBe("42501");
+      ).toMatch(/PAYOUT-(39|40):/);
     }
     expect((await postingOf(held.id as string)).source_gl_account_id).toBe(
       null,

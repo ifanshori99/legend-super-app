@@ -1789,14 +1789,17 @@ describe("L4 a succeeded item is frozen", () => {
     expect(
       await update("status = 'returned', returned_at = now()"),
     ).not.toBeNull();
-    // Control: the one allowed move out of succeeded, with two returners.
-    expect(
-      await update(
-        `status = 'returned', returned_at = now(), returned_by = 'returner-1',
-         returned_by_2 = 'returner-2', return_evidence_key = 'bukti/kembali.pdf',
-         return_note = 'Dana kembali dari bank'`,
-      ),
-    ).toBeNull();
-    expect((await itemsOf(batchId))[0]!.status).toBe("returned");
+    // 905 (A1): even with two returners, plain SQL by the app role may no
+    // longer move a succeeded item: only the payout role's trusted return
+    // function does (PAYOUT-60). The two-person return path is proven
+    // through the service in payroll-payout-proposal.test.ts.
+    const twoReturners = await update(
+      `status = 'returned', returned_at = now(), returned_by = 'returner-1',
+       returned_by_2 = 'returner-2', return_evidence_key = 'bukti/kembali.pdf',
+       return_note = 'Dana kembali dari bank'`,
+    );
+    expect(twoReturners?.code).toBe("23514");
+    expect(twoReturners?.message).toMatch(/PAYOUT-60/);
+    expect((await itemsOf(batchId))[0]!.status).toBe("succeeded");
   });
 });

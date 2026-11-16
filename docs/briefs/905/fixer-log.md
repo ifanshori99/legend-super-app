@@ -66,3 +66,38 @@ Catatan: jalankan suite dari root repo (bukan `apps/api`; dari `apps/api` vitest
 - Penuh (dengan 0649+0650, di r7): **3 gagal / 4 lulus** (tiga yang tercantum di atas, semua butuh keputusan, bukan bug SQL).
 
 ## Pelonggaran 0650(b) tetap harus dilaporkan ke CTO/architect (lihat atas).
+
+## Keputusan engineer untuk fixer 3 (16 Nov)
+- `[905-fu-correction-two-items-control]`: kontrak = 1 item per koreksi → ubah kontrol jadi satu item (komentar `905:`), asersi P2-2 tetap.
+- `[905-fu-closed-key-resolve-*]`: `W.resolve` memanggil service langsung, mapper Express tidak ikut; di HTTP 23514 → 409 lewat `payoutGuardErrorMapper`. Test terima HttpError 4xx ATAU error PG `23514` (penolakan), item tetap `exported`. Jangan longgarkan asersi status.
+- 905-recon / 905-proof-closure / 905-posting-source: boleh ubah `services/payroll-payout-recon.service.ts`, `routes/payroll-payout-proof-closure.routes.ts`, service closure, bila akar ada di implementasi. Bila test salah asumsi (nama fungsi, bentuk data), sesuaikan test dengan komentar `905:` tanpa melemahkan aturan uang.
+- `l4-succeeded-frozen`, `db-return-two-people`: sesuaikan kode error yang diharapkan ke perilaku 905.
+- Overpaid two-step wrappers, 900-global-gate (2), `897-log-no-keys`: cari akar.
+
+# Putaran fixer 3 (16 Nov)
+
+**r8 (suite penuh, sebelum perubahan fixer 3): 32 gagal / 586 lulus / 13 todo** (log `$S/r8.log`), sama dengan r7. Tidak ada perubahan SQL/service. Tidak commit.
+
+## Tes yang disesuaikan (semua `905:`)
+- `payroll-payout-core.test.ts` `[l4-succeeded-frozen]`: kontrol succeeded -> returned (dua returner) lewat SQL app role kini diharapkan 23514 PAYOUT-60, status tetap `succeeded` (A1). Jalur return dua orang dibuktikan lewat service (proposal tests).
+- `payroll-payout-hardening.test.ts` `[db-return-two-people]`: sama, kontrol diharapkan 23514 PAYOUT-60, status tetap `succeeded`.
+- `payroll-payout-hardening.test.ts` `[overpaid-slip-not-open]`: return saudara (setup, bukan aturan yang diuji) ditulis sebagai histori (`W.asTenant(..., true)`, replica).
+- `payroll-payout-fixtures.ts` `W.proposeOverpaid`: dilewati bila proposal terbuka dari proposer yang sama dengan bukti yang sama sudah ada. Sebab: tes 888-guards/so-fixes/source-active memanggil wrapper dua kali (ditolak dulu, lalu diterima), panggilan kedua kena `PAYOUT_OVERPAID_SAME_PERSON`.
+- `payroll-payout-905-followups.test.ts`: `[905-fu-correction-two-items-control]` jadi satu item (Budi), asersi: Budi succeeded + 1 posting + jurnal bertambah, Siti tetap failed tanpa posting, posting Andi tidak berubah. `[905-fu-closed-key-resolve-*]`: terima HttpError 4xx ATAU PG 23514; asersi status `exported` dan `gl_posting_id` NULL tetap.
+- `payroll-payout-905-posting-source.test.ts`: (1) `journalCount()` "before" diambil SETELAH `heldCashWithoutSource()` (setup memposting jurnal lock sendiri) di tiga tes; (2) `[905-source-function-forged-actor-refused]`: `payout_assert_actor` sendiri memakai 42501 (PAYOUT-39/40), jadi asersi "bukan 42501" diganti `message` cocok `/PAYOUT-(39|40):/` (lebih ketat: membuktikan pemeriksaan aktor, bukan grant yang hilang).
+
+## Hasil terarah
+- core, hardening, followups, posting-source, 888-guards, so-fixes, source-active: semua lulus (t4 + t5: 127 + 7 lulus).
+
+- `payroll-payout-905-recon.test.ts`: (1) `runRecon` memanggil `reconcileTrustedPayouts(W.scope(), { storage, after })` per halaman sampai habis (header berkas sendiri bilang hanya `runRecon` yang diubah bila signature beda); sebab 3x `TypeError 'tenantId'`. (2) `overpaidWorld`: batch susulan membayar slip dulu (overpaid butuh percobaan lain yang sukses, `PAYOUT_ITEM_NOT_OVERPAYABLE`). (3) `afterEach` tidak lagi menghapus binding/claim/proposal/correction/hash/contest kunci yang dilacak, hanya baris exception recon. Akar 5x PENDING: menghapus claim/binding sementara item tetap membawa `return_evidence_key` meninggalkan operasi tak terikat di `app.payout_proof_operations()`, jadi gerbang global tertahan untuk semua tes sesudahnya (juga lintas berkas).
+
+## Hasil terarah
+- core, hardening, followups, posting-source, 888-guards, so-fixes, source-active: semua lulus (t4 + t5: 127 + 7 lulus).
+- 905-recon sendiri (t9): **8 lulus / 2 gagal**.
+
+## Sisa, butuh keputusan (perubahan service recon di area uang, tidak saya tebak)
+- `[905-recon-pre-boundary-skipped]`: item `overpaid` sesudah batas tanpa attestation tidak di-flag. `listOperations` (`payroll-payout-recon.service.ts:119-203`) hanya membaca operasi dari corrections / overpaid_proposals / return_claims / postings; item yang dipindah langsung tanpa baris operasi tidak pernah terlihat. Perlu sumber operasi baru "item final sesudah `payout_trusted_since()` tanpa operasi" + alasan flag. Keputusan desain: architect.
+- `[905-recon-tampered-proof]`: tes mengubah `payroll_payout_proof_hashes.sha256`; recon tidak mendeteksinya (kemungkinan membandingkan `bindings.content_sha256` dengan file, bukan `proof_hashes`). Belum diselidiki lebih jauh.
+- 905-proof-closure (7): belum diselidiki. Saat berjalan bersama recon lama, gagal juga sendiri-sendiri (t6); sebagian mungkin akibat kebocoran gerbang dari cleanup recon yang sekarang diperbaiki. Ukur ulang dulu.
+- 900-global-gate (2), 897 `[897-log-no-keys]` (1): belum disentuh.
+- Suite penuh belum dijalankan ulang setelah perubahan fixer 3.

@@ -1035,6 +1035,17 @@ export function installPayoutWorld(label: string) {
     recorder: string,
   ) {
     const proposer = [APP2, APP3, APP].find((id) => id !== recorder)!;
+    // A test may call its wrapper again after a refused second step (for
+    // example: refused while accounting is off, then accepted). The open
+    // proposal of the same person and proof is step one already; proposing
+    // again is a same-person replay (PAYOUT_OVERPAID_SAME_PERSON).
+    const open = await rowsOf(
+      `SELECT 1 FROM payroll_payout_overpaid_proposals
+        WHERE tenant_id = $1 AND item_id = $2 AND proposed_by = $3
+          AND evidence_key = $4 AND status = 'proposed'`,
+      [tenant.id, itemId, proposer, evidenceKey],
+    );
+    if (open.length > 0) return;
     return inTx((tx) =>
       recordOverpaidItems(
         tx,

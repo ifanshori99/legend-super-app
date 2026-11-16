@@ -129,36 +129,16 @@ const trackedKeys: string[] = [];
 const trackKey = (key: string) => (trackedKeys.push(key), key);
 
 afterEach(async () => {
-  const keys = trackedKeys.splice(0);
+  // 905: the proof rows of the keys are kept. Deleting a binding or a return
+  // claim while the item still carries the key leaves an unbound operation in
+  // app.payout_proof_operations(), and the global gate then holds every later
+  // step (PAYOUT_PROOF_FINGERPRINT_PENDING), in this file and the next ones.
+  trackedKeys.splice(0);
   await W.asTenant(async (c) => {
     // Insert-only rows of this file: every test starts without recon exceptions.
     await c.query(`DELETE FROM ${EXCEPTIONS} WHERE tenant_id = $1`, [
       W.tenantId,
     ]);
-    if (keys.length === 0) return;
-    await c.query(
-      `DELETE FROM payroll_payout_proof_hash_contests
-        WHERE sha256 IN (SELECT h.sha256 FROM payroll_payout_proof_hashes h
-                          JOIN payroll_payout_proof_bindings b ON b.id = h.binding_id
-                         WHERE b.tenant_id = $1 AND b.evidence_key = ANY($2::text[]))`,
-      [W.tenantId, keys],
-    );
-    await c.query(
-      `DELETE FROM payroll_payout_proof_hashes
-        WHERE binding_id IN (SELECT id FROM payroll_payout_proof_bindings
-                              WHERE tenant_id = $1 AND evidence_key = ANY($2::text[]))`,
-      [W.tenantId, keys],
-    );
-    for (const table of [
-      "payroll_payout_proof_bindings",
-      "payroll_payout_failed_corrections",
-      "payroll_payout_overpaid_proposals",
-      "payroll_payout_return_claims",
-    ])
-      await c.query(
-        `DELETE FROM ${table} WHERE tenant_id = $1 AND evidence_key = ANY($2::text[])`,
-        [W.tenantId, keys],
-      );
   }, true);
 });
 
@@ -192,13 +172,19 @@ async function runRecon() {
     `payroll-payout-recon.service.ts must export the night run (one of ${RECON_EXPORTS.join(", ")}); it exports: ${Object.keys(mod).join(", ")}`,
   ).toBeDefined();
   const { storage } = W.proofs();
-  await (mod[name!] as (options: unknown) => Promise<unknown>)({
-    tenantId: W.tenantId,
-    storage,
-    context: W.scope(),
-    scope: W.scope(),
-    proofs: W.proofs(),
-  });
+  // 905: the real night run is reconcileTrustedPayouts(context, options), one
+  // page per call; page through the whole tenant before returning.
+  const run = mod[name!] as (
+    context: unknown,
+    options: unknown,
+  ) => Promise<{ operations: number; last: string | null }>;
+  let after: string | null = null;
+  for (let page = 0; page < 1000; page += 1) {
+    const result = await run(W.scope(), { storage, after });
+    if (result.last === null || result.operations === 0) return;
+    after = result.last;
+  }
+  throw new Error("recon did not finish");
 }
 
 // ---- Worlds ----------------------------------------------------------------------------
@@ -276,6 +262,14 @@ async function correctedWorld() {
 /** An overpaid item: failed on paper, but the money moved. */
 async function overpaidWorld() {
   const w = await failedWorld();
+  // 905: an overpaid record needs another succeeded attempt of the same slip
+  // (PAYOUT_ITEM_NOT_OVERPAYABLE otherwise): a follow-up batch pays it first.
+  const followUp = await W.exportedBatch(w.runId);
+  const followItems = (await W.itemsOf(followUp)).filter(
+    (i) => i.status === "exported",
+  );
+  expect(followItems, "premise: one follow-up attempt").toHaveLength(1);
+  await W.confirm(followUp, W.succeedItems(followUp, followItems));
   const key = await twoSteps("overpaid", w);
   expect((await itemOf(w.itemId)).status, "premise: overpaid").toBe("overpaid");
   return { ...w, key };

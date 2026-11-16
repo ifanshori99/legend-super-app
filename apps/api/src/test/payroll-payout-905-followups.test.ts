@@ -40,6 +40,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { HttpError } from "../lib/http-error.ts";
 import { totpCode, totpStep } from "../lib/totp.ts";
 import { originHeader } from "./helpers.ts";
 import {
@@ -523,12 +524,15 @@ describe("905 follow-up P2-2: approving a correction needs the settle posting of
     expect(await postingsCount(w.batchId)).toBe(postingsBefore);
   });
 
-  it("[905-fu-correction-two-items-control] control: two failed items corrected together over HTTP by two people (items sent in descending id order) commit: both succeeded, ONE new settle posting with its journal, Andi's earlier posting untouched", async () => {
+  // 905: the correction contract takes one item per operation (shared
+  // validator: itemIds max 1), so the control corrects one failed item.
+  it("[905-fu-correction-two-items-control] control: one failed item corrected over HTTP by two people commits: it is succeeded with ONE new settle posting and its journal; the other failed item and Andi's earlier posting are untouched", async () => {
     const w = await mixedBatch();
     const key = trackKey(uploadEvidence(w.batchId, `fu-${randomUUID()}.pdf`));
-    const ids = [w.budi, w.siti].sort().reverse();
+    const ids = [w.budi];
     const postingsBefore = await postingsCount(w.batchId);
     const journalsBefore = await payoutJournals();
+    const andiPosting = (await itemOf(w.andi)).gl_posting_id;
 
     const first = await itemCall(one, w.batchId, ids, key);
     expect([200, 201], detail(first)).toContain(first.status);
@@ -536,9 +540,11 @@ describe("905 follow-up P2-2: approving a correction needs the settle posting of
     expect([200, 201], detail(second)).toContain(second.status);
 
     expect((await itemOf(w.budi)).status).toBe("succeeded");
-    expect((await itemOf(w.siti)).status).toBe("succeeded");
+    expect((await itemOf(w.siti)).status, "not in the operation").toBe(
+      "failed",
+    );
     expect((await itemOf(w.andi)).status).toBe("succeeded");
-    expect(await postingsCount(w.batchId), "one posting for the set").toBe(
+    expect(await postingsCount(w.batchId), "one posting for the item").toBe(
       postingsBefore + 1,
     );
     expect(
@@ -547,11 +553,12 @@ describe("905 follow-up P2-2: approving a correction needs the settle posting of
     ).toBeGreaterThan(journalsBefore);
     const budiPosting = (await itemOf(w.budi)).gl_posting_id;
     expect(budiPosting).not.toBeNull();
-    expect((await itemOf(w.siti)).gl_posting_id).toBe(budiPosting);
+    expect((await itemOf(w.siti)).gl_posting_id).toBeNull();
     expect(
       (await itemOf(w.andi)).gl_posting_id,
       "Andi keeps his own posting",
-    ).not.toBe(budiPosting);
+    ).toBe(andiPosting);
+    expect(andiPosting).not.toBe(budiPosting);
   });
 });
 
@@ -628,9 +635,31 @@ describe("905 follow-up P2-4: a closed proof key cannot finish a resolve that fr
       await closeKey(w.batchId, key);
       expect(await gate(), "premise: the gate is clear again").toBe(false);
 
-      await W.expectRefused(
-        W.resolve(w.batchId, [w.itemId], outcome, APP3, key),
-      );
+      // 905: W.resolve calls the service directly, so the Express mapper that
+      // turns the guard's 23514 into 409 (payoutGuardErrorMapper) is not in
+      // the path. Either form is the refusal: a 4xx HttpError, or the raw
+      // PostgreSQL check violation 23514 from the 0649(c) guard.
+      const refusal = (await W.resolve(
+        w.batchId,
+        [w.itemId],
+        outcome,
+        APP3,
+        key,
+      ).then(
+        () => null,
+        (error: unknown) => error,
+      )) as { status?: number; code?: string; cause?: { code?: string } } | null;
+      expect(refusal, "the call must be refused").not.toBeNull();
+      const refusedHttp =
+        refusal instanceof HttpError &&
+        refusal.status >= 400 &&
+        refusal.status < 500;
+      const refusedPg =
+        refusal?.code === "23514" || refusal?.cause?.code === "23514";
+      expect(
+        refusedHttp || refusedPg,
+        `a 4xx HttpError or a 23514 check violation: ${String(refusal)}`,
+      ).toBe(true);
       const after = await itemOf(w.itemId);
       expect(after.status, "the slip is not released for a retry").toBe(
         "exported",
