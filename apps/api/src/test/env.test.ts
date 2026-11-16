@@ -69,6 +69,29 @@ describe("API environment", () => {
       expect(result.status).toBe(0);
     });
 
+    it("lets the worker start in production without it (it never gets the login)", () => {
+      const result = loadEnv(
+        production({
+          PAYOUT_GRANTOR_DATABASE_URL: undefined,
+          WORKER_DATABASE_URL:
+            "postgresql://legend_worker_0123456789abcdef:pw@localhost:5432/legend",
+        }),
+      );
+      expect(result.stderr).toBe("");
+      expect(result.status).toBe(0);
+    });
+
+    it("lets an outlet edge node start in production without it", () => {
+      const result = loadEnv(
+        production({
+          PAYOUT_GRANTOR_DATABASE_URL: undefined,
+          EDGE_MODE: "true",
+          STAFF_PIN_PEPPER: undefined,
+        }),
+      );
+      expect(result.stderr).not.toContain("PAYOUT_GRANTOR_DATABASE_URL");
+    });
+
     it.each(["development", "test"])("stays optional in %s", (nodeEnv) => {
       const result = loadEnv({
         NODE_ENV: nodeEnv,

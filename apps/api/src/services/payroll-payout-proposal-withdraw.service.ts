@@ -39,6 +39,7 @@ import type { Tx } from "./hris-access.ts";
 import {
   isPayoutUuid,
   loadBatchRunFirst,
+  payoutGuardViolation,
   payoutRefuse,
   payoutStateChanged,
   payoutTrustedGrant,
@@ -95,11 +96,12 @@ export function proofSpentByWithdrawn(error: unknown) {
 }
 
 /** The database refusals of the two withdraw functions, as client errors. */
-function withdrawError(error: unknown): unknown {
+export function withdrawError(error: unknown): unknown {
   if (hasPayoutCode(error, "63") || hasPayoutCode(error, "69"))
     return notWithdrawable();
   if (hasPayoutCode(error, "64")) return requesterRefused();
-  return proofSpentByWithdrawn(error) ?? error;
+  // PAYOUT-70 (grant invalid, spent or expired): a 409, like the other steps.
+  return proofSpentByWithdrawn(error) ?? payoutGuardViolation(error) ?? error;
 }
 
 function checkItemIds(itemIds: readonly string[]): void {

@@ -375,30 +375,12 @@ const uuidList = (values: readonly string[]): SQL =>
     sql`, `,
   );
 
-async function loadFacts(
+async function readAttestations(
   tx: Tx,
   tenantId: TenantId,
-  operations: readonly Operation[],
-  since: Date,
-  grantsSince: Date | null,
-  includeWithdrawals: boolean,
-): Promise<Facts> {
-  const batchIds = [...new Set(operations.map((op) => op.batchId))];
-  const itemIds = [
-    ...new Set(
-      operations.flatMap((op) => [...op.itemIds, ...op.terminalItemIds]),
-    ),
-  ];
-  const keys = [
-    ...new Set(
-      operations.flatMap((op) =>
-        op.evidenceKey === null ? [] : [op.evidenceKey],
-      ),
-    ),
-  ];
-  const sinceIso = since.toISOString();
-
-  const attestations = rowsOf(
+  condition: SQL,
+): Promise<Attestation[]> {
+  return rowsOf(
     await tx.execute(sql`
       SELECT a.kind, a.operation_id::text AS operation_id, a.batch_id::text AS batch_id,
              a.evidence_key, a.item_ids::text[] AS item_ids, a.actor, a.session_id,
@@ -406,12 +388,7 @@ async function loadFacts(
              a.step, a.grant_id::text AS grant_id, a.txid
         FROM payroll_payout_attestations a
        WHERE a.tenant_id = ${tenantId}::uuid
-         AND (a.batch_id IN (${uuidList(batchIds)})
-              -- A withdrawn proposal is no operation (nothing was corrected or
-              -- recorded), so its withdraw step is read on its own; the first
-              -- page only, the flags dedupe by operation across pages.
-              OR (${includeWithdrawals} AND a.step = 'withdraw'
-                  AND a.kind IN ('correction', 'overpaid')))`),
+         AND ${condition}`),
   ).map((row): Attestation => ({
     kind: String(row.kind),
     operationId: String(row.operation_id),
@@ -427,14 +404,13 @@ async function loadFacts(
     grantId: text(row.grant_id),
     txid: row.txid === null || row.txid === undefined ? null : Number(row.txid),
   }));
+}
 
-  const operationIds = [
-    ...new Set([
-      ...operations.map((op) => op.operationId),
-      ...attestations.map((a) => a.operationId),
-    ]),
-  ];
-
+async function readGrants(
+  tx: Tx,
+  tenantId: TenantId,
+  attestations: readonly Attestation[],
+): Promise<Map<string, GrantRow>> {
   const grants = new Map<string, GrantRow>();
   const grantIds = [
     ...new Set(
@@ -465,6 +441,88 @@ async function loadFacts(
             ? null
             : Number(row.consumed_txid),
       });
+  return grants;
+}
+
+/**
+ * The withdraw steps of corrections and overpaid proposals at or after the
+ * grant cutover. A withdrawn proposal is no operation (nothing was corrected
+ * or recorded), so it is read on its own, whether or not the tenant has any
+ * operation; the first page only, the flags dedupe by operation across pages.
+ */
+async function loadWithdrawals(
+  tx: Tx,
+  tenantId: TenantId,
+  grantsSince: Date,
+): Promise<{
+  attestations: Attestation[];
+  grants: Map<string, GrantRow>;
+  flagged: Set<string>;
+}> {
+  const attestations = await readAttestations(
+    tx,
+    tenantId,
+    sql`a.step = 'withdraw' AND a.kind IN ('correction', 'overpaid')
+        AND a.attested_at >= ${grantsSince.toISOString()}::timestamptz`,
+  );
+  const grants = await readGrants(tx, tenantId, attestations);
+  const flagged = new Set<string>();
+  const operationIds = [...new Set(attestations.map((a) => a.operationId))];
+  if (operationIds.length > 0)
+    for (const row of rowsOf(
+      await tx.execute(sql`
+        SELECT e.kind, e.operation_id::text AS operation_id, e.item_id::text AS item_id, e.reason
+          FROM payroll_payout_recon_exceptions e
+         WHERE e.tenant_id = ${tenantId}::uuid
+           AND e.operation_id IN (${uuidList(operationIds)})`),
+    ))
+      flagged.add(
+        flagKey(
+          String(row.kind),
+          String(row.operation_id),
+          text(row.item_id),
+          String(row.reason),
+        ),
+      );
+  return { attestations, grants, flagged };
+}
+
+async function loadFacts(
+  tx: Tx,
+  tenantId: TenantId,
+  operations: readonly Operation[],
+  since: Date,
+  grantsSince: Date | null,
+): Promise<Facts> {
+  const batchIds = [...new Set(operations.map((op) => op.batchId))];
+  const itemIds = [
+    ...new Set(
+      operations.flatMap((op) => [...op.itemIds, ...op.terminalItemIds]),
+    ),
+  ];
+  const keys = [
+    ...new Set(
+      operations.flatMap((op) =>
+        op.evidenceKey === null ? [] : [op.evidenceKey],
+      ),
+    ),
+  ];
+  const sinceIso = since.toISOString();
+
+  const attestations = await readAttestations(
+    tx,
+    tenantId,
+    sql`a.batch_id IN (${uuidList(batchIds)})`,
+  );
+
+  const operationIds = [
+    ...new Set([
+      ...operations.map((op) => op.operationId),
+      ...attestations.map((a) => a.operationId),
+    ]),
+  ];
+
+  const grants = await readGrants(tx, tenantId, attestations);
 
   const sessions = new Map<string, SessionRow>();
   const sessionIds = [...new Set(attestations.map((a) => a.sessionId))];
@@ -1006,7 +1064,9 @@ function evaluate(
  * very step, holds the slips of the attestation. Pure, no I/O. An attestation
  * before the cutover is skipped like `trusted_since`.
  */
-function evaluateGrants(facts: Facts): Flag[] {
+function evaluateGrants(
+  facts: Pick<Facts, "grantsSince" | "attestations" | "grants" | "sourceItems">,
+): Flag[] {
   if (facts.grantsSince === null) return [];
   const flags: Flag[] = [];
   for (const a of facts.attestations) {
@@ -1069,44 +1129,52 @@ export async function reconcileTrustedPayouts(
 ): Promise<PayoutReconPageResult> {
   const tenantId = context.tenant.tenantId;
   const limit = options.limit ?? PAYOUT_RECON_OPERATIONS_PER_PAGE;
-  const { operations, facts } = await withTenant(db, context, async (tx) => {
-    const trustedSince = rowsOf(
-      await tx.execute(sql`SELECT app.payout_trusted_since() AS since`),
-    )[0]?.since;
-    const since =
-      options.since ??
-      new Date((trustedSince as string | Date | undefined) ?? NaN);
-    if (Number.isNaN(since.getTime()))
-      throw new Error("Payout trusted boundary time is unknown");
-    const grantsSince = new Date(
-      (rowsOf(
-        await tx.execute(sql`SELECT app.payout_grants_since() AS since`),
-      )[0]?.since as string | Date | undefined) ?? NaN,
-    );
-    if (Number.isNaN(grantsSince.getTime()))
-      throw new Error("Payout grant boundary time is unknown");
-    const found = await listOperations(tx, tenantId, {
-      after: options.after ?? null,
-      limit,
-      since,
-    });
-    if (found.length === 0)
-      return { operations: found, facts: null as Facts | null };
-    return {
-      operations: found,
-      facts: await loadFacts(
-        tx,
-        tenantId,
-        found,
+  const { operations, facts, withdrawals, grantsSince } = await withTenant(
+    db,
+    context,
+    async (tx) => {
+      const trustedSince = rowsOf(
+        await tx.execute(sql`SELECT app.payout_trusted_since() AS since`),
+      )[0]?.since;
+      const since =
+        options.since ??
+        new Date((trustedSince as string | Date | undefined) ?? NaN);
+      if (Number.isNaN(since.getTime()))
+        throw new Error("Payout trusted boundary time is unknown");
+      const grantsSince = new Date(
+        (rowsOf(
+          await tx.execute(sql`SELECT app.payout_grants_since() AS since`),
+        )[0]?.since as string | Date | undefined) ?? NaN,
+      );
+      if (Number.isNaN(grantsSince.getTime()))
+        throw new Error("Payout grant boundary time is unknown");
+      const found = await listOperations(tx, tenantId, {
+        after: options.after ?? null,
+        limit,
         since,
+      });
+      const withdrawals =
+        options.after == null
+          ? await loadWithdrawals(tx, tenantId, grantsSince)
+          : null;
+      if (found.length === 0)
+        return {
+          operations: found,
+          facts: null as Facts | null,
+          withdrawals,
+          grantsSince,
+        };
+      return {
+        operations: found,
+        facts: await loadFacts(tx, tenantId, found, since, grantsSince),
+        withdrawals,
         grantsSince,
-        options.after == null,
-      ),
-    };
-  });
+      };
+    },
+  );
   const last = operations.at(-1)?.sortKey ?? null;
   const exhausted = operations.length < limit;
-  if (facts === null)
+  if (facts === null && (withdrawals?.attestations.length ?? 0) === 0)
     return { operations: 0, flagged: 0, unreadable: 0, last, exhausted };
 
   // The stored proof read again must hash to its record. "Not found" is a
@@ -1116,7 +1184,7 @@ export async function reconcileTrustedPayouts(
   if (options.storage) {
     for (const op of operations) {
       const key = op.evidenceKey;
-      const record = key === null ? undefined : facts.records.get(key);
+      const record = key === null ? undefined : facts?.records.get(key);
       if (key === null || !record || fileOf.has(key)) continue;
       try {
         const object = await options.storage.get(context, {
@@ -1145,10 +1213,27 @@ export async function reconcileTrustedPayouts(
 
   // A difference of the operation holds every slip of it, so an operation-wide
   // reason is flagged once per terminal item (the flag carries the payslip).
-  const seen = new Set(facts.flagged);
-  const fresh = operations
-    .flatMap((op) => evaluate(op, facts, fileOf))
-    .concat(evaluateGrants(facts))
+  const seen = new Set([
+    ...(facts?.flagged ?? []),
+    ...(withdrawals?.flagged ?? []),
+  ]);
+  const fresh = (
+    facts === null
+      ? []
+      : operations
+          .flatMap((op) => evaluate(op, facts, fileOf))
+          .concat(evaluateGrants(facts))
+  )
+    .concat(
+      withdrawals === null
+        ? []
+        : evaluateGrants({
+            grantsSince: grantsSince.getTime(),
+            attestations: withdrawals.attestations,
+            grants: withdrawals.grants,
+            sourceItems: new Map(),
+          }),
+    )
     .filter((flag) => {
       const key = flagKey(
         flag.kind,

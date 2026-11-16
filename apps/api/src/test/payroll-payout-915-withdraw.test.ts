@@ -69,6 +69,8 @@ import {
 import { exportManualBatch } from "../services/payroll-payout-manual.service.ts";
 import type { PayoutGrantBinding } from "../services/payroll-payout-grant.service.ts";
 import { reconcileTrustedPayouts } from "../services/payroll-payout-recon.service.ts";
+import { withdrawError } from "../services/payroll-payout-proposal-withdraw.service.ts";
+import { HttpError } from "../lib/http-error.ts";
 import { originHeader } from "./helpers.ts";
 import {
   APP,
@@ -1678,6 +1680,73 @@ describe("915: the night recon accepts a clean withdrawal and flags a forged gra
       }
     });
   }
+});
+
+describe("915: a withdraw attestation is checked even when the tenant has no operation", () => {
+  it("[915-withdraw-recon-no-operation] a withdraw whose grant was forged gives grant_mismatch although the page has no other operation", async () => {
+    const p = await proposalWorld("correction");
+    expectOk(
+      await withdrawCall(two, "correction", p.batchId, p.covered),
+      "withdraw",
+    );
+    const grantId = (await withdrawAttestations(p.itemId))[0]!
+      .grant_id as string;
+    const exceptions = () =>
+      W.rowsOf(
+        `SELECT * FROM ${EXCEPTIONS} WHERE tenant_id = $1 AND item_id = $2`,
+        [W.tenantId, p.itemId],
+      );
+    // A trusted boundary in the future: no operation is listed on the page.
+    const run = () =>
+      (
+        reconcileTrustedPayouts as unknown as (
+          context: unknown,
+          options: unknown,
+        ) => Promise<{ operations: number }>
+      )(W.scope(), {
+        storage: W.proofs().storage,
+        since: new Date(Date.now() + 86_400_000),
+      });
+    expect((await run()).operations, "no operation on the page").toBe(0);
+    expect(await exceptions(), "clean withdrawal: no flag").toHaveLength(0);
+
+    const original = (
+      await W.rowsOf(
+        `SELECT actor FROM payroll_payout_grants WHERE tenant_id = $1 AND id = $2`,
+        [W.tenantId, grantId],
+      )
+    )[0]!.actor as string;
+    const setActor = (actor: string) =>
+      W.asTenant(
+        (c) =>
+          c.query(
+            `UPDATE payroll_payout_grants SET actor = $3 WHERE tenant_id = $1 AND id = $2`,
+            [W.tenantId, grantId, actor],
+          ),
+        true,
+      );
+    try {
+      await setActor(randomUUID());
+      expect((await run()).operations).toBe(0);
+      expect((await exceptions()).map((r) => r.reason)).toContain(
+        "grant_mismatch",
+      );
+    } finally {
+      await setActor(original);
+    }
+  });
+
+  it("[915-withdraw-grant-error-mapping] PAYOUT-70 (42501) from a withdraw function, also behind a driver wrapper, is a 409 HttpError, not a raw database error", () => {
+    const wrapped = Object.assign(new Error("Failed query"), {
+      cause: Object.assign(new Error("PAYOUT-70: no valid payout grant"), {
+        code: "42501",
+      }),
+    });
+    const mapped = withdrawError(wrapped);
+    expect(mapped).toBeInstanceOf(HttpError);
+    expect((mapped as HttpError).status).toBe(409);
+    expect((mapped as HttpError).code).toBe("PAYOUT_STEP_GRANT_INVALID");
+  });
 });
 
 // =========================================================================

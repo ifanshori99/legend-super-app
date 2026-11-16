@@ -95,6 +95,9 @@ const schema = z
     // production (legend-786te, see the refine below); development and test
     // may leave it unset and fall back to SET LOCAL ROLE (db/grantor.ts).
     PAYOUT_GRANTOR_DATABASE_URL: blankToUndefined(postgresUrl).optional(),
+    // Only read to tell the worker process from the api (legend-786te): the
+    // worker imports this schema too but never receives the grantor login.
+    WORKER_DATABASE_URL: z.string().optional(),
     BETTER_AUTH_SECRET: z
       .string()
       .min(32, "Run pnpm run setup to generate a secret."),
@@ -818,11 +821,16 @@ const schema = z
   .refine(
     (values) =>
       values.NODE_ENV !== "production" ||
+      values.EDGE_MODE ||
+      Boolean(values.WORKER_DATABASE_URL) ||
       Boolean(values.PAYOUT_GRANTOR_DATABASE_URL),
     {
       // legend-786te: without the grantor login every trusted payout step
-      // answers 503, so production refuses to start instead. Edge nodes get no
-      // exemption, the same as APP_DATABASE_URL below.
+      // answers 503, so the production api refuses to start instead. Two
+      // processes never serve payout steps and never receive the login
+      // (check-compose-env.mjs forbids it): the worker, which carries
+      // WORKER_DATABASE_URL (the api must not), and an outlet edge node
+      // (payroll routes are not in its route list).
       path: ["PAYOUT_GRANTOR_DATABASE_URL"],
       message:
         "Set PAYOUT_GRANTOR_DATABASE_URL to the payout grantor login (legend_grant_*) in production.",
