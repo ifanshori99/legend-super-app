@@ -349,7 +349,7 @@ export async function recordOverpaidItems(
   if (proposals.length > 0) throw proposalReplaceRefused();
   await assertOtherAttemptPaid(tx, tenantId, rows);
   // One trusted call writes the proposal of every item; no direct DML on the
-  // proposals (migration 0645).
+  // proposals (migration 0411).
   if (early?.step !== "propose") throw payoutStateChanged();
   try {
     await tx.execute(

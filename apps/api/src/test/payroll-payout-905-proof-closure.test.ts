@@ -1,5 +1,5 @@
 // Payout 905 card 3 (bead legend-6htrf; docs/briefs/905/brief.md "Kartu 3" and
-// docs/briefs/905/design.md "0647 kartu 3", "Endpoint kartu 3 (C3)" and "Asumsi
+// docs/briefs/905/design.md "0413 kartu 3", "Endpoint kartu 3 (C3)" and "Asumsi
 // pemanggil"). Written fail-first from the brief, the design and the shared
 // validators/DTO types (packages/shared payroll-payout), not from the
 // implementation. API level: everything goes over HTTP like the other payout
@@ -45,7 +45,7 @@
 // - The test database has no other unresolved stuck rows when this file starts
 //   (files run one at a time); the premise is asserted in beforeAll.
 // - Not covered here: the audit row of a closure (its event name is not in the
-//   brief) and the SQL-level actor checks of the 0647 functions (the 905
+//   brief) and the SQL-level actor checks of the 0413 functions (the 905
 //   trusted-boundary file covers the role boundary).
 import { createHash, randomUUID } from "node:crypto";
 import { Pool } from "pg";
@@ -266,7 +266,7 @@ async function paidBatch() {
 }
 
 // 905: the stuck table alone never held the gate (app.payout_proof_tenant_pending,
-// 0641/0647, reads no stuck row). What holds it in production is the proof
+// 0399/0413, reads no stuck row). What holds it in production is the proof
 // history the backfill could not finish: an upload record whose stored
 // fingerprint was never read (stored_sha256 NULL). The helper now leaves that
 // real pending state next to the stuck row; the gate itself is unchanged.

@@ -164,7 +164,7 @@ async function seedPosting(
       ],
     );
     // 905: seeded with triggers off (session_replication_role = replica): the
-    // insert guard (PAYOUT-70) and the insert commit check (0643) refuse a
+    // insert guard (PAYOUT-70) and the insert commit check (0409) refuse a
     // recorded source or a journal-less settle that these guard tests need as
     // their starting row.
   }, true);
@@ -545,7 +545,7 @@ describe("legend-63qhw: source account of an unresolved settle", () => {
       const result = await tryUpdate(posting.id, "source_gl_account_id = $2", [
         accountA,
       ]);
-      // 905 (migration 0646): the fill is the payout role's alone
+      // 905 (migration 0412): the fill is the payout role's alone
       // (app.payout_posting_record_source); the app role is refused. The
       // allowed path is proved in payroll-payout-905-posting-source.test.ts.
       expect(result.code).toBe(GUARD_CODE);

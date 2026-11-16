@@ -16,7 +16,7 @@
 -- no item at all and no reconciliation exception), and nothing of the run is
 -- still open. `paid_by` is the approver of the batch, never an argument.
 -- Error code: PAYOUT-77 (P0002) the batch is not in the tenant.
--- Ownership: as 0654, the function is created by the payout role itself (grant,
+-- Ownership: as 0420, the function is created by the payout role itself (grant,
 -- become, work, return, revoke).
 CREATE OR REPLACE FUNCTION app.payroll_runs_payout_guard() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$

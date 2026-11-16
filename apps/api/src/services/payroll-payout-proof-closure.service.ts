@@ -5,7 +5,7 @@
 // finance people close it: one proposes, the other approves. The proof stays
 // bound for good: closing never changes an item and never opens a payment.
 // - The money-adjacent rules live in the SQL functions owned by `legend_payout`
-//   (migration 0647): `app.payout_proof_closure_propose` / `_approve` check the
+//   (migration 0413): `app.payout_proof_closure_propose` / `_approve` check the
 //   actor and session, the two-person rule (approver is neither the proposer
 //   nor the batch requester), idempotence, and contest every known hash. This
 //   file only calls them, lists the stuck keys, and maps their refusals.

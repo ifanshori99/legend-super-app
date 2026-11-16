@@ -22,7 +22,7 @@
 //   call finds an item that is no longer `failed` and is refused. The journal
 //   key and the unique `journal_key` of the posting are the second and third
 //   guard. The database allows `failed -> overpaid` only through the trusted
-//   function `app.payout_overpaid_record` (migrations 0644-0645).
+//   function `app.payout_overpaid_record` (migrations 0410-0411).
 
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, ne, sql } from "drizzle-orm";
@@ -380,7 +380,7 @@ export async function recordOverpaidItem(
     settleNetIdr: netIdr,
     feeIdr,
   });
-  // Trusted function (migration 0645): re-checks the item, the two people, the
+  // Trusted function (migration 0411): re-checks the item, the two people, the
   // proof and the posting, marks the proposal recorded and moves
   // `failed -> overpaid` linked to the posting. No GUC is an authorisation.
   await tx.execute(

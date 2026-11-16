@@ -1,8 +1,8 @@
 -- legend-6htrf (905, card 3): close a stuck proof key. A stuck key (unreadable,
 -- hash_conflict, legacy_duplicate, shared_key, bind_failed) held the global gate
--- app.payout_proof_history_pending() (0641) forever. Two finance people (the
+-- app.payout_proof_history_pending() (0399) forever. Two finance people (the
 -- approver is neither the proposer nor the requester of a batch the key backs)
--- close it through trusted functions of the payout role legend_payout (0644):
+-- close it through trusted functions of the payout role legend_payout (0410):
 -- - app.payout_proof_closure_propose(key, note, actor, session) -> closure id:
 --   the key must have a stuck row not yet resolved. An open closure of the key
 --   is returned as is (idempotent); a closed key is refused.
@@ -13,7 +13,7 @@
 --   payment), sets closed_at / closed_by and resolves the stuck row. Approving
 --   a closed closure only answers the gate again.
 -- - app.payout_proof_key_closed(tenant, key): the one test of "closed".
--- - app.payout_proof_tenant_pending() (0641) ignores closed keys in its four
+-- - app.payout_proof_tenant_pending() (0399) ignores closed keys in its four
 --   conditions.
 -- - Backstops: a closed key is refused on new bindings, on claims, corrections
 --   and overpaid proposals (insert, and any status change, so an open proposal
@@ -170,7 +170,7 @@ GRANT legend_payout TO CURRENT_USER WITH INHERIT FALSE, SET TRUE;
 --> statement-breakpoint
 GRANT CREATE ON SCHEMA app TO legend_payout;
 --> statement-breakpoint
--- What the functions read and write (idempotent grants; 0644 grants the rest).
+-- What the functions read and write (idempotent grants; 0410 grants the rest).
 GRANT SELECT ON TABLE public."session", public.payroll_disbursement_batches,
   public.payroll_disbursement_items, public.payroll_payout_return_claims,
   public.payroll_payout_failed_corrections, public.payroll_payout_overpaid_proposals,

@@ -1,9 +1,9 @@
 -- legend-kjht5 (905, card 2b): the source account of a cash / unfrozen-bank
 -- settlement posting was filled by anyone with UPDATE on the posting (guard
--- PAYOUT-30, 0642 ELSE branch): `legend_app` could name an account the money
+-- PAYOUT-30, 0400 ELSE branch): `legend_app` could name an account the money
 -- never left from. Now:
 -- - app.payout_posting_record_source (SECURITY DEFINER, owned by the NOLOGIN
---   payout role legend_payout, 0644) is the only writer of that branch. It
+--   payout role legend_payout, 0410) is the only writer of that branch. It
 --   re-checks everything in SQL: the actor (user, live MFA session, finance
 --   permission, app.payout_assert_actor); the posting is pending/skipped
 --   without a source; the batch is cash, or bank without a frozen account; the
@@ -20,7 +20,7 @@ GRANT legend_payout TO CURRENT_USER WITH INHERIT FALSE, SET TRUE;
 --> statement-breakpoint
 GRANT CREATE ON SCHEMA app TO legend_payout;
 --> statement-breakpoint
--- What the function reads and writes (idempotent grants; 0644 grants the rest).
+-- What the function reads and writes (idempotent grants; 0410 grants the rest).
 GRANT SELECT ON TABLE public."session" TO legend_payout;
 --> statement-breakpoint
 GRANT SELECT ON TABLE public.payroll_disbursement_batches, public.payroll_payout_gl_postings,
@@ -145,7 +145,7 @@ REVOKE CREATE ON SCHEMA app FROM legend_payout;
 --> statement-breakpoint
 REVOKE SET OPTION FOR legend_payout FROM CURRENT_USER;
 --> statement-breakpoint
--- The 0642 guard, verbatim except the ELSE branch of the source fill.
+-- The 0400 guard, verbatim except the ELSE branch of the source fill.
 CREATE OR REPLACE FUNCTION app.payroll_payout_gl_postings_guard() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 BEGIN
@@ -156,15 +156,15 @@ BEGIN
       IS NOT DISTINCT FROM (to_jsonb(OLD) - 'total_encrypted' - 'pii_key_version') THEN
     RETURN NEW;
   END IF;
-  -- (change 1, 0639) fee_posted false -> true only with the fee journal of the
+  -- (change 1, 0397) fee_posted false -> true only with the fee journal of the
   -- posting, checked on amount and accounts by app.payout_fee_journal_ok
-  -- (re-checked at commit, 0642).
+  -- (re-checked at commit, 0400).
   IF OLD.fee_posted = false AND NEW.fee_posted = true
     AND (to_jsonb(NEW) - 'fee_posted') IS NOT DISTINCT FROM (to_jsonb(OLD) - 'fee_posted')
     AND app.payout_fee_journal_ok(NEW.tenant_id, NEW.id) THEN
     RETURN NEW;
   END IF;
-  -- (F3, 0642) the settle journal checks moved to app.payout_settle_journal_ok
+  -- (F3, 0400) the settle journal checks moved to app.payout_settle_journal_ok
   -- (re-checked at commit). The row read there is OLD, equal to NEW here except
   -- the kind, which the helper does not read.
   IF OLD.kind IN ('settle_pending', 'settle_skipped') AND NEW.kind = 'settle'
@@ -172,7 +172,7 @@ BEGIN
     AND app.payout_settle_journal_ok(NEW.tenant_id, NEW.id) THEN
     RETURN NEW;
   END IF;
-  -- (F4, 0642) on a non-cash batch with a frozen bank account the source is
+  -- (F4, 0400) on a non-cash batch with a frozen bank account the source is
   -- filled only with that account's GL account (settle included). (905, card 2)
   -- any other batch (cash, or bank without a frozen account) is filled only by
   -- the payout role through app.payout_posting_record_source.

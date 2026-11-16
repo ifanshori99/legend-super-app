@@ -252,7 +252,7 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "backfills one open pos_qris_holds row (backfilled = true) for each existing authorized QRIS tender with an unpaid payment link and for each pending QRIS bill-split intent, aborting first if a bill has more than one collectible QRIS, plus one open backfilled hold per ambiguous provider code (QRIS intent with a provider_ref, not paid or failed, of a voided or failed POS QRIS tender, an expired split part, a guest order-wide code, or a sibling code on a POS tender's link) on a bill that is not completed or voided; only inserts into the new table, edits no existing row, no amount touched; FORCE RLS lifted on bill_splits, payment_intents, pos_order_tenders and pos_orders for those statements and restored",
   "0403_pos_customer_display.sql":
     "no backfill: the only UPDATE statements are trigger bodies that bump customer_display_sessions.version when the selected order, QRIS hold or tender changes at runtime; touches no existing row at migration time, no amount touched",
-  // legend-i01jp (905): 0643-0648; 0643 and 0644 contain no row-writing statement of their own
+  // legend-i01jp (905): 0409-0414; 0409 and 0410 contain no row-writing statement of their own
   "0411_payout_trusted_binding.sql":
     "function bodies only, no row edited by the migration: the payout-role functions app.payout_bind_proof and app.payout_backfill_bind insert the proof bindings of their own tenant, app.payout_backfill_claim_hashes fills the missing content/stored hashes of one return claim from its evidence file, and app.payout_proof_contest_own inserts into the global contests (ON CONFLICT DO NOTHING), all when called; no backfill, no amount touched",
   "0412_payout_posting_source_trusted.sql":

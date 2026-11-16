@@ -1,13 +1,13 @@
 -- legend-i01jp (911, P1-1 file B; P1-2; P2-3): every trusted payout step takes a
--- one-time grant (0653) instead of an actor and a session as arguments.
+-- one-time grant (0419) instead of an actor and a session as arguments.
 -- - The nine public step functions and app.payout_attest are dropped (old
 --   signatures end in text, text) and created again. legend_app can no longer
 --   name an actor or a session: the function consumes the grant first
 --   (app.payout_grant_consume: bound to tenant, kind, step, batch, item set,
 --   key, ref and target; PAYOUT-70 when it is not valid) and reads the actor and
 --   the session from the grant row. app.payout_assert_actor then runs on that
---   actor and session (codes 39 to 42 unchanged). Bodies are those of 0646,
---   0647 and 0648 with only that change, plus the two fixes below.
+--   actor and session (codes 39 to 42 unchanged). Bodies are those of 0412,
+--   0413 and 0414 with only that change, plus the two fixes below.
 -- - Every attestation goes through app.payout_attest, which reads actor and
 --   session from the grant row and writes grant_id (closure and posting source
 --   used to insert by hand).
@@ -22,14 +22,14 @@
 --   proposal with the same key is still PAYOUT-64, as before.)
 -- - P2-3: app.payout_assert_proof also needs the uploaded proof record to belong
 --   to the same batch and the same legal entity as the operation (PAYOUT-65).
--- - Last: no attestation after the cutover (app.payout_grants_since, 0653)
+-- - Last: no attestation after the cutover (app.payout_grants_since, 0419)
 --   exists without a grant (CHECK).
 -- New error codes: PAYOUT-71 step one of the operation has no grant, PAYOUT-73
 -- an open proposal cannot take another proof. PAYOUT-70 (no valid grant) and
--- PAYOUT-72 (issue matrix) come from 0653. All other codes are unchanged.
+-- PAYOUT-72 (issue matrix) come from 0419. All other codes are unchanged.
 -- Ownership: the functions of the payout role cannot be dropped or replaced by
 -- the migrator (it holds no INHERIT on the role), so this file runs as the
--- payout role: grant, become, work, return, revoke (as 0644 and 0652). The
+-- payout role: grant, become, work, return, revoke (as 0410 and 0418). The
 -- functions are created by the role itself and keep it as owner.
 GRANT legend_payout TO CURRENT_USER WITH INHERIT FALSE, SET TRUE;
 --> statement-breakpoint
@@ -59,7 +59,7 @@ DROP FUNCTION app.payout_attest(uuid, text, uuid, text, uuid, uuid[], varchar, u
 --> statement-breakpoint
 
 -- ---------------------------------------------------------------------------
--- Internal helper: the proof of one operation (0648 body, P2-3: the proof
+-- Internal helper: the proof of one operation (0414 body, P2-3: the proof
 -- record belongs to the same batch and legal entity). Signature and ACL stay.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION app.payout_assert_proof(
@@ -1074,7 +1074,7 @@ GRANT EXECUTE ON FUNCTION app.payout_return_confirm(uuid, varchar, text) TO lege
 --> statement-breakpoint
 
 -- ---------------------------------------------------------------------------
--- Proof closure, step one (0647 body). The grant binds the batch the stuck proof
+-- Proof closure, step one (0413 body). The grant binds the batch the stuck proof
 -- is stuck on; the idempotent early returns come after the consume.
 -- ---------------------------------------------------------------------------
 CREATE FUNCTION app.payout_proof_closure_propose(
@@ -1139,7 +1139,7 @@ GRANT EXECUTE ON FUNCTION app.payout_proof_closure_propose(varchar, text, text) 
 --> statement-breakpoint
 
 -- ---------------------------------------------------------------------------
--- Proof closure, step two (0647 body). The grant binds the batch of the stuck
+-- Proof closure, step two (0413 body). The grant binds the batch of the stuck
 -- proof, the key of the closure and the closure as its ref; the idempotent
 -- early return of a closed closure comes after the consume.
 -- ---------------------------------------------------------------------------
@@ -1262,7 +1262,7 @@ GRANT EXECUTE ON FUNCTION app.payout_proof_closure_approve(uuid, text) TO legend
 --> statement-breakpoint
 
 -- ---------------------------------------------------------------------------
--- Posting source (0646 body): fills the source account of a pending / skipped
+-- Posting source (0412 body): fills the source account of a pending / skipped
 -- settlement posting. The grant binds batch, posting (ref) and account (target).
 -- ---------------------------------------------------------------------------
 CREATE FUNCTION app.payout_posting_record_source(
@@ -1376,7 +1376,7 @@ REVOKE CREATE ON SCHEMA app FROM legend_payout;
 REVOKE SET OPTION FOR legend_payout FROM CURRENT_USER;
 --> statement-breakpoint
 -- Last (D7): no attestation after the cutover without a grant. Rows written
--- before app.payout_grants_since() (0653) have none and stay valid.
+-- before app.payout_grants_since() (0419) have none and stay valid.
 ALTER TABLE public.payroll_payout_attestations
   ADD CONSTRAINT payroll_payout_attestations_grant_check
   CHECK (grant_id IS NOT NULL OR attested_at < app.payout_grants_since());

@@ -40,7 +40,7 @@
 //   hash of the sound binding lands in payroll_payout_proof_hash_contests.
 // - Item columns refused to the app role: status, confirmed_by,
 //   confirmation_ref, confirmation_evidence_key (brief: "status/confirmed_*").
-//   911 (legend-r86qa, design-r86qa-izza4.md 2/0656): confirmation_ref and
+//   911 (legend-r86qa, design-r86qa-izza4.md 2/0422): confirmation_ref and
 //   confirmation_evidence_key are now REVOKED from legend_app (42501, a column
 //   privilege error before any trigger); status and confirmed_by stay granted
 //   and are refused by the item guard (23514).

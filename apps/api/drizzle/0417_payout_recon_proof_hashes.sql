@@ -1,9 +1,9 @@
 -- legend-i01jp (905 fixer 4): the nightly recon cannot read the global
--- payroll_payout_proof_hashes (no privilege for the app role, 0637). A forger
+-- payroll_payout_proof_hashes (no privilege for the app role, 0395). A forger
 -- with owner rights who rewrites a claimed hash frees the proof for a second
 -- binding while the binding row and the file still match. This read-only
 -- SECURITY DEFINER helper (owner of the hash table, like
--- app.payout_proof_contested in 0640) answers one boolean: every non-empty hash
+-- app.payout_proof_contested in 0398) answers one boolean: every non-empty hash
 -- of the binding of this key, in the tenant in force, is still held by that
 -- binding. No row is written, no amount touched.
 CREATE OR REPLACE FUNCTION app.payout_proof_hashes_held(p_key varchar) RETURNS boolean

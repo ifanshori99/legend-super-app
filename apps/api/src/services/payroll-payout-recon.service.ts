@@ -1,7 +1,7 @@
 // Nightly reconciliation of the trusted payout boundary (bead legend-i01jp;
 // design docs/briefs/905/design.md "Recon malam").
 //
-// The database functions of migrations 0644-0647 are the only writers of a
+// The database functions of migrations 0410-0413 are the only writers of a
 // correction, an overpaid record, a return and a recorded posting source. What
 // SQL cannot prove (a human identity: user, session and role rows are writable
 // by the app role; the bytes of a proof; the bank transfer itself) is checked
@@ -19,7 +19,7 @@
 // A difference calls `app.payout_recon_flag` (insert-only) once per item and
 // reason; the flag holds the payslip's retry and is listed as the finance
 // exception `payout_recon_flag`. Operations that finished before
-// `app.payout_trusted_since()` (the time migration 0644 was applied) came from
+// `app.payout_trusted_since()` (the time migration 0410 was applied) came from
 // before the trusted boundary and are not checked. Nothing here changes
 // an item, a posting or a journal, and the log carries counts only.
 
@@ -988,7 +988,7 @@ function evaluate(
 
 /**
  * Every attestation made at or after `app.payout_grants_since()` needs its
- * one-time grant (0653/0654): no grant, or a grant that was not spent by that
+ * one-time grant (0419/0420): no grant, or a grant that was not spent by that
  * very step, holds the slips of the attestation. Pure, no I/O. An attestation
  * before the cutover is skipped like `trusted_since`.
  */

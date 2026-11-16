@@ -4,7 +4,7 @@
 -- functions owned by `legend_payout`, a NOLOGIN, non-superuser, non-BYPASSRLS
 -- role that nobody can assume (the migrator holds membership only while a
 -- migration runs). This file only prepares the ground; the functions come in
--- 0645 (proof binding), 0646 (posting source), 0647 (closures) and 0648
+-- 0411 (proof binding), 0412 (posting source), 0413 (closures) and 0414
 -- (transitions, item guard, revokes from legend_app).
 -- 1. The role. RLS still applies to it: the tenant policies name no role.
 -- 2. Ownership pattern (repeated by every file that creates a function of the
@@ -196,7 +196,7 @@ GRANT UPDATE (status, confirmed_by, confirmation_ref, confirmation_evidence_key,
 --> statement-breakpoint
 GRANT UPDATE (source_gl_account_id) ON TABLE public.payroll_payout_gl_postings TO legend_payout;
 --> statement-breakpoint
--- The global contest table has no tenant and no policy for anyone else (0640,
+-- The global contest table has no tenant and no policy for anyone else (0398,
 -- pattern 0126): only the payout role gets a policy, to record and to read.
 GRANT SELECT, INSERT ON TABLE public.payroll_payout_proof_hash_contests TO legend_payout;
 --> statement-breakpoint

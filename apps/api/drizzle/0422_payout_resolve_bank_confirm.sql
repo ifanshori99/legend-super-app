@@ -1,11 +1,11 @@
 -- legend-r86qa (911 wave 2), file 2 of 3: every move out of `exported` is made by
--- the payout role, inside a trusted function that spends a one-time grant (0653,
--- kinds `resolve` and `bank_confirm` from 0655).
+-- the payout role, inside a trusted function that spends a one-time grant (0419,
+-- kinds `resolve` and `bank_confirm` from 0421).
 -- - app.payout_resolve_propose / app.payout_resolve_approve: the two-person
 --   resolution of an exported item to failed or not_sent (step one: the proposal
 --   with its proof; step two: another person, the move out of `exported`).
 -- - app.payout_bank_confirm: the bank payment record (exported -> succeeded).
--- - Item guard (0648 body with four changes only): (a) a new attempt is refused
+-- - Item guard (0414 body with four changes only): (a) a new attempt is refused
 --   for a payslip that has an overpaid attempt (PAYOUT-62; the service said so,
 --   now the database does); (b) exported -> succeeded|failed|not_sent needs
 --   current_user = 'legend_payout'; (c) the resolution record changes only for
@@ -23,8 +23,8 @@
 -- item carries no grant, propose again; PAYOUT-74 (23514) the guard; PAYOUT-76
 -- (23514) arguments or state of the batch and items; PAYOUT-18 and PAYOUT-16
 -- (23514) the batch requester. PAYOUT-70 (no valid grant, 42501) comes from
--- app.payout_grant_consume (0653). Every refusal leaves the items unchanged.
--- Ownership: as 0654, the functions are created by the payout role itself
+-- app.payout_grant_consume (0419). Every refusal leaves the items unchanged.
+-- Ownership: as 0420, the functions are created by the payout role itself
 -- (grant, become, work, return, revoke).
 GRANT UPDATE (resolved_by, resolved_by_2, resolution_outcome, resolution_evidence_key, resolution_note, failure_class)
   ON TABLE public.payroll_disbursement_items TO legend_payout;
@@ -34,7 +34,7 @@ REVOKE UPDATE (resolved_by_2, failure_class, confirmation_ref, confirmation_evid
 --> statement-breakpoint
 
 -- ---------------------------------------------------------------------------
--- The item guard: the 0648 body with the four changes above.
+-- The item guard: the 0414 body with the four changes above.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION app.payroll_disbursement_items_guard() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
@@ -604,7 +604,7 @@ BEGIN
     RAISE EXCEPTION 'PAYOUT-65: the proof must be the one the first person recorded for this batch'
       USING ERRCODE = '23514';
   END IF;
-  -- A closed key frees no slip: same refusal code as the item guard (0649).
+  -- A closed key frees no slip: same refusal code as the item guard (0415).
   IF app.payout_proof_key_closed(v_tenant, p_key) THEN
     RAISE EXCEPTION 'PAYOUT-72: the payout proof key is closed, the payslip is not released for a new attempt'
       USING ERRCODE = '23514';

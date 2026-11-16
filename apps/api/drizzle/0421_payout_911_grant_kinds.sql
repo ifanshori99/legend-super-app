@@ -13,7 +13,7 @@
 -- their owner with unchanged signatures (the ACLs stay): the issue matrix gains
 -- the two kinds and checks the detail (PAYOUT-72, 22023).
 -- Ownership: the migrator holds no INHERIT on the payout role, so the functions
--- are replaced as the role itself: grant, become, work, return, revoke (as 0654).
+-- are replaced as the role itself: grant, become, work, return, revoke (as 0420).
 ALTER TABLE "payroll_payout_grants" DROP CONSTRAINT "payroll_payout_grants_kind_check";
 --> statement-breakpoint
 ALTER TABLE "payroll_payout_grants" ADD CONSTRAINT "payroll_payout_grants_kind_check" CHECK ("payroll_payout_grants"."kind" IN ('correction', 'overpaid', 'return', 'closure', 'posting_source', 'resolve', 'bank_confirm'));
@@ -36,7 +36,7 @@ SET ROLE legend_payout;
 --> statement-breakpoint
 
 -- ---------------------------------------------------------------------------
--- Issue a grant (grantor login only): the 0653 body with the two new kinds in
+-- Issue a grant (grantor login only): the 0419 body with the two new kinds in
 -- the matrix and the detail check per kind. Signature and ACL stay.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION app.payout_grant_issue(
@@ -100,7 +100,7 @@ END $$;
 --> statement-breakpoint
 
 -- ---------------------------------------------------------------------------
--- Nightly reconciliation flag: the 0648 body with the two new kinds in the
+-- Nightly reconciliation flag: the 0414 body with the two new kinds in the
 -- accepted list. Signature and ACL stay.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION app.payout_recon_flag(

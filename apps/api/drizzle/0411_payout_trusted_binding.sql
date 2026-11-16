@@ -1,7 +1,7 @@
 -- legend-i01jp (905, card 1, chunk C0c): proof bindings, return-claim hashes and
 -- the shared-key contest move behind trusted functions.
 -- - app.payout_bind_proof: the only writer of a binding for a live operation.
---   Owned by the NOLOGIN payout role legend_payout (0644). It reads both hashes
+--   Owned by the NOLOGIN payout role legend_payout (0410). It reads both hashes
 --   from the stored proof record (never from an argument), re-checks the kind,
 --   the batch and the item set in SQL, and honours the global proof gate and the
 --   contested hashes. The services keep their own checks as a first line.
@@ -9,7 +9,7 @@
 --   must exist in app.payout_proof_operations() and its item set hash is
 --   recomputed here from the item ids the caller names.
 -- - app.payout_backfill_claim_hashes: fills the two NULL hashes of a return claim
---   from the stored proof record (the app role cannot update claims after 0648).
+--   from the stored proof record (the app role cannot update claims after 0414).
 -- - app.payout_proof_contest_own: now answers a boolean and contests only when
 --   the stored rows of the caller's tenant show more than one operation over the
 --   key, or a legacy duplicate binding. A setting naming another tenant cannot
@@ -27,7 +27,7 @@ GRANT legend_payout TO CURRENT_USER WITH INHERIT FALSE, SET TRUE;
 --> statement-breakpoint
 GRANT CREATE ON SCHEMA app TO legend_payout;
 --> statement-breakpoint
--- What the functions read and write (idempotent grants; 0644 grants the rest).
+-- What the functions read and write (idempotent grants; 0410 grants the rest).
 GRANT SELECT ON TABLE public."user" TO legend_payout;
 --> statement-breakpoint
 GRANT SELECT ON TABLE public.payroll_disbursement_batches, public.payroll_disbursement_items,
@@ -234,7 +234,7 @@ REVOKE CREATE ON SCHEMA app FROM legend_payout;
 --> statement-breakpoint
 REVOKE SET OPTION FOR legend_payout FROM CURRENT_USER;
 --> statement-breakpoint
--- The shared-key contest (0641 returned void and trusted the caller to ask only
+-- The shared-key contest (0399 returned void and trusted the caller to ask only
 -- for a key with several operations). Same name, boolean answer: true when it
 -- contested, false when the stored rows do not show a contested key (the
 -- backfill then fails closed). The identities are those of the key's operations

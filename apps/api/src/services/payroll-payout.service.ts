@@ -81,7 +81,7 @@ import {
 
 /**
  * The verified caller. `sessionId` is the Better Auth session of the request.
- * `grants` mints the one-time step grant (migration 0653+) that every trusted
+ * `grants` mints the one-time step grant (migration 0419+) that every trusted
  * payout function consumes; it exists only after the request's step-up. The
  * functions read the actor and the session from the grant, never from the app.
  */
@@ -833,7 +833,7 @@ type PlannedItem = {
 
 /**
  * Slip ids with an open row in `payroll_payout_recon_exceptions` (migration
- * 0644, insert-only) on one of their items. Every row counts as open: the table
+ * 0410, insert-only) on one of their items. Every row counts as open: the table
  * has no clear step yet, and when unsure the slip stays held.
  */
 async function slipsHeldByReconException(

@@ -103,6 +103,7 @@
 - Validasi akhir: `LEGEND_TEST_FILES="src/test/edge-storage-upload-http.test.ts src/test/edge-selfie-upload.test.ts src/test/hris-attendance-selfie-bind.test.ts" heavy pnpm test` hijau, 3 berkas/54 tes (exit 0; `/tmp/legend-edge-green.log`). `heavy pnpm --filter @starter/api typecheck` hijau sekali (exit 0; `/tmp/legend-edge-typecheck.log`). Review architect konteks segar menyetujui setelah temuan diperbaiki. Token heavy hanya satu, dikelola parent lalu dipindahkan ke implementer edge untuk dua perintah akhir berurutan.
 - Pra-gate: ESLint empat berkas TypeScript dan Prettier kelima berkas berubah hijau. Tidak ada migrasi, tabel, izin, atau teks UI baru.
 - Batas: basis `origin/milestone/m1` 7aacd9f68 belum memiliki pipeline ClamAV; perubahan ini memakai port scanner runtime yang tersedia tanpa menarik cabang lain.
+
 ## 847 Follow-up review QR tamu (legend-15ha6, Codex, 15 Nov 2026)
 
 - Temuan CTO direproduksi gagal-dulu: prefix umum `/table-sessions` membuat request QR tamu mengirim header kasir atau tertahan ketika token kasir kedaluwarsa, label tanpa token, atau mode kasir dilepas.
@@ -208,6 +209,7 @@
 - Perintah test akhir: `LEGEND_TEST_FILES="tests/text-contract.test.mjs tests/edge-contract.test.mjs tests/kitchen-contract.test.mjs src/test/edge-print-alert-retry.test.ts src/test/edge-print-alert-atomic.test.ts src/test/edge-print-alert-notifier.test.ts src/test/edge-print-agent.test.ts src/test/edge-print-runtime.test.ts src/test/edge-print-monitor.test.ts src/test/edge-print-db.test.ts src/test/edge-print-api.test.ts src/test/edge-print-escpos.test.ts src/test/edge-print-transport.test.ts src/test/kds-print-fallback.test.ts src/test/kds.test.ts src/test/station-printer.test.ts src/test/station-printer-binding-cleanup.test.ts src/test/station-printer-revoke.test.ts src/test/data-import-registry.test.ts" heavy pnpm test`. Log `/tmp/legend-802-targeted-final.log`; typecheck: `heavy pnpm --filter @starter/api typecheck` dan `heavy pnpm --filter @starter/web typecheck`, log `/tmp/legend-802-api-typecheck.log` dan `/tmp/legend-802-web-typecheck.log`.
 - Pra-gate: `pnpm exec eslint` dan `pnpm exec prettier --check` untuk semua TS/TSX yang berubah hijau setelah koreksi terakhir; `git diff --check` bersih; `pnpm db:generate` tidak menghasilkan perubahan tambahan. Snapshot hanya menambah penanda dan indeks pada `edge_print_alerts`. Browser dan printer fisik belum diuji; test memakai PostgreSQL nyata dan transport printer fake. Commit/push di cabang kerja, tanpa merge m1.
 - Paralel: total 4 subagent, puncak 4 bersamaan; token `heavy` hanya dipegang `test_writer`. `session-usage.py` tidak menemukan transkrip Codex sesi `01a1da9c-8904-7153-874a-0b89a663c8cd`; `parallel-report` hanya menemukan sesi Claude, jadi biaya dan rata-rata Codex belum tersedia dari alat tersebut.
+
 ## 847 Pesan WhatsApp dan header kasir aktif (Codex, 15 Nov 2026)
 
 - Scope: legend-5tewu dan legend-15ha6, brief `847-wa-pesan-acting-staff.md` pada `ux/customer-order-benchmark`. Riwayat kedua ID kosong; ekspor `.beads/issues.jsonl` tidak tersedia. Tidak menjalankan `bd` sesuai brief.
@@ -232,6 +234,7 @@
 - Keputusan uang: PPN/PPh 23 diketik persis dari faktur pajak (input kontrak); web tidak menghitung total/DPP/payable/selisih; pratinjau 3-way match = angka API apa adanya; satu idempotency key per percobaan (retry pakai key sama) + guard klik ganda. Angka format id-ID (titik ribuan, koma desimal) untuk qty dan harga; teks ambigu seperti `12.5` ditolak.
 - Bukti: unit `tests/supplier-invoice-entry.test.mjs` gagal-dulu (11/11 lalu 3/15 di model lama), sekarang 35/35 bersama `text-contract`; e2e mock `e2e/legend-0xnm.mock.spec.ts` 5/5; tsc web exit 0; prettier/eslint/color bersih. Screenshot `docs/design/screenshots/legend-0xnm/`.
 - Berikut: review founder (gerbang UI). Catatan: mock `postSupplierInvoiceMatch` kemungkinan menyimpan `outstandingIdr: 0` untuk faktur matched (belum diverifikasi, bawaan legend-xkk).
+
 ## 812 Status bar operasional ringkas di HP (ui-engineer, `ui/ops-statusbar-mobile`, 14-15 Nov 2026)
 
 - Kartu `legend-0xx06`, basis `b1af31c1b` (brief 803, belum di m1). `OperationsShell` (apps/web `components/shells/operations-shell.tsx`): di bawah `sm` status bar satu baris tepat **56px** (sebelumnya 154px di 390px); desktop tetap **78px** di 1280px. Badge koneksi hanya ikon (teks `sr-only`), jam, tombol outlet 44px (ikon Store) yang membuka sheet bawah (nama outlet, stasiun, petugas utuh + daftar pilih outlet bila 2+ outlet, `OutletList` di `outlet-picker.tsx`), lalu aksi slot. Subtitle `outlet · stasiun` satu baris dengan elipsis; nama lengkap di sheet. Select outlet desktop `max-sm:hidden`. Muat ulang Expo/Pickup jadi ikon 44px di HP, waktu "Diperbarui" pindah ke isi halaman (`sm:hidden`). Kontras 803 (`border-input`) tetap. Enam teks baru di `area.ops` (katalog).
@@ -6446,6 +6449,7 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Bukti: test 911 merah dulu lalu hijau (grants, binding-batch, closure-swap, recon-replacement, exported-settle); migrator non-superuser lulus.
 - Dibuka (kartu lanjutan): legend-7gghu P1 identitas sesi bisa dipalsukan legend_app; legend-786te URL grantor opsional di deploy; legend-r8nas coverage recon; legend-xatux rute batalkan proposal; legend-w4tfb cash handover dan p_zero_net.
 - Biaya: session-usage total 17834k (33 subagent); parallel-report: 33 spawn, puncak 7 bersamaan, rata-rata 0.76 berjalan per agent.
+
 ## 2026-11-15: 849 Pulihkan board design-system v2 (legend-wzdb)
 
 - Memulihkan lima sumber board dari `996bcfe` ke `apps/web/src/components/design-system/v2/`; rute internal baru `/platform/design-system/v2` mewarisi guard platform. Rute publik lama tidak dipasang. Tidak ada migrasi atau perubahan fitur produk.

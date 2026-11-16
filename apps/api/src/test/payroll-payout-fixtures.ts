@@ -95,7 +95,7 @@ export const APP3 = `payout-gl-app3-${randomUUID()}`;
 const sessionIdOf = (userId: string) => `payout-fixture-session-${userId}`;
 
 /**
- * The test stand-in of the grantor login (migration 0653): a short owner
+ * The test stand-in of the grantor login (migration 0419): a short owner
  * connection that does `SET LOCAL ROLE legend_payout_grantor`, sets the tenant
  * and calls `app.payout_grant_issue` with the real COMMIT, so the grant is
  * visible to the payout transaction (READ COMMITTED) exactly as in production.

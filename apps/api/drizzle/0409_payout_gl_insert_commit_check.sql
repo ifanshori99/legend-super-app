@@ -1,6 +1,6 @@
 -- legend-kjht5 (second opinion 900, P2 insert): a payout GL posting written
 -- straight to the table (INSERT right of 0348) was never checked against its
--- journals: the commit checks of 0642 fire on UPDATE of a posting and on lines
+-- journals: the commit checks of 0400 fire on UPDATE of a posting and on lines
 -- added to a journal, so a posting inserted as `kind = 'settle'` or with
 -- `fee_posted = true` and no journal at all fired nothing. A deferred
 -- constraint trigger now re-runs the same two helpers on the INSERTed row at
@@ -11,7 +11,7 @@
 --   journal exists for a zero fee (the settle check above still applies).
 -- Held (settle_pending, settle_skipped) and return postings with fee_posted
 -- false stay legal at insert, as the service stores them. Same tenant handling
--- as app.payroll_payout_gl_postings_commit_check (0642).
+-- as app.payroll_payout_gl_postings_commit_check (0400).
 CREATE OR REPLACE FUNCTION app.payroll_payout_gl_postings_insert_commit_check() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 DECLARE

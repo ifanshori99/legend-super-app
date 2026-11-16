@@ -201,7 +201,7 @@ export async function provisionMigrator(options: {
         `ALTER ROLE "${user}" IN DATABASE "${database}" RESET ALL`,
       );
       await client.query(`ALTER DATABASE "${database}" OWNER TO "${user}"`);
-      // legend_payout (drizzle/0644) owns the trusted payout functions; the
+      // legend_payout (drizzle/0410) owns the trusted payout functions; the
       // migrator needs ADMIN on it to hand them over (GRANT .. SET TRUE for the
       // length of one migration, REVOKE SET OPTION at its end).
       await grantAdminOnExistingRoles(client, user, [

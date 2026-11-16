@@ -1,6 +1,6 @@
 -- legend-i01jp (905, card 1, chunk C0d): the money steps of a failed-item
 -- correction, an overpaid record and a return move behind trusted functions of
--- the NOLOGIN payout role legend_payout (0644). The application role can no
+-- the NOLOGIN payout role legend_payout (0410). The application role can no
 -- longer write those rows, and a setting (GUC) is no longer an authorisation.
 -- - Internal helpers (owner legend_payout, no EXECUTE for the app role):
 --   app.payout_assert_proof (key not closed, stored record complete, global gate
@@ -14,7 +14,7 @@
 --   failure), the binding, the gates, and writes one attestation. The proof
 --   hashes are read from the stored proof record, never from an argument.
 -- - app.payout_recon_flag: the nightly reconciliation (insert-only exceptions).
--- - Item guard (0636 body, rewritten): failed -> succeeded, failed -> overpaid,
+-- - Item guard (0394 body, rewritten): failed -> succeeded, failed -> overpaid,
 --   succeeded -> returned and every change of the returned_* / return_* columns
 --   need current_user = 'legend_payout'; ANY status move out of succeeded,
 --   overpaid or returned needs it too (amendment A1: succeeded -> failed would
@@ -40,7 +40,7 @@
 --   67 commit-time check of a corrected / overpaid / returned item failed
 --   68 recon flag refused
 --   69 batch / claim / item not found (P0002)
--- PAYOUT_PROOF_CLOSED keeps the code text of 0647.
+-- PAYOUT_PROOF_CLOSED keeps the code text of 0413.
 
 -- ---------------------------------------------------------------------------
 -- Journal helper for the commit check (invoker, reads under the tenant policy).
@@ -71,7 +71,7 @@ GRANT legend_payout TO CURRENT_USER WITH INHERIT FALSE, SET TRUE;
 --> statement-breakpoint
 GRANT CREATE ON SCHEMA app TO legend_payout;
 --> statement-breakpoint
--- What the functions read and write (idempotent grants; 0644/0645 grant the rest).
+-- What the functions read and write (idempotent grants; 0410/0411 grant the rest).
 GRANT SELECT ON TABLE public."session", public.payroll_runs, public.payroll_disbursement_batches,
   public.payroll_disbursement_items, public.payroll_payout_gl_postings,
   public.payroll_payout_evidence_files, public.payroll_payout_proof_bindings,
@@ -1079,7 +1079,7 @@ REVOKE SET OPTION FOR legend_payout FROM CURRENT_USER;
 --> statement-breakpoint
 
 -- ---------------------------------------------------------------------------
--- The item guard: the 0636 body with these changes only.
+-- The item guard: the 0394 body with these changes only.
 -- (1) The two settings app.payout_correction / app.payout_overpaid are gone;
 --     failed -> succeeded (correction), failed -> overpaid and succeeded ->
 --     returned need current_user = 'legend_payout' (the functions above).
@@ -1569,7 +1569,7 @@ CREATE CONSTRAINT TRIGGER payout_item_money_commit_check
 
 -- ---------------------------------------------------------------------------
 -- The app role stops writing these rows. Proposals, claims, corrections and
--- bindings: the functions above (and 0645) are the writers. Items: the status and
+-- bindings: the functions above (and 0411) are the writers. Items: the status and
 -- payment columns stay granted for the normal flow (the guard keeps them); the
 -- return record columns are the payout role's alone.
 -- ---------------------------------------------------------------------------

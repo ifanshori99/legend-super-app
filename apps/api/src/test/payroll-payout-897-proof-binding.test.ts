@@ -778,7 +778,7 @@ describe("897 a return fails closed when the fingerprint read fails (F3)", () =>
 
   it("[897-claim-null-hash-refused-by-db] the app role cannot insert a new return claim without its hashes (23514); with both hashes it can", async () => {
     const paid = await paidBatch();
-    // 905 (migration 0648): the app role can no longer INSERT a return claim at
+    // 905 (migration 0414): the app role can no longer INSERT a return claim at
     // all (42501, the payout-role function is the writer), so the NOT NULL-hash
     // CHECK is proved with the migration owner and the app role is checked to be
     // refused for the same row.

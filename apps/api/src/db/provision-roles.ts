@@ -40,7 +40,7 @@ const MAINT_FUNCTIONS = [
 ];
 const GRANTOR_GROUP = "legend_payout_grantor";
 const PAYOUT_OWNER = "legend_payout";
-// The only routine the grantor group may run (migration 0653).
+// The only routine the grantor group may run (migration 0419).
 const GRANTOR_FUNCTIONS = [
   "app.payout_grant_issue(text, text, uuid, uuid[], character varying, uuid, uuid, character varying, text, text, text)",
 ];
@@ -1135,7 +1135,7 @@ async function provisionMaintenance(client: ClientBase, login: Login) {
 
 /**
  * The grantor group runs app.payout_grant_issue and nothing else (migration
- * 0653): SECURITY DEFINER with a pinned search_path, owned by `legend_payout`,
+ * 0419): SECURITY DEFINER with a pinned search_path, owned by `legend_payout`,
  * executable by the group but never by PUBLIC or legend_app.
  */
 async function assertGrantorFunctions(client: ClientBase, user: string) {

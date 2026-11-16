@@ -7,7 +7,7 @@
 -- row is edited by this migration.
 GRANT UPDATE (updated_at) ON TABLE public.payroll_disbursement_batches TO legend_payout;
 --> statement-breakpoint
--- (test round 2) 0643 re-ran the fee journal check of app.payout_fee_journal_ok
+-- (test round 2) 0409 re-ran the fee journal check of app.payout_fee_journal_ok
 -- on every INSERTed posting with fee_posted = true and fee_idr > 0. That helper
 -- looks for the settlement fee journal ('payroll-payout-fee:' || item_set_hash),
 -- which only a settle / settle_pending / settle_skipped posting has: the fee of

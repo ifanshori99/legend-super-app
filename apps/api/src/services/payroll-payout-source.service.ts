@@ -9,7 +9,7 @@
 // from null to a value (posting guard PAYOUT-30), and the settlement is then
 // resolved in the same transaction (`recoverPayoutGlOfBatch`, idempotent), so
 // the source is credited exactly once. The fill itself goes through the trusted
-// SQL function `app.payout_posting_record_source` (905, migration 0646).
+// SQL function `app.payout_posting_record_source` (905, migration 0412).
 //
 // Lock order: run row, batch row (`loadBatchRunFirst`), batch advisory lock,
 // then the posting row. Nothing here logs an amount.

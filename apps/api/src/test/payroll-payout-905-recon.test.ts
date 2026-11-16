@@ -31,7 +31,7 @@
 //   the whole tenant and finish before it returns (no queue).
 // - The attestation table is `payroll_payout_attestations` with columns
 //   tenant_id, operation_id, step, item_ids (uuid[]), session_id, attested_at
-//   (design "Peran (0644)"); the recon-exception table has tenant_id and
+//   (design "Peran (0410)"); the recon-exception table has tenant_id and
 //   item_id (design "Asumsi pemanggil" C2); the proof tables are
 //   payroll_payout_proof_bindings(evidence_key, tenant_id) and
 //   payroll_payout_proof_hashes(binding_id, sha256 as 64 hex text).
@@ -49,7 +49,7 @@
 // - Tampering is done as the table owner with `session_replication_role =
 //   replica` (guards off), what a forger with write access to the rows could do;
 //   that is exactly the gap the recon exists to close.
-// - Not covered here: `posting_source` flags (needs the 0646 flow), and the job
+// - Not covered here: `posting_source` flags (needs the 0412 flow), and the job
 //   registration (`payout-trusted-recon.job.ts`, like `payout-gl-recovery`).
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";

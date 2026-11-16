@@ -151,7 +151,7 @@ describe("legend-hwn02 migration 0226 run by a non-superuser table owner", () =>
     await admin.query(
       `CREATE ROLE ${ownerRole} LOGIN PASSWORD '${ownerPassword}' NOSUPERUSER BYPASSRLS CREATEROLE NOCREATEDB`,
     );
-    // legend_payout (drizzle/0644) is cluster-wide and already exists, created by
+    // legend_payout (drizzle/0410) is cluster-wide and already exists, created by
     // the bootstrap superuser; the migrator manages it through ADMIN OPTION only,
     // as provisionMigrator gives it in production (db/migrator-role.ts).
     await admin.query(

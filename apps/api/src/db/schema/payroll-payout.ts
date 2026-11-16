@@ -1344,7 +1344,7 @@ export const PAYOUT_GRANT_METHODS = ["password", "mfa_challenge"] as const;
 export type PayoutGrantMethod = (typeof PAYOUT_GRANT_METHODS)[number];
 
 /**
- * One-time payout step grants (migration 0653, legend-911). Issued by the
+ * One-time payout step grants (migration 0419, legend-911). Issued by the
  * grantor login only (`app.payout_grant_issue`), spent once by the trusted step
  * functions of the payout role (`app.payout_grant_consume`). Only the SHA-256 of
  * the secret is stored. The app role reads the non-secret columns (nightly
@@ -1432,7 +1432,7 @@ export const payrollPayoutGrants = pgTable(
 
 /**
  * Who did each step of a correction, an overpaid record, a return, a posting
- * source fill or a proof closure (migration 0644): the actor, the live MFA
+ * source fill or a proof closure (migration 0410): the actor, the live MFA
  * session and the permission snapshot, written by the trusted functions of the
  * payout role only. The app role reads it; the nightly reconciliation checks it
  * (two attestations from different sessions, fresh step-up). Never deleted.
@@ -1456,8 +1456,8 @@ export const payrollPayoutAttestations = pgTable(
       .default(sql`'{}'::uuid[]`),
     evidenceKey: varchar("evidence_key", { length: 500 }),
     bindingId: uuid("binding_id"),
-    // The one-time grant this step was made under (0653); NULL only for
-    // entries before the cutover (CHECK in 0654).
+    // The one-time grant this step was made under (0419); NULL only for
+    // entries before the cutover (CHECK in 0420).
     grantId: uuid("grant_id"),
     actor: actor("actor").notNull(),
     sessionId: text("session_id").notNull(),
@@ -1544,7 +1544,7 @@ export const payrollPayoutAttestations = pgTable(
 );
 
 /**
- * What the nightly reconciliation flagged (migration 0644, written by
+ * What the nightly reconciliation flagged (migration 0410, written by
  * `app.payout_recon_flag`): insert-only. A flagged slip gets no new attempt
  * until finance has looked (retry hold, per payslip).
  */
@@ -1605,7 +1605,7 @@ export const payrollPayoutReconExceptions = pgTable(
 );
 
 /**
- * Two-person closure of a stuck proof key (migrations 0644, 0647): the
+ * Two-person closure of a stuck proof key (migrations 0410, 0413): the
  * proposer and the closer are different finance people; closing freezes the
  * key for good and lets the global proof gate go back to false. Never deleted.
  */

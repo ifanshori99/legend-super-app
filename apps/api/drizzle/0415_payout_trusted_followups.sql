@@ -6,8 +6,8 @@
 --     account the service itself would name at this moment: the petty cash
 --     account mapped for the legal entity (cash), the GL account of the
 --     configured source bank account (unfrozen bank). Before this, any account
---     could be INSERTed there and the settle journal check (0643) compared the
---     journal with that written account. The frozen-bank rule (0642) is kept.
+--     could be INSERTed there and the settle journal check (0409) compared the
+--     journal with that written account. The frozen-bank rule (0400) is kept.
 -- (b) PAYOUT-71, correction commit check: the settlement posting of a corrected
 --     item carries the item set hash of the items of its own correction
 --     operation, so another settlement of the batch cannot stand in for it.
@@ -15,8 +15,8 @@
 --     as legend_app, which cannot execute the payout role's function. A
 --     mismatch raises PAYOUT-71; the other reasons stay PAYOUT-67.
 -- (c) PAYOUT-72, closed proof key: an item whose resolution key is closed
---     (0647) cannot move to failed / not_sent, which would free its payslip for
---     a new attempt. The 0647 guard only reacted when a key column changed.
+--     (0413) cannot move to failed / not_sent, which would free its payslip for
+--     a new attempt. The 0413 guard only reacted when a key column changed.
 -- PAYOUT-73 and PAYOUT-74 are not used by this migration.
 CREATE OR REPLACE FUNCTION app.payroll_payout_gl_postings_insert_guard() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
@@ -25,7 +25,7 @@ BEGIN
     RAISE EXCEPTION 'PAYOUT-36: payout GL posting % needs its plain net and fee', NEW.id
       USING ERRCODE = '23514';
   END IF;
-  -- (F4, 0642) a settlement of a non-cash batch with a frozen bank account
+  -- (F4, 0400) a settlement of a non-cash batch with a frozen bank account
   -- carries that account's GL account as its source; NULL or another is refused.
   IF NEW.kind IN ('settle', 'settle_pending', 'settle_skipped')
     AND EXISTS (
@@ -45,7 +45,7 @@ BEGIN
     RAISE EXCEPTION 'PAYOUT-36: payout GL posting % needs the frozen source account of its batch', NEW.id
       USING ERRCODE = '23514';
   END IF;
-  -- (0649, PAYOUT-70) a settlement of a cash batch, or of a bank batch without a
+  -- (0415, PAYOUT-70) a settlement of a cash batch, or of a bank batch without a
   -- frozen account, names no source, or the payout role's, or the mapped one.
   IF NEW.kind IN ('settle', 'settle_pending', 'settle_skipped')
     AND NEW.source_gl_account_id IS NOT NULL
@@ -113,7 +113,7 @@ BEGIN
       SELECT c.operation_id INTO v_operation
         FROM public.payroll_payout_failed_corrections c
        WHERE c.tenant_id = NEW.tenant_id AND c.item_id = NEW.id AND c.status = 'corrected';
-      -- (0649, PAYOUT-71) the posting is the settlement of THIS operation: its item
+      -- (0415, PAYOUT-71) the posting is the settlement of THIS operation: its item
       -- set hash is the hash of the items of the operation (the formula of
       -- app.payout_item_set_hash, written inline: this check runs as legend_app).
       SELECT pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(
@@ -226,7 +226,7 @@ BEGIN
     RAISE EXCEPTION 'PAYOUT_PROOF_CLOSED: the payout proof key is closed'
       USING ERRCODE = '23514';
   END IF;
-  -- (0649, PAYOUT-72) a closed resolution key frees no slip: the item does not
+  -- (0415, PAYOUT-72) a closed resolution key frees no slip: the item does not
   -- leave `exported` for failed / not_sent on it, whatever column changed.
   IF TG_OP = 'UPDATE'
     AND NEW.status IN ('failed', 'not_sent')

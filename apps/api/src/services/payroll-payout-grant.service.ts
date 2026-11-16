@@ -2,7 +2,7 @@
 //
 // A trusted payout money step (correction, overpaid, return, proof closure,
 // posting source) no longer takes (actor, session) from the app: it spends a
-// grant that only the grantor database login can issue (migration 0653,
+// grant that only the grantor database login can issue (migration 0419,
 // `app.payout_grant_issue`). The grant names the actor and session itself and is
 // bound to the exact step, batch, item set, evidence key, ref and target.
 //

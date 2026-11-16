@@ -10,7 +10,7 @@
 // on record on purpose (permanent), but a binding of a superseded proposal is not
 // a completed operation.
 //
-// 911 P1-2 (0654 PAYOUT-73): the proposer can NO LONGER replace the evidence of
+// 911 P1-2 (0420 PAYOUT-73): the proposer can NO LONGER replace the evidence of
 // an open proposal through the service. Production data from BEFORE that fix
 // still holds such replaced proposals, so this file builds that history by hand
 // (`replacedCorrectionWorld`): propose with K1 through the service, then, as
@@ -34,7 +34,7 @@
 //
 // Assumptions (stated so they can be contested):
 // - Steps run through the services (`correctFailedItems`, `returnManualItems`)
-//   with `actorOf(userId)`, which carries the test grant issuer (0653); the HTTP
+//   with `actorOf(userId)`, which carries the test grant issuer (0419); the HTTP
 //   routes use the real grantor login, which the test app does not have.
 // - The audit row of the K2 proposal is written with `recordPayoutAudit` from the
 //   K1 proposal row (same action, object, reason; only `evidenceKey` differs),
@@ -309,7 +309,7 @@ async function replacedCorrectionWorld() {
       [W.tenantId, w.batchId, k1, k2],
     );
     expect(attestation.rowCount, "premise: step-one attestation on K2").toBe(1);
-    // The step-one grant binds the key too (0653): the rewrite moves it with
+    // The step-one grant binds the key too (0419): the rewrite moves it with
     // the attestation, so the history reads as one coherent K2 step.
     const grant = await c.query(
       `UPDATE payroll_payout_grants g SET evidence_key = $4

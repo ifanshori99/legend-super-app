@@ -1,5 +1,5 @@
 // Payout 905 follow-ups P2-1, P2-2 and P2-4 of the first architect review
-// (docs/briefs/905/design.md "Review awal architect", migration 0649). Written
+// (docs/briefs/905/design.md "Review awal architect", migration 0415). Written
 // fail-first from that review and the design, not from the implementation.
 // Everything adversarial runs as the app role (`SET LOCAL ROLE legend_app`) with
 // a REAL COMMIT, so the database is what is proven, not the service.
@@ -645,7 +645,7 @@ describe("905 follow-up P2-4: a closed proof key cannot finish a resolve that fr
       // 905: W.resolve calls the service directly, so the Express mapper that
       // turns the guard's 23514 into 409 (payoutGuardErrorMapper) is not in
       // the path. Either form is the refusal: the PAYOUT-72 message of the
-      // 0649(c) guard, or an HttpError with code PAYOUT_GUARD_REFUSED.
+      // 0415(c) guard, or an HttpError with code PAYOUT_GUARD_REFUSED.
       const refusal = (await W.resolve(
         w.batchId,
         [w.itemId],

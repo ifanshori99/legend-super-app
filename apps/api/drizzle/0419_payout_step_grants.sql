@@ -16,15 +16,15 @@
 --    app.payout_assert_actor (live session, MFA at most 15 minutes old,
 --    permission), then stores the grant and returns the secret once.
 -- 4. app.payout_grant_consume (owner only): the atomic single-use spend that the
---    trusted step functions of migration 0654 call first.
+--    trusted step functions of migration 0420 call first.
 -- 5. payroll_payout_attestations.grant_id: composite FK to the grant (tenant,
 --    id, kind, step, actor, session). The CHECK "no attestation after the
---    cutover without a grant" comes at the end of 0654, once every writer uses
+--    cutover without a grant" comes at the end of 0420, once every writer uses
 --    grants.
 -- Error codes: PAYOUT-70 no valid grant for this step (42501), PAYOUT-72 grant
 -- cannot be issued for these arguments (22023), PAYOUT-75 grant row cannot
--- change (23514). PAYOUT-71 (step one carries no grant) is raised in 0654.
--- (The numbers 70 to 72 are also used by 0649 for other, unrelated checks; the
+-- change (23514). PAYOUT-71 (step one carries no grant) is raised in 0420.
+-- (The numbers 70 to 72 are also used by 0415 for other, unrelated checks; the
 -- message text tells them apart.)
 DO $$
 BEGIN
@@ -72,7 +72,7 @@ CREATE TABLE "payroll_payout_grants" (
 --> statement-breakpoint
 CREATE INDEX "payroll_payout_grants_tenant_batch_idx" ON "payroll_payout_grants" USING btree ("tenant_id","batch_id");--> statement-breakpoint
 -- An attestation names the grant it was made under. NULL only for entries
--- before the cutover (the CHECK in 0654). MATCH SIMPLE: no grant, no check.
+-- before the cutover (the CHECK in 0420). MATCH SIMPLE: no grant, no check.
 -- The attestations table is FORCED under row level security. A migrator without
 -- BYPASSRLS has no tenant in force, so the FK check (which reads the table under
 -- the tenant policy) fails with "tenant context is required". The column is new
@@ -127,9 +127,9 @@ CREATE TRIGGER payroll_payout_grants_guard_trg
   FOR EACH ROW EXECUTE FUNCTION app.payroll_payout_grants_guard();
 --> statement-breakpoint
 -- The moment this migration was applied: the boundary of the attestation
--- CHECK (0654) and of the nightly reconciliation (attestations before it carry
+-- CHECK (0420) and of the nightly reconciliation (attestations before it carry
 -- no grant). Baked into the function body at migration time, same pattern as
--- app.payout_trusted_since() in 0644.
+-- app.payout_trusted_since() in 0410.
 DO $$
 BEGIN
   EXECUTE pg_catalog.format(

@@ -1,12 +1,12 @@
 -- legend-911 (P1-2, P2-3). Function bodies and triggers only; no row is edited.
--- (P1-2) Closed-key swap. The closed-key triggers of 0647 fired on INSERT and on
+-- (P1-2) Closed-key swap. The closed-key triggers of 0413 fired on INSERT and on
 --     UPDATE OF status only, so an open correction / overpaid proposal (or a
 --     claim) could have its evidence_key replaced by a closed (frozen) key
 --     without a status change. They now also fire on UPDATE OF evidence_key, and
---     app.payout_proof_closed_key_guard (0647, unchanged) tests the NEW key.
+--     app.payout_proof_closed_key_guard (0413, unchanged) tests the NEW key.
 --     The bindings trigger gets the same UPDATE OF evidence_key (it was INSERT
 --     only). A closed key is therefore refused whatever column moves it in.
--- (P2-3) app.payout_bind_proof (0645) now requires the stored proof record to
+-- (P2-3) app.payout_bind_proof (0411) now requires the stored proof record to
 --     belong to the batch being bound (f.batch_id = p_batch) and to a batch of
 --     the same legal entity. Before, a proof uploaded for another batch (or
 --     entity) of the tenant could back this batch. Refusal is PAYOUT-46
@@ -36,9 +36,9 @@ CREATE TRIGGER payroll_payout_overpaid_proposals_closed_key_trg
   BEFORE INSERT OR UPDATE OF status, evidence_key ON public.payroll_payout_overpaid_proposals
   FOR EACH ROW EXECUTE FUNCTION app.payout_proof_closed_key_guard();
 --> statement-breakpoint
--- (P2-3) The function is owned by legend_payout (0645), and the migrator cannot
+-- (P2-3) The function is owned by legend_payout (0411), and the migrator cannot
 -- inherit that role (INHERIT FALSE), so the replacement runs as the payout role:
--- grant, become, replace, return, revoke (as 0644). CREATE OR REPLACE keeps the
+-- grant, become, replace, return, revoke (as 0410). CREATE OR REPLACE keeps the
 -- owner and the ACL.
 GRANT legend_payout TO CURRENT_USER WITH INHERIT FALSE, SET TRUE;
 --> statement-breakpoint

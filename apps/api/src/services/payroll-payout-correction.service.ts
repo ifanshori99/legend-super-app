@@ -546,7 +546,7 @@ export async function correctFailedItems(
     }
     // The trusted function re-checks everything in SQL (two people, proof,
     // binding), marks the proposals corrected and moves `failed -> succeeded`
-    // (migration 0645); no GUC is an authorisation any more.
+    // (migration 0411); no GUC is an authorisation any more.
     const moved = await callCorrectionApprove(
       tx,
       early,

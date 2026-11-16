@@ -1,4 +1,4 @@
-// Payout 905 card 2(b) (bead legend-kjht5; docs/briefs/905/design.md "0646 kartu
+// Payout 905 card 2(b) (bead legend-kjht5; docs/briefs/905/design.md "0412 kartu
 // 2(b)" and "Asumsi pemanggil", brief "Kartu 2", finding P2 "historical cash /
 // non-frozen source" in docs/briefs/905/so-900.md). Written fail-first from the
 // brief and the design, not from the implementation.
