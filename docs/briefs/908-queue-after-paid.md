@@ -36,3 +36,7 @@ Fakta: baris rekon baru dibuat >= 30 menit SETELAH kode kedaluwarsa (payment-va-
 4. `recordedMoney` cocok juga `providerRef = intent.providerRef` (extras terparkir tidak boleh dianggap uang primer tercatat).
 5. `parkExtraPayments`: log ID saja (intentId, providerRef, bukan body) saat gagal; tambah `extra_funds_not_parked` ke PAID_UNRECORDED supaya staf dapat peringatan.
 6. Tes: baris dibuka SESUDAH kode kedaluwarsa (realistis, >= 30 menit); tutup 72 jam; batas 7 hari tanpa provider_final_at; reference null tidak diparkir; recordedMoney tidak tertipu extra. Tambah test regresi Duitku (reference null).
+
+## Tahap 4 (16 Nov): architect ronde 2
+P1: `payment-duitku.ts` getStatus kini mengembalikan pending + extraPayments untuk jawaban "referensi lain dibayar"; `askProviderAboutLink` (payment-provider-proof.ts ~190-258) dulu menolak batal link lewat throw, kini lolos ("unpaid") dan uang referensi lain tak terlihat. Perbaiki: tepat setelah cek referensi (~:204) `if (answer.extraPayments?.length) throw unconfirmed();` (refuse). Cek SEMUA pemanggil getStatus lain (grep `.getStatus(` di services) yang bisa memberi verdict "unpaid"/membatalkan/mengabaikan: pasangkan perilaku sama (anggap tidak terkonfirmasi) atau catat mengapa aman. Tes: pembatalan link ditolak saat Duitku menjawab referensi lain dibayar.
+P3: pos-qris-release-recon.ts ~:360-363 jawaban final nyata (expired/failed) dengan uang tercatat: tutup `paid_recorded` tapi `final: true`; assert `providerFinal` di tes VA "a final provider answer after the paid one closes the row".
