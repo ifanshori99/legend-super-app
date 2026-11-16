@@ -37,6 +37,7 @@ import {
 } from "./payment-gateway.ts";
 import { logger } from "../lib/logger.ts";
 import { plausiblePaidAt } from "./payment-paid-at.ts";
+import { RELEASE_RECON_UNPROVEN_AFTER_HOURS } from "@starter/shared/validators/finance-exceptions";
 import {
   PaymentConfirmationRejected,
   confirmPayment,
@@ -47,17 +48,25 @@ import {
 const CLOSE_MARGIN_MS = 60_000;
 const FIRST_CHECK_MS = 2 * 60_000;
 const MAX_BACKOFF_MS = 60 * 60_000;
-/** Hard stop (legend-xzu4l): a row is never asked longer than this, whatever
- * the provider says about the code. */
+/** legend-912 P1-2: no timer closes a row. After this long a still pending
+ * code is asked less often (SLOW_CHECK_MS) but never dropped. */
 const MAX_WATCH_MS = 7 * 24 * 60 * 60_000;
-/** A recorded payment closes a row only this long after the row opened, and
- * only when the answer before it was "paid" too (so the code was asked again
- * after the first paid answer). The row opens after the code lapsed, so expiry
- * alone is no proof the provider is done (legend-xzu4l). */
-const PAID_WATCH_MS = 72 * 60 * 60_000;
+/** After this long a code the provider answers "paid" for is asked less often
+ * too, and the row shows on the finance exception list (the same constant, in
+ * hours, as `RELEASE_RECON_UNPROVEN_AFTER_HOURS`). Only the provider's closed
+ * answer closes the row. */
+export const PAID_WATCH_MS = RELEASE_RECON_UNPROVEN_AFTER_HOURS * 60 * 60_000;
+/** Interval of the slowed checks once a row is past its watch mark. */
+const SLOW_CHECK_MS = 24 * 60 * 60_000;
 
-/** 2, 4, 8 ... minutes, then every hour for as long as the provider is silent. */
-export function nextReconCheckAt(attempts: number, now: Date): Date {
+/** 2, 4, 8 ... minutes, then every hour for as long as the provider is silent.
+ * `slow` (a row past its watch mark): every 24 h, never stopped. */
+export function nextReconCheckAt(
+  attempts: number,
+  now: Date,
+  slow = false,
+): Date {
+  if (slow) return new Date(now.getTime() + SLOW_CHECK_MS);
   const minutes = Math.min(2 ** Math.max(attempts, 1), MAX_BACKOFF_MS / 60_000);
   return new Date(now.getTime() + minutes * 60_000);
 }
@@ -152,7 +161,7 @@ export type Outcome =
        * the margin), never for a time based close. */
       final: boolean;
     }
-  | { kind: "open"; seen: string };
+  | { kind: "open"; seen: string; slow?: boolean };
 
 /** Money on record for the code the intent was minted for. Parked extra
  * transactions (other provider refs) do not count. */
@@ -183,7 +192,9 @@ async function recordedMoney(
  * (legend-xzu4l): parked as unallocated funds, keyed by that provider
  * transaction, so poll and webhook together park it exactly once. It never
  * settles the bill. Staff are alerted only when the money is newly parked.
- * Returns false when parking failed (the row stays open and is asked again).
+ * Returns false when parking failed or an extra is paid with a zero or
+ * unreadable amount (not recorded: the row stays open and is asked again). A
+ * negative amount is not money and needs no recording.
  */
 async function parkExtraPayments(
   context: ScopedTenantContext,
@@ -191,9 +202,14 @@ async function parkExtraPayments(
   extras: NonNullable<GatewayPaymentStatus["extraPayments"]>,
   now: Date,
 ): Promise<boolean> {
+  let allRecorded = true;
   try {
     for (const extra of extras) {
-      if (!(extra.amountIdr > 0)) continue;
+      if (!Number.isFinite(extra.amountIdr) || extra.amountIdr === 0) {
+        allRecorded = false;
+        continue;
+      }
+      if (extra.amountIdr < 0) continue;
       await withTenant(db, context, async (tx) => {
         const outcome = await recordUnsettledGatewayFundsInTx(
           tx,
@@ -231,7 +247,7 @@ async function parkExtraPayments(
         );
       });
     }
-    return true;
+    return allRecorded;
   } catch {
     // Identifiers only: never the error or a provider body.
     logger.warn(
@@ -252,9 +268,10 @@ async function parkExtraPayments(
  * legend-xzu4l: a recorded payment does NOT close the row. A second payment
  * with a lost webhook can still arrive, and the row opens after the code
  * lapsed, so expiry proves nothing. The row keeps asking (backoff) until the
- * provider answers expired/failed for good, or 72 h passed since the row
- * opened and the answer before this one was "paid" too, or the 7 day hard
- * limit. Extra provider transactions are parked, never paid.
+ * provider answers expired/failed for good. legend-912 P1-2: no timer closes
+ * it; past 72 h (paid) or 7 days it is only asked every 24 h. Extra provider
+ * transactions are parked, never paid; the row is final only once every
+ * positive extra is parked.
  */
 export async function decide(
   context: ScopedTenantContext,
@@ -276,6 +293,13 @@ export async function decide(
         ),
       ),
   );
+  const openedMs = row.createdAt?.getTime();
+  const ageMs = openedMs === undefined ? 0 : now.getTime() - openedMs;
+  const stillOpen = (seen: string, slowAfterMs = MAX_WATCH_MS): Outcome => ({
+    kind: "open",
+    seen,
+    slow: ageMs >= slowAfterMs,
+  });
   if (!intent || intent.providerRef === null)
     return { kind: "open", seen: "no_provider_ref" };
   const outletContext =
@@ -295,24 +319,18 @@ export async function decide(
       intentId: intent.id,
     });
   } catch {
-    return { kind: "open", seen: "unreachable" };
+    return stillOpen("unreachable");
   }
   if (answer.providerRef !== intent.providerRef)
-    return { kind: "open", seen: "other_reference" };
-  if (
-    answer.extraPayments &&
-    answer.extraPayments.length > 0 &&
-    !(await parkExtraPayments(outletContext, intent, answer.extraPayments, now))
-  )
-    return { kind: "open", seen: "extra_funds_not_parked" };
+    return stillOpen("other_reference");
+  // An extra that could not be recorded must never keep the primary paid
+  // answer from being recorded: the primary is settled first, then the row
+  // stays open (and staff are warned) until every extra is on record.
+  const extrasRecorded =
+    !answer.extraPayments ||
+    answer.extraPayments.length === 0 ||
+    (await parkExtraPayments(outletContext, intent, answer.extraPayments, now));
   const expired = now.getTime() >= intent.expiresAt.getTime() + CLOSE_MARGIN_MS;
-  const openedMs = row.createdAt?.getTime();
-  const hardLimit =
-    openedMs !== undefined && now.getTime() >= openedMs + MAX_WATCH_MS;
-  const paidWatchOver =
-    openedMs !== undefined &&
-    now.getTime() >= openedMs + PAID_WATCH_MS &&
-    row.lastProviderStatus === "paid";
   if (answer.status === "paid") {
     if (answer.amountIdr === null)
       return { kind: "open", seen: "paid_without_amount" };
@@ -340,20 +358,20 @@ export async function decide(
     }
     if (!(await recordedMoney(context, intent)))
       return { kind: "open", seen: "paid_not_recorded" };
-    return hardLimit || paidWatchOver
-      ? {
-          kind: "resolved",
-          resolution: "paid_recorded",
-          seen: "paid",
-          final: false,
-        }
-      : { kind: "open", seen: "paid" };
+    if (!extrasRecorded)
+      return { kind: "open", seen: "extra_funds_not_parked" };
+    // Paid is not proof the code is closed: a later transaction can still
+    // arrive. Asked on, less often after 72 h.
+    return stillOpen("paid", PAID_WATCH_MS);
   }
   const dead =
     expired &&
     (intent.provider === "duitku"
       ? answer.rawStatus === "02"
       : answer.status === "expired" || answer.status === "failed");
+  // Any non-paid answer (pending, expired before the margin, dead) with an
+  // unrecorded extra stays open so staff are warned (PAID_UNRECORDED).
+  if (!extrasRecorded) return { kind: "open", seen: "extra_funds_not_parked" };
   if (dead) {
     // Money already on record for this code (an earlier paid answer, a webhook)
     // keeps the paid resolution: the code ending later does not undo it.
@@ -372,18 +390,7 @@ export async function decide(
       final: true,
     };
   }
-  // Hard limit with no final answer: close as expired, never as paid unless
-  // money is on record, and never as a provider final answer.
-  if (hardLimit)
-    return {
-      kind: "resolved",
-      resolution: (await recordedMoney(context, intent))
-        ? "paid_recorded"
-        : "provider_expired",
-      seen: answer.status,
-      final: false,
-    };
-  return { kind: "open", seen: answer.status };
+  return stillOpen(answer.status);
 }
 
 /** The provider says the QR was paid but no money could be recorded. */
@@ -429,7 +436,13 @@ export async function reconcileReleasedQris(
               resolvedAt: now,
               resolution: outcome.resolution,
             }
-          : { nextCheckAt: nextReconCheckAt(row.attempts + 1, now) }),
+          : {
+              nextCheckAt: nextReconCheckAt(
+                row.attempts + 1,
+                now,
+                outcome.slow === true,
+              ),
+            }),
       })
       .where(
         and(

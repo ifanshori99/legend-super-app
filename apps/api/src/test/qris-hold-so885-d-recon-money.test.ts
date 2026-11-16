@@ -89,13 +89,18 @@ describe("SO-885 D-01 release while the provider is down, webhook lost for more 
     fx.gateway.script(qr.intentId, { status: "paid" });
     await runRecon(fx, hoursAfter(releasedAt, 26));
     await expectRecordedOnce(qr.intentId);
-    // legend-xzu4l: paid does not close the row; 72 h after it opened and a
-    // second paid answer does.
+    // legend-xzu4l: paid does not close the row. legend-912 P1-2: no timer
+    // does either; 72 h and a second paid answer later it is still open (asked
+    // less often). Only the provider's closed answer closes it.
     expect((await reconRows(fx, qr.intentId))[0]?.status).toBe("open");
     await runRecon(fx, hoursAfter(releasedAt, 100));
+    expect((await reconRows(fx, qr.intentId))[0]?.status).toBe("open");
+    await expectRecordedOnce(qr.intentId);
     expect(await notificationCount(fx, FUNDS_ALERT_TITLE)).toBeGreaterThan(
       alertsBefore,
     );
+    fx.gateway.script(qr.intentId, { rawStatus: "02" });
+    await runRecon(fx, hoursAfter(releasedAt, 101));
     const [done] = await reconRows(fx, qr.intentId);
     expect(done?.status).toBe("resolved");
     expect(done?.resolution).toBe("paid_recorded");
@@ -139,6 +144,12 @@ describe("SO-885 D-02 the verified webhook or the poll comes first (BILL_CLOSED 
     await runRecon(fx, hoursAfter(releasedAt, 1));
     await runRecon(fx, hoursAfter(releasedAt, 73));
     await expectRecordedOnce(qr.intentId);
+    // legend-912 P1-2: past 72 h the row is still open; the provider's closed
+    // answer resolves it, without a second record.
+    expect((await reconRows(fx, qr.intentId))[0]?.status).toBe("open");
+    fx.gateway.script(qr.intentId, { rawStatus: "02" });
+    await runRecon(fx, hoursAfter(releasedAt, 74));
+    await expectRecordedOnce(qr.intentId);
     expect((await reconRows(fx, qr.intentId))[0]?.status).toBe("resolved");
   });
 
@@ -149,6 +160,10 @@ describe("SO-885 D-02 the verified webhook or the poll comes first (BILL_CLOSED 
     await runRecon(fx, hoursAfter(releasedAt, 1));
     await runRecon(fx, hoursAfter(releasedAt, 2));
     await runRecon(fx, hoursAfter(releasedAt, 73));
+    await expectRecordedOnce(qr.intentId);
+    expect((await reconRows(fx, qr.intentId))[0]?.status).toBe("open");
+    fx.gateway.script(qr.intentId, { rawStatus: "02" });
+    await runRecon(fx, hoursAfter(releasedAt, 74));
     await expectRecordedOnce(qr.intentId);
     expect((await reconRows(fx, qr.intentId))[0]?.status).toBe("resolved");
   });
@@ -223,6 +238,11 @@ describe("SO-885 D-06 the provider says paid but nothing can be recorded", () =>
     fx.gateway.script(qr.intentId, { status: "paid" });
     await runRecon(fx, hoursAfter(releasedAt, 4));
     await runRecon(fx, hoursAfter(releasedAt, 77));
+    await expectRecordedOnce(qr.intentId);
+    // legend-912 P1-2: no timer closes it; the provider's closed answer does.
+    expect((await reconRows(fx, qr.intentId))[0]?.status).toBe("open");
+    fx.gateway.script(qr.intentId, { rawStatus: "02" });
+    await runRecon(fx, hoursAfter(releasedAt, 78));
     await expectRecordedOnce(qr.intentId);
     expect((await reconRows(fx, qr.intentId))[0]?.status).toBe("resolved");
   });

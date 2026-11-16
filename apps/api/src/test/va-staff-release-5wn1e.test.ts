@@ -337,7 +337,7 @@ async function expectParkedOnce(code: Opened) {
 describe("legend-5wn1e refusals", () => {
   it("legend-5wn1e without pos.payment.accept the release is refused (403) and nothing changes", async () => {
     const code = await openCode();
-    fx.gateway.script(code.intentId, { error: "5xx" });
+    fx.gateway.script(code.intentId, { rawStatus: "01" });
     await lapse(code, RELEASE_AFTER_MIN + 1);
     const approval = await approvalFor(code);
     await owner.query(
@@ -360,7 +360,7 @@ describe("legend-5wn1e refusals", () => {
   it("legend-5wn1e without a valid supervisor override the release is refused with VOID_APPROVAL_REQUIRED", async () => {
     const code = await openCode();
     const other = await openCode();
-    fx.gateway.script(code.intentId, { error: "5xx" });
+    fx.gateway.script(code.intentId, { rawStatus: "01" });
     await lapse(code, RELEASE_AFTER_MIN + 1);
 
     // An approval granted for ANOTHER order is not an approval for this one.
@@ -384,7 +384,7 @@ describe("legend-5wn1e refusals", () => {
 
   it("legend-5wn1e a missing, blank or too short reason is refused (422)", async () => {
     const code = await openCode();
-    fx.gateway.script(code.intentId, { error: "5xx" });
+    fx.gateway.script(code.intentId, { rawStatus: "01" });
     await lapse(code, RELEASE_AFTER_MIN + 1);
     const approval = await approvalFor(code);
 
@@ -427,7 +427,7 @@ describe("legend-5wn1e refusals", () => {
 
   it("legend-5wn1e the reason is counted in characters, not UTF-16 units: 300 emoji pass, 301 or 2 do not", async () => {
     const code = await openCode();
-    fx.gateway.script(code.intentId, { error: "5xx" });
+    fx.gateway.script(code.intentId, { rawStatus: "01" });
     await lapse(code, RELEASE_AFTER_MIN + 1);
     const approval = await approvalFor(code);
     for (const reason of ["\u{1F600}".repeat(2), "\u{1F600}".repeat(301)])
@@ -532,12 +532,42 @@ describe("legend-5wn1e refusals", () => {
       new Date(),
     );
     expect(await unallocatedFunds(fx, code.intentId)).toHaveLength(1);
-    fx.gateway.script(code.intentId, { error: "5xx" });
+    fx.gateway.script(code.intentId, { rawStatus: "01" });
     await lapse(code, RELEASE_AFTER_MIN + 1);
     expectError(await postVaRelease(code, await approvalFor(code)), 409);
     expect(await releaseRows(code.intentId)).toEqual([]);
     expect(await auditRows(code)).toEqual([]);
   });
+});
+
+describe("legend-5wn1e release needs a readable provider answer (912 P1-1)", () => {
+  it.each<{ label: string; answer: ProviderAnswer }>([
+    { label: "provider 5xx", answer: { error: "5xx" } },
+    { label: "provider timeout", answer: { error: "timeout" } },
+    {
+      label: "answer about another reference",
+      answer: { otherReference: true },
+    },
+  ])(
+    "legend-5wn1e $label: 409 VA_RELEASE_PROVIDER_UNREAD, nothing released, the approval is not spent",
+    async ({ answer }) => {
+      const code = await openCode();
+      fx.gateway.script(code.intentId, answer);
+      await lapse(code, RELEASE_AFTER_MIN + 1);
+      const approval = await approvalFor(code);
+      expectError(
+        await postVaRelease(code, approval),
+        409,
+        "VA_RELEASE_PROVIDER_UNREAD",
+      );
+      await expectNothingReleased(code);
+      expect((await replace(code.guest, code.order.id, "va")).status).toBe(409);
+
+      // The provider answers again: the same approval releases the code.
+      fx.gateway.script(code.intentId, { rawStatus: "01" });
+      expect((await postVaRelease(code, approval)).status).toBe(200);
+    },
+  );
 });
 
 describe("legend-5wn1e release without provider proof", () => {
@@ -547,9 +577,9 @@ describe("legend-5wn1e release without provider proof", () => {
     answer: ProviderAnswer;
   }>([
     {
-      label: "pending, provider down",
+      label: "pending, provider status pending",
       status: "pending",
-      answer: { error: "5xx" },
+      answer: { status: "pending" },
     },
     {
       label: "pending, provider pending",
@@ -557,9 +587,9 @@ describe("legend-5wn1e release without provider proof", () => {
       answer: { rawStatus: "01" },
     },
     {
-      label: "expired, provider timeout",
+      label: "expired, provider status pending",
       status: "expired",
-      answer: { error: "timeout" },
+      answer: { status: "pending" },
     },
     {
       label: "failed, provider pending",
@@ -615,7 +645,7 @@ describe("legend-5wn1e release without provider proof", () => {
 
   it("legend-5wn1e the reason is stored trimmed", async () => {
     const code = await openCode();
-    fx.gateway.script(code.intentId, { error: "5xx" });
+    fx.gateway.script(code.intentId, { rawStatus: "01" });
     await lapse(code, RELEASE_AFTER_MIN + 1);
     const res = await postVaRelease(code, await approvalFor(code), {
       reason: `   ${REASON}   `,
@@ -626,7 +656,7 @@ describe("legend-5wn1e release without provider proof", () => {
 
   it("legend-5wn1e an idempotent repeat of the release changes nothing; a second release of the same code is refused", async () => {
     const code = await openCode();
-    fx.gateway.script(code.intentId, { error: "5xx" });
+    fx.gateway.script(code.intentId, { rawStatus: "01" });
     await lapse(code, RELEASE_AFTER_MIN + 1);
     const approval = await approvalFor(code);
     const key = randomUUID();
@@ -650,7 +680,7 @@ describe("legend-5wn1e release without provider proof", () => {
 
   it("legend-5wn1e an approval is used once: it cannot release a second code", async () => {
     const a = await openCode();
-    fx.gateway.script(a.intentId, { error: "5xx" });
+    fx.gateway.script(a.intentId, { rawStatus: "01" });
     await lapse(a, RELEASE_AFTER_MIN + 1);
     const approval = await approvalFor(a);
     expect((await postVaRelease(a, approval)).status).toBe(200);
@@ -662,7 +692,7 @@ describe("legend-5wn1e release without provider proof", () => {
       ...a,
       intentId: second.body.data.id as string,
     } as Opened;
-    fx.gateway.script(b.intentId, { error: "5xx" });
+    fx.gateway.script(b.intentId, { rawStatus: "01" });
     await lapse(b, RELEASE_AFTER_MIN + 1);
     const reuse = await postVaRelease(b, approval);
     expect(reuse.status, JSON.stringify(reuse.body)).toBeGreaterThanOrEqual(
@@ -673,7 +703,7 @@ describe("legend-5wn1e release without provider proof", () => {
 
   it("legend-5wn1e an approval spent on a VA release cannot be spent on another action of the order (VOID_APPROVAL_REQUIRED)", async () => {
     const code = await openCode();
-    fx.gateway.script(code.intentId, { error: "5xx" });
+    fx.gateway.script(code.intentId, { rawStatus: "01" });
     await lapse(code, RELEASE_AFTER_MIN + 1);
     const approval = await approvalFor(code);
     expect((await postVaRelease(code, approval)).status).toBe(200);
@@ -759,7 +789,8 @@ describe("legend-5wn1e after the release", () => {
   it("legend-5wn1e a provider answer failed ends the queue as provider_failed", async () => {
     const code = await openCode();
     const releasedAt = new Date();
-    await releaseOk(code, { error: "timeout" });
+    await releaseOk(code, { rawStatus: "01" });
+    fx.gateway.script(code.intentId, { error: "timeout" });
     await runVaRecon(hoursAfter(releasedAt, 1));
     expect((await releaseRows(code.intentId))[0]).toMatchObject({
       status: "open",
@@ -803,15 +834,22 @@ describe("legend-5wn1e money paid on a released code", () => {
     fx.gateway.script(code.intentId, { status: "paid" });
     await runVaRecon(hoursAfter(releasedAt, 1));
     await runVaRecon(hoursAfter(releasedAt, 2));
-    // legend-xzu4l: paid closes the row only 72 h after it opened.
+    // legend-912 P1-2: no timer closes the row. Past 72 h it stays open
+    // (paid is not proof the code is closed) and is asked only every 24 h.
     await runVaRecon(hoursAfter(releasedAt, 73));
     await webhookPaid(code.intentId, code.amount, code.providerRef);
     await pollPendingGatewayIntents(fx.context, hoursAfter(releasedAt, 3), 200);
     await expectParkedOnce(code);
-    expect((await releaseRows(code.intentId))[0]).toMatchObject({
-      status: "resolved",
-      resolution: "paid_recorded",
+    const [slow] = await releaseRows(code.intentId);
+    expect(slow).toMatchObject({
+      status: "open",
+      resolution: null,
+      last_provider_status: "paid",
     });
+    expect(slow!.resolved_at).toBeNull();
+    expect(slow!.next_check_at.getTime()).toBe(
+      hoursAfter(releasedAt, 73).getTime() + 24 * 60 * 60_000,
+    );
 
     // Still blocked until staff resolve the money; then a new code is allowed.
     expectError(
@@ -832,11 +870,14 @@ describe("legend-5wn1e money paid on a released code", () => {
     fx.gateway.script(code.intentId, { status: "paid" });
     await runVaRecon(hoursAfter(releasedAt, 1));
     await expectParkedOnce(code);
+    // legend-912 P1-2: 72 h later the row is still open (slowed, not closed).
     await runVaRecon(hoursAfter(releasedAt, 73));
     expect((await releaseRows(code.intentId))[0]).toMatchObject({
-      status: "resolved",
-      resolution: "paid_recorded",
+      status: "open",
+      resolution: null,
+      last_provider_status: "paid",
     });
+    await expectParkedOnce(code);
 
     // The poll already parked this provider transaction: the webhook is a
     // replay, acknowledged without a second record (not a new refusal).

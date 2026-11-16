@@ -13,6 +13,8 @@ export const financeExceptionsMessages = {
     edge_link_dead_letter: "Link edge dead-letter",
     payout_fee_not_posted: "Biaya payout belum dijurnal",
     receipt_pending_stale: "Jurnal penjualan menunggu struk lebih dari 1 hari",
+    release_recon_unproven:
+      "Kode QRIS/VA yang dilepas belum terbukti mati lebih dari 3 hari",
   },
   kindHelp: {
     edge_tax_unsnapshotted:
@@ -27,6 +29,8 @@ export const financeExceptionsMessages = {
       "Biaya transfer pencairan gaji belum masuk jurnal. Berlaku untuk seluruh PT.",
     receipt_pending_stale:
       "Jurnal otomatis tertahan karena pembayaran gateway belum dijurnal lebih dari 1 hari. Tidak mengikuti rentang tanggal; cek status pengiriman pembayaran di bawah.",
+    release_recon_unproven:
+      "Kode QRIS atau VA yang dilepas manual masih belum dijawab final oleh penyedia setelah lebih dari 3 hari. Antrean terus bertanya tiap hari dan tidak menutup baris tanpa bukti, jadi uang masih bisa masuk ke kode ini. Tidak mengikuti rentang tanggal.",
   },
   refTypes: {
     order: "Order edge",
@@ -34,6 +38,8 @@ export const financeExceptionsMessages = {
     receipt_skip: "Struk dilewati",
     link_event: "Kejadian tautan",
     payout_posting: "Jurnal pencairan gaji",
+    qris_release_recon: "Antrean cek QRIS dilepas",
+    va_release_recon: "Antrean cek VA dilepas",
   },
   refTypeUnknown: "Sumber lain",
   details: {

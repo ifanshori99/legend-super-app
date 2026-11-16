@@ -62,7 +62,13 @@ export async function reconcileReleasedVa(
               resolvedAt: now,
               resolution: outcome.resolution,
             }
-          : { nextCheckAt: nextReconCheckAt(row.attempts + 1, now) }),
+          : {
+              nextCheckAt: nextReconCheckAt(
+                row.attempts + 1,
+                now,
+                outcome.slow === true,
+              ),
+            }),
       })
       .where(
         and(
@@ -102,8 +108,8 @@ export async function reconcileReleasedVa(
     return updated?.status ?? "resolved";
   });
   // The provider answered expired / failed for good: the code is final, as the
-  // gateway poll marks it (`provider_final_at`). A time based close (72 h after
-  // paid, the 7 day limit) is not a provider answer and never marks it.
+  // gateway poll marks it (`provider_final_at`). No timer closes a row (legend-912
+  // P1-2), so only such an answer, with every positive extra parked, gets here.
   if (outcome.kind === "resolved" && outcome.final) {
     // The code may still be `pending` locally (a release does not need it to
     // have lapsed in our books), which `markGatewayReconciled` leaves alone.

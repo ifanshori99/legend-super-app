@@ -42,6 +42,7 @@ export const KIND_LABEL_KEYS: Record<FinanceExceptionKind, MessageKey> = {
   edge_link_dead_letter: "financeExceptions.kinds.edge_link_dead_letter",
   payout_fee_not_posted: "financeExceptions.kinds.payout_fee_not_posted",
   receipt_pending_stale: "financeExceptions.kinds.receipt_pending_stale",
+  release_recon_unproven: "financeExceptions.kinds.release_recon_unproven",
 };
 
 export const KIND_HELP_KEYS: Record<FinanceExceptionKind, MessageKey> = {
@@ -51,6 +52,7 @@ export const KIND_HELP_KEYS: Record<FinanceExceptionKind, MessageKey> = {
   edge_link_dead_letter: "financeExceptions.kindHelp.edge_link_dead_letter",
   payout_fee_not_posted: "financeExceptions.kindHelp.payout_fee_not_posted",
   receipt_pending_stale: "financeExceptions.kindHelp.receipt_pending_stale",
+  release_recon_unproven: "financeExceptions.kindHelp.release_recon_unproven",
 };
 
 const REF_TYPE_KEYS: Record<string, MessageKey> = {
@@ -59,6 +61,8 @@ const REF_TYPE_KEYS: Record<string, MessageKey> = {
   receipt_skip: "financeExceptions.refTypes.receipt_skip",
   link_event: "financeExceptions.refTypes.link_event",
   payout_posting: "financeExceptions.refTypes.payout_posting",
+  qris_release_recon: "financeExceptions.refTypes.qris_release_recon",
+  va_release_recon: "financeExceptions.refTypes.va_release_recon",
 };
 
 export const OUTBOX_STATE_KEYS: Record<

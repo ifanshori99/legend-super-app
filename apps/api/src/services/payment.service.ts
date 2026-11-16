@@ -94,6 +94,7 @@ import {
   registeredGatewayProviders,
   type GatewayCancelRequest,
   type GatewayIntent,
+  type GatewayPaymentStatus,
   type OnlinePaymentMethod,
 } from "./payment-gateway";
 import {
@@ -1537,6 +1538,17 @@ type SyncResult = {
   gatewayError: boolean;
 };
 
+/** What a sync run read from the provider, filled in while it runs so a caller
+ * that needs the answer (912 P1-1: a staff VA release) still has it when the
+ * settlement itself throws. `answer` stays unset when the provider was not
+ * asked or did not answer. */
+type ProviderProbe = { answer?: GatewayPaymentStatus };
+
+/** 912 P1-1: how the provider answered a read made by
+ * `settleGatewayIntentNowDetailed`. Only `not_paid` is a read answer that
+ * proves the customer has not paid this code. */
+export type GatewayIntentVerdict = "paid" | "not_paid" | "unread";
+
 /**
  * Gateways whose status answer settles only the exact bill, and whose late
  * payment settles only an open bill (Codex legend-rgddb, CTO decision): any
@@ -1586,6 +1598,46 @@ const parksFunds = (error: unknown): boolean =>
     error.decisionCode === "BILL_CLOSED");
 
 /**
+ * legend-p5xrv: every further provider transaction reported with a status
+ * answer (`extraPayments`, another reference paid on the same code) is parked as
+ * unallocated funds, exactly once per provider + providerRef (the evidence row
+ * is unique), never settling the bill. A failure here only delays the parking:
+ * the next poll reads the same answer again.
+ */
+async function parkExtraPaymentsOfAnswer(
+  context: ScopedTenantContext,
+  intent: PaymentIntentRow,
+  answer: GatewayPaymentStatus,
+  now: Date,
+): Promise<void> {
+  for (const extra of answer.extraPayments ?? []) {
+    if (!(extra.amountIdr > 0) || extra.providerRef === intent.providerRef)
+      continue;
+    try {
+      await recordUnsettledGatewayFunds(
+        context,
+        intent,
+        {
+          provider: intent.provider,
+          providerRef: extra.providerRef,
+          source: "gateway_status",
+          paidAmountIdr: extra.amountIdr,
+          receivedAt: new Date(
+            plausiblePaidAt(extra.paidAt, intent.createdAt, now),
+          ),
+        },
+        now,
+      );
+    } catch (error) {
+      logger.warn(
+        { err: error, intentId: intent.id },
+        "Payment: parking an extra provider transaction failed",
+      );
+    }
+  }
+}
+
+/**
  * Applies a provider status without inventing one (PAY-02). Past its expiry a
  * pending intent with a provider reference asks the gateway first: money may
  * have arrived after the code lapsed, and the lifecycle flags that as a late
@@ -1602,6 +1654,7 @@ async function syncPendingIntentDetailed(
   context: ScopedTenantContext,
   intent: PaymentIntentRow,
   now: Date,
+  probe?: ProviderProbe,
 ): Promise<SyncResult> {
   if (intent.status !== "pending") return { intent, gatewayError: false };
   const pastExpiry = intent.expiresAt <= now;
@@ -1626,9 +1679,15 @@ async function syncPendingIntentDetailed(
       providerRef: intent.providerRef,
       intentId: intent.id,
     });
+    if (probe) probe.answer = providerStatus;
   } catch {
     // Gateway outage: the stored status stays; the link view reports it down.
     gatewayError = true;
+  }
+  // legend-p5xrv: the other transactions of the answer are parked first, so
+  // the code's own settlement (or its refusal) never loses them.
+  if (providerStatus) {
+    await parkExtraPaymentsOfAnswer(context, intent, providerStatus, now);
   }
   if (
     providerStatus?.status === "paid" &&
@@ -2786,6 +2845,7 @@ async function syncExpiredIntentPayment(
   context: ScopedTenantContext,
   intent: PaymentIntentRow,
   now: Date,
+  probe?: ProviderProbe,
 ): Promise<SyncResult> {
   if (!isClosedPollable(intent) || intent.providerRef === null)
     return { intent, gatewayError: false };
@@ -2798,9 +2858,14 @@ async function syncExpiredIntentPayment(
       providerRef: intent.providerRef,
       intentId: intent.id,
     });
+    if (probe) probe.answer = providerStatus;
   } catch {
     return { intent, gatewayError: true };
   }
+  // 912 P2-1 / legend-p5xrv: other transactions of the answer are parked once
+  // (the evidence row is unique per provider + providerRef), never settling the
+  // order, before the code's own answer is looked at.
+  await parkExtraPaymentsOfAnswer(context, intent, providerStatus, now);
   if (
     providerStatus.status === "expired" ||
     providerStatus.status === "failed"
@@ -2947,6 +3012,30 @@ export async function settleGatewayIntentNow(
   intentId: string,
   now = new Date(),
 ): Promise<boolean> {
+  const outcome = await settleGatewayIntentNowDetailed(context, intentId, now);
+  if ("error" in outcome) throw outcome.error;
+  return outcome.settled;
+}
+
+/**
+ * `settleGatewayIntentNow` plus how the provider answered (912 P1-1). The
+ * verdict is `paid` for any paid answer about the code (whatever its amount, and
+ * whether or not the bookkeeping succeeded) and for an answer that carries
+ * `extraPayments` (another reference paid on the same code), `not_paid` only for a read answer
+ * about this very code that is pending / expired / failed, and `unread` for
+ * everything else: an error, a code the provider never received, an answer about
+ * another reference. The verdict is read even when the settlement throws; the
+ * error is then returned, not thrown, so the caller decides.
+ */
+export async function settleGatewayIntentNowDetailed(
+  context: ScopedTenantContext,
+  intentId: string,
+  now = new Date(),
+): Promise<{
+  settled: boolean;
+  verdict: GatewayIntentVerdict;
+  error?: unknown;
+}> {
   const [row] = await withTenant(db, context, async (tx) =>
     tx
       .select()
@@ -2958,7 +3047,8 @@ export async function settleGatewayIntentNow(
         ),
       ),
   );
-  if (!row || row.providerRef === null) return false;
+  if (!row || row.providerRef === null)
+    return { settled: false, verdict: "unread" };
   const outletContext =
     context.outletScope.kind === "tenant"
       ? establishScopedTenantContext(context.tenant, {
@@ -2966,13 +3056,32 @@ export async function settleGatewayIntentNow(
           outletIds: [row.outletId],
         })
       : context;
-  const result = isClosedPollable(row)
-    ? await syncExpiredIntentPayment(outletContext, row, now)
-    : await syncPendingIntentDetailed(outletContext, row, now);
-  return (
+  const probe: ProviderProbe = {};
+  let result: SyncResult | undefined;
+  let error: unknown;
+  try {
+    result = isClosedPollable(row)
+      ? await syncExpiredIntentPayment(outletContext, row, now, probe)
+      : await syncPendingIntentDetailed(outletContext, row, now, probe);
+  } catch (caught) {
+    error = caught;
+  }
+  const answer = probe.answer;
+  const verdict: GatewayIntentVerdict =
+    answer === undefined
+      ? "unread"
+      : answer.status === "paid" || answer.extraPayments?.length
+        ? "paid"
+        : answer.providerRef === row.providerRef
+          ? "not_paid"
+          : "unread";
+  const settled =
+    result !== undefined &&
     row.status !== result.intent.status &&
-    (SETTLED_STATUSES as readonly string[]).includes(result.intent.status)
-  );
+    (SETTLED_STATUSES as readonly string[]).includes(result.intent.status);
+  return error === undefined
+    ? { settled, verdict }
+    : { settled, verdict, error };
 }
 
 /**

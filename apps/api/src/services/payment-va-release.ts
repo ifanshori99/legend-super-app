@@ -36,7 +36,10 @@ import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import type { Tx } from "./menu-internals.ts";
 import { notifyOutletSupervisors } from "./edge-sync-conflict-alert.ts";
-import { settleGatewayIntentNow } from "./payment.service.ts";
+import {
+  settleGatewayIntentNow,
+  settleGatewayIntentNowDetailed,
+} from "./payment.service.ts";
 import { intentIdsOfPosOrder } from "./pos-order-open-funds.ts";
 import {
   auditPos,
@@ -67,6 +70,14 @@ function paidVaReleaseError(): HttpError {
     409,
     "PAID_VA_RELEASE",
     "Virtual account ini sudah dibayar pelanggan, tidak bisa dirilis.",
+  );
+}
+
+function providerUnreadError(): HttpError {
+  return new HttpError(
+    409,
+    "VA_RELEASE_PROVIDER_UNREAD",
+    "Penyedia belum menjawab status virtual account ini dengan jelas; kode tidak dirilis. Coba lagi nanti.",
   );
 }
 
@@ -199,11 +210,13 @@ export async function releaseVaCode(
       reason,
       now,
     );
-  // Last provider read before the supervisor gives up on the code: when the
-  // provider says the customer paid, the payment is settled and the release is
-  // refused. A provider error or a pending answer lets the release go on. Only
-  // a code that could be released at all is asked about; any other refusal (or
-  // the replay of an earlier release) is decided by the locked run below.
+  // Last provider read before the supervisor gives up on the code (912 P1-1):
+  // the code is released only when the provider's answer was read and is not
+  // paid. A paid answer (any amount, bookkeeping done or not) refuses the
+  // release; an error or an answer that proves nothing refuses it too. The
+  // money is still recorded by the read itself. Only a code that could be
+  // released at all is asked about; any other refusal (or the replay of an
+  // earlier release) is decided by the locked run below.
   const releasable = await withTenant(db, context, async (tx) => {
     const [order] = await tx
       .select({ id: orders.id, paymentLinkId: orders.paymentLinkId })
@@ -232,17 +245,20 @@ export async function releaseVaCode(
     }
   });
   if (!releasable) return run();
-  try {
-    await settleGatewayIntentNow(context, input.paymentIntentId, now);
-  } catch {
-    // A rejected (parked) payment is decided below from what was recorded.
-  }
-  // Refuse only when money of this code was APPLIED to the bill. Parked money
-  // cannot be paid again on this code. Read again under the locks below.
+  // A settlement error (a rejected or parked payment, a failed write) is not
+  // thrown: the verdict below is read from the provider's answer itself.
+  const { verdict } = await settleGatewayIntentNowDetailed(
+    context,
+    input.paymentIntentId,
+    now,
+  );
+  // Money of this code applied to the bill refuses the release. Read again
+  // under the locks below.
   const applied = await withTenant(db, context, (tx) =>
     appliedQrisMoneyTx(tx, tenantId, input.paymentIntentId),
   );
-  if (applied) throw paidVaReleaseError();
+  if (applied || verdict === "paid") throw paidVaReleaseError();
+  if (verdict !== "not_paid") throw providerUnreadError();
   return run();
 }
 
