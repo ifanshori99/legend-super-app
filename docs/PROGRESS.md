@@ -6773,3 +6773,10 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Bukti: `LEGEND_MOCK_PORT=3326 heavy --browser pnpm test:e2e:mock e2e/legend-e8oa.mock.spec.ts e2e/legend-mzg.mock.spec.ts e2e/legend-rx0h.mock.spec.ts e2e/legend-sgg.mock.spec.ts` exit 0, 35 passed/1 skipped, 2,4 menit, satu worker. Per spec: e8oa 12, mzg 9, rx0h 9, sgg 5 passed/1 skipped. Log `/tmp/926-e2e.log`. PAY-04 membuktikan approval belum settlement dan total refund tidak melebihi pembayaran.
 - `pnpm exec prettier --check` dan `pnpm exec eslint` pada keempat spec hijau; `git diff --check` hijau. Satu reviewer native Codex atas diff final bersih. Guest credit `legend-whd5c` tetap fixme sesuai commit sumber, bukan bukti lulus. Gate penuh/build tidak dijalankan karena scope port spec saja.
 - Subagent: total 5 unik, puncak 3 bersamaan, token heavy dipegang test_runner. session-usage tidak menemukan transkrip Codex; parallel-report hanya memuat sesi Claude, biaya/token native Codex tidak tersedia. Status Beads ditangani CTO sesuai peran engineer Codex.
+
+### 929 — Transport foto penerimaan dan kas kecil (16 Nov 2026)
+
+- Audit `legend-0una` pada cabang `ws/929-stock-photo-transport` dari basis tepat `a8e6036ab`: implementasi `94a165b19` sudah ancestor. Tidak menambahkan kode duplikat atau migrasi; nomor 0670 tidak dipakai. Bukti lengkap di `docs/briefs/929-stock-photo-transport-verification.md`.
+- Bukti gagal-dulu historis diperiksa: `/tmp/legend-m3-red.log`, 0/13 lulus karena callback tidak mengunggah; hijau historis `/tmp/legend-m3-unit-final.log`, 56/56 lulus. Verifikasi baru melalui heavy: root43/43 dan API80/80 lulus, log `/tmp/legend-929-tests.log`.
+- Satu reviewer: tanpa blocker transport; concern source locking penerimaan merupakan tindak lanjut akses terpisah, di luar brief. Tidak mengubah uang atau akses. Build/typecheck/e2e/provider nyata tidak diulang karena produk tidak berubah.
+- Subagent total6, puncak6, heavy oleh test_runner; biaya/token native Codex tidak tersedia dari session-usage/parallel-report. Kartu dikomentari; perubahan status/penutupan ditangani CTO sesuai peran Codex. Tidak merge/deploy.
