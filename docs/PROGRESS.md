@@ -6844,3 +6844,5 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 - Fast checkpoint: root1141/1141 hijau; API1951 test lulus teramati pada58/317 berkas, tanpa gagal. Antrean cetak edge dan kasus QRIS expired-lokal/provider-paid tepat-sekali ikut berjalan. Belum ada tahap lint/typecheck/e2e/build/full dimulai; satu token heavy tetap pada test-runner.
 
 - Fast checkpoint lanjutan: API4494 test lulus teramati pada251/317 berkas, tanpa gagal; root1141/1141 tetap hijau. Tidak ada perubahan kode selama gerbang. Log `/tmp/batch79-fast.log`; tahap selanjutnya tetap berurutan setelah fast selesai.
+
+- Fast383 selesai hijau exit0 dalam1359,4 detik (22m39s): root1141/1141; API317 berkas lulus,4850 test lulus/8 skip/1 todo (4859 kasus). Seluruh67 kontrak pemindai tercakup. Container disposable dibersihkan. Lanjut lint penuh lalu typecheck, log `/tmp/batch79-{lint,typecheck}.log`.
