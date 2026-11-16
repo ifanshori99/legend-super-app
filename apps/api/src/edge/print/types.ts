@@ -17,6 +17,7 @@
 // - agent.ts: per-printer serial queue, offline reroute, KDS-down fallback
 //   and supervisor alerts.
 import type { PrintJob } from "@starter/shared/edge";
+import type { EdgeTx } from "../../services/edge-queue.service.ts";
 
 export type PrinterTransportKind = "network" | "usb";
 /** receipt: cashier printer; station: production station backup printer. */
@@ -190,7 +191,10 @@ export interface PrintStore {
   reroute(fromPrinterId: string, toPrinterId: string): Promise<number>;
   getJob(jobId: string): Promise<PrintJobRecord | null>;
   listJobs(query: PrintJobListQuery): Promise<PrintJobPage>;
-  recordAlert(alert: PrintAlert): Promise<void>;
+  recordAlert(
+    alert: PrintAlert,
+    notify?: (alert: PrintAlert, tx?: EdgeTx) => void | Promise<void>,
+  ): Promise<void | boolean>;
 }
 
 export type Clock = { now(): Date };

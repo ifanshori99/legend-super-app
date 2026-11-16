@@ -411,6 +411,12 @@ describe("edge print queue API (legend-46p)", () => {
     );
     expect(audit).toHaveLength(1);
     expect(audit[0].event.actorId).toBe(operator.userId);
+    expect(audit[0].event.maskedChanges.after).toMatchObject({
+      originalJobId: original,
+      kind: "receipt",
+      printerId: ids.printer,
+      sourceRef: "[REDACTED]",
+    });
   });
 
   it("reprints concurrently with one key: same job, one row, one audit row", async () => {
@@ -551,6 +557,15 @@ describe("edge print queue API (legend-46p)", () => {
     );
     expect(audit).toHaveLength(1);
     expect(audit[0].event.actorId).toBe(operator.userId);
+    expect(audit[0].event.maskedChanges).toMatchObject({
+      before: { status: "failed" },
+      after: {
+        status: "queued",
+        kind: "receipt",
+        printerId: ids.printer,
+        sourceRef: "[REDACTED]",
+      },
+    });
     expect((await api(operator).retry(failed)).status).toBe(409);
     const printed = await insertJob({
       tenantId: tenant.tenantId,

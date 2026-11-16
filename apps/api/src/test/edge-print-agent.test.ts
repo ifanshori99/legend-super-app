@@ -511,6 +511,40 @@ describe("alerts and notifier", () => {
 });
 
 describe("agent loop", () => {
+  it("waits for a pending offline notification before stopping", async () => {
+    vi.useFakeTimers();
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let notified = false;
+    const { agent, transports, clock } = setup(
+      [makePrinter("A")],
+      async (alert) => {
+        if (alert.kind === "printer_offline") {
+          notified = true;
+          await gate;
+        }
+      },
+    );
+    agent.start();
+    transports.get("A")!.online = false;
+    for (let i = 0; i < 6; i += 1) {
+      clock.advance(TICK_MS);
+      await vi.advanceTimersByTimeAsync(TICK_MS);
+    }
+    expect(notified).toBe(true);
+    let stopped = false;
+    const stopping = agent.stop().then(() => {
+      stopped = true;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(stopped).toBe(false);
+    release();
+    await stopping;
+    expect(stopped).toBe(true);
+  });
+
   it("ticks on an interval after start() and stops cleanly", async () => {
     vi.useFakeTimers();
     const { agent, store, transports, clock } = setup([makePrinter("A")]);

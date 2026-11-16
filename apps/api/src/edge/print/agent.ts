@@ -10,6 +10,7 @@
 // alerts.
 import { CoreError } from "@starter/shared/core";
 import { logger } from "../../lib/logger.ts";
+import type { EdgeTx } from "../../services/edge-queue.service.ts";
 import { createHealthMonitor } from "./monitor.ts";
 import { renderStationTicket } from "./templates.ts";
 import { PrintTransportError, type TransportFactory } from "./transport.ts";
@@ -24,10 +25,12 @@ import {
   type StationTicketData,
 } from "./types.ts";
 
-export type PrintAlertNotifier = (alert: PrintAlert) => void | Promise<void>;
+export type PrintAlertNotifier = (
+  alert: PrintAlert,
+  tx?: EdgeTx,
+) => void | Promise<void>;
 
-// Notification port. The wiring to the `printer_offline` notification type is
-// a follow-up bead; until then alerts are only persisted.
+// Notification port installed by the edge print runtime.
 let moduleNotifier: PrintAlertNotifier | null = null;
 
 export function setPrintAlertNotifier(fn: PrintAlertNotifier | null): void {
@@ -93,17 +96,20 @@ export function createPrintAgent(options: PrintAgentOptions) {
   let healthTicks = 0;
 
   async function emit(alert: PrintAlert): Promise<void> {
+    const notify = options.notify ?? moduleNotifier;
+    let notified = false;
     try {
-      await store.recordAlert(alert);
+      notified = (await store.recordAlert(alert, notify ?? undefined)) === true;
     } catch {
       logger.warn(
         { kind: alert.kind, subjectId: alert.subjectId },
         "Print alert could not be recorded",
       );
       // A failed alert write must not stop printing.
+      return;
     }
     try {
-      await (options.notify ?? moduleNotifier)?.(alert);
+      if (!notified) await notify?.(alert);
     } catch {
       // Notifier errors never break the agent.
     }
@@ -504,6 +510,7 @@ export function createPrintAgent(options: PrintAgentOptions) {
     if (timer) clearInterval(timer);
     timer = null;
     await ticking;
+    while (pending.size > 0) await Promise.all([...pending]);
     while (kicked.size > 0) await Promise.all([...kicked]);
     await Promise.all([...chains.values()]);
   }
