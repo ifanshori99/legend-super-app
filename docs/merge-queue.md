@@ -8,7 +8,7 @@ Ditulis oleh merge train batch64g. Sumber: pesan CTO G6evw, G6w9t, G4j04. Tip SH
 
 ## Batch75 (berikut, basis m1 40f6f3c95)
 
-- `fix/payout-trusted-boundary-905` (setelah perbaikan 911 selesai; migrasi sementara 0643-0651+ dinomori ulang mulai 0409). Second opinion 909 + perbaikan 911.
+- `ghostex/911-payout-905-perbaikan-p1-p2` 3cfecb901 (memuat 905 + 911; menggantikan `fix/payout-trusted-boundary-905`; migrasi sementara 0643-0657 dinomori ulang mulai 0409). Second opinion 909 + perbaikan 911.
 - `fix/qr-va-queue-after-paid-xzu4l` (setelah perbaikan 912 selesai; memuat QRIS 785b3b453 + VA 906 + 908; menggantikan `fix/va-staff-exit-5wn1e`, jangan merge itu terpisah; migrasi sementara 0631_payment_va_releases dinomori ulang).
 - `fix/e2e-m1-858` 3272f4dee: konflik dengan e2e mock m1 (legend-jemae) di 3 spec; perlu rebase dulu.
 
