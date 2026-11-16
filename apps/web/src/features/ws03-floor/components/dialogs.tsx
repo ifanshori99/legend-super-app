@@ -28,6 +28,7 @@ import { useToast } from "@/components/ui/toast";
 import type {
   FloorBoard,
   FloorZone,
+  OrderItemId,
   TableLiveStatus,
   TableSessionId,
 } from "@starter/shared/qr-order";
@@ -386,15 +387,21 @@ export function MoveItemsDialog({
   const session = row.session;
   const bill = useSessionBill(open ? session?.id : undefined);
   const move = useMoveItems();
-  const [selected, setSelected] = React.useState<string[]>([]);
+  const [selected, setSelected] = React.useState<OrderItemId[]>([]);
   const [targetId, setTargetId] = React.useState("");
   if (!session) return null;
   const items =
-    bill.data?.orders.flatMap((order) =>
-      order.items.map((item) => ({ item, order })),
-    ) ?? [];
+    bill.data?.orders
+      .filter((order) => order.status !== "voided")
+      .flatMap((order) =>
+        order.items
+          .filter((item) => item.status !== "voided")
+          .map((item) => ({ item, order })),
+      ) ?? [];
+  const activeItemIds = new Set(items.map(({ item }) => item.id));
+  const selectedItemIds = selected.filter((id) => activeItemIds.has(id));
   const targets = otherSessionRows(board.tables, session.id);
-  const toggle = (itemId: string, checked: boolean) =>
+  const toggle = (itemId: OrderItemId, checked: boolean) =>
     setSelected((current) =>
       checked
         ? [...current, itemId]
@@ -478,13 +485,13 @@ export function MoveItemsDialog({
           <Button
             type="button"
             loading={move.isPending}
-            disabled={selected.length === 0 || !targetId}
+            disabled={selectedItemIds.length === 0 || !targetId}
             onClick={() =>
               move.mutate(
                 {
                   sessionId: session.id,
                   toSessionId: targetId as TableSessionId,
-                  orderItemIds: selected,
+                  orderItemIds: selectedItemIds,
                 },
                 {
                   onSuccess: (result) => {

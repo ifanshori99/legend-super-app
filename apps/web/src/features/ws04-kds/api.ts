@@ -2,6 +2,7 @@ import {
   listKitchenStationLabels,
   listKitchenStations,
   getKitchenBoard,
+  getKitchenStationSummary,
   startKitchenTicket,
   bumpKitchenTicket,
   recallKitchenTicket,
@@ -49,6 +50,18 @@ export async function fetchBoard(
     await callEndpoint(
       getKitchenBoard,
       { params: { outletId, stationId } },
+      { signal },
+    )
+  ).data;
+}
+export async function fetchStationSummary(
+  outletId: string,
+  signal?: AbortSignal,
+) {
+  return (
+    await callEndpoint(
+      getKitchenStationSummary,
+      { params: { outletId } },
       { signal },
     )
   ).data;
