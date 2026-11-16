@@ -1,3 +1,10 @@
+## Batch75 mendarat di milestone/m1 melalui fast-forward (16 Nov 2026)
+
+- Fast-forward remote dan lokal berhasil dari40f6f3c95 ke 2de220909a255e4f187c5685d29bc07e589919bb; basisfeature tetap sesuai enamtip dan peta0409–0423 di bawah. Sesuai ralat CTO Retro37, syarat akhir adalah testterarah metric4/4, banner2/2, payoutfair7/7, ujxl5/5 dan satu typecheckAPI; semuanya hijau. Fullrun#3 tidak dimulai, fullrun#2 tetap tercatat merah sebelumfix5. Tidak ada klaim fullrunhijau.
+- Cleanup pascamendarat sudah menjalankan cleanup-ssd --repo --worktrees-only (laporan danapply karena disk15,02GiB). Seluruhworktree threadlain dan intsendiri ditahan dengan locksementara; tidakada worktree tim terhapus, locksementara sudah dipulihkan dan lockinitializing lama tetap. Worktree intakan dihapus eksplisit sesudah catatanini masukm1; cacheDocker/data tidak disentuh.
+- Penyelesaian berikutnya: komentarSHAm1 dan tutup legend-i01jp,legend-kjht5,legend-6htrf,legend-r86qa,legend-izza4,legend-viocz; pindahkan enamtip keSudahmendarat pada antreanfolderutama tanpa commit; hapus worktree/cabangint lokal+remote. Kartu merger legend-noszy ditutup setelah semuanya terverifikasi.
+- Angka biaya native akhir checkpoint 2026-11-16T14:25:55.130705+07:00: input 125,151,478 (termasukcached 123,877,888), output 126,849, total 125,278,327 token; 6rolloutunik, lima subagent, puncak3aktif. TarifUSD tidak tersedia; cachemerupakan bagian input. Angka ini menggantikan checkpoint lama, bukan ditambahkan kepadanya.
+
 ## Batch75 gate akhir Retro37 hijau (16 Nov 2026)
 
 - Ralat CTO Retro37 membatalkan izin fullrun ketiga: JANGAN fullrun#3, cukup seluruh test yang diperbaiki secara terarah lalu satu typecheckAPI. Fullrun#3 tidak pernah dimulai. Ralat ini menggantikan syarat fullrunulang pada catatan sebelumnya untuk batch75 ini.
