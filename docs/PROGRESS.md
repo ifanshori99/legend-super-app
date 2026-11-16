@@ -6691,3 +6691,13 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Fast pertama exit1 dalam146 detik: root999 kasus,996 lulus/2 gagal/1 skip; hanya dua setup fixture baseline, web/API belum dimulai. Reviewer menyetujui penambahan login grantor acak per scratch DB dan cleanup role, seluruh assertion audit tetap. Targeted baseline dijalankan sebelum fast ulang.
 
 - `LEGEND_TEST_FILES=tests/db-role-provisioning-baseline.test.mjs heavy pnpm test` hijau13/13,28 detik termasuk setup/cleanup DB; `/tmp/batch77-baseline-green.log`. Prettier/ESLint patch dan review independen bersih. Fast211 ulang log `/tmp/batch77-fast2.log`. Gate tambahan `heavy pnpm test:setup` disisipkan sesudah typecheck karena harness setup berubah.
+
+- Fast2 root hijau:1010 kasus,1009 lulus/0 gagal/1 skip dalam143,7 detik; web1 berkas hijau. API154 berkas berjalan. Log `/tmp/batch77-fast2.log`; belum ada kegagalan uang pada checkpoint ini.
+
+- Fast2 checkpoint API:1784 tes lulus teramati pada66 berkas, tanpa gagal; mencakup frozen-source GL, jurnal/header tidak valid, recon overpaid/koreksi tanpa jurnal. Root/web tetap hijau. Gate sesudah fast belum dimulai.
+
+- Fast2 selesai exit1 dalam792 detik: root1009 lulus/1 skip, web29/29, API152 berkas lulus/1 gagal/1 skip;2732 tes lulus/1 gagal/19 skip/13 todo. Seluruh payout/payroll/finance-exception hijau. Satu kegagalan non-uang `device-registry.test.ts:413` F5 heartbeat time cap (`capped` false vs true); diagnosis jam dan riwayat flake dilakukan sebelum gate lanjut. Container disposable dibersihkan, belum lint/typecheck.
+
+- F5 diagnosis: service membatasi `last_seen_at` memakai waktu Node yang juga dikirim sebagai response `serverTime`, sedangkan test membandingkan terhadap PostgreSQL `now()` tanpa toleransi. Selisih jam kecil dapat memberi false failure. Test/service identik m1 dan source; kegagalan sama tercatat batch64b tetapi tidak ditemukan kartu flake tepat, jadi tidak memakai pengecualian full-run. Kartu `legend-g868k` dibuat untuk mengikat assertion ke `serverTime` operasi yang sama; perilaku produksi tetap. Targeted seluruh device registry3× lalu full tetap wajib.
+
+- Patch F5 test-only direview bersih: timestamp cap dibandingkan dengan response serverTime dari operasi yang sama, bukan PostgreSQL now; future+1jam, forward dan anti-mundur tetap diuji, tanpa toleransi. Seluruh device-registry39/39 hijau tiga run berturut,14 detik/run termasuk DB setup/cleanup, `/tmp/batch77-device-green-{1,2,3}.log`. Fast ditutup dengan rerun file gagal; tidak memakai pengecualian full-run. Lanjut `heavy pnpm run lint`, log `/tmp/batch77-lint.log`.
