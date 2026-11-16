@@ -47,6 +47,7 @@ export function EdcLayout({
   title,
   bill,
   headPill,
+  headAction,
   sideLabel,
   sideAmountIdr,
   sidePill,
@@ -56,10 +57,13 @@ export function EdcLayout({
 }: {
   title: string;
   bill: PaymentBill;
-  headPill: EdcPill;
+  /** The state chip in the heading; omit it when `headAction` or the work panel carries it. */
+  headPill?: EdcPill;
+  /** Replaces the heading chip, e.g. the way back to the order. */
+  headAction?: ReactNode;
   sideLabel: string;
   sideAmountIdr: number;
-  sidePill: EdcPill;
+  sidePill?: EdcPill;
   sideTerminal?: EdcSideTerminal;
   sideNote: string;
   children: ReactNode;
@@ -74,9 +78,12 @@ export function EdcLayout({
           table: bill.tableLabel,
         })}
         action={
-          <StatusPill tone={headPill.tone} icon={headPill.icon}>
-            {headPill.label}
-          </StatusPill>
+          headAction ??
+          (headPill && (
+            <StatusPill tone={headPill.tone} icon={headPill.icon}>
+              {headPill.label}
+            </StatusPill>
+          ))
         }
       />
       <PosTwoPane
@@ -101,15 +108,17 @@ export function EdcLayout({
                   {sideLabel}
                 </p>
                 <Money amount={sideAmountIdr} size="hero" />
-                <StatusPill
-                  tone={sidePill.tone}
-                  icon={
-                    sidePill.icon ??
-                    (sidePill.tone === "neutral" ? Lock : undefined)
-                  }
-                >
-                  {sidePill.label}
-                </StatusPill>
+                {sidePill && (
+                  <StatusPill
+                    tone={sidePill.tone}
+                    icon={
+                      sidePill.icon ??
+                      (sidePill.tone === "neutral" ? Lock : undefined)
+                    }
+                  >
+                    {sidePill.label}
+                  </StatusPill>
+                )}
                 {bill.depositSurplusIdr > 0 && (
                   <p className="text-base">
                     {t("posKasirEdc.side.depositSurplus", {

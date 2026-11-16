@@ -6,7 +6,7 @@
 // Assumptions: the state comes from usePaymentSession().activeAttempt with
 // status "declined" and edc.declineReason / edc.responseCode (shared contract
 // in the brief); the screen under test is EdcPanel.
-import { createElement } from "react";
+import { createElement, type ReactNode } from "react";
 import { renderToString } from "react-dom/server";
 import {
   buttonsOf,
@@ -17,6 +17,11 @@ import {
 
 const state = vi.hoisted(() => ({
   attempt: null as unknown,
+}));
+
+vi.mock("@tanstack/react-router", () => ({
+  // Plain stand-in: the router is not mounted in server rendering.
+  Link: ({ children }: { children?: ReactNode }) => children,
 }));
 
 vi.mock("@/features/ws04-pos-kasir/hooks", () => ({
@@ -124,6 +129,17 @@ describe("EDC declined state", () => {
     const other = buttons.find((b) => b.label === "Pilih metode lain");
     expect(retry?.disabled).toBe(false);
     expect(other?.disabled).toBe(false);
+  });
+
+  test("keeps the way back to the order and shows each label once", () => {
+    state.attempt = attempt("declined", {
+      declineReason: "Saldo tidak cukup",
+      responseCode: "51",
+    });
+    const text = visibleText(render());
+    expect(text).toContain("Kembali ke pesanan");
+    expect(text.match(/Pembayaran ditolak/g)).toHaveLength(1);
+    expect(text.match(/Ditolak/g)).toHaveLength(1);
   });
 
   test("without a reason it still says declined, with no invented reason", () => {

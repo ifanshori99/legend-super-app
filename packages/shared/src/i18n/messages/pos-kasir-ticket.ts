@@ -17,6 +17,7 @@ export const posKasirTicketMessages = {
     empty: "Belum ada tiket fasilitas yang dijual",
     emptyHint: "Aktifkan produk fasilitas di pengaturan, lalu muat ulang.",
     errorTitle: "Daftar tiket belum bisa dimuat",
+    loading: "Memuat tiket…",
   },
   customer: {
     title: "2. Pilih pelanggan",

@@ -26,7 +26,7 @@ export function ProductPicker({
     <PosPanel title={t("posKasirTicket.product.title")}>
       {products.isLoading ? (
         <div role="status" aria-busy="true" className="grid gap-3">
-          <span className="sr-only">{t("common.loading")}</span>
+          <span className="sr-only">{t("posKasirTicket.product.loading")}</span>
           <Skeleton className="h-20 w-full" />
           <Skeleton className="h-20 w-full" />
         </div>

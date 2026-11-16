@@ -128,13 +128,9 @@ export const posKasirEdcMessages = {
       "Jika hasil masih belum pasti, hubungi supervisor. Jangan gunakan mode standalone untuk transaksi ini.",
   },
   declined: {
-    title: "Kartu atau transaksi ditolak",
     subtitle: "Terminal menolak transaksi ini. Tagihan belum lunas.",
-    reasonLabel: "Alasan penolakan",
     reasonFallback: "Bank atau terminal tidak memberi alasan.",
     codeLabel: "Kode respons",
-    amountLabel: "Jumlah",
-    terminalLabel: "Terminal",
     noticeTitle: "Tidak ada dana yang tercatat",
     noticeBody:
       "Minta pelanggan memakai kartu lain, atau pilih metode pembayaran lain.",

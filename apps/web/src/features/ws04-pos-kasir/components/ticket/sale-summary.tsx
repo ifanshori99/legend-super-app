@@ -83,7 +83,7 @@ export function SaleSummary({
       }
     >
       <div className="grid gap-4">
-        <dl className="grid gap-2">
+        <dl className="grid gap-2 [&>div:last-child]:mt-1 [&>div:last-child]:border-t [&>div:last-child]:border-border [&>div:last-child]:pt-3">
           <Row label={t("posKasirTicket.summary.product")}>
             {product?.name ?? none}
           </Row>
@@ -92,7 +92,6 @@ export function SaleSummary({
           </Row>
           <Row label={t("posKasirTicket.summary.area")}>{areaName ?? none}</Row>
           <Row label={t("posKasirTicket.summary.when")}>{when}</Row>
-          <hr className="my-1 border-border" />
           <Row label={t("posKasirTicket.summary.price")}>
             {product ? <Money amount={product.priceIdr} size="lg" /> : none}
           </Row>

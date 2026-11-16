@@ -334,7 +334,9 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
               paid={bill.paid}
               voucher={bill.voucher ?? null}
               removingVoucher={removeVoucher.isPending}
-              onRemoveVoucher={() => setConfirmRemove(true)}
+              onRemoveVoucher={
+                attempt ? undefined : () => setConfirmRemove(true)
+              }
             />
             <Dialog
               open={confirmRemove}

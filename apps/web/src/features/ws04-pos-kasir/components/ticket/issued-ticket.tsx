@@ -49,12 +49,18 @@ export function IssuedTicket({
         </StatusPill>
       }
       footer={
-        <>
-          <Button type="button" variant="outline" onClick={onSellAnother}>
+        <div className="flex w-full flex-col-reverse gap-3 sm:w-auto sm:flex-row">
+          <Button
+            type="button"
+            variant="outline"
+            className="w-full sm:w-auto"
+            onClick={onSellAnother}
+          >
             {t("posKasirTicket.issued.sellAnother")}
           </Button>
           <Button
             type="button"
+            className="w-full sm:w-auto"
             disabled={print.isPending}
             aria-busy={print.isPending}
             onClick={runPrint}
@@ -66,7 +72,7 @@ export function IssuedTicket({
                 ? t("posKasirTicket.issued.reprint")
                 : t("posKasirTicket.issued.print")}
           </Button>
-        </>
+        </div>
       }
     >
       <StateBlock

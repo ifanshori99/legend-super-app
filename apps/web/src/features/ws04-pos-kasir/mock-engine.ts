@@ -472,6 +472,9 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
     const key = `pay:${id}`;
     if (!state.orders[id] || (seed !== null && state.applied[key] !== seed)) {
       const effective = seed ?? "baru";
+      // A new demo seed restarts the bill: its voucher and spent points (and
+      // the idempotency keys) must not outlive the order they belonged to.
+      if (state.orders[id]) delete state.loyalty;
       state.orders[id] = seedOrder(id, effective);
       state.applied[key] = effective;
     }

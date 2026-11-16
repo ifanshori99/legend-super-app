@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { formatRupiah } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
@@ -37,11 +37,16 @@ export function PointsPanel({
         footer={
           <>
             {!pending && (
-              <Button variant="outline" onClick={() => void account.refetch()}>
+              <Button onClick={() => void account.refetch()}>
                 {t("posKasirPoints.retry")}
               </Button>
             )}
-            <Button onClick={onCancel}>{t("posKasirPoints.cancel")}</Button>
+            <Button
+              variant={pending ? "default" : "outline"}
+              onClick={onCancel}
+            >
+              {t("posKasirPoints.cancel")}
+            </Button>
           </>
         }
       >
@@ -97,6 +102,7 @@ function PointsForm({
   const quote = useQuotePoints(orderId);
   const redeem = useRedeemPoints(orderId);
   const [text, setText] = useState("");
+  const resultRef = useRef<HTMLDivElement>(null);
 
   const points = text === "" ? null : Number(text);
   const inRange =
@@ -109,6 +115,13 @@ function PointsForm({
   // The quote shown must belong to the number in the field.
   const shownQuote =
     quote.data && quote.data.points === points ? quote.data : null;
+
+  // The sticky footer must not hide the result on a narrow screen. "auto" is
+  // an instant jump, so reduced motion is respected.
+  useEffect(() => {
+    if (shownQuote)
+      resultRef.current?.scrollIntoView({ block: "nearest", behavior: "auto" });
+  }, [shownQuote]);
 
   const change = (next: string) => {
     setText(next.replace(/\D/g, "").slice(0, 9));
@@ -132,6 +145,7 @@ function PointsForm({
   return (
     <PosPanel
       title={t("posKasirPoints.title")}
+      className="pb-24"
       footer={
         <>
           <Button
@@ -218,7 +232,7 @@ function PointsForm({
           </Button>
         </div>
 
-        <div aria-live="polite">
+        <div ref={resultRef} aria-live="polite" className="scroll-mb-24">
           {shownQuote && (
             <Notice
               tone="info"

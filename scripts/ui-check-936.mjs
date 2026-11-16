@@ -151,7 +151,12 @@ add({
   prepare: async (p) => {
     await checkVoucher(p, VOUCHER_OK);
     await expectButton(p, /^\s*Pakai voucher\s*$/i);
-    await clickControl(p, /^\s*Pakai voucher\s*$/i);
+    // The adjust button "Pakai voucher" (side column) has the same name as the
+    // panel's apply button; the apply button comes last in the DOM.
+    await p
+      .getByRole("button", { name: /^\s*Pakai voucher\s*$/i })
+      .last()
+      .click();
     // posKasirPayment.bill.voucher: "Voucher {code}".
     await expectText(p, new RegExp(`Voucher ${VOUCHER_OK}`));
   },
@@ -271,19 +276,17 @@ async function sellTicket(p) {
     .first();
   await product.waitFor({ state: "visible", timeout: COLD_TIMEOUT });
   await product.click();
-  const search = p
-    .getByRole("searchbox")
-    .or(p.getByLabel(/pelanggan|member|nama/i))
+  // The label "Cari nama pelanggan" also names the panel section, so go through
+  // the search box role only; results are buttons "Pilih {name}".
+  const search = p.getByRole("searchbox").filter({ visible: true }).first();
+  await search.waitFor({ state: "visible", timeout: COLD_TIMEOUT });
+  await search.fill("an");
+  const hit = p
+    .getByRole("button", { name: /^Pilih (?!jam )/ })
     .filter({ visible: true })
     .first();
-  if (await search.count()) {
-    await search.fill("a");
-    const hit = p
-      .locator('[role="option"], [role="radio"], li button')
-      .filter({ visible: true })
-      .nth(1);
-    if (await hit.count()) await hit.click().catch(() => {});
-  }
+  await hit.waitFor({ state: "visible", timeout: COLD_TIMEOUT });
+  await hit.click();
   await clickControl(p, /^\s*Jual\b|Terbitkan/i);
 }
 

@@ -282,3 +282,22 @@ test("a refused redeem for too many points does not burn its key", () => {
   assert.equal(session.bill.remainingIdr, 146_000);
   assert.equal(engine.pointsAccount(DEMO_ORDER_ID).balancePoints, 10_500);
 });
+
+test("a new demo seed restarts the bill with a fresh voucher and points state", () => {
+  let seed = null;
+  const engine = createPosKasirEngine({
+    clock: () => 1_700_000_000_000,
+    readSeed: () => seed,
+  });
+  engine.applyVoucher(DEMO_ORDER_ID, "HEMAT20", "key-1");
+  engine.redeemPoints(DEMO_ORDER_ID, 5_000, "key-2");
+  seed = "split";
+  const bill = engine.session(DEMO_ORDER_ID).bill;
+  assert.equal(bill.voucher, undefined);
+  assert.equal(bill.remainingIdr, 48_000);
+  assert.equal(engine.pointsAccount(DEMO_ORDER_ID).balancePoints, 12_500);
+  assert.equal(engine.validateVoucher(DEMO_ORDER_ID, "HEMAT20").valid, true);
+  // The old keys are forgotten too: the same key applies again.
+  const again = engine.redeemPoints(DEMO_ORDER_ID, 5_000, "key-2");
+  assert.equal(again.bill.remainingIdr, 43_000);
+});

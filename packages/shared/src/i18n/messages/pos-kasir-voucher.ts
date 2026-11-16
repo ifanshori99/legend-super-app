@@ -10,6 +10,7 @@ export const posKasirVoucherMessages = {
   checking: "Mengecek...",
   apply: "Pakai voucher",
   applying: "Memakai...",
+  retry: "Coba lagi",
   cancel: "Batal",
   valid: {
     title: "Voucher berlaku",

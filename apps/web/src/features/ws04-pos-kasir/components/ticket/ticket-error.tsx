@@ -32,7 +32,7 @@ export function TicketError({
           : (hint ?? t("posKasirTicket.error.hint"))}
       </Notice>
       {onRetry && !pending && (
-        <Button type="button" variant="outline" onClick={onRetry}>
+        <Button type="button" onClick={onRetry}>
           {t("common.retry")}
         </Button>
       )}

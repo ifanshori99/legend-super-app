@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { formatRupiah } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
@@ -32,6 +32,26 @@ export function VoucherPanel({
   // The result belongs to the code that was checked, not to later keystrokes.
   const current = check && check.code === normalized ? check : undefined;
 
+  // A failed call (not "not connected yet") gets "Coba lagi" as the main action.
+  const retryApply = apply.error != null && !isContractPending(apply.error);
+  const retryCheck =
+    !retryApply && validate.error != null && !isContractPending(validate.error);
+  const failed = retryApply || retryCheck;
+
+  // The footer is sticky and covers the end of the panel at narrow widths:
+  // bring a new result into view (the `scroll-mb` below keeps it above the
+  // footer). Reduced motion jumps instead of gliding.
+  const resultRef = useRef<HTMLDivElement>(null);
+  const resultKey = `${current?.valid}:${validate.error ? 1 : 0}:${apply.error ? 1 : 0}`;
+  useEffect(() => {
+    if (resultKey === "undefined:0:0") return;
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+    resultRef.current?.scrollIntoView({
+      block: "nearest",
+      behavior: reduced.matches ? "auto" : "smooth",
+    });
+  }, [resultKey]);
+
   function runCheck() {
     if (busy || normalized === "") return;
     apply.reset();
@@ -56,21 +76,32 @@ export function VoucherPanel({
           >
             {t("posKasirVoucher.cancel")}
           </Button>
-          <Button
-            type="button"
-            disabled={busy || !current?.valid}
-            aria-busy={apply.isPending}
-            onClick={runApply}
-          >
-            {apply.isPending
-              ? t("posKasirVoucher.applying")
-              : t("posKasirVoucher.apply")}
-          </Button>
+          {failed ? (
+            <Button
+              type="button"
+              disabled={busy}
+              aria-busy={busy}
+              onClick={retryApply ? runApply : runCheck}
+            >
+              {t("posKasirVoucher.retry")}
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              disabled={busy || !current?.valid}
+              aria-busy={apply.isPending}
+              onClick={runApply}
+            >
+              {apply.isPending
+                ? t("posKasirVoucher.applying")
+                : t("posKasirVoucher.apply")}
+            </Button>
+          )}
         </>
       }
     >
       <form
-        className="mx-auto grid max-w-xl gap-4"
+        className="mx-auto grid max-w-xl gap-4 pb-28"
         onSubmit={(event) => {
           event.preventDefault();
           runCheck();
@@ -114,40 +145,42 @@ export function VoucherPanel({
           </p>
         </div>
 
-        {/* Only the valid result sits in the live region. Danger notices carry
+        <div ref={resultRef} className="grid scroll-mb-28 gap-4">
+          {/* Only the valid result sits in the live region. Danger notices carry
             role="alert" and are announced by themselves; nesting them in a polite
             region would read them twice. */}
-        <div aria-live="polite">
-          {current?.valid === true && (
-            <Notice tone="info" title={t("posKasirVoucher.valid.title")}>
-              <p className="font-semibold">
-                {t("posKasirVoucher.valid.discount", {
-                  amount: formatRupiah(current.discountPreviewIdr),
-                })}
-              </p>
-              <p>{t("posKasirVoucher.valid.estimateHint")}</p>
+          <div aria-live="polite">
+            {current?.valid === true && (
+              <Notice tone="info" title={t("posKasirVoucher.valid.title")}>
+                <p className="font-semibold">
+                  {t("posKasirVoucher.valid.discount", {
+                    amount: formatRupiah(current.discountPreviewIdr),
+                  })}
+                </p>
+                <p>{t("posKasirVoucher.valid.estimateHint")}</p>
+              </Notice>
+            )}
+          </div>
+          {validate.error && (
+            <VoucherError
+              error={validate.error}
+              title={t("posKasirVoucher.checkError")}
+              hint={t("posKasirVoucher.checkErrorHint")}
+            />
+          )}
+          {apply.error && (
+            <VoucherError
+              error={apply.error}
+              title={t("posKasirVoucher.applyError")}
+              hint={t("posKasirVoucher.applyErrorHint")}
+            />
+          )}
+          {current?.valid === false && (
+            <Notice tone="danger" title={t("posKasirVoucher.invalid.title")}>
+              {t(`posKasirVoucher.invalid.reason.${current.reason}`)}
             </Notice>
           )}
         </div>
-        {validate.error && (
-          <VoucherError
-            error={validate.error}
-            title={t("posKasirVoucher.checkError")}
-            hint={t("posKasirVoucher.checkErrorHint")}
-          />
-        )}
-        {apply.error && (
-          <VoucherError
-            error={apply.error}
-            title={t("posKasirVoucher.applyError")}
-            hint={t("posKasirVoucher.applyErrorHint")}
-          />
-        )}
-        {current?.valid === false && (
-          <Notice tone="danger" title={t("posKasirVoucher.invalid.title")}>
-            {t(`posKasirVoucher.invalid.reason.${current.reason}`)}
-          </Notice>
-        )}
       </form>
     </PosPanel>
   );
