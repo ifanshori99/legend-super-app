@@ -1742,3 +1742,4 @@ Langkah berikut CTO baru:
 - 19:13 925 selesai: fix/925-ci-grantor-withdraw-flake 953effb41 (kj50i Lighthouse grantor, 61umg fixture; reviewer bersih). Antre batch berikut.
 - 19:19 926 selesai: fix/e2e-m1-858-r2 c12914ea6 (e2e PAY-04 dkk, 35 lulus). Antre batch78 bersama 925.
 - 21:16 Batch78 mendarat m1 a8e6036ab (925 + 858-r2; tanpa migrasi; 24.418 test, full pertama hijau). Sisa terbuka: 0y8tf (tunggu zvz), whd5c (adapter kredit tamu). KDS/delivery lama bentrok, tidak masuk.
+- 21:22 929: transport foto sudah di m1 (94a165b19), 0una ditutup; cabang ws/929 hanya dokumen (tidak perlu batch). Follow-up akses foto penerimaan: legend-iy5l0 P2. Explore cek kartu basi 2lgu/ihf7/zlc6 sebelum thread baru.
