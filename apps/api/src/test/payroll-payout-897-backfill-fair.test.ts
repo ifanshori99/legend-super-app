@@ -249,7 +249,12 @@ describe("897 the backfill is fair when the oldest proofs cannot be processed (F
     expect(refused, "held while stuck targets remain").not.toBeNull();
     expect(refused!.status).toBe(409);
     expect(refused!.code).toBe(PENDING);
-    expect((await W.itemOfPerson(batchId, SITI)).status).toBe("succeeded");
+    // Reload the requested item: legacy clones can belong to the same employee.
+    const [requestedItem] = await W.rowsOf(
+      `SELECT status FROM payroll_disbursement_items WHERE tenant_id = $1 AND id = $2`,
+      [W.tenantId, idOf(siti)],
+    );
+    expect(requestedItem!.status).toBe("succeeded");
     usedKeys.push(fresh);
   });
 
