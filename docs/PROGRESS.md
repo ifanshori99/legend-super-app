@@ -1,3 +1,10 @@
+## Batch76 mendarat di milestone/m1 (16 Nov 2026)
+
+- Fast-forward remote berhasil2cd7c7564→4981dc3973393c9569b7e3221eefaf1ce6479d89, berisi satu tip1fec4716d dan gate hijau lengkap di bawah. Commit dokumentasi ini melanjutkan m1 tanpa mengubah kode yang diuji; tidak main/deploy/forcepush.
+- Cleanup wajib sudahreport+apply --worktrees-only(EXIT0, disk14,94GiB): semua worktree sekunder ditahan lock sementara, nol[HAPUS], tidakada worktree tim dihapus; hanya lock buatan sesi dipulihkan, lockinitializing lama tetap. Worktreeint sendiri bersih1,9G akan dihapus eksplisit setelah catatanini masukm1, beserta cabangintlokal/remote; dataDocker dan cache tidak disentuh.
+- Penutupan sesuai brief921 memakai SHAm1akhir pada komentarxzu4l/5wn1e/p5xrv/ek1wt/4n8rs/yehnr(4n8rs sebelumnya sudahclosed). Sisa idempotensi backendyehnr dipisahkan ke legend-gp3fwP3;154wr tetapopenP3. Antrean docs/merge-queue.md di folderutama diperbarui tanpa commit setelah SHAm1akhir terkonfirmasi.
+- Tidak ada perbaikan test setelahfullrun: fullrunpertama hijau, jadi tidakada kegagalan uang yang memerlukan laporCTOsebelumlanding. Seluruhjobbatch selesai dan container/network uji dibersihkan.
+
 ## Batch76 seluruh gate hijau (921, 16 Nov 2026)
 
 - Fullrun#1 heavy pnpm run test EXIT0, durasi97m08s (5828,1dtk). Root3460pass/1skip; web92pass/3file; API20721pass/41skip/16todo,1338filepass/2skip,5667,21dtkVitest. Container/network disposable bersih dan worktree bersih setelah run. Tidak ada fullrun#2, tidak ada perbaikan test atau produk oleh merge train; ketentuan lapor CTO sebelum landing karena test uang gagal tidak terpicu.
