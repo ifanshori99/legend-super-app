@@ -27,6 +27,7 @@ export const PAY_DEMO_SEEDS = [
   "va",
   "edc-menunggu",
   "edc-tidak-pasti",
+  "edc-ditolak",
   "edc-berhasil",
   "lunas",
   "dp-lunas",

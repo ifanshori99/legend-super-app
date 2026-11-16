@@ -119,6 +119,9 @@ import { posKasirCommonMessages } from "./pos-kasir-common.ts";
 import { posKasirPaymentMessages } from "./pos-kasir-payment.ts";
 import { posKasirGatewayMessages } from "./pos-kasir-gateway.ts";
 import { posKasirEdcMessages } from "./pos-kasir-edc.ts";
+import { posKasirVoucherMessages } from "./pos-kasir-voucher.ts";
+import { posKasirPointsMessages } from "./pos-kasir-points.ts";
+import { posKasirTicketMessages } from "./pos-kasir-ticket.ts";
 import { posKasirCodeMessages } from "./pos-kasir-code.ts";
 import { posKasirShiftMessages } from "./pos-kasir-shift.ts";
 import { posKasirSupervisorMessages } from "./pos-kasir-supervisor.ts";
@@ -179,6 +182,9 @@ export const id = {
   posKasirPayment: posKasirPaymentMessages,
   posKasirGateway: posKasirGatewayMessages,
   posKasirEdc: posKasirEdcMessages,
+  posKasirVoucher: posKasirVoucherMessages,
+  posKasirPoints: posKasirPointsMessages,
+  posKasirTicket: posKasirTicketMessages,
   edcRecon: {
     queue: edcReconQueueMessages,
     resolve: edcReconResolveMessages,
@@ -1756,7 +1762,7 @@ export const id = {
     },
     method: {
       qris: "QRIS",
-      qris_doit: "QRIS DOIT",
+      qris_doit: "QRIS di layar kasir",
       card: "Kartu",
       ewallet: "E-wallet",
       va: "Virtual Account",
@@ -1830,7 +1836,7 @@ export const id = {
       defaultMethod: "Metode default",
       terminal: "Terminal",
       noTerminal: "Tanpa terminal",
-      noTerminalHint: "QRIS diproses lewat DOIT di layar kasir.",
+      noTerminalHint: "QRIS diproses lewat penyedia pembayaran di layar kasir.",
       defaultSaved: "Metode default {cashier} tersimpan.",
       terminalRequired: "Pilih terminal untuk metode ini.",
       terminalIdRequired: "Terminal ID wajib diisi.",

@@ -104,6 +104,8 @@ import type {
   PaymentMethodCode,
   PaymentMethodOption,
   PaymentSession,
+  PointsAccount,
+  PointsQuote,
   ReceiptResult,
   RecordCashMovementInput,
   RecordEdcStandaloneInput,
@@ -114,6 +116,7 @@ import type {
   SubmitBlindCountInput,
   SupervisorOption,
   VaBank,
+  VoucherCheck,
 } from "./types.ts";
 
 /** An EDC request resolves this long after it was sent (bank answer stand-in). */
@@ -121,6 +124,33 @@ export const EDC_AUTO_CONFIRM_MS = 3000;
 export const QRIS_TTL_MS = 10 * 60 * 1000;
 export const VA_TTL_MS = 60 * 60 * 1000;
 export const WALLET_TTL_MS = 15 * 60 * 1000;
+
+/** The demo terminal whose bank refuses every payment (brief 936, D). */
+export const EDC_DECLINING_TERMINAL_ID = "edc-02";
+export const EDC_DECLINE_REASON = "Saldo tidak cukup";
+export const EDC_DECLINE_CODE = "51";
+
+/** Demo member on the demo bill: 1 point is worth Rp1 (brief 936, A). */
+export const DEMO_MEMBER = { id: "member-rina", name: "Rina Kusuma" } as const;
+export const DEMO_POINTS_BALANCE = 12_500;
+export const MIN_REDEEM_POINTS = 1_000;
+export const POINT_VALUE_IDR = 1;
+
+/** Demo voucher codes (brief 936, B). The engine prices the discount. */
+const DEMO_VOUCHERS = {
+  HEMAT20: { kind: "percent", percent: 20, maxIdr: 30_000, minSpendIdr: 0 },
+  LEGEND50K: { kind: "amount", amountIdr: 50_000, minSpendIdr: 150_000 },
+} as const;
+const DEMO_VOUCHER_EXPIRED = "EXPIRED1";
+const DEMO_VOUCHER_REDEEMED = "PAKAI001";
+
+const VOUCHER_MESSAGES: Record<string, string> = {
+  not_found: "Kode voucher tidak ditemukan.",
+  expired: "Voucher sudah kedaluwarsa.",
+  already_redeemed: "Voucher sudah pernah dipakai.",
+  min_spend_not_met: "Belanja belum mencapai minimum voucher.",
+  not_applicable: "Voucher tidak berlaku untuk tagihan ini.",
+};
 const ENGINE_STORAGE_KEY = "legend-pos-kasir-mock-engine:v1";
 
 // ---- Arithmetic (exported: the unit test covers these) ---------------------
@@ -230,6 +260,11 @@ function emptyState(): EngineState {
   };
 }
 
+/** The bill after the voucher: the figure every balance is computed from. */
+export function orderTotalIdr(order: EngineOrder): number {
+  return order.totalIdr - (order.voucher?.discountIdr ?? 0);
+}
+
 export type EngineOptions = {
   clock?: () => number;
   /** The raw `?demo=` value; the browser engine reads the page URL. */
@@ -268,6 +303,7 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
     const now = clock();
     const order = id === DEMO_CODE_ORDER_ID ? codeOrder() : demoOrder();
     if (id === DEMO_CODE_ORDER_ID) return order;
+    order.member = { ...DEMO_MEMBER };
     const posRef = `${order.orderNo}-01`;
     const qris = (
       status: EngineAttempt["status"],
@@ -366,6 +402,27 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
           edcAttempt("unknown", { startedAtMs: now - 60_000 }),
         );
         break;
+      case "edc-ditolak": {
+        // Terminal edc-02 (EDC_DECLINING_TERMINAL_ID): the bank refused.
+        const terminal =
+          edcTerminals.find((item) => item.id === EDC_DECLINING_TERMINAL_ID) ??
+          edcTerminals[0];
+        order.attempts.push(
+          edcAttempt("declined", {
+            startedAtMs: now - 30_000,
+            edc: {
+              terminalId: terminal.id,
+              terminalLabel: terminal.label,
+              bank: terminal.bank,
+              mode: "card",
+              lockedAmountIdr: 148_000,
+              declineReason: EDC_DECLINE_REASON,
+              responseCode: EDC_DECLINE_CODE,
+            },
+          }),
+        );
+        break;
+      }
       case "edc-berhasil": {
         const attempt = edcAttempt("confirmed", {
           startedAtMs: now - 30_000,
@@ -659,7 +716,11 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
   const paidIdr = (order: EngineOrder) =>
     order.tenders.reduce((sum, tender) => sum + tender.amountIdr, 0);
   const remainingOf = (order: EngineOrder) =>
-    remainingIdr(order.totalIdr, order.deposit?.amountIdr ?? 0, paidIdr(order));
+    remainingIdr(
+      orderTotalIdr(order),
+      order.deposit?.amountIdr ?? 0,
+      paidIdr(order),
+    );
 
   /** Resolves what time decides: an EDC answer after a few seconds. */
   function settle(order: EngineOrder) {
@@ -710,6 +771,19 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
       attempt.status = "failed";
       return;
     }
+    if (
+      attempt.method === "edc" &&
+      attempt.edc?.terminalId === EDC_DECLINING_TERMINAL_ID
+    ) {
+      // The bank refused: nothing is paid and no other payment is blocked.
+      attempt.status = "declined";
+      attempt.edc = {
+        ...attempt.edc,
+        declineReason: EDC_DECLINE_REASON,
+        responseCode: EDC_DECLINE_CODE,
+      };
+      return;
+    }
     attempt.status = "confirmed";
     if (attempt.method === "edc") {
       attempt.cardMasked =
@@ -733,7 +807,11 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
   /** A failed or expired attempt is done once the cashier moves on. */
   function archiveStale(order: EngineOrder) {
     for (const attempt of order.attempts)
-      if (attempt.status === "failed" || isExpired(attempt))
+      if (
+        attempt.status === "failed" ||
+        attempt.status === "declined" ||
+        isExpired(attempt)
+      )
         attempt.status = "cancelled";
   }
 
@@ -762,6 +840,7 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
   function billOf(order: EngineOrder): PaymentBill {
     const remaining = remainingOf(order);
     const depositIdr = order.deposit?.amountIdr ?? 0;
+    const totalIdr = orderTotalIdr(order);
     return {
       tableLabel: order.tableLabel,
       orderNo: order.orderNo,
@@ -770,17 +849,18 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
       subtotalIdr: order.subtotalIdr,
       serviceIdr: order.serviceIdr,
       taxIdr: order.taxIdr,
-      totalIdr: order.totalIdr,
+      totalIdr,
       ...(order.deposit
         ? {
             deposit: {
               reference: order.deposit.reference,
-              amountIdr: depositUsedIdr(order.totalIdr, depositIdr),
+              amountIdr: depositUsedIdr(totalIdr, depositIdr),
               paid: true,
             },
           }
         : {}),
-      depositSurplusIdr: depositSurplusIdr(order.totalIdr, depositIdr),
+      depositSurplusIdr: depositSurplusIdr(totalIdr, depositIdr),
+      ...(order.voucher ? { voucher: { ...order.voucher } } : {}),
       allocations: order.tenders.map((tender) => ({
         id: tender.id,
         method: tender.method,
@@ -825,6 +905,87 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
         : {}),
       ...(order.receiptNo ? { receiptNo: order.receiptNo } : {}),
     };
+  }
+
+  // ---- Voucher and points (brief 936) -------------------------------------
+  // The engine stands in for the server: it prices every discount and every
+  // redemption. A discount never exceeds the subtotal or what is still owed, a
+  // voucher is used once, points never pay more than the remaining bill.
+
+  function loyaltyOf() {
+    state.loyalty ??= { balances: {}, redeemedVouchers: [], keys: [] };
+    return state.loyalty;
+  }
+
+  /** True when this key already succeeded: a replay returns the session. */
+  function seenKey(key: string | undefined): boolean {
+    return key !== undefined && loyaltyOf().keys.includes(key);
+  }
+
+  /** Remember a key only after the state changed, so a failed try can retry. */
+  function rememberKey(key: string | undefined) {
+    if (key !== undefined) loyaltyOf().keys.push(key);
+  }
+
+  function balanceOf(memberId: string): number {
+    const { balances } = loyaltyOf();
+    balances[memberId] ??= DEMO_POINTS_BALANCE;
+    return balances[memberId];
+  }
+
+  function normalizeVoucherCode(raw: string): string {
+    return String(raw ?? "")
+      .trim()
+      .toUpperCase();
+  }
+
+  function checkVoucher(order: EngineOrder, rawCode: string): VoucherCheck {
+    const code = normalizeVoucherCode(rawCode);
+    const reject = (
+      reason: Extract<VoucherCheck, { valid: false }>["reason"],
+    ): VoucherCheck => ({ valid: false, code, reason });
+    if (code === DEMO_VOUCHER_EXPIRED) return reject("expired");
+    if (code === DEMO_VOUCHER_REDEEMED) return reject("already_redeemed");
+    const voucher = (
+      DEMO_VOUCHERS as Record<
+        string,
+        (typeof DEMO_VOUCHERS)[keyof typeof DEMO_VOUCHERS]
+      >
+    )[code];
+    if (!voucher) return reject("not_found");
+    if (loyaltyOf().redeemedVouchers.includes(code))
+      return reject("already_redeemed");
+    if (order.subtotalIdr < voucher.minSpendIdr)
+      return reject("min_spend_not_met");
+    const raw =
+      voucher.kind === "percent"
+        ? Math.min(
+            Math.floor((order.subtotalIdr * voucher.percent) / 100),
+            voucher.maxIdr,
+          )
+        : voucher.amountIdr;
+    const discountPreviewIdr = Math.max(
+      Math.min(raw, order.subtotalIdr, remainingOf(order)),
+      0,
+    );
+    // A voucher that takes nothing off the bill is not applicable.
+    if (discountPreviewIdr <= 0) return reject("not_applicable");
+    return { valid: true, code, discountPreviewIdr };
+  }
+
+  function assertPointsAmount(order: EngineOrder, points: number): number {
+    const member = order.member;
+    if (!member) conflict("NO_MEMBER", "Pesanan ini tidak punya member.");
+    if (!isWholeIdr(points) || points <= 0)
+      validation("Jumlah poin harus lebih dari 0.");
+    if (points < MIN_REDEEM_POINTS)
+      validation("Jumlah poin kurang dari minimum penukaran.");
+    if (points > balanceOf(member.id))
+      conflict("INSUFFICIENT_POINTS", "Saldo poin tidak cukup.");
+    const valueIdr = points * POINT_VALUE_IDR;
+    if (valueIdr > remainingOf(order))
+      validation("Nilai poin tidak boleh melebihi sisa tagihan.");
+    return valueIdr;
   }
 
   function assertOpenBill(order: EngineOrder) {
@@ -1014,6 +1175,114 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
 
     session(orderId: string): PaymentSession {
       return sessionOf(orderOf(orderId));
+    },
+
+    // Voucher
+    validateVoucher(orderId: string, code: string): VoucherCheck {
+      const order = orderOf(orderId);
+      settle(order);
+      return checkVoucher(order, code);
+    },
+
+    applyVoucher(
+      orderId: string,
+      code: string,
+      idempotencyKey?: string,
+    ): PaymentSession {
+      const order = orderOf(orderId);
+      settle(order);
+      if (seenKey(idempotencyKey)) return sessionOf(order);
+      assertOpenBill(order);
+      assertNoLiveAttempt(order);
+      if (order.voucher)
+        conflict(
+          "VOUCHER_ALREADY_APPLIED",
+          "Pesanan ini sudah memakai voucher. Hapus dulu untuk ganti.",
+        );
+      const check = checkVoucher(order, code);
+      if (!check.valid)
+        throw new ApiError(
+          422,
+          "VOUCHER_REJECTED",
+          VOUCHER_MESSAGES[check.reason] ?? "Voucher tidak bisa dipakai.",
+        );
+      archiveStale(order);
+      loyaltyOf().redeemedVouchers.push(check.code);
+      order.voucher = {
+        code: check.code,
+        discountIdr: check.discountPreviewIdr,
+      };
+      order.version += 1;
+      rememberKey(idempotencyKey);
+      if (remainingOf(order) === 0 && order.receiptNo === null)
+        order.receiptNo = receiptNumberFor(order);
+      return sessionOf(order);
+    },
+
+    removeVoucher(orderId: string): PaymentSession {
+      const order = orderOf(orderId);
+      settle(order);
+      if (!order.voucher)
+        conflict("NO_VOUCHER", "Pesanan ini tidak memakai voucher.");
+      assertOpenBill(order);
+      assertNoLiveAttempt(order);
+      const loyalty = loyaltyOf();
+      loyalty.redeemedVouchers = loyalty.redeemedVouchers.filter(
+        (item) => item !== order.voucher?.code,
+      );
+      order.voucher = null;
+      order.version += 1;
+      return sessionOf(order);
+    },
+
+    // Member points
+    pointsAccount(orderId: string): PointsAccount | null {
+      const order = orderOf(orderId);
+      settle(order);
+      const member = order.member;
+      if (!member) return null;
+      const balancePoints = balanceOf(member.id);
+      return {
+        memberId: member.id,
+        memberName: member.name,
+        balancePoints,
+        minRedeemPoints: MIN_REDEEM_POINTS,
+        maxRedeemPoints: Math.min(
+          balancePoints,
+          Math.floor(remainingOf(order) / POINT_VALUE_IDR),
+        ),
+      };
+    },
+
+    quotePoints(orderId: string, points: number): PointsQuote {
+      const order = orderOf(orderId);
+      settle(order);
+      assertOpenBill(order);
+      return { points, valueIdr: assertPointsAmount(order, points) };
+    },
+
+    redeemPoints(
+      orderId: string,
+      points: number,
+      idempotencyKey?: string,
+    ): PaymentSession {
+      const order = orderOf(orderId);
+      settle(order);
+      if (seenKey(idempotencyKey)) return sessionOf(order);
+      assertOpenBill(order);
+      assertNoLiveAttempt(order);
+      const valueIdr = assertPointsAmount(order, points);
+      archiveStale(order);
+      if (order.member) loyaltyOf().balances[order.member.id] -= points;
+      rememberKey(idempotencyKey);
+      addTender(order, {
+        id: nextId(),
+        method: "points",
+        label: "Poin",
+        amountIdr: valueIdr,
+        confirmedAt: iso(clock()),
+      });
+      return sessionOf(order);
     },
 
     startPayment(input: StartPaymentInput): PaymentSession {
@@ -1243,7 +1512,7 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
         code: order.code ?? "LG-0044",
         tableLabel: order.tableLabel,
         items: clone(order.items),
-        totalIdr: order.totalIdr,
+        totalIdr: orderTotalIdr(order),
         status: remainingOf(order) === 0 ? "paid" : "unpaid",
       };
     },

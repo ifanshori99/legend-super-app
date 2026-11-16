@@ -1,9 +1,17 @@
 import { useState, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
-import { ArrowLeft, RotateCw } from "lucide-react";
+import { ArrowLeft, RotateCw, TicketPercent, Star } from "lucide-react";
 import { formatRupiah } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { isSettledByDeposit } from "../../payment-due";
@@ -12,6 +20,7 @@ import {
   isContractPending,
   usePaymentMethods,
   usePaymentSession,
+  useRemoveVoucher,
 } from "../../hooks";
 import type { PaymentAttempt, PaymentMethodCode } from "../../types";
 import { CardOnlinePanel } from "./card-online-panel";
@@ -22,16 +31,20 @@ import { EwalletPanel } from "./ewallet-panel";
 import { FailedPanel } from "./failed-panel";
 import { MethodGrid } from "./method-grid";
 import type { PaymentPanelProps } from "./panel-types";
+import { PointsPanel } from "./points-panel";
 import { QrisPanel } from "./qris-panel";
 import { SplitPanel } from "./split-panel";
 import { SuccessPanel } from "./success-panel";
 import { VaPanel } from "./va-panel";
+import { VoucherPanel } from "./voucher-panel";
 
 // What the cashier is doing before a payment attempt exists. Once the server
 // has an attempt (QRIS waiting, EDC sent, ...) its status decides the panel,
 // not this step.
 type Step =
   | { kind: "methods"; selected: PaymentMethodCode | null }
+  | { kind: "voucher" }
+  | { kind: "points" }
   | { kind: "split"; method: PaymentMethodCode; amountIdr: number }
   | { kind: "pay"; method: PaymentMethodCode; amountIdr: number };
 
@@ -61,6 +74,8 @@ function headingKeys(
       return ["ewallet", "ewalletHint"] as const;
     if (attempt.method === "card") return ["card", "cardHint"] as const;
   }
+  if (step.kind === "voucher") return ["voucher", "voucherHint"] as const;
+  if (step.kind === "points") return ["points", "pointsHint"] as const;
   if (step.kind === "split") return ["split", "splitHint"] as const;
   if (step.kind === "pay") {
     if (step.method === "cash") return ["cash", "cashHint"] as const;
@@ -94,6 +109,8 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
   const t = useT();
   const session = usePaymentSession(orderId);
   const methods = usePaymentMethods(orderId);
+  const removeVoucher = useRemoveVoucher(orderId);
+  const [confirmRemove, setConfirmRemove] = useState(false);
   const [step, setStep] = useState<Step>({ kind: "methods", selected: null });
   // "Pilih metode lain" on an expired or failed attempt: hide that attempt
   // until a new one is created (a new attempt has a new id).
@@ -265,6 +282,18 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
         }
       />
     );
+  } else if (step.kind === "voucher" || step.kind === "points") {
+    const adjustmentProps = {
+      orderId,
+      onDone: () => setStep({ kind: "methods", selected: null }),
+      onCancel: () => setStep({ kind: "methods", selected: null }),
+    };
+    panel =
+      step.kind === "voucher" ? (
+        <VoucherPanel {...adjustmentProps} />
+      ) : (
+        <PointsPanel {...adjustmentProps} />
+      );
   } else {
     const props = {
       ...attemptProps,
@@ -303,7 +332,85 @@ export function PaymentScreen({ orderId }: { orderId: string }) {
               allocations={bill.allocations}
               remainingIdr={bill.remainingIdr}
               paid={bill.paid}
+              voucher={bill.voucher ?? null}
+              removingVoucher={removeVoucher.isPending}
+              onRemoveVoucher={() => setConfirmRemove(true)}
             />
+            <Dialog
+              open={confirmRemove}
+              onOpenChange={(open) => {
+                // Stay open while the server is removing the voucher.
+                if (!open && removeVoucher.isPending) return;
+                setConfirmRemove(open);
+              }}
+            >
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>
+                    {t("posKasirPayment.adjust.removeTitle", {
+                      code: bill.voucher?.code ?? "",
+                    })}
+                  </DialogTitle>
+                  <DialogDescription>
+                    {t("posKasirPayment.adjust.removeBody")}
+                  </DialogDescription>
+                </DialogHeader>
+                <DialogFooter>
+                  <Button
+                    variant="outline"
+                    disabled={removeVoucher.isPending}
+                    onClick={() => setConfirmRemove(false)}
+                  >
+                    {t("posKasirPayment.adjust.removeKeep")}
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    disabled={removeVoucher.isPending}
+                    aria-busy={removeVoucher.isPending}
+                    onClick={() => {
+                      if (removeVoucher.isPending) return;
+                      removeVoucher.mutate(undefined, {
+                        onSuccess: () => setConfirmRemove(false),
+                        onError: () => setConfirmRemove(false),
+                      });
+                    }}
+                  >
+                    {t(
+                      removeVoucher.isPending
+                        ? "posKasirPayment.bill.voucherRemoving"
+                        : "posKasirPayment.adjust.removeConfirm",
+                    )}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+            {!bill.paid && !attempt && (
+              <div className="grid gap-2 sm:grid-cols-2">
+                <Button
+                  variant="outline"
+                  disabled={removeVoucher.isPending}
+                  onClick={() => setStep({ kind: "voucher" })}
+                >
+                  <TicketPercent aria-hidden="true" />
+                  {t("posKasirPayment.adjust.voucher")}
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => setStep({ kind: "points" })}
+                >
+                  <Star aria-hidden="true" />
+                  {t("posKasirPayment.adjust.points")}
+                </Button>
+              </div>
+            )}
+            {removeVoucher.error && (
+              <Notice
+                tone="danger"
+                title={t("posKasirPayment.adjust.removeFailed")}
+              >
+                {t("posKasirPayment.adjust.removeFailedHint")}
+              </Notice>
+            )}
             {bill.depositSurplusIdr > 0 && (
               <Notice
                 tone="info"

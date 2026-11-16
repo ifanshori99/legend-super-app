@@ -8,6 +8,7 @@ import {
   usePaymentSession,
 } from "../../hooks";
 import type { EdcMode, PaymentAttempt } from "../../types";
+import { EdcDeclined } from "./edc-declined";
 import { EdcSelect } from "./edc-select";
 import { EdcStandalone } from "./edc-standalone";
 import { EdcSuccess } from "./edc-success";
@@ -77,6 +78,15 @@ export function EdcPanel({
         bill={bill}
         attempt={attempt}
         receiptNo={session.receiptNo}
+      />
+    );
+  if (attempt?.status === "declined")
+    return (
+      <EdcDeclined
+        orderId={orderId}
+        bill={bill}
+        attempt={attempt}
+        onChangeMethod={onChangeMethod}
       />
     );
   if (attempt?.status === "unknown")

@@ -51,6 +51,11 @@ export function QrisPanel({ qris }: { qris: CustomerDisplayQris }) {
           })}
         </Badge>
         <p className="text-sm leading-5 text-muted-foreground">
+          {t("posDisplay.qris.providerLabel", {
+            provider: t(`posDisplay.qris.provider.${qris.provider}`),
+          })}
+        </p>
+        <p className="text-sm leading-5 text-muted-foreground">
           {t("posDisplay.qris.wait")}
         </p>
       </div>

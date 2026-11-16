@@ -22,6 +22,7 @@ import { useOutletClock, useTenantContext } from "@/lib/tenant-context";
 import { noteCatalogSalesBlocked } from "@/features/ws02-edge/hooks";
 import { MOCK_SUPERVISOR_ID } from "./fixtures";
 import {
+  applyVoucherCode,
   approveShiftClose,
   cancelAttempt,
   checkPaymentStatus,
@@ -30,12 +31,16 @@ import {
   lookupCashierCode,
   openShift,
   printReceipt,
+  quotePointsValue,
   recordCashMovement,
   recordEdcStandalone,
+  redeemPointsValue,
   refreshQris,
+  removeVoucherCode,
   requestOverride,
   startPayment,
   submitBlindCount,
+  validateVoucherCode,
 } from "./api";
 import {
   decideHeldCashMovement,
@@ -54,6 +59,7 @@ import {
   ownCountSummaryQuery,
   paymentMethodsQuery,
   paymentSessionQuery,
+  pointsAccountQuery,
   posKasirKeys,
   registeredTerminalsQuery,
   shiftReviewQuery,
@@ -76,11 +82,13 @@ import {
   type ConfirmCashInput,
   type OpenShiftInput,
   type PaymentSession,
+  type PointsQuote,
   type RecordCashMovementInput,
   type RecordEdcStandaloneInput,
   type RequestOverrideInput,
   type StartPaymentInput,
   type SubmitBlindCountInput,
+  type VoucherCheck,
 } from "./types";
 
 /** True when the server has no contract for the call yet (show "belum tersambung"). */
@@ -245,6 +253,102 @@ export function usePrintReceipt() {
       intent.clear();
       return result;
     },
+  });
+}
+
+// ---- Voucher and member points (brief 936) ---------------------------------
+// The server prices every discount and redemption. A screen shows the numbers
+// these hooks return and never computes them. Apply and redeem keep one
+// idempotency key per intent, so a repeated tap is one request on the server.
+
+/** A refused or applied adjustment can change the bill: refresh the screen. */
+function useRefreshBill(orderId: string) {
+  const queryClient = useQueryClient();
+  const outletId = useOutletId();
+  return {
+    put(session: PaymentSession) {
+      putSession(queryClient, outletId, orderId, session);
+      // The most points a member may spend follows the remaining bill.
+      void queryClient.invalidateQueries({
+        queryKey: posKasirKeys.points(outletId, orderId),
+      });
+    },
+    invalidate() {
+      void queryClient.invalidateQueries({
+        queryKey: posKasirKeys.session(outletId, orderId),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: posKasirKeys.points(outletId, orderId),
+      });
+    },
+  };
+}
+
+export function useValidateVoucher(orderId: string) {
+  const outletId = useOutletId();
+  return useMutation<VoucherCheck, Error, { code: string }>({
+    mutationFn: ({ code }) => validateVoucherCode(outletId, orderId, code),
+  });
+}
+
+export function useApplyVoucher(orderId: string) {
+  const refresh = useRefreshBill(orderId);
+  const intent = useIntentKey("voucher");
+  return useMutation<PaymentSession, Error, { code: string }>({
+    mutationFn: async (input) => {
+      const session = await applyVoucherCode(
+        orderId,
+        input.code,
+        intent.keyFor({ orderId, ...input }),
+      );
+      intent.clear();
+      return session;
+    },
+    onSuccess: refresh.put,
+    onError: refresh.invalidate,
+  });
+}
+
+export function useRemoveVoucher(orderId: string) {
+  const refresh = useRefreshBill(orderId);
+  return useMutation<PaymentSession, Error, void>({
+    mutationFn: () => removeVoucherCode(orderId),
+    onSuccess: refresh.put,
+    onError: refresh.invalidate,
+  });
+}
+
+/** `data` is null when the order has no member; the panel shows "no member". */
+export function usePointsAccount(orderId: string) {
+  const outletId = useOutletId();
+  const ready = useReady();
+  return useQuery({
+    ...pointsAccountQuery(outletId, orderId),
+    enabled: ready && orderId !== "",
+  });
+}
+
+export function useQuotePoints(orderId: string) {
+  return useMutation<PointsQuote, Error, { points: number }>({
+    mutationFn: ({ points }) => quotePointsValue(orderId, points),
+  });
+}
+
+export function useRedeemPoints(orderId: string) {
+  const refresh = useRefreshBill(orderId);
+  const intent = useIntentKey("points");
+  return useMutation<PaymentSession, Error, { points: number }>({
+    mutationFn: async (input) => {
+      const session = await redeemPointsValue(
+        orderId,
+        input.points,
+        intent.keyFor({ orderId, ...input }),
+      );
+      intent.clear();
+      return session;
+    },
+    onSuccess: refresh.put,
+    onError: refresh.invalidate,
   });
 }
 
