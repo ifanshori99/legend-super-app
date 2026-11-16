@@ -14,6 +14,8 @@ Ditulis oleh merge train batch64g. Sumber: pesan CTO G6evw, G6w9t, G4j04. Tip SH
 
 ## Antrean tersisa setelah batch77
 
+- `fix/925-ci-grantor-withdraw-flake` 953effb41 SIAP batch berikut (Lighthouse grantor kj50i + fixture 61umg; test saja, tanpa migrasi).
+
 - `fix/e2e-m1-858` 3272f4dee: konflik dengan e2e mock m1 (legend-jemae) di 3 spec; perlu rebase dulu.
 
 ## Aturan tetap
