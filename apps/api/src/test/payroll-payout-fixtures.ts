@@ -47,6 +47,10 @@ import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import type { Tx } from "../services/hris-access.ts";
 import { deliverPayrollGlEvent } from "../services/payroll-gl-consumer.ts";
 import { recordOverpaidItems } from "../services/payroll-payout-overpaid-route.service.ts";
+import type {
+  PayoutGrantBinding,
+  PayoutGrantIssuer,
+} from "../services/payroll-payout-grant.service.ts";
 import { snapshotPayeeBankForLock } from "../services/payroll-bank-snapshot.service.ts";
 import {
   approveDisbursementBatch,
@@ -89,11 +93,70 @@ export const APP3 = `payout-gl-app3-${randomUUID()}`;
  * (`app.payout_assert_actor`) check it is live with a fresh MFA step-up.
  */
 const sessionIdOf = (userId: string) => `payout-fixture-session-${userId}`;
-export const actorOf = (userId: string) => ({
-  tenantId: tenant.id as string,
-  userId,
-  sessionId: sessionIdOf(userId),
-});
+
+/**
+ * The test stand-in of the grantor login (migration 0653): a short owner
+ * connection that does `SET LOCAL ROLE legend_payout_grantor`, sets the tenant
+ * and calls `app.payout_grant_issue` with the real COMMIT, so the grant is
+ * visible to the payout transaction (READ COMMITTED) exactly as in production.
+ * It skips the request step-up the real issuer checks; the SQL still checks
+ * the actor (live session, fresh MFA, permission).
+ */
+export function testGrantIssuer(actor: {
+  tenantId: string;
+  userId: string;
+  sessionId?: string;
+}): PayoutGrantIssuer {
+  return {
+    async issue(binding: PayoutGrantBinding): Promise<string> {
+      const pool = new Pool({
+        connectionString: process.env.STARTER_TEST_DATABASE_URL,
+        max: 1,
+      });
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SET LOCAL ROLE legend_payout_grantor");
+        await client.query("SELECT set_config('app.tenant_id', $1, true)", [
+          actor.tenantId,
+        ]);
+        const { rows } = await client.query(
+          `SELECT app.payout_grant_issue($1::text, $2::text, $3::uuid, $4::uuid[], $5::varchar, $6::uuid, $7::uuid, $8::varchar, $9::text, $10::text, $11::text) AS grant`,
+          [
+            binding.kind,
+            binding.step,
+            binding.batchId,
+            `{${binding.itemIds.join(",")}}`,
+            binding.evidenceKey,
+            binding.refId,
+            binding.targetId,
+            binding.detail ?? null,
+            actor.userId,
+            actor.sessionId ?? null,
+            "mfa_challenge",
+          ],
+        );
+        await client.query("COMMIT");
+        return (rows[0] as { grant: string }).grant;
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+        await pool.end();
+      }
+    },
+  };
+}
+
+export const actorOf = (userId: string) => {
+  const actor = {
+    tenantId: tenant.id as string,
+    userId,
+    sessionId: sessionIdOf(userId),
+  };
+  return { ...actor, grants: testGrantIssuer(actor) };
+};
 
 /**
  * A full `PayoutActor` for the trusted payout paths (correction, overpaid,
@@ -113,7 +176,8 @@ export async function payoutActorSession(tenantId: string, userId: string) {
        VALUES ($1, now() + interval '1 day', $2, $3, $4, now())`,
       [sessionId, randomBytes(16).toString("hex"), userId, tenantId],
     );
-    return { tenantId, userId, sessionId };
+    const actor = { tenantId, userId, sessionId };
+    return { ...actor, grants: testGrantIssuer(actor) };
   } finally {
     await owner.end();
   }
@@ -341,6 +405,24 @@ export function installPayoutWorld(label: string) {
       client.release();
     }
   }
+
+  /**
+   * Like `asTenant`, but the statements of `run` execute as the `legend_payout`
+   * role (`SET LOCAL ROLE`, legend-r86qa/izza4): the only role that may move an
+   * item out of `exported`, write the resolution or payment record, or turn a
+   * run `paid` (outside the trusted functions that run as it). For seeds that
+   * force such a state by SQL and for tests of the trigger guards. The owner
+   * login is a superuser in tests, so no membership grant is needed. `raw`
+   * turns triggers off like in `asTenant`.
+   */
+  const asPayoutRole = <T>(
+    run: (client: PoolClient) => Promise<T>,
+    raw = false,
+  ): Promise<T> =>
+    asTenant(async (client) => {
+      await client.query("SET LOCAL ROLE legend_payout");
+      return run(client);
+    }, raw);
   const rowsOf = (sql: string, params: unknown[] = []) =>
     asTenant(async (c) => (await c.query(sql, params)).rows as Row[]);
 
@@ -1141,10 +1223,12 @@ export function installPayoutWorld(label: string) {
     inTx,
     proofs,
     asTenant,
+    asPayoutRole,
     rowsOf,
     expectRefused,
     httpFailure,
     signedInClient,
+    provisionActor,
     grantRole,
     seedRun,
     postLockedJournal,

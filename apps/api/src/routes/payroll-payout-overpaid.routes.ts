@@ -25,6 +25,7 @@ import {
   requireTenantPermission,
 } from "../middleware/permissions.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
+import { payoutGrantIssuerOf } from "../services/payroll-payout-grant.service.ts";
 import {
   PAYOUT_STEP_UP_MAX_AGE_MINUTES,
   payoutEvidenceStoreOf,
@@ -47,6 +48,7 @@ function actorOf(req: Request) {
       tenantId: context.tenant.tenantId,
       userId: getAuth(req).user.id,
       sessionId: getAuth(req).session.id,
+      grants: payoutGrantIssuerOf(req),
     },
   };
 }

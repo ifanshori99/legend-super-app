@@ -214,6 +214,9 @@ const reauthPasswordMisses = createFixedWindowCounter({
   capacity: 10_000,
 });
 
+/** Which branch of the step-up passed (stored on a payout grant). */
+export type PayoutReauthMethod = "mfa_challenge" | "password";
+
 /**
  * Step-up for payout confirm, resolve and cash handover, called after the
  * body is parsed. Nothing to do when the session passed a real second-factor
@@ -223,20 +226,22 @@ const reauthPasswordMisses = createFixedWindowCounter({
  * - missing: 401 REAUTH_REQUIRED
  * - wrong: 403 REAUTH_PASSWORD_INVALID
  * - five wrong in 15 minutes: 429 REAUTH_PASSWORD_LOCKED
+ * Returns the branch that passed: "mfa_challenge" or "password".
  */
 export async function assertPayoutReauth(input: {
   readonly userId: string;
   readonly sessionId: string;
   readonly password: string | undefined;
   readonly now?: Date;
-}): Promise<void> {
+}): Promise<PayoutReauthMethod> {
   const row = await loadSessionRow(input.sessionId);
   if (!row || row.userId !== input.userId)
     throw new HttpError(401, "UNAUTHORIZED", "Sesi berakhir. Masuk lagi.");
   const nowMs = (input.now ?? new Date()).getTime();
   if (row.mfaChallengeVerifiedAt !== null) {
     const ageMs = nowMs - row.mfaChallengeVerifiedAt.getTime();
-    if (ageMs >= 0 && ageMs <= PAYOUT_STEP_UP_MAX_AGE_MINUTES * 60_000) return;
+    if (ageMs >= 0 && ageMs <= PAYOUT_STEP_UP_MAX_AGE_MINUTES * 60_000)
+      return "mfa_challenge";
   }
   if (input.password === undefined || input.password.length === 0)
     throw new AccessError("REAUTH_REQUIRED");
@@ -255,4 +260,5 @@ export async function assertPayoutReauth(input: {
     throw new HttpError(403, "REAUTH_PASSWORD_INVALID", "Password salah.");
   // A right password does not count against the limit.
   slot.release();
+  return "password";
 }

@@ -778,6 +778,7 @@ login created in the previous section, not the bootstrap superuser.
 | `legend_runtime_<16 hex>` | `APP_DATABASE_URL` (api.env, worker.env; `DATABASE_URL` equal) | Member of `legend_app` only: read and write tenant tables through forced RLS. Not superuser, no `BYPASSRLS`, owns nothing, cannot create or alter objects.                                    |
 | `legend_worker_<16 hex>`  | `WORKER_DATABASE_URL` (worker.env only)                        | Owns only the `pgboss` queue schema and reads `app.active_tenant_registry`. No access to domain tables.                                                                                       |
 | `legend_maint_<16 hex>`   | `MAINTENANCE_DATABASE_URL` (worker.env only, optional here)    | Member of `legend_maintenance` only: no table or sequence rights, runs just `app.audit_retention_due_tenants()` and `app.purge_audit_retention_batch()` (audit retention purge, legend-usyi). |
+| `legend_grant_<16 hex>`   | `PAYOUT_GRANTOR_DATABASE_URL` (api.env only, optional here)    | Member of `legend_payout_grantor` only: no table or sequence rights, runs just `app.payout_grant_issue()` (one-time payout step grants, legend-911). `legend_app` cannot issue a grant. |
 
 Both the application login and the queue login get
 `idle_in_transaction_session_timeout = '5min'` from the job (legend-9h0kg), so
@@ -792,6 +793,7 @@ the job runs. See "Staff device PIN down-sync runbook", rule 3.
    echo "legend_runtime_$(openssl rand -hex 8)"   # application login name
    echo "legend_worker_$(openssl rand -hex 8)"    # queue login name
    echo "legend_maint_$(openssl rand -hex 8)"     # audit retention login name
+   echo "legend_grant_$(openssl rand -hex 8)"     # payout step grant login name
    openssl rand -hex 24                            # a password (one per login)
    ```
 
@@ -807,6 +809,22 @@ the job runs. See "Staff device PIN down-sync runbook", rule 3.
    with a pinned `search_path`, owned by the owner of `audit_logs`, and
    executable by neither PUBLIC nor `legend_app`. `migrator.env` alone holds
    `MIGRATION_DATABASE_URL`.
+
+   `api.env` also takes `PAYOUT_GRANTOR_DATABASE_URL` with the payout step
+   grant login (same host and database; never in `worker.env` or `web.env`).
+   The payout money steps (failed-item correction, overpaid record, return,
+   proof closure, posting source) each spend a one-time grant that only this
+   login can issue (`app.payout_grant_issue`). Without the variable the API
+   still starts, but every one of those steps answers 503
+   `PAYOUT_STEP_GRANT_UNAVAILABLE`: no payout money is recorded until it is
+   set and `provision-roles.sh` has run. `--audit` verifies that the login is a
+   member of `legend_payout_grantor` only, has no table or sequence rights, and
+   can run no function except `app.payout_grant_issue` (`SECURITY DEFINER`,
+   pinned `search_path`, owned by `legend_payout`, not executable by PUBLIC or
+   `legend_app`). Treat the URL as a secret: whoever holds it can mint grants
+   for finance users who have a live session with fresh MFA. In development
+   and test the API falls back to a separate small pool on `DATABASE_URL` and
+   issues grants under `SET LOCAL ROLE legend_payout_grantor`.
 
 2. Run the job from the private network, on the VM:
 
@@ -841,7 +859,8 @@ the job runs. See "Staff device PIN down-sync runbook", rule 3.
    migrator image in a container with no network and no env file. It refuses
    unless no service except the two jobs receives `MIGRATION_DATABASE_URL`
    (or `_FILE`), `web` receives no database URL, no service except `worker` receives
-   `MAINTENANCE_DATABASE_URL`, and the URLs `api` and `worker` receive equal the
+   `MAINTENANCE_DATABASE_URL`, no service except `api` receives
+   `PAYOUT_GRANTOR_DATABASE_URL`, and the URLs `api` and `worker` receive equal the
    ones just validated. Its messages name only
    services and keys, never values. Compose fills `${VAR}` in env files from
    the shell and `compose.env`, so the configuration is read with the
@@ -974,7 +993,8 @@ Outside Compose (another host on the private network, with the API bundle or
 the repository), run `node dist/provision-roles.js` or
 `pnpm --filter @starter/api exec tsx src/provision-roles.ts` with
 `MIGRATION_DATABASE_URL`, `APP_DATABASE_URL` and `WORKER_DATABASE_URL` set (and
-`MAINTENANCE_DATABASE_URL` for the audit retention login). Each
+`MAINTENANCE_DATABASE_URL` for the audit retention login, and
+`PAYOUT_GRANTOR_DATABASE_URL` for the payout step grant login). Each
 may instead be supplied as `<NAME>_FILE`, a path to a file holding the URL. The
 job does not read `.env` files. Local development keeps using
 `pnpm dev:prepare`, which provisions its own random login through the same code.

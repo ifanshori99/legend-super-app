@@ -45,6 +45,10 @@ import { sha256Of } from "./payroll-payout-proof-fingerprint.service.ts";
 export type PayoutReconKind =
   "correction" | "overpaid" | "return" | "posting_source";
 
+/** Kinds a flag can carry: the operations above plus the grant-checked steps. */
+export type PayoutReconFlagKind =
+  PayoutReconKind | "closure" | "resolve" | "bank_confirm";
+
 export type PayoutReconReason =
   | "attestation_count"
   | "attestation_same_person"
@@ -64,7 +68,9 @@ export type PayoutReconReason =
   | "journal_reversed"
   | "net_unreadable"
   | "net_mismatch"
-  | "operation_missing";
+  | "operation_missing"
+  | "grant_missing"
+  | "grant_mismatch";
 
 /** MFA must be at most this old when the step was attested. */
 const MFA_MAX_AGE_MS = 15 * 60_000;
@@ -254,6 +260,22 @@ type Attestation = {
   sessionCreatedAt: number | null;
   mfaVerifiedAt: number | null;
   attestedAt: number | null;
+  step: string;
+  grantId: string | null;
+  txid: number | null;
+};
+
+/** Non-secret columns of a step grant (the app role reads nothing else). */
+type GrantRow = {
+  kind: string;
+  step: string;
+  actor: string;
+  sessionId: string;
+  batchId: string | null;
+  evidenceKey: string | null;
+  expiresAt: number | null;
+  consumedAt: number | null;
+  consumedTxid: number | null;
 };
 
 type SessionRow = {
@@ -270,9 +292,15 @@ type Binding = {
   contentSha256: string;
   storedSha256: string;
   legacyDuplicate: boolean;
+  createdBy: string;
 };
 
-type FileRecord = { content: string; stored: string | null };
+type FileRecord = {
+  content: string;
+  stored: string | null;
+  /** Batch the proof was uploaded for. */
+  batchId: string;
+};
 
 type AuditRow = {
   action: string;
@@ -294,6 +322,9 @@ type ItemFacts = {
 /** Everything one page needs, read in one tenant transaction. */
 type Facts = {
   attestations: Attestation[];
+  /** Grants of the attestations made at or after the grant cutover. */
+  grants: Map<string, GrantRow>;
+  grantsSince: number | null;
   sessions: Map<string, SessionRow>;
   bindings: Binding[];
   contested: Map<string, boolean>;
@@ -349,6 +380,7 @@ async function loadFacts(
   tenantId: TenantId,
   operations: readonly Operation[],
   since: Date,
+  grantsSince: Date | null,
 ): Promise<Facts> {
   const batchIds = [...new Set(operations.map((op) => op.batchId))];
   const itemIds = [
@@ -370,7 +402,8 @@ async function loadFacts(
     await tx.execute(sql`
       SELECT a.kind, a.operation_id::text AS operation_id, a.batch_id::text AS batch_id,
              a.evidence_key, a.item_ids::text[] AS item_ids, a.actor, a.session_id,
-             a.session_created_at, a.mfa_verified_at, a.attested_at
+             a.session_created_at, a.mfa_verified_at, a.attested_at,
+             a.step, a.grant_id::text AS grant_id, a.txid
         FROM payroll_payout_attestations a
        WHERE a.tenant_id = ${tenantId}::uuid
          AND a.batch_id IN (${uuidList(batchIds)})`),
@@ -385,7 +418,41 @@ async function loadFacts(
     sessionCreatedAt: millis(row.session_created_at),
     mfaVerifiedAt: millis(row.mfa_verified_at),
     attestedAt: millis(row.attested_at),
+    step: String(row.step),
+    grantId: text(row.grant_id),
+    txid: row.txid === null || row.txid === undefined ? null : Number(row.txid),
   }));
+
+  const grants = new Map<string, GrantRow>();
+  const grantIds = [
+    ...new Set(
+      attestations.flatMap((a) => (a.grantId === null ? [] : [a.grantId])),
+    ),
+  ];
+  if (grantIds.length > 0)
+    for (const row of rowsOf(
+      await tx.execute(sql`
+        SELECT g.id::text AS id, g.kind, g.step, g.actor, g.session_id,
+               g.batch_id::text AS batch_id, g.evidence_key, g.expires_at,
+               g.consumed_at, g.consumed_txid
+          FROM payroll_payout_grants g
+         WHERE g.tenant_id = ${tenantId}::uuid
+           AND g.id IN (${uuidList(grantIds)})`),
+    ))
+      grants.set(String(row.id), {
+        kind: String(row.kind),
+        step: String(row.step),
+        actor: String(row.actor),
+        sessionId: String(row.session_id),
+        batchId: text(row.batch_id),
+        evidenceKey: text(row.evidence_key),
+        expiresAt: millis(row.expires_at),
+        consumedAt: millis(row.consumed_at),
+        consumedTxid:
+          row.consumed_txid === null || row.consumed_txid === undefined
+            ? null
+            : Number(row.consumed_txid),
+      });
 
   const sessions = new Map<string, SessionRow>();
   const sessionIds = [...new Set(attestations.map((a) => a.sessionId))];
@@ -404,7 +471,8 @@ async function loadFacts(
   const bindings = rowsOf(
     await tx.execute(sql`
       SELECT b.kind, b.batch_id::text AS batch_id, b.item_set_hash, b.evidence_key,
-             b.content_sha256, b.stored_sha256, b.legacy_duplicate
+             b.content_sha256, b.stored_sha256, b.legacy_duplicate,
+             b.created_by
         FROM payroll_payout_proof_bindings b
        WHERE b.tenant_id = ${tenantId}::uuid
          AND b.batch_id IN (${uuidList(batchIds)})`),
@@ -416,6 +484,7 @@ async function loadFacts(
     contentSha256: String(row.content_sha256),
     storedSha256: String(row.stored_sha256),
     legacyDuplicate: row.legacy_duplicate === true,
+    createdBy: String(row.created_by),
   }));
   // Only a yes or no is available for a hash (the global contest list).
   const contested = new Map<string, boolean>();
@@ -440,13 +509,15 @@ async function loadFacts(
   if (keys.length > 0)
     for (const row of rowsOf(
       await tx.execute(sql`
-        SELECT f.evidence_key, f.content_sha256, f.stored_sha256
+        SELECT f.evidence_key, f.content_sha256, f.stored_sha256,
+               f.batch_id::text AS batch_id
           FROM payroll_payout_evidence_files f
          WHERE f.tenant_id = ${tenantId}::uuid AND f.evidence_key IN (${inList(keys)})`),
     ))
       records.set(String(row.evidence_key), {
         content: String(row.content_sha256),
         stored: text(row.stored_sha256),
+        batchId: String(row.batch_id),
       });
 
   const actions = Object.values(AUDIT_ACTIONS).flat();
@@ -646,6 +717,8 @@ async function loadFacts(
 
   return {
     attestations,
+    grants,
+    grantsSince: grantsSince?.getTime() ?? null,
     sessions,
     bindings,
     contested,
@@ -665,7 +738,7 @@ async function loadFacts(
 type FileState = "ok" | "missing" | "mismatch" | "error";
 
 type Flag = {
-  kind: PayoutReconKind;
+  kind: PayoutReconFlagKind;
   operationId: string;
   itemId: string;
   reason: PayoutReconReason;
@@ -798,6 +871,8 @@ function evaluate(
         own.batchId !== op.batchId ||
         own.itemSetHash !== setHash ||
         own.legacyDuplicate ||
+        // The proof file must have been uploaded for this very batch.
+        (record !== undefined && record.batchId !== op.batchId) ||
         facts.hashesHeld.get(op.evidenceKey) !== true ||
         (record !== undefined &&
           (own.contentSha256 !== record.content ||
@@ -807,13 +882,30 @@ function evaluate(
       if (facts.contested.get(op.evidenceKey) !== false)
         addAll("binding_contested");
     }
+    // A binding of a proposal proof that was replaced is permanent on purpose
+    // but is not a second completed operation. It is told apart by the proposal
+    // audit row of the same person for that key while no attestation holds the
+    // key any more (the replacement overwrites the step-one attestation). A
+    // binding with no such trace stays a duplicate (the most restrictive choice).
+    const replaced = (b: Binding) =>
+      (op.kind === "correction" || op.kind === "overpaid") &&
+      !facts.attestations.some((a) => a.evidenceKey === b.evidenceKey) &&
+      facts.audits.some(
+        (row) =>
+          row.action === AUDIT_ACTIONS[op.kind][0] &&
+          row.evidenceKey === b.evidenceKey &&
+          row.by === b.createdBy &&
+          row.objectId !== null &&
+          (row.objectId === op.batchId || op.itemIds.includes(row.objectId)),
+      );
     if (
       facts.bindings.some(
         (b) =>
           b.evidenceKey !== op.evidenceKey &&
           b.kind === op.kind &&
           b.batchId === op.batchId &&
-          b.itemSetHash === setHash,
+          b.itemSetHash === setHash &&
+          !replaced(b),
       )
     )
       addAll("binding_duplicate");
@@ -894,6 +986,53 @@ function evaluate(
   return flags;
 }
 
+/**
+ * Every attestation made at or after `app.payout_grants_since()` needs its
+ * one-time grant (0653/0654): no grant, or a grant that was not spent by that
+ * very step, holds the slips of the attestation. Pure, no I/O. An attestation
+ * before the cutover is skipped like `trusted_since`.
+ */
+function evaluateGrants(facts: Facts): Flag[] {
+  if (facts.grantsSince === null) return [];
+  const flags: Flag[] = [];
+  for (const a of facts.attestations) {
+    if (a.attestedAt === null || a.attestedAt < facts.grantsSince) continue;
+    const grant = a.grantId === null ? undefined : facts.grants.get(a.grantId);
+    const reason: PayoutReconReason | null =
+      grant === undefined
+        ? "grant_missing"
+        : grant.consumedAt === null ||
+            grant.expiresAt === null ||
+            grant.consumedAt > grant.expiresAt ||
+            grant.actor !== a.actor ||
+            grant.sessionId !== a.sessionId ||
+            grant.kind !== a.kind ||
+            grant.step !== a.step ||
+            grant.batchId !== a.batchId ||
+            // A bank confirmation's proof key is not part of its grant (the
+            // grant is bound to actor, batch and items), so it is not compared.
+            (a.kind !== "bank_confirm" &&
+              grant.evidenceKey !== a.evidenceKey) ||
+            grant.consumedTxid !== a.txid
+          ? "grant_mismatch"
+          : null;
+    if (reason === null) continue;
+    // A posting source names no item itself: the slips it holds.
+    const items =
+      a.itemIds.length > 0
+        ? a.itemIds
+        : (facts.sourceItems.get(a.operationId) ?? []);
+    for (const itemId of items)
+      flags.push({
+        kind: a.kind as PayoutReconFlagKind,
+        operationId: a.operationId,
+        itemId,
+        reason,
+      });
+  }
+  return flags;
+}
+
 export type PayoutReconOptions = {
   /** Object storage for the proof files; without it the file check is skipped. */
   storage: ObjectStorage | null | undefined;
@@ -925,6 +1064,13 @@ export async function reconcileTrustedPayouts(
       new Date((trustedSince as string | Date | undefined) ?? NaN);
     if (Number.isNaN(since.getTime()))
       throw new Error("Payout trusted boundary time is unknown");
+    const grantsSince = new Date(
+      (rowsOf(
+        await tx.execute(sql`SELECT app.payout_grants_since() AS since`),
+      )[0]?.since as string | Date | undefined) ?? NaN,
+    );
+    if (Number.isNaN(grantsSince.getTime()))
+      throw new Error("Payout grant boundary time is unknown");
     const found = await listOperations(tx, tenantId, {
       after: options.after ?? null,
       limit,
@@ -934,7 +1080,7 @@ export async function reconcileTrustedPayouts(
       return { operations: found, facts: null as Facts | null };
     return {
       operations: found,
-      facts: await loadFacts(tx, tenantId, found, since),
+      facts: await loadFacts(tx, tenantId, found, since, grantsSince),
     };
   });
   const last = operations.at(-1)?.sortKey ?? null;
@@ -981,6 +1127,7 @@ export async function reconcileTrustedPayouts(
   const seen = new Set(facts.flagged);
   const fresh = operations
     .flatMap((op) => evaluate(op, facts, fileOf))
+    .concat(evaluateGrants(facts))
     .filter((flag) => {
       const key = flagKey(
         flag.kind,

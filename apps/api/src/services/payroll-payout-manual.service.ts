@@ -20,10 +20,16 @@
 //   new batch) only when TWO different non-requesters give the same outcome and
 //   evidence (`resolveManualItems`, also a database trigger): one person alone
 //   can never make a paid slip payable again.
+// - Every move out of `exported` runs in a trusted function of the payout role
+//   that spends a one-time grant (legend-r86qa): `app.payout_bank_confirm`
+//   (grant kind `bank_confirm`) and `app.payout_resolve_propose` / `_approve`
+//   (kind `resolve`, bound to the outcome). The application role cannot write
+//   the resolution or payment record any more (cash handover excepted).
 // - A run turns `paid` only when every payslip with net pay above zero has a
-//   succeeded item (R10). The transition sets `app.payout_settle` for its own
-//   statement only. `paid_by` is the last approver of the batch (CTO 14 Nov);
-//   the person who confirmed stays on the item (`confirmed_by`).
+//   succeeded item (R10). The turn is `app.payout_run_settle` (legend-izza4),
+//   which only the payout role may do: the application role no longer sets a
+//   setting to allow it. `paid_by` is the last approver of the batch (CTO 14
+//   Nov); the person who confirmed stays on the item (`confirmed_by`).
 // - Every confirmed item is journaled exactly once by `settleBatchPayouts` in
 //   the same transaction (payroll-payout-gl.service.ts), and a run that turned
 //   paid emits `payroll.paid` with `settledPerItem: true` (legend-658).
@@ -56,18 +62,8 @@
 // logged and never put in an error.
 
 import { createHash } from "node:crypto";
-import {
-  and,
-  asc,
-  eq,
-  inArray,
-  isNull,
-  notInArray,
-  or,
-  sql,
-} from "drizzle-orm";
+import { and, asc, eq, inArray, notInArray, or, sql } from "drizzle-orm";
 import type { TenantId, UserId } from "@starter/shared/core";
-import type { PayrollRunId } from "@starter/shared/hris/payroll";
 import {
   payrollRuns,
   payslipBankSnapshots,
@@ -116,7 +112,8 @@ import {
   loadBatchRunFirst,
   openItemAmount,
   payoutRefuse,
-  payoutTrustedSessionId,
+  payoutStateChanged,
+  payoutTrustedGrant,
   recordPayoutAudit,
   type BatchRow,
   type ItemRow,
@@ -493,17 +490,20 @@ function readSlipNet(row: {
  * R10: the run becomes `paid` only when every payslip with net pay above zero
  * has a succeeded item. A payslip that cannot be read counts as unpaid (fail
  * closed: it blocks `paid`, it never pays anyone). Returns true when the run
- * turned paid in this call. The caller holds the batch lock. `paidBy` is the
- * last approver of the batch, not the person who confirmed.
+ * turned paid in this call. The caller holds the batch lock. Net pay is sealed,
+ * so the decrypt loop lives here; the turn itself is `app.payout_run_settle`
+ * (legend-izza4): it runs as the payout role, re-checks every sealed fact in
+ * SQL, and takes `paid_by` from the batch (its last approver), not from here.
+ * Only slips that have a readable net of zero or less and no item at all are
+ * handed over as `zeroNet`; the function refuses any other unpaid slip.
  */
 async function settleRunWhenAllPaid(
   tx: Tx,
   actor: Actor,
-  runId: PayrollRunId,
-  now: Date,
-  paidBy: string,
+  batch: BatchRow,
 ): Promise<boolean> {
   const tenantId = actor.tenantId as TenantId;
+  const runId = batch.payrollRunId;
   const [run] = await tx
     .select({ status: payrollRuns.status })
     .from(payrollRuns)
@@ -537,34 +537,18 @@ async function settleRunWhenAllPaid(
         )
     ).map((row) => row.payslipId as string),
   );
+  const zeroNet: string[] = [];
   for (const slip of slips) {
     if (paid.has(slip.id)) continue;
     const net = readSlipNet(slip);
     if (net === null || net > 0) return false;
+    zeroNet.push(slip.id);
   }
-  // Only this statement may turn the run paid (trigger PAYOUT-22).
-  await tx.execute(sql`SELECT set_config('app.payout_settle', 'on', true)`);
-  try {
-    const updated = await tx
-      .update(payrollRuns)
-      .set({
-        status: "paid",
-        paidAt: now,
-        paidBy: paidBy as UserId,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(payrollRuns.tenantId, tenantId),
-          eq(payrollRuns.id, runId),
-          eq(payrollRuns.status, "locked"),
-        ),
-      )
-      .returning({ id: payrollRuns.id });
-    return updated.length === 1;
-  } finally {
-    await tx.execute(sql`SELECT set_config('app.payout_settle', 'off', true)`);
-  }
+  // Only the payout role may turn the run paid (trigger PAYOUT-22, legend-izza4).
+  const settled = await tx.execute<{ paid: boolean }>(
+    sql`SELECT app.payout_run_settle(${batch.id}::uuid, ${uuidArray(zeroNet)}) AS paid`,
+  );
+  return settled.rows[0]?.paid === true;
 }
 
 /** When no item of the batch is still waiting, the batch closes. */
@@ -621,13 +605,7 @@ export async function settleAndMaybePay(
   now: Date,
 ): Promise<boolean> {
   await settleBatchPayouts(tx, actor, batch.id, now);
-  const runPaid = await settleRunWhenAllPaid(
-    tx,
-    actor,
-    batch.payrollRunId,
-    now,
-    batch.approvedBy ?? actor.userId,
-  );
+  const runPaid = await settleRunWhenAllPaid(tx, actor, batch);
   if (runPaid) await emitPayoutRunPaid(tx, actor, batch, now);
   return runPaid;
 }
@@ -640,6 +618,41 @@ function assertNotRequester(batch: BatchRow, actor: Actor): void {
       "Pengaju batch tidak boleh mengonfirmasi pembayarannya sendiri.",
     );
 }
+
+/**
+ * An unlocked peek: does this batch exist for the tenant? The step grants of
+ * confirm and resolve are issued BEFORE the batch row is locked: the grantor
+ * connection inserts a grant row whose foreign key takes `FOR KEY SHARE` on the
+ * batch, which waits for our own `FOR UPDATE` and would deadlock the request
+ * against itself. The trusted function re-checks everything under the lock, so
+ * a state change in between is refused there (fail closed).
+ */
+async function batchExistsUnlocked(
+  tx: Tx,
+  tenantId: TenantId,
+  batchId: string,
+): Promise<boolean> {
+  if (!UUID.test(batchId)) return false;
+  const [row] = await tx
+    .select({ id: payrollDisbursementBatches.id })
+    .from(payrollDisbursementBatches)
+    .where(
+      and(
+        eq(payrollDisbursementBatches.tenantId, tenantId),
+        eq(payrollDisbursementBatches.id, batchId),
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
+}
+
+const validItemIds = (ids: readonly string[]) =>
+  ids.length > 0 &&
+  new Set(ids).size === ids.length &&
+  ids.every((id) => UUID.test(id));
+
+const sameIds = (a: readonly string[], b: readonly string[]) =>
+  a.length === b.length && a.every((id) => b.includes(id));
 
 async function loadItemsForConfirm(
   tx: Tx,
@@ -726,6 +739,24 @@ export async function confirmManualItems(
         ),
       );
   }
+  // The payment record is written only by `app.payout_bank_confirm`, which
+  // spends one grant (legend-r86qa). The grant is issued before the batch lock
+  // (see `batchExistsUnlocked`); an input the checks below refuse gets none.
+  const confirmIds = input.results.map((result) => result.itemId);
+  const confirmGrant =
+    validItemIds(confirmIds) &&
+    (await batchExistsUnlocked(tx, tenantId, batchId))
+      ? await payoutTrustedGrant(actor, {
+          kind: "bank_confirm",
+          step: "record",
+          batchId,
+          itemIds: confirmIds,
+          evidenceKey: null,
+          refId: null,
+          targetId: null,
+          detail: "succeeded",
+        })
+      : null;
   const batch = await loadBatchRunFirst(tx, actor.tenantId, batchId);
   if (batch.channel !== "manual_bank")
     throw refuse(
@@ -795,35 +826,22 @@ export async function confirmManualItems(
   for (const key of proofKeys)
     await assertProofNotUsedForReturn(tx, tenantId, key, true);
 
-  let confirmed = 0;
-  for (const result of input.results) {
-    const updated = await tx
-      .update(payrollDisbursementItems)
-      .set({
-        status: "succeeded",
-        settledAt: now,
-        confirmedBy: actor.userId as UserId,
-        confirmationRef: result.bankRef?.trim() || null,
-        confirmationEvidenceKey: evidenceByItem.get(result.itemId) ?? null,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(payrollDisbursementItems.tenantId, tenantId),
-          eq(payrollDisbursementItems.batchId, batch.id),
-          eq(payrollDisbursementItems.id, result.itemId),
-          eq(payrollDisbursementItems.status, "exported"),
-        ),
-      )
-      .returning({ id: payrollDisbursementItems.id });
-    if (updated.length !== 1)
-      throw refuse(
-        409,
-        "PAYOUT_ITEM_NOT_CONFIRMABLE",
-        "Ada item yang belum diunduh atau sudah dikonfirmasi.",
-      );
-    confirmed += 1;
-  }
+  if (confirmGrant === null)
+    throw refuse(422, "PAYOUT_ITEMS_INVALID", "Daftar item tidak valid.");
+  const refs = input.results.map((result) => result.bankRef?.trim() ?? "");
+  const keys = input.results.map(
+    (result) => evidenceByItem.get(result.itemId) ?? null,
+  );
+  const moved = await tx.execute<{ moved: number }>(
+    sql`SELECT app.payout_bank_confirm(${batch.id}::uuid, ${uuidArray(confirmIds)}, ${pgArray(refs)}::text[], ${pgArray(keys)}::varchar[], ${confirmGrant}) AS moved`,
+  );
+  const confirmed = Number(moved.rows[0]?.moved);
+  if (confirmed !== input.results.length)
+    throw refuse(
+      409,
+      "PAYOUT_ITEM_NOT_CONFIRMABLE",
+      "Ada item yang belum diunduh atau sudah dikonfirmasi.",
+    );
 
   const closed = await closeBatchWhenDone(tx, tenantId, batch, "exported", now);
   const runPaid = await settleAndMaybePay(tx, actor, batch, now);
@@ -892,6 +910,58 @@ export async function resolveManualItems(
     { tenantId: actor.tenantId, batchId },
     evidenceInput,
   );
+  // Both steps run in `app.payout_resolve_propose` / `_approve` (legend-r86qa),
+  // each spending one grant bound to the outcome. A call may mix items at step
+  // one and at step two, so up to two grants. Both are issued before the batch
+  // lock (see `batchExistsUnlocked`) from an unlocked read of `resolved_by`; the
+  // locked read below must give the same split, else 409, and the functions
+  // re-check everything in SQL.
+  const outcomeKnown =
+    input.outcome === "failed" || input.outcome === "not_sent";
+  const peekRows =
+    outcomeKnown &&
+    validItemIds(input.itemIds) &&
+    (await batchExistsUnlocked(tx, tenantId, batchId))
+      ? await tx
+          .select({
+            id: payrollDisbursementItems.id,
+            status: payrollDisbursementItems.status,
+            resolvedBy: payrollDisbursementItems.resolvedBy,
+          })
+          .from(payrollDisbursementItems)
+          .where(
+            and(
+              eq(payrollDisbursementItems.tenantId, tenantId),
+              eq(payrollDisbursementItems.batchId, batchId),
+              inArray(payrollDisbursementItems.id, [...input.itemIds]),
+            ),
+          )
+      : null;
+  const peekReady =
+    peekRows !== null &&
+    peekRows.length === input.itemIds.length &&
+    peekRows.every((row) => row.status === "exported");
+  const proposeIds = peekReady
+    ? peekRows.filter((row) => row.resolvedBy === null).map((row) => row.id)
+    : [];
+  const approveIds = peekReady
+    ? peekRows.filter((row) => row.resolvedBy !== null).map((row) => row.id)
+    : [];
+  const resolveGrant = (step: "propose" | "approve", ids: string[]) =>
+    ids.length === 0
+      ? Promise.resolve(null)
+      : payoutTrustedGrant(actor, {
+          kind: "resolve",
+          step,
+          batchId,
+          itemIds: ids,
+          evidenceKey: evidence,
+          refId: null,
+          targetId: null,
+          detail: input.outcome,
+        });
+  const proposeGrant = await resolveGrant("propose", proposeIds);
+  const approveGrant = await resolveGrant("approve", approveIds);
   const batch = await loadBatchRunFirst(tx, actor.tenantId, batchId);
   if (batch.channel !== "manual_bank")
     throw refuse(
@@ -962,53 +1032,41 @@ export async function resolveManualItems(
   );
   await assertProofNotUsedForReturn(tx, tenantId, evidence, true);
 
+  // The split must be the one the grants were issued for.
+  if (
+    !sameIds(
+      proposeIds,
+      rows.filter((row) => row.resolvedBy === null).map((row) => row.id),
+    ) ||
+    !sameIds(
+      approveIds,
+      rows.filter((row) => row.resolvedBy !== null).map((row) => row.id),
+    )
+  )
+    throw refuse(
+      409,
+      "PAYOUT_ITEM_NOT_CONFIRMABLE",
+      "Ada item yang belum diunduh atau sudah diselesaikan.",
+    );
   let resolved = 0;
   let proposed = 0;
-  for (const row of rows) {
-    const where = (secondStep: boolean) =>
-      and(
-        eq(payrollDisbursementItems.tenantId, tenantId),
-        eq(payrollDisbursementItems.batchId, batch.id),
-        eq(payrollDisbursementItems.id, row.id),
-        eq(payrollDisbursementItems.status, "exported"),
-        secondStep
-          ? and(
-              eq(payrollDisbursementItems.resolvedBy, row.resolvedBy!),
-              isNull(payrollDisbursementItems.resolvedBy2),
-            )
-          : isNull(payrollDisbursementItems.resolvedBy),
-      );
-    const updated =
-      row.resolvedBy === null
-        ? await tx
-            .update(payrollDisbursementItems)
-            .set({
-              resolvedBy: actor.userId as UserId,
-              resolutionOutcome: input.outcome,
-              resolutionEvidenceKey: evidence,
-              resolutionNote: note,
-              updatedAt: now,
-            })
-            .where(where(false))
-            .returning({ id: payrollDisbursementItems.id })
-        : await tx
-            .update(payrollDisbursementItems)
-            .set({
-              resolvedBy2: actor.userId as UserId,
-              status: input.outcome,
-              failureClass: input.outcome === "failed" ? "definitive" : null,
-              updatedAt: now,
-            })
-            .where(where(true))
-            .returning({ id: payrollDisbursementItems.id });
-    if (updated.length !== 1)
+  if (proposeGrant !== null) {
+    await tx.execute(
+      sql`SELECT app.payout_resolve_propose(${batch.id}::uuid, ${uuidArray(proposeIds)}, ${input.outcome}::text, ${evidence}::varchar, ${note}::text, ${proposeGrant}) AS id`,
+    );
+    proposed = proposeIds.length;
+  }
+  if (approveGrant !== null) {
+    const moved = await tx.execute<{ moved: number }>(
+      sql`SELECT app.payout_resolve_approve(${batch.id}::uuid, ${uuidArray(approveIds)}, ${input.outcome}::text, ${evidence}::varchar, ${approveGrant}) AS moved`,
+    );
+    if (Number(moved.rows[0]?.moved) !== approveIds.length)
       throw refuse(
         409,
         "PAYOUT_ITEM_NOT_CONFIRMABLE",
         "Ada item yang belum diunduh atau sudah diselesaikan.",
       );
-    if (row.resolvedBy === null) proposed += 1;
-    else resolved += 1;
+    resolved = approveIds.length;
   }
 
   const closed =
@@ -1253,6 +1311,84 @@ async function bindReturnClaim(
 const uuidArray = (ids: readonly string[]) =>
   sql`${`{${ids.join(",")}}`}::uuid[]`;
 
+/** A text[] or varchar[] literal with quoted elements; null stays SQL NULL. */
+const pgArray = (values: readonly (string | null)[]) =>
+  `{${values
+    .map((value) =>
+      value === null ? "NULL" : `"${value.replace(/[\\"]/g, "\\$&")}"`,
+    )
+    .join(",")}}`;
+
+/** The grant of a return request, issued before the run and batch rows are locked. */
+type ReturnGrant = {
+  step: "propose" | "confirm";
+  /** The claim a step two confirms (null at step one). */
+  claimId: string | null;
+  grant: string;
+};
+
+/**
+ * The step is only known for certain under the lock, but the grant must exist
+ * before it (see `batchExistsUnlocked`: the grant row's foreign key waits for a
+ * held batch lock). The step is read unlocked here (step two when every item
+ * already has a first return and the proof has its open claim), the grant is
+ * bound to it, and the locked read must agree (else 409, fail closed). The
+ * trusted function re-checks everything again under the lock. Null when the
+ * request cannot be a valid step: the locked path refuses it before a grant is
+ * used.
+ */
+async function issueReturnGrant(
+  tx: Tx,
+  actor: Actor,
+  tenantId: TenantId,
+  batchId: string,
+  itemIds: readonly string[],
+  evidence: string,
+): Promise<ReturnGrant | null> {
+  if (
+    !validItemIds(itemIds) ||
+    !(await batchExistsUnlocked(tx, tenantId, batchId))
+  )
+    return null;
+  const rows = await tx
+    .select({ returnedBy: payrollDisbursementItems.returnedBy })
+    .from(payrollDisbursementItems)
+    .where(
+      and(
+        eq(payrollDisbursementItems.tenantId, tenantId),
+        eq(payrollDisbursementItems.batchId, batchId),
+        inArray(payrollDisbursementItems.id, [...itemIds]),
+      ),
+    );
+  if (rows.length !== itemIds.length) return null;
+  const secondStep = rows.every((row) => row.returnedBy !== null);
+  let claimId: string | null = null;
+  if (secondStep) {
+    const [claim] = await tx
+      .select({ id: payrollPayoutReturnClaims.id })
+      .from(payrollPayoutReturnClaims)
+      .where(
+        and(
+          eq(payrollPayoutReturnClaims.tenantId, tenantId),
+          eq(payrollPayoutReturnClaims.evidenceKey, evidence),
+        ),
+      );
+    if (!claim) return null;
+    claimId = claim.id;
+  }
+  const step = secondStep ? "confirm" : "propose";
+  const grant = await payoutTrustedGrant(actor, {
+    kind: "return",
+    step,
+    batchId,
+    itemIds,
+    evidenceKey: evidence,
+    refId: claimId,
+    targetId: null,
+  });
+  return { step, claimId, grant };
+}
+
 /**
  * Funds came back after a paid transfer (design 7.8): moves `succeeded` items
  * to `returned` and reverses their net in the ledger, once. Same two-person
@@ -1290,6 +1426,14 @@ export async function returnManualItems(
     proofs,
     { tenantId: actor.tenantId, batchId },
     input.evidenceKey,
+  );
+  const early = await issueReturnGrant(
+    tx,
+    actor,
+    tenantId,
+    batchId,
+    input.itemIds,
+    evidence,
   );
   const batch = await loadBatchRunFirst(tx, actor.tenantId, batchId);
   if (batch.channel !== "manual_bank")
@@ -1354,10 +1498,11 @@ export async function returnManualItems(
   let returned = 0;
   let proposed = 0;
   if (!secondStep) {
+    if (early?.step !== "propose") throw payoutStateChanged();
     try {
       await tx.transaction((savepoint) =>
         savepoint.execute(
-          sql`SELECT app.payout_return_propose(${batch.id}::uuid, ${uuidArray(itemIds)}, ${evidence}::varchar, ${note}, ${actor.userId}, ${payoutTrustedSessionId(actor)})`,
+          sql`SELECT app.payout_return_propose(${batch.id}::uuid, ${uuidArray(itemIds)}, ${evidence}::varchar, ${note}, ${early.grant})`,
         ),
       );
     } catch (error) {
@@ -1368,8 +1513,10 @@ export async function returnManualItems(
     proposed = rows.length;
   } else {
     if (claimId === null) throw refuseReusedReturnProof();
+    if (early?.step !== "confirm" || early.claimId !== claimId)
+      throw payoutStateChanged();
     const confirmed = await tx.execute<{ moved: number }>(
-      sql`SELECT app.payout_return_confirm(${claimId}::uuid, ${evidence}::varchar, ${actor.userId}, ${payoutTrustedSessionId(actor)}) AS moved`,
+      sql`SELECT app.payout_return_confirm(${claimId}::uuid, ${evidence}::varchar, ${early.grant}) AS moved`,
     );
     if (Number(confirmed.rows[0]?.moved) !== rows.length)
       throw refuse(
@@ -1450,7 +1597,6 @@ export async function confirmCashHandover(
       status: "succeeded",
       settledAt: now,
       confirmedBy: actor.userId as UserId,
-      confirmationEvidenceKey: null,
       updatedAt: now,
     })
     .where(

@@ -17,6 +17,7 @@
 //   (not `succeeded`) is refused: record it once that attempt is paid.
 // - One request is one operation: every item is in the same step.
 
+import { randomUUID } from "node:crypto";
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import type { TenantId, UserId } from "@starter/shared/core";
 import type { RecordOverpaidItemsInput } from "@starter/shared/validators/payroll-payout";
@@ -32,13 +33,24 @@ import {
 import { recordOverpaidItem } from "./payroll-payout-overpaid.service.ts";
 import { bindProofToOperation } from "./payroll-payout-proof-binding.service.ts";
 import {
+  isPayoutUuid,
+  isProposalReplaceViolation,
   loadBatchRunFirst,
   payoutRefuse,
-  payoutTrustedSessionId,
+  payoutStateChanged,
+  payoutTrustedGrant,
+  readBatch,
   recordPayoutAudit,
   type BatchRow,
   type PayoutActor as Actor,
 } from "./payroll-payout.service.ts";
+
+const proposalReplaceRefused = () =>
+  payoutRefuse(
+    409,
+    "PAYOUT_PROPOSAL_REPLACE_REFUSED",
+    "Bukti pengajuan yang masih terbuka tidak bisa diganti. Tarik pengajuan itu, lalu ajukan lagi dengan bukti yang benar.",
+  );
 
 export type OverpaidRouteResult = {
   batchStatus: BatchRow["status"];
@@ -115,6 +127,83 @@ async function assertOtherAttemptPaid(
   }
 }
 
+/** The grants of this request, issued before the run and batch rows are locked. */
+type OverpaidGrants =
+  | { step: "propose"; grant: string }
+  | {
+      step: "record";
+      /** One grant per item, each bound to the posting id its record uses. */
+      records: Map<string, { postingId: string; grant: string }>;
+    };
+
+/**
+ * The step is only known for certain under the lock, but a grant must exist
+ * before it: the grantor connection inserts a grant row whose foreign key takes
+ * `FOR KEY SHARE` on the batch, which would wait for our own `FOR UPDATE` and
+ * deadlock the request against itself. The step is read unlocked here (step two
+ * when another person's proposals of exactly this item set exist), the grants
+ * are bound to it, and the locked read must agree (else 409, fail closed). The
+ * trusted functions re-check everything again under the lock. Null when the
+ * request is malformed: the locked path refuses it before any grant is used.
+ */
+async function issueOverpaidGrants(
+  tx: Tx,
+  actor: Actor,
+  tenantId: TenantId,
+  batchId: string,
+  itemIds: readonly string[],
+  evidence: string,
+): Promise<OverpaidGrants | null> {
+  if (
+    itemIds.length === 0 ||
+    new Set(itemIds).size !== itemIds.length ||
+    !itemIds.every(isPayoutUuid)
+  )
+    return null;
+  const proposals = await tx
+    .select({ proposedBy: payrollPayoutOverpaidProposals.proposedBy })
+    .from(payrollPayoutOverpaidProposals)
+    .where(
+      and(
+        eq(payrollPayoutOverpaidProposals.tenantId, tenantId),
+        inArray(payrollPayoutOverpaidProposals.itemId, [...itemIds]),
+      ),
+    );
+  const stepTwo =
+    proposals.length === itemIds.length &&
+    proposals.every((p) => p.proposedBy !== actor.userId);
+  if (!stepTwo)
+    return {
+      step: "propose",
+      grant: await payoutTrustedGrant(actor, {
+        kind: "overpaid",
+        step: "propose",
+        batchId,
+        itemIds,
+        evidenceKey: evidence,
+        refId: null,
+        targetId: null,
+      }),
+    };
+  const records = new Map<string, { postingId: string; grant: string }>();
+  for (const itemId of itemIds) {
+    const postingId = randomUUID();
+    records.set(itemId, {
+      postingId,
+      grant: await payoutTrustedGrant(actor, {
+        kind: "overpaid",
+        step: "record",
+        batchId,
+        itemIds: [itemId],
+        evidenceKey: evidence,
+        refId: postingId,
+        targetId: null,
+      }),
+    });
+  }
+  return { step: "record", records };
+}
+
 /**
  * Step one or two of recording a double paid transfer (see the file header).
  * The step is decided by the proposals found under the lock, not by the caller.
@@ -142,6 +231,15 @@ export async function recordOverpaidItems(
     proofs,
     { tenantId: actor.tenantId, batchId },
     input.evidenceKey,
+  );
+  await readBatch(tx, actor.tenantId, batchId);
+  const early = await issueOverpaidGrants(
+    tx,
+    actor,
+    tenantId,
+    batchId,
+    input.itemIds,
+    evidence,
   );
   const batch = await loadBatchRunFirst(tx, actor.tenantId, batchId);
   if (batch.channel !== "manual_bank")
@@ -214,13 +312,16 @@ export async function recordOverpaidItems(
           "Bukti harus sama dengan bukti yang dicatat orang pertama.",
         );
     }
+    if (early?.step !== "record") throw payoutStateChanged();
     let recorded = 0;
     for (const row of rows) {
+      const recordGrant = early.records.get(row.id);
+      if (!recordGrant) throw payoutStateChanged();
       await recordOverpaidItem(
         tx,
         actor,
         row.id,
-        { evidenceKey: evidence, note, operationItemIds },
+        { evidenceKey: evidence, note, operationItemIds, recordGrant },
         proofs,
         now,
       );
@@ -234,21 +335,29 @@ export async function recordOverpaidItems(
     };
   }
 
-  // Step one (or the same person correcting an open proposal): only a proposal.
-  // The same person repeating the same proof is a replay, not a second person:
-  // refused. Only a different proof replaces their own open proposal.
+  // Step one: only a proposal. The same person repeating the same proof is a
+  // replay, not a second person: refused. Replacing the proof of an open
+  // proposal is refused in SQL too (legend-911 P1-2): withdraw it and propose
+  // anew. Answered here as a 409 before any SQL runs.
   if (proposals.some((p) => p.evidenceKey === evidence))
     throw payoutRefuse(
       403,
       "PAYOUT_OVERPAID_SAME_PERSON",
       "Anda sudah mengajukan pencatatan ini. Langkah kedua harus dilakukan orang lain.",
     );
+  if (proposals.length > 0) throw proposalReplaceRefused();
   await assertOtherAttemptPaid(tx, tenantId, rows);
-  // One trusted call writes (or replaces, for the same person) the proposal of
-  // every item; no direct DML on the proposals (migration 0645).
-  await tx.execute(
-    sql`SELECT app.payout_overpaid_propose(${batch.id}::uuid, ${`{${operationItemIds.join(",")}}`}::uuid[], ${evidence}::varchar, ${note}, ${actor.userId}, ${payoutTrustedSessionId(actor)})`,
-  );
+  // One trusted call writes the proposal of every item; no direct DML on the
+  // proposals (migration 0645).
+  if (early?.step !== "propose") throw payoutStateChanged();
+  try {
+    await tx.execute(
+      sql`SELECT app.payout_overpaid_propose(${batch.id}::uuid, ${`{${operationItemIds.join(",")}}`}::uuid[], ${evidence}::varchar, ${note}, ${early.grant})`,
+    );
+  } catch (error) {
+    if (isProposalReplaceViolation(error)) throw proposalReplaceRefused();
+    throw error;
+  }
   await recordPayoutAudit(tx, actor, {
     action: "payroll.disbursement.overpaid_proposed",
     objectType: "payroll_disbursement_batch",

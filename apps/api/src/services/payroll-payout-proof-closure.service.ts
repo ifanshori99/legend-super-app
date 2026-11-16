@@ -27,7 +27,7 @@ import type { ListPayoutStuckProofsQuery } from "@starter/shared/validators/payr
 import type { Tx } from "./hris-access.ts";
 import {
   payoutRefuse,
-  payoutTrustedSessionId,
+  payoutTrustedGrant,
   recordPayoutAudit,
   type PayoutActor as Actor,
 } from "./payroll-payout.service.ts";
@@ -195,7 +195,7 @@ export async function proposeProofClosure(
 ): Promise<PayoutProofClosureProposedDto> {
   const [stuck] = rowsOf(
     await tx.execute(
-      sql`SELECT 1 FROM payroll_payout_proof_backfill_stuck
+      sql`SELECT batch_id FROM payroll_payout_proof_backfill_stuck
            WHERE tenant_id = ${actor.tenantId}::uuid
              AND evidence_key = ${input.evidenceKey}
              AND resolved_at IS NULL
@@ -210,9 +210,18 @@ export async function proposeProofClosure(
     );
   let closureId: string;
   try {
+    const grant = await payoutTrustedGrant(actor, {
+      kind: "closure",
+      step: "propose",
+      batchId: stuck.batch_id as string,
+      itemIds: [],
+      evidenceKey: input.evidenceKey,
+      refId: null,
+      targetId: null,
+    });
     const [row] = rowsOf(
       await tx.execute(
-        sql`SELECT app.payout_proof_closure_propose(${input.evidenceKey}::varchar, ${input.note}, ${actor.userId}, ${payoutTrustedSessionId(actor)}) AS id`,
+        sql`SELECT app.payout_proof_closure_propose(${input.evidenceKey}::varchar, ${input.note}, ${grant}) AS id`,
       ),
     );
     closureId = row!.id as string;
@@ -240,9 +249,37 @@ export async function approveProofClosure(
   actor: Actor,
   closureId: string,
 ): Promise<PayoutProofClosureClosedDto> {
-  try {
+  // The grant binds the batch the key is stuck on and the closure's key; the
+  // stuck row is kept after the closure is closed, so a repeat still finds it.
+  const [bound] = rowsOf(
     await tx.execute(
-      sql`SELECT app.payout_proof_closure_approve(${closureId}::uuid, ${actor.userId}, ${payoutTrustedSessionId(actor)}) AS closed`,
+      sql`SELECT s.batch_id, z.evidence_key
+            FROM payroll_payout_proof_closures z
+            JOIN payroll_payout_proof_backfill_stuck s
+              ON s.tenant_id = z.tenant_id AND s.evidence_key = z.evidence_key
+           WHERE z.tenant_id = ${actor.tenantId}::uuid
+             AND z.id = ${closureId}::uuid
+           LIMIT 1`,
+    ),
+  );
+  if (!bound)
+    throw payoutRefuse(
+      404,
+      "PAYOUT_PROOF_STUCK_NOT_FOUND",
+      "Bukti macet tidak ditemukan atau sudah selesai.",
+    );
+  try {
+    const grant = await payoutTrustedGrant(actor, {
+      kind: "closure",
+      step: "approve",
+      batchId: bound.batch_id as string,
+      itemIds: [],
+      evidenceKey: bound.evidence_key as string,
+      refId: closureId,
+      targetId: null,
+    });
+    await tx.execute(
+      sql`SELECT app.payout_proof_closure_approve(${closureId}::uuid, ${grant}) AS closed`,
     );
   } catch (error) {
     throw mapClosureRefusal(error);

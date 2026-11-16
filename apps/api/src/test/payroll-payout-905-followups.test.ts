@@ -28,8 +28,8 @@
 //   accounts that are not the mapping). A held posting with source NULL stays
 //   legal, so it is not asserted here.
 // - Trusted functions are called as `app.payout_correction_approve(operation
-//   uuid, key varchar, actor text, session text)` (design "Fungsi tepercaya"),
-//   with the second finance person and a live MFA session from
+//   uuid, key varchar, grant text)` (911: the grant carries actor and session),
+//   with a grant of the second finance person and a live MFA session from
 //   `payoutActorSession`; the permission checked is `payroll.disburse.approve`.
 //   The call is first proven to be accepted (rolled back), so a refusal of the
 //   COMMIT can only come from the missing posting.
@@ -486,15 +486,22 @@ describe("905 follow-up P2-2: approving a correction needs the settle posting of
     );
     expect(correction!.status, "premise: proposed").toBe("proposed");
     const session = await payoutActorSession(tenantId(), two.userId);
+    // 911: one grant, issued by the grantor login before the payout
+    // transaction. A rolled-back call leaves it unconsumed, so the premise run
+    // and the real run use the same one.
+    const grant = await session.grants.issue({
+      kind: "correction",
+      step: "approve",
+      batchId: w.batchId,
+      itemIds: [w.budi],
+      evidenceKey: correction!.evidence_key as string,
+      refId: correction!.operation_id as string,
+      targetId: null,
+    });
     const approve = async (client: PoolClient) => {
       await client.query(
-        `SELECT app.payout_correction_approve($1::uuid, $2::varchar, $3::text, $4::text)`,
-        [
-          correction!.operation_id,
-          correction!.evidence_key,
-          session.userId,
-          session.sessionId,
-        ],
+        `SELECT app.payout_correction_approve($1::uuid, $2::varchar, $3::text)`,
+        [correction!.operation_id, correction!.evidence_key, grant],
       );
     };
     const accepted = await appTx(approve, true);

@@ -90,6 +90,11 @@ const schema = z
       );
     }, "Set DATABASE_URL to a PostgreSQL connection string or run pnpm run setup."),
     APP_DATABASE_URL: postgresUrl.optional(),
+    // Payout step grant login (legend-911): legend_grant_<16 hex>, member of
+    // legend_payout_grantor, runs only app.payout_grant_issue. Unset outside
+    // development and test: every trusted payout step answers 503
+    // PAYOUT_STEP_GRANT_UNAVAILABLE (no payout money is recorded).
+    PAYOUT_GRANTOR_DATABASE_URL: blankToUndefined(postgresUrl).optional(),
     BETTER_AUTH_SECRET: z
       .string()
       .min(32, "Run pnpm run setup to generate a secret."),

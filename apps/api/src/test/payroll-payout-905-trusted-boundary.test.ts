@@ -40,6 +40,10 @@
 //   hash of the sound binding lands in payroll_payout_proof_hash_contests.
 // - Item columns refused to the app role: status, confirmed_by,
 //   confirmation_ref, confirmation_evidence_key (brief: "status/confirmed_*").
+//   911 (legend-r86qa, design-r86qa-izza4.md 2/0656): confirmation_ref and
+//   confirmation_evidence_key are now REVOKED from legend_app (42501, a column
+//   privilege error before any trigger); status and confirmed_by stay granted
+//   and are refused by the item guard (23514).
 //   Other item columns (returned_by, resolved_*, ...) are not asserted here.
 // - Not covered here (names are not in the brief/contract): the nightly
 //   reconciliation worker job; add when its job name and exception kind are fixed.
@@ -291,13 +295,11 @@ describe("905 the app role cannot write the trusted payout tables", () => {
       },
       {
         name: "UPDATE item confirmation_ref",
-        code: GUARD,
         sql: `UPDATE payroll_disbursement_items SET confirmation_ref = 'FORGED' WHERE tenant_id = $1 AND id = $2`,
         params: [W.tenantId, itemId],
       },
       {
         name: "UPDATE item confirmation_evidence_key",
-        code: GUARD,
         sql: `UPDATE payroll_disbursement_items SET confirmation_evidence_key = $3 WHERE tenant_id = $1 AND id = $2`,
         params: [W.tenantId, itemId, key],
       },

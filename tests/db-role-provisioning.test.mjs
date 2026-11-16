@@ -1274,6 +1274,11 @@ test("legend-zoqc job works with a non-superuser CREATEROLE migration owner", as
   await cluster.query(
     `GRANT legend_app TO ${owner} WITH ADMIN OPTION, INHERIT FALSE, SET FALSE`,
   );
+  // The payout migrations (0644 on) hand functions to legend_payout, which
+  // needs ADMIN on it (src/db/migrator-role.ts grants it to the real migrator).
+  await cluster.query(
+    `GRANT legend_payout TO ${owner} WITH ADMIN OPTION, INHERIT FALSE, SET FALSE`,
+  );
   await cluster.query(`CREATE DATABASE ${database} OWNER ${owner}`);
   t.after(async () => {
     await cluster.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
@@ -2377,6 +2382,326 @@ test("legend-usyi job provisions the audit retention login: group only, no table
       assert.doesNotMatch(result.stdout, new RegExp(maintUser));
     },
   );
+});
+
+test("legend-911 job provisions the payout grantor login: group only, no table rights, one function", async (t) => {
+  const shared = process.env.STARTER_TEST_DATABASE_URL;
+  assert.ok(
+    shared && process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"),
+    "Run pnpm test to create an isolated database.",
+  );
+  const database = `legend_grant_${hex(6)}`;
+  const adminUrl = withDatabase(shared, database).toString();
+  const appUrl = login(adminUrl, `legend_runtime_${hex(8)}`);
+  const workerUrl = login(adminUrl, `legend_worker_${hex(8)}`);
+  const grantUrl = login(adminUrl, `legend_grant_${hex(8)}`);
+  remember(shared);
+  const roles = [appUrl, workerUrl, grantUrl].map((url) =>
+    decodeURIComponent(new URL(url).username),
+  );
+  const grantUser = roles[2];
+  const issueSignature =
+    "app.payout_grant_issue(text, text, uuid, uuid[], varchar, uuid, uuid, varchar, text, text, text)";
+  const cluster = quietPool({ connectionString: shared, max: 1 });
+  await cluster.query(`CREATE DATABASE ${database}`);
+  const admin = quietPool({ connectionString: adminUrl, max: 1 });
+  const pools = [];
+  t.after(async () => {
+    for (const pool of pools) await pool.end();
+    await admin.end();
+    await cluster.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
+    for (const role of roles)
+      await cluster.query(`DROP ROLE IF EXISTS "${role}"`);
+    await cluster.end();
+  });
+  const migrated = spawnSync(pnpmCommand(), ["run", "db:migrate"], {
+    cwd: root,
+    env: {
+      ...process.env,
+      DATABASE_URL: adminUrl,
+      MIGRATION_DATABASE_URL: adminUrl,
+    },
+    encoding: "utf8",
+    shell: process.platform === "win32",
+  });
+  assert.equal(migrated.status, 0, migrated.stderr);
+
+  const env = (overrides = {}) => ({
+    MIGRATION_DATABASE_URL: adminUrl,
+    APP_DATABASE_URL: appUrl,
+    WORKER_DATABASE_URL: workerUrl,
+    PAYOUT_GRANTOR_DATABASE_URL: grantUrl,
+    ...overrides,
+  });
+  const first = runJob(env());
+  assert.equal(first.status, 0, first.stderr);
+  assert.match(first.stdout, new RegExp(`${grantUser} created`));
+  const second = runJob(env());
+  assert.equal(second.status, 0, second.stderr);
+  assert.match(second.stdout, new RegExp(`${grantUser} updated`));
+
+  await t.test(
+    "the login is a plain member of legend_payout_grantor and nothing else",
+    async () => {
+      const role = (
+        await admin.query(
+          "SELECT rolsuper, rolbypassrls, rolcreatedb, rolcreaterole, rolreplication, rolcanlogin FROM pg_roles WHERE rolname = $1",
+          [grantUser],
+        )
+      ).rows[0];
+      assert.deepEqual(role, {
+        rolsuper: false,
+        rolbypassrls: false,
+        rolcreatedb: false,
+        rolcreaterole: false,
+        rolreplication: false,
+        rolcanlogin: true,
+      });
+      const groups = await admin.query(
+        "SELECT g.rolname, m.inherit_option, m.admin_option FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid JOIN pg_roles u ON u.oid = m.member WHERE u.rolname = $1",
+        [grantUser],
+      );
+      assert.deepEqual(groups.rows, [
+        {
+          rolname: "legend_payout_grantor",
+          inherit_option: true,
+          admin_option: false,
+        },
+      ]);
+    },
+  );
+
+  await t.test(
+    "the login reads no table and can run no payout function but the issue function",
+    async () => {
+      const pool = quietPool({ connectionString: grantUrl, max: 1 });
+      pools.push(pool);
+      for (const table of [
+        "payroll_payout_grants",
+        "payroll_payout_attestations",
+        "tenants",
+      ])
+        await assert.rejects(pool.query(`SELECT 1 FROM public.${table}`), {
+          code: "42501",
+        });
+      await assert.rejects(
+        pool.query(
+          "SELECT app.payout_grant_consume(NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)",
+        ),
+        { code: "42501" },
+      );
+      await assert.rejects(
+        pool.query(
+          "SELECT app.payout_assert_actor(NULL, NULL, NULL, 'payroll.disburse.approve')",
+        ),
+        { code: "42501" },
+      );
+      // The issue function itself is reachable: without a tenant in force it
+      // refuses on its own check, not on privileges.
+      await assert.rejects(
+        pool.query(
+          `SELECT ${issueSignature.replace(/\(.*\)/, "")}('correction', 'propose', NULL, NULL, NULL, NULL, NULL, NULL, 'x', 'y', 'password')`,
+        ),
+        { message: /tenant context is required/ },
+      );
+    },
+  );
+
+  await t.test("audit mode passes with the grantor login", () => {
+    const audit = runJob(env(), ["--audit"]);
+    assert.equal(audit.status, 0, audit.stderr);
+    assert.match(audit.stdout, new RegExp(`Audit passed.*${grantUser}`));
+  });
+
+  const drift = [
+    [
+      "a table right on the grants table for the group",
+      ["GRANT SELECT ON public.payroll_payout_grants TO legend_payout_grantor"],
+      [
+        "REVOKE SELECT ON public.payroll_payout_grants FROM legend_payout_grantor",
+      ],
+      /table rights it must not have/,
+    ],
+    [
+      "membership in legend_app",
+      [`GRANT legend_app TO "${grantUser}"`],
+      [`REVOKE legend_app FROM "${grantUser}"`],
+      /unexpected roles/,
+    ],
+    [
+      "the issue function open to PUBLIC",
+      [`GRANT EXECUTE ON FUNCTION ${issueSignature} TO PUBLIC`],
+      [`REVOKE EXECUTE ON FUNCTION ${issueSignature} FROM PUBLIC`],
+      /PUBLIC or legend_app/,
+    ],
+    [
+      "the issue function open to legend_app",
+      [`GRANT EXECUTE ON FUNCTION ${issueSignature} TO legend_app`],
+      [`REVOKE EXECUTE ON FUNCTION ${issueSignature} FROM legend_app`],
+      /PUBLIC or legend_app/,
+    ],
+    [
+      "the issue function that is not SECURITY DEFINER",
+      [`ALTER FUNCTION ${issueSignature} SECURITY INVOKER`],
+      [`ALTER FUNCTION ${issueSignature} SECURITY DEFINER`],
+      /not SECURITY DEFINER/,
+    ],
+    [
+      "the issue function without a pinned search_path",
+      [`ALTER FUNCTION ${issueSignature} RESET search_path`],
+      [
+        `ALTER FUNCTION ${issueSignature} SET search_path = pg_catalog, pg_temp`,
+      ],
+      /no pinned search_path/,
+    ],
+    [
+      "the issue function owned by someone else",
+      [
+        "CREATE ROLE grant_other_owner NOLOGIN",
+        `ALTER FUNCTION ${issueSignature} OWNER TO grant_other_owner`,
+      ],
+      [
+        `ALTER FUNCTION ${issueSignature} OWNER TO legend_payout`,
+        "DROP ROLE grant_other_owner",
+      ],
+      /not owned by legend_payout/,
+    ],
+    [
+      "EXECUTE on the consume function for the group",
+      [
+        "GRANT EXECUTE ON FUNCTION app.payout_grant_consume(uuid, text, text, text, uuid, uuid[], varchar, uuid, uuid, varchar) TO legend_payout_grantor",
+      ],
+      [
+        "REVOKE EXECUTE ON FUNCTION app.payout_grant_consume(uuid, text, text, text, uuid, uuid[], varchar, uuid, uuid, varchar) FROM legend_payout_grantor",
+      ],
+      /functions beyond payout_grant_issue/,
+    ],
+    [
+      "a SECURITY DEFINER function in schema public left open to PUBLIC",
+      [
+        "CREATE FUNCTION public.grant_secdef() RETURNS int LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS 'SELECT 1'",
+      ],
+      ["DROP FUNCTION public.grant_secdef()"],
+      /functions beyond payout_grant_issue/,
+    ],
+  ];
+  for (const [name, breakIt, fix, message] of drift)
+    await t.test(`provisioning and audit refuse ${name}`, async () => {
+      for (const sql of breakIt) await admin.query(sql);
+      try {
+        for (const args of [[], ["--audit"]]) {
+          const result = runJob(env(), args);
+          assert.equal(result.status, 1, `${name} ${args}`);
+          assert.match(result.stderr, message);
+        }
+      } finally {
+        for (const sql of fix) await admin.query(sql);
+      }
+      const healed = runJob(env(), ["--audit"]);
+      assert.equal(healed.status, 0, healed.stderr);
+    });
+
+  await t.test(
+    "a maintenance-style login name is refused for the grantor URL",
+    () => {
+      const bad = login(adminUrl, `legend_maint_${hex(8)}`);
+      const result = runJob(env({ PAYOUT_GRANTOR_DATABASE_URL: bad }));
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /payout grantor login has an invalid name/);
+    },
+  );
+
+  await t.test(
+    "without the grantor URL nothing about it is provisioned or audited",
+    () => {
+      const result = runJob(env({ PAYOUT_GRANTOR_DATABASE_URL: "" }), [
+        "--audit",
+      ]);
+      assert.equal(result.status, 0, result.stderr);
+      assert.doesNotMatch(result.stdout, new RegExp(grantUser));
+    },
+  );
+});
+
+test("legend-911 Compose check: PAYOUT_GRANTOR_DATABASE_URL reaches the api only", () => {
+  const app = "postgresql://app:secret-a@postgres:5432/legend";
+  const worker = "postgresql://worker:secret-w@postgres:5432/legend";
+  const grantor = "postgresql://grant:secret-g@postgres:5432/legend";
+  const config = (overrides = {}) => ({
+    services: {
+      api: {
+        environment: {
+          APP_DATABASE_URL: app,
+          PAYOUT_GRANTOR_DATABASE_URL: grantor,
+        },
+      },
+      web: { environment: {} },
+      worker: {
+        environment: { APP_DATABASE_URL: app, WORKER_DATABASE_URL: worker },
+      },
+      ...overrides,
+    },
+  });
+  const check = (input, expectedGrantor = grantor) => {
+    const result = spawnSync(
+      process.execPath,
+      [resolve(root, "deploy/single-vm/check-compose-env.mjs")],
+      {
+        input: JSON.stringify(input),
+        env: {
+          PATH: process.env.PATH,
+          APP_DATABASE_URL: app,
+          WORKER_DATABASE_URL: worker,
+          ...(expectedGrantor
+            ? { PAYOUT_GRANTOR_DATABASE_URL: expectedGrantor }
+            : {}),
+        },
+        encoding: "utf8",
+      },
+    );
+    for (const secret of ["secret-a", "secret-w", "secret-g"])
+      assert.ok(!result.stderr.includes(secret), "stderr leaks a password");
+    return result;
+  };
+  const ok = check(config());
+  assert.equal(ok.status, 0, ok.stderr);
+  for (const service of ["web", "worker"]) {
+    const refused = check(
+      config({
+        [service]: {
+          environment: {
+            APP_DATABASE_URL: app,
+            WORKER_DATABASE_URL: worker,
+            PAYOUT_GRANTOR_DATABASE_URL: grantor,
+          },
+        },
+      }),
+    );
+    assert.equal(refused.status, 1);
+    assert.match(
+      refused.stderr,
+      new RegExp(`${service} receives PAYOUT_GRANTOR_DATABASE_URL`),
+    );
+  }
+  const other = check(
+    config({
+      api: {
+        environment: {
+          APP_DATABASE_URL: app,
+          PAYOUT_GRANTOR_DATABASE_URL: app,
+        },
+      },
+    }),
+  );
+  assert.equal(other.status, 1);
+  assert.match(
+    other.stderr,
+    /api receives a PAYOUT_GRANTOR_DATABASE_URL other than the checked one/,
+  );
+  // Checked URL absent (api.env does not set it), yet the api gets one.
+  const unchecked = check(config(), "");
+  assert.equal(unchecked.status, 1);
+  assert.match(unchecked.stderr, /PAYOUT_GRANTOR_DATABASE_URL not checked/);
 });
 
 test("legend-usyi Compose check: MAINTENANCE_DATABASE_URL reaches the worker only", () => {

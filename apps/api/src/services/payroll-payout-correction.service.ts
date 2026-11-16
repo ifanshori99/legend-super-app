@@ -53,9 +53,13 @@ import {
 } from "./payroll-payout-proof-fingerprint.service.ts";
 import { bindProofToOperation } from "./payroll-payout-proof-binding.service.ts";
 import {
+  isPayoutUuid,
   loadBatchRunFirst,
+  isProposalReplaceViolation,
   payoutRefuse,
-  payoutTrustedSessionId,
+  payoutStateChanged,
+  payoutTrustedGrant,
+  readBatch,
   recordPayoutAudit,
   type BatchRow,
   type PayoutActor as Actor,
@@ -97,6 +101,13 @@ const stepMismatch = () =>
     "Semua item dalam satu koreksi harus berada pada langkah yang sama dan memuat himpunan item yang sama.",
   );
 
+const proposalReplaceRefused = () =>
+  payoutRefuse(
+    409,
+    "PAYOUT_PROPOSAL_REPLACE_REFUSED",
+    "Bukti pengajuan yang masih terbuka tidak bisa diganti. Tarik pengajuan itu, lalu ajukan lagi dengan bukti yang benar.",
+  );
+
 const proofReused = () =>
   payoutRefuse(
     409,
@@ -131,17 +142,81 @@ function isProofUniqueViolation(error: unknown): boolean {
 /** Array literal for a `uuid[]` parameter (ids come from locked rows). */
 const uuidArray = (ids: readonly string[]) => `{${ids.join(",")}}`;
 
+/** The grant of this request, issued before the run and batch rows are locked. */
+type CorrectionGrant = {
+  step: "propose" | "approve";
+  /** The operation a step two approves (null at step one). */
+  operationId: string | null;
+  grant: string;
+};
+
+/**
+ * The step is only known for certain under the lock, but the grant must exist
+ * before it: the grantor connection inserts a grant row whose foreign key takes
+ * `FOR KEY SHARE` on the batch, which would wait for our own `FOR UPDATE` and
+ * deadlock the request against itself. So the step is read unlocked here (step
+ * two when another person's proposal of exactly this item set exists), the
+ * grant is bound to it, and the locked read must agree (else 409, fail closed).
+ * The trusted function re-checks everything again under the lock. Null when the
+ * request is malformed: the locked path refuses it before any grant is used.
+ */
+async function issueCorrectionGrant(
+  tx: Tx,
+  actor: Actor,
+  tenantId: TenantId,
+  batchId: string,
+  itemIds: readonly string[],
+  evidence: string,
+): Promise<CorrectionGrant | null> {
+  if (
+    itemIds.length === 0 ||
+    new Set(itemIds).size !== itemIds.length ||
+    !itemIds.every(isPayoutUuid)
+  )
+    return null;
+  const proposals = await tx
+    .select({
+      operationId: payrollPayoutFailedCorrections.operationId,
+      proposedBy: payrollPayoutFailedCorrections.proposedBy,
+    })
+    .from(payrollPayoutFailedCorrections)
+    .where(
+      and(
+        eq(payrollPayoutFailedCorrections.tenantId, tenantId),
+        inArray(payrollPayoutFailedCorrections.itemId, [...itemIds]),
+      ),
+    );
+  const operations = new Set(proposals.map((p) => p.operationId));
+  const stepTwo =
+    proposals.length === itemIds.length &&
+    operations.size === 1 &&
+    proposals.every((p) => p.proposedBy !== actor.userId);
+  const operationId = stepTwo ? [...operations][0]! : null;
+  const step = stepTwo ? "approve" : "propose";
+  const grant = await payoutTrustedGrant(actor, {
+    kind: "correction",
+    step,
+    batchId,
+    itemIds,
+    evidenceKey: evidence,
+    refId: operationId,
+    targetId: null,
+  });
+  return { step, operationId, grant };
+}
+
 /** Step one in SQL: writes the proposals, returns the operation id. */
 async function callCorrectionPropose(
   tx: Tx,
-  actor: Actor,
+  early: CorrectionGrant | null,
   batchId: string,
   itemIds: readonly string[],
   evidence: string,
   note: string,
 ): Promise<string> {
+  if (early?.step !== "propose") throw payoutStateChanged();
   const result = await tx.execute(
-    sql`SELECT app.payout_correction_propose(${batchId}::uuid, ${uuidArray(itemIds)}::uuid[], ${evidence}::varchar, ${note}, ${actor.userId}, ${payoutTrustedSessionId(actor)}) AS id`,
+    sql`SELECT app.payout_correction_propose(${batchId}::uuid, ${uuidArray(itemIds)}::uuid[], ${evidence}::varchar, ${note}, ${early.grant}) AS id`,
   );
   return (result.rows[0] as { id: string }).id;
 }
@@ -149,12 +224,14 @@ async function callCorrectionPropose(
 /** Step two in SQL: corrects every item of the operation, returns how many. */
 async function callCorrectionApprove(
   tx: Tx,
-  actor: Actor,
+  early: CorrectionGrant | null,
   operationId: string,
   evidence: string,
 ): Promise<number> {
+  if (early?.step !== "approve" || early.operationId !== operationId)
+    throw payoutStateChanged();
   const result = await tx.execute(
-    sql`SELECT app.payout_correction_approve(${operationId}::uuid, ${evidence}::varchar, ${actor.userId}, ${payoutTrustedSessionId(actor)}) AS moved`,
+    sql`SELECT app.payout_correction_approve(${operationId}::uuid, ${evidence}::varchar, ${early.grant}) AS moved`,
   );
   return Number((result.rows[0] as { moved: number }).moved);
 }
@@ -341,6 +418,15 @@ export async function correctFailedItems(
     { tenantId: actor.tenantId, batchId },
     input.evidenceKey,
   );
+  await readBatch(tx, actor.tenantId, batchId);
+  const early = await issueCorrectionGrant(
+    tx,
+    actor,
+    tenantId,
+    batchId,
+    input.itemIds,
+    evidence,
+  );
   const batch = await loadBatchRunFirst(tx, actor.tenantId, batchId);
   if (batch.channel !== "manual_bank")
     throw payoutRefuse(
@@ -462,7 +548,7 @@ export async function correctFailedItems(
     // (migration 0645); no GUC is an authorisation any more.
     const moved = await callCorrectionApprove(
       tx,
-      actor,
+      early,
       proposals[0]!.operationId,
       evidence,
     );
@@ -491,21 +577,24 @@ export async function correctFailedItems(
     };
   }
 
-  // Step one (or the same person replacing an open proposal): only a proposal.
-  // The same person repeating the same proof is a replay, not a second person:
-  // refused. Only a different proof replaces their own open proposal.
+  // Step one: only a proposal. The same person repeating the same proof is a
+  // replay, not a second person: refused. Replacing the proof of an open
+  // proposal is refused in SQL too (legend-911 P1-2): withdraw it and propose
+  // anew. Answered here as a 409 before any SQL runs.
   if (ownProposals.some((p) => p.evidenceKey === evidence))
     throw payoutRefuse(
       403,
       "PAYOUT_CORRECTION_SAME_PERSON",
       "Anda sudah mengajukan koreksi ini. Langkah kedua harus dilakukan orang lain.",
     );
+  if (ownProposals.length > 0) throw proposalReplaceRefused();
   try {
     // One call writes (or replaces, for the same person) the proposal of every
     // item; the proof hashes are read from the stored record in SQL.
-    await callCorrectionPropose(tx, actor, batch.id, itemIds, evidence, note);
+    await callCorrectionPropose(tx, early, batch.id, itemIds, evidence, note);
   } catch (error) {
     if (isProofUniqueViolation(error)) throw proofReused();
+    if (isProposalReplaceViolation(error)) throw proposalReplaceRefused();
     throw error;
   }
   await recordPayoutAudit(tx, actor, {

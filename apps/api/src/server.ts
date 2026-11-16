@@ -5,6 +5,7 @@ import { attachEmergencyRealtime } from "./edge/panic-relay-realtime.ts";
 import { expressClientAddress } from "./lib/client-address.ts";
 import { env } from "./config/env";
 import { checkDatabase, db, pool } from "./db";
+import { closePayoutGrantorPool } from "./db/grantor";
 import { startCatalogPublisherWorker } from "./services/edge-master-data-publisher.ts";
 import { logger } from "./lib/logger";
 import { createDoitGateway } from "./services/payment-doit.ts";
@@ -238,6 +239,7 @@ async function shutdown(signal: string) {
   server.closeIdleConnections();
   await new Promise<void>((resolve) => server.close(() => resolve()));
   await pool.end().catch(() => {});
+  await closePayoutGrantorPool();
   logger.flush();
   process.exit(0);
 }

@@ -2,7 +2,8 @@
 // `docker compose config --format json` on stdin and compares each service's
 // environment with the restricted URLs provision-roles.sh already validated
 // (APP_DATABASE_URL and WORKER_DATABASE_URL in this process's environment,
-// plus MAINTENANCE_DATABASE_URL when worker.env sets it).
+// plus MAINTENANCE_DATABASE_URL when worker.env sets it and
+// PAYOUT_GRANTOR_DATABASE_URL when api.env sets it).
 //
 // Compose's env_file parser reads more than the line starts the shell checks
 // look at: text after a closing quote is a new KEY=value, quoted values may
@@ -66,6 +67,18 @@ function checkComposeConfig(config, expected) {
     if (name !== "worker" && !JOB_SERVICES.has(name))
       if (has(env(name), "MAINTENANCE_DATABASE_URL"))
         problems.push(`${name} receives MAINTENANCE_DATABASE_URL`);
+  // The payout grantor login (legend-911) belongs to the api only.
+  for (const name of Object.keys(services).sort())
+    if (name !== "api" && !JOB_SERVICES.has(name))
+      if (has(env(name), "PAYOUT_GRANTOR_DATABASE_URL"))
+        problems.push(`${name} receives PAYOUT_GRANTOR_DATABASE_URL`);
+  if (expected.grantor) {
+    if (api.PAYOUT_GRANTOR_DATABASE_URL !== expected.grantor)
+      problems.push(
+        "api receives a PAYOUT_GRANTOR_DATABASE_URL other than the checked one in api.env",
+      );
+  } else if (has(api, "PAYOUT_GRANTOR_DATABASE_URL"))
+    problems.push("api receives a PAYOUT_GRANTOR_DATABASE_URL not checked");
   const worker = env("worker");
   if (expected.maintenance) {
     if (worker.MAINTENANCE_DATABASE_URL !== expected.maintenance)
@@ -93,6 +106,7 @@ async function main() {
     app: process.env.APP_DATABASE_URL,
     worker: process.env.WORKER_DATABASE_URL,
     maintenance: process.env.MAINTENANCE_DATABASE_URL || undefined,
+    grantor: process.env.PAYOUT_GRANTOR_DATABASE_URL || undefined,
   };
   if (!expected.app || !expected.worker)
     refuse(

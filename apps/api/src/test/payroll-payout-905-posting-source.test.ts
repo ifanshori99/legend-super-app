@@ -427,33 +427,33 @@ describe("905 a held posting's source is not filled by the app role (card 2b)", 
 // =========================================================================
 
 describe("905 app.payout_posting_record_source checks who calls it (card 2b)", () => {
-  it("[905-source-function-forged-actor-refused] legend_app calls the function with an invented actor and session, then with a real user and an invented session: both are refused by the actor check and nothing is stored or journaled", async () => {
+  it("[905-source-function-forged-actor-refused] legend_app can name no actor or session any more (911): it calls the function with a made-up grant, then with a malformed one: both are refused by the grant check and nothing is stored or journaled", async () => {
     const { held, batchId } = await heldCashWithoutSource();
     // 905: counted after the setup, which posts the lock journal itself.
     const before = await journalCount();
     const b = await accountId("1101");
 
-    for (const [actor, session] of [
-      [`forged-${randomUUID()}`, `forged-${randomUUID()}`],
-      [finance.userId, `forged-${randomUUID()}`],
-    ] as const) {
+    for (const grant of [
+      `${randomUUID()}${randomUUID()}`.replaceAll("-", ""),
+      `forged-${randomUUID()}`,
+    ]) {
       const result = await appTx(async (client) => {
         await client.query(
-          `SELECT app.payout_posting_record_source($1::uuid, $2::uuid, $3::uuid, $4::text, $5::text)`,
-          [batchId, held.id, b, actor, session],
+          `SELECT app.payout_posting_record_source($1::uuid, $2::uuid, $3::uuid, $4::text)`,
+          [batchId, held.id, b, grant],
         );
       });
       expect(result.code, "the call is refused").toBeDefined();
       expect(result.code, "the function exists (missing behaviour)").not.toBe(
         "42883",
       );
-      // 905: app.payout_assert_actor itself raises 42501 (PAYOUT-39 unknown
-      // actor, PAYOUT-40 no live session), so the code alone cannot tell a
-      // missing EXECUTE grant from the actor check: the message does.
+      // 911: app.payout_grant_consume raises 42501 (PAYOUT-70), so the code
+      // alone cannot tell a missing EXECUTE grant from the grant check: the
+      // message does.
       expect(
         result.message,
-        "the app role may call it; the actor check refuses",
-      ).toMatch(/PAYOUT-(39|40):/);
+        "the app role may call it; the grant check refuses",
+      ).toMatch(/PAYOUT-70:/);
     }
     expect((await postingOf(held.id as string)).source_gl_account_id).toBe(
       null,

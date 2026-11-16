@@ -2773,6 +2773,48 @@
       "when": 1795000000651,
       "tag": "0651_payout_recon_proof_hashes",
       "breakpoints": true
+    },
+    {
+      "idx": 410,
+      "version": "7",
+      "when": 1795000000652,
+      "tag": "0652_payout_911_closure_bind",
+      "breakpoints": true
+    },
+    {
+      "idx": 411,
+      "version": "7",
+      "when": 1795000000653,
+      "tag": "0653_payout_step_grants",
+      "breakpoints": true
+    },
+    {
+      "idx": 412,
+      "version": "7",
+      "when": 1795000000654,
+      "tag": "0654_payout_trusted_steps_grant",
+      "breakpoints": true
+    },
+    {
+      "idx": 413,
+      "version": "7",
+      "when": 1795000000655,
+      "tag": "0655_payout_911_grant_kinds",
+      "breakpoints": true
+    },
+    {
+      "idx": 414,
+      "version": "7",
+      "when": 1795000000656,
+      "tag": "0656_payout_resolve_bank_confirm",
+      "breakpoints": true
+    },
+    {
+      "idx": 415,
+      "version": "7",
+      "when": 1795000000657,
+      "tag": "0657_payout_run_settle",
+      "breakpoints": true
     }
   ]
 }

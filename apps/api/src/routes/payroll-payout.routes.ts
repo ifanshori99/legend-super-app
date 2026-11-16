@@ -43,6 +43,7 @@ import {
   requireTenantPermission,
 } from "../middleware/permissions.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
+import { payoutGrantIssuerOf } from "../services/payroll-payout-grant.service.ts";
 import {
   listPayoutRecoveryPage,
   repostSkippedFees,
@@ -92,6 +93,7 @@ function actorOf(req: Request) {
       tenantId: context.tenant.tenantId,
       userId: getAuth(req).user.id,
       sessionId: getAuth(req).session.id,
+      grants: payoutGrantIssuerOf(req),
     },
   };
 }

@@ -625,11 +625,15 @@ describe("905 recon: items from before the trusted boundary", () => {
         [W.tenantId, fresh.itemId],
       );
     });
+    // The resolve to failed (911) is itself attested (kind 'resolve'); the
+    // legacy shape is an overpaid item without an 'overpaid' attestation.
+    const overpaidAttestations = async (itemId: string) =>
+      (await attestationsOf(itemId)).filter((a) => a.kind === "overpaid");
     expect(
-      await attestationsOf(old.itemId),
-      "premise: legacy, no attestations",
+      await overpaidAttestations(old.itemId),
+      "premise: legacy, no overpaid attestations",
     ).toHaveLength(0);
-    expect(await attestationsOf(fresh.itemId)).toHaveLength(0);
+    expect(await overpaidAttestations(fresh.itemId)).toHaveLength(0);
 
     await runRecon();
     await expectNotFlagged(old.itemId, "pre-boundary item");
@@ -637,5 +641,66 @@ describe("905 recon: items from before the trusted boundary", () => {
       fresh.itemId,
       "post-boundary item without attestations",
     );
+  });
+});
+
+// =========================================================================
+// Step grants (legend-911 design-p1-1 4.11)
+// =========================================================================
+
+describe("911 recon: attestations after the grant cutover need their grant", () => {
+  it("[911-recon-grant] a clean granted operation gives zero flags; a grant whose actor was changed gives grant_mismatch and holds the slip", async () => {
+    const w = await correctedWorld();
+    const [since] = await W.rowsOf(`SELECT app.payout_grants_since() AS since`);
+    const checked = (await attestationsOf(w.itemId)).filter(
+      (a) => (a.attested_at as Date) >= (since!.since as Date),
+    );
+    expect(
+      checked.length,
+      "premise: attestations at or after the grant cutover",
+    ).toBeGreaterThanOrEqual(2);
+    expect(
+      checked.every((a) => a.grant_id !== null),
+      "premise: every one of them has a grant",
+    ).toBe(true);
+    await runRecon();
+    await expectNotFlagged(w.itemId, "clean granted operation");
+
+    const grantId = checked[0]!.grant_id as string;
+    const actorOfGrant = async () =>
+      (
+        await W.rowsOf(
+          `SELECT actor FROM payroll_payout_grants WHERE tenant_id = $1 AND id = $2`,
+          [W.tenantId, grantId],
+        )
+      )[0]!.actor as string;
+    const original = await actorOfGrant();
+    try {
+      // Superuser fixture, FK and guard triggers off for this statement only.
+      await tamper((c) =>
+        c.query(
+          `UPDATE payroll_payout_grants SET actor = $3 WHERE tenant_id = $1 AND id = $2`,
+          [W.tenantId, grantId, randomUUID()],
+        ),
+      );
+      await runRecon();
+      await expectFlagged(w.itemId, "grant actor changed");
+      const rows = await exceptionsOf(w.itemId);
+      expect(
+        rows.map((r) => r.reason),
+        "reason of the flag",
+      ).toContain("grant_mismatch");
+      expect(
+        rows.every((r) => r.payslip_id !== null),
+        "the flag carries the payslip, so the slip is held",
+      ).toBe(true);
+    } finally {
+      await tamper((c) =>
+        c.query(
+          `UPDATE payroll_payout_grants SET actor = $3 WHERE tenant_id = $1 AND id = $2`,
+          [W.tenantId, grantId, original],
+        ),
+      );
+    }
   });
 });

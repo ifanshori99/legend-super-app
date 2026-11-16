@@ -1327,6 +1327,8 @@ export const PAYOUT_ATTESTATION_KINDS = [
   "return",
   "posting_source",
   "closure",
+  "resolve",
+  "bank_confirm",
 ] as const;
 export type PayoutAttestationKind = (typeof PAYOUT_ATTESTATION_KINDS)[number];
 
@@ -1337,6 +1339,96 @@ export const PAYOUT_ATTESTATION_STEPS = [
   "confirm",
 ] as const;
 export type PayoutAttestationStep = (typeof PAYOUT_ATTESTATION_STEPS)[number];
+
+export const PAYOUT_GRANT_METHODS = ["password", "mfa_challenge"] as const;
+export type PayoutGrantMethod = (typeof PAYOUT_GRANT_METHODS)[number];
+
+/**
+ * One-time payout step grants (migration 0653, legend-911). Issued by the
+ * grantor login only (`app.payout_grant_issue`), spent once by the trusted step
+ * functions of the payout role (`app.payout_grant_consume`). Only the SHA-256 of
+ * the secret is stored. The app role reads the non-secret columns (nightly
+ * reconciliation) and writes nothing; `secret_sha256` and `assertion` are
+ * outside its column grant, so services must never select them.
+ */
+export const payrollPayoutGrants = pgTable(
+  "payroll_payout_grants",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    secretSha256: varchar("secret_sha256", { length: 64 }).notNull(),
+    kind: varchar("kind", { length: 16 })
+      .$type<PayoutAttestationKind>()
+      .notNull(),
+    step: varchar("step", { length: 8 })
+      .$type<PayoutAttestationStep>()
+      .notNull(),
+    batchId: uuid("batch_id"),
+    itemSetHash: varchar("item_set_hash", { length: 64 }),
+    evidenceKey: varchar("evidence_key", { length: 500 }),
+    refId: uuid("ref_id"),
+    targetId: uuid("target_id"),
+    detail: varchar("detail", { length: 64 }),
+    actor: actor("actor").notNull(),
+    sessionId: text("session_id").notNull(),
+    stepUpMethod: varchar("step_up_method", { length: 16 })
+      .$type<PayoutGrantMethod>()
+      .notNull(),
+    assertion: jsonb("assertion").$type<Record<string, unknown>>().notNull(),
+    issuedAt: timestamp("issued_at", { withTimezone: true }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    consumedTxid: bigint("consumed_txid", { mode: "number" }),
+  },
+  (table) => [
+    unique("payroll_payout_grants_tenant_id_key").on(table.tenantId, table.id),
+    unique("payroll_payout_grants_secret_key").on(table.secretSha256),
+    unique("payroll_payout_grants_attest_key").on(
+      table.tenantId,
+      table.id,
+      table.kind,
+      table.step,
+      table.actor,
+      table.sessionId,
+    ),
+    index("payroll_payout_grants_tenant_batch_idx").on(
+      table.tenantId,
+      table.batchId,
+    ),
+    foreignKey({
+      name: "payroll_payout_grants_batch_fk",
+      columns: [table.tenantId, table.batchId],
+      foreignColumns: [
+        payrollDisbursementBatches.tenantId,
+        payrollDisbursementBatches.id,
+      ],
+    }),
+    check(
+      "payroll_payout_grants_kind_check",
+      sql`${table.kind} IN (${inList(PAYOUT_ATTESTATION_KINDS)})`,
+    ),
+    check(
+      "payroll_payout_grants_detail_check",
+      sql`(${table.kind} = 'resolve' AND ${table.detail} IN ('failed', 'not_sent')) OR (${table.kind} = 'bank_confirm' AND ${table.detail} = 'succeeded') OR (${table.kind} NOT IN ('resolve', 'bank_confirm') AND ${table.detail} IS NULL)`,
+    ),
+    check(
+      "payroll_payout_grants_step_check",
+      sql`${table.step} IN (${inList(PAYOUT_ATTESTATION_STEPS)})`,
+    ),
+    check(
+      "payroll_payout_grants_method_check",
+      sql`${table.stepUpMethod} IN (${inList(PAYOUT_GRANT_METHODS)})`,
+    ),
+    check(
+      "payroll_payout_grants_expiry_check",
+      sql`${table.expiresAt} > ${table.issuedAt} AND ${table.expiresAt} <= ${table.issuedAt} + interval '2 minutes'`,
+    ),
+    check(
+      "payroll_payout_grants_consumed_check",
+      sql`(${table.consumedAt} IS NULL) = (${table.consumedTxid} IS NULL)`,
+    ),
+  ],
+);
 
 /**
  * Who did each step of a correction, an overpaid record, a return, a posting
@@ -1364,6 +1456,9 @@ export const payrollPayoutAttestations = pgTable(
       .default(sql`'{}'::uuid[]`),
     evidenceKey: varchar("evidence_key", { length: 500 }),
     bindingId: uuid("binding_id"),
+    // The one-time grant this step was made under (0653); NULL only for
+    // entries before the cutover (CHECK in 0654).
+    grantId: uuid("grant_id"),
     actor: actor("actor").notNull(),
     sessionId: text("session_id").notNull(),
     sessionCreatedAt: timestamp("session_created_at", {
@@ -1394,6 +1489,10 @@ export const payrollPayoutAttestations = pgTable(
       table.operationId,
       table.step,
     ),
+    unique("payroll_payout_attestations_grant_key").on(
+      table.tenantId,
+      table.grantId,
+    ),
     index("payroll_payout_attestations_tenant_batch_idx").on(
       table.tenantId,
       table.batchId,
@@ -1412,6 +1511,25 @@ export const payrollPayoutAttestations = pgTable(
       foreignColumns: [
         payrollPayoutProofBindings.tenantId,
         payrollPayoutProofBindings.id,
+      ],
+    }),
+    foreignKey({
+      name: "payroll_payout_attestations_grant_fk",
+      columns: [
+        table.tenantId,
+        table.grantId,
+        table.kind,
+        table.step,
+        table.actor,
+        table.sessionId,
+      ],
+      foreignColumns: [
+        payrollPayoutGrants.tenantId,
+        payrollPayoutGrants.id,
+        payrollPayoutGrants.kind,
+        payrollPayoutGrants.step,
+        payrollPayoutGrants.actor,
+        payrollPayoutGrants.sessionId,
       ],
     }),
     check(
