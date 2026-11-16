@@ -1010,6 +1010,73 @@ describe("915: only a proposal that is still step one can be withdrawn", () => {
 // 4: a new proposal after a withdrawal
 // =========================================================================
 
+/**
+ * 87dur: the night recon after a withdrawal and a new proposal over a NEW proof.
+ * The withdrawn K1 binding stays on record (history, never reusable) but is no
+ * second completed operation: no recon exception, no finance exception, the
+ * K1 binding and the approval log are untouched, and the books are unchanged.
+ */
+async function expectReconCleanAfterRepropose(p: Proposal, k1: string) {
+  const bindingKeys = async () =>
+    (
+      await W.rowsOf(
+        `SELECT evidence_key FROM payroll_payout_proof_bindings
+          WHERE tenant_id = $1 AND batch_id = $2 AND kind = $3`,
+        [W.tenantId, p.batchId, p.kind],
+      )
+    )
+      .map((r) => String(r.evidence_key))
+      .sort();
+  const logRows = () =>
+    count(
+      `SELECT count(*)::int AS n FROM payroll_payout_approval_log
+        WHERE tenant_id = $1 AND batch_id = $2`,
+      [W.tenantId, p.batchId],
+    );
+  const keysBefore = await bindingKeys();
+  const logBefore = await logRows();
+  expect(keysBefore, "premise: K1 binding is on record").toContain(k1);
+  expect(keysBefore, "premise: K1 and K2 bindings").toHaveLength(2);
+
+  const { storage } = W.proofs();
+  let after: string | null = null;
+  for (let page = 0; page < 1000; page += 1) {
+    const result = await (
+      reconcileTrustedPayouts as unknown as (
+        context: unknown,
+        options: unknown,
+      ) => Promise<{ operations: number; last: string | null }>
+    )(W.scope(), { storage, after });
+    if (result.last === null || result.operations === 0) break;
+    after = result.last;
+  }
+
+  const exceptions = await W.rowsOf(
+    `SELECT reason FROM ${EXCEPTIONS} WHERE tenant_id = $1 AND item_id = $2`,
+    [W.tenantId, p.itemId],
+  );
+  expect(
+    exceptions.map((r) => String(r.reason)),
+    "no recon exception (not binding_duplicate)",
+  ).toEqual([]);
+  const day = (shift: number) =>
+    new Date(Date.now() + shift * 86_400_000).toISOString().slice(0, 10);
+  const finance = JSON.stringify(
+    (
+      await listFinanceExceptions(W.scope(), {
+        from: day(-2),
+        to: day(2),
+        kind: "payout_recon_flag",
+      } as never)
+    ).items,
+  );
+  expect(finance, "no finance exception for the item").not.toContain(p.itemId);
+  expect(await bindingKeys(), "both bindings stay on record").toEqual(
+    keysBefore,
+  );
+  expect(await logRows(), "the approval log is untouched").toBe(logBefore);
+}
+
 describe("915: proposing again after a withdrawal", () => {
   it("[915-withdraw-correction-repropose-new-proof] after a withdrawal a new proposal over a NEW proof goes through both steps: the item is corrected once, one settle journal", async () => {
     const p = await proposalWorld("correction");
@@ -1038,6 +1105,13 @@ describe("915: proposing again after a withdrawal", () => {
     );
     expect(settles, "one settle posting").toHaveLength(1);
     expect(await W.countJournals(settles[0]!.journal_key as string)).toBe(1);
+
+    // 87dur: recon after the second operation completed.
+    await expectReconCleanAfterRepropose(p, p.key);
+    expect(
+      await W.countJournals(settles[0]!.journal_key as string),
+      "still one journal after recon",
+    ).toBe(1);
   });
 
   it("[915-withdraw-overpaid-repropose-new-proof] after a withdrawal a new overpaid proposal over a NEW proof is recorded by another person: the item is overpaid, one receivable journal", async () => {
@@ -1061,6 +1135,13 @@ describe("915: proposing again after a withdrawal", () => {
     expect(
       await W.countJournals(`payroll-payout-overpaid:${p.itemId}`),
       "one journal",
+    ).toBe(1);
+
+    // 87dur: recon after the second operation completed.
+    await expectReconCleanAfterRepropose(p, p.key);
+    expect(
+      await W.countJournals(`payroll-payout-overpaid:${p.itemId}`),
+      "still one journal after recon",
     ).toBe(1);
   });
 

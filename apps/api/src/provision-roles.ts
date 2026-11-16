@@ -108,6 +108,7 @@ try {
       // re-key them if they already exist (never logins of other databases).
       appUrl: process.env.APP_DATABASE_URL || undefined,
       workerUrl: process.env.WORKER_DATABASE_URL || undefined,
+      grantorUrl: process.env.PAYOUT_GRANTOR_DATABASE_URL || undefined,
     });
     console.log(
       `Migrator login ${result.user} ${result.outcome}: owns the database, BYPASSRLS, CREATEROLE, not superuser.`,

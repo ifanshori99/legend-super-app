@@ -1,4 +1,5 @@
 import "./load-env";
+import "./role-worker";
 import { Pool } from "pg";
 import type { ObjectStorage } from "@starter/shared/adapters";
 import { assertDeploymentEnv } from "@starter/shared/env";

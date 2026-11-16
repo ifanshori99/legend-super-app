@@ -1284,7 +1284,7 @@ test("legend-zoqc job works with a non-superuser CREATEROLE migration owner", as
   assert.ok(shared, "Run pnpm test to create an isolated database.");
   remember(shared);
   const database = `legend_zoqc_${hex(6)}`;
-  const owner = `zoqc_owner_${hex(6)}`;
+  const owner = `legend_migrator_${hex(8)}`;
   const ownerPassword = hex(24);
   const ownerUrl = withDatabase(shared, database);
   ownerUrl.username = owner;
@@ -1307,23 +1307,6 @@ test("legend-zoqc job works with a non-superuser CREATEROLE migration owner", as
       "legend_app does not exist: run this file through pnpm test, which migrates the shared test database first.",
     );
   }
-  await cluster.query(
-    `CREATE ROLE ${owner} LOGIN CREATEROLE BYPASSRLS PASSWORD '${ownerPassword}'`,
-  );
-  await cluster.query(
-    `GRANT legend_app TO ${owner} WITH ADMIN OPTION, INHERIT FALSE, SET FALSE`,
-  );
-  // The payout migrations (0644 on) hand functions to legend_payout, which
-  // needs ADMIN on it (src/db/migrator-role.ts grants it to the real migrator).
-  await cluster.query(
-    `GRANT legend_payout TO ${owner} WITH ADMIN OPTION, INHERIT FALSE, SET FALSE`,
-  );
-  // The required grantor login (legend-786te) joins legend_payout_grantor, so
-  // the owner needs ADMIN on it as well.
-  await cluster.query(
-    `GRANT legend_payout_grantor TO ${owner} WITH ADMIN OPTION, INHERIT FALSE, SET FALSE`,
-  );
-  await cluster.query(`CREATE DATABASE ${database} OWNER ${owner}`);
   t.after(async () => {
     await cluster.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
     // The default grantor login (legend-786te) holds a grant made by the owner,
@@ -1335,6 +1318,26 @@ test("legend-zoqc job works with a non-superuser CREATEROLE migration owner", as
       await cluster.query(`DROP ROLE IF EXISTS "${role}"`);
     await cluster.end();
   });
+  // legend-fwx7l: the owner is the real migrator login, created by the real
+  // `--migrator` job (bootstrap superuser = the shared test login), not by a
+  // hand-written CREATEROLE/GRANT fixture. The database exists first, as in a
+  // first boot; the job makes the migrator its owner and gives it ADMIN on
+  // legend_app, legend_payout and this deploy's logins, including the payout
+  // grantor group and login.
+  await cluster.query(`CREATE DATABASE ${database}`);
+  const bootstrapUser = decodeURIComponent(new URL(shared).username);
+  const bootstrapPassword = decodeURIComponent(new URL(shared).password);
+  const provisioned = runJob(
+    {
+      MIGRATION_DATABASE_URL: adminUrl,
+      BOOTSTRAP_DATABASE_USER: bootstrapUser,
+      BOOTSTRAP_DATABASE_PASSWORD: bootstrapPassword,
+      APP_DATABASE_URL: appUrl,
+      WORKER_DATABASE_URL: workerUrl,
+    },
+    ["--migrator"],
+  );
+  assert.equal(provisioned.status, 0, provisioned.stderr);
   const migrated = spawnSync(pnpmCommand(), ["run", "db:migrate"], {
     cwd: root,
     env: {
@@ -1400,6 +1403,157 @@ test("legend-zoqc job works with a non-superuser CREATEROLE migration owner", as
   );
   assert.equal(membership.rows.length, 1);
   assert.equal(membership.rows[0].inherit_option, false);
+});
+
+test("legend-fwx7l the real migrator stays ADMIN of a grantor login and group a bootstrap superuser created", async (t) => {
+  // Production first boot: the bootstrap superuser (the shared test login)
+  // already created legend_payout_grantor and the legend_grant_* login. The
+  // migrator made by `provisionMigrator` is not a superuser, so it can only
+  // re-key that login, and put it in the group, if it holds ADMIN OPTION on
+  // both (INHERIT FALSE, SET FALSE like legend_app). Without that grant the
+  // job stops with SQLSTATE 42501 (permission denied).
+  const shared = process.env.STARTER_TEST_DATABASE_URL;
+  assert.ok(shared, "Run pnpm test to create an isolated database.");
+  remember(shared);
+  const database = `legend_zoqc_${hex(6)}`;
+  const migrator = `legend_migrator_${hex(8)}`;
+  const migratorUrl = remember(
+    (() => {
+      const next = withDatabase(shared, database);
+      next.username = migrator;
+      next.password = hex(24);
+      return next.toString();
+    })(),
+  );
+  const appUrl = login(migratorUrl, `legend_runtime_${hex(8)}`);
+  const workerUrl = login(migratorUrl, `legend_worker_${hex(8)}`);
+  const grantorUrl = login(migratorUrl, `legend_grant_${hex(8)}`);
+  const unrelated = `zoqc_unrelated_${hex(6)}`;
+  const names = [appUrl, workerUrl, grantorUrl].map((url) =>
+    decodeURIComponent(new URL(url).username),
+  );
+  const grantorName = names[2];
+  const bootstrapUser = decodeURIComponent(new URL(shared).username);
+  const bootstrapPassword = decodeURIComponent(new URL(shared).password);
+  const cluster = quietPool({ connectionString: shared, max: 1 });
+  t.after(async () => {
+    await cluster.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
+    for (const role of [...names, unrelated, migrator])
+      await cluster.query(`DROP ROLE IF EXISTS "${role}"`);
+    await cluster.end();
+  });
+  const group = await cluster.query(
+    "SELECT 1 FROM pg_roles WHERE rolname = 'legend_payout_grantor'",
+  );
+  assert.equal(
+    group.rows.length,
+    1,
+    "legend_payout_grantor does not exist: run this file through pnpm test, which migrates the shared test database first.",
+  );
+  // Created by the bootstrap superuser, not by the migrator. Not yet a member
+  // of the group: the job adds that membership itself.
+  await cluster.query(
+    `CREATE ROLE "${grantorName}" LOGIN PASSWORD '${decodeURIComponent(new URL(grantorUrl).password)}'`,
+  );
+  // A role the deploy does not name: the migrator must never gain ADMIN on it.
+  await cluster.query(`CREATE ROLE ${unrelated} NOLOGIN`);
+  await cluster.query(`CREATE DATABASE ${database}`);
+
+  const adminOptions = async () =>
+    (
+      await cluster.query(
+        `SELECT pg_get_userbyid(m.roleid) AS role, m.admin_option, m.inherit_option, m.set_option
+           FROM pg_auth_members m
+          WHERE m.member = (SELECT oid FROM pg_roles WHERE rolname = $1)
+          ORDER BY 1`,
+        [migrator],
+      )
+    ).rows;
+
+  const created = runJob(
+    {
+      MIGRATION_DATABASE_URL: migratorUrl,
+      BOOTSTRAP_DATABASE_USER: bootstrapUser,
+      BOOTSTRAP_DATABASE_PASSWORD: bootstrapPassword,
+      APP_DATABASE_URL: appUrl,
+      WORKER_DATABASE_URL: workerUrl,
+      PAYOUT_GRANTOR_DATABASE_URL: grantorUrl,
+    },
+    ["--migrator"],
+  );
+  assert.equal(created.status, 0, created.stderr);
+
+  await t.test(
+    "the migrator holds ADMIN only (no INHERIT, no SET) on the grantor group and login",
+    async () => {
+      const rows = await adminOptions();
+      for (const role of ["legend_payout_grantor", grantorName]) {
+        const grant = rows.find((row) => row.role === role);
+        assert.ok(grant, `the migrator has no membership in ${role}`);
+        assert.deepEqual(
+          {
+            admin: grant.admin_option,
+            inherit: grant.inherit_option,
+            set: grant.set_option,
+          },
+          { admin: true, inherit: false, set: false },
+          `${role} must be ADMIN only`,
+        );
+      }
+    },
+  );
+  await t.test(
+    "control: the migrator gets no ADMIN on a role the deploy does not name",
+    async () => {
+      const rows = await adminOptions();
+      assert.equal(
+        rows.some((row) => row.role === unrelated),
+        false,
+      );
+    },
+  );
+
+  const migrated = spawnSync(pnpmCommand(), ["run", "db:migrate"], {
+    cwd: root,
+    env: {
+      ...process.env,
+      DATABASE_URL: migratorUrl,
+      MIGRATION_DATABASE_URL: migratorUrl,
+    },
+    encoding: "utf8",
+    shell: process.platform === "win32",
+  });
+  assert.equal(migrated.status, 0, migrated.stderr || migrated.stdout);
+
+  // The migrator is not a superuser, so this is the 42501 path of the bug.
+  const provisioned = runJob({
+    MIGRATION_DATABASE_URL: migratorUrl,
+    APP_DATABASE_URL: appUrl,
+    WORKER_DATABASE_URL: workerUrl,
+    PAYOUT_GRANTOR_DATABASE_URL: grantorUrl,
+  });
+  assert.equal(provisioned.status, 0, provisioned.stderr);
+  assert.match(provisioned.stdout, new RegExp(`${grantorName} updated`));
+  const member = await cluster.query(
+    `SELECT g.rolname, m.inherit_option FROM pg_auth_members m
+       JOIN pg_roles g ON g.oid = m.roleid
+      WHERE m.member = (SELECT oid FROM pg_roles WHERE rolname = $1)`,
+    [grantorName],
+  );
+  assert.deepEqual(
+    member.rows.map((row) => row.rolname),
+    ["legend_payout_grantor"],
+  );
+  const audit = runJob(
+    {
+      MIGRATION_DATABASE_URL: migratorUrl,
+      APP_DATABASE_URL: appUrl,
+      WORKER_DATABASE_URL: workerUrl,
+      PAYOUT_GRANTOR_DATABASE_URL: grantorUrl,
+    },
+    ["--audit"],
+  );
+  assert.equal(audit.status, 0, audit.stderr);
 });
 
 // A complete single-VM env layout with valid placeholder values, so real

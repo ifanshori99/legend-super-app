@@ -970,6 +970,18 @@ function evaluate(
           row.objectId !== null &&
           (row.objectId === op.batchId || op.itemIds.includes(row.objectId)),
       );
+    // A binding whose proof was withdrawn (a withdraw attestation and no step
+    // that completed it: neither propose nor withdraw) is history, not a second
+    // completed operation. The binding stays and the proof is never reusable.
+    const withdrawn = (b: Binding) => {
+      const own = facts.attestations.filter(
+        (a) => a.kind === op.kind && a.evidenceKey === b.evidenceKey,
+      );
+      return (
+        own.some((a) => a.step === "withdraw") &&
+        !own.some((a) => a.step !== "propose" && a.step !== "withdraw")
+      );
+    };
     if (
       facts.bindings.some(
         (b) =>
@@ -977,7 +989,8 @@ function evaluate(
           b.kind === op.kind &&
           b.batchId === op.batchId &&
           b.itemSetHash === setHash &&
-          !replaced(b),
+          !replaced(b) &&
+          !withdrawn(b),
       )
     )
       addAll("binding_duplicate");

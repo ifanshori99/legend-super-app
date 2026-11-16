@@ -822,15 +822,19 @@ const schema = z
     (values) =>
       values.NODE_ENV !== "production" ||
       values.EDGE_MODE ||
-      Boolean(values.WORKER_DATABASE_URL) ||
+      (globalThis as { __LEGEND_PROCESS_ROLE?: string })
+        .__LEGEND_PROCESS_ROLE === "worker" ||
       Boolean(values.PAYOUT_GRANTOR_DATABASE_URL),
     {
       // legend-786te: without the grantor login every trusted payout step
       // answers 503, so the production api refuses to start instead. Two
       // processes never serve payout steps and never receive the login
-      // (check-compose-env.mjs forbids it): the worker, which carries
-      // WORKER_DATABASE_URL (the api must not), and an outlet edge node
-      // (payroll routes are not in its route list).
+      // (check-compose-env.mjs forbids it): the worker, which marks itself
+      // in code (legend-9n1mu: src/role-worker.ts, first import of
+      // worker-main.ts; an env var such as WORKER_DATABASE_URL never
+      // exempts the api), and an outlet edge node (payroll routes are not in
+      // its route list). Edge has no separate entrypoint, so it is still
+      // exempt through EDGE_MODE.
       path: ["PAYOUT_GRANTOR_DATABASE_URL"],
       message:
         "Set PAYOUT_GRANTOR_DATABASE_URL to the payout grantor login (legend_grant_*) in production.",
