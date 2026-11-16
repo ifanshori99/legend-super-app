@@ -362,7 +362,7 @@ export async function decide(
         kind: "resolved",
         resolution: "paid_recorded",
         seen: answer.status,
-        final: false,
+        final: true,
       };
     return {
       kind: "resolved",

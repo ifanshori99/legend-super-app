@@ -667,6 +667,12 @@ describe.each([vaKind, qrKind])(
         const closed = await kind.row(s);
         expect(closed.status).toBe("resolved");
         expect(closed.resolution).toBe("paid_recorded");
+        // Only the VA queue records `provider_final_at` (the QR queue has no
+        // such column write).
+        if (kind.label === "VA")
+          expect(await providerFinal(s), "a real final answer is final").toBe(
+            true,
+          );
         await expectParked(s, [s.amount]);
 
         const before = reads(s);

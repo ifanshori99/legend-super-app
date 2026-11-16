@@ -47,8 +47,21 @@ const outletA = outletIdSchema.parse(seededOutletA);
 /** Scripted provider that also records provider-side cancels (must stay empty). */
 class CancelGateway extends ScriptedGateway {
   readonly cancels: unknown[] = [];
+  /** Intents whose answer also reports a paid transaction under another reference (908). */
+  readonly withExtras = new Set<string>();
   async cancel(input: unknown) {
     this.cancels.push(input);
+  }
+  override async getStatus(input: { providerRef: string; intentId?: string }) {
+    const base = await super.getStatus(input);
+    return input.intentId && this.withExtras.has(input.intentId)
+      ? {
+          ...base,
+          extraPayments: [
+            { providerRef: `EXTRA-${randomUUID()}`, amountIdr: 7_000 },
+          ],
+        }
+      : base;
   }
 }
 
@@ -201,6 +214,25 @@ describe("legend-ukbq3 confirmLinkUnpaidAtProvider", () => {
       expect(await evidenceCount(intentId!)).toBe(0);
     });
   }
+
+  it("908-helper-extra-paid: provider reports another reference paid on the code -> 409 PAYMENT_PROVIDER_UNCONFIRMED, nothing changes, no cancel call", async () => {
+    const { linkId, intentId } = await newLink(true);
+    gateway.script(intentId!, { rawStatus: "01" });
+    gateway.withExtras.add(intentId!);
+    const before = gateway.cancels.length;
+
+    const result = await settleCall(
+      confirmLinkUnpaidAtProvider(context(), linkId, new Date()),
+    );
+
+    expectUnconfirmedError(result, "other reference paid");
+    expect(gateway.cancels).toHaveLength(before);
+    expect((await intentInfo(seededTenantId, intentId!)).status).toBe(
+      "pending",
+    );
+    await expectLinkActive(seededTenantId, intentId!, "other reference paid");
+    expect(await evidenceCount(intentId!)).toBe(0);
+  });
 
   for (const answer of PROVIDER_UNSURE) {
     it(`ukbq3-helper-unconfirmed: provider answer ${JSON.stringify(answer)} -> 409 PAYMENT_PROVIDER_UNCONFIRMED, nothing changes, no cancel call`, async () => {

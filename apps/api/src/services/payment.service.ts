@@ -716,6 +716,7 @@ async function cancelSupersededAtGateway(
       });
       if (
         answer.providerRef !== intent.providerRef ||
+        answer.extraPayments?.length ||
         !providerAnswerFinal(
           { provider: intent.provider, expiresAt: row.expiresAt },
           answer,
@@ -2803,6 +2804,7 @@ async function syncExpiredIntentPayment(
     // that the poll keeps asking.
     if (
       providerStatus.providerRef === intent.providerRef &&
+      !providerStatus.extraPayments?.length &&
       providerAnswerFinal(intent, providerStatus, now)
     )
       await markGatewayReconciled(context, intent, now);

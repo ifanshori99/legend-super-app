@@ -202,6 +202,9 @@ async function askProviderAboutLink(
       throw unconfirmed();
     }
     if (answer.providerRef !== providerRef) throw unconfirmed();
+    // Money on another provider reference of the same code is not yet
+    // accounted for: no proof the code holds nothing (908).
+    if (answer.extraPayments?.length) throw unconfirmed();
     if (answer.status === "paid") {
       try {
         await settleGatewayIntentNow(context, intent.id, now);

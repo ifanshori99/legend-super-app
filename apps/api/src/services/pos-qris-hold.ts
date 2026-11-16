@@ -788,6 +788,7 @@ export async function checkQrisHold(
   const dead =
     answer !== null &&
     sameReference &&
+    !answer.extraPayments?.length &&
     (intent.provider === "duitku"
       ? answer.rawStatus === "02"
       : answer.status === "expired" || answer.status === "failed");
