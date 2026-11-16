@@ -6940,3 +6940,5 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 
 - Lint penuh exit0 (50,9detik):0 error/2 warning hook dependency lama pada profit-share distributions-page:42 dan shareholders-page:68, sama batch79. Typecheck penuh exit0 (51,4detik): API/shared/web3/3 cache-miss + root tsc. E2e produksi exit0 (40,8detik),18 lulus/1 skip; explicit build exit0 (5,8detik),2/2 cache-miss. Semua melalui satu runner/heavy; `/tmp/batch80-{lint,typecheck,e2e,build}.log`.
 - Colima-up exit0; full test pertama dimulai di latar melalui `LEGEND_TEST_CONCURRENCY=2 heavy pnpm run test`, log `/tmp/batch80-full.log`. Belum landing sampai exit full run dan fetch akhir terverifikasi.
+
+- Full checkpoint: root3503 lulus/1 skip/0 gagal, termasuk bind mount Colima yang bermasalah pada batch79; web92/92 hijau. API penuh masih berjalan tanpa kegagalan teramati. Tidak ada patch kode atau pengulangan full run.
