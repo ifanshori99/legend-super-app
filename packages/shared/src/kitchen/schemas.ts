@@ -337,6 +337,19 @@ export const stationLabelSchema = z.strictObject({
   targetSeconds: z.number().int().positive().nullable(),
 });
 
+/**
+ * Barcode scanner state of an outlet's KDS (legend-40nvj). Reported by KDS
+ * devices in their heartbeat; `unknown` = no live KDS device reported one.
+ */
+export const kitchenScannerStatusSchema = z.enum([
+  "connected",
+  "disconnected",
+  "unknown",
+]);
+export const kitchenScannerStatusResponseSchema = z.strictObject({
+  status: kitchenScannerStatusSchema,
+});
+
 /* ------------------------------------------------------- pacing / capacity */
 
 /** Load points and preparation time per menu line (F12 ordering pacing). */
@@ -1115,6 +1128,7 @@ export const kitchenFixtureSchema = z.strictObject({
 export type StationSummary = z.infer<typeof stationSummarySchema>;
 export type StationConfig = z.infer<typeof stationConfigSchema>;
 export type StationLabel = z.infer<typeof stationLabelSchema>;
+export type KitchenScannerStatus = z.infer<typeof kitchenScannerStatusSchema>;
 export type StationCapacityRule = z.infer<typeof stationCapacityRuleSchema>;
 export type MenuLoad = z.infer<typeof menuLoadSchema>;
 export type CapacitySchedule = z.infer<typeof capacityScheduleSchema>;

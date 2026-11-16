@@ -2920,6 +2920,13 @@
       "when": 1795000000045,
       "tag": "0430_payout_backfill_unfreeze_lock_order",
       "breakpoints": true
+    },
+    {
+      "idx": 431,
+      "version": "7",
+      "when": 1795000000046,
+      "tag": "0431_device_scanner_status",
+      "breakpoints": true
     }
   ]
 }

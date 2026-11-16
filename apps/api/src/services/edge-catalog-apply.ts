@@ -83,6 +83,7 @@ import {
   inArray,
   isNull,
   notInArray,
+  or,
   sql,
   type SQL,
 } from "drizzle-orm";
@@ -200,6 +201,77 @@ function parseRecords<S extends CatalogSyncStream>(
     seen.add(key);
   }
   return parsed;
+}
+
+/** Missing additions preserve existing settings and use defaults on insert. */
+function stationKdsValues(record: CatalogSyncRecordOf<"stations">) {
+  return {
+    ...(record.displayOrder === undefined
+      ? {}
+      : { displayOrder: record.displayOrder }),
+    ...(record.isActive === undefined ? {} : { isActive: record.isActive }),
+    ...(record.autoPrintFallback === undefined
+      ? {}
+      : { autoPrintFallback: record.autoPrintFallback }),
+  };
+}
+
+/**
+ * Legacy station events omit the optional KDS additions. An HTTP page may fill
+ * those fields at the exact same cloud version, even when its core record is
+ * held by an event receipt. Never revive a tombstone or alter core fields,
+ * timestamps or versions; a newer held receipt also refuses the enrichment.
+ */
+export async function enrichCatalogStationFields(
+  tx: Tx,
+  input: ApplyCatalogRecordsInput<"stations"> & { readonly edgeNodeId: string },
+): Promise<void> {
+  const records = parseRecords(
+    "stations",
+    input.tenantId,
+    input.records,
+    (record) => record.id,
+  );
+  await lockCatalogStream(tx, input.tenantId, "stations");
+  const held = await heldCatalogEventVersions(
+    tx,
+    input.tenantId,
+    input.edgeNodeId,
+  );
+  const t = stations;
+  for (const record of records) {
+    if (record.deletedAt !== null) continue;
+    const heldVersion = held.get(
+      catalogRecordIdFromKeys("stations", [record.id]),
+    );
+    if (heldVersion !== undefined && heldVersion > BigInt(record.syncTxid))
+      continue;
+    const values = stationKdsValues(record);
+    if (Object.keys(values).length === 0) continue;
+    await tx
+      .update(t)
+      .set(values)
+      .where(
+        and(
+          eq(t.tenantId, input.tenantId),
+          eq(t.id, record.id),
+          eq(t.outletId, record.outletId),
+          eq(t.syncTxid, record.syncTxid),
+          isNull(t.deletedAt),
+          or(
+            record.displayOrder === undefined
+              ? undefined
+              : sql`${t.displayOrder} IS DISTINCT FROM ${record.displayOrder}`,
+            record.isActive === undefined
+              ? undefined
+              : sql`${t.isActive} IS DISTINCT FROM ${record.isActive}`,
+            record.autoPrintFallback === undefined
+              ? undefined
+              : sql`${t.autoPrintFallback} IS DISTINCT FROM ${record.autoPrintFallback}`,
+          ),
+        ),
+      );
+  }
 }
 
 type Stamped = {
@@ -940,6 +1012,7 @@ export async function applyCatalogRecords(
               type: r.type,
               printerDeviceId: r.printerDeviceId,
               targetSeconds: r.targetSeconds,
+              ...stationKdsValues(r),
               createdAt: date(r.createdAt),
               updatedAt: date(r.updatedAt),
               deletedAt: dateOrNull(r.deletedAt),

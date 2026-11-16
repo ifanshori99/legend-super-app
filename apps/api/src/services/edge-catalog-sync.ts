@@ -47,6 +47,7 @@
 
 import {
   CATALOG_PROTOCOL_VERSION,
+  STATION_KDS_FIELDS,
   catalogSyncCloudPageSchema,
   catalogSyncQuerySchema,
   catalogSyncCloudRecordSchemas,
@@ -299,6 +300,9 @@ const scanners: Record<
         type: row.type,
         printerDeviceId: row.printerDeviceId,
         targetSeconds: row.targetSeconds,
+        displayOrder: row.displayOrder,
+        isActive: row.isActive,
+        autoPrintFallback: row.autoPrintFallback,
         ...stamps(row),
       },
     }));
@@ -829,10 +833,9 @@ const scanners: Record<
 /**
  * The page version for an edge that understands up to `requested`: the lower
  * of that and this cloud's own. A newer edge gets this cloud's version (it
- * decides whether it can read it); an older one gets its own. Versions 2 and 3
- * share one page shape, so every page has it whatever is stamped; when v3
- * changes the shape, serve the shape of the returned version here. Version 3
- * only widens the `recipes` stream (all brands of the tenant); same shape.
+ * decides whether it can read it); an older one gets its own. Version 3
+ * widens the recipe stream to every brand. A v2 edge or one without the
+ * parameter keeps its brand-filtered recipes.
  */
 export function negotiateCatalogProtocolVersion(requested: number): number {
   return Math.min(requested, CATALOG_PROTOCOL_VERSION);
@@ -953,12 +956,14 @@ export async function listCatalogRecordsSinceTx(
     last === undefined
       ? null
       : encodeMark({ txid: last.txid, keys: last.keys });
-  return catalogSyncCloudPageSchema.parse({
+  const stamped =
+    protocolVersion === undefined
+      ? undefined
+      : negotiateCatalogProtocolVersion(protocolVersion);
+  const full = catalogSyncCloudPageSchema.parse({
     // Only an edge that asked: an older edge's strict page schema would
     // refuse the field and stop syncing.
-    ...(protocolVersion === undefined
-      ? {}
-      : { protocolVersion: negotiateCatalogProtocolVersion(protocolVersion) }),
+    ...(stamped === undefined ? {} : { protocolVersion: stamped }),
     stream,
     records: page.map(({ record }) =>
       catalogSyncCloudRecordSchemas[stream].parse(record),
@@ -966,4 +971,17 @@ export async function listCatalogRecordsSinceTx(
     nextCursor: lastMark ?? input.query.since ?? null,
     hasMore: rows.length > limit,
   });
+  // Versioned HTTP readers tolerate optional station additions. Preserve the
+  // legacy unversioned shape used by the strict catalog event publisher.
+  if (full.stream === "stations" && stamped === undefined) {
+    return {
+      ...full,
+      records: full.records.map((record) => {
+        const legacy = { ...record };
+        for (const field of STATION_KDS_FIELDS) delete legacy[field];
+        return legacy;
+      }),
+    };
+  }
+  return full;
 }

@@ -496,6 +496,9 @@ export const edgePullCheckpoints = pgTable(
         | `catalog:${CatalogSyncStream}`
         // Local stamp normalization, independent of HTTP progress/freshness.
         | `catalog:init:${CatalogSyncStream}`
+        // Local catalog shape revision and resumable upgrade, not wire protocol.
+        | "catalog:schema-revision"
+        | "catalog:schema-pending"
         // Pending menu_categories parent links of the catalog pull (legend-24318).
         | "catalog:menu_categories:parents"
         // Pending printers fallback links of the catalog pull (legend-fbf4v).

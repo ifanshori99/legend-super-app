@@ -154,6 +154,13 @@ const stamps = {
   syncTxid: syncTxidSchema,
 };
 
+/** Optional station additions omitted from the legacy unversioned export. */
+export const STATION_KDS_FIELDS = [
+  "displayOrder",
+  "isActive",
+  "autoPrintFallback",
+] as const;
+
 /** Production routing per outlet; scope = the credential's outlet. */
 export const stationSyncRecordSchema = z.object({
   id: uuidSchema,
@@ -164,6 +171,10 @@ export const stationSyncRecordSchema = z.object({
   /** Plain UUID (no `devices` row required on the edge). */
   printerDeviceId: uuidSchema.nullable(),
   targetSeconds: z.number().int().nullable(),
+  /** KDS tab order, left to right. */
+  displayOrder: z.number().int().min(0).optional(),
+  isActive: z.boolean().optional(),
+  autoPrintFallback: z.boolean().optional(),
   ...stamps,
 });
 
