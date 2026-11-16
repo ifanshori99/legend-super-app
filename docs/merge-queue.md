@@ -1,4 +1,4 @@
-# Antrean merge train (serah terima, 15 Nov 2026)
+# Antrean merge train (serah terima, 16 Nov 2026)
 
 Ditulis oleh merge train batch64g. Sumber: pesan CTO G6evw, G6w9t, G4j04. Tip SHA di bawah dicatat saat pesan CTO; ambil tip terbaru (`git fetch`, lalu `git rev-parse origin/<cabang>`) sebelum menyusun batch, karena banyak cabang dipin ulang.
 
@@ -12,11 +12,14 @@ Ditulis oleh merge train batch64g. Sumber: pesan CTO G6evw, G6w9t, G4j04. Tip SH
 
 - Batch77 -> m1 7b7cc52dfc95020dcefa8777a557ac84e7f274f5: `ghostex/923-payout-deadlock-lock-order` d289f5255, memuat rantai 915 cbc98a31f + 918 ffd47408f + 920 d06e5a269 + 923; 911 sudah di m1 lewat batch75. Migrasi sementara 0658-0663 -> 0425-0430; snapshot direchain, `db:generate` kosong. Semua gate hijau: fast, lint, typecheck, e2e 18 lulus/1 skip, build, dan full run 24414 lulus (20854 API + 3468 root + 92 web). Perbaikan train: perapian lint enam berkas, fixture grantor, dan jam test F5 (3x hijau terarah). Jangan antre 915/918/920/923 ulang. `legend-xp8mc` dan `legend-ijaxi` tetap terbuka; tindak lanjut Lighthouse `legend-kj50i` tetap terbuka.
 
-## Antrean tersisa setelah batch77
+- Batch78 -> m1 a8e6036abf3a609557eb3fae03c00ed3e37368c0 (merge pendaratan `792577ef5`): `fix/925-ci-grantor-withdraw-flake` 953effb41 dan `fix/e2e-m1-858-r2` c12914ea6. Tanpa migrasi; ujung tetap 0430. Gate hijau: fast scanner root/API + seluruh pemakai fixture payout, lint, typecheck, e2e produksi 18 lulus/1 skip, mock 35 lulus/1 skip, build, full run pertama 24.418 lulus (20.855 API + 3.471 root + 92 web), tanpa rerun atau pengecualian flake. Ditutup: `legend-kj50i`, `legend-61umg`, `legend-y4f3l`, `legend-42v4v`. Jangan antre kedua cabang atau `fix/e2e-m1-858` lama ulang.
 
-- `fix/925-ci-grantor-withdraw-flake` 953effb41 SIAP batch berikut (Lighthouse grantor kj50i + fixture 61umg; test saja, tanpa migrasi).
+## Antrean tersisa setelah batch78
 
-- `fix/e2e-m1-858-r2` c12914ea6 SIAP batch berikut (port 858 ke m1 7b7cc52df; e2e 35 lulus/1 skip; test saja). Cabang lama `fix/e2e-m1-858` jangan diambil.
+- `ws/edge-kds-stations` 6e393095c: belum masuk; perlu penyelesaian konflik edge/KDS dan rechain migrasi 0371 dari ujung m1. Tidak memenuhi syarat tambahan tanpa bentrok batch78.
+- `ghostex/5ce165c2` 2f62ed4be: belum masuk; perlu penyelesaian konflik KDS/delivery/e2e. Tidak memenuhi syarat tambahan tanpa bentrok batch78.
+- Rujukan cabang lain pada “Urutan prioritas” sudah menjadi ancestor m1 saat audit batch78; periksa ancestry sebelum mengantre ulang.
+- `legend-0y8tf` tetap terbuka: perbaikan `ujxl` sudah mendarat terpisah, tetapi `zvz` masih versi sebelum `c3cef7cb4` dan perlu port. `legend-whd5c` tetap terbuka untuk adapter kredit tamu (`test.fixme`).
 
 ## Aturan tetap
 
@@ -88,12 +91,12 @@ Induk lebih dulu. Migrasi dinomori ulang dari ujung m1 saat batch disusun.
 - Rantai AI: `ws/ai-eval-missing-metric` e7668d647 -> `fix/ai-sources-tl07-08-12` fb00a4c24 -> `fix/ai-eval-anomaly-year` 64cfad39e.
 - EDC lain: `fix/edc-bill-lock` 8185a7ebd (konflik `docs/PROGRESS.md`: simpan keduanya), `fix/edc-followups` bdae5b4a2, `fix/edc-qris-confirm-lock` 7e32d2707 (cek `merge-base`; 64g sudah memuat rantai sampai fix/edc-so-829).
 - QRIS: `ghostex/775-qris-hold-c1` (sebelum `ws/edge-kds-stations`), `fix/outbox-dead-alert-fairness`.
-- QRIS hold SIAP (16 Nov: 896 + SO akhir 902 [2 P1] + perbaikan 903, architect xhigh 2 ronde 0 P1, 543 test area; tip 785b3b453, tanpa migrasi baru sejak 896; kartu 896 ad95t/xg6qk/5h8ob/o6q8i/la1yk tutup setelah merge): `fix/qris-hold-so-879` (memuat C1+C2/C3+m1; menggantikan `ghostex/775-qris-hold-c1` dan `ghostex/qris-hold-dp-c2-c3`, jangan merge keduanya terpisah). Tip fd4427fd1 (7 temuan 878 + void order refund penuh; 180 berkas test, architect xhigh; sudah memuat m1 2bf32cd92). Migrasi 0381-0383 bentrok dengan batch69 (0381/0382): nomori ulang setelah batch69 masuk. Beberapa test m1 disesuaikan ke aturan hold (QR→VA), assertion uang tidak dilemahkan. Tutup legend-yhia9.2/.3/.4, zff37, ota0l, w0ows, 9ho2v, kf104, eqeu7, 5ailc setelah merge. Catatan lama: `ghostex/qris-hold-dp-c2-c3` 6cfe64ba6 tepat setelah `ghostex/775-qris-hold-c1` 1275f0123 (architect xhigh 2 ronde OK, 260/260 test, tanpa migrasi baru). Saat merge: tambahkan guard hold (409 `QRIS_HOLD_ACTIVE`) ke penulisan orders di `qr-order.service.ts` m1 setelah 5dcc1cfd9 (sekitar baris 1629, 2128, 2569; kartu `legend-5ailc`), supaya bukan 500. Tutup `legend-yhia9.2/.3/.4` setelah merge.
+- QRIS hold sudah masuk batch74 (catatan sumber lama, 16 Nov: 896 + SO akhir 902 [2 P1] + perbaikan 903, architect xhigh 2 ronde 0 P1, 543 test area; tip 785b3b453, tanpa migrasi baru sejak 896; kartu 896 ad95t/xg6qk/5h8ob/o6q8i/la1yk tutup setelah merge): `fix/qris-hold-so-879` (memuat C1+C2/C3+m1; menggantikan `ghostex/775-qris-hold-c1` dan `ghostex/qris-hold-dp-c2-c3`, jangan merge keduanya terpisah). Tip fd4427fd1 (7 temuan 878 + void order refund penuh; 180 berkas test, architect xhigh; sudah memuat m1 2bf32cd92). Migrasi 0381-0383 bentrok dengan batch69 (0381/0382): nomori ulang setelah batch69 masuk. Beberapa test m1 disesuaikan ke aturan hold (QR→VA), assertion uang tidak dilemahkan. Tutup legend-yhia9.2/.3/.4, zff37, ota0l, w0ows, 9ho2v, kf104, eqeu7, 5ailc setelah merge. Catatan lama: `ghostex/qris-hold-dp-c2-c3` 6cfe64ba6 tepat setelah `ghostex/775-qris-hold-c1` 1275f0123 (architect xhigh 2 ronde OK, 260/260 test, tanpa migrasi baru). Saat merge: tambahkan guard hold (409 `QRIS_HOLD_ACTIVE`) ke penulisan orders di `qr-order.service.ts` m1 setelah 5dcc1cfd9 (sekitar baris 1629, 2128, 2569; kartu `legend-5ailc`), supaya bukan 500. Tutup `legend-yhia9.2/.3/.4` setelah merge.
 - Cuti/fasilitas/pemasok: `fix/leave-attachment-active-permission` f161bcca7 -> `fix/leave-create-outlet-permission` 043a8cb23 (setelah leave-attachment); `fix/facility-evidence-bind-source` ca9a7c0f4 dan `fix/supplier-invoice-invoiced-qty` 5cccfd4b9 (setelah induknya); `ghostex/upload-foto-fasilitas-sungguhan` b961fdcc7 (migrasi 0376; nomori ulang); `ghostex/layar-input-faktur-pemasok` 882900f6a.
 - UI: `ghostex/846-delivery-needs-review-layar` 66d1fbf35; `ghostex/5ce165c2` 2f62ed4be.
 - `ws/doit-refund-hardening` 72805cd6f (tanpa migrasi). `ws/criteria-*`: pakai `ws/traceability-strict` ce9337bf4 (sudah di m1), jangan ambil `criteria-pph21`, `criteria-pay-edc`, `criteria-ai-mcp` lama.
 - Prioritas rendah, tingkat S: `fix/esnvi-859` dan `fix/5v8sm-859` sudah di m1 (batch73). `fix/s3ex8-859` sudah diantre di bagian uang.
-- Prioritas rendah: `fix/kecil-859` f561df281 (migrasi 0448, index `push_subscriptions(user_id)`), `fix/e2e-m1-858` 3272f4dee (e2e saja: delivery e8oa, POS koreksi mzg/rx0h, PAY-04 sgg; kredit tamu `test.fixme` legend-whd5c; tingkat S, paling akhir).
+- Prioritas rendah selesai: `fix/kecil-859` sudah batch74; `fix/e2e-m1-858-r2` sudah batch78. Jangan ambil cabang 858 lama. Kredit tamu tetap `test.fixme` pada `legend-whd5c`.
 
 ## Cabang yang ditahan atau dijatuhkan
 
@@ -104,14 +107,14 @@ Induk lebih dulu. Migrasi dinomori ulang dari ujung m1 saat batch disusun.
 
 ## Catatan migrasi
 
-- Nomor terakhir di m1 setelah batch77: 0430 (`0430_payout_backfill_unfreeze_lock_order`). Entri sementara dari brief CTO (0373-0385, 0440, 0448) hanyalah nomor kerja; nomor akhir mengikuti ujung m1 saat merge.
+- Nomor terakhir di m1 setelah batch78: 0430 (`0430_payout_backfill_unfreeze_lock_order`). Entri sementara dari brief CTO (0373-0385, 0440, 0448) hanyalah nomor kerja; nomor akhir mengikuti ujung m1 saat merge.
 - Migrasi data (`0377_recipes_resync_edges` dll.) dikunci per nama berkas di `data-import-registry.test.ts`.
 - Peringatan check-journal terbuka: migrasi 0369 menambah FK `push_subscriptions_device_fk` pada tabel lama tanpa NOT VALID. Catat untuk review sebelum rilis.
 
 ## Item rilis yang harus diangkat ulang
 
 - Second opinion Codex wajib sebelum gerbang rilis (area uang dan payout).
-- `legend-xp8mc` (persetujuan utama payout lewat grant) dan `legend-ijaxi` (review architect Claude atas 923) tetap terbuka setelah batch77. Tindak lanjut Lighthouse `legend-kj50i` juga tetap terbuka.
+- `legend-xp8mc` (persetujuan utama payout lewat grant) dan `legend-ijaxi` (review architect Claude atas 923) tetap terbuka setelah batch77. Tindak lanjut Lighthouse `legend-kj50i` ditutup setelah batch78.
 - Remote `int/batch64f` basi (jangan ditimpa).
 - `fix/edc-agent-867` 569a56005 (base 46f9d1bca = batch65; tanpa migrasi; architect xhigh, 5 temuan dibetulkan; gagal-dulu 8/14). Cabang uang EDC: bukti tanpa sale kedua tetap berlaku. Tes root kontrak belum diulang setelah ronde 2 (server.ts, unit systemd, deployment.md) — fast gate wajib memuatnya.
 - `ghostex/4eda746b` 4db4c178e (868 API antrean rekonsiliasi EDC + UI 865 5fb5f8273 di dalamnya; tanpa migrasi; architect xhigh akses, 4/5 temuan dibetulkan). Menggantikan `ui/edc-rekonsiliasi-865`; jangan antre 865 terpisah.
