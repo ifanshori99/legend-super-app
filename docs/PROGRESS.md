@@ -6824,3 +6824,7 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 - Cabang `fix/844-ui-delivery-r2`, basis `a8e6036ab`; cherry-pick sumber `5e2c7a567` dan `2f62ed4be` menjadi `886cc7e57` dan `5fdf4576f`. Tidak mengubah cabang sumber atau menggabungkan ke m1. Tanpa migrasi.
 - Konflik dokumentasi mempertahankan seluruh riwayat m1 dan catatan sumber. Spec `legend-10n-board` tetap persis versi m1 (`legend-jemae`); regex nama station sudah setara. API delivery mempertahankan `mapOrderLines` dan `fetchItemVariants` dari m1.
 - Harness komponen KDS menambahkan stub noop `useKdsHeartbeat` mengikuti impor baru m1; heartbeat produksi tidak diubah. Bukti gagal-dulu historis sumber dipertahankan; gate port sesudah commit akhir dijalankan test-runner induk melalui heavy dan dicatat pada laporan 930.
+### 930 — Port zvz legend-0y8tf ke m1 (16 Nov 2026)
+
+- Cabang `fix/0y8tf-zvz-port` dari `origin/milestone/m1` `a8e6036ab`; port hanya hunk `e2e/legend-zvz.mock.spec.ts` dari `c3cef7cb4`. Ekspektasi expo dan pickup memakai nomor antrean `A-014`, `A-013`, `A-012`, sesuai fixture m1; perbaikan `ujxl` yang telah mendarat tidak diulang.
+- Tanpa migrasi atau perubahan kode produk. Pola mock dan komentar tunggu hidrasi m1 tetap dipertahankan. Verifikasi final, review, dan push ditangani induk setelah commit sumber terakhir; belum diklaim lulus di tahap port.
