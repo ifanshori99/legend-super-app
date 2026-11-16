@@ -1,3 +1,9 @@
+## Batch75 dilanjutkan: pengecualian CTO untuk fullrun ketiga (16 Nov 2026)
+
+- CTO menetapkan payroll-payout-recon.service.ts sebagai domain akuntansi karena membaca journal_lines untuk verifikasi jurnal payout. Izin eksplisit: tambahkan satu pola exact-file dan komentar alasan; scanner tidak dilonggarkan. Perbaikan test #5 pada ACCOUNTING_DOMAIN sudah diterapkan, tanpa perubahan kode produk.
+- CTO mengizinkan SATU fullrun#3 sebagai pengecualian batas2 karena fullrun#2 hanya merah pada guardstatis tersebut. Merah lagi: berhenti, tidakadafullrun#4. Hijau: fast-forward m1, tutup limakartupayout+legend-viocz, updateantreanutama tanpa commit, cleanupint.
+- Prettier+eslint test#5 hijau; focusedmetric dan scopedAPItypecheck menunggu pemilikheavy. Seluruh gerbang lain dan empat perbaikan test sebelumnya tetap seperti bukti di bawah.
+
 ## Merge train batch75 STOP: dua full run gagal (914, 16 Nov 2026)
 
 - `milestone/m1` TIDAK dimajukan: remote tetap `40f6f3c95af4a10e40ab629f8113be6acd5045e9`. Integrasi tersimpan di `int/batch75`; enam tip sumber tetap seperti catatan di bawah. Tidak ada deploy, perubahan main, atau force push. Antrean utama tidak diubah dan kelima kartu payout belum ditutup, karena batch belum mendarat.
