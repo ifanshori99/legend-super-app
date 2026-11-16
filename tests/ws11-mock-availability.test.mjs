@@ -13,13 +13,13 @@ import { dispatchMock } from "../apps/web/src/lib/mock/runtime.ts";
 
 const DAY = { startDate: "2026-11-01", endDate: "2026-11-01" };
 
-async function run(code, groupBy) {
+async function run(code, groupBy, period = DAY) {
   const response = await dispatchMock({
     method: "POST",
     path: "/api/reports/run",
     body: {
       reportCode: code,
-      period: DAY,
+      period,
       groupBy: groupBy ? [groupBy] : [],
       filters: [],
       bucket: "total",
@@ -33,6 +33,37 @@ const entry = (result, code) =>
   result.availability.find((item) => item.metricCode === code);
 
 describe("report mock availability · brief 284 T4", () => {
+  test("historical loyalty reports label active members as a current estimate and keep the same snapshot", async () => {
+    const current = await run("loyalty.members", null);
+    const historic = await run("loyalty.members", null, {
+      startDate: "2026-10-01",
+      endDate: "2026-10-31",
+    });
+    const yesterday = await run("loyalty.members", null, {
+      startDate: "2026-10-31",
+      endDate: "2026-10-31",
+    });
+    const active = (result) =>
+      result.rows[0].values.find(
+        (cell) => cell.metricCode === "active_members",
+      );
+    assert.equal(historic.period.status, "closed");
+    assert.match(
+      historic.definitions.find(
+        (definition) => definition.code === "active_members",
+      ).name,
+      /saat ini/,
+    );
+    assert.equal(entry(historic, "active_members").status, "available");
+    assert.equal(active(historic).finality, "estimate");
+    assert.deepEqual(active(historic).value, { unit: "count", value: 1_320 });
+    assert.deepEqual(active(historic).value, active(current).value);
+    assert.deepEqual(active(yesterday).value, active(current).value);
+    // This mock supports total buckets only and exposes no comparison field.
+    assert.equal(historic.bucket, "total");
+    assert.equal("comparison" in active(historic), false);
+  });
+
   test("every delivery report is served", async () => {
     for (const code of [
       "delivery.orders",
