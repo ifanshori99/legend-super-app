@@ -73,7 +73,7 @@ test("Q26 · expo orders carry the same state band", async ({ page }) => {
   const readyBand = ready.locator('[data-slot="status-band"]');
   await expect(readyBand).toHaveAttribute("data-tone", "success");
   await expect(readyBand).toContainText("Siap diantar");
-  await expect(readyBand).toContainText("Antrean 14");
+  await expect(readyBand).toContainText("Antrean A-014");
 
   const preparing = page.locator(
     '[data-slot="expo-ticket"][data-complete="false"]',
@@ -106,7 +106,7 @@ test("Q26 · pickup tiles carry the same state band and keep the call flow", asy
   );
   await expect(waiting).toContainText("Menunggu siap");
 
-  await page.getByRole("button", { name: "Panggil nomor 12" }).click();
+  await page.getByRole("button", { name: "Panggil nomor A-012" }).click();
   const newlyCalled = page
     .locator('[data-slot="pickup-call"][data-call-status="called"]')
     .filter({ hasText: "12" });
