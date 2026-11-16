@@ -67,6 +67,7 @@ import { failedOrderCodeWithOpenFundTx } from "./payment-failed-funds.ts";
 import {
   expiredCodeMayStillPay,
   failedCodeMayStillPay,
+  noClosedHold,
 } from "./payment-live-code.ts";
 import {
   getSessionBill,
@@ -195,7 +196,7 @@ export async function listSessionSplitDtosTx(
  */
 function liveCodeWhere() {
   return or(
-    eq(paymentIntents.status, "pending"),
+    and(eq(paymentIntents.status, "pending"), noClosedHold),
     expiredCodeMayStillPay(),
     failedCodeMayStillPay(),
   );

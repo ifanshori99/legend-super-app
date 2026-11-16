@@ -463,7 +463,7 @@ function paidQrisReleaseError(): CoreError {
  * Locks the intent row, so a settlement in flight finishes first. Call it under
  * the orders / pos_orders / hold locks, right before any close (legend-zff37).
  */
-async function appliedQrisMoneyTx(
+export async function appliedQrisMoneyTx(
   tx: Tx,
   tenantId: TenantId,
   intentId: string,
@@ -496,7 +496,7 @@ async function appliedQrisMoneyTx(
 const PARKED_BACKFILLED_RECHECK_MS = 30 * 60_000;
 
 /** Unallocated funds of one intent: how many rows and how many are unresolved. */
-async function unallocatedFundsOfIntentTx(
+export async function unallocatedFundsOfIntentTx(
   tx: Tx,
   tenantId: TenantId,
   intentId: string,

@@ -130,9 +130,7 @@ export async function openReleaseReconciliationTx(
   );
 }
 
-type ReconRow = typeof posQrisReleaseReconciliations.$inferSelect;
-
-type Outcome =
+export type Outcome =
   | { kind: "resolved"; resolution: PosQrisReconResolution; seen: string }
   | { kind: "open"; seen: string };
 
@@ -155,10 +153,13 @@ async function recordedMoney(
   return row !== undefined;
 }
 
-/** Asks the provider once about one queue row and decides. */
-async function decide(
+/**
+ * Asks the provider once about one queue row and decides. Shared with the VA
+ * staff release queue (legend-5wn1e): only the row's intent id is used.
+ */
+export async function decide(
   context: ScopedTenantContext,
-  row: ReconRow,
+  row: { paymentIntentId: string },
   now: Date,
 ): Promise<Outcome> {
   const [intent] = await withTenant(db, context, (tx) =>
@@ -240,7 +241,7 @@ async function decide(
 }
 
 /** The provider says the QR was paid but no money could be recorded. */
-const PAID_UNRECORDED = new Set([
+export const PAID_UNRECORDED = new Set([
   "paid_not_recorded",
   "settlement_failed",
   "paid_without_amount",

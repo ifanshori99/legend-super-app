@@ -18,11 +18,19 @@ import { and, eq, isNotNull, isNull, sql, type SQL } from "drizzle-orm";
 import { paymentIntents } from "../db/schema/index.ts";
 import { HOLD_CLOSE_MARGIN_MS } from "./pos-qris-hold.ts";
 
-/** No closed QR hold on the intent. Raw SQL so it works in any query. */
-export const noClosedHold: SQL = sql`not exists (select 1 from pos_qris_holds h
+/**
+ * No closed QR hold and no staff VA release on the intent: nothing proved or
+ * declared the code dead. Raw SQL so it works in any query.
+ */
+export const noVaRelease: SQL = sql`(not exists (select 1 from payment_va_releases r
+  where r.tenant_id = ${paymentIntents.tenantId}
+    and r.payment_intent_id = ${paymentIntents.id}))`;
+
+export const noClosedHold: SQL = sql`(not exists (select 1 from pos_qris_holds h
   where h.tenant_id = ${paymentIntents.tenantId}
     and h.payment_intent_id = ${paymentIntents.id}
-    and h.state = 'closed')`;
+    and h.state = 'closed')
+  and ${noVaRelease})`;
 
 /**
  * An `expired` (locally superseded, voided or timed out) code the provider

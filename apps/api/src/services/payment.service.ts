@@ -70,6 +70,7 @@ import {
 } from "../db/schema";
 import { auditLogs } from "../db/schema/core-audit";
 import { posQrisHolds } from "../db/schema/pos-qris-hold.ts";
+import { paymentVaReleases } from "../db/schema/payment-va-release.ts";
 import { notifyOutletSupervisors } from "./edge-sync-conflict-alert.ts";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
@@ -102,6 +103,7 @@ import {
 import {
   expiredCodeMayStillPay,
   failedCodeNotFinal,
+  noVaRelease,
   providerAnswerFinal,
 } from "./payment-live-code";
 import {
@@ -1949,6 +1951,62 @@ async function parkWhenQrisHoldRefusesInTx(
   | { kind: "replay" }
   | { kind: "reject"; code: "AMOUNT_MISMATCH" | "BILL_CLOSED" }
 > {
+  // legend-5wn1e: a VA code staff released (supervisor override, no provider
+  // proof) never settles the bill again: money that arrives for it is always
+  // parked as unallocated funds, keyed by the provider transaction, so webhook
+  // and poll together park it exactly once and the order cannot be paid twice.
+  const [vaRelease] = await tx
+    .select({
+      id: paymentVaReleases.id,
+      releasedBy: paymentVaReleases.releasedBy,
+    })
+    .from(paymentVaReleases)
+    .where(
+      and(
+        eq(paymentVaReleases.tenantId, context.tenant.tenantId),
+        eq(paymentVaReleases.paymentIntentId, intent.id),
+      ),
+    );
+  if (vaRelease) {
+    const inserted = await recordUnsettledGatewayFundsInTx(
+      tx,
+      context,
+      intent,
+      {
+        provider: intent.provider,
+        providerRef: paid.providerRef,
+        source:
+          paid.source === "verified_webhook"
+            ? "verified_webhook"
+            : "gateway_status",
+        paidAmountIdr: paid.amountIdr,
+        receivedAt:
+          paid.source === "verified_webhook" ? now : new Date(paid.at),
+      },
+      now,
+    );
+    // A replay of the same provider transaction records and alerts nothing.
+    if (!inserted) return { kind: "replay" };
+    await notifyOutletSupervisors(
+      tx,
+      context,
+      {
+        tenantId: context.tenant.tenantId,
+        outletId: intent.outletId as OutletId,
+        alsoOwners: true,
+        alsoUserIds: vaRelease.releasedBy ? [vaRelease.releasedBy] : [],
+        id: createUlid(now.getTime()),
+        eventName: "payment_va_funds.parked",
+        aggregateType: "payment_va_funds",
+        aggregateId: intent.id,
+        payload: { intentId: intent.id, releaseId: vaRelease.id },
+        title: "Uang VA perlu dikembalikan",
+        body: `Pembayaran VA Rp${paid.amountIdr} masuk untuk kode VA yang sudah dirilis staf. Uang ditahan di dana belum teralokasi; kembalikan ke pembayar.`,
+      },
+      now,
+    );
+    return { kind: "reject", code: "BILL_CLOSED" };
+  }
   const [hold] = await tx
     .select({
       id: posQrisHolds.id,
@@ -2486,7 +2544,7 @@ async function applyConfirmation(
   if (holdRefusal)
     throw new PaymentConfirmationRejected(
       holdRefusal,
-      "This QRIS payment cannot settle its bill; the money is parked.",
+      "This payment cannot settle its bill; the money is parked.",
     );
   return applied;
 }
@@ -2946,7 +3004,7 @@ export async function pollPendingGatewayIntents(
               // An expired or failed code stays in the poll until the provider
               // answers final, however long ago it lapsed (no window).
               kind === "pending"
-                ? eq(paymentIntents.status, "pending")
+                ? and(eq(paymentIntents.status, "pending"), noVaRelease)
                 : or(expiredCodeMayStillPay(), failedCodeNotFinal()),
               backoffDue,
               eq(paymentIntents.provider, provider),

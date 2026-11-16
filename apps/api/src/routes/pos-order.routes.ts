@@ -41,6 +41,7 @@ import {
   listPosOrders,
   refundPosOrder,
   releasePosQris,
+  releasePosVa,
   removePosDiscount,
   submitPosOrder,
   voidPosOrder,
@@ -67,6 +68,7 @@ import * as discounts from "../services/pos-order-discounts.ts";
 import { addPosTender as addPosTenderService } from "../services/pos-order-payment.ts";
 import * as pos from "../services/pos-order.service.ts";
 import * as qrisHold from "../services/pos-qris-hold.ts";
+import * as vaRelease from "../services/payment-va-release.ts";
 import { listPosQrisReconciliations as listPosQrisReconciliationsService } from "../services/pos-qris-release-recon.ts";
 import { readNextPickupCall } from "../services/pickup.service.ts";
 import { getPosCatalog as getPosCatalogService } from "../services/pos-catalog.service.ts";
@@ -461,6 +463,25 @@ posOrderRouter.post(
     const body = releasePosQris.body.parse(req.body);
     res.json({
       data: await qrisHold.releasePosQris(
+        getScopedTenantContext(req),
+        await caller(req),
+        outletId,
+        orderId,
+        body,
+      ),
+    });
+  },
+);
+
+posOrderRouter.post(
+  "/orders/:orderId/va/release",
+  pay,
+  jsonBody,
+  async (req, res) => {
+    const { outletId, orderId } = releasePosVa.params.parse(req.params);
+    const body = releasePosVa.body.parse(req.body);
+    res.json({
+      data: await vaRelease.releaseVaCode(
         getScopedTenantContext(req),
         await caller(req),
         outletId,

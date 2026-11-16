@@ -77,6 +77,7 @@ import {
 } from "../db/schema/pos-order.ts";
 import { edcTransactions } from "../db/schema/edc.ts"; // legend-ig2sl
 import { orderIssues } from "../db/schema/kds-issues.ts"; // legend-kxoyf
+import { paymentVaReleases } from "../db/schema/payment-va-release.ts";
 import { posQrisHolds } from "../db/schema/pos-qris-hold.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { recordAudit } from "./core-audit.ts";
@@ -860,21 +861,48 @@ const APPROVAL_ERROR = {
 export async function consumeApproval(
   tx: Tx,
   context: ScopedTenantContext,
-  input: {
-    action: "void" | "discount" | "refund" | "edc_standalone";
-    purpose: ApprovalPurpose;
-    outletId: OutletId;
-    orderId: string;
-    objectType: "order" | "order_item" | "pos_order";
-    objectId: string;
-    requesterId: string;
-    approvedBy: string;
-    overrideId: string;
-    minValueIdr: number;
-    /** The verified device the caller acts from (null: no device). */
-    deviceId: string | null;
-    now: Date;
-  },
+  input: ApprovalCheckInput & { purpose: ApprovalPurpose },
+): Promise<typeof posOverrides.$inferSelect> {
+  const override = await verifyApproval(tx, context, input);
+  const consumed = await tx
+    .insert(posOrderApprovalUses)
+    .values({
+      tenantId: context.tenant.tenantId,
+      outletId: input.outletId as OutletId,
+      overrideId: override.id,
+      orderId: input.orderId,
+      purpose: input.purpose,
+    })
+    .onConflictDoNothing()
+    .returning({ id: posOrderApprovalUses.id });
+  if (consumed.length === 0) throw new PosError(APPROVAL_ERROR[input.action]);
+  return override;
+}
+
+export type ApprovalCheckInput = {
+  action: "void" | "discount" | "refund" | "edc_standalone";
+  outletId: OutletId;
+  orderId: string;
+  objectType: "order" | "order_item" | "pos_order";
+  objectId: string;
+  requesterId: string;
+  approvedBy: string;
+  overrideId: string;
+  minValueIdr: number;
+  /** The verified device the caller acts from (null: no device). */
+  deviceId: string | null;
+  now: Date;
+};
+
+/**
+ * Every check of `consumeApproval` without spending the approval: the caller
+ * must record the single use itself (legend-5wn1e: a guest order has no
+ * `pos_orders` row for `pos_order_approval_uses`). Locks the override row.
+ */
+export async function verifyApproval(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: ApprovalCheckInput,
 ): Promise<typeof posOverrides.$inferSelect> {
   const refuse = () => new PosError(APPROVAL_ERROR[input.action]);
   const overrideId = ulidSchema.safeParse(input.overrideId);
@@ -937,18 +965,30 @@ export async function consumeApproval(
   } else approvedAt = override.resolvedAt ?? override.createdAt;
   if (input.now.getTime() - approvedAt.getTime() > PIN_APPROVAL_WINDOW_MS)
     throw refuse();
-  const consumed = await tx
-    .insert(posOrderApprovalUses)
-    .values({
-      tenantId,
-      outletId: input.outletId as OutletId,
-      overrideId: override.id,
-      orderId: input.orderId,
-      purpose: input.purpose,
-    })
-    .onConflictDoNothing()
-    .returning({ id: posOrderApprovalUses.id });
-  if (consumed.length === 0) throw refuse();
+  // One approval, one action (legend-5wn1e): an override already spent on a
+  // POS action (`pos_order_approval_uses`) or on a VA release
+  // (`payment_va_releases.override_id`) is refused. The override row is locked
+  // above, so these reads cannot race a concurrent use.
+  const [spent] = await tx
+    .select({ id: posOrderApprovalUses.id })
+    .from(posOrderApprovalUses)
+    .where(
+      and(
+        eq(posOrderApprovalUses.tenantId, tenantId),
+        eq(posOrderApprovalUses.overrideId, override.id),
+      ),
+    );
+  if (spent) throw refuse();
+  const [released] = await tx
+    .select({ id: paymentVaReleases.id })
+    .from(paymentVaReleases)
+    .where(
+      and(
+        eq(paymentVaReleases.tenantId, tenantId),
+        eq(paymentVaReleases.overrideId, override.id),
+      ),
+    );
+  if (released) throw refuse();
   return override;
 }
 
