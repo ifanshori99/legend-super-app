@@ -6838,3 +6838,7 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 - Konflik hanya `docs/PROGRESS.md`; kedua sisi catatan dipertahankan. Reviewer hanya memeriksa hunk resolusi, bukan mengulang review isi cabang. `git diff --check` dan `node scripts/check-workspace-links.mjs` hijau. Dependensi worktree dipasang frozen lockfile.
 - Gate dipegang satu test-runner: format/lint berkas berubah, fast scanner `single-path`/`contract`/`registry` + text-contract + area edge/print/POS/KDS/delivery, lint penuh, typecheck, e2e nyata dan mock berubah, build, lalu full run melalui heavy. Kegagalan menghentikan urutan; hasil per tahap menyusul.
 - Sesudah landing, kartu selesai yang ditutup: `legend-2lp.2`, `legend-2lp.4`, `legend-2lp.5`, `legend-4lm6`, `legend-0y8tf`, `legend-sgvw0`, `legend-xz3ll`. `legend-d6d1` tetap terbuka karena zona publik dan notifikasi waitlist masih tersisa. Tidak menutup pekerjaan parsial.
+
+- Gate awal hijau: Prettier43 berkas didukung exit0 (1,9 detik), ESLint40 berkas kode exit0 (2,7 detik). Manifest fast383 valid: root66 + API317, mencakup seluruh67 kontrak pemindai. Root fast1141/1141 hijau; API area sedang berjalan. Log `/tmp/batch79-fast.log`. Resolusi konflik direview bersih, tanpa perubahan kode tambahan.
+
+- Fast checkpoint: root1141/1141 hijau; API1951 test lulus teramati pada58/317 berkas, tanpa gagal. Antrean cetak edge dan kasus QRIS expired-lokal/provider-paid tepat-sekali ikut berjalan. Belum ada tahap lint/typecheck/e2e/build/full dimulai; satu token heavy tetap pada test-runner.
