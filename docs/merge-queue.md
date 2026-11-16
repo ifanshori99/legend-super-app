@@ -18,7 +18,7 @@ Ditulis oleh merge train batch64g. Sumber: pesan CTO G6evw, G6w9t, G4j04. Tip SH
 
 - `fix/844-ui-delivery-r2` 40d434c3a SIAP batch79 (port 5ce165c2; tanpa migrasi).
 - `fix/0y8tf-zvz-port` 84c48ca1d SIAP batch79 (legend-0y8tf; tanpa migrasi).
-- `ws/edge-kds-stations-r2` e327efa12 TAHAN: tindak lanjut protokol v3 + resync upgrade (930 lanjutan); migrasi sementara 0431. Cabang lama `ws/edge-kds-stations` dan `ghostex/5ce165c2` jangan diambil.
+- `ws/edge-kds-stations-r2` 91c7f9d8b SIAP batch80 (protokol v3 field opsional + resync sekali per revisi; migrasi sementara 0431, renumber dari ujung m1). Cabang lama `ws/edge-kds-stations` dan `ghostex/5ce165c2` jangan diambil.
 - `ws/928-edge-print-alert` b158f09c2 SIAP batch79 (2lp.2, 2lp.4, 2lp.5, 4lm6; tanpa migrasi; 381 test). Rilis: cloud dulu, lalu edge.
 - `ws/edge-kds-stations` 6e393095c: belum masuk; perlu penyelesaian konflik edge/KDS dan rechain migrasi 0371 dari ujung m1. Tidak memenuhi syarat tambahan tanpa bentrok batch78.
 - `ghostex/5ce165c2` 2f62ed4be: belum masuk; perlu penyelesaian konflik KDS/delivery/e2e. Tidak memenuhi syarat tambahan tanpa bentrok batch78.
