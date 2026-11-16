@@ -2005,7 +2005,7 @@ async function parkWhenQrisHoldRefusesInTx(
       now,
     );
     // A replay of the same provider transaction records and alerts nothing.
-    if (!inserted) return { kind: "replay" };
+    if (inserted !== "inserted") return { kind: "replay" };
     await notifyOutletSupervisors(
       tx,
       context,
