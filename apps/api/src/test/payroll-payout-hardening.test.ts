@@ -100,7 +100,11 @@ const repostSkippedFees = (batchId: string, by = APP) =>
       "repostSkippedFees",
     )(tx, actorOf(by), batchId),
   );
-const recordOverpaidItem = async (itemId: string, batchId: string, by = APP) => {
+const recordOverpaidItem = async (
+  itemId: string,
+  batchId: string,
+  by = APP,
+) => {
   // 905: the second step needs the first step of another person (W.proposeOverpaid).
   await W.proposeOverpaid(
     batchId,
@@ -909,18 +913,18 @@ describe("an overpaid item is recorded as a receivable without paying again (qxk
     await W.asTenant(
       (c) =>
         c.query(
-        `UPDATE payroll_disbursement_items
+          `UPDATE payroll_disbursement_items
             SET status = 'returned', returned_at = now(), returned_by = $2,
                 returned_by_2 = $3, return_evidence_key = $4,
                 return_note = 'Dana kembali dari bank'
           WHERE id = $1`,
-        [
-          idOf(sibling),
-          APP,
-          APP3,
-          evidenceKeyFor(W.tenantId, followUp, "dana-kembali.pdf"),
-        ],
-      ),
+          [
+            idOf(sibling),
+            APP,
+            APP3,
+            evidenceKeyFor(W.tenantId, followUp, "dana-kembali.pdf"),
+          ],
+        ),
       true,
     );
     expect((await W.itemOfPerson(followUp, BUDI)).status).toBe("returned");

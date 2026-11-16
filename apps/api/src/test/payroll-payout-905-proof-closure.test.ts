@@ -271,7 +271,11 @@ async function paidBatch() {
 // fingerprint was never read (stored_sha256 NULL). The helper now leaves that
 // real pending state next to the stuck row; the gate itself is unchanged.
 const seededFiles: { tenant: string; key: string }[] = [];
-async function pendingUpload(batchId: string, key: string, tenant = W.tenantId) {
+async function pendingUpload(
+  batchId: string,
+  key: string,
+  tenant = W.tenantId,
+) {
   const sha = createHash("sha256")
     .update(`fixture proof ${tenant}/${key}`)
     .digest("hex");

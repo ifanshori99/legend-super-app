@@ -817,9 +817,10 @@ export function installPayoutWorld(label: string) {
     // The step-up must stay fresh (15 minutes) for the whole file.
     mfaRefresh = setInterval(() => {
       owner
-        .query(`UPDATE session SET mfa_verified_at = now() WHERE id = ANY($1)`, [
-          actorSessions,
-        ])
+        .query(
+          `UPDATE session SET mfa_verified_at = now() WHERE id = ANY($1)`,
+          [actorSessions],
+        )
         .catch(() => {});
     }, 60_000);
     mfaRefresh.unref();
@@ -1044,7 +1045,9 @@ export function installPayoutWorld(label: string) {
         createdRoles,
       ]);
     }, true);
-    await owner.query("DELETE FROM session WHERE id = ANY($1)", [actorSessions]);
+    await owner.query("DELETE FROM session WHERE id = ANY($1)", [
+      actorSessions,
+    ]);
     await owner.query(`DELETE FROM "user" WHERE id = ANY($1)`, [actorUsers]);
     await owner.end();
   });
@@ -1113,9 +1116,8 @@ export function installPayoutWorld(label: string) {
       await c.query(
         `UPDATE legacy_clone SET idempotency_key = 'payslip:' || payslip_id::text || ':attempt:' || attempt_no::text`,
       );
-      const id = (
-        await c.query(`SELECT id::text AS id FROM legacy_clone`)
-      ).rows[0].id as string;
+      const id = (await c.query(`SELECT id::text AS id FROM legacy_clone`))
+        .rows[0].id as string;
       await c.query(
         `INSERT INTO payroll_disbursement_items SELECT * FROM legacy_clone`,
       );

@@ -79,7 +79,11 @@ const repostSkippedFees = (batchId: string, by = APP) =>
       "repostSkippedFees",
     )(tx, actorOf(by), batchId),
   );
-const recordOverpaidItem = async (itemId: string, batchId: string, by = APP) => {
+const recordOverpaidItem = async (
+  itemId: string,
+  batchId: string,
+  by = APP,
+) => {
   // 905: the second step needs the first step of another person (W.proposeOverpaid).
   await W.proposeOverpaid(
     batchId,

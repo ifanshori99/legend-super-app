@@ -648,7 +648,11 @@ describe("905 follow-up P2-4: a closed proof key cannot finish a resolve that fr
       ).then(
         () => null,
         (error: unknown) => error,
-      )) as { status?: number; code?: string; cause?: { code?: string } } | null;
+      )) as {
+        status?: number;
+        code?: string;
+        cause?: { code?: string };
+      } | null;
       expect(refusal, "the call must be refused").not.toBeNull();
       const refusedHttp =
         refusal instanceof HttpError &&
