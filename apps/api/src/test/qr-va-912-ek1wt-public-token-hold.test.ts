@@ -20,6 +20,10 @@
 //   D. Guest bill split paid by virtual account: another part's QRIS hold (it
 //      belongs to its own part) does not block it; a POS hold on the whole order
 //      (no bill split) does (409 QRIS_HOLD_ACTIVE). Ref: bill-split-pay.test.ts.
+//   E. Round 2 (architect): a hold appears between the first check and the
+//      write (recovery charge); a part asks VA while its own QR is expired but
+//      still open; a whole-order link while a part holds a QR; a paid or closed
+//      hold does not block.
 //
 // Assumptions:
 // - Refusal is HTTP 409 and the body carries the code QRIS_HOLD_ACTIVE.
@@ -30,6 +34,12 @@
 // - Refresh mints a new code only when the previous intent already expired. The
 //   refresh test seeds an `expired` intent on the order's link (no provider_ref).
 //   Success of a refresh is any 2xx (the contract says "may mint").
+// - E: a hold the provider has not settled is 'open' even after its intent's
+//   expires_at passed (the hold check job closes it, not the clock). A whole
+//   order link for an order that already has bill-split parts is refused with
+//   the same 409 QRIS_HOLD_ACTIVE while a part holds a QR (the hold covers the
+//   order, a part's hold blocks the whole-order code). A paid or closed hold
+//   is seeded on its own link with a paid or expired intent.
 // - Several files in one run share the pg pools, so pools are closed once, in the
 //   top-level afterAll.
 //
@@ -104,6 +114,8 @@ class CountingGateway implements PaymentGatewayPort {
   readonly provider = "doit";
   readonly requests: GatewayIntentRequest[] = [];
   readonly cancels: string[] = [];
+  /** Runs inside createIntent, before it answers (E: a hold appears mid-call). */
+  onCreate: (() => Promise<void>) | null = null;
   readonly cancel: NonNullable<PaymentGatewayPort["cancel"]> = async (
     _context,
     intent,
@@ -115,6 +127,7 @@ class CountingGateway implements PaymentGatewayPort {
   }
   async createIntent(input: GatewayIntentRequest) {
     this.requests.push(input);
+    await this.onCreate?.();
     const instructions: PaymentInstructions = {
       method: "qris",
       qrPayload: "00020101021226EK1WTQR",
@@ -598,6 +611,34 @@ describe("legend-ek1wt C: order recovery charge payment with an open QRIS hold o
 
 // ------------------------------------------------ D. split bill part paid by VA
 
+/** A guest order cut into two equal parts. */
+async function splitBillOf(fx: HoldFixture) {
+  const guest = await fx.newGuest();
+  const order = await fx.qrOrder(guest);
+  const split = await fx.guestPost(guest, "/splits", {
+    method: "equal",
+    parts: 2,
+    idempotencyKey: randomUUID(),
+  });
+  expect(split.status, JSON.stringify(split.body)).toBe(201);
+  const parts = split.body.data.splits as { id: string; amountIdr: number }[];
+  return { guest, order, parts };
+}
+
+const payPartOf = (
+  fx: HoldFixture,
+  guest: Awaited<ReturnType<typeof splitBillOf>>["guest"],
+  partId: string,
+  method: "qris" | "va",
+) =>
+  fx.guestPost(guest, "/payments", {
+    target: { kind: "split", billSplitId: partId },
+    method,
+    payerSecret: secretFor(partId),
+    ...(method === "va" ? { bankCode: "bmri" } : {}),
+    idempotencyKey: randomUUID(),
+  });
+
 describe("legend-ek1wt D: guest split part paid by virtual account", () => {
   let fx: HoldFixture;
   beforeAll(async () => {
@@ -609,31 +650,12 @@ describe("legend-ek1wt D: guest split part paid by virtual account", () => {
     resetHoldPorts();
   });
 
-  async function splitBill() {
-    const guest = await fx.newGuest();
-    const order = await fx.qrOrder(guest);
-    const split = await fx.guestPost(guest, "/splits", {
-      method: "equal",
-      parts: 2,
-      idempotencyKey: randomUUID(),
-    });
-    expect(split.status, JSON.stringify(split.body)).toBe(201);
-    const parts = split.body.data.splits as { id: string; amountIdr: number }[];
-    return { guest, order, parts };
-  }
-
+  const splitBill = () => splitBillOf(fx);
   const payPart = (
-    guest: Awaited<ReturnType<typeof splitBill>>["guest"],
+    guest: Awaited<ReturnType<typeof splitBillOf>>["guest"],
     partId: string,
     method: "qris" | "va",
-  ) =>
-    fx.guestPost(guest, "/payments", {
-      target: { kind: "split", billSplitId: partId },
-      method,
-      payerSecret: secretFor(partId),
-      ...(method === "va" ? { bankCode: "bmri" } : {}),
-      idempotencyKey: randomUUID(),
-    });
+  ) => payPartOf(fx, guest, partId, method);
 
   it("legend-ek1wt split part VA is issued 201 while another part of the bill holds a QRIS (a part's hold is its own)", async () => {
     const { guest, parts } = await splitBill();
@@ -665,11 +687,366 @@ describe("legend-ek1wt D: guest split part paid by virtual account", () => {
       }),
     );
     const intents = await intentCount(tenantId);
+    const created = fx.gateway.requests.length;
 
     const refused = await payPart(guest, parts[1]!.id, "va");
     expectHoldRefusal(refused);
     expect(await intentCount(tenantId), "no new intent").toBe(intents);
+    expect(fx.gateway.requests.length, "no code asked from the provider").toBe(
+      created,
+    );
   });
+});
+
+// ------------------------------------------------------------- E. round 2
+
+/** A hold row in a final state (paid or closed), on a link of its own. */
+async function seedFinalHold(
+  client: Pg,
+  input: {
+    tenantId: string;
+    outletId: string;
+    orderUuid: string;
+    amountIdr: number;
+    state: "paid" | "closed";
+  },
+) {
+  const linkId = randomUUID();
+  const intentId = randomUUID();
+  await client.query(
+    `INSERT INTO payment_links
+       (id, tenant_id, outlet_id, token_hash, reference, subtotal_idr, total_idr, paid_idr, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $6, 0, 'seed')`,
+    [
+      linkId,
+      input.tenantId,
+      input.outletId,
+      randomBytes(32).toString("hex"),
+      `EK1-${linkId.slice(0, 8)}`,
+      input.amountIdr,
+    ],
+  );
+  await client.query(
+    `INSERT INTO payment_intents
+       (id, tenant_id, outlet_id, payment_link_id, method, provider, provider_ref,
+        amount_idr, idempotency_key, status, instructions, expires_at, paid_at)
+     VALUES ($1, $2, $3, $4, 'qris', 'doit', $5, $6, $7, $8, $9::jsonb,
+             now() - interval '10 minutes', $10)`,
+    [
+      intentId,
+      input.tenantId,
+      input.outletId,
+      linkId,
+      `FINAL-${intentId}`,
+      input.amountIdr,
+      `ek1wt-${intentId}`,
+      input.state === "paid" ? "paid" : "expired",
+      JSON.stringify({
+        method: "qris",
+        qrPayload: "00020101021226FINALQR",
+        issuer: null,
+      }),
+      input.state === "paid" ? new Date() : null,
+    ],
+  );
+  await client.query(
+    `INSERT INTO pos_qris_holds
+       (tenant_id, id, outlet_id, order_id, tender_id, payment_intent_id,
+        amount_idr, backfilled, state, opened_at, opened_by, next_check_at,
+        closed_at, close_reason)
+     VALUES ($1, gen_random_uuid(), $2, $3, NULL, $4, $5, true, $6, now() - interval '20 minutes',
+             NULL, NULL, now(), $7)`,
+    [
+      input.tenantId,
+      input.outletId,
+      input.orderUuid,
+      intentId,
+      input.amountIdr,
+      input.state,
+      input.state === "paid" ? "provider_paid" : "provider_expired",
+    ],
+  );
+  return { intentId, linkId };
+}
+
+describe("legend-ek1wt E1: recovery charge, a hold appears after the first check passed", () => {
+  let w: World;
+  let gateway: CountingGateway;
+  const DIFFERENCE = PRICES.kopi - PRICES.roti;
+  beforeAll(async () => {
+    w = await createWorld();
+    tenantsToClose.push(w.tenant.tenantId);
+    gateway = new CountingGateway();
+  }, 180_000);
+  afterAll(() => {
+    gateway.onCreate = null;
+    setPaymentGateway(null);
+  });
+
+  const context = (): ScopedTenantContext =>
+    establishScopedTenantContext(
+      establishTenantContext({
+        tenantId: tenantIdSchema.parse(w.tenant.tenantId),
+        brandId: null,
+        source: "session",
+      }),
+      { kind: "tenant" },
+    );
+
+  async function openCharge() {
+    const order = await w.paidOrder();
+    const issueId = (await w.report(order.roti.id)).body.data.id as string;
+    const approvalId = await w.insertApproval({
+      actionType: "price_correction",
+      objectType: "order_issue",
+      objectId: issueId,
+      amountIdr: DIFFERENCE,
+      status: "approved",
+      requestedBy: w.floorStaff.userId,
+    });
+    const resolved = await w.staffPost(
+      w.supervisor,
+      `/api/order-issues/${issueId}/resolve`,
+      {
+        resolution: "swap",
+        replacementItemId: w.ids.kopi,
+        approvalRequestId: approvalId,
+      },
+    );
+    expect(resolved.status).toBe(200);
+    const event = (await w.outboxRows("order_issue.resolved", issueId))[0]!
+      .event;
+    const ctx = context();
+    await withTenant(db, ctx, async (tx) => {
+      await deliverSwapKitchenEvent(ctx, event, tx);
+      await deliverIssueChargeEvent(ctx, event, tx);
+    });
+    const { rows } = await owner.query<{ id: string; order_id: string }>(
+      `SELECT id, order_id FROM order_issue_charges
+        WHERE tenant_id = $1 AND order_issue_id = $2`,
+      [w.tenant.tenantId, issueId],
+    );
+    expect(rows).toHaveLength(1);
+    return { guest: order.guest, charge: rows[0]!, issueId };
+  }
+
+  it("legend-ek1wt recovery charge: a hold opened during the provider call refuses the payment 409 QRIS_HOLD_ACTIVE and stores no intent for the charge", async () => {
+    const { guest, charge, issueId } = await openCharge();
+    const tenantId = w.tenant.tenantId;
+    let seeded: { intentId: string; linkId: string } | null = null;
+    gateway.onCreate = async () => {
+      // The first check already passed: the order has no hold when we get here.
+      // lock_timeout: a lock held by the service would otherwise hang the test.
+      // The service holds the order row for the whole call, so a hold insert
+      // would wait on its foreign key to the order: skip FK triggers for this
+      // seed only (the test owner is a superuser) and cap any other lock wait.
+      seeded = await asOwnerTenant(tenantId, async (client) => {
+        await client.query("SET LOCAL lock_timeout = '5s'");
+        await client.query("SET LOCAL session_replication_role = 'replica'");
+        return seedHeldCode(client, {
+          tenantId,
+          outletId: w.tenant.outletId,
+          orderUuid: charge.order_id,
+          amountIdr: 33_000,
+        });
+      });
+    };
+    setPaymentGateway(gateway);
+    const intents = await intentCount(tenantId);
+    const created = gateway.requests.length;
+
+    const refused = await agent(w.app)
+      .post(
+        `/api/table-sessions/${guest.sessionId}/issue-charges/${charge.id}/payments`,
+      )
+      .set("Host", w.tenant.hostname)
+      .set("Authorization", `Bearer ${guest.token}`)
+      .set(originHeader)
+      .send({ method: "qris", idempotencyKey: randomUUID() });
+    gateway.onCreate = null;
+
+    expect(
+      seeded,
+      "the hold was opened during the provider call (setup)",
+    ).not.toBeNull();
+    expect(gateway.requests.length, "setup: the first check passed").toBe(
+      created + 1,
+    );
+    expectHoldRefusal(refused);
+    expect(
+      await intentCount(tenantId),
+      "only the seeded intent exists, nothing stored for the charge",
+    ).toBe(intents + 1);
+    const { rows } = await owner.query<{
+      payment_intent_id: string | null;
+      payment_link_id: string | null;
+    }>(
+      `SELECT payment_intent_id, payment_link_id FROM order_issue_charges
+        WHERE tenant_id = $1 AND order_issue_id = $2`,
+      [tenantId, issueId],
+    );
+    expect(rows[0]!.payment_intent_id).toBeNull();
+    if (rows[0]!.payment_link_id) {
+      const onLink = await owner.query<{ n: string }>(
+        "SELECT count(*) AS n FROM payment_intents WHERE tenant_id = $1 AND payment_link_id = $2",
+        [tenantId, rows[0]!.payment_link_id],
+      );
+      expect(Number(onLink.rows[0]!.n), "no intent on the charge's link").toBe(
+        0,
+      );
+    }
+    expect(
+      (await intentRow(tenantId, seeded!.intentId)).status,
+      "the held code is not superseded",
+    ).toBe("pending");
+    const hold = await owner.query<{ state: string }>(
+      "SELECT state FROM pos_qris_holds WHERE tenant_id = $1 AND payment_intent_id = $2",
+      [tenantId, seeded!.intentId],
+    );
+    expect(hold.rows.map((r) => r.state)).toEqual(["open"]);
+  });
+});
+
+describe("legend-ek1wt E2: guest split bill, holds of a part and of the whole order", () => {
+  let fx: HoldFixture;
+  beforeAll(async () => {
+    fx = await holdFixture("qr-va-912-ek1wt-e");
+    enableVaBank(fx.gateway);
+    setPaymentGateway(fx.gateway);
+  }, 180_000);
+  afterAll(() => {
+    resetHoldPorts();
+  });
+
+  it("legend-ek1wt split part asks VA while its own QR is expired but its hold is still open: 409, no new intent", async () => {
+    const { guest, parts } = await splitBillOf(fx);
+    const part = parts[0]!;
+    const qris = await payPartOf(fx, guest, part.id, "qris");
+    expect(qris.status, JSON.stringify(qris.body)).toBe(201);
+    const intentId = qris.body.data.id as string;
+    // The code's time ran out and it is marked expired; the provider has not
+    // said it is dead, so the hold stays open (a still-valid code would be
+    // refused earlier with SPLIT_CODE_ACTIVE, not by the hold guard).
+    await owner.query(
+      "UPDATE payment_intents SET status = 'expired', expires_at = now() - interval '2 minutes' WHERE tenant_id = $1 AND id = $2",
+      [fx.tenant.tenantId, intentId],
+    );
+    const hold = await owner.query<{ state: string }>(
+      "SELECT state FROM pos_qris_holds WHERE tenant_id = $1 AND payment_intent_id = $2",
+      [fx.tenant.tenantId, intentId],
+    );
+    expect(
+      hold.rows.map((r) => r.state),
+      "setup: the part's QR has an open hold",
+    ).toEqual(["open"]);
+    const intents = await intentCount(fx.tenant.tenantId);
+    const created = fx.gateway.requests.length;
+
+    const refused = await payPartOf(fx, guest, part.id, "va");
+    // Assumption: the part's own pending QR is refused 409 either by the split
+    // rule (SPLIT_CODE_ACTIVE: "the part's code is still valid") or by the hold
+    // guard (QRIS_HOLD_ACTIVE); the brief asks for 409, not for one code.
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(JSON.stringify(refused.body)).toMatch(
+      /SPLIT_CODE_ACTIVE|QRIS_HOLD_ACTIVE/,
+    );
+    expect(await intentCount(fx.tenant.tenantId), "no new intent").toBe(
+      intents,
+    );
+    expect(fx.gateway.requests.length, "no code asked from the provider").toBe(
+      created,
+    );
+    expect(
+      (await intentRow(fx.tenant.tenantId, intentId)).status,
+      "the old code is left as it was",
+    ).toBe("expired");
+  });
+
+  it("legend-ek1wt whole-order link (no bill split) is refused 409 QRIS_HOLD_ACTIVE while a part of the bill holds a QR", async () => {
+    const { guest, order, parts } = await splitBillOf(fx);
+    const qris = await payPartOf(fx, guest, parts[0]!.id, "qris");
+    expect(qris.status, JSON.stringify(qris.body)).toBe(201);
+    const opened = await createPaymentLink(
+      fx.context,
+      {
+        outletId: fx.tenant.outletId as OutletId,
+        reference: `EK1-${randomUUID().slice(0, 8)}`,
+        tableLabel: "A04",
+        pax: 2,
+        subtotalIdr: order.totalIdr,
+        discountIdr: 0,
+        serviceChargeIdr: 0,
+        taxIdr: 0,
+        roundingIdr: 0,
+        totalIdr: order.totalIdr,
+        returnPath: "/t/v1.abc",
+      },
+      fx.staff.userId,
+    );
+    await asOwnerTenant(fx.tenant.tenantId, (client) =>
+      client.query(
+        `UPDATE orders SET payment_link_id = $3, payment_link_token_sealed = 'sealed-test'
+          WHERE tenant_id = $1 AND id = $2`,
+        [fx.tenant.tenantId, ulidToUuid(order.id), opened.linkId],
+      ),
+    );
+    const intents = await intentCount(fx.tenant.tenantId);
+    const created = fx.gateway.requests.length;
+
+    const refused = await agent(fx.app)
+      .post(`/api/payments/links/${opened.token}/intents`)
+      .send(qrisBody());
+    expectHoldRefusal(refused);
+    expect(await intentCount(fx.tenant.tenantId), "no new intent").toBe(
+      intents,
+    );
+    expect(fx.gateway.requests.length, "no code asked from the provider").toBe(
+      created,
+    );
+  });
+});
+
+describe("legend-ek1wt E3: a paid or closed hold does not block a new code", () => {
+  let app: Express;
+  let world: BreakfastWorld;
+  let gateway: CountingGateway;
+  beforeAll(async () => {
+    app = createApp();
+    world = await createBreakfastWorld(app);
+    tenantsToClose.push(world.tenant.tenantId);
+    gateway = new CountingGateway();
+    setPaymentGateway(gateway);
+  }, 180_000);
+  afterAll(() => {
+    setPaymentGateway(null);
+  });
+
+  for (const state of ["paid", "closed"] as const) {
+    it(`legend-ek1wt breakfast token: a ${state} hold on the order does not block, the code is issued 201`, async () => {
+      const member = await newMember(world);
+      const ticketId = await seedTicket(world, member);
+      const order = await placeBreakfastOrder(world, member, ticketId);
+      const token = await payLink(world, member, ticketId, order.id);
+      const orderUuid = ulidToUuid(order.id);
+      await asOwnerTenant(world.tenant.tenantId, (client) =>
+        seedFinalHold(client, {
+          tenantId: world.tenant.tenantId,
+          outletId: world.tenant.outletId,
+          orderUuid,
+          amountIdr: order.totalIdr,
+          state,
+        }),
+      );
+      const created = gateway.requests.length;
+
+      const issued = await agent(app)
+        .post(`/api/payments/links/${token}/intents`)
+        .set(world.headers)
+        .send(qrisBody());
+      expect(issued.status, JSON.stringify(issued.body)).toBe(201);
+      expect(gateway.requests.length).toBe(created + 1);
+    });
+  }
 });
 
 // One cleanup for the whole file: the pools are shared by the three setups.

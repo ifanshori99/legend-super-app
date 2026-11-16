@@ -71,6 +71,7 @@ import {
 } from "../db/schema";
 import { auditLogs } from "../db/schema/core-audit";
 import { orders } from "../db/schema/qr-order.ts";
+import { orderIssueCharges } from "../db/schema/kds-issues.ts";
 import { posQrisHolds } from "../db/schema/pos-qris-hold.ts";
 import { paymentVaReleases } from "../db/schema/payment-va-release.ts";
 import { notifyOutletSupervisors } from "./edge-sync-conflict-alert.ts";
@@ -802,7 +803,7 @@ async function assertLinkOrderNoQrisHold(
   paymentLinkId: string,
   billSplitId: string | null,
 ): Promise<void> {
-  const [order] = await tx
+  let [order] = await tx
     .select({ id: orders.id })
     .from(orders)
     .where(
@@ -812,7 +813,22 @@ async function assertLinkOrderNoQrisHold(
       ),
     )
     .limit(1);
-  if (!order) return;
+  if (!order) {
+    // A recovery charge link belongs to the charge, not to `orders`; its code
+    // is gated by the charge's order, also inside the transaction.
+    const [charge] = await tx
+      .select({ orderId: orderIssueCharges.orderId })
+      .from(orderIssueCharges)
+      .where(
+        and(
+          eq(orderIssueCharges.tenantId, context.tenant.tenantId),
+          eq(orderIssueCharges.paymentLinkId, paymentLinkId),
+        ),
+      )
+      .limit(1);
+    if (!charge) return;
+    order = { id: charge.orderId };
+  }
   if (billSplitId === null) {
     await assertNoActiveQrisHold(tx, context, order.id);
     return;
