@@ -27,6 +27,7 @@ import {
 } from "./types";
 
 export type {
+  CurrentMetricReader,
   DailyComputeInput,
   DailyMetricReader,
   DailyMetricValue,
@@ -168,6 +169,16 @@ export function assertRegistry(
               `Metric registry: ledger percent "${source.code}" splits from unknown code "${input}"`,
             );
       }
+    } else if (source.kind === "current") {
+      if (definition.aggregation !== "latest")
+        throw new Error(
+          `Metric registry: current code "${source.code}" must aggregate as latest`,
+        );
+      for (const dimension of source.reader.dimensions)
+        if (!definition.dimensions.includes(dimension))
+          throw new Error(
+            `Metric registry: "${source.code}" current reader has dimension "${dimension}" the definition lacks`,
+          );
     } else if (source.kind === "daily") {
       checkReader(source.reader, `"${source.code}"`, source.code);
       writers.push({ label: `"${source.code}"`, reader: source.reader });

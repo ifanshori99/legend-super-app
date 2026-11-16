@@ -6896,6 +6896,7 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 - Ditutup sesudah bukti landing: `legend-2lp.2`, `legend-2lp.4`, `legend-2lp.5`, `legend-4lm6`, `legend-0y8tf`, `legend-sgvw0`, `legend-xz3ll`. `legend-d6d1` tetap terbuka (zona publik dan notifikasi waitlist tersisa). Komentar kartu memuat SHA final m1 sesudah commit dokumentasi ini.
 - Laporan cleanup pertama: disk24,64GB; worktree integrasi1,9GB masih terkunci sampai seluruh dokumentasi dipush. Worktree lain ditahan (d8fc7d19 terkunci; dev-seed kotor). Handoff membersihkan hanya worktree/cabang int batch79 dengan perlindungan worktree lain, lalu mengedit `docs/merge-queue.md` di checkout utama tanpa commit sesuai brief.
 - Ringkasan bukti: fast383, lint, typecheck, e2e produksi18/1skip+mock25, build, full gabungan24474 lulus/47 skip/16 todo; pemulihan mount infra tanpa patch. Subagent4 unik/puncak3, satu runner berat. Tidak ada pekerjaan yang masih berjalan.
+
 ## 2026-11-14: Edge KDS stations + status pemindai (cabang ws/edge-kds-stations, di atas 5dcc1cfd9 = int/batch64b)
 
 - Catatan dasar: milestone/m1 belum memuat batch 64b (tabel stations tanpa display_order dll di m1); cabang dibuat dari 5dcc1cfd9 supaya migrasi 0363-0365 ada. Merge train: merge setelah int/batch64b masuk m1.
@@ -6925,7 +6926,6 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 
 - Review AC14 direproduksi melalui event/receipt asli: HTTP dengan versi di bawah receipt yang lebih baru sempat mengubah tambahan KDS. Bukti RED 1 gagal/27 lulus ada di `/tmp/930-kds-followup-receipt-red.log`; perbaikan membatasi enrichment dengan versi receipt node yang sama, tetap mengizinkan versi sama, dan tidak menyentuh field inti. Narrowing tipe pada dua assertion test baru juga diperbaiki tanpa cast.
 
-
 ### 932 — Merge train batch80 KDS stations r2 (17 Nov 2026)
 
 - Basis tip remote `70bba542d`; integrasi `int/batch80`, worktree `/Users/ifanshori99/Projects/legend super app/legend-batch80` agar bind mount Colima tersedia. Isi tepat satu cabang `ws/edge-kds-stations-r2` `91c7f9d8b`; audit ancestry tidak menemukan tambahan SIAP di luar tiga cabang yang dilarang. Kartu train `legend-qhsex`.
@@ -6947,7 +6947,6 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 
 - Full checkpoint +60menit: API14782 test lulus teramati tanpa FAIL; test `kds-scanner-status` berubah batch80 juga sudah hijau dalam full, demikian catalog-loop dan audit akses. Root3503/1skip dan web92/92 tetap hijau. Tidak ada error infra atau perubahan kode; full pertama terus dimonitor.
 
-
 ### Batch80 gate akhir hijau (17 Nov 2026)
 
 - Full run pertama exit0 dalam6136,8detik (102m17s): root3503 lulus/1skip; web92/92; API1353 berkas lulus/2 berkas skip,20932 test lulus/46skip/16todo. Gabungan24527 lulus/47skip/16todo. Tidak ada kegagalan, pemulihan infra, patch, run ulang, atau pengecualian flake. Container/network disposable sudah terhapus; semua job selesai.
@@ -6955,9 +6954,15 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 - Fetch akhir `origin/milestone/m1` masih `70bba542d`, ancestor integrasi teruji. Isi hanya `ws/edge-kds-stations-r2` `91c7f9d8b`; peta migrasi0431->0431 dengan snapshot0431.prevId ke0430.id. Reviewer integrasi bersih, tidak mereview ulang isi cabang. Rencana landing: push normal int/batch80 lalu fast-forward milestone/m1, komentari/tutup legend-i78o6, legend-40nvj, legend-qhsex; cleanup worktree/int dan edit queue utama tanpa commit. Tidak main/deploy/force push.
 - Angka subagent:3 unik native Codex, puncak3;2 Explore,1 runner; satu Explore berlanjut reviewer integrasi. Token heavy hanya pada runner. session-usage tidak menemukan transkrip native, parallel-report hanya berisi sesi Claude coordinator; biaya/token/rata-rata native tidak tersedia. Batas kontrak40nvj: shell pengirim scanner di luar repo dan web memakai mock tercatat pada sumber; kontrak edge/API, penyimpanan heartbeat/status, isolasi dan validasi selesai teruji.
 
-
 ### Batch80 mendarat dan kartu ditutup (17 Nov 2026)
 
 - Integrasi `aa4971d3f7458009be25a0ecb25870e87968e90b` dipush biasa ke int/batch80 lalu fast-forward milestone/m1; SHA remote terverifikasi dan cabang lokal m1 ikut fast-forward. Basis remote tetap70bba542d pada fetch akhir. Cabang masuk tepat satu: ws/edge-kds-stations-r2 91c7f9d8b. Migrasi0431->0431, check-journal satu entri baru hijau. Tidak main/deploy/force push.
 - Ditutup sesudah landing: legend-i78o6, legend-40nvj, dan kartu train legend-qhsex. Kedua kartu implementasi dibaca lengkap: description/AC formal kosong, komentar CTO930 menyatakan hold selesai dan regresi AC1..14 hijau; gate integrasi lengkap membuktikan perilaku kontrak/isolasi/resync. Batas shell eksternal dan mock web disebut saat penutupan. Komentar final kartu memuat SHA m1 setelah commit dokumentasi ini.
 - Laporan cleanup awal disk24,11GB; integrasi masih dikunci sampai seluruh dokumentasi dipush. Handoff hanya membersihkan worktree/cabang int batch80, menjaga lock worktree d8fc7d19 dan dev-seed yang kotor, serta mengedit docs/merge-queue.md pada checkout utama tanpa commit. Semua job selesai. Subagent3 unik/puncak3, satu runner berat; helper biaya/token native tidak tersedia.
+
+## Task 938 — loyalty report current members (legend-eqdcd, 17 Nov 2026)
+
+- Cabang `fix/938-loyalty-current-metrics` dari milestone/m1 `c17c60df7`; tanpa migrasi atau perubahan nilai/aturan poin.
+- Keputusan sumber: active_members membaca snapshot status aktif saat query, termasuk member tanpa home outlet pada total tenant. Metadata bernama `(saat ini)`, estimasi, hanya bucket terakhir, tanpa perbandingan historis; tidak membuat histori harian palsu.
+- points_redeemed tetap unavailable dengan alasan outlet/tanggal bisnis penukaran belum tercatat lengkap. Kartu lanjutan `legend-iuhjc` menyimpan kebutuhan atribusi otoritatif; outlet pengambilan hadiah tidak dianggap outlet penukaran.
+- Paralel: 6 subagent Codex (2 Explore, test-writer, implementer, test-runner, reviewer), puncak 6. Token heavy tunggal dipegang test-runner. Verifikasi akhir dan temuan review dilaporkan pada komentar kartu serta handover.

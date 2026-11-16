@@ -2,9 +2,10 @@
 // docs/briefs/sub-ws11-foundation-design.md §2.1). Exactly one `MetricSource`
 // per registry metric code; a split is an extra reader of a ledger metric.
 
-import type { BusinessDate } from "@starter/shared/core";
+import type { BusinessDate, OutletQueryFilter } from "@starter/shared/core";
 import type {
   MetricDimensionKey,
+  MetricDimensionValue,
   MetricUnavailableReason,
   MetricValue,
 } from "@starter/shared/metrics";
@@ -96,8 +97,30 @@ export function readerWritesTotal(reader: DailyMetricReader): boolean {
   return reader.writesTotal ?? true;
 }
 
+/** Current state has no historical rows and is never written to metrics_daily. */
+export type CurrentMetricReader = {
+  readonly dimensions: readonly MetricDimensionKey[];
+  compute(input: {
+    readonly tx: Tx;
+    readonly tenantId: string;
+    readonly outletFilter: OutletQueryFilter;
+    readonly now: Date;
+  }): Promise<
+    readonly {
+      readonly dimensions: readonly MetricDimensionValue[];
+      readonly value: MetricValue;
+    }[]
+  >;
+};
+
 export type MetricSource =
   | { readonly kind: "gl"; readonly code: string; readonly gl: GlMetricSource }
+  | {
+      /** A live balance, labelled current even when a past period is selected. */
+      readonly kind: "current";
+      readonly code: string;
+      readonly reader: CurrentMetricReader;
+    }
   | {
       readonly kind: "daily";
       readonly code: string;
@@ -137,6 +160,7 @@ export type MetricSource =
       readonly kind: "unavailable";
       readonly code: string;
       readonly reason: MetricUnavailableReason;
+      readonly message?: string;
     };
 
 /** Non-outlet split of a `gl` metric: operational rows + ledger residual row. */

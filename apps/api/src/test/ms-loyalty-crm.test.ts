@@ -1,8 +1,9 @@
 // Fail-first tests for the loyalty-crm metric family (WS-11 F7, bead
 // legend-20ucm; common rules in docs/briefs/268-ws11-family-common.md). The
 // family answers from customer visits, tier history, rating feedback and
-// promotion redemptions through `metrics_daily`; active_members and
-// points_redeemed have no honest source yet and answer `unavailable`.
+// promotion redemptions through `metrics_daily`; active_members reads the
+// current membership snapshot, while unallocated point redemptions remain
+// unavailable rather than being assigned to a guessed outlet or date.
 //
 // Rows are seeded with the owner pool and `session_replication_role =
 // replica`, so foreign keys to orders, vouchers and promotions are not
@@ -120,6 +121,24 @@ async function seed(world: World): Promise<Seed> {
       await profile(),
       await profile(),
     ] as [string, string, string, string, string];
+
+    // Current member totals are not visit counts: these members never visit.
+    // Status and home outlet determine the snapshot; an unassigned home
+    // outlet must not be copied into every outlet's total.
+    for (const [status, homeOutlet, tier] of [
+      ["active", world.outlet1, ids.gold],
+      ["active", world.outlet1, null],
+      ["active", world.outlet2, ids.silver],
+      ["active", null, ids.gold],
+      ["suspended", world.outlet1, ids.gold],
+      ["closed", world.outlet1, ids.gold],
+      ["pending_verification", world.outlet1, ids.gold],
+    ] as const)
+      await client.query(
+        `INSERT INTO customer_profiles (id, tenant_id, name, membership_status, home_outlet_id, tier_id, whatsapp_verified_at)
+         VALUES ($1, $2, 'Snapshot Member', $3, $4, $5, '2025-07-01T05:00:00Z')`,
+        [randomUUID(), t, status, homeOutlet, tier],
+      );
 
     // [profile, from tier, to tier, created at]
     const history: [string, string | null, string | null, string][] = [
@@ -283,7 +302,7 @@ afterAll(async () => {
 });
 
 describe("loyalty-crm registry", () => {
-  it("claims its metrics: daily readers and unavailable sources", () => {
+  it("claims its metrics: daily readers and unavailable point attribution", () => {
     expect(() => assertRegistry(METRIC_SOURCE_MODULES)).not.toThrow();
     for (const code of [
       "new_customers",
@@ -293,14 +312,14 @@ describe("loyalty-crm registry", () => {
       "promo_cost",
     ])
       expect(metricSourceOf(code).kind, code).toBe("daily");
+    expect(metricSourceOf("active_members").kind).toBe("current");
     expect(metricSourceOf("review_rating")).toMatchObject({
       weightCode: "review_count",
     });
-    for (const code of ["active_members", "points_redeemed"])
-      expect(metricSourceOf(code), code).toMatchObject({
-        kind: "unavailable",
-        reason: "source_not_built",
-      });
+    expect(metricSourceOf("points_redeemed")).toMatchObject({
+      kind: "unavailable",
+      reason: "dimension_not_supported",
+    });
     expect(readers.length).toBeGreaterThan(0);
     for (const { reader } of readers as { reader: DailyMetricReader }[])
       expect(reader.metricCodes.length).toBeGreaterThan(0);
@@ -419,8 +438,14 @@ describe("loyalty-crm reports through the engine", () => {
     codes: string[],
     groupBy: string[] = [],
     period = { start: date(DAY), end: date(NEXT_DAY) },
+    ctx = context(a.tenantId, a.outlet1),
+    options: Partial<
+      Pick<
+        Parameters<typeof evaluateMetrics>[2],
+        "bucket" | "comparePrevious" | "filters" | "requireFinal"
+      >
+    > = {},
   ): Promise<EvaluatedMetrics> {
-    const ctx = context(a.tenantId, a.outlet1);
     return withTenantSnapshot(ctx, (tx) =>
       evaluateMetrics(
         tx,
@@ -434,13 +459,173 @@ describe("loyalty-crm reports through the engine", () => {
           filters: [],
           comparePrevious: false,
           viewer: "full",
+          ...options,
         },
         LATE,
       ),
     );
   }
 
-  it("weights the rating by review count and answers the unbuilt metrics as unavailable", async () => {
+  it("labels a historical request as current and never invents historic buckets or comparisons", async () => {
+    const result = await evaluate(
+      ["active_members"],
+      [],
+      { start: date(DAY), end: date(NEXT_DAY) },
+      context(a.tenantId, a.outlet1),
+      { bucket: "day", comparePrevious: true },
+    );
+    expect(result.definitions[0]!.name).toContain("saat ini");
+    expect(result.availability[0]).toMatchObject({ status: "available" });
+    expect(result.series[0]!.points).toHaveLength(2);
+    expect(result.series[0]!.points[0]!.value).toBeNull();
+    expect(result.series[0]!.points[1]!).toMatchObject({
+      value: { unit: "count", value: 2 },
+      finality: "estimate",
+      comparison: null,
+    });
+    const rows = await owner.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM metrics_daily
+       WHERE tenant_id = $1 AND metric_code = 'active_members'`,
+      [a.tenantId],
+    );
+    expect(rows.rows[0]!.n).toBe(0);
+  });
+
+  it("reads current active members without visits, including unassigned home outlets only in the tenant total", async () => {
+    const period = { start: date(DAY), end: date(NEXT_DAY) };
+    const tenant = await evaluate(
+      ["active_members"],
+      [],
+      period,
+      context(a.tenantId),
+    );
+    const first = await evaluate(["active_members"]);
+    const sibling = await evaluate(
+      ["active_members"],
+      [],
+      period,
+      context(a.tenantId, a.outlet2),
+    );
+    const foreign = await evaluate(
+      ["active_members"],
+      ["customer_tier"],
+      period,
+      context(b.tenantId, b.outlet1),
+    );
+    const value = (result: EvaluatedMetrics) =>
+      (result.series[0]!.points[0]!.value as { value: number }).value;
+
+    // Four active profiles: two at outlet 1, one at outlet 2, one without
+    // home outlet. Suspended, closed and pending profiles never contribute.
+    expect(value(tenant)).toBe(4);
+    expect(value(first)).toBe(2);
+    expect(value(sibling)).toBe(1);
+    expect(
+      Object.fromEntries(
+        foreign.series.map((series) => [
+          series.dimension!.value,
+          (series.points[0]!.value as { value: number }).value,
+        ]),
+      ),
+    ).toEqual({ [seedB.gold]: 1, [TIER_UNASSIGNED]: 1 });
+    expect(
+      foreign.series.some((series) => series.dimension?.value === seedA.gold),
+    ).toBe(false);
+
+    const byTier = await evaluate(["active_members"], ["customer_tier"]);
+    expect(
+      Object.fromEntries(
+        byTier.series.map((series) => [
+          series.dimension!.value,
+          (series.points[0]!.value as { value: number }).value,
+        ]),
+      ),
+    ).toEqual({ [seedA.gold]: 1, [TIER_UNASSIGNED]: 1 });
+  });
+
+  it("splits current home outlets without losing unassigned members and applies tier filters", async () => {
+    const period = { start: date(DAY), end: date(NEXT_DAY) };
+    const byOutlet = await evaluate(
+      ["active_members"],
+      ["outlet"],
+      period,
+      context(a.tenantId),
+    );
+    expect(
+      Object.fromEntries(
+        byOutlet.series.map((series) => [
+          series.dimension!.value,
+          (series.points[0]!.value as { value: number }).value,
+        ]),
+      ),
+    ).toEqual({ [a.outlet1]: 2, [a.outlet2]: 1, unassigned: 1 });
+
+    const gold = await evaluate(
+      ["active_members"],
+      [],
+      period,
+      context(a.tenantId),
+      { filters: [{ key: "customer_tier", values: [seedA.gold] }] },
+    );
+    expect(gold.series[0]!.points[0]!.value).toEqual({
+      unit: "count",
+      value: 2,
+    });
+    const missing = await evaluate(
+      ["active_members"],
+      [],
+      period,
+      context(a.tenantId),
+      { filters: [{ key: "customer_tier", values: [seedB.gold] }] },
+    );
+    expect(missing.series[0]!.points[0]!.value).toEqual({
+      unit: "count",
+      value: 0,
+    });
+  });
+
+  it("refreshes current membership from status changes without rewriting a requested historical day", async () => {
+    const updated = await owner.query<{ id: string }>(
+      `UPDATE customer_profiles SET membership_status = 'suspended'
+       WHERE tenant_id = $1 AND home_outlet_id = $2
+         AND tier_id IS NULL AND membership_status = 'active'
+       RETURNING id`,
+      [a.tenantId, a.outlet1],
+    );
+    try {
+      expect(updated.rows).toHaveLength(1);
+      const result = await evaluate(["active_members"]);
+      expect(result.series[0]!.points[0]!.value).toEqual({
+        unit: "count",
+        value: 1,
+      });
+    } finally {
+      await owner.query(
+        `UPDATE customer_profiles SET membership_status = 'active'
+         WHERE tenant_id = $1 AND id = ANY($2::uuid[])`,
+        [a.tenantId, updated.rows.map((row) => row.id)],
+      );
+    }
+    const restored = await evaluate(["active_members"]);
+    expect(restored.series[0]!.points[0]!.value).toEqual({
+      unit: "count",
+      value: 2,
+    });
+  });
+
+  it("refuses official-only requests for a current snapshot even when the selected period is settled", async () => {
+    await expect(
+      evaluate(
+        ["active_members"],
+        [],
+        { start: date(DAY), end: date(NEXT_DAY) },
+        context(a.tenantId, a.outlet1),
+        { requireFinal: true },
+      ),
+    ).rejects.toMatchObject({ status: 409, code: "PERIOD_NOT_CLOSED" });
+  });
+
+  it("weights ratings, keeps active members as a latest snapshot, and leaves unattributed points unavailable", async () => {
     await recomputeMetricsDaily(
       context(a.tenantId),
       a.outlet1,
@@ -448,7 +633,11 @@ describe("loyalty-crm reports through the engine", () => {
       date(NEXT_DAY),
       { readers, now: LATE },
     );
-    const result = await evaluate(["review_rating", "returning_customers"]);
+    const result = await evaluate([
+      "review_rating",
+      "returning_customers",
+      "active_members",
+    ]);
     const valueOf = (code: string) =>
       (
         result.series.find((series) => series.metricCode === code)!.points[0]!
@@ -457,12 +646,20 @@ describe("loyalty-crm reports through the engine", () => {
     // (4 × 3 + 2 × 1) / 4 reviews, not (4 + 2) / 2.
     expect(valueOf("review_rating")).toBe("3.5000");
     expect(valueOf("returning_customers")).toBe(3);
-    for (const code of ["active_members", "points_redeemed"]) {
+    // Current membership is read once, rather than summed over the period.
+    expect(valueOf("active_members")).toBe(2);
+    for (const code of ["points_redeemed"]) {
       const unbuilt = await evaluate([code]);
       expect(unbuilt.availability[0], code).toMatchObject({
         status: "unavailable",
-        reason: "source_not_built",
+        reason: "dimension_not_supported",
       });
+      const availability = unbuilt.availability[0]!;
+      if (availability.status !== "unavailable")
+        throw new Error("Expected unsupported point attribution");
+      expect(availability.message).toMatch(/outlet/i);
+      expect(availability.message).toMatch(/tanggal/i);
+      expect(unbuilt.series[0]!.points[0]!.value).toBeNull();
     }
   });
 
