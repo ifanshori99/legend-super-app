@@ -6942,3 +6942,5 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 - Colima-up exit0; full test pertama dimulai di latar melalui `LEGEND_TEST_CONCURRENCY=2 heavy pnpm run test`, log `/tmp/batch80-full.log`. Belum landing sampai exit full run dan fetch akhir terverifikasi.
 
 - Full checkpoint: root3503 lulus/1 skip/0 gagal, termasuk bind mount Colima yang bermasalah pada batch79; web92/92 hijau. API penuh masih berjalan tanpa kegagalan teramati. Tidak ada patch kode atau pengulangan full run.
+
+- Full checkpoint +30menit: API6797 test lulus teramati tanpa penanda FAIL; root3503 lulus/1skip dan web92/92 sudah hijau. Warning pg concurrent-client-query lama tidak menggagalkan. Runner memonitor satu job full pertama; tidak ada perubahan kode, kegagalan infra, atau run ulang.
