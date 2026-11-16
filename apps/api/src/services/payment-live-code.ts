@@ -14,7 +14,7 @@
 // change guards (`bill-split.service.ts`) and the poll selector
 // (`payment.service.ts`), so they can never disagree.
 
-import { and, eq, isNotNull, isNull, sql, type SQL } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, or, sql, type SQL } from "drizzle-orm";
 import { paymentIntents } from "../db/schema/index.ts";
 import { HOLD_CLOSE_MARGIN_MS } from "./pos-qris-hold.ts";
 
@@ -76,6 +76,23 @@ export function failedCodeMayStillPay(): SQL {
       where f.tenant_id = ${paymentIntents.tenantId}
         and f.payment_intent_id = ${paymentIntents.id}
         and f.resolved_at is null)`,
+  )!;
+}
+
+/**
+ * A code that may still take money: any `pending` code whatever its expiry
+ * (a lapsed one stays pending until the gateway answers final) unless the hold
+ * or a staff release proved it dead, or an `expired` / `failed` code the
+ * provider received and has not declared final. One predicate for every
+ * "is the old code still collectible" guard: the whole-order guard
+ * (`orderLiveCodeTx`), the split guards (`bill-split.service.ts`) and the
+ * code issue guard (`assertLinkOrderCanIssueTx`, legend-4n8rs).
+ */
+export function liveCodeWhere(): SQL {
+  return or(
+    and(eq(paymentIntents.status, "pending"), noClosedHold),
+    expiredCodeMayStillPay(),
+    failedCodeMayStillPay(),
   )!;
 }
 

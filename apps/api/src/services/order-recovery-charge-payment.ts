@@ -349,6 +349,7 @@ export async function createIssueChargePayment(
             }),
           },
           now,
+          { orderLockedByCaller: true },
         );
         await tx
           .update(orderIssueCharges)

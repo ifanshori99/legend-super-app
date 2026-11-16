@@ -111,6 +111,7 @@ import {
 import {
   expiredCodeMayStillPay,
   failedCodeNotFinal,
+  liveCodeWhere,
   noVaRelease,
   providerAnswerFinal,
 } from "./payment-live-code";
@@ -755,6 +756,17 @@ async function cancelSupersededAtGateway(
 }
 
 /**
+ * legend-154wr: `orderLockedByCaller` is set only by a caller whose own
+ * transaction already holds the order row lock (`FOR UPDATE`) and ran the hold
+ * and live code guards under it (the QR guest, the split part, the cashier QR,
+ * the recovery charge). `createIntentCore` opens its own transaction on another
+ * connection, so locking the same row again there would wait on the caller
+ * forever. Every other caller (public token route, refresh) leaves it unset and
+ * the intent transaction locks the order itself.
+ */
+export type CreateIntentOptions = { orderLockedByCaller?: boolean };
+
+/**
  * Creates one payable intent. The amount is the link's outstanding balance
  * (PAY-01); any previous pending code is superseded, so one bill never shows
  * two live codes.
@@ -764,9 +776,10 @@ export async function createIntent(
   token: string,
   input: CreatePaymentIntentInput,
   now = new Date(),
+  options: CreateIntentOptions = {},
 ): Promise<CustomerPaymentIntent> {
   const parsed = createPaymentIntentInputSchema.parse(input);
-  return createIntentCore(context, token, parsed, now, null);
+  return createIntentCore(context, token, parsed, now, null, options);
 }
 
 /**
@@ -780,32 +793,23 @@ export async function createSplitPartIntent(
   input: CreatePaymentIntentInput,
   part: { billSplitId: string; amountIdr: number },
   now = new Date(),
+  options: CreateIntentOptions = {},
 ): Promise<CustomerPaymentIntent> {
   const parsed = createPaymentIntentInputSchema.parse(input);
-  return createIntentCore(context, token, parsed, now, part);
+  return createIntentCore(context, token, parsed, now, part, options);
 }
 
 /**
- * legend-ek1wt: a code of an order's public link is a code issuer like the QR
- * guest and the cashier, so it honors the same QRIS hold guard: while a QR of
- * the bill can still be paid, no new code is issued (409 QRIS_HOLD_ACTIVE).
- * Only a link that is an order's (`orders.payment_link_id`) is checked. For a
- * split part (`billSplitId` set) only a bill-level hold or a hold of that same
- * part refuses; a hold of another part never gates this part. Without a part
- * every active hold refuses. The order row is not locked here and the link
- * lock does not stop a hold opener (it locks the order, not the link); locking
- * `orders` from here would risk a deadlock against the lock order. The hold
- * freeze triggers (migration 0382) guard `orders` and `pos_order_tenders`, not
- * `payment_intents`, so a hold opened between this check and the commit is not
- * stopped by the database; that narrow window is tracked in a bead.
+ * The order a link bills: an order's own link (`orders.payment_link_id`) or the
+ * order of a recovery charge whose link it is. Null for any other link
+ * (deposit, reservation), which no order guard applies to.
  */
-async function assertLinkOrderNoQrisHold(
+async function linkOrderIdTx(
   tx: Tx,
   context: ScopedTenantContext,
   paymentLinkId: string,
-  billSplitId: string | null,
-): Promise<void> {
-  let [order] = await tx
+): Promise<string | null> {
+  const [order] = await tx
     .select({ id: orders.id })
     .from(orders)
     .where(
@@ -815,35 +819,115 @@ async function assertLinkOrderNoQrisHold(
       ),
     )
     .limit(1);
-  if (!order) {
-    // A recovery charge link belongs to the charge, not to `orders`; its code
-    // is gated by the charge's order, also inside the transaction.
-    const [charge] = await tx
-      .select({ orderId: orderIssueCharges.orderId })
-      .from(orderIssueCharges)
-      .where(
-        and(
-          eq(orderIssueCharges.tenantId, context.tenant.tenantId),
-          eq(orderIssueCharges.paymentLinkId, paymentLinkId),
-        ),
-      )
-      .limit(1);
-    if (!charge) return;
-    order = { id: charge.orderId };
-  }
+  if (order) return order.id;
+  // A recovery charge link belongs to the charge, not to `orders`; its code is
+  // gated by the charge's order, also inside the transaction.
+  const [charge] = await tx
+    .select({ orderId: orderIssueCharges.orderId })
+    .from(orderIssueCharges)
+    .where(
+      and(
+        eq(orderIssueCharges.tenantId, context.tenant.tenantId),
+        eq(orderIssueCharges.paymentLinkId, paymentLinkId),
+      ),
+    )
+    .limit(1);
+  return charge?.orderId ?? null;
+}
+
+/**
+ * legend-154wr: locks the billed order's row, the first lock of the documented
+ * order (`pos-qris-hold.ts`: orders, pos_orders, pos_qris_holds, tenders,
+ * payment_links, payment_intents). A hold opener locks the order first, so a
+ * hold either committed before this lock (the guards below see it) or waits
+ * for this transaction (its own guard then sees the new code). Reads after the
+ * lock see fresh rows (READ COMMITTED).
+ */
+async function lockLinkOrderTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  paymentLinkId: string,
+): Promise<void> {
+  const orderId = await linkOrderIdTx(tx, context, paymentLinkId);
+  if (orderId === null) return;
+  await tx
+    .select({ id: orders.id })
+    .from(orders)
+    .where(
+      and(eq(orders.tenantId, context.tenant.tenantId), eq(orders.id, orderId)),
+    )
+    .for("update");
+}
+
+/**
+ * legend-ek1wt + legend-4n8rs: every code of an order's (or recovery charge's)
+ * link goes through here, whoever issues it (public token, refresh, breakfast,
+ * recovery charge, cashier, QR guest). Two refusals:
+ * - QRIS hold (409 QRIS_HOLD_ACTIVE): while a QR of the bill can still be
+ *   paid. For a split part (`billSplitId` set) only a bill-level hold or a
+ *   hold of that same part refuses; a hold of another part never gates this
+ *   part. Without a part every active hold refuses.
+ * - Live code (409 ORDER_CODE_ACTIVE without a part, SPLIT_CODE_ACTIVE with
+ *   one): a VA or QR of the link that may still take money (`liveCodeWhere`:
+ *   pending, or expired / failed and the provider has not answered final, not
+ *   released) blocks a new code. A part is blocked by a live code of that part
+ *   or a bill-level one (`bill_split_id` null); a code of another part never
+ *   gates it. Without a part any live code of the link blocks.
+ * Only a link that belongs to an order or charge is checked. A code that was
+ * only locally superseded keeps `providerRef`, so it stays live until final;
+ * a local code without `providerRef` is not live and may be replaced. An
+ * idempotent replay returns before this runs. The caller holds the order row
+ * lock (`lockLinkOrderTx`, or `orderLockedByCaller`) when the check must be
+ * race free; the check also runs once before any provider call.
+ */
+async function assertLinkOrderCanIssueTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  paymentLinkId: string,
+  billSplitId: string | null,
+): Promise<void> {
+  const orderId = await linkOrderIdTx(tx, context, paymentLinkId);
+  if (orderId === null) return;
   if (billSplitId === null) {
-    await assertNoActiveQrisHold(tx, context, order.id);
-    return;
-  }
-  if (
+    await assertNoActiveQrisHold(tx, context, orderId);
+  } else if (
     await activeHoldBlockingSplitPart(
       tx,
       context.tenant.tenantId,
-      order.id,
+      orderId,
       billSplitId,
     )
   )
     throw new PosError("QRIS_HOLD_ACTIVE");
+  const [live] = await tx
+    .select({ id: paymentIntents.id })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, context.tenant.tenantId),
+        eq(paymentIntents.paymentLinkId, paymentLinkId),
+        billSplitId === null
+          ? undefined
+          : or(
+              eq(paymentIntents.billSplitId, billSplitId),
+              isNull(paymentIntents.billSplitId),
+            ),
+        liveCodeWhere(),
+      ),
+    )
+    .limit(1);
+  if (live)
+    throw billSplitId === null
+      ? new HttpError(
+          409,
+          "ORDER_CODE_ACTIVE",
+          "Kode pembayaran sebelumnya masih berlaku; selesaikan atau tunggu sampai berakhir.",
+        )
+      : new HttpError(
+          409,
+          "SPLIT_CODE_ACTIVE",
+          "Kode pembayaran bagian ini masih berlaku; selesaikan atau tunggu sampai berakhir.",
+        );
 }
 
 async function createIntentCore(
@@ -852,6 +936,7 @@ async function createIntentCore(
   parsed: CreatePaymentIntentInput,
   now: Date,
   part: SplitPartTarget | null,
+  options: CreateIntentOptions = {},
 ): Promise<CustomerPaymentIntent> {
   const plan = await readIntentPlan(context, token, parsed, now, part);
   if (plan.existing) return toCustomerIntent(plan.existing);
@@ -861,10 +946,10 @@ async function createIntentCore(
 
   if (!plan.routing)
     throw new Error("Payment intent plan has neither an intent nor a route");
-  // legend-ek1wt: refused before any provider call (checked again inside the
-  // intent transaction below).
+  // legend-ek1wt / legend-4n8rs: refused before any provider call (checked
+  // again, under the order lock, inside the intent transaction below).
   await withTenant(db, context, (tx) =>
-    assertLinkOrderNoQrisHold(
+    assertLinkOrderCanIssueTx(
       tx,
       context,
       plan.link.id,
@@ -931,6 +1016,12 @@ async function createIntentCore(
   let superseded: GatewayCancelRequest[] = [];
   try {
     const stored = await withTenant(db, context, async (tx) => {
+      // legend-154wr: the order row lock comes first (before the link lock
+      // below), so a hold opener and this issuer serialize on the order and the
+      // guards read after it see each other's committed rows. A caller that
+      // already holds the lock on its own connection skips it.
+      if (options.orderLockedByCaller !== true)
+        await lockLinkOrderTx(tx, context, plan.link.id);
       // Re-check inside the transaction: a concurrent retry may have won.
       const [existing] = await tx
         .select()
@@ -991,9 +1082,10 @@ async function createIntentCore(
           "CONFLICT",
           "This bill changed while the payment was prepared. Reload and try again.",
         );
-      // legend-ek1wt: a hold may have opened while the code was being minted;
-      // the code just minted is then never stored.
-      await assertLinkOrderNoQrisHold(
+      // legend-ek1wt / legend-4n8rs: a hold or a live code may have appeared
+      // while the code was being minted; the code just minted is then never
+      // stored.
+      await assertLinkOrderCanIssueTx(
         tx,
         context,
         plan.link.id,

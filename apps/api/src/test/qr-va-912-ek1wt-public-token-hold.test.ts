@@ -21,8 +21,8 @@
 //      belongs to its own part) does not block it; a POS hold on the whole order
 //      (no bill split) does (409 QRIS_HOLD_ACTIVE). Ref: bill-split-pay.test.ts.
 //   E. Round 2 (architect): a hold appears between the first check and the
-//      write (recovery charge); a part asks VA while its own QR is expired but
-//      still open; a whole-order link while a part holds a QR; a paid or closed
+//      write (recovery charge); a part asks VA while its own QR is live
+//      (SPLIT_CODE_ACTIVE) or final with the hold still open (QRIS_HOLD_ACTIVE); a whole-order link while a part holds a QR; a paid or closed
 //      hold does not block.
 //
 // Assumptions:
@@ -918,19 +918,13 @@ describe("legend-ek1wt E2: guest split bill, holds of a part and of the whole or
     resetHoldPorts();
   });
 
-  it("legend-ek1wt split part asks VA while its own QR is expired but its hold is still open: 409, no new intent", async () => {
+  /** A part with its own QR issued (201), the intent id and the hold read back. */
+  async function partWithQr() {
     const { guest, parts } = await splitBillOf(fx);
     const part = parts[0]!;
     const qris = await payPartOf(fx, guest, part.id, "qris");
     expect(qris.status, JSON.stringify(qris.body)).toBe(201);
     const intentId = qris.body.data.id as string;
-    // The code's time ran out and it is marked expired; the provider has not
-    // said it is dead, so the hold stays open (a still-valid code would be
-    // refused earlier with SPLIT_CODE_ACTIVE, not by the hold guard).
-    await owner.query(
-      "UPDATE payment_intents SET status = 'expired', expires_at = now() - interval '2 minutes' WHERE tenant_id = $1 AND id = $2",
-      [fx.tenant.tenantId, intentId],
-    );
     const hold = await owner.query<{ state: string }>(
       "SELECT state FROM pos_qris_holds WHERE tenant_id = $1 AND payment_intent_id = $2",
       [fx.tenant.tenantId, intentId],
@@ -939,17 +933,18 @@ describe("legend-ek1wt E2: guest split bill, holds of a part and of the whole or
       hold.rows.map((r) => r.state),
       "setup: the part's QR has an open hold",
     ).toEqual(["open"]);
+    return { guest, part, intentId };
+  }
+
+  it("legend-ek1wt split part asks VA while its own QR can still be paid and its hold is open: 409 SPLIT_CODE_ACTIVE exactly, no new intent", async () => {
+    const { guest, part, intentId } = await partWithQr();
+    const before = await intentRow(fx.tenant.tenantId, intentId);
     const intents = await intentCount(fx.tenant.tenantId);
     const created = fx.gateway.requests.length;
 
     const refused = await payPartOf(fx, guest, part.id, "va");
-    // Assumption: the part's own pending QR is refused 409 either by the split
-    // rule (SPLIT_CODE_ACTIVE: "the part's code is still valid") or by the hold
-    // guard (QRIS_HOLD_ACTIVE); the brief asks for 409, not for one code.
     expect(refused.status, JSON.stringify(refused.body)).toBe(409);
-    expect(JSON.stringify(refused.body)).toMatch(
-      /SPLIT_CODE_ACTIVE|QRIS_HOLD_ACTIVE/,
-    );
+    expect(refused.body.error.code).toBe("SPLIT_CODE_ACTIVE");
     expect(await intentCount(fx.tenant.tenantId), "no new intent").toBe(
       intents,
     );
@@ -957,9 +952,50 @@ describe("legend-ek1wt E2: guest split bill, holds of a part and of the whole or
       created,
     );
     expect(
-      (await intentRow(fx.tenant.tenantId, intentId)).status,
+      await intentRow(fx.tenant.tenantId, intentId),
       "the old code is left as it was",
-    ).toBe("expired");
+    ).toEqual(before);
+  });
+
+  // Splits the old test that accepted SPLIT_CODE_ACTIVE or QRIS_HOLD_ACTIVE:
+  // here the part's own code is dead (final at the provider), so the split rule
+  // has nothing to refuse with and only the hold guard can answer.
+  // Assumption: a hold row stays 'open' until the hold check job closes it; the
+  // intent's provider_final_at alone does not close it.
+  it("legend-ek1wt split part asks VA while its own QR is final (expired, provider_final_at set) but its hold row is still open: 409 QRIS_HOLD_ACTIVE exactly, no new intent", async () => {
+    const { guest, part, intentId } = await partWithQr();
+    await owner.query(
+      `UPDATE payment_intents
+          SET status = 'expired', provider_final_at = now(),
+              expires_at = now() - interval '2 minutes'
+        WHERE tenant_id = $1 AND id = $2`,
+      [fx.tenant.tenantId, intentId],
+    );
+    const hold = await owner.query<{ state: string }>(
+      "SELECT state FROM pos_qris_holds WHERE tenant_id = $1 AND payment_intent_id = $2",
+      [fx.tenant.tenantId, intentId],
+    );
+    expect(
+      hold.rows.map((r) => r.state),
+      "setup: the hold row is still open",
+    ).toEqual(["open"]);
+    const before = await intentRow(fx.tenant.tenantId, intentId);
+    const intents = await intentCount(fx.tenant.tenantId);
+    const created = fx.gateway.requests.length;
+
+    const refused = await payPartOf(fx, guest, part.id, "va");
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(refused.body.error.code).toBe("QRIS_HOLD_ACTIVE");
+    expect(await intentCount(fx.tenant.tenantId), "no new intent").toBe(
+      intents,
+    );
+    expect(fx.gateway.requests.length, "no code asked from the provider").toBe(
+      created,
+    );
+    expect(
+      await intentRow(fx.tenant.tenantId, intentId),
+      "the old code is left as it was",
+    ).toEqual(before);
   });
 
   it("legend-ek1wt whole-order link (no bill split) is refused 409 QRIS_HOLD_ACTIVE while a part of the bill holds a QR", async () => {
