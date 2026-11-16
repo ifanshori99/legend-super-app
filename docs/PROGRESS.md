@@ -6944,3 +6944,5 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 - Full checkpoint: root3503 lulus/1 skip/0 gagal, termasuk bind mount Colima yang bermasalah pada batch79; web92/92 hijau. API penuh masih berjalan tanpa kegagalan teramati. Tidak ada patch kode atau pengulangan full run.
 
 - Full checkpoint +30menit: API6797 test lulus teramati tanpa penanda FAIL; root3503 lulus/1skip dan web92/92 sudah hijau. Warning pg concurrent-client-query lama tidak menggagalkan. Runner memonitor satu job full pertama; tidak ada perubahan kode, kegagalan infra, atau run ulang.
+
+- Full checkpoint +60menit: API14782 test lulus teramati tanpa FAIL; test `kds-scanner-status` berubah batch80 juga sudah hijau dalam full, demikian catalog-loop dan audit akses. Root3503/1skip dan web92/92 tetap hijau. Tidak ada error infra atau perubahan kode; full pertama terus dimonitor.
