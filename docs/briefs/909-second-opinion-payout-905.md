@@ -1,0 +1,6 @@
+# 909 Second opinion payout 905: batas tulis tepercaya (gerbang rilis uang + akses)
+Peran: second-opinion (baca ~/.agents/team/roles/second-opinion.md). Uang, akses, migrasi: effort xhigh. Read-only.
+Repo /Users/ifanshori99/Projects/legend super app/legend. Diff: `git diff a06c6bdd4..origin/fix/payout-trusted-boundary-905` (tip 5eeaa683d; migrasi sementara 0643-0651).
+Konteks: `docs/briefs/905-payout-trusted-write-boundary.md` (keputusan CTO), kartu legend-i01jp, legend-kjht5, legend-6htrf; follow-up yang sudah tercatat (jangan dilaporkan ulang): legend-r86qa (retry/resolve masih dipercaya ke legend_app), izza4, xbagc, d023k, y2lk2, d9pxr.
+Cari: `legend_app` masih bisa memindah status uang atau memalsukan koreksi/overpaid/return/binding/sumber lewat jalur lain (tabel, fungsi, GUC, trigger, view); fungsi SECURITY DEFINER bisa dipanggil dengan aktor palsu (search_path, sesi basi, MFA lama, satu orang dua peran, lintas PT); penutupan bukti macet bisa membebaskan slip untuk dibayar ulang; recon malam bisa dibungkam atau menahan semua PT; migrasi gagal di non-superuser atau mengunci tabel besar; pembayaran ganda atau lunas tanpa uang.
+Hasil: `docs/qa/second-opinion-payout-905.md` di worktree-mu (P0-P3, berkas:baris, skenario, usul test), commit dan push cabang qa tanpa force. Lapor hanya saat selesai.
