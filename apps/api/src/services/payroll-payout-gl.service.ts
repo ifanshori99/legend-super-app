@@ -236,6 +236,50 @@ async function journalKeyExists(
 }
 
 /**
+ * True when the fee journal of the posting moves exactly its fee on the right
+ * accounts (897 F6): the same check the posting guard runs before it lets
+ * `fee_posted` turn true. Run before every flip so a journal that fails it is
+ * left for finance instead of answering a guard error.
+ */
+async function feeJournalOk(
+  tx: Tx,
+  tenantId: TenantId,
+  postingId: string,
+): Promise<boolean> {
+  const result = await tx.execute<{ ok: boolean }>(
+    sql`SELECT app.payout_fee_journal_ok(${tenantId}::uuid, ${postingId}::uuid) AS ok`,
+  );
+  return result.rows[0]?.ok === true;
+}
+
+const PAYOUT_FEE_JOURNAL_MISMATCH = {
+  code: "PAYOUT_FEE_JOURNAL_MISMATCH",
+  message:
+    "Jurnal biaya transfer batch ini tidak cocok dengan nominal atau akun yang seharusnya, jadi tidak ditandai selesai. Hubungi tim keuangan.",
+} as const;
+
+/**
+ * True while the posting's fee is owed in the journal but its fee journal
+ * exists and fails `feeJournalOk`: permanent, a human decides.
+ */
+async function feeJournalMismatched(
+  tx: Tx,
+  tenantId: TenantId,
+  posting: FeePosting,
+): Promise<boolean> {
+  return (
+    !posting.feePosted &&
+    postingFeeIdr(posting, tenantId) > 0 &&
+    (await journalKeyExists(
+      tx,
+      tenantId,
+      payoutGlKeys.fee(posting.itemSetHash),
+    )) &&
+    !(await feeJournalOk(tx, tenantId, posting.id))
+  );
+}
+
+/**
  * True while the run's `payroll.locked` event is still in the outbox (not
  * delivered): the lock happened, the GL consumer has not posted its journal
  * yet. A delivered event that left no journal (all-zero run, accounting off at
@@ -339,6 +383,54 @@ async function mappedPettyCashAccount(
   return row?.accountId ?? null;
 }
 
+/** GL account of the frozen source bank account of a non-cash batch, read WITHOUT the active filter (null: cash, no frozen account, or missing). */
+async function frozenBatchGlAccount(
+  tx: Tx,
+  tenantId: TenantId,
+  batch: Pick<BatchRow, "channel" | "legalEntityId" | "sourceBankAccountId">,
+): Promise<string | null> {
+  if (batch.channel === "cash" || batch.sourceBankAccountId === null)
+    return null;
+  const [row] = await tx
+    .select({ glAccountId: bankAccounts.glAccountId })
+    .from(bankAccounts)
+    .where(
+      and(
+        eq(bankAccounts.tenantId, tenantId),
+        eq(bankAccounts.legalEntityId, batch.legalEntityId),
+        eq(bankAccounts.id, batch.sourceBankAccountId),
+      ),
+    )
+    .limit(1);
+  return row?.glAccountId ?? null;
+}
+
+/**
+ * F4: a settlement of a non-cash batch with a frozen bank account carries that
+ * account's GL account as its source. A historical row without one is filled
+ * (NULL -> frozen only; the guard refuses any other account).
+ */
+async function fillFrozenSource(
+  tx: Tx,
+  tenantId: TenantId,
+  batch: Pick<BatchRow, "channel" | "legalEntityId" | "sourceBankAccountId">,
+  posting: { id: string; sourceGlAccountId: string | null },
+): Promise<void> {
+  if (posting.sourceGlAccountId !== null) return;
+  const frozen = await frozenBatchGlAccount(tx, tenantId, batch);
+  if (frozen === null) return;
+  await tx
+    .update(payrollPayoutGlPostings)
+    .set({ sourceGlAccountId: frozen })
+    .where(
+      and(
+        eq(payrollPayoutGlPostings.tenantId, tenantId),
+        eq(payrollPayoutGlPostings.id, posting.id),
+        isNull(payrollPayoutGlPostings.sourceGlAccountId),
+      ),
+    );
+}
+
 type SettleSource =
   | { ok: true; overrides: Partial<Record<"bank" | "petty_cash", string>> }
   | { ok: false; reason: "source_account_unknown" | "source_account_inactive" };
@@ -363,21 +455,11 @@ async function postingSource(
   batch: Pick<BatchRow, "channel" | "legalEntityId" | "sourceBankAccountId">,
   posting: { sourceGlAccountId: string | null },
 ): Promise<SettleSource> {
-  let accountId: string | null;
-  if (batch.channel !== "cash" && batch.sourceBankAccountId !== null) {
-    const [row] = await tx
-      .select({ glAccountId: bankAccounts.glAccountId })
-      .from(bankAccounts)
-      .where(
-        and(
-          eq(bankAccounts.tenantId, tenantId),
-          eq(bankAccounts.legalEntityId, batch.legalEntityId),
-          eq(bankAccounts.id, batch.sourceBankAccountId),
-        ),
-      )
-      .limit(1);
-    accountId = row?.glAccountId ?? null;
-  } else accountId = posting.sourceGlAccountId;
+  const frozenGl = await frozenBatchGlAccount(tx, tenantId, batch);
+  const accountId =
+    batch.channel !== "cash" && batch.sourceBankAccountId !== null
+      ? frozenGl
+      : posting.sourceGlAccountId;
   if (accountId === null)
     return { ok: false, reason: "source_account_unknown" };
   if (!(await glAccountPostable(tx, tenantId, batch.legalEntityId, accountId)))
@@ -649,8 +731,12 @@ export async function settleBatchPayouts(
   // with accounting on, an unusable source is refused whether or not the run
   // has a locked journal, so it is never turned into `settle_skipped`. Nothing
   // is recorded; the confirmation can be sent again once the account is active.
+  // The account actually used for a legacy batch without a frozen bank account
+  // (null: none used); a frozen batch records its frozen GL account below.
+  let unfrozenSource: string | null = null;
   if (!journaled && (accountingOn || pending))
-    await sourceBankOverride(tx, tenantId, batch);
+    unfrozenSource =
+      (await sourceBankOverride(tx, tenantId, batch))?.bank ?? null;
 
   // The fee is real money the PT paid, whether or not the salary journal
   // applies. A fee whose bank charges mapping or source account is missing is
@@ -680,6 +766,7 @@ export async function settleBatchPayouts(
     const entryDate = payrollEntryDateOf(now.toISOString());
     const accountOverrides =
       (await sourceBankOverride(tx, tenantId, batch)) ?? undefined;
+    unfrozenSource = accountOverrides?.bank ?? unfrozenSource;
     if (payable?.ok)
       await postJournalFromRuleInTransaction(
         tx,
@@ -721,6 +808,20 @@ export async function settleBatchPayouts(
       );
   }
 
+  // F4: the posting carries the account the money left from: the petty cash
+  // account for a cash batch, the frozen GL account of a bank batch with a
+  // frozen account (the insert guard demands it), else the account used.
+  const sourceGlAccountId =
+    batch.channel === "cash"
+      ? // A settled cash batch records the petty cash account its journal
+        // credited (the commit check demands the posting names it).
+        (pendingCashAccountId ??
+        (kind === "settle"
+          ? await mappedPettyCashAccount(tx, tenantId, batch.legalEntityId)
+          : null))
+      : batch.sourceBankAccountId !== null
+        ? await frozenBatchGlAccount(tx, tenantId, batch)
+        : unfrozenSource;
   const postingId = randomUUID();
   await tx.insert(payrollPayoutGlPostings).values({
     id: postingId,
@@ -742,9 +843,10 @@ export async function settleBatchPayouts(
     piiKeyVersion: PAYROLL_SEAL_KEY_VERSION,
     postedAt: now,
     feePosted,
-    sourceGlAccountId: pendingCashAccountId,
+    sourceGlAccountId,
     salariesPayableAccountId: payable?.accountId ?? null,
     settleNetIdr: netIdr,
+    feeIdr,
   });
   const linked = await tx
     .update(payrollDisbursementItems)
@@ -910,6 +1012,7 @@ async function resolveOnePosting(
     return false;
   }
   const accountOverrides = source.overrides;
+  await fillFrozenSource(tx, tenantId, batch, posting);
   // The payable account frozen on the posting, else the one the lock journal
   // credited; never today's mapping (legend-wcd24). Not provable or not
   // postable: the posting is left as is and finance sees why.
@@ -987,7 +1090,13 @@ async function resolveOnePosting(
   // bank charges mapping never blocks the resolve: `fee_posted` stays
   // false and finance re-posts it (`repostSkippedFees`).
   const feeIdr = openPostingTotal(posting, tenantId, "feeIdr");
-  if (feeIdr > 0 && (!posting.feePosted || wasSkipped)) {
+  // F5: a posting from before 0397 has no plain fee amount: no fee is posted
+  // and nothing flips; finance sees `fee_amount_unverified`.
+  if (
+    feeIdr > 0 &&
+    posting.feeIdr !== null &&
+    (!posting.feePosted || wasSkipped)
+  ) {
     // A fee journal that already exists (earlier fee post or re-post) is
     // never posted again and never flips the flag back to false.
     const feeJournalExists = await journalKeyExists(
@@ -1023,8 +1132,19 @@ async function resolveOnePosting(
         { tenantId, batchId: batch.id, reason: "fee_skipped_no_mapping" },
         "payout fee not posted: bank charges mapping missing",
       );
-    // Only false -> true: the posting guard refuses the other direction.
-    if (feeMapped && !posting.feePosted)
+    // Only false -> true: the posting guard refuses the other direction. A
+    // fee journal that fails the amount/account check never flips the flag:
+    // it stays owed for finance (`fee_journal_mismatch`).
+    if (
+      feeMapped &&
+      !posting.feePosted &&
+      !(await feeJournalOk(tx, tenantId, posting.id))
+    )
+      logger.warn(
+        { tenantId, batchId: batch.id, reason: "fee_journal_mismatch" },
+        "payout fee flag left false: fee journal does not match the posting",
+      );
+    else if (feeMapped && !posting.feePosted)
       await tx
         .update(payrollPayoutGlPostings)
         .set({ feePosted: true })
@@ -1236,14 +1356,24 @@ async function postFeeOfPosting(
 ): Promise<void> {
   const context = payoutScope(tenantId);
   const entryDate = payrollEntryDateOf(now.toISOString());
+  // F5: a historical NULL fee amount is never posted or flipped.
+  if (posting.feeIdr === null) return;
   const feeIdr = postingFeeIdr(posting, tenantId);
   if (feeIdr > 0) {
-    // A settled group gives to the account its own salary journal used; a
-    // group settled without a journal uses the configured source account.
+    // F4: a frozen bank batch always credits its frozen GL account (never the
+    // settle journal's), and the posting carries it as its source first.
+    // Otherwise a settled group gives to the account its own salary journal
+    // used; a group settled without a journal uses the recorded source.
     // Either way the account must still belong to an active bank account:
     // the settled one may have been deactivated since the settle.
     let accountOverrides: Partial<Record<"bank", string>> | undefined;
-    if (posting.kind === "settle") {
+    if (batch.channel !== "cash" && batch.sourceBankAccountId !== null) {
+      await fillFrozenSource(tx, tenantId, batch, posting);
+      accountOverrides =
+        (await sourceBankOverride(tx, tenantId, batch, {
+          requireFrozen: true,
+        })) ?? undefined;
+    } else if (posting.kind === "settle") {
       const settledBank = await settledSourceAccount(
         tx,
         tenantId,
@@ -1310,6 +1440,12 @@ async function postFeeOfPosting(
   // A historical row is already true and stays true (the guard trigger refuses
   // true -> false); only a false row is flipped.
   if (posting.feePosted) return;
+  if (feeIdr > 0 && !(await feeJournalOk(tx, tenantId, posting.id)))
+    throw payoutRefuse(
+      409,
+      PAYOUT_FEE_JOURNAL_MISMATCH.code,
+      PAYOUT_FEE_JOURNAL_MISMATCH.message,
+    );
   const flipped = await tx
     .update(payrollPayoutGlPostings)
     .set({ feePosted: true })
@@ -1379,6 +1515,14 @@ export async function repostSkippedFees(
   await resolvePendingSettles(tx, tenantId, batch.payrollRunId, now, batch.id);
   const postings = await unpostedFeePostings(tx, tenantId, batch.id);
   if (postings.length === 0) return { reposted: 0 };
+  // F5: a posting from before 0397 has no provable fee amount; nothing in the
+  // batch is re-posted until finance decides.
+  if (postings.some((posting) => posting.feeIdr === null))
+    throw payoutRefuse(
+      409,
+      "PAYOUT_FEE_AMOUNT_UNVERIFIED",
+      "Nominal biaya transfer batch ini dari data lama dan belum bisa dipastikan, jadi tidak dijurnal. Hubungi tim keuangan.",
+    );
 
   if (!(await accountingEnabled(tx, tenantId)))
     throw payoutRefuse(
@@ -1441,6 +1585,7 @@ async function repostFeesSoft(
   const hasLock = await runHasLockedJournal(tx, tenantId, batch.payrollRunId);
   let reposted = 0;
   for (const posting of postings) {
+    if (posting.feeIdr === null) continue;
     if (posting.kind === "settle_skipped" && !hasLock) continue;
     // Never ahead of the salary journal: a settlement whose payable account is
     // not usable keeps its fee owed too (legend-wcd24).
@@ -1508,6 +1653,8 @@ export type PayoutRecoveryReason =
   | "source_account_inactive"
   | "payable_account_unknown"
   | "payable_account_inactive"
+  | "fee_journal_mismatch"
+  | "fee_amount_unverified"
   | "awaiting_resolve";
 
 export type PayoutRecoveryRow = {
@@ -1559,6 +1706,16 @@ export async function payoutRecoveryReason(
 ): Promise<PayoutRecoveryReason> {
   // Settled but the payable account is uncertain (0390): finance reconciles.
   if (posting.payableAccountHold) return "payable_account_unknown";
+  // F5: a historical posting without a plain fee amount never flips.
+  if (
+    posting.feeIdr === null &&
+    !posting.feePosted &&
+    postingFeeIdr(posting, tenantId) > 0
+  )
+    return "fee_amount_unverified";
+  // The fee journal exists but fails the amount/account check: permanent.
+  if (await feeJournalMismatched(tx, tenantId, posting))
+    return "fee_journal_mismatch";
   const owed = await settleOwed(tx, tenantId, batch, posting);
   const feeIdr = postingFeeIdr(posting, tenantId);
   const feeOwed =
@@ -1670,6 +1827,7 @@ const PERMANENT_RECOVERY_REASONS: ReadonlySet<PayoutRecoveryReason> = new Set([
   "accounting_was_off",
   "source_account_unknown",
   "payable_account_unknown",
+  "fee_amount_unverified",
 ]);
 
 /** SQL: the fee journal of the posting does not exist (key `payroll-payout-fee:<hash>`). */

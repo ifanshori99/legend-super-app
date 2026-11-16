@@ -41,11 +41,13 @@
 //   partial unique index backs this up. A proof carries two hashes (uploaded
 //   bytes and stored bytes, legend-8vcsg: an image is re-encoded), and any hash
 //   meeting any hash of a used proof makes it the same proof. A proof without a
-//   fingerprint record keeps the key-only check. While a return claim of the
-//   tenant still has proofs without their hashes (a return claim lacking one, a
-//   file record lacking the stored hash, an item evidence key without a record;
-//   the payout evidence job fills them in), a RETURN with a proof that carries a
-//   fingerprint is refused (409 PAYOUT_PROOF_FINGERPRINT_PENDING; fail closed).
+//   fingerprint record is read now; when that read fails the return waits (409
+//   PAYOUT_PROOF_FINGERPRINT_PENDING; fail closed, legend-so897). The proof is
+//   bound to ONE operation (return, overpaid or correction, one item set, in any
+//   tenant): any other use is 409 PAYOUT_PROOF_REUSED. While the tenant still
+//   has proofs or operations without their hashes or binding (the payout
+//   evidence job fills them in), a return is refused (409
+//   PAYOUT_PROOF_FINGERPRINT_PENDING; fail closed).
 //   Confirm and resolve are never held: they record the fingerprint of their own
 //   proof and money that already left must still be booked.
 //
@@ -86,13 +88,12 @@ import type { Tx } from "./hris-access.ts";
 import {
   claimHoldingFingerprint,
   correctionHoldingProof,
-  ensureProofFingerprintRecord,
-  countFingerprintTargets,
   lockProofFingerprints,
-  proofFingerprintRecord,
   proofFingerprints,
+  recordProofFingerprints,
   twinEvidenceKeys,
 } from "./payroll-payout-proof-fingerprint.service.ts";
+import { bindProofToOperation } from "./payroll-payout-proof-binding.service.ts";
 import { openPayeeBankSnapshot } from "./payroll-bank-snapshot.service.ts";
 import {
   emitPayoutRunPaid,
@@ -775,21 +776,21 @@ export async function confirmManualItems(
   );
   // Every proof a confirmation names gets its fingerprint record now (read from
   // the storage when the upload did not write a complete one), so the evidence
-  // key an item keeps always has one (legend-8vcsg).
-  for (const key of proofKeys)
-    await ensureProofFingerprintRecord(
-      tx,
-      proofs,
-      tenantId,
-      batch.id,
-      key,
-      now,
-    );
-  const proofShas = new Set<string>();
-  for (const key of proofKeys)
-    for (const sha of await proofFingerprints(tx, tenantId, key))
-      proofShas.add(sha);
-  await lockProofFingerprints(tx, tenantId, proofShas);
+  // key an item keeps always has one (legend-8vcsg). One batched call takes the
+  // hash locks of every proof (sorted) before any record row (legend-so900 F7).
+  await recordProofFingerprints(
+    tx,
+    proofs,
+    tenantId,
+    batch.id,
+    proofKeys,
+    now,
+    {
+      strict: false,
+    },
+  );
+  // The call above holds the lock of every hash these records carry (a hash
+  // outside it is 409 PENDING), so each proof is locked once, in sha order.
   for (const key of proofKeys)
     await assertProofNotUsedForReturn(tx, tenantId, key, true);
 
@@ -945,15 +946,20 @@ export async function resolveManualItems(
   // A proof that frees items as failed must not already be a return proof or a
   // return claim (review F3). It MAY equal a payment-confirmation proof: one
   // bank result report legitimately covers paid and failed lines of a batch.
-  await ensureProofFingerprintRecord(
+  // Hash locks before the record row (legend-so900 F7); the check below runs
+  // under those locks.
+  await recordProofFingerprints(
     tx,
     proofs,
     tenantId,
     batch.id,
-    evidence,
+    [evidence],
     now,
+    {
+      strict: false,
+    },
   );
-  await assertProofNotUsedForReturn(tx, tenantId, evidence);
+  await assertProofNotUsedForReturn(tx, tenantId, evidence, true);
 
   let resolved = 0;
   let proposed = 0;
@@ -1087,29 +1093,6 @@ async function assertProofNotUsedForReturn(
   }
 }
 
-/**
- * Fail closed for a RETURN with a proof that carries a fingerprint while the
- * tenant still has proofs without one (legend-8vcsg, CTO): the reuse check
- * cannot see them yet, so the return waits until the payout evidence job has
- * fingerprinted them. Paying (confirm) and failing (resolve) are never held:
- * money that already left must still be booked. A proof without a record keeps
- * the key-only check.
- */
-async function assertReturnFingerprintsReady(
-  tx: Tx,
-  tenantId: TenantId,
-  proofHasFingerprint: boolean,
-): Promise<void> {
-  if (!proofHasFingerprint) return;
-  const held = await countFingerprintTargets(tx, tenantId);
-  if (held.total > 0)
-    throw refuse(
-      409,
-      "PAYOUT_PROOF_FINGERPRINT_PENDING",
-      "Bukti lama sedang diperiksa sidik jarinya. Pengembalian dana dengan bukti baru ditahan sampai selesai; coba lagi sebentar lagi.",
-    );
-}
-
 function isReturnClaimShaViolation(error: unknown): boolean {
   let current: unknown = error;
   for (let depth = 0; depth < 4 && current; depth++) {
@@ -1160,22 +1143,20 @@ async function bindReturnClaim(
         .join("\n"),
     )
     .digest("hex");
-  // A claim ALWAYS carries both proof hashes: a proof without a complete record
-  // (uploaded before the fingerprints) is read from the storage and recorded now.
-  await ensureProofFingerprintRecord(
-    tx,
-    proofs,
-    tenantId,
-    batch.id,
-    evidence,
+  // One proof backs ONE operation (legend-so897): the proof is bound to this
+  // return (its batch and item set) before anything is written, under its hash
+  // locks (lock order: run row, batch row, item rows, proof advisory). A proof
+  // that cannot be fingerprinted waits (fail closed), so a claim ALWAYS carries
+  // both hashes.
+  const record = await bindProofToOperation(tx, proofs, tenantId, {
+    kind: "return",
+    batchId: batch.id,
+    evidenceKey: evidence,
+    itemIds: rows.map((row) => row.id),
+    actorId: actor.userId as UserId,
     now,
-  );
-  const record = await proofFingerprintRecord(tx, tenantId, evidence);
-  const shas = await proofFingerprints(tx, tenantId, evidence);
-  // Two batches racing on the same file content serialize here (lock order:
-  // run row, batch row, batch advisory, proof advisory).
-  await lockProofFingerprints(tx, tenantId, shas);
-  await assertReturnFingerprintsReady(tx, tenantId, shas.length > 0);
+  });
+  const shas = record.shas;
   // The proof must not already free or confirm any item (review F3): a proof
   // that resolved a payslip as failed cannot also return another one.
   const [otherFlow] = await tx
@@ -1267,8 +1248,8 @@ async function bindReturnClaim(
           status: "open",
           createdBy: actor.userId as UserId,
           createdAt: now,
-          contentSha256: record?.content ?? null,
-          storedSha256: record?.stored ?? null,
+          contentSha256: record.content,
+          storedSha256: record.stored,
         })
         .returning();
     } catch (error) {

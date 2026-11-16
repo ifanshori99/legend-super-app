@@ -41,11 +41,15 @@ const GUARD_CODE = "23514";
 type Kind = "settle" | "settle_pending" | "settle_skipped" | "return";
 
 let batchId = "";
+// A legacy bank batch without a frozen source bank account (900 F4): only
+// there may a posting carry no source or take one later.
+let legacyBatchId = "";
 let runId = "";
 let periodId = "";
 let accountA = "";
 let accountB = "";
 let salariesPayableId = "";
+let bankChargesId = "";
 let sourceGlId = "";
 const foreignTenantIds: string[] = [];
 const bentJournalKeys: string[] = [];
@@ -54,6 +58,17 @@ beforeAll(async () => {
   const slips = [bank(BUDI, 1_000_000)];
   runId = await W.seedRun(slips);
   batchId = await W.approvedBatch(runId);
+  const legacyRunId = await W.seedRun([bank(BUDI, 1_000_000)]);
+  legacyBatchId = await W.approvedBatch(legacyRunId);
+  await W.asTenant(
+    (c) =>
+      c.query(
+        `UPDATE payroll_disbursement_batches SET source_bank_account_id = NULL
+          WHERE tenant_id = $1 AND id = $2`,
+        [tenantId(), legacyBatchId],
+      ),
+    true,
+  );
   const accounts = await W.rowsOf(
     `SELECT id, code FROM chart_of_accounts
       WHERE tenant_id = $1 AND legal_entity_id = $2 AND code IN ('1102', '1103')`,
@@ -65,6 +80,13 @@ beforeAll(async () => {
     await W.rowsOf(
       `SELECT account_id FROM account_mappings
         WHERE tenant_id = $1 AND legal_entity_id = $2 AND role = 'salaries_payable'`,
+      [tenantId(), W.entityId()],
+    )
+  )[0]!.account_id as string;
+  bankChargesId = (
+    await W.rowsOf(
+      `SELECT account_id FROM account_mappings
+        WHERE tenant_id = $1 AND legal_entity_id = $2 AND role = 'bank_charges'`,
       [tenantId(), W.entityId()],
     )
   )[0]!.account_id as string;
@@ -113,7 +135,11 @@ type Seeded = { id: string; journalKey: string; feeKey: string };
 /** One posting row of the fixture batch, inserted as the migration owner. */
 async function seedPosting(
   kind: Kind,
-  sourceGlAccountId: string | null = null,
+  // 900 F4: a settlement of the frozen fixture batch carries its frozen GL
+  // account unless a test says otherwise (null needs the legacy batch).
+  sourceGlAccountId: string | null | "frozen" = "frozen",
+  feeIdr = 0,
+  onBatchId = batchId,
 ): Promise<Seeded> {
   const id = randomUUID();
   const hash = randomBytes(32).toString("hex");
@@ -123,17 +149,18 @@ async function seedPosting(
       `INSERT INTO payroll_payout_gl_postings
          (id, tenant_id, batch_id, kind, item_set_hash, journal_key,
           total_encrypted, pii_key_version, fee_posted, source_gl_account_id,
-          salaries_payable_account_id)
-       VALUES ($1, $2, $3, $4, $5, $6, '\\x00', 1, true, $7, $8)`,
+          salaries_payable_account_id, settle_net_idr, fee_idr)
+       VALUES ($1, $2, $3, $4, $5, $6, '\\x00', 1, true, $7, $8, 1000, $9)`,
       [
         id,
         tenantId(),
-        batchId,
+        onBatchId,
         kind,
         hash,
         journalKey,
-        sourceGlAccountId,
+        sourceGlAccountId === "frozen" ? sourceGlId : sourceGlAccountId,
         salariesPayableId,
+        feeIdr,
       ],
     );
   });
@@ -394,7 +421,8 @@ describe("legend-63qhw: kind flip to settle needs the settle journal", () => {
   });
 
   it("refuses the flip that also records a source account in the same statement", async () => {
-    const posting = await seedPosting("settle_pending");
+    // Legacy batch: the posting has no source to start with (900 F4).
+    const posting = await seedPosting("settle_pending", null, 0, legacyBatchId);
     const result = await tryUpdate(
       posting.id,
       "kind = 'settle', source_gl_account_id = $2",
@@ -509,7 +537,7 @@ describe("legend-63qhw: source account of an unresolved settle", () => {
   it.each(["settle_skipped", "settle_pending"] as const)(
     "accepts NULL -> account on %s",
     async (kind) => {
-      const posting = await seedPosting(kind);
+      const posting = await seedPosting(kind, null, 0, legacyBatchId);
       const result = await tryUpdate(posting.id, "source_gl_account_id = $2", [
         accountA,
       ]);
@@ -525,7 +553,7 @@ describe("legend-63qhw: source account of an unresolved settle", () => {
   it.each(["settle_skipped", "settle_pending"] as const)(
     "refuses replacing a recorded source account on %s",
     async (kind) => {
-      const posting = await seedPosting(kind, accountA);
+      const posting = await seedPosting(kind, accountA, 0, legacyBatchId);
       const result = await tryUpdate(posting.id, "source_gl_account_id = $2", [
         accountB,
       ]);
@@ -537,7 +565,7 @@ describe("legend-63qhw: source account of an unresolved settle", () => {
   it.each(["settle_skipped", "settle_pending"] as const)(
     "refuses clearing a recorded source account on %s",
     async (kind) => {
-      const posting = await seedPosting(kind, accountA);
+      const posting = await seedPosting(kind, accountA, 0, legacyBatchId);
       const result = await tryUpdate(posting.id, "source_gl_account_id = NULL");
       expect(result.code).toBe(GUARD_CODE);
       expect(result.row.source_gl_account_id).toBe(accountA);
@@ -547,7 +575,7 @@ describe("legend-63qhw: source account of an unresolved settle", () => {
   it.each(["settle", "return"] as const)(
     "refuses recording a source account on a %s posting",
     async (kind) => {
-      const posting = await seedPosting(kind);
+      const posting = await seedPosting(kind, null, 0, legacyBatchId);
       const result = await tryUpdate(posting.id, "source_gl_account_id = $2", [
         accountA,
       ]);
@@ -557,7 +585,7 @@ describe("legend-63qhw: source account of an unresolved settle", () => {
   );
 
   it("refuses recording a source account together with another column change", async () => {
-    const posting = await seedPosting("settle_skipped");
+    const posting = await seedPosting("settle_skipped", null, 0, legacyBatchId);
     const result = await tryUpdate(
       posting.id,
       "source_gl_account_id = $2, total_encrypted = '\\x0102'",
@@ -568,7 +596,7 @@ describe("legend-63qhw: source account of an unresolved settle", () => {
   });
 
   it("refuses recording a source account on a row whose fee flag also changes", async () => {
-    const posting = await seedPosting("settle_skipped");
+    const posting = await seedPosting("settle_skipped", null, 0, legacyBatchId);
     await W.asTenant(
       (c) =>
         c.query(
@@ -587,7 +615,7 @@ describe("legend-63qhw: source account of an unresolved settle", () => {
   });
 
   it("keeps the earlier fee-posted move (false -> true) allowed with its fee journal", async () => {
-    const posting = await seedPosting("settle_skipped");
+    const posting = await seedPosting("settle_skipped", "frozen", 1000);
     await W.asTenant(
       (c) =>
         c.query(
@@ -596,12 +624,17 @@ describe("legend-63qhw: source account of an unresolved settle", () => {
         ),
       true,
     );
-    // Since 0392 the flip also needs the fee journal of the posting.
+    // Since 0397 the flip needs the fee journal of the posting on the real
+    // accounts and for its fee: Dr bank charges / Cr the frozen source.
     const result = await tryUpdate(
       posting.id,
       "fee_posted = true",
       [],
       [posting.feeKey],
+      [
+        { accountId: bankChargesId, debit: 1000, credit: 0 },
+        { accountId: sourceGlId, debit: 0, credit: 1000 },
+      ],
     );
     expect(result.code).toBeUndefined();
   });

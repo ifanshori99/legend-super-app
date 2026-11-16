@@ -446,7 +446,13 @@ describe("review F4: return claims cannot be rewritten", () => {
 // - Fingerprints persist per tenant, so every test uploads unique bytes.
 // ---------------------------------------------------------------------------
 
-async function expectReuseRefused(steps: (() => Promise<unknown>)[]) {
+// legend-so897: a return over the bytes of another return is refused by the
+// proof binding (one proof = one operation), with its shared code
+// PAYOUT_PROOF_REUSED; resolve and confirm keep PAYOUT_RETURN_PROOF_REUSED.
+async function expectReuseRefused(
+  steps: (() => Promise<unknown>)[],
+  code = "PAYOUT_RETURN_PROOF_REUSED",
+) {
   const failures: Awaited<ReturnType<typeof W.httpFailure>>[] = [];
   for (const step of steps) failures.push(await W.httpFailure(step()));
   expect(
@@ -455,20 +461,23 @@ async function expectReuseRefused(steps: (() => Promise<unknown>)[]) {
   ).toBe(true);
   for (const error of failures.filter((e) => e !== null)) {
     expect(error!.status).toBe(409);
-    expect(error!.code).toBe("PAYOUT_RETURN_PROOF_REUSED");
+    expect(error!.code).toBe(code);
   }
 }
 
 describe("second-opinion F2 (legend-w3691): a re-uploaded copy of a consumed return proof", () => {
-  it("[so-f2-reupload-same-batch] A returned with K; the identical PDF uploaded again (K2) cannot return B: 409 PAYOUT_RETURN_PROOF_REUSED, B stays succeeded, no return journal, not offered to a follow-up batch", async () => {
+  it("[so-f2-reupload-same-batch] A returned with K; the identical PDF uploaded again (K2) cannot return B: 409 PAYOUT_PROOF_REUSED, B stays succeeded, no return journal, not offered to a follow-up batch", async () => {
     const { runId, batchId, b, k, content } = await afterRealReturnOfA();
     const k2 = await upload(batchId, content);
     expect(k2, "premise: a new key for the same bytes").not.toBe(k);
 
-    await expectReuseRefused([
-      () => returnWith(batchId, [idOf(b)], APP, k2, real.store()),
-      () => returnWith(batchId, [idOf(b)], APP3, k2, real.store()),
-    ]);
+    await expectReuseRefused(
+      [
+        () => returnWith(batchId, [idOf(b)], APP, k2, real.store()),
+        () => returnWith(batchId, [idOf(b)], APP3, k2, real.store()),
+      ],
+      "PAYOUT_PROOF_REUSED",
+    );
 
     expect((await W.itemOfPerson(batchId, SITI)).status).toBe("succeeded");
     expect(await W.countJournals(returnKey(idOf(b)))).toBe(0);
@@ -478,15 +487,19 @@ describe("second-opinion F2 (legend-w3691): a re-uploaded copy of a consumed ret
     ]);
   });
 
-  it("[so-f2-reupload-other-batch] cross batch: the identical PDF uploaded to ANOTHER batch of the same tenant cannot return that batch's item: 409 PAYOUT_RETURN_PROOF_REUSED, the item stays succeeded", async () => {
+  it("[so-f2-reupload-other-batch] cross batch: the identical PDF uploaded to ANOTHER batch of the same tenant cannot return that batch's item: 409 PAYOUT_PROOF_REUSED, the item stays succeeded", async () => {
     const first = await afterRealReturnOfA();
     const other = await paidBatch();
     const k2 = await upload(other.batchId, first.content);
 
-    await expectReuseRefused([
-      () => returnWith(other.batchId, [idOf(other.b)], APP, k2, real.store()),
-      () => returnWith(other.batchId, [idOf(other.b)], APP3, k2, real.store()),
-    ]);
+    await expectReuseRefused(
+      [
+        () => returnWith(other.batchId, [idOf(other.b)], APP, k2, real.store()),
+        () =>
+          returnWith(other.batchId, [idOf(other.b)], APP3, k2, real.store()),
+      ],
+      "PAYOUT_PROOF_REUSED",
+    );
 
     expect((await W.itemOfPerson(other.batchId, SITI)).status).toBe(
       "succeeded",

@@ -26,7 +26,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, ne, sql } from "drizzle-orm";
-import type { TenantId } from "@starter/shared/core";
+import type { TenantId, UserId } from "@starter/shared/core";
 import { journalEntries } from "../db/schema/index.ts";
 import {
   payrollDisbursementItems,
@@ -39,7 +39,7 @@ import {
 import { postJournalFromRuleInTransaction } from "./accounting-journal.service.ts";
 import type { Tx } from "./hris-access.ts";
 import { lockJournalPending } from "./payroll-payout-gl.service.ts";
-import { proofBoundToCorrection } from "./payroll-payout-proof-fingerprint.service.ts";
+import { bindProofToOperation } from "./payroll-payout-proof-binding.service.ts";
 import { payrollEntryDateOf, payrollGlKeys } from "./payroll-gl-consumer.ts";
 import {
   assertEvidenceKeyForBatchStored,
@@ -85,7 +85,12 @@ function safeFee(item: Parameters<typeof openItemFee>[0]): number {
   return fee;
 }
 
-export type OverpaidInput = { evidenceKey: string; note: string };
+export type OverpaidInput = {
+  evidenceKey: string;
+  note: string;
+  /** Every item of the overpaid operation this item belongs to (the proof binding's item set). */
+  operationItemIds?: readonly string[];
+};
 
 /**
  * Records a late transfer of a `failed` item whose payslip was paid by another
@@ -137,18 +142,6 @@ export async function recordOverpaidItem(
       "PAYOUT_CHANNEL_MISMATCH",
       "Pembayaran ganda hanya bisa dicatat untuk transfer bank manual.",
     );
-  // A proof bound to a failed-item correction backs nothing else: one bank
-  // proof must not carry both a correction of one item and a double payment of
-  // another (legend-mejr2).
-  if (
-    await proofBoundToCorrection(tx, proofs, tenantId, batch.id, evidence, now)
-  )
-    throw payoutRefuse(
-      409,
-      "PAYOUT_CORRECTION_PROOF_REUSED",
-      "Bukti ini sudah dipakai untuk koreksi item gagal. Unggah bukti transfer yang sesuai dengan pembayaran ganda ini.",
-    );
-
   const [item] = await tx
     .select()
     .from(payrollDisbursementItems)
@@ -168,6 +161,19 @@ export async function recordOverpaidItem(
       "PAYOUT_ITEM_NOT_OVERPAYABLE",
       "Hanya item gagal yang bisa dicatat sebagai pembayaran ganda.",
     );
+  // One proof backs ONE operation (legend-so897): this overpaid record over its
+  // item set (the route passes the whole request; alone, the item itself).
+  // After the item row lock (lock order: run row, batch row, item rows, proof
+  // advisory). A proof of a return, a correction or another overpaid record is
+  // refused 409 PAYOUT_PROOF_REUSED.
+  await bindProofToOperation(tx, proofs, tenantId, {
+    kind: "overpaid",
+    batchId: batch.id,
+    evidenceKey: evidence,
+    itemIds: input.operationItemIds ?? [itemId],
+    actorId: actor.userId as UserId,
+    now,
+  });
   const [paid] = await tx
     .select({ id: payrollDisbursementItems.id })
     .from(payrollDisbursementItems)
@@ -349,6 +355,7 @@ export async function recordOverpaidItem(
     piiKeyVersion: PAYROLL_SEAL_KEY_VERSION,
     postedAt: now,
     settleNetIdr: netIdr,
+    feeIdr,
   });
   // The database allows failed -> overpaid only inside this transaction.
   await tx.execute(sql`SELECT set_config('app.payout_overpaid', 'on', true)`);

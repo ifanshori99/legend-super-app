@@ -48,13 +48,9 @@ import { payrollRuns } from "../db/schema/payroll.ts";
 import { settleAndMaybePay } from "./payroll-payout-manual.service.ts";
 import {
   claimHoldingFingerprint,
-  countFingerprintTargets,
-  ensureProofFingerprintRecord,
-  lockProofFingerprints,
-  proofFingerprintRecord,
-  proofFingerprints,
   twinEvidenceKeys,
 } from "./payroll-payout-proof-fingerprint.service.ts";
+import { bindProofToOperation } from "./payroll-payout-proof-binding.service.ts";
 import {
   loadBatchRunFirst,
   payoutRefuse,
@@ -356,36 +352,20 @@ export async function correctFailedItems(
   await assertCorrectable(tx, tenantId, rows);
   const itemIds = rows.map((row) => row.id);
 
-  // The proof: record its hashes (fail closed when it cannot be read), then
-  // hold one lock per hash, in order, while every reuse check runs.
-  await ensureProofFingerprintRecord(
-    tx,
-    proofs,
-    tenantId,
-    batch.id,
-    evidence,
+  // One proof backs ONE operation (legend-so897): bound to this correction
+  // (batch and item set) at both steps, before anything is written. Its hashes
+  // are recorded first (fail closed when it cannot be read), then one lock per
+  // hash, in order, is held while every reuse check runs (lock order: run row,
+  // batch row, item rows, proof advisory).
+  const record = await bindProofToOperation(tx, proofs, tenantId, {
+    kind: "correction",
+    batchId: batch.id,
+    evidenceKey: evidence,
+    itemIds,
+    actorId: userId,
     now,
-  );
-  const record = await proofFingerprintRecord(tx, tenantId, evidence);
-  if (!record?.stored)
-    throw payoutRefuse(
-      409,
-      "PAYOUT_PROOF_FINGERPRINT_PENDING",
-      "Bukti ini belum bisa diperiksa sidik jarinya. Coba lagi sebentar lagi.",
-    );
-  const shas = await proofFingerprints(tx, tenantId, evidence);
-  await lockProofFingerprints(tx, tenantId, shas);
-  // Fail closed like a return: while older proofs still lack a fingerprint the
-  // reuse checks below cannot see them, so a fingerprinted proof waits.
-  if (
-    shas.length > 0 &&
-    (await countFingerprintTargets(tx, tenantId)).total > 0
-  )
-    throw payoutRefuse(
-      409,
-      "PAYOUT_PROOF_FINGERPRINT_PENDING",
-      "Bukti lama sedang diperiksa sidik jarinya. Koreksi dengan bukti baru ditahan sampai selesai; coba lagi sebentar lagi.",
-    );
+  });
+  const shas = record.shas;
   await assertProofFree(tx, tenantId, evidence, shas, itemIds);
 
   const proposals: CorrectionRow[] = await tx

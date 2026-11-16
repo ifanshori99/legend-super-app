@@ -2668,6 +2668,48 @@
       "when": 1795000000009,
       "tag": "0394_payout_failed_correction_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 395,
+      "version": "7",
+      "when": 1795000000010,
+      "tag": "0395_payout_proof_bindings",
+      "breakpoints": true
+    },
+    {
+      "idx": 396,
+      "version": "7",
+      "when": 1795000000011,
+      "tag": "0396_payout_proof_backfill_stuck",
+      "breakpoints": true
+    },
+    {
+      "idx": 397,
+      "version": "7",
+      "when": 1795000000012,
+      "tag": "0397_payout_posting_fee_idr",
+      "breakpoints": true
+    },
+    {
+      "idx": 398,
+      "version": "7",
+      "when": 1795000000013,
+      "tag": "0398_payout_proof_hash_contests",
+      "breakpoints": true
+    },
+    {
+      "idx": 399,
+      "version": "7",
+      "when": 1795000000014,
+      "tag": "0399_payout_proof_global_gate",
+      "breakpoints": true
+    },
+    {
+      "idx": 400,
+      "version": "7",
+      "when": 1795000000015,
+      "tag": "0400_payout_gl_commit_checks",
+      "breakpoints": true
     }
   ]
 }

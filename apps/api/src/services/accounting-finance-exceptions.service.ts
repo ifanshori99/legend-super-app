@@ -1,5 +1,5 @@
 // Finance exceptions list (bead legend-4oclu; brief
-// docs/briefs/662-finance-exceptions-contract.md). Read-only: six kinds of
+// docs/briefs/662-finance-exceptions-contract.md). Read-only: seven kinds of
 // rows finance must look at, each from its own source table and each listed
 // exactly once. Every query filters `tenant_id` from the session context and
 // the caller's outlet reach; no payload or bank data leaves this file.
@@ -12,6 +12,12 @@
 //   auto-journal still waiting for its receipt a day after its first failure.
 // - The payout kind is tenant-wide, so it is shown only to a caller without
 //   an outlet limit and never when an outlet filter is asked for.
+// - `payout_proof_stuck` (legend-so897) is tenant-wide like the payout kind and
+//   standing like `receipt_pending_stale`: every payout proof the fingerprint
+//   backfill could not complete and has not resolved yet, whatever its date.
+//   The reason (`detail`) is one of unreadable, hash_conflict, legacy_duplicate,
+//   shared_key (more than one operation over one proof; never auto-resolved) or
+//   bind_failed (legend-p2v4s).
 
 import { sql, type SQL } from "drizzle-orm";
 import {
@@ -684,6 +690,38 @@ async function payoutFeeNotPosted(
   };
 }
 
+/** Payout proofs the fingerprint backfill left stuck (own tenant, unresolved only). */
+async function payoutProofStuck(
+  tx: Executor,
+  scope: Scope,
+): Promise<Collected> {
+  const rows = rowsOf(
+    await tx.execute(
+      sql`SELECT evidence_key AS ref_id, reason AS detail, first_seen_at AS occurred_at
+            FROM payroll_payout_proof_backfill_stuck
+           WHERE tenant_id = ${scope.tenantId}::uuid
+             AND resolved_at IS NULL
+           ORDER BY first_seen_at DESC, evidence_key DESC`,
+    ),
+  );
+  const items = rows.map((row) =>
+    toItem("payout_proof_stuck", "payout_proof", {
+      occurred_at: row.occurred_at,
+      ref_id: row.ref_id,
+      outlet_id: null,
+      detail: row.detail,
+      amount: null,
+    }),
+  );
+  return {
+    kind: "payout_proof_stuck",
+    count: items.length,
+    knownAmountCount: 0,
+    amountIdr: 0,
+    items,
+  };
+}
+
 /**
  * The exceptions of the window for the caller's outlets. Read-only. A tenant
  * wide caller also sees the outlet-less payout kind (unless it filters by an
@@ -704,10 +742,10 @@ export async function listFinanceExceptions(
   };
   const wants = (kind: FinanceExceptionKind) =>
     query.kind === undefined || query.kind === kind;
-  const includePayout =
-    wants("payout_fee_not_posted") &&
-    context.outletScope.kind === "tenant" &&
-    query.outletId === undefined;
+  const tenantWide =
+    context.outletScope.kind === "tenant" && query.outletId === undefined;
+  const includePayout = wants("payout_fee_not_posted") && tenantWide;
+  const includeProofStuck = wants("payout_proof_stuck") && tenantWide;
 
   const collected = await withTenant(db, context, async (tx) => {
     const parts: Collected[] = [];
@@ -722,6 +760,7 @@ export async function listFinanceExceptions(
     if (wants("receipt_pending_stale"))
       parts.push(await receiptPendingStale(tx, scope));
     if (includePayout) parts.push(await payoutFeeNotPosted(tx, scope));
+    if (includeProofStuck) parts.push(await payoutProofStuck(tx, scope));
     return parts;
   });
 
