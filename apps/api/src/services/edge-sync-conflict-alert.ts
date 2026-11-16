@@ -386,6 +386,72 @@ export async function notifyEdgeCatalogStale(
   );
 }
 
+export type EdgeDeviceRegistryHardStale = {
+  tenantId: TenantId;
+  outletId: OutletId;
+  edgeNodeId: string;
+  /** The hard limit in seconds (EDGE_DEVICE_REGISTRY_MAX_STALE_SECONDS). */
+  maxStaleSeconds: number;
+  /** Last successful device-registry pull (ISO), null when there never was one. */
+  lastPulledAt: string | null;
+};
+
+/**
+ * Stable alert id for one outlet and UTC day (legend-2lgu): the puller
+ * transition and every refused new session map to the same ULID, so the owner
+ * hears about it at most once a day however often devices retry.
+ */
+export function edgeDeviceRegistryHardStaleAlertId(
+  outletId: OutletId,
+  now: Date,
+): string {
+  const day = now.toISOString().slice(0, 10);
+  const hex = createHash("sha256")
+    .update(`edge_device_registry.hard_stale\0${outletId}\0${day}`)
+    .digest("hex")
+    .slice(0, 32);
+  return uuidToUlid(
+    `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
+  );
+}
+
+/**
+ * Notify the outlet's supervisors AND owners that the edge's device-registry
+ * replica passed its hard limit and the edge now refuses NEW device sessions
+ * (legend-2lgu). Running sessions are untouched. Idempotent per outlet and UTC
+ * day (see `edgeDeviceRegistryHardStaleAlertId`).
+ */
+export async function notifyEdgeDeviceRegistryHardStale(
+  tx: EdgeTx,
+  context: ScopedTenantContext,
+  stale: EdgeDeviceRegistryHardStale,
+  now: Date = new Date(),
+): Promise<void> {
+  const id = edgeDeviceRegistryHardStaleAlertId(stale.outletId, now);
+  await notifyOutletSupervisors(
+    tx,
+    context,
+    {
+      tenantId: stale.tenantId,
+      outletId: stale.outletId,
+      alsoOwners: true,
+      id,
+      eventName: "edge_device_registry.hard_stale",
+      aggregateType: "edge_device_registry",
+      aggregateId: id,
+      payload: {
+        edgeNodeId: stale.edgeNodeId,
+        maxStaleSeconds: String(stale.maxStaleSeconds),
+        // An empty string (not null) when the replica never pulled.
+        lastPulledAt: stale.lastPulledAt ?? "",
+      },
+      title: "Data perangkat di edge terlalu lama tidak diperbarui",
+      body: "Server lokal sudah terlalu lama tidak menerima data perangkat dari cloud, jadi perangkat baru tidak dapat masuk. Perangkat yang sedang aktif tetap berjalan. Sambungkan server lokal ke cloud agar data perangkat diperbarui.",
+    },
+    now,
+  );
+}
+
 export type EdgeEventParkedUnclassified = {
   tenantId: TenantId;
   outletId: OutletId;

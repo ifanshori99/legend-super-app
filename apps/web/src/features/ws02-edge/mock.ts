@@ -115,6 +115,41 @@ const jobs = createMockStore<PrintJob[]>(() => {
     .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
 });
 
+type RegistryFreshness = "fresh" | "stale" | "hardStale";
+
+const HOUR_MS = 3_600_000;
+const REGISTRY_MAX_STALE_SECONDS = 72 * 3600;
+
+// Fresh pull, a late pull (soft) and a pull older than the hard limit.
+const REGISTRY_VARIANTS: Record<
+  RegistryFreshness,
+  () => {
+    lastPulledAt: string;
+    stale: boolean;
+    hardStale: boolean;
+    maxStaleSeconds: number;
+  }
+> = {
+  fresh: () => ({
+    lastPulledAt: nowIso(-30_000),
+    stale: false,
+    hardStale: false,
+    maxStaleSeconds: REGISTRY_MAX_STALE_SECONDS,
+  }),
+  stale: () => ({
+    lastPulledAt: nowIso(-2 * HOUR_MS),
+    stale: true,
+    hardStale: false,
+    maxStaleSeconds: REGISTRY_MAX_STALE_SECONDS,
+  }),
+  hardStale: () => ({
+    lastPulledAt: nowIso(-80 * HOUR_MS),
+    stale: true,
+    hardStale: true,
+    maxStaleSeconds: REGISTRY_MAX_STALE_SECONDS,
+  }),
+};
+
 const status = createMockStore(() => {
   const override = browser ? readOverride() : null;
   return {
@@ -128,6 +163,8 @@ const status = createMockStore(() => {
     // legend-s7szu: a restored or cloned edge database (receipt run alert).
     receiptRunAlert: false,
     receiptRunAlertAt: null as string | null,
+    // legend-2lgu: freshness of the edge's copy of the device registry.
+    registry: "fresh" as RegistryFreshness,
   };
 });
 
@@ -166,6 +203,7 @@ declare global {
       setCloudLink: (link: CloudLink) => void;
       setPendingEvents: (count: number) => void;
       setReceiptRunAlert: (on: boolean) => void;
+      setDeviceRegistry: (state: RegistryFreshness) => void;
     };
   }
 }
@@ -197,8 +235,7 @@ registerMock(getEdgeStatus, ({ scenario }) => {
       pendingEventCount: current.pendingEventCount,
       lastSyncedAt: current.lastSyncedAt,
       deviceRegistry: {
-        lastPulledAt: nowIso(-30_000),
-        stale: false,
+        ...REGISTRY_VARIANTS[current.registry](),
         receiptRunAlert: current.receiptRunAlert,
         receiptRunAlertAt: current.receiptRunAlertAt,
       },
@@ -349,6 +386,9 @@ if (browser)
     },
     setPendingEvents: (count) => {
       status.set({ ...status.get(), pendingEventCount: Math.max(0, count) });
+    },
+    setDeviceRegistry: (state) => {
+      status.set({ ...status.get(), registry: state });
     },
     setReceiptRunAlert: (on) => {
       status.set({

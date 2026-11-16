@@ -10,6 +10,8 @@
 //   lastSyncedAt      when the cloud last acknowledged the edge's events
 //   deviceRegistry    last successful device-registry pull and whether the
 //                     replica is stale (legend-2lp.7; revocations may be missing)
+//                     and whether it is past the hard limit (legend-2lgu:
+//                     hardStale, maxStaleSeconds; new device sessions refused)
 //   thisDevice        the calling device from the device registry port
 //                     (legend-165); null until it is wired or for a session
 import { edgeStatusSchema, type EdgeStatus } from "@starter/shared/edge";
@@ -17,6 +19,7 @@ import type { CloudLink } from "@starter/shared/edge";
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { db } from "../db/index.ts";
 import { getDeviceRegistrySyncState } from "../edge/runtime.ts";
+import { DEFAULT_DEVICE_REGISTRY_MAX_STALE_SECONDS } from "../edge/config.ts";
 import { lookupEdgeDevice } from "../edge/ports.ts";
 import type { LinkScope } from "../edge/link-peer.ts";
 import { getEdgeNode } from "./edge-node.service.ts";
@@ -53,6 +56,13 @@ export async function getEdgeStatus(input: {
     deviceRegistry: {
       lastPulledAt: registry?.lastSuccessAt ?? null,
       stale: registry?.stale ?? true,
+      // legend-2lgu: no pull state (cloud, or before boot) is never hard
+      // stale; only an edge that has been running past the limit is.
+      hardStale: registry?.hardStale ?? false,
+      maxStaleSeconds:
+        registry && registry.maxStaleSeconds > 0
+          ? registry.maxStaleSeconds
+          : DEFAULT_DEVICE_REGISTRY_MAX_STALE_SECONDS,
       receiptSequencesRefused: registry?.receiptSequencesRefused ?? 0,
       receiptSequencesRefusedAt: registry?.receiptSequencesRefusedAt ?? null,
       receiptRunAlert: registry?.receiptRunAlert ?? false,

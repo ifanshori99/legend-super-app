@@ -21,10 +21,20 @@
 //                         the replica counts as stale after this long without
 //                         a successful pull (60..86400, default 900, at least
 //                         twice the interval)
+//   EDGE_DEVICE_REGISTRY_MAX_STALE_SECONDS
+//                         hard limit (legend-2lgu): past this long without a
+//                         successful pull the edge refuses NEW device
+//                         sessions (enroll, token, first heartbeat); a device
+//                         with a live heartbeat keeps running (3600..2592000,
+//                         default 259200 = 72 h, at least twice
+//                         EDGE_DEVICE_SYNC_STALE_SECONDS)
 import { z } from "zod";
 import { deploymentEnvShape } from "@starter/shared/env";
 import { parseEdgeCredential } from "./credential.ts";
 import { LINK_PATH } from "./protocol.ts";
+
+/** legend-2lgu: default hard limit of the device-registry replica (72 h). */
+export const DEFAULT_DEVICE_REGISTRY_MAX_STALE_SECONDS = 259_200;
 
 const schema = z
   .object({
@@ -57,6 +67,12 @@ const schema = z
       .min(60)
       .max(86_400)
       .default(900),
+    EDGE_DEVICE_REGISTRY_MAX_STALE_SECONDS: z.coerce
+      .number()
+      .int()
+      .min(3600)
+      .max(2_592_000)
+      .default(DEFAULT_DEVICE_REGISTRY_MAX_STALE_SECONDS),
   })
   .superRefine((values, ctx) => {
     if (!values.EDGE_MODE) return;
@@ -94,6 +110,16 @@ const schema = z
         message:
           "Set EDGE_DEVICE_SYNC_STALE_SECONDS to at least twice EDGE_DEVICE_SYNC_INTERVAL_SECONDS.",
       });
+    if (
+      values.EDGE_DEVICE_REGISTRY_MAX_STALE_SECONDS <
+      2 * values.EDGE_DEVICE_SYNC_STALE_SECONDS
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["EDGE_DEVICE_REGISTRY_MAX_STALE_SECONDS"],
+        message:
+          "Set EDGE_DEVICE_REGISTRY_MAX_STALE_SECONDS to at least twice EDGE_DEVICE_SYNC_STALE_SECONDS.",
+      });
     if (!parseEdgeCredential(values.EDGE_NODE_CREDENTIAL))
       ctx.addIssue({
         code: "custom",
@@ -113,6 +139,8 @@ export type EdgeRuntimeConfig =
       version: string;
       deviceSyncIntervalMs: number;
       deviceSyncStaleAfterMs: number;
+      /** legend-2lgu: hard limit; past it new device sessions are refused. */
+      deviceRegistryMaxStaleMs: number;
       peopleSyncIntervalMs: number;
     };
 
@@ -140,6 +168,8 @@ export function parseEdgeRuntimeConfig(
       version: values.EDGE_NODE_VERSION,
       deviceSyncIntervalMs: values.EDGE_DEVICE_SYNC_INTERVAL_SECONDS * 1000,
       deviceSyncStaleAfterMs: values.EDGE_DEVICE_SYNC_STALE_SECONDS * 1000,
+      deviceRegistryMaxStaleMs:
+        values.EDGE_DEVICE_REGISTRY_MAX_STALE_SECONDS * 1000,
       peopleSyncIntervalMs: values.EDGE_PEOPLE_SYNC_INTERVAL_SECONDS * 1000,
     },
   };

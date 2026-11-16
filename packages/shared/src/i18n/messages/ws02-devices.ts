@@ -227,6 +227,23 @@ export const deviceRegistryMessages = {
       "Token lama {name} langsung berhenti berlaku. Perangkat harus memakai token baru.",
     reissueConfirm: "Terbitkan token baru",
   },
+  // Freshness of the edge's copy of this registry (legend-2lgu).
+  staleNotice: {
+    softTitle: "Data perangkat belum diperbarui sejak {time}",
+    softNever: "Data perangkat belum pernah diperbarui dari cloud",
+    softHint:
+      "Edge memakai data perangkat terakhir yang tersimpan. Sambungkan edge ke cloud agar daftar perangkat terbaru terbaca.",
+    hardTitle:
+      "Edge menolak perangkat baru: data perangkat terlalu lama ({hours} jam)",
+    hardHint:
+      "Perangkat yang sedang aktif tetap berjalan. Sambungkan edge ke cloud, lalu coba lagi untuk perangkat baru.",
+    rowLabel: "Data perangkat",
+    rowFresh: "Terbaru",
+    rowStale: "Belum diperbarui",
+    rowHard: "Perangkat baru ditolak",
+    rowPulled: "Terakhir diperbarui {time}",
+    rowNever: "Belum pernah diperbarui dari cloud",
+  },
   errors: {
     generic: "Tindakan gagal. Coba lagi.",
     forbidden: "Anda tidak punya izin untuk tindakan ini.",
