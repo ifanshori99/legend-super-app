@@ -21,7 +21,8 @@
 // refused 409 PAYOUT_CHANNEL_NOT_AVAILABLE.
 
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import type { ErrorRequestHandler } from "express";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { maskAccountNumber } from "@starter/shared/accounting";
 import {
   createUlid,
@@ -69,12 +70,28 @@ import {
 import { recordAudit } from "./core-audit.ts";
 import type { Tx } from "./hris-access.ts";
 import { openPayeeBankSnapshot } from "./payroll-bank-snapshot.service.ts";
+import type {
+  PayoutGrantBinding,
+  PayoutGrantIssuer,
+} from "./payroll-payout-grant.service.ts";
 import {
   assertManualPayoutSetup,
   configuredSourceBankAccountId,
 } from "./payroll-payout-setup.ts";
 
-export type PayoutActor = { tenantId: string; userId: string };
+/**
+ * The verified caller. `sessionId` is the Better Auth session of the request.
+ * `grants` mints the one-time step grant (migration 0653+) that every trusted
+ * payout function consumes; it exists only after the request's step-up. The
+ * functions read the actor and the session from the grant, never from the app.
+ */
+export type PayoutActor = {
+  tenantId: string;
+  userId: string;
+  sessionId?: string;
+  /** Required by the trusted paths (see `payoutTrustedGrant`). */
+  readonly grants?: PayoutGrantIssuer;
+};
 export type BatchRow = typeof payrollDisbursementBatches.$inferSelect;
 export type ItemRow = typeof payrollDisbursementItems.$inferSelect;
 
@@ -107,6 +124,129 @@ export const payoutRefuse = (
   code: string,
   message: string,
 ): HttpError => new HttpError(status, code, message);
+
+/**
+ * The one-time grant the trusted payout functions need, bound to exactly the
+ * values the caller passes to SQL. Refused before any SQL runs when the caller
+ * has no issuer (system actors have no session or step-up).
+ */
+export async function payoutTrustedGrant(
+  actor: PayoutActor,
+  binding: PayoutGrantBinding,
+): Promise<string> {
+  if (!actor.grants)
+    throw payoutRefuse(
+      401,
+      "PAYOUT_SESSION_REQUIRED",
+      "Sesi login diperlukan untuk aksi ini.",
+    );
+  return actor.grants.issue(binding);
+}
+
+/** A UUID in its canonical text form (used before ids reach a grant or SQL). */
+export const isPayoutUuid = (value: string): boolean => UUID_FORMAT.test(value);
+
+/**
+ * A step moved between the grant (issued before the batch lock, so the grantor
+ * connection cannot wait on our own `FOR UPDATE`) and the locked re-read:
+ * refused, nothing written, the caller retries (fail closed).
+ */
+export const payoutStateChanged = (): HttpError =>
+  payoutRefuse(
+    409,
+    "PAYOUT_BATCH_STATE_CHANGED",
+    "Status item berubah saat diproses. Coba lagi.",
+  );
+
+/**
+ * The trusted propose functions refuse to replace the proof of an open
+ * proposal (legend-911 P1-2). Matches that database error, also behind a
+ * driver wrapper, so a race past the service pre-check answers 409, not 5xx.
+ */
+export function isProposalReplaceViolation(error: unknown, depth = 0): boolean {
+  if (depth > 4 || typeof error !== "object" || error === null) return false;
+  const candidate = error as { message?: unknown; cause?: unknown };
+  return (
+    (typeof candidate.message === "string" &&
+      /PAYOUT-73:/.test(candidate.message)) ||
+    isProposalReplaceViolation(candidate.cause, depth + 1)
+  );
+}
+
+/** Postgres check_violation (23514), also behind a driver wrapper. */
+function checkViolation(error: unknown, depth = 0): boolean {
+  if (depth > 4 || typeof error !== "object" || error === null) return false;
+  const candidate = error as { code?: unknown; cause?: unknown };
+  return (
+    candidate.code === "23514" || checkViolation(candidate.cause, depth + 1)
+  );
+}
+
+/** SQLSTATE of the error, also behind a driver wrapper. */
+function sqlStateOf(error: unknown, depth = 0): string | null {
+  if (depth > 4 || typeof error !== "object" || error === null) return null;
+  const candidate = error as { code?: unknown; cause?: unknown };
+  return typeof candidate.code === "string"
+    ? candidate.code
+    : sqlStateOf(candidate.cause, depth + 1);
+}
+
+function messageHas(error: unknown, pattern: RegExp, depth = 0): boolean {
+  if (depth > 4 || typeof error !== "object" || error === null) return false;
+  const candidate = error as { message?: unknown; cause?: unknown };
+  return (
+    (typeof candidate.message === "string" &&
+      pattern.test(candidate.message)) ||
+    messageHas(candidate.cause, pattern, depth + 1)
+  );
+}
+
+/**
+ * A payout guard or deferred commit check (trigger or trusted function, code
+ * 23514) refused the change: the client sees a 409, never the raw database
+ * error. Returns null for every other error. The database text is not echoed.
+ */
+export function payoutGuardViolation(error: unknown): HttpError | null {
+  // PAYOUT-70 (42501): the step grant is invalid, spent or expired.
+  if (sqlStateOf(error) === "42501" && messageHas(error, /PAYOUT-70:/))
+    return payoutRefuse(
+      409,
+      "PAYOUT_STEP_GRANT_INVALID",
+      "Izin langkah pembayaran kedaluwarsa. Coba lagi.",
+    );
+  // PAYOUT-6x (42501), e.g. PAYOUT-64: a separation-of-duties or step order
+  // refusal (same person twice, requester, first step not attested).
+  if (sqlStateOf(error) === "42501" && messageHas(error, /PAYOUT-6\d:/))
+    return payoutRefuse(
+      409,
+      "PAYOUT_GUARD_REFUSED",
+      "Perubahan ditolak oleh aturan pembayaran. Muat ulang dan coba lagi.",
+    );
+  // PAYOUT-69 / PAYOUT-77 (P0002): the batch, item or claim is gone.
+  if (sqlStateOf(error) === "P0002" && messageHas(error, /PAYOUT-(69|77):/))
+    return payoutRefuse(
+      409,
+      "PAYOUT_BATCH_STATE_CHANGED",
+      "Data pembayaran berubah atau tidak ditemukan. Muat ulang dan coba lagi.",
+    );
+  if (!checkViolation(error)) return null;
+  return payoutRefuse(
+    409,
+    "PAYOUT_GUARD_REFUSED",
+    "Perubahan ditolak oleh aturan pembayaran. Muat ulang dan coba lagi.",
+  );
+}
+
+/**
+ * Router-level error middleware: mount last on each payout router so a 23514
+ * raised inside a handler or at COMMIT (deferred checks) answers 409.
+ */
+export const payoutGuardErrorMapper: ErrorRequestHandler = (
+  error,
+  _req,
+  _res,
+  next,
+) => next(payoutGuardViolation(error) ?? error);
 
 const asTenant = (tenantId: string) => tenantId as TenantId;
 const asUser = (userId: string) => userId as UserId;
@@ -354,7 +494,7 @@ const batchNotFound = () =>
   );
 
 /** Reads a batch row without a lock (to find its run before the lock order). */
-async function readBatch(
+export async function readBatch(
   tx: Tx,
   tenantId: string,
   batchId: string,
@@ -692,6 +832,67 @@ type PlannedItem = {
 };
 
 /**
+ * Slip ids with an open row in `payroll_payout_recon_exceptions` (migration
+ * 0644, insert-only) on one of their items. Every row counts as open: the table
+ * has no clear step yet, and when unsure the slip stays held.
+ */
+async function slipsHeldByReconException(
+  tx: Tx,
+  tenantId: string,
+  payslipIds: string[],
+): Promise<Set<string>> {
+  if (payslipIds.length === 0) return new Set();
+  const rows = await tx.execute<{ payslip_id: string }>(
+    sql`SELECT DISTINCT i.payslip_id
+          FROM payroll_payout_recon_exceptions e
+          JOIN payroll_disbursement_items i
+            ON i.tenant_id = e.tenant_id AND i.id = e.item_id
+         WHERE e.tenant_id = ${tenantId}
+           AND i.payslip_id IN (${sql.join(
+             payslipIds.map((id) => sql`${id}`),
+             sql`, `,
+           )})`,
+  );
+  return new Set(rows.rows.map((row) => row.payslip_id));
+}
+
+/**
+ * Slip ids with an open correction or overpaid proposal over a closed proof key
+ * (legend-911 P1-2). The insert guard (`app.payroll_disbursement_items_closed_key_guard`)
+ * refuses a new attempt for them in SQL; this keeps the batch from failing on
+ * it with a raw database error (5xx): the slip stays held like any other.
+ */
+async function slipsHeldByClosedKeyProposal(
+  tx: Tx,
+  tenantId: string,
+  payslipIds: string[],
+): Promise<Set<string>> {
+  if (payslipIds.length === 0) return new Set();
+  const ids = sql.join(
+    payslipIds.map((id) => sql`${id}`),
+    sql`, `,
+  );
+  const rows = await tx.execute<{ payslip_id: string }>(
+    sql`SELECT i.payslip_id
+          FROM payroll_disbursement_items i
+          JOIN payroll_payout_failed_corrections c
+            ON c.tenant_id = i.tenant_id AND c.item_id = i.id
+         WHERE i.tenant_id = ${tenantId} AND i.payslip_id IN (${ids})
+           AND c.status = 'proposed'
+           AND app.payout_proof_key_closed(c.tenant_id, c.evidence_key)
+        UNION
+        SELECT i.payslip_id
+          FROM payroll_disbursement_items i
+          JOIN payroll_payout_overpaid_proposals p
+            ON p.tenant_id = i.tenant_id AND p.item_id = i.id
+         WHERE i.tenant_id = ${tenantId} AND i.payslip_id IN (${ids})
+           AND p.status = 'proposed'
+           AND app.payout_proof_key_closed(p.tenant_id, p.evidence_key)`,
+  );
+  return new Set(rows.rows.map((row) => row.payslip_id));
+}
+
+/**
  * Creates a draft batch for a `locked` run (or a follow-up batch for a `paid`
  * run that already has batches). `cash` takes the cash payslips, `manual_bank`
  * the bank_transfer payslips and needs the PT config enabled. Only slips with
@@ -863,7 +1064,23 @@ export async function createDisbursementBatch(
       history.set(item.payslipId, seen);
     }
   }
+  // 905: a slip with an open reconciliation exception on any of its attempts
+  // is held from retry (a new attempt could pay it twice). The insert guard
+  // refuses it in SQL as well; this keeps the batch from failing on it.
+  const held = await slipsHeldByReconException(
+    tx,
+    tenantId,
+    slips.map((slip) => slip.id),
+  );
+  // 911: the same for an open proposal over a closed proof key.
+  for (const id of await slipsHeldByClosedKeyProposal(
+    tx,
+    tenantId,
+    slips.map((slip) => slip.id),
+  ))
+    held.add(id);
   const open = slips.filter((slip) => {
+    if (held.has(slip.id)) return false;
     const seen = history.get(slip.id);
     if (!seen) return true;
     return (

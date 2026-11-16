@@ -12,8 +12,11 @@
 //   by another person with the SAME proof, moves each item `failed ->
 //   succeeded` and settles it. Neither person may be the batch requester or one
 //   of the two who resolved the item as failed (403). The database repeats all
-//   of it (migrations 0393, 0394): `failed -> succeeded` exists only with
-//   `app.payout_correction` set and a `corrected` row of the item.
+//   of it (migrations 0393, 0394): `failed -> succeeded` requires a corrected
+//   row. Migrations 0410, 0411 restrict both steps to writes only by
+//   the trusted functions `app.payout_correction_propose` / `_approve` (owned
+//   by `legend_payout`, which check actor and session); `legend_app` cannot
+//   write the corrections or move `failed -> succeeded` itself.
 // - The proof is bound to ONE operation: its key and both hashes (uploaded and
 //   stored bytes) must not back a return claim, an overpaid proposal, another
 //   correction, or any item's payment, resolution or return proof (409
@@ -29,7 +32,6 @@
 //   retry or a new batch for it is refused (409, no second transfer).
 // - One request is one operation: every item is in the same step.
 
-import { randomUUID } from "node:crypto";
 import { and, eq, inArray, notInArray, or, sql } from "drizzle-orm";
 import type { TenantId, UserId } from "@starter/shared/core";
 import {
@@ -52,8 +54,13 @@ import {
 } from "./payroll-payout-proof-fingerprint.service.ts";
 import { bindProofToOperation } from "./payroll-payout-proof-binding.service.ts";
 import {
+  isPayoutUuid,
   loadBatchRunFirst,
+  isProposalReplaceViolation,
   payoutRefuse,
+  payoutStateChanged,
+  payoutTrustedGrant,
+  readBatch,
   recordPayoutAudit,
   type BatchRow,
   type PayoutActor as Actor,
@@ -95,6 +102,13 @@ const stepMismatch = () =>
     "Semua item dalam satu koreksi harus berada pada langkah yang sama dan memuat himpunan item yang sama.",
   );
 
+const proposalReplaceRefused = () =>
+  payoutRefuse(
+    409,
+    "PAYOUT_PROPOSAL_REPLACE_REFUSED",
+    "Bukti pengajuan yang masih terbuka tidak bisa diganti. Tarik pengajuan itu, lalu ajukan lagi dengan bukti yang benar.",
+  );
+
 const proofReused = () =>
   payoutRefuse(
     409,
@@ -124,6 +138,103 @@ function isProofUniqueViolation(error: unknown): boolean {
     current = (current as { cause?: unknown }).cause;
   }
   return false;
+}
+
+/** Array literal for a `uuid[]` parameter (ids come from locked rows). */
+const uuidArray = (ids: readonly string[]) => `{${ids.join(",")}}`;
+
+/** The grant of this request, issued before the run and batch rows are locked. */
+type CorrectionGrant = {
+  step: "propose" | "approve";
+  /** The operation a step two approves (null at step one). */
+  operationId: string | null;
+  grant: string;
+};
+
+/**
+ * The step is only known for certain under the lock, but the grant must exist
+ * before it: the grantor connection inserts a grant row whose foreign key takes
+ * `FOR KEY SHARE` on the batch, which would wait for our own `FOR UPDATE` and
+ * deadlock the request against itself. So the step is read unlocked here (step
+ * two when another person's proposal of exactly this item set exists), the
+ * grant is bound to it, and the locked read must agree (else 409, fail closed).
+ * The trusted function re-checks everything again under the lock. Null when the
+ * request is malformed: the locked path refuses it before any grant is used.
+ */
+async function issueCorrectionGrant(
+  tx: Tx,
+  actor: Actor,
+  tenantId: TenantId,
+  batchId: string,
+  itemIds: readonly string[],
+  evidence: string,
+): Promise<CorrectionGrant | null> {
+  if (
+    itemIds.length === 0 ||
+    new Set(itemIds).size !== itemIds.length ||
+    !itemIds.every(isPayoutUuid)
+  )
+    return null;
+  const proposals = await tx
+    .select({
+      operationId: payrollPayoutFailedCorrections.operationId,
+      proposedBy: payrollPayoutFailedCorrections.proposedBy,
+    })
+    .from(payrollPayoutFailedCorrections)
+    .where(
+      and(
+        eq(payrollPayoutFailedCorrections.tenantId, tenantId),
+        inArray(payrollPayoutFailedCorrections.itemId, [...itemIds]),
+      ),
+    );
+  const operations = new Set(proposals.map((p) => p.operationId));
+  const stepTwo =
+    proposals.length === itemIds.length &&
+    operations.size === 1 &&
+    proposals.every((p) => p.proposedBy !== actor.userId);
+  const operationId = stepTwo ? [...operations][0]! : null;
+  const step = stepTwo ? "approve" : "propose";
+  const grant = await payoutTrustedGrant(actor, {
+    kind: "correction",
+    step,
+    batchId,
+    itemIds,
+    evidenceKey: evidence,
+    refId: operationId,
+    targetId: null,
+  });
+  return { step, operationId, grant };
+}
+
+/** Step one in SQL: writes the proposals, returns the operation id. */
+async function callCorrectionPropose(
+  tx: Tx,
+  early: CorrectionGrant | null,
+  batchId: string,
+  itemIds: readonly string[],
+  evidence: string,
+  note: string,
+): Promise<string> {
+  if (early?.step !== "propose") throw payoutStateChanged();
+  const result = await tx.execute(
+    sql`SELECT app.payout_correction_propose(${batchId}::uuid, ${uuidArray(itemIds)}::uuid[], ${evidence}::varchar, ${note}, ${early.grant}) AS id`,
+  );
+  return (result.rows[0] as { id: string }).id;
+}
+
+/** Step two in SQL: corrects every item of the operation, returns how many. */
+async function callCorrectionApprove(
+  tx: Tx,
+  early: CorrectionGrant | null,
+  operationId: string,
+  evidence: string,
+): Promise<number> {
+  if (early?.step !== "approve" || early.operationId !== operationId)
+    throw payoutStateChanged();
+  const result = await tx.execute(
+    sql`SELECT app.payout_correction_approve(${operationId}::uuid, ${evidence}::varchar, ${early.grant}) AS moved`,
+  );
+  return Number((result.rows[0] as { moved: number }).moved);
 }
 
 /** Items of the request, locked, all of this batch and all still `failed`. */
@@ -308,6 +419,15 @@ export async function correctFailedItems(
     { tenantId: actor.tenantId, batchId },
     input.evidenceKey,
   );
+  await readBatch(tx, actor.tenantId, batchId);
+  const early = await issueCorrectionGrant(
+    tx,
+    actor,
+    tenantId,
+    batchId,
+    input.itemIds,
+    evidence,
+  );
   const batch = await loadBatchRunFirst(tx, actor.tenantId, batchId);
   if (batch.channel !== "manual_bank")
     throw payoutRefuse(
@@ -377,8 +497,7 @@ export async function correctFailedItems(
         inArray(payrollPayoutFailedCorrections.itemId, itemIds),
       ),
     )
-    .orderBy(payrollPayoutFailedCorrections.itemId)
-    .for("update");
+    .orderBy(payrollPayoutFailedCorrections.itemId);
   // One request is one operation: all items without a proposal, or all with,
   // and then exactly the items of that one earlier operation.
   if (proposals.length !== 0) {
@@ -425,58 +544,22 @@ export async function correctFailedItems(
           "Pengusul koreksi tidak memenuhi syarat dua orang berbeda.",
         );
     }
-    const byItem = new Map(proposals.map((p) => [p.itemId, p]));
-    for (const row of rows) {
-      const proposal = byItem.get(row.id)!;
-      const marked = await tx
-        .update(payrollPayoutFailedCorrections)
-        .set({ status: "corrected", correctedBy: userId, correctedAt: now })
-        .where(
-          and(
-            eq(payrollPayoutFailedCorrections.tenantId, tenantId),
-            eq(payrollPayoutFailedCorrections.id, proposal.id),
-            eq(payrollPayoutFailedCorrections.status, "proposed"),
-          ),
-        )
-        .returning({ id: payrollPayoutFailedCorrections.id });
-      if (marked.length !== 1)
-        throw payoutRefuse(
-          409,
-          "PAYOUT_BATCH_STATE_CHANGED",
-          "Status item berubah saat diproses. Coba lagi.",
-        );
-      // The database allows failed -> succeeded only inside this transaction,
-      // for an item with a corrected row.
-      await tx.execute(
-        sql`SELECT set_config('app.payout_correction', 'on', true)`,
+    // The trusted function re-checks everything in SQL (two people, proof,
+    // binding), marks the proposals corrected and moves `failed -> succeeded`
+    // (migration 0645); no GUC is an authorisation any more.
+    const moved = await callCorrectionApprove(
+      tx,
+      early,
+      proposals[0]!.operationId,
+      evidence,
+    );
+    if (moved !== rows.length)
+      throw payoutRefuse(
+        409,
+        "PAYOUT_BATCH_STATE_CHANGED",
+        "Status item berubah saat diproses. Coba lagi.",
       );
-      const moved = await tx
-        .update(payrollDisbursementItems)
-        .set({
-          status: "succeeded",
-          confirmedBy: userId,
-          confirmationRef: `correction:${proposal.id}`,
-          confirmationEvidenceKey: evidence,
-          settledAt: now,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(payrollDisbursementItems.tenantId, tenantId),
-            eq(payrollDisbursementItems.id, row.id),
-            eq(payrollDisbursementItems.status, "failed"),
-          ),
-        )
-        .returning({ id: payrollDisbursementItems.id });
-      await tx.execute(
-        sql`SELECT set_config('app.payout_correction', 'off', true)`,
-      );
-      if (moved.length !== 1)
-        throw payoutRefuse(
-          409,
-          "PAYOUT_BATCH_STATE_CHANGED",
-          "Status item berubah saat diproses. Coba lagi.",
-        );
+    for (const row of rows)
       await recordPayoutAudit(tx, actor, {
         action: "payroll.disbursement.item_corrected",
         objectType: "payroll_disbursement_item",
@@ -485,7 +568,6 @@ export async function correctFailedItems(
         before: { status: "failed" },
         after: { status: "succeeded", evidenceKey: evidence },
       });
-    }
     // The journal, once: Dr the frozen salaries payable / Cr the source account.
     await settleAndMaybePay(tx, actor, batch, now);
     return {
@@ -496,66 +578,24 @@ export async function correctFailedItems(
     };
   }
 
-  // Step one (or the same person replacing an open proposal): only a proposal.
-  // The same person repeating the same proof is a replay, not a second person:
-  // refused. Only a different proof replaces their own open proposal.
+  // Step one: only a proposal. The same person repeating the same proof is a
+  // replay, not a second person: refused. Replacing the proof of an open
+  // proposal is refused in SQL too (legend-911 P1-2): withdraw it and propose
+  // anew. Answered here as a 409 before any SQL runs.
   if (ownProposals.some((p) => p.evidenceKey === evidence))
     throw payoutRefuse(
       403,
       "PAYOUT_CORRECTION_SAME_PERSON",
       "Anda sudah mengajukan koreksi ini. Langkah kedua harus dilakukan orang lain.",
     );
-  const stored = record.stored;
-  const byItem = new Map(proposals.map((p) => [p.itemId, p]));
+  if (ownProposals.length > 0) throw proposalReplaceRefused();
   try {
-    const operationId = proposals[0]?.operationId ?? randomUUID();
-    for (const [index, row] of rows.entries()) {
-      const existing = byItem.get(row.id);
-      if (existing) {
-        const updated = await tx
-          .update(payrollPayoutFailedCorrections)
-          .set({
-            evidenceKey: evidence,
-            contentSha256: record.content,
-            storedSha256: stored,
-            note,
-            proposedAt: now,
-          })
-          .where(
-            and(
-              eq(payrollPayoutFailedCorrections.tenantId, tenantId),
-              eq(payrollPayoutFailedCorrections.id, existing.id),
-              eq(payrollPayoutFailedCorrections.status, "proposed"),
-              eq(payrollPayoutFailedCorrections.proposedBy, userId),
-            ),
-          )
-          .returning({ id: payrollPayoutFailedCorrections.id });
-        if (updated.length !== 1)
-          throw payoutRefuse(
-            409,
-            "PAYOUT_BATCH_STATE_CHANGED",
-            "Status item berubah saat diproses. Coba lagi.",
-          );
-      } else {
-        // The first row of the operation carries the operation's own id.
-        await tx.insert(payrollPayoutFailedCorrections).values({
-          id: index === 0 ? operationId : randomUUID(),
-          tenantId,
-          batchId: batch.id,
-          itemId: row.id,
-          operationId,
-          evidenceKey: evidence,
-          contentSha256: record.content,
-          storedSha256: stored,
-          note,
-          status: "proposed",
-          proposedBy: userId,
-          proposedAt: now,
-        });
-      }
-    }
+    // One call writes (or replaces, for the same person) the proposal of every
+    // item; the proof hashes are read from the stored record in SQL.
+    await callCorrectionPropose(tx, early, batch.id, itemIds, evidence, note);
   } catch (error) {
     if (isProofUniqueViolation(error)) throw proofReused();
+    if (isProposalReplaceViolation(error)) throw proposalReplaceRefused();
     throw error;
   }
   await recordPayoutAudit(tx, actor, {

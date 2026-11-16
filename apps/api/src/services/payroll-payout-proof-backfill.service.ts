@@ -42,7 +42,6 @@ import {
   payrollPayoutEvidenceFiles,
   payrollPayoutOverpaidProposals,
   payrollPayoutProofBackfillStuck,
-  payrollPayoutProofBindings,
   payrollPayoutReturnClaims,
   type PayoutProofBindingKind,
   type PayoutProofStuckReason,
@@ -444,15 +443,13 @@ export async function completeKey(
   // fixes: leave the claim open to a human, never guess which one is right.
   if (await claimHoldingFingerprint(tx, tenantId, [content, stored], key))
     return { file, claim: false, conflict: true };
-  await tx
-    .update(payrollPayoutReturnClaims)
-    .set({ contentSha256: content, storedSha256: stored })
-    .where(
-      and(
-        eq(payrollPayoutReturnClaims.tenantId, tenantId),
-        eq(payrollPayoutReturnClaims.id, claim.id),
-      ),
-    );
+  // The claim's hashes are filled by the trusted function from the stored
+  // record (legend-i01jp); the application role cannot update return claims.
+  const filled = await tx.execute<{ filled: boolean }>(
+    sql`SELECT app.payout_backfill_claim_hashes(${claim.id}::uuid) AS filled`,
+  );
+  if (filled.rows[0]?.filled !== true)
+    return { file, claim: false, conflict: false };
   return { file, claim: true, conflict: false };
 }
 
@@ -556,6 +553,46 @@ export const itemSetHashOf = (itemIds: readonly string[]): string =>
     .digest("hex");
 
 /**
+ * The item ids of one historical operation, read where the operation lives
+ * (the same sources as `app.payout_proof_operations()`). Fail closed: ids
+ * whose set hash differs from the operation's mean the data moved, so nothing
+ * is bound (the key is listed as bind_failed).
+ */
+async function historicalItemIds(
+  tx: Tx,
+  tenantId: TenantId,
+  operation: HistoricalOperation,
+): Promise<string[]> {
+  const key = operation.evidenceKey;
+  const batch = operation.batchId;
+  const result =
+    operation.kind === "return"
+      ? await tx.execute<{ id: string }>(
+          sql`SELECT i.id::text AS id FROM payroll_disbursement_items i
+               WHERE i.tenant_id = ${tenantId}::uuid AND i.batch_id = ${batch}::uuid
+                 AND i.return_evidence_key = ${key}`,
+        )
+      : operation.kind === "correction"
+        ? await tx.execute<{ id: string }>(
+            sql`SELECT o.item_id::text AS id
+                  FROM payroll_payout_failed_corrections r
+                  JOIN payroll_payout_failed_corrections o
+                    ON o.tenant_id = r.tenant_id AND o.operation_id = r.id
+                 WHERE r.tenant_id = ${tenantId}::uuid AND r.batch_id = ${batch}::uuid
+                   AND r.evidence_key = ${key} AND r.operation_id = r.id`,
+          )
+        : await tx.execute<{ id: string }>(
+            sql`SELECT p.item_id::text AS id FROM payroll_payout_overpaid_proposals p
+                 WHERE p.tenant_id = ${tenantId}::uuid AND p.batch_id = ${batch}::uuid
+                   AND p.evidence_key = ${key}`,
+          );
+  const ids = result.rows.map((row) => row.id);
+  if (ids.length === 0 || itemSetHashOf(ids) !== operation.itemSetHash)
+    throw new Error("historical operation item set not found");
+  return ids;
+}
+
+/**
  * The default binder. The insert runs in a savepoint so a refusal does not
  * poison the transaction: a taken evidence key means it is already bound; a
  * hash held by another binding (the global hash table) is retried once as a
@@ -565,27 +602,21 @@ export const bindHistoricalOperation: HistoricalProofBinder = async (
   tx,
   tenantId,
   operation,
-  now,
 ) => {
   await lockBatchesBeforeHashes(tx, tenantId, [operation.batchId]);
   await lockProofFingerprints(tx, tenantId, [
     operation.contentSha256,
     operation.storedSha256,
   ]);
+  // The trusted function (legend-i01jp) writes the binding. It takes the item
+  // ids (the operation must exist in app.payout_proof_operations()) and
+  // recomputes the item set hash; the hashes come from the evidence record.
+  const itemIds = await historicalItemIds(tx, tenantId, operation);
   const insert = (legacyDuplicate: boolean) =>
     tx.transaction((savepoint) =>
-      savepoint.insert(payrollPayoutProofBindings).values({
-        tenantId,
-        batchId: operation.batchId,
-        kind: operation.kind,
-        itemSetHash: operation.itemSetHash,
-        evidenceKey: operation.evidenceKey,
-        contentSha256: operation.contentSha256,
-        storedSha256: operation.storedSha256,
-        legacyDuplicate,
-        createdBy: operation.createdBy as UserId,
-        createdAt: now,
-      }),
+      savepoint.execute(
+        sql`SELECT app.payout_backfill_bind(${operation.batchId}::uuid, ${operation.kind}::varchar, ${`{${itemIds.join(",")}}`}::uuid[], ${operation.evidenceKey}::varchar, ${legacyDuplicate})`,
+      ),
     );
   try {
     await insert(false);
@@ -777,7 +808,15 @@ async function bindKey(
   if (identities.size > 1 && binding) {
     // Same transaction as the binding: the key is never bound and uncontested
     // while the gate could read it as accounted.
-    await tx.execute(sql`SELECT app.payout_proof_contest_own(${key}::varchar)`);
+    // The trusted function decides from the stored rows of this PT alone and
+    // answers whether it contested. A "no" is never listed as a shared key
+    // with the hashes uncontested: fail closed, the key is retried as
+    // bind_failed (legend-i01jp).
+    const contested = await tx.execute<{ contested: boolean }>(
+      sql`SELECT app.payout_proof_contest_own(${key}::varchar) AS contested`,
+    );
+    if (contested.rows[0]?.contested !== true)
+      throw new Error("shared key could not be contested");
     await listSharedKey(
       tx,
       tenantId,

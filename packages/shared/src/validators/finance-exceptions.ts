@@ -11,6 +11,7 @@ export const FINANCE_EXCEPTION_KINDS = [
   "payout_fee_not_posted",
   "receipt_pending_stale",
   "payout_proof_stuck",
+  "payout_recon_flag",
 ] as const;
 export type FinanceExceptionKind = (typeof FINANCE_EXCEPTION_KINDS)[number];
 

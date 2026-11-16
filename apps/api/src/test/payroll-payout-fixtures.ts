@@ -16,7 +16,7 @@
 //   tenants/<tenantId>/payroll-payout/<batchId>/<fileName>
 // `evidenceKeyFor` is the single place to change if the engineer picks a
 // different format.
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, expect } from "vitest";
 import type { ObjectStorage } from "@starter/shared/adapters";
@@ -46,6 +46,11 @@ import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import type { Tx } from "../services/hris-access.ts";
 import { deliverPayrollGlEvent } from "../services/payroll-gl-consumer.ts";
+import { recordOverpaidItems } from "../services/payroll-payout-overpaid-route.service.ts";
+import type {
+  PayoutGrantBinding,
+  PayoutGrantIssuer,
+} from "../services/payroll-payout-grant.service.ts";
 import { snapshotPayeeBankForLock } from "../services/payroll-bank-snapshot.service.ts";
 import {
   approveDisbursementBatch,
@@ -80,10 +85,103 @@ export const REQ = `payout-gl-req-${randomUUID()}`;
 export const APP = `payout-gl-app-${randomUUID()}`;
 export const APP2 = `payout-gl-app2-${randomUUID()}`;
 export const APP3 = `payout-gl-app3-${randomUUID()}`;
-export const actorOf = (userId: string) => ({
-  tenantId: tenant.id as string,
-  userId,
-});
+/**
+ * The Better Auth session id of a fixture actor: one per user, derived from the
+ * user id so `actorOf` stays synchronous. The row is created by
+ * `installPayoutWorld` (`provisionActor`) for the fixture constants and for
+ * every user made through `signedInClient`; the trusted payout paths
+ * (`app.payout_assert_actor`) check it is live with a fresh MFA step-up.
+ */
+const sessionIdOf = (userId: string) => `payout-fixture-session-${userId}`;
+
+/**
+ * The test stand-in of the grantor login (migration 0653): a short owner
+ * connection that does `SET LOCAL ROLE legend_payout_grantor`, sets the tenant
+ * and calls `app.payout_grant_issue` with the real COMMIT, so the grant is
+ * visible to the payout transaction (READ COMMITTED) exactly as in production.
+ * It skips the request step-up the real issuer checks; the SQL still checks
+ * the actor (live session, fresh MFA, permission).
+ */
+export function testGrantIssuer(actor: {
+  tenantId: string;
+  userId: string;
+  sessionId?: string;
+}): PayoutGrantIssuer {
+  return {
+    async issue(binding: PayoutGrantBinding): Promise<string> {
+      const pool = new Pool({
+        connectionString: process.env.STARTER_TEST_DATABASE_URL,
+        max: 1,
+      });
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SET LOCAL ROLE legend_payout_grantor");
+        await client.query("SELECT set_config('app.tenant_id', $1, true)", [
+          actor.tenantId,
+        ]);
+        const { rows } = await client.query(
+          `SELECT app.payout_grant_issue($1::text, $2::text, $3::uuid, $4::uuid[], $5::varchar, $6::uuid, $7::uuid, $8::varchar, $9::text, $10::text, $11::text) AS grant`,
+          [
+            binding.kind,
+            binding.step,
+            binding.batchId,
+            `{${binding.itemIds.join(",")}}`,
+            binding.evidenceKey,
+            binding.refId,
+            binding.targetId,
+            binding.detail ?? null,
+            actor.userId,
+            actor.sessionId ?? null,
+            "mfa_challenge",
+          ],
+        );
+        await client.query("COMMIT");
+        return (rows[0] as { grant: string }).grant;
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+        await pool.end();
+      }
+    },
+  };
+}
+
+export const actorOf = (userId: string) => {
+  const actor = {
+    tenantId: tenant.id as string,
+    userId,
+    sessionId: sessionIdOf(userId),
+  };
+  return { ...actor, grants: testGrantIssuer(actor) };
+};
+
+/**
+ * A full `PayoutActor` for the trusted payout paths (correction, overpaid,
+ * return, closure, posting source): inserts a live Better Auth session of
+ * `userId` with `mfa_verified_at = now()` (what `app.payout_assert_actor`
+ * checks) and returns the actor carrying its id. The user must already exist.
+ */
+export async function payoutActorSession(tenantId: string, userId: string) {
+  const owner = new Pool({
+    connectionString: process.env.STARTER_TEST_DATABASE_URL,
+    max: 1,
+  });
+  try {
+    const sessionId = randomUUID();
+    await owner.query(
+      `INSERT INTO session (id, expires_at, token, user_id, tenant_id, mfa_verified_at)
+       VALUES ($1, now() + interval '1 day', $2, $3, $4, now())`,
+      [sessionId, randomBytes(16).toString("hex"), userId, tenantId],
+    );
+    const actor = { tenantId, userId, sessionId };
+    return { ...actor, grants: testGrantIssuer(actor) };
+  } finally {
+    await owner.end();
+  }
+}
 
 export const evidenceKeyFor = (
   tenantId: string,
@@ -265,6 +363,9 @@ export function installPayoutWorld(label: string) {
   const createdEmployees: string[] = [];
   const createdUsers: string[] = [];
   const createdRoles: string[] = [];
+  const actorUsers: string[] = [];
+  const actorSessions: string[] = [];
+  let mfaRefresh: NodeJS.Timeout | undefined;
   let bankAccountId = "";
   let hr: ReturnType<typeof agent>;
 
@@ -304,6 +405,24 @@ export function installPayoutWorld(label: string) {
       client.release();
     }
   }
+
+  /**
+   * Like `asTenant`, but the statements of `run` execute as the `legend_payout`
+   * role (`SET LOCAL ROLE`, legend-r86qa/izza4): the only role that may move an
+   * item out of `exported`, write the resolution or payment record, or turn a
+   * run `paid` (outside the trusted functions that run as it). For seeds that
+   * force such a state by SQL and for tests of the trigger guards. The owner
+   * login is a superuser in tests, so no membership grant is needed. `raw`
+   * turns triggers off like in `asTenant`.
+   */
+  const asPayoutRole = <T>(
+    run: (client: PoolClient) => Promise<T>,
+    raw = false,
+  ): Promise<T> =>
+    asTenant(async (client) => {
+      await client.query("SET LOCAL ROLE legend_payout");
+      return run(client);
+    }, raw);
   const rowsOf = (sql: string, params: unknown[] = []) =>
     asTenant(async (c) => (await c.query(sql, params)).rows as Row[]);
 
@@ -331,7 +450,40 @@ export function installPayoutWorld(label: string) {
     const session = await client.get("/api/auth/get-session");
     const userId = session.body.user.id as string;
     createdUsers.push(userId);
+    await provisionActor(userId, { user: false, permit: false });
     return { client, userId };
+  }
+
+  /**
+   * What `app.payout_assert_actor` checks about the human behind a trusted
+   * step: the user row (`user: true` creates it), a live session with a fresh
+   * MFA step-up (the id `actorOf` returns) and, with `permit`, a tenant role
+   * carrying `payroll.disburse.approve`.
+   */
+  async function provisionActor(
+    userId: string,
+    { user, permit }: { user: boolean; permit: boolean },
+  ) {
+    const sessionId = sessionIdOf(userId);
+    actorSessions.push(sessionId);
+    if (user) {
+      actorUsers.push(userId);
+      await owner.query(
+        `INSERT INTO "user" (id, name, email, email_verified)
+         VALUES ($1, $2, $3, true) ON CONFLICT (id) DO NOTHING`,
+        [userId, `Payout ${label} actor`, `${userId}@payout-fixture.test`],
+      );
+    }
+    await owner.query(
+      `INSERT INTO session (id, expires_at, token, user_id, tenant_id, mfa_verified_at)
+       VALUES ($1, now() + interval '1 day', $2, $3, $4, now())
+       ON CONFLICT (id) DO UPDATE SET mfa_verified_at = now()`,
+      [sessionId, randomBytes(16).toString("hex"), userId, tenant.id],
+    );
+    if (permit) {
+      createdUsers.push(userId);
+      await grantRole(userId, ["payroll.disburse.approve"]);
+    }
   }
   async function grantRole(userId: string, permissions: string[]) {
     const roleId = randomUUID();
@@ -742,6 +894,18 @@ export function installPayoutWorld(label: string) {
 
   beforeAll(async () => {
     setAuditWriter(coreAuditWriter);
+    for (const id of [REQ, APP, APP2, APP3])
+      await provisionActor(id, { user: true, permit: true });
+    // The step-up must stay fresh (15 minutes) for the whole file.
+    mfaRefresh = setInterval(() => {
+      owner
+        .query(
+          `UPDATE session SET mfa_verified_at = now() WHERE id = ANY($1)`,
+          [actorSessions],
+        )
+        .catch(() => {});
+    }, 60_000);
+    mfaRefresh.unref();
     const hrUser = await signedInClient(`Payout ${label} HR`);
     await grantRole(hrUser.userId, ["hr.employee.manage", "hr.employee.view"]);
     hr = hrUser.client;
@@ -863,6 +1027,7 @@ export function installPayoutWorld(label: string) {
 
   afterAll(async () => {
     setAuditWriter(null);
+    if (mfaRefresh) clearInterval(mfaRefresh);
     await asTenant(async (c) => {
       const del = (sql: string, params: unknown[]) => c.query(sql, params);
       const runs = [tenant.id, createdRuns];
@@ -874,6 +1039,35 @@ export function installPayoutWorld(label: string) {
         "DELETE FROM payroll_payout_gl_postings WHERE tenant_id = $1 AND batch_id IN (SELECT id FROM payroll_disbursement_batches WHERE tenant_id = $1 AND payroll_run_id = ANY($2))",
         runs,
       );
+      // 905: the operation rows of this file's batches (corrections, overpaid
+      // proposals, return claims, bindings, attestations, recon flags, ...) go
+      // with their items. The fixture tenant is shared by every payout file, and
+      // the night recon reads the whole tenant: an operation left over an item
+      // deleted here fails it (PAYOUT-68).
+      const batchesOfRuns =
+        "SELECT id FROM payroll_disbursement_batches WHERE tenant_id = $1 AND payroll_run_id = ANY($2)";
+      await del(
+        `DELETE FROM payroll_payout_proof_hashes WHERE binding_id IN (
+           SELECT id FROM payroll_payout_proof_bindings
+            WHERE tenant_id = $1 AND batch_id IN (${batchesOfRuns}))`,
+        runs,
+      );
+      const opTables = (
+        await c.query(
+          `SELECT a.table_name FROM information_schema.columns a
+             JOIN information_schema.columns b
+               ON b.table_schema = a.table_schema AND b.table_name = a.table_name AND b.column_name = 'tenant_id'
+             JOIN information_schema.tables t
+               ON t.table_schema = a.table_schema AND t.table_name = a.table_name AND t.table_type = 'BASE TABLE'
+            WHERE a.table_schema = 'public' AND a.column_name = 'batch_id'
+              AND a.table_name LIKE 'payroll\\_payout\\_%'`,
+        )
+      ).rows as { table_name: string }[];
+      for (const { table_name } of opTables)
+        await del(
+          `DELETE FROM "${table_name}" WHERE tenant_id = $1 AND batch_id IN (${batchesOfRuns})`,
+          runs,
+        );
       await del(
         "DELETE FROM payroll_disbursement_items WHERE tenant_id = $1 AND payroll_run_id = ANY($2)",
         runs,
@@ -933,22 +1127,108 @@ export function installPayoutWorld(label: string) {
         createdRoles,
       ]);
     }, true);
+    await owner.query("DELETE FROM session WHERE id = ANY($1)", [
+      actorSessions,
+    ]);
+    await owner.query(`DELETE FROM "user" WHERE id = ANY($1)`, [actorUsers]);
     await owner.end();
   });
+
+  /**
+   * 905: step one of an overpaid record (the proposal) by `proposer`, through
+   * the same service the route uses. `app.payout_overpaid_record` (the second
+   * step, `recordOverpaidItem`) now refuses an item with no proposal of another
+   * person, so a test that calls the second step directly proposes first. The
+   * proposer is the first of APP2 / APP3 / APP that is not `recorder`.
+   */
+  async function proposeOverpaid(
+    batchId: string,
+    itemId: string,
+    evidenceKey: string,
+    note: string,
+    recorder: string,
+  ) {
+    const proposer = [APP2, APP3, APP].find((id) => id !== recorder)!;
+    // A test may call its wrapper again after a refused second step (for
+    // example: refused while accounting is off, then accepted). The open
+    // proposal of the same person and proof is step one already; proposing
+    // again is a same-person replay (PAYOUT_OVERPAID_SAME_PERSON).
+    const open = await rowsOf(
+      `SELECT 1 FROM payroll_payout_overpaid_proposals
+        WHERE tenant_id = $1 AND item_id = $2 AND proposed_by = $3
+          AND evidence_key = $4 AND status = 'proposed'`,
+      [tenant.id, itemId, proposer, evidenceKey],
+    );
+    if (open.length > 0) return;
+    return inTx((tx) =>
+      recordOverpaidItems(
+        tx,
+        actorOf(proposer),
+        batchId,
+        { itemIds: [itemId], evidenceKey, note },
+        proofs(),
+      ),
+    );
+  }
+
+  /**
+   * 905: a pre-claim historical return. The trusted binder (app.payout_backfill_bind)
+   * recomputes the item set hash from real items, so a legacy claim needs a real
+   * item behind its key. Clones `itemId` as a `returned` item (replica: triggers
+   * off, the clone is history, not a new payment) with `return_evidence_key = key`
+   * and returns the hash of that one-item set (what the claim must carry).
+   */
+  async function legacyReturnItem(itemId: string, key: string) {
+    return asTenant(async (c) => {
+      await c.query(
+        `CREATE TEMP TABLE legacy_clone ON COMMIT DROP AS
+           SELECT * FROM payroll_disbursement_items WHERE id = $1`,
+        [itemId],
+      );
+      await c.query(
+        `UPDATE legacy_clone SET id = gen_random_uuid(),
+                attempt_no = 1000 + floor(random() * 1000000)::int,
+                status = 'returned', return_evidence_key = $1,
+                returned_by = COALESCE(returned_by, 'legacy-905'),
+                return_note = COALESCE(return_note, 'legacy 905'),
+                returned_by_2 = COALESCE(returned_by_2, 'legacy-905-b'),
+                returned_at = COALESCE(returned_at, now())`,
+        [key],
+      );
+      await c.query(
+        `UPDATE legacy_clone SET idempotency_key = 'payslip:' || payslip_id::text || ':attempt:' || attempt_no::text`,
+      );
+      const id = (await c.query(`SELECT id::text AS id FROM legacy_clone`))
+        .rows[0].id as string;
+      await c.query(
+        `INSERT INTO payroll_disbursement_items SELECT * FROM legacy_clone`,
+      );
+      return (
+        await c.query(
+          `SELECT encode(sha256(convert_to($1::text, 'UTF8')), 'hex') AS h`,
+          [id],
+        )
+      ).rows[0].h as string;
+    }, true);
+  }
 
   return {
     app,
     owner,
     tenantId: tenant.id as string,
+    proposeOverpaid,
+    legacyReturnItem,
     entityId: () => entityId,
     scope,
     inTx,
     proofs,
     asTenant,
+    asPayoutRole,
     rowsOf,
     expectRefused,
     httpFailure,
     signedInClient,
+    provisionActor,
     grantRole,
     seedRun,
     postLockedJournal,

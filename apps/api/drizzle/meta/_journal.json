@@ -2766,6 +2766,111 @@
       "when": 1795000000023,
       "tag": "0408_print_alert_notification_retry",
       "breakpoints": true
+    },
+    {
+      "idx": 409,
+      "version": "7",
+      "when": 1795000000024,
+      "tag": "0409_payout_gl_insert_commit_check",
+      "breakpoints": true
+    },
+    {
+      "idx": 410,
+      "version": "7",
+      "when": 1795000000025,
+      "tag": "0410_payout_trusted_role",
+      "breakpoints": true
+    },
+    {
+      "idx": 411,
+      "version": "7",
+      "when": 1795000000026,
+      "tag": "0411_payout_trusted_binding",
+      "breakpoints": true
+    },
+    {
+      "idx": 412,
+      "version": "7",
+      "when": 1795000000027,
+      "tag": "0412_payout_posting_source_trusted",
+      "breakpoints": true
+    },
+    {
+      "idx": 413,
+      "version": "7",
+      "when": 1795000000028,
+      "tag": "0413_payout_proof_closures",
+      "breakpoints": true
+    },
+    {
+      "idx": 414,
+      "version": "7",
+      "when": 1795000000029,
+      "tag": "0414_payout_trusted_transitions",
+      "breakpoints": true
+    },
+    {
+      "idx": 415,
+      "version": "7",
+      "when": 1795000000030,
+      "tag": "0415_payout_trusted_followups",
+      "breakpoints": true
+    },
+    {
+      "idx": 416,
+      "version": "7",
+      "when": 1795000000031,
+      "tag": "0416_payout_trusted_batch_lock",
+      "breakpoints": true
+    },
+    {
+      "idx": 417,
+      "version": "7",
+      "when": 1795000000032,
+      "tag": "0417_payout_recon_proof_hashes",
+      "breakpoints": true
+    },
+    {
+      "idx": 418,
+      "version": "7",
+      "when": 1795000000033,
+      "tag": "0418_payout_911_closure_bind",
+      "breakpoints": true
+    },
+    {
+      "idx": 419,
+      "version": "7",
+      "when": 1795000000034,
+      "tag": "0419_payout_step_grants",
+      "breakpoints": true
+    },
+    {
+      "idx": 420,
+      "version": "7",
+      "when": 1795000000035,
+      "tag": "0420_payout_trusted_steps_grant",
+      "breakpoints": true
+    },
+    {
+      "idx": 421,
+      "version": "7",
+      "when": 1795000000036,
+      "tag": "0421_payout_911_grant_kinds",
+      "breakpoints": true
+    },
+    {
+      "idx": 422,
+      "version": "7",
+      "when": 1795000000037,
+      "tag": "0422_payout_resolve_bank_confirm",
+      "breakpoints": true
+    },
+    {
+      "idx": 423,
+      "version": "7",
+      "when": 1795000000038,
+      "tag": "0423_payout_run_settle",
+      "breakpoints": true
     }
   ]
 }

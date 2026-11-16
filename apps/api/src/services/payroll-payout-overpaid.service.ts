@@ -21,8 +21,8 @@
 //   payout step) and the item is read FOR UPDATE; a replay or a concurrent
 //   call finds an item that is no longer `failed` and is refused. The journal
 //   key and the unique `journal_key` of the posting are the second and third
-//   guard. The database allows `failed -> overpaid` only while this code has
-//   set `app.payout_overpaid` for its transaction (migration 0351).
+//   guard. The database allows `failed -> overpaid` only through the trusted
+//   function `app.payout_overpaid_record` (migrations 0644-0645).
 
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, ne, sql } from "drizzle-orm";
@@ -60,6 +60,7 @@ import {
   openItemAmount,
   openItemFee,
   payoutRefuse,
+  payoutTrustedGrant,
   payoutScope,
   recordPayoutAudit,
   type PayoutActor as Actor,
@@ -90,6 +91,12 @@ export type OverpaidInput = {
   note: string;
   /** Every item of the overpaid operation this item belongs to (the proof binding's item set). */
   operationItemIds?: readonly string[];
+  /**
+   * The record grant and the posting id it is bound to, issued by a caller that
+   * already holds the batch lock (the route): a grant cannot be issued under
+   * that lock. Without it the grant is issued here, before the lock.
+   */
+  recordGrant?: { postingId: string; grant: string };
 };
 
 /**
@@ -135,6 +142,23 @@ export async function recordOverpaidItem(
     { tenantId: actor.tenantId, batchId: peek.batchId },
     input.evidenceKey,
   );
+  // The grant is issued before the run and batch rows are locked: the grantor
+  // connection inserts a grant row whose foreign key takes `FOR KEY SHARE` on
+  // the batch, which would wait for our own `FOR UPDATE` and deadlock the
+  // request against itself. The trusted function re-checks everything under
+  // the lock, so a state change in between is refused there (fail closed).
+  const postingId = input.recordGrant?.postingId ?? randomUUID();
+  const grant =
+    input.recordGrant?.grant ??
+    (await payoutTrustedGrant(actor, {
+      kind: "overpaid",
+      step: "record",
+      batchId: peek.batchId,
+      itemIds: [itemId],
+      evidenceKey: evidence,
+      refId: postingId,
+      targetId: null,
+    }));
   const batch = await loadBatchRunFirst(tx, actor.tenantId, peek.batchId);
   if (batch.channel !== "manual_bank")
     throw payoutRefuse(
@@ -334,7 +358,6 @@ export async function recordOverpaidItem(
       );
   }
 
-  const postingId = randomUUID();
   await tx.insert(payrollPayoutGlPostings).values({
     id: postingId,
     tenantId,
@@ -357,26 +380,12 @@ export async function recordOverpaidItem(
     settleNetIdr: netIdr,
     feeIdr,
   });
-  // The database allows failed -> overpaid only inside this transaction.
-  await tx.execute(sql`SELECT set_config('app.payout_overpaid', 'on', true)`);
-  const moved = await tx
-    .update(payrollDisbursementItems)
-    .set({ status: "overpaid", glPostingId: postingId, updatedAt: now })
-    .where(
-      and(
-        eq(payrollDisbursementItems.tenantId, tenantId),
-        eq(payrollDisbursementItems.id, item.id),
-        eq(payrollDisbursementItems.status, "failed"),
-      ),
-    )
-    .returning({ id: payrollDisbursementItems.id });
-  await tx.execute(sql`SELECT set_config('app.payout_overpaid', 'off', true)`);
-  if (moved.length !== 1)
-    throw payoutRefuse(
-      409,
-      "PAYOUT_BATCH_STATE_CHANGED",
-      "Status item berubah saat diproses. Coba lagi.",
-    );
+  // Trusted function (migration 0645): re-checks the item, the two people, the
+  // proof and the posting, marks the proposal recorded and moves
+  // `failed -> overpaid` linked to the posting. No GUC is an authorisation.
+  await tx.execute(
+    sql`SELECT app.payout_overpaid_record(${item.id}::uuid, ${evidence}::varchar, ${postingId}::uuid, ${grant})`,
+  );
   await recordPayoutAudit(tx, actor, {
     action: "payroll.disbursement.item_overpaid",
     objectType: "payroll_disbursement_item",

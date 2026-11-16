@@ -100,8 +100,20 @@ const repostSkippedFees = (batchId: string, by = APP) =>
       "repostSkippedFees",
     )(tx, actorOf(by), batchId),
   );
-const recordOverpaidItem = (itemId: string, batchId: string, by = APP) =>
-  W.inTx((tx: Tx) =>
+const recordOverpaidItem = async (
+  itemId: string,
+  batchId: string,
+  by = APP,
+) => {
+  // 905: the second step needs the first step of another person (W.proposeOverpaid).
+  await W.proposeOverpaid(
+    batchId,
+    itemId,
+    uploadEvidence(batchId, "mutasi-bank.pdf"),
+    "Mutasi bank menunjukkan transfer kedua untuk slip yang sama",
+    by,
+  );
+  return W.inTx((tx: Tx) =>
     glFn<
       (
         tx: Tx,
@@ -121,6 +133,7 @@ const recordOverpaidItem = (itemId: string, batchId: string, by = APP) =>
       W.proofs(),
     ),
   );
+};
 
 // ---- Setup helpers --------------------------------------------------------
 
@@ -893,21 +906,26 @@ describe("an overpaid item is recorded as a receivable without paying again (qxk
     const { runId, batchId, followUp, budiFirst } = await lateDoublePayment();
     await recordOverpaidItem(idOf(budiFirst), batchId);
     // The sibling payment comes back from the bank: two people, evidence, note.
+    // 905 (A1): plain SQL by the app role can no longer move a succeeded item
+    // (PAYOUT-60); this is setup, not the rule under test, so the returned
+    // state is written as history (replica, triggers off).
     const sibling = await W.itemOfPerson(followUp, BUDI);
-    await W.asTenant((c) =>
-      c.query(
-        `UPDATE payroll_disbursement_items
+    await W.asTenant(
+      (c) =>
+        c.query(
+          `UPDATE payroll_disbursement_items
             SET status = 'returned', returned_at = now(), returned_by = $2,
                 returned_by_2 = $3, return_evidence_key = $4,
                 return_note = 'Dana kembali dari bank'
           WHERE id = $1`,
-        [
-          idOf(sibling),
-          APP,
-          APP3,
-          evidenceKeyFor(W.tenantId, followUp, "dana-kembali.pdf"),
-        ],
-      ),
+          [
+            idOf(sibling),
+            APP,
+            APP3,
+            evidenceKeyFor(W.tenantId, followUp, "dana-kembali.pdf"),
+          ],
+        ),
+      true,
     );
     expect((await W.itemOfPerson(followUp, BUDI)).status).toBe("returned");
     const countItems = async () =>
@@ -1033,16 +1051,20 @@ describe("the database guards succeeded -> returned (qxkm6)", () => {
       expect(current.returned_at).toBeNull();
     }
 
-    // Control: two different people, evidence and note: the same move passes.
-    const ok = await rawUpdate(
+    // 905 (A1): two different people, evidence and note are no longer enough
+    // for plain SQL by the app role: a succeeded item leaves only through the
+    // payout role's trusted return function (PAYOUT-60). The two-person
+    // return path is proven through the service in the proposal tests.
+    const refused = await rawUpdate(
       idOf(control),
       `status = 'returned', returned_at = now(), returned_by = $2, returned_by_2 = $3,
        return_evidence_key = $4, return_note = 'Dana kembali dari bank'`,
       [APP, APP3, evidenceKeyFor(W.tenantId, batchId, "dana-kembali.pdf")],
     );
-    expect(ok, JSON.stringify(ok)).toBeNull();
+    expect(refused?.code, JSON.stringify(refused)).toBe("23514");
+    expect(refused?.message).toMatch(/PAYOUT-60/);
     expect(
       (await W.itemsOf(batchId)).find((i) => i.id === control.id)!.status,
-    ).toBe("returned");
+    ).toBe("succeeded");
   });
 });

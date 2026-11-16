@@ -539,6 +539,7 @@ async function legacyOpenReturn(
 type OtherTenant = {
   tenant: string;
   batch: string;
+  sourceBatch: string;
   scope: ReturnType<typeof scopeOf>;
 };
 
@@ -584,6 +585,7 @@ async function tenantB(batchIdA: string): Promise<OtherTenant> {
         "payroll_payout_return_claims",
         STUCK,
         "payroll_payout_evidence_files",
+        "payroll_disbursement_items",
         "payroll_disbursement_batches",
       ])
         await owner.query(`DELETE FROM ${table} WHERE tenant_id = $1`, [
@@ -597,7 +599,7 @@ async function tenantB(batchIdA: string): Promise<OtherTenant> {
       owner.release();
     }
   });
-  return { tenant, batch, scope: scopeOf(tenant) };
+  return { tenant, batch, sourceBatch: batchIdA, scope: scopeOf(tenant) };
 }
 
 /** B's historical return claim over `bytes`: object in storage, claim without hashes, no record. */
@@ -615,11 +617,35 @@ async function historicalClaimOfB(b: OtherTenant, bytes: Uint8Array) {
   try {
     await client.query("BEGIN");
     await client.query("SET LOCAL session_replication_role = replica");
+    // 905: the trusted binder recomputes the item set hash from real items; B
+    // gets a returned item (cloned from A's batch, FKs off) behind the key. The
+    // clone drops A's own proof keys (confirmation/resolution): in B they have no
+    // upload record and would hold B's gate for ever.
+    const item = (
+      await client.query(
+        `WITH src AS (SELECT * FROM payroll_disbursement_items
+                       WHERE batch_id = $1 ORDER BY id LIMIT 1),
+              ins AS (
+                INSERT INTO payroll_disbursement_items
+                SELECT (jsonb_populate_record(NULL::payroll_disbursement_items, to_jsonb(s) || jsonb_build_object(
+                          'id', gen_random_uuid(), 'tenant_id', $2::uuid, 'batch_id', $3::uuid,
+                          'status', 'returned', 'attempt_no', 1000,
+                          'idempotency_key', 'payslip:' || (to_jsonb(s)->>'payslip_id') || ':attempt:1000',
+                          'return_evidence_key', $4::text,
+                          'confirmation_evidence_key', NULL, 'resolution_evidence_key', NULL,
+                          'returned_by', 'legacy-b-900', 'return_note', 'legacy b', 'returned_by_2', 'legacy-b-900-2',
+                          'returned_at', now()))).*
+                  FROM src s
+                RETURNING id)
+         SELECT id::text AS id FROM ins`,
+        [b.sourceBatch, b.tenant, b.batch, key],
+      )
+    ).rows[0].id as string;
     await client.query(
       `INSERT INTO payroll_payout_return_claims
          (tenant_id, batch_id, evidence_key, item_set_hash, status, created_by, created_at)
-       VALUES ($1, $2, $3, $4, 'open', 'legacy-b-900', now() - interval '3 days')`,
-      [b.tenant, b.batch, key, sha256(Buffer.from(`900-set-b-${key}`))],
+       VALUES ($1, $2, $3, encode(sha256(convert_to($4::text, 'UTF8')), 'hex'), 'open', 'legacy-b-900', now() - interval '3 days')`,
+      [b.tenant, b.batch, key, item],
     );
     await client.query("COMMIT");
   } finally {

@@ -14,6 +14,7 @@ export const financeExceptionsMessages = {
     payout_fee_not_posted: "Biaya payout belum dijurnal",
     receipt_pending_stale: "Jurnal penjualan menunggu struk lebih dari 1 hari",
     payout_proof_stuck: "Bukti payout tertahan pemeriksaan",
+    payout_recon_flag: "Selisih rekonsiliasi payout",
   },
   kindHelp: {
     edge_tax_unsnapshotted:
@@ -30,6 +31,8 @@ export const financeExceptionsMessages = {
       "Jurnal otomatis tertahan karena pembayaran gateway belum dijurnal lebih dari 1 hari. Tidak mengikuti rentang tanggal; cek status pengiriman pembayaran di bawah.",
     payout_proof_stuck:
       "Bukti bank pencairan gaji belum bisa diperiksa: berkasnya tidak terbaca atau sama dengan bukti lain. Pengembalian dengan bukti baru tetap ditahan. Berlaku untuk seluruh PT dan tidak mengikuti rentang tanggal.",
+    payout_recon_flag:
+      "Pemeriksaan malam menemukan langkah koreksi, pembayaran ganda, pengembalian, atau akun sumber pencairan gaji yang tidak cocok dengan catatan dua orang, bukti, atau jurnalnya. Slip terkait ditahan dari pencairan ulang. Berlaku untuk seluruh PT dan tidak mengikuti rentang tanggal.",
   },
   refTypes: {
     order: "Order edge",
@@ -38,6 +41,7 @@ export const financeExceptionsMessages = {
     link_event: "Kejadian tautan",
     payout_posting: "Jurnal pencairan gaji",
     payout_proof: "Bukti pencairan gaji",
+    payout_recon: "Rekonsiliasi pencairan gaji",
   },
   refTypeUnknown: "Sumber lain",
   details: {

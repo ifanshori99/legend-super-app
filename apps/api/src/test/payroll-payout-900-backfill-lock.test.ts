@@ -137,6 +137,11 @@ describe("900 phase 2 of the backfill is fair (F6)", () => {
     const ok = Array.from({ length: 50 }, (_, i) => keyOf("ok", i));
     usedKeys.push(...bad, ...ok);
 
+    // 905: the trusted binder needs a real returned item behind each valid key.
+    const source = (await W.itemsOf(batchId))[0]!.id as string;
+    const setHashes = new Map<string, string>();
+    for (const key of ok)
+      setHashes.set(key, await W.legacyReturnItem(source, key));
     // History: claim with both hashes and an upload record, no binding. The bad
     // ones are the oldest.
     await W.asTenant(async (c) => {
@@ -162,7 +167,7 @@ describe("900 phase 2 of the backfill is fair (F6)", () => {
               W.tenantId,
               batchId,
               key,
-              sha256(Buffer.from(`900-set-${key}`)),
+              setHashes.get(key) ?? sha256(Buffer.from(`900-set-${key}`)),
               age - i,
               hash,
             ],

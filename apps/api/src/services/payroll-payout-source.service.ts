@@ -8,12 +8,13 @@
 // leave). Finance names the account here, once: the posting row is opened only
 // from null to a value (posting guard PAYOUT-30), and the settlement is then
 // resolved in the same transaction (`recoverPayoutGlOfBatch`, idempotent), so
-// the source is credited exactly once.
+// the source is credited exactly once. The fill itself goes through the trusted
+// SQL function `app.payout_posting_record_source` (905, migration 0646).
 //
 // Lock order: run row, batch row (`loadBatchRunFirst`), batch advisory lock,
 // then the posting row. Nothing here logs an amount.
 
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { AccountingError } from "@starter/shared/accounting";
 import type { TenantId } from "@starter/shared/core";
 import { logger } from "../lib/logger.ts";
@@ -27,8 +28,13 @@ import {
   glAccountPostable,
 } from "./payroll-payout-setup.ts";
 import {
+  isPayoutUuid,
   loadBatchRunFirst,
+  payoutGuardViolation,
   payoutRefuse,
+  payoutStateChanged,
+  payoutTrustedGrant,
+  readBatch,
   recordPayoutAudit,
   type PayoutActor as Actor,
 } from "./payroll-payout.service.ts";
@@ -83,6 +89,25 @@ export async function recordPostingSource(
   now = new Date(),
 ): Promise<RecordPostingSourceResult> {
   const tenantId = actor.tenantId as TenantId;
+  // The grant is issued before the run and batch rows are locked: the grantor
+  // connection inserts a grant row whose foreign key takes `FOR KEY SHARE` on
+  // the batch, which would wait for our own `FOR UPDATE` and deadlock the
+  // request against itself. The trusted function re-checks the posting, the
+  // account and the actor under the lock (fail closed). A malformed id gets no
+  // grant: the locked reads below refuse it.
+  await readBatch(tx, actor.tenantId, batchId);
+  const grant =
+    isPayoutUuid(postingId) && isPayoutUuid(glAccountId)
+      ? await payoutTrustedGrant(actor, {
+          kind: "posting_source",
+          step: "record",
+          batchId,
+          itemIds: [],
+          evidenceKey: null,
+          refId: postingId,
+          targetId: glAccountId,
+        })
+      : null;
   const batch = await loadBatchRunFirst(tx, actor.tenantId, batchId);
   // The requester never names the source of their own batch (legend-hblpg):
   // refused before any lock, source, journal or audit row is touched.
@@ -157,23 +182,24 @@ export async function recordPostingSource(
       glAccountId,
     );
 
-  const recorded = await tx
-    .update(payrollPayoutGlPostings)
-    .set({ sourceGlAccountId: glAccountId })
-    .where(
-      and(
-        eq(payrollPayoutGlPostings.tenantId, tenantId),
-        eq(payrollPayoutGlPostings.id, posting.id),
-        isNull(payrollPayoutGlPostings.sourceGlAccountId),
-      ),
-    )
-    .returning({ id: payrollPayoutGlPostings.id });
-  if (recorded.length !== 1)
-    throw payoutRefuse(
-      409,
-      "PAYOUT_BATCH_STATE_CHANGED",
-      "Status batch berubah saat diproses. Coba lagi.",
+  // 905: the trusted function re-checks the actor (alive MFA session, finance
+  // permission, not the requester), the posting state, the frozen account and
+  // the GL account in SQL, then fills the source and writes the attestation.
+  // `legend_app` can no longer fill the source by direct UPDATE.
+  try {
+    if (grant === null) throw payoutStateChanged();
+    await tx.execute(
+      sql`SELECT app.payout_posting_record_source(${batch.id}::uuid, ${posting.id}::uuid, ${glAccountId}::uuid, ${grant})`,
     );
+  } catch (error) {
+    if (payoutGuardViolation(error) !== null)
+      throw payoutRefuse(
+        409,
+        "PAYOUT_BATCH_STATE_CHANGED",
+        "Status batch berubah saat diproses. Coba lagi.",
+      );
+    throw error;
+  }
   await recordPayoutAudit(tx, actor, {
     action: "payroll.disbursement.posting_source_recorded",
     objectType: "payroll_disbursement_batch",

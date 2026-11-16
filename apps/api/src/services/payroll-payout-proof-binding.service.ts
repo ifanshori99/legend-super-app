@@ -222,23 +222,18 @@ export async function bindProofToOperation(
   if (own) return { ...record, shas, bindingId: own.id };
 
   try {
-    const [inserted] = await tx.transaction((savepoint) =>
-      savepoint
-        .insert(payrollPayoutProofBindings)
-        .values({
-          tenantId,
-          batchId: op.batchId,
-          kind: op.kind,
-          itemSetHash,
-          evidenceKey: op.evidenceKey,
-          contentSha256: record.content,
-          storedSha256: record.stored,
-          createdBy: op.actorId,
-          createdAt: op.now,
-        })
-        .returning({ id: payrollPayoutProofBindings.id }),
-    );
-    return { ...record, shas, bindingId: inserted!.id };
+    // The binding is written by the trusted function (legend-i01jp): it reads
+    // the hashes from the stored evidence record, re-checks the kind, batch and
+    // item set, and the application role has no INSERT on the table. The
+    // savepoint keeps a refusal from poisoning the caller's transaction.
+    const inserted = await tx.transaction(async (savepoint) => {
+      const result = await savepoint.execute<{ id: string }>(
+        sql`SELECT app.payout_bind_proof(${op.batchId}::uuid, ${op.kind}::varchar, ${`{${[...op.itemIds].join(",")}}`}::uuid[], ${op.evidenceKey}::varchar, ${op.actorId}) AS id`,
+      );
+      return result.rows[0];
+    });
+    if (!inserted?.id) throw refuseProofReused();
+    return { ...record, shas, bindingId: inserted.id };
   } catch (error) {
     // A hash held by another binding (another key here, or another tenant).
     if (isProofClaimViolation(error)) throw refuseProofReused();

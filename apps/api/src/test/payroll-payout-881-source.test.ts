@@ -151,7 +151,7 @@ async function challengedFinance(label: string) {
     });
   expect(challenged.status, JSON.stringify(challenged.body)).toBe(200);
   const stamp = await mfaOwner.query(
-    `SELECT mfa_challenge_verified_at FROM "session" WHERE revoked_at IS NULL AND user_id = $1`,
+    `SELECT mfa_challenge_verified_at FROM "session" WHERE revoked_at IS NULL AND user_id = $1 AND id NOT LIKE 'payout-fixture-session-%'`,
     [person.userId],
   );
   expect(
@@ -1008,7 +1008,7 @@ describe("6ae7e: recording a payout source needs the same step-up as confirm-cas
     const journals = await journalCount();
     const { client, userId } = await enrolledFinance("EnrollmentOnly");
     const stamp = await mfaOwner.query(
-      `SELECT mfa_verified_at, mfa_challenge_verified_at FROM "session" WHERE revoked_at IS NULL AND user_id = $1`,
+      `SELECT mfa_verified_at, mfa_challenge_verified_at FROM "session" WHERE revoked_at IS NULL AND user_id = $1 AND id NOT LIKE 'payout-fixture-session-%'`,
       [userId],
     );
     expect(

@@ -108,7 +108,7 @@ async function enrolledPerson(label: string) {
 async function enrollmentOnly(label: string) {
   const person = await enrolledPerson(label);
   const stamp = await mfaOwner.query(
-    `SELECT mfa_verified_at, mfa_challenge_verified_at FROM "session" WHERE revoked_at IS NULL AND user_id = $1`,
+    `SELECT mfa_verified_at, mfa_challenge_verified_at FROM "session" WHERE revoked_at IS NULL AND user_id = $1 AND id NOT LIKE 'payout-fixture-session-%'`,
     [person.userId],
   );
   expect(
@@ -138,7 +138,7 @@ async function challenged(label: string) {
     });
   expect(res.status, JSON.stringify(res.body)).toBe(200);
   const stamp = await mfaOwner.query(
-    `SELECT mfa_challenge_verified_at FROM "session" WHERE revoked_at IS NULL AND user_id = $1`,
+    `SELECT mfa_challenge_verified_at FROM "session" WHERE revoked_at IS NULL AND user_id = $1 AND id NOT LIKE 'payout-fixture-session-%'`,
     [person.userId],
   );
   expect(

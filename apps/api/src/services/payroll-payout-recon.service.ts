@@ -1,0 +1,1156 @@
+// Nightly reconciliation of the trusted payout boundary (bead legend-i01jp;
+// design docs/briefs/905/design.md "Recon malam").
+//
+// The database functions of migrations 0644-0647 are the only writers of a
+// correction, an overpaid record, a return and a recorded posting source. What
+// SQL cannot prove (a human identity: user, session and role rows are writable
+// by the app role; the bytes of a proof; the bank transfer itself) is checked
+// here after the fact, read-only, and every difference is flagged:
+// - for each corrected / overpaid / returned item: two attestations by two
+//   people from two different sessions; every session matches its snapshot and
+//   its MFA was fresh; two audit rows of the same people; exactly one proof
+//   binding (not a legacy duplicate, not contested); the stored proof file
+//   read again and hashed matches its record; the journal exists, is not
+//   reversed and its debit equals the decrypted net of the item (or of the
+//   settle group, for a correction);
+// - for each overpaid / returned item without such an operation (moved there
+//   by a direct write): flagged `operation_missing`;
+// - for each recorded posting source: its attestation, session and audit row.
+// A difference calls `app.payout_recon_flag` (insert-only) once per item and
+// reason; the flag holds the payslip's retry and is listed as the finance
+// exception `payout_recon_flag`. Operations that finished before
+// `app.payout_trusted_since()` (the time migration 0644 was applied) came from
+// before the trusted boundary and are not checked. Nothing here changes
+// an item, a posting or a journal, and the log carries counts only.
+
+import { and, eq, inArray, sql, type SQL } from "drizzle-orm";
+import { CoreError } from "@starter/shared/core";
+import type { ObjectStorage } from "@starter/shared/adapters";
+import type { ScopedTenantContext, TenantId } from "@starter/shared/core";
+import { db } from "../db/index.ts";
+import {
+  payrollDisbursementBatches,
+  payrollDisbursementItems,
+  payrollPayoutGlPostings,
+} from "../db/schema/payroll-payout.ts";
+import { withTenant } from "../db/tenant.ts";
+import type { Tx } from "./hris-access.ts";
+import { payrollGlKeys } from "./payroll-gl-consumer.ts";
+import { payoutGlKeys } from "./payroll-payout-gl.service.ts";
+import { overpaidJournalKey } from "./payroll-payout-overpaid.service.ts";
+import { openItemAmount } from "./payroll-payout.service.ts";
+import { itemSetHashOf } from "./payroll-payout-proof-binding.service.ts";
+import { sha256Of } from "./payroll-payout-proof-fingerprint.service.ts";
+
+export type PayoutReconKind =
+  "correction" | "overpaid" | "return" | "posting_source";
+
+/** Kinds a flag can carry: the operations above plus the grant-checked steps. */
+export type PayoutReconFlagKind =
+  PayoutReconKind | "closure" | "resolve" | "bank_confirm";
+
+export type PayoutReconReason =
+  | "attestation_count"
+  | "attestation_same_person"
+  | "attestation_same_session"
+  | "session_mismatch"
+  | "mfa_stale"
+  | "audit_mismatch"
+  | "binding_missing"
+  | "binding_mismatch"
+  | "binding_duplicate"
+  | "binding_contested"
+  | "evidence_record_missing"
+  | "evidence_missing"
+  | "evidence_hash_mismatch"
+  | "posting_missing"
+  | "journal_missing"
+  | "journal_reversed"
+  | "net_unreadable"
+  | "net_mismatch"
+  | "operation_missing"
+  | "grant_missing"
+  | "grant_mismatch";
+
+/** MFA must be at most this old when the step was attested. */
+const MFA_MAX_AGE_MS = 15 * 60_000;
+/** Clock skew allowed on top of the MFA age limit. */
+const MFA_AGE_TOLERANCE_MS = 2 * 60_000;
+
+export const PAYOUT_RECON_OPERATIONS_PER_PAGE = 200;
+
+export type PayoutReconPageResult = {
+  /** Operations checked in this page. */
+  readonly operations: number;
+  /** New flags written. */
+  readonly flagged: number;
+  /** Proof files that could not be read for a reason other than "not found". */
+  readonly unreadable: number;
+  /** Sort key of the last operation of the page; null when the page was empty. */
+  readonly last: string | null;
+  /** True when no operation is left after this page. */
+  readonly exhausted: boolean;
+};
+
+type Row = Record<string, unknown>;
+const rowsOf = (result: unknown): Row[] =>
+  (result as { rows: Row[] }).rows ?? [];
+
+const text = (value: unknown): string | null =>
+  value === null || value === undefined ? null : String(value);
+const millis = (value: unknown): number | null =>
+  value === null || value === undefined
+    ? null
+    : new Date(value as string | Date).getTime();
+const list = (value: unknown): string[] =>
+  Array.isArray(value) ? value.map(String) : [];
+
+/** `IN (...)` list of parameters; callers never pass an empty list. */
+const inList = (values: readonly string[]): SQL =>
+  sql.join(
+    values.map((value) => sql`${value}`),
+    sql`, `,
+  );
+
+type Operation = {
+  kind: PayoutReconKind;
+  operationId: string;
+  batchId: string;
+  evidenceKey: string | null;
+  sortKey: string;
+  /** Every item of the operation (the item-set hash covers them all). */
+  itemIds: string[];
+  /** Items that reached their final state through the trusted functions. */
+  terminalItemIds: string[];
+  /**
+   * An overpaid / returned item with no recorded proposal or consumed claim:
+   * the operation id is the item id and nothing else is checked.
+   */
+  missing: boolean;
+};
+
+/** The operations after `after`, in a stable order, newest rule set first. */
+async function listOperations(
+  tx: Tx,
+  tenantId: string,
+  options: { after: string | null; limit: number; since: Date },
+): Promise<Operation[]> {
+  const since = options.since.toISOString();
+  const rows = rowsOf(
+    await tx.execute(sql`
+      SELECT * FROM (
+        SELECT 'correction'::text AS kind, c.operation_id::text AS operation_id,
+               c.batch_id::text AS batch_id, min(c.evidence_key) AS evidence_key,
+               array_agg(c.item_id::text ORDER BY c.item_id) AS item_ids,
+               coalesce(array_agg(c.item_id::text ORDER BY c.item_id)
+                 FILTER (WHERE c.status = 'corrected'), ARRAY[]::text[]) AS terminal_item_ids,
+               'correction:' || c.operation_id::text AS sort_key,
+               false AS missing
+          FROM payroll_payout_failed_corrections c
+         WHERE c.tenant_id = ${tenantId}::uuid
+         GROUP BY c.operation_id, c.batch_id
+        HAVING bool_or(c.status = 'corrected') AND max(c.corrected_at) >= ${since}::timestamptz
+        UNION ALL
+        SELECT 'overpaid'::text, (array_agg(p.id ORDER BY p.id))[1]::text,
+               p.batch_id::text, p.evidence_key,
+               array_agg(p.item_id::text ORDER BY p.item_id),
+               coalesce(array_agg(p.item_id::text ORDER BY p.item_id)
+                 FILTER (WHERE p.status = 'recorded'), ARRAY[]::text[]),
+               'overpaid:' || (array_agg(p.id ORDER BY p.id))[1]::text, false
+          FROM payroll_payout_overpaid_proposals p
+         WHERE p.tenant_id = ${tenantId}::uuid
+         GROUP BY p.batch_id, p.evidence_key
+        HAVING bool_or(p.status = 'recorded') AND max(p.recorded_at) >= ${since}::timestamptz
+        UNION ALL
+        SELECT 'return'::text, c.id::text, c.batch_id::text, c.evidence_key,
+               coalesce((SELECT array_agg(i.id::text ORDER BY i.id)
+                           FROM payroll_disbursement_items i
+                          WHERE i.tenant_id = c.tenant_id AND i.return_claim_id = c.id), ARRAY[]::text[]),
+               coalesce((SELECT array_agg(i.id::text ORDER BY i.id)
+                           FROM payroll_disbursement_items i
+                          WHERE i.tenant_id = c.tenant_id AND i.return_claim_id = c.id
+                            AND i.status = 'returned'), ARRAY[]::text[]),
+               'return:' || c.id::text, false
+          FROM payroll_payout_return_claims c
+         WHERE c.tenant_id = ${tenantId}::uuid AND c.status = 'consumed'
+           AND c.consumed_at >= ${since}::timestamptz
+        UNION ALL
+        SELECT 'posting_source'::text, p.id::text, p.batch_id::text, NULL::text,
+               ARRAY[]::text[], ARRAY[]::text[], 'posting_source:' || p.id::text,
+               false
+          FROM payroll_payout_gl_postings p
+         WHERE p.tenant_id = ${tenantId}::uuid
+           AND (EXISTS (SELECT 1 FROM payroll_payout_attestations a
+                         WHERE a.tenant_id = p.tenant_id AND a.kind = 'posting_source'
+                           AND a.operation_id = p.id)
+                OR EXISTS (SELECT 1 FROM audit_logs al
+                            WHERE al.tenant_id = p.tenant_id
+                              AND al.created_at >= ${since}::timestamptz
+                              AND al.event->>'action' = 'payroll.disbursement.posting_source_recorded'
+                              AND al.event #>> '{maskedChanges,after,postingId}' = p.id::text)
+                -- A source on a cash / unfrozen bank settlement that nobody
+                -- attested and that is not the mapped account (a direct write).
+                OR (p.posted_at >= ${since}::timestamptz
+                    AND p.kind IN ('settle', 'settle_pending', 'settle_skipped')
+                    AND p.source_gl_account_id IS NOT NULL
+                    AND EXISTS (
+                      SELECT 1 FROM payroll_disbursement_batches b
+                       WHERE b.tenant_id = p.tenant_id AND b.id = p.batch_id
+                         AND (b.channel = 'cash' OR b.source_bank_account_id IS NULL)
+                         AND p.source_gl_account_id IS DISTINCT FROM (
+                           CASE WHEN b.channel = 'cash'
+                             THEN (SELECT m.account_id FROM account_mappings m
+                                    WHERE m.tenant_id = b.tenant_id
+                                      AND m.legal_entity_id = b.legal_entity_id
+                                      AND m.role = 'petty_cash')
+                             ELSE (SELECT ba.gl_account_id
+                                     FROM payroll_payout_configs c
+                                     JOIN bank_accounts ba
+                                       ON ba.tenant_id = c.tenant_id
+                                      AND ba.legal_entity_id = c.legal_entity_id
+                                      AND ba.id = c.manual_source_bank_account_id
+                                    WHERE c.tenant_id = b.tenant_id
+                                      AND c.legal_entity_id = b.legal_entity_id)
+                           END))))
+        UNION ALL
+        -- Every overpaid / returned item, not only those with an operation row:
+        -- one moved there after the boundary without a recorded proposal or a
+        -- consumed claim bypassed the trusted functions.
+        SELECT CASE WHEN i.status = 'overpaid' THEN 'overpaid' ELSE 'return' END::text,
+               i.id::text, i.batch_id::text, NULL::text,
+               ARRAY[i.id::text], ARRAY[i.id::text], 'missing:' || i.id::text, true
+          FROM payroll_disbursement_items i
+         WHERE i.tenant_id = ${tenantId}::uuid
+           AND i.status IN ('overpaid', 'returned')
+           AND i.updated_at >= ${since}::timestamptz
+           AND NOT (CASE WHEN i.status = 'overpaid'
+             THEN EXISTS (SELECT 1 FROM payroll_payout_overpaid_proposals p
+                           WHERE p.tenant_id = i.tenant_id AND p.item_id = i.id
+                             AND p.status = 'recorded')
+             ELSE EXISTS (SELECT 1 FROM payroll_payout_return_claims c
+                           WHERE c.tenant_id = i.tenant_id AND c.id = i.return_claim_id
+                             AND c.status = 'consumed')
+           END)
+      ) ops
+      WHERE ${options.after === null ? sql`TRUE` : sql`ops.sort_key > ${options.after}`}
+      ORDER BY ops.sort_key
+      LIMIT ${options.limit}
+    `),
+  );
+  return rows.map((row) => ({
+    kind: String(row.kind) as PayoutReconKind,
+    operationId: String(row.operation_id),
+    batchId: String(row.batch_id),
+    evidenceKey: text(row.evidence_key),
+    sortKey: String(row.sort_key),
+    itemIds: list(row.item_ids),
+    terminalItemIds: list(row.terminal_item_ids),
+    missing: row.missing === true,
+  }));
+}
+
+type Attestation = {
+  kind: string;
+  operationId: string;
+  batchId: string;
+  evidenceKey: string | null;
+  itemIds: string[];
+  actor: string;
+  sessionId: string;
+  sessionCreatedAt: number | null;
+  mfaVerifiedAt: number | null;
+  attestedAt: number | null;
+  step: string;
+  grantId: string | null;
+  txid: number | null;
+};
+
+/** Non-secret columns of a step grant (the app role reads nothing else). */
+type GrantRow = {
+  kind: string;
+  step: string;
+  actor: string;
+  sessionId: string;
+  batchId: string | null;
+  evidenceKey: string | null;
+  expiresAt: number | null;
+  consumedAt: number | null;
+  consumedTxid: number | null;
+};
+
+type SessionRow = {
+  userId: string;
+  createdAt: number | null;
+  mfaVerifiedAt: number | null;
+};
+
+type Binding = {
+  kind: string;
+  batchId: string;
+  itemSetHash: string;
+  evidenceKey: string;
+  contentSha256: string;
+  storedSha256: string;
+  legacyDuplicate: boolean;
+  createdBy: string;
+};
+
+type FileRecord = {
+  content: string;
+  stored: string | null;
+  /** Batch the proof was uploaded for. */
+  batchId: string;
+};
+
+type AuditRow = {
+  action: string;
+  objectId: string | null;
+  evidenceKey: string | null;
+  postingId: string | null;
+  by: string | null;
+};
+
+type Journal = { id: string; debit: bigint; reversed: boolean };
+
+type ItemFacts = {
+  id: string;
+  payslipId: string;
+  glPostingId: string | null;
+  net: number | null;
+};
+
+/** Everything one page needs, read in one tenant transaction. */
+type Facts = {
+  attestations: Attestation[];
+  /** Grants of the attestations made at or after the grant cutover. */
+  grants: Map<string, GrantRow>;
+  grantsSince: number | null;
+  sessions: Map<string, SessionRow>;
+  bindings: Binding[];
+  contested: Map<string, boolean>;
+  /** Per key: every hash of its binding is still claimed by that binding. */
+  hashesHeld: Map<string, boolean>;
+  records: Map<string, FileRecord>;
+  audits: AuditRow[];
+  journals: Map<string, Journal>;
+  items: Map<string, ItemFacts>;
+  postings: Map<string, { kind: string; journalKey: string }>;
+  /** Item ids linked to each posting (a settle group), with their nets. */
+  groups: Map<string, ItemFacts[]>;
+  runOfBatch: Map<string, string>;
+  /**
+   * Items a posting source holds when it is flagged (a flag names an item, so
+   * the payslip is held): the items linked to the posting, else every paid
+   * item of its batch (the most restrictive choice).
+   */
+  sourceItems: Map<string, string[]>;
+  /** Pairs that already carry a flag (kind, operation, item, reason). */
+  flagged: Set<string>;
+};
+
+const AUDIT_ACTIONS = {
+  correction: [
+    "payroll.disbursement.correction_proposed",
+    "payroll.disbursement.item_corrected",
+  ],
+  overpaid: [
+    "payroll.disbursement.overpaid_proposed",
+    "payroll.disbursement.item_overpaid",
+  ],
+  return: ["payroll.disbursement.manual_returned"],
+  posting_source: ["payroll.disbursement.posting_source_recorded"],
+} as const satisfies Record<PayoutReconKind, readonly string[]>;
+
+const flagKey = (
+  kind: string,
+  operationId: string,
+  itemId: string | null,
+  reason: string,
+) => `${kind}|${operationId}|${itemId ?? ""}|${reason}`;
+
+/** `uuid` parameter list for an `IN (...)`; callers never pass an empty list. */
+const uuidList = (values: readonly string[]): SQL =>
+  sql.join(
+    values.map((value) => sql`${value}::uuid`),
+    sql`, `,
+  );
+
+async function loadFacts(
+  tx: Tx,
+  tenantId: TenantId,
+  operations: readonly Operation[],
+  since: Date,
+  grantsSince: Date | null,
+): Promise<Facts> {
+  const batchIds = [...new Set(operations.map((op) => op.batchId))];
+  const itemIds = [
+    ...new Set(
+      operations.flatMap((op) => [...op.itemIds, ...op.terminalItemIds]),
+    ),
+  ];
+  const keys = [
+    ...new Set(
+      operations.flatMap((op) =>
+        op.evidenceKey === null ? [] : [op.evidenceKey],
+      ),
+    ),
+  ];
+  const operationIds = [...new Set(operations.map((op) => op.operationId))];
+  const sinceIso = since.toISOString();
+
+  const attestations = rowsOf(
+    await tx.execute(sql`
+      SELECT a.kind, a.operation_id::text AS operation_id, a.batch_id::text AS batch_id,
+             a.evidence_key, a.item_ids::text[] AS item_ids, a.actor, a.session_id,
+             a.session_created_at, a.mfa_verified_at, a.attested_at,
+             a.step, a.grant_id::text AS grant_id, a.txid
+        FROM payroll_payout_attestations a
+       WHERE a.tenant_id = ${tenantId}::uuid
+         AND a.batch_id IN (${uuidList(batchIds)})`),
+  ).map((row): Attestation => ({
+    kind: String(row.kind),
+    operationId: String(row.operation_id),
+    batchId: String(row.batch_id),
+    evidenceKey: text(row.evidence_key),
+    itemIds: list(row.item_ids),
+    actor: String(row.actor),
+    sessionId: String(row.session_id),
+    sessionCreatedAt: millis(row.session_created_at),
+    mfaVerifiedAt: millis(row.mfa_verified_at),
+    attestedAt: millis(row.attested_at),
+    step: String(row.step),
+    grantId: text(row.grant_id),
+    txid: row.txid === null || row.txid === undefined ? null : Number(row.txid),
+  }));
+
+  const grants = new Map<string, GrantRow>();
+  const grantIds = [
+    ...new Set(
+      attestations.flatMap((a) => (a.grantId === null ? [] : [a.grantId])),
+    ),
+  ];
+  if (grantIds.length > 0)
+    for (const row of rowsOf(
+      await tx.execute(sql`
+        SELECT g.id::text AS id, g.kind, g.step, g.actor, g.session_id,
+               g.batch_id::text AS batch_id, g.evidence_key, g.expires_at,
+               g.consumed_at, g.consumed_txid
+          FROM payroll_payout_grants g
+         WHERE g.tenant_id = ${tenantId}::uuid
+           AND g.id IN (${uuidList(grantIds)})`),
+    ))
+      grants.set(String(row.id), {
+        kind: String(row.kind),
+        step: String(row.step),
+        actor: String(row.actor),
+        sessionId: String(row.session_id),
+        batchId: text(row.batch_id),
+        evidenceKey: text(row.evidence_key),
+        expiresAt: millis(row.expires_at),
+        consumedAt: millis(row.consumed_at),
+        consumedTxid:
+          row.consumed_txid === null || row.consumed_txid === undefined
+            ? null
+            : Number(row.consumed_txid),
+      });
+
+  const sessions = new Map<string, SessionRow>();
+  const sessionIds = [...new Set(attestations.map((a) => a.sessionId))];
+  if (sessionIds.length > 0)
+    for (const row of rowsOf(
+      await tx.execute(sql`
+        SELECT s.id, s.user_id, s.created_at, s.mfa_verified_at
+          FROM session s WHERE s.id IN (${inList(sessionIds)})`),
+    ))
+      sessions.set(String(row.id), {
+        userId: String(row.user_id),
+        createdAt: millis(row.created_at),
+        mfaVerifiedAt: millis(row.mfa_verified_at),
+      });
+
+  const bindings = rowsOf(
+    await tx.execute(sql`
+      SELECT b.kind, b.batch_id::text AS batch_id, b.item_set_hash, b.evidence_key,
+             b.content_sha256, b.stored_sha256, b.legacy_duplicate,
+             b.created_by
+        FROM payroll_payout_proof_bindings b
+       WHERE b.tenant_id = ${tenantId}::uuid
+         AND b.batch_id IN (${uuidList(batchIds)})`),
+  ).map((row): Binding => ({
+    kind: String(row.kind),
+    batchId: String(row.batch_id),
+    itemSetHash: String(row.item_set_hash),
+    evidenceKey: String(row.evidence_key),
+    contentSha256: String(row.content_sha256),
+    storedSha256: String(row.stored_sha256),
+    legacyDuplicate: row.legacy_duplicate === true,
+    createdBy: String(row.created_by),
+  }));
+  // Only a yes or no is available for a hash (the global contest list).
+  const contested = new Map<string, boolean>();
+  const hashesHeld = new Map<string, boolean>();
+  for (const binding of bindings) {
+    if (!keys.includes(binding.evidenceKey)) continue;
+    const answer = rowsOf(
+      await tx.execute(
+        sql`SELECT app.payout_proof_contested(ARRAY[${binding.contentSha256}, ${binding.storedSha256}]::varchar[]) AS contested`,
+      ),
+    )[0];
+    contested.set(binding.evidenceKey, answer?.contested === true);
+    const held = rowsOf(
+      await tx.execute(
+        sql`SELECT app.payout_proof_hashes_held(${binding.evidenceKey}) AS held`,
+      ),
+    )[0];
+    hashesHeld.set(binding.evidenceKey, held?.held === true);
+  }
+
+  const records = new Map<string, FileRecord>();
+  if (keys.length > 0)
+    for (const row of rowsOf(
+      await tx.execute(sql`
+        SELECT f.evidence_key, f.content_sha256, f.stored_sha256,
+               f.batch_id::text AS batch_id
+          FROM payroll_payout_evidence_files f
+         WHERE f.tenant_id = ${tenantId}::uuid AND f.evidence_key IN (${inList(keys)})`),
+    ))
+      records.set(String(row.evidence_key), {
+        content: String(row.content_sha256),
+        stored: text(row.stored_sha256),
+        batchId: String(row.batch_id),
+      });
+
+  const actions = Object.values(AUDIT_ACTIONS).flat();
+  const objectIds = [...new Set([...batchIds, ...itemIds])];
+  const audits = rowsOf(
+    await tx.execute(sql`
+      SELECT al.event->>'action' AS action, al.event->>'objectId' AS object_id,
+             al.event #>> '{maskedChanges,after,evidenceKey}' AS evidence_key,
+             al.event #>> '{maskedChanges,after,postingId}' AS posting_id,
+             al.event #>> '{maskedChanges,after,by}' AS by_user
+        FROM audit_logs al
+       WHERE al.tenant_id = ${tenantId}::uuid
+         AND al.created_at >= ${sinceIso}::timestamptz
+         AND al.event->>'action' IN (${inList(actions)})
+         AND al.event->>'objectId' IN (${inList(objectIds)})`),
+  ).map((row): AuditRow => ({
+    action: String(row.action),
+    objectId: text(row.object_id),
+    evidenceKey: text(row.evidence_key),
+    postingId: text(row.posting_id),
+    by: text(row.by_user),
+  }));
+
+  const items = new Map<string, ItemFacts>();
+  const groups = new Map<string, ItemFacts[]>();
+  const toFacts = (row: {
+    id: string;
+    payslipId: string;
+    glPostingId: string | null;
+    amountEncrypted: Buffer;
+    piiKeyVersion: number;
+  }): ItemFacts => {
+    let net: number | null;
+    try {
+      net = Number(
+        openItemAmount({
+          id: row.id,
+          tenantId,
+          amountEncrypted: row.amountEncrypted,
+          piiKeyVersion: row.piiKeyVersion,
+        }),
+      );
+      if (!Number.isSafeInteger(net)) net = null;
+    } catch {
+      net = null;
+    }
+    return {
+      id: row.id,
+      payslipId: row.payslipId,
+      glPostingId: row.glPostingId,
+      net,
+    };
+  };
+  const itemColumns = {
+    id: payrollDisbursementItems.id,
+    payslipId: payrollDisbursementItems.payslipId,
+    glPostingId: payrollDisbursementItems.glPostingId,
+    amountEncrypted: payrollDisbursementItems.amountEncrypted,
+    piiKeyVersion: payrollDisbursementItems.piiKeyVersion,
+  };
+  if (itemIds.length > 0)
+    for (const row of await tx
+      .select(itemColumns)
+      .from(payrollDisbursementItems)
+      .where(
+        and(
+          eq(payrollDisbursementItems.tenantId, tenantId),
+          inArray(payrollDisbursementItems.id, itemIds),
+        ),
+      ))
+      items.set(row.id, toFacts(row));
+
+  const postingIds = [
+    ...new Set(
+      [...items.values()].flatMap((item) =>
+        item.glPostingId === null ? [] : [item.glPostingId],
+      ),
+    ),
+  ];
+  const postings = new Map<string, { kind: string; journalKey: string }>();
+  if (postingIds.length > 0) {
+    for (const row of await tx
+      .select({
+        id: payrollPayoutGlPostings.id,
+        kind: payrollPayoutGlPostings.kind,
+        journalKey: payrollPayoutGlPostings.journalKey,
+      })
+      .from(payrollPayoutGlPostings)
+      .where(
+        and(
+          eq(payrollPayoutGlPostings.tenantId, tenantId),
+          inArray(payrollPayoutGlPostings.id, postingIds),
+        ),
+      ))
+      postings.set(row.id, { kind: row.kind, journalKey: row.journalKey });
+    for (const row of await tx
+      .select(itemColumns)
+      .from(payrollDisbursementItems)
+      .where(
+        and(
+          eq(payrollDisbursementItems.tenantId, tenantId),
+          inArray(payrollDisbursementItems.glPostingId, postingIds),
+        ),
+      )) {
+      const facts = toFacts(row);
+      const group = groups.get(row.glPostingId!) ?? [];
+      group.push(facts);
+      groups.set(row.glPostingId!, group);
+    }
+  }
+
+  const runOfBatch = new Map<string, string>();
+  for (const row of await tx
+    .select({
+      id: payrollDisbursementBatches.id,
+      runId: payrollDisbursementBatches.payrollRunId,
+    })
+    .from(payrollDisbursementBatches)
+    .where(
+      and(
+        eq(payrollDisbursementBatches.tenantId, tenantId),
+        inArray(payrollDisbursementBatches.id, batchIds),
+      ),
+    ))
+    runOfBatch.set(row.id, row.runId);
+
+  const sourceItems = new Map<string, string[]>();
+  const sourceOps = operations.filter((op) => op.kind === "posting_source");
+  if (sourceOps.length > 0) {
+    const paid = rowsOf(
+      await tx.execute(sql`
+        SELECT i.id::text AS id, i.batch_id::text AS batch_id, i.gl_posting_id::text AS posting_id
+          FROM payroll_disbursement_items i
+         WHERE i.tenant_id = ${tenantId}::uuid
+           AND i.batch_id IN (${uuidList(sourceOps.map((op) => op.batchId))})
+           AND i.status IN ('succeeded', 'returned')`),
+    );
+    for (const op of sourceOps) {
+      const linked = paid
+        .filter((row) => text(row.posting_id) === op.operationId)
+        .map((row) => String(row.id));
+      sourceItems.set(
+        op.operationId,
+        linked.length > 0
+          ? linked
+          : paid
+              .filter((row) => String(row.batch_id) === op.batchId)
+              .map((row) => String(row.id)),
+      );
+    }
+  }
+
+  const journalKeys = new Set<string>();
+  for (const run of runOfBatch.values())
+    journalKeys.add(payrollGlKeys.locked(run));
+  for (const op of operations)
+    for (const id of op.terminalItemIds) {
+      if (op.kind === "overpaid") journalKeys.add(overpaidJournalKey(id));
+      if (op.kind === "return") journalKeys.add(payoutGlKeys.return(id));
+    }
+  for (const posting of postings.values()) journalKeys.add(posting.journalKey);
+  const journals = new Map<string, Journal>();
+  if (journalKeys.size > 0)
+    for (const row of rowsOf(
+      await tx.execute(sql`
+      SELECT je.idempotency_key, je.id::text AS id,
+             coalesce((SELECT sum(jl.debit_idr) FROM journal_lines jl
+                        WHERE jl.tenant_id = je.tenant_id AND jl.entry_id = je.id), 0)::text AS debit,
+             EXISTS (SELECT 1 FROM journal_entries r
+                      WHERE r.tenant_id = je.tenant_id AND r.reversal_of = je.id) AS reversed
+        FROM journal_entries je
+       WHERE je.tenant_id = ${tenantId}::uuid
+         AND je.idempotency_key IN (${inList([...journalKeys])})`),
+    ))
+      journals.set(String(row.idempotency_key), {
+        id: String(row.id),
+        debit: BigInt(String(row.debit)),
+        reversed: row.reversed === true,
+      });
+
+  const flagged = new Set<string>();
+  for (const row of rowsOf(
+    await tx.execute(sql`
+      SELECT e.kind, e.operation_id::text AS operation_id, e.item_id::text AS item_id, e.reason
+        FROM payroll_payout_recon_exceptions e
+       WHERE e.tenant_id = ${tenantId}::uuid
+         AND e.operation_id IN (${uuidList(operationIds)})`),
+  ))
+    flagged.add(
+      flagKey(
+        String(row.kind),
+        String(row.operation_id),
+        text(row.item_id),
+        String(row.reason),
+      ),
+    );
+
+  return {
+    attestations,
+    grants,
+    grantsSince: grantsSince?.getTime() ?? null,
+    sessions,
+    bindings,
+    contested,
+    hashesHeld,
+    records,
+    audits,
+    journals,
+    items,
+    postings,
+    groups,
+    runOfBatch,
+    sourceItems,
+    flagged,
+  };
+}
+
+type FileState = "ok" | "missing" | "mismatch" | "error";
+
+type Flag = {
+  kind: PayoutReconFlagKind;
+  operationId: string;
+  itemId: string;
+  reason: PayoutReconReason;
+};
+
+/** The reasons of one operation; pure, no I/O. */
+function evaluate(
+  op: Operation,
+  facts: Facts,
+  fileOf: ReadonlyMap<string, FileState>,
+): Flag[] {
+  if (op.missing)
+    return op.terminalItemIds.map((itemId) => ({
+      kind: op.kind,
+      operationId: op.operationId,
+      itemId,
+      reason: "operation_missing",
+    }));
+  const flags: Flag[] = [];
+  const add = (itemId: string | null, reason: PayoutReconReason) => {
+    if (itemId === null) {
+      for (const slip of facts.sourceItems.get(op.operationId) ?? [])
+        flags.push({
+          kind: op.kind,
+          operationId: op.operationId,
+          itemId: slip,
+          reason,
+        });
+      return;
+    }
+    flags.push({ kind: op.kind, operationId: op.operationId, itemId, reason });
+  };
+  // A posting source has one attestation; its differences are flagged on every
+  // item it holds (see `sourceItems`), so each of those slips is held.
+  const held =
+    op.kind === "posting_source"
+      ? (facts.sourceItems.get(op.operationId) ?? [])
+      : op.terminalItemIds;
+  const subjects: (string | null)[] =
+    op.kind === "posting_source" ? [null] : op.terminalItemIds;
+  const addAll = (reason: PayoutReconReason) => {
+    for (const subject of held) add(subject, reason);
+  };
+  const required = op.kind === "posting_source" ? 1 : 2;
+
+  // Attestations, sessions and MFA, per item (per posting for a source).
+  const opActors = new Set<string>();
+  for (const subject of subjects) {
+    const atts = facts.attestations.filter(
+      (a) =>
+        a.kind === op.kind &&
+        a.batchId === op.batchId &&
+        (op.kind === "posting_source"
+          ? a.operationId === op.operationId
+          : a.evidenceKey === op.evidenceKey &&
+            subject !== null &&
+            a.itemIds.includes(subject)),
+    );
+    for (const a of atts) opActors.add(a.actor);
+    if (atts.length < required) add(subject, "attestation_count");
+    if (
+      new Set(atts.map((a) => a.actor)).size < Math.min(required, atts.length)
+    )
+      add(subject, "attestation_same_person");
+    if (
+      new Set(atts.map((a) => a.sessionId)).size <
+      Math.min(required, atts.length)
+    )
+      add(subject, "attestation_same_session");
+    if (
+      atts.some((a) => {
+        // A signed-out user has no live session row: that is not a mismatch.
+        // Compare with the attestation snapshot only when a row exists.
+        const s = facts.sessions.get(a.sessionId);
+        if (!s) return false;
+        return (
+          s.userId !== a.actor ||
+          s.createdAt !== a.sessionCreatedAt ||
+          s.mfaVerifiedAt === null ||
+          a.mfaVerifiedAt === null ||
+          s.mfaVerifiedAt < a.mfaVerifiedAt
+        );
+      })
+    )
+      add(subject, "session_mismatch");
+    if (
+      atts.some(
+        (a) =>
+          a.mfaVerifiedAt === null ||
+          a.attestedAt === null ||
+          a.mfaVerifiedAt > a.attestedAt ||
+          a.attestedAt - a.mfaVerifiedAt >
+            MFA_MAX_AGE_MS + MFA_AGE_TOLERANCE_MS,
+      )
+    )
+      add(subject, "mfa_stale");
+  }
+
+  // Audit rows: the same people, at least `required` of them.
+  const scope = new Set([op.batchId, ...op.terminalItemIds]);
+  const auditActors = new Set(
+    facts.audits
+      .filter(
+        (row) =>
+          (AUDIT_ACTIONS[op.kind] as readonly string[]).includes(row.action) &&
+          row.objectId !== null &&
+          scope.has(row.objectId) &&
+          (op.kind === "posting_source"
+            ? row.postingId === op.operationId
+            : row.evidenceKey === op.evidenceKey) &&
+          row.by !== null,
+      )
+      .map((row) => row.by!),
+  );
+  if (
+    auditActors.size < required ||
+    [...opActors].some((actor) => !auditActors.has(actor))
+  )
+    addAll("audit_mismatch");
+
+  if (op.kind !== "posting_source" && op.evidenceKey !== null) {
+    // Exactly one binding of this operation, over this proof, not contested.
+    const setHash = itemSetHashOf(op.itemIds);
+    const own = facts.bindings.find((b) => b.evidenceKey === op.evidenceKey);
+    const record = facts.records.get(op.evidenceKey);
+    if (!own) addAll("binding_missing");
+    else {
+      if (
+        own.kind !== op.kind ||
+        own.batchId !== op.batchId ||
+        own.itemSetHash !== setHash ||
+        own.legacyDuplicate ||
+        // The proof file must have been uploaded for this very batch.
+        (record !== undefined && record.batchId !== op.batchId) ||
+        facts.hashesHeld.get(op.evidenceKey) !== true ||
+        (record !== undefined &&
+          (own.contentSha256 !== record.content ||
+            (record.stored !== null && own.storedSha256 !== record.stored)))
+      )
+        addAll("binding_mismatch");
+      if (facts.contested.get(op.evidenceKey) !== false)
+        addAll("binding_contested");
+    }
+    // A binding of a proposal proof that was replaced is permanent on purpose
+    // but is not a second completed operation. It is told apart by the proposal
+    // audit row of the same person for that key while no attestation holds the
+    // key any more (the replacement overwrites the step-one attestation). A
+    // binding with no such trace stays a duplicate (the most restrictive choice).
+    const replaced = (b: Binding) =>
+      (op.kind === "correction" || op.kind === "overpaid") &&
+      !facts.attestations.some((a) => a.evidenceKey === b.evidenceKey) &&
+      facts.audits.some(
+        (row) =>
+          row.action === AUDIT_ACTIONS[op.kind][0] &&
+          row.evidenceKey === b.evidenceKey &&
+          row.by === b.createdBy &&
+          row.objectId !== null &&
+          (row.objectId === op.batchId || op.itemIds.includes(row.objectId)),
+      );
+    if (
+      facts.bindings.some(
+        (b) =>
+          b.evidenceKey !== op.evidenceKey &&
+          b.kind === op.kind &&
+          b.batchId === op.batchId &&
+          b.itemSetHash === setHash &&
+          !replaced(b),
+      )
+    )
+      addAll("binding_duplicate");
+    if (!record) addAll("evidence_record_missing");
+    const file = fileOf.get(op.evidenceKey);
+    if (file === "missing") addAll("evidence_missing");
+    if (file === "mismatch") addAll("evidence_hash_mismatch");
+  }
+
+  // Journals against the decrypted nets.
+  if (op.kind !== "posting_source") {
+    const lockExists = (batchId: string) => {
+      const run = facts.runOfBatch.get(batchId);
+      return run !== undefined && facts.journals.has(payrollGlKeys.locked(run));
+    };
+    const checkJournal = (
+      subject: string,
+      journal: Journal | undefined,
+      net: number | null,
+      expected: boolean,
+    ) => {
+      if (!journal) {
+        if (expected) add(subject, "journal_missing");
+        return;
+      }
+      if (journal.reversed) add(subject, "journal_reversed");
+      if (net === null) add(subject, "net_unreadable");
+      else if (journal.debit !== BigInt(net)) add(subject, "net_mismatch");
+    };
+    const settledGroups = new Set<string>();
+    for (const id of op.terminalItemIds) {
+      const item = facts.items.get(id);
+      if (!item) {
+        add(id, "posting_missing");
+        continue;
+      }
+      if (item.glPostingId === null) {
+        add(id, "posting_missing");
+        continue;
+      }
+      const posting = facts.postings.get(item.glPostingId);
+      if (!posting) {
+        add(id, "posting_missing");
+        continue;
+      }
+      if (op.kind === "overpaid")
+        checkJournal(
+          id,
+          facts.journals.get(overpaidJournalKey(id)),
+          item.net,
+          lockExists(op.batchId),
+        );
+      else if (posting.kind === "settle") {
+        if (op.kind === "return")
+          checkJournal(
+            id,
+            facts.journals.get(payoutGlKeys.return(id)),
+            item.net,
+            true,
+          );
+        else if (!settledGroups.has(item.glPostingId)) {
+          // A correction settles its group: the debit is the sum of the group.
+          settledGroups.add(item.glPostingId);
+          const group = facts.groups.get(item.glPostingId) ?? [item];
+          const nets = group.map((member) => member.net);
+          checkJournal(
+            id,
+            facts.journals.get(posting.journalKey),
+            nets.some((net) => net === null)
+              ? null
+              : nets.reduce<number>((sum, net) => sum + net!, 0),
+            true,
+          );
+        }
+      }
+    }
+  }
+  return flags;
+}
+
+/**
+ * Every attestation made at or after `app.payout_grants_since()` needs its
+ * one-time grant (0653/0654): no grant, or a grant that was not spent by that
+ * very step, holds the slips of the attestation. Pure, no I/O. An attestation
+ * before the cutover is skipped like `trusted_since`.
+ */
+function evaluateGrants(facts: Facts): Flag[] {
+  if (facts.grantsSince === null) return [];
+  const flags: Flag[] = [];
+  for (const a of facts.attestations) {
+    if (a.attestedAt === null || a.attestedAt < facts.grantsSince) continue;
+    const grant = a.grantId === null ? undefined : facts.grants.get(a.grantId);
+    const reason: PayoutReconReason | null =
+      grant === undefined
+        ? "grant_missing"
+        : grant.consumedAt === null ||
+            grant.expiresAt === null ||
+            grant.consumedAt > grant.expiresAt ||
+            grant.actor !== a.actor ||
+            grant.sessionId !== a.sessionId ||
+            grant.kind !== a.kind ||
+            grant.step !== a.step ||
+            grant.batchId !== a.batchId ||
+            // A bank confirmation's proof key is not part of its grant (the
+            // grant is bound to actor, batch and items), so it is not compared.
+            (a.kind !== "bank_confirm" &&
+              grant.evidenceKey !== a.evidenceKey) ||
+            grant.consumedTxid !== a.txid
+          ? "grant_mismatch"
+          : null;
+    if (reason === null) continue;
+    // A posting source names no item itself: the slips it holds.
+    const items =
+      a.itemIds.length > 0
+        ? a.itemIds
+        : (facts.sourceItems.get(a.operationId) ?? []);
+    for (const itemId of items)
+      flags.push({
+        kind: a.kind as PayoutReconFlagKind,
+        operationId: a.operationId,
+        itemId,
+        reason,
+      });
+  }
+  return flags;
+}
+
+export type PayoutReconOptions = {
+  /** Object storage for the proof files; without it the file check is skipped. */
+  storage: ObjectStorage | null | undefined;
+  now?: Date;
+  /** Sort key of the last operation of the previous page. */
+  after?: string | null;
+  limit?: number;
+  /** Test override of `app.payout_trusted_since()`. */
+  since?: Date;
+};
+
+/**
+ * One page of operations of one tenant (tenant-wide worker context). Reads in
+ * one transaction, reads the proof files outside it, then writes the new flags
+ * in a second one. Idempotent: a flag already on file is not written again.
+ */
+export async function reconcileTrustedPayouts(
+  context: ScopedTenantContext,
+  options: PayoutReconOptions,
+): Promise<PayoutReconPageResult> {
+  const tenantId = context.tenant.tenantId;
+  const limit = options.limit ?? PAYOUT_RECON_OPERATIONS_PER_PAGE;
+  const { operations, facts } = await withTenant(db, context, async (tx) => {
+    const trustedSince = rowsOf(
+      await tx.execute(sql`SELECT app.payout_trusted_since() AS since`),
+    )[0]?.since;
+    const since =
+      options.since ??
+      new Date((trustedSince as string | Date | undefined) ?? NaN);
+    if (Number.isNaN(since.getTime()))
+      throw new Error("Payout trusted boundary time is unknown");
+    const grantsSince = new Date(
+      (rowsOf(
+        await tx.execute(sql`SELECT app.payout_grants_since() AS since`),
+      )[0]?.since as string | Date | undefined) ?? NaN,
+    );
+    if (Number.isNaN(grantsSince.getTime()))
+      throw new Error("Payout grant boundary time is unknown");
+    const found = await listOperations(tx, tenantId, {
+      after: options.after ?? null,
+      limit,
+      since,
+    });
+    if (found.length === 0)
+      return { operations: found, facts: null as Facts | null };
+    return {
+      operations: found,
+      facts: await loadFacts(tx, tenantId, found, since, grantsSince),
+    };
+  });
+  const last = operations.at(-1)?.sortKey ?? null;
+  const exhausted = operations.length < limit;
+  if (facts === null)
+    return { operations: 0, flagged: 0, unreadable: 0, last, exhausted };
+
+  // The stored proof read again must hash to its record. "Not found" is a
+  // difference; any other read error is retried by the next cycle, not flagged.
+  const fileOf = new Map<string, FileState>();
+  let unreadable = 0;
+  if (options.storage) {
+    for (const op of operations) {
+      const key = op.evidenceKey;
+      const record = key === null ? undefined : facts.records.get(key);
+      if (key === null || !record || fileOf.has(key)) continue;
+      try {
+        const object = await options.storage.get(context, {
+          tenantId,
+          outletId: null,
+          reference: "payout-trusted-recon",
+          key,
+          visibility: "private",
+        });
+        fileOf.set(
+          key,
+          sha256Of(object.content) === (record.stored ?? record.content)
+            ? "ok"
+            : "mismatch",
+        );
+      } catch (error) {
+        if (error instanceof CoreError && error.code === "NOT_FOUND")
+          fileOf.set(key, "missing");
+        else {
+          fileOf.set(key, "error");
+          unreadable += 1;
+        }
+      }
+    }
+  }
+
+  // A difference of the operation holds every slip of it, so an operation-wide
+  // reason is flagged once per terminal item (the flag carries the payslip).
+  const seen = new Set(facts.flagged);
+  const fresh = operations
+    .flatMap((op) => evaluate(op, facts, fileOf))
+    .concat(evaluateGrants(facts))
+    .filter((flag) => {
+      const key = flagKey(
+        flag.kind,
+        flag.operationId,
+        flag.itemId,
+        flag.reason,
+      );
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  if (fresh.length > 0)
+    await withTenant(db, context, async (tx) => {
+      for (const flag of fresh)
+        await tx.execute(
+          sql`SELECT app.payout_recon_flag(${tenantId}::uuid, ${flag.kind}, ${flag.operationId}::uuid, ${flag.itemId}::uuid, ${flag.reason})`,
+        );
+    });
+  return {
+    operations: operations.length,
+    flagged: fresh.length,
+    unreadable,
+    last,
+    exhausted,
+  };
+}

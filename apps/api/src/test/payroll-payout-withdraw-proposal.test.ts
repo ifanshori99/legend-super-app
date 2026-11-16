@@ -96,6 +96,9 @@ async function staff(permissions: string[]) {
   const userId = session.body.user.id as string;
   grantedUsers.push(userId);
   await W.grantRole(userId, permissions);
+  // 911: the trusted resolve path (W.resolve) needs the fixture session
+  // `actorOf` returns: live, with a fresh MFA step-up.
+  await W.provisionActor(userId, { user: false, permit: false });
   const enrolled = await client
     .post("/api/auth/mfa/factors")
     .set(originHeader)

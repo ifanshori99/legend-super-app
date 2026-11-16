@@ -8,7 +8,10 @@
 //     filtered app.active_tenant_registry view, and
 //   - the optional maintenance login (legend-usyi), a member of the NOLOGIN
 //     `legend_maintenance` group only: no table rights, it may run just the two
-//     audit retention functions (SECURITY DEFINER, owned by the table owner).
+//     audit retention functions (SECURITY DEFINER, owned by the table owner), and
+//   - the optional payout grantor login (legend-911), a member of the NOLOGIN
+//     `legend_payout_grantor` group only: no table rights, it may run just
+//     app.payout_grant_issue (SECURITY DEFINER, owned by `legend_payout`).
 // None may be a superuser, bypass RLS, own domain tables, or create objects
 // outside its own schema. Every run re-verifies that, so the job is safe to
 // repeat and doubles as an audit.
@@ -26,6 +29,7 @@ import { Client, type ClientBase } from "pg";
 export const APP_LOGIN = /^legend_runtime_[a-f0-9]{16}$/;
 export const WORKER_LOGIN = /^legend_worker_[a-f0-9]{16}$/;
 export const MAINT_LOGIN = /^legend_maint_[a-f0-9]{16}$/;
+export const GRANTOR_LOGIN = /^legend_grant_[a-f0-9]{16}$/;
 export const PASSWORD = /^[a-f0-9]{48}$/;
 const APP_GROUP = "legend_app";
 const MAINT_GROUP = "legend_maintenance";
@@ -33,6 +37,12 @@ const MAINT_GROUP = "legend_maintenance";
 const MAINT_FUNCTIONS = [
   "app.audit_retention_due_tenants()",
   "app.purge_audit_retention_batch(uuid, integer)",
+];
+const GRANTOR_GROUP = "legend_payout_grantor";
+const PAYOUT_OWNER = "legend_payout";
+// The only routine the grantor group may run (migration 0653).
+const GRANTOR_FUNCTIONS = [
+  "app.payout_grant_issue(text, text, uuid, uuid[], character varying, uuid, uuid, character varying, text, text, text)",
 ];
 const QUEUE_SCHEMA = "pgboss";
 // Serialises concurrent runs against one database (hashtext is stable).
@@ -1123,6 +1133,118 @@ async function provisionMaintenance(client: ClientBase, login: Login) {
   return outcome;
 }
 
+/**
+ * The grantor group runs app.payout_grant_issue and nothing else (migration
+ * 0653): SECURITY DEFINER with a pinned search_path, owned by `legend_payout`,
+ * executable by the group but never by PUBLIC or legend_app.
+ */
+async function assertGrantorFunctions(client: ClientBase, user: string) {
+  const functions = await client.query(
+    `SELECT f.signature, p.oid IS NOT NULL AS found,
+            COALESCE(p.prosecdef, false) AS secdef,
+            COALESCE(p.proconfig::text[] @> ARRAY['search_path=pg_catalog, pg_temp'], false) AS pinned,
+            COALESCE(pg_get_userbyid(p.proowner) = $4, false) AS owned_by_payout,
+            COALESCE(has_function_privilege($1, p.oid, 'EXECUTE'), false) AS login_can,
+            COALESCE(has_function_privilege('public', p.oid, 'EXECUTE'), false) AS public_can,
+            COALESCE(has_function_privilege($3, p.oid, 'EXECUTE'), false) AS app_can
+     FROM unnest($2::text[]) AS f(signature)
+     LEFT JOIN pg_proc p ON p.oid = to_regprocedure(f.signature)
+     ORDER BY 1`,
+    [user, GRANTOR_FUNCTIONS, APP_GROUP, PAYOUT_OWNER],
+  );
+  type Row = {
+    signature: string;
+    found: boolean;
+    secdef: boolean;
+    pinned: boolean;
+    owned_by_payout: boolean;
+    login_can: boolean;
+    public_can: boolean;
+    app_can: boolean;
+  };
+  const problems = (functions.rows as Row[]).flatMap((row) => {
+    if (!row.found) return [`${row.signature} does not exist`];
+    return [
+      ...(row.secdef ? [] : ["is not SECURITY DEFINER"]),
+      ...(row.pinned ? [] : ["has no pinned search_path"]),
+      ...(row.owned_by_payout ? [] : [`is not owned by ${PAYOUT_OWNER}`]),
+      ...(row.login_can ? [] : ["cannot be run by the login"]),
+      ...(row.public_can || row.app_can
+        ? ["can be run by PUBLIC or legend_app"]
+        : []),
+    ].map((problem) => `${row.signature} ${problem}`);
+  });
+  if (problems.length)
+    throw new ProvisionError(
+      `The payout grantor function is not as the migrations define it: ${problems.slice(0, 5).join("; ")}${problems.length > 5 ? "; ..." : ""}. Run the migrations, then re-run.`,
+    );
+  // Any SECURITY DEFINER function the login can run beyond the one, in any
+  // schema it can reach (PUBLIC keeps USAGE on schema public), lets it act as
+  // that function's owner.
+  const secdef = await client.query(
+    `SELECT ARRAY(
+       SELECT p.oid::regprocedure::text
+       FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+       WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+         AND has_schema_privilege($1, n.oid, 'USAGE')
+         AND p.prosecdef
+         AND has_function_privilege($1, p.oid, 'EXECUTE')
+         AND p.oid <> ALL(ARRAY(SELECT to_regprocedure(x)::oid FROM unnest($2::text[]) AS x))
+       ORDER BY 1
+     ) AS names`,
+    [user, GRANTOR_FUNCTIONS],
+  );
+  if (secdef.rows[0].names.length)
+    throw new ProvisionError(
+      `The payout grantor role may run functions beyond payout_grant_issue: ${secdef.rows[0].names.slice(0, 5).join(", ")}${secdef.rows[0].names.length > 5 ? ", ..." : ""}. Revoke EXECUTE from PUBLIC and the role, then re-run.`,
+    );
+  // Same for the rest of the app schema, SECURITY DEFINER or not: only the
+  // functions PUBLIC may run anyway can stay.
+  const extra = await client.query(
+    `SELECT ARRAY(
+       SELECT p.oid::regprocedure::text
+       FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+       WHERE n.nspname = 'app'
+         AND has_function_privilege($1, p.oid, 'EXECUTE')
+         AND NOT has_function_privilege('public', p.oid, 'EXECUTE')
+         AND p.oid <> ALL(ARRAY(SELECT to_regprocedure(x)::oid FROM unnest($2::text[]) AS x))
+       ORDER BY 1
+     ) AS names`,
+    [user, GRANTOR_FUNCTIONS],
+  );
+  if (extra.rows[0].names.length)
+    throw new ProvisionError(
+      `The payout grantor role may run functions beyond payout_grant_issue: ${extra.rows[0].names.slice(0, 5).join(", ")}${extra.rows[0].names.length > 5 ? ", ..." : ""}.`,
+    );
+  const schema = await client.query(
+    "SELECT has_schema_privilege($1, 'app', 'USAGE') AS usage",
+    [user],
+  );
+  if (!schema.rows[0].usage)
+    throw new ProvisionError(
+      `The payout grantor role has no USAGE on schema app; run the migrations, then re-run.`,
+    );
+}
+
+async function auditGrantor(client: ClientBase, user: string) {
+  await assertRestricted(client, user, "payout grantor", [GRANTOR_GROUP], []);
+  // No table or sequence right at all: the function does the work as its owner.
+  await assertTableRights(client, user, "payout grantor", [], {});
+  await assertSequenceRights(client, user, "payout grantor", [], []);
+  await assertDefaultPrivileges(client, user, "payout grantor", [], [], []);
+  await assertNoSensitive(client, user, "payout grantor");
+  await assertNoParameterGrants(client, user, "payout grantor");
+  await assertGrantorFunctions(client, user);
+}
+
+async function provisionGrantor(client: ClientBase, login: Login) {
+  await assertGroup(client, GRANTOR_GROUP);
+  const outcome = await upsertLogin(client, login, "payout grantor");
+  await grantGroup(client, GRANTOR_GROUP, login.user);
+  await auditGrantor(client, login.user);
+  return outcome;
+}
+
 async function assertRegistry(client: ClientBase) {
   const registry = await client.query(
     "SELECT c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'app' AND c.relname = 'active_tenant_registry'",
@@ -1179,6 +1301,7 @@ export type ProvisionResult = {
   app: { user: string; outcome: "created" | "updated" };
   worker?: { user: string; outcome: "created" | "updated" };
   maintenance?: { user: string; outcome: "created" | "updated" };
+  grantor?: { user: string; outcome: "created" | "updated" };
 };
 
 /**
@@ -1192,6 +1315,7 @@ export async function provisionRoles(options: {
   appUrl: string;
   workerUrl?: string;
   maintenanceUrl?: string;
+  grantorUrl?: string;
 }): Promise<ProvisionResult> {
   const app = parseLogin(
     options.adminUrl,
@@ -1210,6 +1334,14 @@ export async function provisionRoles(options: {
         "maintenance",
       )
     : undefined;
+  const grantor = options.grantorUrl
+    ? parseLogin(
+        options.adminUrl,
+        options.grantorUrl,
+        GRANTOR_LOGIN,
+        "payout grantor",
+      )
+    : undefined;
   const { result, database } = await withAdmin(
     options.adminUrl,
     async (client) => {
@@ -1226,12 +1358,18 @@ export async function provisionRoles(options: {
           user: maintenance.user,
           outcome: await provisionMaintenance(client, maintenance),
         };
+      if (grantor)
+        result.grantor = {
+          user: grantor.user,
+          outcome: await provisionGrantor(client, grantor),
+        };
       return { result, database: await currentDatabase(client) };
     },
   );
   await verifyIdentity(app, "application", database);
   if (worker) await verifyIdentity(worker, "queue", database);
   if (maintenance) await verifyIdentity(maintenance, "maintenance", database);
+  if (grantor) await verifyIdentity(grantor, "payout grantor", database);
   return result;
 }
 
@@ -1254,7 +1392,7 @@ async function assertLogin(client: ClientBase, user: string, label: string) {
     client,
     user,
     label,
-    label === "maintenance" ? "none" : "required",
+    label === "maintenance" || label === "payout grantor" ? "none" : "required",
   );
 }
 
@@ -1268,6 +1406,7 @@ export async function auditRoles(options: {
   appUrl: string;
   workerUrl: string;
   maintenanceUrl?: string;
+  grantorUrl?: string;
 }) {
   const app = parseLogin(
     options.adminUrl,
@@ -1287,6 +1426,14 @@ export async function auditRoles(options: {
         options.maintenanceUrl,
         MAINT_LOGIN,
         "maintenance",
+      )
+    : undefined;
+  const grantor = options.grantorUrl
+    ? parseLogin(
+        options.adminUrl,
+        options.grantorUrl,
+        GRANTOR_LOGIN,
+        "payout grantor",
       )
     : undefined;
   const database = await withAdmin(
@@ -1331,6 +1478,19 @@ export async function auditRoles(options: {
           );
         await auditMaintenance(client, maintenance.user);
       }
+      if (grantor) {
+        await assertGroup(client, GRANTOR_GROUP);
+        await assertLogin(client, grantor.user, "payout grantor");
+        const member = await client.query(
+          "SELECT pg_has_role($1, $2, 'USAGE') AS member",
+          [grantor.user, GRANTOR_GROUP],
+        );
+        if (!member.rows[0].member)
+          throw new ProvisionError(
+            `The payout grantor login ${grantor.user} does not inherit ${GRANTOR_GROUP}; re-run provision-roles.sh.`,
+          );
+        await auditGrantor(client, grantor.user);
+      }
       return currentDatabase(client);
     },
     false,
@@ -1338,10 +1498,12 @@ export async function auditRoles(options: {
   await verifyIdentity(app, "application", database);
   await verifyIdentity(worker, "queue", database);
   if (maintenance) await verifyIdentity(maintenance, "maintenance", database);
+  if (grantor) await verifyIdentity(grantor, "payout grantor", database);
   return {
     app: app.user,
     worker: worker.user,
     ...(maintenance ? { maintenance: maintenance.user } : {}),
+    ...(grantor ? { grantor: grantor.user } : {}),
   };
 }
 
@@ -1352,6 +1514,7 @@ export async function provisionAppRole(adminUrl: string, appUrl: string) {
     appUrl,
     workerUrl: process.env.WORKER_DATABASE_URL || undefined,
     maintenanceUrl: process.env.MAINTENANCE_DATABASE_URL || undefined,
+    grantorUrl: process.env.PAYOUT_GRANTOR_DATABASE_URL || undefined,
   });
 }
 

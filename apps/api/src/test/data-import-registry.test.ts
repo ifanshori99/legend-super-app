@@ -252,6 +252,28 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "backfills one open pos_qris_holds row (backfilled = true) for each existing authorized QRIS tender with an unpaid payment link and for each pending QRIS bill-split intent, aborting first if a bill has more than one collectible QRIS, plus one open backfilled hold per ambiguous provider code (QRIS intent with a provider_ref, not paid or failed, of a voided or failed POS QRIS tender, an expired split part, a guest order-wide code, or a sibling code on a POS tender's link) on a bill that is not completed or voided; only inserts into the new table, edits no existing row, no amount touched; FORCE RLS lifted on bill_splits, payment_intents, pos_order_tenders and pos_orders for those statements and restored",
   "0403_pos_customer_display.sql":
     "no backfill: the only UPDATE statements are trigger bodies that bump customer_display_sessions.version when the selected order, QRIS hold or tender changes at runtime; touches no existing row at migration time, no amount touched",
+  // legend-i01jp (905): 0643-0648; 0643 and 0644 contain no row-writing statement of their own
+  "0411_payout_trusted_binding.sql":
+    "function bodies only, no row edited by the migration: the payout-role functions app.payout_bind_proof and app.payout_backfill_bind insert the proof bindings of their own tenant, app.payout_backfill_claim_hashes fills the missing content/stored hashes of one return claim from its evidence file, and app.payout_proof_contest_own inserts into the global contests (ON CONFLICT DO NOTHING), all when called; no backfill, no amount touched",
+  "0412_payout_posting_source_trusted.sql":
+    "function body only, no row edited by the migration: app.payout_posting_record_source (payout role) sets source_gl_account_id on a settle_pending/settle_skipped posting that has none and inserts the attestation of who did it, when called; no backfill, no amount or journal touched",
+  "0413_payout_proof_closures.sql":
+    "function bodies only, no row edited by the migration: app.payout_proof_closure_propose and app.payout_proof_closure_approve (payout role) insert a proof closure and its attestations, record the closed key's hashes in the global contests (ON CONFLICT DO NOTHING) and resolve the matching stuck backfill row, when called; no backfill, no amount touched",
+  "0414_payout_trusted_transitions.sql":
+    "function bodies only, no row edited by the migration: the payout-role functions (correction propose/approve, overpaid propose/record, return propose/confirm, recon flag, attest) insert and update the correction, overpaid-proposal, return-claim, exception and attestation rows and move the item status, when called; the migration itself writes no row and changes no amount (it revokes legend_app write and re-grants the item columns)",
+  // legend-911 (temporary numbers, the merge train renumbers): closure bind, step grants
+  "0418_payout_911_closure_bind.sql":
+    "trigger and function bodies only, no row edited by the migration: the closed-key triggers also fire on UPDATE OF evidence_key and app.payout_bind_proof (payout role) inserts the proof bindings of its own tenant when called, now only for a proof uploaded for the same batch and legal entity; no backfill, no amount touched",
+  "0419_payout_step_grants.sql":
+    "creates the payroll_payout_grants table and the functions app.payout_grant_issue (grantor login) and app.payout_grant_consume (payout role): they insert and consume one-time step grants when called; the migration itself writes no row and changes no amount",
+  "0420_payout_trusted_steps_grant.sql":
+    "function bodies only, no row edited by the migration: the nine payout-role step functions and app.payout_attest now consume a one-time grant instead of taking an actor and session, and insert and update the correction, overpaid-proposal, return-claim, closure, posting and attestation rows when called; the migration itself writes no row and changes no amount",
+  "0421_payout_911_grant_kinds.sql":
+    "constraint changes and function bodies only, no row edited by the migration: it adds the resolve and bank_confirm kinds to the grant, attestation and recon-exception CHECKs, and app.payout_grant_issue (grantor login) and app.payout_recon_flag (payout role) insert a grant or a recon exception when called; no backfill, no amount touched",
+  "0422_payout_resolve_bank_confirm.sql":
+    "function bodies only, no row edited by the migration: app.payout_resolve_propose, app.payout_resolve_approve and app.payout_bank_confirm (payout role) spend a one-time grant and move an exported item to failed, not_sent or succeeded when called, and the item guard is replaced; the migration itself writes no row and changes no amount",
+  "0423_payout_run_settle.sql":
+    "function bodies only, no row edited by the migration: app.payout_run_settle (payout role) turns a run paid when called, after re-checking its payments; the run guard is replaced; the migration itself writes no row and changes no amount",
 };
 
 // Entrypoints that open a database pool but import no data.

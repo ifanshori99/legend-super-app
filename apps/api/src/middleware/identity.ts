@@ -18,12 +18,14 @@
 // - requireTenantStepUpPassword: payout confirm, resolve and cash handover. Mount
 //   AFTER jsonBody and requireTenantStepUpMfa. When `mfa_verified_at` may only
 //   come from the first MFA enrollment (no code or passkey was ever checked in
-//   this session), the body's `password` must be the account password.
+//   this session), the body's `password` must be the account password. After
+//   success it records the step-up of this request (`payoutStepUpOf`), the
+//   precondition of a payout grant (legend-911).
 //
 // The first two use the same session policy: a guarded surface makes the session
 // management, so it ends after 30 idle minutes (§3 F6 "Sesi & Perangkat").
 
-import type { RequestHandler } from "express";
+import type { Request, RequestHandler } from "express";
 import {
   AccessError,
   userRequiresMfa,
@@ -31,7 +33,10 @@ import {
 } from "@starter/shared/access";
 import { getAuth } from "./auth";
 import { HttpError } from "../lib/http-error";
-import { assertPayoutReauth } from "../services/payroll-payout-evidence";
+import {
+  assertPayoutReauth,
+  type PayoutReauthMethod,
+} from "../services/payroll-payout-evidence";
 import {
   assertSurfaceFacts,
   denySurfaceAccessFacts,
@@ -45,6 +50,24 @@ import {
 } from "../services/identity-session.service";
 
 type Clock = () => Date;
+
+/**
+ * Proof that this request passed the payout step-up (legend-911). Kept in
+ * process memory per request object, never on `req` itself and never in a
+ * header or body, so nothing a client sends can fake it. Read through
+ * `payoutStepUpOf`; the payout grant issuer refuses without it.
+ */
+export type PayoutStepUp = {
+  readonly userId: string;
+  readonly sessionId: string;
+  readonly method: PayoutReauthMethod;
+  readonly at: Date;
+};
+const payoutStepUps = new WeakMap<Request, PayoutStepUp>();
+
+export function payoutStepUpOf(req: Request): PayoutStepUp | undefined {
+  return payoutStepUps.get(req);
+}
 
 function unauthorized(): HttpError {
   return new HttpError(401, "UNAUTHORIZED", "Sesi berakhir. Masuk lagi.");
@@ -181,11 +204,18 @@ export function requireTenantStepUpPassword(
       body !== null && typeof body === "object"
         ? (body as { password?: unknown }).password
         : undefined;
-    await assertPayoutReauth({
+    const now = clock();
+    const method = await assertPayoutReauth({
       userId: auth.user.id,
       sessionId: auth.session.id,
       password: typeof password === "string" ? password : undefined,
-      now: clock(),
+      now,
+    });
+    payoutStepUps.set(req, {
+      userId: auth.user.id,
+      sessionId: auth.session.id,
+      method,
+      at: now,
     });
     next();
   };

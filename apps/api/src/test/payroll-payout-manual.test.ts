@@ -91,6 +91,7 @@ import { NoopMalwareScanner } from "../services/core-image.ts";
 import type { StorageRuntime } from "../services/core-storage-runtime.ts";
 import type { ObjectStorage, StorageRequest } from "@starter/shared/adapters";
 import { agent, originHeader, signUp } from "./helpers.ts";
+import { actorOf } from "./payroll-payout-fixtures.ts";
 
 // In-memory object storage: the legacy bank file builder (H1) needs a storage
 // runtime.
@@ -132,7 +133,31 @@ const owner = new Pool({
 const REQ = `payout-req-${randomUUID()}`;
 const APP = `payout-app-${randomUUID()}`;
 const APP2 = `payout-app2-${randomUUID()}`;
-const actor = (userId: string) => ({ tenantId: tenant.id as string, userId });
+// 911 (legend-r86qa): confirm and resolve run through a one-time grant, so every
+// actor is a real user with a live session, fresh MFA and the approve
+// permission (`provisionActor` below), and carries the fixture grant issuer.
+const actor = (userId: string) => actorOf(userId);
+const actorSessions: string[] = [];
+const actorUsers: string[] = [];
+async function provisionActor(userId: string) {
+  const { sessionId } = actorOf(userId);
+  actorSessions.push(sessionId);
+  actorUsers.push(userId);
+  await owner.query(
+    `INSERT INTO "user" (id, name, email, email_verified)
+     VALUES ($1, $2, $3, true) ON CONFLICT (id) DO NOTHING`,
+    [userId, "Payout manual actor", `${userId}@payout-manual.test`],
+  );
+  await owner.query(
+    `INSERT INTO session (id, expires_at, token, user_id, tenant_id, mfa_verified_at)
+     VALUES ($1, now() + interval '1 day', $2, $3, $4, now())
+     ON CONFLICT (id) DO UPDATE SET mfa_verified_at = now()`,
+    [sessionId, randomUUID().replaceAll("-", ""), userId, tenant.id],
+  );
+  createdUsers.push(userId);
+  await grantRole(userId, ["payroll.disburse.approve"]);
+}
+let mfaRefresh: NodeJS.Timeout | undefined;
 /**
  * Stores a payment proof under the only key shape accepted (legend-658 L5) and
  * returns its key: confirm, resolve and return refuse a key whose object is not
@@ -560,6 +585,16 @@ async function approvedBatch(runId: string, channel = "manual_bank") {
 // ---- Setup / teardown ---------------------------------------------------------
 
 beforeAll(async () => {
+  for (const id of [REQ, APP, APP2]) await provisionActor(id);
+  // The step-up must stay fresh (15 minutes) for the whole file.
+  mfaRefresh = setInterval(() => {
+    owner
+      .query(`UPDATE session SET mfa_verified_at = now() WHERE id = ANY($1)`, [
+        actorSessions,
+      ])
+      .catch(() => {});
+  }, 60_000);
+  mfaRefresh.unref();
   const hrUser = await signedInClient("Payout manual HR");
   await grantRole(hrUser.userId, ["hr.employee.manage", "hr.employee.view"]);
   hr = hrUser.client;
@@ -731,6 +766,9 @@ afterAll(async () => {
       createdRoles,
     ]);
   }, true);
+  if (mfaRefresh) clearInterval(mfaRefresh);
+  await owner.query("DELETE FROM session WHERE id = ANY($1)", [actorSessions]);
+  await owner.query(`DELETE FROM "user" WHERE id = ANY($1)`, [actorUsers]);
   await owner.end();
 });
 
@@ -1455,14 +1493,21 @@ describe("H2 an exported item is freed only by two different people", () => {
     const budi = (await itemOfPerson(batchId, BUDI))!;
     const siti = (await itemOfPerson(batchId, SITI))!;
     const requester = (await batchById(batchId)).requested_by as string;
+    // 911: a move out of `exported` is only allowed to the payout role, so every
+    // attempt below runs as that role: the refusals come from the two-person
+    // rules (PAYOUT-16/18/...), not from the role check, and the allowed shapes
+    // pass.
     const move = (id: unknown, status: string, set: string) =>
       pgFailure(
-        rowsOf(
-          `UPDATE payroll_disbursement_items
-              SET status = '${status}', ${set}
-            WHERE id = $1`,
-          [id],
-        ),
+        asTenant(async (c) => {
+          await c.query("SET LOCAL ROLE legend_payout");
+          await c.query(
+            `UPDATE payroll_disbursement_items
+                SET status = '${status}', ${set}
+              WHERE id = $1`,
+            [id],
+          );
+        }),
       );
     const evidence = `resolution_evidence_key = 'evidence/db.pdf'`;
     const cases: [string, string][] = [
@@ -1496,6 +1541,23 @@ describe("H2 an exported item is freed only by two different people", () => {
       ),
     );
     expect(bad?.code).toBe("23514");
+    // 911: the same allowed shape as the app role is refused (the app role
+    // cannot move an item out of `exported` any more).
+    const asApp = await pgFailure(
+      asTenant(async (c) => {
+        await c.query("SET LOCAL ROLE legend_app");
+        await c.query(
+          `UPDATE payroll_disbursement_items
+              SET status = 'failed', failure_class = 'definitive',
+                  resolution_outcome = 'failed', resolved_by = 'p1',
+                  resolved_by_2 = 'p2', ${evidence}
+            WHERE id = $1`,
+          [siti.id],
+        );
+      }),
+    );
+    expect(asApp, "legend_app cannot do the allowed shape").not.toBeNull();
+    expect((await itemOfPerson(batchId, SITI))!.status).toBe("exported");
     // Controls: the allowed shape passes, so the refusals above come from the guard.
     const okFailed = await move(
       siti.id,

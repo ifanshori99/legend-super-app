@@ -96,8 +96,16 @@ async function insertLegacyClaims(
   batchId: string,
   keys: string[],
   oldestAgeSeconds: number,
+  realItems = true,
 ) {
   usedKeys.push(...keys);
+  // 905: the trusted binder recomputes the item set hash from real items, so a
+  // claim that must bind needs a returned item behind its key (hash = that set).
+  const source = (await W.itemsOf(batchId))[0]!.id as string;
+  const hashes = new Map<string, string>();
+  if (realItems)
+    for (const key of keys)
+      hashes.set(key, await W.legacyReturnItem(source, key));
   await W.asTenant(async (c) => {
     for (const [index, key] of keys.entries())
       await c.query(
@@ -109,7 +117,7 @@ async function insertLegacyClaims(
           W.tenantId,
           batchId,
           key,
-          sha256(Buffer.from(`897-set-${key}`)),
+          hashes.get(key) ?? sha256(Buffer.from(`897-set-${key}`)),
           oldestAgeSeconds - index,
         ],
       );
@@ -168,6 +176,15 @@ afterEach(async () => {
         WHERE tenant_id = $1 AND evidence_key = ANY($2::text[])`,
       [W.tenantId, keys],
     );
+    // 905: the returned items `W.legacyReturnItem` cloned behind a claim go too;
+    // left behind, a later sweep binds them as item returns over bytes another
+    // test already holds and lists a legacy_duplicate stuck row.
+    await c.query(
+      `DELETE FROM payroll_disbursement_items
+        WHERE tenant_id = $1 AND return_evidence_key = ANY($2::text[])
+          AND returned_by = 'legacy-905' AND attempt_no >= 1000`,
+      [W.tenantId, keys],
+    );
     // The stuck table exists only once the feature does.
     const exists = (await c.query(`SELECT to_regclass('public.${STUCK}') AS t`))
       .rows[0]!.t;
@@ -191,7 +208,7 @@ describe("897 the backfill is fair when the oldest proofs cannot be processed (F
     for (let i = 0; i < 50; i++)
       valid.push(await uploadTo(batchId, await pdf(`valid-${i}`)));
     // Oldest first: the unreadable ones fill the first 200 places of every sweep.
-    await insertLegacyClaims(batchId, unreadable, 100_000);
+    await insertLegacyClaims(batchId, unreadable, 100_000, false);
     await insertLegacyClaims(batchId, valid, 50_000);
 
     await sweep();
@@ -453,7 +470,7 @@ describe("897 review fixes: phase 2 reaches every key the gate counts", () => {
   it("[897-log-no-keys] the job log carries counts only: a stuck key is not named in it (it stays on the finance list)", async () => {
     const { batchId } = await paidBatch();
     const key = missingKey(batchId, "log");
-    await insertLegacyClaims(batchId, [key], 1_000);
+    await insertLegacyClaims(batchId, [key], 1_000, false);
     const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     try {
       await sweep();

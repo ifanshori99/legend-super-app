@@ -26,11 +26,13 @@ import {
   requireTenantPermission,
 } from "../middleware/permissions.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
+import { payoutGrantIssuerOf } from "../services/payroll-payout-grant.service.ts";
 import {
   PAYOUT_STEP_UP_MAX_AGE_MINUTES,
   payoutEvidenceStoreOf,
 } from "../services/payroll-payout-evidence.ts";
 import { correctFailedItems } from "../services/payroll-payout-correction.service.ts";
+import { payoutGuardErrorMapper } from "../services/payroll-payout.service.ts";
 
 export const payrollPayoutCorrectionRouter = Router();
 
@@ -43,7 +45,12 @@ function actorOf(req: Request) {
   const context = getScopedTenantContext(req);
   return {
     context,
-    actor: { tenantId: context.tenant.tenantId, userId: getAuth(req).user.id },
+    actor: {
+      tenantId: context.tenant.tenantId,
+      userId: getAuth(req).user.id,
+      sessionId: getAuth(req).session.id,
+      grants: payoutGrantIssuerOf(req),
+    },
   };
 }
 
@@ -72,3 +79,6 @@ payrollPayoutCorrectionRouter.post(
     res.json({ data });
   },
 );
+
+// 905: a guard or deferred commit check refusal (23514) answers 409.
+payrollPayoutCorrectionRouter.use(payoutGuardErrorMapper);

@@ -326,6 +326,12 @@ describe("legend-bsw9 migration 0186 run by a non-superuser table owner", () => 
     await admin.query(
       `CREATE ROLE ${ownerRole} LOGIN PASSWORD '${ownerPassword}' NOSUPERUSER BYPASSRLS CREATEROLE NOCREATEDB`,
     );
+    // legend_payout (drizzle/0644) is cluster-wide and already exists, created by
+    // the bootstrap superuser; the migrator manages it through ADMIN OPTION only,
+    // as provisionMigrator gives it in production (db/migrator-role.ts).
+    await admin.query(
+      `GRANT legend_payout TO ${ownerRole} WITH ADMIN OPTION, INHERIT FALSE, SET FALSE`,
+    );
     await admin.query(`CREATE DATABASE ${ownerDatabase} OWNER ${ownerRole}`);
     owner = new Pool({
       connectionString: urlFor(ownerDatabase, ownerRole, ownerPassword),

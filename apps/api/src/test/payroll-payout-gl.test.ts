@@ -651,7 +651,9 @@ describe("another tenant is untouched", () => {
       withTenant(db, otherScope(), (tx) =>
         confirmManualItems(
           tx,
-          { tenantId: otherTenantId, userId: APP2 },
+          // 911: confirm takes a grant issuer; the grant is bound to our
+          // tenant's batch, so the refusal can only come from the isolation.
+          { ...actorOf(APP2), tenantId: otherTenantId },
           batchId,
           { results } as never,
           W.proofs(),

@@ -108,8 +108,20 @@ const repostSkippedFees = (batchId: string, by = APP) =>
       "repostSkippedFees",
     )(tx, actorOf(by), batchId),
   );
-const recordOverpaidItem = (itemId: string, batchId: string, by = APP) =>
-  W.inTx((tx: Tx) =>
+const recordOverpaidItem = async (
+  itemId: string,
+  batchId: string,
+  by = APP,
+) => {
+  // 905: the second step needs the first step of another person (W.proposeOverpaid).
+  await W.proposeOverpaid(
+    batchId,
+    itemId,
+    uploadEvidence(batchId, "mutasi-bank.pdf"),
+    "Mutasi bank menunjukkan transfer kedua untuk slip yang sama",
+    by,
+  );
+  return W.inTx((tx: Tx) =>
     glFn<
       (
         tx: Tx,
@@ -129,6 +141,7 @@ const recordOverpaidItem = (itemId: string, batchId: string, by = APP) =>
       W.proofs(),
     ),
   );
+};
 
 // ---- Setup helpers ---------------------------------------------------------
 

@@ -1450,10 +1450,14 @@ describe("R10 and R11 run guards", () => {
     decidedBy: "dec-user",
     decidedAt: "2041-11-30T00:01:00.000Z",
   });
-  const markPaid = (runId: string, settle: boolean) =>
+  // 911 (legend-izza4): the run guard no longer reads the app.payout_settle
+  // GUC. `settle = true` is the trusted payout role (what app.payout_run_settle
+  // runs as); `"guc"` is only the old self-set setting, which buys nothing.
+  const markPaid = (runId: string, settle: boolean | "guc") =>
     asTenant(async (c) => {
-      if (settle)
+      if (settle === "guc")
         await c.query("SELECT set_config('app.payout_settle', 'on', true)");
+      if (settle === true) await c.query("SET LOCAL ROLE legend_payout");
       await c.query(
         `UPDATE payroll_runs SET status = 'paid', paid_at = now(), paid_by = 'tester' WHERE id = $1`,
         [runId],
@@ -1465,7 +1469,7 @@ describe("R10 and R11 run guards", () => {
       [runId, reversal],
     );
 
-  it("[r10-paid-needs-settle] a run with a batch cannot be marked paid by hand; only the settle code (app.payout_settle) can; a run without batch is unchanged", async () => {
+  it("[r10-paid-needs-settle] a run with a batch cannot be marked paid by hand, nor with the old app.payout_settle GUC; only the payout role (app.payout_run_settle) can; a run without batch is unchanged", async () => {
     const withBatch = await seedRun([bank(BUDI, 4_000_000)]);
     await createBatch(withBatch);
     const error = await pgFailure(markPaid(withBatch, false));
@@ -1473,6 +1477,10 @@ describe("R10 and R11 run guards", () => {
       error,
       "manual paid on a batched run must be refused",
     ).not.toBeNull();
+    expect(await runStatus(withBatch)).toBe("locked");
+    // 911: the self-set GUC alone is no key any more (PAYOUT-22).
+    const gucOnly = await pgFailure(markPaid(withBatch, "guc"));
+    expect(gucOnly, "the GUC alone must not mark the run paid").not.toBeNull();
     expect(await runStatus(withBatch)).toBe("locked");
     await markPaid(withBatch, true);
     expect(await runStatus(withBatch)).toBe("paid");
@@ -1698,10 +1706,12 @@ describe("L2 snapshot match guard while an item is prepared or blocked", () => {
 });
 
 describe("L3 settle cannot mark a run paid while money is in flight", () => {
+  // 911: the trusted payout role (as inside app.payout_run_settle); L3
+  // (PAYOUT-23) still refuses it while money is in flight.
   const settlePaid = (runId: string) =>
     pgFailure(
       asTenant(async (c) => {
-        await c.query("SELECT set_config('app.payout_settle', 'on', true)");
+        await c.query("SET LOCAL ROLE legend_payout");
         await c.query(
           `UPDATE payroll_runs SET status = 'paid', paid_at = now(), paid_by = 'tester' WHERE id = $1`,
           [runId],
@@ -1709,7 +1719,7 @@ describe("L3 settle cannot mark a run paid while money is in flight", () => {
       }),
     );
 
-  it("[l3-paid-refused-in-flight] pending_approval, approved, exported batches and an unknown item all refuse paid even with app.payout_settle on", async () => {
+  it("[l3-paid-refused-in-flight] pending_approval, approved, exported batches and an unknown item all refuse paid even for the payout role", async () => {
     const runId = await seedRun([bank(BUDI, 4_000_000)]);
     const batchId = await createBatch(runId);
     await submit(batchId);
@@ -1754,18 +1764,66 @@ describe("L3 settle cannot mark a run paid while money is in flight", () => {
     expect(await settlePaid(runId)).toBeNull();
     expect(await runStatus(runId)).toBe("paid");
   });
+
+  // 911 (legend-izza4): app.payout_run_settle is the only door to `paid` for
+  // the app role; it re-checks the sealed-data conditions itself.
+  const settleFn = (runId: string, batchId: string) =>
+    asTenant(async (c) => {
+      await c.query("SET LOCAL ROLE legend_app");
+      const { rows } = await c.query(
+        `SELECT app.payout_run_settle($1::uuid, '{}'::uuid[]) AS paid`,
+        [batchId],
+      );
+      return rows[0].paid as boolean;
+    }).then(async (paid) => ({ paid, status: await runStatus(runId) }));
+
+  it("[l3-settle-fn-control] legend_app calls app.payout_run_settle: true and the run is paid when every slip has a succeeded item; false and the run stays locked while an item is still exported", async () => {
+    const open = await seedRun([bank(BUDI, 4_000_000)]);
+    const openBatch = await createBatch(open);
+    await asTenant(async (c) => {
+      await forceBatchState(c, openBatch, "exported");
+      await c.query(
+        `UPDATE payroll_disbursement_items SET status = 'exported' WHERE batch_id = $1`,
+        [openBatch],
+      );
+    }, true);
+    expect(await settleFn(open, openBatch)).toEqual({
+      paid: false,
+      status: "locked",
+    });
+
+    const runId = await seedRun([bank(SITI, 4_000_000)]);
+    const batchId = await createBatch(runId);
+    await asTenant(async (c) => {
+      await forceBatchState(c, batchId, "completed");
+      await c.query(
+        `UPDATE payroll_disbursement_items
+            SET status = 'succeeded', settled_at = now(), confirmed_by = 'seed', confirmation_ref = 'SEED-REF'
+          WHERE batch_id = $1`,
+        [batchId],
+      );
+    }, true);
+    expect(await settleFn(runId, batchId)).toEqual({
+      paid: true,
+      status: "paid",
+    });
+  });
 });
 
 describe("L4 a succeeded item is frozen", () => {
   it("[l4-succeeded-frozen] confirmation_ref, confirmed_by, settled_at and provider_ref cannot change on a succeeded item; succeeded -> returned still works", async () => {
     const runId = await seedRun([cash(CASHIER, 2_000_000)]);
     const batchId = await approvedBatch(runId, "cash");
-    await rowsOf(
-      `UPDATE payroll_disbursement_items
-          SET status = 'succeeded', settled_at = now(), confirmed_by = 'x', confirmation_ref = 'REF-1'
-        WHERE batch_id = $1`,
-      [batchId],
-    );
+    // 911: the payment record is written only by the payout role (PAYOUT-74).
+    await asTenant(async (c) => {
+      await c.query("SET LOCAL ROLE legend_payout");
+      await c.query(
+        `UPDATE payroll_disbursement_items
+            SET status = 'succeeded', settled_at = now(), confirmed_by = 'x', confirmation_ref = 'REF-1'
+          WHERE batch_id = $1`,
+        [batchId],
+      );
+    });
     const update = (set: string) =>
       pgFailure(
         rowsOf(
@@ -1789,14 +1847,17 @@ describe("L4 a succeeded item is frozen", () => {
     expect(
       await update("status = 'returned', returned_at = now()"),
     ).not.toBeNull();
-    // Control: the one allowed move out of succeeded, with two returners.
-    expect(
-      await update(
-        `status = 'returned', returned_at = now(), returned_by = 'returner-1',
-         returned_by_2 = 'returner-2', return_evidence_key = 'bukti/kembali.pdf',
-         return_note = 'Dana kembali dari bank'`,
-      ),
-    ).toBeNull();
-    expect((await itemsOf(batchId))[0]!.status).toBe("returned");
+    // 905 (A1): even with two returners, plain SQL by the app role may no
+    // longer move a succeeded item: only the payout role's trusted return
+    // function does (PAYOUT-60). The two-person return path is proven
+    // through the service in payroll-payout-proposal.test.ts.
+    const twoReturners = await update(
+      `status = 'returned', returned_at = now(), returned_by = 'returner-1',
+       returned_by_2 = 'returner-2', return_evidence_key = 'bukti/kembali.pdf',
+       return_note = 'Dana kembali dari bank'`,
+    );
+    expect(twoReturners?.code).toBe("23514");
+    expect(twoReturners?.message).toMatch(/PAYOUT-60/);
+    expect((await itemsOf(batchId))[0]!.status).toBe("succeeded");
   });
 });
