@@ -42,7 +42,15 @@
 // Run just this file:
 //   LEGEND_TEST_FILES="src/test/qr-va-940-24ogm-park-slow.test.ts" heavy pnpm test
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { setPaymentGateway } from "../services/payment-gateway.ts";
 import type { GatewayPaymentStatus } from "../services/payment-gateway.ts";
@@ -127,6 +135,8 @@ beforeAll(async () => {
   };
   setPaymentGateway(fx.gateway);
   kit = releaseKit(fx);
+  // Staff to warn: without a supervisor the notification has no recipient.
+  await kit.supervisor();
   await owner.query(`
     CREATE OR REPLACE FUNCTION ${TRIGGER}() RETURNS trigger AS $fn$
     BEGIN
@@ -155,7 +165,9 @@ afterAll(async () => {
   await owner.query(
     `DROP TRIGGER IF EXISTS ${TRIGGER} ON payment_unallocated_funds`,
   );
-  await owner.query(`DROP TRIGGER IF EXISTS ${NOTIFY_TRIGGER} ON notifications`);
+  await owner.query(
+    `DROP TRIGGER IF EXISTS ${NOTIFY_TRIGGER} ON notifications`,
+  );
   await owner.query(`DROP FUNCTION IF EXISTS ${TRIGGER}()`);
   await owner.query(`DROP FUNCTION IF EXISTS ${NOTIFY_TRIGGER}()`);
   resetHoldPorts();
@@ -378,9 +390,10 @@ describe.each([liveVa, liveQr])(
 
         const first = await notificationsDuring(poll);
         await expectParked(s, [EXTRA_IDR]);
-        expect(first, "staff are told once when the extra is parked").toBeGreaterThan(
-          0,
-        );
+        expect(
+          first,
+          "staff are told once when the extra is parked",
+        ).toBeGreaterThan(0);
 
         for (let i = 0; i < 3; i += 1) {
           const again = await notificationsDuring(poll);
@@ -405,9 +418,10 @@ describe.each([liveVa, liveQr])(
         expect(await notificationsDuring(poll)).toBe(0);
 
         answer(s, { rawStatus: "01" }, [first, second]);
-        expect(await notificationsDuring(poll), "one round for the new row").toBe(
-          perRow,
-        );
+        expect(
+          await notificationsDuring(poll),
+          "one round for the new row",
+        ).toBe(perRow);
         expect(await notificationsDuring(poll)).toBe(0);
         await expectParked(s, [EXTRA_IDR, 7_000]);
         expect(await kind.settled(s)).toBe(0);
@@ -531,9 +545,10 @@ describe("legend-24ogm VA guest status read warns staff once per parked extra", 
       const res = await guestRead(s);
       expect(res.status, JSON.stringify(res.body)).toBe(200);
     });
-    expect(first, "the guest read that parks the extra warns staff").toBeGreaterThan(
-      0,
-    );
+    expect(
+      first,
+      "the guest read that parks the extra warns staff",
+    ).toBeGreaterThan(0);
     await expectParked(s, [EXTRA_IDR]);
 
     const replays = await notificationsDuring(async () => {
@@ -743,14 +758,18 @@ const openStates: OpenState[] = [
       answer(s, { rawStatus: "01" }, [extra(0, `EXTRA-ZERO-${s.intentId}`)]);
     },
     async heal(s) {
-      answer(s, { rawStatus: "01" }, [extra(EXTRA_IDR, `EXTRA-ZERO-${s.intentId}`)]);
+      answer(s, { rawStatus: "01" }, [
+        extra(EXTRA_IDR, `EXTRA-ZERO-${s.intentId}`),
+      ]);
     },
     parkedAfterHeal: () => [EXTRA_IDR],
   },
   {
     label: "extra paid positive but parking fails (extra funds not parked)",
     async arm(s) {
-      answer(s, { rawStatus: "01" }, [extra(EXTRA_IDR, `EXTRA-FAIL-${s.intentId}`)]);
+      answer(s, { rawStatus: "01" }, [
+        extra(EXTRA_IDR, `EXTRA-FAIL-${s.intentId}`),
+      ]);
       await failParkingOf(s.intentId);
     },
     heal: restoreParking,
@@ -964,12 +983,19 @@ describe("legend-24ogm VA release refuses a provider answer that is older than a
       (await paidIdr(s)) + parked,
       "the paid amount is recorded exactly once",
     ).toBe(s.amount);
-    expect(await outboxCountOf(fx, "payment.funds_unallocated", s.intentId)).toBe(
-      parked > 0 ? 1 : 0,
-    );
+    expect(
+      await outboxCountOf(fx, "payment.funds_unallocated", s.intentId),
+    ).toBe(parked > 0 ? 1 : 0);
+    // No second collectible code: a paid bill answers with the same code
+    // (replay of the paid intent), never a new one.
     for (const method of ["va", "qris"] as const) {
       const replacement = await vaOrderCode(s.guest!, s.orderId, method);
-      expect(replacement.status, JSON.stringify(replacement.body)).toBe(409);
+      if (replacement.status === 409) continue;
+      expect(replacement.status, JSON.stringify(replacement.body)).toBe(201);
+      expect(
+        replacement.body.data.id ?? replacement.body.data.paymentIntentId,
+        "the paid bill returns the same code, not a new one",
+      ).toBe(s.intentId);
     }
   });
 });

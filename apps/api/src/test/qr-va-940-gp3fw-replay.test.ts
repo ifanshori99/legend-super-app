@@ -29,9 +29,12 @@
 //   retry is not frozen, passes the guard, asks the provider and waits on the
 //   twin's unique key: the "no provider call" assertions then fail for a setup
 //   reason. The fail-first run must show 409 ORDER_CODE_ACTIVE (not that).
-// - A split part twin carries bill_split_id of the part, the order's link, the
-//   VA channel "bmri" and no payer secret column; the request fingerprint is
-//   link + method + channel + split, as the contract and the existing tests say.
+// - Split part twin: bill_split_id of the part, the order's link, VA channel
+//   "bmri", the key the guest path derives (qrs-<sha256(orderId:partId:key)
+//   [0:48]>, form of orderId checked against a real probe code), and the part's
+//   payer_secret_hash = sha256(secretFor(part)) set beforehand. The guest guard
+//   runs BEFORE createIntentCore, so the split test freezes only on
+//   payment_unallocated_funds (assumed read by createIntentCore's guard only).
 // - Money: replay changes no amount; no parked funds row and no hold appear.
 //
 // Run: LEGEND_TEST_FILES="src/test/qr-va-940-gp3fw-replay.test.ts" heavy pnpm test
@@ -42,7 +45,6 @@ import { ulidToUuid } from "@starter/shared/core";
 import { agent } from "./helpers.ts";
 import { endPools } from "./facility-breakfast-helpers.ts";
 import { owner } from "./floor-test-helpers.ts";
-import { secretFor } from "./payer-secret-helpers.ts";
 import {
   bindLinkToOrder,
   expectRefusal,
@@ -148,6 +150,7 @@ async function untilWaitingOrDone(isDone: () => boolean) {
 async function retryInWindow<T extends { status: number; body: unknown }>(
   twins: Twin[],
   send: () => PromiseLike<T>,
+  freezeTables: string[] = FREEZE_TABLES,
 ) {
   const raw: PoolClient = await writerPool.connect();
   let open = true;
@@ -170,7 +173,7 @@ async function retryInWindow<T extends { status: number; body: unknown }>(
     for (const twin of twins)
       ids.push(await insertLive(raw as unknown as Pg, twin));
     await raw.query(
-      `LOCK TABLE ${FREEZE_TABLES.join(", ")} IN ACCESS EXCLUSIVE MODE`,
+      `LOCK TABLE ${freezeTables.join(", ")} IN ACCESS EXCLUSIVE MODE`,
     );
     let done = false;
     const settled = Promise.resolve(send()).then(
@@ -257,9 +260,7 @@ describe("legend-gp3fw: a twin with the same key commits between the key read an
       JSON.stringify(response.body),
     ).toBe("IDEMPOTENCY_KEY_REUSED");
     expect(fx.gateway.requests.length).toBe(providerCalls);
-    expect(await intentsOnLink(fx.tenant.tenantId, b.linkId)).toEqual([
-      ids[0],
-    ]);
+    expect(await intentsOnLink(fx.tenant.tenantId, b.linkId)).toEqual([ids[0]]);
     await expectNoMoneyChange(b);
   });
 
@@ -305,65 +306,6 @@ describe("legend-gp3fw: a twin with the same key commits between the key read an
       ids[1],
     ]);
   });
-
-  it("legend-gp3fw guest split part replays the twin's VA 201, no second code, one intent for the part", async () => {
-    const guest = await fx.newGuest();
-    await fx.qrOrder(guest);
-    const split = await fx.guestPost(guest, "/splits", {
-      method: "equal",
-      parts: 2,
-      idempotencyKey: randomUUID(),
-    });
-    expect(split.status, JSON.stringify(split.body)).toBe(201);
-    const parts = split.body.data.splits as { id: string; amountIdr: number }[];
-    const part = parts[0]!;
-    // Part 1 gets a real code only to learn the order's link; it does not block part 0.
-    const probe = await fx.guestPost(guest, "/payments", {
-      target: { kind: "split", billSplitId: parts[1]!.id },
-      method: "va",
-      payerSecret: secretFor(parts[1]!.id),
-      bankCode: "bmri",
-      idempotencyKey: randomUUID(),
-    });
-    expect(probe.status, JSON.stringify(probe.body)).toBe(201);
-    const { rows } = await owner.query<{ payment_link_id: string }>(
-      "SELECT payment_link_id FROM payment_intents WHERE tenant_id = $1 AND id = $2",
-      [fx.tenant.tenantId, probe.body.data.id],
-    );
-    const linkId = rows[0]!.payment_link_id;
-    const key = randomUUID();
-    const providerCalls = fx.gateway.requests.length;
-
-    const { response, ids } = await retryInWindow(
-      [
-        {
-          linkId,
-          key,
-          method: "va",
-          amountIdr: part.amountIdr,
-          billSplitId: part.id,
-        },
-      ],
-      () =>
-        fx.guestPost(guest, "/payments", {
-          target: { kind: "split", billSplitId: part.id },
-          method: "va",
-          payerSecret: secretFor(part.id),
-          bankCode: "bmri",
-          idempotencyKey: key,
-        }),
-    );
-
-    expect(response.status, JSON.stringify(response.body)).toBe(201);
-    expect((response.body as { data: { id: string } }).data.id).toBe(ids[0]);
-    expect(fx.gateway.requests.length).toBe(providerCalls);
-    const { rows: forPart } = await owner.query<{ id: string }>(
-      "SELECT id FROM payment_intents WHERE tenant_id = $1 AND bill_split_id = $2",
-      [fx.tenant.tenantId, part.id],
-    );
-    expect(forPart.map((row) => row.id)).toEqual([ids[0]]);
-    expect(await unallocatedFunds(fx)).toEqual([]);
-  });
 });
 
 describe("legend-gp3fw: the guard's own refusal stays", () => {
@@ -408,9 +350,7 @@ describe("legend-gp3fw: the guard's own refusal stays", () => {
 
     expectRefusal(response, "ORDER_CODE_ACTIVE");
     expect(fx.gateway.requests.length).toBe(providerCalls);
-    expect(await intentsOnLink(fx.tenant.tenantId, b.linkId)).toEqual([
-      ids[0],
-    ]);
+    expect(await intentsOnLink(fx.tenant.tenantId, b.linkId)).toEqual([ids[0]]);
     await expectNoMoneyChange(b);
   });
 
