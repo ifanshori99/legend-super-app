@@ -116,6 +116,20 @@ function issueError(error: unknown): unknown {
         "PAYOUT_UNFREEZE_REFUSED",
         "Anda tidak dapat membuka pembekuan batch ini.",
       );
+    case "83":
+      // A batch approval grant for a batch that no longer waits for approval
+      // (a lost approve race): same answer as the approve path itself.
+      return new HttpError(
+        409,
+        "PAYOUT_BATCH_STATE",
+        "Batch belum diajukan atau sudah diproses.",
+      );
+    case "16":
+      return new HttpError(
+        403,
+        "PAYOUT_SELF_APPROVAL",
+        "Pembuat batch tidak boleh menyetujui batchnya sendiri.",
+      );
     case "72":
       return new HttpError(
         422,

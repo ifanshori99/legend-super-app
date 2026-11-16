@@ -43,7 +43,7 @@
 //   fresh worlds to make a lock-order bug show; outcomes, not timing, decide.
 // - Case 5: a refused self-approval (PAYOUT_SELF_APPROVAL) leaves no log row
 //   and no spent grant; the second person is logged as the actor.
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { HttpError } from "../lib/http-error.ts";
 import {
@@ -374,7 +374,7 @@ describe("934 'Bukan saya' on the main approval", () => {
     await approveAs(actor, w);
     const logs = await logsOf(w.batchId);
     expect(logs, "premise: the approval is in the log").toHaveLength(1);
-    const logId = logs[0]!.id;
+    const logId = String(logs[0]!.id);
     expect(await openDisputes(w.batchId), "not frozen before").toBe(0);
 
     const grant = await passwordGrant({
@@ -549,6 +549,111 @@ describe("934 two approvals at the same moment", () => {
           expect(await spentGrantsOf(worlds[i]!.batchId)).toBe(1);
         }
       }
+    }
+  });
+
+  // Assumptions (recon): same route as [911-recon-grant] in the 905 recon
+  // suite: the night run `reconcileTrustedPayouts(scope, {storage, after})`
+  // paged over the tenant, flags read from payroll_payout_recon_exceptions.
+  // A main approval has no item attestation of its own, so the flags are
+  // looked up by the operation id of the batch_approve attestation OR by the
+  // items of the batch (whichever way the recon keys the flag); the test does
+  // not assume which. Tampering is the same forger as 905: the table owner
+  // with guards off changes the actor of the grant row.
+  it("[934-recon-grant] the attestation of a normal main approval gives zero recon flags; a grant whose actor was changed gives grant_mismatch", async () => {
+    const w = await pendingBatch();
+    await approveAs(actorOf(APP), w);
+
+    const [since] = await W.rowsOf(`SELECT app.payout_grants_since() AS since`);
+    const attestations = await W.rowsOf(
+      `SELECT operation_id::text AS operation_id, grant_id::text AS grant_id,
+              attested_at
+         FROM payroll_payout_attestations
+        WHERE tenant_id = $1 AND batch_id = $2 AND kind = 'batch_approve'`,
+      [W.tenantId, w.batchId],
+    );
+    expect(
+      attestations,
+      "premise: the approval left one batch_approve attestation",
+    ).toHaveLength(1);
+    const attestation = attestations[0]!;
+    expect(
+      (attestation.attested_at as Date) >= (since!.since as Date),
+      "premise: it is at or after the grant cutover",
+    ).toBe(true);
+    expect(
+      attestation.grant_id,
+      "premise: it carries its grant",
+    ).not.toBeNull();
+    const grantId = attestation.grant_id as string;
+    const operationId = attestation.operation_id as string;
+    const itemIds = (await W.itemsOf(w.batchId)).map((i) => i.id as string);
+
+    const flagsOfBatch = () =>
+      W.rowsOf(
+        `SELECT reason, payslip_id FROM payroll_payout_recon_exceptions
+          WHERE tenant_id = $1
+            AND (operation_id = $2::uuid OR item_id = ANY($3::uuid[]))`,
+        [W.tenantId, operationId, itemIds],
+      );
+    const runRecon = async () => {
+      const mod = await import("../services/payroll-payout-recon.service.ts");
+      const { storage } = W.proofs();
+      let after: string | null = null;
+      for (let page = 0; page < 1000; page += 1) {
+        const result: { operations: number; last: string | null } =
+          await mod.reconcileTrustedPayouts(W.scope(), { storage, after });
+        if (result.last === null || result.operations === 0) return;
+        after = result.last;
+      }
+      throw new Error("recon did not finish");
+    };
+    const tamper = (run: (c: import("pg").PoolClient) => Promise<unknown>) =>
+      W.asTenant(run, true);
+    const actorOfGrant = async () =>
+      (
+        await W.rowsOf(
+          `SELECT actor FROM payroll_payout_grants WHERE tenant_id = $1 AND id = $2`,
+          [W.tenantId, grantId],
+        )
+      )[0]!.actor as string;
+
+    await runRecon();
+    expect(
+      await flagsOfBatch(),
+      "a clean main approval: zero recon flags",
+    ).toHaveLength(0);
+
+    const original = await actorOfGrant();
+    try {
+      // Superuser fixture, FK and guard triggers off for this statement only.
+      await tamper((c) =>
+        c.query(
+          `UPDATE payroll_payout_grants SET actor = $3 WHERE tenant_id = $1 AND id = $2`,
+          [W.tenantId, grantId, randomUUID()],
+        ),
+      );
+      await runRecon();
+      const rows = await flagsOfBatch();
+      expect(rows.length, "grant actor changed: flagged").toBeGreaterThan(0);
+      expect(
+        rows.map((r) => r.reason),
+        "reason of the flag",
+      ).toContain("grant_mismatch");
+    } finally {
+      await tamper(async (c) => {
+        await c.query(
+          `UPDATE payroll_payout_grants SET actor = $3 WHERE tenant_id = $1 AND id = $2`,
+          [W.tenantId, grantId, original],
+        );
+        // Insert-only rows: remove the flags of this test (guards off).
+        await c.query(
+          `DELETE FROM payroll_payout_recon_exceptions
+            WHERE tenant_id = $1
+              AND (operation_id = $2::uuid OR item_id = ANY($3::uuid[]))`,
+          [W.tenantId, operationId, itemIds],
+        );
+      });
     }
   });
 });

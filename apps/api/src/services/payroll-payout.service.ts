@@ -1573,8 +1573,10 @@ export async function approveDisbursementBatch(
   const peek = await readBatch(tx, tenantId, batchId);
   await assertBatchNotFrozen(tx, tenantId, batchId);
   // Same answers as the checks under the lock, so the grant (which the
-  // database issues only for a pending batch of another requester) is never
-  // the first thing to refuse them.
+  // database issues only for a pending batch of another requester) is rarely
+  // the first thing to refuse them. A batch that changes between this peek and
+  // the grant (a lost approve race) is refused by the grant with PAYOUT-83 or
+  // PAYOUT-16, which the grant service maps to the same 409 and 403.
   if (peek.status !== "pending_approval")
     throw payoutRefuse(
       409,

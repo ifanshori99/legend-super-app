@@ -158,7 +158,7 @@ BEGIN
         USING ERRCODE = '23514';
     END IF;
     IF v_status IS DISTINCT FROM 'pending_approval' THEN
-      RAISE EXCEPTION 'PAYOUT-72: only a batch that waits for approval can get an approval grant'
+      RAISE EXCEPTION 'PAYOUT-83: only a batch that waits for approval can get an approval grant'
         USING ERRCODE = '22023';
     END IF;
   END IF;
