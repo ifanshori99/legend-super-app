@@ -152,7 +152,6 @@ const snapshot = async () => ({
   bank: await account("1103"),
   payable: await account("2103"),
 });
-type Snapshot = Awaited<ReturnType<typeof snapshot>>;
 
 // ---- The locked event, through the real outbox consumer ------------------------
 

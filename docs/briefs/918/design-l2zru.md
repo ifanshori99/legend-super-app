@@ -1,6 +1,7 @@
 # Desain legend-l2zru: "Bukan saya", bekukan batch, buka pembekuan
 
 **Keputusan:** status beku disimpan di dua tabel append-only baru. `status='halted'`/`halt_reason` tidak dipakai, karena tiga alasan:
+
 - `halted` hanya bisa dicapai dari `sending` (0344:239), jadi batch `exported` tidak bisa dibekukan lewat jalur itu.
 - `legend_app` bisa menulis status batch, artinya bisa membuka pembekuan sendiri.
 - `halt_reason` adalah enum untuk alasan provider, bukan sengketa.
@@ -10,26 +11,31 @@ Batch dianggap beku bila ada baris sengketa yang belum punya baris pembukaan.
 ## Migrasi `apps/api/drizzle/0660_payout_batch_disputes.sql` (+ meta, `db/schema/payroll-payout.ts`)
 
 **Tabel `payroll_payout_batch_disputes`**
+
 - Kolom: id, tenant_id, batch_id, log_id, grant_id, actor, session_id, reason varchar(500) null, batch_status_at varchar(16), created_at, txid.
 - UNIQUE (tenant_id,id), (tenant_id,id,batch_id), (tenant_id,log_id), (tenant_id,grant_id).
 - FK ditulis di dalam CREATE TABLE ke: tenants, batches (tenant_id,batch_id), approval_log (tenant_id,log_id), grants (tenant_id,id). Index (tenant_id,batch_id).
 
 **Tabel `payroll_payout_batch_unfreezes`**
+
 - Kolom: id, tenant_id, batch_id, dispute_id, grant_id, actor, session_id, role_template (CHECK owner/finance), reason varchar(500) NOT NULL (CHECK btrim minimal 10 karakter), created_at, txid.
 - UNIQUE (tenant_id,dispute_id).
 - FK inline: (tenant_id,dispute_id,batch_id) ke disputes, ditambah tenants, batches, grants.
 
 **Hak dan penjaga untuk kedua tabel**
+
 - Pemiliknya migrator. `legend_app` hanya SELECT, `legend_payout` SELECT dan INSERT.
 - Trigger BEFORE UPDATE/DELETE per baris dan TRUNCATE per statement menolak dengan PAYOUT-80. RLS lewat `enforce_tenant_rls`.
 
 **Kode error baru (79 sampai 82 belum terpakai)**
+
 - 79: batch beku menolak langkah.
 - 80: tabel sengketa tidak bisa diubah.
 - 81: disown ditolak.
 - 82: pembukaan ditolak.
 
 **Grant**
+
 - `kind_check` ditambah `disown` dan `unfreeze`.
 - `payout_grant_issue` (badan 0658) mendapat dua pasangan baru:
   - `disown/record`: hanya method `password`. Memakai helper baru `app.payout_assert_session`: user tidak diblokir, sesi hidup, punya penugasan aktif apa pun di tenant. Tanpa syarat izin payroll dan tanpa syarat MFA 15 menit, supaya penyetuju yang izinnya dicabut penyerang tetap bisa membekukan. `p_ref` harus baris log di tenant ini dengan actor = p_actor dan batch = p_batch.
@@ -37,6 +43,7 @@ Batch dianggap beku bila ada baris sengketa yang belum punya baris pembukaan.
 - `detail` diisi sha256 alasan, jadi alasan terikat ke step-up.
 
 **Fungsi tepercaya** (SECURITY DEFINER, milik `legend_payout`, EXECUTE untuk `legend_app`)
+
 - `app.payout_approval_disown(p_log, p_grant, p_reason) → uuid`:
   1. Baca log. Grant dikonsumsi dengan batch dari log dan ref = log.
   2. Bila `grant.actor <> log.actor`, tolak dengan PAYOUT-81.
@@ -54,6 +61,7 @@ Batch dianggap beku bila ada baris sengketa yang belum punya baris pembukaan.
 **Helper:** `app.payout_batch_assert_open(p_tenant, p_batch)`. Bila batch NULL langsung lolos. Mengambil kunci `FOR UPDATE` pada batch (serial dengan disown; bukan KEY SHARE, supaya langkah yang kemudian mengunci baris itu FOR UPDATE tidak menunggu dirinya sendiri), lalu menolak dengan PAYOUT-79 bila ada sengketa terbuka. EXECUTE untuk `legend_app` dan `legend_payout`.
 
 **Dipanggil di:**
+
 1. `payout_grant_consume` (0653), di semua kind kecuali disown/unfreeze. Ini menolak di awal.
 2. `payout_attest` (0659), sebagai statement pertama. Ini menutup 17 fungsi:
    - correction_propose, correction_withdraw (0658)
@@ -65,8 +73,8 @@ Batch dianggap beku bila ada baris sengketa yang belum punya baris pembukaan.
    - resolve_propose, resolve_approve, bank_confirm (0656)
 3. `payout_run_settle` (0657), setelah batch dimuat.
 4. Trigger baru (kena juga ke `legend_app`):
-   - batches: BEFORE UPDATE bila status, approved_*, exported_*, content_hash atau source bank berubah. Ini menutup submit, approve, cancel, export dan penutupan batch.
-   - items: BEFORE UPDATE OF status, settled_at, confirmed_*, resolved_*, resolution_* (cash handover dan export).
+   - batches: BEFORE UPDATE bila status, approved__, exported__, content_hash atau source bank berubah. Ini menutup submit, approve, cancel, export dan penutupan batch.
+   - items: BEFORE UPDATE OF status, settled_at, confirmed__, resolved__, resolution_* (cash handover dan export).
    - items: BEFORE INSERT, dicek pada batch percobaan sebelumnya dari payslip yang sama. Tanpa ini, payslip item yang `failed` palsu bisa dimasukkan ke batch baru dan dibayar dua kali.
    - `bank_transfer_files` BEFORE INSERT.
    - `payroll_payout_gl_postings` BEFORE INSERT.
@@ -74,6 +82,7 @@ Batch dianggap beku bila ada baris sengketa yang belum punya baris pembukaan.
 **Sengaja tidak ditolak:** `payout_recon_flag` (justru membatasi), fungsi backfill/contest/bind bukti, dan disown/unfreeze sendiri.
 
 **Sisi aplikasi:**
+
 - `payroll-payout.service.ts`: `payoutGuardViolation` memetakan PAYOUT-79 ke 409 `PAYOUT_BATCH_FROZEN`. Tambah `assertBatchNotFrozen` sebelum grant diterbitkan.
 - `payroll-payout-gl.service.ts` `listRecoveryBatchIds` melewati batch beku.
 - Pengiriman Duitku belum ada, hanya `manual_bank` dan cash, dan keduanya sudah tertutup trigger di atas.
@@ -135,6 +144,7 @@ Batch dianggap beku bila ada baris sengketa yang belum punya baris pembukaan.
 13. Invarian uang: setelah beku, jumlah item `succeeded` dan jurnal tidak berubah.
 
 **Urutan kerja:**
+
 1. Migrasi 0660.
 2. Schema dan shared contract.
 3. Service, rute, dan pemetaan error.
