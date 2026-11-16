@@ -1,3 +1,10 @@
+## Merge train batch75 dilanjutkan dengan izin CTO (914, 16 Nov 2026)
+
+- CTO mengizinkan penyelarasan dua konflik komentar payout, registry dengan nomor akhir dan rechain snapshot lewat db:generate; kode produk tidak diubah oleh resolusi. Enam tip masuk: 911 `3cfecb901`, ajakan-wa-poin-grid-qr-meja `bcfbdf011`, ops-statusbar-mobile `ca0b1bf0a` (memuat 780 dan contrast), member-whatsapp-link `c3e616ddb`, 52c30e92 `9fc198918`, 19eebc7a `738731095`. Selain komentar payout, konflik hanya PROGRESS; kedua sisi dipertahankan.
+- Migrasi final 0409–0423 = sementara0643–0657 (dikurangi234). Journal m1 utuh; idx409–423, when1795000000024–1795000000038 monoton. Snapshot0423 dibangun dari0408 m1; SQL generate duplikat empat tabel payout/FK/index dibuang, tanpa menerapkan DDL dua kali. `pnpm db:generate` kedua: No schema changes. `check-journal`: OK15 entri, warning statis FK0419 pada tabel lama (pembuktian lewat test migrasi). Semua SQL m1 sebelum0409 tetap utuh.
+- Review resolusi+rechain oleh satu subagent terpisah: 0 temuan. Komentar referensi migrasi diselaraskan ke nomor akhir; prettier+eslint scoped hijau. Dependencies worktree terpasang, workspace-links hijau.
+- Lint penuh lewat heavy: hijau, 59 detik (11:36:09–11:37:08 WIB), 0 error/2 warning useMemo bawaan profit-share. Typecheck sedang berjalan. Fast set478 berkas disiapkan (240root+238API, seluruh diff test, edge/migration/notification/payout dan test pasangan). E2e/full run menunggu gerbang sebelumnya. Full run gagal0/2. Perbaikan test: belum ada.
+
 ## Merge train batch75 ditahan sebelum gate (914, 16 Nov 2026, 11:29–11:32 WIB)
 
 - Basis terverifikasi setelah `git fetch origin --prune`: `origin/milestone/m1` = `40f6f3c95af4a10e40ab629f8113be6acd5045e9`; tip 911 = `3cfecb901934bb1aa4cb389b54a34bbe7e68d123`. Ruang integrasi terpisah `int/batch75`.
