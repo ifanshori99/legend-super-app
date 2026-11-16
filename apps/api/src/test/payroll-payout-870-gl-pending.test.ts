@@ -386,8 +386,16 @@ describe("review F1: pending settlement resolves with the frozen source account"
 // ---------------------------------------------------------------------------
 
 const idOf = (row: Row) => row.id as string;
-const recordOverpaid = (itemId: string, batchId: string, by = APP) =>
-  W.inTx((tx) =>
+const recordOverpaid = async (itemId: string, batchId: string, by = APP) => {
+  // 905: the second step needs the first step of another person (W.proposeOverpaid).
+  await W.proposeOverpaid(
+    batchId,
+    itemId,
+    uploadEvidence(batchId, "mutasi-bank.pdf"),
+    "Mutasi bank menunjukkan transfer kedua untuk slip yang sama",
+    by,
+  );
+  return W.inTx((tx) =>
     (
       glService as unknown as {
         recordOverpaidItem: (...args: unknown[]) => Promise<unknown>;
@@ -403,6 +411,7 @@ const recordOverpaid = (itemId: string, batchId: string, by = APP) =>
       W.proofs(),
     ),
   );
+};
 
 /**
  * Budi's first transfer is resolved failed, a follow-up batch pays him, then

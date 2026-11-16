@@ -207,7 +207,7 @@ async function enrollmentOnlyApprover(label: string) {
     .send({ factorId, code: totpCode(secretBase32, totpStep(new Date())) });
   expect(verified.status, JSON.stringify(verified.body)).toBe(200);
   const stamp = await mfaOwner.query(
-    `SELECT mfa_verified_at FROM "session" WHERE revoked_at IS NULL AND user_id = $1`,
+    `SELECT mfa_verified_at FROM "session" WHERE revoked_at IS NULL AND user_id = $1 AND id NOT LIKE 'payout-fixture-session-%'`,
     [userId],
   );
   expect(
@@ -408,7 +408,7 @@ describe("step-up: password again when MFA was only just enrolled", () => {
     const { client, userId } = await challengedApprover("Faktor Lama");
     const results = W.succeedItems(batchId, items);
     const stamp = await mfaOwner.query(
-      `SELECT mfa_challenge_verified_at FROM "session" WHERE revoked_at IS NULL AND user_id = $1`,
+      `SELECT mfa_challenge_verified_at FROM "session" WHERE revoked_at IS NULL AND user_id = $1 AND id NOT LIKE 'payout-fixture-session-%'`,
       [userId],
     );
     expect(stamp.rows[0]?.mfa_challenge_verified_at).not.toBeNull();

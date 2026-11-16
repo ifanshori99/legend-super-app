@@ -46,6 +46,7 @@ import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import type { Tx } from "../services/hris-access.ts";
 import { deliverPayrollGlEvent } from "../services/payroll-gl-consumer.ts";
+import { recordOverpaidItems } from "../services/payroll-payout-overpaid-route.service.ts";
 import { snapshotPayeeBankForLock } from "../services/payroll-bank-snapshot.service.ts";
 import {
   approveDisbursementBatch,
@@ -1019,10 +1020,37 @@ export function installPayoutWorld(label: string) {
     await owner.end();
   });
 
+  /**
+   * 905: step one of an overpaid record (the proposal) by `proposer`, through
+   * the same service the route uses. `app.payout_overpaid_record` (the second
+   * step, `recordOverpaidItem`) now refuses an item with no proposal of another
+   * person, so a test that calls the second step directly proposes first. The
+   * proposer is the first of APP2 / APP3 / APP that is not `recorder`.
+   */
+  async function proposeOverpaid(
+    batchId: string,
+    itemId: string,
+    evidenceKey: string,
+    note: string,
+    recorder: string,
+  ) {
+    const proposer = [APP2, APP3, APP].find((id) => id !== recorder)!;
+    return inTx((tx) =>
+      recordOverpaidItems(
+        tx,
+        actorOf(proposer),
+        batchId,
+        { itemIds: [itemId], evidenceKey, note },
+        proofs(),
+      ),
+    );
+  }
+
   return {
     app,
     owner,
     tenantId: tenant.id as string,
+    proposeOverpaid,
     entityId: () => entityId,
     scope,
     inTx,

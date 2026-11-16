@@ -109,7 +109,7 @@ beforeAll(async () => {
 
 // ---- Outbox / consumer (as in 881) ----------------------------------------------
 
-function lockedEnvelope(runId: string, slips: Slip[]) {
+function lockedEnvelope(runId: string, slips: Slip[], aggregateId = runId) {
   const lockedAt = "2026-10-26T05:00:00.000Z";
   return payrollLocked.envelopeSchema.parse({
     id: createUlid(),
@@ -118,7 +118,7 @@ function lockedEnvelope(runId: string, slips: Slip[]) {
     name: "payroll.locked",
     version: 1,
     aggregateType: "payroll",
-    aggregateId: runId,
+    aggregateId,
     sequence: 1,
     occurredAt: lockedAt,
     actor: { type: "user", id: randomUUID() },
@@ -139,11 +139,23 @@ function lockedEnvelope(runId: string, slips: Slip[]) {
   });
 }
 async function queueLocked(runId: string, slips: Slip[]) {
+  // 905: as in 881, a run's aggregate already holds its own `payroll.paid`
+  // event (sequence 1) after a handover; then the lock event goes on a separate
+  // aggregate (the GL consumer reads the run from the payload).
+  const [taken] = await W.rowsOf(
+    `SELECT count(*)::int AS n FROM domain_event_outbox
+      WHERE tenant_id = $1 AND aggregate_id = $2`,
+    [tenantId(), runId],
+  );
   const outboxId = createUlid();
   await W.inTx((tx) =>
     appendOutbox(tx, W.scope(), {
       id: outboxId,
-      event: lockedEnvelope(runId, slips),
+      event: lockedEnvelope(
+        runId,
+        slips,
+        Number(taken!.n) > 0 ? randomUUID() : runId,
+      ),
       destination: "cloud-sync",
       direction: null,
       peerId: null,

@@ -2759,6 +2759,13 @@
       "when": 1795000000649,
       "tag": "0649_payout_trusted_followups",
       "breakpoints": true
+    },
+    {
+      "idx": 408,
+      "version": "7",
+      "when": 1795000000650,
+      "tag": "0650_payout_trusted_batch_lock",
+      "breakpoints": true
     }
   ]
 }

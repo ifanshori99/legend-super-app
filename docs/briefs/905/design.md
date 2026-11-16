@@ -106,3 +106,8 @@ Tiap berkas fungsi legend_payout mengulang pola grant SET → ALTER OWNER → re
 - P2-4: key tertutup masih bisa membebaskan slip untuk retry (0647:125-133,164-167 hanya bereaksi saat kolom key berubah). Fix 0649(c): tolak pindah ke `failed`/`not_sent` bila `resolution_evidence_key` tertutup.
 - P2-3 (scope, ke CTO): retry/resolve `exported→failed/not_sent/succeeded` masih dipercaya ke legend_app (0648:1255, resolver teks bebas 1400-1414); insert guard hanya menahan slip yang di-flag recon (0648:1141-1148). Bead terpisah.
 - Test gagal-dulu di berkas baru `src/test/payroll-payout-905-followups.test.ts` (tag [905-fu-*]).
+
+## Putaran test 2 (16 Nov): 172 gagal / 446 lulus, log `/private/tmp/claude-501/-Users-ifanshori99-Projects-legend-super-app-legend-2e31f421/3ee34dd7-a818-4770-a5ac-91286fe60c45/scratchpad/payout-tests-2.log`
+- Akar: 54× `permission denied for table payroll_disbursement_batches` (fungsi legend_payout kurang grant, kemungkinan SELECT/FOR UPDATE butuh UPDATE satu kolom), 7× duplicate `domain_event_outbox_aggregate_sequence_key`, premise step-up session (3).
+- Aturan perbaikan (fixer): grant tambahan ke legend_payout lewat migrasi 0650 baru (jangan sunting 0644-0649 kecuali bug sintaks yang mencegah apply); jangan melemahkan guard/fungsi atau asersi uang test; test lama yang mengharapkan perilaku lama yang sengaja diubah 905 (legend_app tulis langsung, return legacy tanpa claim, 42501→23514, 23514→409) boleh disesuaikan dengan komentar `905:`; catat tiap penyesuaian di laporan.
+- Fail-first followups: jalankan `src/test/payroll-payout-905-followups.test.ts` sekali dengan entri journal 0649 dihapus sementara (salin journal dulu, pulihkan sesudahnya, pastikan `git diff` journal kembali bersih), lalu dengan 0649.

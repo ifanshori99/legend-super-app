@@ -778,8 +778,16 @@ describe("897 a return fails closed when the fingerprint read fails (F3)", () =>
 
   it("[897-claim-null-hash-refused-by-db] the app role cannot insert a new return claim without its hashes (23514); with both hashes it can", async () => {
     const paid = await paidBatch();
-    const insert = (content: string | null, stored: string | null) =>
-      withAppRole(async (client) => {
+    // 905 (migration 0648): the app role can no longer INSERT a return claim at
+    // all (42501, the payout-role function is the writer), so the NOT NULL-hash
+    // CHECK is proved with the migration owner and the app role is checked to be
+    // refused for the same row.
+    const insert = (
+      content: string | null,
+      stored: string | null,
+      asApp = false,
+    ) =>
+      (asApp ? withAppRole : W.asTenant)(async (client) => {
         await client.query("SAVEPOINT try_claim");
         try {
           await client.query(
@@ -809,6 +817,10 @@ describe("897 a return fails closed when the fingerprint read fails (F3)", () =>
     expect(await insert(hex(), hex()), "control: with both hashes").toBe(
       undefined,
     );
+    expect(
+      await insert(hex(), hex(), true),
+      "905: the app role cannot insert a claim at all",
+    ).toBe("42501");
     expect(await insert(null, null)).toBe("23514");
     expect(await insert(hex(), null)).toBe("23514");
     expect(await insert(null, hex())).toBe("23514");

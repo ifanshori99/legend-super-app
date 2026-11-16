@@ -678,8 +678,16 @@ const ANDI_NET = 5_000_001;
 const overpaidKey = (itemId: string) => `payroll-payout-overpaid:${itemId}`;
 const idOf = (row: Row) => row.id as string;
 
-const recordOverpaid = (itemId: string, batchId: string) =>
-  W.inTx((tx) =>
+const recordOverpaid = async (itemId: string, batchId: string) => {
+  // 905: the second step needs the first step of another person (W.proposeOverpaid).
+  await W.proposeOverpaid(
+    batchId,
+    itemId,
+    uploadEvidence(batchId, "mutasi-bank.pdf"),
+    "Mutasi bank menunjukkan transfer kedua untuk slip yang sama",
+    APP,
+  );
+  return W.inTx((tx) =>
     (
       glService as unknown as {
         recordOverpaidItem: (...args: unknown[]) => Promise<unknown>;
@@ -695,6 +703,7 @@ const recordOverpaid = (itemId: string, batchId: string) =>
       W.proofs(),
     ),
   );
+};
 
 /**
  * Budi's first transfer is resolved failed (two people), the others are paid,
