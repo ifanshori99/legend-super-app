@@ -1,0 +1,7 @@
+# 921 Merge train batch76 (QR/VA)
+Peran: merge train (baca ~/.agents/team/roles/merge-train.md). Codex gpt-6.1-sol high. Tidak ke `main`, tidak deploy, tidak force push.
+Basis: `origin/milestone/m1` 2cd7c7564. Ambil tip terbaru.
+Isi: `fix/guest-active-code-916` 1fec4716d (memuat `fix/qr-va-queue-after-paid-xzu4l` c35d1c794 = QRIS 785b3b453 yang sudah di m1 + VA 906 migrasi sementara 0631_payment_va_releases + 908 + 912 + ek1wt/4n8rs/154wr). Nomori ulang 0631 mulai 0424. Boleh tambah cabang siap lain dari Urutan prioritas `docs/merge-queue.md` yang tidak bentrok, total maks 7. JANGAN ambil rantai payout 915/918 (menunggu 920), `fix/va-staff-exit-5wn1e` (sudah termuat), `fix/e2e-m1-858`.
+Gate (Retro 36/37): fast gate WAJIB memuat test kontrak pemindai (`*-single-path*`, `*-contract*`, `*registry*`) dan area QR/VA/payment/bill-split, lalu lint, typecheck, e2e, dan full run lewat heavy. Perbaikan test setelah full run gagal: jalankan ulang file yang gagal + yang diperbaiki terarah, lalu lapor ke CTO sebelum mendarat bila kegagalan menyentuh uang.
+Setelah mendarat: tutup legend-xzu4l, legend-5wn1e, legend-p5xrv, legend-ek1wt, legend-4n8rs, legend-yehnr (komentar SHA m1; legend-154wr tetap open untuk P3). Hapus worktree dan cabang int. Edit `docs/merge-queue.md` di folder utama tanpa commit. PROGRESS batch76 ke m1.
+Laporan: SHA m1, cabang masuk, peta migrasi, gate, perbaikan test, kartu ditutup.
