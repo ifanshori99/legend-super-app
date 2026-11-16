@@ -78,6 +78,16 @@ export function PaymentPage({ token }: { token: string }) {
     intent?.status === "pending" ? intent : null,
     remaining,
   );
+  // Keep the success watermark when that mutation starts its next attempt.
+  // The guarded update adjusts this component's own state without an effect.
+  const [successfulMutationAt, setSuccessfulMutationAt] = useState(-1);
+  const latestSuccessAt = Math.max(
+    successfulMutationAt,
+    start.isSuccess ? (start.submittedAt ?? 0) : -1,
+    refresh.isSuccess ? (refresh.submittedAt ?? 0) : -1,
+  );
+  if (latestSuccessAt > successfulMutationAt)
+    setSuccessfulMutationAt(latestSuccessAt);
 
   if (link.isPending) return <PaymentSkeleton />;
 
@@ -174,6 +184,29 @@ export function PaymentPage({ token }: { token: string }) {
   }
 
   const checking = link.isFetching || intentQuery.isFetching;
+  // A successful replacement resolves earlier refusals from either mutation.
+  // Parked funds still take priority among errors after that success.
+  const currentErrors = [start, refresh]
+    .filter(
+      (mutation) =>
+        mutation.error && (mutation.submittedAt ?? 0) > latestSuccessAt,
+    )
+    .sort((a, b) => (b.submittedAt ?? 0) - (a.submittedAt ?? 0));
+  const fundsError = currentErrors.find(
+    (mutation) => paymentErrorKey(mutation.error) === "payment.fundsUnresolved",
+  )?.error;
+  const latestError = currentErrors[0]?.error;
+  const codeError =
+    phase === "paid" || phase === "empty" ? null : (fundsError ?? latestError);
+  const errorKey = codeError ? paymentErrorKey(codeError) : null;
+  const codeActive = errorKey === "payment.codeStillActive";
+  const fundsUnresolved = errorKey === "payment.fundsUnresolved";
+  const showPreviousCode =
+    intent !== null &&
+    (codeActive || fundsUnresolved) &&
+    (phase === "expired" ||
+      phase === "failed" ||
+      (fundsUnresolved && phase === "choose"));
 
   return (
     <article className="grid gap-4">
@@ -202,7 +235,13 @@ export function PaymentPage({ token }: { token: string }) {
 
       <BillCard bill={data.bill} />
 
-      {phase === "choose" && (
+      {codeError && (
+        <p role="alert" className="text-sm leading-5 text-danger">
+          {t(paymentErrorKey(codeError))}
+        </p>
+      )}
+
+      {phase === "choose" && !fundsUnresolved && (
         <MethodPicker
           methods={data.methods}
           method={selectedMethod}
@@ -213,16 +252,17 @@ export function PaymentPage({ token }: { token: string }) {
           }
           onSubmit={submit}
           submitting={start.isPending}
-          error={start.error}
+          error={null}
         />
       )}
 
-      {phase === "pending" && intent && (
+      {(phase === "pending" || showPreviousCode) && intent && (
         <PaymentCode
           intent={intent}
           remaining={remaining}
           refreshing={refresh.isPending}
           onChangeMethod={() => setSwitching(true)}
+          referenceOnly={fundsUnresolved}
         />
       )}
 
@@ -234,14 +274,16 @@ export function PaymentPage({ token }: { token: string }) {
         />
       )}
 
-      {(phase === "expired" || phase === "failed") && (
-        <PaymentRetry
-          kind={phase}
-          onRetry={retry}
-          retrying={start.isPending}
-          error={start.error}
-        />
-      )}
+      {(phase === "expired" || phase === "failed") &&
+        !showPreviousCode &&
+        !fundsUnresolved && (
+          <PaymentRetry
+            kind={phase}
+            onRetry={retry}
+            retrying={start.isPending}
+            error={null}
+          />
+        )}
 
       {phase === "unavailable" && (
         <PaymentCashier

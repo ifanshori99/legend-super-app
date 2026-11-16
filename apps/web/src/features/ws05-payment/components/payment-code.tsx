@@ -24,7 +24,15 @@ import { formatCountdown } from "../status";
 import { CopyField } from "./copy-field";
 
 /** QRIS needs black-on-white to scan in both themes; the shared renderer plate does. */
-function QrisCode({ payload, label }: { payload: string; label: string }) {
+function QrisCode({
+  payload,
+  label,
+  referenceOnly,
+}: {
+  payload: string;
+  label: string;
+  referenceOnly: boolean;
+}) {
   const t = useT();
   return (
     <div className="grid justify-items-center gap-3">
@@ -34,9 +42,11 @@ function QrisCode({ payload, label }: { payload: string; label: string }) {
         size={236}
         className="rounded-container border-(length:--border-w) border-border p-3"
       />
-      <p className="max-w-sm text-center text-sm leading-5 text-muted-foreground">
-        {t("payment.qrisHint")}
-      </p>
+      {!referenceOnly && (
+        <p className="max-w-sm text-center text-sm leading-5 text-muted-foreground">
+          {t("payment.qrisHint")}
+        </p>
+      )}
     </div>
   );
 }
@@ -46,12 +56,15 @@ export function PaymentCode({
   remaining,
   refreshing,
   onChangeMethod,
+  referenceOnly = false,
 }: {
   intent: CustomerPaymentIntent;
   /** Milliseconds left on the code, server-clock corrected. */
   remaining: number;
   refreshing: boolean;
   onChangeMethod: () => void;
+  /** Previous code kept for tracing parked funds, without a new payment prompt. */
+  referenceOnly?: boolean;
 }) {
   const t = useT();
   const time = formatCountdown(remaining);
@@ -61,10 +74,12 @@ export function PaymentCode({
     <Card>
       <div className="grid gap-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <StatusPill status="warning" icon={Clock}>
-            {t("payment.statusPending")}
-          </StatusPill>
-          {remaining > 0 && !refreshing && (
+          {!referenceOnly && (
+            <StatusPill status="warning" icon={Clock}>
+              {t("payment.statusPending")}
+            </StatusPill>
+          )}
+          {!referenceOnly && remaining > 0 && !refreshing && (
             <p
               className="text-sm leading-5 text-muted-foreground tabular"
               aria-label={t("payment.expiresInLong", { time })}
@@ -73,7 +88,13 @@ export function PaymentCode({
             </p>
           )}
         </div>
-        <h2 className="type-title">{t("payment.pendingTitle")}</h2>
+        <h2 className="type-title">
+          {t(
+            referenceOnly
+              ? "payment.previousCodeReference"
+              : "payment.pendingTitle",
+          )}
+        </h2>
       </div>
 
       {instructions.method === "qris" && (
@@ -81,6 +102,7 @@ export function PaymentCode({
           <QrisCode
             payload={instructions.qrPayload}
             label={t("payment.qrisTitle")}
+            referenceOnly={referenceOnly}
           />
           <div className="flex items-baseline justify-between gap-3">
             <span className="text-sm text-muted-foreground">
@@ -105,14 +127,18 @@ export function PaymentCode({
             </span>
             <Money amount={intent.amountIdr} size="lg" />
           </div>
-          <ol className="grid list-decimal gap-1 pl-5 text-sm leading-5 text-muted-foreground">
-            <li>{t("payment.vaStep1")}</li>
-            <li>{t("payment.vaStep2")}</li>
-            <li>{t("payment.vaStep3")}</li>
-          </ol>
-          <p className="text-sm leading-5 text-muted-foreground">
-            {t("payment.vaHint")}
-          </p>
+          {!referenceOnly && (
+            <>
+              <ol className="grid list-decimal gap-1 pl-5 text-sm leading-5 text-muted-foreground">
+                <li>{t("payment.vaStep1")}</li>
+                <li>{t("payment.vaStep2")}</li>
+                <li>{t("payment.vaStep3")}</li>
+              </ol>
+              <p className="text-sm leading-5 text-muted-foreground">
+                {t("payment.vaHint")}
+              </p>
+            </>
+          )}
         </div>
       )}
 
@@ -142,51 +168,57 @@ export function PaymentCode({
               </span>
               <Money amount={instructions.transferTotalIdr} size="lg" />
             </div>
-            <p className="mt-1 text-xs leading-5 text-muted-foreground">
-              {t("payment.transferHint")}
-            </p>
+            {!referenceOnly && (
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                {t("payment.transferHint")}
+              </p>
+            )}
           </div>
         </div>
       )}
 
-      <p role="status" className="text-xs leading-5 text-muted-foreground">
-        {refreshing ? t("payment.refreshingCode") : t("payment.checkingAuto")}
-      </p>
+      {!referenceOnly && (
+        <p role="status" className="text-xs leading-5 text-muted-foreground">
+          {refreshing ? t("payment.refreshingCode") : t("payment.checkingAuto")}
+        </p>
+      )}
 
       <p className="flex items-start gap-2 text-xs leading-5 text-muted-foreground">
         <Lock className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
         {t("payment.secureNote")}
       </p>
 
-      <Dialog>
-        <DialogTrigger asChild>
-          <Button type="button" variant="outline" className="w-full">
-            {t("payment.changeMethod")}
-          </Button>
-        </DialogTrigger>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{t("payment.changeMethodTitle")}</DialogTitle>
-            <DialogDescription>
-              {t("payment.changeMethodBody", {
-                method: t(PAYMENT_METHOD_LABEL[intent.method]),
-              })}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <DialogClose asChild>
-              <Button type="button" variant="outline">
-                {t("payment.changeMethodCancel")}
-              </Button>
-            </DialogClose>
-            <DialogClose asChild>
-              <Button type="button" onClick={onChangeMethod}>
-                {t("payment.changeMethodConfirm")}
-              </Button>
-            </DialogClose>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {!referenceOnly && (
+        <Dialog>
+          <DialogTrigger asChild>
+            <Button type="button" variant="outline" className="w-full">
+              {t("payment.changeMethod")}
+            </Button>
+          </DialogTrigger>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>{t("payment.changeMethodTitle")}</DialogTitle>
+              <DialogDescription>
+                {t("payment.changeMethodBody", {
+                  method: t(PAYMENT_METHOD_LABEL[intent.method]),
+                })}
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <DialogClose asChild>
+                <Button type="button" variant="outline">
+                  {t("payment.changeMethodCancel")}
+                </Button>
+              </DialogClose>
+              <DialogClose asChild>
+                <Button type="button" onClick={onChangeMethod}>
+                  {t("payment.changeMethodConfirm")}
+                </Button>
+              </DialogClose>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
     </Card>
   );
 }
