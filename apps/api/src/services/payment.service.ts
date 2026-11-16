@@ -794,8 +794,10 @@ export async function createSplitPartIntent(
  * part refuses; a hold of another part never gates this part. Without a part
  * every active hold refuses. The order row is not locked here and the link
  * lock does not stop a hold opener (it locks the order, not the link); locking
- * `orders` from here would risk a deadlock against the lock order, so the
- * database trigger of migration 0369 stays the backstop for that race.
+ * `orders` from here would risk a deadlock against the lock order. The hold
+ * freeze triggers (migration 0382) guard `orders` and `pos_order_tenders`, not
+ * `payment_intents`, so a hold opened between this check and the commit is not
+ * stopped by the database; that narrow window is tracked in a bead.
  */
 async function assertLinkOrderNoQrisHold(
   tx: Tx,
