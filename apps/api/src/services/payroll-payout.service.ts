@@ -679,6 +679,7 @@ async function openFreezingDisputes(
   if (ids.length === 0) return [];
   const result = await tx.execute(sql`
     SELECT t.batch_id::text AS target_batch_id, d.id::text AS id,
+           d.batch_id::text AS batch_id,
            d.log_id::text AS log_id, d.actor AS actor, d.reason AS reason,
            d.batch_status_at AS batch_status_at, d.created_at AS created_at
       FROM unnest(${`{${ids.join(",")}}`}::uuid[]) AS t(batch_id)
@@ -701,6 +702,7 @@ async function openFreezingDisputes(
     result.rows as {
       target_batch_id: string;
       id: string;
+      batch_id: string;
       log_id: string;
       actor: string;
       reason: string;
@@ -748,6 +750,7 @@ export async function loadBatchFreezes(
     };
     freeze.disputes.push({
       id: row.id,
+      batchId: row.batch_id,
       logId: row.log_id,
       createdAt: row.created_at.toISOString(),
       batchStatusAt:

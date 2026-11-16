@@ -81,6 +81,7 @@ export const payoutItemSchema = z.object({
 
 export const payoutBatchDisputeSchema = z.object({
   id: z.string(),
+  batchId: z.string(),
   logId: z.string(),
   createdAt: instant,
   batchStatusAt: z.string(),

@@ -119,7 +119,10 @@ export function FreezeBanner({
         </Button>
       )}
       {open && (
-        <UnfreezeDialog batchId={batch.id} onClose={() => setOpen(false)} />
+        <UnfreezeDialog
+          batchId={disputes[0]?.batchId ?? batch.id}
+          onClose={() => setOpen(false)}
+        />
       )}
     </section>
   );

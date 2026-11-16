@@ -1184,6 +1184,7 @@ registerMock(disownPayoutApproval, ({ params, body }) => {
         ...current.freeze.disputes,
         {
           id: disputeId,
+          batchId: current.id,
           logId: params.logId,
           createdAt: new Date().toISOString(),
           batchStatusAt: current.status,

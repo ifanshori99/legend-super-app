@@ -537,6 +537,9 @@ describe("918 review round 2", () => {
       );
 
     const free = await failedWorld();
+    const freeSql = await reverse(free.runId);
+    expect(freeSql.message, "control: a run with no claim reverses").toBe("");
+    expect(freeSql.code).toBeUndefined();
     await expect(request(free.runId), "control: asked").resolves.toBeTruthy();
 
     const frozen = await failedWorld();
@@ -604,5 +607,43 @@ describe("918 review round 2", () => {
     expect(dto.freeze.frozen, "frozen through its sibling").toBe(true);
     expect(dto.freeze.disputes).toHaveLength(1);
     expect(dto.freeze.disputes[0]!.mine).toBe(true);
+    expect(
+      dto.freeze.disputes[0]!.batchId,
+      "the claim names its own batch, the one to unfreeze",
+    ).toBe(w.batchId);
+  });
+
+  it("[918r-unfreeze-via-source] a retry batch frozen through its sibling is opened by unfreezing the batch the DTO names", async () => {
+    const w = await failedWorld();
+    const cId = await retryBatch(w, APP);
+    await disown(a.userId, w.batchId, await logOf(w.batchId, a.userId));
+    const dto = await W.inTx((tx) =>
+      getDisbursementBatch(tx, W.tenantId, cId, a.userId),
+    );
+    const source = dto.freeze.disputes[0]!.batchId;
+    expect(source).not.toBe(cId);
+
+    // The retry batch itself has no claim: unfreezing it is refused.
+    const wrong = await unfreeze(
+      outsideFinance.userId,
+      sessionOf(outsideFinance.userId),
+      cId,
+    );
+    expect(
+      wrong.outcome?.code ?? wrong.message,
+      "no claim on C itself",
+    ).toBeTruthy();
+
+    const ok = await unfreeze(
+      outsideFinance.userId,
+      sessionOf(outsideFinance.userId),
+      source,
+    );
+    expect(ok.outcome?.code, ok.message).toBeUndefined();
+    await W.inTx((tx) => assertBatchNotFrozen(tx, W.tenantId, cId));
+    const after = await W.inTx((tx) =>
+      getDisbursementBatch(tx, W.tenantId, cId, a.userId),
+    );
+    expect(after.freeze.frozen).toBe(false);
   });
 });

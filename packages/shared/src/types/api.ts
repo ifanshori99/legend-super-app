@@ -160,6 +160,12 @@ export type PayoutProofClosureClosedDto = {
  */
 export type PayoutBatchDisputeDto = {
   id: string;
+  /**
+   * The batch the claim was filed on. It is the batch to unfreeze; it differs
+   * from the batch shown when this one is frozen through a sibling (a retry
+   * batch of the same payslip).
+   */
+  batchId: string;
   logId: string;
   /** ISO datetime of the claim. */
   createdAt: string;

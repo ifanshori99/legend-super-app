@@ -33,6 +33,7 @@ import {
   recordPayoutAudit,
   type PayoutActor,
 } from "./payroll-payout.service.ts";
+import { batchIsNotFrozenSql } from "./payroll-payout-freeze-sql.ts";
 
 const logNotFound = () =>
   payoutRefuse(
@@ -127,20 +128,11 @@ export async function getPayoutApprovalLog(
       ),
     )
     .limit(1);
-  const [open] = await tx
-    .select({ id: payrollPayoutBatchDisputes.id })
-    .from(payrollPayoutBatchDisputes)
-    .where(
-      and(
-        eq(payrollPayoutBatchDisputes.tenantId, tenantId),
-        eq(payrollPayoutBatchDisputes.batchId, log.batchId),
-        sql`NOT EXISTS (
-          SELECT 1 FROM payroll_payout_batch_unfreezes u
-           WHERE u.tenant_id = ${payrollPayoutBatchDisputes.tenantId}
-             AND u.dispute_id = ${payrollPayoutBatchDisputes.id})`,
-      ),
-    )
-    .limit(1);
+  // Frozen as the whole system reads it: an open dispute on this batch or on a
+  // batch of the same payslips (the retry batch).
+  const open = await tx.execute(
+    sql`SELECT 1 AS open WHERE ${batchIsNotFrozenSql(tenantId, sql`${log.batchId}::uuid`)}`,
+  );
   return {
     id: log.id,
     batchId: log.batchId,
@@ -150,7 +142,7 @@ export async function getPayoutApprovalLog(
     period: `${log.periodStart} sampai ${log.periodEnd}`,
     loggedAt: log.loggedAt.toISOString(),
     disowned: mine !== undefined,
-    batchFrozen: open !== undefined,
+    batchFrozen: open.rows.length === 0,
   };
 }
 
