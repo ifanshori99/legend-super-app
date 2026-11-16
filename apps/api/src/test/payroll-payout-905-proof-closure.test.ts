@@ -47,7 +47,7 @@
 // - Not covered here: the audit row of a closure (its event name is not in the
 //   brief) and the SQL-level actor checks of the 0647 functions (the 905
 //   trusted-boundary file covers the role boundary).
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { totpCode, totpStep } from "../lib/totp.ts";
@@ -126,6 +126,26 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse())
     await cleanup().catch(() => undefined);
   const keys = trackedKeys.splice(0);
+  // 905: the upload records `stuck()` seeded (only those), and the hashes a
+  // closure contested from them.
+  const files = seededFiles
+    .splice(0)
+    .filter((f) => f.tenant === W.tenantId)
+    .map((f) => f.key);
+  if (files.length > 0)
+    await W.asTenant(async (c) => {
+      await c.query(
+        `DELETE FROM payroll_payout_proof_hash_contests
+          WHERE sha256 IN (SELECT f.content_sha256 FROM payroll_payout_evidence_files f
+                            WHERE f.tenant_id = $1 AND f.evidence_key = ANY($2::text[]))`,
+        [W.tenantId, files],
+      );
+      await c.query(
+        `DELETE FROM payroll_payout_evidence_files
+          WHERE tenant_id = $1 AND evidence_key = ANY($2::text[])`,
+        [W.tenantId, files],
+      );
+    }, true);
   if (keys.length === 0) return;
   await W.asTenant(async (c) => {
     await c.query(
@@ -245,7 +265,31 @@ async function paidBatch() {
   return w;
 }
 
-/** A stuck row as the fingerprint backfill leaves it (owner, guards off). Returns the key. */
+// 905: the stuck table alone never held the gate (app.payout_proof_tenant_pending,
+// 0641/0647, reads no stuck row). What holds it in production is the proof
+// history the backfill could not finish: an upload record whose stored
+// fingerprint was never read (stored_sha256 NULL). The helper now leaves that
+// real pending state next to the stuck row; the gate itself is unchanged.
+const seededFiles: { tenant: string; key: string }[] = [];
+async function pendingUpload(batchId: string, key: string, tenant = W.tenantId) {
+  const sha = createHash("sha256")
+    .update(`fixture proof ${tenant}/${key}`)
+    .digest("hex");
+  const inserted = await W.asTenant(
+    (c) =>
+      c.query(
+        `INSERT INTO payroll_payout_evidence_files
+           (tenant_id, batch_id, evidence_key, content_sha256, stored_sha256, created_by)
+         VALUES ($1, $2, $3, $4, NULL, $5)
+         ON CONFLICT (tenant_id, evidence_key) DO NOTHING RETURNING id`,
+        [tenant, batchId, key, sha, APP],
+      ),
+    true,
+  );
+  if (inserted.rowCount) seededFiles.push({ tenant, key });
+}
+
+/** A stuck row as the fingerprint backfill leaves it (owner, guards off), with its pending upload record. Returns the key. */
 async function stuck(
   batchId: string,
   reason: "unreadable" | "hash_conflict" | "legacy_duplicate" | "shared_key",
@@ -253,6 +297,7 @@ async function stuck(
   tenant = W.tenantId,
 ) {
   if (!trackedKeys.includes(key)) trackKey(key);
+  await pendingUpload(batchId, key, tenant);
   await W.asTenant(
     (c) =>
       c.query(
@@ -671,6 +716,8 @@ describe("905 card 3: idempotent, unknown keys, tenant scope", () => {
         ),
       true,
     );
+    // 905: PT B holds the gate through its pending upload record (see `stuck`).
+    await pendingUpload(b.batch, foreign, b.tenant);
 
     const listed = await listStuck(one.client, "?limit=100");
     const keys = (listed.body.data as unknown as Row[]).map(
@@ -704,6 +751,26 @@ describe("905 card 3: a closed key never moves money", () => {
   it("[905-closure-money-correct-overpaid] closed key, gate false: a correction and an overpaid record over the same bytes are refused for the key (not for the gate); the failed item stays failed with no correction, proposal, posting or journal", async () => {
     const w = await failedBatch();
     const key = await stuck(w.batchId, "unreadable");
+    // 905: the fixture bytes stay readable, so the call below would complete the
+    // seeded upload record itself (stored_sha256 NULL to a value) and clear the
+    // gate. A return claim from before the fingerprints (no hashes) over the
+    // same key is history the call cannot complete; only the closure clears it.
+    await W.asTenant(
+      (c) =>
+        c.query(
+          `INSERT INTO payroll_payout_return_claims
+             (tenant_id, batch_id, evidence_key, item_set_hash, status, created_by)
+           VALUES ($1, $2, $3, $4, 'open', $5)`,
+          [
+            W.tenantId,
+            w.batchId,
+            key,
+            createHash("sha256").update(w.itemId).digest("hex"),
+            APP,
+          ],
+        ),
+      true,
+    );
 
     // Control: while the key holds the gate, the same call is refused by the gate.
     const gated = await itemCall(
@@ -825,7 +892,12 @@ async function tenantB(batchIdA: string) {
     try {
       await owner.query("BEGIN");
       await owner.query("SET LOCAL session_replication_role = replica");
-      for (const table of [CLOSURES, STUCK, "payroll_disbursement_batches"])
+      for (const table of [
+        CLOSURES,
+        STUCK,
+        "payroll_payout_evidence_files", // 905: the pending upload record
+        "payroll_disbursement_batches",
+      ])
         await owner.query(`DELETE FROM ${table} WHERE tenant_id = $1`, [
           tenant,
         ]);

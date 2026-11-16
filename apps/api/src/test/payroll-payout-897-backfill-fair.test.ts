@@ -176,6 +176,15 @@ afterEach(async () => {
         WHERE tenant_id = $1 AND evidence_key = ANY($2::text[])`,
       [W.tenantId, keys],
     );
+    // 905: the returned items `W.legacyReturnItem` cloned behind a claim go too;
+    // left behind, a later sweep binds them as item returns over bytes another
+    // test already holds and lists a legacy_duplicate stuck row.
+    await c.query(
+      `DELETE FROM payroll_disbursement_items
+        WHERE tenant_id = $1 AND return_evidence_key = ANY($2::text[])
+          AND returned_by = 'legacy-905' AND attempt_no >= 1000`,
+      [W.tenantId, keys],
+    );
     // The stuck table exists only once the feature does.
     const exists = (await c.query(`SELECT to_regclass('public.${STUCK}') AS t`))
       .rows[0]!.t;

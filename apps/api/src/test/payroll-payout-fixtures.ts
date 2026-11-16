@@ -956,6 +956,35 @@ export function installPayoutWorld(label: string) {
         "DELETE FROM payroll_payout_gl_postings WHERE tenant_id = $1 AND batch_id IN (SELECT id FROM payroll_disbursement_batches WHERE tenant_id = $1 AND payroll_run_id = ANY($2))",
         runs,
       );
+      // 905: the operation rows of this file's batches (corrections, overpaid
+      // proposals, return claims, bindings, attestations, recon flags, ...) go
+      // with their items. The fixture tenant is shared by every payout file, and
+      // the night recon reads the whole tenant: an operation left over an item
+      // deleted here fails it (PAYOUT-68).
+      const batchesOfRuns =
+        "SELECT id FROM payroll_disbursement_batches WHERE tenant_id = $1 AND payroll_run_id = ANY($2)";
+      await del(
+        `DELETE FROM payroll_payout_proof_hashes WHERE binding_id IN (
+           SELECT id FROM payroll_payout_proof_bindings
+            WHERE tenant_id = $1 AND batch_id IN (${batchesOfRuns}))`,
+        runs,
+      );
+      const opTables = (
+        await c.query(
+          `SELECT a.table_name FROM information_schema.columns a
+             JOIN information_schema.columns b
+               ON b.table_schema = a.table_schema AND b.table_name = a.table_name AND b.column_name = 'tenant_id'
+             JOIN information_schema.tables t
+               ON t.table_schema = a.table_schema AND t.table_name = a.table_name AND t.table_type = 'BASE TABLE'
+            WHERE a.table_schema = 'public' AND a.column_name = 'batch_id'
+              AND a.table_name LIKE 'payroll\\_payout\\_%'`,
+        )
+      ).rows as { table_name: string }[];
+      for (const { table_name } of opTables)
+        await del(
+          `DELETE FROM "${table_name}" WHERE tenant_id = $1 AND batch_id IN (${batchesOfRuns})`,
+          runs,
+        );
       await del(
         "DELETE FROM payroll_disbursement_items WHERE tenant_id = $1 AND payroll_run_id = ANY($2)",
         runs,

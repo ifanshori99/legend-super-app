@@ -124,3 +124,28 @@ Catatan: jalankan suite dari root repo (bukan `apps/api`; dari `apps/api` vitest
 ## Belum dikerjakan
 - 905-proof-closure (lihat atas), 900-global-gate (2), `897-log-no-keys`, suite payout penuh, `tsc` (belum dijalankan untuk perubahan recon; perubahan kecil, tipe `Operation.missing` dan reason baru).
 - Migrasi baru `0651` perlu dilaporkan ke CTO/architect (fungsi baca-saja, bukan grant; di luar aturan "grant lewat 0650").
+
+## Keputusan engineer untuk fixer 5 (16 Nov)
+- Closure: opsi A. Helper `stuck()` membuat keadaan pending nyata seperti produksi (item dengan evidence key tanpa proof hash / binding yang membuat `payout_proof_tenant_pending` true) DAN baris stuck. Jangan ubah gerbang (opsi B ditolak). Premis tiap test: gate true sebelum penutupan, false sesudah approve.
+- Lalu 900-global-gate (2), `897-log-no-keys`, typecheck api (`heavy pnpm --filter api typecheck` atau skrip repo), suite payout penuh.
+
+# Putaran fixer 5 (16 Nov)
+
+## 905-proof-closure: 12/12 lulus (`$S/f5-t2.log`)
+- `stuck()` (komentar `905:`): selain baris stuck, menyisipkan upload record `payroll_payout_evidence_files` (owner, guards off) dengan `content_sha256` = hash byte fixture dan `stored_sha256 NULL`, yaitu riwayat yang tidak selesai di-backfill; itu yang benar-benar menahan `payout_proof_tenant_pending`. Helper `pendingUpload` juga dipakai untuk kunci PT B di `tenant-scope`. Cleanup: hanya record yang di-seed (plus contest hash-nya) dihapus; cleanup PT B ikut menghapus evidence_files PT B.
+- `[905-closure-money-correct-overpaid]` (komentar `905:`): kontrol "ditolak gerbang" gagal karena panggilan koreksi sendiri melengkapi record yang di-seed (byte fixture terbaca, `recordProofFingerprints` mengisi stored), gerbang jadi bersih, lalu koreksi tercatat. Ditambah klaim return pra-fingerprint (tanpa hash) atas kunci yang sama, riwayat yang tak bisa dilengkapi panggilan itu, hanya penutupan yang membersihkannya. Asersi uang tidak diubah. Gerbang/SQL tidak diubah.
+
+## 897-backfill-fair: 7/7 (`$S/f5-t5.log`)
+- `[897-log-no-keys]` "stuck 2": baris stuck `legacy_duplicate` sisa tes sebelumnya di berkas yang sama. Akar: item `returned` hasil clone `W.legacyReturnItem` (perubahan fixture 905) tidak pernah dihapus afterEach; sweep berikut mengikatnya sebagai item return atas byte yang sudah dipegang. afterEach (komentar `905:`) kini juga menghapus clone itu (`returned_by='legacy-905'`, `attempt_no >= 1000`, kunci yang dipakai tes). Asersi tidak diubah.
+
+## 900-global-gate: 7/7 (`$S/f5-t7.log`)
+- `[900-gate-other-tenant-history-holds]`, `[900-half-finished-cross-tenant]`: sesudah sweep B gerbang tetap pending. Akar: item B di `historicalClaimOfB` (clone dari item A yang sudah confirm, perubahan fixture 905) ikut membawa `confirmation_evidence_key` A; di PT B kunci itu tanpa upload record → "item proof keys without record 1" selamanya. Clone (komentar `905:`) kini mengosongkan `confirmation_evidence_key` dan `resolution_evidence_key`. Asersi tidak diubah.
+
+## Typecheck api: bersih (`heavy pnpm --filter @starter/api typecheck`, `$S/f5-tsc.log`)
+
+## Suite payout penuh f5 (47 berkas, `$S/f5-full.log`): 9 gagal / 609 lulus / 13 todo (45 berkas lulus, 1 skip)
+- Semua 9 di `905-recon` (lulus sendiri 10/10): `PAYOUT-68: the flagged item is not an item of the tenant`. Akar: tenant fixture dipakai semua berkas payout; afterAll `installPayoutWorld` menghapus item/batch berkas itu tapi meninggalkan baris operasi (koreksi, proposal overpaid, klaim, binding, attestasi, ...). Recon membaca seluruh tenant dan menemukan koreksi berkas lain atas item yang sudah dihapus.
+- Perbaikan (fixture, komentar `905:`): afterAll juga menghapus `payroll_payout_proof_hashes` milik binding batch berkas itu dan semua tabel `payroll_payout_*` ber-`batch_id` untuk batch berkas itu, sebelum item. Tidak menyentuh asersi atau SQL.
+
+## Suite payout penuh f5 ulang (`$S/f5-full2.log`): 46 berkas lulus, 1 skip; 618 lulus / 0 gagal / 13 todo (631)
+- Belum: `pnpm check` penuh, review architect untuk perubahan fixer 3-5, laporan 0650(b) dan 0651 ke CTO/architect, fail-first 0649 followups (lihat atas).

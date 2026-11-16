@@ -618,7 +618,9 @@ async function historicalClaimOfB(b: OtherTenant, bytes: Uint8Array) {
     await client.query("BEGIN");
     await client.query("SET LOCAL session_replication_role = replica");
     // 905: the trusted binder recomputes the item set hash from real items; B
-    // gets a returned item (cloned from A's batch, FKs off) behind the key.
+    // gets a returned item (cloned from A's batch, FKs off) behind the key. The
+    // clone drops A's own proof keys (confirmation/resolution): in B they have no
+    // upload record and would hold B's gate for ever.
     const item = (
       await client.query(
         `WITH src AS (SELECT * FROM payroll_disbursement_items
@@ -630,6 +632,7 @@ async function historicalClaimOfB(b: OtherTenant, bytes: Uint8Array) {
                           'status', 'returned', 'attempt_no', 1000,
                           'idempotency_key', 'payslip:' || (to_jsonb(s)->>'payslip_id') || ':attempt:1000',
                           'return_evidence_key', $4::text,
+                          'confirmation_evidence_key', NULL, 'resolution_evidence_key', NULL,
                           'returned_by', 'legacy-b-900', 'return_note', 'legacy b', 'returned_by_2', 'legacy-b-900-2',
                           'returned_at', now()))).*
                   FROM src s
