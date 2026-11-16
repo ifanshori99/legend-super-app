@@ -30,6 +30,18 @@ afterAll(async () => {
 });
 
 describe("notification persistence", () => {
+  it("legend-nb2mk indexes push subscriptions by user for account-wide lookup", async () => {
+    const result = await database.execute(sql`
+      SELECT indexdef FROM pg_indexes
+      WHERE schemaname = 'public' AND tablename = 'push_subscriptions'
+    `);
+    expect(
+      result.rows.some((row) =>
+        /\bUSING btree \(user_id\)/.test(String(row.indexdef)),
+      ),
+    ).toBe(true);
+  });
+
   it("TEN-01 TEN-02 isolates WhatsApp cap reservations by tenant and deduplicates attempts", async () => {
     const reservationTenant = randomUUID();
     const attempt = randomUUID();

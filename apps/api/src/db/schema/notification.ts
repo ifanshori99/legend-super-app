@@ -242,6 +242,7 @@ export const pushSubscriptions = pgTable(
   },
   (table) => [
     primaryKey({ columns: [table.tenantId, table.id] }),
+    index("push_subscriptions_user_idx").on(table.userId),
     unique("push_subscriptions_endpoint_key").on(
       table.tenantId,
       table.userId,
