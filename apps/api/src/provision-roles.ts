@@ -12,10 +12,10 @@
 // it the database owner, with BYPASSRLS and CREATEROLE, not a superuser.
 //
 // Reads MIGRATION_DATABASE_URL (owner/admin), APP_DATABASE_URL and
-// WORKER_DATABASE_URL, plus the optional MAINTENANCE_DATABASE_URL (the audit
-// retention login, legend-usyi; skipped when absent) and the optional
-// PAYOUT_GRANTOR_DATABASE_URL (the payout step grant login, legend-911;
-// skipped when absent). Each may instead be given as NAME_FILE, a path to a
+// WORKER_DATABASE_URL and PAYOUT_GRANTOR_DATABASE_URL (the payout step grant
+// login, legend-911; required since legend-786te), plus the optional
+// MAINTENANCE_DATABASE_URL (the audit retention login, legend-usyi; skipped
+// when absent). Each may instead be given as NAME_FILE, a path to a
 // file holding the URL (--migrator reads MIGRATION_DATABASE_URL and the two
 // BOOTSTRAP_DATABASE_* settings only). Prints role names only, never a URL or password.
 // Deliberately does not load .env files: the operator supplies the settings.
@@ -118,7 +118,7 @@ try {
       appUrl: setting("APP_DATABASE_URL"),
       workerUrl: setting("WORKER_DATABASE_URL"),
       maintenanceUrl: optionalSetting("MAINTENANCE_DATABASE_URL"),
-      grantorUrl: optionalSetting("PAYOUT_GRANTOR_DATABASE_URL"),
+      grantorUrl: setting("PAYOUT_GRANTOR_DATABASE_URL"),
     });
     console.log(
       `Audit passed for ${[result.app, result.worker, result.maintenance, result.grantor].filter(Boolean).join(", ")}; nothing was changed.`,
@@ -129,7 +129,7 @@ try {
       appUrl: setting("APP_DATABASE_URL"),
       workerUrl: setting("WORKER_DATABASE_URL"),
       maintenanceUrl: optionalSetting("MAINTENANCE_DATABASE_URL"),
-      grantorUrl: optionalSetting("PAYOUT_GRANTOR_DATABASE_URL"),
+      grantorUrl: setting("PAYOUT_GRANTOR_DATABASE_URL"),
     });
     console.log(
       `Application login ${result.app.user} ${result.app.outcome}: member of legend_app only, no BYPASSRLS, owns nothing, no DDL.`,

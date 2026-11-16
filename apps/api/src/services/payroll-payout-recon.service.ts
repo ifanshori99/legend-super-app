@@ -381,6 +381,7 @@ async function loadFacts(
   operations: readonly Operation[],
   since: Date,
   grantsSince: Date | null,
+  includeWithdrawals: boolean,
 ): Promise<Facts> {
   const batchIds = [...new Set(operations.map((op) => op.batchId))];
   const itemIds = [
@@ -395,7 +396,6 @@ async function loadFacts(
       ),
     ),
   ];
-  const operationIds = [...new Set(operations.map((op) => op.operationId))];
   const sinceIso = since.toISOString();
 
   const attestations = rowsOf(
@@ -406,7 +406,12 @@ async function loadFacts(
              a.step, a.grant_id::text AS grant_id, a.txid
         FROM payroll_payout_attestations a
        WHERE a.tenant_id = ${tenantId}::uuid
-         AND a.batch_id IN (${uuidList(batchIds)})`),
+         AND (a.batch_id IN (${uuidList(batchIds)})
+              -- A withdrawn proposal is no operation (nothing was corrected or
+              -- recorded), so its withdraw step is read on its own; the first
+              -- page only, the flags dedupe by operation across pages.
+              OR (${includeWithdrawals} AND a.step = 'withdraw'
+                  AND a.kind IN ('correction', 'overpaid')))`),
   ).map((row): Attestation => ({
     kind: String(row.kind),
     operationId: String(row.operation_id),
@@ -422,6 +427,13 @@ async function loadFacts(
     grantId: text(row.grant_id),
     txid: row.txid === null || row.txid === undefined ? null : Number(row.txid),
   }));
+
+  const operationIds = [
+    ...new Set([
+      ...operations.map((op) => op.operationId),
+      ...attestations.map((a) => a.operationId),
+    ]),
+  ];
 
   const grants = new Map<string, GrantRow>();
   const grantIds = [
@@ -790,6 +802,8 @@ function evaluate(
     const atts = facts.attestations.filter(
       (a) =>
         a.kind === op.kind &&
+        // A withdrawal is not a step of the operation (grants check it).
+        a.step !== "withdraw" &&
         a.batchId === op.batchId &&
         (op.kind === "posting_source"
           ? a.operationId === op.operationId
@@ -1080,7 +1094,14 @@ export async function reconcileTrustedPayouts(
       return { operations: found, facts: null as Facts | null };
     return {
       operations: found,
-      facts: await loadFacts(tx, tenantId, found, since, grantsSince),
+      facts: await loadFacts(
+        tx,
+        tenantId,
+        found,
+        since,
+        grantsSince,
+        options.after == null,
+      ),
     };
   });
   const last = operations.at(-1)?.sortKey ?? null;

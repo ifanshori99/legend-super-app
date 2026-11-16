@@ -36,6 +36,12 @@ const CODE_KEYS: Record<string, MessageKey> = {
   PAYOUT_RETURN_EVIDENCE_MISMATCH:
     "payrollPayoutReview.error.returnEvidenceMismatch",
   PAYOUT_RETURN_SAME_PERSON: "payrollPayoutReview.error.returnSamePerson",
+  PAYOUT_PROPOSAL_NOT_WITHDRAWABLE:
+    "payrollPayoutReview.error.proposalNotWithdrawable",
+  PAYOUT_PROOF_SPENT_BY_WITHDRAWN:
+    "payrollPayoutReview.error.proofSpentByWithdrawn",
+  PAYOUT_REQUESTER_CANNOT_WITHDRAW:
+    "payrollPayoutReview.error.requesterCannotWithdraw",
   NETWORK_ERROR: "payrollPayout.error.offline",
   FORBIDDEN: "payrollPayout.error.forbidden",
 };

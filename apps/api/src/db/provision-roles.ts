@@ -1514,6 +1514,8 @@ export async function provisionAppRole(adminUrl: string, appUrl: string) {
     appUrl,
     workerUrl: process.env.WORKER_DATABASE_URL || undefined,
     maintenanceUrl: process.env.MAINTENANCE_DATABASE_URL || undefined,
+    // Optional only for this development and test harness; the deploy job
+    // (provision-roles.ts) requires it (legend-786te).
     grantorUrl: process.env.PAYOUT_GRANTOR_DATABASE_URL || undefined,
   });
 }

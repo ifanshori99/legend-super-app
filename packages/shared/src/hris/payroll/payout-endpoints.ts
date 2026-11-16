@@ -31,6 +31,7 @@ import {
   resolveManualItemsSchema,
   returnManualItemsSchema,
   upsertPayoutConfigInputSchema,
+  withdrawPayoutProposalSchema,
 } from "../../validators/payroll-payout.ts";
 
 const BASE = "/api/hris/payroll";
@@ -323,6 +324,33 @@ export const correctFailedDisbursementItems = defineEndpoint({
 });
 
 /**
+ * Takes back an open correction proposal (legend-xatux; payroll.disburse.approve
+ * + step-up MFA + password). The proposer or another approver, never the batch
+ * requester. The items stay `failed`, nothing is paid, and the proof cannot be
+ * used again. `itemIds` is the whole proposal (`groupItemIds`).
+ */
+export const withdrawFailedCorrection = defineEndpoint({
+  method: "POST",
+  path: `${BASE}/disbursement-batches/:id/correct-failed/withdraw`,
+  params: payoutBatchParamsSchema,
+  body: withdrawPayoutProposalSchema,
+  response: z.object({
+    data: z.object({ withdrawn: z.number().int() }),
+  }),
+});
+
+/** Same as `withdrawFailedCorrection`, for an open overpaid proposal. */
+export const withdrawOverpaidProposal = defineEndpoint({
+  method: "POST",
+  path: `${BASE}/disbursement-batches/:id/overpaid/withdraw`,
+  params: payoutBatchParamsSchema,
+  body: withdrawPayoutProposalSchema,
+  response: z.object({
+    data: z.object({ withdrawn: z.number().int() }),
+  }),
+});
+
+/**
  * Upload of a resolve/return proof: multipart with one `file` part (JPEG, PNG
  * or PDF, 5 MiB; step-up MFA). The typed client cannot send multipart, so the
  * web reads this path with a raw fetch; the answer is parsed with
@@ -370,7 +398,7 @@ export const listResolutionProposals = defineEndpoint({
       z.object({
         itemId: z.string(),
         employeeId: z.string(),
-        kind: z.enum(["resolve", "return"]),
+        kind: z.enum(["resolve", "return", "correction", "overpaid"]),
         outcome: z.enum(["failed", "not_sent"]).nullable(),
         evidenceKey: z.string().nullable(),
         note: z.string().nullable(),
@@ -378,6 +406,8 @@ export const listResolutionProposals = defineEndpoint({
         // Display name, only for a user of the same tenant (legend-eszso).
         proposedByName: z.string().nullable(),
         proposedAt: instant,
+        // Only for correction and overpaid: all items of the proposal.
+        groupItemIds: z.array(z.string()).optional(),
       }),
     ),
   }),

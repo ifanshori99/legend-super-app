@@ -14,7 +14,8 @@ password=0123456789abcdef0123456789abcdef0123456789abcdef
 app="postgresql://legend_runtime_0123456789abcdef:$password@postgres:5432/legend"
 worker="postgresql://legend_worker_0123456789abcdef:$password@postgres:5432/legend"
 printf 'MIGRATION_DATABASE_URL=postgresql://owner:secret@postgres:5432/legend\n' > "$tmp/migrator.env"
-printf 'APP_DATABASE_URL=%s\n' "$app" > "$tmp/api.env"
+grantor="postgresql://legend_grant_0123456789abcdef:$password@postgres:5432/legend"
+printf 'APP_DATABASE_URL=%s\nPAYOUT_GRANTOR_DATABASE_URL=%s\n' "$app" "$grantor" > "$tmp/api.env"
 : > "$tmp/web.env"
 printf 'APP_DATABASE_URL=%s\nWORKER_DATABASE_URL=%s\n' "$app" "$worker" > "$tmp/worker.env"
 for name in MIGRATOR API WEB WORKER; do

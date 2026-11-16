@@ -91,9 +91,9 @@ const schema = z
     }, "Set DATABASE_URL to a PostgreSQL connection string or run pnpm run setup."),
     APP_DATABASE_URL: postgresUrl.optional(),
     // Payout step grant login (legend-911): legend_grant_<16 hex>, member of
-    // legend_payout_grantor, runs only app.payout_grant_issue. Unset outside
-    // development and test: every trusted payout step answers 503
-    // PAYOUT_STEP_GRANT_UNAVAILABLE (no payout money is recorded).
+    // legend_payout_grantor, runs only app.payout_grant_issue. Required in
+    // production (legend-786te, see the refine below); development and test
+    // may leave it unset and fall back to SET LOCAL ROLE (db/grantor.ts).
     PAYOUT_GRANTOR_DATABASE_URL: blankToUndefined(postgresUrl).optional(),
     BETTER_AUTH_SECRET: z
       .string()
@@ -813,6 +813,19 @@ const schema = z
       path: ["STAFF_PIN_PEPPER"],
       message:
         "STAFF_PIN_PEPPER must be its own secret, not BETTER_AUTH_SECRET.",
+    },
+  )
+  .refine(
+    (values) =>
+      values.NODE_ENV !== "production" ||
+      Boolean(values.PAYOUT_GRANTOR_DATABASE_URL),
+    {
+      // legend-786te: without the grantor login every trusted payout step
+      // answers 503, so production refuses to start instead. Edge nodes get no
+      // exemption, the same as APP_DATABASE_URL below.
+      path: ["PAYOUT_GRANTOR_DATABASE_URL"],
+      message:
+        "Set PAYOUT_GRANTOR_DATABASE_URL to the payout grantor login (legend_grant_*) in production.",
     },
   )
   .refine(

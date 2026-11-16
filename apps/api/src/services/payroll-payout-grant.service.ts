@@ -1,7 +1,7 @@
 // One-time payout step grants (legend-911, P1-1 of the second opinion on 905).
 //
 // A trusted payout money step (correction, overpaid, return, proof closure,
-// posting source) no longer takes (actor, session) from the app: it spends a
+// posting source, and the withdraw of a correction or overpaid proposal) no longer takes (actor, session) from the app: it spends a
 // grant that only the grantor database login can issue (migration 0653,
 // `app.payout_grant_issue`). The grant names the actor and session itself and is
 // bound to the exact step, batch, item set, evidence key, ref and target.
@@ -28,7 +28,7 @@ export type PayoutGrantBinding = {
     | "posting_source"
     | "resolve"
     | "bank_confirm";
-  step: "propose" | "approve" | "record" | "confirm";
+  step: "propose" | "approve" | "record" | "confirm" | "withdraw";
   batchId: string | null;
   itemIds: readonly string[];
   evidenceKey: string | null;

@@ -1011,6 +1011,7 @@ registerMock(listResolutionProposals, ({ params }) => {
         {
           itemId: target.id,
           employeeId: target.employeeId,
+          groupItemIds: [target.id],
           kind: proposal.kind,
           outcome:
             proposal.kind === "return"

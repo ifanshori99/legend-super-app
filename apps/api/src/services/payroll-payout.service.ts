@@ -878,7 +878,7 @@ async function slipsHeldByClosedKeyProposal(
           JOIN payroll_payout_failed_corrections c
             ON c.tenant_id = i.tenant_id AND c.item_id = i.id
          WHERE i.tenant_id = ${tenantId} AND i.payslip_id IN (${ids})
-           AND c.status = 'proposed'
+           AND c.status IN ('proposed', 'withdrawn')
            AND app.payout_proof_key_closed(c.tenant_id, c.evidence_key)
         UNION
         SELECT i.payslip_id
@@ -886,7 +886,7 @@ async function slipsHeldByClosedKeyProposal(
           JOIN payroll_payout_overpaid_proposals p
             ON p.tenant_id = i.tenant_id AND p.item_id = i.id
          WHERE i.tenant_id = ${tenantId} AND i.payslip_id IN (${ids})
-           AND p.status = 'proposed'
+           AND p.status IN ('proposed', 'withdrawn')
            AND app.payout_proof_key_closed(p.tenant_id, p.evidence_key)`,
   );
   return new Set(rows.rows.map((row) => row.payslip_id));

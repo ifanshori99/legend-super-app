@@ -68,6 +68,8 @@ import {
   shiftCancelled,
   shiftPublished,
 } from "@starter/shared/hris";
+import { payoutStepAttested } from "@starter/shared/hris/payroll";
+import { createTranslator, messagesId } from "@starter/shared/i18n";
 import { operationsEventPayloadSchemas } from "@starter/shared/operations";
 import { PLATFORM_EVENT_PAYLOADS } from "@starter/shared/platform";
 import { AI_EVENT_PAYLOAD_SCHEMAS } from "@starter/shared/ai";
@@ -88,6 +90,11 @@ import { customerProfiles } from "../db/schema/crm-member.ts";
 import { facilityIncidents } from "../db/schema/facility.ts";
 import { panicAlerts } from "../db/schema/panic-alert.ts";
 import { employees } from "../db/schema/hris.ts";
+import { payrollRuns } from "../db/schema/payroll.ts";
+import {
+  payrollDisbursementBatches,
+  payrollPayoutApprovalLog,
+} from "../db/schema/payroll-payout.ts";
 import { roleAssignments, roles } from "../db/schema/platform-access.ts";
 import { approvalRequests } from "../db/schema/platform-approval.ts";
 import { outlets, tenants } from "../db/schema/platform-org.ts";
@@ -928,6 +935,90 @@ async function subscriptionInvoiceCreatedRule(input: RuleInput): Promise<Rule> {
   };
 }
 
+const PAYOUT_RECEIPT_TIME = new Intl.DateTimeFormat("id-ID", {
+  timeZone: "Asia/Jakarta",
+  dateStyle: "long",
+  timeStyle: "short",
+});
+const payoutReceiptText = createTranslator(messagesId);
+
+/** legend-7gghu: the person whose login attested a payout step hears about it
+ * outside that session ("Bukan Anda?"). Everything is re-read from the
+ * append-only log by tenant + id; the payload carries the log id only, so a
+ * forged event cannot name a recipient. The recipient is the log's actor and
+ * only while still holding an open role assignment in this tenant. The text
+ * has no amount, name or account number (the batch total is sealed). */
+async function payoutStepAttestedRule(input: RuleInput): Promise<Rule> {
+  const payload = payoutStepAttested.payloadSchema.parse(input.event.payload);
+  const [log] = await input.tx
+    .select({
+      actor: payrollPayoutApprovalLog.actor,
+      kind: payrollPayoutApprovalLog.kind,
+      step: payrollPayoutApprovalLog.step,
+      batchId: payrollPayoutApprovalLog.batchId,
+      itemCount: payrollPayoutApprovalLog.itemCount,
+      loggedAt: payrollPayoutApprovalLog.loggedAt,
+      periodStart: payrollRuns.periodStart,
+      periodEnd: payrollRuns.periodEnd,
+    })
+    .from(payrollPayoutApprovalLog)
+    .innerJoin(
+      payrollDisbursementBatches,
+      and(
+        eq(
+          payrollDisbursementBatches.tenantId,
+          payrollPayoutApprovalLog.tenantId,
+        ),
+        eq(payrollDisbursementBatches.id, payrollPayoutApprovalLog.batchId),
+      ),
+    )
+    .innerJoin(
+      payrollRuns,
+      and(
+        eq(payrollRuns.tenantId, payrollDisbursementBatches.tenantId),
+        eq(payrollRuns.id, payrollDisbursementBatches.payrollRunId),
+      ),
+    )
+    .where(
+      and(
+        eq(payrollPayoutApprovalLog.tenantId, input.tenantId),
+        eq(payrollPayoutApprovalLog.id, payload.logId),
+      ),
+    );
+  if (!log) throw new Error("Payout approval log row not found for receipt");
+  const [member] = await input.tx
+    .select({ id: roleAssignments.id })
+    .from(roleAssignments)
+    .where(
+      and(
+        eq(roleAssignments.tenantId, input.tenantId),
+        eq(roleAssignments.userId, log.actor),
+        lte(roleAssignments.validFrom, sql`now()`),
+        or(
+          isNull(roleAssignments.validUntil),
+          gt(roleAssignments.validUntil, sql`now()`),
+        ),
+      ),
+    )
+    .limit(1);
+  const body = payoutReceiptText("payrollPayoutReceipt.body", {
+    verb: payoutReceiptText(`payrollPayoutReceipt.verb.${log.step}`),
+    kind: payoutReceiptText(`payrollPayoutReceipt.kind.${log.kind}`),
+    period: `${log.periodStart} sampai ${log.periodEnd}`,
+    count: log.itemCount,
+    time: PAYOUT_RECEIPT_TIME.format(log.loggedAt),
+  });
+  return {
+    userIds: member ? [log.actor] : [],
+    content: {
+      category: "payout_receipt",
+      title: payoutReceiptText("payrollPayoutReceipt.title"),
+      body,
+      link: `/kelola/payroll/pencairan?tab=approval&batch=${encodeURIComponent(log.batchId)}`,
+    },
+  };
+}
+
 const OWNER_CHANGE_TIME = new Intl.DateTimeFormat("id-ID", {
   timeZone: "Asia/Jakarta",
   dateStyle: "long",
@@ -1211,6 +1302,8 @@ async function ruleFor(input: RuleInput): Promise<Rule> {
       return tenantOwnerChangedRule(input);
     case "subscription.invoice_created":
       return subscriptionInvoiceCreatedRule(input);
+    case "payout.step_attested":
+      return payoutStepAttestedRule(input);
     default:
       throw new Error(`No notification recipient rule for ${input.event.name}`);
   }

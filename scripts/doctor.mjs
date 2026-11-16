@@ -48,6 +48,17 @@ await check("Auth secret", () => {
       "Run pnpm run setup or set BETTER_AUTH_SECRET to 32+ characters.",
     );
 });
+await check("Payout grantor login", () => {
+  // legend-786te: production refuses to start without it; development and
+  // test fall back to SET LOCAL ROLE.
+  if (
+    process.env.NODE_ENV === "production" &&
+    !process.env.PAYOUT_GRANTOR_DATABASE_URL
+  )
+    throw new Error(
+      "Set PAYOUT_GRANTOR_DATABASE_URL to the payout grantor login (legend_grant_*) in production.",
+    );
+});
 await check("API and web origins", () => {
   const api = origin("BETTER_AUTH_URL", DEFAULT_API_URL);
   const web = origin("WEB_URL", DEFAULT_WEB_URL);

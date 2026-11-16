@@ -72,13 +72,13 @@ function checkComposeConfig(config, expected) {
     if (name !== "api" && !JOB_SERVICES.has(name))
       if (has(env(name), "PAYOUT_GRANTOR_DATABASE_URL"))
         problems.push(`${name} receives PAYOUT_GRANTOR_DATABASE_URL`);
-  if (expected.grantor) {
-    if (api.PAYOUT_GRANTOR_DATABASE_URL !== expected.grantor)
-      problems.push(
-        "api receives a PAYOUT_GRANTOR_DATABASE_URL other than the checked one in api.env",
-      );
-  } else if (has(api, "PAYOUT_GRANTOR_DATABASE_URL"))
-    problems.push("api receives a PAYOUT_GRANTOR_DATABASE_URL not checked");
+  // Required since legend-786te: the api refuses to start without it.
+  if (!has(api, "PAYOUT_GRANTOR_DATABASE_URL"))
+    problems.push("api receives no PAYOUT_GRANTOR_DATABASE_URL");
+  else if (api.PAYOUT_GRANTOR_DATABASE_URL !== expected.grantor)
+    problems.push(
+      "api receives a PAYOUT_GRANTOR_DATABASE_URL other than the checked one in api.env",
+    );
   const worker = env("worker");
   if (expected.maintenance) {
     if (worker.MAINTENANCE_DATABASE_URL !== expected.maintenance)
@@ -108,9 +108,9 @@ async function main() {
     maintenance: process.env.MAINTENANCE_DATABASE_URL || undefined,
     grantor: process.env.PAYOUT_GRANTOR_DATABASE_URL || undefined,
   };
-  if (!expected.app || !expected.worker)
+  if (!expected.app || !expected.worker || !expected.grantor)
     refuse(
-      "APP_DATABASE_URL and WORKER_DATABASE_URL must be set for the check.",
+      "APP_DATABASE_URL, WORKER_DATABASE_URL and PAYOUT_GRANTOR_DATABASE_URL must be set for the check.",
     );
   let config;
   try {

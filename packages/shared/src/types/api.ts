@@ -101,13 +101,13 @@ export type PayrollPayoutEvidenceReadDto = {
 
 /**
  * One manual step waiting for its second person (legend-t58lr): a resolve
- * (`failed` or `not_sent`) or the return of a paid item. `outcome` is null for
- * a return. `proposedAt` is the item's last update, which the first step set.
+ * (`failed` or `not_sent`), the return of a paid item, or an open correction or
+ * overpaid proposal. `outcome` is null for all but a resolve. `proposedAt` is the item's last update, which the first step set.
  */
 export type PayrollPayoutProposalDto = {
   itemId: string;
   employeeId: string;
-  kind: "resolve" | "return";
+  kind: "resolve" | "return" | "correction" | "overpaid";
   outcome: "failed" | "not_sent" | null;
   evidenceKey: string | null;
   note: string | null;
@@ -115,6 +115,11 @@ export type PayrollPayoutProposalDto = {
   /** user.name, only for a user with a role assignment in this tenant; else null. */
   proposedByName: string | null;
   proposedAt: string;
+  /**
+   * Only for `correction` and `overpaid` (legend-xatux): every item of the
+   * proposal, sorted; `itemId` is the first. A withdraw names exactly this set.
+   */
+  groupItemIds?: string[];
 };
 
 /** One proof key the fingerprint backfill left stuck, with its closure if any (905 card 3). */

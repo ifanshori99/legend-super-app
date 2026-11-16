@@ -2815,6 +2815,20 @@
       "when": 1795000000657,
       "tag": "0657_payout_run_settle",
       "breakpoints": true
+    },
+    {
+      "idx": 416,
+      "version": "7",
+      "when": 1795000000658,
+      "tag": "0658_payout_proposal_withdraw",
+      "breakpoints": true
+    },
+    {
+      "idx": 417,
+      "version": "7",
+      "when": 1795000000659,
+      "tag": "0659_payout_approval_log",
+      "breakpoints": true
     }
   ]
 }

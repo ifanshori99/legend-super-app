@@ -778,7 +778,7 @@ login created in the previous section, not the bootstrap superuser.
 | `legend_runtime_<16 hex>` | `APP_DATABASE_URL` (api.env, worker.env; `DATABASE_URL` equal) | Member of `legend_app` only: read and write tenant tables through forced RLS. Not superuser, no `BYPASSRLS`, owns nothing, cannot create or alter objects.                                    |
 | `legend_worker_<16 hex>`  | `WORKER_DATABASE_URL` (worker.env only)                        | Owns only the `pgboss` queue schema and reads `app.active_tenant_registry`. No access to domain tables.                                                                                       |
 | `legend_maint_<16 hex>`   | `MAINTENANCE_DATABASE_URL` (worker.env only, optional here)    | Member of `legend_maintenance` only: no table or sequence rights, runs just `app.audit_retention_due_tenants()` and `app.purge_audit_retention_batch()` (audit retention purge, legend-usyi). |
-| `legend_grant_<16 hex>`   | `PAYOUT_GRANTOR_DATABASE_URL` (api.env only, optional here)    | Member of `legend_payout_grantor` only: no table or sequence rights, runs just `app.payout_grant_issue()` (one-time payout step grants, legend-911). `legend_app` cannot issue a grant. |
+| `legend_grant_<16 hex>`   | `PAYOUT_GRANTOR_DATABASE_URL` (api.env only, required)         | Member of `legend_payout_grantor` only: no table or sequence rights, runs just `app.payout_grant_issue()` (one-time payout step grants, legend-911). `legend_app` cannot issue a grant.       |
 
 Both the application login and the queue login get
 `idle_in_transaction_session_timeout = '5min'` from the job (legend-9h0kg), so
@@ -810,14 +810,14 @@ the job runs. See "Staff device PIN down-sync runbook", rule 3.
    executable by neither PUBLIC nor `legend_app`. `migrator.env` alone holds
    `MIGRATION_DATABASE_URL`.
 
-   `api.env` also takes `PAYOUT_GRANTOR_DATABASE_URL` with the payout step
+   `api.env` must also set `PAYOUT_GRANTOR_DATABASE_URL` with the payout step
    grant login (same host and database; never in `worker.env` or `web.env`).
    The payout money steps (failed-item correction, overpaid record, return,
    proof closure, posting source) each spend a one-time grant that only this
-   login can issue (`app.payout_grant_issue`). Without the variable the API
-   still starts, but every one of those steps answers 503
-   `PAYOUT_STEP_GRANT_UNAVAILABLE`: no payout money is recorded until it is
-   set and `provision-roles.sh` has run. `--audit` verifies that the login is a
+   login can issue (`app.payout_grant_issue`). The variable is
+   required (legend-786te): `provision-roles.sh` and the compose check refuse
+   an `api.env` without it, and the API refuses to start in production without
+   it, so no deploy can reach the 503 `PAYOUT_STEP_GRANT_UNAVAILABLE` state. `--audit` verifies that the login is a
    member of `legend_payout_grantor` only, has no table or sequence rights, and
    can run no function except `app.payout_grant_issue` (`SECURITY DEFINER`,
    pinned `search_path`, owned by `legend_payout`, not executable by PUBLIC or
@@ -992,9 +992,9 @@ hand it the `pgboss` schema.
 Outside Compose (another host on the private network, with the API bundle or
 the repository), run `node dist/provision-roles.js` or
 `pnpm --filter @starter/api exec tsx src/provision-roles.ts` with
-`MIGRATION_DATABASE_URL`, `APP_DATABASE_URL` and `WORKER_DATABASE_URL` set (and
-`MAINTENANCE_DATABASE_URL` for the audit retention login, and
-`PAYOUT_GRANTOR_DATABASE_URL` for the payout step grant login). Each
+`MIGRATION_DATABASE_URL`, `APP_DATABASE_URL`, `WORKER_DATABASE_URL` and
+`PAYOUT_GRANTOR_DATABASE_URL` (the payout step grant login) set (and
+`MAINTENANCE_DATABASE_URL` for the audit retention login). Each
 may instead be supplied as `<NAME>_FILE`, a path to a file holding the URL. The
 job does not read `.env` files. Local development keeps using
 `pnpm dev:prepare`, which provisions its own random login through the same code.

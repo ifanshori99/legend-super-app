@@ -216,6 +216,10 @@ export const payrollPayoutReviewMessages = {
       detail: "Lihat rincian",
       evidence: "Lihat bukti",
       review: "Tinjau kegagalan",
+      withdraw: "Batalkan usulan",
+      blockedWithdrawCreator:
+        "Pembuat pengajuan tidak boleh membatalkan usulan.",
+      blockedWithdrawAccess: "Akun Anda tidak punya izin membatalkan usulan.",
       blockedCreator: "Pembuat pengajuan tidak boleh mengonfirmasi hasil.",
       blockedAccess: "Akun Anda tidak punya izin mengonfirmasi hasil.",
     },
@@ -286,12 +290,23 @@ export const payrollPayoutReviewMessages = {
     returnProposed:
       "Usulan tercatat. Orang kedua perlu mengonfirmasi dengan bukti yang sama.",
     returnDone: "Dana kembali tercatat.",
+    withdrawTitle: "Batalkan usulan",
+    withdrawDescription:
+      "Untuk {name} · {amount}. Usulan orang pertama dibatalkan supaya bisa dibuat ulang dengan bukti baru.",
+    withdrawWarning:
+      "Membatalkan tidak membayar apa pun dan tidak mengubah status pembayaran. Bukti ini tidak bisa dipakai lagi; usulan baru perlu bukti baru.",
+    withdrawGroup:
+      "Usulan ini mencakup {count} item. Semuanya dibatalkan bersama.",
+    withdrawSubmit: "Batalkan usulan",
+    withdrawDone: "Usulan dibatalkan. Tidak ada pembayaran yang berubah.",
     proposal: {
       title: "Usulan orang pertama",
       outcome: "Hasil",
       outcomeFailed: "Gagal",
       outcomeNotSent: "Tidak terkirim",
       outcomeReturn: "Dana kembali",
+      outcomeCorrection: "Koreksi: transfer ternyata berhasil",
+      outcomeOverpaid: "Terbayar dua kali",
       by: "Diusulkan oleh",
       you: "Anda",
       other: "Orang lain",
@@ -329,6 +344,12 @@ export const payrollPayoutReviewMessages = {
       "Bukti berbeda dari usulan orang pertama. Muat ulang lalu periksa usulan; tidak ada dana yang dicatat kembali.",
     returnSamePerson:
       "Konfirmasi kedua harus dilakukan orang lain, bukan orang yang mencatat pertama.",
+    proposalNotWithdrawable:
+      "Usulan ini sudah berubah (disimpan, dibatalkan, atau hanya sebagian item). Muat ulang lalu periksa. Tidak ada yang dibatalkan.",
+    proofSpentByWithdrawn:
+      "Bukti ini pernah dipakai usulan yang dibatalkan dan tidak bisa dipakai lagi. Unggah bukti baru.",
+    requesterCannotWithdraw:
+      "Pembuat pengajuan tidak boleh membatalkan usulan ini.",
   },
   detail: {
     title: "Rincian pembayaran",

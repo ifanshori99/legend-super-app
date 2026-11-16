@@ -31,7 +31,7 @@
 //   retry or a new batch for it is refused (409, no second transfer).
 // - One request is one operation: every item is in the same step.
 
-import { and, eq, inArray, notInArray, or, sql } from "drizzle-orm";
+import { and, eq, inArray, ne, notInArray, or, sql } from "drizzle-orm";
 import type { TenantId, UserId } from "@starter/shared/core";
 import {
   PAYOUT_LIVE_ITEM_STATUSES,
@@ -52,6 +52,7 @@ import {
   twinEvidenceKeys,
 } from "./payroll-payout-proof-fingerprint.service.ts";
 import { bindProofToOperation } from "./payroll-payout-proof-binding.service.ts";
+import { proofSpentByWithdrawn } from "./payroll-payout-proposal-withdraw.service.ts";
 import {
   isPayoutUuid,
   loadBatchRunFirst,
@@ -184,6 +185,8 @@ async function issueCorrectionGrant(
       and(
         eq(payrollPayoutFailedCorrections.tenantId, tenantId),
         inArray(payrollPayoutFailedCorrections.itemId, [...itemIds]),
+        // A withdrawn proposal is over (legend-xatux): a new one starts anew.
+        ne(payrollPayoutFailedCorrections.status, "withdrawn"),
       ),
     );
   const operations = new Set(proposals.map((p) => p.operationId));
@@ -494,6 +497,7 @@ export async function correctFailedItems(
       and(
         eq(payrollPayoutFailedCorrections.tenantId, tenantId),
         inArray(payrollPayoutFailedCorrections.itemId, itemIds),
+        ne(payrollPayoutFailedCorrections.status, "withdrawn"),
       ),
     )
     .orderBy(payrollPayoutFailedCorrections.itemId);
@@ -510,6 +514,7 @@ export async function correctFailedItems(
         and(
           eq(payrollPayoutFailedCorrections.tenantId, tenantId),
           eq(payrollPayoutFailedCorrections.operationId, [...operations][0]!),
+          ne(payrollPayoutFailedCorrections.status, "withdrawn"),
         ),
       );
     if (n !== rows.length) throw stepMismatch();
@@ -595,7 +600,7 @@ export async function correctFailedItems(
   } catch (error) {
     if (isProofUniqueViolation(error)) throw proofReused();
     if (isProposalReplaceViolation(error)) throw proposalReplaceRefused();
-    throw error;
+    throw proofSpentByWithdrawn(error) ?? error;
   }
   await recordPayoutAudit(tx, actor, {
     action: "payroll.disbursement.correction_proposed",

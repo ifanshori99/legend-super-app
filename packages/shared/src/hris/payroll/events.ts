@@ -21,6 +21,7 @@ import { employeeIdSchema } from "../ids.ts";
 import {
   bankTransferFileIdSchema,
   employeeLoanIdSchema,
+  payoutApprovalLogIdSchema,
   payrollRunIdSchema,
   payslipIdSchema,
   reimbursementCategoryIdSchema,
@@ -159,6 +160,19 @@ export const reimbursementPaid = defineDomainEvent({
     }),
 });
 
+/**
+ * A payout step was attested under a one-time grant (legend-7gghu): the person
+ * behind the step hears about it outside the session that made it. The payload
+ * is the log row id ONLY: the recipient, the kind, the step, the batch and the
+ * item count are re-read from the append-only log, so a forged event cannot
+ * name another recipient. No amount, name or account (the batch total is
+ * sealed). `aggregateId` is the log row.
+ */
+export const payoutStepAttested = defineDomainEvent({
+  name: "payout.step_attested",
+  payload: z.strictObject({ logId: payoutApprovalLogIdSchema }),
+});
+
 export const payrollDomainEvents = [
   payrollLocked,
   payrollPaid,
@@ -166,6 +180,7 @@ export const payrollDomainEvents = [
   payslipCreated,
   employeeLoanDisbursed,
   reimbursementPaid,
+  payoutStepAttested,
 ] as const;
 
 export const payrollEventNames = payrollDomainEvents.map((event) => event.name);

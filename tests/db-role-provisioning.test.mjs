@@ -59,11 +59,50 @@ const jobCommand = [
   "src/provision-roles.ts",
 ];
 // A clean environment: only what an operator would pass to the job.
-const jobEnv = (env) => ({
-  PATH: process.env.PATH,
-  HOME: process.env.HOME,
-  ...env,
+//
+// legend-786te: the payout grantor login is required by the job, so a run that
+// does not name one gets a valid login for the same database (one per
+// database, dropped when the file finishes). A test that wants none sets the
+// key itself, to "" or to a value, or to undefined to leave it out.
+const defaultGrantors = new Map();
+function defaultGrantorFor(migrationUrl) {
+  const key = new URL(migrationUrl);
+  const id = `${key.host}${key.pathname}`;
+  if (!defaultGrantors.has(id))
+    defaultGrantors.set(id, login(migrationUrl, `legend_grant_${hex(8)}`));
+  return defaultGrantors.get(id);
+}
+test.after(async () => {
+  const names = [...defaultGrantors.values()].map((url) =>
+    decodeURIComponent(new URL(url).username),
+  );
+  if (!names.length || !process.env.STARTER_TEST_DATABASE_URL) return;
+  const cluster = quietPool({
+    connectionString: process.env.STARTER_TEST_DATABASE_URL,
+    max: 1,
+  });
+  try {
+    for (const name of names)
+      await cluster.query(`DROP ROLE IF EXISTS "${name}"`);
+  } finally {
+    await cluster.end();
+  }
 });
+const jobEnv = (env) =>
+  Object.fromEntries(
+    Object.entries({
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      ...(!("PAYOUT_GRANTOR_DATABASE_URL" in env) && env.MIGRATION_DATABASE_URL
+        ? {
+            PAYOUT_GRANTOR_DATABASE_URL: defaultGrantorFor(
+              env.MIGRATION_DATABASE_URL,
+            ),
+          }
+        : {}),
+      ...env,
+    }).filter(([, value]) => value !== undefined),
+  );
 
 function runJob(env, args = []) {
   const result = spawnSync(pnpmCommand(), [...jobCommand, ...args], {
@@ -1279,10 +1318,20 @@ test("legend-zoqc job works with a non-superuser CREATEROLE migration owner", as
   await cluster.query(
     `GRANT legend_payout TO ${owner} WITH ADMIN OPTION, INHERIT FALSE, SET FALSE`,
   );
+  // The required grantor login (legend-786te) joins legend_payout_grantor, so
+  // the owner needs ADMIN on it as well.
+  await cluster.query(
+    `GRANT legend_payout_grantor TO ${owner} WITH ADMIN OPTION, INHERIT FALSE, SET FALSE`,
+  );
   await cluster.query(`CREATE DATABASE ${database} OWNER ${owner}`);
   t.after(async () => {
     await cluster.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
-    for (const role of [...roles, owner])
+    // The default grantor login (legend-786te) holds a grant made by the owner,
+    // so it must go first.
+    const grantorLogin = decodeURIComponent(
+      new URL(defaultGrantorFor(adminUrl)).username,
+    );
+    for (const role of [...roles, grantorLogin, owner])
       await cluster.query(`DROP ROLE IF EXISTS "${role}"`);
     await cluster.end();
   });
@@ -1365,12 +1414,16 @@ function wrapperFixture(
   const worker = remember(
     `postgresql://legend_worker_${hex(8)}:${hex(24)}@postgres:5432/legend`,
   );
+  // legend-786te: the grantor login is required in every production api.env.
+  const grantor = remember(
+    `postgresql://legend_grant_${hex(8)}:${hex(24)}@postgres:5432/legend`,
+  );
   const migration = remember(
     `postgresql://owner:${hex(24)}@postgres:5432/legend`,
   );
   const files = {
     migrator: `MIGRATION_DATABASE_URL=${migration}\n`,
-    api: `APP_DATABASE_URL=${app}\nDATABASE_URL="${app}"\n`,
+    api: `APP_DATABASE_URL=${app}\nDATABASE_URL="${app}"\nPAYOUT_GRANTOR_DATABASE_URL=${grantor}\n`,
     web: "WEB_URL=https://app.example.invalid\n",
     worker: `DATABASE_URL=${app}\nAPP_DATABASE_URL=${app}\nWORKER_DATABASE_URL=${worker}\n`,
   };
@@ -1399,7 +1452,7 @@ function wrapperFixture(
       ].join("\n"),
     );
   };
-  return { app, worker, files, write };
+  return { app, worker, grantor, files, write };
 }
 
 const wrapper = resolve(root, "deploy/single-vm/provision-roles.sh");
@@ -1416,7 +1469,8 @@ test("legend-zoqc operator wrapper passes restricted URLs via env and refuses ad
         `#!/bin/sh\nprintf '%s|%s|%s|%s\\n' "$*" "\${APP_DATABASE_URL:-}" "\${WORKER_DATABASE_URL:-}" "\${API_ENV_FILE:-}" >> "$TEST_LOG"\n${extra}`,
         { mode: 0o755 },
       );
-    const { app, worker, files, write } = wrapperFixture(dir);
+    const { app, worker, grantor, files, write } = wrapperFixture(dir);
+    const grantorLine = `PAYOUT_GRANTOR_DATABASE_URL=${grantor}\n`;
     const run = (args = [], env = {}) => {
       writeFileSync(log, "");
       const result = spawnSync(
@@ -1471,7 +1525,7 @@ test("legend-zoqc operator wrapper passes restricted URLs via env and refuses ad
       assert.ok(check, "check-compose-env.mjs did not run");
       assert.match(
         check,
-        /^run --rm -i --network none -e APP_DATABASE_URL -e WORKER_DATABASE_URL -v .*check-compose-env\.mjs:\/tmp\/check-compose-env\.mjs:ro --entrypoint node example\.invalid\/migrator:1 \/tmp\/check-compose-env\.mjs\|/,
+        /^run --rm -i --network none -e APP_DATABASE_URL -e WORKER_DATABASE_URL -e PAYOUT_GRANTOR_DATABASE_URL -v .*check-compose-env\.mjs:\/tmp\/check-compose-env\.mjs:ro --entrypoint node example\.invalid\/migrator:1 \/tmp\/check-compose-env\.mjs\|/,
       );
       assert.deepEqual(check.split("|").slice(1, 3), [app, worker]);
     };
@@ -1594,7 +1648,7 @@ test("legend-zoqc operator wrapper passes restricted URLs via env and refuses ad
       ],
       [
         {
-          api: `APP_DATABASE_URL=${app}\nDATABASE_URL=postgresql://owner:pw@postgres:5432/legend\n`,
+          api: `APP_DATABASE_URL=${app}\nDATABASE_URL=postgresql://owner:pw@postgres:5432/legend\n${grantorLine}`,
         },
         /DATABASE_URL in api\.env must equal/,
       ],
@@ -1602,14 +1656,14 @@ test("legend-zoqc operator wrapper passes restricted URLs via env and refuses ad
       // Format problems surface before anything runs.
       [
         {
-          api: `APP_DATABASE_URL=${short}\n`,
+          api: `APP_DATABASE_URL=${short}\n${grantorLine}`,
           worker: `APP_DATABASE_URL=${short}\nWORKER_DATABASE_URL=${worker}\n`,
         },
         /APP_DATABASE_URL must look like/,
       ],
       [
         {
-          api: `APP_DATABASE_URL=${app}?user=owner\n`,
+          api: `APP_DATABASE_URL=${app}?user=owner\n${grantorLine}`,
           worker: `APP_DATABASE_URL=${app}?user=owner\nWORKER_DATABASE_URL=${worker}\n`,
         },
         /APP_DATABASE_URL must look like/,
@@ -1953,7 +2007,7 @@ test("legend-zoqc Compose check catches keys the line-based checks cannot see", 
   const dir = mkdtempSync(join(tmpdir(), "legend-zoqc-effective-"));
   try {
     const image = "node:22-slim";
-    const { app, worker, files, write } = wrapperFixture(dir, {
+    const { app, worker, grantor, files, write } = wrapperFixture(dir, {
       migratorImage: image,
     });
     const admin = remember(
@@ -1984,7 +2038,12 @@ test("legend-zoqc Compose check catches keys the line-based checks cannot see", 
         [resolve(root, "deploy/single-vm/check-compose-env.mjs")],
         {
           input: config.stdout,
-          env: { ...env, APP_DATABASE_URL: app, WORKER_DATABASE_URL: worker },
+          env: {
+            ...env,
+            APP_DATABASE_URL: app,
+            WORKER_DATABASE_URL: worker,
+            PAYOUT_GRANTOR_DATABASE_URL: grantor,
+          },
           encoding: "utf8",
         },
       );
@@ -2064,7 +2123,7 @@ test("legend-zoqc Compose check catches keys the line-based checks cannot see", 
       "sh",
       [
         "-c",
-        'docker "$@" config --format json 2>/dev/null | docker run --rm -i --network none -e APP_DATABASE_URL -e WORKER_DATABASE_URL -v "$CHECK:/tmp/check-compose-env.mjs:ro" --entrypoint node "$IMAGE" /tmp/check-compose-env.mjs',
+        'docker "$@" config --format json 2>/dev/null | docker run --rm -i --network none -e APP_DATABASE_URL -e WORKER_DATABASE_URL -e PAYOUT_GRANTOR_DATABASE_URL -v "$CHECK:/tmp/check-compose-env.mjs:ro" --entrypoint node "$IMAGE" /tmp/check-compose-env.mjs',
         "sh",
         ...composeArgs,
       ],
@@ -2075,6 +2134,7 @@ test("legend-zoqc Compose check catches keys the line-based checks cannot see", 
           IMAGE: image,
           APP_DATABASE_URL: app,
           WORKER_DATABASE_URL: worker,
+          PAYOUT_GRANTOR_DATABASE_URL: grantor,
         },
         encoding: "utf8",
       },
@@ -2612,13 +2672,25 @@ test("legend-911 job provisions the payout grantor login: group only, no table r
   );
 
   await t.test(
-    "without the grantor URL nothing about it is provisioned or audited",
+    "legend-786te the job refuses to provision or audit without the grantor URL",
     () => {
-      const result = runJob(env({ PAYOUT_GRANTOR_DATABASE_URL: "" }), [
-        "--audit",
-      ]);
-      assert.equal(result.status, 0, result.stderr);
-      assert.doesNotMatch(result.stdout, new RegExp(grantUser));
+      for (const [name, value] of [
+        ["unset", undefined],
+        ["empty", ""],
+      ]) {
+        for (const args of [[], ["--audit"]]) {
+          const result = runJob(
+            env({ PAYOUT_GRANTOR_DATABASE_URL: value }),
+            args,
+          );
+          assert.equal(result.status, 1, `${name} ${args}`);
+          assert.match(
+            result.stderr,
+            /PAYOUT_GRANTOR_DATABASE_URL is required/,
+            `${name} ${args}`,
+          );
+        }
+      }
     },
   );
 });
@@ -2698,19 +2770,116 @@ test("legend-911 Compose check: PAYOUT_GRANTOR_DATABASE_URL reaches the api only
     other.stderr,
     /api receives a PAYOUT_GRANTOR_DATABASE_URL other than the checked one/,
   );
-  // Checked URL absent (api.env does not set it), yet the api gets one.
+  // legend-786te: the grantor login is required. With no checked URL
+  // (api.env does not set it) the check refuses, whether or not the api gets
+  // one, and the message names the key without a value.
   const unchecked = check(config(), "");
   assert.equal(unchecked.status, 1);
-  assert.match(unchecked.stderr, /PAYOUT_GRANTOR_DATABASE_URL not checked/);
+  assert.match(unchecked.stderr, /PAYOUT_GRANTOR_DATABASE_URL/);
+  const nowhere = check(
+    config({ api: { environment: { APP_DATABASE_URL: app } } }),
+    "",
+  );
+  assert.equal(
+    nowhere.status,
+    1,
+    "an api without a grantor login was accepted",
+  );
+  assert.match(nowhere.stderr, /PAYOUT_GRANTOR_DATABASE_URL/);
+  // A checked URL the api never receives is refused too.
+  const dropped = check(
+    config({ api: { environment: { APP_DATABASE_URL: app } } }),
+  );
+  assert.equal(dropped.status, 1);
+  assert.match(dropped.stderr, /PAYOUT_GRANTOR_DATABASE_URL/);
+});
+
+test("legend-786te wrapper requires PAYOUT_GRANTOR_DATABASE_URL in api.env for every production profile", () => {
+  const dir = mkdtempSync(join(tmpdir(), "legend-786te-wrapper-"));
+  try {
+    const bin = join(dir, "bin");
+    mkdirSync(bin);
+    const log = join(dir, "log");
+    // Logs argv and the grantor URL each docker call receives by environment.
+    writeFileSync(
+      join(bin, "docker"),
+      `#!/bin/sh\nprintf '%s|%s\\n' "$*" "\${PAYOUT_GRANTOR_DATABASE_URL:-}" >> "$TEST_LOG"\n`,
+      { mode: 0o755 },
+    );
+    const { grantor, files, write } = wrapperFixture(dir);
+    const run = (args = []) => {
+      writeFileSync(log, "");
+      const result = spawnSync(
+        wrapper,
+        ["--env-file", join(dir, "compose.env"), ...args],
+        {
+          env: { PATH: `${bin}:${process.env.PATH}`, TEST_LOG: log },
+          encoding: "utf8",
+        },
+      );
+      const calls = readFileSync(log, "utf8")
+        .trim()
+        .split("\n")
+        .filter(Boolean);
+      for (const call of calls)
+        assert.deepEqual(
+          leaks(call.split("|")[0]),
+          [],
+          "argv leaks a password",
+        );
+      assertNoSecrets(result);
+      return { ...result, calls };
+    };
+    const withoutGrantor = files.api
+      .split("\n")
+      .filter((line) => !line.startsWith("PAYOUT_GRANTOR_DATABASE_URL"))
+      .join("\n");
+
+    // Control: with the login set, the checker and the job both receive it.
+    write();
+    const real = run();
+    assert.equal(real.status, 0, real.stderr);
+    const check = real.calls.find((call) =>
+      /check-compose-env\.mjs/.test(call),
+    );
+    assert.ok(check, "check-compose-env.mjs did not run");
+    assert.equal(check.split("|")[1], grantor);
+    assert.equal(real.calls.at(-1).split("|")[1], grantor);
+
+    const refusals = [
+      ["the key is missing from api.env", withoutGrantor],
+      [
+        "the key is present but empty",
+        `${withoutGrantor}PAYOUT_GRANTOR_DATABASE_URL=\n`,
+      ],
+    ];
+    for (const [name, api] of refusals) {
+      write({ api });
+      for (const args of [["--dry-run"], [], ["--audit"]]) {
+        const refused = run(args);
+        assert.equal(refused.status, 1, `${name} ${args}: accepted`);
+        assert.match(refused.stderr, /PAYOUT_GRANTOR_DATABASE_URL/, name);
+        assert.equal(refused.calls.length, 0, `${name} ${args}: docker ran`);
+      }
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("legend-usyi Compose check: MAINTENANCE_DATABASE_URL reaches the worker only", () => {
   const app = "postgresql://app:secret-a@postgres:5432/legend";
   const worker = "postgresql://worker:secret-w@postgres:5432/legend";
   const maint = "postgresql://maint:secret-m@postgres:5432/legend";
+  const grantor = "postgresql://grant:secret-g@postgres:5432/legend";
   const config = (overrides = {}) => ({
     services: {
-      api: { environment: { APP_DATABASE_URL: app } },
+      api: {
+        environment: {
+          APP_DATABASE_URL: app,
+          PAYOUT_GRANTOR_DATABASE_URL: grantor,
+        },
+      },
       web: { environment: {} },
       worker: {
         environment: {
@@ -2732,6 +2901,8 @@ test("legend-usyi Compose check: MAINTENANCE_DATABASE_URL reaches the worker onl
           PATH: process.env.PATH,
           APP_DATABASE_URL: app,
           WORKER_DATABASE_URL: worker,
+          // legend-786te: the checked grantor URL is always present.
+          PAYOUT_GRANTOR_DATABASE_URL: grantor,
           ...(expectedMaintenance
             ? { MAINTENANCE_DATABASE_URL: expectedMaintenance }
             : {}),
@@ -2739,7 +2910,7 @@ test("legend-usyi Compose check: MAINTENANCE_DATABASE_URL reaches the worker onl
         encoding: "utf8",
       },
     );
-    for (const secret of ["secret-a", "secret-w", "secret-m"])
+    for (const secret of ["secret-a", "secret-w", "secret-m", "secret-g"])
       assert.ok(!result.stderr.includes(secret), "stderr leaks a password");
     return result;
   };
@@ -2751,6 +2922,7 @@ test("legend-usyi Compose check: MAINTENANCE_DATABASE_URL reaches the worker onl
         [service]: {
           environment: {
             APP_DATABASE_URL: app,
+            PAYOUT_GRANTOR_DATABASE_URL: grantor,
             MAINTENANCE_DATABASE_URL: maint,
           },
         },
@@ -2834,7 +3006,7 @@ test("legend-usyi wrapper validates MAINTENANCE_DATABASE_URL and hands it to the
     );
     assert.match(
       check,
-      /-e WORKER_DATABASE_URL -e MAINTENANCE_DATABASE_URL -v /,
+      /-e WORKER_DATABASE_URL -e MAINTENANCE_DATABASE_URL -e PAYOUT_GRANTOR_DATABASE_URL -v /,
     );
     assert.equal(check.split("|")[1], maint);
     assert.equal(real.calls.at(-1).split("|")[1], maint);

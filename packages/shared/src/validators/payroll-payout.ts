@@ -276,6 +276,20 @@ export const correctFailedItemsSchema = z
     message: "Each item may appear once.",
   });
 
+// Takes back an open correction or overpaid proposal (legend-xatux): the item
+// stays `failed` and nothing is paid. The call names exactly the items of the
+// proposal (the `groupItemIds` of the listed proposal); its proof cannot be
+// used again.
+export const withdrawPayoutProposalSchema = z
+  .strictObject({
+    itemIds: z.array(z.uuid()).min(1).max(PAYOUT_OVERPAID_ITEMS_MAX),
+    password: reauthPasswordSchema,
+  })
+  .refine((value) => new Set(value.itemIds).size === value.itemIds.length, {
+    path: ["itemIds"],
+    message: "Each item may appear once.",
+  });
+
 export const confirmCashHandoverInputSchema = z
   .strictObject({
     itemIds: z.array(z.uuid()).min(1).max(1000),
@@ -363,6 +377,9 @@ export type ConfirmManualItemsInput = z.infer<
 >;
 export type ResolveManualItemsInput = z.infer<typeof resolveManualItemsSchema>;
 export type WithdrawResolutionInput = z.infer<typeof withdrawResolutionSchema>;
+export type WithdrawPayoutProposalInput = z.infer<
+  typeof withdrawPayoutProposalSchema
+>;
 export type ReturnManualItemsInput = z.infer<typeof returnManualItemsSchema>;
 export type RecordOverpaidItemsInput = z.infer<
   typeof recordOverpaidItemsSchema

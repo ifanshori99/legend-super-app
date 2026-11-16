@@ -144,6 +144,7 @@ import { runMetricsDailyJob } from "./worker/metrics-daily.job.ts";
 import { runDueDepreciation } from "./worker/accounting-depreciation.job.ts";
 import { runPayoutEvidenceBackfillSweep } from "./worker/payout-evidence-backfill.job.ts";
 import { runPayoutGlRecoverySweep } from "./worker/payout-gl-recovery.job.ts";
+import { runPayoutApprovalReceiptSweep } from "./worker/payout-approval-receipt.job.ts";
 import { runPayoutTrustedReconSweep } from "./worker/payout-trusted-recon.job.ts";
 import { runPaymentGatewayPollJob } from "./worker/payment-gateway-poll.job.ts";
 import { expireDueIntents } from "./services/payment.service.ts";
@@ -610,6 +611,14 @@ const relay = createRelayRuntime({
         });
       } catch {
         console.error("Payout trusted recon sweep failed");
+      }
+      // Receipts of attested payout steps (legend-7gghu): each row of the
+      // append-only approval log becomes one notification to the person whose
+      // login made the step. Idempotent, bounded, fail closed.
+      try {
+        await runPayoutApprovalReceiptSweep(context, new Date());
+      } catch {
+        console.error("Payout approval receipt sweep failed");
       }
     }
     // PAY-02/03 (legend-b9i): settle pending intents whose DOIT webhook never

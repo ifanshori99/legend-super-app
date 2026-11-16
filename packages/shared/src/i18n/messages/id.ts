@@ -81,6 +81,7 @@ import { payrollRunMessages } from "./ws10-payroll-run.ts";
 import { payrollPayoutMessages } from "./ws10-payroll-payout.ts";
 import { payrollPayoutSettingsMessages } from "./ws10-payroll-payout-settings.ts";
 import { payrollPayoutReviewMessages } from "./ws10-payroll-payout-review.ts";
+import { payrollPayoutReceiptMessages } from "./ws10-payroll-payout-receipt.ts";
 import { financeExceptionsMessages } from "./ws07-finance-exceptions.ts";
 import { payslipMessages } from "./ws10-payslip.ts";
 import { payslipPinMessages } from "./ws10-payslip-pin.ts";
@@ -267,6 +268,7 @@ export const id = {
   payrollPayout: payrollPayoutMessages,
   payrollPayoutSettings: payrollPayoutSettingsMessages,
   payrollPayoutReview: payrollPayoutReviewMessages,
+  payrollPayoutReceipt: payrollPayoutReceiptMessages,
   financeExceptions: financeExceptionsMessages,
   payslip: payslipMessages,
   payslipPin: {
@@ -1497,6 +1499,7 @@ export const id = {
       kitchen_alert: "Peringatan dapur",
       tenant_invitation: "Undangan admin",
       hr_settlement: "Penyelesaian karyawan keluar",
+      payout_receipt: "Tanda terima pencairan gaji",
     },
     inbox: {
       heading: "Kotak masuk",

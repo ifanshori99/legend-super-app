@@ -36,6 +36,7 @@ import type {
   ResolveItemsInput,
   ReturnItemsInput,
   UpsertConfigInput,
+  WithdrawProposalInput,
 } from "./api";
 import { maskedAccountDisplay } from "./lib";
 import {
@@ -420,6 +421,30 @@ export function useReturnBatch() {
       ...body
     }: { batchId: string } & ReturnItemsInput) =>
       api.postReturnItems(batchId, body),
+    onSuccess: refresh,
+  });
+}
+
+/**
+ * `mutate({ batchId, kind, itemIds, password? })`: takes back the first
+ * person's correction or overpaid proposal (`itemIds` = all of its group).
+ * Pays nothing and changes no item; the proof is spent. Refreshes the batch
+ * and the proposal list.
+ */
+export function useWithdrawProposal() {
+  const refresh = useRefreshPayout();
+  return useMutation({
+    mutationFn: ({
+      batchId,
+      kind,
+      ...body
+    }: {
+      batchId: string;
+      kind: "correction" | "overpaid";
+    } & WithdrawProposalInput) =>
+      kind === "correction"
+        ? api.postWithdrawCorrection(batchId, body)
+        : api.postWithdrawOverpaid(batchId, body),
     onSuccess: refresh,
   });
 }

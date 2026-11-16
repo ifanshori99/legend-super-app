@@ -234,6 +234,17 @@ export const NOTIFICATION_CATEGORY_CATALOG = {
     defaultChannels: ["web_push"],
     prd: "§3 F9 Kitchen Display System; KDS-01",
   },
+  // legend-7gghu: the person whose login approved, proposed, recorded or
+  // confirmed a payout step is told outside that session ("Bukan Anda?"). It
+  // is the detection for a forged session row, so it ignores quiet hours and
+  // its email cannot be switched off (see MANDATORY_EMAIL_CATEGORIES).
+  payout_receipt: {
+    audience: "staff",
+    realtime: false,
+    bypassQuietHours: true,
+    defaultChannels: ["web_push", "email"],
+    prd: "§4 Alur K; legend-7gghu",
+  },
 } as const satisfies Record<string, CategoryMeta>;
 
 export type NotificationCategory = keyof typeof NOTIFICATION_CATEGORY_CATALOG;
@@ -251,6 +262,7 @@ export const notificationCategorySchema = z.enum(NOTIFICATION_CATEGORIES);
 export const MANDATORY_EMAIL_CATEGORIES: readonly NotificationCategory[] = [
   "security",
   "tenant_invitation",
+  "payout_receipt",
 ];
 
 /**

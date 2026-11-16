@@ -15,7 +15,8 @@ import { createGrantorPool } from "./role";
  *   transaction starts with `SET LOCAL ROLE legend_payout_grantor`
  *   (`fallbackRole`).
  * - Unset anywhere else: no pool; the issuer answers 503
- *   PAYOUT_STEP_GRANT_UNAVAILABLE and no payout money is recorded.
+ *   PAYOUT_STEP_GRANT_UNAVAILABLE and no payout money is recorded. Production
+ *   never gets here: env validation requires the variable (legend-786te).
  */
 export type PayoutGrantorPool = {
   readonly pool: Pool;

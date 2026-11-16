@@ -1,4 +1,5 @@
 import {
+  BadgeCheck,
   BellRing,
   CalendarCheck,
   CalendarClock,
@@ -59,6 +60,7 @@ export const NOTIFICATION_CATEGORY_ICONS: Record<
   kitchen_alert: ChefHat,
   tenant_invitation: MailCheck,
   hr_settlement: UserRoundMinus,
+  payout_receipt: BadgeCheck,
 };
 
 export function categoryLabelKey(category: NotificationCategory): MessageKey {
