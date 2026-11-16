@@ -443,7 +443,8 @@ type World = {
 
 /**
  * Batch created by `requester`, approved and exported by `approver`, every item
- * closed `failed` by two people (`resolvers`): each leaves one approval-log row.
+ * closed `failed` by two people (`resolvers`): each leaves one approval-log row,
+ * and the main approval leaves one for `approver`.
  */
 async function failedWorld(
   resolvers: [Person, Person] = [a, b],
@@ -492,8 +493,8 @@ async function failedWorld(
     logOf[log.actor as string] = log.id as string;
   expect(
     Object.keys(logOf).sort(),
-    "premise: each resolver left one approval-log row",
-  ).toEqual([resolvers[0].userId, resolvers[1].userId].sort());
+    "premise: the approver (main approval) and each resolver left one approval-log row",
+  ).toEqual([approver.userId, resolvers[0].userId, resolvers[1].userId].sort());
   return { runId, batchId, itemIds, itemId: itemIds[0]!, logOf };
 }
 
