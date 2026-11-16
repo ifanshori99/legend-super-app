@@ -22,6 +22,8 @@ import {
   bankTransferFileIdSchema,
   employeeLoanIdSchema,
   payoutApprovalLogIdSchema,
+  payoutBatchDisputeIdSchema,
+  payoutBatchUnfreezeIdSchema,
   payrollRunIdSchema,
   payslipIdSchema,
   reimbursementCategoryIdSchema,
@@ -173,6 +175,28 @@ export const payoutStepAttested = defineDomainEvent({
   payload: z.strictObject({ logId: payoutApprovalLogIdSchema }),
 });
 
+/**
+ * Someone said "not me" about a payout step and froze the batch
+ * (legend-l2zru). The payload is the dispute row id ONLY: the batch, the
+ * disputant and the status at that moment are re-read from the append-only
+ * dispute table, so a forged event cannot name a recipient. No amount, name or
+ * account. `aggregateId` is the dispute row.
+ */
+export const payoutBatchDisputed = defineDomainEvent({
+  name: "payout.batch_disputed",
+  payload: z.strictObject({ disputeId: payoutBatchDisputeIdSchema }),
+});
+
+/**
+ * An owner or finance user lifted a batch freeze (legend-l2zru). The payload
+ * is the unfreeze row id ONLY, same rule as `payout.batch_disputed`.
+ * `aggregateId` is the unfreeze row.
+ */
+export const payoutBatchUnfrozen = defineDomainEvent({
+  name: "payout.batch_unfrozen",
+  payload: z.strictObject({ unfreezeId: payoutBatchUnfreezeIdSchema }),
+});
+
 export const payrollDomainEvents = [
   payrollLocked,
   payrollPaid,
@@ -181,6 +205,8 @@ export const payrollDomainEvents = [
   employeeLoanDisbursed,
   reimbursementPaid,
   payoutStepAttested,
+  payoutBatchDisputed,
+  payoutBatchUnfrozen,
 ] as const;
 
 export const payrollEventNames = payrollDomainEvents.map((event) => event.name);

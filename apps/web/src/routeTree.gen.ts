@@ -106,6 +106,7 @@ import { Route as PublicReservasiKelolaRouteImport } from './routes/_public/rese
 import { Route as ShareholderShareholderIndexRouteImport } from './routes/_shareholder/shareholder.index'
 import { Route as ShareholderShareholderKeamananRouteImport } from './routes/_shareholder/shareholder.keamanan'
 import { Route as ShareholderShareholderTanyaAiRouteImport } from './routes/_shareholder/shareholder.tanya-ai'
+import { Route as TandaTerimaPayrollLogIdRouteImport } from './routes/tanda-terima.payroll.$logId'
 import { Route as CustomerMemberFasilitasIndexRouteImport } from './routes/_customer/member.fasilitas.index'
 import { Route as CustomerMemberFasilitasTicketIdRouteImport } from './routes/_customer/member.fasilitas.$ticketId'
 import { Route as CustomerMemberFasilitasLanggananRouteImport } from './routes/_customer/member.fasilitas.langganan'
@@ -878,6 +879,11 @@ const ShareholderShareholderTanyaAiRoute =
     path: '/shareholder/tanya-ai',
     getParentRoute: () => ShareholderRoute,
   } as any)
+const TandaTerimaPayrollLogIdRoute = TandaTerimaPayrollLogIdRouteImport.update({
+  id: '/tanda-terima/payroll/$logId',
+  path: '/tanda-terima/payroll/$logId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const CustomerMemberFasilitasIndexRoute =
   CustomerMemberFasilitasIndexRouteImport.update({
     id: '/fasilitas/',
@@ -2634,6 +2640,7 @@ export interface FileRoutesByFullPath {
   '/reservasi/kelola': typeof PublicReservasiKelolaRoute
   '/shareholder/keamanan': typeof ShareholderShareholderKeamananRoute
   '/shareholder/tanya-ai': typeof ShareholderShareholderTanyaAiRoute
+  '/tanda-terima/payroll/$logId': typeof TandaTerimaPayrollLogIdRoute
   '/member/': typeof CustomerMemberIndexRoute
   '/karyawan/': typeof KaryawanKaryawanIndexRoute
   '/kelola/': typeof KelolaKelolaIndexRoute
@@ -3007,6 +3014,7 @@ export interface FileRoutesByTo {
   '/reservasi/kelola': typeof PublicReservasiKelolaRoute
   '/shareholder/keamanan': typeof ShareholderShareholderKeamananRoute
   '/shareholder/tanya-ai': typeof ShareholderShareholderTanyaAiRoute
+  '/tanda-terima/payroll/$logId': typeof TandaTerimaPayrollLogIdRoute
   '/member': typeof CustomerMemberIndexRoute
   '/karyawan': typeof KaryawanKaryawanIndexRoute
   '/kelola': typeof KelolaKelolaIndexRoute
@@ -3393,6 +3401,7 @@ export interface FileRoutesById {
   '/_public/reservasi_/kelola': typeof PublicReservasiKelolaRoute
   '/_shareholder/shareholder/keamanan': typeof ShareholderShareholderKeamananRoute
   '/_shareholder/shareholder/tanya-ai': typeof ShareholderShareholderTanyaAiRoute
+  '/tanda-terima/payroll/$logId': typeof TandaTerimaPayrollLogIdRoute
   '/_customer/member/': typeof CustomerMemberIndexRoute
   '/_karyawan/karyawan/': typeof KaryawanKaryawanIndexRoute
   '/_kelola/kelola/': typeof KelolaKelolaIndexRoute
@@ -3771,6 +3780,7 @@ export interface FileRouteTypes {
     | '/reservasi/kelola'
     | '/shareholder/keamanan'
     | '/shareholder/tanya-ai'
+    | '/tanda-terima/payroll/$logId'
     | '/member/'
     | '/karyawan/'
     | '/kelola/'
@@ -4144,6 +4154,7 @@ export interface FileRouteTypes {
     | '/reservasi/kelola'
     | '/shareholder/keamanan'
     | '/shareholder/tanya-ai'
+    | '/tanda-terima/payroll/$logId'
     | '/member'
     | '/karyawan'
     | '/kelola'
@@ -4529,6 +4540,7 @@ export interface FileRouteTypes {
     | '/_public/reservasi_/kelola'
     | '/_shareholder/shareholder/keamanan'
     | '/_shareholder/shareholder/tanya-ai'
+    | '/tanda-terima/payroll/$logId'
     | '/_customer/member/'
     | '/_karyawan/karyawan/'
     | '/_kelola/kelola/'
@@ -4847,6 +4859,7 @@ export interface RootRouteChildren {
   UndanganRoute: typeof UndanganRoute
   VerifikasiRoute: typeof VerifikasiRoute
   McpConsentRoute: typeof McpConsentRoute
+  TandaTerimaPayrollLogIdRoute: typeof TandaTerimaPayrollLogIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -5529,6 +5542,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/shareholder/tanya-ai'
       preLoaderRoute: typeof ShareholderShareholderTanyaAiRouteImport
       parentRoute: typeof ShareholderRoute
+    }
+    '/tanda-terima/payroll/$logId': {
+      id: '/tanda-terima/payroll/$logId'
+      path: '/tanda-terima/payroll/$logId'
+      fullPath: '/tanda-terima/payroll/$logId'
+      preLoaderRoute: typeof TandaTerimaPayrollLogIdRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/_customer/member/fasilitas/': {
       id: '/_customer/member/fasilitas/'
@@ -8489,6 +8509,7 @@ const rootRouteChildren: RootRouteChildren = {
   UndanganRoute: UndanganRoute,
   VerifikasiRoute: VerifikasiRoute,
   McpConsentRoute: McpConsentRoute,
+  TandaTerimaPayrollLogIdRoute: TandaTerimaPayrollLogIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -41,12 +41,15 @@ import {
   type PayslipId,
 } from "@starter/shared/hris/payroll";
 import type {
+  PayoutBatchFreezeDto,
   PayrollDisbursementBatchDto,
   PayrollDisbursementItemDto,
 } from "@starter/shared/types";
 import {
   payrollDisbursementBatches,
   payrollDisbursementItems,
+  payrollPayoutBatchDisputes,
+  payrollPayoutBatchUnfreezes,
   payrollPayoutConfigs,
   PAYOUT_LIVE_ITEM_STATUSES,
   type PayoutChannel,
@@ -201,6 +204,14 @@ function messageHas(error: unknown, pattern: RegExp, depth = 0): boolean {
   );
 }
 
+/** A frozen batch refuses every payout step until it is unfrozen. */
+const batchFrozen = (): HttpError =>
+  payoutRefuse(
+    409,
+    "PAYOUT_BATCH_FROZEN",
+    'Batch pembayaran ini dibekukan karena ada pengakuan "bukan saya". Finance perlu memeriksanya dan membuka pembekuan.',
+  );
+
 /**
  * A payout guard or deferred commit check (trigger or trusted function, code
  * 23514) refused the change: the client sees a 409, never the raw database
@@ -229,6 +240,9 @@ export function payoutGuardViolation(error: unknown): HttpError | null {
       "PAYOUT_BATCH_STATE_CHANGED",
       "Data pembayaran berubah atau tidak ditemukan. Muat ulang dan coba lagi.",
     );
+  // PAYOUT-79 (23514): the batch has an open "not me" dispute (legend-l2zru).
+  if (checkViolation(error) && messageHas(error, /PAYOUT-79:/))
+    return batchFrozen();
   if (!checkViolation(error)) return null;
   return payoutRefuse(
     409,
@@ -650,6 +664,92 @@ export async function assertManualConfigEnabled(
   return config;
 }
 
+// ------------------------------------------------------------------- freeze
+
+/** Open dispute = a dispute row with no unfreeze row (migration 0660). */
+const openDisputeWhere = (tenantId: string) =>
+  and(
+    eq(payrollPayoutBatchDisputes.tenantId, asTenant(tenantId)),
+    sql`NOT EXISTS (
+      SELECT 1 FROM ${payrollPayoutBatchUnfreezes} u
+       WHERE u.tenant_id = ${payrollPayoutBatchDisputes.tenantId}
+         AND u.dispute_id = ${payrollPayoutBatchDisputes.id})`,
+  );
+
+/**
+ * Friendly early refusal for a frozen batch (409 PAYOUT_BATCH_FROZEN), checked
+ * before a grant is issued. The database refuses the same step with PAYOUT-79
+ * (`payoutGuardViolation` answers it alike), so this is not the net.
+ */
+export async function assertBatchNotFrozen(
+  tx: Tx,
+  tenantId: string,
+  batchId: string,
+): Promise<void> {
+  if (!UUID_FORMAT.test(batchId)) return;
+  const [open] = await tx
+    .select({ id: payrollPayoutBatchDisputes.id })
+    .from(payrollPayoutBatchDisputes)
+    .where(
+      and(
+        openDisputeWhere(tenantId),
+        eq(payrollPayoutBatchDisputes.batchId, batchId),
+      ),
+    )
+    .limit(1);
+  if (open) throw batchFrozen();
+}
+
+const NOT_FROZEN: PayoutBatchFreezeDto = { frozen: false, disputes: [] };
+
+/**
+ * Freeze state of many batches in one query: open disputes only. `viewerId`
+ * marks the claims the caller filed (`mine`); nobody else's identity is read.
+ */
+export async function loadBatchFreezes(
+  tx: Tx,
+  tenantId: string,
+  batchIds: readonly string[],
+  viewerId?: string,
+): Promise<Map<string, PayoutBatchFreezeDto>> {
+  const out = new Map<string, PayoutBatchFreezeDto>();
+  if (batchIds.length === 0) return out;
+  const rows = await tx
+    .select({
+      id: payrollPayoutBatchDisputes.id,
+      batchId: payrollPayoutBatchDisputes.batchId,
+      logId: payrollPayoutBatchDisputes.logId,
+      actor: payrollPayoutBatchDisputes.actor,
+      reason: payrollPayoutBatchDisputes.reason,
+      batchStatusAt: payrollPayoutBatchDisputes.batchStatusAt,
+      createdAt: payrollPayoutBatchDisputes.createdAt,
+    })
+    .from(payrollPayoutBatchDisputes)
+    .where(
+      and(
+        openDisputeWhere(tenantId),
+        inArray(payrollPayoutBatchDisputes.batchId, [...batchIds]),
+      ),
+    )
+    .orderBy(
+      asc(payrollPayoutBatchDisputes.createdAt),
+      asc(payrollPayoutBatchDisputes.id),
+    );
+  for (const row of rows) {
+    const freeze = out.get(row.batchId) ?? { frozen: true, disputes: [] };
+    freeze.disputes.push({
+      id: row.id,
+      logId: row.logId,
+      createdAt: row.createdAt.toISOString(),
+      batchStatusAt: row.batchStatusAt,
+      reason: row.reason,
+      mine: viewerId !== undefined && row.actor === viewerId,
+    });
+    out.set(row.batchId, freeze);
+  }
+  return out;
+}
+
 // --------------------------------------------------------------------- DTOs
 
 const iso = (value: Date | null) => (value ? value.toISOString() : null);
@@ -683,6 +783,7 @@ export function toItemDto(row: ItemRow): PayrollDisbursementItemDto {
 export function toBatchDto(
   row: BatchRow,
   items: readonly ItemRow[],
+  freeze: PayoutBatchFreezeDto = NOT_FROZEN,
 ): PayrollDisbursementBatchDto {
   return {
     id: row.id,
@@ -709,6 +810,7 @@ export function toBatchDto(
     cancelReason: row.cancelledReason,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
+    freeze,
     items: items.map(toItemDto),
   };
 }
@@ -717,6 +819,7 @@ export async function getDisbursementBatch(
   tx: Tx,
   tenantId: string,
   batchId: string,
+  viewerId?: string,
 ): Promise<PayrollDisbursementBatchDto> {
   if (!UUID_FORMAT.test(batchId)) throw batchNotFound();
   const [row] = await tx
@@ -729,13 +832,19 @@ export async function getDisbursementBatch(
       ),
     );
   if (!row) throw batchNotFound();
-  return toBatchDto(row, await loadBatchItems(tx, tenantId, batchId));
+  const freezes = await loadBatchFreezes(tx, tenantId, [batchId], viewerId);
+  return toBatchDto(
+    row,
+    await loadBatchItems(tx, tenantId, batchId),
+    freezes.get(batchId),
+  );
 }
 
 export async function listDisbursementBatches(
   tx: Tx,
   tenantId: string,
   payrollRunId: string,
+  viewerId?: string,
 ): Promise<PayrollDisbursementBatchDto[]> {
   if (!UUID_FORMAT.test(payrollRunId)) return [];
   const batches = await tx
@@ -754,9 +863,21 @@ export async function listDisbursementBatches(
       asc(payrollDisbursementBatches.createdAt),
       asc(payrollDisbursementBatches.id),
     );
+  const freezes = await loadBatchFreezes(
+    tx,
+    tenantId,
+    batches.map((batch) => batch.id),
+    viewerId,
+  );
   const out: PayrollDisbursementBatchDto[] = [];
   for (const batch of batches)
-    out.push(toBatchDto(batch, await loadBatchItems(tx, tenantId, batch.id)));
+    out.push(
+      toBatchDto(
+        batch,
+        await loadBatchItems(tx, tenantId, batch.id),
+        freezes.get(batch.id),
+      ),
+    );
   return out;
 }
 
@@ -1257,7 +1378,7 @@ export async function createDisbursementBatch(
       itemCount: planned.length,
     },
   });
-  return getDisbursementBatch(tx, tenantId, batchId);
+  return getDisbursementBatch(tx, tenantId, batchId, actor.userId);
 }
 
 // ------------------------------------------------------------------- submit
@@ -1285,6 +1406,7 @@ export async function submitDisbursementBatch(
 ): Promise<SubmitResult> {
   const tenantId = actor.tenantId;
   const peek = await readBatch(tx, tenantId, batchId);
+  await assertBatchNotFrozen(tx, tenantId, batchId);
   // Lock order: run row first, then the batch row (create does the same).
   await assertRunPayable(tx, tenantId, peek.payrollRunId);
   const batch = await loadBatchForUpdate(tx, tenantId, batchId);
@@ -1377,7 +1499,7 @@ export async function submitDisbursementBatch(
     },
   });
   return {
-    batch: await getDisbursementBatch(tx, tenantId, batchId),
+    batch: await getDisbursementBatch(tx, tenantId, batchId, actor.userId),
     excluded: blocked.map((item) => ({
       itemId: item.id,
       payslipId: item.payslipId,
@@ -1401,6 +1523,7 @@ export async function approveDisbursementBatch(
 ): Promise<PayrollDisbursementBatchDto> {
   const tenantId = actor.tenantId;
   const peek = await readBatch(tx, tenantId, batchId);
+  await assertBatchNotFrozen(tx, tenantId, batchId);
   await assertRunPayable(tx, tenantId, peek.payrollRunId);
   const batch = await loadBatchForUpdate(tx, tenantId, batchId);
   if (batch.status !== "pending_approval")
@@ -1522,7 +1645,7 @@ export async function approveDisbursementBatch(
       contentHash: batch.contentHash,
     },
   });
-  return getDisbursementBatch(tx, tenantId, batchId);
+  return getDisbursementBatch(tx, tenantId, batchId, actor.userId);
 }
 
 // ------------------------------------------------------------------- cancel
@@ -1547,6 +1670,7 @@ export async function cancelDisbursementBatch(
       "PAYOUT_CANCEL_REASON_INVALID",
       "Alasan pembatalan wajib diisi (maksimal 500 karakter).",
     );
+  await assertBatchNotFrozen(tx, tenantId, batchId);
   const batch = await loadBatchRunFirst(tx, tenantId, batchId);
   if (
     batch.status !== "draft" &&
@@ -1635,5 +1759,5 @@ export async function cancelDisbursementBatch(
     before: { status: batch.status },
     after: { status: cancelled.status, confirmed: handedOver },
   });
-  return getDisbursementBatch(tx, tenantId, batchId);
+  return getDisbursementBatch(tx, tenantId, batchId, actor.userId);
 }

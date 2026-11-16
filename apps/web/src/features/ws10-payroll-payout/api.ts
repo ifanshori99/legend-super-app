@@ -17,8 +17,10 @@ import {
   confirmDisbursementCash,
   confirmDisbursementItems,
   createDisbursementBatch,
+  disownPayoutApproval,
   exportDisbursementBatch,
   getDisbursementBatch,
+  getPayoutApprovalLog,
   getPayoutConfig,
   listPayoutBatches,
   listResolutionProposals,
@@ -29,6 +31,7 @@ import {
   resolveDisbursementItems,
   returnDisbursementItems,
   submitDisbursementBatch,
+  unfreezeDisbursementBatch,
   upsertPayoutConfig,
   withdrawFailedCorrection,
   withdrawOverpaidProposal,
@@ -55,6 +58,8 @@ export type ConfirmItemsInput = Body<typeof confirmDisbursementItems>;
 export type ResolveItemsInput = Body<typeof resolveDisbursementItems>;
 export type ReturnItemsInput = Body<typeof returnDisbursementItems>;
 export type ConfirmCashInput = Body<typeof confirmDisbursementCash>;
+export type DisownApprovalInput = Body<typeof disownPayoutApproval>;
+export type UnfreezeBatchInput = Body<typeof unfreezeDisbursementBatch>;
 export type WithdrawProposalInput = Body<typeof withdrawFailedCorrection>;
 export type ListBatchesQuery = EndpointInput<typeof listPayoutBatches>["query"];
 export type ListBatchesPage = EndpointOutput<typeof listPayoutBatches>;
@@ -236,6 +241,10 @@ export const fetchResolutionProposals = (
     { signal },
   );
 
+/** One logged step of the caller: the page the receipt notification links to. */
+export const fetchApprovalLog = (logId: string, signal?: AbortSignal) =>
+  callEndpoint(getPayoutApprovalLog, { params: { logId } }, { signal });
+
 /** Names for the payee rows (the payout items carry only employee ids). */
 export async function fetchPayoutEmployees(
   signal?: AbortSignal,
@@ -293,6 +302,18 @@ export const postResolveItems = (batchId: string, body: ResolveItemsInput) =>
 
 export const postReturnItems = (batchId: string, body: ReturnItemsInput) =>
   callEndpoint(returnDisbursementItems, { params: { id: batchId }, body });
+
+/** "Not me": freezes the batch of that logged step. Repeating is harmless. */
+export const postDisownApproval = (
+  logId: string,
+  body: DisownApprovalInput,
+) => callEndpoint(disownPayoutApproval, { params: { logId }, body });
+
+/** Releases every open "not me" claim of the batch. */
+export const postUnfreezeBatch = (
+  batchId: string,
+  body: UnfreezeBatchInput,
+) => callEndpoint(unfreezeDisbursementBatch, { params: { id: batchId }, body });
 
 /** Takes back a step-one proposal that corrects a failed item. */
 export const postWithdrawCorrection = (

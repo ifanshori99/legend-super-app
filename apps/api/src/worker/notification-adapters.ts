@@ -68,7 +68,11 @@ import {
   shiftCancelled,
   shiftPublished,
 } from "@starter/shared/hris";
-import { payoutStepAttested } from "@starter/shared/hris/payroll";
+import {
+  payoutBatchDisputed,
+  payoutBatchUnfrozen,
+  payoutStepAttested,
+} from "@starter/shared/hris/payroll";
 import { createTranslator, messagesId } from "@starter/shared/i18n";
 import { operationsEventPayloadSchemas } from "@starter/shared/operations";
 import { PLATFORM_EVENT_PAYLOADS } from "@starter/shared/platform";
@@ -94,6 +98,8 @@ import { payrollRuns } from "../db/schema/payroll.ts";
 import {
   payrollDisbursementBatches,
   payrollPayoutApprovalLog,
+  payrollPayoutBatchDisputes,
+  payrollPayoutBatchUnfreezes,
 } from "../db/schema/payroll-payout.ts";
 import { roleAssignments, roles } from "../db/schema/platform-access.ts";
 import { approvalRequests } from "../db/schema/platform-approval.ts";
@@ -389,6 +395,8 @@ type Content = {
 type Rule = {
   content: Content;
   userIds: string[];
+  /** Per-recipient link that replaces `content.link` (legend-l2zru). */
+  links?: ReadonlyMap<string, string>;
 };
 type RuleInput = {
   tx: Tx;
@@ -1014,7 +1022,149 @@ async function payoutStepAttestedRule(input: RuleInput): Promise<Rule> {
       category: "payout_receipt",
       title: payoutReceiptText("payrollPayoutReceipt.title"),
       body,
-      link: `/kelola/payroll/pencairan?tab=approval&batch=${encodeURIComponent(log.batchId)}`,
+      link: payoutReceiptLink(payload.logId),
+    },
+  };
+}
+
+/** Page of one logged payout step, with the "Bukan saya" button. */
+const payoutReceiptLink = (logId: string) =>
+  `/tanda-terima/payroll/${encodeURIComponent(logId)}`;
+
+/** legend-l2zru: a payout batch was frozen by a "not me" dispute, or the freeze
+ * was lifted. Owner and finance (tenant-wide) and the person behind the
+ * dispute hear about it, outside any session. Everything is re-read from the
+ * append-only dispute / unfreeze rows by tenant + id; the payload carries the
+ * row id only, so a forged event cannot name a recipient. The disputant gets
+ * it only while still holding an open role assignment in this tenant. The
+ * text has no amount, name or account number. */
+async function payoutBatchFreezeRule(
+  input: RuleInput,
+  kind: "disputed" | "unfrozen",
+): Promise<Rule> {
+  let batchId: string;
+  let disputant: string;
+  let logId: string;
+  let at: Date;
+  if (kind === "disputed") {
+    const payload = payoutBatchDisputed.payloadSchema.parse(
+      input.event.payload,
+    );
+    const [row] = await input.tx
+      .select({
+        batchId: payrollPayoutBatchDisputes.batchId,
+        actor: payrollPayoutBatchDisputes.actor,
+        logId: payrollPayoutBatchDisputes.logId,
+        at: payrollPayoutBatchDisputes.createdAt,
+      })
+      .from(payrollPayoutBatchDisputes)
+      .where(
+        and(
+          eq(payrollPayoutBatchDisputes.tenantId, input.tenantId),
+          eq(payrollPayoutBatchDisputes.id, payload.disputeId),
+        ),
+      );
+    if (!row)
+      throw new Error("Payout batch dispute not found for notification");
+    ({ batchId, actor: disputant, logId, at } = row);
+  } else {
+    const payload = payoutBatchUnfrozen.payloadSchema.parse(
+      input.event.payload,
+    );
+    // The people to tell about an unfreeze are those of the dispute it closes.
+    const [row] = await input.tx
+      .select({
+        batchId: payrollPayoutBatchUnfreezes.batchId,
+        actor: payrollPayoutBatchDisputes.actor,
+        logId: payrollPayoutBatchDisputes.logId,
+        at: payrollPayoutBatchUnfreezes.createdAt,
+      })
+      .from(payrollPayoutBatchUnfreezes)
+      .innerJoin(
+        payrollPayoutBatchDisputes,
+        and(
+          eq(
+            payrollPayoutBatchDisputes.tenantId,
+            payrollPayoutBatchUnfreezes.tenantId,
+          ),
+          eq(
+            payrollPayoutBatchDisputes.id,
+            payrollPayoutBatchUnfreezes.disputeId,
+          ),
+        ),
+      )
+      .where(
+        and(
+          eq(payrollPayoutBatchUnfreezes.tenantId, input.tenantId),
+          eq(payrollPayoutBatchUnfreezes.id, payload.unfreezeId),
+        ),
+      );
+    if (!row)
+      throw new Error("Payout batch unfreeze not found for notification");
+    ({ batchId, actor: disputant, logId, at } = row);
+  }
+  const [batch] = await input.tx
+    .select({
+      periodStart: payrollRuns.periodStart,
+      periodEnd: payrollRuns.periodEnd,
+    })
+    .from(payrollDisbursementBatches)
+    .innerJoin(
+      payrollRuns,
+      and(
+        eq(payrollRuns.tenantId, payrollDisbursementBatches.tenantId),
+        eq(payrollRuns.id, payrollDisbursementBatches.payrollRunId),
+      ),
+    )
+    .where(
+      and(
+        eq(payrollDisbursementBatches.tenantId, input.tenantId),
+        eq(payrollDisbursementBatches.id, batchId),
+      ),
+    );
+  if (!batch) throw new Error("Payout batch not found for notification");
+  const handlers = await activeAssignees(
+    input.tx,
+    input.tenantId,
+    inArray(roles.templateKey, ["owner", "finance"] as never[]),
+    { kind: "tenant" },
+  );
+  const [member] = await input.tx
+    .select({ id: roleAssignments.id })
+    .from(roleAssignments)
+    .where(
+      and(
+        eq(roleAssignments.tenantId, input.tenantId),
+        eq(roleAssignments.userId, disputant),
+        lte(roleAssignments.validFrom, sql`now()`),
+        or(
+          isNull(roleAssignments.validUntil),
+          gt(roleAssignments.validUntil, sql`now()`),
+        ),
+      ),
+    )
+    .limit(1);
+  const key =
+    kind === "disputed"
+      ? ("payrollPayoutReceipt.frozen" as const)
+      : ("payrollPayoutReceipt.unfrozen" as const);
+  // Owner and finance go to the batch; the person who said "not me" goes to
+  // their own step page (unless that person is also owner or finance).
+  const links =
+    member && !handlers.includes(disputant)
+      ? new Map([[disputant, payoutReceiptLink(logId)]])
+      : undefined;
+  return {
+    ...(links ? { links } : {}),
+    userIds: [...new Set([...handlers, ...(member ? [disputant] : [])])].sort(),
+    content: {
+      category: "payout_receipt",
+      title: payoutReceiptText(`${key}.title`),
+      body: payoutReceiptText(`${key}.body`, {
+        period: `${batch.periodStart} sampai ${batch.periodEnd}`,
+        time: PAYOUT_RECEIPT_TIME.format(at),
+      }),
+      link: `/kelola/payroll/pencairan?tab=approval&batch=${encodeURIComponent(batchId)}`,
     },
   };
 }
@@ -1304,6 +1454,10 @@ async function ruleFor(input: RuleInput): Promise<Rule> {
       return subscriptionInvoiceCreatedRule(input);
     case "payout.step_attested":
       return payoutStepAttestedRule(input);
+    case "payout.batch_disputed":
+      return payoutBatchFreezeRule(input, "disputed");
+    case "payout.batch_unfrozen":
+      return payoutBatchFreezeRule(input, "unfrozen");
     default:
       throw new Error(`No notification recipient rule for ${input.event.name}`);
   }
@@ -1337,6 +1491,7 @@ export function createNotificationRecipientResolver(
         {
           userId,
           ...rule.content,
+          ...(rule.links?.has(userId) ? { link: rule.links.get(userId) } : {}),
           policy: state.policy,
           preference: userState.preference,
           reachability: reachabilityOf(userState, channels),

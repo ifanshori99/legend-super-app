@@ -1353,6 +1353,17 @@ export const PAYOUT_ATTESTATION_STEPS = [
 ] as const;
 export type PayoutAttestationStep = (typeof PAYOUT_ATTESTATION_STEPS)[number];
 
+/**
+ * Grant kinds: the attestation kinds plus `disown` and `unfreeze` (migration
+ * 0660, legend-l2zru), which attest nothing: they write the dispute tables.
+ */
+export const PAYOUT_GRANT_KINDS = [
+  ...PAYOUT_ATTESTATION_KINDS,
+  "disown",
+  "unfreeze",
+] as const;
+export type PayoutGrantKind = (typeof PAYOUT_GRANT_KINDS)[number];
+
 export const PAYOUT_GRANT_METHODS = ["password", "mfa_challenge"] as const;
 export type PayoutGrantMethod = (typeof PAYOUT_GRANT_METHODS)[number];
 
@@ -1370,9 +1381,7 @@ export const payrollPayoutGrants = pgTable(
     id: uuid("id").defaultRandom().primaryKey(),
     tenantId: tenantIdColumn(() => tenants.id).notNull(),
     secretSha256: varchar("secret_sha256", { length: 64 }).notNull(),
-    kind: varchar("kind", { length: 16 })
-      .$type<PayoutAttestationKind>()
-      .notNull(),
+    kind: varchar("kind", { length: 16 }).$type<PayoutGrantKind>().notNull(),
     step: varchar("step", { length: 8 })
       .$type<PayoutAttestationStep>()
       .notNull(),
@@ -1418,11 +1427,11 @@ export const payrollPayoutGrants = pgTable(
     }),
     check(
       "payroll_payout_grants_kind_check",
-      sql`${table.kind} IN (${inList(PAYOUT_ATTESTATION_KINDS)})`,
+      sql`${table.kind} IN (${inList(PAYOUT_GRANT_KINDS)})`,
     ),
     check(
       "payroll_payout_grants_detail_check",
-      sql`(${table.kind} = 'resolve' AND ${table.detail} IN ('failed', 'not_sent')) OR (${table.kind} = 'bank_confirm' AND ${table.detail} = 'succeeded') OR (${table.kind} NOT IN ('resolve', 'bank_confirm') AND ${table.detail} IS NULL)`,
+      sql`(${table.kind} = 'resolve' AND ${table.detail} IN ('failed', 'not_sent')) OR (${table.kind} = 'bank_confirm' AND ${table.detail} = 'succeeded') OR (${table.kind} IN ('disown', 'unfreeze') AND ${table.detail} ~ '^[0-9a-f]{64}$') OR (${table.kind} NOT IN ('resolve', 'bank_confirm', 'disown', 'unfreeze') AND ${table.detail} IS NULL)`,
     ),
     check(
       "payroll_payout_grants_step_check",
@@ -1615,6 +1624,147 @@ export const payrollPayoutApprovalLog = pgTable(
         payrollDisbursementBatches.id,
       ],
     }),
+  ],
+);
+
+/**
+ * "Not me" disputes (migration 0660, legend-l2zru): append-only. A person who
+ * finds an approval in their name that they did not make disowns that log row
+ * (`app.payout_approval_disown`); the batch is frozen while a dispute has no
+ * row in `payroll_payout_batch_unfreezes`. Written by the payout role only;
+ * the app role reads. UPDATE, DELETE and TRUNCATE are refused by triggers
+ * (PAYOUT-80). No amount.
+ */
+export const payrollPayoutBatchDisputes = pgTable(
+  "payroll_payout_batch_disputes",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    batchId: uuid("batch_id").notNull(),
+    logId: uuid("log_id").notNull(),
+    grantId: uuid("grant_id").notNull(),
+    actor: actor("actor").notNull(),
+    sessionId: text("session_id").notNull(),
+    reason: varchar("reason", { length: 500 }),
+    /** Status of the batch at the moment of the dispute. */
+    batchStatusAt: varchar("batch_status_at", { length: 16 })
+      .$type<PayoutBatchStatus>()
+      .notNull(),
+    createdAt: createdAt(),
+    txid: bigint("txid", { mode: "number" })
+      .notNull()
+      .default(sql`pg_catalog.txid_current()`),
+  },
+  (table) => [
+    unique("payroll_payout_batch_disputes_tenant_id_key").on(
+      table.tenantId,
+      table.id,
+    ),
+    unique("payroll_payout_batch_disputes_tenant_id_batch_key").on(
+      table.tenantId,
+      table.id,
+      table.batchId,
+    ),
+    unique("payroll_payout_batch_disputes_grant_key").on(
+      table.tenantId,
+      table.grantId,
+    ),
+    index("payroll_payout_batch_disputes_tenant_batch_idx").on(
+      table.tenantId,
+      table.batchId,
+    ),
+    // Not unique: after an unfreeze the same log row may be disowned again; one
+    // OPEN dispute per log row is kept by `app.payout_approval_disown`.
+    index("payroll_payout_batch_disputes_tenant_log_idx").on(
+      table.tenantId,
+      table.logId,
+    ),
+    foreignKey({
+      name: "payroll_payout_batch_disputes_batch_fk",
+      columns: [table.tenantId, table.batchId],
+      foreignColumns: [
+        payrollDisbursementBatches.tenantId,
+        payrollDisbursementBatches.id,
+      ],
+    }),
+    foreignKey({
+      name: "payroll_payout_batch_disputes_log_fk",
+      columns: [table.tenantId, table.logId],
+      foreignColumns: [
+        payrollPayoutApprovalLog.tenantId,
+        payrollPayoutApprovalLog.id,
+      ],
+    }),
+    foreignKey({
+      name: "payroll_payout_batch_disputes_grant_fk",
+      columns: [table.tenantId, table.grantId],
+      foreignColumns: [payrollPayoutGrants.tenantId, payrollPayoutGrants.id],
+    }),
+  ],
+);
+
+/**
+ * Release of a dispute (migration 0660): one row per dispute, written by
+ * `app.payout_batch_unfreeze` (payout role) for an owner or finance person who
+ * took no part in the batch. Append-only like the disputes (PAYOUT-80). The
+ * reason (10 to 500 characters) is the result of finance's check at the bank.
+ */
+export const payrollPayoutBatchUnfreezes = pgTable(
+  "payroll_payout_batch_unfreezes",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    batchId: uuid("batch_id").notNull(),
+    disputeId: uuid("dispute_id").notNull(),
+    grantId: uuid("grant_id").notNull(),
+    actor: actor("actor").notNull(),
+    sessionId: text("session_id").notNull(),
+    roleTemplate: varchar("role_template", { length: 8 }).notNull(),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    createdAt: createdAt(),
+    txid: bigint("txid", { mode: "number" })
+      .notNull()
+      .default(sql`pg_catalog.txid_current()`),
+  },
+  (table) => [
+    unique("payroll_payout_batch_unfreezes_dispute_key").on(
+      table.tenantId,
+      table.disputeId,
+    ),
+    index("payroll_payout_batch_unfreezes_tenant_batch_idx").on(
+      table.tenantId,
+      table.batchId,
+    ),
+    foreignKey({
+      name: "payroll_payout_batch_unfreezes_dispute_fk",
+      columns: [table.tenantId, table.disputeId, table.batchId],
+      foreignColumns: [
+        payrollPayoutBatchDisputes.tenantId,
+        payrollPayoutBatchDisputes.id,
+        payrollPayoutBatchDisputes.batchId,
+      ],
+    }),
+    foreignKey({
+      name: "payroll_payout_batch_unfreezes_batch_fk",
+      columns: [table.tenantId, table.batchId],
+      foreignColumns: [
+        payrollDisbursementBatches.tenantId,
+        payrollDisbursementBatches.id,
+      ],
+    }),
+    foreignKey({
+      name: "payroll_payout_batch_unfreezes_grant_fk",
+      columns: [table.tenantId, table.grantId],
+      foreignColumns: [payrollPayoutGrants.tenantId, payrollPayoutGrants.id],
+    }),
+    check(
+      "payroll_payout_batch_unfreezes_role_check",
+      sql`${table.roleTemplate} IN ('owner', 'finance')`,
+    ),
+    check(
+      "payroll_payout_batch_unfreezes_reason_check",
+      sql`pg_catalog.char_length(pg_catalog.btrim(${table.reason})) >= 10`,
+    ),
   ],
 );
 

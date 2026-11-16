@@ -79,6 +79,40 @@ export const payoutItemSchema = z.object({
   updatedAt: instant,
 });
 
+export const payoutBatchDisputeSchema = z.object({
+  id: z.string(),
+  logId: z.string(),
+  createdAt: instant,
+  batchStatusAt: z.string(),
+  reason: z.string().nullable(),
+  mine: z.boolean(),
+});
+
+export const payoutBatchFreezeSchema = z.object({
+  frozen: z.boolean(),
+  disputes: z.array(payoutBatchDisputeSchema),
+});
+
+export const payoutApprovalLogSchema = z.object({
+  id: z.string(),
+  batchId: z.string(),
+  kind: z.enum([
+    "correction",
+    "overpaid",
+    "return",
+    "posting_source",
+    "closure",
+    "resolve",
+    "bank_confirm",
+  ]),
+  step: z.enum(["propose", "approve", "record", "confirm", "withdraw"]),
+  itemCount: z.number().int(),
+  period: z.string(),
+  loggedAt: instant,
+  disowned: z.boolean(),
+  batchFrozen: z.boolean(),
+});
+
 export const payoutBatchSchema = z.object({
   id: z.string(),
   legalEntityId: z.string(),
@@ -105,10 +139,37 @@ export const payoutBatchSchema = z.object({
   cancelReason: z.string().nullable(),
   createdAt: instant,
   updatedAt: instant,
+  freeze: payoutBatchFreezeSchema,
   items: z.array(payoutItemSchema),
 });
 
 const emptyBody = z.strictObject({});
+
+// "Not me" and unfreeze (legend-l2zru). Both re-ask the account password like
+// the other payout steps; the reason of an unfreeze is the finance note, so it
+// is required (10..500 characters after trimming).
+const stepUpPasswordSchema = z.string().min(1).max(128).optional();
+
+export const payoutApprovalLogParamsSchema = z.strictObject({
+  logId: z.uuid(),
+});
+
+export const disownPayoutApprovalInputSchema = z.strictObject({
+  password: stepUpPasswordSchema,
+  reason: z.string().trim().min(1).max(500).optional(),
+});
+
+export const unfreezePayoutBatchInputSchema = z.strictObject({
+  password: stepUpPasswordSchema,
+  reason: z.string().trim().min(10).max(500),
+});
+
+export type DisownPayoutApprovalInput = z.infer<
+  typeof disownPayoutApprovalInputSchema
+>;
+export type UnfreezePayoutBatchInput = z.infer<
+  typeof unfreezePayoutBatchInputSchema
+>;
 const batchResponse = z.object({ data: payoutBatchSchema });
 
 // ---- Config ----------------------------------------------------------------
@@ -424,4 +485,32 @@ export const confirmDisbursementCash = defineEndpoint({
       runPaid: z.boolean(),
     }),
   }),
+});
+
+/** Only the actor of the log gets it; anyone else answers 404. */
+export const getPayoutApprovalLog = defineEndpoint({
+  method: "GET",
+  path: `${BASE}/payout-approval-log/:logId`,
+  params: payoutApprovalLogParamsSchema,
+  response: z.object({ data: payoutApprovalLogSchema }),
+});
+
+/** Freezes the batch of that log; repeating returns the same dispute id. */
+export const disownPayoutApproval = defineEndpoint({
+  method: "POST",
+  path: `${BASE}/payout-approval-log/:logId/disown`,
+  params: payoutApprovalLogParamsSchema,
+  body: disownPayoutApprovalInputSchema,
+  response: z.object({
+    data: z.object({ disputeId: z.string(), batchId: z.string() }),
+  }),
+});
+
+/** Releases every open dispute of the batch; 409 PAYOUT_UNFREEZE_REFUSED. */
+export const unfreezeDisbursementBatch = defineEndpoint({
+  method: "POST",
+  path: `${BASE}/disbursement-batches/:id/unfreeze`,
+  params: payoutBatchParamsSchema,
+  body: unfreezePayoutBatchInputSchema,
+  response: z.object({ data: z.object({ released: z.number().int() }) }),
 });

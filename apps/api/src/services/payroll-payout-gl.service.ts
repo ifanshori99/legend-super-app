@@ -2042,7 +2042,8 @@ async function batchHasRetryableRow(
  * posting with a retryable reason. Batches only a human clears are never
  * listed, so they do not use up the sweep's limit. The sweep selects BATCHES
  * (not postings) and rotates `after`, so a batch that stays blocked in front
- * cannot starve the ones behind it. SQL is paged by 200 batch ids.
+ * cannot starve the ones behind it. SQL is paged by 200 batch ids. A frozen
+ * batch is skipped (legend-l2zru).
  */
 export async function listRecoveryBatchIds(
   tx: Tx,
@@ -2064,6 +2065,15 @@ export async function listRecoveryBatchIds(
           cursor === null
             ? undefined
             : sql`${payrollPayoutGlPostings.batchId} > ${cursor}::uuid`,
+          // A frozen batch (an open "not me" dispute, legend-l2zru) is for a
+          // person to clear: the sweep neither retries nor lists it.
+          sql`NOT EXISTS (
+            SELECT 1 FROM payroll_payout_batch_disputes d
+             WHERE d.tenant_id = ${scoped}::uuid
+               AND d.batch_id = ${payrollPayoutGlPostings.batchId}
+               AND NOT EXISTS (
+                 SELECT 1 FROM payroll_payout_batch_unfreezes u
+                  WHERE u.tenant_id = d.tenant_id AND u.dispute_id = d.id))`,
         ),
       )
       .orderBy(asc(payrollPayoutGlPostings.batchId))

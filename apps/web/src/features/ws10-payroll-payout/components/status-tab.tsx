@@ -31,6 +31,7 @@ import {
   WithdrawProposalDialog,
 } from "./status-dialogs";
 import { VerifyPanel, useStepUp } from "./approval-verify";
+import { FreezeBadge, FreezeBanner } from "./freeze-banner";
 import {
   StatusList,
   proposalFor,
@@ -235,10 +236,15 @@ function StatusBatch({
               })}
           </p>
         </div>
-        <Badge tone={batchStatusMeta(batch.status).kind}>
-          {t(batchStatusMeta(batch.status).labelKey)}
-        </Badge>
+        <div className="flex flex-wrap items-center gap-2">
+          <FreezeBadge batch={batch} />
+          <Badge tone={batchStatusMeta(batch.status).kind}>
+            {t(batchStatusMeta(batch.status).labelKey)}
+          </Badge>
+        </div>
       </header>
+
+      <FreezeBanner batch={batch} canUnfreeze={access.canApprove} />
 
       {showOverpaid && (
         <div

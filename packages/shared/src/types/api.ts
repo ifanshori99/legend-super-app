@@ -154,6 +154,57 @@ export type PayoutProofClosureClosedDto = {
   gatePending: boolean;
 };
 
+/**
+ * One open "not me" claim on a batch (legend-l2zru). `reason` is the
+ * disputant's own words; the claimant's identity is shown only to the claimant.
+ */
+export type PayoutBatchDisputeDto = {
+  id: string;
+  logId: string;
+  /** ISO datetime of the claim. */
+  createdAt: string;
+  /** Batch status when the batch was frozen. */
+  batchStatusAt: string;
+  reason: string | null;
+  /** True when the caller filed this claim. */
+  mine: boolean;
+};
+
+/** A batch is frozen while it has a dispute with no unfreeze row. */
+export type PayoutBatchFreezeDto = {
+  frozen: boolean;
+  /** Open disputes only; empty when not frozen. */
+  disputes: PayoutBatchDisputeDto[];
+};
+
+/**
+ * One payout step logged on the login of the caller (GET
+ * /payout-approval-log/:logId): the page the receipt notification links to.
+ * No amount, name or account number.
+ */
+export type PayoutApprovalLogDto = {
+  id: string;
+  batchId: string;
+  kind:
+    | "correction"
+    | "overpaid"
+    | "return"
+    | "posting_source"
+    | "closure"
+    | "resolve"
+    | "bank_confirm";
+  step: "propose" | "approve" | "record" | "confirm" | "withdraw";
+  itemCount: number;
+  /** Payroll period label of the batch, as in the receipt notification. */
+  period: string;
+  /** ISO datetime the step was logged. */
+  loggedAt: string;
+  /** True once the caller has already said "not me" for this step. */
+  disowned: boolean;
+  /** The batch is frozen now (by this claim or another). */
+  batchFrozen: boolean;
+};
+
 /** A disbursement batch for one payroll run. totalIdr is the sum of items. */
 export type PayrollDisbursementBatchDto = {
   id: string;
@@ -181,6 +232,7 @@ export type PayrollDisbursementBatchDto = {
   cancelReason: string | null;
   createdAt: string;
   updatedAt: string;
+  freeze: PayoutBatchFreezeDto;
   items: PayrollDisbursementItemDto[];
 };
 

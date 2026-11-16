@@ -1,10 +1,12 @@
 // One-time payout step grants (legend-911, P1-1 of the second opinion on 905).
 //
 // A trusted payout money step (correction, overpaid, return, proof closure,
-// posting source, and the withdraw of a correction or overpaid proposal) no longer takes (actor, session) from the app: it spends a
-// grant that only the grantor database login can issue (migration 0653,
-// `app.payout_grant_issue`). The grant names the actor and session itself and is
-// bound to the exact step, batch, item set, evidence key, ref and target.
+// posting source, the withdraw of a correction or overpaid proposal, and the
+// "not me" disown and unfreeze of legend-l2zru) no longer takes (actor,
+// session) from the app: it spends a grant that only the grantor database login
+// can issue (migration 0653, `app.payout_grant_issue`). The grant names the
+// actor and session itself and is bound to the exact step, batch, item set,
+// evidence key, ref and target.
 //
 // The issuer exists per request and works only after the request passed the
 // payout step-up (`requireTenantStepUpPassword` records it, `payoutStepUpOf`).
@@ -16,7 +18,7 @@ import { payoutGrantorPool } from "../db/grantor.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { getAuth } from "../middleware/auth.ts";
 import { payoutStepUpOf } from "../middleware/identity.ts";
-import { getScopedTenantContext } from "../middleware/permissions.ts";
+import { getTenantContext } from "../middleware/tenant.ts";
 import { PAYOUT_STEP_UP_MAX_AGE_MINUTES } from "./payroll-payout-evidence.ts";
 
 export type PayoutGrantBinding = {
@@ -27,7 +29,9 @@ export type PayoutGrantBinding = {
     | "closure"
     | "posting_source"
     | "resolve"
-    | "bank_confirm";
+    | "bank_confirm"
+    | "disown"
+    | "unfreeze";
   step: "propose" | "approve" | "record" | "confirm" | "withdraw";
   batchId: string | null;
   itemIds: readonly string[];
@@ -36,7 +40,9 @@ export type PayoutGrantBinding = {
   targetId: string | null;
   /**
    * The outcome a grant covers (legend-r86qa): `failed` or `not_sent` for kind
-   * `resolve`, `succeeded` for kind `bank_confirm`; NULL for every other kind.
+   * `resolve`, `succeeded` for kind `bank_confirm`, the sha256 (hex) of the
+   * reason for kind `disown` and `unfreeze` (legend-l2zru); NULL for every
+   * other kind.
    */
   detail?: string | null;
 };
@@ -87,6 +93,27 @@ function issueError(error: unknown): unknown {
         403,
         "PAYOUT_ACTOR_REFUSED",
         "Anda tidak berhak menjalankan langkah pembayaran ini.",
+      );
+    case "79":
+      // A frozen batch gets no grant (legend-l2zru).
+      return new HttpError(
+        409,
+        "PAYOUT_BATCH_FROZEN",
+        'Batch pembayaran ini dibekukan karena ada pengakuan "bukan saya". Finance perlu memeriksanya dan membuka pembekuan.',
+      );
+    case "81":
+      // Disown of a log row that is not the caller's, or not on this batch:
+      // answered like a row that does not exist.
+      return new HttpError(
+        404,
+        "PAYOUT_APPROVAL_LOG_NOT_FOUND",
+        "Catatan persetujuan tidak ditemukan.",
+      );
+    case "82":
+      return new HttpError(
+        409,
+        "PAYOUT_UNFREEZE_REFUSED",
+        "Anda tidak dapat membuka pembekuan batch ini.",
       );
     case "72":
       return new HttpError(
@@ -156,7 +183,8 @@ async function issueOnGrantor(
  * passed the payout step-up as the same user and session that `getAuth` names,
  * and that the step-up is no older than PAYOUT_STEP_UP_MAX_AGE_MINUTES: else 401
  * REAUTH_REQUIRED. No grantor pool configured: 503
- * PAYOUT_STEP_GRANT_UNAVAILABLE. The tenant is the request's scoped tenant.
+ * PAYOUT_STEP_GRANT_UNAVAILABLE. The tenant is the request's tenant (the "not
+ * me" disown has no permission middleware, so no scoped context).
  */
 export function payoutGrantIssuerOf(req: Request): PayoutGrantIssuer {
   return {
@@ -174,7 +202,7 @@ export function payoutGrantIssuerOf(req: Request): PayoutGrantIssuer {
       if (!(ageMs >= 0 && ageMs <= PAYOUT_STEP_UP_MAX_AGE_MINUTES * 60_000))
         throw reauthRequired();
       return issueOnGrantor(
-        getScopedTenantContext(req).tenant.tenantId,
+        getTenantContext(req).tenantId,
         binding,
         auth.user.id,
         auth.session.id,

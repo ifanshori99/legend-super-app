@@ -266,6 +266,15 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "function bodies only, no row edited by the migration: app.payout_resolve_propose, app.payout_resolve_approve and app.payout_bank_confirm (payout role) spend a one-time grant and move an exported item to failed, not_sent or succeeded when called, and the item guard is replaced; the migration itself writes no row and changes no amount",
   "0657_payout_run_settle.sql":
     "function bodies only, no row edited by the migration: app.payout_run_settle (payout role) turns a run paid when called, after re-checking its payments; the run guard is replaced; the migration itself writes no row and changes no amount",
+  "0658_payout_proposal_withdraw.sql":
+    "function bodies only, no row edited by the migration: app.payout_grant_issue (grantor login), app.payout_correction_propose, app.payout_overpaid_propose and the withdraw functions (payout role) insert a grant or a proposal, or mark an open correction or overpaid proposal withdrawn, when called; a withdrawn proposal stays as a row and the item is untouched; the migration itself writes no row and changes no amount",
+  "0659_payout_approval_log.sql":
+    "creates the append-only payroll_payout_approval_log table and replaces the function body of app.payout_attest (payout role), which inserts an attestation and a log row when called; the migration itself writes no row and changes no amount",
+  // legend-l2zru (918)
+  "0661_payout_batch_freeze_guards.sql":
+    "trigger and function bodies only, no row edited by the migration: guards that refuse a payout step on a batch with an open dispute (PAYOUT-79), and the item/batch guard functions that update rows only when a payout function is called; the migration itself writes no row and changes no amount (it only blocks payments)",
+  "0660_payout_batch_disputes.sql":
+    "creates the append-only payroll_payout_batch_disputes and payroll_payout_batch_unfreezes tables, adds the disown and unfreeze grant kinds, and function bodies only: app.payout_approval_disown and app.payout_batch_unfreeze (payout role) insert a dispute or the unfreeze rows of a batch when called, app.payout_grant_issue (grantor login) inserts a grant; the migration itself writes no row and changes no amount (a dispute only freezes a batch, nobody is paid more)",
 };
 
 // Entrypoints that open a database pool but import no data.

@@ -26,6 +26,12 @@ export const reimbursementCategoryIdSchema =
 export const reimbursementIdSchema = uuidIdSchema<"ReimbursementId">();
 /** One row of `payroll_payout_approval_log` (legend-7gghu). */
 export const payoutApprovalLogIdSchema = uuidIdSchema<"PayoutApprovalLogId">();
+/** One row of `payroll_payout_batch_disputes` (legend-l2zru). */
+export const payoutBatchDisputeIdSchema =
+  uuidIdSchema<"PayoutBatchDisputeId">();
+/** One row of `payroll_payout_batch_unfreezes` (legend-l2zru). */
+export const payoutBatchUnfreezeIdSchema =
+  uuidIdSchema<"PayoutBatchUnfreezeId">();
 
 export type PayrollPolicyId = z.infer<typeof payrollPolicyIdSchema>;
 export type PayComponentId = z.infer<typeof payComponentIdSchema>;
@@ -38,6 +44,8 @@ export type StatutoryTableVersionId = z.infer<
 export type ThrScheduleId = z.infer<typeof thrScheduleIdSchema>;
 export type PayrollRunId = z.infer<typeof payrollRunIdSchema>;
 export type PayoutApprovalLogId = z.infer<typeof payoutApprovalLogIdSchema>;
+export type PayoutBatchDisputeId = z.infer<typeof payoutBatchDisputeIdSchema>;
+export type PayoutBatchUnfreezeId = z.infer<typeof payoutBatchUnfreezeIdSchema>;
 export type PayslipId = z.infer<typeof payslipIdSchema>;
 export type BankTransferFileId = z.infer<typeof bankTransferFileIdSchema>;
 export type PayrollTaxExportId = z.infer<typeof payrollTaxExportIdSchema>;

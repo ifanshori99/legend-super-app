@@ -2829,6 +2829,20 @@
       "when": 1795000000659,
       "tag": "0659_payout_approval_log",
       "breakpoints": true
+    },
+    {
+      "idx": 418,
+      "version": "7",
+      "when": 1795000000660,
+      "tag": "0660_payout_batch_disputes",
+      "breakpoints": true
+    },
+    {
+      "idx": 419,
+      "version": "7",
+      "when": 1795000000661,
+      "tag": "0661_payout_batch_freeze_guards",
+      "breakpoints": true
     }
   ]
 }

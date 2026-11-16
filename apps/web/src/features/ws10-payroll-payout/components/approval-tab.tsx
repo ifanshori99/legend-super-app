@@ -33,6 +33,7 @@ import { CancelBatchButton, canCancelStatus } from "./approval-cancel";
 import { ApprovalSteps } from "./approval-steps";
 import { ApprovalSummary } from "./approval-summary";
 import { VerifyPanel, useStepUp } from "./approval-verify";
+import { FreezeBadge, FreezeBanner } from "./freeze-banner";
 
 export type ApprovalTabProps = PayoutTabProps & {
   /** Optional: sends the user to the Siap bayar tab from the empty state. */
@@ -290,6 +291,7 @@ function ApprovalBatch({
 
   return (
     <div className="grid min-w-0 grid-cols-1 gap-4">
+      <FreezeBanner batch={batch} canUnfreeze={access.canApprove} />
       {sourceInactive && source && (
         <div
           role="alert"
@@ -330,11 +332,14 @@ function ApprovalBatch({
                 })}
               </p>
             </div>
-            <p className="rounded-full bg-warning-subtle px-2.5 py-0.5 text-xs font-semibold text-warning">
-              {t("payrollPayoutReview.approval.step.progress", {
-                done: batch.approvedBy ? 2 : 1,
-              })}
-            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <FreezeBadge batch={batch} />
+              <p className="rounded-full bg-warning-subtle px-2.5 py-0.5 text-xs font-semibold text-warning">
+                {t("payrollPayoutReview.approval.step.progress", {
+                  done: batch.approvedBy ? 2 : 1,
+                })}
+              </p>
+            </div>
           </header>
           <ApprovalSteps
             batch={batch}

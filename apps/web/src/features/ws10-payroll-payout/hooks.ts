@@ -13,6 +13,7 @@ import {
 } from "@tanstack/react-query";
 import {
   getDisbursementBatch,
+  getPayoutApprovalLog,
   getPayoutConfig,
   listPayoutBatches,
   listResolutionProposals,
@@ -31,15 +32,18 @@ import type {
   ConfirmCashInput,
   ConfirmItemsInput,
   CreateBatchInput,
+  DisownApprovalInput,
   PayableRun,
   PayoutEmployee,
   ResolveItemsInput,
   ReturnItemsInput,
+  UnfreezeBatchInput,
   UpsertConfigInput,
   WithdrawProposalInput,
 } from "./api";
 import { maskedAccountDisplay } from "./lib";
 import {
+  approvalLogQuery,
   batchQuery,
   configQuery,
   employeesQuery,
@@ -105,6 +109,14 @@ export function usePayableRuns(legalEntityId: string | undefined) {
 
 export function useRunBatches(runId: string | undefined) {
   return useQuery({ ...runBatchesQuery(runId ?? ""), enabled: Boolean(runId) });
+}
+
+/** One logged payout step of the caller; 404 for anyone else's. */
+export function useApprovalLog(logId: string | undefined) {
+  return useQuery({
+    ...approvalLogQuery(logId ?? ""),
+    enabled: Boolean(logId),
+  });
 }
 
 export function useBatch(batchId: string | undefined) {
@@ -266,6 +278,7 @@ function useRefreshPayout() {
         queryKey: [listResolutionProposals.id],
       }),
       queryClient.invalidateQueries({ queryKey: [payoutKeys.all[0]] }),
+      queryClient.invalidateQueries({ queryKey: [getPayoutApprovalLog.id] }),
     ]);
 }
 
@@ -368,6 +381,32 @@ export function useConfirmBatch() {
       ...body
     }: { batchId: string } & ConfirmItemsInput) =>
       api.postConfirmItems(batchId, body),
+    onSuccess: refresh,
+  });
+}
+
+/** `mutate({ logId, password?, reason? })`: freezes the batch of that step. */
+export function useDisownApproval() {
+  const refresh = useRefreshPayout();
+  return useMutation({
+    mutationFn: ({
+      logId,
+      ...body
+    }: { logId: string } & DisownApprovalInput) =>
+      api.postDisownApproval(logId, body),
+    onSuccess: refresh,
+  });
+}
+
+/** `mutate({ batchId, reason, password? })`: lifts every open freeze. */
+export function useUnfreezeBatch() {
+  const refresh = useRefreshPayout();
+  return useMutation({
+    mutationFn: ({
+      batchId,
+      ...body
+    }: { batchId: string } & UnfreezeBatchInput) =>
+      api.postUnfreezeBatch(batchId, body),
     onSuccess: refresh,
   });
 }

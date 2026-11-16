@@ -15,6 +15,7 @@ export const financeExceptionsMessages = {
     receipt_pending_stale: "Jurnal penjualan menunggu struk lebih dari 1 hari",
     payout_proof_stuck: "Bukti payout tertahan pemeriksaan",
     payout_recon_flag: "Selisih rekonsiliasi payout",
+    payout_batch_disputed: "Pencairan dibekukan (bukan saya)",
   },
   kindHelp: {
     edge_tax_unsnapshotted:
@@ -33,6 +34,8 @@ export const financeExceptionsMessages = {
       "Bukti bank pencairan gaji belum bisa diperiksa: berkasnya tidak terbaca atau sama dengan bukti lain. Pengembalian dengan bukti baru tetap ditahan. Berlaku untuk seluruh PT dan tidak mengikuti rentang tanggal.",
     payout_recon_flag:
       "Pemeriksaan malam menemukan langkah koreksi, pembayaran ganda, pengembalian, atau akun sumber pencairan gaji yang tidak cocok dengan catatan dua orang, bukti, atau jurnalnya. Slip terkait ditahan dari pencairan ulang. Berlaku untuk seluruh PT dan tidak mengikuti rentang tanggal.",
+    payout_batch_disputed:
+      "Seseorang menyatakan langkah pencairan gaji atas namanya bukan dilakukan olehnya, jadi pencairan itu dibekukan. Selama beku, tidak ada langkah baru yang bisa dilakukan. Bila pencairan sudah dikirim ke bank, periksa mutasi bank. Berlaku untuk seluruh PT dan tampil sampai pembekuan dibuka.",
   },
   refTypes: {
     order: "Order edge",
@@ -42,12 +45,14 @@ export const financeExceptionsMessages = {
     payout_posting: "Jurnal pencairan gaji",
     payout_proof: "Bukti pencairan gaji",
     payout_recon: "Rekonsiliasi pencairan gaji",
+    payout_batch_dispute: "Sengketa pencairan gaji",
   },
   refTypeUnknown: "Sumber lain",
   details: {
     tax_missing: "Pajak tidak ada pada data edge.",
     tax_mismatch: "Pajak pada data edge tidak cocok dengan total order.",
     batchPrefix: "Batch pencairan",
+    disputedBatchStatusAt: "Status pencairan saat dibekukan: {status}",
     proofUnreadable: "Berkas bukti tidak terbaca di penyimpanan.",
     proofHashConflict: "Isi berkas sama dengan bukti lain yang sudah dipakai.",
     proofLegacyDuplicate:

@@ -759,6 +759,48 @@ async function payoutReconFlags(
 }
 
 /**
+ * Payout batches frozen by a "not me" dispute (legend-l2zru), standing until
+ * the unfreeze rows cover every dispute. One row per frozen batch; `detail` is
+ * the batch status when it was first disputed, so finance knows to check the
+ * bank for a batch that was already exported, sending or completed.
+ */
+async function payoutBatchDisputed(
+  tx: Executor,
+  scope: Scope,
+): Promise<Collected> {
+  const rows = rowsOf(
+    await tx.execute(
+      sql`SELECT d.batch_id::text AS ref_id,
+                 (array_agg(d.batch_status_at ORDER BY d.created_at, d.id))[1] AS detail,
+                 min(d.created_at) AS occurred_at
+            FROM payroll_payout_batch_disputes d
+           WHERE d.tenant_id = ${scope.tenantId}::uuid
+             AND NOT EXISTS (
+               SELECT 1 FROM payroll_payout_batch_unfreezes u
+                WHERE u.tenant_id = d.tenant_id AND u.dispute_id = d.id)
+           GROUP BY d.batch_id
+           ORDER BY min(d.created_at) DESC, d.batch_id DESC`,
+    ),
+  );
+  const items = rows.map((row) =>
+    toItem("payout_batch_disputed", "payout_batch_dispute", {
+      occurred_at: row.occurred_at,
+      ref_id: row.ref_id,
+      outlet_id: null,
+      detail: row.detail,
+      amount: null,
+    }),
+  );
+  return {
+    kind: "payout_batch_disputed",
+    count: items.length,
+    knownAmountCount: 0,
+    amountIdr: 0,
+    items,
+  };
+}
+
+/**
  * The exceptions of the window for the caller's outlets. Read-only. A tenant
  * wide caller also sees the outlet-less payout kind (unless it filters by an
  * outlet); an outlet outside the caller's reach shows nothing.
@@ -783,6 +825,7 @@ export async function listFinanceExceptions(
   const includePayout = wants("payout_fee_not_posted") && tenantWide;
   const includeProofStuck = wants("payout_proof_stuck") && tenantWide;
   const includeReconFlags = wants("payout_recon_flag") && tenantWide;
+  const includeBatchDisputed = wants("payout_batch_disputed") && tenantWide;
 
   const collected = await withTenant(db, context, async (tx) => {
     const parts: Collected[] = [];
@@ -799,6 +842,7 @@ export async function listFinanceExceptions(
     if (includePayout) parts.push(await payoutFeeNotPosted(tx, scope));
     if (includeProofStuck) parts.push(await payoutProofStuck(tx, scope));
     if (includeReconFlags) parts.push(await payoutReconFlags(tx, scope));
+    if (includeBatchDisputed) parts.push(await payoutBatchDisputed(tx, scope));
     return parts;
   });
 

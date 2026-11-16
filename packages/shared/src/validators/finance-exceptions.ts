@@ -12,8 +12,14 @@ export const FINANCE_EXCEPTION_KINDS = [
   "receipt_pending_stale",
   "payout_proof_stuck",
   "payout_recon_flag",
+  "payout_batch_disputed",
 ] as const;
 export type FinanceExceptionKind = (typeof FINANCE_EXCEPTION_KINDS)[number];
+
+// `payout_batch_disputed` (legend-l2zru) is tenant-wide and standing: a batch
+// frozen by a "not me" dispute is listed until it is unfrozen. Its detail is
+// the batch status at dispute time (exported, sending or completed means
+// finance checks the bank).
 
 /**
  * `receipt_pending_stale` (legend-z13t) ignores the date window: a parked

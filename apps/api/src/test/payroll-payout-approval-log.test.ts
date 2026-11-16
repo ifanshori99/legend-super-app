@@ -118,6 +118,7 @@ const PASSWORD = "Test-password-123!";
 const BATCHES = "/api/hris/payroll/disbursement-batches";
 const PRIVILEGE = "42501";
 const GUARD = "23514";
+const FK_TRUNCATE = "0A000";
 const EVENT = "payout.step_attested";
 const hex = () => randomBytes(32).toString("hex");
 const sha = (secret: string) =>
@@ -832,6 +833,11 @@ describe("915 log: append-only and tenant-isolated", () => {
       ([n]) => n !== "insert",
     )) {
       const outcome = await rolledBack(null, sql, params);
+      if (name === "truncate" && outcome.code === FK_TRUNCATE) {
+        // 918: the dispute table references the log, so PostgreSQL itself
+        // refuses a plain TRUNCATE (0A000) before the trigger can run.
+        continue;
+      }
       expect(outcome.code, `owner ${name}: ${outcome.message}`).toBe(GUARD);
       expect(outcome.message, `owner ${name}`).toMatch(/PAYOUT-7\d:/);
     }
@@ -992,8 +998,8 @@ describe("915 receipt: recipient and text", () => {
     ).toEqual([]);
   });
 
-  it("[915-receipt-text-no-amounts] the notification names the verb, the batch period, the item count and the time, links to the batch, and carries no Rp, amount, payee name or bank account", async () => {
-    const { w, logId } = await receipt();
+  it("[915-receipt-text-no-amounts] the notification names the verb, the batch period, the item count and the time, links to the receipt page of the log row, and carries no Rp, amount, payee name or bank account", async () => {
+    const { logId } = await receipt();
     const recipients = await resolveReceipt(receiptEvent({ logId }));
     expect(recipients).toHaveLength(1);
     const r = recipients[0]!;
@@ -1017,8 +1023,9 @@ describe("915 receipt: recipient and text", () => {
     expect(text).not.toContain(BUDI.name);
     expect(text).not.toContain(BUDI.account);
 
-    expect(r.link, "a link to the batch page").toBeTruthy();
-    expect(looksLike(String(r.link), w.batchId)).toBe(true);
+    expect(r.link, "a link to the receipt page").toBeTruthy();
+    expect(String(r.link)).toMatch(/^\/tanda-terima\/payroll\//);
+    expect(looksLike(String(r.link), logId)).toBe(true);
   });
 
   it("[915-receipt-email-mandatory] email goes out even when the person switched every channel off and set quiet hours over the whole day", async () => {

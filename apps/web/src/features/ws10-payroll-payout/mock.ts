@@ -47,8 +47,10 @@ import {
   confirmDisbursementCash,
   confirmDisbursementItems,
   createDisbursementBatch,
+  disownPayoutApproval,
   exportDisbursementBatch,
   getDisbursementBatch,
+  getPayoutApprovalLog,
   getPayoutConfig,
   listPayoutBatches,
   listResolutionProposals,
@@ -57,6 +59,7 @@ import {
   resolveDisbursementItems,
   returnDisbursementItems,
   submitDisbursementBatch,
+  unfreezeDisbursementBatch,
   upsertPayoutConfig,
 } from "@starter/shared/hris/payroll/payout";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
@@ -86,6 +89,8 @@ export const MOCK_PAYOUT_IDS = {
   /** `two-pending` only: a second batch awaiting approval (own run). */
   runTwoPending: uid(103),
   batchTwoPending: uid(203),
+  /** A logged step of the signed-in approver, on the status batch. */
+  logStatus: uid(301),
 } as const;
 
 const ACCOUNTS = [
@@ -304,6 +309,7 @@ function batch(
     cancelReason: null,
     createdAt: NOW,
     updatedAt: NOW,
+    freeze: { frozen: false, disputes: [] },
     items,
     ...overrides,
   };
@@ -1137,4 +1143,70 @@ registerMock(confirmDisbursementCash, ({ params, body }) => {
   return {
     data: { batchStatus: next.status, runPaid: next.status === "completed" },
   };
+});
+
+// ---- "Not me" and unfreeze (legend-l2zru) -------------------------------------
+
+registerMock(getPayoutApprovalLog, ({ params }) => {
+  if (params.logId !== MOCK_PAYOUT_IDS.logStatus)
+    throw refuse(404, "NOT_FOUND", "Langkah ini tidak ditemukan.");
+  const found = find(MOCK_PAYOUT_IDS.batchStatus);
+  return {
+    data: {
+      id: params.logId,
+      batchId: found.id,
+      kind: "bank_confirm" as const,
+      step: "confirm" as const,
+      itemCount: found.items.length,
+      period: "1 sampai 30 November 2026",
+      loggedAt: found.updatedAt,
+      disowned: found.freeze.disputes.some(
+        (row) => row.logId === params.logId,
+      ),
+      batchFrozen: found.freeze.frozen,
+    },
+  };
+});
+
+registerMock(disownPayoutApproval, ({ params, body }) => {
+  if (params.logId !== MOCK_PAYOUT_IDS.logStatus)
+    throw refuse(404, "NOT_FOUND", "Langkah ini tidak ditemukan.");
+  const current = find(MOCK_PAYOUT_IDS.batchStatus);
+  const existing = current.freeze.disputes.find(
+    (row) => row.logId === params.logId,
+  );
+  if (existing)
+    return { data: { disputeId: existing.id, batchId: current.id } };
+  const disputeId = uid(401 + current.freeze.disputes.length);
+  save({
+    ...current,
+    freeze: {
+      frozen: true,
+      disputes: [
+        ...current.freeze.disputes,
+        {
+          id: disputeId,
+          logId: params.logId,
+          createdAt: new Date().toISOString(),
+          batchStatusAt: current.status,
+          reason: body.reason ?? null,
+          mine: true,
+        },
+      ],
+    },
+  });
+  return { data: { disputeId, batchId: current.id } };
+});
+
+registerMock(unfreezeDisbursementBatch, ({ params }) => {
+  const current = find(params.id);
+  if (!current.freeze.frozen)
+    throw refuse(
+      409,
+      "PAYOUT_UNFREEZE_REFUSED",
+      "Tidak ada pembekuan yang perlu dibuka.",
+    );
+  const released = current.freeze.disputes.length;
+  save({ ...current, freeze: { frozen: false, disputes: [] } });
+  return { data: { released } };
 });
