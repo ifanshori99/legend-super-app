@@ -6773,3 +6773,8 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Bukti: `LEGEND_MOCK_PORT=3326 heavy --browser pnpm test:e2e:mock e2e/legend-e8oa.mock.spec.ts e2e/legend-mzg.mock.spec.ts e2e/legend-rx0h.mock.spec.ts e2e/legend-sgg.mock.spec.ts` exit 0, 35 passed/1 skipped, 2,4 menit, satu worker. Per spec: e8oa 12, mzg 9, rx0h 9, sgg 5 passed/1 skipped. Log `/tmp/926-e2e.log`. PAY-04 membuktikan approval belum settlement dan total refund tidak melebihi pembayaran.
 - `pnpm exec prettier --check` dan `pnpm exec eslint` pada keempat spec hijau; `git diff --check` hijau. Satu reviewer native Codex atas diff final bersih. Guest credit `legend-whd5c` tetap fixme sesuai commit sumber, bukan bukti lulus. Gate penuh/build tidak dijalankan karena scope port spec saja.
 - Subagent: total 5 unik, puncak 3 bersamaan, token heavy dipegang test_runner. session-usage tidak menemukan transkrip Codex; parallel-report hanya memuat sesi Claude, biaya/token native Codex tidak tersedia. Status Beads ditangani CTO sesuai peran engineer Codex.
+
+### 930 — Port zvz legend-0y8tf ke m1 (16 Nov 2026)
+
+- Cabang `fix/0y8tf-zvz-port` dari `origin/milestone/m1` `a8e6036ab`; port hanya hunk `e2e/legend-zvz.mock.spec.ts` dari `c3cef7cb4`. Ekspektasi expo dan pickup memakai nomor antrean `A-014`, `A-013`, `A-012`, sesuai fixture m1; perbaikan `ujxl` yang telah mendarat tidak diulang.
+- Tanpa migrasi atau perubahan kode produk. Pola mock dan komentar tunggu hidrasi m1 tetap dipertahankan. Verifikasi final, review, dan push ditangani induk setelah commit sumber terakhir; belum diklaim lulus di tahap port.
