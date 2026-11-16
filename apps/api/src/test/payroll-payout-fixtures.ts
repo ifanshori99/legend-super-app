@@ -16,7 +16,7 @@
 //   tenants/<tenantId>/payroll-payout/<batchId>/<fileName>
 // `evidenceKeyFor` is the single place to change if the engineer picks a
 // different format.
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, expect } from "vitest";
 import type { ObjectStorage } from "@starter/shared/adapters";
@@ -80,10 +80,43 @@ export const REQ = `payout-gl-req-${randomUUID()}`;
 export const APP = `payout-gl-app-${randomUUID()}`;
 export const APP2 = `payout-gl-app2-${randomUUID()}`;
 export const APP3 = `payout-gl-app3-${randomUUID()}`;
+/**
+ * The Better Auth session id of a fixture actor: one per user, derived from the
+ * user id so `actorOf` stays synchronous. The row is created by
+ * `installPayoutWorld` (`provisionActor`) for the fixture constants and for
+ * every user made through `signedInClient`; the trusted payout paths
+ * (`app.payout_assert_actor`) check it is live with a fresh MFA step-up.
+ */
+const sessionIdOf = (userId: string) => `payout-fixture-session-${userId}`;
 export const actorOf = (userId: string) => ({
   tenantId: tenant.id as string,
   userId,
+  sessionId: sessionIdOf(userId),
 });
+
+/**
+ * A full `PayoutActor` for the trusted payout paths (correction, overpaid,
+ * return, closure, posting source): inserts a live Better Auth session of
+ * `userId` with `mfa_verified_at = now()` (what `app.payout_assert_actor`
+ * checks) and returns the actor carrying its id. The user must already exist.
+ */
+export async function payoutActorSession(tenantId: string, userId: string) {
+  const owner = new Pool({
+    connectionString: process.env.STARTER_TEST_DATABASE_URL,
+    max: 1,
+  });
+  try {
+    const sessionId = randomUUID();
+    await owner.query(
+      `INSERT INTO session (id, expires_at, token, user_id, tenant_id, mfa_verified_at)
+       VALUES ($1, now() + interval '1 day', $2, $3, $4, now())`,
+      [sessionId, randomBytes(16).toString("hex"), userId, tenantId],
+    );
+    return { tenantId, userId, sessionId };
+  } finally {
+    await owner.end();
+  }
+}
 
 export const evidenceKeyFor = (
   tenantId: string,
@@ -265,6 +298,9 @@ export function installPayoutWorld(label: string) {
   const createdEmployees: string[] = [];
   const createdUsers: string[] = [];
   const createdRoles: string[] = [];
+  const actorUsers: string[] = [];
+  const actorSessions: string[] = [];
+  let mfaRefresh: NodeJS.Timeout | undefined;
   let bankAccountId = "";
   let hr: ReturnType<typeof agent>;
 
@@ -331,7 +367,40 @@ export function installPayoutWorld(label: string) {
     const session = await client.get("/api/auth/get-session");
     const userId = session.body.user.id as string;
     createdUsers.push(userId);
+    await provisionActor(userId, { user: false, permit: false });
     return { client, userId };
+  }
+
+  /**
+   * What `app.payout_assert_actor` checks about the human behind a trusted
+   * step: the user row (`user: true` creates it), a live session with a fresh
+   * MFA step-up (the id `actorOf` returns) and, with `permit`, a tenant role
+   * carrying `payroll.disburse.approve`.
+   */
+  async function provisionActor(
+    userId: string,
+    { user, permit }: { user: boolean; permit: boolean },
+  ) {
+    const sessionId = sessionIdOf(userId);
+    actorSessions.push(sessionId);
+    if (user) {
+      actorUsers.push(userId);
+      await owner.query(
+        `INSERT INTO "user" (id, name, email, email_verified)
+         VALUES ($1, $2, $3, true) ON CONFLICT (id) DO NOTHING`,
+        [userId, `Payout ${label} actor`, `${userId}@payout-fixture.test`],
+      );
+    }
+    await owner.query(
+      `INSERT INTO session (id, expires_at, token, user_id, tenant_id, mfa_verified_at)
+       VALUES ($1, now() + interval '1 day', $2, $3, $4, now())
+       ON CONFLICT (id) DO UPDATE SET mfa_verified_at = now()`,
+      [sessionId, randomBytes(16).toString("hex"), userId, tenant.id],
+    );
+    if (permit) {
+      createdUsers.push(userId);
+      await grantRole(userId, ["payroll.disburse.approve"]);
+    }
   }
   async function grantRole(userId: string, permissions: string[]) {
     const roleId = randomUUID();
@@ -742,6 +811,17 @@ export function installPayoutWorld(label: string) {
 
   beforeAll(async () => {
     setAuditWriter(coreAuditWriter);
+    for (const id of [REQ, APP, APP2, APP3])
+      await provisionActor(id, { user: true, permit: true });
+    // The step-up must stay fresh (15 minutes) for the whole file.
+    mfaRefresh = setInterval(() => {
+      owner
+        .query(`UPDATE session SET mfa_verified_at = now() WHERE id = ANY($1)`, [
+          actorSessions,
+        ])
+        .catch(() => {});
+    }, 60_000);
+    mfaRefresh.unref();
     const hrUser = await signedInClient(`Payout ${label} HR`);
     await grantRole(hrUser.userId, ["hr.employee.manage", "hr.employee.view"]);
     hr = hrUser.client;
@@ -863,6 +943,7 @@ export function installPayoutWorld(label: string) {
 
   afterAll(async () => {
     setAuditWriter(null);
+    if (mfaRefresh) clearInterval(mfaRefresh);
     await asTenant(async (c) => {
       const del = (sql: string, params: unknown[]) => c.query(sql, params);
       const runs = [tenant.id, createdRuns];
@@ -933,6 +1014,8 @@ export function installPayoutWorld(label: string) {
         createdRoles,
       ]);
     }, true);
+    await owner.query("DELETE FROM session WHERE id = ANY($1)", [actorSessions]);
+    await owner.query(`DELETE FROM "user" WHERE id = ANY($1)`, [actorUsers]);
     await owner.end();
   });
 

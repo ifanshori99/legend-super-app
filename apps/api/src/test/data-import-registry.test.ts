@@ -244,6 +244,15 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
   // legend-p2v4s (900)
   "0641_payout_proof_global_gate.sql":
     "function bodies only, no row edited: app.payout_proof_contest_own (SECURITY DEFINER, called by the backfill) inserts the non-empty hashes of the caller tenant's own binding into the global payroll_payout_proof_hash_contests (ON CONFLICT DO NOTHING); the migration itself adds the stuck operations column with its default and writes no row, no amount touched",
+  // legend-i01jp (905): 0643-0648; 0643 and 0644 contain no row-writing statement of their own
+  "0645_payout_trusted_binding.sql":
+    "function bodies only, no row edited by the migration: the payout-role functions app.payout_bind_proof and app.payout_backfill_bind insert the proof bindings of their own tenant, app.payout_backfill_claim_hashes fills the missing content/stored hashes of one return claim from its evidence file, and app.payout_proof_contest_own inserts into the global contests (ON CONFLICT DO NOTHING), all when called; no backfill, no amount touched",
+  "0646_payout_posting_source_trusted.sql":
+    "function body only, no row edited by the migration: app.payout_posting_record_source (payout role) sets source_gl_account_id on a settle_pending/settle_skipped posting that has none and inserts the attestation of who did it, when called; no backfill, no amount or journal touched",
+  "0647_payout_proof_closures.sql":
+    "function bodies only, no row edited by the migration: app.payout_proof_closure_propose and app.payout_proof_closure_approve (payout role) insert a proof closure and its attestations, record the closed key's hashes in the global contests (ON CONFLICT DO NOTHING) and resolve the matching stuck backfill row, when called; no backfill, no amount touched",
+  "0648_payout_trusted_transitions.sql":
+    "function bodies only, no row edited by the migration: the payout-role functions (correction propose/approve, overpaid propose/record, return propose/confirm, recon flag, attest) insert and update the correction, overpaid-proposal, return-claim, exception and attestation rows and move the item status, when called; the migration itself writes no row and changes no amount (it revokes legend_app write and re-grants the item columns)",
 };
 
 // Entrypoints that open a database pool but import no data.

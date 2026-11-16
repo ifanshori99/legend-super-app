@@ -60,6 +60,7 @@ import {
   openItemAmount,
   openItemFee,
   payoutRefuse,
+  payoutTrustedSessionId,
   payoutScope,
   recordPayoutAudit,
   type PayoutActor as Actor,
@@ -361,7 +362,7 @@ export async function recordOverpaidItem(
   // proof and the posting, marks the proposal recorded and moves
   // `failed -> overpaid` linked to the posting. No GUC is an authorisation.
   await tx.execute(
-    sql`SELECT app.payout_overpaid_record(${item.id}::uuid, ${evidence}::varchar, ${postingId}::uuid, ${actor.userId}, ${actor.sessionId})`,
+    sql`SELECT app.payout_overpaid_record(${item.id}::uuid, ${evidence}::varchar, ${postingId}::uuid, ${actor.userId}, ${payoutTrustedSessionId(actor)})`,
   );
   await recordPayoutAudit(tx, actor, {
     action: "payroll.disbursement.item_overpaid",

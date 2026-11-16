@@ -169,7 +169,31 @@ async function listOperations(
                             WHERE al.tenant_id = p.tenant_id
                               AND al.created_at >= ${since}::timestamptz
                               AND al.event->>'action' = 'payroll.disbursement.posting_source_recorded'
-                              AND al.event #>> '{maskedChanges,after,postingId}' = p.id::text))
+                              AND al.event #>> '{maskedChanges,after,postingId}' = p.id::text)
+                -- A source on a cash / unfrozen bank settlement that nobody
+                -- attested and that is not the mapped account (a direct write).
+                OR (p.posted_at >= ${since}::timestamptz
+                    AND p.kind IN ('settle', 'settle_pending', 'settle_skipped')
+                    AND p.source_gl_account_id IS NOT NULL
+                    AND EXISTS (
+                      SELECT 1 FROM payroll_disbursement_batches b
+                       WHERE b.tenant_id = p.tenant_id AND b.id = p.batch_id
+                         AND (b.channel = 'cash' OR b.source_bank_account_id IS NULL)
+                         AND p.source_gl_account_id IS DISTINCT FROM (
+                           CASE WHEN b.channel = 'cash'
+                             THEN (SELECT m.account_id FROM account_mappings m
+                                    WHERE m.tenant_id = b.tenant_id
+                                      AND m.legal_entity_id = b.legal_entity_id
+                                      AND m.role = 'petty_cash')
+                             ELSE (SELECT ba.gl_account_id
+                                     FROM payroll_payout_configs c
+                                     JOIN bank_accounts ba
+                                       ON ba.tenant_id = c.tenant_id
+                                      AND ba.legal_entity_id = c.legal_entity_id
+                                      AND ba.id = c.manual_source_bank_account_id
+                                    WHERE c.tenant_id = b.tenant_id
+                                      AND c.legal_entity_id = b.legal_entity_id)
+                           END))))
       ) ops
       WHERE ${options.after === null ? sql`TRUE` : sql`ops.sort_key > ${options.after}`}
       ORDER BY ops.sort_key

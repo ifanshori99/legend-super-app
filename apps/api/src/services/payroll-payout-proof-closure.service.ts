@@ -27,6 +27,7 @@ import type { ListPayoutStuckProofsQuery } from "@starter/shared/validators/payr
 import type { Tx } from "./hris-access.ts";
 import {
   payoutRefuse,
+  payoutTrustedSessionId,
   recordPayoutAudit,
   type PayoutActor as Actor,
 } from "./payroll-payout.service.ts";
@@ -211,7 +212,7 @@ export async function proposeProofClosure(
   try {
     const [row] = rowsOf(
       await tx.execute(
-        sql`SELECT app.payout_proof_closure_propose(${input.evidenceKey}::varchar, ${input.note}, ${actor.userId}, ${actor.sessionId}) AS id`,
+        sql`SELECT app.payout_proof_closure_propose(${input.evidenceKey}::varchar, ${input.note}, ${actor.userId}, ${payoutTrustedSessionId(actor)}) AS id`,
       ),
     );
     closureId = row!.id as string;
@@ -241,7 +242,7 @@ export async function approveProofClosure(
 ): Promise<PayoutProofClosureClosedDto> {
   try {
     await tx.execute(
-      sql`SELECT app.payout_proof_closure_approve(${closureId}::uuid, ${actor.userId}, ${actor.sessionId}) AS closed`,
+      sql`SELECT app.payout_proof_closure_approve(${closureId}::uuid, ${actor.userId}, ${payoutTrustedSessionId(actor)}) AS closed`,
     );
   } catch (error) {
     throw mapClosureRefusal(error);

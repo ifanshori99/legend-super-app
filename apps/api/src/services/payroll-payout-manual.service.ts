@@ -116,6 +116,7 @@ import {
   loadBatchRunFirst,
   openItemAmount,
   payoutRefuse,
+  payoutTrustedSessionId,
   recordPayoutAudit,
   type BatchRow,
   type ItemRow,
@@ -1212,8 +1213,7 @@ async function bindReturnClaim(
         eq(payrollPayoutReturnClaims.tenantId, tenantId),
         eq(payrollPayoutReturnClaims.evidenceKey, evidence),
       ),
-    )
-    .for("update");
+    );
   const claim = existing;
   if (claim) {
     // Step two continues the claim its own step one created, nothing else.
@@ -1357,7 +1357,7 @@ export async function returnManualItems(
     try {
       await tx.transaction((savepoint) =>
         savepoint.execute(
-          sql`SELECT app.payout_return_propose(${batch.id}::uuid, ${uuidArray(itemIds)}, ${evidence}::varchar, ${note}, ${actor.userId}, ${actor.sessionId})`,
+          sql`SELECT app.payout_return_propose(${batch.id}::uuid, ${uuidArray(itemIds)}, ${evidence}::varchar, ${note}, ${actor.userId}, ${payoutTrustedSessionId(actor)})`,
         ),
       );
     } catch (error) {
@@ -1369,7 +1369,7 @@ export async function returnManualItems(
   } else {
     if (claimId === null) throw refuseReusedReturnProof();
     const confirmed = await tx.execute<{ moved: number }>(
-      sql`SELECT app.payout_return_confirm(${claimId}::uuid, ${evidence}::varchar, ${actor.userId}, ${actor.sessionId}) AS moved`,
+      sql`SELECT app.payout_return_confirm(${claimId}::uuid, ${evidence}::varchar, ${actor.userId}, ${payoutTrustedSessionId(actor)}) AS moved`,
     );
     if (Number(confirmed.rows[0]?.moved) !== rows.length)
       throw refuse(

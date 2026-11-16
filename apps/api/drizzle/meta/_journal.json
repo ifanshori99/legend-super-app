@@ -2752,6 +2752,13 @@
       "when": 1795000000648,
       "tag": "0648_payout_trusted_transitions",
       "breakpoints": true
+    },
+    {
+      "idx": 407,
+      "version": "7",
+      "when": 1795000000649,
+      "tag": "0649_payout_trusted_followups",
+      "breakpoints": true
     }
   ]
 }

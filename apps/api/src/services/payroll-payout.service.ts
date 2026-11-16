@@ -83,7 +83,8 @@ import {
 export type PayoutActor = {
   tenantId: string;
   userId: string;
-  sessionId: string;
+  /** Required by the trusted paths (see `payoutTrustedSessionId`). */
+  sessionId?: string;
 };
 export type BatchRow = typeof payrollDisbursementBatches.$inferSelect;
 export type ItemRow = typeof payrollDisbursementItems.$inferSelect;
@@ -117,6 +118,20 @@ export const payoutRefuse = (
   code: string,
   message: string,
 ): HttpError => new HttpError(status, code, message);
+
+/**
+ * The session id the trusted payout functions need. Refused before any SQL
+ * runs when the caller carries none (system actors have no session).
+ */
+export function payoutTrustedSessionId(actor: PayoutActor): string {
+  if (!actor.sessionId)
+    throw payoutRefuse(
+      401,
+      "PAYOUT_SESSION_REQUIRED",
+      "Sesi login diperlukan untuk aksi ini.",
+    );
+  return actor.sessionId;
+}
 
 /** Postgres check_violation (23514), also behind a driver wrapper. */
 function checkViolation(error: unknown, depth = 0): boolean {

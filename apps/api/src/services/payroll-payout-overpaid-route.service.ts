@@ -34,6 +34,7 @@ import { bindProofToOperation } from "./payroll-payout-proof-binding.service.ts"
 import {
   loadBatchRunFirst,
   payoutRefuse,
+  payoutTrustedSessionId,
   recordPayoutAudit,
   type BatchRow,
   type PayoutActor as Actor,
@@ -181,8 +182,7 @@ export async function recordOverpaidItems(
           rows.map((row) => row.id),
         ),
       ),
-    )
-    .for("update");
+    );
   // One request is one operation: all items without a proposal, or all with.
   if (proposals.length !== 0 && proposals.length !== rows.length)
     throw payoutRefuse(
@@ -247,7 +247,7 @@ export async function recordOverpaidItems(
   // One trusted call writes (or replaces, for the same person) the proposal of
   // every item; no direct DML on the proposals (migration 0645).
   await tx.execute(
-    sql`SELECT app.payout_overpaid_propose(${batch.id}::uuid, ${`{${operationItemIds.join(",")}}`}::uuid[], ${evidence}::varchar, ${note}, ${actor.userId}, ${actor.sessionId})`,
+    sql`SELECT app.payout_overpaid_propose(${batch.id}::uuid, ${`{${operationItemIds.join(",")}}`}::uuid[], ${evidence}::varchar, ${note}, ${actor.userId}, ${payoutTrustedSessionId(actor)})`,
   );
   await recordPayoutAudit(tx, actor, {
     action: "payroll.disbursement.overpaid_proposed",

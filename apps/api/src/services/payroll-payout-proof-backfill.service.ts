@@ -31,7 +31,11 @@ import {
 } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import type { ObjectStorage } from "@starter/shared/adapters";
-import type { ScopedTenantContext, TenantId } from "@starter/shared/core";
+import type {
+  ScopedTenantContext,
+  TenantId,
+  UserId,
+} from "@starter/shared/core";
 import { db } from "../db/index.ts";
 import {
   payrollDisbursementItems,

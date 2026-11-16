@@ -55,6 +55,7 @@ import { bindProofToOperation } from "./payroll-payout-proof-binding.service.ts"
 import {
   loadBatchRunFirst,
   payoutRefuse,
+  payoutTrustedSessionId,
   recordPayoutAudit,
   type BatchRow,
   type PayoutActor as Actor,
@@ -140,7 +141,7 @@ async function callCorrectionPropose(
   note: string,
 ): Promise<string> {
   const result = await tx.execute(
-    sql`SELECT app.payout_correction_propose(${batchId}::uuid, ${uuidArray(itemIds)}::uuid[], ${evidence}::varchar, ${note}, ${actor.userId}, ${actor.sessionId}) AS id`,
+    sql`SELECT app.payout_correction_propose(${batchId}::uuid, ${uuidArray(itemIds)}::uuid[], ${evidence}::varchar, ${note}, ${actor.userId}, ${payoutTrustedSessionId(actor)}) AS id`,
   );
   return (result.rows[0] as { id: string }).id;
 }
@@ -153,7 +154,7 @@ async function callCorrectionApprove(
   evidence: string,
 ): Promise<number> {
   const result = await tx.execute(
-    sql`SELECT app.payout_correction_approve(${operationId}::uuid, ${evidence}::varchar, ${actor.userId}, ${actor.sessionId}) AS moved`,
+    sql`SELECT app.payout_correction_approve(${operationId}::uuid, ${evidence}::varchar, ${actor.userId}, ${payoutTrustedSessionId(actor)}) AS moved`,
   );
   return Number((result.rows[0] as { moved: number }).moved);
 }
@@ -409,8 +410,7 @@ export async function correctFailedItems(
         inArray(payrollPayoutFailedCorrections.itemId, itemIds),
       ),
     )
-    .orderBy(payrollPayoutFailedCorrections.itemId)
-    .for("update");
+    .orderBy(payrollPayoutFailedCorrections.itemId);
   // One request is one operation: all items without a proposal, or all with,
   // and then exactly the items of that one earlier operation.
   if (proposals.length !== 0) {

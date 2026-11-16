@@ -9,7 +9,11 @@
 // matches what moved, one PT cannot block another):
 // - The app role has no INSERT/UPDATE on the correction, overpaid-proposal,
 //   return-claim and proof-binding tables, and no UPDATE of an item's
-//   `status` or `confirmed_*` columns: every such statement fails 42501.
+//   `status` or `confirmed_*` columns: every statement on the four tables, and
+//   every write to the item return_* columns, fails 42501; an UPDATE of an
+//   item's `status` or `confirmed_*` (columns legend_app may still name, as
+//   the legacy resolve/export paths move non-final items) fails 23514 from
+//   the item guard on a failed item.
 //   The app role can still READ the rows (the screens list them).
 // - The forged sequence of the finding (INSERT a proposal by an invented
 //   proposer, UPDATE it to corrected by an invented approver, set the
@@ -27,7 +31,9 @@
 // Assumptions (the brief does not pin these down, stated so they can be contested):
 // - The payout role is recognisable by "payout" in its name (rolname ~ 'payout'),
 //   is NOLOGIN, not superuser, owns at least one SECURITY DEFINER function in
-//   schema `app`, and legend_app is not allowed to SET ROLE to it.
+//   schema `app`, and legend_app is not allowed to SET ROLE to it (checked from
+//   a session whose session user is legend_app: a superuser session user
+//   could SET ROLE to anything, so it proves nothing).
 // - A refusal of the forged sequence may be any database error (42501 on the
 //   first DML, or a guard code); the proof is the unchanged state afterwards.
 // - A refused contest_own may raise or silently do nothing; the proof is that no
@@ -56,6 +62,7 @@ import {
 const W = installPayoutWorld("905tb");
 const NET = 1_000_000;
 const PRIVILEGE = "42501";
+const GUARD = "23514";
 const hex = () => randomBytes(32).toString("hex");
 
 const batchIds: string[] = [];
@@ -213,7 +220,12 @@ describe("905 the app role cannot write the trusted payout tables", () => {
     const { batchId, itemId } = await failedBatch();
     const key = evidenceKeyFor(W.tenantId, batchId, "905-direct.pdf");
     const id = randomUUID();
-    const statements: { name: string; sql: string; params: unknown[] }[] = [
+    const statements: {
+      name: string;
+      sql: string;
+      params: unknown[];
+      code?: string;
+    }[] = [
       {
         name: "INSERT correction",
         sql: `INSERT INTO payroll_payout_failed_corrections
@@ -267,30 +279,44 @@ describe("905 the app role cannot write the trusted payout tables", () => {
       },
       {
         name: "UPDATE item status",
+        code: GUARD,
         sql: `UPDATE payroll_disbursement_items SET status = 'succeeded' WHERE tenant_id = $1 AND id = $2`,
         params: [W.tenantId, itemId],
       },
       {
         name: "UPDATE item confirmed_by",
+        code: GUARD,
         sql: `UPDATE payroll_disbursement_items SET confirmed_by = 'forged' WHERE tenant_id = $1 AND id = $2`,
         params: [W.tenantId, itemId],
       },
       {
         name: "UPDATE item confirmation_ref",
+        code: GUARD,
         sql: `UPDATE payroll_disbursement_items SET confirmation_ref = 'FORGED' WHERE tenant_id = $1 AND id = $2`,
         params: [W.tenantId, itemId],
       },
       {
         name: "UPDATE item confirmation_evidence_key",
+        code: GUARD,
         sql: `UPDATE payroll_disbursement_items SET confirmation_evidence_key = $3 WHERE tenant_id = $1 AND id = $2`,
         params: [W.tenantId, itemId, key],
+      },
+      {
+        name: "UPDATE item returned_by",
+        sql: `UPDATE payroll_disbursement_items SET returned_by = 'forged' WHERE tenant_id = $1 AND id = $2`,
+        params: [W.tenantId, itemId],
+      },
+      {
+        name: "UPDATE item return_claim_id",
+        sql: `UPDATE payroll_disbursement_items SET return_claim_id = $3 WHERE tenant_id = $1 AND id = $2`,
+        params: [W.tenantId, itemId, randomUUID()],
       },
     ];
     const outcome: Record<string, string | undefined> = {};
     for (const s of statements)
       outcome[s.name] = await appStatement(s.sql, s.params);
     const expected = Object.fromEntries(
-      statements.map((s) => [s.name, PRIVILEGE]),
+      statements.map((s) => [s.name, s.code ?? PRIVILEGE]),
     );
     expect(outcome).toEqual(expected);
     expect((await itemRow(itemId)).status).toBe("failed");
@@ -409,7 +435,23 @@ describe("905 the status moves belong to a NOLOGIN payout role", () => {
       `a NOLOGIN, non-superuser payout role must own definer functions (found: ${JSON.stringify(owners)})`,
     ).toBeGreaterThan(0);
     const name = trusted[0]!.rolname as string;
-    const code = await appStatement(`SET LOCAL ROLE "${name}"`);
+    // SET ROLE is checked against the SESSION user. The test pool is a
+    // superuser and could become anyone, so the session user is made
+    // legend_app (a non-superuser) first, as in production.
+    const client = await W.owner.connect();
+    let code: string | undefined;
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL SESSION AUTHORIZATION legend_app");
+      try {
+        await client.query(`SET LOCAL ROLE "${name}"`);
+      } catch (error) {
+        code = (error as { code?: string }).code ?? "unknown";
+      }
+    } finally {
+      await client.query("ROLLBACK").catch(() => undefined);
+      client.release();
+    }
     expect(code, "legend_app must not be able to become the payout role").toBe(
       PRIVILEGE,
     );
@@ -423,7 +465,11 @@ describe("905 the status moves belong to a NOLOGIN payout role", () => {
 describe("905 contest_own cannot block another PT's proof", () => {
   /** A sound binding of the fixture tenant (the victim PT), made by the owner with guards off. */
   async function soundBinding(batchId: string) {
-    const key = evidenceKeyFor(W.tenantId, batchId, `905-sound-${randomUUID()}.pdf`);
+    const key = evidenceKeyFor(
+      W.tenantId,
+      batchId,
+      `905-sound-${randomUUID()}.pdf`,
+    );
     const content = hex();
     const stored = hex();
     contestedHashes.push(content, stored);

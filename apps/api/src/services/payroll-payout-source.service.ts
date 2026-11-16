@@ -31,6 +31,7 @@ import {
   loadBatchRunFirst,
   payoutGuardViolation,
   payoutRefuse,
+  payoutTrustedSessionId,
   recordPayoutAudit,
   type PayoutActor as Actor,
 } from "./payroll-payout.service.ts";
@@ -165,7 +166,7 @@ export async function recordPostingSource(
   // `legend_app` can no longer fill the source by direct UPDATE.
   try {
     await tx.execute(
-      sql`SELECT app.payout_posting_record_source(${batch.id}::uuid, ${posting.id}::uuid, ${glAccountId}::uuid, ${actor.userId}, ${actor.sessionId})`,
+      sql`SELECT app.payout_posting_record_source(${batch.id}::uuid, ${posting.id}::uuid, ${glAccountId}::uuid, ${actor.userId}, ${payoutTrustedSessionId(actor)})`,
     );
   } catch (error) {
     if (payoutGuardViolation(error) !== null)
