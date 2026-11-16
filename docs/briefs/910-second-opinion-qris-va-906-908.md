@@ -1,0 +1,6 @@
+# 910 Second opinion QRIS/VA 906+908 (gerbang rilis uang)
+Peran: second-opinion (baca ~/.agents/team/roles/second-opinion.md). Uang: effort xhigh. Read-only.
+Repo /Users/ifanshori99/Projects/legend super app/legend. Diff: `git diff 785b3b453..origin/fix/qr-va-queue-after-paid-xzu4l` (tip fd34ec962; memuat 906 VA jalur keluar staf 73eb73dc3 + merge 785b3b453 + 908 antrean setelah paid; migrasi sementara 0631_payment_va_releases).
+Konteks: `docs/briefs/906-va-staff-exit-5wn1e.md`, `docs/briefs/908-qr-va-queue-after-paid-xzu4l.md` (keputusan CTO); batas yang sudah diterima (jangan dilaporkan ulang): DOIT tanpa endpoint daftar transaksi, Duitku satu transaksi per order, poll biasa belum memarkir transaksi tambahan (kartu baru).
+Cari: lepas VA tanpa persetujuan sah, persetujuan dipakai ulang, atau lepas saat penyedia sudah paid; uang setelah lepas hilang, tercatat dua kali, atau melunasi order; replay webhook dobel (inserted|found|none); antrean menutup terlalu cepat (72 jam/7 hari) sehingga uang datang belakangan tak tercatat; pembatalan link saat referensi lain sudah dibayar; kode dengan transaksi tambahan ditandai final; lock order atau deadlock baru; lintas tenant.
+Hasil: `docs/qa/second-opinion-qris-va-906-908.md` di worktree-mu (P0-P3, berkas:baris, skenario, usul test), commit dan push cabang qa tanpa force. Lapor hanya saat selesai.
