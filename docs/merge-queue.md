@@ -20,6 +20,7 @@ Ditulis oleh merge train batch64g. Sumber: pesan CTO G6evw, G6w9t, G4j04. Tip SH
 
 ## Antrean tersisa setelah batch80
 
+- `ghostex/bf531619` 784facadd SIAP batch berikut (legend-0cnqt outbox ekspor pajak + i18n; tanpa migrasi; 272 API + 35 root).
 - Tidak ada cabang SIAP tambahan yang belum menjadi ancestor m1 pada audit batch80. Periksa ancestry lagi bila ada tip baru.
 - `ws/edge-kds-stations` 6e393095c: jangan diambil; sudah digantikan port r2 batch80, bukan cabang SIAP baru.
 - `ghostex/5ce165c2` 2f62ed4be: jangan diambil; port UI/delivery sudah batch79, sisa zona/waitlist tetap legend-d6d1.
