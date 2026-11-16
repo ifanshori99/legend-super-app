@@ -240,11 +240,18 @@ describe("SO-885 E: a failed refund on an awaiting_payment QR order", () => {
     const [r3] = (await refundRows(w.aId)).filter(
       (row) => row.requested_by === "system:qr" && row.id !== w.r2,
     );
-    // The re-filed refund is paid out; the older request fails its approval.
+    // The re-filed refund is paid out in full (what came in); the older request
+    // fails its approval. Since m1's weuo2 the system re-file asks only for the
+    // exact remaining balance (here less than what came in, because r2 is still
+    // open), so this step makes the completed refund cover everything received.
+    // A completed refund that covers less keeps holding the order (case d).
     await owner.query(
-      `UPDATE payment_refunds SET status='completed', completed_at=now()
+      `UPDATE payment_refunds
+          SET status='completed', completed_at=now(),
+              amount_idr=(SELECT sum(amount_idr) FROM payment_evidence
+                           WHERE tenant_id=$1 AND payment_intent_id=$3)
         WHERE tenant_id=$1 AND id=$2`,
-      [fx.tenant.tenantId, r3!.id],
+      [fx.tenant.tenantId, r3!.id, w.aId],
     );
     await owner.query(
       `UPDATE payment_refunds SET status='failed', failure_reason='cap_exceeded'
