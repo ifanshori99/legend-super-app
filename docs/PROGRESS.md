@@ -1744,3 +1744,4 @@ Langkah berikut CTO baru:
 - 21:16 Batch78 mendarat m1 a8e6036ab (925 + 858-r2; tanpa migrasi; 24.418 test, full pertama hijau). Sisa terbuka: 0y8tf (tunggu zvz), whd5c (adapter kredit tamu). KDS/delivery lama bentrok, tidak masuk.
 - 21:22 929: transport foto sudah di m1 (94a165b19), 0una ditutup; cabang ws/929 hanya dokumen (tidak perlu batch). Follow-up akses foto penerimaan: legend-iy5l0 P2. Explore cek kartu basi 2lgu/ihf7/zlc6 sebelum thread baru.
 - 21:23 Disk 13 GB (kuning, worktree baru ditolak). Cache npm/docker/brew/uv sudah dibersihkan, tidak bertambah. Sisa besar: ~/.cache/huggingface 5,9 GB (milik founder, tidak dihapus). Thread baru ditahan sampai 928 selesai.
+- 21:52 928 selesai: ws/928-edge-print-alert b158f09c2 (4 kartu WS-02, 381 test, reviewer P1+P2 dibetulkan). Antre batch79.
