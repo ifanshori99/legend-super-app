@@ -14,7 +14,8 @@
 // - edge_print_jobs: the print queue. Content is the raw ESC/POS bytes. A
 //   reprint is a new job pointing at the original (reprint_of).
 // - edge_print_alerts: supervisor alerts (printer offline/online, KDS down/up,
-//   fallback printed, job failed). Append-only except acknowledgement.
+//   fallback printed, job failed). Evidence stays immutable; acknowledgement
+//   and the notification delivery marker can change.
 import { sql } from "drizzle-orm";
 import {
   bigint,
@@ -346,6 +347,10 @@ export const edgePrintAlerts = pgTable(
       .notNull()
       .default({}),
     occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+    /** Queue insertion committed; null means the print agent must retry notification. */
+    notificationEnqueuedAt: timestamp("notification_enqueued_at", {
+      withTimezone: true,
+    }),
     acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
     acknowledgedBy: uuid("acknowledged_by"),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -368,6 +373,9 @@ export const edgePrintAlerts = pgTable(
       t.outletId,
       t.occurredAt,
     ),
+    index("edge_print_alerts_pending_notification_idx")
+      .on(t.tenantId, t.outletId, t.occurredAt, t.id)
+      .where(sql`${t.notificationEnqueuedAt} IS NULL`),
     check(
       "edge_print_alerts_kind_check",
       sql`${t.kind} IN ('printer_offline', 'printer_online', 'kds_down', 'kds_up', 'fallback_printed', 'job_failed')`,

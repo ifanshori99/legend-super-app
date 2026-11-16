@@ -2759,6 +2759,13 @@
       "when": 1795000000022,
       "tag": "0407_push_subscriptions_user_index",
       "breakpoints": true
+    },
+    {
+      "idx": 408,
+      "version": "7",
+      "when": 1795000000023,
+      "tag": "0408_print_alert_notification_retry",
+      "breakpoints": true
     }
   ]
 }

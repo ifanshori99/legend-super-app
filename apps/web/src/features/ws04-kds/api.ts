@@ -7,6 +7,7 @@ import {
   recallKitchenTicket,
   setKitchenTicketPriority,
   updateKitchenTicketItem,
+  recordKitchenStationHeartbeat,
 } from "@starter/shared/kitchen";
 import type {
   StationConfig,
@@ -17,6 +18,18 @@ import type {
 import { callEndpoint } from "@/lib/api/endpoint.ts";
 import { newIdempotencyKey } from "../../lib/idempotency.ts";
 import { getKdsScannerStatus } from "./contract-gap.ts";
+
+export async function sendKdsHeartbeat(
+  outletId: string,
+  stationId: StationConfig["stationId"],
+  signal?: AbortSignal,
+) {
+  return callEndpoint(
+    recordKitchenStationHeartbeat,
+    { params: { outletId, stationId }, body: {} },
+    { signal },
+  );
+}
 
 export async function fetchStations(outletId: string, signal?: AbortSignal) {
   return (

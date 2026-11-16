@@ -7,7 +7,8 @@
 // 2 s). A printer is offline after `offlineAfterMs` without a successful
 // probe, so worst-case detection is offlineAfterMs + tick + probe timeout
 // (15 + 5 + 2 = 22 s). KDS screens report heartbeats; a screen is down after
-// `kdsDownAfterMs` of silence. Time comes from the injected Clock only.
+// `kdsDownAfterMs` of silence after at least one real heartbeat. A station
+// that has never reported remains unknown. Time comes from the injected Clock.
 import type { Clock, PrinterConfig } from "./types.ts";
 import type { TransportFactory } from "./transport.ts";
 
@@ -38,6 +39,8 @@ export type HealthMonitor = {
   tick(): Promise<void>;
   /** A KDS screen is alive. A down station comes back up immediately. */
   recordKdsHeartbeat(stationId: string, at?: Date): void;
+  /** The last real screen heartbeat; watching a station does not create one. */
+  getLastKdsHeartbeatAt(stationId: string): Date | null;
   /** False only after the station was reported down (unwatched = assumed up). */
   isKdsUp(stationId: string): boolean;
   /** False only after the printer was reported offline (unknown = try it). */
@@ -172,8 +175,11 @@ export function createHealthMonitor(
     const now = clock.now();
     const nowMs = now.getTime();
     for (const [stationId, state] of stations) {
-      const silentSinceMs = state.lastHeartbeatMs ?? startedAtMs;
-      if (nowMs - silentSinceMs >= kdsDownAfterMs && state.status !== "down") {
+      if (state.lastHeartbeatMs === null) continue;
+      if (
+        nowMs - state.lastHeartbeatMs >= kdsDownAfterMs &&
+        state.status !== "down"
+      ) {
         state.status = "down";
         await notifyKds(stationId, "down", now);
       }
@@ -206,14 +212,18 @@ export function createHealthMonitor(
       if (wasDown) void notifyKds(stationId, "up", when);
     },
 
+    getLastKdsHeartbeatAt(stationId) {
+      const lastHeartbeatMs = stations.get(stationId)?.lastHeartbeatMs;
+      return lastHeartbeatMs == null ? null : new Date(lastHeartbeatMs);
+    },
+
     isKdsUp(stationId) {
-      // Evaluated now, not at the last tick: a station first asked about
-      // after the start-up grace window, or silent past the limit since the
-      // last tick, already counts as down, so its ticket is printed.
+      // Unknown stations cannot trigger fallback. Once a real heartbeat has
+      // arrived, evaluate its age now rather than waiting for the next tick.
       const state = watch(stationId);
+      if (state.lastHeartbeatMs === null) return true;
       if (state.status === "down") return false;
-      const silentSinceMs = state.lastHeartbeatMs ?? startedAtMs;
-      return clock.now().getTime() - silentSinceMs < kdsDownAfterMs;
+      return clock.now().getTime() - state.lastHeartbeatMs < kdsDownAfterMs;
     },
 
     isPrinterOnline(printerId) {

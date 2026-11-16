@@ -38,6 +38,7 @@ import {
   listKitchenStations,
   listKitchenStationTickets,
   recallKitchenTicket,
+  recordKitchenStationHeartbeat,
   releaseManualChannelPause,
   setKitchenTicketPriority,
   setManualChannelPause,
@@ -64,6 +65,7 @@ import * as capacity from "../services/kds-capacity.service.ts";
 import * as cookReads from "../services/kds-cook-reads.service.ts";
 import * as pacing from "../services/kds-pacing.service.ts";
 import * as stationConfig from "../services/kds-station-config.service.ts";
+import * as kdsPrint from "../services/kds-print.service.ts";
 import * as kds from "../services/kds.service.ts";
 import type { KdsActor } from "../services/kds.service.ts";
 
@@ -99,6 +101,26 @@ function actor(req: Request): KdsActor {
 }
 
 // ---- Station reads ---------------------------------------------------------
+
+kdsRouter.post(
+  "/stations/:stationId/heartbeat",
+  ...processStation,
+  jsonBody,
+  async (req, res) => {
+    const { outletId, stationId } = recordKitchenStationHeartbeat.params.parse(
+      req.params,
+    );
+    recordKitchenStationHeartbeat.body.parse(req.body);
+    res.json({
+      data: await kdsPrint.recordKitchenStationHeartbeat(
+        getScopedTenantContext(req),
+        actorOf(req),
+        outletId,
+        stationId,
+      ),
+    });
+  },
+);
 
 kdsRouter.get(
   "/stations/:stationId/tickets",

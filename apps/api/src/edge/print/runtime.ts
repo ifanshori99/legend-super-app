@@ -28,6 +28,7 @@ import {
   type PrintAlertNotifier,
 } from "./agent.ts";
 import { createDbPrintStore } from "./store.ts";
+import { createKdsPrintFallback } from "./kds-fallback.ts";
 import { defaultTransportFactory } from "./transport.ts";
 
 let current: PrintAgent | null = null;
@@ -40,7 +41,7 @@ export function createPrintAlertNotifier(
   const eventIds = new WeakMap<object, string>();
   return async (alert, tx) => {
     if (alert.kind !== "printer_offline" && alert.kind !== "job_failed") return;
-    const id = eventIds.get(alert) ?? createUlid();
+    const id = alert.id ?? eventIds.get(alert) ?? createUlid();
     eventIds.set(alert, id);
     const enqueue = (tx: EdgeTx) =>
       enqueueEdgeEvent(tx, context, {
@@ -88,6 +89,11 @@ export function startEdgePrintAgent(): { stop(): Promise<void> } {
   const agent = createPrintAgent({
     store: createDbPrintStore({ db, context: runtime.identity.context }),
     transportFor: defaultTransportFactory,
+    sweepStationTickets: createKdsPrintFallback({
+      db,
+      context: runtime.identity.context,
+      outletId: outletIdSchema.parse(runtime.identity.scope.outletId),
+    }),
   });
   agent.start();
   current = agent;

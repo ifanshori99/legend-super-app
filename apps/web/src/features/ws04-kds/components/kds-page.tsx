@@ -40,6 +40,7 @@ import type { AreaAccess } from "@/lib/areas/access";
 import {
   useBoard,
   useKdsActions,
+  useKdsHeartbeat,
   useScannerStatus,
   useStationLabels,
   useStations,
@@ -213,6 +214,7 @@ function StationBoard({
 }) {
   const t = useT();
   const board = useBoard(outletId, stationId);
+  useKdsHeartbeat(outletId, stationId);
   const action = useKdsActions(outletId);
   const scanner = useScannerStatus(outletId);
   const toast = useToast();

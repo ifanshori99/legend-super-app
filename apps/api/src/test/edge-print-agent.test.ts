@@ -372,6 +372,120 @@ describe("KDS down fallback", () => {
       makePrinter("S", { role: "station", stationId: "bar" }),
     ]);
 
+  it("never prints a station that has not sent a heartbeat", async () => {
+    const { agent, clock, store } = withStation();
+    clock.advance(20_000);
+    await agent.tick();
+    expect(
+      await agent.routeStationTicket({
+        stationId: "bar",
+        idempotencyKey: "unheard",
+        ticket: { ...ticket, createdAt: clock.now() },
+      }),
+    ).toEqual({ printed: false });
+    expect(store.jobs).toHaveLength(0);
+    expect(store.alertKinds()).not.toContain("kds_down");
+  });
+
+  it("does not print a ticket older than six hours after a known screen stops", async () => {
+    const { agent, clock, store } = withStation();
+    agent.recordKdsHeartbeat("bar");
+    clock.advance(7 * 60 * 60 * 1000);
+    await agent.tick();
+    expect(
+      await agent.routeStationTicket({
+        stationId: "bar",
+        idempotencyKey: "stale-ticket",
+        ticket: {
+          ...ticket,
+          createdAt: new Date(clock.ms - 6 * 60 * 60 * 1000 - 1),
+        },
+      }),
+    ).toEqual({ printed: false });
+    expect(store.jobs).toHaveLength(0);
+  });
+
+  it("a twenty-second gap prints only tickets newer than its last heartbeat", async () => {
+    const { agent, clock, store, transports } = withStation();
+    const lastHeartbeatAt = clock.now();
+    agent.recordKdsHeartbeat("bar");
+    clock.advance(20_000);
+    await agent.tick();
+    const route = (key: string, createdAt: Date) =>
+      agent.routeStationTicket({
+        stationId: "bar",
+        idempotencyKey: key,
+        ticket: { ...ticket, createdAt },
+      });
+    expect(
+      await route("already-seen", new Date(lastHeartbeatAt.getTime() - 1)),
+    ).toEqual({ printed: false });
+    expect(await route("at-heartbeat", lastHeartbeatAt)).toEqual({
+      printed: false,
+    });
+    expect(
+      (await route("new-during-gap", new Date(lastHeartbeatAt.getTime() + 1)))
+        .printed,
+    ).toBe(true);
+    await agent.drain();
+    expect(store.jobs).toHaveLength(1);
+    expect(transports.get("S")!.printed).toHaveLength(1);
+  });
+
+  it("does not enqueue an empty ticket after a known screen stops", async () => {
+    const { agent, clock, store } = withStation();
+    agent.recordKdsHeartbeat("bar");
+    clock.advance(20_000);
+    await agent.tick();
+    expect(
+      await agent.routeStationTicket({
+        stationId: "bar",
+        idempotencyKey: "empty-ticket",
+        ticket: { ...ticket, createdAt: clock.now(), items: [] },
+      }),
+    ).toEqual({ printed: false });
+    expect(store.jobs).toHaveLength(0);
+  });
+
+  it("does not print when a heartbeat returns during an awaited printer lookup", async () => {
+    const clock = createFakeClock();
+    const store = createFakeStore(clock, [
+      makePrinter("S", { role: "station", stationId: "bar" }),
+    ]);
+    let release!: () => void;
+    let started!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const lookupStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const agent = createPrintAgent({
+      store: {
+        ...store,
+        async listPrinters() {
+          started();
+          await blocked;
+          return store.listPrinters();
+        },
+      },
+      clock,
+      transportFor: () => new FakePrinterTransport(),
+    });
+    agent.recordKdsHeartbeat("bar");
+    clock.advance(20_000);
+    const routing = agent.routeStationTicket({
+      stationId: "bar",
+      idempotencyKey: "recovered-during-read",
+      ticket: { ...ticket, createdAt: clock.now() },
+    });
+    await lookupStarted;
+    agent.recordKdsHeartbeat("bar");
+    release();
+    expect(await routing).toEqual({ printed: false });
+    expect(store.jobs).toHaveLength(0);
+  });
+
   it("prints nothing while the KDS screen is alive", async () => {
     const { agent, store, tick } = withStation();
     agent.recordKdsHeartbeat("bar");
@@ -400,7 +514,7 @@ describe("KDS down fallback", () => {
       stationId: "bar",
       idempotencyKey: "t1",
       sourceRef: "ticket-12",
-      ticket,
+      ticket: { ...ticket, createdAt: clock.now() },
     });
     expect(result.printed).toBe(true);
     if (!result.printed) return;
@@ -437,7 +551,7 @@ describe("KDS down fallback", () => {
     expect(store.alertKinds().filter((k) => k === "kds_down")).toHaveLength(2);
   });
 
-  it("assumes a never-heard station is up during the grace window, then down", async () => {
+  it("does not infer a missing screen from a station that has never sent a heartbeat", async () => {
     const { agent, tick } = withStation();
     const route = (key: string) =>
       agent.routeStationTicket({
@@ -450,11 +564,11 @@ describe("KDS down fallback", () => {
     await tick();
     expect(await route("g2")).toEqual({ printed: false });
     await tick();
-    expect((await route("g3")).printed).toBe(true);
+    expect(await route("g3")).toEqual({ printed: false });
   });
 
   it("uses the station printer's fallback when that printer is offline", async () => {
-    const { agent, transports, tick } = setup([
+    const { agent, transports, tick, clock } = setup([
       makePrinter("R"),
       makePrinter("S", {
         role: "station",
@@ -469,7 +583,7 @@ describe("KDS down fallback", () => {
     const result = await agent.routeStationTicket({
       stationId: "bar",
       idempotencyKey: "t3",
-      ticket,
+      ticket: { ...ticket, createdAt: clock.now() },
     });
     expect(result.printed && result.job.printerId).toBe("R");
   });

@@ -13,7 +13,17 @@
 // - Job content, kind, idempotency key and reprint link are immutable (DB
 //   trigger edge_print_jobs_guard).
 // Printer content is never logged and never placed in an error message.
-import { and, asc, desc, eq, isNull, lt, sql, type SQL } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  inArray,
+  isNull,
+  lt,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import {
   assertOutletInScope,
@@ -22,6 +32,7 @@ import {
   createUlidFactory,
   ulidSchema,
   ulidToUuid,
+  uuidToUlid,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import { transitionPrintJob, type PrintJob } from "@starter/shared/edge";
@@ -179,6 +190,11 @@ export function createDbPrintStore(options: DbPrintStoreOptions): PrintStore {
     and(
       eq(edgePrintJobs.tenantId, tenantId),
       eq(edgePrintJobs.outletId, outletId),
+    );
+  const alertScope = () =>
+    and(
+      eq(edgePrintAlerts.tenantId, tenantId),
+      eq(edgePrintAlerts.outletId, outletId),
     );
 
   // A retired printer (deleted in the cloud, kept for its jobs) counts as
@@ -590,9 +606,12 @@ export function createDbPrintStore(options: DbPrintStoreOptions): PrintStore {
     },
 
     async recordAlert(alert: PrintAlert, notify) {
+      // The local alert and every delivery attempt share one event id, even
+      // when the notifier and agent are recreated after a process restart.
+      const alertId = (alert.id ??= nextUlid());
       const insert = async (tx: Tx) => {
         await tx.insert(edgePrintAlerts).values({
-          id: nextUlid(),
+          id: alertId,
           tenantId: tenantId,
           outletId: outletId,
           kind: alert.kind,
@@ -609,6 +628,12 @@ export function createDbPrintStore(options: DbPrintStoreOptions): PrintStore {
         await run(async (tx) => {
           await insert(tx);
           await notify?.(alert, tx);
+          if (notify) {
+            await tx
+              .update(edgePrintAlerts)
+              .set({ notificationEnqueuedAt: now() })
+              .where(and(alertScope(), eq(edgePrintAlerts.id, alertId)));
+          }
         });
       } catch (error) {
         if (!notify) throw error;
@@ -618,6 +643,52 @@ export function createDbPrintStore(options: DbPrintStoreOptions): PrintStore {
         return false;
       }
       return true;
+    },
+
+    async retryPendingAlerts(notify) {
+      await run(async (tx) => {
+        const alerts = await tx
+          .select()
+          .from(edgePrintAlerts)
+          .where(
+            and(
+              alertScope(),
+              isNull(edgePrintAlerts.notificationEnqueuedAt),
+              inArray(edgePrintAlerts.kind, ["printer_offline", "job_failed"]),
+            ),
+          )
+          .orderBy(asc(edgePrintAlerts.occurredAt), asc(edgePrintAlerts.id))
+          .limit(100)
+          .for("update", { skipLocked: true });
+        for (const row of alerts) {
+          try {
+            // A failed enqueue rolls back only this delivery. The durable
+            // pending row remains, while later alerts can still be delivered.
+            await tx.transaction(async (delivery) => {
+              await notify(
+                {
+                  id: row.id,
+                  kind: row.kind,
+                  subjectId:
+                    row.kind === "job_failed"
+                      ? uuidToUlid(row.subjectId)
+                      : row.subjectId,
+                  stationId: row.stationId,
+                  detail: row.detail,
+                  occurredAt: row.occurredAt,
+                },
+                delivery,
+              );
+              await delivery
+                .update(edgePrintAlerts)
+                .set({ notificationEnqueuedAt: now() })
+                .where(and(alertScope(), eq(edgePrintAlerts.id, row.id)));
+            });
+          } catch {
+            // The next sweep retries the same persisted event id.
+          }
+        }
+      });
     },
   };
 }

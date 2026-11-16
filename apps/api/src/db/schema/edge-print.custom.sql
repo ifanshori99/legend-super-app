@@ -40,7 +40,8 @@ CREATE TRIGGER edge_print_jobs_guard BEFORE UPDATE ON public.edge_print_jobs
 FOR EACH ROW EXECUTE FUNCTION app.guard_edge_print_job_update();
 --> statement-breakpoint
 
--- Alerts are append-only except the one-way acknowledgement.
+-- Alert evidence is immutable; the one-way acknowledgement and notification
+-- delivery marker may change. The marker is added by migration 0408.
 CREATE FUNCTION app.guard_edge_print_alert_update() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 BEGIN

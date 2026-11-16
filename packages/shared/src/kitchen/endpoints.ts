@@ -58,6 +58,15 @@ const stationParams = z.strictObject({
   outletId: outletIdSchema,
   stationId: stationIdSchema,
 });
+
+/** Visible KDS screens send this every five seconds to their local edge node. */
+export const recordKitchenStationHeartbeat = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/kitchen/stations/:stationId/heartbeat",
+  params: stationParams,
+  body: z.strictObject({}),
+  response: dataResponseSchema(z.strictObject({ recorded: z.boolean() })),
+});
 const ticketParams = z.strictObject({
   outletId: outletIdSchema,
   ticketId: kitchenTicketIdSchema,
