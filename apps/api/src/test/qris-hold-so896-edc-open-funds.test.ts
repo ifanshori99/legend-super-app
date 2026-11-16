@@ -5,6 +5,13 @@
 // now would charge the guest twice (the card tender is exempt at booking, Q7).
 // The write-ahead refuses with 409 FUNDS_UNRESOLVED before the terminal is
 // asked. The points tender is guarded by the same check.
+//
+// SO-896 P1-1 (903): the standalone EDC tender (supervisor PIN override plus
+// bank reference, `edc_card` / `edc_qris`) is guarded the same way. It is
+// refused 409 FUNDS_UNRESOLVED BEFORE the override is spent: no tender, no
+// standalone ledger row, no approval use. Once the parked money is resolved
+// the same override settles the bill. (Q7 exempts only an ECR request that is
+// already running; a standalone entry is a new payment.)
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -12,6 +19,8 @@ import {
   idr,
   outletIdSchema,
   tenantIdSchema,
+  ulidToUuid,
+  userIdSchema,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
@@ -23,7 +32,10 @@ import { db } from "../db/index.ts";
 import { createEdcAgent } from "../edge/edc/agent.ts";
 import { EdcProviderRegistry } from "../edge/edc/registry.ts";
 import { EcrSimulator } from "../edge/edc/simulator.ts";
+import { setStaffPin } from "../services/device-pin.service.ts";
+import { createPosOverride } from "../services/staff-override.service.ts";
 import { owner } from "./floor-test-helpers.ts";
+import { agent, signUp } from "./helpers.ts";
 import {
   holdFixture,
   payNotice,
@@ -41,6 +53,9 @@ let kit: ReturnType<typeof releaseKit>;
 let ctx: ScopedTenantContext;
 let edcAgent: ReturnType<typeof createEdcAgent>;
 const terminalId = randomUUID();
+const supervisorRoleId = randomUUID();
+const SUPERVISOR_PIN = "582914";
+let supervisorUserId: string;
 
 async function asOwnerTenant<T>(run: (c: PoolClient) => Promise<T>) {
   const client = await owner.connect();
@@ -73,6 +88,36 @@ beforeAll(async () => {
                '10.0.0.8', ARRAY['card','qris'], 'active')`,
       [terminalId, fx.tenant.tenantId, fx.tenant.outletId],
     ),
+  );
+  // A supervisor with a PIN, for the standalone EDC override (P1-1).
+  await owner.query(
+    `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+     VALUES ($1, $2, 'EDC Supervisor Uji', false, NULL, $3, false, '["tenant"]')`,
+    [
+      supervisorRoleId,
+      fx.tenant.tenantId,
+      JSON.stringify(["order.view", "pos.edc_standalone.approve"]),
+    ],
+  );
+  const supervisorClient = agent(fx.app);
+  await signUp(supervisorClient, "SO896 EDC Supervisor");
+  const supervisorSession = await supervisorClient.get("/api/auth/get-session");
+  supervisorUserId = supervisorSession.body.user.id as string;
+  await owner.query(
+    `INSERT INTO role_assignments
+       (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+     VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 minute', $2)`,
+    [fx.tenant.tenantId, supervisorUserId, supervisorRoleId],
+  );
+  await setStaffPin(
+    establishTenantContext({
+      tenantId: tenantIdSchema.parse(fx.tenant.tenantId),
+      brandId: null,
+      source: "session",
+    }),
+    supervisorUserId,
+    { outletId: fx.tenant.outletId, userId: supervisorUserId },
+    { pin: SUPERVISOR_PIN },
   );
   ctx = establishScopedTenantContext(
     establishTenantContext({
@@ -187,5 +232,110 @@ describe("SO-896 points tender with the guest's released QR money parked open", 
     });
     expect(res.status, JSON.stringify(res.body)).toBe(409);
     expect(JSON.stringify(res.body)).toContain("FUNDS_UNRESOLVED");
+  });
+});
+
+// ---- P1-1: standalone EDC tender with the guest's released QR money parked ---
+
+/** The supervisor's own PIN approval, worth exactly the remaining bill. */
+async function standaloneOverride(orderId: string, valueIdr: number) {
+  const { override } = await createPosOverride(
+    establishTenantContext({
+      tenantId: tenantIdSchema.parse(fx.tenant.tenantId),
+      brandId: null,
+      source: "session",
+    }),
+    fx.staff.userId,
+    {
+      outletId: fx.tenant.outletId,
+      action: "edc_standalone",
+      valueIdr,
+      reason: "Agen EDC mati, kunci manual",
+      objectType: "pos_order",
+      objectId: orderId,
+      approval: {
+        method: "supervisor_pin",
+        approverUserId: userIdSchema.parse(supervisorUserId),
+        pin: SUPERVISOR_PIN,
+      },
+    } as Parameters<typeof createPosOverride>[2],
+    { idempotencyKey: randomUUID() },
+  );
+  expect(override.status).toBe("approved");
+  return override.id;
+}
+
+async function payStandalone(
+  orderId: string,
+  method: "edc_card" | "edc_qris",
+  overrideId: string,
+  bankRef: string,
+) {
+  const bill = await readBill(fx, orderId);
+  return fx.post(`${fx.base}/${orderId}/tenders`, {
+    expectedStatus: bill.status,
+    method,
+    standalone: { terminalId, bankRef, overrideId },
+    idempotencyKey: randomUUID(),
+  });
+}
+
+async function approvalUses(overrideId: string) {
+  const { rows } = await owner.query(
+    `SELECT 1 FROM pos_order_approval_uses WHERE override_id = $1::uuid`,
+    [ulidToUuid(overrideId)],
+  );
+  return rows.length;
+}
+
+async function tenderCount(orderId: string) {
+  const { rows } = await owner.query(
+    `SELECT 1 FROM pos_order_tenders WHERE tenant_id=$1 AND order_id=$2
+        AND status <> 'voided'`,
+    [fx.tenant.tenantId, ulidToUuid(orderId)],
+  );
+  return rows.length;
+}
+
+describe("SO-896 P1-1 standalone EDC tender with the guest's released QR money parked open", () => {
+  for (const [method, bankRef] of [
+    ["edc_card", "123456789012"],
+    ["edc_qris", "210987654321"],
+  ] as const) {
+    it(`${method} standalone is refused 409 FUNDS_UNRESOLVED with no tender, ledger row or approval use; once resolved the same override settles`, async () => {
+      const { orderId, qr } = await parkLateMoney();
+      const number = await numberOf(orderId);
+      const bill = await readBill(fx, orderId);
+      const overrideId = await standaloneOverride(orderId, bill.totalIdr);
+      const baseline = await tenderCount(orderId);
+
+      const refused = await payStandalone(orderId, method, overrideId, bankRef);
+      expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+      expect(JSON.stringify(refused.body)).toContain("FUNDS_UNRESOLVED");
+      expect(await tenderCount(orderId), "no tender added").toBe(baseline);
+      expect(await ledgerOf(number), "no standalone ledger row").toEqual([]);
+      expect(await approvalUses(overrideId), "override not spent").toBe(0);
+
+      // The money is refunded / credited: the bill can be paid again.
+      await resolveFunds(qr.intentId);
+      const paid = await payStandalone(orderId, method, overrideId, bankRef);
+      expect(paid.status, JSON.stringify(paid.body)).toBe(201);
+      expect(await tenderCount(orderId)).toBe(baseline + 1);
+      expect(await ledgerOf(number)).toHaveLength(1);
+      expect(await approvalUses(overrideId)).toBe(1);
+    });
+  }
+
+  it("control: a force released bill with no parked money still takes a standalone EDC tender", async () => {
+    const { orderId } = await kit.forceRelease({ rawStatus: "01" });
+    const bill = await readBill(fx, orderId);
+    const overrideId = await standaloneOverride(orderId, bill.totalIdr);
+    const paid = await payStandalone(
+      orderId,
+      "edc_card",
+      overrideId,
+      "555566667777",
+    );
+    expect(paid.status, JSON.stringify(paid.body)).toBe(201);
   });
 });
