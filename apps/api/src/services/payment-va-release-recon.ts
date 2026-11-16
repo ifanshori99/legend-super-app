@@ -102,13 +102,9 @@ export async function reconcileReleasedVa(
     return updated?.status ?? "resolved";
   });
   // The provider answered expired / failed for good: the code is final, as the
-  // gateway poll marks it (`provider_final_at`). Paid money never marks it
-  // here: it was parked, and the provider is still to answer final.
-  if (
-    outcome.kind === "resolved" &&
-    (outcome.resolution === "provider_expired" ||
-      outcome.resolution === "provider_failed")
-  ) {
+  // gateway poll marks it (`provider_final_at`). A time based close (72 h after
+  // paid, the 7 day limit) is not a provider answer and never marks it.
+  if (outcome.kind === "resolved" && outcome.final) {
     // The code may still be `pending` locally (a release does not need it to
     // have lapsed in our books), which `markGatewayReconciled` leaves alone.
     await withTenant(db, context, (tx) =>

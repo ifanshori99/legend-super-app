@@ -803,6 +803,8 @@ describe("legend-5wn1e money paid on a released code", () => {
     fx.gateway.script(code.intentId, { status: "paid" });
     await runVaRecon(hoursAfter(releasedAt, 1));
     await runVaRecon(hoursAfter(releasedAt, 2));
+    // legend-xzu4l: paid closes the row only 72 h after it opened.
+    await runVaRecon(hoursAfter(releasedAt, 73));
     await webhookPaid(code.intentId, code.amount, code.providerRef);
     await pollPendingGatewayIntents(fx.context, hoursAfter(releasedAt, 3), 200);
     await expectParkedOnce(code);
@@ -830,6 +832,7 @@ describe("legend-5wn1e money paid on a released code", () => {
     fx.gateway.script(code.intentId, { status: "paid" });
     await runVaRecon(hoursAfter(releasedAt, 1));
     await expectParkedOnce(code);
+    await runVaRecon(hoursAfter(releasedAt, 73));
     expect((await releaseRows(code.intentId))[0]).toMatchObject({
       status: "resolved",
       resolution: "paid_recorded",

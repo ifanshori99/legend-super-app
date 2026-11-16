@@ -7,9 +7,12 @@
 // Rules under test (docs/briefs/908-queue-after-paid.md, written from the
 // brief, not from the implementation):
 // - "paid" is NOT a closing answer. The row stays open (last_provider_status
-//   "paid") until the code is closed at the provider: a final provider answer,
-//   a poll at/after expires_at + 60 s, or the hard cap (row created + 7 days).
+//   "paid") until: a final provider answer (expired/failed at/after
+//   expires_at + 60 s), 72 h after the row opened AND the answer before was
+//   "paid" too, or the hard cap (row created + 7 days). The row opens after the
+//   code lapsed (>= 30 min), so the code's expiry alone closes nothing.
 //   When it closes after money was recorded, resolution is "paid_recorded".
+//   Only a real final provider answer marks the VA intent provider_final_at.
 // - Every further provider transaction on the same code, reported through the
 //   new optional `extraPayments` of GatewayPaymentStatus, is parked as
 //   unallocated funds exactly once per provider transaction (identity =
@@ -67,7 +70,8 @@ vi.setConfig({ testTimeout: 180_000 });
 const RELEASE_AFTER_MIN = 30;
 const REASON = "Bank tidak menjawab status VA lebih dari sehari";
 const MIN = 60_000;
-const DAY = 24 * 60 * MIN;
+const HOUR = 60 * MIN;
+const DAY = 24 * HOUR;
 const EXTRA_IDR = 12_345;
 
 let fx: HoldFixture;
@@ -188,6 +192,15 @@ async function expectParked(s: Subject, amounts: number[]) {
   expect(await outboxCountOf(fx, "payment.funds_unallocated", s.intentId)).toBe(
     expected.length,
   );
+}
+
+/** The intent was marked final by the provider (`provider_final_at`). */
+async function providerFinal(s: Subject): Promise<boolean> {
+  const { rows } = await owner.query<{ final_at: Date | null }>(
+    "SELECT provider_final_at AS final_at FROM payment_intents WHERE tenant_id=$1 AND id=$2",
+    [fx.tenant.tenantId, s.intentId],
+  );
+  return rows[0]!.final_at !== null;
 }
 
 const reads = (s: Subject) => fx.gateway.readsOf(s.intentId).length;
@@ -588,32 +601,47 @@ describe.each([vaKind, qrKind])(
 
     it(
       name(
-        "the row stays open until the code is closed, then resolves paid_recorded and is not asked again",
+        "a row opened after the code lapsed: paid does not close it; 72 h after the row opened and a second paid answer resolves paid_recorded; not asked again",
       ),
       async () => {
         const s = await kind.open();
-        const expiresAt = await intentExpiry(s.intentId);
+        // As in production: the row is created >= 30 min after the code lapsed.
+        await setExpiry(s.intentId, after(s.t0, -31 * MIN));
         answer(s, { status: "paid" }, [extra()]);
 
-        // Before expires_at + 60 s: open, not closed by the paid answer.
-        await kind.recon(new Date(expiresAt.getTime() - 1 * MIN));
+        await kind.recon(after(s.t0, 1 * MIN));
+        await kind.recon(after(s.t0, 2 * MIN));
+        await kind.recon(after(s.t0, 71 * HOUR));
         expect((await kind.row(s)).status).toBe("open");
 
-        // After expires_at + 60 s: asked once more, then closed.
+        // 72 h but the answer before was not "paid": one more ask is needed.
+        answer(s, { rawStatus: "01" }, [extra()]);
+        await kind.recon(after(s.t0, 72 * HOUR + 10 * MIN));
+        expect(await kind.row(s)).toMatchObject({
+          status: "open",
+          lastProviderStatus: "pending",
+        });
+        answer(s, { status: "paid" }, [extra()]);
+        await kind.recon(after(s.t0, 73 * HOUR));
+        expect((await kind.row(s)).status).toBe("open");
+
         const beforeClose = reads(s);
-        await kind.recon(new Date(expiresAt.getTime() + 2 * MIN));
+        await kind.recon(after(s.t0, 74 * HOUR));
         expect(reads(s)).toBe(beforeClose + 1);
         const closed = await kind.row(s);
         expect(closed.status).toBe("resolved");
         expect(closed.resolution).toBe("paid_recorded");
-        await expectParked(s, [s.amount, EXTRA_IDR]);
+        expect(await providerFinal(s), "time based close is not final").toBe(
+          false,
+        );
 
         // A resolved row is not asked again and records nothing new.
+        const parked = (await funds(s)).length;
         answer(s, { status: "paid" }, [extra(8_000)]);
-        await kind.recon(new Date(expiresAt.getTime() + 3 * MIN));
-        await kind.recon(new Date(expiresAt.getTime() + 4 * MIN));
+        await kind.recon(after(s.t0, 75 * HOUR));
+        await kind.recon(after(s.t0, 76 * HOUR));
         expect(reads(s)).toBe(beforeClose + 1);
-        await expectParked(s, [s.amount, EXTRA_IDR]);
+        expect(await funds(s)).toHaveLength(parked);
         expect(await kind.settled(s)).toBe(0);
       },
     );
@@ -649,28 +677,55 @@ describe.each([vaKind, qrKind])(
 
     it(
       name(
-        "the hard cap (row created + 7 days) closes a row whose code never expires",
+        "the hard cap (row created + 7 days) closes a row without a provider final answer; extra funds are not primary money",
       ),
       async () => {
         const s = await kind.open();
         await setExpiry(s.intentId, after(s.t0, 30 * DAY));
-        answer(s, { status: "paid" }, [extra()]);
+        // Only another provider reference paid; the code itself stays pending.
+        answer(s, { rawStatus: "01" }, [extra()]);
 
         await kind.recon(after(s.t0, 1 * MIN));
         await kind.recon(after(s.t0, 6 * DAY));
         expect((await kind.row(s)).status).toBe("open");
-        await expectParked(s, [s.amount, EXTRA_IDR]);
+        await expectParked(s, [EXTRA_IDR]);
 
         await kind.recon(after(s.t0, 7 * DAY + 60 * MIN));
         const closed = await kind.row(s);
         expect(closed.status).toBe("resolved");
-        expect(closed.resolution).toBe("paid_recorded");
-        await expectParked(s, [s.amount, EXTRA_IDR]);
+        // The parked extra is not money of this code.
+        expect(closed.resolution).toBe("provider_expired");
+        expect(await providerFinal(s), "hard cap is not a final answer").toBe(
+          false,
+        );
+        await expectParked(s, [EXTRA_IDR]);
 
         const before = reads(s);
         await kind.recon(after(s.t0, 8 * DAY));
         expect(reads(s)).toBe(before);
         expect(await kind.settled(s)).toBe(0);
+      },
+    );
+
+    it(
+      name(
+        "the hard cap closes a recorded paid row as paid_recorded even when the answer before was not paid",
+      ),
+      async () => {
+        const s = await kind.open();
+        await setExpiry(s.intentId, after(s.t0, 30 * DAY));
+        answer(s, { status: "paid" }, [extra()]);
+        await kind.recon(after(s.t0, 1 * MIN));
+        answer(s, { rawStatus: "01" });
+        await kind.recon(after(s.t0, 6 * DAY));
+        expect((await kind.row(s)).status).toBe("open");
+
+        await kind.recon(after(s.t0, 7 * DAY + 60 * MIN));
+        const closed = await kind.row(s);
+        expect(closed.status).toBe("resolved");
+        expect(closed.resolution).toBe("paid_recorded");
+        expect(await providerFinal(s)).toBe(false);
+        await expectParked(s, [s.amount, EXTRA_IDR]);
       },
     );
   },

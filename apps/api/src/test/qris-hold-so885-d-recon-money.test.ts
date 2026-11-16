@@ -89,6 +89,10 @@ describe("SO-885 D-01 release while the provider is down, webhook lost for more 
     fx.gateway.script(qr.intentId, { status: "paid" });
     await runRecon(fx, hoursAfter(releasedAt, 26));
     await expectRecordedOnce(qr.intentId);
+    // legend-xzu4l: paid does not close the row; 72 h after it opened and a
+    // second paid answer does.
+    expect((await reconRows(fx, qr.intentId))[0]?.status).toBe("open");
+    await runRecon(fx, hoursAfter(releasedAt, 100));
     expect(await notificationCount(fx, FUNDS_ALERT_TITLE)).toBeGreaterThan(
       alertsBefore,
     );
@@ -133,6 +137,7 @@ describe("SO-885 D-02 the verified webhook or the poll comes first (BILL_CLOSED 
     await expectRecordedOnce(qr.intentId);
     fx.gateway.script(qr.intentId, { status: "paid" });
     await runRecon(fx, hoursAfter(releasedAt, 1));
+    await runRecon(fx, hoursAfter(releasedAt, 73));
     await expectRecordedOnce(qr.intentId);
     expect((await reconRows(fx, qr.intentId))[0]?.status).toBe("resolved");
   });
@@ -143,6 +148,7 @@ describe("SO-885 D-02 the verified webhook or the poll comes first (BILL_CLOSED 
     await pollPendingGatewayIntents(fx.context, new Date(), 100);
     await runRecon(fx, hoursAfter(releasedAt, 1));
     await runRecon(fx, hoursAfter(releasedAt, 2));
+    await runRecon(fx, hoursAfter(releasedAt, 73));
     await expectRecordedOnce(qr.intentId);
     expect((await reconRows(fx, qr.intentId))[0]?.status).toBe("resolved");
   });
@@ -216,6 +222,7 @@ describe("SO-885 D-06 the provider says paid but nothing can be recorded", () =>
     // Recovery: a proper paid answer is recorded once and the row resolves.
     fx.gateway.script(qr.intentId, { status: "paid" });
     await runRecon(fx, hoursAfter(releasedAt, 4));
+    await runRecon(fx, hoursAfter(releasedAt, 77));
     await expectRecordedOnce(qr.intentId);
     expect((await reconRows(fx, qr.intentId))[0]?.status).toBe("resolved");
   });
