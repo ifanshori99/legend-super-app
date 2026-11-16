@@ -1,3 +1,38 @@
+## 896 QRIS area akhir: 5 P1 second opinion + temuan architect (engineer, legend-ad95t xg6qk 5h8ob o6q8i la1yk, cabang `fix/qris-hold-so-879`, 16 Nov 2026)
+- Selesai (dari c2902fa4e):
+  - ad95t/xg6qk: poll memuat intent `failed` non-final (providerRef, provider_final_at NULL, tanpa hold tertutup); paid tercatat/diparkir tepat sekali; klausa waktu lokal dihapus dari payment-live-code (kode mati hanya oleh providerAnswerFinal/rekonsiliasi); jawaban final wajib providerRef sama; `qris-hold-so896-poll-failed` (11 tes, 9 merah dulu). Lease baris pending yang terlewat sudah dilepas di `finally` (tanpa perubahan kode).
+  - 5h8ob: dana terbuka dihitung untuk intent status apa pun (kecuali paid) -> 409 `FUNDS_UNRESOLVED` (`qris-hold-so896-open-funds`).
+  - o6q8i: tender POS (tunai/QR/points) menolak bila ada dana terbuka dari semua tender/hold/intent order (`pos-order-open-funds.ts`, `qris-hold-so896-pos-open-funds`); EDC pembukuan tetap dikecualikan.
+  - la1yk: DOIT yang ditarik dari paket tetap memverifikasi webhook dan poll intent tersimpan (`forStoredIntent` di payment-doit.ts, payment-webhook.service.ts dua tempat); penerbitan baru tetap ditolak (`qris-hold-so896-doit-stored`).
+  - Architect P2: cakupan dana tender POS di guard tamu/split; mulai penjualan kartu ECR menolak dana terbuka (`edge/edc/agent.ts`); jalur parkir webhook DOIT/Duitku menandai kode final (`qris-hold-so896-p2-parking`, `qris-hold-so896-edc-open-funds`).
+- Tes lama disesuaikan tanpa melemahkan uang: pos-qris-hold-anomaly QH-14 (QR baru ditolak selagi dana terparkir), so889-p2, so885-c, payment-terminal-paid, payment-duitku-webhook.
+- Gate: 193 berkas (3211 tes), kontrak 870, typecheck API+web, prettier/eslint 60 berkas, `db:generate` kosong. Tanpa migrasi.
+- Terbuka: VA tanpa jawaban final -> legend-5wn1e. Skenario kode tamu vs tender POS pada order sama tak terjangkau lewat rute (guard defensif, tes memanggil guard langsung; P2-1 tak sempat diperlihatkan merah). Mismatch pada kode pending sengaja tetap hidup sampai penyedia final. Second opinion Codex berikutnya atas diff c2902fa4e..HEAD (CTO). Satu agen sempat `git stash` lalu memulihkan; satu agen menghentikan satu proses tes miliknya.
+
+## 889 Perbaikan review architect atas gerbang 885 (engineer, cabang `fix/qris-hold-so-879`, 16 Nov 2026)
+- Selesai (review architect xhigh atas 61989ceae..HEAD, dua putaran):
+  - P1 poll starvation: kode pending diproses sebelum expired; budget error per provider DAN per kind; budget waktu terpisah (tes `qris-hold-so885-b-poll-fair` tqkbb-9).
+  - P1 `assertSplitMutableTx` + bayar seluruh order: kode apa pun (seluruh-order/part/void) gagal dengan dana terparkir terbuka -> 409 `FUNDS_UNRESOLVED` (`qris-hold-so889-split-funds`, skenario A, B1, B2).
+  - P1 baru dari review: jawaban final penyedia (Duitku '02', DOIT expired/failed) baru bukti mati bila `now >= expiresAt + HOLD_CLOSE_MARGIN_MS` (D-03); predikat bersama `providerAnswerFinal` di 4 jalur (`qris-hold-so889-final-after-expiry`, 8 tes).
+  - P2: `releasePosQris` 409 `FUNDS_UNRESOLVED` bila dana terparkir terbuka; `cancelSupersededAtGateway` wajib baca status sesudah cancel; intent failed ber-ref tetap hidup sampai expiresAt+margin (`qris-hold-so889-p2-release-cancel`, 5 tes). Tes lama `pos-qris-hold-review` diubah: rilis dengan dana 30k terparkir kini 409.
+- Gate: 187 berkas hijau (3182 tes), kontrak root 870, typecheck API+web, prettier/eslint, `db:generate` kosong. Tanpa migrasi baru.
+- Terbuka: kode expired yang provider-nya selalu error tidak pernah final -> tagihan tertahan (`ORDER_CODE_ACTIVE`/`SPLIT_LOCKED`), tanpa jalan keluar staf untuk VA (QR punya force release Q93). Butuh keputusan CTO. `hasOpenIntent` di `qr-order-consumers.ts:442` masih pakai waktu lokal (void order dengan VA lalu refund otomatis; hanya biaya, bukan uang hilang). Belum direview: `worker-main.ts`, `notification-adapters.ts`, `packages/shared/src/pos/*`, `payment-webhook.service.ts` selain Duitku. Tidak ada celah di `cancel` produksi saat ini (tak ada gateway ber-cancel).
+
+## 885 Perbaikan second opinion QRIS 879 (engineer, legend-m7tnt tqkbb 0owye adiov 05pjx m8jax, cabang `fix/qris-hold-so-879` dari fd4427fd1, 16 Nov 2026)
+- Selesai: 4 P1 + 05pjx + m8jax. Prinsip CTO: waktu lokal bukan bukti kode mati; hanya jawaban final penyedia atau uang yang sudah direkonsiliasi.
+  - A (m7tnt): penutupan reservasi butuh bukti penyedia atas semua intent DP (pending/expired/superseded/failed) + dana tak teralokasi; selain itu 409 `PAYMENT_PROVIDER_UNCONFIRMED`.
+  - B (tqkbb): `payment_intents.provider_final_at` (0629); intent expired berkode tetap hidup dan tetap di-poll sampai final; ganti kode VA dan ubah split ditolak sampai final.
+  - C (0owye): backfill 0381 menahan intent failed dengan dana tak teralokasi terbuka (4 bentuk); guard `FUNDS_UNRESOLVED`; job cek ulang tiap 30 menit.
+  - D (adiov): antrean `pos_qris_release_reconciliations` (0628), worker, rute GET `/qris/reconciliations`; uang yang ditemukan dicatat tepat sekali (evidence, dana tak teralokasi, event, alert).
+  - E (05pjx): refund failed menahan order QR awaiting_payment, terlihat di alert/daftar, ajukan ulang lewat approval refund; eskalasi `failed_holds_order` (0630).
+  - F (m8jax): sweep dengan kursor adil per tenant (paling lama dulu).
+- Migrasi: 0628, 0629, 0630 (sementara; 0381/0382 bentrok dengan batch69 m1, merge train wajib renumber). 0381 diedit di tempat (belum pernah diterapkan di tempat lain).
+- Tes: berkas baru `qris-hold-so885-*`; semua merah dulu lalu hijau. Gate: 184 berkas QRIS hold/qr-order/payment/reservasi/registry/migrasi/refund hijau (183 lulus, 1 skip), 870 tes kontrak root hijau, typecheck API+web, prettier, eslint, `db:generate` kosong.
+- Tes yang sudah merah di fd4427fd1 (bukan regresi 885) dibereskan juga: ws03-guest-va, bill-split-sweep, late-payment-refund-refile (pindah ke VA karena hold QR menahan void), accounting-refund-gateway-historic-tax-map (premis jurnal berubah di 769e3fa44/09852742f).
+- Review: architect xhigh; P1-1 (RLS 0381) dan P1-2 (`provider_final_at` pada paid ditolak) + 2 P2 sudah dibetulkan.
+- Biaya sesi (session-usage): total 30.1M (utama 4.07M, subagent 26.0M); 35 subagent, maks 8 paralel, rata 0.37 berjalan per agent; 334 menit.
+- Sisa/risiko: penyedia yang tak pernah menjawab final menahan penggantian tanpa batas (pengecualian Q93 lewat force release + antrean); kursor sweep di memori saja; jalur reservasi masih memakai waktu lokal (`reservation-core.ts`, `reservation-deposit-resend.ts`) -> kartu baru.
+
 ## 868 API daftar rekonsiliasi EDC (engineer, legend-p98qi, cabang dari `ui/edc-rekonsiliasi-865` 5fb5f8273, 15 Nov 2026)
 
 - `GET /api/payments/admin/edc/reconciliation-queue` (payment-admin.routes.ts, `listEdcReconciliationQueueForActor` di services/edc-reconciliation.service.ts). Kontrak shared tidak diubah; aksi yang diizinkan diturunkan klien dari field (status, needsReconciliation, saleWireOpenAt, dispatchedAt) lewat `reconciliationGate`. Isi: sale dengan needs_reconciliation ATAU status unknown (unknown <10 menit ikut, terkunci di klien). Tanpa `outletId`: `requireMenuPermission("payment.reconcile")` + jangkauan outlet `payment.reconcile` dihitung service (grant lain, mis. kasir-only, tidak menambah); dengan `outletId`: `requireOutletPermission`. Tenant + outlet difilter di SQL, `q` di-escape, urut createdAt desc + id desc, cursor dibulatkan ms, cursor rusak 422, tender dimuat satu query. Tanpa migrasi.
@@ -5657,6 +5692,42 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Risiko diterima (keputusan CTO): nomor salah ketik menerima pesan WA/konfirmasi booking orang lain.
 - Gerbang: 18 berkas test terarah (446 test) hijau, typecheck api hijau, `db:generate` kosong, check-journal ok, prettier+eslint hijau. Merah-dulu terbukti di base: T1 (200 vs 409), T2 (3 test), T3 (4 test), R1b (2 test).
 
+## 2026-11-13: Backend QRIS ber-DP (legend-yhia9.2-.4) di cabang ws/qris-dp-hold
+
+- Sudah: C1 (tabel `pos_qris_holds`, trigger kunci tagihan, satu QR aktif per tagihan, hold untuk QR split tamu), C2 (pembayaran masuk saat hold aktif diterapkan, uang terlambat ke dana tak teralokasi, job cek penyedia di cloud dan edge, buka kunci manajer `qris_release`), C3 (pairing 6 digit, pilihan tagihan, state layar pelanggan dibangun server). Migrasi 0419-0421, tanpa nomor lain.
+- Bukti: 12 berkas test hold/display/old-QRIS lulus (141/141 pada run terarah), typecheck api dan web lulus, eslint dan prettier hijau pada 39 berkas TS, `db:generate` kosong. Review architect xhigh: tanpa penghalang, 7 temuan should-fix sudah dibetulkan. Reviewer sonnet atas perubahan test lama: tidak ada assertion uang yang melemah.
+- Keputusan: pembayaran nominal salah tidak menutup hold (QH-13), uang diparkir sekali, tagihan terkunci sampai buka kunci manajer. 18 test lama (bill-split-pay, pos-order-qris-lifecycle, round2) disesuaikan karena aturan hold mewajibkan (QR tidak bisa dibatalkan lokal), bukan dilonggarkan.
+- Langkah berikut: gerbang S1 (legend-1yig6, sandbox) sebelum C2 digabung; merge train merechain nomor migrasi (journal loncat 308 ke 419); UI (legend-astv2) tetap ditahan; second opinion Codex area pembayaran sebelum rilis.
+- Belum diverifikasi: `QRIS_NEEDS_CLOUD` di edge asli (kredensial gateway di edge tidak terbukti ada), replay `/pair` tanpa test, pesan kasir saat QR sudah dibayar tapi belum dibukukan.
+
+## 2026-11-13: Perbaikan temuan Codex area uang (legend-eh9i4, legend-5i6k1) di cabang fix/codex-money
+
+- Sudah: cek hold QRIS (QH-13) dipindah ke `applyConfirmation` di bawah lock tagihan/intent yang sama, jadi webhook, polling, dan sync expired ikut. QR Rp33.000 dibayar Rp36.000 lewat polling: seluruh Rp36.000 diparkir sekali, tidak ada capture. Migrasi 0419 (diedit di tempat, tanpa nomor baru): backfill hold untuk intent QRIS tamu (status pending, provider_ref ada) dan gagal bila >1 QR collectible per tagihan (tender POS + tamu). Jurnal refund: akun pajak/service charge dilindungi dari gabungan peta saat ini dan historis; payout ke akun itu diparkir `ACCOUNT_MAPPING_MISSING`.
+- Bukti: 3 test gagal-dulu (poll-wrong-amount, 0419 guest backfill, historic-tax-map) lalu hijau; run gabungan 13 file hijau (125 test); `db:generate` kosong; prettier+eslint hijau. Review architect xhigh: tidak ada penghalang; 2 temuan (provider_ref di backfill tamu, receivedAt jalur polling) dibetulkan.
+- Belum: typecheck api (antre kunci heavy). Catatan lanjutan: hold tetap `open` bila Duitku `assertStrictAmount` menolak nominal salah (bill beku sampai manajer buka kunci, tanpa alert kasir); DB lokal yang sudah menerapkan 0419 tidak mendapat backfill tamu.
+
+## 2026-11-13: Hold QRIS nominal salah ditolak Duitku (legend-baz8i) di cabang fix/qris-hold-strict-amount
+
+- Sudah: `holdGatewayAmountMismatch` (jalur `assertStrictAmount` dan webhook Duitku) kini, saat uang baru diparkir dan ada hold QRIS yang belum `paid`, memanggil helper baru `alertQrisFundsParked` (sama dengan jalur `parkWhenQrisHoldRefusesInTx`): cek hold melambat 24 jam dan supervisor, owner, serta kasir pembuka QR mendapat alert "Uang QRIS perlu dikembalikan". Hold tidak ditutup otomatis (QH-13); manajer buka kunci lewat Q93 lalu refund dari dana tak teralokasi. Replay tidak parkir dan tidak alert dua kali. Teks alert khusus hanya untuk hold yang masih terkunci; callback vs status tidak cocok punya kalimat sendiri.
+- Bukti: test baru `pos-qris-hold-strict-amount.test.ts` (4 test): gagal-dulu di source lama (3 gagal, alert 0 vs 1), hijau sesudahnya; run gabungan 4 file (71 test) hijau; prettier + eslint hijau. Review architect xhigh: tanpa penghalang, 2 saran kata dibetulkan. Tanpa migrasi.
+- Typecheck api (`tsc --noEmit`, lewat heavy) hijau tanpa error.
+
+## 2026-11-14: QRIS hold masuk m1 (legend-yhia9.2, cabang ghostex/775-qris-hold-c1)
+
+- `origin/fix/qris-hold-strict-amount` (183c15283, utuh: C1, C2, C3 dan perbaikan Codex money) digabung ke atas `origin/milestone/m1` 5dcc1cfd9. `ws/qris-dp-due` tidak digabung terpisah: versi `pos-qris-deposit-money.test.ts` di cabang itu sudah mencakup 4 test uangnya (MONEY-04 sudah menunggu `QRIS_HOLD_ACTIVE`).
+- Migrasi dinomori ulang lewat `scripts/migration-renumber.mjs` (salinan sementara yang membolehkan celah 0366-0367, dipesan brief 769): 0419 jadi 0368_pos_qris_holds, 0420 jadi 0369_pos_qris_hold_freeze, 0421 jadi 0370_pos_customer_display. `when` 1794629275111/6111/7111. Snapshot dibangun ulang dari skema gabungan, rantai prevId 0365, 0368, 0369, 0370 utuh.
+- Konflik: `_journal.json` dan snapshot (dibangun ulang), `edge-sync-conflict-alert.ts` (SupervisorAlert memegang `alsoUserIds` dan `outletId: OutletId | null`), `pos-day.service.ts` (kedua impor dipertahankan), `PROGRESS.md` (dua sisi dipertahankan). Tidak ada aturan uang yang dilonggarkan.
+- Bukti (14 Nov): 12 berkas QRIS terarah 99/99 (hold, anomaly, backfill 0368, poll, review, strict-amount, deposit-money, display-deposit, lifecycle, round2, capture-refund-race); 9 berkas replay migrasi dan RLS 84/84 (0274, 0226, edge-received-events, 0217, uom-is-system, fk-force-rls, force-rls-guard, tables-rls, customer-display); typecheck api dan web lulus; eslint dan prettier bersih; `db:generate` kosong.
+- Temuan gerbang: run pertama menunjukkan 15 test replay migrasi merah (5 berkas) karena 0370 menambah 14 FK ke `outlets`, `devices`, `orders` lewat `ALTER TABLE ADD CONSTRAINT`; migrator pemilik tabel biasa (FORCE RLS) gagal `tenant context is required`. FK dipindah ke dalam `CREATE TABLE` (pola AGENTS.md "Pra-gate"), nama constraint sama, snapshot tidak berubah. Berkas yang sama sebelumnya hijau 69/69 di batch53.
+- Review architect xhigh atas resolusi konflik dan renumber: tanpa penghalang. Dua catatan rendah: database dev lokal yang sudah menjalankan 0419-0421 lama rusak pada migrate berikut (`created_at` terbaru 1794533716304 membuat drizzle melewati 0309-0318 dan mengulang 0368) dan perlu dibangun ulang; `applyReservationCustomerCredit` (`reservation-deposit-remainder.ts:374`) tidak mengecek hold QRIS (kredit tak terpakai dikembalikan saat sesi berakhir, tidak ada uang hilang).
+
+## 2026-11-15: QRIS hold C2/C3 lanjutan (legend-yhia9.3, legend-yhia9.4) di cabang ghostex/qris-hold-dp-c2-c3
+
+- Base: ujung C1 `ghostex/775-qris-hold-c1` 1275f0123 (C1 belum di `origin/milestone/m1`; m1 sudah di batch66). Audit: C2 dan C3 sudah ada di cabang C1 (D-03..D-09, QH-01..29, QD-01..05 hijau 94/94).
+- Sudah: kredit pelanggan reservasi ditolak 409 `QRIS_HOLD_ACTIVE` selama ada QR yang masih bisa dibayar di tagihan mana pun pada sesi itu (sebelumnya kredit bisa mengubah sisa tagihan saat QR aktif); kunci diambil sesi, orders, pos_orders, hold, baru kunci kredit (cegah deadlock dengan retur DP); hold yang ditutup jalur void/refund dipilih per tender; gabung sesi dan pindah item menolak tagihan ber-hold (cadangan: aturan lama "sesi dibayar sebagian" sudah menolak); registry migrasi data mengakui 0368 dan 0370; desain `docs/design/qris-dp-intent.md` dipulihkan dari d4840228f.
+- Tanpa migrasi baru.
+- Lanjutan: legend-ei9ot (kredit tidak mengurangi QR sampai reprice, aman uang), legend-xb20o (dua tender QRIS + trigger), legend-5ailc (guard hold untuk kode m1 baru saat merge).
+
 ## 2026-11-14 10:21: 722 jumlah nominal diketahui finance exceptions (legend-j4xdb)
 
 - Cabang: `fix/finance-exceptions-known-count`, base `ui/payout-finance-exceptions` (`fd7cc56cd`); worktree kosong dari milestone dibuat ulang sesuai revisi CTO.
@@ -5932,6 +6003,14 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Run penuh (10:27-11:42): 19186 lulus, 0 tes gagal, 1 Unhandled Error pg 57P01 dari edge-recipes-protocol-compat.test.ts (teardown), vitest exit 1. Berkas itu dari m1 dan tidak disentuh batch ini; sendirian 1 dari 6 run kena error sama, run terakhir 3x berturut-turut hijau. Kartu flake baru legend-4ge79 (P2). Tes tidak dilonggarkan.
 - Biaya: dicatat di entri batch berikut (sesi dipindah akun).
 
+## 2026-11-15: Perbaikan second opinion QRIS hold SO-879 (fix/qris-hold-so-879, di atas m1)
+
+- Cabang dari C2/C3 + merge origin/milestone/m1. Migrasi QRIS hold dinomori ulang 0379-0381 (journal dan snapshot disambung ke m1 0378; snapshot 0381 prevId ke 0376).
+- Kartu: zff37 (release/job baca ulang uang di bawah kunci), ota0l (migrasi membekukan QR lama void-lokal, hold backfilled, indeks unik parsial), w0ows (EDC vs QR, kartu menang Q7), 9ho2v (provider-proof ikut intent expired, fail-closed), kf104 (QR tamu order-utuh satu kode, ORDER_CODE_ACTIVE), eqeu7 (poll split tanpa deadlock, kunci advisory pairing), 5ailc (409 QRIS_HOLD_ACTIVE di void order QR + rollback).
+- Review architect xhigh: 1 P1 (hold backfill tak tertutup saat kode lama dibayar, bill beku), 2 P2 (sweep macet oleh hold, VA lama tak ditahan), 2 P3 (rantai snapshot, proof pending): semua dibetulkan dengan test.
+- Tes merah-dulu: 22 tes merah di pohon pra-fix 478efefe6/0b9ceb9ea, hijau sesudah fix (so879-a/b/c).
+- Terbuka: order QR dengan A (VA) dibayar+refund committed dan B (QR) hold mati tetap awaiting_payment (decideUnpaidQrOrder: linkFullyPaid -> keep); uang aman (A direfund), perlu keputusan jalur void. Hold tamu tanpa baris POS tak bisa dirilis manajer (keputusan CTO).
+- Biaya: session-usage sesi total biaya* ~14.7M sebelum perbaikan akhir (subagent sonnet 576 req, opus 46, haiku 42).
 ## 2026-11-15: Merge train batch68 (int/batch68, base m1 69175e58a)
 
 - Isi (7 cabang): fix/flake-866 5c9d29ec4, fix/hris-so-852 2473fc84b, fix/hris-koreksi-so-852 408336d1c, fix/koreksi-identitas-860 e27706496, fix/inv-acct-857 203814737 (HPP), fix/finance-dp-857 4b3bbe148, fix/s3ex8-859 8b5050243.
@@ -6211,3 +6290,18 @@ Handoff preparation: merge parents5cbe2a1e+31643526, no rebase/history rewrite. 
 - Migrasi sementara (merge train menomori ulang): 0641 gerbang global + kunci bersama + kolom stuck, 0642 cek commit fee/settle + sumber beku; snapshot 0642. 0643 tidak dipakai.
 - Bukti: 16 test 900 baru: 11 merah dan 5 lulus di base 1c3067deb (alasan benar: fungsi 42883 dan kolom 42703 tidak ada, guard commit tidak menembak, pending lintas PT tidak ditolak; yang lulus = kontrol race-sweep, fee-control, dan 3 lock-order yang baru membuktikan deadlock di model kunci batch), lalu hijau. 49 berkas payout/GL/registry/rls: 48 lulus 1 skip, 751 test lulus, exit 0 (log suite2); prettier, eslint, typecheck api dan web, db:generate ("No schema changes") semua exit 0 (log final-static).
 - Biaya: session-usage total 33986k sampai akhir 900 (sesi mencakup 888, 891, 897, 900); parallel-report: 51 subagent total, puncak 8 bersamaan, rata-rata 0.73 berjalan per agent.
+
+## 2026-11-15: SO-879 lanjutan: merge m1 2bf32cd92, sweep void order refunded
+
+- Merge origin/milestone/m1 2bf32cd92; migrasi QRIS dinomori ulang 0381 pos_qris_holds, 0382 pos_qris_hold_freeze, 0383 pos_customer_display (m1 terakhir 0380; batch69 memakai 0381/0382, merge train menomori ulang bila perlu). Snapshot 0383 dibangun ulang dari skema gabungan (termasuk indeks stock_ledger m1 0379 yang tak punya snapshot).
+- Keputusan CTO: sweep void order QR awaiting_payment yang linkFullyPaid hanya bila semua kode mati/hold tertutup, uang bersih 0 (refund completed penuh), tak ada refund pending/gagal; alasan void `payment_refunded_codes_dead`. Tes qris-hold-so879-e-sweep-refunded-void (a-i). Tes m1 (order-payment-consumers, payment-doit, duitku-adapter, refund-qr-split-guard) disesuaikan dengan aturan hold.
+- Review architect xhigh: layak digabung. Catatan terbuka: refund `failed` menahan order selamanya (sesuai aturan 3, perlu ajuan ulang otomatis utk order awaiting_payment); kandidat sweep 100 tertua bisa terisi order macet; kode tanpa hold dianggap mati setelah grace, bukan bukti penyedia.
+
+## 2026-11-16: 903 Perbaikan 2, dua P1 second opinion QRIS 896 (fix/qris-hold-so-879)
+
+- P1-1: tender `edc_card`/`edc_qris` standalone ikut penjaga dana terbuka (409 `FUNDS_UNRESOLVED`) di `addPosTender` sebelum override/approval dipakai; tanpa tender, ledger, atau pemakaian approval saat ditolak. Sukses setelah dana selesai. Pengecualian Q7 hanya untuk permintaan ECR yang sudah berjalan.
+- P1-2: jawaban `paid` tanpa nominal positif bukan final: `provider_final_at` tetap NULL, event tetap bisa diulang, poll tetap memilih intent. Final dari jalur parkir hanya bila dana positif benar-benar tertulis atau ditemukan (`recordUnsettledGatewayFunds*` mengembalikan inserted/found/none). Termasuk webhook Duitku (`PAID_AMOUNT_UNREADABLE`), poll intent kedaluwarsa/gagal, poll intent pending lewat expiry, dan `holdGatewayAmountMismatch` (keluar dini bila paid <= 0).
+- Tes: `qris-hold-so896-edc-open-funds` (3 tes baru P1-1) dan `qris-hold-so896-p1-zero-paid` (11 tes). Merah-dulu terbukti: P1-1 2 dari 3 merah tanpa fix; P1-2 6 dari 7 merah; P1-3 (pending lewat expiry, DOIT dan Duitku) 4 merah. Area QRIS 47 berkas, 543 tes hijau lewat heavy.
+- Review architect xhigh: ronde 1 menemukan 1 P1 + 1 P2 (jalur poll intent pending, hold paid 0), dibetulkan; ronde 2 tanpa P0/P1. P3 terbuka: `applyConfirmation` memperlakukan `none` sebagai replay (aman karena pemanggil sudah menyaring amount > 0); intent Duitku gagal dengan dana terparkir lalu paid 0 dianggap settled di provider-proof (dana sudah tercatat, tidak ada uang hilang).
+- Tanpa migrasi baru, tanpa merge, tanpa deploy.
+- Biaya (sesi 903): session-usage total 10621k (utama sonnet 8860k, subagent opus 666k, sonnet 886k, haiku 209k); parallel-report: 18 menit-sesi, 10 spawn subagent, maks 4 bersamaan, rata-rata 0.75 subagent berjalan per agent.

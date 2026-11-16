@@ -23,7 +23,7 @@
 //   before a verified payment (ORD-02).
 
 import { createHash, timingSafeEqual } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq, isNull, or } from "drizzle-orm";
 import {
   CoreError,
   uuidSchema,
@@ -53,6 +53,11 @@ import { HttpError } from "../lib/http-error.ts";
 import { openSecret, sealSecret } from "../lib/secrets.ts";
 import type { Tx } from "./menu-internals.ts";
 import { paymentGatewayFor } from "./payment-gateway.ts";
+import {
+  expiredCodeMayStillPay,
+  failedCodeMayStillPay,
+  noClosedHold,
+} from "./payment-live-code.ts";
 import { selectGatewayForNewIntent } from "./payment-gateway-select.ts";
 import { resolveRoutingRule } from "./payment-routing.service.ts";
 import {
@@ -67,7 +72,18 @@ import {
   createPaymentLink,
   createSplitPartIntent,
   getIntentView,
+  readIntentView,
 } from "./payment.service.ts";
+import {
+  failedOrderCodeWithOpenFundTx,
+  failedPartCodeWithOpenFundTx,
+} from "./payment-failed-funds.ts";
+import { hasOpenEdcRequest } from "./pos-order-support.ts";
+import {
+  activeHoldOf,
+  openGuestQrisHold,
+  openSplitQrisHold,
+} from "./pos-qris-hold.ts";
 import { handleQrOrderPaymentPaid } from "./qr-order-consumers.ts";
 import {
   loadQrZoneOfSession,
@@ -339,6 +355,125 @@ function sameHash(stored: string, candidate: string): boolean {
 }
 
 /**
+ * legend-kf104: the whole-order code of the bill that may still take money:
+ * any `pending` code (a lapsed one stays pending until the gateway answers),
+ * or an `expired` one the gateway received until the PROVIDER answered final
+ * or its money was reconciled (SO-885, `expiredCodeMayStillPay`: the gateway
+ * cancel is best effort and a local timeout is not proof). A code whose QR
+ * hold the provider proved dead (hold `closed`) is dead. Same rule as
+ * `partLiveCodeTx` for a split part, so a VA, a bank change or a QR never
+ * replaces a code that may still be paid (two collectible codes of one bill).
+ */
+async function orderLiveCodeTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  paymentLinkId: string,
+): Promise<{ id: string } | null> {
+  const tenantId = context.tenant.tenantId;
+  const [code] = await tx
+    .select({ id: paymentIntents.id })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, tenantId),
+        eq(paymentIntents.paymentLinkId, paymentLinkId),
+        isNull(paymentIntents.billSplitId),
+        or(
+          and(eq(paymentIntents.status, "pending"), noClosedHold),
+          expiredCodeMayStillPay(),
+          failedCodeMayStillPay(),
+        ),
+      ),
+    )
+    .orderBy(desc(paymentIntents.createdAt))
+    .limit(1);
+  return code ?? null;
+}
+
+/**
+ * legend-w0ows: a QR may not be issued while a card sale of the bill is open
+ * (the card wins, founder Q7). Takes the bill's EDC advisory lock, the lock the
+ * edge write-ahead and `addPosTender` take, after the order row lock (same
+ * order as `addPosTender`), so a sale that already passed the agent's hold
+ * check never meets a hold born after it.
+ */
+async function assertNoOpenCardSale(
+  tx: Tx,
+  context: ScopedTenantContext,
+  order: Pick<typeof orders.$inferSelect, "outletId" | "number">,
+): Promise<void> {
+  if (await hasOpenEdcRequest(tx, context, order))
+    throw new HttpError(
+      409,
+      "EDC_REQUEST_OPEN",
+      "Ada pembayaran kartu yang sedang berjalan untuk tagihan ini. Selesaikan dulu.",
+    );
+}
+
+/**
+ * legend-eqeu7: the provider status call and the settlement of a paid answer
+ * (`getIntentView` -> `applyConfirmation`, which waits for the order row lock)
+ * run here, before the transaction that locks the order. A code that went
+ * paid at the provider (lost webhook) is settled now; the locked transaction
+ * then reads the stored state again (`readIntentView`) and never calls out.
+ * Reads only: no row is locked, so nothing here can wait on the caller.
+ */
+async function syncCodesOutsideLock(
+  context: ScopedTenantContext,
+  credential: string,
+  sessionId: string,
+  orderId: string,
+  splitId: string | null,
+  now: Date,
+): Promise<void> {
+  const found = await withTenant(db, context, async (tx) => {
+    const session = await lockGuestSessionForPayment(
+      tx,
+      context,
+      credential,
+      sessionId,
+      now,
+      "none",
+    );
+    const [order] = await tx
+      .select()
+      .from(orders)
+      .where(
+        and(
+          eq(orders.tenantId, context.tenant.tenantId),
+          eq(orders.id, orderId),
+          eq(orders.tableSessionId, session.id),
+        ),
+      );
+    if (!order || order.paymentLinkTokenSealed === null) return null;
+    const codeIds = new Set<string>();
+    if (splitId === null) {
+      if (order.paymentIntentId !== null) codeIds.add(order.paymentIntentId);
+    } else {
+      const [part] = await tx
+        .select()
+        .from(billSplits)
+        .where(
+          and(
+            eq(billSplits.tenantId, context.tenant.tenantId),
+            eq(billSplits.id, splitId),
+            eq(billSplits.tableSessionId, session.id),
+          ),
+        );
+      if (part?.paymentIntentId) codeIds.add(part.paymentIntentId);
+      if (part) {
+        const live = await partLiveCodeTx(tx, context, part.id);
+        if (live !== null) codeIds.add(live.id);
+      }
+    }
+    return { token: linkToken(context, order), codeIds: [...codeIds] };
+  });
+  if (found === null) return;
+  for (const codeId of found.codeIds)
+    await getIntentView(context, found.token, codeId, now);
+}
+
+/**
  * POST /api/table-sessions/:sessionId/payments (contract guest.ts). The
  * pay-first `order` and the split `split` targets are live, with QRIS or VA:
  * the open-bill `bill` target belongs to the bill settlement bead.
@@ -388,6 +523,14 @@ export async function createGuestPayment(
     orderId,
     now,
   );
+  await syncCodesOutsideLock(
+    context,
+    credential,
+    sessionId,
+    orderId,
+    splitId,
+    now,
+  );
   // Checked after the session lock so the outlet's own channel list decides.
   if (bankCode !== null) await assertVaBank(context, bankCode, outletId);
   return withTenant(db, context, async (tx) => {
@@ -431,7 +574,7 @@ export async function createGuestPayment(
             const current =
               part.paymentIntentId === null
                 ? null
-                : await getIntentView(
+                : await readIntentView(
                     context,
                     token,
                     part.paymentIntentId,
@@ -443,7 +586,7 @@ export async function createGuestPayment(
                 "SPLIT_PART_PAID",
                 "Bagian tagihan ini sudah dibayar oleh tamu lain.",
               );
-            if ((await partLiveCodeTx(tx, context, part.id, now)) !== null)
+            if ((await partLiveCodeTx(tx, context, part.id)) !== null)
               throw new HttpError(
                 409,
                 "SPLIT_CODE_ACTIVE",
@@ -456,7 +599,7 @@ export async function createGuestPayment(
           if (part.paymentIntentId === null)
             throw new Error("Paid split part has no payment intent");
           return guestPaymentDto(
-            await getIntentView(context, token, part.paymentIntentId, now),
+            await readIntentView(context, token, part.paymentIntentId, now),
             { kind: "split", billSplitId: part.id },
           );
         }
@@ -471,7 +614,7 @@ export async function createGuestPayment(
           // (expired and past the late-payment grace), so two codes of one
           // part can never both be paid.
           if (payer && part.paymentIntentId !== null) {
-            const current = await getIntentView(
+            const current = await readIntentView(
               context,
               token,
               part.paymentIntentId,
@@ -488,7 +631,7 @@ export async function createGuestPayment(
               });
           }
           const live = payer
-            ? await partLiveCodeTx(tx, context, part.id, now)
+            ? await partLiveCodeTx(tx, context, part.id)
             : null;
           if (live !== null) {
             // No payer hash yet means no payer: a live code here is an orphan
@@ -500,7 +643,7 @@ export async function createGuestPayment(
               (parsed.method !== "va" || live.channelCode === bankCode)
             )
               return guestPaymentDto(
-                await getIntentView(context, token, live.id, now),
+                await readIntentView(context, token, live.id, now),
                 { kind: "split", billSplitId: part.id },
               );
             throw new HttpError(
@@ -509,6 +652,41 @@ export async function createGuestPayment(
               "Kode pembayaran bagian ini masih berlaku; selesaikan atau tunggu sampai berakhir.",
             );
           }
+          // legend-yhia9: one collectible QRIS per bill. A live code of this
+          // part was answered above; a QR of another part (or a dead code the
+          // provider has not yet confirmed closed) refuses a new one.
+          if (
+            parsed.method === "qris" &&
+            (await activeHoldOf(tx, context.tenant.tenantId, order.id))
+          )
+            throw new HttpError(
+              409,
+              "QRIS_HOLD_ACTIVE",
+              "QR bagian lain masih bisa dibayar. Tunggu sampai dibayar atau berakhir dulu.",
+            );
+          // SO-885 legend-0owye: money of a failed code of this part is still
+          // parked; the part is not charged again before it is returned.
+          // SO-896: money parked anywhere on the bill (a POS tender, another
+          // part, the whole-order code) blocks a part code as well.
+          if (
+            (await failedPartCodeWithOpenFundTx(
+              tx,
+              context.tenant.tenantId,
+              part.id,
+            )) ||
+            (await failedOrderCodeWithOpenFundTx(
+              tx,
+              context.tenant.tenantId,
+              order,
+            ))
+          )
+            throw new HttpError(
+              409,
+              "FUNDS_UNRESOLVED",
+              "Uang dari pembayaran sebelumnya belum dikembalikan; selesaikan dulu sebelum membayar lagi.",
+            );
+          if (parsed.method === "qris")
+            await assertNoOpenCardSale(tx, context, order);
           const intent = await createSplitPartIntent(
             context,
             token,
@@ -527,6 +705,14 @@ export async function createGuestPayment(
             { billSplitId: part.id, amountIdr: part.amountIdr },
             now,
           );
+          if (parsed.method === "qris")
+            await openSplitQrisHold(tx, {
+              order,
+              billSplitId: part.id,
+              intentId: intent.id,
+              amount: part.amountIdr,
+              now,
+            });
           // Never `orders.paymentIntentId`: that is the whole-order code.
           await tx
             .update(billSplits)
@@ -551,14 +737,14 @@ export async function createGuestPayment(
         // Paying the whole order replaces a split that nobody has paid or
         // started paying (assertSplitMutableTx throws SPLIT_LOCKED otherwise).
         if ((await listLiveSplitsTx(tx, context, order.id)).length > 0) {
-          await assertSplitMutableTx(tx, context, order, now);
+          await assertSplitMutableTx(tx, context, order);
           await voidLiveSplitsTx(tx, context, order.id, now);
         }
         // One live code per order: a second payer asking for the same
         // method and bank gets the pending intent; another method or bank
         // opens a new one, which supersedes it (createIntent).
         if (order.paymentIntentId !== null) {
-          const current = await getIntentView(
+          const current = await readIntentView(
             context,
             token,
             order.paymentIntentId,
@@ -574,6 +760,43 @@ export async function createGuestPayment(
               orderId: order.id,
             });
         }
+        // legend-kf104: one collectible code per bill, like a split part. A
+        // code the guest switched away from may still be paid at the provider,
+        // so a replacement waits until the hold check proved it dead.
+        if (await activeHoldOf(tx, context.tenant.tenantId, order.id))
+          throw new HttpError(
+            409,
+            "QRIS_HOLD_ACTIVE",
+            "Kode QR sebelumnya masih bisa dibayar. Tunggu sampai dibayar atau berakhir dulu.",
+          );
+        // A VA (no hold), or a code past its expiry that the gateway may
+        // still accept, is held to the same rule: no replacement while it may
+        // be paid, whatever method the guest now asks for.
+        if (
+          order.paymentLinkId !== null &&
+          (await orderLiveCodeTx(tx, context, order.paymentLinkId))
+        )
+          throw new HttpError(
+            409,
+            "ORDER_CODE_ACTIVE",
+            "Kode pembayaran sebelumnya masih berlaku; selesaikan atau tunggu sampai berakhir.",
+          );
+        // SO-885 legend-0owye: a code closed `failed` by an amount mismatch
+        // still has the guest's money parked; no new code until it is returned.
+        if (
+          await failedOrderCodeWithOpenFundTx(
+            tx,
+            context.tenant.tenantId,
+            order,
+          )
+        )
+          throw new HttpError(
+            409,
+            "FUNDS_UNRESOLVED",
+            "Uang dari pembayaran sebelumnya belum dikembalikan; selesaikan dulu sebelum membayar lagi.",
+          );
+        if (parsed.method === "qris")
+          await assertNoOpenCardSale(tx, context, order);
         // The WS-05 key is unique per tenant; derive it from the order so a
         // guest key can never collide with another session's payment.
         const intent = await createIntent(
@@ -595,6 +818,14 @@ export async function createGuestPayment(
           },
           now,
         );
+        if (parsed.method === "qris")
+          await openGuestQrisHold(tx, {
+            order,
+            billSplitId: null,
+            intentId: intent.id,
+            amount: intent.amountIdr,
+            now,
+          });
         await tx
           .update(orders)
           .set({ paymentIntentId: intent.id, updatedAt: now })

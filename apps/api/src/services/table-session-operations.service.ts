@@ -32,6 +32,7 @@ import {
   tableSessionIdSchema,
   type TableSession,
 } from "@starter/shared/qr-order";
+import { PosError } from "@starter/shared/pos";
 import { assertNoOpenEdcRequest } from "./pos-order-support";
 import { sealSecret } from "../lib/secrets";
 import { db } from "../db";
@@ -47,6 +48,7 @@ import {
 } from "../db/schema";
 import { orderIssueCharges, orderIssues } from "../db/schema/kds-issues";
 import { posOrderTenders } from "../db/schema/pos-order";
+import { activeHoldOf } from "./pos-qris-hold";
 import { reservationTables } from "../db/schema/reservation";
 import { withTenant } from "../db/tenant";
 import {
@@ -639,6 +641,12 @@ export async function mergeTableSessionsOperation(
       (sum, order) => sum + order.totalIdr,
       0,
     );
+    // legend-yhia9: re-pointing an order to the target session is not covered
+    // by the 0369 trigger; refuse while any moved order has a live QRIS hold
+    // (the orders are already row-locked above).
+    for (const order of moved)
+      if (await activeHoldOf(tx, order.tenantId, order.id))
+        throw new PosError("QRIS_HOLD_ACTIVE");
     if (moved.length > 0)
       await tx
         .update(orders)
@@ -1072,6 +1080,10 @@ export async function moveSessionItemsOperation(
         .orderBy(asc(orderItems.id));
       const selectedIds = new Set(selected.map((item) => item.id));
       if (liveItems.every((item) => selectedIds.has(item.id))) {
+        // legend-yhia9: re-pointing the order to another session is not
+        // covered by the 0369 trigger; refuse while a QRIS can still be paid.
+        if (await activeHoldOf(tx, order.tenantId, order.id))
+          throw new PosError("QRIS_HOLD_ACTIVE");
         await tx
           .update(orders)
           .set({ tableSessionId: to.id, updatedAt: now })
@@ -1151,6 +1163,9 @@ async function splitOrder(
   },
 ): Promise<number> {
   const { order, selected, liveItems, to, actorUserId, now } = input;
+  // legend-yhia9: its money columns are frozen while a QRIS can still be paid.
+  if (await activeHoldOf(tx, order.tenantId, order.id))
+    throw new PosError("QRIS_HOLD_ACTIVE");
   // A part of an order cannot leave while something else still depends on the
   // whole: a payment link or intent was opened for the full amount, a deposit
   // credit was applied, or the kitchen has not fired it (PBJT snapshots are

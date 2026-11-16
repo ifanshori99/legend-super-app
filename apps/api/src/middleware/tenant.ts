@@ -27,6 +27,12 @@ export function tenantContext(resolvers: {
   verifyCredential(req: Request): Promise<VerifiedCredential | null>;
   fallback?(req: Request): Promise<VerifiedCredential | null>;
   required?: boolean;
+  /**
+   * A route family that must not reveal which side of a domain/credential
+   * mismatch was wrong (customer display, legend-yhia9 D-08) answers with its
+   * own error here. Undefined keeps the default 403 TENANT_MISMATCH.
+   */
+  onMismatch?(req: Request): HttpError | undefined;
 }): RequestHandler {
   return async (req, _res, next) => {
     // Express only honors X-Forwarded-Host when the sender is a trusted proxy.
@@ -50,10 +56,13 @@ export function tenantContext(resolvers: {
           credentialContext.brandId !== null &&
           domainContext.brandId !== credentialContext.brandId))
     )
-      throw new HttpError(
-        403,
-        "TENANT_MISMATCH",
-        "Tenant does not match this domain.",
+      throw (
+        resolvers.onMismatch?.(req) ??
+        new HttpError(
+          403,
+          "TENANT_MISMATCH",
+          "Tenant does not match this domain.",
+        )
       );
     const context = domainContext?.brandId
       ? domainContext

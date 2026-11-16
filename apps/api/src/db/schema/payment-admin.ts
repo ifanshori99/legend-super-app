@@ -160,7 +160,7 @@ export const paymentRefunds = pgTable(
     lastPayoutError: varchar("last_payout_error", { length: 100 }),
     /** When the refund was flagged as waiting too long; null until escalated. Never moves money state. */
     escalatedAt: timestamp("escalated_at", { withTimezone: true }),
-    /** Why it was escalated (`pending_unapproved` | `provider_pending` | `payout_stalled`); paired with escalatedAt. */
+    /** Why it was escalated (`pending_unapproved` | `provider_pending` | `payout_stalled` | `failed_holds_order`); paired with escalatedAt. */
     escalationReason: varchar("escalation_reason", { length: 30 }),
     /**
      * When an approved refund's payout was first seen stuck (no provider progress, manual or
@@ -251,7 +251,7 @@ export const paymentRefunds = pgTable(
     ),
     check(
       "payment_refunds_escalation_reason_check",
-      sql`${t.escalationReason} IS NULL OR ${t.escalationReason} IN ('pending_unapproved','provider_pending','payout_stalled')`,
+      sql`${t.escalationReason} IS NULL OR ${t.escalationReason} IN ('pending_unapproved','provider_pending','payout_stalled','failed_holds_order')`,
     ),
     check(
       "payment_refunds_escalation_pair_check",

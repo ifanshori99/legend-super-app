@@ -23,6 +23,7 @@ import {
   isoDateTimeSchema,
   outletIdSchema,
   uuidSchema,
+  type OutletId,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
@@ -68,6 +69,8 @@ import {
   paymentUnallocatedFunds,
 } from "../db/schema";
 import { auditLogs } from "../db/schema/core-audit";
+import { posQrisHolds } from "../db/schema/pos-qris-hold.ts";
+import { notifyOutletSupervisors } from "./edge-sync-conflict-alert.ts";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
 import { logger } from "../lib/logger";
@@ -96,6 +99,11 @@ import {
   outletGatewayHealth,
   selectGatewayForNewIntent,
 } from "./payment-gateway-select";
+import {
+  expiredCodeMayStillPay,
+  failedCodeNotFinal,
+  providerAnswerFinal,
+} from "./payment-live-code";
 import {
   onlinePaymentMethodSchema,
   resolveRoutingRule,
@@ -678,11 +686,58 @@ async function cancelSupersededAtGateway(
     if (!gateway.cancel) continue;
     try {
       await gateway.cancel(context, intent);
+      // SO-889 P2-2: a cancel that resolved proves nothing (it is best effort).
+      // Read the code's status; only a final answer (the code lapsed on its
+      // own and the provider says expired / failed) marks it dead (SO-885).
+      const now = new Date();
+      const [row] = await withTenant(db, context, async (tx) =>
+        tx
+          .select({
+            expiresAt: paymentIntents.expiresAt,
+            gatewayIntegrationId: paymentIntents.gatewayIntegrationId,
+          })
+          .from(paymentIntents)
+          .where(
+            and(
+              eq(paymentIntents.tenantId, context.tenant.tenantId),
+              eq(paymentIntents.id, intent.intentId),
+            ),
+          ),
+      );
+      if (!row) continue;
+      const answer = await gateway.getStatus({
+        context,
+        outletId: intent.outletId,
+        integrationId: row.gatewayIntegrationId,
+        providerRef: intent.providerRef,
+        intentId: intent.intentId,
+      });
+      if (
+        answer.providerRef !== intent.providerRef ||
+        !providerAnswerFinal(
+          { provider: intent.provider, expiresAt: row.expiresAt },
+          answer,
+          now,
+        )
+      )
+        continue;
+      await withTenant(db, context, async (tx) =>
+        tx
+          .update(paymentIntents)
+          .set({ providerFinalAt: now })
+          .where(
+            and(
+              eq(paymentIntents.tenantId, context.tenant.tenantId),
+              eq(paymentIntents.id, intent.intentId),
+              isNull(paymentIntents.providerFinalAt),
+            ),
+          ),
+      );
     } catch (error) {
       // Identifiers only.
       logger.warn(
         { intentId: intent.intentId, err: error },
-        "Payment: gateway cancel of a superseded code failed",
+        "Payment: gateway cancel or status read of a superseded code failed",
       );
     }
   }
@@ -963,11 +1018,18 @@ async function expireIntent(
   /** Also writes an audit row in the same transaction (an expiry the gateway
    * never confirmed, see `syncPendingIntentDetailed`). */
   audit?: { action: string; reason: string },
+  /** SO-885: the PROVIDER answered final (or the money was reconciled). A
+   * local timeout never sets it. */
+  providerFinal = false,
 ): Promise<void> {
   await withTenant(db, context, async (tx) => {
     const updated = await tx
       .update(paymentIntents)
-      .set({ status: "expired", updatedAt: now })
+      .set({
+        status: "expired",
+        updatedAt: now,
+        ...(providerFinal ? { providerFinalAt: now } : {}),
+      })
       .where(
         and(
           eq(paymentIntents.tenantId, context.tenant.tenantId),
@@ -1078,11 +1140,18 @@ async function failIntent(
   context: ScopedTenantContext,
   intent: PaymentIntentRow,
   now: Date,
+  /** SO-889: `providerAnswerFinal` held (the code lapsed on its own); a
+   * `failed` answer before `expires_at` + 60 s may be a retryable attempt. */
+  providerFinal = false,
 ): Promise<void> {
   await withTenant(db, context, async (tx) => {
     const updated = await tx
       .update(paymentIntents)
-      .set({ status: "failed", updatedAt: now })
+      .set({
+        status: "failed",
+        updatedAt: now,
+        ...(providerFinal ? { providerFinalAt: now } : {}),
+      })
       .where(
         and(
           eq(paymentIntents.tenantId, context.tenant.tenantId),
@@ -1141,27 +1210,35 @@ type UnsettledGatewayFunds = {
   receivedAt: Date;
 };
 
+/** Returns whether the money is on record (newly written, or found from an
+ * earlier delivery of the same provider transaction). False means no positive
+ * amount: nothing is recorded and the code must not be marked final (SO-896
+ * P1-2). */
 export async function recordUnsettledGatewayFunds(
   context: ScopedTenantContext,
   intent: PaymentIntentRow,
   funds: UnsettledGatewayFunds,
   now: Date,
-): Promise<void> {
-  await withTenant(db, context, (tx) =>
+): Promise<boolean> {
+  const outcome = await withTenant(db, context, (tx) =>
     recordUnsettledGatewayFundsInTx(tx, context, intent, funds, now),
   );
+  return outcome !== "none";
 }
 
-/** The same recording inside the caller's transaction (and lock order). */
+/** The same recording inside the caller's transaction (and lock order).
+ * Returns `inserted` for newly written funds, `found` for a replay of the same
+ * provider transaction (already on record), and `none` when there is no
+ * positive amount (nothing recorded, nothing to call final). */
 async function recordUnsettledGatewayFundsInTx(
   tx: Tx,
   context: ScopedTenantContext,
   intent: PaymentIntentRow,
   funds: UnsettledGatewayFunds,
   now: Date,
-): Promise<void> {
+): Promise<"inserted" | "found" | "none"> {
   const paid = funds.paidAmountIdr;
-  if (!(paid > 0)) return;
+  if (!(paid > 0)) return "none";
   const reason =
     paid > Number(intent.amountIdr) ? "overpayment" : "double_payment";
   {
@@ -1186,7 +1263,7 @@ async function recordUnsettledGatewayFundsInTx(
         ],
       })
       .returning({ id: paymentEvidence.id });
-    if (!inserted) return;
+    if (!inserted) return "found";
     const [fund] = await tx
       .insert(paymentUnallocatedFunds)
       .values({
@@ -1247,6 +1324,7 @@ async function recordUnsettledGatewayFundsInTx(
       ["status", "unallocatedIdr", "providerRef"],
     );
   }
+  return "inserted";
 }
 
 const MISMATCH_HELD_ACTION = "payment.amount_mismatch_held";
@@ -1279,6 +1357,9 @@ async function amountMismatchHeld(
  * payment lock order (see `payment-late-settlement.ts`): bill owner, link,
  * intent. Funds are recorded even when the intent is already paid or settled
  * (the money did arrive); only an unpaid intent is failed and held.
+ * legend-baz8i: when the money is newly parked and the intent has an unpaid
+ * POS QRIS hold, the cashier and manager are alerted (the hold stays open
+ * until a manager releases it); a replay parks and alerts nothing.
  */
 export async function holdGatewayAmountMismatch(
   context: ScopedTenantContext,
@@ -1293,7 +1374,10 @@ export async function holdGatewayAmountMismatch(
 ): Promise<{ held: boolean; intentStatus: PaymentIntentRow["status"] }> {
   return withTenant(db, context, async (tx) => {
     const [probe] = await tx
-      .select({ paymentLinkId: paymentIntents.paymentLinkId })
+      .select({
+        paymentLinkId: paymentIntents.paymentLinkId,
+        status: paymentIntents.status,
+      })
       .from(paymentIntents)
       .where(
         and(
@@ -1302,6 +1386,10 @@ export async function holdGatewayAmountMismatch(
         ),
       );
     if (!probe) throw new HttpError(404, "NOT_FOUND", "Payment not found.");
+    // SO-896 P1: no positive amount proves no money. Not a mismatch verdict:
+    // touch nothing (no status, audit or event change).
+    if (!(input.paidAmountIdr > 0))
+      return { held: false, intentStatus: probe.status };
     await lockBillOwner(tx, context, probe.paymentLinkId);
     await tx
       .select({ id: paymentLinks.id })
@@ -1317,6 +1405,10 @@ export async function holdGatewayAmountMismatch(
     if (!current) throw new HttpError(404, "NOT_FOUND", "Payment not found.");
     let status = current.status;
     let held = false;
+    // SO-896 P2-3: a code that was already `expired` (superseded, voided, timed
+    // out) is over once its money arrived. A `pending` one fails here and, like
+    // any failed code, stays live until the provider answers final.
+    const wasExpired = status === "expired";
     if (status === "pending" || status === "expired") {
       await tx
         .update(paymentIntents)
@@ -1371,7 +1463,7 @@ export async function holdGatewayAmountMismatch(
         },
         ["status", "paidIdr", "dueIdr", "source"],
       );
-    await recordUnsettledGatewayFundsInTx(
+    const inserted = await recordUnsettledGatewayFundsInTx(
       tx,
       context,
       { ...current, status },
@@ -1385,6 +1477,53 @@ export async function holdGatewayAmountMismatch(
       },
       now,
     );
+    // The money that arrived on an expired code ends it for good (as the poll
+    // does when it parks): else it stays live after the money is refunded and
+    // blocks the replacement code.
+    // SO-896 P1-2: only when money is on record; an answer without a positive
+    // amount proves nothing and the code stays in the poll.
+    if (wasExpired && inserted !== "none")
+      await markGatewayReconciledInTx(tx, context, current.id, now);
+    // legend-baz8i: newly parked money for a POS QRIS hold alerts the cashier
+    // and the manager. The hold stays as is (the manager releases it); a
+    // replay (not inserted) parks and alerts nothing more.
+    if (inserted === "inserted") {
+      const [hold] = await tx
+        .select({
+          id: posQrisHolds.id,
+          state: posQrisHolds.state,
+          openedBy: posQrisHolds.openedBy,
+        })
+        .from(posQrisHolds)
+        .where(
+          and(
+            eq(posQrisHolds.tenantId, context.tenant.tenantId),
+            eq(posQrisHolds.paymentIntentId, current.id),
+          ),
+        );
+      if (hold && hold.state !== "paid") {
+        // The unlock wording only fits a hold that is still locked; a closed
+        // hold keeps the helper's default text. A callback amount that
+        // disagrees with the provider's status answer is not "different from
+        // the bill", so it gets its own wording.
+        const dueIdr = Number(current.amountIdr);
+        const body =
+          hold.state === "closed"
+            ? undefined
+            : input.paidAmountIdr === dueIdr
+              ? `Nominal callback QRIS dan status penyedia tidak cocok (Rp${input.paidAmountIdr}). Uang ditahan di dana belum teralokasi; minta manajer membuka kunci QR dan mengembalikan uang ke pembayar.`
+              : `QR QRIS dibayar dengan nominal Rp${input.paidAmountIdr}, berbeda dari tagihan Rp${dueIdr}. Uang ditahan di dana belum teralokasi; minta manajer membuka kunci QR dan mengembalikan uang ke pembayar.`;
+        await alertQrisFundsParked(
+          tx,
+          context,
+          current,
+          hold,
+          input.paidAmountIdr,
+          now,
+          body,
+        );
+      }
+    }
     return { held, intentStatus: status };
   });
 }
@@ -1474,6 +1613,8 @@ async function syncPendingIntentDetailed(
   let providerStatus;
   let gatewayError = false;
   let settlementFailed = false;
+  // The provider's paid money was recorded as unallocated funds (SO-885).
+  let fundsParked = false;
   try {
     providerStatus = await paymentGatewayFor(intent.provider).getStatus({
       context,
@@ -1486,7 +1627,11 @@ async function syncPendingIntentDetailed(
     // Gateway outage: the stored status stays; the link view reports it down.
     gatewayError = true;
   }
-  if (providerStatus?.status === "paid" && providerStatus.amountIdr !== null) {
+  if (
+    providerStatus?.status === "paid" &&
+    providerStatus.amountIdr !== null &&
+    providerStatus.amountIdr > 0
+  ) {
     // Fail closed: a status answer without the settled amount proves nothing
     // about how much arrived; the verified webhook settles it instead (PAY-02).
     const paidAt = plausiblePaidAt(
@@ -1526,8 +1671,8 @@ async function syncPendingIntentDetailed(
       // a late payment on a closed bill) is money that arrived: park it before
       // the intent is expired or the error surfaces, so a lost webhook never
       // loses funds.
-      if (parksFunds(error))
-        await recordUnsettledGatewayFunds(
+      if (parksFunds(error)) {
+        fundsParked = await recordUnsettledGatewayFunds(
           context,
           intent,
           {
@@ -1539,6 +1684,7 @@ async function syncPendingIntentDetailed(
           },
           now,
         );
+      }
       // Past expiry a rejected settlement (409) must not surface on the link
       // view: fall through and expire the intent instead.
       if (!pastExpiry) throw error;
@@ -1548,6 +1694,8 @@ async function syncPendingIntentDetailed(
         settlementFailed = true;
     }
   }
+  // SO-896: an answer about another reference says nothing about this code.
+  const aboutThisCode = providerStatus?.providerRef === intent.providerRef;
   if (pastExpiry) {
     // A provider that still says `pending` past our expiry can still take the
     // money (its own expiry may lag ours): only paid / expired / failed are
@@ -1555,8 +1703,10 @@ async function syncPendingIntentDetailed(
     const inconclusive =
       providerStatus === undefined ||
       settlementFailed ||
+      (providerStatus.status !== "paid" && !aboutThisCode) ||
       providerStatus.status === "pending" ||
-      (providerStatus.status === "paid" && providerStatus.amountIdr === null);
+      (providerStatus.status === "paid" &&
+        (providerStatus.amountIdr === null || providerStatus.amountIdr <= 0));
     if (inconclusive) {
       // Money may have arrived: keep reconciling until the window closes.
       if (now.getTime() - intent.expiresAt.getTime() < GATEWAY_POLL_WINDOW_MS)
@@ -1570,7 +1720,29 @@ async function syncPendingIntentDetailed(
         gatewayError,
       };
     }
-    await expireIntent(context, intent, now, "timeout");
+    // SO-885: final proof only when the provider said expired / failed, or its
+    // paid money was parked as unallocated funds. A paid answer whose
+    // confirmation was refused (untrusted source, invalid transition) is NOT
+    // reconciled: the code stays collectible and in the poll, and the audit row
+    // alerts staff.
+    const providerFinal =
+      (providerStatus !== undefined &&
+        aboutThisCode &&
+        providerAnswerFinal(intent, providerStatus, now)) ||
+      fundsParked;
+    await expireIntent(
+      context,
+      intent,
+      now,
+      "timeout",
+      providerFinal
+        ? undefined
+        : {
+            action: "payment.provider_paid_confirmation_rejected",
+            reason: "provider_paid_not_recorded",
+          },
+      providerFinal,
+    );
     return {
       intent: { ...intent, status: "expired", updatedAt: now },
       gatewayError,
@@ -1578,14 +1750,26 @@ async function syncPendingIntentDetailed(
   }
   if (providerStatus === undefined) return { intent, gatewayError };
   if (providerStatus.status === "expired") {
-    await expireIntent(context, intent, now, "gateway");
+    await expireIntent(
+      context,
+      intent,
+      now,
+      "gateway",
+      undefined,
+      aboutThisCode && providerAnswerFinal(intent, providerStatus, now),
+    );
     return {
       intent: { ...intent, status: "expired", updatedAt: now },
       gatewayError: false,
     };
   }
   if (providerStatus.status === "failed") {
-    await failIntent(context, intent, now);
+    await failIntent(
+      context,
+      intent,
+      now,
+      aboutThisCode && providerAnswerFinal(intent, providerStatus, now),
+    );
     return {
       intent: { ...intent, status: "failed", updatedAt: now },
       gatewayError: false,
@@ -1611,6 +1795,32 @@ export async function getIntentView(
   const parsedToken = paymentLinkTokenSchema.parse(token);
   const { intent } = await loadIntent(context, parsedToken, intentId, now);
   const current = await syncPendingIntent(context, intent, now);
+  return shownIntentView(current, now);
+}
+
+/**
+ * legend-eqeu7: `getIntentView` asks the provider and settles a paid answer
+ * (`applyConfirmation` opens its own transaction and waits for the bill
+ * owner's row lock), so it must never run in a transaction that already holds
+ * that lock. A caller that holds the lock first syncs with `getIntentView`
+ * outside it, then reads again under the lock with this: stored state only,
+ * no provider call and no settlement.
+ */
+export async function readIntentView(
+  context: ScopedTenantContext,
+  token: string,
+  intentId: string,
+  now = new Date(),
+): Promise<CustomerPaymentIntent> {
+  const parsedToken = paymentLinkTokenSchema.parse(token);
+  const { intent } = await loadIntent(context, parsedToken, intentId, now);
+  return shownIntentView(intent, now);
+}
+
+function shownIntentView(
+  current: PaymentIntentRow,
+  now: Date,
+): CustomerPaymentIntent {
   // A lapsed code the gateway has not confirmed yet stays `pending` in the
   // database for reconciliation; the guest sees it as expired.
   const shown: PaymentIntentRow =
@@ -1683,6 +1893,136 @@ export async function refreshIntent(
 }
 
 // ---------------------------------------------------------- confirmation
+
+/**
+ * legend-baz8i: after money was newly parked for a POS QRIS that has a hold
+ * (the caller saw `recordUnsettledGatewayFundsInTx` insert), slow the hold
+ * check to once a day (nothing more to learn from the provider; the hold
+ * itself stays until a manager releases it) and alert the outlet supervisors,
+ * owners and the cashier who issued the QR (guests have no opener). Runs in
+ * the caller's transaction; never changes the hold's state.
+ */
+async function alertQrisFundsParked(
+  tx: Tx,
+  context: ScopedTenantContext,
+  intent: PaymentIntentRow,
+  hold: { id: string; openedBy: string | null },
+  paidAmountIdr: number,
+  now: Date,
+  body = `Pembayaran QRIS Rp${paidAmountIdr} masuk untuk QR yang sudah ditutup atau nominalnya berbeda. Uang ditahan di dana belum teralokasi; kembalikan ke pembayar.`,
+): Promise<void> {
+  await tx
+    .update(posQrisHolds)
+    .set({ nextCheckAt: new Date(now.getTime() + 24 * 3_600_000) })
+    .where(
+      and(
+        eq(posQrisHolds.tenantId, context.tenant.tenantId),
+        eq(posQrisHolds.id, hold.id),
+        inArray(posQrisHolds.state, ["open", "cancelling"]),
+      ),
+    );
+  await notifyOutletSupervisors(
+    tx,
+    context,
+    {
+      tenantId: context.tenant.tenantId,
+      outletId: intent.outletId as OutletId,
+      alsoOwners: true,
+      alsoUserIds: hold.openedBy ? [hold.openedBy] : [],
+      id: createUlid(now.getTime()),
+      eventName: "payment_qris_funds.parked",
+      aggregateType: "payment_qris_funds",
+      aggregateId: intent.id,
+      payload: { intentId: intent.id, holdId: hold.id },
+      title: "Uang QRIS perlu dikembalikan",
+      body,
+    },
+    now,
+  );
+}
+
+/**
+ * legend-yhia9 D-05/D-07: money for a POS QRIS that has a hold is applied only
+ * when the hold is still active and the amount is exactly the hold's. A closed
+ * hold (provider proof or manager release) or a different amount never settles
+ * the bill: the money is parked as unallocated funds (the manager returns it),
+ * the outlet manager is alerted, and the usual 409 follows. Intents without a
+ * hold (cards, QR-table, legacy tenders) are untouched. Replays are no-ops (the
+ * evidence key makes parking once-only; an already applied hold is `paid`).
+ * legend-eh9i4 A1: runs inside `applyConfirmation`, under the bill + intent
+ * locks, so webhook and polling share it. The caller throws after commit.
+ */
+async function parkWhenQrisHoldRefusesInTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  intent: PaymentIntentRow,
+  paid: {
+    providerRef: string;
+    amountIdr: number;
+    source: string;
+    at: string;
+  },
+  now: Date,
+): Promise<
+  | null
+  | { kind: "replay" }
+  | { kind: "reject"; code: "AMOUNT_MISMATCH" | "BILL_CLOSED" }
+> {
+  const [hold] = await tx
+    .select({
+      id: posQrisHolds.id,
+      state: posQrisHolds.state,
+      amountIdr: posQrisHolds.amountIdr,
+      openedBy: posQrisHolds.openedBy,
+      closeEvidence: posQrisHolds.closeEvidence,
+    })
+    .from(posQrisHolds)
+    .where(
+      and(
+        eq(posQrisHolds.tenantId, context.tenant.tenantId),
+        eq(posQrisHolds.paymentIntentId, intent.id),
+      ),
+    );
+  if (!hold || hold.state === "paid") return null;
+  const mismatch = paid.amountIdr !== Number(hold.amountIdr);
+  // legend-w0ows (founder Q7): a hold ended because a card sale booked the
+  // bill is not parked; the payment settles like any payment on a voided
+  // tender, so the late-payment path refunds the customer in full.
+  const endedByCardSale =
+    hold.state === "closed" &&
+    (hold.closeEvidence as { anomaly?: unknown } | null)?.anomaly ===
+      "card_sale_booked";
+  if (endedByCardSale && !mismatch) return null;
+  if (hold.state !== "closed" && !mismatch) return null;
+  {
+    const inserted = await recordUnsettledGatewayFundsInTx(
+      tx,
+      context,
+      intent,
+      {
+        provider: intent.provider,
+        providerRef: paid.providerRef,
+        source:
+          paid.source === "verified_webhook"
+            ? "verified_webhook"
+            : "gateway_status",
+        paidAmountIdr: paid.amountIdr,
+        // Webhook: arrival time. Polling: the provider's paid time, so the
+        // unallocated-funds date is not shifted by when the poll ran.
+        receivedAt:
+          paid.source === "verified_webhook" ? now : new Date(paid.at),
+      },
+      now,
+    );
+    // A replay of the same provider transaction records and alerts nothing.
+    if (inserted !== "inserted") return { kind: "replay" };
+    await alertQrisFundsParked(tx, context, intent, hold, paid.amountIdr, now);
+    return {
+      kind: "reject",
+      code: mismatch ? "AMOUNT_MISMATCH" : "BILL_CLOSED",
+    };
+  }
+}
 
 /**
  * PAY-02/PAY-04: applies one verified confirmation. The caller must already
@@ -1829,7 +2169,8 @@ async function applyConfirmation(
   options: { closedIntentNeedsOpenBill?: boolean } = {},
 ): Promise<PaymentIntentRow> {
   const auditActor = auditActorOf(actor);
-  return withTenant(db, context, async (tx) => {
+  let holdRefusal: "AMOUNT_MISMATCH" | "BILL_CLOSED" | null = null;
+  const applied = await withTenant(db, context, async (tx) => {
     // PAY-04 concurrency, lock order in `payment-late-settlement.ts`: bill
     // owner, then the bill row (FOR UPDATE) before reading its balance, then
     // the intent row. Every settlement writer takes the locks in this order,
@@ -1852,6 +2193,20 @@ async function applyConfirmation(
       throw new HttpError(404, "NOT_FOUND", "Payment link not found.");
     const current = await lockedIntent(tx, context, intent.id);
     if (!current) throw new HttpError(404, "NOT_FOUND", "Payment not found.");
+    // QRIS hold (legend-yhia9 D-05/D-07, legend-eh9i4 A1): the money is parked
+    // here, under the same locks, for webhook and polling alike. The rejection
+    // is thrown after this transaction commits so the parking is kept.
+    const parked = await parkWhenQrisHoldRefusesInTx(
+      tx,
+      context,
+      current,
+      rawConfirmation,
+      now,
+    );
+    if (parked) {
+      if (parked.kind === "reject") holdRefusal = parked.code;
+      return current;
+    }
     // A strict provider's amount mismatch holds the intent for review: a later
     // delivery for the same intent may not settle it, whatever amount it says.
     if (
@@ -2147,6 +2502,12 @@ async function applyConfirmation(
     );
     return row;
   });
+  if (holdRefusal)
+    throw new PaymentConfirmationRejected(
+      holdRefusal,
+      "This QRIS payment cannot settle its bill; the money is parked.",
+    );
+  return applied;
 }
 
 /**
@@ -2302,6 +2663,8 @@ export async function applyGatewayFailure(
   intentId: string,
   outcome: "expired" | "failed",
   now = new Date(),
+  /** The provider's own code (Duitku `02`) when the caller read it. */
+  rawStatus?: string,
 ): Promise<PaymentIntent> {
   const id = uuidSchema.parse(intentId);
   const load = () =>
@@ -2320,13 +2683,32 @@ export async function applyGatewayFailure(
   const intent = await load();
   if (!intent) throw new HttpError(404, "NOT_FOUND", "Payment not found.");
   assertOutletInScope(context.outletScope, intent.outletId);
+  // SO-889: a verified answer is final only once the code lapsed on its own.
+  const final = providerAnswerFinal(
+    intent,
+    { status: outcome, rawStatus },
+    now,
+  );
   if (intent.status === "pending") {
     if (outcome === "expired")
-      await expireIntent(context, intent, now, "gateway");
-    else await failIntent(context, intent, now);
+      await expireIntent(context, intent, now, "gateway", undefined, final);
+    else await failIntent(context, intent, now, final);
+  } else if (
+    (intent.status === "expired" || intent.status === "failed") &&
+    final
+  ) {
+    // A superseded / timed-out / failed code: the provider's verified final
+    // answer, after the code lapsed, is the proof it is dead (SO-885, SO-896).
+    await markGatewayReconciled(context, intent, now);
   }
   const current = (await load()) ?? intent;
   return toPaymentIntent(current);
+}
+
+/** SO-896: an `expired` or `failed` code (both can still be paid until the
+ * provider answers final) is read by `syncExpiredIntentPayment`. */
+function isClosedPollable(intent: { status: string }): boolean {
+  return intent.status === "expired" || intent.status === "failed";
 }
 
 /**
@@ -2346,7 +2728,7 @@ async function syncExpiredIntentPayment(
   intent: PaymentIntentRow,
   now: Date,
 ): Promise<SyncResult> {
-  if (intent.status !== "expired" || intent.providerRef === null)
+  if (!isClosedPollable(intent) || intent.providerRef === null)
     return { intent, gatewayError: false };
   let providerStatus;
   try {
@@ -2364,11 +2746,20 @@ async function syncExpiredIntentPayment(
     providerStatus.status === "expired" ||
     providerStatus.status === "failed"
   ) {
-    await markGatewayReconciled(context, intent, now);
+    // SO-889: final only once the code lapsed on its own (+ margin); before
+    // that the poll keeps asking.
+    if (
+      providerStatus.providerRef === intent.providerRef &&
+      providerAnswerFinal(intent, providerStatus, now)
+    )
+      await markGatewayReconciled(context, intent, now);
     return { intent, gatewayError: false };
   }
   if (providerStatus.status !== "paid" || providerStatus.amountIdr === null)
     return { intent, gatewayError: false };
+  // SO-896 P1-2: a paid answer without a positive amount proves no money and
+  // is not final: nothing is held or recorded and the code stays in the poll.
+  if (!(providerStatus.amountIdr > 0)) return { intent, gatewayError: false };
   const paidAt = plausiblePaidAt(providerStatus.paidAt, intent.createdAt, now);
   try {
     await assertStrictAmount(
@@ -2398,7 +2789,7 @@ async function syncExpiredIntentPayment(
     return { intent: settled, gatewayError: false };
   } catch (error) {
     if (parksFunds(error)) {
-      await recordUnsettledGatewayFunds(
+      const onRecord = await recordUnsettledGatewayFunds(
         context,
         intent,
         {
@@ -2410,7 +2801,9 @@ async function syncExpiredIntentPayment(
         },
         now,
       );
-      await markGatewayReconciled(context, intent, now);
+      // SO-896 P1-2: final only when the money is on record (written now or
+      // found); a paid answer without a positive amount keeps the code polled.
+      if (onRecord) await markGatewayReconciled(context, intent, now);
       return { intent, gatewayError: false };
     }
     throw error;
@@ -2418,31 +2811,41 @@ async function syncExpiredIntentPayment(
 }
 
 /**
- * Ends the poll of an expired intent once the gateway answered definitively
- * after its code lapsed: `updated_at` moves past `expires_at`, which takes the
- * row out of the poller's "closed before its code lapsed" selection. Before
- * the code lapses nothing changes (the code is still payable). Touches only an
- * `expired` row, so a settled one is left as the lifecycle wrote it.
+ * SO-885: the provider answered final for an `expired` intent (expired /
+ * failed) or its money was reconciled: sets `provider_final_at`, which ends
+ * the poll of the code and lets a replacement code or a split change open.
+ * Local time never calls this. Touches only an `expired` or `failed` row
+ * without proof, so a settled one is left as the lifecycle wrote it and a
+ * replay changes nothing.
  */
-async function markGatewayReconciled(
+export async function markGatewayReconciled(
   context: ScopedTenantContext,
   intent: PaymentIntentRow,
   now: Date,
 ): Promise<void> {
-  if (intent.expiresAt > now) return;
   await withTenant(db, context, async (tx) =>
-    tx
-      .update(paymentIntents)
-      .set({ updatedAt: now })
-      .where(
-        and(
-          eq(paymentIntents.tenantId, context.tenant.tenantId),
-          eq(paymentIntents.id, intent.id),
-          eq(paymentIntents.status, "expired"),
-          lt(paymentIntents.updatedAt, paymentIntents.expiresAt),
-        ),
-      ),
+    markGatewayReconciledInTx(tx, context, intent.id, now),
   );
+}
+
+/** The same mark inside the caller's transaction (and lock order). */
+async function markGatewayReconciledInTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  intentId: string,
+  now: Date,
+): Promise<void> {
+  await tx
+    .update(paymentIntents)
+    .set({ providerFinalAt: now })
+    .where(
+      and(
+        eq(paymentIntents.tenantId, context.tenant.tenantId),
+        eq(paymentIntents.id, intentId),
+        inArray(paymentIntents.status, ["expired", "failed"]),
+        isNull(paymentIntents.providerFinalAt),
+      ),
+    );
 }
 
 /** Frees the polling lease of `ids`, but only where it is still the one this
@@ -2474,6 +2877,45 @@ async function releasePollLease(
 }
 
 /**
+ * Asks the provider about one intent now and settles it through the same path
+ * as the poll (legend-yhia9: the QRIS hold check job, which must not wait for
+ * the poll's grace window). A `paid` answer ends in `confirmPayment`; any other
+ * answer changes nothing the hold depends on. Returns whether it settled.
+ */
+export async function settleGatewayIntentNow(
+  context: ScopedTenantContext,
+  intentId: string,
+  now = new Date(),
+): Promise<boolean> {
+  const [row] = await withTenant(db, context, async (tx) =>
+    tx
+      .select()
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          eq(paymentIntents.id, intentId),
+        ),
+      ),
+  );
+  if (!row || row.providerRef === null) return false;
+  const outletContext =
+    context.outletScope.kind === "tenant"
+      ? establishScopedTenantContext(context.tenant, {
+          kind: "outlets",
+          outletIds: [row.outletId],
+        })
+      : context;
+  const result = isClosedPollable(row)
+    ? await syncExpiredIntentPayment(outletContext, row, now)
+    : await syncPendingIntentDetailed(outletContext, row, now);
+  return (
+    row.status !== result.intent.status &&
+    (SETTLED_STATUSES as readonly string[]).includes(result.intent.status)
+  );
+}
+
+/**
  * Polling fallback for a lost webhook (PAY-02/03): asks the gateway about
  * pending intents that have a provider reference and are older than the grace
  * period, through the same path as the customer's status check. Recently
@@ -2484,8 +2926,10 @@ async function releasePollLease(
  * retries. Past expiry a code is asked again only after the backoff (half the
  * time since expiry, at most `GATEWAY_POLL_MAX_BACKOFF_MS`). Intents are taken least-recently-polled first and each attempt
  * stamps `gateway_polled_at`, so a few failing intents cannot starve the rest.
- * A run stops after its time budget; a provider with three gateway errors in a row (the
- * gateway is down).
+ * Live (pending) codes are all processed before any expired code. Each kind
+ * has its own time budget, and a provider with three gateway errors in a row
+ * (the gateway is down) is skipped per kind, so failing expired codes never
+ * starve a live one.
  */
 export async function pollPendingGatewayIntents(
   context: ScopedTenantContext,
@@ -2495,7 +2939,6 @@ export async function pollPendingGatewayIntents(
   const providers = registeredGatewayProviders();
   if (providers.length === 0) return { checked: 0, settled: 0 };
   const cutoff = new Date(now.getTime() - GATEWAY_POLL_GRACE_MS);
-  const windowStart = new Date(now.getTime() - GATEWAY_POLL_WINDOW_MS);
   const nowAt = sql`${now.toISOString()}::timestamptz`;
   // Before expiry every run asks; past it, only once the backoff has passed.
   const backoffDue = or(
@@ -2514,44 +2957,49 @@ export async function pollPendingGatewayIntents(
     // skipped without a stamp, so a shared window would fill with them and
     // starve the other providers.
     const candidates: Array<{ id: string }> = [];
-    for (const provider of providers) {
-      const rows = await tx
-        .select({ id: paymentIntents.id })
-        .from(paymentIntents)
-        .where(
-          and(
-            eq(paymentIntents.tenantId, context.tenant.tenantId),
-            or(
-              isNull(paymentIntents.gatewayPollLeaseUntil),
-              lte(paymentIntents.gatewayPollLeaseUntil, leaseNow),
-            ),
-            or(
-              eq(paymentIntents.status, "pending"),
-              and(
-                eq(paymentIntents.status, "expired"),
-                or(
-                  gt(paymentIntents.expiresAt, cutoff),
-                  and(
-                    lt(paymentIntents.updatedAt, paymentIntents.expiresAt),
-                    gt(paymentIntents.expiresAt, windowStart),
-                  ),
-                ),
+    // SO-885: live (pending) codes and expired / failed codes still without
+    // provider proof get separate quotas, so a backlog of old expired codes (no
+    // backfill in 0405) can never delay a live one.
+    for (const provider of providers)
+      for (const kind of ["pending", "expired"] as const) {
+        const rows = await tx
+          .select({ id: paymentIntents.id })
+          .from(paymentIntents)
+          .where(
+            and(
+              eq(paymentIntents.tenantId, context.tenant.tenantId),
+              or(
+                isNull(paymentIntents.gatewayPollLeaseUntil),
+                lte(paymentIntents.gatewayPollLeaseUntil, leaseNow),
+              ),
+              // An expired or failed code stays in the poll until the provider
+              // answers final, however long ago it lapsed (no window).
+              kind === "pending"
+                ? eq(paymentIntents.status, "pending")
+                : or(expiredCodeMayStillPay(), failedCodeNotFinal()),
+              backoffDue,
+              eq(paymentIntents.provider, provider),
+              isNotNull(paymentIntents.providerRef),
+              or(
+                lt(paymentIntents.createdAt, cutoff),
+                // legend-yhia9 D-09: a QRIS under an active hold is polled from
+                // the start (an edge never gets the webhook; the grace only
+                // exists to let a webhook win the race).
+                sql`exists (select 1 from pos_qris_holds h
+                   where h.tenant_id = ${paymentIntents.tenantId}
+                     and h.payment_intent_id = ${paymentIntents.id}
+                     and h.state in ('open', 'cancelling'))`,
               ),
             ),
-            backoffDue,
-            eq(paymentIntents.provider, provider),
-            isNotNull(paymentIntents.providerRef),
-            lt(paymentIntents.createdAt, cutoff),
-          ),
-        )
-        .orderBy(
-          sql`${paymentIntents.gatewayPolledAt} asc nulls first`,
-          asc(paymentIntents.createdAt),
-        )
-        .limit(limit)
-        .for("update", { skipLocked: true });
-      candidates.push(...rows);
-    }
+          )
+          .orderBy(
+            sql`${paymentIntents.gatewayPolledAt} asc nulls first`,
+            asc(paymentIntents.createdAt),
+          )
+          .limit(limit)
+          .for("update", { skipLocked: true });
+        candidates.push(...rows);
+      }
     if (candidates.length === 0) return [];
     const claimed = await tx
       .update(paymentIntents)
@@ -2567,10 +3015,14 @@ export async function pollPendingGatewayIntents(
       )
       .returning();
     // `returning` has no order, and the per-provider windows come back grouped
-    // by provider. Process in one global least-recently-polled-first order
+    // by provider. SO-885: every live (pending) code goes before any expired
+    // code; inside each kind, one global least-recently-polled-first order
     // (never polled first, then oldest) so a slow provider that uses up the
     // time budget cannot keep another provider's rows behind its own forever.
     return claimed.sort((a, b) => {
+      const ak = a.status === "pending" ? 0 : 1;
+      const bk = b.status === "pending" ? 0 : 1;
+      if (ak !== bk) return ak - bk;
       const ap = a.gatewayPolledAt?.getTime() ?? Number.NEGATIVE_INFINITY;
       const bp = b.gatewayPolledAt?.getTime() ?? Number.NEGATIVE_INFINITY;
       if (ap !== bp) return ap < bp ? -1 : 1;
@@ -2579,14 +3031,21 @@ export async function pollPendingGatewayIntents(
   });
   let checked = 0;
   let settled = 0;
-  // Error budget per provider: one down gateway never stops another's poll.
+  // Error budget per provider AND per kind: one down gateway never stops
+  // another's poll, and failing expired codes never use up the budget of the
+  // live (pending) codes of the same provider. Each kind also has its own time
+  // budget, started when the kind's first row is reached.
   const consecutiveErrors = new Map<string, number>();
-  const startedAt = Date.now();
+  const kindStartedAt = new Map<string, number>();
   try {
     for (const row of pending) {
-      if (Date.now() - startedAt >= GATEWAY_POLL_BUDGET_MS) break;
+      const kind = row.status === "pending" ? "pending" : "expired";
+      const startedAt = kindStartedAt.get(kind) ?? Date.now();
+      kindStartedAt.set(kind, startedAt);
+      if (Date.now() - startedAt >= GATEWAY_POLL_BUDGET_MS) continue;
+      const budgetKey = `${row.provider}:${kind}`;
       if (
-        (consecutiveErrors.get(row.provider) ?? 0) >=
+        (consecutiveErrors.get(budgetKey) ?? 0) >=
         GATEWAY_POLL_MAX_CONSECUTIVE_ERRORS
       )
         continue;
@@ -2613,15 +3072,12 @@ export async function pollPendingGatewayIntents(
                 outletIds: [row.outletId],
               })
             : context;
-        const result =
-          row.status === "expired"
-            ? await syncExpiredIntentPayment(outletContext, row, now)
-            : await syncPendingIntentDetailed(outletContext, row, now);
+        const result = isClosedPollable(row)
+          ? await syncExpiredIntentPayment(outletContext, row, now)
+          : await syncPendingIntentDetailed(outletContext, row, now);
         consecutiveErrors.set(
-          row.provider,
-          result.gatewayError
-            ? (consecutiveErrors.get(row.provider) ?? 0) + 1
-            : 0,
+          budgetKey,
+          result.gatewayError ? (consecutiveErrors.get(budgetKey) ?? 0) + 1 : 0,
         );
         if (
           row.status !== result.intent.status &&

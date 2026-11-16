@@ -26,6 +26,7 @@ import { CoreError, userIdSchema, type OutletId } from "@starter/shared/core";
 import {
   addPosTender,
   applyPosDiscount,
+  cancelPosQris,
   completePosOrder,
   createPosOrder,
   firePosOrderItems,
@@ -34,9 +35,12 @@ import {
   getPosCatalog,
   getPosOrder,
   getPosOrderActionAvailability,
+  getPosQris,
+  listPosQrisReconciliations,
   listPosOrderEvents,
   listPosOrders,
   refundPosOrder,
+  releasePosQris,
   removePosDiscount,
   submitPosOrder,
   voidPosOrder,
@@ -52,12 +56,18 @@ import {
   getScopedTenantContext,
   requireOutletPermission,
 } from "../middleware/permissions.ts";
-import { requireTenantContext } from "../middleware/tenant.ts";
+import {
+  getTenantContext,
+  requireTenantContext,
+} from "../middleware/tenant.ts";
+import { selectBillAfterQrisIssued } from "../services/customer-display.service.ts";
 import { currentDeviceIdOf } from "./device-id.ts";
 import * as corrections from "../services/pos-order-corrections.ts";
 import * as discounts from "../services/pos-order-discounts.ts";
 import { addPosTender as addPosTenderService } from "../services/pos-order-payment.ts";
 import * as pos from "../services/pos-order.service.ts";
+import * as qrisHold from "../services/pos-qris-hold.ts";
+import { listPosQrisReconciliations as listPosQrisReconciliationsService } from "../services/pos-qris-release-recon.ts";
 import { readNextPickupCall } from "../services/pickup.service.ts";
 import { getPosCatalog as getPosCatalogService } from "../services/pos-catalog.service.ts";
 import type { MenuMediaUrls } from "../services/menu-internals.ts";
@@ -82,6 +92,7 @@ const pay = can("pos.payment.accept");
 const discount = can("pos.discount.apply");
 const voids = can("pos.void.request");
 const refund = can("pos.refund.request");
+const reconcile = can("payment.reconcile");
 
 /** `If-Match: "3"` (or `3`) → 3; absent → null; anything else → 412. */
 function expectedVersion(req: Request): number | null {
@@ -375,14 +386,88 @@ posOrderRouter.post(
   async (req, res) => {
     const { outletId, orderId } = addPosTender.params.parse(req.params);
     const body = addPosTender.body.parse(req.body);
+    const tenderCaller = await caller(req, body);
     const data = await addPosTenderService(
       getScopedTenantContext(req),
-      await caller(req, body),
+      tenderCaller,
       outletId,
       orderId,
       body,
     );
+    // legend-yhia9 D-08 (C3): a QR issued from a terminal puts that bill on
+    // its paired display. Best effort; never fails the tender.
+    if (body.method === "qris" && tenderCaller.deviceId !== null)
+      await selectBillAfterQrisIssued(
+        getTenantContext(req),
+        outletId,
+        tenderCaller.deviceId,
+        orderId,
+      );
     await sendOrder(req, res, outletId, orderId, data, 201);
+  },
+);
+
+// legend-yhia9: the QR hold. Cancel hides the QR and waits for provider proof
+// (202); release is a manager approval (Q93, pos-overrides flow).
+posOrderRouter.get("/orders/:orderId/qris", view, async (req, res) => {
+  const { outletId, orderId } = getPosQris.params.parse(req.params);
+  res.json({
+    data: await qrisHold.getPosQrisHold(
+      getScopedTenantContext(req),
+      outletId,
+      orderId,
+    ),
+  });
+});
+
+// legend-adiov: force released QR codes still being reconciled (staff view).
+posOrderRouter.get("/qris/reconciliations", reconcile, async (req, res) => {
+  const { outletId } = listPosQrisReconciliations.params.parse(req.params);
+  const query = listPosQrisReconciliations.query.parse(req.query);
+  res.json({
+    data: await listPosQrisReconciliationsService(
+      getScopedTenantContext(req),
+      outletId,
+      query.status,
+    ),
+  });
+});
+
+posOrderRouter.post(
+  "/orders/:orderId/qris/cancel",
+  pay,
+  jsonBody,
+  async (req, res) => {
+    const { outletId, orderId } = cancelPosQris.params.parse(req.params);
+    const body = cancelPosQris.body.parse(req.body);
+    res.status(202).json({
+      data: await qrisHold.cancelPosQris(
+        getScopedTenantContext(req),
+        await caller(req),
+        outletId,
+        orderId,
+        body,
+      ),
+    });
+  },
+);
+
+posOrderRouter.post(
+  "/orders/:orderId/qris/release",
+  pay,
+  jsonBody,
+  async (req, res) => {
+    const { outletId, orderId } = releasePosQris.params.parse(req.params);
+    const body = releasePosQris.body.parse(req.body);
+    res.json({
+      data: await qrisHold.releasePosQris(
+        getScopedTenantContext(req),
+        await caller(req),
+        outletId,
+        orderId,
+        body,
+      ),
+    });
   },
 );
 

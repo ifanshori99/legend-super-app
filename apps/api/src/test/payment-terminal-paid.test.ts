@@ -366,10 +366,10 @@ beforeEach(async () => {
   doit.faults.clear();
   // Isolation between tests: intents left payable by an earlier test of this
   // file must not be settled or counted by the next poll. `failed` intents
-  // are never polled.
+  // with `provider_final_at` are never polled (SO-896).
   if (createdLinkIds.length > 0)
     await owner.query(
-      `UPDATE payment_intents SET status = 'failed'
+      `UPDATE payment_intents SET status = 'failed', provider_final_at = now()
        WHERE tenant_id = $1 AND payment_link_id = ANY($2::uuid[])
          AND status IN ('pending', 'expired')`,
       [tenantA, createdLinkIds],
@@ -598,17 +598,49 @@ describe("a verified paid webhook for a refunded intent", () => {
   );
 });
 
+describe("SO-896 P2-3 parked money from a DOIT webhook ends the poll of the closed code", () => {
+  it("a verified paid webhook with an amount off the bill parks the money and sets provider_final_at on the expired code", async () => {
+    const intent = await pendingIntent();
+    // The code lapsed unconfirmed (superseded / timed out), not yet final.
+    await owner.query(
+      "UPDATE payment_intents SET status = 'expired' WHERE id = $1",
+      [intent.id],
+    );
+    const original = doit.eventFor(intent.providerRef, "paid");
+    const event = {
+      ...original,
+      data: { ...original.data, amount: BILL_TOTAL - 1_000 },
+    };
+    const response = await deliver(event);
+    expect(response.status).toBe(200);
+    expect((await unallocatedRows(intent.id)).length).toBe(1);
+
+    expect((await intentRow(intent.id)).status).toBe("expired");
+    const { rows } = await owner.query<{ final: boolean }>(
+      "SELECT provider_final_at IS NOT NULL AS final FROM payment_intents WHERE id = $1",
+      [intent.id],
+    );
+    expect(rows[0]!.final).toBe(true);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // 2 and 3. The poller leaves failed / refunded intents alone
 // ---------------------------------------------------------------------------
 
 describe("the poller ignores intents that are not payable", () => {
-  it("a failed intent is not asked about at DOIT and stays failed", async () => {
+  it("a failed intent the provider already answered final for is not asked about at DOIT and stays failed", async () => {
     const intent = await pendingIntent();
     expect((await deliver(doit.failedEvent(intent.providerRef))).status).toBe(
       200,
     );
     expect((await intentRow(intent.id)).status).toBe("failed");
+    // SO-896: a failed code stays in the poll until the provider answered
+    // final (`provider_final_at`); with that proof it is left alone.
+    await owner.query(
+      "UPDATE payment_intents SET provider_final_at = now() WHERE id = $1",
+      [intent.id],
+    );
     // Even if DOIT would now say paid, the poller must not look.
     doit.settle(intent.providerRef);
     const readsBefore = doit.statusReads(intent.providerRef);
@@ -619,6 +651,19 @@ describe("the poller ignores intents that are not payable", () => {
     expect((await intentRow(intent.id)).status).toBe("failed");
     expect(await evidenceCount(intent.id)).toBe(0);
     expect(await linkPaidIdr(intent.linkId)).toBe(0);
+  });
+
+  it("a failed intent without final proof is asked about at DOIT (it may still be paid)", async () => {
+    const intent = await pendingIntent();
+    expect((await deliver(doit.failedEvent(intent.providerRef))).status).toBe(
+      200,
+    );
+    expect((await intentRow(intent.id)).status).toBe("failed");
+    const readsBefore = doit.statusReads(intent.providerRef);
+
+    await pollLater();
+
+    expect(doit.statusReads(intent.providerRef)).toBeGreaterThan(readsBefore);
   });
 
   it.each(["refunded", "partially_refunded"] as const)(

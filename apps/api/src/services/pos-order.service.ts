@@ -132,6 +132,7 @@ import { recordTaxSnapshots } from "./tax.service.ts";
 import { assertBusinessDayOpen } from "./pos-cash-guard.ts";
 import { loadTaxConfig } from "./qr-order-pricing.ts";
 import { voidPendingQrisTenders } from "./pos-order-payment.ts";
+import { assertNoActiveQrisHold } from "./pos-qris-hold.ts";
 import { lockTableLiveState } from "./table-session.service.ts";
 import {
   evaluatePacingIfStale,
@@ -1089,6 +1090,7 @@ export async function submitPosOrder(
       const { order, pos } = locked;
       assertExpectedStatus(order, input.expectedStatus);
       assertMutable(order);
+      await assertNoActiveQrisHold(tx, context, order.id);
       const next = transitionPosOrder(order.status, "submit");
       const shiftId = await posShiftLookup()(tx, context, {
         outletId,
@@ -1252,6 +1254,9 @@ export async function completePosOrder(
       const tenantId = context.tenant.tenantId;
       assertExpectedStatus(order, input.expectedStatus);
       assertMutable(order);
+      // legend-yhia9 D-01: not while a QR can still be paid (before the balance
+      // check, so the cashier hears the hold, not a total mismatch).
+      await assertNoActiveQrisHold(tx, context, order.id);
       const next = transitionPosOrder(order.status, "complete");
       const items = await itemsOf(tx, context, order.id);
       if (
@@ -1597,6 +1602,9 @@ export async function voidPosOrder(
       const tenantId = context.tenant.tenantId;
       assertExpectedStatus(order, input.expectedStatus);
       assertMutable(order);
+      // legend-yhia9 D-01: a QR that can still be paid blocks the void (before
+      // the approval is consumed).
+      await assertNoActiveQrisHold(tx, context, order.id);
       const next = transitionPosOrder(order.status, "void");
       await assertNoOpenEdcRequest(tx, context, order);
       const tenders = await tendersOf(tx, context, order.id);
@@ -1783,6 +1791,7 @@ export async function voidPosOrderItem(
     async (tx, locked) => {
       const { order, pos } = locked;
       assertMutable(order);
+      await assertNoActiveQrisHold(tx, context, order.id);
       const rows = await itemsOf(tx, context, order.id);
       const target = rows.find(({ item }) => item.id === itemId);
       if (!target)

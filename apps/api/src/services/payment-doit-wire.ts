@@ -286,6 +286,7 @@ export function doitPaymentToGatewayStatus(
   if (payment.status === "refunded")
     return {
       status: "pending",
+      rawStatus: payment.status,
       providerRef: payment.id,
       amountIdr: null,
       paidAt: null,
@@ -293,6 +294,7 @@ export function doitPaymentToGatewayStatus(
   const paid = payment.status === "paid";
   return {
     status: payment.status,
+    rawStatus: payment.status,
     providerRef: payment.id,
     amountIdr: paid ? payment.amount : null,
     // `paid_at` already parsed as a timestamp; normalized to ISO for the

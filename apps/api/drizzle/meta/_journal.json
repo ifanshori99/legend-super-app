@@ -2710,6 +2710,48 @@
       "when": 1795000000015,
       "tag": "0400_payout_gl_commit_checks",
       "breakpoints": true
+    },
+    {
+      "idx": 401,
+      "version": "7",
+      "when": 1795000000016,
+      "tag": "0401_pos_qris_holds",
+      "breakpoints": true
+    },
+    {
+      "idx": 402,
+      "version": "7",
+      "when": 1795000000017,
+      "tag": "0402_pos_qris_hold_freeze",
+      "breakpoints": true
+    },
+    {
+      "idx": 403,
+      "version": "7",
+      "when": 1795000000018,
+      "tag": "0403_pos_customer_display",
+      "breakpoints": true
+    },
+    {
+      "idx": 404,
+      "version": "7",
+      "when": 1795000000019,
+      "tag": "0404_pos_qris_release_reconciliations",
+      "breakpoints": true
+    },
+    {
+      "idx": 405,
+      "version": "7",
+      "when": 1795000000020,
+      "tag": "0405_payment_intent_provider_final",
+      "breakpoints": true
+    },
+    {
+      "idx": 406,
+      "version": "7",
+      "when": 1795000000021,
+      "tag": "0406_refund_escalation_failed_holds_order",
+      "breakpoints": true
     }
   ]
 }

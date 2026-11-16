@@ -34,6 +34,23 @@ export const notFound: RequestHandler = () => {
 
 type ParserError = Error & { type?: string; status?: number };
 
+/**
+ * legend-yhia9: the 0369 triggers refuse a change of a bill with a collectible
+ * QRIS (SQLSTATE 23514, message "QRIS_HOLD_ACTIVE: ..."). The service guards
+ * answer first; a path that reached the trigger is a 409, not a 500. The
+ * message is matched only for that fixed prefix and never sent to the client.
+ */
+function isQrisHoldTriggerError(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current instanceof Error; depth += 1) {
+    const { code } = current as { code?: unknown };
+    if (code === "23514" && current.message.startsWith("QRIS_HOLD_ACTIVE:"))
+      return true;
+    current = current.cause;
+  }
+  return false;
+}
+
 // Only explicitly recognized error classes are client-visible. In particular,
 // never trust an arbitrary exception's `status`, `code`, or message.
 export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
@@ -104,6 +121,11 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, next) => {
       undefined,
       error.context,
     );
+
+  if (isQrisHoldTriggerError(error)) {
+    const refused = new PosError("QRIS_HOLD_ACTIVE");
+    return send(refused.status, refused.code, refused.message);
+  }
 
   if (
     error instanceof HttpError ||

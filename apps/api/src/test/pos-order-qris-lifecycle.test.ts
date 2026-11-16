@@ -7,7 +7,8 @@
 // - voiding the order or paying another way closes the WS-05 link (link
 //   expired, pending intent expired, `payment.expired` emitted);
 // - a QRIS the guest already paid is never voided (409);
-// - a late payment on a voided/failed tender is refunded in full, once;
+// - a late payment on a QR the provider already closed is parked in full, once
+//   (legend-yhia9 D-07); one on a bill that cannot take it is refunded once;
 // - a replayed or concurrent `payment.paid` captures once;
 // - events and ids of another tenant do nothing.
 //
@@ -25,6 +26,7 @@ import {
   tenantIdSchema,
   ulidToUuid,
   userIdSchema,
+  uuidToUlid,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
@@ -46,6 +48,7 @@ import {
   setStaffPin,
 } from "../services/device-pin.service.ts";
 import { deliverOrderPaymentEvent } from "../services/order-payment-consumers.ts";
+import { runPosQrisHoldCheckJob } from "../worker/pos-qris-hold-check.job.ts";
 import {
   setPaymentGateway,
   type GatewayIntentRequest,
@@ -417,6 +420,63 @@ async function deliver(
   );
 }
 
+/**
+ * legend-yhia9 D-03: a QR stays collectible (its hold freezes the bill) until
+ * the provider itself answers expired/failed about it. The test gateway
+ * answers `answer`; the hold check job runs past expires_at + 60 s and closes
+ * the hold: tender voided, link closed, bill unlocked.
+ */
+async function closeHoldByProvider(answer: "expired" | "failed" = "expired") {
+  // The 5 minute code has lapsed on the real clock too.
+  await owner.query(
+    `UPDATE payment_intents SET expires_at = now() - interval '10 minutes'
+      WHERE tenant_id = $1 AND id IN (
+        SELECT payment_intent_id FROM pos_qris_holds
+         WHERE tenant_id = $1 AND state IN ('open', 'cancelling'))`,
+    [tenant.tenantId],
+  );
+  gateway.status = answer;
+  try {
+    await runPosQrisHoldCheckJob(contextOf(tenant.tenantId), new Date(), {
+      force: true,
+    });
+  } finally {
+    gateway.status = "pending";
+  }
+}
+
+/**
+ * legend-yhia9 D-07: money for a QR whose hold the provider already closed is
+ * parked (unallocated), never captured and never auto-refunded; the payer is
+ * paid back by the manager (Q93). confirmPayment parks it and throws 409.
+ */
+async function settleParked(
+  intentId: string,
+  amountIdr: number,
+  providerRef = `WEBHOOK-${randomBytes(6).toString("hex")}`,
+) {
+  try {
+    await confirmPayment(contextOf(tenant.tenantId), intentId, {
+      source: "verified_webhook",
+      method: "qris",
+      amountIdr,
+      providerRef,
+      at: new Date().toISOString(),
+    });
+  } catch (error) {
+    if ((error as { status?: unknown }).status !== 409) throw error;
+  }
+}
+
+async function parkedOfIntent(intentId: string) {
+  const { rows } = await owner.query<{ amount_idr: string }>(
+    `SELECT amount_idr::text AS amount_idr FROM payment_unallocated_funds
+      WHERE tenant_id = $1 AND payment_intent_id = $2`,
+    [tenant.tenantId, intentId],
+  );
+  return rows;
+}
+
 async function orderEventCount(orderId: string, type: string): Promise<number> {
   const { rows } = await owner.query<{ count: string }>(
     `SELECT count(*)::text AS count FROM order_events
@@ -613,7 +673,7 @@ beforeEach(() => {
 });
 
 describe("POS QRIS tender lifecycle (legend-b0au)", () => {
-  it("an expired QRIS code fails its tender once, and a new QRIS can open", async () => {
+  it("an expired QRIS code never unlocks the bill by itself; once the provider proves it dead the tender is voided once and a new QRIS can open", async () => {
     const order = await payableOrder();
     const tender = await openQris(order);
     // The 10 minute code lapses; WS-05 emits payment.expired.
@@ -631,22 +691,25 @@ describe("POS QRIS tender lifecycle (legend-b0au)", () => {
       tender.payment_intent_id!,
     );
 
+    // D-04: the local expiry event alone changes nothing (the QR may still
+    // be paid at the provider).
     const routed = await deliver(event);
     expect(routed).toEqual({ route: "pos" });
-    const [failed] = await tendersOfOrder(order.orderId);
-    expect(failed).toMatchObject({ id: tender.id, status: "failed" });
-    expect(failed!.resolved_at).not.toBeNull();
-    expect(await orderEventCount(order.orderId, "order.tender_failed")).toBe(1);
-    expect(
-      await auditCount("pos_order.tender_failed", [
-        order.orderId,
-        ulidToUuid(order.orderId),
-      ]),
-    ).toBe(1);
+    expect((await tendersOfOrder(order.orderId))[0]).toMatchObject({
+      id: tender.id,
+      status: "authorized",
+    });
+    expect(await orderEventCount(order.orderId, "order.tender_failed")).toBe(0);
+
+    await closeHoldByProvider("expired");
+    const [voided] = await tendersOfOrder(order.orderId);
+    expect(voided).toMatchObject({ id: tender.id, status: "voided" });
+    expect(voided!.resolved_at).not.toBeNull();
+    expect(await orderEventCount(order.orderId, "order.tender_voided")).toBe(1);
 
     // Replay: nothing changes.
     await deliver(event);
-    expect(await orderEventCount(order.orderId, "order.tender_failed")).toBe(1);
+    expect(await orderEventCount(order.orderId, "order.tender_voided")).toBe(1);
 
     // The cashier can open a fresh QRIS for the same balance.
     const again = await openQris(order);
@@ -655,7 +718,7 @@ describe("POS QRIS tender lifecycle (legend-b0au)", () => {
     expect(Number(again.amount_idr)).toBe(order.totalIdr);
   });
 
-  it("a failed QRIS (gateway answer) fails its tender", async () => {
+  it("a failed QRIS (gateway answer) frees its tender only once the provider proves it", async () => {
     const order = await payableOrder();
     const tender = await openQris(order);
     gateway.status = "failed";
@@ -675,9 +738,12 @@ describe("POS QRIS tender lifecycle (legend-b0au)", () => {
     );
     expect(await deliver(event)).toEqual({ route: "pos" });
     expect((await tendersOfOrder(order.orderId))[0]).toMatchObject({
-      status: "failed",
+      status: "authorized",
     });
-    expect(await orderEventCount(order.orderId, "order.tender_failed")).toBe(1);
+    await closeHoldByProvider("failed");
+    expect((await tendersOfOrder(order.orderId))[0]).toMatchObject({
+      status: "voided",
+    });
     // A new QRIS is allowed again.
     await openQris(order);
   });
@@ -703,13 +769,25 @@ describe("POS QRIS tender lifecycle (legend-b0au)", () => {
     expect((await tendersOfOrder(order.orderId))[0]!.status).toBe("captured");
   });
 
-  it("voiding the order closes the QRIS link: link expired, pending intent expired, payment.expired emitted", async () => {
+  it("voiding the order is refused while the QRIS can be paid; once the provider closes it the link is closed: link expired, pending intent expired, payment.expired emitted", async () => {
     const order = await payableOrder();
     const tender = await openQris(order);
     const before = await linkRow(tender.payment_link_id!);
     expect(before.expired).toBe(false);
 
     const approval = await voidApproval(order.orderId, order.totalIdr);
+    const refused = await pos().voidOrder(order.orderId, {
+      expectedStatus: await statusOf(order.orderId),
+      reason: "customer_cancelled",
+      reasonNote: "Pelanggan batal",
+      ...approval,
+    });
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(JSON.stringify(refused.body)).toContain("QRIS_HOLD_ACTIVE");
+    expect((await tendersOfOrder(order.orderId))[0]!.status).toBe("authorized");
+    expect((await linkRow(tender.payment_link_id!)).expired).toBe(false);
+
+    await closeHoldByProvider("expired");
     const voided = await pos().voidOrder(order.orderId, {
       expectedStatus: await statusOf(order.orderId),
       reason: "customer_cancelled",
@@ -730,7 +808,7 @@ describe("POS QRIS tender lifecycle (legend-b0au)", () => {
     );
     expect(event.payload).toMatchObject({
       intentId: tender.payment_intent_id,
-      reason: "cancelled",
+      reason: "provider_expired",
     });
     // The guest's page refuses the closed link.
     await expect(
@@ -745,9 +823,20 @@ describe("POS QRIS tender lifecycle (legend-b0au)", () => {
     expect((await tendersOfOrder(order.orderId))[0]!.status).toBe("voided");
   });
 
-  it("cash while a QRIS waits voids the QRIS, closes its link and takes the full balance", async () => {
+  it("cash is refused while a QRIS can be paid; once the provider closes it, cash takes the full balance", async () => {
     const order = await payableOrder();
     const tender = await openQris(order);
+    const refused = await pos().cash(
+      order.orderId,
+      await statusOf(order.orderId),
+      order.totalIdr,
+    );
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(JSON.stringify(refused.body)).toContain("QRIS_HOLD_ACTIVE");
+    expect(await tendersOfOrder(order.orderId)).toEqual([
+      expect.objectContaining({ id: tender.id, status: "authorized" }),
+    ]);
+    await closeHoldByProvider("expired");
     const cash = await pos().cash(
       order.orderId,
       await statusOf(order.orderId),
@@ -767,10 +856,16 @@ describe("POS QRIS tender lifecycle (legend-b0au)", () => {
     expect(await intentStatus(tender.payment_intent_id!)).toBe("expired");
     await onlyPaymentEvent("payment.expired", tender.payment_intent_id!);
     expect(await orderEventCount(order.orderId, "order.tender_voided")).toBe(1);
+    // The provider-proof closure writes the audit row (named after the hold).
+    const { rows: holds } = await owner.query<{ id: string }>(
+      "SELECT id::text AS id FROM pos_qris_holds WHERE tenant_id = $1 AND order_id = $2::uuid",
+      [tenant.tenantId, ulidToUuid(order.orderId)],
+    );
+    expect(holds).toHaveLength(1);
     expect(
-      await auditCount("pos_order.tender_voided", [
-        order.orderId,
-        ulidToUuid(order.orderId),
+      await auditCount("pos_qris_hold.closed_by_provider", [
+        holds[0]!.id,
+        uuidToUlid(holds[0]!.id),
       ]),
     ).toBe(1);
 
@@ -793,7 +888,9 @@ describe("POS QRIS tender lifecycle (legend-b0au)", () => {
       order.totalIdr,
     );
     expect(cash.status, JSON.stringify(cash.body)).toBe(409);
-    expect(JSON.stringify(cash.body)).toContain("QRIS sudah dibayar");
+    // The bill is frozen until the confirmation is booked (the hold guard
+    // answers before the old "QRIS sudah dibayar" wording).
+    expect(JSON.stringify(cash.body)).toContain("QRIS_HOLD_ACTIVE");
     expect(await tendersOfOrder(order.orderId)).toEqual([
       expect.objectContaining({ id: tender.id, status: "authorized" }),
     ]);
@@ -821,7 +918,7 @@ describe("POS QRIS tender lifecycle (legend-b0au)", () => {
       ...approval,
     });
     expect(voided.status, JSON.stringify(voided.body)).toBe(409);
-    expect(JSON.stringify(voided.body)).toContain("QRIS sudah dibayar");
+    expect(JSON.stringify(voided.body)).toContain("QRIS_HOLD_ACTIVE");
 
     // Nothing changed: order not voided, tender still waiting, link open.
     expect(await statusOf(order.orderId)).toBe(statusBefore);
@@ -839,7 +936,7 @@ describe("POS QRIS tender lifecycle (legend-b0au)", () => {
     expect((await tendersOfOrder(order.orderId))[0]!.status).toBe("captured");
   });
 
-  it("payment.expired fails the POS QRIS tender and cancels its payment link", async () => {
+  it("payment.expired keeps the POS QRIS tender while the QR can be paid; the provider's proof voids it and cancels its payment link", async () => {
     const order = await payableOrder();
     const tender = await openQris(order);
     expect((await linkRow(tender.payment_link_id!)).expired).toBe(false);
@@ -859,7 +956,12 @@ describe("POS QRIS tender lifecycle (legend-b0au)", () => {
     expect(await deliver(event)).toEqual({ route: "pos" });
     expect((await tendersOfOrder(order.orderId))[0]).toMatchObject({
       id: tender.id,
-      status: "failed",
+      status: "authorized",
+    });
+    await closeHoldByProvider("expired");
+    expect((await tendersOfOrder(order.orderId))[0]).toMatchObject({
+      id: tender.id,
+      status: "voided",
     });
     // The link stops taking new intents: expires_at <= now.
     expect((await linkRow(tender.payment_link_id!)).expired).toBe(true);
@@ -903,14 +1005,17 @@ describe("POS QRIS tender lifecycle (legend-b0au)", () => {
     const order = await payableOrder();
     const tender = await openQris(order);
     // More deposit is applied while the QRIS waits: what is still due (Rp45.000)
-    // is now below the QRIS amount (Rp55.000). Set directly: the API refuses
-    // total changes while a QRIS is pending.
-    await asOwnerTenant(tenant.tenantId, (client) =>
-      client.query(
+    // is now below the QRIS amount (Rp55.000). Neither the API nor (since
+    // legend-yhia9, QH-20) the 0369 trigger lets this happen while the QR can
+    // be paid, so the write bypasses triggers (replica role): it models a bill
+    // changed behind the freeze, which the consumer must still survive.
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query(
         "UPDATE orders SET deposit_applied_idr = 10000 WHERE tenant_id = $1 AND id = $2::uuid",
         [tenant.tenantId, ulidToUuid(order.orderId)],
-      ),
-    );
+      );
+    });
     await settle(tender.payment_intent_id!, order.totalIdr);
     const event = await onlyPaymentEvent(
       "payment.paid",
@@ -937,9 +1042,12 @@ describe("POS QRIS tender lifecycle (legend-b0au)", () => {
     expect((await tendersOfOrder(order.orderId))[0]!.status).toBe("voided");
   });
 
-  it("a QRIS paid after its tender was voided is refunded in full, once", async () => {
+  it("a QRIS paid after the provider closed it and cash took the bill is parked in full, once (no capture, no automatic refund)", async () => {
     const order = await payableOrder();
     const tender = await openQris(order);
+    // The QR is closed by the provider's proof first (D-01: cash cannot
+    // replace a QR that can still be paid).
+    await closeHoldByProvider("expired");
     const cash = await pos().cash(
       order.orderId,
       await statusOf(order.orderId),
@@ -948,42 +1056,29 @@ describe("POS QRIS tender lifecycle (legend-b0au)", () => {
     expect(cash.status, JSON.stringify(cash.body)).toBe(201);
     expect((await tendersOfOrder(order.orderId))[0]!.status).toBe("voided");
 
-    // The guest still scans the old code: WS-05 accepts it as a late payment.
-    await settle(tender.payment_intent_id!, order.totalIdr);
-    const event = await onlyPaymentEvent(
-      "payment.paid",
-      tender.payment_intent_id!,
-    );
-    await deliver(event);
-
-    const refunds = await refundsOfIntent(tender.payment_intent_id!);
-    expect(refunds).toHaveLength(1);
-    expect(refunds[0]).toMatchObject({
-      amount_idr: String(order.totalIdr),
-      status: "pending",
-      requested_by: "system:pos",
-    });
-    expect(
-      await auditCount("pos_order.late_payment_refund_requested", [
-        refunds[0]!.id,
-      ]),
-    ).toBe(1);
+    // The guest still scans the old code: WS-05 accepts it as a late payment
+    // but the bill cannot take it (hold closed): D-07, parked in full.
+    const ref = `WEBHOOK-${randomBytes(6).toString("hex")}`;
+    await settleParked(tender.payment_intent_id!, order.totalIdr, ref);
+    expect(await parkedOfIntent(tender.payment_intent_id!)).toEqual([
+      { amount_idr: String(order.totalIdr) },
+    ]);
+    expect(await refundsOfIntent(tender.payment_intent_id!)).toHaveLength(0);
     // The POS bill itself is untouched: cash stays the only captured tender.
     const rows = await tendersOfOrder(order.orderId);
     expect(rows.filter((row) => row.status === "captured")).toHaveLength(1);
 
-    // Replay, sequential and concurrent: still one refund row.
-    await deliver(event);
-    await Promise.all([deliver(event), deliver(event)]);
-    expect(await refundsOfIntent(tender.payment_intent_id!)).toHaveLength(1);
-    expect(
-      await auditCount("pos_order.late_payment_refund_requested", [
-        refunds[0]!.id,
-      ]),
-    ).toBe(1);
+    // Replay, sequential and concurrent: still one parked row.
+    await settleParked(tender.payment_intent_id!, order.totalIdr, ref);
+    await Promise.all([
+      settleParked(tender.payment_intent_id!, order.totalIdr, ref),
+      settleParked(tender.payment_intent_id!, order.totalIdr, ref),
+    ]);
+    expect(await parkedOfIntent(tender.payment_intent_id!)).toHaveLength(1);
+    expect(await refundsOfIntent(tender.payment_intent_id!)).toHaveLength(0);
   });
 
-  it("a QRIS paid after its tender failed (expired code) is refunded too", async () => {
+  it("a QRIS paid after the provider closed its expired code is parked too", async () => {
     const order = await payableOrder();
     const tender = await openQris(order);
     // DOIT got our expires_in, so it reports the lapsed code expired.
@@ -997,14 +1092,14 @@ describe("POS QRIS tender lifecycle (legend-b0au)", () => {
     await deliver(
       await onlyPaymentEvent("payment.expired", tender.payment_intent_id!),
     );
-    expect((await tendersOfOrder(order.orderId))[0]!.status).toBe("failed");
+    expect((await tendersOfOrder(order.orderId))[0]!.status).toBe("authorized");
+    await closeHoldByProvider("expired");
+    expect((await tendersOfOrder(order.orderId))[0]!.status).toBe("voided");
 
-    await settle(tender.payment_intent_id!, order.totalIdr);
-    await deliver(
-      await onlyPaymentEvent("payment.paid", tender.payment_intent_id!),
-    );
-    expect(await refundsOfIntent(tender.payment_intent_id!)).toHaveLength(1);
-    expect((await tendersOfOrder(order.orderId))[0]!.status).toBe("failed");
+    await settleParked(tender.payment_intent_id!, order.totalIdr);
+    expect(await parkedOfIntent(tender.payment_intent_id!)).toHaveLength(1);
+    expect(await refundsOfIntent(tender.payment_intent_id!)).toHaveLength(0);
+    expect((await tendersOfOrder(order.orderId))[0]!.status).toBe("voided");
   });
 
   it("a replayed or concurrent payment.paid captures the tender exactly once", async () => {

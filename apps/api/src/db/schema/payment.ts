@@ -212,6 +212,11 @@ export const paymentIntents = pgTable(
     gatewayPollLeaseUntil: timestamp("gateway_poll_lease_until", {
       withTimezone: true,
     }),
+    /** SO-885: when the PROVIDER answered final for this code (expired,
+     * failed, cancelled) or its money was reconciled. Local time never sets
+     * it: an `expired` code with a provider reference and no value here may
+     * still take money, so nothing replaces it and the poller keeps asking. */
+    providerFinalAt: timestamp("provider_final_at", { withTimezone: true }),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()

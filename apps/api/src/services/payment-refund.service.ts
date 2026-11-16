@@ -54,6 +54,7 @@ import {
   OPERATIONS_NOTIFICATION_DESTINATION,
 } from "./operations-events.ts";
 import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
+import { failedRefundHoldsOrderSql } from "./payment-refund-failed-open.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import {
   lockRefundApprovalScope,
@@ -702,8 +703,10 @@ async function failRefund(
 }
 
 /**
- * legend-p61pe: a QR order voided because a refund already took the payment's
- * money (`refund_committed`) files its late-payment refund once per intent
+ * legend-p61pe: a QR order voided (or, SO-885 legend-05pjx, still awaiting
+ * payment while a QR hold or an unsettled refund keeps it) because a refund
+ * already took the payment's money (`refund_committed`) files its late-payment
+ * refund once per intent
  * (qr-order-late-payment.ts), and that request may have found nothing left.
  * When the refund that took the money fails, the guest is owed it again: file
  * a new request under its own key. A failed late-payment refund is not
@@ -755,7 +758,14 @@ async function refileQrLatePaymentAfterFailure(
         eq(orders.tenantId, refund.tenantId),
         eq(orders.paymentLinkId, intent.paymentLinkId),
         eq(orders.channel, "qr"),
-        eq(orders.status, "voided"),
+        // SO-885 legend-05pjx: an order held awaiting payment by the failed
+        // refund (the sweep never voids a bill with an unsettled refund) is
+        // re-filed too, so staff can approve the new request instead of the
+        // order waiting for ever. Safe bounds: the once-only key per failed
+        // refund, the late-payment key that must already exist for the intent
+        // (checked above), and `requestQrLatePaymentRefund` files only what
+        // the paid intent still holds (nothing when nothing is refundable).
+        inArray(orders.status, ["voided", "awaiting_payment"]),
       ),
     )
     .limit(1);
@@ -2561,6 +2571,14 @@ export async function runRefundPayout(
   });
 }
 
+/** The `payment_refunds` columns for the failed-refund SQL fragments. */
+const failedRefundColumns = {
+  tenantId: sql`${paymentRefunds.tenantId}`,
+  paymentIntentId: sql`${paymentRefunds.paymentIntentId}`,
+  unallocatedFundId: sql`${paymentRefunds.unallocatedFundId}`,
+  status: sql`${paymentRefunds.status}`,
+};
+
 const ESCALATION_PENDING_UNAPPROVED_HOURS = 24;
 const ESCALATION_PROVIDER_PENDING_HOURS = 72;
 const ESCALATION_PAYOUT_STALLED_HOURS = 24;
@@ -2577,7 +2595,9 @@ const ESCALATION_PAYOUT_STALLED_HOURS = 24;
  * `PAYOUT_QUARANTINED`, `EVIDENCE_MAPPING_REQUIRED` or
  * `DOIT_REFUND_IDENTITY_MISMATCH`; without a gateway: any
  * such refund, since nothing will pay it), aged from `payout_stall_detected_at`
- * (default 24 h). That stall clock is owned here: it is stamped when a stall is
+ * (default 24 h). Case `failed_holds_order` (SO-885): `failed`, not replaced by
+ * a completed refund, on an intent of an awaiting_payment guest QR order that
+ * it keeps held; escalated at once. That stall clock is owned here: it is stamped when a stall is
  * first seen and cleared when the refund is no longer stalled. Polls never
  * decrease, so `payout_stalled` and `provider_pending` cannot alternate.
  * Thresholds are per tenant (`payment_refund_escalation_settings`). It writes
@@ -2680,6 +2700,17 @@ export async function escalateStaleRefunds(
           stalled,
           sql`${paymentRefunds.payoutStallDetectedAt} IS NOT NULL`,
           sql`${paymentRefunds.escalationReason} IS DISTINCT FROM 'payout_stalled'`,
+        ),
+      },
+      {
+        // SO-885 legend-05pjx: a failed refund that keeps an awaiting_payment
+        // QR order held is alerted at once (no waiting threshold), once.
+        reason: "failed_holds_order",
+        hours: 0,
+        age: sql`${paymentRefunds.updatedAt}`,
+        stale: and(
+          failedRefundHoldsOrderSql(failedRefundColumns),
+          sql`${paymentRefunds.escalationReason} IS DISTINCT FROM 'failed_holds_order'`,
         ),
       },
     ] as const;

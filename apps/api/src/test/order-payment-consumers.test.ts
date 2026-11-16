@@ -52,6 +52,7 @@ import { getGuestPayment } from "../services/qr-order-payment.ts";
 import { setQrOrderPromoPort } from "../services/qr-order-ports.ts";
 import { qrOrderSettlementLookup } from "../services/qr-order.service.ts";
 import { setTableSessionSettlementLookup } from "../services/table-session.service.ts";
+import { runPosQrisHoldCheckJob } from "../worker/pos-qris-hold-check.job.ts";
 import { agent, originHeader } from "./helpers.ts";
 import {
   createIsolatedTenant,
@@ -333,6 +334,29 @@ async function expireCode(guest: Guest, intentId: string, at: Date) {
 
 const fakeGateway = new FakeGateway();
 
+/**
+ * legend-kf104: a guest QR holds its bill until the hold check job has the
+ * provider's own proof that the code is dead (answer `expired` at or after the
+ * code's expiry + 60 s). A fresh code waits for it, so a test that reaches one
+ * first lets the job run, at `now`, with the provider answering `expired`.
+ */
+async function proveDead(now: Date) {
+  const context = establishScopedTenantContext(
+    establishTenantContext({
+      tenantId: tenantIdSchema.parse(tenant.tenantId),
+      brandId: null,
+      source: "job",
+    }),
+    { kind: "tenant" },
+  );
+  fakeGateway.lapsed = true;
+  try {
+    await runPosQrisHoldCheckJob(context, now, { force: true });
+  } finally {
+    fakeGateway.lapsed = false;
+  }
+}
+
 beforeAll(async () => {
   app = createApp();
   setPaymentGateway(fakeGateway);
@@ -418,6 +442,9 @@ describe("ORD-02 decideUnpaidQrOrder (legend-x4qy, PRD silent: safest rule)", ()
     linkFullyPaid: false,
     attempts: 1,
     hasOpenIntent: false,
+    hasActiveHold: false,
+    netCapturedZero: false,
+    anyRefundOpen: false,
     windowClosedAt: new Date(now.getTime() - MINUTE),
   };
 
@@ -432,6 +459,33 @@ describe("ORD-02 decideUnpaidQrOrder (legend-x4qy, PRD silent: safest rule)", ()
     expect(
       decideUnpaidQrOrder({ ...open, hasOpenIntent: true }, now).action,
     ).toBe("keep");
+  });
+
+  it("SO-879 a fully paid link is voided only when all its money is refunded, no refund is open and every code is dead", () => {
+    const later = new Date(now.getTime() + LATE_PAYMENT_GRACE_MS);
+    const refunded = {
+      ...open,
+      linkFullyPaid: true,
+      netCapturedZero: true,
+    };
+    expect(decideUnpaidQrOrder(refunded, later)).toEqual({
+      action: "void",
+      reason: "payment_refunded_codes_dead",
+    });
+    // Inside the late grace the gateway has not said the codes are final.
+    expect(decideUnpaidQrOrder(refunded, now)).toEqual({
+      action: "keep",
+      why: "awaiting_grace",
+    });
+    for (const doubt of [
+      { netCapturedZero: false },
+      { anyRefundOpen: true },
+      { hasOpenIntent: true },
+      { hasActiveHold: true },
+    ])
+      expect(decideUnpaidQrOrder({ ...refunded, ...doubt }, later).action).toBe(
+        "keep",
+      );
   });
 
   it("ORD-02 voids after the attempt cap, but only once the late-payment grace passed", () => {
@@ -578,6 +632,7 @@ describe("ORD-02 payment.expired / payment.failed for QR orders (legend-x4qy)", 
     const guest = await seatAtNewTable();
     const { orderId } = await placeOrder(guest);
     const first = await openPayment(guest, orderId);
+    const createdAfterFirst = fakeGateway.created;
     const expiredAt = new Date(Date.now() + 11 * MINUTE);
     const expired = await expireCode(guest, first, expiredAt);
     expect(expired.payload.reason).toBe("timeout");
@@ -588,7 +643,14 @@ describe("ORD-02 payment.expired / payment.failed for QR orders (legend-x4qy)", 
     });
     expect((await orderRow(orderId)).status).toBe("awaiting_payment");
 
-    // PRD "QRIS Dinamis": the guest gets a fresh code for the same bill.
+    // PRD "QRIS Dinamis": the guest gets a fresh code for the same bill, once
+    // the provider has proved the first one dead (legend-kf104). Before that
+    // proof the hold refuses it and no second code exists.
+    const refused = await as(guest).pay(orderId);
+    expect(refused.status).toBe(409);
+    expect(JSON.stringify(refused.body)).toContain("QRIS_HOLD_ACTIVE");
+    expect(fakeGateway.created).toBe(createdAfterFirst);
+    await proveDead(new Date(expiredAt.getTime() + MINUTE));
     const second = await openPayment(guest, orderId);
     expect(second).not.toBe(first);
     // The stale expiry is no longer about the live code.
@@ -625,6 +687,14 @@ describe("ORD-02 payment.expired / payment.failed for QR orders (legend-x4qy)", 
       const afterGrace = new Date(
         expiredAt.getTime() + LATE_PAYMENT_GRACE_MS + MINUTE,
       );
+      // legend-kf104: the QR hold keeps the bill until the provider proves the
+      // code dead; only then can the void go through.
+      expect(await deliver(expired, afterGrace)).toEqual({
+        route: "qr",
+        outcome: "unchanged",
+      });
+      expect((await orderRow(orderId)).status).toBe("awaiting_payment");
+      await proveDead(afterGrace);
       expect(await deliver(expired, afterGrace)).toEqual({
         route: "qr",
         outcome: "voided",
@@ -648,13 +718,30 @@ describe("ORD-02 payment.expired / payment.failed for QR orders (legend-x4qy)", 
       const next = await seatAtNewTable();
       expect((await as(next).add(ids.terbatas, 0)).status).toBe(201);
 
-      // A late payment (PRD §3.13: accepted after expiry) never revives it.
-      await settle(intentId, totalIdr);
-      const paid = await onlyEvent("payment.paid", "intentId", intentId);
-      expect(await deliver(paid)).toEqual({
-        route: "qr",
-        outcome: "late_payment_on_voided_order",
+      // A late payment never revives it. legend-kf104: the provider proved the
+      // QR dead, so the hold closed the bill and a later settlement is refused
+      // at the gateway (BILL_CLOSED, parked as unallocated funds) instead of
+      // reaching the order consumer; the replay of `late_payment_on_voided_order`
+      // is covered with a VA in qr-order-late-payment.test.ts. Nothing is placed.
+      await expect(settle(intentId, totalIdr)).rejects.toMatchObject({
+        status: 409,
+        decisionCode: "BILL_CLOSED",
       });
+      expect(await outboxEvents("payment.paid", "intentId", intentId)).toEqual(
+        [],
+      );
+      // The refused money is parked, not lost: one unresolved fund row of the
+      // whole amount waits for a refund decision.
+      const { rows: parked } = await owner.query<{
+        amount_idr: number;
+        resolution: string | null;
+      }>(
+        `SELECT amount_idr::int AS amount_idr, resolution
+           FROM payment_unallocated_funds
+          WHERE tenant_id = $1 AND payment_intent_id = $2`,
+        [tenant.tenantId, intentId],
+      );
+      expect(parked).toEqual([{ amount_idr: totalIdr, resolution: null }]);
       expect((await orderRow(orderId)).status).toBe("voided");
       expect(await placedStatuses(orderId)).toEqual(["awaiting_payment"]);
       expect(promo.released).toEqual([orderId]);

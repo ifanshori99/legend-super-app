@@ -48,6 +48,7 @@ import {
   auditCharge,
   AUDIT_PAID,
   chargeAudit,
+  confirmChargeLinksUnpaid,
   lockChargeChain,
 } from "./order-recovery-charge.ts";
 import { toView, type IssueChargeView } from "./order-recovery-charge-staff.ts";
@@ -81,6 +82,9 @@ export async function collectChargeAtPos(
   now = new Date(),
 ): Promise<CollectedChargeAtPos> {
   const tenantId = context.tenant.tenantId;
+  // legend-ukbq3: ask the provider first (outside the transaction). Money the
+  // provider already holds is applied to the charge, so the cash is refused.
+  const settled = await confirmChargeLinksUnpaid(context, { chargeId }, now);
   return withTenant(db, context, async (tx) => {
     const snapshot = await accessSnapshotInTransaction(
       tx,
@@ -131,6 +135,12 @@ export async function collectChargeAtPos(
         409,
         "CONFLICT",
         "Hanya tagihan selisih yang masih terbuka yang dapat dibayar di kasir.",
+      );
+    if (settled)
+      throw new HttpError(
+        409,
+        "CONFLICT",
+        "QRIS sudah dibayar; tunggu konfirmasi.",
       );
     if (input.receivedIdr < charge.amountIdr)
       throw new CoreError(

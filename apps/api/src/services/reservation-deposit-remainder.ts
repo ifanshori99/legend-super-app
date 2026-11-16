@@ -6,6 +6,7 @@ import {
   idr,
   type OutletId,
   type ScopedTenantContext,
+  uuidToUlid,
 } from "@starter/shared/core";
 import { and, eq, sql } from "drizzle-orm";
 import { maskAuditChanges } from "@starter/shared/audit";
@@ -36,6 +37,7 @@ import {
 import { requestFingerprint } from "./reservation-plan.ts";
 import { lockSessionDeposit } from "./qr-order-ports.ts";
 import { refundableBalance } from "./payment-admin.service.ts";
+import { assertNoActiveQrisHold } from "./pos-qris-hold.ts";
 import {
   backingStateOf,
   postedIntentReceiptCreditOf,
@@ -432,6 +434,20 @@ export async function applyReservationCustomerCredit(
       .for("update");
     if (!session || !["open", "bill_requested"].includes(session.status))
       throw unavailable();
+    // legend-yhia9 D-01: credit changes what is left to pay, so it is refused
+    // while any bill of the session has a QR that can still be paid. POS DP
+    // return and refund approval lock orders, then pos_orders, then the
+    // deposit-intent lock; this path must take them in that same order, so the
+    // guard runs here, before any advisory lock (else deadlock 40P01).
+    const billOrders = await tx.execute(sql`SELECT id::text AS id FROM orders
+      WHERE tenant_id=${tenantId} AND table_session_id=${session.id}::uuid
+      ORDER BY id FOR UPDATE`);
+    await tx.execute(sql`SELECT order_id FROM pos_orders
+      WHERE tenant_id=${tenantId} AND order_id IN (SELECT id FROM orders
+        WHERE tenant_id=${tenantId} AND table_session_id=${session.id}::uuid)
+      ORDER BY order_id FOR UPDATE`);
+    for (const row of billOrders.rows)
+      await assertNoActiveQrisHold(tx, context, uuidToUlid(String(row.id)));
     // Every apply for this customer is serialized before source rows are read.
     // Refunds use exclusive intent locks; shared locks must precede ledger
     // row locks, and never be followed by an intent row lock.

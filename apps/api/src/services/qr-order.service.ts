@@ -152,6 +152,7 @@ import {
 } from "./qr-order-ports.ts";
 import { listSessionSplitDtosTx } from "./bill-split.service.ts";
 import { assertNoOpenEdcRequest } from "./pos-order-support.ts";
+import { assertNoActiveQrisHold } from "./pos-qris-hold.ts";
 import { requestRefundsForVoidedQrOrder } from "./qr-order-late-payment.ts";
 import { appendQrOrderPaid } from "./qr-order-paid.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
@@ -2541,6 +2542,10 @@ export async function voidAwaitingPaymentOrderTx(
   // number). While it is open the terminal may still take, or already took, the
   // money, so the void fails closed (409 EDC_REQUEST_OPEN) before any write.
   await assertNoOpenEdcRequest(tx, context, order);
+  // legend-5ailc: a bill with a collectible QRIS never voids (the 0369 trigger
+  // would refuse the orders write, but only after items, stock and promo were
+  // touched). Answer 409 QRIS_HOLD_ACTIVE before any write.
+  await assertNoActiveQrisHold(tx, context, order.id);
   const voidedItems = await tx
     .update(orderItems)
     .set({

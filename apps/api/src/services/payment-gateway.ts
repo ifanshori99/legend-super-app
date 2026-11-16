@@ -89,6 +89,11 @@ export type GatewayPaymentStatus = {
    * time, so a payment made before expiry is never flagged late. Optional so
    * test doubles written before it stay valid; absent means "not reported". */
   readonly paidAt?: string | null;
+  /** The provider's own status code (Duitku `"00"`/`"01"`/`"02"`). The mapped
+   * `status` loses it, and a QRIS hold closes only on provider proof
+   * (design legend-yhia9 D-03), so the code is carried as evidence. Optional:
+   * DOIT and test doubles written before it stay valid. */
+  readonly rawStatus?: string;
 };
 
 /** A code that was replaced by another one on the same bill. */

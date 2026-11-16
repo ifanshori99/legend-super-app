@@ -102,11 +102,19 @@ class FakeGateway implements PaymentGatewayPort {
   }
   async createIntent(input: GatewayIntentRequest) {
     this.created += 1;
-    const instructions: PaymentInstructions = {
-      method: "qris",
-      qrPayload: "00020101021226FAKEQRLATEPARTIAL",
-      issuer: null,
-    };
+    const instructions: PaymentInstructions =
+      input.method === "va"
+        ? {
+            method: "va",
+            channelCode: input.channelCode ?? "bmri",
+            channelName: "Mandiri",
+            virtualAccountNumber: "8808123456789012",
+          }
+        : {
+            method: "qris",
+            qrPayload: "00020101021226FAKEQRLATEPARTIAL",
+            issuer: null,
+          };
     return {
       providerRef: `QLR-${randomBytes(6).toString("hex")}-${this.created}`,
       instructions,
@@ -120,8 +128,8 @@ class FakeGateway implements PaymentGatewayPort {
       amountIdr: null,
     };
   }
-  async channels() {
-    return [];
+  async channels(_context: unknown, method: string) {
+    return method === "va" ? [{ code: "bmri", name: "Mandiri" }] : [];
   }
 }
 const gateway = new FakeGateway();
@@ -204,10 +212,11 @@ function as(guest: Guest) {
         expectedCartVersion,
         idempotencyKey: randomUUID(),
       }),
-    pay: (orderId: string) =>
+    pay: (orderId: string, method: "qris" | "va" = "qris") =>
       auth(client.post(`${base}/payments`)).send({
         target: { kind: "order", orderId },
-        method: "qris",
+        method,
+        ...(method === "va" ? { bankCode: "bmri" } : {}),
         idempotencyKey: randomUUID(),
       }),
   };
@@ -225,18 +234,26 @@ async function placeOrder(guest: Guest) {
   };
 }
 
-async function openPayment(guest: Guest, orderId: string): Promise<string> {
-  const paid = await as(guest).pay(orderId);
+async function openPayment(
+  guest: Guest,
+  orderId: string,
+  method: "qris" | "va" = "qris",
+): Promise<string> {
+  const paid = await as(guest).pay(orderId, method);
   expect(paid.status).toBe(201);
   expect(paid.body.data.status).toBe("pending");
   return paid.body.data.id as string;
 }
 
 /** A verified webhook settlement (the trusted source). */
-async function settle(intentId: string, amountIdr: number) {
+async function settle(
+  intentId: string,
+  amountIdr: number,
+  method: "qris" | "va" = "qris",
+) {
   await confirmPayment(contextOf(tenant.tenantId), intentId, {
     source: "verified_webhook",
-    method: "qris",
+    method,
     amountIdr,
     providerRef: `WEBHOOK-${randomBytes(6).toString("hex")}`,
     at: new Date().toISOString(),
@@ -352,8 +369,11 @@ async function paidOrder() {
   await freshWorld();
   const guest = await seatAtNewTable();
   const { orderId, totalIdr } = await placeOrder(guest);
-  const intentId = await openPayment(guest, orderId);
-  await settle(intentId, totalIdr);
+  // The code is a VA: an open QR holds its bill, so the order cannot be voided
+  // (these tests void it) and a payment after the provider's proof is parked,
+  // never a late payment for this consumer (legend-kf104). A VA has no hold.
+  const intentId = await openPayment(guest, orderId, "va");
+  await settle(intentId, totalIdr, "va");
   return {
     guest,
     orderId,

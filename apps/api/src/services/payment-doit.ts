@@ -130,9 +130,9 @@ type Resolved = {
 const defaultLoader: DoitCredentialLoader = (context, outletId) =>
   loadActiveIntegrationCredentials(context, "doit", outletId);
 
-// Only payments already minted on this integration come through here (status,
-// lookup, refund, refund status); removing DOIT from the plan must not stop
-// reconciling money in flight. New payments use `defaultLoader`.
+// By id = a payment already minted on that integration (status read, poll,
+// cancel, refund): no plan check, so withdrawing DOIT from the plan stops new
+// codes, never the reconciliation of money in flight (legend-la1yk).
 const defaultByIdLoader: DoitCredentialByIdLoader = (context, integrationId) =>
   loadIntegrationCredentialsById(context, "doit", integrationId, {
     forStoredIntent: true,

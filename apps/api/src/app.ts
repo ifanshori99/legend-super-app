@@ -13,6 +13,7 @@ import {
   serializeError,
   type Logger,
 } from "./lib/logger";
+import { HttpError } from "./lib/http-error";
 import { requestContext } from "./lib/request-context";
 import { developmentPublicSiteCredential } from "./lib/development-public-site";
 import { limitAuthBody } from "./middleware/body";
@@ -122,6 +123,9 @@ setPosEdcTenderPort(edcTenderSettlement);
 // INV-02 (legend-db6): production orders and menu waste read recipes from the BOM engine.
 setInventoryRecipeSource(recipeBomSource);
 
+/** Customer display routes (legend-yhia9 D-08): mismatch answers carry no hint. */
+const CUSTOMER_DISPLAY_PATH =
+  /^\/api\/outlets\/[^/]+\/pos\/customer-display(?:\/|$)/i;
 const SENSITIVE_QUERY = /token|code|secret|password|signature|key/i;
 // A search value with a run of 6+ digits (spaces, "+" and "-" ignored) is
 // likely a phone number, e.g. GET /api/customers?q=081234567890: personal data.
@@ -412,6 +416,16 @@ export function createApp({
       required: false,
       resolveDomain,
       verifyCredential: deviceTenantCredential,
+      // Customer display routes (legend-yhia9 D-08): a device credential of
+      // another tenant gets the same 401 as a forged token, no hint.
+      onMismatch: (req) =>
+        CUSTOMER_DISPLAY_PATH.test(req.originalUrl.split("?")[0] ?? "")
+          ? new HttpError(
+              401,
+              "UNAUTHORIZED",
+              "Token perangkat ini tidak berlaku lagi. Daftarkan ulang perangkat.",
+            )
+          : undefined,
       // Development fallback only for a signed-in caller (the e2e/login flow);
       // brands are read later inside the tenant transaction.
       fallback: developmentSyntheticTenant

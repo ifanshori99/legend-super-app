@@ -62,7 +62,12 @@ import { HttpError } from "../lib/http-error.ts";
 import { logger } from "../lib/logger.ts";
 import { openSecret, sealSecret } from "../lib/secrets.ts";
 import type { Tx } from "./menu-internals.ts";
-import { LATE_PAYMENT_GRACE_MS } from "./qr-order-consumers.ts";
+import { activeHoldOf } from "./pos-qris-hold.ts";
+import { failedOrderCodeWithOpenFundTx } from "./payment-failed-funds.ts";
+import {
+  expiredCodeMayStillPay,
+  failedCodeMayStillPay,
+} from "./payment-live-code.ts";
 import {
   getSessionBill,
   lockGuestSessionForPayment,
@@ -184,35 +189,29 @@ export async function listSessionSplitDtosTx(
  * A code that may still take money. Any `pending` code, whatever its expiry:
  * a lapsed one stays pending until reconciliation hears the gateway's final
  * answer, and it may turn out paid (payment.service.ts `supersedePending`). And
- * a superseded (`expired`) code the gateway received, until its own expiry plus
- * the late-payment grace: the gateway cancel is best effort.
+ * an `expired` code the gateway received until the PROVIDER answered final or
+ * its money was reconciled (SO-885, `expiredCodeMayStillPay`): the gateway
+ * cancel is best effort and the local timeout is not proof.
  */
-function liveCodeWhere(now: Date) {
+function liveCodeWhere() {
   return or(
     eq(paymentIntents.status, "pending"),
-    and(
-      eq(paymentIntents.status, "expired"),
-      isNotNull(paymentIntents.providerRef),
-      gt(
-        paymentIntents.expiresAt,
-        new Date(now.getTime() - LATE_PAYMENT_GRACE_MS),
-      ),
-    ),
+    expiredCodeMayStillPay(),
+    failedCodeMayStillPay(),
   );
 }
 
 /**
  * The split can change only while no money moved: 409 `SPLIT_LOCKED` when a
  * live part is paid, the order's link took money, or a code on the link is
- * still open (pending, or expired with a provider ref the gateway may still
- * accept; both until their expiry plus the late-payment grace).
+ * still open (pending, or expired with a provider ref until the provider
+ * answered final: `liveCodeWhere`; local time never counts as proof).
  * Locks the live parts so a concurrent webhook settles before or after us.
  */
 export async function assertSplitMutableTx(
   tx: Tx,
   context: ScopedTenantContext,
   order: QrOrderRow,
-  now: Date,
 ): Promise<void> {
   const tenantId = context.tenant.tenantId;
   const live = await tx
@@ -230,6 +229,21 @@ export async function assertSplitMutableTx(
     new HttpError(409, "SPLIT_LOCKED", message);
   if (live.some((part) => part.status === "paid"))
     throw locked("Ada bagian yang sudah dibayar; pembagian tidak bisa diubah.");
+  // legend-yhia9: a QRIS of a part (or of the bill) that can still be paid
+  // freezes the split until the provider shows it paid or dead.
+  if (await activeHoldOf(tx, tenantId, order.id))
+    throw locked(
+      "Ada QR pembayaran yang masih bisa dibayar; tunggu sampai dibayar atau berakhir.",
+    );
+  // SO-889: a failed code of the order (whole-order or any part, voided or
+  // not) whose money is still parked blocks a new split and a whole-order
+  // payment until it is refunded or credited; else the guest pays twice.
+  if (await failedOrderCodeWithOpenFundTx(tx, tenantId, order))
+    throw new HttpError(
+      409,
+      "FUNDS_UNRESOLVED",
+      "Uang dari pembayaran sebelumnya belum dikembalikan; selesaikan dulu sebelum membayar lagi.",
+    );
   if (order.paymentLinkId === null) return;
   const [link] = await tx
     .select({ paidIdr: paymentLinks.paidIdr })
@@ -249,7 +263,7 @@ export async function assertSplitMutableTx(
       and(
         eq(paymentIntents.tenantId, tenantId),
         eq(paymentIntents.paymentLinkId, order.paymentLinkId),
-        liveCodeWhere(now),
+        liveCodeWhere(),
       ),
     )
     .limit(1);
@@ -265,7 +279,6 @@ export async function partLiveCodeTx(
   tx: Tx,
   context: ScopedTenantContext,
   partId: string,
-  now: Date,
 ): Promise<{
   id: string;
   method: string;
@@ -284,7 +297,7 @@ export async function partLiveCodeTx(
       and(
         eq(paymentIntents.tenantId, context.tenant.tenantId),
         eq(paymentIntents.billSplitId, partId),
-        liveCodeWhere(now),
+        liveCodeWhere(),
       ),
     )
     .orderBy(desc(paymentIntents.createdAt))
@@ -364,7 +377,7 @@ export async function createSessionSplits(
             "VALIDATION_ERROR",
             "Pesanan dengan deposit reservasi belum bisa dibagi.",
           );
-        await assertSplitMutableTx(tx, context, order, now);
+        await assertSplitMutableTx(tx, context, order);
         if (order.paymentLinkId !== null) {
           const [link] = await tx
             .select({

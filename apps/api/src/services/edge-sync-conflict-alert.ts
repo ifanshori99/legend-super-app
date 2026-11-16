@@ -146,6 +146,8 @@ export type SupervisorAlert = {
   category?: NotificationCategory;
   /** Owners get it even when the outlet has supervisors. */
   alsoOwners?: boolean;
+  /** Extra recipients (for example the cashier who opened the bill). */
+  alsoUserIds?: readonly string[];
   /** `null` for a tenant-wide alert: only the owners are notified. */
   outletId: OutletId | null;
   /** ULID; the notification consumer dedupes on it. */
@@ -171,12 +173,17 @@ export async function notifyOutletSupervisors(
   alert: SupervisorAlert,
   now: Date,
 ): Promise<boolean> {
-  const userIds = await supervisorIds(
-    tx,
-    alert.tenantId,
-    alert.outletId,
-    alert.alsoOwners === true,
-  );
+  const userIds = [
+    ...new Set([
+      ...(await supervisorIds(
+        tx,
+        alert.tenantId,
+        alert.outletId,
+        alert.alsoOwners === true,
+      )),
+      ...(alert.alsoUserIds ?? []),
+    ]),
+  ];
   if (userIds.length === 0) {
     if (alert.recordEmpty) {
       const event = eventEnvelopeSchema.parse({

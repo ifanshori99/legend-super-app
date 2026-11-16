@@ -32,7 +32,10 @@ import {
   closeBusinessDayInputSchema,
   closePosShiftInputSchema,
   forceClosePosShiftInputSchema,
+  customerDisplayPairingCodeSchema,
+  customerDisplayPairingIdSchema,
   customerDisplayPairingSchema,
+  customerDisplaySelectionSchema,
   customerDisplayStateSchema,
   decidePosCashMovementInputSchema,
   discountReasonSchema,
@@ -44,6 +47,7 @@ import {
   orderItemIdSchema,
   orderIdSchema,
   pairCustomerDisplayInputSchema,
+  selectCustomerDisplayBillInputSchema,
   posApprovalPolicySchema,
   posCashMovementDecisionSchema,
   posCashMovementSchema,
@@ -57,6 +61,9 @@ import {
   posOrderEventSchema,
   posOrderStatusSchema,
   posOrderSummarySchema,
+  posQrisHoldSchema,
+  posQrisReconciliationSchema,
+  posQrisReconciliationStatusSchema,
   posReceiptIdSchema,
   posReceiptIssueResultSchema,
   posRefundItemSchema,
@@ -305,6 +312,60 @@ export const posStandaloneEdcSchema = z
     overrideId: posOverrideIdSchema,
   })
   .strict();
+
+/**
+ * legend-yhia9 D-04: the cashier hides the QR (`open` -> `cancelling`). The
+ * tender stays authorized until the provider proves the QR is dead; a repeat
+ * returns the current state, a `paid` / `closed` hold is returned as is.
+ */
+export const cancelPosQris = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/orders/:orderId/qris/cancel",
+  params: orderParams,
+  body: clientInputSchema({
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(posQrisHoldSchema),
+});
+
+/** The newest QRIS hold of the bill (404 when the bill never had one). */
+export const getPosQris = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/pos/orders/:orderId/qris",
+  params: orderParams,
+  response: dataResponseSchema(posQrisHoldSchema),
+});
+
+/**
+ * legend-adiov: force released QRIS codes still being reconciled with the
+ * provider (default `open`; at most 200, newest first).
+ */
+export const listPosQrisReconciliations = defineEndpoint({
+  method: "GET",
+  path: "/api/outlets/:outletId/pos/qris/reconciliations",
+  params: outletParams,
+  query: z.strictObject({
+    status: posQrisReconciliationStatusSchema.optional(),
+  }),
+  response: dataResponseSchema(z.array(posQrisReconciliationSchema)),
+});
+
+/**
+ * Q93: a manager releases a stuck hold with a pos-overrides approval, only from
+ * 30 minutes after the QR expired. Money paid on that QR afterwards is parked
+ * as unallocated funds.
+ */
+export const releasePosQris = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/orders/:orderId/qris/release",
+  params: orderParams,
+  body: clientInputSchema({
+    approvedBy: userIdSchema,
+    overrideId: posOverrideIdSchema,
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(posQrisHoldSchema),
+});
 
 /**
  * Add one tender. The body has no amount: cash sends what the customer handed
@@ -697,5 +758,32 @@ export const pairCustomerDisplay = defineEndpoint({
   path: "/api/outlets/:outletId/pos/customer-display/pair",
   params: outletParams,
   body: pairCustomerDisplayInputSchema,
+  response: dataResponseSchema(customerDisplayPairingSchema),
+});
+
+/** legend-yhia9 D-08: a display device asks for its pairing code. */
+export const createCustomerDisplayPairingCode = defineEndpoint({
+  method: "POST",
+  path: "/api/outlets/:outletId/pos/customer-display/pairing-codes",
+  params: outletParams,
+  response: dataResponseSchema(customerDisplayPairingCodeSchema),
+});
+
+/** The cashier picks the bill the paired display shows (null: idle). */
+export const selectCustomerDisplayBill = defineEndpoint({
+  method: "PUT",
+  path: "/api/outlets/:outletId/pos/customer-display/selection",
+  params: outletParams,
+  body: selectCustomerDisplayBillInputSchema,
+  response: dataResponseSchema(customerDisplaySelectionSchema),
+});
+
+export const revokeCustomerDisplayPairing = defineEndpoint({
+  method: "DELETE",
+  path: "/api/outlets/:outletId/pos/customer-display/pairings/:pairingId",
+  params: z.strictObject({
+    outletId: outletIdSchema,
+    pairingId: customerDisplayPairingIdSchema,
+  }),
   response: dataResponseSchema(customerDisplayPairingSchema),
 });

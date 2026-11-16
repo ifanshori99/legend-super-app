@@ -287,11 +287,19 @@ class FakeGateway implements PaymentGatewayPort {
   }
   async createIntent(input: GatewayIntentRequest) {
     this.created += 1;
-    const instructions: PaymentInstructions = {
-      method: "qris",
-      qrPayload: "00020101021226FAKEQRSPLIT",
-      issuer: null,
-    };
+    const instructions: PaymentInstructions =
+      input.method === "va"
+        ? {
+            method: "va",
+            channelCode: input.channelCode ?? "bmri",
+            channelName: "Mandiri",
+            virtualAccountNumber: "8808123456789012",
+          }
+        : {
+            method: "qris",
+            qrPayload: "00020101021226FAKEQRSPLIT",
+            issuer: null,
+          };
     return {
       providerRef: `QSP-${randomBytes(6).toString("hex")}-${this.created}`,
       instructions,
@@ -305,8 +313,8 @@ class FakeGateway implements PaymentGatewayPort {
       amountIdr: null,
     };
   }
-  async channels() {
-    return [];
+  async channels(_context: unknown, method: string) {
+    return method === "va" ? [{ code: "bmri", name: "Mandiri" }] : [];
   }
 }
 
@@ -393,7 +401,8 @@ function as(guest: Guest) {
     pay: (orderId: string) =>
       auth(client.post(`${base}/payments`)).send({
         target: { kind: "order", orderId },
-        method: "qris",
+        method: "va",
+        bankCode: "bmri",
         idempotencyKey: randomUUID(),
       }),
   };
@@ -462,6 +471,8 @@ async function splitPaidOrder() {
   expect(placed.status).toBe(201);
   const orderId = placed.body.data.order.id as string;
   const totalIdr = placed.body.data.order.totalIdr as number;
+  // legend-kf104: P1 is a VA. A QR P1 holds the full amount (frozen), and this
+  // fixture turns the code into a 60% part-payment, which the hold would reject.
   const opened = await as(guest).pay(orderId);
   expect(opened.status).toBe(201);
   const p1 = opened.body.data.id as string;
@@ -475,7 +486,7 @@ async function splitPaidOrder() {
   );
   await confirmPayment(contextOf(tenant.tenantId), p1, {
     source: "verified_webhook",
-    method: "qris",
+    method: "va",
     amountIdr: share1,
     providerRef: `WEBHOOK-${randomBytes(6).toString("hex")}`,
     at: new Date().toISOString(),

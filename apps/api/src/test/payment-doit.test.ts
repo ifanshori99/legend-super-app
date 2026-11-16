@@ -1114,6 +1114,7 @@ describe("DOIT adapter: getStatus", () => {
 
     expect(result).toEqual({
       status: "pending",
+      rawStatus: "pending",
       providerRef: "pay_0001",
       amountIdr: null,
       paidAt: null,
@@ -1138,6 +1139,7 @@ describe("DOIT adapter: getStatus", () => {
     });
     expect(await status()).toEqual({
       status: "paid",
+      rawStatus: "paid",
       providerRef: "pay_0001",
       amountIdr: 50_000,
       paidAt: null,
@@ -1179,6 +1181,7 @@ describe("DOIT adapter: getStatus", () => {
     });
     expect(await status()).toEqual({
       status: expected,
+      rawStatus: provider,
       providerRef: "pay_0001",
       amountIdr: null,
       paidAt: null,
@@ -1203,6 +1206,7 @@ describe("DOIT adapter: getStatus", () => {
     });
     expect(await status()).toEqual({
       status: "paid",
+      rawStatus: "paid",
       providerRef: "pay_0001",
       amountIdr: 50_000,
       paidAt: "2026-11-08T10:05:00.000Z",
@@ -1232,6 +1236,7 @@ describe("DOIT adapter: getStatus", () => {
     });
     expect(await status()).toEqual({
       status: "paid",
+      rawStatus: "paid",
       providerRef: "pay_0001",
       amountIdr: 50_000,
       paidAt: null,
@@ -1249,6 +1254,7 @@ describe("DOIT adapter: getStatus", () => {
     });
     expect(await status()).toEqual({
       status: "paid",
+      rawStatus: "paid",
       providerRef: "pay_0001",
       amountIdr: 50_000,
       paidAt: "2026-11-08T10:05:00.000Z",

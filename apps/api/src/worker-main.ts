@@ -145,6 +145,8 @@ import { runDueDepreciation } from "./worker/accounting-depreciation.job.ts";
 import { runPayoutEvidenceBackfillSweep } from "./worker/payout-evidence-backfill.job.ts";
 import { runPayoutGlRecoverySweep } from "./worker/payout-gl-recovery.job.ts";
 import { runPaymentGatewayPollJob } from "./worker/payment-gateway-poll.job.ts";
+import { runPosQrisHoldCheckJob } from "./worker/pos-qris-hold-check.job.ts";
+import { runPosQrisReleaseReconJob } from "./worker/pos-qris-release-recon.job.ts";
 import { expireDueIntents } from "./services/payment.service.ts";
 import { createDuitkuGateway } from "./services/payment-duitku.ts";
 import { registerPaymentGateway } from "./services/payment-gateway.ts";
@@ -612,6 +614,20 @@ const relay = createRelayRuntime({
       await runPaymentGatewayPollJob(context, new Date());
     } catch {
       console.error("Payment gateway poll sweep failed");
+    }
+    // legend-yhia9 (D-04): close QRIS holds on provider proof only. Cloud and
+    // edge; fail closed like the sweeps (a hold stays frozen on any error).
+    try {
+      await runPosQrisHoldCheckJob(context, new Date());
+    } catch {
+      console.error("QRIS hold check sweep failed");
+    }
+    // legend-adiov (so-879): keep asking the provider about every force
+    // released QRIS until it answers for good; found money is parked once.
+    try {
+      await runPosQrisReleaseReconJob(context, new Date());
+    } catch {
+      console.error("QRIS release reconciliation sweep failed");
     }
     // legend-jf4i (PRD §3.13 Siklus Pembayaran): expire pending intents whose
     // time is up and emit payment.expired, so a code lapses without a guest

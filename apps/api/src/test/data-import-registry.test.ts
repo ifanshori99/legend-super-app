@@ -246,6 +246,10 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
   // legend-p2v4s (900)
   "0399_payout_proof_global_gate.sql":
     "function bodies only, no row edited: app.payout_proof_contest_own (SECURITY DEFINER, called by the backfill) inserts the non-empty hashes of the caller tenant's own binding into the global payroll_payout_proof_hash_contests (ON CONFLICT DO NOTHING); the migration itself adds the stuck operations column with its default and writes no row, no amount touched",
+  "0401_pos_qris_holds.sql":
+    "backfills one open pos_qris_holds row (backfilled = true) for each existing authorized QRIS tender with an unpaid payment link and for each pending QRIS bill-split intent, aborting first if a bill has more than one collectible QRIS, plus one open backfilled hold per ambiguous provider code (QRIS intent with a provider_ref, not paid or failed, of a voided or failed POS QRIS tender, an expired split part, a guest order-wide code, or a sibling code on a POS tender's link) on a bill that is not completed or voided; only inserts into the new table, edits no existing row, no amount touched; FORCE RLS lifted on bill_splits, payment_intents, pos_order_tenders and pos_orders for those statements and restored",
+  "0403_pos_customer_display.sql":
+    "no backfill: the only UPDATE statements are trigger bodies that bump customer_display_sessions.version when the selected order, QRIS hold or tender changes at runtime; touches no existing row at migration time, no amount touched",
 };
 
 // Entrypoints that open a database pool but import no data.

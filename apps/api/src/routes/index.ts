@@ -139,6 +139,7 @@ import { servingTimeRouter } from "./serving-time.routes.ts";
 import { kdsRouter } from "./kds.routes.ts";
 import { orderIssuesRouter } from "./order-issues.routes.ts";
 import { orderRecoveryChargeRouter } from "./order-recovery-charge.routes.ts";
+import { customerDisplayRouter } from "./customer-display.routes.ts";
 import { posOrderRouter } from "./pos-order.routes.ts";
 import { posParkedOrderRouter } from "./pos-parked-order.routes.ts";
 import { posReceiptRouter, publicReceiptRouter } from "./pos-receipt.routes.ts";
@@ -266,6 +267,9 @@ apiRouter.use("/floor", floorRouter);
 // WS-04 POS order service (legend-kk7): contract paths
 // /api/outlets/:outletId/pos/*; the router merges params. Before the floor's
 // /outlets router so POS requests do not run its middleware too.
+// legend-yhia9 D-08 customer display: device-token routes, before the order
+// router whose requireAuth would refuse a display without a session.
+apiRouter.use("/outlets/:outletId/pos", customerDisplayRouter);
 apiRouter.use("/outlets/:outletId/pos", posOrderRouter);
 apiRouter.use("/outlets/:outletId/pos", posParkedOrderRouter);
 // WS-04 receipts, kuitansi and invoices (legend-93a): same prefix, own routes;

@@ -42,9 +42,11 @@ import {
 import {
   confirmPayment,
   expireDueIntents,
+  pollPendingGatewayIntents,
 } from "../services/payment.service.ts";
 import { qrOrderSettlementLookup } from "../services/qr-order.service.ts";
 import { setTableSessionSettlementLookup } from "../services/table-session.service.ts";
+import { runPosQrisHoldCheckJob } from "../worker/pos-qris-hold-check.job.ts";
 import { agent, originHeader } from "./helpers.ts";
 import {
   createIsolatedTenant,
@@ -239,6 +241,39 @@ async function placeOrder(guest: Guest) {
     orderId: placed.body.data.order.id as string,
     totalIdr: placed.body.data.order.totalIdr as number,
   };
+}
+
+/**
+ * SO-885 (legend-kf104, legend-tqkbb): a bill takes one collectible code, so a
+ * guest can only switch bank or method once the provider answered final for the
+ * old code (a local expiry or the switch itself proves nothing). The provider
+ * answers `expired`, the guest's poll records it, and the QR hold check (a QR
+ * has a hold) closes the hold past the code's life + margin. SO-889: the
+ * answer is final only once the code's life + margin has passed, so the
+ * payment poll asks again at that time.
+ */
+async function providerClosesCode(guest: Guest, intentId: string) {
+  gateway.providerStatus = "expired";
+  try {
+    const polled = await as(guest).payment(intentId);
+    expect(polled.body.data.status).toBe("expired");
+    const { rows } = await owner.query<{ expires_at: Date }>(
+      "SELECT expires_at FROM payment_intents WHERE tenant_id = $1 AND id = $2::uuid",
+      [tenant.tenantId, intentId],
+    );
+    await pollPendingGatewayIntents(
+      contextOf(tenant.tenantId),
+      new Date(rows[0]!.expires_at.getTime() + 61_000),
+      200,
+    );
+    await runPosQrisHoldCheckJob(
+      contextOf(tenant.tenantId),
+      new Date(Date.now() + 24 * 60 * 60_000),
+      { force: true },
+    );
+  } finally {
+    gateway.providerStatus = "pending";
+  }
 }
 
 async function totalIdrOf(orderId: string): Promise<number> {
@@ -487,7 +522,17 @@ describe("QR guest virtual account (legend-3160)", () => {
     expect(again.body.data.vaNumber).toBe(first.body.data.vaNumber);
     expect(gateway.requests.length).toBe(created);
 
-    // Another bank opens a new VA and supersedes the first one.
+    // Another bank is refused while the first VA may still be paid: nothing
+    // reaches the provider and the first code stays the live one.
+    const refused = await as(guest).pay(orderId, "va", "bnia");
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(refused.body.error.code).toBe("ORDER_CODE_ACTIVE");
+    expect(gateway.requests.length).toBe(created);
+    expect((await intentRow(first.body.data.id)).status).toBe("pending");
+
+    // The provider answered final for the first VA: another bank opens a new
+    // one for the bill.
+    await providerClosesCode(guest, first.body.data.id);
     const switched = await as(guest).pay(orderId, "va", "bnia");
     expect(switched.status).toBe(201);
     expect(switched.body.data.id).not.toBe(first.body.data.id);
@@ -497,10 +542,6 @@ describe("QR guest virtual account (legend-3160)", () => {
       bankName: "CIMB Niaga",
     });
     expect((await intentRow(first.body.data.id)).status).toBe("expired");
-    // The provider is asked to close the old VA so it stops taking money.
-    expect(gateway.cancelled.at(-1)).toMatchObject({
-      intentId: first.body.data.id,
-    });
     // The old code still answers its poll, with its real status.
     const old = await as(guest).payment(first.body.data.id);
     expect(old.status).toBe(200);
@@ -509,15 +550,13 @@ describe("QR guest virtual account (legend-3160)", () => {
       status: "expired",
       bankCode: "bmri",
     });
-    const superseded = await outboxEvents(
-      "payment.expired",
-      first.body.data.id,
-    );
-    expect(superseded.map((event) => event.payload.reason)).toEqual([
-      "superseded",
-    ]);
+    const closed = await outboxEvents("payment.expired", first.body.data.id);
+    expect(closed.map((event) => event.payload.reason)).toEqual(["gateway"]);
 
-    // Back to QRIS supersedes the VA the same way.
+    // Back to QRIS: refused while the second VA may be paid, then allowed once
+    // the provider closed it.
+    expect((await as(guest).pay(orderId, "qris")).status).toBe(409);
+    await providerClosesCode(guest, switched.body.data.id);
     const qris = await as(guest).pay(orderId, "qris");
     expect(qris.status).toBe(201);
     expect(qris.body.data).toMatchObject({
@@ -623,6 +662,7 @@ describe("QR guest virtual account (legend-3160)", () => {
     const guest = await seatAtNewTable();
     const { orderId, totalIdr } = await placeOrder(guest);
     const first = await as(guest).pay(orderId, "va", "bmri");
+    await providerClosesCode(guest, first.body.data.id);
     const second = await as(guest).pay(orderId, "va", "bnia");
     expect(second.status).toBe(201);
     const oldId = first.body.data.id as string;
@@ -658,16 +698,18 @@ describe("QR guest virtual account (legend-3160)", () => {
     expect(await refundsOf(oldId)).toHaveLength(1);
   });
 
-  it("bank switches are not payment attempts: the last code's expiry allows a retry", async () => {
+  it("a provider-closed VA counts as an attempt; the last code's local expiry still allows a retry", async () => {
+    // SO-885: a bank switch needs the provider's final answer on the old code,
+    // so it is a real attempt (3 attempts void the order); with two codes the
+    // last one timing out locally leaves one attempt, so the guest may retry.
     const guest = await seatAtNewTable();
     const { orderId } = await placeOrder(guest);
     let last = "";
     for (const [method, bank] of [
       ["va", "bmri"],
       ["va", "bnia"],
-      ["qris", undefined],
-      ["va", "bmri"],
     ] as const) {
+      if (last !== "") await providerClosesCode(guest, last);
       const response = await as(guest).pay(orderId, method, bank);
       expect(response.status).toBe(201);
       last = response.body.data.id as string;
@@ -689,6 +731,7 @@ describe("QR guest virtual account (legend-3160)", () => {
     const guest = await seatAtNewTable();
     const { orderId, totalIdr } = await placeOrder(guest);
     const first = await as(guest).pay(orderId, "va", "bmri");
+    await providerClosesCode(guest, first.body.data.id);
     const second = await as(guest).pay(orderId, "va", "bnia");
     expect(second.status).toBe(201);
     const oldId = first.body.data.id as string;
@@ -731,14 +774,10 @@ describe("QR guest virtual account (legend-3160)", () => {
       const opened = await as(guest).pay(orderId, "qris");
       expect(opened.status).toBe(201);
       last = opened.body.data.id as string;
-      // The provider closes the code before its own deadline.
-      gateway.providerStatus = "expired";
-      try {
-        const polled = await as(guest).payment(last);
-        expect(polled.body.data.status).toBe("expired");
-      } finally {
-        gateway.providerStatus = "pending";
-      }
+      // The provider closes the code before its own deadline; its final
+      // answer also lets the QR hold check close the hold (SO-885), which
+      // would otherwise keep the next code and the void away.
+      await providerClosesCode(guest, last);
     }
     const [expired] = await outboxEvents("payment.expired", last);
     expect(expired?.payload.reason).toBe("gateway");

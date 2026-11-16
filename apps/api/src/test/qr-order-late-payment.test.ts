@@ -43,10 +43,14 @@ import {
 } from "../services/payment-gateway.ts";
 import { setPaymentRefundGateway } from "../services/payment-refund-gateway.ts";
 import { confirmPayment } from "../services/payment.service.ts";
-import { LATE_PAYMENT_GRACE_MS } from "../services/qr-order-consumers.ts";
+import {
+  LATE_PAYMENT_GRACE_MS,
+  sweepUnpaidQrOrders,
+} from "../services/qr-order-consumers.ts";
 import { getGuestPayment } from "../services/qr-order-payment.ts";
 import { qrOrderSettlementLookup } from "../services/qr-order.service.ts";
 import { setTableSessionSettlementLookup } from "../services/table-session.service.ts";
+import { runPosQrisHoldCheckJob } from "../worker/pos-qris-hold-check.job.ts";
 import { agent, originHeader, verifySessionMfa } from "./helpers.ts";
 import { FakeRefundGateway } from "./refund-fake-gateway.ts";
 import {
@@ -89,11 +93,19 @@ class FakeGateway implements PaymentGatewayPort {
   }
   async createIntent(input: GatewayIntentRequest) {
     this.created += 1;
-    const instructions: PaymentInstructions = {
-      method: "qris",
-      qrPayload: "00020101021226FAKEQRLATE",
-      issuer: null,
-    };
+    const instructions: PaymentInstructions =
+      input.method === "va"
+        ? {
+            method: "va",
+            channelCode: input.channelCode ?? "bmri",
+            channelName: "Mandiri",
+            virtualAccountNumber: "8808123456789012",
+          }
+        : {
+            method: "qris",
+            qrPayload: "00020101021226FAKEQRLATE",
+            issuer: null,
+          };
     return {
       providerRef: `QLP-${randomBytes(6).toString("hex")}-${this.created}`,
       instructions,
@@ -107,8 +119,8 @@ class FakeGateway implements PaymentGatewayPort {
       amountIdr: null,
     };
   }
-  async channels() {
-    return [];
+  async channels(_context: unknown, method: string) {
+    return method === "va" ? [{ code: "bmri", name: "Mandiri" }] : [];
   }
 }
 const gateway = new FakeGateway();
@@ -189,10 +201,11 @@ function as(guest: Guest) {
         expectedCartVersion,
         idempotencyKey: randomUUID(),
       }),
-    pay: (orderId: string) =>
+    pay: (orderId: string, method: "qris" | "va" = "qris") =>
       auth(client.post(`${base}/payments`)).send({
         target: { kind: "order", orderId },
-        method: "qris",
+        method,
+        ...(method === "va" ? { bankCode: "bmri" } : {}),
         idempotencyKey: randomUUID(),
       }),
   };
@@ -210,8 +223,12 @@ async function placeOrder(guest: Guest) {
   };
 }
 
-async function openPayment(guest: Guest, orderId: string): Promise<string> {
-  const paid = await as(guest).pay(orderId);
+async function openPayment(
+  guest: Guest,
+  orderId: string,
+  method: "qris" | "va" = "qris",
+): Promise<string> {
+  const paid = await as(guest).pay(orderId, method);
   expect(paid.status).toBe(201);
   expect(paid.body.data.status).toBe("pending");
   return paid.body.data.id as string;
@@ -222,10 +239,11 @@ async function settle(
   intentId: string,
   amountIdr: number,
   providerRef: string,
+  method: "qris" | "va" = "qris",
 ) {
   await confirmPayment(contextOf(tenant.tenantId), intentId, {
     source: "verified_webhook",
-    method: "qris",
+    method,
     amountIdr,
     providerRef,
     at: new Date().toISOString(),
@@ -260,6 +278,30 @@ async function deliver(
   return withTenant(db, context, (tx) =>
     deliverOrderPaymentEvent(context, event, tx, now),
   );
+}
+
+/**
+ * legend-kf104: the guest QR holds its bill until the hold check job has the
+ * provider's own proof that the code is dead (answer `failed` at or after the
+ * code's expiry + 60 s). The unpaid-order void and a replacement code both
+ * wait for it, so a test that reaches them first lets the job run, at `now`,
+ * with the provider answering `failed`.
+ */
+async function proveDead(now: Date) {
+  const context = establishScopedTenantContext(
+    establishTenantContext({
+      tenantId: tenantIdSchema.parse(tenant.tenantId),
+      brandId: null,
+      source: "job",
+    }),
+    { kind: "tenant" },
+  );
+  gateway.status = "failed";
+  try {
+    await runPosQrisHoldCheckJob(context, now, { force: true });
+  } finally {
+    gateway.status = "pending";
+  }
 }
 
 async function orderRow(orderId: string) {
@@ -377,7 +419,12 @@ describe("QR pay-first late payment after payment.failed (legend-b0au, legend-da
   it("a failed code waits the grace; a verified settlement on the voided order files one system refund", async () => {
     const guest = await seatAtNewTable();
     const { orderId, totalIdr } = await placeOrder(guest);
-    const intentId = await openPayment(guest, orderId);
+    // The code is a VA: a QR code holds its bill until the provider proves it
+    // dead, and a payment after that proof is parked, never refunded through
+    // this consumer (legend-kf104). A VA has no hold, so the grace and the late
+    // payment on a voided order work as before. The QR hold paths are the
+    // describe at the end of this file.
+    const intentId = await openPayment(guest, orderId, "va");
 
     // The gateway reports the code failed on the guest's status poll.
     const failedAt = new Date();
@@ -430,7 +477,7 @@ describe("QR pay-first late payment after payment.failed (legend-b0au, legend-da
 
     // The guest's money still arrives: a verified webhook settles it late.
     const ref = `WEBHOOK-${randomBytes(6).toString("hex")}`;
-    await settle(intentId, totalIdr, ref);
+    await settle(intentId, totalIdr, ref, "va");
     const settled = await intentRow(intentId);
     expect(settled.status).toBe("paid");
     expect(settled.flags).toContain("late_payment");
@@ -459,7 +506,7 @@ describe("QR pay-first late payment after payment.failed (legend-b0au, legend-da
     expect((await orderRow(orderId)).status).toBe("voided");
 
     // Replays (sequential and concurrent): still one refund, one audit.
-    await settle(intentId, totalIdr, ref);
+    await settle(intentId, totalIdr, ref, "va");
     expect(await outboxEvents("payment.paid", intentId)).toHaveLength(1);
     await deliver(paid);
     await Promise.all([deliver(paid), deliver(paid)]);
@@ -476,7 +523,7 @@ describe("QR pay-first late payment after payment.failed (legend-b0au, legend-da
     );
     const guest = await seatAtNewTable();
     const { orderId, totalIdr } = await placeOrder(guest);
-    const intentId = await openPayment(guest, orderId);
+    const intentId = await openPayment(guest, orderId, "va");
     const failedAt = new Date();
     gateway.status = "failed";
     try {
@@ -508,6 +555,7 @@ describe("QR pay-first late payment after payment.failed (legend-b0au, legend-da
       intentId,
       totalIdr,
       `WEBHOOK-${randomBytes(6).toString("hex")}`,
+      "va",
     );
     const paid = await onlyEvent("payment.paid", intentId);
     expect(await deliver(paid)).toEqual({
@@ -551,7 +599,7 @@ describe("QR late-payment refund ignores refunds still pending (legend-leqj6)", 
   async function lateSettledOrder() {
     const guest = await seatAtNewTable();
     const { orderId, totalIdr } = await placeOrder(guest);
-    const intentId = await openPayment(guest, orderId);
+    const intentId = await openPayment(guest, orderId, "va");
     const failedAt = new Date();
     gateway.status = "failed";
     try {
@@ -585,6 +633,7 @@ describe("QR late-payment refund ignores refunds still pending (legend-leqj6)", 
       intentId,
       totalIdr,
       `WEBHOOK-${randomBytes(6).toString("hex")}`,
+      "va",
     );
     return {
       intentId,
@@ -715,5 +764,70 @@ describe("QR late-payment refund ignores refunds still pending (legend-leqj6)", 
     );
     expect(late).toHaveLength(1);
     expect(late[0]).toMatchObject({ amount_idr: String(totalIdr - 1000) });
+  });
+});
+
+describe("legend-kf104 the guest QR hold keeps the unpaid void and a replacement code waiting", () => {
+  it("before the provider proves the code dead: a replacement is refused 409, the void is left for later, no money moves; after the proof the void and a new code work", async () => {
+    const guest = await seatAtNewTable();
+    const { orderId } = await placeOrder(guest);
+    const intentId = await openPayment(guest, orderId);
+    const failedAt = new Date();
+    gateway.status = "failed";
+    try {
+      await getGuestPayment(
+        contextOf(tenant.tenantId),
+        guest.token,
+        guest.sessionId,
+        intentId,
+        failedAt,
+      );
+    } finally {
+      gateway.status = "pending";
+    }
+    const failed = await onlyEvent("payment.failed", intentId);
+    const createdBefore = gateway.created;
+
+    // The local status says failed, but only the job's proof closes the hold.
+    const early = await as(guest).pay(orderId);
+    expect(early.status, JSON.stringify(early.body)).toBe(409);
+    expect(JSON.stringify(early.body)).toContain("QRIS_HOLD_ACTIVE");
+    expect(gateway.created, "no replacement code at the provider").toBe(
+      createdBefore,
+    );
+    expect((await orderRow(orderId)).status).toBe("awaiting_payment");
+    expect(await refundsOfIntent(intentId)).toEqual([]);
+
+    // The void is refused by the hold: the consumer leaves the order (it
+    // retries on the next event / sweep), it does not throw or dead-letter.
+    const { expires_at: codeEnd } = await intentRow(intentId);
+    const afterGrace = new Date(
+      codeEnd.getTime() + LATE_PAYMENT_GRACE_MS + MINUTE,
+    );
+    expect(await deliver(failed, afterGrace)).not.toEqual({
+      route: "qr",
+      outcome: "voided",
+    });
+    expect((await orderRow(orderId)).status).toBe("awaiting_payment");
+
+    await proveDead(afterGrace);
+    const next = await as(guest).pay(orderId);
+    expect(next.status, JSON.stringify(next.body)).toBe(201);
+    expect(next.body.data.id).not.toBe(intentId);
+    expect(gateway.created).toBe(createdBefore + 1);
+  });
+
+  it("the unpaid sweep skips a bill whose QR hold is active and still voids the bill behind it", async () => {
+    const holdGuest = await seatAtNewTable();
+    const held = await placeOrder(holdGuest);
+    await openPayment(holdGuest, held.orderId);
+    const idleGuest = await seatAtNewTable();
+    const idle = await placeOrder(idleGuest);
+
+    const later = new Date(Date.now() + 3 * 60 * MINUTE);
+    const result = await sweepUnpaidQrOrders(contextOf(tenant.tenantId), later);
+    expect(result.voided).toBeGreaterThanOrEqual(1);
+    expect((await orderRow(idle.orderId)).status).toBe("voided");
+    expect((await orderRow(held.orderId)).status).toBe("awaiting_payment");
   });
 });
