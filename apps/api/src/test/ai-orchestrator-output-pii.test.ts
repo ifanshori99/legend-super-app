@@ -23,6 +23,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AiToolCode } from "@starter/shared/ai";
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { createFakeProvider } from "../lib/ai/fake.ts";
+import * as pii from "../lib/ai/pii.ts";
 import { scanPii } from "../lib/ai/pii.ts";
 import type { AccessSnapshot } from "../services/permission-resolver.ts";
 import {
@@ -184,6 +185,10 @@ const ask = (h: ReturnType<typeof harness>) =>
 describe("scanner sanity: the samples are PII the existing scanner knows", () => {
   it.each(SAMPLES)("$kind sample is found by scanPii", ({ kind, text }) => {
     expect(scanPii(text).found).toContain(kind);
+    // New behavior: the scanner module exposes the salary-amount helpers the
+    // output masking uses (they did not exist before legend-39d.4).
+    expect(pii.normalizeSalaryAmount).toBeTypeOf("function");
+    expect(pii.collectSalaryAmounts).toBeTypeOf("function");
   });
 });
 
@@ -257,6 +262,13 @@ describe("AIG-02 PII in model output (legend-39d.4)", () => {
     expect(result.assistantMessage.content).toBe(clean);
     expect(h.cachePut).toHaveBeenCalledTimes(1);
     expect(h.auditOutputPii).not.toHaveBeenCalled();
+    // Adjacent control (without output masking a NIK would pass through too):
+    // the same harness masks a NIK in a dirty answer and audits it.
+    const dirty = harness(`${clean} ${SAMPLES[0]!.text}`);
+    const masked = await ask(dirty);
+    expect(masked.assistantMessage.content).toContain(clean);
+    expect(masked.assistantMessage.content).not.toContain("3174011501900001");
+    expect(dirty.auditOutputPii).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -292,6 +304,15 @@ describe("AIG-02 salary amount in the caller's own payslip turn (legend-39d.4)",
         (call) => (call[1] as { kinds: string[] }).kinds,
       );
       expect(audited).not.toContain("salary");
+      // Adjacent control in the same turn type: the exemption is only for the
+      // salary kind, so a NIK in the same answer is masked and audited.
+      const other = harness(
+        `Slip Anda. ${nik.text}`,
+        withTool(toolCode, { netIdr: 8500000 }),
+      );
+      const masked = await ask(other);
+      expect(masked.assistantMessage.content).not.toContain("3174011501900001");
+      expect(other.auditOutputPii).toHaveBeenCalledTimes(1);
     },
   );
 
@@ -336,6 +357,15 @@ describe("AIG-02 salary amount in the caller's own payslip turn (legend-39d.4)",
     expect(result.assistantMessage.content).toContain("Rp 8500000");
     expect(result.assistantMessage.content).toContain("8.500.000,00");
     expect(result.assistantMessage.content).not.toContain("[salary amount]");
+    // Adjacent control: a different amount in the same kind of turn is masked.
+    const other = harness(
+      "Gaji Rp 8500000 dan gaji Budi Rp 12.000.000.",
+      withTool("TL-09", { netIdr: "Rp 8.500.000" }),
+    );
+    const masked = await ask(other);
+    expect(masked.assistantMessage.content).toContain("Rp 8500000");
+    expect(masked.assistantMessage.content).not.toContain("12.000.000");
+    expect(pii.normalizeSalaryAmount).toBeTypeOf("function");
   });
 
   it("legend-39d.4 salary amount is masked when the tool result holds a different amount", async () => {

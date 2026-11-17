@@ -103,6 +103,25 @@ async function makeSide(tenant: string): Promise<Side> {
   return { userId, clientRowId, tokenId };
 }
 
+/** Fails the test unless `mcp_token_id` exists (a missing column is not an FK refusal). */
+async function expectTokenColumn() {
+  const { rows } = await ownerPool.query(
+    `SELECT column_name FROM information_schema.columns
+      WHERE table_name = 'ai_tool_calls' AND column_name = 'mcp_token_id'`,
+  );
+  expect(rows).toEqual([{ column_name: "mcp_token_id" }]);
+}
+
+/** The pg error code of a rejected insert (23503 = foreign_key_violation). */
+async function sqlState(attempt: Promise<unknown>): Promise<string> {
+  try {
+    await attempt;
+  } catch (error) {
+    return String((error as { code?: unknown }).code);
+  }
+  throw new Error("Expected the insert to be rejected");
+}
+
 const insertCall = (
   tenant: string,
   side: Side,
@@ -194,16 +213,23 @@ describe("ai_tool_calls.mcp_token_id (legend-39d.4)", () => {
 
   it("legend-39d.4 rejects a token id that does not exist", async () => {
     const side = sides[tenantA]!;
-    await expect(insertCall(tenantA, side, randomUUID())).rejects.toThrow();
+    await expectTokenColumn();
+    // 23503 = foreign_key_violation; "column does not exist" (42703) would not do.
+    expect(await sqlState(insertCall(tenantA, side, randomUUID()))).toBe(
+      "23503",
+    );
   });
 
   it("legend-39d.4 rejects a call that points at another tenant's token", async () => {
     // Tenant B writes a call carrying tenant A's token id.
     const foreign = sides[tenantA]!;
     const own = sides[tenantB]!;
-    await expect(
-      insertCall(tenantB, { ...own }, foreign.tokenId),
-    ).rejects.toThrow();
+    await expectTokenColumn();
+    // Assumed: a (tenant_id, mcp_token_id) composite FK, so the refusal is an
+    // FK violation, not a missing column or an RLS error.
+    expect(
+      await sqlState(insertCall(tenantB, { ...own }, foreign.tokenId)),
+    ).toBe("23503");
   });
 
   it("legend-39d.4 keeps RLS: tenant B never sees tenant A's call, with or without the token filter", async () => {
@@ -228,6 +254,7 @@ describe("ai_tool_calls.mcp_token_id (legend-39d.4)", () => {
   });
 
   it("legend-39d.4 RLS stays enabled and forced on the table", async () => {
+    await expectTokenColumn();
     const { rows } = await ownerPool.query(
       `SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = 'ai_tool_calls'`,
     );

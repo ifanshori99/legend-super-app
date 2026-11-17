@@ -46,8 +46,8 @@ function domainWriteHeld(
   toolCode: AiToolCode,
   payload: Record<string, unknown>,
 ): boolean {
-  // TL-13 drafts a purchase order: the catalog asks for `purchasing.request.create`
-  // (which a kitchen lead holds), but the order itself needs `purchasing.order.create`.
+  // TL-13 drafts a purchase order: the order itself needs `purchasing.order.create`,
+  // as the manual screen does (the catalog roles already exclude kitchen_lead).
   if (toolCode === "TL-13") return via("purchasing.order.create");
   if (toolCode !== "TL-14") return true;
   const lines = Array.isArray(payload.lines)

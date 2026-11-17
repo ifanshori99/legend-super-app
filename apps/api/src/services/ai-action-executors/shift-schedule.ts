@@ -11,7 +11,8 @@
 // Two phases. Phase 1 reads and validates every shift and writes nothing.
 // Phase 2 writes; the roster service commits each assignment on its own, so
 // on an error the drafts created in this run are cancelled before the error
-// reaches the caller.
+// reaches the caller. Only drafts this run inserted are cancelled: a shift
+// replayed from an earlier attempt, or one a manager has since published, stays.
 //
 // Idempotency: each assignment uses the key `ai-action:<actionRequestId>:<n>`
 // (its index in the draft), so a re-run after a crash replays the stored
@@ -20,7 +21,11 @@ import { and, asc, eq } from "drizzle-orm";
 import { draftShiftScheduleInputSchema } from "@starter/shared/ai";
 import { createShiftAssignment as createShiftAssignmentEndpoint } from "@starter/shared/hris";
 import { db } from "../../db/index.ts";
-import { shiftTemplates, stations } from "../../db/schema/index.ts";
+import {
+  shiftAssignments,
+  shiftTemplates,
+  stations,
+} from "../../db/schema/index.ts";
 import { withTenant } from "../../db/tenant.ts";
 import {
   cancelShiftAssignment,
@@ -110,27 +115,48 @@ export const executeShiftSchedule: ActionExecutor = async ({
     });
   });
 
-  // Phase 2: write; undo this run's drafts if one fails.
-  const created: string[] = [];
+  // Phase 2: write; undo the drafts this run inserted if one fails.
+  const handled: string[] = [];
+  const insertedHere: string[] = [];
   try {
     for (const step of steps) {
+      let inserted = false;
       const assignment = await createShiftAssignment(
         context,
         row.requestedByUserId,
         step,
         now,
+        (outcome) => {
+          inserted = outcome.created;
+        },
       );
-      created.push(assignment.id);
+      handled.push(assignment.id);
+      if (inserted) insertedHere.push(assignment.id);
     }
   } catch (error) {
-    for (const id of created)
+    for (const id of insertedHere) {
+      // A manager may have published the draft meanwhile: leave it alone.
+      const [current] = await withTenant(db, context, (tx) =>
+        tx
+          .select({ status: shiftAssignments.status })
+          .from(shiftAssignments)
+          .where(
+            and(
+              eq(shiftAssignments.tenantId, row.tenantId),
+              eq(shiftAssignments.id, id),
+            ),
+          )
+          .limit(1),
+      ).catch(() => []);
+      if (current?.status !== "draft") continue;
       await cancelShiftAssignment(
         context,
         row.requestedByUserId,
         id,
         now,
       ).catch(() => undefined);
+    }
     throw error;
   }
-  return { resultRef: `shift_assignment:${created[0]}` };
+  return { resultRef: `shift_assignment:${handled[0]}` };
 };

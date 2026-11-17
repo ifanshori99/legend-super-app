@@ -384,24 +384,18 @@ describe("TL-13 draft_purchase_order (AIG-03)", () => {
       writeTools["TL-13"]!(await ctxOf(marketing), poInput()),
     ).rejects.toMatchObject({ code: "AI_TOOL_FORBIDDEN" });
     expect(await purchaseOrders(tenantId, own.supplierId)).toHaveLength(0);
-  });
-
-  it("refuses an outlet outside a kitchen lead's assigned outlets", async () => {
-    const lead = await signedIn("Kitchen Lead W13");
-    await grantTemplateRole(lead.userId, "kitchen_lead", {
-      type: "outlet",
-      id: outletA,
-    });
-    await expect(
-      writeTools["TL-13"]!(await ctxOf(lead), {
-        ...poInput(),
-        outletId: outletB,
-      }),
-    ).rejects.toMatchObject({ code: "AI_TOOL_FORBIDDEN" });
+    // Positive control (on the stub every caller got AI_TOOL_DISABLED): the
+    // authorised role's proposal is accepted as a pending request.
+    const receipt = await propose(
+      "TL-13",
+      await purchasingRequester(),
+      poInput(),
+    );
+    expect(receipt.status).toBe("pending");
     expect(await purchaseOrders(tenantId, own.supplierId)).toHaveLength(0);
-  });
+  }, 60_000);
 
-  it("a kitchen lead is refused: no purchasing.order.create, same as the manual screen", async () => {
+  it("a kitchen lead is refused at the catalog role gate: no purchasing.order.create, same as the manual screen", async () => {
     const lead = await signedIn("Kitchen Lead Own W13");
     await grantTemplateRole(lead.userId, "kitchen_lead", {
       type: "outlet",
@@ -411,10 +405,22 @@ describe("TL-13 draft_purchase_order (AIG-03)", () => {
       writeTools["TL-13"]!(await ctxOf(lead), poInput()),
     ).rejects.toMatchObject({ code: "AI_TOOL_FORBIDDEN" });
     expect(await purchaseOrders(tenantId, own.supplierId)).toHaveLength(0);
-  });
+    // Positive control: a purchasing requester at the same outlet is accepted.
+    const receipt = await propose(
+      "TL-13",
+      await purchasingRequester(),
+      poInput(),
+    );
+    expect(receipt.status).toBe("pending");
+  }, 60_000);
 
   it("a supplier or item of another tenant creates nothing anywhere", async () => {
     const requester = await purchasingRequester();
+    // Positive control (the stub refused everything with AI_TOOL_DISABLED): the
+    // same requester's own-tenant proposal is accepted.
+    expect((await propose("TL-13", requester, poInput())).status).toBe(
+      "pending",
+    );
     for (const input of [
       poInput(own, foreign.supplierId),
       {
@@ -432,7 +438,9 @@ describe("TL-13 draft_purchase_order (AIG-03)", () => {
         (e: unknown) => e,
       );
       if (attempt instanceof Error) {
+        // Refused while proposing, for the input, never because the tool is off.
         expect(attempt).toBeInstanceOf(AiError);
+        expect(attempt).not.toMatchObject({ code: "AI_TOOL_DISABLED" });
         continue;
       }
       const receipt = attempt as Receipt;
@@ -611,7 +619,16 @@ describe("TL-16 draft_shift_schedule (AIG-03)", () => {
       writeTools["TL-16"]!(await ctxOf(kitchen), shiftInput(own, week)),
     ).rejects.toMatchObject({ code: "AI_TOOL_FORBIDDEN" });
     expect(await shiftRows(tenantId, own.employees)).toHaveLength(0);
-  });
+    // Positive control (on the stub every caller got AI_TOOL_DISABLED): HR's
+    // proposal for the same input is accepted as a pending request.
+    const receipt = await propose(
+      "TL-16",
+      await hrRequester(),
+      shiftInput(own, week),
+    );
+    expect(receipt.status).toBe("pending");
+    expect(await shiftRows(tenantId, own.employees)).toHaveLength(0);
+  }, 60_000);
 
   it("refuses an outlet outside an outlet manager's assigned outlets", async () => {
     const manager = await signedIn("Manajer W16");
@@ -626,7 +643,14 @@ describe("TL-16 draft_shift_schedule (AIG-03)", () => {
       }),
     ).rejects.toMatchObject({ code: "AI_TOOL_FORBIDDEN" });
     expect(await shiftRows(tenantId, own.employees)).toHaveLength(0);
-  });
+    // Positive control: the same manager is accepted for the assigned outlet.
+    const receipt = await propose(
+      "TL-16",
+      manager,
+      shiftInput(own, freshWeek()),
+    );
+    expect(receipt.status).toBe("pending");
+  }, 60_000);
 
   it("an outlet manager may draft for their own outlet", async () => {
     const manager = await signedIn("Manajer Own W16");
@@ -657,11 +681,18 @@ describe("TL-16 draft_shift_schedule (AIG-03)", () => {
         },
       ],
     };
+    // Positive control (the stub refused everything with AI_TOOL_DISABLED): the
+    // same requester's own-tenant employee proposal is accepted.
+    expect(
+      (await propose("TL-16", requester, shiftInput(own, freshWeek()))).status,
+    ).toBe("pending");
     const attempt = await propose("TL-16", requester, input).catch(
       (e: unknown) => e,
     );
     if (attempt instanceof Error) {
+      // Refused while proposing, for the input, never because the tool is off.
       expect(attempt).toBeInstanceOf(AiError);
+      expect(attempt).not.toMatchObject({ code: "AI_TOOL_DISABLED" });
     } else {
       const receipt = attempt as Receipt;
       await decide(approver, receipt.approvalRequestId, "approved");

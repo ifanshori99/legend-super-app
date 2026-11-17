@@ -507,7 +507,7 @@ describe("TL-09 get_my_payslip", () => {
     );
   });
 
-  it("has no employee, user, slip or PIN input in the contract", () => {
+  it("has no employee, user, slip or PIN input in the contract", async () => {
     for (const extra of ["employeeId", "userId", "payslipId", "pin"])
       expect(() =>
         AI_TOOL_IO["TL-09"].input.parse({
@@ -515,6 +515,31 @@ describe("TL-09 get_my_payslip", () => {
           [extra]: randomUUID(),
         }),
       ).toThrow();
+    // The live handler honours that contract (a stub that throws for everyone
+    // fails here): the month-only call returns my own slip, and a smuggled
+    // colleague id or slip id never redirects it to someone else's slip.
+    const own = parseOut(
+      await callTool(mine.userId, { payrollMonth: ownWorld.month }),
+    );
+    expect(own.payslipId).toBe(ownSlip.id);
+    for (const [extra, value] of [
+      ["employeeId", colleague.employeeId],
+      ["userId", colleague.userId],
+      ["payslipId", colleagueSlip.id],
+    ] as const) {
+      const result = await callTool(mine.userId, {
+        payrollMonth: ownWorld.month,
+        [extra]: value,
+      }).catch((e: unknown) => e);
+      if (result instanceof Error) {
+        // The strict input schema rejects the smuggled field (ZodError).
+        expect(result).toBeInstanceOf(Error);
+      } else {
+        const smuggled = parseOut(result);
+        expect(smuggled.payslipId).toBe(ownSlip.id);
+        expect(JSON.stringify(smuggled)).not.toContain(colleagueSlip.id);
+      }
+    }
   });
 
   it("a colleague's unlock does not open my slip, and mine shows only mine", async () => {

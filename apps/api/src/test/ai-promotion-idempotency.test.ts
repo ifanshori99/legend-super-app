@@ -104,10 +104,24 @@ const uniqueName = () => `Promo idempotensi ${randomUUID().slice(0, 8)}`;
 
 async function promotionsNamed(name: string) {
   const { rows } = await ownerPool.query(
-    "SELECT id, status, description FROM promotions WHERE tenant_id = $1 AND name = $2",
+    "SELECT id, status, description, ai_action_request_id FROM promotions WHERE tenant_id = $1 AND name = $2",
     [tenantId, name],
   );
-  return rows as { id: string; status: string; description: string | null }[];
+  return rows as {
+    id: string;
+    status: string;
+    description: string | null;
+    ai_action_request_id: string | null;
+  }[];
+}
+
+/** The key lives in the dedicated column, never as an `[ai:` marker. */
+function expectKeyedBy(
+  promo: Awaited<ReturnType<typeof promotionsNamed>>[number],
+  requestId: string,
+) {
+  expect(promo.ai_action_request_id).toBe(requestId);
+  expect(promo.description ?? "").not.toContain("[ai:");
 }
 
 afterAll(async () => {
@@ -132,6 +146,7 @@ describe("TL-15 promotion executor: idempotency column (legend-39d.4)", () => {
     const promos = await promotionsNamed(name);
     expect(promos).toHaveLength(1);
     expect(promos[0]!.status).toBe("active");
+    expectKeyedBy(promos[0]!, row.id);
     expect(first.resultRef).toBe(`promotion:${promos[0]!.id}`);
   }, 60_000);
 
@@ -144,6 +159,7 @@ describe("TL-15 promotion executor: idempotency column (legend-39d.4)", () => {
     const promos = await promotionsNamed(name);
     expect(promos).toHaveLength(1);
     expect(promos[0]!.status).toBe("active");
+    expectKeyedBy(promos[0]!, row.id);
   }, 90_000);
 
   it("legend-39d.4 two executions racing on one action request make one promotion", async () => {
@@ -154,16 +170,25 @@ describe("TL-15 promotion executor: idempotency column (legend-39d.4)", () => {
     const promos = await promotionsNamed(name);
     expect(promos).toHaveLength(1);
     expect(promos[0]!.status).toBe("active");
+    expectKeyedBy(promos[0]!, row.id);
   }, 60_000);
 
   it("legend-39d.4 two different action requests with the same payload make two promotions", async () => {
     const who = await manager();
     const name = uniqueName();
-    await run(who, rowOf(who, payloadOf(name)));
-    await run(who, rowOf(who, payloadOf(name)));
+    const rowOne = rowOf(who, payloadOf(name));
+    const rowTwo = rowOf(who, payloadOf(name));
+    await run(who, rowOne);
+    await run(who, rowTwo);
     const promos = await promotionsNamed(name);
     expect(promos).toHaveLength(2);
     expect(promos.every((promo) => promo.status === "active")).toBe(true);
+    // Each promotion is keyed by its own request, with no marker in the text.
+    for (const promo of promos)
+      expect(promo.description ?? "").not.toContain("[ai:");
+    expect(promos.map((promo) => promo.ai_action_request_id).sort()).toEqual(
+      [rowOne.id, rowTwo.id].sort(),
+    );
   }, 90_000);
 
   it("legend-39d.4 the description no longer carries the [ai:<id>] marker", async () => {

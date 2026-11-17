@@ -546,8 +546,9 @@ export async function createShiftAssignment(
   actorUserId: string,
   input: CreateBody,
   now = new Date(),
+  onOutcome?: (outcome: { created: boolean }) => void,
 ): Promise<ShiftAssignment> {
-  return withTenant(db, context, async (tx) => {
+  const result = await withTenant(db, context, async (tx) => {
     const access = await loadHrisAccess(tx, context, actorUserId, now);
     assertManage(access, input.outletId);
     const tenantId = context.tenant.tenantId;
@@ -576,12 +577,12 @@ export async function createShiftAssignment(
       return toShiftAssignment(row);
     };
     const early = await storedByKey();
-    if (early) return early;
+    if (early) return { assignment: early, created: false };
 
     const zone = await loadOutletZone(tx, tenantId, input.outletId);
     await lockKey(tx, `hris:shift:${tenantId}:${input.employeeId}`);
     const locked = await storedByKey();
-    if (locked) return locked;
+    if (locked) return { assignment: locked, created: false };
 
     await assertSchedulable(tx, tenantId, input.employeeId, input.outletId);
     const snapshot = await materialise(
@@ -620,7 +621,7 @@ export async function createShiftAssignment(
       if (constraint === SHIFT_KEY_CONSTRAINT) {
         // A concurrent create with this key won: its row is the replay.
         const raced = await storedByKey();
-        if (raced) return raced;
+        if (raced) return { assignment: raced, created: false };
         // RLS hides the row of an outlet outside the caller's reach: the key
         // is taken tenant-wide all the same.
         throw keyReused();
@@ -636,8 +637,10 @@ export async function createShiftAssignment(
       inserted,
       "hris.shift_assignment.created",
     );
-    return toShiftAssignment(inserted);
+    return { assignment: toShiftAssignment(inserted), created: true };
   });
+  onOutcome?.({ created: result.created });
+  return result.assignment;
 }
 
 /** PATCH /api/hris/shifts/:assignmentId — draft only; segments are re-derived. */
