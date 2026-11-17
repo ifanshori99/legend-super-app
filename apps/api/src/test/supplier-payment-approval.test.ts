@@ -21,6 +21,12 @@
 // - SP-10 no supplier_payment policy: blocked (fail closed), nothing written
 // - SP-11 other tenant / outlet / role / no session cannot see or pay
 // - SP-12 outstanding is recomputed at execution (settled elsewhere meanwhile)
+// - SP-14 a new tenant with no configuration pays only after another person
+//         (finance or owner template role) approved: default policy, limit 0
+// - SP-15 an existing tenant gets the same default from migration 0587
+// - SP-16 the requester cannot approve with the default policy either
+// - SP-17 even Rp 1 needs approval (limit 0); an approved payment is still
+//         never paid above the outstanding amount
 // - SP-13 period closed before the approval: rejected with a note, no money,
 //         the reserved room is released
 //
@@ -52,14 +58,29 @@
 //   supplierPaymentSchema field) saying why. It runs in its own tenant so the
 //   closed period never touches the other tests. Requesting a payment does not
 //   check the period (only posting does), so the new full request is accepted.
+// - CTO decision: every tenant (new via seedTenantRoleTemplates, old via
+//   migration `NNNN_supplier_payment_approval_policies_data.sql`, 0587) has a
+//   default `supplier_payment` policy: threshold 0, one level, distinct actor,
+//   one row per approver template (at least finance and owner). The tenants of
+//   SP-1..SP-13 are built by `createWorld` and are NOT seeded, so they keep
+//   their explicit policies and SP-10 (no policy at all) still means blocked.
+//   SP-15 runs the migration in a rolled-back transaction (it locks roles and
+//   approval_policies and would touch tenants of other suites), reads the rows
+//   it wrote, and recreates exactly those rows outside to pay over HTTP.
 // - Table columns of `supplier_payments` follow the brief: id, tenant_id,
 //   supplier_invoice_id, amount_idr, status, requested_by, approval_chain_id.
 import { randomUUID } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import type { PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ROLE_TEMPLATES } from "@starter/shared/access";
 import { tenantIdSchema } from "@starter/shared/core";
 import { establishTenantContext } from "@starter/shared/core/server";
 import { approvalResolvedEvent } from "@starter/shared/identity";
+import { db } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
+import { seedTenantRoleTemplates } from "../services/access.service.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import { setPurchaseReturnPostingEnabled } from "../services/purchase-return.service.ts";
@@ -108,13 +129,25 @@ type Tenant = {
 let A: Tenant;
 let B: Tenant;
 let C: Tenant;
+let E: Tenant; // new tenant, default policy from the seed
 let outletTwoFinance: Session;
 let nobody: Session;
 
 // ---- fixtures --------------------------------------------------------------
 
-async function setupTenant(label: string): Promise<Tenant> {
+async function setupTenant(
+  label: string,
+  options: { seeded?: boolean } = {},
+): Promise<Tenant> {
   const world = await createWorld(label);
+  if (options.seeded) {
+    // A new tenant as platform provisioning leaves it: role templates and the
+    // default approval policies, nothing configured by hand.
+    const context = contextFor(world, null);
+    await withTenant(db, context, (tx) =>
+      seedTenantRoleTemplates(tx, world.tenantId),
+    );
+  }
   // The bank account that Cr of a supplier payment lands on.
   const bank = await owner.query<{ id: string }>(
     `INSERT INTO chart_of_accounts (tenant_id, legal_entity_id, code, name, type, report_group)
@@ -127,19 +160,24 @@ async function setupTenant(label: string): Promise<Tenant> {
      VALUES ($1, $2, 'bank', $3)`,
     [world.tenantId, world.entityId, bankAccountId],
   );
-  // The approver role named by the policy: the general manager template.
+  // The approver role named by the policy: the general manager template
+  // (custom copy), or the finance template of a seeded tenant.
   const template = ROLE_TEMPLATES.find((t) => t.key === "general_manager")!;
-  const approverRoleId = randomUUID();
-  await owner.query(
-    `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
-     VALUES ($1, $2, 'Uji general manager', false, NULL, $3, false, $4)`,
-    [
-      approverRoleId,
-      world.tenantId,
-      JSON.stringify(template.permissions),
-      JSON.stringify(["tenant", "brand", "outlet", "station"]),
-    ],
-  );
+  let approverRoleId: string;
+  if (options.seeded) approverRoleId = await templateRoleId(world, "finance");
+  else {
+    approverRoleId = randomUUID();
+    await owner.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+       VALUES ($1, $2, 'Uji general manager', false, NULL, $3, false, $4)`,
+      [
+        approverRoleId,
+        world.tenantId,
+        JSON.stringify(template.permissions),
+        JSON.stringify(["tenant", "brand", "outlet", "station"]),
+      ],
+    );
+  }
   const approver = await addUser(world, `${label} approver`, []);
   await owner.query(
     `INSERT INTO role_assignments
@@ -162,6 +200,98 @@ async function setupTenant(label: string): Promise<Tenant> {
       { role: "finance", outletId: null },
     ]),
   };
+}
+
+async function templateRoleId(world: World, templateKey: string) {
+  const { rows } = await owner.query<{ id: string }>(
+    "SELECT id FROM roles WHERE tenant_id = $1 AND template_key = $2",
+    [world.tenantId, templateKey],
+  );
+  if (!rows[0]) throw new Error(`No ${templateKey} template role`);
+  return rows[0].id;
+}
+
+/** A user who holds a template role tenant-wide (exact role the matrix names). */
+async function templateUser(
+  t: Tenant,
+  label: string,
+  templateKey: string,
+): Promise<Session> {
+  const who = await addUser(t.world, label, []);
+  await owner.query(
+    `INSERT INTO role_assignments
+       (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+     VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 hour', $2)`,
+    [t.world.tenantId, who.userId, await templateRoleId(t.world, templateKey)],
+  );
+  return who;
+}
+
+type PolicyRow = {
+  threshold: number | null;
+  level: number;
+  template_key: string | null;
+  approver_role_id: string;
+  requires_distinct_actor: boolean;
+};
+
+async function policyRows(
+  t: Tenant,
+  via: Pick<PoolClient, "query"> = owner,
+): Promise<PolicyRow[]> {
+  const { rows } = await via.query<PolicyRow>(
+    `SELECT p.threshold_idr::int AS threshold, p.levels AS level, r.template_key,
+            p.approver_role_id, p.requires_distinct_actor
+       FROM approval_policies p JOIN roles r ON r.id = p.approver_role_id
+      WHERE p.tenant_id = $1 AND p.action_type = 'supplier_payment'
+      ORDER BY r.template_key`,
+    [t.world.tenantId],
+  );
+  return rows;
+}
+
+/** The default matrix: from Rp 0, one level, distinct actor, finance and owner. */
+function expectDefaultPolicy(rows: PolicyRow[]) {
+  expect(rows.length).toBeGreaterThanOrEqual(2);
+  for (const row of rows) {
+    expect(row.threshold).toBe(0);
+    expect(row.level).toBe(1);
+    expect(row.requires_distinct_actor).toBe(true);
+  }
+  const templates = rows.map((row) => row.template_key);
+  expect(templates).toContain("finance");
+  expect(templates).toContain("owner");
+}
+
+/** Runs the 0587 backfill body in a transaction that is always rolled back. */
+async function inRolledBackBackfill<T>(
+  inspect: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  const dir = fileURLToPath(new URL("../../drizzle/", import.meta.url));
+  const file = readdirSync(dir).find((name) =>
+    /^\d{4}_supplier_payment_approval_policies_data\.sql$/.test(name),
+  );
+  if (!file)
+    throw new Error(
+      "Migration supplier_payment_approval_policies_data is missing",
+    );
+  const statements = readFileSync(`${dir}${file}`, "utf8")
+    .split("--> statement-breakpoint")
+    .map((statement) => statement.trim())
+    .filter((statement) => statement.length > 0);
+  const client = await owner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SET LOCAL lock_timeout = '5s'");
+    for (const statement of statements) await client.query(statement);
+    return await inspect(client);
+  } finally {
+    try {
+      await client.query("ROLLBACK");
+    } finally {
+      client.release();
+    }
+  }
 }
 
 /** One tier from `thresholdIdr`, one level, approver = general manager. */
@@ -398,6 +528,7 @@ beforeAll(async () => {
     { role: "finance", outletId: A.world.outletTwoId },
   ]);
   nobody = await addUser(A.world, "SP nobody", []);
+  E = await setupTenant("sp-e", { seeded: true });
   await setPolicy(A, LIMIT);
   await setPolicy(B, LIMIT);
 });
@@ -711,7 +842,10 @@ describe("legend-xxqz3 supplier payment with approval", () => {
   });
 
   it("SP-10 with no supplier_payment policy the payment is blocked, nothing is written", async () => {
+    // C is built by createWorld (not seeded): no default row exists, and any
+    // is removed here so the test never depends on a default.
     await clearPolicy(C);
+    expect(await policyRows(C)).toEqual([]);
     const invoiceId = await invoiceFor(C);
     const before = await paymentEntryIds(C);
 
@@ -858,5 +992,157 @@ describe("legend-xxqz3 supplier payment with approval", () => {
       "rejected",
       "pending_approval",
     ]);
+  });
+
+  it("SP-14 a new tenant with no configuration pays a supplier only after someone else approved", async () => {
+    expectDefaultPolicy(await policyRows(E));
+    const invoiceId = await invoiceFor(E);
+    const before = await paymentEntryIds(E);
+
+    const { chainId } = await pendingPayment(E, invoiceId, 20_000);
+    expect(await statusesOf(E, invoiceId)).toEqual(["pending_approval"]);
+    expect((await newPaymentJournals(E, before)).count).toBe(0);
+    expect(await outstanding(E, invoiceId)).toBe(PAYABLE);
+
+    await approveAndApply(E, chainId);
+    expect(await statusesOf(E, invoiceId)).toEqual(["paid"]);
+    const journals = await newPaymentJournals(E, before);
+    expect(journals.count).toBe(1);
+    expect(journals.debit).toBe(20_000);
+    expect(journals.credit).toBe(20_000);
+    expect(journals.ap).toEqual({ debit: 20_000, credit: 0 });
+    expect(journals.bank).toEqual({ debit: 0, credit: 20_000 });
+    expect(await outstanding(E, invoiceId)).toBe(80_000);
+
+    // An owner may approve as well (finance/owner are the default approvers).
+    const owner2 = await templateUser(E, "SP owner approver", "owner");
+    const second = await pendingPayment(E, invoiceId, 30_000);
+    await decide(E, owner2, second.chainId, "approved");
+    await applyResolved(E, second.chainId);
+    expect(await statusesOf(E, invoiceId)).toEqual(["paid", "paid"]);
+    expect(await outstanding(E, invoiceId)).toBe(50_000);
+  });
+
+  it("SP-15 an existing tenant gets the same default from the 0587 backfill, once, and can then pay", async () => {
+    const old = await setupTenant("sp-f", { seeded: true });
+    await clearPolicy(old);
+    expect(await policyRows(old)).toEqual([]);
+    const customBefore = await policyRows(A); // A configured its own matrix
+
+    const backfilled = await inRolledBackBackfill(async (client) => {
+      const rows = await policyRows(old, client);
+      expectDefaultPolicy(rows);
+      // A tenant that configured its own matrix is never touched.
+      expect(await policyRows(A, client)).toEqual(customBefore);
+      // Running it again adds nothing.
+      const dir = fileURLToPath(new URL("../../drizzle/", import.meta.url));
+      const file = readdirSync(dir).find((name) =>
+        /^\d{4}_supplier_payment_approval_policies_data\.sql$/.test(name),
+      )!;
+      for (const statement of readFileSync(`${dir}${file}`, "utf8")
+        .split("--> statement-breakpoint")
+        .map((x) => x.trim())
+        .filter(Boolean))
+        await client.query(statement);
+      expect(await policyRows(old, client)).toEqual(rows);
+      return rows;
+    });
+    // Rolled back: nothing leaked into the shared database.
+    expect(await policyRows(old)).toEqual([]);
+
+    // The rows the backfill writes make the tenant able to pay with approval.
+    for (const row of backfilled)
+      await owner.query(
+        `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
+         VALUES ($1, 'supplier_payment', $2, $3, $4, $5)`,
+        [
+          old.world.tenantId,
+          row.threshold,
+          row.approver_role_id,
+          row.level,
+          row.requires_distinct_actor,
+        ],
+      );
+    const invoiceId = await invoiceFor(old);
+    const before = await paymentEntryIds(old);
+    const { chainId } = await pendingPayment(old, invoiceId, 20_000);
+    await approveAndApply(old, chainId);
+    expect(await statusesOf(old, invoiceId)).toEqual(["paid"]);
+    const journals = await newPaymentJournals(old, before);
+    expect(journals.count).toBe(1);
+    expect(journals.debit).toBe(journals.credit);
+    expect(await outstanding(old, invoiceId)).toBe(80_000);
+  });
+
+  it("SP-16 with the default policy the requester cannot approve their own payment", async () => {
+    // A user who may both request (finance permission) and approve (holds the
+    // template role the default names).
+    const both = await addUser(E.world, "SP finance who approves", [
+      { role: "finance", outletId: null },
+    ]);
+    await owner.query(
+      `INSERT INTO role_assignments
+         (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+       VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 hour', $2)`,
+      [E.world.tenantId, both.userId, E.approverRoleId],
+    );
+    const invoiceId = await invoiceFor(E);
+    const before = await paymentEntryIds(E);
+    const res = await requestPayment(E, both, invoiceId, 20_000);
+    expectAccepted(res);
+    expect(dataOf(res).status).toBe("pending_approval");
+    const chainId = (await paymentRows(E, invoiceId))[0]!.approval_chain_id!;
+
+    // The inbox refuses the requester's own decision ...
+    const own = await decide(E, both, chainId, "approved").then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(own).not.toBeNull();
+    // ... so nothing is paid and no resolved event reaches the consumer.
+    expect(await statusesOf(E, invoiceId)).toEqual(["pending_approval"]);
+    expect((await newPaymentJournals(E, before)).count).toBe(0);
+    expect(await outstanding(E, invoiceId)).toBe(PAYABLE);
+
+    // Control: another person with the same role approves and it is paid.
+    await approveAndApply(E, chainId);
+    expect(await statusesOf(E, invoiceId)).toEqual(["paid"]);
+    expect((await newPaymentJournals(E, before)).count).toBe(1);
+  });
+
+  it("SP-17 with limit 0 even Rp 1 needs approval, and an approval never pays above the invoice", async () => {
+    const invoiceId = await invoiceFor(E);
+    const before = await paymentEntryIds(E);
+
+    // Rp 1 is not paid at once: it waits for an approver.
+    const tiny = await pendingPayment(E, invoiceId, 1);
+    expect(await statusesOf(E, invoiceId)).toEqual(["pending_approval"]);
+    expect((await newPaymentJournals(E, before)).count).toBe(0);
+    expect(await outstanding(E, invoiceId)).toBe(PAYABLE);
+
+    // One rupiah above what is left (the Rp 1 reserves) is refused up front.
+    expectRefused(await requestPayment(E, E.finance, invoiceId, PAYABLE));
+    expect(await paymentRows(E, invoiceId)).toHaveLength(1);
+    await approveAndApply(E, tiny.chainId);
+    expect(await outstanding(E, invoiceId)).toBe(PAYABLE - 1);
+    expectRefused(await requestPayment(E, E.finance, invoiceId, PAYABLE));
+
+    // Approved but settled elsewhere meanwhile: still not paid above the rest.
+    const { chainId } = await pendingPayment(E, invoiceId, 70_000);
+    await owner.query(
+      `UPDATE accounting_open_items SET settled_idr = settled_idr + 60000
+        WHERE tenant_id = $1 AND kind = 'payable' AND id = $2`,
+      [E.world.tenantId, invoiceId],
+    );
+    await approveAndApply(E, chainId);
+    // The refused 70.000 is left unpaid (rejected or still pending).
+    expect(
+      (await statusesOf(E, invoiceId)).filter((x) => x === "paid"),
+    ).toHaveLength(1);
+    const journals = await newPaymentJournals(E, before);
+    expect(journals.count).toBe(1); // only the Rp 1
+    expect(journals.debit).toBe(1);
+    expect(journals.credit).toBe(1);
+    expect(await outstanding(E, invoiceId)).toBe(PAYABLE - 1 - 60_000);
   });
 });

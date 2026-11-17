@@ -112,6 +112,8 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "inserts the reserved banned system user (id 00000000-0000-4000-8000-000000000002, no role, no sign-in account) that opens system refund approval chains, ON CONFLICT DO NOTHING with a check that an existing row is that account; adds the user and role-assignment guard triggers (legend-2dnh)",
   "0145_cash_shift_close_approval_policies_data.sql":
     "gives each tenant without a cash_shift_close approval policy the default rows (floor 0, level 1, supervisor, outlet_manager and general_manager template roles); idempotent, never touches a tenant that configured shift close (legend-ccpn)",
+  "0587_supplier_payment_approval_policies_data.sql":
+    "gives each tenant without a supplier_payment approval policy the default rows (floor 0, level 1, finance and owner template roles, distinct actor); idempotent, never touches a tenant that configured supplier_payment, no amount, journal or payment touched (it only makes every supplier payment wait for a second person), FORCE RLS lifted for that one statement and restored (legend-xxqz3)",
   "0586_cash_out_approval_policies_data.sql":
     "gives each tenant without a cash_out approval policy the default row (floor 0, level 1, finance template role, distinct actor); idempotent, never touches a tenant that configured cash_out, no amount, journal or cash entry touched, FORCE RLS lifted for that one statement and restored (legend-4qowr)",
   "0147_accounting_coa_backfill_1204.sql":

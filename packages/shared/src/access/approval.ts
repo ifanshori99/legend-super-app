@@ -206,6 +206,28 @@ export const DEFAULT_CASH_OUT_APPROVAL_POLICIES: readonly {
 }[] = [{ thresholdIdr: 0, level: 1, roleTemplateKey: "finance" }];
 
 /**
+ * Default supplier payment approval matrix (legend-xxqz3, CTO money decision
+ * 17 Nov 2026), the single source for new tenants (seedTenantRoleTemplates),
+ * the dev tenant and migration 0587. The most restrictive default: EVERY
+ * supplier payment (floor 0, tiered on the cumulative amount of the invoice)
+ * needs one approval at level 1 from the Finance or Owner template role, and
+ * the row requires a distinct actor, so the requester never approves their own
+ * payment (the consumer also refuses a chain the requester took part in).
+ * Without any `supplier_payment` row the approval service still fails closed
+ * (APPROVAL_POLICY_MISSING). Applied only to a tenant with no supplier_payment
+ * row; a tenant that configured its own matrix is never touched, and a
+ * template role that does not exist adds no row.
+ */
+export const DEFAULT_SUPPLIER_PAYMENT_APPROVAL_POLICIES: readonly {
+  readonly thresholdIdr: number;
+  readonly level: number;
+  readonly roleTemplateKey: "finance" | "owner";
+}[] = [
+  { thresholdIdr: 0, level: 1, roleTemplateKey: "finance" },
+  { thresholdIdr: 0, level: 1, roleTemplateKey: "owner" },
+];
+
+/**
  * Default shareholder version approval matrix (legend-tm6pp), the single source
  * for new tenants (seedTenantRoleTemplates), the dev tenant and migration 0241.
  * Founder decision Q2 (2026-11-10): once a tenant uses profit share, a share

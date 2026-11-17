@@ -52,6 +52,8 @@ import {
   getSupplierInvoice,
   getSupplierPayment,
   goodsReceiptDetailSchema,
+  goodsReceiptValueIdr,
+  journalizeGoodsReceipt,
   listGoodsReceipts,
   listPettyPurchases,
   listPurchaseReturns,
@@ -103,6 +105,8 @@ type ReceivingState = {
    */
   policy: { toleranceBp: number; updatedAt: string | null };
   created: ReceiptKey;
+  /** Receipt id → journal entry id, so a second journalize books nothing. */
+  journalized: Map<string, string>;
 };
 
 const store = createMockStore<ReceivingState>(() => ({
@@ -113,6 +117,7 @@ const store = createMockStore<ReceivingState>(() => ({
   petty: structuredClone(fixtures.pettyPurchases),
   policy: { toleranceBp: 200, updatedAt: null },
   created: new Map(),
+  journalized: new Map(),
 }));
 
 const tenantId = fixtures.goodsReceipts[0].tenantId;
@@ -353,6 +358,39 @@ registerMock(createGoodsReceipt, ({ body, headers }) =>
     },
   ),
 );
+
+// The journal key is the receipt: the first call books, a repeat answers
+// `already_posted` with the same entry. A receipt worth 0 books nothing (422).
+// The 409 SUPPLIER_INVOICE_POSTING_DISABLED / GOODS_RECEIPT_JOURNAL_PARKED
+// refusals are reachable with `window.__legendMock.failNext(
+// "POST /api/inventory/goods-receipts/:goodsReceiptId/journalize", ...)`.
+registerMock(journalizeGoodsReceipt, ({ params }) => {
+  const detail = receiptOf(params.goodsReceiptId);
+  const existing = store.get().journalized.get(detail.receipt.id);
+  if (existing)
+    return {
+      data: {
+        goodsReceiptId: detail.receipt.id,
+        status: "already_posted" as const,
+        journalEntryId: existing,
+      },
+    };
+  if (goodsReceiptValueIdr(detail.lines, "half_up") === 0)
+    throw new ApiError(
+      422,
+      "VALIDATION_ERROR",
+      "A goods receipt worth 0 has nothing to journalize.",
+    );
+  const journalEntryId = mint();
+  store.get().journalized.set(detail.receipt.id, journalEntryId);
+  return {
+    data: {
+      goodsReceiptId: detail.receipt.id,
+      status: "posted" as const,
+      journalEntryId,
+    },
+  };
+});
 
 // ---- Supplier invoices and the three-way match ---------------------------
 

@@ -10,6 +10,7 @@ import { Pool } from "pg";
 import {
   DEFAULT_CASH_OUT_APPROVAL_POLICIES,
   DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES,
+  DEFAULT_SUPPLIER_PAYMENT_APPROVAL_POLICIES,
   DEFAULT_SHAREHOLDER_VERSION_APPROVAL_POLICIES,
   DEFAULT_REFUND_APPROVAL_POLICIES,
   ROLE_TEMPLATES,
@@ -315,6 +316,29 @@ try {
       DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES.map((row) => row.thresholdIdr),
       DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES.map((row) => row.level),
       DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES.map(
+        (row) => row.roleTemplateKey,
+      ),
+    ],
+  );
+
+  // Supplier payment approval default (legend-xxqz3, CTO money decision): same
+  // level-1 rows from Rp0 (finance, owner) and same no-supplier_payment-row
+  // rule as seedTenantRoleTemplates and migration 0587.
+  await client.query(
+    `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
+     SELECT $1::uuid, 'supplier_payment', d.threshold_idr, r.id, d.level, true
+     FROM unnest($2::bigint[], $3::int[], $4::text[]) AS d(threshold_idr, level, template_key)
+     JOIN roles r
+       ON r.tenant_id = $1::uuid AND r.is_template AND r.template_key = d.template_key
+     WHERE NOT EXISTS (
+       SELECT 1 FROM approval_policies p
+       WHERE p.tenant_id = $1::uuid AND p.action_type = 'supplier_payment'
+     )`,
+    [
+      tenant.id,
+      DEFAULT_SUPPLIER_PAYMENT_APPROVAL_POLICIES.map((row) => row.thresholdIdr),
+      DEFAULT_SUPPLIER_PAYMENT_APPROVAL_POLICIES.map((row) => row.level),
+      DEFAULT_SUPPLIER_PAYMENT_APPROVAL_POLICIES.map(
         (row) => row.roleTemplateKey,
       ),
     ],
