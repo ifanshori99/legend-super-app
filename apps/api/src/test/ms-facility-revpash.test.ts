@@ -273,6 +273,8 @@ async function order(
     taxIdr?: number;
     inclusive?: boolean;
     discountIdr?: number;
+    /** A POS refund row needs a `pos` order (trigger pos_orders_same_outlet). */
+    channel?: "qr" | "pos";
     status?: string;
     date?: string;
   },
@@ -289,7 +291,7 @@ async function order(
       `INSERT INTO orders (id, tenant_id, outlet_id, number, channel, service_type, table_session_id,
          payment_mode, subtotal_idr, discount_idr, service_charge_idr, tax_idr, rounding_idr, total_idr,
          prices_include_tax, status, business_date, placed_at)
-       VALUES ($1, $2, $3, $4, 'qr', $5, $6, 'open_bill', $7, $15, $8, $9, 0, $10, $11, $12, $13, $14)`,
+       VALUES ($1, $2, $3, $4, $16, $5, $6, 'open_bill', $7, $15, $8, $9, 0, $10, $11, $12, $13, $14)`,
       [
         id,
         w.tenantId,
@@ -306,6 +308,7 @@ async function order(
         date,
         at(date, "12:00"),
         discount,
+        input.channel ?? "qr",
       ],
     ),
   );
@@ -533,7 +536,7 @@ async function seedZones(w: World, o1: string, o2: string): Promise<Ids> {
     taxIdr: 2_000,
     inclusive: true,
   });
-  const refunded = await order(w, o2, s8, { netIdr: 60_000 });
+  const refunded = await order(w, o2, s8, { netIdr: 60_000, channel: "pos" });
   await refund(w, o2, refunded, 20_000);
 
   return { z1, z2, z3, z4, z5, z6, z7, z8, zOther: "" };

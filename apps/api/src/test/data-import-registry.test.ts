@@ -287,6 +287,9 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
   // legend-xp8mc (934)
   "0432_payout_batch_approve_grant.sql":
     "adds the batch_approve grant and attestation kind, a trigger on payroll_disbursement_batches and function bodies only, no row edited by the migration: app.payout_grant_issue (grantor login) inserts a grant, app.payout_batch_approve_attest (payout role) spends it and inserts an attestation and an approval log row when called, app.payout_recon_flag (payout role) accepts the batch_approve kind and inserts a reconciliation flag when called; the trigger only refuses an approval without the grant; the migration itself writes no row and changes no amount (it only blocks approvals)",
+  // legend-4us1a (987)
+  "0570_facility_hours_wfc_breakfast.sql":
+    "seeds one baseline facility_operating_hours_versions row per existing facility at 1970-01-01 (a copy of facilities.operating_hours, so every date resolves to the hours it has today) and adds the floor_zones.is_wfc and menu_items.is_breakfast flags with a default of false; no amount, status or bill touched, so nobody is paid more",
   // legend-3wpf (941 card C)
   "0439_payment_intent_provider_answered.sql":
     "adds the nullable payment_intents.provider_answered_at column and backfills it from provider_final_at on the rows that already have one (the provider already answered final, a copy of an existing value, NULL to a value only); no amount, status or bill touched, so nobody is paid more",

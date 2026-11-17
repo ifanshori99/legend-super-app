@@ -231,7 +231,7 @@ async function seedOrder(world: World, seed: OrderSeed): Promise<void> {
          (id, tenant_id, outlet_id, number, channel, service_type, payment_mode, table_session_id,
           subtotal_idr, discount_idr, service_charge_idr, tax_idr, rounding_idr, total_idr,
           prices_include_tax, status, business_date, placed_at)
-       VALUES ($1, $2, $3, $4, 'qr', 'dine_in', 'pay_first', $5, $6, $7, $8, $9, 0, $10, $11, $12, $13, $14)`,
+       VALUES ($1, $2, $3, $4, $15, 'dine_in', 'pay_first', $5, $6, $7, $8, $9, 0, $10, $11, $12, $13, $14)`,
       [
         orderId,
         world.tenantId,
@@ -247,6 +247,9 @@ async function seedOrder(world: World, seed: OrderSeed): Promise<void> {
         seed.status ?? "completed",
         BUSINESS_DATE,
         new Date(NOW.getTime() - HOUR).toISOString(),
+        // app.pos_orders_same_outlet: the pos_orders row repeats the order's
+        // outlet and channel, and its channel list has no 'qr'.
+        seed.training ? "pos" : "qr",
       ],
     );
     if (seed.training)
