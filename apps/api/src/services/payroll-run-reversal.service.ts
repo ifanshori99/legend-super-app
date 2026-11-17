@@ -65,6 +65,7 @@ import { recordAudit } from "./core-audit.ts";
 import type { Tx } from "./hris-access.ts";
 import { assertPayrollTenantCan } from "./payroll-access.ts";
 import { emitPayrollEvent } from "./payroll-events.ts";
+import { syncOvertimeCorrectionLedgerInTransaction } from "./payroll-overtime-correction.service.ts";
 import { syncPph21ReceivableOpenItemsInTransaction } from "./payroll-pph21-receivable-open-items.service.ts";
 import {
   disputeFreezesBatchSql,
@@ -721,6 +722,8 @@ export async function decidePayrollRunReversalInTransaction(
   // legend-itph: the reversed run leaves no employee receivable open item, and
   // a receivable it collected is open again (receivable lock held above).
   await syncPph21ReceivableOpenItemsInTransaction(tx, context, payrollRunId);
+  // legend-72nod: the overtime correction it settled becomes outstanding again.
+  await syncOvertimeCorrectionLedgerInTransaction(tx, context, payrollRunId);
   await emitPayrollEvent(tx, context, payrollReversed, {
     aggregateId: payrollRunId,
     actor: { type: "user", id: actor },

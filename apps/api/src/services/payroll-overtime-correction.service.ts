@@ -143,7 +143,8 @@ type SourceRow = {
   periodStart: BusinessDate;
   periodEnd: BusinessDate;
   lockedAt: Date;
-  paidOvertimeIdr: number;
+  /** The sealed payslip; opened only when a deduction needs its LEMBUR. */
+  slip: Parameters<typeof paidOvertimeOf>[0];
 };
 
 type RequestRow = {
@@ -258,8 +259,16 @@ async function approvedAtOf(
     if (row.status === "approved") {
       out.set(row.id, row.decidedAt ?? undefined);
     } else if (row.approvalChainId === null) {
-      // Approved on filing (below every tier of the matrix).
-      out.set(row.id, row.requestedAt);
+      // Approved on filing (below every tier of the matrix). The cancel
+      // overwrites `decidedAt` with the cancel time (= `updatedAt`); a
+      // `decidedAt` before it is an approval that happened after filing.
+      out.set(
+        row.id,
+        row.decidedAt !== null &&
+          row.decidedAt.getTime() < row.updatedAt.getTime()
+          ? row.decidedAt
+          : row.requestedAt,
+      );
     } else {
       const last = chains.get(row.approvalChainId);
       if (!last) out.set(row.id, undefined);
@@ -344,7 +353,7 @@ export async function planOvertimeCorrection(
         periodStart: row.periodStart as BusinessDate,
         periodEnd: row.periodEnd as BusinessDate,
         lockedAt: row.lockedAt,
-        paidOvertimeIdr: paidOvertimeOf(row),
+        slip: row,
       };
     });
   } catch {
@@ -471,6 +480,15 @@ export async function planOvertimeCorrection(
         }
       }
     const outstandingIdr = deltaIdr - settledIdr;
+    // Only a deduction reads the sealed payslip (never opens one otherwise).
+    let paidOvertimeIdr = 0;
+    if (outstandingIdr < 0) {
+      try {
+        paidOvertimeIdr = paidOvertimeOf(source.slip);
+      } catch {
+        return held("source_unreadable", [source.runId]);
+      }
+    }
     planned.push({
       sourceRunId: source.runId,
       periodStart: source.periodStart,
@@ -479,7 +497,7 @@ export async function planOvertimeCorrection(
       settledIdr,
       outstandingIdr,
       // Never take back more than the source paid, counting what was taken.
-      negativeMaxIdr: Math.max(0, source.paidOvertimeIdr - settledNegativeIdr),
+      negativeMaxIdr: Math.max(0, paidOvertimeIdr - settledNegativeIdr),
     });
   }
 

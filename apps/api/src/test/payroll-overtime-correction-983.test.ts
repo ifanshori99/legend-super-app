@@ -337,8 +337,15 @@ async function makeEmployee(
 /** A new salary row of the employee's base-salary component from a date. */
 async function setSalaryFrom(emp: Emp, amount: number, effectiveFrom: string) {
   const rowId = randomUUID();
-  await asTenant((conn) =>
-    conn.query(
+  await asTenant(async (conn) => {
+    // One open pay window per component: close the current one the day before.
+    await conn.query(
+      `UPDATE employee_pay_components SET effective_to = $4::date - 1
+        WHERE tenant_id = $1 AND employee_id = $2 AND component_id = $3
+          AND effective_to IS NULL`,
+      [tenant.id, emp.id, emp.salaryComponentId, effectiveFrom],
+    );
+    await conn.query(
       `INSERT INTO employee_pay_components (id, tenant_id, employee_id, component_id,
          amount_encrypted, pii_key_version, effective_from, created_by)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
@@ -357,8 +364,8 @@ async function setSalaryFrom(emp: Emp, amount: number, effectiveFrom: string) {
         effectiveFrom,
         lockerUserId,
       ],
-    ),
-  );
+    );
+  });
 }
 
 // ---- overtime request changes after the source run was locked --------------
