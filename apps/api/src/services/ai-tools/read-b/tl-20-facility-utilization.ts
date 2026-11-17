@@ -27,6 +27,7 @@ import type { AiToolHandler } from "../types.ts";
 import {
   TOOL_MAX_ROWS,
   addDays,
+  assertKnownOutlets,
   outletClause,
   resolveReach,
   scopeOutlets,
@@ -80,6 +81,8 @@ export const getFacilityUtilization: AiToolHandler = async (ctx, raw) => {
   const tenantId = ctx.access.tenant.tenantId;
 
   const rows = await withTenant(db, reach.context, async (tx) => {
+    // An outlet that is not this tenant's is denied, never dropped.
+    await assertKnownOutlets(tx, tenantId, input.outletIds, wanted);
     const facilities = (
       await tx.execute(sql`
         select f.id, f.name, f.outlet_id, f.operating_hours, o.timezone, o.business_day_cutoff,

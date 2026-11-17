@@ -18,6 +18,7 @@ import { HttpError } from "../../../lib/http-error.ts";
 import { listShiftAssignments } from "../../hris-scheduling-roster.service.ts";
 import type { AiToolContext, AiToolHandler } from "../types.ts";
 import {
+  assertKnownOutlets,
   forbidden,
   resolveReach,
   scopeOutlets,
@@ -183,6 +184,15 @@ export const getShiftSchedule: AiToolHandler = async (ctx, raw) => {
   if (manage) {
     // Validates the outlet filter against the reach (outside it: forbidden).
     const scoped = scopeOutlets(manage, input.outletIds);
+    // An outlet that is not this tenant's is denied, never dropped.
+    await withTenant(db, manage.context, (tx) =>
+      assertKnownOutlets(
+        tx,
+        ctx.access.tenant.tenantId,
+        input.outletIds,
+        scoped,
+      ),
+    );
     const only = scoped !== null && scoped.length === 1 ? scoped[0] : undefined;
     const found = await collect(
       ctx,

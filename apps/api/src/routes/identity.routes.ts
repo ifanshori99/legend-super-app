@@ -37,6 +37,7 @@ import {
   issuePasskeyChallenge,
   verifyPasskeyAssertion,
 } from "../services/identity-passkey.service";
+import { supportGrantedTenantIds } from "../services/platform-support.service";
 import {
   extendCurrentSession,
   listOwnSessions,
@@ -202,10 +203,23 @@ identityAuthRouter.post(
 
 identityAuthRouter.get("/sessions", requireAuth, async (req, res) => {
   const auth = getAuth(req);
+  // legend-xqkr7: a support (impersonated) session lists only sessions of
+  // tenants where its super admin holds a live grant.
+  const impersonatedBy = (
+    auth.session as { impersonatedBy?: string | null } | undefined
+  )?.impersonatedBy;
   res.json({
     data: await listOwnSessions({
       userId: auth.user.id,
       currentSessionId: auth.session.id,
+      ...(impersonatedBy
+        ? {
+            onlyTenantIds: await supportGrantedTenantIds({
+              adminUserId: impersonatedBy,
+              targetUserId: auth.user.id,
+            }),
+          }
+        : {}),
     }),
   });
 });

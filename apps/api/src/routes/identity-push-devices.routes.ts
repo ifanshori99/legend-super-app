@@ -8,6 +8,7 @@ import { Router, type Request } from "express";
 import { pushDeviceParamsSchema } from "@starter/shared/identity";
 import { getAuth, requireAuth } from "../middleware/auth";
 import { requireTrustedOrigin } from "../middleware/origin";
+import { supportGrantedTenantIds } from "../services/platform-support.service";
 import {
   listOwnPushDevices,
   revokeOwnPushDevice,
@@ -15,16 +16,30 @@ import {
 
 export const identityPushDevicesRouter = Router();
 
-function scopeOf(req: Request) {
+// legend-xqkr7: a support (impersonated) session sees and revokes only devices
+// of tenants where its super admin holds a live grant; ordinary sessions are
+// unchanged.
+async function scopeOf(req: Request) {
   const auth = getAuth(req);
+  const impersonatedBy = (
+    auth.session as { impersonatedBy?: string | null } | undefined
+  )?.impersonatedBy;
   return {
     userId: auth.user.id,
     currentSessionId: auth.session.id,
+    ...(impersonatedBy
+      ? {
+          onlyTenantIds: await supportGrantedTenantIds({
+            adminUserId: impersonatedBy,
+            targetUserId: auth.user.id,
+          }),
+        }
+      : {}),
   };
 }
 
 identityPushDevicesRouter.get("/", requireAuth, async (req, res) => {
-  res.json({ data: await listOwnPushDevices(scopeOf(req)) });
+  res.json({ data: await listOwnPushDevices(await scopeOf(req)) });
 });
 
 identityPushDevicesRouter.delete(
@@ -33,7 +48,7 @@ identityPushDevicesRouter.delete(
   requireTrustedOrigin,
   async (req, res) => {
     const { id } = pushDeviceParamsSchema.parse(req.params);
-    await revokeOwnPushDevice({ ...scopeOf(req), id });
+    await revokeOwnPushDevice({ ...(await scopeOf(req)), id });
     res.status(204).end();
   },
 );

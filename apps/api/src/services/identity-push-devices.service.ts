@@ -16,10 +16,16 @@ type Scope = {
   readonly userId: string;
   /** The caller's current login session id. */
   readonly currentSessionId: string;
+  /**
+   * Support (impersonated) sessions only: keep just devices registered in
+   * these tenants (legend-xqkr7). Undefined for an ordinary session.
+   */
+  readonly onlyTenantIds?: readonly string[];
 };
 
 type DeviceRow = {
   id: string;
+  tenant_id: string;
   device_label: string;
   registered_at: Date | string | null;
   created_at: Date | string;
@@ -37,7 +43,10 @@ async function listRows(scope: Scope, now: Date): Promise<DeviceRow[]> {
   const result = await db.execute<DeviceRow>(
     sql`SELECT * FROM app.list_own_push_devices(${scope.currentSessionId}, ${now.toISOString()}::timestamptz)`,
   );
-  return result.rows;
+  const allowed = scope.onlyTenantIds;
+  return allowed
+    ? result.rows.filter((row) => allowed.includes(row.tenant_id))
+    : result.rows;
 }
 
 /**
