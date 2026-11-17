@@ -1876,3 +1876,4 @@ Langkah berikut CTO baru:
 - 23:09 CTO: 1013 G2zim b6500814e SIAP batch86 sesudah 1009. Keputusan: refund provider sesudah penjualan diposting langsung (deposit debit sementara), tidak diparkir. Kartu legend-ra4lu (P1 fund tanpa evidence) tahan sampai 1020 mendarat (berkas sama). G2zim resolve.
 - 23:10 CTO: Mulai 1022 legend-98etn (uang/migrasi data supplier) Sonnet #1 base 1008.
 - 23:17 CTO: Retro 43 (G0bks). Disetujui: heavy tsc tunggu job browser saat free<60% (G0bks kerjakan). payroll-ter-monthly 15 gagal di full run akhir batch84 -> dititipkan ke fast gate batch85 G0fp6, akar masalah wajib. Throttle: maks 1 engineer baru per 10 menit saat disk < 18 GB.
+- 23:29 CTO: aturan heavy tsc tunggu browser (free<60%) aktif, 21 tests/*.sh hijau; arah sebaliknya dinilai di Retro 44. G0bks resolve.
