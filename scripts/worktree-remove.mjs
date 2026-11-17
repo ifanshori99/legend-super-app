@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
-import { resolve } from "node:path";
+import { posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseEnv } from "node:util";
 import { root } from "./lib.mjs";
@@ -29,6 +29,7 @@ export function removeWorktree(
     exec = spawnSync,
     readEnvironment: readSaved = readEnvironment,
     realpath = realpathSync,
+    discardEnv = false,
   } = {},
 ) {
   if (!targetPath) throw new Error("Use pnpm worktree:remove <worktree-path>.");
@@ -74,6 +75,35 @@ export function removeWorktree(
     throw new Error("Could not check the target worktree's status.");
   if (status.stdout.trim())
     throw new Error("Target worktree is dirty; preserve its changes first.");
+
+  // Git's clean status omits ignored settings, which removal would discard.
+  // Inventory names only, before reading private settings or stopping services.
+  const ignored = run(
+    "git",
+    [
+      "ls-files",
+      "--others",
+      "--ignored",
+      "--exclude-standard",
+      "-z",
+      "--",
+      ":(glob)**/.env*",
+    ],
+    target,
+  );
+  if (ignored.error || ignored.status !== 0)
+    throw new Error(
+      "Could not inventory ignored environment files; the worktree was kept.",
+    );
+  if (
+    ignored.stdout
+      .split("\0")
+      .some((file) => posix.basename(file).startsWith(".env")) &&
+    discardEnv !== true
+  )
+    throw new Error(
+      "Target has ignored environment files. Preserve them first or explicitly pass --discard-env.",
+    );
 
   const saved = readSaved(target);
   // DATABASE_URL may now point to an external server while the earlier local
@@ -147,9 +177,20 @@ if (
   resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 ) {
   try {
-    if (process.argv.length !== 3)
-      throw new Error("Use pnpm worktree:remove <worktree-path>.");
-    removeWorktree(process.argv[2]);
+    const args = process.argv.slice(2);
+    const flags = args.filter((argument) => argument === "--discard-env");
+    const targets = args.filter((argument) => !argument.startsWith("-"));
+    if (
+      flags.length > 1 ||
+      targets.length !== 1 ||
+      args.some(
+        (argument) => argument.startsWith("-") && argument !== "--discard-env",
+      )
+    )
+      throw new Error(
+        "Use pnpm worktree:remove <worktree-path> [--discard-env].",
+      );
+    removeWorktree(targets[0], { discardEnv: flags.length === 1 });
     console.log(
       "Removed the worktree. Its persistent database volume was kept.",
     );
