@@ -2,13 +2,21 @@
 // cashier default tender, refunds with approval, unallocated funds (PAY-04)
 // and settlement reconciliation cases (EDC-06). Each tab loads its own data,
 // so opening the page never fires six requests at once.
-import { Banknote, CreditCard, Route, Scale, Undo2 } from "lucide-react";
+import {
+  Banknote,
+  CreditCard,
+  Route,
+  Scale,
+  ShieldAlert,
+  Undo2,
+} from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { EdcPanel } from "./edc-panel";
 import { ReconciliationPanel } from "./reconciliation-panel";
+import { RefundHoldsPanel } from "./refund-holds-panel";
 import { RefundsPanel } from "./refunds-panel";
 import { RoutingPanel } from "./routing-panel";
 import { UnallocatedPanel } from "./unallocated-panel";
@@ -54,6 +62,10 @@ export function PaymentAdminPage() {
             <Scale aria-hidden="true" />
             {t("paymentAdmin.tabs.reconciliation")}
           </TabsTrigger>
+          <TabsTrigger value="refund-holds">
+            <ShieldAlert aria-hidden="true" />
+            {t("paymentAdmin.tabs.refundHolds")}
+          </TabsTrigger>
         </TabsList>
         <TabsContent value="routing">
           <RoutingPanel />
@@ -69,6 +81,9 @@ export function PaymentAdminPage() {
         </TabsContent>
         <TabsContent value="reconciliation">
           <ReconciliationPanel />
+        </TabsContent>
+        <TabsContent value="refund-holds">
+          <RefundHoldsPanel />
         </TabsContent>
       </Tabs>
     </section>

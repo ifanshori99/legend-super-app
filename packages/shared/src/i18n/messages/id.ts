@@ -1753,6 +1753,7 @@ export const id = {
       refunds: "Refund",
       unallocated: "Dana belum teralokasi",
       reconciliation: "Rekonsiliasi",
+      refundHolds: "Hold refund",
     },
     method: {
       qris: "QRIS",
@@ -1905,6 +1906,42 @@ export const id = {
       allStatuses: "Semua status",
       emptyTitle: "Tidak ada dana belum teralokasi",
       emptyHint: "Semua pembayaran sudah cocok dengan tagihannya.",
+    },
+    refundHolds: {
+      title: "Hold refund",
+      hint: "Provider mengembalikan dana yang belum cocok dengan refund kami. Selama hold terbuka, refund, payout, dan penyelesaian dana pada pembayaran itu ditahan.",
+      filter: "Filter status hold",
+      statusOpen: "Terbuka",
+      statusResolved: "Selesai",
+      providerRefund: "Refund provider",
+      noProviderRefund: "Tanpa nomor refund provider",
+      payment: "Pembayaran",
+      flaggedAt: "Ditandai",
+      amountUnknown: "Nominal tidak tercatat",
+      resolve: "Selesaikan hold",
+      resolveTitle: "Selesaikan hold refund",
+      resolveBody:
+        "Putuskan apakah dana yang dikembalikan provider ini milik pembayaran tersebut. Keputusan tidak bisa diubah setelah disimpan.",
+      resolution: "Keputusan",
+      notThisIntent: "Bukan milik pembayaran ini",
+      notThisIntentHint:
+        "Dana yang dikembalikan provider berasal dari pembayaran lain. Hold hanya ditutup; tidak ada refund yang dicatat.",
+      countedAgainstIntent: "Milik pembayaran ini",
+      countedAgainstIntentHint:
+        "Dana itu dihitung sudah dikembalikan oleh provider kepada tamu. Sisa yang bisa direfund atau dibayarkan pada pembayaran ini berkurang sebesar nominal hold.",
+      countedWarning:
+        "Hati-hati: pilihan ini mencatat uang sebagai sudah kembali ke tamu dan tidak bisa dibatalkan. Pastikan dana benar-benar sudah keluar dari provider.",
+      resolutionRequired: "Pilih salah satu keputusan.",
+      note: "Catatan keputusan",
+      noteHint:
+        "Tulis dasar keputusan untuk jejak audit, misalnya hasil pengecekan di dashboard provider.",
+      noteRequired: "Tulis catatan keputusan minimal 4 karakter.",
+      confirm: "Simpan keputusan",
+      resolved: "Hold refund diselesaikan.",
+      resolvedNotThis: "Bukan milik pembayaran ini",
+      resolvedCounted: "Dihitung sudah dikembalikan",
+      emptyTitle: "Tidak ada hold refund",
+      emptyHint: "Semua refund dari provider sudah cocok dengan catatan kami.",
     },
     reconciliation: {
       title: "Rekonsiliasi settlement",
