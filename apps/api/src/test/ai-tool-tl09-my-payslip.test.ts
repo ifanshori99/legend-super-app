@@ -222,7 +222,7 @@ function calculationFor(
     periodStart: `${world.month}-01`,
     periodEnd: `${world.month}-28`,
     payDate: `${world.month}-28`,
-  } as Record<string, unknown> & {
+  } as unknown as Record<string, unknown> & {
     grossIdr: number;
     deductionsIdr: number;
     netIdr: number;
@@ -388,7 +388,6 @@ let colleagueSlip: Awaited<ReturnType<typeof seedPayslip>>;
 let colleagueOnlySlip: Awaited<ReturnType<typeof seedPayslip>>;
 let foreignSlip: Awaited<ReturnType<typeof seedPayslip>>;
 let entityId: string;
-let foreignTenantId: string;
 
 beforeAll(async () => {
   const entity = await ownerPool.query<{ legal_entity_id: string }>(
@@ -427,7 +426,6 @@ beforeAll(async () => {
   const foreign = await createIsolatedTenant(
     `tl09${randomUUID().replaceAll("-", "").slice(0, 8)}`,
   );
-  foreignTenantId = foreign.tenantId;
   seeded.entities.push(foreign.legalEntityId);
   const foreignEmployee = await seedEmployee(
     foreign.tenantId,
@@ -485,7 +483,6 @@ afterAll(async () => {
 });
 
 void asTenant;
-void foreignTenantId;
 
 // ---- tests ----------------------------------------------------------------------
 
