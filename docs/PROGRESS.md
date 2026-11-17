@@ -1859,3 +1859,4 @@ Langkah berikut CTO baru:
 - 21:40 CTO: 1006 G65pc 419e34451 SIAP batch86 sesudah 984 f586w. Audit router lain -> legend-3z0ds (P1). G65pc resolve.
 - 21:48 CTO: 1009 G5gl3 daf8ace2a SIAP batch86 sesudah 980. Kartu legend-tlm3h (P1 jurnal/breakfast bruto) dan legend-g6ept (P2 lebih bayar). G5gl3 resolve.
 - 21:52 CTO: 1008 G38yq 806d14bf9 SIAP batch86 sesudah 991. Approve langsung kas butuh MFA diterima (sama dengan inbox). Kartu legend-98etn (P2 policy lama), legend-csfwn (P3). G38yq resolve.
+- 21:54 CTO: 1007 G0o10 53e85b8e9 SIAP batch86 sesudah 992 (0621-0624). Keputusan: tolak reversal bila offboarding completed diterima (membatasi). G0o10 resolve.
