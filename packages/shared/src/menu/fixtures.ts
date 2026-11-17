@@ -31,6 +31,15 @@ const groups = [
     "Croissant Mentega|Croissant Cokelat|Roti Bakar Cokelat|Roti Bakar Keju|Banana Bread|Brownies|Cheesecake|Tiramisu|Donat Gula|Donat Cokelat|Muffin Pisang|Muffin Cokelat|Kue Wortel|Cookies Cokelat|Pie Apel",
   ],
 ] as const;
+// legend-lgyfh: demo breakfast menu. A few morning dishes carry the flag so the
+// demo outlet opts in to the flagged breakfast menu; the rest stay unflagged.
+const breakfastNames = new Set([
+  "Nasi Goreng Kampung",
+  "Nasi Goreng Ayam",
+  "Roti Bakar Cokelat",
+  "Roti Bakar Keju",
+  "Croissant Mentega",
+]);
 const categories = groups.map(([name], i) => ({
   ...base(100 + i),
   brandId: brand.id,
@@ -78,7 +87,7 @@ const items: MenuItem[] = groups.flatMap(([, names], group) =>
     allergens: [],
     mediaId: null,
     isActive: true,
-    isBreakfast: false,
+    isBreakfast: breakfastNames.has(name),
     sortOrder: i,
   })),
 );

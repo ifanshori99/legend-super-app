@@ -1009,6 +1009,7 @@ export function createWs03Engine(clock: () => number = Date.now) {
       hours: body.hours,
       status: body.status,
       sortOrder: body.sortOrder,
+      isWfc: body.isWfc ?? false,
     });
     state.zones.push(zone);
     return zone;
@@ -1034,6 +1035,7 @@ export function createWs03Engine(clock: () => number = Date.now) {
       ...(body.hours === undefined ? {} : { hours: body.hours }),
       ...(body.status === undefined ? {} : { status: body.status }),
       ...(body.sortOrder === undefined ? {} : { sortOrder: body.sortOrder }),
+      ...(body.isWfc === undefined ? {} : { isWfc: body.isWfc }),
     });
     state.zones = state.zones.map((entry) =>
       entry.id === zone.id ? zone : entry,

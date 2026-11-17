@@ -186,6 +186,34 @@ async function currentLinked(
 
 // ---- Menu -------------------------------------------------------------------
 
+/**
+ * legend-lgyfh fallback rule, shared by the menu and the order path: an outlet
+ * that has flagged no item `is_breakfast` (active, not deleted, same tenant and
+ * brand as the breakfast menu) keeps the old behaviour (every item the flow
+ * offered, none refused for being unflagged). From the first flagged item on,
+ * only flagged items are listed and orderable.
+ */
+async function outletUsesBreakfastFlag(
+  tx: Tx,
+  tenantId: string,
+  brandId: string,
+): Promise<boolean> {
+  const [row] = await tx
+    .select({ id: menuItems.id })
+    .from(menuItems)
+    .where(
+      and(
+        eq(menuItems.tenantId, tenantId),
+        eq(menuItems.brandId, brandId),
+        eq(menuItems.isActive, true),
+        eq(menuItems.isBreakfast, true),
+        isNull(menuItems.deletedAt),
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
+}
+
 export async function getBreakfastMenuForMember(
   context: ScopedTenantContext,
   member: BreakfastMember,
@@ -196,8 +224,14 @@ export async function getBreakfastMenuForMember(
     const ticket = await loadOwnTicket(tx, context, member, ticketId, false);
     const tenantId = context.tenant.tenantId;
     const outlet = await loadOutlet(tx, context, ticket.outletId as OutletId);
-    // legend-lgyfh: only items flagged `is_breakfast` are offered (priced on
-    // the dine-in list); old items stay out until staff flag them.
+    // legend-lgyfh: once an item is flagged `is_breakfast` only flagged items
+    // are offered (priced on the dine-in list); with none flagged the old menu
+    // stays (see outletUsesBreakfastFlag).
+    const flagOnly = await outletUsesBreakfastFlag(
+      tx,
+      tenantId,
+      outlet.brandId,
+    );
     const candidates = await tx
       .select({ id: menuItems.id })
       .from(menuItems)
@@ -213,7 +247,7 @@ export async function getBreakfastMenuForMember(
           eq(menuItems.tenantId, tenantId),
           eq(menuItems.brandId, outlet.brandId),
           eq(menuItems.isActive, true),
-          eq(menuItems.isBreakfast, true),
+          flagOnly ? eq(menuItems.isBreakfast, true) : undefined,
           isNull(menuItems.deletedAt),
           isNull(menuCategories.deletedAt),
         ),
@@ -414,33 +448,42 @@ export async function createBreakfastOrderForMember(
       now,
     });
 
-    // legend-lgyfh: an item outside the breakfast menu is refused like an
-    // unavailable one, so a guessed id cannot be ordered.
-    const breakfastIds = new Set(
-      (
-        await tx
-          .select({ id: menuItems.id })
-          .from(menuItems)
-          .where(
-            and(
-              eq(menuItems.tenantId, context.tenant.tenantId),
-              eq(menuItems.brandId, outlet.brandId),
-              eq(menuItems.isBreakfast, true),
-              isNull(menuItems.deletedAt),
-              inArray(
-                menuItems.id,
-                wanted.map((line) => line.menuItemId),
-              ),
-            ),
-          )
-      ).map((row) => row.id),
+    // legend-lgyfh: once the outlet flags items, an item outside the breakfast
+    // menu is refused like an unavailable one, so a guessed id cannot be
+    // ordered. With none flagged the old rule applies (nothing refused here).
+    const flagOnly = await outletUsesBreakfastFlag(
+      tx,
+      context.tenant.tenantId,
+      outlet.brandId,
     );
+    const breakfastIds = flagOnly
+      ? new Set(
+          (
+            await tx
+              .select({ id: menuItems.id })
+              .from(menuItems)
+              .where(
+                and(
+                  eq(menuItems.tenantId, context.tenant.tenantId),
+                  eq(menuItems.brandId, outlet.brandId),
+                  eq(menuItems.isBreakfast, true),
+                  isNull(menuItems.deletedAt),
+                  inArray(
+                    menuItems.id,
+                    wanted.map((line) => line.menuItemId),
+                  ),
+                ),
+              )
+          ).map((row) => row.id),
+        )
+      : null;
 
     const orderId = createUlid(now.getTime());
     const resolved = wanted.map((line, index) => {
-      const item = breakfastIds.has(line.menuItemId)
-        ? catalogue.get(line.menuItemId)
-        : undefined;
+      const item =
+        breakfastIds === null || breakfastIds.has(line.menuItemId)
+          ? catalogue.get(line.menuItemId)
+          : undefined;
       const resolution = resolveLine(item, {
         menuItemId: line.menuItemId,
         variantId: null,

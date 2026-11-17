@@ -970,6 +970,9 @@ export const id = {
     formHoursHint: "Zona hanya menerima pesanan pada hari dan jam yang dibuka.",
     formHoursRequired: "Buka minimal satu hari.",
     formStatus: "Zona aktif",
+    formWfc: "Zona WFC",
+    formWfcHint:
+      "Tandai zona untuk tamu yang bekerja dari kafe. Dipakai laporan hunian kursi WFC dan pengingat belanja minimum.",
     formSortOrder: "Urutan tampil",
     formSortOrderHint: "Angka kecil tampil lebih dulu di daftar zona.",
     formCreate: "Buat zona",

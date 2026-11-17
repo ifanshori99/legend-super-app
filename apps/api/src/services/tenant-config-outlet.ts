@@ -107,6 +107,7 @@ type ZoneItem = {
   hours: ZoneRow["hours"];
   status: ZoneRow["status"];
   sortOrder: number;
+  isWfc?: boolean;
 };
 
 const zonesHandler: SectionHandler = {
@@ -133,6 +134,7 @@ const zonesHandler: SectionHandler = {
         hours: row.hours,
         status: row.status,
         sortOrder: row.sortOrder,
+        isWfc: row.isWfc,
       });
     }
     return exported(items);
@@ -182,6 +184,7 @@ const zonesHandler: SectionHandler = {
           hours: item.hours,
           status: item.status,
           sortOrder: item.sortOrder,
+          isWfc: item.isWfc ?? false,
         })
         .returning({ id: floorZones.id });
       if (!created) throw new ConfigImportError("Zone insert returned no row.");
