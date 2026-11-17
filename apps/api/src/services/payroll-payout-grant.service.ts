@@ -33,7 +33,8 @@ export type PayoutGrantBinding = {
     | "batch_approve"
     | "disown"
     | "unfreeze"
-    | "recon_clear";
+    | "recon_clear"
+    | "return_withdraw";
   step: "propose" | "approve" | "record" | "confirm" | "withdraw";
   batchId: string | null;
   itemIds: readonly string[];
@@ -43,8 +44,8 @@ export type PayoutGrantBinding = {
   /**
    * The outcome a grant covers (legend-r86qa): `failed` or `not_sent` for kind
    * `resolve`, `succeeded` for kind `bank_confirm`, the sha256 (hex) of the
-   * reason for kind `disown`, `unfreeze` (legend-l2zru) and `recon_clear`
-   * (legend-xbagc); NULL for every
+   * reason for kind `disown`, `unfreeze` (legend-l2zru), `recon_clear`
+   * (legend-xbagc) and `return_withdraw` (legend-snwnn); NULL for every
    * other kind.
    */
   detail?: string | null;

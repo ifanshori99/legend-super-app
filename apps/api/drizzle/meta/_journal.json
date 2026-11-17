@@ -3039,6 +3039,20 @@
       "when": 1795000000584,
       "tag": "0584_payout_990_flag_fingerprint",
       "breakpoints": true
+    },
+    {
+      "idx": 585,
+      "version": "7",
+      "when": 1795000000585,
+      "tag": "0615_payout_1005_return_withdraw",
+      "breakpoints": true
+    },
+    {
+      "idx": 586,
+      "version": "7",
+      "when": 1795000000586,
+      "tag": "0616_payout_1005_recon_flag_kind",
+      "breakpoints": true
     }
   ]
 }
