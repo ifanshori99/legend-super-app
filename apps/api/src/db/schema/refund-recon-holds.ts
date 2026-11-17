@@ -10,6 +10,7 @@ import {
   pgTable,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
@@ -21,7 +22,8 @@ import { paymentIntents } from "./payment.ts";
 /**
  * One row per stored webhook event (unique with the tenant), so a replay, a
  * worker retry and a concurrent delivery add none. `resolvedAt` NULL = open =
- * blocks refunds and payouts of the intent. `webhookEventId` is the id of the
+ * blocks refunds and payouts of the intent. A provider refund id is held once
+ * per intent (partial unique index). `webhookEventId` is the id of the
  * stored `gateway_webhook_events` row (no foreign key: that table has no
  * `(tenant_id, id)` key and the hold must outlive nothing it depends on).
  */
@@ -47,6 +49,11 @@ export const refundReconHolds = pgTable(
       columns: [t.tenantId, t.paymentIntentId],
       foreignColumns: [paymentIntents.tenantId, paymentIntents.id],
     }),
+    // One hold per provider refund of an intent: the provider resending the
+    // same refund under a new event id adds none.
+    uniqueIndex("refund_recon_hold_provider_refund_key")
+      .on(t.tenantId, t.paymentIntentId, t.providerRefundId)
+      .where(sql`${t.providerRefundId} IS NOT NULL`),
     index("refund_recon_hold_intent_idx").on(t.tenantId, t.paymentIntentId),
     check("refund_recon_hold_amount_check", sql`${t.amountIdr} >= 0`),
   ],

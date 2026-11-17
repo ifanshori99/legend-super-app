@@ -39,10 +39,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import type { Express } from "express";
 import type { PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import {
-  tenantIdSchema,
-  type ScopedTenantContext,
-} from "@starter/shared/core";
+import { tenantIdSchema, type ScopedTenantContext } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,

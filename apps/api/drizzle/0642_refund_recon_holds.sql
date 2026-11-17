@@ -1,7 +1,8 @@
 -- legend-9s33i (1025 C): refund_recon_holds, a provider refund.succeeded whose
 -- reference names another intent than the one owning the payment id. An open
 -- hold (resolved_at NULL) blocks refunds and payouts of that intent until
--- finance matches it; nothing is refunded or stamped automatically.
+-- finance matches it; nothing is refunded or stamped automatically. One hold
+-- per provider refund id of an intent (partial unique index).
 -- Foreign keys into FORCE RLS tables are inline in the CREATE TABLE
 -- (docs/plan/contracts.md, pattern 1); tenant-isolated like
 -- payment_provider_refunds (0505). The migration writes no row.
@@ -22,5 +23,7 @@ CREATE TABLE "refund_recon_holds" (
 );
 --> statement-breakpoint
 CREATE INDEX "refund_recon_hold_intent_idx" ON "refund_recon_holds" USING btree ("tenant_id","payment_intent_id");
+--> statement-breakpoint
+CREATE UNIQUE INDEX "refund_recon_hold_provider_refund_key" ON "refund_recon_holds" USING btree ("tenant_id","payment_intent_id","provider_refund_id") WHERE "refund_recon_holds"."provider_refund_id" IS NOT NULL;
 --> statement-breakpoint
 SELECT app.enforce_tenant_rls('public.refund_recon_holds'::regclass);

@@ -3359,8 +3359,11 @@ export async function markProviderRefunded(
   now: Date,
   /** Which door saw the refund (recorded on the provider refund row). */
   source: "payment_webhook" | "poller" = "poller",
-): Promise<void> {
-  await withTenant(db, context, async (tx) => {
+  /** The caller's retry window is over: count a refund of ours still in
+   * flight instead of asking again. */
+  force = false,
+): Promise<"done" | "retry"> {
+  return withTenant(db, context, async (tx) => {
     await tx
       .update(paymentIntents)
       .set({ providerRefundedAt: now })
@@ -3395,8 +3398,8 @@ export async function markProviderRefunded(
           eq(paymentIntents.id, intentId),
         ),
       );
-    if (!target?.providerRef) return;
-    await recordProviderRefundInTx(
+    if (!target?.providerRef) return "done";
+    const outcome = await recordProviderRefundInTx(
       tx,
       context,
       {
@@ -3407,9 +3410,12 @@ export async function markProviderRefunded(
         source,
         expectedIntentId: target.id,
         quiet: true,
+        force,
       },
       now,
     );
+    // `retry`: a refund of ours is still in flight, nothing was written yet.
+    return outcome.status === "retry" ? "retry" : "done";
   });
 }
 

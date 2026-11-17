@@ -249,29 +249,61 @@ export async function recordProviderRefundInTx(
       ),
     );
   if (providerRefundId.startsWith(SYNTHETIC_PREFIX)) {
-    // Refunds of ours already sent (or that may have been) went back to the
-    // payer and journal through `payment.refunded`: the provider's `refunded`
-    // status is their echo, so they are not booked a second time (1025 B).
-    const [ownSent] = (
-      await tx.execute(sql`SELECT coalesce(sum(r.amount_idr), 0)::text AS sent
-        FROM payment_refunds r
-        WHERE r.tenant_id = ${tenantId}::uuid
-          AND r.payment_intent_id = ${intent.id}::uuid
-          AND (r.status = 'completed'
-            OR (r.status <> 'failed'
-              AND (r.provider_ref IS NOT NULL
-                OR r.payout_attempts > 0
-                OR r.payout_pending_polls > 0)))`)
-    ).rows;
-    const ownSentIdr = Number(ownSent?.sent ?? 0);
+    // Refunds of ours on THIS provider transaction went back to the payer and
+    // journal through `payment.refunded`: the provider's `refunded` status is
+    // their echo, so they are not booked a second time (1025 B). A refund of a
+    // parked fund of another transaction is not part of this money (same rule
+    // as `ownRefundedIdrSql`), and one already recorded as an echo row is in
+    // `recorded` (counted there, not twice).
+    const { rows: ours } = await tx.execute(sql`SELECT r.status,
+        r.amount_idr::text AS amount, r.provider_ref,
+        (r.unallocated_fund_id IS NOT NULL) AS fund,
+        (r.provider_ref IS NOT NULL OR r.payout_attempts > 0
+          OR r.payout_pending_polls > 0
+          OR r.payout_claim_token IS NOT NULL) AS sent
+      FROM payment_refunds r
+      WHERE r.tenant_id = ${tenantId}::uuid
+        AND r.payment_intent_id = ${intent.id}::uuid
+        AND r.status NOT IN ('failed')
+        AND (r.unallocated_fund_id IS NULL
+          OR EXISTS (SELECT 1 FROM payment_unallocated_funds f
+            JOIN payment_evidence e
+              ON e.tenant_id = f.tenant_id AND e.id = f.evidence_id
+            WHERE f.tenant_id = r.tenant_id
+              AND f.id = r.unallocated_fund_id
+              AND e.payment_intent_id = ${intent.id}::uuid
+              AND e.provider = ${PROVIDER}
+              AND e.provider_ref = ${providerPaymentRef}))`);
+    const echoed = new Set(recorded.map((row) => row.refundId));
+    const unrecorded = ours.filter(
+      (row) => !(row.provider_ref && echoed.has(String(row.provider_ref))),
+    );
+    const completed = unrecorded.filter((row) => row.status === "completed");
+    const live = unrecorded.filter(
+      (row) => row.status !== "completed" && row.sent === true,
+    );
+    // Refunds of ours still on their way count as sent: their money goes back
+    // to the payer too (restrictive). When they leave nothing of the
+    // transaction the provider's status is their echo.
+    const ownIdr = [...completed, ...live].reduce(
+      (sum, row) => sum + Number(row.amount),
+      0,
+    );
+    // A refund of the bill still on its way (not a parked fund's, whose amount
+    // is fixed): the provider's status may be its echo and the amount is not
+    // final. Write nothing; the caller asks again later (when the retry window
+    // is over, `force` counts it).
+    const mustWait = !input.force && live.some((row) => row.fund !== true);
     if (evidence) {
       const left =
         Number(evidence.amountIdr) -
         recorded.reduce((sum, row) => sum + Number(row.amountIdr), 0) -
-        ownSentIdr;
-      if (left <= 0) return { status: ownSentIdr > 0 ? "own" : "duplicate" };
+        ownIdr;
+      if (left <= 0) return { status: ownIdr > 0 ? "own" : "duplicate" };
+      if (mustWait) return { status: "retry" };
       amountIdr = left;
-    } else if (ownSentIdr >= amountIdr) return { status: "own" };
+    } else if (ownIdr >= amountIdr) return { status: "own" };
+    else if (mustWait) return { status: "retry" };
   } else if (recorded.some((row) => row.refundId.startsWith(SYNTHETIC_PREFIX)))
     return { status: "duplicate" };
 
@@ -412,51 +444,52 @@ export async function recordProviderRefundInTx(
       );
 
   // 5. One audit row and one alert for this refund (we won the insert).
-  if (!input.quiet) await recordAudit(
-    tx,
-    context,
-    {
-      id: createUlid(now.getTime()),
-      tenantId,
-      outletId: intent.outletId,
-      actorType: "system",
-      actorId: null,
-      deviceId: null,
-      action: "payment.provider_refunded_partial",
-      objectType: "payment_intent",
-      objectId: intent.id,
-      reason: null,
-      maskedChanges: {
-        before: { status: intent.status },
-        after: {
-          status: intent.status,
-          intentId: intent.id,
-          evidenceId,
-          providerRefundId,
-          amountIdr,
-          cumulativeIdr,
-          paidIdr,
-          fundCount: fundsMarked,
-          intentFlagged,
+  if (!input.quiet)
+    await recordAudit(
+      tx,
+      context,
+      {
+        id: createUlid(now.getTime()),
+        tenantId,
+        outletId: intent.outletId,
+        actorType: "system",
+        actorId: null,
+        deviceId: null,
+        action: "payment.provider_refunded_partial",
+        objectType: "payment_intent",
+        objectId: intent.id,
+        reason: null,
+        maskedChanges: {
+          before: { status: intent.status },
+          after: {
+            status: intent.status,
+            intentId: intent.id,
+            evidenceId,
+            providerRefundId,
+            amountIdr,
+            cumulativeIdr,
+            paidIdr,
+            fundCount: fundsMarked,
+            intentFlagged,
+          },
         },
+        ipHash: null,
+        sensitiveAccess: false,
+        retentionClass: "audit_2y",
+        createdAt: now.toISOString(),
       },
-      ipHash: null,
-      sensitiveAccess: false,
-      retentionClass: "audit_2y",
-      createdAt: now.toISOString(),
-    },
-    [
-      "status",
-      "intentId",
-      "evidenceId",
-      "providerRefundId",
-      "amountIdr",
-      "cumulativeIdr",
-      "paidIdr",
-      "fundCount",
-      "intentFlagged",
-    ],
-  );
+      [
+        "status",
+        "intentId",
+        "evidenceId",
+        "providerRefundId",
+        "amountIdr",
+        "cumulativeIdr",
+        "paidIdr",
+        "fundCount",
+        "intentFlagged",
+      ],
+    );
   // The supervisors were already told this money went back (the audit row
   // above still records the refund), unless this refund newly flags the whole
   // intent: that is news they must get.

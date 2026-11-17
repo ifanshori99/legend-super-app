@@ -90,7 +90,10 @@ import {
   setIntegrationStatus,
   upsertIntegration,
 } from "../services/platform-integration.service";
-import { clearDoitWebhookSecretCache } from "../services/payment-webhook.service";
+import {
+  clearDoitWebhookSecretCache,
+  reprocessStoredWebhookEvents,
+} from "../services/payment-webhook.service";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers";
 import { paymentTestScope } from "./payment-test-scope";
 import { FakeRefundGateway } from "./refund-fake-gateway";
@@ -304,19 +307,49 @@ const doit = new FakeDoit();
 type Role = "gateway_clearing" | "customer_deposit";
 const CHART: [string, string, string, string, string][] = [
   ["cash_on_hand", "1101", "Kas", "asset", "current_asset"],
-  ["gateway_clearing", "1201", "Kliring Payment Gateway", "asset", "current_asset"],
+  [
+    "gateway_clearing",
+    "1201",
+    "Kliring Payment Gateway",
+    "asset",
+    "current_asset",
+  ],
   ["edc_clearing", "1202", "Kliring EDC", "asset", "current_asset"],
-  ["loyalty_liability", "2105", "Liabilitas Poin", "liability", "current_liability"],
+  [
+    "loyalty_liability",
+    "2105",
+    "Liabilitas Poin",
+    "liability",
+    "current_liability",
+  ],
   ["tax_payable_pbjt", "2104", "Utang PBJT", "liability", "current_liability"],
-  ["customer_deposit", "2107", "Uang Muka Pelanggan", "liability", "current_liability"],
+  [
+    "customer_deposit",
+    "2107",
+    "Uang Muka Pelanggan",
+    "liability",
+    "current_liability",
+  ],
   ["sales_revenue", "4101", "Penjualan", "revenue", "revenue"],
   ["sales_discount", "4102", "Diskon Penjualan", "revenue", "revenue"],
   ["service_charge", "4103", "Service Charge", "revenue", "revenue"],
   ["rounding", "4104", "Pembulatan", "revenue", "revenue"],
-  ["deposit_forfeit_income", "4201", "Pendapatan DP Hangus", "revenue", "other_income"],
+  [
+    "deposit_forfeit_income",
+    "4201",
+    "Pendapatan DP Hangus",
+    "revenue",
+    "other_income",
+  ],
   ["cash_over_short", "6108", "Selisih Kas", "expense", "operating_expense"],
   ["bank", "1103", "Bank Operasional", "asset", "current_asset"],
-  ["gateway_fee_expense", "6109", "Biaya Gateway (MDR)", "expense", "operating_expense"],
+  [
+    "gateway_fee_expense",
+    "6109",
+    "Biaya Gateway (MDR)",
+    "expense",
+    "operating_expense",
+  ],
 ];
 const accounts: Record<string, string> = {};
 
@@ -803,9 +836,10 @@ describe("1025-B a full provider refund is recorded once and reaches the books o
     expect(rows, "one row keyed payment:<providerRef>").toHaveLength(1);
     expect(rows[0]!.amount_idr).toBe(BILL_TOTAL);
     expect(await providerRows(code.id)).toHaveLength(1);
-    expect(await refundEventIds(rows[0]!.id), "one event for the row").toHaveLength(
-      1,
-    );
+    expect(
+      await refundEventIds(rows[0]!.id),
+      "one event for the row",
+    ).toHaveLength(1);
 
     // The provider retries, the poller runs again: nothing is added.
     await providerRetriesLater(code);
@@ -827,7 +861,9 @@ describe("1025-B a full provider refund is recorded once and reaches the books o
         const answered = await deliver(
           doit.eventFor(code.providerRef, "refunded"),
         );
-        expect(answered.status, JSON.stringify(answered.body)).toBeLessThan(500);
+        expect(answered.status, JSON.stringify(answered.body)).toBeLessThan(
+          500,
+        );
       };
       if (first === "poller") {
         await viaPoller();
@@ -899,7 +935,9 @@ describe("1025-B a full provider refund is recorded once and reaches the books o
     expect(rows, "partial + one full row").toHaveLength(2);
     const full = await fullRowOf(code);
     expect(full, "one row keyed payment:<providerRef>").toHaveLength(1);
-    expect(full[0]!.amount_idr, "only the remainder").toBe(BILL_TOTAL - PARTIAL);
+    expect(full[0]!.amount_idr, "only the remainder").toBe(
+      BILL_TOTAL - PARTIAL,
+    );
     expect(rows.reduce((sum, row) => sum + row.amount_idr, 0)).toBe(BILL_TOTAL);
 
     // Both reach the books once; the gateway holds nothing of this payment.
@@ -1081,7 +1119,9 @@ describe("1025-B a full provider refund is recorded once and reaches the books o
     // A parked fund of another code, refunded by the provider, cannot be paid
     // out a second time either.
     const parked = await newCode();
-    expect((await paid(parked, BILL_TOTAL - SHORT_BY)).status).toBeLessThan(500);
+    expect((await paid(parked, BILL_TOTAL - SHORT_BY)).status).toBeLessThan(
+      500,
+    );
     const [fund] = await fundsOf(parked.id);
     expect(fund).toBeDefined();
     await providerRefundsEverywhere(parked);
@@ -1092,5 +1132,233 @@ describe("1025-B a full provider refund is recorded once and reaches the books o
     }
     expect(await refundRowsOfIntent(parked.id)).toBe(0);
     expect(fake.calls).toHaveLength(0);
+  });
+});
+
+// ===========================================================================
+// Architect follow-ups: what the full refund's remainder may subtract, and the
+// refund of ours that is still in flight (brief 1025 card B, F1a / F1b / F1c /
+// F2). Assumptions: the remainder = what the provider received minus our own
+// COMPLETED refunds of the main transaction, counted once even when the same
+// money is also recorded as an echo provider row, minus earlier provider rows;
+// a refund of a parked fund of ANOTHER provider transaction is not part of it.
+// A live refund of ours (approved, attempts > 0, not final) makes the webhook
+// end `failed` (retryable) with no row; the retry after it resolves writes once.
+// ===========================================================================
+
+const OURS = 30_000;
+
+async function asTenantTx<T>(
+  run: (client: import("pg").PoolClient) => Promise<T>,
+): Promise<T> {
+  const client = await owner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+      [tenantId],
+    );
+    const result = await run(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/** A refund of OUR side on the intent (optionally for a parked fund). */
+async function seedOurRefund(
+  code: Code,
+  amountIdr: number,
+  opts: {
+    status: "completed" | "approved" | "failed";
+    providerRef: string | null;
+    attempts?: number;
+    fundId?: string;
+  },
+): Promise<string> {
+  const id = randomUUID();
+  await owner.query(
+    `INSERT INTO payment_refunds
+       (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status,
+        requested_by, approved_by, decided_at, completed_at, provider_ref,
+        payout_attempts, unallocated_fund_id)
+     VALUES ($1, $2, $3, $4, $5, 'Pengembalian dana', $6, 'requester', 'approver', now(),
+             $7, $8, $9, $10)`,
+    [
+      id,
+      tenantId,
+      outletId,
+      code.id,
+      amountIdr,
+      opts.status,
+      opts.status === "completed" ? new Date() : null,
+      opts.providerRef,
+      opts.attempts ?? 0,
+      opts.fundId ?? null,
+    ],
+  );
+  return id;
+}
+
+/** The recorder's echo row of a refund of ours (forced), as the webhook writes it. */
+async function seedEchoRow(
+  code: Code,
+  providerRefundId: string,
+  amountIdr: number,
+): Promise<void> {
+  await asTenantTx((client) =>
+    client.query(
+      `INSERT INTO payment_provider_refunds
+         (id, tenant_id, outlet_id, payment_intent_id, provider, provider_refund_id,
+          provider_payment_ref, amount_idr, source)
+       VALUES ($1, $2, $3, $4, 'doit', $5, $6, $7, 'payment_webhook')`,
+      [
+        randomUUID(),
+        tenantId,
+        outletId,
+        code.id,
+        providerRefundId,
+        code.providerRef,
+        amountIdr,
+      ],
+    ),
+  );
+}
+
+async function storedStatus(eventId: string) {
+  const { rows } = await owner.query<{ status: string }>(
+    "SELECT status FROM gateway_webhook_events WHERE tenant_id = $1 AND event_id = $2",
+    [tenantId, eventId],
+  );
+  return rows.map((row) => row.status);
+}
+
+const webhookContext: ScopedTenantContext = establishScopedTenantContext(
+  establishTenantContext({ tenantId, brandId: null, source: "webhook" }),
+  { kind: "tenant" },
+);
+
+/** The provider resends the same event and the worker retries it later. */
+async function retryStored(code: Code, body: { id: string }) {
+  await owner.query(
+    `UPDATE gateway_webhook_events
+        SET received_at = now() - interval '20 minutes',
+            updated_at = now() - interval '20 minutes'
+      WHERE tenant_id = $1 AND event_id = $2`,
+    [tenantId, body.id],
+  );
+  await reprocessStoredWebhookEvents(webhookContext, new Date(), 100).catch(
+    () => null,
+  );
+  const again = await deliver(body);
+  expect(again.status).toBeLessThan(600);
+  await pollLater().catch(() => null);
+}
+
+describe("1025-B the remainder of a full refund and a refund of ours in flight", () => {
+  it("1025-B-F1a our refund of 30 completed AND recorded as an echo row is counted once: the full refund writes the remainder (not minus 30 twice)", async () => {
+    const code = await paidCode();
+    await seedOurRefund(code, OURS, {
+      status: "completed",
+      providerRef: "rf_ours_f1a",
+      attempts: 1,
+    });
+    await seedEchoRow(code, "rf_ours_f1a", OURS);
+
+    await providerRefundsEverywhere(code);
+    await providerRetriesLater(code);
+
+    const full = await fullRowOf(code);
+    expect(full, "one row keyed payment:<providerRef>").toHaveLength(1);
+    expect(full[0]!.amount_idr, "remainder counts our 30 once").toBe(
+      BILL_TOTAL - OURS,
+    );
+  });
+
+  it("1025-B-F1b our refund of a parked fund of a DIFFERENT transaction does not reduce the remainder of the main transaction", async () => {
+    const code = await paidCode();
+    const extraRef = `dp_extra_${randomBytes(6).toString("hex")}`;
+    const evidence = await owner.query<{ id: string }>(
+      `INSERT INTO payment_evidence (tenant_id, outlet_id, payment_intent_id, provider, provider_ref, method, source, amount_idr, received_at)
+       VALUES ($1, $2, $3, 'doit', $4, 'qris', 'verified_webhook', $5, now()) RETURNING id`,
+      [tenantId, outletId, code.id, extraRef, OURS],
+    );
+    const fundId = randomUUID();
+    await owner.query(
+      `INSERT INTO payment_unallocated_funds (id, tenant_id, outlet_id, payment_intent_id, evidence_id, amount_idr, reason)
+       VALUES ($1, $2, $3, $4, $5, $6, 'double_payment')`,
+      [fundId, tenantId, outletId, code.id, evidence.rows[0]!.id, OURS],
+    );
+    await seedOurRefund(code, OURS, {
+      status: "completed",
+      providerRef: "rf_fund_f1b",
+      attempts: 1,
+      fundId,
+    });
+
+    await providerRefundsEverywhere(code);
+    await providerRetriesLater(code);
+
+    const full = await fullRowOf(code);
+    expect(full, "one row keyed payment:<providerRef>").toHaveLength(1);
+    expect(
+      full[0]!.amount_idr,
+      "the other transaction's refund is not netted",
+    ).toBe(BILL_TOTAL);
+  });
+
+  it.each([
+    {
+      label:
+        "F1c sent (has a provider ref) then failed: the provider returned everything",
+      live: { providerRef: "rf_live_f1c", attempts: 1 },
+      resolve: "failed" as const,
+      expected: BILL_TOTAL,
+    },
+    {
+      label:
+        "F2 in flight with no provider ref yet, then completed: remainder after it",
+      live: { providerRef: null, attempts: 1 },
+      resolve: "completed" as const,
+      expected: BILL_TOTAL - OURS,
+    },
+  ])("1025-B-$label", async ({ live, resolve, expected }) => {
+    const code = await paidCode();
+    const refundId = await seedOurRefund(code, OURS, {
+      status: "approved",
+      providerRef: live.providerRef,
+      attempts: live.attempts,
+    });
+    doit.refund(code.providerRef);
+    const body = doit.eventFor(code.providerRef, "refunded");
+
+    const first = await deliver(body);
+    expect(first.status).toBeLessThan(600);
+
+    // While our refund is live nothing is written and the event is not
+    // silently dropped: it stays retryable.
+    expect(await fullRowOf(code), "no row while our refund is live").toEqual(
+      [],
+    );
+    expect(await storedStatus(body.id)).toEqual(["failed"]);
+
+    // Our refund resolves.
+    await owner.query(
+      `UPDATE payment_refunds SET status = $2::text, provider_ref = coalesce(provider_ref, 'rf_res_' || id::text),
+                completed_at = CASE WHEN $2::text = 'completed' THEN now() ELSE NULL END
+          WHERE id = $1`,
+      [refundId, resolve],
+    );
+    await retryStored(code, body);
+
+    const full = await fullRowOf(code);
+    expect(full, "the retry wrote the row once").toHaveLength(1);
+    expect(full[0]!.amount_idr).toBe(expected);
+    expect(await providerRows(code.id)).toHaveLength(1);
+    expect(await refundEventsOfIntent(code.id)).toBe(1);
   });
 });

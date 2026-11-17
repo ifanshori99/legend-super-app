@@ -93293,6 +93293,34 @@
         }
       },
       "indexes": {
+        "refund_recon_hold_provider_refund_key": {
+          "name": "refund_recon_hold_provider_refund_key",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "payment_intent_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "provider_refund_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"refund_recon_holds\".\"provider_refund_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "refund_recon_hold_intent_idx": {
           "name": "refund_recon_hold_intent_idx",
           "columns": [

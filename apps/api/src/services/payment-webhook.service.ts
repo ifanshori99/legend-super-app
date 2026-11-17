@@ -826,9 +826,17 @@ async function holdRefundReferenceMismatch(
   context: ScopedTenantContext,
   row: GatewayWebhookEvent,
   intent: PaymentIntentRow,
-  refund: { providerRefundId: string | null; amountIdr: number },
+  refund: {
+    providerRefundId: string | null;
+    amountIdr: number;
+    /** Status the refund carries: only a succeeded one (or one that names no
+     * status, on a `refund.succeeded` event) is held. */
+    refundStatus?: string;
+  },
   now: Date,
 ): Promise<void> {
+  if (refund.refundStatus !== undefined && refund.refundStatus !== "succeeded")
+    return;
   await withTenant(db, context, async (tx) => {
     const [held] = await tx
       .insert(refundReconHolds)
@@ -842,9 +850,9 @@ async function holdRefundReferenceMismatch(
           "Refund penyedia menyebut pembayaran lain dari pembayaran yang dikembalikan (REFERENCE_MISMATCH)",
         flaggedAt: now,
       })
-      .onConflictDoNothing({
-        target: [refundReconHolds.tenantId, refundReconHolds.webhookEventId],
-      })
+      // Per stored event, and per provider refund id of the intent: a replay,
+      // a worker retry or the provider resending the refund adds no second hold.
+      .onConflictDoNothing()
       .returning({ id: refundReconHolds.id });
     if (!held) return;
     await alertRefundReferenceMismatch(
@@ -885,11 +893,14 @@ async function recordRefundFor(
      * object). Each must equal the candidate intent's id, else `mismatch`
      * before anything is recorded (legend-6jdy1). */
     expectedReferences?: readonly string[];
+    /** Status the event's refund carries (a mismatch is held only when it
+     * succeeded, legend-9s33i). */
+    refundStatus?: string;
   },
   now: Date,
   verifiedSecret?: string,
 ): Promise<RefundApplyResult> {
-  const { expectedReferences, ...recorded } = input;
+  const { expectedReferences, refundStatus, ...recorded } = input;
   const windowOver = () =>
     now.getTime() - row.receivedAt.getTime() >=
     WEBHOOK_UNKNOWN_REFERENCE_RETRY_MS;
@@ -921,6 +932,7 @@ async function recordRefundFor(
         {
           providerRefundId: input.providerRefundId,
           amountIdr: input.amountIdr,
+          refundStatus,
         },
         now,
       );
@@ -982,13 +994,17 @@ async function flagRefundInDoubt(
       ))
     )
       return "unbound";
-    await markProviderRefunded(
+    // A refund of ours still in flight: not told apart yet, nothing recorded
+    // (`retry` only inside the window, after it `force` counts it).
+    const marked = await markProviderRefunded(
       context,
       candidate.intent.id,
       now,
       "payment_webhook",
+      now.getTime() - row.receivedAt.getTime() >=
+        WEBHOOK_UNKNOWN_REFERENCE_RETRY_MS,
     );
-    return "bound";
+    return marked === "retry" ? "retry" : "bound";
   }
   if (candidate.evidenceAmountIdr !== null && candidate.evidenceAmountIdr > 0)
     return recordRefundFor(
@@ -1167,8 +1183,20 @@ async function processPaymentEvent(
       // automatically. legend-7uqbs: money we already recorded (parked funds, a
       // settled bill) is flagged, audited and alerted once inside this call, so
       // staff cannot refund it a second time; the row below still ends
-      // processed.
-      await markProviderRefunded(context, intent.id, now, "payment_webhook");
+      // processed. A refund of ours still in flight (nothing recorded yet)
+      // keeps the row `failed`, so the worker retries it.
+      const marked = await markProviderRefunded(
+        context,
+        intent.id,
+        now,
+        "payment_webhook",
+        now.getTime() - row.receivedAt.getTime() >=
+          WEBHOOK_UNKNOWN_REFERENCE_RETRY_MS,
+      );
+      if (marked === "retry") {
+        outcome = "failed";
+        code = "UNKNOWN_REFERENCE";
+      }
     }
     // `pending` changes nothing.
     await markRow(
@@ -1573,6 +1601,7 @@ async function processRefundEvent(
             providerPaymentRef: providerRefund.paymentId,
             amountIdr: providerRefund.amountIdr,
             source: "refund_webhook",
+            refundStatus: facts.refundStatus,
             expectedReferences: [
               ...(facts.reference !== undefined ? [facts.reference] : []),
               ...(facts.payment ? [facts.payment.reference] : []),
@@ -1683,6 +1712,7 @@ async function processRefundEvent(
           {
             providerRefundId: facts.refundId ?? null,
             amountIdr: facts.amountIdr ?? Number(refund.amountIdr),
+            refundStatus: facts.refundStatus,
           },
           now,
         );

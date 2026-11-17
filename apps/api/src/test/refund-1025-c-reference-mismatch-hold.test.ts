@@ -78,7 +78,6 @@ import { agent, originHeader, signUp, verifySessionMfa } from "./helpers";
 import { paymentTestScope } from "./payment-test-scope";
 import { FakeRefundGateway } from "./refund-fake-gateway";
 
-
 vi.setConfig({ testTimeout: 120_000 });
 
 const scope = paymentTestScope();
@@ -311,7 +310,6 @@ async function assign(
     ],
   );
 }
-
 
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
@@ -557,7 +555,6 @@ const journals = () =>
     [tenantId],
   );
 
-
 /** In-app alerts the outlet supervisor received. */
 const supervisorAlerts = () =>
   count(
@@ -689,7 +686,6 @@ async function providerRefunds(intentIds: string[]) {
   return { rows: Number(rows[0]!.rows), idr: Number(rows[0]!.idr) };
 }
 
-
 type Scene = {
   a: Code;
   b: Code;
@@ -709,7 +705,6 @@ async function scene(): Promise<Scene> {
   expect(referenceOf(a)).not.toBe(referenceOf(b));
   return { a, b, x, fundId };
 }
-
 
 const newRefundId = () => `rf_${randomBytes(6).toString("hex")}`;
 
@@ -797,7 +792,6 @@ async function expectIgnoredMismatch(eventId: string) {
     last_error_code: "REFERENCE_MISMATCH",
   });
 }
-
 
 // ---------------------------------------------------------------------------
 // Helpers of this card
@@ -1157,5 +1151,61 @@ describe("legend-9s33i control: a refund naming the intent that owns the payment
     expect(await holdsOfIfTable([s.a.id, s.b.id])).toHaveLength(0);
     const rows = await eventRow(body.id);
     expect(rows[0]!.last_error_code).not.toBe("REFERENCE_MISMATCH");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Architect follow-ups: the hold is only for a SUCCEEDED refund, and a resend
+// of the same provider refund is not a second hold. Assumptions: the refund
+// object carries `status` ("succeeded" | "failed" | "pending"); a resend is the
+// same provider refund id under a NEW event id (a new stored event row).
+// ---------------------------------------------------------------------------
+
+describe("legend-9s33i the hold is only for a succeeded refund and only once per provider refund", () => {
+  it.each(["failed", "pending"] as const)(
+    "1025-9s33i a mismatching refund event whose refund status is %s creates no hold and no alert",
+    async (status) => {
+      const s = await scene();
+      const aRef = referenceOf(s.a);
+      const alertsBefore = await supervisorAlerts();
+      const body = envelope({
+        refund: {
+          id: newRefundId(),
+          amount: s.x.amountIdr,
+          reference: aRef,
+          status,
+        },
+        payment: paymentObject(s.x.providerRef, aRef, s.x.amountIdr),
+      });
+
+      await deliver(body);
+      await settleEvents([body.id]);
+
+      expect(await holdsOfIfTable([s.a.id, s.b.id])).toHaveLength(0);
+      expect(await supervisorAlerts()).toBe(alertsBefore);
+      expect(await providerRefunds([s.a.id, s.b.id])).toEqual({
+        rows: 0,
+        idr: 0,
+      });
+    },
+  );
+
+  it("1025-9s33i the provider resends the same refund under a new event id: still one hold", async () => {
+    const s = await scene();
+    const first = mismatchedRefund("both references", s);
+    // Same provider refund id, new envelope id (a new stored event row).
+    const resent = { ...first, id: `evt_${randomBytes(8).toString("hex")}` };
+    expect(refundIdOf(resent)).toBe(refundIdOf(first));
+
+    await deliver(first);
+    await settleEvents([first.id]);
+    await deliver(resent);
+    await settleEvents([resent.id]);
+    await deliver(resent);
+    await settleEvents([first.id, resent.id]);
+
+    const holds = await holdsOf([s.a.id, s.b.id]);
+    expect(holds, "one hold for one provider refund").toHaveLength(1);
+    expect(holds[0]!.provider_refund_id).toBe(refundIdOf(first));
   });
 });
