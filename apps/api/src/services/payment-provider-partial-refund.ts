@@ -290,7 +290,12 @@ export async function recordProviderRefundInTx(
       ),
     )
     .limit(1);
-  if (inFlight && !input.force) return { status: "retry" };
+  // The payment's own `refunded` status (synthetic id) decides below, once the
+  // remainder is known (legend-tiyce): a live parked-fund refund of ours that
+  // already covers all of it is held, not waited for.
+  const waitForInFlight = inFlight !== undefined && !input.force;
+  if (waitForInFlight && !providerRefundId.startsWith(SYNTHETIC_PREFIX))
+    return { status: "retry" };
 
   // One transaction, one refund: the payment's own `refunded` status
   // (`payment:<ref>`, the whole transaction) and a provider refund id of the
@@ -364,6 +369,11 @@ export async function recordProviderRefundInTx(
     // the outlet supervisors hear of it too. A live parked-fund refund (fixed
     // amount, already told by the 958 alert) is told to the owners only.
     tellSupervisors = live.some((row) => row.fund !== true);
+    if (
+      waitForInFlight &&
+      !(left <= 0 && live.some((row) => !row.provider_ref && row.fund === true))
+    )
+      return { status: "retry" };
     if (left <= 0) {
       // Our refunds leave nothing of the transaction. One not yet accepted by
       // the provider (no provider reference) may still fail: not told apart
@@ -373,7 +383,12 @@ export async function recordProviderRefundInTx(
       if (live.length > 0) {
         if (!input.force && live.some((row) => !row.provider_ref && !row.fund))
           return { status: "retry" };
-        if (input.force) {
+        // legend-tiyce: a live parked-fund refund without a provider reference
+        // is not yet known to have been accepted: should it fail, the provider's
+        // refund is the only money back and the books keep it, so it is held
+        // (once) and finance and the supervisors told, forced or not.
+        if (input.force || live.some((row) => !row.provider_ref)) {
+          tellSupervisors = true;
           await fileLiveOwnHold(
             live.reduce((sum, row) => sum + Number(row.amount), 0),
             intent.outletId,

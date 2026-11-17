@@ -734,9 +734,17 @@ async function cancelSupersededAtGateway(
       // 952 round 2: a `refunded` answer is recorded whether or not the code is
       // final yet (before expiry + 60s), so a late `paid` message cannot settle
       // it. Only a closed code (expired / failed) is ever stamped.
-      if (answer.rawStatus === "refunded")
+      // legend-t9g3i: the whole refund is also written (once) as a provider
+      // refund; a refund of ours still in flight keeps the code in the poll.
+      let refundHeld = false;
+      if (answer.rawStatus === "refunded") {
+        refundHeld =
+          (await markProviderRefunded(context, intent.intentId, now)) ===
+          "retry";
         await markProviderAnswered(context, intent.intentId, now, true);
+      }
       if (
+        refundHeld ||
         !providerAnswerFinal(
           { provider: intent.provider, expiresAt: row.expiresAt },
           answer,
@@ -2021,6 +2029,13 @@ async function syncPendingIntentDetailed(
   }
   // SO-896: an answer about another reference says nothing about this code.
   const aboutThisCode = providerStatus?.providerRef === intent.providerRef;
+  // legend-t9g3i: the provider gave this code's payment back. The whole refund
+  // is written once as a provider refund (as the webhook does); a refund of ours
+  // still in flight keeps the code from being final, so the poll asks again.
+  const refundHeld =
+    aboutThisCode &&
+    providerStatus?.rawStatus === "refunded" &&
+    (await markProviderRefunded(context, intent.id, now)) === "retry";
   if (pastExpiry) {
     // A provider that still says `pending` past our expiry can still take the
     // money (its own expiry may lag ours): only paid / expired / failed are
@@ -2053,6 +2068,7 @@ async function syncPendingIntentDetailed(
     const providerFinal =
       (providerStatus !== undefined &&
         aboutThisCode &&
+        !refundHeld &&
         !providerStatus.extraPayments?.length &&
         providerAnswerFinal(intent, providerStatus, now)) ||
       fundsParked;
@@ -2061,7 +2077,7 @@ async function syncPendingIntentDetailed(
       intent,
       now,
       "timeout",
-      providerFinal
+      providerFinal || refundHeld
         ? undefined
         : {
             action: "payment.provider_paid_confirmation_rejected",
@@ -2098,6 +2114,7 @@ async function syncPendingIntentDetailed(
       intent,
       now,
       aboutThisCode &&
+        !refundHeld &&
         !providerStatus.extraPayments?.length &&
         providerAnswerFinal(intent, providerStatus, now),
       aboutThisCode && providerStatus.rawStatus === "refunded",
@@ -3232,8 +3249,15 @@ async function syncExpiredIntentPayment(
     // SO-889: final only once the code lapsed on its own (+ margin); before
     // that the poll keeps asking.
     const refunded = providerStatus.rawStatus === "refunded";
+    // legend-t9g3i: the whole refund is written once as a provider refund; a
+    // refund of ours still in flight keeps the code in the poll (not final).
+    const refundHeld =
+      refunded &&
+      providerStatus.providerRef === intent.providerRef &&
+      (await markProviderRefunded(context, intent.id, now)) === "retry";
     if (
       providerStatus.providerRef === intent.providerRef &&
+      !refundHeld &&
       !providerStatus.extraPayments?.length &&
       providerAnswerFinal(intent, providerStatus, now)
     ) {

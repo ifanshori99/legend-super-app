@@ -9,9 +9,11 @@
 // Lock order is untouched: the provider call is outside any transaction and
 // `confirmPayment` takes its own locks.
 
+import { createHash } from "node:crypto";
 import { and, asc, desc, eq, lte, sql } from "drizzle-orm";
 import {
   createUlid,
+  uuidToUlid,
   type OutletId,
   type ScopedTenantContext,
 } from "@starter/shared/core";
@@ -517,7 +519,9 @@ export async function reconcileReleasedQris(
     }
     // The provider gave the code's payment back while a refund of ours is
     // still in flight: not an unrecorded payment, but the full refund waits for
-    // ours to finish (legend-gjt5q). Told once, when first seen.
+    // ours to finish (legend-gjt5q). Told once per row: the id is derived from
+    // the row, so the provider status bouncing away and back adds no second
+    // alert (the notification consumer ignores an event id it has seen).
     if (
       updated &&
       outcome.kind === "open" &&
@@ -531,7 +535,7 @@ export async function reconcileReleasedQris(
           tenantId,
           outletId: row.outletId as OutletId,
           alsoOwners: true,
-          id: createUlid(now.getTime()),
+          id: refundInFlightAlertId(tenantId, row.id),
           eventName: "pos_qris_release_reconciliation.refund_in_flight",
           aggregateType: "pos_qris_release_reconciliation",
           aggregateId: row.id,
@@ -543,6 +547,19 @@ export async function reconcileReleasedQris(
       );
     return updated?.status ?? "resolved";
   });
+}
+
+/** Stable alert id of the refund-in-flight state of one reconciliation row. */
+function refundInFlightAlertId(tenantId: string, rowId: string): string {
+  const hex = createHash("sha256")
+    .update(
+      `pos_qris_release_reconciliation.refund_in_flight\0${tenantId}\0${rowId.toLowerCase()}`,
+    )
+    .digest("hex")
+    .slice(0, 32);
+  return uuidToUlid(
+    `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
+  );
 }
 
 /** Ids of the open rows that are due (oldest first). `force`: all open rows. */
