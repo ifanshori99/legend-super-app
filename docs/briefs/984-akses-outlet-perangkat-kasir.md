@@ -13,6 +13,6 @@ Jangan sentuh: refund/recon (980), charge tukar menu dan collect-at-pos (982, ca
 
 Bukti: test gagal-dulu per kartu: outlet/tenant asing ditolak, support access lintas tenant tidak melihat perangkat, perangkat bersama tanpa token kasir ditolak di tiap route yang disebut, dan alur normal (kasir aktif, sesi biasa) tetap lulus.
 
-Paralel: Explore per kartu + test-writer (gagal-dulu) dalam satu giliran; satu implementer per kartu (file terpisah). Lalu test-runner + architect xhigh bersamaan. Gate (#9): lint, typecheck API, test terarah grup ai-tools/identity/pos-device, `db:generate` kosong, prettier. Satu token heavy per thread. Tunggu job latar dengan satu Monitor yang hanya memicu saat selesai/gagal (tanpa tick).
+Paralel: Explore per kartu + test-writer (gagal-dulu) dalam satu giliran; satu implementer per kartu (file terpisah). Lalu test-runner + architect xhigh bersamaan. Gate (#9): lint, typecheck API, test terarah grup ai-tools/identity/pos-device, `db:generate` kosong, prettier. Satu token heavy per thread; typecheck sekali per putaran perbaikan. Jangan jalankan `pnpm check` atau `pnpm test` penuh (tugas merge train). Tunggu job latar dengan satu Monitor yang hanya memicu saat selesai/gagal (tanpa tick).
 
 Laporan: SHA, kartu, migrasi, test, temuan architect, angka subagent (total, puncak, pemegang heavy). Komentari tiap kartu, jangan tutup. Lapor sekali di akhir; jangan akhiri giliran untuk kabar antara.
