@@ -1887,3 +1887,11 @@ Langkah berikut CTO baru:
 - 00:15 CTO: 1024 G9nl6 e3cb158f2 SIAP batch86 sesudah 1021. Keputusan: cabut/matikan mode bersama memaksa login ulang tablet (membatasi). Kartu legend-a6aq6 (P1 device-shared-mode 6 gagal sejak 1012) -> 1026 Sonnet #1; legend-mymz3 (P3). G9nl6 resolve.
 - 00:22 CTO: 1026 G54l1 432f2e6c2 SIAP batch86 sesudah 1024 (ujung rantai akses). Kartu legend-t7xto (P2 fail-closed HTTP). G54l1 resolve.
 - 00:23 CTO: Mulai 1027 legend-t7xto (akses, rantai rilis) Sonnet #1. 1028 legend-mez2n menyusul 10 menit (throttle disk < 18 GB).
+- 00:29 CTO: hapus worktree legend-d8fc7d19 (HEAD b17554cb9 di remote; hanya berkas hilang, tanpa perubahan unik). Disk 14 -> lihat.
+
+## Serah terima CTO 18 Nov 00:30 (S30:P6b2j:G2l8g, compact 2x)
+- Thread jalan: G0fp6 merge train batch85 (#1, full run >66 mnt; setelah landing: cek m1, resolve, rencana train batch86 maks 7/batch), G7wkf 1025 refund provider sisa (#1, test implementer jalan), G8t4u 1027 akses fail-closed HTTP (#1, base 1026).
+- Berikut: mulai 1028 legend-mez2n (brief docs/briefs/1028-kredit-dp-dua-reservasi.md, base ghostex/1020-so-recon-ronde-2-fix, Sonnet #1) setelah 00:33 (throttle disk < 18 GB; disk 15 GB).
+- batch86 di docs/merge-queue.md: 1006, 1009, 1008, 1007, 1005, 1010, 1014, 1012, 1016, 1017, 1018, 1013, 1022, 1021, 1020, 1015 UI (Q30 setuju), 1024, 1026. Rantai akses 1006-1026 lengkap; 1027 menyusul.
+- Founder terbuka: Q29 (layar tablet bersama; saran: Reservasi buka, Tanya AI KDS buka, ops/fasilitas tutup), W3, Q19-Q25, Q2, legend-0ytbu. Nomor Q berikut Q31.
+- Cron CTO: lihat bd memory cto-crons (buat ulang di sesi baru). Disk: legend-d8fc7d19 sudah dihapus; 12 volume Docker anonim dangling bisa di-prune bila disk < 15 GB.
