@@ -305,7 +305,7 @@ type World = {
 /**
  * Batch created by `requester`, approved and exported by `approver`, every item
  * closed `failed` by two people (`disputant` and `other`): each leaves one
- * approval-log row.
+ * approval-log row, and the main approval leaves one for `approver`.
  */
 async function failedWorld(disputant: Person): Promise<World> {
   const slips = [bank(BUDI, NET)];
@@ -352,8 +352,8 @@ async function failedWorld(disputant: Person): Promise<World> {
     logOf[log.actor as string] = log.id as string;
   expect(
     Object.keys(logOf).sort(),
-    "premise: each resolver left one approval-log row",
-  ).toEqual([disputant.userId, other.userId].sort());
+    "premise: the approver (main approval) and each resolver left one approval-log row",
+  ).toEqual([approver.userId, disputant.userId, other.userId].sort());
   return { runId, batchId, itemIds, logOf };
 }
 

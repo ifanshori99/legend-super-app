@@ -227,6 +227,13 @@ export function payoutGuardViolation(error: unknown): HttpError | null {
       "PAYOUT_STEP_GRANT_INVALID",
       "Izin langkah pembayaran kedaluwarsa. Coba lagi.",
     );
+  // PAYOUT-84 (42501): the disowner of a batch main approval approves again.
+  if (sqlStateOf(error) === "42501" && messageHas(error, /PAYOUT-84:/))
+    return payoutRefuse(
+      403,
+      "PAYOUT_DISOWNER_REFUSED",
+      'Anda sudah menyatakan "bukan saya" pada persetujuan batch ini, jadi tidak boleh menyetujuinya lagi.',
+    );
   // PAYOUT-6x (42501), e.g. PAYOUT-64: a separation-of-duties or step order
   // refusal (same person twice, requester, first step not attested).
   if (sqlStateOf(error) === "42501" && messageHas(error, /PAYOUT-6\d:/))
@@ -643,13 +650,19 @@ async function lockRun(
   return run;
 }
 
-/** Step gate: the run must still be locked (or paid, for a follow-up batch). */
+/**
+ * Step gate: the run must still be locked (or paid, for a follow-up batch).
+ * `mode` is the run lock: `share` by default; a step that spends a trusted
+ * grant (approve) takes `update`, because the database function asks for the
+ * run `FOR UPDATE` and a share lock held by two callers would deadlock.
+ */
 export async function assertRunPayable(
   tx: Tx,
   tenantId: string,
   runId: string,
+  mode: "update" | "share" = "share",
 ): Promise<void> {
-  const run = await lockRun(tx, tenantId, runId, "share");
+  const run = await lockRun(tx, tenantId, runId, mode);
   if (run.status !== "locked" && run.status !== "paid")
     throw payoutRefuse(
       409,
@@ -1566,7 +1579,50 @@ export async function approveDisbursementBatch(
   const tenantId = actor.tenantId;
   const peek = await readBatch(tx, tenantId, batchId);
   await assertBatchNotFrozen(tx, tenantId, batchId);
-  await assertRunPayable(tx, tenantId, peek.payrollRunId);
+  // Same answers as the checks under the lock, so the grant (which the
+  // database issues only for a pending batch of another requester) is rarely
+  // the first thing to refuse them. A batch that changes between this peek and
+  // the grant (a lost approve race) is refused by the grant with PAYOUT-83 or
+  // PAYOUT-16, which the grant service maps to the same 409 and 403.
+  if (peek.status !== "pending_approval")
+    throw payoutRefuse(
+      409,
+      "PAYOUT_BATCH_STATE",
+      "Batch belum diajukan atau sudah diproses.",
+    );
+  if (peek.requestedBy === actor.userId)
+    throw payoutRefuse(
+      403,
+      "PAYOUT_SELF_APPROVAL",
+      "Pembuat batch tidak boleh menyetujui batchnya sendiri.",
+    );
+  // Whoever said "not me" to a main approval of this batch cannot approve it
+  // again (legend-s20iu, PAYOUT-84); the grant and the attest refuse the same.
+  const disowned = await tx.execute(
+    sql`SELECT app.payout_batch_approval_disowned_by(${tenantId}::uuid, ${batchId}::uuid, ${actor.userId}::text) AS disowned`,
+  );
+  if ((disowned.rows[0] as { disowned: boolean }).disowned)
+    throw payoutRefuse(
+      403,
+      "PAYOUT_DISOWNER_REFUSED",
+      'Anda sudah menyatakan "bukan saya" pada persetujuan batch ini, jadi tidak boleh menyetujuinya lagi.',
+    );
+  // The main approval spends one step-up grant (legend-xp8mc): issued before
+  // any lock, like the correction grant. No session or step-up: refused
+  // 401 before anything is written.
+  const approveGrant = await payoutTrustedGrant(actor, {
+    kind: "batch_approve",
+    step: "approve",
+    batchId,
+    itemIds: [],
+    evidenceKey: null,
+    refId: null,
+    targetId: null,
+  });
+  // Lock order as `loadBatchRunFirst`: run `update` (the attest function
+  // asks for it, so a `share` lock here would deadlock two approvals), then
+  // the batch row. The second approval of a batch waits, then sees 409.
+  await assertRunPayable(tx, tenantId, peek.payrollRunId, "update");
   const batch = await loadBatchForUpdate(tx, tenantId, batchId);
   await assertBatchOpenUnderRunLock(tx, tenantId, batchId);
   if (batch.status !== "pending_approval")
@@ -1633,6 +1689,12 @@ export async function approveDisbursementBatch(
       "PAYOUT_HASH_MISMATCH",
       "Isi batch berubah sejak diajukan. Buka ulang batch lalu setujui.",
     );
+
+  // Spends the grant and writes the append-only approval log row, so the
+  // "not me" notice reaches the approver of the main approval too.
+  await tx.execute(
+    sql`SELECT app.payout_batch_approve_attest(${batchId}::uuid, ${approveGrant}) AS grant_id`,
+  );
 
   const now = new Date();
   const expires = new Date(

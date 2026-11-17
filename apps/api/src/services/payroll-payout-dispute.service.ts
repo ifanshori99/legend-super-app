@@ -22,6 +22,7 @@ import {
   payrollDisbursementBatches,
   payrollPayoutApprovalLog,
   payrollPayoutBatchDisputes,
+  payrollPayoutBatchUnfreezes,
 } from "../db/schema/payroll-payout.ts";
 import { payrollRuns } from "../db/schema/payroll.ts";
 import { AccountingError } from "@starter/shared/accounting";
@@ -308,6 +309,42 @@ export async function unfreezeDisbursementBatch(
     released = Number((result.rows[0] as { n: number }).n);
   } catch (error) {
     throw disputeError(error);
+  }
+  // The SQL function reopens an approved batch whose main approval was disowned
+  // ("not me"): same transaction, so before/after status are consistent. When
+  // cash was already handed over it stops the batch (partially_failed) instead.
+  const after = await readBatch(tx, actor.tenantId, batch.id);
+  if (
+    batch.status === "approved" &&
+    (after.status === "pending_approval" || after.status === "partially_failed")
+  ) {
+    const lifted = await tx
+      .select({ id: payrollPayoutBatchUnfreezes.disputeId })
+      .from(payrollPayoutBatchUnfreezes)
+      .where(
+        and(
+          eq(payrollPayoutBatchUnfreezes.tenantId, actor.tenantId as TenantId),
+          eq(payrollPayoutBatchUnfreezes.batchId, batch.id),
+          sql`${payrollPayoutBatchUnfreezes.txid} = pg_catalog.txid_current()`,
+        ),
+      );
+    for (const row of lifted) {
+      await recordPayoutAudit(tx, actor, {
+        action:
+          after.status === "pending_approval"
+            ? "payroll.disbursement.batch_reopened"
+            : "payroll.disbursement.batch_stopped",
+        objectType: "payroll_disbursement_batch",
+        objectId: batch.id,
+        reason,
+        before: { status: batch.status },
+        after: {
+          status: after.status,
+          outcome: "main_approval_cancelled",
+          disputeId: row.id,
+        },
+      });
+    }
   }
   await catchUpAfterUnfreeze(tx, actor, batch.id);
   await recordPayoutAudit(tx, actor, {

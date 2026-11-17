@@ -47,7 +47,7 @@ export type PayoutReconKind =
 
 /** Kinds a flag can carry: the operations above plus the grant-checked steps. */
 export type PayoutReconFlagKind =
-  PayoutReconKind | "closure" | "resolve" | "bank_confirm";
+  PayoutReconKind | "closure" | "resolve" | "bank_confirm" | "batch_approve";
 
 export type PayoutReconReason =
   | "attestation_count"
@@ -445,10 +445,12 @@ async function readGrants(
 }
 
 /**
- * The withdraw steps of corrections and overpaid proposals at or after the
- * grant cutover. A withdrawn proposal is no operation (nothing was corrected
- * or recorded), so it is read on its own, whether or not the tenant has any
- * operation; the first page only, the flags dedupe by operation across pages.
+ * The withdraw steps of corrections and overpaid proposals, and the main
+ * approval of every batch (legend-xp8mc), at or after the grant cutover. A
+ * withdrawn proposal is no operation (nothing was corrected or recorded), and
+ * a batch approval needs no operation either, so both are read on their own,
+ * whether or not the tenant has any operation; the first page only, the flags
+ * dedupe by operation across pages.
  */
 async function loadWithdrawals(
   tx: Tx,
@@ -462,7 +464,8 @@ async function loadWithdrawals(
   const attestations = await readAttestations(
     tx,
     tenantId,
-    sql`a.step = 'withdraw' AND a.kind IN ('correction', 'overpaid')
+    sql`((a.step = 'withdraw' AND a.kind IN ('correction', 'overpaid'))
+          OR a.kind = 'batch_approve')
         AND a.attested_at >= ${grantsSince.toISOString()}::timestamptz`,
   );
   const grants = await readGrants(tx, tenantId, attestations);

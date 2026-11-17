@@ -30,6 +30,7 @@ export type PayoutGrantBinding = {
     | "posting_source"
     | "resolve"
     | "bank_confirm"
+    | "batch_approve"
     | "disown"
     | "unfreeze";
   step: "propose" | "approve" | "record" | "confirm" | "withdraw";
@@ -114,6 +115,27 @@ function issueError(error: unknown): unknown {
         409,
         "PAYOUT_UNFREEZE_REFUSED",
         "Anda tidak dapat membuka pembekuan batch ini.",
+      );
+    case "83":
+      // A batch approval grant for a batch that no longer waits for approval
+      // (a lost approve race): same answer as the approve path itself.
+      return new HttpError(
+        409,
+        "PAYOUT_BATCH_STATE",
+        "Batch belum diajukan atau sudah diproses.",
+      );
+    case "16":
+      return new HttpError(
+        403,
+        "PAYOUT_SELF_APPROVAL",
+        "Pembuat batch tidak boleh menyetujui batchnya sendiri.",
+      );
+    case "84":
+      // The person who said "not me" to a main approval cannot approve it again.
+      return new HttpError(
+        403,
+        "PAYOUT_DISOWNER_REFUSED",
+        'Anda sudah menyatakan "bukan saya" pada persetujuan batch ini, jadi tidak boleh menyetujuinya lagi.',
       );
     case "72":
       return new HttpError(

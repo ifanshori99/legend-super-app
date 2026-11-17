@@ -19,6 +19,7 @@ export const payrollPayoutReceiptMessages = {
     closure: "penutupan bukti",
     resolve: "penyelesaian transfer",
     bank_confirm: "konfirmasi bank",
+    batch_approve: "persetujuan utama batch",
   },
   // "Not me" screen (legend-l2zru): reached from the receipt notification.
   disown: {

@@ -278,6 +278,12 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "function bodies only, no row edited by the migration: app.payout_grant_issue (grantor login), app.payout_correction_propose, app.payout_overpaid_propose and the withdraw functions (payout role) insert a grant or a proposal, or mark an open correction or overpaid proposal withdrawn, when called; a withdrawn proposal stays as a row and the item is untouched; the migration itself writes no row and changes no amount",
   "0426_payout_approval_log.sql":
     "creates the append-only payroll_payout_approval_log table and replaces the function body of app.payout_attest (payout role), which inserts an attestation and a log row when called; the migration itself writes no row and changes no amount",
+  // legend-s20iu, legend-dz8ci (947)
+  "0433_payout_934_followups.sql":
+    "trigger and function bodies only, no row edited by the migration: app.payout_batch_unfreeze (payout role) sends an approved batch back to pending_approval and its approved items back to prepared when called after a 'not me' on the main approval, app.payout_grant_issue (grantor login) and app.payout_batch_approve_attest (payout role) refuse the person who disowned a batch approval, and a new trigger refuses any change of the approval columns of a batch outside the approval step; the migration itself writes no row and changes no amount (it only blocks approvals and reopens one, nobody is paid)",
+  // legend-xp8mc (934)
+  "0432_payout_batch_approve_grant.sql":
+    "adds the batch_approve grant and attestation kind, a trigger on payroll_disbursement_batches and function bodies only, no row edited by the migration: app.payout_grant_issue (grantor login) inserts a grant, app.payout_batch_approve_attest (payout role) spends it and inserts an attestation and an approval log row when called, app.payout_recon_flag (payout role) accepts the batch_approve kind and inserts a reconciliation flag when called; the trigger only refuses an approval without the grant; the migration itself writes no row and changes no amount (it only blocks approvals)",
   // legend-yd9u2 (923)
   "0430_payout_backfill_unfreeze_lock_order.sql":
     "function body only, no row edited by the migration: app.payout_batch_unfreeze acquires same-run batches in id order before its target; it keeps the existing grant, dispute and unfreeze rules and changes no amount",

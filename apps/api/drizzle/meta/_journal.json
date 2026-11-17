@@ -2927,6 +2927,20 @@
       "when": 1795000000046,
       "tag": "0431_device_scanner_status",
       "breakpoints": true
+    },
+    {
+      "idx": 432,
+      "version": "7",
+      "when": 1795000000047,
+      "tag": "0432_payout_batch_approve_grant",
+      "breakpoints": true
+    },
+    {
+      "idx": 433,
+      "version": "7",
+      "when": 1795000000048,
+      "tag": "0433_payout_934_followups",
+      "breakpoints": true
     }
   ]
 }
