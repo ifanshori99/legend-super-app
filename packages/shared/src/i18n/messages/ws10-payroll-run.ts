@@ -178,6 +178,35 @@ export const payrollRunMessages = {
     budgetNet: "Ringkasan run: {total}",
     noBudget: "Ringkasan run belum tersedia.",
   },
+  held: {
+    title: "Koreksi lembur ditahan",
+    count: "{count} koreksi",
+    description:
+      "Koreksi ini tidak dibayar atau dipotong di run ini dan tidak masuk angka di atas. Beberapa alasan bisa diselesaikan, lalu simulasikan ulang.",
+    restrictedNote:
+      "Nama karyawan dan nominal hanya terlihat oleh yang berhak melihat data gaji.",
+    employeePending: "Memuat nama karyawan...",
+    employeeError: "Nama belum bisa dimuat",
+    unknownEmployee: "Karyawan tidak ada di daftar review",
+    amountOwed: "Kurang dibayar ke karyawan",
+    amountDeducted: "Akan dipotong dari karyawan",
+    amountUnknown: "Nominal belum bisa dihitung",
+    amountNotApplied: "Jumlah ini tidak dibayar atau dipotong di run ini.",
+    reasonOffboarding:
+      "Karyawan sedang offboarding, jadi koreksi belum diproses. HR menyelesaikan offboarding dulu.",
+    reasonEmployeeEnded:
+      "Masa kerja karyawan sudah berakhir, jadi koreksi tidak bisa dibayar lewat run ini. HR memutuskan cara penyelesaiannya.",
+    reasonFormulaMissing:
+      "Aturan hitung lembur periode asal belum ada, jadi nominal belum bisa dipastikan. Admin payroll perlu melengkapinya.",
+    reasonApprovalUnclear:
+      "Persetujuan koreksi belum jelas, jadi koreksi belum boleh diproses. HR memeriksa dan memastikan persetujuannya.",
+    reasonSourceUnreadable:
+      "Data periode asal tidak bisa dibaca, jadi koreksi belum bisa dihitung. Tim teknis perlu memeriksanya.",
+    reasonOverlappingSources:
+      "Beberapa periode asal saling tumpang tindih, jadi koreksi bisa terhitung dobel. HR memilih periode yang benar.",
+    reasonDeductionExceedsPaid:
+      "Potongan lebih besar dari yang sudah dibayar, jadi tidak dipotong otomatis. HR dan Finance memutuskan cara menagihnya.",
+  },
   dialog: {
     simulateTitle: "Jalankan simulasi",
     simulateBody:

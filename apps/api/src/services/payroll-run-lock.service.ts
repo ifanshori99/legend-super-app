@@ -94,7 +94,10 @@ import { recordAudit } from "./core-audit.ts";
 import { assertPayrollTenantCan } from "./payroll-access.ts";
 import { snapshotPayeeBankForLock } from "./payroll-bank-snapshot.service.ts";
 import { emitPayrollEvent } from "./payroll-events.ts";
-import { syncOvertimeCorrectionLedgerInTransaction } from "./payroll-overtime-correction.service.ts";
+import {
+  lockOvertimeCorrectionScope,
+  syncOvertimeCorrectionLedgerInTransaction,
+} from "./payroll-overtime-correction.service.ts";
 import { syncPph21ReceivableOpenItemsInTransaction } from "./payroll-pph21-receivable-open-items.service.ts";
 import {
   expectedReceivableCollection,
@@ -396,12 +399,17 @@ export async function lockPayrollRunInTransaction(
   const tenantId = context.tenant.tenantId;
   const runId = payrollRunIdSchema.parse(input.payrollRunId);
 
-  // LOCK 1: the month advisory lock. LOCK 2: rapel components, employees and
-  // outlets. LOCK 3: the run row. Never the reverse.
+  // LOCK 1: the month advisory lock. LOCK 1b/1c: pph21 receivable, overtime
+  // correction scope. LOCK 2: rapel components, employees and outlets. LOCK 3:
+  // the run row. Never the reverse.
   const month = await lockPayrollRunMonth(tx, tenantId, runId);
   // LOCK 1b: the receivable of this legal entity (after the month lock, before
   // any run row lock): one receivable is collected by one locked run.
   await lockPph21ReceivableScope(tx, tenantId, month.legalEntityId);
+  // LOCK 1c: the overtime correction scope of this legal entity (legend-pxzhy).
+  // Taken before any run row lock, so it never waits behind the row of a source
+  // run; the later ledger sync takes it again (re-entrant in this transaction).
+  await lockOvertimeCorrectionScope(tx, tenantId, month.legalEntityId);
   await lockRapelInputsForRun(tx, context, {
     runId,
     legalEntityId: month.legalEntityId,

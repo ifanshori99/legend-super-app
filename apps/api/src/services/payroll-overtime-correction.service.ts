@@ -54,7 +54,7 @@
 //
 // `planOvertimeCorrection` writes nothing (simulate and lock use it).
 
-import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, ne, sql } from "drizzle-orm";
 import {
   idr,
   type BusinessDate,
@@ -66,6 +66,7 @@ import {
   OVERTIME_DAY_TYPES,
   payslipCalculationSchema,
   type PayComponentCategory,
+  type PayrollOvertimeCorrectionHeldReason,
   type PayrollRunId,
 } from "@starter/shared/hris/payroll";
 import { employees } from "../db/schema/hris.ts";
@@ -120,14 +121,7 @@ export const OVERTIME_CORRECTION_LINES = {
   },
 } as const;
 
-export type OvertimeCorrectionHeldReason =
-  | "offboarding"
-  | "employee_ended"
-  | "formula_missing"
-  | "approval_unclear"
-  | "source_unreadable"
-  | "overlapping_sources"
-  | "deduction_exceeds_paid";
+export type OvertimeCorrectionHeldReason = PayrollOvertimeCorrectionHeldReason;
 
 export type OvertimeCorrectionSource = {
   sourceRunId: PayrollRunId;
@@ -313,12 +307,25 @@ async function approvedAtOf(
     })
     .map((r) => r.id);
   if (settledIds.length > 0) {
+    // The settle audit is written after the request was made: a lower bound on
+    // createdAt keeps the scan off older audit rows of the tenant. The bound
+    // is widened by one day to absorb app-vs-DB clock skew: it only widens the
+    // scan and never changes the result.
+    const earliestRequestedAt = new Date(
+      Math.min(
+        ...rows
+          .filter((r) => settledIds.includes(r.id))
+          .map((r) => r.requestedAt.getTime()),
+      ) -
+        24 * 60 * 60 * 1000,
+    );
     const audits = await tx
       .select({ event: auditLogs.event })
       .from(auditLogs)
       .where(
         and(
           eq(auditLogs.tenantId, tenantId),
+          gte(auditLogs.createdAt, earliestRequestedAt),
           sql`${auditLogs.event} ->> 'action' = 'hris.overtime_request.approved'`,
           sql`${auditLogs.event} ->> 'objectId' IN (${sql.join(
             settledIds.map((id) => sql`${id}`),
@@ -879,7 +886,8 @@ export async function syncOvertimeCorrectionLedgerInTransaction(
 
 /**
  * The per legal entity lock of the overtime correction (transaction scoped,
- * re-entrant). LOCK ORDER: take it BEFORE any payroll run row lock. The lock of
+ * re-entrant). LOCK ORDER: month -> pph21 receivable -> this overtime scope ->
+ * payroll run rows. Take it BEFORE any payroll run row lock. The lock of
  * a target run holds it while the guard trigger of the ledger waits for a
  * share lock on the source row, so a reversal of that source must never hold
  * the row first and then wait here (deadlock).
