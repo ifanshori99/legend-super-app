@@ -4,6 +4,8 @@
 - Migrasi nomor kerja 0580-0583 (renumber oleh merge train). 0583 berhenti bila ada klaim return terbuka tanpa ref bank (keputusan ops).
 - Keputusan: clearance hanya disetujui yang melepas tahanan; kunci flag yang sama tidak muncul lagi setelah clear; grant recon_clear password saja; kartu wrz3v dilewati (tidak ada layar recon payout, melebar).
 - Bead lanjutan: legend-snwnn (tarik klaim return), legend-w9od2 (fee_idr bisa dipalsukan legend_app), legend-o2b4m (UI clearance).
+- Uji: gagal-dulu 39/43 merah di base; suite payout terarah 71 file 864 lulus (1 fixture E-4, dibetulkan); run delta 7 file 113/113 lulus; typecheck api/shared/web exit 0; db:generate kosong. Architect xhigh: P1 trigger 0583 (dibetulkan), P2 x2 + P3 x6 dibetulkan; P3 fee_idr diterima ke legend-w9od2.
+- Sesi 18:27-20:02 (95 menit): 33 subagent, puncak 8, rata 0.58 berjalan; biaya* ~9.9M (utama opus 2.4M, sonnet 5.7M, opus sub 1.3M, haiku 0.6M). Token heavy: test-runner.
 
 ## 947 Lanjutan 934: unfreeze buka ulang persetujuan, kolom persetujuan halted (legend-s20iu, legend-dz8ci, 17 Nov 2026)
 

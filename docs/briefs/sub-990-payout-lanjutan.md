@@ -95,6 +95,7 @@ Larangan: jangan jalankan vitest/tsc/pnpm test (satu token heavy dipegang test-w
 ## Fase 4: perbaiki test gagal (run2)
 
 Log: `/private/tmp/claude-501/-Users-ifanshori99-Projects-legend-super-app-legend-92055877/8e1e34d3-fa63-436b-b637-34278cff2c4e/scratchpad/payout-run2.log` (grep nama file test + `FAIL`/`AssertionError`/`PAYOUT-`). 850 lulus, 15 gagal. Tentukan sebab: bug implementasi atau test salah asumsi (kontrak di `docs/briefs/990/*.md`). Betulkan di tempat yang benar. Jangan melemahkan bukti uang (dua orang, ref wajib, jurnal fee, tanpa bayar dobel, tenant lain). Jangan jalankan vitest (satu test-runner nanti). Tulis 1 baris sebab+perbaikan per test di laporan.
+
 - F1 `payroll-payout-990-fee-commit.test.ts` (3 `legend-d9pxr-commit-fee-*`): file boleh disentuh: test itu + 0582.
 - F2 `payroll-payout-990-recon-attest.test.ts` (3): test itu + `payroll-payout-recon.service.ts`.
 - F3 `payroll-payout-990-recon-clear.test.ts` (5: A-1, A-3, A-4, A-7; A-7 "Tidak ada slip yang perlu diba..." HttpError): test itu + 0581 + `payroll-payout-recon-clearance.service.ts`/routes + validator clearance. Periksa juga apakah jalur pembuatan batch di TS (service, bukan trigger) membaca recon_exceptions langsung tanpa memperhitungkan clearance: bila ya, betulkan di sana (laporkan file).
