@@ -75,7 +75,7 @@ export async function assertDeviceSessionAdmitted(
  * for a refused request.
  */
 export async function recordDeviceActivity(
-  device: { readonly id: string; readonly tenantId: string },
+  device: Pick<typeof devices.$inferSelect, "id" | "tenantId" | "lastSeenAt">,
   brandId: string | null,
   now: Date,
 ): Promise<void> {
