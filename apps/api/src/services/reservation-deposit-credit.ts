@@ -86,6 +86,47 @@ export function earlierAllocationClaimsSql(
 }
 
 /**
+ * legend-6n4p3 (1033, architect review): DP a LATER allocation of the same
+ * intent has already spent. The earlier allocations claim their full amount
+ * (above), but a later one that already paid its bill from the DP (before a
+ * provider refund came) must also come off the net, or the earlier session
+ * would spend the same money again. Per later allocation: its session's
+ * non-voided `deposit_applied_idr`; for a CLOSED session the larger of that and
+ * the unpaid part of its bill (the close rule of finalize); less the session's
+ * POS DP returns; capped at the allocation. It counts spent money only, never
+ * a remainder (the credit pool already cuts the provider refund from those).
+ * Counted per allocation, so a session paying from two DPs counts its spend on
+ * both: the safe side, a lower credit.
+ */
+export function laterAllocationSpentSql(
+  tenant: SQL,
+  intent: SQL,
+  allocatedAt: SQL,
+  allocationId: SQL,
+): SQL {
+  return sql`coalesce((SELECT sum(least(la.amount_idr, greatest(spent.v, 0)))
+    FROM reservation_deposit_allocations la
+    JOIN table_sessions lts ON lts.tenant_id=la.tenant_id AND lts.id=la.table_session_id
+    CROSS JOIN LATERAL (SELECT
+        greatest(coalesce(sum(lo.deposit_applied_idr),0),
+          CASE WHEN lts.status='closed'
+            THEN coalesce(sum(lo.total_idr),0)-coalesce(sum(ll.paid_idr),0)-coalesce(sum(lt.captured),0)
+            ELSE 0 END)
+        - coalesce((SELECT sum(lr.amount_idr) FROM pos_deposit_refunds lr
+            JOIN orders lro ON lro.tenant_id=lr.tenant_id AND lro.id=lr.order_id
+            WHERE lr.tenant_id=la.tenant_id AND lro.table_session_id=la.table_session_id),0) AS v
+      FROM orders lo
+      LEFT JOIN payment_links ll ON ll.tenant_id=lo.tenant_id AND ll.id=lo.payment_link_id
+      LEFT JOIN LATERAL (SELECT coalesce(sum(pt.amount_idr),0) AS captured
+        FROM pos_order_tenders pt WHERE pt.tenant_id=lo.tenant_id AND pt.order_id=lo.id
+          AND pt.status='captured') lt ON true
+      WHERE lo.tenant_id=la.tenant_id AND lo.table_session_id=la.table_session_id
+        AND lo.status<>'voided') spent
+    WHERE la.tenant_id=${tenant} AND la.payment_intent_id=${intent}
+      AND (la.allocated_at,la.id)>(${allocatedAt},${allocationId})),0)`;
+}
+
+/**
  * legend-obgj5 (1033): provider refunds a recon hold recorded but finance has
  * not matched yet (open = resolved_at IS NULL) count against the intent's net
  * until resolved. `credit_used_before_provider_refund` is left out: that hold
@@ -141,7 +182,8 @@ async function allocationCredits(
                   - ${depositPrincipalReservedSql(sql`a.tenant_id`, sql`a.payment_intent_id`)}
                   - ${providerRefundedForeignIdrSql(sql`a.tenant_id`, sql`a.payment_intent_id`)}
                   - ${openReconHoldIdrSql(sql`a.tenant_id`, sql`a.payment_intent_id`)}
-                  - ${earlierAllocationClaimsSql(sql`a.tenant_id`, sql`a.payment_intent_id`, sql`a.allocated_at`, sql`a.id`)} - coalesce((
+                  - ${earlierAllocationClaimsSql(sql`a.tenant_id`, sql`a.payment_intent_id`, sql`a.allocated_at`, sql`a.id`)}
+                  - ${laterAllocationSpentSql(sql`a.tenant_id`, sql`a.payment_intent_id`, sql`a.allocated_at`, sql`a.id`)} - coalesce((
                   SELECT sum(c.amount_idr) FROM reservation_deposit_remainders c
                    WHERE c.tenant_id = a.tenant_id
                      AND c.payment_intent_id = a.payment_intent_id

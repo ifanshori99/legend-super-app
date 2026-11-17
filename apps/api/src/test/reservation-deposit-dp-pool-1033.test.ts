@@ -1090,3 +1090,129 @@ describe("legend-obgj5 pre-close read: an open hold limits the shown credit", ()
     await expectOpenSum(a, 100_000, { lower: true });
   });
 });
+
+// ---------------------------------------------------------------------------
+// 1033-7 (architect finding): session 2 (the later allocation) pays a 50k bill
+// fully from the DP BEFORE the provider refund of 40k arrives. The value already
+// spent from the pool must be counted: session 1 can show/take at most
+// 100k - 50k spent - 40k refund = 10k, and spent + credit + refund <= 100k.
+//
+// Assumptions: "spent" is the 50k of the extra bill with deposit_applied_idr =
+// 50k, as in the brief (the 5k consumed by each session's base bill is not
+// counted in the bound, which makes the bound looser, never stricter than the
+// brief). credit(s1) is read with depositCreditForSession while session 1 is
+// open; the total after closing session 1 is found with takeable().
+// ---------------------------------------------------------------------------
+
+const SPENT = 50_000;
+const REFUND = 40_000;
+
+/** Session 2 pays a 50k bill fully from the DP (before any provider refund). */
+async function payFromDp(d: Dp, seat: number) {
+  const s = d.seats[seat]!;
+  await addOrder(s.sessionId, SPENT, d.profileId, SPENT);
+  // Bill (base 5k + 50k) is fully settled by the deposit, so the table can close.
+  settlements.set(s.sessionId, {
+    total: CONSUMED + SPENT,
+    paid: CONSUMED + SPENT,
+  });
+}
+
+describe("legend-6n4p3 spent from the DP before the provider refund is counted", () => {
+  it("1033-7 session 2 open, paid 50k from DP, then refund 40k: credit of open session 1 is at most 10k and spent + credit + refund <= 100k", async () => {
+    const d = await sharedDp([50_000, 50_000]);
+    await payFromDp(d, 1);
+    await providerRefunded(d.intentId, REFUND);
+    const credit = await effectiveCredit(d.seats[0]!.sessionId);
+    expect(
+      credit,
+      "credit of session 1 above 100k - 50k - 40k",
+    ).toBeLessThanOrEqual(10_000);
+    expect(
+      SPENT + credit + REFUND,
+      "more value than the DP",
+    ).toBeLessThanOrEqual(d.deposit);
+  });
+
+  it("1033-7 both sessions open, paid 50k from DP on session 2, refund 40k: session 1 reads at most 10k, session 2 reads nothing above the rest", async () => {
+    const d = await sharedDp([50_000, 50_000]);
+    await payFromDp(d, 1);
+    await providerRefunded(d.intentId, REFUND);
+    const { sum, parts } = await creditSum(d);
+    expect(parts[0]!, "credit of session 1").toBeLessThanOrEqual(10_000);
+    // Session 2's read credit (a cap for what is still to come) does not
+    // include what it already spent; its value to the guest is the larger.
+    expect(sum).toBe(parts[0]! + parts[1]!);
+    expect(
+      parts[0]! + Math.max(SPENT, parts[1]!) + REFUND,
+      `credits ${parts.join(" + ")}: more value than the DP`,
+    ).toBeLessThanOrEqual(d.deposit);
+  });
+
+  it("1033-7 session 2 closed after paying from DP, then refund 40k: open session 1 reads at most 10k", async () => {
+    const d = await sharedDp([50_000, 50_000]);
+    await payFromDp(d, 1);
+    await close(d.seats[1]!.sessionId);
+    await providerRefunded(d.intentId, REFUND);
+    const credit = await effectiveCredit(d.seats[0]!.sessionId);
+    expect(
+      credit,
+      "credit of session 1 above 100k - 50k - 40k",
+    ).toBeLessThanOrEqual(10_000);
+    expect(
+      SPENT + credit + REFUND,
+      "more value than the DP",
+    ).toBeLessThanOrEqual(d.deposit);
+    await expectNoNegativeRemainders(d);
+  });
+
+  it("1033-7 session 2 closed after paying from DP, refund 40k, then session 1 closes: the guest takes at most 10k and spent + takeable + refund <= 100k", async () => {
+    const d = await sharedDp([50_000, 50_000]);
+    await payFromDp(d, 1);
+    await close(d.seats[1]!.sessionId);
+    await providerRefunded(d.intentId, REFUND);
+    await close(d.seats[0]!.sessionId);
+    await expectNoNegativeRemainders(d);
+    const total = await takeable(d);
+    expect(total, "takeable above 100k - 50k - 40k").toBeLessThanOrEqual(
+      10_000,
+    );
+    expect(
+      SPENT + total + REFUND,
+      "more value than the DP",
+    ).toBeLessThanOrEqual(d.deposit);
+  });
+
+  it("1033-7 session 2 open (paid from DP), refund 40k, session 1 closes: the guest takes at most 10k and spent + takeable + refund <= 100k", async () => {
+    const d = await sharedDp([50_000, 50_000]);
+    await payFromDp(d, 1);
+    await providerRefunded(d.intentId, REFUND);
+    await close(d.seats[0]!.sessionId);
+    await expectNoNegativeRemainders(d);
+    const total = await takeable(d);
+    expect(total, "takeable above 100k - 50k - 40k").toBeLessThanOrEqual(
+      10_000,
+    );
+    expect(
+      SPENT + total + REFUND,
+      "more value than the DP",
+    ).toBeLessThanOrEqual(d.deposit);
+  });
+
+  it("1033-7 session 1 closes first, then session 2 pays from DP and closes, refund last: spent + takeable + refund <= 100k", async () => {
+    const d = await sharedDp([50_000, 50_000]);
+    await close(d.seats[0]!.sessionId);
+    await payFromDp(d, 1);
+    await close(d.seats[1]!.sessionId);
+    await providerRefunded(d.intentId, REFUND);
+    await expectNoNegativeRemainders(d);
+    const total = await takeable(d);
+    expect(total, "takeable above 100k - 50k - 40k").toBeLessThanOrEqual(
+      10_000,
+    );
+    expect(
+      SPENT + total + REFUND,
+      "more value than the DP",
+    ).toBeLessThanOrEqual(d.deposit);
+  });
+});
