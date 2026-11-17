@@ -887,6 +887,15 @@ export async function handleQrOrderPaymentPaid(
     now,
   );
   let committedRefund = false;
+  // legend-6i91b: re-read the net allocations under the intent locks. A
+  // provider-side refund of one code of a split bill leaves link.paidIdr and
+  // the other parts untouched, so no single code looks short. If the codes of
+  // the link now hold less net than the bill, firing would be paid by money
+  // the provider already returned: void and refund what is left.
+  const netAllocated = await allocatedIdrByIntent(tx, context, paymentLinkId);
+  let netTotal = 0;
+  for (const amount of netAllocated.values()) netTotal += amount;
+  if (netTotal < link.totalIdr) committedRefund = true;
   for (const id of contributors) {
     const [code] = await tx
       .select()
@@ -908,8 +917,19 @@ export async function handleQrOrderPaymentPaid(
     const part =
       contributors.length === 1
         ? BigInt(order.totalIdr - order.depositAppliedIdr)
-        : BigInt(allocated.get(id) ?? 0);
+        : BigInt(netAllocated.get(id) ?? 0);
     if (committed > 0n && committed + part > balance.cap)
+      committedRefund = true;
+    // legend-6i91b: a provider-side refund also took money from the code, yet
+    // leaves our own reserved at 0. A code that now holds less net than the
+    // part it put toward the bill cannot fund the sale. One code covering the
+    // bill alone has part = total - deposit; a split bill's parts are net
+    // allocations, so the net total check above covers a split bill.
+    if (
+      contributors.length === 1 &&
+      balance.providerRefunded > 0n &&
+      balance.paid < part
+    )
       committedRefund = true;
   }
   if (committedRefund) {
