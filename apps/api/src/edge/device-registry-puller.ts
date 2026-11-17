@@ -52,6 +52,11 @@ export type DeviceRegistryPuller = {
   getState(): DeviceRegistrySyncState;
   /** legend-2lgu: hard-stale predicate at `at` (default: now). */
   isHardStale(at?: Date): boolean;
+  /**
+   * True once the local checkpoint was read, so the replica's age can be
+   * judged. Does not wait for the cloud.
+   */
+  isCheckpointLoaded(): boolean;
 };
 
 export type DeviceRegistryPullerDeps = {
@@ -273,6 +278,7 @@ export function createDeviceRegistryPuller(
       if (inFlight) await inFlight;
     },
     isHardStale,
+    isCheckpointLoaded: () => loaded,
     getState() {
       return {
         lastSuccessAt: lastSuccessAt ? lastSuccessAt.toISOString() : null,

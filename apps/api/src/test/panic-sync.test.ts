@@ -109,7 +109,7 @@ import {
   registerEdgeNode,
   type AuthenticatedEdgeNode,
 } from "../services/edge-node.service.ts";
-import { withEdgeModeEnv } from "./edge-mode-env.ts";
+import { setEdgeNodeForEnvTests, withEdgeModeEnv } from "./edge-mode-env.ts";
 import {
   createIsolatedTenant,
   owner,
@@ -653,6 +653,7 @@ beforeAll(async () => {
     `psync-${randomBytes(3).toString("hex")}`,
   );
   outletId = tenant.outletId;
+  setEdgeNodeForEnvTests({ tenantId: tenant.tenantId, outletId: outletId });
   pepper = randomBytes(32);
   resetEdgeStaffPinPeppers();
   installEdgeStaffPinPeppers(tenant.tenantId, outletId, [
@@ -690,6 +691,7 @@ afterEach(() => {
 });
 
 afterAll(async () => {
+  setEdgeNodeForEnvTests(null);
   resetEdgeApplierRegistryForTests();
   resetEdgeStaffPinPeppers();
   setAuditWriter(null);

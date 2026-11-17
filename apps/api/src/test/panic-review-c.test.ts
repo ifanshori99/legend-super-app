@@ -32,6 +32,7 @@ import { guardEdgeUpgrades } from "../edge/mode.ts";
 import { attachEmergencyRealtime } from "../edge/panic-relay-realtime.ts";
 import {
   getEdgeRuntimeState,
+  setDeviceRegistryReadyForTests,
   setEdgeRuntimeStateForTests,
 } from "../edge/runtime.ts";
 import { signDeviceToken } from "../lib/device-token.ts";
@@ -92,6 +93,7 @@ async function asTenantOwner<T>(run: (client: PoolClient) => Promise<T>) {
 }
 
 function actAsEdge(outletId: string) {
+  setDeviceRegistryReadyForTests({});
   setEdgeRuntimeStateForTests({
     edgeMode: true,
     identity: {
@@ -223,6 +225,7 @@ afterEach(async () => {
       ),
   );
   setEdgeRuntimeStateForTests(cloudState);
+  setDeviceRegistryReadyForTests(null);
 });
 
 afterAll(async () => {

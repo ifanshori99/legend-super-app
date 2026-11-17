@@ -117,7 +117,11 @@ import {
   setStaffPin,
 } from "../services/device-pin.service.ts";
 import { enrollDevice } from "../services/device.service.ts";
-import { withEdgeModeEnv } from "./edge-mode-env.ts";
+import {
+  installEdgeNodeForTests,
+  removeEdgeNodeForTests,
+  withEdgeModeEnv,
+} from "./edge-mode-env.ts";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers.ts";
 
 const PROOF_HEADER = "X-Pin-Proof";
@@ -517,6 +521,7 @@ beforeAll(async () => {
     .jpeg()
     .toBuffer();
   outletId = await seedOutlet("Outlet bukti PIN");
+  installEdgeNodeForTests({ tenantId: tenant.id, outletId: outletId });
   holdEdgePepper(outletId);
   const first = await enrollAt(outletId, "Layar satu");
   deviceToken = first.token;
@@ -564,6 +569,7 @@ afterEach(() => {
 });
 
 afterAll(async () => {
+  removeEdgeNodeForTests();
   resetEdgeStaffPinPeppers();
   setAuditWriter(null);
   setDeviceOutletResolver(null);
@@ -919,8 +925,14 @@ describe("(e) a second proof on the same device ends the first", () => {
 // ---- (f) per-device throttle ----------------------------------------------------------
 
 describe("(f) 10 wrong PINs from one device across staff", () => {
+  // Each test runs as the edge node of its own outlet; back to outlet O after.
+  afterEach(() => {
+    installEdgeNodeForTests({ tenantId: tenant.id, outletId });
+  });
+
   it("(f) 11th request -> 429 PIN_DEVICE_THROTTLED with Retry-After for that device only; one audit, one alert, staff counters untouched", async () => {
     const throttleOutlet = await seedOutlet("Outlet throttle PIN");
+    installEdgeNodeForTests({ tenantId: tenant.id, outletId: throttleOutlet });
     holdEdgePepper(throttleOutlet);
     const flooded = await enrollAt(throttleOutlet, "Layar banjir");
     const calm = await enrollAt(throttleOutlet, "Layar tenang");
@@ -1011,6 +1023,7 @@ describe("(f) 10 wrong PINs from one device across staff", () => {
 
   it("(f) 20 wrong PINs at once from one device -> at most 10 answer 401, the rest 429, staff counters rise by at most 10", async () => {
     const throttleOutlet = await seedOutlet("Outlet salah serentak");
+    installEdgeNodeForTests({ tenantId: tenant.id, outletId: throttleOutlet });
     holdEdgePepper(throttleOutlet);
     const device = await enrollAt(throttleOutlet, "Layar serentak");
     const options = { outlet: throttleOutlet };
@@ -1043,6 +1056,7 @@ describe("(f) 10 wrong PINs from one device across staff", () => {
 
   it("(f) a failing alert does not change the answers: 10th wrong PIN stays 401, 11th stays 429", async () => {
     const throttleOutlet = await seedOutlet("Outlet alarm gagal");
+    installEdgeNodeForTests({ tenantId: tenant.id, outletId: throttleOutlet });
     holdEdgePepper(throttleOutlet);
     const device = await enrollAt(throttleOutlet, "Layar alarm gagal");
     await seedSupervisor(throttleOutlet);
@@ -1077,6 +1091,7 @@ describe("(f) 10 wrong PINs from one device across staff", () => {
 
   it("(f) legend-sp9vq: guesses that newly lock a staff PIN still count on the device; an already locked PIN does not", async () => {
     const throttleOutlet = await seedOutlet("Outlet kunci baru");
+    installEdgeNodeForTests({ tenantId: tenant.id, outletId: throttleOutlet });
     holdEdgePepper(throttleOutlet);
     const device = await enrollAt(throttleOutlet, "Layar kunci baru");
     await seedSupervisor(throttleOutlet);
@@ -1118,6 +1133,7 @@ describe("(f) 10 wrong PINs from one device across staff", () => {
 
   it("(f) legend-sp9vq: 12 locking guesses at once -> exactly 10 answer PIN_LOCKED, 2 answer 429", async () => {
     const throttleOutlet = await seedOutlet("Outlet kunci serentak");
+    installEdgeNodeForTests({ tenantId: tenant.id, outletId: throttleOutlet });
     holdEdgePepper(throttleOutlet);
     const device = await enrollAt(throttleOutlet, "Layar kunci serentak");
     const options = { outlet: throttleOutlet };
@@ -1139,6 +1155,7 @@ describe("(f) 10 wrong PINs from one device across staff", () => {
 
   it("(f) 9 wrong PINs do not throttle: the next correct PIN still works", async () => {
     const throttleOutlet = await seedOutlet("Outlet sembilan salah");
+    installEdgeNodeForTests({ tenantId: tenant.id, outletId: throttleOutlet });
     holdEdgePepper(throttleOutlet);
     const device = await enrollAt(throttleOutlet, "Layar sembilan");
     const options = { outlet: throttleOutlet };
