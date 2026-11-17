@@ -14,6 +14,7 @@ import {
   createSupplierInvoiceInputSchema,
   decideSupplierInvoiceInputSchema,
   recordSupplierInvoiceMatchInputSchema,
+  requestSupplierInvoicePaymentInputSchema,
   supplierInvoiceIdSchema,
   supplierInvoiceQuerySchema,
 } from "@starter/shared/inventory";
@@ -49,6 +50,10 @@ import {
   releaseSupplierInvoice,
   SUPPLIER_INVOICE_READ_PERMISSIONS,
 } from "../services/purchasing-invoice.service.ts";
+import {
+  listSupplierInvoicePayments,
+  requestSupplierInvoicePayment,
+} from "../services/purchasing-supplier-payment.service.ts";
 import {
   getPurchasingPolicy,
   putPurchasingPolicy,
@@ -223,6 +228,42 @@ export function createPurchasingInvoiceRouter(): Router {
           input,
         ),
       });
+    },
+  );
+
+  // Payment of one invoice through the approval matrix (legend-xxqz3). The
+  // request needs finance at the invoice's own outlet (re-checked in the
+  // service, RLS hides other outlets and tenants); the list is read-scoped.
+  router.post(
+    "/supplier-invoices/:supplierInvoiceId/payments",
+    jsonBody,
+    requireMenuPermission(RELEASE_PERMISSION),
+    async (req, res) => {
+      const input = requestSupplierInvoicePaymentInputSchema.parse(req.body);
+      const payment = await requestSupplierInvoicePayment(
+        getScopedTenantContext(req),
+        getAuth(req).user.id,
+        invoiceId(req),
+        input,
+      );
+      res.status(201).json({ data: payment });
+    },
+  );
+
+  router.get(
+    "/supplier-invoices/:supplierInvoiceId/payments",
+    scopeByPermissions([
+      RELEASE_PERMISSION,
+      ...SUPPLIER_INVOICE_READ_PERMISSIONS,
+    ]),
+    async (req, res) => {
+      res.json(
+        await listSupplierInvoicePayments(
+          mergedContext(res),
+          getAuth(req).user.id,
+          invoiceId(req),
+        ),
+      );
     },
   );
 

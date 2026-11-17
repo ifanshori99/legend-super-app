@@ -175,6 +175,12 @@ export const useCreateGoodsReceipt = () =>
     getPurchaseOrder,
   ]);
 
+export const useJournalizeGoodsReceipt = () =>
+  useInvalidatingMutation(api.journalizeGoodsReceipt, [
+    listGoodsReceipts,
+    getGoodsReceipt,
+  ]);
+
 export const useCreateSupplierInvoice = () =>
   useInvalidatingMutation(api.createSupplierInvoice, [
     listSupplierInvoices,

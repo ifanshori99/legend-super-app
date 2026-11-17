@@ -3004,6 +3004,20 @@
       "when": 1795000000057,
       "tag": "0442_payment_va_release_guest_kind",
       "breakpoints": true
+    },
+    {
+      "idx": 585,
+      "version": "7",
+      "when": 1795000000585,
+      "tag": "0585_supplier_payments",
+      "breakpoints": true
+    },
+    {
+      "idx": 586,
+      "version": "7",
+      "when": 1795000000586,
+      "tag": "0586_cash_out_approval_policies_data",
+      "breakpoints": true
     }
   ]
 }

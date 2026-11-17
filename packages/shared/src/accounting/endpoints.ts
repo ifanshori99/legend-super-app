@@ -50,6 +50,8 @@ import {
   pettyCashFundQuerySchema,
   pettyCashFundSchema,
   pettyCashMovementInputSchema,
+  pettyCashReconciliationQuerySchema,
+  pettyCashReconciliationSchema,
   reconciliationCaseActionInputSchema,
   reconciliationCaseSchema,
   reconciliationCaseStatusSchema,
@@ -639,6 +641,13 @@ export const listPettyCashEntries = defineEndpoint({
   query: pettyCashEntryQuerySchema,
   response: cursorPageSchema(pettyCashEntrySchema),
 });
+/** Fund balances vs GL 1102 of one legal entity (read-only; tenant scope). */
+export const getPettyCashReconciliation = defineEndpoint({
+  method: "GET",
+  path: `${BASE}/petty-cash/reconciliation`,
+  query: pettyCashReconciliationQuerySchema,
+  response: dataResponseSchema(pettyCashReconciliationSchema),
+});
 /**
  * Top-up from a bank account or return to it; the fund never goes below zero.
  * 201 + the ledger entry; a top-up held by the cash limit (Q7, anti-split) is
@@ -978,6 +987,7 @@ export const accountingEndpoints = Object.freeze({
   putCashOutApprovalLimit,
   listPettyCashFunds,
   listPettyCashEntries,
+  getPettyCashReconciliation,
   createPettyCashMovement,
   postPettyCashEntry,
   listReconciliationCases,

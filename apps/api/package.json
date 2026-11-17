@@ -16,6 +16,7 @@
     "db:studio": "drizzle-kit studio",
     "db:backfill-defaults": "tsx src/db/backfill-tenant-defaults.ts",
     "metrics:backfill": "tsx src/scripts/metrics-daily-backfill.ts",
+    "purchase-return:variance-check": "tsx src/scripts/purchase-return-variance-check.ts",
     "db:rotate-data-key": "tsx src/db/rotate-data-key.ts",
     "role:set": "tsx src/set-role.ts",
     "worker": "node --enable-source-maps dist/worker.js"

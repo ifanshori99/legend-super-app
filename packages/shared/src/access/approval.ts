@@ -69,6 +69,7 @@ export const APPROVAL_ACTIONS = {
   reconciliation_case: "PAY recon; §3.7 Matriks Approval",
   purchase_request: "§3.15 Alur Pengadaan (Purchase Request → approval)",
   supplier_payment: "§3.15 Alur Pengadaan (Supplier Payment dengan approval)",
+  cash_out: "§3.19 Kas & Bank (kas keluar di atas batas; founder Q7)",
   manual_journal: "§3.16 Jurnal Manual & Berulang",
   period_reopen: "§3.16 Tutup Periode; ACC-02",
   payroll_cancel: "PAYR-05",
@@ -184,6 +185,25 @@ export const DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES: readonly {
   { thresholdIdr: 0, level: 1, roleTemplateKey: "outlet_manager" },
   { thresholdIdr: 0, level: 1, roleTemplateKey: "general_manager" },
 ];
+
+/**
+ * Default cash out approval matrix (legend-4qowr, founder Q7 13 Nov 2026), the
+ * single source for new tenants (seedTenantRoleTemplates), the dev tenant and
+ * the data migration for existing tenants. Whether a cash out waits for
+ * approval is decided by the tenant limit and the anti-split sum
+ * (`finance_policies`, accounting-cash-limit.service.ts), not by this matrix:
+ * the matrix only names who decides once the entry is pending, so one tier,
+ * one level, floor 0, for the Finance template (it holds
+ * `accounting.cash_bank.approve`). The creator never decides their own entry
+ * (distinct actor). Applied only to a tenant with no cash_out row and a
+ * Finance template role; a tenant that configured its own matrix is never
+ * touched.
+ */
+export const DEFAULT_CASH_OUT_APPROVAL_POLICIES: readonly {
+  readonly thresholdIdr: number;
+  readonly level: number;
+  readonly roleTemplateKey: "finance";
+}[] = [{ thresholdIdr: 0, level: 1, roleTemplateKey: "finance" }];
 
 /**
  * Default shareholder version approval matrix (legend-tm6pp), the single source

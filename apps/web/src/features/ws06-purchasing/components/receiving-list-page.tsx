@@ -56,6 +56,7 @@ import {
   useSuppliers,
   useUoms,
 } from "../hooks.ts";
+import { JournalizeReceiptDialog } from "./journalize-receipt-dialog.tsx";
 import { ReceivingOfflineNote } from "./receiving-offline-note.tsx";
 import { StoragePhoto } from "../../ws06-inventory/components/photo-field.tsx";
 
@@ -228,14 +229,31 @@ function ReceiptDetailDialog({
  * Keyed by outlet: switching outlet in the shell starts a fresh list, so a
  * selected receipt or search of the previous outlet cannot leak.
  */
-export function ReceivingListPage({ canReceive }: { canReceive: boolean }) {
+export function ReceivingListPage({
+  canReceive,
+  canJournalize = false,
+}: {
+  canReceive: boolean;
+  /** Holds `accounting.journal.post`: may book the receipt into the ledger. */
+  canJournalize?: boolean;
+}) {
   const { outlet } = useTenantContext();
   return (
-    <ReceivingListContent key={outlet?.id ?? "none"} canReceive={canReceive} />
+    <ReceivingListContent
+      key={outlet?.id ?? "none"}
+      canReceive={canReceive}
+      canJournalize={canJournalize}
+    />
   );
 }
 
-function ReceivingListContent({ canReceive }: { canReceive: boolean }) {
+function ReceivingListContent({
+  canReceive,
+  canJournalize,
+}: {
+  canReceive: boolean;
+  canJournalize: boolean;
+}) {
   const t = useT();
   // The outlet the shell selected from the session's assigned outlets.
   const { outlet } = useTenantContext();
@@ -244,6 +262,7 @@ function ReceivingListContent({ canReceive }: { canReceive: boolean }) {
   const orders = usePurchaseOrders(outletId);
   const suppliers = useSuppliers();
   const [selected, setSelected] = React.useState("");
+  const [journalizing, setJournalizing] = React.useState("");
   const [search, setSearch] = React.useState("");
 
   const orderById = React.useMemo(() => {
@@ -392,13 +411,34 @@ function ReceivingListContent({ canReceive }: { canReceive: boolean }) {
                       )}
                     </TableCell>
                     <TableCell className="text-right">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setSelected(receipt.id)}
-                      >
-                        {t("inventoryReceiving.common.view")}
-                      </Button>
+                      <div className="flex flex-wrap justify-end gap-1">
+                        {canJournalize && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            aria-label={t(
+                              "inventoryReceiving.journalize.actionFor",
+                              { number: receipt.number },
+                            )}
+                            onClick={() => setJournalizing(receipt.id)}
+                          >
+                            {t("inventoryReceiving.journalize.action")}
+                          </Button>
+                        )}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          aria-label={t(
+                            "inventoryReceiving.receiving.viewFor",
+                            {
+                              number: receipt.number,
+                            },
+                          )}
+                          onClick={() => setSelected(receipt.id)}
+                        >
+                          {t("inventoryReceiving.common.view")}
+                        </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 );
@@ -413,6 +453,23 @@ function ReceivingListContent({ canReceive }: { canReceive: boolean }) {
           onClose={() => setSelected("")}
         />
       )}
+      {canJournalize &&
+        journalizing !== "" &&
+        (() => {
+          const target = receipts.data?.data.find(
+            (receipt) => receipt.id === journalizing,
+          );
+          return target ? (
+            <JournalizeReceiptDialog
+              receipt={target}
+              supplierName={supplierNameOf(
+                suppliers.data?.data ?? [],
+                target.supplierId,
+              )}
+              onClose={() => setJournalizing("")}
+            />
+          ) : null;
+        })()}
     </div>
   );
 }
