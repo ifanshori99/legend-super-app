@@ -580,10 +580,6 @@ describe("shared device: exempt routes and write-off", () => {
       "pos GET /pos/catalog",
       () => deviceSession.client.get(`${posBase()}/catalog`),
     ],
-    [
-      "pos GET /pos/customer-display",
-      () => deviceSession.client.get(`${posBase()}/customer-display`),
-    ],
   ];
 
   it.each(exempt)(

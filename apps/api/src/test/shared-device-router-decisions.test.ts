@@ -278,11 +278,6 @@ const NO_TOKEN_GUARD: Record<string, { count: number; reason: string }> = {
     reason:
       "createPosCatalogRouter GET: a read of the catalog needs no cashier token (a second window of the device has none).",
   },
-  "customer-display": {
-    count: 1,
-    reason:
-      "the `staff` chain used by the preview GET reads only; commands add the guard through `staffCommand`.",
-  },
 };
 
 /** Opt-ins whose `.use` chain has no cashier guards: they sit on each route instead. */
@@ -393,6 +388,17 @@ describe("1012 shared-device decision per router file", () => {
     },
   );
 
+  it("customer-display: the one cashier chain carries the token guard and every cashier route spreads it (legend-dgtz0)", () => {
+    const code = codeNoImports("customer-display");
+    const start = code.search(/\brequireAuthAllowSharedDevice\b/);
+    const chain = enclosingGroup(code, start);
+    expect(chain).toMatch(/\bresolveActingStaff\b/);
+    expect(chain).toMatch(TOKEN_GUARD);
+    // preview GET (staff branch), pair, selection, delete: no chain without the guard.
+    expect(occurrences(code, /\.\.\.staff\b/g)).toHaveLength(4);
+    expect(code).not.toMatch(/\bstaffCommand\b/);
+  });
+
   it.each(namesOf("pos"))(
     "pos router %s keeps no plain requireAuth except the listed exceptions",
     (name) => {
@@ -448,6 +454,8 @@ describe("1012 login-session reads are allow-listed", () => {
       "dev-only public-site credential resolver; optional session lookup, not a guard.",
     "middleware/auth.ts":
       "the guard itself (requireAuth / requireAuthAllowSharedDevice).",
+    "middleware/shared-device-auth.ts":
+      "legend-wa9n7: /api/auth/* guard; reads the session only to refuse a shared-device session, never authorises.",
     "middleware/support-session.ts":
       "blocks impersonated sessions on auth routes; reads, never authorises.",
     "routes/identity-auth.routes.ts":

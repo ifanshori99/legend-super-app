@@ -15,12 +15,16 @@
 //
 // - a support (impersonated) session also needs an active support access grant
 //   for this tenant (TEN-04), re-checked on every wakeup and recheck;
+// - a session used on a flagged shared device (legend-wa9n7) needs the
+//   `x-device-token` and `x-acting-staff` upgrade headers; the cook is then the
+//   user whose permission is checked (see resolveKdsStaffConnection);
 //
 // Any failure answers null (deny by default).
 
 import type { IncomingMessage } from "node:http";
 import { fromNodeHeaders } from "better-auth/node";
 import { stationIdSchema } from "@starter/shared/access";
+import { ACTING_STAFF_HEADER } from "@starter/shared/pos/acting-staff";
 import {
   assertOutletInScope,
   outletIdSchema,
@@ -41,6 +45,16 @@ import {
   loadTenantAccess,
   resolveAccessSnapshot,
 } from "./permission-resolver.ts";
+import { resolveActingStaffToken } from "./pos-acting-staff.service.ts";
+import {
+  registeredDeviceIdOfHeaders,
+  signedDeviceIdOfHeaders,
+} from "./raw-device-token.ts";
+import {
+  anySharedDeviceActive,
+  isActiveSharedDevice,
+  markSessionSharedDevice,
+} from "./shared-device.service.ts";
 
 const PERMISSION = "kds.ticket.process";
 
@@ -112,7 +126,50 @@ export async function resolveKdsStaffConnection(
         dataClass: "personal",
         intent: "read",
       });
-    const userId = session.user.id;
+    const outletId = outletIdSchema.parse(target.outletId);
+    // legend-wa9n7: a session used on a flagged shared device may not act as
+    // the login owner here. Marks = the session's marks plus the signed device
+    // of this tenant on the upgrade. With no active shared device among them
+    // nothing changes; otherwise the upgrade needs a registry-valid device
+    // token AND a live cashier token (bound to that device, this session and
+    // the path outlet), and the cook becomes the user checked below. Headers
+    // persist on `request`, so every wakeup and recheck re-resolves the token
+    // (revoked or expired throws -> deny). Browsers cannot set WebSocket
+    // headers, so a browser client is denied on a shared device.
+    const headerDeviceId = signedDeviceIdOfHeaders(
+      request.headers,
+      tenant.tenantId,
+    );
+    // A signed header naming an active flagged device also stamps the session
+    // (as requireActingStaffOnSharedDevice does over HTTP), so the same cookie
+    // replayed without the header stays marked. A full mark list (8 active)
+    // refuses this device.
+    if (
+      headerDeviceId !== null &&
+      (await isActiveSharedDevice(tenant, headerDeviceId)) &&
+      !(await markSessionSharedDevice(session.session.id, headerDeviceId))
+    )
+      return null;
+    const marks = [
+      ...(session.session.sharedDeviceIds ?? []),
+      ...(headerDeviceId === null ? [] : [headerDeviceId]),
+    ];
+    let userId = session.user.id;
+    if (await anySharedDeviceActive(marks)) {
+      const deviceId = await registeredDeviceIdOfHeaders(
+        request.headers,
+        tenant.tenantId,
+      );
+      const actingToken = request.headers[ACTING_STAFF_HEADER];
+      if (deviceId === null || typeof actingToken !== "string") return null;
+      const acting = await resolveActingStaffToken(tenant, {
+        token: actingToken,
+        deviceId,
+        sessionId: session.session.id,
+        outletId,
+      });
+      userId = acting.staffUserId;
+    }
     const data = await loadTenantAccess(
       establishScopedTenantContext(tenant, { kind: "tenant" }),
       userId,
@@ -124,7 +181,6 @@ export async function resolveKdsStaffConnection(
       mfaVerified: false,
       now: new Date(),
     });
-    const outletId = outletIdSchema.parse(target.outletId);
     // Station grant only (a station-scoped cook reaches just their station);
     // the minted context's outlet must be the path's outlet.
     const context = snapshot.contextFor(PERMISSION, {
