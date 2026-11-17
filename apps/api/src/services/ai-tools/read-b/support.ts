@@ -156,6 +156,29 @@ export function outletClause(column: SQL, outletIds: string[] | null): SQL {
   return sql`and ${column} in (${uuidList(outletIds)})`;
 }
 
+/**
+ * Denies an outlet filter that names an outlet which is not this tenant's.
+ * A whole-tenant reach does not list outlet ids, so scopeOutlets cannot tell a
+ * foreign outlet from an empty one; this check runs inside the tenant
+ * transaction. No-op without an input filter.
+ */
+export async function assertKnownOutlets(
+  tx: Parameters<Parameters<typeof withTenant>[2]>[0],
+  tenantId: string,
+  requested: readonly string[] | undefined,
+  wanted: string[] | null,
+): Promise<void> {
+  if (requested === undefined || wanted === null || wanted.length === 0) return;
+  const known = (
+    await tx.execute(sql`
+      select count(*)::int as n from outlets o
+      where o.tenant_id = ${tenantId}::uuid
+      ${outletClause(sql`o.id`, wanted)}
+    `)
+  ).rows[0] as { n: number } | undefined;
+  if (Number(known?.n ?? 0) !== wanted.length) throw forbidden();
+}
+
 export function addDays(date: string, days: number): string {
   const [year, month, day] = date.split("-").map(Number) as [
     number,

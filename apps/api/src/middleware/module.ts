@@ -10,7 +10,11 @@ import type { RequestHandler } from "express";
 import { assertModuleEnabled, type ModuleKey } from "@starter/shared/platform";
 import { getTenantContext } from "./tenant";
 import { db } from "../db/index.ts";
-import { assertAiPlatformUnlocked } from "../services/ai-platform-lock.ts";
+import { HttpError } from "../lib/http-error.ts";
+import {
+  assertAiPlatformUnlocked,
+  isMcpModuleDisabled,
+} from "../services/ai-platform-lock.ts";
 import { tenantFeatureFlags } from "../services/platform-org.service";
 
 export function requireModuleEnabled(module: ModuleKey): RequestHandler {
@@ -19,6 +23,21 @@ export function requireModuleEnabled(module: ModuleKey): RequestHandler {
     const flags = await tenantFeatureFlags(tenant.tenantId);
     // Throws core FEATURE_DISABLED (403); the error handler maps it.
     assertModuleEnabled(flags, module, "api");
+    next();
+  };
+}
+
+// 981 / legend-hbuq3: `mcp` module off closes every MCP route. Answers like a
+// missing tenant (404 TENANT_NOT_FOUND): no module or flag name leaks. Mount
+// after authentication and the tenant context.
+export function requireMcpModuleEnabled(): RequestHandler {
+  return async (req, _res, next) => {
+    if (await isMcpModuleDisabled(db, getTenantContext(req).tenantId))
+      throw new HttpError(
+        404,
+        "TENANT_NOT_FOUND",
+        "No tenant is available for this request.",
+      );
     next();
   };
 }

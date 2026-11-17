@@ -75,6 +75,7 @@ const OUTLET_TOOL_CODES = new Set([
   "TL-08",
   "TL-11",
   "TL-20",
+  "TL-21",
 ]);
 /** Tools whose seeded outlet-B data the tenant-wide control must show. */
 const SEEDED_CODES = ["TL-01", "TL-02", "TL-03", "TL-04", "TL-11"];

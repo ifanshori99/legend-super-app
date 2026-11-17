@@ -100,10 +100,9 @@ const tenant = tenantSchema.parse({
   status: "active",
   deploymentMode: "dedicated",
   featureFlags: {
-    // Shareholder dashboard + MCP stay off until their milestones (sample).
-    modules: MODULE_KEYS.filter(
-      (module) => module !== "mcp" && module !== "shareholder_dashboard",
-    ),
+    // Shareholder dashboard stays off until its milestone (sample). MCP is on:
+    // the `mcp` module gates every MCP path (981 / legend-hbuq3).
+    modules: MODULE_KEYS.filter((module) => module !== "shareholder_dashboard"),
     integrationProviders: ["doit", "whatsapp", "email", "gofood", "edc", "llm"],
   },
   limits: {

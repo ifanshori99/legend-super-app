@@ -206,3 +206,6 @@ export * from "./ai-chatgpt";
 // legend-bod emergency (panic) button tables.
 export * from "./panic-alert";
 export * from "./sealed-secret-reseal";
+
+// legend-vqicf customer reviews (migration 0455).
+export * from "./customer-reviews";

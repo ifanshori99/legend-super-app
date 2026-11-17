@@ -46,6 +46,7 @@ export const AI_TOOLS = [
   ["TL-18", "draft_menu_availability"],
   ["TL-19", "get_action_request_status"],
   ["TL-20", "get_facility_utilization"],
+  ["TL-21", "get_review_summary"],
 ] as const;
 
 export type AiToolCode = (typeof AI_TOOLS)[number][0];
@@ -150,6 +151,7 @@ export const MCP_READ_SCOPES = [
   "mcp:anomalies:read",
   "mcp:actions:read",
   "mcp:facility:read",
+  "mcp:reviews:read",
 ] as const;
 
 /** Draft (write) scopes: `mcp:<domain>:draft`. A draft only makes an action request. */
@@ -183,6 +185,7 @@ export const MCP_SCOPE_LABELS_ID: Record<McpScope, string> = {
   "mcp:anomalies:read": "Melihat anomali operasional",
   "mcp:actions:read": "Melihat status permintaan aksi",
   "mcp:facility:read": "Melihat pemakaian fasilitas",
+  "mcp:reviews:read": "Melihat ringkasan ulasan pelanggan",
   "mcp:purchasing:draft": "Menyusun draf pembelian (menunggu persetujuan)",
   "mcp:inventory:draft":
     "Menyusun draf penyesuaian stok (menunggu persetujuan)",

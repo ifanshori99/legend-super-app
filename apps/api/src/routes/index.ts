@@ -168,6 +168,7 @@ import { identityWaUnlinkRouter } from "./identity-wa-unlink.routes.ts"; // lege
 import { identityPushDevicesRouter } from "./identity-push-devices.routes.ts"; // legend-gchkf
 import { segmentsRouter } from "./segments.routes.ts"; // legend-ts50
 import { feedbackRouter } from "./feedback.routes.ts"; // legend-ts50
+import { customerReviewRouter } from "./customer-review.routes.ts"; // legend-vqicf
 import { memberFeedbackRouter } from "./member-feedback.routes.ts"; // legend-ts50
 import { memberRewardsRouter } from "./member-rewards.routes.ts"; // legend-m4p5
 import { loyaltyRewardsRouter } from "./loyalty-rewards.routes.ts"; // legend-m4p5
@@ -385,6 +386,7 @@ apiRouter.use(identityWaUnlinkRouter); // legend-7wzy
 apiRouter.use("/identity/push-devices", identityPushDevicesRouter); // legend-gchkf
 apiRouter.use(segmentsRouter); // legend-ts50
 apiRouter.use(feedbackRouter); // legend-ts50
+apiRouter.use("/reviews", customerReviewRouter); // legend-vqicf
 apiRouter.use(loyaltyRewardsRouter); // legend-m4p5
 apiRouter.use(loyaltyTiersRouter); // legend-3zd1
 apiRouter.use(posOrderCustomerRouter);

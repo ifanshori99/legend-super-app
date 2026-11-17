@@ -14,6 +14,18 @@
 - Bukti: 5 test gagal-dulu di HEAD lalu hijau, plus 2 test konkurensi dan 1 test recon; suite payout 65 file 965 lulus (0 gagal), typecheck penuh hijau, db:generate kosong, migrator non-superuser 12/12, root text-contract + access-i18n 16/16. Test 918/920 disesuaikan: approver kini aktor log.
 - Architect xhigh: pass 1 tanpa P1, dua P2 (kunci run SHARE ke UPDATE bisa deadlock; fixture core tanpa grant), keduanya ditutup; pass 2 tanpa P1/P2.
 - Subagent: total 23, puncak 4 bersamaan, token heavy dipegang test-runner.
+## 981 tindak lanjut CTO (17 Nov 2026)
+
+- Revoke token/klien MCP tetap terbuka saat modul mati; discovery, authorize, register tenant bermodul mati sama dengan tanpa tenant; cek modul di token exchange di dalam transaksi terkunci (sebelum platform_locked); TL-11 menolak id outlet asing (helper assertKnownOutlets, dipakai juga TL-21).
+- Migrasi 0546_mcp_flag_backfill (data saja, idempoten): flag mcp untuk tenant aktif yang paketnya memuat mcp dan punya klien approved atau token aktif; audit satu baris per tenant yang berubah. Tenant di paket tanpa mcp tidak diubah (setTenantPackage menolaknya).
+- Gate: grup tes terarah 55 berkas hijau (satu tes diperbaiki lalu 2 berkas ulang 45/45), lint 0 error, typecheck 0 error, db:generate kosong, prettier hijau. Architect xhigh: 5 temuan, semua dibetulkan.
+
+## 981 Ulasan pelanggan, AI-11 dan modul MCP (17 Nov 2026)
+
+- Kartu legend-vqicf (tabel customer_reviews, migrasi 0545, RLS tenant+outlet, API /api/reviews), legend-39d.5 (TL-21 get_review_summary, agregat tanpa PII), legend-hbuq3 (modul mcp ditegakkan di bearer, OAuth, admin, registrasi, discovery, dan eksekusi aksi MCP yang sudah disetujui).
+- Keputusan pembatas: GET butuh review.respond; POST dan PATCH moderasi butuh crm.feedback.manage; source dipaksa manual; moderasi wajib expectedStatus (409 REVIEW_STATUS_CONFLICT).
+- Gate terarah 52 berkas / 1488 test hijau, root node 3513 lulus, prettier, eslint, typecheck api+shared+web hijau, db:generate kosong. Review architect: 4 temuan sudah dibetulkan.
+- Belum diputuskan (lihat laporan): revoke token saat modul mati, discovery 404 vs unknown tenant, enforce_member_rls untuk customer_profile_id. Rollout: tenant yang memakai MCP wajib diberi flag mcp sebelum deploy.
 
 ## 925 Harness Lighthouse dan fixture withdrawal (16 Nov 2026)
 

@@ -1,4 +1,4 @@
-// Tool input/output schemas for TL-01..TL-20 (bead legend-1zxo, WS-12).
+// Tool input/output schemas for TL-01..TL-21 (bead legend-1zxo, WS-12).
 // PRD v1.7 §3 Fitur 38 (Jawaban Bersumber), 39 (tool table, MCP-01..05),
 // 40 (Input Minimum). One catalog serves Tanya AI and MCP (D32).
 //
@@ -808,9 +808,56 @@ export type GetFacilityUtilizationOutput = z.infer<
   typeof getFacilityUtilizationOutputSchema
 >;
 
+// ---- TL-21 get_review_summary ----------------------------------------------
+
+/** Fixed theme lexicon keys (AI-11). Matching runs in the database. */
+export const REVIEW_THEMES = [
+  "makanan",
+  "pelayanan",
+  "harga",
+  "kebersihan",
+  "waktu_tunggu",
+] as const;
+export const reviewThemeSchema = z.enum(REVIEW_THEMES);
+export type ReviewTheme = z.infer<typeof reviewThemeSchema>;
+
+export const getReviewSummaryInputSchema = z.strictObject({
+  period: toolPeriodSchema,
+  ...toolOutletFilterSchema.shape,
+});
+export type GetReviewSummaryInput = z.infer<typeof getReviewSummaryInputSchema>;
+
+export const reviewSummaryRowSchema = z.strictObject({
+  outletId: outletIdSchema,
+  outletName: rowLabelSchema,
+  reviewCount: countSchema,
+  /** Decimal4 average of ratings 1..5. */
+  averageRating: decimal4Schema,
+  /** Review count per star rating, keyed "1".."5". */
+  ratingDistribution: z.strictObject({
+    "1": countSchema,
+    "2": countSchema,
+    "3": countSchema,
+    "4": countSchema,
+    "5": countSchema,
+  }),
+  /** Number of reviews that mention each theme; no review text. */
+  themes: z
+    .array(z.strictObject({ theme: reviewThemeSchema, mentions: countSchema }))
+    .max(REVIEW_THEMES.length),
+});
+export const getReviewSummaryOutputSchema = z.strictObject({
+  rows: rows(reviewSummaryRowSchema),
+  truncated: truncatedSchema,
+  sources: sourcesSchema,
+});
+export type GetReviewSummaryOutput = z.infer<
+  typeof getReviewSummaryOutputSchema
+>;
+
 // ---- Map -------------------------------------------------------------------
 
-/** Input and output schema per tool code, one entry for each of TL-01..TL-20. */
+/** Input and output schema per tool code, one entry for each of TL-01..TL-21. */
 export const AI_TOOL_IO = {
   "TL-01": {
     input: getSalesSummaryInputSchema,
@@ -885,6 +932,10 @@ export const AI_TOOL_IO = {
   "TL-20": {
     input: getFacilityUtilizationInputSchema,
     output: getFacilityUtilizationOutputSchema,
+  },
+  "TL-21": {
+    input: getReviewSummaryInputSchema,
+    output: getReviewSummaryOutputSchema,
   },
 } as const satisfies Record<
   AiToolCode,
