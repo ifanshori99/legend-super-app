@@ -561,6 +561,22 @@ describe("ws03 pay dialog: virtual account bank picker", () => {
     });
   });
 
+  test("VA with several banks and none chosen asks to pick a bank first", () => {
+    render();
+    choose("va");
+    const html = render();
+
+    expect(html).toContain("Pilih bank dulu");
+  });
+
+  test("the bank hint is gone once a bank is chosen, and for QRIS", () => {
+    expect(render()).not.toContain("Pilih bank dulu");
+    choose("va");
+    render();
+    choose(BCA.code);
+    expect(render()).not.toContain("Pilih bank dulu");
+  });
+
   test("a VA is never started without a bank", async () => {
     render();
     choose("va");

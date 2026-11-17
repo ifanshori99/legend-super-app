@@ -328,6 +328,11 @@ export function PayDialog({
             </p>
           )}
         </div>
+        {needsBank && bank === null && (
+          <p className="text-sm text-muted-foreground">
+            {t("qrOrders.bill.payPickBankFirst")}
+          </p>
+        )}
         <DialogFooter>
           <Button
             variant="outline"
