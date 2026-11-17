@@ -76,6 +76,9 @@ function itemUuid(name: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
+/** Document number prefix of the items written here (the reversal looks for it). */
+export const PPH21_BACKFILL_DOCUMENT_PREFIX = "PPH21-BACKFILL-";
+
 /** The whole balance whatever the pay date: every run is "on or before". */
 const FAR_FUTURE = "9999-12-31" as BusinessDate;
 
@@ -206,7 +209,7 @@ export async function backfillPph21ReceivableOpenItemsInTransaction(
           counterpartyType: "employee" as const,
           counterpartyId: employeeId,
           counterpartyName: name,
-          documentNumber: `PPH21-BACKFILL-${lastPayDate}-${employeeId.slice(0, 8)}`,
+          documentNumber: `${PPH21_BACKFILL_DOCUMENT_PREFIX}${lastPayDate}-${employeeId.slice(0, 8)}`,
           documentDate: lastPayDate as BusinessDate,
           dueOn: lastPayDate as BusinessDate,
           originalIdr: idr(gap),

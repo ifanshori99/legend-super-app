@@ -38,8 +38,11 @@
 //    delta is oracle LEMBUR minus subject LEMBUR of the same run S (same
 //    salary, same formula).
 //  - "Approved late" / "cancelled late" are made by SQL on overtime_requests
-//    (decided_at / updated_at = now(), after S.lockedAt), the brief's model:
-//    paidSet = approved with decided_at <= S.lockedAt.
+//    (decided_at / updated_at set explicitly one hour after the S.lockedAt read
+//    from the run row), the brief's model: paidSet = approved with
+//    updated_at <= S.lockedAt. Timestamps are never the database now(): the
+//    service compares them with the Node clock stamps of simulate and lock, and
+//    the test database clock is skewed against the host (Colima).
 //  - The salary basis for the delta is the one of the period of S.
 //  - Run months: S = 2026-05, T = 06, U = 07, V = 08 (all after the published
 //    overtime formula and statutory tables).
@@ -239,10 +242,18 @@ async function makeWorld(): Promise<World> {
 }
 
 /** Attendance 'out' log (accepted) plus the overtime request of the day. */
+const HOUR_MS = 3_600_000;
+
+/**
+ * Request timestamps are explicit. Seeds exist before S is drafted, so they
+ * sit one hour before the test starts (far outside the skew zone around the
+ * simulate and lock of S); `at` places a seed after S was locked.
+ */
 async function seedOvertime(
   conn: PoolClient,
   employeeId: string,
   spec: OtSpec,
+  at: Date = new Date(Date.now() - HOUR_MS),
 ): Promise<string> {
   const logId = ulidToUuid(createUlid());
   await conn.query(
@@ -265,10 +276,11 @@ async function seedOvertime(
   const inserted = await conn.query<{ id: string }>(
     `INSERT INTO overtime_requests
        (tenant_id, outlet_id, employee_id, formula_id, date, minutes, day_type, reason,
-        status, requested_by, decided_by, decided_at)
+        status, requested_by, decided_by, decided_at, requested_at, updated_at)
      VALUES ($1, $2, $3, $4, $5::date, $6, 'workday', 'Koreksi lembur 983', $7::varchar, $8,
              CASE WHEN $7::varchar = 'approved' THEN $9::text END,
-             CASE WHEN $7::varchar = 'approved' THEN now() END)
+             CASE WHEN $7::varchar = 'approved' THEN $10::timestamptz END,
+             $10::timestamptz, $10::timestamptz)
      RETURNING id`,
     [
       tenant.id,
@@ -280,6 +292,7 @@ async function seedOvertime(
       spec.status,
       lockerUserId,
       approverUserId,
+      at,
     ],
   );
   return inserted.rows[0]!.id;
@@ -370,35 +383,81 @@ async function setSalaryFrom(emp: Emp, amount: number, effectiveFrom: string) {
 
 // ---- overtime request changes after the source run was locked --------------
 
-/** Pending -> approved, decided now (after S.lockedAt). */
-const approveLate = (requestId: string) =>
+/** simulate and lock stamps of the latest source run (period of S_MONTH). */
+async function sourceTimes(): Promise<{
+  simulatedAt: Date;
+  lockedAt: Date | null;
+}> {
+  const { rows } = await asTenant((conn) =>
+    conn.query<{ simulated_at: Date; locked_at: Date | null }>(
+      `SELECT last_simulated_at AS simulated_at, locked_at
+         FROM payroll_runs
+        WHERE tenant_id = $1 AND period_start = $2::date
+        ORDER BY created_at DESC LIMIT 1`,
+      [tenant.id, monthDates(S_MONTH).periodStart],
+    ),
+  );
+  return { simulatedAt: rows[0]!.simulated_at, lockedAt: rows[0]!.locked_at };
+}
+
+/** One hour (plus `afterMs`) after S was locked, read from the run row. */
+async function lateAt(afterMs = 0): Promise<Date> {
+  const { lockedAt } = await sourceTimes();
+  if (lockedAt === null) throw new Error("S is not locked yet");
+  return new Date(lockedAt.getTime() + HOUR_MS + afterMs);
+}
+
+/** Pending -> approved one hour after S.lockedAt (or at `at`). */
+const approveLate = async (requestId: string, at?: Date) => {
+  const when = at ?? (await lateAt());
+  return asTenant(
+    (conn) =>
+      conn.query(
+        `UPDATE overtime_requests
+            SET status = 'approved', decided_by = $3, decided_at = $4::timestamptz, updated_at = $4::timestamptz
+          WHERE tenant_id = $1 AND id = $2`,
+        [tenant.id, requestId, approverUserId, when],
+      ),
+    true,
+  );
+};
+
+/** approved/pending -> cancelled (terminal), one hour and a minute after S.lockedAt. */
+const cancelLate = async (requestId: string, at?: Date) => {
+  const when = at ?? (await lateAt(60_000));
+  return asTenant(
+    (conn) =>
+      conn.query(
+        `UPDATE overtime_requests SET status = 'cancelled', updated_at = $3::timestamptz
+          WHERE tenant_id = $1 AND id = $2`,
+        [tenant.id, requestId, when],
+      ),
+    true,
+  );
+};
+
+/** A fresh approved request (filed and decided after S.lockedAt): "approved again". */
+const approveAgain = async (empId: string, spec: Omit<OtSpec, "status">) => {
+  const when = await lateAt();
+  return asTenant((conn) =>
+    seedOvertime(conn, empId, { ...spec, status: "approved" }, when),
+  );
+};
+
+/** Moves the decision and update time of requests into the window of S. */
+const retimeRequests = (
+  requestIds: readonly string[],
+  times: { decidedAt?: Date; updatedAt: Date },
+) =>
   asTenant(
     (conn) =>
       conn.query(
         `UPDATE overtime_requests
-            SET status = 'approved', decided_by = $3, decided_at = now(), updated_at = now()
-          WHERE tenant_id = $1 AND id = $2`,
-        [tenant.id, requestId, approverUserId],
+            SET decided_at = COALESCE($3::timestamptz, decided_at), updated_at = $4::timestamptz
+          WHERE tenant_id = $1 AND id = ANY($2::uuid[])`,
+        [tenant.id, requestIds, times.decidedAt ?? null, times.updatedAt],
       ),
     true,
-  );
-
-/** approved/pending -> cancelled now (terminal). */
-const cancelLate = (requestId: string) =>
-  asTenant(
-    (conn) =>
-      conn.query(
-        `UPDATE overtime_requests SET status = 'cancelled', updated_at = now()
-          WHERE tenant_id = $1 AND id = $2`,
-        [tenant.id, requestId],
-      ),
-    true,
-  );
-
-/** A fresh approved request (decided now) for a date: "approved again". */
-const approveAgain = (empId: string, spec: Omit<OtSpec, "status">) =>
-  asTenant((conn) =>
-    seedOvertime(conn, empId, { ...spec, status: "approved" }),
   );
 
 // ---- runs ---------------------------------------------------------------
@@ -844,10 +903,10 @@ describe("legend-72nod: overtime correction for frozen periods", () => {
     }
   }, 600_000);
 
-  it("[repeat-cancelled] approve then cancel pays back at most what was paid; total settled never exceeds the delta", async () => {
+  it("[repeat-cancelled] approve then cancel takes back exactly what the correction paid; the net over all runs is zero", async () => {
     const { world, subject, oracle } = await lateApprovalWorld();
     const s = await lockedRun(world, S_MONTH);
-    const { delta, paidInS } = await deltaOfS(s, subject, oracle);
+    const { delta } = await deltaOfS(s, subject, oracle);
     await approveLate(subject.reqs[1]!);
     const t = await lockedRun(world, T_MONTH);
     expect(koreksiOf(await slipOf(t, subject))).toBe(delta);
@@ -857,20 +916,39 @@ describe("legend-72nod: overtime correction for frozen periods", () => {
     const v = await lockedRun(world, V_MONTH);
     const slipU = await slipOf(u, subject);
     const slipV = await slipOf(v, subject);
-    const taken = potonganOf(slipU) + potonganOf(slipV);
-    expect(potonganOf(slipU), "the cancellation is deducted").toBeGreaterThan(
-      0,
-    );
     expect(koreksiOf(slipU) + koreksiOf(slipV)).toBe(0);
-    expect(taken, "never more than was paid").toBeLessThanOrEqual(delta);
-    expect(
-      taken,
-      "never more than LEMBUR of the slip of S",
-    ).toBeLessThanOrEqual(paidInS);
-    // Net settled over T, U, V never goes below zero or above the delta.
-    const net = delta - taken;
-    expect(net).toBeGreaterThanOrEqual(0);
-    expect(net).toBeLessThanOrEqual(delta);
+    // The hours of B were paid by the correction in T (delta), not by the
+    // LEMBUR of S. The take-back is bounded by LEMBUR of S plus what the
+    // correction paid, so it is exactly delta: the net is zero, not "at most
+    // what S paid" (that bound would be wrong whenever the two differ).
+    expect(potonganOf(slipU), "the cancellation is deducted").toBe(delta);
+    expect(potonganOf(slipV), "and only once").toBe(0);
+    expect(delta - (potonganOf(slipU) + potonganOf(slipV))).toBe(0);
+  }, 600_000);
+
+  it("[paid-positive-cancelled] LEMBUR of S is 0, the correction paid it, then the request is cancelled: the amount is taken back, not lost", async () => {
+    const world = await makeWorld();
+    const subject = await makeEmployee(world, [B_PENDING]);
+    const oracle = await makeEmployee(world, [B_APPROVED]);
+    const s = await lockedRun(world, S_MONTH);
+    expect(overtimeOf(await slipOf(s, subject)), "S paid no overtime").toBe(0);
+    const delta = overtimeOf(await slipOf(s, oracle));
+    expect(delta).toBeGreaterThan(0);
+    await approveLate(subject.reqs[0]!);
+    const t = await lockedRun(world, T_MONTH);
+    expect(koreksiOf(await slipOf(t, subject))).toBe(delta);
+
+    await cancelLate(subject.reqs[0]!);
+    const u = await lockedRun(world, U_MONTH);
+    const v = await lockedRun(world, V_MONTH);
+    const slipU = await slipOf(u, subject);
+    const slipV = await slipOf(v, subject);
+    // ASSUMPTION: the wage is large enough to absorb the whole amount, so
+    // the whole correction paid in T is recovered (the take-back cap counts
+    // positive corrections already paid). What could not be recovered would
+    // be held, never silently dropped; here nothing is left.
+    expect(koreksiOf(slipU) + koreksiOf(slipV)).toBe(0);
+    expect(potonganOf(slipU) + potonganOf(slipV)).toBe(delta);
   }, 600_000);
 
   it("[cancel-after-lock] overtime cancelled after S was locked is deducted in T, once, as LEMBUR_KOREKSI_POTONGAN", async () => {
@@ -1004,6 +1082,86 @@ describe("legend-72nod: overtime correction for frozen periods", () => {
     expect(koreksiOf(await slipOf(v, subject)), "and only once").toBe(0);
   }, 600_000);
 
+  it("[window-held] approve or cancel between simulate and lock of S never creates a deduction for hours S did not pay: S is held", async () => {
+    const world = await makeWorld();
+    // Approved inside the window, cancelled after the lock: S never paid B.
+    const approvedInWindow = await makeEmployee(world, [A, B_PENDING]);
+    // Approved inside the window, never cancelled.
+    const approvedOnly = await makeEmployee(world, [A, B_PENDING]);
+    // Paid by S (approved before simulate), cancelled inside the window.
+    const cancelledInWindow = await makeEmployee(world, [A, B_APPROVED]);
+    // Positive control: a plain cancellation after the lock is deducted.
+    const control = await makeEmployee(world, [A]);
+
+    const sRun = await draftRun(world, monthDates(S_MONTH));
+    await simulateRun(sRun);
+    // The changes are made now (status only); their times are placed in the
+    // window once S is locked and both of its stamps are known.
+    const simulatedAt = (await sourceTimes()).simulatedAt;
+    await approveLate(approvedInWindow.reqs[1]!, simulatedAt);
+    await approveLate(approvedOnly.reqs[1]!, simulatedAt);
+    await cancelLate(cancelledInWindow.reqs[1]!, simulatedAt);
+    await asTenant((conn) => approveSimulatedRun(conn, sRun));
+    await lockRun(sRun);
+    expect(await runStatus(sRun)).toBe("locked");
+    const stamps = await sourceTimes();
+    const middle = new Date(
+      stamps.simulatedAt.getTime() +
+        (stamps.lockedAt!.getTime() - stamps.simulatedAt.getTime()) / 2,
+    );
+    await retimeRequests([approvedInWindow.reqs[1]!, approvedOnly.reqs[1]!], {
+      decidedAt: middle,
+      updatedAt: middle,
+    });
+    await retimeRequests([cancelledInWindow.reqs[1]!], { updatedAt: middle });
+
+    await cancelLate(approvedInWindow.reqs[1]!);
+    await cancelLate(control.reqs[0]!);
+
+    const t = await lockedRun(world, T_MONTH);
+    expect(potonganOf(await slipOf(t, control)), "control").toBeGreaterThan(0);
+    // ASSUMPTION (brief, P0-2): a source run with a request decided between
+    // its simulation and its lock is held: no automatic line of any kind.
+    const u = await lockedRun(world, U_MONTH);
+    for (const held of [approvedInWindow, approvedOnly, cancelledInWindow]) {
+      for (const run of [t, u]) {
+        const slip = await slipOf(run, held);
+        expect(koreksiOf(slip), `${held.name} no LEMBUR_KOREKSI`).toBe(0);
+        expect(potonganOf(slip), `${held.name} no POTONGAN`).toBe(0);
+      }
+    }
+  }, 900_000);
+
+  it("[reverse-source] a run that is the source of a settled correction cannot be reversed; after T is reversed it can", async () => {
+    const { world, subject, oracle } = await lateApprovalWorld();
+    const s = await lockedRun(world, S_MONTH);
+    const { delta } = await deltaOfS(s, subject, oracle);
+    await approveLate(subject.reqs[1]!);
+    const t = await lockedRun(world, T_MONTH);
+    expect(koreksiOf(await slipOf(t, subject))).toBe(delta);
+
+    // ASSUMPTION: refused with a 4xx (HttpError); the brief only says "tolak".
+    const refused = await failure(reverseRun(s));
+    expect(refused.status ?? 0, refused.message).toBeGreaterThanOrEqual(400);
+    expect(refused.status ?? 0, refused.message).toBeLessThan(500);
+    expect(await runStatus(s), "S stays locked").toBe("locked");
+    expect(await runStatus(t), "T stays locked").toBe("locked");
+  }, 600_000);
+
+  it("[reverse-source-order] reversing T first lets S be reversed afterwards", async () => {
+    const { world, subject, oracle } = await lateApprovalWorld();
+    const s = await lockedRun(world, S_MONTH);
+    const { delta } = await deltaOfS(s, subject, oracle);
+    await approveLate(subject.reqs[1]!);
+    const t = await lockedRun(world, T_MONTH);
+    expect(koreksiOf(await slipOf(t, subject))).toBe(delta);
+
+    await reverseRun(t);
+    expect(await runStatus(t)).toBe("reversed");
+    await reverseRun(s);
+    expect(await runStatus(s)).toBe("reversed");
+  }, 600_000);
+
   it("[salary-basis] a salary change never enters the delta: a retroactive raise alone gives no line, a raise in T does not scale the delta", async () => {
     const world = await makeWorld();
     const oracle = await makeEmployee(world, [A, B_APPROVED]);
@@ -1032,5 +1190,26 @@ describe("legend-72nod: overtime correction for frozen periods", () => {
     expect(retro, "the raised employee is paid in T").toBeDefined();
     expect(koreksiOf(retro)).toBe(0);
     expect(potonganOf(retro)).toBe(0);
+  }, 600_000);
+
+  it("[deduction-exceeds-paid] a deduction larger than what S paid is held, never partly taken and never dropped", async () => {
+    const world = await makeWorld();
+    const subject = await makeEmployee(world, [A]);
+    const s = await lockedRun(world, S_MONTH);
+    const paidInS = overtimeOf(await slipOf(s, subject));
+    expect(paidInS).toBeGreaterThan(0);
+    // A retroactive raise makes the hours worth three times what S paid, so
+    // the cancellation would take back more than S ever paid for them.
+    await setSalaryFrom(subject, SALARY * 3, "2026-05-01");
+    await cancelLate(subject.reqs[0]!);
+
+    const t = await lockedRun(world, T_MONTH);
+    const u = await lockedRun(world, U_MONTH);
+    const slipT = await slipOf(t, subject);
+    const slipU = await slipOf(u, subject);
+    expect(slipT, "the employee is paid in T").toBeDefined();
+    // Held: nothing automatic, so nothing above what S paid is deducted.
+    expect(koreksiOf(slipT) + koreksiOf(slipU)).toBe(0);
+    expect(potonganOf(slipT) + potonganOf(slipU)).toBe(0);
   }, 600_000);
 });

@@ -43,6 +43,7 @@ import {
   type PayrollRun,
   type PayrollRunId,
 } from "@starter/shared/hris/payroll";
+import { accountingOpenItems } from "../db/schema/accounting-ap-fa.ts";
 import {
   payrollDisbursementBatches,
   payrollDisbursementItems,
@@ -65,7 +66,11 @@ import { recordAudit } from "./core-audit.ts";
 import type { Tx } from "./hris-access.ts";
 import { assertPayrollTenantCan } from "./payroll-access.ts";
 import { emitPayrollEvent } from "./payroll-events.ts";
-import { syncOvertimeCorrectionLedgerInTransaction } from "./payroll-overtime-correction.service.ts";
+import {
+  assertNoSettledOvertimeCorrectionFromRun,
+  syncOvertimeCorrectionLedgerInTransaction,
+} from "./payroll-overtime-correction.service.ts";
+import { PPH21_BACKFILL_DOCUMENT_PREFIX } from "./payroll-pph21-receivable-backfill.service.ts";
 import { syncPph21ReceivableOpenItemsInTransaction } from "./payroll-pph21-receivable-open-items.service.ts";
 import {
   disputeFreezesBatchSql,
@@ -496,6 +501,31 @@ async function assertNoCollectedReceivable(
     })
     .from(payrollRuns)
     .where(and(eq(payrollRuns.tenantId, tenantId), eq(payrollRuns.id, runId)));
+  // legend-i848k: a run before the open item existed was given ONE backfill
+  // item for its employee. Reversing the run would drop the slip balance below
+  // that item and the finance list would show more than the employee owes.
+  if (raised.length > 0) {
+    const [backfilled] = await tx
+      .select({ id: accountingOpenItems.id })
+      .from(accountingOpenItems)
+      .where(
+        and(
+          eq(accountingOpenItems.tenantId, tenantId),
+          eq(accountingOpenItems.kind, "receivable"),
+          eq(accountingOpenItems.counterpartyType, "employee"),
+          inArray(accountingOpenItems.counterpartyId, raised),
+          thisRun
+            ? eq(accountingOpenItems.legalEntityId, thisRun.legalEntityId)
+            : undefined,
+          sql`${accountingOpenItems.documentNumber} LIKE ${`${PPH21_BACKFILL_DOCUMENT_PREFIX}%`}`,
+        ),
+      )
+      .limit(1);
+    if (backfilled)
+      throw reversalBlocked(
+        "Kekurangan PPh 21 karyawan dari payroll ini sudah dicatat sebagai piutang susulan. Hubungi finance untuk menyelesaikan piutang itu sebelum payroll dibatalkan.",
+      );
+  }
   const others = await tx
     .select({ ...PAYSLIP_COLUMNS, runLockedAt: payrollRuns.lockedAt })
     .from(payslips)
@@ -643,6 +673,12 @@ export async function requestPayrollRunReversalInTransaction(
   await assertNoPayoutBatch(tx, tenantId, payrollRunId);
   await assertNoLiveDependents(tx, tenantId, payrollRunId);
   await assertNoCollectedReceivable(tx, tenantId, payrollRunId);
+  await assertNoSettledOvertimeCorrectionFromRun(
+    tx,
+    tenantId,
+    row.legalEntityId,
+    payrollRunId,
+  );
   await writeRun(tx, tenantId, payrollRunId, next);
   await audit(
     tx,
@@ -710,6 +746,12 @@ export async function decidePayrollRunReversalInTransaction(
   await assertNoPayoutBatch(tx, tenantId, payrollRunId);
   await assertNoLiveDependents(tx, tenantId, payrollRunId);
   await assertNoCollectedReceivable(tx, tenantId, payrollRunId);
+  await assertNoSettledOvertimeCorrectionFromRun(
+    tx,
+    tenantId,
+    row.legalEntityId,
+    payrollRunId,
+  );
   await restoreLoanDeductions(tx, tenantId, run, now);
   const { totals, reversal } = next;
   if (totals === null || reversal === null)

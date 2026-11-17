@@ -178,6 +178,7 @@ type Client = Awaited<ReturnType<typeof signedInClient>>["client"];
 let hr: Client;
 let finance: Client;
 let lockerUserId: string;
+let approverUserId: string;
 
 let counter = 0;
 const digits = (length: number) => {
@@ -288,6 +289,42 @@ async function lockRun(runId: string) {
       payrollRunId: payrollRunIdSchema.parse(runId),
     }),
   );
+}
+
+/** Reversal request by the locker, approval by a second user. */
+async function reverseRun(runId: string) {
+  const {
+    requestPayrollRunReversalInTransaction,
+    decidePayrollRunReversalInTransaction,
+  } = await import("../services/payroll-run-reversal.service.ts");
+  const id = payrollRunIdSchema.parse(runId);
+  await withTenant(db, tenantScope(), (tx) =>
+    requestPayrollRunReversalInTransaction(
+      tx,
+      tenantScope(),
+      lockerUserId,
+      id,
+      "Salah hitung, dibatalkan",
+    ),
+  );
+  await withTenant(db, tenantScope(), (tx) =>
+    decidePayrollRunReversalInTransaction(
+      tx,
+      tenantScope(),
+      approverUserId,
+      id,
+      "approve",
+    ),
+  );
+}
+
+async function failure(promise: Promise<unknown>) {
+  try {
+    await promise;
+  } catch (error) {
+    return error as { status?: number; message: string };
+  }
+  throw new Error("Expected a failure");
 }
 
 const scalar = (sqlText: string, params: unknown[]) =>
@@ -547,6 +584,9 @@ beforeAll(async () => {
   const lock = await signedInClient("BF983 locker");
   await grantRole(lock.userId, ["payroll.view", "payroll.run", "payroll.lock"]);
   lockerUserId = lock.userId;
+  const approver = await signedInClient("BF983 approver");
+  await grantRole(approver.userId, ["payroll.view", "payroll.cancel.approve"]);
+  approverUserId = approver.userId;
   const hrUser = await signedInClient("BF983 HR");
   await grantRole(hrUser.userId, ["hr.employee.manage", "hr.employee.view"]);
   hr = hrUser.client;
@@ -754,4 +794,30 @@ describe("legend-i848k: backfill of the employee PPh 21 receivable open item", (
     expect(await rawItems(world, owes)).toEqual([]);
     expect(await financeList(world, owes)).toEqual([]);
   }, 900_000);
+
+  it("reversing a run that raised a receivable is refused while a backfill item of the employee exists", async () => {
+    const world = await makeWorld();
+    const owes = await makeEmployee(world);
+    const jan = await lockedRun(world, monthDates(1, 2026));
+    expect(await raiseReceivable(jan, owes)).toBe(X);
+    await stripItems(world);
+    await runBackfill();
+    const before = await rawItems(world, owes);
+    expect(before, "the backfill made the item").toHaveLength(1);
+    expect(before[0]!.outstanding).toBe(X);
+
+    // ASSUMPTION: refused with a 4xx (HttpError); the brief only says "tolak".
+    // Reversing would remove the receivable from the slips but leave the
+    // backfilled item: finance would list more than the slips say.
+    const refused = await failure(reverseRun(jan));
+    expect(refused.status ?? 0, refused.message).toBeGreaterThanOrEqual(400);
+    expect(refused.status ?? 0, refused.message).toBeLessThan(500);
+    expect(await runStatus(jan), "the run stays locked").toBe("locked");
+    expect(await rawItems(world, owes), "the item is untouched").toEqual(
+      before,
+    );
+    expect(
+      (await financeList(world, owes)).map((r) => r.outstandingIdr),
+    ).toEqual([X]);
+  }, 600_000);
 });

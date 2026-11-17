@@ -7,8 +7,9 @@
 // S of the same legal entity (regular, locked or paid, never reversed, the
 // employee has a payslip on it, period ends before T starts) gives:
 //
-//   paidSet    = requests approved at or before S.lockedAt that are still
-//                approved, or were cancelled after S.lockedAt
+//   paidSet    = requests approved (`updatedAt`, the time the status became
+//                approved) at or before S.lockedAt that are still approved,
+//                or were cancelled after S.lockedAt
 //   currentSet = requests approved now
 //   delta      = f(currentSet) - f(paidSet)
 //
@@ -32,10 +33,17 @@
 //                           S not yet deducted, pay left); the rest stays
 //                           outstanding for a later run, never dropped.
 //
+// The payslip of S was priced at its last simulation, not at its lock, so a
+// request of S's period approved or cancelled between `lastSimulatedAt` and
+// `lockedAt` (widened by OVERTIME_CORRECTION_CLOCK_SKEW_MS on both sides)
+// cannot be placed in paidSet: that source is held.
+//
 // Held (reported, nothing automatic): an offboarding that is not cancelled, an
 // end date before the end of T's period, an approved request without a
-// readable formula, a cancelled request whose approval time is unknown, an
-// unreadable source payslip, overlapping source periods. In doubt: held.
+// readable formula, a cancelled request whose approval time is unknown, a
+// request changed between the last simulation and the lock of S, an unreadable
+// source payslip, overlapping source periods, a deduction above what S paid
+// plus what was paid back to the employee by corrections. In doubt: held.
 //
 // `planOvertimeCorrection` writes nothing (simulate and lock use it).
 
@@ -70,6 +78,15 @@ import {
 } from "./payroll-components.service.ts";
 import type { Tx } from "./permission-resolver.ts";
 
+/**
+ * Clock skew allowed between app instances. A request stamp and the simulate
+ * or lock stamp of a run can come from different instances, so a request
+ * inside [lastSimulatedAt - skew, lockedAt + skew] cannot be placed before or
+ * after the payslip with certainty: the source is held (`approval_unclear`).
+ * Wider than any real skew, narrow enough to hold almost nothing.
+ */
+export const OVERTIME_CORRECTION_CLOCK_SKEW_MS = 5_000;
+
 /** Payslip line codes of the correction (line identity for simulate and lock). */
 export const OVERTIME_CORRECTION_POSITIVE_CODE = "LEMBUR_KOREKSI";
 export const OVERTIME_CORRECTION_NEGATIVE_CODE = "LEMBUR_KOREKSI_POTONGAN";
@@ -98,7 +115,8 @@ export type OvertimeCorrectionHeldReason =
   | "formula_missing"
   | "approval_unclear"
   | "source_unreadable"
-  | "overlapping_sources";
+  | "overlapping_sources"
+  | "deduction_exceeds_paid";
 
 export type OvertimeCorrectionSource = {
   sourceRunId: PayrollRunId;
@@ -143,6 +161,8 @@ type SourceRow = {
   periodStart: BusinessDate;
   periodEnd: BusinessDate;
   lockedAt: Date;
+  /** The simulation that priced the payslip; a request changed after it is not in the slip. */
+  simulatedAt: Date | null;
   /** The sealed payslip; opened only when a deduction needs its LEMBUR. */
   slip: Parameters<typeof paidOvertimeOf>[0];
 };
@@ -257,7 +277,9 @@ async function approvedAtOf(
   }
   for (const row of rows) {
     if (row.status === "approved") {
-      out.set(row.id, row.decidedAt ?? undefined);
+      // `updatedAt` is when the status became approved; the approver's
+      // `decidedAt` can be earlier (a late settle).
+      out.set(row.id, row.updatedAt);
     } else if (row.approvalChainId === null) {
       // Approved on filing (below every tier of the matrix). The cancel
       // overwrites `decidedAt` with the cancel time (= `updatedAt`); a
@@ -311,6 +333,7 @@ export async function planOvertimeCorrection(
       periodStart: payrollRuns.periodStart,
       periodEnd: payrollRuns.periodEnd,
       lockedAt: payrollRuns.lockedAt,
+      simulatedAt: payrollRuns.lastSimulatedAt,
       id: payslips.id,
       tenantId: payslips.tenantId,
       employeeId: payslips.employeeId,
@@ -353,6 +376,7 @@ export async function planOvertimeCorrection(
         periodStart: row.periodStart as BusinessDate,
         periodEnd: row.periodEnd as BusinessDate,
         lockedAt: row.lockedAt,
+        simulatedAt: row.simulatedAt,
         slip: row,
       };
     });
@@ -404,7 +428,7 @@ export async function planOvertimeCorrection(
     .where(
       and(
         eq(payrollOvertimeCorrections.tenantId, tenantId),
-        eq(payrollOvertimeCorrections.employeeId, employeeId),
+        eq(payrollOvertimeCorrections.employeeId, employeeId as EmployeeId),
         eq(payrollOvertimeCorrections.status, "settled"),
         ne(payrollOvertimeCorrections.targetRunId, targetRunId),
         inArray(
@@ -428,8 +452,21 @@ export async function planOvertimeCorrection(
       if (row.status === "approved") current.push(row);
       if (approved === undefined)
         return held("approval_unclear", [source.runId]);
-      if (approved === null || approved.getTime() > source.lockedAt.getTime())
-        continue;
+      if (approved === null) continue;
+      // Changed after the slip was priced but before the lock: neither paid
+      // nor unpaid can be told.
+      if (source.simulatedAt === null)
+        return held("source_unreadable", [source.runId]);
+      const simulatedMs = source.simulatedAt.getTime();
+      const lockedMs = source.lockedAt.getTime();
+      for (const time of [approved, row.decidedAt, row.updatedAt])
+        if (
+          time !== null &&
+          time.getTime() >= simulatedMs - OVERTIME_CORRECTION_CLOCK_SKEW_MS &&
+          time.getTime() <= lockedMs + OVERTIME_CORRECTION_CLOCK_SKEW_MS
+        )
+          return held("approval_unclear", [source.runId]);
+      if (approved.getTime() > lockedMs) continue;
       if (
         row.status === "approved" ||
         row.updatedAt.getTime() > source.lockedAt.getTime()
@@ -469,12 +506,15 @@ export async function planOvertimeCorrection(
       deltaIdr = price(current) - price(paid);
     }
     let settledIdr = 0;
+    let settledPositiveIdr = 0;
     let settledNegativeIdr = 0;
     for (const row of ledger)
       if (row.sourceRunId === source.runId) {
         const amount = row.amountIdr as number;
-        if (row.direction === "positive") settledIdr += amount;
-        else {
+        if (row.direction === "positive") {
+          settledIdr += amount;
+          settledPositiveIdr += amount;
+        } else {
           settledIdr -= amount;
           settledNegativeIdr += amount;
         }
@@ -496,14 +536,21 @@ export async function planOvertimeCorrection(
       deltaIdr,
       settledIdr,
       outstandingIdr,
-      // Never take back more than the source paid, counting what was taken.
-      negativeMaxIdr: Math.max(0, paidOvertimeIdr - settledNegativeIdr),
+      // Never take back more than the employee got for these hours: LEMBUR of
+      // S plus the positive corrections paid, minus what was already taken.
+      negativeMaxIdr: Math.max(
+        0,
+        paidOvertimeIdr + settledPositiveIdr - settledNegativeIdr,
+      ),
     });
   }
 
   const open = planned.filter((entry) => entry.outstandingIdr !== 0);
   if (open.length === 0) return { kind: "none" };
   const openIds = open.map((entry) => entry.sourceRunId);
+  // What cannot be taken back is held, never dropped.
+  if (open.some((entry) => -entry.outstandingIdr > entry.negativeMaxIdr))
+    return held("deduction_exceeds_paid", openIds);
 
   // Blockers apply only when something would be paid or taken.
   const [employee] = await tx
@@ -694,8 +741,14 @@ export async function syncOvertimeCorrectionLedgerInTransaction(
           and(
             eq(payrollOvertimeCorrections.tenantId, tenantId),
             eq(payrollOvertimeCorrections.targetRunId, payrollRunId),
-            eq(payrollOvertimeCorrections.employeeId, slip.employeeId),
-            eq(payrollOvertimeCorrections.sourceRunId, sourceId),
+            eq(
+              payrollOvertimeCorrections.employeeId,
+              slip.employeeId as EmployeeId,
+            ),
+            eq(
+              payrollOvertimeCorrections.sourceRunId,
+              sourceId as PayrollRunId,
+            ),
           ),
         )
         .limit(1);
@@ -708,4 +761,39 @@ export async function syncOvertimeCorrectionLedgerInTransaction(
         throw refused("Catatan koreksi lembur tidak cocok dengan slip gaji.");
     }
   }
+}
+
+/**
+ * Refuses (409) the reversal of a run that is the SOURCE of a settled overtime
+ * correction: reversed, it would drop out of the plan and the same overtime
+ * would be paid or taken a second time. The target run is reversed first. Takes
+ * the same entity lock as the ledger sync, so a lock of the target cannot slip
+ * in between. The DB trigger of migration 0557 is the second line.
+ */
+export async function assertNoSettledOvertimeCorrectionFromRun(
+  tx: Tx,
+  tenantId: TenantId,
+  legalEntityId: string,
+  runId: PayrollRunId,
+): Promise<void> {
+  await tx.execute(
+    sql`select pg_advisory_xact_lock(hashtextextended(${`payroll-overtime-correction:${tenantId}:${legalEntityId}`}, 0))`,
+  );
+  const [row] = await tx
+    .select({ targetRunId: payrollOvertimeCorrections.targetRunId })
+    .from(payrollOvertimeCorrections)
+    .where(
+      and(
+        eq(payrollOvertimeCorrections.tenantId, tenantId),
+        eq(payrollOvertimeCorrections.sourceRunId, runId),
+        eq(payrollOvertimeCorrections.status, "settled"),
+      ),
+    )
+    .limit(1);
+  if (row)
+    throw new HttpError(
+      409,
+      "PAYROLL_RUN_REVERSAL_BLOCKED",
+      "Payroll ini menjadi sumber koreksi lembur yang sudah dibayarkan atau dipotong di payroll lain. Batalkan payroll yang memuat koreksi itu dulu.",
+    );
 }
