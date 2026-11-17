@@ -106,6 +106,8 @@ export const qrOrdersBillMessages = {
   methodEwallet: "E-wallet",
   methodEwalletHint: "Lanjut ke aplikasi e-wallet Anda.",
   payContinue: "Lanjut bayar",
+  payNoMethods:
+    "Belum ada cara bayar online yang tersedia. Silakan bayar di kasir.",
   payPickBankFirst: "Pilih bank dulu",
   payWith: "Bayar {amount} dengan {method}",
   payFailed: "Pembayaran belum bisa dimulai. Periksa koneksi, lalu coba lagi.",

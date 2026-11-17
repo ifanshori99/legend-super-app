@@ -505,6 +505,10 @@ describe("ws03 pay dialog: unavailable methods", () => {
     const html = render();
 
     expect(radios(html)).toHaveLength(0);
+    expect(html).toMatch(
+      /Belum ada cara bayar online yang tersedia\. Silakan bayar di kasir\./,
+    );
+    expect(html).not.toMatch(/Virtual Account sedang tidak tersedia/);
     await submit();
     expect(submitted).toHaveLength(0);
   });
@@ -513,15 +517,18 @@ describe("ws03 pay dialog: unavailable methods", () => {
     h.options = [qris, va];
     expect(render()).toMatch(/Bayar[^<]*dengan QRIS/);
 
-    for (const none of [
-      [],
-      [disabled("qris", "gateway_down"), disabled("va", "gateway_down")],
-    ]) {
-      h.options = none;
-      const html = render();
-      expect(html).toMatch(/Lanjut bayar/);
-      expect(html).not.toMatch(/dengan\s*</);
-    }
+    // Every method off: the disabled CTA falls back to the plain label.
+    h.options = [
+      disabled("qris", "gateway_down"),
+      disabled("va", "gateway_down"),
+    ];
+    const allOff = render();
+    expect(allOff).toMatch(/Lanjut bayar/);
+    expect(allOff).not.toMatch(/dengan\s*</);
+
+    // Empty list: no pay button at all (only Tutup), so no dangling label either.
+    h.options = [];
+    expect(render()).not.toMatch(/dengan\s*</);
   });
 });
 
@@ -715,6 +722,36 @@ describe("ws03 pay dialog: no closing while the start request runs", () => {
     expect(cancel?.disabled).toBe(true);
     h.dialogOnOpenChange?.(false);
     expect(onOpenChange).not.toHaveBeenCalled();
+  });
+
+  test("while the request runs, the method rows cannot be changed", () => {
+    h.options = [qris, va];
+    h.pending = true;
+    const html = render();
+
+    expect(radios(html).length).toBeGreaterThan(0);
+    expect(radios(html).every((item) => item.disabled)).toBe(true);
+  });
+
+  test("no methods: only Tutup, no dead pay button, no generic empty hint", () => {
+    h.options = [];
+    const html = render();
+    const labels = h.buttons.map((entry) => entry.text);
+
+    expect(labels).toContain(t("common.close"));
+    expect(labels).not.toContain(t("common.cancel"));
+    expect(labels).not.toContain(t("qrOrders.bill.payContinue"));
+    expect(labels.some((text) => /^Bayar /.test(text))).toBe(false);
+    expect(html).not.toMatch(/Data akan muncul di sini/);
+  });
+
+  test("with methods the pay button and Batal stay", () => {
+    h.options = [qris, va];
+    render();
+    const labels = h.buttons.map((entry) => entry.text);
+
+    expect(labels).toContain(t("common.cancel"));
+    expect(labels.some((text) => /^Bayar /.test(text))).toBe(true);
   });
 
   test("when idle, Cancel and Escape close the dialog", () => {

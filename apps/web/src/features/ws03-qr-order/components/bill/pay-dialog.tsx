@@ -151,6 +151,10 @@ export function PayDialog({
   const bank =
     current?.banks.find((item) => item.code === pickedBank)?.code ??
     (current?.banks.length === 1 ? current.banks[0]!.code : null);
+  // Nothing to choose (options failed or the list is empty): the only honest
+  // action is to close, so no disabled pay button is shown.
+  const nothingToPay =
+    options.isError || (options.data !== undefined && methods.length === 0);
   const canSubmit =
     target !== null && current !== undefined && (!needsBank || bank !== null);
 
@@ -225,13 +229,14 @@ export function PayDialog({
         ) : methods.length === 0 ? (
           <EmptyState
             icon={TriangleAlert}
-            title={t("qrGlass.pay.va.unavailableTitle")}
-            description={t("payment.methodUnavailable")}
+            title={t("qrOrders.bill.payNoMethods")}
+            description=""
             className="py-4"
           />
         ) : (
           <div className="-mx-1 grid max-h-[55dvh] gap-3 overflow-y-auto px-1 py-1">
             <RadioGroup.Root
+              disabled={start.isPending}
               value={current?.method ?? ""}
               onValueChange={(next) => {
                 setPicked(next);
@@ -287,6 +292,7 @@ export function PayDialog({
                   {t("qrGlass.pay.va.bankLegend")}
                 </legend>
                 <RadioGroup.Root
+                  disabled={start.isPending}
                   value={bank ?? ""}
                   onValueChange={setPickedBank}
                   aria-labelledby="pay-bank-legend"
@@ -335,26 +341,28 @@ export function PayDialog({
         )}
         <DialogFooter>
           <Button
-            variant="outline"
+            variant={nothingToPay ? "default" : "outline"}
             onClick={() => handleOpenChange(false)}
             disabled={start.isPending}
             type="button"
           >
-            {t("common.cancel")}
+            {nothingToPay ? t("common.close") : t("common.cancel")}
           </Button>
-          <Button
-            onClick={submit}
-            loading={start.isPending}
-            disabled={!canSubmit}
-            type="button"
-          >
-            {amountIdr > 0 && current
-              ? t("qrOrders.bill.payWith", {
-                  amount: formatRupiah(amountIdr),
-                  method: currentLabel,
-                })
-              : t("qrOrders.bill.payContinue")}
-          </Button>
+          {!nothingToPay && (
+            <Button
+              onClick={submit}
+              loading={start.isPending}
+              disabled={!canSubmit}
+              type="button"
+            >
+              {amountIdr > 0 && current
+                ? t("qrOrders.bill.payWith", {
+                    amount: formatRupiah(amountIdr),
+                    method: currentLabel,
+                  })
+                : t("qrOrders.bill.payContinue")}
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>
