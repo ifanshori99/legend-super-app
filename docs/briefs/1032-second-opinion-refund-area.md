@@ -1,0 +1,8 @@
+# 1032 Second opinion area refund: 1025 + 1025c + 1028 (gerbang rilis area refund)
+Peran: second-opinion (baca ~/.agents/team/roles/second-opinion.md). Codex xhigh. Read-only, tanpa worktree: pakai `git diff`/`git show <ref>:<path>` dari folder utama, jangan checkout.
+Diff A (1013+1025+1025c, base 1020): `git diff origin/ghostex/1020-so-recon-ronde-2-fix...origin/ghostex/1025-refund-provider-celah-uang -- . ':!**/meta/*snapshot.json'`
+Diff B (1028): `git diff origin/ghostex/1020-so-recon-ronde-2-fix...origin/ghostex/3d4eb7b8 -- . ':!**/meta/*snapshot.json'`
+Ronde sebelumnya: docs/qa/second-opinion-recon-958-967.md, docs/qa/second-opinion-refund-journals.md.
+Diterima CTO (jangan dilaporkan): refund in-flight kita dihitung sudah terkirim; refund payer pending memblokir kredit DP sepenuhnya; refund yang dikarantina hold tidak dikirim ulang setelah resolve; saat ragu hold memblokir refund dan payout; hold kredit menghitung kredit di sesi terbuka; bead P3/P4 yang sudah dicatat 1025c (not_this_intent pada hold kredit, flagCreditReconForIntent sebelum langkah 7, id refund provider di daftar hold).
+Cari: jalan apa pun yang membayar tamu/payer lebih dari dana nyata atau membuat outlet rugi (refund ganda, webhook/poller ganda atau berbalapan, resolve hold yang mencatat dua kali, kredit DP terpakai vs refund susulan, dana parkir); jurnal finance tidak akurat (refund tercatat melebihi dana); lock dan urutan lock (deadlock, celah TOCTOU); lintas tenant/outlet; izin payment.reconcile dan trusted origin; interaksi 1025 x 1028 (finalizeReservationDepositRemainders).
+Hasil: tulis `docs/qa/second-opinion-refund-area-1032.md` di folder utama (P0-P3, berkas:baris, skenario, usul test). JANGAN commit, JANGAN edit file lain. Lapor hanya saat selesai.
