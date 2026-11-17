@@ -70,7 +70,7 @@ async function loanIdsDeductedInMonth(
   tenantId: TenantId,
   runId: PayrollRunId,
   periodEnd: string,
-  loanIds: readonly string[],
+  loanIds: readonly EmployeeLoanId[],
 ): Promise<Set<string>> {
   if (loanIds.length === 0) return new Set();
   const rows = await tx

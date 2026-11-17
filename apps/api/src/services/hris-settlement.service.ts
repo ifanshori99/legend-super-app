@@ -13,10 +13,12 @@ import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import {
   decimal4,
   formatDecimal4,
+  idr,
   parseDecimal4,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
+  employeeIdSchema,
   finalSettlementSummarySchema,
   outstandingLoans,
   unpaidReimbursements,
@@ -134,7 +136,10 @@ export async function computeFinalSettlementInTx(
     .where(
       and(
         eq(payrollLoanDeductions.tenantId, tenantId),
-        eq(payrollLoanDeductions.employeeId, employee.id),
+        eq(
+          payrollLoanDeductions.employeeId,
+          employeeIdSchema.parse(employee.id),
+        ),
         inArray(payrollRuns.status, [...RESERVING_STATUSES]),
       ),
     )
@@ -161,7 +166,9 @@ export async function computeFinalSettlementInTx(
     .orderBy(asc(employeeLoans.id));
   const loansAfterPending = loans.map(({ reserved, ...loan }) => ({
     ...loan,
-    outstandingIdr: Math.max(0, Number(loan.outstandingIdr) - Number(reserved)),
+    outstandingIdr: idr(
+      Math.max(0, Number(loan.outstandingIdr) - Number(reserved)),
+    ),
   }));
   // Only a disbursed loan can still be deducted, and never above what is left
   // of it: min(reserved installment, outstanding) per loan.
