@@ -76,6 +76,7 @@ import {
   type Session,
   type World,
 } from "./helpers/cash-bank-world.ts";
+import { approveChainLevelAs } from "./helpers/cash-out-chain.ts";
 import { withLimitSharedLock } from "./helpers/cash-limit-lock.ts";
 
 const app = createApp();
@@ -161,7 +162,10 @@ const decide = (
     .post(`${ENTRIES}/${encodeURIComponent(entryId)}/${action}`)
     .set(originHeader)
     .send(body);
-const approve = (who: Session, id: string) => decide(who, id, "approve");
+const approve = async (who: Session, id: string) => {
+  await approveChainLevelAs(who, id);
+  return decide(who, id, "approve");
+};
 const reject = (who: Session, id: string, reason = "Tidak sesuai") =>
   decide(who, id, "reject", { reason });
 

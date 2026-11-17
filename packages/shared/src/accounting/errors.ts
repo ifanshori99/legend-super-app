@@ -107,6 +107,10 @@ export const accountingErrorHttpStatus = {
   CASH_OUT_SELF_APPROVAL: 403,
   /** The cash entry is not waiting for approval (already rejected). */
   CASH_ENTRY_NOT_PENDING: 409,
+  /** The approval chain of a pending cash entry is still open: the direct endpoint cannot post before every level approved (legend-3bkvl). */
+  CASH_OUT_CHAIN_OPEN: 409,
+  /** A pending cash entry has no approval chain: nothing proves the matrix was met, so nothing posts (legend-3bkvl, legend-lhyt0). */
+  CASH_OUT_CHAIN_MISSING: 409,
   /** No such cash/bank entry for this tenant. */
   CASH_ENTRY_NOT_FOUND: 404,
 } as const satisfies Record<string, number>;
@@ -196,6 +200,10 @@ const defaultMessages: Record<AccountingErrorCode, string> = {
     "Pembuat kas keluar tidak boleh menyetujui atau menolaknya sendiri.",
   CASH_ENTRY_NOT_PENDING:
     "Entri ini sudah diputuskan dan tidak bisa diubah lagi.",
+  CASH_OUT_CHAIN_OPEN:
+    "Persetujuan bertingkat belum selesai. Selesaikan semua tingkat di kotak persetujuan.",
+  CASH_OUT_CHAIN_MISSING:
+    "Kas keluar ini tidak punya alur persetujuan, jadi tidak bisa disetujui langsung.",
   CASH_ENTRY_NOT_FOUND: "Transaksi kas dan bank tidak ditemukan.",
 };
 
