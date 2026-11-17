@@ -22,3 +22,7 @@ apps/web, payout gaji 947, refund/recon 967, services/ai-*, DOIT, Duitku.
 - FK tabel baru inline di CREATE TABLE; tabel baru diakui di `data-import-registry.test.ts` dan tes cakupan tabel.
 - Tipe brand: pakai helper bertipe.
 - Jangan commit; engineer utama yang commit.
+
+## Putaran 2 (keputusan CTO)
+1. Pencairan pinjaman (`disburseEmployeeLoan`, payroll-loans.service.ts) ditolak 409 selama karyawan punya offboarding AKTIF: status `open`, `revoked` (di skema ini `revoked` = akses dicabut, tahap sebelum completed, BUKAN dibatalkan), atau `completed`. Hanya `cancelled` (dibatalkan) atau tanpa offboarding yang boleh cair. Kode 409 jelas: pakai `PAYROLL_LOAN_OFFBOARDING_ACTIVE` untuk open/revoked, `PAYROLL_LOAN_OFFBOARDING_COMPLETED` tetap untuk completed. Test gagal-dulu di apps/api/src/test/payroll-loan-disburse-offboarding-972.test.ts (ubah `[disburse-offboarding-open]`, tambah cancelled boleh cair).
+2. apps/api/src/test/payroll-loans-caps.test.ts: 4 test merah (`[loan-limits-open-statuses]`, `[loan-total-disbursed-outstanding]`, `[loan-total-closed-statuses]`, `[loan-total-approve-counts-others]`) karena `UPDATE employee_loans SET outstanding_idr/...` langsung kena trigger 0461 (PAYR-02: saldo harus cocok potongan payroll locked). Perbaiki seed lewat jalur ledger/penulis potongan yang sah (lihat 955: docs/briefs/955-loan-design.md, payroll-run-loans.ts, migrasi 0461). JANGAN longgarkan trigger, jangan melemahkan asersi. Cek juga apakah merah di c6ab51bbc.

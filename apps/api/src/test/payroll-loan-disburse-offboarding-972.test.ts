@@ -10,9 +10,12 @@
 //                         of an `approved` loan whose employee has a `completed`
 //                         offboarding is 409 PAYROLL_LOAN_OFFBOARDING_COMPLETED. The loan
 //                         stays `approved`, disbursed_at stays null (no money out).
-//  2. [disburse-offboarding-open] an offboarding that is not completed (created, then
-//                         access revoked) does not block the disbursement (200); an
-//                         employee with no offboarding disburses normally (200).
+//  2. [disburse-offboarding-open] (round 2, CTO) an ACTIVE offboarding blocks too: `open`
+//                         or `revoked` (access revoked = the stage before completed, NOT
+//                         "cancelled") is 409 PAYROLL_LOAN_OFFBOARDING_ACTIVE. The loan
+//                         stays `approved`, disbursed_at stays null (no money out).
+//  2b. [disburse-offboarding-cancelled] a `cancelled` offboarding, or no offboarding at
+//                         all, disburses normally (200).
 //  3. [race-simulate-vs-complete] one transaction simulates the run while another
 //                         completes the offboarding (POST .../complete). Allowed outcomes:
 //                         a) complete 200 -> the run has NO deduction row for the leaver;
@@ -28,7 +31,11 @@
 //  - The 409 error code is `PAYROLL_LOAN_OFFBOARDING_COMPLETED` (brief: "409 kode jelas";
 //    the exact code is not named in the brief or the shared validators). Rename here if
 //    the engineer picks another one; the status 409 is the hard rule.
-//  - Only a `completed` offboarding blocks disbursement (brief). `revoked` does not.
+//  - `open`, `revoked` and `completed` offboardings block disbursement (brief round 2,
+//    item 1): open/revoked with PAYROLL_LOAN_OFFBOARDING_ACTIVE, completed with
+//    PAYROLL_LOAN_OFFBOARDING_COMPLETED. Only `cancelled` or none disburses.
+//  - A `cancelled` offboarding is made over HTTP: create (open), then
+//    POST offboardings/:id/cancel {reason}.
 //  - The disbursement guard is asked at disburse time. To not depend on how the
 //    completion treats an approved loan, the loan is seeded AFTER the offboarding is
 //    completed (a loan approved late), not before.
@@ -107,6 +114,7 @@ type Dates = typeof NOV;
 const LAST_DAY = "2026-11-16";
 const GUARD_CODE = "PAYROLL_DEDUCTION_PENDING";
 const DISBURSE_CODE = "PAYROLL_LOAN_OFFBOARDING_COMPLETED";
+const ACTIVE_CODE = "PAYROLL_LOAN_OFFBOARDING_ACTIVE";
 const LOANS = "/api/hris/payroll/loans";
 
 const tenantScope = (): ScopedTenantContext =>
@@ -385,6 +393,31 @@ async function revokedExit(employeeId: string): Promise<string> {
   return id;
 }
 
+/** Create an offboarding and leave it `open` (not yet revoked). */
+async function openExit(employeeId: string): Promise<string> {
+  const created = await postAs(
+    `/api/hris/employees/${employeeId}/offboarding`,
+    {
+      exitType: "resignation",
+      reason: "Akhir hubungan kerja uji 972.",
+      lastWorkingDate: "2034-09-30",
+    },
+  );
+  expect(created.status, JSON.stringify(created.body)).toBe(201);
+  return created.body.data.id as string;
+}
+
+/** Create then cancel an offboarding: status `cancelled`. */
+async function cancelledExit(employeeId: string): Promise<string> {
+  const id = await openExit(employeeId);
+  const cancelled = await postAs(`/api/hris/offboardings/${id}/cancel`, {
+    reason: "Dibatalkan uji 972.",
+  });
+  expect(cancelled.status, JSON.stringify(cancelled.body)).toBe(200);
+  expect((await exitRow(id)).status).toBe("cancelled");
+  return id;
+}
+
 /** Waive every open checklist task (HR may). */
 async function waiveAll(employeeId: string) {
   const listed = await hr.client.get(
@@ -562,20 +595,54 @@ describe("disbursing a kasbon after the employee's offboarding", () => {
     expect((await loanOf(loan)).status).toBe("approved");
   }, 300_000);
 
-  it("[disburse-offboarding-open] an offboarding that is only revoked, or no offboarding at all, does not block the disbursement", async () => {
+  it("[disburse-offboarding-open] an open or revoked offboarding: 409 PAYROLL_LOAN_OFFBOARDING_ACTIVE; the loan stays approved and no money is released", async () => {
     const world = await makeWorld();
-    const leaving = await makeEmployee(world);
-    await revokedExit(leaving.id); // revoked, NOT completed
-    const loanLeaving = await seedLoan(leaving.id, "approved");
-    const paidLeaving = await disburse(loanLeaving);
-    expect(paidLeaving.status, JSON.stringify(paidLeaving.body)).toBe(200);
-    expect((await loanOf(loanLeaving)).status).toBe("disbursed");
 
+    const opening = await makeEmployee(world);
+    const openId = await openExit(opening.id);
+    expect((await exitRow(openId)).status).toBe("open");
+    const loanOpen = await seedLoan(opening.id, "approved");
+    const refusedOpen = await disburse(loanOpen);
+    expect(refusedOpen.status, JSON.stringify(refusedOpen.body)).toBe(409);
+    expect(refusedOpen.body.error.code).toBe(ACTIVE_CODE);
+    const afterOpen = await loanOf(loanOpen);
+    expect(afterOpen.status, "still approved").toBe("approved");
+    expect(afterOpen.disbursedAt, "no disbursement time").toBeNull();
+
+    const leaving = await makeEmployee(world);
+    const revokedId = await revokedExit(leaving.id); // revoked, NOT completed
+    expect((await exitRow(revokedId)).status).toBe("revoked");
+    const loanRevoked = await seedLoan(leaving.id, "approved");
+    const refusedRevoked = await disburse(loanRevoked);
+    expect(refusedRevoked.status, JSON.stringify(refusedRevoked.body)).toBe(
+      409,
+    );
+    expect(refusedRevoked.body.error.code).toBe(ACTIVE_CODE);
+    const afterRevoked = await loanOf(loanRevoked);
+    expect(afterRevoked.status, "still approved").toBe("approved");
+    expect(afterRevoked.disbursedAt, "no disbursement time").toBeNull();
+
+    // A retry with a fresh idempotency key is refused the same way.
+    const again = await disburse(loanRevoked);
+    expect(again.status).toBe(409);
+    expect(again.body.error.code).toBe(ACTIVE_CODE);
+    expect((await loanOf(loanRevoked)).status).toBe("approved");
+  }, 300_000);
+
+  it("[disburse-offboarding-cancelled] a cancelled offboarding, or no offboarding at all, does not block the disbursement", async () => {
+    const world = await makeWorld();
     const staying = await makeEmployee(world);
-    const loanStaying = await seedLoan(staying.id, "approved");
-    const paidStaying = await disburse(loanStaying);
-    expect(paidStaying.status, JSON.stringify(paidStaying.body)).toBe(200);
-    expect((await loanOf(loanStaying)).status).toBe("disbursed");
+    await cancelledExit(staying.id);
+    const loanCancelled = await seedLoan(staying.id, "approved");
+    const paidCancelled = await disburse(loanCancelled);
+    expect(paidCancelled.status, JSON.stringify(paidCancelled.body)).toBe(200);
+    expect((await loanOf(loanCancelled)).status).toBe("disbursed");
+
+    const never = await makeEmployee(world);
+    const loanNever = await seedLoan(never.id, "approved");
+    const paidNever = await disburse(loanNever);
+    expect(paidNever.status, JSON.stringify(paidNever.body)).toBe(200);
+    expect((await loanOf(loanNever)).status).toBe("disbursed");
   }, 300_000);
 });
 
