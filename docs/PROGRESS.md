@@ -7234,3 +7234,33 @@ Cabang worktree `ghostex/d1e44aa2` dari `d26caed3c` (958). Kartu legend-30hfs (P
 **Bukti**: gagal-dulu di logika base (service dikembalikan ke d26caed3c): 20 dari 32 tes 967 gagal karena AssertionError perilaku, bukan setup. Lalu hijau (lihat laporan akhir batch). Architect xhigh 4 ronde: r1 2 P1 (payout tidak memeriksa uang dipakai penjualan, kredit sisa deposit) + 7 P2; r2 2 P1 (dana parkir muncul setelah refund, kredit deposit) + 1 P2 (koneksi kedua di bawah kunci); r3 1 P1 (transaksi terbelah tidak dihitung) + 2 P2 (alert ganda, `when` journal); r4 tanpa P1, 1 P2 (alert flag penuh) dibetulkan. Semua dibetulkan.
 
 **Diterima / catatan**: echo refund kita yang masih berjalan dan baru tercatat setelah jendela retry bisa dihitung sekali sebagai refund provider (hanya memblok, alert bisa palsu). Jumlah mentah refund provider yang tersimpan bisa melebihi nilai bayar (fakta dari provider); efeknya dipotong di 0 dan intent di-flag. Tindak lanjut: legend-m9pf6 (cek "sudah dibayar" di bill-split, pos-order-payment, pos-qris-hold, qr-order-consumers, facility-breakfast-consumers belum mengurangi refund provider).
+
+## Batch84 merge train (17 Nov 2026)
+
+Basis m1 1b0fd2a9e (ujung migrasi 0442). Cabang int/batch84 (thread merge train, Sonnet 5.5).
+
+**Masuk (urut)**
+1. `fix/966-scanner-suggestion` d8785fcbe (S legend-julap; tanpa migrasi).
+2. `ghostex/dd932307` 71b1155f7 (955+972 payroll; menggantikan 1a1b16fe dan 972-payroll-pinjaman-pph21). Migrasi 0461 -> 0443, 0515 -> 0444.
+3. `ghostex/965-doit-cegah-tagih-dobel` 3793464f1. Migrasi 0500 -> 0445 (teks "see 0445 header" di RAISE ikut).
+4. `ghostex/ee902477` 132131605 (964+976 Tanya AI; menggantikan 964-ws-12-*). Migrasi 0495 -> 0446, 0496 -> 0447; registry data-import ikut (kunci 0446).
+5. `ghostex/969-duitku-e-wallet-kartu-be` ad0507789 (tanpa migrasi).
+6. `ghostex/974-pos-laci-dan-harga-inklusif` 7b05fb24e. Migrasi 0520 -> 0448 (snapshot 0436 bentrok add/add: ambil m1).
+7. `ghostex/recon-refund-parsial-provider` 9788dc422. Migrasi 0505 -> 0449.
+Ujung migrasi m1 sekarang 0449. `when` 1795000000058..64. `check --from-idx 442` hijau tiap tahap, `db:generate` kosong.
+Tidak diambil: a846fbcc (983), 980, batch85 (4badcac8, 978, 981, 982) dan cabang larangan lain.
+
+**Perbaikan train (4 commit, di luar isi cabang)**
+- Tes 969 `qr-va-969-kt3t1-method-change-attempts` (3 gagal, lulus di cabang 969 sendiri, gagal di m1+969): commit cebf58ec1 (3wpf, m1) membuat `expireDueIntents` tidak pernah mengadaluarsakan intent milik gateway. Tes kini mengadaluarsakan lewat `pollPendingGatewayIntents` (jawaban gateway expired). Aturan "method_changed tidak dihitung percobaan" dan "3 kode habis sendiri tetap payment_attempts_exhausted" TIDAK dilonggarkan.
+- Edge: kolom server-only `promotions.ai_action_request_id` (0446, 964) bocor ke stream promo edge, skema strict menolak (`unrecognized_keys`). `edge-catalog-sync.ts` kini membuangnya (`withoutAiActionRequestId`); skema strict tidak diubah.
+- Migrasi 0447 (FK `ai_tool_calls_mcp_token_fk`) gagal saat dijalankan pemilik tabel non-superuser ("tenant context is required": validasi FK memindai tabel FORCE RLS). SQL kini NO FORCE RLS pada `ai_tool_calls` dan `mcp_tokens` lalu FORCE lagi di migrasi yang sama. Bahan 7 tes migrasi (edge-received-events, accounting-depreciation-0274, profit-share-0217, migration-0438-0439).
+- Sarapan (facility-breakfast) vs 974: BRK-TAX-03 mengharuskan outlet pajak-inklusif ditolak; 974 membuat `computePosBill` menerima inklusif untuk kasir. Pilihan membatasi (jangan sampai rugi): jalur sarapan menolak `bill.pricesIncludeTax` dengan QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED sebelum order/link/intent/uang dibuat; kasir POS tetap inklusif. Tes BRK-TAX-03 tidak diubah. KEPUTUSAN CTO bila sarapan inklusif mau didukung nanti (kartu baru).
+
+**Gate**
+- Fast gate: API 54 berkas 1337 tes (3 gagal 969, dibetulkan), root 65 berkas hijau; lint exit 0 (74 dtk, 2 warning lama); typecheck exit 0 (111 dtk; ulang 58 dtk setelah perbaikan); build exit 0 (55 dtk).
+- Full run ke-1 (17:44 -> 19:34, 107 mnt): 21707 lulus, 55 gagal di 10 berkas (empat penyebab di atas, 0 putus DB); rerun terarah 10 berkas 115/115 hijau (143 dtk).
+- Retro 42: commit perbaikan dibuat saat full run ke-1 jalan, jadi full run ke-2 dengan int dibeku (b1ba19de1): 21747 lulus, 15 gagal semuanya `payroll-ter-monthly.test.ts` (23505 `statutory_rates_tenant_type_published_from_key` pph21_ter 2002-01-01). Lulus di full run ke-1 dan 4x terarah (sendiri 3x, bersama payout-core/manual/bank-code, bersama a1-export). Bukan kode batch ini; kartu flake baru. Node:test root hijau di kedua run.
+- e2e produksi: 18 lulus, 1 skip (118 dtk). e2e mock (19:38 -> 20:46): 1159 lulus, 2 skip, 5 gagal: baseline g6d AUTH-05 dan TEN-03, ditambah legend-cz9g OPS-04/05 retry dan legend-kmndq "Ya, masuk" 390px dan 1280px; ketiganya lulus di rerun terisolasi (32/32, 243 dtk): flake beban.
+- Review: reviewer sonnet atas hunk resolusi konflik dan rechain: bersih (payment-webhook.service auto-merge 965+969+967 utuh; journal, prevId, snapshot 0436-0449 konsisten; entri registry 0446 cocok).
+
+**Subagent**: total 6 (test-runner 1, reviewer 1, implementer 4), puncak 3 bersamaan. Pemegang heavy: thread merge train; test-runner memegang satu fast gate. Sesi ±5 jam 43 menit, biaya sesi 4093k (utama 3062k, subagent 1031k).
