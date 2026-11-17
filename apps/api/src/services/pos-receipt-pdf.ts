@@ -190,17 +190,19 @@ function buildRows(doc: Document): Row[] {
   }
   rule();
 
+  // legend-npnh: an inclusive bill's subtotal already holds service and tax.
+  const included = doc.pricesIncludeTax ? "Termasuk " : "";
   pair("Subtotal", formatRupiah(doc.subtotalIdr));
   for (const discount of doc.discounts)
     pair(discount.label, formatRupiah(-discount.amountIdr));
   if (doc.serviceCharge)
     pair(
-      `Layanan (${formatRate(doc.serviceCharge.rateBp)})`,
+      `${included}Layanan (${formatRate(doc.serviceCharge.rateBp)})`,
       formatRupiah(doc.serviceCharge.amountIdr),
     );
   for (const tax of doc.taxLines)
     pair(
-      `${tax.name} (${formatRate(tax.rateBp)})`,
+      `${included}${tax.name} (${formatRate(tax.rateBp)})`,
       formatRupiah(tax.amountIdr),
     );
   if (doc.roundingIdr !== 0) pair("Pembulatan", formatRupiah(doc.roundingIdr));

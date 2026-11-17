@@ -232,6 +232,11 @@ export type ReceiptData = {
   discount?: number;
   serviceCharge?: number;
   tax?: number;
+  /**
+   * Inclusive prices: the subtotal already holds service and tax, so the
+   * template labels those rows "Termasuk ..." and the rows still add up.
+   */
+  pricesIncludeTax?: boolean;
   total: number;
   /** Stored adjustment, not recalculated by the print template. */
   rounding?: number;

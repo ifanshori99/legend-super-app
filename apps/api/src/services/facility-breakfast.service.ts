@@ -500,6 +500,7 @@ export async function createBreakfastOrderForMember(
         taxIdr: bill.taxIdr,
         roundingIdr: bill.roundingIdr,
         totalIdr: bill.totalIdr,
+        pricesIncludeTax: bill.pricesIncludeTax,
         depositAppliedIdr: idr(0),
         status: "awaiting_payment",
         businessDate,

@@ -454,7 +454,8 @@ export const cashierShiftClosedPayloadSchema = z
     cashInIdr: nonnegativeIdr,
     cashOutIdr: nonnegativeIdr,
     cashDropIdr: nonnegativeIdr,
-    expectedIdr: nonnegativeIdr,
+    /** May be negative (legend-4wu4): the gap is a variance, not an error. */
+    expectedIdr: idrSchema,
     /** The blind count the cashier submitted. */
     countedIdr: nonnegativeIdr,
     /**

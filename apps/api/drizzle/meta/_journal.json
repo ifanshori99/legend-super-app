@@ -2955,6 +2955,13 @@
       "when": 1795000000050,
       "tag": "0435_payroll_loan_deductions",
       "breakpoints": true
+    },
+    {
+      "idx": 436,
+      "version": "7",
+      "when": 1795000000051,
+      "tag": "0520_pos_shift_expected_signed",
+      "breakpoints": true
     }
   ]
 }

@@ -43,6 +43,11 @@ import {
 } from "@starter/shared/core";
 import { EdcError } from "@starter/shared/edc";
 import {
+  qrOrderErrorHttpStatus,
+  qrOrderErrorMessages,
+  QR_ORDER_PRICING_MODE_MIXED,
+} from "@starter/shared/qr-order";
+import {
   canSettlePosOrder,
   PosError,
   posEvents,
@@ -80,6 +85,7 @@ import { orderIssues } from "../db/schema/kds-issues.ts"; // legend-kxoyf
 import { paymentVaReleases } from "../db/schema/payment-va-release.ts";
 import { posQrisHolds } from "../db/schema/pos-qris-hold.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
+import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { posOverrideUsableFromDevice } from "./device-pin-support.ts";
 import { appendOutbox } from "./core-outbox.ts";
@@ -1146,6 +1152,14 @@ export async function repriceOrder(
   });
   if (bill.discountIdr !== discountTotal)
     throw new PosError("DISCOUNT_EXCEEDS_SUBTOTAL");
+  // legend-npnh: a repriced order keeps the pricing mode it was created in.
+  // A flipped outlet rule would otherwise rewrite the subtotal's meaning.
+  if (bill.pricesIncludeTax !== order.pricesIncludeTax)
+    throw new HttpError(
+      qrOrderErrorHttpStatus.QR_ORDER_PRICING_MODE_MIXED,
+      QR_ORDER_PRICING_MODE_MIXED,
+      qrOrderErrorMessages.QR_ORDER_PRICING_MODE_MIXED,
+    );
   const deposit =
     input.releaseDeposit || order.status === "draft"
       ? 0
@@ -1159,6 +1173,7 @@ export async function repriceOrder(
       taxIdr: bill.taxIdr,
       roundingIdr: bill.roundingIdr,
       totalIdr: bill.totalIdr,
+      pricesIncludeTax: bill.pricesIncludeTax,
       depositAppliedIdr: idr(deposit),
       taxResult: bill.tax,
       updatedAt: input.now,
@@ -1302,6 +1317,7 @@ export async function orderDetail(
     roundingIdr: order.roundingIdr,
     totalIdr: order.totalIdr,
     depositAppliedIdr: order.depositAppliedIdr,
+    pricesIncludeTax: order.pricesIncludeTax,
     swapReplacementIdr,
     swapReplacedIdr,
     status: order.status,

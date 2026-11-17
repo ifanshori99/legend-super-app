@@ -89,6 +89,7 @@ import { appendOutbox } from "./core-outbox.ts";
 import { outletTarget } from "./device-pin-support.ts";
 import { revokeActingStaffForOutlet } from "./pos-acting-staff-revoke.ts";
 import { reportablePosOrders } from "./device-training.ts";
+import { orderRevenueSplit } from "./order-revenue.ts";
 import { outletBusinessDayClock } from "./outlet-clock.ts";
 import {
   loadTenantAccessInTransaction,
@@ -375,6 +376,7 @@ async function computeRecap(
       taxIdr: orders.taxIdr,
       roundingIdr: orders.roundingIdr,
       totalIdr: orders.totalIdr,
+      pricesIncludeTax: orders.pricesIncludeTax,
       deviceId: posOrders.deviceId,
       shiftDeviceId: posShifts.deviceId,
     })
@@ -409,7 +411,16 @@ async function computeRecap(
   for (const row of sales) {
     const acc = deviceOf(row.deviceId ?? row.shiftDeviceId);
     acc.orderCount += 1;
-    acc.grossSalesIdr += Number(row.subtotalIdr);
+    // legend-npnh: an inclusive order's subtotal already holds service + tax.
+    acc.grossSalesIdr += orderRevenueSplit({
+      subtotalIdr: Number(row.subtotalIdr),
+      discountIdr: Number(row.discountIdr),
+      serviceChargeIdr: Number(row.serviceChargeIdr),
+      taxIdr: Number(row.taxIdr),
+      roundingIdr: Number(row.roundingIdr),
+      totalIdr: Number(row.totalIdr),
+      pricesIncludeTax: row.pricesIncludeTax,
+    }).grossSalesIdr;
     acc.discountIdr += Number(row.discountIdr);
     acc.serviceChargeIdr += Number(row.serviceChargeIdr);
     acc.taxIdr += Number(row.taxIdr);
