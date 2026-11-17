@@ -91,6 +91,7 @@ import {
   providerPaymentSyntheticRefundId,
   recordProviderRefundInTx,
 } from "./payment-provider-partial-refund";
+import { lockDepositIntentsExclusive } from "./reservation-deposit-credit";
 import {
   alertProviderRefundUnbound,
   alertRefundReferenceMismatch,
@@ -851,6 +852,21 @@ async function holdRefundReferenceMismatch(
   )
     return;
   await withTenant(db, context, async (tx) => {
+    // legend-xmtih: the hold limits the DP credit of the intent, so it is made
+    // under the same locks as a provider refund (the intent row, then the
+    // deposit-intent locks exclusive): a credit apply holding them shared
+    // commits first, or the hold is already visible to the apply that follows.
+    await tx
+      .select({ id: paymentIntents.id })
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          eq(paymentIntents.id, intent.id),
+        ),
+      )
+      .for("update");
+    await lockDepositIntentsExclusive(tx, context.tenant.tenantId, intent.id);
     const [held] = await tx
       .insert(refundReconHolds)
       .values({

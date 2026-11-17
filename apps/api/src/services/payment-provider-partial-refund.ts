@@ -150,6 +150,10 @@ export async function recordProviderRefundInTx(
     heldIdr: number,
     intentOutletId: string,
   ): Promise<void> => {
+    // legend-xmtih: a hold limits the DP credit of the intent, so it is made
+    // under the deposit-intent locks (taken after the intent row lock of step
+    // 2, the order of a refund). Re-taking them in step 4 is a no-op.
+    await lockDepositIntentsExclusive(tx, tenantId, input.expectedIntentId);
     const hex = createHash("sha256")
       .update(
         `refund_recon_hold.live_own\0${tenantId}\0${input.expectedIntentId.toLowerCase()}\0${providerRefundId}`,

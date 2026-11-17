@@ -106,15 +106,18 @@ export function sessionSpendSql(alloc: string): SQL {
  * Lower bound of what allocation `alloc` itself spent, for the credit FLOOR
  * (where a too high spend would raise credit, unlike in the claims): the
  * session's spend less everything the session could have spent from its other
- * allocations (full amount, any intent) and from moved credit, capped at the
- * allocation. A session paying from two DPs is never counted on both here.
+ * allocations (full amount, only intents actually paid: DP of an unpaid,
+ * failed or expired intent was never received, legend-iz3ru) and from moved
+ * credit, capped at the allocation. A session paying from two DPs is never counted on both here.
  */
 export function allocationSpentFloorSql(alloc: string): SQL {
   const x = sql.raw(alloc);
   return sql`least(${x}.amount_idr, greatest(${sessionSpendSql(alloc)}
     - coalesce((SELECT sum(oa.amount_idr) FROM reservation_deposit_allocations oa
+        JOIN payment_intents oi ON oi.tenant_id=oa.tenant_id AND oi.id=oa.payment_intent_id
         WHERE oa.tenant_id=${x}.tenant_id AND oa.table_session_id=${x}.table_session_id
-          AND oa.id<>${x}.id),0)
+          AND oa.id<>${x}.id
+          AND oi.status IN ('paid','partially_refunded') AND oi.paid_at IS NOT NULL),0)
     - coalesce((SELECT sum(cu.amount_idr-cu.returned_idr) FROM reservation_customer_credit_uses cu
         WHERE cu.tenant_id=${x}.tenant_id AND cu.table_session_id=${x}.table_session_id),0), 0))`;
 }
