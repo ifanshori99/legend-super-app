@@ -279,7 +279,7 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
   "0426_payout_approval_log.sql":
     "creates the append-only payroll_payout_approval_log table and replaces the function body of app.payout_attest (payout role), which inserts an attestation and a log row when called; the migration itself writes no row and changes no amount",
   // legend-628t9 (954)
-  "0440_payout_grant_expiry_after_lock.sql":
+  "0436_payout_grant_expiry_after_lock.sql":
     "function body only, no row edited by the migration: app.payout_grant_consume (payout role) reads its clock after the run, batch and grant row locks and refuses a grant that expired while it waited, marking a grant consumed only when called; it keeps the existing grant rules and changes no amount (it only blocks a late approval, nobody is paid)",
   // legend-s20iu, legend-dz8ci (947)
   "0433_payout_934_followups.sql":
