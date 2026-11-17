@@ -534,7 +534,10 @@ export async function unallocatedFundsOfIntentTx(
   intentId: string,
 ): Promise<{ total: number; open: number }> {
   const rows = await tx
-    .select({ resolvedAt: paymentUnallocatedFunds.resolvedAt })
+    .select({
+      resolvedAt: paymentUnallocatedFunds.resolvedAt,
+      providerRefundedAt: paymentUnallocatedFunds.providerRefundedAt,
+    })
     .from(paymentUnallocatedFunds)
     .where(
       and(
@@ -544,7 +547,10 @@ export async function unallocatedFundsOfIntentTx(
     );
   return {
     total: rows.length,
-    open: rows.filter((row) => row.resolvedAt === null).length,
+    // legend-7uqbs: money the provider already returned is closed.
+    open: rows.filter(
+      (row) => row.resolvedAt === null && row.providerRefundedAt === null,
+    ).length,
   };
 }
 

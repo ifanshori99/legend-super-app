@@ -75,7 +75,8 @@ export function failedCodeMayStillPay(): SQL {
     sql`not exists (select 1 from payment_unallocated_funds f
       where f.tenant_id = ${paymentIntents.tenantId}
         and f.payment_intent_id = ${paymentIntents.id}
-        and f.resolved_at is null)`,
+        and f.resolved_at is null
+        and f.provider_refunded_at is null)`,
   )!;
 }
 

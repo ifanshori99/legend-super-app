@@ -93,6 +93,7 @@ import {
   lockBillOwner,
 } from "./payment-late-settlement";
 import { plausiblePaidAt } from "./payment-paid-at";
+import { alertProviderRefundedAfterRecorded } from "./payment-provider-refunded-alert.ts";
 import {
   activeHoldBlockingSplitPart,
   assertNoActiveQrisHold,
@@ -1477,21 +1478,33 @@ export async function recordUnsettledGatewayFundsInTx(
   if (!(paid > 0)) return "none";
   // 952 round 2: money of the transaction the provider answered `refunded`
   // already went back to the payer; recording it would refund it twice. Read
-  // from the row (locked by the confirmation path, so current) rather than the
-  // caller's snapshot. A DIFFERENT provider transaction on the same code is a
-  // separate payment and is still parked.
-  if (funds.providerRef === intent.providerRef) {
-    const [refundState] = await tx
-      .select({ providerRefundedAt: paymentIntents.providerRefundedAt })
-      .from(paymentIntents)
-      .where(
-        and(
-          eq(paymentIntents.tenantId, context.tenant.tenantId),
-          eq(paymentIntents.id, intent.id),
-        ),
-      );
-    if (refundState && refundState.providerRefundedAt !== null) return "found";
-  }
+  // from the row rather than the caller's snapshot, under the intent row lock
+  // (FOR UPDATE: inside `applyConfirmation` the caller already holds it; the
+  // webhook, poll and `parkExtraPayments` callers take it here). The lock
+  // orders this against `flagProviderRefundedAfterRecordedInTx` (intent, then
+  // fund): a refunded answer that committed first is seen here, one that comes
+  // later finds the fund this insert writes and flags it. A DIFFERENT provider
+  // transaction on the same code is a separate payment and is still parked.
+  const [refundState] = await tx
+    .select({
+      providerRefundedAt: paymentIntents.providerRefundedAt,
+      providerRefundedAfterPaidAt: paymentIntents.providerRefundedAfterPaidAt,
+    })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, context.tenant.tenantId),
+        eq(paymentIntents.id, intent.id),
+      ),
+    )
+    .for("update");
+  if (
+    funds.providerRef === intent.providerRef &&
+    refundState &&
+    (refundState.providerRefundedAt !== null ||
+      refundState.providerRefundedAfterPaidAt !== null)
+  )
+    return "found";
   const reason =
     paid > Number(intent.amountIdr) ? "overpayment" : "double_payment";
   {
@@ -3323,6 +3336,10 @@ async function markProviderAnswered(
             inArray(paymentIntents.status, ["expired", "failed"]),
           ),
         );
+    // legend-7uqbs: the same answer about money already recorded (a fund
+    // parked earlier for this transaction) is flagged and alerted once.
+    if (refunded)
+      await flagProviderRefundedAfterRecordedInTx(tx, context, intentId, now);
   });
 }
 
@@ -3331,7 +3348,9 @@ async function markProviderAnswered(
  * payment, and nothing else: the status is never changed (a pending code stays
  * pending) and a paid intent is never stamped. From then on no later `paid`
  * message for that payment can settle or park it (`applyConfirmation`). The
- * first answer is kept; a replay changes nothing.
+ * first answer is kept; a replay changes nothing. Money already recorded for
+ * that payment (parked funds, a settled bill) is flagged and alerted by
+ * `flagProviderRefundedAfterRecordedInTx` in the same transaction.
  */
 export async function markProviderRefunded(
   context: ScopedTenantContext,
@@ -3350,7 +3369,155 @@ export async function markProviderRefunded(
           inArray(paymentIntents.status, ["pending", "expired", "failed"]),
         ),
       );
+    // legend-7uqbs: money we already recorded (parked funds, a settled bill)
+    // is flagged and alerted instead of staying silent.
+    await flagProviderRefundedAfterRecordedInTx(tx, context, intentId, now);
   });
+}
+
+/** `payment_refunds` row (alias `r`) that our own payout already returned or
+ * may have returned: completed, or in any other live state once a send was
+ * attempted (provider reference, attempt or poll). The provider's `refunded`
+ * answer for that payment is then the echo of our own payout. */
+const ownRefundSentSql = sql.raw(`(r.status = 'completed'
+  OR (r.status <> 'failed'
+    AND (r.provider_ref IS NOT NULL
+      OR r.payout_attempts > 0
+      OR r.payout_pending_polls > 0)))`);
+/** Money of the paid intent our own sent refunds cover. */
+const ownRefundedIdrSql = sql`coalesce((SELECT sum(r.amount_idr)
+  FROM payment_refunds r
+  WHERE r.tenant_id = ${paymentIntents.tenantId}
+    AND r.payment_intent_id = ${paymentIntents.id}
+    AND ${ownRefundSentSql}), 0)`;
+
+/**
+ * legend-7uqbs (958): the provider answered `refunded` for the code's own
+ * transaction, and we had already recorded that money: it is parked as
+ * unallocated funds, or the bill was settled paid. It went back to the payer,
+ * so it must never be refunded a second time. Marks, once each, the parked
+ * funds of that transaction (`provider_refunded_at`, which blocks resolving
+ * them into a refund) and a settled intent (`provider_refunded_after_paid_at`,
+ * a column of its own so the replay of its paid message stays a replay).
+ * Money our own refunds already returned, or may have returned (completed, or
+ * sent and still live), is left alone: that provider answer is the echo of our
+ * own payout. No journal is touched.
+ *
+ * Who wins is decided by the conditional UPDATEs (`... IS NULL`, RETURNING),
+ * never by a read, so a webhook and a poller racing mark and alert once: only
+ * the winner writes the audit row and the supervisor alert. Lock order: the
+ * intent, then its funds (`resolveUnallocatedFund` takes bill, intent, fund).
+ * Returns true when something was newly marked.
+ */
+export async function flagProviderRefundedAfterRecordedInTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  intentId: string,
+  now: Date,
+): Promise<boolean> {
+  const [intent] = await tx
+    .select()
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, context.tenant.tenantId),
+        eq(paymentIntents.id, intentId),
+      ),
+    )
+    .for("update");
+  if (!intent || !intent.providerRef) return false;
+  const providerRef = intent.providerRef;
+  const paidMarked = await tx
+    .update(paymentIntents)
+    .set({ providerRefundedAfterPaidAt: now })
+    .where(
+      and(
+        eq(paymentIntents.tenantId, context.tenant.tenantId),
+        eq(paymentIntents.id, intent.id),
+        isNull(paymentIntents.providerRefundedAfterPaidAt),
+        inArray(paymentIntents.status, ["paid", "partially_refunded"]),
+        sql`${ownRefundedIdrSql} < ${paymentIntents.amountIdr}`,
+      ),
+    )
+    .returning({
+      id: paymentIntents.id,
+      // What the provider's answer can still have returned beyond our own
+      // refunds: the amount at risk, for the alert.
+      atRiskIdr: sql<string>`${paymentIntents.amountIdr} - ${ownRefundedIdrSql}`,
+    });
+  const fundsMarked = await tx
+    .update(paymentUnallocatedFunds)
+    .set({ providerRefundedAt: now })
+    .where(
+      and(
+        eq(paymentUnallocatedFunds.tenantId, context.tenant.tenantId),
+        eq(paymentUnallocatedFunds.paymentIntentId, intent.id),
+        isNull(paymentUnallocatedFunds.providerRefundedAt),
+        sql`${paymentUnallocatedFunds.evidenceId} IN (
+          SELECT e.id FROM payment_evidence e
+          WHERE e.tenant_id = ${paymentUnallocatedFunds.tenantId}
+            AND e.payment_intent_id = ${intent.id}
+            AND e.provider = ${intent.provider}
+            AND e.provider_ref = ${providerRef})`,
+        sql`NOT EXISTS (SELECT 1 FROM payment_refunds r
+          WHERE r.tenant_id = ${paymentUnallocatedFunds.tenantId}
+            AND r.unallocated_fund_id = ${paymentUnallocatedFunds.id}
+            AND ${ownRefundSentSql})`,
+      ),
+    )
+    .returning({
+      id: paymentUnallocatedFunds.id,
+      amountIdr: paymentUnallocatedFunds.amountIdr,
+    });
+  if (paidMarked.length === 0 && fundsMarked.length === 0) return false;
+  const amountIdr =
+    fundsMarked.reduce((sum, fund) => sum + Number(fund.amountIdr), 0) +
+    paidMarked.reduce((sum, row) => sum + Number(row.atRiskIdr), 0);
+  await recordAudit(
+    tx,
+    context,
+    {
+      id: createUlid(now.getTime()),
+      tenantId: context.tenant.tenantId,
+      outletId: intent.outletId,
+      actorType: "system",
+      actorId: null,
+      deviceId: null,
+      action: "payment.provider_refunded_after_recorded",
+      objectType: "payment_intent",
+      objectId: intent.id,
+      reason: null,
+      maskedChanges: {
+        before: { status: intent.status },
+        after: {
+          status: intent.status,
+          providerRef,
+          amountIdr,
+          fundCount: fundsMarked.length,
+          paidIntent: paidMarked.length > 0,
+        },
+      },
+      ipHash: null,
+      sensitiveAccess: false,
+      retentionClass: "audit_2y",
+      createdAt: now.toISOString(),
+    },
+    ["status", "providerRef", "amountIdr", "fundCount", "paidIntent"],
+  );
+  await alertProviderRefundedAfterRecorded(
+    tx,
+    context,
+    {
+      intentId: intent.id,
+      outletId: intent.outletId,
+      providerRef,
+      fundIds: fundsMarked.map((fund) => fund.id),
+      paidIntent: paidMarked.length > 0,
+      amountIdr,
+    },
+    now,
+  );
+  return true;
 }
 
 /**
@@ -3368,9 +3535,12 @@ export async function markGatewayReconciled(
   /** 952 P1: the provider's answer was `refunded`. */
   refunded = false,
 ): Promise<void> {
-  await withTenant(db, context, async (tx) =>
-    markGatewayReconciledInTx(tx, context, intent.id, now, refunded),
-  );
+  await withTenant(db, context, async (tx) => {
+    await markGatewayReconciledInTx(tx, context, intent.id, now, refunded);
+    // legend-7uqbs: a fund parked earlier for this transaction is flagged.
+    if (refunded)
+      await flagProviderRefundedAfterRecordedInTx(tx, context, intent.id, now);
+  });
 }
 
 /** The same mark inside the caller's transaction (and lock order). */

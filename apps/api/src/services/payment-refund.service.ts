@@ -54,6 +54,11 @@ import {
   OPERATIONS_NOTIFICATION_DESTINATION,
 } from "./operations-events.ts";
 import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
+import {
+  assertNotProviderRefunded,
+  providerRefundedBlocks,
+  refundBlockedByProviderRefundSql,
+} from "./payment-provider-refunded-guard.ts";
 import { failedRefundHoldsOrderSql } from "./payment-refund-failed-open.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import {
@@ -664,6 +669,25 @@ async function failRefund(
     )
     .returning();
   if (!updated) throw new Error("refund changed under its row lock");
+  // legend-7uqbs: a fund refund that ends failed while the provider already
+  // returned the money (the intent's own refunded answer blocks it, the fund
+  // itself was never flagged) would stay open and block the bill forever. Flag
+  // the fund once; the caller holds intent -> fund -> refund, so the order
+  // holds. The failure's own audit row below is the only one written.
+  if (
+    updated.unallocatedFundId &&
+    (await providerRefundedBlocks(tx, updated.tenantId, updated))
+  )
+    await tx
+      .update(paymentUnallocatedFunds)
+      .set({ providerRefundedAt: input.now })
+      .where(
+        and(
+          eq(paymentUnallocatedFunds.tenantId, updated.tenantId),
+          eq(paymentUnallocatedFunds.id, updated.unallocatedFundId),
+          isNull(paymentUnallocatedFunds.providerRefundedAt),
+        ),
+      );
   await refundAudit(tx, context, {
     actorId: input.actorId,
     row: updated,
@@ -1385,8 +1409,12 @@ async function decideRefund(
       if (refund.requestedBy === actor)
         throw new AccessError("APPROVER_IS_REQUESTER");
       // Before any chain decision is recorded (the settle step runs after it).
-      if (decision === "approved")
+      if (decision === "approved") {
         await assertNotPosRefundParty(tx, refund, actor);
+        // legend-7uqbs: money the provider already refunded is never approved
+        // for a second payout (a reject stays open to staff).
+        await assertNotProviderRefunded(tx, refund.tenantId, refund);
+      }
       // Idempotent by key, in this same transaction: a retried call (also a
       // submit-only call or a direct reject, which leave no keyed chain row)
       // replays the first step; the same key with another body is refused.
@@ -1710,6 +1738,7 @@ function errorCodeOf(error: unknown): string {
 
 /** Why an `approved` refund's approval no longer allows a payout. */
 type ApprovalDefect =
+  | "provider_refunded"
   | "approver_unauthorized"
   | "approval_limit_exceeded"
   | "supervisor_required"
@@ -1841,7 +1870,9 @@ async function quarantinePayout(
   });
   logger.error(
     { refundId: refund.id, defect },
-    "Refund payout quarantined: approval failed re-validation; reconcile manually (after paying by hand, close it with settle-manually; never release or re-open it)",
+    defect === "provider_refunded"
+      ? "Refund payout quarantined: the provider already refunded this money to the payer; release the refund (settle-manually and re-open are refused)"
+      : "Refund payout quarantined: approval failed re-validation; reconcile manually (after paying by hand, close it with settle-manually; never release or re-open it)",
   );
   return held;
 }
@@ -1993,6 +2024,8 @@ async function takeSendRight(
           eq(paymentRefunds.status, "approved"),
           eq(paymentRefunds.payoutClaimToken, token),
           gt(paymentRefunds.payoutClaimedUntil, new Date(deadline)),
+          // legend-7uqbs: re-checked atomically with the right to send.
+          sql`NOT ${refundBlockedByProviderRefundSql}`,
         ),
       )
       .returning({ id: paymentRefunds.id }),
@@ -2141,7 +2174,16 @@ export async function runRefundPayout(
         if (!maybeSent) return { run: false, refund };
         send = false;
       } else {
-        const defect = await approvalDefectOf(tx, context, refund, now);
+        // legend-7uqbs: the provider already returned this money to the payer.
+        // Held like a failed re-validation: never sent, an attempt that may
+        // have reached the provider is only looked up; staff release it.
+        const defect: ApprovalDefect | null = (await providerRefundedBlocks(
+          tx,
+          refund.tenantId,
+          refund,
+        ))
+          ? "provider_refunded"
+          : await approvalDefectOf(tx, context, refund, now);
         if (defect !== null) {
           const held = await quarantinePayout(tx, context, refund, defect, now);
           if (!maybeSent) return { run: false, refund: held };
@@ -3117,6 +3159,9 @@ async function actOnQuarantine(
             "REFUND_PAYOUT_MAYBE_SENT",
             "A payout attempt may have reached the provider; the provider lookup settles this refund.",
           );
+        // legend-7uqbs: a re-opened refund would be approved and paid again.
+        if (action === "reopen")
+          await assertNotProviderRefunded(tx, refund.tenantId, refund);
         const defect = await approvalDefectOf(tx, context, refund, now);
         // Its own chain still open (never resolved) would block a new one
         // and leave a level in the inbox.
@@ -3280,6 +3325,9 @@ export async function settleRefundManually(
             "REFUND_NOT_SETTLEABLE",
             "Only an approved refund can be settled manually.",
           );
+        // legend-7uqbs: paying it by hand would pay money the provider already
+        // returned to the payer; release the refund instead.
+        await assertNotProviderRefunded(tx, refund.tenantId, refund);
         if (refund.providerRef !== null || refund.payoutPendingPolls > 0)
           throw new HttpError(
             409,

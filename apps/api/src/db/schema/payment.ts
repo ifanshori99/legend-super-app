@@ -233,6 +233,15 @@ export const paymentIntents = pgTable(
     providerRefundedAt: timestamp("provider_refunded_at", {
       withTimezone: true,
     }),
+    /** legend-7uqbs (958): when the PROVIDER first answered `refunded` for the
+     * payment of a SETTLED (paid) intent: its money went back to the payer, so
+     * no second refund may be paid out. Kept apart from `provider_refunded_at`,
+     * which turns a later `paid` message into a rejected one (a paid intent
+     * must keep treating the replay of its own paid message as a replay).
+     * Null = never answered refunded. */
+    providerRefundedAfterPaidAt: timestamp("provider_refunded_after_paid_at", {
+      withTimezone: true,
+    }),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
@@ -397,6 +406,13 @@ export const paymentUnallocatedFunds = pgTable(
     approvalRef: varchar("approval_ref", { length: 100 }),
     note: text("note"),
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    /** legend-7uqbs (958): when the PROVIDER first answered `refunded` for the
+     * transaction behind this fund: the money already went back to the payer,
+     * so it must not be resolved into a second refund. Set once by a
+     * conditional UPDATE; null = never answered refunded. */
+    providerRefundedAt: timestamp("provider_refunded_at", {
+      withTimezone: true,
+    }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),

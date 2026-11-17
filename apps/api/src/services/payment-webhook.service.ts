@@ -819,7 +819,10 @@ async function processPaymentEvent(
       // 952 round 2: the money went back to the payer. Only the refund time is
       // recorded (the status is untouched, a paid intent is never stamped), so
       // a late `paid` message cannot settle it. The refund itself is not booked
-      // automatically.
+      // automatically. legend-7uqbs: money we already recorded (parked funds, a
+      // settled bill) is flagged, audited and alerted once inside this call, so
+      // staff cannot refund it a second time; the row below still ends
+      // processed.
       await markProviderRefunded(context, intent.id, now);
     }
     // `pending` changes nothing.
@@ -1396,6 +1399,22 @@ function isRecurringInvoiceEvent(type: string, body: unknown): boolean {
   );
 }
 
+/** `payment.refunded` whose `data` is not a payment object (no `id` and
+ * `reference`, e.g. a partial-refund status object). It only ever records that
+ * the provider gave money back and moves nothing here, so it is stored
+ * `ignored` (200) instead of MALFORMED (a 5xx DOIT would resend forever). A
+ * payment object that merely fails the strict schema stays MALFORMED. */
+function isRefundedNonPaymentEvent(type: string, body: unknown): boolean {
+  if (type !== "payment.refunded") return false;
+  const data =
+    typeof body === "object" && body !== null
+      ? (body as { data?: unknown }).data
+      : undefined;
+  if (typeof data !== "object" || data === null) return true;
+  const { id, reference } = data as { id?: unknown; reference?: unknown };
+  return typeof id !== "string" || typeof reference !== "string";
+}
+
 /** Parses the body of a verified event by its type. Null: not readable. */
 function parseEventBody(type: string, body: unknown): ParsedEvent | null {
   if (isDoitRecurringEvent(type)) {
@@ -1738,6 +1757,30 @@ export async function receiveDoitWebhook(input: {
   const parsedEvent = envelope.success
     ? parseEventBody(envelope.data.type, json)
     : null;
+  if (
+    !parsedEvent &&
+    envelope.success &&
+    isRefundedNonPaymentEvent(envelope.data.type, json)
+  ) {
+    // Envelope only (like other ignored events): `data` is not a payment.
+    const { id, type, created_at } = envelope.data;
+    const stored = await insertRow(context, {
+      integrationId: verified.integrationId,
+      signatureValid: true,
+      eventId: id,
+      eventType: type,
+      payloadHash,
+      payload: { id, type, created_at },
+      status: "ignored",
+      lastErrorCode: "REFUND_PAYLOAD_NOT_PAYMENT",
+      processedAt: now,
+      receivedAt: now,
+      attempts: 1,
+      createdAt: now,
+      updatedAt: now,
+    });
+    return { status: stored ? "ignored" : "duplicate", eventId: id };
+  }
   if (!parsedEvent) {
     await insertRow(context, {
       integrationId: verified.integrationId,
@@ -1844,6 +1887,19 @@ export async function receiveDoitWebhook(input: {
       // and stored first (the payload hash may differ, the stored one wins).
       const storedEvent = parseStoredEvent(row.payload);
       if (!storedEvent) {
+        if (isRefundedNonPaymentEvent(event.type, row.payload)) {
+          await markRow(
+            context,
+            row.id,
+            {
+              status: "ignored",
+              lastErrorCode: "REFUND_PAYLOAD_NOT_PAYMENT",
+              processedAt: now,
+            },
+            now,
+          );
+          return { status: "ignored", eventId: event.id };
+        }
         await markRow(
           context,
           row.id,

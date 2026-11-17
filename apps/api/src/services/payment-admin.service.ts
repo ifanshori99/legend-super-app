@@ -29,6 +29,7 @@ import {
 } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { assertNotProviderRefunded } from "./payment-provider-refunded-guard.ts";
 import { recordAudit } from "./core-audit.ts";
 import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
 import {
@@ -524,6 +525,12 @@ export async function createRefund(
           !["paid", "partially_refunded"].includes(intent.status)
         )
           throw conflict("Payment is not refundable.");
+        // legend-7uqbs: the provider already returned this payment's money to
+        // the payer; a refund of it would pay the same money twice.
+        await assertNotProviderRefunded(tx, intent.tenantId, {
+          paymentIntentId: intent.id,
+          unallocatedFundId: null,
+        });
         const {
           cap,
           reserved,
