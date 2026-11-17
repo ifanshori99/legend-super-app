@@ -3384,12 +3384,37 @@ const ownRefundSentSql = sql.raw(`(r.status = 'completed'
     AND (r.provider_ref IS NOT NULL
       OR r.payout_attempts > 0
       OR r.payout_pending_polls > 0)))`);
-/** Money of the paid intent our own sent refunds cover. */
+/** Money of the paid intent our own sent refunds cover. A refund of a parked
+ * fund counts only when that fund's evidence is this intent's own provider
+ * transaction: a fund of another (extra) transaction is not the money the
+ * provider's `refunded` answer for this code is about, and a fund without an
+ * evidence mapping is not trusted as an echo either (doubt means the stamp is
+ * written and the refund stays blocked). */
 const ownRefundedIdrSql = sql`coalesce((SELECT sum(r.amount_idr)
   FROM payment_refunds r
   WHERE r.tenant_id = ${paymentIntents.tenantId}
     AND r.payment_intent_id = ${paymentIntents.id}
-    AND ${ownRefundSentSql}), 0)`;
+    AND ${ownRefundSentSql}
+    AND (r.unallocated_fund_id IS NULL
+      OR EXISTS (SELECT 1 FROM payment_unallocated_funds f
+        JOIN payment_evidence e
+          ON e.tenant_id = f.tenant_id AND e.id = f.evidence_id
+        WHERE f.tenant_id = r.tenant_id
+          AND f.id = r.unallocated_fund_id
+          AND e.payment_intent_id = ${paymentIntents.id}
+          AND e.provider = ${paymentIntents.provider}
+          AND e.provider_ref = ${paymentIntents.providerRef}))), 0)`;
+
+/** Money of the intent's own provider transaction: the evidence amount of the
+ * transaction its `provider_ref` names (tenant-scoped), which can exceed the
+ * bill when the payer overpaid and the excess is parked. Never below the bill
+ * value (`amount_idr`), which also stands in when no evidence row maps: the
+ * larger figure keeps the stamp, and so the refund block, on (legend-qbsbr). */
+const ownTransactionIdrSql = sql`greatest(coalesce((SELECT max(e.amount_idr)
+  FROM payment_evidence e
+  WHERE e.tenant_id = ${paymentIntents.tenantId}
+    AND e.provider = ${paymentIntents.provider}
+    AND e.provider_ref = ${paymentIntents.providerRef}), 0), ${paymentIntents.amountIdr})`;
 
 /**
  * legend-7uqbs (958): the provider answered `refunded` for the code's own
@@ -3436,14 +3461,14 @@ export async function flagProviderRefundedAfterRecordedInTx(
         eq(paymentIntents.id, intent.id),
         isNull(paymentIntents.providerRefundedAfterPaidAt),
         inArray(paymentIntents.status, ["paid", "partially_refunded"]),
-        sql`${ownRefundedIdrSql} < ${paymentIntents.amountIdr}`,
+        sql`${ownRefundedIdrSql} < ${ownTransactionIdrSql}`,
       ),
     )
     .returning({
       id: paymentIntents.id,
       // What the provider's answer can still have returned beyond our own
       // refunds: the amount at risk, for the alert.
-      atRiskIdr: sql<string>`${paymentIntents.amountIdr} - ${ownRefundedIdrSql}`,
+      atRiskIdr: sql<string>`${ownTransactionIdrSql} - ${ownRefundedIdrSql}`,
     });
   const fundsMarked = await tx
     .update(paymentUnallocatedFunds)

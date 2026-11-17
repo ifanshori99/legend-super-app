@@ -758,8 +758,10 @@ async function handleRejectedConfirmation(
 /** Result of applying a provider refund: `bound` (recorded, a duplicate, our
  * own echo, or flagged), `retry` (one of our own refunds for that payment is
  * in flight, so the refund cannot be told apart yet: nothing was written) or
- * `unbound` (not a payment of this tenant, or of another integration). */
-type RefundApplyResult = "bound" | "retry" | "unbound";
+ * `unbound` (not a payment of this tenant, or of another integration) or
+ * `mismatch` (the event names an intent reference that is not the intent the
+ * payment binds to, legend-6jdy1: terminal, nothing written). */
+type RefundApplyResult = "bound" | "retry" | "unbound" | "mismatch";
 
 /** Intent a provider payment reference binds to, by the helper's rule: the
  * evidence of that reference (its intent wins on a conflict), else the intent
@@ -829,14 +831,21 @@ async function recordRefundFor(
     providerPaymentRef: string;
     amountIdr: number;
     source: "refund_webhook" | "payment_webhook";
+    /** Intent references the event carries explicitly (refund and payment
+     * object). Each must equal the candidate intent's id, else `mismatch`
+     * before anything is recorded (legend-6jdy1). */
+    expectedReferences?: readonly string[];
   },
   now: Date,
   verifiedSecret?: string,
 ): Promise<RefundApplyResult> {
+  const { expectedReferences, ...recorded } = input;
   const windowOver = () =>
     now.getTime() - row.receivedAt.getTime() >=
     WEBHOOK_UNKNOWN_REFERENCE_RETRY_MS;
-  const attempt = async (): Promise<"retry" | "unbound" | "bound"> => {
+  const attempt = async (): Promise<
+    "retry" | "unbound" | "bound" | "mismatch"
+  > => {
     const candidate = await findRefundCandidate(
       context,
       input.providerPaymentRef,
@@ -852,6 +861,10 @@ async function recordRefundFor(
       ))
     )
       return "unbound";
+    if (
+      expectedReferences?.some((reference) => reference !== candidate.intent.id)
+    )
+      return "mismatch";
     const run = async (force: boolean) =>
       (
         await withTenant(db, context, async (tx) =>
@@ -860,7 +873,7 @@ async function recordRefundFor(
             context,
             {
               provider: PROVIDER,
-              ...input,
+              ...recorded,
               expectedIntentId: candidate.intent.id,
               ...(force ? { force: true } : {}),
             },
@@ -1494,10 +1507,16 @@ async function processRefundEvent(
             providerPaymentRef: providerRefund.paymentId,
             amountIdr: providerRefund.amountIdr,
             source: "refund_webhook",
+            expectedReferences: [
+              ...(facts.reference !== undefined ? [facts.reference] : []),
+              ...(facts.payment ? [facts.payment.reference] : []),
+            ],
           },
           now,
           verifiedSecret,
         );
+        if (applied === "mismatch")
+          return await ignoredWith("REFERENCE_MISMATCH");
         if (applied === "retry") {
           // Unresolved even with `force`: kept `failed` (the worker retries),
           // never ignored.

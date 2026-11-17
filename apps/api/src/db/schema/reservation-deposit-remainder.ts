@@ -35,6 +35,13 @@ export const reservationDepositRemainders = pgTable(
     kind: varchar("kind", { length: 24 })
       .$type<"customer_credit" | "manual_refund">()
       .notNull(),
+    /** legend-svwdz (1020): what the provider had already refunded on its own
+     * for the source intent when this remainder was made. Amount is already
+     * net of it; only a later refund shrinks credit moved to other sessions.
+     * 0 for rows older than the column (restrictive: the whole refund counts). */
+    providerRefundedSnapshotIdr: idrColumn("provider_refunded_snapshot_idr")
+      .notNull()
+      .default(idr(0)),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -102,6 +109,7 @@ export const reservationCustomerCreditUses = pgTable(
       .defaultNow(),
   },
   (t) => [
+    unique("reservation_credit_use_tenant_id_key").on(t.tenantId, t.id),
     unique("reservation_credit_use_key").on(
       t.tenantId,
       t.idempotencyKey,
@@ -132,6 +140,60 @@ export const reservationCustomerCreditUses = pgTable(
     index("reservation_credit_use_session_idx").on(
       t.tenantId,
       t.tableSessionId,
+    ),
+  ],
+);
+
+/**
+ * legend-svwdz (1020): recon flag, insert-only. Written when credit moved to a
+ * session was already used beyond what the source intent still holds net (a
+ * provider refund landed after the use). The used value is never cut; finance
+ * looks at the flag. One row per credit use (unique), so a re-read adds none.
+ */
+export const reservationCreditReconFlags = pgTable(
+  "reservation_credit_recon_flags",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    creditUseId: uuid("credit_use_id").notNull(),
+    paymentIntentId: uuid("payment_intent_id").notNull(),
+    tableSessionId: uuid("table_session_id").notNull(),
+    usedIdr: idrColumn("used_idr").notNull(),
+    effectiveIdr: idrColumn("effective_idr").notNull(),
+    flaggedAt: timestamp("flagged_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    unique("reservation_credit_recon_flag_use_key").on(
+      t.tenantId,
+      t.creditUseId,
+    ),
+    foreignKey({
+      name: "reservation_credit_recon_flag_use_fk",
+      columns: [t.tenantId, t.creditUseId],
+      foreignColumns: [
+        reservationCustomerCreditUses.tenantId,
+        reservationCustomerCreditUses.id,
+      ],
+    }),
+    foreignKey({
+      name: "reservation_credit_recon_flag_intent_fk",
+      columns: [t.tenantId, t.paymentIntentId],
+      foreignColumns: [paymentIntents.tenantId, paymentIntents.id],
+    }),
+    foreignKey({
+      name: "reservation_credit_recon_flag_session_fk",
+      columns: [t.tenantId, t.tableSessionId],
+      foreignColumns: [tableSessions.tenantId, tableSessions.id],
+    }),
+    check(
+      "reservation_credit_recon_flag_amount_check",
+      sql`${t.usedIdr} > 0 AND ${t.effectiveIdr} >= 0 AND ${t.effectiveIdr} < ${t.usedIdr}`,
+    ),
+    index("reservation_credit_recon_flag_intent_idx").on(
+      t.tenantId,
+      t.paymentIntentId,
     ),
   ],
 );

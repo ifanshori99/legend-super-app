@@ -35,6 +35,7 @@ import { recordAudit } from "./core-audit.ts";
 import { refundableBalance } from "./payment-admin.service.ts";
 import { alertProviderPartialRefund } from "./payment-provider-refunded-alert.ts";
 import { providerRefundedForeignIdrSql } from "./payment-provider-refunded-foreign-sql.ts";
+import { flagCreditReconForIntent } from "./reservation-deposit-credit.ts";
 import type { Tx } from "./permission-resolver.ts";
 
 const PROVIDER = "doit";
@@ -265,6 +266,10 @@ export async function recordProviderRefundInTx(
     })
     .returning({ id: paymentProviderRefunds.id });
   if (!inserted) return { status: "duplicate" };
+
+  // Credit already moved to sessions (closed ones too) may now exceed the
+  // intent's net: flag it in this same transaction (legend-svwdz, 1020).
+  await flagCreditReconForIntent(tx, tenantId, intent.id);
 
   // 6. A parked fund of this transaction: the whole fund is blocked (restrict
   // when in doubt; a partial refund of a fund is not tracked). When the
