@@ -5,9 +5,6 @@
 //   - integration credentials and AI provider keys: rotate-data-key (they carry
 //     a version column);
 //   - HRIS and payroll: hris-pii-reseal.job.ts (piiKeyVersion);
-//   - the voucher code sealed inside the promo idempotency JSON
-//     (crm-promo.service.ts, `promo-voucher-idem:` AAD, legend-nloi): a value
-//     inside a JSON document, no column of its own, not moved by any job;
 //   - ChatGPT connection tokens and pending device codes (ai-chatgpt.service.ts,
 //     ai_chatgpt_connections.tokens_encrypted / pending_encrypted): no job
 //     rotates them, they are re-sealed only when the service rewrites them;
@@ -33,6 +30,16 @@
 // locked. A row that will not open or write is counted failed (its own
 // savepoint) and does not stop the column. Nothing is logged but counts, table
 // and column names and tenant ids: never a sealed or opened value.
+//
+// JSON snapshots (legend-ra1k0): the voucher code sealed inside
+// `promo_command_idempotency.response` (`promo-voucher-idem:` and
+// `apology-voucher-idem:` AAD) is moved by SEALED_JSON_SECRETS, per tenant. It
+// has no state row: stale rows are found from the version byte, so a killed
+// run just starts over what is still stale (the key cursor lives in one run
+// only). Only the sealed value changes (jsonb_set + compare-and-set); the
+// fingerprint and the rest of the response stay, so a replay after rotation
+// returns the same code. Leftovers count in `remaining` under
+// `promo_command_idempotency.response` and block key retirement like any column.
 //
 // Some rows are frozen by the database (POS-04 triggers refuse any change to a
 // completed or voided order and to its tenders; the app login has no UPDATE on
@@ -272,6 +279,48 @@ export const SEALED_SECRET_COLUMNS: readonly SealedSecretColumn[] = [
   },
 ];
 
+/**
+ * A sealed value stored INSIDE a JSON response snapshot (legend-ra1k0, SO 957
+ * P2-1). `promo_command_idempotency.response` replays a voucher issue with the
+ * same code, so its sealed code must follow every key rotation: a replay after
+ * the old key left the ring would otherwise fail in `openSecret`. Rows have no
+ * `id`; they are addressed by (tenant_id, key). The sweep rewrites only the
+ * value at `path` (jsonb_set): fingerprint, operation and the rest of the
+ * response stay as they were.
+ */
+export type SealedJsonSecret = {
+  table: "promo_command_idempotency";
+  column: "response";
+  /** `operation` value of the rows that carry this secret. */
+  operation: string;
+  /** Static SQL on alias `t`: narrows the rows further. */
+  where?: string;
+  /** Path of the sealed string inside the JSON document. */
+  path: readonly string[];
+  /** AAD the writer uses (same builder as the issue/replay code). */
+  aad(tenantId: string, key: string): string;
+};
+
+export const SEALED_JSON_SECRETS: readonly SealedJsonSecret[] = [
+  {
+    // crm-promo.service.ts: `{ voucher, code: sealSecret(code, aad) }`
+    table: "promo_command_idempotency",
+    column: "response",
+    operation: "voucher.issue",
+    path: ["code"],
+    aad: (tenantId, key) => `promo-voucher-idem:${tenantId}:${key}`,
+  },
+  {
+    // apology-voucher.service.ts: `{ kind: "issued", voucher: { code: sealed } }`
+    table: "promo_command_idempotency",
+    column: "response",
+    operation: "apology_voucher.issue",
+    where: "t.response ->> 'kind' = 'issued'",
+    path: ["voucher", "code"],
+    aad: (tenantId, key) => `apology-voucher-idem:${tenantId}:${key}`,
+  },
+];
+
 export type SealedSecretColumnReport = {
   resealed: number;
   failed: number;
@@ -312,6 +361,12 @@ export type SealedSecretResealOptions = {
   listTenantIds?: () => Promise<string[]>;
   /** Test hook; defaults to the whole registry. */
   columns?: readonly SealedSecretColumn[];
+  /**
+   * JSON-snapshot secrets to sweep. Defaults to `SEALED_JSON_SECRETS`, or to
+   * none when a non-empty `columns` narrows the run (column-only tests stay
+   * isolated).
+   */
+  jsonSecrets?: readonly SealedJsonSecret[];
 };
 
 const keyOf = (c: SealedSecretColumn) => `${c.table}.${c.column}`;
@@ -546,6 +601,129 @@ async function runScope(
   return { resealed: resealedTotal, failed: failedTotal, remaining, frozen };
 }
 
+const jsonPathSql = (j: SealedJsonSecret): SQL =>
+  sql`${`{${j.path.join(",")}}`}::text[]`;
+
+/** Sealed string at `path`; NULL when the row has none (never stale). */
+const jsonValueSql = (j: SealedJsonSecret): SQL =>
+  sql`(t.${sql.identifier(j.column)} #>> ${jsonPathSql(j)})`;
+
+function jsonScopeSql(j: SealedJsonSecret, scope: string): SQL {
+  const parts: SQL[] = [
+    sql`t.tenant_id = ${scope}::uuid`,
+    sql`t.operation = ${j.operation}`,
+  ];
+  if (j.where) parts.push(sql.raw(`(${j.where})`));
+  return sql.join(parts, sql` AND `);
+}
+
+/** Version byte of the sealed string at `path` is below `active`. */
+const jsonStaleSql = (j: SealedJsonSecret, active: number): SQL =>
+  sql`(CASE WHEN ${jsonValueSql(j)} ~ '^[A-Za-z0-9+/]{4}' THEN get_byte(decode(substring(${jsonValueSql(j)} from 1 for 4), 'base64'), 0) END < ${active})`;
+
+async function countJsonRows(
+  tx: Transaction,
+  j: SealedJsonSecret,
+  scope: string,
+  active: number,
+): Promise<number> {
+  const result = (await tx.execute(
+    sql`SELECT count(*)::int AS n FROM ${sql.identifier("public")}.${sql.identifier(j.table)} t WHERE ${jsonScopeSql(j, scope)} AND ${jsonStaleSql(j, active)}`,
+  )) as unknown as ResultRows;
+  return Number(result.rows[0]?.n ?? 0);
+}
+
+/**
+ * One batch of JSON snapshots: lock stale rows after the key cursor, re-seal
+ * the value at `path` under the row's own AAD, write it back with a
+ * compare-and-set on that value. Only `path` changes (jsonb_set); the
+ * fingerprint and the rest of the response are untouched.
+ */
+async function resealJsonBatch(
+  tx: Transaction,
+  j: SealedJsonSecret,
+  scope: string,
+  active: number,
+  batchSize: number,
+  cursor: { lastKey: string | null; failed: number },
+): Promise<{ handled: number; resealed: number }> {
+  const after =
+    cursor.lastKey === null ? sql`` : sql` AND t.key > ${cursor.lastKey}`;
+  const result = (await tx.execute(
+    sql`SELECT t.key AS key, ${jsonValueSql(j)} AS sealed FROM ${sql.identifier("public")}.${sql.identifier(j.table)} t WHERE ${jsonScopeSql(j, scope)} AND ${jsonStaleSql(j, active)}${after} ORDER BY t.key LIMIT ${batchSize} FOR UPDATE OF t SKIP LOCKED`,
+  )) as unknown as ResultRows;
+
+  let resealed = 0;
+  for (const row of result.rows) {
+    const key = String(row.key);
+    const sealed = String(row.sealed);
+    cursor.lastKey = key;
+    try {
+      if (sealedVersion(sealed) >= active) continue;
+      const next = resealValue(sealed, [j.aad(scope, key)]);
+      const updated = await tx.transaction(
+        async (savepoint) =>
+          (await savepoint.execute(
+            sql`UPDATE ${sql.identifier("public")}.${sql.identifier(j.table)} t SET ${sql.identifier(j.column)} = jsonb_set(t.${sql.identifier(j.column)}, ${jsonPathSql(j)}, to_jsonb(${next}::text), false) WHERE ${jsonScopeSql(j, scope)} AND t.key = ${key} AND ${jsonValueSql(j)} = ${sealed}`,
+          )) as unknown as ResultRows,
+      );
+      // 0 rows: the value changed under us (compare-and-set); a later pass
+      // sees it again, it is neither resealed nor failed.
+      if ((updated.rowCount ?? 0) > 0) resealed += 1;
+    } catch {
+      cursor.failed += 1;
+    }
+  }
+  return { handled: result.rows.length, resealed };
+}
+
+/**
+ * One JSON secret in one tenant. Stale rows are found from the envelope
+ * version byte, so a killed run simply starts again over what is still stale;
+ * the key cursor only keeps a run from looping on rows it cannot open.
+ */
+async function runJsonScope(
+  database: Database,
+  j: SealedJsonSecret,
+  scope: string,
+  active: number,
+  batchSize: number,
+  options: SealedSecretResealOptions,
+  result: { aborted: boolean },
+): Promise<SealedSecretColumnReport> {
+  const inScope = <T>(run: (tx: Transaction) => Promise<T>): Promise<T> =>
+    withTenant(database, jobContext(scope), run);
+  let resealedTotal = 0;
+  const cursor = { lastKey: null as string | null, failed: 0 };
+
+  if (!options.reportOnly) {
+    for (;;) {
+      if (options.signal?.aborted) {
+        result.aborted = true;
+        break;
+      }
+      const batch = await inScope((tx) =>
+        resealJsonBatch(tx, j, scope, active, batchSize, cursor),
+      );
+      resealedTotal += batch.resealed;
+      if (batch.handled === 0) break;
+      await options.afterBatch?.({
+        table: j.table,
+        column: j.column,
+        scope,
+        count: batch.resealed,
+      });
+    }
+  }
+  const remaining = await inScope((tx) => countJsonRows(tx, j, scope, active));
+  return {
+    resealed: resealedTotal,
+    failed: cursor.failed,
+    remaining,
+    frozen: 0,
+  };
+}
+
 /** Re-seal (or, with `reportOnly`, count) every stale row of every registry column. */
 export async function runSealedSecretReseal(
   options: SealedSecretResealOptions = {},
@@ -557,11 +735,15 @@ export async function runSealedSecretReseal(
   if (!Number.isInteger(batchSize) || batchSize < 1)
     throw new RangeError("batchSize must be a positive integer");
   const columns = options.columns ?? SEALED_SECRET_COLUMNS;
+  const jsonSecrets =
+    options.jsonSecrets ??
+    (options.columns && options.columns.length > 0 ? [] : SEALED_JSON_SECRETS);
 
   // A listing failure is not tenant-specific: fail the job so pg-boss retries.
-  const tenantIds = columns.some((c) => c.scope === "tenant")
-    ? await (options.listTenantIds ?? (() => listAllTenantIds(database)))()
-    : [];
+  const tenantIds =
+    columns.some((c) => c.scope === "tenant") || jsonSecrets.length > 0
+      ? await (options.listTenantIds ?? (() => listAllTenantIds(database)))()
+      : [];
   const result: SealedSecretResealResult = {
     activeVersion: active,
     tables: {},
@@ -610,6 +792,45 @@ export async function runSealedSecretReseal(
       }
     }
     if (result.aborted) break;
+  }
+
+  // JSON snapshots (legend-ra1k0): counted in `remaining`, so the key cannot
+  // retire while a replayable voucher code is still on the old version.
+  for (const j of jsonSecrets) {
+    if (result.aborted) break;
+    const key = `${j.table}.${j.column}`;
+    const total = (result.tables[key] ??= {
+      resealed: 0,
+      failed: 0,
+      remaining: 0,
+      frozen: 0,
+    });
+    for (const scope of tenantIds) {
+      if (result.aborted || options.signal?.aborted) {
+        result.aborted = true;
+        break;
+      }
+      try {
+        const run = await runJsonScope(
+          database,
+          j,
+          scope,
+          active,
+          batchSize,
+          options,
+          result,
+        );
+        total.resealed += run.resealed;
+        total.failed += run.failed;
+        total.remaining += run.remaining;
+      } catch {
+        failedTenants.add(scope);
+        total.failed += 1;
+        log.error(
+          `Sealed secret re-seal failed for ${key} (${j.operation}) scope ${scope} (details withheld)`,
+        );
+      }
+    }
   }
   result.failedTenants = failedTenants.size;
   return result;
