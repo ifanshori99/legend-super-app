@@ -1773,3 +1773,10 @@ Langkah berikut CTO baru:
 - Infra: VM Colima 2,9 GB penuh oleh 2 pg-test 1,5 GiB + 13 dev DB yatim (di-stop). Disk ~15 GB membatasi worktree baru.
 - Berikut: brief 964 WS-12 Tanya AI (39d.2-4, syarat rilis) saat slot+disk; kt3t1 setelah 940; hpgyw setelah Q19.
 - Founder terbuka: Q19-Q25.
+
+## CTO 17 Nov 11:19 serah terima (S30:P6b2j:G4c20, konteks 2x compact)
+- Push origin --all 11:19: ditolak non-fast-forward milestone/m1 dan ghostex/rekonsiliasi-sisa-bank-dan-doit (lokal di belakang remote; jangan force).
+- Thread jalan: 940 G3p7h (ganti metode bayar tamu), merge train batch82 G1dr3, 955 G6kc8 (payroll pinjaman + BPA1), 958 G5ytk (baru lapor interim, grup A jalan), 962 G02qy, 961 G2ngy (Codex), 963 G9qm8.
+- Sesi CTO TETAP di akun Claude #1 (7d 95%, reset 17 Nov 18:00). Pindah paksa ke #3 dibatalkan founder; jangan force-switch sesi CTO. CTO baru: akun #3 (7d 19%).
+- Langkah CTO baru: buat ulang cron (bd memory cto-crons); verifikasi laporan G1dr3 (SHA m1, tutup s20iu/dz8ci), lalu rencanakan batch83 (recon 5e1f9d9fc, 954 f1a512f44, 960 cf9428b5a, 953 2be7cfd8d, 940 bila SIAP); 940 selesai: SO Codex QR/VA lalu legend-kt3t1; 955 selesai: SO Codex payroll; 958/962/961/963: verifikasi lalu antre; 964 WS-12 Tanya AI (brief docs/briefs/964, akun #3) saat disk >= 15 GB dan slot.
+- Founder terbuka: Q19-Q25 (Q24/Q25 menahan duitku-fe-ws05, Q19 menahan hpgyw dan 936).
