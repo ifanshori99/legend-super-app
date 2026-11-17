@@ -30,7 +30,11 @@ import {
   type Device,
   type PrintJob,
 } from "@starter/shared/edge";
-import { createUlid, CoreError } from "@starter/shared/core";
+import {
+  cafeLegendFixtures,
+  createUlid,
+  CoreError,
+} from "@starter/shared/core";
 import { ApiError } from "@/lib/api/errors";
 import { newIdempotencyKey } from "@/lib/idempotency";
 import { paginateFixture } from "@/lib/mock/paginate";
@@ -39,6 +43,13 @@ import { createMockStore } from "@/lib/mock/store";
 
 const OVERRIDE_KEY = "legend-edge-mock";
 type LinkOverride = "cloud_down" | "syncing";
+
+// The generic edge contract examples use their own ids. The running web mock
+// shares the active Cafe Legend scope used by tenant context and outlet filters.
+const mockScope = {
+  tenantId: cafeLegendFixtures.tenant.id,
+  outletId: cafeLegendFixtures.outlets[0].id,
+};
 
 function nowIso(offsetMs = 0): string {
   return new Date(Date.now() + offsetMs).toISOString();
@@ -87,6 +98,7 @@ const devices = createMockStore<Device[]>(() =>
   deviceFixtures.map((device) =>
     deviceSchema.parse({
       ...device,
+      ...mockScope,
       lastSeenAt:
         device.id === edgeFixtureIds.printerKitchenId
           ? nowIso(-13 * 60_000)
@@ -110,7 +122,11 @@ const jobs = createMockStore<PrintJob[]>(() => {
   };
   return printJobFixtures
     .map((job) =>
-      printJobSchema.parse({ ...job, createdAt: nowIso(offsets[job.id] ?? 0) }),
+      printJobSchema.parse({
+        ...job,
+        ...mockScope,
+        createdAt: nowIso(offsets[job.id] ?? 0),
+      }),
     )
     .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
 });
@@ -212,8 +228,7 @@ registerMock(getEdgeStatus, ({ scenario }) => {
   if (scenario === "empty")
     return {
       data: edgeStatusSchema.parse({
-        tenantId: edgeNodeFixture.tenantId,
-        outletId: edgeNodeFixture.outletId,
+        ...mockScope,
         cloudLink: "connected",
         edgeNode: null,
         pendingEventCount: 0,
@@ -225,11 +240,11 @@ registerMock(getEdgeStatus, ({ scenario }) => {
   const devicesNow = devices.get();
   return {
     data: edgeStatusSchema.parse({
-      tenantId: edgeNodeFixture.tenantId,
-      outletId: edgeNodeFixture.outletId,
+      ...mockScope,
       cloudLink: demoCloudDown() ? "disconnected" : current.cloudLink,
       edgeNode: edgeNodeSchema.parse({
         ...edgeNodeFixture,
+        ...mockScope,
         lastHeartbeatAt: nowIso(-5_000),
       }),
       pendingEventCount: current.pendingEventCount,
@@ -351,6 +366,7 @@ registerMock(enrollDevice, ({ body }) => {
   const template = deviceFixtures[0];
   const device: Device = deviceSchema.parse({
     ...template,
+    ...mockScope,
     id: newIdempotencyKey(),
     outletId: body.outletId,
     type: body.type,

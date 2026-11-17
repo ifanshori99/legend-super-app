@@ -116,7 +116,7 @@ test("F36: save a report, schedule an email and pause the schedule", async ({
   const row = savedRow(page, "Omzet per kanal");
   await row.getByRole("button", { name: "Jadwalkan" }).click();
   const dialog = page.getByRole("dialog");
-  await dialog.getByLabel(/Penerima/).fill("owner@cafelegend.id");
+  await dialog.getByRole("checkbox", { name: /Dewi Anggraini/ }).check();
   await dialog.getByRole("button", { name: "Buat jadwal" }).click();
   await expect(dialog).toBeHidden();
 

@@ -107,3 +107,29 @@ test("legend-jzud registerMock refuses a second handler for one endpoint", () =>
   );
   clearMocks();
 });
+
+test("legend-zrdy mock floor seeds without crypto.randomUUID and preserves bill amounts", (t) => {
+  const normal = fresh();
+  const sessionIds = [
+    qr.qrOrderFixtures.sessions[1].id,
+    "00000000-0000-4000-8000-000000000406",
+  ];
+  const totals = sessionIds.map((id) => normal.floor.billFor(id).totals);
+  const original = Object.getOwnPropertyDescriptor(
+    Crypto.prototype,
+    "randomUUID",
+  );
+  t.after(() =>
+    Object.defineProperty(Crypto.prototype, "randomUUID", original),
+  );
+  Object.defineProperty(Crypto.prototype, "randomUUID", {
+    value: undefined,
+    configurable: true,
+  });
+  assert.equal(typeof crypto.randomUUID, "undefined");
+  const fallback = fresh();
+  assert.deepEqual(
+    sessionIds.map((id) => fallback.floor.billFor(id).totals),
+    totals,
+  );
+});

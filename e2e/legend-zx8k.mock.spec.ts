@@ -106,7 +106,12 @@ test("ZX8K-02 the revenue report renders its dense table and a chart", async ({
     page.getByRole("cell", { name: "Shower Room Legend" }),
   ).toBeVisible();
   await expect(page.getByRole("list", { name: /Grafik batang/ })).toBeVisible();
-  await expect(page.getByText(/1\.350\.000/).first()).toBeVisible();
+  // The API source is unavailable: never invent shower revenue or show Rp0.
+  const shower = page.getByRole("row").filter({
+    has: page.getByRole("cell", { name: "Shower Room Legend", exact: true }),
+  });
+  await expect(shower.getByRole("cell").nth(1)).toHaveText("—");
+  await expect(page.getByText(/1\.350\.000|Rp\s*0(?:\D|$)/)).toHaveCount(0);
 });
 
 test("ZX8K-03 splitting the revenue report by facility, unit and outlet works", async ({
@@ -155,15 +160,11 @@ test("ZX8K-04 the RevPASH and shower utilization routes render", async ({
   page,
 }) => {
   await openReport(page, "/reports/facility/revpash?mock=normal", "RevPASH");
-  // Opens split by zone; the four floor zones come from the owner fixtures.
+  // Both RevPASH sources are unavailable, so the grouped result is empty.
   await expect(
-    page.getByRole("columnheader", { name: "Zona", exact: true }),
+    page.getByText("Belum ada data untuk periode ini"),
   ).toBeVisible();
-  await expect(
-    page.getByRole("cell", { name: "Indoor Reguler" }),
-  ).toBeVisible();
-  await expect(page.getByRole("cell", { name: "WFC Corner" })).toBeVisible();
-  await expect(page.getByRole("list", { name: /Grafik batang/ })).toBeVisible();
+  await expect(page.getByRole("table")).toHaveCount(0);
 
   await openReport(
     page,
@@ -201,7 +202,15 @@ test("ZX8K-06 the five operations reports render their default split", async ({
   ] as const;
   for (const [route, heading, cell] of reports) {
     await openReport(page, `/reports/facility/${route}?mock=normal`, heading);
-    await expect(page.getByRole("cell", { name: cell })).toBeVisible();
+    if (route === "cleaning-time" || route === "product-revenue") {
+      // These sources are not built: no mock rows may fabricate their values.
+      await expect(
+        page.getByText("Belum ada data untuk periode ini"),
+      ).toBeVisible();
+      await expect(page.getByRole("table")).toHaveCount(0);
+    } else {
+      await expect(page.getByRole("cell", { name: cell })).toBeVisible();
+    }
   }
 
   // The unit split lists all six units, WFC seats included (bead legend-vhgt).
@@ -269,8 +278,9 @@ for (const width of [390, 1440]) {
         "RevPASH",
       );
       await expect(
-        page.getByRole("cell", { name: "Indoor Reguler" }),
+        page.getByText("Belum ada data untuk periode ini"),
       ).toBeVisible();
+      await expect(page.getByRole("table")).toHaveCount(0);
       await page.waitForTimeout(250);
       await captureScreenshot(
         page,

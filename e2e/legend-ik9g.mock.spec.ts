@@ -70,9 +70,13 @@ test("SH-01: closed period figures are official and the running period is labell
   // One strip for the closed period (DESIGN.md §12).
   const strip = page.getByRole("region", { name: "Ringkasan periode tutup" });
   await expect(page.locator('[data-slot="stat-strip"]')).toHaveCount(1);
-  await expect(strip.getByText("Omzet", { exact: true })).toBeVisible();
+  await expect(
+    strip.getByRole("paragraph").filter({ hasText: /^Omzet$/ }),
+  ).toBeVisible();
   await expect(strip.getByText(/412\.800\.000/)).toBeVisible();
-  await expect(strip.getByText("Laba bersih", { exact: true })).toBeVisible();
+  await expect(
+    strip.getByRole("paragraph").filter({ hasText: /^Laba bersih$/ }),
+  ).toBeVisible();
   // DASH-02: the strip's guests and gross profit equal the source reports'
   // (report viewer sales.per_pax and the owner income statement, October).
   // The metric registry answers avg_spend_per_pax `unavailable`, so the tile
@@ -96,12 +100,24 @@ test("SH-01: closed period figures are official and the running period is labell
   // The running month-to-date net sales (Rp7.420.000, the owner board's day).
   await expect(strip.getByText(/7\.420\.000/)).toHaveCount(0);
 
-  // No shareholder permission opens a source report: no dead /reports links,
-  // and no orphan source chevrons without a link.
-  await expect(page.locator('a[href^="/reports"]')).toHaveCount(0);
-  await expect(
-    strip.locator('[data-slot="stat-tile"] svg.lucide-chevron-right'),
-  ).toHaveCount(0);
+  // SH-01: shareholders may open the aggregate report allowlist (legend-5bjh),
+  // while employee, customer and member detail reports remain unavailable.
+  const allowedReportPaths = [
+    "/reports/sales/daily",
+    "/reports/sales/per-pax",
+    "/reports/traffic/pax",
+    "/reports/finance/gross-margin",
+    "/reports/finance/ebitda",
+    "/reports/finance/income-statement",
+    "/reports/finance/cash-position",
+  ];
+  const reportLinks = page.locator('a[href^="/reports"]');
+  expect(await reportLinks.count()).toBeGreaterThan(0);
+  for (const href of await reportLinks.evaluateAll((links) =>
+    links.map((link) => link.getAttribute("href")),
+  )) {
+    expect(allowedReportPaths).toContain(href);
+  }
 });
 
 test("SH-02: the profit share tab shows only the shareholder's own history, estimate labelled", async ({

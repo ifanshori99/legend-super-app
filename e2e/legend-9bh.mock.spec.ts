@@ -57,16 +57,17 @@ test("AUTH-05: the security page lists factors and devices, and revokes a device
   // Current device is marked and not revocable.
   await expect(page.getByText("Safari di Mac")).toBeVisible();
   await expect(page.getByText("Sesi ini")).toBeVisible();
-  await expect(page.getByText("Chrome di iPhone")).toBeVisible();
+  const sessions = page.getByRole("region", { name: "Sesi & perangkat" });
+  await expect(sessions.getByText("Chrome di iPhone")).toBeVisible();
 
-  await page.getByRole("button", { name: "Cabut" }).click();
+  await sessions.getByRole("button", { name: "Cabut", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "Cabut sesi perangkat ini?" }),
   ).toBeVisible();
   await page.getByRole("button", { name: "Cabut sesi" }).click();
 
   await expect(
-    page.getByRole("listitem").filter({ hasText: "Chrome di iPhone" }),
+    sessions.getByRole("listitem").filter({ hasText: "Chrome di iPhone" }),
   ).toHaveCount(0);
   await expect(
     page.getByText("Sesi Chrome di iPhone dicabut.", { exact: true }),
@@ -133,7 +134,11 @@ test("AUTH-05: a failed refresh keeps the idle warning open with retry text", as
     localStorage.setItem("legend-mock-auth-error", "503"),
   );
   await page.getByRole("button", { name: "Lanjut bekerja" }).click();
-  await expect(page.getByRole("alert")).toContainText("Sesi belum diperbarui");
+  await expect(
+    page
+      .getByRole("dialog", { name: "Sesi akan segera berakhir" })
+      .getByRole("alert"),
+  ).toContainText("Sesi belum diperbarui");
   await page.evaluate(() => localStorage.removeItem("legend-mock-auth-error"));
   await page.getByRole("button", { name: "Lanjut bekerja" }).click();
   await expect(

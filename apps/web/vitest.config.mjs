@@ -7,7 +7,13 @@ import { fileURLToPath } from "node:url";
 
 export default {
   resolve: {
-    alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
+    alias: {
+      "@": fileURLToPath(new URL("./src", import.meta.url)),
+      // Match Vite's mock/demo asset alias when tests boot all mock handlers.
+      "virtual:demo-photo-map": fileURLToPath(
+        new URL("./src/lib/mock/demo-photos.ts", import.meta.url),
+      ),
+    },
   },
   test: {
     include: ["test/**/*.test.ts"],

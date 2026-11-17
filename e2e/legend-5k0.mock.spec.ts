@@ -201,11 +201,11 @@ test("TEN-09 · export downloads a bundle and import previews the diff before ap
   expect(JSON.stringify(bundle)).not.toMatch(/credentials|tenantId/);
 
   // Edit the bundle the way a new tenant's setup would: one zone changes, one is new.
-  bundle.sections.zones.items[0].tableCount = 99;
+  bundle.sections.zones.items[0].name = "Zona diperbarui";
   bundle.sections.zones.items.push({
+    ...bundle.sections.zones.items[0],
     key: "rooftop",
     name: "Rooftop",
-    tableCount: 6,
   });
   const input = page.getByLabel("Pilih berkas .json");
   await input.setInputFiles({
@@ -251,7 +251,7 @@ test("TEN-09 · an import that still carries source-tenant ids is refused with a
   });
   await expect(
     page.getByRole("alert").filter({ hasText: "bocor.json" }),
-  ).toContainText("pengenal tenant asal");
+  ).toContainText("sections.zones.items[0].tenantId (forbidden_key)");
   await expect(
     page.getByRole("button", { name: "Terapkan konfigurasi" }),
   ).toHaveCount(0);

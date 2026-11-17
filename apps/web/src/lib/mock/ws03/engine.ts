@@ -149,7 +149,7 @@ function seedState(clock: () => number): FloorState {
         sessionId: extra.id,
         cartVersion: 1,
         lines: template.items.map((item) => ({
-          cartLineId: crypto.randomUUID(),
+          cartLineId: newIdempotencyKey(),
           menuItemId: item.menuItemId,
           name: item.name,
           quantity: item.quantity,
@@ -206,7 +206,7 @@ function seedState(clock: () => number): FloorState {
       sessionId,
       cartVersion: 1,
       lines: payFirstTemplate.items.map((item) => ({
-        cartLineId: crypto.randomUUID(),
+        cartLineId: newIdempotencyKey(),
         menuItemId: item.menuItemId,
         name: item.name,
         quantity: item.quantity * scale,
@@ -432,7 +432,7 @@ export function createWs03Engine(clock: () => number = Date.now) {
       sessionId: order.tableSessionId,
       cartVersion: 1,
       lines: items.map((item) => ({
-        cartLineId: crypto.randomUUID(),
+        cartLineId: newIdempotencyKey(),
         menuItemId: item.menuItemId,
         name: item.name,
         quantity: item.quantity,
