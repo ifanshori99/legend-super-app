@@ -158,6 +158,23 @@ Both dev servers print colorized single-line logs prefixed by Turborepo (`@start
 
 If you set `DATABASE_URL` before setup, the script keeps it and skips Docker. Use a database dedicated to your app. `MIGRATION_DATABASE_URL` is optional for a separate direct connection. The local container status/log/stop commands do not operate on external databases; use `pnpm run doctor` to check their connection.
 
+## Mock browser tests
+
+Run one mock spec by passing its file path after `--`:
+
+```sh
+pnpm run test:e2e:mock -- e2e/mock-mode.mock.spec.ts
+```
+
+You can pass several files and Playwright options in the same command:
+
+```sh
+pnpm run test:e2e:mock -- e2e/mock-mode.mock.spec.ts e2e/legend-1j7.mock.spec.ts --reporter=line
+```
+
+With no arguments, `pnpm run test:e2e:mock` runs the entire mock suite. Add
+`--list` to list the selected tests without running them.
+
 ## Verify a fresh start
 
 ```sh

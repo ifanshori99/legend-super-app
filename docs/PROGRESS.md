@@ -7264,3 +7264,12 @@ Tidak diambil: a846fbcc (983), 980, batch85 (4badcac8, 978, 981, 982) dan cabang
 - Review: reviewer sonnet atas hunk resolusi konflik dan rechain: bersih (payment-webhook.service auto-merge 965+969+967 utuh; journal, prevId, snapshot 0436-0449 konsisten; entri registry 0446 cocok).
 
 **Subagent**: total 6 (test-runner 1, reviewer 1, implementer 4), puncak 3 bersamaan. Pemegang heavy: thread merge train; test-runner memegang satu fast gate. Sesi ±5 jam 43 menit, biaya sesi 4093k (utama 3062k, subagent 1031k).
+
+## 960 — Filter berkas mock e2e (legend-1ek1l, 17 Nov 2026)
+
+- Basis `origin/milestone/m1` `0c31ff40e`; cabang `ghostex/4badcac8`. Script root memakai wrapper `scripts/e2e-mock.mjs` yang membuang hanya pemisah `--` awal sebelum meneruskan filter berkas dan opsi ke Playwright. Tanpa argumen tetap seluruh suite. Tidak mengubah spec e2e atau migrasi.
+- Bukti gagal-dulu: 2 lulus/4 gagal, termasuk literal `--` yang bocor sebelum filter berkas. GREEN: `LEGEND_TEST_FILES="tests/e2e-mock-runner.test.mjs tests/test-runner-selection.test.mjs" heavy pnpm test` lulus 19/19 (73,44 ms node:test). Log `/tmp/legend-960-contract-green.log`.
+- Bukti browser nyata: `LEGEND_MOCK_WARM_ROUTES=/design-system heavy pnpm run test:e2e:mock -- e2e/mock-mode.mock.spec.ts` menjalankan tepat 3 test dari satu berkas, satu worker, 3/3 lulus (19,1 detik). Log `/tmp/legend-960-e2e-green.log`.
+- Prettier berkas implementasi/test/panduan, ESLint kedua berkas JavaScript, dan `git diff --check` hijau. Review konteks segar tanpa temuan. Gate penuh diserahkan ke merge train; tidak menjalankan seluruh suite mock, build, atau typecheck untuk perubahan wrapper JavaScript ini.
+- Subagent native Codex: total 4, puncak 3 bersamaan; token heavy tunggal bergilir dari root (worktree setup) ke test-writer/runner. Helper session-usage tidak menemukan transkrip native; parallel-report hanya membaca sesi Claude, jadi biaya/token/rata-rata native tidak tersedia. CTO yang memperbarui kartu Beads.
+- Format arsip `docs/PROGRESS.md` masih merah; salinan basis `0c31ff40e` di `/tmp/legend-960-PROGRESS-base.md` juga merah. Tidak memformat ulang arsip di luar lingkup.
