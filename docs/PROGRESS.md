@@ -1764,3 +1764,12 @@ Langkah berikut CTO baru:
 - 05:42 935 selesai 8a661cd90 (iy5l0, 5v7oq ditutup; 2lgu batas keras ada, alert ke cloud -> legend-uvnll). Antre.
 - 05:48 939 selesai 825123713 (xtj5t ditutup, test saja). Antre.
 - 05:58 CTO G4c20 (17 Nov) ambil alih dari G1rv9: link G196j/G15h0/G3p7h/G0suw; cron 4 dibuat ulang (push :07, akun mati :37, retro 3 jam, Q13 :52 generik). Mulai G76iv merge train batch81 (brief 943: bf531619, 938, 935, 160d3d37; full run), G7x2q WS-05 Duitku FE (brief 945: mp44v, vntqt, 6xf7x; 0orff tunda mockup). SO akses 935 (Codex #5, brief 944) e3cd55bd0: 2 P1 -> legend-91u09, legend-eewxw, brief 946 antre slot Claude (tahan gerbang rilis akses). Disk: cleanup-ssd + volume anonim + worktree 935 + hapus ~/.cache/huggingface (founder W3 Ya) -> 22 GB. Founder ditanya Q15-Q18 (QR/VA ganti bank, Coretax, tutup shift 2 langkah, struk tanpa pajak). g7bg dan shareholder seed sudah dijawab; 31fi = Q54 (semua 105 laporan) tinggal kerja.
+
+## CTO 17 Nov 11:16 (S30:P6b2j:G4c20)
+- batch81 di m1 0c31ff40e. batch82 (G1dr3) jalan: 947, 946, 951, 949 payroll (+940/952 bila SIAP). Antre batch83: recon 5e1f9d9fc, 954 f1a512f44, 960 cf9428b5a, 953 2be7cfd8d. TAHAN: duitku-fe-ws05 1e133c584 (UI Q24/Q25), pos-panel 936 (Q19).
+- SO selesai: payout 950 (1 P2 -> 954 selesai), recon 948 (P1 -> 952 selesai), akses 957 946+951 (1 P2 -> 962 jalan). SO tersisa sebelum rilis: QR/VA (setelah 940 9vmit), payroll (setelah 955).
+- Jalan: 940 G3p7h, 955 G6kc8 (payroll pinjaman + BPA1 resmi DJP), 958 G5ytk (recon refund setelah lunas, P1 uang), 962 G02qy (reseal snapshot voucher), Codex 961 G2ngy (test created_at), 963 G9qm8 (memori PG test).
+- Keputusan CTO: O8 partialYearTaxSubject tetap false (hanya WNA <183 hari, potong lebih bukan kurang); Article21IncomeTax A1 dari slip tersegel; satu full run per batch (Retro 40, merge-train.md); worktree:setup langkah pertama (engineer.md); s20iu/dz8ci sudah tertutup oleh 947.
+- Infra: VM Colima 2,9 GB penuh oleh 2 pg-test 1,5 GiB + 13 dev DB yatim (di-stop). Disk ~15 GB membatasi worktree baru.
+- Berikut: brief 964 WS-12 Tanya AI (39d.2-4, syarat rilis) saat slot+disk; kt3t1 setelah 940; hpgyw setelah Q19.
+- Founder terbuka: Q19-Q25.
