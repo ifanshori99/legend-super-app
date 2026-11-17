@@ -16,6 +16,7 @@
 // unbound message never does, so a replayed webhook or a racing poller books
 // nothing twice (the journal key is the recorded row's id besides). Nothing
 // else here touches a journal.
+import { createHash } from "node:crypto";
 import {
   createUlid,
   idr,
@@ -114,6 +115,46 @@ export async function recordProviderRefundInTx(
   // The remainder counted a refund of ours that is not final (1025 B).
   let countedLiveOwn = false;
   let tellSupervisors = false;
+  /** Holds the intent (refunds and payouts stop) because the books count a
+   * refund of ours that is not final, and tells finance once. The hold is
+   * keyed by a stable id of (tenant, intent, provider refund id): a replay, or
+   * the case with no provider row at all, stays one hold and one alert. */
+  const fileLiveOwnHold = async (
+    heldIdr: number,
+    intentOutletId: string,
+  ): Promise<void> => {
+    const hex = createHash("sha256")
+      .update(
+        `refund_recon_hold.live_own\0${tenantId}\0${input.expectedIntentId.toLowerCase()}\0${providerRefundId}`,
+      )
+      .digest("hex");
+    const [held] = await tx
+      .insert(refundReconHolds)
+      .values({
+        tenantId,
+        paymentIntentId: input.expectedIntentId,
+        webhookEventId: `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`,
+        providerRefundId,
+        amountIdr: idr(heldIdr),
+        reason:
+          "Refund penyedia dibukukan dengan menghitung refund kami yang belum final (REFUND_LIVE_OWN)",
+        flaggedAt: now,
+      })
+      .onConflictDoNothing()
+      .returning({ id: refundReconHolds.id });
+    if (held)
+      await alertProviderRefundCountedWithLiveOwn(
+        tx,
+        context,
+        {
+          intentId: input.expectedIntentId,
+          outletId: tellSupervisors ? intentOutletId : null,
+          providerRefundId,
+          amountIdr: heldIdr,
+        },
+        now,
+      );
+  };
   if (
     input.provider !== PROVIDER ||
     providerRefundId.length === 0 ||
@@ -301,21 +342,38 @@ export async function recordProviderRefundInTx(
     // final. Write nothing; the caller asks again later (when the retry window
     // is over, `force` counts it).
     const mustWait = !input.force && live.some((row) => row.fund !== true);
-    if (evidence) {
-      const left =
-        Number(evidence.amountIdr) -
-        recorded.reduce((sum, row) => sum + Number(row.amountIdr), 0) -
-        ownIdr;
-      if (left <= 0) return { status: ownIdr > 0 ? "own" : "duplicate" };
-      if (mustWait) return { status: "retry" };
-      amountIdr = left;
-    } else if (ownIdr >= amountIdr) return { status: "own" };
-    else if (mustWait) return { status: "retry" };
-    countedLiveOwn = live.length > 0;
+    // Without an evidence row the intent's own amount stands for the money
+    // received; provider rows already recorded are taken off in both cases.
+    const left =
+      (evidence ? Number(evidence.amountIdr) : amountIdr) -
+      recorded.reduce((sum, row) => sum + Number(row.amountIdr), 0) -
+      ownIdr;
     // Counted after the retry window (a refund of the bill still unresolved):
     // the outlet supervisors hear of it too. A live parked-fund refund (fixed
     // amount, already told by the 958 alert) is told to the owners only.
     tellSupervisors = live.some((row) => row.fund !== true);
+    if (left <= 0) {
+      // Our refunds leave nothing of the transaction. One not yet accepted by
+      // the provider (no provider reference) may still fail: not told apart
+      // yet, ask again. Past the window (forced) the money is held instead:
+      // nothing new is booked (ours journals itself), but should ours fail the
+      // intent's refunds and payouts stay stopped until finance checks.
+      if (live.length > 0) {
+        if (!input.force && live.some((row) => !row.provider_ref && !row.fund))
+          return { status: "retry" };
+        if (input.force) {
+          await fileLiveOwnHold(
+            live.reduce((sum, row) => sum + Number(row.amount), 0),
+            intent.outletId,
+          );
+          return { status: "own" };
+        }
+      }
+      return { status: ownIdr > 0 ? "own" : "duplicate" };
+    }
+    if (mustWait) return { status: "retry" };
+    amountIdr = left;
+    countedLiveOwn = live.length > 0;
   } else if (recorded.some((row) => row.refundId.startsWith(SYNTHETIC_PREFIX)))
     return { status: "duplicate" };
 
@@ -520,36 +578,8 @@ export async function recordProviderRefundInTx(
     );
   // The books were written counting a refund of ours that is not final: if it
   // later fails the journal is short. Held until finance checks (the intent's
-  // refunds and payouts stop), finance told once. The hold is keyed by this
-  // row (its id stands for the event), once per provider refund id.
-  if (countedLiveOwn) {
-    const [held] = await tx
-      .insert(refundReconHolds)
-      .values({
-        tenantId,
-        paymentIntentId: intent.id,
-        webhookEventId: inserted.id,
-        providerRefundId,
-        amountIdr: idr(amountIdr),
-        reason:
-          "Refund penyedia dibukukan dengan menghitung refund kami yang belum final (REFUND_LIVE_OWN)",
-        flaggedAt: now,
-      })
-      .onConflictDoNothing()
-      .returning({ id: refundReconHolds.id });
-    if (held)
-      await alertProviderRefundCountedWithLiveOwn(
-        tx,
-        context,
-        {
-          intentId: intent.id,
-          outletId: tellSupervisors ? intent.outletId : null,
-          providerRefundId,
-          amountIdr,
-        },
-        now,
-      );
-  }
+  // refunds and payouts stop), finance told once.
+  if (countedLiveOwn) await fileLiveOwnHold(amountIdr, intent.outletId);
   // 8. The journal of this refund (legend-tlm3h): one event per recorded row.
   await appendPaymentEvent(tx, context, {
     name: "payment.provider_refunded",

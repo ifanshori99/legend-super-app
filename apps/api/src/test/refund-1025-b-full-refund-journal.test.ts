@@ -1451,3 +1451,121 @@ describe("1025-B a forced full-refund write with our refund still in flight file
     expect((await holdsFor(code))[0]!.resolved_at).toBeNull();
   });
 });
+
+// ===========================================================================
+// Architect round 3 (1025-B-F4 / F5). Assumptions: the hold's webhook_event_id
+// is not asserted (only that a replay keeps ONE hold and ONE alert); "finance
+// alert" = a supervisor notification, as in F3; the remainder of an intent
+// without an evidence row subtracts the provider rows already recorded, like
+// the evidence branch does.
+// ===========================================================================
+
+describe("1025-B our refund of the FULL amount in flight, and an intent without an evidence row", () => {
+  async function holdsOfIntent(code: Code) {
+    const { rows } = await owner.query<{
+      provider_refund_id: string | null;
+      resolved_at: Date | null;
+    }>(
+      `SELECT provider_refund_id::text AS provider_refund_id, resolved_at
+         FROM refund_recon_holds
+        WHERE tenant_id = $1 AND payment_intent_id = $2`,
+      [tenantId, code.id],
+    );
+    return rows;
+  }
+
+  const runWorker = () =>
+    reprocessStoredWebhookEvents(webhookContext, new Date(), 100).catch(
+      () => null,
+    );
+
+  it("1025-B-F4 R = the whole amount in flight, provider refunded, window passes: one hold, one alert, replay-safe, and after R fails a new refund of the same amount is still 409 PROVIDER_REFUNDED", async () => {
+    const code = await paidCode();
+    const refundId = await seedOurRefund(code, BILL_TOTAL, {
+      status: "approved",
+      providerRef: null,
+      attempts: 1,
+    });
+    doit.refund(code.providerRef);
+    const body = doit.eventFor(code.providerRef, "refunded");
+    const alertsBefore = await supervisorAlerts();
+    await deliver(body);
+
+    // The retry window passes with R unresolved: the write is forced.
+    await owner.query(
+      `UPDATE gateway_webhook_events
+          SET received_at = now() - interval '20 minutes',
+              updated_at = now() - interval '20 minutes'
+        WHERE tenant_id = $1 AND event_id = $2`,
+      [tenantId, body.id],
+    );
+    await runWorker();
+
+    const holds = await holdsOfIntent(code);
+    expect(holds, "one hold for the forced full refund").toHaveLength(1);
+    expect(holds[0]!.provider_refund_id).toBe(`payment:${code.providerRef}`);
+    expect(holds[0]!.resolved_at, "open").toBeNull();
+    const alerts = (await supervisorAlerts()) - alertsBefore;
+    expect(alerts, "finance is alerted").toBeGreaterThanOrEqual(1);
+
+    // Replays: the worker twice more, the provider resends the event.
+    await runWorker();
+    await runWorker();
+    await deliver(body);
+    expect(await holdsOfIntent(code), "still one hold").toHaveLength(1);
+    expect(
+      (await supervisorAlerts()) - alertsBefore,
+      "no second alert on replay",
+    ).toBe(alerts);
+
+    // R then fails: the guest was refunded by the provider already, so staff
+    // must not be able to refund the same money again.
+    await owner.query(
+      "UPDATE payment_refunds SET status = 'failed' WHERE id = $1",
+      [refundId],
+    );
+    const again = await manualRefund(code.id, BILL_TOTAL);
+    expect(again.status, JSON.stringify(again.body)).toBe(409);
+    expect(again.body.error.code).toBe("PROVIDER_REFUNDED");
+    expect(await refundRowsOfIntent(code.id), "no second refund filed").toBe(1);
+  });
+
+  it("1025-B-F5 no evidence row, a provider partial of 30.000 already recorded, then the full refund: the new row is the remainder and the journal totals the payment once", async () => {
+    const code = await paidCode();
+    await owner.query(
+      "DELETE FROM payment_evidence WHERE tenant_id = $1 AND payment_intent_id = $2",
+      [tenantId, code.id],
+    );
+    await seedEchoRow(code, "rf_partial_f5", PARTIAL);
+
+    await providerRefundsEverywhere(code);
+    await providerRetriesLater(code);
+
+    const full = await fullRowOf(code);
+    expect(full, "one row keyed payment:<providerRef>").toHaveLength(1);
+    expect(full[0]!.amount_idr, "only the remainder").toBe(
+      BILL_TOTAL - PARTIAL,
+    );
+    const rows = await providerRows(code.id);
+    expect(rows.reduce((sum, row) => sum + row.amount_idr, 0)).toBe(BILL_TOTAL);
+
+    // The full refund's journal books the remainder, not the whole payment.
+    const events = (
+      await outboxEnvelopes("payment.provider_refunded", code.id)
+    ).filter(
+      (event) =>
+        (event.payload as { providerRefundId: string }).providerRefundId ===
+        full[0]!.id,
+    );
+    expect(events, "one event for the full row").toHaveLength(1);
+    expect((events[0]!.payload as { amountIdr: number }).amountIdr).toBe(
+      BILL_TOTAL - PARTIAL,
+    );
+    expect((await deliverEvent(events[0]!)).status).toBe("posted");
+    const entries = await journalsByKey(full[0]!.id);
+    expect(entries).toHaveLength(1);
+    expect(await linesOf(entries[0]!)).toEqual(
+      refundLines(BILL_TOTAL - PARTIAL),
+    );
+  });
+});

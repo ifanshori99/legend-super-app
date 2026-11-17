@@ -425,7 +425,6 @@ export const PAID_UNRECORDED = new Set([
   "settlement_failed",
   "paid_without_amount",
   "extra_funds_not_parked",
-  "refund_in_flight",
 ]);
 
 /** Checks one queue row now. Returns its status afterwards (null: gone). */
@@ -516,6 +515,32 @@ export async function reconcileReleasedQris(
         now,
       );
     }
+    // The provider gave the code's payment back while a refund of ours is
+    // still in flight: not an unrecorded payment, but the full refund waits for
+    // ours to finish (legend-gjt5q). Told once, when first seen.
+    if (
+      updated &&
+      outcome.kind === "open" &&
+      outcome.seen === "refund_in_flight" &&
+      row.lastProviderStatus !== "refund_in_flight"
+    )
+      await notifyOutletSupervisors(
+        tx,
+        context,
+        {
+          tenantId,
+          outletId: row.outletId as OutletId,
+          alsoOwners: true,
+          id: createUlid(now.getTime()),
+          eventName: "pos_qris_release_reconciliation.refund_in_flight",
+          aggregateType: "pos_qris_release_reconciliation",
+          aggregateId: row.id,
+          payload: { reconciliationId: row.id, holdId: row.holdId },
+          title: "QRIS dikembalikan penyedia, refund kami belum selesai",
+          body: "Penyedia menjawab QRIS yang sudah dirilis ini dikembalikan ke pembayar, tetapi refund dari sistem kami masih berjalan. Pencatatan menunggu refund itu selesai; periksa antrean rekonsiliasi QRIS.",
+        },
+        now,
+      );
     return updated?.status ?? "resolved";
   });
 }

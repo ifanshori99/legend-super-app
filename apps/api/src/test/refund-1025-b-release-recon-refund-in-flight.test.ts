@@ -27,7 +27,9 @@ import {
   type HoldFixture,
 } from "./pos-qris-hold-test-helpers.ts";
 import {
+  UNRECORDED_ALERT_TITLE,
   hoursAfter,
+  notificationCount,
   reconRows,
   releaseKit,
   runRecon,
@@ -84,33 +86,35 @@ async function providerRefundRows(intentId: string): Promise<number> {
   return Number(rows[0]!.n);
 }
 
+/** A released QR whose extra payment is listed and whose own refund is in flight. */
+async function inFlightScene() {
+  const { qr, releasedAt } = await kit.forceRelease({ rawStatus: "01" });
+  const [open] = await reconRows(fx, qr.intentId);
+  expect(open?.status).toBe("open");
+  extrasByRef.set(qr.providerRef!, [
+    { providerRef: `EXTRA-${randomUUID()}`, amountIdr: EXTRA_IDR },
+  ]);
+  await owner.query(
+    `INSERT INTO payment_refunds
+       (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status,
+        requested_by, approved_by, decided_at, provider_ref, payout_attempts)
+     VALUES ($1, $2, $3, $4, $5, 'Pengembalian dana', 'approved', 'requester', 'approver', now(), NULL, 1)`,
+    [
+      randomUUID(),
+      fx.tenant.tenantId,
+      fx.tenant.outletId,
+      qr.intentId,
+      OURS_IDR,
+    ],
+  );
+  return { qr, releasedAt };
+}
+
 describe("1025-B-R refund in flight when the release reconciliation reads `refunded`", () => {
   it("1025-B-R1 extra payments are still parked, the row stays open, no provider refund row, our refund untouched", async () => {
-    const { qr, releasedAt } = await kit.forceRelease({ rawStatus: "01" });
-    const [open] = await reconRows(fx, qr.intentId);
-    expect(open?.status).toBe("open");
-
-    // The provider lists an extra transaction of the code with its status
-    // (the way parkExtraPayments learns about it).
-    extrasByRef.set(qr.providerRef!, [
-      { providerRef: `EXTRA-${randomUUID()}`, amountIdr: EXTRA_IDR },
-    ]);
+    const { qr, releasedAt } = await inFlightScene();
     expect(await unallocatedFunds(fx, qr.intentId), "not parked yet").toEqual(
       [],
-    );
-    // A refund of ours is approved and being sent (attempted, no final answer).
-    await owner.query(
-      `INSERT INTO payment_refunds
-         (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status,
-          requested_by, approved_by, decided_at, provider_ref, payout_attempts)
-       VALUES ($1, $2, $3, $4, $5, 'Pengembalian dana', 'approved', 'requester', 'approver', now(), NULL, 1)`,
-      [
-        randomUUID(),
-        fx.tenant.tenantId,
-        fx.tenant.outletId,
-        qr.intentId,
-        OURS_IDR,
-      ],
     );
     const refundsBefore = await refundsOfIntent(fx, qr.intentId);
 
@@ -132,5 +136,21 @@ describe("1025-B-R refund in flight when the release reconciliation reads `refun
       "the full-refund write waits for our refund",
     ).toBe(0);
     expect(await refundsOfIntent(fx, qr.intentId)).toEqual(refundsBefore);
+  });
+
+  it("1025-B-R2 the refund-in-flight state does not raise the misleading 'QRIS dibayar, uang belum tercatat' warning (it is not an unrecorded payment)", async () => {
+    const { qr, releasedAt } = await inFlightScene();
+    const before = await notificationCount(fx, UNRECORDED_ALERT_TITLE);
+
+    refundedRefs.add(qr.providerRef!);
+    await runRecon(fx, hoursAfter(releasedAt, 2));
+    await runRecon(fx, hoursAfter(releasedAt, 3));
+
+    expect(
+      await notificationCount(fx, UNRECORDED_ALERT_TITLE),
+      "no 'paid but unrecorded' alert for a refund in flight",
+    ).toBe(before);
+    // Still handled, not dropped: the row stays open for the next check.
+    expect((await reconRows(fx, qr.intentId))[0]?.status).toBe("open");
   });
 });
