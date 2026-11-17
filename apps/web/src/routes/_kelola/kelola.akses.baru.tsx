@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { CreateCustomRolePage } from "@/features/ws01-access/components/role-editor-page";
 import { accessGuard } from "@/features/ws01-access/guard";
+import { useViewerUserId } from "@/features/ws01-access/hooks";
 
 // /kelola/akses/baru — custom role builder (PRD §3 F7 "Custom Role").
 export const Route = createFileRoute("/_kelola/kelola/akses/baru")({
@@ -10,7 +11,6 @@ export const Route = createFileRoute("/_kelola/kelola/akses/baru")({
 
 function NewRoleScreen() {
   const { access, session } = Route.useRouteContext();
-  return (
-    <CreateCustomRolePage access={access} viewerUserId={session?.user.id} />
-  );
+  const viewerUserId = useViewerUserId(session?.user.id);
+  return <CreateCustomRolePage access={access} viewerUserId={viewerUserId} />;
 }

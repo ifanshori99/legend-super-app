@@ -75,6 +75,15 @@ test("AUTH-05 · a custom role built from the catalog is created and opens its d
     .check();
   await expect(page.getByText("1 izin dipilih")).toBeVisible();
 
+  // Admin Tenant does not hold pos.void.approve, so adding it asks for a fresh
+  // re-authentication first (assertCanEditCustomRole, legend-tj8o).
+  await page.getByRole("button", { name: "Buat peran" }).click();
+  await page.getByLabel("Kode autentikator").fill("123456");
+  await page.getByRole("button", { name: "Verifikasi kode" }).click();
+  await expect(
+    page.getByText("Verifikasi berhasil. Simpan peran lagi."),
+  ).toBeVisible();
+
   await page.getByRole("button", { name: "Buat peran" }).click();
   await expect(page.getByText("Peran khusus dibuat.").first()).toBeVisible();
   await expect(

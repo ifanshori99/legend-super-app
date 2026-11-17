@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { RoleDetailPage } from "@/features/ws01-access/components/role-editor-page";
 import { accessGuard } from "@/features/ws01-access/guard";
+import { useViewerUserId } from "@/features/ws01-access/hooks";
 import { isMockScenarioRequest } from "@/features/ws01-access/lib";
 import { rolesQuery } from "@/features/ws01-access/queries";
 
@@ -17,11 +18,12 @@ export const Route = createFileRoute("/_kelola/kelola/akses/role/$roleId")({
 function RoleScreen() {
   const { access, session } = Route.useRouteContext();
   const { roleId } = Route.useParams();
+  const viewerUserId = useViewerUserId(session?.user.id);
   return (
     <RoleDetailPage
       roleId={roleId}
       access={access}
-      viewerUserId={session?.user.id}
+      viewerUserId={viewerUserId}
     />
   );
 }

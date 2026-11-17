@@ -14,3 +14,8 @@ export function mockAssignablePeople(): AssignablePerson[] {
     }))
     .sort((a, b) => a.name.localeCompare(b.name, "id-ID"));
 }
+
+/** The mock actor: the fixture Admin Tenant (same id mock.ts acts as). */
+export function mockViewerUserId(): string {
+  return cafeLegendAccessFixtures.users.tenantAdmin.id;
+}

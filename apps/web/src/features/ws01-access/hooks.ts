@@ -29,6 +29,31 @@ import {
 } from "./queries";
 import { EMPTY_SCOPE_LOOKUP, type ScopeLookup } from "./lib";
 
+/**
+ * The signed-in user's id for the grant rules. Mock mode has no API session
+ * (fetchSession finds none), so it falls back to the fixture Admin Tenant, the
+ * same actor the mock handlers act as (mock.ts). Without it nothing is held and
+ * the editor and the grant dialog fail closed (legend-sz75z).
+ */
+export function useViewerUserId(sessionUserId: string | undefined) {
+  const mockViewer = useQuery({
+    queryKey: ["ws01-access", "mock-viewer"],
+    queryFn: async () => {
+      // The import stays inside the flag check so a normal build compiles the
+      // fixtures out (same pattern as loadAssignablePeople).
+      if (import.meta.env.VITE_API_MOCK === "true") {
+        const { mockViewerUserId } = await import("./mock-people");
+        return mockViewerUserId();
+      }
+      return null;
+    },
+    enabled:
+      import.meta.env.VITE_API_MOCK === "true" && sessionUserId === undefined,
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+  return sessionUserId ?? mockViewer.data ?? undefined;
+}
+
 export function useRoles() {
   return useQuery(rolesQuery());
 }
