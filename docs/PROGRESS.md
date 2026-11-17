@@ -6,6 +6,7 @@
 - Bead lanjutan: legend-snwnn (tarik klaim return), legend-w9od2 (fee_idr bisa dipalsukan legend_app), legend-o2b4m (UI clearance).
 - Uji: gagal-dulu 39/43 merah di base; suite payout terarah 71 file 864 lulus (1 fixture E-4, dibetulkan); run delta 7 file 113/113 lulus; typecheck api/shared/web exit 0; db:generate kosong. Architect xhigh: P1 trigger 0583 (dibetulkan), P2 x2 + P3 x6 dibetulkan; P3 fee_idr diterima ke legend-w9od2.
 - Sesi 18:27-20:02 (95 menit): 33 subagent, puncak 8, rata 0.58 berjalan; biaya* ~9.9M (utama opus 2.4M, sonnet 5.7M, opus sub 1.3M, haiku 0.6M). Token heavy: test-runner.
+- Lanjutan keputusan CTO (17 Nov malam): legend-hklnq (0584) clearance terikat sidik flag (hash dihitung SQL dari item, attestation, posting; kolom volatile/terenkripsi dibuang), sighting insert-only, tahanan membandingkan sidik LIVE (lebih membatasi dari kontrak: data berubah setelah approve langsung menahan), approve ditolak PAYOUT-91 bila data berubah sejak propose, recon memanggil ulang flag lama per potongan 100 (flag baru ditulis dulu, potongan gagal tidak menahan cursor). legend-w9od2: recon membandingkan fee_idr posting overpaid dengan fee tersegel (didekripsi) dan nominal jurnal fee; fee 0 sah hanya bila akuntansi mati dan tanpa jurnal; NULL fail closed. Architect xhigh 2 ronde: P2 x3 dibetulkan, P3 dicatat di docs/briefs/990/phase5.md. Suite payout terarah akhir 73 file 889 lulus 0 gagal.
 
 ## 947 Lanjutan 934: unfreeze buka ulang persetujuan, kolom persetujuan halted (legend-s20iu, legend-dz8ci, 17 Nov 2026)
 
