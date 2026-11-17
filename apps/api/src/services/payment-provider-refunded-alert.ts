@@ -323,3 +323,66 @@ export async function alertProviderRefundCountedWithLiveOwn(
     );
   }
 }
+
+export type CreditUsedBeforeProviderRefund = {
+  intentId: string;
+  outletId: string;
+  providerRefundId: string;
+  /** Credit used beyond what the DP still holds after the refund. */
+  amountIdr: number;
+};
+
+/**
+ * legend-ua9ja (1025c B): the provider refunded a DP after its transferred
+ * credit was already used, beyond what is left of the DP. The intent is held
+ * (`refund_recon_holds`) until finance decides; nothing used is cut. Sent only
+ * by the winner of the hold insert. Same savepoint rule as above.
+ */
+export async function alertCreditUsedBeforeProviderRefund(
+  tx: Tx,
+  context: ScopedTenantContext,
+  held: CreditUsedBeforeProviderRefund,
+  now: Date,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const hex = createHash("sha256")
+    .update(
+      `payment.credit_used_before_provider_refund\0${tenantId}\0${held.intentId.toLowerCase()}\0${held.providerRefundId}`,
+    )
+    .digest("hex")
+    .slice(0, 32);
+  const id = uuidToUlid(
+    `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
+  );
+  try {
+    await tx.transaction(async (savepoint) => {
+      await notifyOutletSupervisors(
+        savepoint,
+        context,
+        {
+          tenantId,
+          outletId: outletIdSchema.parse(held.outletId),
+          category: "operational_anomaly",
+          alsoOwners: true,
+          recordEmpty: true,
+          id,
+          eventName: "payment.credit_used_before_provider_refund",
+          aggregateType: "payment",
+          aggregateId: id,
+          payload: {
+            intentId: held.intentId,
+            amountIdr: String(held.amountIdr),
+          },
+          title: "Saldo DP sudah terpakai sebelum refund penyedia",
+          body: `Penyedia pembayaran mengembalikan DP setelah saldo pelanggan dari DP itu dipakai. Rp ${held.amountIdr.toLocaleString("id-ID")} saldo terpakai melebihi sisa DP. Saldo yang sudah terpakai tidak dipotong. Refund dan payout pembayaran ini ditahan sampai finance memutuskan.`,
+        },
+        now,
+      );
+    });
+  } catch (err) {
+    logger.warn(
+      { err, tenantId, intentId: held.intentId },
+      "Credit used before provider refund: notification failed",
+    );
+  }
+}

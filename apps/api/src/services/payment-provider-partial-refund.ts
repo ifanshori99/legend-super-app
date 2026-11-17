@@ -44,11 +44,16 @@ import { recordAudit } from "./core-audit.ts";
 import { refundableBalance } from "./payment-admin.service.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import {
+  alertCreditUsedBeforeProviderRefund,
   alertProviderPartialRefund,
   alertProviderRefundCountedWithLiveOwn,
 } from "./payment-provider-refunded-alert.ts";
 import { providerRefundedForeignIdrSql } from "./payment-provider-refunded-foreign-sql.ts";
-import { flagCreditReconForIntent } from "./reservation-deposit-credit.ts";
+import {
+  creditUsedSurplusForIntent,
+  flagCreditReconForIntent,
+  lockDepositIntentsExclusive,
+} from "./reservation-deposit-credit.ts";
 import { appendPaymentEvent } from "./payment-support.ts";
 import type { Tx } from "./permission-resolver.ts";
 
@@ -390,6 +395,10 @@ export async function recordProviderRefundInTx(
     return { status: "duplicate" };
 
   // 4. The insert decides the winner; a replay or a racing second path stops.
+  // legend-9uvvu: a credit apply holds the deposit-intent lock shared; wait for
+  // it (exclusive, after the intent row lock, as a refund does) so the net and
+  // the credit used below are read after it committed.
+  await lockDepositIntentsExclusive(tx, tenantId, intent.id);
   const createdAt = await lockIntentsForFact(tx, tenantId, [intent.id], now);
   const [inserted] = await tx
     .insert(paymentProviderRefunds)
@@ -424,6 +433,49 @@ export async function recordProviderRefundInTx(
   // Credit already moved to sessions (closed ones too) may now exceed the
   // intent's net: flag it in this same transaction (legend-svwdz, 1020).
   await flagCreditReconForIntent(tx, tenantId, intent.id);
+  // legend-ua9ja: credit used beyond what the DP still holds is held for
+  // finance (refunds and payouts of the intent stop) and told once. The hold is
+  // keyed by (tenant, intent, provider refund id); only the winner of the
+  // provider refund insert gets here, so a replay adds none. Nothing used is
+  // cut and no credit is added.
+  const creditSurplus = await creditUsedSurplusForIntent(
+    tx,
+    tenantId,
+    intent.id,
+  );
+  if (creditSurplus > 0n) {
+    const hex = createHash("sha256")
+      .update(
+        `refund_recon_hold.credit_used\0${tenantId}\0${intent.id.toLowerCase()}\0${providerRefundId}`,
+      )
+      .digest("hex");
+    const [creditHold] = await tx
+      .insert(refundReconHolds)
+      .values({
+        tenantId,
+        paymentIntentId: intent.id,
+        webhookEventId: `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`,
+        providerRefundId,
+        providerPaymentRef,
+        amountIdr: idr(Number(creditSurplus)),
+        reason: "credit_used_before_provider_refund",
+        flaggedAt: now,
+      })
+      .onConflictDoNothing()
+      .returning({ id: refundReconHolds.id });
+    if (creditHold)
+      await alertCreditUsedBeforeProviderRefund(
+        tx,
+        context,
+        {
+          intentId: intent.id,
+          outletId: intent.outletId,
+          providerRefundId,
+          amountIdr: Number(creditSurplus),
+        },
+        now,
+      );
+  }
 
   // 6. A parked fund of this transaction: the whole fund is blocked (restrict
   // when in doubt; a partial refund of a fund is not tracked). When the
