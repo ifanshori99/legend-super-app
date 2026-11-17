@@ -64,3 +64,14 @@ Larangan: jangan jalankan vitest/tsc/pnpm test (satu token heavy dipegang test-w
 
 ### I6: E-web (file: `apps/web/src/features/ws10-payroll-payout/components/status-dialogs.tsx` bagian `ReturnDialog`, `api.ts`, `mock.ts`, `packages/shared/src/i18n/messages/ws10-payroll-payout-review.ts`)
 - Field wajib "Nomor referensi transaksi bank" di ReturnDialog, meniru field bankRef di dialog confirm (:545-663), dikirim sebagai `bankRef`. Teks lewat katalog i18n. Mock ikut. Jangan sentuh file lain.
+
+## Fase 2 (setelah I1-I6)
+
+### I2b: rekonsiliasi A (file: `payroll-payout-recon-clearance.service.ts`, routes-nya, validator clearance, `apps/api/src/test/data-import-registry.test.ts`, tes cakupan tabel schema payout)
+- Samakan service dengan `docs/briefs/990/i1-contract.md` (propose idempoten: flag dengan clearance terbuka mengembalikan id yang sama, jangan 409; approve: detail grant = sha256 alasan TERSIMPAN; p_batch = batch item flag; peta PAYOUT-69/72/70/42). Akui tabel `payroll_payout_recon_clearances` + migrasi 0580-0583 di registry dan tes cakupan tabel (cari "covers exactly the tables exported by db/schema/payroll-payout.ts" atau padanannya; grep `0442` di test).
+
+### I5b: peta error return (file: pemeta error payout API yang menghasilkan `PAYOUT_GUARD_REFUSED`, `apps/web/src/features/ws10-payroll-payout/errors.ts`, katalog i18n web bila perlu)
+- PAYOUT-88 → 422 `PAYOUT_RETURN_BANK_REF_INVALID`, PAYOUT-89 → 409 `PAYOUT_RETURN_BANK_REF_MISMATCH`, unique bank ref → 409 `PAYOUT_RETURN_BANK_REF_REUSED` (cek nama yang dipakai I5 di `docs/briefs/990/i5-contract.md` dan mock I6). Web: pesan jelas untuk ketiganya + PAYOUT-85/86/87 bila ada pemeta web yang dipakai. Teks lewat katalog.
+
+### T1-T3: test lama pemanggil return (hanya file test yang disebut di prompt)
+- Return sekarang wajib `bankRef` (API) dan `p_bank_ref` (SQL `app.payout_return_propose`/`payout_return_confirm`, lihat `docs/briefs/990/i5-contract.md`). Tambahkan ref unik per klaim (mis. `"TRX" + randomUUID().slice(0,8)`), langkah kedua memakai ref yang sama. Jangan ubah ekspektasi lain. Jangan jalankan vitest.

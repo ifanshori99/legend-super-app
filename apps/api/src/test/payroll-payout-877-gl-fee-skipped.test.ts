@@ -30,7 +30,7 @@
 // - Whether the fee is journaled or only marked at the pending stage is not
 //   asserted; only the invariant "fee_posted = true implies a fee journal
 //   exists" and the final outcome (exactly one fee journal) are.
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { createUlid } from "@starter/shared/core";
 import { payrollLocked } from "@starter/shared/hris/payroll";
@@ -55,6 +55,11 @@ import {
   type Row,
   type Slip,
 } from "./payroll-payout-fixtures.ts";
+
+// Bank reference of a return claim: unique per claim (evidence key), identical
+// on both steps of the same claim.
+const bankRefOf = (evidenceKey: string) =>
+  `TRX${createHash("sha256").update(evidenceKey).digest("hex").slice(0, 8)}`;
 
 type Tx = Parameters<Parameters<typeof W.inTx>[0]>[0];
 
@@ -304,20 +309,23 @@ async function remapMapping(role: string, code: string) {
   return () => set(mapping!.account_id as string);
 }
 
-const returnItems = (batchId: string, itemIds: string[], by: string) =>
-  W.inTx((tx) =>
+const returnItems = (batchId: string, itemIds: string[], by: string) => {
+  const evidenceKey = uploadEvidence(batchId, "dana-kembali.pdf");
+  return W.inTx((tx) =>
     returnManualItems(
       tx,
       actorOf(by),
       batchId,
       {
         itemIds,
-        evidenceKey: uploadEvidence(batchId, "dana-kembali.pdf"),
+        evidenceKey,
+        bankRef: bankRefOf(evidenceKey),
         note: "Bank mengembalikan dana, rekening tujuan ditutup",
       } as never,
       W.proofs(),
     ),
   );
+};
 
 // ---------------------------------------------------------------------------
 // A. Fee of a second batch that became pending while accounting was off.

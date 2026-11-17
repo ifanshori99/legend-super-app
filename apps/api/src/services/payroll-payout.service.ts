@@ -252,6 +252,20 @@ export function payoutGuardViolation(error: unknown): HttpError | null {
   // PAYOUT-79 (23514): the batch has an open "not me" dispute (legend-l2zru).
   if (checkViolation(error) && messageHas(error, /PAYOUT-79:/))
     return batchFrozen();
+  // PAYOUT-88 (23514): a return without a usable bank transaction reference.
+  if (checkViolation(error) && messageHas(error, /PAYOUT-88:/))
+    return payoutRefuse(
+      422,
+      "PAYOUT_RETURN_BANK_REF_REQUIRED",
+      "Nomor referensi transaksi bank wajib diisi (4-64 karakter).",
+    );
+  // PAYOUT-89 (23514): the second step names another bank reference.
+  if (checkViolation(error) && messageHas(error, /PAYOUT-89:/))
+    return payoutRefuse(
+      409,
+      "PAYOUT_RETURN_BANK_REF_MISMATCH",
+      "Nomor referensi bank berbeda dari catatan orang pertama.",
+    );
   if (!checkViolation(error)) return null;
   return payoutRefuse(
     409,

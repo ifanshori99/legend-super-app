@@ -349,6 +349,17 @@ export const payrollPayoutReviewMessages = {
       "Bukti berbeda dari usulan orang pertama. Muat ulang lalu periksa usulan; tidak ada dana yang dicatat kembali.",
     returnSamePerson:
       "Konfirmasi kedua harus dilakukan orang lain, bukan orang yang mencatat pertama.",
+    returnBankRefRequired:
+      "Nomor referensi transaksi bank wajib diisi (4-64 karakter). Tidak ada dana yang dicatat kembali.",
+    returnBankRefMismatch:
+      "Nomor referensi bank berbeda dari catatan orang pertama. Periksa bukti bank; tidak ada dana yang dicatat kembali.",
+    returnBankRefReused:
+      "Nomor referensi bank ini sudah dipakai untuk pengembalian lain. Isi nomor referensi transaksi dana kembali yang sesuai dengan item ini.",
+    reconClearReasonInvalid:
+      "Alasan penutupan flag wajib diisi (10 sampai 500 karakter).",
+    reconClearSelfApproval:
+      "Pengusul penutupan flag tidak boleh menyetujuinya sendiri.",
+    reconClearState: "Penutupan flag ini sudah disetujui.",
     proposalNotWithdrawable:
       "Usulan ini sudah berubah (disimpan, dibatalkan, atau hanya sebagian item). Muat ulang lalu periksa. Tidak ada yang dibatalkan.",
     proofSpentByWithdrawn:

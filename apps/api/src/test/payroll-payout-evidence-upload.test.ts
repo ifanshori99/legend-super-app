@@ -38,7 +38,7 @@
 //   PAYOUT_EVIDENCE_INVALID 422 as resolve (same assertEvidenceKeyForBatch).
 // - Empty file: 422, size above PAYOUT_EVIDENCE_MAX_BYTES: 413, bytes that are
 //   not pdf/jpeg/png (whatever the declared type says): 415, as the brief says.
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import sharp from "sharp";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -68,6 +68,11 @@ import {
   installPayoutWorld,
   type Row,
 } from "./payroll-payout-fixtures.ts";
+
+// Bank reference of a return claim: unique per claim (evidence key), identical
+// on both steps of the same claim.
+const bankRefOf = (evidenceKey: string) =>
+  `TRX${createHash("sha256").update(evidenceKey).digest("hex").slice(0, 8)}`;
 
 const W = installPayoutWorld("evidence-upload");
 const BASE = "/api/hris/payroll/disbursement-batches";
@@ -649,6 +654,7 @@ describe("legend-zoqh1 upload payment proof for resolve and return", () => {
           {
             itemIds: [itemId],
             evidenceKey: keyOfA,
+            bankRef: bankRefOf(keyOfA),
             note: "Bank mengembalikan dana, rekening tujuan ditutup",
           } as never,
           { storage, context: W.scope() },

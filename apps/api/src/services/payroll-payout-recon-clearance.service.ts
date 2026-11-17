@@ -52,11 +52,11 @@ const clearanceNotFound = () =>
     "Usulan penutupan flag tidak ditemukan.",
   );
 
-const alreadyProposed = () =>
+const alreadyApproved = () =>
   payoutRefuse(
     409,
-    "PAYOUT_RECON_CLEAR_EXISTS",
-    "Flag ini sudah punya usulan penutupan.",
+    "PAYOUT_RECON_CLEAR_STATE",
+    "Penutupan flag ini sudah disetujui.",
   );
 
 const tenantOf = (actor: PayoutActor) => actor.tenantId as TenantId;
@@ -71,17 +71,26 @@ function messageHas(error: unknown, pattern: RegExp, depth = 0): boolean {
   );
 }
 
-function sqlStateOf(error: unknown, depth = 0): string | undefined {
-  if (depth > 4 || typeof error !== "object" || error === null)
-    return undefined;
-  const candidate = error as { code?: unknown; cause?: unknown };
-  return typeof candidate.code === "string"
-    ? candidate.code
-    : sqlStateOf(candidate.cause, depth + 1);
-}
-
-/** The refusal codes of the two trusted functions, as client errors. */
-function clearanceError(error: unknown): unknown {
+/**
+ * The refusal codes of the two trusted functions, as client errors.
+ * `notFound` answers PAYOUT-69 (the flag or clearance is gone or not in the
+ * tenant). PAYOUT-70 (grant spent or not matching) is left to the router's
+ * `payoutGuardErrorMapper` (409 PAYOUT_STEP_GRANT_INVALID).
+ */
+function clearanceError(error: unknown, notFound: () => unknown): unknown {
+  if (messageHas(error, /PAYOUT-69:/)) return notFound();
+  if (messageHas(error, /PAYOUT-42:/))
+    return payoutRefuse(
+      403,
+      "PAYOUT_ACTOR_REFUSED",
+      "Anda tidak berhak menjalankan langkah pembayaran ini.",
+    );
+  if (messageHas(error, /PAYOUT-72:/))
+    return payoutRefuse(
+      422,
+      "PAYOUT_GRANT_REFUSED",
+      "Izin langkah pembayaran tidak dapat diterbitkan untuk data ini.",
+    );
   if (messageHas(error, /PAYOUT-85:/))
     return payoutRefuse(
       422,
@@ -94,14 +103,7 @@ function clearanceError(error: unknown): unknown {
       "PAYOUT_RECON_CLEAR_SELF_APPROVAL",
       "Pengusul penutupan flag tidak boleh menyetujuinya sendiri.",
     );
-  if (messageHas(error, /PAYOUT-87:/))
-    return payoutRefuse(
-      409,
-      "PAYOUT_RECON_CLEAR_STATE",
-      "Penutupan flag ini sudah disetujui.",
-    );
-  // One clearance per flag: a second proposal (also a concurrent one) loses.
-  if (sqlStateOf(error) === "23505") return alreadyProposed();
+  if (messageHas(error, /PAYOUT-87:/)) return alreadyApproved();
   return error;
 }
 
@@ -184,8 +186,9 @@ export async function listPayoutReconFlags(
 
 /**
  * Propose clearing one flag with a written reason (10 to 500 characters).
- * 404 for a flag of another tenant or a malformed id, before any grant; 409
- * when the flag already has a proposal.
+ * 404 for a flag of another tenant or a malformed id, before any grant. A
+ * flag with an open proposal answers that proposal's id again (idempotent, the
+ * first reason stays, no second audit row); an approved one is 409.
  */
 export async function proposePayoutReconClearance(
   tx: Tx,
@@ -206,6 +209,7 @@ export async function proposePayoutReconClearance(
       id: payrollPayoutReconExceptions.id,
       batchId: payrollDisbursementItems.batchId,
       clearanceId: payrollPayoutReconClearances.id,
+      approvedAt: payrollPayoutReconClearances.approvedAt,
     })
     .from(payrollPayoutReconExceptions)
     .innerJoin(
@@ -239,7 +243,7 @@ export async function proposePayoutReconClearance(
     )
     .limit(1);
   if (!flag) throw flagNotFound();
-  if (flag.clearanceId !== null) throw alreadyProposed();
+  if (flag.approvedAt !== null) throw alreadyApproved();
   const grant = await payoutTrustedGrant(actor, {
     kind: "recon_clear",
     step: "propose",
@@ -257,8 +261,10 @@ export async function proposePayoutReconClearance(
     );
     clearanceId = String((result.rows[0] as { id: string }).id);
   } catch (error) {
-    throw clearanceError(error);
+    throw clearanceError(error, flagNotFound);
   }
+  // An open proposal came back unchanged: nothing new to audit.
+  if (flag.clearanceId === clearanceId) return { clearanceId };
   await recordPayoutAudit(tx, actor, {
     action: "payroll.disbursement.recon_clear_proposed",
     objectType: "payroll_payout_recon_clearance",
@@ -321,6 +327,7 @@ export async function approvePayoutReconClearance(
     )
     .limit(1);
   if (!row) throw clearanceNotFound();
+  if (row.approvedAt !== null) throw alreadyApproved();
   const grant = await payoutTrustedGrant(actor, {
     kind: "recon_clear",
     step: "approve",
@@ -336,7 +343,7 @@ export async function approvePayoutReconClearance(
       sql`SELECT app.payout_recon_clear_approve(${row.id}::uuid, ${grant}) AS id`,
     );
   } catch (error) {
-    throw clearanceError(error);
+    throw clearanceError(error, clearanceNotFound);
   }
   await recordPayoutAudit(tx, actor, {
     action: "payroll.disbursement.recon_clear_approved",

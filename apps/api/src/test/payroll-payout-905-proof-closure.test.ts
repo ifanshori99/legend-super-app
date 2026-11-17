@@ -426,12 +426,21 @@ const itemCall = (
   itemIds: string[],
   evidenceKey: string,
 ) =>
-  who.client.post(`${BATCHES}/${batchId}/${route}`).set(originHeader).send({
-    itemIds,
-    evidenceKey,
-    note: NOTE_ITEM,
-    password: PASSWORD,
-  }) as unknown as Promise<Res>;
+  who.client
+    .post(`${BATCHES}/${batchId}/${route}`)
+    .set(originHeader)
+    .send({
+      itemIds,
+      evidenceKey,
+      // 990: return requires a bank reference, the same in both steps of a claim.
+      ...(route === "return"
+        ? {
+            bankRef: `TRX${createHash("sha256").update(evidenceKey).digest("hex").slice(0, 8)}`,
+          }
+        : {}),
+      note: NOTE_ITEM,
+      password: PASSWORD,
+    }) as unknown as Promise<Res>;
 
 const CLOSED_OR_REUSED = ["PAYOUT_PROOF_CLOSED", "PAYOUT_PROOF_REUSED"];
 function expectKeyRefused(res: Res, label: string) {

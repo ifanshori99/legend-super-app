@@ -29,7 +29,7 @@
 //   non-requesters work; they are the pair used by payroll-payout-gl.test.ts).
 // - Cross-tenant/batch keys are already refused by the existing evidence tests
 //   and are not repeated here.
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { FakeObjectStorage } from "@starter/shared/adapters";
 import { NoopMalwareScanner } from "../services/core-image.ts";
@@ -57,6 +57,14 @@ const ANDI_NET = 5_000_001;
 const idOf = (row: Row) => row.id as string;
 const returnKey = (itemId: string) => `payroll-payout-return:${itemId}`;
 
+/** Bank reference of a return: one per claim, the same in both steps (990). */
+const returnBankRef = (evidenceKey: string, itemIds: string[]) =>
+  "TRX" +
+  createHash("sha256")
+    .update(`${evidenceKey}|${itemIds.join(",")}`)
+    .digest("hex")
+    .slice(0, 12);
+
 const returnWith = (
   batchId: string,
   itemIds: string[],
@@ -72,6 +80,7 @@ const returnWith = (
       {
         itemIds,
         evidenceKey,
+        bankRef: returnBankRef(evidenceKey, itemIds),
         note: "Bank mengembalikan dana, rekening tujuan ditutup",
       } as never,
       store,

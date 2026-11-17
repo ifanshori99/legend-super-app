@@ -229,6 +229,10 @@ const itemCall = (
     .send({
       itemIds: [itemId],
       evidenceKey,
+      // 990: return requires a bank reference, the same in both steps of a claim.
+      ...(route === "return"
+        ? { bankRef: `TRX${evidenceKey.replace(/\W/g, "").slice(-16)}` }
+        : {}),
       note: NOTE_ITEM,
       password: PASSWORD,
     }) as unknown as Promise<Res>;
