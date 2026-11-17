@@ -131,6 +131,25 @@ export const approvalMatrixSchema = z
             message: `Approval tier ${key} skips level ${level}`,
           });
     }
+    // Supplier payments always need one other person (founder Q27): a
+    // threshold may only ADD levels, so a matrix that has supplier_payment rows
+    // needs a base tier (threshold null or 0) with a level 1 row.
+    const supplierRows = rows.filter(
+      (row) => row.actionType === "supplier_payment",
+    );
+    if (
+      supplierRows.length > 0 &&
+      !supplierRows.some(
+        (row) =>
+          row.levels === 1 &&
+          (row.thresholdIdr === null || row.thresholdIdr === 0),
+      )
+    )
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "supplier_payment needs a base tier (threshold null or 0) with a level 1 approver: one person alone may never pay a supplier",
+      });
   });
 
 /**

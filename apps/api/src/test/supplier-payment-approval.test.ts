@@ -9,14 +9,14 @@
 // is never touched. When in doubt the payment is blocked.
 //
 // Ids used in test names:
-// - SP-1  below the limit: paid at once, one balanced journal Dr AP / Cr bank
+// - SP-1  below the limit: still pending for a second person (Q27), no journal
 // - SP-2  above the limit: pending until approved; the consumer pays once
 // - SP-3  rejected: no journal, no money moved, the room is released
 // - SP-4  the requester can never be the approver (forged decision refused)
 // - SP-5  never more than the outstanding amount; bad amounts; held invoice
 // - SP-6  pending requests count against the outstanding amount
 // - SP-7  two parallel requests that together exceed it: one is refused
-// - SP-8  two parallel direct payments that together exceed it: one is refused
+// - SP-8  two parallel requests (huge threshold, no direct pay) exceed it: one is refused
 // - SP-9  same idempotency key: one payment, one journal
 // - SP-10 no supplier_payment policy: blocked (fail closed), nothing written
 // - SP-11 other tenant / outlet / role / no session cannot see or pay
@@ -113,7 +113,7 @@ import {
 const PAYABLE = 100_000;
 /** Amounts from this value on need approval (policy tier floor). */
 const LIMIT = 50_000;
-/** A floor nobody reaches: every payment is made directly. */
+/** A floor nobody reaches: Q27 still makes every payment wait for a second person. */
 const NEVER = 1_000_000_000_000;
 
 type Tenant = {
@@ -496,8 +496,15 @@ async function pendingPayment(
   t: Tenant,
   invoiceId: string,
   amountIdr: number,
+  overrides: Record<string, unknown> = {},
 ): Promise<{ id: string; chainId: string }> {
-  const res = await requestPayment(t, t.finance, invoiceId, amountIdr);
+  const res = await requestPayment(
+    t,
+    t.finance,
+    invoiceId,
+    amountIdr,
+    overrides,
+  );
   expectAccepted(res);
   expect(dataOf(res).status).toBe("pending_approval");
   const row = (await paymentRows(t, invoiceId)).find(
@@ -511,6 +518,20 @@ async function pendingPayment(
 async function approveAndApply(t: Tenant, chainId: string) {
   await decide(t, t.approver, chainId, "approved");
   await applyResolved(t, chainId);
+}
+
+/**
+ * Q27: there is no direct payment. Requests (always pending), a second person
+ * approves, the consumer pays. Returns the payment id.
+ */
+async function payViaApproval(
+  t: Tenant,
+  invoiceId: string,
+  amountIdr: number,
+): Promise<string> {
+  const { id, chainId } = await pendingPayment(t, invoiceId, amountIdr);
+  await approveAndApply(t, chainId);
+  return id;
 }
 
 // ---- setup -----------------------------------------------------------------
@@ -542,31 +563,26 @@ afterAll(async () => {
 });
 
 describe("legend-xxqz3 supplier payment with approval", () => {
-  it("SP-1 below the limit the payment is made at once: one balanced journal Dr AP / Cr bank", async () => {
+  it("SP-1 below the limit the payment still waits for a second person: pending, no journal, nothing settled", async () => {
     await setPolicy(A, LIMIT);
     const invoiceId = await invoiceFor(A);
     const before = await paymentEntryIds(A);
 
     const res = await requestPayment(A, A.finance, invoiceId, 20_000);
     expectAccepted(res);
-    expect(dataOf(res).status).toBe("paid");
+    expect(dataOf(res).status).toBe("pending_approval");
 
     const rows = await paymentRows(A, invoiceId);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       id: dataOf(res).id,
-      status: "paid",
+      status: "pending_approval",
       amount_idr: "20000",
       requested_by: A.finance.userId,
-      approval_chain_id: null,
     });
-    const journals = await newPaymentJournals(A, before);
-    expect(journals.count).toBe(1);
-    expect(journals.debit).toBe(20_000);
-    expect(journals.credit).toBe(20_000);
-    expect(journals.ap).toEqual({ debit: 20_000, credit: 0 });
-    expect(journals.bank).toEqual({ debit: 0, credit: 20_000 });
-    expect(await outstanding(A, invoiceId)).toBe(PAYABLE - 20_000);
+    expect(rows[0]!.approval_chain_id).toBeTruthy();
+    expect((await newPaymentJournals(A, before)).count).toBe(0);
+    expect(await outstanding(A, invoiceId)).toBe(PAYABLE);
   });
 
   it("SP-2 above the limit the payment waits for approval; the consumer pays it exactly once", async () => {
@@ -660,7 +676,8 @@ describe("legend-xxqz3 supplier payment with approval", () => {
   });
 
   it("SP-5 nobody is paid more than the invoice: over-payment, bad amounts and a held invoice are refused", async () => {
-    // Direct path (no chain): one rupiah over the outstanding amount.
+    // Huge threshold (Q27: it still needs a second person): one rupiah over
+    // the outstanding amount is refused at request time.
     await setPolicy(A, NEVER);
     const invoiceId = await invoiceFor(A);
     const before = await paymentEntryIds(A);
@@ -681,11 +698,13 @@ describe("legend-xxqz3 supplier payment with approval", () => {
     expect(await paymentRows(A, invoiceId)).toHaveLength(0);
 
     // Partial payments add up to the outstanding amount, never beyond it.
+    // Each one is pending until a second person approves it (Q27).
     await setPolicy(A, NEVER);
-    expectAccepted(await requestPayment(A, A.finance, invoiceId, 40_000));
+    const firstId = await payViaApproval(A, invoiceId, 40_000);
     expect(await outstanding(A, invoiceId)).toBe(60_000);
     expectRefused(await requestPayment(A, A.finance, invoiceId, 70_000));
-    expectAccepted(await requestPayment(A, A.finance, invoiceId, 60_000));
+    const secondId = await payViaApproval(A, invoiceId, 60_000);
+    expect(firstId).not.toBe(secondId);
     expect(await outstanding(A, invoiceId)).toBe(0);
     expectRefused(await requestPayment(A, A.finance, invoiceId, 1));
     expect(await statusesOf(A, invoiceId)).toEqual(["paid", "paid"]);
@@ -755,7 +774,7 @@ describe("legend-xxqz3 supplier payment with approval", () => {
     expect(await outstanding(A, invoiceId)).toBe(40_000);
   });
 
-  it("SP-8 two parallel direct payments that together exceed the outstanding amount: only one is paid", async () => {
+  it("SP-8 two parallel requests with a huge threshold (Q27: no direct payment) that together exceed the outstanding amount: only one is accepted and paid", async () => {
     await setPolicy(A, NEVER);
     const invoiceId = await invoiceFor(A);
     const before = await paymentEntryIds(A);
@@ -770,6 +789,14 @@ describe("legend-xxqz3 supplier payment with approval", () => {
     );
     expectRefused(results.find((r) => ![200, 201].includes(r.status))!);
 
+    // The accepted one waits: no money moved, the room is reserved.
+    expect(dataOf(accepted[0]!).status).toBe("pending_approval");
+    expect(await statusesOf(A, invoiceId)).toEqual(["pending_approval"]);
+    expect((await newPaymentJournals(A, before)).count).toBe(0);
+    expect(await outstanding(A, invoiceId)).toBe(PAYABLE);
+
+    const rows = await paymentRows(A, invoiceId);
+    await approveAndApply(A, rows[0]!.approval_chain_id!);
     expect(await statusesOf(A, invoiceId)).toEqual(["paid"]);
     const journals = await newPaymentJournals(A, before);
     expect(journals.count).toBe(1);
@@ -778,8 +805,8 @@ describe("legend-xxqz3 supplier payment with approval", () => {
     expect(await outstanding(A, invoiceId)).toBe(40_000);
   });
 
-  it("SP-9 the same idempotency key makes one payment and one journal, direct or pending", async () => {
-    // Direct, sequential replay returns the first payment.
+  it("SP-9 the same idempotency key makes one payment and one journal (Q27: always via approval)", async () => {
+    // Huge threshold: still pending. Sequential replay returns the first one.
     await setPolicy(A, NEVER);
     const invoiceId = await invoiceFor(A);
     const before = await paymentEntryIds(A);
@@ -788,14 +815,15 @@ describe("legend-xxqz3 supplier payment with approval", () => {
       idempotencyKey: sameKey,
     });
     expectAccepted(first);
+    expect(dataOf(first).status).toBe("pending_approval");
     const replay = await requestPayment(A, A.finance, invoiceId, 20_000, {
       idempotencyKey: sameKey,
     });
     expectAccepted(replay);
     expect(dataOf(replay).id).toBe(dataOf(first).id);
     expect(await paymentRows(A, invoiceId)).toHaveLength(1);
-    expect((await newPaymentJournals(A, before)).count).toBe(1);
-    expect(await outstanding(A, invoiceId)).toBe(80_000);
+    expect((await newPaymentJournals(A, before)).count).toBe(0);
+    expect(await outstanding(A, invoiceId)).toBe(PAYABLE);
 
     // The same key with another amount is a conflict and writes nothing.
     const changed = await requestPayment(A, A.finance, invoiceId, 30_000, {
@@ -804,6 +832,15 @@ describe("legend-xxqz3 supplier payment with approval", () => {
     expect(changed.status).toBe(409);
     expect(codeOf(changed)).toBe("IDEMPOTENCY_KEY_REUSED");
     expect(await paymentRows(A, invoiceId)).toHaveLength(1);
+    expect(await outstanding(A, invoiceId)).toBe(PAYABLE);
+
+    // The second person approves: one payment, one journal; a replay of the
+    // approval changes nothing.
+    const firstChain = (await paymentRows(A, invoiceId))[0]!.approval_chain_id!;
+    await approveAndApply(A, firstChain);
+    await applyResolved(A, firstChain);
+    expect(await statusesOf(A, invoiceId)).toEqual(["paid"]);
+    expect((await newPaymentJournals(A, before)).count).toBe(1);
     expect(await outstanding(A, invoiceId)).toBe(80_000);
 
     // Parallel with the same key: still one payment and one journal.
@@ -821,7 +858,13 @@ describe("legend-xxqz3 supplier payment with approval", () => {
       parallel.some((r) => [200, 201].includes(r.status)),
       JSON.stringify(parallel.map((r) => r.body)),
     ).toBe(true);
-    expect(await paymentRows(A, parallelInvoice)).toHaveLength(1);
+    const parallelRows = await paymentRows(A, parallelInvoice);
+    expect(parallelRows).toHaveLength(1);
+    expect(parallelRows[0]!.status).toBe("pending_approval");
+    expect(await outstanding(A, parallelInvoice)).toBe(PAYABLE);
+    expect((await newPaymentJournals(A, before)).count).toBe(1);
+    await approveAndApply(A, parallelRows[0]!.approval_chain_id!);
+    expect(await statusesOf(A, parallelInvoice)).toEqual(["paid"]);
     expect(await outstanding(A, parallelInvoice)).toBe(80_000);
     expect((await newPaymentJournals(A, before)).count).toBe(2);
 
@@ -863,12 +906,12 @@ describe("legend-xxqz3 supplier payment with approval", () => {
     await setPolicy(A, NEVER);
     const invoiceId = await invoiceFor(A);
     const before = await paymentEntryIds(A);
-    // Control: the right finance user pays 20.000 and sees it.
-    const mine = await requestPayment(A, A.finance, invoiceId, 20_000);
-    expectAccepted(mine);
+    // Control: the right finance user requests 20.000 (Q27: another person
+    // approves it) and sees it.
+    const mineId = await payViaApproval(A, invoiceId, 20_000);
     expect(
       rowsOf(await listPayments(A, A.finance, invoiceId)).map((r) => r.id),
-    ).toEqual([dataOf(mine).id]);
+    ).toEqual([mineId]);
 
     // Another tenant (its own finance user, its own host): 404 both ways.
     const asB = (path: string) =>
