@@ -327,3 +327,67 @@ export function recoveryChargeSplit(input: {
     amountIdr: Number(amount),
   };
 }
+
+export type RecoveryChargeRefundSplit = {
+  grossSalesIdr: number;
+  serviceChargeIdr: number;
+  pbjtIdr: number;
+};
+
+/**
+ * legend-nsvu0: the share of a paid swap-difference charge that one refund
+ * gives back. Cumulative: with `priorIdr` already refunded, this refund takes
+ * `F(prior + refund) - F(prior)` per component, where F(x) is the split of the
+ * first x IDR of the charge: PBJT = round(P * x / T) half up (BigInt, no
+ * float); the rest r = x - PBJT splits into service = round(S * r / (S + G))
+ * and gross = r - service. Each step of x moves one component by 0 or 1, so
+ * every component of F is nondecreasing: no refund takes a negative share, the
+ * sum telescopes, and `F(T)` is exactly (G, S, P). The components of one refund
+ * add up to its amount. A refund past the charge (`prior + refund > amount`)
+ * is the caller's error: throws.
+ */
+export function recoveryChargeRefundSplit(input: {
+  charge: {
+    grossSalesIdr: number;
+    serviceChargeIdr: number;
+    pbjtIdr: number;
+    amountIdr: number;
+  };
+  priorIdr: number;
+  refundIdr: number;
+}): RecoveryChargeRefundSplit {
+  const { charge } = input;
+  const total = BigInt(charge.amountIdr);
+  const prior = BigInt(Math.max(0, input.priorIdr));
+  const refund = BigInt(Math.max(0, input.refundIdr));
+  if (
+    total <= 0n ||
+    refund <= 0n ||
+    prior + refund > total ||
+    BigInt(charge.grossSalesIdr) +
+      BigInt(charge.serviceChargeIdr) +
+      BigInt(charge.pbjtIdr) !==
+      total
+  )
+    throw new RangeError("Charge refund is outside the paid charge");
+  const at = (x: bigint) => {
+    const pbjt = mulDivHalfUp(BigInt(charge.pbjtIdr), x, total);
+    const rest = x - pbjt;
+    const base = BigInt(charge.serviceChargeIdr) + BigInt(charge.grossSalesIdr);
+    const service =
+      base === 0n
+        ? 0n
+        : mulDivHalfUp(BigInt(charge.serviceChargeIdr), rest, base);
+    return { gross: rest - service, service, pbjt };
+  };
+  const from = at(prior);
+  const to = at(prior + refund);
+  const gross = to.gross - from.gross;
+  const service = to.service - from.service;
+  const pbjt = to.pbjt - from.pbjt;
+  return {
+    grossSalesIdr: Number(gross),
+    serviceChargeIdr: Number(service),
+    pbjtIdr: Number(pbjt),
+  };
+}

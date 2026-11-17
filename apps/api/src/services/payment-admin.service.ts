@@ -147,6 +147,10 @@ export async function refundableBalance(
  * stays refundable. Same predicate as the payout guard (charges,
  * accounting-auto-journal-guards.ts intentBackedAt). Read under the intent row
  * lock the writers hold; the charge is paid under it too.
+ * legend-nsvu0: less what staff refunds of the charge (`order_issue.charge_refunded`
+ * events, not failed) already reserved or paid back, so the refund that
+ * request filed can be approved and paid; any other refund of the intent
+ * still finds the charge held.
  */
 async function chargeInUseOfIntent(
   tx: Tx,
@@ -154,8 +158,20 @@ async function chargeInUseOfIntent(
   intentId: string,
 ): Promise<bigint> {
   const result = await tx.execute(sql`
-    SELECT coalesce(sum(c.amount_idr), 0)::text AS amount
+    SELECT coalesce(sum(greatest(c.amount_idr - gave.back, 0)), 0)::text AS amount
       FROM order_issue_charges c
+     CROSS JOIN LATERAL (
+       SELECT coalesce(sum(r.amount_idr), 0) AS back
+         FROM payment_refunds r
+        WHERE r.tenant_id = c.tenant_id
+          AND r.payment_intent_id = c.payment_intent_id
+          AND r.status <> 'failed'
+          AND EXISTS (
+            SELECT 1 FROM domain_event_outbox o
+             WHERE o.tenant_id = r.tenant_id
+               AND o.event->>'name' = 'order_issue.charge_refunded'
+               AND o.event->'payload'->>'refundId' = r.id::text)
+     ) gave
      WHERE c.tenant_id = ${tenantId}
        AND c.payment_intent_id = ${intentId}::uuid
        AND c.status = 'paid'

@@ -84,7 +84,11 @@ export type Backing =
    */
   | { kind: "qrRefund"; refundId: string }
   /** legend-x1i1h: the order.voided journal of a completed-sale void (orders ULID). */
-  | { kind: "void"; orderId: string };
+  | { kind: "void"; orderId: string }
+  /** legend-nsvu0: the order_issue.charge_paid journal of a swap-difference charge. */
+  | { kind: "charge"; chargeId: string }
+  /** legend-nsvu0: the order_issue.charge_refunded journal (refundId = payment_refunds.id). */
+  | { kind: "chargeRefund"; refundId: string };
 
 export type BackingState = "posted" | "pending" | "none";
 
@@ -102,6 +106,10 @@ export function backingKeyOf(backing: Backing): string {
       return boundedKey(`aj:order-refund:${backing.refundId}`);
     case "void":
       return boundedKey(`aj:sale-void:${backing.orderId}`);
+    case "charge":
+      return boundedKey(`aj:order-charge:${backing.chargeId}`);
+    case "chargeRefund":
+      return boundedKey(`aj:order-charge-refund:${backing.refundId}`);
   }
 }
 
@@ -146,6 +154,8 @@ export async function backingStatesOf(
   const orderIds = new Set<string>();
   const posRefundIds = new Set<string>();
   const voidOrderIds = new Set<string>();
+  const chargeIds = new Set<string>();
+  const chargeRefundIds = new Set<string>();
   // legend-j0ag5: keys whose journal no longer counts once finance reversed it.
   const reversibleKeys = new Set<string>();
   for (const backing of backings) {
@@ -156,6 +166,9 @@ export async function backingStatesOf(
       if (backing.kind === "sale") orderIds.add(backing.orderId);
       else if (backing.kind === "posRefund" || backing.kind === "qrRefund")
         posRefundIds.add(backing.refundId);
+      else if (backing.kind === "charge") chargeIds.add(backing.chargeId);
+      else if (backing.kind === "chargeRefund")
+        chargeRefundIds.add(backing.refundId);
       else voidOrderIds.add(backing.orderId);
     }
   }
@@ -250,6 +263,43 @@ export async function backingStatesOf(
         backingKeyOf({ kind: "void", orderId: row.orderId }),
         "pending",
       );
+  }
+  // legend-nsvu0: the charge journal and the charge refund journal wait in the
+  // outbox as order_issue.charge_paid / order_issue.charge_refunded.
+  const chargeEvents: readonly {
+    eventName: string;
+    field: string;
+    ids: Set<string>;
+    backingOf: (id: string) => Backing;
+  }[] = [
+    {
+      eventName: "order_issue.charge_paid",
+      field: "chargeId",
+      ids: chargeIds,
+      backingOf: (chargeId) => ({ kind: "charge", chargeId }),
+    },
+    {
+      eventName: "order_issue.charge_refunded",
+      field: "refundId",
+      ids: chargeRefundIds,
+      backingOf: (refundId) => ({ kind: "chargeRefund", refundId }),
+    },
+  ];
+  for (const { eventName, field, ids, backingOf } of chargeEvents) {
+    if (ids.size === 0) continue;
+    const idOf = sql<string>`${domainEventOutbox.event}->'payload'->>${field}`;
+    const rows = await tx
+      .select({ id: idOf })
+      .from(domainEventOutbox)
+      .where(
+        and(
+          undelivered,
+          sql`${domainEventOutbox.event}->>'name' = ${eventName}`,
+          inArray(idOf, [...ids]),
+        ),
+      );
+    for (const row of rows)
+      states.set(backingKeyOf(backingOf(row.id)), "pending");
   }
   const keys = [...states.keys()];
   // 2. Then the parked journals: only a retryable one can still post. A POS
@@ -1116,6 +1166,43 @@ async function intentBackedAt(
         ),
       ),
   );
+  // legend-nsvu0: a completed refund of such a charge whose reversal journal
+  // posted (order_issue.charge_refunded credited customer_deposit) releases
+  // its amount again: its payout is counted below instead. One whose journal
+  // can still post makes the check wait; one that never posts (or finance
+  // reversed) releases nothing (fail closed).
+  const chargeRefundRows = await tx
+    .select({ id: paymentRefunds.id, amountIdr: paymentRefunds.amountIdr })
+    .from(paymentRefunds)
+    .where(
+      and(
+        eq(paymentRefunds.tenantId, tenantId),
+        eq(paymentRefunds.paymentIntentId, intentId),
+        refundsAt(bound),
+        sql`EXISTS (SELECT 1 FROM ${domainEventOutbox}
+          WHERE ${domainEventOutbox.tenantId} = ${tenantId}
+            AND ${domainEventOutbox.destination} = ${EVENT_DESTINATION}
+            AND ${domainEventOutbox.event}->>'name' = 'order_issue.charge_refunded'
+            AND ${domainEventOutbox.event}->'payload'->>'refundId' = ${paymentRefunds.id}::text)`,
+      ),
+    );
+  const chargeRefundStates = await backingStatesOf(
+    tx,
+    tenantId,
+    chargeRefundRows.map((row) => ({
+      kind: "chargeRefund" as const,
+      refundId: row.id,
+    })),
+  );
+  const chargeRefundStateOf = (refundId: string) =>
+    chargeRefundStates.get(backingKeyOf({ kind: "chargeRefund", refundId })) ??
+    "none";
+  const chargeRefundReleased = chargeRefundRows
+    .filter((row) => chargeRefundStateOf(row.id) === "posted")
+    .reduce((sum, row) => sum + BigInt(row.amountIdr), 0n);
+  const chargeRefundPending = chargeRefundRows.some(
+    (row) => chargeRefundStateOf(row.id) === "pending",
+  );
   const forfeits = await sumOf(
     tx
       .select({
@@ -1153,8 +1240,14 @@ async function intentBackedAt(
       ),
   );
   return {
-    backedIdr: tenders + qrSales + charges + forfeits + payouts,
-    backingPending: posRefundPending || voidPending || qrRefundPending,
+    backedIdr:
+      tenders +
+      qrSales +
+      (charges > chargeRefundReleased ? charges - chargeRefundReleased : 0n) +
+      forfeits +
+      payouts,
+    backingPending:
+      posRefundPending || voidPending || qrRefundPending || chargeRefundPending,
   };
 }
 
