@@ -13,6 +13,11 @@
 // `payroll_runs_reversal_dependency_trg` enforces the same rule. Runs whose
 // side effects the lock step does not perform (loans, reimbursements, service
 // charge, rapel) are not reversed here either: refusing never pays anyone more.
+// Loans are the exception when the run recorded its deductions
+// (`payroll_loan_deductions`, legend-xo0xx): an approved reversal restores each
+// loan's outstanding balance by exactly the recorded amount, once, and deletes
+// those rows in the same transaction (a repeat finds none). The recorded sum
+// has to equal the run's `loanRepaymentIdr`, otherwise the reversal is refused.
 //
 // A run that raised an employee receivable (`pph21ReceivableIdr` > 0) is also
 // refused while another live run collected a receivable (`pph21_receivable`
@@ -22,6 +27,7 @@
 import { and, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
 import {
   createUlid,
+  idr,
   type ScopedTenantContext,
   type TenantId,
 } from "@starter/shared/core";
@@ -44,6 +50,8 @@ import {
 } from "../db/schema/payroll-rapel.ts";
 import {
   bankTransferFiles,
+  employeeLoans,
+  payrollLoanDeductions,
   payrollRunMonthPriors,
   payrollRuns,
   payslips,
@@ -119,14 +127,15 @@ async function lockRunRow(
   return row;
 }
 
-/** Totals that carry side effects the lock step does not perform. */
+/**
+ * Totals that carry side effects the lock step does not perform. Loans are
+ * checked apart (`restoreLoanDeductions`): they need recorded deductions.
+ */
 function hasUnsupportedTotals(run: PayrollRun): boolean {
   const totals = run.totals;
   return (
     totals !== null &&
-    (totals.loanRepaymentIdr > 0 ||
-      totals.reimbursementIdr > 0 ||
-      totals.serviceChargeIdr > 0)
+    (totals.reimbursementIdr > 0 || totals.serviceChargeIdr > 0)
   );
 }
 
@@ -157,6 +166,84 @@ async function assertNoRapelSideEffects(
     )
     .limit(1);
   if (finalized || allocated) throw unsupported();
+}
+
+/**
+ * Gives every loan the run deducted its recorded amount back, once, then
+ * deletes the deduction rows so a repeat restores nothing. The recorded sum has
+ * to equal the run's loan total; a run with a loan total and no matching rows
+ * is refused (never guess an amount). A restore that would lift a loan above
+ * its principal is refused. Loans lock in id order.
+ */
+async function restoreLoanDeductions(
+  tx: Tx,
+  tenantId: TenantId,
+  run: PayrollRun,
+  now: Date,
+): Promise<void> {
+  const rows = await tx
+    .select({
+      loanId: payrollLoanDeductions.loanId,
+      amountIdr: payrollLoanDeductions.amountIdr,
+    })
+    .from(payrollLoanDeductions)
+    .where(
+      and(
+        eq(payrollLoanDeductions.tenantId, tenantId),
+        eq(payrollLoanDeductions.payrollRunId, run.id),
+      ),
+    )
+    .orderBy(payrollLoanDeductions.loanId);
+  const recorded = rows.reduce((sum, row) => sum + Number(row.amountIdr), 0);
+  if (recorded !== (run.totals?.loanRepaymentIdr ?? 0)) throw unsupported();
+  if (rows.length === 0) return;
+  for (const row of rows) {
+    const [loan] = await tx
+      .select({
+        principalIdr: employeeLoans.principalIdr,
+        outstandingIdr: employeeLoans.outstandingIdr,
+        status: employeeLoans.status,
+      })
+      .from(employeeLoans)
+      .where(
+        and(
+          eq(employeeLoans.tenantId, tenantId),
+          eq(employeeLoans.id, row.loanId),
+        ),
+      )
+      .for("update");
+    const restored = loan
+      ? Number(loan.outstandingIdr) + Number(row.amountIdr)
+      : 0;
+    if (
+      !loan ||
+      (loan.status !== "disbursed" && loan.status !== "settled") ||
+      restored > Number(loan.principalIdr)
+    )
+      throw unsupported();
+    await tx
+      .update(employeeLoans)
+      .set({
+        outstandingIdr: idr(restored),
+        status: "disbursed",
+        settledAt: null,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(employeeLoans.tenantId, tenantId),
+          eq(employeeLoans.id, row.loanId),
+        ),
+      );
+  }
+  await tx
+    .delete(payrollLoanDeductions)
+    .where(
+      and(
+        eq(payrollLoanDeductions.tenantId, tenantId),
+        eq(payrollLoanDeductions.payrollRunId, run.id),
+      ),
+    );
 }
 
 function unsupported(): HttpError {
@@ -618,6 +705,7 @@ export async function decidePayrollRunReversalInTransaction(
   await assertNoPayoutBatch(tx, tenantId, payrollRunId);
   await assertNoLiveDependents(tx, tenantId, payrollRunId);
   await assertNoCollectedReceivable(tx, tenantId, payrollRunId);
+  await restoreLoanDeductions(tx, tenantId, run, now);
   const { totals, reversal } = next;
   if (totals === null || reversal === null)
     throw new HttpError(

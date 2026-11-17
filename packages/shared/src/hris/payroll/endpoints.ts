@@ -98,6 +98,7 @@ import {
   reimbursementStatusSchema,
 } from "./reimbursements.ts";
 import {
+  approvePayrollRunHrInputSchema,
   createPayrollRunInputSchema,
   decidePayrollRunReversalInputSchema,
   payrollRunActionInputSchema,
@@ -350,7 +351,7 @@ export const approvePayrollRunHr = defineEndpoint({
   method: "POST",
   path: `${BASE}/runs/:payrollRunId/hr-approval`,
   params: runParams,
-  body: payrollRunActionInputSchema,
+  body: approvePayrollRunHrInputSchema,
   response: dataResponseSchema(payrollRunSchema),
 });
 

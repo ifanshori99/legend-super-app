@@ -331,6 +331,8 @@ export const payrollRunMessages = {
     approverNotDistinct:
       "Penyetuju harus berbeda dari penyetuju sebelumnya atau pemohon.",
     invalidTransition: "Perubahan status payroll ini tidak diizinkan.",
+    simulationStale:
+      "Simulasi payroll sudah berubah sejak Anda membukanya. Muat ulang dan tinjau lagi sebelum menyetujui.",
     notApproved:
       "Payroll harus disetujui HR dan Finance/Owner sebelum dikunci.",
     frozen: "Payroll yang sudah dikunci tidak dapat diubah.",

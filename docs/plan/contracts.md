@@ -379,4 +379,4 @@ Routes `routes/hris-payslip.routes.ts`, services `payslip-pin.service.ts` and `h
 - **WhatsApp reset** (`POST /me/payslip-pin/reset-otp`, `/verify`): 6-digit code, 5 min, 5 tries, single use, keyed hash only, sent through the port `PayslipPinOtpSender` to the employee's verified WhatsApp identity. No sender or no number: 503 `SERVICE_UNAVAILABLE`. Unknown, expired and used codes answer 403 like a wrong code.
 - **Audit:** `payslip_pin.set|changed|reset|locked|otp_requested|otp_reset`, `payslip.viewed`; ids, status and lock time only.
 
-- **Events.** `payroll.locked`, `payroll.paid`, `payroll.reversed`, `payslip.created`, `employee_loan.disbursed`, `reimbursement.paid`. The WS-07 posting rule still listens to the placeholder `payroll_run.completed`; switching it to `payroll.locked` (+ reversal) is a follow-up.
+- **Events.** `payroll.locked`, `payroll.approval_requested`, `payroll.paid`, `payroll.reversed`, `payslip.created`, `employee_loan.disbursed`, `reimbursement.paid`. The WS-07 posting rule still listens to the placeholder `payroll_run.completed`; switching it to `payroll.locked` (+ reversal) is a follow-up.

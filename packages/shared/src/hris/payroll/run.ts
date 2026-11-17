@@ -635,6 +635,15 @@ export const payrollRunActionInputSchema = clientInputSchema({
   idempotencyKey: idempotencyKeySchema,
 });
 
+/**
+ * HR approval is bound to the simulation HR reviewed: the count must still be
+ * the run's `simulationCount`, else PAYROLL_RUN_SIMULATION_STALE (409).
+ */
+export const approvePayrollRunHrInputSchema = clientInputSchema({
+  expectedSimulationCount: z.number().int().min(1).max(10_000),
+  idempotencyKey: idempotencyKeySchema,
+});
+
 export const requestPayrollRunReversalInputSchema = clientInputSchema({
   reason: z.string().trim().min(1).max(500),
   idempotencyKey: idempotencyKeySchema,

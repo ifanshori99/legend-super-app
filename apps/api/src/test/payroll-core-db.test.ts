@@ -57,6 +57,7 @@ type Table = (typeof TABLES)[number];
 const RLS_ONLY_TABLES = [
   "payroll_run_month_priors",
   "payroll_run_results",
+  "payroll_loan_deductions",
   "payslip_bank_snapshots",
 ] as const;
 
@@ -510,7 +511,7 @@ describe("payroll core: coverage", () => {
     // Every exported table is either fully covered (TABLES) or RLS-only.
     expect(exported).toEqual([...TABLES, ...RLS_ONLY_TABLES].sort());
     expect(TABLES).toHaveLength(15);
-    expect(TABLES.length + RLS_ONLY_TABLES.length).toBe(18);
+    expect(TABLES.length + RLS_ONLY_TABLES.length).toBe(19);
   });
 });
 

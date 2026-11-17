@@ -651,7 +651,9 @@ describeUntilBuilt(
         const step = await post(
           client,
           `${PAYROLL}/runs/${draft.id}/${action}`,
-          { idempotencyKey: key() },
+          action === "hr-approval"
+            ? { expectedSimulationCount: 1, idempotencyKey: key() }
+            : { idempotencyKey: key() },
         );
         expect(step.status, `${action}: ${JSON.stringify(step.body)}`).toBe(
           200,
@@ -862,7 +864,10 @@ describeUntilBuilt(
     });
 
     it("[PAYR-01] HR approves first; the same person cannot give the second approval; Finance can", async () => {
-      const hrApproval = await run(runId, "hr-approval");
+      // Simulated twice above: HR approves the second (current) simulation.
+      const hrApproval = await run(runId, "hr-approval", {
+        expectedSimulationCount: 2,
+      });
       expect(hrApproval.status, JSON.stringify(hrApproval.body)).toBe(200);
       expect(hrApproval.body.data).toMatchObject({
         status: "hr_approved",

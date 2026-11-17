@@ -18,8 +18,13 @@
 //  6. writes: run row (reducer `simulate`), old results deleted, new results
 //     inserted, audit with counts only. No payslip, no outbox event (PAYR-01).
 //
-// OPEN O7: population rule (legal entity + employment type + period overlap).
-// OPEN O8: `partialYearTaxSubject` is always false.
+// Decided O7 (legend-0ytbu): population = employees whose legal entity (own,
+// else the home outlet's) is the run's, whose employment type is one of the
+// policy's, and whose employment overlaps the period inclusively:
+// joinDate <= periodEnd AND (endDate IS NULL OR endDate >= periodStart).
+// Decided O8 (legend-0ytbu): `partialYearTaxSubject` is false for every
+// employee. Only a foreign national staying under 183 days is a partial-year
+// subject and no such field exists; false never under-withholds.
 // OPEN O1: payment method = bank_transfer when a bank account is on file.
 
 import { randomUUID } from "node:crypto";
@@ -518,7 +523,7 @@ export async function simulatePayrollRunInTransaction(
     types: tableTypes,
   });
 
-  // Population (OPEN O7), ordered by id.
+  // Population (decided O7, see header), ordered by id.
   const memberRows = await tx
     .select({
       id: employees.id,
@@ -791,7 +796,7 @@ export async function simulatePayrollRunInTransaction(
       hasTaxId: member.npwpHmac !== null || member.nikHmac !== null,
       lastTaxPeriod: lastTaxPeriodOf(member.endDate),
       monthsWorked: monthsWorkedIn(member.joinDate, run.payDate),
-      // OPEN O8.
+      // Decided O8: always false (see header).
       partialYearTaxSubject: false,
       earnings: facts.earnings,
       employerBenefitIdr: facts.employerBenefitIdr,

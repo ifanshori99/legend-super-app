@@ -230,7 +230,14 @@ export function RunActionDialogs({
       );
       return;
     }
-    runAction.mutate({ action, runId: run.id }, { onSuccess, onError: failed });
+    runAction.mutate(
+      {
+        action,
+        runId: run.id,
+        expectedSimulationCount: run.simulationCount,
+      },
+      { onSuccess, onError: failed },
+    );
   }
 
   function submitReason(kind: "return_to_draft" | "request_reversal") {

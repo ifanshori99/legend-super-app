@@ -104,6 +104,7 @@ import {
 } from "../lib/payroll-export/coretax-bpmp.ts";
 import { openSecret } from "../lib/secrets.ts";
 import { recordAudit } from "./core-audit.ts";
+import { buildAnnualA1Xml } from "./payroll-coretax-a1.service.ts";
 import {
   openPayeeBankSnapshot,
   type PayeeBankSnapshot,
@@ -845,8 +846,20 @@ async function loadPinnedTerVersion(
   return parsed.data as TerVersion;
 }
 
-function taxFileName(taxPeriod: string): string {
-  return `coretax-pph21-bpmp-${taxPeriod}.xml`;
+function taxFileName(kind: string, taxPeriod: string): string {
+  return kind === "annual_statement"
+    ? `coretax-pph21-a1-${taxPeriod}.xml`
+    : `coretax-pph21-bpmp-${taxPeriod}.xml`;
+}
+
+/** Pay-date window `[from, until)` of a tax period: one month, or the whole year. */
+function taxPeriodWindow(
+  kind: string,
+  taxPeriod: string,
+): { from: string; until: string } {
+  return kind === "annual_statement"
+    ? { from: `${taxPeriod}-01-01`, until: `${Number(taxPeriod) + 1}-01-01` }
+    : { from: `${taxPeriod}-01`, until: nextMonthStart(taxPeriod) };
 }
 
 type TaxExportRecord = typeof payrollTaxExports.$inferSelect;
@@ -870,6 +883,61 @@ function toTaxExport(
   });
 }
 
+/** Stores the rendered Coretax file and its row, with one audit row (ids and counts only). */
+async function storeTaxExport(
+  tx: Tx,
+  context: ScopedTenantContext,
+  runtime: StorageRuntime,
+  actor: UserId,
+  input: { legalEntityId: string; kind: string; taxPeriod: string },
+  xml: string,
+  summary: TaxExportSummary,
+): Promise<{ exportId: TaxExportRecord["id"]; summary: TaxExportSummary }> {
+  const tenantId = context.tenant.tenantId;
+  const exportId = randomUUID();
+  const objectKey = `payroll/tax-exports/${exportId}/${taxFileName(input.kind, input.taxPeriod)}`;
+  const removeFile = await storeFile(
+    context,
+    runtime,
+    exportId,
+    objectKey,
+    "application/xml",
+    xml,
+  );
+  try {
+    await tx.insert(payrollTaxExports).values({
+      id: exportId as TaxExportRecord["id"],
+      tenantId,
+      legalEntityId: input.legalEntityId,
+      kind: input.kind,
+      taxPeriod: input.taxPeriod,
+      status: "ready",
+      objectKey,
+      createdBy: actor,
+    });
+    await audit(
+      tx,
+      context,
+      actor,
+      "payroll.tax_export.created",
+      "payroll_tax_export",
+      exportId,
+      {
+        legalEntityId: input.legalEntityId,
+        kind: input.kind,
+        taxPeriod: input.taxPeriod,
+        rowCount: summary.rowCount,
+        excluded: summary.excluded,
+      },
+      "Ekspor PPh 21 Coretax (NIK dan NPWP karyawan).",
+    );
+  } catch (error) {
+    await removeFile();
+    throw error;
+  }
+  return { exportId: exportId as TaxExportRecord["id"], summary };
+}
+
 export async function createPayrollTaxExport(
   context: ScopedTenantContext,
   actorUserId: string,
@@ -881,15 +949,22 @@ export async function createPayrollTaxExport(
   },
   runtime: StorageRuntime,
 ): Promise<PayrollTaxExport> {
-  if (input.kind === "annual_statement")
+  if (input.kind !== "annual_statement" && input.kind !== "monthly_withholding")
     throw refuse(
       "PAYROLL_TAX_EXPORT_NOT_SUPPORTED",
-      "Ekspor bukti potong tahunan (A1) belum tersedia.",
+      "Jenis ekspor pajak ini belum tersedia.",
     );
-  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(input.taxPeriod))
+  const annual = input.kind === "annual_statement";
+  if (
+    annual
+      ? !/^\d{4}$/.test(input.taxPeriod)
+      : !/^\d{4}-(0[1-9]|1[0-2])$/.test(input.taxPeriod)
+  )
     throw refuse(
       "PAYROLL_TAX_EXPORT_PERIOD_INVALID",
-      "Masa pajak bulanan harus berformat YYYY-MM.",
+      annual
+        ? "Tahun pajak harus berformat YYYY."
+        : "Masa pajak bulanan harus berformat YYYY-MM.",
     );
   const tenantId = context.tenant.tenantId;
   const taxYear = Number(input.taxPeriod.slice(0, 4));
@@ -952,6 +1027,20 @@ export async function createPayrollTaxExport(
           );
         // NITKU = NPWP16 + 6 zeros (head office). No NITKU column exists: assumption.
         const nitku22 = `${tin16}000000`;
+
+        if (annual) {
+          const built = await buildAnnualA1Xml(tx, {
+            tenantId,
+            legalEntityId: input.legalEntityId,
+            taxYear,
+            withholderTin16: tin16,
+            nitku22,
+          });
+          return storeTaxExport(tx, context, runtime, actor, input, built.xml, {
+            rowCount: built.rowCount,
+            excluded: built.excluded,
+          });
+        }
 
         const slipRows = await tx
           .select({
@@ -1238,49 +1327,10 @@ export async function createPayrollTaxExport(
           );
 
         const xml = buildBpmpXml({ withholderTin16: tin16, nitku22, rows });
-        const exportId = randomUUID();
-        const objectKey = `payroll/tax-exports/${exportId}/${taxFileName(input.taxPeriod)}`;
-        const removeFile = await storeFile(
-          context,
-          runtime,
-          exportId,
-          objectKey,
-          "application/xml",
-          xml,
-        );
-        const summary: TaxExportSummary = { rowCount: rows.length, excluded };
-        try {
-          await tx.insert(payrollTaxExports).values({
-            id: exportId as TaxExportRecord["id"],
-            tenantId,
-            legalEntityId: input.legalEntityId,
-            kind: input.kind,
-            taxPeriod: input.taxPeriod,
-            status: "ready",
-            objectKey,
-            createdBy: actor,
-          });
-          await audit(
-            tx,
-            context,
-            actor,
-            "payroll.tax_export.created",
-            "payroll_tax_export",
-            exportId,
-            {
-              legalEntityId: input.legalEntityId,
-              kind: input.kind,
-              taxPeriod: input.taxPeriod,
-              rowCount: summary.rowCount,
-              excluded: summary.excluded,
-            },
-            "Ekspor PPh 21 Coretax (NIK dan NPWP karyawan).",
-          );
-        } catch (error) {
-          await removeFile();
-          throw error;
-        }
-        return { exportId: exportId as TaxExportRecord["id"], summary };
+        return storeTaxExport(tx, context, runtime, actor, input, xml, {
+          rowCount: rows.length,
+          excluded,
+        });
       },
     );
     // The stored response holds no URL: a replay gets a fresh one.
@@ -1296,7 +1346,8 @@ export async function createPayrollTaxExport(
       .limit(1);
     if (!row?.objectKey) throw new Error("Payroll tax export was not stored");
     if (!fresh) {
-      // A replay: no link while a run of that month was reversed since.
+      // A replay: no link while a run of that month (or year) was reversed since.
+      const window = taxPeriodWindow(row.kind, row.taxPeriod);
       const [reversed] = await tx
         .select({ id: payrollRuns.id })
         .from(payrollRuns)
@@ -1305,8 +1356,8 @@ export async function createPayrollTaxExport(
             eq(payrollRuns.tenantId, tenantId),
             eq(payrollRuns.legalEntityId, row.legalEntityId),
             eq(payrollRuns.status, "reversed"),
-            gte(payrollRuns.payDate, `${row.taxPeriod}-01`),
-            lt(payrollRuns.payDate, nextMonthStart(row.taxPeriod)),
+            gte(payrollRuns.payDate, window.from),
+            lt(payrollRuns.payDate, window.until),
           ),
         )
         .limit(1);
@@ -1317,7 +1368,7 @@ export async function createPayrollTaxExport(
       runtime,
       row.id,
       row.objectKey,
-      taxFileName(row.taxPeriod),
+      taxFileName(row.kind, row.taxPeriod),
     );
     if (!fresh)
       await audit(
