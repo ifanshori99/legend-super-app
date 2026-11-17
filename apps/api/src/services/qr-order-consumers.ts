@@ -243,10 +243,11 @@ async function orderSessionActive(
 }
 
 /**
- * Intents of the link that WS-05 superseded because the guest picked another
- * bank or method (`supersedePending` appends `payment.expired` with reason
- * `superseded`; the intent row keeps no reason). A provider or timeout expiry
- * carries another reason, so it still counts as an attempt.
+ * Intents of the link the guest left by picking another bank or method:
+ * WS-05 `supersedePending` appends `payment.expired` with reason `superseded`,
+ * and the 9vmit guest method change (`voidLiveCodesForMethodChange`) writes
+ * `method_changed` (the intent row keeps no reason). A provider or timeout
+ * expiry carries another reason, so it still counts as an attempt.
  */
 async function supersededIntentIds(
   tx: Tx,
@@ -262,7 +263,9 @@ async function supersededIntentIds(
         eq(domainEventOutbox.tenantId, context.tenant.tenantId),
         inArray(domainEventOutbox.aggregateId, [...intentIds]),
         sql`${domainEventOutbox.event}->>'name' = 'payment.expired'`,
-        sql`${domainEventOutbox.event}->'payload'->>'reason' = 'superseded'`,
+        // legend-kt3t1: a code the guest left by changing method is no failed
+        // attempt either (the 9vmit void writes `method_changed`).
+        sql`${domainEventOutbox.event}->'payload'->>'reason' IN ('superseded', 'method_changed')`,
       ),
     );
   return new Set(rows.map((row) => row.intentId));
