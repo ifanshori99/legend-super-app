@@ -22,17 +22,17 @@ import type {
   PaymentInstructions,
 } from "@starter/shared/payment";
 
-/** Online methods the guest screen offers (PRD §3.13 "Metode DOIT"). */
-export type OnlinePaymentMethod = "qris" | "va" | "bank_transfer";
-
 /**
  * Every online method a gateway may offer. Founder rule (8 Nov 2026): the
  * customer web takes QRIS, VA, e-wallet and card (plus pay at the cashier); POS
- * adds EDC. DOIT serves QRIS, VA and bank transfer at release (e-wallets pay
- * through QRIS); a gateway that adds direct e-wallet or card implements the
- * same port and reports them from `methods()`, so no caller contract changes.
+ * adds EDC. DOIT serves QRIS and VA at release (e-wallets pay through QRIS);
+ * Duitku adds direct e-wallet and card (pay-by-link). A gateway reports what it
+ * serves from `methods()`, so no caller contract changes.
  */
-export type GatewayPaymentMethod = OnlinePaymentMethod | "ewallet" | "card";
+export type OnlinePaymentMethod =
+  "qris" | "va" | "bank_transfer" | "ewallet" | "card";
+
+export type GatewayPaymentMethod = OnlinePaymentMethod;
 
 /** One method as the provider reports it (PRD: "Daftar metode aktif diambil
  * dari endpoint DOIT, bukan ditulis tetap di kode"). */
@@ -137,7 +137,8 @@ export interface PaymentGatewayPort {
      * payment that was not created for this intent. */
     intentId?: string;
   }): Promise<GatewayPaymentStatus>;
-  /** Banks/channels for `va` and `bank_transfer`; empty for `qris`. */
+  /** Banks/channels for `va`, `bank_transfer` and `ewallet`; empty for `qris`
+   * and `card`. */
   channels(
     context: ScopedTenantContext,
     method: OnlinePaymentMethod,
@@ -145,10 +146,13 @@ export interface PaymentGatewayPort {
   ): Promise<PaymentChannel[]>;
   /** Active methods from the provider's own endpoint. Optional so test
    * doubles written before it stay valid; a missing method means "use
-   * `channels()` per online method". */
+   * `channels()` per online method". With `amountIdr` the list is the one
+   * valid for that bill amount (a method can be out of limits for it, legend-
+   * kt3t1); omitted, it is the merchant's general list. */
   methods?(
     context: ScopedTenantContext,
     outletId?: string,
+    amountIdr?: number,
   ): Promise<readonly GatewayMethodAvailability[]>;
   /**
    * Best effort: closes a superseded code at the provider so it stops taking

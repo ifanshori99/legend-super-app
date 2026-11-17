@@ -152,8 +152,15 @@ async function assertReleasableIntentTx(
   const tenantId = context.tenant.tenantId;
   const intent = await intentOfOrderTx(tx, context, order, intentId);
   // legend-9vmit: a bank transfer code (an orphan of it too) is released like a
-  // virtual account; QRIS has its own hold and release.
-  if (intent.method !== "va" && intent.method !== "bank_transfer")
+  // virtual account; QRIS has its own hold and release. legend-kt3t1: a guest
+  // method change also voids an e-wallet or card pay link (a hosted page the
+  // provider may still take money on); staff release stays VA / bank transfer.
+  const voidableMethod =
+    intent.method === "va" ||
+    intent.method === "bank_transfer" ||
+    (kind === "guest_method_change" &&
+      (intent.method === "ewallet" || intent.method === "card"));
+  if (!voidableMethod)
     throw notEligible(
       "Hanya kode virtual account atau transfer bank yang bisa dirilis di sini.",
     );
@@ -486,8 +493,8 @@ function methodChangeUnreadError(): HttpError {
 }
 
 /**
- * The guest picked another method or bank: voids the live VA / bank transfer
- * code(s) of the scope so the new code can issue (one active code per bill).
+ * The guest picked another method or bank: voids the live VA / bank transfer /
+ * e-wallet / card code(s) of the scope so the new code can issue (one active code per bill).
  * Scope: `billSplitId` null = the bill-level codes (`bill_split_id` null);
  * otherwise only the codes of that part. Every other live code of the guard's
  * scope (a QRIS hold, a code of another part, a code the provider never
@@ -537,7 +544,10 @@ export async function voidLiveCodesForMethodChange(
   // 30 min after expiry): the guest never ends it on their own.
   const isVoidable = (row: typeof paymentIntents.$inferSelect) =>
     exact(row) &&
-    (row.method === "va" || row.method === "bank_transfer") &&
+    (row.method === "va" ||
+      row.method === "bank_transfer" ||
+      row.method === "ewallet" ||
+      row.method === "card") &&
     row.providerRef !== null &&
     row.providerFinalAt === null &&
     row.status === "pending" &&

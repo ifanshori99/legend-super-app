@@ -421,6 +421,19 @@ describe("QR guest virtual account (legend-3160)", () => {
     expect(options.body.data.methods).toEqual([
       { method: "qris", enabled: true, unavailableReason: null, banks: [] },
       { method: "va", enabled: true, unavailableReason: null, banks: BANKS },
+      // No routing rule for e-wallet or card in this tenant: closed by default.
+      {
+        method: "ewallet",
+        enabled: false,
+        unavailableReason: "routing_disabled",
+        banks: [],
+      },
+      {
+        method: "card",
+        enabled: false,
+        unavailableReason: "routing_disabled",
+        banks: [],
+      },
     ]);
     expect(gateway.channelOutlets.at(-1)).toBe(tenant.outletId);
   });

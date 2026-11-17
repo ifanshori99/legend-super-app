@@ -913,3 +913,264 @@ describe("duitku adapter: secrets stay out of errors", () => {
     expect(gateway().port.provider).toBe("duitku");
   });
 });
+
+// legend-kt3t1: e-wallet and card hand the guest a hosted payment page.
+// Assumptions: Duitku codes OV (OVO), DA (DANA) are e-wallets, VC is the card
+// (as METHOD_ROWS); the redirect instructions carry `paymentUrl` from the
+// inquiry; a card takes the first enabled card code and no caller channel.
+describe("duitku adapter: e-wallet and card createIntent (legend-kt3t1)", () => {
+  const PAY_URL = "https://sandbox.duitku.com/pay/REF-1";
+
+  it("e-wallet OVO: inquiry paymentMethod OV, redirect instructions with the paymentUrl", async () => {
+    const { fn, calls } = fakeFetch();
+    const intent = await gateway({ fetch: fn }).port.createIntent(
+      intentRequest({ method: "ewallet", channelCode: "OV" }),
+    );
+
+    expect(
+      calls.find((c) => c.url.endsWith("v2/inquiry"))?.body.paymentMethod,
+    ).toBe("OV");
+    expect(intent.instructions).toEqual({
+      method: "ewallet",
+      channelCode: "OV",
+      channelName: "OVO",
+      paymentUrl: PAY_URL,
+    });
+    expect(intent.providerRef).toBe("REF-1");
+  });
+
+  it("e-wallet: the amount sent to the provider is the request amount (server bill amount)", async () => {
+    const { fn, calls } = fakeFetch();
+    await gateway({ fetch: fn }).port.createIntent(
+      intentRequest({
+        method: "ewallet",
+        channelCode: "OV",
+        amountIdr: 73_500,
+      }),
+    );
+    expect(
+      calls.find((c) => c.url.endsWith("v2/inquiry"))?.body.paymentAmount,
+    ).toBe(73_500);
+  });
+
+  it("e-wallet without a channel, or with a channel of another category, is refused before the inquiry", async () => {
+    for (const channelCode of [null, "VC", "BC", "XX"]) {
+      const { fn, calls } = fakeFetch();
+      await expectCoreError(
+        gateway({ fetch: fn }).port.createIntent(
+          intentRequest({ method: "ewallet", channelCode }),
+        ),
+        "VALIDATION_ERROR",
+      );
+      expect(calls.some((c) => c.url.endsWith("v2/inquiry"))).toBe(false);
+    }
+  });
+
+  it("card takes the first enabled card code (VC) without a caller channel and returns redirect instructions", async () => {
+    const { fn, calls } = fakeFetch();
+    const intent = await gateway({ fetch: fn }).port.createIntent(
+      intentRequest({ method: "card", channelCode: null }),
+    );
+
+    expect(
+      calls.find((c) => c.url.endsWith("v2/inquiry"))?.body.paymentMethod,
+    ).toBe("VC");
+    expect(intent.instructions).toEqual({
+      method: "card",
+      channelCode: "VC",
+      channelName: "Credit Card",
+      paymentUrl: PAY_URL,
+    });
+  });
+
+  it("card with no enabled card code is refused before the inquiry", async () => {
+    const { fn, calls } = fakeFetch({
+      getpaymentmethod: () =>
+        json({
+          responseCode: "00",
+          paymentFee: METHOD_ROWS.filter((row) => row.paymentMethod !== "VC"),
+        }),
+    });
+    await expectCoreError(
+      gateway({ fetch: fn }).port.createIntent(
+        intentRequest({ method: "card", channelCode: null }),
+      ),
+      "VALIDATION_ERROR",
+    );
+    expect(calls.some((c) => c.url.endsWith("v2/inquiry"))).toBe(false);
+  });
+
+  it("fails closed on a paymentUrl that is not https or not a duitku.com host: 503, nothing returned", async () => {
+    const bad = [
+      "http://sandbox.duitku.com/pay/REF-1",
+      "https://evil.example.com/pay/REF-1",
+      "https://duitku.com.evil.test/pay/REF-1",
+      "https://notduitku.com/pay/REF-1",
+      "https://sandbox.duitku.com@evil.test/pay/REF-1",
+      "javascript:alert(1)",
+      "",
+    ];
+    for (const method of ["ewallet", "card"] as const) {
+      for (const paymentUrl of bad) {
+        const { fn } = fakeFetch({
+          inquiry: (call) =>
+            json({
+              statusCode: "00",
+              reference: "REF-1",
+              paymentUrl,
+              amount: String(call.body.paymentAmount),
+            }),
+        });
+        await expectCoreError(
+          gateway({ fetch: fn }).port.createIntent(
+            intentRequest({
+              method,
+              channelCode: method === "ewallet" ? "OV" : null,
+            }),
+          ),
+          "SERVICE_UNAVAILABLE",
+        );
+      }
+    }
+  });
+
+  it("fails closed when the inquiry has no paymentUrl at all", async () => {
+    const { fn } = fakeFetch({
+      inquiry: (call) =>
+        json({
+          statusCode: "00",
+          reference: "REF-1",
+          amount: String(call.body.paymentAmount),
+        }),
+    });
+    await expectCoreError(
+      gateway({ fetch: fn }).port.createIntent(
+        intentRequest({ method: "ewallet", channelCode: "OV" }),
+      ),
+      "SERVICE_UNAVAILABLE",
+    );
+  });
+
+  it("accepts the duitku.com apex and its subdomains (sandbox and production)", async () => {
+    for (const paymentUrl of [
+      "https://duitku.com/pay/REF-1",
+      "https://passport.duitku.com/pay/REF-1",
+      "https://sandbox.duitku.com/pay/REF-1",
+    ]) {
+      const { fn } = fakeFetch({
+        inquiry: (call) =>
+          json({
+            statusCode: "00",
+            reference: "REF-1",
+            paymentUrl,
+            amount: String(call.body.paymentAmount),
+          }),
+      });
+      const intent = await gateway({ fetch: fn }).port.createIntent(
+        intentRequest({ method: "ewallet", channelCode: "OV" }),
+      );
+      expect(intent.instructions).toMatchObject({ paymentUrl });
+    }
+  });
+});
+
+describe("duitku adapter: e-wallet channels and amount-aware methods (legend-kt3t1)", () => {
+  it("channels('ewallet') lists the enabled e-wallet codes only", async () => {
+    const { port } = gateway();
+    expect(await port.channels(context, "ewallet", OUTLET_ID)).toEqual([
+      { code: "OV", name: "OVO" },
+    ]);
+
+    const two = fakeFetch({
+      getpaymentmethod: () =>
+        json({
+          responseCode: "00",
+          paymentFee: [
+            ...METHOD_ROWS,
+            { paymentMethod: "DA", paymentName: "DANA", totalFee: "0" },
+          ],
+        }),
+    });
+    expect(
+      (await gateway({ fetch: two.fn }).port.channels(context, "ewallet")).map(
+        (c) => c.code,
+      ),
+    ).toEqual(["OV", "DA"]);
+  });
+
+  it("channels('ewallet') is empty when no e-wallet code is enabled", async () => {
+    const { fn } = fakeFetch({
+      getpaymentmethod: () =>
+        json({
+          responseCode: "00",
+          paymentFee: METHOD_ROWS.filter((row) => row.paymentMethod !== "OV"),
+        }),
+    });
+    expect(
+      await gateway({ fetch: fn }).port.channels(context, "ewallet"),
+    ).toEqual([]);
+  });
+
+  it("methods(context, outlet, amount) asks getpaymentmethod at that amount and reflects its answer; without an amount it keeps the 10 000 probe", async () => {
+    const { fn, calls } = fakeFetch({
+      getpaymentmethod: (call) =>
+        json({
+          responseCode: "00",
+          // Over 100 000 the provider drops e-wallet and card.
+          paymentFee:
+            Number(call.body.amount) > 100_000
+              ? METHOD_ROWS.filter(
+                  (row) =>
+                    row.paymentMethod !== "OV" && row.paymentMethod !== "VC",
+                )
+              : METHOD_ROWS,
+        }),
+    });
+    const { port } = gateway({ fetch: fn });
+
+    const big = await port.methods?.(context, OUTLET_ID, 150_000);
+    const probe = await port.methods?.(context, OUTLET_ID);
+
+    expect(calls[0]?.body.amount).toBe(150_000);
+    const flags = (rows: typeof big) =>
+      Object.fromEntries((rows ?? []).map((m) => [m.method, m.enabled]));
+    expect(flags(big)).toMatchObject({
+      qris: true,
+      va: true,
+      ewallet: false,
+      card: false,
+    });
+    expect(
+      calls.some((c) => c.body.amount === 10_000),
+      "the probe still asks 10 000",
+    ).toBe(true);
+    expect(flags(probe)).toMatchObject({ ewallet: true, card: true });
+  });
+
+  it("an amount other than the probe is never served from the 60 s cache, and does not poison it", async () => {
+    const { fn, calls } = fakeFetch();
+    const { port } = gateway({ fetch: fn });
+
+    await port.methods?.(context, undefined, 80_000);
+    await port.methods?.(context, undefined, 80_000);
+    const asked80 = calls.filter((c) => c.body.amount === 80_000).length;
+    await port.methods?.(context);
+    await port.methods?.(context);
+
+    expect(asked80, "each real-amount read goes to the provider").toBe(2);
+    expect(
+      calls.filter((c) => c.body.amount === 10_000),
+      "the probe amount is cached as before",
+    ).toHaveLength(1);
+  });
+
+  it("an amount equal to the probe amount is served from the cache", async () => {
+    const { fn, mock } = fakeFetch();
+    const { port } = gateway({ fetch: fn });
+
+    await port.methods?.(context);
+    await port.methods?.(context, undefined, 10_000);
+
+    expect(mock).toHaveBeenCalledTimes(1);
+  });
+});

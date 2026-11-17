@@ -10,10 +10,12 @@
 //   the applied reservation deposit, computed by the server (PAY-01, ORD-03).
 //   Two guests paying the same order serialize on the order row: the second
 //   one receives the same live intent instead of a second one.
-// - Methods are QRIS and VA (legend-3160, CTO decision 9 Nov). A VA names a
-//   bank from the gateway's channel list (`getGuestPaymentOptions`); picking
-//   another method or bank opens a new intent, which supersedes the pending
-//   one on the same WS-05 link (createIntent: one live code per bill).
+// - Methods are QRIS and VA (legend-3160, CTO decision 9 Nov), plus Duitku
+//   e-wallet and card (legend-kt3t1). A VA or e-wallet names a channel from the
+//   gateway's channel list (`getGuestPaymentOptions`); a card takes none and is
+//   answered with a redirect URL. Picking another method or channel opens a new
+//   intent, which supersedes the pending one on the same WS-05 link
+//   (createIntent: one live code per bill).
 // - WS-05 `payment.paid` (appended only by `confirmPayment` after verified
 //   evidence, PAY-02) is consumed from the outbox by
 //   `deliverOrderPaymentEvent` (order-payment-consumers), which fires the
@@ -30,9 +32,13 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import type { EventEnvelope } from "@starter/shared/events";
-import type { CustomerPaymentIntent } from "@starter/shared/payment";
+import type {
+  CustomerPaymentIntent,
+  PaymentChannel,
+} from "@starter/shared/payment";
 import {
   createGuestPaymentInputSchema,
+  GUEST_PAYMENT_METHODS,
   guestPaymentSchema,
   guestPaymentTargetSchema,
   guestPaymentOptionsSchema,
@@ -44,7 +50,7 @@ import {
 import { z } from "@starter/shared/core";
 import { orderNetSubtotalIdr } from "@starter/shared/tax";
 import { db } from "../db/index.ts";
-import { paymentIntents } from "../db/schema/index.ts";
+import { paymentIntents, paymentLinks } from "../db/schema/index.ts";
 import { orderIssueCharges } from "../db/schema/kds-issues.ts";
 import { billSplits } from "../db/schema/bill-splits.ts";
 import { orders, qrOrderIdempotency } from "../db/schema/qr-order.ts";
@@ -52,8 +58,12 @@ import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { openSecret, sealSecret } from "../lib/secrets.ts";
 import type { Tx } from "./menu-internals.ts";
-import { paymentGatewayFor } from "./payment-gateway.ts";
+import {
+  paymentGatewayFor,
+  type PaymentGatewayPort,
+} from "./payment-gateway.ts";
 import { liveCodeWhere } from "./payment-live-code.ts";
+import { outstandingIdr } from "./payment-support.ts";
 import { selectGatewayForNewIntent } from "./payment-gateway-select.ts";
 import { resolveRoutingRule } from "./payment-routing.service.ts";
 import {
@@ -108,10 +118,19 @@ export function guestPaymentDto(
   target: z.input<typeof guestPaymentTargetSchema>,
 ): GuestPayment {
   const { instructions } = intent;
-  // Only QRIS and VA intents are opened for a QR order.
-  if (instructions.method !== "qris" && instructions.method !== "va")
+  // Only QRIS, VA, e-wallet and card intents are opened for a QR order.
+  if (instructions.method === "bank_transfer")
     throw new Error("QR order payment has an unsupported method");
   const va = instructions.method === "va" ? instructions : null;
+  const redirect =
+    instructions.method === "ewallet" || instructions.method === "card"
+      ? instructions
+      : null;
+  // A card names no channel to the guest (the gateway's code stays internal).
+  const channel =
+    instructions.method === "va" || instructions.method === "ewallet"
+      ? instructions
+      : null;
   return guestPaymentSchema.parse({
     id: intent.id,
     target,
@@ -119,10 +138,12 @@ export function guestPaymentDto(
     amountIdr: intent.amountIdr,
     status: intent.status,
     qrisPayload: instructions.method === "qris" ? instructions.qrPayload : null,
-    redirectUrl: null,
+    // legend-kt3t1: a voided, expired or failed code never exposes its pay link.
+    redirectUrl:
+      intent.status === "pending" ? (redirect?.paymentUrl ?? null) : null,
     vaNumber: va?.virtualAccountNumber ?? null,
-    bankCode: va?.channelCode ?? null,
-    bankName: va?.channelName ?? null,
+    bankCode: channel?.channelCode ?? null,
+    bankName: channel?.channelName ?? null,
     expiresAt: intent.expiresAt,
     paidAt: intent.status === "paid" ? intent.paidAt : null,
   });
@@ -239,16 +260,25 @@ async function ensurePaymentLink(
   });
 }
 
-/** True when the live intent is the method and bank the guest asks for. */
+/** A VA or an e-wallet names a channel; QRIS and card do not. */
+function namesChannel(method: GuestPaymentMethod): method is "va" | "ewallet" {
+  return method === "va" || method === "ewallet";
+}
+
+/**
+ * True when the live intent is the method and bank the guest asks for. A card
+ * is compared by method only (it has no channel of the guest's choosing).
+ */
 export function sameChoice(
   intent: CustomerPaymentIntent,
   method: GuestPaymentMethod,
   bankCode: string | null,
 ): boolean {
-  if (intent.instructions.method !== method) return false;
+  const { instructions } = intent;
+  if (instructions.method !== method) return false;
   return (
-    intent.instructions.method !== "va" ||
-    intent.instructions.channelCode === bankCode
+    (instructions.method !== "va" && instructions.method !== "ewallet") ||
+    instructions.channelCode === bankCode
   );
 }
 
@@ -261,26 +291,108 @@ export async function assertVaBank(
   bankCode: string,
   outletId: string,
 ): Promise<void> {
-  // The gateway the VA rule routes to now (fallback when the primary is down).
+  await assertGuestChannel(context, "va", bankCode, outletId);
+}
+
+/**
+ * legend-kt3t1: the same check for any channel-bearing method (VA bank or
+ * e-wallet). The list is the one the gateway the method's rule routes to
+ * reports now, never the client's.
+ */
+export async function assertGuestChannel(
+  context: ScopedTenantContext,
+  method: "va" | "ewallet",
+  code: string,
+  outletId: string,
+  amountIdr?: number,
+): Promise<void> {
+  // The gateway the rule routes to now (fallback when the primary is down).
   const routing = await withTenant(db, context, (tx) =>
-    resolveRoutingRule(tx, context, outletId, "va"),
+    resolveRoutingRule(tx, context, outletId, method),
   );
   const selected = await selectGatewayForNewIntent(context, outletId, routing);
   const port = selected.provider
     ? selected.port
     : paymentGatewayFor(routing.provider);
-  const banks = await port.channels(context, "va", outletId);
-  if (!banks.some((bank) => bank.code === bankCode))
+  // An e-wallet is checked at the real bill amount (it can be out of limits
+  // for it); a gateway without `methods()` answers from `channels()`.
+  let channels: readonly PaymentChannel[];
+  if (method === "ewallet" && amountIdr !== undefined && port.methods) {
+    const listed = await port.methods(context, outletId, amountIdr);
+    channels =
+      listed.find((entry) => entry.method === method && entry.enabled)
+        ?.channels ?? [];
+  } else channels = await port.channels(context, method, outletId);
+  if (!channels.some((channel) => channel.code === code))
     throw new CoreError(
       "VALIDATION_ERROR",
-      "Bank virtual account ini tidak tersedia; pilih bank lain.",
+      method === "va"
+        ? "Bank virtual account ini tidak tersedia; pilih bank lain."
+        : "E-wallet ini tidak tersedia; pilih e-wallet lain.",
+    );
+}
+
+/**
+ * legend-kt3t1: does the gateway list this method as enabled right now? Read
+ * from the provider's own `methods()` (PRD §3.13), never from a fixed list.
+ * A gateway without `methods()` (a test double) offers QRIS and VA, whose
+ * channel list decides, and never e-wallet or card. A failed read is "no".
+ */
+async function gatewayListsMethod(
+  context: ScopedTenantContext,
+  port: PaymentGatewayPort,
+  method: GuestPaymentMethod,
+  outletId: string,
+  amountIdr?: number,
+): Promise<boolean> {
+  if (port.methods === undefined) return method === "qris" || method === "va";
+  try {
+    const listed = await port.methods(context, outletId, amountIdr);
+    return listed.some((entry) => entry.method === method && entry.enabled);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * legend-kt3t1: an e-wallet or card is refused unless the tenant's gateway for
+ * that method lists it as enabled (and its routing rule is on). Throws
+ * VALIDATION_ERROR; nothing is created. `amountIdr` is the bill amount read
+ * server-side (never the guest's), so a method over its limit is refused before
+ * any old code is voided.
+ */
+async function assertGuestMethodOffered(
+  context: ScopedTenantContext,
+  method: "ewallet" | "card",
+  outletId: string,
+  amountIdr: number,
+): Promise<void> {
+  const routing = await withTenant(db, context, (tx) =>
+    resolveRoutingRule(tx, context, outletId, method),
+  );
+  const selected = await selectGatewayForNewIntent(context, outletId, routing);
+  if (
+    !routing.enabled ||
+    selected.provider === null ||
+    !(await gatewayListsMethod(
+      context,
+      selected.port,
+      method,
+      outletId,
+      amountIdr,
+    ))
+  )
+    throw new CoreError(
+      "VALIDATION_ERROR",
+      "Metode pembayaran ini tidak tersedia di outlet ini.",
     );
 }
 
 /**
  * GET /api/table-sessions/:sessionId/payment-options (contract guest.ts).
- * QRIS and VA with the outlet's routing and the gateway's health; VA lists
- * the banks the gateway offers and is off when it offers none.
+ * Every guest method with the outlet's routing and the gateway's health; a
+ * method is on only if the gateway lists it. VA and e-wallet list the channels
+ * the gateway offers and are off when it offers none.
  */
 export async function getGuestPaymentOptions(
   context: ScopedTenantContext,
@@ -298,7 +410,7 @@ export async function getGuestPaymentOptions(
       "none",
     );
     const rules = [];
-    for (const method of ["qris", "va"] as const) {
+    for (const method of GUEST_PAYMENT_METHODS) {
       const rule = await resolveRoutingRule(
         tx,
         context,
@@ -317,11 +429,22 @@ export async function getGuestPaymentOptions(
       entry.routing,
     );
     const gatewayUsable = selected.provider !== null;
+    const entryMethod = entry.method;
     const banks =
-      entry.method === "va" && entry.routing.enabled && selected.provider
-        ? await selected.port.channels(context, "va", routed.outletId)
+      namesChannel(entryMethod) && entry.routing.enabled && selected.provider
+        ? await selected.port.channels(context, entryMethod, routed.outletId)
         : [];
-    const configured = entry.method === "qris" || banks.length > 0;
+    const listed =
+      entry.routing.enabled && selected.provider !== null
+        ? await gatewayListsMethod(
+            context,
+            selected.port,
+            entryMethod,
+            routed.outletId,
+          )
+        : false;
+    const configured =
+      listed && (!namesChannel(entryMethod) || banks.length > 0);
     const enabled = entry.routing.enabled && gatewayUsable && configured;
     methods.push({
       method: entry.method,
@@ -504,7 +627,7 @@ async function voidOldCodesForChange(
     if (
       live.status === "pending" &&
       live.method === request.method &&
-      (request.method !== "va" || live.channelCode === request.bankCode)
+      (!namesChannel(request.method) || live.channelCode === request.bankCode)
     )
       return null;
     // A replay: this request's own code exists already.
@@ -617,6 +740,48 @@ async function syncCodesOutsideLock(
 }
 
 /**
+ * legend-kt3t1: the amount the next code of this bill would charge, read
+ * server-side: the split part's amount, or the whole order's outstanding
+ * amount. Never from the guest's body.
+ */
+async function billAmountIdr(
+  context: ScopedTenantContext,
+  credential: string,
+  sessionId: string,
+  orderId: string,
+  splitId: string | null,
+  now: Date,
+): Promise<number> {
+  return withTenant(db, context, async (tx) => {
+    const session = await lockGuestSessionForPayment(
+      tx,
+      context,
+      credential,
+      sessionId,
+      now,
+      "share",
+    );
+    if (splitId !== null)
+      return (await lockSplitPartTx(tx, context, session.id, splitId))
+        .amountIdr;
+    const order = await lockSessionOrder(tx, context, session.id, orderId);
+    if (order.paymentLinkId === null)
+      throw new CoreError("CONFLICT", "Tagihan ini belum siap dibayar.");
+    const [link] = await tx
+      .select()
+      .from(paymentLinks)
+      .where(
+        and(
+          eq(paymentLinks.tenantId, context.tenant.tenantId),
+          eq(paymentLinks.id, order.paymentLinkId),
+        ),
+      );
+    if (!link) throw new CoreError("NOT_FOUND", "Tagihan tidak ditemukan.");
+    return outstandingIdr(link);
+  });
+}
+
+/**
  * POST /api/table-sessions/:sessionId/payments (contract guest.ts). The
  * pay-first `order` and the split `split` targets are live, with QRIS or VA:
  * the open-bill `bill` target belongs to the bill settlement bead.
@@ -639,7 +804,10 @@ export async function createGuestPayment(
       "VALIDATION_ERROR",
       "Selisih swap dibayar lewat tagihannya sendiri.",
     );
-  const bankCode = parsed.method === "va" ? (parsed.bankCode ?? null) : null;
+  // The channel of a VA or e-wallet; QRIS and card carry none.
+  const bankCode = namesChannel(parsed.method)
+    ? (parsed.bankCode ?? null)
+    : null;
   // A split share pays into its order's bill: find the order first.
   const target = parsed.target;
   const splitId = target.kind === "split" ? target.billSplitId : null;
@@ -674,8 +842,28 @@ export async function createGuestPayment(
     splitId,
     now,
   );
-  // Checked after the session lock so the outlet's own channel list decides.
-  if (bankCode !== null) await assertVaBank(context, bankCode, outletId);
+  // Checked after the session lock so the outlet's own channel list decides,
+  // at the real bill amount and before any old code is voided (legend-kt3t1).
+  if (parsed.method === "ewallet" || parsed.method === "card") {
+    const amountIdr = await billAmountIdr(
+      context,
+      credential,
+      sessionId,
+      orderId,
+      splitId,
+      now,
+    );
+    await assertGuestMethodOffered(context, parsed.method, outletId, amountIdr);
+    if (bankCode !== null && parsed.method === "ewallet")
+      await assertGuestChannel(
+        context,
+        parsed.method,
+        bankCode,
+        outletId,
+        amountIdr,
+      );
+  } else if (bankCode !== null && namesChannel(parsed.method))
+    await assertGuestChannel(context, parsed.method, bankCode, outletId);
   // legend-9vmit: a changed method or bank voids the old code first.
   await voidOldCodesForChange(
     context,
@@ -701,7 +889,7 @@ export async function createGuestPayment(
       "share",
     );
     const { idempotencyKey, ...request } = parsed;
-    return qrOrderIdempotent(
+    const answer = await qrOrderIdempotent(
       tx,
       context,
       { sessionId: session.id, outletId: session.outletId },
@@ -803,7 +991,7 @@ export async function createGuestPayment(
               part.payerSecretHash !== null &&
               live.status === "pending" &&
               live.method === parsed.method &&
-              (parsed.method !== "va" || live.channelCode === bankCode)
+              (!namesChannel(parsed.method) || live.channelCode === bankCode)
             )
               return guestPaymentDto(
                 await readIntentView(context, token, live.id, now),
@@ -1000,7 +1188,47 @@ export async function createGuestPayment(
         return guestPaymentDto(intent, { kind: "order", orderId: order.id });
       },
     );
+    return closePayLinkIfNotPending(tx, context, answer, now);
   });
+}
+
+/**
+ * legend-kt3t1: a replayed idempotency key serves the answer stored when the
+ * code was created, which still carries the pay link. If the guest switched
+ * away from that e-wallet or card since (or it lapsed), the stored answer must
+ * not hand the old pay link out again: read the code's real state and show it
+ * without the link. A code that is still pending is returned as stored.
+ */
+async function closePayLinkIfNotPending(
+  tx: Tx,
+  context: ScopedTenantContext,
+  answer: GuestPayment,
+  now: Date,
+): Promise<GuestPayment> {
+  if (answer.redirectUrl === null) return answer;
+  const [row] = await tx
+    .select({
+      status: paymentIntents.status,
+      expiresAt: paymentIntents.expiresAt,
+      paidAt: paymentIntents.paidAt,
+    })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, context.tenant.tenantId),
+        eq(paymentIntents.id, answer.id),
+      ),
+    );
+  if (!row) return { ...answer, status: "expired", redirectUrl: null };
+  if (row.status === "pending" && row.expiresAt > now) return answer;
+  return {
+    ...answer,
+    status: row.status === "pending" ? "expired" : row.status,
+    // `paid` and `paidAt` go together (guestPaymentSchema): the stored answer
+    // was made before the payment arrived.
+    paidAt: row.status === "paid" ? (row.paidAt?.toISOString() ?? null) : null,
+    redirectUrl: null,
+  };
 }
 
 /** GET /api/table-sessions/:sessionId/payments/:paymentId (status poll). */

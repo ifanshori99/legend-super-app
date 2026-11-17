@@ -287,16 +287,17 @@ export const listSessionOrderIssues = defineEndpoint({
 // ---- Payment hand-off (WS-05) -----------------------------------------------
 
 /**
- * Online methods of the QR guest (CTO decision 9 Nov: QRIS + VA through DOIT
- * only; an e-wallet pays through QRIS, no bank transfer or card online).
+ * Online methods of the QR guest: QRIS and VA, plus Duitku e-wallet and card
+ * (legend-kt3t1). Which of them a tenant offers comes from its gateway's
+ * `methods()`, read by `getGuestPaymentOptions`, never from this list alone.
  */
-export const GUEST_PAYMENT_METHODS = ["qris", "va"] as const;
+export const GUEST_PAYMENT_METHODS = ["qris", "va", "ewallet", "card"] as const;
 export const guestPaymentMethodSchema = z.enum(GUEST_PAYMENT_METHODS);
 export type GuestPaymentMethod = z.infer<typeof guestPaymentMethodSchema>;
 
 export const guestPaymentIntentIdSchema = uuidSchema;
 
-/** Provider bank code for VA, one of `getGuestPaymentOptions` banks. */
+/** Provider channel code for VA or e-wallet, one of `getGuestPaymentOptions` banks. */
 export const guestPaymentBankCodeSchema = z.string().min(1).max(40);
 
 /** What the guest pays: one order (pay-first), a split share, or the open bill. */
@@ -309,20 +310,20 @@ export const guestPaymentTargetSchema = z.discriminatedUnion("kind", [
 ]);
 export type GuestPaymentTarget = z.infer<typeof guestPaymentTargetSchema>;
 
-/** A VA names a bank; QRIS takes none. */
-function requireBankForVaOnly(
-  input: { method: "qris" | "va"; bankCode?: string | null },
+/** A VA or e-wallet names a channel; QRIS and card take none. */
+function requireBankForChannelMethods(
+  input: { method: GuestPaymentMethod; bankCode?: string | null },
   ctx: z.RefinementCtx,
 ): void {
   const hasBank = input.bankCode !== undefined && input.bankCode !== null;
-  if ((input.method === "va") !== hasBank)
+  const needsChannel = input.method === "va" || input.method === "ewallet";
+  if (needsChannel !== hasBank)
     ctx.addIssue({
       code: "custom",
       path: ["bankCode"],
-      message:
-        input.method === "va"
-          ? "Choose a bank for the virtual account"
-          : "QRIS does not take a bank",
+      message: needsChannel
+        ? "Choose a bank or e-wallet for this method"
+        : "QRIS and card do not take a channel",
     });
 }
 
@@ -337,7 +338,7 @@ export const payerSecretSchema = z.string().regex(/^ps_[A-Za-z0-9_-]{43}$/);
 export const createGuestPaymentInputSchema = clientInputSchema({
   target: guestPaymentTargetSchema,
   method: guestPaymentMethodSchema,
-  /** Required for `va` (validated against the provider list); none for QRIS. */
+  /** Required for `va` and `ewallet` (validated against the provider list); none for QRIS and card. */
   bankCode: guestPaymentBankCodeSchema.nullable().optional(),
   /** Required for a `split` target; ignored by `order`. */
   payerSecret: payerSecretSchema.optional(),
@@ -349,7 +350,7 @@ export const createGuestPaymentInputSchema = clientInputSchema({
       path: ["payerSecret"],
       message: "A split part is paid with the payer's secret",
     });
-  requireBankForVaOnly(input, ctx);
+  requireBankForChannelMethods(input, ctx);
 });
 
 /** ORD-02: `paid` arrives from the verified gateway webhook, never the client. */
@@ -362,14 +363,14 @@ export const guestPaymentSchema = z
     status: paymentStatusSchema,
     /** QRIS payload to render as a QR code (method qris). */
     qrisPayload: z.string().min(1).max(2000).nullable(),
-    /** Hosted payment page; no QR guest method uses one, always null. */
-    redirectUrl: z.string().min(1).max(500).nullable(),
+    /** Hosted payment page the guest is sent to (methods ewallet and card, only while the payment is pending). */
+    redirectUrl: z.string().min(1).max(2000).nullable(),
     /** Virtual account number the guest transfers to (method va). */
     vaNumber: z
       .string()
       .regex(/^\d{8,20}$/)
       .nullable(),
-    /** Bank of the virtual account (method va). */
+    /** Bank of the virtual account or e-wallet channel (methods va, ewallet). */
     bankCode: guestPaymentBankCodeSchema.nullable(),
     bankName: z.string().min(1).max(60).nullable(),
     expiresAt: isoDateTimeSchema,
@@ -383,15 +384,36 @@ export const guestPaymentSchema = z
         message: "paidAt must be set exactly when paid",
       });
     const va = payment.method === "va";
-    for (const key of ["vaNumber", "bankCode", "bankName"] as const)
-      if (va !== (payment[key] !== null))
+    const channel = va || payment.method === "ewallet";
+    const redirect = payment.method === "ewallet" || payment.method === "card";
+    if (va !== (payment.vaNumber !== null))
+      ctx.addIssue({
+        code: "custom",
+        path: ["vaNumber"],
+        message: va
+          ? "A virtual account payment carries its number"
+          : "Only a virtual account payment carries a VA number",
+      });
+    for (const key of ["bankCode", "bankName"] as const)
+      if (channel !== (payment[key] !== null))
         ctx.addIssue({
           code: "custom",
           path: [key],
-          message: va
-            ? "A virtual account payment carries its number and bank"
-            : "Only a virtual account payment carries VA fields",
+          message: channel
+            ? "A virtual account or e-wallet payment carries its channel"
+            : "Only a virtual account or e-wallet payment carries a channel",
         });
+    // legend-kt3t1: a voided, expired or failed code must not expose its pay
+    // link, so the page is carried only while the payment is pending.
+    const carriesRedirect = redirect && payment.status === "pending";
+    if (carriesRedirect !== (payment.redirectUrl !== null))
+      ctx.addIssue({
+        code: "custom",
+        path: ["redirectUrl"],
+        message: carriesRedirect
+          ? "A pending e-wallet or card payment carries its payment page"
+          : "Only a pending e-wallet or card payment carries a payment page",
+      });
   });
 export type GuestPayment = z.infer<typeof guestPaymentSchema>;
 
@@ -408,10 +430,12 @@ export const createGuestPayment = defineEndpoint({
  * is in the path, so the body has no target.
  */
 export const createIssueChargePaymentInputSchema = clientInputSchema({
-  method: guestPaymentMethodSchema,
+  // legend-kt3t1: a swap difference is paid with QRIS or a VA only; an
+  // e-wallet or card is refused at validation.
+  method: z.enum(["qris", "va"]),
   bankCode: guestPaymentBankCodeSchema.nullable().optional(),
   idempotencyKey: idempotencyKeySchema,
-}).superRefine(requireBankForVaOnly);
+}).superRefine(requireBankForChannelMethods);
 
 export const listSessionIssueCharges = defineEndpoint({
   method: "GET",
@@ -439,11 +463,11 @@ export const guestPaymentOptionSchema = z
   .strictObject({
     method: guestPaymentMethodSchema,
     enabled: z.boolean(),
-    /** `no_channels`: gateway up and routing on, but no VA bank offered. */
+    /** `no_channels`: gateway up and routing on, but the gateway lists no channel or method. */
     unavailableReason: z
       .enum(["gateway_down", "routing_disabled", "no_channels"])
       .nullable(),
-    /** Banks for `va`; empty for `qris`. */
+    /** Banks for `va`, e-wallets for `ewallet`; empty for `qris` and `card`. */
     banks: z.array(paymentChannelSchema),
   })
   .superRefine((option, ctx) => {

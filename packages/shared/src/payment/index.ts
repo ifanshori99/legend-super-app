@@ -502,6 +502,21 @@ export const customerPaymentMethodCodeSchema = z.enum([
   "va",
   "bank_transfer",
 ]);
+/**
+ * Methods an intent can carry. The payment-link method picker keeps the three
+ * above; e-wallet and card are issued only through the QR guest flow
+ * (legend-kt3t1) until the picker offers them.
+ */
+export const customerPaymentIntentMethodCodeSchema = z.enum([
+  "qris",
+  "va",
+  "bank_transfer",
+  "ewallet",
+  "card",
+]);
+export type CustomerPaymentIntentMethodCode = z.infer<
+  typeof customerPaymentIntentMethodCodeSchema
+>;
 export const customerPaymentMethodSchema = z
   .strictObject({
     method: customerPaymentMethodCodeSchema,
@@ -543,10 +558,29 @@ export const bankTransferPaymentInstructionsSchema = z.strictObject({
   /** Amount plus the unique code; the guest transfers exactly this. */
   transferTotalIdr: positiveIdr,
 });
+/** Hosted payment page the guest is sent to (e-wallet app or card page). */
+const paymentUrlSchema = z
+  .string()
+  .max(2000)
+  .regex(/^https:\/\/\S+$/, "The payment page must be an https URL");
+export const ewalletPaymentInstructionsSchema = z.strictObject({
+  method: z.literal("ewallet"),
+  channelCode: z.string().min(1).max(40),
+  channelName: z.string().min(1).max(60),
+  paymentUrl: paymentUrlSchema,
+});
+export const cardPaymentInstructionsSchema = z.strictObject({
+  method: z.literal("card"),
+  channelCode: z.string().min(1).max(40),
+  channelName: z.string().min(1).max(60),
+  paymentUrl: paymentUrlSchema,
+});
 export const paymentInstructionsSchema = z.discriminatedUnion("method", [
   qrisPaymentInstructionsSchema,
   vaPaymentInstructionsSchema,
   bankTransferPaymentInstructionsSchema,
+  ewalletPaymentInstructionsSchema,
+  cardPaymentInstructionsSchema,
 ]);
 
 /**
@@ -613,7 +647,7 @@ export const customerPaymentBillSchema = z
 export const customerPaymentIntentSchema = z
   .strictObject({
     id,
-    method: customerPaymentMethodCodeSchema,
+    method: customerPaymentIntentMethodCodeSchema,
     status: paymentStatusSchema,
     amountIdr: positiveIdr,
     expiresAt: isoDateTimeSchema,
@@ -674,8 +708,8 @@ export const paymentLinkViewSchema = z.strictObject({
 });
 export const createPaymentIntentInputSchema = z
   .strictObject({
-    method: customerPaymentMethodCodeSchema,
-    /** Bank/channel code for `va` and `bank_transfer`; null for QRIS. */
+    method: customerPaymentIntentMethodCodeSchema,
+    /** Bank/channel code for `va`, `bank_transfer` and `ewallet`; null for QRIS and card. */
     channelCode: z.string().min(1).max(40).nullable(),
     idempotencyKey: idempotencyKeySchema,
     /** Optional earlier expiry (e.g. the QR guest session ends sooner); the
@@ -683,14 +717,14 @@ export const createPaymentIntentInputSchema = z
     expiresAt: isoDateTimeSchema.optional(),
   })
   .superRefine((input, ctx) => {
-    const needsChannel = input.method !== "qris";
+    const needsChannel = input.method !== "qris" && input.method !== "card";
     if (needsChannel !== (input.channelCode !== null))
       ctx.addIssue({
         code: "custom",
         path: ["channelCode"],
         message: needsChannel
-          ? "Choose a bank for this method"
-          : "QRIS does not take a bank",
+          ? "Choose a bank or channel for this method"
+          : "QRIS and card do not take a channel",
       });
   });
 /** PRD §3.13 "Failover": the guest is told to pay at the cashier and the supervisor is notified. */

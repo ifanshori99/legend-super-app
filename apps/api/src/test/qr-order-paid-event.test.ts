@@ -42,7 +42,6 @@ import {
   orderPaidPayloadSchema,
   posTenderMethodSchema,
 } from "@starter/shared/pos";
-import { GUEST_PAYMENT_METHODS } from "@starter/shared/qr-order";
 import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
@@ -413,7 +412,9 @@ afterAll(async () => {
 });
 
 describe("QR pay-first sale emits order.paid (legend-9pz9)", () => {
-  for (const method of GUEST_PAYMENT_METHODS) {
+  // QRIS and VA only: this fixture opens a VA with a fixed bank. E-wallet and
+  // card booking is covered in qr-va-940-kt3t1-guest-ewallet-card.test.ts.
+  for (const method of ["qris", "va"] as const) {
     it(`QR-PAID-01 (${method}) a verified payment fires the order and emits one order.paid with the order's split and one ${method} gateway tender`, async () => {
       const { orderId, totalIdr, intentId } = await payAndFire(method);
 
