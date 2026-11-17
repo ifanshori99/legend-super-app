@@ -2927,6 +2927,13 @@
       "when": 1795000000046,
       "tag": "0431_device_scanner_status",
       "breakpoints": true
+    },
+    {
+      "idx": 473,
+      "version": "7",
+      "when": 1795000000047,
+      "tag": "0473_sealed_secret_reseal_state",
+      "breakpoints": true
     }
   ]
 }

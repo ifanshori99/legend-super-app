@@ -167,6 +167,7 @@ import { registerEdgeSelfieOrphanSweepJob } from "./worker/edge-selfie-orphan-sw
 import { registerBlindIndexRebuildJob } from "./worker/blind-index-rebuild.job.ts";
 import { registerHrisPiiResealJob } from "./worker/hris-pii-reseal.job.ts";
 import { registerDataKeyRotationJob } from "./worker/data-key-rotation.job.ts";
+import { registerSealedSecretResealJob } from "./worker/sealed-secret-reseal.job.ts";
 import { logger } from "./lib/logger";
 
 assertDeploymentEnv(process.env);
@@ -1009,6 +1010,12 @@ try {
   });
   // legend-rg8yl: daily re-seal of integration and AI keys left on an old data key.
   await registerDataKeyRotationJob({
+    boss,
+    database: db,
+    log: consoleLikeLog(logger),
+  });
+  // legend-tetyr: weekly re-seal of sealSecret columns without a key version column.
+  await registerSealedSecretResealJob({
     boss,
     database: db,
     log: consoleLikeLog(logger),
