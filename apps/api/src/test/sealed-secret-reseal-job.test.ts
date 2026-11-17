@@ -25,7 +25,8 @@
 //   - Global-scope runs are narrowed to the test's own rows through the
 //     registry's `where` hook (the `columns` option), so rows other test files
 //     leave in the shared database do not change the counts.
-//   - `sealedSecretUnresolved` is only asserted as zero / non-zero.
+//   - `sealedSecretUnresolved` counts every row still below the active version,
+//     frozen rows included (the old key cannot retire while any is left).
 import { randomBytes, randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { Pool, type PoolClient } from "pg";
@@ -60,6 +61,7 @@ import {
 import {
   SEALED_SECRET_COLUMNS,
   runSealedSecretReseal,
+  sealedSecretFrozen,
   sealedSecretUnresolved,
   type SealedSecretColumn,
   type SealedSecretResealResult,
@@ -679,7 +681,8 @@ describe("[legend-tetyr] stale rows move to the active key", () => {
       remaining: 1,
       frozen: 1,
     });
-    expect(sealedSecretUnresolved(result)).toBe(0);
+    expect(sealedSecretUnresolved(result)).toBe(1);
+    expect(sealedSecretFrozen(result)).toBe(1);
     expect(await storedSealed(row)).toBe(row.sealed);
   });
 
@@ -982,8 +985,9 @@ describe("[legend-tetyr] completed and voided orders are frozen", () => {
       remaining: 1,
       frozen: 1,
     });
-    // Frozen rows cannot pass as done, but they do not make the run unresolved.
-    expect(sealedSecretUnresolved(result)).toBe(0);
+    // Frozen rows cannot pass as done: they block key retirement.
+    expect(sealedSecretUnresolved(result)).toBe(3);
+    expect(sealedSecretFrozen(result)).toBe(3);
 
     expect(sealedVersion(await storedSealed(open))).toBe(2);
     expect(openSecret(await storedSealed(open), open.aad)).toBe(open.plain);
@@ -1006,7 +1010,8 @@ describe("[legend-tetyr] completed and voided orders are frozen", () => {
       remaining: 2,
       frozen: 2,
     });
-    expect(sealedSecretUnresolved(result)).toBe(0);
+    expect(sealedSecretUnresolved(result)).toBe(2);
+    expect(sealedSecretFrozen(result)).toBe(2);
     expect(openSecret(await storedSealed(onOpen), onOpen.aad)).toBe(
       onOpen.plain,
     );

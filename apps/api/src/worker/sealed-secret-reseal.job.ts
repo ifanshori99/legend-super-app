@@ -1,9 +1,20 @@
 // Re-seal of `sealSecret` columns that have no key version column (bead
 // legend-tetyr): MFA secrets, identity values, NPWP, bank accounts, table, bill
-// split, order, reservation, voucher and receipt tokens. rotate-data-key covers
-// integrations and AI keys (they carry a version column), HRIS and payroll have
-// their own job (hris-pii-reseal.job.ts); this job covers the rest, so an old
-// data key version can retire once `remaining` (minus `frozen`) is 0.
+// split, order, reservation, voucher and receipt tokens (the registry below is
+// the full list). Other sealed data is NOT covered here:
+//   - integration credentials and AI provider keys: rotate-data-key (they carry
+//     a version column);
+//   - HRIS and payroll: hris-pii-reseal.job.ts (piiKeyVersion);
+//   - the voucher code sealed inside the promo idempotency JSON
+//     (crm-promo.service.ts, `promo-voucher-idem:` AAD, legend-nloi): a value
+//     inside a JSON document, no column of its own, not moved by any job;
+//   - ChatGPT connection tokens and pending device codes (ai-chatgpt.service.ts,
+//     ai_chatgpt_connections.tokens_encrypted / pending_encrypted): no job
+//     rotates them, they are re-sealed only when the service rewrites them;
+//   - push subscriptions (lib/push-subscription.ts).
+// An old data key version may retire only when every one of those is moved too
+// AND the report here shows `remaining` 0 INCLUDING `frozen`: frozen rows are
+// still read live, so retiring the key would lose them (see below).
 //
 // Stale = the envelope's version byte (lib/secrets.ts) is below the active
 // version. The SQL filter reads that byte from the column itself, so no
@@ -604,13 +615,24 @@ export async function runSealedSecretReseal(
   return result;
 }
 
-/** Rows a run could not or may not finish: not frozen, still stale or failed. */
+/**
+ * Rows still below the active version after a run, FROZEN ROWS INCLUDED (failed
+ * and locked rows are inside `remaining` too). Retiring an old key version is
+ * only safe at 0: frozen rows (completed-order tokens, apology voucher codes)
+ * are still read with the old key.
+ */
 export function sealedSecretUnresolved(
   result: SealedSecretResealResult,
 ): number {
   let n = 0;
-  for (const report of Object.values(result.tables))
-    n += Math.max(report.remaining - report.frozen, 0) + report.failed;
+  for (const report of Object.values(result.tables)) n += report.remaining;
+  return n;
+}
+
+/** Part of `sealedSecretUnresolved` that the database refuses to change. */
+export function sealedSecretFrozen(result: SealedSecretResealResult): number {
+  let n = 0;
+  for (const report of Object.values(result.tables)) n += report.frozen;
   return n;
 }
 
@@ -670,9 +692,15 @@ export async function registerSealedSecretResealJob(options: {
           `Sealed secret re-seal failed for ${result.failedTenants} scope(s)`,
         );
       const unresolved = sealedSecretUnresolved(result);
-      if (unresolved > 0)
+      const frozen = sealedSecretFrozen(result);
+      // Frozen rows cannot be fixed by a retry: they are reported, not failed.
+      if (frozen > 0)
+        log.info(
+          `Sealed secret re-seal: ${frozen} frozen row(s) still on an old key version; the old key cannot retire`,
+        );
+      if (unresolved - frozen > 0)
         throw new Error(
-          `Sealed secret re-seal incomplete: ${unresolved} row(s) still stale or failed`,
+          `Sealed secret re-seal incomplete: ${unresolved - frozen} row(s) still stale or failed`,
         );
     } catch (error) {
       log.error(

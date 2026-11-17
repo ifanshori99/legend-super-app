@@ -154,6 +154,14 @@ export async function changeEmployeeManager(
     changeEmployeeManagerInputSchema.parse(rest);
   const tenantId = context.tenant.tenantId;
   return withTenant(db, context, async (tx) => {
+    // Same tenant lock as every role-assignment end (access.service.ts,
+    // hris-offboarding.service.ts), first and before any other lock, as they
+    // take it: a concurrent role grant or end cannot slip in between the role
+    // reads below and our write. Order: this lock, the idempotency lock, the
+    // manager-change lock, the employee row, then the role rows.
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${"legend:role-assignment-end:" + tenantId}, 0))`,
+    );
     const access = await loadHrisAccess(tx, context, actorUserId, now);
     const visible = await selectEmployee(tx, context, employeeId, false);
     if (!visible || access.viewerFor(visible) === null) throw notFound();
