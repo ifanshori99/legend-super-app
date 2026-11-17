@@ -938,11 +938,27 @@ describe("PAY-04 unallocated funds", () => {
       .post(`/api/payments/links/${token}/intents`)
       .send({ method: "qris", channelCode: null, idempotencyKey: "prepare-b" });
     expect(second.status).toBe(409);
-    const { rows } = await owner.query<{ count: string }>(
-      "SELECT count(*)::text AS count FROM payment_intents WHERE tenant_id = $1 AND payment_link_id = $2",
+    // legend-154wr (940): the code DOIT made for the settled bill is kept as one
+    // orphan row (failed, not final, derived key) so a late payment on it is
+    // found and parked, never unknown. The only live/paid intent is still the
+    // first one; the orphan is never pending.
+    const { rows } = await owner.query<{
+      id: string;
+      status: string;
+      idempotency_key: string;
+      provider_final_at: Date | null;
+    }>(
+      "SELECT id, status, idempotency_key, provider_final_at FROM payment_intents WHERE tenant_id = $1 AND payment_link_id = $2 ORDER BY created_at, id",
       [tenantId, linkId],
     );
-    expect(rows[0]?.count).toBe("1");
+    expect(rows).toHaveLength(2);
+    expect(rows.filter((r) => r.status === "pending")).toHaveLength(0);
+    expect(rows.filter((r) => !r.idempotency_key.includes(":orphan:"))).toEqual(
+      [expect.objectContaining({ id: first.body.data.id, status: "paid" })],
+    );
+    const orphan = rows.find((r) => r.idempotency_key.includes(":orphan:"))!;
+    expect(orphan.status).toBe("failed");
+    expect(orphan.provider_final_at).toBeNull();
   });
 
   it("PAY-04 records unallocated funds and exposes no in-process resolver", async () => {

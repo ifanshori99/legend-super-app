@@ -27,6 +27,7 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
+import { PosError } from "@starter/shared/pos";
 import {
   customerPaymentIntentSchema,
   createPaymentIntentInputSchema,
@@ -1135,6 +1136,7 @@ async function createIntentCore(
 
   let superseded: GatewayCancelRequest[] = [];
   let committed = false;
+  let finalRefusal = false;
   try {
     const stored = await withTenant(db, context, async (tx) => {
       // legend-154wr: the order row lock comes first (before the link lock
@@ -1187,31 +1189,43 @@ async function createIntentCore(
         (lockedLink.expiresAt !== null &&
           (lockedLink.expiresAt <= now ||
             lockedLink.expiresAt.getTime() !== plan.link.expiresAt?.getTime()))
-      )
+      ) {
+        // The link is closed for good: a retry is refused too.
+        finalRefusal = true;
         throw new HttpError(
           404,
           "NOT_FOUND",
           "This payment link is not available.",
         );
+      }
       if (
         part
           ? !splitPartFits(amountIdr, lockedLink)
           : outstandingIdr(lockedLink) !== amountIdr
-      )
+      ) {
+        // A bill settled meanwhile refuses a retry too ("already paid"); a bill
+        // that only changed (and may change back) lets a retry bind this code.
+        if (outstandingIdr(lockedLink) <= 0) finalRefusal = true;
         throw new HttpError(
           409,
           "CONFLICT",
           "This bill changed while the payment was prepared. Reload and try again.",
         );
+      }
       // legend-ek1wt / legend-4n8rs: a hold or a live code may have appeared
       // while the code was being minted; the code just minted is then never
       // stored.
-      await assertLinkOrderCanIssueTx(
-        tx,
-        context,
-        plan.link.id,
-        part?.billSplitId ?? null,
-      );
+      try {
+        await assertLinkOrderCanIssueTx(
+          tx,
+          context,
+          plan.link.id,
+          part?.billSplitId ?? null,
+        );
+      } catch (guardError) {
+        finalRefusal = true;
+        throw guardError;
+      }
       superseded = await supersedePending(
         tx,
         context,
@@ -1268,10 +1282,19 @@ async function createIntentCore(
       // nowhere. Keep it as an orphan row first, then ask the provider to close
       // it. A reused key is a refusal about the winner's code, never ours: no
       // row, no cancel. A unique-key race is a replay, handled below.
-      // Any error before the commit (a refusal, a deadlock, a serialization
-      // failure, a dropped connection) leaves the code unstored.
+      // Only a refusal that a retry with the same key meets again keeps the
+      // orphan (`finalRefusal`): the final guard (`assertLinkOrderCanIssueTx`:
+      // a hold, a live code or parked money appeared; HttpError or PosError), a
+      // link closed meanwhile, a bill settled meanwhile. The guest was told no,
+      // so the code must stay known. Any other failure (a deadlock, a dropped
+      // connection, a failed local write, a bill that only changed) keeps and
+      // cancels nothing: the guest never received the code, so nobody pays it,
+      // and a retry with the same key yields the same intent id and provider
+      // code and binds it.
       if (
         !committed &&
+        finalRefusal &&
+        (error instanceof HttpError || error instanceof PosError) &&
         !(error instanceof HttpError && error.code === "IDEMPOTENCY_KEY_REUSED")
       ) {
         await keepRefusedCodeAsOrphan(
