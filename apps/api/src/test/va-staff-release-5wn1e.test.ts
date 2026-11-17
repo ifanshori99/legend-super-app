@@ -744,12 +744,16 @@ describe("legend-5wn1e after the release", () => {
 
     const va = await replace(code.guest, code.order.id, "va");
     expect(va.status, JSON.stringify(va.body)).toBe(201);
-    // The replacement VA is itself the live code now: another one waits.
-    expectError(
-      await replace(code.guest, code.order.id, "qris"),
-      409,
-      "ORDER_CODE_ACTIVE",
-    );
+    // The replacement VA is itself the live code now. Since founder Q15
+    // (legend-9vmit) a guest may change method: the pending replacement VA is
+    // voided by the system (one guest_method_change release row, money that
+    // still arrives on it is parked) and the QRIS issues. Still exactly one
+    // collectible code at a time.
+    const qris = await replace(code.guest, code.order.id, "qris");
+    expect(qris.status, JSON.stringify(qris.body)).toBe(201);
+    const voidedRows = await releaseRows(va.body.data.id);
+    expect(voidedRows).toHaveLength(1);
+    expect(voidedRows[0]).toMatchObject({ status: "open" });
     expect((await intentRow(code.intentId)).provider_final_at).toBeNull();
   });
 

@@ -47,7 +47,7 @@ import { db } from "../db/index.ts";
 import { paymentIntents } from "../db/schema/index.ts";
 import { orderIssueCharges } from "../db/schema/kds-issues.ts";
 import { billSplits } from "../db/schema/bill-splits.ts";
-import { orders } from "../db/schema/qr-order.ts";
+import { orders, qrOrderIdempotency } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { openSecret, sealSecret } from "../lib/secrets.ts";
@@ -80,6 +80,7 @@ import {
   openGuestQrisHold,
   openSplitQrisHold,
 } from "./pos-qris-hold.ts";
+import { voidLiveCodesForMethodChange } from "./payment-va-release.ts";
 import { handleQrOrderPaymentPaid } from "./qr-order-consumers.ts";
 import {
   loadQrZoneOfSession,
@@ -364,10 +365,20 @@ async function orderLiveCodeTx(
   tx: Tx,
   context: ScopedTenantContext,
   paymentLinkId: string,
-): Promise<{ id: string } | null> {
+): Promise<{
+  id: string;
+  method: string;
+  channelCode: string | null;
+  status: string;
+} | null> {
   const tenantId = context.tenant.tenantId;
   const [code] = await tx
-    .select({ id: paymentIntents.id })
+    .select({
+      id: paymentIntents.id,
+      method: paymentIntents.method,
+      channelCode: paymentIntents.channelCode,
+      status: paymentIntents.status,
+    })
     .from(paymentIntents)
     .where(
       and(
@@ -380,6 +391,146 @@ async function orderLiveCodeTx(
     .orderBy(desc(paymentIntents.createdAt))
     .limit(1);
   return code ?? null;
+}
+
+/**
+ * The WS-05 key of a guest's whole-order code. Unique per tenant, so it is
+ * derived from the order: a guest key can never collide with another
+ * session's payment.
+ */
+function orderIntentKey(orderId: string, idempotencyKey: string): string {
+  return `qro-${createHash("sha256")
+    .update(`${orderId}:${idempotencyKey}`)
+    .digest("hex")
+    .slice(0, 48)}`;
+}
+
+/** The WS-05 key of a guest's split part code (see `orderIntentKey`). */
+function partIntentKey(
+  orderId: string,
+  partId: string,
+  idempotencyKey: string,
+): string {
+  return `qrs-${createHash("sha256")
+    .update(`${orderId}:${partId}:${idempotencyKey}`)
+    .digest("hex")
+    .slice(0, 48)}`;
+}
+
+/**
+ * legend-9vmit (founder Q15): a guest who switches method or bank gets the old
+ * VA / bank transfer code voided first, outside the main transaction, because
+ * the void reads the provider over the network and commits its own release row
+ * (`voidLiveCodesForMethodChange`). The main transaction then finds the old
+ * code no longer live, so the new code can be issued. This only decides
+ * whether to void; every refusal stays in the main transaction as before:
+ * a replay of this request, the same choice (answered with the pending code),
+ * a QRIS code (hold rules), and a non-payer of a split part all skip it. A
+ * provider-side failure throws the void's HttpError to the guest.
+ */
+async function voidOldCodesForChange(
+  context: ScopedTenantContext,
+  credential: string,
+  sessionId: string,
+  orderId: string,
+  splitId: string | null,
+  request: {
+    method: GuestPaymentMethod;
+    bankCode: string | null;
+    payerSecret: string | undefined;
+    idempotencyKey: string;
+  },
+  now: Date,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const scope = await withTenant(db, context, async (tx) => {
+    const session = await lockGuestSessionForPayment(
+      tx,
+      context,
+      credential,
+      sessionId,
+      now,
+      "share",
+    );
+    const [order] = await tx
+      .select()
+      .from(orders)
+      .where(
+        and(
+          eq(orders.tenantId, tenantId),
+          eq(orders.id, orderId),
+          eq(orders.tableSessionId, session.id),
+        ),
+      );
+    if (
+      !order ||
+      order.paymentLinkId === null ||
+      order.status !== "awaiting_payment"
+    )
+      return null;
+    // A replay of this request (its answer is stored, which may be another
+    // guest's code): never void anything on its behalf, the stored answer is
+    // served by the main transaction as it is.
+    const [stored] = await tx
+      .select({ key: qrOrderIdempotency.key })
+      .from(qrOrderIdempotency)
+      .where(
+        and(
+          eq(qrOrderIdempotency.tenantId, tenantId),
+          eq(qrOrderIdempotency.tableSessionId, session.id),
+          eq(qrOrderIdempotency.key, request.idempotencyKey),
+        ),
+      );
+    if (stored) return null;
+    let intentKey: string;
+    let live: Awaited<ReturnType<typeof orderLiveCodeTx>>;
+    if (splitId === null) {
+      intentKey = orderIntentKey(order.id, request.idempotencyKey);
+      live = await orderLiveCodeTx(tx, context, order.paymentLinkId);
+    } else {
+      const part = await lockSplitPartTx(tx, context, session.id, splitId);
+      // Only the payer who opened the part may swap its code.
+      if (
+        request.payerSecret === undefined ||
+        part.payerSecretHash === null ||
+        !sameHash(part.payerSecretHash, payerSecretHash(request.payerSecret))
+      )
+        return null;
+      intentKey = partIntentKey(order.id, part.id, request.idempotencyKey);
+      live = await partLiveCodeTx(tx, context, part.id);
+    }
+    if (live === null || live.method === "qris") return null;
+    // Same choice, still pending: the main transaction returns that code.
+    if (
+      live.status === "pending" &&
+      live.method === request.method &&
+      (request.method !== "va" || live.channelCode === request.bankCode)
+    )
+      return null;
+    // A replay: this request's own code exists already.
+    const [replay] = await tx
+      .select({ id: paymentIntents.id })
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, tenantId),
+          eq(paymentIntents.idempotencyKey, intentKey),
+        ),
+      );
+    if (replay) return null;
+    return { paymentLinkId: order.paymentLinkId, billSplitId: splitId };
+  });
+  if (scope === null) return;
+  // `next` is read again where the candidates are read: a twin request that
+  // issued this very choice between the two reads must not be voided.
+  await voidLiveCodesForMethodChange(
+    context,
+    {
+      ...scope,
+      next: { method: request.method, channelCode: request.bankCode },
+    },
+    now,
+  );
 }
 
 /**
@@ -525,6 +676,21 @@ export async function createGuestPayment(
   );
   // Checked after the session lock so the outlet's own channel list decides.
   if (bankCode !== null) await assertVaBank(context, bankCode, outletId);
+  // legend-9vmit: a changed method or bank voids the old code first.
+  await voidOldCodesForChange(
+    context,
+    credential,
+    sessionId,
+    orderId,
+    splitId,
+    {
+      method: parsed.method,
+      bankCode,
+      payerSecret: parsed.payerSecret,
+      idempotencyKey: parsed.idempotencyKey,
+    },
+    now,
+  );
   return withTenant(db, context, async (tx) => {
     const session = await lockGuestSessionForPayment(
       tx,
@@ -626,6 +792,11 @@ export async function createGuestPayment(
             ? await partLiveCodeTx(tx, context, part.id)
             : null;
           if (live !== null) {
+            // legend-9vmit: a payer who switched method or bank had the old
+            // VA / bank transfer code voided before this transaction
+            // (`voidOldCodesForChange`), so it is no longer live here. Reaching
+            // this throw means a QRIS code, a code that could not be voided,
+            // or a race: it stays as the safety net.
             // No payer hash yet means no payer: a live code here is an orphan
             // (its creating transaction rolled back), so nobody gets it.
             if (
@@ -685,10 +856,7 @@ export async function createGuestPayment(
             {
               method: parsed.method,
               channelCode: bankCode,
-              idempotencyKey: `qrs-${createHash("sha256")
-                .update(`${order.id}:${part.id}:${idempotencyKey}`)
-                .digest("hex")
-                .slice(0, 48)}`,
+              idempotencyKey: partIntentKey(order.id, part.id, idempotencyKey),
               expiresAt: tableSessionTokenExpiresAt({
                 openedAt: session.openedAt.toISOString(),
                 closedAt: session.closedAt?.toISOString() ?? null,
@@ -764,7 +932,10 @@ export async function createGuestPayment(
           );
         // A VA (no hold), or a code past its expiry that the gateway may
         // still accept, is held to the same rule: no replacement while it may
-        // be paid, whatever method the guest now asks for.
+        // be paid, whatever method the guest now asks for. legend-9vmit: a
+        // guest who switches away from a VA / bank transfer code had it voided
+        // before this transaction (`voidOldCodesForChange`), so it is not
+        // live here; this throw stays as the safety net (QRIS, a race).
         if (
           order.paymentLinkId !== null &&
           (await orderLiveCodeTx(tx, context, order.paymentLinkId))
@@ -798,10 +969,7 @@ export async function createGuestPayment(
           {
             method: parsed.method,
             channelCode: bankCode,
-            idempotencyKey: `qro-${createHash("sha256")
-              .update(`${order.id}:${idempotencyKey}`)
-              .digest("hex")
-              .slice(0, 48)}`,
+            idempotencyKey: orderIntentKey(order.id, idempotencyKey),
             // A code never outlives the guest's session credential; WS-05
             // caps it at the method default (VA 180 minutes).
             expiresAt: tableSessionTokenExpiresAt({

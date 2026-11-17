@@ -394,26 +394,23 @@ describe("legend-kf104 one collectible code per guest bill", () => {
     ).toEqual([["closed", "provider_expired"]]);
   });
 
-  it("legend-kf104 VA -> QRIS: a VA has no hold, yet a QR is refused while the VA may still be paid; the VA alone settles the bill, paid once", async () => {
+  it("legend-kf104 VA -> QRIS: the guest changes method (founder Q15, legend-9vmit): the VA is voided first, so the VA no longer settles the bill and its late money parks for refund", async () => {
     const { guest, order } = await guestOrder();
-    const requestsBefore = gw.requests.length;
     const va = await payWhole(guest, order.id, "va");
     expect(va.status, JSON.stringify(va.body)).toBe(201);
     const vaId = va.body.data.id as string;
 
     const qr = await payWhole(guest, order.id, "qris");
-    expect(
-      qr.status,
-      `a QR must not replace a live VA: ${JSON.stringify(qr.body)}`,
-    ).toBe(409);
-    expect(gw.requests.length, "no QR code at the provider").toBe(
-      requestsBefore + 1,
-    );
-    expect((await intentRow(vaId)).status).toBe("pending");
+    expect(qr.status, JSON.stringify(qr.body)).toBe(201);
+    expect((await intentRow(vaId)).status).toBe("expired");
 
-    await payAndDeliver(vaId, "va", BILL_IDR);
-    expect(await orderStatus(order.id)).not.toBe("awaiting_payment");
-    expect(await unallocatedFunds(fx, vaId)).toEqual([]);
-    expect(await refundsOfIntent(fx, vaId)).toEqual([]);
+    // One collectible code only: money that still arrives on the voided VA is
+    // parked as unallocated funds and never pays the bill.
+    await expect(payAndDeliver(vaId, "va", BILL_IDR)).rejects.toMatchObject({
+      message: expect.stringContaining("the money is parked"),
+    });
+    expect(await orderStatus(order.id)).toBe("awaiting_payment");
+    const parked = await unallocatedFunds(fx, vaId);
+    expect(parked.map((p) => p.amountIdr)).toEqual([BILL_IDR]);
   });
 });

@@ -28,6 +28,16 @@ export const PAYMENT_VA_RELEASE_STATUSES = ["open", "resolved"] as const;
 export type PaymentVaReleaseStatus =
   (typeof PAYMENT_VA_RELEASE_STATUSES)[number];
 
+/** `staff`: a supervisor released the code with a pos-overrides approval (Q93).
+ * `guest_method_change` (legend-9vmit, founder Q15): the guest picked another
+ * method or bank, so the system voided the old code itself. No staff, no
+ * approval; the row opens the same durable queue and parks any late money. */
+export const PAYMENT_VA_RELEASE_KINDS = [
+  "staff",
+  "guest_method_change",
+] as const;
+export type PaymentVaReleaseKind = (typeof PAYMENT_VA_RELEASE_KINDS)[number];
+
 export const PAYMENT_VA_RELEASE_RESOLUTIONS = [
   "paid_recorded",
   "provider_expired",
@@ -44,11 +54,14 @@ export const paymentVaReleases = pgTable(
     outletId: outletIdColumn(() => outlets.id).notNull(),
     paymentIntentId: uuid("payment_intent_id").notNull(),
     orderId: ulidInUuid("order_id").notNull(),
-    /** The supervisor's reason, trimmed, 3..300 characters. */
+    /** The supervisor's reason, trimmed, 3..300 characters (the system's own
+     * words for a guest method change). */
     reason: text("reason").notNull(),
-    releasedBy: text("released_by").notNull(),
-    approvedBy: text("approved_by").notNull(),
-    overrideId: ulidInUuid("override_id").notNull(),
+    kind: text("kind").$type<PaymentVaReleaseKind>().notNull().default("staff"),
+    /** Null only for `guest_method_change` (see the kind check). */
+    releasedBy: text("released_by"),
+    approvedBy: text("approved_by"),
+    overrideId: ulidInUuid("override_id"),
     status: text("status").$type<PaymentVaReleaseStatus>().notNull(),
     attempts: integer("attempts").notNull().default(0),
     nextCheckAt: timestamp("next_check_at", { withTimezone: true }).notNull(),
@@ -96,6 +109,14 @@ export const paymentVaReleases = pgTable(
     check(
       "payment_va_releases_status_check",
       sql`${table.status} IN ('open', 'resolved')`,
+    ),
+    check(
+      "payment_va_releases_kind_check",
+      sql`${table.kind} IN ('staff', 'guest_method_change')`,
+    ),
+    check(
+      "payment_va_releases_kind_actor_check",
+      sql`(${table.kind} = 'staff' AND ${table.releasedBy} IS NOT NULL AND ${table.approvedBy} IS NOT NULL AND ${table.overrideId} IS NOT NULL) OR (${table.kind} = 'guest_method_change' AND ${table.releasedBy} IS NULL AND ${table.approvedBy} IS NULL AND ${table.overrideId} IS NULL)`,
     ),
     check("payment_va_releases_attempts_check", sql`${table.attempts} >= 0`),
     check(
