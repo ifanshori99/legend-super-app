@@ -3604,12 +3604,23 @@ async function lookupStuckRefundBeforeSettle(
   }
 }
 
+/** legend-980: the provider's answer is missing or cannot be trusted; settling
+ * by hand could pay money the provider already sent, so it stays refused. */
+function providerRefundStatusUnknown(): HttpError {
+  return new HttpError(
+    409,
+    "PROVIDER_REFUND_STATUS_UNKNOWN",
+    "Status refund di penyedia pembayaran belum pasti. Hubungi penyedia pembayaran untuk memastikan refund, lalu coba lagi.",
+  );
+}
+
 /**
  * The provider's answer decides whether finance may close the refund by hand:
  * succeeded -> refused (the poller or webhook completes it as provider-paid);
- * failed or not found -> allowed; pending -> refused (see
+ * failed -> allowed; not found -> refused as unknown (a send may have left,
+ * and a lookup by key can lag); pending -> refused (see
  * ALLOW_MANUAL_SETTLE_WHILE_PROVIDER_PENDING); no answer, or an answer for
- * another reference -> refused; a row that changed since the lookup (polls,
+ * another reference -> refused (409 PROVIDER_REFUND_STATUS_UNKNOWN); a row that changed since the lookup (polls,
  * attempts or updated_at) -> refused as stale, retry.
  */
 function assertProviderAllowsSettle(
@@ -3621,11 +3632,7 @@ function assertProviderAllowsSettle(
     lookup.answer === null ||
     lookup.providerRef !== refund.providerRef
   )
-    throw new HttpError(
-      503,
-      "REFUND_PROVIDER_LOOKUP_FAILED",
-      "The provider could not be asked about this refund; try again later.",
-    );
+    throw providerRefundStatusUnknown();
   const { snapshot } = lookup;
   if (
     snapshot.payoutPendingPolls !== refund.payoutPendingPolls ||
@@ -3638,6 +3645,11 @@ function assertProviderAllowsSettle(
       "The refund changed while the provider was asked; try again.",
     );
   const { status } = lookup.answer;
+  // legend-980: `not_found` is never believable. With a reference or polls the
+  // provider did see the refund; with attempts only, a send may have left and
+  // been accepted while the lookup by key still lags. No lasting "never sent"
+  // marker exists, so the settlement stays refused.
+  if (status === "not_found") throw providerRefundStatusUnknown();
   if (status === "succeeded")
     throw new HttpError(
       409,

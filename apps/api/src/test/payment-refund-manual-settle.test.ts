@@ -211,6 +211,13 @@ afterAll(async () => {
 
 beforeEach(() => {
   fake = new LookupGateway();
+  // Settlement by hand needs a definitive "the provider declined" answer;
+  // `not_found` is refused as uncertain (legend-980).
+  fake.defaultStatus = {
+    status: "failed",
+    providerRef: "PR-DECLINED",
+    code: "declined",
+  };
   setPaymentRefundGateway(fake);
 });
 afterEach(() => {
@@ -1027,6 +1034,11 @@ describe("legend-xd2q PAY-04 manual settlement of a refund finance paid by hand"
 // ---------------------------------------------------------------------------
 
 describe("legend-xd2q PAY-04 a maybe-sent refund is never sent again", () => {
+  // These tests exercise the lookup of a maybe-sent refund: a provider that
+  // never saw the key answers `not_found`.
+  beforeEach(() => {
+    fake.defaultStatus = { status: "not_found" };
+  });
   /** Approved by a finance + supervisor user, so only the lookup path is exercised. */
   const maybeSent = (seed: RefundSeed = {}) =>
     seedRefund({
@@ -1249,6 +1261,18 @@ describe("legend-xd2q PAY-04 a maybe-sent refund is never sent again", () => {
       PAYOUT_NOT_FOUND_MAYBE_SENT,
     );
 
+    // legend-980: `not_found` is uncertain (a send may have left), so a hand
+    // settlement is refused until the provider answers a definitive `failed`.
+    const refused = await settle(opsClient, refundId);
+    expect(refused.status).toBe(409);
+    expect(refused.body.error.code).toBe("PROVIDER_REFUND_STATUS_UNKNOWN");
+    expect((await refundRow(refundId)).status).not.toBe("completed");
+
+    fake.setStatus(`refund:${refundId}`, {
+      status: "failed",
+      providerRef: "PR-DECLINED",
+      code: "declined",
+    });
     const response = await settle(opsClient, refundId);
 
     expect(response.status).toBe(200);

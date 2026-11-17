@@ -234,6 +234,14 @@ async function seedRefund(seed: RefundSeed = {}) {
       new Date(Date.now() - 3 * 3_600_000),
     ],
   );
+  // legend-980: a refund is only settleable by hand when the provider answers
+  // `failed`; `not_found` is refused as uncertain. Tests that want another
+  // answer override it with `fake.setStatus`.
+  fake.setStatus(`refund:${refundId}`, {
+    status: "failed",
+    providerRef: seed.providerRef ?? "PR-DECLINED",
+    code: "declined",
+  });
   return { refundId, intentId };
 }
 
@@ -749,33 +757,43 @@ describe("legend-980 settle-manually asks the provider first", () => {
       await expectUntouched(refundId, intentId, before);
     });
 
-    it(`${flagName}: a provider that declined or does not know the refund allows the settlement`, async () => {
+    it(`${flagName}: a provider that declined the refund allows the settlement`, async () => {
       const declined = await seedStuck(flag);
       fake.setStatus(lookupFor(declined.refundId), {
         status: "failed",
         providerRef: "PR-DECLINED",
         code: "declined",
       });
-      const unknown = await seedStuck(flag);
-      // No stored result: the fake answers not_found.
 
       expect((await settle(opsClient, declined.refundId)).status).toBe(200);
-      expect((await settle(opsClient, unknown.refundId)).status).toBe(200);
 
       expect((await refundRow(declined.refundId)).status).toBe("completed");
-      expect((await refundRow(unknown.refundId)).status).toBe("completed");
       expect(fake.calls).toHaveLength(0);
     });
 
-    it(`${flagName}: a provider that cannot be reached refuses the settlement (REFUND_PROVIDER_LOOKUP_FAILED) and changes nothing`, async () => {
+    it(`${flagName}: a provider that does not know a refund it has a reference or polls for refuses the settlement (PROVIDER_REFUND_STATUS_UNKNOWN)`, async () => {
+      const { refundId, intentId } = await seedStuck(flag);
+      // The row has a provider reference and a poll, yet the provider answers
+      // not_found.
+      fake.setStatus(lookupFor(refundId), { status: "not_found" });
+      const before = await refundRow(refundId);
+
+      const response = await settle(opsClient, refundId);
+
+      expect(response.status).toBe(409);
+      expect(response.body.error.code).toBe("PROVIDER_REFUND_STATUS_UNKNOWN");
+      await expectUntouched(refundId, intentId, before);
+    });
+
+    it(`${flagName}: a provider that cannot be reached refuses the settlement (PROVIDER_REFUND_STATUS_UNKNOWN) and changes nothing`, async () => {
       const { refundId, intentId } = await seedStuck(flag);
       fake.statusError = new Error("fake provider unreachable");
       const before = await refundRow(refundId);
 
       const response = await settle(opsClient, refundId);
 
-      expect(response.status).toBe(503);
-      expect(response.body.error.code).toBe("REFUND_PROVIDER_LOOKUP_FAILED");
+      expect(response.status).toBe(409);
+      expect(response.body.error.code).toBe("PROVIDER_REFUND_STATUS_UNKNOWN");
       await expectUntouched(refundId, intentId, before);
 
       // The same request goes through once the provider answers again.
@@ -879,8 +897,8 @@ describe("legend-980 settle-manually asks the provider first", () => {
       const { refundId } = await maybeSent();
       fake.statusError = new Error("fake provider unreachable");
       const refused = await settle(opsClient, refundId);
-      expect(refused.status).toBe(503);
-      expect(refused.body.error.code).toBe("REFUND_PROVIDER_LOOKUP_FAILED");
+      expect(refused.status).toBe(409);
+      expect(refused.body.error.code).toBe("PROVIDER_REFUND_STATUS_UNKNOWN");
 
       fake.statusError = null;
       expect((await settle(opsClient, refundId)).status).toBe(200);
@@ -937,20 +955,31 @@ describe("legend-980 settle-manually asks the provider first", () => {
           await expectUntouched(refundId, intentId, before);
         });
 
-      it(`${label}: provider unreachable: refused (REFUND_PROVIDER_LOOKUP_FAILED), nothing changes`, async () => {
+      it(`${label}: provider unreachable: refused (PROVIDER_REFUND_STATUS_UNKNOWN), nothing changes`, async () => {
         const { refundId, intentId } = await unknownOutcome();
         fake.statusError = new Error("fake provider unreachable");
         const before = await refundRow(refundId);
 
         const response = await settle(opsClient, refundId);
 
-        expect(response.status).toBe(503);
-        expect(response.body.error.code).toBe("REFUND_PROVIDER_LOOKUP_FAILED");
+        expect(response.status).toBe(409);
+        expect(response.body.error.code).toBe("PROVIDER_REFUND_STATUS_UNKNOWN");
         await expectUntouched(refundId, intentId, before);
       });
 
-      it(`${label}: provider does not know the refund (not found) or declined it: settlement allowed after one lookup each`, async () => {
-        const notFound = await unknownOutcome();
+      it(`${label}: provider does not know the refund (not found): settlement refused (PROVIDER_REFUND_STATUS_UNKNOWN), a send may have left`, async () => {
+        const { refundId, intentId } = await unknownOutcome();
+        fake.setStatus(lookupFor(refundId), { status: "not_found" });
+        const before = await refundRow(refundId);
+
+        const response = await settle(opsClient, refundId);
+
+        expect(response.status).toBe(409);
+        expect(response.body.error.code).toBe("PROVIDER_REFUND_STATUS_UNKNOWN");
+        await expectUntouched(refundId, intentId, before);
+      });
+
+      it(`${label}: provider declined the refund (failed): settlement allowed after one lookup`, async () => {
         const declined = await unknownOutcome();
         fake.setStatus(lookupFor(declined.refundId), {
           status: "failed",
@@ -958,17 +987,14 @@ describe("legend-980 settle-manually asks the provider first", () => {
           code: "declined",
         });
 
-        expect((await settle(opsClient, notFound.refundId)).status).toBe(200);
         expect((await settle(opsClient, declined.refundId)).status).toBe(200);
 
-        for (const { refundId } of [notFound, declined]) {
-          expect((await refundRow(refundId)).status).toBe("completed");
-          expect(
-            fake.statusCalls.filter(
-              (c) => c.idempotencyKey === lookupFor(refundId),
-            ),
-          ).toHaveLength(1);
-        }
+        expect((await refundRow(declined.refundId)).status).toBe("completed");
+        expect(
+          fake.statusCalls.filter(
+            (c) => c.idempotencyKey === lookupFor(declined.refundId),
+          ),
+        ).toHaveLength(1);
         expect(fake.calls).toHaveLength(0);
       });
     }

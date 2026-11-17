@@ -6896,6 +6896,7 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 - Ditutup sesudah bukti landing: `legend-2lp.2`, `legend-2lp.4`, `legend-2lp.5`, `legend-4lm6`, `legend-0y8tf`, `legend-sgvw0`, `legend-xz3ll`. `legend-d6d1` tetap terbuka (zona publik dan notifikasi waitlist tersisa). Komentar kartu memuat SHA final m1 sesudah commit dokumentasi ini.
 - Laporan cleanup pertama: disk24,64GB; worktree integrasi1,9GB masih terkunci sampai seluruh dokumentasi dipush. Worktree lain ditahan (d8fc7d19 terkunci; dev-seed kotor). Handoff membersihkan hanya worktree/cabang int batch79 dengan perlindungan worktree lain, lalu mengedit `docs/merge-queue.md` di checkout utama tanpa commit sesuai brief.
 - Ringkasan bukti: fast383, lint, typecheck, e2e produksi18/1skip+mock25, build, full gabungan24474 lulus/47 skip/16 todo; pemulihan mount infra tanpa patch. Subagent4 unik/puncak3, satu runner berat. Tidak ada pekerjaan yang masih berjalan.
+
 ## 2026-11-14: Edge KDS stations + status pemindai (cabang ws/edge-kds-stations, di atas 5dcc1cfd9 = int/batch64b)
 
 - Catatan dasar: milestone/m1 belum memuat batch 64b (tabel stations tanpa display_order dll di m1); cabang dibuat dari 5dcc1cfd9 supaya migrasi 0363-0365 ada. Merge train: merge setelah int/batch64b masuk m1.
@@ -6925,7 +6926,6 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 
 - Review AC14 direproduksi melalui event/receipt asli: HTTP dengan versi di bawah receipt yang lebih baru sempat mengubah tambahan KDS. Bukti RED 1 gagal/27 lulus ada di `/tmp/930-kds-followup-receipt-red.log`; perbaikan membatasi enrichment dengan versi receipt node yang sama, tetap mengizinkan versi sama, dan tidak menyentuh field inti. Narrowing tipe pada dua assertion test baru juga diperbaiki tanpa cast.
 
-
 ### 932 — Merge train batch80 KDS stations r2 (17 Nov 2026)
 
 - Basis tip remote `70bba542d`; integrasi `int/batch80`, worktree `/Users/ifanshori99/Projects/legend super app/legend-batch80` agar bind mount Colima tersedia. Isi tepat satu cabang `ws/edge-kds-stations-r2` `91c7f9d8b`; audit ancestry tidak menemukan tambahan SIAP di luar tiga cabang yang dilarang. Kartu train `legend-qhsex`.
@@ -6947,7 +6947,6 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 
 - Full checkpoint +60menit: API14782 test lulus teramati tanpa FAIL; test `kds-scanner-status` berubah batch80 juga sudah hijau dalam full, demikian catalog-loop dan audit akses. Root3503/1skip dan web92/92 tetap hijau. Tidak ada error infra atau perubahan kode; full pertama terus dimonitor.
 
-
 ### Batch80 gate akhir hijau (17 Nov 2026)
 
 - Full run pertama exit0 dalam6136,8detik (102m17s): root3503 lulus/1skip; web92/92; API1353 berkas lulus/2 berkas skip,20932 test lulus/46skip/16todo. Gabungan24527 lulus/47skip/16todo. Tidak ada kegagalan, pemulihan infra, patch, run ulang, atau pengecualian flake. Container/network disposable sudah terhapus; semua job selesai.
@@ -6955,19 +6954,18 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 - Fetch akhir `origin/milestone/m1` masih `70bba542d`, ancestor integrasi teruji. Isi hanya `ws/edge-kds-stations-r2` `91c7f9d8b`; peta migrasi0431->0431 dengan snapshot0431.prevId ke0430.id. Reviewer integrasi bersih, tidak mereview ulang isi cabang. Rencana landing: push normal int/batch80 lalu fast-forward milestone/m1, komentari/tutup legend-i78o6, legend-40nvj, legend-qhsex; cleanup worktree/int dan edit queue utama tanpa commit. Tidak main/deploy/force push.
 - Angka subagent:3 unik native Codex, puncak3;2 Explore,1 runner; satu Explore berlanjut reviewer integrasi. Token heavy hanya pada runner. session-usage tidak menemukan transkrip native, parallel-report hanya berisi sesi Claude coordinator; biaya/token/rata-rata native tidak tersedia. Batas kontrak40nvj: shell pengirim scanner di luar repo dan web memakai mock tercatat pada sumber; kontrak edge/API, penyimpanan heartbeat/status, isolasi dan validasi selesai teruji.
 
-
 ### Batch80 mendarat dan kartu ditutup (17 Nov 2026)
 
 - Integrasi `aa4971d3f7458009be25a0ecb25870e87968e90b` dipush biasa ke int/batch80 lalu fast-forward milestone/m1; SHA remote terverifikasi dan cabang lokal m1 ikut fast-forward. Basis remote tetap70bba542d pada fetch akhir. Cabang masuk tepat satu: ws/edge-kds-stations-r2 91c7f9d8b. Migrasi0431->0431, check-journal satu entri baru hijau. Tidak main/deploy/force push.
 - Ditutup sesudah landing: legend-i78o6, legend-40nvj, dan kartu train legend-qhsex. Kedua kartu implementasi dibaca lengkap: description/AC formal kosong, komentar CTO930 menyatakan hold selesai dan regresi AC1..14 hijau; gate integrasi lengkap membuktikan perilaku kontrak/isolasi/resync. Batas shell eksternal dan mock web disebut saat penutupan. Komentar final kartu memuat SHA m1 setelah commit dokumentasi ini.
 - Laporan cleanup awal disk24,11GB; integrasi masih dikunci sampai seluruh dokumentasi dipush. Handoff hanya membersihkan worktree/cabang int batch80, menjaga lock worktree d8fc7d19 dan dev-seed yang kotor, serta mengedit docs/merge-queue.md pada checkout utama tanpa commit. Semua job selesai. Subagent3 unik/puncak3, satu runner berat; helper biaya/token native tidak tersedia.
 
-
 ### Batch 941 rekonsiliasi sisa: kebijakan bank recon, match basi, DOIT recon (17 Nov 2026)
 
 Cabang `ghostex/rekonsiliasi-sisa-bank-dan-doit`, dasar m1 `c17c60df7`. Tiga kartu, tiga migrasi (0432 sampai 0434), tanpa perubahan nomor atau saldo jurnal. Approver penutup kasus tetap Owner atau Finance Manager (founder Q12).
 
 **Sudah**
+
 - legend-fnxl.9 (commit `2a499d61e`, tes root `8bb5e3458`): `caseDueDays` bukan lagi angka 7 di kode. Kolom `finance_policies.recon_case_due_days`, bawaan 7, CHECK 1 sampai 60, migrasi 0432. Hanya peran `accounting.reconcile` (owner, finance) yang bisa mengubahnya. Kontrak PUT menerima `reconciliationPolicy.caseDueDays` (wajib).
 - legend-fnxl.10 (commit `5369a7bed`, perbaikan `044269815`): match bank ditandai basi (`stale_at`, `stale_by_reversal_entry_id`) saat jurnalnya dibalik; tidak pernah dihapus diam-diam, muncul di daftar kasus (tipe `bank_statement`, referensi `journal_entry`), idempoten. Migrasi 0433. Hook mengambil `entityLock` sebelum UPDATE agar balik jurnal dan pencocokan otomatis berurutan; PIC kasus adalah orang yang mencocokkan.
 - legend-3wpf (commit `cebf58ec1`, perbaikan `3337d03a7`): `expireDueIntents` tidak lagi menutup intent milik gateway tanpa bertanya ke provider; audit `payment.reconciliation_timed_out` sekali per kode sesudah `expiresAt` + 24 jam sementara polling terus berjalan; status provider `refunded` dipetakan ke `failed` tanpa nominal; kolom sendiri `provider_answered_at` (migrasi 0434, isi awal dari `provider_final_at`).
@@ -6975,17 +6973,20 @@ Cabang `ghostex/rekonsiliasi-sisa-bank-dan-doit`, dasar m1 `c17c60df7`. Tiga kar
 - Tes setelah commit terakhir: root contract 872/872; migrasi + registry + metric-single-path 62/62; akuntansi dan payment terarah 326/326; cakupan tabel 26/26; typecheck API dan shared exit 0.
 
 **Keputusan**
+
 - Aturan pembatas bayar: polling gateway tidak berhenti di jendela 24 jam (VA yang tak pernah dijawab final tetap bisa ditagih, prinsip SO-885); yang berhenti hanya audit (sekali).
 - `refunded` dipetakan ke `failed` tanpa nominal: tidak ada pihak dibayar lebih.
 - Match basi memakai tipe kasus `bank_statement` yang sudah ada, bukan tipe baru.
 - Baris bank dengan match basi dihitung `in_case`, bukan cocok bersih; bentuk DTO tidak berubah (perlu konfirmasi CTO).
 
 **Batas dan belum diverifikasi**
+
 - Tidak ada tes balapan bersamaan untuk hook basi vs match otomatis. Tes ringkasan baris bank hanya sebagian fail-first.
 - Suite polling 37 berkas tidak dijalankan ulang penuh setelah perubahan terakhir; `pnpm test` penuh dan `pnpm check` belum dijalankan (hanya gate terarah).
 - `provider_answered_at` ditulis tetapi belum dibaca; pencarian audit per poll belum berindeks; UI web tidak menampilkan penanda basi.
 
 **Angka**
+
 - Sesi `eaa31d4f`: biaya* total 26.204k (utama Sonnet 21.703k; subagent Sonnet 3.444k, Opus 676k, Haiku 381k); 14 subagent, 4 compact. Puncak subagent bersamaan 4; token heavy dipegang test-runner.
 
 **Berikut**: gerbang rilis (second-opinion Codex satu kali untuk area ini), lalu merge train. Tidak merge, tidak deploy.
@@ -6995,6 +6996,7 @@ Cabang `ghostex/rekonsiliasi-sisa-bank-dan-doit`, dasar m1 `c17c60df7`. Tiga kar
 Cabang `ghostex/64affda0` dari `44dc04cd9`; commit `046289063` dan `7bc7adc3f`.
 
 **Selesai**
+
 - P1 (legend-3wpf dibuka lagi): kolom `payment_intents.provider_refunded_at` (migrasi 0435, kolom nullable tanpa backfill). Diisi saat provider menjawab `refunded` (poll, cek hold QRIS, antrean release VA/QRIS, webhook `payment.refunded` yang kini dikenali). `applyConfirmation` menolak (INVALID_TRANSITION) sebelum parkir/hold/VA bila code itu sudah refunded; jalur penolakan webhook tidak lagi mencatat evidence atau dana belum teralokasi untuk code refunded. `failed` biasa yang dibayar belakangan tetap direkonsiliasi sekali; pembayaran tambahan dengan provider ref lain tetap diparkir; intent `paid` tidak pernah distempel.
 - P2: reversal jurnal mengambil entity lock sebelum `FOR UPDATE` jurnal (urutan sama dengan `write_off`), 409 bila entitas berubah. Helper lock tunggal (huruf kecil) dipakai kasus recon dan akun bank.
 - P3 (legend-l29ln): 0433 melepas FORCE `journal_entries` (induk) dulu baru `bank_statement_line_matches`; tes baru memigrasi 0433-0434 sebagai owner NOBYPASSRLS di tabel berisi baris.
@@ -7002,6 +7004,7 @@ Cabang `ghostex/64affda0` dari `44dc04cd9`; commit `046289063` dan `7bc7adc3f`.
 **Bukti**: gagal-dulu di base (P1 3 tes, P2 2 tes, putaran 2 tes a/b/c gagal) lalu hijau; 73 berkas tes terarah (payment/recon/migrasi/QRIS hold) 1067 lulus; typecheck API exit 0; `db:generate` kosong; prettier bersih. Architect xhigh putaran 1: 1 P1 (parkir lewat hold/VA), diperbaiki di putaran 2; putaran 2: tanpa P1.
 
 **Belum / tindak lanjut**: legend-7uqbs (P2: provider refund SETELAH kita catat pembayaran belum memperingatkan staf, sudah ada sebelum 952); legend-3wwme (P3: payload payment.refunded non-payment 500; komentar lock). Tes 0433 tidak mendeteksi urutan FORCE (lulus juga di base); `pnpm test` penuh dan `pnpm check` belum dijalankan (gate akhir merge train).
+
 - Angka: 15 subagent (Explore 4, test-writer 2, implementer 6, test-runner 1, architect 2), puncak bersamaan 4; token heavy dipegang agent utama (antre `heavy` ~1 jam di jam sibuk).
 
 ## Batch 958: recon, provider refund setelah pembayaran tercatat (17 Nov 2026)
@@ -7009,6 +7012,7 @@ Cabang `ghostex/64affda0` dari `44dc04cd9`; commit `046289063` dan `7bc7adc3f`.
 Cabang `ghostex/60a93dca` dari `5e1f9d9fc`; commit `33b2aac77`. Kartu legend-7uqbs (P1) dan legend-3wwme (P3). Migrasi 0436 (nomor kerja; brief minta 0480-0484, cabang lain sudah memegang 0440 dan 0484, CTO atur nomor saat merge).
 
 **Selesai**
+
 - 7uqbs: kolom `payment_unallocated_funds.provider_refunded_at` dan `payment_intents.provider_refunded_after_paid_at`. Stamp atomik (`WHERE ... IS NULL RETURNING`) lewat satu helper; hanya pemenang stamp menulis SATU baris audit `payment.provider_refunded_after_recorded` dan SATU alert supervisor outlet (id alert deterministik, webhook dan poller bersamaan tetap satu). Tanpa pembalikan jurnal otomatis.
 - Blokir 409 `PROVIDER_REFUNDED`: alokasi/resolve dana parkir, refund manual, approve, dan payout (`runRefundPayout` karantina, `takeSendRight` cek ulang atomik). Satu helper `payment-provider-refunded-guard.ts`.
 - Dana yang sudah di-refund provider tidak lagi menahan tagihan (open-funds POS/QR/live-code). Refund kita sendiri yang terkirim tidak ditandai sebagai refund provider.
@@ -7023,6 +7027,7 @@ Cabang `ghostex/60a93dca` dari `5e1f9d9fc`; commit `33b2aac77`. Kartu legend-7uq
 Cabang worktree `ghostex/d1e44aa2` dari `d26caed3c` (958). Kartu legend-30hfs (P1) dan legend-wourt (P2). Migrasi 0505 (nomor kerja; journal idx 437, `when` 1795000000052 = 958 + 1; CTO atur nomor saat merge).
 
 **Selesai**
+
 - Tabel baru `payment_provider_refunds` (0505, FK inline, RLS tenant + outlet). Satu baris per refund yang dibuat provider sendiri; unik per (tenant, provider, id refund provider). Helper `recordProviderRefundInTx` (`payment-provider-partial-refund.ts`): ikat transaksi ke intent di tenant itu (evidence menang bila bentrok), kunci intent, cek echo refund kita (`payment_refunds.provider_ref`, bukan yang `failed`), insert sebagai penentu pemenang: satu audit `payment.provider_refunded_partial` + satu alert per refund. Alert dilewati bila uang itu sudah diblok dan diberitahukan sebelumnya, kecuali refund ini baru membuat intent ter-flag penuh.
 - Nilai bersih: `providerRefundedForeignIdrSql` dikurangkan di `refundableBalance` (buat/approve/payout), nilai jual QR/fasilitas, sisa deposit reservasi, dan kredit deposit reservasi (0 bila intent ter-flag). Payout (`takeSendRight`/`runRefundPayout`) diblok bila refund kita + refund provider melebihi bayar. Total refund provider >= bayar, atau refund kita yang sudah disetujui melebihi sisa: intent di-flag (958). Intent belum dibayar yang refund-nya sudah penuh: `providerRefundedAt` di-stamp sehingga paid terlambat tidak mengakui.
 - Dana parkir: transaksi yang di-refund provider memblok dana itu (`fundBlockedSql` juga membaca tabel baru), termasuk dana yang muncul setelah refund tercatat. Transaksi terbelah (sebagian ke intent, sisa ke dana): refund dihitung ke intent DAN dana tetap diblok (membatasi dua kali, aman).
@@ -7038,6 +7043,7 @@ Cabang worktree `ghostex/d1e44aa2` dari `d26caed3c` (958). Kartu legend-30hfs (P
 Cabang worktree `ghostex/980-refund-sisa-4-kartu` dari `9788dc422` (958 + 967). Kartu legend-m9pf6, legend-9z1r5, legend-17ml, legend-uyw0v. Migrasi 0540 (nomor kerja; journal idx 438, `when` 1795000000053, snapshot `0540_snapshot.json`): indeks unik parsial `order_issues_manual_refund_once_idx`.
 
 **Selesai**
+
 - m9pf6: helper `netAllocatedIdrSql` (bukti - dana parkir - refund provider, clamp >= 0) dipakai di bill-split, pos-qris-hold, qr-order-consumers, facility-breakfast-consumers, pos-order-payment, dan dua salinan akuntansi (amounts, guards). Penjualan dengan refund parsial provider tidak tampil lunas penuh.
 - 9z1r5: `refundSplit` memutar ulang refund sebelumnya per bagian dan memotong tiap bagian pada sisa bobotnya; total tetap tepat.
 - 17ml: settle manual boleh untuk MANUAL_RECONCILIATION / PAYOUT_NOT_FOUND_MAYBE_SENT; lookup provider sebelum settle (succeeded: tolak; pending: tolak lewat konstanta `ALLOW_MANUAL_SETTLE_WHILE_PROVIDER_PENDING = false`; error: tolak; failed/not found: boleh), cek basi di dalam lock, `providerRef` dipertahankan, dan pengawasan 14 hari atas refund yang sudah di-settle (konflik + alert bila provider kemudian membayar).
@@ -7046,8 +7052,18 @@ Cabang worktree `ghostex/980-refund-sisa-4-kartu` dari `9788dc422` (958 + 967). 
 **Bukti**: gagal-dulu 53 dari 4 berkas baru (AssertionError perilaku). Hijau: grup 185 berkas (2775 lulus; 12 merah diperbaiki: 1 bug kode, sisanya setup test), lalu 34 berkas terkait 514 lulus setelah perbaikan terakhir. Typecheck api/shared/web, eslint, prettier hijau; `db:generate` kosong. Architect xhigh 4 ronde; ronde 4 menemukan 1 High + 2 Medium yang sudah diperbaiki, perbaikan itu belum direview ulang.
 
 **Belum / keputusan founder**
+
 - Edge `order-ingest` void (978) belum menghitung refund manual: bisa membayar ulang baris yang sudah di-refund manual. Kartu lanjutan.
 - Settle manual ditolak saat provider `pending` (membatasi kasus inti legend-17ml); ubah konstanta bila founder mengizinkan.
 - Refund manual per baris vs refund POS saling eksklusif per order (aturan bisnis yang membatasi).
 - Order tamu tanpa baris `pos_orders`: refund manual ditolak 422 (legend-5wn1e).
 - Refund yang dibukukan sebelum 980 dibulatkan per refund; bagian bisa selisih Rp1.
+
+**Ronde 6 (review architect CTO atas 97f02a1d4, 17 Nov 2026; delta architect xhigh: 2 High, keduanya diperbaiki)**
+
+- HIGH diperbaiki: `order-issue-manual-refund.ts` mengurangi refund provider (967, `providerRefundedForeignIdrSql`) per intent tender sebelum cek batas. Intent yang ditandai sudah di-refund provider tanpa jumlah tercatat: 409 `PROVIDER_REFUND_STATUS_UNKNOWN`. Seluruh uang sudah dikembalikan provider: 409 `REFUND_CONFLICT`. Tes: refund penuh, parsial di atas dan di bawah net, status tak pasti, tanpa refund provider.
+- MEDIUM (keputusan CTO: TETAP DIBLOKIR): `getRefundStatus` DOIT hanya mengembalikan succeeded/pending/error, jadi settle manual legend-17ml selalu ditolak. Penolakan kini 409 `PROVIDER_REFUND_STATUS_UNKNOWN` ("hubungi penyedia pembayaran"), bukan 503.
+- REGRESI legend-xd2q (dicatat eksplisit): refund "mungkin terkirim" tanpa ref (`PAYOUT_NOT_FOUND_MAYBE_SENT`) yang dulu bisa di-settle manual sekarang ikut tertutup selama status di provider tidak pasti/pending. Pelunasan manual baru dibuka bila DOIT menyediakan lookup status yang pasti, atau founder mengubah `ALLOW_MANUAL_SETTLE_WHILE_PROVIDER_PENDING`.
+- LOW (diperketat setelah architect delta): SEMUA jawaban `not_found` dari provider ditolak (409 `PROVIDER_REFUND_STATUS_UNKNOWN`), juga untuk refund yang hanya punya attempts: pengiriman bisa sudah lolos dan pencarian by key bisa terlambat. Settle manual hanya lolos bila provider menjawab `failed`.
+- HIGH (architect delta): bendera refund provider di intent (`provider_refunded_after_paid_at` / `provider_refunded_at`) kini selalu menolak refund manual (409), berapa pun refund parsial yang tercatat, karena jawaban `refunded` penuh dan aturan melebihi batas menyetel bendera tanpa mencatat jumlah.
+- Bukti ronde 6: grup 106 berkas refund/order-issues/recovery: 1613 lulus, 0 gagal; typecheck api hijau.

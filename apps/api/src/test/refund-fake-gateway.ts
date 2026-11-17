@@ -38,6 +38,8 @@ export class FakeRefundGateway implements PaymentRefundPort {
   delayAfterExecution = false;
   /** When set, `getRefundStatus` throws it (provider unreachable). */
   statusError: Error | null = null;
+  /** The lookup answer for a key nobody registered (a provider that never saw it). */
+  defaultStatus: GatewayRefundLookup = { status: "not_found" };
   /**
    * Runs inside each `getRefundStatus` call, before it answers: lets a test
    * change the refund while the service waits for the provider (stale lookup).
@@ -119,7 +121,7 @@ export class FakeRefundGateway implements PaymentRefundPort {
     if (override) return override;
     const stored = this.results.get(input.idempotencyKey);
     if (stored) return stored;
-    return { status: "not_found" };
+    return this.defaultStatus;
   }
 }
 

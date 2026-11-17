@@ -35,7 +35,7 @@ import {
   type TenantId,
 } from "@starter/shared/core";
 import { orderIssues } from "../db/schema/kds-issues.ts";
-import { posOrderRefunds, posOrderTenders } from "../db/schema/pos-order.ts";
+import { posOrderRefunds } from "../db/schema/pos-order.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { HttpError } from "../lib/http-error.ts";
 import type { Tx } from "./menu-internals.ts";
@@ -43,6 +43,7 @@ import { orderPromoPartialRefundPort } from "./order-promo-refund.ts";
 import { liveRouteManualRefundWhere } from "./order-issue-route-refund.ts";
 import { recoveryRefundSplit } from "./order-recovery-refund-amount.ts";
 import { OrderRevenueMismatch } from "./order-revenue.ts";
+import { providerRefundedForeignIdrSql } from "./payment-provider-refunded-foreign-sql.ts";
 
 const refuse = (message: string) =>
   new HttpError(422, "VALIDATION_ERROR", message);
@@ -86,21 +87,56 @@ export async function manualRefundAmountIdr(
   if (!order || order.status !== "completed")
     throw refuse("Refund manual hanya untuk pesanan yang sudah dibayar.");
 
-  const [paidRow] = await tx
-    .select({
-      total: sql<string>`coalesce(sum(${posOrderTenders.amountIdr}), 0)::text`,
-    })
-    .from(posOrderTenders)
-    .where(
-      and(
-        eq(posOrderTenders.tenantId, tenantId),
-        eq(posOrderTenders.orderId, orderId),
-        eq(posOrderTenders.status, "captured"),
-      ),
-    );
-  const paidIdr = asNumber(paidRow?.total);
-  if (paidIdr <= 0)
+  // Money the guest paid for the order, per tender. A tender backed by a
+  // payment intent loses what the provider refunded on its own (967, a refund
+  // in the provider dashboard): `providerRefundedForeignIdrSql`, the same rule
+  // `netAllocatedIdrSql` reads. Net per intent, never below 0. An intent the
+  // provider answered refunded (`provider_refunded_at`, or
+  // `provider_refunded_after_paid_at`) with no recorded amount is uncertain:
+  // refused (restrictive).
+  const tenderRows = await tx.execute(sql`
+    SELECT sum(t.amount_idr)::text AS amount,
+           t.payment_intent_id IS NOT NULL AS has_intent,
+           ${providerRefundedForeignIdrSql(sql`${tenantId}::uuid`, sql`t.payment_intent_id`)}::text AS provider_refunded,
+           coalesce(bool_or(i.provider_refunded_after_paid_at IS NOT NULL
+                            OR i.provider_refunded_at IS NOT NULL), false) AS refunded_flag
+      FROM pos_order_tenders t
+      LEFT JOIN payment_intents i
+        ON i.tenant_id = t.tenant_id AND i.id = t.payment_intent_id
+     WHERE t.tenant_id = ${tenantId}
+       AND t.order_id = ${ulidToUuid(orderId)}::uuid
+       AND t.status = 'captured'
+     GROUP BY t.payment_intent_id
+  `);
+  let grossPaidIdr = 0;
+  let paidIdr = 0;
+  let uncertain = false;
+  for (const row of tenderRows.rows) {
+    const amount = asNumber(row.amount);
+    const providerRefunded = asNumber(row.provider_refunded);
+    grossPaidIdr += amount;
+    if (row.has_intent !== true) {
+      paidIdr += amount;
+      continue;
+    }
+    // The flag means "no second refund may be paid" and is also set by paths
+    // that record no amount (full `refunded` answer, cap exceeded), so it
+    // blocks whatever amount is recorded.
+    if (row.refunded_flag === true) uncertain = true;
+    paidIdr += Math.max(amount - providerRefunded, 0);
+  }
+  if (grossPaidIdr <= 0)
     throw refuse("Refund manual hanya untuk pesanan yang sudah dibayar.");
+  if (uncertain)
+    throw new HttpError(
+      409,
+      "PROVIDER_REFUND_STATUS_UNKNOWN",
+      "Penyedia pembayaran sudah mengembalikan uang pesanan ini, tetapi jumlahnya belum tercatat. Refund manual ditolak; hubungi penyedia pembayaran untuk memastikan, lalu coba lagi.",
+    );
+  if (paidIdr <= 0)
+    throw conflict(
+      "Penyedia pembayaran sudah mengembalikan seluruh uang pesanan ini. Refund manual ditolak agar uang yang sama tidak dikembalikan dua kali.",
+    );
 
   if (
     await orderPromoPartialRefundPort.livePromoApplicationOf(

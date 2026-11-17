@@ -268,6 +268,13 @@ type SeedOptions = {
   voidedLine?: 0 | 1;
   /** A POS refund already paid out on the order. */
   posRefundIdr?: number;
+  /**
+   * The tender is a QRIS payment intent (DOIT) instead of cash (legend-uyw0v,
+   * 967). `providerRefundedIdr`: a refund the provider made on its own, recorded
+   * in `payment_provider_refunds`. `refundedFlag`: the intent carries
+   * `provider_refunded_after_paid_at` with no recorded amount.
+   */
+  qris?: { providerRefundedIdr?: number; refundedFlag?: boolean };
 };
 
 /**
@@ -325,7 +332,61 @@ async function seedOrder(options: SeedOptions = {}): Promise<Order> {
        VALUES ($1, $2, $3, 'pos')`,
       [uuid, tenant.tenantId, tenant.outletId],
     );
-    if (options.paid !== false)
+    if (options.paid !== false && options.qris) {
+      const linkId = randomUUID();
+      const intentId = randomUUID();
+      await client.query(
+        `INSERT INTO payment_links (id, tenant_id, outlet_id, token_hash, reference, subtotal_idr, total_idr, paid_idr, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $6, $6, 'seed')`,
+        [
+          linkId,
+          tenant.tenantId,
+          tenant.outletId,
+          randomUUID().replaceAll("-", ""),
+          `Q980-${linkId.slice(0, 8)}`,
+          totalIdr,
+        ],
+      );
+      await client.query(
+        `INSERT INTO payment_intents
+           (id, tenant_id, outlet_id, payment_link_id, method, provider, amount_idr, idempotency_key,
+            status, paid_at, instructions, expires_at, provider_refunded_after_paid_at)
+         VALUES ($1, $2, $3, $4, 'qris', 'doit', $5, $6, 'paid', now(),
+                 '{"method":"qris","qrPayload":"test","issuer":null}', now(),
+                 CASE WHEN $7::boolean THEN now() ELSE NULL END)`,
+        [
+          intentId,
+          tenant.tenantId,
+          tenant.outletId,
+          linkId,
+          totalIdr,
+          `q980-${intentId}`,
+          options.qris.refundedFlag === true,
+        ],
+      );
+      if (options.qris.providerRefundedIdr !== undefined)
+        await client.query(
+          `INSERT INTO payment_provider_refunds
+             (tenant_id, outlet_id, payment_intent_id, provider, provider_refund_id,
+              provider_payment_ref, amount_idr, source)
+           VALUES ($1, $2, $3, 'doit', $4, $5, $6, 'refund_webhook')`,
+          [
+            tenant.tenantId,
+            tenant.outletId,
+            intentId,
+            `pr980-${intentId}`,
+            `pay980-${intentId}`,
+            options.qris.providerRefundedIdr,
+          ],
+        );
+      await client.query(
+        `INSERT INTO pos_order_tenders
+           (tenant_id, outlet_id, order_id, method, provider, amount_idr, received_idr,
+            change_idr, status, requested_at, resolved_at, payment_intent_id)
+         VALUES ($1, $2, $3, 'qris', 'doit', $4, NULL, NULL, 'captured', now(), now(), $5)`,
+        [tenant.tenantId, tenant.outletId, uuid, totalIdr, intentId],
+      );
+    } else if (options.paid !== false)
       await client.query(
         `INSERT INTO pos_order_tenders
            (tenant_id, outlet_id, order_id, method, provider, amount_idr, received_idr,
@@ -1307,5 +1368,58 @@ describe("reportOrderIssue: manual refund guards (legend-uyw0v, 980)", () => {
     await expectLegitStillWorks(order, first, one);
     const two = await approval({ objectId: second.itemUlid });
     await expectLegitStillWorks(order, second, two);
+  });
+});
+
+describe("reportOrderIssue: manual refund after a provider refund (legend-uyw0v, 967)", () => {
+  async function refusedThenControl(
+    qris: NonNullable<SeedOptions["qris"]>,
+    status: number,
+  ) {
+    const order = await seedOrder({ qris });
+    const line = order.lines[0];
+    const over = await approval({ objectId: line.itemUlid });
+    const res = await report(recorder, order, line, {
+      approvedBy: supervisor.userId,
+      overrideId: over.id,
+    });
+    expect(res.status).toBe(status);
+    expect(await issueRows(line)).toBe(0);
+    expect(await uses(over.id)).toBe(0);
+  }
+
+  it("refuses a manual refund when the provider already refunded the whole payment; nothing spent", async () => {
+    await refusedThenControl({ providerRefundedIdr: LINE_TOTAL * 2 }, 409);
+  });
+
+  it("refuses a manual refund above what is left after a partial provider refund", async () => {
+    // Rp50.000 paid, Rp30.000 refunded by the provider: Rp20.000 left, the line is Rp25.000.
+    await refusedThenControl({ providerRefundedIdr: 30_000 }, 422);
+  });
+
+  it("allows a manual refund within what is left after a partial provider refund", async () => {
+    // Rp20.000 refunded by the provider: Rp30.000 left, the line is Rp25.000.
+    const order = await seedOrder({ qris: { providerRefundedIdr: 20_000 } });
+    const good = await approval({ objectId: order.lines[0].itemUlid });
+    await expectLegitStillWorks(order, order.lines[0], good);
+  });
+
+  it("refuses with 409 when the intent is flagged refunded but no amount is recorded", async () => {
+    await refusedThenControl({ refundedFlag: true }, 409);
+  });
+
+  it("refuses with 409 when the intent is flagged refunded even though a partial provider refund is recorded", async () => {
+    // A later full `refunded` answer sets the flag without recording an amount:
+    // Rp10.000 recorded would leave Rp40.000, but the provider returned it all.
+    await refusedThenControl(
+      { providerRefundedIdr: 10_000, refundedFlag: true },
+      409,
+    );
+  });
+
+  it("is unchanged for a QRIS payment the provider never refunded", async () => {
+    const order = await seedOrder({ qris: {} });
+    const good = await approval({ objectId: order.lines[0].itemUlid });
+    await expectLegitStillWorks(order, order.lines[0], good);
   });
 });
