@@ -4,12 +4,22 @@
 services:
   postgres:
     image: ${STARTER_TEST_POSTGRES_IMAGE:-postgres:17-alpine}
-    # tmpfs data counts toward the limit. Override with STARTER_TEST_PG_MEM.
-    # 1536m (batch48i): 512m and 768m both OOM-killed full runs 3x (legend-p649r
-    # first raised it to 768m; the suite peaked at 445 MiB against the old
-    # 512m limit and a first run crashed, probably from OOM.
+    # scripts/test.mjs selects 1024m for targeted unit runs, so two light lanes
+    # share a roughly 3 GiB VM with a combined 2 GiB limit. Full/browser runs
+    # and direct Compose use keep 1536m unless STARTER_TEST_PG_MEM overrides it.
+    # tmpfs data counts toward the limit, alongside buffers and connections.
+    # Earlier full runs OOM-killed at 512m/768m; run larger budgets alone when
+    # the VM cannot accommodate another test database.
     mem_limit: ${STARTER_TEST_PG_MEM:-1536m}
     memswap_limit: ${STARTER_TEST_PG_MEM:-1536m}
+    command:
+      - postgres
+      - -c
+      - shared_buffers=64MB
+      - -c
+      - work_mem=2MB
+      - -c
+      - max_connections=50
     labels:
       legend.test.owner: ${STARTER_TEST_OWNER:-}
     environment:
