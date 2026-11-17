@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="ghostex-page" content="v2">
+<title>Review UI: clearance selisih pencairan</title>
+<style>
+  .how { margin: 0 0 8px; font-size: 13px; line-height: 1.45; color: var(--gx-muted); }
+  .how b { color: var(--gx-fg); font-weight: 600; }
+  .shots { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-items: start; }
+  .shots figure { margin: 0; min-width: 0; }
+  .shots img { box-sizing: border-box; display: block; max-width: 100%; height: auto; border-radius: 10px; border: 1px solid var(--gx-line); }
+  .shots figcaption { margin-top: 6px; font-size: 12.5px; line-height: 1.45; color: var(--gx-muted); }
+  .shots figcaption b { color: var(--gx-fg); font-weight: 600; }
+  .narrow { max-width: 260px; }
+  @media (max-width: 640px) { .shots { grid-template-columns: minmax(0, 1fr); } .narrow { max-width: 100%; } }
+</style>
+</head>
+<body>
+<gx-questions submit="Kirim ke CTO">
+  <header>
+    <span class="gx-eyebrow">Review UI · untuk founder</span>
+    <h1>Review UI: clearance selisih pencairan</h1>
+    <p class="gx-lede">Ini layar yang sudah dibangun, bukan mockup. Isinya sesuai mockup yang disetujui (Q28). Tidak ada tombol bayar di layar ini. Setiap clearance dan penarikan butuh dua orang dan kata sandi. Cukup lihat gambarnya, lalu jawab setuju atau minta diubah.</p>
+    <div class="gx-chips">
+      <span class="gx-chip"><b>1</b> pertanyaan (Q30)</span>
+      <span class="gx-chip">Contoh data, bukan uang sungguhan</span>
+    </div>
+  </header>
+
+  <gx-wide>
+    <h2>Beda dari mockup</h2>
+    <ul class="how">
+      <li>Batch dan flag ditampilkan dengan id pendek, karena kode batch belum dikirim server.</li>
+      <li>Baris "biaya terkunci" belum ada.</li>
+      <li>Tarik klaim return memakai gaya dialog return yang sudah ada (tidak ada mockup sendiri).</li>
+    </ul>
+
+    <h2>1. Keadaan normal: daftar flag per batch</h2>
+    <p class="how">Daftar flag selisih per batch tampil di layar lebar dan di ponsel. Orang yang mengusulkan wajib mengisi <b>alasan</b> dan <b>kata sandi</b>.</p>
+    <div class="shots">
+      <figure><img src="img/ui1015-recon-normal-1280-light.png" alt="Daftar flag selisih per batch, layar lebar"><figcaption><b>Layar komputer (1280).</b> Daftar flag per batch dengan panel pemeriksaan.</figcaption></figure>
+      <figure class="narrow"><img src="img/ui1015-recon-normal-390-light.png" alt="Daftar flag selisih per batch, layar HP"><figcaption><b>Layar HP (390).</b> Isi yang sama, tersusun ke bawah.</figcaption></figure>
+    </div>
+
+    <h2>2. Persetujuan oleh orang kedua</h2>
+    <p class="how">Orang kedua menyetujui dengan <b>kata sandi</b> sendiri. Pengusul dan alasan tampil di panel.</p>
+    <div class="shots">
+      <figure><img src="img/ui1015-recon-approve-1280-light.png" alt="Penyetuju lain menyetujui dengan kata sandi, layar lebar"><figcaption><b>Layar komputer (1280).</b> Penyetuju lain memasukkan kata sandi untuk menyetujui.</figcaption></figure>
+    </div>
+
+    <h2>3. Pengusul tidak bisa menyetujui sendiri</h2>
+    <p class="how">Bila yang membuka panel adalah orang yang mengusulkan, tombol setujui <b>nonaktif</b> dan diberi penjelasan singkat.</p>
+    <div class="shots">
+      <figure><img src="img/ui1015-recon-self-1280-light.png" alt="Pengusul tidak bisa menyetujui sendiri, layar lebar"><figcaption><b>Layar komputer (1280).</b> Tombol setujui mati, ada tulisan kenapa.</figcaption></figure>
+    </div>
+
+    <h2>4. Data berubah setelah diusulkan</h2>
+    <p class="how">Bila data berubah setelah usulan dibuat, usulan lama <b>tidak bisa disetujui</b>. Tim harus membuat usulan baru.</p>
+    <div class="shots">
+      <figure><img src="img/ui1015-recon-changed-1280-light.png" alt="Pesan data berubah dan ajakan usul ulang, layar lebar"><figcaption><b>Layar komputer (1280).</b> Pesan data berubah dengan aksi usul ulang.</figcaption></figure>
+    </div>
+
+    <h2>5. Clearance lama dibuka ulang</h2>
+    <p class="how">Clearance yang sudah disetujui bisa <b>kembali ditahan</b> bila datanya berubah. Tanda <b>terbuka ulang</b> muncul supaya finance memeriksa ulang.</p>
+    <div class="shots">
+      <figure><img src="img/ui1015-recon-reopened-1280-light.png" alt="Clearance lama dibuka ulang, layar lebar"><figcaption><b>Layar komputer (1280).</b> Tanda terbuka ulang tampil di atas panel.</figcaption></figure>
+    </div>
+
+    <h2>6. Clearance berhasil disetujui</h2>
+    <p class="how">Setelah disetujui, layar menunjukkan <b>siapa</b> dan <b>kapan</b> dua orang itu bertindak. Ini hanya menutup satu tanda; <b>tidak berarti gaji langsung dibayar</b>.</p>
+    <div class="shots">
+      <figure class="narrow"><img src="img/ui1015-recon-success-390-light.png" alt="Clearance berhasil disetujui, layar HP"><figcaption><b>Layar HP (390).</b> Identitas dan waktu kedua orang tampil di layar kecil.</figcaption></figure>
+    </div>
+
+    <h2>7. Tarik klaim return</h2>
+    <p class="how">Penarikan memakai gaya dialog return yang sudah ada. Pengusul mengisi usulan, orang lain menyetujui.</p>
+    <div class="shots">
+      <figure><img src="img/ui1015-status-return-propose-1280-light.png" alt="Tarik klaim return, tampilan usul, layar lebar"><figcaption><b>Layar komputer (1280).</b> Tampilan saat mengusulkan tarik klaim return.</figcaption></figure>
+      <figure><img src="img/ui1015-status-return-approve-1280-light.png" alt="Tarik klaim return, tampilan setujui orang lain, layar lebar"><figcaption><b>Layar komputer (1280).</b> Orang lain menyetujui tarik klaim return.</figcaption></figure>
+    </div>
+
+    <h2>8. Mode gelap</h2>
+    <p class="how">Layar yang sama dalam mode gelap.</p>
+    <div class="shots">
+      <figure><img src="img/ui1015-recon-normal-1280-dark.png" alt="Daftar flag selisih per batch, mode gelap, layar lebar"><figcaption><b>Layar komputer (1280), mode gelap.</b> Daftar flag per batch dengan panel pemeriksaan.</figcaption></figure>
+    </div>
+  </gx-wide>
+
+  <gx-question tag="Q30" title="Setujui tampilan layar clearance selisih pencairan dan tarik klaim return?">
+    <p>Layar ini sudah dibangun dan dilihat dari gambar di atas. Bila memilih Perlu perubahan, tulis di kotak catatan layar mana dan maunya bagaimana.</p>
+    <gx-choice value="Setuju" recommended>Setuju<small>Tampilan sudah sesuai, lanjut ke tahap berikutnya.</small></gx-choice>
+    <gx-choice value="Perlu perubahan">Perlu perubahan<small>Tulis catatan: layar mana, apa yang diubah.</small></gx-choice>
+  </gx-question>
+</gx-questions>
+</body>
+</html>
