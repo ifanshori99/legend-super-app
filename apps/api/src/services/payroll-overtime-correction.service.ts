@@ -38,9 +38,16 @@
 // `lockedAt` (widened by OVERTIME_CORRECTION_CLOCK_SKEW_MS on both sides)
 // cannot be placed in paidSet: that source is held.
 //
-// Held (reported, nothing automatic): an offboarding that is not cancelled, an
+// Sources are only runs locked at or after the tenant's activation
+// (`payroll_overtime_correction_activations`, migration 0558; no row = all):
+// older history was settled by the old process and is never corrected.
+//
+// Held is PER SOURCE (the other sources of the employee are still processed)
+// and reported (`plan.held`, written to the audit of simulate). Held (nothing
+// automatic): an offboarding that is not cancelled, an
 // end date before the end of T's period, an approved request without a
-// readable formula, a cancelled request whose approval time is unknown, a
+// readable formula, a cancelled request whose approval time is unknown (for a
+// chain request only the audit row of the settle tells it), a
 // request changed between the last simulation and the lock of S, an unreadable
 // source payslip, overlapping source periods, a deduction above what S paid
 // plus what was paid back to the employee by corrections. In doubt: held.
@@ -64,7 +71,11 @@ import {
 import { employees } from "../db/schema/hris.ts";
 import { hrisOffboardings } from "../db/schema/hris-lifecycle.ts";
 import { overtimeRequests } from "../db/schema/hris-leave.ts";
-import { payrollOvertimeCorrections } from "../db/schema/payroll-overtime-corrections.ts";
+import {
+  payrollOvertimeCorrectionActivations,
+  payrollOvertimeCorrections,
+} from "../db/schema/payroll-overtime-corrections.ts";
+import { auditLogs } from "../db/schema/core-audit.ts";
 import { approvalRequests } from "../db/schema/platform-approval.ts";
 import { payrollRuns, payslips } from "../db/schema/payroll.ts";
 import { HttpError } from "../lib/http-error.ts";
@@ -132,26 +143,38 @@ export type OvertimeCorrectionSource = {
   negativeMaxIdr: number;
 };
 
-export type OvertimeCorrectionPlan =
-  | { kind: "none" }
-  | {
-      kind: "held";
-      reason: OvertimeCorrectionHeldReason;
-      sourceRunIds: PayrollRunId[];
-    }
-  | {
-      kind: "correction";
-      /** Sources with a positive outstanding, oldest first. */
-      positive: { sourceRunId: PayrollRunId; amountIdr: number }[];
-      /** Sources with a negative outstanding, oldest first (before pay cap). */
-      negative: {
-        sourceRunId: PayrollRunId;
-        /** min(|outstanding|, negativeMax). */
-        wantedIdr: number;
-        outstandingIdr: number;
-      }[];
-      sources: OvertimeCorrectionSource[];
-    };
+/** One source held back for one employee; nothing is paid or taken for it. */
+export type OvertimeCorrectionHold = {
+  sourceRunId: PayrollRunId;
+  reason: OvertimeCorrectionHeldReason;
+  /**
+   * Signed outstanding of the source when it was known (offboarding, ended
+   * employee: what stays unpaid or untaken), null when the source itself could
+   * not be priced.
+   */
+  outstandingIdr: number | null;
+};
+
+/**
+ * Held is per SOURCE: an ambiguous or blocked source never stops the others.
+ * `kind` is "correction" when some source gives a line, else "none"; `held`
+ * lists every source held back (reported by simulate and its audit row).
+ */
+export type OvertimeCorrectionPlan = {
+  kind: "none" | "correction";
+  /** Sources with a positive outstanding, oldest first. */
+  positive: { sourceRunId: PayrollRunId; amountIdr: number }[];
+  /** Sources with a negative outstanding, oldest first (before pay cap). */
+  negative: {
+    sourceRunId: PayrollRunId;
+    /** min(|outstanding|, negativeMax). */
+    wantedIdr: number;
+    outstandingIdr: number;
+  }[];
+  /** The sources that are not held (lock accepts a line only for these). */
+  sources: OvertimeCorrectionSource[];
+  held: OvertimeCorrectionHold[];
+};
 
 const notFoundRun = () =>
   new HttpError(404, "PAYROLL_RUN_NOT_FOUND", "Payroll tidak ditemukan.");
@@ -275,6 +298,44 @@ async function approvedAtOf(
       .orderBy(asc(approvalRequests.level));
     for (const level of levels) chains.set(level.chainId, level);
   }
+  // `hris.overtime_request.approved` is written in the settle transaction with
+  // `createdAt` = the settle time (the same `now` as the request's update).
+  const settledAt = new Map<string, Date>();
+  const settledIds = rows
+    .filter((r) => {
+      if (r.status !== "cancelled" || r.approvalChainId === null) return false;
+      const last = chains.get(r.approvalChainId);
+      return (
+        last !== undefined &&
+        last.status === "approved" &&
+        last.level >= last.requiredLevels
+      );
+    })
+    .map((r) => r.id);
+  if (settledIds.length > 0) {
+    const audits = await tx
+      .select({ event: auditLogs.event })
+      .from(auditLogs)
+      .where(
+        and(
+          eq(auditLogs.tenantId, tenantId),
+          sql`${auditLogs.event} ->> 'action' = 'hris.overtime_request.approved'`,
+          sql`${auditLogs.event} ->> 'objectId' IN (${sql.join(
+            settledIds.map((id) => sql`${id}`),
+            sql`, `,
+          )})`,
+        ),
+      );
+    for (const audit of audits) {
+      const at = new Date(audit.event.createdAt);
+      if (Number.isNaN(at.getTime())) continue;
+      const id = audit.event.objectId as string;
+      const known = settledAt.get(id);
+      // Several rows (cannot happen): the latest keeps the hold the longest.
+      if (known === undefined || at.getTime() > known.getTime())
+        settledAt.set(id, at);
+    }
+  }
   for (const row of rows) {
     if (row.status === "approved") {
       // `updatedAt` is when the status became approved; the approver's
@@ -295,7 +356,11 @@ async function approvedAtOf(
       const last = chains.get(row.approvalChainId);
       if (!last) out.set(row.id, undefined);
       else if (last.status === "approved" && last.level >= last.requiredLevels)
-        out.set(row.id, last.decidedAt ?? undefined);
+        // The approver's `decidedAt` is when the chain was decided, not when
+        // the request became approved (the settle can come much later, and the
+        // cancel erases the request's own time). Only the audit row written at
+        // the settle tells; without it the time is unknown (held).
+        out.set(row.id, settledAt.get(row.id));
       else if (last.status === "pending") out.set(row.id, undefined);
       else out.set(row.id, null);
     }
@@ -314,6 +379,13 @@ export async function planOvertimeCorrection(
 ): Promise<OvertimeCorrectionPlan> {
   const tenantId = scope.tenant.tenantId;
   const { employeeId, targetRunId } = input;
+  const none = (): OvertimeCorrectionPlan => ({
+    kind: "none",
+    positive: [],
+    negative: [],
+    sources: [],
+    held: [],
+  });
   const [target] = await tx
     .select({
       legalEntityId: payrollRuns.legalEntityId,
@@ -326,6 +398,13 @@ export async function planOvertimeCorrection(
     )
     .limit(1);
   if (!target) throw notFoundRun();
+
+  // Only runs locked at or after the tenant's activation are sources (R1).
+  const [activation] = await tx
+    .select({ activatedAt: payrollOvertimeCorrectionActivations.activatedAt })
+    .from(payrollOvertimeCorrectionActivations)
+    .where(eq(payrollOvertimeCorrectionActivations.tenantId, tenantId))
+    .limit(1);
 
   const sourceRows = await tx
     .select({
@@ -356,38 +435,76 @@ export async function planOvertimeCorrection(
         inArray(payrollRuns.status, ["locked", "paid"]),
         ne(payrollRuns.id, targetRunId),
         sql`${payrollRuns.periodEnd} < ${target.periodStart}`,
+        activation
+          ? sql`${payrollRuns.lockedAt} >= ${activation.activatedAt}`
+          : undefined,
         eq(payslips.employeeId, employeeId),
       ),
     )
     .orderBy(asc(payrollRuns.periodStart), asc(payrollRuns.id));
-  if (sourceRows.length === 0) return { kind: "none" };
+  if (sourceRows.length === 0) return none();
 
-  const held = (
+  const held = new Map<string, OvertimeCorrectionHold>();
+  const hold = (
+    sourceRunId: PayrollRunId,
     reason: OvertimeCorrectionHeldReason,
-    ids: PayrollRunId[] = sourceRows.map((row) => row.runId as PayrollRunId),
-  ): OvertimeCorrectionPlan => ({ kind: "held", reason, sourceRunIds: ids });
+    outstandingIdr: number | null = null,
+  ) => {
+    if (!held.has(sourceRunId))
+      held.set(sourceRunId, { sourceRunId, reason, outstandingIdr });
+  };
 
-  let sources: SourceRow[];
-  try {
-    sources = sourceRows.map((row) => {
-      if (row.lockedAt === null) throw new Error("not locked");
-      return {
+  const sources: SourceRow[] = [];
+  for (const row of sourceRows) {
+    if (row.lockedAt === null)
+      hold(row.runId as PayrollRunId, "source_unreadable");
+    else
+      sources.push({
         runId: row.runId as PayrollRunId,
         periodStart: row.periodStart as BusinessDate,
         periodEnd: row.periodEnd as BusinessDate,
         lockedAt: row.lockedAt,
         simulatedAt: row.simulatedAt,
         slip: row,
-      };
-    });
-  } catch {
-    return held("source_unreadable");
+      });
   }
+  // Overlapping periods price the same request twice: both are held.
+  for (let i = 1; i < sources.length; i++)
+    if (sources[i]!.periodStart <= sources[i - 1]!.periodEnd) {
+      hold(sources[i - 1]!.runId, "overlapping_sources");
+      hold(sources[i]!.runId, "overlapping_sources");
+    }
+  const live = sources.filter((source) => !held.has(source.runId));
+  const finish = (
+    planned: OvertimeCorrectionSource[],
+  ): OvertimeCorrectionPlan => {
+    const open = planned.filter((entry) => entry.outstandingIdr !== 0);
+    return {
+      kind: open.length === 0 ? "none" : "correction",
+      positive: open
+        .filter((entry) => entry.outstandingIdr > 0)
+        .map((entry) => ({
+          sourceRunId: entry.sourceRunId,
+          amountIdr: entry.outstandingIdr,
+        })),
+      negative: open
+        .filter((entry) => entry.outstandingIdr < 0)
+        .map((entry) => ({
+          sourceRunId: entry.sourceRunId,
+          wantedIdr: Math.min(-entry.outstandingIdr, entry.negativeMaxIdr),
+          outstandingIdr: -entry.outstandingIdr,
+        }))
+        .filter((entry) => entry.wantedIdr > 0),
+      sources: planned,
+      held: [...held.values()],
+    };
+  };
+  if (live.length === 0) return finish([]);
 
-  const earliest = sources[0]!.periodStart;
-  const latest = sources.reduce(
+  const earliest = live[0]!.periodStart;
+  const latest = live.reduce(
     (max, row) => (row.periodEnd > max ? row.periodEnd : max),
-    sources[0]!.periodEnd,
+    live[0]!.periodEnd,
   );
   const requestRows = (
     await tx
@@ -433,15 +550,14 @@ export async function planOvertimeCorrection(
         ne(payrollOvertimeCorrections.targetRunId, targetRunId),
         inArray(
           payrollOvertimeCorrections.sourceRunId,
-          sources.map((row) => row.runId),
+          live.map((row) => row.runId),
         ),
       ),
     );
 
   const planned: OvertimeCorrectionSource[] = [];
-  let formulas: Awaited<ReturnType<typeof loadPinnedOvertimeFormulas>> | null =
-    null;
-  for (const source of sources) {
+  // One source at a time: whatever is unclear holds that source only.
+  sourceLoop: for (const source of live) {
     const inPeriod = requestRows.filter(
       (row) => row.date >= source.periodStart && row.date <= source.periodEnd,
     );
@@ -450,13 +566,17 @@ export async function planOvertimeCorrection(
     for (const row of inPeriod) {
       const approved = approvedAt.get(row.id);
       if (row.status === "approved") current.push(row);
-      if (approved === undefined)
-        return held("approval_unclear", [source.runId]);
+      if (approved === undefined) {
+        hold(source.runId, "approval_unclear");
+        continue sourceLoop;
+      }
       if (approved === null) continue;
       // Changed after the slip was priced but before the lock: neither paid
       // nor unpaid can be told.
-      if (source.simulatedAt === null)
-        return held("source_unreadable", [source.runId]);
+      if (source.simulatedAt === null) {
+        hold(source.runId, "source_unreadable");
+        continue sourceLoop;
+      }
       const simulatedMs = source.simulatedAt.getTime();
       const lockedMs = source.lockedAt.getTime();
       for (const time of [approved, row.decidedAt, row.updatedAt])
@@ -464,8 +584,10 @@ export async function planOvertimeCorrection(
           time !== null &&
           time.getTime() >= simulatedMs - OVERTIME_CORRECTION_CLOCK_SKEW_MS &&
           time.getTime() <= lockedMs + OVERTIME_CORRECTION_CLOCK_SKEW_MS
-        )
-          return held("approval_unclear", [source.runId]);
+        ) {
+          hold(source.runId, "approval_unclear");
+          continue sourceLoop;
+        }
       if (approved.getTime() > lockedMs) continue;
       if (
         row.status === "approved" ||
@@ -478,19 +600,22 @@ export async function planOvertimeCorrection(
       current.every((row) => paid.some((other) => other.id === row.id));
     let deltaIdr = 0;
     if (!sameSet) {
+      let formulas: Awaited<ReturnType<typeof loadPinnedOvertimeFormulas>>;
       try {
-        formulas ??= await loadPinnedOvertimeFormulas(
+        formulas = await loadPinnedOvertimeFormulas(
           tx,
           tenantId,
-          requestRows.filter(
+          inPeriod.filter(
             (row) =>
               row.status === "approved" ||
               approvedAt.get(row.id) instanceof Date,
           ),
         );
       } catch (error) {
-        if (error instanceof HttpError)
-          return held("formula_missing", [source.runId]);
+        if (error instanceof HttpError) {
+          hold(source.runId, "formula_missing");
+          continue sourceLoop;
+        }
         throw error;
       }
       const basis = await loadOvertimeBasisInTransaction(
@@ -501,7 +626,7 @@ export async function planOvertimeCorrection(
         source.periodEnd,
       );
       const price = (rows: readonly RequestRow[]) =>
-        priceOvertimeRequests(rows, formulas!, basis.logs, basis.overtimeBaseOn)
+        priceOvertimeRequests(rows, formulas, basis.logs, basis.overtimeBaseOn)
           .overtimeIdr as number;
       deltaIdr = price(current) - price(paid);
     }
@@ -526,8 +651,20 @@ export async function planOvertimeCorrection(
       try {
         paidOvertimeIdr = paidOvertimeOf(source.slip);
       } catch {
-        return held("source_unreadable", [source.runId]);
+        hold(source.runId, "source_unreadable");
+        continue sourceLoop;
       }
+    }
+    // Never take back more than the employee got for these hours: LEMBUR of
+    // S plus the positive corrections paid, minus what was already taken.
+    const negativeMaxIdr = Math.max(
+      0,
+      paidOvertimeIdr + settledPositiveIdr - settledNegativeIdr,
+    );
+    // What cannot be taken back is held, never dropped.
+    if (-outstandingIdr > negativeMaxIdr) {
+      hold(source.runId, "deduction_exceeds_paid", outstandingIdr);
+      continue;
     }
     planned.push({
       sourceRunId: source.runId,
@@ -536,65 +673,44 @@ export async function planOvertimeCorrection(
       deltaIdr,
       settledIdr,
       outstandingIdr,
-      // Never take back more than the employee got for these hours: LEMBUR of
-      // S plus the positive corrections paid, minus what was already taken.
-      negativeMaxIdr: Math.max(
-        0,
-        paidOvertimeIdr + settledPositiveIdr - settledNegativeIdr,
-      ),
+      negativeMaxIdr,
     });
   }
 
+  // Blockers of the employee apply only when something would be paid or taken.
   const open = planned.filter((entry) => entry.outstandingIdr !== 0);
-  if (open.length === 0) return { kind: "none" };
-  const openIds = open.map((entry) => entry.sourceRunId);
-  // What cannot be taken back is held, never dropped.
-  if (open.some((entry) => -entry.outstandingIdr > entry.negativeMaxIdr))
-    return held("deduction_exceeds_paid", openIds);
-
-  // Blockers apply only when something would be paid or taken.
+  if (open.length === 0) return finish(planned);
   const [employee] = await tx
     .select({ endDate: employees.endDate })
     .from(employees)
     .where(and(eq(employees.tenantId, tenantId), eq(employees.id, employeeId)))
     .limit(1);
-  if (!employee) return held("employee_ended", openIds);
-  const [offboarding] = await tx
-    .select({ id: hrisOffboardings.id })
-    .from(hrisOffboardings)
-    .where(
-      and(
-        eq(hrisOffboardings.tenantId, tenantId),
-        eq(hrisOffboardings.employeeId, employeeId),
-        ne(hrisOffboardings.status, "cancelled"),
-      ),
-    )
-    .limit(1);
-  if (offboarding) return held("offboarding", openIds);
-  if (employee.endDate !== null && employee.endDate < target.periodEnd)
-    return held("employee_ended", openIds);
-  for (let i = 1; i < sources.length; i++)
-    if (sources[i]!.periodStart <= sources[i - 1]!.periodEnd)
-      return held("overlapping_sources", openIds);
-
-  return {
-    kind: "correction",
-    positive: open
-      .filter((entry) => entry.outstandingIdr > 0)
-      .map((entry) => ({
-        sourceRunId: entry.sourceRunId,
-        amountIdr: entry.outstandingIdr,
-      })),
-    negative: open
-      .filter((entry) => entry.outstandingIdr < 0)
-      .map((entry) => ({
-        sourceRunId: entry.sourceRunId,
-        wantedIdr: Math.min(-entry.outstandingIdr, entry.negativeMaxIdr),
-        outstandingIdr: -entry.outstandingIdr,
-      }))
-      .filter((entry) => entry.wantedIdr > 0),
-    sources: planned,
-  };
+  let blocker: OvertimeCorrectionHeldReason | null = null;
+  if (!employee) blocker = "employee_ended";
+  else {
+    const [offboarding] = await tx
+      .select({ id: hrisOffboardings.id })
+      .from(hrisOffboardings)
+      .where(
+        and(
+          eq(hrisOffboardings.tenantId, tenantId),
+          eq(hrisOffboardings.employeeId, employeeId),
+          ne(hrisOffboardings.status, "cancelled"),
+        ),
+      )
+      .limit(1);
+    if (offboarding) blocker = "offboarding";
+    else if (employee.endDate !== null && employee.endDate < target.periodEnd)
+      blocker = "employee_ended";
+  }
+  if (blocker !== null) {
+    // The sources with something open are held and reported with the amount
+    // that stays outstanding; a source with nothing open is unaffected.
+    for (const entry of open)
+      hold(entry.sourceRunId, blocker, entry.outstandingIdr);
+    return finish(planned.filter((entry) => entry.outstandingIdr === 0));
+  }
+  return finish(planned);
 }
 
 /**
@@ -654,9 +770,7 @@ export async function syncOvertimeCorrectionLedgerInTransaction(
   const synced = ["locked", "paid", "reversed"];
   const found = await readRun();
   if (!synced.includes(found.status)) return;
-  await tx.execute(
-    sql`select pg_advisory_xact_lock(hashtextextended(${`payroll-overtime-correction:${tenantId}:${found.legalEntityId}`}, 0))`,
-  );
+  await lockOvertimeCorrectionScope(tx, tenantId, found.legalEntityId);
   const run = await readRun();
   if (!synced.includes(run.status)) return;
 
@@ -708,7 +822,7 @@ export async function syncOvertimeCorrectionLedgerInTransaction(
       employeeId: slip.employeeId,
       targetRunId: payrollRunId,
     });
-    if (plan.kind !== "correction")
+    if (plan.sources.length === 0)
       throw refused("Koreksi lembur karyawan ditahan atau sudah tidak ada.");
     for (const [sourceId, amounts] of taken) {
       const source = plan.sources.find((s) => s.sourceRunId === sourceId);
@@ -764,6 +878,23 @@ export async function syncOvertimeCorrectionLedgerInTransaction(
 }
 
 /**
+ * The per legal entity lock of the overtime correction (transaction scoped,
+ * re-entrant). LOCK ORDER: take it BEFORE any payroll run row lock. The lock of
+ * a target run holds it while the guard trigger of the ledger waits for a
+ * share lock on the source row, so a reversal of that source must never hold
+ * the row first and then wait here (deadlock).
+ */
+export async function lockOvertimeCorrectionScope(
+  tx: Tx,
+  tenantId: TenantId,
+  legalEntityId: string,
+): Promise<void> {
+  await tx.execute(
+    sql`select pg_advisory_xact_lock(hashtextextended(${`payroll-overtime-correction:${tenantId}:${legalEntityId}`}, 0))`,
+  );
+}
+
+/**
  * Refuses (409) the reversal of a run that is the SOURCE of a settled overtime
  * correction: reversed, it would drop out of the plan and the same overtime
  * would be paid or taken a second time. The target run is reversed first. Takes
@@ -776,9 +907,7 @@ export async function assertNoSettledOvertimeCorrectionFromRun(
   legalEntityId: string,
   runId: PayrollRunId,
 ): Promise<void> {
-  await tx.execute(
-    sql`select pg_advisory_xact_lock(hashtextextended(${`payroll-overtime-correction:${tenantId}:${legalEntityId}`}, 0))`,
-  );
+  await lockOvertimeCorrectionScope(tx, tenantId, legalEntityId);
   const [row] = await tx
     .select({ targetRunId: payrollOvertimeCorrections.targetRunId })
     .from(payrollOvertimeCorrections)

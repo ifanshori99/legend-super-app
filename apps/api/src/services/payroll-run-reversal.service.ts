@@ -68,6 +68,7 @@ import { assertPayrollTenantCan } from "./payroll-access.ts";
 import { emitPayrollEvent } from "./payroll-events.ts";
 import {
   assertNoSettledOvertimeCorrectionFromRun,
+  lockOvertimeCorrectionScope,
   syncOvertimeCorrectionLedgerInTransaction,
 } from "./payroll-overtime-correction.service.ts";
 import { PPH21_BACKFILL_DOCUMENT_PREFIX } from "./payroll-pph21-receivable-backfill.service.ts";
@@ -502,9 +503,10 @@ async function assertNoCollectedReceivable(
     .from(payrollRuns)
     .where(and(eq(payrollRuns.tenantId, tenantId), eq(payrollRuns.id, runId)));
   // legend-i848k: a run before the open item existed was given ONE backfill
-  // item for its employee. Reversing the run would drop the slip balance below
-  // that item and the finance list would show more than the employee owes.
-  if (raised.length > 0) {
+  // item for its employee. Reversing a run that raised OR collected a
+  // receivable of that employee would move the slip balance away from that item
+  // and the finance list would show more (or less) than the employee owes.
+  if (touched.length > 0) {
     const [backfilled] = await tx
       .select({ id: accountingOpenItems.id })
       .from(accountingOpenItems)
@@ -513,7 +515,7 @@ async function assertNoCollectedReceivable(
           eq(accountingOpenItems.tenantId, tenantId),
           eq(accountingOpenItems.kind, "receivable"),
           eq(accountingOpenItems.counterpartyType, "employee"),
-          inArray(accountingOpenItems.counterpartyId, raised),
+          inArray(accountingOpenItems.counterpartyId, touched),
           thisRun
             ? eq(accountingOpenItems.legalEntityId, thisRun.legalEntityId)
             : undefined,
@@ -660,6 +662,23 @@ export async function requestPayrollRunReversalInTransaction(
     actorUserId,
     "payroll.lock",
   );
+  // LOCK ORDER (legend-72nod): the overtime correction lock comes BEFORE the
+  // run row. The lock of a target run holds it while the ledger trigger waits
+  // for a share lock on this (source) row.
+  const [entityRow] = await tx
+    .select({ legalEntityId: payrollRuns.legalEntityId })
+    .from(payrollRuns)
+    .where(
+      and(eq(payrollRuns.tenantId, tenantId), eq(payrollRuns.id, payrollRunId)),
+    )
+    .limit(1);
+  if (!entityRow)
+    throw new HttpError(
+      404,
+      "PAYROLL_RUN_NOT_FOUND",
+      "Payroll tidak ditemukan.",
+    );
+  await lockOvertimeCorrectionScope(tx, tenantId, entityRow.legalEntityId);
   const row = await lockRunRow(tx, tenantId, payrollRunId);
   const run = toPayrollRun(row);
   const next = applyPayrollRunCommand(run, {
@@ -711,6 +730,8 @@ export async function decidePayrollRunReversalInTransaction(
   // LOCK 1: tax month. LOCK 2: receivable scope. LOCK 3: run row.
   const month = await lockPayrollRunMonth(tx, tenantId, payrollRunId);
   await lockPph21ReceivableScope(tx, tenantId, month.legalEntityId);
+  // LOCK 2b: overtime correction scope, before the run row (see the request).
+  await lockOvertimeCorrectionScope(tx, tenantId, month.legalEntityId);
   const row = await lockRunRow(tx, tenantId, payrollRunId);
   if (
     row.legalEntityId !== month.legalEntityId ||

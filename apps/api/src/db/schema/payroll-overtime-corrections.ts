@@ -120,3 +120,28 @@ export const payrollOvertimeCorrections = pgTable(
     ),
   ],
 );
+
+/**
+ * Per-tenant start of the overtime correction (bead legend-72nod, architect
+ * R1). Written ONLY by migration 0558 (the app role has no INSERT, UPDATE or
+ * DELETE): a tenant that already had payroll runs when the correction shipped
+ * gets a row stamped at that moment. A run locked before `activatedAt` is never
+ * a source: its overtime was settled by a process the correction does not know,
+ * so correcting it would pay or take back hours of the old history a second
+ * time. A tenant without a row has every run eligible.
+ */
+export const payrollOvertimeCorrectionActivations = pgTable(
+  "payroll_overtime_correction_activations",
+  {
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    activatedAt: timestamp("activated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({
+      name: "payroll_overtime_correction_activations_pkey",
+      columns: [table.tenantId],
+    }),
+  ],
+);

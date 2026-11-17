@@ -820,4 +820,41 @@ describe("legend-i848k: backfill of the employee PPh 21 receivable open item", (
       (await financeList(world, owes)).map((r) => r.outstandingIdr),
     ).toEqual([X]);
   }, 600_000);
+
+  it("reversing a run that only COLLECTS a receivable is refused while a backfill item of the employee exists", async () => {
+    const world = await makeWorld();
+    const owes = await makeEmployee(world);
+    const jan = await lockedRun(world, monthDates(1, 2026));
+    expect(await raiseReceivable(jan, owes)).toBe(X);
+    await stripItems(world);
+    await runBackfill();
+    expect(
+      await rawItems(world, owes),
+      "the backfill made the item",
+    ).toHaveLength(1);
+
+    // March collects the whole receivable and raises nothing new.
+    const mar = await lockedRun(world, monthDates(3, 2026));
+    const slips = await slipsOf([mar], owes);
+    expect(collectedIn(slips), "March collects the receivable").toBe(X);
+    const raisedInMar = slips.reduce(
+      (total, calc) => total + (calc.tax.pph21ReceivableIdr ?? 0),
+      0,
+    );
+    expect(raisedInMar, "and raises none").toBe(0);
+    const before = await rawItems(world, owes);
+    expect(before, "still one item, no duplicate").toHaveLength(1);
+
+    // ASSUMPTION: refused with a 4xx (HttpError); the brief only says "tolak".
+    // Un-collecting the receivable would put the balance back on the slips
+    // while the backfilled item stays as it is (settled or not): finance and
+    // the slips would disagree. The guard looks at runs that raise OR collect.
+    const refused = await failure(reverseRun(mar));
+    expect(refused.status ?? 0, refused.message).toBeGreaterThanOrEqual(400);
+    expect(refused.status ?? 0, refused.message).toBeLessThan(500);
+    expect(await runStatus(mar), "the run stays locked").toBe("locked");
+    expect(await rawItems(world, owes), "the item is untouched").toEqual(
+      before,
+    );
+  }, 900_000);
 });

@@ -27,6 +27,15 @@
 //  7. [salary-basis] A change of the salary base never enters the delta: a
 //     retroactive raise without any request change yields no correction line,
 //     and a raise taking effect in T does not scale the delta of S.
+//  8. [reverse-source-db-trigger] The database itself refuses to mark a run
+//     'reversed' while it is the source of a settled correction (trigger 0557).
+//  9. [late-settle-cancel-held] A request approved by its chain before S but
+//     only settled after S, then cancelled: S did not pay it, so nothing is
+//     deducted (the source is held, not guessed).
+// 10. [pre-activation-source] Runs locked before the tenant's activation
+//     moment (payroll_overtime_correction_activations) are never a source.
+// 11. [held-per-source] A held source does not stop the other sources: they
+//     are still corrected, and the simulate audit row reports the held source.
 //
 // ASSUMPTIONS (spec silent; from the brief)
 //  - Line identity is the payslip line `componentCode`: "LEMBUR_KOREKSI"
@@ -460,6 +469,92 @@ const retimeRequests = (
     true,
   );
 
+/** locked_at of any run, read from the run row. */
+async function lockedAtOf(runId: string): Promise<Date> {
+  const row = await scalar(
+    "SELECT locked_at FROM payroll_runs WHERE tenant_id = $1 AND id = $2",
+    [tenant.id, runId],
+  );
+  if (!row.locked_at) throw new Error("run is not locked yet");
+  return row.locked_at as Date;
+}
+
+/**
+ * The chain (approval_requests) of an overtime request that the approver
+ * decided at `chainAt`; the request itself is settled later. ASSUMPTION: the
+ * module/action/object names below are the ones the overtime chain uses (free
+ * text columns); they are only the link request id -> chain row.
+ */
+async function chainApproval(requestId: string, chainAt: Date) {
+  const id = randomUUID();
+  await asTenant((conn) =>
+    conn.query(
+      `INSERT INTO approval_requests
+         (id, tenant_id, outlet_id, chain_id, source_module, action_type, object_type,
+          object_id, payload, requested_by, source, level, required_levels,
+          required_steps, status, request_reason, decided_by, decided_at, reason,
+          deadline_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $1, 'hris', 'overtime_request', 'overtime_request', $4, '{}', $5,
+               'user', 1, 1, '[]', 'approved', 'Lembur 983 chain', $6, $7::timestamptz,
+               'Disetujui', $7::timestamptz + interval '1 day',
+               $7::timestamptz - interval '1 hour', $7::timestamptz)`,
+      [
+        id,
+        tenant.id,
+        outlet.id,
+        requestId,
+        lockerUserId,
+        approverUserId,
+        chainAt,
+      ],
+    ),
+  );
+  // Link the request to its chain row: without approval_chain_id the request
+  // is not "chained" at all and the source would not be held.
+  await asTenant((conn) =>
+    conn.query(
+      "UPDATE overtime_requests SET approval_chain_id = $3 WHERE tenant_id = $1 AND id = $2",
+      [tenant.id, requestId, id],
+    ),
+  );
+}
+
+/**
+ * Runs `body` with the tenant's activation moment set to `activatedAt` (the
+ * explicit timestamp, never now()); the row is removed afterwards.
+ */
+async function withActivation<T>(
+  activatedAt: Date,
+  body: () => Promise<T>,
+): Promise<T> {
+  const clear = () =>
+    asTenant(
+      (conn) =>
+        conn.query(
+          "DELETE FROM payroll_overtime_correction_activations WHERE tenant_id = $1",
+          [tenant.id],
+        ),
+      true,
+    );
+  await clear();
+  await asTenant(
+    (conn) =>
+      conn.query(
+        `INSERT INTO payroll_overtime_correction_activations (tenant_id, activated_at)
+         VALUES ($1, $2::timestamptz)`,
+        [tenant.id, activatedAt],
+      ),
+    true,
+  );
+  try {
+    return await body();
+  } finally {
+    await clear();
+  }
+}
+
+const C_JUNE: OtSpec = { date: "2026-06-05", minutes: 60, status: "approved" };
+
 // ---- runs ---------------------------------------------------------------
 
 type RunDates = { periodStart: string; periodEnd: string; payDate: string };
@@ -772,6 +867,17 @@ afterAll(async () => {
           "DELETE FROM payroll_overtime_corrections WHERE tenant_id = $1",
           [tenant.id],
         );
+      if (
+        (
+          await conn.query("SELECT to_regclass($1) AS t", [
+            "public.payroll_overtime_correction_activations",
+          ])
+        ).rows[0].t !== null
+      )
+        await conn.query(
+          "DELETE FROM payroll_overtime_correction_activations WHERE tenant_id = $1",
+          [tenant.id],
+        );
     }, true);
   } catch {
     // cleanup only
@@ -810,6 +916,10 @@ afterAll(async () => {
       createdPolicies,
     ]);
     await deleteStatutoryTables(conn, tenant.id);
+    await conn.query(
+      "DELETE FROM approval_requests WHERE tenant_id = $1 AND requested_by = ANY($2::text[]) AND request_reason = 'Lembur 983 chain'",
+      [tenant.id, createdUsers],
+    );
     await conn.query(
       "DELETE FROM overtime_requests WHERE tenant_id = $1 AND employee_id = ANY($2)",
       [tenant.id, createdEmployees],
@@ -1212,4 +1322,166 @@ describe("legend-72nod: overtime correction for frozen periods", () => {
     expect(koreksiOf(slipT) + koreksiOf(slipU)).toBe(0);
     expect(potonganOf(slipT) + potonganOf(slipU)).toBe(0);
   }, 600_000);
+
+  it("[reverse-source-db-trigger] the database refuses status 'reversed' on a source run of a settled correction, straight in SQL", async () => {
+    const { world, subject, oracle } = await lateApprovalWorld();
+    const s = await lockedRun(world, S_MONTH);
+    const { delta } = await deltaOfS(s, subject, oracle);
+    await approveLate(subject.reqs[1]!);
+    const t = await lockedRun(world, T_MONTH);
+    expect(koreksiOf(await slipOf(t, subject))).toBe(delta);
+
+    // Triggers stay on (no replica role): this goes around the service.
+    const markReversed = (runId: string) =>
+      asTenant((conn) =>
+        conn.query(
+          `UPDATE payroll_runs SET status = 'reversed', reversal = '{"status":"approved"}'::jsonb
+            WHERE tenant_id = $1 AND id = $2`,
+          [tenant.id, runId],
+        ),
+      );
+    const refused = await failure(markReversed(s));
+    expect(refused.message).toBeTruthy();
+    expect(await runStatus(s), "S stays locked").toBe("locked");
+
+    // Control (rules out any other trigger as the reason): once T is reversed
+    // the same statement goes through.
+    await reverseRun(t);
+    expect(await runStatus(t)).toBe("reversed");
+    await markReversed(s);
+    expect(await runStatus(s)).toBe("reversed");
+  }, 600_000);
+
+  it("[late-settle-cancel-held] approved by the chain before S, settled after S, then cancelled: S never paid it, so nothing is deducted", async () => {
+    const world = await makeWorld();
+    const subject = await makeEmployee(world, [A, B_PENDING]);
+    const control = await makeEmployee(world, [A]);
+    const s = await lockedRun(world, S_MONTH);
+    expect(
+      overtimeOf(await slipOf(s, subject)),
+      "S pays A only",
+    ).toBeGreaterThan(0);
+    // The chain decided before S was simulated, but the request stayed
+    // pending (outbox settle is late): S paid nothing for it.
+    const stamps = await sourceTimes();
+    const chainAt = new Date(stamps.simulatedAt.getTime() - 30 * 60_000);
+    const late = await lateAt();
+    await chainApproval(subject.reqs[1]!, chainAt);
+    await approveLate(subject.reqs[1]!, late);
+    await retimeRequests([subject.reqs[1]!], {
+      decidedAt: chainAt,
+      updatedAt: late,
+    });
+    await cancelLate(subject.reqs[1]!);
+    await cancelLate(control.reqs[0]!);
+
+    const t = await lockedRun(world, T_MONTH);
+    const u = await lockedRun(world, U_MONTH);
+
+    expect(potonganOf(await slipOf(t, control)), "control").toBeGreaterThan(0);
+    // ASSUMPTION (brief R3): no certain approval time for a chained, cancelled
+    // request -> the source is held: no automatic line of any kind.
+    for (const run of [t, u]) {
+      const slip = await slipOf(run, subject);
+      expect(slip, "the employee is paid").toBeDefined();
+      expect(koreksiOf(slip), "no LEMBUR_KOREKSI").toBe(0);
+      expect(potonganOf(slip), "no deduction for hours S never paid").toBe(0);
+    }
+  }, 900_000);
+
+  it("[pre-activation-source] a run locked before the activation moment is never a source: its old cancellation is not deducted, a later source still is", async () => {
+    const world = await makeWorld();
+    const subject = await makeEmployee(world, [A, C_JUNE]);
+    const s = await lockedRun(world, S_MONTH);
+    const t = await lockedRun(world, T_MONTH);
+    const paidInS = overtimeOf(await slipOf(s, subject));
+    const paidInT = overtimeOf(await slipOf(t, subject));
+    expect(paidInS, "S (May) paid A").toBeGreaterThan(0);
+    expect(paidInT, "T (June) paid C").toBeGreaterThan(0);
+    const sLocked = await lockedAtOf(s);
+    const tLocked = await lockedAtOf(t);
+    expect(tLocked.getTime()).toBeGreaterThan(sLocked.getTime());
+    // Both requests are cancelled after both runs were locked (explicit times).
+    await cancelLate(subject.reqs[0]!, new Date(tLocked.getTime() + HOUR_MS));
+    await cancelLate(
+      subject.reqs[1]!,
+      new Date(tLocked.getTime() + HOUR_MS + 60_000),
+    );
+    // Activation between the two locks: S is old history, T is a source.
+    const activatedAt = new Date((sLocked.getTime() + tLocked.getTime()) / 2);
+
+    const u = await withActivation(activatedAt, () =>
+      lockedRun(world, U_MONTH),
+    );
+
+    const slipU = await slipOf(u, subject);
+    expect(slipU, "the employee is paid").toBeDefined();
+    expect(koreksiOf(slipU)).toBe(0);
+    expect(
+      potonganOf(slipU),
+      "only the post-activation source is deducted",
+    ).toBe(paidInT);
+  }, 900_000);
+
+  it("[held-per-source] a held source does not hold the others: the other source is still deducted, and the simulate audit reports the held one", async () => {
+    const world = await makeWorld();
+    const subject = await makeEmployee(world, [A, C_JUNE]);
+    // S (May): A is paid by S, then cancelled between simulate and lock -> S is held.
+    const sRun = await draftRun(world, monthDates(S_MONTH));
+    await simulateRun(sRun);
+    const simulatedAt = (await sourceTimes()).simulatedAt;
+    await cancelLate(subject.reqs[0]!, simulatedAt);
+    await asTenant((conn) => approveSimulatedRun(conn, sRun));
+    await lockRun(sRun);
+    expect(await runStatus(sRun)).toBe("locked");
+    const stamps = await sourceTimes();
+    const middle = new Date(
+      stamps.simulatedAt.getTime() +
+        (stamps.lockedAt!.getTime() - stamps.simulatedAt.getTime()) / 2,
+    );
+    await retimeRequests([subject.reqs[0]!], { updatedAt: middle });
+    // T (June): clean source; C is paid by T and cancelled after T was locked.
+    const t = await lockedRun(world, T_MONTH);
+    const paidInT = overtimeOf(await slipOf(t, subject));
+    expect(paidInT, "T paid C").toBeGreaterThan(0);
+    await cancelLate(
+      subject.reqs[1]!,
+      new Date((await lockedAtOf(t)).getTime() + HOUR_MS),
+    );
+
+    const uRun = await draftRun(world, monthDates(U_MONTH));
+    await simulateRun(uRun);
+    await asTenant((conn) => approveSimulatedRun(conn, uRun));
+    await lockRun(uRun);
+    expect(await runStatus(uRun)).toBe("locked");
+
+    const slipU = await slipOf(uRun, subject);
+    expect(slipU, "the employee is paid").toBeDefined();
+    expect(koreksiOf(slipU)).toBe(0);
+    expect(
+      potonganOf(slipU),
+      "T is deducted although S is held; S itself is not",
+    ).toBe(paidInT);
+    // Reported, not silent. The run contract is unchanged; the held source is
+    // reported by the audit row `payroll.run.overtime_correction_held` of the
+    // simulate (heldItems: 'employee|source|reason|outstanding').
+    const heldRows = (
+      await asTenant((conn) =>
+        conn.query(
+          `SELECT event->'maskedChanges'->'after'->'heldItems' AS items
+             FROM audit_logs
+            WHERE tenant_id = $1
+              AND event->>'action' = 'payroll.run.overtime_correction_held'
+              AND event->>'objectId' = $2`,
+          [tenant.id, uRun],
+        ),
+      )
+    ).rows;
+    expect(heldRows.length, "one held audit row for the simulate").toBe(1);
+    const heldItems = heldRows[0]!.items as string[];
+    expect(heldItems, "only S is held, T is not").toHaveLength(1);
+    const [heldEmployee, heldSource] = heldItems[0]!.split("|");
+    expect(heldEmployee, "names the held employee").toBe(subject.id);
+    expect(heldSource, "names the held source run").toBe(sRun);
+  }, 900_000);
 });

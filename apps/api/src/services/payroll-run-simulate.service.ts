@@ -771,7 +771,8 @@ export async function simulatePayrollRunInTransaction(
       });
 
   // Overtime correction of frozen periods (legend-72nod): regular runs only;
-  // a held employee gets no line (manual handling), never more than owed.
+  // a held source gets no line (manual handling, reported in the audit row),
+  // never more than owed.
   const correctionById = new Map<string, OvertimeCorrectionPlan>();
   if (!isThr)
     for (const member of population)
@@ -815,7 +816,7 @@ export async function simulatePayrollRunInTransaction(
     const statutoryLine = statutoryById.get(member.id)!;
     const correction: OvertimeCorrectionPlan = correctionById.get(
       member.id,
-    ) ?? { kind: "none" };
+    ) ?? { kind: "none", positive: [], negative: [], sources: [], held: [] };
     let earnings = gross.earnings;
     if (correction.kind === "correction")
       earnings = [
@@ -1082,6 +1083,45 @@ export async function simulatePayrollRunInTransaction(
     },
     ["employeeCount", "simulationCount"],
   );
+
+  // Held overtime corrections are reported, never silent (architect R2): one
+  // audit row with (employee, source run, reason) of each held source.
+  const heldCorrections = results.flatMap(({ entry }) =>
+    entry.correction.held.map(
+      (held) =>
+        `${entry.member.id}|${held.sourceRunId}|${held.reason}|${held.outstandingIdr ?? ""}`,
+    ),
+  );
+  if (heldCorrections.length > 0)
+    await recordAudit(
+      tx,
+      context,
+      {
+        id: createUlid(now.getTime()),
+        tenantId,
+        outletId: null,
+        actorType: "user",
+        actorId: actor,
+        deviceId: null,
+        action: "payroll.run.overtime_correction_held",
+        objectType: "payroll_run",
+        objectId: runId,
+        reason: null,
+        maskedChanges: {
+          before: null,
+          after: {
+            simulationCount: next.simulationCount,
+            heldCount: heldCorrections.length,
+            heldItems: heldCorrections,
+          },
+        },
+        ipHash: null,
+        sensitiveAccess: false,
+        retentionClass: "audit_2y",
+        createdAt: now.toISOString(),
+      },
+      ["simulationCount", "heldCount", "heldItems"],
+    );
 
   return toRun(updated);
 }

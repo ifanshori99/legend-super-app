@@ -54,3 +54,32 @@ BEGIN
 END $$;
 --> statement-breakpoint
 CREATE TRIGGER payroll_overtime_corrections_guard_trg BEFORE INSERT OR UPDATE ON public.payroll_overtime_corrections FOR EACH ROW EXECUTE FUNCTION app.payroll_overtime_corrections_guard();
+--> statement-breakpoint
+-- legend-72nod (architect P0-1, migration 0557): a run that is the SOURCE of a
+-- settled correction row is never reversed; its target is reversed first. The
+-- guard above holds the source row FOR SHARE when a row is inserted, so the
+-- insert and the reversal cannot interleave.
+CREATE OR REPLACE FUNCTION app.payroll_runs_overtime_source_reversal_guard() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+      FROM public.payroll_overtime_corrections c
+      WHERE c.tenant_id = NEW.tenant_id
+        AND c.source_run_id = NEW.id
+        AND c.status = 'settled'
+  ) THEN
+    RAISE EXCEPTION 'PAYR-02: payroll run % is the source of a settled overtime correction', NEW.id
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END $$;
+--> statement-breakpoint
+CREATE TRIGGER payroll_runs_overtime_source_reversal_trg BEFORE UPDATE OF status ON public.payroll_runs FOR EACH ROW WHEN (NEW.status = 'reversed' AND OLD.status IS DISTINCT FROM 'reversed') EXECUTE FUNCTION app.payroll_runs_overtime_source_reversal_guard();
+--> statement-breakpoint
+-- legend-72nod (architect R1, migration 0558): the per-tenant start of the
+-- correction (`payroll_overtime_correction_activations`). Tenant RLS; read-only
+-- for the app role, rows come from the migration only.
+SELECT app.enforce_tenant_rls('public.payroll_overtime_correction_activations'::regclass);
+--> statement-breakpoint
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE public.payroll_overtime_correction_activations FROM legend_app;
