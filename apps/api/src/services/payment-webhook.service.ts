@@ -921,7 +921,12 @@ async function flagRefundInDoubt(
       ))
     )
       return "unbound";
-    await markProviderRefunded(context, candidate.intent.id, now);
+    await markProviderRefunded(
+      context,
+      candidate.intent.id,
+      now,
+      "payment_webhook",
+    );
     return "bound";
   }
   if (candidate.evidenceAmountIdr !== null && candidate.evidenceAmountIdr > 0)
@@ -1102,7 +1107,7 @@ async function processPaymentEvent(
       // settled bill) is flagged, audited and alerted once inside this call, so
       // staff cannot refund it a second time; the row below still ends
       // processed.
-      await markProviderRefunded(context, intent.id, now);
+      await markProviderRefunded(context, intent.id, now, "payment_webhook");
     }
     // `pending` changes nothing.
     await markRow(

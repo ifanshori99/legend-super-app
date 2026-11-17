@@ -133,6 +133,7 @@ import {
   type PaymentIntentRow,
   type PaymentLinkRow,
 } from "./payment-support";
+import { recordProviderRefundInTx } from "./payment-provider-partial-refund";
 import type { Tx } from "./permission-resolver";
 
 /** PRD §3.13 "QRIS Dinamis": a QR code lives about 10 minutes. VA and bank
@@ -3356,6 +3357,8 @@ export async function markProviderRefunded(
   context: ScopedTenantContext,
   intentId: string,
   now: Date,
+  /** Which door saw the refund (recorded on the provider refund row). */
+  source: "payment_webhook" | "poller" = "poller",
 ): Promise<void> {
   await withTenant(db, context, async (tx) => {
     await tx
@@ -3372,6 +3375,41 @@ export async function markProviderRefunded(
     // legend-7uqbs: money we already recorded (parked funds, a settled bill)
     // is flagged and alerted instead of staying silent.
     await flagProviderRefundedAfterRecordedInTx(tx, context, intentId, now);
+    // legend-gjt5q (1025 B): the whole payment is also written once as a
+    // provider refund (`payment:<providerRef>`, the remainder after earlier
+    // partial ones), so the 1013 event books it Dr customer_deposit / Cr
+    // gateway_clearing once. The unique key makes webhook, poller and replays
+    // add nothing. Refunds of ours already sent are the echo of our payout
+    // (journaled by `payment.refunded`) and are taken off. 958 already audited
+    // and alerted above, so the recorder stays quiet.
+    const [target] = await tx
+      .select({
+        id: paymentIntents.id,
+        providerRef: paymentIntents.providerRef,
+        amountIdr: paymentIntents.amountIdr,
+      })
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          eq(paymentIntents.id, intentId),
+        ),
+      );
+    if (!target?.providerRef) return;
+    await recordProviderRefundInTx(
+      tx,
+      context,
+      {
+        provider: "doit",
+        providerRefundId: `payment:${target.providerRef}`,
+        providerPaymentRef: target.providerRef,
+        amountIdr: Number(target.amountIdr),
+        source,
+        expectedIntentId: target.id,
+        quiet: true,
+      },
+      now,
+    );
   });
 }
 

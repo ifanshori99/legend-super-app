@@ -31,7 +31,11 @@ type RefundSource = {
  * `provider_refunded_after_paid_at`) when the fund holds the intent's own
  * provider transaction, or a recorded provider refund (967) of that
  * transaction (or of the intent, for a fund with no evidence mapping). A fund
- * with no evidence mapping cannot be told apart, so it is blocked too (restrict when in doubt). */
+ * with no evidence mapping cannot be told apart, so it is blocked too (restrict when in doubt).
+ * legend-ra4lu (1025 A): a recorded provider refund of the intent with no
+ * evidence link (`evidence_id` NULL, reference matching no transaction) cannot
+ * be attributed either, so it blocks every OPEN fund (`resolution` NULL) of the
+ * intent, with or without evidence, until finance decides. */
 function fundBlockedSql(tenantId: SQL, fundId: SQL): SQL {
   return sql`EXISTS (SELECT 1 FROM payment_unallocated_funds f
     JOIN payment_intents i
@@ -45,6 +49,7 @@ function fundBlockedSql(tenantId: SQL, fundId: SQL): SQL {
           WHERE pr.tenant_id = f.tenant_id
             AND pr.payment_intent_id = f.payment_intent_id
             AND (f.evidence_id IS NULL
+              OR (pr.evidence_id IS NULL AND f.resolution IS NULL)
               OR pr.evidence_id = f.evidence_id
               OR (pr.provider = e.provider
                 AND pr.provider_payment_ref = e.provider_ref)))

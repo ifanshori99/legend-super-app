@@ -69,6 +69,13 @@ export type ProviderRefundInput = {
    * caller is over: counting is the restrictive side, and a provider reference
    * of ours matched later is left out when the sum is read). */
   force?: boolean;
+  /**
+   * The caller already audits and alerts this refund (the full refund of 958,
+   * `markProviderRefunded`): the row, the flags and the journal event are
+   * written, the `payment.provider_refunded_partial` audit row and the alert
+   * are not (legend-gjt5q, 1025 B).
+   */
+  quiet?: boolean;
 };
 
 export type ProviderRefundOutcome = {
@@ -242,13 +249,29 @@ export async function recordProviderRefundInTx(
       ),
     );
   if (providerRefundId.startsWith(SYNTHETIC_PREFIX)) {
+    // Refunds of ours already sent (or that may have been) went back to the
+    // payer and journal through `payment.refunded`: the provider's `refunded`
+    // status is their echo, so they are not booked a second time (1025 B).
+    const [ownSent] = (
+      await tx.execute(sql`SELECT coalesce(sum(r.amount_idr), 0)::text AS sent
+        FROM payment_refunds r
+        WHERE r.tenant_id = ${tenantId}::uuid
+          AND r.payment_intent_id = ${intent.id}::uuid
+          AND (r.status = 'completed'
+            OR (r.status <> 'failed'
+              AND (r.provider_ref IS NOT NULL
+                OR r.payout_attempts > 0
+                OR r.payout_pending_polls > 0)))`)
+    ).rows;
+    const ownSentIdr = Number(ownSent?.sent ?? 0);
     if (evidence) {
       const left =
         Number(evidence.amountIdr) -
-        recorded.reduce((sum, row) => sum + Number(row.amountIdr), 0);
-      if (left <= 0) return { status: "duplicate" };
+        recorded.reduce((sum, row) => sum + Number(row.amountIdr), 0) -
+        ownSentIdr;
+      if (left <= 0) return { status: ownSentIdr > 0 ? "own" : "duplicate" };
       amountIdr = left;
-    }
+    } else if (ownSentIdr >= amountIdr) return { status: "own" };
   } else if (recorded.some((row) => row.refundId.startsWith(SYNTHETIC_PREFIX)))
     return { status: "duplicate" };
 
@@ -389,7 +412,7 @@ export async function recordProviderRefundInTx(
       );
 
   // 5. One audit row and one alert for this refund (we won the insert).
-  await recordAudit(
+  if (!input.quiet) await recordAudit(
     tx,
     context,
     {
@@ -437,7 +460,7 @@ export async function recordProviderRefundInTx(
   // The supervisors were already told this money went back (the audit row
   // above still records the refund), unless this refund newly flags the whole
   // intent: that is news they must get.
-  if (!alreadyAlerted || intentFlagged)
+  if (!input.quiet && (!alreadyAlerted || intentFlagged))
     await alertProviderPartialRefund(
       tx,
       context,
