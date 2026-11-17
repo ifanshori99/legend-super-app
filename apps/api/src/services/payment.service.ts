@@ -136,11 +136,13 @@ import type { Tx } from "./permission-resolver";
 
 /** PRD §3.13 "QRIS Dinamis": a QR code lives about 10 minutes. VA and bank
  * transfer instructions stay payable for 3 hours (PRD silent; the gateway may
- * shorten either value). */
+ * shorten either value). An e-wallet or card pay link lives 30 minutes. */
 const INTENT_LIFETIME_MINUTES: Record<OnlinePaymentMethod, number> = {
   qris: 10,
   va: 180,
   bank_transfer: 180,
+  ewallet: 30,
+  card: 30,
 };
 /** A bill link is short-lived: 24 hours unless the caller sets its own. */
 const LINK_LIFETIME_MINUTES = 24 * 60;

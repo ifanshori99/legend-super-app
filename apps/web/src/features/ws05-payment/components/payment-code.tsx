@@ -19,7 +19,7 @@ import {
 import { Money } from "@/components/ui/money";
 import { QrCode } from "@/components/ui/qr-code";
 import type { CustomerPaymentIntent } from "@starter/shared/payment";
-import { PAYMENT_METHOD_LABEL } from "../labels";
+import { paymentMethodLabelKey } from "../labels";
 import { formatCountdown } from "../status";
 import { CopyField } from "./copy-field";
 
@@ -69,6 +69,13 @@ export function PaymentCode({
   const t = useT();
   const time = formatCountdown(remaining);
   const instructions = intent.instructions;
+  const labelKey = paymentMethodLabelKey(intent.method);
+  const methodLabel =
+    labelKey !== null
+      ? t(labelKey)
+      : instructions.method === "ewallet" || instructions.method === "card"
+        ? instructions.channelName
+        : "";
 
   return (
     <Card>
@@ -200,7 +207,7 @@ export function PaymentCode({
               <DialogTitle>{t("payment.changeMethodTitle")}</DialogTitle>
               <DialogDescription>
                 {t("payment.changeMethodBody", {
-                  method: t(PAYMENT_METHOD_LABEL[intent.method]),
+                  method: methodLabel,
                 })}
               </DialogDescription>
             </DialogHeader>
