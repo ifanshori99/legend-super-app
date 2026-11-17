@@ -1,17 +1,16 @@
 // Re-seal of `sealSecret` columns that have no key version column (bead
 // legend-tetyr): MFA secrets, identity values, NPWP, bank accounts, table, bill
-// split, order, reservation, voucher and receipt tokens (the registry below is
-// the full list). Other sealed data is NOT covered here:
+// split, order, reservation, voucher and receipt tokens, push subscriptions
+// (the registry below is the full list), plus the ChatGPT connection tokens and
+// pending device codes (SEALED_SERVICE_SWEEPS, see below). Other sealed data is
+// NOT covered here:
 //   - integration credentials and AI provider keys: rotate-data-key (they carry
 //     a version column);
-//   - HRIS and payroll: hris-pii-reseal.job.ts (piiKeyVersion);
-//   - ChatGPT connection tokens and pending device codes (ai-chatgpt.service.ts,
-//     ai_chatgpt_connections.tokens_encrypted / pending_encrypted): no job
-//     rotates them, they are re-sealed only when the service rewrites them;
-//   - push subscriptions (lib/push-subscription.ts).
+//   - HRIS and payroll: hris-pii-reseal.job.ts (piiKeyVersion).
 // An old data key version may retire only when every one of those is moved too
-// AND the report here shows `remaining` 0 INCLUDING `frozen`: frozen rows are
-// still read live, so retiring the key would lose them (see below).
+// AND the report here shows `aborted` false, `failedTenants` 0, every `failed`
+// 0 and every `remaining` 0 INCLUDING `frozen`: frozen rows are still read
+// live, so retiring the key would lose them (see below).
 //
 // Stale = the envelope's version byte (lib/secrets.ts) is below the active
 // version. The SQL filter reads that byte from the column itself, so no
@@ -41,7 +40,17 @@
 // returns the same code. Leftovers count in `remaining` under
 // `promo_command_idempotency.response` and block key retirement like any column.
 // A caller that passes a non-empty `columns` (tests only) skips this sweep
-// unless it also passes `jsonSecrets`. An aborted run leaves unreached entries
+// unless it also passes `jsonSecrets`.
+//
+// Service sweeps (legend-rj284): a table whose rows follow a lease protocol
+// owned by its service (ChatGPT connections) is re-sealed by a function in that
+// service, called here once per tenant through SEALED_SERVICE_SWEEPS. The job
+// never reads or writes those columns itself, but it still counts `remaining`
+// with the same stale filter, in a separate transaction, so a sweep that throws
+// leaves its rows in `remaining` and the tenant in `failedTenants`. Rows the
+// service skipped this pass (`busy`) stay in `remaining`. Report keys are
+// `<table>.<column>`. A non-empty `columns` (tests only) skips this sweep unless
+// the caller also passes `serviceSweeps`. An aborted run leaves unreached entries
 // out of the report: a key retirement decision must also require
 // `aborted === false`. The queue job aborts the run itself shortly before its
 // 2 hour expiry (and when pg-boss aborts the job signal), so a long run never
@@ -55,7 +64,11 @@
 
 import { sql, type SQL } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
-import { uuidToUlid, type ScopedTenantContext } from "@starter/shared/core";
+import {
+  uuidToUlid,
+  type ScopedTenantContext,
+  type TenantId,
+} from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -69,6 +82,7 @@ import {
   sealSecret,
   sealedVersion,
 } from "../lib/secrets.ts";
+import { resealChatgptConnectionAny } from "../services/ai-chatgpt.service.ts";
 import { listAllTenantIds } from "./hris-pii-reseal.job.ts";
 
 type Database = NodePgDatabase<typeof schema>;
@@ -114,6 +128,12 @@ export type SealedSecretColumn = {
   where?: string;
   /** Static SQL on alias `t`: rows the database refuses to change. */
   frozenWhere?: string;
+  /**
+   * A label column the writer keeps beside the ciphertext. The compare-and-set
+   * UPDATE sets it in the same statement. It is only a label: the stale filter
+   * still reads the envelope byte, never this column.
+   */
+  versionLabel?: { column: string; value(active: number): string };
   /** AADs the writers use; the first one that opens the value is reused. */
   aad(row: SealedRow): string[];
 };
@@ -124,8 +144,8 @@ const ORDER_FINAL = "t.status IN ('completed', 'voided')";
  * Every sealed column this job moves. Each AAD is copied from the writer named
  * in the comment. Left out on purpose (not here): HRIS and payroll sealed
  * values (piiKeyVersion, hris-pii-reseal.job.ts), integration credentials and
- * AI provider keys (rotate-data-key), push subscriptions and the ChatGPT
- * connection tokens (own key columns / services).
+ * AI provider keys (rotate-data-key). The ChatGPT connection tokens are not
+ * here either: they are moved by SEALED_SERVICE_SWEEPS (lease protocol).
  */
 export const SEALED_SECRET_COLUMNS: readonly SealedSecretColumn[] = [
   {
@@ -288,6 +308,17 @@ export const SEALED_SECRET_COLUMNS: readonly SealedSecretColumn[] = [
     encoding: "text",
     aad: (r) => [`order-issue-charge-link:${r.tenantId}:${r.id}`],
   },
+  {
+    // lib/push-subscription.ts associatedData(); `key_version` (`v<byte>`) is a
+    // label the subscribe upsert writes, so it moves with the ciphertext.
+    table: "push_subscriptions",
+    column: "subscription_ciphertext",
+    scope: "tenant",
+    encoding: "text",
+    extra: ["user_id"],
+    versionLabel: { column: "key_version", value: (v) => `v${v}` },
+    aad: (r) => [`push-subscription:${r.tenantId}:${r.extra[0]}`],
+  },
 ];
 
 /**
@@ -332,6 +363,41 @@ export const SEALED_JSON_SECRETS: readonly SealedJsonSecret[] = [
   },
 ];
 
+/**
+ * A table re-sealed by a function in the service that owns its lease protocol
+ * (legend-rj284). One row set per tenant, no cursor, no state row.
+ */
+export type SealedServiceSweep = {
+  /** Static identifier. */
+  table: string;
+  /** Sealed text columns, tenant scope. */
+  columns: readonly string[];
+  /**
+   * One tenant, inside `withTenant(jobContext)`. Never throws for one bad row
+   * and never logs values. `busy` = skipped this pass (still stale).
+   */
+  reseal(
+    tx: Transaction,
+    tenantId: string,
+    active: number,
+  ): Promise<
+    Record<string, { resealed: number; failed: number; busy: number }>
+  >;
+};
+
+/** Filled by the service that owns the lease protocol (ChatGPT connections). */
+export const SEALED_SERVICE_SWEEPS: readonly SealedServiceSweep[] = [
+  {
+    // ai-chatgpt.service.ts resealChatgptConnectionAny(): one CAS UPDATE per
+    // tenant moves both columns, skipping rows under a live operation lease.
+    table: "ai_chatgpt_connections",
+    columns: ["tokens_encrypted", "pending_encrypted"],
+    // `tenantId` is a uuid from listAllTenantIds, so the brand cast is safe.
+    reseal: (tx, tenantId, active) =>
+      resealChatgptConnectionAny(tx, tenantId as TenantId, active),
+  },
+];
+
 export type SealedSecretColumnReport = {
   resealed: number;
   failed: number;
@@ -339,6 +405,8 @@ export type SealedSecretColumnReport = {
   remaining: number;
   /** Part of `remaining` that the database refuses to change. */
   frozen: number;
+  /** Service sweeps only: rows skipped this pass (still in `remaining`). */
+  busy?: number;
 };
 
 export type SealedSecretResealResult = {
@@ -378,6 +446,11 @@ export type SealedSecretResealOptions = {
    * isolated).
    */
   jsonSecrets?: readonly SealedJsonSecret[];
+  /**
+   * Service sweeps to run. Defaults to `SEALED_SERVICE_SWEEPS`, or to none when
+   * a non-empty `columns` narrows the run (column-only tests stay isolated).
+   */
+  serviceSweeps?: readonly SealedServiceSweep[];
 };
 
 const keyOf = (c: SealedSecretColumn) => `${c.table}.${c.column}`;
@@ -533,12 +606,17 @@ async function resealBatch(
           ? sql`t.tenant_id = ${scope}::uuid AND t.id = ${uuid}::uuid`
           : sql`t.id = ${uuid}::uuid`;
       const bytea = c.encoding === "bytea";
+      // The label moves in the same statement; the compare-and-set stays on the
+      // ciphertext only.
+      const label = c.versionLabel
+        ? sql`, ${sql.identifier(c.versionLabel.column)} = ${c.versionLabel.value(active)}`
+        : sql``;
       const updated = await tx.transaction(
         async (savepoint) =>
           (await savepoint.execute(
             bytea
-              ? sql`UPDATE ${tableSql(c)} t SET ${col} = decode(${next}, 'base64') WHERE ${where} AND t.${col} = decode(${sealed}, 'base64')`
-              : sql`UPDATE ${tableSql(c)} t SET ${col} = ${next} WHERE ${where} AND t.${col} = ${sealed}`,
+              ? sql`UPDATE ${tableSql(c)} t SET ${col} = decode(${next}, 'base64')${label} WHERE ${where} AND t.${col} = decode(${sealed}, 'base64')`
+              : sql`UPDATE ${tableSql(c)} t SET ${col} = ${next}${label} WHERE ${where} AND t.${col} = ${sealed}`,
           )) as unknown as ResultRows,
       );
       // 0 rows: the value changed under us (compare-and-set); the next pass
@@ -749,10 +827,17 @@ export async function runSealedSecretReseal(
   const jsonSecrets =
     options.jsonSecrets ??
     (options.columns && options.columns.length > 0 ? [] : SEALED_JSON_SECRETS);
+  const serviceSweeps =
+    options.serviceSweeps ??
+    (options.columns && options.columns.length > 0
+      ? []
+      : SEALED_SERVICE_SWEEPS);
 
   // A listing failure is not tenant-specific: fail the job so pg-boss retries.
   const tenantIds =
-    columns.some((c) => c.scope === "tenant") || jsonSecrets.length > 0
+    columns.some((c) => c.scope === "tenant") ||
+    jsonSecrets.length > 0 ||
+    serviceSweeps.length > 0
       ? await (options.listTenantIds ?? (() => listAllTenantIds(database)))()
       : [];
   const result: SealedSecretResealResult = {
@@ -839,6 +924,74 @@ export async function runSealedSecretReseal(
         total.failed += 1;
         log.error(
           `Sealed secret re-seal failed for ${key} (${j.operation}) scope ${scope} (details withheld)`,
+        );
+      }
+    }
+  }
+  // Service sweeps (legend-rj284): the service re-seals one tenant; the job
+  // counts `remaining` itself in a SEPARATE transaction, so a sweep that throws
+  // still leaves its stale rows in `remaining`.
+  for (const s of serviceSweeps) {
+    if (result.aborted) break;
+    for (const column of s.columns)
+      result.tables[`${s.table}.${column}`] ??= {
+        resealed: 0,
+        failed: 0,
+        remaining: 0,
+        frozen: 0,
+        busy: 0,
+      };
+    for (const scope of tenantIds) {
+      if (result.aborted || options.signal?.aborted) {
+        result.aborted = true;
+        break;
+      }
+      let sweepFailed = false;
+      let outcome: Awaited<ReturnType<SealedServiceSweep["reseal"]>> = {};
+      // reportOnly: the sweep is never called, only the count runs.
+      if (!options.reportOnly) {
+        try {
+          outcome = await withTenant(database, jobContext(scope), (tx) =>
+            s.reseal(tx, scope, active),
+          );
+        } catch {
+          sweepFailed = true;
+        }
+      }
+      for (const column of s.columns) {
+        const total = result.tables[`${s.table}.${column}`];
+        if (!total) continue;
+        const done = outcome[column];
+        if (done) {
+          total.resealed += done.resealed;
+          total.failed += done.failed;
+          total.busy = (total.busy ?? 0) + done.busy;
+        }
+        try {
+          const synthetic: SealedSecretColumn = {
+            table: s.table,
+            column,
+            scope: "tenant",
+            encoding: "text",
+            aad: () => [],
+          };
+          total.remaining += await withTenant(
+            database,
+            jobContext(scope),
+            (tx) => countRows(tx, synthetic, scope, active, false),
+          );
+        } catch {
+          sweepFailed = true;
+        }
+      }
+      if (sweepFailed) {
+        failedTenants.add(scope);
+        for (const column of s.columns) {
+          const total = result.tables[`${s.table}.${column}`];
+          if (total) total.failed += 1;
+        }
+        log.error(
+          `Sealed secret re-seal failed for ${s.table} scope ${scope} (details withheld)`,
         );
       }
     }

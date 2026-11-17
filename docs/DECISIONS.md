@@ -3,6 +3,16 @@
 Technical decisions the PRD leaves open. Newest first. Each entry names its
 bead so the code comments and tests can be traced back.
 
+## 2026-11-17: Rotasi kunci mencakup token ChatGPT dan langganan push (legend-rj284)
+
+Tingkat K. Rancangan lengkap di `docs/design/reseal-chatgpt-push.md` (Opsi B).
+
+1. **Langganan push lewat registry reseal umum.** `push_subscriptions.subscription_ciphertext` dipindahkan oleh job `sealed-secret-reseal`, dan kolom `key_version` ikut diperbarui lewat label versi di registry.
+2. **Token ChatGPT dipindahkan oleh service-nya sendiri.** `resealChatgptConnectionAny` berjalan di bawah kunci koneksi yang sama dengan refresh dan poll. Tidak pernah berjalan saat panggilan OpenAI sedang berjalan (ditambah 10 menit), jadi rotasi tidak bisa menghilangkan token yang baru di-refresh atau kode perangkat yang sudah disetujui.
+3. **Pensiun kunci hanya setelah laporan job bersih.** Kunci lama keluar dari ring hanya jika laporan job terakhir menunjukkan `remaining` 0 untuk ketiga kolom (termasuk `frozen`), `failed` 0, `failedTenants` 0, dan `aborted` false.
+
+Konsekuensi: pensiun kunci terlalu cepat memutus ChatGPT untuk semua tenant dan menghilangkan langganan push (pengguna tidak dapat notifikasi sampai perangkatnya mendaftar ulang). Nilai yang tidak bisa dibuka tidak pernah dihapus otomatis; operator menanganinya per tenant sesuai `docs/deployment.md` bagian "Job `sealed-secret-reseal` dan pensiun kunci".
+
 ## 2026-11-11: Bukti WhatsApp masuk untuk login dan reset PIN slip gaji (legend-lgfru, legend-9h2oj, legend-s5rgo)
 
 Tingkat K. Rancangan lengkap rev 2.1 (D-WA1 sampai D-WA6). Kirimdev tidak punya sandbox; pesan keluar tetap mati (AUTH-03).
