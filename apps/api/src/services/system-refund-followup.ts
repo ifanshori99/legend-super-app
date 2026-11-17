@@ -17,6 +17,7 @@ import {
   uuidToUlid,
   type ScopedTenantContext,
 } from "@starter/shared/core";
+import { interpolate, messagesId } from "@starter/shared/i18n";
 import * as contract from "@starter/shared/payment/admin";
 import type { SystemRefundActor } from "@starter/shared/payment/admin";
 import type { z } from "zod";
@@ -311,6 +312,7 @@ export async function settleSystemRefundFailure(
   // keeps a failed alarm from aborting the refund failure; the audit row above
   // and the follow-up list still carry the item.
   const id = uuidToUlid(refund.id);
+  const alarmCopy = messagesId.paymentAdmin.refundFollowup.followupAlarm;
   try {
     await tx.transaction(async (savepoint) => {
       await notifyOutletSupervisors(
@@ -326,8 +328,13 @@ export async function settleSystemRefundFailure(
           aggregateType: "payment",
           aggregateId: id,
           payload: { refundId: refund.id, blockedReason: blocked },
-          title: "Refund tamu perlu ditindaklanjuti",
-          body: `Refund otomatis untuk tamu gagal dan tidak diajukan ulang. Rp ${Number(remaining).toLocaleString("id-ID")} masih menjadi hak tamu. Ajukan refund baru untuk pembayaran ini di layar refund; orang lain harus menyetujuinya.`,
+          title: alarmCopy.title,
+          body: interpolate(
+            refund.unallocatedFundId !== null
+              ? alarmCopy.bodyParkedFund
+              : alarmCopy.body,
+            { amount: Number(remaining).toLocaleString("id-ID") },
+          ),
         },
         now,
       );
@@ -345,7 +352,9 @@ export async function settleSystemRefundFailure(
  * Derived on every read: the latest failed refund of a payment by a follow-up
  * requester, while the payment still has a refundable balance above zero
  * (pending and approved refunds are reserved, so a live refund that covers the
- * money removes it, and so does a completed one). Needs the refund read permission,
+ * money removes it, and so does a completed one). legend-of9kp: a parked fund
+ * is listed the same way, one item per fund (its last failed refund), while the
+ * fund is unresolved and no refund of it is live or completed. Needs the refund read permission,
  * tenant-wide or at the outlet asked for. The balance cannot be filtered in
  * SQL, so rows are scanned in batches until the page is full.
  */
@@ -393,35 +402,52 @@ export async function listRefundFollowups(
               ? eq(paymentRefunds.outletId, query.outletId)
               : undefined,
             eq(paymentRefunds.status, "failed"),
-            sql`${paymentRefunds.unallocatedFundId} IS NULL`,
             sql`${paymentRefunds.requestedBy} IN (${actors})`,
             after
               ? sql`(${paymentRefunds.createdAt}, ${paymentRefunds.id}) < (${after[0]}::timestamptz, ${after[1]}::uuid)`
               : undefined,
-            // The latest failed refund of its payment speaks for it.
+            // The latest failed refund of its payment (or, legend-of9kp, of
+            // its parked fund) speaks for it.
             sql`NOT EXISTS (
               SELECT 1 FROM payment_refunds later
                WHERE later.tenant_id = ${paymentRefunds.tenantId}
-                 AND later.payment_intent_id = ${paymentRefunds.paymentIntentId}
-                 AND later.unallocated_fund_id IS NULL
+                 AND (
+                   later.unallocated_fund_id = ${paymentRefunds.unallocatedFundId}
+                   OR (
+                     ${paymentRefunds.unallocatedFundId} IS NULL
+                     AND later.unallocated_fund_id IS NULL
+                     AND later.payment_intent_id = ${paymentRefunds.paymentIntentId}))
                  AND later.status = 'failed'
                  AND later.requested_by IN (${actors})
                  AND (later.created_at, later.id) > (${paymentRefunds.createdAt}, ${paymentRefunds.id}))`,
             // Cheap pre-filter of the balance: a payment that is not paid any
             // more, or whose refunds already add up to what was paid, owes
-            // nothing (the exact balance below can only be lower).
-            sql`EXISTS (
-              SELECT 1 FROM payment_intents pi
-               WHERE pi.tenant_id = ${paymentRefunds.tenantId}
-                 AND pi.id = ${paymentRefunds.paymentIntentId}
-                 AND pi.paid_at IS NOT NULL
-                 AND pi.status IN ('paid', 'partially_refunded')
-                 AND pi.amount_idr > coalesce((
-                   SELECT sum(done.amount_idr) FROM payment_refunds done
-                    WHERE done.tenant_id = pi.tenant_id
-                      AND done.payment_intent_id = pi.id
-                      AND done.unallocated_fund_id IS NULL
-                      AND done.status <> 'failed'), 0))`,
+            // nothing (the exact balance below can only be lower). A parked
+            // fund (legend-of9kp) owes while it is unresolved and no refund of
+            // it is live or completed.
+            sql`(
+              (${paymentRefunds.unallocatedFundId} IS NULL AND EXISTS (
+                SELECT 1 FROM payment_intents pi
+                 WHERE pi.tenant_id = ${paymentRefunds.tenantId}
+                   AND pi.id = ${paymentRefunds.paymentIntentId}
+                   AND pi.paid_at IS NOT NULL
+                   AND pi.status IN ('paid', 'partially_refunded')
+                   AND pi.amount_idr > coalesce((
+                     SELECT sum(done.amount_idr) FROM payment_refunds done
+                      WHERE done.tenant_id = pi.tenant_id
+                        AND done.payment_intent_id = pi.id
+                        AND done.unallocated_fund_id IS NULL
+                        AND done.status <> 'failed'), 0)))
+              OR (${paymentRefunds.unallocatedFundId} IS NOT NULL AND EXISTS (
+                SELECT 1 FROM payment_unallocated_funds fund
+                 WHERE fund.tenant_id = ${paymentRefunds.tenantId}
+                   AND fund.id = ${paymentRefunds.unallocatedFundId}
+                   AND fund.resolution IS NULL
+                   AND NOT EXISTS (
+                     SELECT 1 FROM payment_refunds covering
+                      WHERE covering.tenant_id = fund.tenant_id
+                        AND covering.unallocated_fund_id = fund.id
+                        AND covering.status <> 'failed'))))`,
           ),
         )
         .orderBy(desc(paymentRefunds.createdAt), desc(paymentRefunds.id))
@@ -429,6 +455,27 @@ export async function listRefundFollowups(
       for (const refund of rows) {
         scanned += 1;
         lastScanned = refund;
+        if (refund.unallocatedFundId !== null) {
+          // A parked fund owes its whole amount (the SQL above kept only an
+          // unresolved fund with no live or completed refund).
+          const [fund] = await tx
+            .select()
+            .from(paymentUnallocatedFunds)
+            .where(
+              and(
+                eq(paymentUnallocatedFunds.tenantId, tenantId),
+                eq(paymentUnallocatedFunds.id, refund.unallocatedFundId),
+              ),
+            );
+          if (fund && BigInt(fund.amountIdr) > 0n)
+            found.push({
+              refund,
+              remaining: BigInt(fund.amountIdr),
+              attempts: await failedAttempts(tx, refund),
+            });
+          if (found.length > query.limit) break;
+          continue;
+        }
         const [intent] = await tx
           .select()
           .from(paymentIntents)
@@ -464,6 +511,7 @@ export async function listRefundFollowups(
       data.push(
         contract.refundFollowupViewSchema.parse({
           ...(await refundViewFor(tx, context, refund, actor)),
+          fundId: refund.unallocatedFundId,
           attempts,
           remainingIdr: Number(remaining),
           blockedReason: blockedReason(refund, attempts),

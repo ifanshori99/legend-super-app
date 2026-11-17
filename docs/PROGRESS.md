@@ -6968,3 +6968,10 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 - legend-kis0u: replay kunci lama kini membaca status nyata kode (void/timeout menjadi expired, paid membawa paidAt) untuk semua kode, bukan hanya e-wallet/kartu; kode lama tidak dibuka lagi. legend-p45yq: kembar yang menunggu lock memakai kunci sendiri (`intentKey`) dan menerima jawaban tersimpan, bukan 409 VA_RELEASE_PROVIDER_UNREAD. legend-nqfov: sudah diperbaiki 1004 (peek sebelum cek metode); test regresi saja.
 - legend-9pz0m: refund sistem dana parkir yang gagal approval_expired/approver_unauthorized dibuka ulang otomatis, maks 3 gagal per dana, satu refund hidup per dana, jumlah = dana; alasan keputusan orang (rejected/provider_declined) atau jatah habis tidak dibuka lagi, event ulang pun tidak. Setelah jatah habis alarm payment.refund_followup_required. Tanpa migrasi.
 - Test: qr-va-1029-replay, qr-va-1029-9pz0m-parked-refile + 10 berkas 1004/940/969 terkait hijau (12 berkas, 91 test). Typecheck API hijau. Review architect xhigh: bersih untuk uang; temuan kecil (daftar followup tidak menampilkan refund dana) jadi kartu terpisah.
+
+
+### legend-of9kp followup dana parkir tampil (18 Nov 2026)
+
+- `listRefundFollowups` kini memuat dana parkir yang jatah refund otomatisnya habis atau ditolak orang: satu item per dana (`fundId` baru di `refundFollowupViewSchema`, `remainingIdr` = jumlah dana, `attempts` per dana); dana ber-resolution atau punya refund hidup/selesai tidak tampil. Tanpa UI baru (belum ada konsumen web).
+- Teks alarm `payment.refund_followup_required` pindah ke katalog (`ws05-refund-followup.ts` `followupAlarm`); versi dana parkir menyebut dana tamu yang diparkir dan jumlahnya, tidak menyuruh "ajukan refund baru". Teks non-dana tetap.
+- Test `qr-va-1029-of9kp-followup-list` (9) + 3 berkas terkait hijau (42); `tests/text-contract` dan `payment-admin-contract` hijau; typecheck API hijau; reviewer S bersih. Tidak mengubah alur uang.
