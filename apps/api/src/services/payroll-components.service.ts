@@ -804,11 +804,325 @@ export type EmployeeGross = {
   sealed: { calculation: Buffer; keyVersion: number };
 };
 
-const OVERTIME_CODE = "LEMBUR";
+export const OVERTIME_CODE = "LEMBUR";
 
 /** Whole hours as Decimal4, rounded down: a fraction is never paid. */
 const hoursOf = (minutes: number) =>
   formatDecimal4((BigInt(minutes) / 60n) * 10_000n);
+
+type SalaryOverlays = Awaited<ReturnType<typeof loadApprovedSalaryOverlays>>;
+
+/** One salary history row of an overtime-base component (zero rows kept). */
+type OvertimeHistoryRow = {
+  historyRowId: string;
+  componentId: string;
+  effectiveFrom: string;
+  effectiveTo: string | null;
+  nominal: number;
+};
+
+/**
+ * Every employee amount row that overlaps [periodStart, periodEnd] (inclusive
+ * dates), with its component; deductions stay even when inactive.
+ */
+async function loadEmployeeComponentRows(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+  employeeId: string,
+  periodStart: BusinessDate,
+  periodEnd: BusinessDate,
+) {
+  return tx
+    .select({ amount: employeePayComponents, component: payComponents })
+    .from(employeePayComponents)
+    .innerJoin(
+      payComponents,
+      and(
+        eq(payComponents.tenantId, employeePayComponents.tenantId),
+        eq(payComponents.id, employeePayComponents.componentId),
+      ),
+    )
+    .where(
+      and(
+        eq(employeePayComponents.tenantId, tenantId),
+        eq(employeePayComponents.employeeId, employeeId),
+        or(
+          eq(payComponents.isActive, true),
+          eq(payComponents.kind, "deduction"),
+        ),
+        // Every row that overlaps [periodStart, periodEnd] (inclusive dates).
+        lte(employeePayComponents.effectiveFrom, periodEnd),
+        or(
+          isNull(employeePayComponents.effectiveTo),
+          gte(employeePayComponents.effectiveTo, periodStart),
+        ),
+      ),
+    );
+}
+
+/**
+ * The overtime-base history row of an amount row, or null when its component
+ * is not an earning with the overtime base. Zero rows are kept: a stopped
+ * component must never reuse an earlier positive amount to price overtime
+ * after its last effective day.
+ */
+function overtimeHistoryRowOf(
+  amount: EmployeeComponentRow,
+  component: ComponentRow,
+  nominal: number,
+): OvertimeHistoryRow | null {
+  if (component.kind !== "earning" || !component.overtimeBase) return null;
+  return {
+    historyRowId: amount.id,
+    componentId: component.id,
+    effectiveFrom: amount.effectiveFrom,
+    effectiveTo: amount.effectiveTo,
+    nominal,
+  };
+}
+
+/** Monthly overtime base of an employee on one date, from the history. */
+function makeOvertimeBaseOn(
+  overtimeHistory: readonly OvertimeHistoryRow[],
+  salaryOverlays: SalaryOverlays,
+): (date: string) => Idr {
+  return (date) => {
+    const bases = new Map<string, number>();
+    for (const row of overtimeHistory) {
+      if (
+        row.effectiveFrom > date ||
+        (row.effectiveTo !== null && row.effectiveTo < date)
+      )
+        continue;
+      // Histories written by the service do not overlap. If legacy rows
+      // do, use the lowest value (including zero) instead of paying twice.
+      const nominal = resolveRapelMonthlyAmount(
+        salaryOverlays,
+        row.historyRowId,
+        row.componentId,
+        date,
+        idr(row.nominal),
+      );
+      bases.set(
+        row.componentId,
+        Math.min(bases.get(row.componentId) ?? nominal, nominal),
+      );
+    }
+    // Before a component starts, after it stops, or inside a history gap,
+    // that component contributes zero to this date's overtime base.
+    return idr([...bases.values()].reduce((sum, value) => sum + value, 0));
+  };
+}
+
+/** Attendance days with overtime minutes that may limit approved requests. */
+async function loadOvertimeAttendance(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+  employeeId: string,
+  employmentStart: BusinessDate,
+  employmentEnd: BusinessDate,
+) {
+  // Attendance limits the approved requests; it never authorizes overtime.
+  return tx
+    .select({
+      businessDate: attendanceLogs.businessDate,
+      minutes: sql<number>`max(${attendanceLogs.overtimeMinutes})::int`,
+    })
+    .from(attendanceLogs)
+    .where(
+      and(
+        eq(attendanceLogs.tenantId, tenantId),
+        eq(attendanceLogs.employeeId, employeeId),
+        eq(attendanceLogs.type, "out"),
+        gte(attendanceLogs.businessDate, employmentStart),
+        lte(attendanceLogs.businessDate, employmentEnd),
+        sql`${attendanceLogs.overtimeMinutes} > 0`,
+        or(
+          and(
+            eq(attendanceLogs.validity, "valid"),
+            inArray(attendanceLogs.reviewStatus, ["none", "accepted"]),
+          ),
+          and(
+            eq(attendanceLogs.validity, "flagged"),
+            eq(attendanceLogs.reviewStatus, "accepted"),
+          ),
+        ),
+      ),
+    )
+    .groupBy(attendanceLogs.businessDate);
+}
+
+/** A request the overtime pricing counts (an approved one, in the period). */
+export type PricedOvertimeRequest = {
+  date: string;
+  minutes: number;
+  dayType: OvertimeDayType;
+  /** Pinned formula version; the caller loaded it (`loadPinnedOvertimeFormulas`). */
+  formulaId: string | null;
+};
+
+/**
+ * Overtime pay of a set of requests against the attendance of the period, no
+ * database: per day, the day types and pinned formulas consume one shared
+ * attendance/720 cap, cheaper tariff first; hours are rounded down per day and
+ * day type; no overtime base, no pay (the minutes stay reported, unpaid).
+ * Caller parameters never reprice a request. The gross engine and the overtime
+ * correction (legend-72nod) price through this one function.
+ */
+export function priceOvertimeRequests(
+  requests: readonly PricedOvertimeRequest[],
+  formulas: ReadonlyMap<string, { id: string; parameters: OvertimeParameters }>,
+  logs: readonly { businessDate: string; minutes: number }[],
+  overtimeBaseOn: (date: string) => Idr,
+): { overtimeIdr: Idr; overtimeMinutes: number; overtimeHours: bigint } {
+  type OvertimeGroup = {
+    minutes: number;
+    dayType: OvertimeDayType;
+    formulaId: string;
+    parameters: OvertimeParameters;
+  };
+  const requestsByDay = new Map<string, Map<string, OvertimeGroup>>();
+  for (const request of requests) {
+    const formula = formulas.get(request.formulaId!)!;
+    const day =
+      requestsByDay.get(request.date) ?? new Map<string, OvertimeGroup>();
+    const key = `${request.dayType}|${formula.id}`;
+    const group = day.get(key) ?? {
+      minutes: 0,
+      dayType: request.dayType,
+      formulaId: formula.id,
+      parameters: formula.parameters,
+    };
+    group.minutes += request.minutes;
+    day.set(key, group);
+    requestsByDay.set(request.date, day);
+  }
+  const payableOvertime: {
+    minutes: number;
+    dayType: OvertimeDayType;
+    overtimeBase: Idr;
+    parameters: OvertimeParameters;
+  }[] = [];
+  for (const log of logs) {
+    const day = requestsByDay.get(log.businessDate);
+    if (!day) continue;
+    const overtimeBase = overtimeBaseOn(log.businessDate);
+    let remaining = Math.min(log.minutes, 720);
+    // Day types and pinned formulas consume one shared attendance/720 cap,
+    // cheaper tariff first. Caller parameters never reprice a request.
+    const groups = [...day.values()].sort(
+      (left, right) =>
+        computeOvertimePay(
+          left.parameters,
+          left.dayType,
+          hoursOf(remaining),
+          overtimeBase,
+        ) -
+          computeOvertimePay(
+            right.parameters,
+            right.dayType,
+            hoursOf(remaining),
+            overtimeBase,
+          ) ||
+        left.dayType.localeCompare(right.dayType) ||
+        left.formulaId.localeCompare(right.formulaId),
+    );
+    for (const group of groups) {
+      const minutes = Math.min(group.minutes, remaining);
+      if (minutes <= 0) continue;
+      payableOvertime.push({
+        minutes,
+        dayType: group.dayType,
+        overtimeBase,
+        parameters: group.parameters,
+      });
+      remaining -= minutes;
+    }
+  }
+  const overtimeMinutes = payableOvertime.reduce(
+    (sum, entry) => sum + entry.minutes,
+    0,
+  );
+  const overtimeHours = payableOvertime.reduce(
+    (sum, entry) => sum + BigInt(entry.minutes) / 60n,
+    0n,
+  );
+  // No overtime base, no overtime pay: the minutes stay reported, unpaid.
+  let overtimeIdr = idr(0);
+  for (const entry of payableOvertime)
+    if (entry.overtimeBase > 0)
+      overtimeIdr = idr(
+        overtimeIdr +
+          computeOvertimePay(
+            entry.parameters,
+            entry.dayType,
+            hoursOf(entry.minutes),
+            entry.overtimeBase,
+          ),
+      );
+  return { overtimeIdr, overtimeMinutes, overtimeHours };
+}
+
+/**
+ * The shared inputs that price overtime of one employee for a period: the
+ * attendance limits and the overtime base on each date (current salary basis,
+ * approved prospective overlays included), plus the employment window. Both
+ * sides of an overtime correction use the same basis, so a salary change never
+ * shows up as a correction.
+ */
+export async function loadOvertimeBasisInTransaction(
+  tx: Tx,
+  context: ScopedTenantContext,
+  employeeId: string,
+  periodStart: BusinessDate,
+  periodEnd: BusinessDate,
+): Promise<{
+  employmentStart: BusinessDate;
+  employmentEnd: BusinessDate;
+  logs: Awaited<ReturnType<typeof loadOvertimeAttendance>>;
+  overtimeBaseOn: (date: string) => Idr;
+}> {
+  const salaryOverlays = await loadApprovedSalaryOverlays(
+    tx,
+    context,
+    employeeId,
+  );
+  const employee = await assertEmployeeInTenant(tx, context, employeeId);
+  const employmentStart =
+    employee.joinDate > periodStart ? employee.joinDate : periodStart;
+  const employmentEnd =
+    employee.endDate && employee.endDate < periodEnd
+      ? employee.endDate
+      : periodEnd;
+  const rows = await loadEmployeeComponentRows(
+    tx,
+    context.tenant.tenantId,
+    employeeId,
+    periodStart,
+    periodEnd,
+  );
+  const history: OvertimeHistoryRow[] = [];
+  for (const { amount, component } of rows) {
+    const row = overtimeHistoryRowOf(
+      amount,
+      component,
+      toEmployeeComponent(amount).amountIdr,
+    );
+    if (row) history.push(row);
+  }
+  return {
+    employmentStart: employmentStart as BusinessDate,
+    employmentEnd: employmentEnd as BusinessDate,
+    logs: await loadOvertimeAttendance(
+      tx,
+      context.tenant.tenantId,
+      employeeId,
+      employmentStart as BusinessDate,
+      employmentEnd as BusinessDate,
+    ),
+    overtimeBaseOn: makeOvertimeBaseOn(history, salaryOverlays),
+  };
+}
 
 /**
  * Gross, deductions, net and overtime of one employee for a period, from the
@@ -875,32 +1189,13 @@ export async function computeEmployeeGrossInTransaction(
     employee.endDate && employee.endDate < periodEnd
       ? employee.endDate
       : periodEnd;
-  const rows = await tx
-    .select({ amount: employeePayComponents, component: payComponents })
-    .from(employeePayComponents)
-    .innerJoin(
-      payComponents,
-      and(
-        eq(payComponents.tenantId, employeePayComponents.tenantId),
-        eq(payComponents.id, employeePayComponents.componentId),
-      ),
-    )
-    .where(
-      and(
-        eq(employeePayComponents.tenantId, context.tenant.tenantId),
-        eq(employeePayComponents.employeeId, employeeId),
-        or(
-          eq(payComponents.isActive, true),
-          eq(payComponents.kind, "deduction"),
-        ),
-        // Every row that overlaps [periodStart, periodEnd] (inclusive dates).
-        lte(employeePayComponents.effectiveFrom, periodEnd),
-        or(
-          isNull(employeePayComponents.effectiveTo),
-          gte(employeePayComponents.effectiveTo, periodStart),
-        ),
-      ),
-    );
+  const rows = await loadEmployeeComponentRows(
+    tx,
+    context.tenant.tenantId,
+    employeeId,
+    periodStart,
+    periodEnd,
+  );
 
   // Proration by calendar day: one amount per component, the sum over its
   // overlapping employment days of floor(amount * activeDays / periodDays)
@@ -918,25 +1213,13 @@ export async function computeEmployeeGrossInTransaction(
       amountIdr: number;
     }
   >();
-  const overtimeHistory: {
-    historyRowId: string;
-    componentId: string;
-    effectiveFrom: string;
-    effectiveTo: string | null;
-    nominal: number;
-  }[] = [];
+  const overtimeHistory: OvertimeHistoryRow[] = [];
   for (const { amount, component } of rows) {
     const nominal = toEmployeeComponent(amount).amountIdr;
     // Keep zero rows: a stopped component must never reuse an earlier
     // positive amount to price overtime after its last effective day.
-    if (component.kind === "earning" && component.overtimeBase)
-      overtimeHistory.push({
-        historyRowId: amount.id,
-        componentId: component.id,
-        effectiveFrom: amount.effectiveFrom,
-        effectiveTo: amount.effectiveTo,
-        nominal,
-      });
+    const historyRow = overtimeHistoryRowOf(amount, component, nominal);
+    if (historyRow) overtimeHistory.push(historyRow);
     const activeFrom =
       amount.effectiveFrom > employmentStart
         ? amount.effectiveFrom
@@ -1024,61 +1307,15 @@ export async function computeEmployeeGrossInTransaction(
   const earningLines = amounts
     .filter(({ component }) => component.kind === "earning")
     .map((entry) => lineOf(entry, idr(entry.amountIdr)));
-  const overtimeBaseOn = (date: string): Idr => {
-    const bases = new Map<string, number>();
-    for (const row of overtimeHistory) {
-      if (
-        row.effectiveFrom > date ||
-        (row.effectiveTo !== null && row.effectiveTo < date)
-      )
-        continue;
-      // Histories written by the service do not overlap. If legacy rows
-      // do, use the lowest value (including zero) instead of paying twice.
-      const nominal = resolveRapelMonthlyAmount(
-        salaryOverlays,
-        row.historyRowId,
-        row.componentId,
-        date,
-        idr(row.nominal),
-      );
-      bases.set(
-        row.componentId,
-        Math.min(bases.get(row.componentId) ?? nominal, nominal),
-      );
-    }
-    // Before a component starts, after it stops, or inside a history gap,
-    // that component contributes zero to this date's overtime base.
-    return idr([...bases.values()].reduce((sum, value) => sum + value, 0));
-  };
+  const overtimeBaseOn = makeOvertimeBaseOn(overtimeHistory, salaryOverlays);
 
-  // Attendance limits the approved requests; it never authorizes overtime.
-  const logs = await tx
-    .select({
-      businessDate: attendanceLogs.businessDate,
-      minutes: sql<number>`max(${attendanceLogs.overtimeMinutes})::int`,
-    })
-    .from(attendanceLogs)
-    .where(
-      and(
-        eq(attendanceLogs.tenantId, context.tenant.tenantId),
-        eq(attendanceLogs.employeeId, employeeId),
-        eq(attendanceLogs.type, "out"),
-        gte(attendanceLogs.businessDate, employmentStart),
-        lte(attendanceLogs.businessDate, employmentEnd),
-        sql`${attendanceLogs.overtimeMinutes} > 0`,
-        or(
-          and(
-            eq(attendanceLogs.validity, "valid"),
-            inArray(attendanceLogs.reviewStatus, ["none", "accepted"]),
-          ),
-          and(
-            eq(attendanceLogs.validity, "flagged"),
-            eq(attendanceLogs.reviewStatus, "accepted"),
-          ),
-        ),
-      ),
-    )
-    .groupBy(attendanceLogs.businessDate);
+  const logs = await loadOvertimeAttendance(
+    tx,
+    context.tenant.tenantId,
+    employeeId,
+    employmentStart,
+    employmentEnd,
+  );
   const requests = await tx
     .select({
       date: overtimeRequests.date,
@@ -1104,91 +1341,12 @@ export async function computeEmployeeGrossInTransaction(
     context.tenant.tenantId,
     requests,
   );
-  type OvertimeGroup = {
-    minutes: number;
-    dayType: OvertimeDayType;
-    formulaId: string;
-    parameters: OvertimeParameters;
-  };
-  const requestsByDay = new Map<string, Map<string, OvertimeGroup>>();
-  for (const request of requests) {
-    const formula = formulas.get(request.formulaId!)!;
-    const day =
-      requestsByDay.get(request.date) ?? new Map<string, OvertimeGroup>();
-    const key = `${request.dayType}|${formula.id}`;
-    const group = day.get(key) ?? {
-      minutes: 0,
-      dayType: request.dayType,
-      formulaId: formula.id,
-      parameters: formula.parameters,
-    };
-    group.minutes += request.minutes;
-    day.set(key, group);
-    requestsByDay.set(request.date, day);
-  }
-  const payableOvertime: {
-    minutes: number;
-    dayType: OvertimeDayType;
-    overtimeBase: Idr;
-    parameters: OvertimeParameters;
-  }[] = [];
-  for (const log of logs) {
-    const day = requestsByDay.get(log.businessDate);
-    if (!day) continue;
-    const overtimeBase = overtimeBaseOn(log.businessDate);
-    let remaining = Math.min(log.minutes, 720);
-    // Day types and pinned formulas consume one shared attendance/720 cap,
-    // cheaper tariff first. Caller parameters never reprice a request.
-    const groups = [...day.values()].sort(
-      (left, right) =>
-        computeOvertimePay(
-          left.parameters,
-          left.dayType,
-          hoursOf(remaining),
-          overtimeBase,
-        ) -
-          computeOvertimePay(
-            right.parameters,
-            right.dayType,
-            hoursOf(remaining),
-            overtimeBase,
-          ) ||
-        left.dayType.localeCompare(right.dayType) ||
-        left.formulaId.localeCompare(right.formulaId),
-    );
-    for (const group of groups) {
-      const minutes = Math.min(group.minutes, remaining);
-      if (minutes <= 0) continue;
-      payableOvertime.push({
-        minutes,
-        dayType: group.dayType,
-        overtimeBase,
-        parameters: group.parameters,
-      });
-      remaining -= minutes;
-    }
-  }
-  const overtimeMinutes = payableOvertime.reduce(
-    (sum, entry) => sum + entry.minutes,
-    0,
+  const { overtimeIdr, overtimeMinutes, overtimeHours } = priceOvertimeRequests(
+    requests,
+    formulas,
+    logs,
+    overtimeBaseOn,
   );
-  const overtimeHours = payableOvertime.reduce(
-    (sum, entry) => sum + BigInt(entry.minutes) / 60n,
-    0n,
-  );
-  // No overtime base, no overtime pay: the minutes stay reported, unpaid.
-  let overtimeIdr = idr(0);
-  for (const entry of payableOvertime)
-    if (entry.overtimeBase > 0)
-      overtimeIdr = idr(
-        overtimeIdr +
-          computeOvertimePay(
-            entry.parameters,
-            entry.dayType,
-            hoursOf(entry.minutes),
-            entry.overtimeBase,
-          ),
-      );
   if (overtimeIdr > 0)
     earningLines.push(
       payslipLineSchema.parse({

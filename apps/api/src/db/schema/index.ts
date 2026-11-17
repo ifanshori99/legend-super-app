@@ -118,6 +118,8 @@ export * from "./payroll-pph21-policy";
 // WS-10 payroll core tables (legend-gfcr).
 export * from "./payroll";
 export * from "./payroll-rapel";
+// WS-10 payroll overtime correction ledger (legend-72nod).
+export * from "./payroll-overtime-corrections";
 // WS-10 payroll disbursement: payout config, batches, items (legend-wnkep.1).
 export * from "./payroll-payout";
 // WS-10 payslip PIN and its WhatsApp reset challenges (legend-2ap3).

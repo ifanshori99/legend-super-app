@@ -1,0 +1,1029 @@
+// Overtime correction ("rapel lembur") for frozen periods (bead legend-72nod,
+// brief docs/briefs/983-hr-sisa.md, "Rancangan Kartu C"). Fail-first: written
+// before the feature exists.
+//
+// RULES UNDER TEST (real runs: simulate -> approve -> lock -> reversal)
+//  1. [late-approval] Overtime approved after the source run S was locked is
+//     paid in the next run T as ONE earning line LEMBUR_KOREKSI whose amount
+//     is the difference f(approved now) - f(paid in S). Once T is locked the
+//     line never shows up again in a later run.
+//  2. [repeat] Repeated corrections never pay the same hours twice: after a
+//     cancelled request is replaced by an identical approved one nothing more
+//     is paid; approve-then-cancel pays back at most what was paid. Total
+//     settled over all runs never exceeds the delta.
+//  3. [cancel-after-lock] Overtime cancelled after S was locked becomes a
+//     deduction line LEMBUR_KOREKSI_POTONGAN in T (never more than the LEMBUR
+//     paid on the slip of S), capped by the remaining wage; what does not fit
+//     stays outstanding and is deducted in later runs, never ignored, never
+//     more than the LEMBUR of the slip of S in total.
+//  4. [offboarding-held] An employee with an open / revoked / completed
+//     offboarding gets neither LEMBUR_KOREKSI nor LEMBUR_KOREKSI_POTONGAN
+//     (held for manual handling).
+//  5. [concurrent-drafts] Two draft runs T1, T2 that both carry the same
+//     correction: the lock of the second is refused with 409 once the
+//     outstanding amount is used up. Nobody is paid twice.
+//  6. [reversal] Reversing T gives the outstanding amount back: the next run
+//     pays the correction again (and exactly once).
+//  7. [salary-basis] A change of the salary base never enters the delta: a
+//     retroactive raise without any request change yields no correction line,
+//     and a raise taking effect in T does not scale the delta of S.
+//
+// ASSUMPTIONS (spec silent; from the brief)
+//  - Line identity is the payslip line `componentCode`: "LEMBUR_KOREKSI"
+//    (earning, taxable) and "LEMBUR_KOREKSI_POTONGAN" (deduction). The normal
+//    overtime line of a slip is the line with category "overtime" whose code
+//    is neither of those.
+//  - Expected amounts are never hard-coded. They come from an ORACLE employee
+//    of the same run S whose requests were approved before S was locked: the
+//    delta is oracle LEMBUR minus subject LEMBUR of the same run S (same
+//    salary, same formula).
+//  - "Approved late" / "cancelled late" are made by SQL on overtime_requests
+//    (decided_at / updated_at = now(), after S.lockedAt), the brief's model:
+//    paidSet = approved with decided_at <= S.lockedAt.
+//  - The salary basis for the delta is the one of the period of S.
+//  - Run months: S = 2026-05, T = 06, U = 07, V = 08 (all after the published
+//    overtime formula and statutory tables).
+import { randomUUID } from "node:crypto";
+import { Writable } from "node:stream";
+import { Pool, type PoolClient } from "pg";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
+import { payrollRunIdSchema } from "@starter/shared/hris/payroll";
+import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
+import { FakeObjectStorage } from "@starter/shared/adapters";
+import {
+  createUlid,
+  idr,
+  ulidToUuid,
+  type ScopedTenantContext,
+} from "@starter/shared/core";
+import { createApp } from "../app.ts";
+import { NoopMalwareScanner } from "../services/core-image.ts";
+import { createLogger } from "../lib/logger.ts";
+import {
+  PAYROLL_SEAL_KEY_VERSION,
+  openPayrollValue,
+  sealPayrollAmount,
+} from "../lib/payroll-sealed.ts";
+import { db } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
+import { agent, originHeader, signUp } from "./helpers.ts";
+import {
+  approveSimulatedRun,
+  deleteStatutoryTables,
+  insertDraftRun,
+  insertEmployee,
+  insertPolicy,
+  insertSalary,
+  publishStatutoryTables,
+} from "./payroll-simulate-kit.ts";
+
+const logStream = new Writable({
+  write(_chunk, _encoding, done) {
+    done();
+  },
+});
+const app = createApp({
+  logger: createLogger({ level: "debug", destination: logStream }),
+  storageRuntime: {
+    storage: new FakeObjectStorage(),
+    scanner: new NoopMalwareScanner(),
+    fileSigner: async () => null,
+    hrisDocumentSigner: async () => null,
+  },
+});
+
+const tenant = cafeLegendPlatformFixtures.tenant;
+const outlet = cafeLegendPlatformFixtures.outlets[0];
+const owner = new Pool({
+  connectionString: process.env.STARTER_TEST_DATABASE_URL,
+  max: 3,
+});
+const createdUsers: string[] = [];
+const createdRoles: string[] = [];
+const createdEmployees: string[] = [];
+const createdRuns: string[] = [];
+const createdEntities: string[] = [];
+const createdPolicies: string[] = [];
+
+const key = () => `ot-983-${randomUUID()}`;
+const SALARY = 15_000_000;
+const KOREKSI = "LEMBUR_KOREKSI";
+const POTONGAN = "LEMBUR_KOREKSI_POTONGAN";
+const LAST_DAY = "2026-11-16";
+const OT_PARAMETERS = {
+  monthlyHoursDivisor: 173,
+  tiersByDayType: {
+    workday: [
+      { fromHour: 0, toHour: 1, multiplier: "1.5000" },
+      { fromHour: 1, toHour: null, multiplier: "2.0000" },
+    ],
+    rest_day_6_day_week: [
+      { fromHour: 0, toHour: 7, multiplier: "2.0000" },
+      { fromHour: 7, toHour: 8, multiplier: "3.0000" },
+      { fromHour: 8, toHour: null, multiplier: "4.0000" },
+    ],
+    rest_day_5_day_week: [
+      { fromHour: 0, toHour: 8, multiplier: "2.0000" },
+      { fromHour: 8, toHour: 9, multiplier: "3.0000" },
+      { fromHour: 9, toHour: null, multiplier: "4.0000" },
+    ],
+  },
+  roundingMode: "half_up",
+} as const;
+let formulaId: string;
+
+const tenantScope = (tenantId: string = tenant.id): ScopedTenantContext =>
+  establishScopedTenantContext(
+    establishTenantContext({ tenantId, brandId: null, source: "session" }),
+    { kind: "tenant" },
+  );
+
+async function asTenant<T>(
+  run: (client: PoolClient) => Promise<T>,
+  raw = false,
+): Promise<T> {
+  const client = await owner.connect();
+  try {
+    await client.query("BEGIN");
+    if (raw) await client.query("SET LOCAL session_replication_role = replica");
+    await client.query(
+      "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+      [tenant.id],
+    );
+    const result = await run(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function signedInClient(name: string) {
+  const client = agent(app);
+  await signUp(client, name);
+  const session = await client.get("/api/auth/get-session");
+  const userId = session.body.user.id as string;
+  createdUsers.push(userId);
+  return { client, userId };
+}
+
+async function grantRole(userId: string, permissions: string[]) {
+  const roleId = randomUUID();
+  createdRoles.push(roleId);
+  await asTenant(async (conn) => {
+    await conn.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, permissions, allowed_scope_types)
+       VALUES ($1, $2, $3, false, $4, $5)`,
+      [
+        roleId,
+        tenant.id,
+        `OT983 ${roleId.slice(0, 8)}`,
+        JSON.stringify(permissions),
+        JSON.stringify(["tenant"]),
+      ],
+    );
+    await conn.query(
+      `INSERT INTO role_assignments
+         (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+       VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 minute', $2)`,
+      [tenant.id, userId, roleId],
+    );
+  });
+}
+
+type Client = Awaited<ReturnType<typeof signedInClient>>["client"];
+let hr: Client;
+let lockerUserId: string;
+let approverUserId: string;
+
+let counter = 0;
+const digits = (length: number) => {
+  let tail = "";
+  while (tail.length < length) tail += Math.floor(Math.random() * 1e9);
+  return `${String(++counter).padStart(3, "0")}${tail}`.slice(0, length);
+};
+
+type World = { entityId: string; policyId: string };
+type OtSpec = {
+  date: string;
+  minutes: number;
+  status: "approved" | "pending";
+};
+type Emp = {
+  id: string;
+  name: string;
+  salaryComponentId: string;
+  reqs: string[];
+};
+
+async function makeWorld(): Promise<World> {
+  const world = { entityId: randomUUID(), policyId: randomUUID() };
+  createdEntities.push(world.entityId);
+  createdPolicies.push(world.policyId);
+  await asTenant(async (conn) => {
+    await conn.query(
+      `INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, $3, false)`,
+      [world.entityId, tenant.id, `PT Koreksi Lembur ${++counter}`],
+    );
+    await insertPolicy(conn, tenant.id, world.entityId, world.policyId);
+    await publishStatutoryTables(conn, tenant.id, lockerUserId);
+  });
+  return world;
+}
+
+/** Attendance 'out' log (accepted) plus the overtime request of the day. */
+async function seedOvertime(
+  conn: PoolClient,
+  employeeId: string,
+  spec: OtSpec,
+): Promise<string> {
+  const logId = ulidToUuid(createUlid());
+  await conn.query(
+    `INSERT INTO attendance_logs
+       (id, tenant_id, outlet_id, employee_id, type, method, occurred_at, received_at,
+        validity, flag_reasons, business_date, overtime_minutes, client_event_id,
+        review_status)
+     VALUES ($1, $2, $3, $4, 'out', 'selfie_geo', ($5::date + time '12:00') AT TIME ZONE 'UTC', now(),
+             'valid', '[]'::jsonb, $5::date, $6, $7, 'none')`,
+    [
+      logId,
+      tenant.id,
+      outlet.id,
+      employeeId,
+      spec.date,
+      spec.minutes,
+      `ot983-${logId}`,
+    ],
+  );
+  const inserted = await conn.query<{ id: string }>(
+    `INSERT INTO overtime_requests
+       (tenant_id, outlet_id, employee_id, formula_id, date, minutes, day_type, reason,
+        status, requested_by, decided_by, decided_at)
+     VALUES ($1, $2, $3, $4, $5::date, $6, 'workday', 'Koreksi lembur 983', $7::varchar, $8,
+             CASE WHEN $7::varchar = 'approved' THEN $9::text END,
+             CASE WHEN $7::varchar = 'approved' THEN now() END)
+     RETURNING id`,
+    [
+      tenant.id,
+      outlet.id,
+      employeeId,
+      formulaId,
+      spec.date,
+      spec.minutes,
+      spec.status,
+      lockerUserId,
+      approverUserId,
+    ],
+  );
+  return inserted.rows[0]!.id;
+}
+
+/**
+ * An active pkwtt employee TK/0 with NPWP and bank account on the base salary
+ * plus overtime requests (all dated in the period of S = May 2026).
+ */
+async function makeEmployee(
+  world: World,
+  reqs: readonly OtSpec[] = [],
+): Promise<Emp> {
+  const emp: Emp = {
+    id: randomUUID(),
+    name: `Karyawan Koreksi ${++counter}`,
+    salaryComponentId: "",
+    reqs: [],
+  };
+  createdEmployees.push(emp.id);
+  await asTenant(async (conn) => {
+    await insertEmployee(conn, {
+      tenantId: tenant.id,
+      outletId: outlet.id,
+      entityId: world.entityId,
+      id: emp.id,
+      name: emp.name,
+      joinDate: "2025-03-01",
+      ptkpStatus: "TK/0",
+      taxScheme: "gross",
+    });
+    emp.salaryComponentId = await insertSalary(conn, {
+      tenantId: tenant.id,
+      employeeId: emp.id,
+      amount: SALARY,
+      scheme: "gross",
+      createdBy: lockerUserId,
+    });
+    for (const spec of reqs)
+      emp.reqs.push(await seedOvertime(conn, emp.id, spec));
+  });
+  const put = await hr
+    .put(`/api/hris/employees/${emp.id}/pii`)
+    .set(originHeader)
+    .send({
+      nik: digits(16),
+      npwp: digits(15),
+      bankAccount: digits(12),
+      idempotencyKey: key(),
+    });
+  expect(put.status, JSON.stringify(put.body)).toBe(200);
+  return emp;
+}
+
+/** A new salary row of the employee's base-salary component from a date. */
+async function setSalaryFrom(emp: Emp, amount: number, effectiveFrom: string) {
+  const rowId = randomUUID();
+  await asTenant((conn) =>
+    conn.query(
+      `INSERT INTO employee_pay_components (id, tenant_id, employee_id, component_id,
+         amount_encrypted, pii_key_version, effective_from, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [
+        rowId,
+        tenant.id,
+        emp.id,
+        emp.salaryComponentId,
+        sealPayrollAmount(idr(amount), {
+          tenantId: tenant.id,
+          table: "employee_pay_components",
+          rowId,
+          field: "amount",
+        }),
+        PAYROLL_SEAL_KEY_VERSION,
+        effectiveFrom,
+        lockerUserId,
+      ],
+    ),
+  );
+}
+
+// ---- overtime request changes after the source run was locked --------------
+
+/** Pending -> approved, decided now (after S.lockedAt). */
+const approveLate = (requestId: string) =>
+  asTenant(
+    (conn) =>
+      conn.query(
+        `UPDATE overtime_requests
+            SET status = 'approved', decided_by = $3, decided_at = now(), updated_at = now()
+          WHERE tenant_id = $1 AND id = $2`,
+        [tenant.id, requestId, approverUserId],
+      ),
+    true,
+  );
+
+/** approved/pending -> cancelled now (terminal). */
+const cancelLate = (requestId: string) =>
+  asTenant(
+    (conn) =>
+      conn.query(
+        `UPDATE overtime_requests SET status = 'cancelled', updated_at = now()
+          WHERE tenant_id = $1 AND id = $2`,
+        [tenant.id, requestId],
+      ),
+    true,
+  );
+
+/** A fresh approved request (decided now) for a date: "approved again". */
+const approveAgain = (empId: string, spec: Omit<OtSpec, "status">) =>
+  asTenant((conn) =>
+    seedOvertime(conn, empId, { ...spec, status: "approved" }),
+  );
+
+// ---- runs ---------------------------------------------------------------
+
+type RunDates = { periodStart: string; periodEnd: string; payDate: string };
+
+/** Month `m` (1-12) of `year`, paid on the 28th. */
+const monthDates = (m: number, year = 2026): RunDates => {
+  const mm = String(m).padStart(2, "0");
+  const last = new Date(Date.UTC(year, m, 0)).getUTCDate();
+  return {
+    periodStart: `${year}-${mm}-01`,
+    periodEnd: `${year}-${mm}-${last}`,
+    payDate: `${year}-${mm}-28`,
+  };
+};
+const S_MONTH = 5;
+const T_MONTH = 6;
+const U_MONTH = 7;
+const V_MONTH = 8;
+
+async function draftRun(world: World, dates: RunDates): Promise<string> {
+  const runId = randomUUID();
+  createdRuns.push(runId);
+  await asTenant((conn) =>
+    insertDraftRun(conn, {
+      tenantId: tenant.id,
+      runId,
+      entityId: world.entityId,
+      policyId: world.policyId,
+      ...dates,
+    }),
+  );
+  return runId;
+}
+
+async function simulateRun(runId: string) {
+  const { simulatePayrollRunInTransaction } =
+    await import("../services/payroll-run-simulate.service.ts");
+  return withTenant(db, tenantScope(), (tx) =>
+    simulatePayrollRunInTransaction(
+      tx,
+      tenantScope(),
+      lockerUserId,
+      payrollRunIdSchema.parse(runId),
+    ),
+  );
+}
+
+async function lockRun(runId: string) {
+  const { lockPayrollRunInTransaction } =
+    await import("../services/payroll-run-lock.service.ts");
+  return withTenant(db, tenantScope(), (tx) =>
+    lockPayrollRunInTransaction(tx, tenantScope(), lockerUserId, {
+      payrollRunId: payrollRunIdSchema.parse(runId),
+    }),
+  );
+}
+
+async function reverseRun(runId: string) {
+  const {
+    requestPayrollRunReversalInTransaction,
+    decidePayrollRunReversalInTransaction,
+  } = await import("../services/payroll-run-reversal.service.ts");
+  const id = payrollRunIdSchema.parse(runId);
+  await withTenant(db, tenantScope(), (tx) =>
+    requestPayrollRunReversalInTransaction(
+      tx,
+      tenantScope(),
+      lockerUserId,
+      id,
+      "Salah hitung, dibatalkan",
+    ),
+  );
+  await withTenant(db, tenantScope(), (tx) =>
+    decidePayrollRunReversalInTransaction(
+      tx,
+      tenantScope(),
+      approverUserId,
+      id,
+      "approve",
+    ),
+  );
+}
+
+const scalar = (sqlText: string, params: unknown[]) =>
+  asTenant(async (conn) => (await conn.query(sqlText, params)).rows[0]);
+
+const runStatus = async (runId: string) =>
+  (
+    await scalar(
+      "SELECT status FROM payroll_runs WHERE tenant_id = $1 AND id = $2",
+      [tenant.id, runId],
+    )
+  ).status as string;
+
+/** draft -> simulated -> approved (not yet locked). */
+async function approvedRun(world: World, month: number) {
+  const runId = await draftRun(world, monthDates(month));
+  await simulateRun(runId);
+  await asTenant((conn) => approveSimulatedRun(conn, runId));
+  return runId;
+}
+
+async function lockedRun(world: World, month: number) {
+  const runId = await approvedRun(world, month);
+  await lockRun(runId);
+  expect(await runStatus(runId)).toBe("locked");
+  return runId;
+}
+
+async function failure(promise: Promise<unknown>) {
+  try {
+    await promise;
+  } catch (error) {
+    return error as { status?: number; message: string };
+  }
+  throw new Error("Expected a failure");
+}
+
+// ---- payslip oracle -----------------------------------------------------
+
+type Line = {
+  componentCode: string;
+  category: string;
+  kind: string;
+  amountIdr: number;
+  taxable: boolean;
+};
+type Calc = { netIdr: number; lines: Line[] };
+
+const openSlip = (row: {
+  id: string;
+  calculation_encrypted: Buffer;
+  pii_key_version: number;
+}) =>
+  JSON.parse(
+    openPayrollValue(
+      row.calculation_encrypted,
+      {
+        tenantId: tenant.id,
+        table: "payslips",
+        rowId: row.id,
+        field: "calculation",
+      },
+      row.pii_key_version,
+    ),
+  ) as Calc;
+
+/** The sealed calculation of the employee's slip in a run, if there is one. */
+async function slipOf(runId: string, emp: Emp): Promise<Calc | undefined> {
+  const rows = await asTenant(async (conn) =>
+    (
+      await conn.query(
+        `SELECT id, calculation_encrypted, pii_key_version
+           FROM payslips
+          WHERE tenant_id = $1 AND payroll_run_id = $2 AND employee_id = $3`,
+        [tenant.id, runId, emp.id],
+      )
+    ).rows.map(openSlip),
+  );
+  return rows[0];
+}
+
+const codeSum = (calc: Calc | undefined, code: string) =>
+  (calc?.lines ?? [])
+    .filter((l) => l.componentCode === code)
+    .reduce((total, l) => total + l.amountIdr, 0);
+const koreksiOf = (calc: Calc | undefined) => codeSum(calc, KOREKSI);
+const potonganOf = (calc: Calc | undefined) => codeSum(calc, POTONGAN);
+/** The normal LEMBUR of a slip (not a correction line). */
+const overtimeOf = (calc: Calc | undefined) =>
+  (calc?.lines ?? [])
+    .filter(
+      (l) =>
+        l.category === "overtime" &&
+        l.componentCode !== KOREKSI &&
+        l.componentCode !== POTONGAN,
+    )
+    .reduce((total, l) => total + l.amountIdr, 0);
+
+const A: OtSpec = { date: "2026-05-05", minutes: 60, status: "approved" };
+const B_PENDING: OtSpec = {
+  date: "2026-05-06",
+  minutes: 60,
+  status: "pending",
+};
+const B_APPROVED: OtSpec = { ...B_PENDING, status: "approved" };
+
+/**
+ * Employee E (A approved, B pending) and oracle O (A and B approved) of the
+ * same run S: delta = LEMBUR(O) - LEMBUR(E) is what B adds once approved.
+ */
+async function lateApprovalWorld() {
+  const world = await makeWorld();
+  const subject = await makeEmployee(world, [A, B_PENDING]);
+  const oracle = await makeEmployee(world, [A, B_APPROVED]);
+  return { world, subject, oracle };
+}
+
+async function deltaOfS(sourceRun: string, subject: Emp, oracle: Emp) {
+  const subjectSlip = await slipOf(sourceRun, subject);
+  const oracleSlip = await slipOf(sourceRun, oracle);
+  expect(
+    overtimeOf(subjectSlip),
+    "S pays the approved request",
+  ).toBeGreaterThan(0);
+  const delta = overtimeOf(oracleSlip) - overtimeOf(subjectSlip);
+  expect(delta, "the late request adds overtime pay").toBeGreaterThan(0);
+  return { delta, paidInS: overtimeOf(subjectSlip) };
+}
+
+// ---- offboarding helpers (HTTP, like payroll-loan-disburse-offboarding-972) --
+
+const postAs = (path: string, body: object = {}) =>
+  hr.post(path).set(originHeader).send(body);
+
+async function openExit(employeeId: string): Promise<string> {
+  const created = await postAs(
+    `/api/hris/employees/${employeeId}/offboarding`,
+    {
+      exitType: "resignation",
+      reason: "Akhir hubungan kerja uji 983.",
+      lastWorkingDate: "2034-09-30",
+    },
+  );
+  expect(created.status, JSON.stringify(created.body)).toBe(201);
+  return created.body.data.id as string;
+}
+
+async function revokedExit(employeeId: string): Promise<string> {
+  const id = await openExit(employeeId);
+  await asTenant((conn) =>
+    conn.query(
+      "UPDATE hris_offboardings SET last_working_date = $3 WHERE tenant_id = $1 AND id = $2",
+      [tenant.id, id, LAST_DAY],
+    ),
+  );
+  const revoked = await postAs(`/api/hris/offboardings/${id}/revoke-access`);
+  expect(revoked.status, JSON.stringify(revoked.body)).toBe(200);
+  return id;
+}
+
+async function completedExit(employeeId: string): Promise<string> {
+  const id = await revokedExit(employeeId);
+  const listed = await hr.get(
+    `/api/hris/employees/${employeeId}/checklist-tasks?limit=100`,
+  );
+  expect(listed.status, JSON.stringify(listed.body)).toBe(200);
+  for (const task of listed.body.data as { id: string; status: string }[]) {
+    if (task.status === "done" || task.status === "waived") continue;
+    const waived = await postAs(
+      `/api/hris/checklist-tasks/${task.id}/actions`,
+      { action: "waive", reason: "Uji koreksi lembur 983" },
+    );
+    expect(waived.status, JSON.stringify(waived.body)).toBeLessThan(300);
+  }
+  const done = await postAs(`/api/hris/offboardings/${id}/complete`);
+  expect(done.status, JSON.stringify(done.body)).toBe(200);
+  return id;
+}
+
+beforeAll(async () => {
+  if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
+    throw new Error("Requires the disposable test database");
+  const lock = await signedInClient("OT983 locker");
+  await grantRole(lock.userId, ["payroll.view", "payroll.run", "payroll.lock"]);
+  lockerUserId = lock.userId;
+  const approver = await signedInClient("OT983 approver");
+  await grantRole(approver.userId, ["payroll.view", "payroll.cancel.approve"]);
+  approverUserId = approver.userId;
+  const hrUser = await signedInClient("OT983 HR");
+  await grantRole(hrUser.userId, ["hr.employee.manage", "hr.employee.view"]);
+  hr = hrUser.client;
+  // No tenant PPh 21 policy version: the default policy applies.
+  await asTenant((conn) =>
+    conn.query("DELETE FROM payroll_pph21_policies WHERE tenant_id = $1", [
+      tenant.id,
+    ]),
+  );
+  formulaId = randomUUID();
+  await asTenant((conn) =>
+    conn.query(
+      `INSERT INTO overtime_formulas
+         (id, tenant_id, version, effective_from, status, parameters, rest_day_type,
+          legal_basis, published_at, published_by, created_by)
+       VALUES ($1, $2, $3, '2026-01-01', 'published', $4, 'rest_day_6_day_week',
+               'Koreksi lembur 983 fixture', now(), $5, $5)`,
+      [
+        formulaId,
+        tenant.id,
+        1_000_000 + Math.floor(Math.random() * 1_000_000_000),
+        JSON.stringify(OT_PARAMETERS),
+        lockerUserId,
+      ],
+    ),
+  );
+});
+
+afterAll(async () => {
+  // The ledger of the feature (name from the brief); absent before the feature.
+  try {
+    await asTenant(async (conn) => {
+      if (
+        (
+          await conn.query("SELECT to_regclass($1) AS t", [
+            "public.payroll_overtime_corrections",
+          ])
+        ).rows[0].t !== null
+      )
+        await conn.query(
+          "DELETE FROM payroll_overtime_corrections WHERE tenant_id = $1",
+          [tenant.id],
+        );
+    }, true);
+  } catch {
+    // cleanup only
+  }
+  await asTenant(async (conn) => {
+    for (const table of [
+      "payroll_run_results",
+      "payroll_run_month_priors",
+      "payslip_bank_snapshots",
+    ])
+      if (
+        (await conn.query("SELECT to_regclass($1) AS t", [`public.${table}`]))
+          .rows[0].t !== null
+      )
+        await conn.query(
+          `DELETE FROM ${table} WHERE tenant_id = $1 AND payroll_run_id = ANY($2)`,
+          [tenant.id, createdRuns],
+        );
+    await conn.query(
+      "DELETE FROM bank_transfer_files WHERE tenant_id = $1 AND payroll_run_id = ANY($2)",
+      [tenant.id, createdRuns],
+    );
+    await conn.query(
+      "DELETE FROM payslips WHERE tenant_id = $1 AND payroll_run_id = ANY($2)",
+      [tenant.id, createdRuns],
+    );
+    await conn.query(
+      "DELETE FROM hris_idempotency WHERE tenant_id = $1 AND key LIKE 'ot-983-%'",
+      [tenant.id],
+    );
+    await conn.query(
+      "DELETE FROM payroll_runs WHERE tenant_id = $1 AND id = ANY($2)",
+      [tenant.id, createdRuns],
+    );
+    await conn.query("DELETE FROM payroll_policies WHERE id = ANY($1)", [
+      createdPolicies,
+    ]);
+    await deleteStatutoryTables(conn, tenant.id);
+    await conn.query(
+      "DELETE FROM overtime_requests WHERE tenant_id = $1 AND employee_id = ANY($2)",
+      [tenant.id, createdEmployees],
+    );
+    await conn.query(
+      "DELETE FROM attendance_logs WHERE tenant_id = $1 AND employee_id = ANY($2)",
+      [tenant.id, createdEmployees],
+    );
+    await conn.query(
+      "DELETE FROM overtime_formulas WHERE tenant_id = $1 AND id = $2",
+      [tenant.id, formulaId],
+    );
+    await conn.query(
+      "DELETE FROM employee_pay_components WHERE tenant_id = $1 AND employee_id = ANY($2)",
+      [tenant.id, createdEmployees],
+    );
+    await conn.query(
+      "DELETE FROM pay_components WHERE tenant_id = $1 AND code LIKE 'SM\\_%'",
+      [tenant.id],
+    );
+    await conn.query(
+      "DELETE FROM hris_offboardings WHERE tenant_id = $1 AND employee_id = ANY($2::uuid[])",
+      [tenant.id, createdEmployees],
+    );
+    await conn.query(
+      "DELETE FROM employment_contracts WHERE tenant_id = $1 AND employee_id = ANY($2)",
+      [tenant.id, createdEmployees],
+    );
+    await conn.query("DELETE FROM employees WHERE id = ANY($1)", [
+      createdEmployees,
+    ]);
+    await conn.query("DELETE FROM legal_entities WHERE id = ANY($1)", [
+      createdEntities,
+    ]);
+    await conn.query(
+      "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = ANY($2)",
+      [tenant.id, createdUsers],
+    );
+    await conn.query(
+      "DELETE FROM roles WHERE tenant_id = $1 AND id = ANY($2)",
+      [tenant.id, createdRoles],
+    );
+  }, true);
+  await owner.query('DELETE FROM "user" WHERE id = ANY($1)', [createdUsers]);
+  await owner.end();
+});
+
+describe("legend-72nod: overtime correction for frozen periods", () => {
+  it("[late-approval] overtime approved after S was locked is paid once in T as LEMBUR_KOREKSI and never again", async () => {
+    const { world, subject, oracle } = await lateApprovalWorld();
+    const s = await lockedRun(world, S_MONTH);
+    const { delta } = await deltaOfS(s, subject, oracle);
+    await approveLate(subject.reqs[1]!);
+
+    const t = await lockedRun(world, T_MONTH);
+
+    const slipT = await slipOf(t, subject);
+    expect(slipT, "subject has a slip in T").toBeDefined();
+    expect(koreksiOf(slipT)).toBe(delta);
+    const line = slipT!.lines.find((l) => l.componentCode === KOREKSI)!;
+    expect(line).toMatchObject({ kind: "earning", taxable: true });
+    expect(potonganOf(slipT)).toBe(0);
+    // The oracle was paid in S already: nothing to correct.
+    expect(koreksiOf(await slipOf(t, oracle))).toBe(0);
+    expect(potonganOf(await slipOf(t, oracle))).toBe(0);
+
+    // After T is locked the correction is settled: not in the next runs.
+    const u = await lockedRun(world, U_MONTH);
+    expect(koreksiOf(await slipOf(u, subject))).toBe(0);
+    expect(potonganOf(await slipOf(u, subject))).toBe(0);
+  }, 600_000);
+
+  it("[repeat-replaced] a cancelled request replaced by an identical approved one pays the hours only once", async () => {
+    const { world, subject, oracle } = await lateApprovalWorld();
+    const s = await lockedRun(world, S_MONTH);
+    const { delta } = await deltaOfS(s, subject, oracle);
+    await approveLate(subject.reqs[1]!);
+    const t = await lockedRun(world, T_MONTH);
+    expect(koreksiOf(await slipOf(t, subject))).toBe(delta);
+
+    // The approved request is cancelled and the same day is approved again.
+    await cancelLate(subject.reqs[1]!);
+    await approveAgain(subject.id, { date: B_PENDING.date, minutes: 60 });
+
+    const u = await lockedRun(world, U_MONTH);
+    const v = await lockedRun(world, V_MONTH);
+    for (const run of [u, v]) {
+      const slip = await slipOf(run, subject);
+      expect(koreksiOf(slip), "no second payment of the same hours").toBe(0);
+      expect(potonganOf(slip), "and nothing taken back either").toBe(0);
+    }
+  }, 600_000);
+
+  it("[repeat-cancelled] approve then cancel pays back at most what was paid; total settled never exceeds the delta", async () => {
+    const { world, subject, oracle } = await lateApprovalWorld();
+    const s = await lockedRun(world, S_MONTH);
+    const { delta, paidInS } = await deltaOfS(s, subject, oracle);
+    await approveLate(subject.reqs[1]!);
+    const t = await lockedRun(world, T_MONTH);
+    expect(koreksiOf(await slipOf(t, subject))).toBe(delta);
+
+    await cancelLate(subject.reqs[1]!);
+    const u = await lockedRun(world, U_MONTH);
+    const v = await lockedRun(world, V_MONTH);
+    const slipU = await slipOf(u, subject);
+    const slipV = await slipOf(v, subject);
+    const taken = potonganOf(slipU) + potonganOf(slipV);
+    expect(potonganOf(slipU), "the cancellation is deducted").toBeGreaterThan(
+      0,
+    );
+    expect(koreksiOf(slipU) + koreksiOf(slipV)).toBe(0);
+    expect(taken, "never more than was paid").toBeLessThanOrEqual(delta);
+    expect(
+      taken,
+      "never more than LEMBUR of the slip of S",
+    ).toBeLessThanOrEqual(paidInS);
+    // Net settled over T, U, V never goes below zero or above the delta.
+    const net = delta - taken;
+    expect(net).toBeGreaterThanOrEqual(0);
+    expect(net).toBeLessThanOrEqual(delta);
+  }, 600_000);
+
+  it("[cancel-after-lock] overtime cancelled after S was locked is deducted in T, once, as LEMBUR_KOREKSI_POTONGAN", async () => {
+    const world = await makeWorld();
+    const subject = await makeEmployee(world, [A]);
+    const s = await lockedRun(world, S_MONTH);
+    const paidInS = overtimeOf(await slipOf(s, subject));
+    expect(paidInS).toBeGreaterThan(0);
+    await cancelLate(subject.reqs[0]!);
+
+    const t = await lockedRun(world, T_MONTH);
+
+    const slipT = await slipOf(t, subject);
+    expect(slipT).toBeDefined();
+    expect(potonganOf(slipT)).toBe(paidInS);
+    const line = slipT!.lines.find((l) => l.componentCode === POTONGAN)!;
+    expect(line.kind).toBe("deduction");
+    expect(koreksiOf(slipT)).toBe(0);
+
+    const u = await lockedRun(world, U_MONTH);
+    expect(potonganOf(await slipOf(u, subject))).toBe(0);
+    expect(koreksiOf(await slipOf(u, subject))).toBe(0);
+  }, 600_000);
+
+  it("[cancel-capped] the deduction is limited by the remaining wage; the rest stays outstanding and is deducted later, never above LEMBUR of S", async () => {
+    const world = await makeWorld();
+    const subject = await makeEmployee(world, [A]);
+    const s = await lockedRun(world, S_MONTH);
+    const paidInS = overtimeOf(await slipOf(s, subject));
+    expect(paidInS).toBeGreaterThan(0);
+    await cancelLate(subject.reqs[0]!);
+    // Wage of June is far below the amount to take back; July is normal again.
+    const tiny = 100_000;
+    expect(tiny).toBeLessThan(paidInS);
+    await setSalaryFrom(subject, tiny, monthDates(T_MONTH).periodStart);
+    await setSalaryFrom(subject, SALARY, monthDates(U_MONTH).periodStart);
+
+    const t = await lockedRun(world, T_MONTH);
+    const slipT = await slipOf(t, subject);
+    const firstCut = potonganOf(slipT);
+    expect(firstCut, "something is deducted, not ignored").toBeGreaterThan(0);
+    expect(firstCut, "but not more than the wage allows").toBeLessThan(paidInS);
+    expect(firstCut).toBeLessThanOrEqual(tiny);
+    expect(slipT!.netIdr, "net pay never negative").toBeGreaterThanOrEqual(0);
+
+    const u = await lockedRun(world, U_MONTH);
+    const secondCut = potonganOf(await slipOf(u, subject));
+    expect(secondCut, "the rest follows in the next run").toBe(
+      paidInS - firstCut,
+    );
+
+    const v = await lockedRun(world, V_MONTH);
+    expect(potonganOf(await slipOf(v, subject))).toBe(0);
+    expect(firstCut + secondCut).toBeLessThanOrEqual(paidInS);
+  }, 600_000);
+
+  it("[offboarding-held] open, revoked and completed offboarding employees get no correction line; a normal employee does", async () => {
+    const world = await makeWorld();
+    const oracle = await makeEmployee(world, [A, B_APPROVED]);
+    const control = await makeEmployee(world, [A, B_PENDING]);
+    const open = await makeEmployee(world, [A, B_PENDING]);
+    const revoked = await makeEmployee(world, [A, B_PENDING]);
+    const completed = await makeEmployee(world, [A, B_PENDING]);
+    const openCancel = await makeEmployee(world, [A]);
+    const plainCancel = await makeEmployee(world, [A]);
+    const s = await lockedRun(world, S_MONTH);
+    const { delta } = await deltaOfS(s, control, oracle);
+
+    await openExit(open.id);
+    await revokedExit(revoked.id);
+    await completedExit(completed.id);
+    await openExit(openCancel.id);
+    for (const e of [control, open, revoked, completed])
+      await approveLate(e.reqs[1]!);
+    await cancelLate(openCancel.reqs[0]!);
+    await cancelLate(plainCancel.reqs[0]!);
+
+    const t = await lockedRun(world, T_MONTH);
+
+    // Positive controls: the feature works for a normal employee.
+    expect(koreksiOf(await slipOf(t, control))).toBe(delta);
+    expect(potonganOf(await slipOf(t, plainCancel))).toBeGreaterThan(0);
+    // Held: no automatic line of any kind.
+    for (const held of [open, revoked, completed, openCancel]) {
+      const slip = await slipOf(t, held);
+      expect(koreksiOf(slip), `${held.name} no LEMBUR_KOREKSI`).toBe(0);
+      expect(potonganOf(slip), `${held.name} no POTONGAN`).toBe(0);
+    }
+    // Still held in the next run (manual handling only).
+    const u = await lockedRun(world, U_MONTH);
+    for (const held of [open, revoked, completed, openCancel]) {
+      const slip = await slipOf(u, held);
+      expect(koreksiOf(slip)).toBe(0);
+      expect(potonganOf(slip)).toBe(0);
+    }
+  }, 900_000);
+
+  it("[concurrent-drafts] two draft runs with the same correction: the second lock is refused with 409, nobody is paid twice", async () => {
+    const { world, subject, oracle } = await lateApprovalWorld();
+    const s = await lockedRun(world, S_MONTH);
+    const { delta } = await deltaOfS(s, subject, oracle);
+    await approveLate(subject.reqs[1]!);
+
+    // Both drafts are simulated before either is locked: both carry the line.
+    const t1 = await approvedRun(world, T_MONTH);
+    const t2 = await approvedRun(world, U_MONTH);
+
+    await lockRun(t1);
+    expect(await runStatus(t1)).toBe("locked");
+    expect(koreksiOf(await slipOf(t1, subject))).toBe(delta);
+
+    const refused = await failure(lockRun(t2));
+    expect(refused.status, refused.message).toBe(409);
+    expect(await runStatus(t2), "the run is not locked").not.toBe("locked");
+  }, 600_000);
+
+  it("[reversal] reversing T gives the outstanding amount back; the next run pays it again, once", async () => {
+    const { world, subject, oracle } = await lateApprovalWorld();
+    const s = await lockedRun(world, S_MONTH);
+    const { delta } = await deltaOfS(s, subject, oracle);
+    await approveLate(subject.reqs[1]!);
+    const t = await lockedRun(world, T_MONTH);
+    expect(koreksiOf(await slipOf(t, subject))).toBe(delta);
+
+    await reverseRun(t);
+    expect(await runStatus(t)).toBe("reversed");
+
+    const u = await lockedRun(world, U_MONTH);
+    expect(koreksiOf(await slipOf(u, subject))).toBe(delta);
+    const v = await lockedRun(world, V_MONTH);
+    expect(koreksiOf(await slipOf(v, subject)), "and only once").toBe(0);
+  }, 600_000);
+
+  it("[salary-basis] a salary change never enters the delta: a retroactive raise alone gives no line, a raise in T does not scale the delta", async () => {
+    const world = await makeWorld();
+    const oracle = await makeEmployee(world, [A, B_APPROVED]);
+    const control = await makeEmployee(world, [A, B_PENDING]);
+    const raisedLater = await makeEmployee(world, [A, B_PENDING]);
+    const raisedRetro = await makeEmployee(world, [A]);
+    const s = await lockedRun(world, S_MONTH);
+    const { delta } = await deltaOfS(s, control, oracle);
+
+    await approveLate(control.reqs[1]!);
+    await approveLate(raisedLater.reqs[1]!);
+    // Retroactive raise (effective inside S) without any request change.
+    await setSalaryFrom(raisedRetro, SALARY * 2, "2026-05-01");
+    // Raise effective from T: S is still computed on its own basis.
+    await setSalaryFrom(
+      raisedLater,
+      SALARY * 2,
+      monthDates(T_MONTH).periodStart,
+    );
+
+    const t = await lockedRun(world, T_MONTH);
+
+    expect(koreksiOf(await slipOf(t, control)), "positive control").toBe(delta);
+    expect(koreksiOf(await slipOf(t, raisedLater))).toBe(delta);
+    const retro = await slipOf(t, raisedRetro);
+    expect(retro, "the raised employee is paid in T").toBeDefined();
+    expect(koreksiOf(retro)).toBe(0);
+    expect(potonganOf(retro)).toBe(0);
+  }, 600_000);
+});
