@@ -53,8 +53,21 @@
 //                         one loan: locking the second one is 409 (PAYROLL_RUN_RESULT_STALE, or
 //                         PAYROLL_PPH21_MONTH_STALE when the first run is already locked),
 //                         the balance does not move (the monthly cap is also enforced at lock).
+// 18. [offboarding-guard-*] CTO decision P1: completing an offboarding (POST
+//                         /api/hris/offboardings/:id/complete, the step that freezes the final
+//                         settlement snapshot) is 409 PAYROLL_DEDUCTION_PENDING while the employee
+//                         has a payroll_loan_deductions row in a run that is draft, simulated,
+//                         hr_approved or approved. The offboarding stays `revoked`, no snapshot is
+//                         stored. Once the run is locked the completion passes and the snapshot
+//                         holds the balance after the locked deduction, pending 0. A reversed run
+//                         (rows deleted, balance restored) holds nothing back.
 //
 // ASSUMPTIONS (contract silent; contest if wrong)
+//  - [offboarding-guard-*]: the employee leaves on a day already past (2026-11-16, set by SQL
+//    like hris-offboarding-clearance.test.ts), is cleared with revoke-access, every open
+//    checklist task is waived, then complete is called. The guard is asked at complete time,
+//    not at revoke-access. A run left in `draft` still keeps its raw deduction rows here
+//    (returnRunToDraft of the kit does not delete them); the guard looks at the rows.
 //  - The kasbon policy row (max_deduction_of_net_pay_bp) is the only switch: no row
 //    or bp 0 means nothing is deducted (design D7).
 //  - A second lock of a locked run is any 409 (the exact code is not asserted).
@@ -95,7 +108,10 @@ import {
   insertEmployee,
   insertPolicy,
   insertSalary,
+  KIT_FINANCE_APPROVER,
+  KIT_HR_APPROVER,
   publishStatutoryTables,
+  returnRunToDraft,
 } from "./payroll-simulate-kit.ts";
 
 const logStream = new Writable({
@@ -1674,5 +1690,227 @@ describe("final settlement summary and the kasbon of an unlocked run", () => {
       "never negative",
     ).toBeGreaterThanOrEqual(0);
     expect(await outstandingOf(disbursed), "no money moved").toBe(60_000);
+  }, 300_000);
+});
+
+// ---- 18. [offboarding-guard] completing the exit waits for the payroll deduction --
+
+const GUARD_LAST_DAY = "2026-11-16";
+const GUARD_CODE = "PAYROLL_DEDUCTION_PENDING";
+
+describe("completing an offboarding while a payroll run still holds the kasbon", () => {
+  let hr: Awaited<ReturnType<typeof signedInUser>>;
+  beforeAll(async () => {
+    hr = await signedInUser("Run loans exit HR");
+    await grantRole(hr.userId, ["hr.employee.manage", "payroll.view"]);
+  });
+
+  const postAs = (path: string, body: object = {}) =>
+    hr.client.post(path).set(originHeader).send(body);
+
+  /** Create, move the last day into the past, revoke access: status `revoked`. */
+  async function revokedExit(employeeId: string): Promise<string> {
+    const created = await postAs(
+      `/api/hris/employees/${employeeId}/offboarding`,
+      {
+        exitType: "resignation",
+        reason: "Akhir hubungan kerja uji kasbon.",
+        lastWorkingDate: "2034-09-30",
+      },
+    );
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const id = created.body.data.id as string;
+    await asTenant((conn) =>
+      conn.query(
+        "UPDATE hris_offboardings SET last_working_date = $3 WHERE tenant_id = $1 AND id = $2",
+        [tenant.id, id, GUARD_LAST_DAY],
+      ),
+    );
+    const revoked = await postAs(`/api/hris/offboardings/${id}/revoke-access`);
+    expect(revoked.status, JSON.stringify(revoked.body)).toBe(200);
+    expect(revoked.body.data.status).toBe("revoked");
+    return id;
+  }
+
+  /** Waive every open checklist task (HR may), then ask to complete. */
+  async function tryComplete(offboardingId: string, employeeId: string) {
+    const listed = await hr.client.get(
+      `/api/hris/employees/${employeeId}/checklist-tasks?limit=100`,
+    );
+    expect(listed.status, JSON.stringify(listed.body)).toBe(200);
+    for (const task of listed.body.data as { id: string; status: string }[]) {
+      if (task.status === "done" || task.status === "waived") continue;
+      const waived = await postAs(
+        `/api/hris/checklist-tasks/${task.id}/actions`,
+        {
+          action: "waive",
+          reason: "Uji penjaga potongan kasbon",
+        },
+      );
+      expect(waived.status, JSON.stringify(waived.body)).toBeLessThan(300);
+    }
+    return postAs(`/api/hris/offboardings/${offboardingId}/complete`);
+  }
+
+  async function exitRow(offboardingId: string) {
+    const row = await scalar(
+      `SELECT status, completed_at, settlement_snapshot
+         FROM hris_offboardings WHERE tenant_id = $1 AND id = $2`,
+      [tenant.id, offboardingId],
+    );
+    return {
+      status: row.status as string,
+      completedAt: row.completed_at as string | null,
+      snapshot: row.settlement_snapshot as unknown,
+    };
+  }
+
+  const expectNotCompleted = async (offboardingId: string, stage: string) => {
+    const row = await exitRow(offboardingId);
+    expect(row.status, `${stage}: offboarding stays revoked`).toBe("revoked");
+    expect(row.completedAt, `${stage}: no completion time`).toBeNull();
+    expect(row.snapshot, `${stage}: no settlement snapshot`).toBeNull();
+  };
+
+  it("[offboarding-guard-pending] 409 PAYROLL_DEDUCTION_PENDING while the deduction sits in a draft, simulated, hr_approved or approved run; the offboarding stays revoked and no snapshot is stored", async () => {
+    const world = await makeWorld();
+    const emp = await makeEmployee(world);
+    const loan = await seedLoan(emp.id); // 1.000.000, installment 100.000
+    const runId = await draftRun(world, NOV);
+    await simulateRun(runId);
+    expect((await rowsOf(runId)).byLoan).toEqual({ [loan]: 100_000 });
+    const exitId = await revokedExit(emp.id);
+
+    const refuse = async (stage: string) => {
+      expect(
+        (await rowsOf(runId)).sum,
+        `${stage}: the run still holds the deduction`,
+      ).toBe(100_000);
+      expect(await runStatus(runId)).toBe(stage);
+      const refused = await tryComplete(exitId, emp.id);
+      expect(refused.status, `${stage}: ${JSON.stringify(refused.body)}`).toBe(
+        409,
+      );
+      expect(refused.body.error.code, stage).toBe(GUARD_CODE);
+      await expectNotCompleted(exitId, stage);
+      expect(await outstandingOf(loan), `${stage}: no money moved`).toBe(
+        1_000_000,
+      );
+    };
+
+    await refuse("simulated");
+    await asTenant((conn) =>
+      conn.query(
+        `UPDATE payroll_runs SET status = 'hr_approved', approved_by_hr = $2, approved_by_hr_at = now()
+          WHERE id = $1`,
+        [runId, KIT_HR_APPROVER],
+      ),
+    );
+    await refuse("hr_approved");
+    await asTenant((conn) =>
+      conn.query(
+        `UPDATE payroll_runs SET status = 'approved', approved_by_finance = $2, approved_by_finance_at = now()
+          WHERE id = $1`,
+        [runId, KIT_FINANCE_APPROVER],
+      ),
+    );
+    await refuse("approved");
+    await asTenant((conn) => returnRunToDraft(conn, runId));
+    await refuse("draft");
+
+    const summary = await hr.client.get(
+      `/api/hris/offboardings/${exitId}/settlement`,
+    );
+    expect(summary.status, JSON.stringify(summary.body)).toBe(200);
+    expect(summary.body.data.frozen, "summary is still live").toBe(false);
+    expect(summary.body.data.pendingPayrollDeductions.amountIdr).toBe(100_000);
+  }, 300_000);
+
+  it("[offboarding-guard-locked] once the run is locked the completion passes; the snapshot holds the balance after the locked deduction and no pending deduction", async () => {
+    const world = await makeWorld();
+    const emp = await makeEmployee(world);
+    const loan = await seedLoan(emp.id);
+    const runId = await approvedRun(world, NOV);
+    const exitId = await revokedExit(emp.id);
+
+    const refused = await tryComplete(exitId, emp.id);
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(refused.body.error.code).toBe(GUARD_CODE);
+    await expectNotCompleted(exitId, "approved run");
+
+    await lockRun(runId);
+    expect(await runStatus(runId)).toBe("locked");
+    expect(await outstandingOf(loan), "lock took one installment").toBe(
+      900_000,
+    );
+
+    const done = await tryComplete(exitId, emp.id);
+    expect(done.status, JSON.stringify(done.body)).toBe(200);
+    expect(done.body.data.status).toBe("completed");
+
+    const stored = await exitRow(exitId);
+    expect(stored.status).toBe("completed");
+    expect(stored.completedAt).not.toBeNull();
+    const snapshot = finalSettlementSummarySchema.parse(stored.snapshot);
+    expect(snapshot.frozen).toBe(true);
+    expect(snapshot.outstandingLoans).toEqual({
+      count: 1,
+      amountIdr: 900_000,
+      loanIds: [loan],
+    });
+    expect(snapshot.pendingPayrollDeductions).toEqual({
+      count: 0,
+      amountIdr: 0,
+      loanIds: [],
+    });
+
+    // The frozen summary read over HTTP says the same.
+    const read = await hr.client.get(
+      `/api/hris/offboardings/${exitId}/settlement`,
+    );
+    expect(read.status, JSON.stringify(read.body)).toBe(200);
+    expect(read.body.data.frozen).toBe(true);
+    expect(read.body.data.outstandingLoans.amountIdr).toBe(900_000);
+    expect(read.body.data.pendingPayrollDeductions.amountIdr).toBe(0);
+  }, 300_000);
+
+  it("[offboarding-guard-reversed] a reversed run (rows deleted, balance restored) does not hold the completion back; the snapshot has the full balance", async () => {
+    const world = await makeWorld();
+    const emp = await makeEmployee(world);
+    const loan = await seedLoan(emp.id);
+    const runId = await approvedRun(world, NOV);
+    await lockRun(runId);
+    await requestReversal(runId);
+    await decideReversal(runId);
+    expect(await runStatus(runId)).toBe("reversed");
+    expect((await rowsOf(runId)).rows, "reversal deleted the rows").toEqual([]);
+    expect(await outstandingOf(loan)).toBe(1_000_000);
+    const exitId = await revokedExit(emp.id);
+
+    const done = await tryComplete(exitId, emp.id);
+    expect(done.status, JSON.stringify(done.body)).toBe(200);
+    expect(done.body.data.status).toBe("completed");
+    const snapshot = finalSettlementSummarySchema.parse(
+      (await exitRow(exitId)).snapshot,
+    );
+    expect(snapshot.outstandingLoans.amountIdr).toBe(1_000_000);
+    expect(snapshot.outstandingLoans.loanIds).toEqual([loan]);
+    expect(snapshot.pendingPayrollDeductions.amountIdr).toBe(0);
+  }, 300_000);
+
+  it("[offboarding-guard-no-run] a leaver with a loan but no payroll run row at all completes normally (the guard holds back only a pending deduction)", async () => {
+    const world = await makeWorld();
+    const emp = await makeEmployee(world);
+    const loan = await seedLoan(emp.id);
+    const exitId = await revokedExit(emp.id);
+
+    const done = await tryComplete(exitId, emp.id);
+    expect(done.status, JSON.stringify(done.body)).toBe(200);
+    const snapshot = finalSettlementSummarySchema.parse(
+      (await exitRow(exitId)).snapshot,
+    );
+    expect(snapshot.outstandingLoans.amountIdr).toBe(1_000_000);
+    expect(snapshot.outstandingLoans.loanIds).toEqual([loan]);
+    expect(snapshot.pendingPayrollDeductions.count).toBe(0);
   }, 300_000);
 });
