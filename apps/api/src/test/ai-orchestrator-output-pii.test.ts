@@ -269,11 +269,11 @@ describe("AIG-02 PII in model output (legend-39d.4)", () => {
 describe("AIG-02 salary amount in the caller's own payslip turn (legend-39d.4)", () => {
   const salary = SAMPLES.find((sample) => sample.kind === "salary")!;
   const nik = SAMPLES.find((sample) => sample.kind === "nik")!;
-  const withTool = (toolCode: AiToolCode) => ({
+  const withTool = (toolCode: AiToolCode, extra: object = {}) => ({
     invoke: vi.fn(async () => ({
       ok: true as const,
       toolCode,
-      output: { sources: [salesSource] },
+      output: { sources: [salesSource], ...extra },
       rowCount: 1,
       toolCallId: "01TOOLCALL",
     })),
@@ -282,7 +282,10 @@ describe("AIG-02 salary amount in the caller's own payslip turn (legend-39d.4)",
   it.each(["TL-09", "TL-12"] as const)(
     "legend-39d.4 salary amount is NOT masked when the turn used %s",
     async (toolCode) => {
-      const h = harness(`Slip Anda. ${salary.text}`, withTool(toolCode));
+      const h = harness(
+        `Slip Anda. ${salary.text}`,
+        withTool(toolCode, { netIdr: 8500000 }),
+      );
       const result = await ask(h);
       expect(result.assistantMessage.content).toContain("8.500.000");
       const audited = h.auditOutputPii.mock.calls.flatMap(
@@ -295,12 +298,54 @@ describe("AIG-02 salary amount in the caller's own payslip turn (legend-39d.4)",
   it.each(["TL-09", "TL-12"] as const)(
     "legend-39d.4 other PII is still masked in a %s turn while the salary stays",
     async (toolCode) => {
-      const h = harness(`${salary.text} ${nik.text}`, withTool(toolCode));
+      const h = harness(
+        `${salary.text} ${nik.text}`,
+        withTool(toolCode, { netIdr: 8500000 }),
+      );
       const result = await ask(h);
       expect(result.assistantMessage.content).toContain("8.500.000");
       expect(result.assistantMessage.content).not.toContain("3174011501900001");
     },
   );
+
+  it.each(["TL-09", "TL-12"] as const)(
+    "legend-39d.4 only the own slip amount stays in a %s turn, another amount is masked",
+    async (toolCode) => {
+      const h = harness(
+        "Slip Anda: gaji Rp 8.500.000. Gaji Budi Rp 12.000.000 per bulan.",
+        withTool(toolCode, { netIdr: 8500000 }),
+      );
+      const result = await ask(h);
+      expect(result.assistantMessage.content).toContain("8.500.000");
+      expect(result.assistantMessage.content).not.toContain("12.000.000");
+      expect(result.assistantMessage.content).toContain("[salary amount]");
+      const audited = h.auditOutputPii.mock.calls.flatMap(
+        (call) => (call[1] as { kinds: string[] }).kinds,
+      );
+      expect(audited).toContain("salary");
+      expect(h.cachePut).not.toHaveBeenCalled();
+    },
+  );
+
+  it("legend-39d.4 own amount matches across formats (Rp 8500000, 8.500.000,00)", async () => {
+    const h = harness(
+      "Gaji Rp 8500000 atau gaji 8.500.000,00 sama.",
+      withTool("TL-09", { netIdr: "Rp 8.500.000" }),
+    );
+    const result = await ask(h);
+    expect(result.assistantMessage.content).toContain("Rp 8500000");
+    expect(result.assistantMessage.content).toContain("8.500.000,00");
+    expect(result.assistantMessage.content).not.toContain("[salary amount]");
+  });
+
+  it("legend-39d.4 salary amount is masked when the tool result holds a different amount", async () => {
+    const h = harness(
+      `Slip Anda. ${salary.text}`,
+      withTool("TL-09", { netIdr: 7000000 }),
+    );
+    const result = await ask(h);
+    expect(result.assistantMessage.content).not.toContain("8.500.000");
+  });
 
   it.each(["TL-01", "TL-05"] as const)(
     "legend-39d.4 salary amount is still masked when the turn used only %s",

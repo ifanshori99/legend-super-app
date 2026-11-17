@@ -19,7 +19,12 @@ import {
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { env } from "../config/env.ts";
 import { getModelCapabilities } from "../lib/ai/model-capabilities.ts";
-import { redactPii, scanPii, type PiiKind } from "../lib/ai/pii.ts";
+import {
+  collectSalaryAmounts,
+  redactPii,
+  scanPii,
+  type PiiKind,
+} from "../lib/ai/pii.ts";
 import { prepareAiRequest } from "../lib/ai/request-policy.ts";
 import { resolveTenantAiCapabilities } from "./ai-provider-config.service.ts";
 import type {
@@ -296,23 +301,24 @@ async function runLoop(
   const actionRequestIds: string[] = [];
   let anyToolFailed = false;
   // The caller's own payslip, profit share or authorised labor cost is shown
-  // as returned by the tool; only then is the salary kind left unmasked.
-  let ownSalaryShown = false;
+  // as returned by the tool; only those exact amounts are left unmasked, any
+  // other salary amount in the answer is still masked and audited.
+  const ownSalaryAmounts = new Set<string>();
   const finish = (text: string, cacheable: boolean): LoopOutcome => {
     // Model output is scanned like input: personal data is masked before the
     // answer is cached, stored or shown, and such an answer is never cached.
     const clipped = text.slice(0, ANSWER_MAX_CHARS);
-    const skipKinds: PiiKind[] = ownSalaryShown ? ["salary"] : [];
-    const piiKinds = scanPii(clipped, skipKinds).found;
+    const allowed = ownSalaryAmounts.size > 0 ? ownSalaryAmounts : undefined;
+    const piiKinds = scanPii(clipped, allowed).found;
     return {
-      text: piiKinds.length > 0 ? redactPii(clipped, skipKinds) : clipped,
+      text: piiKinds.length > 0 ? redactPii(clipped, allowed) : clipped,
       tools: [...toolRows.values()],
       sources,
       actionRequestIds,
       cacheable:
         cacheable &&
         piiKinds.length === 0 &&
-        !ownSalaryShown &&
+        ownSalaryAmounts.size === 0 &&
         !anyToolFailed &&
         actionRequestIds.length === 0 &&
         [...toolRows.keys()].every(isSharedTool),
@@ -396,7 +402,7 @@ async function runLoop(
           (outcome.output as { laborCostIdr?: unknown } | null)?.laborCostIdr !=
             null)
       )
-        ownSalaryShown = true;
+        collectSalaryAmounts(outcome.output, ownSalaryAmounts);
       const requestId = (outcome.output as { actionRequestId?: unknown } | null)
         ?.actionRequestId;
       if (

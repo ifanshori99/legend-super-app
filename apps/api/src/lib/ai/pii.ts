@@ -118,15 +118,93 @@ function findAll(text: string): PiiFinding[] {
   return findings.sort((a, b) => a.start - b.start);
 }
 
+const SALARY_SUFFIX = /\s*(juta|jt|ribu|rb|k|m)$/i;
+const SALARY_MULTIPLIER: Record<string, number> = {
+  juta: 1_000_000,
+  jt: 1_000_000,
+  m: 1_000_000,
+  ribu: 1_000,
+  rb: 1_000,
+  k: 1_000,
+};
+
+/**
+ * Digits-only form of a salary amount: "Rp 5.000.000", "5000000" and
+ * "5.000.000,00" all give "5000000"; "2,5 juta" gives "2500000". Returns null
+ * when no amount can be read.
+ */
+export function normalizeSalaryAmount(raw: string): string | null {
+  let text = raw.replace(/^\s*rp\.?\s*/i, "").trim();
+  const suffix = SALARY_SUFFIX.exec(text);
+  if (suffix) {
+    text = text.slice(0, suffix.index);
+    const value = Number(text.replace(/\./g, "").replace(",", "."));
+    if (!Number.isFinite(value) || value <= 0) return null;
+    return String(
+      Math.round(value * SALARY_MULTIPLIER[suffix[1]!.toLowerCase()]!),
+    );
+  }
+  // A trailing decimal part (",00" or ".5") is not part of the rupiah amount.
+  text = text.replace(/[,.]\d{1,2}$/, "");
+  const digits = text.replace(/\D/g, "").replace(/^0+(?=\d)/, "");
+  return digits === "" ? null : digits;
+}
+
+// Amounts shorter than this are never treated as a salary figure to allow, so
+// a year, count or day number in a tool result cannot unmask a small amount.
+const MIN_ALLOWED_SALARY_DIGITS = 5;
+
+/**
+ * Adds every amount found in a tool result (numbers and numeric text inside
+ * strings, at any depth) to `into`, in the normalised form used by
+ * `allowSalaryAmounts`.
+ */
+export function collectSalaryAmounts(
+  value: unknown,
+  into: Set<string> = new Set(),
+): Set<string> {
+  const add = (raw: string) => {
+    const amount = normalizeSalaryAmount(raw);
+    if (amount && amount.length >= MIN_ALLOWED_SALARY_DIGITS) into.add(amount);
+  };
+  if (typeof value === "number") {
+    if (Number.isFinite(value)) add(String(Math.trunc(Math.abs(value))));
+  } else if (typeof value === "string") {
+    for (const match of value.matchAll(
+      /(?:\brp\.?\s*)?\d(?:[\d.,]*\d)?(?:\s*(?:juta|jt|ribu|rb|k|m)\b)?/gi,
+    ))
+      add(match[0]);
+  } else if (Array.isArray(value)) {
+    for (const item of value) collectSalaryAmounts(item, into);
+  } else if (value && typeof value === "object") {
+    for (const item of Object.values(value)) collectSalaryAmounts(item, into);
+  }
+  return into;
+}
+
+/**
+ * A salary finding is kept (not masked) only when its normalised amount is in
+ * `allowSalaryAmounts`. Every other finding, and every other salary amount,
+ * is masked.
+ */
+function isMasked(
+  finding: PiiFinding,
+  allowSalaryAmounts?: ReadonlySet<string>,
+): boolean {
+  if (finding.kind !== "salary" || !allowSalaryAmounts) return true;
+  const amount = normalizeSalaryAmount(finding.text);
+  return amount === null || !allowSalaryAmounts.has(amount);
+}
+
 export function scanPii(
   text: string,
-  skipKinds: readonly PiiKind[] = [],
+  allowSalaryAmounts?: ReadonlySet<string>,
 ): { found: PiiKind[] } {
   return {
     found: [
       ...new Set(
         findAll(text)
-          .filter((f) => !skipKinds.includes(f.kind))
+          .filter((f) => isMasked(f, allowSalaryAmounts))
           .map((f) => f.kind),
       ),
     ],
@@ -136,11 +214,11 @@ export function scanPii(
 /** Replaces each finding with a neutral placeholder, e.g. [phone number]. */
 export function redactPii(
   text: string,
-  skipKinds: readonly PiiKind[] = [],
+  allowSalaryAmounts?: ReadonlySet<string>,
 ): string {
   let result = text;
   for (const f of findAll(text)
-    .filter((f) => !skipKinds.includes(f.kind))
+    .filter((f) => isMasked(f, allowSalaryAmounts))
     .reverse())
     result = `${result.slice(0, f.start)}[${PII_LABELS[f.kind]}]${result.slice(f.end)}`;
   return result;

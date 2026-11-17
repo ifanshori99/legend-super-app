@@ -832,12 +832,12 @@ const manager = buildGroup("manager", {
       num(menu(MAR, { sortBy: "margin", limit: 3 }), "items.0.name"),
     ],
     [
-      "Berapa biaya tenaga kerja outlet saya Maret 2031?",
-      num(labor(MAR), "laborCostIdr"),
+      "Berapa jam kerja aktual di outlet saya Maret 2031?",
+      num(labor(MAR), "workedHours"),
     ],
     [
-      "Berapa persen biaya tenaga kerja outlet saya Maret 2031?",
-      num(labor(MAR), "laborCostPct"),
+      "Berapa jam terjadwal di outlet saya Maret 2031?",
+      num(labor(MAR), "scheduledHours"),
     ],
     [
       "Berapa jumlah karyawan di outlet saya Maret 2031?",
