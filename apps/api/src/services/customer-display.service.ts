@@ -801,6 +801,7 @@ async function buildState(tx: Tx, pairing: PairingRow, now: Date) {
     taxIdr: included ? 0 : Number(order.taxIdr),
     roundingIdr: Number(order.roundingIdr),
     totalIdr: total,
+    pricesIncludeTax: included,
     depositAppliedIdr: deposit,
     remainingIdr: remaining,
     qris,

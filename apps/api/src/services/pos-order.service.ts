@@ -60,6 +60,11 @@ import {
   type PosOrderEvent,
   type PosOrderSummary,
 } from "@starter/shared/pos";
+import {
+  qrOrderErrorHttpStatus,
+  qrOrderErrorMessages,
+  QR_ORDER_PRICING_MODE_MIXED,
+} from "@starter/shared/qr-order";
 import { resolveTaxSettings } from "@starter/shared/tax";
 import { db } from "../db/index.ts";
 import { assertCatalogSalesAllowed } from "../edge/sales-gate.ts";
@@ -777,6 +782,30 @@ export async function createPosOrder(
           orderDiscountIdr: 0,
           taxConfig: await loadPosTaxConfig(tx, context, outletId),
         });
+        // legend-npnh: one session, one pricing mode (as QR checkout, legend-zmc2).
+        // An order may not mix inclusive and exclusive prices with the session's
+        // earlier non-voided orders: the shared bill has one formula.
+        if (tableSessionId !== null) {
+          const [otherMode] = await tx
+            .select({ id: orders.id })
+            .from(orders)
+            .where(
+              and(
+                eq(orders.tenantId, tenantId),
+                eq(orders.outletId, outletId),
+                eq(orders.tableSessionId, tableSessionId),
+                ne(orders.status, "voided"),
+                ne(orders.pricesIncludeTax, bill.pricesIncludeTax),
+              ),
+            )
+            .limit(1);
+          if (otherMode)
+            throw new HttpError(
+              qrOrderErrorHttpStatus.QR_ORDER_PRICING_MODE_MIXED,
+              QR_ORDER_PRICING_MODE_MIXED,
+              qrOrderErrorMessages.QR_ORDER_PRICING_MODE_MIXED,
+            );
+        }
         const [order] = await tx
           .insert(orders)
           .values({
@@ -797,6 +826,7 @@ export async function createPosOrder(
             taxIdr: bill.taxIdr,
             roundingIdr: bill.roundingIdr,
             totalIdr: bill.totalIdr,
+            pricesIncludeTax: bill.pricesIncludeTax,
             depositAppliedIdr: idr(0),
             status: "draft",
             businessDate,
@@ -1681,7 +1711,12 @@ export async function voidPosOrder(
         // Only a contract refusal (e.g. a discount no longer fitting the
         // frozen lines) keeps the stored money; a SQL error has already
         // aborted the transaction and must surface (legend-94qt).
-        if (!(error instanceof PosError)) throw error;
+        // legend-npnh: an outlet tax rule flipped while the order was open
+        // also keeps the stored money (the guard throws before any write).
+        const modeMixed =
+          error instanceof HttpError &&
+          error.code === QR_ORDER_PRICING_MODE_MIXED;
+        if (!(error instanceof PosError) && !modeMixed) throw error;
         priced = order;
       }
       await bumpPos(tx, context, pos, now, {

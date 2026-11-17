@@ -338,6 +338,12 @@ export const posOrderShape = {
    * session's credit, `orders.deposit_applied_idr`). Tenders settle the rest.
    */
   depositAppliedIdr: nonnegativeIdr.default(idr(0)),
+  /**
+   * legend-npnh: inclusive prices (harga nett, `orders.prices_include_tax`).
+   * `subtotalIdr` is then gross with service and tax inside it, and the total
+   * is subtotal - discount + rounding. Absent (legacy) means exclusive.
+   */
+  pricesIncludeTax: z.boolean().default(false),
   status: posOrderStatusSchema,
   createdBy: userIdSchema.nullable(),
   createdAt: isoDateTimeSchema,
@@ -370,6 +376,7 @@ function checkOrderMoney(
     roundingIdr: Idr;
     totalIdr: Idr;
     depositAppliedIdr: Idr;
+    pricesIncludeTax: boolean;
   },
   ctx: z.RefinementCtx,
 ): void {
@@ -379,9 +386,26 @@ function checkOrderMoney(
       path: ["depositAppliedIdr"],
       message: "depositAppliedIdr must not exceed totalIdr",
     });
+  const netSubtotal = Number(order.subtotalIdr) - Number(order.discountIdr);
+  if (order.pricesIncludeTax) {
+    // Inclusive (as the QR order): service and tax sit inside the subtotal.
+    if (Number(order.totalIdr) !== netSubtotal + Number(order.roundingIdr))
+      ctx.addIssue({
+        code: "custom",
+        path: ["totalIdr"],
+        message: "inclusive totalIdr must equal subtotal - discount + rounding",
+      });
+    if (Number(order.serviceChargeIdr) + Number(order.taxIdr) > netSubtotal)
+      ctx.addIssue({
+        code: "custom",
+        path: ["serviceChargeIdr"],
+        message:
+          "included service charge and tax cannot exceed the net subtotal",
+      });
+    return;
+  }
   const expected =
-    Number(order.subtotalIdr) -
-    Number(order.discountIdr) +
+    netSubtotal +
     Number(order.serviceChargeIdr) +
     Number(order.taxIdr) +
     Number(order.roundingIdr);
@@ -993,7 +1017,8 @@ export const posShiftShape = {
   cashInIdr: nonnegativeIdr.nullable(),
   cashOutIdr: nonnegativeIdr.nullable(),
   cashDropIdr: nonnegativeIdr.nullable(),
-  expectedIdr: nonnegativeIdr.nullable(),
+  /** Signed (legend-4wu4): cash out may exceed the drawer; the gap is a variance. */
+  expectedIdr: idrSchema.nullable(),
   countedIdr: nonnegativeIdr.nullable(),
   /** counted − expected: negative is short, positive is over. */
   varianceIdr: idrSchema.nullable(),
@@ -1177,7 +1202,8 @@ export const posShiftCountSchema = z.strictObject({
   sequence: z.number().int().positive(),
   counts: blindCountsSchema,
   countedIdr: nonnegativeIdr,
-  expectedIdr: nonnegativeIdr,
+  /** Signed (legend-4wu4): cash out may exceed the drawer; the gap is a variance. */
+  expectedIdr: idrSchema,
   /** counted − expected: negative is short, positive is over. */
   varianceIdr: idrSchema,
   /**
@@ -2002,6 +2028,11 @@ const documentTotalsShape = {
   taxIdr: nonnegativeIdr,
   roundingIdr: idrSchema,
   totalIdr: nonnegativeIdr,
+  /**
+   * legend-npnh: inclusive prices. `subtotalIdr` then holds service and tax,
+   * which the document shows as included. Absent (legacy) means exclusive.
+   */
+  pricesIncludeTax: z.boolean().default(false),
 };
 
 function checkDocumentTotals(
@@ -2017,6 +2048,7 @@ function checkDocumentTotals(
     taxIdr: Idr;
     roundingIdr: Idr;
     totalIdr: Idr;
+    pricesIncludeTax: boolean;
   },
   ctx: z.RefinementCtx,
 ): void {
@@ -2060,19 +2092,43 @@ function checkDocumentTotals(
       path: ["taxIdr"],
       message: "taxIdr must equal the tax lines",
     });
-  const total =
-    Number(document.subtotalIdr) -
-    Number(document.discountIdr) +
-    Number(document.serviceChargeIdr) +
-    Number(document.taxIdr) +
-    Number(document.roundingIdr);
-  if (Number(document.totalIdr) !== total)
-    ctx.addIssue({
-      code: "custom",
-      path: ["totalIdr"],
-      message:
-        "totalIdr must equal subtotal - discount + service + tax + rounding",
-    });
+  const netSubtotal =
+    Number(document.subtotalIdr) - Number(document.discountIdr);
+  if (document.pricesIncludeTax) {
+    // Inclusive (as checkOrderMoney): service and tax sit inside the subtotal.
+    if (
+      Number(document.totalIdr) !==
+      netSubtotal + Number(document.roundingIdr)
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["totalIdr"],
+        message: "inclusive totalIdr must equal subtotal - discount + rounding",
+      });
+    if (
+      Number(document.serviceChargeIdr) + Number(document.taxIdr) >
+      netSubtotal
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["serviceChargeIdr"],
+        message:
+          "included service charge and tax cannot exceed the net subtotal",
+      });
+  } else {
+    const total =
+      netSubtotal +
+      Number(document.serviceChargeIdr) +
+      Number(document.taxIdr) +
+      Number(document.roundingIdr);
+    if (Number(document.totalIdr) !== total)
+      ctx.addIssue({
+        code: "custom",
+        path: ["totalIdr"],
+        message:
+          "totalIdr must equal subtotal - discount + service + tax + rounding",
+      });
+  }
   if (
     sum(document.tenders.map((row) => row.amountIdr)) !==
     Number(document.totalIdr)
@@ -2285,6 +2341,12 @@ export const customerDisplayStateSchema = z
     /** Cash rounding carried from the order, so the screen shows the final total. */
     roundingIdr: idrSchema,
     totalIdr: nonnegativeIdr,
+    /**
+     * legend-npnh: inclusive prices. The subtotal then holds service and tax,
+     * so the total is subtotal - discount + rounding. Absent (legacy) means
+     * exclusive.
+     */
+    pricesIncludeTax: z.boolean().default(false),
     /** Reservation credit already applied; absent in legacy display pushes. */
     depositAppliedIdr: nonnegativeIdr.default(idr(0)),
     /** Derived from the gross total less the deposit and captured tenders. */
@@ -2347,12 +2409,13 @@ export const customerDisplayStateSchema = z
         path: ["orderId"],
         message: "A live display state shows an order",
       });
-    const total =
-      Number(state.subtotalIdr) -
-      Number(state.discountIdr) +
-      Number(state.serviceChargeIdr) +
-      Number(state.taxIdr) +
-      Number(state.roundingIdr);
+    const netSubtotal = Number(state.subtotalIdr) - Number(state.discountIdr);
+    const total = state.pricesIncludeTax
+      ? netSubtotal + Number(state.roundingIdr)
+      : netSubtotal +
+        Number(state.serviceChargeIdr) +
+        Number(state.taxIdr) +
+        Number(state.roundingIdr);
     if (Number(state.totalIdr) !== total)
       ctx.addIssue({
         code: "custom",
