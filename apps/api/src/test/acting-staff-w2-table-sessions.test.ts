@@ -107,16 +107,9 @@ function post(path: string, body: Record<string, unknown>, token?: string) {
   const request = sessionOwner.client
     .post(`/api/table-sessions/${path}`)
     .set(headers)
-    .set(originHeader);
-  // legend-f586w: registered device without a token is shared-device mode.
-  // No token means a browser-style client without a device identity.
-  return (
-    token
-      ? request
-          .set(DEVICE_TOKEN_HEADER, deviceToken())
-          .set(ACTING_HEADER, token)
-      : request
-  ).send(body);
+    .set(originHeader)
+    .set(DEVICE_TOKEN_HEADER, deviceToken());
+  return (token ? request.set(ACTING_HEADER, token) : request).send(body);
 }
 
 function expectError(

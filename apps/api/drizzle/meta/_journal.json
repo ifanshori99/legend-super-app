@@ -2955,6 +2955,20 @@
       "when": 1795000000050,
       "tag": "0546_mcp_flag_backfill",
       "breakpoints": true
+    },
+    {
+      "idx": 547,
+      "version": "7",
+      "when": 1795000000051,
+      "tag": "0560_device_shared_mode",
+      "breakpoints": true
+    },
+    {
+      "idx": 548,
+      "version": "7",
+      "when": 1795000000052,
+      "tag": "0561_session_shared_device",
+      "breakpoints": true
     }
   ]
 }

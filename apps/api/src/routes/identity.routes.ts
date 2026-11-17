@@ -18,6 +18,7 @@ import {
   mfaVerifySchema,
   sessionParamsSchema,
 } from "@starter/shared/identity";
+import { PlatformError } from "@starter/shared/platform";
 import { getAuth, requireAuth } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
@@ -229,8 +230,13 @@ identityAuthRouter.delete(
   requireAuth,
   requireTrustedOrigin,
   async (req, res) => {
+    // legend-xqkr7: a support (impersonated) session is read-only here and
+    // must not end other sessions of the user it impersonates.
+    const auth = getAuth(req);
+    if ((auth.session as { impersonatedBy?: string | null }).impersonatedBy)
+      throw new PlatformError("SUPPORT_ACCESS_READ_ONLY");
     const { sessionId } = sessionParamsSchema.parse(req.params);
-    await revokeOwnSession({ userId: getAuth(req).user.id, sessionId });
+    await revokeOwnSession({ userId: auth.user.id, sessionId });
     res.status(204).end();
   },
 );

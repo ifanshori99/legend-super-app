@@ -38,6 +38,7 @@ import {
   issueDeviceToken as issueDeviceTokenEndpoint,
   listOutletDevices as listOutletDevicesEndpoint,
   revokeDevice as revokeDeviceEndpoint,
+  setOutletDeviceSharedMode as setSharedModeEndpoint,
   setOutletDeviceTrainingMode as setTrainingModeEndpoint,
 } from "@starter/shared/edge";
 import { getAuth, requireAuth } from "../middleware/auth.ts";
@@ -52,13 +53,16 @@ import {
   getTenantContext,
   requireTenantContext,
 } from "../middleware/tenant.ts";
+import { currentDeviceIdOf } from "./device-id.ts";
 import {
+  assertNotOwnSharedDevice,
   enrollDevice,
   findDeviceOutletId,
   issueDeviceToken,
   deviceHeartbeatHandler,
   listOutletDevices,
   revokeDevice,
+  setDeviceSharedMode,
   setDeviceTrainingMode,
 } from "../services/device.service.ts";
 
@@ -179,11 +183,40 @@ deviceRouter.post(
   async (req, res) => {
     const { deviceId } = deviceParams.parse(req.params);
     const input = revokeDeviceEndpoint.body.parse(req.body);
+    assertNotOwnSharedDevice(
+      deviceId,
+      getAuth(req).session.sharedDeviceId,
+      await currentDeviceIdOf(req),
+    );
     res.json({
       data: await revokeDevice(
         getScopedTenantContext(req),
         getAuth(req).user.id,
         { deviceId, reason: input.reason },
+      ),
+    });
+  },
+);
+
+deviceRouter.patch(
+  "/:deviceId/shared-mode",
+  ...backOffice,
+  jsonBody,
+  requireDevicePermission("device.registry.manage"),
+  async (req, res) => {
+    const { deviceId } = deviceParams.parse(req.params);
+    const input = setSharedModeEndpoint.body.parse(req.body);
+    if (!input.sharedMode)
+      assertNotOwnSharedDevice(
+        deviceId,
+        getAuth(req).session.sharedDeviceId,
+        await currentDeviceIdOf(req),
+      );
+    res.json({
+      data: await setDeviceSharedMode(
+        getScopedTenantContext(req),
+        getAuth(req).user.id,
+        { deviceId, sharedMode: input.sharedMode },
       ),
     });
   },

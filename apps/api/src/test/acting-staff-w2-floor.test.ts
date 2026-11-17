@@ -113,12 +113,9 @@ function call(
 ) {
   const request = sessionOwner.client[method](path)
     .set(headers)
-    .set(originHeader);
-  // legend-f586w: registered device without a token is shared-device mode.
-  // No token means a browser-style client without a device identity.
-  const withToken = token
-    ? request.set(DEVICE_TOKEN_HEADER, deviceToken()).set(ACTING_HEADER, token)
-    : request;
+    .set(originHeader)
+    .set(DEVICE_TOKEN_HEADER, deviceToken());
+  const withToken = token ? request.set(ACTING_HEADER, token) : request;
   return body ? withToken.send(body) : withToken;
 }
 

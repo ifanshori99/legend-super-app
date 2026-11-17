@@ -588,6 +588,7 @@ export async function applyDeviceRecords(
           version: record.version,
           capabilities: record.capabilities,
           trainingMode: record.trainingMode,
+          sharedMode: record.sharedMode ?? false,
           lastSeenAt,
           status: record.status,
           revokedAt,
@@ -608,6 +609,11 @@ export async function applyDeviceRecords(
           stationId,
           label: record.label,
           trainingMode: record.trainingMode,
+          // An older record without the field keeps the local flag; it must
+          // never switch the shared-device guard off by omission.
+          ...(record.sharedMode === undefined
+            ? {}
+            : { sharedMode: record.sharedMode }),
           status: record.status,
           revokedAt,
           tokenIssuedAt: floorOf(local.tokenIssuedAt),

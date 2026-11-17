@@ -49,7 +49,7 @@ import { randomUUID } from "node:crypto";
 import type { Express } from "express";
 import type { PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { tenantIdSchema, ulidToUuid } from "@starter/shared/core";
+import { tenantIdSchema } from "@starter/shared/core";
 import { establishTenantContext } from "@starter/shared/core/server";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
@@ -206,13 +206,13 @@ type CallOptions = {
   deviceId?: string;
   outletId?: string;
   token?: string | null;
-  /** Browser-style client: no device identity header. */
-  noDevice?: boolean;
 };
 
 function withIdentity(request: ReturnType<Client["get"]>, o: CallOptions) {
-  const base = request.set(headers).set(originHeader);
-  if (!o.noDevice) base.set(DEVICE_TOKEN_HEADER, deviceToken(o.deviceId));
+  const base = request
+    .set(headers)
+    .set(originHeader)
+    .set(DEVICE_TOKEN_HEADER, deviceToken(o.deviceId));
   return o.token ? base.set(ACTING_HEADER, o.token) : base;
 }
 
@@ -283,6 +283,14 @@ function actorColumns(row: Record<string, unknown> | undefined) {
       typeof value === "string" &&
       /(created_by|cashier|actor|opened_by|captured_by)/i.test(key),
   );
+}
+
+async function actorsOfShift(shiftId: string) {
+  const { rows } = await owner.query<{ row: Record<string, unknown> }>(
+    "SELECT to_jsonb(t) AS row FROM pos_shifts t WHERE tenant_id = $1 AND id = $2::uuid",
+    [tenant.tenantId, shiftId],
+  );
+  return actorColumns(rows[0]?.row);
 }
 
 function countsFor(totalIdr: number) {
@@ -640,16 +648,13 @@ describe("legend-aruta acting cashier token", () => {
   });
 
   it("without the header the old behaviour stays: the session owner is the actor", async () => {
-    // legend-f586w: registered device without a token is shared-device mode.
-    // The old behaviour now holds for a browser-style client without a device identity.
-    // Shift open needs a registered device, so the actor is read from an order.
-    const created = await posPost("orders", orderBody(), { noDevice: true });
-    expect(created.status, JSON.stringify(created.body)).toBe(201);
-    const { rows } = await owner.query<{ row: Record<string, unknown> }>(
-      "SELECT to_jsonb(t) AS row FROM orders t WHERE tenant_id = $1 AND id = $2::uuid",
-      [tenant.tenantId, ulidToUuid(created.body.data.id)],
+    const opened = await posPost(
+      "shifts",
+      { openingFloatIdr: FLOAT_IDR },
+      { deviceId: device2 },
     );
-    const recorded = actorColumns(rows[0]?.row);
+    expect(opened.status, JSON.stringify(opened.body)).toBe(201);
+    const recorded = await actorsOfShift(opened.body.data.id);
     expect(recorded.length).toBeGreaterThan(0);
     expect(recorded).toEqual(
       recorded.map(([key]) => [key, sessionOwner.userId]),

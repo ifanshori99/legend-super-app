@@ -22,6 +22,10 @@ import {
   endActingStaff,
   issueActingStaff,
 } from "../services/pos-acting-staff.service";
+import {
+  isActiveSharedDevice,
+  markSessionSharedDevice,
+} from "../services/shared-device.service";
 
 /**
  * The signed device id. Unlike `/verify` (no session), this route has a login
@@ -54,6 +58,10 @@ posActingStaffRouter.post(
     const deviceId = await signedDeviceId(req);
     const input = posSessionRequestSchema.parse(req.body);
     const auth = getAuth(req);
+    // Shared-device mode: mark the login session at activation, before any
+    // guarded POS request (middleware/acting-staff.ts).
+    if (await isActiveSharedDevice(getTenantContext(req), deviceId))
+      await markSessionSharedDevice(auth.session.id, deviceId);
     res.setHeader("Cache-Control", "private, no-store");
     res.status(201).json({
       data: await issueActingStaff(getTenantContext(req), {

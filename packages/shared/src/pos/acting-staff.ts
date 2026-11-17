@@ -40,6 +40,8 @@ export const ACTING_STAFF_ERROR_CODES = {
   NOT_ALLOWED: "ACTING_STAFF_NOT_ALLOWED",
   /** A registered shared outlet device sent a POS request without a cashier token. */
   REQUIRED: "ACTING_STAFF_REQUIRED",
+  /** A session or request from the shared device itself tried to unflag or revoke it. */
+  SHARED_MODE_SELF_DISABLE: "SHARED_MODE_SELF_DISABLE",
 } as const;
 export type ActingStaffErrorCode =
   (typeof ACTING_STAFF_ERROR_CODES)[keyof typeof ACTING_STAFF_ERROR_CODES];

@@ -82,6 +82,11 @@ export const session = pgTable(
     // the one that asked for it (magic link opened elsewhere). Such a session
     // may not request a WhatsApp link (IDENTITY_LINK_REAUTH_REQUIRED).
     authCrossDevice: boolean("auth_cross_device").notNull().default(false),
+    // legend-ypwsp: the shared-mode device this session was last seen on.
+    // Stamped server-side only; lets the acting-staff guard keep demanding a
+    // staff token when the device header is stripped. No FK: a revoked or
+    // deleted device just lets the mark lapse.
+    sharedDeviceId: uuid("shared_device_id"),
   },
   (table) => [
     index("session_user_id_idx").on(table.userId),
