@@ -19,7 +19,7 @@
 //   ever sent out).
 // Never log, audit, store in an idempotency response, or emit a PIN, hash or
 // code. Audit rows carry ids, status and lock time only.
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import {
   CoreError,
@@ -71,18 +71,32 @@ import type { Tx } from "./permission-resolver.ts";
 export const PAYSLIP_SELF_CODE = "self.payslip.view" as const;
 const MINUTE_MS = 60_000;
 
-/** Audit `after` field names that are safe to show: ids, status, lock time. */
+/**
+ * Audit `after` field names that are safe to show: ids, status, lock time.
+ * `loginId` is the sha256 hex of the login session id behind `payslip.viewed`
+ * (see `payslipLoginIdOf`; the name avoids the audit deny list, which redacts
+ * "session").
+ */
 export const PAYSLIP_PIN_AUDIT_SAFE_FIELDS = [
   "status",
   "lockedUntil",
   "failedAttempts",
   "payslipId",
   "runId",
+  "loginId",
   "employeeId",
   "expiresAt",
 ] as const;
 
 // ----------------------------------------------------------------- helpers
+
+/**
+ * Value stored as audit `loginId` and compared by TL-09: sha256 hex of the
+ * login session id, so the audit log never holds a live session id.
+ */
+export function payslipLoginIdOf(sessionId: string): string {
+  return createHash("sha256").update(sessionId).digest("hex");
+}
 
 type PinRow = typeof payslipPins.$inferSelect;
 

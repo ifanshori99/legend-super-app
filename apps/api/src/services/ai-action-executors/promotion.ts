@@ -11,15 +11,19 @@
 // the request's savepoint cannot roll them back.
 //
 // Idempotency (crash between the service commit and the status commit): the
-// promotion description ends with a marker `[ai:<actionRequestId>]`; a re-run
-// finds the promotion by that marker instead of creating a second one, then
-// finishes the outlet switches and the activation (each is idempotent).
+// promotion row carries `ai_action_request_id` = the action request id, under
+// a partial unique index (tenant_id, ai_action_request_id). A re-run finds the
+// promotion by that column instead of creating a second one, then finishes the
+// outlet switches and the activation (each is idempotent). Two runs racing past
+// the lookup hit the unique index; the loser re-reads the winner's row.
+// Rows made before the column existed were backfilled from the old description
+// marker `[ai:<id>]` (migration 0446); new promotions carry no marker.
 import {
   createPromotionInputSchema,
   type PromotionBenefit,
 } from "@starter/shared/crm";
 import { parseDecimal4 } from "@starter/shared/core";
-import { and, eq, like } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "../../db/index.ts";
 import { promotions } from "../../db/schema/index.ts";
 import { withTenant } from "../../db/tenant.ts";
@@ -29,6 +33,7 @@ import {
   listPromotionOutlets,
   setPromotionOutlet,
 } from "../crm-promo-outlets.service.ts";
+import { HttpError } from "../../lib/http-error.ts";
 import { ActionExecutionError, type ActionExecutor } from "./types.ts";
 
 export const executePromotion: ActionExecutor = async ({
@@ -49,8 +54,7 @@ export const executePromotion: ActionExecutor = async ({
           maxDiscountIdr: null,
         }
       : { kind: "nominal_off", amountIdr: payload.discount.amountIdr };
-  const marker = `[ai:${row.id}]`;
-  const description = `${(payload.description ?? "").slice(0, 1000 - marker.length - 1)}\n${marker}`;
+  const description = (payload.description ?? "").slice(0, 1000);
   const input = createPromotionInputSchema.parse({
     name: payload.name,
     description,
@@ -76,21 +80,45 @@ export const executePromotion: ActionExecutor = async ({
     quotaPerCustomer: null,
     budgetIdr: null,
   });
-  const [existing] = await withTenant(db, context, (tx) =>
-    tx
-      .select({ id: promotions.id, status: promotions.status })
-      .from(promotions)
-      .where(
-        and(
-          eq(promotions.tenantId, row.tenantId),
-          like(promotions.description, `%${marker}`),
-        ),
-      )
-      .limit(1),
-  );
-  const promotion =
-    existing ??
-    (await createPromotion(context, row.requestedByUserId, input, now));
+  const findExisting = async () => {
+    const [found] = await withTenant(db, context, (tx) =>
+      tx
+        .select({ id: promotions.id, status: promotions.status })
+        .from(promotions)
+        .where(
+          and(
+            eq(promotions.tenantId, row.tenantId),
+            eq(promotions.aiActionRequestId, row.id),
+          ),
+        )
+        .limit(1),
+    );
+    return found;
+  };
+  const existing = await findExisting();
+  let promotion = existing;
+  if (!promotion) {
+    try {
+      promotion = await createPromotion(
+        context,
+        row.requestedByUserId,
+        input,
+        now,
+        null,
+        row.id,
+      );
+    } catch (error) {
+      // The unique index fired: a concurrent run created the promotion first.
+      // These promotions have no code hash, so PROMO_CODE_TAKEN can only mean
+      // that index; anything else (or no row to reuse) is a real failure.
+      const raced =
+        error instanceof HttpError && error.code === "PROMO_CODE_TAKEN"
+          ? await findExisting()
+          : undefined;
+      if (!raced) throw error;
+      promotion = raced;
+    }
+  }
   try {
     const wanted = new Set(payload.outletIds.map((id) => id.toLowerCase()));
     const outlets = await listPromotionOutlets(

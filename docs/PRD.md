@@ -1064,7 +1064,7 @@ Workstream WS-07 (bagi hasil), WS-11, dan WS-12.
 | TL-10 | `search_sop` | Baca | Semua staf |
 | TL-11 | `get_anomalies` | Baca | Outlet manager, Owner |
 | TL-12 | `get_my_profit_share` | Baca | Shareholder (miliknya) |
-| TL-13 | `draft_purchase_order` | Tulis → approval | Purchasing, Kitchen lead |
+| TL-13 | `draft_purchase_order` | Tulis → approval | Purchasing |
 | TL-14 | `draft_stock_adjustment` | Tulis → approval | Gudang, Kitchen lead |
 | TL-15 | `draft_promotion` | Tulis → approval | Marketing |
 | TL-16 | `draft_shift_schedule` | Tulis → approval | Outlet manager, HR |

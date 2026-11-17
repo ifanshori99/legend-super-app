@@ -290,6 +290,9 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
   // legend-3wpf (941 card C)
   "0439_payment_intent_provider_answered.sql":
     "adds the nullable payment_intents.provider_answered_at column and backfills it from provider_final_at on the rows that already have one (the provider already answered final, a copy of an existing value, NULL to a value only); no amount, status or bill touched, so nobody is paid more",
+  // legend-39d.4 (964)
+  "0446_promotion_ai_action_request_key.sql":
+    "adds promotions.ai_action_request_id and backfills it only from the `[ai:<id>]` marker already at the end of promotions.description (the earliest promotion per tenant and marker keeps the key, so the partial unique index can be created); the description, money fields and every other row stay as they are, never imports data, FORCE RLS lifted on promotions and restored in the same migration",
   // legend-yd9u2 (923)
   "0430_payout_backfill_unfreeze_lock_order.sql":
     "function body only, no row edited by the migration: app.payout_batch_unfreeze acquires same-run batches in id order before its target; it keeps the existing grant, dispute and unfreeze rules and changes no amount",

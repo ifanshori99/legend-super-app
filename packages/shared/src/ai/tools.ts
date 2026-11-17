@@ -199,10 +199,7 @@ const WRITE_TOOLS: readonly AiToolDefinition[] = [
     featureCodes: ["AI-05", "AI-08"],
     scope: "mcp:purchasing:draft",
     requiredPermissions: ["purchasing.request.create", "ai.action.propose"],
-    minRoles: [
-      role("purchasing", "tenant"),
-      role("kitchen_lead", "assigned_outlets"),
-    ],
+    minRoles: [role("purchasing", "tenant")],
   }),
   write({
     code: "TL-14",

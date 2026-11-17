@@ -19,6 +19,12 @@ import {
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { env } from "../config/env.ts";
 import { getModelCapabilities } from "../lib/ai/model-capabilities.ts";
+import {
+  collectSalaryAmounts,
+  redactPii,
+  scanPii,
+  type PiiKind,
+} from "../lib/ai/pii.ts";
 import { prepareAiRequest } from "../lib/ai/request-policy.ts";
 import { resolveTenantAiCapabilities } from "./ai-provider-config.service.ts";
 import type {
@@ -27,6 +33,7 @@ import type {
   AiCompletionResult,
   AiContentBlock,
 } from "../lib/ai/types.ts";
+import { logger } from "../lib/logger.ts";
 import type { AccessSnapshot } from "./permission-resolver.ts";
 import type { AiChannel, AiToolContext } from "./ai-tools/types.ts";
 import {
@@ -35,6 +42,7 @@ import {
   aiComplete,
   aiPreflight,
   gatewayContext,
+  recordAiOutputPiiRedacted,
   type AiCacheKeyInput,
 } from "./ai-gateway.service.ts";
 import {
@@ -106,6 +114,11 @@ export type OrchestratorDeps = {
     conversationId: string,
   ) => Promise<AiChatMessage[]>;
   persist: typeof persistTurn;
+  /** Audit row for an answer masked for PII; optional so test deps may omit it. */
+  auditOutputPii?: (
+    access: AccessSnapshot,
+    meta: { feature: string; kinds: readonly PiiKind[] },
+  ) => Promise<void>;
   now: () => Date;
 };
 
@@ -161,6 +174,8 @@ export const defaultDeps: OrchestratorDeps = {
     aiCachePut(access, key, { ...value }, ttl),
   loadHistory: defaultLoadHistory,
   persist: persistTurn,
+  auditOutputPii: (access, meta) =>
+    recordAiOutputPiiRedacted(access, { ...meta, channel: CHANNEL }),
   now: () => new Date(),
 };
 
@@ -234,6 +249,8 @@ type LoopOutcome = {
   actionRequestIds: string[];
   /** Only a clean end_turn with no tool error may be cached. */
   cacheable: boolean;
+  /** PII kinds the model's answer carried; `text` is already masked. */
+  piiKinds: PiiKind[];
 };
 
 async function toolsStillCallable(
@@ -259,12 +276,14 @@ async function runLoop(
   input: AskAi,
   history: AiChatMessage[],
   deps: OrchestratorDeps,
+  sessionId: string | null,
 ): Promise<LoopOutcome> {
   const started = deps.now().getTime();
   const ctx: AiToolContext = {
     access,
     channel: CHANNEL,
     mcpClientId: null,
+    sessionId,
     now: deps.now(),
   };
   const capabilities = deps.resolveCapabilities
@@ -283,17 +302,31 @@ async function runLoop(
   const sources: AiMessageSource[] = [];
   const actionRequestIds: string[] = [];
   let anyToolFailed = false;
-  const finish = (text: string, cacheable: boolean): LoopOutcome => ({
-    text: text.slice(0, ANSWER_MAX_CHARS),
-    tools: [...toolRows.values()],
-    sources,
-    actionRequestIds,
-    cacheable:
-      cacheable &&
-      !anyToolFailed &&
-      actionRequestIds.length === 0 &&
-      [...toolRows.keys()].every(isSharedTool),
-  });
+  // The caller's own payslip, profit share or authorised labor cost is shown
+  // as returned by the tool; only those exact amounts are left unmasked, any
+  // other salary amount in the answer is still masked and audited.
+  const ownSalaryAmounts = new Set<string>();
+  const finish = (text: string, cacheable: boolean): LoopOutcome => {
+    // Model output is scanned like input: personal data is masked before the
+    // answer is cached, stored or shown, and such an answer is never cached.
+    const clipped = text.slice(0, ANSWER_MAX_CHARS);
+    const allowed = ownSalaryAmounts.size > 0 ? ownSalaryAmounts : undefined;
+    const piiKinds = scanPii(clipped, allowed).found;
+    return {
+      text: piiKinds.length > 0 ? redactPii(clipped, allowed) : clipped,
+      tools: [...toolRows.values()],
+      sources,
+      actionRequestIds,
+      cacheable:
+        cacheable &&
+        piiKinds.length === 0 &&
+        ownSalaryAmounts.size === 0 &&
+        !anyToolFailed &&
+        actionRequestIds.length === 0 &&
+        [...toolRows.keys()].every(isSharedTool),
+      piiKinds,
+    };
+  };
 
   for (let turn = 0; turn < AI_MAX_TURNS; turn += 1) {
     const remaining = AI_DEADLINE_MS - (deps.now().getTime() - started);
@@ -364,6 +397,14 @@ async function runLoop(
       };
       addSources(row.sources, found);
       toolRows.set(outcome.toolCode, row);
+      if (
+        outcome.toolCode === "TL-09" ||
+        outcome.toolCode === "TL-12" ||
+        (outcome.toolCode === "TL-05" &&
+          (outcome.output as { laborCostIdr?: unknown } | null)?.laborCostIdr !=
+            null)
+      )
+        collectSalaryAmounts(outcome.output, ownSalaryAmounts);
       const requestId = (outcome.output as { actionRequestId?: unknown } | null)
         ?.actionRequestId;
       if (
@@ -390,6 +431,8 @@ export async function askAi(
   context: ScopedTenantContext,
   input: AskAi,
   deps: OrchestratorDeps = defaultDeps,
+  /** Login session of the caller; TL-09 binds the payslip PIN unlock to it. */
+  sessionId: string | null = null,
 ): Promise<AskAiResponse> {
   if (
     input.outletId &&
@@ -424,15 +467,31 @@ export async function askAi(
   const cached =
     hit && (await toolsStillCallable(access, hit, deps)) ? hit : null;
 
+  // An entry cached before the output PII scan existed is scanned on read with
+  // the same rules as model output. Shared-tool answers carry no own-salary
+  // amount, so nothing is allowed through.
+  const cachedPiiKinds = cached ? scanPii(cached.text).found : [];
   const outcome: LoopOutcome = cached
     ? {
-        text: cached.text,
+        text: cachedPiiKinds.length > 0 ? redactPii(cached.text) : cached.text,
         tools: cached.tools,
         sources: cached.sources,
         actionRequestIds: [],
         cacheable: false,
+        piiKinds: cachedPiiKinds,
       }
-    : await runLoop(access, input, history, deps);
+    : await runLoop(access, input, history, deps, sessionId);
+
+  if (outcome.piiKinds.length > 0)
+    await deps
+      .auditOutputPii?.(access, {
+        feature: input.feature,
+        kinds: outcome.piiKinds,
+      })
+      // The answer is already masked, so a failed audit never fails it.
+      .catch((error: unknown) =>
+        logger.warn({ err: error }, "ai output pii audit failed"),
+      );
 
   if (!cached && outcome.cacheable && history.length === 0)
     await deps

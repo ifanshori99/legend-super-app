@@ -125,10 +125,14 @@ function summaryOf(
   const count = (key: string) =>
     Array.isArray(payload[key]) ? (payload[key] as unknown[]).length : 0;
   switch (toolCode) {
+    case "TL-13":
+      return `Draf pesanan pembelian untuk ${count("lines")} item.`;
     case "TL-14":
       return `Penyesuaian stok untuk ${count("lines")} item.`;
     case "TL-15":
       return `Promo "${String(payload.name ?? "").slice(0, 120)}" untuk ${count("outletIds")} outlet.`;
+    case "TL-16":
+      return `Draf jadwal shift untuk ${count("shifts")} shift.`;
     case "TL-17":
       return `Perubahan harga untuk ${count("changes")} item menu.`;
     case "TL-18":

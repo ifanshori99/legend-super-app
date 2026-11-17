@@ -632,6 +632,8 @@ export const aiToolCalls = pgTable(
     channel: varchar("channel", { length: 3 }).notNull(),
     userId: userRef("user_id").notNull(),
     mcpClientId: uuid("mcp_client_id"),
+    /** The MCP token that made the call (null for app calls and old rows). */
+    mcpTokenId: uuid("mcp_token_id"),
     conversationId: uuid("conversation_id"),
     params: jsonb("params")
       .$type<Record<string, unknown>>()
@@ -653,6 +655,11 @@ export const aiToolCalls = pgTable(
       name: "ai_tool_calls_mcp_client_fk",
       columns: [table.tenantId, table.mcpClientId],
       foreignColumns: [mcpClients.tenantId, mcpClients.id],
+    }),
+    foreignKey({
+      name: "ai_tool_calls_mcp_token_fk",
+      columns: [table.tenantId, table.mcpTokenId],
+      foreignColumns: [mcpTokens.tenantId, mcpTokens.id],
     }),
     index("ai_tool_calls_tenant_created_idx").on(
       table.tenantId,

@@ -67,7 +67,10 @@ mcpRouter.post("/", async (req, res, next) => {
       throw error;
     }
     try {
-      enforceMcpRateLimit(principal.tokenId, principal.rateLimitPerMinute);
+      await enforceMcpRateLimit(
+        principal.tokenId,
+        principal.rateLimitPerMinute,
+      );
     } catch (error) {
       res.setHeader("Retry-After", "60");
       throw error;

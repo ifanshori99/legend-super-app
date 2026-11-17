@@ -105,6 +105,14 @@ export const promotions = pgTable(
       .$type<PromotionOutletScope>()
       .notNull()
       .default("all_except"),
+    /**
+     * Idempotency key of the Tanya AI TL-15 action request that created this
+     * promotion (action_requests.id); null for promotions made by hand. The
+     * partial unique index below makes a retried execution reuse the first
+     * promotion instead of creating a second one. No FK on purpose: the key is
+     * only a replay guard, never a join target.
+     */
+    aiActionRequestId: uuid("ai_action_request_id"),
     createdBy: text("created_by").$type<UserId>(),
     updatedBy: text("updated_by").$type<UserId>(),
     createdAt,
@@ -118,6 +126,9 @@ export const promotions = pgTable(
       table.id,
     ),
     unique("promotions_tenant_id_id_key").on(table.tenantId, table.id),
+    uniqueIndex("promotions_tenant_ai_action_request_key")
+      .on(table.tenantId, table.aiActionRequestId)
+      .where(sql`${table.aiActionRequestId} IS NOT NULL`),
     uniqueIndex("promotions_tenant_code_hash_key")
       .on(table.tenantId, table.codeHash)
       .where(sql`${table.codeHash} IS NOT NULL`),

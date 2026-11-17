@@ -3025,6 +3025,20 @@
       "when": 1795000000060,
       "tag": "0445_recurring_unresolved_start_key",
       "breakpoints": true
+    },
+    {
+      "idx": 446,
+      "version": "7",
+      "when": 1795000000061,
+      "tag": "0446_promotion_ai_action_request_key",
+      "breakpoints": true
+    },
+    {
+      "idx": 447,
+      "version": "7",
+      "when": 1795000000062,
+      "tag": "0447_ai_tool_calls_mcp_token",
+      "breakpoints": true
     }
   ]
 }

@@ -526,8 +526,7 @@ export async function listToolCalls(
       userId: row.userId,
       channel: row.channel as AiToolCallRecord["channel"],
       mcpClientId: row.mcpClientId as AiToolCallRecord["mcpClientId"],
-      // ai_tool_calls has no token or action request column yet (see report).
-      mcpTokenId: null,
+      mcpTokenId: row.mcpTokenId as AiToolCallRecord["mcpTokenId"],
       toolCode: row.toolCode as AiToolCallRecord["toolCode"],
       redactedParams: flattenParams(row.params),
       outcome: outcomeOf(row.status, row.errorCode),

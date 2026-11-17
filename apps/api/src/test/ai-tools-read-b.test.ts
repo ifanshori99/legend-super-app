@@ -6,8 +6,8 @@
 // `session_replication_role = replica` so the append-only triggers and the
 // order/FK parents of the POS tables do not have to be built for a read test.
 //
-// TL-09 (get_my_payslip) is not registered (no payslip storage exists), so it
-// has no test here. TL-07, TL-08 and TL-12 are tested for their access rules
+// TL-09 (get_my_payslip) has its own file: ai-tool-tl09-my-payslip.test.ts.
+// TL-07, TL-08 and TL-12 are tested for their access rules
 // and against real rows seeded here (customers/tiers, shift assignments,
 // shareholder allocations and distribution runs), including rows of another
 // tenant and rows the caller may not see (small segments, drafts, other
@@ -1417,10 +1417,11 @@ afterAll(async () => {
 // ---- Registry --------------------------------------------------------------
 
 describe("readToolsB registry", () => {
-  it("registers TL-07, 08, 10, 11, 12, 20 and leaves TL-09 to the engineer", () => {
+  it("registers TL-07, 08, 09, 10, 11, 12, 20", () => {
     expect(Object.keys(readToolsB).sort()).toEqual([
       "TL-07",
       "TL-08",
+      "TL-09",
       "TL-10",
       "TL-11",
       "TL-12",

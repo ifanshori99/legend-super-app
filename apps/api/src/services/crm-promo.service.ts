@@ -317,6 +317,7 @@ export async function createPromotion(
   input: CreatePromotionInput,
   now = new Date(),
   idempotencyKey: string | null = null,
+  aiActionRequestId: string | null = null,
 ): Promise<Promotion> {
   const actor = userIdSchema.parse(actorUserId);
   return withTenant(db, context, async (tx) => {
@@ -328,7 +329,7 @@ export async function createPromotion(
       tx,
       context,
       { key: idempotencyKey, operation: "promotion.create", request: input },
-      () => insertPromotion(tx, context, actor, input, now),
+      () => insertPromotion(tx, context, actor, input, now, aiActionRequestId),
     );
   });
 }
@@ -339,6 +340,7 @@ async function insertPromotion(
   actor: UserId,
   input: CreatePromotionInput,
   now: Date,
+  aiActionRequestId: string | null = null,
 ): Promise<Promotion> {
   {
     const id = crypto.randomUUID();
@@ -375,6 +377,7 @@ async function insertPromotion(
           quotaPerCustomer: promotion.quotaPerCustomer,
           budgetIdr: promotion.budgetIdr,
           outletScope: promotion.outletScope ?? "all_except",
+          aiActionRequestId,
           createdBy: actor,
           updatedBy: actor,
           createdAt: now,
