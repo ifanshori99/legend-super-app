@@ -27,7 +27,11 @@ import {
   reportOrderIssue,
   resolveOrderIssue,
 } from "@starter/shared/qr-order";
-import { getAuth, requireAuth } from "../middleware/auth.ts";
+import {
+  requireActingStaffOnSharedDevice,
+  resolveActingStaff,
+} from "../middleware/acting-staff.ts";
+import { getAuth, requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
@@ -41,9 +45,11 @@ import { guestContext, sessionCredential } from "./qr-order.routes.ts";
 export const orderRecoveryRouter = Router();
 
 const staffGuard = [
-  requireAuth,
+  requireAuthAllowSharedDevice,
   requireTrustedOrigin,
   requireTenantContext,
+  resolveActingStaff,
+  requireActingStaffOnSharedDevice,
   requireMenuPermission("order.recovery.handle"),
 ];
 const guestRead = [requireTenantContext];

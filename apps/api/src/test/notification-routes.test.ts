@@ -6,17 +6,22 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 
-vi.mock("../middleware/auth.ts", () => ({
-  requireAuth: (
+vi.mock("../middleware/auth.ts", () => {
+  const requireAuth = (
     req: express.Request,
     res: express.Response,
     next: express.NextFunction,
   ) => {
     if (!req.get("x-test-auth")) return res.status(401).end();
     next();
-  },
-  getAuth: () => ({ user: { id: "verified-user" } }),
-}));
+  };
+  return {
+    requireAuth,
+    // legend-3z0ds: the router opts push removal/key into shared devices.
+    requireAuthAllowSharedDevice: requireAuth,
+    getAuth: () => ({ user: { id: "verified-user" } }),
+  };
+});
 vi.mock("../middleware/origin.ts", () => ({
   requireTrustedOrigin: (
     req: express.Request,

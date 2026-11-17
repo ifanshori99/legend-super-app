@@ -712,12 +712,10 @@ describe("shared device: outlet alias board (legend-42gqp)", () => {
   });
 
   it("legend-42gqp: the guard is only on the floor GET; a cashier token of outlet A on another /api/outlets/B route is not touched by it", async () => {
-    // Assumption: GET /api/outlets/:id/reservation-policy is a fall-through
-    // outlet route. A router-level guard would answer the flagged-device
-    // request WITHOUT X-Acting-Staff with 401 ACTING_STAFF_REQUIRED; the route
-    // itself never does, so that code must not appear. With a token the
-    // generic "unsupported endpoint" answer is not the guard's and is allowed;
-    // the guard's own REQUIRED/INVALID codes are not.
+    // legend-3z0ds: GET /api/outlets/:id/reservation-policy is a back-office
+    // route. The floor guard is not on it, but requireAuth (default-deny) now
+    // refuses a session used on a shared device there, token or not, with
+    // 403 ACTING_STAFF_NOT_ALLOWED; never with the guard's own REQUIRED/INVALID.
     const deviceId = await newDevice(true);
     const who = await member("Sesi Rute Lain Outlet", roles.till);
     const token = await cashierToken(who, cashierB, deviceId);
@@ -726,13 +724,12 @@ describe("shared device: outlet alias board (legend-42gqp)", () => {
     const without = await get(who, path, deviceId);
     const code = (r: { body: unknown }) =>
       (r.body as { error?: { code?: string } }).error?.code ?? "";
-    expect(code(without), JSON.stringify(without.body)).not.toMatch(
-      /^(ACTING_STAFF_|SHARED_DEVICE_)/,
+    expect(code(without), JSON.stringify(without.body)).toBe(
+      "ACTING_STAFF_NOT_ALLOWED",
     );
-    expect(
-      ["ACTING_STAFF_REQUIRED", "ACTING_STAFF_INVALID"],
-      JSON.stringify(withToken.body),
-    ).not.toContain(code(withToken));
+    expect(code(withToken), JSON.stringify(withToken.body)).toBe(
+      "ACTING_STAFF_NOT_ALLOWED",
+    );
     // The floor GET alias of the cashier's own outlet still passes with a live token.
     const board = await get(who, alias(tenant.outletId), deviceId, token);
     expect(board.status, JSON.stringify(board.body)).toBe(200);

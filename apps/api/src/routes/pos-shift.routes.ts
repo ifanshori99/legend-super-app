@@ -4,7 +4,7 @@
 // Mount (routes/index.ts): `apiRouter.use("/outlets/:outletId/pos",
 // posShiftRouter)` next to posOrderRouter; the router merges params.
 //
-// - requireAuth + requireTrustedOrigin + requireTenantContext, then
+// - requireAuthAllowSharedDevice + requireTrustedOrigin + requireTenantContext, then
 //   requireOutletPermission on the path's outlet (TEN-03). The services check
 //   the same permissions again and fail closed.
 // - Bodies, params and queries are parsed with the strict contract schemas.
@@ -42,7 +42,7 @@ import {
   requireActingStaffOnSharedDevice,
   resolveActingStaff,
 } from "../middleware/acting-staff.ts";
-import { requireAuth } from "../middleware/auth.ts";
+import { requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
@@ -58,7 +58,7 @@ import { currentDeviceIdOf } from "./device-id.ts";
 export const posShiftRouter = Router({ mergeParams: true });
 
 posShiftRouter.use(
-  requireAuth,
+  requireAuthAllowSharedDevice,
   requireTrustedOrigin,
   requireTenantContext,
   resolveActingStaff,

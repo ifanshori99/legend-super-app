@@ -17,7 +17,11 @@
 import { Router } from "express";
 import { userIdSchema } from "@starter/shared/core";
 import { listOrderIssues, reportOrderIssue } from "@starter/shared/kitchen";
-import { getAuth, requireAuth } from "../middleware/auth.ts";
+import {
+  requireActingStaffOnSharedDevice,
+  resolveActingStaff,
+} from "../middleware/acting-staff.ts";
+import { getAuth, requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
@@ -32,9 +36,11 @@ export const orderIssuesRouter = Router({ mergeParams: true });
 // The prefix `/outlets/:outletId` is shared with other routers, so the
 // middleware is mounted per route: an unrelated path falls through untouched.
 const guard = [
-  requireAuth,
+  requireAuthAllowSharedDevice,
   requireTrustedOrigin,
   requireTenantContext,
+  resolveActingStaff,
+  requireActingStaffOnSharedDevice,
   requireStationScopePermission("kds.remake_comp.record"),
 ];
 

@@ -7,12 +7,16 @@
 // whether the session passed a second factor. Presentation and guard data
 // only: every API request is authorized again by the permission middleware.
 
-import { Router } from "express";
+import { Router, type Request, type Response } from "express";
 import {
   myAccessViewSchema,
   setActiveOutletInputSchema,
 } from "@starter/shared/access";
-import { getAuth, requireAuth } from "../middleware/auth";
+import {
+  getAuth,
+  requireAuth,
+  requireAuthAllowSharedDevice,
+} from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
 import {
@@ -30,9 +34,17 @@ import { listMyOutlets } from "../services/me-outlets.service";
 
 export const meRouter = Router();
 
-meRouter.use(requireAuth, requireTrustedOrigin, requireTenantContext);
+// Per route: only the shell read (GET /access) is open to a shared POS device;
+// every write stays on the strict guard (shared device refused).
+meRouter.get(
+  "/access",
+  requireAuthAllowSharedDevice,
+  requireTrustedOrigin,
+  requireTenantContext,
+  accessRead,
+);
 
-meRouter.get("/access", async (req, res) => {
+async function accessRead(req: Request, res: Response) {
   const snapshot = await loadRequestAccess(req);
   // Station reach (legend-fsb7): the stations the caller may work on for at
   // least one permission they hold, from the same assignments the API
@@ -87,12 +99,21 @@ meRouter.get("/access", async (req, res) => {
       canChangeEmployeeManager,
     }),
   });
-});
+}
 
 // Pin the outlet the outlet-less floor routes work on (legend-6vgv). The id is
 // schema-checked, then must be one of the caller's own assigned outlets;
 // another tenant's outlet and an unknown id answer the same 404.
-meRouter.put("/active-outlet", jsonBody, async (req, res) => {
+meRouter.put(
+  "/active-outlet",
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  jsonBody,
+  setActiveOutletRoute,
+);
+
+async function setActiveOutletRoute(req: Request, res: Response) {
   const input = setActiveOutletInputSchema.parse(req.body);
   await loadRequestAccess(req);
   const activeOutletId = await setActiveOutlet({
@@ -104,4 +125,4 @@ meRouter.put("/active-outlet", jsonBody, async (req, res) => {
     now: new Date(),
   });
   res.json({ data: { activeOutletId } });
-});
+}

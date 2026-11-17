@@ -160,8 +160,18 @@ export const ACTING_STAFF_HELD_MESSAGE =
 
 // Cashier calls: POS, floor/table management and kitchen routes. Table sessions
 // include guest QR calls, so only their staff actions carry the cashier token.
+// Every router listed here mounts resolveActingStaff and
+// requireActingStaffOnSharedDevice (legend-3z0ds), so a shared device needs the
+// token on it: outlet expo, pickup, service-request, order-issue, serving-time
+// and open-bill routes; the staff halves of order recovery (report, resolve,
+// collect-at-pos) and service requests (acknowledge, resolve); and menu
+// availability (the KDS "sold out" button). Not listed on purpose: guest QR
+// routes, /api/staff-pins/*, /api/me/*, /api/emergency/*, /api/notifications,
+// /api/identity/push-devices (sign-in and device routes that carry no cashier
+// guard; a held call there would block sign-out). /api/approvals is back office
+// only: its guard is strict, so a shared device is refused outright.
 const POS_PATH =
-  /^\/api\/(?:outlets\/[^/]+\/(?:pos|kitchen|floor)(?:\/|$)|(?:floor|tables|table-links|pos-overrides)(?:\/|$)|table-sessions\/[^/]+\/(?:confirm|close|move|merge|move-items|open-bill)\/?$|pos\/orders\/[^/]+\/customer\/?$)/;
+  /^\/api\/(?:outlets\/[^/]+\/(?:pos|kitchen|floor|expo|pickup-display|pickup-calls|service-requests|order-issues|serving-time-estimate|open-bill-policy|open-bill\/approvers|orders\/[^/]+\/issues)(?:\/|$)|(?:floor|tables|table-links|pos-overrides)(?:\/|$)|table-sessions\/[^/]+\/(?:confirm|close|move|merge|move-items|open-bill)\/?$|pos\/orders\/[^/]+\/customer\/?$|order-items\/[^/]+\/issues\/?$|order-issues\/[^/]+\/resolve\/?$|order-issue-charges\/[^/]+\/collect-at-pos\/?$|service-requests\/[^/]+\/(?:acknowledge|resolve)\/?$|menu\/availability(?:\/|$))/;
 
 /**
  * Headers for a `method` call to `path`. Returns null when the call must be

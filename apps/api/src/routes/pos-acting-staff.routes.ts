@@ -13,7 +13,7 @@
 import { Router, type Request } from "express";
 import { CoreError } from "@starter/shared/core";
 import { posSessionRequestSchema } from "@starter/shared/pos/acting-staff";
-import { getAuth, requireAuth } from "../middleware/auth";
+import { getAuth, requireAuthAllowSharedDevice } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
 import { getTenantContext, requireTenantContext } from "../middleware/tenant";
@@ -51,7 +51,7 @@ export const posActingStaffRouter = Router();
 // staffPinRouter, whose /verify must stay reachable without a session.
 posActingStaffRouter.post(
   "/pos-session",
-  requireAuth,
+  requireAuthAllowSharedDevice,
   requireTrustedOrigin,
   requireTenantContext,
   jsonBody,
@@ -83,7 +83,7 @@ posActingStaffRouter.post(
 
 posActingStaffRouter.post(
   "/pos-session/end",
-  requireAuth,
+  requireAuthAllowSharedDevice,
   requireTrustedOrigin,
   requireTenantContext,
   async (req, res) => {
