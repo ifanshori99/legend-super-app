@@ -4,13 +4,22 @@
 // breakfast schemas, `@starter/shared/menu` admin DTOs) and the existing
 // breakfast fixtures, never from the implementation.
 //
-// Decision under test: a menu item belongs to the breakfast menu only when its
-// flag `isBreakfast` (column `menu_items.is_breakfast`, default false) is true.
+// Decision under test (CTO fallback rule, brief 987b B1): the breakfast menu
+// uses the flag `isBreakfast` (column `menu_items.is_breakfast`, default false)
+// only once an outlet has opted in.
+//   - LEGACY state: no active, non-deleted item in the outlet's menu scope
+//     (same tenant / brand / outlet visibility as the breakfast menu) is flagged.
+//     Old behaviour: every item the flow showed before the flag is listed and
+//     orderable; nothing is rejected for being unflagged.
+//   - FLAGGED state: >= 1 such item is flagged. Only flagged items are listed;
+//     unflagged ids are rejected (409). The same rule drives the order path.
 //   LGYFH-01 flagged + active item shows in the member breakfast menu and orders
-//   LGYFH-02 unflagged (or inactive) item is absent from the menu and an order
-//            line with it is rejected, whole order refused, nothing created
-//   LGYFH-03 default false: old items stay out until flagged (INTENDED
-//            behaviour change: a tenant's breakfast menu is empty until staff flag items)
+//   LGYFH-02 flagged state: unflagged (or inactive) item is absent from the menu
+//            and an order line with it is rejected, whole order refused
+//   LGYFH-03 legacy state (zero flagged): everything shows, unflagged orderable;
+//            flagged state: only flagged, unflagged 409; flipping the first flag
+//            switches state, unflagging the last returns to legacy; flags of
+//            another tenant/brand and inactive/deleted flagged items do not count
 //   LGYFH-04 other tenant / other brand item ids are rejected
 //   LGYFH-05 admin menu API: create/update/read `isBreakfast`, strict boolean,
 //            and the flag drives the member menu; other tenants cannot flip it
@@ -27,8 +36,12 @@
 //   drives the member menu" cases flip the flag on already active seeded items
 //   with PATCH instead of creating a published item.
 // - The shared fixture `facility-breakfast-helpers.ts` seeds its two items
-//   without the flag; this file does not rely on them being flagged. Other
-//   breakfast tests that order those items need `is_breakfast = true` there.
+//   (nasi, kopi) WITH the flag, so a fresh world is in the flagged state. To get
+//   the legacy state a test builds its own world and resets both flags to false.
+// - "Legacy menu" is asserted with `toContain` for the active priced items of the
+//   outlet (the exact legacy list is not pinned) and `not.toContain` for
+//   inactive/deleted items, which the old flow never showed either (assumption).
+// - Rejection in the flagged state is pinned to 409 (brief: "409, as now").
 
 import { randomUUID } from "node:crypto";
 import type { Express } from "express";
@@ -54,7 +67,7 @@ import {
 let app: Express;
 let world: BreakfastWorld; // main tenant
 let other: BreakfastWorld; // a second, isolated tenant
-let legacy: BreakfastWorld; // a tenant whose items were never flagged
+const extraWorlds: BreakfastWorld[] = []; // per-test worlds, dropped in afterAll
 let admin: Staff; // menu admin of `world`
 let otherAdmin: Staff; // menu admin of `other`
 
@@ -68,14 +81,13 @@ beforeAll(async () => {
   installGateway();
   world = await createBreakfastWorld(app);
   other = await createBreakfastWorld(app);
-  legacy = await createBreakfastWorld(app);
   admin = await menuAdminOf(world);
   otherAdmin = await menuAdminOf(other);
 });
 
 afterAll(async () => {
   removeGateway();
-  for (const w of [world, other, legacy]) await dropBreakfastWorld(w);
+  for (const w of [world, other, ...extraWorlds]) await dropBreakfastWorld(w);
   await endPools();
 });
 
@@ -87,6 +99,43 @@ async function menuAdminOf(w: BreakfastWorld): Promise<Staff> {
     [w.tenant.roleId],
   );
   return staffOfIsolatedTenant(app, w.tenant);
+}
+
+/** A new world in the legacy state: none of its items is flagged. */
+async function createLegacyWorld(): Promise<BreakfastWorld> {
+  const w = await createBreakfastWorld(app);
+  extraWorlds.push(w);
+  await asOwnerTenant(w.tenant.tenantId, (client) =>
+    client.query(
+      `UPDATE menu_items SET is_breakfast = false WHERE id = ANY($1::uuid[])`,
+      [[w.ids.nasi, w.ids.kopi]],
+    ),
+  );
+  for (const id of [w.ids.nasi, w.ids.kopi])
+    expect(await flagOf(w, id)).toBe(false);
+  return w;
+}
+
+async function setFlag(w: BreakfastWorld, itemId: string, value: boolean) {
+  await asOwnerTenant(w.tenant.tenantId, (client) =>
+    client.query(
+      `UPDATE menu_items SET is_breakfast = $3 WHERE tenant_id = $1 AND id = $2`,
+      [w.tenant.tenantId, itemId, value],
+    ),
+  );
+}
+
+async function orderOne(w: BreakfastWorld, itemId: string) {
+  const { ticketId, api } = await newTicket(w);
+  return api.create(
+    ticketId,
+    breakfastBody(w, { lines: [{ menuItemId: itemId, quantity: 1 }] }),
+  );
+}
+
+async function menuIdsOf(w: BreakfastWorld): Promise<string[]> {
+  const { ticketId, api } = await newTicket(w);
+  return (await menuItems(api, ticketId)).map((item) => item.id);
 }
 
 type SeedOptions = {
@@ -301,28 +350,139 @@ describe("legend-lgyfh breakfast menu flag: member menu and order", () => {
     expect(REJECTED, JSON.stringify(rejected.body)).toContain(rejected.status);
   });
 
-  it("LGYFH-03 default is false: an item created without the flag stays out of the menu until flagged", async () => {
-    const id = await seedItem(legacy, { name: "Menu Lama" }); // column not written
-    expect(await flagOf(legacy, id)).toBe(false);
-    // The two items every breakfast world seeds are flagged by the shared
-    // fixture; an old tenant's were never flagged, so reset them here.
-    await asOwnerTenant(legacy.tenant.tenantId, (client) =>
-      client.query(
-        `UPDATE menu_items SET is_breakfast = false WHERE id = ANY($1::uuid[])`,
-        [[legacy.ids.nasi, legacy.ids.kopi]],
-      ),
-    );
-    for (const seeded of [legacy.ids.nasi, legacy.ids.kopi])
-      expect(await flagOf(legacy, seeded)).toBe(false);
+  it("LGYFH-03 default is false: an item created without the flag stores false", async () => {
+    const id = await seedItem(world, { name: "Menu Lama" }); // column not written
+    expect(await flagOf(world, id)).toBe(false);
+  });
+
+  it("LGYFH-03 legacy state (zero flagged): every active item shows and an unflagged item can be ordered", async () => {
+    const legacy = await createLegacyWorld();
+    const extra = await seedItem(legacy, { name: "Menu Lama", price: 18_000 });
+    const inactive = await seedItem(legacy, {
+      name: "Menu Mati",
+      active: false,
+    });
+    expect(await flagOf(legacy, extra)).toBe(false);
 
     const { ticketId, api } = await newTicket(legacy);
-    // Intended behaviour change: an old tenant's breakfast menu is empty.
-    expect(await menuItems(api, ticketId)).toEqual([]);
-    const rejected = await api.create(
-      ticketId,
-      breakfastBody(legacy, { lines: [{ menuItemId: id, quantity: 1 }] }),
+    const items = await menuItems(api, ticketId);
+    const ids = items.map((item) => item.id);
+    expect(ids).toEqual(
+      expect.arrayContaining([legacy.ids.nasi, legacy.ids.kopi, extra]),
     );
+    expect(items.find((item) => item.id === extra)).toEqual({
+      id: extra,
+      name: "Menu Lama",
+      priceIdr: 18_000,
+    });
+    expect(ids).not.toContain(inactive);
+
+    // Old behaviour: the unflagged item is not rejected.
+    const created = await api.create(
+      ticketId,
+      breakfastBody(legacy, { lines: [{ menuItemId: extra, quantity: 1 }] }),
+    );
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    // An inactive item stays unorderable, as before the flag existed.
+    const rejected = await orderOne(legacy, inactive);
     expect(REJECTED, JSON.stringify(rejected.body)).toContain(rejected.status);
+  });
+
+  it("LGYFH-03 flagged state (>= 1 flagged): only flagged items show and an unflagged id is rejected with 409", async () => {
+    const flagged = await seedItem(world, {
+      name: "Hanya Ini",
+      breakfast: true,
+    });
+    const unflagged = await seedItem(world, { name: "Bukan Sarapan" });
+    expect(await menuIdsOf(world)).toEqual(
+      expect.arrayContaining([world.ids.nasi, world.ids.kopi, flagged]),
+    );
+    expect(await menuIdsOf(world)).not.toContain(unflagged);
+
+    const rejected = await orderOne(world, unflagged);
+    expect(rejected.status, JSON.stringify(rejected.body)).toBe(409);
+  });
+
+  it("LGYFH-03 flagging the first item switches the outlet to the flagged state; unflagging the last returns to legacy", async () => {
+    const legacy = await createLegacyWorld();
+    const first = await seedItem(legacy, { name: "Item Pertama" });
+    const second = await seedItem(legacy, { name: "Item Kedua" });
+
+    // Legacy: all show, unflagged orderable.
+    expect(await menuIdsOf(legacy)).toEqual(
+      expect.arrayContaining([legacy.ids.nasi, first, second]),
+    );
+
+    // Flag the first item: only it shows, every other id is rejected (409).
+    await setFlag(legacy, first, true);
+    expect(await menuIdsOf(legacy)).toEqual([first]);
+    expect((await orderOne(legacy, second)).status).toBe(409);
+    expect((await orderOne(legacy, legacy.ids.nasi)).status).toBe(409);
+    expect((await orderOne(legacy, first)).status).toBe(201);
+
+    // A second flag widens the menu but stays in the flagged state.
+    await setFlag(legacy, second, true);
+    expect((await menuIdsOf(legacy)).sort()).toEqual([first, second].sort());
+    expect((await orderOne(legacy, legacy.ids.kopi)).status).toBe(409);
+
+    // Unflag one: still flagged state. Unflag the last: back to legacy.
+    await setFlag(legacy, second, false);
+    expect(await menuIdsOf(legacy)).toEqual([first]);
+    await setFlag(legacy, first, false);
+    expect(await menuIdsOf(legacy)).toEqual(
+      expect.arrayContaining([legacy.ids.nasi, legacy.ids.kopi, first, second]),
+    );
+    expect((await orderOne(legacy, second)).status).toBe(201);
+  });
+
+  it("LGYFH-03 a flag in another tenant or another brand does not switch this outlet to the flagged state", async () => {
+    const legacy = await createLegacyWorld();
+    const mine = await seedItem(legacy, { name: "Item Saya" });
+    await seedItem(other, { name: "Tenant Lain Ditandai", breakfast: true });
+    const brandId = randomUUID();
+    await asOwnerTenant(legacy.tenant.tenantId, (client) =>
+      client.query(
+        `INSERT INTO brands (id, tenant_id, slug, name) VALUES ($1, $2, $3, 'Merek Lain')`,
+        [brandId, legacy.tenant.tenantId, `merek-${brandId.slice(0, 8)}`],
+      ),
+    );
+    await seedItem(legacy, {
+      name: "Merek Lain Ditandai",
+      breakfast: true,
+      brandId,
+    });
+
+    expect(await menuIdsOf(legacy)).toEqual(
+      expect.arrayContaining([legacy.ids.nasi, legacy.ids.kopi, mine]),
+    );
+    expect((await orderOne(legacy, mine)).status).toBe(201);
+  });
+
+  it("LGYFH-03 a flagged item that is inactive or deleted does not count as flagged", async () => {
+    const legacy = await createLegacyWorld();
+    const mine = await seedItem(legacy, { name: "Item Aktif" });
+    await seedItem(legacy, {
+      name: "Ditandai Tapi Mati",
+      breakfast: true,
+      active: false,
+    });
+    const deleted = await seedItem(legacy, {
+      name: "Ditandai Tapi Dihapus",
+      breakfast: true,
+    });
+    await asOwnerTenant(legacy.tenant.tenantId, (client) =>
+      client.query(
+        `UPDATE menu_items SET deleted_at = now() WHERE tenant_id = $1 AND id = $2`,
+        [legacy.tenant.tenantId, deleted],
+      ),
+    );
+
+    const ids = await menuIdsOf(legacy);
+    expect(ids).toEqual(
+      expect.arrayContaining([legacy.ids.nasi, legacy.ids.kopi, mine]),
+    );
+    expect(ids).not.toContain(deleted);
+    expect((await orderOne(legacy, mine)).status).toBe(201);
   });
 
   it("LGYFH-04 an item id of another tenant is rejected even when that item is flagged", async () => {
