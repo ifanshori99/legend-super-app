@@ -12,10 +12,11 @@
 // (the grantor connection would wait on our own lock).
 //
 // A clearance is bound to the fingerprint of the flagged data (legend-hklnq,
-// migration 0584). The flag's current fingerprint is its latest sighting; only
-// an approved clearance of that fingerprint releases the slip, so a flag raised
-// again over changed data is open again (`reopened`), and approving a clearance
-// whose data changed since the proposal is refused (PAYOUT-91).
+// migration 0584). The flag's current fingerprint is the LIVE one
+// (`app.payout_recon_flag_fingerprint`); only an approved clearance of that
+// fingerprint releases the slip, so data changed after the approval holds the
+// slip again at once (`reopened`), and approving a clearance whose data changed
+// since the proposal is refused (PAYOUT-91).
 //
 // Trusted in-transaction writers: the caller wraps `withTenant`. No amount, name
 // or account number leaves this file.
@@ -67,14 +68,9 @@ const alreadyApproved = () =>
 
 const tenantOf = (actor: PayoutActor) => actor.tenantId as TenantId;
 
-/** The flag's current fingerprint: its latest sighting (migration 0584). */
-const currentFlagSha = sql`(
-  SELECT s.flag_sha256
-    FROM payroll_payout_recon_flag_sightings s
-   WHERE s.tenant_id = ${payrollPayoutReconExceptions.tenantId}
-     AND s.exception_id = ${payrollPayoutReconExceptions.id}
-   ORDER BY s.seen_at DESC, s.id DESC
-   LIMIT 1)`;
+/** The flag's current fingerprint: the live one (migration 0584). */
+const currentFlagSha = sql`app.payout_recon_flag_fingerprint(
+  ${payrollPayoutReconExceptions.tenantId}, ${payrollPayoutReconExceptions.id})`;
 
 /** The clearance of the flag's current fingerprint (at most one). */
 const currentClearanceJoin = and(
@@ -140,9 +136,8 @@ function clearanceError(error: unknown, notFound: () => unknown): unknown {
 
 /**
  * Every flag of the tenant with the state of the clearance of its current
- * fingerprint, newest first. `reopened`: a clearance of other flagged data was
- * approved for this flag and none of the current fingerprint is (the flag
- * holds the slip again).
+ * fingerprint, newest first. `reopened`: a clearance was approved for this flag
+ * and none matches the live fingerprint (the flag holds the slip again).
  */
 export async function listPayoutReconFlags(
   tx: Tx,

@@ -6,9 +6,11 @@
 --    flag's current one (its latest sighting, by seen_at then id).
 -- 2. payroll_payout_recon_clearances.flag_sha256: a clearance is bound to the
 --    fingerprint it was proposed for; one clearance per flag and fingerprint.
--- 3. A flag holds its payslip back unless a clearance with the flag's current
---    fingerprint is approved (app.payout_payslip_held_by_recon; the API test
---    slipsHeldByReconException is the same query).
+-- 3. A flag holds its payslip back unless a clearance with the flag's LIVE
+--    fingerprint (app.payout_recon_flag_fingerprint, EXECUTE granted to
+--    legend_app) is approved: app.payout_payslip_held_by_recon and the API
+--    slipsHeldByReconException call the same function, so data changed after
+--    the approval holds the slip again at once, without waiting for a recon.
 -- 4. app.payout_recon_flag (0432 body): after the insert (or the conflict on the
 --    flag key) it records a sighting of the live fingerprint. Same key, other
 --    data: a new sighting, and the old clearance no longer releases the slip.
@@ -120,6 +122,9 @@ $$;
 --> statement-breakpoint
 REVOKE ALL ON FUNCTION app.payout_recon_flag_fingerprint(uuid, uuid) FROM PUBLIC;
 --> statement-breakpoint
+-- The hold helper and the batch guard read the live fingerprint as legend_app.
+GRANT EXECUTE ON FUNCTION app.payout_recon_flag_fingerprint(uuid, uuid) TO legend_app;
+--> statement-breakpoint
 -- For the backfill below only (the migrator holds the payout role without
 -- inheriting it); revoked again before the end of this migration.
 GRANT EXECUTE ON FUNCTION app.payout_recon_flag_fingerprint(uuid, uuid) TO SESSION_USER;
@@ -128,15 +133,21 @@ GRANT EXECUTE ON FUNCTION app.payout_recon_flag_fingerprint(uuid, uuid) TO SESSI
 -- ---------------------------------------------------------------------------
 -- Record the live fingerprint of a flag as a sighting when it is not the
 -- flag's current one; returns the live fingerprint. Called by the trusted
--- functions below only (no EXECUTE for anyone else).
+-- functions below only (no EXECUTE for anyone else). Serialised per flag by a
+-- transaction advisory lock (tenant and exception) taken before the last
+-- sighting is read, so two sessions never both record the same new fingerprint
+-- out of order.
 -- ---------------------------------------------------------------------------
 CREATE FUNCTION app.payout_recon_flag_see(p_tenant uuid, p_exception uuid)
 RETURNS varchar
 LANGUAGE plpgsql VOLATILE SET search_path = pg_catalog, pg_temp AS $$
 DECLARE
-  v_live varchar := app.payout_recon_flag_fingerprint(p_tenant, p_exception);
+  v_live varchar;
   v_last varchar;
 BEGIN
+  PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(
+    'payout_recon_flag_see:' || p_tenant::text || ':' || p_exception::text, 0));
+  v_live := app.payout_recon_flag_fingerprint(p_tenant, p_exception);
   IF v_live IS NULL THEN
     RAISE EXCEPTION 'PAYOUT-69: reconciliation flag not found' USING ERRCODE = 'P0002';
   END IF;
@@ -349,8 +360,8 @@ END $$;
 RESET ROLE;
 --> statement-breakpoint
 
--- (hklnq) a flag holds its payslip unless a clearance of the flag's current
--- fingerprint (its latest sighting) is approved. No sighting: held.
+-- (hklnq) a flag holds its payslip unless a clearance of the flag's LIVE
+-- fingerprint is approved. Changed data after the approval: held again at once.
 CREATE OR REPLACE FUNCTION app.payout_payslip_held_by_recon(p_tenant uuid, p_payslip uuid)
 RETURNS boolean
 LANGUAGE sql STABLE SET search_path = pg_catalog AS $$
@@ -363,12 +374,7 @@ LANGUAGE sql STABLE SET search_path = pg_catalog AS $$
            FROM public.payroll_payout_recon_clearances c
           WHERE c.tenant_id = e.tenant_id AND c.exception_id = e.id
             AND c.approved_at IS NOT NULL
-            AND c.flag_sha256 = (
-              SELECT s.flag_sha256
-                FROM public.payroll_payout_recon_flag_sightings s
-               WHERE s.tenant_id = e.tenant_id AND s.exception_id = e.id
-               ORDER BY s.seen_at DESC, s.id DESC
-               LIMIT 1)))
+            AND c.flag_sha256 = app.payout_recon_flag_fingerprint(e.tenant_id, e.id)))
 $$;
 --> statement-breakpoint
 

@@ -50,6 +50,7 @@ import {
   overpaidJournalKey,
 } from "./payroll-payout-overpaid.service.ts";
 import { openItemAmount, openItemFee } from "./payroll-payout.service.ts";
+import { accountingEnabled } from "./payroll-payout-setup.ts";
 import { itemSetHashOf } from "./payroll-payout-proof-binding.service.ts";
 import { sha256Of } from "./payroll-payout-proof-fingerprint.service.ts";
 
@@ -391,6 +392,8 @@ type Facts = {
   sourceItems: Map<string, string[]>;
   /** Pairs that already carry a flag (kind, operation, item, reason). */
   flagged: Set<string>;
+  /** The tenant's accounting module is on (a zero posted fee is legit only when off). */
+  accountingOn: boolean;
 };
 
 const AUDIT_ACTIONS = {
@@ -1193,6 +1196,7 @@ async function loadFacts(
     runOfBatch,
     sourceItems,
     flagged,
+    accountingOn: await accountingEnabled(tx, tenantId),
   };
 }
 
@@ -1439,10 +1443,23 @@ function evaluate(
         // service only fills `fee_idr` when it journals it, docs/briefs/990/
         // i3-note.md). The posted fee must equal the sealed fee of the item
         // (unreadable or absent while the posting has a fee: fail closed) and
-        // the fee journal debit must equal the posted fee (990-B).
-        if (posting.feeIdr !== null) {
+        // the fee journal debit must equal the posted fee (990-B). A posted
+        // fee of 0 against a sealed fee above 0 is legit only when nothing was
+        // journaled (no overpaid journal) and accounting is off, exactly the
+        // overpaid service's rule; a NULL posted fee fails closed.
+        if (posting.feeIdr === null) add(id, "fee_sealed_mismatch");
+        else {
+          const unjournaledZero =
+            posting.feeIdr === 0 &&
+            item.fee !== null &&
+            item.fee > 0 &&
+            !facts.journals.has(overpaidJournalKey(id)) &&
+            !facts.accountingOn;
           if (
-            item.fee === null ? posting.feeIdr > 0 : item.fee !== posting.feeIdr
+            !unjournaledZero &&
+            (item.fee === null
+              ? posting.feeIdr > 0
+              : item.fee !== posting.feeIdr)
           )
             add(id, "fee_sealed_mismatch");
           if (posting.feeIdr > 0) {

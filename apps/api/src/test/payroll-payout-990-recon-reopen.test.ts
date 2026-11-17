@@ -5,10 +5,14 @@
 // Rules proven (founder: when in doubt, limit the payment):
 // - A flag carries a fingerprint of the data it flagged (the item, the
 //   attestations of its operation, its GL postings), written as an insert-only
-//   "sighting". The recon finding the same key again with a DIFFERENT
-//   fingerprint adds a sighting and the flag holds the payslip again, although
-//   an earlier clearance was approved ("reopened": true in the flag list).
-// - The same finding with unchanged data adds no sighting and the slip stays free.
+//   "sighting". The hold compares the LIVE fingerprint (brief phase 6, P2-2):
+//   a flag holds the payslip unless an approved clearance carries exactly the
+//   fingerprint the data has NOW. Data that changes after the approval holds the
+//   slip again AT ONCE, without waiting for the recon ("reopened": true in the
+//   flag list = an approved clearance exists but none matches the live data).
+// - The recon finding the same key again with a DIFFERENT fingerprint adds a
+//   sighting; with unchanged data it adds none (also for the REAL recon run
+//   twice) and the slip stays free.
 // - Only updated_at, the key version and sealed (_encrypted) columns changing
 //   (a re-seal) never reopens a flag.
 // - A clearance is bound to the fingerprint it was proposed for: when the data
@@ -19,13 +23,17 @@
 // - The app role cannot write the sightings; another tenant is not affected.
 //
 // Assumptions (the brief leaves them open, stated so they can be contested):
-// - "The recon runs again" is simulated, as the 990 recon-clear test does, by the
-//   owner calling the trusted flag function app.payout_recon_flag with the SAME
-//   key (tenant, 'correction', operation, item, reason). The data change is
-//   made by the table owner with guards off: a non-volatile item column
-//   (last_response_code), or a new attestation row for the flag's operation.
-//   The night run itself is only called where the data is unchanged (as the
-//   recon-clear test does), so an unrelated finding cannot hold the slip.
+// - Where the test only needs "a flag", "the recon runs again" is simulated, as
+//   the 990 recon-clear test does, by the owner calling the trusted flag function
+//   app.payout_recon_flag with the SAME key (tenant, 'correction', operation,
+//   item, reason). Two tests ("real recon") instead build a corrected item,
+//   delete its journal (the 905 forgery) and let the real night run
+//   (reconcileTrustedPayouts) raise the flag; there I assume the item has exactly
+//   the flags the run raises and clear every one of them.
+//   The data change is made by the table owner with guards off: a non-volatile
+//   item column (last_response_code), or a new attestation row for the flag's
+//   operation. NO recon runs between such a change and the "held again" check:
+//   the hold must follow the live data (phase 6).
 // - "Held" is probed two ways: the SQL helper app.payout_payslip_held_by_recon
 //   (tenant, payslip) and, where no earlier batch exists, a follow-up batch of
 //   the failed slip (refused 409 while held, accepted once released).
@@ -48,6 +56,7 @@ import {
   APP3,
   REQ,
   installPayoutWorld,
+  uploadEvidence,
   type Row,
 } from "./payroll-payout-fixtures.ts";
 
@@ -444,6 +453,96 @@ async function runRecon() {
   throw new Error("recon did not finish");
 }
 
+// ---- Real recon worlds (the 905 forgery: a corrected item whose journal is gone) ------------
+
+/** A corrected item: failed, then corrected by two different people over one proof. */
+async function correctedWorld() {
+  const w = await failedWorld();
+  const key = uploadEvidence(w.batchId, `reopen-${randomUUID()}.pdf`);
+  for (const who of [proposer, approverA]) {
+    const res = (await who.client
+      .post(
+        `/api/hris/payroll/disbursement-batches/${w.batchId}/correct-failed`,
+      )
+      .set(originHeader)
+      .send({
+        itemIds: [w.itemId],
+        evidenceKey: key,
+        note: "Mutasi bank menunjukkan transfer ternyata berhasil",
+        password: PASSWORD,
+      })) as unknown as Res;
+    expect([200, 201], `correct-failed ${detail(res)}`).toContain(res.status);
+  }
+  const [item] = await W.rowsOf(
+    `SELECT status FROM payroll_disbursement_items WHERE tenant_id = $1 AND id = $2`,
+    [W.tenantId, w.itemId],
+  );
+  expect(item!.status, "premise: corrected").toBe("succeeded");
+  return w;
+}
+
+/** The journal of the item's transition is deleted (owner, guards off). */
+async function dropJournalOf(itemId: string) {
+  const [row] = await W.rowsOf(
+    `SELECT p.journal_key FROM payroll_payout_gl_postings p
+      WHERE p.tenant_id = $1
+        AND p.id = COALESCE(
+              (SELECT i.gl_posting_id FROM payroll_disbursement_items i
+                WHERE i.tenant_id = $1 AND i.id = $2),
+              (SELECT p2.id FROM payroll_payout_gl_postings p2
+                WHERE p2.tenant_id = $1 AND p2.batch_id =
+                      (SELECT i.batch_id FROM payroll_disbursement_items i
+                        WHERE i.tenant_id = $1 AND i.id = $2)
+                ORDER BY p2.posted_at DESC LIMIT 1))`,
+    [W.tenantId, itemId],
+  );
+  expect(
+    row?.journal_key,
+    "premise: the transition has a journal",
+  ).toBeTruthy();
+  const key = row!.journal_key as string;
+  await W.asTenant(async (c) => {
+    await c.query(
+      `DELETE FROM journal_lines WHERE tenant_id = $1 AND entry_id IN
+         (SELECT id FROM journal_entries WHERE tenant_id = $1 AND idempotency_key = $2)`,
+      [W.tenantId, key],
+    );
+    await c.query(
+      `DELETE FROM journal_entries WHERE tenant_id = $1 AND idempotency_key = $2`,
+      [W.tenantId, key],
+    );
+  }, true);
+}
+
+/** A flag raised by the REAL night run: returns every flag of the item. */
+async function realFlaggedWorld() {
+  const w = await correctedWorld();
+  await runRecon();
+  expect(
+    await exceptionRows(w.itemId),
+    "control: an untouched corrected item is not flagged",
+  ).toHaveLength(0);
+  await dropJournalOf(w.itemId);
+  await runRecon();
+  const flags = await exceptionRows(w.itemId);
+  expect(
+    flags.length,
+    "premise: the real run flagged the item",
+  ).toBeGreaterThan(0);
+  return {
+    ...w,
+    flagIds: flags.map((f) => f.id as string),
+    payslipId: flags[0]!.payslip_id as string,
+  };
+}
+type RealWorld = Awaited<ReturnType<typeof realFlaggedWorld>>;
+
+const sightingTotal = async (w: RealWorld) =>
+  (await Promise.all(w.flagIds.map((id) => sightingsOf(id)))).flat().length;
+const clearAll = async (w: RealWorld) => {
+  for (const id of w.flagIds) await clearedBy(id);
+};
+
 // ---- Setup / teardown ----------------------------------------------------------------------
 
 /** Sightings are insert-only: remove those of this file as the owner with guards off (the table may not exist yet). */
@@ -529,7 +628,18 @@ describe("990 phase 5 A: a cleared flag reopens when the flagged data changes", 
     );
     expect(await reopenedOf(w.flagId), "cleared and unchanged").toBe(false);
 
+    // Phase 6: NO recon yet. The hold already follows the live data.
     await changeItemData(w.itemId);
+    expect(await heldBySql(w.payslipId), "held at once, before any recon").toBe(
+      true,
+    );
+    expect(await reopenedOf(w.flagId), "reopened at once").toBe(true);
+    await expectHeld(w.runId, "changed data holds the slip before the recon");
+    expect(
+      await sightingsOf(w.flagId),
+      "nothing ran, so still one sighting",
+    ).toHaveLength(1);
+
     await flagCall(w.itemId, w.operation);
 
     const sightings = await sightingsOf(w.flagId);
@@ -555,6 +665,10 @@ describe("990 phase 5 A: a cleared flag reopens when the flagged data changes", 
     expect(await heldBySql(w.payslipId), "premise: free").toBe(false);
 
     await addAttestation(w);
+    // Phase 6: held again before any recon.
+    expect(await heldBySql(w.payslipId), "held at once").toBe(true);
+    expect(await reopenedOf(w.flagId), "reopened at once").toBe(true);
+    await expectHeld(w.runId, "a new attestation holds the slip at once");
     await flagCall(w.itemId, w.operation);
 
     expect(await sightingsOf(w.flagId)).toHaveLength(2);
@@ -783,5 +897,68 @@ describe("990 phase 5 A: the sightings table", () => {
     expect(await foreignState(), "the other tenant is untouched").toBe(
       foreignBefore,
     );
+  });
+});
+
+// =========================================================================
+// 4: the real recon, and the hold that follows the live data
+// =========================================================================
+
+describe("990 phase 6: real recon and the live fingerprint", () => {
+  it("[legend-hklnq-real-recon-twice-no-new-sighting] the real night run flags a forged item once; running it again, before and after the clearance, adds no sighting and no flag", async () => {
+    const w = await realFlaggedWorld();
+    const flagCount = w.flagIds.length;
+    const firstSightings = await sightingTotal(w);
+    expect(firstSightings, "one sighting per flag").toBe(flagCount);
+    expect(await heldBySql(w.payslipId), "premise: flagged is held").toBe(true);
+
+    await runRecon();
+    await runRecon();
+    expect(await sightingTotal(w), "unchanged data, no new sighting").toBe(
+      firstSightings,
+    );
+    expect(await exceptionRows(w.itemId), "no new flag").toHaveLength(
+      flagCount,
+    );
+
+    await clearAll(w);
+    expect(await heldBySql(w.payslipId), "cleared is free").toBe(false);
+
+    await runRecon();
+    expect(await sightingTotal(w), "no sighting after the clearance").toBe(
+      firstSightings,
+    );
+    expect(await exceptionRows(w.itemId)).toHaveLength(flagCount);
+    expect(await heldBySql(w.payslipId), "the slip stays free").toBe(false);
+    for (const id of w.flagIds) expect(await reopenedOf(id)).toBe(false);
+  });
+
+  it("[legend-hklnq-live-hold-without-recon] a clearance is approved, the flagged data changes and NO recon runs: the payslip is held at once (helper true, a new batch is 409) and the flag list says reopened; a later real recon adds the new sighting and the slip stays held", async () => {
+    const w = await realFlaggedWorld();
+    await clearAll(w);
+    expect(await heldBySql(w.payslipId), "premise: cleared is free").toBe(
+      false,
+    );
+    const before = await sightingTotal(w);
+
+    await changeItemData(w.itemId);
+
+    expect(await heldBySql(w.payslipId), "held at once").toBe(true);
+    for (const id of w.flagIds)
+      expect(await reopenedOf(id), "reopened at once").toBe(true);
+    expect(
+      await sightingTotal(w),
+      "the recon has not run: no new sighting yet",
+    ).toBe(before);
+    // The corrected slip is paid anyway, so a follow-up batch would be refused for
+    // another reason; the 409 on a failed slip is proven in section 1.
+
+    await runRecon();
+    expect(
+      await sightingTotal(w),
+      "the recon sees the new fingerprint",
+    ).toBeGreaterThan(before);
+    expect(await heldBySql(w.payslipId), "still held").toBe(true);
+    for (const id of w.flagIds) expect(await reopenedOf(id)).toBe(true);
   });
 });

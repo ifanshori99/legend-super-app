@@ -87,14 +87,14 @@ afterEach(async () => {
 
 const idOf = (row: Row) => row.id as string;
 
-async function exportedRun() {
+async function exportedRun(withLockedJournal = true) {
   const slips = [
     bank(BUDI, BUDI_NET),
     bank(SITI, SITI_NET),
     bank(ANDI, ANDI_NET),
   ];
   const runId = await W.seedRun(slips);
-  await W.postLockedJournal(runId, slips);
+  if (withLockedJournal) await W.postLockedJournal(runId, slips);
   const batchId = await W.exportedBatch(runId);
   const items = (await W.itemsOf(batchId)).filter(
     (i) => i.status === "exported",
@@ -103,8 +103,8 @@ async function exportedRun() {
 }
 
 /** Budi's first transfer failed (two people), a follow-up paid him: a double payment candidate. */
-async function lateDoublePayment() {
-  const { runId, batchId, items } = await exportedRun();
+async function lateDoublePayment(withLockedJournal = true) {
+  const { runId, batchId, items } = await exportedRun(withLockedJournal);
   const budiFirst = items.find((i) => i.employee_id === BUDI.id)!;
   await W.confirm(
     batchId,
@@ -146,6 +146,64 @@ const recordOverpaidItem = async (itemId: string, batchId: string) => {
     ),
   );
 };
+
+const tenantFlags = async () =>
+  (
+    await W.owner.query(
+      "SELECT feature_flags AS flags FROM tenants WHERE id = $1",
+      [W.tenantId],
+    )
+  ).rows[0]!.flags as { modules: string[] } & Record<string, unknown>;
+const setFlags = (flags: unknown) =>
+  W.owner.query("UPDATE tenants SET feature_flags = $2::jsonb WHERE id = $1", [
+    W.tenantId,
+    JSON.stringify(flags),
+  ]);
+/** Runs `work` with the accounting module off, always restoring the flags. */
+async function withAccountingOff<T>(work: () => Promise<T>) {
+  const original = await tenantFlags();
+  expect(original.modules, "premise: accounting is on").toContain("accounting");
+  await setFlags({
+    ...original,
+    modules: original.modules.filter((m) => m !== "accounting"),
+  });
+  try {
+    return await work();
+  } finally {
+    await setFlags(original);
+  }
+}
+
+/**
+ * An overpaid item recorded with accounting off and no locked journal: the
+ * service journals nothing, so the posting carries fee_idr 0 while the item
+ * still seals Rp5.000 (the legit "accounting off" case).
+ */
+async function unjournaledOverpaidWorld() {
+  const w = await withAccountingOff(async () => {
+    const made = await lateDoublePayment(false);
+    await recordOverpaidItem(made.itemId, made.batchId);
+    return made;
+  });
+  const [item] = await W.rowsOf(
+    `SELECT status, gl_posting_id, payslip_id FROM payroll_disbursement_items
+      WHERE tenant_id = $1 AND id = $2`,
+    [W.tenantId, w.itemId],
+  );
+  expect(item?.status, "premise: overpaid").toBe("overpaid");
+  const postingId = item!.gl_posting_id as string;
+  const [posting] = await W.rowsOf(
+    `SELECT fee_idr::text AS fee FROM payroll_payout_gl_postings
+      WHERE tenant_id = $1 AND id = $2`,
+    [W.tenantId, postingId],
+  );
+  expect(Number(posting?.fee), "premise: nothing was journaled").toBe(0);
+  expect(
+    await W.countJournals(`${FEE_PREFIX}${w.itemId}`),
+    "premise: no fee journal",
+  ).toBe(0);
+  return { ...w, postingId, payslipId: item!.payslip_id as string };
+}
 
 /** An overpaid item recorded through the services, with a posting of fee Rp5.000 and its fee journal. */
 async function overpaidWorld() {
@@ -308,6 +366,47 @@ describe("990 phase 5 B: the recon compares the posting fee with the sealed fee"
       w.payslipId,
       SEALED,
       "sealed fee unreadable",
+    );
+  });
+});
+
+describe("990 phase 6 P2-1: a posted fee of 0 against a sealed fee above 0", () => {
+  it("[legend-w9od2-zero-legit-accounting-off] fee 0, no overpaid journal and accounting off: not flagged fee_sealed_mismatch", async () => {
+    const w = await unjournaledOverpaidWorld();
+
+    await withAccountingOff(runRecon);
+    expect(await hasReason(w.itemId, SEALED)).toBe(false);
+  });
+
+  it("[legend-w9od2-zero-forged-accounting-on] the same fee 0 with no journal while accounting is on: flagged fee_sealed_mismatch, the payslip is held", async () => {
+    const w = await unjournaledOverpaidWorld();
+
+    await runRecon();
+    await expectFlaggedAndHeld(
+      w.itemId,
+      w.payslipId,
+      SEALED,
+      "fee 0 with accounting on",
+    );
+  });
+
+  it("[legend-w9od2-null-fee-fail-closed] a posting with fee_idr NULL: flagged fee_sealed_mismatch, the payslip is held", async () => {
+    const w = await overpaidWorld();
+    await W.asTenant(
+      (c) =>
+        c.query(
+          `UPDATE payroll_payout_gl_postings SET fee_idr = NULL WHERE tenant_id = $1 AND id = $2`,
+          [W.tenantId, w.postingId],
+        ),
+      true,
+    );
+
+    await runRecon();
+    await expectFlaggedAndHeld(
+      w.itemId,
+      w.payslipId,
+      SEALED,
+      "posting fee NULL",
     );
   });
 });
