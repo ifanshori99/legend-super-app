@@ -71,9 +71,10 @@ import {
 } from "../lib/device-token.ts";
 import {
   getEdgeRuntimeState,
-  isDeviceRegistryHardStale,
+  getDeviceRegistryStatus,
   reportDeviceRegistryHardStale,
 } from "../edge/runtime.ts";
+import { isEdgeNode } from "../edge/mode.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { findTenantContext } from "../middleware/tenant.ts";
 import { recordAudit } from "./audit-writer.ts";
@@ -212,8 +213,10 @@ export { EDGE_DEVICE_REGISTRY_STALE_CODE };
  * cloud. Alerts the outlet's supervisors (once a day).
  */
 async function assertDeviceRegistryFresh(now: Date): Promise<void> {
-  if (!isDeviceRegistryHardStale(now)) return;
-  await reportDeviceRegistryHardStale(now);
+  const status = getDeviceRegistryStatus(now);
+  if (status === "fresh") return;
+  // not_ready (replica not judged yet) refuses too, but is not a stale alert.
+  if (status === "stale") await reportDeviceRegistryHardStale(now);
   throw deviceRegistryStaleError();
 }
 
@@ -838,7 +841,8 @@ async function heartbeatDevice(req: Request): Promise<{
       "Tenant does not match this device.",
     );
   const runtime = getEdgeRuntimeState();
-  if (runtime.edgeMode && !runtime.identity) throw heartbeatRefused();
+  if ((runtime.edgeMode || isEdgeNode()) && !runtime.identity)
+    throw heartbeatRefused();
   const identity = runtime.edgeMode ? runtime.identity : null;
   if (identity && identity.scope.tenantId !== payload.tenantId)
     throw heartbeatRefused();

@@ -25,6 +25,7 @@ import {
   reportDeviceRegistryHardStale,
 } from "../edge/runtime.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { logger } from "../lib/logger.ts";
 
 /** A heartbeat this recent means the device already has a running session. */
 export const DEVICE_LIVE_SESSION_WINDOW_MS = 5 * 60_000;
@@ -68,7 +69,8 @@ export async function assertDeviceSessionAdmitted(
 /**
  * Record that an admitted device request happened, so a device that never
  * sends a heartbeat (the web app) still shows a running session. Throttled in
- * SQL: only a row quiet for DEVICE_ACTIVITY_THROTTLE_MS is touched. A failed
+ * JS (device.lastSeenAt) and in SQL: only a row quiet for
+ * DEVICE_ACTIVITY_THROTTLE_MS is touched. A failed
  * write never fails the request. Callers skip it for a "not_ready" replica and
  * for a refused request.
  */
@@ -77,6 +79,14 @@ export async function recordDeviceActivity(
   brandId: string | null,
   now: Date,
 ): Promise<void> {
+  // Throttle in JS too: skip the write (and its transaction) while the last
+  // write is recent. A lastSeenAt in the future is not recent: fix it.
+  if (
+    device.lastSeenAt != null &&
+    device.lastSeenAt.getTime() <= now.getTime() &&
+    now.getTime() - device.lastSeenAt.getTime() < DEVICE_ACTIVITY_THROTTLE_MS
+  )
+    return;
   try {
     const context = establishScopedTenantContext(
       establishTenantContext({
@@ -99,7 +109,12 @@ export async function recordDeviceActivity(
           ),
         ),
     );
-  } catch {
+  } catch (error) {
     // Best effort: activity bookkeeping must not fail the device's request.
+    // Log the error class only: no ids, no message.
+    logger.warn(
+      { errName: error instanceof Error ? error.name : "Error" },
+      "device activity write failed",
+    );
   }
 }
