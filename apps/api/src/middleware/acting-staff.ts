@@ -18,8 +18,16 @@ import {
 } from "@starter/shared/pos/acting-staff";
 import { HttpError } from "../lib/http-error";
 import { setRequestActingStaff } from "../lib/request-context";
-import { registeredDeviceIdOf } from "../routes/device-id.ts";
+import {
+  currentDeviceIdOf,
+  registeredDeviceIdOf,
+} from "../routes/device-id.ts";
 import { resolveActingStaffToken } from "../services/pos-acting-staff.service";
+import {
+  anySharedDeviceActive,
+  isActiveSharedDevice,
+  markSessionSharedDevice,
+} from "../services/shared-device.service";
 import { getAuth } from "./auth";
 import { getTenantContext } from "./tenant";
 
@@ -88,6 +96,63 @@ export const resolveActingStaff: RequestHandler = async (req, _res, next) => {
   setRequestActingStaff(req.actingStaff);
   next();
 };
+
+/**
+ * Shared-device mode (legend-f586w), an explicit per-device flag
+ * (`devices.shared_mode`). Only a flagged device is guarded; every other
+ * request keeps the old behaviour (session owner is the actor).
+ *  - A request from a flagged device must carry a live cashier token. The login
+ *    session is marked with that device first (shared_device_ids, newest 8), so
+ *    the same cookie replayed without the device header is refused too.
+ *  - A marked session is refused while ANY marked device is still active and
+ *    flagged, in any tenant of the login (the cookie is shared across tenants),
+ *    whether the request has no device header or carries the token of another,
+ *    unflagged device; once every marked device is unflagged, revoked or gone
+ *    the marks lapse.
+ * A device token that is present but no longer accepted is a 401 from
+ * currentDeviceIdOf, never the old behaviour. Mount right after
+ * resolveActingStaff: an invalid header has already failed there with its own
+ * error. Not for device-pin, customer-display, edge or rejectActingStaff routes.
+ */
+export const requireActingStaffOnSharedDevice: RequestHandler = async (
+  req,
+  _res,
+  next,
+) => {
+  const tenant = getTenantContext(req);
+  const { session } = getAuth(req);
+  if (req.actingStaff) {
+    // A tokened request passes, but a device flagged after the cashier session
+    // started must still mark the session, or the same cookie replayed without
+    // the device header would keep the old behaviour. No device header: skip.
+    const tokenDeviceId = await currentDeviceIdOf(req);
+    if (
+      tokenDeviceId !== null &&
+      (await isActiveSharedDevice(tenant, tokenDeviceId))
+    )
+      await markSessionSharedDevice(session.id, tokenDeviceId);
+    return next();
+  }
+  const deviceId = await currentDeviceIdOf(req);
+  const marked = session.sharedDeviceIds ?? [];
+  if (deviceId !== null && (await isActiveSharedDevice(tenant, deviceId))) {
+    await markSessionSharedDevice(session.id, deviceId);
+    throw sharedDeviceRequired();
+  }
+  // No device header, or another (unflagged) device's valid token: neither may
+  // lift the marks of a session used on a device that is still active and
+  // flagged.
+  if (await anySharedDeviceActive(marked)) throw sharedDeviceRequired();
+  next();
+};
+
+function sharedDeviceRequired(): HttpError {
+  return new HttpError(
+    401,
+    ACTING_STAFF_ERROR_CODES.REQUIRED,
+    "Perangkat bersama: masuk dengan PIN kasir dulu.",
+  );
+}
 
 /** For owner-only routes that never accept an acting cashier. */
 export const rejectActingStaff: RequestHandler = (req, _res, next) => {

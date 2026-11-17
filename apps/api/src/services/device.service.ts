@@ -54,6 +54,7 @@ import { menuUpdatedEvent } from "@starter/shared/menu";
 import type { Request, RequestHandler } from "express";
 import type { z } from "zod";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
+import { ACTING_STAFF_ERROR_CODES } from "@starter/shared/pos/acting-staff";
 import { db } from "../db/index.ts";
 import {
   deviceTrainingPeriods,
@@ -118,6 +119,7 @@ export function toDevice(row: DeviceRow): Device {
     revokedAt: row.revokedAt?.toISOString() ?? null,
     status: row.status,
     trainingMode: row.trainingMode,
+    sharedMode: row.sharedMode,
   });
 }
 
@@ -450,6 +452,28 @@ export async function closeTrainingPeriod(
   return true;
 }
 
+/**
+ * A session marked with a shared device, or a request carrying that device's
+ * own token, must not switch the guard off (disable shared mode or revoke the
+ * device): 403. Pass the session's `sharedDeviceIds` and the request's resolved
+ * device id (null without a device header).
+ */
+export function assertNotOwnSharedDevice(
+  deviceId: string,
+  sessionSharedDeviceIds: readonly string[] | null | undefined,
+  requestDeviceId: string | null,
+): void {
+  if (
+    sessionSharedDeviceIds?.includes(deviceId) ||
+    requestDeviceId === deviceId
+  )
+    throw new HttpError(
+      403,
+      ACTING_STAFF_ERROR_CODES.SHARED_MODE_SELF_DISABLE,
+      "Matikan mode perangkat bersama dari perangkat lain.",
+    );
+}
+
 export async function revokeDevice(
   context: ScopedTenantContext,
   actorUserId: string,
@@ -528,6 +552,64 @@ export async function revokeDevice(
           status: "revoked",
           clearedStationIds: clearedStations.map((station) => station.id),
         },
+        sensitiveAccess: false,
+      },
+      { tx, context },
+    );
+    return toDevice(updated);
+  });
+}
+
+/**
+ * Shared-device mode on/off (legend-f586w). Only flagged devices are guarded by
+ * requireActingStaffOnSharedDevice. Revoked devices cannot change; same value
+ * is a no-op without audit.
+ */
+export async function setDeviceSharedMode(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  input: { deviceId: string; sharedMode: boolean },
+): Promise<Device> {
+  assertTrustedScopedContext(context);
+  const tenantId = context.tenant.tenantId;
+  return withTenant(db, context, async (tx) => {
+    const [current] = await tx
+      .select()
+      .from(devices)
+      .where(eq(devices.id, input.deviceId))
+      .for("update");
+    if (!current || current.tenantId !== tenantId) throw notFound();
+    assertOutletInScope(context.outletScope, current.outletId);
+    if (current.status !== "active")
+      throw new CoreError("CONFLICT", "Perangkat sudah dicabut.");
+    if (input.sharedMode === true && current.type !== "pos")
+      throw new CoreError(
+        "CONFLICT",
+        "Mode perangkat bersama hanya untuk perangkat POS.",
+      );
+    if (current.sharedMode === input.sharedMode) return toDevice(current);
+    const [updated] = await tx
+      .update(devices)
+      .set({ sharedMode: input.sharedMode, updatedAt: dbClock })
+      .where(and(eq(devices.id, current.id), eq(devices.status, "active")))
+      .returning();
+    if (!updated)
+      throw new CoreError("CONFLICT", "Perangkat berubah, coba lagi.");
+    await recordAudit(
+      {
+        tenantId,
+        outletId: current.outletId,
+        actorType: "user",
+        actorId: actorUserId,
+        deviceId: null,
+        action: input.sharedMode
+          ? "device.shared_mode_enabled"
+          : "device.shared_mode_disabled",
+        objectType: "device",
+        objectId: current.id,
+        reason: null,
+        before: { sharedMode: current.sharedMode },
+        after: { sharedMode: input.sharedMode },
         sensitiveAccess: false,
       },
       { tx, context },

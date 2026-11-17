@@ -37,7 +37,11 @@ import {
   openPosShift,
   recordPosCashMovement,
 } from "@starter/shared/pos";
-import { actorOf, resolveActingStaff } from "../middleware/acting-staff.ts";
+import {
+  actorOf,
+  requireActingStaffOnSharedDevice,
+  resolveActingStaff,
+} from "../middleware/acting-staff.ts";
 import { requireAuth } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
@@ -58,6 +62,7 @@ posShiftRouter.use(
   requireTrustedOrigin,
   requireTenantContext,
   resolveActingStaff,
+  requireActingStaffOnSharedDevice,
 );
 
 const outletOf = (req: Request) => String(req.params.outletId ?? "");

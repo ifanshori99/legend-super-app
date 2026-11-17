@@ -17,7 +17,11 @@ import {
   tableSessionIdSchema,
 } from "@starter/shared/qr-order";
 import { z } from "@starter/shared/core";
-import { actorOf, resolveActingStaff } from "../middleware/acting-staff";
+import {
+  actorOf,
+  requireActingStaffOnSharedDevice,
+  resolveActingStaff,
+} from "../middleware/acting-staff";
 import { requireAuth } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
@@ -43,6 +47,7 @@ const staffGuard = [
   requireTrustedOrigin,
   requireTenantContext,
   resolveActingStaff,
+  requireActingStaffOnSharedDevice,
 ];
 
 tableSessionsRouter.post(

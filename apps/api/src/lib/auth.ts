@@ -778,6 +778,15 @@ export const auth = betterAuth({
         required: false,
         input: false,
       },
+      // legend-f586w, legend-jqurl: devices (devices.shared_mode) this session
+      // was used on while shared-device mode applied (newest 8); empty
+      // otherwise. Written only by the early stamp in requireAuth,
+      // requireActingStaffOnSharedDevice and POST /staff-pins/pos-session.
+      sharedDeviceIds: {
+        type: "string[]",
+        required: false,
+        input: false,
+      },
     },
   },
   advanced: {

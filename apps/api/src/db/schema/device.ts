@@ -62,6 +62,12 @@ export const devices = pgTable(
       .notNull()
       .default(sql`'[]'::jsonb`),
     trainingMode: boolean("training_mode").notNull().default(false),
+    /**
+     * Shared-device mode (legend-f586w): when true, POS/floor/KDS requests from
+     * this device need an acting-staff token (middleware/acting-staff.ts).
+     * Off by default so unflagged devices keep the old behaviour.
+     */
+    sharedMode: boolean("shared_mode").notNull().default(false),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
     /**
      * Scanner state the device last reported (legend-40nvj). NULL = never
@@ -126,6 +132,10 @@ export const devices = pgTable(
     check(
       "devices_scanner_status_check",
       sql`${table.scannerStatus} IS NULL OR ${table.scannerStatus} IN ('connected', 'disconnected')`,
+    ),
+    check(
+      "devices_shared_mode_pos_only",
+      sql`NOT ${table.sharedMode} OR ${table.type} = 'pos'`,
     ),
   ],
 );

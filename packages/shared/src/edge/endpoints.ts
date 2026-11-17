@@ -303,6 +303,19 @@ export const setOutletDeviceTrainingMode = defineEndpoint({
   response: dataResponseSchema(deviceSchema),
 });
 
+/**
+ * Shared-device mode on/off (legend-f586w). A flagged device needs an
+ * acting-staff token on POS, floor and KDS requests. Same guards as training
+ * mode: `device.registry.manage`, tenant and outlet scope, audit event.
+ */
+export const setOutletDeviceSharedMode = defineEndpoint({
+  method: "PATCH",
+  path: "/api/devices/:deviceId/shared-mode",
+  params: deviceParams,
+  body: clientInputSchema({ sharedMode: z.boolean() }),
+  response: dataResponseSchema(deviceSchema),
+});
+
 export const deviceHeartbeatResultSchema = z.strictObject({
   deviceId: uuidSchema,
   serverTime: isoDateTimeSchema,

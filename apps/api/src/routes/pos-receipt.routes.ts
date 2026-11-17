@@ -28,7 +28,11 @@ import {
   issuePosReceipt,
 } from "@starter/shared/pos";
 import type { PermissionCode } from "@starter/shared/access";
-import { actorOf, resolveActingStaff } from "../middleware/acting-staff.ts";
+import {
+  actorOf,
+  requireActingStaffOnSharedDevice,
+  resolveActingStaff,
+} from "../middleware/acting-staff.ts";
 import { requireAuth } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
@@ -50,6 +54,7 @@ posReceiptRouter.use(
   requireTrustedOrigin,
   requireTenantContext,
   resolveActingStaff,
+  requireActingStaffOnSharedDevice,
 );
 
 const outletOf = (req: Request) => String(req.params.outletId ?? "");

@@ -588,6 +588,9 @@ export async function applyDeviceRecords(
           version: record.version,
           capabilities: record.capabilities,
           trainingMode: record.trainingMode,
+          // Shared mode exists only on POS devices; the cloud cannot produce
+          // it for another type, so deny when in doubt.
+          sharedMode: record.type === "pos" && (record.sharedMode ?? false),
           lastSeenAt,
           status: record.status,
           revokedAt,
@@ -602,15 +605,29 @@ export async function applyDeviceRecords(
         lastSeenAt !== null &&
         (local.lastSeenAt === null ||
           lastSeenAt.getTime() > local.lastSeenAt.getTime());
+      // Cloud wins for the mode flags and the version: no updatedAt
+      // comparison. The edge's own heartbeats write `updated_at` with the edge
+      // clock, so a local `updated_at` says nothing about whether the cloud
+      // record is older, and comparing would let a fast edge clock freeze
+      // the flags (e.g. a shared-device guard never switching off or on).
       await tx
         .update(devices)
         .set({
           stationId,
           label: record.label,
-          trainingMode: record.trainingMode,
           status: record.status,
           revokedAt,
           tokenIssuedAt: floorOf(local.tokenIssuedAt),
+          trainingMode: record.trainingMode,
+          // A record without the field keeps the local flag; it must never
+          // switch the shared-device guard off by omission. Shared mode exists
+          // only on POS devices; the cloud cannot produce it for another type,
+          // so deny when in doubt.
+          ...(record.type !== "pos"
+            ? { sharedMode: false }
+            : record.sharedMode === undefined
+              ? {}
+              : { sharedMode: record.sharedMode }),
           updatedAt: version,
           ...(newerTelemetry
             ? {
