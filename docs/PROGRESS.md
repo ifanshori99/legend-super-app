@@ -7074,3 +7074,13 @@ Cabang worktree `ghostex/980-refund-sisa-4-kartu` dari `9788dc422` (958 + 967). 
 - F3 legend-6jdy1: refund.succeeded dengan reference yang menyebut intent lain = ignored REFERENCE_MISMATCH, tanpa tulis refund/stamp/audit/alert.
 - Temuan di luar cabang: bead P2 (DP satu intent dua reservasi, apply kredit sah ditolak 409 setelah refund provider; perilaku lama, restriktif).
 - Bukti: 3 berkas test 1020 (38 test) + 13 berkas 958/967/980/1009/1016/registry (315 test) lulus; gagal-dulu di base 19 dari 24 (sisanya kontrol); typecheck api, eslint, prettier hijau; db:generate kosong. Review architect 3 putaran (6 temuan nyata dibetulkan).
+
+**1013 Jurnal otomatis dan breakfast memakai net setelah refund provider (legend-tlm3h, 17 Nov 2026, base daf8ace2a, tingkat K)**
+
+- Sudah: event baru `payment.provider_refunded` (satu per baris `payment_provider_refunds` yang baru direkam, kunci jurnal `aj:provider-refund:<id>`), rule Dr customer_deposit / Cr gateway_clearing. Penerimaan tetap bruto, jadi clearing = net dan pendapatan = net. Tanpa migrasi (rule ada di kode, `db:generate` kosong).
+- Cap refund provider hanya terhadap receipt (refund kita completed + refund provider <= receipt); `intentBackedAt` menghitung refund provider sebagai payout sehingga payout kita berikutnya tetap dibatasi. `sessionDepositAt`, `assertForfeitWithinIntent`, share sale QR memakai net pada waktu paid (refund provider setelah jurnal paid tidak mengubah jurnal lama).
+- Review architect xhigh: HIGH jurnal ganda saat providerRef refund kita terisi telat (diperbaiki: provider_refunded menunggu `AutoJournalReceiptPending` selama refund kita belum final, safety net di `payment.refunded`); MEDIUM urutan waktu (`lockIntentsForFact` kini memasukkan refund provider). Delta direview ulang: tidak ada temuan.
+- Breakfast: net 0 setelah refund provider kini void (pola 1009) lewat `providerRefundedIdr`; net antara 0 dan total sudah void + refund net lewat jalur split.
+- Keputusan untuk founder (lewat CTO): refund provider SETELAH sale terjurnal membuat `customer_deposit` bersaldo debit sementara; dipulihkan lewat order refund/void manual. Alternatif (parkir) menahan fakta uang keluar dari buku.
+- Belum: refund provider PENUH (jalur 958) tidak menulis `payment_provider_refunds` sehingga tidak dijurnal (bead baru). Refund fund double_payment tidak bisa parsial; di produksi diblokir `fundBlockedSql` bila refund provider membawa evidence_id.
+- Bukti: 72 berkas / 1451 test terarah lulus (akuntansi, refund, breakfast, 967, 980, 1009, qr-order); tes kontrak root text/events/accounting + data-import-registry lulus; typecheck api, eslint, prettier hijau.

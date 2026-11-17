@@ -8,7 +8,9 @@
 // without an outbox replay.
 //
 // Slice 1 handles order.paid (POS), order.refunded, payment.paid,
-// payment.funds_unallocated and payment.refunded. Gateway money is
+// payment.funds_unallocated, payment.refunded and payment.provider_refunded
+// (legend-tlm3h: a refund the provider made on its own, booked like a payout
+// out of the intent receipt, judged at its own moment). Gateway money is
 // receipt-first: payment.paid (one receipt per intent) and
 // payment.funds_unallocated (money no payment.paid counts: closed intent,
 // second payment) book the receipt into customer_deposit, order.paid moves the
@@ -56,7 +58,7 @@
 // consumption.
 
 import { createHash } from "node:crypto";
-import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   AccountingError,
@@ -84,6 +86,7 @@ import {
   outlets,
   paymentAdminIdempotency,
   paymentIntents,
+  paymentProviderRefunds,
   paymentRefunds,
   paymentUnallocatedFunds,
   pointLedger,
@@ -98,6 +101,7 @@ import {
 import {
   assertForfeitWithinIntent,
   assertPayoutWithinReceipt,
+  assertProviderRefundWithinReceipt,
   assertSaleWithinReceipt,
   type Bound,
   assertChargeWithinReceipt,
@@ -107,6 +111,7 @@ import {
   chargeBoundOf,
   DP_INTENT_STATUSES,
   payoutBackingOf,
+  providerRefundsAt,
   saleBoundOf,
   sessionDepositAt,
 } from "./accounting-auto-journal-guards.ts";
@@ -129,6 +134,7 @@ import {
 } from "./accounting-auto-journal-tax-split.ts";
 import { salePostingAccountsOf } from "./accounting-sale-account-history.ts";
 import { netAllocatedIdrSql } from "./payment-net-allocated-sql.ts";
+import { providerRefundedForeignIdrSql } from "./payment-provider-refunded-foreign-sql.ts";
 
 type TenantId = ScopedTenantContext["tenant"]["tenantId"];
 
@@ -158,6 +164,8 @@ export const AUTO_JOURNAL_EVENTS = [
   "payment.paid",
   "payment.funds_unallocated",
   "payment.refunded",
+  // legend-tlm3h
+  "payment.provider_refunded",
   "reservation.cancelled",
   "reservation.no_show",
   "cashier_shift.closed",
@@ -351,6 +359,15 @@ const paymentRefundedSchema = z.object({
   amountIdr: idr,
 });
 
+// legend-tlm3h: refundedAt is kept for the audit trail only; the journal is
+// dated and judged from the payment_provider_refunds row (the authority).
+const paymentProviderRefundedSchema = z.object({
+  providerRefundId: z.string().uuid(),
+  paymentIntentId: z.string().uuid(),
+  amountIdr: idr,
+  refundedAt: time.optional(),
+});
+
 const reservationClosedSchema = z.object({
   reservationId: z.string().uuid(),
   depositForfeitedIdr: idr.nonnegative(),
@@ -438,6 +455,7 @@ const PAYMENT_SCHEMAS = {
   "payment.paid": paymentPaidSchema,
   "payment.funds_unallocated": fundsUnallocatedSchema,
   "payment.refunded": paymentRefundedSchema,
+  "payment.provider_refunded": paymentProviderRefundedSchema,
 } as const;
 
 /**
@@ -542,7 +560,8 @@ export function storedEventOf(event: {
     }
     case "payment.paid":
     case "payment.funds_unallocated":
-    case "payment.refunded": {
+    case "payment.refunded":
+    case "payment.provider_refunded": {
       const payload = PAYMENT_SCHEMAS[event.name].parse(event.payload);
       if (event.outletId === null)
         throw new AutoJournalPayloadInvalid(
@@ -756,6 +775,10 @@ export function autoJournalKeyOf(stored: StoredAutoJournalEvent): string {
       return boundedKey(`aj:receipt-fund:${String(p.unallocatedFundId)}`);
     case "payment.refunded":
       return boundedKey(`aj:payout:${String(p.refundId)}`);
+    // legend-tlm3h: one journal per provider refund row, however often its
+    // event is replayed.
+    case "payment.provider_refunded":
+      return boundedKey(`aj:provider-refund:${String(p.providerRefundId)}`);
     case "reservation.cancelled":
     case "reservation.no_show":
       return boundedKey(`aj:dp-forfeit:${String(p.reservationId)}`);
@@ -1664,6 +1687,7 @@ async function qrSaleGatewayOf(
   // legend-gzu54: a bill split over several codes of the link is paid by
   // every code that put money toward it, each for its part.
   const shares = await qrSaleSharesOf(tx, tenantId, {
+    orderId: p.orderId,
     paymentLinkId: order.paymentLinkId,
     pinnedIntentId: intentId,
     dueIdr: gatewayIdr,
@@ -1709,15 +1733,27 @@ async function qrSaleGatewayOf(
  * legend-05cm9) and allocatedIdrByIntent (qr-order-consumers.ts).
  * qrSaleInUseOfIntent (payment-admin.service.ts) holds the pinned code's whole
  * due instead, which is stricter.
+ * legend-tlm3h: the provider refunds taken off are those recorded by the sale's
+ * own moment; a refund after it never changes the sale (or its retry).
  */
 async function qrSaleSharesOf(
   tx: Tx,
   tenantId: TenantId,
-  input: { paymentLinkId: string; pinnedIntentId: string; dueIdr: number },
+  input: {
+    orderId: string;
+    paymentLinkId: string;
+    pinnedIntentId: string;
+    dueIdr: number;
+  },
 ): Promise<Map<string, number>> {
+  const refundsBySale = providerRefundsAt({
+    kind: "sale",
+    tenantId,
+    orderId: input.orderId,
+  });
   const result = await tx.execute<{ id: string; allocated: string }>(sql`
     SELECT i.id,
-           (${netAllocatedIdrSql(sql`i.tenant_id`, sql`i.id`)})::text AS allocated
+           (${netAllocatedIdrSql(sql`i.tenant_id`, sql`i.id`, refundsBySale)})::text AS allocated
       FROM payment_intents i
      WHERE i.tenant_id = ${tenantId}
        AND i.payment_link_id = ${input.paymentLinkId}
@@ -2406,6 +2442,7 @@ export async function autoJournalFactOf(
           amountIdr: paymentRefunds.amountIdr,
           paymentIntentId: paymentRefunds.paymentIntentId,
           unallocatedFundId: paymentRefunds.unallocatedFundId,
+          providerRef: paymentRefunds.providerRef,
         })
         .from(paymentRefunds)
         .where(
@@ -2418,6 +2455,35 @@ export async function autoJournalFactOf(
         throw new AutoJournalPayloadInvalid(
           "Payment refund of the event not found",
         );
+      // legend-tlm3h safety net: the provider already reported this very refund
+      // (its id is our provider reference) and its journal is posted, so the
+      // payout is that journal's money: booked once, never twice.
+      if (refund.providerRef !== null) {
+        const [echoed] = await tx
+          .select({ id: paymentProviderRefunds.id })
+          .from(paymentProviderRefunds)
+          .where(
+            and(
+              eq(paymentProviderRefunds.tenantId, tenantId),
+              eq(paymentProviderRefunds.providerRefundId, refund.providerRef),
+            ),
+          );
+        if (echoed) {
+          const [booked] = await tx
+            .select({ id: journalEntries.id })
+            .from(journalEntries)
+            .where(
+              and(
+                eq(journalEntries.tenantId, tenantId),
+                eq(
+                  journalEntries.idempotencyKey,
+                  boundedKey(`aj:provider-refund:${echoed.id}`),
+                ),
+              ),
+            );
+          if (booked) return null;
+        }
+      }
       // The refund is judged at its own completion: it must be final and be
       // the one the event reports.
       if (
@@ -2457,6 +2523,128 @@ export async function autoJournalFactOf(
         sourceId: p.refundId,
         outletId: refund.outletId,
         moneyTime: refund.completedAt,
+      };
+    }
+    case "payment.provider_refunded": {
+      const p = paymentProviderRefundedSchema.parse(stored.payload);
+      if (p.amountIdr <= 0) return null;
+      const intent = await intentOf(tx, tenantId, p.paymentIntentId);
+      // Same as payment.refunded: an EDC-linked intent posts through
+      // edc_clearing, never gateway_clearing.
+      if (intent.edcTransactionId !== null) return null;
+      const [refund] = await tx
+        .select({
+          outletId: paymentProviderRefunds.outletId,
+          paymentIntentId: paymentProviderRefunds.paymentIntentId,
+          amountIdr: paymentProviderRefunds.amountIdr,
+          createdAt: paymentProviderRefunds.createdAt,
+          providerRefundId: paymentProviderRefunds.providerRefundId,
+        })
+        .from(paymentProviderRefunds)
+        .where(
+          and(
+            eq(paymentProviderRefunds.tenantId, tenantId),
+            eq(paymentProviderRefunds.id, p.providerRefundId),
+          ),
+        );
+      if (!refund)
+        throw new AutoJournalPayloadInvalid(
+          "Provider refund of the event not found",
+        );
+      if (
+        Number(refund.amountIdr) !== p.amountIdr ||
+        refund.paymentIntentId !== p.paymentIntentId
+      )
+        throw new AutoJournalPayloadInvalid(
+          "Provider refund differs from the event",
+        );
+      // The echo of a refund of ours is the payout journal's money
+      // (payment.refunded), booked once there: a completed refund of ours whose
+      // provider reference is this refund's id books nothing here. While such a
+      // refund of ours is not final (sent, reference matched but not completed,
+      // or in flight with no reference yet, the recorder's own in-flight rule)
+      // it may still be this refund's echo: wait (retryable) rather than book
+      // the same money twice. A failed refund of ours returned nothing and
+      // never matches.
+      const ours = await tx
+        .select({
+          status: paymentRefunds.status,
+          providerRef: paymentRefunds.providerRef,
+        })
+        .from(paymentRefunds)
+        .where(
+          and(
+            eq(paymentRefunds.tenantId, tenantId),
+            or(
+              eq(paymentRefunds.providerRef, refund.providerRefundId),
+              and(
+                eq(paymentRefunds.paymentIntentId, p.paymentIntentId),
+                eq(paymentRefunds.status, "approved"),
+                isNull(paymentRefunds.providerRef),
+                sql`(${paymentRefunds.payoutAttempts} > 0
+                  OR ${paymentRefunds.payoutPendingPolls} > 0
+                  OR ${paymentRefunds.payoutClaimToken} IS NOT NULL)`,
+              ),
+            ),
+          ),
+        );
+      const matched = ours.filter(
+        (row) =>
+          row.providerRef === refund.providerRefundId &&
+          row.status !== "failed",
+      );
+      if (matched.some((row) => row.status === "completed")) return null;
+      if (matched.length > 0 || ours.some((row) => row.providerRef === null))
+        throw new AutoJournalReceiptPending(
+          "A refund of ours may be the echo of this provider refund: not final yet",
+        );
+      // Only a refund that counts against the intent books here
+      // (providerRefundedForeignIdrSql, the rule of refundableBalance). A refund
+      // of a transaction a parked fund holds whole is paid out of that fund's
+      // receipt: not guessed here, parked for finance (restrictive).
+      const counted = BigInt(
+        String(
+          (
+            await tx.execute(
+              sql`SELECT ${providerRefundedForeignIdrSql(
+                sql`${tenantId}::uuid`,
+                sql`${p.paymentIntentId}::uuid`,
+                sql`pr.id = ${p.providerRefundId}::uuid`,
+              )}::text AS amount`,
+            )
+          ).rows[0]?.amount ?? "0",
+        ),
+      );
+      if (counted === 0n)
+        throw new AutoJournalPayloadInvalid(
+          "Provider refund of a transaction an unallocated fund holds whole is not journaled automatically",
+        );
+      // The money leaves the intent's own receipt.
+      const backing = await payoutBackingOf(tx, tenantId, {
+        intentId: p.paymentIntentId,
+        unallocatedFundId: null,
+      });
+      const backingState = await backingStateOf(tx, tenantId, backing);
+      if (backingState === "pending")
+        throw new AutoJournalReceiptPending(
+          "Receipt behind a provider refund is not booked yet",
+        );
+      if (backingState === "none")
+        throw new AutoJournalReceiptMissing(
+          "Receipt behind a provider refund will never be booked",
+        );
+      await assertProviderRefundWithinReceipt(
+        tx,
+        tenantId,
+        p.paymentIntentId,
+        p.providerRefundId,
+      );
+      return {
+        ruleEvent: "payment.provider_refunded",
+        amounts: { amountIdr: p.amountIdr },
+        sourceId: p.providerRefundId,
+        outletId: refund.outletId,
+        moneyTime: refund.createdAt,
       };
     }
     case "reservation.cancelled":
