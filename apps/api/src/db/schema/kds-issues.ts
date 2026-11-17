@@ -306,7 +306,7 @@ export const orderIssueCharges = pgTable(
     }),
     check(
       "order_issue_charges_cash_paid_check",
-      sql`${table.cashMovementId} IS NULL OR (${table.status} = 'paid' AND ${table.paymentIntentId} IS NULL)`,
+      sql`${table.cashMovementId} IS NULL OR (${table.status} IN ('paid', 'voided') AND ${table.paymentIntentId} IS NULL)`,
     ),
     check(
       "order_issue_charges_link_token_check",
@@ -318,7 +318,7 @@ export const orderIssueCharges = pgTable(
     ),
     check(
       "order_issue_charges_status_check",
-      sql`${table.status} IN ('open', 'paid', 'routed_pos', 'waived', 'expired')`,
+      sql`${table.status} IN ('open', 'paid', 'routed_pos', 'waived', 'expired', 'voided')`,
     ),
     check(
       "order_issue_charges_amount_check",
@@ -326,11 +326,11 @@ export const orderIssueCharges = pgTable(
     ),
     check(
       "order_issue_charges_state_check",
-      sql`(${table.status} = 'paid') = (${table.paidAt} IS NOT NULL) AND (${table.status} IN ('waived', 'expired')) = (${table.closedAt} IS NOT NULL) AND (${table.status} <> 'waived' OR (${table.closedBy} IS NOT NULL AND ${table.closeReason} IS NOT NULL))`,
+      sql`(${table.status} IN ('paid', 'voided')) = (${table.paidAt} IS NOT NULL) AND (${table.status} IN ('waived', 'expired', 'voided')) = (${table.closedAt} IS NOT NULL) AND (${table.status} <> 'waived' OR (${table.closedBy} IS NOT NULL AND ${table.closeReason} IS NOT NULL))`,
     ),
     check(
       "order_issue_charges_route_status_check",
-      sql`(${table.route} = 'pos') = (${table.status} = 'routed_pos') OR ${table.status} IN ('paid', 'waived', 'expired')`,
+      sql`(${table.route} = 'pos') = (${table.status} = 'routed_pos') OR ${table.status} IN ('paid', 'waived', 'expired', 'voided')`,
     ),
   ],
 );

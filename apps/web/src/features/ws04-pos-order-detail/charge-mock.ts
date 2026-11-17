@@ -67,6 +67,13 @@ registerMock(getIssueCharge, ({ params }) => ({
 
 registerMock(collectIssueChargeAtPos, ({ params, body }) => {
   const entry = stored(params.chargeId);
+  // legend-gt98h: QRIS and EDC are real API paths; this mock models cash only.
+  if (body.method !== "cash")
+    throw new ApiError(
+      422,
+      "VALIDATION_ERROR",
+      "Metode ini belum didukung di mode contoh.",
+    );
   if (entry.status === "paid") {
     if (entry.paidKey === body.idempotencyKey)
       return {

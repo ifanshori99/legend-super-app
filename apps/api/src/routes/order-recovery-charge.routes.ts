@@ -22,6 +22,7 @@ import {
 } from "../middleware/permissions.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
 import { collectChargeAtPos } from "../services/order-recovery-charge-pos.ts";
+import { refundIssueCharge } from "../services/order-recovery-charge-refund.ts";
 import {
   closeIssueCharge,
   type IssueChargeCloseAction,
@@ -63,6 +64,31 @@ for (const action of [
       });
     },
   );
+
+// Staff refund of a PAID charge (legend-nsvu0): a request that adds up with the
+// earlier ones, never past the paid charge; the payment module pays it out.
+const refundBody = z.strictObject({
+  amountIdr: z.number().int().positive().max(1_000_000_000),
+  reason: z.string().trim().min(3).max(300),
+});
+orderRecoveryChargeRouter.post(
+  "/order-issue-charges/:chargeId/refund",
+  ...staffGuard,
+  jsonBody,
+  async (req, res) => {
+    const { chargeId } = params.parse(req.params);
+    const input = refundBody.parse(req.body);
+    res.json({
+      data: await refundIssueCharge(
+        getScopedTenantContext(req),
+        userIdSchema.parse(getAuth(req).user.id),
+        chargeId,
+        input,
+        new Date(),
+      ),
+    });
+  },
+);
 
 // The cashier takes the charge in cash at the till (legend-800h1): the same
 // permission as a POS tender (`pos.payment.accept`, checked again on the

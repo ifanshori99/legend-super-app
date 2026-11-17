@@ -1183,7 +1183,8 @@ export type CreateSplitsInput = z.infer<typeof createSplitsInputSchema>;
 /**
  * The dearer-swap difference of a failed-item issue, owed on the open bill
  * (legend-i83ls). `open` and `paid` count in the bill total, `paid` in what is
- * paid; `waived` and `expired` are shown but owe nothing.
+ * paid; `waived`, `expired` and `voided` (legend-s61sg: the order was voided
+ * and the charge given back) are shown but owe nothing.
  */
 export const ORDER_ISSUE_CHARGE_STATUSES = [
   "open",
@@ -1191,6 +1192,7 @@ export const ORDER_ISSUE_CHARGE_STATUSES = [
   "routed_pos",
   "waived",
   "expired",
+  "voided",
 ] as const;
 export const orderIssueChargeStatusSchema = z.enum(ORDER_ISSUE_CHARGE_STATUSES);
 export type OrderIssueChargeStatus = z.infer<
@@ -1211,16 +1213,29 @@ export const sessionBillChargeSchema = z.strictObject({
 export type SessionBillCharge = z.infer<typeof sessionBillChargeSchema>;
 
 /**
- * The cashier takes a swap charge in cash at the till (legend-800h1):
+ * The cashier takes a swap charge at the till. Cash (legend-800h1):
  * `receivedIdr` is what the guest handed over (at least the charge amount; the
- * change is the answer's `changeIdr`). Cash only; EDC / QRIS at the till is a
- * later step.
+ * change is the answer's `changeIdr`). QRIS and EDC card (legend-gt98h): no
+ * amount is sent, the server's charge amount is the only one. QRIS answers a
+ * pending code; the charge is paid when the gateway confirms it. EDC names the
+ * approved `edc_transactions` sale (reference = the charge id) that paid it.
  */
-export const collectChargeAtPosInputSchema = z.strictObject({
-  idempotencyKey: uuidSchema,
-  method: z.literal("cash"),
-  receivedIdr: positiveIdr,
-});
+export const collectChargeAtPosInputSchema = z.discriminatedUnion("method", [
+  z.strictObject({
+    idempotencyKey: uuidSchema,
+    method: z.literal("cash"),
+    receivedIdr: positiveIdr,
+  }),
+  z.strictObject({
+    idempotencyKey: uuidSchema,
+    method: z.literal("qris"),
+  }),
+  z.strictObject({
+    idempotencyKey: uuidSchema,
+    method: z.literal("edc_card"),
+    edcTransactionId: uuidSchema,
+  }),
+]);
 export type CollectChargeAtPosInput = z.infer<
   typeof collectChargeAtPosInputSchema
 >;

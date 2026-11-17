@@ -1,0 +1,8 @@
+ALTER TABLE "order_issue_charges" DROP CONSTRAINT "order_issue_charges_cash_paid_check";--> statement-breakpoint
+ALTER TABLE "order_issue_charges" DROP CONSTRAINT "order_issue_charges_status_check";--> statement-breakpoint
+ALTER TABLE "order_issue_charges" DROP CONSTRAINT "order_issue_charges_state_check";--> statement-breakpoint
+ALTER TABLE "order_issue_charges" DROP CONSTRAINT "order_issue_charges_route_status_check";--> statement-breakpoint
+ALTER TABLE "order_issue_charges" ADD CONSTRAINT "order_issue_charges_cash_paid_check" CHECK ("order_issue_charges"."cash_movement_id" IS NULL OR ("order_issue_charges"."status" IN ('paid', 'voided') AND "order_issue_charges"."payment_intent_id" IS NULL));--> statement-breakpoint
+ALTER TABLE "order_issue_charges" ADD CONSTRAINT "order_issue_charges_status_check" CHECK ("order_issue_charges"."status" IN ('open', 'paid', 'routed_pos', 'waived', 'expired', 'voided'));--> statement-breakpoint
+ALTER TABLE "order_issue_charges" ADD CONSTRAINT "order_issue_charges_state_check" CHECK (("order_issue_charges"."status" IN ('paid', 'voided')) = ("order_issue_charges"."paid_at" IS NOT NULL) AND ("order_issue_charges"."status" IN ('waived', 'expired', 'voided')) = ("order_issue_charges"."closed_at" IS NOT NULL) AND ("order_issue_charges"."status" <> 'waived' OR ("order_issue_charges"."closed_by" IS NOT NULL AND "order_issue_charges"."close_reason" IS NOT NULL)));--> statement-breakpoint
+ALTER TABLE "order_issue_charges" ADD CONSTRAINT "order_issue_charges_route_status_check" CHECK (("order_issue_charges"."route" = 'pos') = ("order_issue_charges"."status" = 'routed_pos') OR "order_issue_charges"."status" IN ('paid', 'waived', 'expired', 'voided'));

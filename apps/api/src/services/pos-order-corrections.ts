@@ -52,6 +52,11 @@ import { getEdgeRuntimeState } from "../edge/runtime.ts";
 import { HttpError } from "../lib/http-error.ts";
 import type { Tx } from "./menu-internals.ts";
 import { liveRouteManualRefundWhere } from "./order-issue-route-refund.ts";
+import {
+  lockIssuesOfOrder,
+  paidChargesOfOrder,
+  returnPaidChargesOfVoidedOrder,
+} from "./order-recovery-charge-void.ts";
 import { loadDeferredRefundCommitments } from "./payment-refund-edge-history.ts";
 import {
   monotonicFactTime,
@@ -178,6 +183,9 @@ async function correct<T>(
   },
   run: (tx: Tx, locked: Locked, factAt: Date) => Promise<T>,
   requestedAt: Date,
+  // Locks taken BEFORE the order row (legend-s61sg: the issues of the order,
+  // the module's lock order is issue, order, charge).
+  beforeOrderLock?: (tx: Tx) => Promise<void>,
 ): Promise<T> {
   return withTenant(db, context, (tx) =>
     posIdempotent(
@@ -192,6 +200,7 @@ async function correct<T>(
         request: input.request,
       },
       async () => {
+        if (beforeOrderLock) await beforeOrderLock(tx);
         const locked = await lockPosOrder(
           tx,
           context,
@@ -303,6 +312,9 @@ export async function voidPosOrderCorrection(
           "CONFLICT",
           "Transaksi ini dibayar dengan DP reservasi dan tidak bisa di-void; hubungi admin untuk koreksi.",
         );
+      // legend-s61sg: a swap charge already paid on this order goes back with
+      // the void, in this transaction, or the void is refused (409).
+      const paidCharges = await paidChargesOfOrder(tx, context, order.id);
       const override = await consumeApproval(tx, context, {
         action: "void",
         purpose: "correction_void",
@@ -359,25 +371,36 @@ export async function voidPosOrderCorrection(
       // answers to the same cumulative ceiling and paid cap. It has no native
       // refund rows (a prior refund refuses the void above), so any deferred
       // edge refund fact or earlier admin refund must be reconciled first.
+      // legend-s61sg: the drawer also gives back the cash charges of the order.
+      const outflowIdr = voidCashIdr + paidCharges.cashIdr;
       if (voidCashIdr > 0) {
-        const candidate = {
-          tenantId: context.tenant.tenantId,
-          outletId: order.outletId,
-          orderId: order.id,
-          amountIdr: voidCashIdr,
-        };
-        const committed = await refundCommittedAmount(tx, candidate, {
-          includePendingReservations: true,
-          paidCapScope: true,
-        });
+        const committed = await refundCommittedAmount(
+          tx,
+          {
+            tenantId: context.tenant.tenantId,
+            outletId: order.outletId,
+            orderId: order.id,
+            amountIdr: voidCashIdr,
+          },
+          { includePendingReservations: true, paidCapScope: true },
+        );
         if (committed > BigInt(voidCashIdr))
           throw new PosError("REFUND_EXCEEDS_PAID");
+      }
+      // The approver's ceiling covers the whole outflow, also when the order
+      // itself holds no captured cash and only the charge cash goes out.
+      if (outflowIdr > 0) {
         if (
           !(await refundApprovalWithinLimit(
             tx,
             context,
             override.approvedBy!,
-            candidate,
+            {
+              tenantId: context.tenant.tenantId,
+              outletId: order.outletId,
+              orderId: order.id,
+              amountIdr: outflowIdr,
+            },
             now,
           ))
         )
@@ -395,7 +418,7 @@ export async function voidPosOrderCorrection(
           );
       }
       const shift =
-        voidCashIdr > 0
+        outflowIdr > 0
           ? await lockCashierShiftForCash(tx, context, {
               outletId,
               cashierId: caller.userId,
@@ -405,11 +428,11 @@ export async function voidPosOrderCorrection(
             })
           : null;
       // legend-q7jj F3: every outflow of the drawer stays a safe integer.
-      if (shift !== null) await assertShiftOutflowBound(tx, shift, voidCashIdr);
+      if (shift !== null) await assertShiftOutflowBound(tx, shift, outflowIdr);
       // Held, not refused: a refusal would let the cashier probe the expected
       // drawer cash (legend-utqr). Nothing the cashier reads shows the flag.
       const needsApproval =
-        shift !== null && (await cashOutExceedsDrawer(tx, shift, voidCashIdr));
+        shift !== null && (await cashOutExceedsDrawer(tx, shift, outflowIdr));
       const [row] = await tx
         .insert(posOrderVoids)
         .values({
@@ -430,6 +453,15 @@ export async function voidPosOrderCorrection(
         })
         .returning();
       if (!row) throw new Error("Void insert returned no row");
+      await returnPaidChargesOfVoidedOrder(tx, context, {
+        charges: paidCharges,
+        shift,
+        voidId: row.id,
+        held: needsApproval,
+        caller,
+        orderNumber: order.number,
+        now,
+      });
       // POS-06: the receipt is marked voided; its number stays on record.
       await receipts.voidForOrder(tx, context, {
         orderId: order.id,
@@ -513,6 +545,7 @@ export async function voidPosOrderCorrection(
       return voidDto(row);
     },
     requestedAt,
+    (tx) => lockIssuesOfOrder(tx, context, orderId),
   );
 }
 

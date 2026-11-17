@@ -62,7 +62,7 @@ import {
   AccountingError,
   type PostingAccountRole,
 } from "@starter/shared/accounting";
-import type { ScopedTenantContext } from "@starter/shared/core";
+import { outletIdSchema, type ScopedTenantContext } from "@starter/shared/core";
 import { goodsReceiptValueIdr } from "@starter/shared/inventory";
 import { tenderBucket } from "@starter/shared/pos";
 import {
@@ -75,6 +75,7 @@ import {
   billSplits,
   cashMovements,
   domainEventOutbox,
+  edcTransactions,
   goodsReceiptLines,
   journalEntries,
   loyaltyPrograms,
@@ -89,6 +90,7 @@ import {
   pointLedger,
   posDepositRefunds,
   posOrderRefunds,
+  posOrderVoids,
   posOrders,
   posOrderTenders,
   posShifts,
@@ -107,6 +109,7 @@ import {
   chargeBoundOf,
   DP_INTENT_STATUSES,
   payoutBackingOf,
+  postedEntryIdOf,
   saleBoundOf,
   sessionDepositAt,
 } from "./accounting-auto-journal-guards.ts";
@@ -114,6 +117,7 @@ import {
   AutoJournalSaleMissing,
   AutoJournalSalePending,
 } from "./accounting-auto-journal-void.ts";
+import { heldVoidChargeRefundId } from "./order-recovery-charge-void-id.ts";
 import { isTrainingOrder } from "./device-training.ts";
 import { ROUNDING_MODE, type Tx } from "./inventory-ops.shared.ts";
 import { purchasingPostingEnabled } from "./purchasing-posting-gate.ts";
@@ -155,6 +159,7 @@ export const AUTO_JOURNAL_EVENTS = [
   "order.voided",
   "order_issue.refund_reversal_requested",
   "order_issue.charge_paid",
+  "order_issue.charge_refunded",
   "payment.paid",
   "payment.funds_unallocated",
   "payment.refunded",
@@ -191,6 +196,15 @@ export class AutoJournalPayloadInvalid extends Error {
  */
 export class AutoJournalReceiptPending extends Error {
   readonly code = "AUTO_JOURNAL_RECEIPT_PENDING";
+}
+
+/**
+ * legend-nsvu0: a charge refund whose payment_refunds row is not final yet
+ * (`pending`/`approved`): parked retryable. Its reversal books only once the
+ * refund is `completed`; a refund that ends `failed` books nothing.
+ */
+export class AutoJournalChargeRefundPending extends Error {
+  readonly code = "AUTO_JOURNAL_CHARGE_REFUND_PENDING";
 }
 
 /**
@@ -323,13 +337,35 @@ export const orderIssueChargePaidStoredSchema = z.object({
   /** Null exactly when the charge was paid in cash at the POS (legend-800h1). */
   paymentIntentId: z.string().uuid().nullable(),
   /** Absent on events stored before the cash variant: qr_link. */
-  method: z.enum(["qr_link", "pos_cash"]).optional(),
+  method: z.enum(["qr_link", "pos_cash", "pos_edc"]).optional(),
   cashMovementId: z.string().uuid().nullable().optional(),
   grossSalesIdr: idr.nonnegative(),
   serviceChargeIdr: idr.nonnegative(),
   pbjtIdr: idr.nonnegative(),
   amountIdr: idr.refine((value) => value > 0),
   paidAt: time,
+});
+
+/**
+ * order_issue.charge_refunded as the consumer stores it (legend-nsvu0): staff
+ * refunded part of a paid swap-difference charge through `payment_refunds`
+ * row `refundId`. The outlet is the event envelope outlet; the charge and
+ * refund rows are the source of truth.
+ */
+export const orderIssueChargeRefundedStoredSchema = z.object({
+  orderId: id,
+  orderIssueId: z.string().uuid(),
+  chargeId: z.string().uuid(),
+  refundId: z.string().uuid(),
+  /** Null exactly for the cash return of a voided order (legend-s61sg). */
+  paymentIntentId: z.string().uuid().nullable(),
+  /** Absent: the gateway refund of an intent (legend-nsvu0). */
+  method: z.enum(["gateway", "pos_cash"]).optional(),
+  grossSalesIdr: idr.nonnegative(),
+  serviceChargeIdr: idr.nonnegative(),
+  pbjtIdr: idr.nonnegative(),
+  amountIdr: idr.refine((value) => value > 0),
+  refundedAt: time,
 });
 
 const paymentPaidSchema = z.object({
@@ -534,6 +570,14 @@ export function storedEventOf(event: {
     }
     case "order_issue.charge_paid": {
       const payload = orderIssueChargePaidStoredSchema.parse(event.payload);
+      if (event.outletId === null)
+        throw new AutoJournalPayloadInvalid(
+          `${event.name} event has no outlet`,
+        );
+      return { ...base, outletId: event.outletId, occurredAt, payload };
+    }
+    case "order_issue.charge_refunded": {
+      const payload = orderIssueChargeRefundedStoredSchema.parse(event.payload);
       if (event.outletId === null)
         throw new AutoJournalPayloadInvalid(
           `${event.name} event has no outlet`,
@@ -750,6 +794,8 @@ export function autoJournalKeyOf(stored: StoredAutoJournalEvent): string {
       return boundedKey(`aj:order-refund-reversal:${String(p.orderIssueId)}`);
     case "order_issue.charge_paid":
       return boundedKey(`aj:order-charge:${String(p.chargeId)}`);
+    case "order_issue.charge_refunded":
+      return boundedKey(`aj:order-charge-refund:${String(p.refundId)}`);
     case "payment.paid":
       return receiptKeyOf(String(p.intentId));
     case "payment.funds_unallocated":
@@ -1898,15 +1944,20 @@ async function chargePaidFactOf(
   if (!charge)
     throw new AutoJournalPayloadInvalid("Charge of the event not found");
   const cash = p.method === "pos_cash";
+  const edc = p.method === "pos_edc";
   if (
     cash !== (p.cashMovementId != null) ||
-    cash !== (p.paymentIntentId === null)
+    (cash || edc) !== (p.paymentIntentId === null)
   )
     throw new AutoJournalPayloadInvalid(
       "Charge event mixes the cash and the payment link variants",
     );
+  // legend-s61sg: a cash charge returned by the void of its order is `voided`;
+  // the late charge_paid still books its revenue, the cash return event
+  // reverses it (a charge that never reached the books needs no journal, but
+  // the return event would then wait for it, so it must post).
   if (
-    charge.status !== "paid" ||
+    (charge.status !== "paid" && !(cash && charge.status === "voided")) ||
     charge.paymentIntentId !== p.paymentIntentId ||
     (charge.cashMovementId ?? null) !== (p.cashMovementId ?? null) ||
     charge.outletId !== stored.outletId ||
@@ -1933,7 +1984,15 @@ async function chargePaidFactOf(
   });
   if (saleState === "pending")
     throw new AutoJournalSalePending("Sale journal is not posted yet");
-  if (saleState === "none")
+  // legend-s61sg: the void of a voided charge's order reversed the sale
+  // journal (reads "none"), but the sale did post: the charge books too.
+  if (
+    saleState === "none" &&
+    !(
+      charge.status === "voided" &&
+      (await postedEntryIdOf(tx, tenantId, `aj:sale:${p.orderId}`)) !== null
+    )
+  )
     throw new AutoJournalSaleMissing("Sale journal will never post");
   if (cash) {
     const [movement] = await tx
@@ -1966,6 +2025,48 @@ async function chargePaidFactOf(
         paidDepositIdr: 0,
         paidGatewayIdr: 0,
         paidEdcIdr: 0,
+        paidPointsIdr: 0,
+        discountIdr: 0,
+        grossSalesIdr: p.grossSalesIdr,
+        serviceChargeIdr: p.serviceChargeIdr,
+        pbjtIdr: p.pbjtIdr,
+        roundingIdr: 0,
+      },
+      sourceId: p.chargeId,
+      outletId: stored.outletId,
+      moneyTime: new Date(p.paidAt),
+    };
+  }
+  if (edc) {
+    // legend-gt98h: the money is an APPROVED EDC sale whose reference is the
+    // charge (one approved sale per outlet + reference), for its exact amount.
+    if (!stored.outletId)
+      throw new AutoJournalPayloadInvalid("EDC charge event has no outlet");
+    const [sale] = await tx
+      .select({ amountIdr: edcTransactions.amountIdr })
+      .from(edcTransactions)
+      .where(
+        and(
+          eq(edcTransactions.tenantId, tenantId),
+          eq(edcTransactions.outletId, outletIdSchema.parse(stored.outletId)),
+          eq(edcTransactions.reference, p.chargeId),
+          eq(edcTransactions.type, "sale"),
+          eq(edcTransactions.status, "approved"),
+        ),
+      )
+      .limit(1);
+    if (!sale || Number(sale.amountIdr) !== p.amountIdr)
+      throw new AutoJournalPayloadInvalid(
+        "Charge has no approved EDC sale of its amount",
+      );
+    return {
+      ruleEvent: "order.paid",
+      amounts: {
+        paidCashIdr: 0,
+        paidGatewayIntentIdr: 0,
+        paidDepositIdr: 0,
+        paidGatewayIdr: 0,
+        paidEdcIdr: p.amountIdr,
         paidPointsIdr: 0,
         discountIdr: 0,
         grossSalesIdr: p.grossSalesIdr,
@@ -2014,6 +2115,263 @@ async function chargePaidFactOf(
     sourceId: p.chargeId,
     outletId: stored.outletId,
     moneyTime: new Date(p.paidAt),
+  };
+}
+
+/**
+ * legend-nsvu0: the reversal of the part of a paid charge's revenue one refund
+ * gives back (`order.refunded` rule: gross / service / PBJT debited, the
+ * refund owed to the guest credited to customer_deposit, or to
+ * gateway_clearing when the charge receipt was never booked, mirroring
+ * chargePaidFactOf). Restrictive:
+ * - the charge must be paid through the intent of the event and the refund row
+ *   must be that intent's, for the event's amount; a refund that ended
+ *   `failed` books nothing (the money never left);
+ * - it books only once the refund is `completed` (pending/approved waits,
+ *   retryable);
+ * - the amounts must match the refund; the refunds of the charge together
+ *   (non-failed) may not pass the charge;
+ * - it waits (retryable) for the charge journal it reverses, and for the
+ *   gateway receipt when that can still post.
+ */
+async function chargeRefundedFactOf(
+  tx: Tx,
+  tenantId: TenantId,
+  stored: StoredAutoJournalEvent,
+): Promise<AutoJournalFact | null> {
+  const p = orderIssueChargeRefundedStoredSchema.parse(stored.payload);
+  const [charge] = await tx
+    .select({
+      outletId: orderIssueCharges.outletId,
+      orderId: orderIssueCharges.orderId,
+      orderIssueId: orderIssueCharges.orderIssueId,
+      status: orderIssueCharges.status,
+      paymentIntentId: orderIssueCharges.paymentIntentId,
+      amountIdr: orderIssueCharges.amountIdr,
+    })
+    .from(orderIssueCharges)
+    .where(
+      and(
+        eq(orderIssueCharges.tenantId, tenantId),
+        eq(orderIssueCharges.id, p.chargeId),
+      ),
+    );
+  if (!charge)
+    throw new AutoJournalPayloadInvalid("Charge of the event not found");
+  if (p.method === "pos_cash")
+    return chargeCashReturnFactOf(tx, tenantId, stored, p, charge);
+  if (
+    p.paymentIntentId === null ||
+    charge.status !== "paid" ||
+    charge.paymentIntentId !== p.paymentIntentId ||
+    charge.outletId !== stored.outletId ||
+    charge.orderId !== p.orderId ||
+    charge.orderIssueId !== p.orderIssueId
+  )
+    throw new AutoJournalPayloadInvalid(
+      "Charge is not paid by the intent of the event",
+    );
+  const paymentIntentId = p.paymentIntentId;
+  const [refund] = await tx
+    .select({
+      amountIdr: paymentRefunds.amountIdr,
+      status: paymentRefunds.status,
+      paymentIntentId: paymentRefunds.paymentIntentId,
+    })
+    .from(paymentRefunds)
+    .where(
+      and(
+        eq(paymentRefunds.tenantId, tenantId),
+        eq(paymentRefunds.id, p.refundId),
+      ),
+    );
+  if (!refund || refund.paymentIntentId !== paymentIntentId)
+    throw new AutoJournalPayloadInvalid(
+      "Refund of the charge event not found on its intent",
+    );
+  if (refund.status === "failed") return null;
+  // Booked only once final: a refund journalled while pending that then fails
+  // would leave its reversal behind, and the refile would reverse twice.
+  if (refund.status !== "completed")
+    throw new AutoJournalChargeRefundPending(
+      "Charge refund is not completed yet",
+    );
+  if (
+    Number(refund.amountIdr) !== p.amountIdr ||
+    p.grossSalesIdr + p.serviceChargeIdr + p.pbjtIdr !== p.amountIdr
+  )
+    throw new AccountingError(
+      "POSTING_AMOUNTS_MISMATCH",
+      "Charge refund payload does not match the refund row",
+    );
+  const [refunded] = await tx
+    .select({
+      total: sql<string>`coalesce(sum(${paymentRefunds.amountIdr}), 0)::text`,
+    })
+    .from(paymentRefunds)
+    .where(
+      and(
+        eq(paymentRefunds.tenantId, tenantId),
+        eq(paymentRefunds.paymentIntentId, paymentIntentId),
+        ne(paymentRefunds.status, "failed"),
+      ),
+    );
+  if (Number(refunded?.total ?? "0") > Number(charge.amountIdr))
+    throw new AccountingError(
+      "POSTING_AMOUNTS_MISMATCH",
+      "Refunds of the charge pass the paid charge",
+    );
+  const chargeState = await backingStateOf(tx, tenantId, {
+    kind: "charge",
+    chargeId: p.chargeId,
+  });
+  if (chargeState === "pending")
+    throw new AutoJournalSalePending("Charge journal is not posted yet");
+  if (chargeState === "none")
+    throw new AutoJournalSaleMissing("Charge journal will never post");
+  const states = await receiptStatesOf(tx, tenantId, [paymentIntentId]);
+  const state = states.get(paymentIntentId);
+  if (state === "pending")
+    throw new AutoJournalReceiptPending(
+      "Gateway receipt of the charge is not booked yet",
+    );
+  const deposit = state === "posted" ? p.amountIdr : 0;
+  return {
+    ruleEvent: "order.refunded",
+    amounts: {
+      grossSalesIdr: p.grossSalesIdr,
+      serviceChargeIdr: p.serviceChargeIdr,
+      pbjtIdr: p.pbjtIdr,
+      discountIdr: 0,
+      refundCashIdr: 0,
+      refundGatewayIdr: deposit,
+      refundGatewayClearingIdr: p.amountIdr - deposit,
+      refundEdcIdr: 0,
+      refundPointsIdr: 0,
+    },
+    sourceId: p.refundId,
+    outletId: stored.outletId,
+    moneyTime: new Date(p.refundedAt),
+  };
+}
+
+/**
+ * legend-s61sg: the return of a paid cash charge when its order is voided
+ * (`order.refunded` rule: gross / service / PBJT debited, the cash credited).
+ * `refundId` is the cash_out movement of the return. Restrictive:
+ * - the charge must be `voided`, cash paid, of the event's order and issue,
+ *   and the movement must be a cash_out of the same outlet, for the whole
+ *   charge, recorded for this charge only (its key names the charge); a void
+ *   held for the drawer has no movement: then the held void row of the order
+ *   and the refund id derived from it and the charge are the evidence;
+ * - it waits (retryable) for the charge journal it reverses, even when the
+ *   sale journal was reversed by the same void.
+ */
+async function chargeCashReturnFactOf(
+  tx: Tx,
+  tenantId: TenantId,
+  stored: StoredAutoJournalEvent,
+  p: z.infer<typeof orderIssueChargeRefundedStoredSchema>,
+  charge: {
+    outletId: string;
+    orderId: string;
+    orderIssueId: string;
+    status: string;
+    paymentIntentId: string | null;
+    amountIdr: number | bigint;
+  },
+): Promise<AutoJournalFact> {
+  if (
+    p.paymentIntentId !== null ||
+    charge.status !== "voided" ||
+    charge.paymentIntentId !== null ||
+    charge.outletId !== stored.outletId ||
+    charge.orderId !== p.orderId ||
+    charge.orderIssueId !== p.orderIssueId
+  )
+    throw new AutoJournalPayloadInvalid(
+      "Charge is not a voided cash charge of the event",
+    );
+  const [movement] = await tx
+    .select({
+      type: cashMovements.type,
+      outletId: cashMovements.outletId,
+      amountIdr: cashMovements.amountIdr,
+      idempotencyKey: cashMovements.idempotencyKey,
+    })
+    .from(cashMovements)
+    .where(
+      and(
+        eq(cashMovements.tenantId, tenantId),
+        eq(cashMovements.id, p.refundId),
+      ),
+    );
+  if (movement) {
+    if (
+      movement.type !== "cash_out" ||
+      movement.outletId !== stored.outletId ||
+      movement.idempotencyKey !== `void-charge:${p.chargeId}`
+    )
+      throw new AutoJournalPayloadInvalid(
+        "Cash movement of the event is not the return of its charge",
+      );
+    if (Number(movement.amountIdr) !== p.amountIdr)
+      throw new AccountingError(
+        "POSTING_AMOUNTS_MISMATCH",
+        "Charge cash return does not match the charge row",
+      );
+  } else {
+    // A void held for the drawer pays no cash out now and has no movement: the
+    // held void row of the same order is the evidence, and the refund id must
+    // be the one derived from that void and this charge.
+    const [held] = await tx
+      .select({ id: posOrderVoids.id })
+      .from(posOrderVoids)
+      .where(
+        and(
+          eq(posOrderVoids.tenantId, tenantId),
+          eq(posOrderVoids.outletId, outletIdSchema.parse(stored.outletId)),
+          eq(posOrderVoids.orderId, charge.orderId),
+          eq(posOrderVoids.needsApproval, true),
+        ),
+      );
+    if (!held || p.refundId !== heldVoidChargeRefundId(held.id, p.chargeId))
+      throw new AutoJournalPayloadInvalid(
+        "Cash movement of the event is not the return of its charge",
+      );
+  }
+  if (
+    Number(charge.amountIdr) !== p.amountIdr ||
+    p.grossSalesIdr + p.serviceChargeIdr + p.pbjtIdr !== p.amountIdr
+  )
+    throw new AccountingError(
+      "POSTING_AMOUNTS_MISMATCH",
+      "Charge cash return does not match the charge row",
+    );
+  const chargeState = await backingStateOf(tx, tenantId, {
+    kind: "charge",
+    chargeId: p.chargeId,
+  });
+  if (chargeState === "pending")
+    throw new AutoJournalSalePending("Charge journal is not posted yet");
+  if (chargeState === "none")
+    throw new AutoJournalSaleMissing("Charge journal will never post");
+  return {
+    ruleEvent: "order.refunded",
+    amounts: {
+      grossSalesIdr: p.grossSalesIdr,
+      serviceChargeIdr: p.serviceChargeIdr,
+      pbjtIdr: p.pbjtIdr,
+      discountIdr: 0,
+      refundCashIdr: p.amountIdr,
+      refundGatewayIdr: 0,
+      refundGatewayClearingIdr: 0,
+      refundEdcIdr: 0,
+      refundPointsIdr: 0,
+    },
+    sourceId: p.refundId,
+    outletId: stored.outletId,
+    moneyTime: new Date(p.refundedAt),
   };
 }
 
@@ -2344,6 +2702,8 @@ export async function autoJournalFactOf(
       );
     case "order_issue.charge_paid":
       return chargePaidFactOf(tx, tenantId, stored);
+    case "order_issue.charge_refunded":
+      return chargeRefundedFactOf(tx, tenantId, stored);
     case "payment.paid": {
       const p = paymentPaidSchema.parse(stored.payload);
       if (p.receivedIdr <= 0) return null;

@@ -59,6 +59,7 @@ import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { applySupplierDebitNoteInTransaction } from "./accounting-ap.service.ts";
 import {
+  AutoJournalChargeRefundPending,
   AutoJournalDepositCutoverMixed,
   AutoJournalLoyaltyEntityAmbiguous,
   AutoJournalPayloadInvalid,
@@ -104,6 +105,7 @@ const TRAINING_ORDER_EVENTS: ReadonlySet<string> = new Set([
   "order.refunded",
   "order.voided",
   "order_issue.charge_paid",
+  "order_issue.charge_refunded",
 ]);
 
 export type AutoJournalResult =
@@ -129,6 +131,7 @@ const RETRYABLE_CODES = [
   "AUTO_JOURNAL_SALE_PENDING",
   "AUTO_JOURNAL_RECOVERY_REFUND_PENDING",
   "AUTO_JOURNAL_REFUND_SOURCE_PENDING",
+  "AUTO_JOURNAL_CHARGE_REFUND_PENDING",
 ] as const;
 
 const PAYLOAD_INVALID = "AUTO_JOURNAL_PAYLOAD_INVALID";
@@ -175,6 +178,7 @@ function parkCodeOf(error: unknown): string | null {
   if (error instanceof AutoJournalDebitNoteShort) return error.code;
   if (error instanceof AutoJournalReceiptPending) return error.code;
   if (error instanceof AutoJournalRefundSourcePending) return error.code;
+  if (error instanceof AutoJournalChargeRefundPending) return error.code;
   if (error instanceof AutoJournalReceiptMissing) return error.code;
   if (error instanceof AutoJournalReceiptDeadLettered) return error.code;
   if (error instanceof AutoJournalSalePending) return error.code;
@@ -467,6 +471,21 @@ async function requeueSaleDependents(
   stored: StoredAutoJournalEvent,
   now: Date,
 ): Promise<void> {
+  // legend-s61sg: the cash return of a voided charge waits for the charge journal.
+  if (stored.eventName === "order_issue.charge_paid") {
+    await tx
+      .update(autoJournalParked)
+      .set({ retryable: true, nextRetryAt: now })
+      .where(
+        and(
+          eq(autoJournalParked.tenantId, tenantId),
+          eq(autoJournalParked.errorCode, "AUTO_JOURNAL_SALE_MISSING"),
+          eq(autoJournalParked.eventName, "order_issue.charge_refunded"),
+          sql`${autoJournalParked.payload}->>'chargeId' = ${String(stored.payload.chargeId)}`,
+        ),
+      );
+    return;
+  }
   if (stored.eventName !== "order.paid") return;
   await tx
     .update(autoJournalParked)
@@ -479,6 +498,7 @@ async function requeueSaleDependents(
           "order.voided",
           "order.refunded",
           "order_issue.charge_paid",
+          "order_issue.charge_refunded",
         ]),
         sql`${autoJournalParked.payload}->>'orderId' = ${String(stored.payload.orderId)}`,
       ),

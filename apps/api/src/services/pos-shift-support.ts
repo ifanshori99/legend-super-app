@@ -4,7 +4,7 @@
 // DTO mappers.
 
 import { createHash } from "node:crypto";
-import { and, asc, eq, isNull, not, or, sql } from "drizzle-orm";
+import { and, asc, eq, isNotNull, isNull, not, or, sql } from "drizzle-orm";
 import type { PermissionCode } from "@starter/shared/access";
 import { maskAuditChanges } from "@starter/shared/audit";
 import {
@@ -37,6 +37,7 @@ import {
   type PosShiftWithFigures,
 } from "@starter/shared/pos";
 import { domainEventOutbox } from "../db/schema/index.ts";
+import { orderIssueCharges } from "../db/schema/kds-issues.ts";
 import {
   posOrderRefunds,
   posOrderTenders,
@@ -485,7 +486,40 @@ async function heldCorrectionCashOf(tx: Tx, shift: ShiftRow): Promise<bigint> {
         eq(posOrderTenders.status, "captured"),
       ),
     );
-  return refundCash + BigInt(voided?.total ?? 0);
+  // legend-s61sg: the cash swap charges that a held void gives back with its
+  // order (status `voided`, collected in cash). No cash movement carries them.
+  const [charges] = await tx
+    .select({
+      total: sql<string>`coalesce(sum(${orderIssueCharges.amountIdr}), 0)`,
+    })
+    .from(posOrderVoids)
+    .innerJoin(
+      orderIssueCharges,
+      and(
+        eq(orderIssueCharges.tenantId, posOrderVoids.tenantId),
+        eq(orderIssueCharges.orderId, posOrderVoids.orderId),
+      ),
+    )
+    .leftJoin(
+      posOrders,
+      and(
+        eq(posOrders.tenantId, posOrderVoids.tenantId),
+        eq(posOrders.orderId, posOrderVoids.orderId),
+      ),
+    )
+    .where(
+      and(
+        notTrainingOrder,
+        eq(posOrderVoids.tenantId, shift.tenantId),
+        eq(posOrderVoids.outletId, shift.outletId),
+        eq(posOrderVoids.shiftId, shift.id),
+        eq(posOrderVoids.needsApproval, true),
+        eq(orderIssueCharges.status, "voided"),
+        isNull(orderIssueCharges.paymentIntentId),
+        isNotNull(orderIssueCharges.cashMovementId),
+      ),
+    );
+  return refundCash + BigInt(voided?.total ?? 0) + BigInt(charges?.total ?? 0);
 }
 
 function safeHeldTotal(total: bigint): number {
