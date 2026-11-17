@@ -161,7 +161,7 @@ const lockUnsupported = () =>
   );
 
 /** Maps a stored `payroll_runs` row to the contract run (dates as ISO strings). */
-function toRun(row: typeof payrollRuns.$inferSelect): PayrollRun {
+export function toRun(row: typeof payrollRuns.$inferSelect): PayrollRun {
   const iso = (value: Date | null) => (value ? value.toISOString() : null);
   const parsed = payrollRunSchema.safeParse({
     id: row.id,

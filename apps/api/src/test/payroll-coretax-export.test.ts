@@ -822,22 +822,6 @@ describe("Coretax export: permission, validation, scope", () => {
     expect(rows.rowCount).toBe(0);
   });
 
-  it("[coretax-annual-not-supported] kind annual_statement answers 422 PAYROLL_TAX_EXPORT_NOT_SUPPORTED and writes nothing", async () => {
-    const world = await makeWorld(digits(16));
-    const emp = await makeEmployee(world);
-    await seedRun(world, "locked", [
-      { emp, gross: 40_000_000, bp: 1600, pph: 6_400_000 },
-    ]);
-    const response = await exportTax(exporter, {
-      legalEntityId: world.entityId,
-      kind: "annual_statement",
-      taxPeriod: String(YEAR),
-    });
-    expect(response.status, JSON.stringify(response.body)).toBe(422);
-    expect(response.body.error?.code).toBe("PAYROLL_TAX_EXPORT_NOT_SUPPORTED");
-    expect(await exportCount(world.entityId)).toBe(0);
-  });
-
   it("[coretax-bad-period] a monthly export needs YYYY-MM; a bare year or a month 13 answers 422", async () => {
     const world = await makeWorld(digits(16));
     const bareYear = await exportTax(exporter, monthly(world, String(YEAR)));

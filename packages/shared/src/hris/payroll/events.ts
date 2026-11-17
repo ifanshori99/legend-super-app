@@ -57,6 +57,21 @@ export const payrollLocked = defineDomainEvent({
   }),
 });
 
+/**
+ * HR approved the run and the final approval is now asked of a second, distinct
+ * person (PAYROLL_RUN_SIDE_EFFECTS.approve_hr). Run-level totals only, never
+ * per-employee amounts (HR-03); no journal follows.
+ */
+export const payrollApprovalRequested = defineDomainEvent({
+  name: "payroll.approval_requested",
+  payload: z.strictObject({
+    ...runRef,
+    totals: payrollRunTotalsSchema,
+    approvedByHr: userIdSchema,
+    approvedByHrAt: isoDateTimeSchema,
+  }),
+});
+
 const nonNegativeIdr = idrSchema.refine((v) => v >= 0, "Must not be negative");
 
 /**
@@ -199,6 +214,7 @@ export const payoutBatchUnfrozen = defineDomainEvent({
 
 export const payrollDomainEvents = [
   payrollLocked,
+  payrollApprovalRequested,
   payrollPaid,
   payrollReversed,
   payslipCreated,
