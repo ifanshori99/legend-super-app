@@ -36,6 +36,7 @@ import { CoreError } from "@starter/shared/core";
 import type { ObjectStorage } from "@starter/shared/adapters";
 import type { ScopedTenantContext, TenantId } from "@starter/shared/core";
 import { db } from "../db/index.ts";
+import { logger } from "../lib/logger.ts";
 import {
   payrollDisbursementBatches,
   payrollDisbursementItems,
@@ -100,6 +101,10 @@ export type PayoutReconPageResult = {
   readonly operations: number;
   /** New flags written. */
   readonly flagged: number;
+  /** Known flags raised again (a changed fingerprint records a sighting). */
+  readonly reraised: number;
+  /** Known flags whose chunk failed to be raised again; logged, page not failed. */
+  readonly reraiseFailed: number;
   /** Proof files that could not be read for a reason other than "not found". */
   readonly unreadable: number;
   /** Sort key of the last operation of the page; null when the page was empty. */
@@ -1711,6 +1716,45 @@ export type PayoutReconOptions = {
   since?: Date;
 };
 
+/** Known flags raised again per transaction (each call keeps an advisory lock). */
+export const PAYOUT_RECON_RERAISE_CHUNK = 100;
+
+/**
+ * Raises known flags again, `chunkSize` per `withTenant`. A failed chunk is
+ * logged (no personal data) and counted; the other chunks still run.
+ */
+export async function reraiseKnownFlags(
+  context: ScopedTenantContext,
+  flags: readonly Flag[],
+  chunkSize: number = PAYOUT_RECON_RERAISE_CHUNK,
+): Promise<{ reraised: number; failed: number }> {
+  const tenantId = context.tenant.tenantId;
+  let reraised = 0;
+  let failed = 0;
+  for (let at = 0; at < flags.length; at += chunkSize) {
+    const chunk = flags.slice(at, at + chunkSize);
+    try {
+      await withTenant(db, context, async (tx) => {
+        for (const flag of chunk)
+          await tx.execute(
+            sql`SELECT app.payout_recon_flag(${tenantId}::uuid, ${flag.kind}, ${flag.operationId}::uuid, ${flag.itemId}::uuid, ${flag.reason})`,
+          );
+      });
+      reraised += chunk.length;
+    } catch (error) {
+      failed += chunk.length;
+      logger.error(
+        {
+          errorName: error instanceof Error ? error.name : "unknown",
+          chunkSize: chunk.length,
+        },
+        "payout recon: raising known flags again failed",
+      );
+    }
+  }
+  return { reraised, failed };
+}
+
 /**
  * One page of operations of one tenant (tenant-wide worker context). Reads in
  * one transaction, reads the proof files outside it, then writes the new flags
@@ -1773,7 +1817,15 @@ export async function reconcileTrustedPayouts(
     (withdrawals?.attestations.length ?? 0) === 0 &&
     (closures?.closures.length ?? 0) === 0
   )
-    return { operations: 0, flagged: 0, unreadable: 0, last, exhausted };
+    return {
+      operations: 0,
+      flagged: 0,
+      reraised: 0,
+      reraiseFailed: 0,
+      unreadable: 0,
+      last,
+      exhausted,
+    };
 
   // The stored proof read again must hash to its record. "Not found" is a
   // difference; any other read error is retried by the next cycle, not flagged.
@@ -1883,16 +1935,36 @@ export async function reconcileTrustedPayouts(
         flagKey(flag.kind, flag.operationId, flag.itemId, flag.reason),
       ),
   );
-  if (raised.length > 0)
+  // New flags first, in their own transaction: a failure fails the page, as before.
+  if (fresh.length > 0)
     await withTenant(db, context, async (tx) => {
-      for (const flag of raised)
+      for (const flag of fresh)
         await tx.execute(
           sql`SELECT app.payout_recon_flag(${tenantId}::uuid, ${flag.kind}, ${flag.operationId}::uuid, ${flag.itemId}::uuid, ${flag.reason})`,
         );
     });
+  // Known flags are raised again in small chunks of their own (each call holds
+  // an advisory lock until its transaction ends). A failed chunk is logged and
+  // never fails the page or holds the cursor (legend-hklnq).
+  const freshKeys = new Set(
+    fresh.map((flag) =>
+      flagKey(flag.kind, flag.operationId, flag.itemId, flag.reason),
+    ),
+  );
+  const again = await reraiseKnownFlags(
+    context,
+    raised.filter(
+      (flag) =>
+        !freshKeys.has(
+          flagKey(flag.kind, flag.operationId, flag.itemId, flag.reason),
+        ),
+    ),
+  );
   return {
     operations: operations.length,
     flagged: fresh.length,
+    reraised: again.reraised,
+    reraiseFailed: again.failed,
     unreadable,
     last,
     exhausted,

@@ -962,3 +962,112 @@ describe("990 phase 6: real recon and the live fingerprint", () => {
     for (const id of w.flagIds) expect(await reopenedOf(id)).toBe(true);
   });
 });
+
+// =========================================================================
+// 5: raising known flags again never fails the page
+// =========================================================================
+
+describe("990 phase 6: raising known flags again is chunked and cannot fail the page", () => {
+  it("[legend-hklnq-reraise-failure-page-ok] raising a known flag again fails (the sighting insert is refused): the new flag is still written, the page result succeeds, reraiseFailed counts the known flags", async () => {
+    const w = await realFlaggedWorld();
+    const w2 = await correctedWorld();
+    await dropJournalOf(w2.itemId);
+    expect(
+      await exceptionRows(w2.itemId),
+      "premise: the second item is not flagged yet",
+    ).toHaveLength(0);
+    await changeItemData(w.itemId);
+
+    const guard = `reraise_block_${randomUUID().replaceAll("-", "")}`;
+    const ids = w.flagIds.map((id) => `'${id}'`).join(",");
+    await W.asTenant(async (c) => {
+      await c.query(
+        `CREATE FUNCTION ${guard}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test: sighting refused'; END $$`,
+      );
+      await c.query(
+        `CREATE TRIGGER ${guard} BEFORE INSERT ON ${SIGHTINGS} FOR EACH ROW WHEN (NEW.exception_id IN (${ids})) EXECUTE FUNCTION ${guard}()`,
+      );
+    }, true);
+    try {
+      const { reconcileTrustedPayouts } =
+        await import("../services/payroll-payout-recon.service.ts");
+      const { storage } = W.proofs();
+      let flagged = 0;
+      let reraised = 0;
+      let reraiseFailed = 0;
+      let after: string | null = null;
+      for (let page = 0; page < 1000; page += 1) {
+        const result: Awaited<ReturnType<typeof reconcileTrustedPayouts>> =
+          await reconcileTrustedPayouts(W.scope(), { storage, after });
+        flagged += result.flagged;
+        reraised += result.reraised;
+        reraiseFailed += result.reraiseFailed;
+        if (result.last === null || result.exhausted) break;
+        after = result.last;
+      }
+      expect(
+        (await exceptionRows(w2.itemId)).length,
+        "the new flag is written",
+      ).toBeGreaterThan(0);
+      expect(flagged, "the page counts the new flag").toBeGreaterThan(0);
+      expect(reraiseFailed, "the known flags failed").toBeGreaterThanOrEqual(
+        w.flagIds.length,
+      );
+      expect(reraised, "no known flag raised again").toBe(0);
+    } finally {
+      await W.asTenant(async (c) => {
+        await c.query(`DROP TRIGGER IF EXISTS ${guard} ON ${SIGHTINGS}`);
+        await c.query(`DROP FUNCTION IF EXISTS ${guard}()`);
+      }, true);
+    }
+  });
+
+  it("[legend-hklnq-reraise-chunks] 250 known flags are all raised again in chunks of 100 (each gets its new sighting); a bad chunk fails alone and the others still run", async () => {
+    const { reraiseKnownFlags, PAYOUT_RECON_RERAISE_CHUNK } =
+      await import("../services/payroll-payout-recon.service.ts");
+    expect(PAYOUT_RECON_RERAISE_CHUNK).toBe(100);
+    const w = await failedWorld();
+    type Flags = Parameters<typeof reraiseKnownFlags>[1];
+    const flags = Array.from({ length: 250 }, () => ({
+      kind: "correction",
+      operationId: randomUUID(),
+      itemId: w.itemId,
+      reason: FLAG_REASON,
+    }));
+    for (const flag of flags) await flagCall(w.itemId, flag.operationId);
+    const rows = await exceptionRows(w.itemId);
+    expect(rows, "premise: 250 flags on record").toHaveLength(250);
+    const exceptionIds = rows.map((r) => r.id as string);
+    const sightingCount = () =>
+      count(
+        `SELECT count(*) AS n FROM ${SIGHTINGS} WHERE tenant_id = $1 AND exception_id = ANY($2::uuid[])`,
+        [W.tenantId, exceptionIds],
+      );
+    expect(await sightingCount(), "premise: one sighting each").toBe(250);
+
+    await changeItemData(w.itemId);
+    const done = await reraiseKnownFlags(W.scope(), flags as unknown as Flags);
+    expect(done).toEqual({ reraised: 250, failed: 0 });
+    expect(await sightingCount(), "every flag has its new sighting").toBe(500);
+
+    const mixed = [
+      flags[0]!,
+      { ...flags[1]!, operationId: "not-a-uuid" },
+      flags[2]!,
+      flags[3]!,
+    ];
+    await changeItemData(w.itemId, "FORGED-02");
+    const part = await reraiseKnownFlags(
+      W.scope(),
+      mixed as unknown as Flags,
+      2,
+    );
+    expect(part, "the bad chunk fails alone").toEqual({
+      reraised: 2,
+      failed: 2,
+    });
+    expect(await sightingCount(), "the good chunk still wrote").toBeGreaterThan(
+      500,
+    );
+  });
+});
