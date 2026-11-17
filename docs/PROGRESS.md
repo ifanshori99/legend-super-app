@@ -1870,3 +1870,4 @@ Langkah berikut CTO baru:
 - 22:40 CTO: 1016 G8gub 8164b182a SIAP batch86 sesudah 1009. Refund > kelebihan dihitung penuh (membatasi) dipertahankan. Celah test POS lebih bayar dicatat (QRIS POS selalu hold, tidak bisa lebih bayar). G8gub resolve.
 - 22:52 CTO: 1017 G737x a4fd0a639 SIAP batch86 sesudah 1012. Keputusan: keep-alive sesi perangkat bersama diizinkan (kartu legend-hlmbk naik P2). G737x resolve.
 - 22:52 CTO: Mulai 1018 (dsbqr KDS ws subprotocol + hlmbk keep-alive), penahan rilis tablet KDS, Sonnet #3 base 1017.
+- 22:56 CTO: batch84 mendarat m1 a981c1a53 (7 cabang, migrasi 0443-0449). Dikonfirmasi: held kas 974 (4wu4 ditutup), sarapan inklusif ditolak (legend-5klwi P3), flake e2e (legend-bz3hj). G36es resolve. Mulai G0fp6 merge train batch85 (#1, 7 cabang 4badcac8/978/980/982/983/981/984) dan G3ik2 SO recon ronde 2 Codex.
