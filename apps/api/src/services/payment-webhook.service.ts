@@ -209,17 +209,26 @@ async function loadWebhookSecrets(
   context: ScopedTenantContext,
 ): Promise<WebhookSecretEntry[]> {
   const { data } = await listIntegrations(context);
-  const outletIds = new Set<string | null>();
-  for (const row of data)
-    if (row.provider === PROVIDER && row.status === "active")
-      outletIds.add(row.outletId);
   const secrets = new Map<string, WebhookSecretEntry>();
-  for (const outletId of outletIds) {
-    const loaded = await loadActiveIntegrationCredentials(
-      context,
-      PROVIDER,
-      outletId,
-    );
+  for (const row of data) {
+    if (row.provider !== PROVIDER || row.status !== "active") continue;
+    // One active integration with unreadable credentials must not break the
+    // others: it is skipped (class name only, never the error message, which
+    // could carry secret material).
+    let loaded: Awaited<ReturnType<typeof loadIntegrationCredentialsById>>;
+    try {
+      loaded = await loadIntegrationCredentialsById(context, PROVIDER, row.id);
+    } catch (error) {
+      logger.warn(
+        {
+          tenantId: context.tenant.tenantId,
+          integrationId: row.id,
+          errName: error instanceof Error ? error.name : "UnknownError",
+        },
+        "doit webhook: integration credentials unreadable, skipped",
+      );
+      continue;
+    }
     if (!loaded) continue;
     const secret = loaded.credentials.webhookSecret;
     if (typeof secret === "string" && secret.length > 0 && !secrets.has(secret))

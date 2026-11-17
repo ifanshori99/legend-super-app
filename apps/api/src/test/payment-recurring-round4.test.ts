@@ -779,11 +779,12 @@ describe("REC-35 a PLAN_MISMATCH row may only be cancelled", () => {
 });
 
 // ---------------------------------------------------------------------------
-// REC-36 (item 1): a mismatch row with a DOIT id does not block a new key
+// REC-36 (item 1, reversed by legend-ycb85 / legend-965): a mismatch row with a
+// DOIT id BLOCKS a new key
 // ---------------------------------------------------------------------------
 
-describe("REC-36 a new idempotency key is not blocked by a needs_reconcile row that has a DOIT id", () => {
-  it("REC-36 a new key starts normally next to a PLAN_MISMATCH row that holds a DOIT id", async () => {
+describe("REC-36 a new idempotency key is blocked by a needs_reconcile row that has a DOIT id", () => {
+  it("REC-36 a new key next to a PLAN_MISMATCH row that holds a DOIT id is CONFLICT, DOIT is not called and no row is added", async () => {
     const plan = await seedPlan();
     const profileId = await seedProfile();
     const stale = await seedSub({
@@ -793,29 +794,25 @@ describe("REC-36 a new idempotency key is not blocked by a needs_reconcile row t
       customerProfileId: profileId,
       startKey: `idem-${unique()}`,
     });
-    const providerId = `sub_${unique()}`;
     const { state, deps } = fakeDoit(
       "createSubscription",
-      createdAnswer(plan, providerId),
+      createdAnswer(plan, `sub_${unique()}`),
     );
-    const result = await startSubscription(
-      context(),
-      {
-        planId: plan.planId,
-        customerProfileId: profileId,
-        idempotencyKey: `idem-${unique()}`,
-      },
-      deps,
-    );
-    expect(result.subscription.status).toBe("pending_first_payment");
-    expect(state.calls).toBe(1);
-    const rows = await subsForPlan(plan.planId, stale.subId);
-    expect(rows).toEqual([
-      expect.objectContaining({
-        status: "pending_first_payment",
-        provider_subscription_id: providerId,
-      }),
-    ]);
+    expect(
+      await codeOf(
+        startSubscription(
+          context(),
+          {
+            planId: plan.planId,
+            customerProfileId: profileId,
+            idempotencyKey: `idem-${unique()}`,
+          },
+          deps,
+        ),
+      ),
+    ).toBe("CONFLICT");
+    expect(state.calls).toBe(0);
+    expect(await subsForPlan(plan.planId, stale.subId)).toEqual([]);
     // The old mismatch row is untouched.
     expect((await subRow(stale.subId)).status).toBe("needs_reconcile");
   });

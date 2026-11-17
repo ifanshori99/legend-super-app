@@ -12,6 +12,9 @@
 //   - HTTP     POST /v1/recurring/plans
 //              POST /v1/recurring/subscriptions
 //              POST /v1/recurring/subscriptions/{id}/pause|resume|cancel
+//              GET  /v1/recurring/subscriptions/{id}
+//              GET  /v1/recurring/subscriptions?reference={uuid}
+//                   -> { data: subscription[] } (empty = DOIT has none)
 //
 // Only what moves money is strict (ids, amount, currency, status, period).
 // Unknown extra fields are dropped, never echoed. Nothing here logs or throws
@@ -132,6 +135,15 @@ export const doitRecurringSubscriptionSchema = z.object({
 });
 export type DoitRecurringSubscription = z.infer<
   typeof doitRecurringSubscriptionSchema
+>;
+
+/** Answer of the lookup by `reference` (ASSUMED). One malformed entry fails the
+ * whole answer: a partial list could hide a second subscription. */
+export const doitRecurringSubscriptionListSchema = z.object({
+  data: z.array(doitRecurringSubscriptionSchema).max(100),
+});
+export type DoitRecurringSubscriptionList = z.infer<
+  typeof doitRecurringSubscriptionListSchema
 >;
 
 /** Statuses DOIT reports after a pause / resume / cancel call (ASSUMED, like

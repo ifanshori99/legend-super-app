@@ -125,7 +125,8 @@ export const paymentRecurringSubscriptions = pgTable(
     gatewayIntegrationId: uuid("gateway_integration_id").notNull(),
     /** Plain UUID, no FK (customer profiles live in another workstream). */
     customerProfileId: uuid("customer_profile_id").notNull(),
-    /** Null only while `provisioning` / `needs_reconcile` (see the CHECK). */
+    /** Null only while `provisioning` / `needs_reconcile`, or `cancelled` for a
+     * start intent DOIT confirmed it never created (see the CHECK). */
     providerSubscriptionId: varchar("provider_subscription_id", {
       length: 100,
     }),
@@ -192,6 +193,12 @@ export const paymentRecurringSubscriptions = pgTable(
     uniqueIndex("payment_recurring_subscriptions_live_customer_plan_key")
       .on(table.tenantId, table.planId, table.customerProfileId)
       .where(sql`${table.status} IN ('pending_first_payment', 'active')`),
+    // Bead legend-yqne1 / legend-ycb85: one unresolved (provisioning or
+    // needs_reconcile) row per customer and plan, with or without a DOIT id,
+    // so a second start can never sit next to a row DOIT may still charge for.
+    uniqueIndex("payment_recurring_subscriptions_unresolved_customer_plan_key")
+      .on(table.tenantId, table.planId, table.customerProfileId)
+      .where(sql`${table.status} IN ('provisioning', 'needs_reconcile')`),
     index("payment_recurring_subscriptions_outlet_idx").on(
       table.tenantId,
       table.outletId,
@@ -207,7 +214,7 @@ export const paymentRecurringSubscriptions = pgTable(
     ),
     check(
       "payment_recurring_subscriptions_provider_sub_check",
-      sql`${table.providerSubscriptionId} IS NOT NULL OR ${table.status} IN ('provisioning', 'needs_reconcile')`,
+      sql`${table.providerSubscriptionId} IS NOT NULL OR ${table.status} IN ('provisioning', 'needs_reconcile', 'cancelled')`,
     ),
     check(
       "payment_recurring_subscriptions_next_period_check",

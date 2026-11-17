@@ -23,6 +23,7 @@ import {
   doitCreatePlanBody,
   doitCreateSubscriptionBody,
   doitRecurringPlanSchema,
+  doitRecurringSubscriptionListSchema,
   doitRecurringSubscriptionSchema,
   type DoitCreatePlanInput,
   type DoitCreateSubscriptionInput,
@@ -66,6 +67,16 @@ export type DoitRecurringClient = {
     providerSubscriptionId: string,
     idempotencyKey: string,
   ): Promise<DoitRecurringSubscription>;
+  /** Read-only GET of one subscription (ASSUMED contract). */
+  getSubscription(
+    providerSubscriptionId: string,
+  ): Promise<DoitRecurringSubscription>;
+  /** Read-only lookup by Legend's own subscription id (`reference`, ASSUMED
+   * contract). An empty array means DOIT knows no such subscription; a thrown
+   * error means unknown, never "empty". */
+  findSubscriptionByReference(
+    reference: string,
+  ): Promise<DoitRecurringSubscription[]>;
 };
 
 function unavailable(message: string): CoreError {
@@ -94,12 +105,14 @@ export function createDoitRecurringClient(
     return baseUrl;
   }
 
-  /** One authenticated POST. Returns the parsed payload or throws a CoreError
-   * that carries no provider text. */
-  async function post<T>(
+  /** One authenticated request (POST with an Idempotency-Key, or a bodyless
+   * GET). Returns the parsed payload or throws a CoreError that carries no
+   * provider text. */
+  async function send<T>(
+    method: "GET" | "POST",
     path: string,
     body: unknown,
-    idempotencyKey: string,
+    idempotencyKey: string | null,
     schema: z.ZodType<T>,
   ): Promise<T> {
     const baseUrl = resolveBaseUrl();
@@ -123,14 +136,20 @@ export function createDoitRecurringClient(
     let response: Response;
     try {
       response = await doFetch(`${baseUrl}${path}`, {
-        method: "POST",
+        method,
         headers: {
           Authorization: `Bearer ${config.apiKey}`,
           Accept: "application/json",
-          "Content-Type": "application/json",
-          "Idempotency-Key": idempotencyKey,
+          ...(method === "POST"
+            ? {
+                "Content-Type": "application/json",
+                ...(idempotencyKey
+                  ? { "Idempotency-Key": idempotencyKey }
+                  : {}),
+              }
+            : {}),
         },
-        body: JSON.stringify(body ?? {}),
+        ...(method === "POST" ? { body: JSON.stringify(body ?? {}) } : {}),
         redirect: "error",
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
@@ -186,6 +205,13 @@ export function createDoitRecurringClient(
     return parsed.data;
   }
 
+  const post = <T>(
+    path: string,
+    body: unknown,
+    idempotencyKey: string,
+    schema: z.ZodType<T>,
+  ) => send("POST", path, body, idempotencyKey, schema);
+
   const subscriptionAction =
     (action: "pause" | "resume" | "cancel") =>
     (providerSubscriptionId: string, idempotencyKey: string) =>
@@ -214,5 +240,23 @@ export function createDoitRecurringClient(
     pauseSubscription: subscriptionAction("pause"),
     resumeSubscription: subscriptionAction("resume"),
     cancelSubscription: subscriptionAction("cancel"),
+    getSubscription: (providerSubscriptionId) =>
+      send(
+        "GET",
+        `/v1/recurring/subscriptions/${encodeURIComponent(providerSubscriptionId)}`,
+        null,
+        null,
+        doitRecurringSubscriptionSchema,
+      ),
+    findSubscriptionByReference: async (reference) => {
+      const answer = await send(
+        "GET",
+        `/v1/recurring/subscriptions?reference=${encodeURIComponent(reference)}`,
+        null,
+        null,
+        doitRecurringSubscriptionListSchema,
+      );
+      return answer.data;
+    },
   };
 }

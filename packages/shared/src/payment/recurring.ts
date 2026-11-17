@@ -170,6 +170,27 @@ export const cancelRecurringSubscription = defineEndpoint({
   params: subscriptionParams,
   response: dataResponseSchema(recurringSubscriptionSchema),
 });
+/** Reconcile tools (legend-yqne1, legend-lch2o): the row follows what DOIT says,
+ * never to `active` (only a verified invoice.paid webhook activates).
+ * `resolved` is false when the row stayed `needs_reconcile`. */
+export const recurringReconcileResultSchema = z.strictObject({
+  subscription: recurringSubscriptionSchema,
+  resolved: z.boolean(),
+});
+export const resolveRecurringSubscription = defineEndpoint({
+  method: "POST",
+  path: `${RECURRING}/subscriptions/:subscriptionId/resolve`,
+  params: subscriptionParams,
+  body: z.strictObject({}),
+  response: dataResponseSchema(recurringReconcileResultSchema),
+});
+export const reconcileRecurringStartIntent = defineEndpoint({
+  method: "POST",
+  path: `${RECURRING}/subscriptions/:subscriptionId/reconcile-intent`,
+  params: subscriptionParams,
+  body: z.strictObject({}),
+  response: dataResponseSchema(recurringReconcileResultSchema),
+});
 
 /** Days after the end of the paid period a customer keeps using the
  * subscription quota while the next invoice is unpaid (per outlet, default 3,
