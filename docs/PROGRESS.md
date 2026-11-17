@@ -6968,3 +6968,11 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 - Review architect xhigh: tanpa P1. P2 dibetulkan: persetujuan HR terikat expectedSimulationCount (409 PAYROLL_RUN_SIMULATION_STALE); guard potongan pinjaman membatasi jumlah antar-run per pinjaman.
 - Gerbang thread: typecheck shared/api/web exit 0, db:generate kosong, tes area hijau, tes kontrak root hijau. Belum: pnpm check penuh (merge train).
 - Keputusan menunggu CTO/founder: O8 partialYearTaxSubject tetap false (aturan aman); format A1 Coretax adalah tebakan (tanpa sampel DJP).
+
+## 17 Nov 2026 — 955 payroll penulis pinjaman + BPA1 (thread G6kc8)
+
+- Cabang ghostex/1a1b16fe (dari cdec4ae29, payroll 949), commit 2d4582502, 76563fdc4, b56a6d405. Kartu legend-8tfvr dan legend-y6w4q selesai di cabang; migrasi 0461 (trigger ledger pinjaman, INSERT/UPDATE; journal when 1795000000048).
+- Desain: docs/briefs/955-loan-design.md. Simulate menulis baris dan garis LOAN, lock menurunkan saldo sekali, reversal restore sekali; lock/simulate tidak lagi menolak run berpinjaman. A1 mengikuti format resmi DJP (docs/qa/coretax-bpa1-format.md, fixture golden bpa1-official.xml).
+- Review architect xhigh: tanpa P0/P1; 3 P2 dibetulkan (trigger INSERT, uji konkurensi beda tahun, bruto 0 dengan pph21 != 0 ditolak).
+- Gerbang thread: tes terarah 368/368 hijau, prettier dan eslint hijau, db:generate kosong, typecheck API + shared bersih. Belum: pnpm check penuh (merge train).
+- Keputusan menunggu CTO/founder: karyawan di dua run regular satu bulan bisa kena dua cicilan (dibatasi sisa pinjaman); ringkasan pesangon hris-settlement.service.ts:113-126 memuat potongan run belum locked.
