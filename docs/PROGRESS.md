@@ -7167,3 +7167,13 @@ Basis `origin/milestone/m1` 1c185edc0 (batch82, ujung migrasi 0435). Cabang `int
 - e2e mock: 2 gagal (`legend-g6d` AUTH-05 dan TEN-03, sudah di kartu baru), 1162 lulus, 2 skip; baseline batch82 40 gagal -> 2. Tidak ada kegagalan baru. 65 menit.
 
 **Angka**: 0 subagent (merge train jalan sendiri; gerbang lewat satu token heavy, pemegang: agent merge train), puncak 0.
+
+## Thread 966 — scanner typed errors dan SQL purchase suggestions (17 Nov 2026)
+
+Cabang `fix/966-scanner-suggestion`, base `0c31ff40e`; kartu `legend-bkoim` dan `legend-julap`, engineer Codex tingkat S. Tanpa migrasi, pembayaran, atau perubahan area milik thread 964.
+
+- `legend-bkoim` sudah diperbaiki di base oleh `d4c02fa0aad40b5a774fb7dfcf6325dd1bee4660`; selfie test sudah aktif oleh `5e767ceeb46b4896dba5352238904057e82b4c76`. Tidak membuat perubahan atau gagal-dulu palsu untuk kartu yang sudah selesai. Verifikasi ulang empat berkas (core-image, core-image-scanner-fail-open, core-storage-pdf-scanner, hris-attendance-selfie-bind): 48/48 lulus lewat `LEGEND_TEST_FILES=... heavy pnpm test`.
+- `legend-julap`: shortage dipilih PostgreSQL dengan `coalesce(quantity, 0) < par_min`, sebelum limit/offset. Urutan nama item, nama lokasi, ID par dipertahankan. Shared Zod menetapkan limit bawaan 25, maksimum 100 dan offset nonnegatif; alias WS06 mengikuti endpoint yang sama, envelope respons tetap.
+- Gagal-dulu: `LEGEND_TEST_FILES="src/test/ai-forecast.test.ts src/test/ws06-purchasing-preview-contract.test.ts src/test/ai-insights-api.test.ts" heavy pnpm test`, exit 1, 3 gagal/33 lulus: layanan belum membatasi baris, API menolak pagination valid, default kontrak belum ada. Log `/tmp/966-red.log`.
+- Satu reviewer Codex konteks segar: PASS tanpa temuan pada lima file TypeScript. Gate final oleh test_runner dengan satu token heavy: 36/36 test API suggestion dan 9/9 root ai-insights-contract lulus; ESLint lima TS dan Prettier lima TS + dokumen lulus; `heavy pnpm --filter @starter/api typecheck` dan `heavy pnpm --filter @starter/web typecheck` exit 0. Log `/tmp/966-green.log`, `/tmp/966-api-tc.log`, `/tmp/966-web-tc.log`. Full suite/build tidak dijalankan sesuai gate thread; diserahkan ke merge train.
+- Subagent Codex: total 6, puncak 4 bersamaan (dua Explore, dua test-writer/implementer, satu reviewer, satu test-runner). Token heavy parent saat red/scanner, lalu test_runner saat gate final. `session-usage.py` tidak menemukan transkrip Codex; `parallel-report` hanya menampilkan sesi Claude, jadi biaya/rata-rata Codex tidak terukur oleh alat itu.
