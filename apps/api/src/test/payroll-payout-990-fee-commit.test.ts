@@ -414,7 +414,7 @@ describe("990 B commit: failed -> overpaid with a fee needs the fee journal", ()
       "the move without a fee journal must be refused",
     ).not.toBeNull();
     expect(error!.code).toBe(GUARD_CODE);
-    expect(error!.message ?? "").toContain("PAYOUT-");
+    expect(error!.message ?? "").toContain("PAYOUT-90");
     expect(await statusOf(w.itemId), "nothing stayed").toBe("failed");
   });
 

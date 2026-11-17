@@ -14,6 +14,7 @@
 -- Ownership: as 0420/0436, created by the payout role itself.
 DO $$
 BEGIN
+  LOCK TABLE public.payroll_payout_return_claims IN SHARE ROW EXCLUSIVE MODE;
   IF EXISTS (
     SELECT 1 FROM public.payroll_payout_return_claims
      WHERE status = 'open' AND bank_ref IS NULL

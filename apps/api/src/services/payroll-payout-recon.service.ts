@@ -306,7 +306,12 @@ type ResolutionFacts = {
   resolvedBy2: string | null;
   lastProposeOperationId: string | null;
   /** Every propose / approve attestation of the item, whenever it was made. */
-  steps: { step: string; actor: string; sessionId: string }[];
+  steps: {
+    step: string;
+    actor: string;
+    sessionId: string;
+    operationId: string;
+  }[];
 };
 
 type SessionRow = {
@@ -470,7 +475,8 @@ async function readResolutions(
     });
   for (const row of rowsOf(
     await tx.execute(sql`
-      SELECT x::text AS item_id, a.step, a.actor, a.session_id
+      SELECT x::text AS item_id, a.step, a.actor, a.session_id,
+             a.operation_id::text AS operation_id
         FROM payroll_payout_attestations a, unnest(a.item_ids) AS x
        WHERE a.tenant_id = ${tenantId}::uuid
          AND a.kind = 'resolve' AND a.step IN ('propose', 'approve')
@@ -480,6 +486,7 @@ async function readResolutions(
       step: String(row.step),
       actor: String(row.actor),
       sessionId: String(row.session_id),
+      operationId: String(row.operation_id),
     });
   for (const row of rowsOf(
     await tx.execute(sql`
@@ -1552,8 +1559,13 @@ function evaluateResolutions(
       )
         continue;
       done.add(itemId);
+      // Only the standing proposal counts: a withdrawn earlier propose by
+      // another person or session must not satisfy the two-person check.
       const first = item.steps.filter(
-        (s) => s.step === "propose" && s.actor === item.resolvedBy,
+        (s) =>
+          s.step === "propose" &&
+          s.actor === item.resolvedBy &&
+          s.operationId === item.lastProposeOperationId,
       );
       const second = item.steps.filter(
         (s) =>

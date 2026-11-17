@@ -37,6 +37,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { totpCode, totpStep } from "../lib/totp.ts";
 import { listFinanceExceptions } from "../services/accounting-finance-exceptions.service.ts";
 import { correctFailedItems } from "../services/payroll-payout-correction.service.ts";
+import { withdrawResolutionProposal } from "../services/payroll-payout-withdraw.service.ts";
 import { originHeader } from "./helpers.ts";
 import {
   APP,
@@ -522,7 +523,9 @@ describe("990 D recon: resolve-only and bank_confirm-only batches are checked", 
 
     await dropSecondAttestation(w.itemId, "resolve");
     await runRecon();
-    await expectFlagged(w.itemId, "resolve with one attestation");
+    await expectFlagged(w.itemId, "resolve with one attestation", {
+      reason: "attestation_count",
+    });
   });
 
   it("[legend-r8nas-resolve-same-session] a resolve whose two attestations share one session: flagged", async () => {
@@ -538,7 +541,24 @@ describe("990 D recon: resolve-only and bank_confirm-only batches are checked", 
     );
     expect(sessions.size, "premise: one session").toBe(1);
     await runRecon();
-    await expectFlagged(w.itemId, "resolve same session");
+    await expectFlagged(w.itemId, "resolve same session", {
+      reason: "attestation_same_session",
+    });
+  });
+
+  it("[legend-r8nas-resolve-withdrawn-propose] A proposes, withdraws, B proposes again, A approves: nothing flagged (control for the withdrawn proposal)", async () => {
+    const w = await exportedBatch();
+    await W.resolve(w.batchId, [w.itemId], "failed", APP);
+    await W.inTx((tx) =>
+      withdrawResolutionProposal(tx, actorOf(APP), w.batchId, {
+        itemIds: [w.itemId],
+      }),
+    );
+    await W.resolve(w.batchId, [w.itemId], "failed", APP3);
+    await W.resolve(w.batchId, [w.itemId], "failed", APP);
+    expect((await itemOf(w.itemId)).status, "premise: failed").toBe("failed");
+    await runRecon();
+    await expectNotFlagged(w.itemId, "withdrawn proposal, legit second round");
   });
 
   it("[legend-r8nas-bank-confirm-forged-session] a bank confirmation whose attestation names another session than its grant: flagged", async () => {
