@@ -99,10 +99,11 @@ const wholeIdr = (value: unknown): bigint => {
 
 /**
  * Employer labor cost for the period, from frozen (locked or paid) payroll runs:
- * (gross - service charge - reimbursement) + employer BPJS + employer-borne
- * PPh 21 - employer refund. Service charge is customer money passed through to
- * staff and reimbursement repays staff expenses: neither is wage cost. Both come
- * from the run's own totals (`serviceChargeIdr`, `reimbursementIdr`); a run
+ * (gross - service charge - reimbursement - PPh 21 refund) + employer BPJS +
+ * employer-borne PPh 21 - employer refund. Service charge is customer money
+ * passed through to staff, reimbursement repays staff expenses and the PPh 21
+ * refund returns tax to staff: none is wage cost. All come from the run's own
+ * totals (`serviceChargeIdr`, `reimbursementIdr`, `pph21RefundIdr`); a run
  * frozen before those fields existed reads them as 0. A run that
  * overlaps the period counts pro rata by days, so the share never exceeds the
  * run's own total. Returns null (never 0) when no run exists or the frozen runs
@@ -137,7 +138,8 @@ export async function queryLaborCost(
       const net =
         wholeIdr(totals.grossIdr) -
         wholeIdr(totals.serviceChargeIdr) -
-        wholeIdr(totals.reimbursementIdr);
+        wholeIdr(totals.reimbursementIdr) -
+        wholeIdr(totals.pph21RefundIdr);
       return net > 0n ? net : 0n;
     })();
     const full =

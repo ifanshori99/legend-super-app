@@ -11,7 +11,7 @@
 // ASSUMPTIONS (listed in the report):
 //  - The salary permission is `payroll.view` at tenant scope; the HR template
 //    holds it, the outlet_manager template does not.
-//  - Cost = (gross - service charge - reimbursement + employer BPJS + employer-borne PPh21 - employer refund) of
+//  - Cost = (max(0, gross - service charge - reimbursement - employee PPh21 refund) + employer BPJS + employer-borne PPh21 - employer refund) of
 //    runs with status locked/paid, pro rata by days when the period is a part of
 //    the run, null when the frozen runs do not cover every day of the period.
 //  - An outlet-filtered request gets null cost (a run has no outlet split).
@@ -69,7 +69,13 @@ const policyId = randomUUID();
 const totals = (
   grossIdr: number,
   bpjsCompanyIdr: number,
-  extra: { serviceChargeIdr?: number; reimbursementIdr?: number } = {},
+  extra: {
+    serviceChargeIdr?: number;
+    reimbursementIdr?: number;
+    pph21RefundIdr?: number;
+    pph21EmployerBorneIdr?: number;
+    pph21EmployerRefundIdr?: number;
+  } = {},
 ) => ({
   employeeCount: 0,
   grossIdr,
@@ -79,9 +85,9 @@ const totals = (
   bpjsCompanyIdr,
   pph21Idr: 0,
   pph21WithheldIdr: 0,
-  pph21EmployerBorneIdr: 0,
-  pph21RefundIdr: 0,
-  pph21EmployerRefundIdr: 0,
+  pph21EmployerBorneIdr: extra.pph21EmployerBorneIdr ?? 0,
+  pph21RefundIdr: extra.pph21RefundIdr ?? 0,
+  pph21EmployerRefundIdr: extra.pph21EmployerRefundIdr ?? 0,
   pph21EmployerAllowanceRefundIdr: 0,
   loanRepaymentIdr: 0,
   pph21ReceivableIdr: 0,
@@ -199,6 +205,24 @@ beforeAll(async () => {
     totals(31_000_000, 3_100_000, {
       serviceChargeIdr: 1_550_000,
       reimbursementIdr: 1_550_000,
+    }),
+  );
+  // May: locked, 31 days. gross 31_000_000 INCLUDES a PPh 21 refund to the
+  // employee of 2_000_000 (pass-through, like the payroll journal), a service
+  // charge of 1_000_000 and a reimbursement of 1_000_000. Employer BPJS
+  // 3_100_000, employer-borne PPh 21 500_000, employer refund 220_000.
+  // Cost = max(0, 31_000_000 - 1_000_000 - 1_000_000 - 2_000_000) + 3_100_000
+  //        + 500_000 - 220_000 = 30_380_000 (31 * 980_000: whole IDR per day).
+  await seedRun(
+    "locked",
+    "2031-05-01",
+    "2031-05-31",
+    totals(31_000_000, 3_100_000, {
+      serviceChargeIdr: 1_000_000,
+      reimbursementIdr: 1_000_000,
+      pph21RefundIdr: 2_000_000,
+      pph21EmployerBorneIdr: 500_000,
+      pph21EmployerRefundIdr: 220_000,
     }),
   );
   // April: only a draft, with a large total that must never be counted.
@@ -423,5 +447,27 @@ describe("TL-05 labor cost excludes reimbursement and service charge (legend-4cj
     });
     expect(out.laborCostIdr).toBe(31_000_000);
     expect(out.laborCostIdr).not.toBe(34_100_000);
+  });
+
+  // ASSUMPTION: like service charge and reimbursement, the employee PPh 21
+  // refund (pph21RefundIdr) is inside grossIdr but is not salary cost
+  // (payroll-journal reading). Formula: max(0, gross - serviceCharge -
+  // reimbursement - pph21Refund) + bpjsCompany + pph21EmployerBorne -
+  // pph21EmployerRefund.
+  it("legend-4cjn6 a whole locked run leaves out the employee PPh 21 refund", async () => {
+    const out = await labor(contextFor("hr"), {
+      from: "2031-05-01",
+      to: "2031-05-31",
+    });
+    expect(out.laborCostIdr).toBe(30_380_000);
+    expect(out.laborCostIdr).not.toBe(32_380_000); // refund counted as salary
+  });
+
+  it("legend-4cjn6 a part of a run with a PPh 21 refund is pro rata of the cost without the refund", async () => {
+    const out = await labor(contextFor("hr"), {
+      from: "2031-05-10",
+      to: "2031-05-11",
+    });
+    expect(out.laborCostIdr).toBe(1_960_000); // 30_380_000 * 2 / 31
   });
 });
