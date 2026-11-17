@@ -1,0 +1,522 @@
+{
+  "source": "payout-recon-clearance.html",
+  "contractCommit": "74e142d8b",
+  "screenshots": [
+    {
+      "filename": "payout-recon-clearance-normal-desktop.png",
+      "width": 1280,
+      "height": 1000,
+      "state": "normal",
+      "fullPage": true
+    },
+    {
+      "filename": "payout-recon-clearance-empty-desktop.png",
+      "width": 1280,
+      "height": 1000,
+      "state": "empty",
+      "fullPage": true
+    },
+    {
+      "filename": "payout-recon-clearance-loading-desktop.png",
+      "width": 1280,
+      "height": 1000,
+      "state": "loading",
+      "fullPage": true
+    },
+    {
+      "filename": "payout-recon-clearance-error-desktop.png",
+      "width": 1280,
+      "height": 1000,
+      "state": "error",
+      "fullPage": true
+    },
+    {
+      "filename": "payout-recon-clearance-validation-desktop.png",
+      "width": 1280,
+      "height": 1000,
+      "state": "validation",
+      "fullPage": true
+    },
+    {
+      "filename": "payout-recon-clearance-success-desktop.png",
+      "width": 1280,
+      "height": 1000,
+      "state": "success",
+      "fullPage": true
+    },
+    {
+      "filename": "payout-recon-clearance-approve-desktop.png",
+      "width": 1280,
+      "height": 1000,
+      "state": "normal",
+      "view": "approve",
+      "fullPage": true
+    },
+    {
+      "filename": "payout-recon-clearance-self-desktop.png",
+      "width": 1280,
+      "height": 1000,
+      "state": "normal",
+      "view": "self",
+      "fullPage": true
+    },
+    {
+      "filename": "payout-recon-clearance-changed-desktop.png",
+      "width": 1280,
+      "height": 1000,
+      "state": "normal",
+      "view": "changed",
+      "fullPage": true
+    },
+    {
+      "filename": "payout-recon-clearance-reopened-desktop.png",
+      "width": 1280,
+      "height": 1000,
+      "state": "normal",
+      "view": "reopened",
+      "fullPage": true
+    },
+    {
+      "filename": "payout-recon-clearance-normal-mobile.png",
+      "width": 390,
+      "height": 844,
+      "state": "normal",
+      "fullPage": true
+    },
+    {
+      "filename": "payout-recon-clearance-empty-mobile.png",
+      "width": 390,
+      "height": 844,
+      "state": "empty",
+      "fullPage": true
+    },
+    {
+      "filename": "payout-recon-clearance-loading-mobile.png",
+      "width": 390,
+      "height": 844,
+      "state": "loading",
+      "fullPage": true
+    },
+    {
+      "filename": "payout-recon-clearance-error-mobile.png",
+      "width": 390,
+      "height": 844,
+      "state": "error",
+      "fullPage": true
+    },
+    {
+      "filename": "payout-recon-clearance-validation-mobile.png",
+      "width": 390,
+      "height": 844,
+      "state": "validation",
+      "fullPage": true
+    },
+    {
+      "filename": "payout-recon-clearance-success-mobile.png",
+      "width": 390,
+      "height": 844,
+      "state": "success",
+      "fullPage": true
+    },
+    {
+      "filename": "payout-recon-clearance-approve-mobile.png",
+      "width": 390,
+      "height": 844,
+      "state": "normal",
+      "view": "approve",
+      "fullPage": true
+    },
+    {
+      "filename": "payout-recon-clearance-self-mobile.png",
+      "width": 390,
+      "height": 844,
+      "state": "normal",
+      "view": "self",
+      "fullPage": true
+    },
+    {
+      "filename": "payout-recon-clearance-changed-mobile.png",
+      "width": 390,
+      "height": 844,
+      "state": "normal",
+      "view": "changed",
+      "fullPage": true
+    },
+    {
+      "filename": "payout-recon-clearance-reopened-mobile.png",
+      "width": 390,
+      "height": 844,
+      "state": "normal",
+      "view": "reopened",
+      "fullPage": true
+    }
+  ],
+  "layoutChecks": [
+    {
+      "device": "desktop",
+      "state": "normal",
+      "width": 1280,
+      "scrollWidth": 1280,
+      "viewport": 1280,
+      "contentLength": 2593,
+      "passed": true
+    },
+    {
+      "device": "desktop",
+      "state": "empty",
+      "width": 1280,
+      "scrollWidth": 1280,
+      "viewport": 1280,
+      "contentLength": 914,
+      "passed": true
+    },
+    {
+      "device": "desktop",
+      "state": "loading",
+      "width": 1280,
+      "scrollWidth": 1280,
+      "viewport": 1280,
+      "contentLength": 799,
+      "passed": true
+    },
+    {
+      "device": "desktop",
+      "state": "error",
+      "width": 1280,
+      "scrollWidth": 1280,
+      "viewport": 1280,
+      "contentLength": 981,
+      "passed": true
+    },
+    {
+      "device": "desktop",
+      "state": "validation",
+      "width": 1280,
+      "scrollWidth": 1280,
+      "viewport": 1280,
+      "contentLength": 2777,
+      "passed": true
+    },
+    {
+      "device": "desktop",
+      "state": "success",
+      "width": 1280,
+      "scrollWidth": 1280,
+      "viewport": 1280,
+      "contentLength": 2332,
+      "passed": true
+    },
+    {
+      "device": "desktop",
+      "state": "normal",
+      "view": "approve",
+      "width": 1280,
+      "scrollWidth": 1280,
+      "viewport": 1280,
+      "contentLength": 2410,
+      "passed": true
+    },
+    {
+      "device": "desktop",
+      "state": "normal",
+      "view": "self",
+      "width": 1280,
+      "scrollWidth": 1280,
+      "viewport": 1280,
+      "contentLength": 2449,
+      "passed": true
+    },
+    {
+      "device": "desktop",
+      "state": "normal",
+      "view": "changed",
+      "width": 1280,
+      "scrollWidth": 1280,
+      "viewport": 1280,
+      "contentLength": 2747,
+      "passed": true
+    },
+    {
+      "device": "desktop",
+      "state": "normal",
+      "view": "reopened",
+      "width": 1280,
+      "scrollWidth": 1280,
+      "viewport": 1280,
+      "contentLength": 2721,
+      "passed": true
+    },
+    {
+      "device": "mobile",
+      "state": "normal",
+      "width": 390,
+      "scrollWidth": 390,
+      "viewport": 390,
+      "contentLength": 2500,
+      "passed": true
+    },
+    {
+      "device": "mobile",
+      "state": "empty",
+      "width": 390,
+      "scrollWidth": 390,
+      "viewport": 390,
+      "contentLength": 821,
+      "passed": true
+    },
+    {
+      "device": "mobile",
+      "state": "loading",
+      "width": 390,
+      "scrollWidth": 390,
+      "viewport": 390,
+      "contentLength": 706,
+      "passed": true
+    },
+    {
+      "device": "mobile",
+      "state": "error",
+      "width": 390,
+      "scrollWidth": 390,
+      "viewport": 390,
+      "contentLength": 888,
+      "passed": true
+    },
+    {
+      "device": "mobile",
+      "state": "validation",
+      "width": 390,
+      "scrollWidth": 390,
+      "viewport": 390,
+      "contentLength": 2684,
+      "passed": true
+    },
+    {
+      "device": "mobile",
+      "state": "success",
+      "width": 390,
+      "scrollWidth": 390,
+      "viewport": 390,
+      "contentLength": 2239,
+      "passed": true
+    },
+    {
+      "device": "mobile",
+      "state": "normal",
+      "view": "approve",
+      "width": 390,
+      "scrollWidth": 390,
+      "viewport": 390,
+      "contentLength": 2317,
+      "passed": true
+    },
+    {
+      "device": "mobile",
+      "state": "normal",
+      "view": "self",
+      "width": 390,
+      "scrollWidth": 390,
+      "viewport": 390,
+      "contentLength": 2356,
+      "passed": true
+    },
+    {
+      "device": "mobile",
+      "state": "normal",
+      "view": "changed",
+      "width": 390,
+      "scrollWidth": 390,
+      "viewport": 390,
+      "contentLength": 2654,
+      "passed": true
+    },
+    {
+      "device": "mobile",
+      "state": "normal",
+      "view": "reopened",
+      "width": 390,
+      "scrollWidth": 390,
+      "viewport": 390,
+      "contentLength": 2628,
+      "passed": true
+    },
+    {
+      "device": "narrow",
+      "state": "normal",
+      "width": 320,
+      "scrollWidth": 320,
+      "viewport": 320,
+      "contentLength": 2500,
+      "passed": true
+    },
+    {
+      "device": "narrow",
+      "state": "empty",
+      "width": 320,
+      "scrollWidth": 320,
+      "viewport": 320,
+      "contentLength": 821,
+      "passed": true
+    },
+    {
+      "device": "narrow",
+      "state": "loading",
+      "width": 320,
+      "scrollWidth": 320,
+      "viewport": 320,
+      "contentLength": 706,
+      "passed": true
+    },
+    {
+      "device": "narrow",
+      "state": "error",
+      "width": 320,
+      "scrollWidth": 320,
+      "viewport": 320,
+      "contentLength": 888,
+      "passed": true
+    },
+    {
+      "device": "narrow",
+      "state": "validation",
+      "width": 320,
+      "scrollWidth": 320,
+      "viewport": 320,
+      "contentLength": 2684,
+      "passed": true
+    },
+    {
+      "device": "narrow",
+      "state": "success",
+      "width": 320,
+      "scrollWidth": 320,
+      "viewport": 320,
+      "contentLength": 2239,
+      "passed": true
+    },
+    {
+      "device": "narrow",
+      "state": "normal",
+      "view": "approve",
+      "width": 320,
+      "scrollWidth": 320,
+      "viewport": 320,
+      "contentLength": 2317,
+      "passed": true
+    },
+    {
+      "device": "narrow",
+      "state": "normal",
+      "view": "self",
+      "width": 320,
+      "scrollWidth": 320,
+      "viewport": 320,
+      "contentLength": 2356,
+      "passed": true
+    },
+    {
+      "device": "narrow",
+      "state": "normal",
+      "view": "changed",
+      "width": 320,
+      "scrollWidth": 320,
+      "viewport": 320,
+      "contentLength": 2654,
+      "passed": true
+    },
+    {
+      "device": "narrow",
+      "state": "normal",
+      "view": "reopened",
+      "width": 320,
+      "scrollWidth": 320,
+      "viewport": 320,
+      "contentLength": 2628,
+      "passed": true
+    }
+  ],
+  "interactionChecks": [
+    {
+      "device": "desktop",
+      "name": "Empty reason and password refuse proposal",
+      "passed": true
+    },
+    {
+      "device": "desktop",
+      "name": "Valid proposal has success feedback",
+      "passed": true
+    },
+    {
+      "device": "desktop",
+      "name": "Another person can approve with password",
+      "passed": true
+    },
+    {
+      "device": "desktop",
+      "name": "Proposer cannot approve own clearance and sees why",
+      "passed": true
+    },
+    {
+      "device": "desktop",
+      "name": "Changed data directs finance to a new proposal",
+      "passed": true
+    },
+    {
+      "device": "desktop",
+      "name": "Reopened flag explains old clearance no longer applies",
+      "passed": true
+    },
+    {
+      "device": "desktop",
+      "name": "Load failure hides unverified counts and can retry",
+      "passed": true
+    },
+    {
+      "device": "desktop",
+      "name": "Empty batch keeps the selected batch visible",
+      "passed": true
+    },
+    {
+      "device": "mobile",
+      "name": "Empty reason and password refuse proposal",
+      "passed": true
+    },
+    {
+      "device": "mobile",
+      "name": "Valid proposal has success feedback",
+      "passed": true
+    },
+    {
+      "device": "mobile",
+      "name": "Another person can approve with password",
+      "passed": true
+    },
+    {
+      "device": "mobile",
+      "name": "Proposer cannot approve own clearance and sees why",
+      "passed": true
+    },
+    {
+      "device": "mobile",
+      "name": "Changed data directs finance to a new proposal",
+      "passed": true
+    },
+    {
+      "device": "mobile",
+      "name": "Reopened flag explains old clearance no longer applies",
+      "passed": true
+    },
+    {
+      "device": "mobile",
+      "name": "Load failure hides unverified counts and can retry",
+      "passed": true
+    },
+    {
+      "device": "mobile",
+      "name": "Empty batch keeps the selected batch visible",
+      "passed": true
+    }
+  ],
+  "runtimeErrors": [],
+  "passed": true
+}
