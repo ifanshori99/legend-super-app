@@ -1,3 +1,12 @@
+## 947 Lanjutan 934: unfreeze buka ulang persetujuan, kolom persetujuan halted (legend-s20iu, legend-dz8ci, 17 Nov 2026)
+
+- Cabang ghostex/947-payout-934-followups dari tip 934 d7bb598a4, migrasi sementara 0433_payout_934_followups.sql (tanpa tabel baru).
+- legend-s20iu: unfreeze setelah "Bukan saya" atas persetujuan utama mengembalikan batch approved ke pending_approval dalam transaksi yang sama (approver, waktu, kedaluwarsa, rekening sumber dikosongkan; item approved kembali prepared). Persetujuan baru wajib grant batch_approve baru oleh orang yang bukan pemohon dan bukan penyangkal (PAYOUT-84, di service, grant_issue, dan attest). Bila cash sudah sebagian diserahkan, batch tidak dibuka ulang (akan macet): item approved jadi not_sent dan batch partially_failed (keputusan engineer yang membatasi pembayaran; perlu pengakuan CTO). Audit batch_reopened/batch_stopped. Penyangkal yang menarik klaim tetap tidak bisa menyetujui ulang.
+- legend-dz8ci: trigger payroll_disbursement_batches_approval_cols_trg menolak perubahan approved_by/approved_at/approval_expires_at/source_bank_account_id pada status apa pun (termasuk halted) kecuali persetujuan dengan grant terpakai di txid yang sama, ekspor batch lama, atau jalur unfreeze (bukti txid dari payroll_payout_batch_unfreezes yang hanya bisa ditulis legend_payout). Guard 0344/0355/item/freeze dilonggarkan hanya dengan bukti itu.
+- Bukti: test gagal-dulu di HEAD lalu hijau (reapprove: tidak ada uang keluar sebelum persetujuan ulang, tidak ada pihak dibayar lebih, file ekspor/item terkirim tak berubah; halted: SQL langsung ditolak); suite payout 67 file, 974 lulus, 1 timeout beban (897-sweeps-reach-valid-targets) lulus 7/7 saat dijalankan sendiri; typecheck API hijau, db:generate kosong.
+- Architect xhigh: tanpa P1; P2 (cash sebagian macet, case "84" ganda) ditutup; P3 test diperketat.
+- Subagent 947: sekitar 11 (34 sesi total, 23 milik 934), token heavy dipegang test-runner.
+
 ## 934 Persetujuan utama batch payout lewat grant + log (legend-xp8mc, 17 Nov 2026)
 
 - Cabang ghostex/934-payout-persetujuan-utama-grant dari milestone/m1 c17c60df7, tip 0c5f37cef (6 commit, push tanpa force). Migrasi sementara 0432_payout_batch_approve_grant.sql.
