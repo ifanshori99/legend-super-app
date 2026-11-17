@@ -122,7 +122,7 @@ test("RSV-03 closing a reservation reports what the frozen policy does with the 
   await expect(dialog.getByText("Hasil DP", { exact: true })).toBeVisible();
   await expect(dialog.getByText("Dikembalikan", { exact: true })).toBeVisible();
   await expect(dialog.getByText("Hangus", { exact: true })).toBeVisible();
-  await expect(dialog.getByText("Rp 100.000", { exact: true })).toBeVisible();
+  await expect(dialog.getByText("Rp100.000", { exact: true })).toBeVisible();
 
   // A cancelled booking without a paid DP says so plainly.
   await page.goto(`${DESK}?reservationId=00000000-0000-4000-8000-000000005001`);
@@ -188,7 +188,7 @@ test("the event packages tab shows the package catalogue", async ({ page }) => {
   );
   await expect(page.getByText("Paket Kopi & Pastry Rombongan")).toBeVisible();
   await expect(page.getByText("Paket Makan Malam Keluarga")).toBeVisible();
-  await expect(page.getByText("Rp 85.000")).toBeVisible();
+  await expect(page.getByText("Rp85.000")).toBeVisible();
   await expect(page.getByText("Pesan ≥ 24 jam sebelum hari H")).toBeVisible();
 });
 

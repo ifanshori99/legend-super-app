@@ -39,7 +39,7 @@ export function Toaster({ children }: { children: React.ReactNode }) {
 
   return (
     <ToastContext.Provider value={push}>
-      <ToastPrimitive.Provider swipeDirection="down" label={t("toast.region")}>
+      <ToastPrimitive.Provider swipeDirection="up" label={t("toast.region")}>
         {children}
         {items.map(({ id, title, description, tone = "info" }) => {
           const Icon = ICONS[tone];
@@ -48,7 +48,7 @@ export function Toaster({ children }: { children: React.ReactNode }) {
               key={id}
               type={tone === "danger" ? "foreground" : "background"}
               onOpenChange={(open) => !open && remove(id)}
-              className="flex items-start gap-3 rounded-container border bg-card p-4 text-foreground shadow-overlay data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-bottom-2 data-[swipe=end]:animate-out data-[swipe=move]:translate-y-(--radix-toast-swipe-move-y)"
+              className="flex items-start gap-3 rounded-container border bg-card p-4 text-foreground shadow-overlay data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-top-2 sm:data-[state=open]:slide-in-from-bottom-2 data-[swipe=end]:animate-out data-[swipe=move]:translate-y-(--radix-toast-swipe-move-y)"
             >
               <Icon
                 className={cn("mt-0.5 size-5 shrink-0", ICON_COLOR[tone])}
@@ -73,12 +73,13 @@ export function Toaster({ children }: { children: React.ReactNode }) {
             </ToastPrimitive.Root>
           );
         })}
-        {/* A page can lift toasts above its own chrome (e.g. the customer bottom
+        {/* On phones toasts sit at the top so they never cover bottom sheets,
+            sticky actions or the bottom nav. From sm up they sit bottom-right;
+            a page can lift them above its own chrome (e.g. the customer bottom
             nav) by setting --toast-inset-bottom; it defaults to 0px. */}
         <ToastPrimitive.Viewport
           label={t("toast.region")}
-          style={{ bottom: "var(--toast-inset-bottom, 0px)" }}
-          className="fixed inset-x-0 bottom-0 z-[60] flex flex-col gap-2 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] outline-none sm:inset-x-auto sm:right-0 sm:w-96"
+          className="fixed inset-x-0 top-0 z-[60] flex flex-col gap-2 p-4 pt-[max(1rem,env(safe-area-inset-top))] outline-none sm:inset-x-auto sm:top-auto sm:right-0 sm:bottom-[var(--toast-inset-bottom,0px)] sm:w-96 sm:pt-4 sm:pb-[max(1rem,env(safe-area-inset-bottom))]"
         />
       </ToastPrimitive.Provider>
     </ToastContext.Provider>

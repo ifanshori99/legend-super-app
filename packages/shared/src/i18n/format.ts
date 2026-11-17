@@ -16,22 +16,28 @@ const integer = new Intl.NumberFormat(DEFAULT_LOCALE, {
   maximumFractionDigits: 0,
 });
 
+// Intl puts a no-break space between "Rp" and the digits; the product style
+// is "Rp38.000", so drop it.
+function compact(text: string): string {
+  return text.replace("Rp\u00a0", "Rp");
+}
+
 function assertFinite(value: number | bigint): void {
   if (typeof value === "number" && !Number.isFinite(value))
     throw new RangeError(`Cannot format a non-finite amount: ${value}`);
 }
 
 /**
- * Formats an amount in whole rupiah: 25000 → "Rp 25.000" (the space is a
- * no-break space, so the symbol never wraps away from the digits).
+ * Formats an amount in whole rupiah: 25000 → "Rp25.000" (no space between
+ * the symbol and the digits, so the symbol never wraps away from them).
  * Amounts with sen are rounded half away from zero for display only; the
  * stored value is never changed here.
  */
 export function formatRupiah(amount: number | bigint): string {
   assertFinite(amount);
   // Normalize "-0" so a zero balance never renders as "-Rp 0".
-  if (amount === 0 || amount === 0n) return rupiah.format(0);
-  return rupiah.format(amount).replace("-", "−");
+  if (amount === 0 || amount === 0n) return compact(rupiah.format(0));
+  return compact(rupiah.format(amount)).replace("-", "−");
 }
 
 /** Whole numbers with Indonesian grouping: 1234 → "1.234". */

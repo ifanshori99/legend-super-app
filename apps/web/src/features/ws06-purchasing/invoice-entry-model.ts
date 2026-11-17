@@ -106,14 +106,14 @@ export function formatDecimalText(value: Decimal4 | string): string {
 }
 
 /**
- * Unit price for display: "Rp 12.500,5" (no-break space, true minus). Keeps
+ * Unit price for display: "Rp12.500,5" (no space, true minus). Keeps
  * the sub-rupiah digits that `Money` would round away.
  */
 export function formatIdrDecimalText(value: Decimal4 | string): string {
   const text = formatDecimalText(value);
   return text.startsWith("\u2212")
-    ? `\u2212Rp\u00a0${text.slice(1)}`
-    : `Rp\u00a0${text}`;
+    ? `\u2212Rp${text.slice(1)}`
+    : `Rp${text}`;
 }
 
 const GROUPED_INTEGER = /^(?:\d+|[1-9]\d{0,2}(?:\.\d{3})+)$/;
