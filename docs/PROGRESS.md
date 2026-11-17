@@ -7003,3 +7003,17 @@ Cabang `ghostex/64affda0` dari `44dc04cd9`; commit `046289063` dan `7bc7adc3f`.
 
 **Belum / tindak lanjut**: legend-7uqbs (P2: provider refund SETELAH kita catat pembayaran belum memperingatkan staf, sudah ada sebelum 952); legend-3wwme (P3: payload payment.refunded non-payment 500; komentar lock). Tes 0433 tidak mendeteksi urutan FORCE (lulus juga di base); `pnpm test` penuh dan `pnpm check` belum dijalankan (gate akhir merge train).
 - Angka: 15 subagent (Explore 4, test-writer 2, implementer 6, test-runner 1, architect 2), puncak bersamaan 4; token heavy dipegang agent utama (antre `heavy` ~1 jam di jam sibuk).
+
+## Batch 958: recon, provider refund setelah pembayaran tercatat (17 Nov 2026)
+
+Cabang `ghostex/60a93dca` dari `5e1f9d9fc`; commit `33b2aac77`. Kartu legend-7uqbs (P1) dan legend-3wwme (P3). Migrasi 0436 (nomor kerja; brief minta 0480-0484, cabang lain sudah memegang 0440 dan 0484, CTO atur nomor saat merge).
+
+**Selesai**
+- 7uqbs: kolom `payment_unallocated_funds.provider_refunded_at` dan `payment_intents.provider_refunded_after_paid_at`. Stamp atomik (`WHERE ... IS NULL RETURNING`) lewat satu helper; hanya pemenang stamp menulis SATU baris audit `payment.provider_refunded_after_recorded` dan SATU alert supervisor outlet (id alert deterministik, webhook dan poller bersamaan tetap satu). Tanpa pembalikan jurnal otomatis.
+- Blokir 409 `PROVIDER_REFUNDED`: alokasi/resolve dana parkir, refund manual, approve, dan payout (`runRefundPayout` karantina, `takeSendRight` cek ulang atomik). Satu helper `payment-provider-refunded-guard.ts`.
+- Dana yang sudah di-refund provider tidak lagi menahan tagihan (open-funds POS/QR/live-code). Refund kita sendiri yang terkirim tidak ditandai sebagai refund provider.
+- 3wwme: `payment.refunded` tanpa objek payment dijawab 2xx, baris `ignored` kode `REFUND_PAYLOAD_NOT_PAYMENT`; komentar lock `recordUnsettledGatewayFundsInTx` dibetulkan.
+
+**Bukti**: gagal-dulu di logika base (17 tes gagal karena audit tidak ada, payout selesai, resolve berhasil, bukan setup), lalu hijau: 958 (2 berkas) 35 tes, ditambah hold-release dan refund-webhook 77 lulus; 5 grup terkait 376 lulus (payment-doit, refund, qris-hold open-funds, pos-qris-hold, migrasi/registry); typecheck API exit 0; prettier dan eslint hijau; text-contract 11/11; `db:generate` kosong. Architect xhigh: r1 2 P1 (race late-paid vs refunded, bill terkunci) dibetulkan, r2 tanpa P1.
+
+**Belum / tindak lanjut**: event refund parsial tidak disimpan (hanya envelope); refund transaksi tambahan (id berbeda dari intent) diabaikan `findBoundIntent`; refund `approved` chain tetap tertahan sampai staf release; dana tanpa `evidence_id` tetap diblok tapi tidak ber-stamp. Run awal sempat gagal `Connection terminated unexpectedly` (DB test), rerun hijau.
