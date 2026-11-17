@@ -39,7 +39,9 @@ import {
 } from "@starter/shared/pos";
 import { orderNetSubtotalIdr } from "@starter/shared/tax";
 import { db } from "../db/index.ts";
+import { edcTransactions } from "../db/schema/edc.ts";
 import { edgeOrderIngests } from "../db/schema/edge-order-ingest.ts";
+import { orderIssueCharges } from "../db/schema/kds-issues.ts";
 import {
   posOrderRefunds,
   posOrderVoids,
@@ -309,6 +311,47 @@ export async function voidPosOrderCorrection(
       // legend-s61sg: a swap charge already paid on this order goes back with
       // the void, in this transaction, or the void is refused (409).
       const paidCharges = await paidChargesOfOrder(tx, context, order.id);
+      // legend-vl6bk (SO 996 F2): a guest card approved (or pending/unknown)
+      // on the EDC terminal for a charge still unpaid has no refund path once
+      // the order is voided (the collect is refused, a manual refund needs a
+      // paid charge, the void only returns paid charges): refuse the void.
+      const unpaidCharges = await tx
+        .select({ id: orderIssueCharges.id })
+        .from(orderIssueCharges)
+        .where(
+          and(
+            eq(orderIssueCharges.tenantId, context.tenant.tenantId),
+            eq(orderIssueCharges.orderId, order.id),
+            inArray(orderIssueCharges.status, ["open", "routed_pos"]),
+          ),
+        );
+      if (unpaidCharges.length > 0) {
+        const [edcHeld] = await tx
+          .select({ id: edcTransactions.id })
+          .from(edcTransactions)
+          .where(
+            and(
+              eq(edcTransactions.tenantId, context.tenant.tenantId),
+              eq(edcTransactions.type, "sale"),
+              inArray(edcTransactions.status, [
+                "approved",
+                "pending",
+                "unknown",
+              ]),
+              inArray(
+                edcTransactions.reference,
+                unpaidCharges.map((charge) => charge.id),
+              ),
+            ),
+          )
+          .limit(1);
+        if (edcHeld !== undefined)
+          throw new HttpError(
+            409,
+            "edc_charge_pending",
+            "Ada transaksi kartu EDC untuk tagihan selisih swap yang belum selesai; selesaikan pembayaran di kasir atau void di terminal EDC dulu, lalu void ulang.",
+          );
+      }
       const override = await consumeApproval(tx, context, {
         action: "void",
         purpose: "correction_void",

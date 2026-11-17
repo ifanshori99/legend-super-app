@@ -58,6 +58,7 @@ import {
   collectChargeAtPosEdc,
   collectChargeAtPosQris,
 } from "./order-recovery-charge-pos-nontunai.ts";
+import { assertOrderNotVoidedByCorrection } from "./order-recovery-charge-void-guard.ts";
 import { toView, type IssueChargeView } from "./order-recovery-charge-staff.ts";
 import { accessSnapshotInTransaction } from "./permission-resolver.ts";
 import { cancelPaymentLinkInTx } from "./payment.service.ts";
@@ -177,6 +178,7 @@ async function collectChargeAtPosCash(
         "CONFLICT",
         "Pesanan sudah dibatalkan; tagihan selisih tidak dapat dibayar.",
       );
+    await assertOrderNotVoidedByCorrection(tx, tenantId, order.id);
     if (charge.paymentLinkId !== null) {
       // Lock the link first (link -> intent, the confirmation order), so a
       // confirmation cannot commit `paid` between this check and the cancel.

@@ -56,7 +56,7 @@
 // consumption.
 
 import { createHash } from "node:crypto";
-import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   AccountingError,
@@ -2158,6 +2158,9 @@ async function chargeRefundedFactOf(
       status: orderIssueCharges.status,
       paymentIntentId: orderIssueCharges.paymentIntentId,
       amountIdr: orderIssueCharges.amountIdr,
+      grossSalesIdr: orderIssueCharges.grossSalesIdr,
+      serviceChargeIdr: orderIssueCharges.serviceChargeIdr,
+      pbjtIdr: orderIssueCharges.pbjtIdr,
     })
     .from(orderIssueCharges)
     .where(
@@ -2239,12 +2242,51 @@ async function chargeRefundedFactOf(
         eq(paymentRefunds.tenantId, tenantId),
         eq(paymentRefunds.paymentIntentId, paymentIntentId),
         ne(paymentRefunds.status, "failed"),
+        // A refund of an unallocated fund gives back money that is not the charge's.
+        isNull(paymentRefunds.unallocatedFundId),
       ),
     );
   if (Number(refunded?.total ?? "0") > Number(charge.amountIdr))
     throw new AccountingError(
       "POSTING_AMOUNTS_MISMATCH",
       "Refunds of the charge pass the paid charge",
+    );
+  // legend-0zfr1: per component, the reversals of the non-failed refunds of
+  // the charge (this one included) may not pass the charge's own component.
+  const eventPayload = sql`${domainEventOutbox.event}->'payload'`;
+  const [parts] = await tx
+    .select({
+      gross: sql<string>`coalesce(sum((${eventPayload}->>'grossSalesIdr')::bigint), 0)::text`,
+      service: sql<string>`coalesce(sum((${eventPayload}->>'serviceChargeIdr')::bigint), 0)::text`,
+      pbjt: sql<string>`coalesce(sum((${eventPayload}->>'pbjtIdr')::bigint), 0)::text`,
+    })
+    .from(domainEventOutbox)
+    .innerJoin(
+      paymentRefunds,
+      and(
+        eq(paymentRefunds.tenantId, domainEventOutbox.tenantId),
+        sql`${paymentRefunds.id}::text = ${eventPayload}->>'refundId'`,
+      ),
+    )
+    .where(
+      and(
+        eq(domainEventOutbox.tenantId, tenantId),
+        eq(domainEventOutbox.destination, EVENT_DESTINATION),
+        eq(domainEventOutbox.aggregateId, charge.orderIssueId),
+        sql`${domainEventOutbox.event}->>'name' = 'order_issue.charge_refunded'`,
+        sql`${eventPayload}->>'chargeId' = ${p.chargeId}`,
+        eq(paymentRefunds.paymentIntentId, paymentIntentId),
+        ne(paymentRefunds.status, "failed"),
+      ),
+    );
+  if (
+    Number(parts?.gross ?? "0") > Number(charge.grossSalesIdr) ||
+    Number(parts?.service ?? "0") > Number(charge.serviceChargeIdr) ||
+    Number(parts?.pbjt ?? "0") > Number(charge.pbjtIdr)
+  )
+    throw new AccountingError(
+      "POSTING_AMOUNTS_MISMATCH",
+      "Refund reversals of the charge pass a component of the charge",
     );
   const chargeState = await backingStateOf(tx, tenantId, {
     kind: "charge",
