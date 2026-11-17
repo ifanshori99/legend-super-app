@@ -58,6 +58,7 @@ import { appendOutbox } from "./core-outbox.ts";
 import { appendPromoEvent, hashPromoCode } from "./crm-promo-engine.ts";
 import { promoIdempotentCommand } from "./crm-promo-idempotency.ts";
 import type { Tx } from "./menu-internals.ts";
+import { assertLineNotManuallyRefunded } from "./order-issue-manual-refund.ts";
 import { accessSnapshotInTransaction } from "./permission-resolver.ts";
 import { openApprovalRequest } from "./platform-approval.service.ts";
 
@@ -643,6 +644,14 @@ async function settleIssueWithVoucher(
 ): Promise<void> {
   const tenantId = context.tenant.tenantId;
   const { issue, now } = input;
+  // legend-980 (M1): a line with a live manual refund is paid back; a voucher
+  // on top pays the guest twice. Takes the order row lock the refund takes.
+  await assertLineNotManuallyRefunded(
+    tx,
+    tenantId,
+    issue.orderId,
+    issue.orderItemId,
+  );
   const [row] = await tx
     .update(orderIssues)
     .set({

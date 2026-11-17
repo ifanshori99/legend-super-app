@@ -103,6 +103,14 @@ export const orderIssues = pgTable(
       .where(
         sql`${table.type} = 'unfulfillable' AND ${table.resolution} IS NOT NULL AND ${table.status} <> 'cancelled' AND ${table.refundRejectedAt} IS NULL`,
       ),
+    // A line is manually refunded at most once, whatever the issue type
+    // (legend-uyw0v, migration 0450). A cancelled issue and a rejected refund
+    // gave nothing back and are not counted, same as the index above.
+    uniqueIndex("order_issues_manual_refund_once_idx")
+      .on(table.tenantId, table.orderItemId)
+      .where(
+        sql`${table.resolution} = 'manual_refund' AND ${table.status} <> 'cancelled' AND ${table.refundRejectedAt} IS NULL`,
+      ),
     // One voucher settles at most one issue.
     uniqueIndex("order_issues_voucher_once_idx")
       .on(table.tenantId, table.voucherId)

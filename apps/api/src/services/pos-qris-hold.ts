@@ -42,6 +42,7 @@ import {
   settleGatewayIntentNow,
 } from "./payment.service.ts";
 import { paymentGatewayFor } from "./payment-gateway.ts";
+import { netAllocatedIdrSql } from "./payment-net-allocated-sql.ts";
 import { appendPaymentEvent } from "./payment-support.ts";
 import { notifyOutletSupervisors } from "./edge-sync-conflict-alert.ts";
 import { mutatePosOrder } from "./pos-order.service.ts";
@@ -510,18 +511,12 @@ export async function appliedQrisMoneyTx(
       ),
     )
     .for("update");
+  // legend-m9pf6: evidence - parked - what the provider refunded on its own.
   const result = await tx.execute(sql`
-    SELECT
-      (SELECT coalesce(sum(e.amount_idr), 0)::bigint FROM payment_evidence e
-        WHERE e.tenant_id = ${tenantId}
-          AND e.payment_intent_id = ${intentId}) AS evidence,
-      (SELECT coalesce(sum(f.amount_idr), 0)::bigint FROM payment_unallocated_funds f
-        WHERE f.tenant_id = ${tenantId}
-          AND f.payment_intent_id = ${intentId}) AS parked
+    SELECT (${netAllocatedIdrSql(sql`${tenantId}`, sql`${intentId}`)})::bigint AS applied
   `);
-  const row = result.rows[0] as
-    { evidence: string | number; parked: string | number } | undefined;
-  return Number(row?.evidence ?? 0) > Number(row?.parked ?? 0);
+  const row = result.rows[0] as { applied: string | number } | undefined;
+  return Number(row?.applied ?? 0) > 0;
 }
 
 /** so-885 legend-0owye: how soon a backfilled hold with parked money is read again. */

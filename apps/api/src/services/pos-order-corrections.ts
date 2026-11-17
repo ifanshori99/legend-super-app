@@ -40,6 +40,8 @@ import {
 import { orderNetSubtotalIdr } from "@starter/shared/tax";
 import { db } from "../db/index.ts";
 import { edgeOrderIngests } from "../db/schema/edge-order-ingest.ts";
+import { orderIssues } from "../db/schema/kds-issues.ts";
+import { posDepositRefunds } from "../db/schema/pos-deposit-refund.ts";
 import {
   posOrderRefunds,
   posOrderVoids,
@@ -49,6 +51,7 @@ import { withTenant } from "../db/tenant.ts";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
 import { HttpError } from "../lib/http-error.ts";
 import type { Tx } from "./menu-internals.ts";
+import { liveRouteManualRefundWhere } from "./order-issue-route-refund.ts";
 import { loadDeferredRefundCommitments } from "./payment-refund-edge-history.ts";
 import {
   monotonicFactTime,
@@ -283,6 +286,9 @@ export async function voidPosOrderCorrection(
           "CONFLICT",
           "Transaksi ini sudah direfund sebagian; lanjutkan dengan refund.",
         );
+      // legend-980: a void books the full total, so it never runs next to a
+      // live manual refund of one of the order's lines.
+      await assertNoLiveManualRefund(tx, context, order.id);
       if (order.totalIdr <= 0)
         throw new CoreError(
           "CONFLICT",
@@ -511,6 +517,63 @@ export async function voidPosOrderCorrection(
 }
 
 /**
+ * One refund's goods / service / tax parts: the cumulative largest-remainder
+ * split of everything returned (including `amountIdr`) minus what earlier
+ * refunds booked per part, a part that would shrink held at 0, a part capped
+ * at what the sale still holds of it, and the difference put back so the parts
+ * add up to `amountIdr` exactly (legend-980). Only a refund above the sum of
+ * the weights (bill rounding) leaves a rest no part has room for: it goes on
+ * the biggest part so the journal still balances.
+ */
+function refundPartsStep(
+  weights: readonly number[],
+  booked: readonly number[],
+  cumulativeIdr: number,
+  amountIdr: number,
+): number[] {
+  const target = allocateIdr(idr(cumulativeIdr + amountIdr), weights).map(
+    Number,
+  );
+  const room = weights.map((weight, index) =>
+    Math.max(0, weight - (booked[index] ?? 0)),
+  );
+  const parts = target.map((cumulative, index) =>
+    Math.min(Math.max(0, cumulative - (booked[index] ?? 0)), room[index] ?? 0),
+  );
+  let diff = amountIdr - parts.reduce((sum, part) => sum + part, 0);
+  while (diff < 0) {
+    let biggest = 0;
+    for (const [index, part] of parts.entries())
+      if (part > (parts[biggest] ?? 0)) biggest = index;
+    const take = Math.min(parts[biggest] ?? 0, -diff);
+    if (take <= 0) break;
+    parts[biggest] = (parts[biggest] ?? 0) - take;
+    diff += take;
+  }
+  while (diff > 0) {
+    let best = 0;
+    for (const index of parts.keys())
+      if (
+        (room[index] ?? 0) - (parts[index] ?? 0) >
+        (room[best] ?? 0) - (parts[best] ?? 0)
+      )
+        best = index;
+    const free = (room[best] ?? 0) - (parts[best] ?? 0);
+    if (free <= 0) {
+      let heaviest = 0;
+      for (const [index, weight] of weights.entries())
+        if (weight > (weights[heaviest] ?? 0)) heaviest = index;
+      parts[heaviest] = (parts[heaviest] ?? 0) + diff;
+      break;
+    }
+    const give = Math.min(free, diff);
+    parts[best] = (parts[best] ?? 0) + give;
+    diff -= give;
+  }
+  return parts;
+}
+
+/**
  * Splits a refund over the sale's revenue lines for the WS-07 refund rule
  * (gross − discount + service + tax = amount, exactly): service charge and
  * tax pro rata to the bill, discount pro rata to the net, gross the rest.
@@ -527,6 +590,7 @@ export function refundSplit(
   order: Locked["order"],
   amountIdr: number,
   refundedSubtotalIdr: number | null = null,
+  alreadyRefundedIdr: number | readonly number[] = 0,
 ): {
   grossSalesIdr: number;
   discountIdr: number;
@@ -536,11 +600,35 @@ export function refundSplit(
   // legend-zmc2: an inclusive order's subtotal already contains service and
   // tax; the net line excludes them so the split still adds up to the amount.
   const net = Math.max(0, orderNetSubtotalIdr(order) - order.discountIdr);
-  const [netPart, servicePart, taxPart] = allocateIdr(idr(amountIdr), [
-    net,
-    order.serviceChargeIdr,
-    order.taxIdr,
-  ]).map(Number);
+  const weights = [net, order.serviceChargeIdr, order.taxIdr];
+  // legend-9z1r5: rounding every partial refund on its own can reverse Rp1
+  // more goods (and Rp1 less tax) than the sale holds. Each refund takes the
+  // cumulative split of everything returned so far minus what the earlier
+  // refunds really booked per part (replayed here from their amounts, oldest
+  // first, with the same rule), so over several refunds each part follows one
+  // allocateIdr of the total. Largest remainder is not monotone in the total:
+  // a part that would shrink is held at 0 and the shortfall is taken from the
+  // biggest growing part. A part is also capped at what the sale still holds
+  // of it (weight minus what earlier refunds booked), and a shortfall from the
+  // cap goes to the parts with room, so the sum stays the amount and a part
+  // never passes its weight (legend-980).
+  const earlier =
+    typeof alreadyRefundedIdr === "number"
+      ? [alreadyRefundedIdr]
+      : [...alreadyRefundedIdr];
+  const priorParts = weights.map(() => 0);
+  let cumulativeIdr = 0;
+  for (const earlierIdr of earlier) {
+    if (!(earlierIdr > 0)) continue;
+    refundPartsStep(weights, priorParts, cumulativeIdr, earlierIdr).forEach(
+      (part, index) => {
+        priorParts[index] = (priorParts[index] ?? 0) + part;
+      },
+    );
+    cumulativeIdr += earlierIdr;
+  }
+  const deltas = refundPartsStep(weights, priorParts, cumulativeIdr, amountIdr);
+  const [netPart = 0, servicePart = 0, taxPart = 0] = deltas;
   if (refundedSubtotalIdr !== null) {
     // An inclusive order's item prices already contain service and tax, but
     // its sale books gross without them (order-revenue.ts): bring the refunded
@@ -563,13 +651,20 @@ export function refundSplit(
       pbjtIdr: taxPart,
     };
   }
-  const discountPart =
+  // The discount floors on the cumulative goods part too, so earlier refunds
+  // cannot add up to more than the order's discount.
+  const discountOf = (goodsIdr: number) =>
     net > 0
       ? Math.min(
           order.discountIdr,
-          Math.floor((order.discountIdr * netPart) / net),
+          Math.floor((order.discountIdr * goodsIdr) / net),
         )
       : 0;
+  const priorGoods = priorParts[0] ?? 0;
+  const discountPart = Math.max(
+    0,
+    discountOf(priorGoods + netPart) - discountOf(priorGoods),
+  );
   return {
     grossSalesIdr: netPart + discountPart,
     discountIdr: discountPart,
@@ -687,6 +782,73 @@ export function refundLinesByTender(
   return lines;
 }
 
+/**
+ * legend-980 (restrictive, "jangan sampai rugi"): a POS refund and a manual
+ * refund of an order's lines are mutually exclusive per order. A manual refund
+ * pays the line's net share (service charge and PBJT included, see
+ * order-issue-manual-refund.ts) and a POS refund counts items and amounts by
+ * its own rules, so mixing them could pay one line or one rupiah twice. An
+ * issue whose refund was rejected or that was cancelled paid nothing and does
+ * not block. Only manual refunds of the approval route count: an ORD-09
+ * failed-item manual issue sends the guest to this very POS refund
+ * (order-issue-route-refund.ts). Business-rule restriction pending founder
+ * review. Also guards the cash void, which is a refund too.
+ */
+async function assertNoLiveManualRefund(
+  tx: Tx,
+  context: ScopedTenantContext,
+  orderId: string,
+): Promise<void> {
+  const [row] = await tx
+    .select({ id: orderIssues.id })
+    .from(orderIssues)
+    .where(
+      and(
+        liveRouteManualRefundWhere(context.tenant.tenantId),
+        eq(orderIssues.orderId, orderId),
+      ),
+    )
+    .limit(1);
+  if (row)
+    throw new HttpError(
+      409,
+      "REFUND_MANUAL_REFUND_EXISTS",
+      "Pesanan ini sudah punya refund manual per item. Selesaikan sisanya lewat alur refund manual per item, bukan refund kasir.",
+    );
+}
+
+/**
+ * What each earlier refund returned in total (payout plus the deposit part it
+ * released), oldest first: the history `refundSplit` replays so every part is
+ * capped by what earlier refunds really booked.
+ */
+async function earlierRefundTotals(
+  tx: Tx,
+  context: ScopedTenantContext,
+  orderId: string,
+  refunds: readonly RefundRow[],
+): Promise<number[]> {
+  const depositOf = new Map<string, number>();
+  if (refunds.length > 0)
+    for (const row of await tx
+      .select({
+        posRefundId: posDepositRefunds.posRefundId,
+        amountIdr: posDepositRefunds.amountIdr,
+      })
+      .from(posDepositRefunds)
+      .where(
+        and(
+          eq(posDepositRefunds.tenantId, context.tenant.tenantId),
+          eq(posDepositRefunds.orderId, orderId),
+        ),
+      ))
+      depositOf.set(
+        row.posRefundId,
+        (depositOf.get(row.posRefundId) ?? 0) + Number(row.amountIdr),
+      );
+  return refunds.map((row) => row.amountIdr + (depositOf.get(row.id) ?? 0));
+}
+
 /** POST .../corrections/refund — linked refund against a paid sale (POS-04). */
 export async function refundPosOrder(
   context: ScopedTenantContext,
@@ -720,11 +882,14 @@ export async function refundPosOrder(
       const { voids, refunds } = await correctionsOf(tx, context, order.id);
       if (voids.length > 0)
         throw new CoreError("CONFLICT", "Transaksi ini sudah di-void.");
+      // legend-980: never next to a live manual refund of the same order.
+      await assertNoLiveManualRefund(tx, context, order.id);
       const tenders = (await tendersOf(tx, context, order.id)).map(tenderDto);
       const paid = tenders
         .filter((tender) => tender.status === "captured")
         .reduce((sum, tender) => sum + Number(tender.amountIdr), 0);
-      const refunded = refunds.reduce((sum, row) => sum + row.amountIdr, 0);
+      const posRefunded = refunds.reduce((sum, row) => sum + row.amountIdr, 0);
+      const refunded = posRefunded;
       const depositRefunded =
         Number(order.depositAppliedIdr) > 0
           ? await depositRefundedOfOrder(tx, context, order.id)
@@ -947,7 +1112,7 @@ export async function refundPosOrder(
           Math.max(
             0,
             Number(
-              (BigInt(refunded + depositRefunded + input.amountIdr) *
+              (BigInt(posRefunded + depositRefunded + input.amountIdr) *
                 BigInt(order.depositAppliedIdr)) /
                 BigInt(paidIn),
             ) - depositRefunded,
@@ -1095,6 +1260,7 @@ export async function refundPosOrder(
         order,
         totalReturnIdr,
         promoRefundedSubtotalIdr,
+        await earlierRefundTotals(tx, context, order.id, refunds),
       );
       // Goods part of the payout goes onto the promo application's ledger.
       if (promoApplication && totalReturnIdr > 0)
@@ -1162,7 +1328,7 @@ export async function refundPosOrder(
           caller,
           objectType: "pos_order_refund",
           objectId: row.id,
-          before: { id: order.id, amountIdr: refunded },
+          before: { id: order.id, amountIdr: posRefunded },
           after: {
             id: row.id,
             amountIdr: row.amountIdr,

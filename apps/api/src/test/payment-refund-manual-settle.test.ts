@@ -104,14 +104,19 @@ const key = (prefix = "k") => `${prefix}-${randomUUID()}`;
 /** Fake provider whose status lookup can be made to fail (an unknown outcome). */
 class LookupGateway extends FakeRefundGateway {
   lookupFails = false;
-  /** Awaited inside `getRefundStatus` (after the call is recorded), to hold a worker mid-lookup. */
+  /**
+   * Awaited inside the next `getRefundStatus` only (after the call is recorded),
+   * to hold a worker mid-lookup; later lookups (the settlement's own) are not held.
+   */
   lookupGate: Promise<void> | null = null;
   override async getRefundStatus(
     input: Parameters<FakeRefundGateway["getRefundStatus"]>[0],
   ) {
     if (this.lookupGate) {
+      const gate = this.lookupGate;
+      this.lookupGate = null;
       this.statusCalls.push(input);
-      await this.lookupGate;
+      await gate;
       const override = await super.getRefundStatus(input);
       this.statusCalls.pop();
       return override;
@@ -206,6 +211,13 @@ afterAll(async () => {
 
 beforeEach(() => {
   fake = new LookupGateway();
+  // Settlement by hand needs a definitive "the provider declined" answer;
+  // `not_found` is refused as uncertain (legend-980).
+  fake.defaultStatus = {
+    status: "failed",
+    providerRef: "PR-DECLINED",
+    code: "declined",
+  };
   setPaymentRefundGateway(fake);
 });
 afterEach(() => {
@@ -507,9 +519,10 @@ describe("legend-xd2q PAY-04 manual settlement of a refund finance paid by hand"
     expect(
       await outboxEventCount([refundId, intentId], "payment.refunded"),
     ).toBe(1);
-    // No provider call was made on the way.
+    // No payout was sent on the way; the settlement only asked the provider once
+    // (legend-980: a refund with attempts is looked up first).
     expect(fake.calls).toHaveLength(0);
-    expect(fake.statusCalls).toHaveLength(0);
+    expect(fake.statusCalls).toHaveLength(1);
   });
 
   it("PAY-04 settling a refund that covers the whole bill moves the bill to refunded", async () => {
@@ -557,7 +570,7 @@ describe("legend-xd2q PAY-04 manual settlement of a refund finance paid by hand"
     ],
   ];
   for (const [label, seed] of eligibleShapes)
-    it(`PAY-04 can be settled: ${label}; afterwards the sweep makes no gateway call`, async () => {
+    it(`PAY-04 can be settled: ${label}; afterwards the sweep sends no payout`, async () => {
       const { refundId } = await seedRefund(seed);
 
       const response = await settle(opsClient, refundId);
@@ -572,10 +585,16 @@ describe("legend-xd2q PAY-04 manual settlement of a refund finance paid by hand"
       });
       expect(await audits(refundId, SETTLE_ACTION)).toHaveLength(1);
 
+      // legend-980: the settlement itself looked the provider up (not found, so
+      // it was allowed), and the sweep watches a settled refund with a provider
+      // trace read-only (one lookup, no payout); one without a trace is not asked.
+      const lookupsAtSettle = fake.statusCalls.length;
       await ageRefund(refundId);
       await sweep();
       expect(fake.calls).toHaveLength(0);
-      expect(fake.statusCalls).toHaveLength(0);
+      expect(fake.statusCalls).toHaveLength(
+        lookupsAtSettle + ((seed.attempts ?? 0) > 0 ? 1 : 0),
+      );
       expect((await refundRow(refundId)).status).toBe("completed");
     });
 
@@ -971,10 +990,6 @@ describe("legend-xd2q PAY-04 manual settlement of a refund finance paid by hand"
         attempts: 1,
         lastError: "Error",
       });
-      fake.setStatus(`refund:${refundId}`, {
-        status: "pending",
-        providerRef: "PR-LATE-PENDING",
-      });
       let release!: () => void;
       fake.lookupGate = new Promise<void>((resolve) => {
         release = resolve;
@@ -989,6 +1004,13 @@ describe("legend-xd2q PAY-04 manual settlement of a refund finance paid by hand"
       expect(response.status).toBe(200);
       const settled = await refundRow(refundId);
 
+      // The settlement's own lookup (legend-980) saw the provider not know the
+      // refund, which is what allowed it. Only now does the provider answer the
+      // held worker lookup: pending, after the settlement.
+      fake.setStatus(`refund:${refundId}`, {
+        status: "pending",
+        providerRef: "PR-LATE-PENDING",
+      });
       release();
       await worker;
 
@@ -1012,6 +1034,11 @@ describe("legend-xd2q PAY-04 manual settlement of a refund finance paid by hand"
 // ---------------------------------------------------------------------------
 
 describe("legend-xd2q PAY-04 a maybe-sent refund is never sent again", () => {
+  // These tests exercise the lookup of a maybe-sent refund: a provider that
+  // never saw the key answers `not_found`.
+  beforeEach(() => {
+    fake.defaultStatus = { status: "not_found" };
+  });
   /** Approved by a finance + supervisor user, so only the lookup path is exercised. */
   const maybeSent = (seed: RefundSeed = {}) =>
     seedRefund({
@@ -1234,6 +1261,18 @@ describe("legend-xd2q PAY-04 a maybe-sent refund is never sent again", () => {
       PAYOUT_NOT_FOUND_MAYBE_SENT,
     );
 
+    // legend-980: `not_found` is uncertain (a send may have left), so a hand
+    // settlement is refused until the provider answers a definitive `failed`.
+    const refused = await settle(opsClient, refundId);
+    expect(refused.status).toBe(409);
+    expect(refused.body.error.code).toBe("PROVIDER_REFUND_STATUS_UNKNOWN");
+    expect((await refundRow(refundId)).status).not.toBe("completed");
+
+    fake.setStatus(`refund:${refundId}`, {
+      status: "failed",
+      providerRef: "PR-DECLINED",
+      code: "declined",
+    });
     const response = await settle(opsClient, refundId);
 
     expect(response.status).toBe(200);

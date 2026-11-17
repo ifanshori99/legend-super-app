@@ -77,6 +77,8 @@ import {
 } from "./bill-split.service.ts";
 import type { Tx } from "./menu-internals.ts";
 import { refundableBalance } from "./payment-admin.service.ts";
+import { netAllocatedIdrSql } from "./payment-net-allocated-sql.ts";
+import { providerRefundedForeignIdrSql } from "./payment-provider-refunded-foreign-sql.ts";
 import {
   failedRefundOpenSql,
   refundColumnsOf,
@@ -275,8 +277,8 @@ async function supersededIntentIds(
  * SO-879: where the guest's money stands on a fully paid link, read under the
  * intent row locks the refund writers hold (lock order: order row -> intents
  * ascending, as the fire path). `netCapturedZero`: something was paid and every
- * intent's COMPLETED refunds (of any kind) cover everything that came in for
- * it; an intent still marked paid with no evidence is unknown, so not zero.
+ * intent's COMPLETED refunds (of any kind) plus the provider's own partial
+ * refunds (legend-m9pf6) cover everything that came in for it; an intent still marked paid with no evidence is unknown, so not zero.
  * `anyRefundOpen`: any refund of the link that is not completed (pending,
  * approved but not paid out, or failed and not yet replaced by a completed
  * refund; SO-885 legend-05pjx). Both answer the safe way on doubt.
@@ -308,10 +310,12 @@ async function refundPositionOfLink(
            coalesce((SELECT sum(e.amount_idr) FROM payment_evidence e
                       WHERE e.tenant_id = i.tenant_id
                         AND e.payment_intent_id = i.id), 0)::text AS received,
-           coalesce((SELECT sum(r.amount_idr) FROM payment_refunds r
+           (coalesce((SELECT sum(r.amount_idr) FROM payment_refunds r
                       WHERE r.tenant_id = i.tenant_id
                         AND r.payment_intent_id = i.id
-                        AND r.status = 'completed'), 0)::text AS completed,
+                        AND r.status = 'completed'), 0)
+             + ${providerRefundedForeignIdrSql(sql`i.tenant_id`, sql`i.id`)}
+             )::text AS completed,
            (SELECT count(*) FROM payment_refunds r
              WHERE r.tenant_id = i.tenant_id
                AND r.payment_intent_id = i.id
@@ -473,7 +477,8 @@ async function lockOrderOfLink(
  * legend-mks0q: what each paid code of the link put toward the bill, from the
  * durable WS-05 rows: the money its provider evidence brought in, less the
  * part booked as unallocated funds (overpayment or double payment, whatever
- * became of it later). WS-05 keeps no per-code allocation column; these two
+ * became of it later), less what the provider refunded on its own (legend-m9pf6,
+ * so a partly refunded code never covers the bill alone). WS-05 keeps no per-code allocation column; these two
  * append-only tables, written in the settling transaction, are the allocation
  * record. One statement, so one snapshot: a second payment of a code that
  * commits mid-read can never make its evidence count without its fund (or
@@ -486,12 +491,7 @@ async function allocatedIdrByIntent(
 ): Promise<Map<string, number>> {
   const result = await tx.execute<{ id: string; allocated: string }>(sql`
     SELECT i.id,
-           (coalesce((SELECT sum(e.amount_idr) FROM payment_evidence e
-                       WHERE e.tenant_id = i.tenant_id
-                         AND e.payment_intent_id = i.id), 0)
-          - coalesce((SELECT sum(f.amount_idr) FROM payment_unallocated_funds f
-                       WHERE f.tenant_id = i.tenant_id
-                         AND f.payment_intent_id = i.id), 0))::text AS allocated
+           (${netAllocatedIdrSql(sql`i.tenant_id`, sql`i.id`)})::text AS allocated
       FROM payment_intents i
      WHERE i.tenant_id = ${context.tenant.tenantId}
        AND i.payment_link_id = ${paymentLinkId}

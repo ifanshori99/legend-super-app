@@ -126,6 +126,12 @@ afterAll(async () => {
 
 beforeEach(() => {
   fake = new FakeRefundGateway();
+  // A settlement by hand needs a definitive "declined" answer (legend-980).
+  fake.defaultStatus = {
+    status: "failed",
+    providerRef: "PR-DECLINED",
+    code: "declined",
+  };
   setPaymentRefundGateway(fake);
 });
 afterEach(() => {

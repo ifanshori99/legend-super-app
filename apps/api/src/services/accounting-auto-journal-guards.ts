@@ -53,6 +53,7 @@ import {
 import type { Tx } from "./inventory-ops.shared.ts";
 import { posDepositRefunds } from "../db/schema/pos-deposit-refund.ts";
 import { EVENT_DESTINATION } from "./payment-support.ts";
+import { netAllocatedIdrSql } from "./payment-net-allocated-sql.ts";
 import {
   netPosTendersOfIntentSql,
   posRefundsOfIntentSql,
@@ -995,15 +996,11 @@ async function intentBackedAt(
   // code paying alone is pinned (orders.payment_intent_id) and backs all of it.
   // legend-05cm9: a bill split over several codes of the order's payment link
   // pins only the code of the event that fired it; each code backs the part
-  // it put toward the bill (its evidence less its unallocated funds, at most
-  // total - DP), like
+  // it put toward the bill (its evidence less its unallocated funds and the
+  // provider's own partial refunds, netAllocatedIdrSql; at most total - DP), like
   // qrSaleInUseOfIntent (payment-admin.service.ts). The pinned payer of a split
   // bill backs its part too, not the whole bill its receipt never carried.
-  const evidenceOf = (id: SQL) => sql`(
-    SELECT coalesce(sum(e.amount_idr), 0) FROM payment_evidence e
-      WHERE e.tenant_id = ${tenantId} AND e.payment_intent_id = ${id})
-    - (SELECT coalesce(sum(f.amount_idr), 0) FROM payment_unallocated_funds f
-      WHERE f.tenant_id = ${tenantId} AND f.payment_intent_id = ${id})`;
+  const evidenceOf = (id: SQL) => netAllocatedIdrSql(sql`${tenantId}`, id);
   const due = sql`(${orders.totalIdr} - ${orders.depositAppliedIdr})`;
   const qrSaleScope = and(
     eq(orders.tenantId, tenantId),
