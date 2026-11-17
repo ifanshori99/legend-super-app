@@ -324,6 +324,65 @@ export async function alertProviderRefundCountedWithLiveOwn(
   }
 }
 
+export type ProviderRefundUnbound = {
+  intentId: string;
+  outletId: string;
+  providerPaymentRef: string;
+};
+
+/**
+ * legend-hpwpt (1025d): the provider says a transaction of the intent is
+ * refunded but the recorder could not write it (`unbound`), so no fact and no
+ * journal event exist. Never silent: finance (owners and the outlet's
+ * supervisors) is told once per (tenant, intent, transaction); the stamp the
+ * caller wrote stays. Same savepoint rule as above.
+ */
+export async function alertProviderRefundUnbound(
+  tx: Tx,
+  context: ScopedTenantContext,
+  unbound: ProviderRefundUnbound,
+  now: Date,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const hex = createHash("sha256")
+    .update(
+      `payment.provider_refund_unbound\0${tenantId}\0${unbound.intentId.toLowerCase()}\0${unbound.providerPaymentRef}`,
+    )
+    .digest("hex")
+    .slice(0, 32);
+  const id = uuidToUlid(
+    `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
+  );
+  try {
+    await tx.transaction(async (savepoint) => {
+      await notifyOutletSupervisors(
+        savepoint,
+        context,
+        {
+          tenantId,
+          outletId: outletIdSchema.parse(unbound.outletId),
+          category: "operational_anomaly",
+          alsoOwners: true,
+          recordEmpty: true,
+          id,
+          eventName: "payment.provider_refund_unbound",
+          aggregateType: "payment",
+          aggregateId: id,
+          payload: { intentId: unbound.intentId },
+          title: "Refund penyedia tidak bisa dibukukan",
+          body: "Penyedia pembayaran menyatakan sebuah transaksi sudah dikembalikan, tetapi refund itu tidak bisa dicatat otomatis dan tidak ada jurnalnya. Dana transaksi itu tetap ditandai; finance harus memeriksa dan membukukannya.",
+        },
+        now,
+      );
+    });
+  } catch (err) {
+    logger.warn(
+      { err, tenantId, intentId: unbound.intentId },
+      "Provider refund unbound: notification failed",
+    );
+  }
+}
+
 export type CreditUsedBeforeProviderRefund = {
   intentId: string;
   outletId: string;

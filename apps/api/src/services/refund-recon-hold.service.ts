@@ -42,7 +42,11 @@ import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
-import { recordProviderRefundInTx } from "./payment-provider-partial-refund.ts";
+import {
+  isHashedSyntheticRefundId,
+  providerPaymentSyntheticRefundId,
+  recordProviderRefundInTx,
+} from "./payment-provider-partial-refund.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import { assertPaymentPermission } from "./payment-support.ts";
 import type { Tx } from "./permission-resolver.ts";
@@ -355,7 +359,18 @@ async function countHold(
     // left of the transaction is worked out here. It closes only when nothing
     // of ours is still on its way; whatever is not yet accounted for is
     // recorded first, so nothing more than the payment can ever leave.
-    const providerPaymentRef = named.slice(SYNTHETIC_PREFIX.length);
+    // A hashed id (long payment id) cannot be sliced: the raw ref is the one
+    // stored on the hold (or the intent's only transaction), and it must hash
+    // to the named id (legend-hpwpt).
+    let providerPaymentRef: string;
+    if (isHashedSyntheticRefundId(named)) {
+      const held = await heldPaymentRefOf(tx, tenantId, hold, intent);
+      if (!held || providerPaymentSyntheticRefundId(held) !== named)
+        throw unprocessable(
+          "The provider transaction of this refund is not known.",
+        );
+      providerPaymentRef = held;
+    } else providerPaymentRef = named.slice(SYNTHETIC_PREFIX.length);
     await assertNoRefundInFlight();
     const leftNow = () =>
       transactionLeftIdr(tx, tenantId, intent, providerPaymentRef);

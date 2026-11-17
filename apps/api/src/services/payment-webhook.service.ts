@@ -87,8 +87,14 @@ import {
   applyRefundProviderUpdate,
   SETTLED_OUTSIDE_PROVIDER,
 } from "./payment-refund.service";
-import { recordProviderRefundInTx } from "./payment-provider-partial-refund";
-import { alertRefundReferenceMismatch } from "./payment-provider-refunded-alert";
+import {
+  providerPaymentSyntheticRefundId,
+  recordProviderRefundInTx,
+} from "./payment-provider-partial-refund";
+import {
+  alertProviderRefundUnbound,
+  alertRefundReferenceMismatch,
+} from "./payment-provider-refunded-alert";
 import { gatewayWebhookTolerance } from "./platform-payment-gateway.service";
 import { processDoitInvoiceEvent } from "./payment-recurring.service";
 import {
@@ -1020,7 +1026,7 @@ async function flagRefundInDoubt(
       context,
       row,
       {
-        providerRefundId: `payment:${paymentId}`,
+        providerRefundId: providerPaymentSyntheticRefundId(paymentId),
         providerPaymentRef: paymentId,
         amountIdr: candidate.evidenceAmountIdr,
         source: "payment_webhook",
@@ -1101,7 +1107,9 @@ async function processPaymentEvent(
               context,
               row,
               {
-                providerRefundId: `payment:${event.data.id}`,
+                providerRefundId: providerPaymentSyntheticRefundId(
+                  event.data.id,
+                ),
                 providerPaymentRef: event.data.id,
                 amountIdr: extra.amountIdr,
                 source: "payment_webhook",
@@ -1123,6 +1131,20 @@ async function processPaymentEvent(
         return "failed";
       }
       const recorded = applied === "bound";
+      // A refund of the extra the recorder could not write is never silent.
+      if (applied === "unbound" && status === "refunded" && extra.amountIdr > 0)
+        await withTenant(db, context, (tx) =>
+          alertProviderRefundUnbound(
+            tx,
+            context,
+            {
+              intentId: intent.id,
+              outletId: intent.outletId,
+              providerPaymentRef: event.data.id,
+            },
+            now,
+          ),
+        );
       await markRow(
         context,
         row.id,

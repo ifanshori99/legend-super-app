@@ -61,6 +61,22 @@ const PROVIDER = "doit";
 /** Id prefix of the refund derived from a payment's own `refunded` status. */
 const SYNTHETIC_PREFIX = "payment:";
 
+/**
+ * Synthetic provider refund id of a transaction's own `refunded` status. The
+ * id column holds 100 characters and a payment id may be 100 long, so a ref
+ * that does not fit after the prefix is keyed by its hash; the raw ref is
+ * never cut and is kept in `provider_payment_ref` (legend-hpwpt, 1025d).
+ */
+export function providerPaymentSyntheticRefundId(ref: string): string {
+  return SYNTHETIC_PREFIX.length + ref.length <= 100
+    ? `${SYNTHETIC_PREFIX}${ref}`
+    : `${SYNTHETIC_PREFIX}h:${createHash("sha256").update(ref).digest("hex").slice(0, 64)}`;
+}
+
+/** True for the hashed form made by `providerPaymentSyntheticRefundId`. */
+export const isHashedSyntheticRefundId = (id: string): boolean =>
+  /^payment:h:[0-9a-f]{64}$/.test(id);
+
 export type ProviderRefundInput = {
   provider: string;
   /** The provider's own refund id (never ours). */
@@ -318,7 +334,8 @@ export async function recordProviderRefundInTx(
     // journal through `payment.refunded`: the provider's `refunded` status is
     // their echo, so they are not booked a second time (1025 B). A refund of a
     // parked fund of another transaction is not part of this money (same rule
-    // as `ownRefundedIdrSql`), and one already recorded as an echo row is in
+    // as `ownRefundedIdrSql`); an intent-level refund belongs to the intent's
+    // primary transaction only, never to a secondary one (1025d), and one already recorded as an echo row is in
     // `recorded` (counted there, not twice).
     const { rows: ours } = await tx.execute(sql`SELECT r.status,
         r.amount_idr::text AS amount, r.provider_ref,
@@ -330,7 +347,9 @@ export async function recordProviderRefundInTx(
       WHERE r.tenant_id = ${tenantId}::uuid
         AND r.payment_intent_id = ${intent.id}::uuid
         AND r.status NOT IN ('failed')
-        AND (r.unallocated_fund_id IS NULL
+        AND ((r.unallocated_fund_id IS NULL
+            AND ${intent.providerRef ?? null}::text
+              IS NOT DISTINCT FROM ${providerPaymentRef}::text)
           OR EXISTS (SELECT 1 FROM payment_unallocated_funds f
             JOIN payment_evidence e
               ON e.tenant_id = f.tenant_id AND e.id = f.evidence_id
