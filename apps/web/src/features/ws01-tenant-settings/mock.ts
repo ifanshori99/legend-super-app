@@ -274,6 +274,7 @@ registerMock(importOrgConfig, ({ body }) => {
       status: "applied",
       appliedSections: applied,
       errors: [],
+      warnings: [],
       startedBy: actorId,
       startedAt: nowIso(),
       finishedAt: nowIso(),

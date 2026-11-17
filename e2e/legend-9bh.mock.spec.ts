@@ -60,7 +60,7 @@ test("AUTH-05: the security page lists factors and devices, and revokes a device
   const sessions = page.getByRole("region", { name: "Sesi & perangkat" });
   await expect(sessions.getByText("Chrome di iPhone")).toBeVisible();
 
-  await page.getByRole("button", { name: "Cabut" }).click();
+  await sessions.getByRole("button", { name: "Cabut", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "Cabut sesi perangkat ini?" }),
   ).toBeVisible();

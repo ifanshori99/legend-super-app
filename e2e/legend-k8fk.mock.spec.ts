@@ -82,13 +82,23 @@ test("DASH-01: the owner dashboard shows today's sales against the target, trace
   for (const href of await reportLinks.evaluateAll((links) =>
     links.map((link) => link.getAttribute("href")),
   )) {
+    expect(href).not.toBeNull();
+    const source = new URL(href!, MOCK_URL);
     expect([
       "/reports/sales/target",
       "/reports/traffic/pax",
       "/reports/sales/transactions",
       "/reports/operations/table-turnover",
       "/reports/sales/per-channel",
-    ]).toContain(href);
+    ]).toContain(source.pathname);
+    expect(source.searchParams.get("startDate")).toBe("2026-11-01");
+    expect(source.searchParams.get("endDate")).toBe("2026-11-01");
+    expect(source.searchParams.get("outletId")).toBe(
+      "6a2d4f80-1c3e-4b5a-9d7f-8e0c2b4a6d13",
+    );
+    expect(source.searchParams.get("groupBy")).toBe(
+      source.pathname === "/reports/sales/per-channel" ? "channel" : null,
+    );
   }
 
   // One StatStrip for the related KPIs (DESIGN.md v3 / Q30), not separate cards.
@@ -100,7 +110,11 @@ test("DASH-01: the owner dashboard shows today's sales against the target, trace
   await expect(strip.getByText("148", { exact: true })).toBeVisible();
   await expect(strip.getByText("96", { exact: true })).toBeVisible();
   await expect(strip.getByText("Okupansi meja")).toBeVisible();
-  await expect(strip.getByText("62,5%", { exact: true })).toBeVisible();
+  const occupancy = strip.locator('[data-slot="stat-tile"]').filter({
+    has: page.getByRole("paragraph").filter({ hasText: /^Okupansi meja$/ }),
+  });
+  await expect(occupancy.getByText("—", { exact: true })).toBeVisible();
+  await expect(strip.getByText("62,5%", { exact: true })).toHaveCount(0);
 
   // The channel split is the same sales.per_channel report, one row per channel.
   await expect(
@@ -166,11 +180,9 @@ test("DASH-01: operations, shower, and seats tabs show their report-backed tiles
     name: "Okupansi kursi per zona",
   });
   await expect(
-    zoneOccupancy
-      .getByRole("row")
-      .filter({ hasText: "Indoor Reguler" })
-      .getByRole("cell"),
-  ).toHaveText(["Indoor Reguler", "—", "—"]);
+    zoneOccupancy.getByText("Belum ada data hari ini"),
+  ).toBeVisible();
+  await expect(zoneOccupancy.getByRole("table")).toHaveCount(0);
   await expect(page.getByText("68,8%", { exact: true })).toHaveCount(0);
   await expect(
     page.getByRole("heading", { name: "Durasi duduk dan belanja" }),
