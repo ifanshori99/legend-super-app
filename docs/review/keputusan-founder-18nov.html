@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="ghostex-page" content="v2">
+<title>Keputusan founder, 18 Nov</title>
+<style>
+  .how { margin: 0 0 8px; font-size: 13px; line-height: 1.45; color: var(--gx-muted); }
+  .how b { color: var(--gx-fg); font-weight: 600; }
+  .ctx { display: grid; gap: 6px; padding: 11px 13px; border-radius: 12px; background: var(--gx-surface); border: 1px solid var(--gx-line); font-size: 13px; line-height: 1.5; color: var(--gx-text); }
+  .ctx b { color: var(--gx-fg); font-weight: 600; }
+  .shots { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-items: start; }
+  .shots figure { margin: 0; min-width: 0; }
+  .shots img { box-sizing: border-box; display: block; max-width: 100%; height: auto; border-radius: 10px; border: 1px solid var(--gx-line); }
+  .shots figcaption { margin-top: 6px; font-size: 12.5px; line-height: 1.45; color: var(--gx-muted); }
+  .shots figcaption b { color: var(--gx-fg); font-weight: 600; }
+  .narrow { max-width: 260px; }
+  @media (max-width: 640px) { .shots { grid-template-columns: minmax(0, 1fr); } .narrow { max-width: 100%; } }
+</style>
+</head>
+<body>
+<gx-questions submit="Kirim ke CTO">
+  <header>
+    <span class="gx-eyebrow">Keputusan founder · 18 Nov 2026</span>
+    <h1>Delapan keputusan yang menunggu Anda</h1>
+    <p class="gx-lede">Tiap kartu singkat: apa masalahnya, kenapa penting, dan pilihan. Pilihan bertanda Disarankan adalah usulan tim. Bila ragu, pilih yang disarankan atau tulis catatan.</p>
+    <div class="gx-chips">
+      <span class="gx-chip"><b>8</b> kartu</span>
+      <span class="gx-chip">Q32, Q29, Q19, Q24/Q25, W3, gaji WNA, Q35, Q36</span>
+    </div>
+  </header>
+
+  <h2>1. Kredit DP di kasus langka (Q32)</h2>
+  <div class="ctx">
+    <span><b>Kasus:</b> tamu membayar DP yang dibagi beberapa sesi (misalnya 70% dan 30%), lalu penyedia pembayaran mengembalikan sebagian uang.</span>
+    <span><b>Aturan aman:</b> kredit DP dihitung sedikit lebih kecil dari seharusnya. Outlet tidak pernah rugi. Tamu bisa membayar sedikit lebih, dan finance mengoreksinya manual.</span>
+    <span><b>Menahan:</b> cabang refund sisa (1033) ikut rilis pertama.</span>
+  </div>
+  <gx-question tag="Q32" title="Pakai aturan aman di rilis pertama?">
+    <gx-choice value="Pakai aturan aman" recommended>Ya, pakai aturan aman untuk rilis<small>Rilis tidak tertunda. Kasus ini sangat jarang, dan finance koreksi manual.</small></gx-choice>
+    <gx-choice value="Hitung tepat dulu">Hitung tepat sebelum rilis<small>Tamu tidak pernah bayar lebih, tetapi rilis mundur sekitar setengah hari.</small></gx-choice>
+  </gx-question>
+
+  <h2>2. Layar apa yang boleh tampil di tablet bersama (Q29)</h2>
+  <div class="ctx">
+    <span><b>Tablet bersama</b> dipakai bergantian oleh beberapa karyawan outlet, tanpa akun pribadi.</span>
+    <span><b>Usulan tim:</b> Reservasi dibuka, Tanya AI di layar dapur (KDS) dibuka, layar operasional dan fasilitas ditutup.</span>
+    <span><b>Menahan:</b> daftar layar tablet bersama belum bisa dikunci sebelum Anda menjawab.</span>
+  </div>
+  <gx-question tag="Q29" title="Layar mana yang boleh tampil di tablet bersama?">
+    <gx-choice value="Reservasi buka, Tanya AI KDS buka, ops/fasilitas tutup" recommended>Usulan tim<small>Reservasi dan Tanya AI KDS boleh dilihat siapa saja di outlet. Operasional dan fasilitas tetap tertutup.</small></gx-choice>
+    <gx-choice value="Semua tutup">Semua layar tertutup<small>Paling aman, tetapi karyawan harus masuk akun pribadi untuk reservasi.</small></gx-choice>
+    <gx-choice value="Semua buka">Semua layar terbuka<small>Paling praktis, tetapi data operasional terlihat oleh siapa pun yang memegang tablet.</small></gx-choice>
+  </gx-question>
+
+  <h2>3. Layar kasir bayar sisa (Q19)</h2>
+  <p class="how">Pelanggan sudah membayar DP, kasir menagih sisanya. Bisa dipotong voucher atau poin, menjual tiket fasilitas, dan menangani kartu yang ditolak. <b>Menahan:</b> pengerjaan 936 dan kartu lanjutannya. Contoh data, bukan uang sungguhan.</p>
+  <gx-wide>
+    <div class="shots">
+      <figure><img src="img/pos936-voucher-valid-light-1280.png" alt="Pakai voucher, layar tablet"><figcaption><b>Voucher.</b> Kode berlaku, potongan Rp 30.000 (tablet).</figcaption></figure>
+      <figure class="narrow"><img src="img/pos936-voucher-valid-light-360.png" alt="Pakai voucher, layar HP"><figcaption><b>Voucher (HP).</b></figcaption></figure>
+      <figure><img src="img/pos936-poin-nilai-light-1280.png" alt="Tukar poin, layar tablet"><figcaption><b>Poin.</b> Saldo 12.500 poin, 5.000 poin bernilai Rp 5.000.</figcaption></figure>
+      <figure class="narrow"><img src="img/pos936-poin-saldo-light-360.png" alt="Tukar poin, layar HP"><figcaption><b>Poin (HP).</b></figcaption></figure>
+      <figure><img src="img/pos936-tiket-terbit-light-1280.png" alt="Tiket fasilitas terbit dengan QR dan PIN"><figcaption><b>Tiket fasilitas.</b> Tiket terbit lengkap dengan QR dan PIN.</figcaption></figure>
+      <figure class="narrow"><img src="img/pos936-tiket-terbit-light-360.png" alt="Tiket fasilitas, layar HP"><figcaption><b>Tiket (HP).</b></figcaption></figure>
+      <figure><img src="img/pos936-edc-ditolak-normal-light-1280.png" alt="Kartu ditolak, saldo tidak cukup"><figcaption><b>Kartu ditolak.</b> Tagihan tetap Rp 148.000, belum lunas.</figcaption></figure>
+      <figure class="narrow"><img src="img/pos936-edc-ditolak-normal-light-360.png" alt="Kartu ditolak, layar HP"><figcaption><b>Kartu ditolak (HP).</b></figcaption></figure>
+    </div>
+  </gx-wide>
+  <gx-question tag="Q19" title="Layar kasir bayar sisa sudah sesuai?">
+    <gx-choice value="Setuju" recommended>Setuju<small>Layar dipakai seperti gambar dan 936 bisa lanjut.</small></gx-choice>
+    <gx-choice value="Perlu revisi">Perlu revisi<small>Tulis di kotak catatan: layar mana dan apa yang diubah. 936 tertahan sampai selesai.</small></gx-choice>
+  </gx-question>
+
+  <h2>4. Pengaturan pembayaran Duitku dan bayar tamu (Q24/Q25)</h2>
+  <p class="how">Admin mengatur cara bayar online per metode, dengan cadangan bila metode utama gagal. Kunci tersimpan tidak pernah ditampilkan ulang. Tamu membayar lewat HP. <b>Menahan:</b> cabang Duitku di sisi layar (WS-05). Contoh data, bukan uang sungguhan.</p>
+  <gx-wide>
+    <div class="shots">
+      <figure><img src="img/945-pembayaran-routing-normal-desktop-light.png" alt="Pengaturan urutan penyedia pembayaran per metode"><figcaption><b>Admin (komputer).</b> Tiap metode bayar punya penyedia utama dan cadangan.</figcaption></figure>
+      <figure><img src="img/945-pembayaran-duitku-saved-draft-desktop-light.png" alt="Pengaturan kunci Duitku tersimpan"><figcaption><b>Admin (komputer).</b> Kunci Duitku tersimpan, hanya tanda tersimpan yang tampil.</figcaption></figure>
+      <figure class="narrow"><img src="img/945-bayar-tamu-dialog-normal-mobile-light.png" alt="Dialog bayar tamu di HP"><figcaption><b>Tamu (HP).</b> Pilih cara bayar.</figcaption></figure>
+      <figure class="narrow"><img src="img/945-bayar-tamu-dialog-va-banks-mobile-light.png" alt="Pilihan bank virtual account di HP"><figcaption><b>Tamu (HP).</b> Pilih bank untuk virtual account.</figcaption></figure>
+    </div>
+  </gx-wide>
+  <gx-question tag="Q24/Q25" title="Layar pengaturan Duitku dan bayar tamu sudah sesuai?">
+    <gx-choice value="Setuju" recommended>Setuju<small>Cabang Duitku bisa lanjut ke penggabungan.</small></gx-choice>
+    <gx-choice value="Revisi">Revisi<small>Tulis di kotak catatan layar mana yang diubah. Cabang Duitku tetap tertahan.</small></gx-choice>
+  </gx-question>
+
+  <h2>5. Dua keputusan refund (W3)</h2>
+  <div class="ctx">
+    <span><b>Menahan:</b> cabang refund sisa (980) dan semua yang menunggunya. Cabang itu sengaja ditahan agar tidak ada uang keluar dua kali.</span>
+  </div>
+  <gx-question tag="W3a" title="Refund macet di penyedia pembayaran: boleh ditutup manual saat penyedia masih menjawab menunggu?">
+    <gx-choice value="A. Tetap blokir" recommended>A. Tetap diblokir<small>Penutupan manual baru boleh bila penyedia memastikan gagal. Aman dari bayar dua kali, tetapi sebagian refund macet harus menunggu atau menghubungi penyedia.</small></gx-choice>
+    <gx-choice value="B. Izinkan">B. Izinkan tutup manual<small>Refund macet cepat selesai, tetapi bila penyedia ternyata mengirim uangnya, tamu bisa menerima dua kali dan outlet rugi.</small></gx-choice>
+  </gx-question>
+  <gx-question tag="W3b" title="Refund manual untuk masalah pesanan: satu pesanan hanya boleh satu jalur?">
+    <gx-choice value="A. Satu jalur per pesanan" recommended>A. Satu jalur per pesanan<small>Satu pesanan hanya boleh punya satu dari: refund kasir, batal, atau refund manual. Mencegah refund ganda.</small></gx-choice>
+    <gx-choice value="B. Boleh digabung">B. Boleh digabung<small>Lebih fleksibel untuk kasus rumit, tetapi risiko uang kembali lebih dari yang dibayar tamu.</small></gx-choice>
+  </gx-question>
+
+  <h2>6. Gaji dan pajak tahun parsial untuk WNA</h2>
+  <div class="ctx">
+    <span><b>Kasus:</b> karyawan asing yang bekerja hanya sebagian tahun di Indonesia. Apakah dihitung sebagai subjek pajak tahun parsial?</span>
+    <span><b>Sekarang:</b> tidak (aturan aman). Aturan siapa yang masuk satu putaran gaji sudah dikonfirmasi dan dikunci tes.</span>
+    <span><b>Menahan:</b> kartu aturan gaji legend-0ytbu tetap terbuka.</span>
+  </div>
+  <gx-question tag="legend-0ytbu" title="Aktifkan perhitungan pajak tahun parsial untuk WNA?">
+    <gx-choice value="Tetap tidak" recommended>Tetap tidak diaktifkan<small>Aturan aman yang berjalan sekarang. Pajak WNA tahun parsial dihitung manual oleh finance.</small></gx-choice>
+    <gx-choice value="Aktifkan untuk WNA">Aktifkan untuk WNA<small>Perlu aturan rinci dari konsultan pajak, lalu pekerjaan tambahan dan tes baru.</small></gx-choice>
+  </gx-question>
+
+  <h2>7. Baru: test penuh merge pindah ke cloud (Q35)</h2>
+  <div class="ctx">
+    <span><b>Sekarang:</b> test penuh tiap batch merge berjalan di Mac. Satu batch sekitar 4 jam, dan Mac penuh sehingga agent dibatasi.</span>
+    <span><b>Usulan:</b> pindahkan ke GitHub Actions, dibagi paralel. Perkiraan satu batch di bawah 1 jam, dan Mac punya RAM untuk lebih banyak agent.</span>
+    <span><b>Biaya:</b> berbayar per menit untuk repo privat. Ini perkiraan kasar, kira-kira puluhan sampai ratusan dolar per bulan, angkanya perlu dikonfirmasi tim sebelum jalan.</span>
+    <span><b>Menahan:</b> percepatan merge lebih lanjut.</span>
+  </div>
+  <gx-question tag="Q35" title="Siapkan CI cloud?">
+    <gx-choice value="Ya, siapkan" recommended>Ya, siapkan<small>Tim menyiapkan dan melaporkan biaya sebenarnya sebelum dipakai penuh.</small></gx-choice>
+    <gx-choice value="Belum">Belum<small>Tidak ada biaya baru, tetapi merge tetap lambat dan Mac tetap jadi penghambat.</small></gx-choice>
+  </gx-question>
+
+  <h2>8. Baru: rem antrean merge (Q36)</h2>
+  <div class="ctx">
+    <span><b>Aturan sekarang (Q11):</b> bila antrean merge lebih dari 20 cabang, hanya kartu rilis atau uang yang boleh mulai.</span>
+    <span><b>Usulan:</b> naikkan batas ke 35 selama percepatan merge berjalan, supaya slot agent tidak menganggur.</span>
+    <span><b>Menahan:</b> kartu non-rilis baru bila antrean di atas 20.</span>
+  </div>
+  <gx-question tag="Q36" title="Batas rem antrean merge">
+    <gx-choice value="Naikkan ke 35" recommended>Naikkan batas ke 35 selama percepatan<small>Lebih banyak kerja jalan. Antrean lebih panjang, jadi risiko tabrakan antar cabang sedikit naik.</small></gx-choice>
+    <gx-choice value="Tetap 20">Tetap 20<small>Antrean terkendali, tetapi sebagian slot agent tetap kosong.</small></gx-choice>
+  </gx-question>
+</gx-questions>
+</body>
+</html>
