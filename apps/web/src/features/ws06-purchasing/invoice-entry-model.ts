@@ -111,9 +111,7 @@ export function formatDecimalText(value: Decimal4 | string): string {
  */
 export function formatIdrDecimalText(value: Decimal4 | string): string {
   const text = formatDecimalText(value);
-  return text.startsWith("\u2212")
-    ? `\u2212Rp${text.slice(1)}`
-    : `Rp${text}`;
+  return text.startsWith("\u2212") ? `\u2212Rp${text.slice(1)}` : `Rp${text}`;
 }
 
 const GROUPED_INTEGER = /^(?:\d+|[1-9]\d{0,2}(?:\.\d{3})+)$/;

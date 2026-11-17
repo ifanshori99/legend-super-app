@@ -101,7 +101,10 @@ test.describe("tax recap and Coretax export", () => {
     await expect(page.getByText("Draf", { exact: true }).first()).toBeVisible();
     // The recap carries the stored line values, including the total.
     await expect(
-      page.getByRole("table").getByText(/Rp\s?37\.500/).first(),
+      page
+        .getByRole("table")
+        .getByText(/Rp\s?37\.500/)
+        .first(),
     ).toBeVisible();
 
     // draft → final locks the numbers; the status history records it.

@@ -50,7 +50,10 @@ export function Toaster({ children }: { children: React.ReactNode }) {
 
   return (
     <ToastContext.Provider value={push}>
-      <ToastPrimitive.Provider swipeDirection={wide ? "down" : "up"} label={t("toast.region")}>
+      <ToastPrimitive.Provider
+        swipeDirection={wide ? "down" : "up"}
+        label={t("toast.region")}
+      >
         {children}
         {items.map(({ id, title, description, tone = "info" }) => {
           const Icon = ICONS[tone];

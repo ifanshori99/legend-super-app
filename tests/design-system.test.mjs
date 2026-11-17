@@ -198,10 +198,7 @@ test("Rupiah formatting is deterministic Indonesian notation", () => {
   assert.equal(formatRupiah(-5000), "\u2212Rp5.000");
   assert.equal(formatRupiah(0), "Rp0");
   assert.equal(formatRupiah(-0), "Rp0");
-  assert.equal(
-    formatRupiah(9007199254740993n),
-    "Rp9.007.199.254.740.993",
-  );
+  assert.equal(formatRupiah(9007199254740993n), "Rp9.007.199.254.740.993");
   assert.equal(formatRupiah(1999.5), "Rp2.000");
   assert.doesNotMatch(formatRupiah(38000), /[\s ]/);
   assert.throws(() => formatRupiah(Number.NaN), RangeError);
