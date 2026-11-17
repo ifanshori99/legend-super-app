@@ -3004,6 +3004,13 @@
       "when": 1795000000057,
       "tag": "0442_payment_va_release_guest_kind",
       "breakpoints": true
+    },
+    {
+      "idx": 570,
+      "version": "7",
+      "when": 1795000000058,
+      "tag": "0570_facility_hours_wfc_breakfast",
+      "breakpoints": true
     }
   ]
 }
