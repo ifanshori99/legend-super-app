@@ -8,7 +8,8 @@ import { providerRefundedForeignIdrSql } from "./payment-provider-refunded-forei
  * SQL: the money the intent put toward its bill (tenant and intent id given as
  * expressions): the provider evidence it brought in, less the part booked as
  * unallocated funds, less what the provider refunded on its own
- * (`providerRefundedForeignIdrSql`). Never below 0. Restrictive on doubt: a
+ * (`providerRefundedForeignIdrSql`; refunds that fit in the parked excess of
+ * the same transaction are not taken off, legend-g6ept). Never below 0. Restrictive on doubt: a
  * partly refunded code never counts as paid in full.
  */
 export function netAllocatedIdrSql(tenantIdSql: SQL, intentIdSql: SQL): SQL {
