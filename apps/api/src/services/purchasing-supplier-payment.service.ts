@@ -14,9 +14,12 @@
 //   settled + open requests + this one), so splitting one large payment into
 //   small ones cannot slip under the limit. No policy for `supplier_payment`
 //   refuses the request (409 APPROVAL_POLICY_MISSING): nothing is paid.
-// - Below the limit (`required: false`) the payment is made at once through
-//   `paySupplierInvoiceInTransaction` (settlement + balanced journal, one
-//   transaction). Above it the row waits as `pending_approval`.
+// - Every payment waits as `pending_approval` for a second person (founder
+//   Q27, SO 1036 finding 2): the request opens with `alwaysRequire`, so an
+//   amount below every tier takes the lowest tier's chain and no tier can
+//   remove the second person. A result without a chain refuses the request
+//   (fail closed); nothing is paid at request time. The payment is made by
+//   `paySupplierInvoiceInTransaction` only when the decided chain settles.
 // - `settleSupplierPaymentForApproval` applies the decided chain from the
 //   `approval.resolved` consumer (purchasing-approval-consumer.ts): row locked
 //   FOR UPDATE, the chain outcome re-read from the database, a replay is a
@@ -235,6 +238,7 @@ export async function requestSupplierInvoicePayment(
         objectType: "supplier_payment",
         objectId: paymentId,
         amountIdr: cumulativeIdr,
+        alwaysRequire: true,
         outletId: invoice.outletId,
         requestedBy: actorUserId,
         source: "user",
@@ -261,48 +265,22 @@ export async function requestSupplierInvoicePayment(
         createdAt: now,
         updatedAt: now,
       };
-      let row: PaymentRow | undefined;
-      if (opened.required) {
-        [row] = await tx
-          .insert(supplierPayments)
-          .values({
-            ...base,
-            status: "pending_approval",
-            approvalChainId: opened.chainId,
-          })
-          .returning();
-      } else {
-        // Below every tier of the matrix: paid now, one transaction.
-        const settled = await paySupplierInvoiceInTransaction(
-          tx,
-          context,
-          {
-            supplierInvoiceId: invoice.id,
-            supplierPaymentId: paymentId,
-            amountIdr: input.amountIdr,
-            paidOn: input.paidOn,
-            idempotencyKey: `sp-pay:${paymentId}`,
-          },
-          userIdSchema.parse(actorUserId),
-          now,
-        );
-        [row] = await tx
-          .insert(supplierPayments)
-          .values({
-            ...base,
-            status: "paid",
-            settlementId: settled.settlementId,
-            journalEntryId: settled.journalEntryId,
-          })
-          .returning();
-      }
+      // Fail closed: `alwaysRequire` never yields `required: false`, so a
+      // result without a chain must not reach a payment row (nothing is paid).
+      if (!opened.required) throw new AccessError("APPROVAL_POLICY_MISSING");
+      const [row] = await tx
+        .insert(supplierPayments)
+        .values({
+          ...base,
+          status: "pending_approval",
+          approvalChainId: opened.chainId,
+        })
+        .returning();
       if (!row) throw new Error("supplier payment was not recorded");
       await recordOpsAudit(tx, context, {
         actorUserId,
         outletId: row.outletId,
-        action: opened.required
-          ? "purchasing.supplier_payment_requested"
-          : "purchasing.supplier_payment_paid",
+        action: "purchasing.supplier_payment_requested",
         objectType: "supplier_payment",
         objectId: row.id,
         before: null,
