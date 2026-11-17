@@ -1146,8 +1146,9 @@ async function createIntentCore(
     // plan read and this guard; its live code is what the guard refused on.
     // Read the key again: found -> the twin's intent (no provider call, no
     // second intent); not found -> the guard's own refusal.
-    const twin = await readIntentByKey(context, parsed.idempotencyKey);
-    if (twin) {
+    const readTwinIntent = async (): Promise<CustomerPaymentIntent | null> => {
+      const twin = await readIntentByKey(context, parsed.idempotencyKey);
+      if (!twin) return null;
       assertIdempotencyFingerprint(twin, {
         paymentLinkId: plan.link.id,
         method: parsed.method,
@@ -1155,7 +1156,9 @@ async function createIntentCore(
         billSplitId: part?.billSplitId ?? null,
       });
       return toCustomerIntent(twin);
-    }
+    };
+    const twinIntent = await readTwinIntent();
+    if (twinIntent) return twinIntent;
     // legend-9vmit: a guest that changes method voids the old VA / bank
     // transfer code first (after the twin check, so a retry of a request that
     // already issued its code never voids that code). Only a "code still
@@ -1174,6 +1177,11 @@ async function createIntentCore(
         channelCode: parsed.channelCode ?? null,
       },
     });
+    // legend-p45yq: the void ran, so a same-key twin may have committed its
+    // intent while we voided (it voided the same code). Read the key again
+    // before anything else: found -> that intent, never a second one.
+    const twinAfterVoid = await readTwinIntent();
+    if (twinAfterVoid) return twinAfterVoid;
     if (voided.length === 0) throw error;
     await withTenant(db, context, (tx) =>
       assertLinkOrderCanIssueTx(
@@ -2665,7 +2673,7 @@ async function parkWhenQrisHoldRefusesInTx(
         title: "Uang VA perlu dikembalikan",
         body:
           vaRelease.kind === "guest_method_change"
-            ? `Pembayaran Rp${paid.amountIdr} masuk untuk kode pembayaran lama yang sudah diganti tamu dengan metode lain. Uang ditahan di dana belum teralokasi; kembalikan ke pembayar.`
+            ? `Pembayaran Rp${paid.amountIdr} masuk untuk kode pembayaran lama yang sudah diganti tamu dengan metode lain. Uang ditahan di dana belum teralokasi dan pengembalian dana ke pembayar sudah diminta otomatis; jangan transfer manual.`
             : `Pembayaran VA Rp${paid.amountIdr} masuk untuk kode VA yang sudah dirilis staf. Uang ditahan di dana belum teralokasi; kembalikan ke pembayar.`,
       },
       now,

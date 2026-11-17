@@ -96,6 +96,7 @@ import {
   loadQrZoneOfSession,
   lockGuestSessionForPayment,
   qrOrderIdempotent,
+  qrOrderPeekIdempotent,
   type QrOrderRow,
 } from "./qr-order.service.ts";
 
@@ -842,6 +843,34 @@ export async function createGuestPayment(
     splitId,
     now,
   );
+  // legend-nqfov: a retry of an answered request replays the stored answer
+  // before any availability check or void: it must not depend on the method
+  // being offered right now. A miss falls through to today's flow.
+  {
+    const { idempotencyKey: peekKey, ...peekRequest } = parsed;
+    const replay = await withTenant(db, context, async (tx) => {
+      const session = await lockGuestSessionForPayment(
+        tx,
+        context,
+        credential,
+        sessionId,
+        now,
+        "share",
+      );
+      const stored = await qrOrderPeekIdempotent<GuestPayment>(
+        tx,
+        context,
+        { sessionId: session.id },
+        peekKey,
+        "payment.create",
+        peekRequest,
+      );
+      return stored === undefined
+        ? undefined
+        : closePayLinkIfNotPending(tx, context, stored, now);
+    });
+    if (replay !== undefined) return replay;
+  }
   // Checked after the session lock so the outlet's own channel list decides,
   // at the real bill amount and before any old code is voided (legend-kt3t1).
   if (parsed.method === "ewallet" || parsed.method === "card") {

@@ -65,6 +65,7 @@ import {
   paymentLinks,
   tableSessions,
 } from "../db/schema/index.ts";
+import { paymentVaReleases } from "../db/schema/payment-va-release.ts";
 import { posQrisHolds } from "../db/schema/pos-qris-hold.ts";
 import { orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
@@ -89,6 +90,7 @@ import { pendingRefundIdr } from "./pos-order-late-payment.ts";
 import { markSplitQrisHoldPaidByIntentTx } from "./pos-qris-hold.ts";
 import {
   HOLDS_REFUNDABLE_MONEY,
+  QR_SYSTEM_ACTOR,
   requestQrDoublePaymentRefund,
   requestQrLatePaymentRefund,
 } from "./qr-order-late-payment.ts";
@@ -118,6 +120,10 @@ const closedPayloadSchema = z.looseObject({
   intentId: uuidSchema,
   reason: z.string().optional(),
 });
+const fundsPayloadSchema = z.looseObject({
+  unallocatedFundId: uuidSchema,
+  intentId: uuidSchema,
+});
 
 export type QrPaymentPaidOutcome =
   | "ignored"
@@ -133,6 +139,8 @@ export type QrPaymentPaidOutcome =
 
 export type QrPaymentClosedOutcome =
   "ignored" | "unchanged" | "voided" | "retry_allowed" | "awaiting_grace";
+
+export type QrFundsOutcome = "ignored" | "unchanged" | "funds_refund_requested";
 
 // ---- Decision (pure) ------------------------------------------------------------
 
@@ -1031,6 +1039,72 @@ export async function handleQrOrderPaymentClosed(
   if (!(await voidUnlessEdcOpen(tx, context, order, decision.reason, now)))
     return "unchanged";
   return "voided";
+}
+
+// ---- payment.funds_unallocated -------------------------------------------------
+
+/**
+ * Late money on a code the guest voided by changing the payment method
+ * (legend-hs1rc, founder Q15): the gateway parked it, and it goes straight back
+ * to the guest as one refund request for that fund. Only a code with a
+ * `guest_method_change` release counts; a staff release and every other parked
+ * fund keep the old behavior (left for a person to resolve). The amount is the
+ * locked fund row's, never the event's; a fund with a live refund files
+ * nothing, so a replay is safe.
+ */
+export async function handleQrOrderFundsUnallocated(
+  context: ScopedTenantContext,
+  event: EventEnvelope,
+  tx: Tx,
+  now = new Date(),
+): Promise<QrFundsOutcome> {
+  if (event.name !== "payment.funds_unallocated") return "ignored";
+  if (event.tenantId !== context.tenant.tenantId) return "ignored";
+  const payload = fundsPayloadSchema.safeParse(event.payload);
+  if (!payload.success) return "ignored";
+  const { unallocatedFundId, intentId } = payload.data;
+  const [intent] = await tx
+    .select({ paymentLinkId: paymentIntents.paymentLinkId })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, context.tenant.tenantId),
+        eq(paymentIntents.id, intentId),
+      ),
+    );
+  if (!intent) return "ignored";
+  // Lock order: orders -> intent -> fund -> refund.
+  const order = await lockOrderOfLink(tx, context, intent.paymentLinkId);
+  if (!order) return "ignored";
+  const [release] = await tx
+    .select({ id: paymentVaReleases.id })
+    .from(paymentVaReleases)
+    .where(
+      and(
+        eq(paymentVaReleases.tenantId, context.tenant.tenantId),
+        eq(paymentVaReleases.paymentIntentId, intentId),
+        eq(paymentVaReleases.kind, "guest_method_change"),
+      ),
+    );
+  if (!release) return "ignored";
+  const ids = await requestQrDoublePaymentRefund(tx, context, {
+    order,
+    paymentLinkId: intent.paymentLinkId,
+    intentId,
+    now,
+    fundId: unallocatedFundId,
+    source: {
+      requestedBy: QR_SYSTEM_ACTOR,
+      reason:
+        "Refund uang yang masuk ke kode pembayaran lama (tamu sudah mengganti metode)",
+    },
+  });
+  if (ids.length === 0) return "unchanged";
+  logger.warn(
+    { orderId: order.id, intentId, unallocatedFundId, refundIds: ids },
+    "QR: method-change late money refund requested",
+  );
+  return "funds_refund_requested";
 }
 
 // ---- Sweep (relay tick) ---------------------------------------------------------
