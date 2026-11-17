@@ -99,6 +99,8 @@ import {
 } from "../db/schema";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
+import { entityLock } from "./accounting-bank-matching";
+import { markMatchStaleForReversedJournal } from "./accounting-bank-recon-stale.service";
 import { assertPeriodOpenForPosting } from "./accounting-period.service";
 import {
   auditAccountingChange,
@@ -1082,6 +1084,22 @@ export async function reverseJournalInTransaction(
     input.lateAdjustmentFrom == null
       ? null
       : businessDateSchema.parse(input.lateAdjustmentFrom);
+  // Lock order is entity lock, then journal row (bank recon write_off takes
+  // them in that order). Read the entity with a plain select, take the entity
+  // lock, and only then lock the journal row; the stale-match hook below
+  // takes the same entity lock again, which is a re-entrant no-op.
+  const [owner] = await tx
+    .select({ legalEntityId: journalEntries.legalEntityId })
+    .from(journalEntries)
+    .where(
+      and(
+        eq(journalEntries.tenantId, context.tenant.tenantId),
+        eq(journalEntries.id, entryId),
+      ),
+    )
+    .limit(1);
+  if (!owner) throw new HttpError(404, "NOT_FOUND", "Journal entry not found.");
+  await entityLock(tx, context.tenant.tenantId, owner.legalEntityId);
   const [row] = await tx
     .select()
     .from(journalEntries)
@@ -1095,6 +1113,13 @@ export async function reverseJournalInTransaction(
     .for("update");
   if (!row || !(await visibleToScope(tx, context, row)))
     throw new HttpError(404, "NOT_FOUND", "Journal entry not found.");
+  // Fail closed if the entity moved between the plain read and the lock.
+  if (row.legalEntityId !== owner.legalEntityId)
+    throw new HttpError(
+      409,
+      "CONFLICT",
+      "Journal entry changed while reversing; retry.",
+    );
   const lines = await entryLines(tx, context.tenant.tenantId, entryId);
   // The request fingerprint covers the target entry, the reversal date and
   // the reason, so a reused key with another correction is refused.
@@ -1204,5 +1229,19 @@ export async function reverseJournalInTransaction(
       reversalEntryId: entry.id,
     },
   });
+  // ACC-04: a bank match of the reversed journal turns stale and opens a case.
+  await markMatchStaleForReversedJournal(
+    tx,
+    context,
+    {
+      legalEntityId: row.legalEntityId,
+      outletId: row.outletId,
+      journalEntryId: entryId,
+      reversalEntryId: entry.id,
+      reversedBy: input.postedBy,
+      reason: input.reason,
+    },
+    now,
+  );
   return entry;
 }

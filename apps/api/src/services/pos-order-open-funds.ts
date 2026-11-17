@@ -107,6 +107,9 @@ export async function openFundOfPosOrderTx(
       and(
         eq(paymentUnallocatedFunds.tenantId, tenantId),
         isNull(paymentUnallocatedFunds.resolvedAt),
+        // legend-7uqbs: money the provider already returned to the payer is
+        // closed: nothing is left to refund, so it must not lock the bill.
+        isNull(paymentUnallocatedFunds.providerRefundedAt),
         inArray(
           paymentUnallocatedFunds.paymentIntentId,
           intentIdsOfPosOrder(tx, tenantId, order),

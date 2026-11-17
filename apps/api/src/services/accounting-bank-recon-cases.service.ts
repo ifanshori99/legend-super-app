@@ -15,8 +15,8 @@
 //   reversed, debits = |difference|, used by no other case, deposit or match).
 // - Locks: the entity lock `acc-cashbank:<tenant>:<entity>` comes first, then
 //   the row locks, like every other cash & bank writer.
-// - Due date: server constant of 7 days until the finance policy carries
-//   `reconciliationPolicy.caseDueDays` (architect resolution Q2).
+// - Due date: the tenant finance policy `reconciliationPolicy.caseDueDays`
+//   (default 7) read when the case opens; an open case keeps its dueAt.
 
 import {
   and,
@@ -32,7 +32,6 @@ import {
 import {
   AccountingError,
   reconciliationCaseActionInputSchema,
-  reconciliationPolicySchema,
   transitionReconciliationCase,
   openReconciliationCaseInputSchema,
   type ReconciliationCase,
@@ -66,7 +65,6 @@ import { outlets } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import {
-  advisoryLock,
   assertOutletReach,
   assertTenantScope,
   auditApFa,
@@ -74,6 +72,8 @@ import {
   outletVisible,
   type TenantTransaction,
 } from "./accounting-ap-fa-shared.ts";
+import { entityLock } from "./accounting-bank-matching.ts";
+import { loadReconciliationPolicyInTx } from "./accounting-finance-policy.service.ts";
 import {
   notFound,
   reconciliationCaseDto,
@@ -83,17 +83,9 @@ import { requireLegalEntity } from "./accounting-shared.ts";
 const CASE_NOT_FOUND = "Kasus rekonsiliasi";
 const DAY_MS = 86_400_000;
 
-/** Server constant until the finance policy carries the due days (Q2). */
-const RECONCILIATION_POLICY = reconciliationPolicySchema.parse({
-  caseDueDays: 7,
-});
-
 const CURSOR_AT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
 const invalidCursor = () =>
   new HttpError(422, "VALIDATION_ERROR", "Check the cursor.");
-
-const entityLockName = (tenantId: string, legalEntityId: string) =>
-  `acc-cashbank:${tenantId}:${legalEntityId}`;
 
 /** The PIC must hold a role assignment that is valid now in this tenant. */
 async function assertActiveOwner(
@@ -290,6 +282,10 @@ export async function openReconciliationCase(
       async () => {
         const tenantId = context.tenant.tenantId;
         const now = new Date();
+        const { caseDueDays } = await loadReconciliationPolicyInTx(
+          tx,
+          tenantId,
+        );
         await requireLegalEntity(tx, tenantId, input.legalEntityId);
         if (input.outletId !== null) {
           const [outlet] = await tx
@@ -312,7 +308,7 @@ export async function openReconciliationCase(
         }
         await assertActiveOwner(tx, tenantId, input.ownerId, now);
 
-        await advisoryLock(tx, entityLockName(tenantId, input.legalEntityId));
+        await entityLock(tx, tenantId, input.legalEntityId);
         await lockStatementLines(tx, tenantId, input.legalEntityId, lineIds);
         await lockCashDeposits(tx, context, input.legalEntityId, depositIds);
         await assertJournalsOfEntity(
@@ -333,9 +329,7 @@ export async function openReconciliationCase(
             differenceIdr: input.differenceIdr,
             ownerId: input.ownerId,
             status: "open",
-            dueAt: new Date(
-              now.getTime() + RECONCILIATION_POLICY.caseDueDays * DAY_MS,
-            ),
+            dueAt: new Date(now.getTime() + caseDueDays * DAY_MS),
             refs: input.refs,
             idempotencyKey: input.idempotencyKey,
             openedBy: actorId,
@@ -625,7 +619,7 @@ export async function actOnReconciliationCase(
     const now = new Date();
     const seen = await loadCase(tx, context, caseId);
     assertOutletReach(context, seen.outletId);
-    await advisoryLock(tx, entityLockName(tenantId, seen.legalEntityId));
+    await entityLock(tx, tenantId, seen.legalEntityId);
     const current = await loadCase(tx, context, caseId, { forUpdate: true });
 
     let action: ReconciliationCaseAction;

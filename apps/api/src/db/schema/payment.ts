@@ -217,6 +217,31 @@ export const paymentIntents = pgTable(
      * it: an `expired` code with a provider reference and no value here may
      * still take money, so nothing replaces it and the poller keeps asking. */
     providerFinalAt: timestamp("provider_final_at", { withTimezone: true }),
+    /** legend-3wpf: when the PROVIDER first answered about this code with a
+     * terminal status (expired, failed, refunded) or its money was reconciled.
+     * Unlike `provider_final_at` it is also set by an answer given before the
+     * code lapsed (a retryable attempt). Never inferred from `updated_at`,
+     * which any unrelated touch of the row moves. Null = no answer yet. */
+    providerAnsweredAt: timestamp("provider_answered_at", {
+      withTimezone: true,
+    }),
+    /** legend-3wpf (952 P1): when the PROVIDER first answered `refunded` for
+     * this code: the money went back to the payer, so no later `paid` message
+     * may settle the bill. Kept apart from the `failed` status a refunded
+     * answer maps to, so a plain `failed` code that is paid late still
+     * reconciles once. Null = never answered refunded. */
+    providerRefundedAt: timestamp("provider_refunded_at", {
+      withTimezone: true,
+    }),
+    /** legend-7uqbs (958): when the PROVIDER first answered `refunded` for the
+     * payment of a SETTLED (paid) intent: its money went back to the payer, so
+     * no second refund may be paid out. Kept apart from `provider_refunded_at`,
+     * which turns a later `paid` message into a rejected one (a paid intent
+     * must keep treating the replay of its own paid message as a replay).
+     * Null = never answered refunded. */
+    providerRefundedAfterPaidAt: timestamp("provider_refunded_after_paid_at", {
+      withTimezone: true,
+    }),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
@@ -381,6 +406,13 @@ export const paymentUnallocatedFunds = pgTable(
     approvalRef: varchar("approval_ref", { length: 100 }),
     note: text("note"),
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    /** legend-7uqbs (958): when the PROVIDER first answered `refunded` for the
+     * transaction behind this fund: the money already went back to the payer,
+     * so it must not be resolved into a second refund. Set once by a
+     * conditional UPDATE; null = never answered refunded. */
+    providerRefundedAt: timestamp("provider_refunded_at", {
+      withTimezone: true,
+    }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),

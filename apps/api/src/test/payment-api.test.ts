@@ -247,6 +247,13 @@ class FakeGateway implements PaymentGatewayPort {
       amountIdr: amountIdr ?? found.amountIdr,
     });
   }
+
+  /** The provider reports the code as expired (its own answer). */
+  expire(providerRef: string) {
+    const found = this.payments.get(providerRef);
+    if (!found) throw new Error(`No fake payment ${providerRef}`);
+    this.payments.set(providerRef, { ...found, status: "expired" });
+  }
 }
 
 /** A second adapter behind the same registry (sub-302 D1). */
@@ -1020,8 +1027,11 @@ describe("late payment and refresh", () => {
       });
     await new Promise((resolve) => setTimeout(resolve, 80));
     const now = new Date(Date.now() + 60_000);
+    // legend-3wpf: the plain sweep never expires a gateway-backed code; the
+    // provider's own "expired" answer (read by the status check) does.
     const swept = await expireDueIntents(contextFor(), now);
-    expect(swept.expired).toBeGreaterThanOrEqual(1);
+    expect(swept.expired).toBe(0);
+    gateway.expire(gateway.lastCreated!);
     const expired = await agent(app).get(
       `/api/payments/links/${token}/intents/${created.body.data.id}`,
     );
@@ -1060,9 +1070,9 @@ describe("late payment and refresh", () => {
       leaveGatewayReconciling: true,
     });
     expect(swept.expired).toBe(0);
-    // Still pending: the plain sweep (no option) finds and expires it.
+    // legend-3wpf: safe is the default; the plain sweep (no option) leaves it too.
     const plain = await expireDueIntents(contextFor(), now);
-    expect(plain.expired).toBeGreaterThanOrEqual(1);
+    expect(plain.expired).toBe(0);
     expect(created.body.data.id).toBeTruthy();
   });
 

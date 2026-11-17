@@ -41,6 +41,7 @@ import { RELEASE_RECON_UNPROVEN_AFTER_HOURS } from "@starter/shared/validators/f
 import {
   PaymentConfirmationRejected,
   confirmPayment,
+  markProviderRefunded,
   recordUnsettledGatewayFundsInTx,
 } from "./payment.service.ts";
 
@@ -327,6 +328,10 @@ export async function decide(
   }
   if (answer.providerRef !== intent.providerRef)
     return stillOpen("other_reference");
+  // 952 round 2: the provider gave this code's payment back; recorded whether
+  // or not the code is final, so a late `paid` message cannot book or park it.
+  if (answer.rawStatus === "refunded")
+    await markProviderRefunded(context, intent.id, now);
   // An extra that could not be recorded must never keep the primary paid
   // answer from being recorded: the primary is settled first, then the row
   // stays open (and staff are warned) until every extra is on record.

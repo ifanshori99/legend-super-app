@@ -1173,8 +1173,9 @@ describe("DOIT adapter: getStatus", () => {
     ["pending", "pending"],
     ["expired", "expired"],
     ["failed", "failed"],
-    // Money went back: nothing in the books changes automatically.
-    ["refunded", "pending"],
+    // Money went back: a terminal answer, never pending (false timeout) and
+    // never paid (no credit); nothing in the books changes automatically.
+    ["refunded", "failed"],
   ] as const)("maps provider status %s to %s", async (provider, expected) => {
     route = methodsAndPayments({
       get: () => ({ json: qrisPayment({ status: provider }) }),

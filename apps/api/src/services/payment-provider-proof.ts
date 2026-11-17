@@ -149,6 +149,8 @@ async function assertNoOpenFundsOfLink(
         // the settled DP; it does not change what the DP itself holds.
         ne(paymentIntents.status, "paid"),
         isNull(paymentUnallocatedFunds.resolvedAt),
+        // legend-7uqbs: already returned by the provider, nothing is open.
+        isNull(paymentUnallocatedFunds.providerRefundedAt),
       ),
     )
     .limit(1);

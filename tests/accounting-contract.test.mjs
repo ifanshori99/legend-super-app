@@ -834,12 +834,13 @@ describe("ACC-04 bank and gateway reconciliation", () => {
 });
 
 describe("legend-pxcs finance policy contract (ACC-04 tolerance, ACC-05 batas hari)", () => {
-  const body = (maxDaysUndeposited, dateToleranceDays) => ({
+  const body = (maxDaysUndeposited, dateToleranceDays, caseDueDays = 7) => ({
     cashDepositPolicy: { maxDaysUndeposited },
     matchingPolicy: { dateToleranceDays },
+    reconciliationPolicy: { caseDueDays },
   });
 
-  test("defaults are 2 days / 2 days and satisfy the strict policy schema", () => {
+  test("defaults are 2 days / 2 days / 7 case days and satisfy the strict policy schema", () => {
     assert.deepEqual(acc.DEFAULT_FINANCE_POLICY, body(2, 2));
     assert.deepEqual(
       acc.financePolicySchema.parse(acc.DEFAULT_FINANCE_POLICY),
@@ -847,14 +848,24 @@ describe("legend-pxcs finance policy contract (ACC-04 tolerance, ACC-05 batas ha
     );
   });
 
-  test("bounds reuse the banking limits: 0..30 undeposited days, 0..14 tolerance days", () => {
+  test("bounds reuse the banking limits: 0..30 undeposited days, 0..14 tolerance days, 1..60 case due days", () => {
     const ok = (value) => acc.putFinancePolicyInputSchema.safeParse(value);
     assert.equal(ok(body(0, 0)).success, true);
     assert.equal(ok(body(30, 14)).success, true);
-    for (const bad of [body(31, 2), body(-1, 2), body(2, 15), body(2, -1)])
+    assert.equal(ok(body(2, 2, 1)).success, true);
+    assert.equal(ok(body(2, 2, 60)).success, true);
+    for (const bad of [
+      body(31, 2),
+      body(-1, 2),
+      body(2, 15),
+      body(2, -1),
+      body(2, 2, 0),
+      body(2, 2, 61),
+    ])
       assert.equal(ok(bad).success, false);
     assert.equal(ok(body(1.5, 2)).success, false);
     assert.equal(ok(body("2", 2)).success, false);
+    assert.equal(ok(body(2, 2, 1.5)).success, false);
   });
 
   test("the body is strict: no tenantId (TEN-02), no foreign or missing sections", () => {
@@ -867,6 +878,7 @@ describe("legend-pxcs finance policy contract (ACC-04 tolerance, ACC-05 batas ha
       ok({
         cashDepositPolicy: { maxDaysUndeposited: 2, extra: 1 },
         matchingPolicy: { dateToleranceDays: 2 },
+        reconciliationPolicy: { caseDueDays: 7 },
       }).success,
       false,
     );
@@ -876,6 +888,10 @@ describe("legend-pxcs finance policy contract (ACC-04 tolerance, ACC-05 batas ha
     );
     assert.equal(
       ok({ matchingPolicy: { dateToleranceDays: 2 } }).success,
+      false,
+    );
+    assert.equal(
+      ok({ reconciliationPolicy: { caseDueDays: 7 } }).success,
       false,
     );
     assert.equal(ok({}).success, false);

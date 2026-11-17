@@ -30,6 +30,7 @@ import { createApp } from "../app";
 import { errorHandler, notFound } from "../middleware/error-handler";
 import { tenantContext } from "../middleware/tenant";
 import { createAccountingBankReconCasesRouter } from "../routes/accounting-bank-recon-cases.routes";
+import { putFinancePolicy } from "../services/accounting-finance-policy.service";
 import {
   getReconciliationCase,
   listReconciliationCases,
@@ -362,6 +363,27 @@ async function openOnLine(user: User, pic: User, entity?: Entity) {
   return { entity: ent, lineId, caseId: response.body.data.id as string };
 }
 
+// legend-fnxl.9: the case due-days come from the tenant finance policy
+// (reconciliationPolicy.caseDueDays), written through the real service.
+async function setCaseDueDays(days: number, tenant: string = tenantId) {
+  await putFinancePolicy(
+    scope(undefined, tenant),
+    {
+      cashDepositPolicy: { maxDaysUndeposited: 2 },
+      matchingPolicy: { dateToleranceDays: 2 },
+      reconciliationPolicy: { caseDueDays: days },
+    },
+    finance.userId as never,
+  );
+}
+async function clearPolicy() {
+  await owner.query("DELETE FROM finance_policies WHERE tenant_id = $1", [
+    tenantId,
+  ]);
+}
+const dueDaysOf = (data: { dueAt: string; openedAt: string }) =>
+  (Date.parse(data.dueAt) - Date.parse(data.openedAt)) / 86_400_000;
+
 let finance: User;
 let finance2: User;
 let nobody: User;
@@ -375,6 +397,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await clearPolicy();
   // Journals are append-only and FKs point both ways: replica mode lets the
   // owner remove the fixtures in one go.
   if (createdEntityIds.length > 0) {
@@ -966,5 +989,105 @@ describe("legend-fnxl.6 reconciliation cases (ACC-04)", () => {
       }),
     ).rejects.toMatchObject({ status: 404 });
     expect((await events(caseId)).length).toBe(1);
+  });
+
+  // ---------------------------------------------------------------- legend-fnxl.9
+  it("fnxl.9 dueAt follows the tenant policy: 14 days when the tenant set 14", async () => {
+    await clearPolicy();
+    try {
+      await setCaseDueDays(14);
+      const { caseId } = await openOnLine(finance, finance);
+      const data = reconciliationCaseSchema.parse(
+        (await get(finance, `${BASE}/${caseId}`)).body.data,
+      );
+      expect(dueDaysOf(data)).toBeCloseTo(14, 5);
+    } finally {
+      await clearPolicy();
+    }
+  });
+
+  it("fnxl.9 with no policy row the default stays 7 days", async () => {
+    await clearPolicy();
+    const { caseId } = await openOnLine(finance, finance);
+    const data = reconciliationCaseSchema.parse(
+      (await get(finance, `${BASE}/${caseId}`)).body.data,
+    );
+    expect(dueDaysOf(data)).toBeCloseTo(7, 5);
+  });
+
+  it("fnxl.9 boundaries 1 and 60 are honoured", async () => {
+    await clearPolicy();
+    try {
+      await setCaseDueDays(1);
+      const one = await openOnLine(finance, finance);
+      expect(
+        dueDaysOf(
+          reconciliationCaseSchema.parse(
+            (await get(finance, `${BASE}/${one.caseId}`)).body.data,
+          ),
+        ),
+      ).toBeCloseTo(1, 5);
+      await setCaseDueDays(60);
+      const sixty = await openOnLine(finance, finance);
+      expect(
+        dueDaysOf(
+          reconciliationCaseSchema.parse(
+            (await get(finance, `${BASE}/${sixty.caseId}`)).body.data,
+          ),
+        ),
+      ).toBeCloseTo(60, 5);
+    } finally {
+      await clearPolicy();
+    }
+  });
+
+  it("fnxl.9 a case already open keeps its dueAt when the policy changes later", async () => {
+    await clearPolicy();
+    try {
+      const { caseId } = await openOnLine(finance, finance); // default 7
+      const before = (await get(finance, `${BASE}/${caseId}`)).body.data;
+      await setCaseDueDays(30);
+      const after = (await get(finance, `${BASE}/${caseId}`)).body.data;
+      expect(after.dueAt).toBe(before.dueAt);
+      expect(dueDaysOf(reconciliationCaseSchema.parse(after))).toBeCloseTo(
+        7,
+        5,
+      );
+      // Acting on the case does not re-derive the due date either.
+      expect((await act(finance, caseId, { type: "start" })).status).toBe(200);
+      const started = (await get(finance, `${BASE}/${caseId}`)).body.data;
+      expect(started.dueAt).toBe(before.dueAt);
+      // A case opened afterwards does use the new policy.
+      const next = await openOnLine(finance, finance);
+      expect(
+        dueDaysOf(
+          reconciliationCaseSchema.parse(
+            (await get(finance, `${BASE}/${next.caseId}`)).body.data,
+          ),
+        ),
+      ).toBeCloseTo(30, 5);
+    } finally {
+      await clearPolicy();
+    }
+  });
+
+  it("fnxl.9 another tenant's policy does not change this tenant's due date", async () => {
+    await clearPolicy();
+    const other = await newTenant();
+    try {
+      await setCaseDueDays(45, other);
+      const { caseId } = await openOnLine(finance, finance);
+      expect(
+        dueDaysOf(
+          reconciliationCaseSchema.parse(
+            (await get(finance, `${BASE}/${caseId}`)).body.data,
+          ),
+        ),
+      ).toBeCloseTo(7, 5);
+    } finally {
+      await owner.query("DELETE FROM finance_policies WHERE tenant_id = $1", [
+        other,
+      ]);
+    }
   });
 });

@@ -429,6 +429,14 @@ export const bankStatementLineMatches = pgTable(
     matchedAt: timestamp("matched_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    /**
+     * Set when the matched journal is reversed (legend-fnxl.10): the match is
+     * kept as is but no longer counts as a clean match; a reconciliation case
+     * is opened for a person to decide. Null = a live match.
+     */
+    staleAt: timestamp("stale_at", { withTimezone: true }),
+    /** The reversal journal that made this match stale (set with `stale_at`). */
+    staleByReversalEntryId: uuid("stale_by_reversal_entry_id"),
   },
   (t) => [
     // A document is matched to at most one line, ever, until unmatched.
@@ -454,6 +462,15 @@ export const bankStatementLineMatches = pgTable(
     check(
       "bank_statement_line_matches_source_check",
       sql`${t.source} IN ('auto','manual')`,
+    ),
+    foreignKey({
+      name: "bank_statement_line_matches_stale_reversal_fk",
+      columns: [t.tenantId, t.staleByReversalEntryId],
+      foreignColumns: [journalEntries.tenantId, journalEntries.id],
+    }),
+    check(
+      "bank_statement_line_matches_stale_check",
+      sql`(${t.staleAt} IS NULL) = (${t.staleByReversalEntryId} IS NULL)`,
     ),
   ],
 );

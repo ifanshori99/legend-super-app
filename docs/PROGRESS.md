@@ -7090,3 +7090,58 @@ Pemakaian: session-usage merge train 1400k biaya* (Sonnet 5.5); subagent 2 (Expl
 - Review architect xhigh: tanpa P1. P2 (entri registry `data-import-registry.test.ts`) dan P3 (cek UPDATE persetujuan sungguhan di test) sudah dibetulkan. Dicatat tidak ditest: grant yang kedaluwarsa saat menunggu baris grant itu sendiri (consumer kedua yang rollback); disown dan unfreeze mengambil lock run sesudah grant dipakai, `consumed_at` tetap sebelum expiry (dipakai recon), diterima.
 - Bukti: area payout 65 berkas 811 lulus/5 skip/13 todo, 0 gagal; prettier, eslint, `db:generate` kosong, cek journal ok.
 - Angka: 9 subagent (2 Explore, test-writer, 3 test-runner, implementer, architect xhigh), puncak 3 bersamaan; pemegang heavy hanya test-runner.
+
+### Batch 941 rekonsiliasi sisa: kebijakan bank recon, match basi, DOIT recon (17 Nov 2026)
+
+Cabang `ghostex/rekonsiliasi-sisa-bank-dan-doit`, dasar m1 `c17c60df7`. Tiga kartu, tiga migrasi (0432 sampai 0434), tanpa perubahan nomor atau saldo jurnal. Approver penutup kasus tetap Owner atau Finance Manager (founder Q12).
+
+**Sudah**
+- legend-fnxl.9 (commit `2a499d61e`, tes root `8bb5e3458`): `caseDueDays` bukan lagi angka 7 di kode. Kolom `finance_policies.recon_case_due_days`, bawaan 7, CHECK 1 sampai 60, migrasi 0432. Hanya peran `accounting.reconcile` (owner, finance) yang bisa mengubahnya. Kontrak PUT menerima `reconciliationPolicy.caseDueDays` (wajib).
+- legend-fnxl.10 (commit `5369a7bed`, perbaikan `044269815`): match bank ditandai basi (`stale_at`, `stale_by_reversal_entry_id`) saat jurnalnya dibalik; tidak pernah dihapus diam-diam, muncul di daftar kasus (tipe `bank_statement`, referensi `journal_entry`), idempoten. Migrasi 0433. Hook mengambil `entityLock` sebelum UPDATE agar balik jurnal dan pencocokan otomatis berurutan; PIC kasus adalah orang yang mencocokkan.
+- legend-3wpf (commit `cebf58ec1`, perbaikan `3337d03a7`): `expireDueIntents` tidak lagi menutup intent milik gateway tanpa bertanya ke provider; audit `payment.reconciliation_timed_out` sekali per kode sesudah `expiresAt` + 24 jam sementara polling terus berjalan; status provider `refunded` dipetakan ke `failed` tanpa nominal; kolom sendiri `provider_answered_at` (migrasi 0434, isi awal dari `provider_final_at`).
+- Review architect (xhigh): satu P1 (FORCE RLS pada migrasi 0433 dan 0434, migrator bisa owner biasa), dibetulkan dengan mengangkat lalu memulihkan FORCE sesuai pola 2 di docs/plan/contracts.md; tes migrasi `edge-received-events-migration` hijau sebagai owner non-superuser. P2 (balapan hook vs match otomatis, hitungan ringkasan baris bank, PIC) dibetulkan.
+- Tes setelah commit terakhir: root contract 872/872; migrasi + registry + metric-single-path 62/62; akuntansi dan payment terarah 326/326; cakupan tabel 26/26; typecheck API dan shared exit 0.
+
+**Keputusan**
+- Aturan pembatas bayar: polling gateway tidak berhenti di jendela 24 jam (VA yang tak pernah dijawab final tetap bisa ditagih, prinsip SO-885); yang berhenti hanya audit (sekali).
+- `refunded` dipetakan ke `failed` tanpa nominal: tidak ada pihak dibayar lebih.
+- Match basi memakai tipe kasus `bank_statement` yang sudah ada, bukan tipe baru.
+- Baris bank dengan match basi dihitung `in_case`, bukan cocok bersih; bentuk DTO tidak berubah (perlu konfirmasi CTO).
+
+**Batas dan belum diverifikasi**
+- Tidak ada tes balapan bersamaan untuk hook basi vs match otomatis. Tes ringkasan baris bank hanya sebagian fail-first.
+- Suite polling 37 berkas tidak dijalankan ulang penuh setelah perubahan terakhir; `pnpm test` penuh dan `pnpm check` belum dijalankan (hanya gate terarah).
+- `provider_answered_at` ditulis tetapi belum dibaca; pencarian audit per poll belum berindeks; UI web tidak menampilkan penanda basi.
+
+**Angka**
+- Sesi `eaa31d4f`: biaya* total 26.204k (utama Sonnet 21.703k; subagent Sonnet 3.444k, Opus 676k, Haiku 381k); 14 subagent, 4 compact. Puncak subagent bersamaan 4; token heavy dipegang test-runner.
+
+**Berikut**: gerbang rilis (second-opinion Codex satu kali untuk area ini), lalu merge train. Tidak merge, tidak deploy.
+
+## Batch 952: perbaikan temuan second opinion recon 941 (17 Nov 2026)
+
+Cabang `ghostex/64affda0` dari `44dc04cd9`; commit `046289063` dan `7bc7adc3f`.
+
+**Selesai**
+- P1 (legend-3wpf dibuka lagi): kolom `payment_intents.provider_refunded_at` (migrasi 0435, kolom nullable tanpa backfill). Diisi saat provider menjawab `refunded` (poll, cek hold QRIS, antrean release VA/QRIS, webhook `payment.refunded` yang kini dikenali). `applyConfirmation` menolak (INVALID_TRANSITION) sebelum parkir/hold/VA bila code itu sudah refunded; jalur penolakan webhook tidak lagi mencatat evidence atau dana belum teralokasi untuk code refunded. `failed` biasa yang dibayar belakangan tetap direkonsiliasi sekali; pembayaran tambahan dengan provider ref lain tetap diparkir; intent `paid` tidak pernah distempel.
+- P2: reversal jurnal mengambil entity lock sebelum `FOR UPDATE` jurnal (urutan sama dengan `write_off`), 409 bila entitas berubah. Helper lock tunggal (huruf kecil) dipakai kasus recon dan akun bank.
+- P3 (legend-l29ln): 0433 melepas FORCE `journal_entries` (induk) dulu baru `bank_statement_line_matches`; tes baru memigrasi 0433-0434 sebagai owner NOBYPASSRLS di tabel berisi baris.
+
+**Bukti**: gagal-dulu di base (P1 3 tes, P2 2 tes, putaran 2 tes a/b/c gagal) lalu hijau; 73 berkas tes terarah (payment/recon/migrasi/QRIS hold) 1067 lulus; typecheck API exit 0; `db:generate` kosong; prettier bersih. Architect xhigh putaran 1: 1 P1 (parkir lewat hold/VA), diperbaiki di putaran 2; putaran 2: tanpa P1.
+
+**Belum / tindak lanjut**: legend-7uqbs (P2: provider refund SETELAH kita catat pembayaran belum memperingatkan staf, sudah ada sebelum 952); legend-3wwme (P3: payload payment.refunded non-payment 500; komentar lock). Tes 0433 tidak mendeteksi urutan FORCE (lulus juga di base); `pnpm test` penuh dan `pnpm check` belum dijalankan (gate akhir merge train).
+- Angka: 15 subagent (Explore 4, test-writer 2, implementer 6, test-runner 1, architect 2), puncak bersamaan 4; token heavy dipegang agent utama (antre `heavy` ~1 jam di jam sibuk).
+
+## Batch 958: recon, provider refund setelah pembayaran tercatat (17 Nov 2026)
+
+Cabang `ghostex/60a93dca` dari `5e1f9d9fc`; commit `33b2aac77`. Kartu legend-7uqbs (P1) dan legend-3wwme (P3). Migrasi 0436 (nomor kerja; brief minta 0480-0484, cabang lain sudah memegang 0440 dan 0484, CTO atur nomor saat merge).
+
+**Selesai**
+- 7uqbs: kolom `payment_unallocated_funds.provider_refunded_at` dan `payment_intents.provider_refunded_after_paid_at`. Stamp atomik (`WHERE ... IS NULL RETURNING`) lewat satu helper; hanya pemenang stamp menulis SATU baris audit `payment.provider_refunded_after_recorded` dan SATU alert supervisor outlet (id alert deterministik, webhook dan poller bersamaan tetap satu). Tanpa pembalikan jurnal otomatis.
+- Blokir 409 `PROVIDER_REFUNDED`: alokasi/resolve dana parkir, refund manual, approve, dan payout (`runRefundPayout` karantina, `takeSendRight` cek ulang atomik). Satu helper `payment-provider-refunded-guard.ts`.
+- Dana yang sudah di-refund provider tidak lagi menahan tagihan (open-funds POS/QR/live-code). Refund kita sendiri yang terkirim tidak ditandai sebagai refund provider.
+- 3wwme: `payment.refunded` tanpa objek payment dijawab 2xx, baris `ignored` kode `REFUND_PAYLOAD_NOT_PAYMENT`; komentar lock `recordUnsettledGatewayFundsInTx` dibetulkan.
+
+**Bukti**: gagal-dulu di logika base (17 tes gagal karena audit tidak ada, payout selesai, resolve berhasil, bukan setup), lalu hijau: 958 (2 berkas) 35 tes, ditambah hold-release dan refund-webhook 77 lulus; 5 grup terkait 376 lulus (payment-doit, refund, qris-hold open-funds, pos-qris-hold, migrasi/registry); typecheck API exit 0; prettier dan eslint hijau; text-contract 11/11; `db:generate` kosong. Architect xhigh: r1 2 P1 (race late-paid vs refunded, bill terkunci) dibetulkan, r2 tanpa P1.
+
+**Belum / tindak lanjut**: event refund parsial tidak disimpan (hanya envelope); refund transaksi tambahan (id berbeda dari intent) diabaikan `findBoundIntent`; refund `approved` chain tetap tertahan sampai staf release; dana tanpa `evidence_id` tetap diblok tapi tidak ber-stamp. Run awal sempat gagal `Connection terminated unexpectedly` (DB test), rerun hijau.

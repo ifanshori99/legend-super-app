@@ -714,14 +714,21 @@ describe("QR guest virtual account (legend-3160)", () => {
       expect(response.status).toBe(201);
       last = response.body.data.id as string;
     }
-    // Past the VA's 180 minutes and the late-payment grace.
+    // legend-3wpf: a gateway code is never expired by the plain sweep; it
+    // times out locally only when the poller finds it unanswered after the
+    // 24 h reconciliation window.
     const context = contextOf(tenant.tenantId);
-    const later = new Date(Date.now() + 184 * 60_000);
-    await expireDueIntents(context, later);
+    // The VA lives 180 minutes, so 28 h is more than 24 h past its expiry.
+    const later = new Date(Date.now() + 28 * 60 * 60_000);
+    expect((await expireDueIntents(context, later)).expired).toBe(0);
+    await pollPendingGatewayIntents(context, later, 200);
     const [expired] = await outboxEvents("payment.expired", last);
     expect(expired?.payload.reason).toBe("timeout");
+    // The order consumer judges the code just after its life and the grace,
+    // as the old sweep did (the 28 h above only drives the poller's timeout).
+    const afterGrace = new Date(Date.now() + 184 * 60_000);
     const dispatch = await withTenant(db, context, (tx) =>
-      deliverOrderPaymentEvent(context, expired!, tx, later),
+      deliverOrderPaymentEvent(context, expired!, tx, afterGrace),
     );
     expect(dispatch).toMatchObject({ route: "qr", outcome: "retry_allowed" });
     expect(await orderStatusOf(orderId)).toBe("awaiting_payment");

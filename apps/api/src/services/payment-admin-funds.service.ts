@@ -24,6 +24,7 @@ import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
+import { assertNotProviderRefunded } from "./payment-provider-refunded-guard.ts";
 import { openRefundChainAtRequest } from "./payment-refund.service.ts";
 import {
   appendPaymentEvent,
@@ -309,6 +310,13 @@ export async function resolveUnallocatedFund(
       async () => {
         if (fund.resolution)
           throw new HttpError(409, "CONFLICT", "Funds already resolved.");
+        // legend-7uqbs: the provider already returned this money to the payer.
+        // A refund (or credit) of it would pay the same money twice; the
+        // fund stays on record for staff to settle outside this screen.
+        await assertNotProviderRefunded(tx, context.tenant.tenantId, {
+          paymentIntentId: fund.paymentIntentId,
+          unallocatedFundId: fund.id,
+        });
         // Credit has no approved ledger adapter; do not represent it as completed.
         if (request.resolution === "credit")
           throw new HttpError(

@@ -65,6 +65,8 @@ export const DOIT_WEBHOOK_EVENT_TYPES = [
 export const DOIT_PAYMENT_EVENT_TYPES = [
   "payment.paid",
   "payment.expired",
+  // 952 round 2: only records that the provider gave the money back.
+  "payment.refunded",
 ] as const;
 export type DoitPaymentEventType = (typeof DOIT_PAYMENT_EVENT_TYPES)[number];
 
@@ -273,19 +275,22 @@ export function mapDoitMethods(
 // -- Payment object -> port types -------------------------------------------
 
 /**
- * Status the lifecycle receives. `refunded` changes nothing here, so it is
- * reported as `pending` with no amount (money went back; the books are not
- * touched automatically). For a paid payment the amount is `amount`, the
- * figure the bill is credited (`total_amount` adds the unique code or a
- * customer-borne fee); the lifecycle compares it with the intent and flags a
- * mismatch.
+ * Status the lifecycle receives. `refunded` is a terminal answer: the money went
+ * back to the payer, so the code can never settle the bill. It is reported as
+ * `failed` with no amount (legend-3wpf), never `pending` (which kept the code
+ * polled and ended as a false `gateway_unconfirmed` timeout) and never `paid`
+ * (which would credit the bill again). The books are not touched automatically
+ * and the raw status stays `refunded`. For a paid payment the amount is
+ * `amount`, the figure the bill is credited (`total_amount` adds the unique code
+ * or a customer-borne fee); the lifecycle compares it with the intent and flags
+ * a mismatch.
  */
 export function doitPaymentToGatewayStatus(
   payment: DoitPayment,
 ): GatewayPaymentStatus {
   if (payment.status === "refunded")
     return {
-      status: "pending",
+      status: "failed",
       rawStatus: payment.status,
       providerRef: payment.id,
       amountIdr: null,
