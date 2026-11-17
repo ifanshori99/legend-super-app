@@ -75,6 +75,18 @@ test("AUTH-05 · a custom role built from the catalog is created and opens its d
     .check();
   await expect(page.getByText("1 izin dipilih")).toBeVisible();
 
+  // The mock viewer (Admin Tenant) does not hold pos.void.approve, so adding
+  // it asks for a second-factor check first (RBAC grant rule). The first save
+  // surfaces the step; the role is created only after the code is verified.
+  await page.getByRole("button", { name: "Buat peran" }).click();
+  await expect(
+    page.getByText("Verifikasi ulang diperlukan.").first(),
+  ).toBeVisible();
+  await expect(page.getByText("Peran khusus dibuat.")).toHaveCount(0);
+  await page.getByLabel("Kode autentikator").fill("123456");
+  await page.getByRole("button", { name: "Verifikasi kode" }).click();
+  await expect(page.getByLabel("Kode autentikator")).toBeDisabled();
+
   await page.getByRole("button", { name: "Buat peran" }).click();
   await expect(page.getByText("Peran khusus dibuat.").first()).toBeVisible();
   await expect(
