@@ -18,6 +18,9 @@
 // - PPh 21 - gross deductions, so net is never negative and the collection never
 // exceeds the open balance (`planPph21ReceivableCollection`, founder B8).
 //
+// Overtime correction (legend-72nod): LEMBUR_KOREKSI_POTONGAN instalments come
+// right after the receivable, capped by the same room (`overtimeCorrectionDeductions`).
+//
 // Kasbon (legend-8tfvr, D4): after the receivable, `planLoanDeductions` plans
 // the installments over the pay left (gross - every deduction so far), capped
 // by the policy's share of that pay. One LOAN line per loan that takes money:
@@ -192,6 +195,12 @@ export type ComposePayslipInput = {
   loans?: readonly PlannableLoan[];
   /** Policy share of the pay left that all installments may take (absent = 0). */
   loanMaxDeductionOfNetPayBp?: BasisPoints;
+  /**
+   * Overtime correction deductions (legend-72nod): given the pay left after
+   * the receivable collection, the LEMBUR_KOREKSI_POTONGAN lines to take. The
+   * caller caps them at that room; the composer re-checks it (never pays more).
+   */
+  overtimeCorrectionDeductions?: (roomIdr: number) => readonly PayslipLine[];
 };
 
 /** A loan the composer may plan an installment for (`planLoanDeductions`). */
@@ -228,6 +237,15 @@ export function composePayslipCalculation(
     deductions.push(
       systemLine("PPH21_RECEIVABLE", receivableCollection.collectedIdr),
     );
+  // Overtime correction (legend-72nod): an instalment of what the outlet paid
+  // too much in a frozen period, over the pay left; the rest stays outstanding.
+  if (input.overtimeCorrectionDeductions) {
+    const room = grossIdr - sumIdr(deductions.map((l) => l.amountIdr));
+    const taken = input.overtimeCorrectionDeductions(room);
+    if (sumIdr(taken.map((l) => l.amountIdr)) > Math.max(0, room))
+      throw new RangeError("Overtime correction exceeds the pay left");
+    deductions.push(...taken);
+  }
   // Kasbon: whatever the deductions above leave, up to the policy share.
   const loanPlan = planLoanDeductions(
     input.loans ?? [],

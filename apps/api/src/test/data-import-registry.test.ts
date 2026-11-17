@@ -55,6 +55,10 @@ const NOT_A_WRITER: Record<string, string> = {
     "release-only replay (legend-ka1hg): recomputes metrics_daily for past outlet days from the tenant's own source rows through the metric service (same locks and upserts as the live sweep), tenant by tenant, with --dry-run; imports no external data",
   "apps/api/src/db/backfill-employee-managers.ts":
     "one-off repair of employees.manager_id on existing rows (legend-qhqf8): dry-run by default, --apply writes only HR-reviewed before/after tuples from a manifest, one audit row each; imports no data",
+  "apps/api/src/scripts/payroll-pph21-receivable-backfill.ts":
+    "release-only backfill (legend-i848k) of the employee PPh 21 receivable open item for receivables that predate the 972 open item: one transaction per tenant, --dry-run available, idempotent (ON CONFLICT DO NOTHING on a deterministic id), inserts only the missing gap to the employee's own payslip balance (never more), holds doubtful cases and reports them; derives everything from the tenant's own payslips and employees, imports no external data",
+  "apps/api/src/services/payroll-pph21-receivable-backfill.service.ts":
+    "the per-tenant backfill the script above runs (legend-i848k): reads the tenant's own payslips and open items, inserts only the missing accounting_open_items receivable up to the payslip balance, never updates or deletes a row and never exceeds the balance; imports no external data",
 };
 
 // Files under apps/api/src/db referenced from scripts/*.mjs that are not
@@ -68,6 +72,8 @@ const SCRIPT_NOT_A_WRITER: Record<string, string> = {
 // upgrades of existing data, never imports. A new data statement in a
 // migration must be added here with a reason, so it gets looked at.
 const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
+  "0454_payroll_overtime_correction_activations.sql":
+    "backfills one payroll_overtime_correction_activations row (tenant id plus the migration time) for each tenant that already has payroll runs (legend-72nod): the stamp after which a locked run may be corrected for late overtime, so no old history is paid or taken back twice; idempotent, ON CONFLICT DO NOTHING, edits no existing row, no amount touched, FORCE RLS lifted on payroll_runs for that one read and restored",
   "0408_print_alert_notification_retry.sql":
     "marks legacy print alerts delivered because their historical event ids cannot be reconstructed safely; new alerts retain a null marker for durable retry; restores FORCE RLS",
   "0312_public_tarantula.sql":
@@ -338,6 +344,8 @@ const SCRIPT_NAME_ALLOWLIST: Record<string, string> = {
     "one-off repair of employees.manager_id from an HR-reviewed manifest (dry-run by default); not an importer, listed in POOL_OPENERS_NOT_IMPORTERS",
   "apps/api/package.json#db:backfill-defaults":
     "runs the registered, guarded source backfill.tenant-defaults",
+  "apps/api/package.json#payroll:backfill-pph21-receivable":
+    "release-only backfill of the employee PPh 21 receivable open item from the tenant's own payslips (legend-i848k), --dry-run available, idempotent, never above the payslip balance; not an importer, no external data, listed in NOT_A_WRITER",
 };
 
 function walk(dir: string, out: string[] = []): string[] {

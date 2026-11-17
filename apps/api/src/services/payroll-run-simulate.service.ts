@@ -112,6 +112,12 @@ import { recordAudit } from "./core-audit.ts";
 import { assertPayrollTenantCan } from "./payroll-access.ts";
 import { computeEmployeeGrossInTransaction } from "./payroll-components.service.ts";
 import {
+  OVERTIME_CORRECTION_LINES,
+  planOvertimeCorrection,
+  planOvertimeCorrectionDeduction,
+  type OvertimeCorrectionPlan,
+} from "./payroll-overtime-correction.service.ts";
+import {
   bpjsLinesOf,
   composePayslipCalculation,
   payslipTaxFactsOf,
@@ -764,6 +770,33 @@ export async function simulatePayrollRunInTransaction(
         periodEnd: run.periodEnd,
       });
 
+  // Overtime correction of frozen periods (legend-72nod): regular runs only;
+  // a held source gets no line (manual handling, reported in the audit row),
+  // never more than owed.
+  const correctionById = new Map<string, OvertimeCorrectionPlan>();
+  if (!isThr)
+    for (const member of population)
+      correctionById.set(
+        member.id,
+        await planOvertimeCorrection(tx, context, {
+          employeeId: member.id,
+          targetRunId: runId,
+        }),
+      );
+  const correctionLine = (
+    kind: "positive" | "negative",
+    sourceRunId: string,
+    amountIdr: number,
+  ): PayslipLine => {
+    const spec = OVERTIME_CORRECTION_LINES[kind];
+    return payslipLineSchema.parse({
+      ...spec,
+      amountIdr,
+      quantity: null,
+      sourceId: sourceRunId,
+    });
+  };
+
   type Prepared = {
     member: (typeof population)[number];
     payslipId: PayslipId;
@@ -774,13 +807,24 @@ export async function simulatePayrollRunInTransaction(
     priorPayslipIds: string[];
     rapelAllocationRevision: number | null;
     paymentMethod: PayslipPaymentMethod;
+    correction: OvertimeCorrectionPlan;
   };
   const prepared: Prepared[] = [];
   const taxEmployees: PayrollRunTaxEmployee[] = [];
   for (const member of population) {
     const gross = grossById.get(member.id)!;
     const statutoryLine = statutoryById.get(member.id)!;
+    const correction: OvertimeCorrectionPlan = correctionById.get(
+      member.id,
+    ) ?? { kind: "none", positive: [], negative: [], sources: [], held: [] };
     let earnings = gross.earnings;
+    if (correction.kind === "correction")
+      earnings = [
+        ...earnings,
+        ...correction.positive.map((entry) =>
+          correctionLine("positive", entry.sourceRunId, entry.amountIdr),
+        ),
+      ];
     let deductions = gross.deductions;
     let bpjs = bpjsLinesOf(statutoryLine.contributions);
     if (isThr) {
@@ -854,6 +898,7 @@ export async function simulatePayrollRunInTransaction(
       taxInput,
       priorPayslipIds: [...new Set(prior.payslipIds)].sort(),
       rapelAllocationRevision: gross.rapelAllocationRevision,
+      correction,
       // OPEN O1.
       paymentMethod: member.bankAccountHmac !== null ? "bank_transfer" : "cash",
     });
@@ -898,6 +943,10 @@ export async function simulatePayrollRunInTransaction(
         receivableBalances.total.get(entry.member.id) ?? 0,
       loans: loansByEmployee.get(entry.member.id) ?? [],
       loanMaxDeductionOfNetPayBp: loanPolicy?.bp ?? 0,
+      overtimeCorrectionDeductions: (roomIdr) =>
+        planOvertimeCorrectionDeduction(entry.correction, roomIdr).map((item) =>
+          correctionLine("negative", item.sourceRunId, item.amountIdr),
+        ),
     });
     results.push({
       entry,
@@ -1034,6 +1083,45 @@ export async function simulatePayrollRunInTransaction(
     },
     ["employeeCount", "simulationCount"],
   );
+
+  // Held overtime corrections are reported, never silent (architect R2): one
+  // audit row with (employee, source run, reason) of each held source.
+  const heldCorrections = results.flatMap(({ entry }) =>
+    entry.correction.held.map(
+      (held) =>
+        `${entry.member.id}|${held.sourceRunId}|${held.reason}|${held.outstandingIdr ?? ""}`,
+    ),
+  );
+  if (heldCorrections.length > 0)
+    await recordAudit(
+      tx,
+      context,
+      {
+        id: createUlid(now.getTime()),
+        tenantId,
+        outletId: null,
+        actorType: "user",
+        actorId: actor,
+        deviceId: null,
+        action: "payroll.run.overtime_correction_held",
+        objectType: "payroll_run",
+        objectId: runId,
+        reason: null,
+        maskedChanges: {
+          before: null,
+          after: {
+            simulationCount: next.simulationCount,
+            heldCount: heldCorrections.length,
+            heldItems: heldCorrections,
+          },
+        },
+        ipHash: null,
+        sensitiveAccess: false,
+        retentionClass: "audit_2y",
+        createdAt: now.toISOString(),
+      },
+      ["simulationCount", "heldCount", "heldItems"],
+    );
 
   return toRun(updated);
 }

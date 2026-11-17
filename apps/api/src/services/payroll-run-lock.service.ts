@@ -94,6 +94,7 @@ import { recordAudit } from "./core-audit.ts";
 import { assertPayrollTenantCan } from "./payroll-access.ts";
 import { snapshotPayeeBankForLock } from "./payroll-bank-snapshot.service.ts";
 import { emitPayrollEvent } from "./payroll-events.ts";
+import { syncOvertimeCorrectionLedgerInTransaction } from "./payroll-overtime-correction.service.ts";
 import { syncPph21ReceivableOpenItemsInTransaction } from "./payroll-pph21-receivable-open-items.service.ts";
 import {
   expectedReceivableCollection,
@@ -738,6 +739,9 @@ export async function lockPayrollRunInTransaction(
   // legend-itph: the receivable raised or collected by these payslips becomes
   // (or settles) the employee open item, under the receivable lock held above.
   await syncPph21ReceivableOpenItemsInTransaction(tx, context, runId);
+  // legend-72nod: the overtime correction lines become ledger rows; a line above
+  // the outstanding amount (another draft locked first) refuses with 409.
+  await syncOvertimeCorrectionLedgerInTransaction(tx, context, runId);
   const bankSnapshotCount = await snapshotPayeeBankForLock(
     tx,
     tenantId,
