@@ -21,14 +21,10 @@ import { and, asc, eq } from "drizzle-orm";
 import { draftShiftScheduleInputSchema } from "@starter/shared/ai";
 import { createShiftAssignment as createShiftAssignmentEndpoint } from "@starter/shared/hris";
 import { db } from "../../db/index.ts";
-import {
-  shiftAssignments,
-  shiftTemplates,
-  stations,
-} from "../../db/schema/index.ts";
+import { shiftTemplates, stations } from "../../db/schema/index.ts";
 import { withTenant } from "../../db/tenant.ts";
 import {
-  cancelShiftAssignment,
+  cancelDraftShiftAssignment,
   createShiftAssignment,
 } from "../hris-scheduling-roster.service.ts";
 import { holdsToolAccess } from "./access.ts";
@@ -134,28 +130,14 @@ export const executeShiftSchedule: ActionExecutor = async ({
       if (inserted) insertedHere.push(assignment.id);
     }
   } catch (error) {
-    for (const id of insertedHere) {
-      // A manager may have published the draft meanwhile: leave it alone.
-      const [current] = await withTenant(db, context, (tx) =>
-        tx
-          .select({ status: shiftAssignments.status })
-          .from(shiftAssignments)
-          .where(
-            and(
-              eq(shiftAssignments.tenantId, row.tenantId),
-              eq(shiftAssignments.id, id),
-            ),
-          )
-          .limit(1),
-      ).catch(() => []);
-      if (current?.status !== "draft") continue;
-      await cancelShiftAssignment(
+    // Draft-only and atomic: a draft a manager published meanwhile stays.
+    for (const id of insertedHere)
+      await cancelDraftShiftAssignment(
         context,
         row.requestedByUserId,
         id,
         now,
       ).catch(() => undefined);
-    }
     throw error;
   }
   return { resultRef: `shift_assignment:${handled[0]}` };

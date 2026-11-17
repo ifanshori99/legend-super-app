@@ -767,6 +767,39 @@ export async function cancelShiftAssignment(
 }
 
 /**
+ * Cancels the shift only if it is still a draft, checked on the locked row in
+ * the same transaction as the cancel (no read-then-cancel gap): a shift a
+ * manager published meanwhile is returned untouched. For the Tanya AI
+ * rollback of the drafts it inserted. Same access check and effects as
+ * `cancelShiftAssignment`.
+ */
+export async function cancelDraftShiftAssignment(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  assignmentId: string,
+  now = new Date(),
+): Promise<ShiftAssignment> {
+  return withTenant(db, context, async (tx) => {
+    const access = await loadHrisAccess(tx, context, actorUserId, now);
+    const found = await findAssignment(
+      tx,
+      context.tenant.tenantId,
+      assignmentId,
+    );
+    if (!found) throw scheduleNotFound();
+    assertManage(access, found.outletId);
+    return cancelShiftAssignmentInTx(
+      tx,
+      context,
+      access.actorUserId,
+      assignmentId,
+      now,
+      true,
+    );
+  });
+}
+
+/**
  * The cancel itself, inside the caller's tenant transaction, for a caller
  * that has already authorised it: `cancelShiftAssignment` above (schedule
  * manager of the outlet) and exit clearance (`hris-offboarding.service.ts`,
@@ -774,6 +807,7 @@ export async function cancelShiftAssignment(
  * the last working day in the same transaction as the access revocation.
  * Same effects either way: pending swaps withdrawn, `shift.cancelled` for a
  * published or swapped shift, audit rows. A cancelled row is returned as is.
+ * `onlyDraft` returns a non-draft row as is, judged on the locked row.
  */
 export async function cancelShiftAssignmentInTx(
   tx: Tx,
@@ -781,6 +815,7 @@ export async function cancelShiftAssignmentInTx(
   actorUserId: string | HrisActor,
   assignmentId: string,
   now: Date,
+  onlyDraft = false,
 ): Promise<ShiftAssignment> {
   const tenantId = context.tenant.tenantId;
   const found = await findAssignment(tx, tenantId, assignmentId);
@@ -808,6 +843,8 @@ export async function cancelShiftAssignmentInTx(
   const current = await findAssignment(tx, tenantId, assignmentId, true);
   if (!current) throw scheduleNotFound();
   if (current.status === "cancelled") return toShiftAssignment(current);
+  if (onlyDraft && current.status !== "draft")
+    return toShiftAssignment(current);
 
   const status = transitionShiftAssignment(current.status, "cancel");
   const [updated] = await tx

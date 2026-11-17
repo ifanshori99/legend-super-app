@@ -245,6 +245,43 @@ function failShiftOf(failEmployeeId: string) {
   return hits;
 }
 
+/**
+ * Forces the check-then-act race deterministically. Every roster-service export
+ * whose name matches /cancel/i is wrapped (found at runtime from the module
+ * namespace, so this does not depend on how the executor is structured
+ * internally). The FIRST call into any of them first lets a manager publish the
+ * week over real HTTP, then delegates to the real function. So the publish lands
+ * after the executor decided the shifts are its drafts to cancel, and right
+ * before the cancel statement runs. `hits.cancelCalls` proves the window opened.
+ */
+function publishRightBeforeCancel(week: Week) {
+  const hits = { cancelCalls: 0, publishStatus: 0 };
+  const namespace = roster as unknown as Record<string, unknown>;
+  for (const name of Object.keys(namespace)) {
+    const original = namespace[name];
+    if (!/cancel/i.test(name) || typeof original !== "function") continue;
+    vi.spyOn(
+      namespace as Record<string, (...args: unknown[]) => unknown>,
+      name,
+    ).mockImplementation(async (...args: unknown[]) => {
+      hits.cancelCalls += 1;
+      if (hits.cancelCalls === 1) {
+        const res = await manager.client
+          .post("/api/hris/rosters/publish")
+          .set(originHeader)
+          .send({
+            outletId: outletA,
+            weekStart: week.weekStart,
+            idempotencyKey: `w16r-race-${randomUUID()}`,
+          });
+        hits.publishStatus = res.status;
+      }
+      return (original as (...a: unknown[]) => unknown)(...args);
+    });
+  }
+  return hits;
+}
+
 // ---- TL-16 rollback scope ---------------------------------------------------
 
 describe("TL-16 draft_shift_schedule: rollback cancels only this attempt's drafts", () => {
@@ -264,6 +301,32 @@ describe("TL-16 draft_shift_schedule: rollback cancels only this attempt's draft
     for (const id of [employees[0]!, employees[1]!])
       expect(status[id]!.filter((s) => s !== "cancelled")).toEqual([]);
     // Shift 3 never got created.
+    expect(status[employees[2]!]).toEqual([]);
+  }, 90_000);
+
+  it("(d) race: a shift created by the failing attempt is published by a manager just before the rollback cancels it, and stays published", async () => {
+    // Assumption: a manager publishing a draft in that gap wins; the rollback
+    // must not cancel a shift that is no longer a draft (a published shift is
+    // visible to staff).
+    const employees = await seedEmployees(3);
+    const week = freshWeek();
+    const requestId = randomUUID();
+    const failed = failShiftOf(employees[2]!);
+    const race = publishRightBeforeCancel(week);
+
+    await expect(
+      run(requestId, payloadOf(employees, week, 3)),
+    ).rejects.toThrow();
+
+    expect(failed.forced).toBeGreaterThan(0);
+    // The window really opened: a cancel was attempted and the publish ran.
+    expect(race.cancelCalls).toBeGreaterThan(0);
+    expect(race.publishStatus).toBeLessThan(300);
+    expect(race.publishStatus).toBeGreaterThan(0);
+
+    const status = await statusByEmployee(employees);
+    expect(status[employees[0]!]).toEqual(["published"]);
+    expect(status[employees[1]!]).toEqual(["published"]);
     expect(status[employees[2]!]).toEqual([]);
   }, 90_000);
 
