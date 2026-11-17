@@ -5,7 +5,10 @@ import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { auth } from "../lib/auth";
 import { HttpError } from "../lib/http-error";
 import { setRequestAuthMethod, setRequestUser } from "../lib/request-context";
-import { stampSharedDeviceFromToken } from "../services/shared-device.service";
+import {
+  sharedDeviceMarkLimit,
+  stampSharedDeviceFromToken,
+} from "../services/shared-device.service";
 import { enforceSupportSession } from "./support-session";
 
 // Authenticates against the database on every request (no cookie cache), so a
@@ -23,12 +26,15 @@ export const requireAuth: RequestHandler = async (req, _res, next) => {
   // (services/permission-resolver.ts reads it through requestMayUseStaffRoles).
   setRequestAuthMethod(session.session.authMethod ?? "legacy");
   // legend-jqurl: a signed token of a flagged shared device marks the session
-  // on every authenticated route, not only the guarded POS ones. Never throws.
-  await stampSharedDeviceFromToken(
+  // on every authenticated route, not only the guarded POS ones. A full list of
+  // 8 active marks refuses the 9th device (legend-dn7uo). Otherwise never throws.
+  const stamped = await stampSharedDeviceFromToken(
     session.session.id,
     session.session.sharedDeviceIds,
     req.get(DEVICE_TOKEN_HEADER),
   );
+  if (!stamped)
+    throw await sharedDeviceMarkLimit(session.session.id, session.user.id);
   // A support (impersonated) session is checked against its support access
   // grant here, the one chokepoint of every cookie router. See
   // middleware/support-session.ts.

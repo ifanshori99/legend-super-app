@@ -7407,3 +7407,13 @@ Gerbang:
 - e2e produksi: 18 lulus, 1 skip, 40 dtk. e2e mock penuh (1,0 jam): 1163 lulus, 2 skip, 1 gagal: g6d AUTH-06 menghitung 31 aksi approval, kini 32 (991 menambah `supplier_payment`); spec diperbarui, `legend-g6d.mock.spec.ts` 5/5. AUTH-05 dan TEN-03 (baseline batch85, kartu sz75z) kini lulus berkat `perbaiki-test-mock-e2e-m1`. 14 spec 988 (`Rp\s?`) lulus.
 
 Subagent: 0 (thread ini tidak memanggil subagent di batch86; sesi sejak awal: 6), pemegang `heavy`: thread ini. Biaya sesi (session-usage, kumulatif batch85+86): utama 5886k, subagent 499k; selisih batch86 sekitar utama 3123k, subagent 44k.
+## 1006 perbaikan SO 997 akses (17 Nov 2026) - ghostex/f12296d2, setelah ghostex/984-f586w-shared-device-wip (839500696)
+
+Brief: `docs/briefs/1006-so-akses-fix.md`. Tingkat K (akses). Tanpa migrasi (`db:generate`: "No schema changes").
+
+- legend-sq1ux (P1): sesi dari sign-in Better Auth di perangkat bersama distempel saat dibuat (`session.create.before` membaca `X-Device-Token`, `sharedDeviceIdsFromToken`). Web: `authClient` mengirim token perangkat lewat `fetchOptions.onRequest` (tanpa itu hook tak pernah melihat token).
+- legend-42gqp (P1): `GET /api/outlets/:outletId/floor` memasang `resolveActingStaff` + `requireActingStaffOnSharedDevice` di rute (bukan `.use` router: guard tingkat router ikut jalan untuk request jatuh-lewat `/api/outlets/*` tanpa `:outletId`). Web: `POS_PATH` ikut `outlets/:id/floor`, kalau tidak papan di perangkat bersama selalu 401.
+- legend-dn7uo (P2): perangkat ke-9 saat 8 penanda aktif ditolak 403 `SHARED_DEVICE_MARK_LIMIT` dan sesinya ditutup lewat `revokeOwnSession` (audit; sesi support dihapus dengan `impersonation_ended` cause revoked). Tanpa penutupan, cookie perangkat ke-9 lolos tanpa header setelah perangkat 1-8 dimatikan.
+- Review architect (xhigh) ronde 1: 3 P1 + 1 P2 (guard router-level, POS_PATH tanpa floor, authClient tanpa header, cookie ke-9) semua dibetulkan. Ronde 2: tertutup, 1 temuan rendah (audit sesi support) dibetulkan.
+- Rute tanpa guard perangkat bersama yang belum ditutup (keputusan CTO): pickup, expo, order-issues, serving-time, open-bill (approvers dan convert POST), delivery-orders (guard ringan), emergency-cloud (belum jelas).
+- Subagent: total 8, puncak 3 bersamaan, token heavy dipegang bergantian (test-writer, test-runner).

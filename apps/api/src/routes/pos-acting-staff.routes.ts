@@ -25,6 +25,7 @@ import {
 import {
   isActiveSharedDevice,
   markSessionSharedDevice,
+  sharedDeviceMarkLimit,
 } from "../services/shared-device.service";
 
 /**
@@ -60,8 +61,13 @@ posActingStaffRouter.post(
     const auth = getAuth(req);
     // Shared-device mode: mark the login session at activation, before any
     // guarded POS request (middleware/acting-staff.ts).
-    if (await isActiveSharedDevice(getTenantContext(req), deviceId))
-      await markSessionSharedDevice(auth.session.id, deviceId);
+    // legend-dn7uo: a 9th device the session cannot record is refused, no PIN
+    // session is issued for it.
+    if (
+      (await isActiveSharedDevice(getTenantContext(req), deviceId)) &&
+      !(await markSessionSharedDevice(auth.session.id, deviceId))
+    )
+      throw await sharedDeviceMarkLimit(auth.session.id, auth.user.id);
     res.setHeader("Cache-Control", "private, no-store");
     res.status(201).json({
       data: await issueActingStaff(getTenantContext(req), {

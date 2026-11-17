@@ -18,6 +18,11 @@
 //    stamp nothing; a badly signed token stamps nothing and does not break the
 //    request.
 //
+// legend-sq1ux / legend-dn7uo (brief 1006): sign-in itself stamps the new session
+// from X-Device-Token, and a 9th live shared device is REFUSED (403
+// SHARED_DEVICE_MARK_LIMIT) instead of passing as owner; the mark list is then
+// unchanged and `markSessionSharedDevice` answers false.
+//
 // Assumptions:
 //  - The non-guarded requireAuth route is GET /api/me/access (answers 200 to any
 //    signed-in account, 401 anonymously). It is sent WITHOUT a Host header so the
@@ -41,9 +46,17 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
 import { signDeviceToken } from "../lib/device-token.ts";
-import { setDeviceOutletResolver } from "../services/device-pin.service.ts";
+import { tenantIdSchema } from "@starter/shared/core";
+import { establishTenantContext } from "@starter/shared/core/server";
+import {
+  setDeviceOutletResolver,
+  setStaffPin,
+} from "../services/device-pin.service.ts";
 import { markSessionSharedDevice } from "../services/shared-device.service.ts";
-import { agent, originHeader, signUp } from "./helpers.ts";
+import { agent, originHeader, setRole, signUp } from "./helpers.ts";
+import { requestSupportAccess } from "../services/platform-support.service.ts";
+import { requestSupportAccessInputSchema } from "@starter/shared/platform";
+
 import {
   createIsolatedTenant,
   dropIsolatedTenant,
@@ -72,6 +85,7 @@ let tenantA: IsolatedTenant;
 let tenantB: IsolatedTenant;
 // device id -> tenant it is registered in (for the outlet resolver)
 const knownDevices = new Map<string, IsolatedTenant>();
+const supportAdminIds: string[] = [];
 
 async function addRole(tenant: IsolatedTenant): Promise<string> {
   const roleId = randomUUID();
@@ -145,6 +159,19 @@ async function marks(who: Member): Promise<string[]> {
   return rows[0]!.ids;
 }
 
+/**
+ * A refused 9th device ends the login session: a normal session keeps its row
+ * with revoked_at set (and an expiry in the past); an impersonated one is
+ * deleted. Either way the session is no longer usable.
+ */
+async function sessionEnded(who: Member): Promise<boolean> {
+  const { rows } = await owner.query<{ revoked_at: Date | null }>(
+    `SELECT revoked_at FROM "session" WHERE id = $1`,
+    [who.sessionId],
+  );
+  return rows.length === 0 || rows[0]!.revoked_at !== null;
+}
+
 /** Guarded route of a tenant; `deviceId` adds that device's token header. */
 const parked = (who: Member, tenant: IsolatedTenant, deviceId?: string) => {
   let request = who.client
@@ -171,6 +198,21 @@ function expectRequired(response: { status: number; body: unknown }) {
   expect(body.error?.message ?? "").not.toBe("");
 }
 
+function expectLimit(response: { status: number; body: unknown }) {
+  const body = response.body as { error?: { code?: string; message?: string } };
+  expect(response.status, JSON.stringify(response.body)).toBe(403);
+  expect(body.error?.code, JSON.stringify(response.body)).toBe(
+    "SHARED_DEVICE_MARK_LIMIT",
+  );
+  expect(body.error?.message ?? "").not.toBe("");
+}
+
+function expectUnauthorized(response: { status: number; body: unknown }) {
+  const body = response.body as { error?: { code?: string } };
+  expect(response.status, JSON.stringify(response.body)).toBe(401);
+  expect(body.error?.code, JSON.stringify(response.body)).toBe("UNAUTHORIZED");
+}
+
 function expectOk(response: { status: number; body: unknown }) {
   expect(response.status, JSON.stringify(response.body)).toBe(200);
 }
@@ -189,8 +231,20 @@ beforeAll(async () => {
 
 afterAll(async () => {
   setDeviceOutletResolver(null);
-  for (const t of [tenantA, tenantB])
+  await owner.query(
+    "DELETE FROM support_access_grants WHERE super_admin_user_id = ANY($1::text[])",
+    [supportAdminIds],
+  );
+  await owner.query(
+    "DELETE FROM platform_admins WHERE user_id = ANY($1::text[])",
+    [supportAdminIds],
+  );
+  for (const t of [tenantA, tenantB]) {
+    await owner.query("DELETE FROM staff_pins WHERE tenant_id = $1", [
+      t.tenantId,
+    ]);
     await owner.query("DELETE FROM devices WHERE tenant_id = $1", [t.tenantId]);
+  }
   await dropIsolatedTenant(tenantA);
   await dropIsolatedTenant(tenantB);
   await owner.end();
@@ -361,25 +415,173 @@ const revoke = (id: string) =>
   );
 
 describe("shared device marks: cap of 8 never evicts a live mark", () => {
-  it("8 active flagged marks: a 9th flagged device is not added, the list is unchanged and header-less is still refused", async () => {
-    const { who, devices } = await fullSession("Sesi Penuh Aktif");
+  it("stamp function on a full live session returns false for a 9th device, true for an already marked one", async () => {
+    const { who, devices } = await fullSession("Sesi Penuh Nilai Balik");
     const ninth = await newDevice(tenantA, true);
-
-    await markSessionSharedDevice(who.sessionId, ninth);
-    let ids = await marks(who);
+    // The stamp function reports it could not mark (false), and does not add.
+    expect(await markSessionSharedDevice(who.sessionId, ninth)).toBe(false);
+    const ids = await marks(who);
     expect(ids).toHaveLength(8);
     expect(ids).not.toContain(ninth);
     expect([...ids].sort()).toEqual([...devices].sort());
+    // A device already marked still reports true.
+    expect(await markSessionSharedDevice(who.sessionId, devices[0]!)).toBe(
+      true,
+    );
+  });
 
-    // The same through a guarded request carrying the 9th device's token.
-    expectRequired(await parked(who, tenantA, ninth));
-    ids = await marks(who);
-    expect(ids).toHaveLength(8);
-    expect(ids).not.toContain(ninth);
+  it("8 active flagged marks: a 9th device on a guarded route is refused 403 SHARED_DEVICE_MARK_LIMIT and the login session is revoked", async () => {
+    const { who } = await fullSession("Sesi Penuh Aktif");
+    const ninth = await newDevice(tenantA, true);
 
-    // Header-less (cookie only): still refused because the marks are live.
-    expectRequired(await parked(who, tenantA));
-    expectRequired(await parked(who, tenantB));
+    // Refused, not owner-passed.
+    expectLimit(await parked(who, tenantA, ninth));
+    // The refusal revokes the login session (revoked or gone).
+    expect(await sessionEnded(who)).toBe(true);
+
+    // The cookie is dead everywhere, with or without a device header.
+    expectUnauthorized(await parked(who, tenantA));
+    expectUnauthorized(await parked(who, tenantB));
+    expectUnauthorized(await access(who));
+  });
+
+  it("8 active flagged marks: a 9th device on a non-guarded requireAuth route is refused 403 SHARED_DEVICE_MARK_LIMIT and the session is revoked", async () => {
+    const { who } = await fullSession("Sesi Penuh Rute Bebas");
+    const ninth = await newDevice(tenantA, true);
+
+    expectLimit(await access(who, tokenOf(ninth)));
+    expect(await sessionEnded(who)).toBe(true);
+    expectUnauthorized(await access(who));
+    expectUnauthorized(await parked(who, tenantA));
+  });
+
+  it("8 old marks unflagged after a refused 9th: the old residual hole is closed, the cookie stays 401 UNAUTHORIZED", async () => {
+    const { who, devices } = await fullSession("Sesi Sembilan Ditolak");
+    const ninth = await newDevice(tenantA, true);
+
+    // The 9th-device request is refused outright (not a 200 owner pass), and
+    // the session is revoked before the 403 is sent.
+    expectLimit(await parked(who, tenantA, ninth));
+    expect(await sessionEnded(who)).toBe(true);
+
+    // Devices 1-8 lapse. Before the fix the cookie alone passed as owner here.
+    for (const id of devices) await setFlag(id, false);
+    expectUnauthorized(await parked(who, tenantA));
+    expectUnauthorized(await parked(who, tenantB));
+    expectUnauthorized(await access(who));
+    // The 9th device is not an owner pass either: still no session.
+    expectUnauthorized(await parked(who, tenantA, ninth));
+  });
+
+  it("an impersonated (support) session at the 8-mark limit gets 403 SHARED_DEVICE_MARK_LIMIT, the row is deleted and impersonation_ended (cause revoked) is audited", async () => {
+    // Assumption: a support grant for tenant A plus the tenant user's POS role
+    // in tenant A is enough to impersonate (same flow as
+    // impersonation-grant.test.ts); the admin client then carries the
+    // impersonated session cookie.
+    const target = await member("Pemilik Dukungan Penuh");
+    const devices: string[] = [];
+    for (let i = 0; i < 8; i += 1) devices.push(await newDevice(tenantA, true));
+
+    const adminClient = agent(app);
+    const adminEmail = await signUp(adminClient, "Admin Dukungan Penuh");
+    await setRole(adminEmail, "admin");
+    const adminId = (await adminClient.get("/api/auth/get-session")).body.user
+      .id as string;
+    await owner.query("INSERT INTO platform_admins (user_id) VALUES ($1)", [
+      adminId,
+    ]);
+    supportAdminIds.push(adminId);
+    const grant = await requestSupportAccess({
+      tenantId: tenantA.tenantId,
+      actorUserId: adminId,
+      request: requestSupportAccessInputSchema.parse({
+        reason: "Menelusuri keluhan pelanggan atas perangkat bersama.",
+        mfaCode: "123456",
+      }),
+      mfaVerifiedAt: new Date().toISOString(),
+      now: new Date(),
+    });
+    const started = await adminClient
+      .post("/api/auth/admin/impersonate-user")
+      .set(originHeader)
+      .send({ userId: target.userId });
+    expect(started.status, JSON.stringify(started.body)).toBe(200);
+    const supportSessionId = (await adminClient.get("/api/auth/get-session"))
+      .body.session.id as string;
+    expect(supportSessionId).not.toBe(target.sessionId);
+    const support: Member = {
+      client: adminClient,
+      userId: target.userId,
+      sessionId: supportSessionId,
+    };
+    for (const id of devices)
+      await markSessionSharedDevice(supportSessionId, id);
+    expect([...(await marks(support))].sort()).toEqual([...devices].sort());
+
+    const ninth = await newDevice(tenantA, true);
+    expectLimit(await parked(support, tenantA, ninth));
+
+    // An impersonated session is deleted, not kept as a revoked row.
+    const rows = await owner.query(`SELECT 1 FROM "session" WHERE id = $1`, [
+      supportSessionId,
+    ]);
+    expect(rows.rowCount).toBe(0);
+    // The tenant user's own session is untouched.
+    expect(await sessionEnded(target)).toBe(false);
+
+    const { rows: audit } = await owner.query<{
+      event: {
+        actorId: string | null;
+        objectId: string | null;
+        maskedChanges: { after: Record<string, unknown> | null };
+      };
+    }>(
+      `SELECT event FROM audit_logs
+        WHERE tenant_id = $1 AND event->>'action' = 'support_access.impersonation_ended'
+          AND event->>'actorId' = $2`,
+      [tenantA.tenantId, adminId],
+    );
+    expect(audit).toHaveLength(1);
+    expect(audit[0]!.event.objectId).toBe(grant.id);
+    expect(audit[0]!.event.maskedChanges.after).toMatchObject({
+      impersonatedUserId: target.userId,
+      impersonationId: supportSessionId,
+      cause: "revoked",
+    });
+  });
+
+  it("POST /api/staff-pins/pos-session on a full live session with a 9th device token: 403 SHARED_DEVICE_MARK_LIMIT, no acting-staff token", async () => {
+    const PIN = "582914";
+    const { who, devices } = await fullSession("Sesi Penuh PIN");
+    const cashier = await member("Kasir Sesi Penuh PIN");
+    await setStaffPin(
+      establishTenantContext({
+        tenantId: tenantIdSchema.parse(tenantA.tenantId),
+        brandId: null,
+        source: "session",
+      }),
+      cashier.userId,
+      { outletId: tenantA.outletId, userId: cashier.userId },
+      { pin: PIN },
+    );
+    const ninth = await newDevice(tenantA, true);
+
+    const response = await who.client
+      .post("/api/staff-pins/pos-session")
+      .set({ Host: tenantA.hostname })
+      .set(originHeader)
+      .set(DEVICE_TOKEN_HEADER, tokenOf(ninth))
+      .send({ userId: cashier.userId, pin: PIN });
+    expectLimit(response);
+    expect(JSON.stringify(response.body)).not.toContain('"token"');
+    expect((response.body as { data?: unknown }).data).toBeUndefined();
+
+    // The login session is revoked before the 403 (row revoked) and the
+    // cookie is 401 UNAUTHORIZED afterwards, also once devices 1-8 lapse.
+    expect(await sessionEnded(who)).toBe(true);
+    for (const id of devices) await setFlag(id, false);
+    expectUnauthorized(await parked(who, tenantA));
+    expectUnauthorized(await access(who));
   });
 
   it("8 marks, the oldest unflagged: it leaves, the 9th enters, the other 7 stay", async () => {
@@ -498,6 +700,86 @@ describe("shared device marks: cap of 8 never evicts a live mark", () => {
     expectRequired(await parked(who, tenantA));
     expectRequired(await parked(who, tenantB));
     await setFlag(d, false);
+    expectOk(await parked(who, tenantA));
+  });
+});
+
+describe("shared device marks: sign-in with a shared device token stamps the new session (legend-sq1ux)", () => {
+  // Assumption: Better Auth's sign-in endpoint is POST /api/auth/sign-in/email
+  // and the X-Device-Token header on it is the device token of the tablet.
+  // signUp() uses password "Test-password-123!".
+  const PASSWORD = "Test-password-123!";
+
+  async function signInFresh(label: string, tokenHeader?: string) {
+    const first = agent(app);
+    const email = await signUp(first, label);
+    const userId = (await first.get("/api/auth/get-session")).body.user
+      .id as string;
+    await assign(tenantA, userId);
+    await assign(tenantB, userId);
+    const before = await owner.query<{ id: string }>(
+      `SELECT id FROM "session" WHERE user_id = $1`,
+      [userId],
+    );
+    const client = agent(app);
+    let request = client.post("/api/auth/sign-in/email").set(originHeader);
+    if (tokenHeader) request = request.set(DEVICE_TOKEN_HEADER, tokenHeader);
+    const response = await request.send({ email, password: PASSWORD });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const known = new Set(before.rows.map((r) => r.id));
+    const after = await owner.query<{ id: string }>(
+      `SELECT id FROM "session" WHERE user_id = $1`,
+      [userId],
+    );
+    const fresh = after.rows.filter((r) => !known.has(r.id));
+    expect(fresh).toHaveLength(1);
+    return { client, userId, sessionId: fresh[0]!.id } as Member;
+  }
+
+  it("sign-in with the token of an active shared device: cookie-only POS request is 401 ACTING_STAFF_REQUIRED in both tenants", async () => {
+    const flagged = await newDevice(tenantA, true);
+    const who = await signInFresh("Masuk Perangkat Bersama", tokenOf(flagged));
+    expect(await marks(who)).toEqual([flagged]);
+    expectRequired(await parked(who, tenantA));
+    expectRequired(await parked(who, tenantB));
+  });
+
+  it("sign-in with an unflagged (private) device token stamps nothing and the cookie works", async () => {
+    const privateDevice = await newDevice(tenantA, false);
+    const who = await signInFresh(
+      "Masuk Perangkat Pribadi",
+      tokenOf(privateDevice),
+    );
+    expect(await marks(who)).toEqual([]);
+    expectOk(await parked(who, tenantA));
+    expectOk(await parked(who, tenantB));
+  });
+
+  it("sign-in with a garbage token succeeds, stamps nothing and the cookie works", async () => {
+    const flagged = await newDevice(tenantA, true);
+    const good = tokenOf(flagged);
+    for (const [name, value] of [
+      ["no dots", "abc"],
+      ["tampered signature", `${good.slice(0, -6)}AAAAAA`],
+      ["very long", "a".repeat(4000)],
+    ] as const) {
+      const who = await signInFresh(`Masuk Token Rusak ${name}`, value);
+      expect(await marks(who), name).toEqual([]);
+      expectOk(await parked(who, tenantA));
+    }
+  });
+
+  it("sign-in without any token header stamps nothing", async () => {
+    const who = await signInFresh("Masuk Tanpa Token");
+    expect(await marks(who)).toEqual([]);
+    expectOk(await parked(who, tenantA));
+  });
+
+  it("sign-in with a revoked shared device token stamps nothing", async () => {
+    const flagged = await newDevice(tenantA, true);
+    await revoke(flagged);
+    const who = await signInFresh("Masuk Perangkat Dicabut", tokenOf(flagged));
+    expect(await marks(who)).toEqual([]);
     expectOk(await parked(who, tenantA));
   });
 });
