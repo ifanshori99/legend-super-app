@@ -9,6 +9,10 @@ import {
   type AuditRetentionRunResult,
 } from "../worker/audit-retention.job.ts";
 import { resolveMaintenanceDatabaseUrl } from "../worker/production-config.ts";
+import {
+  CLOCK_REGRESSION_TOLERANCE_MS,
+  type TrustedClock,
+} from "./trusted-clock.ts";
 
 const DEFAULT_INTERVAL_MS = 24 * 60 * 60_000;
 
@@ -34,6 +38,18 @@ export interface StartEdgeAuditRetentionOptions {
   intervalMs?: number;
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (handle: unknown) => void;
+  /**
+   * legend-4sesc: the edge's trusted clock. The purge cutoff stays in SQL
+   * (0187, CURRENT_TIMESTAMP, the box wall clock), so the sweep runs only
+   * while `purgeSafeNow()` exists (the cloud was heard since boot) and the box
+   * wall clock is no more than the clock regression tolerance ahead of it.
+   * A wall clock set forward by years is therefore never trusted: the sweep
+   * waits, and the check is repeated before every query. The skipped sweep is
+   * retried at the next interval, once the cloud has been heard again.
+   */
+  clock?: Pick<TrustedClock, "purgeSafeNow">;
+  /** Box wall clock, as Postgres sees it. Test seam. */
+  wall?: () => Date;
 }
 
 export function resolveEdgeAuditRetentionUrl(
@@ -53,6 +69,13 @@ function defaultSetTimer(fn: () => void, ms: number): unknown {
 
 function defaultClearTimer(handle: unknown): void {
   clearTimeout(handle as ReturnType<typeof setTimeout>);
+}
+
+class ClockNotTrustedError extends Error {
+  constructor() {
+    super("Edge clock is not trusted");
+    this.name = "ClockNotTrustedError";
+  }
 }
 
 /** Error class only: database errors may contain parameters or credentials. */
@@ -125,10 +148,35 @@ export async function startEdgeAuditRetention(
     }, options.intervalMs ?? DEFAULT_INTERVAL_MS);
   }
 
+  // SQL cutoffs use the box wall clock: refuse any query while it is ahead of
+  // the safe time (never heard the cloud, or the wall was set forward).
+  const wallIsSafe = (): boolean => {
+    if (!options.clock) return true;
+    const safe = options.clock.purgeSafeNow();
+    if (safe === null) return false;
+    const wall = (options.wall ?? (() => new Date()))();
+    return wall.getTime() - safe.getTime() <= CLOCK_REGRESSION_TOLERANCE_MS;
+  };
+  const guardedPool: RetentionPool = {
+    query: async (text, values) => {
+      if (!wallIsSafe()) throw new ClockNotTrustedError();
+      return pool.query(text, values);
+    },
+    connect: () => pool.connect(),
+    end: () => pool.end(),
+  };
+
   async function execute(): Promise<AuditRetentionRunResult | null> {
     try {
+      if (!wallIsSafe()) {
+        // A purge on an untrusted clock could delete rows early; wait.
+        logger.warn(
+          "Edge audit retention purge skipped: edge clock is not trusted",
+        );
+        return null;
+      }
       const result = await runAuditRetentionPurge({
-        pool,
+        pool: guardedPool,
         // The cloud helper's message can include tenant ids and raw errors;
         // discard it and expose only the safe aggregate counts below.
         log: { error: () => {} },

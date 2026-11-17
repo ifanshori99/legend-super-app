@@ -50,6 +50,8 @@ import {
   type PinAttemptOutcome,
 } from "./device-pin.service";
 import { outletContext } from "./device-pin-support";
+import { getEdgeRuntimeState } from "../edge/runtime";
+import { enqueueEdgeEvent } from "./edge-queue.service";
 import { notifyOutletSupervisors } from "./edge-sync-conflict-alert";
 import { assertAttendanceClockAllowed } from "./hris-attendance-eligibility";
 import type { Tx } from "./permission-resolver";
@@ -361,6 +363,46 @@ async function alertDeviceThrottled(
         { tx, context },
       );
       const id = createUlid(now.getTime());
+      // legend-62jtd: on an edge node the supervisors live in the cloud. Queue
+      // the alert for the up-sync (device id only, no PIN or secret) instead
+      // of writing a notification nobody reads in the edge database.
+      const runtime = getEdgeRuntimeState();
+      const edgeIdentity = runtime.edgeMode ? runtime.identity : null;
+      if (edgeIdentity) {
+        // The audit above is already written: a failed enqueue undoes only
+        // its own savepoint, so the audit row is never lost with it.
+        try {
+          await tx.transaction(async (savepoint) => {
+            await enqueueEdgeEvent(savepoint, context, {
+              edgeNodeId: edgeIdentity.scope.edgeNodeId,
+              direction: "edge_to_cloud",
+              kind: "transaction_event",
+              event: {
+                id,
+                tenantId: context.tenant.tenantId,
+                outletId: outletIdSchema.parse(outletId),
+                name: "staff_pin.device_throttled",
+                version: 1,
+                aggregateType: "staff_pin",
+                aggregateId: id,
+                sequence: 1,
+                occurredAt: now.toISOString(),
+                actor: { type: "system" },
+                deviceId: null,
+                idempotencyKey: `staff_pin.device_throttled:${id}`,
+                payloadSchemaRef: "staff_pin.device_throttled.v1",
+                payload: { deviceId },
+              },
+            });
+          });
+        } catch (error) {
+          logger.error(
+            { err: toLoggableError(error), deviceId },
+            "staff pin device throttle event not queued",
+          );
+        }
+        return;
+      }
       await notifyOutletSupervisors(
         tx,
         context,

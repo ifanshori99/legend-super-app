@@ -7273,3 +7273,11 @@ Tidak diambil: a846fbcc (983), 980, batch85 (4badcac8, 978, 981, 982) dan cabang
 - Prettier berkas implementasi/test/panduan, ESLint kedua berkas JavaScript, dan `git diff --check` hijau. Review konteks segar tanpa temuan. Gate penuh diserahkan ke merge train; tidak menjalankan seluruh suite mock, build, atau typecheck untuk perubahan wrapper JavaScript ini.
 - Subagent native Codex: total 4, puncak 3 bersamaan; token heavy tunggal bergilir dari root (worktree setup) ke test-writer/runner. Helper session-usage tidak menemukan transkrip native; parallel-report hanya membaca sesi Claude, jadi biaya/token/rata-rata native tidak tersedia. CTO yang memperbarui kartu Beads.
 - Format arsip `docs/PROGRESS.md` masih merah; salinan basis `0c31ff40e` di `/tmp/legend-960-PROGRESS-base.md` juga merah. Tidak memformat ulang arsip di luar lingkup.
+### 978 Edge ketahanan (17 Nov 2026, cabang ghostex/978-edge-ketahanan-katalog-purge-pin)
+
+- l1wux: antrean global `catalogPullQueue` + `pendingStreams` di promo-gate sudah menutup balapan (legend-09sxa); tidak ada perubahan kode, ditambah test regresi `edge-catalog-pull-serial.test.ts` (3 tes, lulus; fail-first tidak mungkin karena perilaku sudah benar).
+- 4sesc: `TrustedClock.purgeSafeNow()` = min(jam dinding, waktu server terakhir + monotonik); purge audit/PIN/selfie dilewati bila null. Audit tanpa migrasi (SQL 0187 tetap CURRENT_TIMESTAMP, dijaga selisih <= 5 menit dari waktu aman).
+- 62jtd: edge mengantre `staff_pin.device_throttled` v1 (payload `{deviceId}`), applier cloud `edge/staff-pin-alert-applier.ts` memberi tahu supervisor outlet node saja; audit tidak hilang bila enqueue gagal (savepoint).
+- ngyd7: `replayRefusedAccessEvents` idempoten; penanda `refusal=audit_unavailable` di envelope; baris warisan butuh `acknowledgeUnmarked`; runbook bagian 5 diperbarui.
+- Migrasi: tidak ada. Gate: eslint + prettier file berubah hijau, typecheck API exit 0, 21 berkas test terarah 373 tes hijau, db:generate kosong. Review architect high: 2 temuan medium 4sesc dibetulkan (purgeSafeNow), 2 low ditangani (penanda refusal; catatan clock).
+- Subagent: total 21 (4 Explore, 8 test-writer, 8 implementer, 1 architect), puncak 7 bersamaan; token heavy: thread ini.

@@ -598,3 +598,83 @@ describe("533c trusted clock detects a wall clock set back while running", () =>
     expect(clock.now().getTime()).toBe(T0.getTime() + 30 * HOUR);
   });
 });
+
+// legend-4sesc: purgeSafeNow() = min(wall now, last cloud server time aged by
+// the monotonic clock); null until the cloud was heard since boot. The server
+// time is recorded on EVERY proveWithServerTime call, even a refused one.
+describe("legend-4sesc purgeSafeNow", () => {
+  it("is null until a server time was seen", () => {
+    const { clock, tick } = rig();
+    expect(clock.purgeSafeNow()).toBeNull();
+    tick(HOUR);
+    expect(clock.purgeSafeNow()).toBeNull();
+  });
+
+  it("ignores a non-finite server time", () => {
+    const { clock } = rig();
+    clock.proveWithServerTime(new Date(Number.NaN));
+    expect(clock.purgeSafeNow()).toBeNull();
+  });
+
+  it("follows real time after a server time, aged by the monotonic clock", () => {
+    const { clock, tick } = rig();
+    clock.proveWithServerTime(T0);
+    tick(HOUR);
+    expect(clock.purgeSafeNow()).toEqual(new Date(T0.getTime() + HOUR));
+  });
+
+  it("is not moved by a wall clock set forward by 2+ years", () => {
+    const { clock, tick, setWall } = rig();
+    clock.proveWithServerTime(T0);
+    tick(HOUR);
+    setWall(new Date(T0.getTime() + 2 * 365 * 24 * HOUR));
+    // The trusted clock accepts the step; the purge time does not.
+    expect(clock.now().getTime()).toBeGreaterThan(
+      T0.getTime() + 365 * 24 * HOUR,
+    );
+    expect(clock.purgeSafeNow()).toEqual(new Date(T0.getTime() + HOUR));
+  });
+
+  it("is lowered by a wall clock set back", () => {
+    const { clock, tick, setWall } = rig();
+    clock.proveWithServerTime(T0);
+    tick(HOUR);
+    setWall(new Date(T0.getTime() - 24 * HOUR));
+    expect(clock.purgeSafeNow()).toEqual(new Date(T0.getTime() - 24 * HOUR));
+  });
+
+  it("records the server time even when the proof is refused or already given", () => {
+    // Already proven (no persisted stamp): the proof returns early.
+    const proven = rig();
+    proven.clock.proveWithServerTime(T0);
+    proven.tick(HOUR);
+    proven.clock.proveWithServerTime(new Date(T0.getTime() + HOUR));
+    proven.tick(HOUR);
+    expect(proven.clock.purgeSafeNow()).toEqual(
+      new Date(T0.getTime() + 2 * HOUR),
+    );
+
+    // Refused: server time behind the boot high water.
+    const persisted = new Date(T0.getTime() + HOUR);
+    const refused = rig(persisted, persisted);
+    const behind = new Date(persisted.getTime() - HOUR);
+    refused.clock.proveWithServerTime(behind);
+    expect(refused.clock.elapsedTimeUnproven()).toBe(true);
+    expect(refused.clock.purgeSafeNow()).toEqual(behind);
+
+    // A wall step seen after boot: the proof is blocked for good, the time is not.
+    const stepped = rig();
+    stepped.tick(1000);
+    stepped.setWall(new Date(T0.getTime() - HOUR));
+    stepped.clock.proveWithServerTime(T0);
+    expect(stepped.clock.purgeSafeNow()).toEqual(new Date(T0.getTime() - HOUR));
+  });
+
+  it("keeps the latest server time, not the highest", () => {
+    const { clock, tick } = rig();
+    clock.proveWithServerTime(new Date(T0.getTime() + HOUR));
+    tick(1000);
+    clock.proveWithServerTime(T0);
+    expect(clock.purgeSafeNow()).toEqual(T0);
+  });
+});

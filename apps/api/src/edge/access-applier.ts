@@ -27,6 +27,11 @@
 // DRAIN_LIMIT parked access rows of its outlet (oldest first), each in its own
 // savepoint, the whole drain in one more savepoint that never fails the live
 // event, and marks every processed row (`applied_at`, `apply_outcome`).
+// A refusal drops the envelope's pin material, except a transient one: an
+// `AuditUnavailableError` (no audit writer in this process, legend-j88cz) marks
+// the row `refused`, keeps the envelope intact and adds
+// `envelope.refusal = "audit_unavailable"`, so replayRefusedAccessEvents can
+// apply it later (legend-ngyd7); it replays only marked rows.
 //
 // Fail closed like the other appliers: a wrong direction, tenant, outlet or
 // node, a payload that does not parse, an id that does not match its
@@ -62,7 +67,10 @@ import {
 } from "../db/schema/edge-deferred-event.ts";
 import { roleAssignments } from "../db/schema/platform-access.ts";
 import { user } from "../db/schema/user.ts";
-import { recordAudit } from "../services/audit-writer.ts";
+import {
+  AuditUnavailableError,
+  recordAudit,
+} from "../services/audit-writer.ts";
 import { isStaffPinPepperVersionUsable } from "../services/device-pin-pepper.ts";
 import type { EdgeTx } from "../services/edge-queue.service.ts";
 import { revokeActingStaffForStaff } from "../services/pos-acting-staff-revoke.ts";
@@ -76,7 +84,10 @@ import type {
   EdgeLastSequenceHook,
 } from "./applier-registry.ts";
 import { assertEdgeEventScope } from "./deferred-event-applier.ts";
-import { redactEdgeEnvelopeSecrets } from "./envelope-secrets.ts";
+import {
+  hasEdgeEnvelopeSecrets,
+  redactEdgeEnvelopeSecrets,
+} from "./envelope-secrets.ts";
 import type { EdgeApplyMeta } from "./ports.ts";
 import { logger } from "../lib/logger.ts";
 
@@ -577,6 +588,79 @@ async function applyParked(
 }
 
 /**
+ * Envelope key (jsonb, no migration) a drain adds when it refuses a row only
+ * for AuditUnavailableError (legend-ngyd7). replayRefusedAccessEvents trusts
+ * only rows carrying it; the strict envelope schema rejects the key, so it is
+ * stripped before a row is parsed or applied.
+ */
+const REFUSAL_KEY = "refusal";
+const AUDIT_UNAVAILABLE_REFUSAL = "audit_unavailable";
+
+function isAuditUnavailableMarked(envelope: unknown): boolean {
+  return (
+    envelope !== null &&
+    typeof envelope === "object" &&
+    (envelope as Record<string, unknown>)[REFUSAL_KEY] ===
+      AUDIT_UNAVAILABLE_REFUSAL
+  );
+}
+
+/** The envelope without the refusal marker; the same object when unmarked. */
+function withoutRefusalMarker(envelope: EventEnvelope): EventEnvelope {
+  if (!(REFUSAL_KEY in envelope)) return envelope;
+  const rest: Record<string, unknown> = { ...envelope };
+  delete rest[REFUSAL_KEY];
+  return rest as EventEnvelope;
+}
+
+type ParkedRow = {
+  eventId: string;
+  edgeNodeId: string;
+  envelope: EventEnvelope;
+};
+
+type ParkedRowResult = {
+  outcome: EdgeDeferredApplyOutcome;
+  /** Refused only because no audit writer was installed: retry later. */
+  transient: boolean;
+  errorClass: string | null;
+};
+
+/**
+ * Applies one parked row in its own savepoint. A failure undoes only that
+ * row (the savepoint) and comes back as `refused`; it is never thrown.
+ */
+async function applyParkedRow(
+  tx: EdgeTx,
+  row: ParkedRow,
+  meta: Omit<EdgeApplyMeta, "edgeNodeId">,
+): Promise<ParkedRowResult> {
+  // The parked row's own node (primary or standby of this outlet). Its
+  // edge database instance was never recorded: never borrow the live
+  // link's (review K #2), so the node-only rule applies (legend-o839h).
+  const rowMeta: EdgeApplyMeta = {
+    ...meta,
+    edgeNodeId: row.edgeNodeId,
+    edgeInstanceId: null,
+  };
+  try {
+    const outcome = await tx.transaction((savepoint) =>
+      applyParked(savepoint, row.envelope, rowMeta),
+    );
+    return { outcome, transient: false, errorClass: null };
+  } catch (error) {
+    // Any failure (review K F3): the row savepoint is already rolled back.
+    return {
+      outcome: "refused",
+      // Only a missing audit writer is transient (legend-ngyd7): the event
+      // itself was fine, so its material must survive for a replay.
+      transient: error instanceof AuditUnavailableError,
+      errorClass: errorClassOf(error),
+    };
+  }
+}
+
+/**
  * Applies up to `limit` still-parked access rows (staff_pin / pos_override,
  * either parked reason) of `outletId`, oldest first, and marks each one with
  * its outcome. Each row has its own savepoint (a refusal undoes only that
@@ -584,6 +668,11 @@ async function applyParked(
  * (its own savepoint) and propagates to the caller so background sweeps can
  * count failed outlets. The live handler isolates drain failures. Returns
  * the rows marked.
+ *
+ * A refused row loses its pin material, except one refused only with
+ * `AuditUnavailableError` (transient, legend-ngyd7): it is marked `refused`
+ * with its envelope intact plus `envelope.refusal = "audit_unavailable"`, for
+ * replayRefusedAccessEvents.
  */
 export async function drainParkedAccessEvents(
   tx: EdgeTx,
@@ -619,33 +708,23 @@ export async function drainParkedAccessEvents(
         .limit(limit)
         .for("update", { skipLocked: true });
       for (const row of rows) {
-        // The parked row's own node (primary or standby of this outlet). Its
-        // edge database instance was never recorded: never borrow the live
-        // link's (review K #2), so the node-only rule applies (legend-o839h).
-        const rowMeta: EdgeApplyMeta = {
-          ...meta,
-          edgeNodeId: row.edgeNodeId,
-          edgeInstanceId: null,
-        };
-        let outcome: EdgeDeferredApplyOutcome;
-        try {
-          outcome = await drain.transaction((savepoint) =>
-            applyParked(savepoint, row.envelope, rowMeta),
-          );
-        } catch (error) {
-          // Any failure (review K F3): the row savepoint is already rolled
-          // back, so the row is marked and the drain goes on.
-          outcome = "refused";
-          refusedClasses.add(errorClassOf(error));
-        }
+        const result = await applyParkedRow(drain, row, meta);
+        if (result.errorClass !== null) refusedClasses.add(result.errorClass);
         await drain
           .update(edgeDeferredEvents)
           .set({
             appliedAt: sql`now()`,
-            applyOutcome: outcome,
+            applyOutcome: result.outcome,
             // Rows parked by an older cloud may still hold pin hash
-            // material (review K F7).
-            envelope: redactEdgeEnvelopeSecrets(row.envelope),
+            // material (review K F7). A transient refusal keeps it and adds
+            // the refusal marker: the row waits for
+            // replayRefusedAccessEvents (legend-ngyd7).
+            envelope: result.transient
+              ? ({
+                  ...row.envelope,
+                  [REFUSAL_KEY]: AUDIT_UNAVAILABLE_REFUSAL,
+                } as EventEnvelope)
+              : redactEdgeEnvelopeSecrets(row.envelope),
           })
           .where(
             and(
@@ -671,6 +750,127 @@ export async function drainParkedAccessEvents(
     );
     throw error;
   }
+}
+
+export type ReplayRefusedAccessResult = {
+  /** Rows selected (`refused`, this outlet, an access aggregate). */
+  considered: number;
+  applied: number;
+  notApplicable: number;
+  /** Refused again (a real refusal, or the audit writer is still missing). */
+  stillRefused: number;
+  /** A `staff_pin.set` without material: nothing to replay, left alone. */
+  skippedNoMaterial: number;
+  /** Refused without the audit-unavailable marker and not acknowledged. */
+  skippedUnmarked: number;
+};
+
+/**
+ * Replays `refused` parked access rows of `outletId` named by `eventIds`
+ * (legend-ngyd7), for rows a past drain refused only because the audit writer
+ * was missing. Idempotent and scoped:
+ * - only `apply_outcome = 'refused'` rows of this tenant and outlet are
+ *   selected (FOR UPDATE); a row already applied, or of another outlet, is
+ *   never touched, so a second call finds nothing to do;
+ * - only rows a drain marked `envelope.refusal = "audit_unavailable"` are
+ *   replayed. An unmarked `refused` row (a real refusal, or a legacy row from
+ *   the m1 window) is skipped untouched, unless the operator names it in
+ *   `eventIds` and passes `acknowledgeUnmarked: true`;
+ * - a `staff_pin.set` whose material was already dropped is skipped
+ *   untouched (the pin cannot be rebuilt from it);
+ * - each row applies through applyParked in its own savepoint. Success marks
+ *   `applied` / `not_applicable` and drops the material. A real refusal
+ *   marks nothing new beyond dropping the material; a repeat
+ *   `AuditUnavailableError` leaves the row exactly as it was.
+ * The appliers are themselves idempotent (same pin material, one audit row
+ * per override), so replaying a row whose effect already landed adds nothing.
+ */
+export async function replayRefusedAccessEvents(
+  tx: EdgeTx,
+  meta: Omit<EdgeApplyMeta, "edgeNodeId">,
+  outletId: OutletId,
+  {
+    eventIds,
+    acknowledgeUnmarked = false,
+  }: { eventIds: readonly string[]; acknowledgeUnmarked?: boolean },
+): Promise<ReplayRefusedAccessResult> {
+  const result: ReplayRefusedAccessResult = {
+    considered: 0,
+    applied: 0,
+    notApplicable: 0,
+    stillRefused: 0,
+    skippedNoMaterial: 0,
+    skippedUnmarked: 0,
+  };
+  if (eventIds.length === 0) return result;
+  const tenantId = meta.context.tenant.tenantId;
+  const refusedClasses = new Set<string>();
+  const rows = await tx
+    .select({
+      eventId: edgeDeferredEvents.eventId,
+      edgeNodeId: edgeDeferredEvents.edgeNodeId,
+      envelope: edgeDeferredEvents.envelope,
+    })
+    .from(edgeDeferredEvents)
+    .where(
+      and(
+        eq(edgeDeferredEvents.tenantId, tenantId),
+        eq(edgeDeferredEvents.outletId, outletId),
+        inArray(edgeDeferredEvents.aggregateType, [...ACCESS_EDGE_AGGREGATES]),
+        eq(edgeDeferredEvents.applyOutcome, "refused"),
+        inArray(edgeDeferredEvents.eventId, [...eventIds]),
+      ),
+    )
+    .orderBy(
+      asc(edgeDeferredEvents.receivedAt),
+      asc(edgeDeferredEvents.eventId),
+    )
+    .for("update");
+  result.considered = rows.length;
+  for (const stored of rows) {
+    if (!acknowledgeUnmarked && !isAuditUnavailableMarked(stored.envelope)) {
+      result.skippedUnmarked += 1;
+      continue;
+    }
+    const row = { ...stored, envelope: withoutRefusalMarker(stored.envelope) };
+    const parsed = eventEnvelopeSchema.safeParse(row.envelope);
+    if (
+      parsed.success &&
+      parsed.data.name === STAFF_PIN_SET_EVENT &&
+      !hasEdgeEnvelopeSecrets(parsed.data)
+    ) {
+      result.skippedNoMaterial += 1;
+      continue;
+    }
+    const applied = await applyParkedRow(tx, row, meta);
+    if (applied.errorClass !== null) refusedClasses.add(applied.errorClass);
+    if (applied.outcome === "refused") {
+      result.stillRefused += 1;
+      // Still transient: the row stays exactly as it was.
+      if (applied.transient) continue;
+    } else if (applied.outcome === "applied") result.applied += 1;
+    else result.notApplicable += 1;
+    await tx
+      .update(edgeDeferredEvents)
+      .set({
+        appliedAt: sql`now()`,
+        applyOutcome: applied.outcome,
+        envelope: redactEdgeEnvelopeSecrets(row.envelope),
+      })
+      .where(
+        and(
+          eq(edgeDeferredEvents.tenantId, tenantId),
+          eq(edgeDeferredEvents.eventId, row.eventId),
+        ),
+      );
+  }
+  if (refusedClasses.size > 0)
+    // Counts and error classes only: no payload or ids (ports.ts rule).
+    logger.warn(
+      { considered: result.considered, errorClasses: [...refusedClasses] },
+      "Refused edge access events still refused on replay",
+    );
+  return result;
 }
 
 function errorClassOf(error: unknown): string {
