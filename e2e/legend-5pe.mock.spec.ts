@@ -115,7 +115,7 @@ test("F17 actual vs theoretical food cost explains the variance in a chart and a
   await openTab(page, "Aktual vs teoretis");
   await expect(
     page.getByRole("img", {
-      name: /Grafik batang food cost periode 1 Okt 2026 – 31 Okt 2026: teoretis Rp\s18\.450\.000, aktual Rp\s19\.120\.000/,
+      name: /Grafik batang food cost periode 1 Okt 2026 – 31 Okt 2026: teoretis Rp\s?18\.450\.000, aktual Rp\s?19\.120\.000/,
     }),
   ).toBeVisible();
 

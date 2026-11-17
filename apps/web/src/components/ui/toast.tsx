@@ -26,8 +26,19 @@ const ICON_COLOR = {
   danger: "text-danger",
 };
 
+// Toasts sit at the top below `sm` and bottom-right from `sm` up, so a swipe
+// dismisses toward the nearest screen edge. Radix takes one direction only.
+const WIDE_QUERY = "(min-width: 40rem)";
+function subscribeWide(onChange: () => void) {
+  const query = window.matchMedia(WIDE_QUERY);
+  query.addEventListener("change", onChange);
+  return () => query.removeEventListener("change", onChange);
+}
+const isWide = () => window.matchMedia(WIDE_QUERY).matches;
+
 export function Toaster({ children }: { children: React.ReactNode }) {
   const t = useT();
+  const wide = React.useSyncExternalStore(subscribeWide, isWide, () => false);
   const [items, setItems] = React.useState<ToastItem[]>([]);
   const nextId = React.useRef(0);
   const push = React.useCallback((toast: ToastInput) => {
@@ -39,7 +50,7 @@ export function Toaster({ children }: { children: React.ReactNode }) {
 
   return (
     <ToastContext.Provider value={push}>
-      <ToastPrimitive.Provider swipeDirection="up" label={t("toast.region")}>
+      <ToastPrimitive.Provider swipeDirection={wide ? "down" : "up"} label={t("toast.region")}>
         {children}
         {items.map(({ id, title, description, tone = "info" }) => {
           const Icon = ICONS[tone];

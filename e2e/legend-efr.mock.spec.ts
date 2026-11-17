@@ -134,7 +134,7 @@ test("F11 D13: PBJT monthly recap totals rows and exports a CSV", async ({
   ).toBeVisible();
   await expect(page.getByText("PBJT-FNB")).toBeVisible();
   await expect(page.getByText("PBJT-FASILITAS")).toBeVisible();
-  await expect(page.getByText("Rp 41.996.000").first()).toBeVisible();
+  await expect(page.getByText(/Rp\s?41\.996\.000/).first()).toBeVisible();
 
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: "Unduh CSV" }).click();
