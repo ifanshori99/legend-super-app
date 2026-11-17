@@ -7016,3 +7016,14 @@ Gate per tahap:
 - Catatan: kerja test thread 935 tidak mencakup `tests/platform-offline-banner.test.mjs` (kelas tes root yang mengimpor komponen web). Saran: gate thread web ws02-edge ikut menjalankan `tests/platform-*.test.mjs`.
 
 Pemakaian: session-usage merge train 1400k biaya* (Sonnet 5.5); subagent 2 (Explore audit, reviewer konflik), puncak 1-2; token heavy dipegang train sendiri (satu lajur sekaligus).
+
+## 1006 perbaikan SO 997 akses (17 Nov 2026) - ghostex/f12296d2, setelah ghostex/984-f586w-shared-device-wip (839500696)
+
+Brief: `docs/briefs/1006-so-akses-fix.md`. Tingkat K (akses). Tanpa migrasi (`db:generate`: "No schema changes").
+
+- legend-sq1ux (P1): sesi dari sign-in Better Auth di perangkat bersama distempel saat dibuat (`session.create.before` membaca `X-Device-Token`, `sharedDeviceIdsFromToken`). Web: `authClient` mengirim token perangkat lewat `fetchOptions.onRequest` (tanpa itu hook tak pernah melihat token).
+- legend-42gqp (P1): `GET /api/outlets/:outletId/floor` memasang `resolveActingStaff` + `requireActingStaffOnSharedDevice` di rute (bukan `.use` router: guard tingkat router ikut jalan untuk request jatuh-lewat `/api/outlets/*` tanpa `:outletId`). Web: `POS_PATH` ikut `outlets/:id/floor`, kalau tidak papan di perangkat bersama selalu 401.
+- legend-dn7uo (P2): perangkat ke-9 saat 8 penanda aktif ditolak 403 `SHARED_DEVICE_MARK_LIMIT` dan sesinya ditutup lewat `revokeOwnSession` (audit; sesi support dihapus dengan `impersonation_ended` cause revoked). Tanpa penutupan, cookie perangkat ke-9 lolos tanpa header setelah perangkat 1-8 dimatikan.
+- Review architect (xhigh) ronde 1: 3 P1 + 1 P2 (guard router-level, POS_PATH tanpa floor, authClient tanpa header, cookie ke-9) semua dibetulkan. Ronde 2: tertutup, 1 temuan rendah (audit sesi support) dibetulkan.
+- Rute tanpa guard perangkat bersama yang belum ditutup (keputusan CTO): pickup, expo, order-issues, serving-time, open-bill (approvers dan convert POST), delivery-orders (guard ringan), emergency-cloud (belum jelas).
+- Subagent: total 8, puncak 3 bersamaan, token heavy dipegang bergantian (test-writer, test-runner).

@@ -15,6 +15,7 @@ import {
   roles,
 } from "@starter/shared/permissions";
 import { normalizeEmail } from "@starter/shared/identity";
+import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { siteConfig } from "@starter/shared/site";
 import { env } from "../config/env";
 import { db } from "../db";
@@ -41,6 +42,7 @@ import {
   deleteUserPushSubscriptions,
 } from "../services/identity-session.service";
 import { resolveHostname } from "../services/org-resolve.service";
+import { sharedDeviceIdsFromToken } from "../services/shared-device.service";
 import { logger } from "./logger";
 import { sealSecret } from "./secrets";
 
@@ -559,6 +561,12 @@ export const auth = betterAuth({
           const authCrossDevice =
             ctx?.path === undefined &&
             (session as { authCrossDevice?: unknown }).authCrossDevice === true;
+          // legend-sq1ux: a sign-in carrying the token of an active shared
+          // device marks the new session at once (requireAuth never sees the
+          // sign-in request). [] for any other token or none.
+          const sharedDeviceIds = await sharedDeviceIdsFromToken(
+            ctx?.headers?.get(DEVICE_TOKEN_HEADER),
+          );
           const adminUserId = session.impersonatedBy;
           if (typeof adminUserId !== "string" || !adminUserId) {
             const tenantId = await staffLoginTenantId(
@@ -571,6 +579,7 @@ export const auth = betterAuth({
                 ...session,
                 authMethod,
                 authCrossDevice,
+                sharedDeviceIds,
                 ...(tenantId ? { tenantId } : {}),
               },
             };
@@ -591,6 +600,7 @@ export const auth = betterAuth({
               ...session,
               authMethod,
               authCrossDevice,
+              sharedDeviceIds,
               expiresAt: impersonationSessionEnd({
                 requested: session.expiresAt,
                 matches,
@@ -780,7 +790,8 @@ export const auth = betterAuth({
       },
       // legend-f586w, legend-jqurl: devices (devices.shared_mode) this session
       // was used on while shared-device mode applied (newest 8); empty
-      // otherwise. Written only by the early stamp in requireAuth,
+      // otherwise. Written by the session create hook (sign-in with a shared
+      // device token, legend-sq1ux), the early stamp in requireAuth,
       // requireActingStaffOnSharedDevice and POST /staff-pins/pos-session.
       sharedDeviceIds: {
         type: "string[]",

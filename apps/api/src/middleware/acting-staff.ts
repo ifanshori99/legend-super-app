@@ -27,6 +27,7 @@ import {
   anySharedDeviceActive,
   isActiveSharedDevice,
   markSessionSharedDevice,
+  sharedDeviceMarkLimit,
 } from "../services/shared-device.service";
 import { getAuth } from "./auth";
 import { getTenantContext } from "./tenant";
@@ -109,8 +110,10 @@ export const resolveActingStaff: RequestHandler = async (req, _res, next) => {
  *    whether the request has no device header or carries the token of another,
  *    unflagged device; once every marked device is unflagged, revoked or gone
  *    the marks lapse.
- * A device token that is present but no longer accepted is a 401 from
- * currentDeviceIdOf, never the old behaviour. Mount right after
+ * When the session already holds 8 active marks, a 9th flagged device cannot be
+ * recorded: its request is refused 403 SHARED_DEVICE_MARK_LIMIT (never passed
+ * as owner). A device token that is present but no longer accepted is a 401
+ * from currentDeviceIdOf, never the old behaviour. Mount right after
  * resolveActingStaff: an invalid header has already failed there with its own
  * error. Not for device-pin, customer-display, edge or rejectActingStaff routes.
  */
@@ -120,7 +123,7 @@ export const requireActingStaffOnSharedDevice: RequestHandler = async (
   next,
 ) => {
   const tenant = getTenantContext(req);
-  const { session } = getAuth(req);
+  const { session, user } = getAuth(req);
   if (req.actingStaff) {
     // A tokened request passes, but a device flagged after the cashier session
     // started must still mark the session, or the same cookie replayed without
@@ -128,15 +131,17 @@ export const requireActingStaffOnSharedDevice: RequestHandler = async (
     const tokenDeviceId = await currentDeviceIdOf(req);
     if (
       tokenDeviceId !== null &&
-      (await isActiveSharedDevice(tenant, tokenDeviceId))
+      (await isActiveSharedDevice(tenant, tokenDeviceId)) &&
+      !(await markSessionSharedDevice(session.id, tokenDeviceId))
     )
-      await markSessionSharedDevice(session.id, tokenDeviceId);
+      throw await sharedDeviceMarkLimit(session.id, user.id);
     return next();
   }
   const deviceId = await currentDeviceIdOf(req);
   const marked = session.sharedDeviceIds ?? [];
   if (deviceId !== null && (await isActiveSharedDevice(tenant, deviceId))) {
-    await markSessionSharedDevice(session.id, deviceId);
+    if (!(await markSessionSharedDevice(session.id, deviceId)))
+      throw await sharedDeviceMarkLimit(session.id, user.id);
     throw sharedDeviceRequired();
   }
   // No device header, or another (unflagged) device's valid token: neither may
