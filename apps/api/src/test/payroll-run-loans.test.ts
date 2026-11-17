@@ -50,7 +50,8 @@
 //                         disbursed loans are listed, and a frozen snapshot saved before the
 //                         field existed parses with the default { count: 0, amountIdr: 0, loanIds: [] }.
 // 17. [monthly-cap-lock-conflict] two regular runs of one pay month that both hold a row for
-//                         one loan: locking the second one is 409 PAYROLL_RUN_RESULT_STALE,
+//                         one loan: locking the second one is 409 (PAYROLL_RUN_RESULT_STALE, or
+//                         PAYROLL_PPH21_MONTH_STALE when the first run is already locked),
 //                         the balance does not move (the monthly cap is also enforced at lock).
 //
 // ASSUMPTIONS (contract silent; contest if wrong)
@@ -1398,7 +1399,7 @@ describe("one installment per loan per pay month", () => {
   }, 300_000);
 
   it.each(["first run already locked", "first run still approved"])(
-    "[monthly-cap-lock-conflict] %s: a second run of the same month that also holds a row for the loan cannot lock, 409 PAYROLL_RUN_RESULT_STALE, balance unchanged",
+    "[monthly-cap-lock-conflict] %s: a second run of the same month that also holds a row for the loan cannot lock, 409, balance unchanged",
     async (scenario) => {
       // ASSUMPTION: the writer never gives run B a row while run A holds one, so B's
       // row is a replica of A's row inserted by SQL (a row the simulation did not make).
@@ -1432,7 +1433,16 @@ describe("one installment per loan per pay month", () => {
         "a second row of the same loan in the same month must be refused",
       ).not.toBeNull();
       expect(refused!.status).toBe(409);
-      expect(refused!.code).toBe("PAYROLL_RUN_RESULT_STALE");
+      // When run A is already locked, the tax month already has a locked run, so
+      // another guard (PAYROLL_PPH21_MONTH_STALE) refuses B first. When A is still
+      // approved, only the stale-row guard applies (PAYROLL_RUN_RESULT_STALE).
+      if (firstLocked) {
+        expect(["PAYROLL_PPH21_MONTH_STALE", "PAYROLL_RUN_RESULT_STALE"]).toContain(
+          refused!.code,
+        );
+      } else {
+        expect(refused!.code).toBe("PAYROLL_RUN_RESULT_STALE");
+      }
       expect(await runStatus(runB), "B stays approved").toBe("approved");
       expect(await outstandingOf(loan), "balance unchanged").toBe(
         balanceBefore,
