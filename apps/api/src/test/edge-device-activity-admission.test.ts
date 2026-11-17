@@ -29,7 +29,6 @@
 //  - A running session in the not_ready window may be admitted or held; only
 //    "last_seen_at is not written" is asserted.
 import { randomUUID } from "node:crypto";
-import { Pool } from "pg";
 import request from "supertest";
 import {
   afterAll,
@@ -316,7 +315,6 @@ async function finishBoot() {
   handles.push(handle);
   await vi.waitFor(() => expect(getDeviceRegistrySyncState()).toBeTruthy());
 }
-
 
 /** Edge whose registry replica is `ageMs` old, answered by `cloud`. */
 async function bootWithReplicaAge(

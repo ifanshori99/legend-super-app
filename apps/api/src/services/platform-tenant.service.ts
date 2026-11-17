@@ -88,7 +88,9 @@ export async function deviceTenantCredential(
   if (!isEdgeStatusRead(req)) {
     const now = new Date();
     const status = await assertDeviceSessionAdmitted(device, now);
-    if (status !== "not_ready")
+    // Edge only: the cloud has no registry replica, so "running session" and
+    // this write do not apply there (cloud heartbeat semantics unchanged).
+    if (status !== "not_ready" && (runtime.edgeMode || isEdgeNode()))
       await recordDeviceActivity(device, payload.brandId, now);
   }
   return {

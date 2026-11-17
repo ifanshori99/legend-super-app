@@ -22,7 +22,6 @@
 //    the edge app reads the same database, so the cookie is replayed to it.
 //  - A refused request does not touch devices.last_seen_at.
 import { randomUUID } from "node:crypto";
-import { Pool } from "pg";
 import request from "supertest";
 import {
   afterAll,
