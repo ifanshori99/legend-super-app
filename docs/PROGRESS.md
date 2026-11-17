@@ -1850,3 +1850,4 @@ Langkah berikut CTO baru:
 - 21:07 CTO: 1003 mockup clearance 906b99063 (ghostex/2a17b0c4, 20 PNG). Page review founder Q28 sedang dibuat subagent. G2swr resolve.
 - 21:08 CTO: SO 997 akses: 3 P1 + 1 P2 -> legend-sq1ux/42gqp/dn7uo, thread G65pc 1006 (base 984 f586w). P1 journal when -> merge train + gerbang legend-ir8n8. G50zo resolve. Mulai G7y5g 1005 tarik klaim return (legend-snwnn, base 990). Q28 mockup clearance ke founder.
 - 21:09 CTO: SO 971 payroll dimulai Codex #4 (7d 0%), brief ditambah 992.
+- 21:10 CTO: SO 996 refund/charge (Codex #5) dan 998 supplier/payout (Codex #4) dimulai. SO rotasi kunci legend-e1mtr menyusul (slot Codex penuh).

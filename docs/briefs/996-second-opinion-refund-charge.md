@@ -9,3 +9,5 @@ Diterima CTO (jangan dilaporkan): void tunai sisa charge tanpa lantai sendiri (a
 Cari: refund melebihi total charge atau sisa refund kumulatif (refundSplit, netAllocatedIdrSql di 7 jalur); refund ganda lewat dua jalur (provider, manual, settle); overrideId manual_refund dipakai ulang; void order dengan charge paid yang tidak membalik charge dalam satu transaksi; race void vs refund vs webhook; collect-at-pos timeout yang tetap dihitung paid; lantai expected laci yang bisa dilewati; jurnal akuntansi refund/void tidak seimbang atau dobel; CHECK status voided menolak baris lama; migrasi tidak idempoten atau mematikan RLS/FORCE.
 Usul test: skenario refund parsial berurutan, void setelah refund sebagian, dua permintaan refund bersamaan, timeout collect-at-pos.
 Hasil: tulis `docs/qa/second-opinion-refund-charge.md` di folder utama (P0-P3, berkas:baris, skenario, usul test). JANGAN commit, JANGAN edit file lain. Lapor hanya saat selesai.
+
+Tambahan CTO 17 Nov: 994 sudah ada: `ghostex/847b580a` af6845a55 (di atas 985 cda5730e0; approve refund EDC tolak saat hari bisnis ditutup, voidReason, collectCharge 3 metode). Review juga diff 985..af6845a55.

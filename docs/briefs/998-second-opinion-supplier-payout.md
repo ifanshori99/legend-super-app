@@ -8,3 +8,5 @@ Diterima CTO (jangan dilaporkan): clearance terikat sidik bukti (berubah = buka 
 Cari: pembayaran supplier melebihi sisa tagihan (pending mengurangi sisa, batas kumulatif, dua permintaan bersamaan); approval yang bisa dilewati atau disetujui pembuatnya sendiri; default batas 0 yang membuka pembayaran ketika kebijakan belum ada; rekon kas kecil vs GL 1102 yang salah per entity; jurnal dobel saat journalize diulang; cash_out di inbox approval yang bocor lintas tenant; klaim lama yang masih bisa dipakai setelah 0583; migrasi tidak idempoten atau mematikan RLS/FORCE.
 Usul test: dua pembayaran pending bersamaan terhadap satu tagihan, approve oleh pembuat, journalize dua kali, klaim lama setelah 0583.
 Hasil: tulis `docs/qa/second-opinion-supplier-payout.md` di folder utama (P0-P3, berkas:baris, skenario, usul test). JANGAN commit, JANGAN edit file lain. Lapor hanya saat selesai.
+
+Tambahan CTO 17 Nov: tip final 990 = `ghostex/92055877` 74e142d8b (migrasi kerja 0580-0584, clearance fingerprint, fee tersegel).
