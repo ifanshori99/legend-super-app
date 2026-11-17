@@ -14,12 +14,14 @@ import { anySharedDeviceActive } from "../services/shared-device.service";
 // requireAuth cannot guard them because Better Auth and identityAuthRouter
 // authenticate on their own. Only these stay open: reading the session,
 // and signing in (also social callbacks). The idle keep-alive
-// (sessions/current/activity) is not listed: identityAuthRouter's requireAuth
-// already refuses a shared-device session there (1012, default restrict).
+// (POST sessions/current/activity, legend-hlmbk) is open too: it only extends
+// the caller's own current session, and without it a tablet signs out when
+// idle. Its route uses requireAuthAllowSharedDevice.
 const SHARED_DEVICE_ALLOWED_PATHS: ReadonlySet<string> = new Set([
   "/api/auth/get-session",
   "/api/auth/sign-out",
 ]);
+const SHARED_DEVICE_KEEP_ALIVE_PATH = "/api/auth/sessions/current/activity";
 const SIGN_IN_PREFIX = "/api/auth/sign-in/";
 
 /**
@@ -42,9 +44,10 @@ function normalizedPathOf(req: Request): string | null {
   return path.toLowerCase();
 }
 
-function isAllowedOnSharedDevice(path: string | null): boolean {
+function isAllowedOnSharedDevice(path: string | null, method: string): boolean {
   if (path === null) return false;
   if (SHARED_DEVICE_ALLOWED_PATHS.has(path)) return true;
+  if (path === SHARED_DEVICE_KEEP_ALIVE_PATH) return method === "POST";
   return path.startsWith(SIGN_IN_PREFIX) && path.length > SIGN_IN_PREFIX.length;
 }
 
@@ -62,7 +65,7 @@ export const guardSharedDeviceAuthRoutes: RequestHandler = async (
   _res,
   next,
 ) => {
-  if (isAllowedOnSharedDevice(normalizedPathOf(req))) return next();
+  if (isAllowedOnSharedDevice(normalizedPathOf(req), req.method)) return next();
   if (!req.headers.cookie && !req.headers.authorization) return next();
   const session = await auth.api.getSession({
     headers: fromNodeHeaders(req.headers),

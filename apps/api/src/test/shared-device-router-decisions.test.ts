@@ -303,6 +303,26 @@ const PLAIN_REQUIRE_AUTH: Record<string, { count: number; reason: string }> = {
   },
 };
 
+/**
+ * "backoffice" files with exactly this many per-route opt-ins to shared devices
+ * (legend-hlmbk, brief 1018 part B): the idle keep-alive POST
+ * /api/auth/sessions/current/activity must work on a shared device. Every other
+ * route of the file keeps the default-deny requireAuth.
+ * Assumption: the opt-in is a single `requireAuthAllowSharedDevice` use inside
+ * identity.routes.ts (not a new router file). If the engineer moves the route to
+ * its own file, that file is a "shell" decision and this entry is removed.
+ */
+const BACKOFFICE_SHARED_OPT_INS: Record<
+  string,
+  { count: number; reason: string }
+> = {
+  identity: {
+    count: 1,
+    reason:
+      "POST /sessions/current/activity: idle keep-alive of a shared-device session (legend-hlmbk).",
+  },
+};
+
 const HOW =
   'Add it to DECISIONS in shared-device-router-decisions.test.ts: "pos" (cashier on a shared device), "shell" (identity/PIN/emergency reader), "backoffice" (owner screens, default requireAuth) or "public" (no login session). See the header of that file.';
 
@@ -420,12 +440,28 @@ describe("1012 shared-device decision per router file", () => {
   it.each(namesOf("backoffice"))(
     "backoffice router %s never opts in to shared devices",
     (name) => {
+      const uses = occurrences(
+        codeNoImports(name),
+        /\brequireAuthAllowSharedDevice\b/g,
+      ).length;
       expect(
-        codeOf(name),
-        `${name} is back office: it must keep the default-deny requireAuth`,
-      ).not.toContain("requireAuthAllowSharedDevice");
+        uses,
+        `${name} is back office: it must keep the default-deny requireAuth (allowed opt-ins, with reason, are in BACKOFFICE_SHARED_OPT_INS)`,
+      ).toBe(BACKOFFICE_SHARED_OPT_INS[name]?.count ?? 0);
     },
   );
+
+  it("identity: only the keep-alive route opts in to shared devices (legend-hlmbk)", () => {
+    const code = codeNoImports("identity");
+    const starts = occurrences(code, /\brequireAuthAllowSharedDevice\b/g);
+    expect(starts).toHaveLength(1);
+    // The opt-in sits on the sessions/current/activity route, not on a router-wide use.
+    const window = code.slice(
+      Math.max(0, (starts[0] ?? 0) - 400),
+      (starts[0] ?? 0) + 400,
+    );
+    expect(window).toMatch(/sessions\/current\/activity/);
+  });
 
   it.each(namesOf("public"))(
     "public router %s has no login-session guard",

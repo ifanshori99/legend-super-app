@@ -16,7 +16,8 @@
 // - a support (impersonated) session also needs an active support access grant
 //   for this tenant (TEN-04), re-checked on every wakeup and recheck;
 // - a session used on a flagged shared device (legend-wa9n7) needs the
-//   `x-device-token` and `x-acting-staff` upgrade headers; the cook is then the
+//   `x-device-token` and `x-acting-staff` upgrade headers (or, for a browser,
+//   the same two tokens as Sec-WebSocket-Protocol entries); the cook is then the
 //   user whose permission is checked (see resolveKdsStaffConnection);
 //
 // Any failure answers null (deny by default).
@@ -40,6 +41,7 @@ import { pool } from "../db/index.ts";
 import { auth } from "../lib/auth.ts";
 import { assertSupportAccess } from "./platform-support.service.ts";
 import { parseKdsRealtimeUrl } from "./kds-realtime.ts";
+import { carryKdsCredentialsFromProtocols } from "./kds-realtime-protocol.ts";
 import { resolveHostname } from "./org-resolve.service.ts";
 import {
   loadTenantAccess,
@@ -99,6 +101,9 @@ export async function resolveKdsStaffConnection(
   try {
     const target = parseKdsRealtimeUrl(request.url);
     if (!target) return null;
+    // Browser carrier (legend-dsbqr): subprotocol tokens become the two
+    // headers below. Idempotent, so every wakeup / recheck can call it again.
+    if (!carryKdsCredentialsFromProtocols(request)) return null;
     const session = await auth.api.getSession({
       headers: fromNodeHeaders(request.headers),
       query: { disableCookieCache: true },
@@ -134,8 +139,9 @@ export async function resolveKdsStaffConnection(
     // token AND a live cashier token (bound to that device, this session and
     // the path outlet), and the cook becomes the user checked below. Headers
     // persist on `request`, so every wakeup and recheck re-resolves the token
-    // (revoked or expired throws -> deny). Browsers cannot set WebSocket
-    // headers, so a browser client is denied on a shared device.
+    // (revoked or expired throws -> deny). A browser cannot set WebSocket
+    // headers: kds-realtime-protocol.ts moves its Sec-WebSocket-Protocol
+    // carrier (legend-dsbqr) into these same headers before this runs.
     const headerDeviceId = signedDeviceIdOfHeaders(
       request.headers,
       tenant.tenantId,

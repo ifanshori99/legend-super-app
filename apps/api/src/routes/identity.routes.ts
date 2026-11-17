@@ -19,7 +19,11 @@ import {
   sessionParamsSchema,
 } from "@starter/shared/identity";
 import { PlatformError } from "@starter/shared/platform";
-import { getAuth, requireAuth } from "../middleware/auth";
+import {
+  getAuth,
+  requireAuth,
+  requireAuthAllowSharedDevice,
+} from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
 import {
@@ -190,7 +194,7 @@ identityAuthRouter.post(
 
 identityAuthRouter.post(
   "/sessions/current/activity",
-  requireAuth,
+  requireAuthAllowSharedDevice,
   requireTrustedOrigin,
   async (req, res) => {
     const auth = getAuth(req);

@@ -5,8 +5,8 @@
 // Rules under test:
 //  - A session marked with an active shared device (session.shared_device_ids),
 //    or carrying the X-Device-Token of an active flagged device, may call ONLY
-//    get-session, sign-out, sign-in/* under /api/auth (sessions/current/activity
-//    is refused too: identityAuthRouter's requireAuth, 1012).
+//    get-session, sign-out, sign-in/* and (legend-hlmbk, brief 1018 part B) the
+//    idle keep-alive POST sessions/current/activity under /api/auth.
 //    Everything else (update-user, change-password, change-email, set-password,
 //    list-sessions, revoke-session(s), revoke-other-sessions, delete-user,
 //    admin/*, two-factor/*, passkey/*, link/unlink-account, callback/*,
@@ -27,7 +27,12 @@
 //    the body matters, so a 403 ACTING_STAFF_NOT_ALLOWED can only come from it.
 //  - A path with an encoded `..` segment never reaches update-user: 400 (existing
 //    request-target check) or 403 are both fine.
-//  - sessions/current/activity (idle keep-alive) is refused on a marked session.
+//  - sessions/current/activity (idle keep-alive) answers 2xx (coordinator: 200;
+//    the existing AUTH-05 test sees 204 for a management session, so 200 or 204
+//    are both accepted) on a marked session or a flagged device token, for a
+//    management-kind session (a customer-kind session gets 403 from the route's
+//    own rule, unrelated to shared devices). It really extends last_seen_at.
+//    The account-change endpoints stay 403 ACTING_STAFF_NOT_ALLOWED.
 import { randomUUID } from "node:crypto";
 import type { Express } from "express";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -169,6 +174,11 @@ const BLOCKED: Array<{
     body: { newPassword: "Another-password-456!" },
   },
   { name: "list-sessions", method: "get", path: "/api/auth/list-sessions" },
+  {
+    name: "sessions (identity session list, not the keep-alive)",
+    method: "get",
+    path: "/api/auth/sessions",
+  },
   {
     name: "revoke-session",
     method: "post",
@@ -434,11 +444,92 @@ describe("1017 marked session on /api/auth/* (Better Auth)", () => {
       expectNotGuarded(response);
     });
 
-    it("sessions/current/activity is refused (identity router requireAuth, 1012 default restrict)", async () => {
+    it("sessions/current/activity (keep-alive) passes on a marked management session and extends it (legend-hlmbk)", async () => {
       const { who } = await markedMember("Sesi Bertanda Activity");
-      expectNotAllowed(
-        await call(who.client, "post", "/api/auth/sessions/current/activity"),
+      await owner.query(
+        `UPDATE "session" SET kind = 'management', created_at = now() - interval '40 minutes',
+           last_seen_at = now() - interval '28 minutes', expires_at = now() + interval '2 minutes'
+         WHERE id = $1`,
+        [who.sessionId],
       );
+      const before = await owner.query<{ seen: Date }>(
+        `SELECT last_seen_at AS seen FROM "session" WHERE id = $1`,
+        [who.sessionId],
+      );
+      const response = await call(
+        who.client,
+        "post",
+        "/api/auth/sessions/current/activity",
+      );
+      expect([200, 204], JSON.stringify(response.body)).toContain(
+        response.status,
+      );
+      expectNotGuarded(response);
+      const after = await owner.query<{ seen: Date }>(
+        `SELECT last_seen_at AS seen FROM "session" WHERE id = $1`,
+        [who.sessionId],
+      );
+      expect(after.rows[0]!.seen.getTime()).toBeGreaterThan(
+        before.rows[0]!.seen.getTime(),
+      );
+    });
+
+    it("sessions/current/activity passes for an unmarked session sending a flagged device token", async () => {
+      const device = await newDevice(true);
+      const who = await member("Sesi Token Activity");
+      await owner.query(
+        `UPDATE "session" SET kind = 'management', created_at = now() - interval '40 minutes',
+           last_seen_at = now() - interval '28 minutes', expires_at = now() + interval '2 minutes'
+         WHERE id = $1`,
+        [who.sessionId],
+      );
+      const response = await call(
+        who.client,
+        "post",
+        "/api/auth/sessions/current/activity",
+        undefined,
+        { [DEVICE_TOKEN_HEADER]: tokenOf(device) },
+      );
+      expect([200, 204], JSON.stringify(response.body)).toContain(
+        response.status,
+      );
+    });
+
+    it("the keep-alive allowance does not open account changes: update-user and list-sessions stay 403 on the same session", async () => {
+      const { who } = await markedMember("Sesi Bertanda Activity Tetap");
+      await owner.query(
+        `UPDATE "session" SET kind = 'management', created_at = now() - interval '40 minutes',
+           last_seen_at = now() - interval '28 minutes', expires_at = now() + interval '2 minutes'
+         WHERE id = $1`,
+        [who.sessionId],
+      );
+      const keepAlive = await call(
+        who.client,
+        "post",
+        "/api/auth/sessions/current/activity",
+      );
+      expect([200, 204], JSON.stringify(keepAlive.body)).toContain(
+        keepAlive.status,
+      );
+      expectNotAllowed(
+        await call(who.client, "post", "/api/auth/update-user", { name: "X" }),
+      );
+      expectNotAllowed(
+        await call(who.client, "get", "/api/auth/list-sessions"),
+      );
+    });
+
+    it("sessions/current/activity keeps its own rules on a marked session: no session 401, untrusted origin 403", async () => {
+      expect(
+        (await call(agent(app), "post", "/api/auth/sessions/current/activity"))
+          .status,
+      ).toBe(401);
+      const { who } = await markedMember("Sesi Bertanda Activity Origin");
+      const response = await who.client
+        .post("/api/auth/sessions/current/activity")
+        .set("Origin", "https://evil.example")
+        .send({});
+      expect(response.status).toBe(403);
     });
 
     it("sign-out ends the marked session", async () => {

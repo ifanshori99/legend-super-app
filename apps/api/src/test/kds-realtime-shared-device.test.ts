@@ -25,13 +25,29 @@
 //  - Cross-tenant: a cook token of tenant A sent to tenant B's host is refused
 //    (the login has no access there either); this is a regression guard that
 //    holds before and after the fix.
-//  - A browser cannot set WebSocket headers, so a shared-device browser socket
-//    is denied by default (limitation, follow-up carrier needed). Not tested.
+//
+// legend-dsbqr (brief 1018 part A): a browser cannot set WebSocket headers, so
+// the same two credentials may ride in `Sec-WebSocket-Protocol`. Contract from
+// the coordinator: the client offers "legend-kds.v1", "legend-kds-device.<device
+// token>" and (when needed) "legend-kds-staff.<acting staff token>". Same
+// validation as the header path; a header, when present, wins over the
+// subprotocol; the server answers with exactly "legend-kds.v1" and never echoes
+// a credential protocol; the token is never read from the query string and never
+// logged. A refused upgrade answers 403.
+// Assumptions:
+//  - "header wins" is tested per credential pair: a valid header pair beats a
+//    garbage subprotocol pair, and a garbage header pair is not rescued by a
+//    valid subprotocol pair.
+//  - Log check spies on the pino `logger` singleton (every level method and
+//    child()), console and process stdout/stderr writes.
 
 import { randomUUID } from "node:crypto";
-import type { IncomingMessage } from "node:http";
+import { once } from "node:events";
+import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { Express } from "express";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import WebSocket from "ws";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { KITCHEN_REALTIME_PROTOCOL } from "@starter/shared/kitchen";
 import { tenantIdSchema } from "@starter/shared/core";
 import { establishTenantContext } from "@starter/shared/core/server";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
@@ -41,8 +57,10 @@ import {
   setDeviceOutletResolver,
   setStaffPin,
 } from "../services/device-pin.service.ts";
+import { logger } from "../lib/logger.ts";
+import { attachKdsRealtime } from "../services/kds-realtime.ts";
 import { resolveKdsStaffConnection } from "../services/kds-realtime-auth.ts";
-import { agent, originHeader, signUp } from "./helpers.ts";
+import { agent, originHeader, signUp, WEB_ORIGIN } from "./helpers.ts";
 import {
   createIsolatedTenant,
   owner,
@@ -52,6 +70,8 @@ import {
 const PIN = "582914";
 const ACTING_HEADER = "x-acting-staff";
 const PASSWORD = "Test-password-123!";
+const DEVICE_PROTOCOL_PREFIX = "legend-kds-device.";
+const STAFF_PROTOCOL_PREFIX = "legend-kds-staff.";
 
 type Member = { userId: string; email: string };
 type Login = { cookie: string; sessionId: string };
@@ -159,16 +179,30 @@ type Upgrade = {
   stationId?: string;
   deviceToken?: string;
   acting?: string;
+  /** Raw Sec-WebSocket-Protocol offer, in the order the browser sends it. */
+  protocols?: string[];
+  /** Extra query string (must never be honoured as a credential carrier). */
+  query?: string;
 };
+
+/** The offer a browser makes: KDS protocol plus credential protocols. */
+const offer = (deviceTokenValue?: string, actingToken?: string) => [
+  KITCHEN_REALTIME_PROTOCOL,
+  ...(deviceTokenValue ? [`${DEVICE_PROTOCOL_PREFIX}${deviceTokenValue}`] : []),
+  ...(actingToken ? [`${STAFF_PROTOCOL_PREFIX}${actingToken}`] : []),
+];
 
 function upgrade(input: Upgrade): IncomingMessage {
   const outletId = input.outletId ?? tenant.outletId;
   const stationId = input.stationId ?? stationA;
   return {
-    url: `/api/outlets/${outletId}/kitchen/stations/${stationId}/realtime?after=0`,
+    url: `/api/outlets/${outletId}/kitchen/stations/${stationId}/realtime?after=0${input.query ?? ""}`,
     headers: {
       host: input.host ?? tenant.hostname,
       cookie: input.cookie,
+      ...(input.protocols
+        ? { "sec-websocket-protocol": input.protocols.join(", ") }
+        : {}),
       ...(input.deviceToken
         ? { [DEVICE_TOKEN_HEADER]: input.deviceToken }
         : {}),
@@ -518,5 +552,462 @@ describe("KDS socket: shared device, cross-device, cross-outlet and cross-tenant
         }),
       ),
     ).toBeNull();
+  });
+});
+
+describe("KDS socket: credentials in Sec-WebSocket-Protocol (legend-dsbqr)", () => {
+  it("device + live cook token in the subprotocol open the socket as the acting cook", async () => {
+    const session = await login(sharedLogin);
+    const token = await issueToken(session, cook, sharedDevice);
+    const result = await resolveKdsStaffConnection(
+      upgrade({
+        cookie: session.cookie,
+        protocols: offer(deviceToken(sharedDevice), token),
+      }),
+    );
+    expect(result?.userId).toBe(cook.userId);
+    expect(result?.userId).not.toBe(sharedLogin.userId);
+  });
+
+  it("a marked session with the subprotocol pair is accepted too", async () => {
+    const session = await login(sharedLogin);
+    await markSession(session.sessionId, sharedDevice);
+    const token = await issueToken(session, cook, sharedDevice);
+    const result = await resolveKdsStaffConnection(
+      upgrade({
+        cookie: session.cookie,
+        protocols: offer(deviceToken(sharedDevice), token),
+      }),
+    );
+    expect(result?.userId).toBe(cook.userId);
+  });
+
+  it("the device protocol alone (no staff protocol) is denied", async () => {
+    const session = await login(sharedLogin);
+    expect(
+      await resolveKdsStaffConnection(
+        upgrade({
+          cookie: session.cookie,
+          protocols: offer(deviceToken(sharedDevice)),
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("the staff protocol alone (no device protocol) is denied", async () => {
+    const session = await login(sharedLogin);
+    await markSession(session.sessionId, sharedDevice);
+    const token = await issueToken(session, cook, sharedDevice);
+    expect(
+      await resolveKdsStaffConnection(
+        upgrade({
+          cookie: session.cookie,
+          protocols: offer(undefined, token),
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("a wrong staff token in the subprotocol is denied", async () => {
+    const session = await login(sharedLogin);
+    expect(
+      await resolveKdsStaffConnection(
+        upgrade({
+          cookie: session.cookie,
+          protocols: offer(deviceToken(sharedDevice), "pas_garbage-token"),
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("a wrong device token in the subprotocol is denied", async () => {
+    const session = await login(sharedLogin);
+    await markSession(session.sessionId, sharedDevice);
+    const token = await issueToken(session, cook, sharedDevice);
+    expect(
+      await resolveKdsStaffConnection(
+        upgrade({
+          cookie: session.cookie,
+          protocols: offer("not-a-signed-device-token", token),
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("a subprotocol token revoked later is denied on the next call", async () => {
+    const session = await login(sharedLogin);
+    const token = await issueToken(session, cook, sharedDevice);
+    const request = upgrade({
+      cookie: session.cookie,
+      protocols: offer(deviceToken(sharedDevice), token),
+    });
+    expect((await resolveKdsStaffConnection(request))?.userId).toBe(
+      cook.userId,
+    );
+    await endToken(session, sharedDevice);
+    expect(await resolveKdsStaffConnection(request)).toBeNull();
+  });
+
+  it("a token for another device of the same outlet is denied via the subprotocol", async () => {
+    const session = await login(sharedLogin);
+    const token = await issueToken(session, cook, sharedDevice);
+    expect(
+      await resolveKdsStaffConnection(
+        upgrade({
+          cookie: session.cookie,
+          protocols: offer(deviceToken(otherSharedDevice), token),
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("a subprotocol token for outlet A is denied on a station of outlet B", async () => {
+    const session = await login(sharedLogin);
+    const token = await issueToken(session, cook, sharedDevice);
+    const protocols = offer(deviceToken(sharedDevice), token);
+    expect(
+      (
+        await resolveKdsStaffConnection(
+          upgrade({ cookie: session.cookie, protocols }),
+        )
+      )?.userId,
+    ).toBe(cook.userId);
+    expect(
+      await resolveKdsStaffConnection(
+        upgrade({
+          cookie: session.cookie,
+          protocols,
+          outletId: outletB,
+          stationId: stationB,
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("another tenant's host refuses a tenant A subprotocol pair", async () => {
+    const session = await login(sharedLogin);
+    const token = await issueToken(session, cook, sharedDevice);
+    expect(
+      await resolveKdsStaffConnection(
+        upgrade({
+          host: tenantB.hostname,
+          cookie: session.cookie,
+          protocols: offer(deviceToken(sharedDevice), token),
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("a device token signed for another tenant in the subprotocol is denied", async () => {
+    const session = await login(sharedLogin);
+    await markSession(session.sessionId, sharedDevice);
+    const token = await issueToken(session, cook, sharedDevice);
+    expect(
+      await resolveKdsStaffConnection(
+        upgrade({
+          cookie: session.cookie,
+          protocols: offer(deviceToken(sharedDevice, tenantB), token),
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("a subprotocol token from another login session is denied", async () => {
+    const session = await login(sharedLogin);
+    const token = await issueToken(session, cook, sharedDevice);
+    const otherSession = await login(sharedLogin);
+    await markSession(otherSession.sessionId, sharedDevice);
+    expect(
+      await resolveKdsStaffConnection(
+        upgrade({
+          cookie: otherSession.cookie,
+          protocols: offer(deviceToken(sharedDevice), token),
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("an acting person without kds.ticket.process is denied via the subprotocol", async () => {
+    const session = await login(sharedLogin);
+    const token = await issueToken(session, waiter, sharedDevice);
+    expect(
+      await resolveKdsStaffConnection(
+        upgrade({
+          cookie: session.cookie,
+          protocols: offer(deviceToken(sharedDevice), token),
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("a header pair wins over a garbage subprotocol pair", async () => {
+    const session = await login(sharedLogin);
+    const token = await issueToken(session, cook, sharedDevice);
+    const result = await resolveKdsStaffConnection(
+      upgrade({
+        cookie: session.cookie,
+        deviceToken: deviceToken(sharedDevice),
+        acting: token,
+        protocols: offer("not-a-signed-device-token", "pas_garbage-token"),
+      }),
+    );
+    expect(result?.userId).toBe(cook.userId);
+  });
+
+  it("a garbage header pair is not rescued by a valid subprotocol pair", async () => {
+    const session = await login(sharedLogin);
+    const token = await issueToken(session, cook, sharedDevice);
+    await markSession(session.sessionId, sharedDevice);
+    expect(
+      await resolveKdsStaffConnection(
+        upgrade({
+          cookie: session.cookie,
+          deviceToken: deviceToken(sharedDevice),
+          acting: "pas_garbage-token",
+          protocols: offer(deviceToken(sharedDevice), token),
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("credentials in the query string are never accepted", async () => {
+    const session = await login(sharedLogin);
+    const token = await issueToken(session, cook, sharedDevice);
+    await markSession(session.sessionId, sharedDevice);
+    const device = encodeURIComponent(deviceToken(sharedDevice));
+    expect(
+      await resolveKdsStaffConnection(
+        upgrade({
+          cookie: session.cookie,
+          query: `&deviceToken=${device}&x-device-token=${device}&token=${token}&actingStaff=${token}&x-acting-staff=${token}`,
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("a personal login offering only the KDS protocol opens as the session owner", async () => {
+    const session = await login(personal);
+    const result = await resolveKdsStaffConnection(
+      upgrade({
+        cookie: session.cookie,
+        protocols: [KITCHEN_REALTIME_PROTOCOL],
+      }),
+    );
+    expect(result?.userId).toBe(personal.userId);
+  });
+
+  it("a personal login with an unflagged device protocol needs no staff protocol", async () => {
+    const session = await login(personal);
+    const result = await resolveKdsStaffConnection(
+      upgrade({
+        cookie: session.cookie,
+        protocols: offer(deviceToken(personalDevice)),
+      }),
+    );
+    expect(result?.userId).toBe(personal.userId);
+  });
+});
+
+describe("KDS socket handshake: Sec-WebSocket-Protocol on a real upgrade (legend-dsbqr)", () => {
+  let server: Server;
+  let realtime: ReturnType<typeof attachKdsRealtime>;
+  let port = 0;
+  const sockets: WebSocket[] = [];
+
+  beforeAll(async () => {
+    server = createServer();
+    realtime = attachKdsRealtime(server, {
+      trustedOrigins: [WEB_ORIGIN],
+      resolveConnection: resolveKdsStaffConnection,
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("address");
+    port = address.port;
+  });
+
+  afterAll(async () => {
+    for (const ws of sockets) ws.terminate();
+    await realtime?.close();
+    await new Promise<void>((resolve) => server?.close(() => resolve()));
+  });
+
+  type Outcome =
+    | { opened: true; protocol: string; upgradeProtocolHeader: unknown }
+    | { opened: false; status: number };
+
+  async function handshake(
+    cookie: string,
+    protocols: string[],
+    headers: Record<string, string> = {},
+  ): Promise<Outcome> {
+    const ws = new WebSocket(
+      `ws://127.0.0.1:${port}/api/outlets/${tenant.outletId}/kitchen/stations/${stationA}/realtime?after=0`,
+      protocols,
+      {
+        headers: {
+          origin: WEB_ORIGIN,
+          host: tenant.hostname,
+          cookie,
+          ...headers,
+        },
+      },
+    );
+    sockets.push(ws);
+    ws.on("error", () => {});
+    let upgradeProtocolHeader: unknown;
+    ws.on("upgrade", (response) => {
+      upgradeProtocolHeader = response.headers["sec-websocket-protocol"];
+    });
+    const outcome = await Promise.race([
+      once(ws, "open").then((): Outcome => ({
+        opened: true,
+        protocol: ws.protocol,
+        upgradeProtocolHeader,
+      })),
+      once(ws, "unexpected-response").then(([, response]): Outcome => ({
+        opened: false,
+        status: (response as { statusCode?: number }).statusCode ?? 0,
+      })),
+    ]);
+    ws.terminate();
+    return outcome;
+  }
+
+  it("a valid subprotocol pair opens; the server answers with the KDS protocol only and never echoes a credential", async () => {
+    const session = await login(sharedLogin);
+    const token = await issueToken(session, cook, sharedDevice);
+    const device = deviceToken(sharedDevice);
+    const outcome = await handshake(session.cookie, offer(device, token));
+    expect(outcome.opened, JSON.stringify(outcome)).toBe(true);
+    if (!outcome.opened) return;
+    expect(outcome.protocol).toBe(KITCHEN_REALTIME_PROTOCOL);
+    expect(outcome.upgradeProtocolHeader).toBe(KITCHEN_REALTIME_PROTOCOL);
+    expect(String(outcome.upgradeProtocolHeader)).not.toContain(device);
+    expect(String(outcome.upgradeProtocolHeader)).not.toContain(token);
+  });
+
+  it("a shared-device login with only the KDS protocol is refused 403", async () => {
+    const session = await login(sharedLogin);
+    await markSession(session.sessionId, sharedDevice);
+    expect(
+      await handshake(session.cookie, [KITCHEN_REALTIME_PROTOCOL]),
+    ).toEqual({ opened: false, status: 403 });
+  });
+
+  it("a wrong staff token in the subprotocol is refused 403", async () => {
+    const session = await login(sharedLogin);
+    expect(
+      await handshake(
+        session.cookie,
+        offer(deviceToken(sharedDevice), "pas_garbage-token"),
+      ),
+    ).toEqual({ opened: false, status: 403 });
+  });
+
+  it("a revoked staff token in the subprotocol is refused 403", async () => {
+    const session = await login(sharedLogin);
+    const token = await issueToken(session, cook, sharedDevice);
+    const protocols = offer(deviceToken(sharedDevice), token);
+    expect((await handshake(session.cookie, protocols)).opened).toBe(true);
+    await endToken(session, sharedDevice);
+    expect(await handshake(session.cookie, protocols)).toEqual({
+      opened: false,
+      status: 403,
+    });
+  });
+
+  it("another tenant's device token in the subprotocol is refused 403", async () => {
+    const session = await login(sharedLogin);
+    await markSession(session.sessionId, sharedDevice);
+    const token = await issueToken(session, cook, sharedDevice);
+    expect(
+      await handshake(
+        session.cookie,
+        offer(deviceToken(sharedDevice, tenantB), token),
+      ),
+    ).toEqual({ opened: false, status: 403 });
+  });
+
+  it("a personal login still opens with only the KDS protocol", async () => {
+    const session = await login(personal);
+    const outcome = await handshake(session.cookie, [
+      KITCHEN_REALTIME_PROTOCOL,
+    ]);
+    expect(outcome.opened, JSON.stringify(outcome)).toBe(true);
+    if (outcome.opened)
+      expect(outcome.protocol).toBe(KITCHEN_REALTIME_PROTOCOL);
+  });
+
+  it("the header path still opens a shared-device socket", async () => {
+    const session = await login(sharedLogin);
+    const token = await issueToken(session, cook, sharedDevice);
+    const outcome = await handshake(
+      session.cookie,
+      [KITCHEN_REALTIME_PROTOCOL],
+      {
+        [DEVICE_TOKEN_HEADER]: deviceToken(sharedDevice),
+        [ACTING_HEADER]: token,
+      },
+    );
+    expect(outcome.opened, JSON.stringify(outcome)).toBe(true);
+  });
+
+  it("neither token appears in any log output, accepted or refused", async () => {
+    const session = await login(sharedLogin);
+    const token = await issueToken(session, cook, sharedDevice);
+    const device = deviceToken(sharedDevice);
+    const seen: string[] = [];
+    const record = (...args: unknown[]) => {
+      seen.push(
+        args
+          .map((arg) => {
+            try {
+              return typeof arg === "string" ? arg : JSON.stringify(arg);
+            } catch {
+              return String(arg);
+            }
+          })
+          .join(" "),
+      );
+    };
+    const spies = [
+      ...(["trace", "debug", "info", "warn", "error", "fatal"] as const).map(
+        (level) => vi.spyOn(logger, level).mockImplementation(record as never),
+      ),
+      ...(["log", "info", "warn", "error", "debug"] as const).map((level) =>
+        vi.spyOn(console, level).mockImplementation(record as never),
+      ),
+      vi.spyOn(process.stdout, "write").mockImplementation(((
+        chunk: unknown,
+      ) => {
+        record(chunk);
+        return true;
+      }) as never),
+      vi.spyOn(process.stderr, "write").mockImplementation(((
+        chunk: unknown,
+      ) => {
+        record(chunk);
+        return true;
+      }) as never),
+    ];
+    let accepted: Outcome;
+    let refused: Outcome;
+    try {
+      accepted = await handshake(session.cookie, offer(device, token));
+      refused = await handshake(
+        session.cookie,
+        offer(device, "pas_garbage-token"),
+      );
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
+    // Connect must work first, or the log check proves nothing.
+    expect(accepted.opened, JSON.stringify(accepted)).toBe(true);
+    expect(refused.opened).toBe(false);
+    const output = seen.join("\n");
+    expect(output).not.toContain(token);
+    expect(output).not.toContain(device);
   });
 });
