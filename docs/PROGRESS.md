@@ -1884,3 +1884,4 @@ Langkah berikut CTO baru:
 - 23:42 CTO: 1020 G1165 c15dd03aa SIAP batch86 sesudah 1016 (0636-0637); resolve. Bead P2 kredit DP dua reservasi antrean terpisah. Kartu legend-9s33i (P1 mismatch). Mulai 1025 (ra4lu+gjt5q+legend-9s33i) Sonnet #1. Disk 15-16 GB: pnpm store prune + brew cleanup.
 - 23:54 CTO: 1015 G2571 6c270b04f SIAP batch86 sesudah 1005, menunggu review UI founder Q30. Kartu legend-jwpbp, legend-11dyg (P3). G2571 resolve.
 - 23:55 CTO: Founder Q30 setuju UI clearance payout (1015).
+- 00:15 CTO: 1024 G9nl6 e3cb158f2 SIAP batch86 sesudah 1021. Keputusan: cabut/matikan mode bersama memaksa login ulang tablet (membatasi). Kartu legend-a6aq6 (P1 device-shared-mode 6 gagal sejak 1012) -> 1026 Sonnet #1; legend-mymz3 (P3). G9nl6 resolve.
