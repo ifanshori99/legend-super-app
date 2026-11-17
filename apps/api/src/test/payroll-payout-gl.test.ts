@@ -53,7 +53,7 @@
 // - The existing assertion in payroll-payout-manual.test.ts that no
 //   `payroll.paid` leaves the outbox ("belongs to card .5") must be inverted by
 //   the engineer: this card emits it.
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { tenantIdSchema } from "@starter/shared/core";
@@ -86,6 +86,11 @@ import {
   type Row,
 } from "./payroll-payout-fixtures.ts";
 
+// Bank reference of a return claim: unique per claim (evidence key), identical
+// on both steps of the same claim.
+const bankRefOf = (evidenceKey: string) =>
+  `TRX${createHash("sha256").update(evidenceKey).digest("hex").slice(0, 8)}`;
+
 const W = installPayoutWorld("gl");
 
 const BUDI_NET = 4_250_000;
@@ -100,20 +105,23 @@ const slipsOf = () => [
 
 const settle = (batchId: string, by = APP2) =>
   W.inTx((tx) => settleBatchPayouts(tx, actorOf(by), batchId));
-const returnItems = (batchId: string, itemIds: string[], by: string) =>
-  W.inTx((tx) =>
+const returnItems = (batchId: string, itemIds: string[], by: string) => {
+  const evidenceKey = uploadEvidence(batchId, "dana-kembali.pdf");
+  return W.inTx((tx) =>
     returnManualItems(
       tx,
       actorOf(by),
       batchId,
       {
         itemIds,
-        evidenceKey: uploadEvidence(batchId, "dana-kembali.pdf"),
+        evidenceKey,
+        bankRef: bankRefOf(evidenceKey),
         note: "Bank mengembalikan dana, rekening tujuan ditutup",
       } as never,
       W.proofs(),
     ),
   );
+};
 const idOf = (row: Row) => row.id as string;
 
 /** A locked run with an exported manual batch, ready to confirm. */

@@ -47,6 +47,11 @@ import {
   type Row,
 } from "./payroll-payout-fixtures.ts";
 
+// Bank reference of a return claim: unique per claim (evidence key), identical
+// on both steps of the same claim.
+const bankRefOf = (evidenceKey: string) =>
+  `TRX${createHash("sha256").update(evidenceKey).digest("hex").slice(0, 8)}`;
+
 const W = installPayoutWorld("897backfill");
 const PENDING = "PAYOUT_PROOF_FINGERPRINT_PENDING";
 const STUCK = "payroll_payout_proof_backfill_stuck";
@@ -240,6 +245,7 @@ describe("897 the backfill is fair when the oldest proofs cannot be processed (F
           {
             itemIds: [idOf(siti)],
             evidenceKey: fresh,
+            bankRef: bankRefOf(fresh),
             note: "Bank mengembalikan dana, rekening tujuan ditutup",
           } as never,
           store(),

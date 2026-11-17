@@ -206,6 +206,7 @@ describe("legend-eszso the proposal list names the proposer", () => {
       .send({
         itemIds: [idOf(budi)],
         evidenceKey: key,
+        bankRef: `TRX${randomUUID().slice(0, 8)}`,
         note: "Bank mengembalikan dana, rekening tujuan ditutup",
       });
     expect(step1.status, JSON.stringify(step1.body)).toBe(200);

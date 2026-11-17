@@ -54,7 +54,7 @@
 //   (the code is not pinned).
 // - Under "accounting off + lock event still queued" the correction is accepted
 //   and stored as `settle_pending` (brief: follow the existing pending pattern).
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createUlid } from "@starter/shared/core";
@@ -91,6 +91,11 @@ import {
   type Row,
   type Slip,
 } from "./payroll-payout-fixtures.ts";
+
+// Bank reference of a return claim: unique per claim (evidence key), identical
+// on both steps of the same claim.
+const bankRefOf = (evidenceKey: string) =>
+  `TRX${createHash("sha256").update(evidenceKey).digest("hex").slice(0, 8)}`;
 
 const W = installPayoutWorld("correction-891");
 const PASSWORD = "Test-password-123!";
@@ -879,6 +884,7 @@ describe("correcting a failed transfer over HTTP: a proof is used once (legend-m
         {
           itemIds: [world.siti],
           evidenceKey: key,
+          bankRef: bankRefOf(key),
           note: "Bank mengembalikan dana, rekening tujuan ditutup",
         } as never,
         W.proofs(),
@@ -1071,6 +1077,7 @@ describe("correcting a failed transfer over HTTP: a proof is used once (legend-m
           {
             itemIds: [world.siti],
             evidenceKey: key,
+            bankRef: bankRefOf(key),
             note: "Bank mengembalikan dana, rekening tujuan ditutup",
           } as never,
           W.proofs(),

@@ -216,6 +216,7 @@ const postReturn = (
   batchId: string,
   itemId: string,
   evidenceKey: string,
+  bankRef = `RET-${batchId.slice(0, 8)}`,
 ) =>
   who.client
     .post(`${BASE}/${batchId}/return`)
@@ -223,6 +224,7 @@ const postReturn = (
     .send({
       itemIds: [itemId],
       evidenceKey,
+      bankRef,
       note: "Bank mengembalikan dana, rekening tujuan ditutup",
     });
 const postConfirm = (

@@ -623,6 +623,7 @@ describe("915 log: a spent grant leaves a log row", () => {
     const paid = await succeededWorld();
     // Over HTTP: the route also posts the return journal that step two needs.
     const returnKey = uploadEvidence(paid.batchId, `log-${randomUUID()}.pdf`);
+    const returnBankRef = `TRX${randomUUID().slice(0, 8)}`;
     const retOne = await webFinance("Return one");
     const retTwo = await webFinance("Return two");
     for (const who of [retOne, retTwo]) {
@@ -632,6 +633,7 @@ describe("915 log: a spent grant leaves a log row", () => {
         .send({
           itemIds: [paid.itemId],
           evidenceKey: returnKey,
+          bankRef: returnBankRef,
           note: NOTE,
           password: PASSWORD,
         });

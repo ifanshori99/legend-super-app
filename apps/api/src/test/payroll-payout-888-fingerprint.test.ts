@@ -123,6 +123,14 @@ const noisyJpeg = (withExif = true) => {
     .toBuffer();
 };
 
+/** Bank reference of a return: one per claim, the same in both steps (990). */
+const returnBankRef = (evidenceKey: string, itemIds: string[]) =>
+  "TRX" +
+  createHash("sha256")
+    .update(`${evidenceKey}|${itemIds.join(",")}`)
+    .digest("hex")
+    .slice(0, 12);
+
 const returnWith = (
   batchId: string,
   itemIds: string[],
@@ -138,6 +146,7 @@ const returnWith = (
       {
         itemIds,
         evidenceKey,
+        bankRef: returnBankRef(evidenceKey, itemIds),
         note: "Bank mengembalikan dana, rekening tujuan ditutup",
       } as never,
       store,

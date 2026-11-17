@@ -414,6 +414,8 @@ type Proposal = {
   by: string;
   evidenceKey: string;
   note: string;
+  /** Return only: the bank transaction reference, normalized. */
+  bankRef?: string;
   at: string;
 };
 type PayoutMockState = {
@@ -523,6 +525,7 @@ function seedScenarioProposals() {
         by: userIds.financeApprover,
         evidenceKey: MOCK_PROPOSAL_EVIDENCE_KEY,
         note: "Dana kembali dari bank penerima.",
+        bankRef: "RTN20261031001",
         at: "2026-10-31T04:10:00.000Z",
       },
     },
@@ -1019,6 +1022,10 @@ registerMock(confirmDisbursementItems, ({ params, body }) => {
   };
 });
 
+/** The server trims, upper-cases and drops inner spaces before comparing. */
+const normalizeBankRef = (value: string | undefined) =>
+  (value ?? "").replace(/\s+/g, "").toUpperCase();
+
 /**
  * The two-person rule of resolve and return: the first call records a proposal
  * (nothing moves), a second call by someone else with the same outcome applies
@@ -1028,8 +1035,15 @@ function propose(
   kind: Proposal["kind"],
   outcome: string,
   itemIds: readonly string[],
-  proof: { evidenceKey: string; note: string },
+  proof: { evidenceKey: string; note: string; bankRef?: string },
 ) {
+  const bankRef = normalizeBankRef(proof.bankRef);
+  if (kind === "return" && bankRef === "")
+    throw refuse(
+      422,
+      "VALIDATION_ERROR",
+      "Nomor referensi transaksi bank wajib diisi.",
+    );
   seedScenarioProposals();
   const actor = currentActor();
   const proposals = { ...state().proposals };
@@ -1044,6 +1058,7 @@ function propose(
         by: actor,
         evidenceKey: proof.evidenceKey,
         note: proof.note,
+        ...(kind === "return" ? { bankRef } : {}),
         at: new Date().toISOString(),
       };
       continue;
@@ -1072,6 +1087,12 @@ function propose(
             "PAYOUT_RETURN_EVIDENCE_MISMATCH",
             "Bukti berbeda dari usulan orang pertama.",
           );
+    if (kind === "return" && earlier.bankRef !== bankRef)
+      throw refuse(
+        409,
+        "PAYOUT_RETURN_BANK_REF_MISMATCH",
+        "Nomor referensi bank berbeda dari catatan orang pertama.",
+      );
     delete proposals[key];
     applied.push(id);
   }

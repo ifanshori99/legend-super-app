@@ -40,6 +40,7 @@
 // - Ambiguity is produced by adding a balanced pair to the lock journal:
 //   Cr 2106 net / Dr 2104 net, so two liability accounts (A and 2106) are each
 //   credited the same net.
+import { createHash } from "node:crypto";
 import { Pool } from "pg";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { settleBatchPayouts } from "../services/payroll-payout-gl.service.ts";
@@ -80,6 +81,13 @@ const CODES = ["1102", "1103", "8101", A, B, C] as const;
 const sweep = () => runPayoutGlRecoverySweep(W.scope(), NOW);
 const settle = (batchId: string, by = APP2) =>
   W.inTx((tx) => settleBatchPayouts(tx, actorOf(by), batchId));
+/** Bank reference of a return: one per claim, the same in both steps (990). */
+const returnBankRef = (evidenceKey: string, itemIds: string[]) =>
+  "TRX" +
+  createHash("sha256")
+    .update(`${evidenceKey}|${itemIds.join(",")}`)
+    .digest("hex")
+    .slice(0, 12);
 const returnItems = (batchId: string, itemIds: string[], by: string) =>
   W.inTx((tx) =>
     returnManualItems(
@@ -89,6 +97,7 @@ const returnItems = (batchId: string, itemIds: string[], by: string) =>
       {
         itemIds,
         evidenceKey: uploadEvidence(batchId, "dana-kembali.pdf"),
+        bankRef: returnBankRef(batchId, itemIds),
         note: "Bank mengembalikan dana, rekening tujuan ditutup",
       } as never,
       W.proofs(),

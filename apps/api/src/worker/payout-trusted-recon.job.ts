@@ -60,6 +60,8 @@ export async function runPayoutTrustedReconSweep(
     return {
       operations: 0,
       flagged: 0,
+      reraised: 0,
+      reraiseFailed: 0,
       unreadable: 0,
       last: cycle.after,
       exhausted: true,
@@ -73,9 +75,9 @@ export async function runPayoutTrustedReconSweep(
   // The page is only counted once it committed; a thrown page is retried.
   cycle.after = result.last ?? cycle.after;
   cycle.done = result.exhausted;
-  if (result.flagged > 0 || result.unreadable > 0)
+  if (result.flagged > 0 || result.unreadable > 0 || result.reraiseFailed > 0)
     console.error(
-      `Payout trusted recon: operations ${result.operations}, new flags ${result.flagged}, proof files unreadable ${result.unreadable}`,
+      `Payout trusted recon: operations ${result.operations}, new flags ${result.flagged}, flags raised again ${result.reraised}, raising again failed ${result.reraiseFailed}, proof files unreadable ${result.unreadable}`,
     );
   return result;
 }

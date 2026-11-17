@@ -75,6 +75,8 @@ const returnCall = (
       {
         itemIds,
         evidenceKey: key,
+        // Same bank reference in both steps of one claim (990, bankRef required).
+        bankRef: `TRX${createHash("sha256").update(key).digest("hex").slice(0, 8)}`,
         note: "Bank mengembalikan dana, rekening tujuan ditutup",
       } as never,
       store(),

@@ -252,6 +252,20 @@ export function payoutGuardViolation(error: unknown): HttpError | null {
   // PAYOUT-79 (23514): the batch has an open "not me" dispute (legend-l2zru).
   if (checkViolation(error) && messageHas(error, /PAYOUT-79:/))
     return batchFrozen();
+  // PAYOUT-88 (23514): a return without a usable bank transaction reference.
+  if (checkViolation(error) && messageHas(error, /PAYOUT-88:/))
+    return payoutRefuse(
+      422,
+      "PAYOUT_RETURN_BANK_REF_REQUIRED",
+      "Nomor referensi transaksi bank wajib diisi (4-64 karakter).",
+    );
+  // PAYOUT-89 (23514): the second step names another bank reference.
+  if (checkViolation(error) && messageHas(error, /PAYOUT-89:/))
+    return payoutRefuse(
+      409,
+      "PAYOUT_RETURN_BANK_REF_MISMATCH",
+      "Nomor referensi bank berbeda dari catatan orang pertama.",
+    );
   if (!checkViolation(error)) return null;
   return payoutRefuse(
     409,
@@ -1008,8 +1022,12 @@ type PlannedItem = {
 
 /**
  * Slip ids with an open row in `payroll_payout_recon_exceptions` (migration
- * 0410, insert-only) on one of their items. Every row counts as open: the table
- * has no clear step yet, and when unsure the slip stays held.
+ * 0410, insert-only) on one of their items. A row is open until it has an
+ * approved two-person clearance (`payroll_payout_recon_clearances`, migration
+ * 0581, same test as `app.payout_payslip_held_by_recon`) bound to the flag's
+ * LIVE fingerprint (`app.payout_recon_flag_fingerprint`, migration 0584): a
+ * clearance of other flagged data, or a proposal alone (`approved_at` null),
+ * still holds the slip, also when the data changed after the approval.
  */
 async function slipsHeldByReconException(
   tx: Tx,
@@ -1023,6 +1041,13 @@ async function slipsHeldByReconException(
           JOIN payroll_disbursement_items i
             ON i.tenant_id = e.tenant_id AND i.id = e.item_id
          WHERE e.tenant_id = ${tenantId}
+           AND NOT EXISTS (
+             SELECT 1
+               FROM payroll_payout_recon_clearances c
+              WHERE c.tenant_id = e.tenant_id AND c.exception_id = e.id
+                AND c.approved_at IS NOT NULL
+                AND c.flag_sha256 =
+                  app.payout_recon_flag_fingerprint(e.tenant_id, e.id))
            AND i.payslip_id IN (${sql.join(
              payslipIds.map((id) => sql`${id}`),
              sql`, `,

@@ -286,6 +286,14 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "function bodies only, no row edited by the migration: app.payout_grant_issue (grantor login), app.payout_correction_propose, app.payout_overpaid_propose and the withdraw functions (payout role) insert a grant or a proposal, or mark an open correction or overpaid proposal withdrawn, when called; a withdrawn proposal stays as a row and the item is untouched; the migration itself writes no row and changes no amount",
   "0426_payout_approval_log.sql":
     "creates the append-only payroll_payout_approval_log table and replaces the function body of app.payout_attest (payout role), which inserts an attestation and a log row when called; the migration itself writes no row and changes no amount",
+  // legend-xbagc (990 card A)
+  "0581_payout_990_recon_clear.sql":
+    "function bodies only, no row edited by the migration: app.payout_grant_issue (grantor login) inserts a recon_clear grant, app.payout_recon_clear_propose and app.payout_recon_clear_approve (payout role) insert and approve a clearance of a reconciliation flag when called (two different finance people, step-up grants), and the item guard and app.payout_resolve_approve read the clearance; the migration itself writes no row and changes no amount (it only releases a payslip held by a false flag, nobody is paid by it)",
+  // legend-nsqhm (990 card E)
+  "0583_payout_990_return_bank_ref.sql":
+    "function bodies and a guard trigger only, no row edited by the migration: app.payout_return_propose and app.payout_return_confirm (payout role) store the bank transaction reference of a return on the claim and the item when called, and refuse a missing, differing or reused reference; the migration itself writes no row and changes no amount (it only adds a refusal)",
+  "0584_payout_990_flag_fingerprint.sql":
+    "backfill only (legend-hklnq): one fingerprint sighting per existing payout recon exception, computed from that exception's own item, attestation and posting rows, so a later recon can tell whether the flagged data changed; no amount, item, payslip or clearance row is edited, and an exception without a matching clearance keeps holding its payslip",
   // legend-628t9 (954)
   "0436_payout_grant_expiry_after_lock.sql":
     "function body only, no row edited by the migration: app.payout_grant_consume (payout role) reads its clock after the run, batch and grant row locks and refuses a grant that expired while it waited, marking a grant consumed only when called; it keeps the existing grant rules and changes no amount (it only blocks a late approval, nobody is paid)",

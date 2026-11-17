@@ -147,6 +147,8 @@ export type ManualResolveInput = {
 export type ManualReturnInput = {
   itemIds: string[];
   evidenceKey: string;
+  /** Bank transaction reference of the returned funds (legend-nsqhm). */
+  bankRef: string;
   note: string;
 };
 
@@ -1187,6 +1189,45 @@ function isReturnClaimShaViolation(error: unknown): boolean {
   return false;
 }
 
+function isReturnClaimBankRefViolation(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current; depth++) {
+    const { code, constraint } = current as {
+      code?: unknown;
+      constraint?: unknown;
+    };
+    if (
+      code === "23505" &&
+      constraint === "payroll_payout_return_claims_bank_ref_key"
+    )
+      return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+const refuseReusedBankRef = () =>
+  refuse(
+    409,
+    "PAYOUT_RETURN_BANK_REF_REUSED",
+    "Nomor referensi bank ini sudah dipakai untuk pengembalian lain. Isi nomor referensi transaksi dana kembali yang sesuai dengan item ini.",
+  );
+
+/**
+ * Bank reference of a return as the database stores it (spaces out, upper
+ * case; `app.payout_normalize_bank_ref` does the same). Wrong length: 422.
+ */
+function normalizeReturnBankRef(value: string): string {
+  const ref = value.replace(/\s+/g, "").toUpperCase();
+  if (ref.length < 4 || ref.length > 64)
+    throw refuse(
+      422,
+      "PAYOUT_RETURN_BANK_REF_REQUIRED",
+      "Nomor referensi transaksi bank wajib diisi (4-64 karakter).",
+    );
+  return ref;
+}
+
 const refuseReusedReturnProof = () =>
   refuse(
     409,
@@ -1444,6 +1485,7 @@ export async function returnManualItems(
     { tenantId: actor.tenantId, batchId },
     input.evidenceKey,
   );
+  const bankRef = normalizeReturnBankRef(input.bankRef);
   const early = await issueReturnGrant(
     tx,
     actor,
@@ -1519,12 +1561,14 @@ export async function returnManualItems(
     try {
       await tx.transaction((savepoint) =>
         savepoint.execute(
-          sql`SELECT app.payout_return_propose(${batch.id}::uuid, ${uuidArray(itemIds)}, ${evidence}::varchar, ${note}, ${early.grant})`,
+          sql`SELECT app.payout_return_propose(${batch.id}::uuid, ${uuidArray(itemIds)}, ${evidence}::varchar, ${note}, ${early.grant}, ${bankRef}::varchar)`,
         ),
       );
     } catch (error) {
       // Race backstop: another operation claimed the same file content.
       if (isReturnClaimShaViolation(error)) throw refuseReusedReturnProof();
+      // Same bank reference on another claim of the tenant (990).
+      if (isReturnClaimBankRefViolation(error)) throw refuseReusedBankRef();
       throw error;
     }
     proposed = rows.length;
@@ -1533,7 +1577,7 @@ export async function returnManualItems(
     if (early?.step !== "confirm" || early.claimId !== claimId)
       throw payoutStateChanged();
     const confirmed = await tx.execute<{ moved: number }>(
-      sql`SELECT app.payout_return_confirm(${claimId}::uuid, ${evidence}::varchar, ${early.grant}) AS moved`,
+      sql`SELECT app.payout_return_confirm(${claimId}::uuid, ${evidence}::varchar, ${early.grant}, ${bankRef}::varchar) AS moved`,
     );
     if (Number(confirmed.rows[0]?.moved) !== rows.length)
       throw refuse(

@@ -32,7 +32,8 @@ export type PayoutGrantBinding = {
     | "bank_confirm"
     | "batch_approve"
     | "disown"
-    | "unfreeze";
+    | "unfreeze"
+    | "recon_clear";
   step: "propose" | "approve" | "record" | "confirm" | "withdraw";
   batchId: string | null;
   itemIds: readonly string[];
@@ -42,7 +43,8 @@ export type PayoutGrantBinding = {
   /**
    * The outcome a grant covers (legend-r86qa): `failed` or `not_sent` for kind
    * `resolve`, `succeeded` for kind `bank_confirm`, the sha256 (hex) of the
-   * reason for kind `disown` and `unfreeze` (legend-l2zru); NULL for every
+   * reason for kind `disown`, `unfreeze` (legend-l2zru) and `recon_clear`
+   * (legend-xbagc); NULL for every
    * other kind.
    */
   detail?: string | null;
@@ -136,6 +138,25 @@ function issueError(error: unknown): unknown {
         403,
         "PAYOUT_DISOWNER_REFUSED",
         'Anda sudah menyatakan "bukan saya" pada persetujuan batch ini, jadi tidak boleh menyetujuinya lagi.',
+      );
+    case "85":
+      return new HttpError(
+        422,
+        "PAYOUT_RECON_CLEAR_REASON_INVALID",
+        "Alasan penutupan flag wajib diisi (10 sampai 500 karakter).",
+      );
+    case "86":
+      // The proposer of a recon clearance cannot approve it (legend-xbagc).
+      return new HttpError(
+        403,
+        "PAYOUT_RECON_CLEAR_SELF_APPROVAL",
+        "Pengusul penutupan flag tidak boleh menyetujuinya sendiri.",
+      );
+    case "87":
+      return new HttpError(
+        409,
+        "PAYOUT_RECON_CLEAR_STATE",
+        "Penutupan flag ini sudah disetujui.",
       );
     case "72":
       return new HttpError(

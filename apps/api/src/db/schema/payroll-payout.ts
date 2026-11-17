@@ -586,12 +586,22 @@ export const payrollPayoutReturnClaims = pgTable(
      * upload record instead.
      */
     storedSha256: varchar("stored_sha256", { length: 64 }),
+    /**
+     * Normalised bank transaction reference of the returned money
+     * (legend-nsqhm). One bank transaction backs ONE return claim per tenant,
+     * so the same incoming transfer cannot free two sets of payslips. Null
+     * only on claims made before it was required.
+     */
+    bankRef: varchar("bank_ref", { length: 64 }),
   },
   (table) => [
     unique("payroll_payout_return_claims_tenant_id_key").on(
       table.tenantId,
       table.id,
     ),
+    uniqueIndex("payroll_payout_return_claims_bank_ref_key")
+      .on(table.tenantId, table.bankRef)
+      .where(sql`${table.bankRef} IS NOT NULL`),
     unique("payroll_payout_return_claims_tenant_batch_id_key").on(
       table.tenantId,
       table.batchId,
@@ -756,6 +766,12 @@ export const payrollDisbursementItems = pgTable(
     returnedBy2: actor("returned_by_2"),
     returnEvidenceKey: varchar("return_evidence_key", { length: 500 }),
     returnNote: varchar("return_note", { length: 500 }),
+    /**
+     * Bank transaction reference of the money that came back (legend-nsqhm),
+     * normalised (trimmed, upper case, no inner spaces). Required by the
+     * trusted return function for every new return; null on legacy rows.
+     */
+    returnBankRef: varchar("return_bank_ref", { length: 64 }),
     /** The return operation whose proof this return belongs to (w3691). */
     returnClaimId: uuid("return_claim_id"),
     createdAt: createdAt(),
@@ -1362,6 +1378,9 @@ export const PAYOUT_GRANT_KINDS = [
   ...PAYOUT_ATTESTATION_KINDS,
   "disown",
   "unfreeze",
+  // Two-person clearance of a false reconciliation flag (legend-xbagc):
+  // writes payroll_payout_recon_clearances, attests nothing.
+  "recon_clear",
 ] as const;
 export type PayoutGrantKind = (typeof PAYOUT_GRANT_KINDS)[number];
 
@@ -1432,7 +1451,7 @@ export const payrollPayoutGrants = pgTable(
     ),
     check(
       "payroll_payout_grants_detail_check",
-      sql`(${table.kind} = 'resolve' AND ${table.detail} IN ('failed', 'not_sent')) OR (${table.kind} = 'bank_confirm' AND ${table.detail} = 'succeeded') OR (${table.kind} IN ('disown', 'unfreeze') AND ${table.detail} ~ '^[0-9a-f]{64}$') OR (${table.kind} NOT IN ('resolve', 'bank_confirm', 'disown', 'unfreeze') AND ${table.detail} IS NULL)`,
+      sql`(${table.kind} = 'resolve' AND ${table.detail} IN ('failed', 'not_sent')) OR (${table.kind} = 'bank_confirm' AND ${table.detail} = 'succeeded') OR (${table.kind} IN ('disown', 'unfreeze', 'recon_clear') AND ${table.detail} ~ '^[0-9a-f]{64}$') OR (${table.kind} NOT IN ('resolve', 'bank_confirm', 'disown', 'unfreeze', 'recon_clear') AND ${table.detail} IS NULL)`,
     ),
     check(
       "payroll_payout_grants_step_check",
@@ -1826,6 +1845,116 @@ export const payrollPayoutReconExceptions = pgTable(
     check(
       "payroll_payout_recon_exceptions_kind_check",
       sql`${table.kind} IN (${inList(PAYOUT_ATTESTATION_KINDS)})`,
+    ),
+  ],
+);
+
+/**
+ * Each time the reconciliation saw a flag, the fingerprint of the flagged data
+ * (legend-hklnq, migration 0584): sha256 of the item (minus volatile and sealed
+ * columns), the attestations of the operation and the postings of the item, as
+ * computed by `app.payout_recon_flag_fingerprint`. A row is written when the
+ * fingerprint is new for the flag; the latest row is the flag's current
+ * fingerprint. Insert-only, written by the payout role only.
+ */
+export const payrollPayoutReconFlagSightings = pgTable(
+  "payroll_payout_recon_flag_sightings",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    exceptionId: uuid("exception_id").notNull(),
+    flagSha256: varchar("flag_sha256", { length: 64 }).notNull(),
+    seenAt: timestamp("seen_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("payroll_payout_recon_flag_sightings_exception_idx").on(
+      table.tenantId,
+      table.exceptionId,
+      table.seenAt.desc(),
+    ),
+    foreignKey({
+      name: "payroll_payout_recon_flag_sightings_exception_fk",
+      columns: [table.tenantId, table.exceptionId],
+      foreignColumns: [
+        payrollPayoutReconExceptions.tenantId,
+        payrollPayoutReconExceptions.id,
+      ],
+    }),
+    check(
+      "payroll_payout_recon_flag_sightings_sha_check",
+      sql`${table.flagSha256} ~ '^[0-9a-f]{64}$'`,
+    ),
+  ],
+);
+
+/**
+ * Two-person clearance of a false reconciliation flag (legend-xbagc). The flag
+ * row stays (insert-only); an approved clearance stops it holding the payslip
+ * back. Written only by the trusted payout functions: a finance person proposes
+ * with a reason, a different one approves, each with a one-time step-up grant.
+ * Never deleted. A clearance is bound to the fingerprint of the flagged data
+ * (legend-hklnq, migration 0584): it releases the slip only while the flag's
+ * current fingerprint is the same; one clearance per flag and fingerprint.
+ */
+export const payrollPayoutReconClearances = pgTable(
+  "payroll_payout_recon_clearances",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    exceptionId: uuid("exception_id").notNull(),
+    /** Fingerprint of the flagged data the clearance was proposed for. */
+    flagSha256: varchar("flag_sha256", { length: 64 }).notNull(),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    proposedBy: actor("proposed_by").notNull(),
+    proposedSessionId: text("proposed_session_id").notNull(),
+    proposedGrantId: uuid("proposed_grant_id").notNull(),
+    proposedAt: timestamp("proposed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    approvedBy: actor("approved_by"),
+    approvedSessionId: text("approved_session_id"),
+    approvedGrantId: uuid("approved_grant_id"),
+    approvedAt: timestamp("approved_at", { withTimezone: true }),
+  },
+  (table) => [
+    unique("payroll_payout_recon_clearances_tenant_id_key").on(
+      table.tenantId,
+      table.id,
+    ),
+    unique("payroll_payout_recon_clearances_exception_sha_key").on(
+      table.tenantId,
+      table.exceptionId,
+      table.flagSha256,
+    ),
+    foreignKey({
+      name: "payroll_payout_recon_clearances_exception_fk",
+      columns: [table.tenantId, table.exceptionId],
+      foreignColumns: [
+        payrollPayoutReconExceptions.tenantId,
+        payrollPayoutReconExceptions.id,
+      ],
+    }),
+    foreignKey({
+      name: "payroll_payout_recon_clearances_proposed_grant_fk",
+      columns: [table.tenantId, table.proposedGrantId],
+      foreignColumns: [payrollPayoutGrants.tenantId, payrollPayoutGrants.id],
+    }),
+    foreignKey({
+      name: "payroll_payout_recon_clearances_approved_grant_fk",
+      columns: [table.tenantId, table.approvedGrantId],
+      foreignColumns: [payrollPayoutGrants.tenantId, payrollPayoutGrants.id],
+    }),
+    check(
+      "payroll_payout_recon_clearances_sha_check",
+      sql`${table.flagSha256} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      "payroll_payout_recon_clearances_reason_check",
+      sql`char_length(btrim(${table.reason})) >= 10`,
+    ),
+    check(
+      "payroll_payout_recon_clearances_approved_check",
+      sql`(${table.approvedBy} IS NULL AND ${table.approvedSessionId} IS NULL AND ${table.approvedGrantId} IS NULL AND ${table.approvedAt} IS NULL) OR (${table.approvedBy} IS NOT NULL AND ${table.approvedSessionId} IS NOT NULL AND ${table.approvedGrantId} IS NOT NULL AND ${table.approvedAt} IS NOT NULL AND ${table.approvedBy} <> ${table.proposedBy})`,
     ),
   ],
 );

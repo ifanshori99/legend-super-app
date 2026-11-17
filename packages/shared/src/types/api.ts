@@ -212,6 +212,39 @@ export type PayoutApprovalLogDto = {
   batchFrozen: boolean;
 };
 
+/**
+ * One reconciliation flag and the state of its two-person clearance (GET
+ * /payout-recon-flags). `clearance` is the clearance of the flag's current
+ * fingerprint, null until someone proposes for it; the flag holds the payslip
+ * back until `clearance.status` is `approved`. No amount, name or account
+ * number.
+ */
+export type PayoutReconFlagDto = {
+  id: string;
+  kind: string;
+  itemId: string;
+  payslipId: string;
+  batchId: string;
+  reason: string;
+  /** ISO datetime the reconciliation flagged it. */
+  flaggedAt: string;
+  /**
+   * True when a clearance was approved for other flagged data (an earlier
+   * fingerprint, legend-hklnq) and none is approved for the current one: the
+   * flag holds the payslip again and needs a new clearance.
+   */
+  reopened: boolean;
+  clearance: {
+    id: string;
+    status: "proposed" | "approved";
+    reason: string;
+    proposedBy: string;
+    proposedAt: string;
+    approvedBy: string | null;
+    approvedAt: string | null;
+  } | null;
+};
+
 /** A disbursement batch for one payroll run. totalIdr is the sum of items. */
 export type PayrollDisbursementBatchDto = {
   id: string;
