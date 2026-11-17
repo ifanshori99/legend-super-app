@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="ghostex-page" content="v2">
+<title>Review tampilan: pengaturan pembayaran Duitku dan bayar tamu</title>
+<style>
+  .how { margin: 0 0 8px; font-size: 13px; line-height: 1.45; color: var(--gx-muted); }
+  .how b { color: var(--gx-fg); font-weight: 600; }
+  .shots { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-items: start; }
+  .shots figure { margin: 0; min-width: 0; }
+  .shots img { box-sizing: border-box; display: block; max-width: 100%; height: auto; border-radius: 10px; border: 1px solid var(--gx-line); }
+  .shots figcaption { margin-top: 6px; font-size: 12.5px; line-height: 1.45; color: var(--gx-muted); }
+  .shots figcaption b { color: var(--gx-fg); font-weight: 600; }
+  .narrow { max-width: 260px; }
+  .missing { padding: 12px 14px; border-radius: 12px; background: var(--gx-surface); border: 1px dashed var(--gx-line); font-size: 13px; line-height: 1.5; color: var(--gx-text); }
+  .missing b { color: var(--gx-fg); }
+  @media (max-width: 640px) { .shots { grid-template-columns: minmax(0, 1fr); } .narrow { max-width: 100%; } }
+</style>
+</head>
+<body>
+<gx-questions submit="Kirim ke CTO">
+  <header>
+    <span class="gx-eyebrow">Review tampilan · untuk founder</span>
+    <h1>Pengaturan pembayaran Duitku dan bayar tamu</h1>
+    <p class="gx-lede">Dua hal untuk dilihat: layar pengaturan pembayaran untuk admin (nomor 945), dan layar bayar di HP tamu. Cukup lihat gambarnya, lalu jawab setuju atau minta diubah.</p>
+    <div class="gx-chips">
+      <span class="gx-chip"><b>2</b> pertanyaan (Q24, Q25)</span>
+      <span class="gx-chip">Contoh data, bukan uang sungguhan</span>
+    </div>
+  </header>
+
+  <h2>A. Pengaturan pembayaran (admin)</h2>
+  <p class="how">Admin mengatur cara bayar online per metode, dengan cadangan bila metode utama gagal. Kunci Duitku diisi per brand atau outlet. Tombol <b>Tes koneksi</b> dipakai untuk memastikan kunci benar. Tombol <b>Aktifkan</b> baru bisa dipakai setelah tes berhasil. Setelah disimpan, kunci <b>tidak pernah ditampilkan ulang</b>, hanya tanda bahwa kunci sudah tersimpan.</p>
+
+  <gx-wide>
+    <h3>1. Routing per metode dengan cadangan</h3>
+    <p class="how">Tiap metode bayar (e-wallet, kartu, virtual account) punya urutan penyedia dan cadangan. Bila penyedia utama gagal, sistem pindah ke cadangan.</p>
+    <div class="shots">
+      <figure><img src="img/945-pembayaran-routing-normal-desktop-light.png" alt="Routing gateway per metode bayar, layar lebar"><figcaption><b>Layar lebar.</b> Tiap metode (QRIS, Virtual Account, E-wallet, Kartu, Transfer bank, Paylater) punya gateway dan gateway cadangan.</figcaption></figure>
+      <figure class="narrow"><img src="img/945-pembayaran-routing-normal-mobile-light.png" alt="Routing gateway per metode bayar, layar HP"><figcaption><b>Layar HP (390).</b> Isi yang sama, tersusun ke bawah.</figcaption></figure>
+    </div>
+
+    <h3>2. Form kunci Duitku, tes koneksi, dan aktivasi</h3>
+    <p class="how">Form kunci per brand atau outlet. Keadaan yang perlu dilihat: belum dites, tes sukses (boleh aktifkan), dan sudah tersimpan (kunci disembunyikan).</p>
+    <div class="shots">
+      <figure><img src="img/945-pembayaran-duitku-normal-desktop-light.png" alt="Form kredensial Duitku kosong, status Belum diatur"><figcaption><b>Layar lebar, form kosong.</b> Status &quot;Belum diatur&quot;, Aktifkan belum bisa ditekan.</figcaption></figure>
+      <figure><img src="img/945-pembayaran-duitku-saved-draft-desktop-light.png" alt="Kredensial Duitku tersimpan, belum diuji"><figcaption><b>Layar lebar, setelah Simpan.</b> Status &quot;Tersimpan, belum diuji&quot;. Kode merchant dan API key disembunyikan, hanya ada tanda sudah tersimpan.</figcaption></figure>
+      <figure class="narrow"><img src="img/945-pembayaran-duitku-saved-draft-mobile-light.png" alt="Kredensial Duitku tersimpan, layar HP"><figcaption><b>Layar HP (390).</b> Keadaan tersimpan, tersusun ke bawah.</figcaption></figure>
+    </div>
+    <p class="how"><b>Belum ada gambar tes sukses dan tombol Aktifkan menyala.</b> Contoh data belum punya jawaban untuk Tes koneksi, jadi keadaan itu belum bisa difoto. Perlu tambahan kecil di data contoh.</p>
+  </gx-wide>
+
+  <gx-question tag="Q24" title="Layar pengaturan pembayaran (routing dan Duitku) sudah sesuai?">
+    <p>Bila memilih Perlu ubah, tulis layar mana dan maunya bagaimana di kotak catatan.</p>
+    <gx-choice value="Setuju">Setuju<small>Lanjut seperti rancangan.</small></gx-choice>
+    <gx-choice value="Perlu ubah">Perlu ubah<small>Tulis catatan: layar mana, apa yang diubah.</small></gx-choice>
+  </gx-question>
+
+  <h2>B. Bayar dari HP tamu</h2>
+  <p class="how">Tamu yang memesan lewat HP memilih cara bayar online. Layar meminta tamu <b>Pilih bank dulu</b> bila metodenya bank. Bila tidak ada cara bayar online yang bisa dipakai, layar memberi tahu tamu untuk membayar di kasir. Catatan: pilihan <b>e-wallet dan kartu</b> baru muncul setelah backend Duitku untuk tamu selesai. Gambar di bawah memakai contoh data, bukan transaksi sungguhan.</p>
+
+  <gx-wide>
+    <h3>1. Pilihan bayar dan pilih bank</h3>
+    <div class="shots">
+      <figure class="narrow"><img src="img/945-bayar-tamu-dialog-normal-mobile-light.png" alt="Dialog Pilih cara bayar, keadaan normal"><figcaption><b>Normal (HP 390).</b> Tamu melihat pilihan cara bayar untuk bagiannya, Rp 13.300.</figcaption></figure>
+      <figure class="narrow"><img src="img/945-bayar-tamu-dialog-va-banks-mobile-light.png" alt="Dialog Pilih cara bayar, daftar bank virtual account terbuka"><figcaption><b>Pilih bank.</b> Setelah Virtual Account dipilih, daftar bank terbuka di bawah pilihan.</figcaption></figure>
+    </div>
+
+    <h3>2. Keadaan gagal dan kosong</h3>
+    <p class="how">Bila tidak ada cara bayar online, tamu melihat tulisan: <b>Belum ada cara bayar online yang tersedia. Silakan bayar di kasir.</b></p>
+    <div class="shots">
+      <figure class="narrow"><img src="img/945-bayar-tamu-dialog-error-mobile-light.png" alt="Dialog gagal memuat daftar bank"><figcaption><b>Gagal memuat.</b> &quot;Daftar bank belum bisa dimuat&quot;, ada tombol Coba lagi.</figcaption></figure>
+      <figure class="narrow"><img src="img/945-bayar-tamu-dialog-no-methods-mobile-light.png" alt="Dialog tanpa cara bayar online"><figcaption><b>Tanpa metode.</b> Tamu diminta bayar di kasir. Keadaan ini disimulasikan di contoh data, belum bisa dicapai lewat sakelar.</figcaption></figure>
+      <figure class="narrow"><img src="img/945-bayar-tamu-dialog-sending-mobile-light.png" alt="Dialog saat pembayaran sedang dikirim"><figcaption><b>Sedang mengirim.</b> Tombol bayar terkunci dan tanda sibuk menyala sampai jawaban datang.</figcaption></figure>
+    </div>
+  </gx-wide>
+
+  <gx-question tag="Q25" title="Layar bayar tamu sudah sesuai?">
+    <p>Bila memilih Perlu ubah, tulis layar mana dan maunya bagaimana di kotak catatan.</p>
+    <gx-choice value="Setuju">Setuju<small>Lanjut seperti rancangan.</small></gx-choice>
+    <gx-choice value="Perlu ubah">Perlu ubah<small>Tulis catatan: layar mana, apa yang diubah.</small></gx-choice>
+  </gx-question>
+</gx-questions>
+</body>
+</html>
