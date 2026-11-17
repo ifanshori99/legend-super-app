@@ -65,7 +65,9 @@
 //   `settledPerItem: true`: the GL consumer posts nothing for it.
 //
 // Lock order: the run row, then the batch row (`loadBatchRunFirst`), then the
-// batch advisory lock. The caller's transaction is the unit: a throw rolls back
+// legal entity's cash/bank lock (`entityLock`, shared with the petty cash
+// return, legend-3k9qg), then the batch advisory lock (`lockBatchPayoutGl`
+// takes both, in that order). The caller's transaction is the unit: a throw rolls back
 // every row and every journal. Amounts are sealed; nothing here logs one.
 
 import { createHash, randomUUID } from "node:crypto";
@@ -98,6 +100,7 @@ import {
   openPayrollValue,
   sealPayrollValue,
 } from "../lib/payroll-sealed.ts";
+import { entityLock } from "./accounting-bank-matching.ts";
 import { postJournalFromRuleInTransaction } from "./accounting-journal.service.ts";
 import type { Tx } from "./hris-access.ts";
 import { payrollEntryDateOf, payrollGlKeys } from "./payroll-gl-consumer.ts";
@@ -633,7 +636,7 @@ export async function settleBatchPayouts(
 ): Promise<SettleResult> {
   const tenantId = actor.tenantId as TenantId;
   const batch = await loadBatchRunFirst(tx, actor.tenantId, batchId);
-  await lockBatchPayoutGl(tx, tenantId, batch.id);
+  await lockBatchPayoutGl(tx, tenantId, batch);
   // A pending settlement whose locked journal exists by now resolves first
   // (the consumer normally does it; this is the retry when it could not).
   await resolvePendingSettles(tx, tenantId, batch.payrollRunId, now, batch.id);
@@ -928,7 +931,7 @@ export async function resolvePendingSettles(
     .orderBy(asc(payrollDisbursementBatches.id));
   let resolved = 0;
   for (const batch of batches) {
-    await lockBatchPayoutGl(tx, tenantId, batch.id);
+    await lockBatchPayoutGl(tx, tenantId, batch);
     // A frozen batch sends no new money: its settle waits for the unfreeze
     // (the posting trigger of 0661 stays strict). The healthy siblings go on.
     if (await batchIsFrozen(tx, tenantId, batch.id)) {
@@ -1358,14 +1361,22 @@ const postingFeeIdr = (
   tenantId: string,
 ): number => openPostingTotal(posting, tenantId, "feeIdr");
 
-/** Takes the batch advisory lock that serializes every payout GL writer. */
+/**
+ * Takes the locks that serialize every payout GL writer of a batch: the legal
+ * entity's cash/bank lock FIRST (the one the petty cash return holds while it
+ * reads GL 1102, legend-3k9qg), then the batch advisory lock. Every call site
+ * goes through here, so the order is always entity lock, then batch lock, and
+ * never the reverse. Cash settlements, fees and recoveries credit 1102, so a
+ * return and a payout of one entity cannot interleave.
+ */
 export async function lockBatchPayoutGl(
   tx: Tx,
   tenantId: TenantId,
-  batchId: string,
+  batch: Pick<BatchRow, "id" | "legalEntityId">,
 ): Promise<void> {
+  await entityLock(tx, tenantId, batch.legalEntityId);
   await tx.execute(
-    sql`SELECT pg_advisory_xact_lock(hashtext(${`payroll-payout-gl:${tenantId}:${batchId}`}))`,
+    sql`SELECT pg_advisory_xact_lock(hashtext(${`payroll-payout-gl:${tenantId}:${batch.id}`}))`,
   );
 }
 
@@ -1539,7 +1550,7 @@ export async function repostSkippedFees(
 ): Promise<RepostFeesResult> {
   const tenantId = actor.tenantId as TenantId;
   const batch = await loadBatchRunFirst(tx, actor.tenantId, batchId);
-  await lockBatchPayoutGl(tx, tenantId, batch.id);
+  await lockBatchPayoutGl(tx, tenantId, batch);
   // A pending settlement whose locked journal exists by now resolves first, so
   // the fee re-post never runs ahead of the salary journal it belongs to.
   await resolvePendingSettles(tx, tenantId, batch.payrollRunId, now, batch.id);
@@ -1662,7 +1673,7 @@ export async function recoverPayoutGlOfBatch(
   now = new Date(),
 ): Promise<RecoverPayoutGlResult> {
   const batch = await loadBatchRunFirst(tx, tenantId, batchId);
-  await lockBatchPayoutGl(tx, tenantId, batch.id);
+  await lockBatchPayoutGl(tx, tenantId, batch);
   const { resolved } = await resolvePendingSettles(
     tx,
     tenantId,

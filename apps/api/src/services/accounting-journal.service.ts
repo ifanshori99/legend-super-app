@@ -460,6 +460,43 @@ async function appendJournalPosted(
 }
 
 /**
+ * Central back-stop of the petty cash lock protocol (legend-3k9qg): a journal
+ * that CREDITS the account the `petty_cash` role maps to (1102) lowers the GL
+ * side of the fund-vs-GL guard that the petty cash return reads under the
+ * entity lock. Take that same lock before the entry is written. Lock order is
+ * entity lock, then the batch/period/journal locks; callers that already hold
+ * it (petty cash, cash/bank, reversal, payroll payout) make this a re-entrant
+ * no-op. A poster that wants to take other locks first must take the entity
+ * lock before them, never after.
+ */
+async function lockEntityForPettyCashCredit(
+  tx: TenantTransaction,
+  tenantId: string,
+  legalEntityId: string,
+  lines: readonly { accountId: string; creditIdr: number }[],
+): Promise<void> {
+  const credited = lines.filter((line) => line.creditIdr > 0);
+  if (credited.length === 0) return;
+  const [mapping] = await tx
+    .select({ accountId: accountMappings.accountId })
+    .from(accountMappings)
+    .where(
+      and(
+        eq(accountMappings.tenantId, tenantId),
+        eq(accountMappings.legalEntityId, legalEntityId),
+        eq(accountMappings.role, "petty_cash"),
+      ),
+    )
+    .limit(1);
+  if (
+    !mapping ||
+    !credited.some((line) => line.accountId === mapping.accountId)
+  )
+    return;
+  await entityLock(tx, tenantId, legalEntityId);
+}
+
+/**
  * The posting API all modules use, inside the caller's tenant transaction.
  * Idempotent on `idempotencyKey`; fails closed on a closed period, an
  * inactive/header/foreign account or an unbalanced entry.
@@ -495,6 +532,13 @@ export async function postJournalInTransaction(
       chart,
     );
   const totalIdr = assertJournalBalanced(parsed.lines);
+  // Before the period gate (entity lock first, like every other writer).
+  await lockEntityForPettyCashCredit(
+    tx,
+    context.tenant.tenantId,
+    parsed.legalEntityId,
+    parsed.lines,
+  );
   const period = await assertPeriodOpenForPosting(tx, context, {
     legalEntityId: parsed.legalEntityId,
     entryDate: parsed.entryDate,
