@@ -1862,3 +1862,4 @@ Langkah berikut CTO baru:
 - 21:54 CTO: 1007 G0o10 53e85b8e9 SIAP batch86 sesudah 992 (0621-0624). Keputusan: tolak reversal bila offboarding completed diterima (membatasi). G0o10 resolve.
 - 21:55 CTO: RAM hijau. Mulai G24vl 1012 audit guard router (legend-3z0ds), G2zim 1013 jurnal net refund provider (legend-tlm3h), G1bzk 1014 runbook reseal (legend-ony4b), semua Sonnet #3.
 - 21:56 CTO: 1005 G7y5g e6e59f5bf SIAP batch86 sesudah 990 (0615-0616). Keputusan CTO: bukti return yang terpakai tetap terbakar, ajukan ulang butuh berkas baru (membatasi, tabel bukti append-only utuh). G7y5g resolve.
+- 21:57 CTO: 1010 G8hy5 e821ed64f SIAP batch86 sesudah 994 847b580a. Guard edc_charge_pending diterima (membatasi). G8hy5 resolve.
