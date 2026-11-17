@@ -5,6 +5,8 @@
 //
 // Plain TypeScript with no runtime imports: Node tests load it directly.
 
+import type { TenderVoidReason } from "./tender-void-reason";
+
 /** Error code a hook returns outside mock mode when the contract is missing. */
 export const CONTRACT_PENDING = "CONTRACT_PENDING";
 
@@ -97,6 +99,11 @@ export type PaymentAttempt = {
   posRef?: string;
   /** Recorded by hand from a bank slip: needs reconciliation. */
   standalone?: boolean;
+  /**
+   * Set when the server voided this QRIS tender and refunded the money (legend-7e8kx):
+   * why, so the cashier text names the real cause. Absent otherwise.
+   */
+  voidReason?: TenderVoidReason;
 };
 
 export type PaymentSession = {
@@ -381,6 +388,7 @@ export type EngineAttempt = {
   approvalCode?: string;
   posRef?: string;
   standalone?: boolean;
+  voidReason?: TenderVoidReason;
 };
 
 export type EngineOrder = {

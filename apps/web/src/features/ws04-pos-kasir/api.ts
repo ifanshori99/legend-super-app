@@ -46,6 +46,7 @@ import {
   type OpenShiftInput,
   type OverrideResult,
   type PaymentMethodOption,
+  type PaymentAttempt,
   type PaymentSession,
   type ReceiptResult,
   type RecordCashMovementInput,
@@ -166,6 +167,40 @@ export const postCloseShiftRaw = closePosShift;
 
 // ---- Mapping real responses to the screen view-models ----------------------
 
+/**
+ * legend-7e8kx: the order's newest tender is a QRIS the server voided and
+ * refunded for a reason the cashier text names, and the bill is still unpaid.
+ * It is shown as a failed QRIS attempt that carries the reason; otherwise
+ * there is no attempt (the gateway flow itself is not on the wire yet).
+ */
+function voidedQrisAttempt(
+  order: PosOrderDetail,
+  remainingIdr: number,
+): PaymentAttempt | null {
+  if (remainingIdr === 0) return null;
+  const ordered = [...order.tenders].sort((a, b) =>
+    a.requestedAt.localeCompare(b.requestedAt),
+  );
+  const latest = ordered.at(-1);
+  if (
+    latest === undefined ||
+    latest.method !== "qris" ||
+    latest.status !== "voided" ||
+    !latest.voidReason
+  )
+    return null;
+  return {
+    id: latest.id,
+    sequence: ordered.length,
+    method: "qris",
+    status: "failed",
+    // The guest pays the bill that is still open, which can be less than the
+    // voided tender (bill_below_tender); fall back to the tender amount.
+    amountIdr: remainingIdr > 0 ? remainingIdr : Number(latest.amountIdr),
+    voidReason: latest.voidReason,
+  };
+}
+
 function sessionFromOrder(order: PosOrderDetail): PaymentSession {
   const captured = order.tenders.filter((t) => t.status === "captured");
   const paidIdr = captured.reduce((sum, t) => sum + Number(t.amountIdr), 0);
@@ -212,7 +247,7 @@ function sessionFromOrder(order: PosOrderDetail): PaymentSession {
       remainingIdr,
       paid: remainingIdr === 0,
     },
-    activeAttempt: null,
+    activeAttempt: voidedQrisAttempt(order, remainingIdr),
     ...(lastTender?.method === "cash" &&
     lastCash?.receivedIdr != null &&
     lastCash.changeIdr != null

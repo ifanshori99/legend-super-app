@@ -48,12 +48,14 @@ import {
   posEvents,
   posOrderDetailSchema,
   posOrderSummarySchema,
+  posTenderVoidReasonSchema,
   voidReasonSchema,
   type PosEventName,
   type PosOrderDetail,
   type PosOrderStatus,
   type PosOrderSummary,
   type PosTender,
+  type PosTenderVoidReason,
 } from "@starter/shared/pos";
 import {
   approvalRequests,
@@ -1238,6 +1240,45 @@ export async function swapLinksOf(
   return { replacementIds, replacedIds };
 }
 
+/**
+ * Why each voided QRIS tender of the order was voided: the `reason` of its
+ * latest `order.tender_voided` event, kept only when it is one the cashier text
+ * names (an unknown reason stays absent, so the POS shows the generic text).
+ */
+async function tenderVoidReasonsOf(
+  tx: Tx,
+  context: ScopedTenantContext,
+  orderId: string,
+  tenders: readonly TenderRow[],
+): Promise<Map<string, PosTenderVoidReason>> {
+  const reasons = new Map<string, PosTenderVoidReason>();
+  if (!tenders.some((t) => t.status === "voided" && t.method === "qris"))
+    return reasons;
+  const events = await tx
+    .select({ payload: orderEvents.payload })
+    .from(orderEvents)
+    .where(
+      and(
+        eq(orderEvents.tenantId, context.tenant.tenantId),
+        eq(orderEvents.orderId, orderId),
+        eq(orderEvents.type, "order.tender_voided"),
+      ),
+    )
+    .orderBy(asc(orderEvents.sequence));
+  for (const { payload } of events) {
+    const { tenderId, reason } = (payload ?? {}) as {
+      tenderId?: unknown;
+      reason?: unknown;
+    };
+    if (typeof tenderId !== "string") continue;
+    const parsed = posTenderVoidReasonSchema.safeParse(reason);
+    // The latest event wins, so a later unnamed reason clears an earlier one.
+    if (parsed.success) reasons.set(tenderId, parsed.data);
+    else reasons.delete(tenderId);
+  }
+  return reasons;
+}
+
 /** The cashier screen's order: lines, tenders, live discounts and receipt. */
 export async function orderDetail(
   tx: Tx,
@@ -1281,6 +1322,7 @@ export async function orderDetail(
               swaps.replacedIds.has(item.id) && item.status === "voided",
           )
           .reduce((sum, { item }) => sum + item.lineTotalIdr, 0);
+  const voidReasons = await tenderVoidReasonsOf(tx, context, order.id, tenders);
   return posOrderDetailSchema.parse({
     id: order.id,
     tenantId: order.tenantId,
@@ -1377,7 +1419,12 @@ export async function orderDetail(
         createdAt: item.createdAt.toISOString(),
       };
     }),
-    tenders: tenders.map(tenderDto),
+    tenders: tenders.map((tender) => {
+      const voidReason = voidReasons.get(tender.id);
+      return voidReason
+        ? { ...tenderDto(tender), voidReason }
+        : tenderDto(tender);
+    }),
     discounts: discounts.map((row) => ({
       id: row.id,
       tenantId: row.tenantId,

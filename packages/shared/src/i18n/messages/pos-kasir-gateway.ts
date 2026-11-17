@@ -119,15 +119,15 @@ export const posKasirGatewayMessages = {
   tenderVoided: {
     title: "QRIS dibatalkan, dana dikembalikan ke pelanggan",
     edc_request_open:
-      "Penjualan kartu EDC untuk tagihan ini masih terbuka, jadi QRIS yang masuk direfund ke pelanggan. Minta pelanggan membayar ulang.",
+      "Masih ada transaksi kartu EDC yang belum selesai di tagihan ini, jadi QRIS dikembalikan ke pelanggan. Selesaikan atau batalkan transaksi EDC dulu, lalu minta pelanggan membayar ulang.",
     bill_below_tender:
-      "Tagihan sudah berubah dan lebih kecil dari QRIS yang dibayar, jadi QRIS direfund ke pelanggan. Minta pelanggan membayar ulang sesuai tagihan.",
+      "Tagihan sudah berubah dan lebih kecil dari QRIS yang dibayar, jadi QRIS dikembalikan ke pelanggan. Minta pelanggan membayar ulang sesuai tagihan.",
     business_day_closed:
-      "Hari bisnis sudah ditutup, jadi QRIS yang masuk direfund ke pelanggan. Minta pelanggan membayar ulang.",
+      "Hari bisnis sudah ditutup, jadi QRIS yang masuk dikembalikan ke pelanggan. Minta pelanggan membayar ulang.",
     refund_reserved:
-      "Tagihan ini sedang diproses untuk refund, jadi QRIS yang masuk direfund ke pelanggan. Minta pelanggan membayar ulang.",
+      "Tagihan ini sedang diproses untuk refund, jadi QRIS yang masuk dikembalikan ke pelanggan. Minta pelanggan membayar ulang.",
     unknown:
-      "QRIS yang masuk tidak bisa dipakai untuk tagihan ini dan direfund ke pelanggan. Minta pelanggan membayar ulang.",
+      "QRIS yang masuk tidak bisa dipakai untuk tagihan ini dan dikembalikan ke pelanggan. Minta pelanggan membayar ulang.",
   },
   method: {
     qris: "QRIS",

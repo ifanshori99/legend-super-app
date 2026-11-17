@@ -7,6 +7,7 @@ import {
   useRefreshQris,
   useStartPayment,
 } from "../../hooks";
+import { tenderVoidMessageKey } from "../../tender-void-reason";
 import type { PaymentAttempt } from "../../types";
 import {
   BlockNotice,
@@ -73,6 +74,9 @@ export function FailedPanel({ orderId, onChangeMethod }: PaymentPanelProps) {
   };
 
   const deposit = bill?.deposit;
+  // legend-7e8kx: the server voided this QRIS and refunded it. Say why, instead
+  // of the provider-failure text (the guest did pay; the money went back).
+  const voided = attempt.voidReason !== undefined;
   return (
     <LiveRegion>
       <PosPanel
@@ -84,7 +88,7 @@ export function FailedPanel({ orderId, onChangeMethod }: PaymentPanelProps) {
         }
         footer={
           <>
-            {canRetry && (
+            {canRetry && !voided && (
               <Button variant="outline" loading={retrying} onClick={retry}>
                 {retrying
                   ? t("posKasirGateway.failed.retrying")
@@ -100,25 +104,35 @@ export function FailedPanel({ orderId, onChangeMethod }: PaymentPanelProps) {
       >
         <StateBlock
           mark="fail"
-          title={t("posKasirGateway.failed.heading")}
-          description={t("posKasirGateway.failed.body")}
+          title={
+            voided
+              ? t("posKasirGateway.tenderVoided.title")
+              : t("posKasirGateway.failed.heading")
+          }
+          description={
+            voided
+              ? t(tenderVoidMessageKey(attempt.voidReason))
+              : t("posKasirGateway.failed.body")
+          }
           amountIdr={attempt.amountIdr}
           className="py-4"
         >
-          <BlockNotice>
-            <Notice
-              tone="danger"
-              title={t("posKasirGateway.failed.noticeTitle", {
-                method: methodLabel,
-              })}
-            >
-              {deposit?.paid
-                ? t("posKasirGateway.failed.noticeBodyDeposit", {
-                    amount: formatRupiah(deposit.amountIdr),
-                  })
-                : t("posKasirGateway.failed.noticeBody")}
-            </Notice>
-          </BlockNotice>
+          {!voided && (
+            <BlockNotice>
+              <Notice
+                tone="danger"
+                title={t("posKasirGateway.failed.noticeTitle", {
+                  method: methodLabel,
+                })}
+              >
+                {deposit?.paid
+                  ? t("posKasirGateway.failed.noticeBodyDeposit", {
+                      amount: formatRupiah(deposit.amountIdr),
+                    })
+                  : t("posKasirGateway.failed.noticeBody")}
+              </Notice>
+            </BlockNotice>
+          )}
           {retryError != null && (
             <BlockNotice>
               <ErrorNotice
