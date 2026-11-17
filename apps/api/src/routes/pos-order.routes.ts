@@ -8,7 +8,7 @@
 // posOrderRouter)`. The router merges params, so every contract path
 // `/api/outlets/:outletId/pos/...` is served here.
 //
-// - requireAuth + requireTrustedOrigin + requireTenantContext, then
+// - requireAuthAllowSharedDevice + requireTrustedOrigin + requireTenantContext, then
 //   requireOutletPermission on the path's outlet (TEN-03); the tenant comes
 //   from the server-minted context (TEN-02), never the body.
 // - Bodies, params and queries are parsed with the strict contract schemas.
@@ -54,7 +54,7 @@ import {
   requireActingStaffOnSharedDevice,
   resolveActingStaff,
 } from "../middleware/acting-staff.ts";
-import { requireAuth } from "../middleware/auth.ts";
+import { requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
@@ -82,7 +82,7 @@ import type { PosCaller } from "../services/pos-order-support.ts";
 export const posOrderRouter = Router({ mergeParams: true });
 
 posOrderRouter.use(
-  requireAuth,
+  requireAuthAllowSharedDevice,
   requireTrustedOrigin,
   requireTenantContext,
   resolveActingStaff,
@@ -211,7 +211,7 @@ export function createPosCatalogRouter(
   const router = Router({ mergeParams: true });
   router.get(
     "/",
-    requireAuth,
+    requireAuthAllowSharedDevice,
     requireTrustedOrigin,
     requireTenantContext,
     resolveActingStaff,

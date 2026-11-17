@@ -6,7 +6,11 @@
 
 import { Router, type Request } from "express";
 import { pushDeviceParamsSchema } from "@starter/shared/identity";
-import { getAuth, requireAuth } from "../middleware/auth";
+import {
+  getAuth,
+  requireAuth,
+  requireAuthAllowSharedDevice,
+} from "../middleware/auth";
 import { requireTrustedOrigin } from "../middleware/origin";
 import { supportGrantedTenantIds } from "../services/platform-support.service";
 import {
@@ -38,9 +42,15 @@ async function scopeOf(req: Request) {
   };
 }
 
-identityPushDevicesRouter.get("/", requireAuth, async (req, res) => {
-  res.json({ data: await listOwnPushDevices(await scopeOf(req)) });
-});
+// The list is read by every area frame (push auto-renew), the POS shell on a
+// shared device included; revoking a device stays back office only.
+identityPushDevicesRouter.get(
+  "/",
+  requireAuthAllowSharedDevice,
+  async (req, res) => {
+    res.json({ data: await listOwnPushDevices(await scopeOf(req)) });
+  },
+);
 
 identityPushDevicesRouter.delete(
   "/:id",

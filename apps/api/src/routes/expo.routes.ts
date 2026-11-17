@@ -15,7 +15,11 @@ import {
   listExpoRunners,
   markExpoOrderDelivered,
 } from "@starter/shared/kitchen";
-import { getAuth, requireAuth } from "../middleware/auth.ts";
+import {
+  requireActingStaffOnSharedDevice,
+  resolveActingStaff,
+} from "../middleware/acting-staff.ts";
+import { getAuth, requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
@@ -29,9 +33,11 @@ import type { KdsActor } from "../services/kds-support.ts";
 export const expoRouter = Router({ mergeParams: true });
 
 const guard = [
-  requireAuth,
+  requireAuthAllowSharedDevice,
   requireTrustedOrigin,
   requireTenantContext,
+  resolveActingStaff,
+  requireActingStaffOnSharedDevice,
   requireOutletPermission("kds.expo.operate", (req) =>
     String(req.params.outletId),
   ),

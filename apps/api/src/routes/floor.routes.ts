@@ -16,7 +16,7 @@ import {
   requireActingStaffOnSharedDevice,
   resolveActingStaff,
 } from "../middleware/acting-staff";
-import { requireAuth } from "../middleware/auth";
+import { requireAuthAllowSharedDevice } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
 import { loadRequestAccess } from "../middleware/permissions";
@@ -75,7 +75,7 @@ async function floorBoardFilters(
 
 export const floorRouter = Router();
 floorRouter.use(
-  requireAuth,
+  requireAuthAllowSharedDevice,
   requireTrustedOrigin,
   requireTenantContext,
   resolveActingStaff,
@@ -165,7 +165,7 @@ floorRouter.put("/layout", jsonBody, async (req, res) => {
 
 export const tablesRouter = Router();
 tablesRouter.use(
-  requireAuth,
+  requireAuthAllowSharedDevice,
   requireTrustedOrigin,
   requireTenantContext,
   resolveActingStaff,
@@ -199,7 +199,11 @@ tablesRouter.post("/:tableId/status", jsonBody, async (req, res) => {
 // ---- Live floor board for one explicit outlet -----------------------------
 
 export const outletFloorRouter = Router();
-outletFloorRouter.use(requireAuth, requireTrustedOrigin, requireTenantContext);
+outletFloorRouter.use(
+  requireAuthAllowSharedDevice,
+  requireTrustedOrigin,
+  requireTenantContext,
+);
 
 // legend-42gqp: same shared-device guard as floorRouter; without it an owner
 // cookie (or a cashier token) on a shared device read another outlet's board.

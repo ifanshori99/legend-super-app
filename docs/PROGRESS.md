@@ -7461,3 +7461,14 @@ Cabang `ghostex/987-fasilitas-4-kartu` dari `origin/milestone/m1` (1b0fd2a9e). M
 - `listRefundFollowups` kini memuat dana parkir yang jatah refund otomatisnya habis atau ditolak orang: satu item per dana (`fundId` baru di `refundFollowupViewSchema`, `remainingIdr` = jumlah dana, `attempts` per dana); dana ber-resolution atau punya refund hidup/selesai tidak tampil. Tanpa UI baru (belum ada konsumen web).
 - Teks alarm `payment.refund_followup_required` pindah ke katalog (`ws05-refund-followup.ts` `followupAlarm`); versi dana parkir menyebut dana tamu yang diparkir dan jumlahnya, tidak menyuruh "ajukan refund baru". Teks non-dana tetap.
 - Test `qr-va-1029-of9kp-followup-list` (9) + 3 berkas terkait hijau (42); `tests/text-contract` dan `payment-admin-contract` hijau; typecheck API hijau; reviewer S bersih. Tidak mengubah alur uang.
+
+## 1012 Akses: router tanpa guard perangkat bersama (legend-3z0ds), 17 Nov 2026
+
+Cabang `ghostex/1012-guard-router-perangkat-bersama`, tanpa migrasi, tanpa logika uang.
+
+- Desain: `requireAuth` (apps/api/src/middleware/auth.ts) default-tolak sesi bertanda perangkat bersama aktif (403 `ACTING_STAFF_NOT_ALLOWED`); varian opt-in `requireAuthAllowSharedDevice` untuk router POS (plus `resolveActingStaff` + `requireActingStaffOnSharedDevice`) dan shell (me GET /access, pos-acting-staff, push key/delete, identity push-devices GET). Router baru otomatis tertutup.
+- Kontrak: `apps/api/src/test/shared-device-router-decisions.test.ts` (182 router eksplisit, per kemunculan; scan `getSession` ber-allowlist). HTTP: `shared-device-backoffice-guard.test.ts`. Web: `apps/web/test/acting-staff-shared-routers-path.test.ts`, POS_PATH diperluas.
+- Router POS baru: expo, pickup, serving-time, service-request, open-bill, order-issues, order-recovery(-charge), menu /availability, device-pin pos-overrides (guard kasir), customer-display (perintah).
+- Dua tes lama diperbarui karena premisnya berubah: acting-staff-w2-floor (reservation-policy kini 403 NOT_ALLOWED), pos-acting-staff (router tanpa middleware: delivery-channels).
+- Lanjutan (kartu bd dibuat): handler POS memakai pemilik sesi bukan `actorOf` (menyentuh uang, keputusan founder); websocket KDS dan `/api/auth/*` Better Auth belum lewat gate; layar reservasi/Tanya AI/_ops kini 403 di perangkat bersama (keputusan produk).
+- Subagent: total 14, puncak 5 bersamaan, token heavy dipegang induk dan test-runner bergantian.

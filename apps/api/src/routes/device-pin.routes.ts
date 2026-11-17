@@ -46,8 +46,16 @@ import {
 } from "@starter/shared/identity";
 import { ACTING_STAFF_ERROR_CODES } from "@starter/shared/pos/acting-staff";
 import { HttpError } from "../lib/http-error";
-import { actorOf, resolveActingStaff } from "../middleware/acting-staff";
-import { getAuth, requireAuth } from "../middleware/auth";
+import {
+  actorOf,
+  requireActingStaffOnSharedDevice,
+  resolveActingStaff,
+} from "../middleware/acting-staff";
+import {
+  getAuth,
+  requireAuth,
+  requireAuthAllowSharedDevice,
+} from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireBackOfficeSurface } from "../middleware/identity-surface";
 import { requireTrustedOrigin } from "../middleware/origin";
@@ -140,10 +148,11 @@ staffPinRouter.put(
 export const posOverrideRouter = Router();
 
 posOverrideRouter.use(
-  requireAuth,
+  requireAuthAllowSharedDevice,
   requireTrustedOrigin,
   requireTenantContext,
   resolveActingStaff,
+  requireActingStaffOnSharedDevice,
 );
 
 posOverrideRouter.post("/", jsonBody, async (req, res) => {

@@ -26,11 +26,10 @@ import * as writeoff from "../services/pos-receipt-writeoff.service.ts";
 
 export const posReceiptWriteoffRouter = Router({ mergeParams: true });
 
-posReceiptWriteoffRouter.use(
-  requireAuth,
-  requireTrustedOrigin,
-  requireTenantContext,
-);
+// Per route, not router `.use` (legend-3z0ds): the router shares its URL prefix
+// with the POS routers, so a strict `.use` would refuse their shared-device
+// requests (shifts, day close) before they reach their own router.
+const session = [requireAuth, requireTrustedOrigin, requireTenantContext];
 
 const outletOf = (req: Request) => String(req.params.outletId ?? "");
 const owner = requireOutletPermission("pos.receipt.writeoff", outletOf);
@@ -83,6 +82,7 @@ const recentSecondFactor: RequestHandler = async (req, _res, next) => {
 
 posReceiptWriteoffRouter.post(
   "/receipt-writeoffs",
+  ...session,
   rejectActingStaff,
   owner,
   ownerTemplateOnly,
@@ -104,6 +104,7 @@ posReceiptWriteoffRouter.post(
 
 posReceiptWriteoffRouter.get(
   "/receipt-writeoffs",
+  ...session,
   rejectActingStaff,
   owner,
   ownerTemplateOnly,
