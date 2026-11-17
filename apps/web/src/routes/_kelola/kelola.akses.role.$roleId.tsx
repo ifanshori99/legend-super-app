@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { RoleDetailPage } from "@/features/ws01-access/components/role-editor-page";
 import { accessGuard } from "@/features/ws01-access/guard";
+import { accessViewerUserId } from "@/features/ws01-access/viewer";
 import { isMockScenarioRequest } from "@/features/ws01-access/lib";
 import { rolesQuery } from "@/features/ws01-access/queries";
 
@@ -21,7 +22,7 @@ function RoleScreen() {
     <RoleDetailPage
       roleId={roleId}
       access={access}
-      viewerUserId={session?.user.id}
+      viewerUserId={accessViewerUserId(session)}
     />
   );
 }
