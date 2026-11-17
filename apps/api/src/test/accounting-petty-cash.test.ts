@@ -41,8 +41,19 @@ import { withTenant } from "../db/tenant.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import { deliverAutoJournalEvent } from "../services/accounting-auto-journal-consumer.ts";
+import {
+  CASH_BANK_APPROVAL_SOURCE_MODULE,
+  CASH_BANK_ENTRY_OBJECT_TYPE,
+} from "../services/accounting-cash-bank-entries.service.ts";
+import {
+  PETTY_TOPUP_APPROVAL_SOURCE_MODULE,
+  PETTY_TOPUP_ENTRY_OBJECT_TYPE,
+} from "../services/accounting-petty-cash.service.ts";
 import { agent, originHeader } from "./helpers.ts";
-import { withLimitSharedLock } from "./helpers/cash-limit-lock.ts";
+import {
+  limitExclusiveLock,
+  withLimitSharedLock,
+} from "./helpers/cash-limit-lock.ts";
 import {
   asRuntime,
   auditActionsFor,
@@ -1463,5 +1474,251 @@ describe("legend-e61s5 top-up held for approval needs the petty_cash mapping", (
     });
     expect(await pendingRows(outletId)).toHaveLength(1);
     expect(await fundRow(outletId)).toBeNull();
+  });
+});
+
+describe("legend-6ipij held top-up opens its approval chain (SO 1036 finding 6)", () => {
+  // The amounts assume the default cash limit (Rp5.000.000).
+  withLimitSharedLock();
+  const ABOVE_LIMIT_IDR = 5_000_001;
+
+  type ChainRow = {
+    id: string;
+    source_module: string;
+    action_type: string;
+    object_type: string;
+    status: string;
+    requested_by: string;
+    amount_idr: string;
+    required_levels: number;
+    payload: Record<string, unknown>;
+  };
+  const chainOf = async (documentId: string) =>
+    (
+      await owner.query<ChainRow>(
+        `SELECT id, source_module, action_type, object_type, status, requested_by,
+                amount_idr::text AS amount_idr, required_levels, payload
+           FROM approval_requests
+          WHERE tenant_id = $1 AND object_id = $2
+          ORDER BY level`,
+        [tenantId, documentId],
+      )
+    ).rows;
+
+  it("[legend-6ipij-PC-1] the chain identity here is the one the cash-bank consumer listens to", () => {
+    expect(PETTY_TOPUP_APPROVAL_SOURCE_MODULE).toBe(
+      CASH_BANK_APPROVAL_SOURCE_MODULE,
+    );
+    expect(PETTY_TOPUP_ENTRY_OBJECT_TYPE).toBe(CASH_BANK_ENTRY_OBJECT_TYPE);
+  });
+
+  it("[legend-6ipij-PC-2] a held top-up has exactly one pending cash_out chain; no fund, no ledger row, no journal yet", async () => {
+    const outletId = await freshOutlet();
+    const res = await move(
+      finance,
+      movementBody(outletId, "topup", ABOVE_LIMIT_IDR),
+    );
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    const documentId = res.body.data.id as string;
+    const chain = await chainOf(documentId);
+    expect(chain.length).toBeGreaterThanOrEqual(1);
+    expect(chain.length).toBe(chain[0]!.required_levels);
+    for (const row of chain)
+      expect(row).toMatchObject({
+        source_module: CASH_BANK_APPROVAL_SOURCE_MODULE,
+        action_type: "cash_out",
+        object_type: CASH_BANK_ENTRY_OBJECT_TYPE,
+        status: "pending",
+        requested_by: finance.userId,
+        amount_idr: String(ABOVE_LIMIT_IDR),
+      });
+    expect(chain[0]!.payload).toMatchObject({
+      kind: "petty_topup",
+      amountIdr: ABOVE_LIMIT_IDR,
+    });
+    expect(await fundRow(outletId)).toBeNull();
+    expect(await entryRows(outletId)).toHaveLength(0);
+    expect(await journalsByKey(world.entityId, `pc:${documentId}`)).toHaveLength(
+      0,
+    );
+  });
+
+  it("[legend-6ipij-PC-3] a split top-up tiers on the creator's day total: the chain carries the total, the payload the real amount", async () => {
+    const splitter = await signedIn(app, "PC splitter", [
+      { role: "finance", outletId: null },
+    ]);
+    const outletId = await freshOutlet();
+    const first = await move(
+      splitter,
+      movementBody(outletId, "topup", 3_000_000),
+    );
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    const second = await move(
+      splitter,
+      movementBody(outletId, "topup", 3_000_000),
+    );
+    expect(second.status, JSON.stringify(second.body)).toBe(202);
+    const chain = await chainOf(second.body.data.id as string);
+    expect(chain).toHaveLength(chain[0]!.required_levels);
+    expect(chain[0]).toMatchObject({
+      amount_idr: "6000000",
+      status: "pending",
+    });
+    expect(chain[0]!.payload).toMatchObject({ amountIdr: 3_000_000 });
+    // Only the first, direct top-up moved money.
+    expect(await balanceOf(outletId)).toBe(3_000_000);
+  });
+
+  it("[legend-6ipij-PC-4] a top-up at or below the limit is direct: no document, no chain", async () => {
+    const outletId = await freshOutlet();
+    const entryId = await fundWith(outletId, 100_000);
+    expect(await chainOf(entryId)).toHaveLength(0);
+    expect(await balanceOf(outletId)).toBe(100_000);
+  });
+
+  it("[legend-6ipij-PC-5] a replay of the held top-up answers the same document and opens no second chain", async () => {
+    const outletId = await freshOutlet();
+    const body = movementBody(outletId, "topup", ABOVE_LIMIT_IDR);
+    const first = await move(finance, body);
+    const replay = await move(finance, body);
+    expect(first.status, JSON.stringify(first.body)).toBe(202);
+    expect(replay.body.data.id).toBe(first.body.data.id);
+    const chain = await chainOf(first.body.data.id as string);
+    expect(chain).toHaveLength(chain[0]!.required_levels);
+  });
+});
+
+describe("legend-6ipij held top-up without an approval policy fails closed", () => {
+  limitExclusiveLock();
+  const HELD_ACTION = "cash_out_held_by_petty_test";
+  let heldPolicyIds: string[] = [];
+  const restorePolicies = async () => {
+    if (heldPolicyIds.length === 0) return;
+    await owner.query(
+      "UPDATE approval_policies SET action_type = 'cash_out' WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+      [tenantId, heldPolicyIds],
+    );
+    heldPolicyIds = [];
+  };
+  afterAll(async () => {
+    await restorePolicies().catch(() => {});
+  });
+
+  it("[legend-6ipij-PC-6] no cash_out policy: 409 APPROVAL_POLICY_MISSING, no document, no chain, no fund", async () => {
+    const outletId = await freshOutlet();
+    try {
+      const { rows } = await owner.query<{ id: string }>(
+        "UPDATE approval_policies SET action_type = $1 WHERE tenant_id = $2 AND action_type = 'cash_out' RETURNING id",
+        [HELD_ACTION, tenantId],
+      );
+      heldPolicyIds = rows.map((row) => row.id);
+      expect(heldPolicyIds.length).toBeGreaterThan(0);
+      const res = await move(
+        finance,
+        movementBody(outletId, "topup", 5_000_001),
+      );
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body.error.code).toBe("APPROVAL_POLICY_MISSING");
+      const docs = await owner.query(
+        "SELECT id FROM cash_bank_entries WHERE tenant_id = $1 AND outlet_id = $2",
+        [tenantId, outletId],
+      );
+      expect(docs.rows).toHaveLength(0);
+      expect(await fundRow(outletId)).toBeNull();
+    } finally {
+      await restorePolicies();
+    }
+  });
+});
+
+describe("legend-3k9qg petty cash paths take the entity lock (SO 1036 finding 3)", () => {
+  withLimitSharedLock();
+
+  /**
+   * Holds the entity lock (`entityLock` key) on another connection, fires the
+   * request, and proves it has not finished while the lock is held; releases and
+   * returns the response. A path that skips the lock would finish at once.
+   */
+  async function whileEntityLocked<T>(
+    entityId: string,
+    fire: () => Promise<T>,
+  ): Promise<T> {
+    const client = await owner.connect();
+    let pending: Promise<T> | undefined;
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+        [`acc-cashbank:${tenantId.toLowerCase()}:${entityId.toLowerCase()}`],
+      );
+      let settled = false;
+      pending = fire().then((result) => {
+        settled = true;
+        return result;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      expect(settled, "finished while the entity lock was held").toBe(false);
+    } finally {
+      await client.query("COMMIT").catch(() => {});
+      client.release();
+    }
+    return pending!;
+  }
+
+  it("[legend-3k9qg-PC-1] a return waits for the entity lock", async () => {
+    const outletId = await freshOutlet();
+    await fundWith(outletId, 100_000);
+    const res = await whileEntityLocked(world.entityId, async () =>
+      move(finance, movementBody(outletId, "return", 40_000)),
+    );
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(await balanceOf(outletId)).toBe(60_000);
+  });
+
+  it("[legend-3k9qg-PC-2] a petty purchase waits for the entity lock", async () => {
+    const outletId = await freshOutlet();
+    await fundWith(outletId, 100_000);
+    const body = await purchaseBody(outletId, 30_000);
+    const res = await whileEntityLocked(world.entityId, async () => buy(body));
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(await balanceOf(outletId)).toBe(70_000);
+  });
+
+  it("[legend-3k9qg-PC-3] the retry post of a parked entry waits for the entity lock", async () => {
+    // Own entity: the petty_cash mapping is removed to park, then restored.
+    const w = await makeWorld();
+    const outletId = await makeOutlet(w.entityId);
+    const mapping = await owner.query<{ account_id: string }>(
+      "SELECT account_id FROM account_mappings WHERE tenant_id = $1 AND legal_entity_id = $2 AND role = 'petty_cash'",
+      [tenantId, w.entityId],
+    );
+    expect(mapping.rows).toHaveLength(1);
+    await owner.query(
+      "DELETE FROM account_mappings WHERE tenant_id = $1 AND legal_entity_id = $2 AND role = 'petty_cash'",
+      [tenantId, w.entityId],
+    );
+    let parkedId = "";
+    try {
+      const parked = await move(
+        finance,
+        movementBody(outletId, "topup", 30_000, {
+          bankAccountId: w.bankAccountA,
+        }),
+      );
+      expect(parked.status, JSON.stringify(parked.body)).toBe(201);
+      expect(parked.body.data.journalStatus).toBe("parked");
+      parkedId = parked.body.data.id as string;
+    } finally {
+      await owner.query(
+        `INSERT INTO account_mappings (tenant_id, legal_entity_id, role, account_id)
+         VALUES ($1, $2, 'petty_cash', $3)`,
+        [tenantId, w.entityId, mapping.rows[0]!.account_id],
+      );
+    }
+    const res = await whileEntityLocked(w.entityId, async () =>
+      retryPost(finance, parkedId),
+    );
+    expect(ok(res.status), JSON.stringify(res.body)).toBe(true);
+    expect(res.body.data.journalStatus).toBe("posted");
   });
 });
