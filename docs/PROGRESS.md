@@ -7039,3 +7039,12 @@ Pemakaian: session-usage merge train 1400k biaya* (Sonnet 5.5); subagent 2 (Expl
 - Gate: fast gate 563 berkas (API 508, root 54, web 1) 3215 dtk; 43 berkas API gagal semuanya DB `in recovery mode`/57P03 (lingkungan, Colima), rerun terarah 41/43 hijau, 2 sisanya adalah dua berkas panic di atas. Lint 67 dtk (0 error, 2 warning), typecheck 221 dtk, e2e produksi 18 lulus/1 skip (145 dtk), build 71 dtk. Lint dan typecheck diulang setelah fix tes, hijau. Full run `pnpm run test` 6085 dtk (~104 menit, ikut berjalan paralel dengan e2e mock): root + web + API 1375 berkas lulus/2 skip, 21194 tes lulus/46 skip/16 todo, tanpa gagal. e2e mock penuh 40 gagal/2 skip/1124 lulus (1,6 jam): 38 sama dengan baseline 953 (legend-dq4y3), 2 baru (`legend-0z5k` strict-mode toast, `legend-kmndq` animasi finish) lulus pada rerun terarah 17/17, dinilai flake beban.
 - Subagent: 4 test-runner total (puncak 1 sekaligus); pemegang heavy: thread ini (full run dan e2e mock berjalan bersamaan sekali, ditegur CTO, tidak diulang).
 - Catatan: `session-usage.py` melaporkan sesi ini 105 permintaan utama, biaya* 2423k.
+
+### 978 Edge ketahanan (17 Nov 2026, cabang ghostex/978-edge-ketahanan-katalog-purge-pin)
+
+- l1wux: antrean global `catalogPullQueue` + `pendingStreams` di promo-gate sudah menutup balapan (legend-09sxa); tidak ada perubahan kode, ditambah test regresi `edge-catalog-pull-serial.test.ts` (3 tes, lulus; fail-first tidak mungkin karena perilaku sudah benar).
+- 4sesc: `TrustedClock.purgeSafeNow()` = min(jam dinding, waktu server terakhir + monotonik); purge audit/PIN/selfie dilewati bila null. Audit tanpa migrasi (SQL 0187 tetap CURRENT_TIMESTAMP, dijaga selisih <= 5 menit dari waktu aman).
+- 62jtd: edge mengantre `staff_pin.device_throttled` v1 (payload `{deviceId}`), applier cloud `edge/staff-pin-alert-applier.ts` memberi tahu supervisor outlet node saja; audit tidak hilang bila enqueue gagal (savepoint).
+- ngyd7: `replayRefusedAccessEvents` idempoten; penanda `refusal=audit_unavailable` di envelope; baris warisan butuh `acknowledgeUnmarked`; runbook bagian 5 diperbarui.
+- Migrasi: tidak ada. Gate: eslint + prettier file berubah hijau, typecheck API exit 0, 21 berkas test terarah 373 tes hijau, db:generate kosong. Review architect high: 2 temuan medium 4sesc dibetulkan (purgeSafeNow), 2 low ditangani (penanda refusal; catatan clock).
+- Subagent: total 21 (4 Explore, 8 test-writer, 8 implementer, 1 architect), puncak 7 bersamaan; token heavy: thread ini.

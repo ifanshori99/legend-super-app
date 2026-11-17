@@ -38,6 +38,8 @@ export function setEdgeNodeForEnvTests(
 export function installEdgeNodeForTests(next: {
   readonly tenantId: string;
   readonly outletId: string;
+  /** A registered node id, for code that queues edge events (legend-62jtd). */
+  readonly edgeNodeId?: string;
 }): void {
   installNodeState(next);
 }
@@ -56,6 +58,7 @@ function installNode(): void {
 function installNodeState(node: {
   readonly tenantId: string;
   readonly outletId: string;
+  readonly edgeNodeId?: string;
 }): void {
   const outletId = outletIdSchema.parse(node.outletId);
   const tenant = establishTenantContext({
@@ -74,7 +77,7 @@ function installNodeState(node: {
       scope: {
         tenantId: node.tenantId,
         outletId,
-        edgeNodeId: randomUUID(),
+        edgeNodeId: node.edgeNodeId ?? randomUUID(),
       },
     },
     link: { cloudLink: "disconnected", refused: false, lastConnectedAt: null },

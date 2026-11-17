@@ -55,6 +55,15 @@ export type TrustedClock = {
    * written since the boot (533 A3).
    */
   bootHighWater(): Date | null;
+  /**
+   * legend-4sesc: the time a purge may cut off at. The lower of the wall clock
+   * and the last cloud server time seen (`proveWithServerTime`, whatever its
+   * outcome) aged by the monotonic time since it was seen. A wall clock set
+   * forward cannot push it past what the cloud last said; a wall clock set back
+   * lowers it. Null until the cloud has been heard since boot: no purge then.
+   * Unlike `now()` it never trusts a forward wall step by itself.
+   */
+  purgeSafeNow(): Date | null;
 };
 
 /** A wall clock this far behind the persisted high water at boot is a regression. */
@@ -100,6 +109,8 @@ export function createTrustedClock(
   // so it could not tell the step from real time and would erase the owner
   // alarm; elapsed time stays unproven until the next restart (533c).
   let steppedBack = false;
+  // The last cloud server time seen and its monotonic stamp (legend-4sesc).
+  let lastServer: { ms: number; mono: number } | null = null;
 
   const read = (): number => {
     const monoNow = mono();
@@ -162,9 +173,17 @@ export function createTrustedClock(
     },
     bootHighWater: () =>
       bootHighWater === null ? null : new Date(bootHighWater),
+    purgeSafeNow: () => {
+      if (lastServer === null) return null;
+      const aged = lastServer.ms + (mono() - lastServer.mono);
+      return new Date(Math.min(wall().getTime(), aged));
+    },
     proveWithServerTime: (serverTime) => {
       const serverMs = serverTime.getTime();
       if (!Number.isFinite(serverMs)) return;
+      // Recorded before any early return below: a purge cuts off at server
+      // time even when the proof itself is refused or already given.
+      lastServer = { ms: serverMs, mono: mono() };
       // Observe a wall clock set back first, so the proof below can clear it.
       read();
       if (steppedBack) return;

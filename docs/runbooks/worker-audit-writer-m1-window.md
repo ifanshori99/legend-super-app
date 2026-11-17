@@ -76,4 +76,21 @@ WHERE apply_outcome = 'refused'
 GROUP BY tenant_id, event_name ORDER BY jumlah DESC;
 ```
 
-`drainParkedAccessEvents` menangkap semua error per baris, menandai `refused` dan menghapus isi envelope (`edge/access-applier.ts`), jadi perbaikan kode tidak memulihkan baris ini. Cocokkan dengan log worker "Parked edge access events refused during drain" yang memuat `AuditUnavailableError` untuk menentukan jendela. Pemulihan (menyetel ulang `applied_at`) hanya setelah envelope dipastikan masih utuh; kartu terpisah.
+Perilaku kode (legend-ngyd7, `edge/access-applier.ts`): `drainParkedAccessEvents` menandai baris `refused` bila event ditolak, lalu membuang bahan PIN dari envelope. Pengecualian: bila penolakannya hanya `AuditUnavailableError` (tidak ada audit writer), baris tetap `refused`, envelope dibiarkan utuh, dan envelope diberi penanda `refusal = "audit_unavailable"` (jsonb, tanpa migrasi) supaya bisa diputar ulang. Replay hanya memproses baris bertanda itu. Baris yang sudah ditandai sebelum perbaikan ini tidak punya bahan lagi untuk `staff_pin.set`: tidak bisa dipulihkan dari sini (edge mengirim ulang set barunya). `pos_override.recorded` tidak membawa bahan rahasia, jadi tetap bisa diputar ulang.
+
+Cocokkan dengan log worker "Parked edge access events refused during drain" yang memuat `AuditUnavailableError` untuk menentukan jendela. Pemulihan hanya SETELAH worker dengan audit writer terdeploy:
+
+1. Daftar event id kandidat per outlet (hanya baris di jendela; periksa dulu envelope `staff_pin.set` masih punya `payload.material`):
+
+   ```sql
+   SELECT tenant_id, outlet_id, event_id, event_name, applied_at,
+          envelope->>'refusal' AS penanda
+   FROM edge_deferred_events
+   WHERE apply_outcome = 'refused'
+   ORDER BY tenant_id, outlet_id, applied_at;
+   ```
+
+2. Per outlet, panggil `replayRefusedAccessEvents(tx, meta, outletId, { eventIds })`. Fungsi ini idempoten: hanya memilih baris `refused` outlet itu (FOR UPDATE) yang bertanda `penanda = 'audit_unavailable'`. Baris `refused` tanpa penanda (penolakan sungguhan, atau baris warisan jendela m1) dilewati tanpa diubah dan dihitung di `skippedUnmarked`. Selain itu: melewati `staff_pin.set` tanpa bahan (tidak disentuh), menerapkan tiap baris di savepoint sendiri, lalu menandai `applied` / `not_applicable` (penanda ikut dibuang). Baris outlet lain dan baris yang sudah diterapkan tidak tersentuh, jadi aman diulang. Penolakan sungguhan menandai bahan terbuang; `AuditUnavailableError` berulang membiarkan baris persis seperti semula (penanda tetap).
+   - Baris warisan jendela m1 (ditandai `refused` sebelum penanda ada, `penanda` kosong) yang menurut operator memang ditolak hanya karena audit writer: cocokkan dengan log worker dan jendela waktunya, sebutkan id-nya satu per satu di `eventIds`, lalu tambahkan opsi `acknowledgeUnmarked: true`: `replayRefusedAccessEvents(tx, meta, outletId, { eventIds, acknowledgeUnmarked: true })`. Tanpa opsi itu baris tanpa penanda dilewati, jadi penolakan sungguhan tidak ikut terputar ulang. Jangan memakai opsi ini untuk daftar yang belum diperiksa.
+   - Langkah meta: `meta` (`EdgeApplyMeta` tanpa `edgeNodeId`) berisi `direction: "edge_to_cloud"`, `kind: "transaction_event"`, dan `context` tenant outlet itu; `tx` didapat dari `withTenant(db, context, (tx) => ...)` dengan context tenant yang sama. Node tiap baris diambil dari baris itu sendiri. Pastikan audit writer terpasang di proses yang menjalankan panggilan ini; tanpa itu semua baris tetap seperti semula.
+3. Cek: ulangi query bagian 5; baris yang pulih keluar dari daftar `refused`.

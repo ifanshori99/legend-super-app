@@ -90,6 +90,7 @@ import { registerStockMovedEdgeApplier } from "./stock-moved-applier.ts";
 import { registerAccessEdgeApplier } from "./access-applier.ts";
 import { registerPanicAlertEdgeApplier } from "./panic-alert-applier.ts";
 import { registerPrintAlertEdgeApplier } from "./print/alert-applier.ts";
+import { registerStaffPinAlertEdgeApplier } from "./staff-pin-alert-applier.ts";
 import { resendMateriallessStaffPinSets } from "./staff-pin-resend.ts";
 import {
   WIFI_RECONCILE_INTERVAL_MS,
@@ -149,6 +150,7 @@ import type { LinkScope } from "./link-peer.ts";
 import { LINK_CLOSE, type CatalogStale } from "./protocol.ts";
 import { recordUploaderRejection } from "./selfie-health.ts";
 import { startEdgeSelfieSweep } from "./selfie-retention.ts";
+import type { TrustedClock } from "./trusted-clock.ts";
 import {
   startEdgeAuditRetention,
   resolveEdgeAuditRetentionUrl,
@@ -1002,7 +1004,13 @@ export async function startEdgeRuntime(
   // Clock for the alarm queue only. It is set as soon as the gate builds the
   // trusted clock (before the boot alarm), while `catalogClock` stays null until
   // the freshness tracker exists, so applyServerTime keeps its old timing.
-  let queueClock: { now(): Date } | null = null;
+  let queueClock: Pick<TrustedClock, "now" | "purgeSafeNow"> | null = null;
+  // legend-4sesc: retention sweeps start before the gate builds the clock.
+  // Until it exists there is no safe purge time, so a sweep waits for the
+  // next interval instead of running on the box clock.
+  const retentionClock: Pick<TrustedClock, "purgeSafeNow"> = {
+    purgeSafeNow: () => (queueClock ? queueClock.purgeSafeNow() : null),
+  };
   // Wall time of this boot, taken before the gate: alarms of this boot have a
   // staleSince at or after it, alarms of earlier boots are older.
   const bootAt = new Date();
@@ -1328,6 +1336,7 @@ export async function startEdgeRuntime(
     context: local.context,
     dir: env.EDGE_SELFIE_DIR,
     maxAgeDays: env.EDGE_SELFIE_MAX_AGE_DAYS,
+    clock: retentionClock,
   });
   // legend-6xcy (legend-9ppw): re-pull stock locations, UOMs and the chart of
   // accounts. No master tick at start: a fresh bootstrap (or missing masters)
@@ -1551,7 +1560,10 @@ export async function startEdgeRuntime(
   // legend-0cqql: activate audit retention only after runtime initialization.
   // A refused maintenance login closes every already-started component.
   try {
-    auditRetention = await startEdgeAuditRetention({ source });
+    auditRetention = await startEdgeAuditRetention({
+      source,
+      clock: retentionClock,
+    });
   } catch (error) {
     await handle
       .stop()
@@ -1598,6 +1610,9 @@ export async function registerEdgeLink(
   // legend-bod.5: emergency button alerts (panic_alert.*) mirrored idempotently.
   registerPanicAlertEdgeApplier();
   registerPrintAlertEdgeApplier();
+  // legend-62jtd: staff_pin.device_throttled raised on an edge reaches the
+  // outlet's supervisors in the cloud.
+  registerStaffPinAlertEdgeApplier();
   // Last: anything still unregistered is parked as unclassified, not a stall.
   registerEdgeDeferredFallback();
   const version = env.EDGE_NODE_VERSION;

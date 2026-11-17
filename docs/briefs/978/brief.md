@@ -1,0 +1,10 @@
+# 978 Edge ketahanan (brief bersama)
+Cabang: worktree ini (dari milestone/m1). Kode utama: apps/api/src/edge/*. Test vitest di apps/api/src/edge/*.test.ts atau apps/api/src/test/. Test terarah: `LEGEND_TEST_FILES="src/..." heavy pnpm test` (dari root worktree; satu token heavy per thread: hanya yang diminta menjalankan). Jangan sentuh payroll, recon/refund, services/ai-*, POS kas/harga, payment QR/Duitku. Migrasi bila perlu: 0530-0534.
+
+Kartu (bd show <id>):
+- legend-l1wux: `pullCatalog` (edge/catalog-puller.ts) per stream belum diserialkan; dua pull bersamaan bisa membuka gate promo (promo-gate*.ts, catalog-gate.ts) di atas snapshot parsial. Serialkan per stream; gate promo terbuka hanya setelah snapshot lengkap. File utama: catalog-puller.ts (+ promo-gate-runtime.ts bila perlu).
+- legend-4sesc: purge audit/PIN (edge/audit-retention.ts, selfie-retention?) melewati sweep saat jam edge tidak terpercaya (edge/trusted-clock.ts). Sweep tertunda aman, lanjut saat jam terpercaya; pakai trusted clock, bukan CURRENT_TIMESTAMP jam box.
+- legend-62jtd: notifikasi `staff_pin.device_throttled` (services/staff-pin-proof.service.ts, notifyOutletSupervisors) ditulis di DB edge; harus sampai manajer outlet di cloud (outbox/sync edge; lihat edge/mode.ts, db-link-store.ts, applier-registry.ts), tanpa PIN/rahasia di payload; tenant/outlet lain tidak menerima.
+- legend-ngyd7: edge/access-applier.ts drainParkedAccessEvents (~L618-638) menandai refused permanen + menghapus isi envelope saat audit writer tidak ada (AuditUnavailableError). Jalur replay idempoten untuk event refused itu, tanpa menerapkan ulang yang sudah diterapkan. Cek runbook worker-audit-writer-m1-window.md (docs/), worker/access-drain.job.ts, edge/access-drain-538.test.ts.
+
+Bukti test gagal-dulu: (1) dua pull bersamaan tidak pernah membuka gate di atas snapshot parsial, (2) purge tidak jalan saat jam tidak terpercaya dan jalan setelah terpercaya, (3) notifikasi throttle sampai ke manajer outlet yang benar saja, (4) replay event refused idempoten.
