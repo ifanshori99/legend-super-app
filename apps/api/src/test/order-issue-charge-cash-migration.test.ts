@@ -51,6 +51,11 @@ async function inRolledBackTx(work: (client: PoolClient) => Promise<void>) {
   try {
     await client.query("BEGIN");
     await client.query("SET LOCAL lock_timeout = '10s'");
+    // The table is shared with other test files and what they leave behind
+    // (paid-at-POS and voided charges, legend-gt98h / legend-s61sg) breaks the
+    // 0229 route/status CHECK this test puts back. The simulated 0229 table
+    // starts empty; the ROLLBACK below restores every row.
+    await client.query("DELETE FROM order_issue_charges");
     await work(client);
   } finally {
     await client.query("ROLLBACK");
