@@ -310,7 +310,13 @@ const outstandingOf = async (loanId: string) =>
     ).outstanding_idr,
   );
 
-/** A disbursed loan; `outstanding` below principal = installments already deducted. */
+/**
+ * A disbursed loan. Ledger trigger 0461 also runs on INSERT (deferred, I3:
+ * principal - outstanding = SUM of deductions of locked/paid runs), so a
+ * fresh loan with no locked run must be seeded with outstanding = principal.
+ * Installments already deducted are created by `lockedRunWithDeductions`,
+ * which records the rows and lowers outstanding together.
+ */
 async function seedLoan(
   employeeId: string,
   outstanding: number,
@@ -396,8 +402,10 @@ async function lockedRunWithDeductions(
         WHERE id = $1`,
       [runId, total],
     );
+    // Rows and the matching outstanding decrease share this transaction so
+    // the deferred ledger invariant (I3) holds at COMMIT.
     if (recordRows)
-      for (const d of deductions)
+      for (const d of deductions) {
         await conn.query(insertDeductionSql, [
           tenant.id,
           runId,
@@ -405,6 +413,12 @@ async function lockedRunWithDeductions(
           d.loanId,
           d.amount,
         ]);
+        await conn.query(
+          `UPDATE employee_loans SET outstanding_idr = outstanding_idr - $3
+            WHERE tenant_id = $1 AND id = $2`,
+          [tenant.id, d.loanId, d.amount],
+        );
+      }
   }, true);
   return runId;
 }
@@ -596,7 +610,7 @@ describe("payroll_loan_deductions guards", () => {
     const world = await makeWorld();
     const otherWorld = await makeWorld();
     const emp = await makeEmployee(world);
-    const loanId = await seedLoan(emp.id, 150_000);
+    const loanId = await seedLoan(emp.id, 150_000, 150_000);
     const runA = await draftRun(world);
     const runB = await draftRun(otherWorld);
 
@@ -666,8 +680,8 @@ describe("reversal restores loan deductions", () => {
   it("[reversal-restores] each deducted loan is restored by exactly the recorded amount, once; an unrelated loan is untouched", async () => {
     const world = await makeWorld();
     const emp = await makeEmployee(world);
-    const first = await seedLoan(emp.id, PRINCIPAL - DEDUCTED);
-    const second = await seedLoan(emp.id, 400_000 - 50_000, 400_000);
+    const first = await seedLoan(emp.id, PRINCIPAL);
+    const second = await seedLoan(emp.id, 400_000, 400_000);
     const runId = await lockedRunWithDeductions(world, emp, [
       { loanId: first, amount: DEDUCTED },
       { loanId: second, amount: 50_000 },
@@ -675,7 +689,7 @@ describe("reversal restores loan deductions", () => {
     // The unrelated loan paid 300_000 in ANOTHER locked run (I3 holds for it too).
     const otherWorld = await makeWorld();
     const otherEmp = await makeEmployee(otherWorld);
-    const unrelated = await seedLoan(otherEmp.id, 700_000, PRINCIPAL);
+    const unrelated = await seedLoan(otherEmp.id, PRINCIPAL, PRINCIPAL);
     await lockedRunWithDeductions(otherWorld, otherEmp, [
       { loanId: unrelated, amount: 300_000 },
     ]);
@@ -704,7 +718,8 @@ describe("reversal restores loan deductions", () => {
   it("[reversal-refuses-unrecorded] loan repayment in totals without deduction rows stays refused (409); run stays locked, loans untouched", async () => {
     const world = await makeWorld();
     const emp = await makeEmployee(world);
-    const loanId = await seedLoan(emp.id, PRINCIPAL - DEDUCTED);
+    // No deduction rows are recorded, so I3 requires outstanding = principal.
+    const loanId = await seedLoan(emp.id, PRINCIPAL);
     const runId = await lockedRunWithDeductions(
       world,
       emp,
@@ -721,6 +736,6 @@ describe("reversal restores loan deductions", () => {
     expect(refused, "no rows to restore from: must be refused").not.toBeNull();
     expect(refused!.status).toBe(409);
     expect(await runStatus(runId)).toBe("locked");
-    expect(await outstandingOf(loanId)).toBe(PRINCIPAL - DEDUCTED);
+    expect(await outstandingOf(loanId)).toBe(PRINCIPAL);
   }, 120_000);
 });
