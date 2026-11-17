@@ -44,3 +44,15 @@ Recon TS (`apps/api/src/services/payroll-payout-recon.service.ts`, bagian jurnal
 9. alur sah (fee sama, jurnal sama) → tidak ada flag fee.
 10. tenant lain tidak ditandai.
     Assert reason + item_id, bukan kind. Pakai fixture yang ada (`payroll-payout-fixtures.ts`, test 990-fee-commit, 990-recon-clear, 905-recon).
+
+## Fase 6: temuan architect (keputusan engineer, aturan membatasi; dilaporkan ke CTO)
+
+- P2-2 (dipilih yang membatasi): tahanan membandingkan sidik LIVE. Exception menahan kecuali ada clearance disetujui dengan `flag_sha256 = app.payout_recon_flag_fingerprint(tenant, exception)` saat ini. `GRANT EXECUTE` fungsi sidik ke legend_app di 0584; `app.payout_payslip_held_by_recon` dan `slipsHeldByReconException` (TS memanggil fungsi SQL yang sama) identik. `reopened` di DTO = ada clearance disetujui tapi tidak ada yang cocok dengan sidik live. Data berubah setelah approve = tertahan lagi seketika.
+- P2-1: `fee_idr = 0` dengan fee tersegel > 0 sah HANYA bila jurnal `overpaidJournalKey(item)` tidak ada DAN akuntansi tenant mati (logika yang sama dengan `payroll-payout-overpaid.service.ts:229,256-258`); selain itu `fee_sealed_mismatch`. Posting overpaid dengan `fee_idr` NULL setelah trusted_since: fail closed, `fee_sealed_mismatch`.
+- P3: `payout_recon_flag_see` diserialisasi dengan `pg_advisory_xact_lock` per exception (kunci hash tenant+exception) sebelum membaca sighting terakhir. Sidik posting membuang `updated_at`, `pii_key_version`, `*_encrypted` (diterima: nilai dijaga guard). Jurnal tidak masuk sidik (journal_lines append-only, 0027).
+
+Pembagian (berkas tidak bertumpuk):
+
+- J1: `apps/api/drizzle/0584_payout_990_flag_fingerprint.sql` (edit di tempat, belum rilis) + `apps/api/src/services/payroll-payout.service.ts` (`slipsHeldByReconException`) + clearance service (DTO `reopened`) — P2-2 + advisory lock.
+- J2: `apps/api/src/services/payroll-payout-recon.service.ts` + `apps/api/src/test/payroll-payout-990-fee-sealed.test.ts` — P2-1 + NULL; test baru: legit akuntansi mati (fee 0, tanpa jurnal) tidak ditandai; palsu fee 0 dengan akuntansi nyala ditandai; NULL ditandai.
+- J3: `apps/api/src/test/payroll-payout-990-recon-reopen.test.ts` — test: recon SUNGGUHAN (service recon, bukan `flagCall` sintetis) dua kali tanpa perubahan → tidak ada sighting baru; clearance disetujui lalu data berubah TANPA recon → slip langsung tertahan (`app.payout_payslip_held_by_recon` true dan batch baru 409), `reopened: true`. Sesuaikan test lama yang mengasumsikan tahanan hanya kembali setelah recon.
