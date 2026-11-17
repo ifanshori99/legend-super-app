@@ -1,0 +1,26 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "flat-type-hierarchy",
+        "value": "*",
+        "files": [
+          "/Users/ifanshori99/Projects/legend super app/legend/docs/review/ui-review-945-duitku.html"
+        ],
+        "createdAt": "2026-11-17T04:12:47.094Z",
+        "reason": "CTO: Ghostex page v2 review card; heading sizes come from Ghostex host gx-* styles, same pattern as ui-review-936-payout.html"
+      },
+      {
+        "rule": "flat-type-hierarchy",
+        "value": "*",
+        "files": [
+          "docs/review/ui-review-payout-clearance.html"
+        ],
+        "createdAt": "2026-11-17T16:55:05.448Z",
+        "reason": "CTO: internal Ghostex v2 review page, type scale set by Ghostex page shell, same template as Q28 mockup review"
+      }
+    ]
+  }
+}
