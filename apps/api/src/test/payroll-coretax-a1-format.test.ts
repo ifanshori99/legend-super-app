@@ -13,7 +13,9 @@
 //   ("FullYear" | "PartialYear" | "Annualized"), and integer IDR amounts
 //   salaryPensionJhtThtIdr, otherBenefitIdr, honorariumIdr,
 //   insurancePaidByEmployerIdr, naturaIdr, tantiemBonusThrIdr,
-//   pensionContributionJhtThtFeeIdr, zakatIdr }.
+//   pensionContributionJhtThtFeeIdr, zakatIdr, taxPeriodMonthStart,
+//   taxPeriodMonthEnd (1-12, start <= end, FullYear = 1..12) and
+//   article21IncomeTaxIdr } (official 27-element layout, docs/qa/coretax-bpa1-format.md).
 // - Root <A1Bulk> with <TIN>, one <A1> block per row, element names from the
 //   brief (SalaryPensionJhtTht, OtherBenefit, Honorarium,
 //   InsurancePaidByEmployer, Natura, TantiemBonusThr,
@@ -36,6 +38,9 @@ function row(over: Record<string, unknown> = {}) {
     position: "Kasir",
     statusOfWithholding: "FullYear",
     withholdingDate: "2025-12-31",
+    taxPeriodMonthStart: 1,
+    taxPeriodMonthEnd: 12,
+    article21IncomeTaxIdr: 7_000_000,
     salaryPensionJhtThtIdr: 60_000_000,
     otherBenefitIdr: 1_000_000,
     honorariumIdr: 2_000_000,
@@ -78,6 +83,9 @@ describe("buildA1BulkXml", () => {
     expect(tag(xml, "TantiemBonusThr")).toEqual(["5000000"]);
     expect(tag(xml, "PensionContributionJhtThtFee")).toEqual(["600000"]);
     expect(tag(xml, "Zakat")).toEqual(["150000"]);
+    expect(tag(xml, "TaxPeriodMonthStart")).toEqual(["1"]);
+    expect(tag(xml, "TaxPeriodMonthEnd")).toEqual(["12"]);
+    expect(tag(xml, "Article21IncomeTax")).toEqual(["7000000"]);
     expect(xml).toContain("2025-12-31");
   });
 

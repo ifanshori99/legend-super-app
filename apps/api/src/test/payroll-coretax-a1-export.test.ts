@@ -207,6 +207,12 @@ type Slip = {
   bp: number | null; // terRateBp, null for annual_recalculation
   pph: number;
   method?: "ter" | "annual_recalculation";
+  /**
+   * Non-taxable earning (a reimbursement line) on top of `gross`. A valid slip
+   * needs net >= 0, so PPh 21 above 0 on taxable gross 0 can only be sealed
+   * when something non-taxable pays for the deduction.
+   */
+  nonTaxable?: number;
   ptkp?: string;
   position?: string | null;
 };
@@ -306,6 +312,18 @@ function calculation(slip: Slip, dates: RunDates) {
       sourceId: null,
     },
   ];
+  const nonTaxable = slip.nonTaxable ?? 0;
+  if (nonTaxable > 0)
+    lines.push({
+      componentCode: "REIMB",
+      name: "Reimbursement",
+      category: "reimbursement",
+      kind: "earning",
+      amountIdr: nonTaxable,
+      taxable: false,
+      quantity: null,
+      sourceId: null,
+    });
   if (slip.pph > 0)
     lines.push({
       componentCode: "PPH21",
@@ -326,9 +344,9 @@ function calculation(slip: Slip, dates: RunDates) {
     periodStart: dates.periodStart,
     periodEnd: dates.periodEnd,
     payDate: dates.payDate,
-    grossIdr: slip.gross,
+    grossIdr: slip.gross + nonTaxable,
     deductionsIdr: slip.pph,
-    netIdr: slip.gross - slip.pph,
+    netIdr: slip.gross + nonTaxable - slip.pph,
     pph21Idr: slip.pph,
     bpjsEmployeeIdr: 0,
     bpjsCompanyIdr: 0,
@@ -363,7 +381,8 @@ const STEPS = [
 ];
 
 function totalsFor(slips: Slip[]) {
-  const gross = slips.reduce((sum, s) => sum + s.gross, 0);
+  const nonTaxable = slips.reduce((sum, s) => sum + (s.nonTaxable ?? 0), 0);
+  const gross = slips.reduce((sum, s) => sum + s.gross, 0) + nonTaxable;
   const pph = slips.reduce((sum, s) => sum + s.pph, 0);
   const net = gross - pph;
   return {
@@ -385,7 +404,7 @@ function totalsFor(slips: Slip[]) {
     otherDeductionsIdr: 0,
     customDeductionsIdr: 0,
     serviceChargeIdr: 0,
-    reimbursementIdr: 0,
+    reimbursementIdr: nonTaxable,
     bankTransferIdr: net,
     cashIdr: 0,
   };
@@ -1245,6 +1264,8 @@ describe("Coretax A1 export: refusals (never guess)", () => {
     // Assumption: a slip that withheld tax on no income is inconsistent data the
     // exporter must not report or silently drop (money-critical: no under-report).
     // The slip is an annual_recalculation one so no TER bracket is involved.
+    // A readable slip needs net >= 0, so the 500 PPh 21 is covered by a 500
+    // non-taxable reimbursement line: taxable gross stays 0 (PPh 21 > 0 on it).
     const world = await makeWorld(digits(16));
     const ok = await makeEmployee(world);
     const broken = await makeEmployee(world);
@@ -1256,6 +1277,7 @@ describe("Coretax A1 export: refusals (never guess)", () => {
         {
           emp: broken,
           gross: 0,
+          nonTaxable: 500,
           bp: null,
           pph: 500,
           method: "annual_recalculation",
