@@ -26,8 +26,8 @@ import {
   type OutletId,
   type ScopedTenantContext,
 } from "@starter/shared/core";
-import { PosError } from "@starter/shared/pos";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
+import { PosError } from "@starter/shared/pos";
 import {
   customerPaymentIntentSchema,
   createPaymentIntentInputSchema,
@@ -901,7 +901,13 @@ async function assertLinkOrderCanIssueTx(
       billSplitId,
     )
   )
-    throw new PosError("QRIS_HOLD_ACTIVE");
+    // legend-154wr: a guest-facing path (the token issue and the split part
+    // code); the cashier sentence of PosError is not for a guest.
+    throw new HttpError(
+      409,
+      "QRIS_HOLD_ACTIVE",
+      "QR bagian lain masih bisa dibayar. Tunggu sampai dibayar atau berakhir dulu.",
+    );
   const [live] = await tx
     .select({ id: paymentIntents.id })
     .from(paymentIntents)
@@ -940,6 +946,95 @@ async function assertLinkOrderCanIssueTx(
   });
 }
 
+async function readIntentByKey(
+  context: ScopedTenantContext,
+  idempotencyKey: string,
+): Promise<PaymentIntentRow | null> {
+  return withTenant(db, context, async (tx) => {
+    const [row] = await tx
+      .select()
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          eq(paymentIntents.idempotencyKey, idempotencyKey),
+        ),
+      );
+    return row ?? null;
+  });
+}
+
+/**
+ * legend-154wr: the provider made a code but the write refused it, so it is
+ * stored nowhere. Asks the provider to close it so nobody can pay a code Legend
+ * does not know. Best effort: a failure is logged (identifiers only) and never
+ * replaces the refusal the caller is about to answer.
+ */
+async function cancelUnstoredCode(
+  context: ScopedTenantContext,
+  request: GatewayCancelRequest,
+): Promise<boolean> {
+  try {
+    const gateway = paymentGatewayFor(request.provider);
+    if (!gateway.cancel) return false;
+    await gateway.cancel(context, request);
+    return true;
+  } catch (error) {
+    logger.warn(
+      {
+        intentId: request.intentId,
+        provider: request.provider,
+        providerRef: request.providerRef,
+        err: error,
+      },
+      "Payment: cancelling a code that was refused after the provider made it failed",
+    );
+    return false;
+  }
+}
+
+/**
+ * legend-154wr: a code the provider made and the write refused is kept as an
+ * orphan row (`failed`, `provider_final_at` NULL) BEFORE the best-effort cancel:
+ * a cancel that resolved proves nothing (SO-889 P2-2). The existing machinery
+ * then treats it like any failed code the provider may still honour: live
+ * (`failedCodeNotFinal`) until the provider is proven final after expiry + 60 s,
+ * polled, and a paid answer settles an open bill once (or parks the money on a
+ * closed one) instead of UNKNOWN_REFERENCE. The id MUST be the `intentId` sent
+ * to the provider as the reference (`intentIdFor`): webhooks (DOIT `reference`,
+ * Duitku `merchantOrderId`) and the poll find the intent by it. The idempotency
+ * key is derived (`<key>:orphan:<id>`), so a replay of the guest's own key never
+ * returns the orphan. Own transaction, after the refusal rolled back. Never
+ * throws: the caller's refusal stays the answer. An insert that fails (the
+ * primary key: the real write did commit and only its reply was lost, or an
+ * earlier orphan of the same code; the foreign key: the split part was removed)
+ * is only logged.
+ */
+async function keepRefusedCodeAsOrphan(
+  context: ScopedTenantContext,
+  row: typeof paymentIntents.$inferInsert & { id: string },
+  now: Date,
+): Promise<void> {
+  const id = row.id;
+  try {
+    await withTenant(db, context, async (tx) => {
+      await tx.insert(paymentIntents).values({
+        ...row,
+        id,
+        // The column is varchar(100): 50 + ":orphan:" + 36 = 94.
+        idempotencyKey: `${row.idempotencyKey.slice(0, 50)}:orphan:${id}`,
+        status: "failed",
+        updatedAt: now,
+      });
+    });
+  } catch (error) {
+    logger.error(
+      { intentId: id, providerRef: row.providerRef, err: error },
+      "Payment: keeping a refused code as an orphan intent failed; a payment on it would be unknown",
+    );
+  }
+}
+
 async function createIntentCore(
   context: ScopedTenantContext,
   token: string,
@@ -958,14 +1053,30 @@ async function createIntentCore(
     throw new Error("Payment intent plan has neither an intent nor a route");
   // legend-ek1wt / legend-4n8rs: refused before any provider call (checked
   // again, under the order lock, inside the intent transaction below).
-  await withTenant(db, context, (tx) =>
-    assertLinkOrderCanIssueTx(
-      tx,
-      context,
-      plan.link.id,
-      part?.billSplitId ?? null,
-    ),
-  );
+  try {
+    await withTenant(db, context, (tx) =>
+      assertLinkOrderCanIssueTx(
+        tx,
+        context,
+        plan.link.id,
+        part?.billSplitId ?? null,
+      ),
+    );
+  } catch (error) {
+    // legend-gp3fw: a twin with the same key may have committed between the
+    // plan read and this guard; its live code is what the guard refused on.
+    // Read the key again: found -> the twin's intent (no provider call, no
+    // second intent); not found -> the guard's own refusal.
+    const twin = await readIntentByKey(context, parsed.idempotencyKey);
+    if (!twin) throw error;
+    assertIdempotencyFingerprint(twin, {
+      paymentLinkId: plan.link.id,
+      method: parsed.method,
+      channelCode: parsed.channelCode,
+      billSplitId: part?.billSplitId ?? null,
+    });
+    return toCustomerIntent(twin);
+  }
   const selected = await selectGatewayForNewIntent(
     context,
     plan.link.outletId,
@@ -1024,6 +1135,8 @@ async function createIntentCore(
   const instructions: PaymentInstructions = created.instructions;
 
   let superseded: GatewayCancelRequest[] = [];
+  let committed = false;
+  let finalRefusal = false;
   try {
     const stored = await withTenant(db, context, async (tx) => {
       // legend-154wr: the order row lock comes first (before the link lock
@@ -1076,31 +1189,43 @@ async function createIntentCore(
         (lockedLink.expiresAt !== null &&
           (lockedLink.expiresAt <= now ||
             lockedLink.expiresAt.getTime() !== plan.link.expiresAt?.getTime()))
-      )
+      ) {
+        // The link is closed for good: a retry is refused too.
+        finalRefusal = true;
         throw new HttpError(
           404,
           "NOT_FOUND",
           "This payment link is not available.",
         );
+      }
       if (
         part
           ? !splitPartFits(amountIdr, lockedLink)
           : outstandingIdr(lockedLink) !== amountIdr
-      )
+      ) {
+        // A bill settled meanwhile refuses a retry too ("already paid"); a bill
+        // that only changed (and may change back) lets a retry bind this code.
+        if (outstandingIdr(lockedLink) <= 0) finalRefusal = true;
         throw new HttpError(
           409,
           "CONFLICT",
           "This bill changed while the payment was prepared. Reload and try again.",
         );
+      }
       // legend-ek1wt / legend-4n8rs: a hold or a live code may have appeared
       // while the code was being minted; the code just minted is then never
       // stored.
-      await assertLinkOrderCanIssueTx(
-        tx,
-        context,
-        plan.link.id,
-        part?.billSplitId ?? null,
-      );
+      try {
+        await assertLinkOrderCanIssueTx(
+          tx,
+          context,
+          plan.link.id,
+          part?.billSplitId ?? null,
+        );
+      } catch (guardError) {
+        finalRefusal = true;
+        throw guardError;
+      }
       superseded = await supersedePending(
         tx,
         context,
@@ -1147,10 +1272,60 @@ async function createIntentCore(
       });
       return toCustomerIntent(row);
     });
+    committed = true;
     await cancelSupersededAtGateway(context, superseded);
     return stored;
   } catch (error) {
-    if (!uniqueViolation(error)) throw error;
+    if (!uniqueViolation(error)) {
+      // legend-154wr: the write refused (a hold or a live code appeared, the
+      // link closed, the bill changed): the code the provider made is stored
+      // nowhere. Keep it as an orphan row first, then ask the provider to close
+      // it. A reused key is a refusal about the winner's code, never ours: no
+      // row, no cancel. A unique-key race is a replay, handled below.
+      // Only a refusal that a retry with the same key meets again keeps the
+      // orphan (`finalRefusal`): the final guard (`assertLinkOrderCanIssueTx`:
+      // a hold, a live code or parked money appeared; HttpError or PosError), a
+      // link closed meanwhile, a bill settled meanwhile. The guest was told no,
+      // so the code must stay known. Any other failure (a deadlock, a dropped
+      // connection, a failed local write, a bill that only changed) keeps and
+      // cancels nothing: the guest never received the code, so nobody pays it,
+      // and a retry with the same key yields the same intent id and provider
+      // code and binds it.
+      if (
+        !committed &&
+        finalRefusal &&
+        (error instanceof HttpError || error instanceof PosError) &&
+        !(error instanceof HttpError && error.code === "IDEMPOTENCY_KEY_REUSED")
+      ) {
+        await keepRefusedCodeAsOrphan(
+          context,
+          {
+            id: intentId,
+            tenantId: context.tenant.tenantId,
+            outletId: plan.link.outletId,
+            paymentLinkId: plan.link.id,
+            method: parsed.method,
+            provider: selected.provider,
+            amountIdr: idr(amountIdr),
+            billSplitId: part?.billSplitId ?? null,
+            idempotencyKey: parsed.idempotencyKey,
+            providerRef: created.providerRef,
+            gatewayIntegrationId: created.integrationId ?? null,
+            instructions,
+            channelCode: parsed.channelCode,
+            expiresAt,
+          },
+          new Date(),
+        );
+        await cancelUnstoredCode(context, {
+          intentId,
+          provider: selected.provider,
+          providerRef: created.providerRef,
+          outletId: plan.link.outletId,
+        });
+      }
+      throw error;
+    }
     // The unique (tenant, idempotency_key) key decided the race.
     const existing = await withTenant(db, context, async (tx) => {
       const [row] = await tx
@@ -1164,7 +1339,14 @@ async function createIntentCore(
         );
       return row ?? null;
     });
-    if (!existing) throw error;
+    // No row under this key: the primary key hit is a row of the same code kept
+    // as an orphan (legend-154wr), not a replay. Never a 500.
+    if (!existing)
+      throw new HttpError(
+        409,
+        "CONFLICT",
+        "Pembayaran ini masih diproses. Muat ulang halaman lalu coba lagi.",
+      );
     // The winner may have been a different request that reused the key.
     assertIdempotencyFingerprint(existing, {
       paymentLinkId: plan.link.id,
@@ -1791,6 +1973,11 @@ const parksFunds = (error: unknown): boolean =>
  * unallocated funds, exactly once per provider + providerRef (the evidence row
  * is unique), never settling the bill. A failure here only delays the parking:
  * the next poll reads the same answer again.
+ *
+ * legend-24ogm: like the release recon, staff are warned once per newly parked
+ * row (`inserted`); a replay (`found`) warns nobody. The warning runs in a
+ * savepoint of the parking transaction: a failing warning never undoes the
+ * parking.
  */
 async function parkExtraPaymentsOfAnswer(
   context: ScopedTenantContext,
@@ -1802,20 +1989,55 @@ async function parkExtraPaymentsOfAnswer(
     if (!(extra.amountIdr > 0) || extra.providerRef === intent.providerRef)
       continue;
     try {
-      await recordUnsettledGatewayFunds(
-        context,
-        intent,
-        {
-          provider: intent.provider,
-          providerRef: extra.providerRef,
-          source: "gateway_status",
-          paidAmountIdr: extra.amountIdr,
-          receivedAt: new Date(
-            plausiblePaidAt(extra.paidAt, intent.createdAt, now),
-          ),
-        },
-        now,
-      );
+      await withTenant(db, context, async (tx) => {
+        const outcome = await recordUnsettledGatewayFundsInTx(
+          tx,
+          context,
+          intent,
+          {
+            provider: intent.provider,
+            providerRef: extra.providerRef,
+            source: "gateway_status",
+            paidAmountIdr: extra.amountIdr,
+            receivedAt: new Date(
+              plausiblePaidAt(extra.paidAt, intent.createdAt, now),
+            ),
+          },
+          now,
+        );
+        if (outcome !== "inserted") return;
+        try {
+          await tx.transaction((savepoint) =>
+            notifyOutletSupervisors(
+              savepoint,
+              context,
+              {
+                tenantId: context.tenant.tenantId,
+                outletId: intent.outletId as OutletId,
+                alsoOwners: true,
+                alsoUserIds: [],
+                id: createUlid(now.getTime()),
+                eventName: "payment_intent.extra_funds_parked",
+                aggregateType: "payment_intent",
+                aggregateId: intent.id,
+                payload: {
+                  intentId: intent.id,
+                  providerRef: extra.providerRef,
+                },
+                title: "Uang tambahan masuk di kode pembayaran",
+                body: `Penyedia mencatat pembayaran tambahan Rp${extra.amountIdr} pada kode yang sama. Uang ditahan di dana belum teralokasi; kembalikan ke pembayar.`,
+              },
+              now,
+            ),
+          );
+        } catch {
+          // Identifiers only: never the error or a provider body.
+          logger.warn(
+            { intentId: intent.id, providerRef: extra.providerRef },
+            "Payment: warning staff about parked extra funds failed",
+          );
+        }
+      });
     } catch (error) {
       logger.warn(
         { err: error, intentId: intent.id },

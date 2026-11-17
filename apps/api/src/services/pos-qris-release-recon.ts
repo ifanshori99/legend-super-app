@@ -336,8 +336,7 @@ export async function decide(
     (await parkExtraPayments(outletContext, intent, answer.extraPayments, now));
   const expired = now.getTime() >= intent.expiresAt.getTime() + CLOSE_MARGIN_MS;
   if (answer.status === "paid") {
-    if (answer.amountIdr === null)
-      return { kind: "open", seen: "paid_without_amount" };
+    if (answer.amountIdr === null) return stillOpen("paid_without_amount");
     try {
       await confirmPayment(
         outletContext,
@@ -357,13 +356,12 @@ export async function decide(
       // closed hold; anything else is retried (the check below decides).
       if (!(error instanceof PaymentConfirmationRejected)) {
         if (!(await recordedMoney(context, intent)))
-          return { kind: "open", seen: "settlement_failed" };
+          return stillOpen("settlement_failed");
       }
     }
     if (!(await recordedMoney(context, intent)))
-      return { kind: "open", seen: "paid_not_recorded" };
-    if (!extrasRecorded)
-      return { kind: "open", seen: "extra_funds_not_parked" };
+      return stillOpen("paid_not_recorded");
+    if (!extrasRecorded) return stillOpen("extra_funds_not_parked");
     // Duitku is one transaction per order: a recorded positive paid answer with
     // every extra parked is final (legend-912 round 2).
     if (intent.provider === "duitku")
@@ -384,7 +382,7 @@ export async function decide(
       : answer.status === "expired" || answer.status === "failed");
   // Any non-paid answer (pending, expired before the margin, dead) with an
   // unrecorded extra stays open so staff are warned (PAID_UNRECORDED).
-  if (!extrasRecorded) return { kind: "open", seen: "extra_funds_not_parked" };
+  if (!extrasRecorded) return stillOpen("extra_funds_not_parked");
   if (dead) {
     // Money already on record for this code (an earlier paid answer, a webhook)
     // keeps the paid resolution: the code ending later does not undo it.

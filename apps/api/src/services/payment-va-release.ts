@@ -56,6 +56,11 @@ import {
 
 /** The queue asks the provider for the first time this long after the release. */
 const FIRST_CHECK_MS = 2 * 60_000;
+/** legend-24ogm: the provider is read outside the locks. An answer older than
+ * this when the order lock is taken proves nothing about now (a payment may
+ * have landed in between), so the release is refused and may be retried. No
+ * network call happens inside the lock. */
+export const VA_RELEASE_PROVIDER_READ_MAX_AGE_MS = 30_000;
 
 type ReleaseRow = typeof paymentVaReleases.$inferSelect;
 
@@ -199,7 +204,7 @@ export async function releaseVaCode(
       "Alasan pelepasan wajib diisi (3 sampai 300 karakter).",
     );
   const tenantId = context.tenant.tenantId;
-  const run = () =>
+  const run = (providerReadAt: Date | null = null) =>
     runRelease(
       context,
       caller,
@@ -209,6 +214,7 @@ export async function releaseVaCode(
       request,
       reason,
       now,
+      providerReadAt,
     );
   // Last provider read before the supervisor gives up on the code (912 P1-1):
   // the code is released only when the provider's answer was read and is not
@@ -247,6 +253,8 @@ export async function releaseVaCode(
   if (!releasable) return run();
   // A settlement error (a rejected or parked payment, a failed write) is not
   // thrown: the verdict below is read from the provider's answer itself.
+  // Taken before the read: the answer is at least this old at lock time.
+  const providerReadAt = new Date();
   const { verdict } = await settleGatewayIntentNowDetailed(
     context,
     input.paymentIntentId,
@@ -259,7 +267,7 @@ export async function releaseVaCode(
   );
   if (applied || verdict === "paid") throw paidVaReleaseError();
   if (verdict !== "not_paid") throw providerUnreadError();
-  return run();
+  return run(providerReadAt);
 }
 
 async function runRelease(
@@ -276,6 +284,7 @@ async function runRelease(
   },
   reason: string,
   now: Date,
+  providerReadAt: Date | null,
 ): Promise<PosVaRelease> {
   const tenantId = context.tenant.tenantId;
   let paidIntentId: string | null = null;
@@ -319,6 +328,15 @@ async function runRelease(
             paidIntentId = request.paymentIntentId;
             throw paidVaReleaseError();
           }
+          // The provider answer behind this release is too old now (legend-24ogm):
+          // nothing is released and the approval is not spent (the transaction
+          // rolls back); the caller reads again.
+          if (
+            providerReadAt !== null &&
+            new Date().getTime() - providerReadAt.getTime() >
+              VA_RELEASE_PROVIDER_READ_MAX_AGE_MS
+          )
+            throw providerUnreadError();
           const intent = await assertReleasableIntentTx(
             tx,
             context,
