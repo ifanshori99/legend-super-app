@@ -22,7 +22,10 @@ import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { auth } from "../lib/auth.ts";
 import { verifyDeviceToken } from "../lib/device-token.ts";
 import { logger, serializeError } from "../lib/logger.ts";
-import { anySharedDeviceActive } from "../services/shared-device.service.ts";
+import {
+  anySharedDeviceActive,
+  stampSharedDeviceFromToken,
+} from "../services/shared-device.service.ts";
 import {
   addCartLine,
   claimSessionPoints,
@@ -260,6 +263,24 @@ async function optionalMemberUserId(req: Request): Promise<string | null> {
     sharedDeviceIds?: readonly string[] | null;
   };
   if ((sharedDeviceIds?.length ?? 0) > 0) return null;
+  // legend-vzvok: record the mark of a flagged shared device's token on the
+  // cookie session, so a header-less replay is closed too. The order stays a
+  // guest order in every case: marks found, 8-mark limit (null; the session is
+  // not closed here) or a failed stamp (503, fail closed).
+  try {
+    const marks = await stampSharedDeviceFromToken(
+      session.session.id,
+      sharedDeviceIds,
+      req.get(DEVICE_TOKEN_HEADER),
+    );
+    if (marks === null || marks.length > 0) return null;
+  } catch (error) {
+    logger.warn(
+      { err: serializeError(error) },
+      "qr-order: shared device stamp failed, treating request as anonymous",
+    );
+    return null;
+  }
   if (await isSharedDeviceRequest(req)) return null;
   const { impersonatedBy } = session.session as {
     impersonatedBy?: string | null;

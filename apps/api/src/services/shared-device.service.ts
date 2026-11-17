@@ -14,7 +14,7 @@ import type { TenantContext } from "@starter/shared/core";
 import { db } from "../db/index.ts";
 import { verifyDeviceToken } from "../lib/device-token.ts";
 import { HttpError } from "../lib/http-error.ts";
-import { logger } from "../lib/logger.ts";
+import { logger, serializeError } from "../lib/logger.ts";
 import { devices, session } from "../db/schema";
 import { withTenant } from "../db/tenant.ts";
 
@@ -230,7 +230,9 @@ export function withSharedMark(
  * the session, so the marks exist before the cookie is replayed on a guarded
  * route without the header. The signature already binds tenant and device, so
  * the lookup needs no tenant context. No header, a bad signature or an
- * unflagged device do nothing; a failure is logged and never thrown. Returns
+ * unflagged device do nothing. Fail closed (legend-vzvok): when the token is
+ * valid and a database step fails, it logs and throws 503 SERVICE_UNAVAILABLE, so
+ * the first request with a token never passes unmarked. Returns
  * the marks in effect for THIS request (legend-7yvmm): the existing marks plus
  * the token's device when it was stamped now or was already marked, as a new
  * array, so the caller can refresh its session snapshot and not read a stale
@@ -245,17 +247,60 @@ export async function stampSharedDeviceFromToken(
 ): Promise<string[] | null> {
   const existing = [...(markedDeviceIds ?? [])];
   if (!rawToken) return existing;
+  let deviceId: string;
   try {
     const payload = verifyDeviceToken(rawToken);
     if (payload === null) return existing;
-    if (existing.includes(payload.deviceId)) return existing;
-    if (await anySharedDeviceActive([payload.deviceId]))
-      return (await markSessionSharedDevice(sessionId, payload.deviceId))
-        ? withSharedMark(existing, payload.deviceId)
+    deviceId = payload.deviceId;
+  } catch {
+    // A badly signed token adds nothing.
+    return existing;
+  }
+  if (existing.includes(deviceId)) return existing;
+  try {
+    if (await anySharedDeviceActive([deviceId]))
+      return (await markSessionSharedDevice(sessionId, deviceId))
+        ? withSharedMark(existing, deviceId)
         : null;
     return existing;
   } catch (error) {
-    logger.warn({ err: error }, "shared device early stamp failed");
-    return existing;
+    throw sharedDeviceCheckUnavailable(error, "early stamp");
   }
+}
+
+/** Fail-closed 503 (legend-vzvok) for a database error while checking or marking a shared device. */
+function sharedDeviceCheckUnavailable(error: unknown, step: string): HttpError {
+  logger.warn(
+    { err: serializeError(error) },
+    `shared device ${step} failed, refusing request`,
+  );
+  return new HttpError(
+    503,
+    "SERVICE_UNAVAILABLE",
+    "Perangkat bersama tidak bisa diperiksa sekarang. Coba lagi sebentar.",
+  );
+}
+
+/**
+ * Race guard (legend-vzvok), for a request whose stamp saw no marks. When the
+ * token's device is NOW active shared (flagged between the stamp lookup and
+ * the guard's own lookup), record the mark before the caller refuses with 403.
+ * Returns false when the device is not active shared (the caller lets the
+ * request pass). Throws 403 SHARED_DEVICE_MARK_LIMIT when the 8 marks are full;
+ * a database error fails closed with 503 SERVICE_UNAVAILABLE.
+ */
+export async function recordMarkIfDeviceNowShared(
+  sessionId: string,
+  userId: string,
+  deviceId: string,
+): Promise<boolean> {
+  let marked: boolean;
+  try {
+    if (!(await anySharedDeviceActive([deviceId]))) return false;
+    marked = await markSessionSharedDevice(sessionId, deviceId);
+  } catch (error) {
+    throw sharedDeviceCheckUnavailable(error, "race mark");
+  }
+  if (!marked) throw await sharedDeviceMarkLimit(sessionId, userId);
+  return true;
 }

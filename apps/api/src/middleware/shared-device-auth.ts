@@ -6,7 +6,7 @@ import { auth } from "../lib/auth";
 import { verifyDeviceToken } from "../lib/device-token.ts";
 import { HttpError } from "../lib/http-error";
 import {
-  anySharedDeviceActive,
+  recordMarkIfDeviceNowShared,
   sharedDeviceMarkLimit,
   stampSharedDeviceFromToken,
 } from "../services/shared-device.service";
@@ -75,7 +75,9 @@ const REFUSED = (): HttpError =>
  * sign-out with no lookup (sign-in is stamped at session creation, sign-out
  * must stay reachable). The open get-session and keep-alive paths pass with no
  * lookup unless they carry an X-Device-Token; with one, the session is read and
- * the token is stamped (legend-5pipx) but the request is never refused. Every
+ * the token is stamped (legend-5pipx) and the request is not refused for being
+ * marked (only the 9th-device limit 403 or a failed stamp, 503 fail closed,
+ * legend-vzvok, can stop it). Every
  * other path reads the session (no cookie cache) and stamps the token FIRST, so
  * even a refused request records the mark and a header-less replay of the same
  * cookie is closed too. It is then refused 403 ACTING_STAFF_NOT_ALLOWED when the
@@ -118,7 +120,16 @@ export const guardSharedDeviceAuthRoutes: RequestHandler = async (
   } catch {
     // A badly signed token adds nothing.
   }
-  if (deviceId === null || !(await anySharedDeviceActive([deviceId])))
+  // legend-vzvok: the device may have been flagged after the stamp lookup, so
+  // record the mark before refusing.
+  if (
+    deviceId === null ||
+    !(await recordMarkIfDeviceNowShared(
+      session.session.id,
+      session.user.id,
+      deviceId,
+    ))
+  )
     return next();
   throw REFUSED();
 };

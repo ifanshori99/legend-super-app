@@ -8,7 +8,7 @@ import { verifyDeviceToken } from "../lib/device-token.ts";
 import { HttpError } from "../lib/http-error";
 import { setRequestAuthMethod, setRequestUser } from "../lib/request-context";
 import {
-  anySharedDeviceActive,
+  recordMarkIfDeviceNowShared,
   sharedDeviceMarkLimit,
   stampSharedDeviceFromToken,
 } from "../services/shared-device.service";
@@ -28,6 +28,8 @@ import { enforceSupportSession } from "./support-session";
 // gone. Only a token-only request (no mark yet) needs its device to be active.
 async function refuseSharedDeviceSession(
   req: Request,
+  sessionId: string,
+  userId: string,
   marked: readonly string[] | null | undefined,
 ): Promise<void> {
   if ((marked?.length ?? 0) > 0)
@@ -44,7 +46,13 @@ async function refuseSharedDeviceSession(
   } catch {
     // A badly signed token adds nothing.
   }
-  if (deviceId === null || !(await anySharedDeviceActive([deviceId]))) return;
+  // legend-vzvok: the device may have been flagged after the stamp lookup, so
+  // record the mark before refusing.
+  if (
+    deviceId === null ||
+    !(await recordMarkIfDeviceNowShared(sessionId, userId, deviceId))
+  )
+    return;
   throw new HttpError(
     403,
     ACTING_STAFF_ERROR_CODES.NOT_ALLOWED,
@@ -71,7 +79,8 @@ function createRequireAuth(options: {
     setRequestAuthMethod(session.session.authMethod ?? "legacy");
     // legend-jqurl: a signed token of a flagged shared device marks the session
     // on every authenticated route, not only the guarded POS ones. A full list of
-    // 8 active marks refuses the 9th device (legend-dn7uo). Otherwise never throws.
+    // 8 active marks refuses the 9th device (legend-dn7uo). A database failure
+    // while stamping answers 503 (legend-vzvok, fail closed), never passes unmarked.
     // legend-7yvmm: the returned marks replace the session snapshot (req.auth is
     // the same object), so the guards below and later handlers see the stamp even
     // if the device is unflagged before their own check.
@@ -83,7 +92,13 @@ function createRequireAuth(options: {
     if (marks === null)
       throw await sharedDeviceMarkLimit(session.session.id, session.user.id);
     session.session.sharedDeviceIds = marks;
-    if (!options.allowSharedDevice) await refuseSharedDeviceSession(req, marks);
+    if (!options.allowSharedDevice)
+      await refuseSharedDeviceSession(
+        req,
+        session.session.id,
+        session.user.id,
+        marks,
+      );
     // A support (impersonated) session is checked against its support access
     // grant here, the one chokepoint of every cookie router. See
     // middleware/support-session.ts.

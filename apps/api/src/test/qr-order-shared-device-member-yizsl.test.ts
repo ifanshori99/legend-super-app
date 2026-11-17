@@ -553,7 +553,11 @@ describe("QR order on a shared-device session is anonymous (legend-yizsl)", () =
   });
 
   it("(f) fail closed: when the shared-device lookup rejects, the order is anonymous and the request does not 500", async () => {
-    const deviceId = await newDevice(true);
+    // legend-vzvok: the early stamp runs first and would mark a flagged device
+    // without the stubbed lookup. An unflagged device leaves the stamp empty, so
+    // the request reaches the stubbed isSharedDeviceRequest lookup (the path
+    // this test pins) and must fail closed there.
+    const deviceId = await newDevice(false);
     const member = await newMember();
     const token = { [DEVICE_TOKEN_HEADER]: tokenOf(deviceId) };
     sharedDeviceStub.reject = true;
