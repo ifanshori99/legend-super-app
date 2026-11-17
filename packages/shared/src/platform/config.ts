@@ -264,6 +264,7 @@ const zoneItemSchema = z.strictObject({
   hours: z.array(zoneHoursSchema).max(50),
   status: zoneStatusSchema,
   sortOrder,
+  isWfc: z.boolean().optional(),
 });
 
 const checklistItemEntrySchema = z.strictObject({

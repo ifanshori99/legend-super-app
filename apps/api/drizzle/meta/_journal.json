@@ -3221,6 +3221,13 @@
       "when": 1795000000090,
       "tag": "0473_payout_1005_recon_flag_kind",
       "breakpoints": true
+    },
+    {
+      "idx": 474,
+      "version": "7",
+      "when": 1795000000091,
+      "tag": "0474_facility_hours_wfc_breakfast",
+      "breakpoints": true
     }
   ]
 }

@@ -817,7 +817,7 @@ function valueOf(unit: MetricUnit, native: bigint): MetricValue {
 function ratioValue(
   numerator: MetricValue | null,
   denominator: MetricValue | null,
-  scale: 1 | 100,
+  scale: 1 | 60 | 100,
   unit: MetricUnit,
 ): MetricValue | null {
   if (numerator === null || denominator === null) return null;
@@ -1030,7 +1030,7 @@ type Plan =
       kind: "derived";
       numerator: string;
       denominator: string;
-      scale: 1 | 100;
+      scale: 1 | 60 | 100;
     }
   | { kind: "share"; of: string; dimension: string };
 

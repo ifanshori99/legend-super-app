@@ -21,6 +21,7 @@ import {
   Timer,
   TriangleAlert,
   UserRoundMinus,
+  Wallet,
   type LucideIcon,
 } from "lucide-react";
 import type { MessageKey } from "@starter/shared/i18n";
@@ -51,6 +52,7 @@ export const NOTIFICATION_CATEGORY_ICONS: Record<
   reservation_confirmation: CalendarCheck,
   reservation_reminder: CalendarClock,
   facility_session: Timer,
+  wfc_min_spend: Wallet,
   subscription_billing: CreditCard,
   schedule_update: CalendarDays,
   payslip: FileText,

@@ -154,6 +154,7 @@ function toMenuItem(
     allergens: row.allergens,
     mediaId: row.mediaId,
     isActive: row.isActive,
+    isBreakfast: row.isBreakfast,
     sortOrder: row.sortOrder,
   });
   return menuItemAdminSchema.parse({ ...item, mediaUrl });
@@ -1178,6 +1179,7 @@ export async function createItem(
     allergens: string[];
     mediaId?: string | null;
     isActive: boolean;
+    isBreakfast?: boolean;
     sortOrder?: number;
   },
   now = new Date(),
@@ -1224,6 +1226,7 @@ export async function createItem(
         allergens: input.allergens,
         mediaId: input.mediaId ?? null,
         isActive: input.isActive,
+        isBreakfast: input.isBreakfast ?? false,
         sortOrder,
         createdAt: now,
         updatedAt: now,
@@ -1271,6 +1274,7 @@ export async function updateItem(
     allergens?: string[];
     mediaId?: string | null;
     isActive?: boolean;
+    isBreakfast?: boolean;
     sortOrder?: number;
   },
   now = new Date(),
@@ -1352,6 +1356,9 @@ export async function updateItem(
           : {}),
         ...(input.mediaId !== undefined ? { mediaId: input.mediaId } : {}),
         ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
+        ...(input.isBreakfast !== undefined
+          ? { isBreakfast: input.isBreakfast }
+          : {}),
         ...(input.sortOrder !== undefined
           ? { sortOrder: input.sortOrder }
           : {}),

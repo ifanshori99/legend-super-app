@@ -160,6 +160,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await asTenant(async (client) => {
     for (const table of [
+      "facility_operating_hours_versions",
       "facility_queue_entries",
       "access_tickets",
       "facility_units",

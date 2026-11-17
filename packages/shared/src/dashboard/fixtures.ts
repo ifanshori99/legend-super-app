@@ -158,8 +158,6 @@ const OWNER_BOARD_UNAVAILABLE: ReadonlySet<string> = new Set([
   "active_subscriptions",
   "shower_fnb_conversion_pct",
   "shower_sessions_with_fnb",
-  "revpash",
-  "seat_occupancy_pct",
   "wifi_quota_used",
   "wifi_sessions",
 ]);

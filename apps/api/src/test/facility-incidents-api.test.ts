@@ -161,6 +161,7 @@ afterAll(async () => {
       [tenant.id, outletA.id],
     );
     for (const table of [
+      "facility_operating_hours_versions",
       "facility_incidents",
       "facility_units",
       "facility_areas",
@@ -170,6 +171,7 @@ afterAll(async () => {
         [tenant.id, facilityId],
       );
     for (const table of [
+      "facility_operating_hours_versions",
       "facility_incidents",
       "facility_units",
       "facility_areas",

@@ -203,6 +203,8 @@ export const menuItems = pgTable(
     /** WS-00 storage object (menu_photo purpose). */
     mediaId: uuid("media_id"),
     isActive: boolean("is_active").notNull().default(true),
+    /** legend-lgyfh: only flagged items appear in the breakfast flow. */
+    isBreakfast: boolean("is_breakfast").notNull().default(false),
     sortOrder: integer("sort_order").notNull().default(0),
     createdAt,
     updatedAt,

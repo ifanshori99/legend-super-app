@@ -26,6 +26,7 @@ import {
   assertTrustedScopedContext,
   createUlid,
   idempotencyKeySchema,
+  localDateOf,
   userIdSchema,
   uuidSchema,
   z,
@@ -74,6 +75,7 @@ import {
   type UnitRow,
 } from "./facility-shared.ts";
 import { unitAcceptsSlot, unitIsBookable } from "./facility-rules.ts";
+import { resolveOperatingHoursOn } from "./facility-hours-versions.service.ts";
 
 /** How long a `pending_payment` hold keeps its unit (PRD silent: 10 min). */
 export const SLOT_HOLD_TTL_MINUTES = 10;
@@ -294,7 +296,11 @@ export async function getFacilityAvailability(
     const [year, month, day] = query.date.split("-").map(Number);
     const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
     const grid: FacilitySlot[] = [];
-    for (const hours of facility.operatingHours) {
+    // Hours valid on the requested date (legend-4us1a), not today's.
+    const dayHours =
+      (await resolveOperatingHoursOn(tx, tenantId, facility.id, query.date)) ??
+      facility.operatingHours;
+    for (const hours of dayHours) {
       if (!hours.daysOfWeek.includes(weekday)) continue;
       const [oh, om] = hours.opensAt.split(":").map(Number);
       const [ch, cm] = hours.closesAt.split(":").map(Number);
@@ -309,8 +315,7 @@ export async function getFacilityAvailability(
           zonedInstant(query.date, at, timeZone),
           config,
         );
-        if (slotFitsOperatingHours(slot, facility.operatingHours, timeZone))
-          grid.push(slot);
+        if (slotFitsOperatingHours(slot, dayHours, timeZone)) grid.push(slot);
       }
     }
     const dayStart = zonedInstant(query.date, 0, timeZone);
@@ -486,7 +491,15 @@ export async function holdFacilitySlot(
   const cleaningEndsAt = new Date(slot.cleaningEndsAt);
   if (input.timing.kind === "slot" && startsAt.getTime() < now.getTime())
     throw new FacilityError("SLOT_UNAVAILABLE");
-  if (!slotFitsOperatingHours(slot, facility.operatingHours, timeZone))
+  // Hours valid on the slot's own date; a later change never reaches back.
+  const slotHours =
+    (await resolveOperatingHoursOn(
+      tx,
+      tenantId,
+      facility.id,
+      localDateOf(slot.startsAt, timeZone),
+    )) ?? facility.operatingHours;
+  if (!slotFitsOperatingHours(slot, slotHours, timeZone))
     throw new FacilityError("FACILITY_CLOSED");
 
   const candidates = await tx
