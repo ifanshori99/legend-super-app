@@ -1830,8 +1830,10 @@ describe("completing an offboarding while a payroll run still holds the kasbon",
     const world = await makeWorld();
     const emp = await makeEmployee(world);
     const loan = await seedLoan(emp.id);
-    const runId = await approvedRun(world, NOV);
+    // Revoking access ends the employment (end_date = last day), which changes
+    // the payslip; do it BEFORE the run is simulated or the lock is rightly stale.
     const exitId = await revokedExit(emp.id);
+    const runId = await approvedRun(world, NOV);
 
     const refused = await tryComplete(exitId, emp.id);
     expect(refused.status, JSON.stringify(refused.body)).toBe(409);
@@ -1912,5 +1914,32 @@ describe("completing an offboarding while a payroll run still holds the kasbon",
     expect(snapshot.outstandingLoans.amountIdr).toBe(1_000_000);
     expect(snapshot.outstandingLoans.loanIds).toEqual([loan]);
     expect(snapshot.pendingPayrollDeductions.count).toBe(0);
+  }, 300_000);
+
+  it("[offboarding-guard-after-complete] a run simulated AFTER the offboarding completed does not deduct the leaver's loan; the balance stays equal to the frozen snapshot (a stayer is still deducted)", async () => {
+    const world = await makeWorld();
+    const leaver = await makeEmployee(world);
+    const stayer = await makeEmployee(world);
+    const leaverLoan = await seedLoan(leaver.id);
+    const stayerLoan = await seedLoan(stayer.id);
+    const exitId = await revokedExit(leaver.id);
+    const done = await tryComplete(exitId, leaver.id);
+    expect(done.status, JSON.stringify(done.body)).toBe(200);
+
+    const runId = await approvedRun(world, NOV);
+    const planned = await rowsOf(runId);
+    expect(planned.byLoan[leaverLoan], "no row for the leaver").toBeUndefined();
+    expect(planned.byLoan[stayerLoan]).toBe(100_000);
+
+    await lockRun(runId);
+    expect(await runStatus(runId)).toBe("locked");
+    const snapshot = finalSettlementSummarySchema.parse(
+      (await exitRow(exitId)).snapshot,
+    );
+    expect(snapshot.outstandingLoans.amountIdr).toBe(1_000_000);
+    expect(await outstandingOf(leaverLoan), "balance = snapshot").toBe(
+      1_000_000,
+    );
+    expect(await outstandingOf(stayerLoan)).toBe(900_000);
   }, 300_000);
 });

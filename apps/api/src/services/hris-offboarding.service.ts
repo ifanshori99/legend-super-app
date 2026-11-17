@@ -956,7 +956,7 @@ async function assertNoPendingPayrollDeduction(
     throw new HttpError(
       409,
       "PAYROLL_DEDUCTION_PENDING",
-      "Karyawan masih punya potongan kasbon di run payroll yang belum dikunci. Kunci run payroll itu atau keluarkan karyawan dari run dulu, lalu selesaikan offboarding.",
+      "Karyawan masih punya potongan kasbon di run payroll yang belum dikunci. Kunci run payroll itu dulu, lalu selesaikan offboarding.",
     );
 }
 

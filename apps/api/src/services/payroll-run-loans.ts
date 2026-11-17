@@ -19,6 +19,8 @@
 // paid; never reversed, never thr) is not deducted again. Simulation drops
 // such a loan from the plan (the run is not rejected); lock treats a clash as
 // 409 resultStale. Month = `date_trunc('month', period_end)` of both runs.
+// COMPLETED OFFBOARDING: an employee whose offboarding is completed is not
+// deducted (the frozen settlement snapshot owns the balance; see below).
 // Money rules: a row is never above min(installment, outstanding - what other
 // live runs reserve, room); `planLoanDeductions` owns the room. Anything that
 // does not match at lock is 409 PAYROLL_RUN_RESULT_STALE, never a guess.
@@ -37,6 +39,7 @@ import {
   type PayrollRunId,
   type PayslipCalculation,
 } from "@starter/shared/hris/payroll";
+import { hrisOffboardings } from "../db/schema/hris-lifecycle.ts";
 import {
   employeeLoans,
   payrollLoanDeductions,
@@ -153,6 +156,29 @@ export async function lockLoansForRunSimulation(
     .for("update");
   if (loans.length === 0) return byEmployee;
 
+  // A completed offboarding froze the final-settlement snapshot with the loan
+  // balance at that moment; a later deduction would lower the real balance
+  // below the snapshot and HR would collect the same money twice. Such an
+  // employee is not deducted: the snapshot stays the only source (the rule
+  // that limits payment). Read after the loans are locked, so a completion
+  // that ran first is seen (completion locks the same loans, id order).
+  const completedOffboarding = new Set(
+    (
+      await tx
+        .select({ employeeId: hrisOffboardings.employeeId })
+        .from(hrisOffboardings)
+        .where(
+          and(
+            eq(hrisOffboardings.tenantId, tenantId),
+            inArray(hrisOffboardings.employeeId, [
+              ...new Set(loans.map((loan) => loan.employeeId)),
+            ]),
+            eq(hrisOffboardings.status, "completed"),
+          ),
+        )
+    ).map((row) => row.employeeId),
+  );
+
   const takenThisMonth = await loanIdsDeductedInMonth(
     tx,
     tenantId,
@@ -194,6 +220,7 @@ export async function lockLoansForRunSimulation(
     const free = Number(loan.outstandingIdr) - (reserved.get(loan.id) ?? 0);
     if (free <= 0 || loan.disbursedAt === null) continue;
     if (takenThisMonth.has(loan.id)) continue;
+    if (completedOffboarding.has(loan.employeeId)) continue;
     const list = byEmployee.get(loan.employeeId) ?? [];
     list.push({
       id: loan.id,
