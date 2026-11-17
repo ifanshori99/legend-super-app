@@ -57,6 +57,7 @@ import { cashOutExceedsDrawer } from "./pos-cash-guard.ts";
 import {
   assertShiftOutflowBound,
   auditShift,
+  liveExpectedCashIdr,
   shiftFingerprint,
   uniqueViolationOf,
   type ShiftCaller,
@@ -386,6 +387,14 @@ export async function approveChargeManualRefund(
       // the cash, the same guards as the void's and the POS refund's cash_out.
       await assertShiftOutflowBound(tx, shift, amountIdr);
       if (await cashOutExceedsDrawer(tx, shift, amountIdr))
+        throw conflict("Kas di laci shift ini tidak cukup untuk refund.");
+      // Rule of this refund (legend-mrwtp, CTO 17 Nov), kept apart from the
+      // shared drawer guard on purpose: other cash flows may let a shift's
+      // expected cash go negative (legend-974 keeps held corrections), but a NEW
+      // manual cash refund never takes the expected cash of the shift below 0.
+      // It does not depend on `cashOutExceedsDrawer`: if that guard is relaxed,
+      // this one still refuses (409). The shift is locked FOR UPDATE above.
+      if (amountIdr > (await liveExpectedCashIdr(tx, shift)))
         throw conflict("Kas di laci shift ini tidak cukup untuk refund.");
       shiftId = shift.id;
       const caller: ShiftCaller = { userId: actorUserId, deviceId: null };
