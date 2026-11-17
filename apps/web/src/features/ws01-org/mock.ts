@@ -21,6 +21,7 @@ import {
   type TenantDomain,
 } from "@starter/shared/platform";
 import { ApiError } from "../../lib/api/errors.ts";
+import { newIdempotencyKey } from "../../lib/idempotency.ts";
 import { registerMock } from "../../lib/mock/registry.ts";
 import { createMockStore } from "../../lib/mock/store.ts";
 import { appendMockAuditEvent } from "../ws11-audit/mock.ts";
@@ -127,7 +128,7 @@ function seedDomains(): TenantDomain[] {
   const [first] = cafeLegendPlatformFixtures.domains;
   const failing: TenantDomain = {
     ...first,
-    id: crypto.randomUUID() as TenantDomain["id"],
+    id: newIdempotencyKey() as TenantDomain["id"],
     hostname: `${FAILING_PREFIX}cafelegend.example`,
     kind: "custom",
     tlsStatus: "pending",
