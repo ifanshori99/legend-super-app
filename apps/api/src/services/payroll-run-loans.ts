@@ -355,9 +355,7 @@ export async function lockLoansForRunLock(
   const [runRow] = await tx
     .select({ periodEnd: payrollRuns.periodEnd })
     .from(payrollRuns)
-    .where(
-      and(eq(payrollRuns.tenantId, tenantId), eq(payrollRuns.id, run.id)),
-    )
+    .where(and(eq(payrollRuns.tenantId, tenantId), eq(payrollRuns.id, run.id)))
     .limit(1);
   if (runRow === undefined) throw resultStale();
   const takenThisMonth = await loanIdsDeductedInMonth(

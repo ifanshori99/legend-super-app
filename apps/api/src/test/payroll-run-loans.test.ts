@@ -1437,9 +1437,10 @@ describe("one installment per loan per pay month", () => {
       // another guard (PAYROLL_PPH21_MONTH_STALE) refuses B first. When A is still
       // approved, only the stale-row guard applies (PAYROLL_RUN_RESULT_STALE).
       if (firstLocked) {
-        expect(["PAYROLL_PPH21_MONTH_STALE", "PAYROLL_RUN_RESULT_STALE"]).toContain(
-          refused!.code,
-        );
+        expect([
+          "PAYROLL_PPH21_MONTH_STALE",
+          "PAYROLL_RUN_RESULT_STALE",
+        ]).toContain(refused!.code);
       } else {
         expect(refused!.code).toBe("PAYROLL_RUN_RESULT_STALE");
       }

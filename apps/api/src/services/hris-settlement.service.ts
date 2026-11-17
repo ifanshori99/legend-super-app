@@ -161,10 +161,7 @@ export async function computeFinalSettlementInTx(
     .orderBy(asc(employeeLoans.id));
   const loansAfterPending = loans.map(({ reserved, ...loan }) => ({
     ...loan,
-    outstandingIdr: Math.max(
-      0,
-      Number(loan.outstandingIdr) - Number(reserved),
-    ),
+    outstandingIdr: Math.max(0, Number(loan.outstandingIdr) - Number(reserved)),
   }));
   // Only a disbursed loan can still be deducted, and never above what is left
   // of it: min(reserved installment, outstanding) per loan.
