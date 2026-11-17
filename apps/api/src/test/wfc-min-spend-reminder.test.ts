@@ -27,8 +27,11 @@
 // Assumptions (the brief leaves them open):
 // - Peak windows (`startsAt`/`endsAt`, `daysOfWeek` 0 = Sunday) are read in the
 //   outlet timezone (Asia/Jakarta, UTC+7). NOW below is Tuesday 13:00 WIB.
-// - Only 'completed' orders count as spend; 'voided' and 'draft' never do.
-//   'sent' and 'awaiting_payment' are not exercised (open-bill ambiguity).
+// - 'sent' (open bill, real outstanding spend) and 'completed' orders count as
+//   spend; 'voided', 'draft' and 'awaiting_payment' never do. Training orders
+//   (pos_orders.is_training) never count either.
+// - Only active sessions are checked: status 'open' or 'bill_requested' with
+//   closedAt null; 'pending_confirmation' (and 'voided') are not.
 // - Net order total = subtotal - discount for a price-exclusive order, and
 //   total - tax - service charge for a tax-inclusive order (harga nett).
 // - Exactly one hour (h = 1) already counts as a completed hour.
@@ -75,6 +78,8 @@ type Seed = {
   /** Hours (can be fractional) the session has been open at NOW. */
   openedHoursAgo?: number;
   closed?: boolean;
+  /** Status of an unclosed session; default 'open'. */
+  status?: "open" | "bill_requested" | "pending_confirmation";
   withPolicy?: boolean;
   /** Distinct sign-in user ids, one device each. */
   signedInUsers?: string[];
@@ -154,19 +159,23 @@ async function seedScenario(world: World, seed: Seed = {}): Promise<Scenario> {
     await client.query(
       `INSERT INTO table_sessions
          (id, tenant_id, outlet_id, table_id, pax, payment_mode, status, session_token_hash,
-          session_token_sealed, confirmed_by, opened_at, last_activity_at, closed_at, closed_reason)
-       VALUES ($1, $2, $3, $4, 2, 'pay_first', $5, $6, 'sealed', $7, $8, $8, $9, $10)`,
+          session_token_sealed, confirmed_by, opened_at, last_activity_at, closed_at, closed_reason,
+          bill_requested_at)
+       VALUES ($1, $2, $3, $4, 2, $11, $5, $6, 'sealed', $7, $8, $8, $9, $10, $12)`,
       [
         sessionId,
         world.tenantId,
         outletId,
         tableId,
-        seed.closed ? "closed" : "open",
+        seed.closed ? "closed" : (seed.status ?? "open"),
         hex64(),
         seed.confirmedBy ?? null,
         openedAt.toISOString(),
         seed.closed ? NOW.toISOString() : null,
         seed.closed ? "paid_and_cleaned" : null,
+        // Table constraints: only an open-bill session waits for confirmation.
+        seed.status === "pending_confirmation" ? "open_bill" : "pay_first",
+        seed.status === "bill_requested" ? NOW.toISOString() : null,
       ],
     );
     const participants: Array<string | null> = [
@@ -197,7 +206,9 @@ async function seedScenario(world: World, seed: Seed = {}): Promise<Scenario> {
 type OrderSeed = {
   outletId?: string;
   sessionId: string;
-  status?: "completed" | "voided" | "draft";
+  status?: "completed" | "voided" | "draft" | "sent" | "awaiting_payment";
+  /** Stamp the order as till practice (pos_orders.is_training). */
+  training?: boolean;
   subtotal: number;
   discount?: number;
   service?: number;
@@ -212,17 +223,19 @@ async function seedOrder(world: World, seed: OrderSeed): Promise<void> {
   const total = seed.inclusive
     ? seed.subtotal - discount
     : seed.subtotal - discount + service + tax;
-  await asTenant(world.tenantId, (client) =>
-    client.query(
+  const orderId = ulidToUuid(createUlid());
+  const outletId = seed.outletId ?? world.outletA;
+  await asTenant(world.tenantId, async (client) => {
+    await client.query(
       `INSERT INTO orders
          (id, tenant_id, outlet_id, number, channel, service_type, payment_mode, table_session_id,
           subtotal_idr, discount_idr, service_charge_idr, tax_idr, rounding_idr, total_idr,
           prices_include_tax, status, business_date, placed_at)
        VALUES ($1, $2, $3, $4, 'qr', 'dine_in', 'pay_first', $5, $6, $7, $8, $9, 0, $10, $11, $12, $13, $14)`,
       [
-        ulidToUuid(createUlid()),
+        orderId,
         world.tenantId,
-        seed.outletId ?? world.outletA,
+        outletId,
         `WF-${short()}`.toUpperCase(),
         seed.sessionId,
         seed.subtotal,
@@ -235,8 +248,14 @@ async function seedOrder(world: World, seed: OrderSeed): Promise<void> {
         BUSINESS_DATE,
         new Date(NOW.getTime() - HOUR).toISOString(),
       ],
-    ),
-  );
+    );
+    if (seed.training)
+      await client.query(
+        `INSERT INTO pos_orders (order_id, tenant_id, outlet_id, channel, is_training)
+         VALUES ($1, $2, $3, 'pos', true)`,
+        [orderId, world.tenantId, outletId],
+      );
+  });
 }
 
 function evaluate(
@@ -361,6 +380,78 @@ describe("legend-e24cz WFC minimum spend per hour reminder", () => {
     await evaluate(world);
 
     expect(await reminders(world, sessionId)).toHaveLength(1);
+  });
+
+  it("counts a sent (open bill) order as spend, alone or with a completed one", async () => {
+    const world = await createWorld();
+    const alone = await seedScenario(world, { signedInUsers: [randomUUID()] });
+    await seedOrder(world, {
+      sessionId: alone.sessionId,
+      subtotal: 60_000,
+      status: "sent",
+    });
+    const mixed = await seedScenario(world, { signedInUsers: [randomUUID()] });
+    await seedOrder(world, { sessionId: mixed.sessionId, subtotal: 25_000 });
+    await seedOrder(world, {
+      sessionId: mixed.sessionId,
+      subtotal: 35_000,
+      status: "sent",
+    });
+
+    await evaluate(world);
+
+    expect(await reminders(world)).toHaveLength(0);
+  });
+
+  it("does not count an awaiting_payment order as spend", async () => {
+    const world = await createWorld();
+    const { sessionId } = await seedScenario(world, {
+      signedInUsers: [randomUUID()],
+    });
+    await seedOrder(world, {
+      sessionId,
+      subtotal: 100_000,
+      status: "awaiting_payment",
+    });
+
+    await evaluate(world);
+
+    expect(await reminders(world, sessionId)).toHaveLength(1);
+  });
+
+  it("does not count a training order as spend", async () => {
+    const world = await createWorld();
+    const { sessionId } = await seedScenario(world, {
+      signedInUsers: [randomUUID()],
+    });
+    await seedOrder(world, { sessionId, subtotal: 100_000, training: true });
+    await seedOrder(world, {
+      sessionId,
+      subtotal: 100_000,
+      status: "sent",
+      training: true,
+    });
+
+    await evaluate(world);
+
+    expect(await reminders(world, sessionId)).toHaveLength(1);
+  });
+
+  it("checks only active sessions: not pending confirmation, still a bill-requested one", async () => {
+    const world = await createWorld();
+    const pending = await seedScenario(world, {
+      signedInUsers: [randomUUID()],
+      status: "pending_confirmation",
+    });
+    const billRequested = await seedScenario(world, {
+      signedInUsers: [randomUUID()],
+      status: "bill_requested",
+    });
+
+    await evaluate(world);
+
+    expect(await reminders(world, pending.sessionId)).toHaveLength(0);
+    expect(await reminders(world, billRequested.sessionId)).toHaveLength(1);
   });
 
   it("excludes tax and service charge from spend (price-exclusive order)", async () => {

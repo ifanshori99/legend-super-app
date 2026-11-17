@@ -52,8 +52,9 @@
 // session still open at `now` counts up to `now`; capped at the available
 // minutes) and wfc_net_sales (completed orders by `business_date` through
 // order -> table session -> table -> zone, without tax and service charge:
-// a tax-inclusive order backs both out of its gross subtotal; discounts are
-// not deducted). Open window: the zone's `hours` for the weekday of the date,
+// a tax-inclusive order backs both out of its gross subtotal; the order net
+// is the dashboard's net_sales one, subtotal - discount - refunds, so revpash
+// never overstates). Open window: the zone's `hours` for the weekday of the date,
 // or the outlet's opening hours when the zone has none; a zone with no seats
 // or no open minutes writes no row (absent, never a divide by zero).
 // Derived: seat_occupancy_pct = used / available * 100 and revpash = net
@@ -63,7 +64,7 @@ import { sql } from "drizzle-orm";
 import { businessDayRange, idr } from "@starter/shared/core";
 import { minutesOfDay, type FacilityDayHours } from "@starter/shared/facility";
 import { outletBusinessDayClock } from "../outlet-clock";
-import { NOT_TRAINING_SQL } from "./sales";
+import { NOT_TRAINING_SQL, ORDER_NET_SQL, REFUNDS_JOIN } from "./sales";
 import type {
   DailyComputeInput,
   DailyMetricReader,
@@ -687,9 +688,10 @@ async function loadWfcDay(
     await tx.execute(sql`
       SELECT t.zone_id,
              sum(CASE WHEN o.prices_include_tax
-                      THEN o.subtotal_idr - o.tax_idr - o.service_charge_idr
-                      ELSE o.subtotal_idr END) AS net
+                      THEN ${ORDER_NET_SQL} - o.tax_idr - o.service_charge_idr
+                      ELSE ${ORDER_NET_SQL} END) AS net
         FROM orders o
+        ${REFUNDS_JOIN}
         JOIN table_sessions ts ON ts.tenant_id = o.tenant_id AND ts.id = o.table_session_id
         JOIN tables t ON t.tenant_id = ts.tenant_id AND t.id = ts.table_id
         JOIN floor_zones z ON z.tenant_id = t.tenant_id AND z.id = t.zone_id

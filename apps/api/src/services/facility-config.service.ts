@@ -69,6 +69,7 @@ import {
 } from "./facility-products.service.ts";
 import { listWifiPoliciesForFacility } from "./wifi-policy.service.ts";
 import {
+  ensureBaselineHoursVersion,
   FIRST_HOURS_VERSION_DATE,
   rollForwardOutletHoursNow,
   upsertOperatingHoursVersion,
@@ -358,7 +359,15 @@ export async function updateFacility(
       )
       .returning();
     const after = toFacility(row);
-    if (hoursStart !== null)
+    if (hoursStart !== null) {
+      // A facility without a 1970-01-01 baseline (imported, or created before
+      // the versions) keeps its current hours for every earlier day.
+      await ensureBaselineHoursVersion(tx, {
+        tenantId: context.tenant.tenantId,
+        outletId: locked.outletId,
+        facilityId: locked.id,
+        operatingHours: before.operatingHours,
+      });
       await upsertOperatingHoursVersion(tx, {
         tenantId: context.tenant.tenantId,
         outletId: locked.outletId,
@@ -366,6 +375,7 @@ export async function updateFacility(
         effectiveFrom: hoursStart,
         operatingHours: newHours ?? before.operatingHours,
       });
+    }
     await auditFacility(tx, context, actor, now, {
       action: "facility.updated",
       objectType: "facility",

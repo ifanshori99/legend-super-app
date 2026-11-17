@@ -95,6 +95,39 @@ export async function upsertOperatingHoursVersion(
 }
 
 /**
+ * Makes sure the facility has the 1970-01-01 baseline version (the hours it
+ * has now) without touching an existing one. A facility created before the
+ * versions existed, or by the config import, may lack it; without a baseline
+ * a first dated change would rewrite every earlier day.
+ */
+export async function ensureBaselineHoursVersion(
+  tx: Tx,
+  input: {
+    tenantId: TenantId;
+    outletId: OutletId;
+    facilityId: string;
+    operatingHours: FacilityDayHours[];
+  },
+): Promise<void> {
+  await tx
+    .insert(facilityOperatingHoursVersions)
+    .values({
+      tenantId: input.tenantId,
+      outletId: input.outletId,
+      facilityId: input.facilityId,
+      effectiveFrom: FIRST_HOURS_VERSION_DATE,
+      operatingHours: input.operatingHours,
+    })
+    .onConflictDoNothing({
+      target: [
+        facilityOperatingHoursVersions.tenantId,
+        facilityOperatingHoursVersions.facilityId,
+        facilityOperatingHoursVersions.effectiveFrom,
+      ],
+    });
+}
+
+/**
  * Copies, per facility of the outlet, the latest version with `effective_from`
  * <= `today` onto `facilities.operating_hours` (the hours valid today), only
  * where it differs, so a rerun changes nothing. `updated_at` is left alone: a

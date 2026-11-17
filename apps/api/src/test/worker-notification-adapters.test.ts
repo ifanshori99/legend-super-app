@@ -1141,6 +1141,10 @@ describe("legend-18qw notification recipient resolver", () => {
         "DELETE FROM facility_incidents WHERE tenant_id = $1 AND facility_id = $2",
         [tenantId, facilityId],
       );
+      await owner.query(
+        "DELETE FROM facility_operating_hours_versions WHERE facility_id = $1",
+        [facilityId],
+      );
       await owner.query("DELETE FROM facilities WHERE id = $1", [facilityId]);
       await owner.query("DELETE FROM roles WHERE id = $1", [roleId]);
     }
@@ -1820,6 +1824,10 @@ describe("legend-5rgl facility_incident.raised owner fallback", () => {
   });
 
   afterAll(async () => {
+    await owner.query(
+      "DELETE FROM facility_operating_hours_versions WHERE facility_id = $1",
+      [facilityC],
+    );
     await owner.query("DELETE FROM facilities WHERE id = $1", [facilityC]);
     await owner.query(`DELETE FROM "user" WHERE id = ANY($1::text[])`, [
       userIds,

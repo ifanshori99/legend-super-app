@@ -41,6 +41,15 @@
 //   Z6 WFC with a window of zero length (09:00-09:00): no value.
 // Outlet 2: Z7 WFC 09:00-17:00, one table of 4 seats, order net 16 000, session
 //   pax 4 09:00-13:00 (16 of 32 seat-h): revpash 500; occupancy 50 %.
+//   Z8 WFC 09:00-17:00, one table of 4 seats (32 seat-h = 1 920 min); the net
+//   of an order is subtotal - discount - refunds (like the dashboard's
+//   net_sales), minus service charge and tax when prices include tax:
+//     discounted tax-exclusive order: subtotal 100 000, discount 10 000 -> 90 000;
+//     discounted tax-inclusive order: gross 72 000, discount 5 000, sc 3 000,
+//       tax 2 000 -> 62 000;
+//     refunded order: subtotal 60 000, refund 20 000 -> 40 000.
+//   Net 192 000, so revpash 192 000 / 32 = 6 000 (without the discounts and
+//   refunds it would read 232 000 / 32 = 7 250).
 // Another tenant has its own WFC zone and order that must never show up here.
 //
 // Assumptions where the spec is silent: the zone dimension value is the zone id;
@@ -84,6 +93,7 @@ type Ids = {
   z5: string;
   z6: string;
   z7: string;
+  z8: string;
   zOther: string;
 };
 
@@ -262,14 +272,16 @@ async function order(
     serviceChargeIdr?: number;
     taxIdr?: number;
     inclusive?: boolean;
+    discountIdr?: number;
     status?: string;
     date?: string;
   },
-) {
+): Promise<string> {
   const sc = input.serviceChargeIdr ?? 0;
   const tax = input.taxIdr ?? 0;
-  const subtotal = input.inclusive ? input.netIdr + sc + tax : input.netIdr;
-  const total = input.inclusive ? subtotal : subtotal + sc + tax;
+  const discount = input.discountIdr ?? 0;
+  const subtotal = input.netIdr + discount + (input.inclusive ? sc + tax : 0);
+  const total = subtotal - discount + (input.inclusive ? 0 : sc + tax);
   const id = randomUUID();
   const date = input.date ?? DAY;
   await asOwner(w.tenantId, (client) =>
@@ -277,7 +289,7 @@ async function order(
       `INSERT INTO orders (id, tenant_id, outlet_id, number, channel, service_type, table_session_id,
          payment_mode, subtotal_idr, discount_idr, service_charge_idr, tax_idr, rounding_idr, total_idr,
          prices_include_tax, status, business_date, placed_at)
-       VALUES ($1, $2, $3, $4, 'qr', $5, $6, 'open_bill', $7, 0, $8, $9, 0, $10, $11, $12, $13, $14)`,
+       VALUES ($1, $2, $3, $4, 'qr', $5, $6, 'open_bill', $7, $15, $8, $9, 0, $10, $11, $12, $13, $14)`,
       [
         id,
         w.tenantId,
@@ -293,9 +305,41 @@ async function order(
         input.status ?? "completed",
         date,
         at(date, "12:00"),
+        discount,
       ],
     ),
   );
+  return id;
+}
+
+/** A POS refund of `amountIdr` against an order (the dashboard's refund source). */
+async function refund(
+  w: World,
+  outletId: string,
+  orderId: string,
+  amountIdr: number,
+) {
+  await asOwner(w.tenantId, async (client) => {
+    await client.query(
+      `INSERT INTO pos_orders (order_id, tenant_id, outlet_id, channel, submitted_at, completed_at)
+       VALUES ($1, $2, $3, 'pos', now(), now())`,
+      [orderId, w.tenantId, outletId],
+    );
+    await client.query(
+      `INSERT INTO pos_order_refunds (tenant_id, outlet_id, order_id, amount_idr, reason, reason_note,
+          lines, requested_by, approved_by, approval_request_id, refunded_at)
+       VALUES ($1, $2, $3, $4, 'customer_cancelled', 'Uji', $5::jsonb,
+               'kasir-uji', 'supervisor-uji', $6, now())`,
+      [
+        w.tenantId,
+        outletId,
+        orderId,
+        amountIdr,
+        JSON.stringify([{ method: "cash", amountIdr, reference: null }]),
+        randomUUID(),
+      ],
+    );
+  });
 }
 
 type Dim = { key: "zone"; value: string };
@@ -473,7 +517,26 @@ async function seedZones(w: World, o1: string, o2: string): Promise<Ids> {
   const s7 = await session(w, o2, t7, { pax: 4, from: "09:00", to: "13:00" });
   await order(w, o2, s7, { netIdr: 16_000 });
 
-  return { z1, z2, z3, z4, z5, z6, z7, zOther: "" };
+  // Z8: discounted and refunded orders in the second outlet.
+  const z8 = await zone(w, o2, {
+    name: "WFC Diskon",
+    isWfc: true,
+    hours: hoursOf("09:00", "17:00"),
+  });
+  const t8 = await table(w, o2, z8, 4);
+  const s8 = await session(w, o2, t8, { pax: 1, from: "10:00", to: "11:00" });
+  await order(w, o2, s8, { netIdr: 90_000, discountIdr: 10_000 });
+  await order(w, o2, s8, {
+    netIdr: 62_000,
+    discountIdr: 5_000,
+    serviceChargeIdr: 3_000,
+    taxIdr: 2_000,
+    inclusive: true,
+  });
+  const refunded = await order(w, o2, s8, { netIdr: 60_000 });
+  await refund(w, o2, refunded, 20_000);
+
+  return { z1, z2, z3, z4, z5, z6, z7, z8, zOther: "" };
 }
 
 beforeAll(async () => {
@@ -560,6 +623,15 @@ describe("revpash", () => {
     expect((await figure(world, "revpash", ids.z7)).value).toBeCloseTo(500, 2);
   });
 
+  it("takes discounts and refunds off the net like the dashboard net_sales", async () => {
+    // (100 000 - 10 000) + (72 000 - 5 000 - 3 000 - 2 000) + (60 000 - 20 000)
+    // = 192 000 net / (4 seats * 8 h) = 6 000.
+    expect((await figure(world, "revpash", ids.z8)).value).toBeCloseTo(
+      6_000,
+      2,
+    );
+  });
+
   it("ignores a zone that is not WFC", async () => {
     expect((await figure(world, "revpash", ids.z2)).value).toBeNull();
     expect(await storedZones(world, world.outlet1, "revpash")).not.toContain(
@@ -634,7 +706,9 @@ describe("isolation", () => {
       ),
     );
     expect(zones.has(ids.zOther)).toBe(false);
-    expect([...zones].sort()).toEqual([ids.z1, ids.z3, ids.z5, ids.z7].sort());
+    expect([...zones].sort()).toEqual(
+      [ids.z1, ids.z3, ids.z5, ids.z7, ids.z8].sort(),
+    );
   });
 
   it("answers the other tenant from its own data only", async () => {
@@ -650,9 +724,9 @@ describe("isolation", () => {
   });
 
   it("keeps the second outlet's zone out of the first outlet's rows", async () => {
-    expect(await storedZones(world, world.outlet2, "revpash")).toEqual([
-      ids.z7,
-    ]);
+    expect(await storedZones(world, world.outlet2, "revpash")).toEqual(
+      [ids.z7, ids.z8].sort(),
+    );
     expect(await storedZones(world, world.outlet1, "revpash")).not.toContain(
       ids.z7,
     );

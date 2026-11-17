@@ -3,9 +3,11 @@
 //
 // A WFC zone may ask for `wifi_policies.min_spend_per_hour_idr`. During the
 // policy's peak window (jam ramai; off-peak is relaxed) every open table
-// session of the zone that has completed `h >= 1` full hours is checked:
-// required = h x minimum; spend = net order total of the session (completed
-// orders only, tax and service charge left out). A session below the
+// active session of the zone (open or bill requested, not pending
+// confirmation or voided) that has completed `h >= 1` full hours is checked:
+// required = h x minimum; spend = net order total of the session ('sent' open
+// bill and 'completed' orders, training orders excluded, tax and service
+// charge left out). A session below the
 // requirement gets ONE polite reminder per completed hour. No charge, refund
 // or session change happens: the reminder is a message, nothing else.
 //
@@ -20,7 +22,16 @@
 // Net spend of an order: price-exclusive = subtotal - discount; tax-inclusive
 // (harga nett) = total - tax - service charge.
 
-import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import {
+  and,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  notInArray,
+  sql,
+} from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import {
   createUlid,
   ulidToUuid,
@@ -43,6 +54,7 @@ import {
   tables,
 } from "../db/schema/index.ts";
 import { outlets } from "../db/schema/platform-org.ts";
+import { NOT_TRAINING_SQL } from "./metric-sources/sales.ts";
 import { appendNotificationEvent } from "./notification-events.ts";
 import { buildRecipients } from "./service-request.service.ts";
 import type { Tx } from "./table-session.service.ts";
@@ -241,6 +253,9 @@ export async function evaluateMinSpend(
           eq(tableSessions.tenantId, tenantId),
           eq(tableSessions.outletId, outletId),
           isNull(tableSessions.closedAt),
+          // Same filter as the WFC seat metrics: an unconfirmed or voided
+          // session is not a seated guest.
+          notInArray(tableSessions.status, ["voided", "pending_confirmation"]),
           eq(tables.tenantId, tenantId),
           eq(tables.zoneId, policy.zoneId),
         ),
@@ -256,22 +271,25 @@ export async function evaluateMinSpend(
     if (due.length === 0) continue;
 
     const sessionIds = due.map((session) => session.id);
+    // Alias `o`: NOT_TRAINING_SQL refers to the orders row as `o`.
+    const o = alias(orders, "o");
     const spendRows = await tx
       .select({
-        sessionId: orders.tableSessionId,
-        spend: sql<string>`COALESCE(SUM(CASE WHEN ${orders.pricesIncludeTax}
-          THEN ${orders.totalIdr} - ${orders.taxIdr} - ${orders.serviceChargeIdr}
-          ELSE ${orders.subtotalIdr} - ${orders.discountIdr} END), 0)::text`,
+        sessionId: o.tableSessionId,
+        spend: sql<string>`COALESCE(SUM(CASE WHEN ${o.pricesIncludeTax}
+          THEN ${o.totalIdr} - ${o.taxIdr} - ${o.serviceChargeIdr}
+          ELSE ${o.subtotalIdr} - ${o.discountIdr} END), 0)::text`,
       })
-      .from(orders)
+      .from(o)
       .where(
         and(
-          eq(orders.tenantId, tenantId),
-          inArray(orders.tableSessionId, sessionIds),
-          eq(orders.status, "completed"),
+          eq(o.tenantId, tenantId),
+          inArray(o.tableSessionId, sessionIds),
+          inArray(o.status, ["sent", "completed"]),
+          NOT_TRAINING_SQL,
         ),
       )
-      .groupBy(orders.tableSessionId);
+      .groupBy(o.tableSessionId);
     const spendBySession = new Map<string, number>();
     for (const row of spendRows)
       if (row.sessionId !== null)

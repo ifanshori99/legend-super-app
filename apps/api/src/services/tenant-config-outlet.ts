@@ -24,6 +24,7 @@ import {
 } from "../db/schema/facility.ts";
 import { floorZones } from "../db/schema/floor.ts";
 import { opsChecklistTemplates } from "../db/schema/operations.ts";
+import { ensureBaselineHoursVersion } from "./facility-hours-versions.service.ts";
 import { loadTenantKeyMaps } from "./tenant-config-keys.ts";
 import {
   ConfigImportError,
@@ -617,6 +618,12 @@ const facilitiesHandler: SectionHandler = {
         if (!created)
           throw new ConfigImportError("Facility insert returned no row.");
         id = created.id;
+        await ensureBaselineHoursVersion(tx, {
+          tenantId: tid,
+          outletId: asOutlet(outletId),
+          facilityId: id,
+          operatingHours: item.operatingHours,
+        });
       }
       const claimedBy = claimed.get(id);
       if (claimedBy)

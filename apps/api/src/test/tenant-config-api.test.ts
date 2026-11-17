@@ -825,6 +825,16 @@ describe("TEN-09 export, template and import", () => {
     expect(after.ready, JSON.stringify(after.checks)).toBe(true);
     expect(after.checks.every((row) => row.ok)).toBe(true);
     expect(await counts(target.tenantId)).toEqual(SOURCE_COUNTS);
+    // Every imported facility starts with the 1970-01-01 hours baseline
+    // (legend-4us1a), so a later hours change never rewrites the past.
+    const baselines = await owner.query<{ effective_from: string }>(
+      `SELECT effective_from::text AS effective_from
+         FROM facility_operating_hours_versions WHERE tenant_id = $1`,
+      [target.tenantId],
+    );
+    expect(baselines.rows.map((row) => row.effective_from)).toEqual([
+      "1970-01-01",
+    ]);
 
     // Modules are unioned into the target (package validated).
     const flags = await owner.query<{ feature_flags: { modules: string[] } }>(

@@ -1396,11 +1396,11 @@ export const dashboardMetricDefinitions: readonly MetricDefinition[] = [
     code: "wfc_net_sales",
     name: "Penjualan bersih zona WFC",
     description:
-      "Penjualan pesanan selesai di meja zona WFC tanpa pajak dan biaya layanan, per tanggal bisnis.",
+      "Penjualan bersih pesanan selesai di meja zona WFC (setelah diskon dan refund, tanpa pajak dan biaya layanan), per tanggal bisnis.",
     ownerModule: "facility",
     formulaRef: "facility.wfc_net_sales",
     expression:
-      "sum(order subtotal, minus tax and service charge when prices include tax) of completed orders at zone tables",
+      "sum(order subtotal - discount - refunds, minus tax and service charge when prices include tax) of completed orders at zone tables",
     unit: "idr",
     aggregation: "sum",
     dimensions: ["outlet", "zone"],

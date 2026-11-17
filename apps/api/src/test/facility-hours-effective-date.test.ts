@@ -38,7 +38,6 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import { createFacility, facilityIdSchema } from "@starter/shared/facility";
-import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
@@ -816,6 +815,32 @@ describe("legend-4us1a facility hours API", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.status).toBe("issued");
     expect(rows[0]!.starts_at.toISOString()).toBe(startsAt);
+  });
+
+  it("a facility without a baseline version (imported) keeps its old hours for past days after a change", async () => {
+    const client = await ownerClient();
+    // Inserted straight into the table, like a facility created before the
+    // versions existed or by the config import: no 1970-01-01 version.
+    const id = await insertFacilityRow({
+      tenantId,
+      outletId: seededOutletA,
+      name: `Impor jam ${randomUUID().slice(0, 8)}`,
+      hours: hoursOf("08:00", "20:00"),
+    });
+    apiFacilities.push(id);
+    expect(await versionRows(tenantId, id)).toHaveLength(0);
+    const changed = await putHours(client, id, hoursOf("09:00", "17:00"));
+    expect(changed.status, JSON.stringify(changed.body)).toBe(200);
+    const rows = await versionRows(tenantId, id);
+    expect(rows[0]!.effective_from).toBe("1970-01-01");
+    expect(rows[0]!.operating_hours).toEqual(hoursOf("08:00", "20:00"));
+    // Day before today: still the old hours; today and later: the new ones.
+    expect(await resolveOn(tenantId, id, jakartaDate(-2))).toEqual(
+      hoursOf("08:00", "20:00"),
+    );
+    expect(await resolveOn(tenantId, id, jakartaDate(1))).toEqual(
+      hoursOf("09:00", "17:00"),
+    );
   });
 
   it("another tenant's facility cannot be changed: 404, no version written", async () => {

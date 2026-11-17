@@ -18,8 +18,9 @@
 // Assumptions (ambiguous in the brief):
 // - The order path rejects a non-breakfast item with "the same error class as
 //   an unavailable item". The exact status/code is not in the contract, so the
-//   tests accept 404 or 422 (never 201, never 5xx) and assert that nothing was
-//   created for the ticket instead of pinning one code.
+//   tests accept 404, 409 or 422 (never 201, never 5xx) and assert that nothing
+//   was created for the ticket instead of pinning one code. The service answers
+//   409 CONFLICT, the same as an unavailable item (resolveLine "sold_out").
 // - The admin DTO field is named `isBreakfast` (boolean) in create input,
 //   update input and the admin item response, next to `isActive`.
 // - Admin items are created as inactive drafts (Q23 photo rule), so the "flag
@@ -58,7 +59,7 @@ let admin: Staff; // menu admin of `world`
 let otherAdmin: Staff; // menu admin of `other`
 
 /** Rejection of an order line the breakfast menu does not offer. */
-const REJECTED = [404, 422];
+const REJECTED = [404, 409, 422];
 
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
@@ -303,7 +304,14 @@ describe("legend-lgyfh breakfast menu flag: member menu and order", () => {
   it("LGYFH-03 default is false: an item created without the flag stays out of the menu until flagged", async () => {
     const id = await seedItem(legacy, { name: "Menu Lama" }); // column not written
     expect(await flagOf(legacy, id)).toBe(false);
-    // The two items every breakfast world seeds were never flagged either.
+    // The two items every breakfast world seeds are flagged by the shared
+    // fixture; an old tenant's were never flagged, so reset them here.
+    await asOwnerTenant(legacy.tenant.tenantId, (client) =>
+      client.query(
+        `UPDATE menu_items SET is_breakfast = false WHERE id = ANY($1::uuid[])`,
+        [[legacy.ids.nasi, legacy.ids.kopi]],
+      ),
+    );
     for (const seeded of [legacy.ids.nasi, legacy.ids.kopi])
       expect(await flagOf(legacy, seeded)).toBe(false);
 
