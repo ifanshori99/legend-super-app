@@ -118,7 +118,11 @@ import {
   recheckReceiverSession,
   revokeReceiverSession,
 } from "../services/panic-receiver-session.ts";
-import { withEdgeModeEnv } from "./edge-mode-env.ts";
+import {
+  installEdgeNodeForTests,
+  removeEdgeNodeForTests,
+  withEdgeModeEnv,
+} from "./edge-mode-env.ts";
 import {
   createIsolatedTenant,
   owner,
@@ -479,6 +483,11 @@ const openSession = (
   withEdgeModeEnv(async () => {
     // The edge verifies with the peppers of the device's outlet.
     ensurePeppers(tokenOutlet.get(deviceToken) ?? outletA);
+    // This edge process serves the device's outlet (one outlet per edge).
+    installEdgeNodeForTests({
+      tenantId: tenant.tenantId,
+      outletId: tokenOutlet.get(deviceToken) ?? outletA,
+    });
     let req = agent(app)
       .post(PANIC_ROUTES.sessions)
       .set(DEVICE_TOKEN_HEADER, deviceToken);
@@ -488,12 +497,16 @@ const openSession = (
   });
 
 const pressAlert = (button: Device, eventId: string, kind?: "press" | "test") =>
-  withEdgeModeEnv(async () =>
-    agent(edge)
+  withEdgeModeEnv(async () => {
+    installEdgeNodeForTests({
+      tenantId: tenant.tenantId,
+      outletId: button.outlet,
+    });
+    return agent(edge)
       .post(PANIC_ROUTES.press)
       .set(DEVICE_TOKEN_HEADER, button.token)
-      .send(pressBody(eventId, { kind })),
-  );
+      .send(pressBody(eventId, { kind }));
+  });
 
 /** Rings an alert and returns its id (uuid). */
 async function ring(outlet: string) {
@@ -786,6 +799,7 @@ beforeAll(async () => {
   });
   outletA = await seedOutlet("Outlet darurat A");
   outletB = await seedOutlet("Outlet darurat B");
+  installEdgeNodeForTests({ tenantId: tenant.tenantId, outletId: outletA });
   holdPeppers(outletA);
   adminUserId = await insertUser("Admin Darurat");
   ownerB = createOwnerPool();
@@ -793,6 +807,7 @@ beforeAll(async () => {
 }, 90_000);
 
 afterEach(async () => {
+  installEdgeNodeForTests({ tenantId: tenant.tenantId, outletId: outletA });
   holdPeppers(outletA);
   // Free device quota: the retired buttons stay in the registry as revoked.
   for (const button of buttonsToRetire.splice(0))
@@ -804,6 +819,7 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
+  removeEdgeNodeForTests();
   for (const socket of sockets.splice(0)) socket.terminate();
   await realtime?.close?.();
   if (http) await new Promise<void>((resolve) => http!.close(() => resolve()));

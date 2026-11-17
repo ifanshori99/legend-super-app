@@ -8,7 +8,15 @@
 // Fixtures follow panic-receiver-session.test.ts.
 import { randomBytes, randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 
 // Must run before ../config/env is first imported (imports are hoisted).
 vi.hoisted(() => {
@@ -43,7 +51,11 @@ import {
   revokeDevice,
 } from "../services/device.service.ts";
 import { authenticateReceiverSession } from "../services/panic-receiver-session.ts";
-import { withEdgeModeEnv } from "./edge-mode-env.ts";
+import {
+  installEdgeNodeForTests,
+  removeEdgeNodeForTests,
+  withEdgeModeEnv,
+} from "./edge-mode-env.ts";
 import {
   createIsolatedTenant,
   owner,
@@ -239,6 +251,11 @@ async function onDutyStaff(outlets: string[]) {
 const login = (device: Device, userId: string) =>
   withEdgeModeEnv(async () => {
     ensurePeppers(tokenOutlet.get(device.token) ?? outletA);
+    // This edge process serves the device's outlet (one outlet per edge).
+    installEdgeNodeForTests({
+      tenantId: tenant.tenantId,
+      outletId: device.outlet,
+    });
     return agent(edge)
       .post(PANIC_ROUTES.sessions)
       .set(DEVICE_TOKEN_HEADER, device.token)
@@ -285,11 +302,17 @@ beforeAll(async () => {
   });
   outletA = await seedOutlet("Outlet review B-A");
   outletB = await seedOutlet("Outlet review B-B");
+  installEdgeNodeForTests({ tenantId: tenant.tenantId, outletId: outletA });
   holdPeppers(outletA);
   adminUserId = await insertUser("Admin Review B");
 }, 90_000);
 
+afterEach(() => {
+  installEdgeNodeForTests({ tenantId: tenant.tenantId, outletId: outletA });
+});
+
 afterAll(async () => {
+  removeEdgeNodeForTests();
   resetEdgeStaffPinPeppers();
   setAuditWriter(null);
   setDeviceOutletResolver(null);

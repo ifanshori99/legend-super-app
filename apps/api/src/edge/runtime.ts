@@ -38,6 +38,7 @@ import type { ReceiptRunRefusalReport } from "@starter/shared/edge";
 import { db, pool } from "../db/index.ts";
 import { env } from "../config/env.ts";
 import { logger } from "../lib/logger.ts";
+import { isEdgeNode } from "./mode.ts";
 import {
   authenticateEdgeCredential,
   EDGE_NODE_REVOKED_CHANNEL,
@@ -384,7 +385,23 @@ export function getDeviceRegistrySyncState(): DeviceRegistrySyncState | null {
  * new device sessions are refused. False on the cloud and before boot.
  */
 export function isDeviceRegistryHardStale(now: Date = new Date()): boolean {
-  return state.edgeMode && (registryPuller?.isHardStale(now) ?? false);
+  return getDeviceRegistryStatus(now) === "stale";
+}
+
+/**
+ * The replica's age verdict for admitting device sessions. Cloud: "fresh".
+ * Edge (EDGE_MODE or an installed edge state): "not_ready" without the node
+ * identity or until the local checkpoint is loaded (never waits for the
+ * cloud), then "stale" past the hard limit, else "fresh".
+ */
+export function getDeviceRegistryStatus(
+  now: Date = new Date(),
+): "not_ready" | "fresh" | "stale" {
+  if (!state.edgeMode && !isEdgeNode()) return "fresh";
+  // An edge process without its node identity cannot judge its replica.
+  if (!state.identity) return "not_ready";
+  if (!registryPuller?.isCheckpointLoaded()) return "not_ready";
+  return registryPuller.isHardStale(now) ? "stale" : "fresh";
 }
 
 let hardStaleAlertedKey: string | null = null;
@@ -437,6 +454,26 @@ export function getCatalogFreshness(): CatalogFreshnessTracker | null {
 /** Test seam: install a runtime state without starting a link. */
 export function setEdgeRuntimeStateForTests(next: EdgeRuntimeState): void {
   state = next;
+}
+
+/**
+ * Test seam: install a device-registry puller with a loaded checkpoint (fresh
+ * unless `hardStale`), or clear it with `null`. For tests that fake an edge
+ * with setEdgeRuntimeStateForTests and still need device sessions admitted.
+ */
+export function setDeviceRegistryReadyForTests(
+  ready: { readonly hardStale?: boolean } | null,
+): void {
+  registryPuller = ready
+    ? ({
+        start: () => undefined,
+        runOnce: async () => true,
+        stop: async () => undefined,
+        getState: () => ({}) as DeviceRegistrySyncState,
+        isHardStale: () => ready.hardStale ?? false,
+        isCheckpointLoaded: () => true,
+      } satisfies DeviceRegistryPuller)
+    : null;
 }
 
 function safeError(error: unknown) {

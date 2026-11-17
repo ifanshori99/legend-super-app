@@ -90,7 +90,7 @@ import {
   resendDue,
   sendOpenAlertsTo,
 } from "../services/panic-relay.service.ts";
-import { withEdgeModeEnv } from "./edge-mode-env.ts";
+import { setEdgeNodeForEnvTests, withEdgeModeEnv } from "./edge-mode-env.ts";
 import {
   createIsolatedTenant,
   owner,
@@ -295,6 +295,7 @@ beforeAll(async () => {
     `prev-e-${randomBytes(3).toString("hex")}`,
   );
   outletId = tenant.outletId;
+  setEdgeNodeForEnvTests({ tenantId: tenant.tenantId, outletId: outletId });
   const registered = await registerEdgeNode(scope(), actor, {
     outletId,
     role: "primary",
@@ -322,6 +323,7 @@ afterEach(() => {
 });
 
 afterAll(async () => {
+  setEdgeNodeForEnvTests(null);
   resetEdgeApplierRegistryForTests();
   setAuditWriter(null);
   setDeviceOutletResolver(null);

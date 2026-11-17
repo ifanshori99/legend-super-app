@@ -12,6 +12,7 @@ import type { Request } from "express";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { db } from "../db";
 import { tenants } from "../db/schema";
+import { isEdgeNode } from "../edge/mode.ts";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { verifyDeviceToken } from "../lib/device-token.ts";
@@ -62,7 +63,10 @@ export async function registeredDeviceIdOf(
  * client must keep its token then, so these answer UNAUTHORIZED.
  */
 async function deviceRegistryUnavailable(req: Request): Promise<boolean> {
-  if (getEdgeRuntimeState().edgeMode && !getEdgeRuntimeState().identity)
+  if (
+    (getEdgeRuntimeState().edgeMode || isEdgeNode()) &&
+    !getEdgeRuntimeState().identity
+  )
     return true;
   const [tenant] = await db
     .select({ status: tenants.status })

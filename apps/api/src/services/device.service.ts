@@ -71,13 +71,19 @@ import {
 } from "../lib/device-token.ts";
 import {
   getEdgeRuntimeState,
-  isDeviceRegistryHardStale,
+  getDeviceRegistryStatus,
   reportDeviceRegistryHardStale,
 } from "../edge/runtime.ts";
+import { isEdgeNode } from "../edge/mode.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { findTenantContext } from "../middleware/tenant.ts";
 import { recordAudit } from "./audit-writer.ts";
 import { findActiveDeviceForToken } from "./device-registry-check.ts";
+import {
+  assertDeviceSessionAdmitted,
+  deviceRegistryStaleError,
+  EDGE_DEVICE_REGISTRY_STALE_CODE,
+} from "./device-session-admission.ts";
 import { appendMenuEvent } from "./menu-internals.ts";
 import type { Tx } from "./permission-resolver.ts";
 import {
@@ -198,25 +204,20 @@ function mintForRow(
   );
 }
 
-/** A heartbeat this recent means the device already has a running session. */
-const DEVICE_LIVE_SESSION_WINDOW_MS = 5 * 60_000;
-
-export const EDGE_DEVICE_REGISTRY_STALE_CODE = "EDGE_DEVICE_REGISTRY_STALE";
+export { EDGE_DEVICE_REGISTRY_STALE_CODE };
 
 /**
  * legend-2lgu: an edge whose device-registry replica is past its hard limit
- * refuses NEW device sessions (enroll, token, first heartbeat): a revocation
- * may be missing. Running sessions are never cut (see `heartbeatDevice`).
- * No-op on the cloud. Alerts the outlet's supervisors (once a day).
+ * refuses NEW device sessions (enroll, token): a revocation may be missing.
+ * Device sessions are admitted by `assertDeviceSessionAdmitted`. No-op on the
+ * cloud. Alerts the outlet's supervisors (once a day).
  */
 async function assertDeviceRegistryFresh(now: Date): Promise<void> {
-  if (!isDeviceRegistryHardStale(now)) return;
-  await reportDeviceRegistryHardStale(now);
-  throw new HttpError(
-    503,
-    EDGE_DEVICE_REGISTRY_STALE_CODE,
-    "Data perangkat di edge sudah terlalu lama tidak diperbarui dari cloud. Sambungkan edge ke cloud, lalu coba lagi.",
-  );
+  const status = getDeviceRegistryStatus(now);
+  if (status === "fresh") return;
+  // not_ready (replica not judged yet) refuses too, but is not a stale alert.
+  if (status === "stale") await reportDeviceRegistryHardStale(now);
+  throw deviceRegistryStaleError();
 }
 
 export type EnrollDeviceInput = {
@@ -814,9 +815,11 @@ const heartbeatRefused = () =>
  * agree with the token (same tenant, same brand when it pins one). On an edge
  * node the registry check also pins the node's outlet.
  */
-async function heartbeatDevice(
-  req: Request,
-): Promise<{ tenant: TenantContext; deviceId: string }> {
+async function heartbeatDevice(req: Request): Promise<{
+  tenant: TenantContext;
+  deviceId: string;
+  registryStatus: "fresh" | "not_ready" | "stale";
+}> {
   const raw = req.get(DEVICE_TOKEN_HEADER);
   const payload = raw ? verifyDeviceToken(raw) : null;
   if (payload === null) throw heartbeatRefused();
@@ -838,7 +841,8 @@ async function heartbeatDevice(
       "Tenant does not match this device.",
     );
   const runtime = getEdgeRuntimeState();
-  if (runtime.edgeMode && !runtime.identity) throw heartbeatRefused();
+  if ((runtime.edgeMode || isEdgeNode()) && !runtime.identity)
+    throw heartbeatRefused();
   const identity = runtime.edgeMode ? runtime.identity : null;
   if (identity && identity.scope.tenantId !== payload.tenantId)
     throw heartbeatRefused();
@@ -847,14 +851,10 @@ async function heartbeatDevice(
     identity ? { outletId: identity.scope.outletId } : undefined,
   );
   if (!device) throw heartbeatRefused();
-  // legend-2lgu: only a NEW session is gated. A device that reported within
-  // the live window keeps running through a hard-stale replica.
-  const now = new Date();
-  const hasLiveSession =
-    device.lastSeenAt !== null &&
-    now.getTime() - device.lastSeenAt.getTime() <=
-      DEVICE_LIVE_SESSION_WINDOW_MS;
-  if (!hasLiveSession) await assertDeviceRegistryFresh(now);
+  // legend-2lgu / legend-91u09: only a NEW session is gated. A device that
+  // reported within the live window keeps running through a stale or
+  // not-yet-judged replica; in the latter lastSeenAt must not move.
+  const registryStatus = await assertDeviceSessionAdmitted(device, new Date());
   return {
     tenant: establishTenantContext({
       tenantId: payload.tenantId,
@@ -862,6 +862,7 @@ async function heartbeatDevice(
       source: "device",
     }),
     deviceId: device.id,
+    registryStatus,
   };
 }
 
@@ -872,17 +873,22 @@ async function heartbeatDevice(
  * edge); an update that touches no row is refused too.
  */
 export const deviceHeartbeatHandler: RequestHandler = async (req, res) => {
-  const { tenant, deviceId } = await heartbeatDevice(req);
+  const { tenant, deviceId, registryStatus } = await heartbeatDevice(req);
   const body = deviceHeartbeatBodySchema.parse(req.body);
   const now = new Date();
-  const recorded = await recordDeviceHeartbeat(
-    tenantWideContext(tenant),
-    deviceId,
-    body,
-    now,
-  );
-  if (!recorded)
-    throw new CoreError("UNAUTHORIZED", "Perangkat tidak terdaftar.");
+  // legend-91u09: a running session is let through a not-yet-judged replica,
+  // but its heartbeat does not move lastSeenAt (that would keep a revoked
+  // device's session alive on an edge that cannot tell yet).
+  if (registryStatus !== "not_ready") {
+    const recorded = await recordDeviceHeartbeat(
+      tenantWideContext(tenant),
+      deviceId,
+      body,
+      now,
+    );
+    if (!recorded)
+      throw new CoreError("UNAUTHORIZED", "Perangkat tidak terdaftar.");
+  }
   res.setHeader("Cache-Control", "private, no-store");
   res.json({ data: { deviceId, serverTime: now.toISOString() } });
 };
