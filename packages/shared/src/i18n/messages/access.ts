@@ -298,6 +298,7 @@ const accessBaseMessages = {
     reconciliation_case: "Penutupan kasus rekonsiliasi",
     purchase_request: "Purchase request",
     supplier_payment: "Pembayaran supplier",
+    cash_out: "Kas keluar",
     manual_journal: "Jurnal manual",
     period_reopen: "Buka kembali periode",
     payroll_cancel: "Pembatalan payroll",

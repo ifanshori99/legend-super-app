@@ -16,7 +16,9 @@
 import { randomUUID } from "node:crypto";
 import {
   AccessError,
+  DEFAULT_CASH_OUT_APPROVAL_POLICIES,
   DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES,
+  DEFAULT_SUPPLIER_PAYMENT_APPROVAL_POLICIES,
   DEFAULT_SHAREHOLDER_VERSION_APPROVAL_POLICIES,
   DEFAULT_RECONCILIATION_CASE_APPROVAL_POLICIES,
   DEFAULT_REFUND_APPROVAL_POLICIES,
@@ -369,6 +371,55 @@ export async function seedTenantRoleTemplates(
     WHERE NOT EXISTS (
       SELECT 1 FROM approval_policies p
       WHERE p.tenant_id = ${tenantId}::uuid AND p.action_type = 'cash_shift_close'
+    )
+  `);
+  // legend-4qowr: a pending cash out (Q7) is decided from the approval inbox.
+  // Default matrix from Rp0 (DEFAULT_CASH_OUT_APPROVAL_POLICIES; same row as
+  // migration 0586): level 1 for the Finance template, only when the tenant
+  // has no cash_out row; a missing Finance template adds no row.
+  const cashOutValues = sql.join(
+    DEFAULT_CASH_OUT_APPROVAL_POLICIES.map(
+      (row) =>
+        sql`(${row.thresholdIdr}::bigint, ${row.level}::int, ${row.roleTemplateKey}::text)`,
+    ),
+    sql`, `,
+  );
+  await tx.execute(sql`
+    INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
+    SELECT ${tenantId}::uuid, 'cash_out', d.threshold_idr, r.id, d.level, true
+    FROM (VALUES ${cashOutValues}) AS d(threshold_idr, level, template_key)
+    JOIN roles r
+      ON r.tenant_id = ${tenantId}::uuid
+     AND r.is_template
+     AND r.template_key = d.template_key
+    WHERE NOT EXISTS (
+      SELECT 1 FROM approval_policies p
+      WHERE p.tenant_id = ${tenantId}::uuid AND p.action_type = 'cash_out'
+    )
+  `);
+  // legend-xxqz3: every supplier payment needs one approval from someone else
+  // (CTO money decision 2026-11-17). Default matrix from Rp0
+  // (DEFAULT_SUPPLIER_PAYMENT_APPROVAL_POLICIES; same rows as migration 0587):
+  // level 1 for the Finance and Owner templates, only when the tenant has no
+  // supplier_payment row; a missing template role adds no row.
+  const supplierPaymentValues = sql.join(
+    DEFAULT_SUPPLIER_PAYMENT_APPROVAL_POLICIES.map(
+      (row) =>
+        sql`(${row.thresholdIdr}::bigint, ${row.level}::int, ${row.roleTemplateKey}::text)`,
+    ),
+    sql`, `,
+  );
+  await tx.execute(sql`
+    INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
+    SELECT ${tenantId}::uuid, 'supplier_payment', d.threshold_idr, r.id, d.level, true
+    FROM (VALUES ${supplierPaymentValues}) AS d(threshold_idr, level, template_key)
+    JOIN roles r
+      ON r.tenant_id = ${tenantId}::uuid
+     AND r.is_template
+     AND r.template_key = d.template_key
+    WHERE NOT EXISTS (
+      SELECT 1 FROM approval_policies p
+      WHERE p.tenant_id = ${tenantId}::uuid AND p.action_type = 'supplier_payment'
     )
   `);
   // legend-tm6pp: shareholder versions need one Owner approval (Q2, 2026-11-10);

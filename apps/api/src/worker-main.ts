@@ -104,6 +104,7 @@ import { handleHrisApprovalResolved } from "./services/hris-approval-consumers.t
 import { runScheduledLeaveJobs } from "./services/hris-leave-jobs.ts";
 import { runScheduledExitClearance } from "./services/hris-offboarding-jobs.ts";
 import { handleJournalApprovalResolved } from "./services/accounting-journal-consumers.ts";
+import { handleCashBankApprovalResolved } from "./services/cash-bank-approval-consumer.ts";
 import { handleProfitShareApprovalResolved } from "./services/profit-share-approval-consumers.ts";
 import { handleReconciliationApprovalResolved } from "./services/payment-reconciliation-approval-consumer.ts";
 import { handleApprovalResolved } from "./services/staff-override-consumers.ts";
@@ -417,6 +418,9 @@ const runtime = createWorkerRuntime({
           await handleHrisApprovalResolved(context, event);
           // Manual/recurring journals (legend-vmyg): settle from the chain.
           await handleJournalApprovalResolved(context, event);
+          // Cash out held for approval (legend-4qowr, Q7): approved/rejected
+          // settles from the chain re-read under the entry row lock.
+          await handleCashBankApprovalResolved(context, event);
           // Profit share (legend-33im6): distribution runs and recipient
           // changes settle from the chain outcome re-read under the row lock.
           await handleProfitShareApprovalResolved(context, event);

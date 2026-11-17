@@ -109,6 +109,8 @@ export * from "./kds-capacity";
 export * from "./kds-pacing";
 // WS-06 purchasing: suppliers, price history, PR/PO (legend-9yz).
 export * from "./purchasing";
+// WS-06 supplier invoice payments with approval (legend-xxqz3).
+export * from "./supplier-payments";
 // WS-04 cashier shift, cash movements, end-of-day close (legend-6c0).
 export * from "./pos-shift";
 // Acting cashier token per POS device (legend-aruta).

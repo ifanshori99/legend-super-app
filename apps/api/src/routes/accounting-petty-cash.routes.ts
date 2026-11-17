@@ -3,6 +3,7 @@
 // comes from the server-minted context (TEN-02); the permission is
 // `accounting.petty_cash.manage` from stored role assignments (TEN-03).
 //
+// - The reconciliation read (legend-a4z2f) needs `accounting.journal.view`.
 // - All routes use `requireMenuPermission` (the caller's reachable scope). Fund
 //   money moves through bank accounts, which live on the legal entity, so the
 //   writes (movement, retry post) also need tenant scope: the service refuses
@@ -12,6 +13,7 @@
 import { Router, type Request } from "express";
 import {
   createPettyCashMovement,
+  getPettyCashReconciliation,
   listPettyCashEntries,
   listPettyCashFunds,
   postPettyCashEntry,
@@ -28,6 +30,7 @@ import {
 import { requireTenantContext } from "../middleware/tenant";
 import {
   createPettyCashMovement as createPettyCashMovementService,
+  getPettyCashReconciliation as getPettyCashReconciliationService,
   listPettyCashEntries as listPettyCashEntriesService,
   listPettyCashFunds as listPettyCashFundsService,
   postPettyCashEntry as postPettyCashEntryService,
@@ -42,6 +45,7 @@ export function createAccountingPettyCashRouter(): Router {
   router.use(requireAuth, requireTrustedOrigin, requireTenantContext);
 
   const MANAGE: PermissionCode = "accounting.petty_cash.manage";
+  const VIEW_JOURNAL: PermissionCode = "accounting.journal.view";
 
   router.get(
     route(listPettyCashFunds.path),
@@ -65,6 +69,22 @@ export function createAccountingPettyCashRouter(): Router {
       res.json(
         await listPettyCashEntriesService(getScopedTenantContext(req), query),
       );
+    },
+  );
+
+  // Read-only fund vs GL 1102; shows the books, so it needs journal view (and
+  // the service needs tenant scope: the GL is per legal entity).
+  router.get(
+    route(getPettyCashReconciliation.path),
+    requireMenuPermission(VIEW_JOURNAL),
+    async (req, res) => {
+      const query = getPettyCashReconciliation.query.parse(req.query);
+      res.json({
+        data: await getPettyCashReconciliationService(
+          getScopedTenantContext(req),
+          query,
+        ),
+      });
     },
   );
 

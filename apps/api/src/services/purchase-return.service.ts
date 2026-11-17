@@ -119,6 +119,12 @@ import {
 } from "./inventory-ops.shared.ts";
 import { accessSnapshotInTransaction } from "./permission-resolver.ts";
 import {
+  computeReturnBilling,
+  priceVarianceOf,
+  ReturnExceedsPayableError,
+  splitReturnLines,
+} from "./purchase-return-billing.ts";
+import {
   claimPurchasingIdempotency,
   completePurchasingIdempotency,
   guardMoneyMath,
@@ -413,59 +419,14 @@ async function splitReturnAgainstInvoices(
     parseDecimal4(row.quantity),
   );
 
-  const split = guardMoneyMath(() => {
-    let uninvoicedValueIdr = 0;
-    let invoicedValueIdr = 0;
-    const invoicedParts: {
-      purchaseOrderLineId: string;
-      before: bigint;
-      part: bigint;
-      accepted: bigint;
-      poUnits: bigint;
-    }[] = [];
-    for (const line of lines) {
-      const accepted = acceptedBase.get(line.purchaseOrderLineId) ?? 0n;
-      const poUnits = acceptedPo.get(line.purchaseOrderLineId) ?? 0n;
-      const billedBase =
-        poUnits > 0n
-          ? divideRounded(
-              (invoicedPo.get(line.purchaseOrderLineId) ?? 0n) * accepted,
-              poUnits,
-              ROUNDING_MODE,
-            )
-          : 0n;
-      // Received, not billed, and not already taken by an earlier return.
-      const open =
-        accepted -
-        billedBase -
-        (returnedBase.get(line.purchaseOrderLineId) ?? 0n);
-      const notBilled = open > 0n ? open : 0n;
-      const take = line.quantity < notBilled ? line.quantity : notBilled;
-      // Earlier returns took the not-billed quantity first, the rest of them
-      // was billed; this return's billed part follows it.
-      const returned = returnedBase.get(line.purchaseOrderLineId) ?? 0n;
-      const openBefore = accepted - billedBase;
-      const priorNotBilled =
-        openBefore <= 0n ? 0n : returned < openBefore ? returned : openBefore;
-      invoicedParts.push({
-        purchaseOrderLineId: line.purchaseOrderLineId,
-        before: returned - priorNotBilled,
-        part: line.quantity - take,
-        accepted,
-        poUnits,
-      });
-      const lineUninvoiced = Number(
-        divideRounded(
-          BigInt(line.lineValueIdr) * take,
-          line.quantity,
-          ROUNDING_MODE,
-        ),
-      );
-      uninvoicedValueIdr += lineUninvoiced;
-      invoicedValueIdr += line.lineValueIdr - lineUninvoiced;
-    }
-    return { uninvoicedValueIdr, invoicedValueIdr, invoicedParts };
-  });
+  const split = guardMoneyMath(() =>
+    splitReturnLines(lines, {
+      invoicedPo,
+      acceptedPo,
+      acceptedBase,
+      returnedBase,
+    }),
+  );
   if (split.invoicedValueIdr === 0)
     return {
       uninvoicedValueIdr: split.uninvoicedValueIdr,
@@ -510,97 +471,30 @@ async function splitReturnAgainstInvoices(
   // The same slots give the billed value of the returned quantity (the
   // invoice line totals consumed), which the debit note clears.
   const billing = guardMoneyMath(() => {
-    type Slot = {
-      invoice: (typeof invoices)[number];
-      base: bigint;
-      billedIdr: bigint;
-    };
-    const invoiceIndex = new Map(
-      invoices.map((invoice, index) => [invoice.id, index]),
-    );
-    const delta = new Map<string, { before: bigint; after: bigint }>();
-    for (const part of split.invoicedParts) {
-      if (part.part === 0n || part.poUnits === 0n) continue;
-      const perInvoice = new Map<string, { qtyPo: bigint; totalIdr: bigint }>();
-      for (const row of invoiceLineRows) {
-        if (row.purchaseOrderLineId !== part.purchaseOrderLineId) continue;
-        const current = perInvoice.get(row.purchaseInvoiceId) ?? {
-          qtyPo: 0n,
-          totalIdr: 0n,
-        };
-        current.qtyPo += parseDecimal4(row.quantity);
-        current.totalIdr += BigInt(row.lineTotalIdr);
-        perInvoice.set(row.purchaseInvoiceId, current);
-      }
-      const slots: Slot[] = [...perInvoice]
-        .sort(([a], [b]) => invoiceIndex.get(a)! - invoiceIndex.get(b)!)
-        .map(([invoiceId, row]) => ({
-          invoice: invoices[invoiceIndex.get(invoiceId)!]!,
-          base: divideRounded(
-            row.qtyPo * part.accepted,
-            part.poUnits,
-            ROUNDING_MODE,
-          ),
-          billedIdr: row.totalIdr,
-        }));
-      let priorLeft = part.before;
-      let wanted = part.part;
-      for (const slot of slots) {
-        const used = priorLeft < slot.base ? priorLeft : slot.base;
-        priorLeft -= used;
-        const room = slot.base - used;
-        const taken = wanted < room ? wanted : room;
-        wanted -= taken;
-        if (taken === 0n) continue;
-        // Billed value of the consumed quantity of this invoice line.
-        const valueOf = (qty: bigint) =>
-          divideRounded(slot.billedIdr * qty, slot.base, ROUNDING_MODE);
-        const entry = delta.get(slot.invoice.id) ?? { before: 0n, after: 0n };
-        entry.before += valueOf(used);
-        entry.after += valueOf(used + taken);
-        delta.set(slot.invoice.id, entry);
-      }
-      // Invoice slots used up but part of the return is still unbilled: the
-      // billed value would come out short and the supplier be debited too
-      // little. Refuse instead of silently favoring the supplier. Each slot
-      // base is rounded on its own (at most 1 scaled unit off), so a line
-      // spread over several invoices may leave that crumb: not a refusal.
-      if (wanted > BigInt(slots.length))
+    try {
+      return computeReturnBilling({
+        invoices,
+        invoiceLineRows,
+        invoicedParts: split.invoicedParts,
+        creditedPpnBeforeIdr: priorReturns.reduce(
+          (sum, row) => sum + row.ppnIdr,
+          0,
+        ),
+      });
+    } catch (error) {
+      if (error instanceof ReturnExceedsPayableError)
         throw new PurchasingError(
           "PURCHASE_RETURN_EXCEEDS_PAYABLE",
           "The return is worth more than the supplier invoices still owed.",
         );
+      throw error;
     }
-    let ppn = 0n;
-    let billed = 0n;
-    for (const [invoiceId, entry] of delta) {
-      billed += entry.after - entry.before;
-      const invoice = invoices[invoiceIndex.get(invoiceId)!]!;
-      // DPP billed = total - PPN (goods + price variance + services).
-      const dpp = BigInt(invoice.totalIdr) - BigInt(invoice.ppnIdr);
-      if (dpp <= 0n) continue;
-      const share = (value: bigint) =>
-        divideRounded(BigInt(invoice.ppnIdr) * value, dpp, ROUNDING_MODE);
-      ppn += share(entry.after) - share(entry.before);
-    }
-    // Rounding across lines of one invoice must never credit more PPN in total
-    // than the PO's invoices carry.
-    const creditedBefore = priorReturns.reduce(
-      (sum, row) => sum + BigInt(row.ppnIdr),
-      0n,
-    );
-    const ceiling = invoices.reduce(
-      (sum, invoice) => sum + BigInt(invoice.ppnIdr),
-      0n,
-    );
-    const room = ceiling > creditedBefore ? ceiling - creditedBefore : 0n;
-    return { ppnIdr: Number(ppn < room ? ppn : room), billedIdr: billed };
   });
   const { ppnIdr } = billing;
   // Billed minus order-price value of the invoiced part (signed). Billed is
   // never negative, so invoiced + variance (the debit note base) is too.
   const priceVarianceIdr = guardMoneyMath(() =>
-    Number(billing.billedIdr - BigInt(split.invoicedValueIdr)),
+    priceVarianceOf(billing.billedIdr, split.invoicedValueIdr),
   );
 
   // Refuse a debit note larger than what is still owed on this PO's invoices.

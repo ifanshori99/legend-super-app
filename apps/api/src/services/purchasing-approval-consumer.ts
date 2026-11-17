@@ -7,10 +7,10 @@
 // The approval service never writes another module's tables: it appends
 // `approval.resolved` and the source module applies the effect in its own
 // transaction. This consumer only reacts to chains this module opened
-// (sourceModule `purchasing`, objectType `purchase_request` or
-// `purchase_order`) and delegates to the settle functions, which re-read the
-// chain outcome and the final approver from the database under the document's
-// row lock. The event is a trigger, never the authority: a forged or stale
+// (sourceModule `purchasing`, objectType `purchase_request`, `purchase_order`
+// or `supplier_payment`) and delegates to the settle functions, which re-read
+// the chain outcome and the final approver from the database under the
+// document's row lock. The event is a trigger, never the authority: a forged or stale
 // "approved" event cannot approve a chain the database still has pending.
 //
 // - Other event names and other source modules: ignored (not ours).
@@ -31,11 +31,13 @@ import type { EventEnvelope } from "@starter/shared/events";
 import { and, eq } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import { purchaseOrders, purchaseRequests } from "../db/schema/purchasing.ts";
+import { supplierPayments } from "../db/schema/supplier-payments.ts";
 import { withTenant } from "../db/tenant.ts";
 import { outletContext } from "./device-pin-support.ts";
 import { PURCHASING_SOURCE_MODULE } from "./purchasing-flow.shared.ts";
 import { settlePurchaseOrderForApproval } from "./purchasing-order.service.ts";
 import { settlePurchaseRequestForApproval } from "./purchasing-request.service.ts";
+import { settleSupplierPaymentForApproval } from "./purchasing-supplier-payment.service.ts";
 
 /** Envelope as the worker hands it to `deliverEvent`. */
 export type DomainEvent = EventEnvelope;
@@ -79,7 +81,11 @@ export async function handlePurchasingApprovalResolved(
   if (resolved.tenantId.toLowerCase() !== context.tenant.tenantId.toLowerCase())
     refuse("approval.resolved tenant does not match the worker context");
   const { objectType, chainId } = resolved.payload;
-  if (objectType !== "purchase_request" && objectType !== "purchase_order")
+  if (
+    objectType !== "purchase_request" &&
+    objectType !== "purchase_order" &&
+    objectType !== "supplier_payment"
+  )
     refuse("approval.resolved for purchasing names another object type");
   // Both documents belong to one outlet; settle on exactly that RLS scope so
   // a document of another outlet stays invisible (TEN-03).
@@ -91,7 +97,11 @@ export async function handlePurchasingApprovalResolved(
   // corrupt or forged input: refuse. No document: nothing of ours to settle.
   const owner = await withTenant(db, scoped, async (tx) => {
     const table =
-      objectType === "purchase_order" ? purchaseOrders : purchaseRequests;
+      objectType === "supplier_payment"
+        ? supplierPayments
+        : objectType === "purchase_order"
+          ? purchaseOrders
+          : purchaseRequests;
     const [row] = await tx
       .select({ id: table.id })
       .from(table)
@@ -108,7 +118,9 @@ export async function handlePurchasingApprovalResolved(
   if (storedId(owner.id) !== storedId(resolved.payload.objectId))
     refuse("approval.resolved chain belongs to another document");
 
-  if (objectType === "purchase_order")
+  if (objectType === "supplier_payment")
+    await settleSupplierPaymentForApproval(scoped, chainId, now);
+  else if (objectType === "purchase_order")
     await settlePurchaseOrderForApproval(scoped, chainId, now);
   else await settlePurchaseRequestForApproval(scoped, chainId, now);
 }

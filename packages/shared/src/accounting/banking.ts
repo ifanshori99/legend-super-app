@@ -953,6 +953,38 @@ export const pettyCashEntryQuerySchema = cursorPageQuerySchema.extend({
   to: businessDateSchema,
 });
 
+export const pettyCashReconciliationQuerySchema = z.strictObject({
+  legalEntityId: legalEntityIdSchema,
+  outletId: outletIdSchema.optional(),
+});
+
+/**
+ * Fund vs GL (account of the `petty_cash` role, 1102) of one legal entity
+ * (legend-a4z2f). The account map and the payroll/loan/reimbursement journals
+ * are per legal entity (no outlet on the line), so the comparison is entity
+ * wide: `fundIdr` sums every outlet's fund, `glIdr` is debit minus credit of
+ * the posted journal lines. `diffIdr` = fund - GL; above 0 the funds hold more
+ * than the books show (cash left through a rule that never drew the fund).
+ */
+export const pettyCashReconciliationSchema = z.strictObject({
+  legalEntityId: legalEntityIdSchema,
+  outletId: outletIdSchema.nullable(),
+  /** Sum of the balances of every petty cash fund of the entity. */
+  fundIdr: idrSchema,
+  /** The requested outlet's own fund balance; null without `outletId`. */
+  outletFundIdr: idrSchema.nullable(),
+  glIdr: idrSchema,
+  diffIdr: idrSchema,
+  /** Petty ledger entries parked + petty purchase journals still parked. */
+  parkedEntries: z.number().int().nonnegative(),
+  /** Credits to 1102 from journals that are not petty cash top-up/return/purchase. */
+  nonPettyCredits1102: idrSchema,
+  nonPettyCreditEntries: z.number().int().nonnegative(),
+});
+export type PettyCashReconciliation = z.infer<
+  typeof pettyCashReconciliationSchema
+>;
+
 const pettyCashMovementShape = {
   outletId: outletIdSchema,
   bankAccountId: bankAccountIdSchema,

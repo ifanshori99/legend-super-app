@@ -17,6 +17,15 @@
 //   guess an account: the entry is saved `parked` with ACCOUNT_MAPPING_MISSING
 //   (the cash did move) and `postPettyCashEntry` posts it later, under the same
 //   key `pc:<entryId>`, so one entry makes at most one journal.
+// - GL guard (legend-a4z2f): payroll cash, employee loans and reimbursements
+//   credit petty cash (1102) without drawing the fund, so the fund can exceed
+//   the books. A `return` is therefore also refused when it is above
+//   `outlet fund - max(0, entity fund total - GL 1102)` (PETTY_CASH_GL_INSUFFICIENT),
+//   read with the entity's fund rows locked in id order. The GL is per legal
+//   entity (account map and payroll journals carry no outlet), so the entity's
+//   whole shortfall is charged to the returning outlet (conservative). With no petty_cash
+//   mapping the check is skipped: the return parks as before.
+//   `getPettyCashReconciliation` shows fund vs GL without changing anything.
 // - Founder Q7 (13 Nov 2026): a top-up above the tenant cash limit, or one that
 //   takes the creator's day total of cash outs and top-ups at the outlet past
 //   it (`accounting-cash-limit.service.ts`), is NOT executed: it is stored as a
@@ -36,6 +45,7 @@ import {
   type PettyCashEntry,
   type PettyCashFund,
   type PettyCashMovementInput,
+  type PettyCashReconciliation,
   periodOf,
   resolveAutoJournalDate,
 } from "@starter/shared/accounting";
@@ -63,7 +73,13 @@ import {
   type PettyCashEntryRow,
   type PettyCashFundRow,
 } from "../db/schema/accounting-cash-bank-entries.ts";
-import { accountMappings, fiscalPeriods } from "../db/schema/accounting.ts";
+import {
+  accountMappings,
+  fiscalPeriods,
+  journalEntries,
+  journalLines,
+} from "../db/schema/accounting.ts";
+import { autoJournalParked } from "../db/schema/accounting-auto-journal.ts";
 import { outlets } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
@@ -94,6 +110,7 @@ import { loadOutletClock } from "./inventory-ops.shared.ts";
 const OPERATION = "petty_cash.movement.create";
 
 export type PettyCashFundQuery = { legalEntityId: string; outletId?: string };
+export type PettyCashReconciliationQuery = PettyCashFundQuery;
 export type PettyCashEntryListQuery = {
   outletId: string;
   from: string;
@@ -226,6 +243,75 @@ async function changeBalance(
   return updated.balanceIdr;
 }
 
+const PETTY_JOURNAL_SOURCES = [
+  "petty_cash_topup",
+  "petty_cash_return",
+  "petty_purchase",
+] as const;
+
+/** The GL account the `petty_cash` role maps to for the entity, or null. */
+async function pettyCashGlAccount(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  legalEntityId: string,
+): Promise<string | null> {
+  const [mapping] = await tx
+    .select({ accountId: accountMappings.accountId })
+    .from(accountMappings)
+    .where(
+      and(
+        eq(accountMappings.tenantId, tenantId),
+        eq(accountMappings.legalEntityId, legalEntityId),
+        eq(accountMappings.role, "petty_cash"),
+      ),
+    )
+    .limit(1);
+  return mapping?.accountId ?? null;
+}
+
+/**
+ * Debit minus credit of the posted journal lines on the entity's petty cash
+ * account, or null when the entity has no petty_cash mapping.
+ */
+async function pettyCashGlBalance(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  legalEntityId: string,
+): Promise<number | null> {
+  const accountId = await pettyCashGlAccount(tx, tenantId, legalEntityId);
+  return accountId === null
+    ? null
+    : glBalanceOf(tx, tenantId, legalEntityId, accountId);
+}
+
+async function glBalanceOf(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  legalEntityId: string,
+  accountId: string,
+): Promise<number> {
+  const [row] = await tx
+    .select({
+      balance: sql<string>`COALESCE(SUM(${journalLines.debitIdr}) - SUM(${journalLines.creditIdr}), 0)::text`,
+    })
+    .from(journalLines)
+    .innerJoin(
+      journalEntries,
+      and(
+        eq(journalEntries.tenantId, journalLines.tenantId),
+        eq(journalEntries.id, journalLines.entryId),
+      ),
+    )
+    .where(
+      and(
+        eq(journalLines.tenantId, tenantId),
+        eq(journalLines.accountId, accountId),
+        eq(journalEntries.legalEntityId, legalEntityId),
+      ),
+    );
+  return Number(row?.balance ?? 0);
+}
+
 // ------------------------------------------------------------------- reads
 
 /** Funds of one legal entity (optionally one outlet) in the caller's outlets. */
@@ -308,6 +394,149 @@ export async function listPettyCashEntries(
             : null,
       },
     };
+  });
+}
+
+/**
+ * Fund vs GL 1102 of one legal entity (contract `getPettyCashReconciliation`).
+ * Read-only. Entity wide (see header): needs tenant scope, since the GL side
+ * cannot be narrowed to an outlet's lines. `outletId` only adds that outlet's
+ * own fund balance.
+ */
+export async function getPettyCashReconciliation(
+  context: ScopedTenantContext,
+  query: PettyCashReconciliationQuery,
+): Promise<PettyCashReconciliation> {
+  assertTrustedScopedContext(context);
+  assertTenantScope(context);
+  return withTenant(db, context, async (tx) => {
+    const tenantId = context.tenant.tenantId;
+    await requireLegalEntity(tx, tenantId, query.legalEntityId);
+    let outletFundIdr: number | null = null;
+    if (query.outletId) {
+      const outletId = outletIdSchema.parse(query.outletId);
+      const [outlet] = await tx
+        .select({ id: outlets.id })
+        .from(outlets)
+        .where(
+          and(
+            eq(outlets.tenantId, tenantId),
+            eq(outlets.id, outletId),
+            eq(outlets.legalEntityId, query.legalEntityId),
+          ),
+        )
+        .limit(1);
+      if (!outlet) throw notFound("Outlet");
+      const [fund] = await tx
+        .select({ balanceIdr: pettyCashFunds.balanceIdr })
+        .from(pettyCashFunds)
+        .where(
+          and(
+            eq(pettyCashFunds.tenantId, tenantId),
+            eq(pettyCashFunds.outletId, outletId),
+          ),
+        )
+        .limit(1);
+      outletFundIdr = fund?.balanceIdr ?? 0;
+    }
+    const accountId = await pettyCashGlAccount(
+      tx,
+      tenantId,
+      query.legalEntityId,
+    );
+    // No petty_cash mapping: there is no GL side to compare, do not guess one.
+    if (accountId === null)
+      throw new AccountingError(
+        "ACCOUNT_MAPPING_MISSING",
+        "No account mapped for petty_cash",
+      );
+    const glIdr = await glBalanceOf(
+      tx,
+      tenantId,
+      query.legalEntityId,
+      accountId,
+    );
+    const [funds] = await tx
+      .select({
+        total: sql<string>`COALESCE(SUM(${pettyCashFunds.balanceIdr}), 0)::text`,
+      })
+      .from(pettyCashFunds)
+      .where(
+        and(
+          eq(pettyCashFunds.tenantId, tenantId),
+          eq(pettyCashFunds.legalEntityId, query.legalEntityId),
+        ),
+      );
+    const fundIdr = Number(funds?.total ?? 0);
+
+    const [parkedLedger] = await tx
+      .select({ count: sql<string>`COUNT(*)::text` })
+      .from(pettyCashEntries)
+      .where(
+        and(
+          eq(pettyCashEntries.tenantId, tenantId),
+          eq(pettyCashEntries.legalEntityId, query.legalEntityId),
+          eq(pettyCashEntries.journalStatus, "parked"),
+        ),
+      );
+    // A petty purchase books its journal later, through the auto-journal; the
+    // ones still waiting leave the GL behind the fund.
+    const [parkedPurchases] = await tx
+      .select({ count: sql<string>`COUNT(*)::text` })
+      .from(autoJournalParked)
+      .innerJoin(
+        outlets,
+        and(
+          eq(outlets.tenantId, autoJournalParked.tenantId),
+          eq(outlets.id, autoJournalParked.outletId),
+        ),
+      )
+      .where(
+        and(
+          eq(autoJournalParked.tenantId, tenantId),
+          eq(outlets.legalEntityId, query.legalEntityId),
+          eq(autoJournalParked.eventName, "petty_purchase.recorded"),
+        ),
+      );
+
+    const [nonPetty] = await tx
+      .select({
+        total: sql<string>`COALESCE(SUM(${journalLines.creditIdr}), 0)::text`,
+        entries: sql<string>`COUNT(DISTINCT ${journalEntries.id})::text`,
+      })
+      .from(journalLines)
+      .innerJoin(
+        journalEntries,
+        and(
+          eq(journalEntries.tenantId, journalLines.tenantId),
+          eq(journalEntries.id, journalLines.entryId),
+        ),
+      )
+      .where(
+        and(
+          eq(journalLines.tenantId, tenantId),
+          eq(journalLines.accountId, accountId),
+          eq(journalEntries.legalEntityId, query.legalEntityId),
+          sql`${journalLines.creditIdr} > 0`,
+          sql`${journalEntries.sourceType} NOT IN (${sql.join(
+            PETTY_JOURNAL_SOURCES.map((source) => sql`${source}`),
+            sql`, `,
+          )})`,
+        ),
+      );
+
+    return {
+      legalEntityId: query.legalEntityId,
+      outletId: query.outletId ?? null,
+      fundIdr,
+      outletFundIdr,
+      glIdr,
+      diffIdr: fundIdr - glIdr,
+      parkedEntries:
+        Number(parkedLedger?.count ?? 0) + Number(parkedPurchases?.count ?? 0),
+      nonPettyCredits1102: Number(nonPetty?.total ?? 0),
+      nonPettyCreditEntries: Number(nonPetty?.entries ?? 0),
+    } as PettyCashReconciliation;
   });
 }
 
@@ -414,9 +643,47 @@ async function applyMovement(
       .onConflictDoNothing({
         target: [pettyCashFunds.tenantId, pettyCashFunds.outletId],
       });
+  // A return locks every fund row of the entity in id order first (one fixed
+  // order, so two returns cannot deadlock; the entity lock already serialises
+  // them), so the entity total below is read consistently with this fund.
+  let entityFundTotal = 0;
+  if (input.kind === "return") {
+    const entityFunds = await tx
+      .select({ balanceIdr: pettyCashFunds.balanceIdr })
+      .from(pettyCashFunds)
+      .where(
+        and(
+          eq(pettyCashFunds.tenantId, tenantId),
+          eq(pettyCashFunds.legalEntityId, input.legalEntityId),
+        ),
+      )
+      .orderBy(pettyCashFunds.id)
+      .for("update");
+    entityFundTotal = entityFunds.reduce((sum, row) => sum + row.balanceIdr, 0);
+  }
   const fund = await lockFund(tx, tenantId, outletId);
   // A return from an outlet with no fund has nothing to give back.
   if (!fund) throw insufficient(0, -input.amountIdr);
+  // A return of money the books do not show is refused (legend-a4z2f, CTO:
+  // conservative). The GL is per entity, so the shortfall of the whole entity
+  // (funds above the GL) is charged to this outlet in full:
+  //   allowed = outlet fund - max(0, total entity funds - GL 1102).
+  // Fund shortage keeps its own code (changeBalance below); the GL check only
+  // runs when a petty_cash account is mapped.
+  if (input.kind === "return" && input.amountIdr <= fund.balanceIdr) {
+    const glIdr = await pettyCashGlBalance(tx, tenantId, input.legalEntityId);
+    if (glIdr !== null) {
+      const allowedIdr = fund.balanceIdr - Math.max(0, entityFundTotal - glIdr);
+      if (input.amountIdr > allowedIdr)
+        throw new AccountingError("PETTY_CASH_GL_INSUFFICIENT", undefined, {
+          balanceIdr: fund.balanceIdr,
+          glIdr,
+          entityFundIdr: entityFundTotal,
+          allowedIdr: Math.max(0, allowedIdr),
+          deltaIdr: -input.amountIdr,
+        });
+    }
+  }
   const delta = input.kind === "topup" ? input.amountIdr : -input.amountIdr;
   const balanceAfter = await changeBalance(tx, fund, delta);
 
