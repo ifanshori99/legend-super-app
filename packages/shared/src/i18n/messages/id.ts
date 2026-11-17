@@ -1752,7 +1752,7 @@ export const id = {
       "Atur gateway dan terminal EDC, putuskan refund, selesaikan dana belum teralokasi, dan cocokkan settlement dengan mutasi rekening.",
     tabs: {
       routing: "Routing gateway",
-      duitku: "Kredensial Duitku",
+      duitku: "Duitku",
       edc: "EDC & kasir",
       refunds: "Refund",
       unallocated: "Dana belum teralokasi",

@@ -34,6 +34,7 @@ import {
   useIntegrations,
   useOutlets,
   useSaveIntegration,
+  useSetIntegrationStatus,
 } from "../../ws01-tenant-settings/hooks";
 import { createSecretBuffer } from "../../ws01-tenant-settings/secret-buffer";
 import {
@@ -41,6 +42,7 @@ import {
   DUITKU_ENVIRONMENTS,
   VA_NAME_MAX,
   buildDuitkuUpsertInput,
+  duitkuActivation,
   duitkuConfigDraft,
   duitkuFieldId,
   duitkuFormKey,
@@ -82,6 +84,10 @@ function duitkuErrorMessage(
       return t("paymentAdmin.duitku.errors.notSupported");
     case "NETWORK_ERROR":
       return t("paymentAdmin.duitku.errors.offline");
+    case "INVALID_TRANSITION":
+      return t("paymentAdmin.duitku.errors.invalidTransition");
+    case "INTEGRATION_PROVIDER_NOT_AVAILABLE":
+      return t("paymentAdmin.duitku.errors.providerUnavailable");
     default:
       return t("paymentAdmin.duitku.errors.generic");
   }
@@ -241,6 +247,7 @@ function DuitkuForm({
   const toast = useToast();
   const save = useSaveIntegration();
   const test = useTestIntegrationConnection();
+  const activate = useSetIntegrationStatus();
   const buffer = React.useRef(createSecretBuffer());
   const [config, setConfig] = React.useState<DuitkuConfigDraft>(() =>
     duitkuConfigDraft(row),
@@ -338,6 +345,12 @@ function DuitkuForm({
     if (!row) return;
     test.reset();
     test.mutate(row.id);
+  };
+
+  const runActivate = () => {
+    if (!row) return;
+    activate.reset();
+    activate.mutate({ integrationId: row.id, status: "active" });
   };
 
   const credentialLabel = (name: DuitkuCredentialField) =>
@@ -505,7 +518,15 @@ function DuitkuForm({
 
       <div className="grid min-w-0 content-start gap-4">
         <StatusCard row={row} />
-        {duitkuNeedsActivation(row) && <ActivationNote row={row} />}
+        {duitkuNeedsActivation(row) ? (
+          <ActivationNote
+            row={row}
+            activate={activate}
+            onActivate={runActivate}
+          />
+        ) : (
+          <ActiveCard activate={activate} />
+        )}
         <TestCard row={row} test={test} onRun={runTest} />
       </div>
     </div>
@@ -696,9 +717,24 @@ function TestCard({
   );
 }
 
-/** A row routing cannot use yet is draft: activation lives in integrations. */
-function ActivationNote({ row }: { row: TenantIntegration | null }) {
+/** A row routing cannot use yet is draft: activate it here once a test passed. */
+function ActivationNote({
+  row,
+  activate,
+  onActivate,
+}: {
+  row: TenantIntegration | null;
+  activate: ReturnType<typeof useSetIntegrationStatus>;
+  onActivate: () => void;
+}) {
   const t = useT();
+  const state = duitkuActivation(row);
+  const blockedKey =
+    state.kind === "blocked"
+      ? state.reason === "notTested"
+        ? "paymentAdmin.duitku.activation.needTest"
+        : "paymentAdmin.duitku.activation.testFailed"
+      : null;
   return (
     <div className="grid gap-2 rounded-container border-(length:--border-w) bg-surface-2 p-card text-sm leading-5">
       <p>
@@ -706,12 +742,66 @@ function ActivationNote({ row }: { row: TenantIntegration | null }) {
           ? t("paymentAdmin.duitku.activation.newHint")
           : t("paymentAdmin.duitku.activation.pendingHint")}
       </p>
+      {state.kind !== "none" && (
+        <div className="grid gap-2">
+          <Button
+            type="button"
+            onClick={onActivate}
+            disabled={state.kind !== "ready"}
+            loading={activate.isPending}
+            className="w-full sm:w-fit"
+          >
+            {t("paymentAdmin.duitku.activation.action")}
+          </Button>
+          {blockedKey && (
+            <p className="text-muted-foreground">{t(blockedKey)}</p>
+          )}
+          {state.kind === "ready" && !activate.isPending && (
+            <p className="text-muted-foreground">
+              {t("paymentAdmin.duitku.activation.readyHint")}
+            </p>
+          )}
+        </div>
+      )}
+      <div aria-live="polite">
+        {activate.isPending && (
+          <p className="text-muted-foreground">
+            {t("paymentAdmin.duitku.activation.running")}
+          </p>
+        )}
+        {activate.isError && (
+          <p role="alert" className="font-medium text-danger">
+            {duitkuErrorMessage(activate.error, t)}
+          </p>
+        )}
+      </div>
       <a
         href="/kelola/pengaturan/integrasi"
         className="w-fit font-semibold text-primary underline underline-offset-2"
       >
         {t("paymentAdmin.duitku.activation.link")}
       </a>
+    </div>
+  );
+}
+
+/** Shown once the row is active: replaces the draft hint. */
+function ActiveCard({
+  activate,
+}: {
+  activate: ReturnType<typeof useSetIntegrationStatus>;
+}) {
+  const t = useT();
+  return (
+    <div className="grid gap-2 rounded-container border-(length:--border-w) bg-surface-2 p-card text-sm leading-5">
+      <div className="flex items-center gap-2">
+        <Badge tone="success">
+          {t("paymentAdmin.duitku.activation.activeLabel")}
+        </Badge>
+      </div>
+      <p role={activate.isSuccess ? "status" : undefined}>
+        {t("paymentAdmin.duitku.activation.done")}
+      </p>
     </div>
   );
 }

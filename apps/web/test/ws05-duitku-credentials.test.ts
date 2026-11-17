@@ -347,6 +347,7 @@ const api = {
   testError: null as unknown,
   testResult: null as Record<string, unknown> | null,
   testGate: null as Promise<void> | null,
+  statusError: null as unknown,
   outletsError: null as unknown,
   outletsGate: null as Promise<void> | null,
 };
@@ -464,6 +465,16 @@ h.api = async (path, init = {}) => {
         methods: [],
       },
     };
+  }
+  const status = /^\/api\/org\/integrations\/([^/]+)\/status$/.exec(path);
+  if (method === "POST" && status) {
+    if (api.statusError) throw api.statusError;
+    const next = (init.body as { status: string }).status;
+    const found = api.rows.find((r) => r.id === status[1]);
+    if (!found) throw new ApiError(404, "NOT_FOUND", "no row");
+    const saved = { ...found, status: next, updatedAt: LATER };
+    api.rows = api.rows.map((r) => (r === found ? saved : r));
+    return { data: saved };
   }
   throw new ApiError(404, "NOT_FOUND", "unknown test route");
 };
@@ -651,6 +662,8 @@ async function chooseScope(value: "brand" | "outlet") {
 const puts = () => api.calls.filter((c) => c.method === "PUT");
 const tests = () =>
   api.calls.filter((c) => c.method === "POST" && c.path.endsWith("/test"));
+const statusPosts = () =>
+  api.calls.filter((c) => c.method === "POST" && c.path.endsWith("/status"));
 const validNew = {
   merchantCode: MERCHANT,
   apiKey: API_KEY,
@@ -673,6 +686,7 @@ beforeEach(() => {
     testError: null,
     testResult: null,
     testGate: null,
+    statusError: null,
     outletsError: null,
     outletsGate: null,
   });
@@ -1251,5 +1265,99 @@ describe("legend-vntqt: Duitku panel review fixes", () => {
     await mount();
     expect(text()).not.toContain(copy.activation.pendingHint);
     expect(text()).not.toContain(copy.activation.newHint);
+  });
+});
+
+describe("legend-mp44v: Duitku activation from the credentials screen", () => {
+  const tested = (over: Record<string, unknown> = {}) =>
+    row({ lastCheckedAt: LATER, lastErrorCode: null, ...over });
+
+  test("draft with a successful test: Aktifkan is enabled", async () => {
+    api.rows = [tested()];
+    await mount();
+
+    expect(buttonState(copy.activation.action)).toBe("enabled");
+    expect(text()).toContain(copy.activation.readyHint);
+  });
+
+  test("draft never tested: disabled with the reason", async () => {
+    api.rows = [row()];
+    await mount();
+
+    expect(buttonState(copy.activation.action)).toBe("disabled");
+    expect(text()).toContain(copy.activation.needTest);
+    expect(statusPosts()).toHaveLength(0);
+  });
+
+  test("draft with a failed test: disabled with the reason", async () => {
+    api.rows = [tested({ lastErrorCode: "DUITKU_AUTH_FAILED" })];
+    await mount();
+
+    expect(buttonState(copy.activation.action)).toBe("disabled");
+    expect(text()).toContain(copy.activation.testFailed);
+    expect(statusPosts()).toHaveLength(0);
+  });
+
+  test("a disabled row has no Aktifkan button", async () => {
+    api.rows = [tested({ status: "disabled" })];
+    await mount();
+
+    expect(buttonState(copy.activation.action)).toBe("absent");
+  });
+
+  test("click posts the active status, then shows Aktif and drops the draft hint", async () => {
+    api.rows = [tested()];
+    await mount();
+    expect(text()).toContain(copy.activation.pendingHint);
+    await click(copy.activation.action);
+
+    expect(statusPosts()).toHaveLength(1);
+    expect(statusPosts()[0]!.path).toBe(
+      `/api/org/integrations/${ID.brandRow}/status`,
+    );
+    expect(statusPosts()[0]!.body).toEqual({ status: "active" });
+    expect(text()).toContain(copy.activation.activeLabel);
+    expect(text()).toContain(copy.activation.done);
+    expect(text()).not.toContain(copy.activation.pendingHint);
+    expect(buttonState(copy.activation.action)).toBe("absent");
+  });
+
+  test("INVALID_TRANSITION is explained without the server message", async () => {
+    api.rows = [tested()];
+    api.statusError = new ApiError(409, "INVALID_TRANSITION", "raw-server-msg");
+    await mount();
+    await click(copy.activation.action);
+
+    expect(html).toContain('role="alert"');
+    expect(text()).toContain(copy.errors.invalidTransition);
+    expect(text()).not.toContain("raw-server-msg");
+    expect(text()).not.toMatch(
+      new RegExp(`(?<![\\w])${copy.activation.activeLabel}(?![\\w])`),
+    );
+  });
+
+  test("a provider Super Admin has not enabled is explained", async () => {
+    api.rows = [tested()];
+    api.statusError = new ApiError(
+      422,
+      "INTEGRATION_PROVIDER_NOT_AVAILABLE",
+      "raw-provider-msg",
+    );
+    await mount();
+    await click(copy.activation.action);
+
+    expect(text()).toContain(copy.errors.providerUnavailable);
+    expect(text()).not.toContain("raw-provider-msg");
+  });
+
+  test("an unknown failure shows the generic message", async () => {
+    api.rows = [tested()];
+    api.statusError = new ApiError(500, "INTERNAL_ERROR", "boom-details");
+    await mount();
+    await click(copy.activation.action);
+
+    expect(text()).toContain(copy.errors.generic);
+    expect(text()).not.toContain("boom-details");
+    expect(buttonState(copy.activation.action)).toBe("enabled");
   });
 });

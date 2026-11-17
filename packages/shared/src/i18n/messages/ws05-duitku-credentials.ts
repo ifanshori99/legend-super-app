@@ -25,6 +25,16 @@ export const paymentDuitkuMessages = {
     pendingHint:
       "Integrasi ini belum aktif (draft atau nonaktif). Aktifkan di Pengaturan integrasi supaya Duitku bisa dipilih di routing pembayaran.",
     link: "Buka Pengaturan integrasi",
+    action: "Aktifkan",
+    running: "Mengaktifkan...",
+    done: "Duitku sudah aktif dan bisa dipilih di routing pembayaran.",
+    activeLabel: "Aktif",
+    readyHint:
+      "Tes koneksi berhasil. Aktifkan supaya Duitku bisa dipilih di routing pembayaran.",
+    needTest:
+      "Jalankan tes koneksi dulu. Aktivasi baru bisa setelah tes berhasil.",
+    testFailed:
+      "Tes koneksi terakhir gagal. Perbaiki kredensial, lalu tes lagi sampai berhasil.",
   },
   inherited:
     "Outlet ini memakai kredensial brand. Simpan kredensial di sini untuk menggantinya khusus outlet ini.",
@@ -102,5 +112,9 @@ export const paymentDuitkuMessages = {
     notFound: "Kredensial tidak ditemukan. Muat ulang halaman.",
     notSupported: "Tes koneksi belum tersedia untuk gateway ini.",
     offline: "Tidak ada koneksi. Periksa jaringan, lalu coba lagi.",
+    invalidTransition:
+      "Status integrasi sudah berubah dan tidak bisa diaktifkan dari sini. Muat ulang halaman.",
+    providerUnavailable:
+      "Duitku belum disediakan untuk akun ini. Hubungi admin platform.",
   },
 } as const;

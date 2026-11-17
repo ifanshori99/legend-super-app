@@ -235,3 +235,23 @@ export function duitkuTestFailureKeys(code: string | null): {
 export function duitkuNeedsActivation(row: TenantIntegration | null): boolean {
   return row === null || row.status !== "active";
 }
+
+export type DuitkuActivation =
+  | { kind: "none" }
+  | { kind: "ready" }
+  | { kind: "blocked"; reason: "notTested" | "testFailed" };
+
+/**
+ * Whether the row may be activated from here: only a draft whose last
+ * connection test succeeded (a test stamps lastCheckedAt, a failure sets
+ * lastErrorCode). Anything else is not offered or says why it is blocked.
+ */
+export function duitkuActivation(
+  row: TenantIntegration | null,
+): DuitkuActivation {
+  if (!row || row.status !== "draft") return { kind: "none" };
+  if (row.lastCheckedAt === null)
+    return { kind: "blocked", reason: "notTested" };
+  if (row.lastErrorCode) return { kind: "blocked", reason: "testFailed" };
+  return { kind: "ready" };
+}
