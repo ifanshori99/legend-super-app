@@ -21,7 +21,9 @@
 //    `emergency-cloud` (acknowledge/resolve are manager actions, not cashier ones) is
 //    "backoffice" (round 2 decision of legend-3z0ds).
 //  - `notification` and `me` are "shell" at file level although most of their routes stay
-//    strict; only per-route opt-ins are lenient. The per-occurrence rules below apply to
+//    strict; only per-route opt-ins are lenient. In `notification` the opt-in removePush
+//    is further limited: on a shared-device session it deletes only the subscription of
+//    that session or that device (legend 1024). The per-occurrence rules below apply to
 //    "pos" files only.
 //  - platform-* files that use `requirePlatformAuth` are "backoffice"; platform-brand,
 //    platform-text-overrides and platform-tls carry no auth middleware of their own and
@@ -461,6 +463,12 @@ describe("1012 shared-device decision per router file", () => {
       (starts[0] ?? 0) + 400,
     );
     expect(window).toMatch(/sessions\/current\/activity/);
+  });
+
+  it("notification: removePush resolves the caller so a shared-device session removes only its own subscription (legend 1024)", () => {
+    const code = codeNoImports("notification");
+    expect(code).toMatch(/"removePush"\s*&&\s*ports\.resolveCaller/);
+    expect(code).toMatch(/sharedDevice\?: boolean/);
   });
 
   it.each(namesOf("public"))(

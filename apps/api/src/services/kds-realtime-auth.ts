@@ -25,6 +25,7 @@
 import type { IncomingMessage } from "node:http";
 import { fromNodeHeaders } from "better-auth/node";
 import { stationIdSchema } from "@starter/shared/access";
+import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { ACTING_STAFF_HEADER } from "@starter/shared/pos/acting-staff";
 import {
   assertOutletInScope,
@@ -53,7 +54,7 @@ import {
   signedDeviceIdOfHeaders,
 } from "./raw-device-token.ts";
 import {
-  anySharedDeviceActive,
+  closeSessionAtMarkLimit,
   isActiveSharedDevice,
   markSessionSharedDevice,
 } from "./shared-device.service.ts";
@@ -132,16 +133,20 @@ export async function resolveKdsStaffConnection(
         intent: "read",
       });
     const outletId = outletIdSchema.parse(target.outletId);
-    // legend-wa9n7: a session used on a flagged shared device may not act as
-    // the login owner here. Marks = the session's marks plus the signed device
-    // of this tenant on the upgrade. With no active shared device among them
-    // nothing changes; otherwise the upgrade needs a registry-valid device
-    // token AND a live cashier token (bound to that device, this session and
-    // the path outlet), and the cook becomes the user checked below. Headers
-    // persist on `request`, so every wakeup and recheck re-resolves the token
-    // (revoked or expired throws -> deny). A browser cannot set WebSocket
-    // headers: kds-realtime-protocol.ts moves its Sec-WebSocket-Protocol
-    // carrier (legend-dsbqr) into these same headers before this runs.
+    // legend-wa9n7, legend-1024: a session used on a flagged shared device may
+    // not act as the login owner here. A session with any mark, or an upgrade
+    // whose signed device header names an active flagged device, is a shared
+    // device session EVEN when the marks have lapsed (restrict by default): it
+    // needs a registry-valid device token AND a live cashier token (bound to
+    // that device, this session and the path outlet), and the cook becomes the
+    // user checked below. A device token the registry refuses, or a cashier
+    // token that is ended or expired, is a refusal on any device, never a
+    // fall back to the login owner. A personal session with no token at all is
+    // unchanged. Headers persist on `request`, so every wakeup and recheck
+    // re-resolves the tokens (revoked or expired throws -> deny). A browser
+    // cannot set WebSocket headers: kds-realtime-protocol.ts moves its
+    // Sec-WebSocket-Protocol carrier (legend-dsbqr) into these same headers
+    // before this runs.
     const headerDeviceId = signedDeviceIdOfHeaders(
       request.headers,
       tenant.tenantId,
@@ -149,32 +154,44 @@ export async function resolveKdsStaffConnection(
     // A signed header naming an active flagged device also stamps the session
     // (as requireActingStaffOnSharedDevice does over HTTP), so the same cookie
     // replayed without the header stays marked. A full mark list (8 active)
-    // refuses this device.
+    // refuses this device and closes the login session, as the HTTP route does
+    // (sharedDeviceMarkLimit), so the cookie cannot pass header-less later.
+    const headerFlagged =
+      headerDeviceId !== null &&
+      (await isActiveSharedDevice(tenant, headerDeviceId));
     if (
       headerDeviceId !== null &&
-      (await isActiveSharedDevice(tenant, headerDeviceId)) &&
+      headerFlagged &&
       !(await markSessionSharedDevice(session.session.id, headerDeviceId))
-    )
+    ) {
+      await closeSessionAtMarkLimit(session.session.id, session.user.id);
       return null;
-    const marks = [
-      ...(session.session.sharedDeviceIds ?? []),
-      ...(headerDeviceId === null ? [] : [headerDeviceId]),
-    ];
+    }
+    const sharedSession =
+      (session.session.sharedDeviceIds?.length ?? 0) > 0 || headerFlagged;
+    const deviceHeader = request.headers[DEVICE_TOKEN_HEADER];
+    const actingToken = request.headers[ACTING_STAFF_HEADER];
+    const hasDeviceToken =
+      typeof deviceHeader === "string" && deviceHeader !== "";
+    const hasActingToken = typeof actingToken === "string";
     let userId = session.user.id;
-    if (await anySharedDeviceActive(marks)) {
+    if (sharedSession || hasDeviceToken || hasActingToken) {
       const deviceId = await registeredDeviceIdOfHeaders(
         request.headers,
         tenant.tenantId,
       );
-      const actingToken = request.headers[ACTING_STAFF_HEADER];
-      if (deviceId === null || typeof actingToken !== "string") return null;
-      const acting = await resolveActingStaffToken(tenant, {
-        token: actingToken,
-        deviceId,
-        sessionId: session.session.id,
-        outletId,
-      });
-      userId = acting.staffUserId;
+      if (hasDeviceToken && deviceId === null) return null;
+      if (sharedSession && (deviceId === null || !hasActingToken)) return null;
+      if (hasActingToken) {
+        if (deviceId === null) return null;
+        const acting = await resolveActingStaffToken(tenant, {
+          token: actingToken,
+          deviceId,
+          sessionId: session.session.id,
+          outletId,
+        });
+        userId = acting.staffUserId;
+      }
     }
     const data = await loadTenantAccess(
       establishScopedTenantContext(tenant, { kind: "tenant" }),

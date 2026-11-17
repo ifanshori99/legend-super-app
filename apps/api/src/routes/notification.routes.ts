@@ -53,6 +53,12 @@ export type NotificationCaller = {
    * caller with a device but no value is refused (legend-806 P1-2).
    */
   deviceTokenIssuedAt?: number | null;
+  /**
+   * The request comes from a session used on an active shared (cashier)
+   * device. Removing a push subscription is then limited to this session's or
+   * this device's own rows (legend 1024).
+   */
+  sharedDevice?: boolean;
 };
 export type NotificationInput = {
   params?: unknown;
@@ -134,6 +140,8 @@ export function createNotificationRouter(ports?: NotificationRoutePorts) {
       const input: NotificationInput = {};
       if (operation === "registerPush") {
         if (!ports.resolveCaller) throw denied();
+        input.caller = await ports.resolveCaller(req);
+      } else if (operation === "removePush" && ports.resolveCaller) {
         input.caller = await ports.resolveCaller(req);
       }
       if (endpoint.params) input.params = endpoint.params.parse(req.params);

@@ -147,6 +147,32 @@ export async function closeSessionAtMarkLimit(
   }
 }
 
+/**
+ * legend-1024: a device was revoked, so every login session that was used on it
+ * is closed (same audited revoke as closeSessionAtMarkLimit). Their cookies
+ * would otherwise pass header-less as the owner once the mark lapses. Best
+ * effort per session, never throws. Returns the closed session ids.
+ */
+export async function closeSessionsOfSharedDevice(
+  deviceId: string,
+): Promise<string[]> {
+  let rows: { id: string; userId: string }[];
+  try {
+    rows = await db
+      .select({ id: session.id, userId: session.userId })
+      .from(session)
+      .where(sql`${session.sharedDeviceIds} @> ARRAY[${deviceId}]::uuid[]`);
+  } catch (selectError) {
+    logger.warn(
+      { err: selectError },
+      "shared device sessions close: select failed",
+    );
+    return [];
+  }
+  for (const row of rows) await closeSessionAtMarkLimit(row.id, row.userId);
+  return rows.map((row) => row.id);
+}
+
 // legend-dn7uo: the session already carries 8 active shared-device marks, so
 // this 9th device cannot be recorded. Refused outright, never passed as owner,
 // and the session is closed so its cookie cannot pass header-less once the 8

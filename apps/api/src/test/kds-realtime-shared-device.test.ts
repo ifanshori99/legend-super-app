@@ -49,8 +49,11 @@ import WebSocket from "ws";
 import type { PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { KITCHEN_REALTIME_PROTOCOL } from "@starter/shared/kitchen";
-import { tenantIdSchema } from "@starter/shared/core";
-import { establishTenantContext } from "@starter/shared/core/server";
+import { outletIdSchema, tenantIdSchema } from "@starter/shared/core";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
 import { signDeviceToken } from "../lib/device-token.ts";
@@ -58,6 +61,10 @@ import {
   setDeviceOutletResolver,
   setStaffPin,
 } from "../services/device-pin.service.ts";
+import {
+  revokeDevice,
+  setDeviceSharedMode,
+} from "../services/device.service.ts";
 import { logger } from "../lib/logger.ts";
 import { attachKdsRealtime } from "../services/kds-realtime.ts";
 import { resolveKdsStaffConnection } from "../services/kds-realtime-auth.ts";
@@ -1304,5 +1311,675 @@ describe("KDS socket: cashier token revoked while connected (legend-t0m89)", () 
       await slowRealtime.close();
       await new Promise<void>((resolve) => slowServer.close(() => resolve()));
     }
+  });
+});
+
+// Second opinion round 2 (docs/qa/second-opinion-akses-ronde2.md), P1 and the
+// 9th-device P2, on REAL sockets. Spec = the 1006/1012/1017 contract in the
+// header above plus the findings' expected outcomes.
+// Assumptions:
+//  - A device token (header or subprotocol) that the device registry no longer
+//    accepts is refused 403 regardless of shared marks; a sent acting token is
+//    always resolved and limits the identity (never falls back to the owner),
+//    also on an unflagged device.
+//  - A live cook token of outlet A on an unflagged device may be accepted for
+//    station A (as the cook); only station B (other outlet) is asserted refused.
+//  - A refused upgrade answers 403 (header contract of legend-dsbqr).
+//  - "Session closed" = login session row revoked or gone (as in
+//    shared-device-marks.test.ts).
+describe("KDS socket: revoked device and ninth device on real sockets (second opinion round 2)", () => {
+  const RECHECK_MS = 100;
+  let server: Server;
+  let realtime: ReturnType<typeof attachKdsRealtime>;
+  let port = 0;
+  const sockets: WebSocket[] = [];
+  const actor = randomUUID();
+
+  type Outcome = { opened: true } | { opened: false; status: number };
+  const refused403: Outcome = { opened: false, status: 403 };
+
+  beforeAll(async () => {
+    server = createServer();
+    realtime = attachKdsRealtime(server, {
+      trustedOrigins: [WEB_ORIGIN],
+      resolveConnection: resolveKdsStaffConnection,
+      recheckIntervalMs: RECHECK_MS,
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("address");
+    port = address.port;
+  });
+
+  afterAll(async () => {
+    for (const ws of sockets) ws.terminate();
+    await realtime?.close();
+    await new Promise<void>((resolve) => server?.close(() => resolve()));
+  });
+
+  async function waitFor(check: () => boolean, label: string, ms = 5_000) {
+    const deadline = Date.now() + ms;
+    while (!check()) {
+      if (Date.now() > deadline) throw new Error(`Timed out: ${label}`);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+
+  function socketUrl(outletId: string, stationId: string) {
+    return `ws://127.0.0.1:${port}/api/outlets/${outletId}/kitchen/stations/${stationId}/realtime?after=0`;
+  }
+
+  /** One real upgrade attempt; closes the socket at once. */
+  async function connect(
+    cookie: string,
+    protocols: string[],
+    headers: Record<string, string> = {},
+    place: { outletId: string; stationId: string } = {
+      outletId: tenant.outletId,
+      stationId: stationA,
+    },
+  ): Promise<Outcome> {
+    const ws = new WebSocket(
+      socketUrl(place.outletId, place.stationId),
+      protocols,
+      {
+        headers: {
+          origin: WEB_ORIGIN,
+          host: tenant.hostname,
+          cookie,
+          ...headers,
+        },
+      },
+    );
+    sockets.push(ws);
+    ws.on("error", () => {});
+    const outcome = await Promise.race([
+      once(ws, "open").then((): Outcome => ({ opened: true })),
+      once(ws, "unexpected-response").then(([, response]): Outcome => ({
+        opened: false,
+        status: (response as { statusCode?: number }).statusCode ?? 0,
+      })),
+    ]);
+    ws.terminate();
+    return outcome;
+  }
+
+  const where = {
+    a: () => ({ outletId: tenant.outletId, stationId: stationA }),
+    b: () => ({ outletId: outletB, stationId: stationB }),
+  };
+
+  async function newDevice(flagged: boolean): Promise<string> {
+    const id = randomUUID();
+    knownDevices.add(id);
+    await owner.query(
+      `INSERT INTO devices (id, tenant_id, outlet_id, type, label, token_issued_at, shared_mode)
+       VALUES ($1, $2, $3, 'pos', $4, now() - interval '1 minute', $5)`,
+      [
+        id,
+        tenant.tenantId,
+        tenant.outletId,
+        `Tablet R2 ${id.slice(0, 6)}`,
+        flagged,
+      ],
+    );
+    return id;
+  }
+
+  const outletScope = () =>
+    establishScopedTenantContext(
+      establishTenantContext({
+        tenantId: tenantIdSchema.parse(tenant.tenantId),
+        brandId: null,
+        source: "session",
+      }),
+      { kind: "outlets", outletIds: [outletIdSchema.parse(tenant.outletId)] },
+    );
+
+  async function sessionEnded(sessionId: string): Promise<boolean> {
+    const { rows } = await owner.query<{ revoked_at: Date | null }>(
+      `SELECT revoked_at FROM "session" WHERE id = $1`,
+      [sessionId],
+    );
+    return rows.length === 0 || rows[0]!.revoked_at !== null;
+  }
+
+  /** Both credential carriers a client uses, for station A and B. */
+  async function allReconnects(
+    cookie: string,
+    device: string,
+    token: string | undefined,
+  ) {
+    const results: Record<string, Outcome> = {};
+    for (const [name, place] of [
+      ["A", where.a()],
+      ["B", where.b()],
+    ] as const) {
+      results[`header ${name}`] = await connect(
+        cookie,
+        [KITCHEN_REALTIME_PROTOCOL],
+        {
+          [DEVICE_TOKEN_HEADER]: device,
+          ...(token ? { [ACTING_HEADER]: token } : {}),
+        },
+        place,
+      );
+      results[`subprotocol ${name}`] = await connect(
+        cookie,
+        offer(device, token),
+        {},
+        place,
+      );
+    }
+    return results;
+  }
+
+  it("P1 revoking the device while the screen is open closes it 1008, and reconnecting with the old header or subprotocol tokens (station A and B) is refused 403", async () => {
+    const device = await newDevice(true);
+    const session = await login(sharedLogin);
+    await markSession(session.sessionId, device);
+    const token = await issueToken(session, cook, device);
+    const deviceJwt = deviceToken(device);
+
+    const ws = new WebSocket(
+      socketUrl(tenant.outletId, stationA),
+      offer(deviceJwt, token),
+      {
+        headers: {
+          origin: WEB_ORIGIN,
+          host: tenant.hostname,
+          cookie: session.cookie,
+        },
+      },
+    );
+    sockets.push(ws);
+    ws.on("error", () => {});
+    const frames: { type: string }[] = [];
+    let closeCode: number | null = null;
+    ws.on("message", (data) => frames.push(JSON.parse(String(data))));
+    ws.on("close", (code) => {
+      closeCode = code;
+    });
+    await waitFor(() => frames.some((f) => f.type === "hello"), "hello frame");
+
+    // Control: before the revoke the same credentials open station A.
+    expect(await connect(session.cookie, offer(deviceJwt, token))).toEqual({
+      opened: true,
+    });
+
+    await revokeDevice(outletScope(), actor, {
+      deviceId: device,
+      reason: "hilang",
+    });
+    await waitFor(() => closeCode !== null, "server close after the revoke");
+    expect(closeCode).toBe(1008);
+
+    // The old credentials must stay refused: neither the retry of the screen
+    // nor a station of the other outlet may fall back to the login owner.
+    const outcomes = await allReconnects(session.cookie, deviceJwt, token);
+    expect(outcomes).toEqual({
+      "header A": refused403,
+      "subprotocol A": refused403,
+      "header B": refused403,
+      "subprotocol B": refused403,
+    });
+    // Only the (revoked) device token, or only the acting token, is no way back.
+    expect(
+      await connect(
+        session.cookie,
+        [KITCHEN_REALTIME_PROTOCOL],
+        { [DEVICE_TOKEN_HEADER]: deviceJwt },
+        where.b(),
+      ),
+    ).toEqual(refused403);
+    expect(
+      await connect(
+        session.cookie,
+        [KITCHEN_REALTIME_PROTOCOL],
+        { [ACTING_HEADER]: token },
+        where.b(),
+      ),
+    ).toEqual(refused403);
+  });
+
+  it("control: a personal login with no tokens, and with only an unflagged device's token, opens station A and B", async () => {
+    const session = await login(personal);
+    for (const place of [where.a(), where.b()]) {
+      expect(
+        await connect(session.cookie, [KITCHEN_REALTIME_PROTOCOL], {}, place),
+      ).toEqual({ opened: true });
+      expect(
+        await connect(
+          session.cookie,
+          offer(deviceToken(personalDevice)),
+          {},
+          place,
+        ),
+      ).toEqual({ opened: true });
+    }
+  });
+
+  it("an ended cashier token on a device that is no longer flagged is refused on station A and B, never owner", async () => {
+    const device = await newDevice(true);
+    const session = await login(sharedLogin);
+    await markSession(session.sessionId, device);
+    const token = await issueToken(session, cook, device);
+    await endToken(session, device);
+    await owner.query(`UPDATE devices SET shared_mode = false WHERE id = $1`, [
+      device,
+    ]);
+    const outcomes = await allReconnects(
+      session.cookie,
+      deviceToken(device),
+      token,
+    );
+    expect(outcomes).toEqual({
+      "header A": refused403,
+      "subprotocol A": refused403,
+      "header B": refused403,
+      "subprotocol B": refused403,
+    });
+  });
+
+  it("an expired cashier token on an unflagged device is refused on station A and B, never owner", async () => {
+    const device = await newDevice(true);
+    const session = await login(sharedLogin);
+    await markSession(session.sessionId, device);
+    const token = await issueToken(session, cook, device);
+    await owner.query(`UPDATE devices SET shared_mode = false WHERE id = $1`, [
+      device,
+    ]);
+    await owner.query(
+      `UPDATE pos_acting_staff
+         SET issued_at = now() - interval '2 hours', expires_at = now() - interval '1 minute'
+       WHERE device_id = $1`,
+      [device],
+    );
+    const outcomes = await allReconnects(
+      session.cookie,
+      deviceToken(device),
+      token,
+    );
+    expect(outcomes).toEqual({
+      "header A": refused403,
+      "subprotocol A": refused403,
+      "header B": refused403,
+      "subprotocol B": refused403,
+    });
+  });
+
+  it("a live outlet-A cashier token on an unflagged device does not open station B of another outlet", async () => {
+    const device = await newDevice(true);
+    const session = await login(sharedLogin);
+    await markSession(session.sessionId, device);
+    const token = await issueToken(session, cook, device);
+    await owner.query(`UPDATE devices SET shared_mode = false WHERE id = $1`, [
+      device,
+    ]);
+    const outcomes = await allReconnects(
+      session.cookie,
+      deviceToken(device),
+      token,
+    );
+    expect(outcomes["header B"]).toEqual(refused403);
+    expect(outcomes["subprotocol B"]).toEqual(refused403);
+  });
+
+  describe.each(["unflagged", "revoked"] as const)(
+    "P2 ninth device upgrade, the eight old devices become %s afterwards",
+    (how) => {
+      it("refuses the direct ninth-device upgrade AND closes the login session, so the old cookie stays dead on websocket and back office", async () => {
+        const ninth = await newDevice(true);
+
+        // Control: on a clean session the same ninth-device credentials open,
+        // so the refusal below can only come from the eight-mark limit.
+        const clean = await login(sharedLogin);
+        const cleanToken = await issueToken(clean, cook, ninth);
+        expect(
+          await connect(clean.cookie, offer(deviceToken(ninth), cleanToken)),
+        ).toEqual({ opened: true });
+
+        const session = await login(sharedLogin);
+        const token = await issueToken(session, cook, ninth);
+        const eight: string[] = [];
+        for (let index = 0; index < 8; index += 1)
+          eight.push(await newDevice(true));
+        await owner.query(
+          `UPDATE "session" SET shared_device_ids = $2::uuid[] WHERE id = $1`,
+          [session.sessionId, eight],
+        );
+        expect(await sessionEnded(session.sessionId)).toBe(false);
+
+        // The ninth device upgrades directly: refused, and the login session
+        // is closed (same outcome as the HTTP route).
+        expect(
+          await connect(session.cookie, offer(deviceToken(ninth), token)),
+        ).toEqual(refused403);
+        expect(await sessionEnded(session.sessionId)).toBe(true);
+
+        // Another admin lapses the eight old marks.
+        for (const id of eight) {
+          if (how === "unflagged")
+            await owner.query(
+              `UPDATE devices SET shared_mode = false WHERE id = $1`,
+              [id],
+            );
+          else
+            await owner.query(
+              `UPDATE devices SET status = 'revoked', revoked_at = now() WHERE id = $1`,
+              [id],
+            );
+        }
+
+        // The old cookie, without any header, is no owner pass anywhere.
+        for (const place of [where.a(), where.b()])
+          expect(
+            await connect(
+              session.cookie,
+              [KITCHEN_REALTIME_PROTOCOL],
+              {},
+              place,
+            ),
+          ).toEqual(refused403);
+        const backOffice = await agent(app)
+          .get("/api/me/access")
+          .set("Cookie", session.cookie)
+          .set(originHeader);
+        expect(backOffice.status, JSON.stringify(backOffice.body)).toBe(401);
+        const parkedOrders = await agent(app)
+          .get(
+            `/api/outlets/${encodeURIComponent(tenant.outletId)}/pos/parked-orders`,
+          )
+          .set("Cookie", session.cookie)
+          .set({ Host: tenant.hostname })
+          .set(originHeader);
+        expect(parkedOrders.status, JSON.stringify(parkedOrders.body)).toBe(
+          401,
+        );
+      });
+    },
+  );
+});
+
+// legend-1024 hardening (architect review). Written from the 1012/1017 contract:
+// a login session that served a shared device never becomes the owner pass
+// again, however the device was taken away.
+// Assumptions:
+//  - A device revoked by plain SQL (status + revoked_at) keeps the login
+//    session alive on purpose: the socket gate alone must refuse, with header,
+//    subprotocol and cookie only, and for a personal login that merely carries
+//    the revoked device's token.
+//  - `recheckIntervalMs` is one minute, so an open screen can only close within
+//    the test window because revokeDevice / setDeviceSharedMode call
+//    `recheckKdsSockets()` themselves.
+//  - Turning shared mode off, or revoking again, closes every login session
+//    that was used on the device; GET /api/me/access then answers 401. Before
+//    that the cookie is merely "not 401" (a marked session may need a cashier
+//    token for some routes, which is outside this case).
+describe("KDS socket: revoked / unshared device closes sessions and screens (legend-1024)", () => {
+  let server: Server;
+  let realtime: ReturnType<typeof attachKdsRealtime>;
+  let port = 0;
+  const sockets: WebSocket[] = [];
+  const actor = randomUUID();
+  type Outcome = { opened: true } | { opened: false; status: number };
+  const refused403: Outcome = { opened: false, status: 403 };
+
+  beforeAll(async () => {
+    server = createServer();
+    realtime = attachKdsRealtime(server, {
+      trustedOrigins: [WEB_ORIGIN],
+      resolveConnection: resolveKdsStaffConnection,
+      recheckIntervalMs: 60_000,
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("address");
+    port = address.port;
+  });
+
+  afterAll(async () => {
+    for (const ws of sockets) ws.terminate();
+    await realtime?.close();
+    await new Promise<void>((resolve) => server?.close(() => resolve()));
+  });
+
+  const url = () =>
+    `ws://127.0.0.1:${port}/api/outlets/${tenant.outletId}/kitchen/stations/${stationA}/realtime?after=0`;
+
+  function open(
+    cookie: string,
+    protocols: string[],
+    headers: Record<string, string> = {},
+  ) {
+    const ws = new WebSocket(url(), protocols, {
+      headers: {
+        origin: WEB_ORIGIN,
+        host: tenant.hostname,
+        cookie,
+        ...headers,
+      },
+    });
+    sockets.push(ws);
+    ws.on("error", () => {});
+    return ws;
+  }
+
+  async function connect(
+    cookie: string,
+    protocols: string[],
+    headers: Record<string, string> = {},
+  ): Promise<Outcome> {
+    const ws = open(cookie, protocols, headers);
+    const outcome = await Promise.race([
+      once(ws, "open").then((): Outcome => ({ opened: true })),
+      once(ws, "unexpected-response").then(([, response]): Outcome => ({
+        opened: false,
+        status: (response as { statusCode?: number }).statusCode ?? 0,
+      })),
+    ]);
+    ws.terminate();
+    return outcome;
+  }
+
+  async function newDevice(): Promise<string> {
+    const id = randomUUID();
+    knownDevices.add(id);
+    await owner.query(
+      `INSERT INTO devices (id, tenant_id, outlet_id, type, label, token_issued_at, shared_mode)
+       VALUES ($1, $2, $3, 'pos', $4, now() - interval '1 minute', true)`,
+      [id, tenant.tenantId, tenant.outletId, `Tablet 1024 ${id.slice(0, 6)}`],
+    );
+    return id;
+  }
+
+  const scope = () =>
+    establishScopedTenantContext(
+      establishTenantContext({
+        tenantId: tenantIdSchema.parse(tenant.tenantId),
+        brandId: null,
+        source: "session",
+      }),
+      { kind: "outlets", outletIds: [outletIdSchema.parse(tenant.outletId)] },
+    );
+
+  async function sessionEnded(sessionId: string): Promise<boolean> {
+    const { rows } = await owner.query<{ revoked_at: Date | null }>(
+      `SELECT revoked_at FROM "session" WHERE id = $1`,
+      [sessionId],
+    );
+    return rows.length === 0 || rows[0]!.revoked_at !== null;
+  }
+
+  const meAccess = (cookie: string) =>
+    agent(app)
+      .get("/api/me/access")
+      .set("Cookie", cookie)
+      .set({ Host: tenant.hostname })
+      .set(originHeader);
+
+  async function closedWithin(ws: WebSocket, label: string) {
+    let code: number | null = null;
+    ws.on("close", (value) => {
+      code = value;
+    });
+    const deadline = Date.now() + 5_000;
+    while (code === null) {
+      if (Date.now() > deadline) throw new Error(`Timed out: ${label}`);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    return code;
+  }
+
+  async function openAndWaitHello(
+    session: Login,
+    device: string,
+    token: string,
+  ) {
+    const ws = open(session.cookie, offer(deviceToken(device), token));
+    const frames: { type: string }[] = [];
+    ws.on("message", (data) => frames.push(JSON.parse(String(data))));
+    const deadline = Date.now() + 5_000;
+    while (!frames.some((f) => f.type === "hello")) {
+      if (Date.now() > deadline) throw new Error("Timed out: hello frame");
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    return ws;
+  }
+
+  it("a device revoked by SQL (session still alive) is refused 403 with the header only, the subprotocol only, the cookie only and with both tokens", async () => {
+    const device = await newDevice();
+    const session = await login(sharedLogin);
+    await markSession(session.sessionId, device);
+    const token = await issueToken(session, cook, device);
+    const jwt = deviceToken(device);
+
+    // Control: before the revoke the full credentials open the screen.
+    expect(await connect(session.cookie, offer(jwt, token))).toEqual({
+      opened: true,
+    });
+
+    await owner.query(
+      `UPDATE devices SET status = 'revoked', revoked_at = now() WHERE id = $1`,
+      [device],
+    );
+    // The point of this case: only the socket gate can refuse here.
+    expect(await sessionEnded(session.sessionId)).toBe(false);
+
+    const outcomes = {
+      "device header only": await connect(
+        session.cookie,
+        [KITCHEN_REALTIME_PROTOCOL],
+        { [DEVICE_TOKEN_HEADER]: jwt },
+      ),
+      "device subprotocol only": await connect(session.cookie, offer(jwt)),
+      "cookie only": await connect(session.cookie, [KITCHEN_REALTIME_PROTOCOL]),
+      "header pair": await connect(
+        session.cookie,
+        [KITCHEN_REALTIME_PROTOCOL],
+        { [DEVICE_TOKEN_HEADER]: jwt, [ACTING_HEADER]: token },
+      ),
+      "subprotocol pair": await connect(session.cookie, offer(jwt, token)),
+    };
+    expect(outcomes).toEqual({
+      "device header only": refused403,
+      "device subprotocol only": refused403,
+      "cookie only": refused403,
+      "header pair": refused403,
+      "subprotocol pair": refused403,
+    });
+    expect(await sessionEnded(session.sessionId)).toBe(false);
+  });
+
+  it("a personal (never marked) login that carries a revoked device's token is refused 403, by header and by subprotocol", async () => {
+    const device = await newDevice();
+    const session = await login(personal);
+    const jwt = deviceToken(device);
+    // The login was never marked; the revoked device's token alone must not
+    // let it through as the owner.
+    await owner.query(
+      `UPDATE devices SET status = 'revoked', revoked_at = now() WHERE id = $1`,
+      [device],
+    );
+    expect(await sessionEnded(session.sessionId)).toBe(false);
+    expect(
+      await connect(session.cookie, [KITCHEN_REALTIME_PROTOCOL], {
+        [DEVICE_TOKEN_HEADER]: jwt,
+      }),
+    ).toEqual(refused403);
+    expect(await connect(session.cookie, offer(jwt))).toEqual(refused403);
+    // A personal login with no device token at all still opens (control).
+    expect(await connect(session.cookie, [KITCHEN_REALTIME_PROTOCOL])).toEqual({
+      opened: true,
+    });
+  });
+
+  it("revokeDevice closes an open screen 1008 although the recheck interval is one minute (recheckKdsSockets), and the login session is closed", async () => {
+    const device = await newDevice();
+    const session = await login(sharedLogin);
+    await markSession(session.sessionId, device);
+    const token = await issueToken(session, cook, device);
+    const ws = await openAndWaitHello(session, device, token);
+
+    await revokeDevice(scope(), actor, { deviceId: device, reason: "hilang" });
+    expect(await closedWithin(ws, "1008 after revokeDevice")).toBe(1008);
+    expect(await sessionEnded(session.sessionId)).toBe(true);
+  });
+
+  it("switching shared mode off closes an open screen 1008 within the test window and closes the login session (cookie then answers 401)", async () => {
+    const device = await newDevice();
+    const session = await login(sharedLogin);
+    await markSession(session.sessionId, device);
+    const token = await issueToken(session, cook, device);
+    const ws = await openAndWaitHello(session, device, token);
+    expect((await meAccess(session.cookie)).status).not.toBe(401);
+
+    await setDeviceSharedMode(scope(), actor, {
+      deviceId: device,
+      sharedMode: false,
+    });
+    expect(await closedWithin(ws, "1008 after shared mode off")).toBe(1008);
+    expect(await sessionEnded(session.sessionId)).toBe(true);
+    const after = await meAccess(session.cookie);
+    expect(after.status, JSON.stringify(after.body)).toBe(401);
+  });
+
+  it("switching shared mode off without an open screen still closes the login session: the old cookie answers 401", async () => {
+    const device = await newDevice();
+    const session = await login(sharedLogin);
+    await markSession(session.sessionId, device);
+    expect((await meAccess(session.cookie)).status).not.toBe(401);
+
+    await setDeviceSharedMode(scope(), actor, {
+      deviceId: device,
+      sharedMode: false,
+    });
+    const after = await meAccess(session.cookie);
+    expect(after.status, JSON.stringify(after.body)).toBe(401);
+  });
+
+  it("revoking an already revoked device (idempotent) still closes a session that was marked afterwards", async () => {
+    const device = await newDevice();
+    const first = await login(sharedLogin);
+    await markSession(first.sessionId, device);
+    await revokeDevice(scope(), actor, { deviceId: device, reason: "hilang" });
+    expect(await sessionEnded(first.sessionId)).toBe(true);
+
+    // A session that still holds the mark (e.g. a cleanup that failed before).
+    const late = await login(sharedLogin);
+    await markSession(late.sessionId, device);
+    expect(await sessionEnded(late.sessionId)).toBe(false);
+    expect((await meAccess(late.cookie)).status).not.toBe(401);
+
+    const again = await revokeDevice(scope(), actor, {
+      deviceId: device,
+      reason: "hilang",
+    });
+    expect(again.status).toBe("revoked");
+    expect(await sessionEnded(late.sessionId)).toBe(true);
+    const after = await meAccess(late.cookie);
+    expect(after.status, JSON.stringify(after.body)).toBe(401);
   });
 });

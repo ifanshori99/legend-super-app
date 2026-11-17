@@ -118,6 +118,18 @@ function send(ws: WebSocket, message: KitchenRealtimeMessage) {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message));
 }
 
+/** Every attached instance's "recheck all sockets now" (legend-1024). */
+const rechecks = new Set<() => void>();
+
+/**
+ * Re-resolve every open KDS socket now instead of at the next interval, so a
+ * revoked device or a closed session loses its screen at once (the resolver
+ * answers null, the socket closes 1008).
+ */
+export function recheckKdsSockets(): void {
+  for (const recheck of rechecks) recheck();
+}
+
 export function attachKdsRealtime(server: Server, options: Options = {}) {
   const wss = new WebSocketServer({
     noServer: true,
@@ -320,17 +332,23 @@ export function attachKdsRealtime(server: Server, options: Options = {}) {
     );
   }
 
-  const timer = setInterval(() => {
+  const recheckAll = () => {
     void Promise.all(
       [...clients].map(([ws, client]) => enqueue(ws, client)),
     ).catch(() => {});
-  }, options.recheckIntervalMs ?? RECHECK_INTERVAL_MS);
+  };
+  const timer = setInterval(
+    recheckAll,
+    options.recheckIntervalMs ?? RECHECK_INTERVAL_MS,
+  );
   timer.unref();
+  rechecks.add(recheckAll);
 
   return {
     dispatch,
     async close() {
       clearInterval(timer);
+      rechecks.delete(recheckAll);
       server.off("upgrade", upgrade);
       for (const ws of clients.keys()) ws.terminate();
       clients.clear();

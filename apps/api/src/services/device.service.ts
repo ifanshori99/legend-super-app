@@ -79,7 +79,9 @@ import { HttpError } from "../lib/http-error.ts";
 import { findTenantContext } from "../middleware/tenant.ts";
 import { recordAudit } from "./audit-writer.ts";
 import { findActiveDeviceForToken } from "./device-registry-check.ts";
+import { recheckKdsSockets } from "./kds-realtime.ts";
 import { appendMenuEvent } from "./menu-internals.ts";
+import { closeSessionsOfSharedDevice } from "./shared-device.service.ts";
 import type { Tx } from "./permission-resolver.ts";
 import {
   deviceTakesReceipts,
@@ -481,7 +483,8 @@ export async function revokeDevice(
 ): Promise<Device> {
   assertTrustedScopedContext(context);
   const tenantId = context.tenant.tenantId;
-  return withTenant(db, context, async (tx) => {
+  let revoked = false;
+  const result = await withTenant(db, context, async (tx) => {
     const [current] = await tx
       .select()
       .from(devices)
@@ -489,7 +492,12 @@ export async function revokeDevice(
       .for("update");
     if (!current || current.tenantId !== tenantId) throw notFound();
     assertOutletInScope(context.outletScope, current.outletId);
-    if (current.status === "revoked") return toDevice(current); // idempotent
+    if (current.status === "revoked") {
+      // Idempotent, but still re-run the post-commit cleanup: an earlier
+      // revoke may have committed and then failed before closing sessions.
+      revoked = true;
+      return toDevice(current);
+    }
     const status: DeviceStatus = transitionDevice(current.status, "revoke");
     const [updated] = await tx
       .update(devices)
@@ -555,8 +563,18 @@ export async function revokeDevice(
       },
       { tx, context },
     );
+    revoked = true;
     return toDevice(updated);
   });
+  // legend-1024: after the commit, close the login sessions used on this
+  // device and make open KDS screens re-resolve, so neither the cookie nor the
+  // old tokens keep working as the login owner. Best effort: the registry
+  // check already refuses the revoked device token on its own.
+  if (revoked) {
+    await closeSessionsOfSharedDevice(input.deviceId);
+    recheckKdsSockets();
+  }
+  return result;
 }
 
 /**
@@ -571,7 +589,8 @@ export async function setDeviceSharedMode(
 ): Promise<Device> {
   assertTrustedScopedContext(context);
   const tenantId = context.tenant.tenantId;
-  return withTenant(db, context, async (tx) => {
+  let turnedOff = false;
+  const result = await withTenant(db, context, async (tx) => {
     const [current] = await tx
       .select()
       .from(devices)
@@ -613,8 +632,16 @@ export async function setDeviceSharedMode(
       },
       { tx, context },
     );
+    turnedOff = current.sharedMode === true && input.sharedMode === false;
     return toDevice(updated);
   });
+  // Shared mode switched off: close the login sessions used on this device and
+  // make open KDS screens re-resolve (same cleanup as revokeDevice).
+  if (turnedOff) {
+    await closeSessionsOfSharedDevice(input.deviceId);
+    recheckKdsSockets();
+  }
+  return result;
 }
 
 /**
