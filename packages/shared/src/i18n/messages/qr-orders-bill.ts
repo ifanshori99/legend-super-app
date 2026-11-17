@@ -106,7 +106,7 @@ export const qrOrdersBillMessages = {
   methodEwallet: "E-wallet",
   methodEwalletHint: "Lanjut ke aplikasi e-wallet Anda.",
   payContinue: "Lanjut bayar",
-  payNow: "Bayar",
+  payWith: "Bayar {amount} dengan {method}",
   payFailed: "Pembayaran belum bisa dimulai. Periksa koneksi, lalu coba lagi.",
   claimTitle: "Poin untuk Anda",
   claimUnavailable: "Poin bisa diklaim setelah bagian Anda lunas.",

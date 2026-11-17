@@ -140,6 +140,13 @@ export function PayDialog({
   const current =
     methods.find((item) => item.method === picked && item.enabled) ??
     methods.find((item) => item.enabled);
+  // The CTO names the chosen method with its catalog label, like the list row.
+  const currentMethodKey = current ? METHOD_LABEL[current.method] : undefined;
+  const currentLabel = current
+    ? currentMethodKey
+      ? t(currentMethodKey)
+      : current.method.toUpperCase()
+    : "";
   const needsBank = current !== undefined && current.banks.length > 0;
   const bank =
     current?.banks.find((item) => item.code === pickedBank)?.code ??
@@ -336,14 +343,12 @@ export function PayDialog({
             disabled={!canSubmit}
             type="button"
           >
-            {amountIdr > 0 ? (
-              <>
-                {t("qrOrders.bill.payNow")}{" "}
-                <span className="tabular">{formatRupiah(amountIdr)}</span>
-              </>
-            ) : (
-              t("qrOrders.bill.payContinue")
-            )}
+            {amountIdr > 0
+              ? t("qrOrders.bill.payWith", {
+                  amount: formatRupiah(amountIdr),
+                  method: currentLabel,
+                })
+              : t("qrOrders.bill.payContinue")}
           </Button>
         </DialogFooter>
       </DialogContent>

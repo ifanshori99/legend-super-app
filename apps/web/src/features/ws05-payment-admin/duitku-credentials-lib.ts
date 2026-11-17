@@ -13,6 +13,7 @@ import {
 import { paymentMethodSchema } from "@starter/shared/payment";
 import { rowForScope } from "../ws01-tenant-settings/integrations-lib.ts";
 import { methodLabelKey } from "./format.ts";
+import { INTEGRATION_MANAGE_PERMISSION } from "./lib.ts";
 
 export const DUITKU_ENVIRONMENTS =
   GATEWAY_CREDENTIAL_SPECS.duitku.config.environment;
@@ -29,6 +30,30 @@ const EMAIL_MAX = 254;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export type DuitkuScope = { outletId: string | null };
+
+/** Why the form is view-only: a read_only support grant, or no manage right. */
+export type DuitkuReadOnlyReason = "support_session" | "no_permission";
+
+type DuitkuAccessLike = {
+  readonly permissions: readonly string[];
+  readonly supportSession?: { readonly accessMode: string } | null;
+};
+
+/**
+ * Presentation only: the API re-checks org.integration.manage and refuses
+ * writes under a read_only support grant. Fails closed: no access context
+ * means view-only.
+ */
+export function duitkuReadOnlyReason(
+  access: DuitkuAccessLike | null | undefined,
+): DuitkuReadOnlyReason | null {
+  if (!access) return "no_permission";
+  if (access.supportSession?.accessMode === "read_only")
+    return "support_session";
+  if (!access.permissions.includes(INTEGRATION_MANAGE_PERMISSION))
+    return "no_permission";
+  return null;
+}
 
 export type DuitkuConfigDraft = {
   environment: DuitkuEnvironment | "";

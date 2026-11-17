@@ -69,6 +69,12 @@ export const paymentDuitkuMessages = {
     replaceLabel: "Ganti {field}",
   },
   save: "Simpan kredensial",
+  readOnly: {
+    support:
+      "Hanya baca. Sesi dukungan ini tidak boleh mengubah kredensial, menguji koneksi, atau mengaktifkan Duitku.",
+    noPermission:
+      "Hanya baca. Mengubah kredensial, menguji koneksi, dan mengaktifkan Duitku butuh izin kelola integrasi.",
+  },
   saveClearedNotice:
     "Kode merchant dan API key sudah dikosongkan demi keamanan. Isi ulang keduanya, lalu simpan lagi.",
   saved: "Kredensial Duitku tersimpan",

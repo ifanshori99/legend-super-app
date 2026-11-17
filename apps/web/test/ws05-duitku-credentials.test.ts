@@ -320,6 +320,28 @@ vi.mock("@/components/ui/toast", () => ({
   useToast: () => (toast: { title?: string }) => h.toasts.push(toast),
 }));
 vi.mock("@/lib/use-online", () => ({ useOnline: () => true }));
+// Presentation-only access: the panel reads the route context like RoutingPanel.
+const access = vi.hoisted(() => ({
+  permissions: ["org.integration.manage"] as string[],
+  supportSession: null as { accessMode: string; expiresAt: string } | null,
+}));
+vi.mock("@tanstack/react-router", async (original) => {
+  const real = await original<typeof import("@tanstack/react-router")>();
+  return {
+    ...real,
+    useRouteContext: () => ({
+      access: {
+        authenticated: true,
+        permissions: access.permissions,
+        mfaRequired: false,
+        mfaVerified: true,
+        stations: [],
+        outlets: [],
+        supportSession: access.supportSession,
+      },
+    }),
+  };
+});
 
 import { DuitkuCredentialsPanel } from "@/features/ws05-payment-admin/components/duitku-credentials-panel";
 
@@ -695,6 +717,8 @@ beforeEach(() => {
   h.records = [];
   h.toasts = [];
   html = "";
+  access.permissions = ["org.integration.manage"];
+  access.supportSession = null;
   Object.assign(api, {
     calls: [],
     rows: [],
@@ -1395,6 +1419,63 @@ describe("legend-mp44v: Duitku activation from the credentials screen", () => {
 
     expect(text()).toContain(copy.errors.generic);
     expect(text()).not.toContain("boom-details");
+    expect(buttonState(copy.activation.action)).toBe("enabled");
+  });
+});
+
+describe("Duitku credentials panel: read-only access", () => {
+  const tested = () => row({ lastCheckedAt: LATER, lastErrorCode: null });
+  const inputs = () =>
+    h.records.filter((r) => r.type === "input" || r.type === "textarea");
+
+  async function expectViewOnly(hint: string) {
+    await mount();
+    expect(text()).toContain(hint);
+    expect(text()).toContain("Hanya baca");
+    expect(buttonState(copy.save)).toBe("disabled");
+    expect(buttonState(copy.test.action)).toBe("disabled");
+    expect(buttonState(copy.activation.action)).toBe("disabled");
+    expect(text()).not.toContain(copy.activation.readyHint);
+    expect(inputs().length).toBeGreaterThan(0);
+    for (const rec of inputs()) expect(rec.props.disabled).toBe(true);
+    const environment = h.records.find(
+      (r) =>
+        typeof r.props.onValueChange === "function" &&
+        ["", "sandbox", "production"].includes(String(r.props.value ?? "")),
+    );
+    expect(environment?.props.disabled).toBe(true);
+    // Even a forced submit never reaches the API.
+    await submit();
+    expect(puts()).toHaveLength(0);
+    expect(tests()).toHaveLength(0);
+    expect(statusPosts()).toHaveLength(0);
+  }
+
+  test("read_only support session: every control is off and a hint says why", async () => {
+    api.rows = [tested()];
+    access.supportSession = {
+      accessMode: "read_only",
+      expiresAt: "2026-11-17T10:00:00.000Z",
+    };
+    await expectViewOnly(copy.readOnly.support);
+  });
+
+  test("without org.integration.manage: every control is off and a hint says why", async () => {
+    api.rows = [tested()];
+    access.permissions = [];
+    await expectViewOnly(copy.readOnly.noPermission);
+  });
+
+  test("read_write support session with the permission stays editable", async () => {
+    api.rows = [tested()];
+    access.supportSession = {
+      accessMode: "read_write",
+      expiresAt: "2026-11-17T10:00:00.000Z",
+    };
+    await mount();
+    expect(text()).not.toContain("Hanya baca");
+    expect(buttonState(copy.save)).toBe("enabled");
+    expect(buttonState(copy.test.action)).toBe("enabled");
     expect(buttonState(copy.activation.action)).toBe("enabled");
   });
 });

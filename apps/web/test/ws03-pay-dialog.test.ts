@@ -697,11 +697,26 @@ describe("ws03 pay dialog: no closing while the start request runs", () => {
 });
 
 describe("ws03 pay dialog: presentation", () => {
-  test("the pay button shows the amount", () => {
+  test("the pay button names the amount and the chosen method", () => {
     render();
     const pay = h.buttons.find((entry) => entry.text !== t("common.cancel"));
 
-    expect(pay?.text).toContain(t("qrOrders.bill.payNow"));
+    expect(pay?.text).toBe(
+      t("qrOrders.bill.payWith", {
+        amount: formatRupiah(50_000),
+        method: t("qrOrders.bill.methodQris"),
+      }),
+    );
+    expect(pay?.text).not.toMatch(/\s{2,}/);
+  });
+
+  test("the pay button follows the picked method label from the catalog", () => {
+    render();
+    choose("va");
+    render();
+    const pay = h.buttons.find((entry) => entry.text !== t("common.cancel"));
+
+    expect(pay?.text).toContain(`dengan ${t("payment.methodVa")}`);
     expect(pay?.text).toContain(formatRupiah(50_000));
   });
 

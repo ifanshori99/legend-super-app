@@ -5,6 +5,7 @@
 // ws01-tenant-settings/components/integration-dialog.tsx, PAY-06).
 import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useRouteContext } from "@tanstack/react-router";
 import {
   CircleAlert,
   CircleCheck,
@@ -32,6 +33,7 @@ import { StatusBand } from "@/components/ui/status-band";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
 import { retryOnceOnServerError } from "@/lib/api/retry";
+import { ANONYMOUS_ACCESS, type AreaAccess } from "@/lib/areas/access";
 import { integrationsQuery } from "../../ws01-tenant-settings/queries";
 import {
   useOutlets,
@@ -51,6 +53,7 @@ import {
   duitkuMethodLabelKey,
   duitkuNeedsActivation,
   duitkuOutletsState,
+  duitkuReadOnlyReason,
   duitkuRowForScope,
   duitkuStatusView,
   duitkuTestFailureKeys,
@@ -61,6 +64,7 @@ import {
   type DuitkuConfigDraft,
   type DuitkuCredentialField,
   type DuitkuErrors,
+  type DuitkuReadOnlyReason,
   type DuitkuScope,
 } from "../duitku-credentials-lib";
 import { formatMoment } from "../format";
@@ -95,8 +99,17 @@ function duitkuErrorMessage(
   }
 }
 
+/** Presentation only: the API re-checks every write (see duitkuReadOnlyReason). */
+function useDuitkuReadOnlyReason(): DuitkuReadOnlyReason | null {
+  const context = useRouteContext({ strict: false }) as {
+    readonly access?: AreaAccess;
+  };
+  return duitkuReadOnlyReason(context.access ?? ANONYMOUS_ACCESS);
+}
+
 export function DuitkuCredentialsPanel() {
   const t = useT();
+  const readOnlyReason = useDuitkuReadOnlyReason();
   const [outletId, setOutletId] = React.useState<string | null>(null);
   // One quick retry: a failing list reaches the error state in about a second.
   const integrations = useQuery({
@@ -233,7 +246,12 @@ export function DuitkuCredentialsPanel() {
       {/* Remount per scope, row and credential generation so typed values never
           carry over. Not per `updatedAt`: a connection test stamps the row and
           must not wipe its own result or the user's input. */}
-      <DuitkuForm key={duitkuFormKey(scope, row)} scope={scope} row={row} />
+      <DuitkuForm
+        key={duitkuFormKey(scope, row)}
+        scope={scope}
+        row={row}
+        readOnlyReason={readOnlyReason}
+      />
     </section>
   );
 }
@@ -241,11 +259,14 @@ export function DuitkuCredentialsPanel() {
 function DuitkuForm({
   scope,
   row,
+  readOnlyReason,
 }: {
   scope: DuitkuScope;
   row: TenantIntegration | null;
+  readOnlyReason: DuitkuReadOnlyReason | null;
 }) {
   const t = useT();
+  const readOnly = readOnlyReason !== null;
   const toast = useToast();
   const save = useSaveIntegration();
   const test = useTestIntegrationConnection();
@@ -306,6 +327,7 @@ function DuitkuForm({
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
+    if (readOnly) return;
     const found = validateDuitkuDraft(config, typed, stored);
     setErrors(found);
     const firstError = firstDuitkuErrorField(found);
@@ -344,13 +366,13 @@ function DuitkuForm({
   };
 
   const runTest = () => {
-    if (!row) return;
+    if (!row || readOnly) return;
     test.reset();
     test.mutate(row.id);
   };
 
   const runActivate = () => {
-    if (!row) return;
+    if (!row || readOnly) return;
     activate.reset();
     activate.mutate({ integrationId: row.id, status: "active" });
   };
@@ -374,6 +396,18 @@ function DuitkuForm({
         noValidate
         aria-label={t("paymentAdmin.duitku.title")}
       >
+        {readOnlyReason && (
+          <p
+            role="note"
+            className="rounded-container border-(length:--border-w) bg-surface-2 p-card text-sm leading-5 text-muted-foreground"
+          >
+            {t(
+              readOnlyReason === "support_session"
+                ? "paymentAdmin.duitku.readOnly.support"
+                : "paymentAdmin.duitku.readOnly.noPermission",
+            )}
+          </p>
+        )}
         <FormField
           id={duitkuFieldId("environment")}
           label={t("paymentAdmin.duitku.fields.environment")}
@@ -381,6 +415,7 @@ function DuitkuForm({
           required
         >
           <Select
+            disabled={readOnly}
             value={config.environment}
             onValueChange={(value) =>
               changeConfig(
@@ -420,6 +455,7 @@ function DuitkuForm({
             type="email"
             inputMode="email"
             autoComplete="off"
+            disabled={readOnly}
             maxLength={254}
             value={config.notificationEmail}
             onChange={(event) =>
@@ -439,6 +475,7 @@ function DuitkuForm({
         >
           <Input
             autoComplete="off"
+            disabled={readOnly}
             maxLength={VA_NAME_MAX}
             value={config.vaName}
             onChange={(event) =>
@@ -490,6 +527,7 @@ function DuitkuForm({
               <Input
                 type="password"
                 name={`credential-${name}`}
+                disabled={readOnly}
                 value={typed[name] ?? ""}
                 onChange={(event) => changeTyped(name, event.target.value)}
                 onBlur={() => checkField(`credential:${name}`, config, typed)}
@@ -515,6 +553,7 @@ function DuitkuForm({
         )}
         <Button
           type="submit"
+          disabled={readOnly}
           loading={save.isPending}
           className="w-full sm:w-fit"
         >
@@ -529,11 +568,12 @@ function DuitkuForm({
             row={row}
             activate={activate}
             onActivate={runActivate}
+            readOnly={readOnly}
           />
         ) : (
           <ActiveCard activate={activate} />
         )}
-        <TestCard row={row} test={test} onRun={runTest} />
+        <TestCard row={row} test={test} onRun={runTest} readOnly={readOnly} />
       </div>
     </div>
   );
@@ -605,10 +645,12 @@ function TestCard({
   row,
   test,
   onRun,
+  readOnly,
 }: {
   row: TenantIntegration | null;
   test: ReturnType<typeof useTestIntegrationConnection>;
   onRun: () => void;
+  readOnly: boolean;
 }) {
   const t = useT();
   const result = test.data?.data;
@@ -624,7 +666,7 @@ function TestCard({
         type="button"
         variant="outline"
         onClick={onRun}
-        disabled={row === null}
+        disabled={row === null || readOnly}
         loading={test.isPending}
         className="w-full sm:w-fit"
       >
@@ -728,10 +770,12 @@ function ActivationNote({
   row,
   activate,
   onActivate,
+  readOnly,
 }: {
   row: TenantIntegration | null;
   activate: ReturnType<typeof useSetIntegrationStatus>;
   onActivate: () => void;
+  readOnly: boolean;
 }) {
   const t = useT();
   const state = duitkuActivation(row);
@@ -753,7 +797,7 @@ function ActivationNote({
           <Button
             type="button"
             onClick={onActivate}
-            disabled={state.kind !== "ready"}
+            disabled={state.kind !== "ready" || readOnly}
             loading={activate.isPending}
             className="w-full sm:w-fit"
           >
@@ -762,7 +806,7 @@ function ActivationNote({
           {blockedKey && (
             <p className="text-muted-foreground">{t(blockedKey)}</p>
           )}
-          {state.kind === "ready" && !activate.isPending && (
+          {state.kind === "ready" && !activate.isPending && !readOnly && (
             <p className="text-muted-foreground">
               {t("paymentAdmin.duitku.activation.readyHint")}
             </p>
