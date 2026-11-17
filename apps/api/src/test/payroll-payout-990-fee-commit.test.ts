@@ -283,7 +283,7 @@ const revertItem = (itemId: string, before: Json, after: Json) =>
 /** The trusted role replays the failed -> overpaid move with a REAL commit; the error, or null. */
 const replayOverpaid = (itemId: string, before: Json, after: Json) =>
   W.asTenant(async (c) => {
-    // The commit check (0414/0582) only accepts a `record` attestation written in
+    // The commit check (0414/0462) only accepts a `record` attestation written in
     // the SAME transaction (txid = txid_current()). The real record happened in
     // an earlier transaction, so this replay re-stamps that one row (owner,
     // guards off), then turns the guards back on for the move itself.

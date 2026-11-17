@@ -1851,7 +1851,7 @@ export const payrollPayoutReconExceptions = pgTable(
 
 /**
  * Each time the reconciliation saw a flag, the fingerprint of the flagged data
- * (legend-hklnq, migration 0584): sha256 of the item (minus volatile and sealed
+ * (legend-hklnq, migration 0464): sha256 of the item (minus volatile and sealed
  * columns), the attestations of the operation and the postings of the item, as
  * computed by `app.payout_recon_flag_fingerprint`. A row is written when the
  * fingerprint is new for the flag; the latest row is the flag's current
@@ -1893,7 +1893,7 @@ export const payrollPayoutReconFlagSightings = pgTable(
  * back. Written only by the trusted payout functions: a finance person proposes
  * with a reason, a different one approves, each with a one-time step-up grant.
  * Never deleted. A clearance is bound to the fingerprint of the flagged data
- * (legend-hklnq, migration 0584): it releases the slip only while the flag's
+ * (legend-hklnq, migration 0464): it releases the slip only while the flag's
  * current fingerprint is the same; one clearance per flag and fingerprint.
  */
 export const payrollPayoutReconClearances = pgTable(

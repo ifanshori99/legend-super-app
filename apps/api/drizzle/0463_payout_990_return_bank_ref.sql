@@ -1,6 +1,6 @@
 -- legend-nsqhm (990, card E): a return of paid payout money needs the bank
 -- transaction reference of the funds that came back, besides the proof file
--- fingerprint. 0580 added payroll_payout_return_claims.bank_ref (unique per
+-- fingerprint. 0460 added payroll_payout_return_claims.bank_ref (unique per
 -- tenant where set) and payroll_disbursement_items.return_bank_ref.
 --   PAYOUT-88  the bank reference is missing or not 4-64 characters once
 --              normalized (spaces removed, upper case)

@@ -32,7 +32,7 @@ ALTER TABLE "payroll_payout_grants" ADD CONSTRAINT "payroll_payout_grants_detail
 -- legend-xbagc (990): clearance of a reconciliation flag. Two finance people
 -- (propose, approve), each under a one-time payout grant (kind recon_clear,
 -- password step-up). Owner: the migrator. Written only by the trusted functions
--- of legend_payout (app.payout_recon_clear_propose / _approve, 0581); legend_app
+-- of legend_payout (app.payout_recon_clear_propose / _approve, 0461); legend_app
 -- may only read. Pattern of payroll_payout_proof_closures (0410).
 SELECT app.enforce_tenant_rls('public.payroll_payout_recon_clearances'::regclass);
 --> statement-breakpoint

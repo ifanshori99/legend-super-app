@@ -4,7 +4,7 @@
 -- propose, then approve, each under a one-time payout grant (kind recon_clear,
 -- password step-up only, tenant-wide owner or finance role plus
 -- payroll.disburse.approve). The table payroll_payout_recon_clearances is
--- migration 0580.
+-- migration 0460.
 -- 1. app.payout_payslip_held_by_recon(tenant, payslip): true when a flag of the
 --    payslip has no approved clearance. The one test of "held": the item guard
 --    (insert of a new attempt, PAYOUT-62) and app.payout_resolve_approve

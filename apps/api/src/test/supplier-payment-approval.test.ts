@@ -23,7 +23,7 @@
 // - SP-12 outstanding is recomputed at execution (settled elsewhere meanwhile)
 // - SP-14 a new tenant with no configuration pays only after another person
 //         (finance or owner template role) approved: default policy, limit 0
-// - SP-15 an existing tenant gets the same default from migration 0587
+// - SP-15 an existing tenant gets the same default from migration 0467
 // - SP-16 the requester cannot approve with the default policy either
 // - SP-17 even Rp 1 needs approval (limit 0); an approved payment is still
 //         never paid above the outstanding amount
@@ -59,7 +59,7 @@
 //   closed period never touches the other tests. Requesting a payment does not
 //   check the period (only posting does), so the new full request is accepted.
 // - CTO decision: every tenant (new via seedTenantRoleTemplates, old via
-//   migration `NNNN_supplier_payment_approval_policies_data.sql`, 0587) has a
+//   migration `NNNN_supplier_payment_approval_policies_data.sql`, 0467) has a
 //   default `supplier_payment` policy: threshold 0, one level, distinct actor,
 //   one row per approver template (at least finance and owner). The tenants of
 //   SP-1..SP-13 are built by `createWorld` and are NOT seeded, so they keep
@@ -263,7 +263,7 @@ function expectDefaultPolicy(rows: PolicyRow[]) {
   expect(templates).toContain("owner");
 }
 
-/** Runs the 0587 backfill body in a transaction that is always rolled back. */
+/** Runs the 0467 backfill body in a transaction that is always rolled back. */
 async function inRolledBackBackfill<T>(
   inspect: (client: PoolClient) => Promise<T>,
 ): Promise<T> {
@@ -1023,7 +1023,7 @@ describe("legend-xxqz3 supplier payment with approval", () => {
     expect(await outstanding(E, invoiceId)).toBe(50_000);
   });
 
-  it("SP-15 an existing tenant gets the same default from the 0587 backfill, once, and can then pay", async () => {
+  it("SP-15 an existing tenant gets the same default from the 0467 backfill, once, and can then pay", async () => {
     const old = await setupTenant("sp-f", { seeded: true });
     await clearPolicy(old);
     expect(await policyRows(old)).toEqual([]);

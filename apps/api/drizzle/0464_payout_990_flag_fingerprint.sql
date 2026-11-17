@@ -14,10 +14,10 @@
 -- 4. app.payout_recon_flag (0432 body): after the insert (or the conflict on the
 --    flag key) it records a sighting of the live fingerprint. Same key, other
 --    data: a new sighting, and the old clearance no longer releases the slip.
--- 5. app.payout_recon_clear_propose (0581 body): binds the clearance to the live
+-- 5. app.payout_recon_clear_propose (0461 body): binds the clearance to the live
 --    fingerprint (recorded as a sighting first when new). An open clearance of
 --    the same fingerprint returns its id; an approved one is PAYOUT-87.
--- 6. app.payout_recon_clear_approve (0581 body): the live fingerprint must be
+-- 6. app.payout_recon_clear_approve (0461 body): the live fingerprint must be
 --    the one of the clearance, else PAYOUT-91 (23514) and nothing changes (the
 --    grant consumed in the function rolls back with it).
 -- Fingerprint: sha256 (hex) of the jsonb text of {item, attestations, postings}:
@@ -27,7 +27,7 @@
 -- item set hash is the hash of this one item, as the overpaid posting), stripped
 -- the same way. TimeZone is fixed to UTC so timestamps render the same in every
 -- session.
--- Ownership: as 0581, the trusted functions are created by the payout role; the
+-- Ownership: as 0461, the trusted functions are created by the payout role; the
 -- table, its guard and the hold helper by the migrator.
 CREATE TABLE "payroll_payout_recon_flag_sightings" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
@@ -42,7 +42,7 @@ CREATE TABLE "payroll_payout_recon_flag_sightings" (
 --> statement-breakpoint
 CREATE INDEX "payroll_payout_recon_flag_sightings_exception_idx" ON "payroll_payout_recon_flag_sightings" USING btree ("tenant_id","exception_id","seen_at" DESC NULLS LAST);--> statement-breakpoint
 ALTER TABLE "payroll_payout_recon_clearances" DROP CONSTRAINT "payroll_payout_recon_clearances_exception_key";--> statement-breakpoint
--- Nullable until the backfill below fills a row left by 0580/0581 (none in
+-- Nullable until the backfill below fills a row left by 0460/0461 (none in
 -- production: the table shipped one release ago); NOT NULL right after.
 ALTER TABLE "payroll_payout_recon_clearances" ADD COLUMN "flag_sha256" varchar(64);--> statement-breakpoint
 SELECT app.enforce_tenant_rls('public.payroll_payout_recon_flag_sightings'::regclass);
@@ -211,7 +211,7 @@ END $$;
 --> statement-breakpoint
 
 -- ---------------------------------------------------------------------------
--- Clearance, step one (0581 body): the clearance is bound to the live
+-- Clearance, step one (0461 body): the clearance is bound to the live
 -- fingerprint of the flag, recorded as a sighting first when it is new. An open
 -- clearance of the same fingerprint returns its id (the reason stays as first
 -- proposed); an approved one is PAYOUT-87.
@@ -284,7 +284,7 @@ END $$;
 --> statement-breakpoint
 
 -- ---------------------------------------------------------------------------
--- Clearance, step two (0581 body): the live fingerprint of the flag must be the
+-- Clearance, step two (0461 body): the live fingerprint of the flag must be the
 -- one the clearance was proposed for (PAYOUT-91); the sighting is brought up to
 -- date so the approval releases the slip.
 -- ---------------------------------------------------------------------------
@@ -379,7 +379,7 @@ $$;
 --> statement-breakpoint
 
 -- Backfill: one sighting per flag that exists, and the fingerprint of its
--- flag on each clearance left by 0581, tenant by tenant (the fingerprint reads
+-- flag on each clearance left by 0461, tenant by tenant (the fingerprint reads
 -- under tenant RLS). The clearance guard refuses every update but approval, so
 -- it is disabled for this statement only, in the migration transaction.
 ALTER TABLE public.payroll_payout_recon_clearances DISABLE TRIGGER payroll_payout_recon_clearances_row_guard_trg;

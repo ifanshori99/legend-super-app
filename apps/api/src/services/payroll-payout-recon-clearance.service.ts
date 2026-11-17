@@ -12,7 +12,7 @@
 // (the grantor connection would wait on our own lock).
 //
 // A clearance is bound to the fingerprint of the flagged data (legend-hklnq,
-// migration 0584). The flag's current fingerprint is the LIVE one
+// migration 0464). The flag's current fingerprint is the LIVE one
 // (`app.payout_recon_flag_fingerprint`); only an approved clearance of that
 // fingerprint releases the slip, so data changed after the approval holds the
 // slip again at once (`reopened`), and approving a clearance whose data changed
@@ -68,7 +68,7 @@ const alreadyApproved = () =>
 
 const tenantOf = (actor: PayoutActor) => actor.tenantId as TenantId;
 
-/** The flag's current fingerprint: the live one (migration 0584). */
+/** The flag's current fingerprint: the live one (migration 0464). */
 const currentFlagSha = sql`app.payout_recon_flag_fingerprint(
   ${payrollPayoutReconExceptions.tenantId}, ${payrollPayoutReconExceptions.id})`;
 

@@ -208,7 +208,7 @@ export const DEFAULT_CASH_OUT_APPROVAL_POLICIES: readonly {
 /**
  * Default supplier payment approval matrix (legend-xxqz3, CTO money decision
  * 17 Nov 2026), the single source for new tenants (seedTenantRoleTemplates),
- * the dev tenant and migration 0587. The most restrictive default: EVERY
+ * the dev tenant and migration 0467. The most restrictive default: EVERY
  * supplier payment (floor 0, tiered on the cumulative amount of the invoice)
  * needs one approval at level 1 from the Finance or Owner template role, and
  * the row requires a distinct actor, so the requester never approves their own

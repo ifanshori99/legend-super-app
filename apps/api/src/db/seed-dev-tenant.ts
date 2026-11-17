@@ -323,7 +323,7 @@ try {
 
   // Supplier payment approval default (legend-xxqz3, CTO money decision): same
   // level-1 rows from Rp0 (finance, owner) and same no-supplier_payment-row
-  // rule as seedTenantRoleTemplates and migration 0587.
+  // rule as seedTenantRoleTemplates and migration 0467.
   await client.query(
     `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
      SELECT $1::uuid, 'supplier_payment', d.threshold_idr, r.id, d.level, true

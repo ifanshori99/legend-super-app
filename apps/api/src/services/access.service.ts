@@ -375,7 +375,7 @@ export async function seedTenantRoleTemplates(
   `);
   // legend-4qowr: a pending cash out (Q7) is decided from the approval inbox.
   // Default matrix from Rp0 (DEFAULT_CASH_OUT_APPROVAL_POLICIES; same row as
-  // migration 0586): level 1 for the Finance template, only when the tenant
+  // migration 0466): level 1 for the Finance template, only when the tenant
   // has no cash_out row; a missing Finance template adds no row.
   const cashOutValues = sql.join(
     DEFAULT_CASH_OUT_APPROVAL_POLICIES.map(
@@ -399,7 +399,7 @@ export async function seedTenantRoleTemplates(
   `);
   // legend-xxqz3: every supplier payment needs one approval from someone else
   // (CTO money decision 2026-11-17). Default matrix from Rp0
-  // (DEFAULT_SUPPLIER_PAYMENT_APPROVAL_POLICIES; same rows as migration 0587):
+  // (DEFAULT_SUPPLIER_PAYMENT_APPROVAL_POLICIES; same rows as migration 0467):
   // level 1 for the Finance and Owner templates, only when the tenant has no
   // supplier_payment row; a missing template role adds no row.
   const supplierPaymentValues = sql.join(

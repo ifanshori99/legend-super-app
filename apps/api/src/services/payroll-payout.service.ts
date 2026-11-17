@@ -1024,8 +1024,8 @@ type PlannedItem = {
  * Slip ids with an open row in `payroll_payout_recon_exceptions` (migration
  * 0410, insert-only) on one of their items. A row is open until it has an
  * approved two-person clearance (`payroll_payout_recon_clearances`, migration
- * 0581, same test as `app.payout_payslip_held_by_recon`) bound to the flag's
- * LIVE fingerprint (`app.payout_recon_flag_fingerprint`, migration 0584): a
+ * 0461, same test as `app.payout_payslip_held_by_recon`) bound to the flag's
+ * LIVE fingerprint (`app.payout_recon_flag_fingerprint`, migration 0464): a
  * clearance of other flagged data, or a proposal alone (`approved_at` null),
  * still holds the slip, also when the data changed after the approval.
  */

@@ -1,4 +1,4 @@
--- Supplier invoice payments (bead legend-xxqz3; migration 0585, with the table).
+-- Supplier invoice payments (bead legend-xxqz3; migration 0465, with the table).
 -- Tenant and outlet RLS (TEN-01/02/03). A request is never deleted; only its
 -- decision may change, and a paid, rejected or cancelled row is final.
 SELECT app.enforce_tenant_rls('public.supplier_payments'::regclass);

@@ -5,7 +5,7 @@
 -- approval_policies. Lift FORCE for this transaction only and restore it
 -- before commit (drizzle applies pending migrations in one transaction, so no
 -- other session ever sees the lifted state), as in 0068, 0116, 0140, 0145 and
--- 0586. Without FORCE the owner skips RLS, so the statements still span every
+-- 0466. Without FORCE the owner skips RLS, so the statements still span every
 -- tenant.
 ALTER TABLE public.roles NO FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
