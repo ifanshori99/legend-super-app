@@ -163,13 +163,15 @@ async function enrollPanicDevice(
   exactLabel = false,
 ): Promise<Device> {
   const full = exactLabel ? label : `${label} ${randomUUID().slice(0, 6)}`;
-  const enrolled = await enrollDevice(scope(), actor, {
-    outletId,
-    type: "panic_button",
-    label: full,
-    stationId: null,
-    idempotencyKey: randomUUID(),
-  });
+  const enrolled = await withEdgeModeEnv(() =>
+    enrollDevice(scope(), actor, {
+      outletId,
+      type: "panic_button",
+      label: full,
+      stationId: null,
+      idempotencyKey: randomUUID(),
+    }),
+  );
   return { id: enrolled.device.id, token: enrolled.token, label: full };
 }
 
@@ -667,13 +669,17 @@ beforeAll(async () => {
   const authenticated = await authenticateEdgeCredential(registered.credential);
   if (!authenticated) throw new Error("Edge node did not authenticate");
   node = authenticated;
-  const enrolled = await enrollDevice(scope(), actor, {
-    outletId,
-    type: "pos",
-    label: `Layar darurat ${randomUUID().slice(0, 6)}`,
-    stationId: null,
-    idempotencyKey: randomUUID(),
-  });
+  // legend-91u09: enrolling is refused on an edge whose device registry is not
+  // judged yet, so enroll as the registered edge node (registry loaded).
+  const enrolled = await withEdgeModeEnv(() =>
+    enrollDevice(scope(), actor, {
+      outletId,
+      type: "pos",
+      label: `Layar darurat ${randomUUID().slice(0, 6)}`,
+      stationId: null,
+      idempotencyKey: randomUUID(),
+    }),
+  );
   posDevice = { id: enrolled.device.id, token: enrolled.token };
   staff = await seedStaff();
 }, 120_000);
