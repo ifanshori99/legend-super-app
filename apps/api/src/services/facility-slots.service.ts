@@ -20,13 +20,14 @@
 // the POS sale own authentication of the guest and the payment/entitlement
 // step; this module owns the slot invariant.
 import { createHash } from "node:crypto";
-import { and, asc, eq, gt, inArray, lt, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, lt, ne, sql } from "drizzle-orm";
 import {
   assertOutletInScope,
   assertTrustedScopedContext,
   createUlid,
+  addBusinessDays,
+  businessDateOf,
   idempotencyKeySchema,
-  localDateOf,
   userIdSchema,
   uuidSchema,
   z,
@@ -45,6 +46,7 @@ import {
   slotFitsOperatingHours,
   slotFromStart,
   transitionTicket,
+  transitionUnit,
   type AccessTicket,
   type FacilityAvailability,
   type FacilitySlot,
@@ -76,6 +78,22 @@ import {
 } from "./facility-shared.ts";
 import { unitAcceptsSlot, unitIsBookable } from "./facility-rules.ts";
 import { resolveOperatingHoursOn } from "./facility-hours-versions.service.ts";
+import { outlets } from "../db/schema/platform-org.ts";
+import { outletBusinessDayClock } from "./outlet-clock.ts";
+
+/** Time zone + business day cutoff of the outlet (hours versions are keyed by business date). */
+async function outletClock(tx: Tx, tenantId: TenantId, outletId: string) {
+  const [outlet] = await tx
+    .select({
+      timezone: outlets.timezone,
+      businessDayCutoff: outlets.businessDayCutoff,
+    })
+    .from(outlets)
+    .where(and(eq(outlets.tenantId, tenantId), eq(outlets.id, outletId)))
+    .limit(1);
+  if (!outlet) throw new HttpError(404, "NOT_FOUND", "Outlet tidak ditemukan.");
+  return outletBusinessDayClock(outlet);
+}
 
 /** How long a `pending_payment` hold keeps its unit (PRD silent: 10 min). */
 export const SLOT_HOLD_TTL_MINUTES = 10;
@@ -282,6 +300,8 @@ export async function getFacilityAvailability(
         and(
           eq(facilityUnits.tenantId, tenantId),
           eq(facilityUnits.facilityId, facility.id),
+          // A retired unit is not offered or counted (legend-etawy).
+          isNull(facilityUnits.retiredAt),
           ...(query.areaId ? [eq(facilityUnits.areaId, query.areaId)] : []),
         ),
       )
@@ -295,29 +315,46 @@ export async function getFacilityAvailability(
     });
     const [year, month, day] = query.date.split("-").map(Number);
     const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
-    const grid: FacilitySlot[] = [];
-    // Hours valid on the requested date (legend-4us1a), not today's.
-    const dayHours =
-      (await resolveOperatingHoursOn(tx, tenantId, facility.id, query.date)) ??
-      facility.operatingHours;
-    for (const hours of dayHours) {
-      if (!hours.daysOfWeek.includes(weekday)) continue;
-      const [oh, om] = hours.opensAt.split(":").map(Number);
-      const [ch, cm] = hours.closesAt.split(":").map(Number);
-      const closes = ch * 60 + cm;
-      const step = config.sessionMinutes + config.cleaningMinutes;
-      for (
-        let at = oh * 60 + om;
-        at + config.sessionMinutes <= closes;
-        at += step
-      ) {
-        const slot = slotFromStart(
-          zonedInstant(query.date, at, timeZone),
-          config,
-        );
-        if (slotFitsOperatingHours(slot, dayHours, timeZone)) grid.push(slot);
+    // Hours versions are keyed by business date (legend-13j7i, legend-4us1a):
+    // slots stay listed under their calendar date, but each one is judged by
+    // the version of its own business date (00:00-cutoff belongs to the day
+    // before). Start candidates of a version are kept only for slots whose own
+    // business date is that version's date, so versions never overlap.
+    const clock = await outletClock(tx, tenantId, facility.outletId);
+    const versionByDate = new Map<string, typeof facility.operatingHours>();
+    for (const date of [addBusinessDays(query.date, -1), query.date])
+      versionByDate.set(
+        date,
+        (await resolveOperatingHoursOn(tx, tenantId, facility.id, date)) ??
+          facility.operatingHours,
+      );
+    const step = config.sessionMinutes + config.cleaningMinutes;
+    const gridByStart = new Map<string, FacilitySlot>();
+    for (const [versionDate, versionHours] of versionByDate) {
+      for (const hours of versionHours) {
+        if (!hours.daysOfWeek.includes(weekday)) continue;
+        const [oh, om] = hours.opensAt.split(":").map(Number);
+        const [ch, cm] = hours.closesAt.split(":").map(Number);
+        const closes = ch * 60 + cm;
+        for (
+          let at = oh * 60 + om;
+          at + config.sessionMinutes <= closes;
+          at += step
+        ) {
+          const slot = slotFromStart(
+            zonedInstant(query.date, at, timeZone),
+            config,
+          );
+          if (businessDateOf(slot.startsAt, clock) !== versionDate) continue;
+          if (gridByStart.has(slot.startsAt)) continue;
+          if (slotFitsOperatingHours(slot, versionHours, timeZone))
+            gridByStart.set(slot.startsAt, slot);
+        }
       }
     }
+    const grid: FacilitySlot[] = [...gridByStart.values()].sort(
+      (a, b) => Date.parse(a.startsAt) - Date.parse(b.startsAt),
+    );
     const dayStart = zonedInstant(query.date, 0, timeZone);
     const dayEnd = zonedInstant(query.date, 1440, timeZone);
     const windows = await holdWindows(
@@ -341,7 +378,7 @@ export async function getFacilityAvailability(
             unitId: unit.id,
             code: unit.code,
             status: unit.status,
-            bookable: unitIsBookable(unit.status),
+            bookable: unitIsBookable(unit.status, unit.retiredAt),
             slots: grid.map((slot) => {
               const from = new Date(slot.startsAt);
               const to = new Date(slot.cleaningEndsAt);
@@ -477,7 +514,8 @@ export async function holdFacilitySlot(
     return { ticket: toTicket(existing), replayed: true };
   }
 
-  const timeZone = await outletTimeZone(tx, context, facility.outletId);
+  const clock = await outletClock(tx, tenantId, facility.outletId);
+  const timeZone = clock.timeZone;
   const config = slotConfigSchema.parse({
     sessionMinutes: facility.sessionMinutes,
     cleaningMinutes: facility.cleaningMinutes,
@@ -491,13 +529,15 @@ export async function holdFacilitySlot(
   const cleaningEndsAt = new Date(slot.cleaningEndsAt);
   if (input.timing.kind === "slot" && startsAt.getTime() < now.getTime())
     throw new FacilityError("SLOT_UNAVAILABLE");
-  // Hours valid on the slot's own date; a later change never reaches back.
+  // Hours valid on the slot's BUSINESS date (legend-13j7i): a slot after
+  // midnight but before the cutoff uses the previous day's version. A later
+  // change never reaches back.
   const slotHours =
     (await resolveOperatingHoursOn(
       tx,
       tenantId,
       facility.id,
-      localDateOf(slot.startsAt, timeZone),
+      businessDateOf(slot.startsAt, clock),
     )) ?? facility.operatingHours;
   if (!slotFitsOperatingHours(slot, slotHours, timeZone))
     throw new FacilityError("FACILITY_CLOSED");
@@ -524,7 +564,7 @@ export async function holdFacilitySlot(
   const blocked = new Map<string, "state" | "overlap">();
   const free: UnitRow[] = [];
   for (const unit of candidates) {
-    if (!unitAcceptsSlot(unit.status, startsAt, now)) {
+    if (!unitAcceptsSlot(unit.status, startsAt, now, unit.retiredAt)) {
       blocked.set(unit.id, "state");
       continue;
     }
@@ -769,6 +809,102 @@ export async function releaseExpiredSlotHolds(
   for (const { id } of expired) {
     await cancelFacilitySlotHold(tx, context, id, null, now);
     released.push(id);
+  }
+  return released;
+}
+
+/**
+ * An `in_use` ticket still open this many minutes after its scheduled
+ * `ends_at` is stale (nobody closed it): the sweep ends it (legend-etawy).
+ */
+export const IN_USE_STALE_AFTER_MINUTES = 120;
+
+/**
+ * Sweeper (legend-etawy): ends `in_use` tickets left open past
+ * `IN_USE_STALE_AFTER_MINUTES` after their scheduled end. It is the normal
+ * "end" outcome without a charge: the ticket becomes `completed` with
+ * `ended_at` set, its unit goes `in_use` -> `needs_cleaning`; overtime stays
+ * 0 and no linked order is created. Idempotent (only `in_use` tickets are
+ * read); scope comes from the RLS context. Returns the released ticket ids.
+ */
+export async function releaseStaleInUseTickets(
+  tx: Tx,
+  context: ScopedTenantContext,
+  now = new Date(),
+): Promise<string[]> {
+  assertTrustedScopedContext(context);
+  const tenantId = context.tenant.tenantId;
+  const cutoff = new Date(now.getTime() - IN_USE_STALE_AFTER_MINUTES * 60_000);
+  const stale = await tx
+    .select()
+    .from(accessTickets)
+    .where(
+      and(
+        eq(accessTickets.tenantId, tenantId),
+        eq(accessTickets.status, "in_use"),
+        lt(accessTickets.endsAt, cutoff),
+      ),
+    )
+    .orderBy(asc(accessTickets.endsAt), asc(accessTickets.id))
+    .for("update", { skipLocked: true });
+  const released: string[] = [];
+  for (const ticket of stale) {
+    const status = transitionTicket(ticket.status, "end");
+    await tx
+      .update(accessTickets)
+      // The scheduled end, not `now`: the sweep must not inflate overtime or
+      // utilisation metrics with the time nobody closed the ticket.
+      .set({ status, endedAt: ticket.endsAt, updatedAt: now })
+      .where(
+        and(
+          eq(accessTickets.tenantId, tenantId),
+          eq(accessTickets.id, ticket.id),
+          eq(accessTickets.status, "in_use"),
+        ),
+      );
+    const [otherInUse] = await tx
+      .select({ id: accessTickets.id })
+      .from(accessTickets)
+      .where(
+        and(
+          eq(accessTickets.tenantId, tenantId),
+          eq(accessTickets.unitId, ticket.unitId),
+          eq(accessTickets.status, "in_use"),
+          ne(accessTickets.id, ticket.id),
+        ),
+      )
+      .limit(1);
+    const [unit] = await tx
+      .select({ status: facilityUnits.status })
+      .from(facilityUnits)
+      .where(
+        and(
+          eq(facilityUnits.tenantId, tenantId),
+          eq(facilityUnits.id, ticket.unitId),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    // Another open ticket still holds the unit: leave it `in_use`.
+    if (unit?.status === "in_use" && !otherInUse)
+      await tx
+        .update(facilityUnits)
+        .set({ status: transitionUnit(unit.status, "end_session") })
+        .where(
+          and(
+            eq(facilityUnits.tenantId, tenantId),
+            eq(facilityUnits.id, ticket.unitId),
+          ),
+        );
+    await auditFacility(tx, context, null, now, {
+      action: "access_ticket.stale_released",
+      objectType: "access_ticket",
+      objectId: ticket.id,
+      outletId: ticket.outletId,
+      before: { ticketId: ticket.id, status: ticket.status },
+      after: { ticketId: ticket.id, status, charged: false },
+    });
+    released.push(ticket.id);
   }
   return released;
 }

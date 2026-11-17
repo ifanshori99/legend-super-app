@@ -11,19 +11,24 @@
 // requirement gets ONE polite reminder per completed hour. No charge, refund
 // or session change happens: the reminder is a message, nothing else.
 //
-// Recipients (CTO decision, no migration): `notifications.user_id` is NOT
-// NULL, so each DISTINCT signed-in participant of the session is reminded;
-// an anonymous participant (user_id null) gets nothing (known limitation) and
-// no staff user is notified. The reminder is delivered like the reservation
-// guest messages (see `deliverReminders`). Dedupe key
+// Recipients: `notifications.user_id` is NOT NULL, so each DISTINCT signed-in
+// participant of the session is reminded through `notifications`; no staff
+// user is notified. The reminder is delivered like the reservation guest
+// messages (see `deliverReminders`). Dedupe key
 // `wfc_min_spend:<sessionId>:<h>:<userId>` (unique per tenant) makes a repeat
 // run in the same hour a no-op.
+// An anonymous participant (user_id null) who left a WhatsApp number or email
+// on the session (legend-qr3sd) gets ONE row in the `wfc_guest_reminders`
+// outbox per distinct destination + session + hour (WhatsApp preferred over
+// email); no contact = no reminder. Outbox rows only: no order, payment or
+// session is touched.
 //
 // Net spend of an order: price-exclusive = subtotal - discount; tax-inclusive
 // (harga nett) = total - tax - service charge.
 
 import {
   and,
+  asc,
   eq,
   inArray,
   isNotNull,
@@ -47,6 +52,7 @@ import {
 import { wifiPolicies } from "../db/schema/facility.ts";
 import { deliveryAttempts, notifications } from "../db/schema/notification.ts";
 import { user } from "../db/schema/user.ts";
+import { wfcGuestReminders } from "../db/schema/wfc-guest-reminder.ts";
 import {
   orders,
   sessionParticipants,
@@ -78,6 +84,69 @@ const wfcMinSpendDedupeKey = (
 
 const formatIdr = (amount: number) =>
   new Intl.NumberFormat("id-ID").format(amount);
+
+// Same shapes the participant contact is validated with on entry.
+const WHATSAPP_DIGITS = /^[1-9][0-9]{7,14}$/;
+const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+type GuestContact = { channel: "whatsapp" | "email"; destination: string };
+
+/** One contact per participant: WhatsApp preferred, blank or invalid = none. */
+function pickGuestContact(participant: {
+  contactWhatsapp: string | null;
+  contactEmail: string | null;
+}): GuestContact | null {
+  const whatsapp = participant.contactWhatsapp?.trim() ?? "";
+  if (WHATSAPP_DIGITS.test(whatsapp.replace(/^\+/, "")))
+    return {
+      channel: "whatsapp",
+      destination: `+${whatsapp.replace(/^\+/, "")}`,
+    };
+  const email = participant.contactEmail?.trim().toLowerCase() ?? "";
+  if (email.length <= 254 && EMAIL_SHAPE.test(email))
+    return { channel: "email", destination: email };
+  return null;
+}
+
+/**
+ * Outbox rows for guests without an account: one per distinct destination of
+ * the session and hour; an existing row (same dedupe key) writes nothing.
+ */
+async function writeGuestReminders(
+  tx: Tx,
+  reminder: {
+    tenantId: TenantId;
+    outletId: OutletId;
+    sessionId: string;
+    hours: number;
+    contacts: Array<GuestContact & { participantId: string }>;
+  },
+  now: Date,
+): Promise<number> {
+  const seen = new Set<string>();
+  let written = 0;
+  for (const contact of reminder.contacts) {
+    if (seen.has(contact.destination)) continue;
+    seen.add(contact.destination);
+    const inserted = await tx
+      .insert(wfcGuestReminders)
+      .values({
+        tenantId: reminder.tenantId,
+        outletId: reminder.outletId,
+        tableSessionId: reminder.sessionId,
+        participantId: contact.participantId,
+        hours: reminder.hours,
+        channel: contact.channel,
+        destination: contact.destination,
+        dedupeKey: `${WFC_MIN_SPEND_CATEGORY}:${reminder.sessionId}:${reminder.hours}:${contact.destination}`,
+        createdAt: now,
+      })
+      .onConflictDoNothing()
+      .returning({ id: wfcGuestReminders.id });
+    written += inserted.length;
+  }
+  return written;
+}
 
 /**
  * Writes the reminders through the same path as the reservation guest
@@ -303,9 +372,12 @@ export async function evaluateMinSpend(
     result.sessionsBelow += below.length;
 
     const participants = await tx
-      .selectDistinct({
+      .select({
+        id: sessionParticipants.id,
         sessionId: sessionParticipants.tableSessionId,
         userId: sessionParticipants.userId,
+        contactWhatsapp: sessionParticipants.contactWhatsapp,
+        contactEmail: sessionParticipants.contactEmail,
       })
       .from(sessionParticipants)
       .where(
@@ -315,39 +387,59 @@ export async function evaluateMinSpend(
             sessionParticipants.tableSessionId,
             below.map((session) => session.id),
           ),
-          isNotNull(sessionParticipants.userId),
         ),
-      );
+      )
+      .orderBy(asc(sessionParticipants.joinedAt), asc(sessionParticipants.id));
 
     for (const session of below) {
+      const inSession = participants.filter(
+        (participant) => participant.sessionId === session.id,
+      );
       const userIds = [
         ...new Set(
-          participants.flatMap((participant) =>
-            participant.sessionId === session.id && participant.userId !== null
-              ? [participant.userId]
-              : [],
+          inSession.flatMap((participant) =>
+            participant.userId !== null ? [participant.userId] : [],
           ),
         ),
       ];
-      if (userIds.length === 0) continue;
+      // A signed-in participant is reminded through `notifications` only.
+      const contacts = inSession.flatMap((participant) => {
+        if (participant.userId !== null) return [];
+        const contact = pickGuestContact(participant);
+        return contact ? [{ ...contact, participantId: participant.id }] : [];
+      });
+      if (userIds.length === 0 && contacts.length === 0) continue;
       const required = session.hours * minimum;
       const spend = spendBySession.get(session.id) ?? 0;
       const content = {
         title: "Pengingat belanja minimum",
         body: `Anda sudah ${session.hours} jam di zona kerja. Minimum belanja sampai sekarang Rp${formatIdr(required)}, belanja Anda baru Rp${formatIdr(spend)}. Silakan pesan kapan saja, terima kasih.`,
       };
-      result.reminders += await deliverReminders(
-        tx,
-        input.context,
-        {
-          outletId,
-          sessionId: session.id,
-          hours: session.hours,
-          userIds,
-          content,
-        },
-        now,
-      );
+      if (userIds.length > 0)
+        result.reminders += await deliverReminders(
+          tx,
+          input.context,
+          {
+            outletId,
+            sessionId: session.id,
+            hours: session.hours,
+            userIds,
+            content,
+          },
+          now,
+        );
+      if (contacts.length > 0)
+        result.reminders += await writeGuestReminders(
+          tx,
+          {
+            tenantId,
+            outletId,
+            sessionId: session.id,
+            hours: session.hours,
+            contacts,
+          },
+          now,
+        );
     }
   }
   return result;

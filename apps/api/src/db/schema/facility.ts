@@ -221,6 +221,11 @@ export const facilityUnits = pgTable(
       .notNull()
       .default("available"),
     sortOrder: integer("sort_order").notNull().default(0),
+    /**
+     * Retirement (legend-etawy): set = the unit is no longer offered for new
+     * slots or tickets; the row and its ticket history stay. NULL = active.
+     */
+    retiredAt: timestamp("retired_at", { withTimezone: true }),
     createdAt,
     /** Configuration stamp only; a status transition does not move it. */
     updatedAt,

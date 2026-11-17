@@ -3011,6 +3011,13 @@
       "when": 1795000000058,
       "tag": "0570_facility_hours_wfc_breakfast",
       "breakpoints": true
+    },
+    {
+      "idx": 595,
+      "version": "7",
+      "when": 1795000000059,
+      "tag": "0595_facility_retired_wfc_guest_reminders",
+      "breakpoints": true
     }
   ]
 }

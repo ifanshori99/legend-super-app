@@ -48,6 +48,8 @@ export * from "./reservation";
 export * from "./reservation-public";
 export * from "./facility";
 export * from "./facility-entitlement";
+// WFC min-spend reminder outbox for guests without an account (legend-qr3sd).
+export * from "./wfc-guest-reminder";
 export * from "./hris";
 // WS-10 leave, balances, accrual, holidays, overtime (legend-hggk).
 export * from "./hris-leave";

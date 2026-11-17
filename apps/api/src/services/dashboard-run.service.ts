@@ -25,7 +25,7 @@
 //   database once. The key starts with the tenant id: no key is shared across
 //   tenants.
 
-import { and, asc, count, eq, inArray, type SQL } from "drizzle-orm";
+import { and, asc, count, eq, inArray, isNull, type SQL } from "drizzle-orm";
 import {
   businessDateOf,
   DEFAULT_BUSINESS_DAY_CLOCK,
@@ -771,6 +771,7 @@ export async function getDashboardQueueRows(
           and(
             eq(facilityUnits.tenantId, facilities.tenantId),
             eq(facilityUnits.facilityId, facilities.id),
+            isNull(facilityUnits.retiredAt),
           ),
         )
         .where(

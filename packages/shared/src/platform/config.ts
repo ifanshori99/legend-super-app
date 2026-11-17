@@ -328,6 +328,8 @@ const facilityItemSchema = z.discriminatedUnion("kind", [
     areaKey: itemKey,
     code: z.string().min(1).max(20),
     status: facilityUnitStatusSchema,
+    /** Present only for a retired unit (legend-etawy); older exports omit it. */
+    retired: z.literal(true).optional(),
     sortOrder,
   }),
   z.strictObject({

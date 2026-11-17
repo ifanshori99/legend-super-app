@@ -2,7 +2,7 @@
 // Kebersihan"; FAC-06; bead legend-nm4f). Cleaning tasks themselves are a
 // later bead: this module only reads the board and flips the maintenance
 // state through the contract's unit state machine.
-import { and, asc, eq, gt, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, lte, sql } from "drizzle-orm";
 import { userIdSchema, type ScopedTenantContext } from "@starter/shared/core";
 import {
   canTransitionUnit,
@@ -49,6 +49,8 @@ export async function getFacilityUnitBoard(
         and(
           eq(facilityUnits.tenantId, tenantId),
           eq(facilityUnits.facilityId, facility.id),
+          // The operator board lists live units only (legend-etawy).
+          isNull(facilityUnits.retiredAt),
           ...(query.status ? [eq(facilityUnits.status, query.status)] : []),
         ),
       )
