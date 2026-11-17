@@ -226,6 +226,14 @@ function withoutCodeHash<T extends { codeHash: unknown }>(
   return copy as Omit<T, "codeHash">;
 }
 
+function withoutAiActionRequestId<T extends { aiActionRequestId: unknown }>(
+  row: T,
+): Omit<T, "aiActionRequestId"> {
+  const copy: Partial<T> = { ...row };
+  delete copy.aiActionRequestId;
+  return copy as Omit<T, "aiActionRequestId">;
+}
+
 /**
  * Irreversible stand-in for `promotions.code_hash` on the promotions stream
  * (SHA-256 of the promotion id under a fixed prefix). Deterministic, so a
@@ -727,7 +735,9 @@ const scanners: Record<
         txid,
         keys: [row.id],
         record: {
-          ...row,
+          // `aiActionRequestId` is a server-only idempotency key for the
+          // Tanya AI promo executor: it never reaches an edge.
+          ...withoutAiActionRequestId(row),
           codeRef: codeHash === null ? null : promoCodeRef(row.id),
           outletId,
           syncTxid: txid,
