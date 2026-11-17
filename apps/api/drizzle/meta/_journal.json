@@ -3004,6 +3004,34 @@
       "when": 1795000000057,
       "tag": "0442_payment_va_release_guest_kind",
       "breakpoints": true
+    },
+    {
+      "idx": 580,
+      "version": "7",
+      "when": 1795000000580,
+      "tag": "0580_payout_990_schema",
+      "breakpoints": true
+    },
+    {
+      "idx": 581,
+      "version": "7",
+      "when": 1795000000581,
+      "tag": "0581_payout_990_recon_clear",
+      "breakpoints": true
+    },
+    {
+      "idx": 582,
+      "version": "7",
+      "when": 1795000000582,
+      "tag": "0582_payout_990_fee_commit",
+      "breakpoints": true
+    },
+    {
+      "idx": 583,
+      "version": "7",
+      "when": 1795000000583,
+      "tag": "0583_payout_990_return_bank_ref",
+      "breakpoints": true
     }
   ]
 }
