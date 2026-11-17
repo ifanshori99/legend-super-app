@@ -6983,3 +6983,8 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 - Satu cicilan per pinjaman per bulan kalender period_end: pinjaman yang sudah punya baris di run regular lain (draft..approved, locked, paid; reversed tidak dihitung) tidak dipotong lagi; lock memberi 409 bila bentrok. Pesangon: outstandingLoans = sisa dikurangi potongan run draft..approved, plus pendingPayrollDeductions {count, amountIdr, loanIds} terpisah (default aman untuk snapshot lama).
 - Review architect xhigh: tanpa P0. P1 terbuka: snapshot pesangon yang dibekukan saat offboarding selesai sudah mengurangi potongan run yang belum locked; run itu masih bisa kembali ke draft. Usul architect: tolak penyelesaian 409 selama ada potongan di run draft..approved. Menunggu keputusan CTO. 3 P2 dibetulkan.
 - Gerbang: tes terarah 434/434, prettier/eslint hijau, typecheck API dan shared exit 0. Fail-first 5 test baru terbukti merah di HEAD sebelumnya. Belum: kartu web final-settlement-card.tsx menghitung sisa sendiri dari sources.loans (tidak menampilkan potongan tertunda).
+
+### 955 lanjutan 2: guard offboarding (17 Nov 2026, keputusan CTO opsi a)
+
+- Commit 67d26efc7 di ghostex/1a1b16fe (tanpa migrasi). Selesaikan offboarding ditolak 409 PAYROLL_DEDUCTION_PENDING selama karyawan punya potongan pinjaman di run draft, simulated, hr_approved, approved. HR kunci run atau keluarkan karyawan dari run dulu. Run locked/paid/reversed tidak menahan; snapshot beku memakai sisa setelah potongan locked saja (tidak lagi mengurangi potongan belum locked).
+- Fail-first: 4 test section 18 payroll-run-loans.test.ts; 2 merah (200 bukan 409) di kode tanpa guard, 2 hijau (reversed, tanpa run). Kartu web legend-10tqi terpisah, apps/web tidak disentuh.
