@@ -102,7 +102,7 @@ export const kontrasOverrides: Record<
     "muted-foreground": "#d0cbc3",
     secondary: "#23211f",
     accent: "#2a2825",
-    border: "#5c5852",
+    border: "#6a665f",
     input: "#a8a39b",
   },
 };

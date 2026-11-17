@@ -224,7 +224,7 @@ test.fixme("PAY-04 an overpayment is closed by a guest credit with an approval n
 
   // A double payment shows the received money, the bill and the excess.
   await expect(page.getByText("A05-0421")).toBeVisible();
-  await expect(page.getByText("Rp 144.375").first()).toBeVisible();
+  await expect(page.getByText(/Rp\s?144\.375/).first()).toBeVisible();
 
   await page.getByRole("button", { name: "Selesaikan" }).click();
   const dialog = page.getByRole("dialog");
@@ -235,7 +235,7 @@ test.fixme("PAY-04 an overpayment is closed by a guest credit with an approval n
   await dialog.getByRole("button", { name: "Simpan penyelesaian" }).click();
 
   await expect(
-    page.getByText("Dana Rp 144.375 diselesaikan.").first(),
+    page.getByText(/Dana Rp\s?144\.375 diselesaikan\./).first(),
   ).toBeVisible();
   await expect(page.getByText("Selesai").first()).toBeVisible();
 });

@@ -325,7 +325,7 @@ export function WhatsAppLogin({
         <Button
           ref={startRef}
           size="lg"
-          className="w-full"
+          className="h-auto! min-h-control-lg w-full px-4 py-2 text-center whitespace-normal sm:px-8"
           loading={start.isPending}
           onClick={() => void begin()}
         >

@@ -331,7 +331,7 @@ function AreaFrameBody({
       {showSupportBar ? (
         <SupportSessionBar
           supportSession={access.supportSession}
-          className="mb-4"
+          className="mb-4 max-sm:mb-2"
         />
       ) : null}
       {area !== "platform" ? <OfflineBannerSlot /> : null}

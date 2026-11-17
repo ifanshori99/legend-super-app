@@ -134,20 +134,21 @@ export function ThrTab({ canRun }: { canRun: boolean }) {
         <Card>
           <CardHeader>
             <CardTitle>{t("payrollConfig.thr.ruleTitle")}</CardTitle>
-            <CardDescription>
-              {statutoryQuery.isPending ? (
-                <Skeleton className="h-5 w-3/4" />
-              ) : !statutoryQuery.isSuccess ? (
-                "—"
-              ) : thrRule ? (
-                t("payrollConfig.thr.ruleBody", {
-                  min: thrRule.parameters.minTenureMonths,
-                  full: thrRule.parameters.fullTenureMonths,
-                })
-              ) : (
-                t("payrollConfig.thr.ruleNone")
-              )}
-            </CardDescription>
+            {/* Skeleton is a <div>: keep it out of the <p> CardDescription. */}
+            {statutoryQuery.isPending ? (
+              <Skeleton className="h-5 w-3/4" />
+            ) : (
+              <CardDescription>
+                {!statutoryQuery.isSuccess
+                  ? "—"
+                  : thrRule
+                    ? t("payrollConfig.thr.ruleBody", {
+                        min: thrRule.parameters.minTenureMonths,
+                        full: thrRule.parameters.fullTenureMonths,
+                      })
+                    : t("payrollConfig.thr.ruleNone")}
+              </CardDescription>
+            )}
           </CardHeader>
           <CardContent>
             <p className="text-sm leading-5 text-muted-foreground">

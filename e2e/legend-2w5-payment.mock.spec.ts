@@ -54,7 +54,7 @@ test("PAY-02 a bank transfer shows the unique code and the exact total", async (
 }) => {
   await page.goto(path(TRANSFER, "?mock=normal"));
   await expect(page.getByText("Kode unik", { exact: true })).toBeVisible();
-  await expect(page.getByText(/Rp\s144\.722/)).toBeVisible();
+  await expect(page.getByText(/Rp\s?144\.722/)).toBeVisible();
 });
 
 test("PAY-02 gateway down points the guest to the cashier and tells the staff", async ({

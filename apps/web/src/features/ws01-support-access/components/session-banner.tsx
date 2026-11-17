@@ -106,7 +106,7 @@ function BarBody({
       data-slot="support-session-bar"
       data-expiring={soon || undefined}
       className={cn(
-        "sticky top-0 z-20 flex flex-wrap items-center gap-x-4 gap-y-1 border-b-(length:--border-w) px-4 py-2 text-sm",
+        "sticky top-0 z-20 flex flex-wrap items-center gap-x-4 gap-y-1 border-b-(length:--border-w) px-4 py-2 text-sm max-sm:gap-x-3 max-sm:px-3 max-sm:py-1.5",
         soon
           ? "bg-danger text-danger-foreground"
           : "bg-warning-subtle text-warning",
