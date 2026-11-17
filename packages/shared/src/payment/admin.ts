@@ -523,7 +523,8 @@ export const refundReconHoldViewSchema = z.strictObject({
   paymentIntentId: uuidSchema,
   outletId: uuidSchema.nullable(),
   paymentReference: ref.nullable(),
-  outletName: ref.nullable(),
+  // outlets.name allows 150 characters.
+  outletName: z.string().min(1).max(150).nullable(),
   providerRefundId: ref.nullable(),
   amountIdr: nonnegativeIdr,
   reason: z.string().min(1).max(500),

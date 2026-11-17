@@ -448,50 +448,6 @@ export async function recordProviderRefundInTx(
   // Credit already moved to sessions (closed ones too) may now exceed the
   // intent's net: flag it in this same transaction (legend-svwdz, 1020).
   await flagCreditReconForIntent(tx, tenantId, intent.id);
-  // legend-ua9ja: credit used beyond what the DP still holds is held for
-  // finance (refunds and payouts of the intent stop) and told once. The hold is
-  // keyed by (tenant, intent, provider refund id); only the winner of the
-  // provider refund insert gets here, so a replay adds none. Nothing used is
-  // cut and no credit is added.
-  const creditSurplus = await creditUsedSurplusForIntent(
-    tx,
-    tenantId,
-    intent.id,
-  );
-  if (creditSurplus > 0n) {
-    const hex = createHash("sha256")
-      .update(
-        `refund_recon_hold.credit_used\0${tenantId}\0${intent.id.toLowerCase()}\0${providerRefundId}`,
-      )
-      .digest("hex");
-    const [creditHold] = await tx
-      .insert(refundReconHolds)
-      .values({
-        tenantId,
-        paymentIntentId: intent.id,
-        webhookEventId: `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`,
-        providerRefundId,
-        providerPaymentRef,
-        amountIdr: idr(Number(creditSurplus)),
-        reason: "credit_used_before_provider_refund",
-        flaggedAt: now,
-      })
-      .onConflictDoNothing()
-      .returning({ id: refundReconHolds.id });
-    if (creditHold)
-      await alertCreditUsedBeforeProviderRefund(
-        tx,
-        context,
-        {
-          intentId: intent.id,
-          outletId: intent.outletId,
-          providerRefundId,
-          amountIdr: Number(creditSurplus),
-        },
-        now,
-      );
-  }
-
   // 6. A parked fund of this transaction: the whole fund is blocked (restrict
   // when in doubt; a partial refund of a fund is not tracked). When the
   // refunded transaction is the intent's own, a fund with no evidence mapping
@@ -591,6 +547,53 @@ export async function recordProviderRefundInTx(
           inArray(paymentIntents.status, ["pending", "expired", "failed"]),
         ),
       );
+
+  // legend-ua9ja: credit used beyond what the DP still holds is held for
+  // finance (refunds and payouts of the intent stop) and told once. The hold is
+  // deduplicated by its own hash (webhook event id), with no provider refund
+  // id: the unique key (tenant, intent, provider refund id) also counts holds
+  // already closed and the live-own hold of this call. Only the winner of the
+  // provider refund insert gets here, so a replay adds none. Nothing used is
+  // cut and no credit is added. Worked out after step 7, which may flag the
+  // intent as refunded after paid and so empty the pool.
+  const creditSurplus = await creditUsedSurplusForIntent(
+    tx,
+    tenantId,
+    intent.id,
+  );
+  if (creditSurplus > 0n) {
+    const hex = createHash("sha256")
+      .update(
+        `refund_recon_hold.credit_used\0${tenantId}\0${intent.id.toLowerCase()}\0${providerRefundId}`,
+      )
+      .digest("hex");
+    const [creditHold] = await tx
+      .insert(refundReconHolds)
+      .values({
+        tenantId,
+        paymentIntentId: intent.id,
+        webhookEventId: `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`,
+        providerRefundId: null,
+        providerPaymentRef,
+        amountIdr: idr(Number(creditSurplus)),
+        reason: "credit_used_before_provider_refund",
+        flaggedAt: now,
+      })
+      .onConflictDoNothing()
+      .returning({ id: refundReconHolds.id });
+    if (creditHold)
+      await alertCreditUsedBeforeProviderRefund(
+        tx,
+        context,
+        {
+          intentId: intent.id,
+          outletId: intent.outletId,
+          providerRefundId,
+          amountIdr: Number(creditSurplus),
+        },
+        now,
+      );
+  }
 
   // 5. One audit row and one alert for this refund (we won the insert).
   if (!input.quiet)

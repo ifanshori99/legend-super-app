@@ -1844,3 +1844,64 @@ describe("1025-d (legend-03jjx) counting is refused while our own refund of the 
     });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Architect area review: E (long outlet name), F (hint for a pending refund)
+// ---------------------------------------------------------------------------
+
+describe("1025-d review E: an outlet name of 120 characters does not break the holds list or the resolve", () => {
+  it("1025-d-53 list and resolve of a hold of that outlet both work and show the whole name", async () => {
+    const longName = "Outlet-".padEnd(120, "x");
+    expect(longName).toHaveLength(120);
+    const { rows: named } = await owner.query<{ name: string }>(
+      "SELECT name FROM outlets WHERE id = $1",
+      [outletId],
+    );
+    const intent = await seedIntent();
+    const holdId = await seedHold(intent);
+    await owner.query("UPDATE outlets SET name = $2 WHERE id = $1", [
+      outletId,
+      longName,
+    ]);
+    try {
+      const listed = await listHolds(staff);
+      expect(listed.status, JSON.stringify(listed.body)).toBe(200);
+      const row = listed.body.data.find((h: { id: string }) => h.id === holdId);
+      expect(row, "the hold is listed").toBeDefined();
+      expect(row.outletName).toBe(longName);
+
+      const response = await resolveHold(staff, holdId, "not_this_intent");
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(response.body.data.outletName).toBe(longName);
+    } finally {
+      // The other tests of this file share the outlet: put its name back.
+      await owner.query("UPDATE outlets SET name = $2 WHERE id = $1", [
+        outletId,
+        named[0]!.name,
+      ]);
+    }
+  });
+});
+
+describe("1025-d review F: a pending, never-sent refund blocks the resolve and the message says what to do", () => {
+  it("1025-d-54 422 whose message tells finance to fail or cancel the pending refund first; the hold stays open", async () => {
+    const intent = await seedIntent();
+    const filed = await manualRefund(intent.id, 10_000);
+    expect(filed.status, JSON.stringify(filed.body)).toBe(201);
+    await owner.query(
+      "UPDATE payment_refunds SET status = 'pending', provider_ref = NULL WHERE tenant_id = $1 AND id = $2",
+      [tenantId, filed.body.data.id as string],
+    );
+    const holdId = await seedHold(intent, {
+      refundId: `rf_${randomBytes(6).toString("hex")}`,
+      amountIdr: 30_000,
+    });
+
+    const response = await resolveHold(staff, holdId, "counted_against_intent");
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(String(response.body.error?.message ?? "")).toMatch(
+      /(fail|cancel|gagal|batal)/i,
+    );
+    expect(await isOpen(holdId)).toBe(true);
+  });
+});

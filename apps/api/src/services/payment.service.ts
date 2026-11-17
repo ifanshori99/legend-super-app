@@ -738,10 +738,10 @@ async function cancelSupersededAtGateway(
       // refund; a refund of ours still in flight keeps the code in the poll.
       let refundHeld = false;
       if (answer.rawStatus === "refunded") {
+        await markProviderAnswered(context, intent.intentId, now, true);
         refundHeld =
           (await markProviderRefunded(context, intent.intentId, now)) ===
           "retry";
-        await markProviderAnswered(context, intent.intentId, now, true);
       }
       if (
         refundHeld ||

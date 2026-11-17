@@ -337,9 +337,17 @@ async function countHold(
         AND r.status IN ('pending', 'approved') LIMIT 1`);
     if (flying.length > 0)
       throw unprocessable(
-        "A refund of this payment is still on its way; wait until it is final.",
+        "A refund of this payment is still on its way; wait until it is final. A pending refund that was never sent must first be failed or cancelled by finance.",
       );
   };
+
+  if (hold.reason === "credit_used_before_provider_refund") {
+    // Credit used beyond what the DP still holds: the provider refund is
+    // already on record, so counting adds no refund row. Nothing of ours may
+    // be on its way; then the hold closes (legend-ua9ja).
+    await assertNoRefundInFlight();
+    return;
+  }
 
   if (named?.startsWith(SYNTHETIC_PREFIX)) {
     // The provider's `refunded` status of the payment, filed while a refund of

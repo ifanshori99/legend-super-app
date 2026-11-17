@@ -63,6 +63,7 @@ import {
 } from "@starter/shared/core/server";
 import { closeTableSessionInputSchema } from "@starter/shared/qr-order";
 import { createApp } from "../app";
+import { originHeader, verifySessionMfa } from "./helpers";
 import { db } from "../db";
 import { paymentIntents } from "../db/schema/payment.ts";
 import { withTenant } from "../db/tenant";
@@ -808,9 +809,10 @@ describe("legend-ua9ja provider refund after the credit was used leaves a hold a
       resolvedAt: null,
       tenantId: seededTenantId,
     });
-    expect(holds[0]!.providerRefundId).toBe(
-      (await providerRefundIdsOf(d.intentId))[0],
-    );
+    // Design (architect finding 1): the credit hold carries no provider refund
+    // id (it would collide with a mismatch hold of the same refund); it is
+    // deduplicated by its webhook event id instead.
+    expect(holds[0]!.providerRefundId).toBeNull();
     // The plain provider-refund alert plus the hold alert.
     await expectAlerts(alertsBefore, plain + 1);
   });
@@ -921,7 +923,7 @@ describe("legend-ua9ja provider refund after the credit was used leaves a hold a
     expect(holds).toHaveLength(1);
     expect(holds[0]).toMatchObject({
       amount: 30_000,
-      providerRefundId,
+      providerRefundId: null,
       resolvedAt: null,
     });
     expect(await providerRefundRows(d.intentId)).toEqual({
@@ -1056,4 +1058,295 @@ describe("legend-9uvvu the provider-refund recorder waits for a concurrent credi
       expect(credit).toBeLessThanOrEqual(10_000);
     }
   }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// Architect area review (legend-ua9ja follow-ups). Same scenes as above.
+//  A  a REFERENCE_MISMATCH hold for the same provider refund id must not make
+//     the credit-overuse hold of that refund vanish (unique tenant+intent+
+//     provider_refund_id): both holds exist.
+//  B  one recorder call with a live own refund (payment:<ref> hold) AND a
+//     credit surplus: exactly one of each hold, and the live-own alert.
+//  C  a credit hold (provider_refund_id NULL) counted_against_intent books
+//     NOTHING (the money was already booked by the provider refund that made
+//     the hold); only the in-flight check applies. not_this_intent just closes.
+//  D  a refund that drops the pool to 0 (stamps provider_refunded_after_paid_at)
+//     still files the credit hold.
+// Assumptions: alerts are measured as at-least counts where several alerts can
+// legitimately coexist; the resolve endpoint is the 1025-d one.
+// ---------------------------------------------------------------------------
+
+const ADMIN = "/api/payments/admin";
+let mfaDone = false;
+
+async function seedHoldRow(
+  d: Pick<Deposit, "intentId" | "providerRef">,
+  opts: {
+    providerRefundId: string | null;
+    amountIdr: number;
+    reason: string;
+  },
+) {
+  const id = randomUUID();
+  const client = await owner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+      [seededTenantId],
+    );
+    await client.query(
+      `INSERT INTO refund_recon_holds
+         (id, tenant_id, payment_intent_id, webhook_event_id, provider_refund_id, amount_idr, reason, provider_payment_ref)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [
+        id,
+        seededTenantId,
+        d.intentId,
+        randomUUID(),
+        opts.providerRefundId,
+        opts.amountIdr,
+        opts.reason,
+        d.providerRef,
+      ],
+    );
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+  return id;
+}
+
+async function resolveHoldHttp(
+  holdId: string,
+  resolution: "not_this_intent" | "counted_against_intent",
+) {
+  if (!mfaDone) {
+    await verifySessionMfa(staff.email);
+    mfaDone = true;
+  }
+  return staff.client
+    .post(`${ADMIN}/refund-recon-holds/${holdId}/resolve`)
+    .set(originHeader)
+    .send({
+      idempotencyKey: `hold-${randomUUID()}`,
+      resolution,
+      note: "Dicocokkan dengan mutasi bank provider",
+    });
+}
+
+/** Open holds of the intent that are NOT credit-overuse holds (e.g. live own). */
+async function otherOpenHolds(intentId: string) {
+  const { rows } = await owner.query<{
+    provider_refund_id: string | null;
+    reason: string;
+  }>(
+    `SELECT provider_refund_id, reason FROM refund_recon_holds
+      WHERE tenant_id = $1 AND payment_intent_id = $2 AND resolved_at IS NULL
+        AND reason NOT LIKE $3`,
+    [seededTenantId, intentId, `${HOLD_REASON}%`],
+  );
+  return rows;
+}
+
+async function isHoldOpen(holdId: string) {
+  const { rows } = await owner.query<{ resolved_at: Date | null }>(
+    "SELECT resolved_at FROM refund_recon_holds WHERE id = $1",
+    [holdId],
+  );
+  return rows[0]!.resolved_at === null;
+}
+
+describe("legend-ua9ja review A: a mismatch hold of the same provider refund does not swallow the credit hold", () => {
+  it("1025c-ua9ja-A1 an open REFERENCE_MISMATCH hold exists for refund R1; R1 is then recorded after the credit was used: the credit hold and its alert still appear", async () => {
+    const plain = await plainAlerts("single");
+    const d = await creditUsedScene(40_000);
+    const r1 = `rf_${randomUUID().slice(0, 12)}`;
+    await seedHoldRow(d, {
+      providerRefundId: r1,
+      amountIdr: 30_000,
+      reason: "Reference names another intent",
+    });
+    const alertsBefore = await supervisorAlerts();
+
+    const outcome = await recordRefund(d, 30_000, {
+      providerRefundId: r1,
+      source: "refund_webhook",
+    });
+    expect(outcome.status).toBe("recorded");
+
+    const credit = (await creditHoldsOf(d.intentId)).filter(
+      (h) => h.resolvedAt === null,
+    );
+    expect(credit, "the credit-overuse hold is not dropped").toHaveLength(1);
+    expect(credit[0]).toMatchObject({ amount: 30_000 });
+    await expectAlerts(alertsBefore, plain + 1);
+  });
+
+  it("1025c-ua9ja-A2 finance resolves the mismatch hold of R1 as counted_against_intent (R1 recorded): the credit used before R1 still leaves its own credit hold and alert", async () => {
+    const d = await creditUsedScene(40_000);
+    const r1 = `rf_${randomUUID().slice(0, 12)}`;
+    const holdId = await seedHoldRow(d, {
+      providerRefundId: r1,
+      amountIdr: 30_000,
+      reason: "Reference names another intent",
+    });
+    const alertsBefore = await supervisorAlerts();
+
+    const response = await resolveHoldHttp(holdId, "counted_against_intent");
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(await isHoldOpen(holdId)).toBe(false);
+    expect(await providerRefundIdsOf(d.intentId)).toEqual([r1]);
+
+    const credit = (await creditHoldsOf(d.intentId)).filter(
+      (h) => h.resolvedAt === null,
+    );
+    expect(credit, "own credit-overuse hold of the same refund").toHaveLength(
+      1,
+    );
+    expect(credit[0]).toMatchObject({ amount: 30_000 });
+    expect(await supervisorAlerts()).toBeGreaterThan(alertsBefore);
+  });
+});
+
+/**
+ * Credit used scene plus OUR refund of 10.000 still in flight (approved, payout sent, no provider ref). Seeded directly: a DP applied to a seated bill cannot be refunded
+ * through the API, but a refund filed earlier can still be in flight.
+ */
+async function addOwnRefundInFlight(d: Pick<Deposit, "intentId">) {
+  await owner.query(
+    `INSERT INTO payment_refunds
+       (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status,
+        requested_by, approved_by, decided_at, completed_at, provider_ref, payout_attempts)
+     VALUES ($1, $2, $3, $4, 10000, '1025c-B refund in flight', 'approved',
+             $5, 'approver', now(), NULL, NULL, 1)`,
+    [randomUUID(), seededTenantId, outletId, d.intentId, staff.userId],
+  );
+  expect(await ourRefundRows(d.intentId)).toBe(1);
+}
+
+async function creditUsedSceneWithOwnRefund(used: number) {
+  const d = await creditUsedScene(used);
+  await addOwnRefundInFlight(d);
+  return d;
+}
+
+describe("legend-ua9ja review B: live own refund and credit surplus in one recorder call", () => {
+  // Assumption: the live-own hold is filed when the provider refunds the WHOLE
+  // payment while our own refund of it is still in flight (1025-b); a partial
+  // provider refund leaves our refund payable and files no hold.
+  it("1025c-ua9ja-B0 control: a live own refund, the provider refunds everything, NO credit used: one live-own hold, no credit hold", async () => {
+    const d = await closedSourceWithCredit();
+    await addOwnRefundInFlight(d);
+
+    // The full-refund door (webhook "refunded", poller, release recon) records
+    // the whole payment under payment:<ref>.
+    await recordRefund(d, 100_000, {
+      providerRefundId: `payment:${d.providerRef}`,
+      source: "refund_webhook",
+    });
+
+    expect(await creditHoldsOf(d.intentId)).toEqual([]);
+    const live = await otherOpenHolds(d.intentId);
+    expect(live, "exactly one live-own hold").toHaveLength(1);
+  });
+
+  it("1025c-ua9ja-B exactly one credit hold, one live-own hold (payment:<ref>) and its alert", async () => {
+    const d = await creditUsedSceneWithOwnRefund(40_000);
+    const alertsBefore = await supervisorAlerts();
+
+    // The full-refund door (webhook "refunded", poller, release recon) records
+    // the whole payment under payment:<ref>.
+    await recordRefund(d, 100_000, {
+      providerRefundId: `payment:${d.providerRef}`,
+      source: "refund_webhook",
+    });
+
+    const credit = await creditHoldsOf(d.intentId);
+    expect(credit, "exactly one credit hold").toHaveLength(1);
+    const live = await otherOpenHolds(d.intentId);
+    expect(live, "exactly one live-own hold").toHaveLength(1);
+    // Credit hold alert + live-own alert (+ the plain provider-refund alert).
+    await vi.waitFor(
+      async () => {
+        expect(
+          (await supervisorAlerts()) - alertsBefore,
+        ).toBeGreaterThanOrEqual(2);
+      },
+      { timeout: 5_000, interval: 100 },
+    );
+  });
+});
+
+describe("legend-ua9ja review C: resolving a credit hold books nothing", () => {
+  const creditHold = async (d: Deposit) =>
+    seedHoldRow(d, {
+      providerRefundId: null,
+      amountIdr: 30_000,
+      reason: HOLD_REASON,
+    });
+
+  it("1025c-ua9ja-C1 counted_against_intent closes the hold and writes NO provider refund row (no hold:<id>)", async () => {
+    const d = await creditUsedScene(40_000);
+    await recordRefund(d, 30_000, { providerRefundId: "rf_prior_c1" });
+    const before = await providerRefundIdsOf(d.intentId);
+    const holdId = await creditHold(d);
+
+    const response = await resolveHoldHttp(holdId, "counted_against_intent");
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+
+    expect(await isHoldOpen(holdId)).toBe(false);
+    expect(await providerRefundIdsOf(d.intentId)).toEqual(before);
+    expect(
+      (await providerRefundIdsOf(d.intentId)).some((id) =>
+        id.startsWith("hold:"),
+      ),
+    ).toBe(false);
+  });
+
+  it("1025c-ua9ja-C2 counted_against_intent with our own refund still in flight is 422 and the hold stays open", async () => {
+    const d = await creditUsedSceneWithOwnRefund(40_000);
+    const holdId = await creditHold(d);
+
+    const response = await resolveHoldHttp(holdId, "counted_against_intent");
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(await isHoldOpen(holdId)).toBe(true);
+    expect(await providerRefundRows(d.intentId)).toEqual({ rows: 0, idr: 0 });
+  });
+
+  it("1025c-ua9ja-C3 not_this_intent just closes the hold, no provider refund row", async () => {
+    const d = await creditUsedScene(40_000);
+    const holdId = await creditHold(d);
+
+    const response = await resolveHoldHttp(holdId, "not_this_intent");
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+
+    expect(await isHoldOpen(holdId)).toBe(false);
+    expect(await providerRefundRows(d.intentId)).toEqual({ rows: 0, idr: 0 });
+  });
+});
+
+describe("legend-ua9ja review D: a refund that empties the pool still files the credit hold", () => {
+  it("1025c-ua9ja-D the provider refunds the whole DP (stamp set), credit was used: the stamp is set AND the credit hold exists", async () => {
+    const d = await creditUsedScene(40_000);
+
+    // The full-refund door (webhook "refunded", poller, release recon) records
+    // the whole payment under payment:<ref>.
+    await recordRefund(d, 100_000, {
+      providerRefundId: `payment:${d.providerRef}`,
+      source: "refund_webhook",
+    });
+
+    const { rows } = await owner.query<{ stamp: Date | null }>(
+      "SELECT provider_refunded_after_paid_at AS stamp FROM payment_intents WHERE id = $1",
+      [d.intentId],
+    );
+    expect(rows[0]!.stamp, "premise: the pool dropped to 0").not.toBeNull();
+    const holds = await creditHoldsOf(d.intentId);
+    expect(holds).toHaveLength(1);
+    expect(holds[0]).toMatchObject({ amount: 40_000, resolvedAt: null });
+  });
 });
