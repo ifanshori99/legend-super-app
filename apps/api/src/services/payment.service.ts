@@ -737,7 +737,13 @@ async function cancelSupersededAtGateway(
       await withTenant(db, context, async (tx) =>
         tx
           .update(paymentIntents)
-          .set({ providerFinalAt: now, providerAnsweredAt: now })
+          .set({
+            providerFinalAt: now,
+            providerAnsweredAt: now,
+            ...(answer.rawStatus === "refunded"
+              ? { providerRefundedAt: now }
+              : {}),
+          })
           .where(
             and(
               eq(paymentIntents.tenantId, context.tenant.tenantId),
@@ -1213,6 +1219,8 @@ async function expireIntent(
   /** SO-885: the PROVIDER answered final (or the money was reconciled). A
    * local timeout never sets it. */
   providerFinal = false,
+  /** 952 P1: the provider answered `refunded` (money went back to the payer). */
+  refunded = false,
 ): Promise<void> {
   await withTenant(db, context, async (tx) => {
     const updated = await tx
@@ -1221,6 +1229,7 @@ async function expireIntent(
         status: "expired",
         updatedAt: now,
         ...(providerFinal ? { providerFinalAt: now } : {}),
+        ...(refunded ? { providerRefundedAt: now } : {}),
         // legend-3wpf: a `gateway` expiry is the provider's own answer, final
         // or not; a local timeout never says the provider answered.
         ...(providerFinal || reason === "gateway"
@@ -1356,6 +1365,8 @@ async function failIntent(
   /** SO-889: `providerAnswerFinal` held (the code lapsed on its own); a
    * `failed` answer before `expires_at` + 60 s may be a retryable attempt. */
   providerFinal = false,
+  /** 952 P1: the provider answered `refunded` (money went back to the payer). */
+  refunded = false,
 ): Promise<void> {
   await withTenant(db, context, async (tx) => {
     const updated = await tx
@@ -1364,6 +1375,7 @@ async function failIntent(
         status: "failed",
         updatedAt: now,
         ...(providerFinal ? { providerFinalAt: now } : {}),
+        ...(refunded ? { providerRefundedAt: now } : {}),
         // legend-3wpf: `failIntent` only ever applies a provider answer.
         providerAnsweredAt: now,
       })
@@ -2016,6 +2028,7 @@ async function syncPendingIntentDetailed(
             reason: "provider_paid_not_recorded",
           },
       providerFinal,
+      aboutThisCode && providerStatus?.rawStatus === "refunded",
     );
     return {
       intent: { ...intent, status: "expired", updatedAt: now },
@@ -2047,6 +2060,7 @@ async function syncPendingIntentDetailed(
       aboutThisCode &&
         !providerStatus.extraPayments?.length &&
         providerAnswerFinal(intent, providerStatus, now),
+      aboutThisCode && providerStatus.rawStatus === "refunded",
     );
     return {
       intent: { ...intent, status: "failed", updatedAt: now },
@@ -2552,6 +2566,15 @@ async function applyConfirmation(
         "AMOUNT_MISMATCH",
         "This payment is held for an amount mismatch.",
       );
+    // 952 P1: the provider answered `refunded` for this code, so its money went
+    // back to the payer. No later `paid` message (an old webhook, a stale
+    // answer) may settle the bill: checked under the locks, before any write,
+    // so nothing is credited, no event is emitted and no evidence is recorded.
+    if (current.providerRefundedAt !== null)
+      throw new PaymentConfirmationRejected(
+        "INVALID_TRANSITION",
+        "The provider refunded this payment; it cannot be settled.",
+      );
     // paidAt from the LOCKED status: a still pending intent was paid no later
     // than the first receipt; a closed one was paid after it closed, so never
     // before its close time (`now` is taken when the caller started, which can
@@ -3030,17 +3053,26 @@ export async function applyGatewayFailure(
     { status: outcome, rawStatus },
     now,
   );
+  const refunded = rawStatus === "refunded";
   if (intent.status === "pending") {
     if (outcome === "expired")
-      await expireIntent(context, intent, now, "gateway", undefined, final);
-    else await failIntent(context, intent, now, final);
+      await expireIntent(
+        context,
+        intent,
+        now,
+        "gateway",
+        undefined,
+        final,
+        refunded,
+      );
+    else await failIntent(context, intent, now, final, refunded);
   } else if (
     (intent.status === "expired" || intent.status === "failed") &&
     final
   ) {
     // A superseded / timed-out / failed code: the provider's verified final
     // answer, after the code lapsed, is the proof it is dead (SO-885, SO-896).
-    await markGatewayReconciled(context, intent, now);
+    await markGatewayReconciled(context, intent, now, refunded);
   }
   const current = (await load()) ?? intent;
   return toPaymentIntent(current);
@@ -3139,17 +3171,18 @@ async function syncExpiredIntentPayment(
   ) {
     // SO-889: final only once the code lapsed on its own (+ margin); before
     // that the poll keeps asking.
+    const refunded = providerStatus.rawStatus === "refunded";
     if (
       providerStatus.providerRef === intent.providerRef &&
       !providerStatus.extraPayments?.length &&
       providerAnswerFinal(intent, providerStatus, now)
     ) {
-      await markGatewayReconciled(context, intent, now);
+      await markGatewayReconciled(context, intent, now, refunded);
       return { intent, gatewayError: false };
     }
     // legend-3wpf: the provider did answer about this code (not final yet).
     if (providerStatus.providerRef === intent.providerRef)
-      await markProviderAnswered(context, intent.id, now);
+      await markProviderAnswered(context, intent.id, now, refunded);
     return timedOut(false);
   }
   if (providerStatus.status !== "paid" || providerStatus.amountIdr === null)
@@ -3217,9 +3250,11 @@ async function markProviderAnswered(
   context: ScopedTenantContext,
   intentId: string,
   now: Date,
+  /** 952 P1: the answer was `refunded`; the first such answer is kept. */
+  refunded = false,
 ): Promise<void> {
-  await withTenant(db, context, async (tx) =>
-    tx
+  await withTenant(db, context, async (tx) => {
+    await tx
       .update(paymentIntents)
       .set({ providerAnsweredAt: now })
       .where(
@@ -3228,8 +3263,19 @@ async function markProviderAnswered(
           eq(paymentIntents.id, intentId),
           isNull(paymentIntents.providerAnsweredAt),
         ),
-      ),
-  );
+      );
+    if (refunded)
+      await tx
+        .update(paymentIntents)
+        .set({ providerRefundedAt: now })
+        .where(
+          and(
+            eq(paymentIntents.tenantId, context.tenant.tenantId),
+            eq(paymentIntents.id, intentId),
+            isNull(paymentIntents.providerRefundedAt),
+          ),
+        );
+  });
 }
 
 /**
@@ -3244,9 +3290,11 @@ export async function markGatewayReconciled(
   context: ScopedTenantContext,
   intent: PaymentIntentRow,
   now: Date,
+  /** 952 P1: the provider's answer was `refunded`. */
+  refunded = false,
 ): Promise<void> {
   await withTenant(db, context, async (tx) =>
-    markGatewayReconciledInTx(tx, context, intent.id, now),
+    markGatewayReconciledInTx(tx, context, intent.id, now, refunded),
   );
 }
 
@@ -3256,10 +3304,15 @@ async function markGatewayReconciledInTx(
   context: ScopedTenantContext,
   intentId: string,
   now: Date,
+  refunded = false,
 ): Promise<void> {
   await tx
     .update(paymentIntents)
-    .set({ providerFinalAt: now, providerAnsweredAt: now })
+    .set({
+      providerFinalAt: now,
+      providerAnsweredAt: now,
+      ...(refunded ? { providerRefundedAt: now } : {}),
+    })
     .where(
       and(
         eq(paymentIntents.tenantId, context.tenant.tenantId),

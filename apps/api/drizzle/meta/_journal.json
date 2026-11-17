@@ -2948,6 +2948,13 @@
       "when": 1795000000049,
       "tag": "0434_payment_intent_provider_answered",
       "breakpoints": true
+    },
+    {
+      "idx": 435,
+      "version": "7",
+      "when": 1795000000050,
+      "tag": "0435_payment_intent_provider_refunded",
+      "breakpoints": true
     }
   ]
 }

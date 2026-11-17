@@ -701,10 +701,13 @@ async function handleRejectedConfirmation(
     decision.kind === "reject"
       ? `REJECTED_${decision.code}`
       : "REJECTED_CONFLICT";
-  // Money that arrived but cannot settle is never dropped.
+  // Money that arrived but cannot settle is never dropped, except for a code
+  // the provider answered `refunded` (952 P1): that money already went back to
+  // the payer, so no evidence, unallocated funds or event is written for it.
   if (
-    fresh.status === "failed" ||
-    (decision.kind === "reject" && decision.code === "AMOUNT_MISMATCH")
+    fresh.providerRefundedAt === null &&
+    (fresh.status === "failed" ||
+      (decision.kind === "reject" && decision.code === "AMOUNT_MISMATCH"))
   )
     await recordUnsettledFunds(context, fresh, event, now);
   return code;

@@ -4,10 +4,12 @@
 -- SECURITY would run under the tenant policies, which raise 42501 without
 -- app.tenant_id. Lift FORCE on both tables for this transaction only; it is
 -- restored at the end of this migration (drizzle applies pending migrations in
--- one transaction).
-ALTER TABLE public.bank_statement_line_matches NO FORCE ROW LEVEL SECURITY;
---> statement-breakpoint
+-- one transaction). Lift the referenced parent (journal_entries) before the
+-- child (bank_statement_line_matches), the same order the restore at the end
+-- of this file uses.
 ALTER TABLE public.journal_entries NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE public.bank_statement_line_matches NO FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
 ALTER TABLE "bank_statement_line_matches" ADD COLUMN "stale_at" timestamp with time zone;--> statement-breakpoint
 ALTER TABLE "bank_statement_line_matches" ADD COLUMN "stale_by_reversal_entry_id" uuid;--> statement-breakpoint

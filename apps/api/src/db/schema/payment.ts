@@ -225,6 +225,14 @@ export const paymentIntents = pgTable(
     providerAnsweredAt: timestamp("provider_answered_at", {
       withTimezone: true,
     }),
+    /** legend-3wpf (952 P1): when the PROVIDER first answered `refunded` for
+     * this code: the money went back to the payer, so no later `paid` message
+     * may settle the bill. Kept apart from the `failed` status a refunded
+     * answer maps to, so a plain `failed` code that is paid late still
+     * reconciles once. Null = never answered refunded. */
+    providerRefundedAt: timestamp("provider_refunded_at", {
+      withTimezone: true,
+    }),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
