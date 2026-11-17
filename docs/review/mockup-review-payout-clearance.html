@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="ghostex-page" content="v2">
+<title>Review mockup: clearance selisih pencairan</title>
+<style>
+  .how { margin: 0 0 8px; font-size: 13px; line-height: 1.45; color: var(--gx-muted); }
+  .how b { color: var(--gx-fg); font-weight: 600; }
+  .shots { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-items: start; }
+  .shots figure { margin: 0; min-width: 0; }
+  .shots img { box-sizing: border-box; display: block; max-width: 100%; height: auto; border-radius: 10px; border: 1px solid var(--gx-line); }
+  .shots figcaption { margin-top: 6px; font-size: 12.5px; line-height: 1.45; color: var(--gx-muted); }
+  .shots figcaption b { color: var(--gx-fg); font-weight: 600; }
+  .narrow { max-width: 260px; }
+  @media (max-width: 640px) { .shots { grid-template-columns: minmax(0, 1fr); } .narrow { max-width: 100%; } }
+</style>
+</head>
+<body>
+<gx-questions submit="Kirim ke CTO">
+  <header>
+    <span class="gx-eyebrow">Review mockup · untuk founder</span>
+    <h1>Review mockup: clearance selisih pencairan</h1>
+    <p class="gx-lede">Layar baru untuk tim finance meninjau tanda selisih pencairan gaji dan menutupnya berdua: satu orang mengusulkan, orang lain menyetujui dengan kata sandi. Ada enam keadaan; cukup lihat gambarnya, lalu jawab setuju atau minta diubah.</p>
+    <div class="gx-chips">
+      <span class="gx-chip"><b>1</b> pertanyaan (Q28)</span>
+      <span class="gx-chip">Contoh data, bukan uang sungguhan</span>
+    </div>
+  </header>
+
+  <gx-wide>
+    <h2>1. Keadaan normal: daftar dan panel usulan</h2>
+    <p class="how">Daftar tanda selisih ada di kiri, panel pemeriksaan di kanan. Orang yang mengusulkan wajib menulis <b>alasan</b> dan mengisi <b>kata sandi</b>.</p>
+    <div class="shots">
+      <figure><img src="img/mockup-clearance-normal-desktop.png" alt="Daftar tanda selisih dan panel usulan clearance, layar lebar"><figcaption><b>Layar komputer (1280).</b> Daftar tanda selisih dan panel usulan berdampingan.</figcaption></figure>
+      <figure class="narrow"><img src="img/mockup-clearance-normal-mobile.png" alt="Daftar tanda selisih dan panel usulan clearance, layar HP"><figcaption><b>Layar HP (390).</b> Isi yang sama, tersusun ke bawah.</figcaption></figure>
+    </div>
+
+    <h2>2. Persetujuan oleh orang kedua</h2>
+    <p class="how">Panel menampilkan siapa yang mengusulkan, kapan, dan alasannya. Orang kedua menyetujui dengan <b>kata sandi</b> sendiri.</p>
+    <div class="shots">
+      <figure><img src="img/mockup-clearance-approve-desktop.png" alt="Panel persetujuan clearance oleh orang kedua, layar lebar"><figcaption><b>Layar komputer (1280).</b> Panel siap disetujui orang kedua.</figcaption></figure>
+      <figure class="narrow"><img src="img/mockup-clearance-approve-mobile.png" alt="Panel persetujuan clearance oleh orang kedua, layar HP"><figcaption><b>Layar HP (390).</b> Pengusul, alasan, dan kolom kata sandi tampil berurutan.</figcaption></figure>
+    </div>
+
+    <h2>3. Pengusul tidak bisa menyetujui sendiri</h2>
+    <p class="how">Bila yang membuka panel adalah orang yang mengusulkan, tombol setujui <b>nonaktif</b> dan diberi penjelasan singkat.</p>
+    <div class="shots">
+      <figure><img src="img/mockup-clearance-self-desktop.png" alt="Tombol setujui nonaktif karena pengusul sama, layar lebar"><figcaption><b>Layar komputer (1280).</b> Tombol setujui mati, ada tulisan kenapa.</figcaption></figure>
+      <figure class="narrow"><img src="img/mockup-clearance-self-mobile.png" alt="Tombol setujui nonaktif karena pengusul sama, layar HP"><figcaption><b>Layar HP (390).</b> Penjelasan yang sama di layar kecil.</figcaption></figure>
+    </div>
+
+    <h2>4. Data berubah setelah diusulkan</h2>
+    <p class="how">Bila data selisih berubah setelah usulan dibuat, usulan lama <b>tidak bisa disetujui</b>. Tim harus memeriksa data terbaru lalu membuat usulan baru.</p>
+    <div class="shots">
+      <figure><img src="img/mockup-clearance-changed-desktop.png" alt="Pesan data berubah dan ajakan membuat usulan baru, layar lebar"><figcaption><b>Layar komputer (1280).</b> Pesan data berubah dengan aksi buat usulan baru.</figcaption></figure>
+      <figure class="narrow"><img src="img/mockup-clearance-changed-mobile.png" alt="Pesan data berubah dan ajakan membuat usulan baru, layar HP"><figcaption><b>Layar HP (390).</b> Pesan dan aksi tetap terbaca di layar kecil.</figcaption></figure>
+    </div>
+
+    <h2>5. Clearance lama dibuka ulang</h2>
+    <p class="how">Clearance yang sudah disetujui bisa <b>kembali ditahan</b> bila datanya berubah. Tanda <b>Clearance lama tidak berlaku</b> muncul supaya finance memeriksa ulang.</p>
+    <div class="shots">
+      <figure><img src="img/mockup-clearance-reopened-desktop.png" alt="Tanda clearance lama tidak berlaku dan slip kembali ditahan, layar lebar"><figcaption><b>Layar komputer (1280).</b> Tanda terbuka ulang tampil di atas panel.</figcaption></figure>
+      <figure class="narrow"><img src="img/mockup-clearance-reopened-mobile.png" alt="Tanda clearance lama tidak berlaku dan slip kembali ditahan, layar HP"><figcaption><b>Layar HP (390).</b> Tanda yang sama, tetap di bagian atas.</figcaption></figure>
+    </div>
+
+    <h2>6. Clearance berhasil disetujui</h2>
+    <p class="how">Setelah disetujui, layar menunjukkan <b>siapa</b> dan <b>kapan</b> dua orang itu bertindak. Ini hanya menutup satu tanda; <b>tidak berarti gaji langsung dibayar</b>.</p>
+    <div class="shots">
+      <figure><img src="img/mockup-clearance-success-desktop.png" alt="Clearance berhasil disetujui dengan identitas dan waktu dua orang, layar lebar"><figcaption><b>Layar komputer (1280).</b> Sukses dengan identitas dan waktu kedua orang.</figcaption></figure>
+      <figure class="narrow"><img src="img/mockup-clearance-success-mobile.png" alt="Clearance berhasil disetujui, layar HP"><figcaption><b>Layar HP (390).</b> Keterangan yang sama di layar kecil.</figcaption></figure>
+    </div>
+  </gx-wide>
+
+  <gx-question tag="Q28" title="Setujui mockup layar clearance selisih pencairan?">
+    <p>Enam keadaan di atas: normal, persetujuan orang kedua, pengusul sendiri, data berubah, terbuka ulang, dan sukses. Bila memilih Ubah dulu, tulis keadaan mana dan maunya bagaimana di kotak catatan.</p>
+    <gx-choice value="Setuju" recommended>Setuju, lanjut bangun<small>Lanjut membangun layar ini seperti gambar.</small></gx-choice>
+    <gx-choice value="Ubah dulu">Ubah dulu<small>Tulis catatan: keadaan mana, apa yang diubah.</small></gx-choice>
+  </gx-question>
+</gx-questions>
+</body>
+</html>
