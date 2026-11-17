@@ -188,9 +188,9 @@ async function currentLinked(
 
 /**
  * legend-lgyfh fallback rule, shared by the menu and the order path: an outlet
- * that has flagged no item `is_breakfast` (active, not deleted, same tenant and
- * brand as the breakfast menu) keeps the old behaviour (every item the flow
- * offered, none refused for being unflagged). From the first flagged item on,
+ * that has flagged no item `is_breakfast` (active, not deleted, category not
+ * deleted, same tenant and brand as the breakfast menu) keeps the old
+ * behaviour (every item the flow offered, none refused for being unflagged). From the first flagged item on,
  * only flagged items are listed and orderable.
  */
 async function outletUsesBreakfastFlag(
@@ -201,6 +201,13 @@ async function outletUsesBreakfastFlag(
   const [row] = await tx
     .select({ id: menuItems.id })
     .from(menuItems)
+    .innerJoin(
+      menuCategories,
+      and(
+        eq(menuCategories.tenantId, menuItems.tenantId),
+        eq(menuCategories.id, menuItems.categoryId),
+      ),
+    )
     .where(
       and(
         eq(menuItems.tenantId, tenantId),
@@ -208,6 +215,7 @@ async function outletUsesBreakfastFlag(
         eq(menuItems.isActive, true),
         eq(menuItems.isBreakfast, true),
         isNull(menuItems.deletedAt),
+        isNull(menuCategories.deletedAt),
       ),
     )
     .limit(1);

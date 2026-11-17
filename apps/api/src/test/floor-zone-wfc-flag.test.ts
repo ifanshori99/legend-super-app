@@ -250,7 +250,7 @@ describe("P4Q10 zone WFC flag (legend-p4q10)", () => {
     expect(await storedIsWfc(zone.id)).toBe(false);
   });
 
-  it("P4Q10-10 a zone of another outlet answers 404 and stays unchanged", async () => {
+  it("P4Q10-10 an outlet-scoped manager cannot flag a zone of another outlet", async () => {
     const otherZone = await createFloorZone(
       tenantContext(),
       seededOutletB,
@@ -267,13 +267,8 @@ describe("P4Q10 zone WFC flag (legend-p4q10)", () => {
     );
     zoneIds.push(otherZone.id);
 
-    const patched = await patchZone(staff.client, otherZone.id, {
-      isWfc: true,
-    });
-    expect(patched.status).toBe(404);
-    expect(await storedIsWfc(otherZone.id)).toBe(false);
-
-    // An outlet-scoped manager of outlet A cannot reach it either.
+    // A tenant-wide owner may edit any outlet's zone by design, so only an
+    // outlet-scoped manager of outlet A is checked here.
     const managerA = await staffWithRole(app, {
       template: "outlet_manager",
       scopeType: "outlet",

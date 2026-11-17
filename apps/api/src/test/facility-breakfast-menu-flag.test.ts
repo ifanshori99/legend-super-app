@@ -485,6 +485,34 @@ describe("legend-lgyfh breakfast menu flag: member menu and order", () => {
     expect((await orderOne(legacy, mine)).status).toBe(201);
   });
 
+  it("LGYFH-03 a flagged item in a soft-deleted category does not count as flagged", async () => {
+    const legacy = await createLegacyWorld();
+    const orphan = await seedItem(legacy, {
+      name: "Ditandai Kategori Dihapus",
+      breakfast: true,
+    });
+    await asOwnerTenant(legacy.tenant.tenantId, async (client) => {
+      const categoryId = randomUUID();
+      await client.query(
+        `INSERT INTO menu_categories (id, tenant_id, brand_id, name, sort_order, deleted_at)
+         VALUES ($1, $2, $3, 'Kategori Dihapus', 0, now())`,
+        [categoryId, legacy.tenant.tenantId, legacy.tenant.brandId],
+      );
+      await client.query(
+        `UPDATE menu_items SET category_id = $3 WHERE tenant_id = $1 AND id = $2`,
+        [legacy.tenant.tenantId, orphan, categoryId],
+      );
+    });
+
+    // Legacy mode: the unflagged items show and can still be ordered.
+    const ids = await menuIdsOf(legacy);
+    expect(ids).toEqual(
+      expect.arrayContaining([legacy.ids.nasi, legacy.ids.kopi]),
+    );
+    expect(ids).not.toContain(orphan);
+    expect((await orderOne(legacy, legacy.ids.nasi)).status).toBe(201);
+  });
+
   it("LGYFH-04 an item id of another tenant is rejected even when that item is flagged", async () => {
     const foreign = await seedItem(other, {
       name: "Menu Tenant Lain",
