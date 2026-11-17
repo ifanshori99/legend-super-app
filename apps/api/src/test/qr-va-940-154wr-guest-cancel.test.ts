@@ -653,7 +653,11 @@ describe("legend-154wr: a refused code is kept as an orphan row", () => {
       .send(qrisBody(key));
     gw.onCreate = null;
 
-    expectRefusal(refused, "IDEMPOTENCY_KEY_REUSED");
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(
+      (refused.body as { error?: { code?: string } }).error?.code,
+      JSON.stringify(refused.body),
+    ).toBe("IDEMPOTENCY_KEY_REUSED");
     expect(gw.created, "setup: the provider made a code").toHaveLength(1);
     expect(await orphansOf(tenantId, b.linkId)).toEqual([]);
     expect(await intentsOnLink(tenantId, b.linkId)).toHaveLength(1);
