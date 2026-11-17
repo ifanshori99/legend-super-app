@@ -6961,3 +6961,10 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 - Integrasi `aa4971d3f7458009be25a0ecb25870e87968e90b` dipush biasa ke int/batch80 lalu fast-forward milestone/m1; SHA remote terverifikasi dan cabang lokal m1 ikut fast-forward. Basis remote tetap70bba542d pada fetch akhir. Cabang masuk tepat satu: ws/edge-kds-stations-r2 91c7f9d8b. Migrasi0431->0431, check-journal satu entri baru hijau. Tidak main/deploy/force push.
 - Ditutup sesudah landing: legend-i78o6, legend-40nvj, dan kartu train legend-qhsex. Kedua kartu implementasi dibaca lengkap: description/AC formal kosong, komentar CTO930 menyatakan hold selesai dan regresi AC1..14 hijau; gate integrasi lengkap membuktikan perilaku kontrak/isolasi/resync. Batas shell eksternal dan mock web disebut saat penutupan. Komentar final kartu memuat SHA m1 setelah commit dokumentasi ini.
 - Laporan cleanup awal disk24,11GB; integrasi masih dikunci sampai seluruh dokumentasi dipush. Handoff hanya membersihkan worktree/cabang int batch80, menjaga lock worktree d8fc7d19 dan dev-seed yang kotor, serta mengedit docs/merge-queue.md pada checkout utama tanpa commit. Semua job selesai. Subagent3 unik/puncak3, satu runner berat; helper biaya/token native tidak tersedia.
+
+## 17 Nov 2026 — 949 WS-10 payroll run BE (thread G716r)
+
+- Branch ghostex/ba6c8a6b, commits 4ca4de1a1, 6fbf43520, 50753bcb4 (base m1 c17c60df7). Kartu xo0xx, 0ytbu, vepv0, 838hi selesai di cabang; migrasi 0460 (payroll_loan_deductions; payroll_run_results sudah ada sejak 0328).
+- Review architect xhigh: tanpa P1. P2 dibetulkan: persetujuan HR terikat expectedSimulationCount (409 PAYROLL_RUN_SIMULATION_STALE); guard potongan pinjaman membatasi jumlah antar-run per pinjaman.
+- Gerbang thread: typecheck shared/api/web exit 0, db:generate kosong, tes area hijau, tes kontrak root hijau. Belum: pnpm check penuh (merge train).
+- Keputusan menunggu CTO/founder: O8 partialYearTaxSubject tetap false (aturan aman); format A1 Coretax adalah tebakan (tanpa sampel DJP).
