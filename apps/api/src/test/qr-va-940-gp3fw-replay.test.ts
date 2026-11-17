@@ -100,9 +100,10 @@ async function insertLive(client: Pg, twin: Twin) {
   await client.query(
     `INSERT INTO payment_intents
        (id, tenant_id, outlet_id, payment_link_id, bill_split_id, method, provider,
-        provider_ref, amount_idr, idempotency_key, status, instructions, expires_at)
+        provider_ref, amount_idr, idempotency_key, status, instructions, expires_at,
+        channel_code)
      VALUES ($1, $2, $3, $4, $5, $6, 'doit', $7, $8, $9, 'pending', $10::jsonb,
-             now() + interval '4 minutes')`,
+             now() + interval '4 minutes', $11)`,
     [
       id,
       fx.tenant.tenantId,
@@ -123,6 +124,9 @@ async function insertLive(client: Pg, twin: Twin) {
               virtualAccountNumber: "8808123456789012",
             },
       ),
+      // A real VA row carries its bank in the column: the same-choice check
+      // reads it (a seed without it would look like a bank change, Q15).
+      twin.method === "va" ? "bmri" : null,
     ],
   );
   return id;

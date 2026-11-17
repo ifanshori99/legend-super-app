@@ -522,17 +522,9 @@ describe("QR guest virtual account (legend-3160)", () => {
     expect(again.body.data.vaNumber).toBe(first.body.data.vaNumber);
     expect(gateway.requests.length).toBe(created);
 
-    // Another bank is refused while the first VA may still be paid: nothing
-    // reaches the provider and the first code stays the live one.
-    const refused = await as(guest).pay(orderId, "va", "bnia");
-    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
-    expect(refused.body.error.code).toBe("ORDER_CODE_ACTIVE");
-    expect(gateway.requests.length).toBe(created);
-    expect((await intentRow(first.body.data.id)).status).toBe("pending");
-
-    // The provider answered final for the first VA: another bank opens a new
-    // one for the bill.
-    await providerClosesCode(guest, first.body.data.id);
+    // Another bank while the first VA may still be paid is the guest changing
+    // method (founder Q15, legend-9vmit): the first code is voided first (a
+    // released row), then one new code is issued for the bill.
     const switched = await as(guest).pay(orderId, "va", "bnia");
     expect(switched.status).toBe(201);
     expect(switched.body.data.id).not.toBe(first.body.data.id);
@@ -551,12 +543,11 @@ describe("QR guest virtual account (legend-3160)", () => {
       bankCode: "bmri",
     });
     const closed = await outboxEvents("payment.expired", first.body.data.id);
-    expect(closed.map((event) => event.payload.reason)).toEqual(["gateway"]);
+    expect(closed.map((event) => event.payload.reason)).toEqual([
+      "method_changed",
+    ]);
 
-    // Back to QRIS: refused while the second VA may be paid, then allowed once
-    // the provider closed it.
-    expect((await as(guest).pay(orderId, "qris")).status).toBe(409);
-    await providerClosesCode(guest, switched.body.data.id);
+    // Back to QRIS: the second VA is voided the same way, then the QR is issued.
     const qris = await as(guest).pay(orderId, "qris");
     expect(qris.status).toBe(201);
     expect(qris.body.data).toMatchObject({

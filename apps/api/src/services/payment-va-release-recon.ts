@@ -99,8 +99,14 @@ export async function reconcileReleasedVa(
           aggregateType: "payment_va_release",
           aggregateId: row.id,
           payload: { releaseId: row.id, paymentIntentId: row.paymentIntentId },
-          title: "VA dibayar, uang belum tercatat",
-          body: "Penyedia menjawab kode VA yang sudah dirilis ini dibayar, tetapi uangnya belum bisa dicatat. Sistem terus mencoba; periksa antrean rekonsiliasi VA.",
+          title:
+            row.kind === "guest_method_change"
+              ? "Kode lama dibayar, uang belum tercatat"
+              : "VA dibayar, uang belum tercatat",
+          body:
+            row.kind === "guest_method_change"
+              ? "Penyedia menjawab kode pembayaran lama yang sudah diganti tamu ini dibayar, tetapi uangnya belum bisa dicatat. Sistem terus mencoba; periksa antrean rekonsiliasi."
+              : "Penyedia menjawab kode VA yang sudah dirilis ini dibayar, tetapi uangnya belum bisa dicatat. Sistem terus mencoba; periksa antrean rekonsiliasi VA.",
         },
         now,
       );

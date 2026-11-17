@@ -684,12 +684,59 @@ async function supersedePending(
 }
 
 /**
+ * legend-9vmit: a guest changed method, so the old code was voided (a
+ * `payment_va_releases` row, same transaction). A still-`pending` code turns
+ * `expired` here, so the bill never shows it as payable again; returns the ones
+ * a provider holds so the caller can ask the provider to close them after the
+ * commit (`cancelSupersededAtGateway`). Money that still arrives is parked by
+ * the release row, never applied.
+ */
+export async function expireVoidedCodesTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  rows: readonly PaymentIntentRow[],
+  now: Date,
+): Promise<GatewayCancelRequest[]> {
+  const toCancel: GatewayCancelRequest[] = [];
+  for (const row of rows) {
+    const updated = await tx
+      .update(paymentIntents)
+      .set({ status: "expired", updatedAt: now })
+      .where(
+        and(
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          eq(paymentIntents.id, row.id),
+          eq(paymentIntents.status, "pending"),
+        ),
+      )
+      .returning({ id: paymentIntents.id });
+    if (updated.length > 0)
+      await appendPaymentEvent(tx, context, {
+        name: "payment.expired",
+        aggregateId: row.id,
+        outletId: row.outletId,
+        actor: { type: "system" },
+        payload: { intentId: row.id, reason: "method_changed" },
+        now,
+      });
+    if (row.providerRef !== null)
+      toCancel.push({
+        intentId: row.id,
+        provider: row.provider,
+        providerRef: row.providerRef,
+        outletId: row.outletId,
+      });
+  }
+  return toCancel;
+}
+
+/**
  * After the supersede committed: asks the provider to close the old codes so
  * a guest cannot still pay a VA they switched away from. Best effort; a
  * failure is logged and the old code, if paid anyway, is settled and refunded
  * through the normal verified path.
  */
-async function cancelSupersededAtGateway(
+export async function cancelSupersededAtGateway(
   context: ScopedTenantContext,
   superseded: readonly GatewayCancelRequest[],
 ): Promise<void> {
@@ -781,7 +828,21 @@ async function cancelSupersededAtGateway(
  * forever. Every other caller (public token route, refresh) leaves it unset and
  * the intent transaction locks the order itself.
  */
-export type CreateIntentOptions = { orderLockedByCaller?: boolean };
+export type CreateIntentOptions = {
+  orderLockedByCaller?: boolean;
+  /**
+   * legend-9vmit (founder Q15): set by a guest-facing caller that may change
+   * method. When the pre-provider guard refuses because a live VA or bank
+   * transfer code of the same scope exists, this voids those codes (provider
+   * read outside any lock, then a release row) and the guard runs again. A
+   * hook, not an import, so the void service can depend on this file.
+   */
+  voidLiveCodesForChange?: (scope: {
+    paymentLinkId: string;
+    billSplitId: string | null;
+    next: { method: string; channelCode: string | null };
+  }) => Promise<{ voided: string[] }>;
+};
 
 /**
  * Creates one payable intent. The amount is the link's outstanding balance
@@ -1084,14 +1145,42 @@ async function createIntentCore(
     // Read the key again: found -> the twin's intent (no provider call, no
     // second intent); not found -> the guard's own refusal.
     const twin = await readIntentByKey(context, parsed.idempotencyKey);
-    if (!twin) throw error;
-    assertIdempotencyFingerprint(twin, {
+    if (twin) {
+      assertIdempotencyFingerprint(twin, {
+        paymentLinkId: plan.link.id,
+        method: parsed.method,
+        channelCode: parsed.channelCode,
+        billSplitId: part?.billSplitId ?? null,
+      });
+      return toCustomerIntent(twin);
+    }
+    // legend-9vmit: a guest that changes method voids the old VA / bank
+    // transfer code first (after the twin check, so a retry of a request that
+    // already issued its code never voids that code). Only a "code still
+    // active" refusal is retried; every other refusal stays.
+    if (!(
+      options.voidLiveCodesForChange !== undefined &&
+      error instanceof HttpError &&
+      (error.code === "ORDER_CODE_ACTIVE" || error.code === "SPLIT_CODE_ACTIVE")
+    ))
+      throw error;
+    const { voided } = await options.voidLiveCodesForChange({
       paymentLinkId: plan.link.id,
-      method: parsed.method,
-      channelCode: parsed.channelCode,
       billSplitId: part?.billSplitId ?? null,
+      next: {
+        method: parsed.method,
+        channelCode: parsed.channelCode ?? null,
+      },
     });
-    return toCustomerIntent(twin);
+    if (voided.length === 0) throw error;
+    await withTenant(db, context, (tx) =>
+      assertLinkOrderCanIssueTx(
+        tx,
+        context,
+        plan.link.id,
+        part?.billSplitId ?? null,
+      ),
+    );
   }
   const selected = await selectGatewayForNewIntent(
     context,
@@ -2529,6 +2618,7 @@ async function parkWhenQrisHoldRefusesInTx(
     .select({
       id: paymentVaReleases.id,
       releasedBy: paymentVaReleases.releasedBy,
+      kind: paymentVaReleases.kind,
     })
     .from(paymentVaReleases)
     .where(
@@ -2571,7 +2661,10 @@ async function parkWhenQrisHoldRefusesInTx(
         aggregateId: intent.id,
         payload: { intentId: intent.id, releaseId: vaRelease.id },
         title: "Uang VA perlu dikembalikan",
-        body: `Pembayaran VA Rp${paid.amountIdr} masuk untuk kode VA yang sudah dirilis staf. Uang ditahan di dana belum teralokasi; kembalikan ke pembayar.`,
+        body:
+          vaRelease.kind === "guest_method_change"
+            ? `Pembayaran Rp${paid.amountIdr} masuk untuk kode pembayaran lama yang sudah diganti tamu dengan metode lain. Uang ditahan di dana belum teralokasi; kembalikan ke pembayar.`
+            : `Pembayaran VA Rp${paid.amountIdr} masuk untuk kode VA yang sudah dirilis staf. Uang ditahan di dana belum teralokasi; kembalikan ke pembayar.`,
       },
       now,
     );

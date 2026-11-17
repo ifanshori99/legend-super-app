@@ -137,12 +137,12 @@ describe("legend-4n8rs A: public token of a POS bill with an active VA code", ()
     const before = await intentRow(tenantId, intentId);
     expect(before.status).toBe("pending");
 
-    for (const body of [vaBody(), qrisBody()]) {
-      const refused = await agent(fx.app)
-        .post(`/api/payments/links/${token}/intents`)
-        .send(body);
-      expectRefusal(refused, "ORDER_CODE_ACTIVE");
-    }
+    // The same choice with a new key stays refused: nothing is voided, nothing
+    // is asked from the provider.
+    const refused = await agent(fx.app)
+      .post(`/api/payments/links/${token}/intents`)
+      .send(vaBody());
+    expectRefusal(refused, "ORDER_CODE_ACTIVE");
     expect(fx.gateway.requests.length, "no code asked from the provider").toBe(
       created,
     );
@@ -152,6 +152,27 @@ describe("legend-4n8rs A: public token of a POS bill with an active VA code", ()
       await intentRow(tenantId, intentId),
       "the old code is left pending",
     ).toEqual(before);
+
+    // A different choice is the guest changing method (founder Q15, legend-9vmit):
+    // the old code is voided first (released row, no staff), then one new code
+    // is issued. The old code can no longer settle the bill: late money parks.
+    const swapped = await agent(fx.app)
+      .post(`/api/payments/links/${token}/intents`)
+      .send(qrisBody());
+    expect(swapped.status, JSON.stringify(swapped.body)).toBe(201);
+    expect(await intentCount(tenantId), "exactly one new intent").toBe(
+      intents + 1,
+    );
+    expect((await intentRow(tenantId, intentId)).status).toBe("expired");
+    const { rows: releases } = await owner.query<{ kind: string }>(
+      "SELECT kind FROM payment_va_releases WHERE tenant_id = $1 AND payment_intent_id = $2",
+      [tenantId, intentId],
+    );
+    expect(releases.map((r) => r.kind)).toEqual(["guest_method_change"]);
+    const replacement = (await intentsOnLink(tenantId, linkId)).filter(
+      (id) => id !== intentId,
+    );
+    expect(replacement, "one live replacement code").toHaveLength(1);
   });
 
   it("legend-4n8rs POST links/:token/intents/:intentId/refresh is refused 409 ORDER_CODE_ACTIVE while another code on the link can still be paid", async () => {
@@ -660,22 +681,30 @@ describe("legend-4n8rs D: guest split bill, part codes", () => {
       idempotencyKey: randomUUID(),
     });
 
-  it("legend-4n8rs split part asks another code while its own VA can still be paid: 409 SPLIT_CODE_ACTIVE, no provider call, no new intent, old code pending", async () => {
+  it("legend-4n8rs split part asks another code while its own VA can still be paid: the guest changes method (Q15), old VA voided with a released row, one new code", async () => {
     const { guest, parts } = await splitBillOf(fx);
     const part = parts[0]!;
     const va = await payPart(guest, part.id, "va");
     expect(va.status, JSON.stringify(va.body)).toBe(201);
     const vaId = va.body.data.id as string;
     const tenantId = fx.tenant.tenantId;
-    const created = fx.gateway.requests.length;
     const intents = await intentCount(tenantId);
-    const before = await intentRow(tenantId, vaId);
 
-    const refused = await payPart(guest, part.id, "qris");
-    expectRefusal(refused, "SPLIT_CODE_ACTIVE");
-    expect(fx.gateway.requests.length).toBe(created);
-    expect(await intentCount(tenantId)).toBe(intents);
-    expect(await intentRow(tenantId, vaId)).toEqual(before);
+    const swapped = await payPart(guest, part.id, "qris");
+    expect(swapped.status, JSON.stringify(swapped.body)).toBe(201);
+    expect(swapped.body.data.target).toMatchObject({
+      kind: "split",
+      billSplitId: part.id,
+    });
+    expect(await intentCount(tenantId), "exactly one new intent").toBe(
+      intents + 1,
+    );
+    expect((await intentRow(tenantId, vaId)).status).toBe("expired");
+    const { rows: releases } = await owner.query<{ kind: string }>(
+      "SELECT kind FROM payment_va_releases WHERE tenant_id = $1 AND payment_intent_id = $2",
+      [tenantId, vaId],
+    );
+    expect(releases.map((r) => r.kind)).toEqual(["guest_method_change"]);
   });
 
   it("legend-4n8rs a code of another part does not block this part: its QR is issued 201", async () => {
