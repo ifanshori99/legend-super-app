@@ -268,6 +268,16 @@ describe("outlet reach", () => {
 });
 
 describe("validation", () => {
+  it("accepts bounded suggestion pagination and rejects invalid bounds", async () => {
+    const path = `/api/ai/purchase-suggestions?outletId=${outletA}`;
+    const result = await manager.client.get(`${path}&limit=1&offset=0`);
+    expect(result.status).toBe(200);
+    expect(Array.isArray(result.body.data)).toBe(true);
+    expect(result.body.data.length).toBeLessThanOrEqual(1);
+    for (const query of ["limit=101", "limit=0", "limit=1.5", "offset=-1"])
+      expect((await manager.client.get(`${path}&${query}`)).status).toBe(422);
+  });
+
   it("rejects missing or malformed query with 422", async () => {
     for (const path of [
       "/api/ai/forecasts",

@@ -480,6 +480,18 @@ describe("listPurchaseSuggestions (AI-08)", () => {
     ).rejects.toMatchObject({ status: 403 });
   });
 
+  it("pages only stock shortages in a repeatable order", async () => {
+    const access = accessFor(tx, ["inventory.stock.view"]);
+    const page = (offset: number) =>
+      listPurchaseSuggestions(access, { outletId: x1, limit: 1, offset });
+    expect((await page(0)).map((row) => row.itemName)).toEqual(["Beras"]);
+    // Gula sorts between Beras and Kopi but has sufficient stock. SQL must
+    // exclude it before applying pagination, and missing balances stay zero.
+    expect((await page(1)).map((row) => row.itemName)).toEqual(["Kopi"]);
+    expect(await page(1)).toEqual(await page(1));
+    expect(await page(2)).toEqual([]);
+  });
+
   it("isolates tenants", async () => {
     await expect(
       listPurchaseSuggestions(accessFor(ty, ["inventory.stock.view"]), {

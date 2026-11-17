@@ -22,6 +22,8 @@ import {
   idrSchema,
   isoDateTimeSchema,
   outletIdSchema,
+  PAGE_LIMIT_DEFAULT,
+  PAGE_LIMIT_MAX,
   uuidSchema,
   z,
 } from "../core/index.ts";
@@ -97,6 +99,13 @@ export type PurchaseSuggestion = z.infer<typeof purchaseSuggestionSchema>;
 
 export const listPurchaseSuggestionsQuerySchema = z.strictObject({
   outletId: outletIdSchema,
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(PAGE_LIMIT_MAX)
+    .default(PAGE_LIMIT_DEFAULT),
+  offset: z.coerce.number().int().min(0).default(0),
 });
 
 // ---- Roster inputs (AI-13) ------------------------------------------------

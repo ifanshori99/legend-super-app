@@ -6960,7 +6960,6 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 - Ditutup sesudah landing: legend-i78o6, legend-40nvj, dan kartu train legend-qhsex. Kedua kartu implementasi dibaca lengkap: description/AC formal kosong, komentar CTO930 menyatakan hold selesai dan regresi AC1..14 hijau; gate integrasi lengkap membuktikan perilaku kontrak/isolasi/resync. Batas shell eksternal dan mock web disebut saat penutupan. Komentar final kartu memuat SHA m1 setelah commit dokumentasi ini.
 - Laporan cleanup awal disk24,11GB; integrasi masih dikunci sampai seluruh dokumentasi dipush. Handoff hanya membersihkan worktree/cabang int batch80, menjaga lock worktree d8fc7d19 dan dev-seed yang kotor, serta mengedit docs/merge-queue.md pada checkout utama tanpa commit. Semua job selesai. Subagent3 unik/puncak3, satu runner berat; helper biaya/token native tidak tersedia.
 
-
 ### 937 — WS-07 event ekspor dan bukti hambatan XSD (17 Nov 2026)
 
 - Basis worktree milestone/m1 c17c60df7; kedua kartu diperiksa dan belum ada pada m1. legend-0cnqt: tax_report.exported kini masuk outbox dalam transaksi ekspor, satu kali per laporan/revisi, replay tidak menulis lagi. Tujuh kode TAX_REPORT yang belum dipetakan mendapat teks Indonesia khusus. Tidak ada perubahan angka pajak, jurnal, akses, migrasi, atau format XML.
@@ -6969,12 +6968,14 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 - legend-igclp belum selesai: XSD resmi tertanam dalam converter BPMP/BPPU DJP v3, tetapi root TaxReport internal dan data rekap tidak memenuhi dokumen resmi. NITKU, kode objek, tarif, tanggal potong dan rincian legal lain tidak tersedia. Bukti URL/versi/hash serta keputusan kontrak yang dibutuhkan ada di docs/briefs/937-coretax-xsd-blocker.md. Tidak memasang validator palsu atau gerbang yang menolak semua ekspor.
 - Subagent native Codex: total 7, puncak 5 bersamaan; dua Explore, dua implementer, satu test-writer, satu runner, satu reviewer. Token heavy bergilir test-writer lalu runner. session-usage tidak menemukan transkrip native; parallel-report hanya membaca sesi Claude, jadi biaya/token/rata-rata native tidak tersedia.
 - Pengecualian format arsip: Prettier docs/PROGRESS.md merah pada basis c17c60df7 dan sesudah penambahan ini; perbandingan basis /tmp/legend-937-PROGRESS-base.md juga merah. Tidak memformat ulang seluruh arsip di luar cakupan.
+
 ## Task 938 — loyalty report current members (legend-eqdcd, 17 Nov 2026)
 
 - Cabang `fix/938-loyalty-current-metrics` dari milestone/m1 `c17c60df7`; tanpa migrasi atau perubahan nilai/aturan poin.
 - Keputusan sumber: active_members membaca snapshot status aktif saat query, termasuk member tanpa home outlet pada total tenant. Metadata bernama `(saat ini)`, estimasi, hanya bucket terakhir, tanpa perbandingan historis; tidak membuat histori harian palsu.
 - points_redeemed tetap unavailable dengan alasan outlet/tanggal bisnis penukaran belum tercatat lengkap. Kartu lanjutan `legend-iuhjc` menyimpan kebutuhan atribusi otoritatif; outlet pengambilan hadiah tidak dianggap outlet penukaran.
 - Paralel: 6 subagent Codex (2 Explore, test-writer, implementer, test-runner, reviewer), puncak 6. Token heavy tunggal dipegang test-runner. Red sah: 7 gagal/5 lulus. Review API tanpa temuan; gate awal menemukan daftar mock unavailable yang usang. Reviewer menemukan mock historis perlu label/finality/nilai snapshot yang sama; regresi mock red sah 1 gagal/5 lulus, diperbaiki agar active_members mengikuti registry, berlabel saat ini, tetap estimate, dan nilainya memakai tanggal data terkini. Verifikasi akhir dilaporkan pada komentar kartu serta handover. Helper session-usage tidak menemukan transkrip native Codex; parallel-report hanya memuat sesi Claude, jadi biaya/token/rata-rata native tidak tersedia.
+
 ### Kartu 935: foto penerimaan barang dan batas basi replika perangkat edge (17 Nov 2026)
 
 - Cabang `ghostex/935-foto-penerimaan-stale-edge`, dari `milestone/m1` (c17c60df7). Tanpa migrasi baru (`core_storage_objects.purpose` varchar tanpa constraint); `db:generate` tidak menghasilkan apa pun.
@@ -6990,6 +6991,7 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 Basis `c17c60df7` (batch80). Empat cabang, tanpa migrasi (ujung tetap 0431), konflik hanya `docs/PROGRESS.md` (dua sisi disimpan, direview): `ghostex/bf531619` 784facadd (legend-0cnqt), `fix/938-loyalty-current-metrics` 7d173a189 (legend-eqdcd), `ghostex/935-foto-penerimaan-stale-edge` 8a661cd90 (K akses: legend-iy5l0, legend-5v7oq, legend-2lgu; deploy API+web bersamaan), `ghostex/160d3d37` 825123713 (legend-xtj5t). Audit cabang SIAP tambahan: tidak ada (934/940/5w6/929/5e8ae9c0 bukan SIAP).
 
 Gate per tahap:
+
 - Lint per cabang (eslint + prettier 42 berkas berubah): hijau.
 - Fast gate 383 berkas (311 API + 72 root; seluruh pemindai `*-single-path*`/`*-contract*`/`*registry*`, text-contract, pajak/loyalty/storage-foto/edge/payout): 05:51 -> 06:18, 26,5 mnt. API 4422 lulus, root 1235 lulus, 0 gagal.
 - `pnpm run lint`: 1 mnt 07 dtk, hijau (0 error, 2 warning).
@@ -7001,3 +7003,13 @@ Gate per tahap:
 - Catatan: kerja test thread 935 tidak mencakup `tests/platform-offline-banner.test.mjs` (kelas tes root yang mengimpor komponen web). Saran: gate thread web ws02-edge ikut menjalankan `tests/platform-*.test.mjs`.
 
 Pemakaian: session-usage merge train 1400k biaya* (Sonnet 5.5); subagent 2 (Explore audit, reviewer konflik), puncak 1-2; token heavy dipegang train sendiri (satu lajur sekaligus).
+
+## Thread 966 — scanner typed errors dan SQL purchase suggestions (17 Nov 2026)
+
+Cabang `fix/966-scanner-suggestion`, base `0c31ff40e`; kartu `legend-bkoim` dan `legend-julap`, engineer Codex tingkat S. Tanpa migrasi, pembayaran, atau perubahan area milik thread 964.
+
+- `legend-bkoim` sudah diperbaiki di base oleh `d4c02fa0aad40b5a774fb7dfcf6325dd1bee4660`; selfie test sudah aktif oleh `5e767ceeb46b4896dba5352238904057e82b4c76`. Tidak membuat perubahan atau gagal-dulu palsu untuk kartu yang sudah selesai. Verifikasi ulang empat berkas (core-image, core-image-scanner-fail-open, core-storage-pdf-scanner, hris-attendance-selfie-bind): 48/48 lulus lewat `LEGEND_TEST_FILES=... heavy pnpm test`.
+- `legend-julap`: shortage dipilih PostgreSQL dengan `coalesce(quantity, 0) < par_min`, sebelum limit/offset. Urutan nama item, nama lokasi, ID par dipertahankan. Shared Zod menetapkan limit bawaan 25, maksimum 100 dan offset nonnegatif; alias WS06 mengikuti endpoint yang sama, envelope respons tetap.
+- Gagal-dulu: `LEGEND_TEST_FILES="src/test/ai-forecast.test.ts src/test/ws06-purchasing-preview-contract.test.ts src/test/ai-insights-api.test.ts" heavy pnpm test`, exit 1, 3 gagal/33 lulus: layanan belum membatasi baris, API menolak pagination valid, default kontrak belum ada. Log `/tmp/966-red.log`.
+- Satu reviewer Codex konteks segar: PASS tanpa temuan pada lima file TypeScript. Gate final oleh test_runner dengan satu token heavy: 36/36 test API suggestion dan 9/9 root ai-insights-contract lulus; ESLint lima TS dan Prettier lima TS + dokumen lulus; `heavy pnpm --filter @starter/api typecheck` dan `heavy pnpm --filter @starter/web typecheck` exit 0. Log `/tmp/966-green.log`, `/tmp/966-api-tc.log`, `/tmp/966-web-tc.log`. Full suite/build tidak dijalankan sesuai gate thread; diserahkan ke merge train.
+- Subagent Codex: total 6, puncak 4 bersamaan (dua Explore, dua test-writer/implementer, satu reviewer, satu test-runner). Token heavy parent saat red/scanner, lalu test_runner saat gate final. `session-usage.py` tidak menemukan transkrip Codex; `parallel-report` hanya menampilkan sesi Claude, jadi biaya/rata-rata Codex tidak terukur oleh alat itu.

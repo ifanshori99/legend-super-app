@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import * as purchasing from "@starter/shared/inventory";
+import { listAiPurchaseSuggestions } from "@starter/shared/ai";
+import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 
 describe("legend-ca3c purchasing preview contracts", () => {
   it("exports an authenticated PDF preview contract without creating a share link", () => {
@@ -17,6 +19,25 @@ describe("legend-ca3c purchasing preview contracts", () => {
     expect(
       Reflect.get(purchasing, "purchasingAiSuggestionSchema"),
     ).toBeDefined();
+  });
+  it("shares bounded suggestion pagination with the ws06 alias", () => {
+    const query = purchasing.listPurchasingAiSuggestions.query;
+    const outletId = cafeLegendPlatformFixtures.outlets[0]!.id;
+    expect(query).toBe(listAiPurchaseSuggestions.query);
+    expect(query.parse({ outletId })).toEqual({
+      outletId,
+      limit: 25,
+      offset: 0,
+    });
+    expect(query.parse({ outletId, limit: "100", offset: "2" })).toEqual({
+      outletId,
+      limit: 100,
+      offset: 2,
+    });
+    for (const limit of [0, -1, 101, 1.5, "bad"])
+      expect(query.safeParse({ outletId, limit }).success).toBe(false);
+    for (const offset of [-1, 1.5, "bad"])
+      expect(query.safeParse({ outletId, offset }).success).toBe(false);
   });
   it("provides AI suggestions and typed PDF preview fixtures for purchasing screens", () => {
     const fixtures = Reflect.get(

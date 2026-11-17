@@ -6,8 +6,9 @@
 // `par_max - on hand`; at or above `par_min` suggests nothing. Locations in an
 // open blind count are hidden (same rule as every plain stock read). Forecast
 // driven usage is a gap: there is no recipe table yet.
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, lt, sql } from "drizzle-orm";
 import {
+  listPurchaseSuggestionsQuerySchema,
   purchaseSuggestionSchema,
   type PurchaseSuggestion,
 } from "@starter/shared/ai";
@@ -28,8 +29,9 @@ const round4 = (value: number) => Math.round(value * 10_000) / 10_000;
 
 export async function listPurchaseSuggestions(
   access: AccessSnapshot,
-  query: { outletId: string },
+  input: { outletId: string; limit?: number; offset?: number },
 ): Promise<PurchaseSuggestion[]> {
+  const query = listPurchaseSuggestionsQuerySchema.parse(input);
   const context = requireOutletContext(
     access,
     ["purchasing.request.create", "inventory.stock.view"],
@@ -84,6 +86,7 @@ export async function listPurchaseSuggestions(
           eq(parLevels.outletId, query.outletId),
           eq(stockLocations.isActive, true),
           eq(inventoryItems.isActive, true),
+          lt(sql`coalesce(${stockBalances.quantity}, 0)`, parLevels.parMin),
           blindCountHiddenFilter(parLevels),
         ),
       )
@@ -91,7 +94,9 @@ export async function listPurchaseSuggestions(
         asc(inventoryItems.name),
         asc(stockLocations.name),
         asc(parLevels.id),
-      ),
+      )
+      .limit(query.limit)
+      .offset(query.offset),
   );
 
   const suggestions: PurchaseSuggestion[] = [];
@@ -99,7 +104,6 @@ export async function listPurchaseSuggestions(
     const onHand = Number(row.onHand ?? 0);
     const parMin = Number(row.parMin);
     const parMax = Number(row.parMax);
-    if (!(onHand < parMin)) continue;
     suggestions.push(
       purchaseSuggestionSchema.parse({
         inventoryItemId: row.inventoryItemId,
