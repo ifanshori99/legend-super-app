@@ -12,6 +12,9 @@
 //   - HTTP     POST /v1/recurring/plans
 //              POST /v1/recurring/subscriptions
 //              POST /v1/recurring/subscriptions/{id}/pause|resume|cancel
+//              GET  /v1/recurring/subscriptions/{id}
+//              GET  /v1/recurring/subscriptions?reference={uuid}
+//                   -> { data: subscription[] } (empty = DOIT has none)
 //
 // Only what moves money is strict (ids, amount, currency, status, period).
 // Unknown extra fields are dropped, never echoed. Nothing here logs or throws
@@ -124,6 +127,13 @@ export const doitRecurringSubscriptionSchema = z.object({
   id: idSchema,
   plan_id: idSchema,
   status: z.string().min(1).max(32),
+  // Echo of the `reference` sent at creation (Legend's subscription id), null
+  // when DOIT does not return it (ASSUMED). The reconcile tool binds a lookup
+  // result to a local row only when it equals the row id.
+  reference: idSchema
+    .nullish()
+    .catch(null)
+    .transform((value) => value ?? null),
   // Link of the first invoice when DOIT already knows it, else null.
   first_invoice_url: httpsUrlSchema
     .nullish()
@@ -132,6 +142,15 @@ export const doitRecurringSubscriptionSchema = z.object({
 });
 export type DoitRecurringSubscription = z.infer<
   typeof doitRecurringSubscriptionSchema
+>;
+
+/** Answer of the lookup by `reference` (ASSUMED). One malformed entry fails the
+ * whole answer: a partial list could hide a second subscription. */
+export const doitRecurringSubscriptionListSchema = z.object({
+  data: z.array(doitRecurringSubscriptionSchema).max(100),
+});
+export type DoitRecurringSubscriptionList = z.infer<
+  typeof doitRecurringSubscriptionListSchema
 >;
 
 /** Statuses DOIT reports after a pause / resume / cancel call (ASSUMED, like

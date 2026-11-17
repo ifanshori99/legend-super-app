@@ -252,6 +252,48 @@ paymentRecurringRouter.post(
   },
 );
 
+paymentRecurringRouter.post(
+  route(contract.resolveRecurringSubscription.path),
+  jsonBody,
+  record,
+  async (req, res) => {
+    const { subscriptionId } =
+      contract.resolveRecurringSubscription.params.parse(req.params);
+    contract.resolveRecurringSubscription.body.parse(req.body);
+    const result = await service.resolveNeedsReconcileSubscription(
+      scope(req),
+      subscriptionId,
+    );
+    res.json({
+      data: {
+        subscription: subscriptionDto(result.subscription),
+        resolved: result.resolved,
+      },
+    });
+  },
+);
+
+paymentRecurringRouter.post(
+  route(contract.reconcileRecurringStartIntent.path),
+  jsonBody,
+  record,
+  async (req, res) => {
+    const { subscriptionId } =
+      contract.reconcileRecurringStartIntent.params.parse(req.params);
+    contract.reconcileRecurringStartIntent.body.parse(req.body);
+    const result = await service.reconcileExpiredStartIntent(
+      scope(req),
+      subscriptionId,
+    );
+    res.json({
+      data: {
+        subscription: subscriptionDto(result.subscription),
+        resolved: result.resolved,
+      },
+    });
+  },
+);
+
 paymentRecurringRouter.get(
   route(contract.getRecurringOutletGrace.path),
   outletParam,

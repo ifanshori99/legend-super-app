@@ -55,18 +55,7 @@ import {
   RECURRING_GRACE_DAYS_MAX,
   RECURRING_GRACE_DAYS_MIN,
 } from "@starter/shared/payment/recurring";
-import {
-  and,
-  asc,
-  desc,
-  eq,
-  inArray,
-  isNotNull,
-  isNull,
-  ne,
-  or,
-  sql,
-} from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { db } from "../db";
 import { customerProfiles } from "../db/schema/crm-member";
 import {
@@ -380,6 +369,11 @@ function isUniqueViolation(error: unknown, depth = 0): boolean {
  * window may be over and a retry could create a second subscription. */
 const START_RETRY_WINDOW_MS = 24 * 3_600_000;
 
+/** Extra time past the retry window before the reconcile tool treats an
+ * expired start as abandoned: a start retry that is still running at the edge
+ * of the window must not race a reconcile that cancels it. */
+const EXPIRED_INTENT_RECONCILE_GRACE_MS = 10 * 60_000;
+
 /** Marks a start whose outcome at the gateway is unconfirmed. Guarded: only a
  * row that never got a provider id moves, and a failed write is logged, never
  * allowed to hide the original error. `providerSubscriptionId` (a plan
@@ -446,6 +440,12 @@ async function markStartNeedsReconcile(
     );
   }
 }
+
+const cancelledIntent = (): CoreError =>
+  new CoreError(
+    "CONFLICT",
+    "Permintaan langganan ini sudah dibatalkan. Buat permintaan baru dengan kunci baru.",
+  );
 
 /** Creates the subscription at DOIT and stores it `pending_first_payment`.
  * It becomes active only when the first invoice is paid (verified webhook).
@@ -518,13 +518,7 @@ export async function startSubscription(
                 paymentRecurringSubscriptions.customerProfileId,
                 input.customerProfileId,
               ),
-              // A mismatch row that holds a DOIT id can be paused/cancelled on
-              // its own: it does not block a new key.
-              isNull(paymentRecurringSubscriptions.providerSubscriptionId),
-              inArray(paymentRecurringSubscriptions.status, [
-                "provisioning",
-                "needs_reconcile",
-              ]),
+              unresolvedSubscription(),
             ),
           )
           .limit(1);
@@ -550,6 +544,9 @@ export async function startSubscription(
     // Finished earlier: an idempotent replay, DOIT is not called again.
     if (existing.providerSubscriptionId !== null)
       return { subscription: existing, firstInvoiceUrl: null };
+    // DOIT confirmed it never created this intent and it was cancelled: it is
+    // never retried (a retry could create a subscription no row points to).
+    if (existing.status === "cancelled") throw cancelledIntent();
     // An unconfirmed start older than DOIT's idempotency window is not retried
     // (a second subscription could be created): park it for reconciliation.
     if (Date.now() - existing.createdAt.getTime() > START_RETRY_WINDOW_MS) {
@@ -671,8 +668,14 @@ export async function startSubscription(
             ),
           ),
         );
+      // No row with this key: the conflict was the unresolved customer + plan
+      // index (another start slipped in), not a reused key.
+      if (!raced)
+        throw new CoreError(
+          "CONFLICT",
+          "Pelanggan ini sudah memiliki langganan untuk paket ini atau sedang diproses.",
+        );
       if (
-        !raced ||
         raced.planId !== plan.id ||
         raced.customerProfileId !== input.customerProfileId
       )
@@ -681,6 +684,8 @@ export async function startSubscription(
     }));
   if (intent.providerSubscriptionId !== null)
     return { subscription: intent, firstInvoiceUrl: null };
+  // Lost a race with a reconcile that cancelled the same intent.
+  if (intent.status === "cancelled") throw cancelledIntent();
 
   let provider: DoitRecurringSubscription;
   try {
@@ -754,8 +759,20 @@ export async function startSubscription(
         ),
       )
       .returning();
-    // Not updated: a concurrent retry finished it first; return what is stored.
-    return updated ?? loadSubscription(tx, context, intent.id);
+    if (updated) return updated;
+    // Not updated: a concurrent retry finished it first (same DOIT id), or a
+    // reconcile moved the row (cancelled / needs_reconcile) while DOIT was
+    // called. Only a row that holds this DOIT id is ours to return.
+    const stored = await loadSubscription(tx, context, intent.id);
+    if (stored.providerSubscriptionId === provider.id) return stored;
+    logger.error(
+      { subscriptionId: intent.id, providerSubscriptionId: provider.id },
+      "Recurring start finished at DOIT but the local row no longer accepts it",
+    );
+    throw new CoreError(
+      "CONFLICT",
+      "Permintaan langganan ini sudah diubah saat diproses di gateway. Status di gateway perlu dicek manual.",
+    );
   });
   if (!subscription) {
     await markStartNeedsReconcile(context, intent.id, "DUPLICATE_AT_PROVIDER");
@@ -1130,23 +1147,15 @@ export async function listSubscriptionInvoices(
   });
 }
 
-/** A row whose state at the gateway is not settled: a start without a DOIT id
- * (provisioning / needs_reconcile), or a needs_reconcile row that holds a DOIT
- * id and can still be resumed (every reason except PLAN_MISMATCH), so DOIT may
- * charge for it. */
+/** A row whose state at the gateway is not settled: every `provisioning` or
+ * `needs_reconcile` row, with or without a DOIT id (any reason, PLAN_MISMATCH
+ * too), because DOIT may still charge for it. It blocks a new start and a
+ * resume of another row of the same customer and plan until it is resolved
+ * (cancelled, or synced by the reconcile tool). Matches the unique partial
+ * index `payment_recurring_subscriptions_unresolved_customer_plan_key`. */
 function unresolvedSubscription() {
   const t = paymentRecurringSubscriptions;
-  return or(
-    and(
-      isNull(t.providerSubscriptionId),
-      inArray(t.status, ["provisioning", "needs_reconcile"]),
-    ),
-    and(
-      eq(t.status, "needs_reconcile"),
-      isNotNull(t.providerSubscriptionId),
-      or(isNull(t.reconcileReason), ne(t.reconcileReason, "PLAN_MISMATCH")),
-    ),
-  );
+  return inArray(t.status, ["provisioning", "needs_reconcile"]);
 }
 
 type SubscriptionAction = "pause" | "resume" | "cancel";
@@ -1254,23 +1263,37 @@ async function changeSubscription(
   if (
     !doitSubscriptionActionConfirmed(action, answer, providerSubscriptionId)
   ) {
-    await withTenant(db, context, (tx) =>
-      tx
-        .update(paymentRecurringSubscriptions)
-        .set({
-          status: "needs_reconcile",
-          reconcileReason: "RESPONSE_MISMATCH",
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(paymentRecurringSubscriptions.tenantId, tenantId),
-            eq(paymentRecurringSubscriptions.id, current.id),
-            // A concurrent cancel that already won stays cancelled.
-            ne(paymentRecurringSubscriptions.status, "cancelled"),
+    try {
+      await withTenant(db, context, (tx) =>
+        tx
+          .update(paymentRecurringSubscriptions)
+          .set({
+            status: "needs_reconcile",
+            reconcileReason: "RESPONSE_MISMATCH",
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(paymentRecurringSubscriptions.tenantId, tenantId),
+              eq(paymentRecurringSubscriptions.id, current.id),
+              // A concurrent cancel that already won stays cancelled.
+              ne(paymentRecurringSubscriptions.status, "cancelled"),
+            ),
           ),
-        ),
-    );
+      );
+    } catch (error) {
+      // Another unresolved row already holds the (customer, plan) slot: this
+      // row cannot be parked, so it keeps its status and a person must look.
+      if (!isUniqueViolation(error)) throw error;
+      logger.warn(
+        { subscriptionId: current.id, action },
+        "Could not park an unconfirmed subscription action: unresolved row exists",
+      );
+      throw new CoreError(
+        "CONFLICT",
+        "Status di gateway belum dapat dipastikan dan pelanggan ini punya langganan lain yang belum diselesaikan. Periksa langganan di gateway.",
+      );
+    }
     logger.warn(
       { subscriptionId: current.id, action },
       "DOIT answer to a subscription action did not confirm it",
@@ -1392,6 +1415,312 @@ export const cancelSubscription = (
   now: Date = new Date(),
   deps?: RecurringDeps,
 ) => changeSubscription(context, subscriptionId, "cancel", now, deps);
+
+// -- Reconcile tools (legend-yqne1, legend-lch2o) --------------------------------
+//
+// Read-only towards DOIT (GET only, never create/pause/resume/cancel). They move
+// a `needs_reconcile` row to what DOIT says, but never to `active`: only a
+// verified invoice.paid webhook activates. Any doubt (error, another id or
+// plan, an unknown status, more than one match) leaves the row as it is.
+
+export type ReconcileResult = {
+  subscription: PaymentRecurringSubscription;
+  /** True when the row left `needs_reconcile`. */
+  resolved: boolean;
+};
+
+const reconcileConflict = () =>
+  new CoreError(
+    "CONFLICT",
+    "Langganan ini tidak perlu direkonsiliasi atau statusnya sudah berubah. Muat ulang lalu coba lagi.",
+  );
+
+/** How a DOIT status maps locally (ASSUMED statuses, like the rest of the
+ * client). `null`: unknown, the row stays `needs_reconcile`. */
+function doitStatusKind(
+  status: string,
+): "cancelled" | "paused" | "live" | null {
+  const value = status.trim().toLowerCase();
+  if (value === "cancelled" || value === "canceled") return "cancelled";
+  if (value === "paused") return "paused";
+  if (["pending", "active", "past_due"].includes(value)) return "live";
+  return null;
+}
+
+async function lockSubscription(
+  tx: Tx,
+  context: ScopedTenantContext,
+  subscriptionId: string,
+): Promise<PaymentRecurringSubscription> {
+  const [locked] = await tx
+    .select()
+    .from(paymentRecurringSubscriptions)
+    .where(
+      and(
+        eq(paymentRecurringSubscriptions.tenantId, context.tenant.tenantId),
+        eq(paymentRecurringSubscriptions.id, subscriptionId),
+      ),
+    )
+    .for("update");
+  if (!locked) throw notFound("Langganan");
+  assertOutletInScope(context.outletScope, locked.outletId);
+  return locked;
+}
+
+/** Local plan row's DOIT plan id, for the plan check against a DOIT answer. */
+async function providerPlanIdOf(
+  tx: Tx,
+  tenantId: TenantId,
+  planId: string,
+): Promise<string> {
+  const [plan] = await tx
+    .select({ providerPlanId: paymentRecurringPlans.providerPlanId })
+    .from(paymentRecurringPlans)
+    .where(
+      and(
+        eq(paymentRecurringPlans.tenantId, tenantId),
+        eq(paymentRecurringPlans.id, planId),
+      ),
+    );
+  if (!plan) throw notFound("Paket");
+  return plan.providerPlanId;
+}
+
+/** A row that left `needs_reconcile` and meets the live (customer, plan) index
+ * because a new start holds that slot: refuse, do not leak a 23505. */
+function reconcileUniqueConflict(error: unknown): never {
+  if (isUniqueViolation(error))
+    throw new CoreError(
+      "CONFLICT",
+      "Pelanggan ini sudah memiliki langganan lain yang aktif untuk paket ini. Batalkan salah satunya lebih dulu.",
+    );
+  throw error;
+}
+
+/** `needs_reconcile` row WITH a DOIT id (any reason): asks DOIT for the
+ * subscription and follows its status. The answer must carry the same id and
+ * the plan's DOIT plan id, otherwise the row stays (a plan mismatch is marked
+ * PLAN_MISMATCH). A PLAN_MISMATCH row only ever becomes `cancelled`. A DOIT
+ * failure rejects and changes nothing. */
+export async function resolveNeedsReconcileSubscription(
+  context: ScopedTenantContext,
+  subscriptionId: string,
+  now: Date = new Date(),
+  deps?: RecurringDeps,
+): Promise<ReconcileResult> {
+  const tenantId = context.tenant.tenantId;
+  const { current, providerPlanId } = await withTenant(
+    db,
+    context,
+    async (tx) => {
+      const row = await loadSubscription(tx, context, subscriptionId);
+      if (
+        row.status !== "needs_reconcile" ||
+        row.providerSubscriptionId === null
+      )
+        throw reconcileConflict();
+      return {
+        current: row,
+        providerPlanId: await providerPlanIdOf(tx, tenantId, row.planId),
+      };
+    },
+  );
+  const providerSubscriptionId = current.providerSubscriptionId;
+  if (providerSubscriptionId === null) throw reconcileConflict();
+
+  // Read-only: any integration status works, like a stop call.
+  const client = await clientLoader(deps)(
+    context,
+    current.outletId,
+    current.gatewayIntegrationId,
+    "stop",
+  );
+  const answer = await client.getSubscription(providerSubscriptionId);
+  const kind = doitStatusKind(answer.status);
+
+  return withTenant(db, context, async (tx): Promise<ReconcileResult> => {
+    const locked = await lockSubscription(tx, context, current.id);
+    // The decision was made on this state; anything else moved it.
+    if (
+      locked.status !== "needs_reconcile" ||
+      locked.providerSubscriptionId !== providerSubscriptionId
+    )
+      throw reconcileConflict();
+    const stay = { subscription: locked, resolved: false };
+
+    // Not this subscription: nothing can be said about the row.
+    if (answer.id !== providerSubscriptionId) return stay;
+    if (answer.plan_id !== providerPlanId) {
+      if (locked.reconcileReason === "PLAN_MISMATCH") return stay;
+      const [marked] = await tx
+        .update(paymentRecurringSubscriptions)
+        .set({ reconcileReason: "PLAN_MISMATCH", updatedAt: now })
+        .where(
+          and(
+            eq(paymentRecurringSubscriptions.tenantId, tenantId),
+            eq(paymentRecurringSubscriptions.id, locked.id),
+          ),
+        )
+        .returning();
+      return { subscription: marked ?? locked, resolved: false };
+    }
+    if (kind === null) return stay;
+    // DOIT holds another plan for this row: only a cancel is a safe way out.
+    if (locked.reconcileReason === "PLAN_MISMATCH" && kind !== "cancelled")
+      return stay;
+
+    const patch: Partial<typeof paymentRecurringSubscriptions.$inferInsert> = {
+      updatedAt: now,
+      reconcileReason: null,
+    };
+    if (kind === "cancelled") {
+      patch.status = "cancelled";
+      patch.cancelledAt = now;
+    } else if (kind === "paused") {
+      patch.status = "paused";
+      patch.pausedAt = now;
+    } else {
+      // Never `active` without a verified payment: only a period of an earlier
+      // paid invoice that still runs gives `active`.
+      patch.status =
+        locked.activatedAt !== null &&
+        locked.currentPeriodEnd !== null &&
+        locked.currentPeriodEnd > businessDateOf(now)
+          ? "active"
+          : locked.activatedAt === null && locked.currentPeriodEnd === null
+            ? "pending_first_payment"
+            : "past_due";
+    }
+    const [updated] = await tx
+      .update(paymentRecurringSubscriptions)
+      .set(patch)
+      .where(
+        and(
+          eq(paymentRecurringSubscriptions.tenantId, tenantId),
+          eq(paymentRecurringSubscriptions.id, locked.id),
+          eq(paymentRecurringSubscriptions.status, "needs_reconcile"),
+        ),
+      )
+      .returning();
+    if (!updated) throw reconcileConflict();
+    if (kind !== "live")
+      await revokeSubscriptionGrace(tx, context, updated, now);
+    return { subscription: updated, resolved: true };
+  }).catch(reconcileUniqueConflict);
+}
+
+/** A start intent older than the retry window (`needs_reconcile`
+ * INTENT_EXPIRED, no DOIT id; a fresher one may still be in flight and belongs
+ * to the automatic retry). Looks DOIT up by the row id (the `reference` of the
+ * start): nothing found = the intent is cancelled, one match of the same plan
+ * continues as `pending_first_payment`, another plan is PLAN_MISMATCH. More
+ * than one match, an unknown status or a DOIT failure leave the row blocked.
+ * Never creates anything at DOIT. */
+export async function reconcileExpiredStartIntent(
+  context: ScopedTenantContext,
+  subscriptionId: string,
+  now: Date = new Date(),
+  deps?: RecurringDeps,
+): Promise<ReconcileResult> {
+  const tenantId = context.tenant.tenantId;
+  const isExpiredIntent = (row: PaymentRecurringSubscription) =>
+    row.status === "needs_reconcile" &&
+    row.reconcileReason === "INTENT_EXPIRED" &&
+    row.providerSubscriptionId === null &&
+    now.getTime() - row.createdAt.getTime() >
+      START_RETRY_WINDOW_MS + EXPIRED_INTENT_RECONCILE_GRACE_MS;
+  const { current, providerPlanId } = await withTenant(
+    db,
+    context,
+    async (tx) => {
+      const row = await loadSubscription(tx, context, subscriptionId);
+      if (!isExpiredIntent(row)) throw reconcileConflict();
+      return {
+        current: row,
+        providerPlanId: await providerPlanIdOf(tx, tenantId, row.planId),
+      };
+    },
+  );
+
+  const client = await clientLoader(deps)(
+    context,
+    current.outletId,
+    current.gatewayIntegrationId,
+    "stop",
+  );
+  const found = await client.findSubscriptionByReference(current.id);
+
+  return withTenant(db, context, async (tx): Promise<ReconcileResult> => {
+    const locked = await lockSubscription(tx, context, current.id);
+    if (!isExpiredIntent(locked)) throw reconcileConflict();
+    const stay = { subscription: locked, resolved: false };
+    // More than one match is ambiguous: a person must look at DOIT.
+    if (found.length > 1)
+      throw new CoreError(
+        "CONFLICT",
+        "DOIT mengembalikan lebih dari satu langganan untuk permintaan ini. Periksa di gateway.",
+      );
+
+    const patch: Partial<typeof paymentRecurringSubscriptions.$inferInsert> = {
+      updatedAt: now,
+    };
+    const match = found[0];
+    if (match === undefined) {
+      // DOIT confirmed it has none (a lookup error never reaches here).
+      patch.status = "cancelled";
+      patch.cancelledAt = now;
+      patch.reconcileReason = null;
+    } else {
+      // A lookup result that does not echo this row's id as its reference is
+      // not proven to be ours: the row stays, no DOIT id is bound.
+      if (match.reference !== locked.id) return stay;
+      const [taken] = await tx
+        .select({ id: paymentRecurringSubscriptions.id })
+        .from(paymentRecurringSubscriptions)
+        .where(
+          and(
+            eq(paymentRecurringSubscriptions.tenantId, tenantId),
+            eq(paymentRecurringSubscriptions.providerSubscriptionId, match.id),
+            ne(paymentRecurringSubscriptions.id, locked.id),
+          ),
+        );
+      if (taken) return stay;
+      const kind = doitStatusKind(match.status);
+      patch.providerSubscriptionId = match.id;
+      if (match.plan_id !== providerPlanId) {
+        patch.reconcileReason = "PLAN_MISMATCH";
+      } else if (kind === "cancelled") {
+        patch.status = "cancelled";
+        patch.cancelledAt = now;
+        patch.reconcileReason = null;
+      } else if (kind === "live") {
+        // Never `active`: a verified invoice.paid does that.
+        patch.status = "pending_first_payment";
+        patch.reconcileReason = null;
+      } else {
+        // Paused or unknown: keep the DOIT id so the row can be resolved or
+        // cancelled, but it stays blocked.
+        patch.reconcileReason = "RESPONSE_MISMATCH";
+      }
+    }
+    const [updated] = await tx
+      .update(paymentRecurringSubscriptions)
+      .set(patch)
+      .where(
+        and(
+          eq(paymentRecurringSubscriptions.tenantId, tenantId),
+          eq(paymentRecurringSubscriptions.id, locked.id),
+          eq(paymentRecurringSubscriptions.status, "needs_reconcile"),
+        ),
+      )
+      .returning();
+    if (!updated) throw reconcileConflict();
+    return {
+      subscription: updated,
+      resolved: updated.status !== "needs_reconcile",
+    };
+  }).catch(reconcileUniqueConflict);
+}
 
 // -- Webhook: invoice.created / invoice.paid -------------------------------------
 
