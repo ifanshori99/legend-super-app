@@ -273,6 +273,17 @@ describe("ws05 routing panel: loading and error keep the scope selector", () => 
     expect(rows(html)).toHaveLength(0);
   });
 
+  test("the skeleton mirrors the list: header bar, desktop rows, phone blocks", () => {
+    state.pending = true;
+    const html = renderToString(createElement(RoutingPanel));
+    expect(html).toContain("sr-only");
+    // One header bar and three method rows, each with a phone block.
+    expect(html.match(/hidden h-12 lg:block/g)).toHaveLength(1);
+    expect(html.match(/h-62 lg:hidden/g)).toHaveLength(3);
+    expect(html.match(/hidden gap-3[^"]*lg:grid/g)).toHaveLength(3);
+    expect(html).toContain("lg:grid-cols-[minmax(12rem,1fr)");
+  });
+
   test("an error shows the scope selector and the retry state", () => {
     state.error = true;
     const html = renderToString(createElement(RoutingPanel));
@@ -348,5 +359,52 @@ describe("ws05 routing panel: row details", () => {
     expect(row).not.toContain("lucide-check");
     const save = row.match(/<button[^>]*>(?:(?!<\/button>).)*Simpan/s);
     expect(save?.[0]).toContain("w-20");
+  });
+});
+
+describe("ws05 routing panel: empty state action", () => {
+  beforeEach(() => {
+    (state.view as PaymentRoutingView).routes = [];
+  });
+
+  test("offers the Duitku credentials step when the tab can be opened", () => {
+    const html = renderToString(
+      createElement(RoutingPanel, { onOpenTab: vi.fn() }),
+    );
+    expect(html).toContain(t("paymentAdmin.routing.emptyTitle"));
+    expect(html).toContain(t("paymentAdmin.routing.emptyAction"));
+    expect(t("paymentAdmin.routing.emptyAction")).toBe(
+      "Buka kredensial Duitku",
+    );
+  });
+
+  test("no action without the callback (Duitku tab hidden)", () => {
+    const html = renderToString(createElement(RoutingPanel));
+    expect(html).toContain(t("paymentAdmin.routing.emptyTitle"));
+    expect(html).not.toContain(t("paymentAdmin.routing.emptyAction"));
+  });
+});
+
+describe("ws05 routing panel: why Simpan is off", () => {
+  const saveButton = (row: string) =>
+    (
+      row.match(/<button[^>]*>(?:(?!<\/button>).)*Simpan/s) as RegExpMatchArray
+    )[0];
+
+  test("an unchanged row explains it and the button points to the hint", () => {
+    const [row] = rows(renderToString(createElement(RoutingPanel)));
+    const hint = t("paymentAdmin.routing.saveHint");
+    expect(hint).toBe("Ubah gateway untuk menyimpan");
+    expect(row).toContain(hint);
+    const id = /aria-describedby="([^"]+)"/.exec(saveButton(row))?.[1];
+    expect(id, "aria-describedby on Simpan").toBeDefined();
+    expect(row).toMatch(new RegExp(`<p id="${id}"[^>]*>${hint}</p>`));
+  });
+
+  test("without org.settings.manage there is no hint", () => {
+    state.permissions = ["payment.edc.manage"];
+    const [row] = rows(renderToString(createElement(RoutingPanel)));
+    expect(row).not.toContain(t("paymentAdmin.routing.saveHint"));
+    expect(saveButton(row)).not.toContain("aria-describedby");
   });
 });

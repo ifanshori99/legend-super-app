@@ -190,7 +190,9 @@ export function PaymentAdminPage({
         </div>
         {show("routing") && (
           <TabsContent value="routing">
-            <RoutingPanel />
+            <RoutingPanel
+              onOpenTab={show("duitku") ? onTabChange : undefined}
+            />
           </TabsContent>
         )}
         {show("duitku") && (

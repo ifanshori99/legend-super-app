@@ -4,6 +4,7 @@
 // the inputs are emptied before the request leaves (same rule as
 // ws01-tenant-settings/components/integration-dialog.tsx, PAY-06).
 import * as React from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   CircleAlert,
   CircleCheck,
@@ -30,8 +31,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { StatusBand } from "@/components/ui/status-band";
 import { useToast } from "@/components/ui/toast";
 import { ApiError } from "@/lib/api/errors";
+import { retryOnceOnServerError } from "@/lib/api/retry";
+import { integrationsQuery } from "../../ws01-tenant-settings/queries";
 import {
-  useIntegrations,
   useOutlets,
   useSaveIntegration,
   useSetIntegrationStatus,
@@ -96,7 +98,11 @@ function duitkuErrorMessage(
 export function DuitkuCredentialsPanel() {
   const t = useT();
   const [outletId, setOutletId] = React.useState<string | null>(null);
-  const integrations = useIntegrations();
+  // One quick retry: a failing list reaches the error state in about a second.
+  const integrations = useQuery({
+    ...integrationsQuery(),
+    retry: retryOnceOnServerError,
+  });
   const outlets = useOutlets();
   const outletList = outlets.data?.data ?? [];
   const outletsState = duitkuOutletsState(outlets);
@@ -144,30 +150,26 @@ export function DuitkuCredentialsPanel() {
             <span className="text-sm leading-5 font-semibold">
               {t("paymentAdmin.duitku.scope")}
             </span>
-            {/* A disabled fieldset disables the radios until outlets are ready. */}
-            <fieldset
-              disabled={!outletsReady}
-              className="m-0 min-w-0 border-0 p-0 disabled:opacity-60"
-            >
-              <SegmentedControl
-                value={activeOutletId === null ? "brand" : "outlet"}
-                label={t("paymentAdmin.duitku.scope")}
-                onValueChange={(next) => {
-                  if (next === "brand") setOutletId(null);
-                  else if (outletsReady) setOutletId(outletList[0]?.id ?? null);
-                }}
-                options={[
-                  {
-                    value: "brand",
-                    label: t("paymentAdmin.duitku.scopeBrand"),
-                  },
-                  {
-                    value: "outlet",
-                    label: t("paymentAdmin.duitku.scopeOutlet"),
-                  },
-                ]}
-              />
-            </fieldset>
+            {/* Only the outlet option is disabled until outlets are ready. */}
+            <SegmentedControl
+              value={activeOutletId === null ? "brand" : "outlet"}
+              label={t("paymentAdmin.duitku.scope")}
+              onValueChange={(next) => {
+                if (next === "brand") setOutletId(null);
+                else if (outletsReady) setOutletId(outletList[0]?.id ?? null);
+              }}
+              options={[
+                {
+                  value: "brand",
+                  label: t("paymentAdmin.duitku.scopeBrand"),
+                },
+                {
+                  value: "outlet",
+                  label: t("paymentAdmin.duitku.scopeOutlet"),
+                  disabled: !outletsReady,
+                },
+              ]}
+            />
           </div>
           {activeOutletId !== null && (
             <FormField
@@ -388,7 +390,11 @@ function DuitkuForm({
             }
           >
             <SelectTrigger className="w-full">
-              <SelectValue />
+              <SelectValue
+                placeholder={t(
+                  "paymentAdmin.duitku.fields.environmentPlaceholder",
+                )}
+              />
             </SelectTrigger>
             <SelectContent>
               {DUITKU_ENVIRONMENTS.map((environment) => (
@@ -806,7 +812,7 @@ function ActiveCard({
   );
 }
 
-/** Shaped like the loaded screen: header card, form fields, status and test. */
+/** Shaped like the loaded screen (header card ~196px mobile, ~156px desktop): form fields, status and test. */
 function DuitkuSkeleton() {
   const t = useT();
   return (
@@ -814,7 +820,7 @@ function DuitkuSkeleton() {
       <span role="status" className="sr-only">
         {t("paymentAdmin.duitku.loading")}
       </span>
-      <Skeleton className="h-28" />
+      <Skeleton className="h-49 sm:h-39" />
       <div className="grid min-w-0 gap-4 lg:grid-cols-2">
         <div className="grid content-start gap-4 rounded-container border-(length:--border-w) bg-card p-card">
           <Skeleton className="h-11" />

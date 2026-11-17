@@ -49,6 +49,7 @@ export const paymentDuitkuMessages = {
   },
   fields: {
     environment: "Lingkungan",
+    environmentPlaceholder: "Pilih lingkungan",
     environmentSandbox: "Sandbox (uji coba)",
     environmentProduction: "Production (transaksi nyata)",
     notificationEmail: "Email notifikasi",

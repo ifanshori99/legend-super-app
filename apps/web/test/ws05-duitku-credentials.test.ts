@@ -26,6 +26,8 @@ import {
   upsertIntegrationInputSchema,
 } from "@starter/shared/platform";
 import { ApiError } from "@/lib/api/errors";
+import { retryOnceOnServerError } from "@/lib/api/retry";
+import { duitkuConfigDraft } from "@/features/ws05-payment-admin/duitku-credentials-lib";
 import { messagesId } from "@starter/shared/i18n";
 import { paymentDuitkuMessages as copy } from "../../../packages/shared/src/i18n/messages/ws05-duitku-credentials";
 
@@ -39,6 +41,7 @@ type Entry = {
     queryFn: (ctx: unknown) => Promise<unknown>;
     select?: (data: unknown) => unknown;
     enabled?: boolean;
+    retry?: unknown;
   };
   status: "pending" | "success" | "error";
   data?: unknown;
@@ -659,6 +662,21 @@ async function chooseScope(value: "brand" | "outlet") {
   await settle();
 }
 
+function outletOptionDisabled() {
+  const control = h.records.find(
+    (r) =>
+      Array.isArray(r.props.options) &&
+      typeof r.props.onValueChange === "function",
+  );
+  expect(control, "scope control").toBeDefined();
+  const options = control!.props.options as Array<{
+    value: string;
+    disabled?: boolean;
+  }>;
+  expect(options.find((o) => o.value === "brand")?.disabled).toBeFalsy();
+  return options.find((o) => o.value === "outlet")?.disabled === true;
+}
+
 const puts = () => api.calls.filter((c) => c.method === "PUT");
 const tests = () =>
   api.calls.filter((c) => c.method === "POST" && c.path.endsWith("/test"));
@@ -722,6 +740,25 @@ describe("legend-vntqt: Duitku credentials form (D15)", () => {
     expect(text()).toContain(copy.loadErrorTitle);
     expect(text()).toContain(copy.loadErrorHint);
     expect(hasInput("apiKey")).toBe(false);
+  });
+
+  test("integration query retries once, so the error state appears fast", async () => {
+    await mount();
+
+    const retries = [...h.cache.values()].map(
+      (e) => (e as Entry).options.retry,
+    );
+    expect(retries).toContain(retryOnceOnServerError);
+  });
+
+  test("environment select has a placeholder and is never silently production", async () => {
+    await mount();
+
+    expect(messagesId.paymentAdmin.duitku.fields.environmentPlaceholder).toBe(
+      "Pilih lingkungan",
+    );
+    // Required explicit choice: the draft starts empty, so the placeholder shows.
+    expect(duitkuConfigDraft(null).environment).toBe("");
   });
 
   test("stored credentials are shown as status only, never as values", async () => {
@@ -1161,14 +1198,14 @@ describe("legend-vntqt: Duitku panel review fixes", () => {
 
     expect(text()).toContain(copy.outletsLoading);
     expect(text()).not.toContain(copy.noOutlets);
-    expect(html).toMatch(/<fieldset[^>]*\sdisabled=""/);
+    expect(outletOptionDisabled()).toBe(true);
     await chooseScope("outlet");
     expect(text()).not.toContain(copy.inherited);
     expect(hasInput("merchantCode")).toBe(true);
 
     release();
     await settle();
-    expect(html).not.toMatch(/<fieldset[^>]*\sdisabled=""/);
+    expect(outletOptionDisabled()).toBe(false);
     expect(text()).not.toContain(copy.outletsLoading);
   });
 
@@ -1179,7 +1216,7 @@ describe("legend-vntqt: Duitku panel review fixes", () => {
     expect(text()).toContain(copy.outletsError);
     expect(text()).toContain(copy.outletsRetry);
     expect(text()).not.toContain(copy.noOutlets);
-    expect(html).toMatch(/<fieldset[^>]*\sdisabled=""/);
+    expect(outletOptionDisabled()).toBe(true);
     await chooseScope("outlet");
     expect(text()).not.toContain(copy.inherited);
   });
@@ -1189,7 +1226,7 @@ describe("legend-vntqt: Duitku panel review fixes", () => {
 
     expect(text()).toContain(copy.noOutlets);
     expect(text()).not.toContain(copy.outletsError);
-    expect(html).toMatch(/<fieldset[^>]*\sdisabled=""/);
+    expect(outletOptionDisabled()).toBe(true);
     expect(hasInput("merchantCode")).toBe(true);
   });
 

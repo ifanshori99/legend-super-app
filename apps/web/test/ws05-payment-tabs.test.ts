@@ -10,14 +10,20 @@
 import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToString } from "react-dom/server";
-import { PAYMENT_ADMIN_TABS } from "@/features/ws05-payment-admin/lib";
+import {
+  PAYMENT_ADMIN_TABS,
+  type PaymentAdminTab,
+} from "@/features/ws05-payment-admin/lib";
 import {
   PaymentAdminPage,
   resolvePaymentAdminTab,
 } from "@/features/ws05-payment-admin/components/payment-admin-page";
 import { createTranslator, messagesId } from "@starter/shared/i18n";
 
-const state = vi.hoisted(() => ({ permissions: [] as string[] }));
+const state = vi.hoisted(() => ({
+  permissions: [] as string[],
+  routingProps: null as { onOpenTab?: unknown } | null,
+}));
 
 vi.mock("@tanstack/react-router", async (original) => {
   const real = await original<typeof import("@tanstack/react-router")>();
@@ -55,7 +61,10 @@ vi.mock("@/features/ws05-payment-admin/components/refunds-panel", () => ({
   RefundsPanel: () => null,
 }));
 vi.mock("@/features/ws05-payment-admin/components/routing-panel", () => ({
-  RoutingPanel: () => null,
+  RoutingPanel: (props: { onOpenTab?: unknown }) => {
+    state.routingProps = props;
+    return null;
+  },
 }));
 vi.mock("@/features/ws05-payment-admin/components/unallocated-panel", () => ({
   UnallocatedPanel: () => null,
@@ -76,9 +85,14 @@ function selectedTabs(html: string): string[] {
     .map((tag) => /id="[^"]*-trigger-([a-z]+)"/.exec(tag)?.[1] ?? "?");
 }
 
-function render(permissions: string[], tab?: string): string {
+function render(
+  permissions: string[],
+  tab?: string,
+  onTabChange?: (tab: PaymentAdminTab) => void,
+): string {
   state.permissions = permissions;
-  return renderToString(createElement(PaymentAdminPage, { tab }));
+  state.routingProps = null;
+  return renderToString(createElement(PaymentAdminPage, { tab, onTabChange }));
 }
 
 describe("ws05 payment tabs: synced to the URL", () => {
@@ -141,5 +155,17 @@ describe("ws05 payment tabs: phone strip", () => {
     const t = createTranslator(messagesId);
     expect(t("paymentAdmin.tabs.duitku")).toBe("Duitku");
     expect(render(ALL)).toContain("Duitku");
+  });
+});
+
+describe("ws05 payment tabs: routing empty-state shortcut", () => {
+  test("the routing panel gets the tab callback only when Duitku is visible", () => {
+    const onTabChange = vi.fn();
+    render(ALL, "routing", onTabChange);
+    expect(state.routingProps?.onOpenTab).toBe(onTabChange);
+
+    render(["org.settings.manage"], "routing", onTabChange);
+    expect(state.routingProps).not.toBeNull();
+    expect(state.routingProps?.onOpenTab).toBeUndefined();
   });
 });

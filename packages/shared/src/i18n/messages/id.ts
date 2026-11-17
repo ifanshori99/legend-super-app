@@ -1796,6 +1796,8 @@ export const id = {
       emptyTitle: "Belum ada metode yang dirutekan",
       emptyHint:
         "Aktifkan gateway lebih dulu, lalu atur metode online di sini.",
+      emptyAction: "Buka kredensial Duitku",
+      saveHint: "Ubah gateway untuk menyimpan",
       overridden: "Ditimpa outlet",
       inherited: "Ikut default tenant",
       enableMethod: "Aktifkan {method}",

@@ -33,6 +33,7 @@ import {
   ROUTING_MANAGE_PERMISSION,
   fallbackProviderOptions,
   routingSaveErrorKey,
+  type PaymentAdminTab,
 } from "../lib";
 import type { MessageKey } from "@starter/shared/i18n";
 
@@ -52,7 +53,15 @@ function useCanManageRouting(): boolean {
   ]);
 }
 
-export function RoutingPanel() {
+export function RoutingPanel({
+  onOpenTab,
+}: {
+  /**
+   * Opens another tab. The page passes it only when the account may see the
+   * Duitku tab, so the empty state offers that step only to those who can take it.
+   */
+  onOpenTab?: (tab: PaymentAdminTab) => void;
+} = {}) {
   const t = useT();
   const canManage = useCanManageRouting();
   const [outletId, setOutletId] = React.useState<string | null>(null);
@@ -157,6 +166,17 @@ export function RoutingPanel() {
           <EmptyState
             title={t("paymentAdmin.routing.emptyTitle")}
             description={t("paymentAdmin.routing.emptyHint")}
+            action={
+              onOpenTab && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => onOpenTab("duitku")}
+                >
+                  {t("paymentAdmin.routing.emptyAction")}
+                </Button>
+              )
+            }
           />
         </div>
       ) : (
@@ -214,6 +234,7 @@ function RouteRow({
   const toast = useToast();
   const update = useUpdatePaymentRoute();
   const attempt = useAttemptKey();
+  const saveHintId = React.useId();
   const enabledProviders = providers.filter((provider) => provider.enabled);
   const [provider, setProvider] = React.useState(route.provider);
   const [fallback, setFallback] = React.useState(
@@ -227,6 +248,9 @@ function RouteRow({
     fallback !== (route.fallbackProvider ?? NO_FALLBACK) ||
     enabled !== route.enabled;
   const dirty = canManage && changed && !update.isPending;
+  // Say why Simpan is off only when nothing differs; without permission the
+  // controls themselves are disabled and the hint would mislead.
+  const showSaveHint = canManage && !changed;
   const fallbackOptions = fallbackProviderOptions(providers, provider);
   // A saved gateway that was switched off still has to show in its Select, but
   // cannot be picked again.
@@ -371,9 +395,18 @@ function RouteRow({
         onClick={save}
         disabled={!dirty}
         loading={update.isPending}
+        aria-describedby={showSaveHint ? saveHintId : undefined}
       >
         {t("common.save")}
       </Button>
+      {showSaveHint && (
+        <p
+          id={saveHintId}
+          className="text-sm leading-5 text-muted-foreground lg:sr-only"
+        >
+          {t("paymentAdmin.routing.saveHint")}
+        </p>
+      )}
 
       {saveError && (
         <p
@@ -387,14 +420,28 @@ function RouteRow({
   );
 }
 
+// Same shape as the loaded list: header bar and a row per method on desktop
+// (ROW_GRID columns), a tall card per method on a phone.
 function RoutingSkeleton() {
   const t = useT();
   return (
     <div className="grid gap-2" aria-busy="true">
       <span className="sr-only">{t("common.loading")}</span>
-      <Skeleton className="h-24" />
-      <Skeleton className="h-20" />
-      <Skeleton className="h-20" />
+      <Skeleton className="hidden h-12 lg:block" />
+      {[0, 1, 2].map((row) => (
+        <div key={row}>
+          <Skeleton className="h-62 lg:hidden" />
+          <div
+            className={`hidden gap-3 rounded-container border-(length:--border-w) bg-card p-card shadow-hairline lg:grid ${ROW_GRID} lg:items-center`}
+          >
+            <Skeleton className="h-control" />
+            <Skeleton className="h-control" />
+            <Skeleton className="h-control" />
+            <Skeleton className="h-control" />
+            <Skeleton className="h-control" />
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
