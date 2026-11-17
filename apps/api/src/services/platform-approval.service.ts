@@ -497,6 +497,12 @@ export type OpenApprovalRequestInput = {
   readonly deadlineMinutes?: number;
   readonly idempotencyKey?: string | null;
   readonly now?: Date;
+  /**
+   * True: the action always needs another person. An amount below every tier
+   * takes the lowest tier's chain instead of `{ required: false }` (founder
+   * Q27 supplier payments; held cash and top-ups, SO 1036 findings 2, 5, 6).
+   */
+  readonly alwaysRequire?: boolean;
 };
 
 export type OpenApprovalResult =
@@ -602,11 +608,17 @@ export async function openApprovalRequest(
         ),
       )
   ).map(toPolicy);
-  const requirement = approvalRequirementFor(
+  let requirement = approvalRequirementFor(
     policies,
     input.actionType,
     input.amountIdr,
   );
+  if (!requirement.required && input.alwaysRequire === true) {
+    // Below every tier: the lowest threshold row exists (no row would have
+    // thrown APPROVAL_POLICY_MISSING), so its chain applies.
+    const lowest = Math.min(...policies.map((row) => row.thresholdIdr ?? 0));
+    requirement = approvalRequirementFor(policies, input.actionType, lowest);
+  }
   if (!requirement.required) return { required: false };
   const steps: ApprovalStepSnapshot[] = requirement.steps.map((step) => ({
     level: step.level,
