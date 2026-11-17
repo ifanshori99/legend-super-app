@@ -93,7 +93,10 @@ import {
   lockBillOwner,
 } from "./payment-late-settlement";
 import { plausiblePaidAt } from "./payment-paid-at";
-import { alertProviderRefundedAfterRecorded } from "./payment-provider-refunded-alert.ts";
+import {
+  alertProviderRefundedAfterRecorded,
+  alertProviderRefundUnbound,
+} from "./payment-provider-refunded-alert.ts";
 import {
   activeHoldBlockingSplitPart,
   assertNoActiveQrisHold,
@@ -133,7 +136,10 @@ import {
   type PaymentIntentRow,
   type PaymentLinkRow,
 } from "./payment-support";
-import { recordProviderRefundInTx } from "./payment-provider-partial-refund";
+import {
+  providerPaymentSyntheticRefundId,
+  recordProviderRefundInTx,
+} from "./payment-provider-partial-refund";
 import type { Tx } from "./permission-resolver";
 
 /** PRD §3.13 "QRIS Dinamis": a QR code lives about 10 minutes. VA and bank
@@ -3412,6 +3418,7 @@ export async function markProviderRefunded(
     const [target] = await tx
       .select({
         id: paymentIntents.id,
+        outletId: paymentIntents.outletId,
         providerRef: paymentIntents.providerRef,
         amountIdr: paymentIntents.amountIdr,
       })
@@ -3428,7 +3435,7 @@ export async function markProviderRefunded(
       context,
       {
         provider: "doit",
-        providerRefundId: `payment:${target.providerRef}`,
+        providerRefundId: providerPaymentSyntheticRefundId(target.providerRef),
         providerPaymentRef: target.providerRef,
         amountIdr: Number(target.amountIdr),
         source,
@@ -3438,6 +3445,18 @@ export async function markProviderRefunded(
       },
       now,
     );
+    // `unbound`: not recorded, so finance is told (the stamp stays).
+    if (outcome.status === "unbound")
+      await alertProviderRefundUnbound(
+        tx,
+        context,
+        {
+          intentId: target.id,
+          outletId: target.outletId,
+          providerPaymentRef: target.providerRef,
+        },
+        now,
+      );
     // `retry`: a refund of ours is still in flight, nothing was written yet.
     return outcome.status === "retry" ? "retry" : "done";
   });

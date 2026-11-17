@@ -946,10 +946,12 @@ describe("1025d-b-U the synthetic id never collides", () => {
       ]);
       const id = mine[0]!.provider_refund_id;
       expect(id.length).toBeLessThanOrEqual(100);
-      expect(id, "never the ref cut short").not.toBe(
-        `payment:${ref.slice(0, 92)}`,
-      );
-      if (ref.length > 92) expect(id).toMatch(/^payment:h:[0-9a-f]{64}$/);
+      if (ref.length > 92) {
+        expect(id, "never the ref cut short").not.toBe(
+          `payment:${ref.slice(0, 92)}`,
+        );
+        expect(id).toMatch(/^payment:h:[0-9a-f]{64}$/);
+      }
     }
     expect(await refundEventsOfIntent(code.id), "one event per fact").toBe(5);
   });

@@ -61,6 +61,22 @@ const PROVIDER = "doit";
 /** Id prefix of the refund derived from a payment's own `refunded` status. */
 const SYNTHETIC_PREFIX = "payment:";
 
+/**
+ * Synthetic provider refund id of a transaction's own `refunded` status. The
+ * id column holds 100 characters and a payment id may be 100 long, so a ref
+ * that does not fit after the prefix is keyed by its hash; the raw ref is
+ * never cut and is kept in `provider_payment_ref` (legend-hpwpt, 1025d).
+ */
+export function providerPaymentSyntheticRefundId(ref: string): string {
+  return SYNTHETIC_PREFIX.length + ref.length <= 100
+    ? `${SYNTHETIC_PREFIX}${ref}`
+    : `${SYNTHETIC_PREFIX}h:${createHash("sha256").update(ref).digest("hex").slice(0, 64)}`;
+}
+
+/** True for the hashed form made by `providerPaymentSyntheticRefundId`. */
+export const isHashedSyntheticRefundId = (id: string): boolean =>
+  /^payment:h:[0-9a-f]{64}$/.test(id);
+
 export type ProviderRefundInput = {
   provider: string;
   /** The provider's own refund id (never ours). */
