@@ -6972,7 +6972,7 @@ Cabang `ghostex/rekonsiliasi-sisa-bank-dan-doit`, dasar m1 `c17c60df7`. Tiga kar
 - legend-fnxl.10 (commit `5369a7bed`, perbaikan `044269815`): match bank ditandai basi (`stale_at`, `stale_by_reversal_entry_id`) saat jurnalnya dibalik; tidak pernah dihapus diam-diam, muncul di daftar kasus (tipe `bank_statement`, referensi `journal_entry`), idempoten. Migrasi 0433. Hook mengambil `entityLock` sebelum UPDATE agar balik jurnal dan pencocokan otomatis berurutan; PIC kasus adalah orang yang mencocokkan.
 - legend-3wpf (commit `cebf58ec1`, perbaikan `3337d03a7`): `expireDueIntents` tidak lagi menutup intent milik gateway tanpa bertanya ke provider; audit `payment.reconciliation_timed_out` sekali per kode sesudah `expiresAt` + 24 jam sementara polling terus berjalan; status provider `refunded` dipetakan ke `failed` tanpa nominal; kolom sendiri `provider_answered_at` (migrasi 0434, isi awal dari `provider_final_at`).
 - Review architect (xhigh): satu P1 (FORCE RLS pada migrasi 0433 dan 0434, migrator bisa owner biasa), dibetulkan dengan mengangkat lalu memulihkan FORCE sesuai pola 2 di docs/plan/contracts.md; tes migrasi `edge-received-events-migration` hijau sebagai owner non-superuser. P2 (balapan hook vs match otomatis, hitungan ringkasan baris bank, PIC) dibetulkan.
-- Tes setelah commit terakhir: root contract 872/872; migrasi + registry + metric-single-path 62/62; akuntansi dan payment terarah 326/326; cakupan tabel 26/26; typecheck API exit 0.
+- Tes setelah commit terakhir: root contract 872/872; migrasi + registry + metric-single-path 62/62; akuntansi dan payment terarah 326/326; cakupan tabel 26/26; typecheck API dan shared exit 0.
 
 **Keputusan**
 - Aturan pembatas bayar: polling gateway tidak berhenti di jendela 24 jam (VA yang tak pernah dijawab final tetap bisa ditagih, prinsip SO-885); yang berhenti hanya audit (sekali).
@@ -6984,7 +6984,6 @@ Cabang `ghostex/rekonsiliasi-sisa-bank-dan-doit`, dasar m1 `c17c60df7`. Tiga kar
 - Tidak ada tes balapan bersamaan untuk hook basi vs match otomatis. Tes ringkasan baris bank hanya sebagian fail-first.
 - Suite polling 37 berkas tidak dijalankan ulang penuh setelah perubahan terakhir; `pnpm test` penuh dan `pnpm check` belum dijalankan (hanya gate terarah).
 - `provider_answered_at` ditulis tetapi belum dibaca; pencarian audit per poll belum berindeks; UI web tidak menampilkan penanda basi.
-- Typecheck shared menyusul di laporan akhir.
 
 **Angka**
 - Sesi `eaa31d4f`: biaya* total 26.204k (utama Sonnet 21.703k; subagent Sonnet 3.444k, Opus 676k, Haiku 381k); 14 subagent, 4 compact. Puncak subagent bersamaan 4; token heavy dipegang test-runner.
