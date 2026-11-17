@@ -36,12 +36,16 @@ import {
   paymentIntents,
   paymentProviderRefunds,
   paymentRefunds,
+  refundReconHolds,
   paymentUnallocatedFunds,
 } from "../db/schema/index.ts";
 import { recordAudit } from "./core-audit.ts";
 import { refundableBalance } from "./payment-admin.service.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
-import { alertProviderPartialRefund } from "./payment-provider-refunded-alert.ts";
+import {
+  alertProviderPartialRefund,
+  alertProviderRefundCountedWithLiveOwn,
+} from "./payment-provider-refunded-alert.ts";
 import { providerRefundedForeignIdrSql } from "./payment-provider-refunded-foreign-sql.ts";
 import { flagCreditReconForIntent } from "./reservation-deposit-credit.ts";
 import { appendPaymentEvent } from "./payment-support.ts";
@@ -107,6 +111,9 @@ export async function recordProviderRefundInTx(
   const tenantId = context.tenant.tenantId;
   const { providerRefundId, providerPaymentRef } = input;
   let amountIdr = input.amountIdr;
+  // The remainder counted a refund of ours that is not final (1025 B).
+  let countedLiveOwn = false;
+  let tellSupervisors = false;
   if (
     input.provider !== PROVIDER ||
     providerRefundId.length === 0 ||
@@ -304,6 +311,11 @@ export async function recordProviderRefundInTx(
       amountIdr = left;
     } else if (ownIdr >= amountIdr) return { status: "own" };
     else if (mustWait) return { status: "retry" };
+    countedLiveOwn = live.length > 0;
+    // Counted after the retry window (a refund of the bill still unresolved):
+    // the outlet supervisors hear of it too. A live parked-fund refund (fixed
+    // amount, already told by the 958 alert) is told to the owners only.
+    tellSupervisors = live.some((row) => row.fund !== true);
   } else if (recorded.some((row) => row.refundId.startsWith(SYNTHETIC_PREFIX)))
     return { status: "duplicate" };
 
@@ -506,6 +518,38 @@ export async function recordProviderRefundInTx(
       },
       now,
     );
+  // The books were written counting a refund of ours that is not final: if it
+  // later fails the journal is short. Held until finance checks (the intent's
+  // refunds and payouts stop), finance told once. The hold is keyed by this
+  // row (its id stands for the event), once per provider refund id.
+  if (countedLiveOwn) {
+    const [held] = await tx
+      .insert(refundReconHolds)
+      .values({
+        tenantId,
+        paymentIntentId: intent.id,
+        webhookEventId: inserted.id,
+        providerRefundId,
+        amountIdr: idr(amountIdr),
+        reason:
+          "Refund penyedia dibukukan dengan menghitung refund kami yang belum final (REFUND_LIVE_OWN)",
+        flaggedAt: now,
+      })
+      .onConflictDoNothing()
+      .returning({ id: refundReconHolds.id });
+    if (held)
+      await alertProviderRefundCountedWithLiveOwn(
+        tx,
+        context,
+        {
+          intentId: intent.id,
+          outletId: tellSupervisors ? intent.outletId : null,
+          providerRefundId,
+          amountIdr,
+        },
+        now,
+      );
+  }
   // 8. The journal of this refund (legend-tlm3h): one event per recorded row.
   await appendPaymentEvent(tx, context, {
     name: "payment.provider_refunded",

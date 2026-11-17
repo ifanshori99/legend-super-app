@@ -258,3 +258,68 @@ export async function alertRefundReferenceMismatch(
     );
   }
 }
+
+export type ProviderRefundCountedWithLiveOwn = {
+  intentId: string;
+  /** The outlet whose supervisors are told too; null: the owners only. */
+  outletId: string | null;
+  providerRefundId: string;
+  amountIdr: number;
+};
+
+/**
+ * legend-gjt5q (1025 B): the full provider refund was booked counting a refund
+ * of OURS that was still in flight (not final). If that refund later fails the
+ * journal is short, so the intent is held (`refund_recon_holds`) and finance
+ * (the owners: a tenant-wide alert) must check it. Sent only by the winner of
+ * the hold insert. Same savepoint rule as above.
+ */
+export async function alertProviderRefundCountedWithLiveOwn(
+  tx: Tx,
+  context: ScopedTenantContext,
+  held: ProviderRefundCountedWithLiveOwn,
+  now: Date,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const hex = createHash("sha256")
+    .update(
+      `payment.provider_refund_live_own\0${tenantId}\0${held.intentId.toLowerCase()}\0${held.providerRefundId}`,
+    )
+    .digest("hex")
+    .slice(0, 32);
+  const id = uuidToUlid(
+    `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
+  );
+  try {
+    await tx.transaction(async (savepoint) => {
+      await notifyOutletSupervisors(
+        savepoint,
+        context,
+        {
+          tenantId,
+          outletId: held.outletId ? outletIdSchema.parse(held.outletId) : null,
+          category: "operational_anomaly",
+          alsoOwners: true,
+          recordEmpty: true,
+          id,
+          eventName: "payment.provider_refund_live_own",
+          aggregateType: "payment",
+          aggregateId: id,
+          payload: {
+            intentId: held.intentId,
+            amountIdr: String(held.amountIdr),
+          },
+          title:
+            "Refund penyedia dibukukan bersama refund kami yang belum final",
+          body: `Penyedia pembayaran mengembalikan seluruh pembayaran, dan Rp ${held.amountIdr.toLocaleString("id-ID")} dibukukan dengan menghitung refund kami yang belum selesai. Bila refund kami gagal, jurnal kurang. Refund dan payout pembayaran ini ditahan sampai finance memeriksanya.`,
+        },
+        now,
+      );
+    });
+  } catch (err) {
+    logger.warn(
+      { err, tenantId, intentId: held.intentId },
+      "Provider refund counted with live own refund: notification failed",
+    );
+  }
+}

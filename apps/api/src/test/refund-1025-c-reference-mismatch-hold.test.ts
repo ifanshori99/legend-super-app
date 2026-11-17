@@ -1209,3 +1209,66 @@ describe("legend-9s33i the hold is only for a succeeded refund and only once per
     expect(holds[0]!.provider_refund_id).toBe(refundIdOf(first));
   });
 });
+
+// ---------------------------------------------------------------------------
+// Architect round 2: every success spelling of the provider holds, a failure
+// event without a status never does. Assumption (payment-doit-wire.ts maps
+// these): a refund whose status is "completed", "success" or "refunded" is a
+// succeeded refund, like "succeeded".
+// ---------------------------------------------------------------------------
+
+describe("legend-9s33i the hold covers every success spelling and no failure event", () => {
+  it.each(["completed", "success", "refunded"] as const)(
+    "1025-9s33i a mismatching refund.succeeded whose refund status is %s: one open hold and one supervisor alert",
+    async (status) => {
+      const s = await scene();
+      const aRef = referenceOf(s.a);
+      const alertsBefore = await supervisorAlerts();
+      const body = envelope({
+        refund: {
+          id: newRefundId(),
+          amount: s.x.amountIdr,
+          reference: aRef,
+          status,
+        },
+        payment: paymentObject(s.x.providerRef, aRef, s.x.amountIdr),
+      });
+
+      await deliver(body);
+      await settleEvents([body.id]);
+
+      const holds = await holdsOf([s.a.id, s.b.id]);
+      expect(holds, "one hold").toHaveLength(1);
+      expect(holds[0]!.payment_intent_id).toBe(s.b.id);
+      expect(holds[0]!.resolved_at, "open").toBeNull();
+      expect((await supervisorAlerts()) - alertsBefore).toBe(1);
+      expect(await providerRefunds([s.a.id, s.b.id])).toEqual({
+        rows: 0,
+        idr: 0,
+      });
+    },
+  );
+
+  it("1025-9s33i a mismatching refund.failed event without any status creates no hold and no alert", async () => {
+    const s = await scene();
+    const aRef = referenceOf(s.a);
+    const alertsBefore = await supervisorAlerts();
+    const body = {
+      ...envelope({
+        refund: { id: newRefundId(), amount: s.x.amountIdr, reference: aRef },
+        payment: paymentObject(s.x.providerRef, aRef, s.x.amountIdr),
+      }),
+      type: "refund.failed",
+    };
+
+    await deliver(body);
+    await settleEvents([body.id]);
+
+    expect(await holdsOfIfTable([s.a.id, s.b.id])).toHaveLength(0);
+    expect(await supervisorAlerts()).toBe(alertsBefore);
+    expect(await providerRefunds([s.a.id, s.b.id])).toEqual({
+      rows: 0,
+      idr: 0,
+    });
+  });
+});

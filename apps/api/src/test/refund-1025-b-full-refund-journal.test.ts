@@ -493,6 +493,10 @@ afterAll(async () => {
       [tenantId, createdLinkIds],
     );
     await owner.query(
+      `DELETE FROM refund_recon_holds WHERE tenant_id = $1 AND payment_intent_id IN (${intents})`,
+      [tenantId, createdLinkIds],
+    );
+    await owner.query(
       `DELETE FROM payment_provider_refunds WHERE tenant_id = $1 AND payment_intent_id IN (${intents})`,
       [tenantId, createdLinkIds],
     );
@@ -1360,5 +1364,90 @@ describe("1025-B the remainder of a full refund and a refund of ours in flight",
     expect(full[0]!.amount_idr).toBe(expected);
     expect(await providerRows(code.id)).toHaveLength(1);
     expect(await refundEventsOfIntent(code.id)).toBe(1);
+  });
+});
+
+// ===========================================================================
+// Architect round 2: when the full-refund write is FORCED after the retry
+// window while our refund R is still in flight, the books may end short if R
+// later fails. A recon hold (provider_refund_id `payment:<providerRef>`) and
+// one extra alert to finance must be filed in the same transaction as the row.
+// Assumptions: forced = the stored event aged past the 15 minute window and
+// reprocessed by the worker (same clock trick as the 967 refund door); the
+// alert goes to the outlet supervisor like the 958 alert, counted as "one more
+// than a plain full refund raises"; table refund_recon_holds as in the 1025-C
+// file (tenant_id, payment_intent_id, provider_refund_id, resolved_at).
+// ===========================================================================
+
+describe("1025-B a forced full-refund write with our refund still in flight files a recon hold", () => {
+  async function holdsFor(code: Code) {
+    const { rows } = await owner.query<{
+      provider_refund_id: string | null;
+      resolved_at: Date | null;
+    }>(
+      `SELECT provider_refund_id::text AS provider_refund_id, resolved_at
+         FROM refund_recon_holds
+        WHERE tenant_id = $1 AND payment_intent_id = $2`,
+      [tenantId, code.id],
+    );
+    return rows;
+  }
+
+  it("1025-B-F3 R in flight, the retry window passes, the worker forces the write: the row, one open hold and one extra alert exist together; a replay adds none", async () => {
+    // Control: what a plain full refund alerts.
+    const plain = await paidCode();
+    const plainBefore = await supervisorAlerts();
+    await providerRefundsEverywhere(plain);
+    const plainAlerts = (await supervisorAlerts()) - plainBefore;
+
+    const code = await paidCode();
+    await seedOurRefund(code, OURS, {
+      status: "approved",
+      providerRef: null,
+      attempts: 1,
+    });
+    doit.refund(code.providerRef);
+    const body = doit.eventFor(code.providerRef, "refunded");
+    const alertsBefore = await supervisorAlerts();
+    await deliver(body);
+    expect(await storedStatus(body.id)).toEqual(["failed"]);
+    expect(await holdsFor(code), "no hold while still retrying").toEqual([]);
+
+    // The window passes with R unresolved: the worker forces the write.
+    await owner.query(
+      `UPDATE gateway_webhook_events
+          SET received_at = now() - interval '20 minutes',
+              updated_at = now() - interval '20 minutes'
+        WHERE tenant_id = $1 AND event_id = $2`,
+      [tenantId, body.id],
+    );
+    await reprocessStoredWebhookEvents(webhookContext, new Date(), 100).catch(
+      () => null,
+    );
+
+    expect(await fullRowOf(code), "the forced write happened").toHaveLength(1);
+    const holds = await holdsFor(code);
+    expect(holds, "one hold for the forced write").toHaveLength(1);
+    expect(holds[0]!.provider_refund_id).toBe(`payment:${code.providerRef}`);
+    expect(holds[0]!.resolved_at, "open").toBeNull();
+    expect(
+      (await supervisorAlerts()) - alertsBefore,
+      "a plain full refund alerts, finance gets one more",
+    ).toBeGreaterThanOrEqual(plainAlerts + 1);
+
+    // Replays add no second hold and no second row.
+    await reprocessStoredWebhookEvents(webhookContext, new Date(), 100).catch(
+      () => null,
+    );
+    await deliver(body);
+    expect(await holdsFor(code)).toHaveLength(1);
+    expect(await fullRowOf(code)).toHaveLength(1);
+
+    // R failing later changes nothing silently: the hold is still open.
+    await owner.query(
+      "UPDATE payment_refunds SET status = 'failed' WHERE tenant_id = $1 AND payment_intent_id = $2",
+      [tenantId, code.id],
+    );
+    expect((await holdsFor(code))[0]!.resolved_at).toBeNull();
   });
 });

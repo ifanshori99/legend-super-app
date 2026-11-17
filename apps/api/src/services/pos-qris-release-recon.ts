@@ -330,12 +330,11 @@ export async function decide(
     return stillOpen("other_reference");
   // 952 round 2: the provider gave this code's payment back; recorded whether
   // or not the code is final, so a late `paid` message cannot book or park it.
-  if (
+  // A refund of ours still in flight: the full refund is not recorded yet.
+  // What the answer carries is still handled below, and the row stays open.
+  const refundInFlight =
     answer.rawStatus === "refunded" &&
-    (await markProviderRefunded(context, intent.id, now)) === "retry"
-  )
-    // A refund of ours is still in flight: nothing recorded yet, look again.
-    return stillOpen("refund_in_flight");
+    (await markProviderRefunded(context, intent.id, now)) === "retry";
   // An extra that could not be recorded must never keep the primary paid
   // answer from being recorded: the primary is settled first, then the row
   // stays open (and staff are warned) until every extra is on record.
@@ -343,6 +342,11 @@ export async function decide(
     !answer.extraPayments ||
     answer.extraPayments.length === 0 ||
     (await parkExtraPayments(outletContext, intent, answer.extraPayments, now));
+  // Parked (or kept open for staff) first; then the open row asks again.
+  if (refundInFlight)
+    return extrasRecorded
+      ? stillOpen("refund_in_flight")
+      : { kind: "open", seen: "extra_funds_not_parked" };
   const expired = now.getTime() >= intent.expiresAt.getTime() + CLOSE_MARGIN_MS;
   if (answer.status === "paid") {
     if (answer.amountIdr === null)
@@ -421,6 +425,7 @@ export const PAID_UNRECORDED = new Set([
   "settlement_failed",
   "paid_without_amount",
   "extra_funds_not_parked",
+  "refund_in_flight",
 ]);
 
 /** Checks one queue row now. Returns its status afterwards (null: gone). */

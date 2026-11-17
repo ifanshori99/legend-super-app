@@ -101,6 +101,7 @@ import {
   doitWebhookEnvelopeSchema,
   doitWebhookEventSchema,
   isDoitPaymentEvent,
+  isDoitRefundSuccessStatus,
   readDoitRefundedStatusFacts,
   verifyDoitSignature,
   type DoitRefundedStatusFacts,
@@ -835,7 +836,10 @@ async function holdRefundReferenceMismatch(
   },
   now: Date,
 ): Promise<void> {
-  if (refund.refundStatus !== undefined && refund.refundStatus !== "succeeded")
+  if (
+    refund.refundStatus !== undefined &&
+    !isDoitRefundSuccessStatus(refund.refundStatus)
+  )
     return;
   await withTenant(db, context, async (tx) => {
     const [held] = await tx
@@ -1695,7 +1699,9 @@ async function processRefundEvent(
       const owner = namedPaymentId
         ? await findRefundCandidate(context, namedPaymentId)
         : null;
+      // Only a refund.succeeded event is held (refund.failed never is).
       if (
+        status === "succeeded" &&
         owner &&
         (await signedByIntentIntegration(
           context,
