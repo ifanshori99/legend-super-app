@@ -215,32 +215,47 @@ export async function sharedDeviceIdsFromToken(
   }
 }
 
+/** The marks plus `deviceId`, deduped, as a new array. */
+export function withSharedMark(
+  marked: readonly string[] | null | undefined,
+  deviceId: string,
+): string[] {
+  const list = marked ?? [];
+  return list.includes(deviceId) ? [...list] : [...list, deviceId];
+}
+
 /**
- * Early stamp (legend-jqurl), run by requireAuth. A validly signed device token
- * whose device is active and flagged shared marks the session, so the marks
- * exist before the cookie is replayed on a guarded route without the header.
- * The signature already binds tenant and device, so the lookup needs no tenant
- * context. No header, a bad signature, an unflagged device or an already marked
- * session do nothing; a failure is logged and never thrown. Returns false only
- * when the device is flagged and active but the session's 8 marks are all
- * active (markSessionSharedDevice false): the caller must refuse the request
- * with 403 SHARED_DEVICE_MARK_LIMIT. Every other outcome is true.
+ * Early stamp (legend-jqurl), run by requireAuth and the /api/auth guard. A
+ * validly signed device token whose device is active and flagged shared marks
+ * the session, so the marks exist before the cookie is replayed on a guarded
+ * route without the header. The signature already binds tenant and device, so
+ * the lookup needs no tenant context. No header, a bad signature or an
+ * unflagged device do nothing; a failure is logged and never thrown. Returns
+ * the marks in effect for THIS request (legend-7yvmm): the existing marks plus
+ * the token's device when it was stamped now or was already marked, as a new
+ * array, so the caller can refresh its session snapshot and not read a stale
+ * list. Returns null only when the device is flagged and active but the
+ * session's 8 marks are all active (markSessionSharedDevice false): the caller
+ * must refuse the request with 403 SHARED_DEVICE_MARK_LIMIT.
  */
 export async function stampSharedDeviceFromToken(
   sessionId: string,
   markedDeviceIds: readonly string[] | null | undefined,
   rawToken: string | undefined,
-): Promise<boolean> {
-  if (!rawToken) return true;
+): Promise<string[] | null> {
+  const existing = [...(markedDeviceIds ?? [])];
+  if (!rawToken) return existing;
   try {
     const payload = verifyDeviceToken(rawToken);
-    if (payload === null || markedDeviceIds?.includes(payload.deviceId))
-      return true;
+    if (payload === null) return existing;
+    if (existing.includes(payload.deviceId)) return existing;
     if (await anySharedDeviceActive([payload.deviceId]))
-      return await markSessionSharedDevice(sessionId, payload.deviceId);
-    return true;
+      return (await markSessionSharedDevice(sessionId, payload.deviceId))
+        ? withSharedMark(existing, payload.deviceId)
+        : null;
+    return existing;
   } catch (error) {
     logger.warn({ err: error }, "shared device early stamp failed");
-    return true;
+    return existing;
   }
 }

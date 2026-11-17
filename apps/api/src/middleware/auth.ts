@@ -72,15 +72,18 @@ function createRequireAuth(options: {
     // legend-jqurl: a signed token of a flagged shared device marks the session
     // on every authenticated route, not only the guarded POS ones. A full list of
     // 8 active marks refuses the 9th device (legend-dn7uo). Otherwise never throws.
-    const stamped = await stampSharedDeviceFromToken(
+    // legend-7yvmm: the returned marks replace the session snapshot (req.auth is
+    // the same object), so the guards below and later handlers see the stamp even
+    // if the device is unflagged before their own check.
+    const marks = await stampSharedDeviceFromToken(
       session.session.id,
       session.session.sharedDeviceIds,
       req.get(DEVICE_TOKEN_HEADER),
     );
-    if (!stamped)
+    if (marks === null)
       throw await sharedDeviceMarkLimit(session.session.id, session.user.id);
-    if (!options.allowSharedDevice)
-      await refuseSharedDeviceSession(req, session.session.sharedDeviceIds);
+    session.session.sharedDeviceIds = marks;
+    if (!options.allowSharedDevice) await refuseSharedDeviceSession(req, marks);
     // A support (impersonated) session is checked against its support access
     // grant here, the one chokepoint of every cookie router. See
     // middleware/support-session.ts.

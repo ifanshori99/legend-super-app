@@ -27,6 +27,7 @@ import {
   isActiveSharedDevice,
   markSessionSharedDevice,
   sharedDeviceMarkLimit,
+  withSharedMark,
 } from "../services/shared-device.service";
 import { getAuth } from "./auth";
 import { getTenantContext } from "./tenant";
@@ -131,10 +132,17 @@ export const requireActingStaffOnSharedDevice: RequestHandler = async (
     const tokenDeviceId = await currentDeviceIdOf(req);
     if (
       tokenDeviceId !== null &&
-      (await isActiveSharedDevice(tenant, tokenDeviceId)) &&
-      !(await markSessionSharedDevice(session.id, tokenDeviceId))
-    )
-      throw await sharedDeviceMarkLimit(session.id, user.id);
+      (await isActiveSharedDevice(tenant, tokenDeviceId))
+    ) {
+      if (!(await markSessionSharedDevice(session.id, tokenDeviceId)))
+        throw await sharedDeviceMarkLimit(session.id, user.id);
+      // legend-7yvmm: keep the session snapshot (the same object as req.auth) in
+      // step with the stamp, so later handlers (push resolveCaller) see the mark.
+      session.sharedDeviceIds = withSharedMark(
+        session.sharedDeviceIds,
+        tokenDeviceId,
+      );
+    }
     return next();
   }
   const deviceId = await currentDeviceIdOf(req);
@@ -142,6 +150,7 @@ export const requireActingStaffOnSharedDevice: RequestHandler = async (
   if (deviceId !== null && (await isActiveSharedDevice(tenant, deviceId))) {
     if (!(await markSessionSharedDevice(session.id, deviceId)))
       throw await sharedDeviceMarkLimit(session.id, user.id);
+    session.sharedDeviceIds = withSharedMark(session.sharedDeviceIds, deviceId);
     throw sharedDeviceRequired();
   }
   // No device header, or another (unflagged) device's valid token: neither may
