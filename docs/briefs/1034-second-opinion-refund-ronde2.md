@@ -1,0 +1,7 @@
+# 1034 Second opinion area refund ronde 2 (gerbang rilis area refund)
+Peran: second-opinion (baca ~/.agents/team/roles/second-opinion.md). Codex xhigh. Read-only, tanpa worktree: `git diff`/`git show <ref>:<path>` dari folder utama, jangan checkout.
+Diff: `git diff origin/ghostex/1020-so-recon-ronde-2-fix...origin/ghostex/1033-kredit-dp-pool-net-bersama -- . ':!**/meta/*snapshot.json'` (memuat 1013 + 1025 + 1025c + 1025d + 1028 + 1033).
+Ronde 1: docs/qa/second-opinion-refund-area-1032.md (4 P1: 9dzxc, hpwpt di cabang 1025; 6n4p3, obgj5 di 1033; lanjutan xmtih lock hold, iz3ru lantai dua-DP).
+Diterima CTO (jangan dilaporkan): semua yang diterima di brief 1032; kredit DP dihitung kurang (bukan lebih) di kasus 70/30, tiga alokasi, batas konservatif (menunggu founder Q32); DP yang sudah terpakai tidak diambil kembali setelah refund provider (ditangani hold credit_used_before_provider_refund); bead P3/P4 tmepz, 8q1gl.
+Cari: apakah 4 P1 ronde 1 benar tertutup; regresi baru dari perbaikannya; interleaving poller x webhook x refund dana parkir x resolve hold x kredit DP (urutan berbeda, bersamaan, event ganda, transaksi utama vs tambahan); siklus lock; jalan apa pun yang membayar tamu/payer lebih dari dana nyata, membuat outlet rugi, atau membuat tamu bayar dua kali; jurnal finance tidak akurat; lintas tenant/outlet.
+Hasil: tulis `docs/qa/second-opinion-refund-ronde2-1034.md` di folder utama (P0-P3, berkas:baris, skenario, usul test). JANGAN commit, JANGAN edit file lain. Lapor hanya saat selesai.
