@@ -1816,3 +1816,4 @@ Langkah berikut CTO baru:
 - 17:46 CTO G72tm: 984 e35c4a41a (xloqn, xqkr7) antre setelah 981. f586w: keputusan CTO opsi B (devices.shared_mode 0560) + penanda sesi server (0561) + endpoint admin; route uang menunggu 985. Dikirim ke 984.
 - 17:51 CTO G72tm: 988 selesai 947c48b1b, antre batch86 (e2e wajib di train karena 14 spec diubah). Keputusan: format uang API diseragamkan Rp25.000 (kartu P3), toast ponsel di atas diterima, kontras accent kartu P3.
 - 18:17 CTO G72tm: 987 4743ac423 diterima dengan 2 tambahan (menu sarapan fallback perilaku lama bila belum ada item bertanda; jalur admin is_wfc zona). 3 kartu P3 turunan.
+- 18:17 CTO G72tm: 980 ronde 6 08187d8b0 SIAP batch85 (refund manual dikurangi refund provider, bendera provider selalu tolak, not_found semua ditolak: keputusan CTO setuju). Thread resolve, worktree dihapus.
