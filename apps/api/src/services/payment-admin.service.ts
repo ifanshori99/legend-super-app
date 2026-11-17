@@ -86,7 +86,10 @@ export const hasSourceDocument = (
 export async function refundableBalance(
   tx: Tx,
   intent: Intent,
-  { lockDeposit = true }: { lockDeposit?: boolean } = {},
+  {
+    lockDeposit = true,
+    netCreditProviderCut = false,
+  }: { lockDeposit?: boolean; netCreditProviderCut?: boolean } = {},
 ) {
   const result = await tx.execute(sql`
     SELECT
@@ -120,7 +123,7 @@ export async function refundableBalance(
     tx,
     intent.tenantId,
     intent.id,
-    { lock: lockDeposit },
+    { lock: lockDeposit, netCreditProviderCut },
   );
   const forfeited = BigInt(String(row.forfeited));
   const posSaleInUse = await posSaleInUseOfIntent(

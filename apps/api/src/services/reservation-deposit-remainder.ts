@@ -30,6 +30,7 @@ import {
 } from "./reservation-core.ts";
 import { HttpError } from "../lib/http-error.ts";
 import {
+  creditProviderCutOfIntent,
   depositPrincipalReservedSql,
   listSessionDepositSources,
   sessionDepositCredit,
@@ -562,6 +563,7 @@ export async function applyReservationCustomerCredit(
         throw unavailable();
       const balance = await refundableBalance(tx, source, {
         lockDeposit: false,
+        netCreditProviderCut: true,
       });
       const held =
         balance.depositInUse +
@@ -593,13 +595,27 @@ export async function applyReservationCustomerCredit(
       facts.profile !== input.customerProfileId
     )
       throw unavailable();
-    const available = credits.reduce(
-      (sum, row) => sum + Number(row.remainingIdr),
+    // legend-mez2n: the intent check above values the held credit net of the
+    // provider's refunds, so the amount a guest may take is bounded the same
+    // way, per intent: what is left of that intent minus its provider cut
+    // (counted once per intent). One intent's cut never locks another's credit.
+    const intentAvailable = new Map<string, number>();
+    for (const intentId of new Set(credits.map((row) => row.paymentIntentId))) {
+      const remaining = credits
+        .filter((row) => row.paymentIntentId === intentId)
+        .reduce((sum, row) => sum + Number(row.remainingIdr), 0);
+      const cut = Number(
+        await creditProviderCutOfIntent(tx, tenantId, intentId),
+      );
+      intentAvailable.set(intentId, Math.max(0, remaining - cut));
+    }
+    const availableNet = [...intentAvailable.values()].reduce(
+      (sum, value) => sum + value,
       0,
     );
     const assigned = await sessionDepositCredit(tx, tenantId, session.id);
     if (
-      input.amountIdr > available ||
+      input.amountIdr > availableNet ||
       input.amountIdr > Math.max(0, Number(facts.outstanding) - assigned)
     )
       throw unavailable();
@@ -607,8 +623,10 @@ export async function applyReservationCustomerCredit(
     let sourceReservationId: string | null = null;
     for (const credit of credits) {
       if (left <= 0) break;
-      const amount = Math.min(left, Number(credit.remainingIdr));
+      const intentLeft = intentAvailable.get(credit.paymentIntentId) ?? 0;
+      const amount = Math.min(left, Number(credit.remainingIdr), intentLeft);
       if (amount <= 0) continue;
+      intentAvailable.set(credit.paymentIntentId, intentLeft - amount);
       await tx
         .update(reservationDepositRemainders)
         .set({ remainingIdr: idr(Number(credit.remainingIdr) - amount) })

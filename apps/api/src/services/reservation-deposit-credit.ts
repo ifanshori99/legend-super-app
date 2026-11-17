@@ -179,6 +179,30 @@ async function transferredCreditPools(
 }
 
 /**
+ * legend-mez2n: how much of the intent's customer_credit remainders the
+ * provider's later refunds already took out of the transferred pool (counted
+ * once per intent, not per remainder): sum of the remainders minus the pool
+ * (transferredCreditPools, not liveOnly). 0 when nothing was refunded since.
+ */
+export async function creditProviderCutOfIntent(
+  tx: Tx,
+  tenantId: TenantId,
+  intentId: string,
+): Promise<bigint> {
+  const total = await tx.execute(sql`
+    SELECT coalesce(sum(amount_idr), 0)::text AS credit
+      FROM reservation_deposit_remainders
+     WHERE tenant_id = ${tenantId} AND payment_intent_id = ${intentId}::uuid
+       AND kind = 'customer_credit'`);
+  const credit = BigInt(String(total.rows[0]?.credit ?? "0"));
+  const pool =
+    (await transferredCreditPools(tx, tenantId, [intentId], false)).get(
+      intentId.toLowerCase(),
+    ) ?? credit;
+  return credit > pool ? credit - pool : 0n;
+}
+
+/**
  * Recon flags of every credit use of one source intent (any session, closed
  * ones included), judged against the intent's current pool in the same
  * (created_at, id) order as effectiveCreditUseIdr. A use the pool no longer
@@ -324,7 +348,10 @@ export async function depositInUseOfIntent(
   tx: Tx,
   tenantId: TenantId,
   intentId: string,
-  { lock = true }: { lock?: boolean } = {},
+  {
+    lock = true,
+    netCreditProviderCut = false,
+  }: { lock?: boolean; netCreditProviderCut?: boolean } = {},
 ): Promise<bigint> {
   if (lock) {
     // Every DP of the sessions this intent backs, ascending: a refund of a
@@ -364,7 +391,15 @@ export async function depositInUseOfIntent(
   // Gross view, not capped by the pool: the caller's refund check already
   // subtracts the provider's refunds from what was paid, so capping here would
   // count them twice and raise the refund limit (legend-svwdz, 1020).
-  const heldCredit = BigInt(String(creditHeld.rows[0]?.amount ?? "0"));
+  // legend-mez2n: the credit-apply check compares this to a paid amount that is
+  // already net of the provider's refunds, so it asks for the held credit net of
+  // the provider cut (taken once per intent, see creditProviderCutOfIntent).
+  const heldGross = BigInt(String(creditHeld.rows[0]?.amount ?? "0"));
+  let heldCredit = heldGross;
+  if (netCreditProviderCut && heldGross > 0n) {
+    const cut = await creditProviderCutOfIntent(tx, tenantId, intentId);
+    heldCredit = heldGross - (cut < heldGross ? cut : heldGross);
+  }
   if (credits.length === 0) return heldCredit;
   const sessionIds = [...new Set(credits.map((row) => row.tableSessionId))];
   // What the DP paid on each session: the larger of what orders applied
