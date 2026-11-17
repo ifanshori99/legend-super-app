@@ -7448,3 +7448,16 @@ Cabang `ghostex/987-fasilitas-4-kartu` dari `origin/milestone/m1` (1b0fd2a9e). M
 - Gate: prettier dan eslint file berubah hijau, typecheck shared + api hijau, `db:generate` kosong, 17 berkas/251 tes hijau (985, 982, jurnal order-charge, collect-pos, pos-tender, order-issues, pos-cash-guard, data-import-registry). `pnpm check` dan `pnpm test` penuh tidak dijalankan (merge train).
 - Subagent: total 16, puncak 3 bersamaan, token heavy dipegang thread ini (satu lajur bergantian).
 - 985 aturan lantai laci (CTO 17 Nov, setelah 974 batch84 membolehkan expected laci negatif untuk alur lama): approve refund manual TUNAI menolak (409) bila jumlah > expected laci shift (`liveExpectedCashIdr`), dicek sendiri di `order-recovery-charge-manual-refund.ts`, terpisah dari `cashOutExceedsDrawer`. Test `order-charge-drawer-floor-985.test.ts` memock guard bersama jadi selalu longgar; hijau dengan aturan, merah tanpa aturan (dibuktikan). Void tunai sisa (`insertCashReturn`) masih memakai guard bersama, tidak punya lantai sendiri.
+
+### 1029 QR/VA replay + refund otomatis dana parkir (18 Nov 2026)
+
+- legend-kis0u: replay kunci lama kini membaca status nyata kode (void/timeout menjadi expired, paid membawa paidAt) untuk semua kode, bukan hanya e-wallet/kartu; kode lama tidak dibuka lagi. legend-p45yq: kembar yang menunggu lock memakai kunci sendiri (`intentKey`) dan menerima jawaban tersimpan, bukan 409 VA_RELEASE_PROVIDER_UNREAD. legend-nqfov: sudah diperbaiki 1004 (peek sebelum cek metode); test regresi saja.
+- legend-9pz0m: refund sistem dana parkir yang gagal approval_expired/approver_unauthorized dibuka ulang otomatis, maks 3 gagal per dana, satu refund hidup per dana, jumlah = dana; alasan keputusan orang (rejected/provider_declined) atau jatah habis tidak dibuka lagi, event ulang pun tidak. Setelah jatah habis alarm payment.refund_followup_required. Tanpa migrasi.
+- Test: qr-va-1029-replay, qr-va-1029-9pz0m-parked-refile + 10 berkas 1004/940/969 terkait hijau (12 berkas, 91 test). Typecheck API hijau. Review architect xhigh: bersih untuk uang; temuan kecil (daftar followup tidak menampilkan refund dana) jadi kartu terpisah.
+
+
+### legend-of9kp followup dana parkir tampil (18 Nov 2026)
+
+- `listRefundFollowups` kini memuat dana parkir yang jatah refund otomatisnya habis atau ditolak orang: satu item per dana (`fundId` baru di `refundFollowupViewSchema`, `remainingIdr` = jumlah dana, `attempts` per dana); dana ber-resolution atau punya refund hidup/selesai tidak tampil. Tanpa UI baru (belum ada konsumen web).
+- Teks alarm `payment.refund_followup_required` pindah ke katalog (`ws05-refund-followup.ts` `followupAlarm`); versi dana parkir menyebut dana tamu yang diparkir dan jumlahnya, tidak menyuruh "ajukan refund baru". Teks non-dana tetap.
+- Test `qr-va-1029-of9kp-followup-list` (9) + 3 berkas terkait hijau (42); `tests/text-contract` dan `payment-admin-contract` hijau; typecheck API hijau; reviewer S bersih. Tidak mengubah alur uang.
