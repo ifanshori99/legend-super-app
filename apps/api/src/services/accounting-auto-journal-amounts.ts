@@ -79,6 +79,7 @@ import {
   goodsReceiptLines,
   journalEntries,
   loyaltyPrograms,
+  orderIssueChargeManualRefunds,
   orderIssueCharges,
   orderIssues,
   orders,
@@ -118,6 +119,7 @@ import {
   AutoJournalSalePending,
 } from "./accounting-auto-journal-void.ts";
 import { heldVoidChargeRefundId } from "./order-recovery-charge-void-id.ts";
+import { manualRefundedOfCharge } from "./order-charge-manual-refund-sum.ts";
 import { isTrainingOrder } from "./device-training.ts";
 import { ROUNDING_MODE, type Tx } from "./inventory-ops.shared.ts";
 import { purchasingPostingEnabled } from "./purchasing-posting-gate.ts";
@@ -358,8 +360,11 @@ export const orderIssueChargeRefundedStoredSchema = z.object({
   refundId: z.string().uuid(),
   /** Null exactly for the cash return of a voided order (legend-s61sg). */
   paymentIntentId: z.string().uuid().nullable(),
-  /** Absent: the gateway refund of an intent (legend-nsvu0). */
-  method: z.enum(["gateway", "pos_cash"]).optional(),
+  /**
+   * Absent: the gateway refund of an intent (legend-nsvu0). edc_manual
+   * (legend-mrwtp): money given back on the EDC machine, no intent.
+   */
+  method: z.enum(["gateway", "pos_cash", "edc_manual"]).optional(),
   grossSalesIdr: idr.nonnegative(),
   serviceChargeIdr: idr.nonnegative(),
   pbjtIdr: idr.nonnegative(),
@@ -1959,8 +1964,10 @@ async function chargePaidFactOf(
   // the late charge_paid still books its revenue, the cash return event
   // reverses it (a charge that never reached the books needs no journal, but
   // the return event would then wait for it, so it must post).
+  // legend-v5z4h: a gateway charge already refunded in full is `voided` by the
+  // void of its order the same way; its late events post as if it were paid.
   if (
-    (charge.status !== "paid" && !(cash && charge.status === "voided")) ||
+    (charge.status !== "paid" && charge.status !== "voided") ||
     charge.paymentIntentId !== p.paymentIntentId ||
     (charge.cashMovementId ?? null) !== (p.cashMovementId ?? null) ||
     charge.outletId !== stored.outletId ||
@@ -2161,11 +2168,26 @@ async function chargeRefundedFactOf(
     );
   if (!charge)
     throw new AutoJournalPayloadInvalid("Charge of the event not found");
-  if (p.method === "pos_cash")
+  if (p.method === "edc_manual")
+    return chargeManualRefundFactOf(tx, tenantId, stored, p, charge);
+  if (p.method === "pos_cash") {
+    // legend-mrwtp: the cash_out of an approved manual refund names its row.
+    const [manual] = await tx
+      .select({ id: orderIssueChargeManualRefunds.id })
+      .from(orderIssueChargeManualRefunds)
+      .where(
+        and(
+          eq(orderIssueChargeManualRefunds.tenantId, tenantId),
+          eq(orderIssueChargeManualRefunds.cashMovementId, p.refundId),
+        ),
+      );
+    if (manual)
+      return chargeManualRefundFactOf(tx, tenantId, stored, p, charge);
     return chargeCashReturnFactOf(tx, tenantId, stored, p, charge);
+  }
   if (
     p.paymentIntentId === null ||
-    charge.status !== "paid" ||
+    (charge.status !== "paid" && charge.status !== "voided") ||
     charge.paymentIntentId !== p.paymentIntentId ||
     charge.outletId !== stored.outletId ||
     charge.orderId !== p.orderId ||
@@ -2263,8 +2285,8 @@ async function chargeRefundedFactOf(
  * (`order.refunded` rule: gross / service / PBJT debited, the cash credited).
  * `refundId` is the cash_out movement of the return. Restrictive:
  * - the charge must be `voided`, cash paid, of the event's order and issue,
- *   and the movement must be a cash_out of the same outlet, for the whole
- *   charge, recorded for this charge only (its key names the charge); a void
+ *   and the movement must be a cash_out of the same outlet, for the rest of
+ *   the charge (its amount less the completed manual refunds), recorded for this charge only (its key names the charge); a void
  *   held for the drawer has no movement: then the held void row of the order
  *   and the refund id derived from it and the charge are the evidence;
  * - it waits (retryable) for the charge journal it reverses, even when the
@@ -2343,8 +2365,12 @@ async function chargeCashReturnFactOf(
         "Cash movement of the event is not the return of its charge",
       );
   }
+  // The void gives back the REST of the charge: what staff already returned by
+  // hand (completed manual refunds, their own journal events) is not returned
+  // twice, so the amount is the charge less those, never more.
+  const manual = await manualRefundedOfCharge(tx, tenantId, p.chargeId);
   if (
-    Number(charge.amountIdr) !== p.amountIdr ||
+    manual.completed + p.amountIdr !== Number(charge.amountIdr) ||
     p.grossSalesIdr + p.serviceChargeIdr + p.pbjtIdr !== p.amountIdr
   )
     throw new AccountingError(
@@ -2370,6 +2396,160 @@ async function chargeCashReturnFactOf(
       refundGatewayIdr: 0,
       refundGatewayClearingIdr: 0,
       refundEdcIdr: 0,
+      refundPointsIdr: 0,
+    },
+    sourceId: p.refundId,
+    outletId: stored.outletId,
+    moneyTime: new Date(p.refundedAt),
+  };
+}
+
+/**
+ * legend-mrwtp: the return of part (or all) of a till-paid charge that staff
+ * gave back by hand and a second person approved
+ * (`order_issue_charge_manual_refunds`, `order.refunded` rule: gross / service
+ * / PBJT debited, the cash or the EDC clearing credited). `refundId` is the
+ * shift's cash_out movement (method pos_cash) or the manual refund row itself
+ * (method edc_manual). Restrictive:
+ * - the manual refund must be `completed`, of this charge and outlet, of the
+ *   same method and for the event's amount; a cash one needs its cash_out
+ *   (key `manual-charge-refund:<id>`, same outlet and amount);
+ * - the charge must be a till-paid one (cash_in or approved EDC sale, no
+ *   intent) still `paid` or `voided` after the void gave the rest back; the
+ *   refunds of the charge together (requested + completed) may not pass it;
+ * - it waits (retryable) for the charge journal it reverses.
+ */
+async function chargeManualRefundFactOf(
+  tx: Tx,
+  tenantId: TenantId,
+  stored: StoredAutoJournalEvent,
+  p: z.infer<typeof orderIssueChargeRefundedStoredSchema>,
+  charge: {
+    outletId: string;
+    orderId: string;
+    orderIssueId: string;
+    status: string;
+    paymentIntentId: string | null;
+    amountIdr: number | bigint;
+  },
+): Promise<AutoJournalFact> {
+  const cash = p.method === "pos_cash";
+  if (
+    p.paymentIntentId !== null ||
+    !["paid", "voided"].includes(charge.status) ||
+    charge.paymentIntentId !== null ||
+    !stored.outletId ||
+    charge.outletId !== stored.outletId ||
+    charge.orderId !== p.orderId ||
+    charge.orderIssueId !== p.orderIssueId
+  )
+    throw new AutoJournalPayloadInvalid(
+      "Charge is not a till-paid charge of the event",
+    );
+  const [manual] = await tx
+    .select({
+      id: orderIssueChargeManualRefunds.id,
+      chargeId: orderIssueChargeManualRefunds.chargeId,
+      outletId: orderIssueChargeManualRefunds.outletId,
+      method: orderIssueChargeManualRefunds.method,
+      status: orderIssueChargeManualRefunds.status,
+      amountIdr: orderIssueChargeManualRefunds.amountIdr,
+      cashMovementId: orderIssueChargeManualRefunds.cashMovementId,
+    })
+    .from(orderIssueChargeManualRefunds)
+    .where(
+      and(
+        eq(orderIssueChargeManualRefunds.tenantId, tenantId),
+        cash
+          ? eq(orderIssueChargeManualRefunds.cashMovementId, p.refundId)
+          : eq(orderIssueChargeManualRefunds.id, p.refundId),
+      ),
+    );
+  if (
+    !manual ||
+    manual.status !== "completed" ||
+    manual.chargeId !== p.chargeId ||
+    manual.outletId !== stored.outletId ||
+    manual.method !== (cash ? "cash" : "edc")
+  )
+    throw new AutoJournalPayloadInvalid(
+      "Manual refund of the event not found or not completed",
+    );
+  if (Number(manual.amountIdr) !== p.amountIdr)
+    throw new AccountingError(
+      "POSTING_AMOUNTS_MISMATCH",
+      "Charge manual refund does not match its row",
+    );
+  if (cash) {
+    const [movement] = await tx
+      .select({
+        type: cashMovements.type,
+        outletId: cashMovements.outletId,
+        amountIdr: cashMovements.amountIdr,
+        idempotencyKey: cashMovements.idempotencyKey,
+      })
+      .from(cashMovements)
+      .where(
+        and(
+          eq(cashMovements.tenantId, tenantId),
+          eq(cashMovements.id, p.refundId),
+        ),
+      );
+    if (
+      !movement ||
+      movement.type !== "cash_out" ||
+      movement.outletId !== stored.outletId ||
+      movement.idempotencyKey !== `manual-charge-refund:${manual.id}`
+    )
+      throw new AutoJournalPayloadInvalid(
+        "Cash movement of the event is not the manual refund of its charge",
+      );
+    if (Number(movement.amountIdr) !== p.amountIdr)
+      throw new AccountingError(
+        "POSTING_AMOUNTS_MISMATCH",
+        "Charge manual refund does not match the cash movement",
+      );
+  }
+  const [held] = await tx
+    .select({
+      total: sql<string>`coalesce(sum(${orderIssueChargeManualRefunds.amountIdr}), 0)::text`,
+    })
+    .from(orderIssueChargeManualRefunds)
+    .where(
+      and(
+        eq(orderIssueChargeManualRefunds.tenantId, tenantId),
+        eq(orderIssueChargeManualRefunds.chargeId, p.chargeId),
+        ne(orderIssueChargeManualRefunds.status, "rejected"),
+      ),
+    );
+  if (
+    p.amountIdr > Number(charge.amountIdr) ||
+    Number(held?.total ?? "0") > Number(charge.amountIdr) ||
+    p.grossSalesIdr + p.serviceChargeIdr + p.pbjtIdr !== p.amountIdr
+  )
+    throw new AccountingError(
+      "POSTING_AMOUNTS_MISMATCH",
+      "Manual refunds of the charge pass the paid charge",
+    );
+  const chargeState = await backingStateOf(tx, tenantId, {
+    kind: "charge",
+    chargeId: p.chargeId,
+  });
+  if (chargeState === "pending")
+    throw new AutoJournalSalePending("Charge journal is not posted yet");
+  if (chargeState === "none")
+    throw new AutoJournalSaleMissing("Charge journal will never post");
+  return {
+    ruleEvent: "order.refunded",
+    amounts: {
+      grossSalesIdr: p.grossSalesIdr,
+      serviceChargeIdr: p.serviceChargeIdr,
+      pbjtIdr: p.pbjtIdr,
+      discountIdr: 0,
+      refundCashIdr: cash ? p.amountIdr : 0,
+      refundGatewayIdr: 0,
+      refundGatewayClearingIdr: 0,
+      refundEdcIdr: cash ? 0 : p.amountIdr,
       refundPointsIdr: 0,
     },
     sourceId: p.refundId,

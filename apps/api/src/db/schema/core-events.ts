@@ -72,6 +72,13 @@ export const domainEventOutbox = pgTable(
       table.status,
       table.availableAt,
     ),
+    // legend-9e21l: the refund lookups of a paid swap charge (payment-admin
+    // chargeInUseOfIntent, accounting-auto-journal-guards charge refund guard)
+    // find `order_issue.charge_refunded` events by their payload refundId. The
+    // queries repeat this WHERE text exactly so the planner uses the index.
+    index("domain_event_outbox_charge_refunded_idx")
+      .on(table.tenantId, sql`(${table.event}->'payload'->>'refundId')`)
+      .where(sql`${table.event}->>'name' = 'order_issue.charge_refunded'`),
   ],
 );
 
