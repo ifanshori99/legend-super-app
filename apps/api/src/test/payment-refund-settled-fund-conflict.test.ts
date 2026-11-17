@@ -160,6 +160,11 @@ async function cleanupRows() {
     "DELETE FROM payment_refunds WHERE payment_intent_id = ANY($1::uuid[])",
     [intentIds],
   );
+  // legend-30hfs: provider refunds recorded by an unmatched refund event.
+  await owner.query(
+    "DELETE FROM payment_provider_refunds WHERE payment_intent_id = ANY($1::uuid[])",
+    [intentIds],
+  );
   await owner.query(
     "DELETE FROM gateway_webhook_events WHERE tenant_id = $1 AND (event_id = ANY($2::text[]) OR NOT signature_valid)",
     [tenantId, eventIds],
@@ -256,6 +261,32 @@ async function eventRows(eventId: string) {
     [tenantId, eventId],
   );
   return rows;
+}
+
+/** Provider refunds recorded for the intent (legend-30hfs). */
+async function providerRefunds(intentId: string) {
+  const { rows } = await owner.query<{
+    amount_idr: string;
+    provider_payment_ref: string;
+    evidence_id: string | null;
+  }>(
+    `SELECT amount_idr, provider_payment_ref, evidence_id FROM payment_provider_refunds
+     WHERE tenant_id = $1 AND payment_intent_id = $2`,
+    [tenantId, intentId],
+  );
+  return rows.map((r) => ({
+    amount: Number(r.amount_idr),
+    payment: r.provider_payment_ref,
+    evidence: r.evidence_id !== null,
+  }));
+}
+
+async function fundProviderRefunded(fundId: string) {
+  const { rows } = await owner.query<{ at: Date | null }>(
+    "SELECT provider_refunded_at AS at FROM payment_unallocated_funds WHERE id = $1",
+    [fundId],
+  );
+  return rows[0]?.at != null;
 }
 
 /** Deliver one signed refund event; `data` is the DOIT payload. */
@@ -373,7 +404,7 @@ describe("legend-kl46s DOIT reports a fund refund that finance settled by hand",
     // One live refund per fund (payment_refunds_unallocated_fund_live_uq), so the
     // second live refund is an ordinary one on another intent whose own payment
     // is p2 (a flat event names no intent).
-    const { refundId, p2 } = await seedSettledFundRefund();
+    const { refundId, intentId, fundId, p2 } = await seedSettledFundRefund();
     const { intentId: otherIntentId } = await seedPaidIntent();
     await owner.query(
       "UPDATE payment_intents SET provider_ref = $3 WHERE tenant_id = $1 AND id = $2",
@@ -385,31 +416,44 @@ describe("legend-kl46s DOIT reports a fund refund that finance settled by hand",
 
     const eventId = await deliverFlatAged(p2, FUND_IDR);
 
+    // legend-30hfs: no refund of ours matches, so it is the provider's own
+    // refund of p2, recorded against the intent whose evidence p2 is.
     expect(await eventRows(eventId)).toEqual([
-      expect.objectContaining({
-        status: "ignored",
-        last_error_code: "REFUND_UNMATCHED",
-      }),
+      expect.objectContaining({ status: "processed", last_error_code: null }),
     ]);
     expect(await conflictAudits(refundId)).toHaveLength(0);
     expect(await refundRow(refundId)).toEqual(before);
     expect(await refundRow(otherId)).toEqual(otherBefore);
+    expect(await providerRefunds(intentId)).toEqual([
+      { amount: FUND_IDR, payment: p2, evidence: true },
+    ]);
+    expect(
+      await providerRefunds(otherIntentId),
+      "never the other intent",
+    ).toEqual([]);
+    // The fund p2 backs is blocked: it can never be refunded again.
+    expect(await fundProviderRefunded(fundId)).toBe(true);
   });
 
   it("an event naming the intent's own payment p1 never matches the fund refund (its source is p2)", async () => {
-    const { refundId, p1 } = await seedSettledFundRefund();
+    const { refundId, intentId, fundId, p1 } = await seedSettledFundRefund();
     const before = await refundRow(refundId);
 
     const eventId = await deliverFlatAged(p1, FUND_IDR);
 
+    // legend-30hfs: recorded as the provider's own partial refund of p1 (the
+    // intent's own payment), never as the fund refund.
     expect(await eventRows(eventId)).toEqual([
-      expect.objectContaining({
-        status: "ignored",
-        last_error_code: "REFUND_UNMATCHED",
-      }),
+      expect.objectContaining({ status: "processed", last_error_code: null }),
     ]);
     expect(await conflictAudits(refundId)).toHaveLength(0);
     expect(await refundRow(refundId)).toEqual(before);
+    expect(await providerRefunds(intentId)).toEqual([
+      { amount: FUND_IDR, payment: p1, evidence: true },
+    ]);
+    expect(await fundProviderRefunded(fundId), "p2's fund is not p1").toBe(
+      false,
+    );
   });
 
   it("an event naming another payment never matches the fund refund", async () => {

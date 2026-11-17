@@ -1474,9 +1474,7 @@ async function processRefundEvent(
         : null;
     if (settledOutside?.kind === "found") target = settledOutside;
     const viaSettled = settledOutside?.kind === "found";
-    const unmatched = async (
-      foreign = false,
-    ): Promise<ProcessOutcome> => {
+    const unmatched = async (foreign = false): Promise<ProcessOutcome> => {
       const retryable =
         now.getTime() - row.receivedAt.getTime() <
         WEBHOOK_UNKNOWN_REFERENCE_RETRY_MS;
@@ -2237,8 +2235,7 @@ export async function receiveDoitWebhook(input: {
       if (refundedRow.payload !== null)
         toApply = storedRefundedStatusFacts(refundedRow.payload);
     }
-    if (!facts.paymentId && stored)
-      return { status: "ignored", eventId: id };
+    if (!facts.paymentId && stored) return { status: "ignored", eventId: id };
     const outcome = await processRefundedStatusEvent(
       context,
       refundedRow,

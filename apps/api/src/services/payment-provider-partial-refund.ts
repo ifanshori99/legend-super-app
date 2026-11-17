@@ -14,7 +14,16 @@ import {
   idr,
   type ScopedTenantContext,
 } from "@starter/shared/core";
-import { and, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
+import {
+  and,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import {
   paymentEvidence,
   paymentIntents,
@@ -29,6 +38,8 @@ import { providerRefundedForeignIdrSql } from "./payment-provider-refunded-forei
 import type { Tx } from "./permission-resolver.ts";
 
 const PROVIDER = "doit";
+/** Id prefix of the refund derived from a payment's own `refunded` status. */
+const SYNTHETIC_PREFIX = "payment:";
 
 export type ProviderRefundInput = {
   provider: string;
@@ -77,7 +88,8 @@ export async function recordProviderRefundInTx(
   now: Date,
 ): Promise<ProviderRefundOutcome> {
   const tenantId = context.tenant.tenantId;
-  const { providerRefundId, providerPaymentRef, amountIdr } = input;
+  const { providerRefundId, providerPaymentRef } = input;
+  let amountIdr = input.amountIdr;
   if (
     input.provider !== PROVIDER ||
     providerRefundId.length === 0 ||
@@ -89,7 +101,9 @@ export async function recordProviderRefundInTx(
   )
     return { status: "unbound" };
   const outletIds =
-    context.outletScope.kind === "outlets" ? context.outletScope.outletIds : null;
+    context.outletScope.kind === "outlets"
+      ? context.outletScope.outletIds
+      : null;
   const inScope = (column: SQL): SQL =>
     outletIds
       ? sql`${column} IN (${sql.join(
@@ -154,6 +168,7 @@ export async function recordProviderRefundInTx(
     .select({
       id: paymentEvidence.id,
       intentId: paymentEvidence.paymentIntentId,
+      amountIdr: paymentEvidence.amountIdr,
     })
     .from(paymentEvidence)
     .where(
@@ -200,6 +215,33 @@ export async function recordProviderRefundInTx(
     .limit(1);
   if (inFlight && !input.force) return { status: "retry" };
 
+  // One transaction, one refund: the payment's own `refunded` status
+  // (`payment:<ref>`, the whole transaction) and a provider refund id of the
+  // same transaction describe the same money, so the second never adds to it.
+  const recorded = await tx
+    .select({
+      refundId: paymentProviderRefunds.providerRefundId,
+      amountIdr: paymentProviderRefunds.amountIdr,
+    })
+    .from(paymentProviderRefunds)
+    .where(
+      and(
+        eq(paymentProviderRefunds.tenantId, tenantId),
+        eq(paymentProviderRefunds.provider, PROVIDER),
+        eq(paymentProviderRefunds.providerPaymentRef, providerPaymentRef),
+      ),
+    );
+  if (providerRefundId.startsWith(SYNTHETIC_PREFIX)) {
+    if (evidence) {
+      const left =
+        Number(evidence.amountIdr) -
+        recorded.reduce((sum, row) => sum + Number(row.amountIdr), 0);
+      if (left <= 0) return { status: "duplicate" };
+      amountIdr = left;
+    }
+  } else if (recorded.some((row) => row.refundId.startsWith(SYNTHETIC_PREFIX)))
+    return { status: "duplicate" };
+
   // 4. The insert decides the winner; a replay or a racing second path stops.
   const [inserted] = await tx
     .insert(paymentProviderRefunds)
@@ -229,6 +271,26 @@ export async function recordProviderRefundInTx(
   // refunded transaction is the intent's own, a fund with no evidence mapping
   // of the intent may hold that money too, so it is blocked as well.
   const ownTransaction = intent.providerRef === providerPaymentRef;
+  // Already told (958, an earlier refund of this transaction): the intent of
+  // the transaction, or its fund, carried the refunded stamp before this call.
+  const [fundAlreadyStamped] = evidenceId
+    ? await tx
+        .select({ id: paymentUnallocatedFunds.id })
+        .from(paymentUnallocatedFunds)
+        .where(
+          and(
+            eq(paymentUnallocatedFunds.tenantId, tenantId),
+            eq(paymentUnallocatedFunds.evidenceId, evidenceId),
+            isNotNull(paymentUnallocatedFunds.providerRefundedAt),
+          ),
+        )
+        .limit(1)
+    : [];
+  const alreadyAlerted =
+    !!fundAlreadyStamped ||
+    (ownTransaction &&
+      (intent.providerRefundedAfterPaidAt !== null ||
+        intent.providerRefundedAt !== null));
   const marked = await tx
     .update(paymentUnallocatedFunds)
     .set({ providerRefundedAt: now })
@@ -271,7 +333,10 @@ export async function recordProviderRefundInTx(
   // longer fit in what the bill may refund (the cap), so the settled intent is
   // flagged like a full refund. Read under the intent lock.
   const balance = await refundableBalance(tx, intent, { lockDeposit: false });
-  if ((paidIdr > 0 && cumulativeIdr >= paidIdr) || balance.reserved > balance.cap) {
+  if (
+    (paidIdr > 0 && cumulativeIdr >= paidIdr) ||
+    balance.reserved > balance.cap
+  ) {
     const flagged = await tx
       .update(paymentIntents)
       .set({ providerRefundedAfterPaidAt: now })
@@ -347,17 +412,21 @@ export async function recordProviderRefundInTx(
       "intentFlagged",
     ],
   );
-  await alertProviderPartialRefund(
-    tx,
-    context,
-    {
-      intentId: intent.id,
-      outletId: intent.outletId,
-      providerRefundId,
-      amountIdr,
-      cumulativeIdr,
-    },
-    now,
-  );
+  // The supervisors were already told this money went back (the audit row
+  // above still records the refund), unless this refund newly flags the whole
+  // intent: that is news they must get.
+  if (!alreadyAlerted || intentFlagged)
+    await alertProviderPartialRefund(
+      tx,
+      context,
+      {
+        intentId: intent.id,
+        outletId: intent.outletId,
+        providerRefundId,
+        amountIdr,
+        cumulativeIdr,
+      },
+      now,
+    );
   return { status: "recorded" };
 }

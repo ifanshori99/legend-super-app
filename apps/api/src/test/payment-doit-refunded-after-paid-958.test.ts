@@ -1408,16 +1408,10 @@ describe("legend-7uqbs a declined fund refund does not free the money when the p
 // ---------------------------------------------------------------------------
 
 describe("legend-3wwme payment.refunded whose data is not a payment object", () => {
+  // legend-30hfs (967): a partial refund object naming our payment (payment_id
+  // + amount) is no longer only stored; see "958-b a partial refund object"
+  // below.
   const BODIES: Array<[string, (code: Code) => Record<string, unknown>]> = [
-    [
-      "a partial refund object",
-      (code) => ({
-        id: `rf_${randomBytes(6).toString("hex")}`,
-        payment_id: code.providerRef,
-        amount: 5_000,
-        status: "partially_refunded",
-      }),
-    ],
     ["an empty object", () => ({})],
     [
       "a nested refund and no payment fields",
@@ -1480,6 +1474,59 @@ describe("legend-3wwme payment.refunded whose data is not a payment object", () 
       expect(await eventRow(body.id)).toHaveLength(1);
     },
   );
+
+  it("958-b a partial refund object naming our payment without a refund id answers 2xx and is taken as a full refund in doubt: the code is blocked, nothing else moves", async () => {
+    const code = await newCode();
+    const before = await books(code);
+    const auditBefore = await auditActions(code.id);
+    const alertsBefore = await supervisorAlerts();
+    const body = {
+      id: `evt_${randomBytes(8).toString("hex")}`,
+      type: "payment.refunded",
+      created_at: new Date().toISOString(),
+      data: {
+        id: `rf_${randomBytes(6).toString("hex")}`,
+        payment_id: code.providerRef,
+        amount: 5_000,
+        status: "partially_refunded",
+      },
+    };
+
+    const answer = await deliver(body);
+    expect(
+      answer.status,
+      `DOIT must not retry: ${JSON.stringify(answer.body)}`,
+    ).toBeGreaterThanOrEqual(200);
+    expect(answer.status).toBeLessThan(300);
+
+    const rows = await eventRow(body.id);
+    expect(rows, "one stored row for the event").toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      signature_valid: true,
+      status: "processed",
+    });
+
+    // legend-30hfs: no refund id, so the refund may be the whole payment. The
+    // pending code is marked provider-refunded: a later paid message can never
+    // settle it.
+    const { rows: flagged } = await owner.query<{ at: Date | null }>(
+      "SELECT provider_refunded_at AS at FROM payment_intents WHERE id = $1",
+      [code.id],
+    );
+    expect(flagged[0]!.at, "the code is blocked").not.toBeNull();
+    expect((await intentState(code.id)).status).toBe("pending");
+
+    // Nothing moved, nobody was alerted (no money was recorded), no audit row.
+    expect(await books(code)).toEqual(before);
+    expect(await auditActions(code.id)).toEqual(auditBefore);
+    expect(await supervisorAlerts()).toBe(alertsBefore);
+
+    // DOIT's resend of the same event is a plain duplicate, still 2xx.
+    const resend = await deliver(body);
+    expect(resend.status).toBeGreaterThanOrEqual(200);
+    expect(resend.status).toBeLessThan(300);
+    expect(await eventRow(body.id)).toHaveLength(1);
+  });
 
   it.each([
     [

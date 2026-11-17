@@ -103,7 +103,6 @@ const actor = randomUUID();
 const webhookPath = `/api/webhooks/payments/doit/${tenantId}`;
 const ADMIN = "/api/payments/admin";
 const BILL_TOTAL = 144_375;
-const SHORT_BY = 1_000;
 const MINUTE = 60_000;
 
 const apiKey = `doit-key-967-${randomBytes(12).toString("hex")}`;
@@ -421,6 +420,10 @@ afterAll(async () => {
     );
     await owner.query(
       `DELETE FROM payment_refunds WHERE tenant_id = $1 AND payment_intent_id IN (${intents})`,
+      [tenantId, createdLinkIds],
+    );
+    await owner.query(
+      `DELETE FROM payment_provider_refunds WHERE tenant_id = $1 AND payment_intent_id IN (${intents})`,
       [tenantId, createdLinkIds],
     );
     await owner.query(

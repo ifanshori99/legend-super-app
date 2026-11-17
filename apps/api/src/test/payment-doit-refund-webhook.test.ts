@@ -343,6 +343,11 @@ async function cleanupRows() {
     "DELETE FROM payment_refunds WHERE payment_intent_id = ANY($1::uuid[])",
     [intentIds],
   );
+  // legend-30hfs: provider refunds recorded by an unmatched refund event.
+  await owner.query(
+    "DELETE FROM payment_provider_refunds WHERE payment_intent_id = ANY($1::uuid[])",
+    [intentIds],
+  );
   await owner.query(
     "DELETE FROM gateway_webhook_events WHERE tenant_id = $1 AND (event_id = ANY($2::text[]) OR NOT signature_valid)",
     [tenantId, eventIds],
@@ -823,10 +828,11 @@ describe("PAY-03 a refund event that matches no refund is retried for 15 minutes
   it("PAY-03 an event still unmatched after 15 minutes is ignored as REFUND_UNMATCHED", async () => {
     const intent = await seedPaidIntent();
     const refundId = await seedRefund(intent, { attempts: 1 });
+    // A payment id no intent or evidence of this tenant carries.
     const body = refundEvent(
       "refund.succeeded",
       flatRefund(randomUUID(), intent.amountIdr, {
-        payment_id: intent.paymentId,
+        payment_id: `dp_${hex(8)}`,
       }),
     );
     expect((await deliver(body)).status).toBe(500);
@@ -841,6 +847,52 @@ describe("PAY-03 a refund event that matches no refund is retried for 15 minutes
       }),
     ]);
     expect((await refundRow(refundId)).status).toBe("approved");
+  });
+
+  it("PAY-03 legend-30hfs an unmatched success naming our payment, after 15 minutes, is recorded as the provider's own refund and blocks our payout", async () => {
+    const intent = await seedPaidIntent();
+    const refundId = await seedRefund(intent, { attempts: 1 });
+    const body = refundEvent(
+      "refund.succeeded",
+      flatRefund(randomUUID(), intent.amountIdr, {
+        payment_id: intent.paymentId,
+      }),
+    );
+    expect((await deliver(body)).status).toBe(500);
+
+    await backdate(body.id, 20);
+    await reprocess();
+
+    expect(await eventRows(body.id)).toEqual([
+      expect.objectContaining({ status: "processed", last_error_code: null }),
+    ]);
+    // Our refund is not completed by someone else's refund.
+    expect((await refundRow(refundId)).status).toBe("approved");
+    // The money went back to the payer: recorded once against this intent...
+    const { rows: recorded } = await owner.query<{
+      amount_idr: string;
+      provider_refund_id: string;
+    }>(
+      `SELECT amount_idr, provider_refund_id FROM payment_provider_refunds
+        WHERE tenant_id = $1 AND payment_intent_id = $2`,
+      [tenantId, intent.intentId],
+    );
+    expect(
+      recorded.map((r) => [r.provider_refund_id, Number(r.amount_idr)]),
+    ).toEqual([[body.data.id, intent.amountIdr]]);
+    const { rows: stamped } = await owner.query<{ at: Date | null }>(
+      "SELECT provider_refunded_after_paid_at AS at FROM payment_intents WHERE id = $1",
+      [intent.intentId],
+    );
+    expect(stamped[0]?.at, "the paid intent is flagged").not.toBeNull();
+    // ...and our own refund of the same money is never paid out on top.
+    await owner.query(
+      "UPDATE payment_refunds SET updated_at = now() - interval '2 hours' WHERE id = $1",
+      [refundId],
+    );
+    await sweep();
+    expect(doit.refundPostsFor(intent.paymentId)).toEqual([]);
+    expect((await refundRow(refundId)).status).not.toBe("completed");
   });
 });
 

@@ -178,6 +178,11 @@ async function cleanupRows() {
     "DELETE FROM payment_refunds WHERE payment_intent_id = ANY($1::uuid[])",
     [intentIds],
   );
+  // legend-30hfs: provider refunds recorded by an unmatched refund event.
+  await owner.query(
+    "DELETE FROM payment_provider_refunds WHERE payment_intent_id = ANY($1::uuid[])",
+    [intentIds],
+  );
   await owner.query(
     "DELETE FROM gateway_webhook_events WHERE tenant_id = $1 AND (event_id = ANY($2::text[]) OR NOT signature_valid)",
     [tenantId, eventIds],

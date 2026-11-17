@@ -39,9 +39,12 @@
 //    "poller at once" is a poll running beside the webhooks; it adds nothing.
 //  - "Recorded refunded" is what GET /refunds/refundable shows:
 //    refundedAmountIdr + refundableAmountIdr == paidAmountIdr (a contract
-//    invariant) and the provider's partial refunds count as refunded. A
-//    payment with nothing left is absent from that list (see
-//    payment-refund-approval.test.ts), read as refundable 0 / refunded paid.
+//    invariant). paidAmountIdr is the money still ours, net of what the
+//    provider refunded (like the DP a bill uses), and refundedAmountIdr is our
+//    own refunds only; the provider's refunds are read from
+//    payment_provider_refunds. A payment with nothing left is absent from that
+//    list (see payment-refund-approval.test.ts), read as refundable 0 /
+//    refunded paid.
 //  - "Audit row" and "alert" as in the 958 file: a new audit_logs row of the
 //    tenant mentioning the intent with an action containing "refund"; an
 //    in-app notification for the outlet supervisor. Counted as deltas.
@@ -438,6 +441,10 @@ afterAll(async () => {
       [tenantId, createdLinkIds],
     );
     await owner.query(
+      `DELETE FROM payment_provider_refunds WHERE tenant_id = $1 AND payment_intent_id IN (${intents})`,
+      [tenantId, createdLinkIds],
+    );
+    await owner.query(
       `DELETE FROM payment_evidence WHERE tenant_id = $1 AND payment_intent_id IN (${intents})`,
       [tenantId, createdLinkIds],
     );
@@ -673,15 +680,6 @@ async function refundStatuses(intentId: string): Promise<string[]> {
   return rows.map((row) => row.status);
 }
 
-async function fundRefundId(fundId: string): Promise<string> {
-  const { rows } = await owner.query<{ id: string }>(
-    "SELECT id FROM payment_refunds WHERE tenant_id = $1 AND unallocated_fund_id = $2",
-    [tenantId, fundId],
-  );
-  if (!rows[0]) throw new Error("no refund filed for the fund");
-  return rows[0].id;
-}
-
 /** The refund was not paid out: no provider call, no journal, not completed. */
 async function expectNotPaidOut(intentId: string, journalsBefore: number) {
   expect(fake.calls, "no provider refund call").toHaveLength(0);
@@ -843,6 +841,16 @@ async function refundView(intentId: string) {
   };
 }
 
+/** Provider refunds recorded for the intent (legend-30hfs), in rupiah. */
+async function providerRefundedIdr(intentId: string): Promise<number> {
+  const { rows } = await owner.query<{ n: string }>(
+    `SELECT coalesce(sum(amount_idr), 0)::text AS n FROM payment_provider_refunds
+      WHERE tenant_id = $1 AND payment_intent_id = $2`,
+    [tenantId, intentId],
+  );
+  return Number(rows[0]!.n);
+}
+
 const PARTIAL_AUDIT = "payment.provider_refunded_partial";
 const refundAudit = async (intentId: string) =>
   (await auditActions(intentId)).filter((a) => /refund/i.test(a));
@@ -906,10 +914,12 @@ describe("legend-30hfs a partial provider refund on a paid intent", () => {
         "exactly one alert to the outlet supervisor",
       ).toBe(1);
 
-      // Counted once: Rp40.000 refunded, the rest still refundable.
+      // Counted once: Rp40.000 refunded by the provider, the rest still
+      // refundable.
+      expect(await providerRefundedIdr(code.id)).toBe(40_000);
       expect(await refundView(code.id)).toEqual({
-        paid: BILL_TOTAL,
-        refunded: 40_000,
+        paid: BILL_TOTAL - 40_000,
+        refunded: 0,
         refundable: BILL_TOTAL - 40_000,
       });
       // The provider's refund is not our payout: no journal, no provider call.
@@ -931,8 +941,10 @@ describe("legend-30hfs a partial provider refund on a paid intent", () => {
 
     expect((await partialAudit(code.id)) - auditBefore).toBe(1);
     expect((await supervisorAlerts()) - alertsBefore).toBe(1);
-    expect(await refundView(code.id)).toMatchObject({
-      refunded: 40_000,
+    expect(await providerRefundedIdr(code.id)).toBe(40_000);
+    expect(await refundView(code.id)).toEqual({
+      paid: BILL_TOTAL - 40_000,
+      refunded: 0,
       refundable: BILL_TOTAL - 40_000,
     });
   });
@@ -955,9 +967,10 @@ describe("legend-30hfs repeated partial provider refunds", () => {
     await deliverPartial(code, refundId(), 30_000, "refund");
     expect((await partialAudit(code.id)) - auditBefore).toBe(2);
     expect((await supervisorAlerts()) - alertsBefore).toBe(2);
+    expect(await providerRefundedIdr(code.id)).toBe(130_000);
     expect(await refundView(code.id)).toEqual({
-      paid: BILL_TOTAL,
-      refunded: 130_000,
+      paid: BILL_TOTAL - 130_000,
+      refunded: 0,
       refundable: BILL_TOTAL - 130_000,
     });
 
@@ -967,13 +980,23 @@ describe("legend-30hfs repeated partial provider refunds", () => {
     await partialBurst(code, third, 20_000, "payment");
 
     const view = await refundView(code.id);
-    expect(
-      view.refunded,
-      "recorded refunded never exceeds paid",
-    ).toBeLessThanOrEqual(BILL_TOTAL);
-    expect(view.refunded).toBeGreaterThanOrEqual(130_000);
-    expect(view.refundable).toBeGreaterThanOrEqual(0);
-    expect(view.refunded + view.refundable).toBe(BILL_TOTAL);
+    const recorded = await providerRefundedIdr(code.id);
+    expect(recorded).toBeGreaterThanOrEqual(130_000);
+    // The provider's reported amounts are stored as reported; what they take
+    // off the money still ours is never more than was paid (refundable >= 0,
+    // and 0 once they reach it).
+    expect(view.refundable).toBe(Math.max(0, BILL_TOTAL - recorded));
+    expect(view.refunded + view.refundable).toBe(view.paid);
+    if (recorded >= BILL_TOTAL) {
+      const { rows } = await owner.query<{ at: Date | null }>(
+        "SELECT provider_refunded_after_paid_at AS at FROM payment_intents WHERE id = $1",
+        [code.id],
+      );
+      expect(
+        rows[0]?.at,
+        "fully refunded by the provider: blocked",
+      ).not.toBeNull();
+    }
 
     // Staff can never move more than what is left, and not 20.000 (the room
     // left is at most 14.375).
@@ -1108,8 +1131,17 @@ describe("legend-30hfs a refund event echoing our own sent refund", () => {
       expect(await refundView(code.id), "counted once, not twice").toEqual(
         viewBefore,
       );
-      expect(await refundStatuses(code.id), "our refund untouched").toEqual(
-        statusesBefore,
+      // The payment door never touches our refund. The refund door's
+      // `refund.succeeded` naming our provider ref is the provider confirming
+      // the refund we sent: the existing refund-id match completes it (same
+      // amount, still reserved, never paid twice).
+      expect(
+        await refundStatuses(code.id),
+        "our refund settled at most",
+      ).toEqual(
+        channel === "refund"
+          ? statusesBefore.map(() => "completed")
+          : statusesBefore,
       );
       expect(fake.calls, "no second payout").toHaveLength(1);
     },
@@ -1126,9 +1158,10 @@ describe("legend-30hfs a refund event echoing our own sent refund", () => {
 
     expect((await partialAudit(code.id)) - auditBefore).toBe(1);
     expect((await supervisorAlerts()) - alertsBefore).toBe(1);
+    expect(await providerRefundedIdr(code.id)).toBe(25_000);
     expect(await refundView(code.id)).toEqual({
-      paid: BILL_TOTAL,
-      refunded: 55_000,
+      paid: BILL_TOTAL - 25_000,
+      refunded: 30_000,
       refundable: BILL_TOTAL - 55_000,
     });
   });
@@ -1213,9 +1246,10 @@ describe("legend-30hfs a sale in use, a failed refund of ours, an in-flight refu
       "a failed refund is no echo: the provider really refunded",
     ).toBe(1);
     expect((await supervisorAlerts()) - alertsBefore).toBe(1);
+    expect(await providerRefundedIdr(code.id)).toBe(30_000);
     expect(await refundView(code.id)).toEqual({
-      paid: BILL_TOTAL,
-      refunded: 30_000,
+      paid: BILL_TOTAL - 30_000,
+      refunded: 0,
       refundable: BILL_TOTAL - 30_000,
     });
   });
@@ -1374,8 +1408,10 @@ describe("legend-30hfs expired intents and rotated integrations", () => {
         "recorded although the intent's integration differs",
       ).toBe(1);
       expect((await supervisorAlerts()) - alertsBefore).toBe(1);
-      expect(await refundView(code.id)).toMatchObject({
-        refunded: 40_000,
+      expect(await providerRefundedIdr(code.id)).toBe(40_000);
+      expect(await refundView(code.id)).toEqual({
+        paid: BILL_TOTAL - 40_000,
+        refunded: 0,
         refundable: BILL_TOTAL - 40_000,
       });
     } finally {
@@ -1398,5 +1434,251 @@ describe("legend-30hfs expired intents and rotated integrations", () => {
       ]);
       clearDoitWebhookSecretCache();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Architect r3 fixes
+// ---------------------------------------------------------------------------
+
+describe("legend-30hfs split transactions and the 958 full refund", () => {
+  it("967-r3a split transaction: one DOIT payment credits the bill (intent) and parks the rest as a fund; the provider refunds more than the fund holds: the intent is capped and the fund stays blocked", async () => {
+    const code = await newCode();
+    // 60.000 of the bill was paid elsewhere; the code then pays the whole bill
+    // again, so only the remainder is credited and 60.000 is parked (same
+    // provider transaction, same evidence).
+    await owner.query(
+      "UPDATE payment_links SET paid_idr = 60_000 WHERE id = $1",
+      [code.linkId],
+    );
+    expect((await paid(code, BILL_TOTAL)).status).toBeLessThan(500);
+    const funds = await fundsOf(code.id);
+    expect(funds, "the excess is parked").toHaveLength(1);
+    expect(Number(funds[0]!.amount_idr)).toBe(60_000);
+    const intentPart = BILL_TOTAL - 60_000;
+    const alertsBefore = await supervisorAlerts();
+
+    // DOIT refunds 70.000 of that one transaction: more than the fund's 60.000.
+    await deliverPartial(code, refundId(), 70_000, "payment");
+    expect(
+      (await supervisorAlerts()) - alertsBefore,
+      "the refund is announced once",
+    ).toBe(1);
+
+    // The part of the refund beyond the fund eats into the intent: a manual
+    // refund of everything the intent holds is refused, and so is the fund.
+    const manual = await manualRefund(code.id, intentPart);
+    expect(manual.status, JSON.stringify(manual.body)).toBe(409);
+    expect(await refundRowsOfIntent(code.id), "nothing filed").toBe(0);
+    for (const resolution of ["refund", "credit"] as const) {
+      const attempt = await resolveFund(funds[0]!.id, resolution);
+      expect(
+        attempt.status,
+        `resolve by ${resolution}: ${JSON.stringify(attempt.body)}`,
+      ).toBe(409);
+    }
+    expect(await refundRowsOfFund(funds[0]!.id)).toBe(0);
+  });
+
+  it("967-r3b a full provider refund (958) and then a refund.succeeded of the same payment after the retry window: exactly ONE supervisor alert in total", async () => {
+    const code = await paidCode();
+    const alertsBefore = await supervisorAlerts();
+
+    // 958: DOIT reports the whole payment refunded (two webhooks and a poll).
+    doit.refund(code.providerRef);
+    const [first, second] = await Promise.all([
+      deliver(doit.eventFor(code.providerRef, "refunded")),
+      deliver(doit.eventFor(code.providerRef, "refunded")),
+      pollSoon().catch(() => null),
+    ]);
+    expect(first.status).toBeLessThan(500);
+    expect(second.status).toBeLessThan(500);
+    expect(
+      (await supervisorAlerts()) - alertsBefore,
+      "the full refund alerts once",
+    ).toBe(1);
+
+    // The sandbox then sends the flat refund.succeeded for the same payment;
+    // it matches none of our refunds and ends ignored after 15 minutes.
+    await deliverPartial(code, refundId(), BILL_TOTAL, "refund");
+    await deliverPartial(code, refundId(), BILL_TOTAL, "refund");
+    await pollLater().catch(() => null);
+
+    expect(
+      (await supervisorAlerts()) - alertsBefore,
+      "no second alert for the same payment",
+    ).toBe(1);
+    // Still nothing can be refunded manually.
+    const attempt = await manualRefund(code.id, 1);
+    expect(attempt.status, JSON.stringify(attempt.body)).toBe(409);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Architect r3 follow-ups: extra transactions and split-transaction alerts
+// ---------------------------------------------------------------------------
+
+describe("legend-30hfs refunds of an additional transaction and of a split transaction", () => {
+  const EXTRA = 100_000;
+
+  /**
+   * An additional DOIT transaction of the intent: its provider id differs from
+   * the intent's, and it is verified evidence of that intent (the legitimate
+   * relation legend-wourt binds through).
+   */
+  async function extraTxn(code: Code) {
+    const extraRef = `dp_extra_${randomBytes(6).toString("hex")}`;
+    await owner.query(
+      `INSERT INTO payment_evidence
+         (tenant_id, outlet_id, payment_intent_id, provider, provider_ref, method, source, amount_idr, received_at)
+       VALUES ($1, $2, $3, 'doit', $4, 'qris', 'verified_webhook', $5, now())`,
+      [tenantId, outletId, code.id, extraRef, EXTRA],
+    );
+    return extraRef;
+  }
+
+  /** `payment.refunded` whose data is the extra transaction's payment object. */
+  function extraRefundedEvent(code: Code, extraRef: string) {
+    const original = doit.payments.get(code.providerRef)!;
+    return {
+      id: `evt_${randomBytes(8).toString("hex")}`,
+      type: "payment.refunded",
+      created_at: new Date().toISOString(),
+      data: {
+        ...original,
+        id: extraRef,
+        status: "refunded",
+        amount: EXTRA,
+        total_amount: EXTRA,
+      },
+    };
+  }
+
+  /** A real provider refund (with its refund id) of the extra transaction. */
+  function extraPartial(
+    extraRef: string,
+    providerRefundId: string,
+    amount: number,
+    channel: Channel,
+  ) {
+    const base = {
+      id: `evt_${randomBytes(8).toString("hex")}`,
+      created_at: new Date().toISOString(),
+    };
+    return channel === "payment"
+      ? {
+          ...base,
+          type: "payment.refunded",
+          data: {
+            payment_id: extraRef,
+            refund_id: providerRefundId,
+            amount,
+            status: "partially_refunded",
+          },
+        }
+      : {
+          ...base,
+          type: "refund.succeeded",
+          data: { amount, refund_id: providerRefundId, payment_id: extraRef },
+        };
+  }
+
+  async function deliverExtra(body: { id: string }, channel: Channel) {
+    const answer = await deliver(body);
+    if (channel === "payment")
+      expect(answer.status, JSON.stringify(answer.body)).toBeLessThan(500);
+    else await settleRefundEvents([body.id]);
+  }
+
+  it("967-r3c a real provider refund of 30.000 on an extra transaction of 100.000, then its refunded payment event: the 70.000 left is recorded, 100.000 counted in total, refundable shrinks by exactly 100.000", async () => {
+    const code = await paidCode();
+    const extraRef = await extraTxn(code);
+    const before = await refundView(code.id);
+    const auditBefore = await partialAudit(code.id);
+
+    await deliverExtra(
+      extraPartial(extraRef, refundId(), 30_000, "payment"),
+      "payment",
+    );
+    expect(await partialAudit(code.id)).toBe(auditBefore + 1);
+    expect((await refundView(code.id)).refundable).toBe(
+      before.refundable - 30_000,
+    );
+
+    // DOIT now reports the whole extra transaction refunded.
+    await deliverExtra(extraRefundedEvent(code, extraRef), "payment");
+    expect(
+      await partialAudit(code.id),
+      "a new row for the remaining 70.000",
+    ).toBe(auditBefore + 2);
+    expect(await refundView(code.id)).toEqual({
+      paid: before.paid - EXTRA,
+      refunded: before.refunded,
+      refundable: before.refundable - EXTRA,
+    });
+
+    // The provider repeats the refunded event: nothing more is counted.
+    await deliverExtra(extraRefundedEvent(code, extraRef), "payment");
+    expect(await partialAudit(code.id)).toBe(auditBefore + 2);
+    expect((await refundView(code.id)).refundable).toBe(
+      before.refundable - EXTRA,
+    );
+  });
+
+  it("967-r3d the refunded payment event of an extra transaction first, then refund.succeeded with a real refund id for the same payment after the window: no new row, no extra alert", async () => {
+    const code = await paidCode();
+    const extraRef = await extraTxn(code);
+    const before = await refundView(code.id);
+    const auditBefore = await partialAudit(code.id);
+    const alertsBefore = await supervisorAlerts();
+
+    await deliverExtra(extraRefundedEvent(code, extraRef), "payment");
+    expect(await partialAudit(code.id)).toBe(auditBefore + 1);
+    expect((await supervisorAlerts()) - alertsBefore).toBe(1);
+    const counted = await refundView(code.id);
+    expect(counted.refundable).toBe(before.refundable - EXTRA);
+
+    await deliverExtra(
+      extraPartial(extraRef, refundId(), EXTRA, "refund"),
+      "refund",
+    );
+
+    expect(await partialAudit(code.id), "no new row").toBe(auditBefore + 1);
+    expect((await supervisorAlerts()) - alertsBefore, "no extra alert").toBe(1);
+    expect(await refundView(code.id), "not counted twice").toEqual(counted);
+  });
+
+  it("967-r3e split transaction: a small partial R1 alerts once; R2 pushing the total above what the intent kept newly flags the intent and alerts a second time", async () => {
+    const code = await newCode();
+    await owner.query(
+      "UPDATE payment_links SET paid_idr = 60_000 WHERE id = $1",
+      [code.linkId],
+    );
+    expect((await paid(code, BILL_TOTAL)).status).toBeLessThan(500);
+    const funds = await fundsOf(code.id);
+    expect(funds, "the excess is parked").toHaveLength(1);
+    const intentPart = BILL_TOTAL - 60_000;
+    const alertsBefore = await supervisorAlerts();
+
+    await deliverPartial(code, refundId(), 10_000, "payment");
+    expect((await supervisorAlerts()) - alertsBefore, "R1").toBe(1);
+    // R1 is small: the intent is not yet flagged, something is still refundable.
+    expect((await refundView(code.id)).refundable).toBeGreaterThan(0);
+
+    // R1 + R2 = 90.000 is more than the 84.375 the intent kept.
+    await deliverPartial(
+      code,
+      refundId(),
+      intentPart - 10_000 + 5_000,
+      "payment",
+    );
+    expect(
+      (await supervisorAlerts()) - alertsBefore,
+      "R2 flags the intent: a second alert",
+    ).toBe(2);
+    const attempt = await manualRefund(code.id, 1);
+    expect(attempt.status, JSON.stringify(attempt.body)).toBe(409);
+    expect(attempt.body.error.code).toBe("PROVIDER_REFUNDED");
+    expect(await refundRowsOfIntent(code.id)).toBe(0);
   });
 });

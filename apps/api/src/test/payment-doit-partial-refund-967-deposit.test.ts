@@ -21,27 +21,14 @@
 //
 // Run: LEGEND_TEST_FILES="src/test/payment-doit-partial-refund-967-deposit.test.ts" heavy pnpm test
 import { randomUUID } from "node:crypto";
-import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import {
-  idr,
-  outletIdSchema,
-  tenantIdSchema,
-  userIdSchema,
-} from "@starter/shared/core";
+import { idr, outletIdSchema, tenantIdSchema } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
 import { closeTableSessionInputSchema } from "@starter/shared/qr-order";
 import { createApp } from "../app";
-import { db } from "../db";
-import { withTenant } from "../db/tenant";
-import { depositInUseOfIntent } from "../services/reservation-deposit-credit.ts";
-import { unlinkWhatsAppIdentity } from "../services/identity-wa-unlink.service.ts";
-import { reverseJournal } from "../services/accounting-journal.service.ts";
-import { createRefund } from "../services/payment-admin.service.ts";
-import { depositCreditForSession } from "../services/reservation-lifecycle.ts";
 import {
   closeTableSession,
   openOrJoinTableSession,
@@ -330,19 +317,6 @@ async function remainders(reservationId: string) {
     profileId: r.customer_profile_id,
   }));
 }
-
-const requestRefund = (intentId: string, amount: number, key = randomUUID()) =>
-  createRefund(
-    scope(),
-    staff.userId,
-    {
-      idempotencyKey: key,
-      paymentIntentId: intentId,
-      amountIdr: idr(amount),
-      reason: "Q82 refund original payer",
-    },
-    key,
-  );
 
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
