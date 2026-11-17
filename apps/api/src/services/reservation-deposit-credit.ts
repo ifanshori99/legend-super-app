@@ -65,6 +65,46 @@ export function depositPrincipalReservedSql(tenant: SQL, intent: SQL): SQL {
   )`;
 }
 
+/**
+ * legend-6n4p3 (1033): what the allocations of the same intent that came
+ * earlier in the stable order (allocated_at, id) already claim of the intent's
+ * net, in full (used plus whatever they left as credit), so the sessions of one
+ * intent share a single net pool and the total never passes it, whatever the
+ * order they close or pay in. Arguments are SQL expressions of the allocation
+ * row (tenant, intent, allocated_at, id) supplied by our callers.
+ */
+export function earlierAllocationClaimsSql(
+  tenant: SQL,
+  intent: SQL,
+  allocatedAt: SQL,
+  allocationId: SQL,
+): SQL {
+  return sql`coalesce((SELECT sum(ea.amount_idr)
+    FROM reservation_deposit_allocations ea
+    WHERE ea.tenant_id=${tenant} AND ea.payment_intent_id=${intent}
+      AND (ea.allocated_at,ea.id)<(${allocatedAt},${allocationId})),0)`;
+}
+
+/**
+ * legend-obgj5 (1033): provider refunds a recon hold recorded but finance has
+ * not matched yet (open = resolved_at IS NULL) count against the intent's net
+ * until resolved. `credit_used_before_provider_refund` is left out: that hold
+ * only marks a surplus of credit already spent (1025c), and the pool is net of
+ * it already. Resolved `not_this_intent` gives the credit back in full;
+ * `counted_against_intent` is a provider refund of the intent from then on.
+ */
+export function openReconHoldIdrSql(tenant: SQL, intent: SQL): SQL {
+  return sql`coalesce((SELECT sum(h.amount_idr) FROM refund_recon_holds h
+    WHERE h.tenant_id=${tenant} AND h.payment_intent_id=${intent}
+      AND h.resolved_at IS NULL
+      AND h.reason<>'credit_used_before_provider_refund'
+      -- A refund already recorded for the same provider refund id counts as a
+      -- provider refund; counting its hold too would take the money twice.
+      AND NOT EXISTS (SELECT 1 FROM payment_provider_refunds hr
+        WHERE hr.tenant_id=h.tenant_id AND hr.payment_intent_id=h.payment_intent_id
+          AND hr.provider_refund_id=h.provider_refund_id)),0)`;
+}
+
 type AllocationCredit = {
   tableSessionId: string;
   paymentIntentId: string;
@@ -99,7 +139,9 @@ async function allocationCredits(
                   AND i.provider_refunded_after_paid_at IS NULL
                 THEN greatest(least(r.deposit_idr, i.amount_idr)
                   - ${depositPrincipalReservedSql(sql`a.tenant_id`, sql`a.payment_intent_id`)}
-                  - ${providerRefundedForeignIdrSql(sql`a.tenant_id`, sql`a.payment_intent_id`)} - coalesce((
+                  - ${providerRefundedForeignIdrSql(sql`a.tenant_id`, sql`a.payment_intent_id`)}
+                  - ${openReconHoldIdrSql(sql`a.tenant_id`, sql`a.payment_intent_id`)}
+                  - ${earlierAllocationClaimsSql(sql`a.tenant_id`, sql`a.payment_intent_id`, sql`a.allocated_at`, sql`a.id`)} - coalesce((
                   SELECT sum(c.amount_idr) FROM reservation_deposit_remainders c
                    WHERE c.tenant_id = a.tenant_id
                      AND c.payment_intent_id = a.payment_intent_id
@@ -135,11 +177,15 @@ async function allocationCredits(
  * remainders (what the first sessions left over) minus the provider refunds
  * made AFTER those remainders: a remainder is already net of what the provider
  * had refunded when its session closed (`provider_refunded_snapshot_idr`), so
- * only the growth since then comes off again, measured from the smallest
- * snapshot (restrictive; created_at is not used, the refund recorder does not
- * hold the deposit-intent lock). With `liveOnly`, an intent that is not paid /
+ * only the growth since then comes off again. legend-6n4p3 (1033): the
+ * sessions of one intent share one pool in a fixed order, so each remainder
+ * absorbed a different slice of the refunds (earlier sessions none, the last
+ * the rest); the absorbed total is the SUM of the snapshots, not the smallest
+ * (created_at is not used, the refund recorder does not hold the
+ * deposit-intent lock). With `liveOnly`, an intent that is not paid /
  * partially refunded, or is flagged refunded after paid, holds nothing; the
  * refund guard passes false and keeps its stricter gross view. Floor 0.
+ * legend-obgj5: an open recon hold counts like a provider refund here.
  */
 async function transferredCreditPools(
   tx: Tx,
@@ -156,10 +202,11 @@ async function transferredCreditPools(
            coalesce((SELECT sum(x.amount_idr) FROM reservation_deposit_remainders x
              WHERE x.tenant_id = i.tenant_id AND x.payment_intent_id = i.id
                AND x.kind = 'customer_credit'), 0)::text AS credit,
-           coalesce((SELECT min(x.provider_refunded_snapshot_idr) FROM reservation_deposit_remainders x
+           coalesce((SELECT sum(x.provider_refunded_snapshot_idr) FROM reservation_deposit_remainders x
              WHERE x.tenant_id = i.tenant_id AND x.payment_intent_id = i.id
                AND x.kind = 'customer_credit'), 0)::text AS snapshot,
-           ${providerRefundedForeignIdrSql(sql`i.tenant_id`, sql`i.id`)}::text AS provider
+           (${providerRefundedForeignIdrSql(sql`i.tenant_id`, sql`i.id`)}
+             + ${openReconHoldIdrSql(sql`i.tenant_id`, sql`i.id`)})::text AS provider
       FROM payment_intents i
      WHERE i.tenant_id = ${tenantId}
        AND i.id IN (${sql.join(

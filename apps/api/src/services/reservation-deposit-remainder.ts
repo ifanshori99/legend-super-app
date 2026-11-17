@@ -32,6 +32,7 @@ import { HttpError } from "../lib/http-error.ts";
 import {
   creditProviderCutOfIntent,
   depositPrincipalReservedSql,
+  earlierAllocationClaimsSql,
   listSessionDepositSources,
   sessionDepositCredit,
 } from "./reservation-deposit-credit.ts";
@@ -224,12 +225,26 @@ export async function finalizeReservationDepositRemainders(
   used = used > released ? used - released : 0n;
   // legend-30hfs: money the provider refunded outside our own refunds is not
   // free credit, so it is subtracted from what the deposit still holds.
-  const heldBaseSql = sql`least(r.deposit_idr,i.amount_idr,
+  // legend-6n4p3 (1033): the sessions of one intent share one net pool; the
+  // allocations that came earlier on the intent claim their full amount first.
+  const earlierSql = earlierAllocationClaimsSql(
+    sql`a.tenant_id`,
+    sql`i.id`,
+    sql`a.allocated_at`,
+    sql`a.id`,
+  );
+  const heldBaseSql = sql`greatest(least(r.deposit_idr,i.amount_idr,
         greatest(coalesce((SELECT sum(e.amount_idr) FROM payment_evidence e
           WHERE e.tenant_id=a.tenant_id AND e.payment_intent_id=i.id),0)
           - coalesce((SELECT sum(f.amount_idr) FROM payment_unallocated_funds f
           WHERE f.tenant_id=a.tenant_id AND f.payment_intent_id=i.id),0),0))
-        - ${depositPrincipalReservedSql(sql`a.tenant_id`, sql`i.id`)}`;
+        - ${depositPrincipalReservedSql(sql`a.tenant_id`, sql`i.id`)}
+        - ${earlierSql},0)`;
+  // legend-obgj5: an open recon hold is NOT taken off the remainder here. The
+  // credit pool (transferredCreditPools) and the bill read (allocationCredits)
+  // subtract it while it is open, so the credit stays blocked, and a hold that
+  // finance dismisses (`not_this_intent`) gives the full credit back. Cutting
+  // the remainder at close would lose that money for good.
   const heldSql = sql`least(a.amount_idr,greatest(${heldBaseSql}
         - ${providerRefundedForeignIdrSql(sql`a.tenant_id`, sql`i.id`)},0))`;
   const allocations = await tx.execute(sql`
