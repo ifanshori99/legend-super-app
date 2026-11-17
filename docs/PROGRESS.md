@@ -1897,3 +1897,4 @@ Langkah berikut CTO baru:
 - Cron CTO: lihat bd memory cto-crons (buat ulang di sesi baru). Disk: legend-d8fc7d19 sudah dihapus; 12 volume Docker anonim dangling bisa di-prune bila disk < 15 GB.
 
 - 00:32 CTO G0w5d ambil alih dari G2l8g: link G0fp6/G7wkf/G8t4u; cron dibuat ulang (push :07 8766f72a, akun mati :37 3117c163, retro f0738641, Q13 :52 aac5db2a). Mulai G4bmg 1028 legend-mez2n (Sonnet #1, worktree dari 1020). Disk 16 GB.
+- 00:33 Disk 14.6 GB (cleanup-ssd +0.7 GB, 0 worktree). 12 volume dangling ternyata BERNAMA (ngodingpakeai-pg-*_postgres-data, 1.4 GB): tidak dihapus, tanya founder Q31. Brief 1029 (kis0u p45yq nqfov 9pz0m, base 1004, migrasi 0647-0648) ditahan sampai batch85 landing.
