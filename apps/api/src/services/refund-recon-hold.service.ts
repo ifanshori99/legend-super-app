@@ -326,14 +326,10 @@ async function countHold(
   };
   const notRecorded = () =>
     unprocessable("This refund could not be recorded against the intent.");
-
-  if (named?.startsWith(SYNTHETIC_PREFIX)) {
-    // The provider's `refunded` status of the payment, filed while a refund of
-    // ours ran. The hold does not store the transaction amount, so what is
-    // left of the transaction is worked out here. It closes only when nothing
-    // of ours is still on its way; whatever is not yet accounted for is
-    // recorded first, so nothing more than the payment can ever leave.
-    const providerPaymentRef = named.slice(SYNTHETIC_PREFIX.length);
+  // Counting books money against the payment, so nothing of ours may still be
+  // on its way: a pending or approved refund of the intent refuses it (422,
+  // nothing recorded, the hold stays open).
+  const assertNoRefundInFlight = async () => {
     const { rows: flying } = await tx.execute(sql`SELECT 1
       FROM payment_refunds r
       WHERE r.tenant_id = ${tenantId}::uuid
@@ -343,6 +339,16 @@ async function countHold(
       throw unprocessable(
         "A refund of this payment is still on its way; wait until it is final.",
       );
+  };
+
+  if (named?.startsWith(SYNTHETIC_PREFIX)) {
+    // The provider's `refunded` status of the payment, filed while a refund of
+    // ours ran. The hold does not store the transaction amount, so what is
+    // left of the transaction is worked out here. It closes only when nothing
+    // of ours is still on its way; whatever is not yet accounted for is
+    // recorded first, so nothing more than the payment can ever leave.
+    const providerPaymentRef = named.slice(SYNTHETIC_PREFIX.length);
+    await assertNoRefundInFlight();
     const leftNow = () =>
       transactionLeftIdr(tx, tenantId, intent, providerPaymentRef);
     let left = await leftNow();
@@ -372,6 +378,7 @@ async function countHold(
     return;
   }
 
+  await assertNoRefundInFlight();
   const providerPaymentRef = await heldPaymentRefOf(tx, tenantId, hold, intent);
   if (!providerPaymentRef)
     throw unprocessable(

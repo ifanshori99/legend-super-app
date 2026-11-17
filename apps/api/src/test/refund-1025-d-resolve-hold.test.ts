@@ -1703,7 +1703,11 @@ describe("1025-d round 3: counting books at most what is left", () => {
 });
 
 describe("1025-d round 3: a hold never closes with money unaccounted", () => {
-  it("1025-d-47 payment:<ref> hold whose row already exists (60.000 of 100.000), nothing in flight: either the exact left (40.000) is booked as hold:<id>, or the resolve is refused and the hold stays open", async () => {
+  // Pinned to ONE outcome (legend-03jjx): the resolve books exactly the left
+  // of the transaction as hold:<holdId> and closes the hold at zero. A refusal
+  // (422) would leave 40.000 of the payment refundable twice, so it is not an
+  // accepted outcome here.
+  it("1025-d-47 payment:<ref> hold whose row already exists (60.000 of 100.000), nothing in flight: the exact left (40.000) is booked as hold:<id>, the hold closes, nothing is refundable", async () => {
     const intent = await seedIntent();
     await seedProviderRow(intent, `payment:${intent.providerRef}`, 60_000);
     const holdId = await seedHold(intent, {
@@ -1712,20 +1716,131 @@ describe("1025-d round 3: a hold never closes with money unaccounted", () => {
     });
 
     const response = await resolveHold(staff, holdId, "counted_against_intent");
-    expect([200, 422], JSON.stringify(response.body)).toContain(
-      response.status,
-    );
-    if (response.status === 422) {
-      expect(await isOpen(holdId)).toBe(true);
-      expect(await providerRows(intent.id)).toHaveLength(1);
-    } else {
-      const rows = await providerRows(intent.id);
-      expect(
-        rows.find((r) => r.provider_refund_id === `hold:${holdId}`),
-        "the exact left is booked",
-      ).toMatchObject({ amount_idr: "40000" });
-      expect(await providerSum(intent.id)).toBe(BILL);
-      await expectNothingRefundable(intent);
-    }
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+
+    expect((await holdRow(holdId)).resolved_at).not.toBeNull();
+    const rows = await providerRows(intent.id);
+    expect(rows, "the 60.000 row plus one top-up row").toHaveLength(2);
+    expect(
+      rows.find((r) => r.provider_refund_id === `hold:${holdId}`),
+      "the exact left is booked",
+    ).toMatchObject({ amount_idr: "40000" });
+    expect(await providerSum(intent.id)).toBe(BILL);
+    await expectNothingRefundable(intent);
   });
+});
+
+// ---------------------------------------------------------------------------
+// legend-03jjx: a hold without a provider refund id, and a hold with its own
+// refund id, are refused while OUR refund of the intent is still in flight
+// (pending / approved, sent, no provider ref), exactly like payment:<ref>.
+// Counting would otherwise book the provider refund on top of the refund we
+// are about to send: the guest is paid twice, the outlet loses.
+// ---------------------------------------------------------------------------
+
+type HoldShape = "no provider refund id (REFERENCE_MISMATCH)" | "named id";
+
+async function seedShapedHold(intent: Intent, shape: HoldShape) {
+  return shape === "named id"
+    ? seedHold(intent, {
+        refundId: `rf_${randomBytes(6).toString("hex")}`,
+        amountIdr: 30_000,
+      })
+    : seedHold(intent, {
+        refundId: null,
+        amountIdr: 30_000,
+        providerPaymentRef: intent.providerRef,
+      });
+}
+
+const HOLD_SHAPES: HoldShape[] = [
+  "no provider refund id (REFERENCE_MISMATCH)",
+  "named id",
+];
+
+describe("1025-d (legend-03jjx) counting is refused while our own refund of the intent is in flight", () => {
+  for (const shape of HOLD_SHAPES) {
+    it.each(["pending", "approved"] as const)(
+      `1025-d-48 hold with ${shape}, own refund still %s: counted_against_intent is 422, nothing is recorded, the hold stays open`,
+      async (status) => {
+        const intent = await seedIntent();
+        const filed = await manualRefund(intent.id, 10_000);
+        expect(filed.status, JSON.stringify(filed.body)).toBe(201);
+        await owner.query(
+          "UPDATE payment_refunds SET status = $3, provider_ref = NULL WHERE tenant_id = $1 AND id = $2",
+          [tenantId, filed.body.data.id as string, status],
+        );
+        const holdId = await seedShapedHold(intent, shape);
+        const auditBefore = await auditCount();
+
+        const response = await resolveHold(
+          staff,
+          holdId,
+          "counted_against_intent",
+        );
+        expect(response.status, JSON.stringify(response.body)).toBe(422);
+        expect(await isOpen(holdId)).toBe(true);
+        expect(await providerRows(intent.id), "nothing recorded").toHaveLength(
+          0,
+        );
+        expect(await refundRowCount(intent.id)).toBe(1);
+        expect(await auditCount()).toBe(auditBefore);
+      },
+    );
+
+    it(`1025-d-49 hold with ${shape}: once our refund has completed the resolve works, and the booked total never exceeds what was paid`, async () => {
+      const intent = await seedIntent();
+      const filed = await manualRefund(intent.id, 10_000);
+      expect(filed.status, JSON.stringify(filed.body)).toBe(201);
+      const holdId = await seedShapedHold(intent, shape);
+
+      // The refund was filed first (pending, in flight); the hold came after.
+      // An open hold correctly blocks approving it (409), so the refund is
+      // completed directly, as if the payout had already gone out.
+      const early = await resolveHold(staff, holdId, "counted_against_intent");
+      expect(early.status, JSON.stringify(early.body)).toBe(422);
+      expect(await isOpen(holdId)).toBe(true);
+
+      await owner.query(
+        "UPDATE payment_refunds SET status = 'completed', completed_at = now() WHERE tenant_id = $1 AND id = $2",
+        [tenantId, filed.body.data.id as string],
+      );
+      expect(await refundStatuses(intent.id)).toContain("completed");
+
+      const response = await resolveHold(
+        staff,
+        holdId,
+        "counted_against_intent",
+      );
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(await isOpen(holdId)).toBe(false);
+      expect(
+        (await providerSum(intent.id)) + (await ownCompletedIdr(intent.id)),
+        "booked total never above paid",
+      ).toBeLessThanOrEqual(BILL);
+    });
+
+    it(`1025-d-50 hold with ${shape}: once our refund has failed the resolve works, and the booked total never exceeds what was paid`, async () => {
+      const intent = await seedIntent();
+      const filed = await manualRefund(intent.id, 10_000);
+      expect(filed.status, JSON.stringify(filed.body)).toBe(201);
+      await owner.query(
+        "UPDATE payment_refunds SET status = 'failed' WHERE tenant_id = $1 AND id = $2",
+        [tenantId, filed.body.data.id as string],
+      );
+      const holdId = await seedShapedHold(intent, shape);
+
+      const response = await resolveHold(
+        staff,
+        holdId,
+        "counted_against_intent",
+      );
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(await isOpen(holdId)).toBe(false);
+      expect(
+        (await providerSum(intent.id)) + (await ownCompletedIdr(intent.id)),
+        "booked total never above paid",
+      ).toBeLessThanOrEqual(BILL);
+    });
+  }
 });
