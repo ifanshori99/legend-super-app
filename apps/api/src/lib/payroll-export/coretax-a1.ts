@@ -5,13 +5,10 @@
 // services/payroll-coretax-a1.service.ts. Errors name a row index only, never a
 // NIK or other PII.
 //
-// ASSUMPTIONS (no DJP A1 sample is in the repo, unlike BPMP `bpmp.zip`): the
-// root and row element names (`A1Bulk`, `ListOfA1`, `A1`), the element order
-// and the shared fields copied from the BPMP sample are guesses from the DJP A1
-// field list (SalaryPensionJhtTht, OtherBenefit, Honorarium,
-// InsurancePaidByEmployer, Natura, TantiemBonusThr, PensionContributionJhtThtFee,
-// Zakat, StatusOfWithholding). Verify against the official A1 template before
-// the first real upload.
+// Layout: the official DJP BPA1 XSD, 27 elements in mandatory xsd:sequence
+// order. See docs/qa/coretax-bpa1-format.md for the source and the diff against
+// the earlier guessed layout. `Article21IncomeTax` is the PPh 21 already
+// withheld, taken from sealed payslips by the service, never computed here.
 
 import { HttpError } from "../http-error.ts";
 
@@ -62,6 +59,9 @@ export type A1Row = {
   ptkpStatus: string;
   position: string;
   statusOfWithholding: A1WithholdingStatus;
+  /** 1-12; FullYear requires 1 to 12, start <= end. */
+  taxPeriodMonthStart: number;
+  taxPeriodMonthEnd: number;
   /** Integer IDR, whole-year amounts (all non-negative). */
   salaryPensionJhtThtIdr: number;
   otherBenefitIdr: number;
@@ -72,7 +72,9 @@ export type A1Row = {
   /** Employee JHT + JP (iuran pensiun/JHT/THT), a deduction from gross. */
   pensionContributionJhtThtFeeIdr: number;
   zakatIdr: number;
-  /** YYYY-MM-DD. */
+  /** PPh 21 already withheld (sum of sealed payslip PPh 21), integer IDR >= 0. */
+  article21IncomeTaxIdr: number;
+  /** YYYY-MM-DD, not earlier than the end of the tax period. */
   withholdingDate: string;
 };
 
@@ -115,6 +117,14 @@ const AMOUNT_FIELDS = [
   ["zakatIdr", "Zakat"],
 ] as const satisfies readonly (readonly [keyof A1Row, string])[];
 
+const NON_NEGATIVE_FIELDS = [
+  ...AMOUNT_FIELDS.map(([key]) => key),
+  "article21IncomeTaxIdr",
+] as const satisfies readonly (keyof A1Row)[];
+
+const isMonth = (value: number) =>
+  Number.isInteger(value) && value >= 1 && value <= 12;
+
 function validateRow(row: A1Row, index: number): string {
   const at = `Baris ${index + 1}`;
   if (
@@ -132,11 +142,25 @@ function validateRow(row: A1Row, index: number): string {
     row.statusOfWithholding !== "Annualized"
   )
     throw invalid(`${at}: status pemotongan tidak valid.`);
-  for (const [key] of AMOUNT_FIELDS)
+  if (!isMonth(row.taxPeriodMonthStart) || !isMonth(row.taxPeriodMonthEnd))
+    throw invalid(`${at}: bulan masa pajak harus 1 sampai 12.`);
+  if (row.taxPeriodMonthStart > row.taxPeriodMonthEnd)
+    throw invalid(`${at}: bulan awal masa pajak melebihi bulan akhir.`);
+  if (
+    row.statusOfWithholding === "FullYear" &&
+    (row.taxPeriodMonthStart !== 1 || row.taxPeriodMonthEnd !== 12)
+  )
+    throw invalid(`${at}: status FullYear harus masa pajak Januari-Desember.`);
+  for (const key of NON_NEGATIVE_FIELDS)
     if (!Number.isSafeInteger(row[key]) || (row[key] as number) < 0)
       throw invalid(`${at}: jumlah harus rupiah bulat tidak negatif.`);
   if (!isValidDate(row.withholdingDate))
     throw invalid(`${at}: tanggal pemotongan harus YYYY-MM-DD yang valid.`);
+  if (
+    row.withholdingDate <
+    `${row.taxYear}-${String(row.taxPeriodMonthEnd).padStart(2, "0")}-01`
+  )
+    throw invalid(`${at}: tanggal pemotongan lebih awal dari masa pajak.`);
   const position = truncatePosition(row.position);
   if (position === "") throw invalid(`${at}: jabatan wajib diisi.`);
   return position;
@@ -155,22 +179,46 @@ export function buildA1BulkXml(input: A1Input): string {
     if (seenNik.has(row.nik16))
       throw invalid(`Baris ${index + 1}: NIK ganda dalam satu berkas.`);
     seenNik.add(row.nik16);
+    const i = "\t\t\t";
     return [
       "\t\t<A1>",
-      element("TaxPeriodYear", row.taxYear, "\t\t\t"),
-      element("CounterpartOpt", "Resident", "\t\t\t"),
-      '\t\t\t<CounterpartPassport xsi:nil="true"/>',
-      element("CounterpartTin", row.nik16, "\t\t\t"),
-      element("StatusTaxExemption", row.ptkpStatus, "\t\t\t"),
-      element("Position", position, "\t\t\t"),
-      element("StatusOfWithholding", row.statusOfWithholding, "\t\t\t"),
-      element("TaxCertificate", "N/A", "\t\t\t"),
-      element("TaxObjectCode", "21-100-01", "\t\t\t"),
-      ...AMOUNT_FIELDS.map(([key, name]) =>
-        element(name, row[key] as number, "\t\t\t"),
+      element("WorkForSecondEmployer", "No", i),
+      element("TaxPeriodMonthStart", row.taxPeriodMonthStart, i),
+      element("TaxPeriodMonthEnd", row.taxPeriodMonthEnd, i),
+      element("TaxPeriodYear", row.taxYear, i),
+      element("CounterpartOpt", "Resident", i),
+      `${i}<CounterpartPassport xsi:nil="true"/>`,
+      element("CounterpartTin", row.nik16, i),
+      element("TaxExemptOpt", row.ptkpStatus, i),
+      element("StatusOfWithholding", row.statusOfWithholding, i),
+      element("CounterpartPosition", position, i),
+      element("TaxObjectCode", "21-100-01", i),
+      element(
+        "NumberOfMonths",
+        row.statusOfWithholding === "Annualized"
+          ? row.taxPeriodMonthEnd - row.taxPeriodMonthStart + 1
+          : 0,
+        i,
       ),
-      element("IDPlaceOfBusinessActivity", input.nitku22, "\t\t\t"),
-      element("WithholdingDate", row.withholdingDate, "\t\t\t"),
+      element("SalaryPensionJhtTht", row.salaryPensionJhtThtIdr, i),
+      element("GrossUpOpt", "No", i),
+      element("IncomeTaxBenefit", 0, i),
+      element("OtherBenefit", row.otherBenefitIdr, i),
+      element("Honorarium", row.honorariumIdr, i),
+      element("InsurancePaidByEmployer", row.insurancePaidByEmployerIdr, i),
+      element("Natura", row.naturaIdr, i),
+      element("TantiemBonusThr", row.tantiemBonusThrIdr, i),
+      element(
+        "PensionContributionJhtThtFee",
+        row.pensionContributionJhtThtFeeIdr,
+        i,
+      ),
+      element("Zakat", row.zakatIdr, i),
+      `${i}<PrevWhTaxSlip xsi:nil="true"/>`,
+      element("TaxCertificate", "N/A", i),
+      element("Article21IncomeTax", row.article21IncomeTaxIdr, i),
+      element("IDPlaceOfBusinessActivity", input.nitku22, i),
+      element("WithholdingDate", row.withholdingDate, i),
       "\t\t</A1>",
     ].join("\n");
   });

@@ -24,6 +24,7 @@ import type {
 } from "@starter/shared/core";
 import {
   checklistTemplateSchema,
+  employeeIdSchema,
   isChecklistComplete,
   offboardingSchema,
   type CancelOffboardingInput,
@@ -46,6 +47,11 @@ import {
   shiftSwapRequests,
 } from "../db/schema/hris-scheduling.ts";
 import { pushSubscriptions } from "../db/schema/notification.ts";
+import {
+  employeeLoans,
+  payrollLoanDeductions,
+  payrollRuns,
+} from "../db/schema/payroll.ts";
 import { session } from "../db/schema/session.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
@@ -62,6 +68,7 @@ import {
 } from "./hris-access.ts";
 import { cancelShiftAssignmentInTx } from "./hris-scheduling-roster.service.ts";
 import { loadOutletTimeZone } from "./hris-scheduling-common.ts";
+import { RESERVING_STATUSES } from "./payroll-run-loans.ts";
 import { computeFinalSettlementInTx } from "./hris-settlement.service.ts";
 
 type OffboardingRow = typeof hrisOffboardings.$inferSelect;
@@ -901,6 +908,59 @@ async function revokeOffboardingAccessAs(
 // ---------------------------------------------------------------- complete
 
 /**
+ * Refuses completion while a live payroll run (draft, simulated, hr_approved
+ * or approved) still holds a kasbon deduction row of the employee: the frozen
+ * snapshot would otherwise store a balance that the lock step lowers later.
+ * The employee's loans are locked FOR UPDATE (id order, like the run
+ * simulation) before the check, so a simulation running at the same time
+ * either commits its rows first (refused here) or waits for this transaction.
+ */
+async function assertNoPendingPayrollDeduction(
+  tx: Tx,
+  tenantId: TenantId,
+  employeeId: string,
+): Promise<void> {
+  await tx
+    .select({ id: employeeLoans.id })
+    .from(employeeLoans)
+    .where(
+      and(
+        eq(employeeLoans.tenantId, tenantId),
+        eq(employeeLoans.employeeId, employeeId),
+      ),
+    )
+    .orderBy(asc(employeeLoans.id))
+    .for("update");
+  const [pending] = await tx
+    .select({ loanId: payrollLoanDeductions.loanId })
+    .from(payrollLoanDeductions)
+    .innerJoin(
+      payrollRuns,
+      and(
+        eq(payrollRuns.tenantId, payrollLoanDeductions.tenantId),
+        eq(payrollRuns.id, payrollLoanDeductions.payrollRunId),
+      ),
+    )
+    .where(
+      and(
+        eq(payrollLoanDeductions.tenantId, tenantId),
+        eq(
+          payrollLoanDeductions.employeeId,
+          employeeIdSchema.parse(employeeId),
+        ),
+        inArray(payrollRuns.status, [...RESERVING_STATUSES]),
+      ),
+    )
+    .limit(1);
+  if (pending)
+    throw new HttpError(
+      409,
+      "PAYROLL_DEDUCTION_PENDING",
+      "Karyawan masih punya potongan kasbon di run payroll yang belum dikunci. Kunci run payroll itu dulu, lalu selesaikan offboarding.",
+    );
+}
+
+/**
  * POST /api/hris/offboardings/:offboardingId/complete. Needs exit clearance
  * done and every checklist task done or waived; freezes the settlement
  * summary. A completed offboarding answers as stored.
@@ -942,6 +1002,11 @@ export async function completeOffboarding(
         "CHECKLIST_INCOMPLETE",
         "Masih ada tugas offboarding yang belum selesai.",
       );
+    await assertNoPendingPayrollDeduction(
+      tx,
+      context.tenant.tenantId,
+      employee.id,
+    );
     const settlement: FinalSettlementSummary = await computeFinalSettlementInTx(
       tx,
       context,

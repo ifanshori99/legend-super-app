@@ -149,6 +149,8 @@ function totalsOf(
     custom?: number;
     /** Service charge inside gross. */
     serviceCharge?: number;
+    /** Kasbon installments deducted by the run (legend-8tfvr). */
+    loan?: number;
   } = {},
 ): PayrollRunTotals {
   const gross = over.gross ?? 10_000_000;
@@ -157,7 +159,8 @@ function totalsOf(
   const erf = over.employerRefund ?? 0;
   const late = over.late ?? 0;
   const custom = over.custom ?? 0;
-  const deductions = bpjsEmp + withheld + late + custom;
+  const loan = over.loan ?? 0;
+  const deductions = bpjsEmp + withheld + late + custom + loan;
   const net = gross - deductions;
   return payrollRunTotalsSchema.parse({
     employeeCount: 1,
@@ -172,7 +175,7 @@ function totalsOf(
     pph21RefundIdr: 0,
     pph21EmployerRefundIdr: erf,
     pph21EmployerAllowanceRefundIdr: over.employerAllowanceRefund ?? 0,
-    loanRepaymentIdr: 0,
+    loanRepaymentIdr: loan,
     pph21ReceivableIdr: 0,
     pph21ReceivableCollectedIdr: 0,
     otherDeductionsIdr: late + custom,
@@ -504,6 +507,22 @@ describe("payroll.locked", () => {
     const codes = byCode(await linesOf(entry!.id));
     expect(codes["6101"]).toEqual({ debit: 10_000_000, credit: 30_000 });
     expect(codes["6111"]).toEqual({ debit: 0, credit: 10_000 });
+  });
+
+  it("[gl-unchanged] a run that deducted kasbon credits employee_receivable (1204) by loanRepaymentIdr, balanced (legend-8tfvr)", async () => {
+    const world = await makeWorld();
+    const runId = randomUUID();
+    const totals = totalsOf({ loan: 150_000 });
+    expect(totals.loanRepaymentIdr).toBe(150_000);
+    const result = await deliver(lockedEvent(world, runId, totals));
+    expect(result.status).toBe("posted");
+
+    const [entry] = await bySource(world, runId);
+    const lines = await linesOf(entry!.id);
+    expect(sumOf(lines, "debit")).toBe(sumOf(lines, "credit"));
+    const codes = byCode(lines);
+    expect(codes["1204"]).toEqual({ debit: 0, credit: 150_000 });
+    expect(codes["2103"]).toEqual({ debit: 0, credit: totals.netIdr });
   });
 
   it("replaying the same event posts nothing new", async () => {

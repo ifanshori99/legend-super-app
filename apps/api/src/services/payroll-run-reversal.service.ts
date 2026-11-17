@@ -11,13 +11,16 @@
 // same tax month was computed on this run (`payroll_run_month_priors`, written
 // at lock): reverse the later run first. The database trigger
 // `payroll_runs_reversal_dependency_trg` enforces the same rule. Runs whose
-// side effects the lock step does not perform (loans, reimbursements, service
-// charge, rapel) are not reversed here either: refusing never pays anyone more.
-// Loans are the exception when the run recorded its deductions
-// (`payroll_loan_deductions`, legend-xo0xx): an approved reversal restores each
-// loan's outstanding balance by exactly the recorded amount, once, and deletes
-// those rows in the same transaction (a repeat finds none). The recorded sum
-// has to equal the run's `loanRepaymentIdr`, otherwise the reversal is refused.
+// side effects the lock step does not perform (reimbursements, service charge,
+// rapel) are not reversed here either: refusing never pays anyone more.
+// Loans: the lock step lowers each loan by its recorded deduction
+// (`payroll_loan_deductions`, legend-xo0xx, legend-8tfvr), so an approved
+// reversal restores each loan's outstanding balance by exactly the recorded
+// amount, once, and deletes those rows in the same transaction (a repeat finds
+// none). The recorded sum has to equal the run's `loanRepaymentIdr`, otherwise
+// the reversal is refused. Migration 0443 proves at commit that principal -
+// outstanding equals the rows of locked or paid runs, so a missed or doubled
+// restore cannot commit.
 //
 // A run that raised an employee receivable (`pph21ReceivableIdr` > 0) is also
 // refused while another live run collected a receivable (`pph21_receivable`
@@ -62,6 +65,7 @@ import { recordAudit } from "./core-audit.ts";
 import type { Tx } from "./hris-access.ts";
 import { assertPayrollTenantCan } from "./payroll-access.ts";
 import { emitPayrollEvent } from "./payroll-events.ts";
+import { syncPph21ReceivableOpenItemsInTransaction } from "./payroll-pph21-receivable-open-items.service.ts";
 import {
   disputeFreezesBatchSql,
   disputeIsOpenSql,
@@ -714,6 +718,9 @@ export async function decidePayrollRunReversalInTransaction(
       "Perubahan status payroll tidak diizinkan.",
     );
   await writeRun(tx, tenantId, payrollRunId, next);
+  // legend-itph: the reversed run leaves no employee receivable open item, and
+  // a receivable it collected is open again (receivable lock held above).
+  await syncPph21ReceivableOpenItemsInTransaction(tx, context, payrollRunId);
   await emitPayrollEvent(tx, context, payrollReversed, {
     aggregateId: payrollRunId,
     actor: { type: "user", id: actor },

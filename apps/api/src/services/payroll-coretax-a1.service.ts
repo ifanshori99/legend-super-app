@@ -15,7 +15,7 @@
 // export does not check that the year is closed by an annual-recalculation
 // payslip: it reports exactly what the locked payslips of the year carry.
 //
-// MAPPING ASSUMPTIONS (no A1 sample in the repo, see coretax-a1.ts):
+// MAPPING ASSUMPTIONS:
 // - base_salary -> SalaryPensionJhtTht.
 // - bonus, thr -> TantiemBonusThr.
 // - every other taxable earning (allowances, incentive, overtime, service
@@ -25,6 +25,10 @@
 // - StatusOfWithholding: FullYear when the first payslip is in January and the
 //   last in December, else PartialYear; Annualized is never produced (no partial-year tax subject exists, bead legend-0ytbu).
 // - PTKP status and position come from the employee's latest payslip.
+// - Article21IncomeTax = sum of the sealed `tax.pph21Idr` of those slips,
+//   never recomputed; a negative sum (refund) is refused, never clamped.
+// - Layout and fixed values (GrossUpOpt No, IncomeTaxBenefit 0): see
+//   docs/qa/coretax-bpa1-format.md.
 
 import { and, eq, gte, inArray, lt } from "drizzle-orm";
 import type { TenantId } from "@starter/shared/core";
@@ -98,6 +102,8 @@ type Amounts = {
   insurancePaidByEmployer: number;
   pensionContributionJhtThtFee: number;
   taxableGross: number;
+  /** Signed: PPh 21 sealed on the slip (a lebih potong refund is negative). */
+  pph21: number;
 };
 
 function lineField(
@@ -121,6 +127,7 @@ function slipAmounts(calc: PayslipCalculation): Amounts | null {
     insurancePaidByEmployer: 0,
     pensionContributionJhtThtFee: 0,
     taxableGross: calc.tax.taxableGrossIdr,
+    pph21: calc.tax.pph21Idr,
   };
   let accounted = 0;
   for (const line of calc.lines) {
@@ -245,6 +252,7 @@ export async function buildAnnualA1Xml(
   }
 
   const badAmounts: string[] = [];
+  const negativeTax: string[] = [];
   const unsupportedPtkp: string[] = [];
   const badNik: string[] = [];
   const noPosition: string[] = [];
@@ -265,6 +273,7 @@ export async function buildAnnualA1Xml(
       insurancePaidByEmployer: 0,
       pensionContributionJhtThtFee: 0,
       taxableGross: 0,
+      pph21: 0,
     };
     let split = true;
     for (const slip of slips) {
@@ -281,7 +290,19 @@ export async function buildAnnualA1Xml(
       continue;
     }
     if (total.taxableGross === 0) {
+      // Zero gross with sealed tax cannot be skipped: the tax would vanish from A1.
+      if (total.pph21 !== 0) {
+        negativeTax.push(employeeId);
+        continue;
+      }
       excluded.zeroGross += slips.length;
+      continue;
+    }
+
+    // Article21IncomeTax is the sealed sum, never recomputed or raised. A
+    // negative sum (refund) cannot be stated as >= 0 without exceeding it.
+    if (!Number.isSafeInteger(total.pph21) || total.pph21 < 0) {
+      negativeTax.push(employeeId);
       continue;
     }
 
@@ -330,6 +351,8 @@ export async function buildAnnualA1Xml(
       position,
       statusOfWithholding:
         startMonth === 1 && endMonth === 12 ? "FullYear" : "PartialYear",
+      taxPeriodMonthStart: startMonth,
+      taxPeriodMonthEnd: endMonth,
       salaryPensionJhtThtIdr: total.salaryPensionJhtTht,
       otherBenefitIdr: total.otherBenefit,
       honorariumIdr: 0,
@@ -338,6 +361,7 @@ export async function buildAnnualA1Xml(
       tantiemBonusThrIdr: total.tantiemBonusThr,
       pensionContributionJhtThtFeeIdr: total.pensionContributionJhtThtFee,
       zakatIdr: 0,
+      article21IncomeTaxIdr: total.pph21,
       withholdingDate: last.payDate,
     });
   }
@@ -346,6 +370,11 @@ export async function buildAnnualA1Xml(
     throw refuse(
       "PAYROLL_TAX_EXPORT_A1_AMOUNT_MISMATCH",
       `Rincian slip gaji melebihi penghasilan bruto kena pajak, A1 tidak bisa dibuat (ID karyawan: ${idList(badAmounts)}).`,
+    );
+  if (negativeTax.length > 0)
+    throw refuse(
+      "PAYROLL_TAX_EXPORT_A1_TAX_INVALID",
+      `Total PPh 21 tersegel negatif atau tidak valid, A1 tidak bisa dibuat (ID karyawan: ${idList(negativeTax)}).`,
     );
   if (unsupportedPtkp.length > 0)
     throw refuse(

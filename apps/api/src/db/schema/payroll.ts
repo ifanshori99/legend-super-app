@@ -626,7 +626,10 @@ export const payrollRunResults = pgTable(
  * edited, and deleted only while the run is draft/simulated or when its
  * reversal is approved (the reversal restores each loan by exactly this
  * amount, once). The amount never exceeds the loan's outstanding balance at
- * write time (payroll-loan-deductions.custom.sql).
+ * write time (payroll-loan-deductions.custom.sql). Until the run locks a row
+ * is only a reservation: the lock step lowers the loan's outstanding balance
+ * by it (legend-8tfvr), and payroll-loan-ledger.custom.sql proves at commit
+ * that principal - outstanding equals the rows of locked or paid runs.
  */
 export const payrollLoanDeductions = pgTable(
   "payroll_loan_deductions",
@@ -658,6 +661,7 @@ export const payrollLoanDeductions = pgTable(
       columns: [table.tenantId, table.loanId],
       foreignColumns: [employeeLoans.tenantId, employeeLoans.id],
     }),
+    index("payroll_loan_deductions_loan_idx").on(table.tenantId, table.loanId),
     check("payroll_loan_deductions_amount_check", sql`${table.amountIdr} > 0`),
   ],
 );

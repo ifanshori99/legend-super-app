@@ -8,7 +8,9 @@
 //  1. permission `payroll.run`;
 //  2. LOCK ORDER (design §0.4): month advisory lock, rapel component locks +
 //     employees/outlets FOR SHARE, then the run row FOR UPDATE, then the
-//     prior runs FOR SHARE (`loadTaxYearPriors`), then reads, then writes;
+//     prior runs FOR SHARE (`loadTaxYearPriors`), then the receivable reads,
+//     then the loans FOR UPDATE in id order (`payroll-run-loans.ts`), then
+//     reads, then writes. Never lock a run row after a loan row;
 //  3. population: employees of the run's legal entity (own, else the home
 //     outlet's), in the policy's employment types, employed during the period
 //     (THR runs: also THR-eligible and in the schedule's list);
@@ -16,7 +18,9 @@
 //     tax facts from the employee row, tax-year priors;
 //  5. PPh 21 for all employees in one call, then the pure composer;
 //  6. writes: run row (reducer `simulate`), old results deleted, new results
-//     inserted, audit with counts only. No payslip, no outbox event (PAYR-01).
+//     inserted, the run's kasbon rows replaced (one per LOAN line: a
+//     reservation, the loan balance only drops at lock; legend-8tfvr), audit
+//     with counts only. No payslip, no outbox event (PAYR-01).
 //
 // Decided O7 (legend-0ytbu): population = employees whose legal entity (own,
 // else the home outlet's) is the run's, whose employment type is one of the
@@ -71,6 +75,7 @@ import {
   sumPayrollRunTotals,
   taxSchemeSchema,
   type BpjsTableType,
+  type EmployeeLoanId,
   type PayrollRun,
   type PayrollRunId,
   type PayslipCalculation,
@@ -110,6 +115,7 @@ import {
   bpjsLinesOf,
   composePayslipCalculation,
   payslipTaxFactsOf,
+  type PlannableLoan,
 } from "./payroll-run-compose.ts";
 import {
   calculatePayrollRunTax,
@@ -123,6 +129,10 @@ import {
   loadRunRapelAllocations,
   lockRapelInputsForRun,
 } from "./payroll-run-rapel-lock.ts";
+import {
+  replaceRunLoanDeductions,
+  lockLoansForRunSimulation,
+} from "./payroll-run-loans.ts";
 import {
   calculatePayrollRunStatutory,
   captureStatutoryForLock,
@@ -599,6 +609,10 @@ export async function simulatePayrollRunInTransaction(
         ...(run.runType === "regular" ? { payrollRunId: runId } : {}),
       },
     );
+    // Only the loan writer may produce a loan line (design D5): a tenant
+    // component of that category would have no loan behind it.
+    if (gross.lines.some((l) => l.category === "loan_installment"))
+      throw simulateUnsupported();
     const earnings = gross.lines.filter((l) => l.kind === "earning");
     const sumFlag = (flag: "bpjsBase" | "thrBase") =>
       sumIdr(
@@ -735,6 +749,21 @@ export async function simulatePayrollRunInTransaction(
     })),
   );
 
+  // Kasbon (legend-8tfvr): only regular runs deduct loans. Loans lock after
+  // the priors (design §2); no policy row means bp 0, so nothing is deducted.
+  const [loanPolicy] = await tx
+    .select({ bp: payrollLoanPolicies.maxDeductionOfNetPayBp })
+    .from(payrollLoanPolicies)
+    .where(eq(payrollLoanPolicies.tenantId, tenantId))
+    .limit(1);
+  const loansByEmployee = isThr
+    ? new Map<string, PlannableLoan[]>()
+    : await lockLoansForRunSimulation(tx, tenantId, {
+        runId,
+        employeeIds: population.map((m) => m.id),
+        periodEnd: run.periodEnd,
+      });
+
   type Prepared = {
     member: (typeof population)[number];
     payslipId: PayslipId;
@@ -867,6 +896,8 @@ export async function simulatePayrollRunInTransaction(
       openReceivableIdr: openReceivableById.get(entry.member.id) ?? 0,
       totalOpenReceivableIdr:
         receivableBalances.total.get(entry.member.id) ?? 0,
+      loans: loansByEmployee.get(entry.member.id) ?? [],
+      loanMaxDeductionOfNetPayBp: loanPolicy?.bp ?? 0,
     });
     results.push({
       entry,
@@ -884,18 +915,9 @@ export async function simulatePayrollRunInTransaction(
 
   const totals = sumPayrollRunTotals(results.map((r) => r.stored.calculation));
   // Side effects simulate does not compose: refuse, never pay more.
-  if (
-    totals.loanRepaymentIdr > 0 ||
-    totals.reimbursementIdr > 0 ||
-    totals.serviceChargeIdr > 0
-  )
+  if (totals.reimbursementIdr > 0 || totals.serviceChargeIdr > 0)
     throw simulateUnsupported();
 
-  const [loanPolicy] = await tx
-    .select({ bp: payrollLoanPolicies.maxDeductionOfNetPayBp })
-    .from(payrollLoanPolicies)
-    .where(eq(payrollLoanPolicies.tenantId, tenantId))
-    .limit(1);
   const at = isoDateTimeSchema.parse(now.toISOString());
   const snapshot = payrollConfigSnapshotSchema.safeParse({
     statutoryVersions: captured.statutoryVersions,
@@ -919,7 +941,7 @@ export async function simulatePayrollRunInTransaction(
         overtimeBase: c.overtimeBase,
         thrBase: c.thrBase,
       })),
-    // Kasbon off: no loan is deducted (simulate refuses loans anyway).
+    // The policy share of net pay kasbon may take; 0 (no policy) = none.
     loanMaxDeductionOfNetPayBp: loanPolicy?.bp ?? 0,
     pph21Policy: tax.pph21Policy,
     capturedAt: at,
@@ -967,6 +989,21 @@ export async function simulatePayrollRunInTransaction(
       piiKeyVersion: PAYROLL_SEAL_KEY_VERSION,
       createdAt: now,
     })),
+  );
+  // One kasbon row per LOAN line (a reservation until the run locks).
+  await replaceRunLoanDeductions(
+    tx,
+    tenantId,
+    runId,
+    results.flatMap(({ entry, stored }) =>
+      stored.calculation.lines
+        .filter((l) => l.category === "loan_installment")
+        .map((l) => ({
+          employeeId: employeeIdSchema.parse(entry.member.id),
+          loanId: l.sourceId as EmployeeLoanId,
+          amountIdr: l.amountIdr,
+        })),
+    ),
   );
 
   await recordAudit(

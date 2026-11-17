@@ -70,7 +70,7 @@ export const accountingOpenItems = pgTable(
     legalEntityId: uuid("legal_entity_id").notNull(),
     outletId: uuid("outlet_id").$type<OutletId>(),
     counterpartyType: varchar("counterparty_type", { length: 20 })
-      .$type<"supplier" | "corporate_account" | "event_customer">()
+      .$type<"supplier" | "corporate_account" | "event_customer" | "employee">()
       .notNull(),
     counterpartyId: uuid("counterparty_id").notNull(),
     counterpartyName: varchar("counterparty_name", { length: 150 }).notNull(),
@@ -112,10 +112,11 @@ export const accountingOpenItems = pgTable(
       "accounting_open_items_kind_check",
       sql`${table.kind} IN ('payable', 'receivable')`,
     ),
-    // §3.19: utang = supplier; piutang = event dan corporate account.
+    // §3.19: utang = supplier; piutang = event dan corporate account; plus the
+    // employee PPh 21 receivable (legend-itph).
     check(
       "accounting_open_items_counterparty_check",
-      sql`(${table.kind} = 'payable' AND ${table.counterpartyType} = 'supplier') OR (${table.kind} = 'receivable' AND ${table.counterpartyType} IN ('corporate_account', 'event_customer'))`,
+      sql`(${table.kind} = 'payable' AND ${table.counterpartyType} = 'supplier') OR (${table.kind} = 'receivable' AND ${table.counterpartyType} IN ('corporate_account', 'event_customer', 'employee'))`,
     ),
     check(
       "accounting_open_items_amounts_check",

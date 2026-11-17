@@ -38,6 +38,7 @@ import {
   asTenant as asAppTenant,
   tenantAId,
 } from "./tenant-isolation-harness.ts";
+import { insertPolicy } from "./payroll-simulate-kit.ts";
 
 const app = createApp();
 const ME = "/api/hris/me/loans";
@@ -59,6 +60,8 @@ const createdUsers: string[] = [];
 const createdEmployees: string[] = [];
 const createdComponents: string[] = [];
 const createdCategories: string[] = [];
+let ledgerRunId: string | undefined;
+let ledgerPolicyId: string | undefined;
 const key = () => `loan-caps-${randomUUID()}`;
 const label = randomUUID().slice(0, 8);
 
@@ -90,6 +93,58 @@ async function asTenantOf<T>(
 
 const asTenantB = <T>(run: (client: PoolClient) => Promise<T>): Promise<T> =>
   asTenantOf(tenantB.tenantId, run);
+
+/**
+ * Repay a disbursed loan through the ledger (migration 0443, invariant I3):
+ * outstanding_idr / status only move together with the deduction row of a
+ * locked payroll run, and the deferred trigger checks it at COMMIT. One locked
+ * run (own policy, written in replica role like the history run of
+ * payroll-run-loans.test.ts) carries a row per loan; `patchLoanSql` is then
+ * applied with triggers on, so the real ledger trigger judges the new balance.
+ */
+async function repayThroughLedger(
+  loanId: string,
+  paidIdr: number,
+  patchLoanSql: string,
+) {
+  await asTenantB(async (db) => {
+    await db.query("SET LOCAL session_replication_role = replica");
+    if (!ledgerRunId) {
+      ledgerRunId = randomUUID();
+      ledgerPolicyId = randomUUID();
+      await insertPolicy(
+        db,
+        tenantB.tenantId,
+        tenantB.legalEntityId,
+        ledgerPolicyId,
+      );
+      await db.query(
+        `INSERT INTO payroll_runs
+           (id, tenant_id, legal_entity_id, payroll_policy_id, run_type, period_start,
+            period_end, pay_date, status, totals, config_snapshot, approved_by_hr,
+            approved_by_hr_at, approved_by_finance, approved_by_finance_at, locked_by,
+            locked_at, created_by)
+         VALUES ($1, $2, $3, $4, 'regular', '2024-10-01', '2024-10-31', '2024-10-28',
+                 'locked', '{}', '{}', 'loan-caps-hr', now(), 'loan-caps-fin', now(),
+                 'loan-caps-lock', now(), 'loan-caps-hr')`,
+        [ledgerRunId, tenantB.tenantId, tenantB.legalEntityId, ledgerPolicyId],
+      );
+    }
+    await db.query(
+      `INSERT INTO payroll_loan_deductions
+         (tenant_id, payroll_run_id, employee_id, loan_id, amount_idr)
+       SELECT tenant_id, $2, employee_id, id, $3
+         FROM employee_loans WHERE tenant_id = $1 AND id = $4`,
+      [tenantB.tenantId, ledgerRunId, paidIdr, loanId],
+    );
+    // Triggers back on: the loan write below is what the ledger must accept.
+    await db.query("SET LOCAL session_replication_role = origin");
+    await db.query(
+      `UPDATE employee_loans SET ${patchLoanSql} WHERE tenant_id = $1 AND id = $2`,
+      [tenantB.tenantId, loanId],
+    );
+  });
+}
 
 async function signedInClient(name: string) {
   const client = agent(app);
@@ -296,6 +351,15 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await asTenantB(async (db) => {
+    // The locked ledger run is frozen: delete its rows in replica role.
+    await db.query("SET LOCAL session_replication_role = replica");
+    for (const sql of [
+      "DELETE FROM payroll_loan_deductions WHERE tenant_id = $1",
+      "DELETE FROM payroll_runs WHERE tenant_id = $1",
+      "DELETE FROM payroll_policies WHERE tenant_id = $1",
+    ])
+      await db.query(sql, [tenantB.tenantId]);
+    await db.query("SET LOCAL session_replication_role = origin");
     for (const sql of [
       "DELETE FROM payroll_loan_policies WHERE tenant_id = $1",
       "DELETE FROM hris_idempotency WHERE tenant_id = $1",
@@ -443,11 +507,10 @@ describe("kasbon limits: single open loan", () => {
     expect(disbursed.status, JSON.stringify(disbursed.body)).toBe(200);
     expectRefused(await requestLoan(staff.client, 500_000));
 
-    await asTenantB((db) =>
-      db.query(
-        "UPDATE employee_loans SET status = 'settled', settled_at = now(), outstanding_idr = 0 WHERE id = $1",
-        [first],
-      ),
+    await repayThroughLedger(
+      first,
+      500_000,
+      "status = 'settled', settled_at = now(), outstanding_idr = 0",
     );
     await created(staff.client, 500_000);
   });
@@ -637,12 +700,7 @@ describe("kasbon limits: total open cap", () => {
     const loan = await created(staff.client, 1_200_000);
     await disbursed(loan);
     // Part of the loan was repaid: 300,000 is still owed of 1,200,000.
-    await asTenantB((db) =>
-      db.query(
-        "UPDATE employee_loans SET outstanding_idr = 300000 WHERE id = $1",
-        [loan],
-      ),
-    );
+    await repayThroughLedger(loan, 900_000, "outstanding_idr = 300000");
     // Room = 2,000,000 - 300,000 = 1,700,000 (it would be 800,000 on principal).
     expectRefused(await requestLoan(staff.client, 1_700_001));
     const fits = await requestLoan(staff.client, 1_700_000);
@@ -660,11 +718,10 @@ describe("kasbon limits: total open cap", () => {
     expect((await decide(cancelled, "cancel")).status).toBe(200);
     const settled = await created(staff.client, 1_500_000);
     await disbursed(settled);
-    await asTenantB((db) =>
-      db.query(
-        "UPDATE employee_loans SET status = 'settled', settled_at = now(), outstanding_idr = 0 WHERE id = $1",
-        [settled],
-      ),
+    await repayThroughLedger(
+      settled,
+      1_500_000,
+      "status = 'settled', settled_at = now(), outstanding_idr = 0",
     );
     // None of the three counts, so the whole total is free.
     const full = await requestLoan(staff.client, 2_000_000);
@@ -743,12 +800,7 @@ describe("kasbon limits: total open cap", () => {
     const staff = await newStaff();
     const paid = await created(staff.client, 1_200_000);
     await disbursed(paid);
-    await asTenantB((db) =>
-      db.query(
-        "UPDATE employee_loans SET outstanding_idr = 300000 WHERE id = $1",
-        [paid],
-      ),
-    );
+    await repayThroughLedger(paid, 900_000, "outstanding_idr = 300000");
     const next = await created(staff.client, 1_700_000);
     // 300,000 owed + 1,700,000 = 2,000,000.
     await setPolicy({ maxTotalOpenIdr: 2_000_000, singleOpenLoan: false });
