@@ -278,6 +278,9 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "function bodies only, no row edited by the migration: app.payout_grant_issue (grantor login), app.payout_correction_propose, app.payout_overpaid_propose and the withdraw functions (payout role) insert a grant or a proposal, or mark an open correction or overpaid proposal withdrawn, when called; a withdrawn proposal stays as a row and the item is untouched; the migration itself writes no row and changes no amount",
   "0426_payout_approval_log.sql":
     "creates the append-only payroll_payout_approval_log table and replaces the function body of app.payout_attest (payout role), which inserts an attestation and a log row when called; the migration itself writes no row and changes no amount",
+  // legend-39d.4 (964)
+  "0495_promotion_ai_action_request_key.sql":
+    "adds promotions.ai_action_request_id and backfills it only from the `[ai:<id>]` marker already at the end of promotions.description (the earliest promotion per tenant and marker keeps the key, so the partial unique index can be created); the description, money fields and every other row stay as they are, never imports data, FORCE RLS lifted on promotions and restored in the same migration",
   // legend-yd9u2 (923)
   "0430_payout_backfill_unfreeze_lock_order.sql":
     "function body only, no row edited by the migration: app.payout_batch_unfreeze acquires same-run batches in id order before its target; it keeps the existing grant, dispute and unfreeze rules and changes no amount",

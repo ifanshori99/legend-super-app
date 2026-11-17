@@ -2927,6 +2927,20 @@
       "when": 1795000000046,
       "tag": "0431_device_scanner_status",
       "breakpoints": true
+    },
+    {
+      "idx": 495,
+      "version": "7",
+      "when": 1795000000047,
+      "tag": "0495_promotion_ai_action_request_key",
+      "breakpoints": true
+    },
+    {
+      "idx": 496,
+      "version": "7",
+      "when": 1795000000048,
+      "tag": "0496_ai_tool_calls_mcp_token",
+      "breakpoints": true
     }
   ]
 }

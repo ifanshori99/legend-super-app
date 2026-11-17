@@ -11,6 +11,8 @@ export type AiToolContext = {
   readonly channel: AiChannel;
   /** Set only for channel "mcp". */
   readonly mcpClientId: string | null;
+  /** The MCP token behind the call; set only for channel "mcp" (audit). */
+  readonly mcpTokenId?: string | null;
   readonly now: Date;
 };
 

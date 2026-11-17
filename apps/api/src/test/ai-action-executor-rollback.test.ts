@@ -118,8 +118,8 @@ const promotionPayload = (outletIds: string[]) => ({
 
 async function promotionStatuses(rowId: string): Promise<string[]> {
   const { rows } = await ownerPool.query(
-    "SELECT status FROM promotions WHERE tenant_id = $1 AND description LIKE $2",
-    [tenantId, `%[ai:${rowId}]`],
+    "SELECT status FROM promotions WHERE tenant_id = $1 AND ai_action_request_id = $2",
+    [tenantId, rowId],
   );
   return rows.map((entry) => entry.status as string);
 }

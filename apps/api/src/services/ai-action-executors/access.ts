@@ -36,15 +36,19 @@ export function outletIdsOf(payload: Record<string, unknown>): string[] {
 /**
  * TL-14 changes stock, so `inventory.stock.view` is not enough: a decrease
  * needs a permission that removes stock (stock count or waste), an increase one
- * that adds it (stock count or receiving). Other tools' write permission
- * (promo.manage, menu.price.manage, menu.availability.toggle) is already in
- * their catalog `requiredPermissions`.
+ * that adds it (stock count or receiving). TL-13 needs `purchasing.order.create`
+ * as the manual purchase order screen does. Other tools' write permission
+ * (promo.manage, menu.price.manage, menu.availability.toggle, hr.schedule.manage)
+ * is already in their catalog `requiredPermissions`.
  */
 function domainWriteHeld(
   via: (permission: PermissionCode) => boolean,
   toolCode: AiToolCode,
   payload: Record<string, unknown>,
 ): boolean {
+  // TL-13 drafts a purchase order: the catalog asks for `purchasing.request.create`
+  // (which a kitchen lead holds), but the order itself needs `purchasing.order.create`.
+  if (toolCode === "TL-13") return via("purchasing.order.create");
   if (toolCode !== "TL-14") return true;
   const lines = Array.isArray(payload.lines)
     ? (payload.lines as { qtyDelta?: unknown }[])

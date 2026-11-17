@@ -919,10 +919,12 @@ describe("TL-05 get_labor_summary", () => {
     );
     expect(out.headcount).toBe(2);
     expect(out.overtimeHours).toBe("1.5000");
-    // No payroll or attendance data exists yet.
+    // No attendance data exists. Labor cost is NULL, never 0: the request is
+    // outlet-filtered (a payroll run has no outlet split) and tenant X has no
+    // locked payroll run (legend-39d.4). Computed values: ai-labor-cost-payroll.test.ts.
     expect(out).toMatchObject({
-      laborCostIdr: 0,
-      laborCostPct: "0.0000",
+      laborCostIdr: null,
+      laborCostPct: null,
       workedHours: "0.0000",
     });
     expect(Object.keys(out).sort()).toEqual(
@@ -944,11 +946,17 @@ describe("TL-05 get_labor_summary", () => {
     );
     expect(hr.headcount).toBe(3);
     expect(hr.overtimeHours).toBe("2.0000");
+    // HR may view payroll, but tenant X has no locked run: null, not 0.
+    expect(hr.laborCostIdr).toBeNull();
+    expect(hr.laborCostPct).toBeNull();
     const ctx = contextFor(tx, "outlet_manager", x1);
     const manager = getLaborSummaryOutputSchema.parse(
       await call("TL-05", ctx, { period }),
     );
     expect(manager.headcount).toBe(2);
+    // An outlet manager has no payroll permission: cost is hidden, not 0.
+    expect(manager.laborCostIdr).toBeNull();
+    expect(manager.laborCostPct).toBeNull();
     await expect(
       call("TL-05", ctx, { period, outletIds: [x2] }),
     ).rejects.toMatchObject(forbidden);

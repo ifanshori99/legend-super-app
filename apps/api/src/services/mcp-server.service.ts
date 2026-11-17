@@ -27,8 +27,17 @@ import {
   redactPii,
   redactToolResultContent,
 } from "../lib/ai/pii.ts";
+import { env } from "../config/env.ts";
+import { createFixedWindowCounter } from "../lib/fixed-window-counter.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { logger } from "../lib/logger.ts";
+import {
+  createLocalWindowStore,
+  createRedisWindowStore,
+  SHARED_STORE_TIMEOUT_MS,
+  type SharedWindowResult,
+  type SharedWindowStore,
+} from "../lib/shared-window-store.ts";
 import {
   loadTenantAccess,
   resolveAccessSnapshot,
@@ -153,31 +162,69 @@ export async function authenticateMcpToken(
   };
 }
 
-// ---- Per-token rate limit (sliding window, in memory) ----------------------
+// ---- Per-token rate limit (fixed window; Redis-shared, fail closed) ---------
 
 const WINDOW_MS = 60_000;
-const hits = new Map<string, number[]>();
+const LOCAL_CAPACITY = 5_000;
+const MCP_BUCKET = "mcp";
 
-/** Throws `MCP_RATE_LIMITED` when the token passed its per-minute budget. */
-export function enforceMcpRateLimit(
+const localStore = () =>
+  createLocalWindowStore((limit, windowMs) =>
+    createFixedWindowCounter({ limit, windowMs, capacity: LOCAL_CAPACITY }),
+  );
+let local = localStore();
+let redisStore: SharedWindowStore | undefined;
+
+/**
+ * The store the budget counts in. With REDIS_URL every API instance shares one
+ * window; without it (dev, test, single VM) the window stays in process.
+ */
+function resolveMcpStore(): { store: SharedWindowStore; shared: boolean } {
+  if (!env.REDIS_URL) return { store: local, shared: false };
+  redisStore ??= createRedisWindowStore(env.REDIS_URL);
+  return { store: redisStore, shared: true };
+}
+
+/**
+ * Throws `MCP_RATE_LIMITED` when the token passed its per-minute budget. With a
+ * shared (Redis) store the limit fails CLOSED: a Redis error or a stall past
+ * `SHARED_STORE_TIMEOUT_MS` refuses the call instead of counting locally, so an
+ * outage never loosens the budget. `options.store` is a test seam.
+ */
+export async function enforceMcpRateLimit(
   tokenId: string,
   limitPerMinute: number,
-  nowMs = Date.now(),
-): void {
-  const recent = (hits.get(tokenId) ?? []).filter((t) => nowMs - t < WINDOW_MS);
-  if (recent.length >= limitPerMinute) {
-    hits.set(tokenId, recent);
+  options: { store?: SharedWindowStore } = {},
+): Promise<void> {
+  const resolved = options.store
+    ? { store: options.store, shared: true }
+    : resolveMcpStore();
+  let timer: NodeJS.Timeout | undefined;
+  let result: SharedWindowResult;
+  try {
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error("mcp rate limit store timed out")),
+        SHARED_STORE_TIMEOUT_MS,
+      );
+      timer.unref?.();
+    });
+    result = await Promise.race([
+      resolved.store.take(MCP_BUCKET, tokenId, limitPerMinute, WINDOW_MS),
+      timeout,
+    ]);
+  } catch (error) {
+    if (!resolved.shared) throw error;
+    logger.warn({ err: error }, "mcp rate limit store failed; refusing call");
     throw new AiError("MCP_RATE_LIMITED");
+  } finally {
+    clearTimeout(timer);
   }
-  recent.push(nowMs);
-  hits.set(tokenId, recent);
-  if (hits.size > 5_000)
-    for (const [key, times] of hits)
-      if (times.every((t) => nowMs - t >= WINDOW_MS)) hits.delete(key);
+  if (!result.allowed) throw new AiError("MCP_RATE_LIMITED");
 }
 
 export function resetMcpRateLimits(): void {
-  hits.clear();
+  local = localStore();
 }
 
 // ---- MCP server ------------------------------------------------------------
@@ -260,6 +307,7 @@ export function createMcpServer(principal: McpPrincipal): Server {
     access: principal.access,
     channel: "mcp",
     mcpClientId: principal.clientId,
+    mcpTokenId: principal.tokenId,
     now: new Date(),
   });
   const scopes = principal.scopes;

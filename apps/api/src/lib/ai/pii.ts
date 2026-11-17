@@ -118,14 +118,30 @@ function findAll(text: string): PiiFinding[] {
   return findings.sort((a, b) => a.start - b.start);
 }
 
-export function scanPii(text: string): { found: PiiKind[] } {
-  return { found: [...new Set(findAll(text).map((f) => f.kind))] };
+export function scanPii(
+  text: string,
+  skipKinds: readonly PiiKind[] = [],
+): { found: PiiKind[] } {
+  return {
+    found: [
+      ...new Set(
+        findAll(text)
+          .filter((f) => !skipKinds.includes(f.kind))
+          .map((f) => f.kind),
+      ),
+    ],
+  };
 }
 
 /** Replaces each finding with a neutral placeholder, e.g. [phone number]. */
-export function redactPii(text: string): string {
+export function redactPii(
+  text: string,
+  skipKinds: readonly PiiKind[] = [],
+): string {
   let result = text;
-  for (const f of findAll(text).reverse())
+  for (const f of findAll(text)
+    .filter((f) => !skipKinds.includes(f.kind))
+    .reverse())
     result = `${result.slice(0, f.start)}[${PII_LABELS[f.kind]}]${result.slice(f.end)}`;
   return result;
 }

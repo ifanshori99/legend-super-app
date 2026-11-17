@@ -128,13 +128,14 @@ export async function listMyPayslips(
   });
 }
 
-async function toPayslip(
-  tx: Tx,
-  context: ScopedTenantContext,
-  row: PayslipRow,
-  signer: HrisFileSigner,
-): Promise<Payslip> {
-  const calculation = payslipCalculationSchema.parse(
+/** Opens the sealed calculation of one payslip row (no PIN check here). */
+export function openPayslipCalculation(
+  row: Pick<
+    PayslipRow,
+    "tenantId" | "id" | "calculationEncrypted" | "piiKeyVersion"
+  >,
+) {
+  return payslipCalculationSchema.parse(
     JSON.parse(
       openPayrollValue(
         row.calculationEncrypted,
@@ -148,6 +149,15 @@ async function toPayslip(
       ),
     ),
   );
+}
+
+async function toPayslip(
+  tx: Tx,
+  context: ScopedTenantContext,
+  row: PayslipRow,
+  signer: HrisFileSigner,
+): Promise<Payslip> {
+  const calculation = openPayslipCalculation(row);
   // The PDF is a private storage object when its key is the object id; any
   // other key (not yet rendered / legacy path) yields no URL.
   const objectId = uuidSchema.safeParse(row.pdfObjectKey);

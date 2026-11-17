@@ -305,10 +305,14 @@ export const getLaborSummaryInputSchema = z.strictObject({
 });
 export type GetLaborSummaryInput = z.infer<typeof getLaborSummaryInputSchema>;
 
-/** Aggregate only: no individual salary or employee field (§40 Input Minimum). */
+/**
+ * Aggregate only: no individual salary or employee field (§40 Input Minimum).
+ * Labor cost and its percent are null (never 0) when the caller lacks payroll
+ * permission, filtered by outlet, or no frozen payroll run covers the period.
+ */
 export const getLaborSummaryOutputSchema = z.strictObject({
-  laborCostIdr: idrSchema,
-  laborCostPct: decimal4Schema,
+  laborCostIdr: idrSchema.nullable(),
+  laborCostPct: decimal4Schema.nullable(),
   scheduledHours: nonNegativeDecimal4Schema,
   workedHours: nonNegativeDecimal4Schema,
   overtimeHours: nonNegativeDecimal4Schema,

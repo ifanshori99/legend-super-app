@@ -50,6 +50,8 @@ const SAFE_FIELDS_BY_ACTION: Readonly<Record<string, readonly string[]>> = {
   ],
   "ai_chatgpt.unavailable": ["enabled", "status", "model", "generation"],
   "ai_chatgpt.refreshed": ["enabled", "status", "model", "generation"],
+  // A model answer masked for personal data: kinds only, never the text.
+  "ai_output.pii_redacted": ["feature", "channel", "kinds"],
 
   "pos_override.recorded": [
     "action",
