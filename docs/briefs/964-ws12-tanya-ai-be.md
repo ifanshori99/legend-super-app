@@ -1,0 +1,11 @@
+# 964 WS-12 Tanya AI BE: tool tersisa + pengerasan (syarat rilis; K uang/akses/PII + migrasi)
+Peran: engineer (baca ~/.agents/team/roles/engineer.md). Sonnet 5.5 high. Review: architect effort xhigh (uang, akses, migrasi).
+Cabang: worktree-mu dari `origin/milestone/m1` (0c31ff40e). Langkah pertama `heavy pnpm worktree:setup`. Commit dan push tanpa force. Tidak merge, tidak deploy. Migrasi baru 0495-0499 (nomor kerja).
+Kartu (`bd show <id>`; claim dulu). Hasil scoping CTO di m1:
+- legend-39d.2 TL-09 my payslip: tabel `payslips` sudah ada (`db/schema/payroll.ts:525`, `hris-payslip.service.ts`, `payslip-pin.service.ts`); daftarkan tool di `services/ai-tools/read-b/index.ts`. Hanya slip milik sendiri, gerbang PIN slip/MFA sama dengan layar slip. Tanpa migrasi.
+- legend-39d.3 TL-13 PO draft (`purchasing-order.service.ts`; stub `ai-tools/write/index.ts:31`, executor di `ai-action-executors/`) dan TL-16 tulis jadwal shift (`hris-scheduling-roster.service.ts`; stub `write/index.ts:37`). Tetap lewat action request -> approval, tidak pernah mutasi langsung. Tanpa migrasi.
+- legend-39d.4 pengerasan: rate limit MCP ke Redis (`mcp-server.service.ts:162`); marker promo `[ai:<id>]` diganti kolom idempotensi (migrasi; `ai-action-executors/promotion.ts`); `ai_tool_calls.mcp_token_id` (migrasi + RLS, tabel insert-only; `ai-governance.service.ts:529`); scan PII pada output model; TL-05 biaya tenaga kerja dari data payroll/absensi (`ai-metrics/labor.ts`) dengan izin gaji.
+Jangan sampai rugi: test bukti tool AI tidak bisa membuat PO/promo/jadwal tanpa persetujuan, tidak membaca slip orang lain, promo tidak dobel saat retry, dan biaya tenaga kerja tidak tampil ke peran tanpa izin gaji.
+Paralel: Explore per kartu + test-writer (gagal-dulu) dalam satu giliran; satu implementer per kartu (39d.4 boleh dua: Redis/PII dan migrasi); lalu test-runner + architect xhigh bersamaan. Suite besar hanya setelah kode beku.
+Bukti: gagal-dulu lalu hijau; test area ai/mcp/payslip/purchasing/scheduling lewat heavy setelah commit terakhir; pra-gate AGENTS.md (prettier, eslint, text-contract, db:generate kosong, registry migrasi, typecheck API sekali); architect tanpa P1.
+Laporan: SHA, kartu, migrasi, test, temuan architect, angka subagent (total, puncak, pemegang heavy). Komentari tiap kartu. Lapor sekali di akhir; jangan akhiri giliran untuk kabar antara.
