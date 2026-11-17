@@ -65,7 +65,6 @@ import { outlets } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import {
-  advisoryLock,
   assertOutletReach,
   assertTenantScope,
   auditApFa,
@@ -73,6 +72,7 @@ import {
   outletVisible,
   type TenantTransaction,
 } from "./accounting-ap-fa-shared.ts";
+import { entityLock } from "./accounting-bank-matching.ts";
 import { loadReconciliationPolicyInTx } from "./accounting-finance-policy.service.ts";
 import {
   notFound,
@@ -86,9 +86,6 @@ const DAY_MS = 86_400_000;
 const CURSOR_AT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/;
 const invalidCursor = () =>
   new HttpError(422, "VALIDATION_ERROR", "Check the cursor.");
-
-const entityLockName = (tenantId: string, legalEntityId: string) =>
-  `acc-cashbank:${tenantId}:${legalEntityId}`;
 
 /** The PIC must hold a role assignment that is valid now in this tenant. */
 async function assertActiveOwner(
@@ -311,7 +308,7 @@ export async function openReconciliationCase(
         }
         await assertActiveOwner(tx, tenantId, input.ownerId, now);
 
-        await advisoryLock(tx, entityLockName(tenantId, input.legalEntityId));
+        await entityLock(tx, tenantId, input.legalEntityId);
         await lockStatementLines(tx, tenantId, input.legalEntityId, lineIds);
         await lockCashDeposits(tx, context, input.legalEntityId, depositIds);
         await assertJournalsOfEntity(
@@ -622,7 +619,7 @@ export async function actOnReconciliationCase(
     const now = new Date();
     const seen = await loadCase(tx, context, caseId);
     assertOutletReach(context, seen.outletId);
-    await advisoryLock(tx, entityLockName(tenantId, seen.legalEntityId));
+    await entityLock(tx, tenantId, seen.legalEntityId);
     const current = await loadCase(tx, context, caseId, { forUpdate: true });
 
     let action: ReconciliationCaseAction;

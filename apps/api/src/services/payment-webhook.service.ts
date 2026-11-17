@@ -12,7 +12,8 @@
 // id (`data.reference`), amount and the integration that signed it must all
 // agree, otherwise the row is `ignored` and nothing settles; a paid `amount`
 // that differs from the intent goes the AMOUNT_MISMATCH way (money parked).
-// Only `payment.paid` and `payment.expired` move an intent; `refund.succeeded`
+// Only `payment.paid` and `payment.expired` move an intent (`payment.refunded`
+// only records the refund time); `refund.succeeded`
 // and `refund.failed` close an approved refund (see processRefundEvent);
 // `invoice.created` and `invoice.paid` go to the recurring billing service
 // (payment-recurring.service.ts); any other event type (`webhook.test`, ...)
@@ -65,6 +66,7 @@ import {
   applyGatewayFailure,
   confirmPayment,
   markGatewayReconciled,
+  markProviderRefunded,
   recordUnsettledGatewayFunds,
 } from "./payment.service";
 import { decidePaymentConfirmation } from "./payment-lifecycle";
@@ -813,9 +815,14 @@ async function processPaymentEvent(
       await applyGatewayFailure(context, intent.id, "expired", now);
     } else if (status === "failed") {
       await applyGatewayFailure(context, intent.id, "failed", now);
+    } else if (status === "refunded") {
+      // 952 round 2: the money went back to the payer. Only the refund time is
+      // recorded (the status is untouched, a paid intent is never stamped), so
+      // a late `paid` message cannot settle it. The refund itself is not booked
+      // automatically.
+      await markProviderRefunded(context, intent.id, now);
     }
-    // `pending` and `refunded` change nothing (a refund is not booked
-    // automatically).
+    // `pending` changes nothing.
     await markRow(
       context,
       row.id,

@@ -38,6 +38,7 @@ import { HttpError } from "../lib/http-error.ts";
 import type { Tx } from "./menu-internals.ts";
 import {
   cancelPaymentLinkInTx,
+  markProviderRefunded,
   settleGatewayIntentNow,
 } from "./payment.service.ts";
 import { paymentGatewayFor } from "./payment-gateway.ts";
@@ -807,6 +808,11 @@ export async function checkQrisHold(
   }
   const sameReference =
     answer !== null && answer.providerRef === intent.providerRef;
+  // 952 round 2: the provider gave this code's payment back. Recorded at once
+  // (the hold may close now or later), so a late `paid` message for it is
+  // never booked or parked as money the outlet would refund a second time.
+  if (answer?.rawStatus === "refunded" && sameReference)
+    await markProviderRefunded(context, intent.id, now);
   if (answer?.status === "paid" && sameReference) {
     // The customer paid: settle through the normal path (evidence, link, the
     // payment.paid event that captures the tender). Never closes the hold.

@@ -65,6 +65,8 @@ export const DOIT_WEBHOOK_EVENT_TYPES = [
 export const DOIT_PAYMENT_EVENT_TYPES = [
   "payment.paid",
   "payment.expired",
+  // 952 round 2: only records that the provider gave the money back.
+  "payment.refunded",
 ] as const;
 export type DoitPaymentEventType = (typeof DOIT_PAYMENT_EVENT_TYPES)[number];
 

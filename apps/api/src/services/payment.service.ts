@@ -726,7 +726,15 @@ async function cancelSupersededAtGateway(
       });
       if (
         answer.providerRef !== intent.providerRef ||
-        answer.extraPayments?.length ||
+        answer.extraPayments?.length
+      )
+        continue;
+      // 952 round 2: a `refunded` answer is recorded whether or not the code is
+      // final yet (before expiry + 60s), so a late `paid` message cannot settle
+      // it. Only a closed code (expired / failed) is ever stamped.
+      if (answer.rawStatus === "refunded")
+        await markProviderAnswered(context, intent.intentId, now, true);
+      if (
         !providerAnswerFinal(
           { provider: intent.provider, expiresAt: row.expiresAt },
           answer,
@@ -749,6 +757,7 @@ async function cancelSupersededAtGateway(
               eq(paymentIntents.tenantId, context.tenant.tenantId),
               eq(paymentIntents.id, intent.intentId),
               isNull(paymentIntents.providerFinalAt),
+              inArray(paymentIntents.status, ["expired", "failed"]),
             ),
           ),
       );
@@ -1466,6 +1475,23 @@ export async function recordUnsettledGatewayFundsInTx(
 ): Promise<"inserted" | "found" | "none"> {
   const paid = funds.paidAmountIdr;
   if (!(paid > 0)) return "none";
+  // 952 round 2: money of the transaction the provider answered `refunded`
+  // already went back to the payer; recording it would refund it twice. Read
+  // from the row (locked by the confirmation path, so current) rather than the
+  // caller's snapshot. A DIFFERENT provider transaction on the same code is a
+  // separate payment and is still parked.
+  if (funds.providerRef === intent.providerRef) {
+    const [refundState] = await tx
+      .select({ providerRefundedAt: paymentIntents.providerRefundedAt })
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          eq(paymentIntents.id, intent.id),
+        ),
+      );
+    if (refundState && refundState.providerRefundedAt !== null) return "found";
+  }
   const reason =
     paid > Number(intent.amountIdr) ? "overpayment" : "double_payment";
   {
@@ -2541,6 +2567,21 @@ async function applyConfirmation(
       throw new HttpError(404, "NOT_FOUND", "Payment link not found.");
     const current = await lockedIntent(tx, context, intent.id);
     if (!current) throw new HttpError(404, "NOT_FOUND", "Payment not found.");
+    // 952 P1: the provider answered `refunded` for this code, so its money went
+    // back to the payer. No later `paid` message (an old webhook, a stale
+    // answer) may settle the bill: checked under the locks, before any parking
+    // (QRIS hold, VA release) or write, so nothing is credited, no event is
+    // emitted and no evidence is recorded. Only for the transaction the
+    // provider answered about (same provider reference): a DIFFERENT provider
+    // payment on the same code is separate money and is parked below.
+    const refundedOwnPayment =
+      current.providerRefundedAt !== null &&
+      rawConfirmation.providerRef === current.providerRef;
+    if (refundedOwnPayment)
+      throw new PaymentConfirmationRejected(
+        "INVALID_TRANSITION",
+        "The provider refunded this payment; it cannot be settled.",
+      );
     // QRIS hold (legend-yhia9 D-05/D-07, legend-eh9i4 A1): the money is parked
     // here, under the same locks, for webhook and polling alike. The rejection
     // is thrown after this transaction commits so the parking is kept.
@@ -2566,10 +2607,8 @@ async function applyConfirmation(
         "AMOUNT_MISMATCH",
         "This payment is held for an amount mismatch.",
       );
-    // 952 P1: the provider answered `refunded` for this code, so its money went
-    // back to the payer. No later `paid` message (an old webhook, a stale
-    // answer) may settle the bill: checked under the locks, before any write,
-    // so nothing is credited, no event is emitted and no evidence is recorded.
+    // A refunded code never settles a bill, whatever the reference (a different
+    // provider payment that was not parked above is refused, not credited).
     if (current.providerRefundedAt !== null)
       throw new PaymentConfirmationRejected(
         "INVALID_TRANSITION",
@@ -3073,6 +3112,13 @@ export async function applyGatewayFailure(
     // A superseded / timed-out / failed code: the provider's verified final
     // answer, after the code lapsed, is the proof it is dead (SO-885, SO-896).
     await markGatewayReconciled(context, intent, now, refunded);
+  } else if (
+    (intent.status === "expired" || intent.status === "failed") &&
+    refunded
+  ) {
+    // 952 round 2: a `refunded` answer is recorded even before the code is
+    // final, so a late `paid` message cannot settle it.
+    await markProviderAnswered(context, intent.id, now, true);
   }
   const current = (await load()) ?? intent;
   return toPaymentIntent(current);
@@ -3273,8 +3319,37 @@ async function markProviderAnswered(
             eq(paymentIntents.tenantId, context.tenant.tenantId),
             eq(paymentIntents.id, intentId),
             isNull(paymentIntents.providerRefundedAt),
+            // Never stamp a paid (or pending) intent.
+            inArray(paymentIntents.status, ["expired", "failed"]),
           ),
         );
+  });
+}
+
+/**
+ * 952 round 2: records that the provider answered `refunded` for the code's own
+ * payment, and nothing else: the status is never changed (a pending code stays
+ * pending) and a paid intent is never stamped. From then on no later `paid`
+ * message for that payment can settle or park it (`applyConfirmation`). The
+ * first answer is kept; a replay changes nothing.
+ */
+export async function markProviderRefunded(
+  context: ScopedTenantContext,
+  intentId: string,
+  now: Date,
+): Promise<void> {
+  await withTenant(db, context, async (tx) => {
+    await tx
+      .update(paymentIntents)
+      .set({ providerRefundedAt: now })
+      .where(
+        and(
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          eq(paymentIntents.id, intentId),
+          isNull(paymentIntents.providerRefundedAt),
+          inArray(paymentIntents.status, ["pending", "expired", "failed"]),
+        ),
+      );
   });
 }
 

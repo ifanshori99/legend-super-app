@@ -39,10 +39,10 @@ import {
 } from "../lib/blind-index.ts";
 import { sealSecret } from "../lib/secrets.ts";
 import {
-  advisoryLock,
   assertTenantScope,
   type TenantTransaction,
 } from "./accounting-ap-fa-shared.ts";
+import { entityLock } from "./accounting-bank-matching.ts";
 import { bankAccountDto, notFound } from "./accounting-cash-bank-shared.ts";
 import { requireLegalEntity } from "./accounting-shared.ts";
 import { recordAudit } from "./core-audit.ts";
@@ -148,7 +148,7 @@ export async function createBankAccount(
     return await withTenant(db, context, async (tx) => {
       const tenantId = context.tenant.tenantId;
       await requireLegalEntity(tx, tenantId, input.legalEntityId);
-      await advisoryLock(tx, `acc-cashbank:${tenantId}:${input.legalEntityId}`);
+      await entityLock(tx, tenantId, input.legalEntityId);
       await assertPostableGlAccount(
         tx,
         tenantId,
