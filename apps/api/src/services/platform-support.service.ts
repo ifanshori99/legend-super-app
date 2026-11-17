@@ -1562,6 +1562,27 @@ export class ImpersonationRefused extends Error {
 }
 
 export type ImpersonationMatch = { tenantId: string; grant: GrantRow };
+
+/**
+ * Tenant ids an impersonating super admin may see of `targetUserId`'s
+ * account-level data (own push devices and login sessions, which carry no
+ * tenant context): tenants where the admin holds a live grant (not ended, not
+ * expired) and the target has an active role assignment (same match as
+ * findImpersonationGrants). No match returns an empty list, so the caller
+ * shows nothing.
+ */
+export async function supportGrantedTenantIds(input: {
+  adminUserId: string;
+  targetUserId: string;
+  now?: Date;
+}): Promise<string[]> {
+  const matches = await findImpersonationGrants({
+    adminUserId: input.adminUserId,
+    targetUserId: input.targetUserId,
+    now: input.now ?? new Date(),
+  });
+  return matches.map((match) => match.tenantId);
+}
 export type ImpersonationEndCause =
   | "stopped"
   | "signed_out"

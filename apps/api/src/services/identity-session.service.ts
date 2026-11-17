@@ -15,7 +15,7 @@
 // `token` stays Better Auth's raw token; §6 B's token_hash is the one
 // deliberate deviation (see db/schema/session.ts and the bead report).
 
-import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -247,8 +247,15 @@ export async function listOwnSessions(input: {
   readonly userId: string;
   readonly currentSessionId: string;
   readonly now?: Date;
+  /**
+   * Support (impersonated) sessions only: list just sessions whose tenant_id
+   * is one of these (legend-xqkr7). Sessions with no tenant never match.
+   * Undefined for an ordinary session: no extra filter.
+   */
+  readonly onlyTenantIds?: readonly string[];
 }): Promise<SessionView[]> {
   const now = input.now ?? new Date();
+  if (input.onlyTenantIds && input.onlyTenantIds.length === 0) return [];
   const rows = await db
     .select()
     .from(session)
@@ -257,6 +264,9 @@ export async function listOwnSessions(input: {
         eq(session.userId, input.userId),
         isNull(session.revokedAt),
         gt(session.expiresAt, now),
+        input.onlyTenantIds
+          ? inArray(session.tenantId, [...input.onlyTenantIds])
+          : undefined,
       ),
     )
     .orderBy(desc(session.lastSeenAt));
