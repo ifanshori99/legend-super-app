@@ -1863,3 +1863,4 @@ Langkah berikut CTO baru:
 - 21:55 CTO: RAM hijau. Mulai G24vl 1012 audit guard router (legend-3z0ds), G2zim 1013 jurnal net refund provider (legend-tlm3h), G1bzk 1014 runbook reseal (legend-ony4b), semua Sonnet #3.
 - 21:56 CTO: 1005 G7y5g e6e59f5bf SIAP batch86 sesudah 990 (0615-0616). Keputusan CTO: bukti return yang terpakai tetap terbakar, ajukan ulang butuh berkas baru (membatasi, tabel bukti append-only utuh). G7y5g resolve.
 - 21:57 CTO: 1010 G8hy5 e821ed64f SIAP batch86 sesudah 994 847b580a. Guard edc_charge_pending diterima (membatasi). G8hy5 resolve.
+- 21:58 CTO: 1014 G1bzk ee8f502f6 SIAP batch86 sesudah 1002. Keputusan: kunci lama dengan baris frozen tersisa tidak dipensiunkan tanpa persetujuan CTO (membatasi). Kartu legend-49onu (P2 frozen), legend-tk8nk (P3). Query runbook dicoba di staging sebelum production. G1bzk resolve. Antrean > 20: kartu non-uang ditahan.
