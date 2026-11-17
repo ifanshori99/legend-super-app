@@ -24,6 +24,7 @@ import * as corrections from "../services/payment-reconciliation-correction.serv
 import * as settlementImport from "../services/payment-settlement-import.service.ts";
 import * as refunds from "../services/payment-refund.service.ts";
 import * as followups from "../services/system-refund-followup.ts";
+import * as refundHolds from "../services/refund-recon-hold.service.ts";
 
 export const paymentAdminRouter = Router();
 paymentAdminRouter.use(requireAuth, requireTrustedOrigin, requireTenantContext);
@@ -401,6 +402,36 @@ paymentAdminRouter.post(
         scope(req),
         actor(req),
         contract.resolveUnallocatedFund.params.parse(req.params),
+        input,
+        input.idempotencyKey,
+      ),
+    });
+  },
+);
+paymentAdminRouter.get(
+  route(contract.listRefundReconHolds.path),
+  reconcileQuery,
+  async (req, res) => {
+    res.json(
+      await refundHolds.listRefundReconHolds(
+        scope(req),
+        actor(req),
+        contract.listRefundReconHolds.query.parse(req.query),
+      ),
+    );
+  },
+);
+paymentAdminRouter.post(
+  route(contract.resolveRefundReconHold.path),
+  jsonBody,
+  reconcileRecord,
+  async (req, res) => {
+    const input = contract.resolveRefundReconHold.body.parse(req.body);
+    res.json({
+      data: await refundHolds.resolveRefundReconHold(
+        scope(req),
+        actor(req),
+        contract.resolveRefundReconHold.params.parse(req.params),
         input,
         input.idempotencyKey,
       ),

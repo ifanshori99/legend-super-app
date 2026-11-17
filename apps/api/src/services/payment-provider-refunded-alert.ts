@@ -175,3 +175,214 @@ export async function alertProviderPartialRefund(
     );
   }
 }
+
+export type RefundReferenceMismatchAlert = {
+  /** The intent that owns the payment id of the event (the one held). */
+  intentId: string;
+  outletId: string;
+  /** The provider's refund id, when the event carries one. */
+  providerRefundId: string | null;
+  amountIdr: number;
+};
+
+/** Stable alert id for one provider refund naming another intent: the same
+ * refund resent under a new event id, a webhook retry and a worker retry are
+ * one alert. */
+export function refundReferenceMismatchAlertId(
+  tenantId: string,
+  intentId: string,
+  providerRefundId: string | null,
+  webhookEventId: string,
+): string {
+  const hex = createHash("sha256")
+    .update(
+      `payment.refund_reference_mismatch\0${tenantId}\0${intentId.toLowerCase()}\0${providerRefundId ?? webhookEventId}`,
+    )
+    .digest("hex")
+    .slice(0, 32);
+  return uuidToUlid(
+    `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
+  );
+}
+
+/**
+ * legend-9s33i (1025 C): alerts the supervisors that a provider refund names
+ * another intent than the one owning its payment id. Nothing was refunded or
+ * stamped; the intent is held (`refund_recon_holds`) until finance matches the
+ * refund. Sent only by the winner of the hold insert. Same savepoint rule as
+ * above.
+ */
+export async function alertRefundReferenceMismatch(
+  tx: Tx,
+  context: ScopedTenantContext,
+  held: RefundReferenceMismatchAlert,
+  webhookEventId: string,
+  now: Date,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const id = refundReferenceMismatchAlertId(
+    tenantId,
+    held.intentId,
+    held.providerRefundId,
+    webhookEventId,
+  );
+  try {
+    await tx.transaction(async (savepoint) => {
+      await notifyOutletSupervisors(
+        savepoint,
+        context,
+        {
+          tenantId,
+          outletId: outletIdSchema.parse(held.outletId),
+          category: "operational_anomaly",
+          alsoOwners: true,
+          recordEmpty: true,
+          id,
+          eventName: "payment.refund_reference_mismatch",
+          aggregateType: "payment",
+          aggregateId: id,
+          payload: {
+            intentId: held.intentId,
+            amountIdr: String(held.amountIdr),
+          },
+          title: "Refund penyedia tidak cocok dengan pembayaran",
+          body: `Penyedia pembayaran melaporkan refund Rp ${held.amountIdr.toLocaleString("id-ID")} yang menyebut pembayaran lain dari pembayaran yang dikembalikan. Uang mungkin sudah kembali ke pembayar. Refund dan payout pembayaran ini ditahan sampai finance mencocokkannya; tidak ada refund atau jurnal yang dibuat otomatis.`,
+        },
+        now,
+      );
+    });
+  } catch (err) {
+    logger.warn(
+      { err, tenantId, intentId: held.intentId },
+      "Refund reference mismatch: notification failed",
+    );
+  }
+}
+
+export type ProviderRefundCountedWithLiveOwn = {
+  intentId: string;
+  /** The outlet whose supervisors are told too; null: the owners only. */
+  outletId: string | null;
+  providerRefundId: string;
+  amountIdr: number;
+};
+
+/**
+ * legend-gjt5q (1025 B): the full provider refund was booked counting a refund
+ * of OURS that was still in flight (not final). If that refund later fails the
+ * journal is short, so the intent is held (`refund_recon_holds`) and finance
+ * (the owners: a tenant-wide alert) must check it. Sent only by the winner of
+ * the hold insert. Same savepoint rule as above.
+ */
+export async function alertProviderRefundCountedWithLiveOwn(
+  tx: Tx,
+  context: ScopedTenantContext,
+  held: ProviderRefundCountedWithLiveOwn,
+  now: Date,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const hex = createHash("sha256")
+    .update(
+      `payment.provider_refund_live_own\0${tenantId}\0${held.intentId.toLowerCase()}\0${held.providerRefundId}`,
+    )
+    .digest("hex")
+    .slice(0, 32);
+  const id = uuidToUlid(
+    `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
+  );
+  try {
+    await tx.transaction(async (savepoint) => {
+      await notifyOutletSupervisors(
+        savepoint,
+        context,
+        {
+          tenantId,
+          outletId: held.outletId ? outletIdSchema.parse(held.outletId) : null,
+          category: "operational_anomaly",
+          alsoOwners: true,
+          recordEmpty: true,
+          id,
+          eventName: "payment.provider_refund_live_own",
+          aggregateType: "payment",
+          aggregateId: id,
+          payload: {
+            intentId: held.intentId,
+            amountIdr: String(held.amountIdr),
+          },
+          title:
+            "Refund penyedia dibukukan bersama refund kami yang belum final",
+          body: `Penyedia pembayaran mengembalikan seluruh pembayaran, dan Rp ${held.amountIdr.toLocaleString("id-ID")} dibukukan dengan menghitung refund kami yang belum selesai. Bila refund kami gagal, jurnal kurang. Refund dan payout pembayaran ini ditahan sampai finance memeriksanya.`,
+        },
+        now,
+      );
+    });
+  } catch (err) {
+    logger.warn(
+      { err, tenantId, intentId: held.intentId },
+      "Provider refund counted with live own refund: notification failed",
+    );
+  }
+}
+
+export type CreditUsedBeforeProviderRefund = {
+  intentId: string;
+  outletId: string;
+  providerRefundId: string;
+  /** Credit used beyond what the DP still holds after the refund. */
+  amountIdr: number;
+};
+
+/**
+ * legend-ua9ja (1025c B): the provider refunded a DP after its transferred
+ * credit was already used, beyond what is left of the DP. The intent is held
+ * (`refund_recon_holds`) until finance decides; nothing used is cut. Sent only
+ * by the winner of the hold insert. Same savepoint rule as above.
+ */
+export async function alertCreditUsedBeforeProviderRefund(
+  tx: Tx,
+  context: ScopedTenantContext,
+  held: CreditUsedBeforeProviderRefund,
+  now: Date,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const hex = createHash("sha256")
+    .update(
+      `payment.credit_used_before_provider_refund\0${tenantId}\0${held.intentId.toLowerCase()}\0${held.providerRefundId}`,
+    )
+    .digest("hex")
+    .slice(0, 32);
+  const id = uuidToUlid(
+    `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
+  );
+  try {
+    await tx.transaction(async (savepoint) => {
+      await notifyOutletSupervisors(
+        savepoint,
+        context,
+        {
+          tenantId,
+          outletId: outletIdSchema.parse(held.outletId),
+          category: "operational_anomaly",
+          alsoOwners: true,
+          recordEmpty: true,
+          id,
+          eventName: "payment.credit_used_before_provider_refund",
+          aggregateType: "payment",
+          aggregateId: id,
+          payload: {
+            intentId: held.intentId,
+            amountIdr: String(held.amountIdr),
+          },
+          title: "Saldo DP sudah terpakai sebelum refund penyedia",
+          body: `Penyedia pembayaran mengembalikan DP setelah saldo pelanggan dari DP itu dipakai. Rp ${held.amountIdr.toLocaleString("id-ID")} saldo terpakai melebihi sisa DP. Saldo yang sudah terpakai tidak dipotong. Refund dan payout pembayaran ini ditahan sampai finance memutuskan.`,
+        },
+        now,
+      );
+    });
+  } catch (err) {
+    logger.warn(
+      { err, tenantId, intentId: held.intentId },
+      "Credit used before provider refund: notification failed",
+    );
+  }
+}

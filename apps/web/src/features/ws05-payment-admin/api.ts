@@ -13,12 +13,14 @@ import {
   listEdcTerminals as listEdcTerminalsEndpoint,
   listReconciliationCases as listReconciliationCasesEndpoint,
   listRefundablePayments as listRefundablePaymentsEndpoint,
+  listRefundReconHolds as listRefundReconHoldsEndpoint,
   listRefunds as listRefundsEndpoint,
   listUnallocatedFunds as listUnallocatedFundsEndpoint,
   rejectRefund as rejectRefundEndpoint,
   releaseQuarantinedRefund as releaseQuarantinedRefundEndpoint,
   reopenQuarantinedRefund as reopenQuarantinedRefundEndpoint,
   resolveReconciliationCase as resolveReconciliationCaseEndpoint,
+  resolveRefundReconHold as resolveRefundReconHoldEndpoint,
   resolveUnallocatedFund as resolveUnallocatedFundEndpoint,
   retryRefundPayout as retryRefundPayoutEndpoint,
   updateEdcCashierDefault as updateEdcCashierDefaultEndpoint,
@@ -138,6 +140,17 @@ export const resolveUnallocatedFund = (
   params: Params<typeof resolveUnallocatedFundEndpoint>,
   body: Body<typeof resolveUnallocatedFundEndpoint>,
 ) => callEndpoint(resolveUnallocatedFundEndpoint, { params, body });
+
+// ---- Refund recon holds (legend-vp4ta) -----------------------------------
+
+export const fetchRefundReconHolds = (
+  query: Query<typeof listRefundReconHoldsEndpoint>,
+) => callEndpoint(listRefundReconHoldsEndpoint, { query });
+
+export const resolveRefundReconHold = (
+  params: Params<typeof resolveRefundReconHoldEndpoint>,
+  body: Body<typeof resolveRefundReconHoldEndpoint>,
+) => callEndpoint(resolveRefundReconHoldEndpoint, { params, body });
 
 // ---- Settlement reconciliation (EDC-06) ----------------------------------
 

@@ -57,6 +57,7 @@ import {
 import type { Tx } from "./menu-internals.ts";
 import { refundableBalance } from "./payment-admin.service.ts";
 import { netAllocatedIdrSql } from "./payment-net-allocated-sql.ts";
+import { providerRefundedForeignIdrSql } from "./payment-provider-refunded-foreign-sql.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import { requestQrDoublePaymentRefund } from "./qr-order-late-payment.ts";
 
@@ -134,6 +135,17 @@ async function allocatedIdrByIntent(
        AND i.payment_link_id = ${paymentLinkId}
        AND i.status IN ('paid', 'partially_refunded', 'refunded')`);
   return new Map(result.rows.map((row) => [row.id, Number(row.allocated)]));
+}
+
+/** What the provider refunded on its own for `intentId` (same rule as the net). */
+async function providerRefundedIdr(
+  tx: Tx,
+  tenantId: string,
+  intentId: string,
+): Promise<number> {
+  const result = await tx.execute<{ refunded: string }>(sql`
+    SELECT (${providerRefundedForeignIdrSql(sql`${tenantId}`, sql`${intentId}::uuid`)})::text AS refunded`);
+  return Number(result.rows[0]?.refunded ?? 0);
 }
 
 /** Refunds `intentId`'s double-payment funds; true when a request was filed. */
@@ -272,7 +284,14 @@ export async function handleBreakfastPaymentPaid(
         payerId = id;
         break;
       }
-  if (payerId === null && own === 0) {
+  // legend-tlm3h: a code that put nothing toward the bill because the provider
+  // gave its money back is not a bystander: the order is voided below (like a
+  // partly refunded code, net 0 included) and nothing is left to refund.
+  const returnedByProvider =
+    payerId === null && own === 0
+      ? await providerRefundedIdr(tx, tenantId, intentId)
+      : 0;
+  if (payerId === null && own === 0 && returnedByProvider === 0) {
     // This code put nothing toward the bill and none covered it alone: the
     // codes that did report with their own events. Its money goes back.
     return (await refundDoublePayment(

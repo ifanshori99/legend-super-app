@@ -337,6 +337,64 @@ export async function sessionDepositCredit(
 }
 
 /**
+ * Takes the deposit-intent lock EXCLUSIVE of `intentId` and of every DP on the
+ * sessions it backs, ascending (a refund of a second DP on the same table moves
+ * this one's share). The caller holds the intent row lock already: the order is
+ * intent row, then these locks, the same as a refund. A credit apply holds them
+ * SHARED and never locks an intent row afterwards, so there is no cycle. Used
+ * by `depositInUseOfIntent` and by the provider-refund recorder (legend-9uvvu).
+ */
+export async function lockDepositIntentsExclusive(
+  tx: Tx,
+  tenantId: TenantId,
+  intentId: string,
+): Promise<void> {
+  const intents = await tx.execute(sql`
+    SELECT DISTINCT payment_intent_id::text AS intent_id
+      FROM reservation_deposit_allocations
+     WHERE tenant_id = ${tenantId}
+       AND table_session_id IN (
+         SELECT table_session_id FROM reservation_deposit_allocations
+          WHERE tenant_id = ${tenantId} AND payment_intent_id = ${intentId}::uuid)
+  `);
+  const ids = [
+    ...new Set([
+      intentId.toLowerCase(),
+      ...intents.rows.map((row) => String(row.intent_id).toLowerCase()),
+    ]),
+  ].sort();
+  for (const id of ids)
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${depositIntentLockKey(tenantId, id)}, 0))`,
+    );
+}
+
+/**
+ * legend-ua9ja (1025c B): credit already moved to other sessions that the
+ * source intent's net (after the provider's refunds) no longer covers. Same
+ * pool and (created_at, id) order as `flagCreditReconForIntent`; 0 when the
+ * pool covers every use. Nothing is cut: finance gets a hold on the intent.
+ */
+export async function creditUsedSurplusForIntent(
+  tx: Tx,
+  tenantId: TenantId,
+  intentId: string,
+): Promise<bigint> {
+  const pool = (
+    await transferredCreditPools(tx, tenantId, [intentId], true)
+  ).get(intentId.toLowerCase());
+  if (pool === undefined) return 0n;
+  const uses = await tx.execute(sql`
+    SELECT coalesce(sum(u.amount_idr - u.returned_idr), 0)::text AS used
+      FROM reservation_customer_credit_uses u
+      JOIN reservation_deposit_remainders x
+        ON x.tenant_id = u.tenant_id AND x.id = u.remainder_id
+     WHERE u.tenant_id = ${tenantId} AND x.payment_intent_id = ${intentId}::uuid`);
+  const used = BigInt(String(uses.rows[0]?.used ?? "0"));
+  return used > pool ? used - pool : 0n;
+}
+
+/**
  * DP of `intentId` that already paid its sessions' bills (header: applied or
  * uncovered open bill, after the session's other DPs, capped at this
  * allocation's gross amount); 0 when the intent backs no seated session. With
@@ -353,28 +411,7 @@ export async function depositInUseOfIntent(
     netCreditProviderCut = false,
   }: { lock?: boolean; netCreditProviderCut?: boolean } = {},
 ): Promise<bigint> {
-  if (lock) {
-    // Every DP of the sessions this intent backs, ascending: a refund of a
-    // second DP on the same table moves this one's share (see below).
-    const intents = await tx.execute(sql`
-      SELECT DISTINCT payment_intent_id::text AS intent_id
-        FROM reservation_deposit_allocations
-       WHERE tenant_id = ${tenantId}
-         AND table_session_id IN (
-           SELECT table_session_id FROM reservation_deposit_allocations
-            WHERE tenant_id = ${tenantId} AND payment_intent_id = ${intentId}::uuid)
-    `);
-    const ids = [
-      ...new Set([
-        intentId.toLowerCase(),
-        ...intents.rows.map((row) => String(row.intent_id).toLowerCase()),
-      ]),
-    ].sort();
-    for (const id of ids)
-      await tx.execute(
-        sql`SELECT pg_advisory_xact_lock(hashtextextended(${depositIntentLockKey(tenantId, id)}, 0))`,
-      );
-  }
+  if (lock) await lockDepositIntentsExclusive(tx, tenantId, intentId);
   const credits = await allocationCredits(tx, tenantId, {
     paymentIntentId: intentId,
   });

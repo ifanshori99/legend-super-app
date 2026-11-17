@@ -59,6 +59,9 @@ export type DoitRefundFacts = {
   /** Intent reference carried by a refund object (legend-r7g2): checked
    * against the refund's intent like a payment object's `reference`. */
   reference?: string;
+  /** Status the refund object carries (`succeeded`, `failed`, `pending`...),
+   * when it carries one (legend-9s33i: only a succeeded refund is held). */
+  refundStatus?: string;
   /** legend-2ol8g: facts the event carries but we could not read (or, on an
    * event matched by key or refund id, that it must carry and does not). Sorted, unique. The
    * caller never settles on such an event. */
@@ -198,6 +201,9 @@ export function readDoitRefundFacts(data: unknown): DoitRefundFacts {
     refund.reference ?? (isRefundObject ? record.reference : undefined),
   );
   if (reference.success) facts.reference = reference.data;
+  const refundStatus =
+    text(refund.status) ?? (isRefundObject ? text(record.status) : undefined);
+  if (refundStatus) facts.refundStatus = refundStatus;
   return facts;
 }
 
@@ -225,6 +231,7 @@ export const doitRefundWebhookEventSchema =
     if (facts.amountIdr !== undefined) refund.amount = facts.amountIdr;
     if (facts.failureCode) refund.failure_code = facts.failureCode;
     if (facts.reference) refund.reference = facts.reference;
+    if (facts.refundStatus) refund.status = facts.refundStatus;
     const data: Record<string, unknown> = { refund };
     if (facts.idempotencyKey) data.idempotency_key = facts.idempotencyKey;
     if (facts.payment) data.payment = facts.payment;

@@ -40,7 +40,7 @@ import {
 const ref = z.string().min(1).max(100);
 const nonnegativeIdr = idrSchema.refine((n) => n >= 0);
 const positiveIdr = idrSchema.refine((n) => n > 0);
-const noteSchema = z.string().min(4).max(500);
+const noteSchema = z.string().trim().min(4).max(500);
 const ADMIN = "/api/payments/admin";
 
 /** Online methods a gateway can route. Cash, EDC and points never route here. */
@@ -495,6 +495,56 @@ export type ResolveUnallocatedFundInput = z.infer<
   typeof resolveUnallocatedFundInputSchema
 >;
 
+// ---- Refund recon holds (legend-vp4ta) ----------------------------------
+
+/**
+ * A provider refund the system could not tie to its own refund holds the
+ * intent: no refund, payout or fund runs on it until finance decides.
+ * `providerRefundId` is null for a hold filed without provider evidence.
+ */
+export const refundReconHoldFilterSchema = z.enum(["open", "resolved"]);
+
+/**
+ * `not_this_intent`: the money the provider returned is not this payment's;
+ * the hold is only closed. `counted_against_intent`: it is this payment's, so
+ * it is recorded as already returned before the hold closes and the refund
+ * limits count it.
+ */
+export const refundReconHoldResolutionSchema = z.enum([
+  "not_this_intent",
+  "counted_against_intent",
+]);
+export type RefundReconHoldResolution = z.infer<
+  typeof refundReconHoldResolutionSchema
+>;
+
+export const refundReconHoldViewSchema = z.strictObject({
+  id: uuidSchema,
+  paymentIntentId: uuidSchema,
+  outletId: uuidSchema.nullable(),
+  paymentReference: ref.nullable(),
+  // outlets.name allows 150 characters.
+  outletName: z.string().min(1).max(150).nullable(),
+  providerRefundId: ref.nullable(),
+  amountIdr: nonnegativeIdr,
+  reason: z.string().min(1).max(500),
+  flaggedAt: isoDateTimeSchema,
+  resolvedAt: isoDateTimeSchema.nullable(),
+  resolution: refundReconHoldResolutionSchema.nullable(),
+  resolutionNote: z.string().max(500).nullable(),
+});
+export type RefundReconHoldView = z.infer<typeof refundReconHoldViewSchema>;
+
+/** Money limits change (a refund is counted), so the write carries a key. */
+export const resolveRefundReconHoldInputSchema = clientInputSchema({
+  idempotencyKey: idempotencyKeySchema,
+  resolution: refundReconHoldResolutionSchema,
+  note: noteSchema,
+});
+export type ResolveRefundReconHoldInput = z.infer<
+  typeof resolveRefundReconHoldInputSchema
+>;
+
 // ---- Settlement reconciliation (EDC-06) ---------------------------------
 
 export const reconciliationSourceSchema = z.enum(["gateway", "edc"]);
@@ -934,6 +984,29 @@ export const resolveUnallocatedFund = defineEndpoint({
   params: fundParams,
   body: resolveUnallocatedFundInputSchema,
   response: dataResponseSchema(unallocatedFundViewSchema),
+});
+
+const holdParams = z.strictObject({ holdId: uuidSchema });
+
+/** Permission `payment.reconcile`; `status` defaults to open server-side. */
+export const listRefundReconHolds = defineEndpoint({
+  method: "GET",
+  path: `${ADMIN}/refund-recon-holds`,
+  query: cursorPageQuerySchema.extend({
+    status: refundReconHoldFilterSchema.optional(),
+  }),
+  response: cursorPageSchema(refundReconHoldViewSchema),
+});
+/**
+ * Closes one hold. 404 unknown or other tenant; 409 CONFLICT already
+ * resolved; 422 when the chosen resolution is not allowed for this hold.
+ */
+export const resolveRefundReconHold = defineEndpoint({
+  method: "POST",
+  path: `${ADMIN}/refund-recon-holds/:holdId/resolve`,
+  params: holdParams,
+  body: resolveRefundReconHoldInputSchema,
+  response: dataResponseSchema(refundReconHoldViewSchema),
 });
 
 export const listReconciliationCases = defineEndpoint({

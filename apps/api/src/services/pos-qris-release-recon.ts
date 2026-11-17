@@ -9,9 +9,11 @@
 // Lock order is untouched: the provider call is outside any transaction and
 // `confirmPayment` takes its own locks.
 
+import { createHash } from "node:crypto";
 import { and, asc, desc, eq, lte, sql } from "drizzle-orm";
 import {
   createUlid,
+  uuidToUlid,
   type OutletId,
   type ScopedTenantContext,
 } from "@starter/shared/core";
@@ -330,8 +332,11 @@ export async function decide(
     return stillOpen("other_reference");
   // 952 round 2: the provider gave this code's payment back; recorded whether
   // or not the code is final, so a late `paid` message cannot book or park it.
-  if (answer.rawStatus === "refunded")
-    await markProviderRefunded(context, intent.id, now);
+  // A refund of ours still in flight: the full refund is not recorded yet.
+  // What the answer carries is still handled below, and the row stays open.
+  const refundInFlight =
+    answer.rawStatus === "refunded" &&
+    (await markProviderRefunded(context, intent.id, now)) === "retry";
   // An extra that could not be recorded must never keep the primary paid
   // answer from being recorded: the primary is settled first, then the row
   // stays open (and staff are warned) until every extra is on record.
@@ -339,6 +344,11 @@ export async function decide(
     !answer.extraPayments ||
     answer.extraPayments.length === 0 ||
     (await parkExtraPayments(outletContext, intent, answer.extraPayments, now));
+  // Parked (or kept open for staff) first; then the open row asks again.
+  if (refundInFlight)
+    return extrasRecorded
+      ? stillOpen("refund_in_flight")
+      : { kind: "open", seen: "extra_funds_not_parked" };
   const expired = now.getTime() >= intent.expiresAt.getTime() + CLOSE_MARGIN_MS;
   if (answer.status === "paid") {
     if (answer.amountIdr === null)
@@ -507,8 +517,49 @@ export async function reconcileReleasedQris(
         now,
       );
     }
+    // The provider gave the code's payment back while a refund of ours is
+    // still in flight: not an unrecorded payment, but the full refund waits for
+    // ours to finish (legend-gjt5q). Told once per row: the id is derived from
+    // the row, so the provider status bouncing away and back adds no second
+    // alert (the notification consumer ignores an event id it has seen).
+    if (
+      updated &&
+      outcome.kind === "open" &&
+      outcome.seen === "refund_in_flight" &&
+      row.lastProviderStatus !== "refund_in_flight"
+    )
+      await notifyOutletSupervisors(
+        tx,
+        context,
+        {
+          tenantId,
+          outletId: row.outletId as OutletId,
+          alsoOwners: true,
+          id: refundInFlightAlertId(tenantId, row.id),
+          eventName: "pos_qris_release_reconciliation.refund_in_flight",
+          aggregateType: "pos_qris_release_reconciliation",
+          aggregateId: row.id,
+          payload: { reconciliationId: row.id, holdId: row.holdId },
+          title: "QRIS dikembalikan penyedia, refund kami belum selesai",
+          body: "Penyedia menjawab QRIS yang sudah dirilis ini dikembalikan ke pembayar, tetapi refund dari sistem kami masih berjalan. Pencatatan menunggu refund itu selesai; periksa antrean rekonsiliasi QRIS.",
+        },
+        now,
+      );
     return updated?.status ?? "resolved";
   });
+}
+
+/** Stable alert id of the refund-in-flight state of one reconciliation row. */
+function refundInFlightAlertId(tenantId: string, rowId: string): string {
+  const hex = createHash("sha256")
+    .update(
+      `pos_qris_release_reconciliation.refund_in_flight\0${tenantId}\0${rowId.toLowerCase()}`,
+    )
+    .digest("hex")
+    .slice(0, 32);
+  return uuidToUlid(
+    `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
+  );
 }
 
 /** Ids of the open rows that are due (oldest first). `force`: all open rows. */

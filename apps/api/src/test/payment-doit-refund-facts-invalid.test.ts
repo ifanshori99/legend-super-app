@@ -137,6 +137,10 @@ afterAll(async () => {
   setPaymentRefundGateway(null);
   await cleanupRows();
   await owner.query(
+    "DELETE FROM payment_provider_refunds WHERE payment_intent_id = ANY($1::uuid[])",
+    [intentIds],
+  );
+  await owner.query(
     "DELETE FROM payment_evidence WHERE payment_intent_id = ANY($1::uuid[])",
     [intentIds],
   );

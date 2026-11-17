@@ -257,6 +257,7 @@ export const paymentEventNames = [
   "payment.expired",
   "payment.failed",
   "payment.refunded",
+  "payment.provider_refunded",
   "payment.funds_unallocated",
   "settlement.imported",
 ] as const;

@@ -1,20 +1,34 @@
 // Payment back office (PRD §3 F13): gateway routing, EDC terminals and the
 // cashier default tender, refunds with approval, unallocated funds (PAY-04)
 // and settlement reconciliation cases (EDC-06). Each tab loads its own data,
-// so opening the page never fires six requests at once.
-import { Banknote, CreditCard, Route, Scale, Undo2 } from "lucide-react";
+// so opening the page never fires six requests at once (only the open-hold
+// count for the tab badge loads up front).
+import {
+  Banknote,
+  CreditCard,
+  Route,
+  Scale,
+  ShieldAlert,
+  Undo2,
+} from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { API_MOCK } from "@/lib/api/mock-flag";
+import { useRefundReconHolds } from "../hooks";
 import { EdcPanel } from "./edc-panel";
 import { ReconciliationPanel } from "./reconciliation-panel";
+import { RefundHoldsPanel } from "./refund-holds-panel";
 import { RefundsPanel } from "./refunds-panel";
 import { RoutingPanel } from "./routing-panel";
 import { UnallocatedPanel } from "./unallocated-panel";
 
 export function PaymentAdminPage() {
   const t = useT();
+  // Same query (and cache entry) the tab opens with, so the badge is free.
+  const openHolds = useRefundReconHolds("open");
+  const openHoldCount = openHolds.data?.data.length ?? 0;
+  const moreHolds = Boolean(openHolds.data?.meta.nextCursor);
   return (
     <section
       aria-labelledby="payment-admin-title"
@@ -54,6 +68,20 @@ export function PaymentAdminPage() {
             <Scale aria-hidden="true" />
             {t("paymentAdmin.tabs.reconciliation")}
           </TabsTrigger>
+          <TabsTrigger value="refund-holds">
+            <ShieldAlert aria-hidden="true" />
+            {t("paymentAdmin.tabs.refundHolds")}
+            {openHoldCount > 0 && (
+              <Badge tone="warning">
+                {openHoldCount}
+                {moreHolds ? "+" : ""}
+                <span className="sr-only">
+                  {" "}
+                  {t("paymentAdmin.refundHolds.openCount")}
+                </span>
+              </Badge>
+            )}
+          </TabsTrigger>
         </TabsList>
         <TabsContent value="routing">
           <RoutingPanel />
@@ -69,6 +97,9 @@ export function PaymentAdminPage() {
         </TabsContent>
         <TabsContent value="reconciliation">
           <ReconciliationPanel />
+        </TabsContent>
+        <TabsContent value="refund-holds">
+          <RefundHoldsPanel />
         </TabsContent>
       </Tabs>
     </section>

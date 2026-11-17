@@ -25,6 +25,7 @@ import { createHash } from "node:crypto";
 import {
   CoreError,
   createUlid,
+  idr,
   isoDateTimeSchema,
   tenantIdSchema,
   uuidSchema,
@@ -55,6 +56,7 @@ import {
   paymentRecurringSubscriptions,
   paymentRefunds,
   paymentUnallocatedFunds,
+  refundReconHolds,
   tenants,
   type GatewayWebhookEvent,
 } from "../db/schema";
@@ -86,6 +88,7 @@ import {
   SETTLED_OUTSIDE_PROVIDER,
 } from "./payment-refund.service";
 import { recordProviderRefundInTx } from "./payment-provider-partial-refund";
+import { alertRefundReferenceMismatch } from "./payment-provider-refunded-alert";
 import { gatewayWebhookTolerance } from "./platform-payment-gateway.service";
 import { processDoitInvoiceEvent } from "./payment-recurring.service";
 import {
@@ -98,6 +101,7 @@ import {
   doitWebhookEnvelopeSchema,
   doitWebhookEventSchema,
   isDoitPaymentEvent,
+  isDoitRefundSuccessStatus,
   readDoitRefundedStatusFacts,
   verifyDoitSignature,
   type DoitRefundedStatusFacts,
@@ -812,6 +816,68 @@ async function findRefundCandidate(
   });
 }
 
+/** legend-9s33i (1025 C): a signed refund event whose reference names another
+ * intent than the one owning its payment id is not dropped without a trace:
+ * an open recon hold on the intent that owns the payment id (blocks its
+ * refunds and payouts until finance matches it) and one supervisor alert,
+ * sent by the winner of the insert (unique per stored event, so a replay, a
+ * worker retry and a concurrent delivery add neither). Still no refund row, no
+ * stamp, no journal. */
+async function holdRefundReferenceMismatch(
+  context: ScopedTenantContext,
+  row: GatewayWebhookEvent,
+  intent: PaymentIntentRow,
+  refund: {
+    providerRefundId: string | null;
+    amountIdr: number;
+    /** The provider payment id the event names (stored on the hold, so
+     * finance counts the refund against that transaction). */
+    providerPaymentRef?: string | null;
+    /** Status the refund carries: only a succeeded one (or one that names no
+     * status, on a `refund.succeeded` event) is held. */
+    refundStatus?: string;
+  },
+  now: Date,
+): Promise<void> {
+  if (
+    refund.refundStatus !== undefined &&
+    !isDoitRefundSuccessStatus(refund.refundStatus)
+  )
+    return;
+  await withTenant(db, context, async (tx) => {
+    const [held] = await tx
+      .insert(refundReconHolds)
+      .values({
+        tenantId: context.tenant.tenantId,
+        paymentIntentId: intent.id,
+        webhookEventId: row.id,
+        providerRefundId: refund.providerRefundId,
+        amountIdr: idr(refund.amountIdr),
+        providerPaymentRef: refund.providerPaymentRef ?? null,
+        reason:
+          "Refund penyedia menyebut pembayaran lain dari pembayaran yang dikembalikan (REFERENCE_MISMATCH)",
+        flaggedAt: now,
+      })
+      // Per stored event, and per provider refund id of the intent: a replay,
+      // a worker retry or the provider resending the refund adds no second hold.
+      .onConflictDoNothing()
+      .returning({ id: refundReconHolds.id });
+    if (!held) return;
+    await alertRefundReferenceMismatch(
+      tx,
+      context,
+      {
+        intentId: intent.id,
+        outletId: intent.outletId,
+        providerRefundId: refund.providerRefundId,
+        amountIdr: refund.amountIdr,
+      },
+      row.id,
+      now,
+    );
+  });
+}
+
 /** Records a provider refund through the shared helper, in two phases: a
  * short read finds the candidate intent (`findRefundCandidate`), the integration
  * that verified the signature must be the one that minted it
@@ -835,11 +901,14 @@ async function recordRefundFor(
      * object). Each must equal the candidate intent's id, else `mismatch`
      * before anything is recorded (legend-6jdy1). */
     expectedReferences?: readonly string[];
+    /** Status the event's refund carries (a mismatch is held only when it
+     * succeeded, legend-9s33i). */
+    refundStatus?: string;
   },
   now: Date,
   verifiedSecret?: string,
 ): Promise<RefundApplyResult> {
-  const { expectedReferences, ...recorded } = input;
+  const { expectedReferences, refundStatus, ...recorded } = input;
   const windowOver = () =>
     now.getTime() - row.receivedAt.getTime() >=
     WEBHOOK_UNKNOWN_REFERENCE_RETRY_MS;
@@ -863,8 +932,21 @@ async function recordRefundFor(
       return "unbound";
     if (
       expectedReferences?.some((reference) => reference !== candidate.intent.id)
-    )
+    ) {
+      await holdRefundReferenceMismatch(
+        context,
+        row,
+        candidate.intent,
+        {
+          providerRefundId: input.providerRefundId,
+          amountIdr: input.amountIdr,
+          providerPaymentRef: input.providerPaymentRef,
+          refundStatus,
+        },
+        now,
+      );
       return "mismatch";
+    }
     const run = async (force: boolean) =>
       (
         await withTenant(db, context, async (tx) =>
@@ -921,8 +1003,17 @@ async function flagRefundInDoubt(
       ))
     )
       return "unbound";
-    await markProviderRefunded(context, candidate.intent.id, now);
-    return "bound";
+    // A refund of ours still in flight: not told apart yet, nothing recorded
+    // (`retry` only inside the window, after it `force` counts it).
+    const marked = await markProviderRefunded(
+      context,
+      candidate.intent.id,
+      now,
+      "payment_webhook",
+      now.getTime() - row.receivedAt.getTime() >=
+        WEBHOOK_UNKNOWN_REFERENCE_RETRY_MS,
+    );
+    return marked === "retry" ? "retry" : "bound";
   }
   if (candidate.evidenceAmountIdr !== null && candidate.evidenceAmountIdr > 0)
     return recordRefundFor(
@@ -1101,8 +1192,20 @@ async function processPaymentEvent(
       // automatically. legend-7uqbs: money we already recorded (parked funds, a
       // settled bill) is flagged, audited and alerted once inside this call, so
       // staff cannot refund it a second time; the row below still ends
-      // processed.
-      await markProviderRefunded(context, intent.id, now);
+      // processed. A refund of ours still in flight (nothing recorded yet)
+      // keeps the row `failed`, so the worker retries it.
+      const marked = await markProviderRefunded(
+        context,
+        intent.id,
+        now,
+        "payment_webhook",
+        now.getTime() - row.receivedAt.getTime() >=
+          WEBHOOK_UNKNOWN_REFERENCE_RETRY_MS,
+      );
+      if (marked === "retry") {
+        outcome = "failed";
+        code = "UNKNOWN_REFERENCE";
+      }
     }
     // `pending` changes nothing.
     await markRow(
@@ -1507,6 +1610,7 @@ async function processRefundEvent(
             providerPaymentRef: providerRefund.paymentId,
             amountIdr: providerRefund.amountIdr,
             source: "refund_webhook",
+            refundStatus: facts.refundStatus,
             expectedReferences: [
               ...(facts.reference !== undefined ? [facts.reference] : []),
               ...(facts.payment ? [facts.payment.reference] : []),
@@ -1594,6 +1698,36 @@ async function processRefundEvent(
         intent.gatewayIntegrationId,
         now,
       );
+      // legend-9s33i: hold the intent that owns the payment id the event
+      // names (when the signature is that intent's own); nothing is refunded.
+      const namedPaymentId = facts.paymentId ?? facts.payment?.id;
+      const owner = namedPaymentId
+        ? await findRefundCandidate(context, namedPaymentId)
+        : null;
+      // Only a refund.succeeded event is held (refund.failed never is).
+      if (
+        status === "succeeded" &&
+        owner &&
+        (await signedByIntentIntegration(
+          context,
+          owner.intent,
+          row,
+          verifiedSecret,
+          now,
+        ))
+      )
+        await holdRefundReferenceMismatch(
+          context,
+          row,
+          owner.intent,
+          {
+            providerRefundId: facts.refundId ?? null,
+            amountIdr: facts.amountIdr ?? Number(refund.amountIdr),
+            providerPaymentRef: namedPaymentId ?? null,
+            refundStatus: facts.refundStatus,
+          },
+          now,
+        );
       return await ignoredWith("REFERENCE_MISMATCH");
     }
 

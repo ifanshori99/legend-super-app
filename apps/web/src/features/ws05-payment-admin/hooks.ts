@@ -9,6 +9,7 @@ import type {
   RejectRefundInput,
   RetryRefundPayoutInput,
   ResolveReconciliationCaseInput,
+  ResolveRefundReconHoldInput,
   ResolveUnallocatedFundInput,
   RoutedPaymentMethod,
   UpdateEdcCashierDefaultInput,
@@ -21,6 +22,7 @@ import {
   getReconciliationSummary as getReconciliationSummaryEndpoint,
   listEdcTerminals as listEdcTerminalsEndpoint,
   listReconciliationCases as listReconciliationCasesEndpoint,
+  listRefundReconHolds as listRefundReconHoldsEndpoint,
   listRefunds as listRefundsEndpoint,
   listUnallocatedFunds as listUnallocatedFundsEndpoint,
 } from "@starter/shared/payment/admin";
@@ -33,6 +35,7 @@ import {
   releaseQuarantinedRefund,
   reopenQuarantinedRefund,
   resolveReconciliationCase,
+  resolveRefundReconHold,
   resolveUnallocatedFund,
   retryRefundPayout,
   saveEdcCashierDefault,
@@ -43,6 +46,7 @@ import {
   reconciliationCasesQuery,
   reconciliationSummaryQuery,
   refundablePaymentsQuery,
+  refundReconHoldsQuery,
   refundsQuery,
   routingQuery,
   terminalsQuery,
@@ -236,6 +240,28 @@ export function useResolveUnallocatedFund() {
       queryClient.invalidateQueries({
         queryKey: [listUnallocatedFundsEndpoint.id],
       }),
+  });
+}
+
+export function useRefundReconHolds(status: "open" | "resolved") {
+  return useQuery(refundReconHoldsQuery({ limit: 100, status }));
+}
+
+/** A resolve can open refund/payout limits too, so refunds refresh as well. */
+export function useResolveRefundReconHold() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      holdId: string;
+      body: ResolveRefundReconHoldInput;
+    }) => resolveRefundReconHold({ holdId: input.holdId }, input.body),
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: [listRefundReconHoldsEndpoint.id],
+        }),
+        queryClient.invalidateQueries({ queryKey: [listRefundsEndpoint.id] }),
+      ]),
   });
 }
 

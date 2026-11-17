@@ -8,7 +8,15 @@
 // refunds of an intent is taken off what the intent may still refund or pay
 // out (`providerRefundedForeignIdrSql`, used by `refundableBalance` and the
 // payout guard): nobody is paid more than the money the provider did not
-// already return. Nothing here touches a journal.
+// already return. The winner of the insert also appends one
+// `payment.provider_refunded` event in the same transaction (legend-tlm3h): the
+// auto journal books it Dr customer_deposit / Cr gateway_clearing, so the
+// ledger holds what the gateway kept, like a payout (`payment.refunded`). Only
+// the recorded outcome emits; a duplicate, an echo of ours, a retry or an
+// unbound message never does, so a replayed webhook or a racing poller books
+// nothing twice (the journal key is the recorded row's id besides). Nothing
+// else here touches a journal.
+import { createHash } from "node:crypto";
 import {
   createUlid,
   idr,
@@ -29,13 +37,24 @@ import {
   paymentIntents,
   paymentProviderRefunds,
   paymentRefunds,
+  refundReconHolds,
   paymentUnallocatedFunds,
 } from "../db/schema/index.ts";
 import { recordAudit } from "./core-audit.ts";
 import { refundableBalance } from "./payment-admin.service.ts";
-import { alertProviderPartialRefund } from "./payment-provider-refunded-alert.ts";
+import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
+import {
+  alertCreditUsedBeforeProviderRefund,
+  alertProviderPartialRefund,
+  alertProviderRefundCountedWithLiveOwn,
+} from "./payment-provider-refunded-alert.ts";
 import { providerRefundedForeignIdrSql } from "./payment-provider-refunded-foreign-sql.ts";
-import { flagCreditReconForIntent } from "./reservation-deposit-credit.ts";
+import {
+  creditUsedSurplusForIntent,
+  flagCreditReconForIntent,
+  lockDepositIntentsExclusive,
+} from "./reservation-deposit-credit.ts";
+import { appendPaymentEvent } from "./payment-support.ts";
 import type { Tx } from "./permission-resolver.ts";
 
 const PROVIDER = "doit";
@@ -60,6 +79,19 @@ export type ProviderRefundInput = {
    * caller is over: counting is the restrictive side, and a provider reference
    * of ours matched later is left out when the sum is read). */
   force?: boolean;
+  /**
+   * The caller already audits and alerts this refund (the full refund of 958,
+   * `markProviderRefunded`): the row, the flags and the journal event are
+   * written, the `payment.provider_refunded_partial` audit row and the alert
+   * are not (legend-gjt5q, 1025 B).
+   */
+  quiet?: boolean;
+  /**
+   * Only the resolve of a refund recon hold passes it: the row tops up a
+   * `payment:<ref>` row already recorded for the transaction (the second
+   * refund of one transaction is otherwise a duplicate of the first).
+   */
+  topUp?: boolean;
 };
 
 export type ProviderRefundOutcome = {
@@ -91,6 +123,50 @@ export async function recordProviderRefundInTx(
   const tenantId = context.tenant.tenantId;
   const { providerRefundId, providerPaymentRef } = input;
   let amountIdr = input.amountIdr;
+  // The remainder counted a refund of ours that is not final (1025 B).
+  let countedLiveOwn = false;
+  let tellSupervisors = false;
+  /** Holds the intent (refunds and payouts stop) because the books count a
+   * refund of ours that is not final, and tells finance once. The hold is
+   * keyed by a stable id of (tenant, intent, provider refund id): a replay, or
+   * the case with no provider row at all, stays one hold and one alert. */
+  const fileLiveOwnHold = async (
+    heldIdr: number,
+    intentOutletId: string,
+  ): Promise<void> => {
+    const hex = createHash("sha256")
+      .update(
+        `refund_recon_hold.live_own\0${tenantId}\0${input.expectedIntentId.toLowerCase()}\0${providerRefundId}`,
+      )
+      .digest("hex");
+    const [held] = await tx
+      .insert(refundReconHolds)
+      .values({
+        tenantId,
+        paymentIntentId: input.expectedIntentId,
+        webhookEventId: `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`,
+        providerRefundId,
+        providerPaymentRef,
+        amountIdr: idr(heldIdr),
+        reason:
+          "Refund penyedia dibukukan dengan menghitung refund kami yang belum final (REFUND_LIVE_OWN)",
+        flaggedAt: now,
+      })
+      .onConflictDoNothing()
+      .returning({ id: refundReconHolds.id });
+    if (held)
+      await alertProviderRefundCountedWithLiveOwn(
+        tx,
+        context,
+        {
+          intentId: input.expectedIntentId,
+          outletId: tellSupervisors ? intentOutletId : null,
+          providerRefundId,
+          amountIdr: heldIdr,
+        },
+        now,
+      );
+  };
   if (
     input.provider !== PROVIDER ||
     providerRefundId.length === 0 ||
@@ -214,7 +290,12 @@ export async function recordProviderRefundInTx(
       ),
     )
     .limit(1);
-  if (inFlight && !input.force) return { status: "retry" };
+  // The payment's own `refunded` status (synthetic id) decides below, once the
+  // remainder is known (legend-tiyce): a live parked-fund refund of ours that
+  // already covers all of it is held, not waited for.
+  const waitForInFlight = inFlight !== undefined && !input.force;
+  if (waitForInFlight && !providerRefundId.startsWith(SYNTHETIC_PREFIX))
+    return { status: "retry" };
 
   // One transaction, one refund: the payment's own `refunded` status
   // (`payment:<ref>`, the whole transaction) and a provider refund id of the
@@ -233,17 +314,107 @@ export async function recordProviderRefundInTx(
       ),
     );
   if (providerRefundId.startsWith(SYNTHETIC_PREFIX)) {
-    if (evidence) {
-      const left =
-        Number(evidence.amountIdr) -
-        recorded.reduce((sum, row) => sum + Number(row.amountIdr), 0);
-      if (left <= 0) return { status: "duplicate" };
-      amountIdr = left;
+    // Refunds of ours on THIS provider transaction went back to the payer and
+    // journal through `payment.refunded`: the provider's `refunded` status is
+    // their echo, so they are not booked a second time (1025 B). A refund of a
+    // parked fund of another transaction is not part of this money (same rule
+    // as `ownRefundedIdrSql`), and one already recorded as an echo row is in
+    // `recorded` (counted there, not twice).
+    const { rows: ours } = await tx.execute(sql`SELECT r.status,
+        r.amount_idr::text AS amount, r.provider_ref,
+        (r.unallocated_fund_id IS NOT NULL) AS fund,
+        (r.provider_ref IS NOT NULL OR r.payout_attempts > 0
+          OR r.payout_pending_polls > 0
+          OR r.payout_claim_token IS NOT NULL) AS sent
+      FROM payment_refunds r
+      WHERE r.tenant_id = ${tenantId}::uuid
+        AND r.payment_intent_id = ${intent.id}::uuid
+        AND r.status NOT IN ('failed')
+        AND (r.unallocated_fund_id IS NULL
+          OR EXISTS (SELECT 1 FROM payment_unallocated_funds f
+            JOIN payment_evidence e
+              ON e.tenant_id = f.tenant_id AND e.id = f.evidence_id
+            WHERE f.tenant_id = r.tenant_id
+              AND f.id = r.unallocated_fund_id
+              AND e.payment_intent_id = ${intent.id}::uuid
+              AND e.provider = ${PROVIDER}
+              AND e.provider_ref = ${providerPaymentRef}))`);
+    const echoed = new Set(recorded.map((row) => row.refundId));
+    const unrecorded = ours.filter(
+      (row) => !(row.provider_ref && echoed.has(String(row.provider_ref))),
+    );
+    const completed = unrecorded.filter((row) => row.status === "completed");
+    const live = unrecorded.filter(
+      (row) => row.status !== "completed" && row.sent === true,
+    );
+    // Refunds of ours still on their way count as sent: their money goes back
+    // to the payer too (restrictive). When they leave nothing of the
+    // transaction the provider's status is their echo.
+    const ownIdr = [...completed, ...live].reduce(
+      (sum, row) => sum + Number(row.amount),
+      0,
+    );
+    // A refund of the bill still on its way (not a parked fund's, whose amount
+    // is fixed): the provider's status may be its echo and the amount is not
+    // final. Write nothing; the caller asks again later (when the retry window
+    // is over, `force` counts it).
+    const mustWait = !input.force && live.some((row) => row.fund !== true);
+    // Without an evidence row the intent's own amount stands for the money
+    // received; provider rows already recorded are taken off in both cases.
+    const left =
+      (evidence ? Number(evidence.amountIdr) : amountIdr) -
+      recorded.reduce((sum, row) => sum + Number(row.amountIdr), 0) -
+      ownIdr;
+    // Counted after the retry window (a refund of the bill still unresolved):
+    // the outlet supervisors hear of it too. A live parked-fund refund (fixed
+    // amount, already told by the 958 alert) is told to the owners only.
+    tellSupervisors = live.some((row) => row.fund !== true);
+    if (
+      waitForInFlight &&
+      !(left <= 0 && live.some((row) => !row.provider_ref && row.fund === true))
+    )
+      return { status: "retry" };
+    if (left <= 0) {
+      // Our refunds leave nothing of the transaction. One not yet accepted by
+      // the provider (no provider reference) may still fail: not told apart
+      // yet, ask again. Past the window (forced) the money is held instead:
+      // nothing new is booked (ours journals itself), but should ours fail the
+      // intent's refunds and payouts stay stopped until finance checks.
+      if (live.length > 0) {
+        if (!input.force && live.some((row) => !row.provider_ref && !row.fund))
+          return { status: "retry" };
+        // legend-tiyce: a live parked-fund refund without a provider reference
+        // is not yet known to have been accepted: should it fail, the provider's
+        // refund is the only money back and the books keep it, so it is held
+        // (once) and finance and the supervisors told, forced or not.
+        if (input.force || live.some((row) => !row.provider_ref)) {
+          tellSupervisors = true;
+          await fileLiveOwnHold(
+            live.reduce((sum, row) => sum + Number(row.amount), 0),
+            intent.outletId,
+          );
+          return { status: "own" };
+        }
+      }
+      return { status: ownIdr > 0 ? "own" : "duplicate" };
     }
-  } else if (recorded.some((row) => row.refundId.startsWith(SYNTHETIC_PREFIX)))
+    if (mustWait) return { status: "retry" };
+    amountIdr = left;
+    countedLiveOwn = live.length > 0;
+  } else if (
+    // Finance topping up what the transaction still has left (resolve of a
+    // recon hold) is added to the `payment:` row on purpose.
+    !input.topUp &&
+    recorded.some((row) => row.refundId.startsWith(SYNTHETIC_PREFIX))
+  )
     return { status: "duplicate" };
 
   // 4. The insert decides the winner; a replay or a racing second path stops.
+  // legend-9uvvu: a credit apply holds the deposit-intent lock shared; wait for
+  // it (exclusive, after the intent row lock, as a refund does) so the net and
+  // the credit used below are read after it committed.
+  await lockDepositIntentsExclusive(tx, tenantId, intent.id);
+  const createdAt = await lockIntentsForFact(tx, tenantId, [intent.id], now);
   const [inserted] = await tx
     .insert(paymentProviderRefunds)
     .values({
@@ -256,6 +427,13 @@ export async function recordProviderRefundInTx(
       providerPaymentRef,
       amountIdr: idr(amountIdr),
       source: input.source,
+      // legend-tlm3h: the auto journals judge a provider refund at this
+      // instant, in (created_at, id) order. It comes from the fact clock of the
+      // intent (lockIntentsForFact, under the intent lock taken above): strictly
+      // after the latest refund of ours or of the provider recorded for it. So
+      // on one intent a refund committed later is stamped later; the moment is
+      // not the commit moment (the clock may be ahead of it), only their order.
+      createdAt,
     })
     .onConflictDoNothing({
       target: [
@@ -270,7 +448,6 @@ export async function recordProviderRefundInTx(
   // Credit already moved to sessions (closed ones too) may now exceed the
   // intent's net: flag it in this same transaction (legend-svwdz, 1020).
   await flagCreditReconForIntent(tx, tenantId, intent.id);
-
   // 6. A parked fund of this transaction: the whole fund is blocked (restrict
   // when in doubt; a partial refund of a fund is not tracked). When the
   // refunded transaction is the intent's own, a fund with no evidence mapping
@@ -371,56 +548,104 @@ export async function recordProviderRefundInTx(
         ),
       );
 
-  // 5. One audit row and one alert for this refund (we won the insert).
-  await recordAudit(
+  // legend-ua9ja: credit used beyond what the DP still holds is held for
+  // finance (refunds and payouts of the intent stop) and told once. The hold is
+  // deduplicated by its own hash (webhook event id), with no provider refund
+  // id: the unique key (tenant, intent, provider refund id) also counts holds
+  // already closed and the live-own hold of this call. Only the winner of the
+  // provider refund insert gets here, so a replay adds none. Nothing used is
+  // cut and no credit is added. Worked out after step 7, which may flag the
+  // intent as refunded after paid and so empty the pool.
+  const creditSurplus = await creditUsedSurplusForIntent(
     tx,
-    context,
-    {
-      id: createUlid(now.getTime()),
-      tenantId,
-      outletId: intent.outletId,
-      actorType: "system",
-      actorId: null,
-      deviceId: null,
-      action: "payment.provider_refunded_partial",
-      objectType: "payment_intent",
-      objectId: intent.id,
-      reason: null,
-      maskedChanges: {
-        before: { status: intent.status },
-        after: {
-          status: intent.status,
-          intentId: intent.id,
-          evidenceId,
-          providerRefundId,
-          amountIdr,
-          cumulativeIdr,
-          paidIdr,
-          fundCount: fundsMarked,
-          intentFlagged,
-        },
-      },
-      ipHash: null,
-      sensitiveAccess: false,
-      retentionClass: "audit_2y",
-      createdAt: now.toISOString(),
-    },
-    [
-      "status",
-      "intentId",
-      "evidenceId",
-      "providerRefundId",
-      "amountIdr",
-      "cumulativeIdr",
-      "paidIdr",
-      "fundCount",
-      "intentFlagged",
-    ],
+    tenantId,
+    intent.id,
   );
+  if (creditSurplus > 0n) {
+    const hex = createHash("sha256")
+      .update(
+        `refund_recon_hold.credit_used\0${tenantId}\0${intent.id.toLowerCase()}\0${providerRefundId}`,
+      )
+      .digest("hex");
+    const [creditHold] = await tx
+      .insert(refundReconHolds)
+      .values({
+        tenantId,
+        paymentIntentId: intent.id,
+        webhookEventId: `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`,
+        providerRefundId: null,
+        providerPaymentRef,
+        amountIdr: idr(Number(creditSurplus)),
+        reason: "credit_used_before_provider_refund",
+        flaggedAt: now,
+      })
+      .onConflictDoNothing()
+      .returning({ id: refundReconHolds.id });
+    if (creditHold)
+      await alertCreditUsedBeforeProviderRefund(
+        tx,
+        context,
+        {
+          intentId: intent.id,
+          outletId: intent.outletId,
+          providerRefundId,
+          amountIdr: Number(creditSurplus),
+        },
+        now,
+      );
+  }
+
+  // 5. One audit row and one alert for this refund (we won the insert).
+  if (!input.quiet)
+    await recordAudit(
+      tx,
+      context,
+      {
+        id: createUlid(now.getTime()),
+        tenantId,
+        outletId: intent.outletId,
+        actorType: "system",
+        actorId: null,
+        deviceId: null,
+        action: "payment.provider_refunded_partial",
+        objectType: "payment_intent",
+        objectId: intent.id,
+        reason: null,
+        maskedChanges: {
+          before: { status: intent.status },
+          after: {
+            status: intent.status,
+            intentId: intent.id,
+            evidenceId,
+            providerRefundId,
+            amountIdr,
+            cumulativeIdr,
+            paidIdr,
+            fundCount: fundsMarked,
+            intentFlagged,
+          },
+        },
+        ipHash: null,
+        sensitiveAccess: false,
+        retentionClass: "audit_2y",
+        createdAt: now.toISOString(),
+      },
+      [
+        "status",
+        "intentId",
+        "evidenceId",
+        "providerRefundId",
+        "amountIdr",
+        "cumulativeIdr",
+        "paidIdr",
+        "fundCount",
+        "intentFlagged",
+      ],
+    );
   // The supervisors were already told this money went back (the audit row
   // above still records the refund), unless this refund newly flags the whole
   // intent: that is news they must get.
-  if (!alreadyAlerted || intentFlagged)
+  if (!input.quiet && (!alreadyAlerted || intentFlagged))
     await alertProviderPartialRefund(
       tx,
       context,
@@ -433,5 +658,23 @@ export async function recordProviderRefundInTx(
       },
       now,
     );
+  // The books were written counting a refund of ours that is not final: if it
+  // later fails the journal is short. Held until finance checks (the intent's
+  // refunds and payouts stop), finance told once.
+  if (countedLiveOwn) await fileLiveOwnHold(amountIdr, intent.outletId);
+  // 8. The journal of this refund (legend-tlm3h): one event per recorded row.
+  await appendPaymentEvent(tx, context, {
+    name: "payment.provider_refunded",
+    aggregateId: inserted.id,
+    outletId: intent.outletId,
+    actor: { type: "system" },
+    payload: {
+      providerRefundId: inserted.id,
+      paymentIntentId: intent.id,
+      amountIdr,
+      refundedAt: now.toISOString(),
+    },
+    now,
+  });
   return { status: "recorded" };
 }

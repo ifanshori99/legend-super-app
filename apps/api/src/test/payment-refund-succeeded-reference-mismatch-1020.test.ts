@@ -14,8 +14,10 @@
 //      payment id is X (or A's own id) but whose reference(s) name the OTHER
 //      intent is not recorded: the stored event ends `ignored` with
 //      REFERENCE_MISMATCH and nothing moves. No payment_provider_refunds row,
-//      no stamp on an intent or fund, no audit row, no supervisor alert, no
-//      journal, same refundable amounts, no provider payout call. Shapes: both
+//      no stamp on an intent or fund, no audit row, no journal, same
+//      refundable amounts, no provider payout call (legend-9s33i, 1025 C: one
+//      supervisor alert and a recon hold now mark it, see
+//      refund-1025-c-reference-mismatch-hold.test.ts). Shapes: both
 //      references, flat `object: "refund"`, `refund.reference` only,
 //      `payment.reference` only, and the reverse (A's own payment id with
 //      B's reference).
@@ -380,6 +382,7 @@ afterAll(async () => {
     for (const table of [
       "payment_refunds",
       "payment_provider_refunds",
+      "refund_recon_holds",
       "payment_evidence",
       "payment_unallocated_funds",
     ])
@@ -814,7 +817,7 @@ async function expectIgnoredMismatch(eventId: string) {
 
 describe("legend-6jdy1 refund.succeeded with a reference that does not name the intent owning the payment id", () => {
   it.each(MISMATCH_SHAPES)(
-    "1020-6jdy1 %s: ignored REFERENCE_MISMATCH, no provider refund row, no stamp, no audit, no alert, intents and fund unchanged (also after worker retries)",
+    "1020-6jdy1 %s: ignored REFERENCE_MISMATCH, no provider refund row, no stamp, no audit, one alert (legend-9s33i), intents and fund unchanged (also after worker retries)",
     async (shape) => {
       const s = await scene();
       const before = await snapshot(s);
@@ -830,7 +833,11 @@ describe("legend-6jdy1 refund.succeeded with a reference that does not name the 
 
       await expectIgnoredMismatch(body.id);
       await expectIgnoredMismatch(resend.id);
-      expect(await snapshot(s)).toEqual(before);
+      // legend-9s33i: the mismatch is now alerted once (the resend names the
+      // same provider refund, so it is the same alert); nothing else moves.
+      const after = await snapshot(s);
+      expect(after.alerts - before.alerts).toBe(1);
+      expect({ ...after, alerts: 0 }).toEqual({ ...before, alerts: 0 });
       // Neither intent nor the parked fund of X carries a provider-refund stamp.
       for (const stamp of [...before.stamps.intents, ...before.stamps.funds])
         expect(stamp).toBeNull();
