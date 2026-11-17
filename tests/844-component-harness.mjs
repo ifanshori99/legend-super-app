@@ -28,6 +28,10 @@ export function componentHarness(stubs) {
             export const useState = (value) => R.useState(globalThis.__844Data.mode && value === "equal" ? globalThis.__844Data.mode : globalThis.__844Data.selected && Array.isArray(value) ? globalThis.__844Data.selected : globalThis.__844Data.target && value === "" ? globalThis.__844Data.target : value);
             export const useMemo = R.useMemo;
             export const useRef = R.useRef;
+            export const useCallback = R.useCallback;
+            // Static markup never runs effects; a test opts in with data.runEffects to
+            // exercise effect-wired refs (kds realtime resume, legend-t0m89).
+            export const useEffect = (effect) => { if (globalThis.__844Data.runEffects) effect(); };
             export const useSyncExternalStore = R.useSyncExternalStore;`),
           shortCircuit: true,
         };

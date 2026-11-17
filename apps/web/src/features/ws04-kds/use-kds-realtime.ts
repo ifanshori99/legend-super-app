@@ -1,6 +1,6 @@
 // Owns the KDS station realtime client for the lifetime of the component
-// (WS-04). Not wired into kds-page.tsx yet: the page keeps its polling until a
-// gate-ui card swaps it. Mock mode (VITE_API_MOCK) opens no socket.
+// (WS-04). kds-page.tsx wires it next to the board polling, which stays as the
+// fallback. Mock mode (VITE_API_MOCK) opens no socket.
 import type { KitchenFeedEntry } from "@starter/shared/kitchen";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { API_MOCK } from "@/lib/api/mock-flag";
@@ -24,6 +24,8 @@ export function useKdsRealtime(options: {
 }): {
   status: KdsRealtimeStatus;
   resume(after: number): void;
+  /** After "denied": read the tokens again and reconnect from the cursor. */
+  reconnect(): void;
 } {
   const { outletId, stationId, enabled = true } = options;
   const [status, setStatus] = useState<KdsRealtimeStatus>("stopped");
@@ -60,5 +62,9 @@ export function useKdsRealtime(options: {
     clientRef.current?.resume(after);
   }, []);
 
-  return { status, resume };
+  const reconnect = useCallback(() => {
+    clientRef.current?.reconnect();
+  }, []);
+
+  return { status, resume, reconnect };
 }

@@ -13,9 +13,16 @@
 // - Close code 4409 (`resync` frame: the cursor cannot be resumed) pauses the
 //   client and calls `onResync`; the caller reloads the snapshot and calls
 //   `resume(snapshot.sequence)`.
-// - Close code 1008 (denied) stops for good. Every other close reconnects with
-//   exponential backoff that resets once a socket opened; the reconnect asks
-//   for the changes after the last applied sequence.
+// - Close code 1008 (denied) on a socket that had opened: the credentials are
+//   read again and the client reconnects ONCE (the cashier may have renewed the
+//   acting-staff token). The allowance comes back only after the new socket
+//   receives a valid `hello` frame. If that socket closes before a hello (any
+//   code) or closes 1008 again, or a socket never opened and closed 1008, the
+//   status is "denied" and the client stops: no loop. `reconnect()` restarts it
+//   from the cursor with fresh credentials.
+// - Every other close reconnects with exponential backoff that resets once a
+//   socket opened; the reconnect asks for the changes after the last applied
+//   sequence.
 import {
   KITCHEN_REALTIME_PATH,
   KITCHEN_REALTIME_RESYNC_CLOSE_CODE,
@@ -102,6 +109,12 @@ export type KdsRealtimeOptions = {
   scheduler?: KdsScheduler;
   /** delay = min(baseMs * 2^attempt, maxMs) */
   backoff?: { baseMs: number; maxMs: number };
+  /**
+   * How long a retried socket must stay open after its `hello` before the
+   * one-time 1008 retry is given back. A server that sends `hello` and then
+   * 1008 again ends in "denied" instead of looping.
+   */
+  stableMs?: number;
 };
 
 export type KdsRealtimeClient = {
@@ -109,11 +122,14 @@ export type KdsRealtimeClient = {
   stop(): void;
   /** After a snapshot reload: continue from its cursor (also after a pause). */
   resume(after: number): void;
+  /** Restart from the cursor with fresh credentials after denied/stopped/paused. */
+  reconnect(): void;
   /** Highest sequence applied so far (the `after` of the next connect). */
   cursor(): number | null;
 };
 
 const DEFAULT_BACKOFF = { baseMs: 1_000, maxMs: 30_000 };
+const DEFAULT_STABLE_MS = 10_000;
 
 const defaultScheduler: KdsScheduler = {
   setTimeout: (fn, ms) => setTimeout(fn, ms),
@@ -136,6 +152,7 @@ export function createKdsRealtimeClient(
     onStatus,
     scheduler = defaultScheduler,
     backoff = DEFAULT_BACKOFF,
+    stableMs = DEFAULT_STABLE_MS,
   } = options;
 
   let socket: KdsSocket | null = null;
@@ -145,6 +162,28 @@ export function createKdsRealtimeClient(
   let paused = false;
   let after = options.after;
   let resyncSequence: number | null = null;
+  // The current socket reached `onopen` / received a valid `hello`.
+  let opened = false;
+  let helloReceived = false;
+  // The one 1008 retry is used: set at the 1008 close, given back only after
+  // the retried socket stayed open for `stableMs` past its hello.
+  let retryUsed = false;
+  let stableTimer: unknown = null;
+
+  function clearStableTimer() {
+    if (stableTimer !== null) {
+      scheduler.clearTimeout(stableTimer);
+      stableTimer = null;
+    }
+  }
+
+  function scheduleDeniedRetry() {
+    onStatus?.("reconnecting");
+    timer = scheduler.setTimeout(() => {
+      timer = null;
+      connect();
+    }, backoff.baseMs);
+  }
 
   function scheduleReconnect() {
     onStatus?.("reconnecting");
@@ -169,6 +208,13 @@ export function createKdsRealtimeClient(
     const frame = parsed.data;
     if (frame.stationId !== stationId) return;
     if (frame.type === "hello") {
+      helloReceived = true;
+      if (retryUsed && stableTimer === null) {
+        stableTimer = scheduler.setTimeout(() => {
+          stableTimer = null;
+          retryUsed = false;
+        }, stableMs);
+      }
       if (after === null) after = frame.sequence;
       onHello?.(frame.sequence);
       return;
@@ -191,7 +237,13 @@ export function createKdsRealtimeClient(
   function handleClose(current: KdsSocket, code: number) {
     if (current !== socket) return;
     socket = null;
+    clearStableTimer();
     if (stopped) return;
+    if (retryUsed && !helloReceived) {
+      stopped = true;
+      onStatus?.("denied");
+      return;
+    }
     if (code === KITCHEN_REALTIME_RESYNC_CLOSE_CODE) {
       paused = true;
       onStatus?.("resync");
@@ -200,6 +252,11 @@ export function createKdsRealtimeClient(
       return;
     }
     if (code === KDS_DENIED_CLOSE_CODE) {
+      if (opened && !retryUsed) {
+        retryUsed = true;
+        scheduleDeniedRetry();
+        return;
+      }
       stopped = true;
       onStatus?.("denied");
       return;
@@ -210,6 +267,8 @@ export function createKdsRealtimeClient(
   function connect() {
     if (stopped || paused) return;
     onStatus?.("connecting");
+    opened = false;
+    helloReceived = false;
     let current: KdsSocket;
     try {
       current = socketFactory(
@@ -224,6 +283,7 @@ export function createKdsRealtimeClient(
     current.onopen = () => {
       if (current !== socket || stopped) return;
       attempt = 0;
+      opened = true;
       onStatus?.("open");
     };
     current.onmessage = (event) => {
@@ -236,6 +296,7 @@ export function createKdsRealtimeClient(
   }
 
   function closeSocket() {
+    clearStableTimer();
     if (timer !== null) {
       scheduler.clearTimeout(timer);
       timer = null;
@@ -251,11 +312,13 @@ export function createKdsRealtimeClient(
       stopped = false;
       paused = false;
       attempt = 0;
+      retryUsed = false;
       connect();
     },
     stop() {
       if (stopped && socket === null && timer === null) return;
       stopped = true;
+      retryUsed = false;
       closeSocket();
       onStatus?.("stopped");
     },
@@ -266,6 +329,15 @@ export function createKdsRealtimeClient(
       stopped = false;
       paused = false;
       attempt = 0;
+      connect();
+    },
+    reconnect() {
+      if (!stopped && !paused) return;
+      closeSocket();
+      stopped = false;
+      paused = false;
+      attempt = 0;
+      retryUsed = false;
       connect();
     },
     cursor() {

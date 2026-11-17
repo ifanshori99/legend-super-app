@@ -72,6 +72,17 @@ function fakeScheduler() {
       timer.fn();
       return timer.ms;
     },
+    /** Fire the pending timer scheduled with exactly `ms` (e.g. stableMs). */
+    fireMs(ms) {
+      const timer = timers.find((t) => !t.cancelled && !t.fired && t.ms === ms);
+      assert.ok(timer, `expected a pending ${ms} ms timer`);
+      timer.fired = true;
+      timer.fn();
+    },
+    /** Timers scheduled with `ms`, cancelled or not. */
+    withMs(ms) {
+      return timers.filter((t) => t.ms === ms);
+    },
   };
 }
 
@@ -326,5 +337,314 @@ describe("createKdsRealtimeClient", () => {
     scheduler.fire();
     assert.equal(sockets[0].protocols[1], "legend-kds-staff.pas_one");
     assert.equal(sockets[1].protocols[1], "legend-kds-staff.pas_two");
+  });
+});
+
+// Item 3 of bead legend-t0m89: a 1008 on a socket that had opened is usually a
+// cashier session that rolled over, so the client re-reads the credentials and
+// retries exactly once. The retry allowance comes back only after the new
+// socket received a valid hello AND stayed open `stableMs` (scheduler timer)
+// past it; hello then 1008 before that, or no hello, is "denied" and silent.
+// Assumption: "short delay" is not pinned to a number, only that the retry goes
+// through the scheduler (a timer, status "reconnecting"), not synchronously.
+describe("close 1008 on a socket that had opened", () => {
+  const hello = (sequence = 5) => ({
+    type: "hello",
+    stationId: STATION,
+    sequence,
+  });
+
+  test("re-reads the credentials and reconnects once through the scheduler", () => {
+    let token = "pas_old";
+    const { client, sockets, statuses, scheduler } = harness({
+      getProtocols: () => ["legend-kds.v1", `legend-kds-staff.${token}`],
+    });
+    client.start();
+    sockets[0].open();
+    sockets[0].push(hello());
+    sockets[0].push(ticketFrame(6));
+    token = "pas_new";
+    sockets[0].serverClose(1008);
+    assert.equal(statuses.at(-1), "reconnecting");
+    assert.notEqual(statuses.at(-1), "denied");
+    assert.equal(sockets.length, 1, "the retry waits for the scheduler");
+    const delay = scheduler.fire();
+    assert.ok(Number.isFinite(delay) && delay >= 0);
+    assert.equal(sockets.length, 2);
+    assert.equal(sockets[1].protocols[1], "legend-kds-staff.pas_new");
+    assert.ok(sockets[1].url.endsWith("realtime?after=6"));
+    assert.equal(statuses.at(-1), "connecting");
+  });
+
+  test("hello then 1008 on the retry socket before it was stable is denied: no loop", () => {
+    const { client, sockets, statuses, scheduler } = harness({
+      stableMs: 5_000,
+    });
+    client.start();
+    sockets[0].open();
+    sockets[0].serverClose(1008);
+    scheduler.fire();
+    sockets[1].open();
+    sockets[1].push(hello());
+    assert.equal(statuses.at(-1), "open");
+    sockets[1].serverClose(1008); // hello, but not stable yet
+    assert.equal(statuses.at(-1), "denied");
+    assert.equal(statuses.filter((s) => s === "denied").length, 1);
+    assert.throws(() => scheduler.fire(), "no retry and no stable timer left");
+    assert.equal(sockets.length, 2);
+  });
+
+  test("the retry is given back only after the socket stayed open stableMs past its hello", () => {
+    const { client, sockets, statuses, scheduler } = harness({
+      stableMs: 5_000,
+    });
+    client.start();
+    sockets[0].open();
+    sockets[0].serverClose(1008);
+    scheduler.fire();
+    sockets[1].open();
+    assert.equal(
+      scheduler.withMs(5_000).length,
+      0,
+      "no timer before the hello",
+    );
+    sockets[1].push(hello());
+    assert.equal(
+      scheduler.withMs(5_000).length,
+      1,
+      "stable timer after the hello",
+    );
+    scheduler.fireMs(5_000); // stayed open stableMs
+    sockets[1].serverClose(1008); // a later rollover: one more retry is allowed
+    assert.equal(statuses.at(-1), "reconnecting");
+    scheduler.fire();
+    assert.equal(sockets.length, 3);
+    sockets[2].open();
+    sockets[2].serverClose(1008); // no hello this time: denied
+    assert.equal(statuses.at(-1), "denied");
+    assert.equal(sockets.length, 3);
+  });
+
+  test("the stable timer defaults to 10 seconds", () => {
+    const { client, sockets, scheduler } = harness();
+    client.start();
+    sockets[0].open();
+    sockets[0].serverClose(1008);
+    scheduler.fire();
+    sockets[1].open();
+    sockets[1].push(hello());
+    assert.equal(scheduler.withMs(10_000).length, 1);
+  });
+
+  test("a hello on the first socket (no retry in use) starts no stable timer", () => {
+    const { client, sockets, scheduler } = harness({ stableMs: 5_000 });
+    client.start();
+    sockets[0].open();
+    sockets[0].push(hello());
+    assert.equal(scheduler.withMs(5_000).length, 0);
+  });
+
+  test("the stable timer is cleared when the retry socket closes", () => {
+    const { client, sockets, statuses, scheduler } = harness({
+      stableMs: 5_000,
+    });
+    client.start();
+    sockets[0].open();
+    sockets[0].serverClose(1008);
+    scheduler.fire();
+    sockets[1].open();
+    sockets[1].push(hello());
+    const [stable] = scheduler.withMs(5_000);
+    sockets[1].serverClose(1006); // ordinary close before it was stable
+    assert.equal(stable.cancelled, true);
+    assert.equal(statuses.at(-1), "reconnecting");
+    // The next socket opens without a hello and closes 1008: the allowance was
+    // never given back, so it is denied.
+    scheduler.fire();
+    sockets[2].open();
+    sockets[2].serverClose(1008);
+    assert.equal(statuses.at(-1), "denied");
+    assert.equal(sockets.length, 3);
+  });
+
+  test("stop() clears the stable timer", () => {
+    const { client, sockets, statuses, scheduler } = harness({
+      stableMs: 5_000,
+    });
+    client.start();
+    sockets[0].open();
+    sockets[0].serverClose(1008);
+    scheduler.fire();
+    sockets[1].open();
+    sockets[1].push(hello());
+    const [stable] = scheduler.withMs(5_000);
+    client.stop();
+    assert.equal(stable.cancelled, true);
+    assert.equal(statuses.at(-1), "stopped");
+    assert.throws(() => scheduler.fire());
+    assert.equal(sockets.length, 2);
+  });
+
+  test("a retry that opens but never gets a hello does not restore the allowance", () => {
+    const { client, sockets, statuses, scheduler } = harness();
+    client.start();
+    sockets[0].open();
+    sockets[0].serverClose(1008);
+    scheduler.fire();
+    sockets[1].open(); // opened, no hello frame
+    sockets[1].serverClose(1008);
+    assert.equal(statuses.at(-1), "denied");
+    assert.throws(() => scheduler.fire(), "no further retry timer");
+    assert.equal(sockets.length, 2);
+  });
+
+  test("a frame that is not a hello does not restore the allowance", () => {
+    const { client, sockets, statuses, scheduler } = harness();
+    client.start();
+    sockets[0].open();
+    sockets[0].serverClose(1008);
+    scheduler.fire();
+    sockets[1].open();
+    sockets[1].push({ type: "nonsense" });
+    sockets[1].push({ type: "hello", stationId: "other-station", sequence: 3 });
+    sockets[1].serverClose(1008);
+    assert.equal(statuses.at(-1), "denied");
+    assert.equal(sockets.length, 2);
+  });
+
+  test("1008 on the retry socket is denied: stops, no loop", () => {
+    const { client, sockets, statuses, scheduler } = harness();
+    client.start();
+    sockets[0].open();
+    sockets[0].serverClose(1008);
+    scheduler.fire();
+    sockets[1].serverClose(1008);
+    assert.equal(statuses.at(-1), "denied");
+    assert.equal(statuses.filter((s) => s === "denied").length, 1);
+    assert.throws(() => scheduler.fire());
+    assert.equal(sockets.length, 2);
+  });
+
+  test("1006 on the retry socket (handshake refused) is denied, not backoff", () => {
+    const { client, sockets, statuses, scheduler } = harness();
+    client.start();
+    sockets[0].open();
+    sockets[0].serverClose(1008);
+    scheduler.fire();
+    sockets[1].serverClose(1006); // never opened, no hello
+    assert.equal(statuses.at(-1), "denied");
+    assert.throws(() => scheduler.fire());
+    assert.equal(sockets.length, 2);
+  });
+
+  test("a retry that opened but closes 1006 before any hello is denied", () => {
+    const { client, sockets, statuses, scheduler } = harness();
+    client.start();
+    sockets[0].open();
+    sockets[0].serverClose(1008);
+    scheduler.fire();
+    sockets[1].open();
+    sockets[1].serverClose(1006);
+    assert.equal(statuses.at(-1), "denied");
+    assert.throws(() => scheduler.fire());
+    assert.equal(sockets.length, 2);
+  });
+
+  test("after a hello, an ordinary close goes back to backoff reconnects", () => {
+    const { client, sockets, statuses, scheduler } = harness();
+    client.start();
+    sockets[0].open();
+    sockets[0].serverClose(1008);
+    scheduler.fire();
+    sockets[1].open();
+    sockets[1].push(hello());
+    sockets[1].serverClose(1006);
+    assert.equal(statuses.at(-1), "reconnecting");
+    assert.equal(scheduler.fire(), 100);
+    assert.equal(sockets.length, 3);
+  });
+
+  test("stop() cancels the pending retry", () => {
+    const { client, sockets, statuses, scheduler } = harness();
+    client.start();
+    sockets[0].open();
+    sockets[0].serverClose(1008);
+    client.stop();
+    assert.equal(statuses.at(-1), "stopped");
+    assert.throws(() => scheduler.fire());
+    assert.equal(sockets.length, 1);
+  });
+});
+
+describe("close 1008 on a socket that never opened", () => {
+  test("is denied immediately: no retry timer, no second socket", () => {
+    const { client, sockets, statuses, scheduler } = harness();
+    client.start();
+    sockets[0].serverClose(1008);
+    assert.equal(statuses.at(-1), "denied");
+    assert.ok(!statuses.includes("reconnecting"));
+    assert.throws(() => scheduler.fire());
+    assert.equal(sockets.length, 1);
+  });
+});
+
+describe("reconnect()", () => {
+  test("restarts a denied client from the cursor with fresh protocols", () => {
+    let token = "pas_old";
+    const { client, sockets, statuses, scheduler } = harness({
+      getProtocols: () => ["legend-kds.v1", `legend-kds-staff.${token}`],
+    });
+    client.start();
+    sockets[0].open();
+    sockets[0].push(ticketFrame(6));
+    sockets[0].serverClose(1008);
+    scheduler.fire();
+    sockets[1].serverClose(1008);
+    assert.equal(statuses.at(-1), "denied");
+    token = "pas_fresh";
+    client.reconnect();
+    assert.equal(sockets.length, 3);
+    assert.equal(sockets[2].protocols[1], "legend-kds-staff.pas_fresh");
+    assert.ok(sockets[2].url.endsWith("realtime?after=6"));
+    assert.equal(statuses.at(-1), "connecting");
+    sockets[2].open();
+    assert.equal(statuses.at(-1), "open");
+  });
+
+  test("gives the retry allowance back after a denial", () => {
+    const { client, sockets, statuses, scheduler } = harness();
+    client.start();
+    sockets[0].open();
+    sockets[0].serverClose(1008);
+    scheduler.fire();
+    sockets[1].serverClose(1008); // denied
+    client.reconnect();
+    sockets[2].open();
+    sockets[2].push({ type: "hello", stationId: STATION, sequence: 5 });
+    sockets[2].serverClose(1008);
+    assert.equal(statuses.at(-1), "reconnecting");
+    scheduler.fire();
+    assert.equal(sockets.length, 4);
+  });
+
+  test("restarts a client that was stopped", () => {
+    const { client, sockets } = harness();
+    client.start();
+    client.stop();
+    client.reconnect();
+    assert.equal(sockets.length, 2);
+    assert.ok(sockets[1].url.endsWith("realtime?after=5"));
+  });
+
+  test("restarts a client paused for resync from its own cursor", () => {
+    const { client, sockets } = harness();
+    client.start();
+    sockets[0].open();
+    sockets[0].push(ticketFrame(6));
+    sockets[0].push({ type: "resync", stationId: STATION, sequence: 40 });
+    sockets[0].serverClose(4409);
+    client.reconnect();
+    assert.equal(sockets.length, 2);
+    assert.ok(sockets[1].url.endsWith("realtime?after=6"));
   });
 });

@@ -46,6 +46,7 @@ import { once } from "node:events";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { Express } from "express";
 import WebSocket from "ws";
+import type { PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { KITCHEN_REALTIME_PROTOCOL } from "@starter/shared/kitchen";
 import { tenantIdSchema } from "@starter/shared/core";
@@ -1009,5 +1010,299 @@ describe("KDS socket handshake: Sec-WebSocket-Protocol on a real upgrade (legend
     const output = seen.join("\n");
     expect(output).not.toContain(token);
     expect(output).not.toContain(device);
+  });
+});
+
+describe("KDS socket: cashier token revoked while connected (legend-t0m89)", () => {
+  // Spec (brief 1021 item 4 + 1017 contract "the check repeats on every
+  // wakeup/recheck"): a shared-device screen whose acting-staff token is
+  // revoked mid-connection is closed by the server with 1008 within the recheck
+  // interval, and no ticket frame reaches that screen afterwards.
+  // Assumptions:
+  //  - Changes are fed by writing a feed row + cursor and calling
+  //    `realtime.dispatch` (the relay entry point), not via NOTIFY.
+  //  - The control (a ticket frame before the revoke) proves the screen was
+  //    live, so "nothing afterwards" is not a vacuous check.
+  const RECHECK_MS = 100;
+  let server: Server;
+  let realtime: ReturnType<typeof attachKdsRealtime>;
+  let port = 0;
+  const sockets: WebSocket[] = [];
+  const category = randomUUID();
+  const menuItem = randomUUID();
+  const orderItem = randomUUID();
+  const ticketId = randomUUID();
+
+  async function asTenant<T>(run: (client: PoolClient) => Promise<T>) {
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [tenant.tenantId],
+      );
+      const result = await run(client);
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  beforeAll(async () => {
+    server = createServer();
+    realtime = attachKdsRealtime(server, {
+      trustedOrigins: [WEB_ORIGIN],
+      resolveConnection: resolveKdsStaffConnection,
+      recheckIntervalMs: RECHECK_MS,
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("address");
+    port = address.port;
+
+    const orderId = randomUUID();
+    await asTenant(async (client) => {
+      await client.query(
+        `INSERT INTO menu_categories (id, tenant_id, brand_id, name, sort_order)
+         VALUES ($1, $2, $3, 'Cabut Token Uji', 0)`,
+        [category, tenant.tenantId, tenant.brandId],
+      );
+      await client.query(
+        `INSERT INTO menu_items (id, tenant_id, brand_id, category_id, name, is_active, media_id, station_id, station_type)
+         VALUES ($1, $2, $3, $4, 'Kopi Susu', true, $5, $6, 'hot_kitchen')`,
+        [
+          menuItem,
+          tenant.tenantId,
+          tenant.brandId,
+          category,
+          randomUUID(),
+          stationA,
+        ],
+      );
+      await client.query(
+        `INSERT INTO orders (id, tenant_id, outlet_id, number, channel, service_type, table_session_id, payment_mode,
+           subtotal_idr, discount_idr, service_charge_idr, tax_idr, rounding_idr, total_idr,
+           status, business_date, placed_at)
+         VALUES ($1, $2, $3, $4, 'pos', 'dine_in', NULL, 'pay_first', 20000, 0, 0, 0, 0, 20000,
+                 'sent', '2026-11-01', now())`,
+        [
+          orderId,
+          tenant.tenantId,
+          tenant.outletId,
+          `RVK-${randomUUID().slice(0, 8)}`,
+        ],
+      );
+      await client.query(
+        `INSERT INTO order_items (id, tenant_id, outlet_id, order_id, menu_item_id, name, quantity,
+           unit_price_idr, modifiers_total_idr, line_total_idr, modifiers, fire_status, status, reserved_business_date)
+         VALUES ($1, $2, $3, $4, $5, 'Kopi Susu', 1, 20000, 0, 20000, '[]', 'fired', 'queued', '2026-11-01')`,
+        [orderItem, tenant.tenantId, tenant.outletId, orderId, menuItem],
+      );
+      await client.query(
+        `INSERT INTO kitchen_tickets (id, tenant_id, outlet_id, order_id, station_id, fire_batch_id, business_date, ticket_no, status, priority, fired_at)
+         VALUES ($1, $2, $3, $4, $5, $6, '2026-11-01', (SELECT coalesce(max(m.ticket_no), 0) + 1 FROM kitchen_tickets m WHERE m.tenant_id = $2::uuid AND m.outlet_id = $3::uuid AND m.business_date = '2026-11-01'), 'new', 0, now())`,
+        [
+          ticketId,
+          tenant.tenantId,
+          tenant.outletId,
+          orderId,
+          stationA,
+          randomUUID(),
+        ],
+      );
+      await client.query(
+        `INSERT INTO kitchen_ticket_items (id, tenant_id, outlet_id, ticket_id, order_id, order_item_id, menu_item_id,
+           name, quantity, modifiers, status, fired_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'Kopi Susu', 1, '{}', 'queued', now())`,
+        [
+          randomUUID(),
+          tenant.tenantId,
+          tenant.outletId,
+          ticketId,
+          orderId,
+          orderItem,
+          menuItem,
+        ],
+      );
+      await client.query(
+        `INSERT INTO kitchen_station_cursors (tenant_id, outlet_id, station_id, last_sequence)
+         VALUES ($1, $2, $3, 0)
+         ON CONFLICT DO NOTHING`,
+        [tenant.tenantId, tenant.outletId, stationA],
+      );
+    });
+  });
+
+  afterAll(async () => {
+    for (const ws of sockets) ws.terminate();
+    await realtime?.close();
+    await new Promise<void>((resolve) => server?.close(() => resolve()));
+  });
+
+  /** One more change on the station: feed row, cursor, relay wake-up. */
+  async function emitChange(
+    sequence: number,
+    target: ReturnType<typeof attachKdsRealtime> = realtime,
+  ) {
+    await asTenant(async (client) => {
+      await client.query(
+        `INSERT INTO kitchen_station_feed (id, tenant_id, outlet_id, station_id, sequence, ticket_id, occurred_at)
+         VALUES ($1, $2, $3, $4, $5, $6::uuid, now())`,
+        [
+          randomUUID(),
+          tenant.tenantId,
+          tenant.outletId,
+          stationA,
+          sequence,
+          ticketId,
+        ],
+      );
+      await client.query(
+        "UPDATE kitchen_station_cursors SET last_sequence = $2 WHERE station_id = $1",
+        [stationA, sequence],
+      );
+    });
+    await target.dispatch({
+      tenantId: tenant.tenantId,
+      outletId: tenant.outletId,
+      stationId: stationA,
+      sequence,
+    });
+  }
+
+  async function waitFor(check: () => boolean, label: string, ms = 5_000) {
+    const deadline = Date.now() + ms;
+    while (!check()) {
+      if (Date.now() > deadline) throw new Error(`Timed out: ${label}`);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+
+  it("a revoked cashier token closes the socket with 1008 within the recheck interval and no ticket arrives afterwards", async () => {
+    const session = await login(sharedLogin);
+    const token = await issueToken(session, cook, sharedDevice);
+    const ws = new WebSocket(
+      `ws://127.0.0.1:${port}/api/outlets/${tenant.outletId}/kitchen/stations/${stationA}/realtime?after=0`,
+      offer(deviceToken(sharedDevice), token),
+      {
+        headers: {
+          origin: WEB_ORIGIN,
+          host: tenant.hostname,
+          cookie: session.cookie,
+        },
+      },
+    );
+    sockets.push(ws);
+    ws.on("error", () => {});
+    const frames: { type: string }[] = [];
+    let closeCode: number | null = null;
+    let closedAt = 0;
+    ws.on("message", (data) => frames.push(JSON.parse(String(data))));
+    ws.on("close", (code) => {
+      closeCode = code;
+      closedAt = Date.now();
+    });
+
+    await waitFor(() => frames.some((f) => f.type === "hello"), "hello frame");
+
+    // Control: while the token is valid, a change reaches the screen.
+    await emitChange(1);
+    await waitFor(
+      () => frames.some((f) => f.type === "ticket"),
+      "ticket frame before the revoke",
+    );
+    expect(closeCode).toBeNull();
+
+    // The cashier ends their session on the shared device: token revoked.
+    const revokedAt = Date.now();
+    await endToken(session, sharedDevice);
+    await waitFor(() => closeCode !== null, "server close after the revoke");
+    expect(closeCode).toBe(1008);
+    // Generous bound over the 100 ms recheck: proves the recheck, not a
+    // 30 s default timer, closed it.
+    expect(closedAt - revokedAt).toBeLessThan(RECHECK_MS * 20);
+
+    // A change after the revoke must not reach the screen.
+    const framesAtClose = frames.length;
+    await emitChange(2);
+    await new Promise((resolve) => setTimeout(resolve, RECHECK_MS * 4));
+    expect(frames.filter((f) => f.type === "ticket")).toHaveLength(1);
+    expect(frames).toHaveLength(framesAtClose);
+  });
+
+  // Same revoke, but the periodic recheck is far away (60 s): the ticket
+  // delivery itself must re-validate the token, so a change emitted right
+  // after the revoke closes the socket with 1008 instead of being delivered.
+  // Assumption: the relay dispatch is the "ticket change" path; the cursor
+  // starts at the current sequence (after=2) so no old entry is replayed.
+  it("with a large recheck interval, a ticket change right after the revoke closes 1008 and delivers no second ticket frame", async () => {
+    const slowServer = createServer();
+    const slowRealtime = attachKdsRealtime(slowServer, {
+      trustedOrigins: [WEB_ORIGIN],
+      resolveConnection: resolveKdsStaffConnection,
+      recheckIntervalMs: 60_000,
+    });
+    slowServer.listen(0, "127.0.0.1");
+    await once(slowServer, "listening");
+    const address = slowServer.address();
+    if (!address || typeof address === "string") throw new Error("address");
+
+    const session = await login(sharedLogin);
+    const token = await issueToken(session, cook, sharedDevice);
+    const ws = new WebSocket(
+      `ws://127.0.0.1:${address.port}/api/outlets/${tenant.outletId}/kitchen/stations/${stationA}/realtime?after=2`,
+      offer(deviceToken(sharedDevice), token),
+      {
+        headers: {
+          origin: WEB_ORIGIN,
+          host: tenant.hostname,
+          cookie: session.cookie,
+        },
+      },
+    );
+    sockets.push(ws);
+    ws.on("error", () => {});
+    const frames: { type: string }[] = [];
+    let closeCode: number | null = null;
+    ws.on("message", (data) => frames.push(JSON.parse(String(data))));
+    ws.on("close", (code) => {
+      closeCode = code;
+    });
+
+    try {
+      await waitFor(
+        () => frames.some((f) => f.type === "hello"),
+        "hello frame",
+      );
+
+      // Control: while the token is valid, a change reaches the screen.
+      await emitChange(3, slowRealtime);
+      await waitFor(
+        () => frames.some((f) => f.type === "ticket"),
+        "ticket frame before the revoke",
+      );
+      expect(closeCode).toBeNull();
+
+      // Revoke, then change at once: far inside the 60 s recheck interval.
+      await endToken(session, sharedDevice);
+      await emitChange(4, slowRealtime);
+      await waitFor(
+        () => closeCode !== null,
+        "server close after the revoke",
+        3_000,
+      );
+      expect(closeCode).toBe(1008);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(frames.filter((f) => f.type === "ticket")).toHaveLength(1);
+    } finally {
+      ws.terminate();
+      await slowRealtime.close();
+      await new Promise<void>((resolve) => slowServer.close(() => resolve()));
+    }
   });
 });

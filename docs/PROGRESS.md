@@ -7050,3 +7050,14 @@ Cabang `ghostex/34755844`, dasar 1012 (ca8ba4eb7). Tingkat K (akses). Tanpa migr
 - Tes (gagal-dulu di dasar: 12/15, 28/41, 4/14): `kds-realtime-shared-device`, `auth-shared-device-guard`, `pos-customer-display-preview-access`, plus `shared-device-router-decisions` dan `acting-staff-shared-device`: 5 berkas, 336 lulus.
 - Review architect (xhigh): tidak ada bypass. Dibetulkan: komentar app.ts, stempel penanda di upgrade ws, activity dikeluarkan dari allowlist. Kartu lanjutan: carrier ws untuk browser (subprotocol, P2), schema preview data-minimal (P3), keep-alive `sessions/current/activity` ditolak di perangkat bersama (P3, putuskan perlu `requireAuthAllowSharedDevice` atau tidak).
 - Subagent: total 14, puncak 6 bersamaan, token heavy dipegang induk (bukan subagent).
+
+## 1021 KDS: layar memakai client realtime + reconnect 1008 (legend-t0m89), 17 Nov 2026
+
+Cabang `ghostex/4b06e171`, dasar 1018 (f854663f9). Tingkat K (akses). Tanpa migrasi, tanpa uang.
+
+- `kds-page.tsx` (`StationBoard`) memasang `useKdsRealtime`: frame tiket menyegarkan query board + ringkasan stasiun; resync mengambil snapshot (`fetchStationSnapshot`) lalu `resume(sequence)`, gagal ambil = coba `reconnect()` lagi 5 detik. Polling 2 detik tetap cadangan. Chip status kecil (Tersambung / Menyambung ulang / Terputus + tombol Sambung ulang), teks di `kds.realtime.*`, live region selalu terpasang.
+- Client (`kds-realtime.ts`): close 1008 setelah socket terbuka = baca ulang token dan reconnect SEKALI; jatah dikembalikan hanya bila socket retry bertahan `stableMs` (10 dtk) setelah hello. Retry putus sebelum hello, 1008 lagi, atau socket tak pernah terbuka = "denied" (minta PIN), tanpa loop. `reconnect()` baru (hook + client).
+- Tes: client 33 (gagal-dulu 13/15 awal), halaman 11 (gagal-dulu 8/11), API real-socket cabut token tengah koneksi: tutup 1008 + tak ada event sesudahnya, plus kasus recheck 60 dtk (tiket langsung setelah cabut tidak terkirim). Hijau: 46 tes root, 45 API shared-device + 64 KDS, prettier, eslint, tsc web + API.
+- Review reviewer: tanpa bug fungsional (a11y live region dibetulkan). Review architect (K): akses disetujui; dibetulkan loop hello->1008 tiap detik (jatah retry kini bergantung `stableMs`), snapshot gagal membuat client macet, tes API diperkuat. Sisa catatan rendah: chip bisa menyebut "sesi berakhir" untuk retry yang putus 1006 sebelum hello; `after: null` (jeda board-hello ditutup polling 2 dtk).
+- Screenshot 1280: `docs/review/img/ui1021-kds-connected.png`, `ui1021-kds-disconnected.png`.
+- Subagent: total 12, puncak 3 bersamaan, token heavy dipegang test-runner/implementer bergantian. Biaya sesi (session-usage): 3260k.

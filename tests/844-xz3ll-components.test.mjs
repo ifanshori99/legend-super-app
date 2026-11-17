@@ -10,14 +10,19 @@ const harness = componentHarness((specifier, parent) => {
   if (specifier === "@tanstack/react-router")
     return 'export const useRouteContext = () => ({access: {stations: ["bar", "kitchen"]}});';
   if (specifier === "@tanstack/react-query")
-    return "export const useQueries = () => [];";
+    return "export const useQueries = () => []; export const useQueryClient = () => ({invalidateQueries: () => Promise.resolve()});";
   if (specifier === "../hooks.ts" && parent.includes("ws04-kds"))
     return `export const useStations = () => ({data: [{stationId: "bar", isActive: true, displayOrder: 0}, {stationId: "kitchen", isActive: true, displayOrder: 1}]});
       export const useStationLabels = () => ({data: [{stationId: "bar", name: "Bar kopi"}, {stationId: "kitchen", name: "Dapur panas"}]});
       export const useStationSummary = () => ({data: {stations: [{stationId: "bar", openTickets: 7}, {stationId: "kitchen", openTickets: 3}]}});
       export const useBoard = () => ({isPending: true}); export const useKdsActions = () => ({}); export const useKdsHeartbeat = () => {}; export const useScannerStatus = () => ({});`;
   if (specifier === "../queries.ts" && parent.includes("ws04-kds"))
-    return "export const boardQuery = () => ({});";
+    return "export const boardQuery = () => ({}); export const kdsKeys = {board: () => [], stationSummary: () => []};";
+  // The page opens the realtime feed (legend-t0m89); no socket in this render.
+  if (specifier === "../api.ts" && parent.includes("ws04-kds"))
+    return "export const fetchStationSnapshot = async () => ({sequence: 0});";
+  if (specifier === "../use-kds-realtime.ts")
+    return 'export const useKdsRealtime = () => ({status: "stopped", resume() {}, reconnect() {}});';
   if (specifier === "./scanner-panel.tsx")
     return "export const ScannerPanel = () => null;";
 });
