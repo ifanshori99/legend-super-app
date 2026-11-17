@@ -1830,3 +1830,4 @@ Langkah berikut CTO baru:
 - 19:15 CTO: 993 bae5b2c43 SIAP batch86 sesudah 987. Keputusan CTO: batas basi in_use 120 menit diterima; sweep tanpa overtime (membatasi tagihan tamu). qr3sd lanjutan (simpan kontak + pengirim) ditunda: butuh teks persetujuan + Kirimdev. G8k5y resolve.
 - 19:16 CTO: 984 f586w ronde 2 839500696 SIAP batch86 (jqurl, xrbjv; migrasi 0575). Keputusan CTO: edge sync tidak membandingkan updatedAt (jam edge menulis updated_at; kursor cloud berurutan) diterima. SO Codex akses 981+984 (brief belum ada) antre. G6xcr resolve.
 - 19:17 CTO: mulai 994 refund manual charge lanjutan (ng3tf, ayobh, 7e8kx, khvqb; base 985 cda5730e0; migrasi 0600-0604) dan 995 refund/voucher hardening (mq7ir, o8quo, h1da5, 59jya, 8m23m; base m1; 0605-0609). Sonnet #1.
+- 19:21 CTO: 991 bbcf73dee SIAP batch86 (migrasi 0585-0587). Founder ditanya Q27: tenant satu Owner tanpa finance tidak bisa approve bayar supplier. G9r89 resolve.
