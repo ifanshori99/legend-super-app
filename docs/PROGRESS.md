@@ -7167,3 +7167,13 @@ Basis `origin/milestone/m1` 1c185edc0 (batch82, ujung migrasi 0435). Cabang `int
 - e2e mock: 2 gagal (`legend-g6d` AUTH-05 dan TEN-03, sudah di kartu baru), 1162 lulus, 2 skip; baseline batch82 40 gagal -> 2. Tidak ada kegagalan baru. 65 menit.
 
 **Angka**: 0 subagent (merge train jalan sendiri; gerbang lewat satu token heavy, pemegang: agent merge train), puncak 0.
+
+## 987 Fasilitas: jam berlaku-mulai, pengingat min-spend, revpash, tanda sarapan (17 Nov 2026)
+
+Cabang `ghostex/987-fasilitas-4-kartu` dari `origin/milestone/m1` (1b0fd2a9e). Migrasi tunggal 0570 (nomor kerja; idx 570, when 1795000000058): tabel `facility_operating_hours_versions` (RLS tenant+outlet, seed satu versi 1970-01-01 per fasilitas), `floor_zones.is_wfc`, `menu_items.is_breakfast` (default false).
+- legend-4us1a: jam fasilitas dengan `effectiveFrom` (tidak boleh di masa lalu); resolver `resolveOperatingHoursOn`; konsumen: menit tersedia metrik dan cek slot; roll-forward kolom `facilities.operating_hours` lewat worker `facility-hours-roll` dan baca config; baseline versi juga untuk impor dan update.
+- legend-e24cz: `evaluateMinSpend` baru (`wfc-min-spend.service.ts`) + job `wfc-min-spend.job.ts`; pengingat per peserta bertanda-masuk per jam-sesi, dedupe key `wfc_min_spend:<sesi>:<jam>:<user>`; kategori notifikasi `wfc_min_spend` (web_push). Peserta anonim tidak dapat pengingat.
+- legend-p4q10: `revpash` dan `seat_occupancy_pct` hidup sebagai metrik derived dari kode harian baru `seat_available_minutes`, `seat_used_minutes`, `wfc_net_sales` (net setelah diskon dan refund, tanpa pajak dan service charge); zona WFC = `floor_zones.is_wfc`.
+- legend-lgyfh: menu sarapan hanya item `is_breakfast`; pemesanan menolak item tidak bertanda; Switch di editor menu. Perubahan perilaku disengaja: menu lama kosong di alur sarapan sampai ditandai.
+- Bukti: gagal-dulu 4 file tes (25 gagal); target 130/130 hijau terakhir, putaran lebar 541 lulus; typecheck shared/api/web, eslint, prettier, root contract (873), `db:generate` kosong. Review architect high: 1 High + 2 Medium + 3 Low; High/Medium dibetulkan, Low #4 (tanggal kalender vs hari bisnis di slot hari ganti jam) dan #5 (tulis di GET) dicatat.
+- Sisa: retired_at unit dan batas basi tiket in_use (komentar 4us1a) belum dikerjakan; push notifikasi untuk tamu anonim butuh model penerima baru.
