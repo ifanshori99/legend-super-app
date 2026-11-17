@@ -318,7 +318,8 @@ export async function recordProviderRefundInTx(
     // journal through `payment.refunded`: the provider's `refunded` status is
     // their echo, so they are not booked a second time (1025 B). A refund of a
     // parked fund of another transaction is not part of this money (same rule
-    // as `ownRefundedIdrSql`), and one already recorded as an echo row is in
+    // as `ownRefundedIdrSql`); an intent-level refund belongs to the intent's
+    // primary transaction only, never to a secondary one (1025d), and one already recorded as an echo row is in
     // `recorded` (counted there, not twice).
     const { rows: ours } = await tx.execute(sql`SELECT r.status,
         r.amount_idr::text AS amount, r.provider_ref,
@@ -330,7 +331,9 @@ export async function recordProviderRefundInTx(
       WHERE r.tenant_id = ${tenantId}::uuid
         AND r.payment_intent_id = ${intent.id}::uuid
         AND r.status NOT IN ('failed')
-        AND (r.unallocated_fund_id IS NULL
+        AND ((r.unallocated_fund_id IS NULL
+            AND ${intent.providerRef ?? null}::text
+              IS NOT DISTINCT FROM ${providerPaymentRef}::text)
           OR EXISTS (SELECT 1 FROM payment_unallocated_funds f
             JOIN payment_evidence e
               ON e.tenant_id = f.tenant_id AND e.id = f.evidence_id
