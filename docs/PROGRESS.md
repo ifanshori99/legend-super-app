@@ -1815,3 +1815,4 @@ Langkah berikut CTO baru:
 - 17:43 CTO G72tm: review architect CTO atas 980: 1 High (refund manual tidak mengurangi refund provider -> bisa bayar dua kali), 1 Medium (settle 17ml selalu tertutup di DOIT, regresi xd2q; keputusan tetap blok, 409 bertipe), 1 Low. Dikirim ke 980 untuk ronde 6; tetap TAHAN.
 - 17:46 CTO G72tm: 984 e35c4a41a (xloqn, xqkr7) antre setelah 981. f586w: keputusan CTO opsi B (devices.shared_mode 0560) + penanda sesi server (0561) + endpoint admin; route uang menunggu 985. Dikirim ke 984.
 - 17:51 CTO G72tm: 988 selesai 947c48b1b, antre batch86 (e2e wajib di train karena 14 spec diubah). Keputusan: format uang API diseragamkan Rp25.000 (kartu P3), toast ponsel di atas diterima, kontras accent kartu P3.
+- 18:17 CTO G72tm: 987 4743ac423 diterima dengan 2 tambahan (menu sarapan fallback perilaku lama bila belum ada item bertanda; jalur admin is_wfc zona). 3 kartu P3 turunan.
