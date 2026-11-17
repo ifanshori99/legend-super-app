@@ -31,8 +31,10 @@ import {
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import {
+  outlets,
   paymentEvidence,
   paymentIntents,
+  paymentLinks,
   paymentProviderRefunds,
   refundReconHolds,
 } from "../db/schema/index.ts";
@@ -60,11 +62,19 @@ const unprocessable = (message: string) =>
 
 type HoldRow = typeof refundReconHolds.$inferSelect;
 
-function toView(hold: HoldRow, outletId: string | null) {
+type HoldLabels = {
+  outletId: string | null;
+  paymentReference: string | null;
+  outletName: string | null;
+};
+
+function toView(hold: HoldRow, labels: HoldLabels) {
   return refundReconHoldViewSchema.parse({
     id: hold.id,
     paymentIntentId: hold.paymentIntentId,
-    outletId,
+    outletId: labels.outletId,
+    paymentReference: labels.paymentReference,
+    outletName: labels.outletName,
     providerRefundId: hold.providerRefundId,
     amountIdr: hold.amountIdr,
     reason: hold.reason,
@@ -99,13 +109,32 @@ export async function listRefundReconHolds(
       cursor = sql`(${refundReconHolds.flaggedAt}, ${refundReconHolds.id}) < (${flagged}::timestamptz, ${id}::uuid)`;
     }
     const rows = await tx
-      .select({ hold: refundReconHolds, outletId: paymentIntents.outletId })
+      .select({
+        hold: refundReconHolds,
+        outletId: paymentIntents.outletId,
+        paymentReference: paymentLinks.reference,
+        outletName: outlets.name,
+      })
       .from(refundReconHolds)
       .leftJoin(
         paymentIntents,
         and(
           eq(paymentIntents.tenantId, refundReconHolds.tenantId),
           eq(paymentIntents.id, refundReconHolds.paymentIntentId),
+        ),
+      )
+      .leftJoin(
+        paymentLinks,
+        and(
+          eq(paymentLinks.tenantId, paymentIntents.tenantId),
+          eq(paymentLinks.id, paymentIntents.paymentLinkId),
+        ),
+      )
+      .leftJoin(
+        outlets,
+        and(
+          eq(outlets.tenantId, paymentIntents.tenantId),
+          eq(outlets.id, paymentIntents.outletId),
         ),
       )
       .where(
@@ -125,7 +154,7 @@ export async function listRefundReconHolds(
     const page = rows.slice(0, query.limit);
     const last = page.at(-1);
     return {
-      data: page.map((row) => toView(row.hold, row.outletId)),
+      data: page.map((row) => toView(row.hold, row)),
       meta: {
         limit: query.limit,
         nextCursor:
@@ -501,7 +530,27 @@ export async function resolveRefundReconHold(
           },
           ["holdId", "open", "resolution", "providerRefundId", "amountIdr"],
         );
-        return toView(closed, intent.outletId);
+        const [labels] = await tx
+          .select({ reference: paymentLinks.reference, name: outlets.name })
+          .from(paymentLinks)
+          .leftJoin(
+            outlets,
+            and(
+              eq(outlets.tenantId, paymentLinks.tenantId),
+              eq(outlets.id, intent.outletId),
+            ),
+          )
+          .where(
+            and(
+              eq(paymentLinks.tenantId, tenantId),
+              eq(paymentLinks.id, intent.paymentLinkId),
+            ),
+          );
+        return toView(closed, {
+          outletId: intent.outletId,
+          paymentReference: labels?.reference ?? null,
+          outletName: labels?.name ?? null,
+        });
       },
     );
   });

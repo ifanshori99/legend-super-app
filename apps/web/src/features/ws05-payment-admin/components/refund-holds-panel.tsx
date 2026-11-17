@@ -104,17 +104,18 @@ export function RefundHoldsPanel() {
               className="flex flex-col gap-3 p-card sm:flex-row sm:items-center sm:justify-between"
             >
               <div className="grid min-w-0 gap-0.5">
-                <p className="font-semibold break-all">
-                  {hold.providerRefundId ??
-                    t("paymentAdmin.refundHolds.noProviderRefund")}
+                <p className="font-semibold tabular break-all">
+                  {hold.paymentReference ?? hold.paymentIntentId}
                 </p>
                 <p className="text-sm text-muted-foreground">
-                  {t("paymentAdmin.refundHolds.payment")}{" "}
-                  <span className="tabular break-all">
-                    {hold.paymentIntentId}
-                  </span>{" "}
-                  · {t("paymentAdmin.refundHolds.flaggedAt")}{" "}
+                  {hold.outletName ? `${hold.outletName} · ` : ""}
+                  {t("paymentAdmin.refundHolds.flaggedAt")}{" "}
                   {formatMoment(hold.flaggedAt)}
+                </p>
+                <p className="text-xs break-all text-muted-foreground">
+                  {hold.providerRefundId ??
+                    t("paymentAdmin.refundHolds.noProviderRefund")}
+                  {hold.paymentReference ? ` · ${hold.paymentIntentId}` : ""}
                 </p>
                 <p className="text-sm break-words text-muted-foreground">
                   {hold.reason}

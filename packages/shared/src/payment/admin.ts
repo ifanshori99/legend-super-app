@@ -522,6 +522,8 @@ export const refundReconHoldViewSchema = z.strictObject({
   id: uuidSchema,
   paymentIntentId: uuidSchema,
   outletId: uuidSchema.nullable(),
+  paymentReference: ref.nullable(),
+  outletName: ref.nullable(),
   providerRefundId: ref.nullable(),
   amountIdr: nonnegativeIdr,
   reason: z.string().min(1).max(500),
