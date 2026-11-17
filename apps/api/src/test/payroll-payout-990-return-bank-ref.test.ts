@@ -236,11 +236,7 @@ describe("990 E: a return needs the bank reference", () => {
     for (const [label, bankRef, code] of [
       ["missing", undefined, "VALIDATION_ERROR"],
       ["too short", "ab", "VALIDATION_ERROR"],
-      [
-        "short without spaces",
-        "a b c",
-        "PAYOUT_RETURN_BANK_REF_REQUIRED",
-      ],
+      ["short without spaces", "a b c", "PAYOUT_RETURN_BANK_REF_REQUIRED"],
     ] as const) {
       const key = freshKey(w.batchId);
       const res = await returnHttp(one, w.batchId, w.a, key, bankRef);
@@ -432,41 +428,64 @@ describe("990 E: references are unique per tenant", () => {
     const a = await returnHttp(one, w.batchId, w.a, keyA, refA);
     expect(ok(a), `premise: ${detail(a)}`).toBe(true);
 
+    // Reuse is refused only by payroll_payout_return_claims_bank_ref_key
+    // (tenant_id, bank_ref). Proven at the index, all inside one savepoint that
+    // is rolled back: a fingerprint-less claim of another tenant must never be
+    // visible, because the proof history gate (legend-so900 F1) is global and
+    // would hold every tenant's return while it exists.
     const foreign = randomUUID();
-    foreignTenants.push(foreign);
-    await W.asTenant(async (c) => {
+    const outcome = await W.asTenant(async (c) => {
+      await c.query("SAVEPOINT e4");
+      const copy = async (tenant: string, ref: string) => {
+        await c.query("SAVEPOINT e4_row");
+        try {
+          await c.query(
+            `INSERT INTO ${CLAIMS}
+             SELECT (jsonb_populate_record(t, jsonb_build_object(
+                       'id', gen_random_uuid(), 'tenant_id', $1::uuid, 'bank_ref', $2::text,
+                       'evidence_key', 'e4-' || gen_random_uuid()::text,
+                       'content_sha256', NULL, 'stored_sha256', NULL))).*
+               FROM ${CLAIMS} t WHERE tenant_id = $3 AND evidence_key = $4`,
+            [tenant, ref, W.tenantId, keyA],
+          );
+          await c.query("RELEASE SAVEPOINT e4_row");
+          return "inserted";
+        } catch (error) {
+          await c.query("ROLLBACK TO SAVEPOINT e4_row");
+          const { code, constraint } = error as {
+            code?: string;
+            constraint?: string;
+          };
+          return `${code}:${constraint}`;
+        }
+      };
       await c.query(
         `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
          SELECT $1, $2, 'Payout 990 tenant B', plan, status, deployment_mode, feature_flags, limits, created_by
            FROM tenants WHERE id = $3`,
         [foreign, `payout-990-${foreign.slice(0, 8)}`, W.tenantId],
       );
-      await c.query(
-        `CREATE TEMP TABLE claim990_copy ON COMMIT DROP AS
-           SELECT * FROM ${CLAIMS} WHERE tenant_id = $1 AND evidence_key = $2`,
-        [W.tenantId, keyA],
-      );
-      // The other tenant has the SAME reference as my open claim (refA) and the one I am about to use (refB).
-      for (const ref of [refA, refB]) {
-        await c.query(
-          `UPDATE claim990_copy
-              SET id = gen_random_uuid(), tenant_id = $1, bank_ref = $2,
-                  evidence_key = 'foreign-' || gen_random_uuid()::text,
-                  content_sha256 = NULL, stored_sha256 = NULL`,
-          [foreign, ref],
-        );
-        await c.query(`INSERT INTO ${CLAIMS} SELECT * FROM claim990_copy`);
-      }
+      const result = {
+        // My refA does not block the other tenant.
+        foreignSameAsMine: await copy(foreign, refA),
+        // The other tenant holds refB first; I can still use refB.
+        foreignFirst: await copy(foreign, refB),
+        mineAfterForeign: await copy(W.tenantId, refB),
+        // Control: inside my tenant refA is taken.
+        mineReused: await copy(W.tenantId, refA),
+      };
+      await c.query("ROLLBACK TO SAVEPOINT e4");
+      return result;
     }, true);
 
-    const keyB = freshKey(w.batchId);
-    const b = await returnHttp(two, w.batchId, w.b, keyB, refB);
-    expect(
-      ok(b),
-      `the other tenant's reference does not block: ${detail(b)}`,
-    ).toBe(true);
-    expect(await claimsOfKey(keyB)).toHaveLength(1);
+    expect(outcome).toEqual({
+      foreignSameAsMine: "inserted",
+      foreignFirst: "inserted",
+      mineAfterForeign: "inserted",
+      mineReused: "23505:payroll_payout_return_claims_bank_ref_key",
+    });
     expect(await claimsWithRef(refA), "my claim keeps refA").toBe(1);
+    expect(await claimsWithRef(refB), "nothing of the proof is kept").toBe(0);
   });
 });
 
