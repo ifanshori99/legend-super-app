@@ -55,8 +55,6 @@ import type { Tx } from "./permission-resolver.ts";
 const PROVIDER = "doit";
 /** Id prefix of the refund derived from a payment's own `refunded` status. */
 const SYNTHETIC_PREFIX = "payment:";
-/** Id prefix of the row finance writes when it counts a recon hold. */
-const HOLD_PREFIX = "hold:";
 
 export type ProviderRefundInput = {
   provider: string;
@@ -83,6 +81,12 @@ export type ProviderRefundInput = {
    * are not (legend-gjt5q, 1025 B).
    */
   quiet?: boolean;
+  /**
+   * Only the resolve of a refund recon hold passes it: the row tops up a
+   * `payment:<ref>` row already recorded for the transaction (the second
+   * refund of one transaction is otherwise a duplicate of the first).
+   */
+  topUp?: boolean;
 };
 
 export type ProviderRefundOutcome = {
@@ -378,9 +382,9 @@ export async function recordProviderRefundInTx(
     amountIdr = left;
     countedLiveOwn = live.length > 0;
   } else if (
-    // `hold:<id>` is finance topping up what the transaction still has left
-    // (resolve of a recon hold): it is added to the `payment:` row on purpose.
-    !providerRefundId.startsWith(HOLD_PREFIX) &&
+    // Finance topping up what the transaction still has left (resolve of a
+    // recon hold) is added to the `payment:` row on purpose.
+    !input.topUp &&
     recorded.some((row) => row.refundId.startsWith(SYNTHETIC_PREFIX))
   )
     return { status: "duplicate" };
