@@ -27,7 +27,7 @@
 // line) from the same employee: the collection would be left without its
 // receivable. The collecting run has to be reversed first.
 
-import { and, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
 import {
   createUlid,
   idr,
@@ -44,6 +44,7 @@ import {
   type PayrollRunId,
 } from "@starter/shared/hris/payroll";
 import { accountingOpenItems } from "../db/schema/accounting-ap-fa.ts";
+import { hrisOffboardings } from "../db/schema/hris-lifecycle.ts";
 import {
   payrollDisbursementBatches,
   payrollDisbursementItems,
@@ -254,6 +255,65 @@ async function restoreLoanDeductions(
         eq(payrollLoanDeductions.tenantId, tenantId),
         eq(payrollLoanDeductions.payrollRunId, run.id),
       ),
+    );
+}
+
+/**
+ * legend-xo4cn: refuses the reversal of a run whose loan deductions touch an
+ * employee with a completed offboarding. The frozen settlement snapshot holds
+ * the loan balance as it was; restoring the deductions would lift the balance
+ * above what the snapshot billed. Refusing is the safe rule (nobody is paid
+ * more, no automatic difference is opened); reopening the settlement is a
+ * separate, explicit decision. The employee's loans lock FOR UPDATE in id
+ * order BEFORE the offboarding query, like `assertNoPendingPayrollDeduction`
+ * in hris-offboarding.service.ts, so a completion running at the same time
+ * either commits first (refused here) or waits for this transaction. One
+ * affected employee refuses the whole run.
+ */
+async function assertNoCompletedSettlementLoanImpact(
+  tx: Tx,
+  tenantId: TenantId,
+  run: Pick<PayrollRun, "id">,
+): Promise<void> {
+  const deducted = await tx
+    .selectDistinct({ employeeId: payrollLoanDeductions.employeeId })
+    .from(payrollLoanDeductions)
+    .where(
+      and(
+        eq(payrollLoanDeductions.tenantId, tenantId),
+        eq(payrollLoanDeductions.payrollRunId, run.id),
+      ),
+    );
+  if (deducted.length === 0) return;
+  const employeeIds = deducted.map((row) => row.employeeId);
+  await tx
+    .select({ id: employeeLoans.id })
+    .from(employeeLoans)
+    .where(
+      and(
+        eq(employeeLoans.tenantId, tenantId),
+        inArray(employeeLoans.employeeId, employeeIds),
+      ),
+    )
+    .orderBy(asc(employeeLoans.id))
+    .for("update");
+  const [settled] = await tx
+    .select({ id: hrisOffboardings.id })
+    .from(hrisOffboardings)
+    .where(
+      and(
+        eq(hrisOffboardings.tenantId, tenantId),
+        inArray(hrisOffboardings.employeeId, employeeIds),
+        eq(hrisOffboardings.status, "completed"),
+        sql`${hrisOffboardings.settlementSnapshot} IS NOT NULL`,
+      ),
+    )
+    .limit(1);
+  if (settled)
+    throw new HttpError(
+      409,
+      "PAYROLL_REVERSAL_LOAN_SETTLED",
+      "Run tidak bisa dibatalkan: pinjaman karyawan sudah dibekukan di settlement offboarding yang selesai. Koreksi settlement dulu.",
     );
 }
 
@@ -698,6 +758,7 @@ export async function requestPayrollRunReversalInTransaction(
     row.legalEntityId,
     payrollRunId,
   );
+  await assertNoCompletedSettlementLoanImpact(tx, tenantId, run);
   await writeRun(tx, tenantId, payrollRunId, next);
   await audit(
     tx,
@@ -773,6 +834,7 @@ export async function decidePayrollRunReversalInTransaction(
     row.legalEntityId,
     payrollRunId,
   );
+  await assertNoCompletedSettlementLoanImpact(tx, tenantId, run);
   await restoreLoanDeductions(tx, tenantId, run, now);
   const { totals, reversal } = next;
   if (totals === null || reversal === null)

@@ -2969,6 +2969,34 @@
       "when": 1795000000052,
       "tag": "0558_payroll_overtime_correction_activations",
       "breakpoints": true
+    },
+    {
+      "idx": 466,
+      "version": "7",
+      "when": 1795000000053,
+      "tag": "0621_payroll_overtime_ledger_reverse_guard",
+      "breakpoints": true
+    },
+    {
+      "idx": 467,
+      "version": "7",
+      "when": 1795000000054,
+      "tag": "0622_payroll_loan_principal_ledger_guard",
+      "breakpoints": true
+    },
+    {
+      "idx": 468,
+      "version": "7",
+      "when": 1795000000055,
+      "tag": "0623_payroll_pph21_receivable_settlement_reversal",
+      "breakpoints": true
+    },
+    {
+      "idx": 469,
+      "version": "7",
+      "when": 1795000000056,
+      "tag": "0624_payroll_loan_status_backward_guard",
+      "breakpoints": true
     }
   ]
 }
