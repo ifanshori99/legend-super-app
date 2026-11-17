@@ -55,6 +55,8 @@ import type { Tx } from "./permission-resolver.ts";
 const PROVIDER = "doit";
 /** Id prefix of the refund derived from a payment's own `refunded` status. */
 const SYNTHETIC_PREFIX = "payment:";
+/** Id prefix of the row finance writes when it counts a recon hold. */
+const HOLD_PREFIX = "hold:";
 
 export type ProviderRefundInput = {
   provider: string;
@@ -375,7 +377,12 @@ export async function recordProviderRefundInTx(
     if (mustWait) return { status: "retry" };
     amountIdr = left;
     countedLiveOwn = live.length > 0;
-  } else if (recorded.some((row) => row.refundId.startsWith(SYNTHETIC_PREFIX)))
+  } else if (
+    // `hold:<id>` is finance topping up what the transaction still has left
+    // (resolve of a recon hold): it is added to the `payment:` row on purpose.
+    !providerRefundId.startsWith(HOLD_PREFIX) &&
+    recorded.some((row) => row.refundId.startsWith(SYNTHETIC_PREFIX))
+  )
     return { status: "duplicate" };
 
   // 4. The insert decides the winner; a replay or a racing second path stops.

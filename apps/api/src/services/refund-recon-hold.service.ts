@@ -196,6 +196,37 @@ const ownCompletedIdrSql = (tenantId: TenantId, intentId: string) => sql`(
        WHERE p.tenant_id = r.tenant_id AND p.provider_refund_id = r.provider_ref))`;
 
 /**
+ * What is left of one provider transaction of the intent: its amount (the
+ * recorded evidence of the reference, else the intent's own amount) minus the
+ * provider refunds recorded on it, minus our completed refunds when it is the
+ * intent's own transaction. Read under the intent lock.
+ */
+async function transactionLeftIdr(
+  tx: Tx,
+  tenantId: TenantId,
+  intent: IntentRow,
+  providerPaymentRef: string,
+): Promise<number> {
+  const { rows } = await tx.execute(sql`SELECT
+      (SELECT sum(e.amount_idr) FROM payment_evidence e
+        WHERE e.tenant_id = ${tenantId}::uuid
+          AND e.payment_intent_id = ${intent.id}::uuid
+          AND e.provider = ${PROVIDER}
+          AND e.provider_ref = ${providerPaymentRef})::text AS evidence,
+      (SELECT coalesce(sum(p.amount_idr), 0) FROM payment_provider_refunds p
+        WHERE p.tenant_id = ${tenantId}::uuid
+          AND p.payment_intent_id = ${intent.id}::uuid
+          AND p.provider = ${PROVIDER}
+          AND p.provider_payment_ref = ${providerPaymentRef})::text AS provider,
+      ${ownCompletedIdrSql(tenantId, intent.id)}::text AS own`);
+  const row = rows[0];
+  const amount =
+    row?.evidence == null ? Number(intent.amountIdr) : Number(row.evidence);
+  const own = providerPaymentRef === intent.providerRef ? Number(row?.own) : 0;
+  return amount - Number(row?.provider ?? 0) - own;
+}
+
+/**
  * Records the refund of a hold as a provider refund of its intent, before the
  * hold closes (same transaction). Throws 422, leaving the hold open, whenever
  * the refund is not on record afterwards.
@@ -235,12 +266,29 @@ async function countHold(
     );
     return status;
   };
+  const rowOf = async (providerRefundId: string) => {
+    const [row] = await tx
+      .select({ id: paymentProviderRefunds.id })
+      .from(paymentProviderRefunds)
+      .where(
+        and(
+          eq(paymentProviderRefunds.tenantId, tenantId),
+          eq(paymentProviderRefunds.paymentIntentId, intent.id),
+          eq(paymentProviderRefunds.provider, PROVIDER),
+          eq(paymentProviderRefunds.providerRefundId, providerRefundId),
+        ),
+      );
+    return row;
+  };
+  const notRecorded = () =>
+    unprocessable("This refund could not be recorded against the intent.");
 
   if (named?.startsWith(SYNTHETIC_PREFIX)) {
     // The provider's `refunded` status of the payment, filed while a refund of
-    // ours ran. It closes only when nothing of ours is still on its way and
-    // what went back (provider rows of the transaction, completed refunds of
-    // ours) covers the held amount.
+    // ours ran. The hold does not store the transaction amount, so what is
+    // left of the transaction is worked out here. It closes only when nothing
+    // of ours is still on its way; whatever is not yet accounted for is
+    // recorded first, so nothing more than the payment can ever leave.
     const providerPaymentRef = named.slice(SYNTHETIC_PREFIX.length);
     const { rows: flying } = await tx.execute(sql`SELECT 1
       FROM payment_refunds r
@@ -251,25 +299,30 @@ async function countHold(
       throw unprocessable(
         "A refund of this payment is still on its way; wait until it is final.",
       );
-    const { rows: covered } = await tx.execute(sql`SELECT
-      (SELECT coalesce(sum(p.amount_idr), 0) FROM payment_provider_refunds p
-        WHERE p.tenant_id = ${tenantId}::uuid
-          AND p.payment_intent_id = ${intent.id}::uuid
-          AND p.provider = ${PROVIDER}
-          AND p.provider_payment_ref = ${providerPaymentRef})::text AS provider,
-      ${ownCompletedIdrSql(tenantId, intent.id)}::text AS own`);
-    if (
-      Number(covered[0]?.provider ?? 0) + Number(covered[0]?.own ?? 0) <
-      hold.amountIdr
-    )
-      throw unprocessable(
-        "The refunds on record do not cover this payment; the hold stays open.",
+    const left = await transactionLeftIdr(
+      tx,
+      tenantId,
+      intent,
+      providerPaymentRef,
+    );
+    if (left <= 0) return;
+    if (!(await rowOf(named))) {
+      // The recorder works out the remainder itself; it needs the amount of
+      // the transaction only when no evidence names it.
+      const evidenceLeft = await record(
+        named,
+        providerPaymentRef,
+        Number(intent.amountIdr),
       );
-    const status = await record(named, providerPaymentRef, hold.amountIdr);
-    if (status === "retry" || status === "unbound")
-      throw unprocessable(
-        "This refund could not be recorded against the intent.",
-      );
+      if (evidenceLeft === "retry" || evidenceLeft === "unbound")
+        throw notRecorded();
+      return;
+    }
+    // The payment: row is there but part of the transaction is not accounted
+    // for (a refund of ours that failed since): top it up.
+    const topUp = `hold:${hold.id}`;
+    if (!(await rowOf(topUp))) await record(topUp, providerPaymentRef, left);
+    if (!(await rowOf(topUp))) throw notRecorded();
     return;
   }
 
@@ -279,58 +332,24 @@ async function countHold(
       "The provider transaction of this refund is not known; the intent has more than one.",
     );
   const providerRefundId = named ?? `hold:${hold.id}`;
-  const [existing] = await tx
-    .select({ id: paymentProviderRefunds.id })
-    .from(paymentProviderRefunds)
-    .where(
-      and(
-        eq(paymentProviderRefunds.tenantId, tenantId),
-        eq(paymentProviderRefunds.paymentIntentId, intent.id),
-        eq(paymentProviderRefunds.provider, PROVIDER),
-        eq(paymentProviderRefunds.providerRefundId, providerRefundId),
-      ),
-    );
-  if (existing) return;
+  if (await rowOf(providerRefundId)) return;
   let amountIdr = hold.amountIdr;
   if (named === null && amountIdr <= 0) {
-    // No amount and no refund id: the whole remaining paid amount is counted
-    // (restrictive). Nothing remaining means nothing left to count.
-    const { rows } = await tx.execute(sql`SELECT
-      least(${intent.amountIdr}::bigint, greatest(
-        coalesce((SELECT sum(e.amount_idr) FROM payment_evidence e
-          WHERE e.tenant_id = ${tenantId}::uuid AND e.payment_intent_id = ${intent.id}::uuid), 0)
-        - coalesce((SELECT sum(f.amount_idr) FROM payment_unallocated_funds f
-          WHERE f.tenant_id = ${tenantId}::uuid AND f.payment_intent_id = ${intent.id}::uuid), 0),
-        0))::text AS paid,
-      (SELECT coalesce(sum(p.amount_idr), 0) FROM payment_provider_refunds p
-        WHERE p.tenant_id = ${tenantId}::uuid
-          AND p.payment_intent_id = ${intent.id}::uuid)::text AS provider,
-      ${ownCompletedIdrSql(tenantId, intent.id)}::text AS own`);
-    const remaining =
-      Number(rows[0]?.paid ?? 0) -
-      Number(rows[0]?.provider ?? 0) -
-      Number(rows[0]?.own ?? 0);
-    if (remaining <= 0) return;
-    amountIdr = idr(remaining);
+    // No amount and no refund id: what is left of the named transaction is
+    // counted (restrictive). Nothing left means nothing to count.
+    const left = await transactionLeftIdr(
+      tx,
+      tenantId,
+      intent,
+      providerPaymentRef,
+    );
+    if (left <= 0) return;
+    amountIdr = idr(left);
   }
   await record(providerRefundId, providerPaymentRef, amountIdr);
   // Only a refund that is on record may close the hold: an echo of our own
   // refund, an unbound or a delayed one counted nothing.
-  const [counted] = await tx
-    .select({ id: paymentProviderRefunds.id })
-    .from(paymentProviderRefunds)
-    .where(
-      and(
-        eq(paymentProviderRefunds.tenantId, tenantId),
-        eq(paymentProviderRefunds.paymentIntentId, intent.id),
-        eq(paymentProviderRefunds.provider, PROVIDER),
-        eq(paymentProviderRefunds.providerRefundId, providerRefundId),
-      ),
-    );
-  if (!counted)
-    throw unprocessable(
-      "This refund could not be recorded against the intent.",
-    );
+  if (!(await rowOf(providerRefundId))) throw notRecorded();
 }
 
 export async function resolveRefundReconHold(
