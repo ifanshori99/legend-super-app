@@ -6961,3 +6961,32 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 - Integrasi `aa4971d3f7458009be25a0ecb25870e87968e90b` dipush biasa ke int/batch80 lalu fast-forward milestone/m1; SHA remote terverifikasi dan cabang lokal m1 ikut fast-forward. Basis remote tetap70bba542d pada fetch akhir. Cabang masuk tepat satu: ws/edge-kds-stations-r2 91c7f9d8b. Migrasi0431->0431, check-journal satu entri baru hijau. Tidak main/deploy/force push.
 - Ditutup sesudah landing: legend-i78o6, legend-40nvj, dan kartu train legend-qhsex. Kedua kartu implementasi dibaca lengkap: description/AC formal kosong, komentar CTO930 menyatakan hold selesai dan regresi AC1..14 hijau; gate integrasi lengkap membuktikan perilaku kontrak/isolasi/resync. Batas shell eksternal dan mock web disebut saat penutupan. Komentar final kartu memuat SHA m1 setelah commit dokumentasi ini.
 - Laporan cleanup awal disk24,11GB; integrasi masih dikunci sampai seluruh dokumentasi dipush. Handoff hanya membersihkan worktree/cabang int batch80, menjaga lock worktree d8fc7d19 dan dev-seed yang kotor, serta mengedit docs/merge-queue.md pada checkout utama tanpa commit. Semua job selesai. Subagent3 unik/puncak3, satu runner berat; helper biaya/token native tidak tersedia.
+
+
+### Batch 941 rekonsiliasi sisa: kebijakan bank recon, match basi, DOIT recon (17 Nov 2026)
+
+Cabang `ghostex/rekonsiliasi-sisa-bank-dan-doit`, dasar m1 `c17c60df7`. Tiga kartu, tiga migrasi (0432 sampai 0434), tanpa perubahan nomor atau saldo jurnal. Approver penutup kasus tetap Owner atau Finance Manager (founder Q12).
+
+**Sudah**
+- legend-fnxl.9 (commit `2a499d61e`, tes root `8bb5e3458`): `caseDueDays` bukan lagi angka 7 di kode. Kolom `finance_policies.recon_case_due_days`, bawaan 7, CHECK 1 sampai 60, migrasi 0432. Hanya peran `accounting.reconcile` (owner, finance) yang bisa mengubahnya. Kontrak PUT menerima `reconciliationPolicy.caseDueDays` (wajib).
+- legend-fnxl.10 (commit `5369a7bed`, perbaikan `044269815`): match bank ditandai basi (`stale_at`, `stale_by_reversal_entry_id`) saat jurnalnya dibalik; tidak pernah dihapus diam-diam, muncul di daftar kasus (tipe `bank_statement`, referensi `journal_entry`), idempoten. Migrasi 0433. Hook mengambil `entityLock` sebelum UPDATE agar balik jurnal dan pencocokan otomatis berurutan; PIC kasus adalah orang yang mencocokkan.
+- legend-3wpf (commit `cebf58ec1`, perbaikan `3337d03a7`): `expireDueIntents` tidak lagi menutup intent milik gateway tanpa bertanya ke provider; audit `payment.reconciliation_timed_out` sekali per kode sesudah `expiresAt` + 24 jam sementara polling terus berjalan; status provider `refunded` dipetakan ke `failed` tanpa nominal; kolom sendiri `provider_answered_at` (migrasi 0434, isi awal dari `provider_final_at`).
+- Review architect (xhigh): satu P1 (FORCE RLS pada migrasi 0433 dan 0434, migrator bisa owner biasa), dibetulkan dengan mengangkat lalu memulihkan FORCE sesuai pola 2 di docs/plan/contracts.md; tes migrasi `edge-received-events-migration` hijau sebagai owner non-superuser. P2 (balapan hook vs match otomatis, hitungan ringkasan baris bank, PIC) dibetulkan.
+- Tes setelah commit terakhir: root contract 872/872; migrasi + registry + metric-single-path 62/62; akuntansi dan payment terarah 326/326; cakupan tabel 26/26; typecheck API exit 0.
+
+**Keputusan**
+- Aturan pembatas bayar: polling gateway tidak berhenti di jendela 24 jam (VA yang tak pernah dijawab final tetap bisa ditagih, prinsip SO-885); yang berhenti hanya audit (sekali).
+- `refunded` dipetakan ke `failed` tanpa nominal: tidak ada pihak dibayar lebih.
+- Match basi memakai tipe kasus `bank_statement` yang sudah ada, bukan tipe baru.
+- Baris bank dengan match basi dihitung `in_case`, bukan cocok bersih; bentuk DTO tidak berubah (perlu konfirmasi CTO).
+
+**Batas dan belum diverifikasi**
+- Tidak ada tes balapan bersamaan untuk hook basi vs match otomatis. Tes ringkasan baris bank hanya sebagian fail-first.
+- Suite polling 37 berkas tidak dijalankan ulang penuh setelah perubahan terakhir; `pnpm test` penuh dan `pnpm check` belum dijalankan (hanya gate terarah).
+- `provider_answered_at` ditulis tetapi belum dibaca; pencarian audit per poll belum berindeks; UI web tidak menampilkan penanda basi.
+- Typecheck shared menyusul di laporan akhir.
+
+**Angka**
+- Sesi `eaa31d4f`: biaya* total 26.204k (utama Sonnet 21.703k; subagent Sonnet 3.444k, Opus 676k, Haiku 381k); 14 subagent, 4 compact. Puncak subagent bersamaan 4; token heavy dipegang test-runner.
+
+**Berikut**: gerbang rilis (second-opinion Codex satu kali untuk area ini), lalu merge train. Tidak merge, tidak deploy.
