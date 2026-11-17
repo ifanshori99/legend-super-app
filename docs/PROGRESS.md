@@ -1788,3 +1788,4 @@ Langkah berikut CTO baru:
 - Brief siap, tertahan disk < 15 GB (worktree ditolak): 965 DOIT recurring anti tagih dobel (ycb85, yqne1, lch2o, 145n0; Sonnet akun #3; migrasi 0500-0504), 966 Codex S (bkoim, julap; Codex #8).
 - Sesi CTO ini di akun #1 (7d 95%, reset 18:00): bila limit, serah terima ke CTO baru di #3.
 - 11:29 Disk: hapus tmp sesi menganggur >12 jam + cache bun/hyperframes -> 18 GB. Mulai G6c8h 965 DOIT recurring (akun #3, ghostex/37314bba) dan G8vhd 966 Codex S (Codex #8, ghostex/633826e6; bkoim, julap di-claim CTO).
+- - 11:30 955 lapor: ghostex/1a1b16fe 96800259a (legend-8tfvr potongan pinjaman, legend-y6w4q A1 XSD DJP; migrasi kerja 0461 trigger ledger; 368 test; architect xhigh 0 P1, 3 P2 dibetulkan). Keputusan CTO: maks 1 cicilan per karyawan per bulan; ringkasan pesangon kurangi potongan run belum locked + label. Lanjutan dikirim ke G6kc8 (migrasi 0462+). SO Codex payroll setelah lanjutan. Unggah Coretax sungguhan belum diuji.
