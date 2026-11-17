@@ -1814,3 +1814,4 @@ Langkah berikut CTO baru:
 - 17:38 CTO G72tm: 983 selesai c9c096052 (migrasi 0556-0558), antre batch85 setelah dd932307. Keputusan: held koreksi lembur ditampilkan di simulate+UI (kartu baru), dry-run backfill di staging jadi gerbang rilis.
 - 17:43 CTO G72tm: review architect CTO atas 980: 1 High (refund manual tidak mengurangi refund provider -> bisa bayar dua kali), 1 Medium (settle 17ml selalu tertutup di DOIT, regresi xd2q; keputusan tetap blok, 409 bertipe), 1 Low. Dikirim ke 980 untuk ronde 6; tetap TAHAN.
 - 17:46 CTO G72tm: 984 e35c4a41a (xloqn, xqkr7) antre setelah 981. f586w: keputusan CTO opsi B (devices.shared_mode 0560) + penanda sesi server (0561) + endpoint admin; route uang menunggu 985. Dikirim ke 984.
+- 17:51 CTO G72tm: 988 selesai 947c48b1b, antre batch86 (e2e wajib di train karena 14 spec diubah). Keputusan: format uang API diseragamkan Rp25.000 (kartu P3), toast ponsel di atas diterima, kontras accent kartu P3.
