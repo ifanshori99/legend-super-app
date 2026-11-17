@@ -1445,8 +1445,9 @@ function evaluate(
         // (unreadable or absent while the posting has a fee: fail closed) and
         // the fee journal debit must equal the posted fee (990-B). A posted
         // fee of 0 against a sealed fee above 0 is legit only when nothing was
-        // journaled (no overpaid journal) and accounting is off, exactly the
-        // overpaid service's rule; a NULL posted fee fails closed.
+        // journaled (neither the overpaid journal nor the fee journal exists)
+        // and accounting is off, exactly the overpaid service's rule; a NULL
+        // posted fee fails closed.
         if (posting.feeIdr === null) add(id, "fee_sealed_mismatch");
         else {
           const unjournaledZero =
@@ -1454,6 +1455,7 @@ function evaluate(
             item.fee !== null &&
             item.fee > 0 &&
             !facts.journals.has(overpaidJournalKey(id)) &&
+            !facts.journals.has(overpaidFeeJournalKey(id)) &&
             !facts.accountingOn;
           if (
             !unjournaledZero &&

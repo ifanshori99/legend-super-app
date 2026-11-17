@@ -390,6 +390,23 @@ describe("990 phase 6 P2-1: a posted fee of 0 against a sealed fee above 0", () 
     );
   });
 
+  it("[legend-w9od2-zero-fee-journal-exists] fee 0 and accounting off, but the fee journal exists: flagged fee_sealed_mismatch, the payslip is held", async () => {
+    const w = await overpaidWorld();
+    await setPostingFee(w.postingId, 0);
+    expect(
+      await W.countJournals(`${FEE_PREFIX}${w.itemId}`),
+      "premise: the fee journal exists",
+    ).toBe(1);
+
+    await withAccountingOff(runRecon);
+    await expectFlaggedAndHeld(
+      w.itemId,
+      w.payslipId,
+      SEALED,
+      "fee 0 with a fee journal",
+    );
+  });
+
   it("[legend-w9od2-null-fee-fail-closed] a posting with fee_idr NULL: flagged fee_sealed_mismatch, the payslip is held", async () => {
     const w = await overpaidWorld();
     await W.asTenant(
