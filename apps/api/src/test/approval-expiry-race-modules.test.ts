@@ -373,14 +373,14 @@ async function seedCountedStock(counter: string, counted: string) {
 
 async function countApproval(countId: string) {
   const { rows } = await owner.query<{ id: string; chain_id: string }>(
-    `SELECT id, chain_id FROM approval_requests
-     WHERE tenant_id = $1 AND source_module = 'inventory_count' AND object_id = $2
-     ORDER BY created_at DESC`,
+    `SELECT request.id, request.chain_id FROM approval_requests AS request
+     JOIN stock_counts AS count
+       ON count.tenant_id = request.tenant_id AND count.approval_chain_id = request.chain_id
+     WHERE request.tenant_id = $1 AND request.source_module = 'inventory_count'
+       AND count.id = $2 AND request.object_id = count.id::text AND request.level = 1`,
     [tenantId, countId],
   );
-  expect(rows.length, "the submitted count opened an approval").toBeGreaterThan(
-    0,
-  );
+  expect(rows, "the submitted count opened one approval chain").toHaveLength(1);
   return rows[0]!;
 }
 

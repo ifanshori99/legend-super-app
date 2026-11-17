@@ -199,8 +199,16 @@ const conflictCount = () =>
     "SELECT count(*)::int AS n FROM edge_sync_conflicts WHERE tenant_id = $1",
     [tenantId],
   );
-/** Notification rows of the tenant created from `since` on. */
-async function notificationsSince(since: Date) {
+async function notificationIds() {
+  const { rows } = await owner.query<{ id: string }>(
+    "SELECT id FROM notifications WHERE tenant_id = $1",
+    [tenantId],
+  );
+  return rows.map((row) => row.id);
+}
+
+/** Notification rows added after the captured IDs, regardless of DB clock drift. */
+async function notificationsAfter(previousIds: string[]) {
   const { rows } = await owner.query<{
     user_id: string;
     outlet_id: string | null;
@@ -208,8 +216,8 @@ async function notificationsSince(since: Date) {
     body: string;
     link: string | null;
   }>(
-    "SELECT user_id, outlet_id, title, body, link FROM notifications WHERE tenant_id = $1 AND created_at >= $2",
-    [tenantId, since],
+    "SELECT user_id, outlet_id, title, body, link FROM notifications WHERE tenant_id = $1 AND NOT (id = ANY($2::uuid[]))",
+    [tenantId, previousIds],
   );
   return rows;
 }
@@ -450,7 +458,7 @@ describe("legend-eadm A classification and alarm", () => {
     const link = store();
     const cursorBefore = await link.lastReceivedInbound();
     const notificationsBefore = await notificationCount();
-    const since = new Date();
+    const previousIds = await notificationIds();
 
     await deliver(batch);
 
@@ -466,7 +474,7 @@ describe("legend-eadm A classification and alarm", () => {
 
     // Exactly one alarm, to the outlet's supervisor, without the payload.
     expect(await notificationCount()).toBe(notificationsBefore + 1);
-    const alarms = await notificationsSince(since);
+    const alarms = await notificationsAfter(previousIds);
     expect(alarms).toHaveLength(1);
     expect(alarms[0]!.user_id).toBe(supervisorUserId);
     expect(
@@ -531,7 +539,7 @@ describe("legend-niq9 C stock.* other than stock.moved alarms once", () => {
     const link = store();
     const cursorBefore = await link.lastReceivedInbound();
     const notificationsBefore = await notificationCount();
-    const since = new Date();
+    const previousIds = await notificationIds();
 
     await deliver([adjusted]);
 
@@ -544,7 +552,7 @@ describe("legend-niq9 C stock.* other than stock.moved alarms once", () => {
       },
     ]);
     expect(await notificationCount()).toBe(notificationsBefore + 1);
-    const alarms = await notificationsSince(since);
+    const alarms = await notificationsAfter(previousIds);
     expect(alarms.map((row) => row.user_id)).toEqual([supervisorUserId]);
     expect(JSON.stringify(alarms[0])).not.toContain(PAYLOAD_MARKER);
 

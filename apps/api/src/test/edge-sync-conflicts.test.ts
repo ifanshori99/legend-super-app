@@ -1049,12 +1049,18 @@ describe("legend-wqc6 alert to supervisors", () => {
   });
 
   it("when in-app notifications are created they go to supervisors of the outlet only", async () => {
-    const before = new Date();
+    // Capture existing IDs: the DB clock can lag behind the host clock.
+    const before = await asOwnerTenant(tenantA.tenantId, (client) =>
+      client.query<{ id: string }>(
+        "SELECT id FROM notifications WHERE tenant_id = $1",
+        [tenantA.tenantId],
+      ),
+    );
     await deliver([gapEvent(randomUUID())]);
     const { rows } = await asOwnerTenant(tenantA.tenantId, (client) =>
       client.query<{ user_id: string; outlet_id: string | null }>(
-        "SELECT user_id, outlet_id FROM notifications WHERE tenant_id = $1 AND created_at >= $2",
-        [tenantA.tenantId, before],
+        "SELECT user_id, outlet_id FROM notifications WHERE tenant_id = $1 AND NOT (id = ANY($2::uuid[]))",
+        [tenantA.tenantId, before.rows.map((row) => row.id)],
       ),
     );
     const recipients = rows.map((row) => row.user_id);
