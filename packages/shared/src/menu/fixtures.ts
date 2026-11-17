@@ -78,6 +78,7 @@ const items: MenuItem[] = groups.flatMap(([, names], group) =>
     allergens: [],
     mediaId: null,
     isActive: true,
+    isBreakfast: false,
     sortOrder: i,
   })),
 );
@@ -186,6 +187,7 @@ export const legacyPhotoMissingItem: MenuItem = menuItemSchema.parse({
   allergens: [],
   mediaId: null,
   isActive: true,
+  isBreakfast: false,
   sortOrder: 90,
 });
 

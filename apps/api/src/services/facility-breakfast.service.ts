@@ -16,7 +16,7 @@
 //   or reaches the kitchen).
 // The idempotency key of pay / cancel / fire is validated by the route schema;
 // those calls are idempotent by the status machine plus the row locks.
-import { and, asc, desc, eq, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import {
   CoreError,
   createUlid,
@@ -196,8 +196,8 @@ export async function getBreakfastMenuForMember(
     const ticket = await loadOwnTicket(tx, context, member, ticketId, false);
     const tenantId = context.tenant.tenantId;
     const outlet = await loadOutlet(tx, context, ticket.outletId as OutletId);
-    // TODO(oa0qk): no "breakfast" menu flag exists yet; every sellable plain
-    // dish of the outlet's brand is offered (priced on the dine-in list).
+    // legend-lgyfh: only items flagged `is_breakfast` are offered (priced on
+    // the dine-in list); old items stay out until staff flag them.
     const candidates = await tx
       .select({ id: menuItems.id })
       .from(menuItems)
@@ -213,6 +213,7 @@ export async function getBreakfastMenuForMember(
           eq(menuItems.tenantId, tenantId),
           eq(menuItems.brandId, outlet.brandId),
           eq(menuItems.isActive, true),
+          eq(menuItems.isBreakfast, true),
           isNull(menuItems.deletedAt),
           isNull(menuCategories.deletedAt),
         ),
@@ -413,9 +414,33 @@ export async function createBreakfastOrderForMember(
       now,
     });
 
+    // legend-lgyfh: an item outside the breakfast menu is refused like an
+    // unavailable one, so a guessed id cannot be ordered.
+    const breakfastIds = new Set(
+      (
+        await tx
+          .select({ id: menuItems.id })
+          .from(menuItems)
+          .where(
+            and(
+              eq(menuItems.tenantId, context.tenant.tenantId),
+              eq(menuItems.brandId, outlet.brandId),
+              eq(menuItems.isBreakfast, true),
+              isNull(menuItems.deletedAt),
+              inArray(
+                menuItems.id,
+                wanted.map((line) => line.menuItemId),
+              ),
+            ),
+          )
+      ).map((row) => row.id),
+    );
+
     const orderId = createUlid(now.getTime());
     const resolved = wanted.map((line, index) => {
-      const item = catalogue.get(line.menuItemId);
+      const item = breakfastIds.has(line.menuItemId)
+        ? catalogue.get(line.menuItemId)
+        : undefined;
       const resolution = resolveLine(item, {
         menuItemId: line.menuItemId,
         variantId: null,

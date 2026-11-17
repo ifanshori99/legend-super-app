@@ -329,8 +329,14 @@ function evaluate(
 }
 
 function numberOf(value: unknown): number | null {
-  const v = value as { unit: string; value?: number | string } | null;
-  return v === null || v.value === undefined ? null : Number(v.value);
+  const v = value as {
+    unit: string;
+    value?: number | string;
+    valueIdr?: number;
+  } | null;
+  if (v === null) return null;
+  const raw = v.unit === "idr" ? v.valueIdr : v.value;
+  return raw === undefined ? null : Number(raw);
 }
 
 /** Value of one code for one zone; null when the zone has no value. */
@@ -352,6 +358,15 @@ async function figure(
   return { value: numberOf(point.value), finality: point.finality };
 }
 
+/**
+ * Both codes are derived from stored sums: a zone has a value exactly when it
+ * has a stored `seat_available_minutes` row.
+ */
+const STORED_CODE: Record<string, string> = {
+  revpash: "seat_available_minutes",
+  seat_occupancy_pct: "seat_available_minutes",
+};
+
 async function storedZones(
   w: World,
   outletId: string,
@@ -362,7 +377,7 @@ async function storedZones(
     `SELECT dimension_value FROM metrics_daily
       WHERE tenant_id = $1 AND outlet_id = $2 AND metric_date = $3
         AND metric_code = $4 AND dimension_key = 'zone'`,
-    [w.tenantId, outletId, date, code],
+    [w.tenantId, outletId, date, STORED_CODE[code] ?? code],
   );
   return rows.map((row) => row.dimension_value).sort();
 }

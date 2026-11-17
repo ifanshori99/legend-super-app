@@ -1496,6 +1496,7 @@ export const id = {
       reservation_confirmation: "Konfirmasi reservasi",
       reservation_reminder: "Pengingat reservasi",
       facility_session: "Sesi fasilitas",
+      wfc_min_spend: "Pengingat belanja minimum",
       subscription_billing: "Tagihan langganan",
       schedule_update: "Perubahan jadwal",
       payslip: "Slip gaji",
@@ -2832,6 +2833,7 @@ export const id = {
         allergens: "Alergen",
         photo: "Foto",
         active: "Tampil di menu",
+        breakfast: "Menu sarapan fasilitas",
       },
       station: {
         title: "Routing stasiun",
@@ -2893,6 +2895,8 @@ export const id = {
         "Isi hanya alergen yang benar-benar dipakai resep item ini.",
       activeHint:
         "Item yang disembunyikan tidak tampil di QR order, POS, maupun kanal lain.",
+      breakfastHint:
+        "Item yang dinyalakan bisa dipesan tamu fasilitas sebagai sarapan dari tiketnya. Item lama tidak masuk menu sarapan sebelum dinyalakan.",
       photoRequired: "Foto wajib",
       photoRequiredHint:
         "Item hanya bisa tampil di menu setelah fotonya diunggah. Unggah foto atau matikan pilihan tampil di menu.",

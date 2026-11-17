@@ -29,6 +29,4 @@ export const unavailableMetrics: ReadonlySet<string> = new Set([
   "shower_fnb_conversion_pct",
   "facility_cleaning_count",
   "facility_cleaning_seconds",
-  "revpash",
-  "seat_occupancy_pct",
 ]);

@@ -85,6 +85,7 @@ type FormValues = {
   labels: string[];
   allergens: string[];
   isActive: boolean;
+  isBreakfast: boolean;
   image: MenuImageValue | null;
 };
 
@@ -104,6 +105,7 @@ function initialValues(item: MenuItemAdmin | null): FormValues {
     // Q23: a new item starts as a draft; it needs its photo before it can be
     // shown in the menu (the API refuses an active item without a photo).
     isActive: item?.isActive ?? false,
+    isBreakfast: item?.isBreakfast ?? false,
     image:
       item?.mediaId && item.mediaUrl
         ? { mediaId: item.mediaId, mediaUrl: item.mediaUrl }
@@ -144,6 +146,8 @@ function itemPatch(values: FormValues, item: MenuItemAdmin): ItemPatch {
   if ((values.image?.mediaId ?? null) !== (initial.image?.mediaId ?? null))
     patch.mediaId = values.image?.mediaId ?? null;
   if (values.isActive !== initial.isActive) patch.isActive = values.isActive;
+  if (values.isBreakfast !== initial.isBreakfast)
+    patch.isBreakfast = values.isBreakfast;
   return patch;
 }
 
@@ -341,6 +345,7 @@ function ItemEditor({
       allergens: values.allergens,
       mediaId: values.image?.mediaId ?? null,
       isActive: values.isActive,
+      isBreakfast: values.isBreakfast,
     };
     const onError = (error: unknown) =>
       setFormError(
@@ -670,6 +675,23 @@ function ItemEditor({
                       checked={values.isActive}
                       onCheckedChange={(checked) =>
                         update({ isActive: checked })
+                      }
+                    />
+                  </div>
+                  <div className="flex items-start justify-between gap-3 border-t pt-4">
+                    <div className="min-w-0">
+                      <Label htmlFor="item-breakfast">
+                        {t("menu.editor.fields.breakfast")}
+                      </Label>
+                      <p className="text-sm leading-5 text-muted-foreground">
+                        {t("menu.editor.breakfastHint")}
+                      </p>
+                    </div>
+                    <Switch
+                      id="item-breakfast"
+                      checked={values.isBreakfast}
+                      onCheckedChange={(checked) =>
+                        update({ isBreakfast: checked })
                       }
                     />
                   </div>

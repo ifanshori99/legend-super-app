@@ -32,8 +32,12 @@
 // - Net order total = subtotal - discount for a price-exclusive order, and
 //   total - tax - service charge for a tax-inclusive order (harga nett).
 // - Exactly one hour (h = 1) already counts as a completed hour.
-// - The reminder title/body come from the text catalog; the test only requires
-//   them to be non-empty, because the wording is not specified here.
+// - The reminder title/body are fixed Indonesian wording (the text catalog only
+//   holds renameable terms); the test only requires them to be non-empty.
+// - Delivery goes through the shared notification path: the row, a
+//   `notification.created` event and a delivery attempt per channel, all keyed
+//   by the same dedupe key. `evaluateMinSpend` therefore also takes the trusted
+//   `context` of the tenant, and signed-in guests are real `user` rows.
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
@@ -49,6 +53,7 @@ import {
   asTenant,
   createWorld,
   hex64,
+  owner,
   short,
   type World,
 } from "./member-loyalty-helpers.ts";
@@ -61,9 +66,7 @@ const HOUR = 3_600_000;
 const NOW = new Date("2026-11-17T06:00:00Z");
 const BUSINESS_DATE = "2026-11-17";
 const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6];
-const PEAK_NOW = [
-  { daysOfWeek: ALL_DAYS, startsAt: "10:00", endsAt: "23:00" },
-];
+const PEAK_NOW = [{ daysOfWeek: ALL_DAYS, startsAt: "10:00", endsAt: "23:00" }];
 
 type Seed = {
   outletId?: string;
@@ -83,10 +86,7 @@ type Seed = {
 
 type Scenario = { zoneId: string; tableId: string; sessionId: string };
 
-async function seedScenario(
-  world: World,
-  seed: Seed = {},
-): Promise<Scenario> {
+async function seedScenario(world: World, seed: Seed = {}): Promise<Scenario> {
   const outletId = seed.outletId ?? world.outletA;
   const zoneId = randomUUID();
   const tableId = randomUUID();
@@ -94,6 +94,12 @@ async function seedScenario(
   const openedAt = new Date(
     NOW.getTime() - (seed.openedHoursAgo ?? 2.5) * HOUR,
   );
+  // Delivery needs a real account for every signed-in guest.
+  for (const userId of seed.signedInUsers ?? [])
+    await owner.query(
+      'INSERT INTO "user" (id, name, email) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING',
+      [userId, "WFC guest", `${userId}@example.com`],
+    );
   await asTenant(world.tenantId, async (client) => {
     await client.query(
       `INSERT INTO floor_zones (id, tenant_id, outlet_id, name, payment_mode, service_charge_bp, minimum_spend_idr, hours, is_wfc)
@@ -165,8 +171,9 @@ async function seedScenario(
     );
     const participants: Array<string | null> = [
       ...(seed.signedInUsers ?? []),
-      ...Array.from({ length: seed.extraDevicesOfFirstUser ?? 0 }, () =>
-        (seed.signedInUsers ?? [])[0] ?? null,
+      ...Array.from(
+        { length: seed.extraDevicesOfFirstUser ?? 0 },
+        () => (seed.signedInUsers ?? [])[0] ?? null,
       ),
       ...Array.from({ length: seed.anonymousDevices ?? 0 }, () => null),
     ];
@@ -239,6 +246,7 @@ function evaluate(
 ) {
   return withTenant(db, world.context, (tx) =>
     evaluateMinSpend(tx, {
+      context: world.context,
       tenantId: tenantIdSchema.parse(world.tenantId),
       outletId: outletIdSchema.parse(outletId),
       now: at,
@@ -268,11 +276,7 @@ async function reminders(
        WHERE tenant_id = $1 AND category = 'wfc_min_spend'
          AND ($2::text IS NULL OR dedupe_key LIKE $3)
        ORDER BY dedupe_key`,
-      [
-        world.tenantId,
-        sessionId ?? null,
-        `wfc_min_spend:${sessionId ?? ""}:%`,
-      ],
+      [world.tenantId, sessionId ?? null, `wfc_min_spend:${sessionId ?? ""}:%`],
     );
     return result.rows;
   });
@@ -498,6 +502,36 @@ describe("legend-e24cz WFC minimum spend per hour reminder", () => {
     expect(await reminders(world, sessionId)).toHaveLength(1);
   });
 
+  it("delivers through the notification path once: delivery attempts, no duplicate on a repeat run", async () => {
+    const world = await createWorld();
+    const user = randomUUID();
+    const { sessionId } = await seedScenario(world, { signedInUsers: [user] });
+    const countDelivery = () =>
+      asTenant(world.tenantId, async (client) => {
+        const result = await client.query<{ channel: string; keys: string }>(
+          `SELECT d.channel, d.idempotency_key AS keys
+           FROM delivery_attempts d
+           JOIN notifications n ON n.tenant_id = d.tenant_id AND n.id = d.notification_id
+           WHERE n.tenant_id = $1 AND n.dedupe_key = $2
+           ORDER BY d.channel`,
+          [world.tenantId, key(sessionId, 2, user)],
+        );
+        return result.rows;
+      });
+
+    await evaluate(world);
+    const first = await countDelivery();
+    await evaluate(world);
+    const second = await countDelivery();
+
+    expect(first.length).toBeGreaterThan(0);
+    expect(second).toEqual(first);
+    expect(first.map((row) => row.channel)).toContain("web_push");
+    expect(first[0]?.keys).toBe(
+      `${key(sessionId, 2, user)}:${first[0]?.channel}`,
+    );
+  });
+
   it("sends another reminder for the next completed hour", async () => {
     const world = await createWorld();
     const user = randomUUID();
@@ -613,9 +647,9 @@ describe("legend-e24cz WFC minimum spend per hour reminder", () => {
     expect(await reminders(world, sessionId)).toHaveLength(0);
 
     await evaluate(world, new Date(NOW.getTime() + 2 * HOUR)); // 15:00 WIB, 4.5h open
-    expect((await reminders(world, sessionId)).map((r) => r.dedupe_key)).toEqual(
-      [key(sessionId, 4, user)],
-    );
+    expect(
+      (await reminders(world, sessionId)).map((r) => r.dedupe_key),
+    ).toEqual([key(sessionId, 4, user)]);
   });
 
   it("ignores a policy without a minimum spend and a zone without a policy", async () => {
