@@ -246,7 +246,8 @@ const approveHr = async (
 ) =>
   post(who, `${RUNS}/${runId}/hr-approval`, {
     expectedSimulationCount:
-      expectedSimulationCount ?? (await runRow(runId)).simulation_count,
+      expectedSimulationCount ??
+      Math.max(1, (await runRowOrNull(runId))?.simulation_count ?? 1),
     idempotencyKey: k,
   });
 const approveFinal = (runId: string, who: Actor, k = key()) =>
@@ -276,7 +277,7 @@ type RunRow = {
   simulation_count: number;
   totals_is_null: boolean;
 };
-const runRow = async (runId: string): Promise<RunRow> =>
+const runRowOrNull = async (runId: string): Promise<RunRow | undefined> =>
   (
     await inTenant((conn) =>
       conn.query<RunRow>(
@@ -287,6 +288,8 @@ const runRow = async (runId: string): Promise<RunRow> =>
       ),
     )
   ).rows[0];
+const runRow = async (runId: string): Promise<RunRow> =>
+  (await runRowOrNull(runId))!;
 
 const countOf = async (table: string, runId: string) =>
   Number(
