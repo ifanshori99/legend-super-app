@@ -7132,3 +7132,11 @@ Cabang worktree `ghostex/980-refund-sisa-4-kartu` dari `9788dc422` (958 + 967). 
 - Belum (bead): pembuatan hold di payment-webhook.service.ts tidak memegang lock deposit-intent sehingga apply kredit bersamaan berperilaku seperti hold setelah pemakaian (di luar berkas yang boleh disentuh, P2); r.deposit_idr per reservasi (Low).
 - Bukti: 13 berkas test terarah (283 test) lulus pada hasil gabungan (refund-1025-d, 1025d-a/b, 1025c-b, 1025-c, 1020, dp-shared-intent-refund, dp-pool-1033 55 test baru, refund-guard, remainder, deposit-db, resend-db, 967-deposit); typecheck API (heavy), prettier, eslint hijau; db:generate kosong.
 - Biaya sesi (session-usage): total biaya* 4.2M; 11 subagent, maks 3 bersamaan, rata-rata 0.22 berjalan per agent (parallel-report).
+
+**1033b Lock hold dan lantai terpakai (legend-xmtih, legend-iz3ru; 18 Nov 2026, cabang ghostex/1033-kredit-dp-pool-net-bersama, tingkat K)**
+
+- Sudah: xmtih (pembuat hold refund_recon_holds, yaitu hold mismatch di payment-webhook.service.ts dan hold live-own di payment-provider-partial-refund.ts, kini mengambil row lock intent lalu lock deposit-intent exclusive, urutan sama dengan pencatat refund; apply kredit yang sedang jalan selesai dulu atau hold sudah terlihat oleh apply berikutnya); iz3ru (lantai terpakai sesi dua-DP hanya mengurangi alokasi lain yang intent-nya paid atau partially_refunded dengan paid_at terisi; DP intent pending, failed, expired tidak pernah diterima sehingga tamu tidak lagi diminta bayar dua kali). Tanpa migrasi.
+- Keputusan aturan uang: tidak ada perubahan arah; lantai hanya naik sampai belanja sesi, kredit di atasnya tetap dibatasi net dikurangi klaim.
+- Review architect xhigh delta sekali: bersih (tidak ada siklus lock, tidak ada kelebihan kredit, tiga INSERT hold semuanya di bawah lock). Catatan: kredit gabungan pool bisa melebihi net setelah refund provider (belanja tidak diambil kembali), itu desain 6n4p3, kerugian berasal dari refund provider.
+- Bukti: 17 berkas test terarah (312 test) lulus, termasuk refund-1033-xmtih-hold-lock (7 test, 2 gagal di base) dan reservation-deposit-dp-floor-iz3ru-1033 (10 test, 4 gagal di base); typecheck API (heavy), prettier, eslint hijau; db:generate kosong.
+- Biaya sesi (session-usage kumulatif): total biaya* 5.95M (naik 1.7M untuk 1033b); 14 subagent total (3 untuk 1033b), maks 3 bersamaan.
