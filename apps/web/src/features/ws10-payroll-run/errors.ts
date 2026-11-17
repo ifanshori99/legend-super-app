@@ -6,6 +6,7 @@ import { ApiError } from "@/lib/api/errors";
 const CODE_KEYS: Record<string, MessageKey> = {
   PAYROLL_APPROVER_NOT_DISTINCT: "payrollRun.error.approverNotDistinct",
   PAYROLL_RUN_INVALID_TRANSITION: "payrollRun.error.invalidTransition",
+  PAYROLL_RUN_SIMULATION_STALE: "payrollRun.error.simulationStale",
   PAYROLL_RUN_NOT_APPROVED: "payrollRun.error.notApproved",
   PAYROLL_RUN_FROZEN: "payrollRun.error.frozen",
   PAYROLL_BANK_FILE_MISMATCH: "payrollRun.error.bankFileMismatch",

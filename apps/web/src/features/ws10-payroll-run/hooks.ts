@@ -138,8 +138,17 @@ export function useRunAction() {
   const refresh = useRefresh(RUN_LISTS);
   const storeRun = useStoreRun();
   return useMutation({
-    mutationFn: (variables: { action: SimpleRunAction; runId: string }) =>
-      api.runAction(variables.action, variables.runId, newIdempotencyKey()),
+    mutationFn: (variables: {
+      action: SimpleRunAction;
+      runId: string;
+      expectedSimulationCount: number;
+    }) =>
+      api.runAction(
+        variables.action,
+        variables.runId,
+        newIdempotencyKey(),
+        variables.expectedSimulationCount,
+      ),
     onSuccess: (run) => {
       storeRun(run);
       return refresh();

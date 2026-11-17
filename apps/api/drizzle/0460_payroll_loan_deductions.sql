@@ -20,7 +20,10 @@ CREATE TABLE "payroll_loan_deductions" (
 -- and deleted only while the run is draft/simulated or while its reversal is
 -- pending approval (the approved reversal restores each loan by exactly the
 -- recorded amount, then deletes the rows, so a second approval finds none).
--- The amount never exceeds the loan's outstanding balance at write time.
+-- The amount never exceeds the loan's outstanding balance at write time, and the
+-- live deductions of all runs together never exceed it either: other runs still
+-- draft/simulated/hr_approved/approved count against the loan (the loan row is
+-- locked FOR UPDATE so two runs cannot both pass the check).
 SELECT app.enforce_tenant_rls('public.payroll_loan_deductions'::regclass);
 --> statement-breakpoint
 REVOKE TRUNCATE, UPDATE ON TABLE public.payroll_loan_deductions FROM legend_app;
@@ -33,6 +36,7 @@ DECLARE
   loan_employee uuid;
   loan_status text;
   loan_outstanding bigint;
+  other_runs_total bigint;
 BEGIN
   IF TG_OP = 'UPDATE' THEN
     RAISE EXCEPTION 'PAYR-02: payroll loan deductions of run % are never edited', OLD.payroll_run_id
@@ -61,7 +65,7 @@ BEGIN
     INTO loan_employee, loan_status, loan_outstanding
     FROM public.employee_loans l
     WHERE l.tenant_id = NEW.tenant_id AND l.id = NEW.loan_id
-    FOR SHARE;
+    FOR UPDATE;
   IF loan_employee IS NULL OR loan_employee <> NEW.employee_id THEN
     RAISE EXCEPTION 'PAYR-02: loan % does not belong to the deducted employee', NEW.loan_id
       USING ERRCODE = '23514';
@@ -70,8 +74,15 @@ BEGIN
     RAISE EXCEPTION 'PAYR-02: loan % is not disbursed and cannot be deducted', NEW.loan_id
       USING ERRCODE = '23514';
   END IF;
-  IF NEW.amount_idr > loan_outstanding THEN
-    RAISE EXCEPTION 'PAYR-02: deduction for loan % exceeds its outstanding balance', NEW.loan_id
+  SELECT COALESCE(SUM(d.amount_idr), 0) INTO other_runs_total
+    FROM public.payroll_loan_deductions d
+    JOIN public.payroll_runs r
+      ON r.tenant_id = d.tenant_id AND r.id = d.payroll_run_id
+    WHERE d.tenant_id = NEW.tenant_id AND d.loan_id = NEW.loan_id
+      AND d.payroll_run_id <> NEW.payroll_run_id
+      AND r.status IN ('draft', 'simulated', 'hr_approved', 'approved');
+  IF NEW.amount_idr + other_runs_total > loan_outstanding THEN
+    RAISE EXCEPTION 'PAYR-02: deductions for loan % exceed its outstanding balance', NEW.loan_id
       USING ERRCODE = '23514';
   END IF;
   RETURN NEW;

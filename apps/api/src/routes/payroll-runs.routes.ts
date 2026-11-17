@@ -75,7 +75,8 @@ payrollRunsRouter.post(
   jsonBody,
   async (req, res) => {
     const { payrollRunId } = approvePayrollRunHr.params.parse(req.params);
-    const { idempotencyKey } = approvePayrollRunHr.body.parse(req.body);
+    const { idempotencyKey, expectedSimulationCount } =
+      approvePayrollRunHr.body.parse(req.body);
     const context = getScopedTenantContext(req);
     const actorUserId = getAuth(req).user.id;
     const data = await withTenant(db, context, (tx) =>
@@ -84,13 +85,14 @@ payrollRunsRouter.post(
         context,
         idempotencyKey,
         "payroll.run.approve_hr",
-        { actorUserId, payrollRunId },
+        { actorUserId, payrollRunId, expectedSimulationCount },
         () =>
           approvePayrollRunHrInTransaction(
             tx,
             context,
             actorUserId,
             payrollRunId,
+            expectedSimulationCount,
           ),
       ),
     );

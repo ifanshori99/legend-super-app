@@ -580,6 +580,8 @@ export const payrollConfigMessages = {
     PAYROLL_TER_BRACKET_NOT_FOUND:
       "Kategori atau lapisan TER untuk karyawan ini tidak ditemukan.",
     PAYROLL_RUN_INVALID_TRANSITION: "Perubahan status payroll tidak diizinkan.",
+    PAYROLL_RUN_SIMULATION_STALE:
+      "Simulasi payroll sudah berubah sejak Anda membukanya. Muat ulang dan tinjau lagi sebelum menyetujui.",
     PAYROLL_RUN_NOT_APPROVED:
       "Payroll harus disetujui HR dan Finance/Owner sebelum dikunci.",
     PAYROLL_APPROVER_NOT_DISTINCT:

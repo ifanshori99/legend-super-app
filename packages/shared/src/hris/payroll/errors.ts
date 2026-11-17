@@ -20,6 +20,9 @@ export const payrollErrorHttpStatus = {
   PAYROLL_PPH21_POLICY_CONFLICT: 409,
   /** Status transition not allowed by the payroll run state machine. */
   PAYROLL_RUN_INVALID_TRANSITION: 409,
+  /** HR approval names a simulation count that is no longer the run's (the
+   * run was simulated again after HR loaded it); reload and review again. */
+  PAYROLL_RUN_SIMULATION_STALE: 409,
   /** Lock requested without both approvals (PAYR-01). */
   PAYROLL_RUN_NOT_APPROVED: 409,
   /** The second approver is the HR approver, or a reversal approver is the
@@ -70,6 +73,8 @@ const defaultMessages: Record<PayrollErrorCode, string> = {
   PAYROLL_PPH21_POLICY_CONFLICT:
     "Sudah ada versi kebijakan PPh 21 pada tanggal itu, atau tanggalnya sudah lewat.",
   PAYROLL_RUN_INVALID_TRANSITION: "Perubahan status payroll tidak diizinkan.",
+  PAYROLL_RUN_SIMULATION_STALE:
+    "Simulasi payroll sudah berubah sejak Anda membukanya. Muat ulang dan tinjau lagi sebelum menyetujui.",
   PAYROLL_RUN_NOT_APPROVED:
     "Payroll harus disetujui HR dan Finance/Owner sebelum dikunci.",
   PAYROLL_APPROVER_NOT_DISTINCT:

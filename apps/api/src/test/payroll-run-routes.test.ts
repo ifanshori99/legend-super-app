@@ -237,8 +237,18 @@ async function newRun(world: World): Promise<string> {
 
 const simulate = (runId: string, who: Actor = maker) =>
   post(who, `${RUNS}/${runId}/simulate`, { idempotencyKey: key() });
-const approveHr = (runId: string, who: Actor, k = key()) =>
-  post(who, `${RUNS}/${runId}/hr-approval`, { idempotencyKey: k });
+/** HR approval of the simulation as loaded: the count defaults to the run's current one. */
+const approveHr = async (
+  runId: string,
+  who: Actor,
+  k = key(),
+  expectedSimulationCount?: number,
+) =>
+  post(who, `${RUNS}/${runId}/hr-approval`, {
+    expectedSimulationCount:
+      expectedSimulationCount ?? (await runRow(runId)).simulation_count,
+    idempotencyKey: k,
+  });
 const approveFinal = (runId: string, who: Actor, k = key()) =>
   post(who, `${RUNS}/${runId}/final-approval`, { idempotencyKey: k });
 const returnToDraft = (runId: string, who: Actor = maker, reason = "Koreksi") =>
@@ -645,6 +655,26 @@ describe("[approve-twice] no second approval, no second effect", () => {
     expect(await eventCount(runId)).toBe(events);
   }, 90_000);
 
+  it("HR approval is bound to the simulation HR reviewed: an old expectedSimulationCount is 409 PAYROLL_RUN_SIMULATION_STALE, no state change, no event", async () => {
+    const { runId } = await simulatedRun();
+    const loaded = (await runRow(runId)).simulation_count;
+    const again = await simulate(runId);
+    expect(again.status, JSON.stringify(again.body)).toBe(200);
+    expect((await runRow(runId)).simulation_count).toBe(loaded + 1);
+    const events = await eventCount(runId);
+    const stale = await approveHr(runId, hr1, key(), loaded);
+    expect(stale.status, JSON.stringify(stale.body)).toBe(409);
+    expect(stale.body.error.code).toBe("PAYROLL_RUN_SIMULATION_STALE");
+    const row = await runRow(runId);
+    expect(row.status).toBe("simulated");
+    expect(row.approved_by_hr).toBeNull();
+    expect(await eventCount(runId)).toBe(events);
+    // The current count is approved.
+    const fresh = await approveHr(runId, hr1, key(), loaded + 1);
+    expect(fresh.status, JSON.stringify(fresh.body)).toBe(200);
+    expect(fresh.body.data.status).toBe("hr_approved");
+  }, 90_000);
+
   it("the same idempotencyKey replays the first answer without a new event", async () => {
     const { runId } = await simulatedRun();
     const k = key();
@@ -839,7 +869,10 @@ describe("[permissions] guards on the four routes", () => {
     const anonymous = agent(app);
     const calls: [string, object][] = [
       [RUNS, createBody(world)],
-      [`${RUNS}/${runId}/hr-approval`, { idempotencyKey: key() }],
+      [
+        `${RUNS}/${runId}/hr-approval`,
+        { expectedSimulationCount: 1, idempotencyKey: key() },
+      ],
       [`${RUNS}/${runId}/final-approval`, { idempotencyKey: key() }],
       [
         `${RUNS}/${runId}/return-to-draft`,

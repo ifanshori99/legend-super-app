@@ -561,6 +561,46 @@ describe("payroll_loan_deductions guards", () => {
     expect(rows.n).toBe(0);
   }, 90_000);
 
+  it("[combined-cap] two live runs cannot deduct the same loan above its outstanding together", async () => {
+    const world = await makeWorld();
+    const otherWorld = await makeWorld();
+    const emp = await makeEmployee(world);
+    const loanId = await seedLoan(emp.id, 150_000);
+    const runA = await draftRun(world);
+    const runB = await draftRun(otherWorld);
+
+    expect(
+      await dbCode(insertDeductionSql, [
+        tenant.id,
+        runA,
+        emp.id,
+        loanId,
+        DEDUCTED,
+      ]),
+    ).toBeNull();
+    // 100_000 + 100_000 > 150_000 outstanding: refused although each alone fits.
+    expect(
+      await dbCode(insertDeductionSql, [
+        tenant.id,
+        runB,
+        emp.id,
+        loanId,
+        DEDUCTED,
+      ]),
+      "combined deductions above outstanding",
+    ).toBe("23514");
+    // The remaining 50_000 still fits.
+    expect(
+      await dbCode(insertDeductionSql, [
+        tenant.id,
+        runB,
+        emp.id,
+        loanId,
+        50_000,
+      ]),
+    ).toBeNull();
+  }, 90_000);
+
   it("[insert-window] once the run is approved the DB refuses a new deduction row", async () => {
     const world = await makeWorld();
     const emp = await makeEmployee(world);

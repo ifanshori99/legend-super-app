@@ -21,7 +21,8 @@
 //    `payroll_runs_live_regular_period_key` / `payroll_runs_live_thr_schedule_key`
 //    and answers 409; the insert uses ON CONFLICT DO NOTHING so a race cannot
 //    abort the transaction.
-//  - None of these routes writes payslips, loan deductions or journals.
+//  - None of these routes writes payslips, loan deductions or journals;
+//    return-to-draft only deletes the run's stored loan deductions.
 //
 // ASSUMPTIONS (spec silent; flagged for the CTO):
 //  - A THR run takes the period of the policy cycle that contains the
@@ -54,6 +55,7 @@ import {
 } from "@starter/shared/hris/payroll";
 import { holidays } from "../db/schema/hris-leave.ts";
 import {
+  payrollLoanDeductions,
   payrollPolicies,
   payrollRunResults,
   payrollRuns,
@@ -267,6 +269,7 @@ async function approveInTransaction(
   rawRunId: string,
   action: Approval,
   now: Date,
+  expectedSimulationCount?: number,
 ): Promise<PayrollRun> {
   const actor = await assertPayrollTenantCan(
     tx,
@@ -281,6 +284,13 @@ async function approveInTransaction(
   // The reducer only compares the two approvers: the maker never approves.
   if (actor === run.createdBy)
     throw new PayrollError("PAYROLL_APPROVER_NOT_DISTINCT");
+  // HR approves the simulation HR reviewed: a newer simulate since then
+  // changed the figures, so the approval is refused with no state change.
+  if (
+    action === "approve_hr" &&
+    expectedSimulationCount !== run.simulationCount
+  )
+    throw new PayrollError("PAYROLL_RUN_SIMULATION_STALE");
 
   const [updated] = await tx
     .update(payrollRuns)
@@ -347,6 +357,7 @@ export function approvePayrollRunHrInTransaction(
   context: ScopedTenantContext,
   actorUserId: string,
   runId: string,
+  expectedSimulationCount: number,
   now = new Date(),
 ) {
   return approveInTransaction(
@@ -356,6 +367,7 @@ export function approvePayrollRunHrInTransaction(
     runId,
     "approve_hr",
     now,
+    expectedSimulationCount,
   );
 }
 
@@ -429,6 +441,16 @@ export async function returnPayrollRunToDraftInTransaction(
       and(
         eq(payrollRunResults.tenantId, tenantId),
         eq(payrollRunResults.payrollRunId, run.id),
+      ),
+    );
+  // Same for the kasbon deductions: a stale row would count against the loan
+  // cap of other runs, and the next simulate writes fresh ones.
+  await tx
+    .delete(payrollLoanDeductions)
+    .where(
+      and(
+        eq(payrollLoanDeductions.tenantId, tenantId),
+        eq(payrollLoanDeductions.payrollRunId, run.id),
       ),
     );
   await audit(
