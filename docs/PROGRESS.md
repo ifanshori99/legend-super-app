@@ -1898,3 +1898,4 @@ Langkah berikut CTO baru:
 
 - 00:32 CTO G0w5d ambil alih dari G2l8g: link G0fp6/G7wkf/G8t4u; cron dibuat ulang (push :07 8766f72a, akun mati :37 3117c163, retro f0738641, Q13 :52 aac5db2a). Mulai G4bmg 1028 legend-mez2n (Sonnet #1, worktree dari 1020). Disk 16 GB.
 - 00:33 Disk 14.6 GB (cleanup-ssd +0.7 GB, 0 worktree). 12 volume dangling ternyata BERNAMA (ngodingpakeai-pg-*_postgres-data, 1.4 GB): tidak dihapus, tanya founder Q31. Brief 1029 (kis0u p45yq nqfov 9pz0m, base 1004, migrasi 0647-0648) ditahan sampai batch85 landing.
+- 00:46 CTO: 1027 a35b9cc9a SIAP batch86 sesudah 1026 (architect approve); G8t4u lanjut legend-yizsl (qr-order member dari tablet bertanda). SO 1030 akses ronde 3 (Codex #3): 1 P1 legend-5pipx (/api/auth tidak mencatat tanda) + 1 P2 legend-7yvmm (snapshot request pertama) -> ke G8t4u setelah yizsl; gerbang rilis akses ditahan. G2chs resolve. Mode kuning: slot Claude penuh.
