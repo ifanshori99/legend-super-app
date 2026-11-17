@@ -567,6 +567,24 @@ export type PromoEvaluationOptions = {
 };
 
 /**
+ * Why a promotion is not live at `at`: not active (draft, paused, ended) or
+ * outside its period. The one rule behind evaluation and other callers that
+ * must refuse a dead promotion (order issue vouchers, legend-c1gnr).
+ */
+export function promotionAvailability(
+  promotion: Pick<Promotion, "status" | "startsAt" | "endsAt">,
+  at: string,
+): "draft" | "paused" | "ended" | "not_started" | null {
+  if (promotion.status === "draft") return "draft";
+  if (promotion.status === "paused") return "paused";
+  if (promotion.status === "ended") return "ended";
+  if (before(at, promotion.startsAt)) return "not_started";
+  if (promotion.endsAt !== null && !before(at, promotion.endsAt))
+    return "ended";
+  return null;
+}
+
+/**
  * Evaluates one promotion against a bill. The result is deterministic and
  * side-effect free: quota/budget counters and voucher validity are supplied by
  * the caller (the service locks and increments them in the same transaction
@@ -590,12 +608,8 @@ export function evaluatePromotion(
     discountableIdr > input.subtotalIdr
   )
     throw new RangeError(`Invalid discountable amount: ${discountableIdr}`);
-  if (promotion.status === "draft") return rejected("draft");
-  if (promotion.status === "paused") return rejected("paused");
-  if (promotion.status === "ended") return rejected("ended");
-  if (before(input.at, promotion.startsAt)) return rejected("not_started");
-  if (promotion.endsAt !== null && !before(input.at, promotion.endsAt))
-    return rejected("ended");
+  const unavailable = promotionAvailability(promotion, input.at);
+  if (unavailable !== null) return rejected(unavailable);
   if (promotion.voucherRequired && input.voucherPromotionId !== promotion.id)
     return rejected("voucher_required");
   if (promotion.quotaTotal !== null && usage.totalUses >= promotion.quotaTotal)
