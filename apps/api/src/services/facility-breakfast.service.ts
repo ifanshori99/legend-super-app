@@ -40,6 +40,11 @@ import {
   type BreakfastPayment,
   type CreateBreakfastOrderBody,
 } from "@starter/shared/facility";
+import {
+  qrOrderErrorHttpStatus,
+  qrOrderErrorMessages,
+  QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED,
+} from "@starter/shared/qr-order";
 import { orderNetSubtotalIdr } from "@starter/shared/tax";
 import { db } from "../db/index.ts";
 import { accessTickets, facilityLinkedOrders } from "../db/schema/facility.ts";
@@ -47,6 +52,7 @@ import { floorZones, tables } from "../db/schema/floor.ts";
 import { menuCategories, menuItems } from "../db/schema/index.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
+import { HttpError } from "../lib/http-error.ts";
 import { openSecret, sealSecret } from "../lib/secrets.ts";
 import {
   assertFacilityPermission,
@@ -468,6 +474,15 @@ export async function createBreakfastOrderForMember(
       orderDiscountIdr: 0,
       taxConfig: await loadPosTaxConfig(tx, context, outletId),
     });
+    // Fail closed: the breakfast path (tax snapshot per line, journal) is not
+    // proven for a tax-inclusive bill (legend-npnh is cashier-only). Refuse
+    // before any order, link, intent or money exists.
+    if (bill.pricesIncludeTax)
+      throw new HttpError(
+        qrOrderErrorHttpStatus.QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED,
+        QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED,
+        qrOrderErrorMessages.QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED,
+      );
     // A bill of 0 can never be "paid"; refuse it instead of holding it forever.
     if (bill.totalIdr <= 0)
       throw new CoreError(
