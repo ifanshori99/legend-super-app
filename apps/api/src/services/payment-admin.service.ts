@@ -29,6 +29,7 @@ import {
 } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { providerRefundedForeignIdrSql } from "./payment-provider-refunded-foreign-sql.ts";
 import { assertNotProviderRefunded } from "./payment-provider-refunded-guard.ts";
 import { recordAudit } from "./core-audit.ts";
 import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
@@ -98,17 +99,22 @@ export async function refundableBalance(
          AND status <> 'failed' AND unallocated_fund_id IS NULL)::text AS reserved,
       (SELECT coalesce(sum(deposit_forfeited_idr), 0) FROM reservations
        WHERE tenant_id = ${intent.tenantId} AND deposit_payment_id = ${intent.id}::uuid
-         AND status IN ('cancelled', 'no_show'))::text AS forfeited
+         AND status IN ('cancelled', 'no_show'))::text AS forfeited,
+      ${providerRefundedForeignIdrSql(sql`${intent.tenantId}`, sql`${intent.id}::uuid`)}::text AS provider_refunded
   `);
   const row = result.rows[0]!;
   const allocated =
     BigInt(String(row.received)) - BigInt(String(row.unallocated));
-  const paid =
+  const gross =
     allocated < 0n
       ? 0n
       : allocated > BigInt(intent.amountIdr)
         ? BigInt(intent.amountIdr)
         : allocated;
+  // legend-30hfs (967): money the provider itself refunded (not the echo of a
+  // refund of ours) is no longer ours to refund or pay out again.
+  const providerRefunded = BigInt(String(row.provider_refunded));
+  const paid = gross > providerRefunded ? gross - providerRefunded : 0n;
   const reserved = BigInt(String(row.reserved));
   const depositInUse = await depositInUseOfIntent(
     tx,
@@ -136,6 +142,7 @@ export async function refundableBalance(
     posSaleInUse,
     qrSaleInUse,
     chargeInUse,
+    providerRefunded,
   };
 }
 
@@ -249,7 +256,8 @@ async function qrSaleInUseOfIntent(
             (SELECT coalesce(sum(e.amount_idr), 0) FROM payment_evidence e
               WHERE e.tenant_id = o.tenant_id AND e.payment_intent_id = ${intentId}::uuid)
             - (SELECT coalesce(sum(f.amount_idr), 0) FROM payment_unallocated_funds f
-                WHERE f.tenant_id = o.tenant_id AND f.payment_intent_id = ${intentId}::uuid),
+                WHERE f.tenant_id = o.tenant_id AND f.payment_intent_id = ${intentId}::uuid)
+            - ${providerRefundedForeignIdrSql(sql`o.tenant_id`, sql`${intentId}::uuid`)},
             0))
       END), 0)::text AS amount
     FROM orders o

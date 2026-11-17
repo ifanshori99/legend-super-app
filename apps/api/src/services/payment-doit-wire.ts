@@ -198,6 +198,51 @@ export const doitWebhookEnvelopeSchema = z.object({
   data: z.unknown(),
 });
 
+/** legend-30hfs: bounded facts of a `payment.refunded` whose `data` is a status
+ * object, not a payment object (a partial-refund notice). Only these three are
+ * kept (the raw `data` is never stored); a fact that is absent or unreadable is
+ * simply missing, and the caller then treats the refund as a full one in
+ * doubt. `payment_id` wins over `id`; a `payment_id` that is present but
+ * unreadable is never replaced by `id`. */
+export type DoitRefundedStatusFacts = {
+  paymentId?: string;
+  refundId?: string;
+  amountIdr?: number;
+};
+
+function refundedStatusText(value: unknown): string | undefined {
+  return typeof value === "string" && value.length >= 1 && value.length <= 100
+    ? value
+    : undefined;
+}
+
+export function readDoitRefundedStatusFacts(
+  data: unknown,
+): DoitRefundedStatusFacts {
+  const record =
+    typeof data === "object" && data !== null && !Array.isArray(data)
+      ? (data as Record<string, unknown>)
+      : {};
+  const facts: DoitRefundedStatusFacts = {};
+  const paymentId = refundedStatusText(
+    record.payment_id !== undefined ? record.payment_id : record.id,
+  );
+  if (paymentId) facts.paymentId = paymentId;
+  const refundId = refundedStatusText(record.refund_id);
+  if (refundId) facts.refundId = refundId;
+  const rawAmount = record.amount;
+  const amountIdr =
+    typeof rawAmount === "string"
+      ? parseDoitIntegerString(rawAmount)
+      : typeof rawAmount === "number" &&
+          Number.isSafeInteger(rawAmount) &&
+          rawAmount >= 0
+        ? rawAmount
+        : undefined;
+  if (amountIdr !== undefined) facts.amountIdr = amountIdr;
+  return facts;
+}
+
 /** Webhook body of a payment event: the envelope around a payment object. */
 export const doitWebhookEventSchema = doitWebhookEnvelopeSchema.extend({
   data: doitPaymentSchema,

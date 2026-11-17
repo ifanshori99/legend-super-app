@@ -96,3 +96,82 @@ export async function alertProviderRefundedAfterRecorded(
     );
   }
 }
+
+export type ProviderPartialRefundAlert = {
+  intentId: string;
+  outletId: string;
+  providerRefundId: string;
+  /** What this one provider refund returned. */
+  amountIdr: number;
+  /** What the provider refunded in total for the intent so far. */
+  cumulativeIdr: number;
+};
+
+/** Stable alert id for one provider refund of one intent (967): each distinct
+ * refund is one alert, a webhook, a poller and a retry of it are the same. */
+export function providerPartialRefundAlertId(
+  tenantId: string,
+  intentId: string,
+  providerRefundId: string,
+): string {
+  const hex = createHash("sha256")
+    .update(
+      `payment.provider_refunded_partial\0${tenantId}\0${intentId.toLowerCase()}\0${providerRefundId}`,
+    )
+    .digest("hex")
+    .slice(0, 32);
+  return uuidToUlid(
+    `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
+  );
+}
+
+/**
+ * legend-30hfs (967): alerts the supervisors that the provider refunded part
+ * (or all) of a payment on its own. Sent only by the winner of the insert of
+ * that refund (`recordProviderRefundInTx`). Same savepoint rule as above.
+ */
+export async function alertProviderPartialRefund(
+  tx: Tx,
+  context: ScopedTenantContext,
+  refunded: ProviderPartialRefundAlert,
+  now: Date,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const id = providerPartialRefundAlertId(
+    tenantId,
+    refunded.intentId,
+    refunded.providerRefundId,
+  );
+  try {
+    await tx.transaction(async (savepoint) => {
+      await notifyOutletSupervisors(
+        savepoint,
+        context,
+        {
+          tenantId,
+          outletId: outletIdSchema.parse(refunded.outletId),
+          category: "operational_anomaly",
+          alsoOwners: true,
+          recordEmpty: true,
+          id,
+          eventName: "payment.provider_refunded_partial",
+          aggregateType: "payment",
+          aggregateId: id,
+          payload: {
+            intentId: refunded.intentId,
+            amountIdr: String(refunded.amountIdr),
+            cumulativeIdr: String(refunded.cumulativeIdr),
+          },
+          title: "Penyedia mengembalikan sebagian pembayaran",
+          body: `Penyedia pembayaran mengembalikan Rp ${refunded.amountIdr.toLocaleString("id-ID")} ke pembayar untuk pembayaran yang sudah tercatat (total dikembalikan penyedia Rp ${refunded.cumulativeIdr.toLocaleString("id-ID")}). Jumlah yang masih bisa di-refund dikurangi sebesar itu. Periksa pembukuan dan putuskan koreksinya; tidak ada jurnal yang dibalik otomatis.`,
+        },
+        now,
+      );
+    });
+  } catch (err) {
+    logger.warn(
+      { err, tenantId, intentId: refunded.intentId },
+      "Provider partial refund: notification failed",
+    );
+  }
+}

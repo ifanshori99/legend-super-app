@@ -77,6 +77,7 @@ import {
   matchDoitRefundEvent,
   pickRefundCandidate,
   readDoitRefundFacts,
+  readProviderInitiatedRefund,
   type DoitRefundFacts,
   type DoitRefundWebhookEvent,
 } from "./payment-doit-refund-webhook";
@@ -84,6 +85,7 @@ import {
   applyRefundProviderUpdate,
   SETTLED_OUTSIDE_PROVIDER,
 } from "./payment-refund.service";
+import { recordProviderRefundInTx } from "./payment-provider-partial-refund";
 import { gatewayWebhookTolerance } from "./platform-payment-gateway.service";
 import { processDoitInvoiceEvent } from "./payment-recurring.service";
 import {
@@ -96,7 +98,9 @@ import {
   doitWebhookEnvelopeSchema,
   doitWebhookEventSchema,
   isDoitPaymentEvent,
+  readDoitRefundedStatusFacts,
   verifyDoitSignature,
+  type DoitRefundedStatusFacts,
 } from "./payment-doit-wire";
 import {
   listIntegrations,
@@ -567,12 +571,19 @@ export async function markRow(
 
 /** Intent the event names: provider ref and `data.reference` (the intent id)
  * must both match. `unknown` may still resolve later (early event); `mismatch`
- * never will. */
+ * never will. legend-wourt: a provider ref that is not the intent's own is
+ * accepted only when it is recorded evidence of that very intent (an additional
+ * transaction of the same bill, verified); the evidence comes back as
+ * `boundEvidence` and the caller processes only its refund. */
 async function findBoundIntent(
   context: ScopedTenantContext,
   event: DoitWebhookEvent,
 ): Promise<
-  | { kind: "found"; intent: PaymentIntentRow }
+  | {
+      kind: "found";
+      intent: PaymentIntentRow;
+      boundEvidence?: { id: string; amountIdr: number };
+    }
   | { kind: "unknown" }
   | { kind: "mismatch" }
 > {
@@ -594,7 +605,36 @@ async function findBoundIntent(
   if (!intent) return { kind: "unknown" };
   if (intent.provider !== PROVIDER) return { kind: "mismatch" };
   if (intent.providerRef === null) return { kind: "unknown" };
-  if (intent.providerRef !== event.data.id) return { kind: "mismatch" };
+  if (intent.providerRef !== event.data.id) {
+    const evidence = await withTenant(db, context, async (tx) => {
+      const [found] = await tx
+        .select({
+          id: paymentEvidence.id,
+          amountIdr: paymentEvidence.amountIdr,
+        })
+        .from(paymentEvidence)
+        .where(
+          and(
+            eq(paymentEvidence.tenantId, context.tenant.tenantId),
+            eq(paymentEvidence.provider, PROVIDER),
+            eq(paymentEvidence.providerRef, event.data.id),
+            eq(paymentEvidence.paymentIntentId, intent.id),
+            inArray(paymentEvidence.source, [
+              "verified_webhook",
+              "gateway_status",
+            ]),
+          ),
+        )
+        .limit(1);
+      return found ?? null;
+    });
+    if (!evidence) return { kind: "mismatch" };
+    return {
+      kind: "found",
+      intent,
+      boundEvidence: { id: evidence.id, amountIdr: Number(evidence.amountIdr) },
+    };
+  }
   return { kind: "found", intent };
 }
 
@@ -730,6 +770,178 @@ async function handleRejectedConfirmation(
   return code;
 }
 
+/** Result of applying a provider refund: `bound` (recorded, a duplicate, our
+ * own echo, or flagged), `retry` (one of our own refunds for that payment is
+ * in flight, so the refund cannot be told apart yet: nothing was written) or
+ * `unbound` (not a payment of this tenant, or of another integration). */
+type RefundApplyResult = "bound" | "retry" | "unbound";
+
+/** Intent a provider payment reference binds to, by the helper's rule: the
+ * evidence of that reference (its intent wins on a conflict), else the intent
+ * whose own provider ref it is. Tenant scoped, a short read with no lock; two
+ * candidates are a doubt, so none. `evidenceAmountIdr` is set when the
+ * reference is recorded evidence. */
+async function findRefundCandidate(
+  context: ScopedTenantContext,
+  providerRef: string,
+): Promise<{
+  intent: PaymentIntentRow;
+  evidenceAmountIdr: number | null;
+} | null> {
+  const tenantId = context.tenant.tenantId;
+  return withTenant(db, context, async (tx) => {
+    const [evidence] = await tx
+      .select({
+        intentId: paymentEvidence.paymentIntentId,
+        amountIdr: paymentEvidence.amountIdr,
+      })
+      .from(paymentEvidence)
+      .where(
+        and(
+          eq(paymentEvidence.tenantId, tenantId),
+          eq(paymentEvidence.provider, PROVIDER),
+          eq(paymentEvidence.providerRef, providerRef),
+        ),
+      )
+      .limit(1);
+    const intents = await tx
+      .select()
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, tenantId),
+          eq(paymentIntents.provider, PROVIDER),
+          evidence
+            ? eq(paymentIntents.id, evidence.intentId)
+            : eq(paymentIntents.providerRef, providerRef),
+        ),
+      )
+      .limit(2);
+    if (intents.length !== 1) return null;
+    return {
+      intent: intents[0]!,
+      evidenceAmountIdr: evidence ? Number(evidence.amountIdr) : null,
+    };
+  });
+}
+
+/** Records a provider refund through the shared helper, in two phases: a
+ * short read finds the candidate intent (`findRefundCandidate`), the integration
+ * that verified the signature must be the one that minted it
+ * (`signedByIntentIntegration`, run with no transaction open), and only then
+ * the helper runs in its own transaction with `expectedIntentId`, so it
+ * records for that intent or nothing (legend-30hfs R2). `retry` (one of our own
+ * refunds for that payment is in flight, so the refund cannot be told apart
+ * yet, nothing written) is returned only inside the retry window; after it
+ * the refund is recorded again with `force: true` (counted, restrictive when
+ * in doubt); a `retry` that survives `force` gets one fresh two-phase pass
+ * and is otherwise returned as `retry` (the row stays `failed`). */
+async function recordRefundFor(
+  context: ScopedTenantContext,
+  row: GatewayWebhookEvent,
+  input: {
+    providerRefundId: string;
+    providerPaymentRef: string;
+    amountIdr: number;
+    source: "refund_webhook" | "payment_webhook";
+  },
+  now: Date,
+  verifiedSecret?: string,
+): Promise<RefundApplyResult> {
+  const windowOver = () =>
+    now.getTime() - row.receivedAt.getTime() >=
+    WEBHOOK_UNKNOWN_REFERENCE_RETRY_MS;
+  const attempt = async (): Promise<"retry" | "unbound" | "bound"> => {
+    const candidate = await findRefundCandidate(
+      context,
+      input.providerPaymentRef,
+    );
+    if (
+      !candidate ||
+      !(await signedByIntentIntegration(
+        context,
+        candidate.intent,
+        row,
+        verifiedSecret,
+        now,
+      ))
+    )
+      return "unbound";
+    const run = async (force: boolean) =>
+      (
+        await withTenant(db, context, async (tx) =>
+          recordProviderRefundInTx(
+            tx,
+            context,
+            {
+              provider: PROVIDER,
+              ...input,
+              expectedIntentId: candidate.intent.id,
+              ...(force ? { force: true } : {}),
+            },
+            now,
+          ),
+        )
+      ).status;
+    let status = await run(false);
+    if (status === "retry" && windowOver()) status = await run(true);
+    if (status === "retry") return "retry";
+    return status === "unbound" ? "unbound" : "bound";
+  };
+  const first = await attempt();
+  // `retry` even with `force` (the evidence moved to another intent after the
+  // read): one more full pass with a fresh candidate. Still `retry` stays
+  // `retry`; the caller keeps the row `failed`, never `ignored`.
+  return first === "retry" && windowOver() ? attempt() : first;
+}
+
+/** A refund of the payment `paymentId` we cannot size: treated as a refund of
+ * all of it. The intent's own transaction takes the 958 flag (blocks
+ * allocation, refund and payout of the money recorded for it); an additional
+ * transaction (evidence only) is recorded as refunded for its full amount.
+ * The signing integration must be the one that minted the intent
+ * (`signedByIntentIntegration`). */
+async function flagRefundInDoubt(
+  context: ScopedTenantContext,
+  row: GatewayWebhookEvent,
+  paymentId: string,
+  now: Date,
+  verifiedSecret?: string,
+): Promise<RefundApplyResult> {
+  const candidate = await findRefundCandidate(context, paymentId);
+  if (!candidate) return "unbound";
+  if (candidate.intent.providerRef === paymentId) {
+    // Same rule as every other event: the integration that signed must be the
+    // one that minted the intent (an older intent falls back to its outlet's).
+    if (
+      !(await signedByIntentIntegration(
+        context,
+        candidate.intent,
+        row,
+        verifiedSecret,
+        now,
+      ))
+    )
+      return "unbound";
+    await markProviderRefunded(context, candidate.intent.id, now);
+    return "bound";
+  }
+  if (candidate.evidenceAmountIdr !== null && candidate.evidenceAmountIdr > 0)
+    return recordRefundFor(
+      context,
+      row,
+      {
+        providerRefundId: `payment:${paymentId}`,
+        providerPaymentRef: paymentId,
+        amountIdr: candidate.evidenceAmountIdr,
+        source: "payment_webhook",
+      },
+      now,
+      verifiedSecret,
+    );
+  return "unbound";
+}
+
 /**
  * Applies one stored, verified event. Settlement, expiry and failure all go
  * through the payment service, so every rule (evidence dedupe, late payment,
@@ -789,6 +1001,60 @@ async function processPaymentEvent(
     let outcome: ProcessOutcome = "processed";
     let code: string | null = null;
     const status = event.data.status;
+    if (bound.kind === "found" && bound.boundEvidence) {
+      // legend-wourt: an additional transaction of the bill. Only its refund is
+      // applied (recorded as a provider refund of that evidence, a parked fund
+      // is flagged); every other status of it stays ignored.
+      const extra = bound.boundEvidence;
+      const applied: RefundApplyResult =
+        status === "refunded" && extra.amountIdr > 0
+          ? await recordRefundFor(
+              context,
+              row,
+              {
+                providerRefundId: `payment:${event.data.id}`,
+                providerPaymentRef: event.data.id,
+                amountIdr: extra.amountIdr,
+                source: "payment_webhook",
+              },
+              now,
+              verifiedSecret,
+            )
+          : "unbound";
+      if (applied === "retry") {
+        // One of our own refunds for that payment is in flight: not told apart
+        // yet. Kept `failed` and retried by the worker; after the retry window
+        // `recordRefundFor` has already recorded it with `force`.
+        await markRow(
+          context,
+          row.id,
+          { status: "failed", lastErrorCode: "UNKNOWN_REFERENCE" },
+          now,
+        );
+        return "failed";
+      }
+      const recorded = applied === "bound";
+      await markRow(
+        context,
+        row.id,
+        recorded
+          ? {
+              status: "processed",
+              lastErrorCode: null,
+              processedAt: now,
+              paymentIntentId: intent.id,
+              outletId: intent.outletId,
+              providerRef: event.data.id,
+            }
+          : {
+              status: "ignored",
+              lastErrorCode: "REFERENCE_MISMATCH",
+              processedAt: now,
+            },
+        now,
+      );
+      return recorded ? "processed" : "ignored";
+    }
     if (status === "paid") {
       const amountIdr = settledAmount(event);
       if (amountIdr === null) {
@@ -1223,10 +1489,56 @@ async function processRefundEvent(
         : null;
     if (settledOutside?.kind === "found") target = settledOutside;
     const viaSettled = settledOutside?.kind === "found";
-    const unmatched = async (): Promise<ProcessOutcome> => {
+    const unmatched = async (foreign = false): Promise<ProcessOutcome> => {
       const retryable =
         now.getTime() - row.receivedAt.getTime() <
         WEBHOOK_UNKNOWN_REFERENCE_RETRY_MS;
+      // legend-30hfs: no refund of ours after the retry window, so the refund
+      // is the provider's own (money went back to the payer): record it against
+      // the payment it names. An unknown payment or the echo of our own refund
+      // keeps the ignored answer below.
+      const providerRefund = foreign
+        ? readProviderInitiatedRefund(event.type, facts)
+        : null;
+      if (!retryable && providerRefund) {
+        const applied = await recordRefundFor(
+          context,
+          row,
+          {
+            providerRefundId: providerRefund.refundId,
+            providerPaymentRef: providerRefund.paymentId,
+            amountIdr: providerRefund.amountIdr,
+            source: "refund_webhook",
+          },
+          now,
+          verifiedSecret,
+        );
+        if (applied === "retry") {
+          // Unresolved even with `force`: kept `failed` (the worker retries),
+          // never ignored.
+          await markRow(
+            context,
+            row.id,
+            { status: "failed", lastErrorCode: "REFUND_UNMATCHED" },
+            now,
+          );
+          return "failed";
+        }
+        if (applied === "bound") {
+          await markRow(
+            context,
+            row.id,
+            {
+              status: "processed",
+              lastErrorCode: null,
+              processedAt: now,
+              providerRef: providerRefund.refundId,
+            },
+            now,
+          );
+          return "processed";
+        }
+      }
       if (!retryable && status === "succeeded")
         logger.warn(
           { webhookEventId: row.id },
@@ -1255,7 +1567,7 @@ async function processRefundEvent(
       );
       return "ignored";
     };
-    if (target.kind === "none") return await unmatched();
+    if (target.kind === "none") return await unmatched(true);
     if (target.kind === "ambiguous")
       return await ignoredWith("REJECTED_CONFLICT");
 
@@ -1374,6 +1686,126 @@ async function processRefundEvent(
         paymentIntentId: intent.id,
         outletId: intent.outletId,
         providerRef: providerRef ?? refund.providerRef,
+      },
+      now,
+    );
+    return "processed";
+  } catch (error) {
+    await markRow(
+      context,
+      row.id,
+      { status: "failed", lastErrorCode: errorCodeOf(error) },
+      now,
+    ).catch(() => {});
+    throw new HttpError(
+      500,
+      "INTERNAL_ERROR",
+      "Webhook belum dapat diproses. Coba lagi.",
+    );
+  }
+}
+
+/** Bounded `data` kept for a stored `payment.refunded` status object: only the
+ * facts below, never the raw body. Re-reads to the same facts on a retry. */
+function refundedStatusData(
+  facts: DoitRefundedStatusFacts,
+): Record<string, unknown> {
+  const data: Record<string, unknown> = {};
+  if (facts.paymentId) data.payment_id = facts.paymentId;
+  if (facts.refundId) data.refund_id = facts.refundId;
+  if (facts.amountIdr !== undefined) data.amount = facts.amountIdr;
+  return data;
+}
+
+/** Facts of a stored `payment.refunded` payload (its bounded `data`). */
+function storedRefundedStatusFacts(payload: unknown): DoitRefundedStatusFacts {
+  return readDoitRefundedStatusFacts(
+    typeof payload === "object" && payload !== null
+      ? (payload as { data?: unknown }).data
+      : undefined,
+  );
+}
+
+/**
+ * legend-30hfs: `payment.refunded` whose `data` is a status object (a partial
+ * refund notice), applied from its bounded facts. With a refund id, a payment
+ * id and a positive amount the refund is recorded against the payment it names
+ * (deduped by refund id, the echo of our own refund not counted). When the
+ * payment binds to an intent but the refund id or amount is missing, the refund
+ * may be the whole payment: treated as a full refund in doubt (the 958 flag,
+ * which blocks allocation, refund and payout of the recorded money). A payment
+ * we cannot bind keeps the old `ignored` answer. Nothing else is moved here.
+ */
+async function processRefundedStatusEvent(
+  context: ScopedTenantContext,
+  row: GatewayWebhookEvent,
+  facts: DoitRefundedStatusFacts,
+  now: Date,
+  verifiedSecret?: string,
+): Promise<ProcessOutcome> {
+  try {
+    const ignoredNotPayment = async (): Promise<ProcessOutcome> => {
+      await markRow(
+        context,
+        row.id,
+        {
+          status: "ignored",
+          lastErrorCode: "REFUND_PAYLOAD_NOT_PAYMENT",
+          processedAt: now,
+        },
+        now,
+      );
+      return "ignored";
+    };
+    const { paymentId, refundId, amountIdr } = facts;
+    if (!paymentId) return await ignoredNotPayment();
+    const retryable =
+      now.getTime() - row.receivedAt.getTime() <
+      WEBHOOK_UNKNOWN_REFERENCE_RETRY_MS;
+    let applied: RefundApplyResult;
+    if (refundId && amountIdr !== undefined && amountIdr > 0) {
+      applied = await recordRefundFor(
+        context,
+        row,
+        {
+          providerRefundId: refundId,
+          providerPaymentRef: paymentId,
+          amountIdr,
+          source: "payment_webhook",
+        },
+        now,
+        verifiedSecret,
+      );
+    } else
+      applied = await flagRefundInDoubt(
+        context,
+        row,
+        paymentId,
+        now,
+        verifiedSecret,
+      );
+    // A payment not bound yet may just be early, and an in-flight own refund
+    // may settle: kept `failed` (retried by the worker) inside the window
+    // (`retry` only comes back inside it, see `recordRefundFor`). `unbound`
+    // then ends ignored.
+    if (applied === "retry" || (applied === "unbound" && retryable)) {
+      await markRow(
+        context,
+        row.id,
+        { status: "failed", lastErrorCode: "UNKNOWN_REFERENCE" },
+        now,
+      );
+      return "failed";
+    }
+    if (applied === "unbound") return await ignoredNotPayment();
+    await markRow(
+      context,
+      row.id,
+      {
+        status: "processed",
+        lastErrorCode: null,
+        processedAt: now,
+        providerRef: (refundId ?? paymentId).slice(0, 100),
       },
       now,
     );
@@ -1777,24 +2209,56 @@ export async function receiveDoitWebhook(input: {
     envelope.success &&
     isRefundedNonPaymentEvent(envelope.data.type, json)
   ) {
-    // Envelope only (like other ignored events): `data` is not a payment.
+    // `data` is not a payment: only the bounded refund facts are kept (never
+    // the raw body). A readable payment id is processed; without one the row
+    // stays ignored as before.
     const { id, type, created_at } = envelope.data;
+    const facts = readDoitRefundedStatusFacts(
+      (json as { data?: unknown }).data,
+    );
     const stored = await insertRow(context, {
       integrationId: verified.integrationId,
       signatureValid: true,
       eventId: id,
       eventType: type,
       payloadHash,
-      payload: { id, type, created_at },
-      status: "ignored",
-      lastErrorCode: "REFUND_PAYLOAD_NOT_PAYMENT",
-      processedAt: now,
+      payload: { id, type, created_at, data: refundedStatusData(facts) },
+      providerRef: facts.refundId ?? facts.paymentId ?? null,
+      status: facts.paymentId ? "received" : "ignored",
+      ...(facts.paymentId
+        ? {}
+        : { lastErrorCode: "REFUND_PAYLOAD_NOT_PAYMENT", processedAt: now }),
       receivedAt: now,
       attempts: 1,
       createdAt: now,
       updatedAt: now,
     });
-    return { status: stored ? "ignored" : "duplicate", eventId: id };
+    let refundedRow = stored;
+    let toApply = facts;
+    if (!refundedRow) {
+      // A retry of the same event id: finished rows are a duplicate, an
+      // unfinished one (`received` or `failed`) is processed from what it
+      // stored.
+      refundedRow = await loadVerifiedRow(context, verified.integrationId, id);
+      if (!refundedRow)
+        throw new Error("Webhook event conflicted without a winner");
+      if (
+        refundedRow.status === "processed" ||
+        refundedRow.status === "ignored"
+      )
+        return { status: "duplicate", eventId: id };
+      if (refundedRow.payload !== null)
+        toApply = storedRefundedStatusFacts(refundedRow.payload);
+    }
+    if (!facts.paymentId && stored) return { status: "ignored", eventId: id };
+    const outcome = await processRefundedStatusEvent(
+      context,
+      refundedRow,
+      toApply,
+      now,
+      verified.secret,
+    );
+    return { status: outcome, eventId: id };
   }
   if (!parsedEvent) {
     await insertRow(context, {
@@ -1903,17 +2367,14 @@ export async function receiveDoitWebhook(input: {
       const storedEvent = parseStoredEvent(row.payload);
       if (!storedEvent) {
         if (isRefundedNonPaymentEvent(event.type, row.payload)) {
-          await markRow(
+          const outcome = await processRefundedStatusEvent(
             context,
-            row.id,
-            {
-              status: "ignored",
-              lastErrorCode: "REFUND_PAYLOAD_NOT_PAYMENT",
-              processedAt: now,
-            },
+            row,
+            storedRefundedStatusFacts(row.payload),
             now,
+            verified.secret,
           );
-          return { status: "ignored", eventId: event.id };
+          return { status: outcome, eventId: event.id };
         }
         await markRow(
           context,
@@ -2015,6 +2476,24 @@ export async function reprocessStoredWebhookEvents(
     if (claimed.length === 0) continue;
     const parsed = parseStoredEvent(row.payload);
     if (!parsed) {
+      // legend-30hfs: a stored `payment.refunded` status object is applied from
+      // its bounded facts; anything else unreadable stays MALFORMED.
+      if (isRefundedNonPaymentEvent(row.eventType ?? "", row.payload)) {
+        try {
+          const outcome = await processRefundedStatusEvent(
+            context,
+            row,
+            storedRefundedStatusFacts(row.payload),
+            now,
+            secrets.find((entry) => entry.integrationId === row.integrationId)
+              ?.secret,
+          );
+          if (outcome !== "failed") processed += 1;
+        } catch {
+          // Already recorded on the row; the next run retries.
+        }
+        continue;
+      }
       await markRow(
         context,
         row.id,
