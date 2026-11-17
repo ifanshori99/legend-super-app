@@ -206,6 +206,31 @@ export async function changeEmployeeManager(
                 ORDER BY ra.id FOR SHARE OF ra`,
           );
         }
+        // The target employee's role assignments too (the role rule reads them
+        // as well), same FOR SHARE and id order as above.
+        await tx.execute(
+          sql`SELECT ra.id FROM role_assignments ra
+              JOIN employees e ON e.tenant_id = ra.tenant_id AND e.user_id = ra.user_id
+              WHERE ra.tenant_id = ${tenantId}::uuid AND e.id = ${row.id}::uuid
+              ORDER BY ra.id FOR SHARE OF ra`,
+        );
+        // Then the custom roles behind the assignments read here (actor, target,
+        // proposed manager): a permission revoke on a custom role is an UPDATE
+        // of its row, so it cannot commit between the checks and the write.
+        // Always after the assignments, in id order, as offboarding does.
+        await tx.execute(
+          sql`SELECT r.id FROM roles r
+              WHERE r.tenant_id = ${tenantId}::uuid AND r.is_template = false
+                AND r.id IN (
+                  SELECT ra.role_id FROM role_assignments ra
+                  LEFT JOIN employees e ON e.tenant_id = ra.tenant_id AND e.user_id = ra.user_id
+                  WHERE ra.tenant_id = ${tenantId}::uuid
+                    AND (ra.user_id = ${access.actorUserId}
+                      OR e.id = ${row.id}::uuid
+                      ${manager ? sql`OR e.id = ${manager.id}::uuid` : sql``})
+                )
+              ORDER BY r.id FOR SHARE OF r`,
+        );
         // Time is taken after the last lock: a wait may have let an assignment
         // expire. Used for access, the role rule, updated_at and the audit time.
         const lockedNow = new Date();
