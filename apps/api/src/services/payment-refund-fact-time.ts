@@ -89,6 +89,9 @@ export async function lockIntentsForFact(
         WHERE f.tenant_id = ${tenantId}
           AND f.payment_intent_id IN (${list})
           AND f.completed_at IS NOT NULL),
+      (SELECT max(pr.created_at) FROM payment_provider_refunds pr
+        WHERE pr.tenant_id = ${tenantId}
+          AND pr.payment_intent_id IN (${list})),
       (SELECT max(r.closed_at) FROM reservations r
         WHERE r.tenant_id = ${tenantId}
           AND r.deposit_payment_id IN (${list})

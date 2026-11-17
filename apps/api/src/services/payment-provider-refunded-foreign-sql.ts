@@ -13,15 +13,20 @@ import { sql, type SQL } from "drizzle-orm";
  * id is the provider reference of a refund of ours in the tenant that did not
  * fail (the echo of
  * our own payout that was recorded before we matched it: never counted twice).
+ * `onlyIf` (legend-tlm3h, the auto journals) is a predicate over alias `pr`
+ * that keeps only the refunds recorded by a moment, so a journal judged at its
+ * own time is not changed by a refund that came after it.
  */
 export function providerRefundedForeignIdrSql(
   tenantIdSql: SQL,
   intentIdSql: SQL,
+  onlyIf?: SQL,
 ): SQL {
   return sql`coalesce((SELECT sum(pr.amount_idr)
     FROM payment_provider_refunds pr
     WHERE pr.tenant_id = ${tenantIdSql}
       AND pr.payment_intent_id = ${intentIdSql}
+      AND ${onlyIf ?? sql`true`}
       AND NOT EXISTS (SELECT 1 FROM payment_unallocated_funds uf
         JOIN payment_evidence pe
           ON pe.tenant_id = uf.tenant_id AND pe.id = uf.evidence_id

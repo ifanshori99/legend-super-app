@@ -8,7 +8,14 @@
 // refunds of an intent is taken off what the intent may still refund or pay
 // out (`providerRefundedForeignIdrSql`, used by `refundableBalance` and the
 // payout guard): nobody is paid more than the money the provider did not
-// already return. Nothing here touches a journal.
+// already return. The winner of the insert also appends one
+// `payment.provider_refunded` event in the same transaction (legend-tlm3h): the
+// auto journal books it Dr customer_deposit / Cr gateway_clearing, so the
+// ledger holds what the gateway kept, like a payout (`payment.refunded`). Only
+// the recorded outcome emits; a duplicate, an echo of ours, a retry or an
+// unbound message never does, so a replayed webhook or a racing poller books
+// nothing twice (the journal key is the recorded row's id besides). Nothing
+// else here touches a journal.
 import {
   createUlid,
   idr,
@@ -33,8 +40,10 @@ import {
 } from "../db/schema/index.ts";
 import { recordAudit } from "./core-audit.ts";
 import { refundableBalance } from "./payment-admin.service.ts";
+import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import { alertProviderPartialRefund } from "./payment-provider-refunded-alert.ts";
 import { providerRefundedForeignIdrSql } from "./payment-provider-refunded-foreign-sql.ts";
+import { appendPaymentEvent } from "./payment-support.ts";
 import type { Tx } from "./permission-resolver.ts";
 
 const PROVIDER = "doit";
@@ -243,6 +252,7 @@ export async function recordProviderRefundInTx(
     return { status: "duplicate" };
 
   // 4. The insert decides the winner; a replay or a racing second path stops.
+  const createdAt = await lockIntentsForFact(tx, tenantId, [intent.id], now);
   const [inserted] = await tx
     .insert(paymentProviderRefunds)
     .values({
@@ -255,6 +265,13 @@ export async function recordProviderRefundInTx(
       providerPaymentRef,
       amountIdr: idr(amountIdr),
       source: input.source,
+      // legend-tlm3h: the auto journals judge a provider refund at this
+      // instant, in (created_at, id) order. It comes from the fact clock of the
+      // intent (lockIntentsForFact, under the intent lock taken above): strictly
+      // after the latest refund of ours or of the provider recorded for it. So
+      // on one intent a refund committed later is stamped later; the moment is
+      // not the commit moment (the clock may be ahead of it), only their order.
+      createdAt,
     })
     .onConflictDoNothing({
       target: [
@@ -428,5 +445,19 @@ export async function recordProviderRefundInTx(
       },
       now,
     );
+  // 8. The journal of this refund (legend-tlm3h): one event per recorded row.
+  await appendPaymentEvent(tx, context, {
+    name: "payment.provider_refunded",
+    aggregateId: inserted.id,
+    outletId: intent.outletId,
+    actor: { type: "system" },
+    payload: {
+      providerRefundId: inserted.id,
+      paymentIntentId: intent.id,
+      amountIdr,
+      refundedAt: now.toISOString(),
+    },
+    now,
+  });
   return { status: "recorded" };
 }

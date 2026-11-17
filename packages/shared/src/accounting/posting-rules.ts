@@ -22,7 +22,9 @@
 // `order.paid` then moves the intent-backed gateway part and any DP applied
 // out of customer_deposit into the sale. `order.refunded` credits
 // customer_deposit for the gateway part (owed to the guest until payout) and
-// `payment.refunded` pays it out of gateway_clearing. A forfeited DP moves
+// `payment.refunded` pays it out of gateway_clearing; a refund the provider
+// made on its own (`payment.provider_refunded`) books the same way, so
+// gateway_clearing ends at what the gateway kept. A forfeited DP moves
 // from customer_deposit to deposit_forfeit_income on reservation.cancelled /
 // reservation.no_show (from gateway_clearing when its receipt predates the
 // cutover). Gateway and EDC fees post on settlement.
@@ -301,6 +303,16 @@ export const defaultPostingRules: readonly PostingRule[] = Object.freeze([
     { event: "payment.refunded" },
     "refund",
     "Refund dibayarkan kembali lewat payment gateway",
+    `${AUTO}; ORD-09; §3.13 Orkestrasi Pembayaran`,
+    [
+      ["customer_deposit", "debit", "amountIdr"],
+      ["gateway_clearing", "credit", "amountIdr"],
+    ],
+  ),
+  rule(
+    { event: "payment.provider_refunded" },
+    "refund",
+    "Refund yang dikembalikan payment gateway sendiri (parsial, di luar modul refund)",
     `${AUTO}; ORD-09; §3.13 Orkestrasi Pembayaran`,
     [
       ["customer_deposit", "debit", "amountIdr"],
