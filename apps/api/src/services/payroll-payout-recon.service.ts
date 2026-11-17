@@ -49,7 +49,7 @@ import {
   overpaidFeeJournalKey,
   overpaidJournalKey,
 } from "./payroll-payout-overpaid.service.ts";
-import { openItemAmount } from "./payroll-payout.service.ts";
+import { openItemAmount, openItemFee } from "./payroll-payout.service.ts";
 import { itemSetHashOf } from "./payroll-payout-proof-binding.service.ts";
 import { sha256Of } from "./payroll-payout-proof-fingerprint.service.ts";
 
@@ -79,6 +79,8 @@ export type PayoutReconReason =
   | "journal_reversed"
   | "net_unreadable"
   | "net_mismatch"
+  | "fee_sealed_mismatch"
+  | "fee_journal_amount"
   | "operation_missing"
   | "grant_missing"
   | "grant_mismatch"
@@ -353,6 +355,8 @@ type ItemFacts = {
   payslipId: string;
   glPostingId: string | null;
   net: number | null;
+  /** Decrypted sealed fee; null when it cannot be read (fail closed). */
+  fee: number | null;
 };
 
 /** Everything one page needs, read in one tenant transaction. */
@@ -370,7 +374,10 @@ type Facts = {
   audits: AuditRow[];
   journals: Map<string, Journal>;
   items: Map<string, ItemFacts>;
-  postings: Map<string, { kind: string; journalKey: string; feeIdr: number }>;
+  postings: Map<
+    string,
+    { kind: string; journalKey: string; feeIdr: number | null }
+  >;
   /** Resolution state of the items of the resolve attestations. */
   resolutions: Map<string, ResolutionFacts>;
   /** Item ids linked to each posting (a settle group), with their nets. */
@@ -973,6 +980,7 @@ async function loadFacts(
     payslipId: string;
     glPostingId: string | null;
     amountEncrypted: Buffer;
+    feeIdrEncrypted: Buffer;
     piiKeyVersion: number;
   }): ItemFacts => {
     let net: number | null;
@@ -989,11 +997,26 @@ async function loadFacts(
     } catch {
       net = null;
     }
+    let fee: number | null;
+    try {
+      fee = Number(
+        openItemFee({
+          id: row.id,
+          tenantId,
+          feeIdrEncrypted: row.feeIdrEncrypted,
+          piiKeyVersion: row.piiKeyVersion,
+        }),
+      );
+      if (!Number.isSafeInteger(fee) || fee < 0) fee = null;
+    } catch {
+      fee = null;
+    }
     return {
       id: row.id,
       payslipId: row.payslipId,
       glPostingId: row.glPostingId,
       net,
+      fee,
     };
   };
   const itemColumns = {
@@ -1001,6 +1024,7 @@ async function loadFacts(
     payslipId: payrollDisbursementItems.payslipId,
     glPostingId: payrollDisbursementItems.glPostingId,
     amountEncrypted: payrollDisbursementItems.amountEncrypted,
+    feeIdrEncrypted: payrollDisbursementItems.feeIdrEncrypted,
     piiKeyVersion: payrollDisbursementItems.piiKeyVersion,
   };
   if (itemIds.length > 0)
@@ -1024,7 +1048,7 @@ async function loadFacts(
   ];
   const postings = new Map<
     string,
-    { kind: string; journalKey: string; feeIdr: number }
+    { kind: string; journalKey: string; feeIdr: number | null }
   >();
   if (postingIds.length > 0) {
     for (const row of await tx
@@ -1044,7 +1068,7 @@ async function loadFacts(
       postings.set(row.id, {
         kind: row.kind,
         journalKey: row.journalKey,
-        feeIdr: row.feeIdr ?? 0,
+        feeIdr: row.feeIdr,
       });
     for (const row of await tx
       .select(itemColumns)
@@ -1413,11 +1437,23 @@ function evaluate(
         );
         // The fee journal is owed exactly when the posting carries a fee (the
         // service only fills `fee_idr` when it journals it, docs/briefs/990/
-        // i3-note.md). Its amount is not compared: the rule fixes no amount.
-        if (posting.feeIdr > 0) {
-          const fee = facts.journals.get(overpaidFeeJournalKey(id));
-          if (!fee) add(id, "journal_missing");
-          else if (fee.reversed) add(id, "journal_reversed");
+        // i3-note.md). The posted fee must equal the sealed fee of the item
+        // (unreadable or absent while the posting has a fee: fail closed) and
+        // the fee journal debit must equal the posted fee (990-B).
+        if (posting.feeIdr !== null) {
+          if (
+            item.fee === null ? posting.feeIdr > 0 : item.fee !== posting.feeIdr
+          )
+            add(id, "fee_sealed_mismatch");
+          if (posting.feeIdr > 0) {
+            const fee = facts.journals.get(overpaidFeeJournalKey(id));
+            if (!fee) add(id, "journal_missing");
+            else {
+              if (fee.reversed) add(id, "journal_reversed");
+              if (fee.debit !== BigInt(posting.feeIdr))
+                add(id, "fee_journal_amount");
+            }
+          }
         }
       } else if (posting.kind === "settle") {
         if (op.kind === "return")

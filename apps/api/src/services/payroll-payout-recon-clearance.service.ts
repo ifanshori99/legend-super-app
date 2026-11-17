@@ -11,6 +11,12 @@
 // the step-up is refused. The grant is issued before the function locks any row
 // (the grantor connection would wait on our own lock).
 //
+// A clearance is bound to the fingerprint of the flagged data (legend-hklnq,
+// migration 0584). The flag's current fingerprint is its latest sighting; only
+// an approved clearance of that fingerprint releases the slip, so a flag raised
+// again over changed data is open again (`reopened`), and approving a clearance
+// whose data changed since the proposal is refused (PAYOUT-91).
+//
 // Trusted in-transaction writers: the caller wraps `withTenant`. No amount, name
 // or account number leaves this file.
 
@@ -61,6 +67,25 @@ const alreadyApproved = () =>
 
 const tenantOf = (actor: PayoutActor) => actor.tenantId as TenantId;
 
+/** The flag's current fingerprint: its latest sighting (migration 0584). */
+const currentFlagSha = sql`(
+  SELECT s.flag_sha256
+    FROM payroll_payout_recon_flag_sightings s
+   WHERE s.tenant_id = ${payrollPayoutReconExceptions.tenantId}
+     AND s.exception_id = ${payrollPayoutReconExceptions.id}
+   ORDER BY s.seen_at DESC, s.id DESC
+   LIMIT 1)`;
+
+/** The clearance of the flag's current fingerprint (at most one). */
+const currentClearanceJoin = and(
+  eq(
+    payrollPayoutReconClearances.tenantId,
+    payrollPayoutReconExceptions.tenantId,
+  ),
+  eq(payrollPayoutReconClearances.exceptionId, payrollPayoutReconExceptions.id),
+  sql`${payrollPayoutReconClearances.flagSha256} = ${currentFlagSha}`,
+);
+
 function messageHas(error: unknown, pattern: RegExp, depth = 0): boolean {
   if (depth > 4 || typeof error !== "object" || error === null) return false;
   const candidate = error as { message?: unknown; cause?: unknown };
@@ -104,10 +129,21 @@ function clearanceError(error: unknown, notFound: () => unknown): unknown {
       "Pengusul penutupan flag tidak boleh menyetujuinya sendiri.",
     );
   if (messageHas(error, /PAYOUT-87:/)) return alreadyApproved();
+  if (messageHas(error, /PAYOUT-91:/))
+    return payoutRefuse(
+      409,
+      "PAYOUT_RECON_FLAG_CHANGED",
+      "Data yang ditandai berubah sejak penutupan flag diusulkan. Ajukan usulan penutupan baru.",
+    );
   return error;
 }
 
-/** Every flag of the tenant with the state of its clearance, newest first. */
+/**
+ * Every flag of the tenant with the state of the clearance of its current
+ * fingerprint, newest first. `reopened`: a clearance of other flagged data was
+ * approved for this flag and none of the current fingerprint is (the flag
+ * holds the slip again).
+ */
 export async function listPayoutReconFlags(
   tx: Tx,
   actor: PayoutActor,
@@ -127,6 +163,14 @@ export async function listPayoutReconFlags(
       proposedAt: payrollPayoutReconClearances.proposedAt,
       approvedBy: payrollPayoutReconClearances.approvedBy,
       approvedAt: payrollPayoutReconClearances.approvedAt,
+      reopened: sql<boolean>`(EXISTS (
+        SELECT 1
+          FROM payroll_payout_recon_clearances o
+         WHERE o.tenant_id = ${payrollPayoutReconExceptions.tenantId}
+           AND o.exception_id = ${payrollPayoutReconExceptions.id}
+           AND o.approved_at IS NOT NULL
+           AND o.flag_sha256 IS DISTINCT FROM ${currentFlagSha})
+        AND ${payrollPayoutReconClearances.approvedAt} IS NULL)`,
     })
     .from(payrollPayoutReconExceptions)
     .innerJoin(
@@ -139,19 +183,7 @@ export async function listPayoutReconFlags(
         eq(payrollDisbursementItems.id, payrollPayoutReconExceptions.itemId),
       ),
     )
-    .leftJoin(
-      payrollPayoutReconClearances,
-      and(
-        eq(
-          payrollPayoutReconClearances.tenantId,
-          payrollPayoutReconExceptions.tenantId,
-        ),
-        eq(
-          payrollPayoutReconClearances.exceptionId,
-          payrollPayoutReconExceptions.id,
-        ),
-      ),
-    )
+    .leftJoin(payrollPayoutReconClearances, currentClearanceJoin)
     .where(eq(payrollPayoutReconExceptions.tenantId, tenantOf(actor)))
     .orderBy(
       desc(payrollPayoutReconExceptions.flaggedAt),
@@ -166,6 +198,7 @@ export async function listPayoutReconFlags(
     batchId: row.batchId,
     reason: row.reason,
     flaggedAt: row.flaggedAt.toISOString(),
+    reopened: row.reopened === true,
     clearance:
       row.clearanceId === null ||
       row.clearanceReason === null ||
@@ -186,9 +219,11 @@ export async function listPayoutReconFlags(
 
 /**
  * Propose clearing one flag with a written reason (10 to 500 characters).
- * 404 for a flag of another tenant or a malformed id, before any grant. A
- * flag with an open proposal answers that proposal's id again (idempotent, the
- * first reason stays, no second audit row); an approved one is 409.
+ * 404 for a flag of another tenant or a malformed id, before any grant. The
+ * clearance is bound to the live fingerprint of the flagged data. A flag with
+ * an open proposal of its current fingerprint answers that proposal's id again
+ * (idempotent, the first reason stays, no second audit row); an approved one
+ * is 409.
  */
 export async function proposePayoutReconClearance(
   tx: Tx,
@@ -222,19 +257,7 @@ export async function proposePayoutReconClearance(
         eq(payrollDisbursementItems.id, payrollPayoutReconExceptions.itemId),
       ),
     )
-    .leftJoin(
-      payrollPayoutReconClearances,
-      and(
-        eq(
-          payrollPayoutReconClearances.tenantId,
-          payrollPayoutReconExceptions.tenantId,
-        ),
-        eq(
-          payrollPayoutReconClearances.exceptionId,
-          payrollPayoutReconExceptions.id,
-        ),
-      ),
-    )
+    .leftJoin(payrollPayoutReconClearances, currentClearanceJoin)
     .where(
       and(
         eq(payrollPayoutReconExceptions.tenantId, tenantOf(actor)),
@@ -279,8 +302,9 @@ export async function proposePayoutReconClearance(
 /**
  * Approve a proposed clearance. The database refuses the proposer and the
  * proposer's session (403 PAYOUT_RECON_CLEAR_SELF_APPROVAL) and a clearance
- * already approved (409 PAYOUT_RECON_CLEAR_STATE); two concurrent approvals
- * leave exactly one winner.
+ * already approved (409 PAYOUT_RECON_CLEAR_STATE), and a clearance whose
+ * flagged data changed since the proposal (409 PAYOUT_RECON_FLAG_CHANGED);
+ * two concurrent approvals leave exactly one winner.
  */
 export async function approvePayoutReconClearance(
   tx: Tx,

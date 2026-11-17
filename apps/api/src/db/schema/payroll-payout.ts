@@ -1850,11 +1850,51 @@ export const payrollPayoutReconExceptions = pgTable(
 );
 
 /**
+ * Each time the reconciliation saw a flag, the fingerprint of the flagged data
+ * (legend-hklnq, migration 0584): sha256 of the item (minus volatile and sealed
+ * columns), the attestations of the operation and the postings of the item, as
+ * computed by `app.payout_recon_flag_fingerprint`. A row is written when the
+ * fingerprint is new for the flag; the latest row is the flag's current
+ * fingerprint. Insert-only, written by the payout role only.
+ */
+export const payrollPayoutReconFlagSightings = pgTable(
+  "payroll_payout_recon_flag_sightings",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    exceptionId: uuid("exception_id").notNull(),
+    flagSha256: varchar("flag_sha256", { length: 64 }).notNull(),
+    seenAt: timestamp("seen_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("payroll_payout_recon_flag_sightings_exception_idx").on(
+      table.tenantId,
+      table.exceptionId,
+      table.seenAt.desc(),
+    ),
+    foreignKey({
+      name: "payroll_payout_recon_flag_sightings_exception_fk",
+      columns: [table.tenantId, table.exceptionId],
+      foreignColumns: [
+        payrollPayoutReconExceptions.tenantId,
+        payrollPayoutReconExceptions.id,
+      ],
+    }),
+    check(
+      "payroll_payout_recon_flag_sightings_sha_check",
+      sql`${table.flagSha256} ~ '^[0-9a-f]{64}$'`,
+    ),
+  ],
+);
+
+/**
  * Two-person clearance of a false reconciliation flag (legend-xbagc). The flag
  * row stays (insert-only); an approved clearance stops it holding the payslip
  * back. Written only by the trusted payout functions: a finance person proposes
  * with a reason, a different one approves, each with a one-time step-up grant.
- * Never deleted; one clearance per flag.
+ * Never deleted. A clearance is bound to the fingerprint of the flagged data
+ * (legend-hklnq, migration 0584): it releases the slip only while the flag's
+ * current fingerprint is the same; one clearance per flag and fingerprint.
  */
 export const payrollPayoutReconClearances = pgTable(
   "payroll_payout_recon_clearances",
@@ -1862,6 +1902,8 @@ export const payrollPayoutReconClearances = pgTable(
     id: uuid("id").defaultRandom().primaryKey(),
     tenantId: tenantIdColumn(() => tenants.id).notNull(),
     exceptionId: uuid("exception_id").notNull(),
+    /** Fingerprint of the flagged data the clearance was proposed for. */
+    flagSha256: varchar("flag_sha256", { length: 64 }).notNull(),
     reason: varchar("reason", { length: 500 }).notNull(),
     proposedBy: actor("proposed_by").notNull(),
     proposedSessionId: text("proposed_session_id").notNull(),
@@ -1879,9 +1921,10 @@ export const payrollPayoutReconClearances = pgTable(
       table.tenantId,
       table.id,
     ),
-    unique("payroll_payout_recon_clearances_exception_key").on(
+    unique("payroll_payout_recon_clearances_exception_sha_key").on(
       table.tenantId,
       table.exceptionId,
+      table.flagSha256,
     ),
     foreignKey({
       name: "payroll_payout_recon_clearances_exception_fk",
@@ -1901,6 +1944,10 @@ export const payrollPayoutReconClearances = pgTable(
       columns: [table.tenantId, table.approvedGrantId],
       foreignColumns: [payrollPayoutGrants.tenantId, payrollPayoutGrants.id],
     }),
+    check(
+      "payroll_payout_recon_clearances_sha_check",
+      sql`${table.flagSha256} ~ '^[0-9a-f]{64}$'`,
+    ),
     check(
       "payroll_payout_recon_clearances_reason_check",
       sql`char_length(btrim(${table.reason})) >= 10`,

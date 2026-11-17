@@ -50,6 +50,7 @@ const CODE_KEYS: Record<string, MessageKey> = {
   PAYOUT_RECON_CLEAR_SELF_APPROVAL:
     "payrollPayoutReview.error.reconClearSelfApproval",
   PAYOUT_RECON_CLEAR_STATE: "payrollPayoutReview.error.reconClearState",
+  PAYOUT_RECON_FLAG_CHANGED: "payrollPayoutReview.error.reconFlagChanged",
   PAYOUT_PROPOSAL_NOT_WITHDRAWABLE:
     "payrollPayoutReview.error.proposalNotWithdrawable",
   PAYOUT_PROOF_SPENT_BY_WITHDRAWN:

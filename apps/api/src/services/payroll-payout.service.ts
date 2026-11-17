@@ -1024,8 +1024,10 @@ type PlannedItem = {
  * Slip ids with an open row in `payroll_payout_recon_exceptions` (migration
  * 0410, insert-only) on one of their items. A row is open until it has an
  * approved two-person clearance (`payroll_payout_recon_clearances`, migration
- * 0581, same test as `app.payout_payslip_held_by_recon`); a proposal alone
- * (`approved_at` null) still holds the slip.
+ * 0581, same test as `app.payout_payslip_held_by_recon`) bound to the flag's
+ * current fingerprint, its latest sighting (migration 0584): a clearance of
+ * other flagged data, or a proposal alone (`approved_at` null), still holds
+ * the slip.
  */
 async function slipsHeldByReconException(
   tx: Tx,
@@ -1043,7 +1045,13 @@ async function slipsHeldByReconException(
              SELECT 1
                FROM payroll_payout_recon_clearances c
               WHERE c.tenant_id = e.tenant_id AND c.exception_id = e.id
-                AND c.approved_at IS NOT NULL)
+                AND c.approved_at IS NOT NULL
+                AND c.flag_sha256 = (
+                  SELECT s.flag_sha256
+                    FROM payroll_payout_recon_flag_sightings s
+                   WHERE s.tenant_id = e.tenant_id AND s.exception_id = e.id
+                   ORDER BY s.seen_at DESC, s.id DESC
+                   LIMIT 1))
            AND i.payslip_id IN (${sql.join(
              payslipIds.map((id) => sql`${id}`),
              sql`, `,

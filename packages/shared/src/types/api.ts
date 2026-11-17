@@ -214,9 +214,10 @@ export type PayoutApprovalLogDto = {
 
 /**
  * One reconciliation flag and the state of its two-person clearance (GET
- * /payout-recon-flags). `clearance` is null until someone proposes; the flag
- * holds the payslip back until `clearance.status` is `approved`. No amount,
- * name or account number.
+ * /payout-recon-flags). `clearance` is the clearance of the flag's current
+ * fingerprint, null until someone proposes for it; the flag holds the payslip
+ * back until `clearance.status` is `approved`. No amount, name or account
+ * number.
  */
 export type PayoutReconFlagDto = {
   id: string;
@@ -227,6 +228,12 @@ export type PayoutReconFlagDto = {
   reason: string;
   /** ISO datetime the reconciliation flagged it. */
   flaggedAt: string;
+  /**
+   * True when a clearance was approved for other flagged data (an earlier
+   * fingerprint, legend-hklnq) and none is approved for the current one: the
+   * flag holds the payslip again and needs a new clearance.
+   */
+  reopened: boolean;
   clearance: {
     id: string;
     status: "proposed" | "approved";

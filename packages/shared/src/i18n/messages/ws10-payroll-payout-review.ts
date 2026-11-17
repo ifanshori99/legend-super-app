@@ -360,6 +360,8 @@ export const payrollPayoutReviewMessages = {
     reconClearSelfApproval:
       "Pengusul penutupan flag tidak boleh menyetujuinya sendiri.",
     reconClearState: "Penutupan flag ini sudah disetujui.",
+    reconFlagChanged:
+      "Data yang ditandai berubah sejak penutupan flag diusulkan. Ajukan usulan penutupan baru.",
     proposalNotWithdrawable:
       "Usulan ini sudah berubah (disimpan, dibatalkan, atau hanya sebagian item). Muat ulang lalu periksa. Tidak ada yang dibatalkan.",
     proofSpentByWithdrawn:
