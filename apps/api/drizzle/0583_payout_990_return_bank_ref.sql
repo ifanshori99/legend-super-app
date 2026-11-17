@@ -299,6 +299,14 @@ REVOKE ALL ON FUNCTION app.payout_return_confirm(uuid, varchar, text, varchar) F
 --> statement-breakpoint
 GRANT EXECUTE ON FUNCTION app.payout_return_confirm(uuid, varchar, text, varchar) TO legend_app;
 
+--> statement-breakpoint
+RESET ROLE;
+--> statement-breakpoint
+REVOKE CREATE ON SCHEMA app FROM legend_payout;
+--> statement-breakpoint
+REVOKE SET OPTION FOR legend_payout FROM CURRENT_USER;
+--> statement-breakpoint
+
 -- The return bank reference is written by the payout role only (the application
 -- role has no column grant for UPDATE; this closes INSERT).
 CREATE FUNCTION app.payroll_disbursement_items_return_bank_ref_guard() RETURNS trigger
@@ -317,9 +325,3 @@ END $$;
 CREATE TRIGGER payroll_disbursement_items_return_bank_ref_trg
   BEFORE INSERT OR UPDATE ON public.payroll_disbursement_items
   FOR EACH ROW EXECUTE FUNCTION app.payroll_disbursement_items_return_bank_ref_guard();
---> statement-breakpoint
-RESET ROLE;
---> statement-breakpoint
-REVOKE CREATE ON SCHEMA app FROM legend_payout;
---> statement-breakpoint
-REVOKE SET OPTION FOR legend_payout FROM CURRENT_USER;
