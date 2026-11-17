@@ -7067,3 +7067,10 @@ Cabang worktree `ghostex/980-refund-sisa-4-kartu` dari `9788dc422` (958 + 967). 
 - LOW (diperketat setelah architect delta): SEMUA jawaban `not_found` dari provider ditolak (409 `PROVIDER_REFUND_STATUS_UNKNOWN`), juga untuk refund yang hanya punya attempts: pengiriman bisa sudah lolos dan pencarian by key bisa terlambat. Settle manual hanya lolos bila provider menjawab `failed`.
 - HIGH (architect delta): bendera refund provider di intent (`provider_refunded_after_paid_at` / `provider_refunded_at`) kini selalu menolak refund manual (409), berapa pun refund parsial yang tercatat, karena jawaban `refunded` penuh dan aturan melebihi batas menyetel bendera tanpa mencatat jumlah.
 - Bukti ronde 6: grup 106 berkas refund/order-issues/recovery: 1613 lulus, 0 gagal; typecheck api hijau.
+
+## 1020 SO recon ronde 2 (17 Nov 2026, cabang ghostex/1020-so-recon-ronde-2-fix, 88fd5d7c8)
+- F1 legend-qbsbr: refund dana parkir transaksi LAIN tidak lagi dihitung sebagai refund transaksi utama; refund dana milik transaksi sendiri dibandingkan dengan nilai transaksi (greatest evidence dan tagihan), bukan tagihan saja (temuan architect: tagihan 50k dibayar 150k).
+- F2 legend-svwdz: kredit DP pindahan dibatasi nilai bersih intent sumber (pool, alokasi created_at,id, floor 0), snapshot refund provider per remainder (migrasi 0636), flag recon tercatat `reservation_credit_recon_flags` (migrasi 0637) diperbarui saat refund provider dicatat. Guard refund tetap pandangan gross.
+- F3 legend-6jdy1: refund.succeeded dengan reference yang menyebut intent lain = ignored REFERENCE_MISMATCH, tanpa tulis refund/stamp/audit/alert.
+- Temuan di luar cabang: bead P2 (DP satu intent dua reservasi, apply kredit sah ditolak 409 setelah refund provider; perilaku lama, restriktif).
+- Bukti: 3 berkas test 1020 (38 test) + 13 berkas 958/967/980/1009/1016/registry (315 test) lulus; gagal-dulu di base 19 dari 24 (sisanya kontrol); typecheck api, eslint, prettier hijau; db:generate kosong. Review architect 3 putaran (6 temuan nyata dibetulkan).
