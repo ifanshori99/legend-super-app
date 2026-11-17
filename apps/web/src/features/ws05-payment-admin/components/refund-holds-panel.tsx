@@ -1,4 +1,4 @@
-// Refund recon holds (legend-vp4ta): a refund the provider made that does not
+// Refund recon holds (legend-vp4ta; shown to staff as "refund tertahan"): a refund the provider made that does not
 // match any refund of ours blocks refund, payout and fund on that payment.
 // Finance closes the hold with a decision and a note. Closing never pays
 // anyone; "counted" records the money as already returned to the guest.
@@ -31,6 +31,7 @@ import type {
   RefundReconHoldResolution,
   RefundReconHoldView,
 } from "@starter/shared/payment/admin";
+import { formatRupiah } from "@starter/shared/i18n";
 import { formatMoment } from "../format";
 import { useRefundReconHolds, useResolveRefundReconHold } from "../hooks";
 import { newIdempotencyKey } from "../../../lib/idempotency.ts";
@@ -84,8 +85,16 @@ export function RefundHoldsPanel() {
           </Select>
         }
         empty={{
-          title: t("paymentAdmin.refundHolds.emptyTitle"),
-          description: t("paymentAdmin.refundHolds.emptyHint"),
+          title: t(
+            status === "resolved"
+              ? "paymentAdmin.refundHolds.emptyResolvedTitle"
+              : "paymentAdmin.refundHolds.emptyTitle",
+          ),
+          description: t(
+            status === "resolved"
+              ? "paymentAdmin.refundHolds.emptyResolvedHint"
+              : "paymentAdmin.refundHolds.emptyHint",
+          ),
         }}
       >
         <ul className="divide-y divide-border">
@@ -107,9 +116,11 @@ export function RefundHoldsPanel() {
                   · {t("paymentAdmin.refundHolds.flaggedAt")}{" "}
                   {formatMoment(hold.flaggedAt)}
                 </p>
-                <p className="text-sm text-muted-foreground">{hold.reason}</p>
+                <p className="text-sm break-words text-muted-foreground">
+                  {hold.reason}
+                </p>
                 {hold.resolvedAt && hold.resolution && (
-                  <p className="text-sm text-muted-foreground">
+                  <p className="text-sm break-words text-muted-foreground">
                     {t(resolutionLabelKey(hold.resolution))} ·{" "}
                     {formatMoment(hold.resolvedAt)}
                     {hold.resolutionNote ? ` · ${hold.resolutionNote}` : ""}
@@ -181,22 +192,39 @@ function ResolveHoldDialog({
   const [note, setNote] = React.useState("");
   // One key per dialog so a retry never records the refund twice.
   const [idempotencyKey] = React.useState(() => newIdempotencyKey());
-  const [error, setError] = React.useState<string | undefined>();
+  const [noteError, setNoteError] = React.useState<string | undefined>();
   const [choiceError, setChoiceError] = React.useState<string | undefined>();
-  const groupName = React.useId();
+  const [formError, setFormError] = React.useState<string | undefined>();
+  const groupId = React.useId();
+  const firstRadioRef = React.useRef<HTMLInputElement>(null);
+  const noteRef = React.useRef<HTMLTextAreaElement>(null);
+  const formErrorRef = React.useRef<HTMLParagraphElement>(null);
+  const pending = resolve.isPending;
+  const hasAmount = hold.amountIdr > 0;
+  const amount = formatRupiah(hold.amountIdr);
   // Without a provider refund id or an amount there is nothing to count.
-  const canCount = hold.providerRefundId !== null && hold.amountIdr > 0;
+  const canCount = hold.providerRefundId !== null && hasAmount;
+  const counting = resolution === "counted_against_intent";
+  const warningId = `${groupId}-warning`;
+
+  // A server error is announced and focused: it sits above the footer, where
+  // the person who just pressed the submit button is looking.
+  React.useEffect(() => {
+    if (formError) formErrorRef.current?.focus();
+  }, [formError]);
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
-    setChoiceError(undefined);
-    setError(undefined);
+    if (pending) return;
+    setFormError(undefined);
     if (!resolution) {
       setChoiceError(t("paymentAdmin.refundHolds.resolutionRequired"));
+      firstRadioRef.current?.focus();
       return;
     }
     if (note.trim().length < 4) {
-      setError(t("paymentAdmin.refundHolds.noteRequired"));
+      setNoteError(t("paymentAdmin.refundHolds.noteRequired"));
+      noteRef.current?.focus();
       return;
     }
     resolve.mutate(
@@ -206,10 +234,18 @@ function ResolveHoldDialog({
       },
       {
         onSuccess: () => {
-          toast({ title: t("paymentAdmin.refundHolds.resolved") });
+          toast({
+            tone: "success",
+            title:
+              resolution === "counted_against_intent"
+                ? t("paymentAdmin.refundHolds.toastCounted", { amount })
+                : hasAmount
+                  ? t("paymentAdmin.refundHolds.toastClosedAmount", { amount })
+                  : t("paymentAdmin.refundHolds.toastClosed"),
+          });
           onClose();
         },
-        onError: (mutationError) => setError(mutationError.message),
+        onError: (mutationError) => setFormError(mutationError.message),
       },
     );
   };
@@ -218,66 +254,100 @@ function ResolveHoldDialog({
     value: RefundReconHoldResolution;
     label: string;
     hint: string;
-    disabled: boolean;
+    disabledReason?: string;
   }[] = [
     {
       value: "not_this_intent",
       label: t("paymentAdmin.refundHolds.notThisIntent"),
       hint: t("paymentAdmin.refundHolds.notThisIntentHint"),
-      disabled: false,
     },
     {
       value: "counted_against_intent",
       label: t("paymentAdmin.refundHolds.countedAgainstIntent"),
       hint: t("paymentAdmin.refundHolds.countedAgainstIntentHint"),
-      disabled: !canCount,
+      disabledReason: canCount
+        ? undefined
+        : t(
+            hold.providerRefundId === null
+              ? "paymentAdmin.refundHolds.countedDisabledNoRef"
+              : "paymentAdmin.refundHolds.countedDisabledZero",
+          ),
     },
   ];
 
   return (
-    <Dialog open onOpenChange={(open) => (!open ? onClose() : undefined)}>
-      <DialogContent>
+    <Dialog
+      open
+      onOpenChange={(open) => (!open && !pending ? onClose() : undefined)}
+    >
+      <DialogContent
+        hideClose={pending}
+        onEscapeKeyDown={(event) => pending && event.preventDefault()}
+        onInteractOutside={(event) => pending && event.preventDefault()}
+      >
         <DialogHeader>
           <DialogTitle>
-            {t("paymentAdmin.refundHolds.resolveTitle")}
+            {hasAmount
+              ? t("paymentAdmin.refundHolds.resolveTitle", { amount })
+              : t("paymentAdmin.refundHolds.resolveTitleNoAmount")}
           </DialogTitle>
-          <DialogDescription>
-            {t("paymentAdmin.refundHolds.resolveBody")}
+          <DialogDescription className="break-words">
+            {t("paymentAdmin.refundHolds.resolveBody", {
+              refundId:
+                hold.providerRefundId ??
+                t("paymentAdmin.refundHolds.noProviderRefund"),
+            })}
           </DialogDescription>
         </DialogHeader>
         <form className="grid gap-4" onSubmit={submit} noValidate>
           <fieldset
+            role="radiogroup"
             className="grid gap-2"
-            aria-describedby={choiceError ? `${groupName}-error` : undefined}
+            aria-required="true"
+            aria-invalid={choiceError ? true : undefined}
+            aria-describedby={choiceError ? `${groupId}-error` : undefined}
           >
             <legend className="mb-1 text-sm font-medium">
               {t("paymentAdmin.refundHolds.resolution")}
             </legend>
-            {options.map((option) => (
-              <label
-                key={option.value}
-                className="flex min-h-11 items-start gap-3 rounded-control border border-border p-3 has-[:checked]:border-foreground has-[:disabled]:opacity-60"
-              >
-                <input
-                  type="radio"
-                  name={groupName}
-                  value={option.value}
-                  checked={resolution === option.value}
-                  disabled={option.disabled}
-                  onChange={() => setResolution(option.value)}
-                  className="mt-1 size-4 shrink-0"
-                />
-                <span className="grid gap-0.5">
-                  <span className="text-sm font-semibold">{option.label}</span>
-                  <span className="text-sm text-muted-foreground">
-                    {option.hint}
+            {options.map((option, index) => {
+              const labelId = `${groupId}-${option.value}-label`;
+              const hintId = `${groupId}-${option.value}-hint`;
+              const disabled = Boolean(option.disabledReason);
+              return (
+                <label
+                  key={option.value}
+                  className="flex min-h-11 items-start gap-3 rounded-control border border-border p-3 has-[:checked]:border-foreground has-[:disabled]:opacity-70 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring"
+                >
+                  <input
+                    ref={index === 0 ? firstRadioRef : undefined}
+                    type="radio"
+                    name={groupId}
+                    value={option.value}
+                    checked={resolution === option.value}
+                    disabled={disabled || pending}
+                    aria-labelledby={labelId}
+                    aria-describedby={hintId}
+                    onChange={() => {
+                      setResolution(option.value);
+                      setChoiceError(undefined);
+                    }}
+                    className="mt-1 size-4 shrink-0 accent-accent-foreground"
+                  />
+                  <span className="grid gap-0.5">
+                    <span id={labelId} className="text-sm font-semibold">
+                      {option.label}
+                    </span>
+                    <span id={hintId} className="text-sm text-muted-foreground">
+                      {option.disabledReason ?? option.hint}
+                    </span>
                   </span>
-                </span>
-              </label>
-            ))}
+                </label>
+              );
+            })}
             {choiceError && (
               <p
-                id={`${groupName}-error`}
+                id={`${groupId}-error`}
                 role="alert"
                 className="text-sm text-danger"
               >
@@ -285,36 +355,65 @@ function ResolveHoldDialog({
               </p>
             )}
           </fieldset>
-          {resolution === "counted_against_intent" && (
+          {counting && (
             <p
-              role="alert"
+              id={warningId}
               className="flex items-start gap-2 rounded-control bg-warning-subtle p-3 text-sm text-warning"
             >
               <TriangleAlert
                 className="mt-0.5 size-4 shrink-0"
                 aria-hidden="true"
               />
-              {t("paymentAdmin.refundHolds.countedWarning")}
+              {t("paymentAdmin.refundHolds.countedWarning", { amount })}
             </p>
           )}
           <FormField
             label={t("paymentAdmin.refundHolds.note")}
             required
-            error={error}
+            error={noteError}
             hint={t("paymentAdmin.refundHolds.noteHint")}
           >
             <Textarea
+              ref={noteRef}
               value={note}
-              onChange={(event) => setNote(event.target.value)}
+              autoComplete="off"
+              onChange={(event) => {
+                setNote(event.target.value);
+                setNoteError(undefined);
+              }}
               rows={3}
             />
           </FormField>
+          {formError && (
+            <p
+              ref={formErrorRef}
+              tabIndex={-1}
+              role="alert"
+              className="text-sm font-medium text-danger outline-none"
+            >
+              {formError}
+            </p>
+          )}
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={onClose}>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={pending}
+              onClick={onClose}
+            >
               {t("common.cancel")}
             </Button>
-            <Button type="submit" loading={resolve.isPending}>
-              {t("paymentAdmin.refundHolds.confirm")}
+            <Button
+              type="submit"
+              variant={counting ? "destructive" : "default"}
+              loading={pending}
+              aria-describedby={counting ? warningId : undefined}
+            >
+              {resolution === null
+                ? t("paymentAdmin.refundHolds.confirm")
+                : counting
+                  ? t("paymentAdmin.refundHolds.confirmCount", { amount })
+                  : t("paymentAdmin.refundHolds.confirmClose")}
             </Button>
           </DialogFooter>
         </form>

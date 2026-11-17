@@ -8,6 +8,7 @@ import {
   foreignKey,
   index,
   pgTable,
+  text,
   timestamp,
   unique,
   uniqueIndex,
@@ -41,6 +42,10 @@ export const refundReconHolds = pgTable(
       .notNull()
       .defaultNow(),
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    // legend-vp4ta: who closed the hold, what they decided and why.
+    resolvedBy: uuid("resolved_by"),
+    resolution: text("resolution"),
+    resolutionNote: text("resolution_note"),
   },
   (t) => [
     unique("refund_recon_hold_event_key").on(t.tenantId, t.webhookEventId),
@@ -56,5 +61,9 @@ export const refundReconHolds = pgTable(
       .where(sql`${t.providerRefundId} IS NOT NULL`),
     index("refund_recon_hold_intent_idx").on(t.tenantId, t.paymentIntentId),
     check("refund_recon_hold_amount_check", sql`${t.amountIdr} >= 0`),
+    check(
+      "refund_recon_hold_resolution_check",
+      sql`${t.resolution} IS NULL OR ${t.resolution} IN ('not_this_intent', 'counted_against_intent')`,
+    ),
   ],
 );

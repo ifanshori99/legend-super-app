@@ -500,16 +500,19 @@ describe("1025-d not_this_intent closes the hold and lifts the block, once", () 
     expect(await refundRowCount(intent.id)).toBe(1);
   });
 
-  it("1025-d-03 an approved refund held back by the hold is paid out once the hold is resolved, and only once", async () => {
+  it("1025-d-03 a refund quarantined while the hold was open stays unpaid after the resolve; a NEW refund within the remaining net goes out exactly once", async () => {
+    // Decision (coordinator): the payout path quarantines a refund of a
+    // hold-blocked intent for good (PAYOUT_QUARANTINED); resolving the hold
+    // does not release it (restrictive, no money-path change).
     const intent = await seedIntent();
     const filed = await manualRefund(intent.id, 10_000);
     expect(filed.status, JSON.stringify(filed.body)).toBe(201);
-    const refundId = filed.body.data.id as string;
-    await approveWithoutSending(refundId);
+    const oldRefundId = filed.body.data.id as string;
+    await approveWithoutSending(oldRefundId);
     const holdId = await seedHold(intent);
 
     // Blocked while the hold is open: nothing leaves.
-    const blocked = await retryRefund(refundId);
+    const blocked = await retryRefund(oldRefundId);
     expect(blocked.status, JSON.stringify(blocked.body)).toBeLessThan(500);
     expect(fake.calls, "no payout while the hold is open").toHaveLength(0);
     expect(await refundStatuses(intent.id)).not.toContain("completed");
@@ -518,14 +521,35 @@ describe("1025-d not_this_intent closes the hold and lifts the block, once", () 
       200,
     );
 
-    const paid = await retryRefund(refundId);
-    expect(paid.status, JSON.stringify(paid.body)).toBeLessThan(300);
-    expect(fake.calls, "paid out exactly once").toHaveLength(1);
-    expect(fake.calls[0]).toMatchObject({ refundId, amountIdr: 10_000 });
-    expect(await refundStatuses(intent.id)).toEqual(["completed"]);
+    // The quarantined refund is NOT sent, however often it is retried.
+    await retryRefund(oldRefundId);
+    await retryRefund(oldRefundId);
+    expect(fake.calls, "quarantined refund stays unpaid").toHaveLength(0);
+    expect(await refundStatuses(intent.id)).not.toContain("completed");
 
-    // Retrying (or resolving again) never pays a second time.
-    await retryRefund(refundId);
+    // A NEW refund of the intent is accepted and pays out exactly once.
+    const fresh = await manualRefund(intent.id, 10_000);
+    expect(fresh.status, JSON.stringify(fresh.body)).toBe(201);
+    const newRefundId = fresh.body.data.id as string;
+    expect(newRefundId).not.toBe(oldRefundId);
+    const approved = await approver
+      .post(`${ADMIN}/refunds/${newRefundId}/approve`)
+      .set(originHeader)
+      .send({ idempotencyKey: key("apr") });
+    expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+    expect(approved.body.data).toMatchObject({
+      status: "completed",
+      amountIdr: 10_000,
+    });
+    expect(fake.calls, "the new refund paid exactly once").toHaveLength(1);
+    expect(fake.calls[0]).toMatchObject({
+      refundId: newRefundId,
+      amountIdr: 10_000,
+    });
+
+    // Retrying either refund or resolving again never pays a second time.
+    await retryRefund(newRefundId);
+    await retryRefund(oldRefundId);
     await resolveHold(staff, holdId, "not_this_intent");
     expect(fake.calls).toHaveLength(1);
   });
