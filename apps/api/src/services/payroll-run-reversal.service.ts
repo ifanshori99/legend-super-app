@@ -65,6 +65,7 @@ import { recordAudit } from "./core-audit.ts";
 import type { Tx } from "./hris-access.ts";
 import { assertPayrollTenantCan } from "./payroll-access.ts";
 import { emitPayrollEvent } from "./payroll-events.ts";
+import { syncPph21ReceivableOpenItemsInTransaction } from "./payroll-pph21-receivable-open-items.service.ts";
 import {
   disputeFreezesBatchSql,
   disputeIsOpenSql,
@@ -717,6 +718,9 @@ export async function decidePayrollRunReversalInTransaction(
       "Perubahan status payroll tidak diizinkan.",
     );
   await writeRun(tx, tenantId, payrollRunId, next);
+  // legend-itph: the reversed run leaves no employee receivable open item, and
+  // a receivable it collected is open again (receivable lock held above).
+  await syncPph21ReceivableOpenItemsInTransaction(tx, context, payrollRunId);
   await emitPayrollEvent(tx, context, payrollReversed, {
     aggregateId: payrollRunId,
     actor: { type: "user", id: actor },

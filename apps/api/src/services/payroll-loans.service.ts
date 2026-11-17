@@ -63,6 +63,7 @@ import {
   payrollLoanPolicies,
 } from "../db/schema/payroll.ts";
 import { employees } from "../db/schema/hris.ts";
+import { hrisOffboardings } from "../db/schema/hris-lifecycle.ts";
 import { withTenant } from "../db/tenant.ts";
 import { openPayrollAmount } from "../lib/payroll-sealed.ts";
 import { recordAudit } from "./core-audit.ts";
@@ -593,15 +594,30 @@ export async function disburseEmployeeLoan(
       input.idempotencyKey,
       "payroll.loan.disburse",
       { actor, loanId },
-      async () =>
-        applyTransition(
-          tx,
-          context,
-          actor,
-          await lockLoanForDecision(tx, context, actor, loanId),
-          "disburse",
-          now,
-        ),
+      async () => {
+        // Loan lock first (same order as assertNoPendingPayrollDeduction in
+        // hris-offboarding.service.ts), then the offboarding check: no money
+        // leaves to an employee whose offboarding is already completed.
+        const row = await lockLoanForDecision(tx, context, actor, loanId);
+        const [offboarded] = await tx
+          .select({ id: hrisOffboardings.id })
+          .from(hrisOffboardings)
+          .where(
+            and(
+              eq(hrisOffboardings.tenantId, context.tenant.tenantId),
+              eq(hrisOffboardings.employeeId, row.employeeId),
+              eq(hrisOffboardings.status, "completed"),
+            ),
+          )
+          .limit(1);
+        if (offboarded)
+          throw new HttpError(
+            409,
+            "PAYROLL_LOAN_OFFBOARDING_COMPLETED",
+            "Kasbon tidak bisa dicairkan: offboarding karyawan sudah selesai.",
+          );
+        return applyTransition(tx, context, actor, row, "disburse", now);
+      },
     );
   });
 }
