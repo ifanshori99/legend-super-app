@@ -827,6 +827,8 @@ export type CreateIntentOptions = {
     paymentLinkId: string;
     billSplitId: string | null;
     next: { method: string; channelCode: string | null };
+    /** The request's own intent key, read again under the order lock. */
+    intentKey?: string;
   }) => Promise<{ voided: string[] }>;
 };
 
@@ -1160,6 +1162,7 @@ async function createIntentCore(
         method: parsed.method,
         channelCode: parsed.channelCode ?? null,
       },
+      intentKey: parsed.idempotencyKey,
     });
     // legend-p45yq: the void ran, so a same-key twin may have committed its
     // intent while we voided (it voided the same code). Read the key again
