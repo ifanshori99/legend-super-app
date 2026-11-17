@@ -1809,12 +1809,16 @@ export async function reconcileTrustedPayouts(
 
   // A difference of the operation holds every slip of it, so an operation-wide
   // reason is flagged once per terminal item (the flag carries the payslip).
-  const seen = new Set([
+  // Known flags are raised again too (legend-hklnq): `app.payout_recon_flag`
+  // inserts nothing for an existing key but records a new fingerprint sighting
+  // when the flagged data changed. Only flags new to the table count as fresh.
+  const known = new Set([
     ...(facts?.flagged ?? []),
     ...(withdrawals?.flagged ?? []),
     ...(closures?.flagged ?? []),
   ]);
-  const fresh = (
+  const seen = new Set<string>();
+  const raised = (
     facts === null
       ? []
       : operations
@@ -1871,9 +1875,15 @@ export async function reconcileTrustedPayouts(
       seen.add(key);
       return true;
     });
-  if (fresh.length > 0)
+  const fresh = raised.filter(
+    (flag) =>
+      !known.has(
+        flagKey(flag.kind, flag.operationId, flag.itemId, flag.reason),
+      ),
+  );
+  if (raised.length > 0)
     await withTenant(db, context, async (tx) => {
-      for (const flag of fresh)
+      for (const flag of raised)
         await tx.execute(
           sql`SELECT app.payout_recon_flag(${tenantId}::uuid, ${flag.kind}, ${flag.operationId}::uuid, ${flag.itemId}::uuid, ${flag.reason})`,
         );
