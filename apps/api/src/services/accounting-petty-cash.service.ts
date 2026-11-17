@@ -30,9 +30,19 @@
 //   takes the creator's day total of cash outs and top-ups at the outlet past
 //   it (`accounting-cash-limit.service.ts`), is NOT executed: it is stored as a
 //   `petty_topup` document in `cash_bank_entries` (`pending_approval`, no
-//   journal, fund and ledger untouched). `approveCashBankEntry` then runs the
-//   real top-up in its own transaction (`approvePettyTopupInTransaction`, ledger
-//   key `pt/<entryId>`). A return (fund -> bank) is never held.
+//   journal, fund and ledger untouched). The same transaction opens the
+//   `cash_out` approval chain for that document (SO 1036 finding 6): the matrix
+//   tiers on the creator's day total (`cashApprovalCheck`, so a split cannot pick
+//   a lower tier) and `alwaysRequire` keeps a held top-up from ever having no
+//   chain; with no policy the submission rolls back whole (fail closed).
+//   `approveCashBankEntry` then runs the real top-up in its own transaction
+//   (`approvePettyTopupInTransaction`, ledger key `pt/<entryId>`). A return
+//   (fund -> bank) is never held.
+// - Lock order (SO 1036 finding 3): every path that moves a fund or posts to the
+//   petty cash account takes `entityLock(tenant, legalEntity)` FIRST, then (when
+//   it applies) the actor's cash-limit lock, then fund / ledger rows. Payroll
+//   cash posts credit 1102 under the same entity lock, so a return reads the GL
+//   balance it is about to spend.
 // - Writes need tenant scope (bank accounts live on the legal entity). Reads
 //   are narrowed to the caller's outlets.
 
@@ -97,7 +107,7 @@ import {
 } from "./accounting-cash-bank-shared.ts";
 import {
   APPROVED_TOPUP_KEY_PREFIX,
-  requiresApproval,
+  cashApprovalCheck,
 } from "./accounting-cash-limit.service.ts";
 import { postJournalFromRuleInTransaction } from "./accounting-journal.service.ts";
 import {
@@ -106,8 +116,16 @@ import {
 } from "./accounting-period.service.ts";
 import { requireLegalEntity } from "./accounting-shared.ts";
 import { loadOutletClock } from "./inventory-ops.shared.ts";
+import { openApprovalRequest } from "./platform-approval.service.ts";
 
 const OPERATION = "petty_cash.movement.create";
+
+// Approval inbox identity of a held top-up: the same chain as a held cash out
+// (`CASH_BANK_APPROVAL_SOURCE_MODULE` / `CASH_BANK_ENTRY_OBJECT_TYPE` in
+// accounting-cash-bank-entries.service.ts, which imports this file, so the
+// values are repeated here; a test pins them equal).
+export const PETTY_TOPUP_APPROVAL_SOURCE_MODULE = "accounting";
+export const PETTY_TOPUP_ENTRY_OBJECT_TYPE = "cash_bank_entry";
 
 export type PettyCashFundQuery = { legalEntityId: string; outletId?: string };
 export type PettyCashReconciliationQuery = PettyCashFundQuery;
@@ -631,6 +649,9 @@ async function applyMovement(
 ): Promise<{ id: string; balanceAfter: Idr; posted: Posted }> {
   const tenantId = context.tenant.tenantId;
   const outletId = outletIdSchema.parse(input.outletId);
+  // Entity lock before any fund row or GL read (no-op when the caller already
+  // holds it): payroll cash posts to 1102 under the same lock.
+  await entityLock(tx, tenantId, input.legalEntityId);
   if (input.kind === "topup")
     await tx
       .insert(pettyCashFunds)
@@ -838,14 +859,15 @@ export async function createPettyCashMovement(
         const clock = await loadOutletClock(tx, input.outletId);
         const entryDate = businessDateOf(now, clock);
 
-        if (
-          input.kind === "topup" &&
-          (await requiresApproval(tx, {
-            tenantId,
-            actorId,
-            amountIdr: input.amountIdr,
-          }))
-        ) {
+        const cashCheck =
+          input.kind === "topup"
+            ? await cashApprovalCheck(tx, {
+                tenantId,
+                actorId,
+                amountIdr: input.amountIdr,
+              })
+            : null;
+        if (cashCheck?.required) {
           // Held for approval: validated like a posting (period open) but no
           // fund, ledger row or journal until a second person approves.
           await assertPeriodOpenForPosting(tx, context, {
@@ -902,6 +924,37 @@ export async function createPettyCashMovement(
               status: "pending_approval",
             },
           });
+          // Same transaction as the document: no document without a chain. The
+          // matrix tiers on the day total (anti-split), the real amount rides in
+          // the payload. APPROVAL_POLICY_MISSING (409) propagates and rolls the
+          // submission back whole; a result without a chain fails closed too.
+          const opened = await openApprovalRequest(tx, context, {
+            sourceModule: PETTY_TOPUP_APPROVAL_SOURCE_MODULE,
+            actionType: "cash_out",
+            objectType: PETTY_TOPUP_ENTRY_OBJECT_TYPE,
+            objectId: documentId,
+            amountIdr: cashCheck.dayTotalIdr,
+            outletId: input.outletId,
+            requestedBy: actorId,
+            source: "user",
+            requestReason:
+              input.description.length >= 3
+                ? input.description.slice(0, 500)
+                : `Isi kas kecil: ${input.description}`,
+            payload: {
+              kind: "petty_topup",
+              amountIdr: input.amountIdr,
+              dayTotalIdr: cashCheck.dayTotalIdr,
+            },
+            alwaysRequire: true,
+            now,
+          });
+          if (!opened.required)
+            throw new HttpError(
+              409,
+              "PETTY_TOPUP_CHAIN_MISSING",
+              "Isi kas kecil yang tertahan harus punya rantai persetujuan.",
+            );
           return { id: documentId, pending: true };
         }
 
@@ -996,6 +1049,11 @@ export async function postPettyCashEntry(
   assertTenantScope(context);
   return withTenant(db, context, async (tx) => {
     const tenantId = context.tenant.tenantId;
+    // Entity lock first, then the entry row: read the entry unlocked for its
+    // legal entity, lock the entity, then re-read under the row lock (a retry
+    // that lost the race sees the entry already posted and returns it).
+    const unlocked = await loadEntry(tx, tenantId, entryId);
+    await entityLock(tx, tenantId, unlocked.legalEntityId);
     const row = await loadEntry(tx, tenantId, entryId, { forUpdate: true });
     if (
       row.journalStatus !== "parked" ||
@@ -1093,6 +1151,15 @@ export async function drawPettyCashForPurchase(
 ): Promise<void> {
   const tenantId = context.tenant.tenantId;
   const outletId = outletIdSchema.parse(input.outletId);
+  // Entity lock before the fund row, same order as every other petty cash path
+  // (the entity comes from the outlet: the fund may not exist yet).
+  const [outlet] = await tx
+    .select({ legalEntityId: outlets.legalEntityId })
+    .from(outlets)
+    .where(and(eq(outlets.tenantId, tenantId), eq(outlets.id, outletId)))
+    .limit(1);
+  if (!outlet) throw notFound("Outlet");
+  await entityLock(tx, tenantId, outlet.legalEntityId);
   const fund = await lockFund(tx, tenantId, outletId);
   if (!fund) throw new AccountingError("PETTY_CASH_FUND_REQUIRED");
   const balanceAfter = await changeBalance(tx, fund, -input.amountIdr);
