@@ -1787,3 +1787,4 @@ Langkah berikut CTO baru:
 - Disk: cleanup-ssd --apply + fstrim Colima -> 15,7 GB; mulai G7688 964 WS-12 Tanya AI (akun #3, cabang ghostex/9e2a1667) -> disk 13,7 GB lagi.
 - Brief siap, tertahan disk < 15 GB (worktree ditolak): 965 DOIT recurring anti tagih dobel (ycb85, yqne1, lch2o, 145n0; Sonnet akun #3; migrasi 0500-0504), 966 Codex S (bkoim, julap; Codex #8).
 - Sesi CTO ini di akun #1 (7d 95%, reset 18:00): bila limit, serah terima ke CTO baru di #3.
+- 11:29 Disk: hapus tmp sesi menganggur >12 jam + cache bun/hyperframes -> 18 GB. Mulai G6c8h 965 DOIT recurring (akun #3, ghostex/37314bba) dan G8vhd 966 Codex S (Codex #8, ghostex/633826e6; bkoim, julap di-claim CTO).
