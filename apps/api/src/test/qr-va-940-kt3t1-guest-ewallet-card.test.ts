@@ -1136,10 +1136,11 @@ describe("legend-kt3t1 a paid e-wallet / card intent books the order with a gate
   async function payAndFire(
     method: "ewallet" | "card",
     channel: string | undefined,
+    key: string = randomUUID(),
   ) {
     gw.reset();
     const { guest, order } = await wholeOrder();
-    const created = await payOrder(guest, order.id, method, channel);
+    const created = await payOrder(guest, order.id, method, channel, key);
     expect(created.status, JSON.stringify(created.body)).toBe(201);
     const intentId = created.body.data.id as string;
     const meta = await intentMeta(intentId);
@@ -1234,6 +1235,25 @@ describe("legend-kt3t1 a paid e-wallet / card intent books the order with a gate
     expect(await outbox("order.paid", "orderId", order.id)).toHaveLength(1);
     expect((await link(await linkIdOf(intentId))).paid).toBe(order.totalIdr);
     expect(await unallocatedFunds(fx, intentId)).toEqual([]);
+  });
+
+  // Architect delta review: a replay after the whole order is paid is refused
+  // before the stored answer is served (ensurePaymentLink), so a paid order
+  // never hands the old pay link or provider reference back.
+  it("legend-kt3t1 a replay of the create request after the order is paid is refused and leaks no pay link", async () => {
+    const key = randomUUID();
+    const { guest, order, intentId, meta } = await payAndFire(
+      "ewallet",
+      "OV",
+      key,
+    );
+
+    const replay = await payOrder(guest, order.id, "ewallet", "OV", key);
+
+    expect(replay.status).toBe(409);
+    expect(JSON.stringify(replay.body)).not.toContain("pay.example.test");
+    expect(JSON.stringify(replay.body)).not.toContain(meta.provider_ref);
+    expect((await intentRow(fx.tenant.tenantId, intentId)).status).toBe("paid");
   });
 });
 

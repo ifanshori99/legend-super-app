@@ -1210,6 +1210,7 @@ async function closePayLinkIfNotPending(
     .select({
       status: paymentIntents.status,
       expiresAt: paymentIntents.expiresAt,
+      paidAt: paymentIntents.paidAt,
     })
     .from(paymentIntents)
     .where(
@@ -1223,6 +1224,9 @@ async function closePayLinkIfNotPending(
   return {
     ...answer,
     status: row.status === "pending" ? "expired" : row.status,
+    // `paid` and `paidAt` go together (guestPaymentSchema): the stored answer
+    // was made before the payment arrived.
+    paidAt: row.status === "paid" ? (row.paidAt?.toISOString() ?? null) : null,
     redirectUrl: null,
   };
 }
