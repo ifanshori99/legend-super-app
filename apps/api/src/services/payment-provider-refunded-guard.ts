@@ -11,6 +11,10 @@
 // legend-30hfs (967): an intent-level refund is also blocked when the refunds of
 // ours plus the refunds the provider made on its own would exceed what the
 // intent paid (`intentOverNetSql`).
+// legend-9s33i (1025 C): an OPEN refund recon hold (`refund_recon_holds`, a
+// provider refund.succeeded naming another intent, not yet matched by finance)
+// blocks every refund and payout of the intent that owns the payment id, fund
+// refunds included, until finance resolves it.
 // Nothing here touches a journal.
 import type { TenantId } from "@starter/shared/core";
 import { and, eq, sql, type SQL } from "drizzle-orm";
@@ -25,6 +29,15 @@ type RefundSource = {
   paymentIntentId: string;
   unallocatedFundId: string | null;
 };
+
+/** SQL condition (legend-9s33i): the intent (tenant and intent id expressions)
+ * has an open refund recon hold. */
+function openReconHoldSql(tenantId: SQL, intentId: SQL): SQL {
+  return sql`EXISTS (SELECT 1 FROM refund_recon_holds h
+    WHERE h.tenant_id = ${tenantId}
+      AND h.payment_intent_id = ${intentId}
+      AND h.resolved_at IS NULL)`;
+}
 
 /** SQL condition: the fund (given as tenant and id expressions) is blocked. Its
  * own flag, or the intent's refunded answer (`provider_refunded_at`, or
@@ -45,6 +58,7 @@ function fundBlockedSql(tenantId: SQL, fundId: SQL): SQL {
     WHERE f.tenant_id = ${tenantId}
       AND f.id = ${fundId}
       AND (f.provider_refunded_at IS NOT NULL
+        OR ${openReconHoldSql(sql`f.tenant_id`, sql`f.payment_intent_id`)}
         OR EXISTS (SELECT 1 FROM payment_provider_refunds pr
           WHERE pr.tenant_id = f.tenant_id
             AND pr.payment_intent_id = f.payment_intent_id
@@ -108,6 +122,10 @@ export async function providerRefundedBlocks(
     );
   if (!intent) return false;
   if (intent.at !== null) return true;
+  const held = await tx.execute(
+    sql`SELECT ${openReconHoldSql(sql`${tenantId}::uuid`, sql`${source.paymentIntentId}::uuid`)} AS blocked`,
+  );
+  if (held.rows[0]?.blocked === true) return true;
   const over = await tx.execute(
     sql`SELECT ${intentOverNetSql(sql`${tenantId}::uuid`, sql`${source.paymentIntentId}::uuid`)} AS blocked`,
   );
@@ -142,6 +160,10 @@ export const refundBlockedByProviderRefundSql = sql`(
       WHERE i.tenant_id = ${paymentRefunds.tenantId}
         AND i.id = ${paymentRefunds.paymentIntentId}
         AND i.provider_refunded_after_paid_at IS NOT NULL)
+    OR ${openReconHoldSql(
+      sql`${paymentRefunds.tenantId}`,
+      sql`${paymentRefunds.paymentIntentId}`,
+    )}
     OR ${intentOverNetSql(
       sql`${paymentRefunds.tenantId}`,
       sql`${paymentRefunds.paymentIntentId}`,

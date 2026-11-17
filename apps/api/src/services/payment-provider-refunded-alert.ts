@@ -175,3 +175,86 @@ export async function alertProviderPartialRefund(
     );
   }
 }
+
+export type RefundReferenceMismatchAlert = {
+  /** The intent that owns the payment id of the event (the one held). */
+  intentId: string;
+  outletId: string;
+  /** The provider's refund id, when the event carries one. */
+  providerRefundId: string | null;
+  amountIdr: number;
+};
+
+/** Stable alert id for one provider refund naming another intent: the same
+ * refund resent under a new event id, a webhook retry and a worker retry are
+ * one alert. */
+export function refundReferenceMismatchAlertId(
+  tenantId: string,
+  intentId: string,
+  providerRefundId: string | null,
+  webhookEventId: string,
+): string {
+  const hex = createHash("sha256")
+    .update(
+      `payment.refund_reference_mismatch\0${tenantId}\0${intentId.toLowerCase()}\0${providerRefundId ?? webhookEventId}`,
+    )
+    .digest("hex")
+    .slice(0, 32);
+  return uuidToUlid(
+    `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
+  );
+}
+
+/**
+ * legend-9s33i (1025 C): alerts the supervisors that a provider refund names
+ * another intent than the one owning its payment id. Nothing was refunded or
+ * stamped; the intent is held (`refund_recon_holds`) until finance matches the
+ * refund. Sent only by the winner of the hold insert. Same savepoint rule as
+ * above.
+ */
+export async function alertRefundReferenceMismatch(
+  tx: Tx,
+  context: ScopedTenantContext,
+  held: RefundReferenceMismatchAlert,
+  webhookEventId: string,
+  now: Date,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const id = refundReferenceMismatchAlertId(
+    tenantId,
+    held.intentId,
+    held.providerRefundId,
+    webhookEventId,
+  );
+  try {
+    await tx.transaction(async (savepoint) => {
+      await notifyOutletSupervisors(
+        savepoint,
+        context,
+        {
+          tenantId,
+          outletId: outletIdSchema.parse(held.outletId),
+          category: "operational_anomaly",
+          alsoOwners: true,
+          recordEmpty: true,
+          id,
+          eventName: "payment.refund_reference_mismatch",
+          aggregateType: "payment",
+          aggregateId: id,
+          payload: {
+            intentId: held.intentId,
+            amountIdr: String(held.amountIdr),
+          },
+          title: "Refund penyedia tidak cocok dengan pembayaran",
+          body: `Penyedia pembayaran melaporkan refund Rp ${held.amountIdr.toLocaleString("id-ID")} yang menyebut pembayaran lain dari pembayaran yang dikembalikan. Uang mungkin sudah kembali ke pembayar. Refund dan payout pembayaran ini ditahan sampai finance mencocokkannya; tidak ada refund atau jurnal yang dibuat otomatis.`,
+        },
+        now,
+      );
+    });
+  } catch (err) {
+    logger.warn(
+      { err, tenantId, intentId: held.intentId },
+      "Refund reference mismatch: notification failed",
+    );
+  }
+}
