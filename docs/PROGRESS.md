@@ -1,3 +1,9 @@
+## 981 tindak lanjut CTO (17 Nov 2026)
+
+- Revoke token/klien MCP tetap terbuka saat modul mati; discovery, authorize, register tenant bermodul mati sama dengan tanpa tenant; cek modul di token exchange di dalam transaksi terkunci (sebelum platform_locked); TL-11 menolak id outlet asing (helper assertKnownOutlets, dipakai juga TL-21).
+- Migrasi 0546_mcp_flag_backfill (data saja, idempoten): flag mcp untuk tenant aktif yang paketnya memuat mcp dan punya klien approved atau token aktif; audit satu baris per tenant yang berubah. Tenant di paket tanpa mcp tidak diubah (setTenantPackage menolaknya).
+- Gate: grup tes terarah 55 berkas hijau (satu tes diperbaiki lalu 2 berkas ulang 45/45), lint 0 error, typecheck 0 error, db:generate kosong, prettier hijau. Architect xhigh: 5 temuan, semua dibetulkan.
+
 ## 981 Ulasan pelanggan, AI-11 dan modul MCP (17 Nov 2026)
 
 - Kartu legend-vqicf (tabel customer_reviews, migrasi 0545, RLS tenant+outlet, API /api/reviews), legend-39d.5 (TL-21 get_review_summary, agregat tanpa PII), legend-hbuq3 (modul mcp ditegakkan di bearer, OAuth, admin, registrasi, discovery, dan eksekusi aksi MCP yang sudah disetujui).
@@ -6967,7 +6973,6 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 - Ditutup sesudah landing: legend-i78o6, legend-40nvj, dan kartu train legend-qhsex. Kedua kartu implementasi dibaca lengkap: description/AC formal kosong, komentar CTO930 menyatakan hold selesai dan regresi AC1..14 hijau; gate integrasi lengkap membuktikan perilaku kontrak/isolasi/resync. Batas shell eksternal dan mock web disebut saat penutupan. Komentar final kartu memuat SHA m1 setelah commit dokumentasi ini.
 - Laporan cleanup awal disk24,11GB; integrasi masih dikunci sampai seluruh dokumentasi dipush. Handoff hanya membersihkan worktree/cabang int batch80, menjaga lock worktree d8fc7d19 dan dev-seed yang kotor, serta mengedit docs/merge-queue.md pada checkout utama tanpa commit. Semua job selesai. Subagent3 unik/puncak3, satu runner berat; helper biaya/token native tidak tersedia.
 
-
 ### 937 — WS-07 event ekspor dan bukti hambatan XSD (17 Nov 2026)
 
 - Basis worktree milestone/m1 c17c60df7; kedua kartu diperiksa dan belum ada pada m1. legend-0cnqt: tax_report.exported kini masuk outbox dalam transaksi ekspor, satu kali per laporan/revisi, replay tidak menulis lagi. Tujuh kode TAX_REPORT yang belum dipetakan mendapat teks Indonesia khusus. Tidak ada perubahan angka pajak, jurnal, akses, migrasi, atau format XML.
@@ -6976,12 +6981,14 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 - legend-igclp belum selesai: XSD resmi tertanam dalam converter BPMP/BPPU DJP v3, tetapi root TaxReport internal dan data rekap tidak memenuhi dokumen resmi. NITKU, kode objek, tarif, tanggal potong dan rincian legal lain tidak tersedia. Bukti URL/versi/hash serta keputusan kontrak yang dibutuhkan ada di docs/briefs/937-coretax-xsd-blocker.md. Tidak memasang validator palsu atau gerbang yang menolak semua ekspor.
 - Subagent native Codex: total 7, puncak 5 bersamaan; dua Explore, dua implementer, satu test-writer, satu runner, satu reviewer. Token heavy bergilir test-writer lalu runner. session-usage tidak menemukan transkrip native; parallel-report hanya membaca sesi Claude, jadi biaya/token/rata-rata native tidak tersedia.
 - Pengecualian format arsip: Prettier docs/PROGRESS.md merah pada basis c17c60df7 dan sesudah penambahan ini; perbandingan basis /tmp/legend-937-PROGRESS-base.md juga merah. Tidak memformat ulang seluruh arsip di luar cakupan.
+
 ## Task 938 — loyalty report current members (legend-eqdcd, 17 Nov 2026)
 
 - Cabang `fix/938-loyalty-current-metrics` dari milestone/m1 `c17c60df7`; tanpa migrasi atau perubahan nilai/aturan poin.
 - Keputusan sumber: active_members membaca snapshot status aktif saat query, termasuk member tanpa home outlet pada total tenant. Metadata bernama `(saat ini)`, estimasi, hanya bucket terakhir, tanpa perbandingan historis; tidak membuat histori harian palsu.
 - points_redeemed tetap unavailable dengan alasan outlet/tanggal bisnis penukaran belum tercatat lengkap. Kartu lanjutan `legend-iuhjc` menyimpan kebutuhan atribusi otoritatif; outlet pengambilan hadiah tidak dianggap outlet penukaran.
 - Paralel: 6 subagent Codex (2 Explore, test-writer, implementer, test-runner, reviewer), puncak 6. Token heavy tunggal dipegang test-runner. Red sah: 7 gagal/5 lulus. Review API tanpa temuan; gate awal menemukan daftar mock unavailable yang usang. Reviewer menemukan mock historis perlu label/finality/nilai snapshot yang sama; regresi mock red sah 1 gagal/5 lulus, diperbaiki agar active_members mengikuti registry, berlabel saat ini, tetap estimate, dan nilainya memakai tanggal data terkini. Verifikasi akhir dilaporkan pada komentar kartu serta handover. Helper session-usage tidak menemukan transkrip native Codex; parallel-report hanya memuat sesi Claude, jadi biaya/token/rata-rata native tidak tersedia.
+
 ### Kartu 935: foto penerimaan barang dan batas basi replika perangkat edge (17 Nov 2026)
 
 - Cabang `ghostex/935-foto-penerimaan-stale-edge`, dari `milestone/m1` (c17c60df7). Tanpa migrasi baru (`core_storage_objects.purpose` varchar tanpa constraint); `db:generate` tidak menghasilkan apa pun.
@@ -6997,6 +7004,7 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 Basis `c17c60df7` (batch80). Empat cabang, tanpa migrasi (ujung tetap 0431), konflik hanya `docs/PROGRESS.md` (dua sisi disimpan, direview): `ghostex/bf531619` 784facadd (legend-0cnqt), `fix/938-loyalty-current-metrics` 7d173a189 (legend-eqdcd), `ghostex/935-foto-penerimaan-stale-edge` 8a661cd90 (K akses: legend-iy5l0, legend-5v7oq, legend-2lgu; deploy API+web bersamaan), `ghostex/160d3d37` 825123713 (legend-xtj5t). Audit cabang SIAP tambahan: tidak ada (934/940/5w6/929/5e8ae9c0 bukan SIAP).
 
 Gate per tahap:
+
 - Lint per cabang (eslint + prettier 42 berkas berubah): hijau.
 - Fast gate 383 berkas (311 API + 72 root; seluruh pemindai `*-single-path*`/`*-contract*`/`*registry*`, text-contract, pajak/loyalty/storage-foto/edge/payout): 05:51 -> 06:18, 26,5 mnt. API 4422 lulus, root 1235 lulus, 0 gagal.
 - `pnpm run lint`: 1 mnt 07 dtk, hijau (0 error, 2 warning).

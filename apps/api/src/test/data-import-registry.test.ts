@@ -68,6 +68,8 @@ const SCRIPT_NOT_A_WRITER: Record<string, string> = {
 // upgrades of existing data, never imports. A new data statement in a
 // migration must be added here with a reason, so it gets looked at.
 const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
+  "0546_mcp_flag_backfill.sql":
+    "adds the mcp module to feature_flags.modules of tenants that already use MCP (approved client or live token) so enforcing the module (legend-hbuq3) does not switch MCP off silently; idempotent, touches no other tenant or flag, no imports",
   "0408_print_alert_notification_retry.sql":
     "marks legacy print alerts delivered because their historical event ids cannot be reconstructed safely; new alerts retain a null marker for durable retry; restores FORCE RLS",
   "0312_public_tarantula.sql":

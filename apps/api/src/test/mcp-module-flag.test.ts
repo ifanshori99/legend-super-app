@@ -23,9 +23,17 @@
 //  - Host-based OAuth endpoints (discovery, authorize, token, registration)
 //    answer a 4xx and hand out no code, token or endpoint list.
 //  - Admin routes that GRANT MCP access (create client, approve client,
-//    consent preview, consent approve) are refused with 403 or 404. Reads and
-//    revocation (GET lists, revoke) are NOT asserted: removal of access may
-//    stay open, as under the ai_assistant lock.
+//    consent preview, consent approve) are refused with 403 or 404. Lists and
+//    other reads answer 404 TENANT_NOT_FOUND. Revoking a client or a token
+//    stays OPEN (200) with the module off (follow-up 981, item 1; section 6).
+//  - Follow-up 981 item 2: a closed tenant is indistinguishable from an
+//    unknown tenant host on discovery, authorize and registration. Section 7
+//    compares status, a few relevant headers and the body with the tenant host
+//    scrubbed (the host appears in issuer/endpoint URLs).
+//  - Follow-up 981 item 3: the module is re-checked inside the token exchange
+//    transaction; section 8 proves it with a held row lock, see there.
+//  - Follow-up 981 round 2 (A2): with the module off AND the Tanya AI platform
+//    locked, the exchange still answers invalid_grant (section 8).
 //  - Re-enabling restores access for a token issued before the flag went off
 //    (the flag never touches stored tokens).
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -47,6 +55,7 @@ import {
 } from "../services/permission-resolver.ts";
 import {
   app,
+  asTenant,
   availabilityFingerprint,
   cleanupAcceptance,
   created,
@@ -56,8 +65,10 @@ import {
   signedIn,
   newOwner,
   originHeader,
+  outboxEvents,
   ownerPool,
   patchGovernance,
+  pollUntil,
   resetGovernance,
   tenantHost,
   tenantId,
@@ -300,6 +311,76 @@ async function issueToken(who: Actor, host: string): Promise<string> {
   return res.body.access_token as string;
 }
 
+// ---- Closed tenant vs unknown tenant (follow-up 981, item 2) -----------------------
+
+/** A hostname no tenant owns (same shape as test tenant hosts). */
+const unknownTenantHost = () =>
+  `tenant-nope${randomUUID().replaceAll("-", "").slice(0, 10)}.legend.test`;
+
+const COMPARED_HEADERS = [
+  "content-type",
+  "cache-control",
+  "www-authenticate",
+  "location",
+  "access-control-allow-origin",
+  "allow",
+  "retry-after",
+];
+
+/** Status, relevant headers and body; the tenant host is scrubbed from URLs. */
+function snapshotOf(res: request.Response, host: string) {
+  const scrub = (value: string) => value.replaceAll(host, "<host>");
+  const headers = Object.fromEntries(
+    COMPARED_HEADERS.map((name) => {
+      const value = res.headers[name];
+      return [name, value === undefined ? null : scrub(String(value))];
+    }),
+  );
+  let body: unknown = scrub(res.text ?? "");
+  try {
+    body = stable(JSON.parse(body as string));
+  } catch {
+    // not JSON: the scrubbed text is compared as is
+  }
+  return { status: res.status, headers, body };
+}
+
+/** A real, already-approved client of the primary tenant plus a PKCE challenge. */
+async function authorizeQuery() {
+  const clientId = await registerApprovedClient(primary.admin);
+  return {
+    response_type: "code",
+    redirect_uri: REDIRECT_URI,
+    client_id: clientId,
+    scope: MCP_SCOPES.join(" "),
+    state: "fixed-state-for-comparison",
+    code_challenge: pkce().challenge,
+    code_challenge_method: "S256",
+  };
+}
+
+// ---- Revoke helpers (follow-up 981, item 1) --------------------------------------------
+
+async function clientRow(clientId: string) {
+  return asTenant(async (c) => {
+    const { rows } = await c.query<{ id: string; status: string }>(
+      "SELECT id, status FROM mcp_clients WHERE tenant_id = $1 AND client_id = $2",
+      [tenantId, clientId],
+    );
+    return rows[0]!;
+  });
+}
+
+async function tokenRow(token: string) {
+  return asTenant(async (c) => {
+    const { rows } = await c.query<{ id: string; revoked_at: Date | null }>(
+      "SELECT id, revoked_at FROM mcp_tokens WHERE tenant_id = $1 AND token_prefix = $2",
+      [tenantId, token.slice(0, 12)],
+    );
+    return rows[0]!;
+  });
+}
+
 // ---- Fixtures: a second, independent tenant ---------------------------------------
 
 async function createOtherTenant(): Promise<Tenant> {
@@ -529,14 +610,15 @@ describe("legend-hbuq3 (2) mcp module off: JSON-RPC", () => {
 // ---- (3) Module off: OAuth ----------------------------------------------------------------
 
 describe("legend-hbuq3 (3) mcp module off: OAuth", () => {
-  it("discovery documents answer a 4xx and list no endpoints", async () => {
+  it("discovery documents of a closed tenant are identical to an unknown tenant's (no 4xx that betrays the module)", async () => {
     await mcpOff();
+    const unknownHost = unknownTenantHost();
     for (const path of [METADATA_PATH, PROTECTED_RESOURCE_PATH]) {
-      const res = await hostAgent(primary.host).get(path);
-      expect(res.status, `${path}: ${res.text}`).toBeGreaterThanOrEqual(400);
-      expect(res.status).toBeLessThan(500);
-      expect(res.text).not.toMatch(
-        /authorization_endpoint|token_endpoint|registration_endpoint/,
+      const closed = await request(app).get(path).set("Host", primary.host);
+      const unknown = await request(app).get(path).set("Host", unknownHost);
+      expect(closed.status, `${path}: ${closed.text}`).toBe(unknown.status);
+      expect(snapshotOf(closed, primary.host), path).toEqual(
+        snapshotOf(unknown, unknownHost),
       );
     }
   });
@@ -559,12 +641,12 @@ describe("legend-hbuq3 (3) mcp module off: OAuth", () => {
         code_challenge_method: "S256",
       })
       .redirects(0);
+    // Same answer as a host no tenant owns (production has no tenant fallback):
+    // GET /oauth/authorize only forwards to the consent page and never issues a
+    // code; approval (POST /api/ai/mcp/authorize) is 404 while the module is off.
     const location = res.headers.location as string | undefined;
     if (res.status >= 300 && res.status < 400 && location) {
       const url = new URL(location, REDIRECT_URI);
-      expect(url.pathname, "no consent screen for a closed tenant").not.toBe(
-        "/mcp/consent",
-      );
       expect(url.searchParams.get("code")).toBeNull();
     } else {
       expect(res.status, res.text).toBeGreaterThanOrEqual(400);
@@ -909,5 +991,371 @@ describe("legend-hbuq3 (5) approved MCP action under a closed module", () => {
     const row = await reasonOf(action.actionRequestId);
     expect(row.status).toBe("failed");
     expect(row.failure_reason).toMatch(/MCP/);
+  }, 60_000);
+});
+
+// ---- (6) Revoke stays open with the module off (follow-up 981, item 1) ----------------
+
+describe("legend-hbuq3 (6) mcp module off: revoking credentials stays open", () => {
+  it("an admin revokes a client: 200, status revoked in the DB", async () => {
+    const clientId = await registerApprovedClient(primary.admin);
+    const row = await clientRow(clientId);
+    expect(row.status).toBe("approved");
+    await mcpOff();
+    const res = await primary.admin.client
+      .post(`/api/ai/mcp-clients/${row.id}/revoke`)
+      .set(originHeader)
+      .send({ reason: "Modul dimatikan" });
+    expect(res.status, res.text).toBe(200);
+    expect(res.body.data.status).toBe("revoked");
+    expect((await clientRow(clientId)).status).toBe("revoked");
+  });
+
+  it("the token owner revokes their own token: 200, revoked_at set, and it stays dead when the module is back on", async () => {
+    const token = await issueToken(primary.admin, primary.host);
+    const row = await tokenRow(token);
+    expect(row.revoked_at).toBeNull();
+    await mcpOff();
+    const res = await primary.admin.client
+      .post(`/api/ai/mcp-tokens/${row.id}/revoke`)
+      .set(originHeader)
+      .send({ reason: "Laptop hilang" });
+    expect(res.status, res.text).toBe(200);
+    expect((await tokenRow(token)).revoked_at).not.toBeNull();
+    await mcpOn();
+    const after = await pollUntil(
+      () => rpc(token, "tools/list"),
+      (r) => r.status === 401,
+      { timeoutMs: 10_000 },
+    );
+    expect(after.status, after.raw).toBe(401);
+  }, 60_000);
+
+  it("the other MCP admin routes stay closed with 404 TENANT_NOT_FOUND", async () => {
+    await mcpOff();
+    const attempts = [
+      await primary.admin.client.get("/api/ai/mcp-clients"),
+      await primary.admin.client.get("/api/ai/mcp-tokens"),
+      await primary.admin.client
+        .post("/api/ai/mcp-clients")
+        .set(originHeader)
+        .send({
+          name: "Klien tertutup",
+          clientId: `flag-${randomUUID().slice(0, 12)}`,
+          redirectUris: [REDIRECT_URI],
+          allowedScopes: MCP_SCOPES,
+        }),
+      await primary.admin.client
+        .post(`/api/ai/mcp-clients/${randomUUID()}/approve`)
+        .set(originHeader)
+        .send({}),
+      await primary.admin.client.get("/api/ai/mcp/authorize/preview").query({
+        client_id: "flag-none",
+        redirect_uri: REDIRECT_URI,
+        scope: MCP_SCOPES.join(" "),
+      }),
+    ];
+    for (const res of attempts) {
+      expect(res.status, res.text).toBe(404);
+      expect(res.text).toContain("TENANT_NOT_FOUND");
+    }
+  });
+
+  it("revoking still needs permission, a session and a trusted origin", async () => {
+    const clientId = await registerApprovedClient(primary.admin);
+    const row = await clientRow(clientId);
+    const token = await issueToken(primary.admin, primary.host);
+    const tokenId = (await tokenRow(token)).id;
+    const plain = await signedIn("Tanpa izin MCP");
+    await mcpOff();
+
+    const noPermClient = await plain.client
+      .post(`/api/ai/mcp-clients/${row.id}/revoke`)
+      .set(originHeader)
+      .send({});
+    expect([403, 404], noPermClient.text).toContain(noPermClient.status);
+    const noPermToken = await plain.client
+      .post(`/api/ai/mcp-tokens/${tokenId}/revoke`)
+      .set(originHeader)
+      .send({});
+    expect([403, 404], noPermToken.text).toContain(noPermToken.status);
+
+    const anonymous = await request(app)
+      .post(`/api/ai/mcp-clients/${row.id}/revoke`)
+      .set("Host", primary.host)
+      .set(originHeader)
+      .send({});
+    expect(anonymous.status, anonymous.text).toBe(401);
+    const badOrigin = await primary.admin.client
+      .post(`/api/ai/mcp-tokens/${tokenId}/revoke`)
+      .set("Origin", "https://evil.example")
+      .send({});
+    expect([401, 403], badOrigin.text).toContain(badOrigin.status);
+
+    // Nothing was revoked by the refused attempts.
+    expect((await clientRow(clientId)).status).toBe("approved");
+    expect((await tokenRow(token)).revoked_at).toBeNull();
+  });
+});
+
+// ---- (7) Closed tenant looks like an unknown tenant (follow-up 981, item 2) ------------
+
+describe("legend-hbuq3 (7) mcp module off: indistinguishable from an unknown tenant", () => {
+  it("/.well-known/oauth-authorization-server answers exactly like an unknown host", async () => {
+    await mcpOff();
+    const unknownHost = unknownTenantHost();
+    const closed = await request(app)
+      .get(METADATA_PATH)
+      .set("Host", primary.host);
+    const unknown = await request(app)
+      .get(METADATA_PATH)
+      .set("Host", unknownHost);
+    expect(snapshotOf(closed, primary.host)).toEqual(
+      snapshotOf(unknown, unknownHost),
+    );
+  });
+
+  it("/.well-known/oauth-protected-resource answers exactly like an unknown host", async () => {
+    await mcpOff();
+    const unknownHost = unknownTenantHost();
+    const closed = await request(app)
+      .get(PROTECTED_RESOURCE_PATH)
+      .set("Host", primary.host);
+    const unknown = await request(app)
+      .get(PROTECTED_RESOURCE_PATH)
+      .set("Host", unknownHost);
+    expect(snapshotOf(closed, primary.host)).toEqual(
+      snapshotOf(unknown, unknownHost),
+    );
+  });
+
+  it("GET /oauth/authorize of a closed tenant answers like a request with no tenant (anonymous and signed in)", async () => {
+    // Production resolves no tenant for an unknown host, so authorize forwards
+    // to the consent page without looking at the client. The dev synthetic
+    // fallback would resolve a tenant for an unknown host in this test
+    // environment, so the expected answer is stated, not sampled.
+    const query = await authorizeQuery();
+    await mcpOff();
+    const anonymous = await request(app)
+      .get("/oauth/authorize")
+      .set("Host", primary.host)
+      .query(query)
+      .redirects(0);
+    const signedIn = await primary.admin.client
+      .get("/oauth/authorize")
+      .set("Host", primary.host)
+      .query(query)
+      .redirects(0);
+    for (const res of [anonymous, signedIn]) {
+      expect(res.status, res.text).toBe(302);
+      const url = new URL(res.headers.location as string);
+      expect(url.pathname).toBe("/mcp/consent");
+      expect(url.searchParams.get("code")).toBeNull();
+      expect(url.searchParams.get("error")).toBeNull();
+    }
+    expect(snapshotOf(anonymous, primary.host)).toEqual(
+      snapshotOf(signedIn, primary.host),
+    );
+  });
+
+  it("POST /oauth/register of a closed tenant answers like a request with no tenant (404 TENANT_NOT_FOUND)", async () => {
+    expect(
+      (
+        await patchGovernance(primary.admin, {
+          dynamicClientRegistrationEnabled: true,
+        })
+      ).status,
+    ).toBe(200);
+    await mcpOff();
+    const res = await request(app)
+      .post("/oauth/register")
+      .set("Host", primary.host)
+      .send({
+        client_name: "Klien dinamis pembanding",
+        redirect_uris: [REDIRECT_URI],
+        scope: "mcp:sales:read",
+        token_endpoint_auth_method: "none",
+      });
+    expect(res.status, res.text).toBe(404);
+    expect(res.body.error.code).toBe("TENANT_NOT_FOUND");
+    const created = await floorPool.query(
+      "select count(*)::int as n from mcp_clients where name = $1",
+      ["Klien dinamis pembanding"],
+    );
+    expect(created.rows[0].n).toBe(0);
+  });
+});
+
+// ---- (8) Token exchange re-checks the module inside the locked transaction ------------
+// (follow-up 981, item 3)
+
+describe("legend-hbuq3 (8) token exchange with the module off", () => {
+  const INVALID_GRANT = "Invalid authorization code.";
+
+  async function codeRow(clientId: string) {
+    return asTenant(async (c) => {
+      const { rows } = await c.query<{ used_at: Date | null }>(
+        `SELECT a.used_at FROM mcp_auth_codes a
+           JOIN mcp_clients m ON m.id = a.mcp_client_id
+          WHERE m.tenant_id = $1 AND m.client_id = $2`,
+        [tenantId, clientId],
+      );
+      return rows;
+    });
+  }
+  async function tokenCount(clientId: string) {
+    return asTenant(async (c) => {
+      const { rows } = await c.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM mcp_tokens t
+           JOIN mcp_clients m ON m.id = t.mcp_client_id
+          WHERE m.tenant_id = $1 AND m.client_id = $2`,
+        [tenantId, clientId],
+      );
+      return rows[0]!.n;
+    });
+  }
+  function expectInvalidGrant(res: request.Response) {
+    expect(res.status, res.text).toBe(400);
+    expect(res.body.error).toBe("invalid_grant");
+    expect(res.body.error_description).toBe(INVALID_GRANT);
+    expect(res.text).not.toContain("access_token");
+  }
+
+  it("module off before the exchange: invalid_grant, the code is not burned, no token, no mcp_token.issued event", async () => {
+    const meta = await metadataOf(primary.host);
+    const clientId = await registerApprovedClient(primary.admin);
+    const { verifier, challenge } = pkce();
+    const auth = await authorize(
+      primary.admin,
+      primary.host,
+      clientId,
+      challenge,
+    );
+    expect(auth.code, auth.error).toBeTruthy();
+    const eventsBefore = (await outboxEvents("mcp_token.issued")).length;
+    await mcpOff();
+    const res = await exchange(
+      primary.host,
+      clientId,
+      auth.code!,
+      verifier,
+      pathOf(meta.token_endpoint!),
+    );
+    expectInvalidGrant(res);
+    const codes = await codeRow(clientId);
+    expect(codes).toHaveLength(1);
+    expect(codes[0]!.used_at, "code stays unused").toBeNull();
+    expect(await tokenCount(clientId)).toBe(0);
+    expect((await outboxEvents("mcp_token.issued")).length).toBe(eventsBefore);
+  });
+
+  // Follow-up 981 round 2 (A2): the platform lock and the module switch are
+  // both off. The exchange must still answer like an unknown code (the module
+  // check comes before the platform-lock result), never AI_PLATFORM_DISABLED,
+  // which would reveal the tenant state to the caller.
+  it("module off AND Tanya AI platform locked: invalid_grant, not AI_PLATFORM_DISABLED; the code is not burned, no token, no event", async () => {
+    const meta = await metadataOf(primary.host);
+    const clientId = await registerApprovedClient(primary.admin);
+    const { verifier, challenge } = pkce();
+    const auth = await authorize(
+      primary.admin,
+      primary.host,
+      clientId,
+      challenge,
+    );
+    expect(auth.code, auth.error).toBeTruthy();
+    const eventsBefore = (await outboxEvents("mcp_token.issued")).length;
+    // Both switches off through plain SQL (beforeEach restores them).
+    await setModules(
+      tenantId,
+      primaryModules.filter((m) => m !== "mcp" && m !== "ai_assistant"),
+    );
+    const res = await exchange(
+      primary.host,
+      clientId,
+      auth.code!,
+      verifier,
+      pathOf(meta.token_endpoint!),
+    );
+    expectInvalidGrant(res);
+    expect(res.text).not.toMatch(/AI_PLATFORM/);
+    const codes = await codeRow(clientId);
+    expect(codes).toHaveLength(1);
+    expect(codes[0]!.used_at, "code stays unused").toBeNull();
+    expect(await tokenCount(clientId)).toBe(0);
+    expect((await outboxEvents("mcp_token.issued")).length).toBe(eventsBefore);
+  });
+
+  // RACE: the module is switched off after the exchange started but before it
+  // got the shared row lock on the tenant. We hold the tenant row with FOR
+  // UPDATE, flip the module off in that same transaction, start the exchange
+  // (it passes any check made before the lock, then waits for the row), wait
+  // until a backend is blocked on a lock, and only then COMMIT. Under the rule
+  // "check the module inside the locked transaction" the exchange sees the
+  // module off. A check done before the transaction lets it issue a token.
+  it("module switched off while the exchange waits on the tenant lock: invalid_grant, the code is not burned, no token, no event", async () => {
+    const meta = await metadataOf(primary.host);
+    const tokenPath = pathOf(meta.token_endpoint!);
+    const clientId = await registerApprovedClient(primary.admin);
+    const { verifier, challenge } = pkce();
+    const auth = await authorize(
+      primary.admin,
+      primary.host,
+      clientId,
+      challenge,
+    );
+    expect(auth.code, auth.error).toBeTruthy();
+    const eventsBefore = (await outboxEvents("mcp_token.issued")).length;
+
+    const lock = await floorPool.connect();
+    let pending: Promise<request.Response> | undefined;
+    try {
+      await lock.query("BEGIN");
+      await lock.query("SELECT 1 FROM tenants WHERE id = $1 FOR UPDATE", [
+        tenantId,
+      ]);
+      await lock.query(
+        `UPDATE tenants SET feature_flags = jsonb_set(feature_flags, '{modules}', $2::jsonb) WHERE id = $1`,
+        [tenantId, JSON.stringify(withoutMcp(primaryModules))],
+      );
+      pending = exchange(
+        primary.host,
+        clientId,
+        auth.code!,
+        verifier,
+        tokenPath,
+      ).then((res) => res);
+      const blocked = await pollUntil(
+        async () =>
+          (
+            await floorPool.query<{ n: number }>(
+              `SELECT count(*)::int AS n FROM pg_stat_activity
+                WHERE datname = current_database() AND wait_event_type = 'Lock'
+                  AND pid <> pg_backend_pid()`,
+            )
+          ).rows[0]!.n,
+        (n) => n > 0,
+        { timeoutMs: 10_000, intervalMs: 50 },
+      );
+      expect(
+        blocked,
+        "the exchange waits on the tenant row lock",
+      ).toBeGreaterThan(0);
+      await lock.query("COMMIT");
+    } catch (error) {
+      await lock.query("ROLLBACK").catch(() => undefined);
+      await pending?.catch(() => undefined);
+      throw error;
+    } finally {
+      lock.release();
+    }
+
+    const res = await pending!;
+    expectInvalidGrant(res);
+    const codes = await codeRow(clientId);
+    expect(codes).toHaveLength(1);
+    expect(codes[0]!.used_at, "code stays unused").toBeNull();
+    expect(await tokenCount(clientId)).toBe(0);
+    expect((await outboxEvents("mcp_token.issued")).length).toBe(eventsBefore);
   }, 60_000);
 });

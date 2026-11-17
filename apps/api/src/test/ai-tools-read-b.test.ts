@@ -1795,6 +1795,69 @@ describe("TL-11 get_anomalies", () => {
     ).rejects.toMatchObject(forbidden);
   });
 
+  // Brief docs/briefs/981-followup.md item 5: with tenant-wide reach, an outlet id
+  // that does not belong to this tenant must be rejected, like TL-21 does, not
+  // answered with empty data.
+  it("a tenant-wide role asking for another tenant's outlet id is forbidden", async () => {
+    await expect(
+      call("TL-11", "owner", {
+        period: ANOMALY_PERIOD,
+        outletIds: [otherOutlet],
+      }),
+    ).rejects.toMatchObject(forbidden);
+  });
+
+  it("a tenant-wide role is forbidden when one id in the list is another tenant's", async () => {
+    await expect(
+      call("TL-11", "owner", {
+        period: ANOMALY_PERIOD,
+        outletIds: [outletA, otherOutlet],
+      }),
+    ).rejects.toMatchObject(forbidden);
+  });
+
+  it("a tenant-wide role is forbidden for an outlet id that exists nowhere", async () => {
+    // Assumption: an unknown id is treated like a foreign one (TL-21 'known' count).
+    await expect(
+      call("TL-11", "owner", {
+        period: ANOMALY_PERIOD,
+        outletIds: [randomUUID()],
+      }),
+    ).rejects.toMatchObject(forbidden);
+  });
+
+  it("a tenant-wide role may still ask for its own outlets", async () => {
+    const out = await call("TL-11", "owner", {
+      period: ANOMALY_PERIOD,
+      types: ["void"],
+      outletIds: [outletA, outletB],
+    });
+    expect(out.anomalies.map((a) => a.outletId).sort()).toEqual(
+      [outletA, outletB].sort(),
+    );
+  });
+
+  it("an outlet-scoped role is forbidden for another tenant's outlet and for a sibling outlet", async () => {
+    await expect(
+      call("TL-11", "outletManager", {
+        period: ANOMALY_PERIOD,
+        outletIds: [otherOutlet],
+      }),
+    ).rejects.toMatchObject(forbidden);
+    await expect(
+      call("TL-11", "outletManager", {
+        period: ANOMALY_PERIOD,
+        outletIds: [outletA, outletB],
+      }),
+    ).rejects.toMatchObject(forbidden);
+    const own = await call("TL-11", "outletManager", {
+      period: ANOMALY_PERIOD,
+      types: ["void"],
+      outletIds: [outletA],
+    });
+    expect(own.anomalies.map((a) => a.outletId)).toEqual([outletA]);
+  });
+
   it("reports saved cash variance and respects tenant and outlet reach", async () => {
     const out = await call("TL-11", "owner", { period: ANOMALY_PERIOD });
     expect(out.anomalies.some((a) => a.outletId === otherOutlet)).toBe(false);

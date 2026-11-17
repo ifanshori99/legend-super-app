@@ -49,6 +49,19 @@ function oauthJsonError(res: Response, error: OAuthError) {
   });
 }
 
+/**
+ * The tenant for the unauthenticated OAuth and discovery paths. A tenant with
+ * the `mcp` module off resolves to `null`, exactly like an unknown host, so
+ * status, headers and body cannot reveal the module state (981 / legend-hbuq3,
+ * follow-up item 2). Bearer, token exchange and tool execution enforce the
+ * module on their own.
+ */
+async function openMcpTenant(req: Request) {
+  const tenant = findTenantContext(req);
+  if (tenant && (await isMcpModuleDisabled(db, tenant.tenantId))) return null;
+  return tenant;
+}
+
 // ---- /mcp -------------------------------------------------------------------
 
 const mcpRouter = Router();
@@ -129,10 +142,7 @@ mcpOAuthRouter.get(
   async (req, res, next) => {
     try {
       const base = baseUrl(req);
-      const tenant = findTenantContext(req);
-      // `mcp` module off: same 404 as an unknown tenant (981 / legend-hbuq3).
-      if (tenant && (await isMcpModuleDisabled(db, tenant.tenantId)))
-        throw new HttpError(404, "TENANT_NOT_FOUND", "No tenant is available.");
+      const tenant = await openMcpTenant(req);
       const settings = tenant ? await loadMcpSettings(tenant.tenantId) : null;
       res.setHeader("Cache-Control", "no-store");
       res.json({
@@ -159,10 +169,6 @@ mcpOAuthRouter.get(
   async (req, res, next) => {
     try {
       const base = baseUrl(req);
-      const tenant = findTenantContext(req);
-      // `mcp` module off: same 404 as an unknown tenant (981 / legend-hbuq3).
-      if (tenant && (await isMcpModuleDisabled(db, tenant.tenantId)))
-        throw new HttpError(404, "TENANT_NOT_FOUND", "No tenant is available.");
       res.json({
         resource: `${base}/mcp`,
         authorization_servers: [base],
@@ -184,10 +190,7 @@ mcpOAuthRouter.get("/oauth/authorize", async (req, res, next) => {
   try {
     res.setHeader("Cache-Control", "no-store");
     const q = req.query;
-    const tenant = findTenantContext(req);
-    // `mcp` module off: same 404 as an unknown tenant (981 / legend-hbuq3).
-    if (tenant && (await isMcpModuleDisabled(db, tenant.tenantId)))
-      throw new HttpError(404, "TENANT_NOT_FOUND", "No tenant is available.");
+    const tenant = await openMcpTenant(req);
     if (tenant) {
       try {
         await validateAuthorizationRequest(tenant.tenantId, {
@@ -252,11 +255,8 @@ let globalRegistrations: number[] = [];
 
 mcpOAuthRouter.post("/oauth/register", jsonBody, async (req, res, next) => {
   try {
-    const tenant = findTenantContext(req);
+    const tenant = await openMcpTenant(req);
     if (!tenant)
-      throw new HttpError(404, "TENANT_NOT_FOUND", "No tenant is available.");
-    // `mcp` module off: same answer as no tenant (981 / legend-hbuq3).
-    if (await isMcpModuleDisabled(db, tenant.tenantId))
       throw new HttpError(404, "TENANT_NOT_FOUND", "No tenant is available.");
     // Platform lock: refuse before the rate budgets are spent or the body is
     // read. The service re-checks under a row lock before it inserts.

@@ -60,12 +60,11 @@ const mcpAuthorizeBodySchema = z.strictObject({
 
 export function createAiMcpAdminRouter(): Router {
   const router = Router();
-  const common = [
-    requireAuth,
-    requireTrustedOrigin,
-    requireTenantContext,
-    requireMcpModuleEnabled(),
-  ];
+  // The two revoke routes use `base` only: credential removal stays open when
+  // the `mcp` module is off (same stance as the AI platform lock). Everything
+  // else uses `common` and answers 404 TENANT_NOT_FOUND.
+  const base = [requireAuth, requireTrustedOrigin, requireTenantContext];
+  const common = [...base, requireMcpModuleEnabled()];
   const manage = requireTenantPermission("mcp.client.manage");
   const own: import("express").RequestHandler = async (req, res, next) => {
     await loadRequestAccess(req);
@@ -109,7 +108,7 @@ export function createAiMcpAdminRouter(): Router {
 
   router.post(
     "/mcp-clients/:mcpClientId/revoke",
-    ...common,
+    ...base,
     jsonBody,
     manage,
     async (req, res) => {
@@ -201,7 +200,7 @@ export function createAiMcpAdminRouter(): Router {
 
   router.post(
     "/mcp-tokens/:mcpTokenId/revoke",
-    ...common,
+    ...base,
     jsonBody,
     own,
     async (req, res) => {

@@ -22,7 +22,7 @@ import { withTenant } from "../../../db/tenant.ts";
 import type { AiToolHandler } from "../types.ts";
 import {
   TOOL_MAX_ROWS,
-  forbidden,
+  assertKnownOutlets,
   outletClause,
   resolveReach,
   scopeOutlets,
@@ -69,19 +69,8 @@ export const getReviewSummary: AiToolHandler = async (ctx, raw) => {
   const tenantId = ctx.access.tenant.tenantId;
 
   const found = await withTenant(db, reach.context, async (tx) => {
-    // An outlet that is not this tenant's is denied, never dropped: a
-    // whole-tenant reach does not list outlet ids, so scopeOutlets cannot
-    // tell a foreign outlet from an empty one.
-    if (input.outletIds !== undefined && wanted !== null && wanted.length > 0) {
-      const known = (
-        await tx.execute(sql`
-          select count(*)::int as n from outlets o
-          where o.tenant_id = ${tenantId}::uuid
-          ${outletClause(sql`o.id`, wanted)}
-        `)
-      ).rows[0] as { n: number } | undefined;
-      if (Number(known?.n ?? 0) !== wanted.length) throw forbidden();
-    }
+    // An outlet that is not this tenant's is denied, never dropped.
+    await assertKnownOutlets(tx, tenantId, input.outletIds, wanted);
     const outletRows = (
       await tx.execute(sql`
         select o.id, o.name, o.timezone, o.business_day_cutoff
