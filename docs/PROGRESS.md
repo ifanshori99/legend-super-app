@@ -6984,3 +6984,20 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 - Keputusan: peringatan hard-stale hanya sampai ke outbox lokal edge; jalur ke cloud dicatat di legend-uvnll. Replika yang belum pernah berhasil ditarik dihitung dari waktu proses mulai (restart mengulang hitungan).
 - Review architect: satu P1 (foto penerimaan lama tidak terbaca) sudah dibetulkan; P2 peringatan dicatat sebagai bead.
 - Subagent: total sekitar 21, puncak 5 bersamaan, token heavy dipegang bergantian (test-writer, implementer, test-runner).
+
+## Batch81 merge train (17 Nov 2026) -> int/batch81 -> milestone/m1
+
+Basis `c17c60df7` (batch80). Empat cabang, tanpa migrasi (ujung tetap 0431), konflik hanya `docs/PROGRESS.md` (dua sisi disimpan, direview): `ghostex/bf531619` 784facadd (legend-0cnqt), `fix/938-loyalty-current-metrics` 7d173a189 (legend-eqdcd), `ghostex/935-foto-penerimaan-stale-edge` 8a661cd90 (K akses: legend-iy5l0, legend-5v7oq, legend-2lgu; deploy API+web bersamaan), `ghostex/160d3d37` 825123713 (legend-xtj5t). Audit cabang SIAP tambahan: tidak ada (934/940/5w6/929/5e8ae9c0 bukan SIAP).
+
+Gate per tahap:
+- Lint per cabang (eslint + prettier 42 berkas berubah): hijau.
+- Fast gate 383 berkas (311 API + 72 root; seluruh pemindai `*-single-path*`/`*-contract*`/`*registry*`, text-contract, pajak/loyalty/storage-foto/edge/payout): 05:51 -> 06:18, 26,5 mnt. API 4422 lulus, root 1235 lulus, 0 gagal.
+- `pnpm run lint`: 1 mnt 07 dtk, hijau (0 error, 2 warning).
+- `pnpm run typecheck`: 2 mnt 44 dtk, hijau.
+- e2e produksi: 2 mnt 19 dtk, 18 lulus / 1 skip. Build: 6 mnt 34 dtk, hijau.
+- e2e mock penuh: dihentikan pada 17 gagal dari ~520 (spesifikasi legend-23nc, 5k0, 9bh, diq, g6d, ik9g tidak disentuh diff). Run mock penuh di m1 murni (tanpa batch81) 07:02 -> 08:20 (1,2 jam): 38 gagal, mencakup keenam berkas itu. Jadi kegagalan mock sudah ada di m1, bukan dari batch81. Perlu kartu terpisah (belum dibuat).
+- Full run #1 (08:20, 5 mnt 27 dtk): satu gagal root `tests/platform-offline-banner.test.mjs` karena stub `../use-now.ts` tanpa `useNowMs` (dipakai `device-registry-stale-notice.tsx` dari 935). Diperbaiki di commit chore `7e0b4b056` (stub menambah `useNowMs`); tes 14/14 hijau terarah (+operations-checklist-labels, 2lgu-edge-stale-panel).
+- Full run #2 (08:26 -> 10:08, 102 mnt): root 3513, web 92, API 20976 lulus; 14 gagal di 6 berkas API (`edge-print-db`, `member-feedback`, `qr-va-912-r2-close-rules`, `rbac-audit-writer`, `recipes-resync-migration-0377-edge`, `service-request-api`) dengan `Connection terminated unexpectedly` / `57P03` / `Sign-up failed with 500` = kegagalan lingkungan DB. Rerun 6 berkas terarah 10:09 -> 10:11, 103/103 lulus. Tanpa patch kode.
+- Catatan: kerja test thread 935 tidak mencakup `tests/platform-offline-banner.test.mjs` (kelas tes root yang mengimpor komponen web). Saran: gate thread web ws02-edge ikut menjalankan `tests/platform-*.test.mjs`.
+
+Pemakaian: session-usage merge train 1400k biaya* (Sonnet 5.5); subagent 2 (Explore audit, reviewer konflik), puncak 1-2; token heavy dipegang train sendiri (satu lajur sekaligus).
