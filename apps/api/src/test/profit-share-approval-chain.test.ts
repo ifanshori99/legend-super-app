@@ -460,11 +460,11 @@ async function statusOf(runId: string) {
 }
 
 async function chainOf(runId: string): Promise<string> {
+  // Each run is created by this test; its level-one request identifies the chain.
   const { rows } = await owner.query<{ chain_id: string }>(
     `SELECT chain_id FROM approval_requests
       WHERE tenant_id = $1 AND source_module = 'profit_share'
-        AND object_type = 'distribution_run' AND object_id = $2 AND level = 1
-      ORDER BY created_at DESC LIMIT 1`,
+        AND object_type = 'distribution_run' AND object_id = $2 AND level = 1`,
     [tenantA, runId],
   );
   expect(rows, "the submit opened an approval chain").toHaveLength(1);

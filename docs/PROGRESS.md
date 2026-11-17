@@ -7001,3 +7001,11 @@ Gate per tahap:
 - Catatan: kerja test thread 935 tidak mencakup `tests/platform-offline-banner.test.mjs` (kelas tes root yang mengimpor komponen web). Saran: gate thread web ws02-edge ikut menjalankan `tests/platform-*.test.mjs`.
 
 Pemakaian: session-usage merge train 1400k biaya* (Sonnet 5.5); subagent 2 (Explore audit, reviewer konflik), puncak 1-2; token heavy dipegang train sendiri (satu lajur sekaligus).
+
+## 961 Selektor fixture tanpa created_at (17 Nov 2026)
+
+- Kartu legend-0l3v4, scope lima berkas test sesuai brief 961. Worktree disiapkan lewat `heavy pnpm worktree:setup` dan basis diselaraskan ke `origin/milestone/m1` 0c31ff40e; tidak ada perubahan produk atau migrasi.
+- Approval stock count memakai ID chain yang disimpan objek. Notifikasi memakai selisih ID sebelum/sesudah aksi. Helper profit-share memilih run atau entity/version unik tanpa pengurutan waktu atau LIMIT yang menyembunyikan duplikasi.
+- Bukti gagal-dulu deterministik: helper waktu lama gagal menemukan notifikasi yang timestamp-nya dimundurkan (18 lulus/1 gagal). Run awal menemukan konflik parameter UUID/teks di join baru; diperbaiki dengan `request.object_id = count.id::text` dan direview ulang. Dua run setelah perbaikan masing-masing hijau 5 berkas/102 tes; run pertama memakai skenario timestamp mundur yang sama, run kedua memakai source akhir tanpa probe. Log `/tmp/961-{red,run1-before-cast,run1,run2}.log`.
+- Review konteks segar akhir: nol temuan tersisa. `heavy pnpm --filter @starter/api typecheck`, `pnpm exec eslint` dan `pnpm exec prettier --check` pada kelima berkas test hijau (exit 0); log `/tmp/961-{typecheck,eslint,prettier}.log`. Satu test_runner memegang token heavy; tidak ada job tersisa. Probe sementara dipulihkan persis (cmp hijau). `git diff --check` hijau. Prettier `docs/PROGRESS.md` merah pada baseline maupun setelah tambahan catatan ini; format dokumen lama tidak diubah. Gate penuh/build tidak dijalankan oleh thread test-only ini.
+- Subagent: total 5, puncak 3 bersamaan; dua pembaca dipakai ulang untuk implementasi, satu implementer chain, satu test_runner dan satu reviewer. `session-usage.py` tidak menemukan transkrip Codex; `parallel-report` hanya menemukan sesi Claude coordinator, jadi biaya dan rata-rata sesi ini tidak tersedia.
