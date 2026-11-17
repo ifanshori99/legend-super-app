@@ -17,7 +17,18 @@
 //   to `unmatched` (reason cleared), cash deposits it held back to `recorded`
 //   with no line id.
 
-import { and, asc, eq, gt, gte, lte, or, sql, type SQL } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  gt,
+  gte,
+  isNotNull,
+  lte,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import {
   AccountingError,
   assertManualMatch,
@@ -435,8 +446,11 @@ export async function getReconciliationSummary(
   return withTenant(db, context, async (tx) => {
     const tenantId = context.tenant.tenantId;
     await loadBankAccount(tx, tenantId, bankAccountId);
-    const rows = await tx
-      .select({ matchStatus: bankStatementLines.matchStatus })
+    const raw = await tx
+      .select({
+        id: bankStatementLines.id,
+        matchStatus: bankStatementLines.matchStatus,
+      })
       .from(bankStatementLines)
       .where(
         and(
@@ -446,6 +460,25 @@ export async function getReconciliationSummary(
           lte(bankStatementLines.postedOn, query.to),
         ),
       );
+    const staleLines = await tx
+      .select({ lineId: bankStatementLineMatches.lineId })
+      .from(bankStatementLineMatches)
+      .where(
+        and(
+          eq(bankStatementLineMatches.tenantId, tenantId),
+          eq(bankStatementLineMatches.bankAccountId, bankAccountId),
+          isNotNull(bankStatementLineMatches.staleAt),
+        ),
+      );
+    const staleLineIds = new Set(staleLines.map((row) => row.lineId));
+    // A match whose journal was reversed (stale) is no clean match: the line
+    // waits for a person, so it counts as in a case (a case was opened with it).
+    const rows = raw.map((row) => ({
+      matchStatus: (MATCHED.includes(row.matchStatus) &&
+      staleLineIds.has(row.id)
+        ? "in_case"
+        : row.matchStatus) as MatchStatus,
+    }));
     const count = (status: MatchStatus) =>
       rows.filter((row) => row.matchStatus === status).length;
     return {

@@ -10,20 +10,27 @@
 //
 // - Idempotent: only a live match (`stale_at IS NULL`) turns stale, and only
 //   that turn opens a case, so a retry or a second call never doubles it.
-// - No entity lock here: the caller already holds the journal row lock, and the
-//   cash & bank entity lock comes first in every other writer. The atomic
-//   UPDATE on the match row is the guard.
-// - The case never fails the reversal: the owner is the reverser (the matcher
-//   for a system reversal) and no role check runs.
+// - The cash & bank entity lock is taken before the UPDATE, so a reversal and
+//   an automatic match insert of the same entity run one after the other. The
+//   caller already holds the journal row lock; the matching paths only read
+//   journals (no row lock), so the order journal row, then entity lock cannot
+//   cycle. The atomic UPDATE on the match row stays the idempotency guard.
+// - The case never fails the reversal: the owner is the person who matched
+//   (`matched_by`, who holds accounting.reconcile) and no role check runs.
 
 import { and, eq, isNull } from "drizzle-orm";
-import { type ScopedTenantContext, type UserId } from "@starter/shared/core";
+import {
+  outletIdSchema,
+  type ScopedTenantContext,
+  type UserId,
+} from "@starter/shared/core";
 import {
   bankReconciliationCaseEvents,
   bankReconciliationCases,
   bankStatementLineMatches,
 } from "../db/schema/accounting-cash-bank.ts";
 import { auditApFa } from "./accounting-ap-fa-shared.ts";
+import { entityLock } from "./accounting-bank-matching.ts";
 import { loadReconciliationPolicyInTx } from "./accounting-finance-policy.service.ts";
 import type { TenantTransaction } from "./accounting-shared.ts";
 
@@ -43,6 +50,7 @@ export async function markMatchStaleForReversedJournal(
   now: Date,
 ): Promise<void> {
   const tenantId = context.tenant.tenantId;
+  await entityLock(tx, tenantId, input.legalEntityId);
   const staled = await tx
     .update(bankStatementLineMatches)
     .set({ staleAt: now, staleByReversalEntryId: input.reversalEntryId })
@@ -56,6 +64,8 @@ export async function markMatchStaleForReversedJournal(
     )
     .returning();
   if (staled.length === 0) return;
+  const caseOutletId =
+    input.outletId === null ? null : outletIdSchema.parse(input.outletId);
   const { caseDueDays } = await loadReconciliationPolicyInTx(tx, tenantId);
   for (const match of staled) {
     await auditApFa(tx, context, {
@@ -74,13 +84,13 @@ export async function markMatchStaleForReversedJournal(
     });
     // The case needs a signed, non-zero difference; a match is never zero.
     if (match.amountIdr === 0) continue;
-    const ownerId = input.reversedBy ?? match.matchedBy;
+    const ownerId = match.matchedBy;
     const [opened] = await tx
       .insert(bankReconciliationCases)
       .values({
         tenantId,
         legalEntityId: input.legalEntityId,
-        outletId: input.outletId,
+        outletId: caseOutletId,
         type: "bank_statement",
         differenceIdr: match.amountIdr,
         ownerId,

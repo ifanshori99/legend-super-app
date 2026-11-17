@@ -42,6 +42,7 @@ import {
 } from "@starter/shared/core";
 import { reconciliationCaseSchema } from "@starter/shared/accounting";
 import { createApp } from "../app";
+import { getReconciliationSummary } from "../services/accounting-bank-lines.service";
 import { listReconciliationCases } from "../services/accounting-bank-recon-cases.service";
 import { reverseJournal } from "../services/accounting-journal.service";
 import { originHeader } from "./helpers";
@@ -212,12 +213,13 @@ async function seedMatch(
   lineId: string,
   journalId: string,
   amount = 10_000,
+  matchedBy: string = actorId,
 ) {
   await owner.query(
     `INSERT INTO bank_statement_line_matches
        (tenant_id, bank_account_id, line_id, ref_type, ref_id, amount_idr, source, matched_by)
-     VALUES ($1, $2, $3, 'journal_entry', $4, $5, 'auto', 'seed')`,
-    [entity.tenant, entity.bankAccountId, lineId, journalId, amount],
+     VALUES ($1, $2, $3, 'journal_entry', $4, $5, 'auto', $6)`,
+    [entity.tenant, entity.bankAccountId, lineId, journalId, amount, matchedBy],
   );
 }
 
@@ -426,6 +428,67 @@ describe("legend-fnxl.10 stale bank match when its journal is reversed (ACC-04)"
       refs.includes(`journal_entry:${journalId}`) ||
         refs.includes(`bank_statement_line:${lineId}`),
     ).toBe(true);
+  });
+
+  it("the case owner is the person who matched, not the person who reversed", async () => {
+    const entity = await seedEntity();
+    const journalId = await seedJournal(entity, 10_000);
+    const lineId = await seedLine(entity, 10_000);
+    const matcherId = await signedInUser();
+    await seedMatch(entity, lineId, journalId, 10_000, matcherId);
+    expect(matcherId).not.toBe(actorId);
+    await reverse(entity, journalId);
+
+    const [opened] = await casesOf(entity);
+    expect(opened!.ownerId).toBe(matcherId);
+    const { rows } = await owner.query<{
+      owner_id: string;
+      opened_by: string;
+      to_owner: string;
+    }>(
+      `SELECT c.owner_id, c.opened_by, e.to_owner_id AS to_owner
+         FROM bank_reconciliation_cases c
+         JOIN bank_reconciliation_case_events e ON e.case_id = c.id AND e.tenant_id = c.tenant_id
+        WHERE c.tenant_id = $1 AND c.legal_entity_id = $2`,
+      [tenantId, entity.id],
+    );
+    expect(rows).toEqual([
+      { owner_id: matcherId, opened_by: matcherId, to_owner: matcherId },
+    ]);
+  });
+
+  it("the reconciliation summary does not count a stale-matched line as a clean match", async () => {
+    const stale = await matchedJournal();
+    const clean = await seedLine(stale.entity, 5_000);
+    const cleanJournal = await seedJournal(stale.entity, 5_000);
+    await seedMatch(stale.entity, clean, cleanJournal, 5_000);
+    const query = { from: "2026-11-01", to: "2026-11-30" };
+    const read = () =>
+      getReconciliationSummary(
+        scope(stale.entity.tenant),
+        stale.entity.bankAccountId,
+        query,
+      );
+    const before = await read();
+    expect(before).toMatchObject({
+      lineCount: 2,
+      autoMatchedCount: 2,
+      inCaseCount: 0,
+      autoMatchRateBp: 10_000,
+    });
+
+    await reverse(stale.entity, stale.journalId);
+
+    const after = await read();
+    expect(after).toMatchObject({
+      lineCount: 2,
+      autoMatchedCount: 1,
+      manuallyMatchedCount: 0,
+      unmatchedCount: 0,
+      inCaseCount: 1,
+      excludedCount: 0,
+      autoMatchRateBp: 5000,
+    });
   });
 
   it("the original journal's numbers do not change and the reversal posts exactly one mirror entry", async () => {
