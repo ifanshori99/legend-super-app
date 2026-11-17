@@ -75,6 +75,7 @@ type Setup = {
 let broken: Setup;
 let healthy: Setup;
 const integrationIds: string[] = [];
+const extraSetups: Setup[] = [];
 
 function contextFor(id: string): ScopedTenantContext {
   return establishScopedTenantContext(
@@ -165,7 +166,7 @@ afterAll(async () => {
       integrationIds,
     ]),
   );
-  for (const setupRow of [broken, healthy])
+  for (const setupRow of [broken, healthy, ...extraSetups])
     if (setupRow) {
       // Same sweep as the other recurring suites: audit rows and other
       // tenant-scoped rows point at the extra outlet, so they go first.
@@ -274,6 +275,55 @@ describe("145n0 an active integration with unreadable credentials does not break
     expect(
       isOk((await deliver(broken.tenant.tenantId, broken.secret)).status),
     ).toBe(true);
+  });
+
+  it("145n0 an incomplete secret load (an active integration failed to open) is not cached: the next delivery loads again", async () => {
+    // Valid metadata (it passes the integration list) but a ciphertext that
+    // cannot be opened, so `loadIntegrationCredentialsById` itself throws.
+    const flaky = await setup("wbflaky", false);
+    extraSetups.push(flaky);
+    const second = await upsertIntegration(
+      contextFor(flaky.tenant.tenantId),
+      {
+        outletId: (await addOutlet(flaky.tenant)) as OutletId,
+        provider: "doit",
+        config: { baseUrl: "http://127.0.0.1:9" },
+        credentials: {
+          apiKey: `doit-key-${unique()}`,
+          webhookSecret: `whsec-wb-${randomBytes(12).toString("hex")}`,
+        },
+      },
+      actor,
+    );
+    await setIntegrationStatus(
+      contextFor(flaky.tenant.tenantId),
+      second.id,
+      { status: "active" },
+      actor,
+    );
+    integrationIds.push(second.id);
+    await owner.query(
+      "UPDATE tenant_integrations SET credentials_encrypted = $2 WHERE id = $1",
+      [second.id, SEALED],
+    );
+    clearDoitWebhookSecretCache();
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    const skipped = () =>
+      warn.mock.calls.filter(
+        (call) =>
+          JSON.stringify(call).includes(second.id) &&
+          JSON.stringify(call).includes("credentials unreadable, skipped"),
+      ).length;
+    expect(
+      isOk((await deliver(flaky.tenant.tenantId, flaky.secret)).status),
+    ).toBe(true);
+    expect(skipped()).toBe(1);
+    // No cache clear in between: a cached result would not read (or warn) again.
+    expect(
+      isOk((await deliver(flaky.tenant.tenantId, flaky.secret)).status),
+    ).toBe(true);
+    expect(skipped()).toBe(2);
+    warn.mockRestore();
   });
 
   it("145n0 control: another tenant's webhook is unaffected by the broken tenant", async () => {

@@ -351,6 +351,8 @@ async function seedSub(
     customerProfileId?: string;
     /** Backdates created_at (hours) after the insert. */
     createdHoursAgo?: number;
+    /** Backdates created_at (minutes); wins over `createdHoursAgo`. */
+    createdMinutesAgo?: number;
   } = {},
 ): Promise<Sub> {
   const plan = options.plan ?? (await seedPlan());
@@ -386,7 +388,12 @@ async function seedSub(
     ],
   );
   subIds.push(sub.subId);
-  if (options.createdHoursAgo !== undefined)
+  if (options.createdMinutesAgo !== undefined)
+    await owner.query(
+      `UPDATE payment_recurring_subscriptions SET created_at = now() - make_interval(mins => $2) WHERE id = $1`,
+      [sub.subId, options.createdMinutesAgo],
+    );
+  else if (options.createdHoursAgo !== undefined)
     await owner.query(
       `UPDATE payment_recurring_subscriptions SET created_at = now() - make_interval(hours => $2) WHERE id = $1`,
       [sub.subId, options.createdHoursAgo],
@@ -434,6 +441,8 @@ type DoitAnswer = {
   plan_id: string;
   status: string;
   first_invoice_url?: string | null;
+  /** DOIT's echo of the `reference` sent at creation (the local row id). */
+  reference?: string | null;
 };
 type Deps = { clientFor?: () => Promise<never> };
 type ReconcileFn = (
@@ -499,13 +508,14 @@ function fakeDoit(
 const NOW = () => new Date();
 
 /** The blocked intent of REC-40: needs_reconcile INTENT_EXPIRED, no DOIT id. */
-const expiredIntent = async (hoursAgo = 25) =>
+const expiredIntent = async (hoursAgo = 25, minutesAgo?: number) =>
   seedSub({
     customerProfileId: await seedProfile(),
     status: "needs_reconcile",
     providerSubId: null,
     reconcileReason: "INTENT_EXPIRED",
     createdHoursAgo: hoursAgo,
+    createdMinutesAgo: minutesAgo,
   });
 
 const confirmed = (
@@ -518,6 +528,7 @@ const confirmed = (
     plan_id: sub.providerPlanId,
     status,
     first_invoice_url: null,
+    reference: sub.subId,
   }) satisfies DoitAnswer;
 
 async function rowsOfPlan(planId: string) {
@@ -638,6 +649,88 @@ describe("lch2o reconcile of a start intent older than 24 hours", () => {
       provider_subscription_id: null,
     });
     expect(mutations()).toEqual([]);
+  });
+
+  it("lch2o NEW a DOIT answer whose reference is not this row's id is not bound: no DOIT id stored, the intent stays blocked", async () => {
+    for (const reference of [randomUUID(), null, undefined]) {
+      const sub = await expiredIntent();
+      const answer: DoitAnswer = { ...confirmed(sub), reference };
+      const { count, mutations, deps } = fakeDoit(answer);
+      await codeOf(reconcileFn()(context(), sub.subId, NOW(), deps));
+      expect(count("findSubscriptionByReference")).toBe(1);
+      expect(await subRow(sub.subId)).toMatchObject({
+        status: "needs_reconcile",
+        reconcile_reason: "INTENT_EXPIRED",
+        provider_subscription_id: null,
+      });
+      expect(mutations()).toEqual([]);
+    }
+  });
+
+  it("lch2o NEW an intent younger than 24h10m is CONFLICT with no DOIT call (a retry at the edge of the window may still run); older than that is reconciled", async () => {
+    const young = await expiredIntent(0, 24 * 60 + 5);
+    const first = fakeDoit(null);
+    const before = await subRow(young.subId);
+    expect(
+      await codeOf(reconcileFn()(context(), young.subId, NOW(), first.deps)),
+    ).toBe("CONFLICT");
+    expect(first.calls).toEqual([]);
+    expect(await subRow(young.subId)).toEqual(before);
+
+    const old = await expiredIntent(0, 24 * 60 + 15);
+    const second = fakeDoit(null);
+    await reconcileFn()(context(), old.subId, NOW(), second.deps);
+    expect((await subRow(old.subId)).status).toBe("cancelled");
+  });
+
+  it("lch2o NEW a start that finishes at DOIT after a reconcile cancelled its intent is CONFLICT without a payment URL, and the row stays cancelled", async () => {
+    const plan = await seedPlan();
+    const profileId = await seedProfile();
+    const providerId = `sub_${unique()}`;
+    let intentId = "";
+    const deps = {
+      clientFor: async () =>
+        ({
+          createSubscription: async (input: { reference: string }) => {
+            intentId = input.reference;
+            // The reconcile tool cancels the intent while DOIT is answering.
+            await owner.query(
+              `UPDATE payment_recurring_subscriptions
+                  SET status = 'cancelled', cancelled_at = now(), reconcile_reason = NULL
+                WHERE id = $1`,
+              [intentId],
+            );
+            return {
+              id: providerId,
+              plan_id: plan.providerPlanId,
+              status: "pending",
+              reference: intentId,
+              first_invoice_url: "https://pay.example.test/invoice/1",
+            };
+          },
+        }) as never,
+    } satisfies Deps;
+    const outcome = await startSubscription(
+      context(),
+      {
+        planId: plan.planId,
+        customerProfileId: profileId,
+        idempotencyKey: `idem-${unique()}`,
+      },
+      deps,
+    ).then(
+      (value) => ({ value, code: null as string | null }),
+      (error: unknown) => ({
+        value: null,
+        code: (error as { code?: string }).code ?? "NO_CODE",
+      }),
+    );
+    expect(outcome.code).toBe("CONFLICT");
+    expect(outcome.value).toBeNull();
+    expect(await subRow(intentId)).toMatchObject({
+      status: "cancelled",
+      provider_subscription_id: null,
+    });
   });
 
   it("lch2o NEW a DOIT failure rejects, the intent stays blocked, nothing is created at DOIT", async () => {

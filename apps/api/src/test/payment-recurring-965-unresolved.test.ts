@@ -5,6 +5,7 @@
 // start that loses to that index answers CONFLICT, never KEY_REUSED.
 // Fail-first: written before the service and schema change.
 import { randomBytes, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -14,6 +15,7 @@ import {
 import type { OutletId, ScopedTenantContext } from "@starter/shared/core";
 import { createApp } from "../app";
 import {
+  pauseSubscription,
   resumeSubscription,
   startSubscription,
 } from "../services/payment-recurring.service";
@@ -438,5 +440,69 @@ describe("965 P2: a cancelled start intent without a DOIT id is never retried", 
     expect(outcome).toMatchObject({ code: "CONFLICT" });
     expect(doit.state.calls).toBe(0);
     expect(await rowsFor(plan.planId)).toHaveLength(1);
+  });
+});
+
+describe("965 review: an unconfirmed pause cannot park a row next to an unresolved one", () => {
+  it("23505 on the move to needs_reconcile is CONFLICT, the row keeps its status", async () => {
+    const plan = await seedPlan();
+    const customerProfileId = await seedProfile();
+    const active = await seedSub({ plan, customerProfileId, status: "active" });
+    await seedSub({
+      plan,
+      customerProfileId,
+      status: "needs_reconcile",
+      reconcileReason: "PLAN_MISMATCH",
+      providerSubId: `sub_${unique()}`,
+    });
+    const outcome = await pauseSubscription(context(), active, new Date(), {
+      // DOIT answers about another subscription: the pause is unconfirmed.
+      clientFor: async () =>
+        ({
+          pauseSubscription: async () => ({
+            id: `sub_other_${unique()}`,
+            plan_id: plan.providerPlanId,
+            status: "paused",
+          }),
+        }) as never,
+    }).then(
+      () => null,
+      (error: unknown) => error as { code?: string },
+    );
+    expect(outcome).toMatchObject({ code: "CONFLICT" });
+    const { rows } = await owner.query<{ status: string }>(
+      "SELECT status FROM payment_recurring_subscriptions WHERE id = $1",
+      [active],
+    );
+    expect(rows[0]!.status).toBe("active");
+  });
+});
+
+describe("965 review: migration 0500 preflight counts mixed groups", () => {
+  const migration = readFileSync(
+    new URL(
+      "../../drizzle/0500_recurring_unresolved_start_key.sql",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const preflight = /DO \$\$[\s\S]*?\n\$\$;/.exec(migration)?.[0] ?? "";
+
+  it("an unresolved row next to a non-cancelled row of the same customer + plan stops the migration", async () => {
+    expect(preflight).not.toBe("");
+    const plan = await seedPlan();
+    const customerProfileId = await seedProfile();
+    await seedSub({ plan, customerProfileId, status: "paused" });
+    await seedSub({ plan, customerProfileId, status: "needs_reconcile" });
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await expect(client.query(preflight)).rejects.toThrow(
+        /unresolved row next to another non-cancelled row/,
+      );
+    } finally {
+      await client.query("ROLLBACK").catch(() => undefined);
+      client.release();
+    }
   });
 });

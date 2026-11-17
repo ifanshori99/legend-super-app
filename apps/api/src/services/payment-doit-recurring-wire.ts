@@ -127,6 +127,13 @@ export const doitRecurringSubscriptionSchema = z.object({
   id: idSchema,
   plan_id: idSchema,
   status: z.string().min(1).max(32),
+  // Echo of the `reference` sent at creation (Legend's subscription id), null
+  // when DOIT does not return it (ASSUMED). The reconcile tool binds a lookup
+  // result to a local row only when it equals the row id.
+  reference: idSchema
+    .nullish()
+    .catch(null)
+    .transform((value) => value ?? null),
   // Link of the first invoice when DOIT already knows it, else null.
   first_invoice_url: httpsUrlSchema
     .nullish()

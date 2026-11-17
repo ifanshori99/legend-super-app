@@ -204,12 +204,16 @@ export async function tenantIsActive(
 }
 
 /** Webhook secret of every active DOIT integration (tenant row and outlet
- * rows), deduplicated, each with the integration that owns it. */
+ * rows), deduplicated, each with the integration that owns it. `complete` is
+ * false when an active integration failed to load: the result still serves
+ * this request but must not be cached, or the skipped integration would stay
+ * unable to verify webhooks for the whole TTL after it is repaired. */
 async function loadWebhookSecrets(
   context: ScopedTenantContext,
-): Promise<WebhookSecretEntry[]> {
+): Promise<{ entries: WebhookSecretEntry[]; complete: boolean }> {
   const { data } = await listIntegrations(context);
   const secrets = new Map<string, WebhookSecretEntry>();
+  let complete = true;
   for (const row of data) {
     if (row.provider !== PROVIDER || row.status !== "active") continue;
     // One active integration with unreadable credentials must not break the
@@ -219,6 +223,7 @@ async function loadWebhookSecrets(
     try {
       loaded = await loadIntegrationCredentialsById(context, PROVIDER, row.id);
     } catch (error) {
+      complete = false;
       logger.warn(
         {
           tenantId: context.tenant.tenantId,
@@ -240,7 +245,7 @@ async function loadWebhookSecrets(
     if (previous && !secrets.has(previous.secret))
       secrets.set(previous.secret, previous);
   }
-  return [...secrets.values()];
+  return { entries: [...secrets.values()], complete };
 }
 
 const secretCache = new Map<
@@ -264,7 +269,8 @@ export function clearDoitWebhookSecretCache(tenantId?: string): void {
 }
 
 /** Secrets cached 60 s per tenant so an unsigned flood does not hit the
- * credential store each time. An empty result is never cached. */
+ * credential store each time. An empty or incomplete result
+ * (an active integration failed to load) is never cached. */
 async function cachedWebhookSecrets(
   context: ScopedTenantContext,
   now: Date,
@@ -274,11 +280,11 @@ async function cachedWebhookSecrets(
   if (hit && hit.expiresAt > Date.now())
     return hit.entries.filter((entry) => inGrace(entry, now));
   const generation = secretCacheGeneration;
-  const entries = await loadWebhookSecrets(context);
+  const { entries, complete } = await loadWebhookSecrets(context);
   // A clear ran while loading: serve this request, cache nothing.
   if (generation !== secretCacheGeneration)
     return entries.filter((entry) => inGrace(entry, now));
-  if (entries.length > 0)
+  if (entries.length > 0 && complete)
     secretCache.set(key, {
       entries,
       expiresAt: Date.now() + SECRET_CACHE_TTL_MS,

@@ -6,8 +6,9 @@
 --
 -- Existing data: if a customer + plan already has more than one unresolved row
 -- the index cannot be built. Instead of an opaque 23505 this stops with the
--- number of groups; the team decides per group (check DOIT, then cancel or
--- reconcile the extra row). Nothing is changed or deleted here.
+-- number of groups (duplicates, and an unresolved row next to a non-cancelled
+-- row of the same customer + plan); the team decides per group (check DOIT,
+-- then cancel or reconcile the extra row). Nothing is changed or deleted here.
 -- The duplicate check reads a FORCE RLS table; a non-superuser owner migrator has no tenant
 -- context and the read fails with "tenant context is required". RLS is un-forced for the
 -- check and forced again right after (same pattern as 0266).
@@ -15,6 +16,7 @@ ALTER TABLE public.payment_recurring_subscriptions NO FORCE ROW LEVEL SECURITY;-
 DO $$
 DECLARE
   dup_count integer;
+  mixed_count integer;
 BEGIN
   SELECT count(*) INTO dup_count FROM (
     SELECT 1
@@ -25,6 +27,27 @@ BEGIN
   ) AS duplicated;
   IF dup_count > 0 THEN
     RAISE EXCEPTION 'payment_recurring_subscriptions: % customer+plan group(s) have more than one provisioning/needs_reconcile row; resolve them before migrating (see 0500 header)', dup_count;
+  END IF;
+  -- Mixed groups: one unresolved row next to another row of the same customer
+  -- and plan that is not cancelled. The index does not reject this, but
+  -- startSubscription / resume now refuse it, and DOIT may charge for both.
+  SELECT count(*) INTO mixed_count FROM (
+    SELECT 1
+      FROM "payment_recurring_subscriptions" AS u
+     WHERE u."status" IN ('provisioning', 'needs_reconcile')
+       AND EXISTS (
+         SELECT 1
+           FROM "payment_recurring_subscriptions" AS o
+          WHERE o."tenant_id" = u."tenant_id"
+            AND o."plan_id" = u."plan_id"
+            AND o."customer_profile_id" = u."customer_profile_id"
+            AND o."id" <> u."id"
+            AND o."status" <> 'cancelled'
+       )
+     GROUP BY u."tenant_id", u."plan_id", u."customer_profile_id"
+  ) AS mixed;
+  IF mixed_count > 0 THEN
+    RAISE EXCEPTION 'payment_recurring_subscriptions: % customer+plan group(s) have an unresolved row next to another non-cancelled row; resolve them before migrating (see 0500 header)', mixed_count;
   END IF;
 END
 $$;--> statement-breakpoint
