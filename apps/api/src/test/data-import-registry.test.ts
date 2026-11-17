@@ -278,6 +278,9 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "function bodies only, no row edited by the migration: app.payout_grant_issue (grantor login), app.payout_correction_propose, app.payout_overpaid_propose and the withdraw functions (payout role) insert a grant or a proposal, or mark an open correction or overpaid proposal withdrawn, when called; a withdrawn proposal stays as a row and the item is untouched; the migration itself writes no row and changes no amount",
   "0426_payout_approval_log.sql":
     "creates the append-only payroll_payout_approval_log table and replaces the function body of app.payout_attest (payout role), which inserts an attestation and a log row when called; the migration itself writes no row and changes no amount",
+  // legend-628t9 (954)
+  "0440_payout_grant_expiry_after_lock.sql":
+    "function body only, no row edited by the migration: app.payout_grant_consume (payout role) reads its clock after the run, batch and grant row locks and refuses a grant that expired while it waited, marking a grant consumed only when called; it keeps the existing grant rules and changes no amount (it only blocks a late approval, nobody is paid)",
   // legend-s20iu, legend-dz8ci (947)
   "0433_payout_934_followups.sql":
     "trigger and function bodies only, no row edited by the migration: app.payout_batch_unfreeze (payout role) sends an approved batch back to pending_approval and its approved items back to prepared when called after a 'not me' on the main approval, app.payout_grant_issue (grantor login) and app.payout_batch_approve_attest (payout role) refuse the person who disowned a batch approval, and a new trigger refuses any change of the approval columns of a batch outside the approval step; the migration itself writes no row and changes no amount (it only blocks approvals and reopens one, nobody is paid)",

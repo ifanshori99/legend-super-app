@@ -2955,6 +2955,13 @@
       "when": 1795000000050,
       "tag": "0435_payroll_loan_deductions",
       "breakpoints": true
+    },
+    {
+      "idx": 436,
+      "version": "7",
+      "when": 1795000000051,
+      "tag": "0436_payout_grant_expiry_after_lock",
+      "breakpoints": true
     }
   ]
 }
