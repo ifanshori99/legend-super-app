@@ -40,6 +40,10 @@
 // fingerprint and the rest of the response stay, so a replay after rotation
 // returns the same code. Leftovers count in `remaining` under
 // `promo_command_idempotency.response` and block key retirement like any column.
+// A caller that passes a non-empty `columns` (tests only) skips this sweep
+// unless it also passes `jsonSecrets`. An aborted run leaves unreached entries
+// out of the report: a key retirement decision must also require
+// `aborted === false`.
 //
 // Some rows are frozen by the database (POS-04 triggers refuse any change to a
 // completed or voided order and to its tenders; the app login has no UPDATE on
