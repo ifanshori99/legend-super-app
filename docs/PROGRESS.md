@@ -1823,3 +1823,4 @@ Langkah berikut CTO baru:
 - 18:27 CTO G2l8g: mulai G5pqk 990 payout recon lanjutan (Opus high, #1, migrasi 0580-0584: xbagc, d9pxr, y2lk2, r8nas, nsqhm, wrz3v opsional) dan G9r89 991 akuntansi kas supplier (Sonnet high, #1, migrasi 0585-0589: xxqz3, a4z2f, 4qowr, efdx6, eestb). Base m1 1b0fd2a9e. Codex tidak diisi: semua akun 7d >90% (SO terjadwal 20:52/21:07).
 - 18:29 CTO: 984 f586w 64b1f5c2d SIAP batch86 sesudah e35c4a41a (migrasi kerja 0560/0561, when journal dinaikkan train); gerbang rilis legend-ir8n8 edge dulu. G6xcr pindah ke akun #1, lanjut jqurl+xrbjv (migrasi 0575-0579).
 - 18:33 CTO: 987 f9fcb4cd7 SIAP batch86 (migrasi 0570); G2669 resolve.
+- 18:33 CTO: mulai 992 payroll koreksi lembur (pxzhy, oayhe, xrop2; base a846fbcc c9c096052; migrasi 0590-0594; Sonnet high #1).
