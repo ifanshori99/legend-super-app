@@ -486,6 +486,55 @@ describe("legend-leqj6 the POS late-payment refund ignores refunds still pending
     expect(await reservedOf(bill.intentId)).toBe(bill.amountIdr);
   });
 
+  it("legend-leqj6 race: the late refund and the old pending 20000 are approved at the same moment; together they never exceed what was paid", async () => {
+    const bill = await paidBill(100_000);
+    await addTender(bill);
+    await pendingRefund(bill.intentId, 10_000, { approved: true });
+    const pendingId = await pendingRefund(bill.intentId, 20_000);
+    await deliverPaid(bill);
+    const late = (await refundRows(bill.intentId)).find(
+      (row) => row.requested_by === "system:pos",
+    )!;
+    expect(late).toMatchObject({ status: "pending", amount: "90000" });
+
+    // The provider call is slowed so both approvals are in flight together.
+    const fake = new FakeRefundGateway();
+    fake.delayMs = 150;
+    setPaymentRefundGateway(fake);
+    try {
+      const responses = await Promise.all([
+        approveRefund(late.id),
+        approveRefund(pendingId),
+      ]);
+      for (const response of responses)
+        expect(response.status, JSON.stringify(response.body)).toBeLessThan(
+          500,
+        );
+    } finally {
+      setPaymentRefundGateway(null);
+    }
+
+    const after = await refundRows(bill.intentId);
+    // Money cap: whichever approval wins, nothing live exceeds what was paid.
+    expect(await reservedOf(bill.intentId)).toBeLessThanOrEqual(bill.amountIdr);
+    // 10000 approved + 90000 late + 20000 old cannot all be paid out.
+    const decided = (id: string) => {
+      const status = after.find((row) => row.id === id)!.status;
+      return status !== "pending" && status !== "failed";
+    };
+    expect(decided(late.id) && decided(pendingId)).toBe(false);
+    // The provider is asked once per refund at most, and never for more than
+    // the 90000 the approved refund leaves free.
+    const asked = new Map<string, number>(
+      fake.calls.map((call): [string, number] => [
+        call.idempotencyKey,
+        call.amountIdr,
+      ]),
+    );
+    const askedTotal = [...asked.values()].reduce((sum, v) => sum + v, 0);
+    expect(askedTotal).toBeLessThanOrEqual(90_000);
+  });
+
   it("legend-leqj6 regression: no pending refund, an approved 40000 leaves a late refund of 60000", async () => {
     const bill = await paidBill(100_000);
     const tenderId = await addTender(bill);
@@ -497,10 +546,12 @@ describe("legend-leqj6 the POS late-payment refund ignores refunds still pending
     const rows = await refundRows(bill.intentId);
     expect(rows).toHaveLength(2);
     // Found by who filed it, not by position: created_at can tie or step back.
-    expect(rows.find((row) => row.requested_by === "system:pos")).toMatchObject({
-      amount: "60000",
-      requested_by: "system:pos",
-    });
+    expect(rows.find((row) => row.requested_by === "system:pos")).toMatchObject(
+      {
+        amount: "60000",
+        requested_by: "system:pos",
+      },
+    );
     expect(await reservedOf(bill.intentId)).toBe(bill.amountIdr);
   });
 });

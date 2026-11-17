@@ -48,6 +48,8 @@ import {
 } from "@starter/shared/kitchen";
 import { db } from "../db/index.ts";
 import { stations } from "../db/schema/index.ts";
+import { vouchers } from "../db/schema/crm-promo.ts";
+import { menuItems } from "../db/schema/menu.ts";
 import { orderIssues } from "../db/schema/kds-issues.ts";
 import { posOrderItems } from "../db/schema/pos-order.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
@@ -57,6 +59,7 @@ import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
+import { promotionDisabledAtOutlet } from "./crm-promo-outlets.ts";
 import {
   cursorInstant,
   cursorKeys,
@@ -128,6 +131,58 @@ function uniqueViolationOf(error: unknown, depth = 0): string | null {
   if (candidate.code === "23505")
     return typeof candidate.constraint === "string" ? candidate.constraint : "";
   return uniqueViolationOf(candidate.cause, depth + 1);
+}
+
+/**
+ * The voucher and swap item named in a report must belong to this tenant, and
+ * a voucher's promotion must run at this outlet (legend-o8quo). The FK is
+ * tenant-scoped only and RLS hides other tenants' rows, so a stray id would
+ * otherwise be stored unchecked.
+ */
+async function assertResolutionTargets(
+  tx: Tx,
+  context: ScopedTenantContext,
+  outletId: OutletId,
+  input: CreateOrderIssueInput,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  if (input.voucherId !== null) {
+    const [voucher] = await tx
+      .select({ promotionId: vouchers.promotionId })
+      .from(vouchers)
+      .where(
+        and(eq(vouchers.tenantId, tenantId), eq(vouchers.id, input.voucherId)),
+      )
+      .limit(1);
+    if (!voucher)
+      throw unprocessable("Voucher yang dipilih bukan milik tenant ini.");
+    if (
+      voucher.promotionId !== null &&
+      (await promotionDisabledAtOutlet(
+        tx,
+        context,
+        voucher.promotionId,
+        outletId,
+      ))
+    )
+      throw unprocessable("Voucher yang dipilih tidak berlaku di outlet ini.");
+  }
+  if (input.replacementItemId !== null) {
+    const [item] = await tx
+      .select({ id: menuItems.id })
+      .from(menuItems)
+      .where(
+        and(
+          eq(menuItems.tenantId, tenantId),
+          eq(menuItems.id, input.replacementItemId),
+        ),
+      )
+      .limit(1);
+    if (!item)
+      throw unprocessable(
+        "Menu pengganti yang dipilih bukan milik tenant ini.",
+      );
+  }
 }
 
 /** A user with an active role assignment in this tenant (a staff member). */
@@ -305,6 +360,7 @@ async function storeOrderIssue(
       !(await isTenantStaff(tx, context, input.employeeId, now))
     )
       throw unprocessable("Staf yang dicatat bukan staf tenant ini.");
+    await assertResolutionTargets(tx, context, outletId, input);
 
     const lineVoided = line.status === "voided" || line.posVoidedAt !== null;
     // A comp of a billed line is already drawn by `order.paid`; only a voided

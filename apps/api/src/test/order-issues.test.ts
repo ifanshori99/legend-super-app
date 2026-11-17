@@ -15,7 +15,7 @@
 // - A remake always emits the event (the kitchen cooks the line again).
 // - A manual refund is refused (422): an approver id alone is no proof and no
 //   approval flow exists yet.
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Express } from "express";
 import type { PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -543,15 +543,13 @@ describe("reportOrderIssue: remake", () => {
     await deliver(events[0]!);
     const deductions = await deductionsOf(order);
     // Order-insensitive: created_at follows the DB clock, which can step back.
-    expect(
-      deductions.map((d) => [d.kind, d.status]).sort(),
-    ).toEqual([
+    expect(deductions.map((d) => [d.kind, d.status]).sort()).toEqual([
       ["remake", "posted"],
       ["sale", "posted"],
     ]);
-    expect(
-      Number(deductions.find((d) => d.kind === "remake")!.cost_idr),
-    ).toBe(2 * CUP_COST);
+    expect(Number(deductions.find((d) => d.kind === "remake")!.cost_idr)).toBe(
+      2 * CUP_COST,
+    );
   });
 
   it("ignores a client-sent costIdr (strict contract)", async () => {
@@ -744,6 +742,210 @@ describe("reportOrderIssue: R25 manual refund is refused", () => {
       [tenant.tenantId, order.itemUuid],
     );
     expect(rows).toHaveLength(0);
+  });
+});
+
+// legend-o8quo: the voucher and the swap item a staff member names must belong
+// to this tenant, and a voucher from a promotion must be valid at this outlet.
+// Assumptions where the brief is silent:
+// - Refusal is 422 and nothing is stored (no order_issues row, no event).
+// - A promotion's outlet scope: `only` = allowlist (an enabled row for the
+//   outlet includes it), `all_except` = opt-out (an enabled=false row for the
+//   outlet excludes it); a voucher without a promotion is checked by tenant only.
+describe("reportOrderIssue: voucher and swap item belong to this tenant (legend-o8quo)", () => {
+  const resolveWith = (
+    order: Order,
+    patch: Record<string, unknown>,
+  ): Record<string, unknown> =>
+    issueBody(order, {
+      type: "complaint",
+      reason: "complaint",
+      employeeId: null,
+      reasonNote: "Pelanggan kecewa, diberi kompensasi",
+      ...patch,
+    });
+
+  async function seedVoucher(
+    forTenantId: string,
+    promotionId: string | null,
+  ): Promise<string> {
+    return one<string>(
+      `INSERT INTO vouchers (tenant_id, promotion_id, customer_profile_id, code_hash, source,
+                             value_idr, valid_from, valid_until)
+       VALUES ($1, $2, NULL, $3, 'manual', 10000, now() - interval '1 hour', NULL)
+       RETURNING id`,
+      [
+        forTenantId,
+        promotionId,
+        createHash("sha256").update(randomUUID()).digest("hex"),
+      ],
+    );
+  }
+
+  async function seedPromotion(
+    outletScope: "only" | "all_except",
+  ): Promise<string> {
+    const id = randomUUID();
+    await owner.query(
+      `INSERT INTO promotions
+         (id, tenant_id, name, description, status, voucher_required, starts_at,
+          conditions, benefit, stack_group, stackable, priority, outlet_scope)
+       VALUES ($1, $2, $3, 'Uji', 'active', false, now() - interval '2 hours',
+               '[]'::jsonb, $4, $5, true, 0, $6)`,
+      [
+        id,
+        tenant.tenantId,
+        `Promo Issue ${id.slice(0, 8)}`,
+        JSON.stringify({
+          kind: "percent_off",
+          percentBp: 1000,
+          maxDiscountIdr: null,
+        }),
+        `g${id.slice(0, 8)}`,
+        outletScope,
+      ],
+    );
+    return id;
+  }
+
+  async function setPromotionOutlet(
+    promotionId: string,
+    outletId: string,
+    enabled: boolean,
+  ) {
+    await owner.query(
+      `INSERT INTO promotion_outlets (tenant_id, promotion_id, outlet_id, enabled)
+       VALUES ($1, $2, $3, $4)`,
+      [tenant.tenantId, promotionId, outletId, enabled],
+    );
+  }
+
+  async function seedOtherTenantMenuItem(): Promise<string> {
+    const categoryId = await one<string>(
+      "INSERT INTO menu_categories (tenant_id, brand_id, name, sort_order) VALUES ($1, $2, 'Kategori B', 0) RETURNING id",
+      [tenantB.tenantId, tenantB.brandId],
+    );
+    return one<string>(
+      "INSERT INTO menu_items (tenant_id, brand_id, category_id, name) VALUES ($1, $2, $3, 'Menu Tenant B') RETURNING id",
+      [tenantB.tenantId, tenantB.brandId, categoryId],
+    );
+  }
+
+  async function expectRefusedAndNothingStored(
+    order: Order,
+    patch: Record<string, unknown>,
+  ) {
+    const res = await api(recorder).report(
+      order.ulid,
+      resolveWith(order, patch),
+    );
+    expect(res.status).toBe(422);
+    const { rows } = await owner.query(
+      "SELECT 1 FROM order_issues WHERE tenant_id = $1 AND order_item_id = $2",
+      [tenant.tenantId, order.itemUuid],
+    );
+    expect(rows).toHaveLength(0);
+  }
+
+  it("refuses a voucher id that does not exist", async () => {
+    const order = await seedOrder(kit.menuItem);
+    await expectRefusedAndNothingStored(order, {
+      resolution: "voucher",
+      voucherId: randomUUID(),
+    });
+  });
+
+  it("refuses a voucher that belongs to another tenant", async () => {
+    const order = await seedOrder(kit.menuItem);
+    const foreign = await seedVoucher(tenantB.tenantId, null);
+    await expectRefusedAndNothingStored(order, {
+      resolution: "voucher",
+      voucherId: foreign,
+    });
+  });
+
+  it("refuses a swap item that does not exist", async () => {
+    const order = await seedOrder(kit.menuItem);
+    await expectRefusedAndNothingStored(order, {
+      resolution: "swap",
+      replacementItemId: randomUUID(),
+    });
+  });
+
+  it("refuses a swap item that belongs to another tenant", async () => {
+    const order = await seedOrder(kit.menuItem);
+    await expectRefusedAndNothingStored(order, {
+      resolution: "swap",
+      replacementItemId: await seedOtherTenantMenuItem(),
+    });
+  });
+
+  it("refuses a voucher whose promotion is allowlisted to another outlet only", async () => {
+    const order = await seedOrder(kit.menuItem);
+    const promotion = await seedPromotion("only");
+    await setPromotionOutlet(promotion, ids.outletB, true);
+    await expectRefusedAndNothingStored(order, {
+      resolution: "voucher",
+      voucherId: await seedVoucher(tenant.tenantId, promotion),
+    });
+  });
+
+  it("refuses a voucher whose promotion is switched off at this outlet", async () => {
+    const order = await seedOrder(kit.menuItem);
+    const promotion = await seedPromotion("all_except");
+    await setPromotionOutlet(promotion, tenant.outletId, false);
+    await expectRefusedAndNothingStored(order, {
+      resolution: "voucher",
+      voucherId: await seedVoucher(tenant.tenantId, promotion),
+    });
+  });
+
+  it("stores a voucher of this tenant with no promotion", async () => {
+    const order = await seedOrder(kit.menuItem);
+    const voucherId = await seedVoucher(tenant.tenantId, null);
+    const res = await api(recorder).report(
+      order.ulid,
+      resolveWith(order, { resolution: "voucher", voucherId }),
+    );
+    expect(res.status).toBe(201);
+    expect(res.body.data).toMatchObject({
+      resolution: "voucher",
+      voucherId,
+    });
+  });
+
+  it("stores a voucher whose promotion covers this outlet (allowlist and opt-out scopes)", async () => {
+    const allowed = await seedPromotion("only");
+    await setPromotionOutlet(allowed, tenant.outletId, true);
+    const optOutElsewhere = await seedPromotion("all_except");
+    await setPromotionOutlet(optOutElsewhere, ids.outletB, false);
+    const untouched = await seedPromotion("all_except");
+    for (const promotion of [allowed, optOutElsewhere, untouched]) {
+      const order = await seedOrder(kit.menuItem);
+      const voucherId = await seedVoucher(tenant.tenantId, promotion);
+      const res = await api(recorder).report(
+        order.ulid,
+        resolveWith(order, { resolution: "voucher", voucherId }),
+      );
+      expect(res.status).toBe(201);
+      expect(res.body.data.voucherId).toBe(voucherId);
+    }
+  });
+
+  it("stores a swap to a menu item of this tenant", async () => {
+    const order = await seedOrder(kit.menuItem);
+    const res = await api(recorder).report(
+      order.ulid,
+      resolveWith(order, {
+        resolution: "swap",
+        replacementItemId: kit.menuItem,
+      }),
+    );
+    expect(res.status).toBe(201);
+    expect(res.body.data).toMatchObject({
+      resolution: "swap",
+      replacementItemId: kit.menuItem,
+    });
   });
 });
 

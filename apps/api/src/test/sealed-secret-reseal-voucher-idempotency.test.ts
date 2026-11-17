@@ -22,7 +22,15 @@
 //   - The key ring may contain key 3 alone (key 2 retired) once the sweep is done.
 //   - Replay of a stored key answers 200 or 201 with the same voucher id/code.
 //   - "No second financial record" is checked as: no tenant-scoped table other
-//     than audit/outbox/session noise gains or loses a row on replay.
+//     than the reviewed NOISE_TABLES list (audit, outbox, notification, login and
+//     session plumbing) gains or loses a row on replay. Financial event tables
+//     (order_events, bank_reconciliation_case_events, gateway_webhook_events) and
+//     table_sessions / table_session_carts are counted (legend-59jya).
+//   - A snapshot that "will not open" is one sealed under key 2 with the wrong AAD;
+//     the job documents such a row as counted `failed`, left unchanged, still in
+//     `remaining`, and not stopping the rest. A row "locked by another
+//     transaction" is skipped (SKIP LOCKED): neither resealed nor failed, still in
+//     `remaining`, picked up by the next run.
 //   - Role permissions "promo.manage" and "order.apology_voucher.issue" are
 //     enough for the two commands (an approval policy exists as in the
 //     order-recovery world; the voucher value is below its floor).
@@ -53,7 +61,49 @@ const owner = new Pool({
 });
 
 const PASSWORD = "Test-password-123!";
-const NOISE = /audit|outbox|event|notification|session|login/i;
+/**
+ * Tenant tables a voucher replay may legitimately write: audit, outbox,
+ * notification, login and session plumbing, telemetry. This is an explicit,
+ * reviewed list on purpose (legend-59jya): the former regex
+ * /audit|outbox|event|notification|session|login/i also hid financial event
+ * tables such as order_events. A new table matching that old pattern fails the
+ * classification test below until someone puts it in one of the two lists.
+ */
+const NOISE_TABLES = new Set([
+  "ai_usage_events",
+  "audit_logs",
+  "customer_display_sessions",
+  "domain_event_consumptions",
+  "domain_event_gap_requests",
+  "domain_event_offsets",
+  "domain_event_outbox",
+  "domain_event_replays",
+  "edge_deferred_events",
+  "edge_inbound_events",
+  "edge_received_events",
+  "login_challenges",
+  "notification_outbox",
+  "notification_policies",
+  "notification_preferences",
+  "notification_templates",
+  "notifications",
+  "panic_press_events",
+  "panic_receiver_sessions",
+  "session",
+  "session_active_outlets",
+  "session_participants",
+  "wa_login_reply_policies",
+  "wifi_sessions",
+]);
+/** Event/session-named tables that carry money or order state: always counted. */
+const COUNTED_EVENT_TABLES = [
+  "bank_reconciliation_case_events",
+  "gateway_webhook_events",
+  "order_events",
+  "table_session_carts",
+  "table_sessions",
+];
+const LEGACY_NOISE = /audit|outbox|event|notification|session|login/i;
 
 type Ring = Awaited<ReturnType<typeof load>>;
 
@@ -145,8 +195,8 @@ async function storedRow(tenant: string, key: string): Promise<Stored> {
   });
 }
 
-/** Row counts of every tenant-scoped table the replay could touch. */
-async function tenantCounts(tenant: string): Promise<Record<string, number>> {
+/** Every base table in public with a uuid tenant_id column. */
+async function tenantTables(tenant: string): Promise<string[]> {
   return asTenant(tenant, async (client) => {
     const { rows } = await client.query(
       `SELECT table_name FROM information_schema.columns
@@ -155,9 +205,17 @@ async function tenantCounts(tenant: string): Promise<Record<string, number>> {
                               WHERE table_schema = 'public' AND table_type = 'BASE TABLE')
         ORDER BY table_name`,
     );
+    return rows.map((row: { table_name: string }) => row.table_name);
+  });
+}
+
+/** Row counts of every tenant-scoped table the replay could touch. */
+async function tenantCounts(tenant: string): Promise<Record<string, number>> {
+  const names = await tenantTables(tenant);
+  return asTenant(tenant, async (client) => {
     const counts: Record<string, number> = {};
-    for (const { table_name: name } of rows) {
-      if (NOISE.test(name)) continue;
+    for (const name of names) {
+      if (NOISE_TABLES.has(name)) continue;
       const result = await client.query(
         `SELECT count(*)::int AS n FROM public."${name}" WHERE tenant_id = $1`,
         [tenant],
@@ -273,6 +331,7 @@ async function versionsOf(ring: Ring, rows: Issued[]) {
 
 type RunOptions = {
   tenantIds: string[];
+  log?: { error: (...args: unknown[]) => void };
   batchSize?: number;
   signal?: AbortSignal;
   afterBatch?: () => void | Promise<void>;
@@ -285,7 +344,7 @@ async function sweep(ring: Ring, options: RunOptions) {
     columns: [],
     listTenantIds: async () => options.tenantIds,
     batchSize: options.batchSize ?? 2,
-    log: { error: () => {} },
+    log: options.log ?? { error: () => {} },
     ...(options.signal ? { signal: options.signal } : {}),
     ...(options.afterBatch ? { afterBatch: options.afterBatch } : {}),
     ...(options.reportOnly ? { reportOnly: true } : {}),
@@ -403,26 +462,28 @@ beforeEach(async () => {
   );
 });
 
+/** Fixture cleanup: every row of the tenant, then the tenant itself. */
+async function purgeTenant(tenant: Tenant | undefined) {
+  if (!tenant) return;
+  await asTenant(tenant.id, async (client) => {
+    const { rows } = await client.query(
+      `SELECT table_name FROM information_schema.columns
+        WHERE table_schema = 'public' AND column_name = 'tenant_id' AND data_type = 'uuid'
+          AND table_name IN (SELECT table_name FROM information_schema.tables
+                              WHERE table_schema = 'public' AND table_type = 'BASE TABLE')`,
+    );
+    for (const { table_name: name } of rows)
+      await client.query(`DELETE FROM public."${name}" WHERE tenant_id = $1`, [
+        tenant.id,
+      ]);
+  }).catch(() => undefined);
+  await owner
+    .query("DELETE FROM tenants WHERE id = $1", [tenant.id])
+    .catch(() => undefined);
+}
+
 afterAll(async () => {
-  for (const tenant of [tenantA, tenantB]) {
-    if (!tenant) continue;
-    await asTenant(tenant.id, async (client) => {
-      const { rows } = await client.query(
-        `SELECT table_name FROM information_schema.columns
-          WHERE table_schema = 'public' AND column_name = 'tenant_id' AND data_type = 'uuid'
-            AND table_name IN (SELECT table_name FROM information_schema.tables
-                                WHERE table_schema = 'public' AND table_type = 'BASE TABLE')`,
-      );
-      for (const { table_name: name } of rows)
-        await client.query(
-          `DELETE FROM public."${name}" WHERE tenant_id = $1`,
-          [tenant.id],
-        );
-    }).catch(() => undefined);
-    await owner
-      .query("DELETE FROM tenants WHERE id = $1", [tenant.id])
-      .catch(() => undefined);
-  }
+  for (const tenant of [tenantA, tenantB]) await purgeTenant(tenant);
   await owner.end();
 });
 
@@ -594,5 +655,271 @@ describe("[legend-ra1k0] voucher idempotency snapshots follow the key rotation",
       [tenantA.id],
     );
     expect(rows[0].n).toBe(2);
+  });
+});
+
+// --- legend-59jya: failure, lock and filter edge cases ------------------------
+
+const JSON_ENTRY = "promo_command_idempotency.response";
+
+/** Totals over every report of a run (only the JSON sweep exists here). */
+function totals(result: Awaited<ReturnType<typeof sweep>>) {
+  const sum = { resealed: 0, failed: 0, remaining: 0 };
+  for (const report of Object.values(result.tables)) {
+    sum.resealed += report.resealed;
+    sum.failed += report.failed;
+    sum.remaining += report.remaining;
+  }
+  return sum;
+}
+
+function setAt(response: Json, path: string[], value: string) {
+  let node = response;
+  for (const part of path.slice(0, -1)) node = node[part] as Json;
+  node[path[path.length - 1]!] = value;
+}
+
+describe("[legend-59jya] reseal sweep edge cases (failed row, locked row, counting filter)", () => {
+  let tenantC: Tenant;
+
+  type Seeded = { kind: Kind; key: string; code: string; sealed: string };
+
+  /**
+   * A stale (key 2) snapshot in tenant C, cloned from a real row so the JSON
+   * shape is what the commands store. `aadKey` differs from `key` for a row
+   * that cannot be opened with the AAD the job uses.
+   */
+  async function seedStale(
+    kind: Kind,
+    key: string,
+    aadKey: string = key,
+  ): Promise<Seeded> {
+    const source = issuedIn(tenantA.id).find((i) => i.kind === kind)!;
+    const stored = await storedRow(source.tenant, source.key);
+    const code = `C-${randomBytes(6).toString("hex").toUpperCase()}`;
+    const sealed = ring2.secrets.sealSecret(
+      code,
+      aadOf(kind, tenantC.id, aadKey),
+    );
+    const response = structuredClone(stored.response);
+    setAt(response, sealedPath(kind), sealed);
+    await asTenant(tenantC.id, (client) =>
+      client.query(
+        `INSERT INTO promo_command_idempotency
+         SELECT (json_populate_record(NULL::promo_command_idempotency, $1::json)).*`,
+        [
+          JSON.stringify({
+            ...stored.rest,
+            tenant_id: tenantC.id,
+            key,
+            response,
+          }),
+        ],
+      ),
+    );
+    return { kind, key, code, sealed };
+  }
+
+  beforeAll(async () => {
+    tenantC = await createTenant(`ra1k-c-${randomUUID().slice(0, 6)}`);
+  }, 120_000);
+
+  beforeEach(async () => {
+    await owner.query(
+      "DELETE FROM sealed_secret_reseal_state WHERE scope_key = $1",
+      [tenantC.id],
+    );
+    await asTenant(tenantC.id, (client) =>
+      client.query(
+        "DELETE FROM promo_command_idempotency WHERE tenant_id = $1",
+        [tenantC.id],
+      ),
+    );
+  });
+
+  afterAll(async () => {
+    await purgeTenant(tenantC);
+  });
+
+  it("a snapshot that will not open is counted failed, stays unchanged and in remaining, and does not stop the rest", async () => {
+    const prefix = randomUUID().slice(0, 6);
+    // Sorted by key: good, bad, good, bad. The bad ones are sealed under the
+    // right key version but with another AAD, so the job cannot open them.
+    const goodPromo = await seedStale("promo", `c1-${prefix}-good`);
+    const badPromo = await seedStale(
+      "promo",
+      `c2-${prefix}-bad`,
+      `c2-${prefix}-other`,
+    );
+    const goodApology = await seedStale("apology", `c3-${prefix}-good`);
+    const badApology = await seedStale(
+      "apology",
+      `c4-${prefix}-bad`,
+      `c4-${prefix}-other`,
+    );
+    const badBefore = await Promise.all(
+      [badPromo, badApology].map((row) => storedRow(tenantC.id, row.key)),
+    );
+
+    const logged: unknown[][] = [];
+    const run = () =>
+      sweep(ringBoth, {
+        tenantIds: [tenantC.id],
+        batchSize: 2,
+        log: { error: (...args) => logged.push(args) },
+      });
+    const first = await run();
+
+    // A row failure is not a tenant failure, and the run was not cut short.
+    expect(first).toMatchObject({ aborted: false, failedTenants: 0 });
+    expect(Object.keys(first.tables)).toContain(JSON_ENTRY);
+    expect(totals(first)).toEqual({ resealed: 2, failed: 2, remaining: 2 });
+    // The failed rows still block key retirement.
+    expect(ringBoth.job.sealedSecretUnresolved(first)).toBe(2);
+
+    // Good rows (before and after the bad ones) moved to key 3, same plaintext.
+    for (const row of [goodPromo, goodApology]) {
+      const { response } = await storedRow(tenantC.id, row.key);
+      const sealed = readAt(response, sealedPath(row.kind));
+      expect(keyVersion(ringBoth, sealed)).toBe(3);
+      expect(
+        ringBoth.secrets.openSecret(
+          sealed,
+          aadOf(row.kind, tenantC.id, row.key),
+        ),
+      ).toBe(row.code);
+    }
+    // Bad rows are byte-for-byte what they were, still key 2.
+    const badAfter = await Promise.all(
+      [badPromo, badApology].map((row) => storedRow(tenantC.id, row.key)),
+    );
+    expect(badAfter).toEqual(badBefore);
+    for (const row of [badPromo, badApology])
+      expect(keyVersion(ringBoth, row.sealed)).toBe(2);
+
+    // Nothing sealed or opened reaches the log.
+    const logText = JSON.stringify(logged);
+    for (const row of [goodPromo, badPromo, goodApology, badApology]) {
+      expect(logText).not.toContain(row.sealed);
+      expect(logText).not.toContain(row.code);
+    }
+
+    // A rerun is stable: the bad rows are retried, fail again, nothing else moves.
+    const second = await run();
+    expect(totals(second)).toEqual({ resealed: 0, failed: 2, remaining: 2 });
+    expect(await storedRow(tenantC.id, badPromo.key)).toEqual(badBefore[0]);
+    expect(await storedRow(tenantC.id, badApology.key)).toEqual(badBefore[1]);
+  });
+
+  it("a snapshot locked by another transaction is skipped (neither resealed nor failed), counted in remaining, and done by the next run", async () => {
+    const prefix = randomUUID().slice(0, 6);
+    const first = await seedStale("promo", `l1-${prefix}`);
+    const locked = await seedStale("promo", `l2-${prefix}`);
+    const last = await seedStale("apology", `l3-${prefix}`);
+    const lockedBefore = await storedRow(tenantC.id, locked.key);
+
+    // Another transaction holds the row lock for the whole first sweep.
+    const holder = await owner.connect();
+    let released = false;
+    const release = async () => {
+      if (released) return;
+      released = true;
+      try {
+        await holder.query("ROLLBACK");
+      } finally {
+        holder.release();
+      }
+    };
+    try {
+      await holder.query("BEGIN");
+      await holder.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [tenantC.id],
+      );
+      const lock = await holder.query(
+        "SELECT key FROM promo_command_idempotency WHERE tenant_id = $1 AND key = $2 FOR UPDATE",
+        [tenantC.id, locked.key],
+      );
+      expect(lock.rows, "the test holds the row lock").toHaveLength(1);
+
+      // batchSize 1: the rows after the locked one are still reached.
+      const during = await sweep(ringBoth, {
+        tenantIds: [tenantC.id],
+        batchSize: 1,
+      });
+      expect(during).toMatchObject({ aborted: false, failedTenants: 0 });
+      expect(totals(during)).toEqual({ resealed: 2, failed: 0, remaining: 1 });
+      expect(ringBoth.job.sealedSecretUnresolved(during)).toBe(1);
+
+      for (const row of [first, last]) {
+        const { response } = await storedRow(tenantC.id, row.key);
+        const sealed = readAt(response, sealedPath(row.kind));
+        expect(keyVersion(ringBoth, sealed)).toBe(3);
+        expect(
+          ringBoth.secrets.openSecret(
+            sealed,
+            aadOf(row.kind, tenantC.id, row.key),
+          ),
+        ).toBe(row.code);
+      }
+      // The locked row was not touched.
+      expect(await storedRow(tenantC.id, locked.key)).toEqual(lockedBefore);
+    } finally {
+      await release();
+    }
+
+    // Lock gone: the next run finishes it, with the same plaintext and AAD.
+    const after = await sweep(ringBoth, {
+      tenantIds: [tenantC.id],
+      batchSize: 1,
+    });
+    expect(totals(after)).toEqual({ resealed: 1, failed: 0, remaining: 0 });
+    expect(ringBoth.job.sealedSecretUnresolved(after)).toBe(0);
+    const { response } = await storedRow(tenantC.id, locked.key);
+    const sealed = readAt(response, sealedPath(locked.kind));
+    expect(keyVersion(ringBoth, sealed)).toBe(3);
+    expect(
+      ringBoth.secrets.openSecret(
+        sealed,
+        aadOf(locked.kind, tenantC.id, locked.key),
+      ),
+    ).toBe(locked.code);
+  });
+
+  it("the table filter of the no-second-record check hides only reviewed plumbing tables, never a financial event table", async () => {
+    const tables = await tenantTables(tenantC.id);
+    const classified = new Set([...NOISE_TABLES, ...COUNTED_EVENT_TABLES]);
+
+    // Every tenant table the old regex would have hidden is classified by a
+    // person. A new *_events / *_sessions table lands here and must be put in
+    // NOISE_TABLES (plumbing) or COUNTED_EVENT_TABLES (money or order state).
+    const unclassified = tables.filter(
+      (name) => LEGACY_NOISE.test(name) && !classified.has(name),
+    );
+    expect(unclassified, "classify these tables").toEqual([]);
+
+    // The financial event tables are counted ...
+    const counts = await tenantCounts(tenantC.id);
+    for (const name of COUNTED_EVENT_TABLES)
+      if (tables.includes(name))
+        expect(Object.keys(counts), `${name} is counted`).toContain(name);
+    expect(tables).toContain("order_events");
+    expect(Object.keys(counts)).toContain("order_events");
+    // ... and the plumbing list never swallows one of them.
+    for (const name of COUNTED_EVENT_TABLES)
+      expect(NOISE_TABLES.has(name), `${name} is not noise`).toBe(false);
+    // Only listed plumbing tables are missing from the counts.
+    const hidden = tables.filter((name) => !(name in counts));
+    expect(hidden.filter((name) => !NOISE_TABLES.has(name))).toEqual([]);
+
+    // A row appearing in a counted table shows up in the diff.
+    expect(
+      diffCounts(
+        { ...counts },
+        { ...counts, order_events: counts.order_events! + 1 },
+      ),
+    ).toEqual({
+      order_events: [counts.order_events, counts.order_events! + 1],
+    });
   });
 });

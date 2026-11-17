@@ -733,12 +733,14 @@ async function failRefund(
  * refund once per intent
  * (qr-order-late-payment.ts), and that request may have found nothing left.
  * When the refund that took the money fails, the guest is owed it again: file
- * a new request under its own key. A failed late-payment refund is not
- * re-filed while it is a system refund that may still be (legend-weuo2: only
- * a failure a new request can fix (not a rejection), at most
+ * a new request under its own key. A failed `system:qr` refund is re-filed
+ * only when `systemRefundMayRefile` allows it (legend-weuo2: the failure is
+ * `approval_expired` or `approver_unauthorized`, at most
  * `MAX_SYSTEM_REFUND_REFILE_ATTEMPTS` failures per intent, see
- * system-refund-followup.ts); the rest stays failed for a person (alarm and
- * follow-up list). A fund refund and an intent that has no QR late-payment
+ * system-refund-followup.ts); every other failure (`provider_declined`,
+ * `cap_exceeded`, `source_document`, a rejection, an unknown reason) stays
+ * failed for a person (alarm and follow-up list, sized by the exact remaining
+ * balance). A fund refund and an intent that has no QR late-payment
  * request on a voided order are not re-filed either.
  * Lazy import: qr-order-late-payment imports this module (cycle).
  */

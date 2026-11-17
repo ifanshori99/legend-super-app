@@ -65,6 +65,7 @@ import {
   sealedSecretUnresolved,
   type SealedSecretColumn,
   type SealedSecretResealResult,
+  registerSealedSecretResealJob,
 } from "../worker/sealed-secret-reseal.job.ts";
 
 const fixtureTenant = cafeLegendPlatformFixtures.tenant.id;
@@ -1059,5 +1060,37 @@ describe("[legend-tetyr] nothing secret in the result, the logs or the progress 
       ...sealedNow,
     ];
     for (const secret of secrets) expect(output).not.toContain(secret);
+  });
+});
+
+// --- queue handler abort ----------------------------------------------------
+
+describe("[legend-h1da5] queue handler abort", () => {
+  const spec = specOf("shareholders", "npwp_sealed");
+
+  it("passes the job signal to the run: an aborted job fails and reseals nothing", async () => {
+    const row = await seed(spec);
+    const before = await storedSealed(row);
+    let handler:
+      | ((jobs: { data: unknown; signal?: AbortSignal }[]) => Promise<void>)
+      | undefined;
+    await registerSealedSecretResealJob({
+      boss: {
+        createQueue: async () => {},
+        schedule: async () => {},
+        work: async (_name, fn) => {
+          handler = fn;
+        },
+      },
+      database: db,
+      log: { error: () => {}, info: () => {} },
+      listTenantIds: async () => [tenantA],
+    });
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      handler!([{ data: null, signal: controller.signal }]),
+    ).rejects.toThrow(/aborted/);
+    expect(await storedSealed(row)).toBe(before);
   });
 });
