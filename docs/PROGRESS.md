@@ -7389,3 +7389,21 @@ Subagent: total 5 (reviewer 1, Explore 1, implementer 3), puncak 3 bersamaan, pe
 - Architect xhigh: API aman (tanpa deadlock, tanpa bayar ganda); temuan P2 label web, P3 test lemah, P3 tipe disalin, P3 selisih jam: semua dibetulkan. ui-auditor: 11 temuan, 8 dibetulkan, 3 dilewati (#6 periode sumber, #8 lipat daftar, #10 ukuran font).
 - Gerbang: prettier, eslint, tsc API dan web exit 0, tes terarah 48/48 (held 6, lock-order 3, 983, run-lock, rapel), kontrak 35/35 (text-contract + payroll-contract), db:generate kosong. Belum: pnpm check penuh (merge train).
 - Angka: 13 subagent, puncak 5 bersamaan, rata-rata 1,0; token heavy dipegang test-writer/test-runner bergantian.
+
+## Merge train batch86 (18 Nov 2026, `int/batch86` -> `milestone/m1`)
+
+Basis m1 f92a5c904 (batch85). Cabang masuk (urut, 7 pertama antrean SIAP batch86): `ghostex/perbaiki-test-mock-e2e-m1` (4jo2d/dq4y3, S), `988-ui-bug-kecil-ponsel` (S UI), `995-refund-voucher-hardening-kecil` (K uang), `992-koreksi-lembur-payroll` (K gaji), `984-f586w-shared-device-wip` (K akses), `92055877` (K uang 990 payout recon), `991-bayar-supplier-approval-kas` (K uang). Tidak masuk: 1005 (sempat ke-merge sebagai cabang ke-8, dibuang sebelum gerbang), 1025 dan 3d4eb7b8 (TAHAN, SO 1032 P1).
+
+Peta migrasi (lama -> baru, `when` 1795000000072 dst): 0560/0561/0575 -> 0457/0458/0459 (984-f586w), 0580-0584 -> 0460-0464 (990), 0585/0586/0587 -> 0465/0466/0467 (991). Journal ok (idx 440+, 454 entri), `db:generate` kosong. Snapshot 0466/0467 dibuat dari 0465 (migrasi data tanpa snapshot) dengan id baru dan rantai prevId 0465 -> 0466 -> 0467 supaya tidak tabrakan.
+
+Konflik: `qr-order-consumers.ts` (995 vs m1: `supersededIntentIds` menerima `reason?`, tanpa reason = dua alasan seperti kt3t1, `method_changed` saja untuk jendela 8m23m), `PROGRESS.md` (simpan keduanya), `_journal.json` + `apps/api/package.json` (991 vs 992: simpan kedua skrip).
+
+Gerbang:
+- check-workspace-links + lint: hijau (2 warning lama, 59 dtk). typecheck hijau (87 dtk).
+- Fast gate API 97 berkas: 552 dtk, 1 gagal NYATA: `data-import-registry` (kunci nama berkas migrasi baru + 0459 belum diterangkan). Dibetulkan, 46/46.
+- Full run (`heavy pnpm run test`, 112 menit): root node:test 3558 (0 gagal), web vitest 99/99, API vitest 22427 lulus, 20 gagal di 8 berkas. Penyebab nyata di migrasi (bukan test): (a) 0459 `UPDATE devices` kena FORCE RLS untuk pemilik migrasi non-superuser (42501 `app.require_tenant_id`): kini NO FORCE / FORCE di sekelilingnya (pola 0150/0454); (b) 0463 cek klaim return terbuka membaca `payroll_payout_return_claims` tanpa konteks tenant: kini per tenant lewat `app.tenant_id` (pola 0464), semantik sama (tetap menolak bila ada klaim terbuka tanpa referensi); (c) `accounting-cash-limit-antisplit` AS-2b menyemai dana mentah tanpa GL 1102, ditolak aturan a4z2f (`PETTY_CASH_GL_INSUFFICIENT`): kini disemai lewat top-up yang disetujui. Rerun terarah 49 berkas (semua yang menyebut shared_device_ids/shared_mode/return_bank_ref/payout-990 + semua *migration*): 602/602.
+- Retro 45: node:test root pada head akhir `LEGEND_TEST_FILES=tests/*.test.mjs heavy pnpm test`: 3558 tes, 3557 lulus, 1 skip, 0 gagal (141 dtk). Catatan: `node --test` mentah tanpa harness (tanpa DB) gagal 21 di tes DB/Docker, bukan regresi. Legend-usyi dan legend-4lm6 lulus lewat harness.
+- Terarah batch85 (Retro 44) 3 berkas access-owner-grant, ms-sales, payment-admin-ws05-fuv7: 39/39 hijau.
+- e2e produksi: 18 lulus, 1 skip, 40 dtk. e2e mock penuh (1,0 jam): 1163 lulus, 2 skip, 1 gagal: g6d AUTH-06 menghitung 31 aksi approval, kini 32 (991 menambah `supplier_payment`); spec diperbarui, `legend-g6d.mock.spec.ts` 5/5. AUTH-05 dan TEN-03 (baseline batch85, kartu sz75z) kini lulus berkat `perbaiki-test-mock-e2e-m1`. 14 spec 988 (`Rp\s?`) lulus.
+
+Subagent: 0 (thread ini tidak memanggil subagent di batch86; sesi sejak awal: 6), pemegang `heavy`: thread ini. Biaya sesi (session-usage, kumulatif batch85+86): utama 5886k, subagent 499k; selisih batch86 sekitar utama 3123k, subagent 44k.
