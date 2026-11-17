@@ -286,6 +286,11 @@ export const payrollPayoutReviewMessages = {
     returnDescription:
       "Untuk {name} · {amount}. Pakai ini bila transfer yang sudah berhasil dikembalikan bank. Perlu dua orang berbeda.",
     returnAction: "Catat dana kembali",
+    returnBankRef: "Nomor referensi transaksi bank",
+    returnBankRefHint:
+      "Salin dari mutasi atau bukti dana kembali di internet banking. Orang kedua mengisi nomor yang sama dari bukti banknya sendiri.",
+    returnBankRefRequired: "Nomor referensi transaksi bank wajib diisi.",
+    returnBankRefShort: "Nomor referensi minimal 4 karakter.",
     returnSubmit: "Simpan dana kembali",
     returnProposed:
       "Usulan tercatat. Orang kedua perlu mengonfirmasi dengan bukti yang sama.",

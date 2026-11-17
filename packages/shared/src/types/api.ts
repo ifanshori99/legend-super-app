@@ -212,6 +212,32 @@ export type PayoutApprovalLogDto = {
   batchFrozen: boolean;
 };
 
+/**
+ * One reconciliation flag and the state of its two-person clearance (GET
+ * /payout-recon-flags). `clearance` is null until someone proposes; the flag
+ * holds the payslip back until `clearance.status` is `approved`. No amount,
+ * name or account number.
+ */
+export type PayoutReconFlagDto = {
+  id: string;
+  kind: string;
+  itemId: string;
+  payslipId: string;
+  batchId: string;
+  reason: string;
+  /** ISO datetime the reconciliation flagged it. */
+  flaggedAt: string;
+  clearance: {
+    id: string;
+    status: "proposed" | "approved";
+    reason: string;
+    proposedBy: string;
+    proposedAt: string;
+    approvedBy: string | null;
+    approvedAt: string | null;
+  } | null;
+};
+
 /** A disbursement batch for one payroll run. totalIdr is the sum of items. */
 export type PayrollDisbursementBatchDto = {
   id: string;

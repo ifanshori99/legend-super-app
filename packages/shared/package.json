@@ -11,6 +11,7 @@
     "./validators/finance-exceptions": "./src/validators/finance-exceptions.ts",
     "./validators/kirimdev-sender": "./src/validators/kirimdev-sender.ts",
     "./validators/payroll-payout": "./src/validators/payroll-payout.ts",
+    "./validators/payroll-payout-recon-clearance": "./src/validators/payroll-payout-recon-clearance.ts",
     "./theme": "./src/theme/index.ts",
     "./i18n": "./src/i18n/index.ts",
     "./env": "./src/env/index.ts",
