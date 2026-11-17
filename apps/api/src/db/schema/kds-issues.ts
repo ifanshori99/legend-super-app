@@ -38,7 +38,7 @@ import { outlets, tenants } from "./platform-org";
 import { paymentIntents, paymentLinks } from "./payment";
 import { orderItems, orders } from "./qr-order";
 import { tableSessions } from "./floor";
-import { cashMovements } from "./pos-shift";
+import { cashMovements, posShifts } from "./pos-shift";
 import { user } from "./user";
 
 /** `order_issues` (T, O): one remake, comp, complaint or unfulfillable line. */
@@ -331,6 +331,108 @@ export const orderIssueCharges = pgTable(
     check(
       "order_issue_charges_route_status_check",
       sql`(${table.route} = 'pos') = (${table.status} = 'routed_pos') OR ${table.status} IN ('paid', 'waived', 'expired', 'voided')`,
+    ),
+  ],
+);
+
+/**
+ * `order_issue_charge_manual_refunds` (T, O): staff refund of a paid swap
+ * charge that has no payment intent (legend-mrwtp): cash out of the drawer, or
+ * money given back on the EDC machine. One row per request. `requested` holds
+ * its amount against the charge (reservation), `completed` has paid it back,
+ * `rejected` releases it. The approver differs from the requester (service).
+ * `reference` is the EDC slip/approval code of the refund (EDC only), unique
+ * while the refund is not rejected. `cash_movement_id` is the shift's cash_out
+ * of a completed cash refund.
+ */
+export const orderIssueChargeManualRefunds = pgTable(
+  "order_issue_charge_manual_refunds",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    chargeId: uuid("charge_id").notNull(),
+    method: varchar("method", { length: 4 }).notNull(),
+    amountIdr: idrColumn("amount_idr").notNull(),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    reference: varchar("reference", { length: 100 }),
+    status: varchar("status", { length: 10 }).notNull().default("requested"),
+    requestedBy: text("requested_by")
+      .notNull()
+      .references(() => user.id),
+    requestedAt: timestamp("requested_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    decidedBy: text("decided_by").references(() => user.id),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    shiftId: uuid("shift_id"),
+    cashMovementId: uuid("cash_movement_id"),
+    rejectReason: varchar("reject_reason", { length: 500 }),
+  },
+  (table) => [
+    unique("order_issue_charge_manual_refunds_tenant_id_id_key").on(
+      table.tenantId,
+      table.id,
+    ),
+    // One live refund per EDC slip, even when the request is replayed.
+    uniqueIndex("order_issue_charge_manual_refunds_edc_reference_once_idx")
+      .on(table.tenantId, table.method, table.reference)
+      .where(sql`${table.method} = 'edc' AND ${table.status} <> 'rejected'`),
+    uniqueIndex("order_issue_charge_manual_refunds_cash_movement_once_idx")
+      .on(table.tenantId, table.cashMovementId)
+      .where(sql`${table.cashMovementId} IS NOT NULL`),
+    index("order_issue_charge_manual_refunds_charge_idx").on(
+      table.tenantId,
+      table.chargeId,
+      table.status,
+    ),
+    foreignKey({
+      name: "order_issue_charge_manual_refunds_charge_fk",
+      columns: [table.tenantId, table.chargeId],
+      foreignColumns: [orderIssueCharges.tenantId, orderIssueCharges.id],
+    }),
+    foreignKey({
+      name: "order_issue_charge_manual_refunds_outlet_fk",
+      columns: [table.tenantId, table.outletId],
+      foreignColumns: [outlets.tenantId, outlets.id],
+    }),
+    foreignKey({
+      name: "order_issue_charge_manual_refunds_shift_fk",
+      columns: [table.tenantId, table.shiftId],
+      foreignColumns: [posShifts.tenantId, posShifts.id],
+    }),
+    foreignKey({
+      name: "order_issue_charge_manual_refunds_cash_movement_fk",
+      columns: [table.tenantId, table.cashMovementId],
+      foreignColumns: [cashMovements.tenantId, cashMovements.id],
+    }),
+    check(
+      "order_issue_charge_manual_refunds_amount_check",
+      sql`${table.amountIdr} > 0`,
+    ),
+    check(
+      "order_issue_charge_manual_refunds_method_check",
+      sql`${table.method} IN ('cash', 'edc')`,
+    ),
+    check(
+      "order_issue_charge_manual_refunds_status_check",
+      sql`${table.status} IN ('requested', 'completed', 'rejected')`,
+    ),
+    check(
+      "order_issue_charge_manual_refunds_reference_check",
+      sql`(${table.method} = 'edc' AND ${table.reference} IS NOT NULL AND char_length(${table.reference}) BETWEEN 3 AND 100) OR (${table.method} = 'cash' AND ${table.reference} IS NULL)`,
+    ),
+    check(
+      "order_issue_charge_manual_refunds_decided_check",
+      sql`(${table.status} = 'requested' AND ${table.decidedBy} IS NULL AND ${table.decidedAt} IS NULL) OR (${table.status} IN ('completed', 'rejected') AND ${table.decidedBy} IS NOT NULL AND ${table.decidedAt} IS NOT NULL)`,
+    ),
+    check(
+      "order_issue_charge_manual_refunds_reject_check",
+      sql`(${table.status} = 'rejected') = (${table.rejectReason} IS NOT NULL)`,
+    ),
+    check(
+      "order_issue_charge_manual_refunds_cash_check",
+      sql`((${table.method} = 'cash' AND ${table.status} = 'completed') = (${table.cashMovementId} IS NOT NULL)) AND (${table.cashMovementId} IS NULL OR ${table.shiftId} IS NOT NULL) AND (${table.method} = 'cash' OR ${table.shiftId} IS NULL)`,
     ),
   ],
 );
