@@ -39,6 +39,7 @@ import { createApp } from "../app";
 import { db } from "../db";
 import { withTenant } from "../db/tenant";
 import { depositCreditForSession } from "../services/reservation-lifecycle.ts";
+import { depositInUseOfIntent } from "../services/reservation-deposit-credit.ts";
 import { applyReservationCustomerCredit } from "../services/reservation-deposit-remainder.ts";
 import {
   closeTableSession,
@@ -1108,13 +1109,13 @@ const SPENT = 50_000;
 const REFUND = 40_000;
 
 /** Session 2 pays a 50k bill fully from the DP (before any provider refund). */
-async function payFromDp(d: Dp, seat: number) {
+async function payFromDp(d: Dp, seat: number, amount = SPENT) {
   const s = d.seats[seat]!;
-  await addOrder(s.sessionId, SPENT, d.profileId, SPENT);
-  // Bill (base 5k + 50k) is fully settled by the deposit, so the table can close.
+  await addOrder(s.sessionId, amount, d.profileId, amount);
+  // Bill (base 5k + extra) is fully settled by the deposit, so the table can close.
   settlements.set(s.sessionId, {
-    total: CONSUMED + SPENT,
-    paid: CONSUMED + SPENT,
+    total: CONSUMED + amount,
+    paid: CONSUMED + amount,
   });
 }
 
@@ -1219,5 +1220,142 @@ describe("legend-6n4p3 spent from the DP before the provider refund is counted",
       SPENT + total + REFUND,
       "more value than the DP",
     ).toBeLessThanOrEqual(d.deposit);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 1033-8 (architect repro): one session holds two allocations, the spent DP
+// stays with the single-DP intent X, the shared intent Y is refunded.
+//
+// Intent X: single DP 100k, allocated 100k to session 1.
+// Intent Y: shared DP 200k, allocated 100k to session 1 and 100k to session 2.
+// Session 1 therefore has two allocations (X and Y1), 200k in all. Before any
+// refund session 1 applies 100k from the DP and session 2 applies 100k. Then
+// the provider refunds 100k of Y.
+//
+// Assumptions: one allocation per reservation (unique key), so X is a second
+// reservation row (clone of session 1's reservation) that points at session 1.
+// "Spent" is the extra 100k bill with deposit_applied_idr = 100k per session,
+// on top of the 5k base bill every seat already has (looser, never stricter).
+// Value in play is X 100k + Y 200k = 300k; spent 200k + refund 100k leaves no
+// headroom, so the credit read of each session is capped at what it spent.
+// ---------------------------------------------------------------------------
+
+/** A single paid DP intent X of `amount`, allocated to an existing session. */
+async function addSingleDpOnSession(
+  profileId: string,
+  seat: { sessionId: string; reservationId: string },
+  amount: number,
+) {
+  const reservationId = randomUUID();
+  reservationIds.push(reservationId);
+  // Second reservation (same guest) whose allocation points at the same session.
+  await owner.query(
+    `INSERT INTO reservations
+       (id, tenant_id, outlet_id, customer_profile_id, guest_name, reserved_for,
+        duration_minutes, pax, zone_id, deposit_idr, policy_snapshot, status,
+        source, seated_at, table_session_id)
+     SELECT $1, tenant_id, outlet_id, customer_profile_id, guest_name, reserved_for,
+        duration_minutes, pax, zone_id, $4, policy_snapshot, status,
+        source, seated_at, $2
+       FROM reservations WHERE id = $3`,
+    [reservationId, seat.sessionId, seat.reservationId, amount],
+  );
+  const intentId = randomUUID();
+  const linkId = randomUUID();
+  intentIds.push(intentId);
+  linkIds.push(linkId);
+  await owner.query(
+    `INSERT INTO payment_links
+       (id, tenant_id, outlet_id, token_hash, reference, subtotal_idr, total_idr, paid_idr, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $6, $6, 't1033-test')`,
+    [
+      linkId,
+      seededTenantId,
+      outletId,
+      randomUUID().replaceAll("-", "").padEnd(64, "0"),
+      `T1033-${linkId.slice(0, 8)}`,
+      amount,
+    ],
+  );
+  await owner.query(
+    `INSERT INTO payment_intents
+       (id, tenant_id, outlet_id, payment_link_id, reservation_id, method, provider,
+        amount_idr, idempotency_key, status, instructions, expires_at, paid_at)
+     VALUES ($1, $2, $3, $4, $5, 'qris', 'doit', $6, $7, 'paid',
+       '{"method":"qris","qrPayload":"00020101021226TEST","issuer":null}',
+       now() + interval '1 hour', now())`,
+    [
+      intentId,
+      seededTenantId,
+      outletId,
+      linkId,
+      reservationId,
+      amount,
+      `t1033-pay-${intentId}`,
+    ],
+  );
+  await owner.query(
+    `INSERT INTO payment_evidence
+       (tenant_id, outlet_id, payment_intent_id, provider, provider_ref, method, source, amount_idr, received_at)
+     VALUES ($1, $2, $3, 'doit', $4, 'qris', 'verified_webhook', $5, now())`,
+    [seededTenantId, outletId, intentId, `t1033-evidence-${intentId}`, amount],
+  );
+  await seedOriginalReceipt(intentId, amount);
+  await owner.query(
+    "UPDATE reservations SET deposit_payment_id = $2, deposit_payment_link_id = $3 WHERE id = $1",
+    [reservationId, intentId, linkId],
+  );
+  await owner.query(
+    `INSERT INTO reservation_deposit_allocations
+       (tenant_id, outlet_id, reservation_id, table_session_id, payment_intent_id, amount_idr)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [seededTenantId, outletId, reservationId, seat.sessionId, intentId, amount],
+  );
+  return { intentId, reservationId };
+}
+
+describe("legend-6n4p3 spent DP of a session with two allocations stays with its single-DP intent", () => {
+  it("1033-8 X single 100k + Y shared 100k/100k, both sessions applied 100k, refund 100k of Y: session 1 reads 100k at most, session 2 reads 100k, session 1 cannot spend 100k more, X stays in use", async () => {
+    const y = await sharedDp([100_000, 100_000]);
+    const x = await addSingleDpOnSession(y.profileId, y.seats[0]!, 100_000);
+    // Both sessions apply 100k from the DP BEFORE the refund.
+    await payFromDp(y, 0, 100_000);
+    await payFromDp(y, 1, 100_000);
+    await providerRefunded(y.intentId, 100_000);
+
+    // Every seat also has its 5k base bill applied: session 1 spent 105k in
+    // all (X 100k + 5k on Y1), session 2 spent 100k of its 100k allocation.
+    const spent1 = 100_000 + CONSUMED;
+    const credit1 = await effectiveCredit(y.seats[0]!.sessionId);
+    const credit2 = await effectiveCredit(y.seats[1]!.sessionId);
+    expect(
+      credit1,
+      "session 1 (allocations X + Y1) reads above what it spent",
+    ).toBeLessThanOrEqual(spent1);
+    expect(credit1, "session 1 keeps what it spent").toBe(spent1);
+    expect(credit2, "session 2 keeps what it spent").toBe(100_000);
+
+    // 300k in play (X 100k + Y 200k): nothing may be spendable beyond what the
+    // sessions already spent (the 5k base bills were spent before the refund,
+    // the unavoidable part).
+    const headroom1 = Math.max(0, credit1 - spent1);
+    const headroom2 = Math.max(0, credit2 - 100_000);
+    expect(
+      headroom1 + headroom2,
+      "a session could spend more than the DP holds",
+    ).toBe(0);
+
+    const inUse = await withTenant(db, scope(), (tx) =>
+      depositInUseOfIntent(
+        tx,
+        tenantIdSchema.parse(seededTenantId),
+        x.intentId,
+      ),
+    );
+    expect(
+      inUse,
+      "the 100k session 1 spent stays with X, which is still in use",
+    ).toBeGreaterThanOrEqual(100_000n);
   });
 });

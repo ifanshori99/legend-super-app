@@ -75,7 +75,16 @@ export function depositPrincipalReservedSql(tenant: SQL, intent: SQL): SQL {
  */
 export function allocationSpentSql(alloc: string): SQL {
   const x = sql.raw(alloc);
-  return sql`least(${x}.amount_idr, greatest(coalesce((SELECT
+  return sql`least(${x}.amount_idr, greatest(${sessionSpendSql(alloc)}, 0))`;
+}
+
+/**
+ * The whole DP spend of the session of allocation `alloc` (not split between
+ * its DPs, not capped): see `allocationSpentSql`.
+ */
+export function sessionSpendSql(alloc: string): SQL {
+  const x = sql.raw(alloc);
+  return sql`coalesce((SELECT
       greatest(coalesce(sum(lo.deposit_applied_idr),0),
         CASE WHEN (SELECT lts.status FROM table_sessions lts
                     WHERE lts.tenant_id=${x}.tenant_id AND lts.id=${x}.table_session_id)='closed'
@@ -90,7 +99,24 @@ export function allocationSpentSql(alloc: string): SQL {
       FROM pos_order_tenders pt WHERE pt.tenant_id=lo.tenant_id AND pt.order_id=lo.id
         AND pt.status='captured') lt ON true
     WHERE lo.tenant_id=${x}.tenant_id AND lo.table_session_id=${x}.table_session_id
-      AND lo.status<>'voided'),0),0))`;
+      AND lo.status<>'voided'),0)`;
+}
+
+/**
+ * Lower bound of what allocation `alloc` itself spent, for the credit FLOOR
+ * (where a too high spend would raise credit, unlike in the claims): the
+ * session's spend less everything the session could have spent from its other
+ * allocations (full amount, any intent) and from moved credit, capped at the
+ * allocation. A session paying from two DPs is never counted on both here.
+ */
+export function allocationSpentFloorSql(alloc: string): SQL {
+  const x = sql.raw(alloc);
+  return sql`least(${x}.amount_idr, greatest(${sessionSpendSql(alloc)}
+    - coalesce((SELECT sum(oa.amount_idr) FROM reservation_deposit_allocations oa
+        WHERE oa.tenant_id=${x}.tenant_id AND oa.table_session_id=${x}.table_session_id
+          AND oa.id<>${x}.id),0)
+    - coalesce((SELECT sum(cu.amount_idr-cu.returned_idr) FROM reservation_customer_credit_uses cu
+        WHERE cu.tenant_id=${x}.tenant_id AND cu.table_session_id=${x}.table_session_id),0), 0))`;
 }
 
 /**
@@ -179,7 +205,7 @@ async function allocationCredits(
                     -- as before, only the sessions of a shared intent keep
                     -- what they spent (a session paying from two DPs counts
                     -- its spend on both).
-                    least(${allocationSpentSql("a")}, greatest(
+                    least(${allocationSpentFloorSql("a")}, greatest(
                       least(r.deposit_idr, i.amount_idr)
                       - ${depositPrincipalReservedSql(sql`a.tenant_id`, sql`a.payment_intent_id`)}
                       - ${providerRefundedForeignIdrSql(sql`a.tenant_id`, sql`a.payment_intent_id`)}
