@@ -573,9 +573,41 @@ async function idempotent<T>(
 ): Promise<T> {
   if (key === null) return run();
   const tenantId = context.tenant.tenantId;
-  const fingerprint = sha256(
+  const fingerprint = idempotencyFingerprint(scope, operation, request);
+  const stored = await readIdempotent<T>(tx, context, scope, key, fingerprint);
+  if (stored !== undefined) return stored;
+  const response = await run();
+  await tx.insert(qrOrderIdempotency).values({
+    tenantId,
+    outletId: scope.outletId,
+    tableSessionId: scope.sessionId,
+    key,
+    operation,
+    fingerprint,
+    response,
+  });
+  return response;
+}
+
+function idempotencyFingerprint(
+  scope: { sessionId: string },
+  operation: string,
+  request: unknown,
+): string {
+  return sha256(
     JSON.stringify({ operation, sessionId: scope.sessionId, request }),
   );
+}
+
+/** Lock the key, then return its stored answer (undefined on a miss). */
+async function readIdempotent<T>(
+  tx: Tx,
+  context: ScopedTenantContext,
+  scope: { sessionId: string },
+  key: string,
+  fingerprint: string,
+): Promise<T | undefined> {
+  const tenantId = context.tenant.tenantId;
   await tx.execute(
     sql`SELECT pg_advisory_xact_lock(hashtextextended(${`qr-order-idem:${tenantId}:${scope.sessionId}:${key}`}, 0))`,
   );
@@ -589,25 +621,36 @@ async function idempotent<T>(
         eq(qrOrderIdempotency.key, key),
       ),
     );
-  if (existing) {
-    if (existing.fingerprint !== fingerprint)
-      throw new CoreError(
-        "IDEMPOTENCY_KEY_REUSED",
-        "Kunci idempoten ini sudah dipakai untuk permintaan lain.",
-      );
-    return existing.response as T;
-  }
-  const response = await run();
-  await tx.insert(qrOrderIdempotency).values({
-    tenantId,
-    outletId: scope.outletId,
-    tableSessionId: scope.sessionId,
+  if (!existing) return undefined;
+  if (existing.fingerprint !== fingerprint)
+    throw new CoreError(
+      "IDEMPOTENCY_KEY_REUSED",
+      "Kunci idempoten ini sudah dipakai untuk permintaan lain.",
+    );
+  return existing.response as T;
+}
+
+/**
+ * Read-only peek (legend-nqfov): the stored answer of (session, key) when the
+ * same request was already served, undefined on a miss, IDEMPOTENCY_KEY_REUSED
+ * when the key belongs to another request. Writes nothing.
+ */
+async function peekIdempotent<T>(
+  tx: Tx,
+  context: ScopedTenantContext,
+  scope: { sessionId: string },
+  key: string | null,
+  operation: string,
+  request: unknown,
+): Promise<T | undefined> {
+  if (key === null) return undefined;
+  return readIdempotent<T>(
+    tx,
+    context,
+    scope,
     key,
-    operation,
-    fingerprint,
-    response,
-  });
-  return response;
+    idempotencyFingerprint(scope, operation, request),
+  );
 }
 
 // ---- DTO mapping --------------------------------------------------------------------
@@ -2662,5 +2705,6 @@ export {
   loadOutlet as loadQrOutlet,
   loadZoneOfSession as loadQrZoneOfSession,
   idempotent as qrOrderIdempotent,
+  peekIdempotent as qrOrderPeekIdempotent,
 };
 export type { OrderRow as QrOrderRow, SessionRow as QrSessionRow };
