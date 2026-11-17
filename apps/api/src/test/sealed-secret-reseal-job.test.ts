@@ -300,6 +300,19 @@ const SPECS: Spec[] = [
     encoding: "text",
     aad: (c) => `order-issue-charge-link:${c.tenant}:${c.id}`,
   },
+  {
+    // lib/push-subscription.ts associatedData(); key_version is kept in step by the job.
+    table: "push_subscriptions",
+    column: "subscription_ciphertext",
+    scope: "tenant",
+    encoding: "text",
+    extra: () => ({ user_id: randomUUID() }),
+    defaults: () => ({
+      endpoint_hash: randomBytes(32).toString("hex"),
+      key_version: "v1",
+    }),
+    aad: (c) => `push-subscription:${c.tenant}:${c.extra.user_id}`,
+  },
 ];
 
 const specOf = (table: string, column: string): Spec => {
@@ -598,10 +611,10 @@ describe("[legend-tetyr] registry", () => {
     });
   });
 
-  it("covers the 17 sealed columns, each once", () => {
+  it("covers the 18 sealed columns, each once", () => {
     const keys = SEALED_SECRET_COLUMNS.map(keyOf).sort();
     expect(keys).toEqual(SPECS.map(keyOf).sort());
-    expect(new Set(keys).size).toBe(17);
+    expect(new Set(keys).size).toBe(18);
   });
 
   it("every registry column exists with the declared type, and tenant tables have tenant_id", async () => {

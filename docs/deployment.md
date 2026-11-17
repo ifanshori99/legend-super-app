@@ -400,7 +400,28 @@ Cakupan skrip: hanya `tenant_integrations.credentials_encrypted` dan `ai_provide
 | Token sesi meja, klaim, split, QR, recovery, reservasi, promo, voucher, receipt | token tersegel per fitur                             |
 | Kredensial integrasi dan kunci AI                                               | dirotasi oleh skrip di atas                          |
 
-Reseal pemakai lain dicatat sebagai kartu lanjutan di bd.
+Pemakai `sealSecret` lain (token ChatGPT, langganan push, dan kolom lain yang terdaftar) tidak lewat skrip ini, melainkan job `sealed-secret-reseal`. Lihat bagian berikut.
+
+### Job `sealed-secret-reseal` dan pensiun kunci (legend-rj284)
+
+Job `sealed-secret-reseal` berjalan tiap Minggu 03:30 Asia/Jakarta (`SEALED_SECRET_RESEAL_CRON`). Job ini memindahkan setiap kolom yang terdaftar di `SEALED_SECRET_COLUMNS` (`apps/api/src/worker/sealed-secret-reseal.job.ts`) ke versi aktif, termasuk:
+
+- `push_subscriptions.subscription_ciphertext`. Kolom `key_version` ikut diisi `v<versi>` saat baris pindah.
+- `ai_chatgpt_connections.tokens_encrypted` dan `pending_encrypted`, lewat `resealChatgptConnectionAny` (`apps/api/src/services/ai-chatgpt.service.ts`). Baris yang sedang dipakai operasi ChatGPT (lease, ditambah margin 10 menit) dilewati dan dihitung sebagai `busy`. Job tidak menunggu permintaan pengguna, tidak mengubah `updated_at`, dan tidak pernah memutus atau mencabut koneksi.
+
+Versi lama boleh dikeluarkan dari `DATA_ENCRYPTION_KEYS` hanya jika laporan job terakhir memenuhi SEMUA syarat ini untuk setiap kunci:
+
+- `aborted` = false;
+- `failedTenants` = 0 dan `failed` = 0;
+- `remaining` = 0 untuk setiap kolom di atas, termasuk baris `frozen`;
+- cek `rotate-data-key` dan `hris-pii-reseal` di bagian sebelumnya juga terpenuhi.
+
+Job tidak pernah menghapus nilai atau memutus koneksi. Nilai yang tidak bisa dibuka tetap `failed` dan menahan pensiun. Log hanya menyebut tenant, tidak pernah nilainya. Jika setelah run kedua masih ada nilai seperti itu, langkah operator per tenant:
+
+- ChatGPT: pemilik tenant memutus ChatGPT di pengaturan Tanya AI, lalu menghubungkannya lagi. Putus menghapus kedua kolom.
+- Push: hapus baris `push_subscriptions` yang tidak terbaca milik tenant itu, per id. Perangkat mendaftar ulang saat aplikasi dibuka berikutnya. Pengguna di perangkat itu tidak menerima notifikasi sampai saat itu.
+
+Pensiun dengan `failed` > 0 atau `failedTenants` > 0 berarti menerima kehilangan itu untuk tenant terkait. Keputusan ini butuh persetujuan CTO.
 
 Catatan: penulisan baru HRIS dan payroll versi 1 (`pii_key_version = 1`) tetap di bawah kunci 1 lewat `sealSecretBaseKey`, BUKAN kunci data aktif; pembacaan lewat `openSecret` membaca byte versi amplop. Kunci 1 (`DATA_ENCRYPTION_KEY`) tidak bisa dipensiunkan selama masih ada baris versi 1. Memindahkannya ke kunci HRIS bernomor 2 ke atas dilakukan lewat rotasi HRIS di bawah.
 
