@@ -230,6 +230,32 @@ test("Compose creates and health-checks the configured database name", () => {
   );
 });
 
+test("Compose bounds two disposable PostgreSQL servers within the Colima budget", () => {
+  const compose = readFileSync(
+    new URL("../compose.test.yaml", import.meta.url),
+    "utf8",
+  );
+  assert.match(compose, /mem_limit: \$\{STARTER_TEST_PG_MEM:-1024m\}/);
+  assert.match(compose, /memswap_limit: \$\{STARTER_TEST_PG_MEM:-1024m\}/);
+  for (const setting of [
+    "shared_buffers=64MB",
+    "work_mem=2MB",
+    "max_connections=50",
+  ]) {
+    assert.ok(compose.includes(setting), `PostgreSQL must set ${setting}`);
+  }
+});
+
+test("Worktree removal command uses the database cleanup launcher", () => {
+  const packageJson = JSON.parse(
+    readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+  );
+  assert.equal(
+    packageJson.scripts["worktree:remove"],
+    "node scripts/worktree-remove.mjs",
+  );
+});
+
 test("Unit and production browser runs provision an isolated payout grantor", async () => {
   const external =
     "postgresql://legend_grant_ffffffffffffffff:external@outside.invalid/production";
