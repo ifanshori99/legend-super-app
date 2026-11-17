@@ -12,16 +12,25 @@
 -- while one is open (PAYOUT-89): ops decides on it first.
 -- The old signatures are dropped so the application role has no path without it.
 -- Ownership: as 0420/0436, created by the payout role itself.
+-- The check reads tenant by tenant (FORCE RLS: a migration owner without
+-- BYPASSRLS has no tenant context and would fail in app.require_tenant_id).
 DO $$
+DECLARE
+  previous_tenant text := pg_catalog.current_setting('app.tenant_id', true);
+  t record;
 BEGIN
   LOCK TABLE public.payroll_payout_return_claims IN SHARE ROW EXCLUSIVE MODE;
-  IF EXISTS (
-    SELECT 1 FROM public.payroll_payout_return_claims
-     WHERE status = 'open' AND bank_ref IS NULL
-  ) THEN
-    RAISE EXCEPTION 'PAYOUT-89: open return claims without a bank reference must be settled before 990'
-      USING ERRCODE = 'P0001';
-  END IF;
+  FOR t IN SELECT id FROM public.tenants ORDER BY id LOOP
+    PERFORM pg_catalog.set_config('app.tenant_id', t.id::text, true);
+    IF EXISTS (
+      SELECT 1 FROM public.payroll_payout_return_claims
+       WHERE tenant_id = t.id AND status = 'open' AND bank_ref IS NULL
+    ) THEN
+      RAISE EXCEPTION 'PAYOUT-89: open return claims without a bank reference must be settled before 990'
+        USING ERRCODE = 'P0001';
+    END IF;
+  END LOOP;
+  PERFORM pg_catalog.set_config('app.tenant_id', COALESCE(previous_tenant, ''), true);
 END
 $$;
 --> statement-breakpoint
