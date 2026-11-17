@@ -1868,3 +1868,4 @@ Langkah berikut CTO baru:
 - 22:12 CTO: Mulai 1016 legend-g6ept (uang, Sonnet #3) base 1009. Antrean > 20: kartu non-uang tetap ditahan.
 - 22:38 CTO: 1012 G24vl ca8ba4eb7 SIAP batch86 sesudah 1006. Kartu baru legend-dgtz0 (P1 preview lintas outlet). Mulai 1017 (wa9n7+dgtz0) Sonnet #3. legend-13vhb (aktor = kasir di route uang) tetap tahan sampai 982 dan 1012 di m1. Q29 ke founder: layar reservasi/Tanya AI KDS/ops di tablet bersama. G24vl resolve.
 - 22:40 CTO: 1016 G8gub 8164b182a SIAP batch86 sesudah 1009. Refund > kelebihan dihitung penuh (membatasi) dipertahankan. Celah test POS lebih bayar dicatat (QRIS POS selalu hold, tidak bisa lebih bayar). G8gub resolve.
+- 22:52 CTO: 1017 G737x a4fd0a639 SIAP batch86 sesudah 1012. Keputusan: keep-alive sesi perangkat bersama diizinkan (kartu legend-hlmbk naik P2). G737x resolve.
