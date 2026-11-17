@@ -24,6 +24,7 @@ import {
   DEFAULT_REFUND_APPROVAL_POLICIES,
   approvalPolicyChangedEvent,
   approvalMatrixSchema,
+  supplierPaymentBaseTierMissing,
   approvalPolicySchema,
   roleAssignmentSchema,
   roleIdSchema,
@@ -1320,6 +1321,10 @@ export async function replaceApprovalMatrix(
   actorUserId: string,
   now = new Date(),
 ): Promise<{ data: ApprovalPolicy[] }> {
+  // Supplier payment must keep a base tier (founder Q27): answer with the
+  // dedicated code the matrix UI shows beside that row.
+  if (supplierPaymentBaseTierMissing(input.policies))
+    throw new AccessError("SUPPLIER_PAYMENT_BASE_TIER_REQUIRED");
   // The stored-row schema carries ids; the request does not. Validate the
   // rules (tiers, contiguous levels, distinct actor) on synthetic rows.
   const matrix = approvalMatrixSchema.parse(

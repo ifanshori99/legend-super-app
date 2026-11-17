@@ -654,6 +654,8 @@ const accessBaseMessages = {
     APPROVAL_LEVEL_OUT_OF_ORDER: "Tingkat approval ini belum dapat diputuskan.",
     APPROVAL_POLICY_MISSING:
       "Matriks approval untuk tindakan ini belum diatur.",
+    SUPPLIER_PAYMENT_BASE_TIER_REQUIRED:
+      "Pembayaran supplier wajib punya tingkat dasar: tingkat 1 untuk semua nominal (batas 0). Tambahkan tingkat 1 dengan batas 0, supaya satu orang tidak bisa membayar supplier sendirian.",
   },
 } as const;
 

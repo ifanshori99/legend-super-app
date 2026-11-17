@@ -27,7 +27,7 @@ function assertCatalogText(key) {
 
 describe("access catalog text (legend-svza)", () => {
   test("every ACCESS_ERROR_CODE has a user-facing Indonesian message", () => {
-    assert.equal(ACCESS_ERROR_CODES.length, 13);
+    assert.equal(ACCESS_ERROR_CODES.length, 14);
     for (const code of ACCESS_ERROR_CODES) {
       assertCatalogText(`access.error.${code}`);
       assert.notEqual(t(`access.error.${code}`), code, `${code} is raw text`);

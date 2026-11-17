@@ -26,6 +26,7 @@ import {
   type ApprovalPolicy,
   type Role,
 } from "@starter/shared/access";
+import { ApiError } from "@/lib/api/errors";
 import type { AreaAccess } from "@/lib/areas/access";
 import { holdsAny } from "@/lib/areas/guard";
 import { accessErrorMessage } from "../errors";
@@ -53,6 +54,9 @@ import {
   useRoles,
 } from "../hooks";
 import { AccessPage } from "./access-shell";
+
+const SUPPLIER_PAYMENT_BASE_TIER_REQUIRED =
+  "SUPPLIER_PAYMENT_BASE_TIER_REQUIRED";
 
 function issueMessageKey(kind: MatrixIssue["kind"]) {
   switch (kind) {
@@ -239,28 +243,45 @@ function MatrixEditor({
   const [initialJson, setInitialJson] = React.useState(() =>
     JSON.stringify(matrixPoliciesFromDraft(draft)),
   );
+  // The supplier payment base-tier error belongs to that row, not the top alert.
+  const [supplierPaymentError, setSupplierPaymentError] = React.useState<
+    string | null
+  >(null);
   const issues = matrixIssues(draft);
   const coverage = matrixCoverage(draft);
   const approverRoles = matrixApproverRoles(roles);
   const dirty = JSON.stringify(matrixPoliciesFromDraft(draft)) !== initialJson;
+  const saveErrorInRow =
+    save.error instanceof ApiError &&
+    save.error.code === SUPPLIER_PAYMENT_BASE_TIER_REQUIRED;
 
   const updateRow = (
     actionType: MatrixDraftRow["actionType"],
     next: MatrixDraftRow,
-  ) =>
+  ) => {
+    if (actionType === "supplier_payment") setSupplierPaymentError(null);
     setDraft((current) =>
       current.map((row) => (row.actionType === actionType ? next : row)),
     );
+  };
 
   const submit = () => {
     const body = { policies: matrixPoliciesFromDraft(draft) };
     if (body.policies.length === 0) return;
+    setSupplierPaymentError(null);
     save.mutate(body, {
       onSuccess: (response) => {
         const next = matrixDraftFromPolicies(response.data);
         setDraft(next);
         setInitialJson(JSON.stringify(matrixPoliciesFromDraft(next)));
         toast({ title: t("access.matrix.saved") });
+      },
+      onError: (error) => {
+        if (
+          error instanceof ApiError &&
+          error.code === SUPPLIER_PAYMENT_BASE_TIER_REQUIRED
+        )
+          setSupplierPaymentError(accessErrorMessage(error, t));
       },
     });
   };
@@ -307,7 +328,7 @@ function MatrixEditor({
         </Card>
       </CardShell>
 
-      {save.isError && (
+      {save.isError && !saveErrorInRow && (
         <p className="text-sm text-danger" role="alert">
           {accessErrorMessage(save.error, t)}
         </p>
@@ -375,6 +396,17 @@ function MatrixEditor({
                     ))}
                   </div>
                 )}
+
+                {row.actionType === "supplier_payment" &&
+                  supplierPaymentError && (
+                    <p
+                      className="text-sm text-danger"
+                      role="alert"
+                      data-testid="approval-row-error-supplier_payment"
+                    >
+                      {supplierPaymentError}
+                    </p>
+                  )}
               </Card>
             </CardShell>
           );
