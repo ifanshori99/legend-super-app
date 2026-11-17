@@ -621,6 +621,7 @@ describe("yqne1 resolve matches the DOIT status of a needs_reconcile subscriptio
             nextPeriodEnd: row.next_end,
           } as never,
           new Date(),
+          30,
         ),
       ).toBe(false);
       expect(calls).toHaveLength(1);

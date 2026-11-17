@@ -40,7 +40,7 @@ describe("getSubscription", () => {
   it("GETs the encoded id without a body or Idempotency-Key", async () => {
     const { client, calls } = clientWith(() => json(sub));
     const answer = await client.getSubscription("sub/1 x");
-    expect(answer).toEqual(sub);
+    expect(answer).toEqual({ ...sub, reference: null });
     expect(calls).toHaveLength(1);
     const { url, init } = calls[0]!;
     expect(url.endsWith("/v1/recurring/subscriptions/sub%2F1%20x")).toBe(true);
@@ -96,7 +96,7 @@ describe("findSubscriptionByReference", () => {
   it("GETs by reference and returns the array", async () => {
     const { client, calls } = clientWith(() => json({ data: [sub] }));
     const answer = await client.findSubscriptionByReference(reference);
-    expect(answer).toEqual([sub]);
+    expect(answer).toEqual([{ ...sub, reference: null }]);
     const { url, init } = calls[0]!;
     expect(
       url.endsWith(`/v1/recurring/subscriptions?reference=${reference}`),

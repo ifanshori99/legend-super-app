@@ -571,6 +571,7 @@ describe("lch2o reconcile of a start intent older than 24 hours", () => {
             nextPeriodEnd: row.next_end,
           } as never,
           new Date(),
+          30,
         ),
       ).toBe(false);
       expect(count("findSubscriptionByReference")).toBe(1);
