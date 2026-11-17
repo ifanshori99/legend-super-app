@@ -3,6 +3,7 @@
 // crypto.randomUUID does not exist; every save must still mint a key through
 // the shared helper instead of throwing.
 import { expect, test } from "@playwright/test";
+import { waitForHydration } from "./hydration.ts";
 
 test("legend-zrdy payment routing saves when crypto.randomUUID is unavailable", async ({
   page,
@@ -17,12 +18,14 @@ test("legend-zrdy payment routing saves when crypto.randomUUID is unavailable", 
   await page.goto("/kelola/pembayaran?mock=normal", {
     waitUntil: "networkidle",
   });
+  await waitForHydration(page);
+  await page.getByRole("tab", { name: "Routing gateway" }).click();
   expect(await page.evaluate(() => typeof crypto.randomUUID)).toBe("undefined");
 
   const row = page
     .getByRole("tabpanel", { name: "Routing gateway" })
     .locator("li")
-    .filter({ hasText: "QRIS" })
+    .filter({ has: page.getByText("QRIS", { exact: true }) })
     .first();
   await row.getByRole("switch").click();
   await row.getByRole("button", { name: "Simpan" }).click();

@@ -136,9 +136,9 @@ test("AUTH-06 · the matrix states the distinct-approver rule and saves a new ti
       exact: true,
     }),
   ).toBeVisible();
-  // Fixture matrix: 14 of the 30 approval actions (edc_standalone joined upstream) have a policy.
+  // Fixture matrix: 14 of the 31 approval actions have a policy.
   await expect(
-    page.getByText("14 dari 30 tindakan memiliki kebijakan."),
+    page.getByText("14 dari 31 tindakan memiliki kebijakan."),
   ).toBeVisible();
 
   // Reimbursement has no policy yet: it is denied until a tier exists.
@@ -165,7 +165,7 @@ test("AUTH-06 · the matrix states the distinct-approver rule and saves a new ti
     page.getByText("Matriks approval disimpan.").first(),
   ).toBeVisible();
   await expect(
-    page.getByText("15 dari 30 tindakan memiliki kebijakan."),
+    page.getByText("15 dari 31 tindakan memiliki kebijakan."),
   ).toBeVisible();
 });
 

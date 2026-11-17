@@ -40,7 +40,7 @@ test("security email is on, disabled and explained in words", async ({
   await expect(locked).toBeVisible();
   await expect(locked).toContainText("Wajib");
   await expect(
-    page.getByText("Email wajib aktif untuk pemberitahuan keamanan."),
+    page.locator("#notification-security-email-locked-hint"),
   ).toBeVisible();
   // The hint is what assistive tech reads for the locked switch.
   await expect(sw).toHaveAccessibleDescription(

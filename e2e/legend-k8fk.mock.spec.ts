@@ -74,12 +74,22 @@ test("DASH-01: the owner dashboard shows today's sales against the target, trace
 
   // DASH-01: the estimate label. The source-report path (same period and
   // outlet scope as the run) is unit-tested in tests/ws11-owner-dashboard.
-  // Only report routes that exist light up (legend-j815 ships the sales
-  // family); a tile never links to a 404.
+  // Source viewers now include traffic and operations as well as sales.
+  // Every link must still point to the source report of a displayed tile.
   await expect(page.getByText("Estimasi", { exact: true })).toBeVisible();
-  await expect(
-    page.locator('a[href^="/reports"]:not([href^="/reports/sales"])'),
-  ).toHaveCount(0);
+  const reportLinks = page.locator('a[href^="/reports"]');
+  expect(await reportLinks.count()).toBeGreaterThan(0);
+  for (const href of await reportLinks.evaluateAll((links) =>
+    links.map((link) => link.getAttribute("href")),
+  )) {
+    expect([
+      "/reports/sales/target",
+      "/reports/traffic/pax",
+      "/reports/sales/transactions",
+      "/reports/operations/table-turnover",
+      "/reports/sales/per-channel",
+    ]).toContain(href);
+  }
 
   // One StatStrip for the related KPIs (DESIGN.md v3 / Q30), not separate cards.
   const strip = page.getByRole("region", {
@@ -118,7 +128,7 @@ test("DASH-01: operations, shower, and seats tabs show their report-backed tiles
   await expect(
     page.getByRole("heading", { name: "Waktu saji per stasiun" }),
   ).toBeVisible();
-  await expect(page.getByText(/4,7/).first()).toBeVisible();
+  await expect(page.getByText("4,6/5", { exact: true })).toBeVisible();
   await expect(
     page.getByRole("heading", { name: "Ulasan terbaru" }),
   ).toBeVisible();
@@ -130,9 +140,20 @@ test("DASH-01: operations, shower, and seats tabs show their report-backed tiles
   await expect(page.getByText("Status bilik saat ini")).toBeVisible();
   await expect(page.getByText("Utilisasi bilik")).toBeVisible();
   await expect(page.getByText("56,3%", { exact: true })).toBeVisible();
-  await expect(page.getByText(/1\.350\.000/)).toBeVisible();
-  await expect(page.getByText("Konversi ke F&B")).toBeVisible();
-  await expect(page.getByText("61,1%", { exact: true })).toBeVisible();
+  // These sources are explicitly unavailable: show no invented revenue,
+  // subscriptions or F&B conversion while retaining real occupancy above.
+  for (const label of [
+    "Pendapatan fasilitas",
+    "Langganan aktif",
+    "Konversi ke F&B",
+  ]) {
+    const tile = page.locator('[data-slot="stat-tile"]').filter({
+      has: page.getByRole("paragraph").filter({ hasText: label }),
+    });
+    await expect(tile.getByText("—", { exact: true })).toBeVisible();
+    await expect(tile.getByText(/Rp/)).toHaveCount(0);
+  }
+  await expect(page.getByText(/1\.350\.000|61,1%/)).toHaveCount(0);
 
   await page.getByRole("tab", { name: "Kursi & WFC" }).click();
   await expect(
@@ -141,12 +162,25 @@ test("DASH-01: operations, shower, and seats tabs show their report-backed tiles
   await expect(
     page.getByRole("cell", { name: "Indoor Reguler" }).first(),
   ).toBeVisible();
-  await expect(page.getByText("68,8%", { exact: true })).toBeVisible();
+  const zoneOccupancy = page.getByRole("region", {
+    name: "Okupansi kursi per zona",
+  });
+  await expect(
+    zoneOccupancy
+      .getByRole("row")
+      .filter({ hasText: "Indoor Reguler" })
+      .getByRole("cell"),
+  ).toHaveText(["Indoor Reguler", "—", "—"]);
+  await expect(page.getByText("68,8%", { exact: true })).toHaveCount(0);
   await expect(
     page.getByRole("heading", { name: "Durasi duduk dan belanja" }),
   ).toBeVisible();
   await expect(page.getByText("Pemakaian Wi-Fi")).toBeVisible();
-  await expect(page.getByText(/210/).first()).toBeVisible();
+  const wifi = page.locator('[data-slot="stat-tile"]').filter({
+    has: page.getByRole("paragraph").filter({ hasText: /^Pemakaian Wi-Fi$/ }),
+  });
+  await expect(wifi.getByText("—", { exact: true })).toBeVisible();
+  await expect(wifi.getByText(/210/)).toHaveCount(0);
 });
 
 test("DASH-03: the owner dashboard is fully usable at 360px with no page scroll", async ({

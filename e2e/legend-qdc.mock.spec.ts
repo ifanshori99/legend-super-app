@@ -91,7 +91,7 @@ test.describe("legend-qdc · inventory back office", () => {
     await page.goto("/kelola/inventori/satuan?mock=normal");
     await ready(page);
     await expect(
-      page.getByRole("heading", { name: "Katalog satuan" }),
+      page.getByRole("heading", { name: "Daftar satuan" }),
     ).toBeVisible();
     await expect(page.getByText("Kilogram").first()).toBeVisible();
 

@@ -444,9 +444,9 @@ test.describe("payroll configuration", () => {
       await openSection(page, "components", theme);
       await expectShellTitle(page);
       // The table and the 390px list duplicate the rows; the pager footer is
-      // outside both, so this assertion holds at every viewport. 14 = the 12
-      // seeded components + TAX_ALLOWANCE and PPH21_REFUND (legend-iwgb).
-      await expect(page.getByText("14 baris", { exact: true })).toBeVisible();
+      // outside both, so this assertion holds at every viewport. 15 = the 12
+      // seeded components + TAX_ALLOWANCE, PPH21_REFUND and PPH21_RECEIVABLE.
+      await expect(page.getByText("15 baris", { exact: true })).toBeVisible();
       await captureScreenshot(
         page,
         `legend-r1bu/components-${width}-${theme}.png`,
