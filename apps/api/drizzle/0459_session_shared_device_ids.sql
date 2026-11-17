@@ -29,7 +29,13 @@ GRANT EXECUTE ON FUNCTION app.shared_device_active(uuid[]) TO legend_app;
 --> statement-breakpoint
 
 -- Shared mode exists only on POS devices (the acting-cashier rule is a POS
--- rule). Clear any other type, then enforce it.
+-- rule). Clear any other type, then enforce it. FORCE RLS on devices is lifted
+-- for the one UPDATE (the migration role has no tenant context, so a
+-- non-superuser owner fails app.require_tenant_id) and restored right after.
+ALTER TABLE "devices" NO FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
 UPDATE "devices" SET "shared_mode" = false WHERE "shared_mode" AND "type" <> 'pos';
+--> statement-breakpoint
+ALTER TABLE "devices" FORCE ROW LEVEL SECURITY;
 --> statement-breakpoint
 ALTER TABLE "devices" ADD CONSTRAINT "devices_shared_mode_pos_only" CHECK (NOT "shared_mode" OR "type" = 'pos');
