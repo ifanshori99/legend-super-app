@@ -22,23 +22,29 @@ import { enforceSupportSession } from "./support-session";
 // really use opts in with requireAuthAllowSharedDevice and then mounts
 // resolveActingStaff + requireActingStaffOnSharedDevice (POS routers) or is a
 // reviewed shell read. The list of opted-in routers is pinned by
-// test/shared-device-router-decisions.test.ts. A mark lapses when every marked
-// device is unflagged, revoked or gone, then the session is open again.
+// test/shared-device-router-decisions.test.ts. A mark never lapses (legend
+// 1027): a session with any entry in session.shared_device_ids stays a shared
+// device session even when every marked device is later unflagged, revoked or
+// gone. Only a token-only request (no mark yet) needs its device to be active.
 async function refuseSharedDeviceSession(
   req: Request,
   marked: readonly string[] | null | undefined,
 ): Promise<void> {
-  const ids = new Set(marked ?? []);
+  if ((marked?.length ?? 0) > 0)
+    throw new HttpError(
+      403,
+      ACTING_STAFF_ERROR_CODES.NOT_ALLOWED,
+      "Perangkat bersama: fitur ini hanya bisa dibuka dari perangkat pribadi.",
+    );
   const raw = req.get(DEVICE_TOKEN_HEADER);
-  if (raw) {
-    try {
-      const payload = verifyDeviceToken(raw);
-      if (payload !== null) ids.add(payload.deviceId);
-    } catch {
-      // A badly signed token adds nothing; the session's own marks still count.
-    }
+  if (!raw) return;
+  let deviceId: string | null = null;
+  try {
+    deviceId = verifyDeviceToken(raw)?.deviceId ?? null;
+  } catch {
+    // A badly signed token adds nothing.
   }
-  if (ids.size === 0 || !(await anySharedDeviceActive([...ids]))) return;
+  if (deviceId === null || !(await anySharedDeviceActive([deviceId]))) return;
   throw new HttpError(
     403,
     ACTING_STAFF_ERROR_CODES.NOT_ALLOWED,

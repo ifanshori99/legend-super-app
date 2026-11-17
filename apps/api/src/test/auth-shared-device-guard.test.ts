@@ -554,26 +554,30 @@ describe("1017 personal sessions and anonymous callers are unchanged", () => {
     expect(list.status, JSON.stringify(list.body)).toBe(200);
   });
 
-  it("a session marked only on an unflagged device is unaffected", async () => {
+  // 1027: any mark entry means shared device for the life of the session,
+  // even one pointing at a device that is not (or no longer) flagged.
+  it("a session carrying a mark on an unflagged device stays refused (fail closed, 1027)", async () => {
     const device = await newDevice(false);
     const who = await member("Sesi Perangkat Pribadi");
     await markSessionSharedDevice(who.sessionId, device);
-    const update = await call(who.client, "post", "/api/auth/update-user", {
-      name: "Tetap Boleh",
-    });
-    expect(update.status, JSON.stringify(update.body)).toBe(200);
+    expectNotAllowed(
+      await call(who.client, "post", "/api/auth/update-user", {
+        name: "Tetap Ditolak",
+      }),
+    );
   });
 
-  it("a session whose only mark lapsed (flag turned off) is unaffected", async () => {
+  it("a session whose only mark lapsed (flag turned off) stays refused (fail closed, 1027)", async () => {
     const { who, device } = await markedMember("Sesi Tanda Lapuk");
     expectNotAllowed(
       await call(who.client, "post", "/api/auth/update-user", { name: "X" }),
     );
     await setFlag(device, false);
-    const update = await call(who.client, "post", "/api/auth/update-user", {
-      name: "Boleh Lagi",
-    });
-    expect(update.status, JSON.stringify(update.body)).toBe(200);
+    expectNotAllowed(
+      await call(who.client, "post", "/api/auth/update-user", {
+        name: "Tetap Ditolak",
+      }),
+    );
   });
 
   it("a session sending an unflagged device's token is unaffected", async () => {

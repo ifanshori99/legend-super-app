@@ -24,7 +24,6 @@ import {
 } from "../routes/device-id.ts";
 import { resolveActingStaffToken } from "../services/pos-acting-staff.service";
 import {
-  anySharedDeviceActive,
   isActiveSharedDevice,
   markSessionSharedDevice,
   sharedDeviceMarkLimit,
@@ -108,8 +107,9 @@ export const resolveActingStaff: RequestHandler = async (req, _res, next) => {
  *  - A marked session is refused while ANY marked device is still active and
  *    flagged, in any tenant of the login (the cookie is shared across tenants),
  *    whether the request has no device header or carries the token of another,
- *    unflagged device; once every marked device is unflagged, revoked or gone
- *    the marks lapse.
+ *    unflagged device. A mark never lapses (legend 1027): unflagging or
+ *    revoking a device closes its sessions best effort, and the guards stay
+ *    closed even if that close fails.
  * When the session already holds 8 active marks, a 9th flagged device cannot be
  * recorded: its request is refused 403 SHARED_DEVICE_MARK_LIMIT (never passed
  * as owner). A device token that is present but no longer accepted is a 401
@@ -145,9 +145,9 @@ export const requireActingStaffOnSharedDevice: RequestHandler = async (
     throw sharedDeviceRequired();
   }
   // No device header, or another (unflagged) device's valid token: neither may
-  // lift the marks of a session used on a device that is still active and
-  // flagged.
-  if (await anySharedDeviceActive(marked)) throw sharedDeviceRequired();
+  // lift the marks of a session used on a shared device. A mark never lapses
+  // (legend 1027), even if every marked device is now unflagged or revoked.
+  if (marked.length > 0) throw sharedDeviceRequired();
   next();
 };
 

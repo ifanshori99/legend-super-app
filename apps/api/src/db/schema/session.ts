@@ -85,7 +85,7 @@ export const session = pgTable(
     // legend-ypwsp, legend-jqurl: every shared-mode device this session was
     // seen on (newest 8). Stamped server-side only; lets the acting-staff
     // guard keep demanding a staff token when the device header is stripped.
-    // No FK: a revoked or deleted device just lets the mark lapse.
+    // No FK: a mark never lapses, a revoked or deleted device keeps its mark.
     sharedDeviceIds: uuid("shared_device_ids")
       .array()
       .notNull()

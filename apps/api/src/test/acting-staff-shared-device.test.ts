@@ -16,8 +16,8 @@
 //    file; the PATCH endpoint is covered in device-shared-mode.test.ts.
 //  - Once a flagged device is seen, the login session is marked
 //    (`session.shared_device_ids`, an array of device ids). The marked session is refused even when the
-//    device header is stripped (cookie reused elsewhere); the mark lapses when
-//    the device is unflagged, revoked or gone.
+//    device header is stripped (cookie reused elsewhere); the mark never lapses
+//    (1027, fail closed): unflagging or revoking the device keeps the PIN demand.
 //  - Because the mark sticks to a login session, device requests use their own
 //    member (`deviceSession`); `sessionOwner` stays a clean browser session for
 //    fixtures, DB-side checks and the "no device identity" cases.
@@ -737,7 +737,7 @@ describe("shared device: only flagged devices are guarded, and the session is ma
     expect(await count("orders")).toBe(before);
   });
 
-  it("the same device is open when unflagged, refused once flagged, open again when unflagged", async () => {
+  it("the same device is open when unflagged, refused once flagged, and stays refused after unflagging (fail closed, 1027)", async () => {
     const id = await newDevice(false);
     const who = await freshMember();
     const on = { onDevice: true, deviceId: id };
@@ -745,7 +745,7 @@ describe("shared device: only flagged devices are guarded, and the session is ma
     await setFlag(id, true);
     expectRequired(await listParked(who, on));
     await setFlag(id, false);
-    expectOk(await listParked(who, on));
+    expectRequired(await listParked(who, on));
   });
 
   it("a flagged device with a live acting token goes through", async () => {
@@ -815,7 +815,7 @@ describe("shared device: only flagged devices are guarded, and the session is ma
     expectOk(await listParked(clean, { onDevice: true, deviceId: unflagged }));
   });
 
-  it("header swap: once the marked device is unflagged, the other device's token works again", async () => {
+  it("header swap: once the marked device is unflagged, the other device's token still does not reopen the session (fail closed, 1027)", async () => {
     const flagged = await newDevice(true);
     const unflagged = await newDevice(false);
     const who = await freshMember();
@@ -826,7 +826,9 @@ describe("shared device: only flagged devices are guarded, and the session is ma
       await listParked(who, { onDevice: true, deviceId: unflagged }),
     );
     await setFlag(flagged, false);
-    expectOk(await listParked(who, { onDevice: true, deviceId: unflagged }));
+    expectRequired(
+      await listParked(who, { onDevice: true, deviceId: unflagged }),
+    );
   });
 
   it("issuing a cashier token on a flagged device marks the session before any POS request", async () => {
@@ -861,7 +863,7 @@ describe("shared device: only flagged devices are guarded, and the session is ma
     expectRequired(await listParked(who, { onDevice: false }));
   });
 
-  it("unflagging the device lapses the mark: the same session works again without the device header", async () => {
+  it("unflagging the device does not lapse the mark: the same session still needs a PIN without the device header (fail closed, 1027)", async () => {
     const flagged = await newDevice(true);
     const who = await freshMember();
     expectRequired(
@@ -870,8 +872,10 @@ describe("shared device: only flagged devices are guarded, and the session is ma
     expectRequired(await listParked(who, { onDevice: false }));
 
     await setFlag(flagged, false);
-    expectOk(await listParked(who, { onDevice: false }));
-    expectOk(await placeOrder(who, { onDevice: false }));
+    expectRequired(await listParked(who, { onDevice: false }));
+    const before = await count("orders");
+    expectRequired(await placeOrder(who, { onDevice: false }));
+    expect(await count("orders")).toBe(before);
   });
 
   it("a revoked device token on a flagged device is refused with 401 and never runs as the session owner", async () => {
@@ -890,7 +894,7 @@ describe("shared device: only flagged devices are guarded, and the session is ma
     expect(await count("orders")).toBe(before);
   });
 
-  it("revoking the device lapses the mark of a session that was already marked", async () => {
+  it("revoking the device does not lapse the mark of a session that was already marked (fail closed, 1027)", async () => {
     const flagged = await newDevice(true);
     const who = await freshMember();
     expectRequired(
@@ -902,6 +906,6 @@ describe("shared device: only flagged devices are guarded, and the session is ma
       "UPDATE devices SET status = 'revoked', revoked_at = now() WHERE id = $1",
       [flagged],
     );
-    expectOk(await listParked(who, { onDevice: false }));
+    expectRequired(await listParked(who, { onDevice: false }));
   });
 });

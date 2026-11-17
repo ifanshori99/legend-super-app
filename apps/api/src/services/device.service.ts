@@ -459,7 +459,7 @@ export async function closeTrainingPeriod(
  * device routes (403 ACTING_STAFF_NOT_ALLOWED), for any device. This check
  * still refuses, with its own message, a session marked with the device or a
  * request carrying that device's own token that reaches the service anyway
- * (for example a lapsed mark whose session close failed): it must not switch
+ * (for example a mark whose session close failed after revoke or unflag): it must not switch
  * the guard off (disable shared mode or revoke the device): 403. Pass the
  * session's `sharedDeviceIds` and the request's resolved device id (null
  * without a device header).

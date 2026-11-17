@@ -55,9 +55,10 @@ function isAllowedOnSharedDevice(path: string | null, method: string): boolean {
  * Mounted on /api/auth before the login-challenge router, identityAuthRouter
  * and Better Auth. An allowlisted path passes with no lookup, and so does a
  * request without credentials. Otherwise the session is read (no cookie cache)
- * and, when its marks (session.sharedDeviceIds plus the device of a validly
- * signed X-Device-Token) include an active shared device, the request is
- * refused 403 ACTING_STAFF_NOT_ALLOWED. A personal-device session is untouched.
+ * and, when it carries any mark in session.sharedDeviceIds (a mark never
+ * lapses, even if those devices are now unflagged or revoked) or the validly
+ * signed X-Device-Token is of an active shared device, the request is refused
+ * 403 ACTING_STAFF_NOT_ALLOWED. A personal-device session is untouched.
  * Reads headers only, never the body.
  */
 export const guardSharedDeviceAuthRoutes: RequestHandler = async (
@@ -72,17 +73,23 @@ export const guardSharedDeviceAuthRoutes: RequestHandler = async (
     query: { disableCookieCache: true },
   });
   if (!session) return next();
-  const ids = new Set(session.session.sharedDeviceIds ?? []);
+  const marked = session.session.sharedDeviceIds ?? [];
+  if (marked.length > 0)
+    throw new HttpError(
+      403,
+      ACTING_STAFF_ERROR_CODES.NOT_ALLOWED,
+      "Perangkat bersama: fitur ini hanya bisa dibuka dari perangkat pribadi.",
+    );
   const rawToken = req.get(DEVICE_TOKEN_HEADER);
-  if (rawToken) {
-    try {
-      const payload = verifyDeviceToken(rawToken);
-      if (payload !== null) ids.add(payload.deviceId);
-    } catch {
-      // A badly signed token adds nothing; the session's own marks still count.
-    }
+  if (!rawToken) return next();
+  let deviceId: string | null = null;
+  try {
+    deviceId = verifyDeviceToken(rawToken)?.deviceId ?? null;
+  } catch {
+    // A badly signed token adds nothing.
   }
-  if (ids.size === 0 || !(await anySharedDeviceActive([...ids]))) return next();
+  if (deviceId === null || !(await anySharedDeviceActive([deviceId])))
+    return next();
   throw new HttpError(
     403,
     ACTING_STAFF_ERROR_CODES.NOT_ALLOWED,

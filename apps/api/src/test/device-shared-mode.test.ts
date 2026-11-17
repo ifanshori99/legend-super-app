@@ -35,6 +35,7 @@ import {
 
 const ENABLED = "device.shared_mode_enabled";
 const DISABLED = "device.shared_mode_disabled";
+const REVOKED = "device.revoked";
 
 type Client = ReturnType<typeof agent>;
 type Member = { client: Client; userId: string };
@@ -535,6 +536,7 @@ describe("device management is refused from a shared device", () => {
     const response = await revoke(marked, id);
     expectSharedDeviceRefusal(response);
     expect(await statusOf(id)).toBe("active");
+    expect(await auditRows(id, REVOKED)).toHaveLength(0);
   });
 
   // Changed (legend-a6aq6): new code instead of the fixed message text.
@@ -544,6 +546,7 @@ describe("device management is refused from a shared device", () => {
     const response = await revoke(caller, id, tokenOf(id));
     expectSharedDeviceRefusal(response);
     expect(await statusOf(id)).toBe("active");
+    expect(await auditRows(id, REVOKED)).toHaveLength(0);
   });
 
   // Extended (legend-a6aq6, 1024): the revoked tablet's session is closed.
@@ -555,6 +558,8 @@ describe("device management is refused from a shared device", () => {
     const response = await revoke(other, id);
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     expect(await statusOf(id)).toBe("revoked");
+    // Control for the zero-audit checks of the refused revokes above.
+    expect(await auditRows(id, REVOKED)).toHaveLength(1);
     await expectSessionClosed(marked);
   });
 

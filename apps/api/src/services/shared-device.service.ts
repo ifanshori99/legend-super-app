@@ -4,8 +4,9 @@
 // requireActingStaffOnSharedDevice). A session that has been used on such a
 // device is marked in `session.shared_device_ids` (the newest 8 such devices);
 // the mark keeps the rule when the same cookie is replayed without the device
-// header, in any tenant of the login. A mark lapses when its device is
-// unflagged, revoked or gone.
+// header, in any tenant of the login. A mark never lapses (legend 1027): when
+// its device is unflagged or revoked the sessions are closed best effort, and
+// the guards stay closed even if that close fails.
 
 import { and, eq, sql } from "drizzle-orm";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
@@ -69,8 +70,8 @@ export async function anySharedDeviceActive(
 /**
  * Marks the login session as used on this shared device: appends the id when
  * absent. One UPDATE, no write when already marked. A full list (8) makes room
- * by dropping the oldest mark that is NOT active (unflagged, revoked or gone:
- * a lapsed mark guards nothing). An active mark is never dropped, so an
+ * by dropping the oldest mark that is NOT active (unflagged, revoked or gone;
+ * its sessions were closed best effort). An active mark is never dropped, so an
  * attacker cannot evict the mark of the real shared device by flooding the
  * session with other devices.
  *
@@ -117,8 +118,8 @@ export async function markSessionSharedDevice(
 
 /**
  * legend-dn7uo: the session holds 8 active marks and a 9th device asked for
- * it. The refused device is not recorded, so once devices 1-8 lapse its cookie
- * would pass header-less as the owner. Closing the session here removes that
+ * it. The refused device is not recorded, so its cookie would carry no mark
+ * and pass header-less as the owner. Closing the session here removes that
  * cookie's access: the user signs in again on the 9th device, and the new
  * session is stamped at sign-in (legend-sq1ux). Best effort, never throws.
  */
@@ -150,8 +151,9 @@ export async function closeSessionAtMarkLimit(
 /**
  * legend-1024: a device was revoked, so every login session that was used on it
  * is closed (same audited revoke as closeSessionAtMarkLimit). Their cookies
- * would otherwise pass header-less as the owner once the mark lapses. Best
- * effort per session, never throws. Returns the closed session ids.
+ * would otherwise stay usable. A mark never lapses, so the guards stay closed
+ * even if this close fails. Best effort per session, never throws. Returns
+ * the closed session ids.
  */
 export async function closeSessionsOfSharedDevice(
   deviceId: string,
@@ -175,8 +177,8 @@ export async function closeSessionsOfSharedDevice(
 
 // legend-dn7uo: the session already carries 8 active shared-device marks, so
 // this 9th device cannot be recorded. Refused outright, never passed as owner,
-// and the session is closed so its cookie cannot pass header-less once the 8
-// marked devices lapse. Usage: `throw await sharedDeviceMarkLimit(session.id, user.id)`.
+// and the session is closed so its cookie, which carries no mark of the 9th
+// device, cannot pass header-less. Usage: `throw await sharedDeviceMarkLimit(session.id, user.id)`.
 export async function sharedDeviceMarkLimit(
   sessionId: string,
   userId: string,
