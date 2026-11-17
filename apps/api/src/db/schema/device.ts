@@ -133,6 +133,10 @@ export const devices = pgTable(
       "devices_scanner_status_check",
       sql`${table.scannerStatus} IS NULL OR ${table.scannerStatus} IN ('connected', 'disconnected')`,
     ),
+    check(
+      "devices_shared_mode_pos_only",
+      sql`NOT ${table.sharedMode} OR ${table.type} = 'pos'`,
+    ),
   ],
 );
 

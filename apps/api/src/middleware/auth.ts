@@ -1,9 +1,11 @@
 import type { Request, RequestHandler } from "express";
 import { fromNodeHeaders } from "better-auth/node";
 import type { Permissions } from "@starter/shared/permissions";
+import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { auth } from "../lib/auth";
 import { HttpError } from "../lib/http-error";
 import { setRequestAuthMethod, setRequestUser } from "../lib/request-context";
+import { stampSharedDeviceFromToken } from "../services/shared-device.service";
 import { enforceSupportSession } from "./support-session";
 
 // Authenticates against the database on every request (no cookie cache), so a
@@ -20,6 +22,13 @@ export const requireAuth: RequestHandler = async (req, _res, next) => {
   // legend-k2l: only a password session may use staff role assignments
   // (services/permission-resolver.ts reads it through requestMayUseStaffRoles).
   setRequestAuthMethod(session.session.authMethod ?? "legacy");
+  // legend-jqurl: a signed token of a flagged shared device marks the session
+  // on every authenticated route, not only the guarded POS ones. Never throws.
+  await stampSharedDeviceFromToken(
+    session.session.id,
+    session.session.sharedDeviceIds,
+    req.get(DEVICE_TOKEN_HEADER),
+  );
   // A support (impersonated) session is checked against its support access
   // grant here, the one chokepoint of every cookie router. See
   // middleware/support-session.ts.

@@ -24,6 +24,7 @@ import {
 } from "../routes/device-id.ts";
 import { resolveActingStaffToken } from "../services/pos-acting-staff.service";
 import {
+  anySharedDeviceActive,
   isActiveSharedDevice,
   markSessionSharedDevice,
 } from "../services/shared-device.service";
@@ -101,12 +102,13 @@ export const resolveActingStaff: RequestHandler = async (req, _res, next) => {
  * (`devices.shared_mode`). Only a flagged device is guarded; every other
  * request keeps the old behaviour (session owner is the actor).
  *  - A request from a flagged device must carry a live cashier token. The login
- *    session is marked with that device first (shared_device_id), so the same
- *    cookie replayed without the device header is refused too.
- *  - A marked session is refused while the marked device is still active and
- *    flagged, whether the request has no device header or carries the token of
- *    another, unflagged device; once it is unflagged, revoked or gone the mark
- *    lapses.
+ *    session is marked with that device first (shared_device_ids, newest 8), so
+ *    the same cookie replayed without the device header is refused too.
+ *  - A marked session is refused while ANY marked device is still active and
+ *    flagged, in any tenant of the login (the cookie is shared across tenants),
+ *    whether the request has no device header or carries the token of another,
+ *    unflagged device; once every marked device is unflagged, revoked or gone
+ *    the marks lapse.
  * A device token that is present but no longer accepted is a 401 from
  * currentDeviceIdOf, never the old behaviour. Mount right after
  * resolveActingStaff: an invalid header has already failed there with its own
@@ -132,27 +134,15 @@ export const requireActingStaffOnSharedDevice: RequestHandler = async (
     return next();
   }
   const deviceId = await currentDeviceIdOf(req);
-  const marked = session.sharedDeviceId;
-  if (deviceId !== null) {
-    if (await isActiveSharedDevice(tenant, deviceId)) {
-      await markSessionSharedDevice(session.id, deviceId);
-      throw sharedDeviceRequired();
-    }
-    // Another (unflagged) device's valid token must not lift the mark of a
-    // session that was used on a device that is still active and flagged.
-    if (
-      typeof marked === "string" &&
-      marked !== deviceId &&
-      (await isActiveSharedDevice(tenant, marked))
-    )
-      throw sharedDeviceRequired();
-    return next();
-  }
-  if (
-    typeof marked === "string" &&
-    (await isActiveSharedDevice(tenant, marked))
-  )
+  const marked = session.sharedDeviceIds ?? [];
+  if (deviceId !== null && (await isActiveSharedDevice(tenant, deviceId))) {
+    await markSessionSharedDevice(session.id, deviceId);
     throw sharedDeviceRequired();
+  }
+  // No device header, or another (unflagged) device's valid token: neither may
+  // lift the marks of a session used on a device that is still active and
+  // flagged.
+  if (await anySharedDeviceActive(marked)) throw sharedDeviceRequired();
   next();
 };
 

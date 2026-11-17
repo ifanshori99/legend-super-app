@@ -454,15 +454,18 @@ export async function closeTrainingPeriod(
 /**
  * A session marked with a shared device, or a request carrying that device's
  * own token, must not switch the guard off (disable shared mode or revoke the
- * device): 403. Pass the session's `sharedDeviceId` and the request's resolved
+ * device): 403. Pass the session's `sharedDeviceIds` and the request's resolved
  * device id (null without a device header).
  */
 export function assertNotOwnSharedDevice(
   deviceId: string,
-  sessionSharedDeviceId: string | null | undefined,
+  sessionSharedDeviceIds: readonly string[] | null | undefined,
   requestDeviceId: string | null,
 ): void {
-  if (sessionSharedDeviceId === deviceId || requestDeviceId === deviceId)
+  if (
+    sessionSharedDeviceIds?.includes(deviceId) ||
+    requestDeviceId === deviceId
+  )
     throw new HttpError(
       403,
       ACTING_STAFF_ERROR_CODES.SHARED_MODE_SELF_DISABLE,
@@ -578,6 +581,11 @@ export async function setDeviceSharedMode(
     assertOutletInScope(context.outletScope, current.outletId);
     if (current.status !== "active")
       throw new CoreError("CONFLICT", "Perangkat sudah dicabut.");
+    if (input.sharedMode === true && current.type !== "pos")
+      throw new CoreError(
+        "CONFLICT",
+        "Mode perangkat bersama hanya untuk perangkat POS.",
+      );
     if (current.sharedMode === input.sharedMode) return toDevice(current);
     const [updated] = await tx
       .update(devices)

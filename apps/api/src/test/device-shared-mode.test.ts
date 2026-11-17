@@ -356,7 +356,7 @@ describe("PATCH /api/devices/:deviceId/shared-mode", () => {
 
 // ---- round C: a shared device cannot switch its own guard off ------------------
 // Spec (card brief, round C): when the caller's login session is marked with the
-// device (`session.shared_device_id` = the device) or the request itself carries
+// device (`session.shared_device_ids` contains the device) or the request itself carries
 // that device's token header, turning shared mode OFF for that device, or revoking
 // it, answers 403 with the Indonesian message "Matikan mode perangkat bersama dari
 // perangkat lain." Turning it ON stays allowed, and so does any other session.
@@ -395,7 +395,7 @@ describe("shared mode cannot be switched off from the device itself", () => {
   /** The login session was marked by an earlier request from the shared device. */
   async function mark(who: Member, deviceId: string) {
     const { rowCount } = await owner.query(
-      `UPDATE "session" SET shared_device_id = $2 WHERE user_id = $1`,
+      `UPDATE "session" SET shared_device_ids = ARRAY[$2]::uuid[] WHERE user_id = $1`,
       [who.userId, deviceId],
     );
     expect(rowCount).toBeGreaterThan(0);

@@ -185,7 +185,7 @@ deviceRouter.post(
     const input = revokeDeviceEndpoint.body.parse(req.body);
     assertNotOwnSharedDevice(
       deviceId,
-      getAuth(req).session.sharedDeviceId,
+      getAuth(req).session.sharedDeviceIds,
       await currentDeviceIdOf(req),
     );
     res.json({
@@ -209,7 +209,7 @@ deviceRouter.patch(
     if (!input.sharedMode)
       assertNotOwnSharedDevice(
         deviceId,
-        getAuth(req).session.sharedDeviceId,
+        getAuth(req).session.sharedDeviceIds,
         await currentDeviceIdOf(req),
       );
     res.json({
