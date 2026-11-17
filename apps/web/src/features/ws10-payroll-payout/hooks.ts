@@ -45,6 +45,7 @@ import { maskedAccountDisplay } from "./lib";
 import {
   approvalLogQuery,
   batchQuery,
+  batchReturnClaimsQuery,
   configQuery,
   employeesQuery,
   entityBatchesQuery,
@@ -52,6 +53,7 @@ import {
   paidRunsQuery,
   payableRunsQuery,
   payoutKeys,
+  payoutReconFlagsQuery,
   resolutionProposalsQuery,
   runBatchesQuery,
   sourceAccountsQuery,
@@ -498,4 +500,111 @@ export function useConfirmCash() {
   });
 }
 
+// ---- Recon flags and return-claim withdrawal --------------------------------
+// Two people: one proposes, a different one approves. Both writes refresh on
+// settle (success or error), so a 409 (`isReconConflict`, `isWithdrawConflict`)
+// leaves the screen on the data as it is now. The password is only passed
+// through, never kept.
+
+/** Every recon flag of the tenant, newest first (`clearance` null = open). */
+export function usePayoutReconFlags() {
+  return useQuery(payoutReconFlagsQuery());
+}
+
+/** `mutate({ flagId, reason, password? })`; `data.clearanceId`. Closes nothing yet. */
+export function useProposeReconClearance() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      flagId,
+      ...body
+    }: { flagId: string } & api.ReconClearanceProposalInput) =>
+      api.proposeReconClearance(flagId, body),
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: payoutKeys.reconFlags() }),
+  });
+}
+
+/** `mutate({ clearanceId, password? })`: the second person, not the proposer. */
+export function useApproveReconClearance() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      clearanceId,
+      ...body
+    }: { clearanceId: string } & api.PasswordStepInput) =>
+      api.approveReconClearance(clearanceId, body),
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: payoutKeys.reconFlags() }),
+  });
+}
+
+/** Return claims of a batch with their open withdrawal proposal. */
+export function useBatchReturnClaims(batchId: string | undefined) {
+  return useQuery({
+    ...batchReturnClaimsQuery(batchId ?? ""),
+    enabled: Boolean(batchId),
+  });
+}
+
+/** Also refreshes the batch, whose items an approved withdrawal restores. */
+function useRefreshReturnClaims(batchId: string) {
+  const queryClient = useQueryClient();
+  const refresh = useRefreshPayout();
+  return async () => {
+    await queryClient.invalidateQueries({
+      queryKey: payoutKeys.returnClaims(batchId),
+    });
+    await refresh();
+  };
+}
+
+/** `mutate({ claimId, reason, password? })`; `data.withdrawalId`. Withdraws nothing yet. */
+export function useProposeReturnWithdrawal(batchId: string) {
+  const refresh = useRefreshReturnClaims(batchId);
+  return useMutation({
+    mutationFn: ({
+      claimId,
+      ...body
+    }: { claimId: string } & api.ReconClearanceProposalInput) =>
+      api.proposeReturnWithdrawal(claimId, body),
+    onSettled: refresh,
+  });
+}
+
+/** `mutate({ withdrawalId, password? })`: the second person; `data.restoredItems`. */
+export function useApproveReturnWithdrawal(batchId: string) {
+  const refresh = useRefreshReturnClaims(batchId);
+  return useMutation({
+    mutationFn: ({
+      withdrawalId,
+      ...body
+    }: { withdrawalId: string } & api.PasswordStepInput) =>
+      api.approveReturnWithdrawal(withdrawalId, body),
+    onSettled: refresh,
+  });
+}
+
 export type { PayableRun };
+
+/**
+ * The signed-in user for the two-person checks. A real session has an id. Mock
+ * mode has no session (the role cookie picks the mock actor), so the id comes
+ * from the mock module, loaded on demand so a real build never ships it. Until
+ * it is known the id is empty, which `isOwnProposal` treats as "not mine"; the
+ * mock server refuses a self approval either way.
+ */
+export function useActingUserId(sessionUserId: string): string {
+  const [mockId, setMockId] = React.useState("");
+  React.useEffect(() => {
+    if (import.meta.env.VITE_API_MOCK !== "true" || sessionUserId) return;
+    let live = true;
+    void import("./mock").then((mod) => {
+      if (live) setMockId(mod.mockActorId());
+    });
+    return () => {
+      live = false;
+    };
+  }, [sessionUserId]);
+  return sessionUserId || mockId;
+}

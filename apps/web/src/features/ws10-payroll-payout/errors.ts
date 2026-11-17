@@ -51,6 +51,19 @@ const CODE_KEYS: Record<string, MessageKey> = {
     "payrollPayoutReview.error.reconClearSelfApproval",
   PAYOUT_RECON_CLEAR_STATE: "payrollPayoutReview.error.reconClearState",
   PAYOUT_RECON_FLAG_CHANGED: "payrollPayoutReview.error.reconFlagChanged",
+  PAYOUT_RECON_FLAG_NOT_FOUND: "payrollPayoutReview.error.reconNotFound",
+  PAYOUT_RECON_CLEARANCE_NOT_FOUND: "payrollPayoutReview.error.reconNotFound",
+  PAYOUT_RETURN_WITHDRAW_REASON_INVALID:
+    "payrollPayoutReview.error.returnWithdrawReasonInvalid",
+  PAYOUT_RETURN_WITHDRAW_SELF_APPROVAL:
+    "payrollPayoutReview.error.returnWithdrawSelfApproval",
+  PAYOUT_RETURN_WITHDRAW_STATE: "payrollPayoutReview.error.returnWithdrawState",
+  PAYOUT_RETURN_WITHDRAW_REFUSED:
+    "payrollPayoutReview.error.returnWithdrawRefused",
+  PAYOUT_RETURN_CLAIM_NOT_FOUND:
+    "payrollPayoutReview.error.returnWithdrawNotFound",
+  PAYOUT_RETURN_WITHDRAWAL_NOT_FOUND:
+    "payrollPayoutReview.error.returnWithdrawNotFound",
   PAYOUT_PROPOSAL_NOT_WITHDRAWABLE:
     "payrollPayoutReview.error.proposalNotWithdrawable",
   PAYOUT_PROOF_SPENT_BY_WITHDRAWN:
@@ -112,4 +125,38 @@ export function evidenceUploadMessage(
   if (error.status === 415 || error.code === "PAYOUT_EVIDENCE_REJECTED")
     return t("payrollPayoutReview.error.evidenceRejected");
   return null;
+}
+
+const RECON_CONFLICT_CODES = new Set([
+  "PAYOUT_RECON_FLAG_CHANGED",
+  "PAYOUT_RECON_CLEAR_STATE",
+]);
+
+const WITHDRAW_CONFLICT_CODES = new Set([
+  "PAYOUT_RETURN_WITHDRAW_REFUSED",
+  "PAYOUT_RETURN_WITHDRAW_STATE",
+]);
+
+/**
+ * The flag or its clearance changed under the person (409 FLAG_CHANGED, or the
+ * clearance was already approved). Reload the list and offer a new proposal.
+ */
+export function isReconConflict(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    error.status === 409 &&
+    RECON_CONFLICT_CODES.has(error.code)
+  );
+}
+
+/**
+ * The return claim or its withdrawal changed (409: not withdrawable any more,
+ * or the withdrawal was already approved). Reload the claims and look again.
+ */
+export function isWithdrawConflict(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    error.status === 409 &&
+    WITHDRAW_CONFLICT_CODES.has(error.code)
+  );
 }

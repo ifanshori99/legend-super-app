@@ -1,4 +1,4 @@
-import { Banknote } from "lucide-react";
+import { Banknote, ShieldCheck } from "lucide-react";
 import type { AreaNavEntry } from "@/lib/areas/nav";
 
 // Kelola → Finance, next to the payroll run list. Presentation only; the page
@@ -17,6 +17,15 @@ const nav: AreaNavEntry[] = [
       "payroll.disburse.request",
       "payroll.disburse.approve",
     ],
+  },
+  {
+    area: "kelola",
+    labelKey: "payrollPayoutReview.recon.nav",
+    to: "/kelola/payroll/rekonsiliasi",
+    icon: ShieldCheck,
+    group: "finance",
+    order: 26,
+    anyPermission: ["payroll.disburse.approve"],
   },
 ];
 

@@ -37,9 +37,28 @@ import {
   withdrawOverpaidProposal,
 } from "@starter/shared/hris/payroll/payout";
 import { orgEndpoints } from "@starter/shared/platform";
-import type { PayrollPayoutEvidenceUploadDto } from "@starter/shared/types";
+import type {
+  PayoutReconFlagDto,
+  PayoutReturnClaimDto,
+  PayrollPayoutEvidenceUploadDto,
+} from "@starter/shared/types";
 import type { PayoutBankFormat } from "@starter/shared/validators/payroll-payout";
 import { apiErrorBodySchema } from "@starter/shared/core";
+import { z } from "zod";
+import { defineEndpoint } from "@starter/shared/api";
+import {
+  approvePayoutReconClearanceInputSchema,
+  payoutReconClearanceParamsSchema,
+  payoutReconFlagParamsSchema,
+  proposePayoutReconClearanceInputSchema,
+} from "@starter/shared/validators/payroll-payout-recon-clearance";
+import {
+  approvePayoutReturnWithdrawInputSchema,
+  payoutReturnClaimBatchParamsSchema,
+  payoutReturnClaimParamsSchema,
+  payoutReturnWithdrawalParamsSchema,
+  proposePayoutReturnWithdrawInputSchema,
+} from "@starter/shared/validators/payroll-payout-return-withdraw";
 import { apiFetch } from "@/lib/api/client";
 import { ApiError, NETWORK_ERROR_MESSAGE } from "@/lib/api/errors";
 import { callEndpoint } from "@/lib/api/endpoint";
@@ -472,4 +491,182 @@ export async function postExportBatch(
     filename,
     checksumSha256: response.headers.get("x-content-checksum-sha256") ?? "",
   };
+}
+
+// ---- Recon flags and return-claim withdrawal -----------------------------------
+// The wire of two routers the shared payout contract does not list yet
+// (payroll-payout-recon-clearance.routes.ts, payroll-payout-return-withdraw
+// .routes.ts). Declared here so `callEndpoint` and `registerMock` still type
+// them; the bodies reuse the API's own validators. Both need `payroll.disburse
+// .approve`; the POSTs re-ask the password (the grant accepts it only).
+
+const PAYROLL_BASE = "/api/hris/payroll";
+const instant = z.string();
+
+const reconFlagSchema = z.object({
+  id: z.string(),
+  kind: z.string(),
+  itemId: z.string(),
+  payslipId: z.string(),
+  batchId: z.string(),
+  reason: z.string(),
+  flaggedAt: instant,
+  reopened: z.boolean(),
+  clearance: z
+    .object({
+      id: z.string(),
+      status: z.enum(["proposed", "approved"]),
+      reason: z.string(),
+      proposedBy: z.string(),
+      proposedAt: instant,
+      approvedBy: z.string().nullable(),
+      approvedAt: instant.nullable(),
+    })
+    .nullable(),
+});
+
+const returnClaimSchema = z.object({
+  id: z.string(),
+  status: z.enum(["open", "consumed", "withdrawn"]),
+  bankRef: z.string().nullable(),
+  itemCount: z.number().int(),
+  createdBy: z.string(),
+  createdAt: instant,
+  withdrawal: z
+    .object({
+      id: z.string(),
+      reason: z.string(),
+      proposedBy: z.string(),
+      proposedAt: instant,
+    })
+    .nullable(),
+});
+
+export const listPayoutReconFlagsEndpoint = defineEndpoint({
+  method: "GET",
+  path: `${PAYROLL_BASE}/payout-recon-flags`,
+  response: z.object({ data: z.array(reconFlagSchema) }),
+});
+
+/** 201 `{ clearanceId }`. */
+export const proposeReconClearanceEndpoint = defineEndpoint({
+  method: "POST",
+  path: `${PAYROLL_BASE}/payout-recon-flags/:flagId/clearance`,
+  params: payoutReconFlagParamsSchema,
+  body: proposePayoutReconClearanceInputSchema,
+  response: z.object({ data: z.object({ clearanceId: z.string() }) }),
+});
+
+export const approveReconClearanceEndpoint = defineEndpoint({
+  method: "POST",
+  path: `${PAYROLL_BASE}/payout-recon-clearances/:clearanceId/approve`,
+  params: payoutReconClearanceParamsSchema,
+  body: approvePayoutReconClearanceInputSchema,
+  response: z.object({ data: z.object({ clearanceId: z.string() }) }),
+});
+
+export const listBatchReturnClaimsEndpoint = defineEndpoint({
+  method: "GET",
+  path: `${PAYROLL_BASE}/disbursement-batches/:id/return-claims`,
+  params: payoutReturnClaimBatchParamsSchema,
+  response: z.object({ data: z.array(returnClaimSchema) }),
+});
+
+/** 201 `{ withdrawalId }`. */
+export const proposeReturnWithdrawalEndpoint = defineEndpoint({
+  method: "POST",
+  path: `${PAYROLL_BASE}/payout-return-claims/:claimId/withdrawal`,
+  params: payoutReturnClaimParamsSchema,
+  body: proposePayoutReturnWithdrawInputSchema,
+  response: z.object({ data: z.object({ withdrawalId: z.string() }) }),
+});
+
+export const approveReturnWithdrawalEndpoint = defineEndpoint({
+  method: "POST",
+  path: `${PAYROLL_BASE}/payout-return-withdrawals/:withdrawalId/approve`,
+  params: payoutReturnWithdrawalParamsSchema,
+  body: approvePayoutReturnWithdrawInputSchema,
+  response: z.object({
+    data: z.object({
+      withdrawalId: z.string(),
+      restoredItems: z.number().int(),
+    }),
+  }),
+});
+
+/** Reason (10 to 500 characters) plus the password the grant re-asks. */
+export type ReconClearanceProposalInput = { reason: string; password?: string };
+export type PasswordStepInput = { password?: string };
+
+/** Every flag of the tenant with its clearance state, newest first. */
+export async function listPayoutReconFlags(
+  signal?: AbortSignal,
+): Promise<PayoutReconFlagDto[]> {
+  const response = await callEndpoint(
+    listPayoutReconFlagsEndpoint,
+    {},
+    { signal },
+  );
+  return response.data;
+}
+
+/** First person: proposes closing a flag. Closes nothing by itself. */
+export async function proposeReconClearance(
+  flagId: string,
+  body: ReconClearanceProposalInput,
+): Promise<{ clearanceId: string }> {
+  const response = await callEndpoint(proposeReconClearanceEndpoint, {
+    params: { flagId },
+    body,
+  });
+  return response.data;
+}
+
+/** Second person (not the proposer): approves the proposal. */
+export async function approveReconClearance(
+  clearanceId: string,
+  body: PasswordStepInput = {},
+): Promise<{ clearanceId: string }> {
+  const response = await callEndpoint(approveReconClearanceEndpoint, {
+    params: { clearanceId },
+    body,
+  });
+  return response.data;
+}
+
+/** Return claims of one batch with their open withdrawal proposal. */
+export async function listBatchReturnClaims(
+  batchId: string,
+  signal?: AbortSignal,
+): Promise<PayoutReturnClaimDto[]> {
+  const response = await callEndpoint(
+    listBatchReturnClaimsEndpoint,
+    { params: { id: batchId } },
+    { signal },
+  );
+  return response.data;
+}
+
+/** First person: proposes withdrawing an open claim. Withdraws nothing yet. */
+export async function proposeReturnWithdrawal(
+  claimId: string,
+  body: ReconClearanceProposalInput,
+): Promise<{ withdrawalId: string }> {
+  const response = await callEndpoint(proposeReturnWithdrawalEndpoint, {
+    params: { claimId },
+    body,
+  });
+  return response.data;
+}
+
+/** Second person (not the proposer): approves; the claim's items are restored. */
+export async function approveReturnWithdrawal(
+  withdrawalId: string,
+  body: PasswordStepInput = {},
+): Promise<{ withdrawalId: string; restoredItems: number }> {
+  const response = await callEndpoint(approveReturnWithdrawalEndpoint, {
+    params: { withdrawalId },
+    body,
+  });
+  return response.data;
 }

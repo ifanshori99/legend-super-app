@@ -22,6 +22,9 @@ export const payoutKeys = {
   paidRuns: (legalEntityId: string) =>
     [...payoutKeys.all, "paid-runs", legalEntityId] as const,
   employees: () => [...payoutKeys.all, "employees"] as const,
+  reconFlags: () => [...payoutKeys.all, "recon-flags"] as const,
+  returnClaims: (batchId: string) =>
+    [...payoutKeys.all, "return-claims", batchId] as const,
 };
 
 export const legalEntitiesQuery = () =>
@@ -127,4 +130,20 @@ export const employeesQuery = () =>
     queryKey: payoutKeys.employees(),
     queryFn: ({ signal }) => api.fetchPayoutEmployees(signal),
     staleTime: 60_000,
+  });
+
+/** Recon flags of the tenant with their clearance state. Always re-read: a person approves what they see. */
+export const payoutReconFlagsQuery = () =>
+  queryOptions({
+    queryKey: payoutKeys.reconFlags(),
+    queryFn: ({ signal }) => api.listPayoutReconFlags(signal),
+    staleTime: 0,
+  });
+
+/** Return claims of one batch with their open withdrawal proposal. */
+export const batchReturnClaimsQuery = (batchId: string) =>
+  queryOptions({
+    queryKey: payoutKeys.returnClaims(batchId),
+    queryFn: ({ signal }) => api.listBatchReturnClaims(batchId, signal),
+    staleTime: 0,
   });

@@ -1,3 +1,12 @@
+## 1015 UI finance: flag recon payout, clearance dua orang, tarik klaim return (ui-engineer, legend-o2b4m, base e6e59f5bf, 17 Nov 2026)
+
+- Layar baru `/kelola/payroll/rekonsiliasi` (h1 "Flag rekonsiliasi payout", izin `payroll.disburse.approve` di `reconGuard`, sama dengan API). Daftar flag per batch + panel usul/setujui clearance dengan konfirmasi kata sandi (VerifyPanel). Status Terbuka/Diusulkan/Disetujui/Terbuka ulang; konflik 409 memuat ulang dan mengajak usulan baru; peringatan batas 200 flag.
+- Tab Status pencairan: bagian "Tarik klaim return" (usul dengan alasan + kata sandi, setujui oleh orang lain; pengusul dan peminta batch melihat tombol nonaktif dengan alasan; 409 menutup dialog + toast).
+- Pengusul dibandingkan lewat id pengguna (`useActingUserId`: sesi di produksi, aktor mock hanya bila `VITE_API_MOCK`). Tidak ada aksi bayar.
+- Mockup: `design/mockups/backoffice/payout-recon-clearance*` (dibawa dari 906b99063). Brief: `docs/briefs/1015/brief.md`. Screenshot: `docs/review/img/ui1015-*` (1280/390, terang/gelap), `scripts/ui-check-payout-recon.mjs`.
+- Test: `apps/web/test/payout-recon-{data,screen}.test.ts`, `e2e/payout-recon-clearance.mock.spec.ts`. Review architect (xhigh) 2 putaran + ui-auditor 2 putaran; temuan nyata diperbaiki.
+- Berikut: merge train sesudah 1005. Header shell memotong judul panjang di 390 (seluruh shell, bukan layar ini).
+
 ## 1005 Payout: tarik klaim return dua orang (engineer, legend-snwnn, cabang ghostex/3bb6104c dari ghostex/92055877 74e142d8b, 17 Nov 2026)
 
 - Sudah: penarikan klaim return terbuka lewat dua orang. Tabel `payroll_payout_return_withdrawals`, grant kind `return_withdraw` (password di tiap langkah), fungsi tepercaya `app.payout_return_withdraw_propose` dan `app.payout_return_withdraw_approve` (0615), kind flag recon `return_withdraw` (0616). Pengaju dan sesi pengaju tidak bisa menyetujui (PAYOUT-94). Setelah approve klaim berstatus `withdrawn`, item kembali ke status sebelum klaim dan boleh diajukan lagi dengan ref baru. Jurnal yang sudah diposting tidak disentuh, tidak ada pembayaran ulang otomatis. Recon menandai penarikan tanpa attestation dua orang yang sah.

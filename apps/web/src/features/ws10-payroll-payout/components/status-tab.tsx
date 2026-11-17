@@ -18,6 +18,7 @@ import { formatDateTime } from "../../ws10-payroll-run/lib";
 import { payoutErrorMessage } from "../errors";
 import { useBatch, useExportBatch, useResolutionProposals } from "../hooks";
 import { batchStatusMeta, type PayoutTabProps } from "../lib";
+import { ReturnWithdrawSection } from "./return-withdraw";
 import {
   ExcludedList,
   isExcludedItem,
@@ -402,6 +403,14 @@ function StatusBatch({
           {t("payrollPayoutReview.status.footnote")}
         </p>
       </section>
+
+      {canReturn && (
+        <ReturnWithdrawSection
+          batchId={batch.id}
+          currentUserId={currentUserId}
+          isCreator={isCreator}
+        />
+      )}
 
       {dialog?.kind === "record" && (
         <ResultDialog

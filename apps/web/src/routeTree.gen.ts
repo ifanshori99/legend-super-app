@@ -195,6 +195,7 @@ import { Route as KelolaKelolaPajakOpsiRouteImport } from './routes/_kelola/kelo
 import { Route as KelolaKelolaPajakServiceChargeRouteImport } from './routes/_kelola/kelola.pajak.service-charge'
 import { Route as KelolaKelolaPayrollPencairanRouteImport } from './routes/_kelola/kelola.payroll.pencairan'
 import { Route as KelolaKelolaPayrollPengaturanRouteImport } from './routes/_kelola/kelola.payroll.pengaturan'
+import { Route as KelolaKelolaPayrollRekonsiliasiRouteImport } from './routes/_kelola/kelola.payroll.rekonsiliasi'
 import { Route as KelolaKelolaPayrollServiceChargeRouteImport } from './routes/_kelola/kelola.payroll.service-charge'
 import { Route as KelolaKelolaPelangganIndexRouteImport } from './routes/_kelola/kelola.pelanggan.index'
 import { Route as KelolaKelolaPelangganCustomerProfileIdRouteImport } from './routes/_kelola/kelola.pelanggan.$customerProfileId'
@@ -1388,6 +1389,12 @@ const KelolaKelolaPayrollPengaturanRoute =
   KelolaKelolaPayrollPengaturanRouteImport.update({
     id: '/kelola/payroll/pengaturan',
     path: '/kelola/payroll/pengaturan',
+    getParentRoute: () => KelolaRoute,
+  } as any)
+const KelolaKelolaPayrollRekonsiliasiRoute =
+  KelolaKelolaPayrollRekonsiliasiRouteImport.update({
+    id: '/kelola/payroll/rekonsiliasi',
+    path: '/kelola/payroll/rekonsiliasi',
     getParentRoute: () => KelolaRoute,
   } as any)
 const KelolaKelolaPayrollServiceChargeRoute =
@@ -2735,6 +2742,7 @@ export interface FileRoutesByFullPath {
   '/kelola/pajak/service-charge': typeof KelolaKelolaPajakServiceChargeRoute
   '/kelola/payroll/pencairan': typeof KelolaKelolaPayrollPencairanRoute
   '/kelola/payroll/pengaturan': typeof KelolaKelolaPayrollPengaturanRoute
+  '/kelola/payroll/rekonsiliasi': typeof KelolaKelolaPayrollRekonsiliasiRoute
   '/kelola/payroll/service-charge': typeof KelolaKelolaPayrollServiceChargeRoute
   '/kelola/pelanggan/$customerProfileId': typeof KelolaKelolaPelangganCustomerProfileIdRoute
   '/kelola/pelanggan/segmen': typeof KelolaKelolaPelangganSegmenRoute
@@ -3110,6 +3118,7 @@ export interface FileRoutesByTo {
   '/kelola/pajak/service-charge': typeof KelolaKelolaPajakServiceChargeRoute
   '/kelola/payroll/pencairan': typeof KelolaKelolaPayrollPencairanRoute
   '/kelola/payroll/pengaturan': typeof KelolaKelolaPayrollPengaturanRoute
+  '/kelola/payroll/rekonsiliasi': typeof KelolaKelolaPayrollRekonsiliasiRoute
   '/kelola/payroll/service-charge': typeof KelolaKelolaPayrollServiceChargeRoute
   '/kelola/pelanggan/$customerProfileId': typeof KelolaKelolaPelangganCustomerProfileIdRoute
   '/kelola/pelanggan/segmen': typeof KelolaKelolaPelangganSegmenRoute
@@ -3500,6 +3509,7 @@ export interface FileRoutesById {
   '/_kelola/kelola/pajak/service-charge': typeof KelolaKelolaPajakServiceChargeRoute
   '/_kelola/kelola/payroll/pencairan': typeof KelolaKelolaPayrollPencairanRoute
   '/_kelola/kelola/payroll/pengaturan': typeof KelolaKelolaPayrollPengaturanRoute
+  '/_kelola/kelola/payroll/rekonsiliasi': typeof KelolaKelolaPayrollRekonsiliasiRoute
   '/_kelola/kelola/payroll/service-charge': typeof KelolaKelolaPayrollServiceChargeRoute
   '/_kelola/kelola/pelanggan/$customerProfileId': typeof KelolaKelolaPelangganCustomerProfileIdRoute
   '/_kelola/kelola/pelanggan/segmen': typeof KelolaKelolaPelangganSegmenRoute
@@ -3881,6 +3891,7 @@ export interface FileRouteTypes {
     | '/kelola/pajak/service-charge'
     | '/kelola/payroll/pencairan'
     | '/kelola/payroll/pengaturan'
+    | '/kelola/payroll/rekonsiliasi'
     | '/kelola/payroll/service-charge'
     | '/kelola/pelanggan/$customerProfileId'
     | '/kelola/pelanggan/segmen'
@@ -4256,6 +4267,7 @@ export interface FileRouteTypes {
     | '/kelola/pajak/service-charge'
     | '/kelola/payroll/pencairan'
     | '/kelola/payroll/pengaturan'
+    | '/kelola/payroll/rekonsiliasi'
     | '/kelola/payroll/service-charge'
     | '/kelola/pelanggan/$customerProfileId'
     | '/kelola/pelanggan/segmen'
@@ -4645,6 +4657,7 @@ export interface FileRouteTypes {
     | '/_kelola/kelola/pajak/service-charge'
     | '/_kelola/kelola/payroll/pencairan'
     | '/_kelola/kelola/payroll/pengaturan'
+    | '/_kelola/kelola/payroll/rekonsiliasi'
     | '/_kelola/kelola/payroll/service-charge'
     | '/_kelola/kelola/pelanggan/$customerProfileId'
     | '/_kelola/kelola/pelanggan/segmen'
@@ -6190,6 +6203,13 @@ declare module '@tanstack/react-router' {
       path: '/kelola/payroll/pengaturan'
       fullPath: '/kelola/payroll/pengaturan'
       preLoaderRoute: typeof KelolaKelolaPayrollPengaturanRouteImport
+      parentRoute: typeof KelolaRoute
+    }
+    '/_kelola/kelola/payroll/rekonsiliasi': {
+      id: '/_kelola/kelola/payroll/rekonsiliasi'
+      path: '/kelola/payroll/rekonsiliasi'
+      fullPath: '/kelola/payroll/rekonsiliasi'
+      preLoaderRoute: typeof KelolaKelolaPayrollRekonsiliasiRouteImport
       parentRoute: typeof KelolaRoute
     }
     '/_kelola/kelola/payroll/service-charge': {
@@ -7825,6 +7845,7 @@ interface KelolaRouteChildren {
   KelolaKelolaPajakServiceChargeRoute: typeof KelolaKelolaPajakServiceChargeRoute
   KelolaKelolaPayrollPencairanRoute: typeof KelolaKelolaPayrollPencairanRoute
   KelolaKelolaPayrollPengaturanRoute: typeof KelolaKelolaPayrollPengaturanRoute
+  KelolaKelolaPayrollRekonsiliasiRoute: typeof KelolaKelolaPayrollRekonsiliasiRoute
   KelolaKelolaPayrollServiceChargeRoute: typeof KelolaKelolaPayrollServiceChargeRoute
   KelolaKelolaPelangganCustomerProfileIdRoute: typeof KelolaKelolaPelangganCustomerProfileIdRoute
   KelolaKelolaPelangganSegmenRoute: typeof KelolaKelolaPelangganSegmenRoute
@@ -8090,6 +8111,7 @@ const KelolaRouteChildren: KelolaRouteChildren = {
   KelolaKelolaPajakServiceChargeRoute: KelolaKelolaPajakServiceChargeRoute,
   KelolaKelolaPayrollPencairanRoute: KelolaKelolaPayrollPencairanRoute,
   KelolaKelolaPayrollPengaturanRoute: KelolaKelolaPayrollPengaturanRoute,
+  KelolaKelolaPayrollRekonsiliasiRoute: KelolaKelolaPayrollRekonsiliasiRoute,
   KelolaKelolaPayrollServiceChargeRoute: KelolaKelolaPayrollServiceChargeRoute,
   KelolaKelolaPelangganCustomerProfileIdRoute:
     KelolaKelolaPelangganCustomerProfileIdRoute,

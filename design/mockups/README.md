@@ -211,3 +211,10 @@ Gate RYUX disesuaikan tahap arah visual:
 1. Studi awal merekomendasikan A untuk katalog foto Hangat & Visual, dengan B sebagai alternatif baca/kustomisasi. Founder kemudian **memilih A pada Q4**; tidak ada pilihan A/B yang masih pending. Penilaian ini bukan hasil uji konversi.
 2. Usulan jumlah tamu inline kemudian **disetujui pada Q5**: wajib sebelum item pertama, tanpa sheet sambutan.
 3. Format kode kasir, masa berlaku, quote biaya dan waktu pembuatan order tetap urusan kontrak teknis. Persetujuan Bayar di kasir pada Q3 tetap berlaku.
+
+## Backoffice finance — rekonsiliasi payout (1003)
+
+- Layar: [Flag rekonsiliasi dan clearance dua orang](backoffice/payout-recon-clearance.html). Tujuan: memeriksa alasan flag per batch, mengusulkan clearance, lalu meminta orang lain menyetujui.
+- Kondisi utama: normal, kosong, memuat, gagal, validasi, sukses; pengusul sendiri tidak bisa menyetujui, data berubah menuntut usulan baru, dan flag terbuka ulang membatalkan clearance lama.
+- Arah mengikuti pola `account-role-mappings` yang diminta; [catatan desain dan kontrak](backoffice/payout-recon-clearance-notes.md) menjelaskan sumber, batas data, dan gerbang founder.
+- Render: `heavy --browser node design/mockups/backoffice/payout-recon-clearance-render.mjs`, desktop 1280 dan mobile 390. Semua data adalah ilustrasi, tanpa panggilan API atau pembayaran.
