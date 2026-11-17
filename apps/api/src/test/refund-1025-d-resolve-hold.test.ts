@@ -81,7 +81,6 @@ const userIds: string[] = [];
 const linkIds: string[] = [];
 const otherLinkIds: string[] = [];
 const key = (prefix = "k") => `${prefix}-${randomUUID()}`;
-const unique = () => randomBytes(4).toString("hex");
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -198,6 +197,7 @@ afterAll(async () => {
       "payment_refunds",
       "refund_recon_holds",
       "payment_provider_refunds",
+      "payment_unallocated_funds",
       "payment_evidence",
     ])
       await owner.query(
@@ -271,19 +271,74 @@ async function seedHold(
     refundId = `rf_${randomBytes(6).toString("hex")}` as string | null,
     amountIdr = 30_000,
     tenant = tenantId,
-  }: { refundId?: string | null; amountIdr?: number; tenant?: string } = {},
+    providerPaymentRef,
+  }: {
+    refundId?: string | null;
+    amountIdr?: number;
+    tenant?: string;
+    /** The provider payment id the refund names (new column, 1025-d). */
+    providerPaymentRef?: string;
+  } = {},
 ): Promise<string> {
   const holdId = randomUUID();
+  const base = [holdId, tenant, intent.id, randomUUID(), refundId, amountIdr];
   await asTenantTx(tenant, (client) =>
-    client.query(
-      `INSERT INTO refund_recon_holds
-         (id, tenant_id, payment_intent_id, webhook_event_id, provider_refund_id, amount_idr, reason)
-       VALUES ($1, $2, $3, $4, $5, $6, 'Reference names another intent')`,
-      [holdId, tenant, intent.id, randomUUID(), refundId, amountIdr],
-    ),
+    providerPaymentRef === undefined
+      ? client.query(
+          `INSERT INTO refund_recon_holds
+             (id, tenant_id, payment_intent_id, webhook_event_id, provider_refund_id, amount_idr, reason)
+           VALUES ($1, $2, $3, $4, $5, $6, 'Reference names another intent')`,
+          base,
+        )
+      : client.query(
+          `INSERT INTO refund_recon_holds
+             (id, tenant_id, payment_intent_id, webhook_event_id, provider_refund_id, amount_idr, reason, provider_payment_ref)
+           VALUES ($1, $2, $3, $4, $5, $6, 'Reference names another intent', $7)`,
+          [...base, providerPaymentRef],
+        ),
   );
   return holdId;
 }
+
+/**
+ * An extra provider transaction Y of the intent (evidence) whose money is
+ * parked as an unallocated fund, as the webhook pipeline leaves it (1020).
+ */
+async function seedExtraTxn(
+  intent: Intent,
+  amountIdr = 30_000,
+): Promise<{ providerRef: string; fundId: string }> {
+  const providerRef = `dp_extra_${randomBytes(8).toString("hex")}`;
+  const { rows } = await owner.query<{ id: string }>(
+    `INSERT INTO payment_evidence (tenant_id, outlet_id, payment_intent_id, provider, provider_ref, method, source, amount_idr, received_at)
+     VALUES ($1, $2, $3, 'doit', $4, 'qris', 'verified_webhook', $5, now())
+     RETURNING id`,
+    [tenantId, outletId, intent.id, providerRef, amountIdr],
+  );
+  const fundId = randomUUID();
+  await owner.query(
+    `INSERT INTO payment_unallocated_funds (id, tenant_id, outlet_id, payment_intent_id, evidence_id, amount_idr, reason)
+     VALUES ($1, $2, $3, $4, $5, $6, 'double_payment')`,
+    [fundId, tenantId, outletId, intent.id, rows[0]!.id, amountIdr],
+  );
+  return { providerRef, fundId };
+}
+
+const resolveFund = (fundId: string) =>
+  staff
+    .post(`${ADMIN}/unallocated-funds/${fundId}/resolve`)
+    .set(originHeader)
+    .send({
+      idempotencyKey: key("fund"),
+      resolution: "refund",
+      note: "Kembalikan dana yang belum teralokasi",
+    });
+
+const fundRefundRows = (fundId: string) =>
+  count(
+    "SELECT count(*)::text AS n FROM payment_refunds WHERE tenant_id = $1 AND unallocated_fund_id = $2",
+    [tenantId, fundId],
+  );
 
 /** The provider-refund row our own recorder would have written. */
 async function seedProviderRow(
@@ -807,6 +862,8 @@ describe("1025-d who may resolve, and what is refused", () => {
   it.each([
     ["an empty note", { note: "" }],
     ["a too short note", { note: "ok" }],
+    ["a note of only spaces", { note: "          " }],
+    ["a note that is short once trimmed", { note: "  ab  " }],
     ["a missing note", { note: undefined }],
     ["an unknown decision", { resolution: "matched_no_action" }],
     ["a missing idempotency key", { idempotencyKey: undefined }],
@@ -831,23 +888,17 @@ describe("1025-d who may resolve, and what is refused", () => {
     expect(await providerRows(intent.id)).toEqual([]);
   });
 
-  it("1025-d-14 counted_against_intent on a hold with no provider refund id is 422; not_this_intent still works", async () => {
+  it("1025-d-14 not_this_intent on a hold with no provider refund id just closes it, no provider row", async () => {
     const intent = await seedIntent();
     const holdId = await seedHold(intent, {
       refundId: null,
       amountIdr: 30_000,
     });
-    const auditBefore = await auditCount();
 
-    const response = await resolveHold(staff, holdId, "counted_against_intent");
-    expect(response.status, JSON.stringify(response.body)).toBe(422);
-    expect(await isOpen(holdId)).toBe(true);
+    const response = await resolveHold(staff, holdId, "not_this_intent");
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect((await holdRow(holdId)).resolution).toBe("not_this_intent");
     expect(await providerRows(intent.id)).toEqual([]);
-    expect(await auditCount()).toBe(auditBefore);
-
-    expect((await resolveHold(staff, holdId, "not_this_intent")).status).toBe(
-      200,
-    );
   });
 
   it("1025-d-15 counted_against_intent on a hold of 0 rupiah is 422", async () => {
@@ -957,5 +1008,310 @@ describe("1025-d the list of holds", () => {
   it("1025-d-20 an unknown status filter is 422", async () => {
     const response = await listHolds(staff, "?status=everything");
     expect(response.status, JSON.stringify(response.body)).toBe(422);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Architect round: three money gaps (coordinator decisions).
+//  (1) A hold from a REFERENCE_MISMATCH names the provider payment id Y of an
+//      extra transaction (new column refund_recon_holds.provider_payment_ref).
+//      Counting records the refund against Y, so the fund of Y stays blocked.
+//      Without that column filled: 422 when the intent has more than one
+//      evidence row or any parked fund.
+//  (2) payment:<ref> holds close with counted_against_intent only when no own
+//      refund of the intent is in flight (status pending or approved: the
+//      payment_refunds status check has no 'processing') AND provider rows plus
+//      completed own refunds cover the transaction amount (no new row then).
+//  (3) A hold with NULL provider_refund_id is countable: the refund is
+//      recorded under `hold:<holdId>` for the hold amount, or for the whole
+//      remaining paid amount when the hold amount is 0.
+// Assumption: "transaction amount" of a payment:<ref> hold = the hold amount
+// (BILL here); a fully covered, nothing-in-flight hold closes with
+// counted_against_intent (not_this_intent stays refused for payment:<ref>).
+// ---------------------------------------------------------------------------
+
+/** File a refund and let a second person approve it: pays out, completed. */
+async function completeOwnRefund(intent: Intent, amountIdr: number) {
+  const filed = await manualRefund(intent.id, amountIdr);
+  expect(filed.status, JSON.stringify(filed.body)).toBe(201);
+  const refundId = filed.body.data.id as string;
+  const approved = await approver
+    .post(`${ADMIN}/refunds/${refundId}/approve`)
+    .set(originHeader)
+    .send({ idempotencyKey: key("apr") });
+  expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+  expect(await refundStatuses(intent.id)).toContain("completed");
+  return refundId;
+}
+
+const providerRefsOf = async (intentId: string) => {
+  const { rows } = await owner.query<{
+    provider_refund_id: string;
+    provider_payment_ref: string | null;
+  }>(
+    `SELECT provider_refund_id, provider_payment_ref
+       FROM payment_provider_refunds
+      WHERE tenant_id = $1 AND payment_intent_id = $2 ORDER BY provider_refund_id`,
+    [tenantId, intentId],
+  );
+  return rows;
+};
+
+describe("1025-d (1) a hold naming an extra transaction Y is counted against Y, not the intent's own payment", () => {
+  it("1025-d-21 control: without a hold the parked fund of Y can be refunded", async () => {
+    const intent = await seedIntent();
+    const y = await seedExtraTxn(intent);
+    const fund = await resolveFund(y.fundId);
+    expect(fund.status, JSON.stringify(fund.body)).toBe(200);
+    expect(await fundRefundRows(y.fundId)).toBe(1);
+  });
+
+  it("1025-d-22 counted_against_intent writes the provider refund against Y; the fund of Y stays blocked and cannot be refunded again", async () => {
+    const intent = await seedIntent();
+    const y = await seedExtraTxn(intent, 30_000);
+    const holdId = await seedHold(intent, {
+      refundId: "rf_for_y",
+      amountIdr: 30_000,
+      providerPaymentRef: y.providerRef,
+    });
+
+    const response = await resolveHold(staff, holdId, "counted_against_intent");
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+
+    const rows = await providerRefsOf(intent.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.provider_refund_id).toBe("rf_for_y");
+    expect(rows[0]!.provider_payment_ref, "recorded against Y").toBe(
+      y.providerRef,
+    );
+    expect(rows[0]!.provider_payment_ref).not.toBe(intent.providerRef);
+
+    // The provider already gave Y's money back: the parked fund cannot go out.
+    const again = await resolveFund(y.fundId);
+    expect(again.status, JSON.stringify(again.body)).toBe(409);
+    expect(again.body.error.code).toBe("PROVIDER_REFUNDED");
+    expect(await fundRefundRows(y.fundId)).toBe(0);
+    expect(fake.calls).toHaveLength(0);
+  });
+
+  it("1025-d-23 a hold without provider_payment_ref on an intent with an extra evidence row is 422 and stays open", async () => {
+    const intent = await seedIntent();
+    await owner.query(
+      `INSERT INTO payment_evidence (tenant_id, outlet_id, payment_intent_id, provider, provider_ref, method, source, amount_idr, received_at)
+       VALUES ($1, $2, $3, 'doit', $4, 'qris', 'verified_webhook', 30000, now())`,
+      [
+        tenantId,
+        outletId,
+        intent.id,
+        `dp_extra_${randomBytes(6).toString("hex")}`,
+      ],
+    );
+    const holdId = await seedHold(intent, { amountIdr: 30_000 });
+    const auditBefore = await auditCount();
+
+    const response = await resolveHold(staff, holdId, "counted_against_intent");
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(await isOpen(holdId)).toBe(true);
+    expect(await providerRows(intent.id)).toEqual([]);
+    expect(await auditCount()).toBe(auditBefore);
+
+    // Closing without counting is still possible.
+    expect((await resolveHold(staff, holdId, "not_this_intent")).status).toBe(
+      200,
+    );
+  });
+
+  it("1025-d-24 a hold without provider_payment_ref on an intent with a parked fund is 422 and stays open", async () => {
+    const intent = await seedIntent();
+    await owner.query(
+      `INSERT INTO payment_unallocated_funds (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason)
+       VALUES ($1, $2, $3, $4, 20000, 'overpayment')`,
+      [randomUUID(), tenantId, outletId, intent.id],
+    );
+    const holdId = await seedHold(intent, { amountIdr: 30_000 });
+
+    const response = await resolveHold(staff, holdId, "counted_against_intent");
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(await isOpen(holdId)).toBe(true);
+    expect(await providerRows(intent.id)).toEqual([]);
+  });
+});
+
+describe("1025-d (2) holds of our own refund (payment:<ref>) close only when nothing is in flight and the amount is covered", () => {
+  const OWN = (intent: Intent) => `payment:${intent.providerRef}`;
+
+  it.each(["pending", "approved"] as const)(
+    "1025-d-25 an own refund still %s: counted_against_intent is 422 even when the provider row exists",
+    async (status) => {
+      const intent = await seedIntent();
+      const filed = await manualRefund(intent.id, 10_000);
+      expect(filed.status, JSON.stringify(filed.body)).toBe(201);
+      await owner.query(
+        "UPDATE payment_refunds SET status = $3 WHERE tenant_id = $1 AND id = $2",
+        [tenantId, filed.body.data.id as string, status],
+      );
+      await seedProviderRow(intent, OWN(intent), BILL);
+      const holdId = await seedHold(intent, {
+        refundId: OWN(intent),
+        amountIdr: BILL,
+      });
+      const auditBefore = await auditCount();
+
+      const response = await resolveHold(
+        staff,
+        holdId,
+        "counted_against_intent",
+      );
+      expect(response.status, JSON.stringify(response.body)).toBe(422);
+      expect(await isOpen(holdId)).toBe(true);
+      expect(await providerRows(intent.id)).toHaveLength(1);
+      expect(await auditCount()).toBe(auditBefore);
+    },
+  );
+
+  it("1025-d-26 nothing recorded and nothing refunded by us: the amount is not covered, counted_against_intent is 422", async () => {
+    const intent = await seedIntent();
+    const holdId = await seedHold(intent, {
+      refundId: OWN(intent),
+      amountIdr: BILL,
+    });
+
+    const response = await resolveHold(staff, holdId, "counted_against_intent");
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(await isOpen(holdId)).toBe(true);
+    expect(await providerRows(intent.id)).toEqual([]);
+  });
+
+  it("1025-d-27 provider rows plus completed own refunds are summed: below the amount is 422, once they reach it the hold closes without a new row", async () => {
+    const intent = await seedIntent();
+    await completeOwnRefund(intent, 20_000);
+    await seedProviderRow(intent, "rf_part_1", 40_000);
+    const holdId = await seedHold(intent, {
+      refundId: OWN(intent),
+      amountIdr: BILL,
+    });
+
+    // 20.000 (ours) + 40.000 (provider) = 60.000 < 100.000.
+    const short = await resolveHold(staff, holdId, "counted_against_intent");
+    expect(short.status, JSON.stringify(short.body)).toBe(422);
+    expect(await isOpen(holdId)).toBe(true);
+
+    await seedProviderRow(intent, "rf_part_2", 40_000);
+    // 20.000 + 80.000 = 100.000: covered.
+    const covered = await resolveHold(staff, holdId, "counted_against_intent");
+    expect(covered.status, JSON.stringify(covered.body)).toBe(200);
+    expect((await holdRow(holdId)).resolution).toBe("counted_against_intent");
+    expect(await providerRows(intent.id), "no new row").toHaveLength(2);
+  });
+
+  it("1025-d-28 our own refund already completed and covered everything (no provider row written): the hold is resolvable, no new row", async () => {
+    const intent = await seedIntent();
+    await completeOwnRefund(intent, BILL);
+    expect(await providerRows(intent.id)).toEqual([]);
+    const holdId = await seedHold(intent, {
+      refundId: OWN(intent),
+      amountIdr: BILL,
+    });
+
+    const response = await resolveHold(staff, holdId, "counted_against_intent");
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const row = await holdRow(holdId);
+    expect(row.resolved_at).not.toBeNull();
+    expect(row.resolution).toBe("counted_against_intent");
+    expect(await providerRows(intent.id), "no new row").toEqual([]);
+    expect(fake.calls, "nothing paid by the resolve").toHaveLength(1);
+  });
+});
+
+describe("1025-d (3) a hold without a provider refund id can be counted under hold:<holdId>", () => {
+  it("1025-d-29 counts the hold amount under hold:<holdId>, closes the hold, journals once", async () => {
+    const intent = await seedIntent();
+    const holdId = await seedHold(intent, {
+      refundId: null,
+      amountIdr: 30_000,
+    });
+
+    const response = await resolveHold(staff, holdId, "counted_against_intent");
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+
+    const rows = await providerRows(intent.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      provider_refund_id: `hold:${holdId}`,
+      amount_idr: "30000",
+    });
+    expect((await holdRow(holdId)).resolution).toBe("counted_against_intent");
+    expect(await providerRefundedEvents(intent.id)).toBe(1);
+    expect(fake.calls).toHaveLength(0);
+  });
+
+  it("1025-d-30 a hold amount of 0 counts the whole remaining paid amount (restrictive): after an earlier 40.000 that is 60.000, then nothing is left to refund", async () => {
+    const intent = await seedIntent();
+    await seedProviderRow(intent, "rf_before", 40_000);
+    const holdId = await seedHold(intent, { refundId: null, amountIdr: 0 });
+
+    const response = await resolveHold(staff, holdId, "counted_against_intent");
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+
+    const rows = await providerRows(intent.id);
+    expect(rows).toHaveLength(2);
+    expect(
+      rows.find((r) => r.provider_refund_id === `hold:${holdId}`),
+    ).toMatchObject({ amount_idr: "60000" });
+    const refused = await manualRefund(intent.id, 1_000);
+    expect([409, 422], JSON.stringify(refused.body)).toContain(refused.status);
+    expect(await refundRowCount(intent.id)).toBe(0);
+  });
+
+  it("1025-d-31 a hold amount of 0 on an untouched payment counts the whole 100.000", async () => {
+    const intent = await seedIntent();
+    const holdId = await seedHold(intent, { refundId: null, amountIdr: 0 });
+
+    expect(
+      (await resolveHold(staff, holdId, "counted_against_intent")).status,
+    ).toBe(200);
+    const rows = await providerRows(intent.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      provider_refund_id: `hold:${holdId}`,
+      amount_idr: String(BILL),
+    });
+  });
+
+  it("1025-d-32 idempotent: an already written hold:<holdId> row is not doubled, and a repeated resolve is 409 with no second row or event", async () => {
+    const intent = await seedIntent();
+    const holdId = await seedHold(intent, {
+      refundId: null,
+      amountIdr: 30_000,
+    });
+    await seedProviderRow(intent, `hold:${holdId}`, 30_000);
+
+    const first = await resolveHold(staff, holdId, "counted_against_intent");
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect(await providerRows(intent.id)).toHaveLength(1);
+    const events = await providerRefundedEvents(intent.id);
+
+    const second = await resolveHold(staff, holdId, "counted_against_intent");
+    expect(second.status).toBe(409);
+    expect(await providerRows(intent.id)).toHaveLength(1);
+    expect(await providerRefundedEvents(intent.id)).toBe(events);
+    // 30.000 counted once leaves 70.000.
+    expect((await manualRefund(intent.id, 70_000)).status).toBe(201);
+  });
+
+  it("1025-d-33 a refund beyond the remainder is still refused after counting", async () => {
+    const intent = await seedIntent();
+    const holdId = await seedHold(intent, {
+      refundId: null,
+      amountIdr: 30_000,
+    });
+    expect(
+      (await resolveHold(staff, holdId, "counted_against_intent")).status,
+    ).toBe(200);
+
+    const over = await manualRefund(intent.id, 80_000);
+    expect([409, 422], JSON.stringify(over.body)).toContain(over.status);
+    expect(await refundRowCount(intent.id)).toBe(0);
+    expect((await manualRefund(intent.id, 70_000)).status).toBe(201);
   });
 });

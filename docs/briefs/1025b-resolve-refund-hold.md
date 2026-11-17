@@ -3,10 +3,13 @@
 Branch: ghostex/5e374ac9 di atas d18b82fa8. Tingkat K (uang, izin). Keputusan CTO: dikerjakan sebelum rilis. Beads lain: legend-t9g3i (poller, P2), legend-tiyce (refund fund menutup semua, P2) hanya dicatat, tidak dikerjakan.
 
 ## Yang ada
+
 Tabel `refund_recon_holds` (migrasi 0642, schema `apps/api/src/db/schema/refund-recon-holds.ts`): tenant_id, payment_intent_id, webhook_event_id, provider_refund_id, amount_idr, reason, flagged_at, resolved_at. Hold terbuka (resolved_at NULL) memblokir refund, payout, dan fund pada intent lewat `payment-provider-refunded-guard.ts` (`fundBlockedSql`, `providerRefundedBlocks`, `refundBlockedByProviderRefundSql`). Tidak ada kode yang mengisi `resolved_at`.
 
 ## Yang dibangun
+
 Endpoint finance untuk menutup (resolve) satu hold:
+
 - Izin finance yang sudah ada (cek `packages/shared/src/permissions.ts`; pakai `requireTenantPermission` atau `requireOutletPermission` seperti rute refund/payment-admin yang ada), `requireAuth`, `requireTrustedOrigin`, `jsonBody`.
 - Body strict zod di `packages/shared/src/validators/`: alasan wajib (min panjang), keputusan yang dicatat (mis. `matched_no_action` / `matched_refund_recorded`; tentukan minimal yang aman).
 - Idempoten: resolve ganda tidak mengubah apa pun dan tidak menggandakan audit (balas 200 dengan keadaan sama atau 409 yang jelas; pilih satu, uji).
@@ -16,11 +19,14 @@ Endpoint finance untuk menutup (resolve) satu hold:
 - Daftar hold terbuka (GET) bila perlu untuk UI. UI hanya bila layar finance yang ada sudah punya tempatnya; layar baru: berhenti dan lapor.
 
 ## Test wajib
+
 Resolve membuka blok refund/payout sekali; tidak membayar lebih (refund melebihi sisa tetap ditolak); resolve ganda; hold lain tetap memblokir; tenant lain 404; tanpa izin 403; alasan kosong 422; kontrol 1025-a/b/c, 1020, 958, 967, 1013, 1016 hijau. Gagal-dulu di base. Berkas: `src/test/refund-1025-d-resolve-hold.test.ts`.
 Migrasi hanya bila perlu (nomor kerja 0649-0650).
 
 ## Rancangan (diputuskan engineer, hasil peta Explore)
+
 Kontrak di `packages/shared/src/payment/admin.ts` (bukan validators/), mengikuti `resolveUnallocatedFund` (:931) dan rute `payment-admin.routes.ts:393` (`jsonBody`, `reconcileRecord` = `requireMenuPermission("payment.reconcile")`, mount `/api/payments/admin`):
+
 - `listRefundReconHolds`: GET `${ADMIN}/refund-recon-holds` (query: status `open|resolved`, cursor), izin `payment.reconcile` (`reconcileQuery`).
 - `resolveRefundReconHold`: POST `${ADMIN}/refund-recon-holds/:holdId/resolve`, body strict `{ idempotencyKey, resolution: "not_this_intent" | "counted_against_intent", note }` (`noteSchema`, wajib).
 - Layanan baru `refund-recon-hold.service.ts` (di dalam `withTenant`; kunci intent via `lockIntentsForFact`; `UPDATE ... SET resolved_at, resolved_by, resolution, resolution_note WHERE tenant_id AND id AND resolved_at IS NULL RETURNING`; audit + `appendPaymentEvent` hanya bila baris kembali). Resolve ganda: 409 `CONFLICT` "Hold already resolved." (pola fund :312); hold tidak ada / tenant lain: 404.

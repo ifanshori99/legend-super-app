@@ -40,7 +40,7 @@ import {
 const ref = z.string().min(1).max(100);
 const nonnegativeIdr = idrSchema.refine((n) => n >= 0);
 const positiveIdr = idrSchema.refine((n) => n > 0);
-const noteSchema = z.string().min(4).max(500);
+const noteSchema = z.string().trim().min(4).max(500);
 const ADMIN = "/api/payments/admin";
 
 /** Online methods a gateway can route. Cash, EDC and points never route here. */

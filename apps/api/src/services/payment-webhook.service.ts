@@ -830,6 +830,9 @@ async function holdRefundReferenceMismatch(
   refund: {
     providerRefundId: string | null;
     amountIdr: number;
+    /** The provider payment id the event names (stored on the hold, so
+     * finance counts the refund against that transaction). */
+    providerPaymentRef?: string | null;
     /** Status the refund carries: only a succeeded one (or one that names no
      * status, on a `refund.succeeded` event) is held. */
     refundStatus?: string;
@@ -850,6 +853,7 @@ async function holdRefundReferenceMismatch(
         webhookEventId: row.id,
         providerRefundId: refund.providerRefundId,
         amountIdr: idr(refund.amountIdr),
+        providerPaymentRef: refund.providerPaymentRef ?? null,
         reason:
           "Refund penyedia menyebut pembayaran lain dari pembayaran yang dikembalikan (REFERENCE_MISMATCH)",
         flaggedAt: now,
@@ -936,6 +940,7 @@ async function recordRefundFor(
         {
           providerRefundId: input.providerRefundId,
           amountIdr: input.amountIdr,
+          providerPaymentRef: input.providerPaymentRef,
           refundStatus,
         },
         now,
@@ -1718,6 +1723,7 @@ async function processRefundEvent(
           {
             providerRefundId: facts.refundId ?? null,
             amountIdr: facts.amountIdr ?? Number(refund.amountIdr),
+            providerPaymentRef: namedPaymentId ?? null,
             refundStatus: facts.refundStatus,
           },
           now,

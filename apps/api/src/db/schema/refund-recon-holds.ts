@@ -41,6 +41,9 @@ export const refundReconHolds = pgTable(
     flaggedAt: timestamp("flagged_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
+    // The provider payment id the refund names (the transaction its money
+    // came from). Counting a hold records the refund against it.
+    providerPaymentRef: varchar("provider_payment_ref", { length: 100 }),
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
     // legend-vp4ta: who closed the hold, what they decided and why.
     resolvedBy: uuid("resolved_by"),

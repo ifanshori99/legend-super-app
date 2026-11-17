@@ -135,6 +135,7 @@ export async function recordProviderRefundInTx(
         paymentIntentId: input.expectedIntentId,
         webhookEventId: `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`,
         providerRefundId,
+        providerPaymentRef,
         amountIdr: idr(heldIdr),
         reason:
           "Refund penyedia dibukukan dengan menghitung refund kami yang belum final (REFUND_LIVE_OWN)",

@@ -18,8 +18,10 @@ import {
   createUlid,
   decodeCursor,
   encodeCursor,
+  idr,
   isoDateTimeSchema,
   type ScopedTenantContext,
+  type TenantId,
 } from "@starter/shared/core";
 import {
   listRefundReconHolds as listEndpoint,
@@ -139,7 +141,7 @@ export async function listRefundReconHolds(
  * one recorded transaction (evidence) of the intent. Null when in doubt. */
 async function providerPaymentRefOf(
   tx: Tx,
-  tenantId: string,
+  tenantId: TenantId,
   intent: typeof paymentIntents.$inferSelect,
 ): Promise<string | null> {
   if (intent.provider === PROVIDER && intent.providerRef)
@@ -156,6 +158,179 @@ async function providerPaymentRefOf(
     )
     .limit(2);
   return evidence.length === 1 ? (evidence[0]?.providerRef ?? null) : null;
+}
+
+type IntentRow = typeof paymentIntents.$inferSelect;
+
+/** The provider payment id a hold is counted against: the one the webhook
+ * stored on the hold; else the intent's only transaction. A hold of an intent
+ * with another transaction (evidence) or a parked fund is in doubt: null. */
+async function heldPaymentRefOf(
+  tx: Tx,
+  tenantId: TenantId,
+  hold: HoldRow,
+  intent: IntentRow,
+): Promise<string | null> {
+  if (hold.providerPaymentRef) return hold.providerPaymentRef;
+  const { rows } = await tx.execute(sql`SELECT
+      (SELECT count(*) FROM payment_evidence e
+        WHERE e.tenant_id = ${tenantId}::uuid
+          AND e.payment_intent_id = ${intent.id}::uuid)::int AS evidence,
+      (SELECT count(*) FROM payment_unallocated_funds f
+        WHERE f.tenant_id = ${tenantId}::uuid
+          AND f.payment_intent_id = ${intent.id}::uuid)::int AS funds`);
+  if (Number(rows[0]?.evidence ?? 0) > 1 || Number(rows[0]?.funds ?? 0) > 0)
+    return null;
+  return providerPaymentRefOf(tx, tenantId, intent);
+}
+
+/** Completed refunds of ours on the intent that no provider row echoes (a
+ * parked fund's refund is another transaction's money, not counted). */
+const ownCompletedIdrSql = (tenantId: TenantId, intentId: string) => sql`(
+  SELECT coalesce(sum(r.amount_idr), 0) FROM payment_refunds r
+   WHERE r.tenant_id = ${tenantId}::uuid
+     AND r.payment_intent_id = ${intentId}::uuid
+     AND r.status = 'completed'
+     AND r.unallocated_fund_id IS NULL
+     AND NOT EXISTS (SELECT 1 FROM payment_provider_refunds p
+       WHERE p.tenant_id = r.tenant_id AND p.provider_refund_id = r.provider_ref))`;
+
+/**
+ * Records the refund of a hold as a provider refund of its intent, before the
+ * hold closes (same transaction). Throws 422, leaving the hold open, whenever
+ * the refund is not on record afterwards.
+ */
+async function countHold(
+  tx: Tx,
+  context: ScopedTenantContext,
+  hold: HoldRow,
+  intent: IntentRow,
+  factAt: Date,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const named = hold.providerRefundId;
+  if (named !== null && hold.amountIdr <= 0)
+    throw unprocessable("This hold has no amount to count against the intent.");
+  const record = async (
+    providerRefundId: string,
+    providerPaymentRef: string,
+    amountIdr: number,
+  ) => {
+    // Counted first: the limits and the journal see the refund before the
+    // hold lets go of the intent. Quiet: this resolve is audited by the caller.
+    const { status } = await recordProviderRefundInTx(
+      tx,
+      context,
+      {
+        provider: PROVIDER,
+        providerRefundId,
+        providerPaymentRef,
+        amountIdr,
+        source: "refund_webhook",
+        expectedIntentId: intent.id,
+        force: true,
+        quiet: true,
+      },
+      factAt,
+    );
+    return status;
+  };
+
+  if (named?.startsWith(SYNTHETIC_PREFIX)) {
+    // The provider's `refunded` status of the payment, filed while a refund of
+    // ours ran. It closes only when nothing of ours is still on its way and
+    // what went back (provider rows of the transaction, completed refunds of
+    // ours) covers the held amount.
+    const providerPaymentRef = named.slice(SYNTHETIC_PREFIX.length);
+    const { rows: flying } = await tx.execute(sql`SELECT 1
+      FROM payment_refunds r
+      WHERE r.tenant_id = ${tenantId}::uuid
+        AND r.payment_intent_id = ${intent.id}::uuid
+        AND r.status IN ('pending', 'approved') LIMIT 1`);
+    if (flying.length > 0)
+      throw unprocessable(
+        "A refund of this payment is still on its way; wait until it is final.",
+      );
+    const { rows: covered } = await tx.execute(sql`SELECT
+      (SELECT coalesce(sum(p.amount_idr), 0) FROM payment_provider_refunds p
+        WHERE p.tenant_id = ${tenantId}::uuid
+          AND p.payment_intent_id = ${intent.id}::uuid
+          AND p.provider = ${PROVIDER}
+          AND p.provider_payment_ref = ${providerPaymentRef})::text AS provider,
+      ${ownCompletedIdrSql(tenantId, intent.id)}::text AS own`);
+    if (
+      Number(covered[0]?.provider ?? 0) + Number(covered[0]?.own ?? 0) <
+      hold.amountIdr
+    )
+      throw unprocessable(
+        "The refunds on record do not cover this payment; the hold stays open.",
+      );
+    const status = await record(named, providerPaymentRef, hold.amountIdr);
+    if (status === "retry" || status === "unbound")
+      throw unprocessable(
+        "This refund could not be recorded against the intent.",
+      );
+    return;
+  }
+
+  const providerPaymentRef = await heldPaymentRefOf(tx, tenantId, hold, intent);
+  if (!providerPaymentRef)
+    throw unprocessable(
+      "The provider transaction of this refund is not known; the intent has more than one.",
+    );
+  const providerRefundId = named ?? `hold:${hold.id}`;
+  const [existing] = await tx
+    .select({ id: paymentProviderRefunds.id })
+    .from(paymentProviderRefunds)
+    .where(
+      and(
+        eq(paymentProviderRefunds.tenantId, tenantId),
+        eq(paymentProviderRefunds.paymentIntentId, intent.id),
+        eq(paymentProviderRefunds.provider, PROVIDER),
+        eq(paymentProviderRefunds.providerRefundId, providerRefundId),
+      ),
+    );
+  if (existing) return;
+  let amountIdr = hold.amountIdr;
+  if (named === null && amountIdr <= 0) {
+    // No amount and no refund id: the whole remaining paid amount is counted
+    // (restrictive). Nothing remaining means nothing left to count.
+    const { rows } = await tx.execute(sql`SELECT
+      least(${intent.amountIdr}::bigint, greatest(
+        coalesce((SELECT sum(e.amount_idr) FROM payment_evidence e
+          WHERE e.tenant_id = ${tenantId}::uuid AND e.payment_intent_id = ${intent.id}::uuid), 0)
+        - coalesce((SELECT sum(f.amount_idr) FROM payment_unallocated_funds f
+          WHERE f.tenant_id = ${tenantId}::uuid AND f.payment_intent_id = ${intent.id}::uuid), 0),
+        0))::text AS paid,
+      (SELECT coalesce(sum(p.amount_idr), 0) FROM payment_provider_refunds p
+        WHERE p.tenant_id = ${tenantId}::uuid
+          AND p.payment_intent_id = ${intent.id}::uuid)::text AS provider,
+      ${ownCompletedIdrSql(tenantId, intent.id)}::text AS own`);
+    const remaining =
+      Number(rows[0]?.paid ?? 0) -
+      Number(rows[0]?.provider ?? 0) -
+      Number(rows[0]?.own ?? 0);
+    if (remaining <= 0) return;
+    amountIdr = idr(remaining);
+  }
+  await record(providerRefundId, providerPaymentRef, amountIdr);
+  // Only a refund that is on record may close the hold: an echo of our own
+  // refund, an unbound or a delayed one counted nothing.
+  const [counted] = await tx
+    .select({ id: paymentProviderRefunds.id })
+    .from(paymentProviderRefunds)
+    .where(
+      and(
+        eq(paymentProviderRefunds.tenantId, tenantId),
+        eq(paymentProviderRefunds.paymentIntentId, intent.id),
+        eq(paymentProviderRefunds.provider, PROVIDER),
+        eq(paymentProviderRefunds.providerRefundId, providerRefundId),
+      ),
+    );
+  if (!counted)
+    throw unprocessable(
+      "This refund could not be recorded against the intent.",
+    );
 }
 
 export async function resolveRefundReconHold(
@@ -238,53 +413,7 @@ export async function resolveRefundReconHold(
               "This hold names the payment's own refund; it can only be counted against the intent.",
             );
         } else {
-          if (!refundId || hold.amountIdr <= 0)
-            throw unprocessable(
-              "This hold has no provider refund to count against the intent.",
-            );
-          const providerPaymentRef = await providerPaymentRefOf(
-            tx,
-            tenantId,
-            intent,
-          );
-          if (!providerPaymentRef)
-            throw unprocessable(
-              "The provider transaction of this intent is not known.",
-            );
-          // Counted first: the limits and the journal see the refund before the
-          // hold lets go of the intent. Quiet: this resolve is audited below.
-          await recordProviderRefundInTx(
-            tx,
-            context,
-            {
-              provider: PROVIDER,
-              providerRefundId: refundId,
-              providerPaymentRef,
-              amountIdr: hold.amountIdr,
-              source: "refund_webhook",
-              expectedIntentId: intent.id,
-              force: true,
-              quiet: true,
-            },
-            factAt,
-          );
-          // Only a refund that is on record may close the hold: an echo of our
-          // own refund, an unbound or a delayed one counted nothing.
-          const [counted] = await tx
-            .select({ id: paymentProviderRefunds.id })
-            .from(paymentProviderRefunds)
-            .where(
-              and(
-                eq(paymentProviderRefunds.tenantId, tenantId),
-                eq(paymentProviderRefunds.paymentIntentId, intent.id),
-                eq(paymentProviderRefunds.provider, PROVIDER),
-                eq(paymentProviderRefunds.providerRefundId, refundId),
-              ),
-            );
-          if (!counted)
-            throw unprocessable(
-              "This refund could not be recorded against the intent.",
-            );
+          await countHold(tx, context, hold, intent, factAt);
         }
         const [closed] = await tx
           .update(refundReconHolds)
