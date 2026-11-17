@@ -7018,3 +7018,8 @@ Gate per tahap:
 - Catatan: kerja test thread 935 tidak mencakup `tests/platform-offline-banner.test.mjs` (kelas tes root yang mengimpor komponen web). Saran: gate thread web ws02-edge ikut menjalankan `tests/platform-*.test.mjs`.
 
 Pemakaian: session-usage merge train 1400k biaya* (Sonnet 5.5); subagent 2 (Explore audit, reviewer konflik), puncak 1-2; token heavy dipegang train sendiri (satu lajur sekaligus).
+### 951 WS-01 pengerasan akses (17 Nov 2026)
+
+- Cabang `ghostex/ws-01-pengerasan-akses-951` dari m1 `c17c60df7`, head `21093a7b7` (sebelum commit dokumen ini), dipush biasa. Kartu: legend-ijcxc (kunci FOR SHARE baris role_assignments target dan roles kustom plus advisory lock role-assignment-end di PATCH manajer), legend-p0ms5 (requestDtos memakai actorNames, email peminta tidak bocor), legend-d3quc (kode sudah benar sejak 6b350e143 dan migrasi 0273; hanya tes regresi ditambah, tanpa migrasi), legend-tetyr (job reseal `worker/sealed-secret-reseal.job.ts`, tabel state, migrasi kerja 0473, nomor di m1 0434 pada batch82).
+- Keputusan tetyr: stale dideteksi dari byte versi envelope, tanpa kolom versi per kolom; 17 kolom tercakup. Baris order/tender selesai (trigger POS-04) dan `apology_vouchers.code_sealed` (UPDATE dicabut migrasi 0212) berstatus frozen: tetap dihitung di `remaining`, dan kunci lama TIDAK boleh dipensiunkan sebelum remaining 0 termasuk frozen. Di luar cakupan: kode voucher di JSON idempotensi promo, token ChatGPT, push subscription.
+- Bukti: tes terarah 10 berkas/207 tes hijau, prettier+eslint, typecheck API, db:generate kosong, tes kontrak root, semuanya pada 21093a7b7. Architect xhigh: tanpa P1; dua P2 dan satu P3 dibetulkan.
