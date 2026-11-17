@@ -1840,3 +1840,5 @@ Langkah berikut CTO baru:
 - 20:12 CTO: disk 12->20 GB (hapus 7 worktree thread selesai, semua bersih dan sudah di origin). Retro 3 jam dimulai (akun #1).
 - 20:18 CTO: Retro 42 diterima (int/batch dibekukan selama full run, dikirim ke G36es). G6naz resolve.
 - 20:21 CTO: G6bdp 999 desain fc7964366 (Opsi B, tanpa migrasi) -> legend-rj284 ditutup, kartu K1-K4 legend-7rd7l/g24b5/4w7rf/iqzet; thread 1002 dimulai (Sonnet, akun #3, base 995). Juga mulai G26wn 1000 mock e2e m1 (legend-dq4y3) dan G56m0 1001 status voucher reportOrderIssue (legend-c1gnr, base 995). Worktree subagent a13dc (1,8 GB, bersih) dihapus; 3 lainnya milik G5pqk, diminta bersihkan. Akun #3 dipakai untuk thread baru (#1 5h 66%).
+- 20:34 CTO: 1001 G56m0 3d7e194e5 selesai (voucher dicabut/kedaluwarsa/redeemed + promo nonaktif/di luar periode ditolak 422, sekali pakai 409; architect xhigh bersih). Keputusan: laporan tidak menebus voucher. Menunggu web typecheck (shared berubah) sebelum antre.
+- 20:37 CTO: 1001 3d7e194e5 SIAP batch86 sesudah 995 (web+shared typecheck 0). G56m0 resolve.
