@@ -124,6 +124,10 @@ export async function authenticateMcpToken(
     return found;
   });
   if (!row) throw new McpUnauthorizedError();
+  const settings = await loadMcpSettings(tenantId);
+  // `mcp` module off: same answer as an unknown token, before any status of
+  // the token or client is revealed (981 / legend-hbuq3).
+  if (settings.moduleDisabled) throw new McpUnauthorizedError();
   const { token } = row;
   if (row.clientStatus !== "approved")
     throw new AiError("MCP_CLIENT_NOT_APPROVED");
@@ -134,7 +138,6 @@ export async function authenticateMcpToken(
   if (token.expiresAt.getTime() <= Date.now())
     throw new AiError("MCP_TOKEN_EXPIRED");
 
-  const settings = await loadMcpSettings(tenantId);
   if (settings.platformLocked) throw new AiError("AI_PLATFORM_DISABLED");
   if (!settings.aiEnabled) throw new AiError("AI_FEATURE_DISABLED");
   if (!settings.mcpEnabled)

@@ -13,7 +13,7 @@
 // - Failure statuses: unauthenticated 401, missing dashboard permission 403
 //   REPORT_NOT_PERMITTED.
 // - Tiles the caller may not open are left out, never blanked.
-// - The reviews queue has no table yet: 501 DASHBOARD_QUEUE_UNAVAILABLE.
+// - The reviews queue reads customer_reviews (legend-vqicf): no review text.
 // - Ledger numbers asserted: net_sales = revenue minus discount.
 
 import { randomUUID } from "node:crypto";
@@ -873,22 +873,18 @@ describe("queue rows and facility scope", () => {
     }
   });
 
-  it("refuses queues without permission and says reviews are not built", async () => {
+  it("refuses queues without permission and serves reviews without text", async () => {
     expect(
       (await get(a.nobody, "/api/dashboards/queues/kitchen_queue/rows")).status,
     ).toBe(403);
-    // The reviews queue answers an explicit "not built" instead of an empty
-    // list that would read as "no reviews" (F11 availability per queue).
+    // The reviews queue reads customer_reviews; an empty table is an honest
+    // empty list and no row ever carries the review body.
     const reviews = await get(a.full, "/api/dashboards/queues/reviews/rows");
     expect(reviews.status).toBe(200);
     const parsed = dashboardQueueRowsSchema.parse(reviews.body.data);
     expect(parsed.queue).toBe("reviews");
     expect(parsed.rows).toEqual([]);
-    expect(parsed.availability).toEqual({
-      status: "unavailable",
-      reason: "source_not_built",
-      message: METRIC_UNAVAILABLE_MESSAGES.source_not_built,
-    });
+    expect(parsed.availability).toEqual({ status: "available" });
     expect(
       (await get(a.full, "/api/dashboards/queues/approvals/rows")).status,
     ).toBe(422);

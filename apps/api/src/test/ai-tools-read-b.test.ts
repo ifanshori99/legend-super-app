@@ -1417,7 +1417,7 @@ afterAll(async () => {
 // ---- Registry --------------------------------------------------------------
 
 describe("readToolsB registry", () => {
-  it("registers TL-07, 08, 09, 10, 11, 12, 20", () => {
+  it("registers TL-07, 08, 09, 10, 11, 12, 20, 21", () => {
     expect(Object.keys(readToolsB).sort()).toEqual([
       "TL-07",
       "TL-08",
@@ -1426,6 +1426,7 @@ describe("readToolsB registry", () => {
       "TL-11",
       "TL-12",
       "TL-20",
+      "TL-21",
     ]);
   });
 });

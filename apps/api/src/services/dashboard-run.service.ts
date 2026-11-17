@@ -25,7 +25,7 @@
 //   database once. The key starts with the tenant id: no key is shared across
 //   tenants.
 
-import { and, asc, count, eq, inArray, type SQL } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, sql, type SQL } from "drizzle-orm";
 import {
   businessDateOf,
   DEFAULT_BUSINESS_DAY_CLOCK,
@@ -68,6 +68,7 @@ import {
 } from "@starter/shared/metrics";
 import { db } from "../db";
 import {
+  customerReviews,
   facilities,
   facilityUnits,
   kitchenTicketItems,
@@ -824,19 +825,46 @@ export async function getDashboardQueueRows(
     });
   }
 
-  // `reviews`: no review table exists yet, so there is nothing true to show.
-  // An empty list alone would read as "no reviews", so the payload says the
-  // source is not built (availability) instead of failing the tile.
+  // `reviews` (legend-vqicf): pending first, then newest. Never reads `body`:
+  // the review text is personal data, so `excerpt` stays null. `replied` means
+  // a moderator has already acted (status is not `pending`).
+  const reviewRows = await withTenant(db, context, (tx) =>
+    tx
+      .select({
+        outletId: customerReviews.outletId,
+        reviewId: customerReviews.id,
+        rating: customerReviews.rating,
+        source: customerReviews.source,
+        createdAt: customerReviews.createdAt,
+        moderationStatus: customerReviews.moderationStatus,
+      })
+      .from(customerReviews)
+      .where(
+        and(
+          eq(customerReviews.tenantId, tenantId),
+          outletCondition(customerReviews.outletId, filter),
+        ),
+      )
+      .orderBy(
+        sql`(${customerReviews.moderationStatus} = 'pending') DESC`,
+        desc(customerReviews.createdAt),
+        desc(customerReviews.id),
+      )
+      .limit(page),
+  );
   return dashboardQueueRowsSchema.parse({
     queue: "reviews",
-    rows: [],
-    hasMore: false,
+    rows: reviewRows.slice(0, input.limit).map((row) => ({
+      outletId: row.outletId,
+      reviewId: row.reviewId,
+      rating: row.rating,
+      excerpt: null,
+      source: row.source,
+      createdAt: row.createdAt.toISOString(),
+      replied: row.moderationStatus !== "pending",
+    })),
+    hasMore: reviewRows.length > input.limit,
     generatedAt,
-    availability: {
-      status: "unavailable",
-      reason: "source_not_built",
-      message: METRIC_UNAVAILABLE_MESSAGES.source_not_built,
-    },
   });
 }
 

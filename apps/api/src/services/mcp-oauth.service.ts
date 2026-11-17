@@ -326,6 +326,9 @@ export async function exchangeAuthorizationCode(
   const tenantId = tenantIdSchema.parse(hit.tenant_id);
   const context = tenantScopeById(tenantId);
   const settings = await loadMcpSettings(tenantId);
+  // `mcp` module off: same answer as an unknown code (981 / legend-hbuq3).
+  if (settings.moduleDisabled)
+    throw new OAuthError("invalid_grant", "Invalid authorization code.");
   const ttl = Math.min(env.MCP_TOKEN_TTL_SECONDS, 86_400);
   const raw = `mcp_${randomBytes(24).toString("hex")}`;
   const now = new Date();

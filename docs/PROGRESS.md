@@ -1,3 +1,10 @@
+## 981 Ulasan pelanggan, AI-11 dan modul MCP (17 Nov 2026)
+
+- Kartu legend-vqicf (tabel customer_reviews, migrasi 0545, RLS tenant+outlet, API /api/reviews), legend-39d.5 (TL-21 get_review_summary, agregat tanpa PII), legend-hbuq3 (modul mcp ditegakkan di bearer, OAuth, admin, registrasi, discovery, dan eksekusi aksi MCP yang sudah disetujui).
+- Keputusan pembatas: GET butuh review.respond; POST dan PATCH moderasi butuh crm.feedback.manage; source dipaksa manual; moderasi wajib expectedStatus (409 REVIEW_STATUS_CONFLICT).
+- Gate terarah 52 berkas / 1488 test hijau, root node 3513 lulus, prettier, eslint, typecheck api+shared+web hijau, db:generate kosong. Review architect: 4 temuan sudah dibetulkan.
+- Belum diputuskan (lihat laporan): revoke token saat modul mati, discovery 404 vs unknown tenant, enforce_member_rls untuk customer_profile_id. Rollout: tenant yang memakai MCP wajib diberi flag mcp sebelum deploy.
+
 ## 925 Harness Lighthouse dan fixture withdrawal (16 Nov 2026)
 
 - Basis milestone/m1 7b7cc52df, cabang fix/925-ci-grantor-withdraw-flake. Dua kartu dikerjakan terpisah: legend-kj50i oleh lighthouse, legend-61umg oleh flake; test_runner memegang satu token heavy dan reviewer memeriksa diff.

@@ -17,7 +17,10 @@ import { HttpError } from "../lib/http-error.ts";
 import { BODY_LIMIT_BYTES, jsonBody } from "../middleware/body.ts";
 import { findTenantContext } from "../middleware/tenant.ts";
 import { db } from "../db/index.ts";
-import { isAiPlatformLocked } from "../services/ai-platform-lock.ts";
+import {
+  isAiPlatformLocked,
+  isMcpModuleDisabled,
+} from "../services/ai-platform-lock.ts";
 import { loadMcpSettings } from "../services/mcp-common.ts";
 import {
   exchangeAuthorizationCode,
@@ -123,36 +126,54 @@ const mcpOAuthRouter = Router();
 
 mcpOAuthRouter.get(
   "/.well-known/oauth-authorization-server",
-  async (req, res) => {
-    const base = baseUrl(req);
-    const tenant = findTenantContext(req);
-    const settings = tenant ? await loadMcpSettings(tenant.tenantId) : null;
-    res.setHeader("Cache-Control", "no-store");
-    res.json({
-      issuer: base,
-      authorization_endpoint: `${base}/oauth/authorize`,
-      token_endpoint: `${base}/oauth/token`,
-      ...(settings?.mcpEnabled && settings.dynamicClientRegistrationEnabled
-        ? { registration_endpoint: `${base}/oauth/register` }
-        : {}),
-      response_types_supported: ["code"],
-      grant_types_supported: ["authorization_code"],
-      code_challenge_methods_supported: ["S256"],
-      token_endpoint_auth_methods_supported: ["none"],
-      scopes_supported: [...MCP_SCOPES],
-    });
+  async (req, res, next) => {
+    try {
+      const base = baseUrl(req);
+      const tenant = findTenantContext(req);
+      // `mcp` module off: same 404 as an unknown tenant (981 / legend-hbuq3).
+      if (tenant && (await isMcpModuleDisabled(db, tenant.tenantId)))
+        throw new HttpError(404, "TENANT_NOT_FOUND", "No tenant is available.");
+      const settings = tenant ? await loadMcpSettings(tenant.tenantId) : null;
+      res.setHeader("Cache-Control", "no-store");
+      res.json({
+        issuer: base,
+        authorization_endpoint: `${base}/oauth/authorize`,
+        token_endpoint: `${base}/oauth/token`,
+        ...(settings?.mcpEnabled && settings.dynamicClientRegistrationEnabled
+          ? { registration_endpoint: `${base}/oauth/register` }
+          : {}),
+        response_types_supported: ["code"],
+        grant_types_supported: ["authorization_code"],
+        code_challenge_methods_supported: ["S256"],
+        token_endpoint_auth_methods_supported: ["none"],
+        scopes_supported: [...MCP_SCOPES],
+      });
+    } catch (error) {
+      next(error);
+    }
   },
 );
 
-mcpOAuthRouter.get("/.well-known/oauth-protected-resource", (req, res) => {
-  const base = baseUrl(req);
-  res.json({
-    resource: `${base}/mcp`,
-    authorization_servers: [base],
-    bearer_methods_supported: ["header"],
-    scopes_supported: [...MCP_SCOPES],
-  });
-});
+mcpOAuthRouter.get(
+  "/.well-known/oauth-protected-resource",
+  async (req, res, next) => {
+    try {
+      const base = baseUrl(req);
+      const tenant = findTenantContext(req);
+      // `mcp` module off: same 404 as an unknown tenant (981 / legend-hbuq3).
+      if (tenant && (await isMcpModuleDisabled(db, tenant.tenantId)))
+        throw new HttpError(404, "TENANT_NOT_FOUND", "No tenant is available.");
+      res.json({
+        resource: `${base}/mcp`,
+        authorization_servers: [base],
+        bearer_methods_supported: ["header"],
+        scopes_supported: [...MCP_SCOPES],
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
 
 /**
  * GET /oauth/authorize validates the request and sends the browser to the
@@ -164,6 +185,9 @@ mcpOAuthRouter.get("/oauth/authorize", async (req, res, next) => {
     res.setHeader("Cache-Control", "no-store");
     const q = req.query;
     const tenant = findTenantContext(req);
+    // `mcp` module off: same 404 as an unknown tenant (981 / legend-hbuq3).
+    if (tenant && (await isMcpModuleDisabled(db, tenant.tenantId)))
+      throw new HttpError(404, "TENANT_NOT_FOUND", "No tenant is available.");
     if (tenant) {
       try {
         await validateAuthorizationRequest(tenant.tenantId, {
@@ -230,6 +254,9 @@ mcpOAuthRouter.post("/oauth/register", jsonBody, async (req, res, next) => {
   try {
     const tenant = findTenantContext(req);
     if (!tenant)
+      throw new HttpError(404, "TENANT_NOT_FOUND", "No tenant is available.");
+    // `mcp` module off: same answer as no tenant (981 / legend-hbuq3).
+    if (await isMcpModuleDisabled(db, tenant.tenantId))
       throw new HttpError(404, "TENANT_NOT_FOUND", "No tenant is available.");
     // Platform lock: refuse before the rate budgets are spent or the body is
     // read. The service re-checks under a row lock before it inserts.

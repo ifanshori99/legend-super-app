@@ -28,7 +28,10 @@ import {
   oauthErrorRedirect,
   previewAuthorizationRequest,
 } from "../services/mcp-oauth.service.ts";
-import { requireAiPlatformEnabled } from "../middleware/module.ts";
+import {
+  requireAiPlatformEnabled,
+  requireMcpModuleEnabled,
+} from "../middleware/module.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
 import {
   approveMcpClient,
@@ -57,7 +60,12 @@ const mcpAuthorizeBodySchema = z.strictObject({
 
 export function createAiMcpAdminRouter(): Router {
   const router = Router();
-  const common = [requireAuth, requireTrustedOrigin, requireTenantContext];
+  const common = [
+    requireAuth,
+    requireTrustedOrigin,
+    requireTenantContext,
+    requireMcpModuleEnabled(),
+  ];
   const manage = requireTenantPermission("mcp.client.manage");
   const own: import("express").RequestHandler = async (req, res, next) => {
     await loadRequestAccess(req);

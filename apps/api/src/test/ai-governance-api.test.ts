@@ -517,7 +517,7 @@ describe("tools, tenant usage and tool-call audit", () => {
     it("lists the whole catalog with the kill-switch state", async () => {
       const res = await admin.get("/api/ai/governance/tools");
       expect(res.status).toBe(200);
-      expect(res.body.data).toHaveLength(20);
+      expect(res.body.data).toHaveLength(21);
       const byCode = Object.fromEntries(
         res.body.data.map((t: { code: string; isEnabled: boolean }) => [
           t.code,

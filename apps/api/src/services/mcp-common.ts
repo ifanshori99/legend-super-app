@@ -23,7 +23,7 @@ import {
   type mcpTokens,
 } from "../db/schema/ai.ts";
 import { withTenant } from "../db/tenant.ts";
-import { isAiPlatformLocked } from "./ai-platform-lock.ts";
+import { isAiPlatformLocked, isMcpModuleDisabled } from "./ai-platform-lock.ts";
 import { appendOutbox } from "./core-outbox.ts";
 
 const EVENT_DESTINATION = "cloud-sync";
@@ -50,6 +50,8 @@ export type McpTenantSettings = {
   readonly mcpRateLimitPerMinute: number;
   /** Platform turned `ai_assistant` off for this tenant: AI and MCP closed. */
   readonly platformLocked: boolean;
+  /** The `mcp` module is off for this tenant: every MCP path closed. */
+  readonly moduleDisabled: boolean;
 };
 
 /** No settings row means MCP off (fail closed) and the default 60/min. */
@@ -57,7 +59,7 @@ export async function loadMcpSettings(
   tenantIdRaw: string,
 ): Promise<McpTenantSettings> {
   const tenantId = tenantIdSchema.parse(tenantIdRaw);
-  const { row, platformLocked } = await withTenant(
+  const { row, platformLocked, moduleDisabled } = await withTenant(
     db,
     tenantScopeById(tenantId),
     async (tx) => {
@@ -74,18 +76,21 @@ export async function loadMcpSettings(
       return {
         row: found,
         platformLocked: await isAiPlatformLocked(tx, tenantId),
+        moduleDisabled: await isMcpModuleDisabled(tx, tenantId),
       };
     },
   );
   // Locked: force every switch off so bearer, OAuth and registration all close.
+  // Module off closes the MCP switches only (Tanya AI stays as is).
   return {
     aiEnabled: platformLocked ? false : (row?.aiEnabled ?? true),
-    mcpEnabled: platformLocked ? false : (row?.mcpEnabled ?? false),
-    dynamicClientRegistrationEnabled: platformLocked
-      ? false
-      : (row?.dynamic ?? false),
+    mcpEnabled:
+      platformLocked || moduleDisabled ? false : (row?.mcpEnabled ?? false),
+    dynamicClientRegistrationEnabled:
+      platformLocked || moduleDisabled ? false : (row?.dynamic ?? false),
     mcpRateLimitPerMinute: row?.rate ?? 60,
     platformLocked,
+    moduleDisabled,
   };
 }
 

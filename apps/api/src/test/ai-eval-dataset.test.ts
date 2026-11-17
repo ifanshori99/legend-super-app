@@ -168,7 +168,7 @@ describe("AI eval dataset: tools", () => {
     for (const item of evalCases)
       for (const name of toolRefs(item))
         expect(getAiTool(name), `${item.id} ${name}`).toBeDefined();
-    expect(AI_TOOL_CATALOG).toHaveLength(20);
+    expect(AI_TOOL_CATALOG).toHaveLength(21);
   });
 
   it("registry: every tool the model is expected to call has a handler", () => {
