@@ -32,8 +32,7 @@ import { HttpError } from "../lib/http-error.ts";
 import {
   creditProviderCutOfIntent,
   depositPrincipalReservedSql,
-  earlierAllocationClaimsSql,
-  laterAllocationSpentSql,
+  otherAllocationClaimsSql,
   listSessionDepositSources,
   sessionDepositCredit,
 } from "./reservation-deposit-credit.ts";
@@ -228,18 +227,13 @@ export async function finalizeReservationDepositRemainders(
   // free credit, so it is subtracted from what the deposit still holds.
   // legend-6n4p3 (1033): the sessions of one intent share one net pool; the
   // allocations that came earlier on the intent claim their full amount first.
-  // Later allocations that already spent DP come off too (architect review).
-  const earlierSql = sql`(${earlierAllocationClaimsSql(
+  // Spent DP of the other allocations comes off too (architect review).
+  const earlierSql = otherAllocationClaimsSql(
     sql`a.tenant_id`,
     sql`i.id`,
     sql`a.allocated_at`,
     sql`a.id`,
-  )} + ${laterAllocationSpentSql(
-    sql`a.tenant_id`,
-    sql`i.id`,
-    sql`a.allocated_at`,
-    sql`a.id`,
-  )})`;
+  );
   const heldBaseSql = sql`greatest(least(r.deposit_idr,i.amount_idr,
         greatest(coalesce((SELECT sum(e.amount_idr) FROM payment_evidence e
           WHERE e.tenant_id=a.tenant_id AND e.payment_intent_id=i.id),0)

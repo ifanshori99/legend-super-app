@@ -1143,6 +1143,11 @@ describe("legend-6n4p3 spent from the DP before the provider refund is counted",
     // Session 2's read credit (a cap for what is still to come) does not
     // include what it already spent; its value to the guest is the larger.
     expect(sum).toBe(parts[0]! + parts[1]!);
+    // Exact: the 50k session 2 already spent stays its own (never read below
+    // it, so its bill is not charged again) and session 1 gets the rest, so
+    // the guest's total is the 60k net.
+    expect(parts[1]!, "session 2 keeps what it spent").toBe(SPENT);
+    expect(sum, "guest total = net 100k - refund 40k").toBe(60_000);
     expect(
       parts[0]! + Math.max(SPENT, parts[1]!) + REFUND,
       `credits ${parts.join(" + ")}: more value than the DP`,
