@@ -120,9 +120,11 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "inserts the reserved banned system user (id 00000000-0000-4000-8000-000000000002, no role, no sign-in account) that opens system refund approval chains, ON CONFLICT DO NOTHING with a check that an existing row is that account; adds the user and role-assignment guard triggers (legend-2dnh)",
   "0145_cash_shift_close_approval_policies_data.sql":
     "gives each tenant without a cash_shift_close approval policy the default rows (floor 0, level 1, supervisor, outlet_manager and general_manager template roles); idempotent, never touches a tenant that configured shift close (legend-ccpn)",
-  "0587_supplier_payment_approval_policies_data.sql":
+  "0459_session_shared_device_ids.sql":
+    "backfill only (legend-jqurl): copies each session's single shared_device_id into the new shared_device_ids array before the old column is dropped, and clears shared_mode on devices that are not POS before the pos-only CHECK is added; no import, no money.",
+  "0467_supplier_payment_approval_policies_data.sql":
     "gives each tenant without a supplier_payment approval policy the default rows (floor 0, level 1, finance and owner template roles, distinct actor); idempotent, never touches a tenant that configured supplier_payment, no amount, journal or payment touched (it only makes every supplier payment wait for a second person), FORCE RLS lifted for that one statement and restored (legend-xxqz3)",
-  "0586_cash_out_approval_policies_data.sql":
+  "0466_cash_out_approval_policies_data.sql":
     "gives each tenant without a cash_out approval policy the default row (floor 0, level 1, finance template role, distinct actor); idempotent, never touches a tenant that configured cash_out, no amount, journal or cash entry touched, FORCE RLS lifted for that one statement and restored (legend-4qowr)",
   "0147_accounting_coa_backfill_1204.sql":
     "backfills accounts 1204, 6110 and 6111 and the employee_receivable, reimbursement_expense and pph21_borne_expense mappings for every already provisioned legal entity that lacks them (legend-s8a3); idempotent, never updates or deletes, keeps a custom account with the same code",
@@ -291,12 +293,12 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
   "0426_payout_approval_log.sql":
     "creates the append-only payroll_payout_approval_log table and replaces the function body of app.payout_attest (payout role), which inserts an attestation and a log row when called; the migration itself writes no row and changes no amount",
   // legend-xbagc (990 card A)
-  "0581_payout_990_recon_clear.sql":
+  "0461_payout_990_recon_clear.sql":
     "function bodies only, no row edited by the migration: app.payout_grant_issue (grantor login) inserts a recon_clear grant, app.payout_recon_clear_propose and app.payout_recon_clear_approve (payout role) insert and approve a clearance of a reconciliation flag when called (two different finance people, step-up grants), and the item guard and app.payout_resolve_approve read the clearance; the migration itself writes no row and changes no amount (it only releases a payslip held by a false flag, nobody is paid by it)",
   // legend-nsqhm (990 card E)
-  "0583_payout_990_return_bank_ref.sql":
+  "0463_payout_990_return_bank_ref.sql":
     "function bodies and a guard trigger only, no row edited by the migration: app.payout_return_propose and app.payout_return_confirm (payout role) store the bank transaction reference of a return on the claim and the item when called, and refuse a missing, differing or reused reference; the migration itself writes no row and changes no amount (it only adds a refusal)",
-  "0584_payout_990_flag_fingerprint.sql":
+  "0464_payout_990_flag_fingerprint.sql":
     "backfill only (legend-hklnq): one fingerprint sighting per existing payout recon exception, computed from that exception's own item, attestation and posting rows, so a later recon can tell whether the flagged data changed; no amount, item, payslip or clearance row is edited, and an exception without a matching clearance keeps holding its payslip",
   // legend-628t9 (954)
   "0436_payout_grant_expiry_after_lock.sql":
