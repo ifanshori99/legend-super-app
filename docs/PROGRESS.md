@@ -1780,3 +1780,10 @@ Langkah berikut CTO baru:
 - Sesi CTO TETAP di akun Claude #1 (7d 95%, reset 17 Nov 18:00). Pindah paksa ke #3 dibatalkan founder; jangan force-switch sesi CTO. CTO baru: akun #3 (7d 19%).
 - Langkah CTO baru: buat ulang cron (bd memory cto-crons); verifikasi laporan G1dr3 (SHA m1, tutup s20iu/dz8ci), lalu rencanakan batch83 (recon 5e1f9d9fc, 954 f1a512f44, 960 cf9428b5a, 953 2be7cfd8d, 940 bila SIAP); 940 selesai: SO Codex QR/VA lalu legend-kt3t1; 955 selesai: SO Codex payroll; 958/962/961/963: verifikasi lalu antre; 964 WS-12 Tanya AI (brief docs/briefs/964, akun #3) saat disk >= 15 GB dan slot.
 - Founder terbuka: Q19-Q25 (Q24/Q25 menahan duitku-fe-ws05, Q19 menahan hpgyw dan 936).
+
+## CTO 17 Nov 11:26 (S30:P6b2j:G72tm, akun Claude #1) ambil alih dari G4c20
+- Link 7 thread (G02qy, G3p7h, G1dr3, G6kc8, G5ytk, G2ngy, G9qm8). Cron 4 dibuat ulang (push :07, akun mati :37, retro 3 jam, Q13 :52; Q13 kini: jangan force-switch sesi CTO).
+- 962 selesai: `ghostex/ebc31074` fa79bcdd2 (legend-ra1k0, di atas 951; architect xhigh tanpa P1/P2; 138 test). Antre batch83 setelah 951. P3 test ke kartu baru. Thread di-resolve, worktree dihapus.
+- Disk: cleanup-ssd --apply + fstrim Colima -> 15,7 GB; mulai G7688 964 WS-12 Tanya AI (akun #3, cabang ghostex/9e2a1667) -> disk 13,7 GB lagi.
+- Brief siap, tertahan disk < 15 GB (worktree ditolak): 965 DOIT recurring anti tagih dobel (ycb85, yqne1, lch2o, 145n0; Sonnet akun #3; migrasi 0500-0504), 966 Codex S (bkoim, julap; Codex #8).
+- Sesi CTO ini di akun #1 (7d 95%, reset 18:00): bila limit, serah terima ke CTO baru di #3.
