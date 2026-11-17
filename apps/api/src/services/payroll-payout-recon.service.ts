@@ -294,6 +294,18 @@ type GrantRow = {
   consumedTxid: number | null;
 };
 
+/**
+ * What an item holds of its resolution: the outcome and first resolver now on
+ * the item, its status, and the last propose step made for it (a proposal can
+ * be withdrawn and made again with another outcome).
+ */
+type ResolutionFacts = {
+  outcome: string | null;
+  status: string;
+  resolvedBy: string | null;
+  lastProposeOperationId: string | null;
+};
+
 type SessionRow = {
   userId: string;
   createdAt: number | null;
@@ -351,8 +363,8 @@ type Facts = {
   journals: Map<string, Journal>;
   items: Map<string, ItemFacts>;
   postings: Map<string, { kind: string; journalKey: string; feeIdr: number }>;
-  /** Resolution outcome of the items of the resolve attestations (null: none). */
-  resolutions: Map<string, string | null>;
+  /** Resolution state of the items of the resolve attestations. */
+  resolutions: Map<string, ResolutionFacts>;
   /** Item ids linked to each posting (a settle group), with their nets. */
   groups: Map<string, ItemFacts[]>;
   runOfBatch: Map<string, string>;
@@ -424,27 +436,44 @@ async function readAttestations(
   }));
 }
 
-/** The outcome each item of a resolve attestation was proposed with. */
+/** The resolution state of each item of a resolve attestation. */
 async function readResolutions(
   tx: Tx,
   tenantId: TenantId,
   attestations: readonly Attestation[],
-): Promise<Map<string, string | null>> {
-  const resolutions = new Map<string, string | null>();
+): Promise<Map<string, ResolutionFacts>> {
+  const resolutions = new Map<string, ResolutionFacts>();
   const ids = [
     ...new Set(
       attestations.flatMap((a) => (a.kind === "resolve" ? a.itemIds : [])),
     ),
   ];
-  if (ids.length > 0)
-    for (const row of rowsOf(
-      await tx.execute(sql`
-        SELECT i.id::text AS id, i.resolution_outcome
-          FROM payroll_disbursement_items i
-         WHERE i.tenant_id = ${tenantId}::uuid
-           AND i.id IN (${uuidList(ids)})`),
-    ))
-      resolutions.set(String(row.id), text(row.resolution_outcome));
+  if (ids.length === 0) return resolutions;
+  for (const row of rowsOf(
+    await tx.execute(sql`
+      SELECT i.id::text AS id, i.resolution_outcome, i.status, i.resolved_by
+        FROM payroll_disbursement_items i
+       WHERE i.tenant_id = ${tenantId}::uuid
+         AND i.id IN (${uuidList(ids)})`),
+  ))
+    resolutions.set(String(row.id), {
+      outcome: text(row.resolution_outcome),
+      status: String(row.status),
+      resolvedBy: text(row.resolved_by),
+      lastProposeOperationId: null,
+    });
+  for (const row of rowsOf(
+    await tx.execute(sql`
+      SELECT DISTINCT ON (x) x::text AS item_id, a.operation_id::text AS operation_id
+        FROM payroll_payout_attestations a, unnest(a.item_ids) AS x
+       WHERE a.tenant_id = ${tenantId}::uuid
+         AND a.kind = 'resolve' AND a.step = 'propose'
+         AND x IN (${uuidList(ids)})
+       ORDER BY x, a.attested_at DESC, a.operation_id DESC`),
+  )) {
+    const facts = resolutions.get(String(row.item_id));
+    if (facts) facts.lastProposeOperationId = String(row.operation_id);
+  }
   return resolutions;
 }
 
@@ -506,7 +535,7 @@ async function loadWithdrawals(
 ): Promise<{
   attestations: Attestation[];
   grants: Map<string, GrantRow>;
-  resolutions: Map<string, string | null>;
+  resolutions: Map<string, ResolutionFacts>;
   flagged: Set<string>;
 }> {
   const attestations = await readAttestations(
@@ -589,8 +618,7 @@ async function loadClosures(
                  LIMIT 1))::text AS batch_id
         FROM payroll_payout_proof_closures z
        WHERE z.tenant_id = ${tenantId}::uuid
-         AND (z.proposed_at >= ${sinceIso}::timestamptz
-              OR z.closed_at >= ${sinceIso}::timestamptz)
+         AND z.proposed_at >= ${sinceIso}::timestamptz
        ORDER BY z.id`),
   );
   const none = {
@@ -1416,13 +1444,17 @@ const GRANT_DETAIL_IS_NULL: ReadonlySet<string> = new Set([
  * What the grant was bound to against what the step did (990-D). The consume
  * function matches the item set, ref and detail it is given, so a difference
  * means the grant row or the attestation was changed after the step. The item
- * set of a batch approval and of a step without items is NULL; the outcome of
- * a resolution is the one stored on its items (none stored: not compared).
+ * set of a batch approval and of a step without items is NULL. The outcome of
+ * a resolution is the one stored on its items, compared only where it still
+ * speaks for the step: a propose step is compared for the last proposal made
+ * for the item and while its proposer still holds it (an older proposal was
+ * withdrawn and made again, maybe with another outcome); an approve step only
+ * while the item sits in the outcome it moved to (`failed` or `not_sent`).
  */
 function grantBindingMismatch(
   a: Attestation,
   grant: GrantRow,
-  resolutions: ReadonlyMap<string, string | null>,
+  resolutions: ReadonlyMap<string, ResolutionFacts>,
 ): boolean {
   const itemSet =
     a.kind === "batch_approve" || a.itemIds.length === 0
@@ -1432,8 +1464,15 @@ function grantBindingMismatch(
   if (a.kind === "resolve") {
     if (grant.detail === null) return true;
     for (const id of a.itemIds) {
-      const outcome = resolutions.get(id) ?? null;
-      if (outcome !== null && outcome !== grant.detail) return true;
+      const item = resolutions.get(id);
+      if (!item || item.outcome === null) continue;
+      const comparable =
+        a.step === "propose"
+          ? item.lastProposeOperationId === a.operationId &&
+            item.resolvedBy === a.actor
+          : a.step === "approve" &&
+            (item.status === "failed" || item.status === "not_sent");
+      if (comparable && item.outcome !== grant.detail) return true;
     }
   } else if (a.kind === "bank_confirm") {
     if (grant.detail !== "succeeded") return true;

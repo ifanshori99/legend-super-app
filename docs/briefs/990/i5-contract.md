@@ -14,7 +14,7 @@ Galat:
 - `bankRef` sudah dipakai klaim return lain di tenant yang sama: 409 `PAYOUT_RETURN_BANK_REF_REUSED` (unique `payroll_payout_return_claims_bank_ref_key`; tenant lain boleh pakai ref sama).
 - Langkah 2 dengan ref berbeda dari klaim: SQL PAYOUT-89 (23514) -> 409 `PAYOUT_GUARD_REFUSED` (pemeta generik).
 - Fungsi SQL dipanggil tanpa/ref terlalu pendek: PAYOUT-88 (23514).
-- Klaim return terbuka sebelum 990 (bank_ref NULL) tidak bisa di-confirm (PAYOUT-89); pengaju pertama mengajukan ulang.
+- Klaim return terbuka sebelum 990 (bank_ref NULL) tidak bisa di-confirm maupun diajukan ulang. Migrasi 0583 berhenti dengan `PAYOUT-89: open return claims without a bank reference must be settled before 990` selama masih ada klaim seperti itu; ops menyelesaikannya dulu sebelum 990 diterapkan.
 
 SQL (0583, signature lama di-DROP):
 - `app.payout_return_propose(p_batch uuid, p_item_ids uuid[], p_key varchar, p_note text, p_grant text, p_bank_ref varchar) RETURNS uuid`

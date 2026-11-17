@@ -75,3 +75,7 @@ Larangan: jangan jalankan vitest/tsc/pnpm test (satu token heavy dipegang test-w
 
 ### T1-T3: test lama pemanggil return (hanya file test yang disebut di prompt)
 - Return sekarang wajib `bankRef` (API) dan `p_bank_ref` (SQL `app.payout_return_propose`/`payout_return_confirm`, lihat `docs/briefs/990/i5-contract.md`). Tambahkan ref unik per klaim (mis. `"TRX" + randomUUID().slice(0,8)`), langkah kedua memakai ref yang sama. Jangan ubah ekspektasi lain. Jangan jalankan vitest.
+
+## Fase 3: temuan architect
+- R (file `payroll-payout-recon.service.ts`): (P2) :1432-1437 grant `resolve:propose` lama (proposal ditarik lalu diajukan ulang dengan outcome lain) jangan dibandingkan dengan outcome item: bandingkan hanya grant propose TERAKHIR untuk item itu dan `item.resolved_by = a.actor`; `resolve:approve` dibandingkan dengan outcome item hanya bila status item `failed`/`not_sent`. (P3) :592 closure: filter `proposed_at >= since` saja (closure yang diusulkan antara 0410-0414 tanpa attestation jangan ditandai).
+- M (file `0583_payout_990_return_bank_ref.sql`, `docs/briefs/990/i5-contract.md`): (P2) klaim return terbuka dari sebelum 990 (`bank_ref` NULL) tidak bisa di-confirm dan tidak bisa diajukan ulang. Tambah guard di awal 0583: `DO $$ ... IF EXISTS (open claim, bank_ref NULL) THEN RAISE EXCEPTION 'PAYOUT-89: open return claims without a bank reference must be settled before 990' ...` supaya ops memutuskan dulu. Betulkan kalimat "pengaju pertama mengajukan ulang" di kontrak.

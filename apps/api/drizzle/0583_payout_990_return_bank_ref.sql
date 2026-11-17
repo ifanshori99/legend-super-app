@@ -8,9 +8,22 @@
 -- A reference already used by another return claim of the tenant raises the unique
 -- violation payroll_payout_return_claims_bank_ref_key (the service answers 409);
 -- another tenant may use the same reference. Return claims from before 990 have
--- no reference and cannot be confirmed (PAYOUT-89): the first person proposes again.
+-- no reference and cannot be confirmed or proposed again, so this migration refuses to run
+-- while one is open (PAYOUT-89): ops decides on it first.
 -- The old signatures are dropped so the application role has no path without it.
 -- Ownership: as 0420/0436, created by the payout role itself.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM public.payroll_payout_return_claims
+     WHERE status = 'open' AND bank_ref IS NULL
+  ) THEN
+    RAISE EXCEPTION 'PAYOUT-89: open return claims without a bank reference must be settled before 990'
+      USING ERRCODE = 'P0001';
+  END IF;
+END
+$$;
+--> statement-breakpoint
 GRANT UPDATE (return_bank_ref) ON TABLE public.payroll_disbursement_items TO legend_payout;
 --> statement-breakpoint
 GRANT SELECT, INSERT ON TABLE public.payroll_payout_return_claims TO legend_payout;
