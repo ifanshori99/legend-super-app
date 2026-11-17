@@ -7365,3 +7365,12 @@ Gerbang:
 - e2e produksi: 18 lulus, 1 skip, 42 dtk. e2e mock: 1162 lulus, 2 gagal = baseline (legend-g6d AUTH-05, TEN-03), 2 skip, 1,0 jam.
 
 Subagent: total 5 (reviewer 1, Explore 1, implementer 3), puncak 3 bersamaan, pemegang `heavy`: thread ini. Biaya sesi (session-usage, unit biaya*): utama 2763k, subagent 455k.
+## 17 Nov 2026 — 992 lanjutan 983: lock koreksi lembur, held di simulate + UI, batas audit (thread engineer)
+
+- Cabang ghostex/992-koreksi-lembur-payroll (dari c9c096052, 983). Kartu legend-pxzhy, legend-oayhe, legend-xrop2. Tanpa migrasi (0590-0594 tidak dipakai). Brief kerja di scratchpad.
+- pxzhy: `lockOvertimeCorrectionScope` dipanggil di lock run tepat setelah `lockPph21ReceivableScope`; urutan semua jalur: bulan, pph21, scope lembur, baris run. Komentar LOCK ORDER diperbarui. Test balapan dua transaksi (lock T vs request reversal): tanpa 40P01, lembur dibayar tepat sekali (T + U = delta), tenant lain tak berubah. Gagal-dulu di HEAD: "deadlock detected".
+- oayhe: field opsional `heldOvertimeCorrections` {employeeId, sourceRunId, reason, outstandingIdr} di `payrollRunSchema`, diisi hanya di respons simulate dari `plan.held` yang sama dengan audit; tidak masuk nilai gaji. UI: blok "Koreksi lembur ditahan" di layar run (tanpa izin gaji hanya jumlah dan alasan). Alias `OvertimeCorrectionHeldReason` = tipe shared. Batas: daftar bertahan di cache setelah approve_hr/approve_final tetapi hilang setelah muat ulang halaman (tidak ada GET run); simulate ulang menampilkannya lagi.
+- xrop2: query audit approve dibatasi `created_at >= min(requestedAt) - 1 hari` (serap selisih jam app vs DB; hanya melebarkan pemindaian).
+- Architect xhigh: API aman (tanpa deadlock, tanpa bayar ganda); temuan P2 label web, P3 test lemah, P3 tipe disalin, P3 selisih jam: semua dibetulkan. ui-auditor: 11 temuan, 8 dibetulkan, 3 dilewati (#6 periode sumber, #8 lipat daftar, #10 ukuran font).
+- Gerbang: prettier, eslint, tsc API dan web exit 0, tes terarah 48/48 (held 6, lock-order 3, 983, run-lock, rapel), kontrak 35/35 (text-contract + payroll-contract), db:generate kosong. Belum: pnpm check penuh (merge train).
+- Angka: 13 subagent, puncak 5 bersamaan, rata-rata 1,0; token heavy dipegang test-writer/test-runner bergantian.

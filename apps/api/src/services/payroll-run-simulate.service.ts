@@ -1123,5 +1123,18 @@ export async function simulatePayrollRunInTransaction(
       ["simulationCount", "heldCount", "heldItems"],
     );
 
-  return toRun(updated);
+  // Same held list as the audit row, surfaced to the caller (legend-oayhe).
+  // Omitted when nothing is held; never part of the pay values.
+  const heldOvertimeCorrections = results.flatMap(({ entry }) =>
+    entry.correction.held.map((held) => ({
+      employeeId: employeeIdSchema.parse(entry.member.id),
+      sourceRunId: held.sourceRunId,
+      reason: held.reason,
+      outstandingIdr: held.outstandingIdr,
+    })),
+  );
+  const simulated = toRun(updated);
+  return heldOvertimeCorrections.length > 0
+    ? { ...simulated, heldOvertimeCorrections }
+    : simulated;
 }

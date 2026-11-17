@@ -21,6 +21,7 @@ import { useBankFiles, useRun, useRunResults } from "../hooks";
 import { AuditTrail } from "./audit-trail";
 import { EmployeeReviewTable } from "./employee-review-table";
 import { ExportsSection } from "./exports-section";
+import { HeldOvertimeCorrections } from "./held-overtime-corrections";
 import { RunActionDialogs, type RunDialog } from "./run-actions";
 import { RunStatusHeader } from "./run-status-header";
 
@@ -154,6 +155,13 @@ export function RunDetailPage({
           context={t("payrollRun.detail.employeesContext")}
         />
       </StatStrip>
+
+      <HeldOvertimeCorrections
+        run={data}
+        rows={rows}
+        resultsState={resultsState}
+        canViewSalaries={permissions.canViewSalaries}
+      />
 
       <EmployeeReviewTable
         run={data}
