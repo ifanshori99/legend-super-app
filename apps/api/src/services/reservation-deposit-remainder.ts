@@ -37,6 +37,7 @@ import {
 import { requestFingerprint } from "./reservation-plan.ts";
 import { lockSessionDeposit } from "./qr-order-ports.ts";
 import { refundableBalance } from "./payment-admin.service.ts";
+import { providerRefundedForeignIdrSql } from "./payment-provider-refunded-foreign-sql.ts";
 import { assertNoActiveQrisHold } from "./pos-qris-hold.ts";
 import {
   backingStateOf,
@@ -220,6 +221,8 @@ export async function finalizeReservationDepositRemainders(
     WHERE r.tenant_id=${tenantId} AND o.table_session_id=${input.tableSessionId}::uuid`);
   const released = BigInt(String(releases.rows[0]?.amount ?? "0"));
   used = used > released ? used - released : 0n;
+  // legend-30hfs: money the provider refunded outside our own refunds is not
+  // free credit, so it is subtracted from what the deposit still holds.
   const allocations = await tx.execute(sql`
     SELECT a.reservation_id::text, a.outlet_id::text, a.payment_intent_id::text,
       r.customer_profile_id::text, r.source::text AS source,
@@ -228,7 +231,8 @@ export async function finalizeReservationDepositRemainders(
           WHERE e.tenant_id=a.tenant_id AND e.payment_intent_id=i.id),0)
           - coalesce((SELECT sum(f.amount_idr) FROM payment_unallocated_funds f
           WHERE f.tenant_id=a.tenant_id AND f.payment_intent_id=i.id),0),0))
-        - ${depositPrincipalReservedSql(sql`a.tenant_id`, sql`i.id`)},0))::text AS held
+        - ${depositPrincipalReservedSql(sql`a.tenant_id`, sql`i.id`)}
+        - ${providerRefundedForeignIdrSql(sql`a.tenant_id`, sql`i.id`)},0))::text AS held
     FROM reservation_deposit_allocations a
     JOIN reservations r ON r.tenant_id=a.tenant_id AND r.id=a.reservation_id
     JOIN payment_intents i ON i.tenant_id=a.tenant_id AND i.id=a.payment_intent_id

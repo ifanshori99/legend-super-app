@@ -29,6 +29,7 @@
 import type { TenantId } from "@starter/shared/core";
 import { sql, type SQL } from "drizzle-orm";
 import type { Tx } from "./permission-resolver.ts";
+import { providerRefundedForeignIdrSql } from "./payment-provider-refunded-foreign-sql.ts";
 
 /** Advisory key of one DP intent's refund-vs-credit lock. */
 function depositIntentLockKey(tenantId: TenantId, intentId: string): string {
@@ -90,14 +91,18 @@ async function allocationCredits(
            CASE WHEN i.status IN ('paid', 'partially_refunded', 'refunded')
                 THEN least(r.deposit_idr, i.amount_idr)
                 ELSE 0 END::text AS gross,
+           -- legend-30hfs: money the provider refunded outside our own refunds
+           -- is not credit; a flagged refund-after-paid intent credits 0.
            CASE WHEN i.status IN ('paid', 'partially_refunded')
-                THEN least(r.deposit_idr, i.amount_idr)
-                  - ${depositPrincipalReservedSql(sql`a.tenant_id`, sql`a.payment_intent_id`)} - coalesce((
+                  AND i.provider_refunded_after_paid_at IS NULL
+                THEN greatest(least(r.deposit_idr, i.amount_idr)
+                  - ${depositPrincipalReservedSql(sql`a.tenant_id`, sql`a.payment_intent_id`)}
+                  - ${providerRefundedForeignIdrSql(sql`a.tenant_id`, sql`a.payment_intent_id`)} - coalesce((
                   SELECT sum(c.amount_idr) FROM reservation_deposit_remainders c
                    WHERE c.tenant_id = a.tenant_id
                      AND c.payment_intent_id = a.payment_intent_id
                      AND c.table_session_id = a.table_session_id
-                     AND c.kind = 'customer_credit'), 0)
+                     AND c.kind = 'customer_credit'), 0), 0)
                 ELSE 0 END::text AS held
       FROM reservation_deposit_allocations a
       JOIN reservations r ON r.tenant_id = a.tenant_id AND r.id = a.reservation_id

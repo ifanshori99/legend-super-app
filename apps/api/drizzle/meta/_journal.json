@@ -2962,6 +2962,13 @@
       "when": 1795000000051,
       "tag": "0436_provider_refunded_after_recorded",
       "breakpoints": true
+    },
+    {
+      "idx": 437,
+      "version": "7",
+      "when": 1795000000505,
+      "tag": "0505_provider_partial_refunds",
+      "breakpoints": true
     }
   ]
 }

@@ -525,3 +525,69 @@ export const paymentEvidence = pgTable(
     ),
   ],
 );
+
+/**
+ * legend-30hfs (967): one row per refund the PROVIDER made on its own (not the
+ * echo of a refund we sent), for money we had already recorded as paid. The
+ * unique `(tenant_id, provider, provider_refund_id)` key makes a retried
+ * webhook, a poller and a webhook racing each other record it once; the winner
+ * of the insert writes the audit row and the supervisor alert. The sum of the
+ * rows of an intent (`providerRefundedForeignIdrSql`) is taken off what the
+ * intent may still refund or pay out. Append-only evidence: never updated.
+ */
+export const paymentProviderRefunds = pgTable(
+  "payment_provider_refunds",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    paymentIntentId: uuid("payment_intent_id").notNull(),
+    /** The provider transaction (evidence) the refund belongs to, when the
+     * transaction was recorded as evidence. */
+    evidenceId: uuid("evidence_id"),
+    provider: varchar("provider", { length: 20 }).notNull(),
+    /** The provider's own refund id (the identity with tenant and provider). */
+    providerRefundId: varchar("provider_refund_id", { length: 100 }).notNull(),
+    /** The provider transaction the refund names. */
+    providerPaymentRef: varchar("provider_payment_ref", {
+      length: 100,
+    }).notNull(),
+    amountIdr: idrColumn("amount_idr").notNull(),
+    /** Which path saw it first: `refund_webhook`, `payment_webhook`, `poller`. */
+    source: varchar("source", { length: 20 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    unique("payment_provider_refunds_provider_refund_key").on(
+      table.tenantId,
+      table.provider,
+      table.providerRefundId,
+    ),
+    foreignKey({
+      name: "payment_provider_refunds_intent_fk",
+      columns: [table.tenantId, table.paymentIntentId],
+      foreignColumns: [paymentIntents.tenantId, paymentIntents.id],
+    }),
+    foreignKey({
+      name: "payment_provider_refunds_evidence_fk",
+      columns: [table.tenantId, table.evidenceId],
+      foreignColumns: [paymentEvidence.tenantId, paymentEvidence.id],
+    }),
+    foreignKey({
+      name: "payment_provider_refunds_outlet_fk",
+      columns: [table.tenantId, table.outletId],
+      foreignColumns: [outlets.tenantId, outlets.id],
+    }),
+    index("payment_provider_refunds_intent_idx").on(
+      table.tenantId,
+      table.paymentIntentId,
+    ),
+    check("payment_provider_refunds_amount_check", sql`${table.amountIdr} > 0`),
+    check(
+      "payment_provider_refunds_source_check",
+      sql`${table.source} IN ('refund_webhook', 'payment_webhook', 'poller')`,
+    ),
+  ],
+);

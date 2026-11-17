@@ -269,6 +269,30 @@ export function matchDoitRefundEvent(
   return { kind: "none" };
 }
 
+/**
+ * legend-30hfs: a `refund.succeeded` no refund of ours matches may be a refund
+ * the provider made on its own (the money went back to the payer). It can be
+ * recorded only when it names its refund id, its payment id (flat, refund-level
+ * or the payment object's, never two different ones) and a positive amount,
+ * and none of its facts is unreadable. Anything less is null (stays ignored).
+ */
+export function readProviderInitiatedRefund(
+  type: string,
+  facts: DoitRefundFacts,
+): { refundId: string; paymentId: string; amountIdr: number } | null {
+  if (type !== "refund.succeeded" || facts.invalid) return null;
+  const { refundId, amountIdr } = facts;
+  if (!refundId || amountIdr === undefined || amountIdr <= 0) return null;
+  if (
+    facts.payment &&
+    facts.paymentId !== undefined &&
+    facts.payment.id !== facts.paymentId
+  )
+    return null;
+  const paymentId = facts.paymentId ?? facts.payment?.id;
+  return paymentId ? { refundId, paymentId, amountIdr } : null;
+}
+
 export type RefundCandidateRow = {
   id: string;
   status: string;
