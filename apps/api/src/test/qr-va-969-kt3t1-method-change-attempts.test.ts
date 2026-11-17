@@ -11,14 +11,14 @@
 // Expected fail-first reason (test 1): the attempt count only skips
 // payment.expired events whose reason is "superseded"; a code voided by a
 // method change carries reason "method_changed" and is counted. Three method
-// changes (four codes) plus the last code's timeout therefore reach the cap
+// changes (four codes) plus the last code's expiry therefore reach the cap
 // and the order is voided "payment_attempts_exhausted" instead of
 // "retry_allowed". Test 2 passes before and after the fix: it guards that
 // codes that really expired on their own still exhaust the attempts.
 //
 // Assumptions
 // - The last code lapses by its provider-side expiry (expires_at moved into
-//   the past, then expireDueIntents) and the payment.expired event is
+//   the past, then the gateway poll answers expired, reason "gateway") and the payment.expired event is
 //   delivered after LATE_PAYMENT_GRACE_MS, as in ws03-guest-va.test.ts and
 //   order-payment-consumers.test.ts. The last code is a VA, so the QRIS hold
 //   does not apply.
@@ -44,7 +44,7 @@ import {
   type GatewayPaymentMethod,
   type PaymentGatewayPort,
 } from "../services/payment-gateway.ts";
-import { expireDueIntents } from "../services/payment.service.ts";
+import { pollPendingGatewayIntents } from "../services/payment.service.ts";
 import { endPools } from "./facility-breakfast-helpers.ts";
 import { owner } from "./floor-test-helpers.ts";
 import {
@@ -130,9 +130,12 @@ class DuitkuLikeGateway implements PaymentGatewayPort {
       expiresAt: input.expiresAt,
     };
   }
+  /** providerRefs the provider now reports as expired. */
+  readonly expired = new Set<string>();
   async getStatus(input: { providerRef: string }) {
     return {
-      status: "pending" as const,
+      status: (this.expired.has(input.providerRef) ? "expired" : "pending") as
+        "expired" | "pending",
       providerRef: input.providerRef,
       amountIdr: null,
     };
@@ -229,10 +232,20 @@ async function lapse(intentId: string) {
            WHERE tenant_id = $1 AND id = $2)`,
     [fx.tenant.tenantId, intentId],
   );
-  const context = fx.context as ScopedTenantContext;
-  await expireDueIntents(context, new Date());
+  // A code the gateway issued is never expired locally (legend-3wpf): the
+  // polling fallback asks the provider, which answers expired.
+  const { rows } = await owner.query<{ provider_ref: string }>(
+    "SELECT provider_ref FROM payment_intents WHERE tenant_id = $1 AND id = $2",
+    [fx.tenant.tenantId, intentId],
+  );
+  gw.expired.add(rows[0]!.provider_ref);
+  await pollPendingGatewayIntents(
+    fx.context as ScopedTenantContext,
+    new Date(Date.now() + 2 * 60 * 60_000),
+  );
   const [expired] = await outbox("payment.expired", intentId);
   expect(expired, "the lapsed code wrote payment.expired").toBeDefined();
+  // Past its own expiry the provider's expired answer is a timeout.
   expect(expired!.payload.reason, "a local timeout, not a method change").toBe(
     "timeout",
   );
