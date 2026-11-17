@@ -680,7 +680,8 @@ async function voidTendersAndRefundPaidQris(
       | "bill_below_tender"
       | "business_day_closed"
       | "edc_request_open"
-      | "refund_reserved";
+      | "refund_reserved"
+      | "provider_refunded";
     now: Date;
     /** Wall-clock time the link closes at, when `now` is a fact time. */
     linkClosedAt?: Date;
@@ -942,7 +943,24 @@ export async function handlePosPaymentPaid(
        ORDER BY i.paid_at ASC NULLS LAST, i.id ASC
        LIMIT 1
     `);
-    const countedId = counted.rows[0]?.id;
+    let countedId = counted.rows[0]?.id;
+    if (countedId === undefined || countedId === null) {
+      // legend-6i91b: every settled intent nets to 0 (the provider refunded it
+      // all on its own). The tender cannot be captured and must not stay
+      // `authorized` with its hold closed: the intent that carries the void is
+      // the first settled one by payment time, then id (nothing is left to
+      // refund, so no refund row is made).
+      const first = await tx.execute(sql`
+        SELECT i.id
+          FROM payment_intents i
+         WHERE i.tenant_id = ${tenantId}
+           AND i.payment_link_id = ${payload.data.paymentLinkId}::uuid
+           AND i.status IN ('paid', 'partially_refunded', 'refunded')
+         ORDER BY i.paid_at ASC NULLS LAST, i.id ASC
+         LIMIT 1
+      `);
+      countedId = first.rows[0]?.id;
+    }
     if (countedId === undefined || countedId === null) return;
     const [paid] = await tx
       .select()
@@ -993,6 +1011,31 @@ export async function handlePosPaymentPaid(
         intentId: paid.id,
         tenderId: tender.id,
         reason: "edc_request_open",
+        now: at,
+        linkClosedAt: now,
+      });
+      return;
+    }
+    // legend-6i91b: the provider refunded part of the money on its own, so the
+    // link's settled intents net less than the tender. Capturing would count
+    // money the guest no longer has paid in. Restrictive: void the tender and
+    // refund the net (the refund cap already nets provider refunds); the order
+    // keeps its full balance.
+    const netRows = await tx.execute(sql`
+      SELECT coalesce(sum(${netAllocatedIdrSql(sql`i.tenant_id`, sql`i.id`)}), 0)::text AS total
+        FROM payment_intents i
+       WHERE i.tenant_id = ${tenantId}
+         AND i.payment_link_id = ${payload.data.paymentLinkId}::uuid
+         AND i.status IN ('paid', 'partially_refunded', 'refunded')
+    `);
+    if (Number(netRows.rows[0]?.total ?? 0) < Number(tender.amountIdr)) {
+      await voidTendersAndRefundPaidQris(tx, context, {
+        order,
+        pos,
+        paymentLinkId: payload.data.paymentLinkId,
+        intentId: paid.id,
+        tenderId: tender.id,
+        reason: "provider_refunded",
         now: at,
         linkClosedAt: now,
       });
