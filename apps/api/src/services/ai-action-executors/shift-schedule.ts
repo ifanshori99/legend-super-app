@@ -23,8 +23,9 @@ import { createShiftAssignment as createShiftAssignmentEndpoint } from "@starter
 import { db } from "../../db/index.ts";
 import { shiftTemplates, stations } from "../../db/schema/index.ts";
 import { withTenant } from "../../db/tenant.ts";
+import { logger } from "../../lib/logger.ts";
 import {
-  cancelDraftShiftAssignment,
+  cancelShiftAssignment,
   createShiftAssignment,
 } from "../hris-scheduling-roster.service.ts";
 import { holdsToolAccess } from "./access.ts";
@@ -131,13 +132,47 @@ export const executeShiftSchedule: ActionExecutor = async ({
     }
   } catch (error) {
     // Draft-only and atomic: a draft a manager published meanwhile stays.
-    for (const id of insertedHere)
-      await cancelDraftShiftAssignment(
-        context,
-        row.requestedByUserId,
-        id,
-        now,
-      ).catch(() => undefined);
+    // A failed cancel is logged (ids and counts only, no personal data) and
+    // reported: those drafts may still be on the roster.
+    let rollbackFailures = 0;
+    for (const id of insertedHere) {
+      try {
+        await cancelShiftAssignment(
+          context,
+          row.requestedByUserId,
+          id,
+          now,
+          true,
+        );
+      } catch (rollbackError) {
+        rollbackFailures += 1;
+        logger.error(
+          {
+            actionRequestId: row.id,
+            assignmentId: id,
+            // Name and message only: no stack, no request data.
+            err:
+              rollbackError instanceof Error
+                ? { name: rollbackError.name, message: rollbackError.message }
+                : { name: "NonError" },
+          },
+          "TL-16 rollback could not cancel a draft shift",
+        );
+      }
+    }
+    if (rollbackFailures > 0) {
+      logger.error(
+        {
+          actionRequestId: row.id,
+          insertedCount: insertedHere.length,
+          rollbackFailures,
+        },
+        "TL-16 rollback incomplete",
+      );
+      throw new ActionExecutionError(
+        "Jadwal gagal dibuat dan pembatalan otomatis belum tuntas: sebagian shift mungkin sudah live di jadwal. Periksa jadwal outlet.",
+      );
+    }
     throw error;
   }
   return { resultRef: `shift_assignment:${handled[0]}` };

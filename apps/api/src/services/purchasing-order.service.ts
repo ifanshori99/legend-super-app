@@ -5,7 +5,8 @@
 //   (UPSERT ... RETURNING, period of the outlet business date).
 // - The server computes line totals and header totals (`taxIdr` = 0 until the
 //   tax contract is wired) and overwrites `source` from the actor (session
-//   user: `user`).
+//   user: `user`). Only a trusted server caller (the AI action executor) can
+//   pass another `source` through `options`; the client-declared one is ignored.
 // - Creating from a purchase request needs that PR `approved` at the same
 //   outlet and marks it `converted` in the same transaction.
 // - State changes only through the contract `transitionPurchaseOrder`.
@@ -47,6 +48,7 @@ import {
   type PurchaseOrder,
   type PurchaseOrderAction,
   type PurchaseOrderDetail,
+  type PurchaseOrderSource,
   type transitionPurchaseOrderInputSchema,
   type updatePurchaseOrderInputSchema,
 } from "@starter/shared/inventory";
@@ -55,6 +57,7 @@ import { db } from "../db/index.ts";
 import { approvalRequests } from "../db/schema/platform-approval.ts";
 import {
   purchaseOrderLines,
+  purchasingIdempotency,
   purchaseInvoiceLines,
   purchaseInvoices,
   purchaseOrders,
@@ -272,15 +275,54 @@ async function nextPoNumber(
 }
 
 /**
+ * The draft PO an earlier `createPurchaseOrder` stored under this idempotency
+ * key for this actor, or null. A retry with other dates or prices reads the
+ * stored draft back instead of clashing on the key (the AI executor uses it
+ * so a retried request never fails over an order that already exists).
+ */
+export async function findPurchaseOrderByIdempotencyKey(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  idempotencyKey: string,
+): Promise<PurchaseOrderDetail | null> {
+  return withTenant(db, context, async (tx) => {
+    const [claim] = await tx
+      .select({
+        fingerprint: purchasingIdempotency.requestFingerprint,
+        response: purchasingIdempotency.response,
+      })
+      .from(purchasingIdempotency)
+      .where(
+        and(
+          eq(purchasingIdempotency.tenantId, context.tenant.tenantId),
+          eq(purchasingIdempotency.operation, CREATE_OPERATION),
+          eq(purchasingIdempotency.idempotencyKey, idempotencyKey),
+        ),
+      );
+    if (!claim || claim.response === null) return null;
+    const detail = purchaseOrderDetailSchema.parse(claim.response);
+    // Only the actor that created the order may read it back this way.
+    if (
+      detail.purchaseOrder.createdBy.toLowerCase() !== actorUserId.toLowerCase()
+    )
+      return null;
+    return detail;
+  });
+}
+
+/**
  * POST purchase order (draft). Needs `purchasing.order.create` at the outlet.
  * With `purchaseRequestId`, that PR must be `approved` at the same outlet and
- * becomes `converted` in this transaction.
+ * becomes `converted` in this transaction. `options.source` is for trusted
+ * server callers only; routes leave it out and the order is `user`.
  */
 export async function createPurchaseOrder(
   context: ScopedTenantContext,
   actorUserId: string,
   input: CreatePurchaseOrderInput,
+  options: { source?: PurchaseOrderSource } = {},
 ): Promise<PurchaseOrderDetail> {
+  const source = options.source ?? "user";
   assertOutlet(context, input.outletId);
   const claim = {
     operation: CREATE_OPERATION,
@@ -349,8 +391,8 @@ export async function createPurchaseOrder(
           subtotalIdr: totals.subtotalIdr,
           taxIdr: totals.taxIdr,
           totalIdr: totals.totalIdr,
-          // The actor is a session user; AI / MCP callers set their own.
-          source: "user",
+          // A session user by default; the AI executor passes its own.
+          source,
           createdBy: actorUserId,
           note: input.note ?? null,
         })
@@ -385,7 +427,7 @@ export async function createPurchaseOrder(
           supplierId: row!.supplierId,
           outletId: input.outletId,
           number,
-          source: "user",
+          source,
           totalIdr: totals.totalIdr,
           createdBy: actorUserId,
           createdAt: row!.createdAt.toISOString(),

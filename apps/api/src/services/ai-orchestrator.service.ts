@@ -276,12 +276,14 @@ async function runLoop(
   input: AskAi,
   history: AiChatMessage[],
   deps: OrchestratorDeps,
+  sessionId: string | null,
 ): Promise<LoopOutcome> {
   const started = deps.now().getTime();
   const ctx: AiToolContext = {
     access,
     channel: CHANNEL,
     mcpClientId: null,
+    sessionId,
     now: deps.now(),
   };
   const capabilities = deps.resolveCapabilities
@@ -429,6 +431,8 @@ export async function askAi(
   context: ScopedTenantContext,
   input: AskAi,
   deps: OrchestratorDeps = defaultDeps,
+  /** Login session of the caller; TL-09 binds the payslip PIN unlock to it. */
+  sessionId: string | null = null,
 ): Promise<AskAiResponse> {
   if (
     input.outletId &&
@@ -463,16 +467,20 @@ export async function askAi(
   const cached =
     hit && (await toolsStillCallable(access, hit, deps)) ? hit : null;
 
+  // An entry cached before the output PII scan existed is scanned on read with
+  // the same rules as model output. Shared-tool answers carry no own-salary
+  // amount, so nothing is allowed through.
+  const cachedPiiKinds = cached ? scanPii(cached.text).found : [];
   const outcome: LoopOutcome = cached
     ? {
-        text: cached.text,
+        text: cachedPiiKinds.length > 0 ? redactPii(cached.text) : cached.text,
         tools: cached.tools,
         sources: cached.sources,
         actionRequestIds: [],
         cacheable: false,
-        piiKinds: [],
+        piiKinds: cachedPiiKinds,
       }
-    : await runLoop(access, input, history, deps);
+    : await runLoop(access, input, history, deps, sessionId);
 
   if (outcome.piiKinds.length > 0)
     await deps

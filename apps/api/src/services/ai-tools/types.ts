@@ -13,6 +13,11 @@ export type AiToolContext = {
   readonly mcpClientId: string | null;
   /** The MCP token behind the call; set only for channel "mcp" (audit). */
   readonly mcpTokenId?: string | null;
+  /**
+   * Login session behind the call (Better Auth session id). Set for Tanya AI
+   * calls; null/absent for MCP tokens. TL-09 binds the payslip PIN unlock to it.
+   */
+  readonly sessionId?: string | null;
   readonly now: Date;
 };
 

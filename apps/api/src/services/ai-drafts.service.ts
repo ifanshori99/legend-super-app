@@ -20,6 +20,7 @@ import { menuItems } from "../db/schema/menu.ts";
 import { outlets } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { redactPii, scanPii } from "../lib/ai/pii.ts";
 import type { AiCompletionResult } from "../lib/ai/types.ts";
 import {
   aiComplete,
@@ -278,8 +279,14 @@ export async function draftPromoCopy(
     { feature: AI_DRAFT_PROMO_FEATURE, channel: CHANNEL },
   );
   const answer = parseAnswer(result, promoAnswerSchema);
+  // Model output is scanned like the brief: personal data is masked before the
+  // draft reaches the caller.
   return {
-    drafts: answer.drafts.slice(0, MAX_DRAFTS),
+    drafts: answer.drafts
+      .slice(0, MAX_DRAFTS)
+      .map((draft) =>
+        scanPii(draft).found.length > 0 ? redactPii(draft) : draft,
+      ),
     aiAssisted: true,
     label: LABEL,
   };

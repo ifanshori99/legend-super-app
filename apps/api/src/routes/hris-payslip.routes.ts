@@ -192,6 +192,8 @@ export function createHrisPayslipRouter(
           payslipId,
           body,
           signer,
+          undefined,
+          getAuth(req).session.id,
         ),
       });
     },

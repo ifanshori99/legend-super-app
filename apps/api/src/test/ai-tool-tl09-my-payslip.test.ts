@@ -16,6 +16,13 @@
 //   months exist). The session is NOT MFA-verified.
 // - `payrollMonth` (YYYY-MM) matches the month of payroll_runs.period_end.
 // - The 10 minute window is measured against the tool context's `now`.
+// - SESSION BINDING (legend-3e1ut, PRD 964): the unlock belongs to the login
+//   session that typed the PIN, not to the user. The tool context carries that
+//   login session id as `sessionId` (Better Auth session.id; the field name is
+//   an assumption, the spec only says "session id"). Another login session of
+//   the same user is refused with AI_TOOL_FORBIDDEN. The MCP channel (token) is
+//   refused always, with the exact message "Buka slip di aplikasi", even right
+//   after the PIN was opened on screen.
 // - Output carries no raw PII: no key naming nik/npwp/bank/account/rekening, no
 //   digit run of 10 or more, and no employee name or number.
 import { randomUUID } from "node:crypto";
@@ -39,6 +46,11 @@ import {
 import { errorHandler } from "../middleware/error-handler.ts";
 import { tenantContext } from "../middleware/tenant.ts";
 import { createHrisPayslipRouter } from "../routes/hris-payslip.routes.ts";
+import {
+  getConversationDetail,
+  persistTurn,
+} from "../services/ai-conversation.service.ts";
+import { AI_HIDDEN_ANSWER_MESSAGE } from "../services/ai-prompts.ts";
 import { readToolsB } from "../services/ai-tools/read-b/index.ts";
 import type { AiToolContext } from "../services/ai-tools/types.ts";
 import {
@@ -287,7 +299,12 @@ type Staff = {
   userId: string;
   employeeId: string;
   client: ReturnType<typeof agent>;
+  email: string;
+  sessionId: string;
 };
+
+/** Login session id that opened the PIN on screen, per user. */
+const sessionOf = new Map<string, string>();
 
 /** A signed-in employee (employee template role at the outlet, no MFA). */
 async function makeStaff(options: { pin?: string } = {}): Promise<Staff> {
@@ -295,6 +312,9 @@ async function makeStaff(options: { pin?: string } = {}): Promise<Staff> {
   await signUp(client, "Staf TL09");
   const session = await client.get("/api/auth/get-session");
   const userId = session.body.user.id as string;
+  const email = session.body.user.email as string;
+  const sessionId = session.body.session.id as string;
+  sessionOf.set(userId, sessionId);
   created.users.push(userId);
   await grantTemplateRole(userId, "employee", { type: "outlet", id: outletA });
   const employeeId = await seedEmployee(tenantId, outletA, userId);
@@ -305,14 +325,27 @@ async function makeStaff(options: { pin?: string } = {}): Promise<Staff> {
       .send({ pin: options.pin, idempotencyKey: idempotency() });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
   }
-  return { userId, employeeId, client };
+  return { userId, employeeId, client, email, sessionId };
 }
+
+type CtxOptions = {
+  /** Login session behind the call; defaults to the session that signed up. */
+  sessionId?: string | null;
+  channel?: "tanya_ai" | "mcp";
+};
 
 async function ctxOf(
   userId: string,
   now: Date = new Date(),
+  options: CtxOptions = {},
 ): Promise<AiToolContext> {
   const data = await loadTenantAccess(workerContext, userId);
+  const channel = options.channel ?? "tanya_ai";
+  const sessionId =
+    options.sessionId === undefined
+      ? (sessionOf.get(userId) ?? null)
+      : options.sessionId;
+  // `sessionId` is the contract the engineer adds to AiToolContext (assumption).
   return {
     access: resolveAccessSnapshot({
       tenant,
@@ -321,20 +354,37 @@ async function ctxOf(
       mfaVerified: false,
       now,
     }),
-    channel: "tanya_ai",
-    mcpClientId: null,
+    channel,
+    mcpClientId: channel === "mcp" ? "mcp-client-tl09" : null,
+    ...(channel === "mcp" ? { mcpTokenId: "mcp-token-tl09" } : {}),
+    sessionId: channel === "mcp" ? null : sessionId,
     now,
-  };
+  } as AiToolContext;
 }
 
 async function callTool(
   userId: string,
   input: Record<string, unknown>,
   now?: Date,
+  options?: CtxOptions,
 ) {
   const handler = readToolsB["TL-09"];
   if (!handler) throw new Error("No handler for TL-09");
-  return handler(await ctxOf(userId, now), input);
+  return handler(await ctxOf(userId, now, options), input);
+}
+
+/** A second, separate login (new session id) of the same user. */
+async function secondLogin(staff: Staff) {
+  const client = agent(pinApp);
+  const res = await client
+    .post("/api/auth/sign-in/email")
+    .set(originHeader)
+    .send({ email: staff.email, password: "Test-password-123!" });
+  expect(res.status, JSON.stringify(res.body)).toBe(200);
+  const session = await client.get("/api/auth/get-session");
+  const sessionId = session.body.session.id as string;
+  expect(sessionId).not.toBe(staff.sessionId);
+  return { client, sessionId };
 }
 
 /** Opens the payslip on the screen with the PIN (writes audit payslip.viewed). */
@@ -596,7 +646,13 @@ describe("TL-09 get_my_payslip", () => {
     for (const key of keysOf(out))
       expect(key).not.toMatch(/nik|npwp|bank|account|rekening|pin|name/i);
     const text = JSON.stringify(out);
-    expect(text).not.toMatch(/\d{10,}/);
+    // A random uuid can hold 10 digits in a row: look for long numbers outside ids.
+    expect(
+      text.replace(
+        /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi,
+        "<id>",
+      ),
+    ).not.toMatch(/\d{10,}/);
     expect(text).not.toContain(colleague.employeeId);
     expect(text).not.toContain(String(fixtureSlip.employeeName));
     expect(text).not.toContain(String(fixtureSlip.employeeNo));
@@ -688,6 +744,138 @@ describe("TL-09 get_my_payslip", () => {
       await expect(
         callTool(userId, { payrollMonth: ownWorld.month }),
       ).rejects.toMatchObject(forbidden);
+    });
+  });
+  describe("login-session binding (legend-3e1ut)", () => {
+    const APP_ONLY = "Buka slip di aplikasi";
+
+    it("an MCP token of the same user is refused with 'Buka slip di aplikasi' right after the PIN was opened on screen", async () => {
+      const world = await seedWorld(tenantId, entityId, nextMonth());
+      const { staff, slip } = await staffWithSlip(world, 1, { open: true });
+      // Sanity: the opening session can read it.
+      expect(
+        parseOut(await callTool(staff.userId, { payrollMonth: world.month }))
+          .payslipId,
+      ).toBe(slip.id);
+      const error = await callTool(
+        staff.userId,
+        { payrollMonth: world.month },
+        undefined,
+        { channel: "mcp" },
+      ).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(AiError);
+      expect(error).toMatchObject({
+        code: "AI_TOOL_FORBIDDEN",
+        message: APP_ONLY,
+      });
+      expect(
+        JSON.stringify(error, Object.getOwnPropertyNames(error)),
+      ).not.toContain(String(slip.calculation.netIdr));
+    });
+
+    it("an MCP token is refused with the same message when nothing was opened either", async () => {
+      const world = await seedWorld(tenantId, entityId, nextMonth());
+      const { staff } = await staffWithSlip(world, 1);
+      await expect(
+        callTool(staff.userId, { payrollMonth: world.month }, undefined, {
+          channel: "mcp",
+        }),
+      ).rejects.toMatchObject({ code: "AI_TOOL_FORBIDDEN", message: APP_ONLY });
+    });
+
+    it("another login session of the same user is refused, the opening session still reads", async () => {
+      const world = await seedWorld(tenantId, entityId, nextMonth());
+      const { staff, slip } = await staffWithSlip(world, 1, { open: true });
+      const other = await secondLogin(staff);
+      const error = await callTool(
+        staff.userId,
+        { payrollMonth: world.month },
+        undefined,
+        { sessionId: other.sessionId },
+      ).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(AiError);
+      expect(error).toMatchObject({ code: "AI_TOOL_FORBIDDEN" });
+      expect(
+        JSON.stringify(error, Object.getOwnPropertyNames(error)),
+      ).not.toContain(String(slip.calculation.netIdr));
+      // A Tanya AI call with no session at all is refused too.
+      await expect(
+        callTool(staff.userId, { payrollMonth: world.month }, undefined, {
+          sessionId: null,
+        }),
+      ).rejects.toMatchObject({ code: "AI_TOOL_FORBIDDEN" });
+      // The session that typed the PIN is unaffected.
+      expect(
+        parseOut(
+          await callTool(
+            staff.userId,
+            { payrollMonth: world.month },
+            undefined,
+            {
+              sessionId: staff.sessionId,
+            },
+          ),
+        ).payslipId,
+      ).toBe(slip.id);
+    });
+
+    it("the opening session reads within 10 minutes and is refused after", async () => {
+      const world = await seedWorld(tenantId, entityId, nextMonth());
+      const { staff, slip } = await staffWithSlip(world, 1, { open: true });
+      const now = new Date();
+      const at = (minutes: number) =>
+        new Date(now.getTime() + minutes * 60_000);
+      for (const minutes of [0, 9]) {
+        expect(
+          parseOut(
+            await callTool(
+              staff.userId,
+              { payrollMonth: world.month },
+              at(minutes),
+              { sessionId: staff.sessionId },
+            ),
+          ).payslipId,
+        ).toBe(slip.id);
+      }
+      await expect(
+        callTool(staff.userId, { payrollMonth: world.month }, at(11), {
+          sessionId: staff.sessionId,
+        }),
+      ).rejects.toMatchObject({ code: "AI_TOOL_FORBIDDEN" });
+    });
+
+    it("a stored TL-09 answer is hidden when another session opens the conversation", async () => {
+      const world = await seedWorld(tenantId, entityId, nextMonth());
+      const { staff, slip } = await staffWithSlip(world, 1, { open: true });
+      const netText = `Gaji bersih Anda Rp ${slip.calculation.netIdr}`;
+      const sessionA = await ctxOf(staff.userId, undefined, {
+        sessionId: staff.sessionId,
+      });
+      const turn = await persistTurn(sessionA.access, workerContext, {
+        conversationId: null,
+        feature: "AI-01",
+        title: "Slip gaji",
+        question: "Berapa gaji bersih saya?",
+        answer: netText,
+        answerSources: [],
+        tools: [{ toolCode: "TL-09", text: "get_my_payslip", sources: [] }],
+      });
+      // Session B (another login of the same user) opens the conversation.
+      const other = await secondLogin(staff);
+      const sessionB = await ctxOf(staff.userId, undefined, {
+        sessionId: other.sessionId,
+      });
+      const detail = await getConversationDetail(
+        sessionB.access,
+        workerContext,
+        turn.conversation.id,
+      );
+      expect(JSON.stringify(detail.messages)).not.toContain(
+        String(slip.calculation.netIdr),
+      );
+      const answer = detail.messages.find((m) => m.role === "assistant");
+      expect(answer?.content).toBe(AI_HIDDEN_ANSWER_MESSAGE);
+      expect(answer?.sources).toEqual([]);
     });
   });
 });

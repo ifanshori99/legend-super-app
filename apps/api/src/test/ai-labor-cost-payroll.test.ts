@@ -11,7 +11,7 @@
 // ASSUMPTIONS (listed in the report):
 //  - The salary permission is `payroll.view` at tenant scope; the HR template
 //    holds it, the outlet_manager template does not.
-//  - Cost = (gross + employer BPJS + employer-borne PPh21 - employer refund) of
+//  - Cost = (gross - service charge - reimbursement + employer BPJS + employer-borne PPh21 - employer refund) of
 //    runs with status locked/paid, pro rata by days when the period is a part of
 //    the run, null when the frozen runs do not cover every day of the period.
 //  - An outlet-filtered request gets null cost (a run has no outlet split).
@@ -66,7 +66,11 @@ const outletId = randomUUID();
 const otherOutletId = randomUUID();
 const policyId = randomUUID();
 
-const totals = (grossIdr: number, bpjsCompanyIdr: number) => ({
+const totals = (
+  grossIdr: number,
+  bpjsCompanyIdr: number,
+  extra: { serviceChargeIdr?: number; reimbursementIdr?: number } = {},
+) => ({
   employeeCount: 0,
   grossIdr,
   deductionsIdr: 0,
@@ -84,8 +88,8 @@ const totals = (grossIdr: number, bpjsCompanyIdr: number) => ({
   pph21ReceivableCollectedIdr: 0,
   otherDeductionsIdr: 0,
   customDeductionsIdr: 0,
-  serviceChargeIdr: 0,
-  reimbursementIdr: 0,
+  serviceChargeIdr: extra.serviceChargeIdr ?? 0,
+  reimbursementIdr: extra.reimbursementIdr ?? 0,
   bankTransferIdr: grossIdr,
   cashIdr: 0,
 });
@@ -183,12 +187,19 @@ beforeAll(async () => {
       [policyId, tenantId, entityId, code, JSON.stringify({ code })],
     );
   });
-  // March: locked, 31 days, full cost 31_000_000 + 3_100_000 = 34_100_000.
+  // March: locked, 31 days. gross 31_000_000 INCLUDES a service charge of
+  // 1_550_000 and a reimbursement of 1_550_000 (same reading as the payroll
+  // journal: salary expense = gross - service charge - reimbursement; Kartu C
+  // legend-4cjn6 point 4). Full cost = (31_000_000 - 1_550_000 - 1_550_000)
+  // + 3_100_000 = 31_000_000.
   await seedRun(
     "locked",
     "2031-03-01",
     "2031-03-31",
-    totals(31_000_000, 3_100_000),
+    totals(31_000_000, 3_100_000, {
+      serviceChargeIdr: 1_550_000,
+      reimbursementIdr: 1_550_000,
+    }),
   );
   // April: only a draft, with a large total that must never be counted.
   await seedRun("draft", "2031-04-01", "2031-04-30", totals(900_000_000, 0));
@@ -327,7 +338,7 @@ describe("TL-05 labor cost needs the payroll permission (legend-39d.4)", () => {
       from: "2031-03-01",
       to: "2031-03-31",
     });
-    expect(out.laborCostIdr).toBe(34_100_000);
+    expect(out.laborCostIdr).toBe(31_000_000);
   });
 
   it("legend-39d.4 a part of a locked run is pro rata by days and never above the run total", async () => {
@@ -335,8 +346,8 @@ describe("TL-05 labor cost needs the payroll permission (legend-39d.4)", () => {
       from: "2031-03-10",
       to: "2031-03-11",
     });
-    expect(out.laborCostIdr).toBe(2_200_000); // 34_100_000 * 2 / 31
-    expect(out.laborCostIdr!).toBeLessThanOrEqual(34_100_000);
+    expect(out.laborCostIdr).toBe(2_000_000); // 31_000_000 * 2 / 31
+    expect(out.laborCostIdr!).toBeLessThanOrEqual(31_000_000);
   });
 
   it("legend-39d.4 HR without payroll.view gets NULL cost, not 0, but keeps the headcount", async () => {
@@ -356,7 +367,7 @@ describe("TL-05 labor cost needs the payroll permission (legend-39d.4)", () => {
     });
     expect(out.laborCostIdr).toBeNull();
     expect(out.laborCostPct).toBeNull();
-    expect(JSON.stringify(out)).not.toContain("34100000");
+    expect(JSON.stringify(out)).not.toContain("31000000");
   });
 
   it("legend-39d.4 an outlet-filtered request gets NULL cost (a run has no outlet split)", async () => {
@@ -396,6 +407,21 @@ describe("TL-05 labor cost needs the payroll permission (legend-39d.4)", () => {
     expect(typeof out.headcount).toBe("number");
     expect(out.laborCostIdr).toBeNull();
     expect(out.laborCostPct).toBeNull();
-    expect(JSON.stringify(out)).not.toContain("34100000");
+    expect(JSON.stringify(out)).not.toContain("31000000");
+  });
+});
+
+describe("TL-05 labor cost excludes reimbursement and service charge (legend-4cjn6)", () => {
+  // ASSUMPTION: run totals' grossIdr includes serviceChargeIdr and
+  // reimbursementIdr (pass-through money, not salary). The March run has gross
+  // 31_000_000 with 1_550_000 + 1_550_000 of them, so the labor cost is
+  // 31_000_000, not the 34_100_000 that counts them as salary.
+  it("legend-4cjn6 a whole locked run leaves out service charge and reimbursement", async () => {
+    const out = await labor(contextFor("hr"), {
+      from: "2031-03-01",
+      to: "2031-03-31",
+    });
+    expect(out.laborCostIdr).toBe(31_000_000);
+    expect(out.laborCostIdr).not.toBe(34_100_000);
   });
 });

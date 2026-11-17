@@ -740,12 +740,18 @@ export async function updateShiftAssignment(
  * cancelled row. A pending swap on the shift is withdrawn with it. A published
  * or swapped shift emits `shift.cancelled` for its owner (the employee was
  * told about it); a draft was never announced, so nothing is emitted.
+ *
+ * `onlyDraft` cancels the shift only if it is still a draft, checked on the
+ * locked row in the same transaction as the cancel (no read-then-cancel gap):
+ * a shift a manager published meanwhile is returned untouched. For the Tanya
+ * AI rollback of the drafts it inserted. Same access check and effects.
  */
 export async function cancelShiftAssignment(
   context: ScopedTenantContext,
   actorUserId: string,
   assignmentId: string,
   now = new Date(),
+  onlyDraft = false,
 ): Promise<ShiftAssignment> {
   return withTenant(db, context, async (tx) => {
     const access = await loadHrisAccess(tx, context, actorUserId, now);
@@ -762,39 +768,7 @@ export async function cancelShiftAssignment(
       access.actorUserId,
       assignmentId,
       now,
-    );
-  });
-}
-
-/**
- * Cancels the shift only if it is still a draft, checked on the locked row in
- * the same transaction as the cancel (no read-then-cancel gap): a shift a
- * manager published meanwhile is returned untouched. For the Tanya AI
- * rollback of the drafts it inserted. Same access check and effects as
- * `cancelShiftAssignment`.
- */
-export async function cancelDraftShiftAssignment(
-  context: ScopedTenantContext,
-  actorUserId: string,
-  assignmentId: string,
-  now = new Date(),
-): Promise<ShiftAssignment> {
-  return withTenant(db, context, async (tx) => {
-    const access = await loadHrisAccess(tx, context, actorUserId, now);
-    const found = await findAssignment(
-      tx,
-      context.tenant.tenantId,
-      assignmentId,
-    );
-    if (!found) throw scheduleNotFound();
-    assertManage(access, found.outletId);
-    return cancelShiftAssignmentInTx(
-      tx,
-      context,
-      access.actorUserId,
-      assignmentId,
-      now,
-      true,
+      onlyDraft,
     );
   });
 }

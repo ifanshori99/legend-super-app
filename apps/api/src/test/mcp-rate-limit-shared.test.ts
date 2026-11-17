@@ -20,7 +20,7 @@
 //  - Without an injected store and without REDIS_URL (tests, dev) the limit
 //    stays in process: covered by ai-mcp-acceptance.test.ts.
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SharedWindowStore } from "../lib/shared-window-store.ts";
 import { enforceMcpRateLimit } from "../services/mcp-server.service.ts";
 
@@ -144,5 +144,95 @@ describe("MCP rate limit in a shared store (legend-39d.4)", () => {
     healthy = true;
     expect(await allowed(token, 1, store)).toBe(true); // outage calls never counted
     expect(await allowed(token, 1, store)).toBe(false); // now over the limit
+  });
+});
+
+// ---- Kartu C legend-4cjn6 point 3: no 2x burst across a minute boundary -----
+//
+// A fixed one-minute window lets a caller spend the whole budget in the last
+// seconds of window N and again in the first seconds of window N+1 (about 2x
+// the limit within a few seconds). A sliding window or token bucket must not.
+// Tested on the in-process limiter (no injected store, no REDIS_URL) with a
+// controlled clock; an in-memory fixed-window fake store cannot express a
+// sliding window, so the store seam is not used here.
+//
+// ASSUMPTIONS: the limiter reads Date.now() and/or a monotonic clock
+// (performance.now / process.hrtime); all are faked together and moved with
+// vi.advanceTimersByTime so every clock source agrees. The start is an exact
+// epoch minute, so an epoch-aligned and a first-call-anchored window both begin
+// there. Any correct sliding window or token bucket passes: calls allowed in
+// the 3 seconds around the boundary stay <= limit, and the whole budget is back
+// after two quiet minutes.
+describe("MCP rate limit has no 2x burst across a minute boundary (legend-4cjn6)", () => {
+  afterEach(() => vi.useRealTimers());
+
+  const startClock = () =>
+    vi.useFakeTimers({
+      now: new Date("2040-01-01T00:00:00.000Z"),
+      toFake: ["Date", "performance", "hrtime"],
+    });
+  const inProcess = async (token: string, limit: number): Promise<boolean> => {
+    try {
+      await enforceMcpRateLimit(token, limit, {});
+      return true;
+    } catch (error) {
+      expect(error).toMatchObject({ code: "MCP_RATE_LIMITED" });
+      return false;
+    }
+  };
+  const spend = async (token: string, limit: number, calls: number) => {
+    let ok = 0;
+    for (let i = 0; i < calls; i += 1)
+      if (await inProcess(token, limit)) ok += 1;
+    return ok;
+  };
+
+  it("legend-4cjn6 limit calls at the end of one minute and again just after the boundary are not both allowed", async () => {
+    startClock();
+    const limit = 6;
+    const token = randomUUID();
+    expect(await spend(token, limit, 1)).toBe(1); // opens the window at 00:00:00
+    vi.advanceTimersByTime(58_000); // 00:00:58
+    const late = await spend(token, limit, limit + 2);
+    expect(late).toBeGreaterThanOrEqual(limit - 1); // guard: not over-restrictive
+    vi.advanceTimersByTime(3_000); // 00:01:01, a new calendar minute
+    const early = await spend(token, limit, limit);
+    // late + early calls inside 3 seconds would be up to 2x the per-minute budget.
+    expect(late + early).toBeLessThanOrEqual(limit);
+  });
+
+  it("legend-4cjn6 calls spread over a minute are not forgotten at a minute boundary (sliding, not fixed)", async () => {
+    startClock();
+    const limit = 6;
+    const token = randomUUID();
+    expect(await spend(token, limit, 3)).toBe(3); // 00:00:00
+    vi.advanceTimersByTime(50_000);
+    expect(await spend(token, limit, 3)).toBe(3); // 00:00:50, budget used up
+    vi.advanceTimersByTime(11_000); // 00:01:01: 3 calls of the last 60 s remain
+    // A fixed window would hand out the whole budget again here (6 calls).
+    expect(await spend(token, limit, limit)).toBe(3);
+  });
+
+  it("legend-4cjn6 the full budget is back after two quiet minutes", async () => {
+    startClock();
+    const limit = 6;
+    const token = randomUUID();
+    vi.advanceTimersByTime(58_000);
+    expect(await spend(token, limit, limit + 1)).toBe(limit);
+    vi.advanceTimersByTime(130_000);
+    expect(await spend(token, limit, limit + 1)).toBe(limit);
+  });
+
+  it("legend-4cjn6 a store error still refuses right after a minute boundary (fail closed)", async () => {
+    startClock();
+    vi.advanceTimersByTime(61_000);
+    const store: SharedWindowStore = {
+      async take() {
+        throw new Error("redis down");
+      },
+    };
+    await expect(
+      enforceMcpRateLimit(randomUUID(), 1000, { store }),
+    ).rejects.toMatchObject({ code: "MCP_RATE_LIMITED" });
   });
 });

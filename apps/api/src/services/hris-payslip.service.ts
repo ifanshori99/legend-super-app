@@ -50,6 +50,7 @@ import {
   lockPayslipPin,
   loadPayslipSelf,
   type PinCheck,
+  payslipLoginIdOf,
 } from "./payslip-pin.service.ts";
 import type { Tx } from "./permission-resolver.ts";
 
@@ -242,6 +243,7 @@ async function idempotentFailureWrite(
 /**
  * POST /api/hris/me/payslips/:payslipId/view — opens one own payslip with the
  * PIN. A miss is counted and committed before the error is thrown.
+ * `loginSessionId` is the caller's login session, stored in the audit row.
  */
 export async function viewMyPayslip(
   context: ScopedTenantContext,
@@ -250,6 +252,7 @@ export async function viewMyPayslip(
   input: ViewMyPayslipInput,
   signer: HrisFileSigner = noHrisFileSigner,
   nowOverride?: Date,
+  loginSessionId?: string | null,
 ): Promise<Payslip> {
   const { idempotencyKey, pin } = input;
   const result = await withTenant(db, context, async (tx) => {
@@ -319,7 +322,15 @@ export async function viewMyPayslip(
             objectId: row.id,
             // `payrollRunId` would be redacted (deny list: "payroll"); `runId` is the
             // same id under a name the audit masking keeps.
-            after: { payslipId: row.id, runId: row.payrollRunId },
+            // `loginId` = login session that typed the PIN; the Tanya AI payslip
+            // tool (TL-09) honours the unlock only for that session.
+            after: {
+              payslipId: row.id,
+              runId: row.payrollRunId,
+              ...(loginSessionId
+                ? { loginId: payslipLoginIdOf(loginSessionId) }
+                : {}),
+            },
             sensitiveReason: "Karyawan membuka slip gaji sendiri (PIN benar).",
           }),
           PAYSLIP_PIN_AUDIT_SAFE_FIELDS,

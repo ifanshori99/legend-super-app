@@ -43,6 +43,8 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import { settleActionRequest } from "../services/ai-action-request.service.ts";
+import { executePurchaseOrder } from "../services/ai-action-executors/purchase-order.ts";
+import type { ActionRequestRow } from "../services/ai-action-executors/types.ts";
 import { writeTools } from "../services/ai-tools/write/index.ts";
 import type { AiToolContext } from "../services/ai-tools/types.ts";
 import {
@@ -721,4 +723,179 @@ describe("TL-16 draft_shift_schedule (AIG-03)", () => {
     ).toBe("failed");
     expect(await shiftRows(tenantId, catalog.employees)).toHaveLength(0);
   }, 60_000);
+});
+
+// ---- TL-13 source and retry (Kartu C legend-4cjn6, points 1 and 2) -----------
+//
+// ASSUMPTIONS:
+//  - purchase_orders.source holds 'user' | 'ai' | 'mcp' (check constraint of the
+//    column); a PO made from a Tanya AI approval must read 'ai'.
+//  - A retry is a second execution of the same approved request (crash between
+//    the PO commit and the status commit). It may happen on a later day (the
+//    default expected date is "today") or after the supplier changed its quote.
+//    Either way the existing draft is returned: no error, no second PO.
+//  - The second run reads the stored action_requests row, so the test does not
+//    guess the row's `source` value.
+
+async function storedRow(actionRequestId: string): Promise<ActionRequestRow> {
+  const { rows } = await ownerPool.query<Record<string, unknown>>(
+    "SELECT * FROM action_requests WHERE id = $1",
+    [actionRequestId],
+  );
+  const camel = (key: string) =>
+    key.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
+  return Object.fromEntries(
+    Object.entries(rows[0]!).map(([key, value]) => [camel(key), value]),
+  ) as unknown as ActionRequestRow;
+}
+
+async function approvedAndExecuted(catalog: Catalog, requester: Actor) {
+  const receipt = await propose("TL-13", requester, poInput(catalog));
+  await decide(approver, receipt.approvalRequestId, "approved");
+  expect(
+    await settleActionRequest(workerContext, receipt.actionRequestId),
+  ).toBe("executed");
+  const orders = await purchaseOrders(tenantId, catalog.supplierId);
+  expect(orders).toHaveLength(1);
+  return { receipt, orderId: orders[0]!.id };
+}
+
+async function rerun(
+  requester: Actor,
+  actionRequestId: string,
+  now: Date,
+): Promise<{ resultRef: string }> {
+  return executePurchaseOrder({
+    tx: undefined as never,
+    context: workerContext,
+    access: (await ctxOf(requester)).access,
+    row: await storedRow(actionRequestId),
+    now,
+  });
+}
+
+describe("TL-13 purchase order source and retry (legend-4cjn6)", () => {
+  it("legend-4cjn6 a PO created from an approved AI request records source 'ai', not 'user'", async () => {
+    const catalog = await seedCatalog(tenantId, outletA, approver.userId, 0);
+    const { orderId } = await approvedAndExecuted(
+      catalog,
+      await purchasingRequester(),
+    );
+    const { rows } = await ownerPool.query<{ source: string }>(
+      "SELECT source FROM purchase_orders WHERE id = $1",
+      [orderId],
+    );
+    expect(rows[0]!.source).toBe("ai");
+  }, 90_000);
+
+  it("legend-4cjn6 a retry on a later day (expected date changed) returns the existing draft and creates no second PO", async () => {
+    const catalog = await seedCatalog(tenantId, outletA, approver.userId, 0);
+    const requester = await purchasingRequester();
+    const { receipt, orderId } = await approvedAndExecuted(catalog, requester);
+
+    const later = new Date(Date.now() + 3 * 86_400_000);
+    const second = await rerun(requester, receipt.actionRequestId, later);
+
+    expect(second.resultRef).toBe(`purchase_order:${orderId}`);
+    expect(await purchaseOrders(tenantId, catalog.supplierId)).toHaveLength(1);
+  }, 90_000);
+
+  it("legend-4cjn6 a retry after the supplier price changed returns the existing draft and creates no second PO", async () => {
+    const catalog = await seedCatalog(tenantId, outletA, approver.userId, 0);
+    const requester = await purchasingRequester();
+    const { receipt, orderId } = await approvedAndExecuted(catalog, requester);
+    const before = await purchaseOrders(tenantId, catalog.supplierId);
+
+    // A supplier quote that now wins over the draft's own unit cost.
+    const client = await ownerPool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [tenantId],
+      );
+      for (const item of [catalog.itemA, catalog.itemB]) {
+        const uom = await client.query<{ base_uom_id: string }>(
+          "SELECT base_uom_id FROM inventory_items WHERE id = $1",
+          [item],
+        );
+        await client.query(
+          `INSERT INTO supplier_prices (tenant_id, supplier_id, inventory_item_id, purchase_uom_id, price_idr, effective_from, created_by)
+           VALUES ($1, $2, $3, $4, '31000.0000', '2001-01-01', $5)`,
+          [
+            tenantId,
+            catalog.supplierId,
+            item,
+            uom.rows[0]!.base_uom_id,
+            approver.userId,
+          ],
+        );
+      }
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    const second = await rerun(requester, receipt.actionRequestId, new Date());
+
+    expect(second.resultRef).toBe(`purchase_order:${orderId}`);
+    const after = await purchaseOrders(tenantId, catalog.supplierId);
+    expect(after).toHaveLength(1);
+    // The draft already made keeps its amount: nobody is charged a new price.
+    expect(Number(after[0]!.subtotal_idr)).toBe(
+      Number(before[0]!.subtotal_idr),
+    );
+  }, 90_000);
+
+  it("legend-4cjn6 a crashed-then-retried request (status back to approved) with a changed supplier price settles as executed, not failed", async () => {
+    // Simulates the crash between the PO commit and the status commit: the PO
+    // exists, the request is still waiting to be settled.
+    // ASSUMPTION: action_requests.status can be set back to 'approved' by the
+    // owner connection.
+    const catalog = await seedCatalog(tenantId, outletA, approver.userId, 0);
+    const requester = await purchasingRequester();
+    const { receipt, orderId } = await approvedAndExecuted(catalog, requester);
+    const client = await ownerPool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [tenantId],
+      );
+      await client.query(
+        "UPDATE action_requests SET status = 'approved', executed_at = NULL, result_ref = NULL WHERE id = $1",
+        [receipt.actionRequestId],
+      );
+      const uom = await client.query<{ base_uom_id: string }>(
+        "SELECT base_uom_id FROM inventory_items WHERE id = $1",
+        [catalog.itemA],
+      );
+      await client.query(
+        `INSERT INTO supplier_prices (tenant_id, supplier_id, inventory_item_id, purchase_uom_id, price_idr, effective_from, created_by)
+         VALUES ($1, $2, $3, $4, '31000.0000', '2001-01-01', $5)`,
+        [
+          tenantId,
+          catalog.supplierId,
+          catalog.itemA,
+          uom.rows[0]!.base_uom_id,
+          approver.userId,
+        ],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    expect(
+      await settleActionRequest(workerContext, receipt.actionRequestId),
+    ).toBe("executed");
+    const orders = await purchaseOrders(tenantId, catalog.supplierId);
+    expect(orders.map((o) => o.id)).toEqual([orderId]);
+  }, 90_000);
 });

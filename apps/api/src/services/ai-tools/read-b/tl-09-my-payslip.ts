@@ -8,7 +8,12 @@
 // locked, and the employee opened THIS payslip with the PIN on the screen in
 // the last 10 minutes (audit `payslip.viewed`, object = payslip, actor = self,
 // written only after a correct PIN). Anything else is refused with a message
-// that sends the employee to the app. Output carries amounts and component
+// that sends the employee to the app.
+//
+// Session binding (legend-3e1ut): the unlock belongs to the login session that
+// typed the PIN (audit `loginId` = sha256 hex of the session id), not to the user. Another login
+// session of the same user is refused. The MCP channel (a token) never reads a
+// payslip: it is refused with "Buka slip di aplikasi". Output carries amounts and component
 // lines only: no bank account, no tax id, no employee name.
 import { and, desc, eq, gte, sql } from "drizzle-orm";
 import {
@@ -24,7 +29,11 @@ import { db } from "../../../db/index.ts";
 import { withTenant } from "../../../db/tenant.ts";
 import { HttpError } from "../../../lib/http-error.ts";
 import { openPayslipCalculation } from "../../hris-payslip.service.ts";
-import { loadPayslipSelf, pinStatusOf } from "../../payslip-pin.service.ts";
+import {
+  loadPayslipSelf,
+  payslipLoginIdOf,
+  pinStatusOf,
+} from "../../payslip-pin.service.ts";
 import type { AiToolHandler } from "../types.ts";
 import { forbidden, resolveReach, TOOL_MAX_ROWS } from "./support.ts";
 
@@ -36,6 +45,8 @@ const PIN_REQUIRED_MESSAGE = "Buka slip di aplikasi dengan PIN dulu.";
 const pinRequired = (): AiError =>
   new AiError("AI_TOOL_FORBIDDEN", PIN_REQUIRED_MESSAGE);
 
+const MCP_REFUSED_MESSAGE = "Buka slip di aplikasi";
+
 function lastDayOf(month: string): string {
   const [year, mon] = month.split("-").map(Number) as [number, number];
   return new Date(Date.UTC(year, mon, 0)).toISOString().slice(0, 10);
@@ -43,6 +54,9 @@ function lastDayOf(month: string): string {
 
 export const getMyPayslip: AiToolHandler = async (ctx, raw) => {
   const input = getMyPayslipInputSchema.parse(raw);
+  // A token cannot type the PIN on screen, so it never reads a payslip.
+  if (ctx.channel === "mcp")
+    throw new AiError("AI_TOOL_FORBIDDEN", MCP_REFUSED_MESSAGE);
   const reach = await resolveReach(ctx, "self.payslip.view", "TL-09");
   const tenantId = reach.context.tenant.tenantId;
   const since = new Date(
@@ -102,6 +116,8 @@ export const getMyPayslip: AiToolHandler = async (ctx, raw) => {
     // does not reveal which months exist before the PIN was entered.
     if (!row) throw pinRequired();
 
+    // No login session behind the call: nothing can match the unlock.
+    if (!ctx.sessionId) throw pinRequired();
     const [unlock] = await tx
       .select({ id: auditLogs.id })
       .from(auditLogs)
@@ -113,6 +129,8 @@ export const getMyPayslip: AiToolHandler = async (ctx, raw) => {
           sql`${auditLogs.event}->>'action' = 'payslip.viewed'`,
           sql`${auditLogs.event}->>'objectId' = ${row.id}`,
           sql`${auditLogs.event}->>'actorId' = ${self.actor}`,
+          // Only the login session that typed the PIN (see viewMyPayslip).
+          sql`${auditLogs.event}->'maskedChanges'->'after'->>'loginId' = ${payslipLoginIdOf(ctx.sessionId)}`,
           sql`(${auditLogs.event}->>'createdAt')::timestamptz >= ${since.toISOString()}::timestamptz`,
         ),
       )

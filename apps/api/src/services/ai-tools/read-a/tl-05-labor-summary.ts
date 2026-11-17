@@ -4,6 +4,7 @@
 // `payroll.view` at tenant scope (a run has no outlet split): without it, for an
 // outlet-filtered request, when the caller's reach does not cover every tenant
 // outlet, or without a frozen run covering the period, both are null, never 0.
+// Cost excludes service charge and reimbursement (see queryLaborCost).
 import {
   divideRounded,
   formatDecimal4,
@@ -84,7 +85,7 @@ export const getLaborSummary: AiToolHandler = async (ctx, raw) => {
         label:
           laborCostIdr === null
             ? "Karyawan aktif, jadwal, absensi, lembur; biaya kerja tidak tersedia (perlu izin gaji, payroll terkunci, semua outlet)"
-            : "Karyawan aktif, jadwal, absensi, lembur disetujui, dan biaya dari payroll terkunci (pro rata hari)",
+            : "Karyawan, jadwal, absensi, lembur disetujui, biaya payroll terkunci (pro rata hari, tanpa service charge dan reimburse)",
         metricCode: "labor_cost_pct",
         period: input.period,
         finality: closed ? "final" : "estimate",

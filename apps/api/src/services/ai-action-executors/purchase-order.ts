@@ -12,7 +12,9 @@
 //
 // Idempotency: the purchasing idempotency key is `ai-action:<actionRequestId>`.
 // A re-run after a crash between the service commit and the status commit
-// replays the stored order instead of creating a second one.
+// returns the stored order instead of creating a second one, even when the
+// date or a supplier price changed since (the key would clash on a different
+// request fingerprint, and the request would wrongly end `failed`).
 import { and, desc, eq, inArray, lte } from "drizzle-orm";
 import { localDateOf } from "@starter/shared/core";
 import { draftPurchaseOrderInputSchema } from "@starter/shared/ai";
@@ -20,7 +22,10 @@ import { createPurchaseOrderInputSchema } from "@starter/shared/inventory";
 import { db } from "../../db/index.ts";
 import { inventoryItems, supplierPrices } from "../../db/schema/index.ts";
 import { withTenant } from "../../db/tenant.ts";
-import { createPurchaseOrder } from "../purchasing-order.service.ts";
+import {
+  createPurchaseOrder,
+  findPurchaseOrderByIdempotencyKey,
+} from "../purchasing-order.service.ts";
 import { holdsToolAccess } from "./access.ts";
 import { ActionExecutionError, type ActionExecutor } from "./types.ts";
 
@@ -42,6 +47,14 @@ export const executePurchaseOrder: ActionExecutor = async ({
     throw new ActionExecutionError(
       "Pengaju tidak lagi punya izin membuat pesanan pembelian di outlet ini.",
     );
+  const idempotencyKey = `ai-action:${row.id}`;
+  const existing = await findPurchaseOrderByIdempotencyKey(
+    context,
+    row.requestedByUserId,
+    idempotencyKey,
+  );
+  if (existing)
+    return { resultRef: `purchase_order:${existing.purchaseOrder.id}` };
   const itemIds = payload.lines.map((line) => line.inventoryItemId);
   const today = localDateOf(now);
   const { quotes, items } = await withTenant(db, context, async (tx) => ({
@@ -116,12 +129,13 @@ export const executePurchaseOrder: ActionExecutor = async ({
     lines,
     // The purchase order note holds 300 characters, a draft note 500.
     note: payload.note?.slice(0, 300) ?? null,
-    idempotencyKey: `ai-action:${row.id}`,
+    idempotencyKey,
   });
   const detail = await createPurchaseOrder(
     context,
     row.requestedByUserId,
     input,
+    { source: input.source },
   );
   return { resultRef: `purchase_order:${detail.purchaseOrder.id}` };
 };

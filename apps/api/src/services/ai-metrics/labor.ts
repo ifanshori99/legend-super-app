@@ -99,7 +99,11 @@ const wholeIdr = (value: unknown): bigint => {
 
 /**
  * Employer labor cost for the period, from frozen (locked or paid) payroll runs:
- * gross + employer BPJS + employer-borne PPh 21 - employer refund. A run that
+ * (gross - service charge - reimbursement) + employer BPJS + employer-borne
+ * PPh 21 - employer refund. Service charge is customer money passed through to
+ * staff and reimbursement repays staff expenses: neither is wage cost. Both come
+ * from the run's own totals (`serviceChargeIdr`, `reimbursementIdr`); a run
+ * frozen before those fields existed reads them as 0. A run that
  * overlaps the period counts pro rata by days, so the share never exceeds the
  * run's own total. Returns null (never 0) when no run exists or the frozen runs
  * do not cover every day of the period: a partial figure would read as a low
@@ -128,8 +132,16 @@ export async function queryLaborCost(
     const start = dayNumber(String(run.period_start));
     const end = dayNumber(String(run.period_end));
     const totals = (run.totals ?? {}) as Record<string, unknown>;
+    // Guard: pass-through lines never push the wage base below zero.
+    const wageGross = (() => {
+      const net =
+        wholeIdr(totals.grossIdr) -
+        wholeIdr(totals.serviceChargeIdr) -
+        wholeIdr(totals.reimbursementIdr);
+      return net > 0n ? net : 0n;
+    })();
     const full =
-      wholeIdr(totals.grossIdr) +
+      wageGross +
       wholeIdr(totals.bpjsCompanyIdr) +
       wholeIdr(totals.pph21EmployerBorneIdr) -
       wholeIdr(totals.pph21EmployerRefundIdr);

@@ -44,6 +44,7 @@ import {
   loadTenantAccess,
   resolveAccessSnapshot,
 } from "../services/permission-resolver.ts";
+import { logger } from "../lib/logger.ts";
 import * as roster from "../services/hris-scheduling-roster.service.ts";
 import { executeShiftSchedule } from "../services/ai-action-executors/shift-schedule.ts";
 import type { ActionRequestRow } from "../services/ai-action-executors/types.ts";
@@ -395,5 +396,93 @@ describe("TL-16 draft_shift_schedule: rollback cancels only this attempt's draft
     expect(after[employees[1]!]).toEqual(before[employees[1]!]);
     expect(after[employees[1]!]).not.toContain("cancelled");
     expect(after[employees[2]!]).toEqual([]);
+  }, 90_000);
+});
+
+// ---- Kartu C legend-4cjn6 point 5: a failing rollback is logged, not swallowed
+//
+// When shift 3 fails AND the compensation (cancel of shifts 1 and 2) fails too,
+// the executor must (a) log the rollback error, (b) keep the log free of
+// personal data and (c) tell the approver in the failure message that part of
+// the schedule may already be live.
+//
+// ASSUMPTIONS:
+//  - The executor logs through the shared `logger` singleton (lib/logger.ts) at
+//    error or warn level; both are spied.
+//  - "Personal data" = the employee's full name and the shift times/dates of
+//    the payload; ids are not personal.
+//  - The failure message is Indonesian, like the other executor failures, and
+//    contains "sebagian" plus one of live/tayang/terbit/publish.
+//  - Any roster-service export whose name matches /cancel/i is the rollback
+//    path (same seam as the race test above); all of them are made to reject.
+describe("TL-16 draft_shift_schedule: a failing rollback is logged and reported (legend-4cjn6)", () => {
+  function failAllCancels() {
+    const hits = { cancelCalls: 0 };
+    const namespace = roster as unknown as Record<string, unknown>;
+    for (const name of Object.keys(namespace)) {
+      if (!/cancel/i.test(name) || typeof namespace[name] !== "function")
+        continue;
+      vi.spyOn(
+        namespace as Record<string, (...args: unknown[]) => unknown>,
+        name,
+      ).mockImplementation(async () => {
+        hits.cancelCalls += 1;
+        throw new Error("forced rollback failure");
+      });
+    }
+    return hits;
+  }
+
+  it("the rollback error is logged without personal data and the failure says part of the schedule may be live", async () => {
+    const employees = await seedEmployees(3);
+    const week = freshWeek();
+    const errorLog = vi.spyOn(logger, "error");
+    const warnLog = vi.spyOn(logger, "warn");
+    const failed = failShiftOf(employees[2]!);
+    const cancels = failAllCancels();
+
+    const error = await run(randomUUID(), payloadOf(employees, week, 3)).then(
+      () => null,
+      (e: unknown) => e,
+    );
+
+    // Setup proof: shift 3 failed and the rollback was attempted and failed.
+    expect(failed.forced).toBeGreaterThan(0);
+    expect(cancels.cancelCalls).toBeGreaterThan(0);
+    // (c) the failure message
+    expect(error).toBeInstanceOf(Error);
+    const message = (error as Error).message;
+    expect(message).toMatch(/sebagian/i);
+    expect(message).toMatch(/live|tayang|terbit|publish/i);
+    // (a) the rollback error is logged
+    const logged = [...errorLog.mock.calls, ...warnLog.mock.calls];
+    expect(logged.length).toBeGreaterThan(0);
+    // JSON.stringify drops an Error's message: expand Errors first.
+    const dump = JSON.stringify(logged, (_key, value: unknown) =>
+      value instanceof Error
+        ? { name: value.name, message: value.message, stack: value.stack }
+        : value,
+    );
+    expect(dump).toMatch(/forced rollback failure/);
+    // (b) no personal data in what was logged
+    expect(dump).not.toContain("Karyawan Rollback W16");
+    expect(dump).not.toContain("07:00");
+    expect(dump).not.toContain("15:00");
+    expect(dump).not.toContain(week.day(0));
+  }, 90_000);
+
+  it("a successful rollback does not claim part of the schedule is live", async () => {
+    const employees = await seedEmployees(3);
+    const week = freshWeek();
+    failShiftOf(employees[2]!);
+    const error = await run(randomUUID(), payloadOf(employees, week, 3)).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).not.toMatch(/sebagian/i);
+    const status = await statusByEmployee(employees);
+    for (const id of [employees[0]!, employees[1]!])
+      expect(status[id]!.filter((s) => s !== "cancelled")).toEqual([]);
   }, 90_000);
 });

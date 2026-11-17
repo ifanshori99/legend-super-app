@@ -28,16 +28,17 @@ import {
   redactToolResultContent,
 } from "../lib/ai/pii.ts";
 import { env } from "../config/env.ts";
-import { createFixedWindowCounter } from "../lib/fixed-window-counter.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { logger } from "../lib/logger.ts";
 import {
-  createLocalWindowStore,
-  createRedisWindowStore,
   SHARED_STORE_TIMEOUT_MS,
   type SharedWindowResult,
   type SharedWindowStore,
 } from "../lib/shared-window-store.ts";
+import {
+  createLocalSlidingWindowStore,
+  createRedisSlidingWindowStore,
+} from "../lib/sliding-window-store.ts";
 import {
   loadTenantAccess,
   resolveAccessSnapshot,
@@ -162,16 +163,14 @@ export async function authenticateMcpToken(
   };
 }
 
-// ---- Per-token rate limit (fixed window; Redis-shared, fail closed) ---------
+// ---- Per-token rate limit (sliding window; Redis-shared, fail closed) ------
 
 const WINDOW_MS = 60_000;
 const LOCAL_CAPACITY = 5_000;
 const MCP_BUCKET = "mcp";
 
 const localStore = () =>
-  createLocalWindowStore((limit, windowMs) =>
-    createFixedWindowCounter({ limit, windowMs, capacity: LOCAL_CAPACITY }),
-  );
+  createLocalSlidingWindowStore({ capacity: LOCAL_CAPACITY });
 let local = localStore();
 let redisStore: SharedWindowStore | undefined;
 
@@ -181,15 +180,17 @@ let redisStore: SharedWindowStore | undefined;
  */
 function resolveMcpStore(): { store: SharedWindowStore; shared: boolean } {
   if (!env.REDIS_URL) return { store: local, shared: false };
-  redisStore ??= createRedisWindowStore(env.REDIS_URL);
+  redisStore ??= createRedisSlidingWindowStore(env.REDIS_URL);
   return { store: redisStore, shared: true };
 }
 
 /**
- * Throws `MCP_RATE_LIMITED` when the token passed its per-minute budget. With a
- * shared (Redis) store the limit fails CLOSED: a Redis error or a stall past
- * `SHARED_STORE_TIMEOUT_MS` refuses the call instead of counting locally, so an
- * outage never loosens the budget. `options.store` is a test seam.
+ * Throws `MCP_RATE_LIMITED` when the token passed its per-minute budget. The
+ * window slides (any 60 s span holds at most the budget, no 2x burst across a
+ * minute boundary). With a shared (Redis) store the limit fails CLOSED: a Redis
+ * error or a stall past `SHARED_STORE_TIMEOUT_MS` refuses the call instead of
+ * counting locally, so an outage never loosens the budget. `options.store` is a
+ * test seam.
  */
 export async function enforceMcpRateLimit(
   tokenId: string,
