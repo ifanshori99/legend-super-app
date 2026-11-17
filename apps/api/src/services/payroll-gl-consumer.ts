@@ -35,6 +35,12 @@
 // - `reimbursement.paid`: a payroll payout posts nothing (the run journal
 //   carries it); a cash payout posts on the employee's legal entity.
 //
+// Petty cash lock (legend-3k9qg): the cash `payroll.paid`, the cash/unset loan and
+// the cash reimbursement credit petty cash (1102), so they take the legal
+// entity's cash/bank lock (`entityLock`) before posting, the lock the petty cash
+// return holds while it reads GL 1102. `postJournalInTransaction` also takes it
+// for any credit on the petty_cash account (re-entrant, so no double wait).
+//
 // Idempotency: every journal has a deterministic key
 // (`payroll-gl:<kind>:<id>`), so a replayed event returns the entry already
 // posted and posts nothing new.
@@ -85,6 +91,7 @@ import {
   tenants,
 } from "../db/schema/index.ts";
 import { payrollRuns } from "../db/schema/payroll.ts";
+import { entityLock } from "./accounting-bank-matching.ts";
 import {
   postJournalFromRuleInTransaction,
   reverseJournalInTransaction,
@@ -365,6 +372,10 @@ export async function deliverPayrollGlEvent(
         : { status: "ignored" };
     // Nothing paid out (net 0): no settlement journal.
     if (payload.netIdr === 0) return { status: "skipped" };
+    // The cash part credits petty cash (1102): take the entity lock the petty
+    // cash return reads GL 1102 under, before the journal (legend-3k9qg).
+    if (payload.cashIdr > 0)
+      await entityLock(tx, context.tenant.tenantId, payload.legalEntityId);
     const entry = await postJournalFromRuleInTransaction(
       tx,
       context,
@@ -457,6 +468,10 @@ export async function deliverPayrollGlEvent(
 
   if (event.name === employeeLoanDisbursed.name) {
     const payload = employeeLoanDisbursed.payloadSchema.parse(event.payload);
+    // Anything but a bank disbursement credits petty cash (1102): entity lock
+    // first, as the petty cash return does (legend-3k9qg).
+    if (payload.disbursedVia !== "bank")
+      await entityLock(tx, context.tenant.tenantId, payload.legalEntityId);
     const entry = await postJournalFromRuleInTransaction(
       tx,
       context,
@@ -493,6 +508,9 @@ export async function deliverPayrollGlEvent(
     throw new Error(
       `Employee ${payload.employeeId} of reimbursement ${payload.reimbursementId} has no legal entity`,
     );
+  // A cash reimbursement credits petty cash (1102): entity lock first, as the
+  // petty cash return does (legend-3k9qg).
+  await entityLock(tx, context.tenant.tenantId, employee.legalEntityId);
   const entry = await postJournalFromRuleInTransaction(
     tx,
     context,
