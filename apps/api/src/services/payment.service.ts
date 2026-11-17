@@ -3387,8 +3387,10 @@ export async function settleGatewayIntentNowDetailed(
  * period, through the same path as the customer's status check. Recently
  * expired intents whose gateway code is still payable (superseded by a newer
  * code) are asked too, and so are expired intents closed before their code
- * lapsed that have no definitive answer yet (up to `GATEWAY_POLL_WINDOW_MS`
- * past expiry, then once more for the timeout audit). A gateway error leaves the intent untouched; the next run
+ * lapsed that have no definitive answer yet. There is no polling window: such
+ * a code is asked until the provider answers final; past
+ * `GATEWAY_POLL_WINDOW_MS` after expiry only the timeout audit row is written
+ * (once per code). A gateway error leaves the intent untouched; the next run
  * retries. Past expiry a code is asked again only after the backoff (half the
  * time since expiry, at most `GATEWAY_POLL_MAX_BACKOFF_MS`). Intents are taken least-recently-polled first and each attempt
  * stamps `gateway_polled_at`, so a few failing intents cannot starve the rest.
