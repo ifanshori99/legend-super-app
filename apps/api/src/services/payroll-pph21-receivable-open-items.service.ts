@@ -19,9 +19,13 @@
 //    on its own payslip. A run that already settled its collection is left
 //    alone (idempotent). What no item carries (raised before open items
 //    existed) stays unsettled, never settled above an item's room;
-//  - reversal: the settlements of the run are deleted (the items owe again),
-//    its own items are deleted, and refused (409) when anything else was
-//    settled on them. A reversed run never creates an item.
+//  - reversal: the settlements of the run are cancelled by appended
+//    `reversal` rows (the ledger is append-only for the app role; the items
+//    owe again), its own items are deleted, and refused (409) when anything
+//    else is still settled on them. An item that kept settlement history
+//    (all cancelled) cannot be deleted: it is written off for the run
+//    instead, so it no longer counts as owed. A reversed run never creates an
+//    item. Re-running either step is a no-op.
 // Doubt fails closed: an unreadable payslip or a changed amount refuses with
 // 409 and rolls the caller (lock, reversal) back.
 //
@@ -216,6 +220,7 @@ export async function syncPph21ReceivableOpenItemsInTransaction(
     await removeRaisedItems(
       tx,
       tenantId,
+      payrollRunId,
       own.filter((slip) => slip.raisedIdr > 0),
     );
     return;
@@ -315,24 +320,17 @@ async function collectItems(
         asc(accountingOpenItems.id),
       )
       .for("update");
-    // What this run already settled on this employee's items.
+    // What this run already settled on this employee's items (a settlement
+    // already cancelled by a reversal row does not count).
     const mine =
       items.length === 0
         ? []
-        : await tx
-            .select()
-            .from(accountingOpenItemSettlements)
-            .where(
-              and(
-                eq(accountingOpenItemSettlements.tenantId, tenantId),
-                eq(accountingOpenItemSettlements.kind, "receivable"),
-                eq(accountingOpenItemSettlements.sourceId, runId),
-                inArray(
-                  accountingOpenItemSettlements.openItemId,
-                  items.map((item) => item.id),
-                ),
-              ),
-            );
+        : await activeRunPayments(
+            tx,
+            tenantId,
+            runId,
+            items.map((item) => item.id),
+          );
     // This run already settled its collection (a re-sync): never settle twice.
     if (mine.length > 0) continue;
 
@@ -375,12 +373,18 @@ async function collectItems(
   }
 }
 
-/** A reversed run gives back what it settled: the items owe again. */
-async function undoRun(
+type Settlement = typeof accountingOpenItemSettlements.$inferSelect;
+
+/**
+ * The receivable settlements of `runId` that no `reversal` row cancels yet
+ * (all of them, or only those on `itemIds`).
+ */
+async function activeRunPayments(
   tx: Tx,
   tenantId: TenantId,
   runId: string,
-): Promise<void> {
+  itemIds?: readonly string[],
+): Promise<Settlement[]> {
   const rows = await tx
     .select()
     .from(accountingOpenItemSettlements)
@@ -388,10 +392,30 @@ async function undoRun(
       and(
         eq(accountingOpenItemSettlements.tenantId, tenantId),
         eq(accountingOpenItemSettlements.kind, "receivable"),
-        eq(accountingOpenItemSettlements.method, "payment"),
         eq(accountingOpenItemSettlements.sourceId, runId),
+        inArray(accountingOpenItemSettlements.method, ["payment", "reversal"]),
+        ...(itemIds
+          ? [inArray(accountingOpenItemSettlements.openItemId, [...itemIds])]
+          : []),
       ),
     );
+  const cancelled = new Set(rows.map((row) => row.reversalOf));
+  return rows.filter(
+    (row) => row.method === "payment" && !cancelled.has(row.id),
+  );
+}
+
+/**
+ * A reversed run gives back what it settled: a `reversal` row cancels each
+ * payment of the run (append-only, never DELETE) and the items owe again.
+ * A payment already cancelled is left alone (idempotent).
+ */
+async function undoRun(
+  tx: Tx,
+  tenantId: TenantId,
+  runId: string,
+): Promise<void> {
+  const rows = await activeRunPayments(tx, tenantId, runId);
   if (rows.length === 0) return;
   const itemIds = [...new Set(rows.map((row) => row.openItemId))].sort();
   const items = await tx
@@ -406,14 +430,20 @@ async function undoRun(
     )
     .orderBy(asc(accountingOpenItems.id))
     .for("update");
-  await tx.delete(accountingOpenItemSettlements).where(
-    and(
-      eq(accountingOpenItemSettlements.tenantId, tenantId),
-      inArray(
-        accountingOpenItemSettlements.id,
-        rows.map((row) => row.id),
-      ),
-    ),
+  await tx.insert(accountingOpenItemSettlements).values(
+    rows.map((row) => ({
+      tenantId,
+      kind: "receivable" as const,
+      openItemId: row.openItemId,
+      method: "reversal" as const,
+      reversalOf: row.id,
+      sourceId: row.sourceId,
+      settledOn: row.settledOn,
+      amountIdr: row.amountIdr,
+      journalEntryId: null,
+      reason: null,
+      createdBy: null,
+    })),
   );
   for (const item of items) {
     const give = rows
@@ -433,10 +463,15 @@ async function undoRun(
   }
 }
 
-/** The items a reversed run raised go away; anything settled on them refuses. */
+/**
+ * The items a reversed run raised go away; anything still settled on them
+ * refuses. An item with settlement history (every payment cancelled) cannot
+ * be deleted from the append-only ledger: it is written off for this run.
+ */
 async function removeRaisedItems(
   tx: Tx,
   tenantId: TenantId,
+  runId: string,
   raising: readonly Slip[],
 ): Promise<void> {
   if (raising.length === 0) return;
@@ -454,8 +489,8 @@ async function removeRaisedItems(
     .orderBy(asc(accountingOpenItems.id))
     .for("update");
   if (items.length === 0) return;
-  const settled = await tx
-    .select({ id: accountingOpenItemSettlements.id })
+  const history = await tx
+    .select()
     .from(accountingOpenItemSettlements)
     .where(
       and(
@@ -466,18 +501,63 @@ async function removeRaisedItems(
           items.map((item) => item.id),
         ),
       ),
-    )
-    .limit(1);
-  if (settled.length > 0 || items.some((item) => item.settledIdr !== 0))
-    throw inconsistent();
-  await tx.delete(accountingOpenItems).where(
-    and(
-      eq(accountingOpenItems.tenantId, tenantId),
-      eq(accountingOpenItems.kind, "receivable"),
-      inArray(
-        accountingOpenItems.id,
-        items.map((item) => item.id),
+    );
+  const cancelled = new Set(history.map((row) => row.reversalOf));
+  const deletable: string[] = [];
+  for (const item of items) {
+    const rows = history.filter((row) => row.openItemId === item.id);
+    if (rows.length === 0) {
+      if (item.settledIdr !== 0) throw inconsistent();
+      deletable.push(item.id);
+      continue;
+    }
+    // Still settled: a payment no reversal cancels, or any other method
+    // (reversal rows are never "settled" themselves).
+    const active = rows.filter(
+      (row) => row.method !== "reversal" && !cancelled.has(row.id),
+    );
+    // Already written off by this very undo: nothing left to do.
+    if (
+      active.length > 0 &&
+      active.every(
+        (row) => row.method === "write_off" && row.sourceId === runId,
+      )
+    ) {
+      if (item.settledIdr !== item.originalIdr) throw inconsistent();
+      continue;
+    }
+    if (active.length > 0 || item.settledIdr !== 0) throw inconsistent();
+    await tx.insert(accountingOpenItemSettlements).values({
+      tenantId,
+      kind: "receivable",
+      openItemId: item.id,
+      method: "write_off",
+      sourceId: runId,
+      settledOn: item.documentDate,
+      amountIdr: idr(item.originalIdr),
+      journalEntryId: null,
+      reason: "Run payroll dibatalkan",
+      createdBy: null,
+    });
+    await tx
+      .update(accountingOpenItems)
+      .set({ settledIdr: idr(item.originalIdr), updatedAt: new Date() })
+      .where(
+        and(
+          eq(accountingOpenItems.tenantId, tenantId),
+          eq(accountingOpenItems.kind, "receivable"),
+          eq(accountingOpenItems.id, item.id),
+        ),
+      );
+  }
+  if (deletable.length === 0) return;
+  await tx
+    .delete(accountingOpenItems)
+    .where(
+      and(
+        eq(accountingOpenItems.tenantId, tenantId),
+        eq(accountingOpenItems.kind, "receivable"),
+        inArray(accountingOpenItems.id, deletable),
       ),
-    ),
-  );
+    );
 }

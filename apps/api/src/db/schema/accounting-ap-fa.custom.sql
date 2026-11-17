@@ -36,3 +36,33 @@ REVOKE UPDATE, DELETE, TRUNCATE ON TABLE public.fixed_asset_revaluations FROM le
 REVOKE UPDATE, DELETE, TRUNCATE ON TABLE public.accounting_open_item_settlements FROM legend_app;
 --> statement-breakpoint
 REVOKE UPDATE, DELETE, TRUNCATE ON TABLE public.accounting_command_idempotency FROM legend_app;
+--> statement-breakpoint
+-- legend-2ln9t: a settlement is undone by an appended `reversal` row (never
+-- DELETE). The row must match the payment it cancels: same item, kind, source
+-- and amount, and that payment is not itself a reversal.
+CREATE OR REPLACE FUNCTION app.accounting_open_item_settlements_reversal_guard() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+DECLARE
+  target public.accounting_open_item_settlements%ROWTYPE;
+BEGIN
+  SELECT * INTO target
+    FROM public.accounting_open_item_settlements s
+    WHERE s.tenant_id = NEW.tenant_id AND s.id = NEW.reversal_of;
+  IF NOT FOUND
+    OR target.method <> 'payment'
+    OR target.reversal_of IS NOT NULL
+    OR target.kind <> NEW.kind
+    OR target.open_item_id <> NEW.open_item_id
+    OR target.source_id IS DISTINCT FROM NEW.source_id
+    OR target.amount_idr <> NEW.amount_idr
+    OR target.kind <> 'receivable'
+    OR target.journal_entry_id IS NOT NULL
+    OR NEW.journal_entry_id IS NOT NULL
+  THEN
+    RAISE EXCEPTION 'ACC-01: settlement reversal % does not match the payment it cancels', NEW.id
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END $$;
+--> statement-breakpoint
+CREATE TRIGGER accounting_open_item_settlements_reversal_trg BEFORE INSERT ON public.accounting_open_item_settlements FOR EACH ROW WHEN (NEW.method = 'reversal') EXECUTE FUNCTION app.accounting_open_item_settlements_reversal_guard();

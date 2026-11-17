@@ -3179,6 +3179,34 @@
       "when": 1795000000082,
       "tag": "0467_supplier_payment_approval_policies_data",
       "breakpoints": true
+    },
+    {
+      "idx": 468,
+      "version": "7",
+      "when": 1795000000085,
+      "tag": "0468_payroll_overtime_ledger_reverse_guard",
+      "breakpoints": true
+    },
+    {
+      "idx": 469,
+      "version": "7",
+      "when": 1795000000086,
+      "tag": "0469_payroll_loan_principal_ledger_guard",
+      "breakpoints": true
+    },
+    {
+      "idx": 470,
+      "version": "7",
+      "when": 1795000000087,
+      "tag": "0470_payroll_pph21_receivable_settlement_reversal",
+      "breakpoints": true
+    },
+    {
+      "idx": 471,
+      "version": "7",
+      "when": 1795000000088,
+      "tag": "0471_payroll_loan_status_backward_guard",
+      "breakpoints": true
     }
   ]
 }
