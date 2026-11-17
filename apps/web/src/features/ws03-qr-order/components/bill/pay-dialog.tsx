@@ -343,7 +343,7 @@ export function PayDialog({
             disabled={!canSubmit}
             type="button"
           >
-            {amountIdr > 0
+            {amountIdr > 0 && current
               ? t("qrOrders.bill.payWith", {
                   amount: formatRupiah(amountIdr),
                   method: currentLabel,

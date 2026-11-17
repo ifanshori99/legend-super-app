@@ -508,6 +508,21 @@ describe("ws03 pay dialog: unavailable methods", () => {
     await submit();
     expect(submitted).toHaveLength(0);
   });
+
+  test("CTA names the method; with no method it never ends in a dangling 'dengan'", () => {
+    h.options = [qris, va];
+    expect(render()).toMatch(/Bayar[^<]*dengan QRIS/);
+
+    for (const none of [
+      [],
+      [disabled("qris", "gateway_down"), disabled("va", "gateway_down")],
+    ]) {
+      h.options = none;
+      const html = render();
+      expect(html).toMatch(/Lanjut bayar/);
+      expect(html).not.toMatch(/dengan\s*</);
+    }
+  });
 });
 
 describe("ws03 pay dialog: virtual account bank picker", () => {
