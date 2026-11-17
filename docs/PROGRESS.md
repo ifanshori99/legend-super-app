@@ -1828,3 +1828,4 @@ Langkah berikut CTO baru:
 - 18:56 CTO: mulai 993 fasilitas lanjutan (13j7i, etawy, qr3sd; base 987 f9fcb4cd7; migrasi 0595-0599; Sonnet #1).
 - 18:57 CTO: 991 9ee53e644 (xxqz3, a4z2f, 4qowr, efdx6, eestb; migrasi 0585-0586; architect xhigh tanpa bug uang). Keputusan CTO: seed default supplier_payment paling membatasi (batas 0, 1 penyetuju selain pembuat) + backfill (0587); guard kas kecil per entity diterima; mock journalize. Dikirim balik ke G9r89.
 - 19:15 CTO: 993 bae5b2c43 SIAP batch86 sesudah 987. Keputusan CTO: batas basi in_use 120 menit diterima; sweep tanpa overtime (membatasi tagihan tamu). qr3sd lanjutan (simpan kontak + pengirim) ditunda: butuh teks persetujuan + Kirimdev. G8k5y resolve.
+- 19:16 CTO: 984 f586w ronde 2 839500696 SIAP batch86 (jqurl, xrbjv; migrasi 0575). Keputusan CTO: edge sync tidak membandingkan updatedAt (jam edge menulis updated_at; kursor cloud berurutan) diterima. SO Codex akses 981+984 (brief belum ada) antre. G6xcr resolve.
