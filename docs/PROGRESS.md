@@ -6976,3 +6976,10 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 - Review architect xhigh: tanpa P0/P1; 3 P2 dibetulkan (trigger INSERT, uji konkurensi beda tahun, bruto 0 dengan pph21 != 0 ditolak).
 - Gerbang thread: tes terarah 368/368 hijau, prettier dan eslint hijau, db:generate kosong, typecheck API + shared bersih. Belum: pnpm check penuh (merge train).
 - Keputusan menunggu CTO/founder: karyawan di dua run regular satu bulan bisa kena dua cicilan (dibatasi sisa pinjaman); ringkasan pesangon hris-settlement.service.ts:113-126 memuat potongan run belum locked.
+
+### 955 lanjutan: cap satu cicilan per bulan + pesangon (17 Nov 2026, keputusan CTO)
+
+- Commit d0f4ca821, 687cfced2, f111d4217, 43bc79232 di ghostex/1a1b16fe (tanpa migrasi baru).
+- Satu cicilan per pinjaman per bulan kalender period_end: pinjaman yang sudah punya baris di run regular lain (draft..approved, locked, paid; reversed tidak dihitung) tidak dipotong lagi; lock memberi 409 bila bentrok. Pesangon: outstandingLoans = sisa dikurangi potongan run draft..approved, plus pendingPayrollDeductions {count, amountIdr, loanIds} terpisah (default aman untuk snapshot lama).
+- Review architect xhigh: tanpa P0. P1 terbuka: snapshot pesangon yang dibekukan saat offboarding selesai sudah mengurangi potongan run yang belum locked; run itu masih bisa kembali ke draft. Usul architect: tolak penyelesaian 409 selama ada potongan di run draft..approved. Menunggu keputusan CTO. 3 P2 dibetulkan.
+- Gerbang: tes terarah 434/434, prettier/eslint hijau, typecheck API dan shared exit 0. Fail-first 5 test baru terbukti merah di HEAD sebelumnya. Belum: kartu web final-settlement-card.tsx menghitung sisa sendiri dari sources.loans (tidak menampilkan potongan tertunda).
