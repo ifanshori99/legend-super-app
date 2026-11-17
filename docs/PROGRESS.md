@@ -1843,3 +1843,4 @@ Langkah berikut CTO baru:
 - 20:34 CTO: 1001 G56m0 3d7e194e5 selesai (voucher dicabut/kedaluwarsa/redeemed + promo nonaktif/di luar periode ditolak 422, sekali pakai 409; architect xhigh bersih). Keputusan: laporan tidak menebus voucher. Menunggu web typecheck (shared berubah) sebelum antre.
 - 20:37 CTO: 1001 3d7e194e5 SIAP batch86 sesudah 995 (web+shared typecheck 0). G56m0 resolve.
 - 20:40 CTO: 1002 9b1010918 SIAP batch86 sesudah 995. Penyimpangan failed+=1 per kolom saat sweep error diterima (lebih ketat). Kartu legend-ony4b runbook, legend-e1mtr SO rotasi kunci (P1). G7jwc resolve.
+- 20:52 CTO: 990 G5pqk 74e142d8b SIAP batch86 (0580-0584). Keputusan: hold memakai fingerprint live (lebih ketat, membatasi pembayaran) dipertahankan. o2b4m layar clearance naik P1. Backfill 0584 masuk gerbang legend-7hg1q. G5pqk resolve.
