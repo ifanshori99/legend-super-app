@@ -6989,3 +6989,17 @@ Cabang `ghostex/rekonsiliasi-sisa-bank-dan-doit`, dasar m1 `c17c60df7`. Tiga kar
 - Sesi `eaa31d4f`: biaya* total 26.204k (utama Sonnet 21.703k; subagent Sonnet 3.444k, Opus 676k, Haiku 381k); 14 subagent, 4 compact. Puncak subagent bersamaan 4; token heavy dipegang test-runner.
 
 **Berikut**: gerbang rilis (second-opinion Codex satu kali untuk area ini), lalu merge train. Tidak merge, tidak deploy.
+
+## Batch 952: perbaikan temuan second opinion recon 941 (17 Nov 2026)
+
+Cabang `ghostex/64affda0` dari `44dc04cd9`; commit `046289063` dan `7bc7adc3f`.
+
+**Selesai**
+- P1 (legend-3wpf dibuka lagi): kolom `payment_intents.provider_refunded_at` (migrasi 0435, kolom nullable tanpa backfill). Diisi saat provider menjawab `refunded` (poll, cek hold QRIS, antrean release VA/QRIS, webhook `payment.refunded` yang kini dikenali). `applyConfirmation` menolak (INVALID_TRANSITION) sebelum parkir/hold/VA bila code itu sudah refunded; jalur penolakan webhook tidak lagi mencatat evidence atau dana belum teralokasi untuk code refunded. `failed` biasa yang dibayar belakangan tetap direkonsiliasi sekali; pembayaran tambahan dengan provider ref lain tetap diparkir; intent `paid` tidak pernah distempel.
+- P2: reversal jurnal mengambil entity lock sebelum `FOR UPDATE` jurnal (urutan sama dengan `write_off`), 409 bila entitas berubah. Helper lock tunggal (huruf kecil) dipakai kasus recon dan akun bank.
+- P3 (legend-l29ln): 0433 melepas FORCE `journal_entries` (induk) dulu baru `bank_statement_line_matches`; tes baru memigrasi 0433-0434 sebagai owner NOBYPASSRLS di tabel berisi baris.
+
+**Bukti**: gagal-dulu di base (P1 3 tes, P2 2 tes, putaran 2 tes a/b/c gagal) lalu hijau; 73 berkas tes terarah (payment/recon/migrasi/QRIS hold) 1067 lulus; typecheck API exit 0; `db:generate` kosong; prettier bersih. Architect xhigh putaran 1: 1 P1 (parkir lewat hold/VA), diperbaiki di putaran 2; putaran 2: tanpa P1.
+
+**Belum / tindak lanjut**: legend-7uqbs (P2: provider refund SETELAH kita catat pembayaran belum memperingatkan staf, sudah ada sebelum 952); legend-3wwme (P3: payload payment.refunded non-payment 500; komentar lock). Tes 0433 tidak mendeteksi urutan FORCE (lulus juga di base); `pnpm test` penuh dan `pnpm check` belum dijalankan (gate akhir merge train).
+- Angka: 15 subagent (Explore 4, test-writer 2, implementer 6, test-runner 1, architect 2), puncak bersamaan 4; token heavy dipegang agent utama (antre `heavy` ~1 jam di jam sibuk).
