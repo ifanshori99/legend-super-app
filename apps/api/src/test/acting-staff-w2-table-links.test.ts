@@ -113,12 +113,16 @@ const twoTables = async () =>
   [await openSeat(), await openSeat()].map((seat) => seat.tableId);
 
 function call(path: string, body: object, token?: string | null) {
-  const request = sessionOwner.client
-    .post(path)
-    .set(host)
-    .set(originHeader)
-    .set(DEVICE_TOKEN_HEADER, deviceToken());
-  return (token ? request.set(ACTING_HEADER, token) : request).send(body);
+  const request = sessionOwner.client.post(path).set(host).set(originHeader);
+  // legend-f586w: registered device without a token is shared-device mode.
+  // No token means a browser-style client without a device identity.
+  return (
+    token
+      ? request
+          .set(DEVICE_TOKEN_HEADER, deviceToken())
+          .set(ACTING_HEADER, token)
+      : request
+  ).send(body);
 }
 
 const link = (tableIds: string[], token?: string | null) =>

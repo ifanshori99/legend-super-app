@@ -11,7 +11,11 @@
 
 import { Router } from "express";
 import type { Request } from "express";
-import { actorOf, resolveActingStaff } from "../middleware/acting-staff";
+import {
+  actorOf,
+  requireActingStaffOnSharedDevice,
+  resolveActingStaff,
+} from "../middleware/acting-staff";
 import { requireAuth } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
@@ -75,6 +79,7 @@ floorRouter.use(
   requireTrustedOrigin,
   requireTenantContext,
   resolveActingStaff,
+  requireActingStaffOnSharedDevice,
 );
 
 /** Zones, tables and live sessions of the caller's outlet (editor read model). */
@@ -164,6 +169,7 @@ tablesRouter.use(
   requireTrustedOrigin,
   requireTenantContext,
   resolveActingStaff,
+  requireActingStaffOnSharedDevice,
 );
 
 /** The table's current signed QR; never rotates (contract issueTableQr). */

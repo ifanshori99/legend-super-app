@@ -100,11 +100,12 @@ const deviceToken = () =>
   });
 
 function withIdentity(request: Req, token: string | null): Req {
-  const base = request
-    .set(headers)
-    .set(originHeader)
-    .set(DEVICE_TOKEN_HEADER, deviceToken());
-  return token ? base.set("X-Acting-Staff", token) : base;
+  const base = request.set(headers).set(originHeader);
+  // legend-f586w: registered device without a token is shared-device mode.
+  // No token means a browser-style client without a device identity.
+  return token
+    ? base.set(DEVICE_TOKEN_HEADER, deviceToken()).set("X-Acting-Staff", token)
+    : base;
 }
 
 async function issueToken(who: Member): Promise<string> {

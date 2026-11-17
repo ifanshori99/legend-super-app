@@ -38,6 +38,8 @@ export const ACTING_STAFF_ERROR_CODES = {
   UNSUPPORTED: "ACTING_STAFF_UNSUPPORTED",
   /** The route refuses an acting staff member (e.g. receipt write-off). */
   NOT_ALLOWED: "ACTING_STAFF_NOT_ALLOWED",
+  /** A registered shared outlet device sent a POS request without a cashier token. */
+  REQUIRED: "ACTING_STAFF_REQUIRED",
 } as const;
 export type ActingStaffErrorCode =
   (typeof ACTING_STAFF_ERROR_CODES)[keyof typeof ACTING_STAFF_ERROR_CODES];

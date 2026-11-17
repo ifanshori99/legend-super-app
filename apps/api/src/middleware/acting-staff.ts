@@ -18,7 +18,10 @@ import {
 } from "@starter/shared/pos/acting-staff";
 import { HttpError } from "../lib/http-error";
 import { setRequestActingStaff } from "../lib/request-context";
-import { registeredDeviceIdOf } from "../routes/device-id.ts";
+import {
+  currentDeviceIdOf,
+  registeredDeviceIdOf,
+} from "../routes/device-id.ts";
 import { resolveActingStaffToken } from "../services/pos-acting-staff.service";
 import { getAuth } from "./auth";
 import { getTenantContext } from "./tenant";
@@ -87,6 +90,33 @@ export const resolveActingStaff: RequestHandler = async (req, _res, next) => {
   };
   setRequestActingStaff(req.actingStaff);
   next();
+};
+
+/**
+ * Shared-device mode (legend-f586w): a request from a registered, enrolled
+ * outlet device (currentDeviceIdOf) must carry a live cashier token, so the
+ * shared login session owner is never the actor. Browsers that send no device
+ * token keep the old behaviour; a sent but refused token is a 401, never the
+ * old behaviour. Mount right after resolveActingStaff: an
+ * invalid header has already failed there with its own error. Not for
+ * device-pin, customer-display, edge or rejectActingStaff routes.
+ */
+export const requireActingStaffOnSharedDevice: RequestHandler = async (
+  req,
+  _res,
+  next,
+) => {
+  if (req.actingStaff) return next();
+  // A device token that is PRESENT but no longer accepted (revoked, rotated,
+  // foreign tenant, edge node without identity) must fail closed: currentDeviceIdOf
+  // throws 401 for it. Only a request with no device header at all is "not a
+  // shared device".
+  if ((await currentDeviceIdOf(req)) === null) return next();
+  throw new HttpError(
+    401,
+    ACTING_STAFF_ERROR_CODES.REQUIRED,
+    "Perangkat bersama: masuk dengan PIN kasir dulu.",
+  );
 };
 
 /** For owner-only routes that never accept an acting cashier. */
