@@ -71,6 +71,9 @@ const GRANTS = "payroll_payout_grants";
 const PRIVILEGE = "42501";
 const sha256 = (text: string) =>
   createHash("sha256").update(text, "utf8").digest("hex");
+/** payroll_payout_grants.secret_sha256 is sha256 of the raw bytes of the hex grant. */
+const grantSecretHash = (grant: string) =>
+  createHash("sha256").update(Buffer.from(grant, "hex")).digest("hex");
 
 const personIds: string[] = [];
 const enrolledUsers: string[] = [];
@@ -662,7 +665,7 @@ describe("990 A: password and grant are required", () => {
               SET issued_at = now() - interval '10 minutes',
                   expires_at = now() - interval '8 minutes'
             WHERE secret_sha256 = $1`,
-          [sha256(grant.grant!)],
+          [grantSecretHash(grant.grant!)],
         ),
       true,
     );

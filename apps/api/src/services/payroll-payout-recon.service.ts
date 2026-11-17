@@ -303,7 +303,10 @@ type ResolutionFacts = {
   outcome: string | null;
   status: string;
   resolvedBy: string | null;
+  resolvedBy2: string | null;
   lastProposeOperationId: string | null;
+  /** Every propose / approve attestation of the item, whenever it was made. */
+  steps: { step: string; actor: string; sessionId: string }[];
 };
 
 type SessionRow = {
@@ -451,7 +454,8 @@ async function readResolutions(
   if (ids.length === 0) return resolutions;
   for (const row of rowsOf(
     await tx.execute(sql`
-      SELECT i.id::text AS id, i.resolution_outcome, i.status, i.resolved_by
+      SELECT i.id::text AS id, i.resolution_outcome, i.status, i.resolved_by,
+             i.resolved_by_2
         FROM payroll_disbursement_items i
        WHERE i.tenant_id = ${tenantId}::uuid
          AND i.id IN (${uuidList(ids)})`),
@@ -460,7 +464,22 @@ async function readResolutions(
       outcome: text(row.resolution_outcome),
       status: String(row.status),
       resolvedBy: text(row.resolved_by),
+      resolvedBy2: text(row.resolved_by_2),
       lastProposeOperationId: null,
+      steps: [],
+    });
+  for (const row of rowsOf(
+    await tx.execute(sql`
+      SELECT x::text AS item_id, a.step, a.actor, a.session_id
+        FROM payroll_payout_attestations a, unnest(a.item_ids) AS x
+       WHERE a.tenant_id = ${tenantId}::uuid
+         AND a.kind = 'resolve' AND a.step IN ('propose', 'approve')
+         AND x IN (${uuidList(ids)})`),
+  ))
+    resolutions.get(String(row.item_id))?.steps.push({
+      step: String(row.step),
+      actor: String(row.actor),
+      sessionId: String(row.session_id),
     });
   for (const row of rowsOf(
     await tx.execute(sql`
@@ -755,8 +774,17 @@ function evaluateClosures(
   closures: readonly ClosureFacts[],
   attestations: readonly Attestation[],
   sessions: ReadonlyMap<string, SessionRow>,
+  grants: ReadonlyMap<string, GrantRow>,
 ): Flag[] {
   const flags: Flag[] = [];
+  // The session columns of the closure row stay empty, so the session of a
+  // step is also compared with the one its grant was issued to.
+  const grantSessionDiffers = (a: Attestation | undefined) => {
+    const grant = a?.grantId ? grants.get(a.grantId) : undefined;
+    return (
+      grant !== undefined && a !== undefined && grant.sessionId !== a.sessionId
+    );
+  };
   for (const closure of closures) {
     const reasons = new Set<PayoutReconReason>();
     const steps = attestations.filter((a) => a.operationId === closure.id);
@@ -787,6 +815,8 @@ function evaluateClosures(
         closure.closedSessionId !== null &&
         approve.sessionId !== closure.closedSessionId)
     )
+      reasons.add("closure_session_mismatch");
+    if (grantSessionDiffers(propose) || grantSessionDiffers(approve))
       reasons.add("closure_session_mismatch");
     for (const a of steps) {
       if (sessionMismatch(a, sessions)) reasons.add("session_mismatch");
@@ -1485,6 +1515,72 @@ function grantBindingMismatch(
 }
 
 /**
+ * A resolution that moved an item to `failed` / `not_sent` needs both steps on
+ * file (990-D): a propose attestation by the first resolver and an approve
+ * attestation by the second one, two people from two sessions. The grant check
+ * only compares the attestations that exist, so one deleted step (or a second
+ * step forged with the first person's session) is judged here. Items that are
+ * not resolved yet, or moved on, are skipped. Pure, no I/O.
+ */
+function evaluateResolutions(
+  attestations: readonly Attestation[],
+  resolutions: ReadonlyMap<string, ResolutionFacts>,
+  grantsSince: number | null,
+): Flag[] {
+  if (grantsSince === null) return [];
+  const flags: Flag[] = [];
+  const done = new Set<string>();
+  const ordered = attestations
+    .filter(
+      (a) =>
+        a.kind === "resolve" &&
+        a.attestedAt !== null &&
+        a.attestedAt >= grantsSince,
+    )
+    .sort(
+      (x, y) =>
+        (x.attestedAt ?? 0) - (y.attestedAt ?? 0) ||
+        x.operationId.localeCompare(y.operationId),
+    );
+  for (const a of ordered)
+    for (const itemId of a.itemIds) {
+      const item = resolutions.get(itemId);
+      if (
+        done.has(itemId) ||
+        !item ||
+        (item.status !== "failed" && item.status !== "not_sent")
+      )
+        continue;
+      done.add(itemId);
+      const first = item.steps.filter(
+        (s) => s.step === "propose" && s.actor === item.resolvedBy,
+      );
+      const second = item.steps.filter(
+        (s) =>
+          s.step === "approve" &&
+          (item.resolvedBy2 === null || s.actor === item.resolvedBy2),
+      );
+      const reasons = new Set<PayoutReconReason>();
+      if (first.length === 0 || second.length === 0)
+        reasons.add("attestation_count");
+      else {
+        if (!first.some((f) => second.some((s) => s.actor !== f.actor)))
+          reasons.add("attestation_same_person");
+        if (!first.some((f) => second.some((s) => s.sessionId !== f.sessionId)))
+          reasons.add("attestation_same_session");
+      }
+      for (const reason of reasons)
+        flags.push({
+          kind: "resolve",
+          operationId: a.operationId,
+          itemId,
+          reason,
+        });
+    }
+  return flags;
+}
+
+/**
  * Every attestation made at or after `app.payout_grants_since()` needs its
  * one-time grant (0419/0420): no grant, or a grant that was not spent by that
  * very step, holds the slips of the attestation. Pure, no I/O. An attestation
@@ -1669,7 +1765,13 @@ export async function reconcileTrustedPayouts(
             grants: withdrawals.grants,
             sourceItems: new Map(),
             resolutions: withdrawals.resolutions,
-          }),
+          }).concat(
+            evaluateResolutions(
+              withdrawals.attestations,
+              withdrawals.resolutions,
+              grantsSince.getTime(),
+            ),
+          ),
     )
     .concat(
       closures === null
@@ -1679,6 +1781,7 @@ export async function reconcileTrustedPayouts(
               closures.closures,
               closures.attestations,
               closures.sessions,
+              closures.grants,
             ),
             // An attestation of a closure names no item: the slips it holds.
             ...evaluateGrants({

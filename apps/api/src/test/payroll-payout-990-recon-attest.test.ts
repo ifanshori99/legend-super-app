@@ -425,15 +425,19 @@ const forgeAttestationSession = (itemId: string, kind: string) =>
       [W.tenantId, itemId, `forged-session-${randomUUID()}`, kind],
     ),
   );
-/** Changes one column of every grant that an attestation of the item was made under. */
-const forgeGrants = (itemId: string, set: string, params: unknown[] = []) =>
+/**
+ * Changes one column of every grant that an attestation of the item was made
+ * under; `grantKind` limits it to the grants of one kind (the item's batch
+ * approval grant has no detail, so a detail can only be forged on a resolve).
+ */
+const forgeGrants = (itemId: string, set: string, grantKind?: string) =>
   tamper(async (c) => {
     const res = await c.query(
       `UPDATE ${GRANTS} SET ${set}
-        WHERE tenant_id = $1 AND id IN (
+        WHERE tenant_id = $1 AND ($3::text IS NULL OR kind = $3) AND id IN (
           SELECT grant_id FROM ${ATTESTATIONS}
            WHERE tenant_id = $1 AND $2::uuid = ANY(item_ids) AND grant_id IS NOT NULL)`,
-      [W.tenantId, itemId, ...params],
+      [W.tenantId, itemId, grantKind ?? null],
     );
     expect(
       res.rowCount,
@@ -586,7 +590,7 @@ describe("990 D recon: the grant must match what was attested", () => {
     await runRecon();
     await expectNotFlagged(w.itemId, "control before the forgery");
 
-    await forgeGrants(w.itemId, "detail = 'not_sent'");
+    await forgeGrants(w.itemId, "detail = 'not_sent'", "resolve");
     await runRecon();
     await expectFlagged(w.itemId, "grant detail", { reason: "grant_mismatch" });
   });

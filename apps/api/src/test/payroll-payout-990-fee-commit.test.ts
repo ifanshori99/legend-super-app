@@ -282,7 +282,21 @@ const revertItem = (itemId: string, before: Json, after: Json) =>
 
 /** The trusted role replays the failed -> overpaid move with a REAL commit; the error, or null. */
 const replayOverpaid = (itemId: string, before: Json, after: Json) =>
-  W.asPayoutRole(async (c) => {
+  W.asTenant(async (c) => {
+    // The commit check (0414/0582) only accepts a `record` attestation written in
+    // the SAME transaction (txid = txid_current()). The real record happened in
+    // an earlier transaction, so this replay re-stamps that one row (owner,
+    // guards off), then turns the guards back on for the move itself.
+    await c.query("SET LOCAL session_replication_role = replica");
+    await c.query(
+      `UPDATE payroll_payout_attestations a
+          SET txid = pg_catalog.txid_current()
+        WHERE a.tenant_id = $1 AND a.kind = 'overpaid' AND a.step = 'record'
+          AND a.item_ids @> ARRAY[$2::uuid]`,
+      [W.tenantId, itemId],
+    );
+    await c.query("SET LOCAL session_replication_role = origin");
+    await c.query("SET LOCAL ROLE legend_payout");
     await c.query("SELECT set_config('app.payout_overpaid', 'on', true)");
     await updateItemTo(c, itemId, after, changedColumns(before, after));
   }).then(

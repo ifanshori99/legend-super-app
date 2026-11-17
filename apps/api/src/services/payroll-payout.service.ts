@@ -1022,8 +1022,10 @@ type PlannedItem = {
 
 /**
  * Slip ids with an open row in `payroll_payout_recon_exceptions` (migration
- * 0410, insert-only) on one of their items. Every row counts as open: the table
- * has no clear step yet, and when unsure the slip stays held.
+ * 0410, insert-only) on one of their items. A row is open until it has an
+ * approved two-person clearance (`payroll_payout_recon_clearances`, migration
+ * 0581, same test as `app.payout_payslip_held_by_recon`); a proposal alone
+ * (`approved_at` null) still holds the slip.
  */
 async function slipsHeldByReconException(
   tx: Tx,
@@ -1037,6 +1039,11 @@ async function slipsHeldByReconException(
           JOIN payroll_disbursement_items i
             ON i.tenant_id = e.tenant_id AND i.id = e.item_id
          WHERE e.tenant_id = ${tenantId}
+           AND NOT EXISTS (
+             SELECT 1
+               FROM payroll_payout_recon_clearances c
+              WHERE c.tenant_id = e.tenant_id AND c.exception_id = e.id
+                AND c.approved_at IS NOT NULL)
            AND i.payslip_id IN (${sql.join(
              payslipIds.map((id) => sql`${id}`),
              sql`, `,

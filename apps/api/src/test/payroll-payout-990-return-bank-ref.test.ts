@@ -230,17 +230,22 @@ async function returnBoth(
 // =========================================================================
 
 describe("990 E: a return needs the bank reference", () => {
-  it("[990-E-1-api-requires-bankref] a return step without bankRef or with one under 4 characters is refused 400; one that is too short without its spaces is 422; nothing is recorded; a valid reference then works", async () => {
+  it("[990-E-1-api-requires-bankref] a return step without bankRef or with one under 4 characters is refused 422 VALIDATION_ERROR; one that is too short without its spaces is 422 PAYOUT_RETURN_BANK_REF_REQUIRED; nothing is recorded; a valid reference then works", async () => {
     const w = await paidBatch(2);
 
-    for (const [label, bankRef, status] of [
-      ["missing", undefined, 400],
-      ["too short", "ab", 400],
-      ["short without spaces", "a b c", 422],
+    for (const [label, bankRef, code] of [
+      ["missing", undefined, "VALIDATION_ERROR"],
+      ["too short", "ab", "VALIDATION_ERROR"],
+      [
+        "short without spaces",
+        "a b c",
+        "PAYOUT_RETURN_BANK_REF_REQUIRED",
+      ],
     ] as const) {
       const key = freshKey(w.batchId);
       const res = await returnHttp(one, w.batchId, w.a, key, bankRef);
-      expect(res.status, `${label}: ${detail(res)}`).toBe(status);
+      expect(res.status, `${label}: ${detail(res)}`).toBe(422);
+      expect(res.body?.error?.code, `${label}: code`).toBe(code);
       expect(await claimsOfKey(key), `${label}: no claim`).toHaveLength(0);
       await expectNotReleased(w.a, label);
       expect((await statusOf(w.a)).return_bank_ref, label).toBeNull();
@@ -252,7 +257,7 @@ describe("990 E: a return needs the bank reference", () => {
     expect(await claimsOfKey(key)).toHaveLength(1);
   });
 
-  it("[990-E-1-api-step-two-requires-bankref] the second step without bankRef is refused 400; the item stays succeeded", async () => {
+  it("[990-E-1-api-step-two-requires-bankref] the second step without bankRef is refused 422 VALIDATION_ERROR; the item stays succeeded", async () => {
     const w = await paidBatch(2);
     const key = freshKey(w.batchId);
     const ref = freshRef();
@@ -260,7 +265,8 @@ describe("990 E: a return needs the bank reference", () => {
     expect(ok(s1), `premise: ${detail(s1)}`).toBe(true);
 
     const s2 = await returnHttp(two, w.batchId, w.a, key, undefined);
-    expect(s2.status, detail(s2)).toBe(400);
+    expect(s2.status, detail(s2)).toBe(422);
+    expect(s2.body?.error?.code).toBe("VALIDATION_ERROR");
     await expectNotReleased(w.a, "step 2 without a reference");
   });
 
@@ -445,7 +451,8 @@ describe("990 E: references are unique per tenant", () => {
         await c.query(
           `UPDATE claim990_copy
               SET id = gen_random_uuid(), tenant_id = $1, bank_ref = $2,
-                  evidence_key = 'foreign-' || gen_random_uuid()::text`,
+                  evidence_key = 'foreign-' || gen_random_uuid()::text,
+                  content_sha256 = NULL, stored_sha256 = NULL`,
           [foreign, ref],
         );
         await c.query(`INSERT INTO ${CLAIMS} SELECT * FROM claim990_copy`);

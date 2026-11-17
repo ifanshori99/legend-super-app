@@ -5,7 +5,7 @@ Route (tidak berubah): `POST /api/hris/payroll/disbursement-batches/:id/return`
 
 Body final: `{ itemIds: uuid[], evidenceKey: string(1-200), bankRef: string, note: string(1-500), password }`.
 
-- `bankRef` WAJIB: trim, 4-64 karakter (validator zod, 400 bila kurang/hilang).
+- `bankRef` WAJIB: trim, 4-64 karakter (validator zod, 422 bila kurang/hilang).
 - Service menormalkan: hapus semua spasi, huruf besar (`normalizeReturnBankRef`), lalu 4-64 lagi (422 `PAYOUT_RETURN_BANK_REF_REQUIRED` bila jadi terlalu pendek). SQL menormalkan hal yang sama.
 - Dikirim di LANGKAH 1 (propose) dan LANGKAH 2 (confirm): nilai ternormalisasi harus sama.
 
