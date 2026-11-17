@@ -508,6 +508,14 @@ describe("BRK-REFILE-09 controls", () => {
         row.requestedBy === SYSTEM && row.amount === R_IDR && isLive(row),
     );
     expect(refiled, "no re-filed refund to fail").toBeDefined();
+    // The sibling: the first late refund (the rest of the payment) is still
+    // waiting for its approval and must not be touched by the other one's decline.
+    const sibling = before.find(
+      (row) =>
+        row.requestedBy === SYSTEM && row.id !== refiled!.id && isLive(row),
+    );
+    expect(sibling, "no sibling late refund").toBeDefined();
+    expect(sibling).toMatchObject({ status: "pending", amount: paid - R_IDR });
     const alarmsBefore = await alarmCount();
 
     const fake = new FakeRefundGateway();
@@ -533,5 +541,13 @@ describe("BRK-REFILE-09 controls", () => {
     expect(items[0]!.blockedReason).toBe("failure_needs_person");
     expect(await auditCount(refiled!.id)).toBe(1);
     expect(await alarmCount()).toBe(alarmsBefore + 1);
+
+    // The sibling is exactly as before: still pending, same amount, no new
+    // refund row, no alarm or audit row of its own, live total capped.
+    const after = await expectCapped(lateIntentId, paid);
+    expect(after).toHaveLength(before.length);
+    expect(after.find((row) => row.id === sibling!.id)).toEqual(sibling);
+    expect(await auditCount(sibling!.id)).toBe(0);
+    expect(liveSum(after)).toBe(paid - R_IDR);
   });
 });

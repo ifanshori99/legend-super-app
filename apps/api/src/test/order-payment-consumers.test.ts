@@ -28,7 +28,10 @@ import {
   eventEnvelopeSchema,
   type EventEnvelope,
 } from "@starter/shared/events";
-import type { PaymentInstructions } from "@starter/shared/payment";
+import type {
+  PaymentChannel,
+  PaymentInstructions,
+} from "@starter/shared/payment";
 import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
@@ -37,8 +40,10 @@ import type { OrderPromoPort } from "../services/order-promo-port.ts";
 import {
   setPaymentGateway,
   type GatewayIntentRequest,
+  type OnlinePaymentMethod,
   type PaymentGatewayPort,
 } from "../services/payment-gateway.ts";
+import { voidLiveCodesForMethodChange } from "../services/payment-va-release.ts";
 import { confirmPayment } from "../services/payment.service.ts";
 import {
   decideUnpaidQrOrder,
@@ -85,6 +90,12 @@ const ALL_DAY = [
 ];
 const MINUTE = 60_000;
 
+/** DOIT VA bank codes, as in ws03-guest-va.test.ts. */
+const VA_BANKS: PaymentChannel[] = [
+  { code: "bmri", name: "Mandiri" },
+  { code: "bnia", name: "CIMB Niaga" },
+];
+
 class FakeGateway implements PaymentGatewayPort {
   readonly provider = "doit";
   created = 0;
@@ -95,11 +106,20 @@ class FakeGateway implements PaymentGatewayPort {
   }
   async createIntent(input: GatewayIntentRequest) {
     this.created += 1;
-    const instructions: PaymentInstructions = {
-      method: "qris",
-      qrPayload: "00020101021226FAKEORDERPAY",
-      issuer: null,
-    };
+    const bank = VA_BANKS.find((entry) => entry.code === input.channelCode);
+    const instructions: PaymentInstructions =
+      input.method === "va" && bank
+        ? {
+            method: "va",
+            channelCode: bank.code,
+            channelName: bank.name,
+            virtualAccountNumber: `8808${String(this.created).padStart(8, "0")}`,
+          }
+        : {
+            method: "qris",
+            qrPayload: "00020101021226FAKEORDERPAY",
+            issuer: null,
+          };
     return {
       providerRef: `OPC-${randomBytes(6).toString("hex")}-${this.created}`,
       instructions,
@@ -113,8 +133,8 @@ class FakeGateway implements PaymentGatewayPort {
       amountIdr: null,
     };
   }
-  async channels() {
-    return [];
+  async channels(_context: ScopedTenantContext, method: OnlinePaymentMethod) {
+    return method === "va" ? [...VA_BANKS] : [];
   }
 }
 
@@ -225,6 +245,13 @@ function as(guest: Guest) {
         method: "qris",
         idempotencyKey: randomUUID(),
       }),
+    payWith: (orderId: string, method: "qris" | "va", bankCode?: string) =>
+      auth(client.post(`${base}/payments`)).send({
+        target: { kind: "order", orderId },
+        method,
+        ...(bankCode === undefined ? {} : { bankCode }),
+        idempotencyKey: randomUUID(),
+      }),
   };
 }
 
@@ -248,10 +275,14 @@ async function openPayment(guest: Guest, orderId: string): Promise<string> {
   return paid.body.data.id as string;
 }
 
-async function settle(intentId: string, amountIdr: number) {
+async function settle(
+  intentId: string,
+  amountIdr: number,
+  method: "qris" | "va" = "qris",
+) {
   await confirmPayment(contextOf(tenant.tenantId), intentId, {
     source: "verified_webhook",
-    method: "qris",
+    method,
     amountIdr,
     providerRef: `WEBHOOK-${randomBytes(6).toString("hex")}`,
     at: new Date().toISOString(),
@@ -773,5 +804,160 @@ describe("ORD-02 payment.expired / payment.failed for QR orders (legend-x4qy)", 
     } finally {
       setQrOrderPromoPort(null);
     }
+  });
+});
+
+// legend-8m23m: the abandoned-order window runs from the last code that was
+// really offered. A code the guest swapped out (payment.expired reason
+// `method_changed`, WS-05 voids it when the guest picks another method) is not
+// a code the guest is waiting on, so its original, longer life (a VA lives
+// 180 minutes, a QRIS code about 10) must not keep the window open.
+// Assumption (PRD silent): the money rule does not change; a swapped-out code
+// that is paid late is still a late payment and must be refunded or parked.
+describe("ORD-02 a swapped-out code does not hold the abandon window open (legend-8m23m)", () => {
+  async function expiryOf(intentId: string): Promise<Date> {
+    const { rows } = await owner.query<{ expires_at: Date }>(
+      "SELECT expires_at FROM payment_intents WHERE tenant_id = $1 AND id = $2::uuid",
+      [tenant.tenantId, intentId],
+    );
+    return rows[0]!.expires_at;
+  }
+
+  /** A VA, swapped for a QRIS code that then lapses; ends at the abandon time. */
+  async function swappedOutThenLapsed() {
+    const guest = await seatAtNewTable();
+    const { orderId, totalIdr } = await placeOrder(guest);
+    const va = await as(guest).payWith(orderId, "va", "bmri");
+    expect(va.status).toBe(201);
+    const vaIntent = va.body.data.id as string;
+    const qris = await as(guest).payWith(orderId, "qris");
+    expect(qris.status).toBe(201);
+    const qrisIntent = qris.body.data.id as string;
+    const swapped = await outboxEvents("payment.expired", "intentId", vaIntent);
+    expect(swapped.map((event) => event.payload.reason)).toEqual([
+      "method_changed",
+    ]);
+
+    // The swapped-out VA outlives the QRIS code that replaced it.
+    const vaExpiry = await expiryOf(vaIntent);
+    const qrisExpiry = await expiryOf(qrisIntent);
+    expect(vaExpiry.getTime()).toBeGreaterThan(
+      qrisExpiry.getTime() + 2 * UNPAID_ORDER_ABANDON_MS,
+    );
+
+    const lapsedAt = new Date(qrisExpiry.getTime() + MINUTE);
+    const expired = await expireCode(guest, qrisIntent, lapsedAt);
+    // The abandon window of the QRIS code alone has passed; the old VA's has not.
+    const abandonedAt = new Date(
+      qrisExpiry.getTime() + UNPAID_ORDER_ABANDON_MS + MINUTE,
+    );
+    expect(abandonedAt.getTime()).toBeLessThan(
+      vaExpiry.getTime() + UNPAID_ORDER_ABANDON_MS,
+    );
+    // legend-kf104: the QR hold needs the provider's proof that the code is dead.
+    await proveDead(abandonedAt);
+    return { orderId, totalIdr, vaIntent, expired, abandonedAt };
+  }
+
+  it("ORD-02 the order is voided as abandoned once the live code's window has passed", async () => {
+    const { orderId, expired, abandonedAt } = await swappedOutThenLapsed();
+    expect(await deliver(expired, abandonedAt)).toEqual({
+      route: "qr",
+      outcome: "voided",
+    });
+    expect(await orderRow(orderId)).toMatchObject({
+      status: "voided",
+      void_reason: "payment_abandoned",
+    });
+  });
+
+  it("ORD-02 money rule: the swapped-out VA paid after the void is refunded or parked, never lost or overpaid", async () => {
+    const { orderId, totalIdr, vaIntent, expired, abandonedAt } =
+      await swappedOutThenLapsed();
+    expect(await deliver(expired, abandonedAt)).toEqual({
+      route: "qr",
+      outcome: "voided",
+    });
+
+    // WS-05 refuses the settlement of a bill that is already closed: the money
+    // is parked (not applied), no payment.paid event reaches the order consumer,
+    // and the order stays voided.
+    await expect(settle(vaIntent, totalIdr, "va")).rejects.toMatchObject({
+      decisionCode: "BILL_CLOSED",
+      message: expect.stringContaining("the money is parked"),
+    });
+    expect(await outboxEvents("payment.paid", "intentId", vaIntent)).toEqual(
+      [],
+    );
+
+    const { rows: refunds } = await owner.query<{ amount: string }>(
+      `SELECT coalesce(sum(amount_idr), 0)::text AS amount
+         FROM payment_refunds WHERE tenant_id = $1 AND payment_intent_id = $2`,
+      [tenant.tenantId, vaIntent],
+    );
+    const { rows: parked } = await owner.query<{ amount: string }>(
+      `SELECT coalesce(sum(amount_idr), 0)::text AS amount
+         FROM payment_unallocated_funds WHERE tenant_id = $1 AND payment_intent_id = $2`,
+      [tenant.tenantId, vaIntent],
+    );
+    const refunded = Number(refunds[0]!.amount);
+    const parkedAmount = Number(parked[0]!.amount);
+    // Exactly one path holds the money, and only once: here the parked path for
+    // the whole amount; never both, never partly, never lost.
+    expect(refunded === totalIdr).not.toBe(parkedAmount === totalIdr);
+    expect(parkedAmount).toBe(totalIdr);
+    expect(refunded).toBe(0);
+    expect(await orderRow(orderId)).toMatchObject({ status: "voided" });
+    expect(await placedStatuses(orderId)).toEqual(["awaiting_payment"]);
+  });
+
+  it("ORD-02 a VA released with no new code yet keeps the order alive from the swap, not from the placement", async () => {
+    const guest = await seatAtNewTable();
+    const { orderId } = await placeOrder(guest);
+    const va = await as(guest).payWith(orderId, "va", "bmri");
+    expect(va.status).toBe(201);
+    const vaIntent = va.body.data.id as string;
+    // Placed long ago: the old VA (180 minutes) is the only thing that ever
+    // held the window open past the placement.
+    await owner.query(
+      "UPDATE orders SET placed_at = now() - interval '30 minutes' WHERE tenant_id = $1 AND id = $2::uuid",
+      [tenant.tenantId, ulidToUuid(orderId)],
+    );
+    const swappedAt = new Date();
+    // The guest picks another method: the VA is released (committed) and the
+    // new code is never made (it failed or the guest left).
+    const released = await voidLiveCodesForMethodChange(
+      contextOf(tenant.tenantId),
+      {
+        paymentLinkId: (await orderRow(orderId)).payment_link_id!,
+        billSplitId: null,
+      },
+      swappedAt,
+    );
+    expect(released.voided).toEqual([vaIntent]);
+    const closed = await onlyEvent("payment.expired", "intentId", vaIntent);
+    expect(closed.payload.reason).toBe("method_changed");
+
+    // Right after the swap the order lives: the window runs from the swap.
+    expect(
+      await deliver(closed, new Date(swappedAt.getTime() + MINUTE)),
+    ).not.toMatchObject({ outcome: "voided" });
+    expect((await orderRow(orderId)).status).toBe("awaiting_payment");
+    await sweepUnpaidQrOrders(
+      contextOf(tenant.tenantId),
+      new Date(swappedAt.getTime() + 5 * MINUTE),
+    );
+    expect((await orderRow(orderId)).status).toBe("awaiting_payment");
+
+    // After the abandon window counted from the swap it is voided as abandoned;
+    // the VA's own 180 minutes do not hold it.
+    const abandoned = new Date(
+      swappedAt.getTime() + UNPAID_ORDER_ABANDON_MS + MINUTE,
+    );
+    await sweepUnpaidQrOrders(contextOf(tenant.tenantId), abandoned);
+    expect(await orderRow(orderId)).toMatchObject({
+      status: "voided",
+      void_reason: "payment_abandoned",
+    });
   });
 });

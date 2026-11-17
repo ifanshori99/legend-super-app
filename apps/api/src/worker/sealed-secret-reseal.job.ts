@@ -43,7 +43,9 @@
 // A caller that passes a non-empty `columns` (tests only) skips this sweep
 // unless it also passes `jsonSecrets`. An aborted run leaves unreached entries
 // out of the report: a key retirement decision must also require
-// `aborted === false`.
+// `aborted === false`. The queue job aborts the run itself shortly before its
+// 2 hour expiry (and when pg-boss aborts the job signal), so a long run never
+// overlaps the next one; it then fails the job and the next run resumes.
 //
 // Some rows are frozen by the database (POS-04 triggers refuse any change to a
 // completed or voided order and to its tenders; the app login has no UPDATE on
@@ -79,6 +81,11 @@ export const SEALED_SECRET_RESEAL_BATCH = 200;
 export const SEALED_SECRET_RESEAL_CRON = "30 3 * * 0";
 export const SEALED_SECRET_RESEAL_TZ = "Asia/Jakarta";
 const SEALED_SECRET_RESEAL_EXPIRE_SECONDS = 2 * 60 * 60;
+/**
+ * The run aborts this long before the queue expiry, so it stops between
+ * batches before pg-boss fails the job and a second run can start beside it.
+ */
+const SEALED_SECRET_RESEAL_ABORT_MARGIN_SECONDS = 5 * 60;
 const GLOBAL_SCOPE = "global";
 
 /** What a registry AAD builder sees of one row. */
@@ -874,7 +881,7 @@ type SealedSecretResealBoss = {
   ): Promise<void>;
   work(
     name: string,
-    handler: (jobs: { data: unknown }[]) => Promise<void>,
+    handler: (jobs: { data: unknown; signal?: AbortSignal }[]) => Promise<void>,
   ): Promise<unknown>;
 };
 
@@ -902,16 +909,31 @@ export async function registerSealedSecretResealJob(options: {
     null,
     { tz: SEALED_SECRET_RESEAL_TZ },
   );
-  await boss.work(SEALED_SECRET_RESEAL_QUEUE, async () => {
+  await boss.work(SEALED_SECRET_RESEAL_QUEUE, async (jobs) => {
+    // Stop before the queue expiry (and when pg-boss aborts the job), so the
+    // next run never starts while this one is still going.
+    const signals = [
+      AbortSignal.timeout(
+        (SEALED_SECRET_RESEAL_EXPIRE_SECONDS -
+          SEALED_SECRET_RESEAL_ABORT_MARGIN_SECONDS) *
+          1000,
+      ),
+      ...jobs.flatMap((job) => (job.signal ? [job.signal] : [])),
+    ];
     try {
       const result = await runSealedSecretReseal({
         log,
+        signal: AbortSignal.any(signals),
         ...(options.database ? { database: options.database } : {}),
         ...(options.listTenantIds
           ? { listTenantIds: options.listTenantIds }
           : {}),
       });
       log.info(`Sealed secret re-seal finished ${JSON.stringify(result)}`);
+      // The report of an aborted run leaves unreached entries out: fail the
+      // job so it is not recorded as done; the next run resumes.
+      if (result.aborted)
+        throw new Error("Sealed secret re-seal aborted before it finished");
       if (result.failedTenants > 0)
         throw new Error(
           `Sealed secret re-seal failed for ${result.failedTenants} scope(s)`,

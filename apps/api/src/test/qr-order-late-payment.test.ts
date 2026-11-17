@@ -656,6 +656,56 @@ describe("QR late-payment refund ignores refunds still pending (legend-leqj6)", 
     );
   }
 
+  /**
+   * The tenant's two refund approvers, set up once for the whole describe (the
+   * policy row and role changes must not be inserted twice). `staff` is the
+   * first approver; the returned account is the second.
+   */
+  let approversReady: Promise<Staff> | undefined;
+  function readyApprovers(): Promise<Staff> {
+    approversReady ??= (async () => {
+      // The tenant's floor-only role needs the refund permissions and a place in
+      // the default Rp0 refund tier (beside the supervisor template) BEFORE the
+      // late refund is filed: a system refund opens its approval chain at
+      // creation (legend-2dnh) and one approver decides.
+      await owner.query(
+        "UPDATE roles SET permissions = permissions || $2::jsonb WHERE tenant_id = $1 AND id = $3",
+        [
+          tenant.tenantId,
+          JSON.stringify([
+            "payment.reconcile",
+            "pos.refund.approve",
+            "approval.inbox.view",
+            "approval.request.decide",
+          ]),
+          tenant.roleId,
+        ],
+      );
+      await owner.query(
+        `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels)
+         VALUES ($1, 'refund', 0, $2, 1)`,
+        [tenant.tenantId, tenant.roleId],
+      );
+      const second = await staffOfIsolatedTenant(app, tenant);
+      await verifySessionMfa(staff.email);
+      await verifySessionMfa(second.email);
+      // Q63: a refund approver also needs an amount ceiling. Both approvers hold
+      // the tenant's supervisor template at the outlet (Rp200.000 per bill).
+      await withTenant(db, contextOf(tenant.tenantId), (tx) =>
+        seedTenantRoleTemplates(tx, tenant.tenantId),
+      );
+      for (const approver of [staff, second])
+        await owner.query(
+          `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+           SELECT $1, $2, r.id, 'outlet', $3, now() - interval '1 hour', $2
+             FROM roles r WHERE r.tenant_id = $1 AND r.template_key = 'supervisor'`,
+          [tenant.tenantId, approver.userId, tenant.outletId],
+        );
+      return second;
+    })();
+    return approversReady;
+  }
+
   it("a pending 1000 refund is not subtracted: the late refund returns the whole amount", async () => {
     const { intentId, totalIdr, paid } = await lateSettledOrder();
     await filedRefund(intentId, 1000, "pending");
@@ -675,43 +725,7 @@ describe("QR late-payment refund ignores refunds still pending (legend-leqj6)", 
   });
 
   it("approving the late refund first succeeds; the old pending refund then fails cap_exceeded", async () => {
-    // The tenant's floor-only role needs the refund permissions and a place in
-    // the default Rp0 refund tier (beside the supervisor template) BEFORE the
-    // late refund is filed: a system refund opens its approval chain at
-    // creation (legend-2dnh) and one approver decides.
-    await owner.query(
-      "UPDATE roles SET permissions = permissions || $2::jsonb WHERE tenant_id = $1 AND id = $3",
-      [
-        tenant.tenantId,
-        JSON.stringify([
-          "payment.reconcile",
-          "pos.refund.approve",
-          "approval.inbox.view",
-          "approval.request.decide",
-        ]),
-        tenant.roleId,
-      ],
-    );
-    await owner.query(
-      `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels)
-       VALUES ($1, 'refund', 0, $2, 1)`,
-      [tenant.tenantId, tenant.roleId],
-    );
-    const second = await staffOfIsolatedTenant(app, tenant);
-    await verifySessionMfa(staff.email);
-    await verifySessionMfa(second.email);
-    // Q63: a refund approver also needs an amount ceiling. Both approvers hold
-    // the tenant's supervisor template at the outlet (Rp200.000 per bill).
-    await withTenant(db, contextOf(tenant.tenantId), (tx) =>
-      seedTenantRoleTemplates(tx, tenant.tenantId),
-    );
-    for (const approver of [staff, second])
-      await owner.query(
-        `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
-         SELECT $1, $2, r.id, 'outlet', $3, now() - interval '1 hour', $2
-           FROM roles r WHERE r.tenant_id = $1 AND r.template_key = 'supervisor'`,
-        [tenant.tenantId, approver.userId, tenant.outletId],
-      );
+    const second = await readyApprovers();
 
     const { intentId, totalIdr, paid } = await lateSettledOrder();
     await filedRefund(intentId, 1000, "approved");
@@ -752,6 +766,68 @@ describe("QR late-payment refund ignores refunds still pending (legend-leqj6)", 
       .filter((row) => row.status !== "failed")
       .reduce((sum, row) => sum + Number(row.amount_idr), 0);
     expect(kept).toBe(totalIdr);
+  });
+
+  it("race: the late refund and the old pending refund are approved at the same moment; together they never exceed what was paid", async () => {
+    const second = await readyApprovers();
+    const { intentId, totalIdr, paid } = await lateSettledOrder();
+    await filedRefund(intentId, 1000, "approved");
+    await filedRefund(intentId, 2000, "pending", staff.userId);
+    await deliver(paid);
+    const rows = await refundsOfIntent(intentId);
+    const late = rows.find((row) => row.requested_by === "system:qr")!;
+    const older = rows.find(
+      (row) => row.requested_by === staff.userId && row.status === "pending",
+    )!;
+    expect(late.amount_idr).toBe(String(totalIdr - 1000));
+
+    // Two different approvers decide in parallel; the provider call is slowed
+    // so both requests are in flight together.
+    const fake = new FakeRefundGateway();
+    fake.delayMs = 150;
+    setPaymentRefundGateway(fake);
+    try {
+      const decide = (who: Staff, refundId: string) =>
+        who.client
+          .post(`/api/payments/admin/refunds/${refundId}/approve`)
+          .set(headers)
+          .set(originHeader)
+          .send({ idempotencyKey: `leqj6-race-${randomUUID()}` })
+          .then((response) => response);
+      const responses = await Promise.all([
+        decide(staff, late.id),
+        decide(second, older.id),
+      ]);
+      for (const response of responses)
+        expect(response.status, JSON.stringify(response.body)).toBeLessThan(
+          500,
+        );
+    } finally {
+      setPaymentRefundGateway(null);
+    }
+
+    const after = await refundsOfIntent(intentId);
+    // Money cap: whatever the order of the two approvals, what is not failed
+    // never exceeds the amount the guest paid.
+    const kept = after
+      .filter((row) => row.status !== "failed")
+      .reduce((sum, row) => sum + Number(row.amount_idr), 0);
+    expect(kept).toBeLessThanOrEqual(totalIdr);
+    // The two refunds cannot both be paid out (1000 + late + 2000 > paid).
+    const decided = (id: string) =>
+      after.find((row) => row.id === id)!.status !== "pending" &&
+      after.find((row) => row.id === id)!.status !== "failed";
+    expect(decided(late.id) && decided(older.id)).toBe(false);
+    // The provider was asked once per refund at most, and never for more than
+    // the 1000 still free of the approved refund allows.
+    const asked = new Map<string, number>(
+      fake.calls.map((call): [string, number] => [
+        call.idempotencyKey,
+        call.amountIdr,
+      ]),
+    );
+    const askedTotal = [...asked.values()].reduce((sum, v) => sum + v, 0);
+    expect(askedTotal).toBeLessThanOrEqual(totalIdr - 1000);
   });
 
   it("regression: an approved 1000 refund is still subtracted", async () => {

@@ -249,16 +249,23 @@ async function orderSessionActive(
  * WS-05 `supersedePending` appends `payment.expired` with reason `superseded`,
  * and the 9vmit guest method change (`voidLiveCodesForMethodChange`) writes
  * `method_changed` (the intent row keeps no reason). A provider or timeout
- * expiry carries another reason, so it still counts as an attempt.
+ * expiry carries another reason, so it still counts as an attempt. Without
+ * `reason` both reasons count (legend-kt3t1); `reason` picks one expiry reason
+ * to read (`method_changed` for the abandon window, legend-8m23m). Maps each
+ * intent to the time of its (earliest) expiry event.
  */
 async function supersededIntentIds(
   tx: Tx,
   context: ScopedTenantContext,
   intentIds: readonly string[],
-): Promise<Set<string>> {
-  if (intentIds.length === 0) return new Set();
+  reason?: "superseded" | "method_changed",
+): Promise<Map<string, Date>> {
+  if (intentIds.length === 0) return new Map();
   const rows = await tx
-    .selectDistinct({ intentId: domainEventOutbox.aggregateId })
+    .select({
+      intentId: domainEventOutbox.aggregateId,
+      at: sql<string>`min((${domainEventOutbox.event}->>'occurredAt')::timestamptz)::text`,
+    })
     .from(domainEventOutbox)
     .where(
       and(
@@ -266,11 +273,15 @@ async function supersededIntentIds(
         inArray(domainEventOutbox.aggregateId, [...intentIds]),
         sql`${domainEventOutbox.event}->>'name' = 'payment.expired'`,
         // legend-kt3t1: a code the guest left by changing method is no failed
-        // attempt either (the 9vmit void writes `method_changed`).
-        sql`${domainEventOutbox.event}->'payload'->>'reason' IN ('superseded', 'method_changed')`,
+        // attempt either (the 9vmit void writes `method_changed`). legend-8m23m:
+        // the abandon window asks for `method_changed` alone.
+        reason === undefined
+          ? sql`${domainEventOutbox.event}->'payload'->>'reason' IN ('superseded', 'method_changed')`
+          : sql`${domainEventOutbox.event}->'payload'->>'reason' = ${reason}`,
       ),
-    );
-  return new Set(rows.map((row) => row.intentId));
+    )
+    .groupBy(domainEventOutbox.aggregateId);
+  return new Map(rows.map((row) => [row.intentId, new Date(row.at)]));
 }
 
 /**
@@ -394,10 +405,28 @@ async function loadUnpaidState(
     context,
     intents.map((row) => row.id),
   );
+  // legend-8m23m: a code the guest swapped out (WS-05 `method_changed`) is not
+  // one the guest waits on, so its longer life (a VA lives 180 minutes) must not
+  // hold the window open past the swap. But the swap itself is the last moment
+  // the guest was offered that code: the window never runs back before it, or an
+  // order whose VA was released and whose new code was not (yet) made would void
+  // at once. It still counts as an attempt above, and if it is paid late the
+  // late-payment path (refund or parked money) still handles it.
+  const swappedOut = await supersededIntentIds(
+    tx,
+    context,
+    intents.map((row) => row.id),
+    "method_changed",
+  );
   const windowClosedAt = new Date(
     Math.max(
       order.placedAt.getTime(),
-      ...intents.map((row) => row.expiresAt.getTime()),
+      ...intents.map((row) => {
+        const swappedAt = swappedOut.get(row.id);
+        return swappedAt === undefined
+          ? row.expiresAt.getTime()
+          : Math.min(row.expiresAt.getTime(), swappedAt.getTime());
+      }),
     ),
   );
   // Split bill: codes are counted per part, so a part that already used its
