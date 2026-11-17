@@ -56,6 +56,7 @@ import {
 } from "./facility-breakfast-money.ts";
 import type { Tx } from "./menu-internals.ts";
 import { refundableBalance } from "./payment-admin.service.ts";
+import { netAllocatedIdrSql } from "./payment-net-allocated-sql.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import { requestQrDoublePaymentRefund } from "./qr-order-late-payment.ts";
 
@@ -118,7 +119,7 @@ async function orderIdOfLink(
 /**
  * What each settled code of the link put toward the bill: its provider
  * evidence less the part booked as unallocated funds (overpayment or double
- * payment). One statement, one snapshot (same record the QR consumer reads).
+ * payment) and what the provider refunded on its own. One statement, one snapshot (same record the QR consumer reads).
  */
 async function allocatedIdrByIntent(
   tx: Tx,
@@ -127,12 +128,7 @@ async function allocatedIdrByIntent(
 ): Promise<Map<string, number>> {
   const result = await tx.execute<{ id: string; allocated: string }>(sql`
     SELECT i.id,
-           (coalesce((SELECT sum(e.amount_idr) FROM payment_evidence e
-                       WHERE e.tenant_id = i.tenant_id
-                         AND e.payment_intent_id = i.id), 0)
-          - coalesce((SELECT sum(f.amount_idr) FROM payment_unallocated_funds f
-                       WHERE f.tenant_id = i.tenant_id
-                         AND f.payment_intent_id = i.id), 0))::text AS allocated
+           (${netAllocatedIdrSql(sql`i.tenant_id`, sql`i.id`)})::text AS allocated
       FROM payment_intents i
      WHERE i.tenant_id = ${context.tenant.tenantId}
        AND i.payment_link_id = ${paymentLinkId}

@@ -128,6 +128,7 @@ import {
   TAX_SPLIT_VARIANT,
 } from "./accounting-auto-journal-tax-split.ts";
 import { salePostingAccountsOf } from "./accounting-sale-account-history.ts";
+import { netAllocatedIdrSql } from "./payment-net-allocated-sql.ts";
 
 type TenantId = ScopedTenantContext["tenant"]["tenantId"];
 
@@ -1702,7 +1703,8 @@ async function qrSaleGatewayOf(
  * sale of `dueIdr` (total - DP), keyed by intent. A code paying alone (the
  * pinned intent, no other code with money toward the bill) is the whole sale.
  * On a split bill every code that put money toward it (evidence less its
- * unallocated funds, a status that never reverts) backs `min(due, that)`,
+ * unallocated funds and the partial refunds the provider made on its own,
+ * netAllocatedIdrSql; a status that never reverts) backs `min(due, that)`,
  * the pinned one included; same parts as the payout guard (intentBackedAt,
  * legend-05cm9) and allocatedIdrByIntent (qr-order-consumers.ts).
  * qrSaleInUseOfIntent (payment-admin.service.ts) holds the pinned code's whole
@@ -1715,12 +1717,7 @@ async function qrSaleSharesOf(
 ): Promise<Map<string, number>> {
   const result = await tx.execute<{ id: string; allocated: string }>(sql`
     SELECT i.id,
-           (coalesce((SELECT sum(e.amount_idr) FROM payment_evidence e
-                       WHERE e.tenant_id = i.tenant_id
-                         AND e.payment_intent_id = i.id), 0)
-          - coalesce((SELECT sum(f.amount_idr) FROM payment_unallocated_funds f
-                       WHERE f.tenant_id = i.tenant_id
-                         AND f.payment_intent_id = i.id), 0))::text AS allocated
+           (${netAllocatedIdrSql(sql`i.tenant_id`, sql`i.id`)})::text AS allocated
       FROM payment_intents i
      WHERE i.tenant_id = ${tenantId}
        AND i.payment_link_id = ${input.paymentLinkId}

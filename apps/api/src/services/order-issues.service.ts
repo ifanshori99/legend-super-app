@@ -13,8 +13,12 @@
 //   drawn by `order.paid`, and a second draw would count it twice
 //   (recipe-deduction.service.ts, consumer comment), so it is refused (422).
 //   complaint and unfulfillable draw nothing.
-// - R25: a supervisor id in the body is not proof of approval, so a manual
-//   refund is refused (422) until a real approval flow exists.
+// - R25: a supervisor id in the body is not proof of approval. A manual refund
+//   spends one approved POS override (`overrideId`) for exactly what the guest
+//   paid for the line, once (legend-uyw0v); anything else is refused (403),
+//   nothing is spent. It is also refused for a voided line, an unpaid order, a
+//   line already refunded manually and an amount past what the order took in
+//   (order-issue-manual-refund.ts).
 // - Idempotency: `idempotencyKey` is unique per tenant; a resend returns the
 //   stored row without a second row or event. At most one live comp per line
 //   (partial unique index), so two concurrent comps end in one 409.
@@ -46,10 +50,11 @@ import {
   type OrderIssueView,
   type OrderIssueType,
 } from "@starter/shared/kitchen";
+import { PosError } from "@starter/shared/pos";
 import { db } from "../db/index.ts";
 import { stations } from "../db/schema/index.ts";
 import { orderIssues } from "../db/schema/kds-issues.ts";
-import { posOrderItems } from "../db/schema/pos-order.ts";
+import { posOrderItems, posOrders } from "../db/schema/pos-order.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { roleAssignments } from "../db/schema/platform-access.ts";
 import { user } from "../db/schema/user.ts";
@@ -65,6 +70,11 @@ import {
 } from "./inventory-ops.shared.ts";
 import type { Tx } from "./menu-internals.ts";
 import { accessSnapshotInTransaction } from "./permission-resolver.ts";
+import {
+  assertLineHasNoOtherCompensation,
+  manualRefundAmountIdr,
+} from "./order-issue-manual-refund.ts";
+import { consumeApproval } from "./pos-order-support.ts";
 import { estimateDeductionCostIdr } from "./recipe-deduction.service.ts";
 import {
   assertStationPermission,
@@ -75,6 +85,7 @@ const RECORD = "kds.remake_comp.record";
 const EVENT_DESTINATION = "cloud-sync";
 const DEFAULT_LIMIT = 50;
 const COMP_ONCE_INDEX = "order_issues_comp_once_idx";
+const MANUAL_REFUND_ONCE_INDEX = "order_issues_manual_refund_once_idx";
 const IDEMPOTENCY_KEY = "order_issues_tenant_idempotency_key";
 const AUDIT_SAFE_FIELDS = ["id", "type", "reason", "stationId", "costIdr"];
 
@@ -179,6 +190,64 @@ async function assertStationInOutlet(
     );
 }
 
+/**
+ * legend-uyw0v: verifies and spends the approval of a manual refund. Refuses
+ * (fail closed, nothing spent) unless the override is approved by `approvedBy`,
+ * requested by the reporter, for action "refund" on exactly this order item at
+ * exactly the amount the guest paid for the line (`refundIdr`, net of discount;
+ * see order-issue-manual-refund.ts), in this outlet and tenant, and not spent
+ * before. The
+ * single use is the `pos_order_approval_uses` row (one per override, shared
+ * with the POS refund, void and discount, so an approval cannot be used twice
+ * across actions). A guest order has no `pos_orders` row for that ledger, so it
+ * is refused until it has its own spend record (legend-5wn1e).
+ */
+async function spendManualRefundApproval(
+  tx: Tx,
+  context: ScopedTenantContext,
+  actorUserId: string,
+  outletId: OutletId,
+  orderId: string,
+  input: CreateOrderIssueInput,
+  refundIdr: number,
+  now: Date,
+): Promise<void> {
+  const refused = () => new PosError("REFUND_APPROVAL_REQUIRED");
+  if (input.approvedBy === null || input.overrideId === null) throw refused();
+  const [posOrder] = await tx
+    .select({ orderId: posOrders.orderId })
+    .from(posOrders)
+    .where(
+      and(
+        eq(posOrders.tenantId, context.tenant.tenantId),
+        eq(posOrders.outletId, outletId),
+        eq(posOrders.orderId, orderId),
+      ),
+    );
+  if (!posOrder)
+    throw unprocessable(
+      "Refund manual belum tersedia untuk pesanan tamu tanpa kasir.",
+    );
+  const override = await consumeApproval(tx, context, {
+    action: "refund",
+    purpose: "refund",
+    outletId,
+    orderId,
+    objectType: "order_item",
+    objectId: input.orderItemId,
+    requesterId: actorUserId,
+    approvedBy: input.approvedBy,
+    overrideId: input.overrideId,
+    minValueIdr: refundIdr,
+    deviceId: null,
+    now,
+  });
+  // The POS check is ">=". A manual refund pays exactly what the guest paid
+  // for the line (`manualRefundAmountIdr`), so an approval for another amount
+  // is refused ("Jangan sampai rugi"); the throw rolls the spend back.
+  if (override.valueIdr !== refundIdr) throw refused();
+}
+
 export async function reportOrderIssue(
   context: ScopedTenantContext,
   actorUserId: string,
@@ -198,6 +267,8 @@ export async function reportOrderIssue(
     const violated = uniqueViolationOf(error);
     if (violated === COMP_ONCE_INDEX)
       throw new CoreError("CONFLICT", "Item ini sudah pernah di-comp.");
+    if (violated === MANUAL_REFUND_ONCE_INDEX)
+      throw new CoreError("CONFLICT", "Item ini sudah pernah direfund manual.");
     if (violated === IDEMPOTENCY_KEY) return store();
     throw error;
   }
@@ -232,12 +303,6 @@ async function storeOrderIssue(
     } else if (!snapshot.allows(RECORD, { type: "outlet", id: outletId })) {
       throw deniedOutlet();
     }
-
-    // R25: the approver id alone is no proof, and no approval flow exists here.
-    if (input.resolution === "manual_refund")
-      throw unprocessable(
-        "Refund manual butuh alur persetujuan yang belum tersedia di sini.",
-      );
 
     const [replay] = await tx
       .select()
@@ -280,6 +345,7 @@ async function storeOrderIssue(
         quantity: orderItems.quantity,
         modifiers: orderItems.modifiers,
         status: orderItems.status,
+        lineTotalIdr: orderItems.lineTotalIdr,
         posVoidedAt: posOrderItems.voidedAt,
       })
       .from(orderItems)
@@ -328,6 +394,62 @@ async function storeOrderIssue(
         .limit(1);
       if (existing)
         throw new CoreError("CONFLICT", "Item ini sudah pernah di-comp.");
+    }
+
+    // R25 (legend-uyw0v): the approver id alone is no proof. A manual refund
+    // spends one supervisor approval (the POS override: action "refund", this
+    // order item, requested by the reporter) worth exactly the line total. The
+    // spend rolls back with this transaction if anything below fails.
+    if (input.resolution === "manual_refund") {
+      // No approval named: refused first (403), before any other check, so the
+      // answer does not depend on the order's state. Nothing is spent.
+      if (input.approvedBy === null || input.overrideId === null)
+        throw new PosError("REFUND_APPROVAL_REQUIRED");
+      // Refused (nothing spent) for a voided line, an unpaid order, a second
+      // manual refund of the line or an amount past what the order took in;
+      // the approval is bound to what the guest paid for the line.
+      // legend-980 (M2): the order row lock comes first, the checks after it,
+      // so a voucher, a swap or a refund racing this one is serialized with it.
+      // An open or settled voucher/swap issue on the line (M1) got, or is about
+      // to get, its compensation; a refund on top pays it twice.
+      await assertLineHasNoOtherCompensation(
+        tx,
+        tenantId,
+        orderId,
+        input.orderItemId,
+      );
+      const [liveRefund] = await tx
+        .select({ id: orderIssues.id })
+        .from(orderIssues)
+        .where(
+          and(
+            eq(orderIssues.tenantId, tenantId),
+            eq(orderIssues.orderItemId, input.orderItemId),
+            eq(orderIssues.resolution, "manual_refund"),
+            ne(orderIssues.status, "cancelled"),
+            isNull(orderIssues.refundRejectedAt),
+          ),
+        )
+        .limit(1);
+      if (liveRefund)
+        throw new CoreError(
+          "CONFLICT",
+          "Item ini sudah pernah direfund manual.",
+        );
+      const refundIdr = await manualRefundAmountIdr(tx, context, orderId, {
+        lineTotalIdr: line.lineTotalIdr,
+        voided: lineVoided,
+      });
+      await spendManualRefundApproval(
+        tx,
+        context,
+        actorUserId,
+        outletId,
+        orderId,
+        input,
+        refundIdr,
+        now,
+      );
     }
 
     const modifierIds = (line.modifiers ?? []).map(

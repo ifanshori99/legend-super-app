@@ -32,7 +32,18 @@ import { approvalResolvedEvent, IdentityError } from "@starter/shared/identity";
 import { paymentRefundEscalatedEvent } from "@starter/shared/payment";
 import type * as contract from "@starter/shared/payment/admin";
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, gt, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  gt,
+  inArray,
+  isNull,
+  ne,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import { db } from "../db/index.ts";
 import { logger } from "../lib/logger.ts";
 import {
@@ -807,8 +818,8 @@ async function refileQrLatePaymentAfterFailure(
 
 /**
  * `approved` -> `completed`: called on provider success, or by
- * settleRefundManually (no provider ref, `marker` SETTLED_OUTSIDE_PROVIDER,
- * the ops actor resolves the fund and owns the audit row).
+ * settleRefundManually (keeps any provider ref the row already had, `marker`
+ * SETTLED_OUTSIDE_PROVIDER, the ops actor resolves the fund and owns the audit row).
  */
 async function completeRefund(
   tx: Tx,
@@ -2104,6 +2115,90 @@ function refundPortInstalledSql(
   );
 }
 
+/** The provider ref of the transaction a fund refund's stored evidence mapping
+ * names, else null. Never the intent's own payment (another payment of the
+ * intent could settle the lookup by mistake). */
+async function fundEvidenceProviderRef(
+  tx: Tx,
+  refund: Refund,
+  fundId: string,
+): Promise<string | null> {
+  const [fund] = await tx
+    .select({ evidenceId: paymentUnallocatedFunds.evidenceId })
+    .from(paymentUnallocatedFunds)
+    .where(
+      and(
+        eq(paymentUnallocatedFunds.tenantId, refund.tenantId),
+        eq(paymentUnallocatedFunds.id, fundId),
+      ),
+    );
+  const [evidence] = fund?.evidenceId
+    ? await tx
+        .select({ providerRef: paymentEvidence.providerRef })
+        .from(paymentEvidence)
+        .where(
+          and(
+            eq(paymentEvidence.tenantId, refund.tenantId),
+            eq(paymentEvidence.paymentIntentId, refund.paymentIntentId),
+            eq(paymentEvidence.id, fund.evidenceId),
+          ),
+        )
+    : [];
+  return evidence?.providerRef ?? null;
+}
+
+/**
+ * Asks the provider what happened to a refund, writing nothing (legend-980:
+ * settle-manually and the settled-refund follow-up sweep). Same request as the
+ * lookup of `runRefundPayout`. Throws when the provider cannot be asked or
+ * does not answer in time: the caller treats that as unknown, never as safe.
+ */
+async function lookupRefundStatusReadOnly(
+  context: ScopedTenantContext,
+  refund: Refund,
+): Promise<GatewayRefundLookup> {
+  const source = await withTenant(db, context, async (tx) => {
+    const [intent] = await tx
+      .select()
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, refund.tenantId),
+          eq(paymentIntents.id, refund.paymentIntentId),
+        ),
+      );
+    if (!intent) throw missing();
+    return {
+      provider: intent.provider,
+      integrationId: intent.gatewayIntegrationId,
+      outletId: intent.outletId,
+      paymentProviderRef: refund.unallocatedFundId
+        ? await fundEvidenceProviderRef(tx, refund, refund.unallocatedFundId)
+        : intent.providerRef,
+    };
+  });
+  if (!refundGatewayInstalled(source.provider))
+    throw new CoreError(
+      "SERVICE_UNAVAILABLE",
+      "Belum ada gateway refund yang aktif.",
+    );
+  const signal = AbortSignal.timeout(PROVIDER_TIMEOUT_MS);
+  return withDeadline(
+    signal,
+    paymentRefundGatewayFor(source.provider).getRefundStatus({
+      context,
+      idempotencyKey: `refund:${refund.id}`,
+      providerRef: refund.providerRef,
+      paymentIntentId: refund.paymentIntentId,
+      paymentProviderRef: source.paymentProviderRef,
+      integrationId: source.integrationId,
+      outletId: source.outletId,
+      amountIdr: refund.amountIdr,
+      signal,
+    }),
+  );
+}
+
 /**
  * Pays an `approved` refund out through the refund port. The claim lease (with a
  * fencing token) makes concurrent callers skip; the provider dedupes on
@@ -2205,30 +2300,12 @@ export async function runRefundPayout(
       // fund refund never looks at the intent's own payment (another payment
       // of the intent could settle it by mistake): read the fund's stored
       // evidence mapping, else null.
-      if (refund.unallocatedFundId && !send) {
-        const [fund] = await tx
-          .select({ evidenceId: paymentUnallocatedFunds.evidenceId })
-          .from(paymentUnallocatedFunds)
-          .where(
-            and(
-              eq(paymentUnallocatedFunds.tenantId, refund.tenantId),
-              eq(paymentUnallocatedFunds.id, refund.unallocatedFundId),
-            ),
-          );
-        const [evidence] = fund?.evidenceId
-          ? await tx
-              .select({ providerRef: paymentEvidence.providerRef })
-              .from(paymentEvidence)
-              .where(
-                and(
-                  eq(paymentEvidence.tenantId, refund.tenantId),
-                  eq(paymentEvidence.paymentIntentId, refund.paymentIntentId),
-                  eq(paymentEvidence.id, fund.evidenceId),
-                ),
-              )
-          : [];
-        paymentProviderRef = evidence?.providerRef ?? null;
-      }
+      if (refund.unallocatedFundId && !send)
+        paymentProviderRef = await fundEvidenceProviderRef(
+          tx,
+          refund,
+          refund.unallocatedFundId,
+        );
       if (refund.unallocatedFundId && send) {
         // The fund's own evidence is the transaction to refund; never the
         // intent's providerRef. A fund without one resolves only when the intent
@@ -2882,6 +2959,26 @@ export async function sweepApprovedRefundPayouts(
   if (!anyRefundGatewayInstalled())
     return { attempted: 0, exhausted: 0, escalated };
   const tenantId = context.tenant.tenantId;
+  // Each payout may take up to a minute: advance the (possibly injected) clock
+  // by the real elapsed time so a later row's lease is not born expired.
+  const started = Date.now();
+  // legend-980: refunds finance closed by hand are watched for a late provider
+  // payout. Own small slice and time budget, run first: a busy payout sweep
+  // below cannot starve it.
+  try {
+    await checkSettledRefundsAtProvider(
+      context,
+      now,
+      Math.min(limit, SETTLED_WATCH_SLICE),
+      Math.floor(budgetMs / 4),
+      shouldStop,
+    );
+  } catch (error) {
+    logger.warn(
+      { tenantId, code: errorCodeOf(error) },
+      "Settled refund provider check failed",
+    );
+  }
   const leaseFree = sql`(${paymentRefunds.payoutClaimedUntil} IS NULL OR ${paymentRefunds.payoutClaimedUntil} <= ${now})`;
   const decidedAtOrCreated = sql`coalesce(${paymentRefunds.decidedAt}, ${paymentRefunds.createdAt})`;
   const pendingTooLong = sql`(${paymentRefunds.payoutPendingPolls} > 0 AND ${decidedAtOrCreated} + ${PAYOUT_PENDING_MAX_HOURS} * interval '1 hour' <= ${now})`;
@@ -2931,9 +3028,6 @@ export async function sweepApprovedRefundPayouts(
       "Refund payout gave up after repeated attempts; reconcile manually",
     );
   let attempted = 0;
-  // Each payout may take up to a minute: advance the (possibly injected) clock
-  // by the real elapsed time so a later row's lease is not born expired.
-  const started = Date.now();
   for (const row of due) {
     if (shouldStop() || Date.now() - started >= budgetMs) break;
     try {
@@ -2949,6 +3043,128 @@ export async function sweepApprovedRefundPayouts(
     }
   }
   return { attempted, exhausted: exhausted.length, escalated };
+}
+
+/** How long after a manual settlement the provider is still asked about it. */
+const SETTLED_WATCH_DAYS = 14;
+/** Most settled refunds looked up per sweep (its own slice, see the sweep). */
+const SETTLED_WATCH_SLICE = 10;
+
+/**
+ * legend-980 follow-up of settle-manually: a `completed` refund marked
+ * SETTLED_OUTSIDE_PROVIDER that keeps a provider ref, or was polled or attempted
+ * (so the provider may know it by its key `refund:<id>`), is looked up again (at
+ * most once an hour, for 14 days) in case the provider pays it later. Read-only:
+ * a provider `succeeded` or `pending` (`contradicts`) is recorded once per kind
+ * through `recordProviderConflict` (audit and error log for ops, no payout, no
+ * state change). After `succeeded` the refund is not looked up again; after
+ * `pending` it still is, so a later `succeeded` is reported too. A lookup that
+ * fails is retried on the next due round.
+ */
+async function checkSettledRefundsAtProvider(
+  context: ScopedTenantContext,
+  now: Date,
+  limit: number,
+  budgetMs: number,
+  shouldStop: () => boolean,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const due = await withTenant(db, context, async (tx) =>
+    tx
+      .select({ id: paymentRefunds.id, outletId: paymentRefunds.outletId })
+      .from(paymentRefunds)
+      .where(
+        and(
+          eq(paymentRefunds.tenantId, tenantId),
+          eq(paymentRefunds.status, "completed"),
+          eq(paymentRefunds.lastPayoutError, SETTLED_OUTSIDE_PROVIDER),
+          sql`(${paymentRefunds.providerRef} IS NOT NULL OR ${paymentRefunds.payoutPendingPolls} > 0 OR ${paymentRefunds.payoutAttempts} > 0)`,
+          sql`${paymentRefunds.completedAt} + ${SETTLED_WATCH_DAYS} * interval '1 day' > ${now}`,
+          refundPortInstalledSql(tx, tenantId),
+          // The stamp of the last check (or of the settlement) is updated_at.
+          sql`${paymentRefunds.updatedAt} + ${PAYOUT_BACKOFF_CAP_MINUTES} * interval '1 minute' <= ${now}`,
+          // Ops were told of a payout already made: nothing worse is left to
+          // find. A `pending` alert alone keeps the watch (it may succeed later).
+          sql`NOT ${providerConflictSeenSql(tenantId, sql`${paymentRefunds.id}::text`, now, "succeeded")}`,
+        ),
+      )
+      .orderBy(asc(paymentRefunds.updatedAt), asc(paymentRefunds.id))
+      .limit(limit),
+  );
+  const started = Date.now();
+  for (const row of due) {
+    if (shouldStop() || Date.now() - started >= budgetMs) break;
+    const scoped = outletContext(context.tenant, row.outletId);
+    try {
+      const [refund] = await withTenant(db, scoped, (tx) =>
+        tx
+          .select()
+          .from(paymentRefunds)
+          .where(
+            and(
+              eq(paymentRefunds.tenantId, tenantId),
+              eq(paymentRefunds.id, row.id),
+            ),
+          ),
+      );
+      if (!refund) continue;
+      let answer: GatewayRefundLookup | null = null;
+      try {
+        answer = await lookupRefundStatusReadOnly(scoped, refund);
+      } catch (error) {
+        logger.warn(
+          { refundId: row.id, code: errorCodeOf(error) },
+          "Settled refund provider lookup failed",
+        );
+      }
+      const checkedAt = new Date(now.getTime() + (Date.now() - started));
+      await withTenant(db, scoped, async (tx) => {
+        const locked = await lockRefundGraph(tx, tenantId, row.id);
+        const current = locked.refund;
+        if (
+          current.status !== "completed" ||
+          current.lastPayoutError !== SETTLED_OUTSIDE_PROVIDER
+        )
+          return;
+        const answered = answer?.status;
+        // Judged under the row lock: a second worker that looked up the same
+        // refund meanwhile has recorded its alert already (once per kind).
+        const alreadyTold =
+          answered === "pending" || answered === "succeeded"
+            ? (
+                await tx.execute<{ seen: boolean }>(
+                  sql`SELECT ${providerConflictSeenSql(tenantId, sql`${row.id}::text`, now, answered)} AS seen`,
+                )
+              ).rows[0]?.seen === true
+            : false;
+        if (
+          answered !== undefined &&
+          !alreadyTold &&
+          contradicts(current, answered)
+        )
+          await recordProviderConflict(
+            tx,
+            scoped,
+            current,
+            answered,
+            checkedAt,
+          );
+        // Only the backoff stamp moves: no money or status column.
+        await tx
+          .update(paymentRefunds)
+          .set({ updatedAt: checkedAt })
+          .where(
+            and(
+              eq(paymentRefunds.tenantId, tenantId),
+              eq(paymentRefunds.id, row.id),
+            ),
+          );
+      });
+    } catch {
+      // Ids only: one broken refund must not stop the batch.
+      logger.warn({ refundId: row.id }, "Settled refund check failed");
+    }
+  }
 }
 
 const quarantined = () =>
@@ -3272,14 +3488,187 @@ const SETTLEMENT_CLOCK_SKEW_MS = 5 * 60_000;
 const SETTLEMENT_STALL_MARGIN_MS = 10 * 60_000;
 
 /**
+ * Whether finance may settle by hand a stuck refund the provider still holds
+ * (answer `pending`). Restrictive default: no, for both stuck flags (paying by
+ * hand while the provider may still pay means paying twice). founder decision
+ * legend-17ml. With true, only MANUAL_RECONCILIATION may settle while pending.
+ */
+export const ALLOW_MANUAL_SETTLE_WHILE_PROVIDER_PENDING = false;
+
+/** What the provider said about a stuck refund just before it was settled by
+ * hand; `answer` is null when the provider could not be asked. `snapshot` is
+ * the row as it was at lookup time: a change before the settlement locks the
+ * row makes the answer stale. */
+type SettleLookup = {
+  readonly providerRef: string | null;
+  readonly answer: GatewayRefundLookup | null;
+  readonly snapshot: {
+    readonly payoutPendingPolls: number;
+    readonly payoutAttempts: number;
+    readonly updatedAt: Date;
+  };
+} | null;
+
+/**
+ * legend-980 M5: the provider may know the refund by its reference, by polls or,
+ * with neither (the usual maybe-sent case), by an earlier attempt: it is asked
+ * by its key `refund:<id>`.
+ */
+const hasProviderTrace = (refund: Refund) =>
+  refund.providerRef !== null ||
+  refund.payoutPendingPolls > 0 ||
+  refund.payoutAttempts > 0;
+
+/** Ops flagged the refund stuck at the provider (legend-17ml). */
+const isStuckAtProvider = (refund: Refund) =>
+  refund.lastPayoutError === MANUAL_RECONCILIATION ||
+  refund.lastPayoutError === PAYOUT_NOT_FOUND_MAYBE_SENT;
+
+/**
+ * legend-980 L7: whether ops were already told of a provider conflict of this
+ * kind (`pending` or `succeeded`) for the refund. Bounded by refund id and by
+ * the watch window, so the audit table is never scanned for old rows.
+ */
+const providerConflictSeenSql = (
+  tenantId: string,
+  refundId: SQL,
+  now: Date,
+  kind: "pending" | "succeeded",
+) =>
+  sql`EXISTS (SELECT 1 FROM audit_logs
+        WHERE audit_logs.tenant_id = ${tenantId}
+          AND audit_logs.created_at > ${now}::timestamptz - ${SETTLED_WATCH_DAYS} * interval '1 day'
+          AND audit_logs.event->>'objectId' = ${refundId}
+          AND audit_logs.event->>'action' = 'payment.refund_provider_conflict'
+          AND audit_logs.event->'maskedChanges'->'after'->>'providerCode' = ${kind})`;
+
+/**
+ * legend-980 (restrictive): a refund with any provider trace (reference, polls
+ * or an earlier attempt), flagged stuck or not, is looked up before finance may
+ * close it by hand, so a payout the provider already made is never paid a
+ * second time. Skipped only when the refusal is certain without it (unflagged
+ * with a reference or polls: REFUND_AT_PROVIDER). Runs only for
+ * an authorised actor (same checks as the settlement) and outside the row lock.
+ * The answer is judged under the lock by `assertProviderAllowsSettle`.
+ */
+async function lookupStuckRefundBeforeSettle(
+  context: ScopedTenantContext,
+  actor: string,
+  refundId: string,
+  opts: DecideOptions,
+  now: Date,
+): Promise<SettleLookup> {
+  const refund = await withTenant(db, context, async (tx) => {
+    const [row] = await tx
+      .select()
+      .from(paymentRefunds)
+      .where(
+        and(
+          eq(paymentRefunds.tenantId, context.tenant.tenantId),
+          eq(paymentRefunds.id, refundId),
+        ),
+      );
+    if (!row) return null;
+    await assertOpsActor(tx, context, actor, row, opts, now);
+    if (!opts.mfaVerified) throw new AccessError("MFA_REQUIRED");
+    return row;
+  });
+  if (
+    !refund ||
+    refund.status !== "approved" ||
+    !hasProviderTrace(refund) ||
+    // Unflagged with a provider ref or polls: refused as REFUND_AT_PROVIDER
+    // under the lock, no lookup needed. Unflagged with only attempts (no ref,
+    // no poll: an unknown payout outcome) is always looked up.
+    (!isStuckAtProvider(refund) &&
+      (refund.providerRef !== null || refund.payoutPendingPolls > 0))
+  )
+    return null;
+  const snapshot = {
+    payoutPendingPolls: refund.payoutPendingPolls,
+    payoutAttempts: refund.payoutAttempts,
+    updatedAt: refund.updatedAt,
+  };
+  try {
+    return {
+      providerRef: refund.providerRef,
+      answer: await lookupRefundStatusReadOnly(context, refund),
+      snapshot,
+    };
+  } catch (error) {
+    logger.warn(
+      { refundId, code: errorCodeOf(error) },
+      "Provider lookup before settle-manually failed; settlement refused",
+    );
+    return { providerRef: refund.providerRef, answer: null, snapshot };
+  }
+}
+
+/**
+ * The provider's answer decides whether finance may close the refund by hand:
+ * succeeded -> refused (the poller or webhook completes it as provider-paid);
+ * failed or not found -> allowed; pending -> refused (see
+ * ALLOW_MANUAL_SETTLE_WHILE_PROVIDER_PENDING); no answer, or an answer for
+ * another reference -> refused; a row that changed since the lookup (polls,
+ * attempts or updated_at) -> refused as stale, retry.
+ */
+function assertProviderAllowsSettle(
+  refund: Refund,
+  lookup: SettleLookup,
+): void {
+  if (
+    lookup === null ||
+    lookup.answer === null ||
+    lookup.providerRef !== refund.providerRef
+  )
+    throw new HttpError(
+      503,
+      "REFUND_PROVIDER_LOOKUP_FAILED",
+      "The provider could not be asked about this refund; try again later.",
+    );
+  const { snapshot } = lookup;
+  if (
+    snapshot.payoutPendingPolls !== refund.payoutPendingPolls ||
+    snapshot.payoutAttempts !== refund.payoutAttempts ||
+    snapshot.updatedAt.getTime() !== refund.updatedAt.getTime()
+  )
+    throw new HttpError(
+      409,
+      "REFUND_LOOKUP_STALE",
+      "The refund changed while the provider was asked; try again.",
+    );
+  const { status } = lookup.answer;
+  if (status === "succeeded")
+    throw new HttpError(
+      409,
+      "REFUND_PROVIDER_PAID",
+      "The provider already paid this refund; it completes as provider-paid.",
+    );
+  if (
+    status === "pending" &&
+    (!ALLOW_MANUAL_SETTLE_WHILE_PROVIDER_PENDING ||
+      refund.lastPayoutError !== MANUAL_RECONCILIATION)
+  )
+    throw new HttpError(
+      409,
+      "REFUND_PROVIDER_PENDING",
+      "The provider still holds this refund; wait for its answer.",
+    );
+}
+
+/**
  * Closes an `approved` refund finance paid by hand (legend-xd2q): it ends
  * `completed` with no provider payout, ever, marked SETTLED_OUTSIDE_PROVIDER.
  * The payment moves to (partially) refunded, a fund is resolved by the actor
  * and `payment.refunded` is emitted, as on provider success. Only a refund the
- * provider never saw (no provider ref, no poll) whose lease is free; any
+ * provider never saw (no provider ref, no poll) whose lease is free, or (legend-
+ * 17ml) one flagged MANUAL_RECONCILIATION or PAYOUT_NOT_FOUND_MAYBE_SENT, which
+ * may hold a provider ref or polls and keeps the ref after settling; any
  * attempt count and payout flag (quarantine, MANUAL_RECONCILIATION,
  * PAYOUT_NOT_FOUND_MAYBE_SENT). The approval defect, if any, is recorded in
- * the audit row, not blocking: the money already left.
+ * the audit row, not blocking: the money already left. With a provider ref,
+ * polls or an earlier attempt the provider is looked up first (legend-980,
+ * assertProviderAllowsSettle).
  *
  * Same actor and lock order as actOnQuarantine; the state checks run inside
  * the idempotent write, so a same-key replay returns the stored result.
@@ -3301,6 +3690,15 @@ export async function settleRefundManually(
     externalReference: input.externalReference,
     amountIdr: input.amountIdr,
   };
+  // legend-980: a stuck refund with a provider trace is looked up first, outside
+  // the row lock (a network call), by an authorised actor only.
+  const lookup = await lookupStuckRefundBeforeSettle(
+    context,
+    actor,
+    params.refundId,
+    opts,
+    now,
+  );
   await withTenant(db, context, async (tx) => {
     const locked = await lockRefundGraph(
       tx,
@@ -3328,12 +3726,22 @@ export async function settleRefundManually(
         // legend-7uqbs: paying it by hand would pay money the provider already
         // returned to the payer; release the refund instead.
         await assertNotProviderRefunded(tx, refund.tenantId, refund);
-        if (refund.providerRef !== null || refund.payoutPendingPolls > 0)
+        // legend-17ml: a provider reference or poll count blocks settling unless
+        // ops flagged the refund stuck (MANUAL_RECONCILIATION, or
+        // PAYOUT_NOT_FOUND_MAYBE_SENT); any other error keeps the refusal.
+        if (
+          (refund.providerRef !== null || refund.payoutPendingPolls > 0) &&
+          !isStuckAtProvider(refund)
+        )
           throw new HttpError(
             409,
             "REFUND_AT_PROVIDER",
             "The provider has this refund; its provider lookup settles it.",
           );
+        // legend-980 H1: any provider trace (ref, polls or an earlier attempt,
+        // flagged stuck or not) is judged on the provider's answer.
+        if (hasProviderTrace(refund))
+          assertProviderAllowsSettle(refund, lookup);
         // A claim not yet cleared may belong to a stalled worker: wait out the
         // lease plus a margin (its send takes the right atomically, takeSendRight).
         if (
@@ -3363,7 +3771,9 @@ export async function settleRefundManually(
             "paidAt must be between the refund request and now.",
           );
         const defect = await approvalDefectOf(tx, context, refund, now);
-        await completeRefund(tx, context, locked, null, now, {
+        // Keep the provider reference: a late webhook naming it must still find
+        // this refund and be recorded as a conflict.
+        await completeRefund(tx, context, locked, refund.providerRef, now, {
           actorId: actor,
           action: "payment.refund_settled_manually",
           reason: note,

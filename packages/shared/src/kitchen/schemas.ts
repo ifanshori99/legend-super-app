@@ -29,6 +29,7 @@ import {
   isoDateTimeSchema,
   timeOfDaySchema,
 } from "../core/index.ts";
+import { posOverrideIdSchema } from "../access/override.ts";
 import { PICKUP_CODE_PATTERN } from "./pickup-code.ts";
 import { channelSchema, stationTypeSchema } from "../menu/schemas.ts";
 
@@ -1046,8 +1047,8 @@ export const orderIssueViewSchema = z
  * "biaya bahan"), so a client cannot under-report it. The same cross-field
  * rules as the stored record apply, so the FE form fails before the request.
  * `approvedBy` names the supervisor who approved a manual refund (R25); the
- * field alone is never proof of approval, so `reportOrderIssue` refuses
- * `manual_refund` until a real approval flow exists (422).
+ * field alone is never proof of approval, so `reportOrderIssue` requires
+ * `overrideId` too and verifies and spends that approval once (legend-uyw0v).
  */
 export const createOrderIssueInputSchema = z
   .strictObject({
@@ -1061,6 +1062,11 @@ export const createOrderIssueInputSchema = z
     replacementItemId: uuidSchema.nullable().default(null),
     voucherId: uuidSchema.nullable(),
     approvedBy: userIdSchema.nullable(),
+    /**
+     * The approved `pos_overrides` row (action "refund", object "order_item",
+     * worth exactly the line total) a manual refund spends once.
+     */
+    overrideId: posOverrideIdSchema.nullable().default(null),
     /** A resend of the same key returns the stored issue, never a second one. */
     idempotencyKey: idempotencyKeySchema,
   })

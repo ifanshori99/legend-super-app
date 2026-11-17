@@ -65,6 +65,7 @@ import type { Tx } from "./menu-internals.ts";
 import { activeHoldOf } from "./pos-qris-hold.ts";
 import { failedOrderCodeWithOpenFundTx } from "./payment-failed-funds.ts";
 import { liveCodeWhere } from "./payment-live-code.ts";
+import { netAllocatedIdrSql } from "./payment-net-allocated-sql.ts";
 import {
   getSessionBill,
   lockGuestSessionForPayment,
@@ -576,8 +577,9 @@ export async function expireSplitClaimsTx(
 
 /**
  * What the paid intent put toward the bill: the money its provider evidence
- * brought in, less the part booked as unallocated funds. Same rule as
- * qr-order-consumers `allocatedIdrByIntent`, for one intent.
+ * brought in, less the part booked as unallocated funds and what the provider
+ * refunded on its own. Same rule as qr-order-consumers `allocatedIdrByIntent`,
+ * for one intent.
  */
 async function allocatedIdrOfIntent(
   tx: Tx,
@@ -585,12 +587,7 @@ async function allocatedIdrOfIntent(
   intentId: string,
 ): Promise<number> {
   const result = await tx.execute<{ allocated: string }>(sql`
-    SELECT (coalesce((SELECT sum(e.amount_idr) FROM payment_evidence e
-                       WHERE e.tenant_id = ${context.tenant.tenantId}
-                         AND e.payment_intent_id = ${intentId}), 0)
-          - coalesce((SELECT sum(f.amount_idr) FROM payment_unallocated_funds f
-                       WHERE f.tenant_id = ${context.tenant.tenantId}
-                         AND f.payment_intent_id = ${intentId}), 0))::text AS allocated`);
+    SELECT (${netAllocatedIdrSql(sql`${context.tenant.tenantId}`, sql`${intentId}`)})::text AS allocated`);
   return Number(result.rows[0]?.allocated ?? 0);
 }
 

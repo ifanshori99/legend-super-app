@@ -47,6 +47,7 @@ import { withTenant } from "../db/tenant.ts";
 import { sealSecret } from "../lib/secrets.ts";
 import type { Tx } from "./menu-internals.ts";
 import { refundableBalance } from "./payment-admin.service.ts";
+import { netAllocatedIdrSql } from "./payment-net-allocated-sql.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import {
   cancelPaymentLinkInTx,
@@ -929,18 +930,15 @@ export async function handlePosPaymentPaid(
     // A second payment of a covered link (`double_payment`) is also `paid`,
     // but its money sits in unallocated funds and is refunded from there.
     // The tender takes the intent whose money the link counted (allocated =
-    // evidence - unallocated > 0); ties by payment time, then id.
+    // evidence - unallocated - provider's own refunds > 0); ties by payment
+    // time, then id.
     const counted = await tx.execute(sql`
       SELECT i.id
         FROM payment_intents i
        WHERE i.tenant_id = ${tenantId}
          AND i.payment_link_id = ${payload.data.paymentLinkId}::uuid
          AND i.status IN ('paid', 'partially_refunded', 'refunded')
-         AND (SELECT coalesce(sum(e.amount_idr), 0) FROM payment_evidence e
-               WHERE e.tenant_id = i.tenant_id AND e.payment_intent_id = i.id)
-           - (SELECT coalesce(sum(f.amount_idr), 0) FROM payment_unallocated_funds f
-               WHERE f.tenant_id = i.tenant_id AND f.payment_intent_id = i.id)
-           > 0
+         AND ${netAllocatedIdrSql(sql`i.tenant_id`, sql`i.id`)} > 0
        ORDER BY i.paid_at ASC NULLS LAST, i.id ASC
        LIMIT 1
     `);

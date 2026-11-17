@@ -77,6 +77,7 @@ import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import type { Tx } from "./menu-internals.ts";
 import { accessSnapshotInTransaction } from "./permission-resolver.ts";
+import { assertLineNotManuallyRefunded } from "./order-issue-manual-refund.ts";
 import { estimateDeductionCostIdr } from "./recipe-deduction.service.ts";
 import { notifyQrOrderChange } from "./qr-order-realtime-signal.ts";
 import {
@@ -97,6 +98,7 @@ const IDEMPOTENCY_KEY = "order_issues_tenant_idempotency_key";
 const RECOVERY_KEY_PREFIX = "recovery:";
 const RESOLVED_ITEM_ONCE_INDEX = "order_issues_resolved_item_once_idx";
 const VOUCHER_ONCE_INDEX = "order_issues_voucher_once_idx";
+const MANUAL_REFUND_ONCE_INDEX = "order_issues_manual_refund_once_idx";
 const SWAP_CANDIDATE_LIMIT = 200;
 const SUGGESTED_SWAP_LIMIT = 10;
 const CREDIT_VOUCHER_DAYS = 30;
@@ -446,6 +448,8 @@ function recoveryConflictOf(error: unknown): unknown {
       "CONFLICT",
       "Voucher maaf ini sudah dipakai laporan lain.",
     );
+  if (violated === MANUAL_REFUND_ONCE_INDEX)
+    return new CoreError("CONFLICT", "Item ini sudah pernah direfund manual.");
   return error;
 }
 
@@ -679,6 +683,13 @@ async function storeFailedItem(
       );
     if (line.status === "voided" || line.posVoidedAt !== null)
       throw unprocessable("Item ini sudah dibatalkan (void).");
+
+    await assertLineNotManuallyRefunded(
+      tx,
+      tenantId,
+      line.orderId,
+      orderItemId,
+    );
 
     const costIdr = await estimateDeductionCostIdr(tx, context, line.outletId, [
       {
@@ -949,6 +960,13 @@ async function settleIssue(
   actor: { type: "user"; id: string } | { type: "system" },
   now: Date,
 ): Promise<OrderIssue> {
+  if (settlement.resolution !== "manual_refund")
+    await assertLineNotManuallyRefunded(
+      tx,
+      context.tenant.tenantId,
+      found.issue.orderId,
+      found.issue.orderItemId,
+    );
   const [row] = await tx
     .update(orderIssues)
     .set({

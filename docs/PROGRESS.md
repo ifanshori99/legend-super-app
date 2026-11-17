@@ -7032,3 +7032,22 @@ Cabang worktree `ghostex/d1e44aa2` dari `d26caed3c` (958). Kartu legend-30hfs (P
 **Bukti**: gagal-dulu di logika base (service dikembalikan ke d26caed3c): 20 dari 32 tes 967 gagal karena AssertionError perilaku, bukan setup. Lalu hijau (lihat laporan akhir batch). Architect xhigh 4 ronde: r1 2 P1 (payout tidak memeriksa uang dipakai penjualan, kredit sisa deposit) + 7 P2; r2 2 P1 (dana parkir muncul setelah refund, kredit deposit) + 1 P2 (koneksi kedua di bawah kunci); r3 1 P1 (transaksi terbelah tidak dihitung) + 2 P2 (alert ganda, `when` journal); r4 tanpa P1, 1 P2 (alert flag penuh) dibetulkan. Semua dibetulkan.
 
 **Diterima / catatan**: echo refund kita yang masih berjalan dan baru tercatat setelah jendela retry bisa dihitung sekali sebagai refund provider (hanya memblok, alert bisa palsu). Jumlah mentah refund provider yang tersimpan bisa melebihi nilai bayar (fakta dari provider); efeknya dipotong di 0 dan intent di-flag. Tindak lanjut: legend-m9pf6 (cek "sudah dibayar" di bill-split, pos-order-payment, pos-qris-hold, qr-order-consumers, facility-breakfast-consumers belum mengurangi refund provider).
+
+## Batch 980: refund sisa (17 Nov 2026)
+
+Cabang worktree `ghostex/980-refund-sisa-4-kartu` dari `9788dc422` (958 + 967). Kartu legend-m9pf6, legend-9z1r5, legend-17ml, legend-uyw0v. Migrasi 0540 (nomor kerja; journal idx 438, `when` 1795000000053, snapshot `0540_snapshot.json`): indeks unik parsial `order_issues_manual_refund_once_idx`.
+
+**Selesai**
+- m9pf6: helper `netAllocatedIdrSql` (bukti - dana parkir - refund provider, clamp >= 0) dipakai di bill-split, pos-qris-hold, qr-order-consumers, facility-breakfast-consumers, pos-order-payment, dan dua salinan akuntansi (amounts, guards). Penjualan dengan refund parsial provider tidak tampil lunas penuh.
+- 9z1r5: `refundSplit` memutar ulang refund sebelumnya per bagian dan memotong tiap bagian pada sisa bobotnya; total tetap tepat.
+- 17ml: settle manual boleh untuk MANUAL_RECONCILIATION / PAYOUT_NOT_FOUND_MAYBE_SENT; lookup provider sebelum settle (succeeded: tolak; pending: tolak lewat konstanta `ALLOW_MANUAL_SETTLE_WHILE_PROVIDER_PENDING = false`; error: tolak; failed/not found: boleh), cek basi di dalam lock, `providerRef` dipertahankan, dan pengawasan 14 hari atas refund yang sudah di-settle (konflik + alert bila provider kemudian membayar).
+- uyw0v: `reportOrderIssue` menerima `overrideId`; `consumeApproval` (action refund, order_item, nominal tepat = bagian bersih baris, sekali pakai). Refund manual lewat rute ini dan refund POS / void kasir saling eksklusif per order (pembeda: `approval_request_id` NULL = rute baru; ORD-09 selalu mengisinya). Baris yang sudah di-refund manual menolak voucher/swap/laporan item gagal, dan sebaliknya.
+
+**Bukti**: gagal-dulu 53 dari 4 berkas baru (AssertionError perilaku). Hijau: grup 185 berkas (2775 lulus; 12 merah diperbaiki: 1 bug kode, sisanya setup test), lalu 34 berkas terkait 514 lulus setelah perbaikan terakhir. Typecheck api/shared/web, eslint, prettier hijau; `db:generate` kosong. Architect xhigh 4 ronde; ronde 4 menemukan 1 High + 2 Medium yang sudah diperbaiki, perbaikan itu belum direview ulang.
+
+**Belum / keputusan founder**
+- Edge `order-ingest` void (978) belum menghitung refund manual: bisa membayar ulang baris yang sudah di-refund manual. Kartu lanjutan.
+- Settle manual ditolak saat provider `pending` (membatasi kasus inti legend-17ml); ubah konstanta bila founder mengizinkan.
+- Refund manual per baris vs refund POS saling eksklusif per order (aturan bisnis yang membatasi).
+- Order tamu tanpa baris `pos_orders`: refund manual ditolak 422 (legend-5wn1e).
+- Refund yang dibukukan sebelum 980 dibulatkan per refund; bagian bisa selisih Rp1.

@@ -543,15 +543,13 @@ describe("reportOrderIssue: remake", () => {
     await deliver(events[0]!);
     const deductions = await deductionsOf(order);
     // Order-insensitive: created_at follows the DB clock, which can step back.
-    expect(
-      deductions.map((d) => [d.kind, d.status]).sort(),
-    ).toEqual([
+    expect(deductions.map((d) => [d.kind, d.status]).sort()).toEqual([
       ["remake", "posted"],
       ["sale", "posted"],
     ]);
-    expect(
-      Number(deductions.find((d) => d.kind === "remake")!.cost_idr),
-    ).toBe(2 * CUP_COST);
+    expect(Number(deductions.find((d) => d.kind === "remake")!.cost_idr)).toBe(
+      2 * CUP_COST,
+    );
   });
 
   it("ignores a client-sent costIdr (strict contract)", async () => {
@@ -708,7 +706,9 @@ describe("reportOrderIssue: concurrent comps and idempotency", () => {
   });
 });
 
-describe("reportOrderIssue: R25 manual refund is refused", () => {
+// R25 (legend-uyw0v): a supervisor id is no proof. The accepted path (a real,
+// single-use approval) is in order-issues-manual-refund-approval-980.test.ts.
+describe("reportOrderIssue: R25 manual refund without an approval is refused", () => {
   const refund = (order: Order, approvedBy: string | null) =>
     issueBody(order, {
       type: "complaint",
@@ -719,13 +719,13 @@ describe("reportOrderIssue: R25 manual refund is refused", () => {
       reasonNote: "Pelanggan kecewa, refund manual disetujui",
     });
 
-  it("refuses a manual refund even with a valid supervisor id (422)", async () => {
+  it("refuses a manual refund with a valid supervisor id but no override (403)", async () => {
     const order = await seedOrder(kit.menuItem);
     const res = await api(recorder).report(
       order.ulid,
       refund(order, supervisor.userId),
     );
-    expect(res.status).toBe(422);
+    expect(res.status).toBe(403);
     expect(res.body.error.message).toContain("persetujuan");
   });
 
@@ -734,11 +734,11 @@ describe("reportOrderIssue: R25 manual refund is refused", () => {
     expect(
       (await api(recorder).report(order.ulid, refund(order, nobody.userId)))
         .status,
-    ).toBe(422);
+    ).toBe(403);
     expect(
       (await api(recorder).report(order.ulid, refund(order, recorder.userId)))
         .status,
-    ).toBe(422);
+    ).toBe(403);
     const { rows } = await owner.query(
       "SELECT 1 FROM order_issues WHERE tenant_id = $1 AND order_item_id = $2",
       [tenant.tenantId, order.itemUuid],
