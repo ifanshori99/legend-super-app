@@ -13,6 +13,12 @@
 // LOCK ORDER (design §2): never lock a `payroll_runs` row after an
 // `employee_loans` row; loans lock in `id` order. Both callers take the loans
 // only after the run row and the tax-year priors (run FOR SHARE) are held.
+// ONE DEDUCTION PER LOAN PER MONTH (CTO rule): per loan and calendar month of
+// `period_end`, a loan that already has a `payroll_loan_deductions` row in
+// ANOTHER regular run (draft, simulated, hr_approved, approved, locked or
+// paid; never reversed, never thr) is not deducted again. Simulation drops
+// such a loan from the plan (the run is not rejected); lock treats a clash as
+// 409 resultStale. Month = `date_trunc('month', period_end)` of both runs.
 // Money rules: a row is never above min(installment, outstanding - what other
 // live runs reserve, room); `planLoanDeductions` owns the room. Anything that
 // does not match at lock is 409 PAYROLL_RUN_RESULT_STALE, never a guess.
@@ -41,12 +47,54 @@ import type { PlannableLoan } from "./payroll-run-compose.ts";
 import type { Tx } from "./permission-resolver.ts";
 
 /** Runs whose rows still reserve part of a loan's outstanding balance. */
-const RESERVING_STATUSES = [
+export const RESERVING_STATUSES = [
   "draft",
   "simulated",
   "hr_approved",
   "approved",
 ] as const;
+
+/** Run statuses whose loan rows count as "this month's deduction is taken". */
+const MONTH_BLOCKING_STATUSES = [
+  ...RESERVING_STATUSES,
+  "locked",
+  "paid",
+] as const;
+
+/**
+ * Loan ids (of `loanIds`) that already have a row in another regular run
+ * whose period end falls in the same calendar month as `periodEnd`.
+ */
+async function loanIdsDeductedInMonth(
+  tx: Tx,
+  tenantId: TenantId,
+  runId: PayrollRunId,
+  periodEnd: string,
+  loanIds: readonly string[],
+): Promise<Set<string>> {
+  if (loanIds.length === 0) return new Set();
+  const rows = await tx
+    .selectDistinct({ loanId: payrollLoanDeductions.loanId })
+    .from(payrollLoanDeductions)
+    .innerJoin(
+      payrollRuns,
+      and(
+        eq(payrollRuns.tenantId, payrollLoanDeductions.tenantId),
+        eq(payrollRuns.id, payrollLoanDeductions.payrollRunId),
+      ),
+    )
+    .where(
+      and(
+        eq(payrollLoanDeductions.tenantId, tenantId),
+        inArray(payrollLoanDeductions.loanId, [...loanIds]),
+        sql`${payrollLoanDeductions.payrollRunId} <> ${runId}`,
+        eq(payrollRuns.runType, "regular"),
+        inArray(payrollRuns.status, [...MONTH_BLOCKING_STATUSES]),
+        sql`date_trunc('month', ${payrollRuns.periodEnd}::date) = date_trunc('month', ${periodEnd}::date)`,
+      ),
+    );
+  return new Set(rows.map((row) => row.loanId));
+}
 
 const resultStale = () =>
   new HttpError(
@@ -68,7 +116,9 @@ export type RunLoanDeduction = {
  * its first deduction period is on or before the run's period end. Its
  * `outstandingIdr` is lowered by what OTHER live runs already reserve, so two
  * runs never plan more than the loan owes; a loan with nothing left is
- * dropped. Call after `loadTaxYearPriors` (design §2).
+ * dropped, and so is a loan another regular run of the same calendar month
+ * already deducts (one deduction per loan per month; see header). Call after
+ * `loadTaxYearPriors` (design §2).
  */
 export async function lockLoansForRunSimulation(
   tx: Tx,
@@ -103,6 +153,14 @@ export async function lockLoansForRunSimulation(
     .for("update");
   if (loans.length === 0) return byEmployee;
 
+  const takenThisMonth = await loanIdsDeductedInMonth(
+    tx,
+    tenantId,
+    input.runId,
+    input.periodEnd,
+    loans.map((loan) => loan.id),
+  );
+
   const reservedRows = await tx
     .select({
       loanId: payrollLoanDeductions.loanId,
@@ -135,6 +193,7 @@ export async function lockLoansForRunSimulation(
   for (const loan of loans) {
     const free = Number(loan.outstandingIdr) - (reserved.get(loan.id) ?? 0);
     if (free <= 0 || loan.disbursedAt === null) continue;
+    if (takenThisMonth.has(loan.id)) continue;
     const list = byEmployee.get(loan.employeeId) ?? [];
     list.push({
       id: loan.id,
@@ -291,7 +350,25 @@ export async function lockLoansForRunLock(
     .orderBy(asc(employeeLoans.id))
     .for("update");
   const loanById = new Map(loans.map((loan) => [loan.id, loan]));
+  // One deduction per loan per calendar month: a clash with another regular
+  // run of the run's period-end month means the plan is stale.
+  const [runRow] = await tx
+    .select({ periodEnd: payrollRuns.periodEnd })
+    .from(payrollRuns)
+    .where(
+      and(eq(payrollRuns.tenantId, tenantId), eq(payrollRuns.id, run.id)),
+    )
+    .limit(1);
+  if (runRow === undefined) throw resultStale();
+  const takenThisMonth = await loanIdsDeductedInMonth(
+    tx,
+    tenantId,
+    run.id,
+    runRow.periodEnd,
+    loanIds,
+  );
   for (const row of rows) {
+    if (takenThisMonth.has(row.loanId)) throw resultStale();
     const loan = loanById.get(row.loanId);
     if (
       loan === undefined ||

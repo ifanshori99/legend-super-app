@@ -9,7 +9,7 @@
 // `pendingPayrollEngine` instead of being estimated here. Completing the
 // offboarding freezes the summary in `hris_offboardings.settlement_snapshot`.
 
-import { and, asc, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import {
   decimal4,
   formatDecimal4,
@@ -28,6 +28,7 @@ import { leaveBalances, leaveTypes } from "../db/schema/hris-leave.ts";
 import { hrisOffboardings } from "../db/schema/hris-lifecycle.ts";
 import {
   employeeLoans,
+  payrollLoanDeductions,
   payrollRuns,
   payslips,
   reimbursements,
@@ -35,6 +36,7 @@ import {
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { loadHrisAccess, type Tx } from "./hris-access.ts";
+import { RESERVING_STATUSES } from "./payroll-run-loans.ts";
 
 type OffboardingRow = typeof hrisOffboardings.$inferSelect;
 type EmployeeRow = typeof employees.$inferSelect;
@@ -110,13 +112,46 @@ export async function computeFinalSettlementInTx(
     : employee.joinDate;
   const unpaidCalendarDays = inclusiveDays(unpaidFrom, lastWorkingDate);
 
+  // Installments reserved by a run that is not locked yet (same statuses as
+  // payroll-run-loans.ts): not owed twice, so subtracted from the balance.
+  // Loans and reservations are read in ONE statement so both see the same
+  // snapshot.
+  const reservedDeductions = tx
+    .select({
+      loanId: payrollLoanDeductions.loanId,
+      reserved: sql<string>`SUM(${payrollLoanDeductions.amountIdr})`.as(
+        "reserved",
+      ),
+    })
+    .from(payrollLoanDeductions)
+    .innerJoin(
+      payrollRuns,
+      and(
+        eq(payrollRuns.tenantId, payrollLoanDeductions.tenantId),
+        eq(payrollRuns.id, payrollLoanDeductions.payrollRunId),
+      ),
+    )
+    .where(
+      and(
+        eq(payrollLoanDeductions.tenantId, tenantId),
+        eq(payrollLoanDeductions.employeeId, employee.id),
+        inArray(payrollRuns.status, [...RESERVING_STATUSES]),
+      ),
+    )
+    .groupBy(payrollLoanDeductions.loanId)
+    .as("reserved_deductions");
   const loans = await tx
     .select({
       id: employeeLoans.id,
       status: employeeLoans.status,
       outstandingIdr: employeeLoans.outstandingIdr,
+      reserved: sql<string>`COALESCE(${reservedDeductions.reserved}, 0)`,
     })
     .from(employeeLoans)
+    .leftJoin(
+      reservedDeductions,
+      eq(reservedDeductions.loanId, employeeLoans.id),
+    )
     .where(
       and(
         eq(employeeLoans.tenantId, tenantId),
@@ -124,6 +159,22 @@ export async function computeFinalSettlementInTx(
       ),
     )
     .orderBy(asc(employeeLoans.id));
+  const loansAfterPending = loans.map(({ reserved, ...loan }) => ({
+    ...loan,
+    outstandingIdr: Math.max(
+      0,
+      Number(loan.outstandingIdr) - Number(reserved),
+    ),
+  }));
+  // Only a disbursed loan can still be deducted, and never above what is left
+  // of it: min(reserved installment, outstanding) per loan.
+  const pendingLoans = loans
+    .filter((loan) => loan.status === "disbursed")
+    .map((loan) => ({
+      id: loan.id,
+      amountIdr: Math.min(Number(loan.reserved), Number(loan.outstandingIdr)),
+    }))
+    .filter((loan) => loan.amountIdr > 0);
   const claims = await tx
     .select({
       status: reimbursements.status,
@@ -180,8 +231,13 @@ export async function computeFinalSettlementInTx(
       unpaidCalendarDays,
     },
     outstandingLoans: outstandingLoans(
-      loans as Parameters<typeof outstandingLoans>[0],
+      loansAfterPending as Parameters<typeof outstandingLoans>[0],
     ),
+    pendingPayrollDeductions: {
+      count: pendingLoans.length,
+      amountIdr: pendingLoans.reduce((sum, loan) => sum + loan.amountIdr, 0),
+      loanIds: pendingLoans.map((loan) => loan.id),
+    },
     unpaidReimbursements: unpaidReimbursements(
       claims as Parameters<typeof unpaidReimbursements>[0],
     ),

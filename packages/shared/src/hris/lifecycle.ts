@@ -187,6 +187,19 @@ export const finalSettlementSummarySchema = z.strictObject({
     amountIdr: idrSchema,
     loanIds: z.array(employeeLoanIdSchema),
   }),
+  /**
+   * Kasbon installments already reserved by a draft..approved payroll run.
+   * They are subtracted from `outstandingLoans.amountIdr` so the same rupiah
+   * is not counted twice. Frozen snapshots from before this field default to
+   * none.
+   */
+  pendingPayrollDeductions: z
+    .strictObject({
+      count: z.number().int().nonnegative(),
+      amountIdr: idrSchema,
+      loanIds: z.array(employeeLoanIdSchema),
+    })
+    .default({ count: 0, amountIdr: idr(0), loanIds: [] }),
   unpaidReimbursements: z.strictObject({
     count: z.number().int().nonnegative(),
     amountIdr: idrSchema,

@@ -34,6 +34,24 @@
 // 13. [concurrent-simulate] two runs simulated in parallel on one loan never
 //                         reserve more than the balance and never deadlock.
 // 14. [gl-unchanged]      lives in payroll-gl-consumer.test.ts.
+// 15. [monthly-cap-*]     CTO decision: one installment per loan per pay month. A loan that
+//                         already has a deduction row in ANOTHER regular run whose period_end
+//                         is in the same calendar month (draft..approved, locked or paid; not
+//                         reversed) is not deducted again; the second run is not refused, it
+//                         just has no row and no LOAN line for that loan. Other loans of the
+//                         same employee are still deducted. The balance stays right.
+// 16. [settlement-*]      CTO decision: the final settlement summary (GET
+//                         /api/hris/offboardings/:id/settlement) shows
+//                         outstandingLoans.amountIdr = balance minus the deductions of runs
+//                         that are not locked yet (draft..approved), never negative, per loan,
+//                         and a separate top-level pendingPayrollDeductions
+//                         { count, amountIdr, loanIds } (only loans with a pending deduction > 0).
+//                         The pending amount of a loan never exceeds its balance, only
+//                         disbursed loans are listed, and a frozen snapshot saved before the
+//                         field existed parses with the default { count: 0, amountIdr: 0, loanIds: [] }.
+// 17. [monthly-cap-lock-conflict] two regular runs of one pay month that both hold a row for
+//                         one loan: locking the second one is 409 PAYROLL_RUN_RESULT_STALE,
+//                         the balance does not move (the monthly cap is also enforced at lock).
 //
 // ASSUMPTIONS (contract silent; contest if wrong)
 //  - The kasbon policy row (max_deduction_of_net_pay_bp) is the only switch: no row
@@ -53,6 +71,7 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
+import { finalSettlementSummarySchema } from "@starter/shared/hris";
 import { payrollRunIdSchema } from "@starter/shared/hris/payroll";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { FakeObjectStorage } from "@starter/shared/adapters";
@@ -114,6 +133,13 @@ const NOV = {
   periodStart: "2026-11-01",
   periodEnd: "2026-11-30",
   payDate: "2026-11-28",
+};
+// Earlier month for the history run of seeded loans: with one installment per loan
+// per pay month, history recorded in November would block the November runs.
+const OCT = {
+  periodStart: "2026-10-01",
+  periodEnd: "2026-10-31",
+  payDate: "2026-10-28",
 };
 const DEC = {
   periodStart: "2026-12-01",
@@ -401,7 +427,7 @@ async function ensureHistoryRun(): Promise<string> {
   if (historyRunId) return historyRunId;
   const world = await makeWorld();
   await makeEmployee(world);
-  const runId = await approvedRun(world);
+  const runId = await approvedRun(world, OCT);
   await lockRun(runId);
   expect(await runStatus(runId), "history run is locked").toBe("locked");
   historyRunId = runId;
@@ -649,6 +675,10 @@ afterAll(async () => {
     await conn.query(
       "DELETE FROM pay_components WHERE tenant_id = $1 AND code LIKE 'SM\\_%'",
       [tenant.id],
+    );
+    await conn.query(
+      "DELETE FROM hris_offboardings WHERE tenant_id = $1 AND employee_id = ANY($2::uuid[])",
+      [tenant.id, createdEmployees],
     );
     await conn.query(
       "DELETE FROM employment_contracts WHERE tenant_id = $1 AND employee_id = ANY($2)",
@@ -1243,4 +1273,395 @@ describe("two runs reserving one loan together", () => {
       expect(await outstandingOf(loan)).toBe(150_000);
     }
   }, 600_000);
+});
+
+// ---- 15. [monthly-cap] one installment per loan per pay month ----------------
+
+// Two regular runs of one pay month (same calendar month of period_end). The DB
+// allows only one live regular run per policy and period_start, so the two runs
+// are the two halves of November.
+const NOV_FIRST = {
+  periodStart: "2026-11-01",
+  periodEnd: "2026-11-15",
+  payDate: "2026-11-14",
+};
+const NOV_SECOND = {
+  periodStart: "2026-11-16",
+  periodEnd: "2026-11-30",
+  payDate: "2026-11-28",
+};
+
+async function approve(runId: string) {
+  await asTenant((conn) => approveSimulatedRun(conn, runId));
+  expect(await runStatus(runId), "run is approved").toBe("approved");
+}
+
+describe("one installment per loan per pay month", () => {
+  it("[monthly-cap-live] a second regular run of the same month, while the first is draft..approved, has no row and no LOAN line; it is not refused; the first keeps its row; lock takes one installment", async () => {
+    const world = await makeWorld();
+    const emp = await makeEmployee(world);
+    const loan = await seedLoan(emp.id);
+    const runA = await draftRun(world, NOV_FIRST);
+    await simulateRun(runA);
+    expect((await rowsOf(runA)).byLoan).toEqual({ [loan]: 100_000 });
+
+    const runB = await draftRun(world, NOV_SECOND);
+    const expectNoDeduction = async (stage: string) => {
+      await simulateRun(runB); // must not be refused
+      expect(await runStatus(runB), `${stage}: B simulated`).toBe("simulated");
+      expect((await rowsOf(runB)).rows, `${stage}: B has no row`).toHaveLength(
+        0,
+      );
+      expect(
+        await loanLines(runB),
+        `${stage}: B has no LOAN line`,
+      ).toHaveLength(0);
+      expect(await loanRepaymentOf(runB), `${stage}: B repays nothing`).toBe(0);
+    };
+
+    await expectNoDeduction("A simulated");
+    // A re-simulated while B exists: A's own row is still its row.
+    await simulateRun(runA);
+    expect((await rowsOf(runA)).byLoan).toEqual({ [loan]: 100_000 });
+    await approve(runA);
+    await expectNoDeduction("A approved");
+    expect((await rowsOf(runA)).byLoan).toEqual({ [loan]: 100_000 });
+
+    await lockRun(runA);
+    await expectNoDeduction("A locked");
+    expect(await outstandingOf(loan), "one installment taken").toBe(900_000);
+  }, 300_000);
+
+  it("[monthly-cap-locked] a second regular run of the same month created after the first is locked deducts nothing, even locked itself; another month still deducts; other loans of the employee still deduct", async () => {
+    const world = await makeWorld();
+    const emp = await makeEmployee(world);
+    const loan = await seedLoan(emp.id);
+    const runA = await approvedRun(world, NOV_FIRST);
+    await lockRun(runA);
+    expect(await outstandingOf(loan)).toBe(900_000);
+
+    // A loan disbursed after A was locked has no row in November: it is deducted.
+    const fresh = await seedLoan(emp.id, {
+      principal: 500_000,
+      installment: 50_000,
+    });
+    const runB = await draftRun(world, NOV_SECOND);
+    await simulateRun(runB);
+    expect(
+      (await rowsOf(runB)).byLoan,
+      "only the loan A did not touch",
+    ).toEqual({
+      [fresh]: 50_000,
+    });
+    expect(await loanRepaymentOf(runB)).toBe(50_000);
+    await approve(runB);
+    await lockRun(runB);
+    expect(await outstandingOf(loan), "no second installment").toBe(900_000);
+    expect((await loanOf(loan)).status).toBe("disbursed");
+    expect(await outstandingOf(fresh)).toBe(450_000);
+
+    // The next month is a new pay month: the loan is deducted again.
+    const runDec = await draftRun(world, DEC);
+    await simulateRun(runDec);
+    expect((await rowsOf(runDec)).byLoan).toEqual({
+      [loan]: 100_000,
+      [fresh]: 50_000,
+    });
+  }, 300_000);
+
+  it("[monthly-cap-reversed] a reversed run does not count: once the first run is reversed, the second run of the month deducts the installment, and its lock takes it once", async () => {
+    const world = await makeWorld();
+    const emp = await makeEmployee(world);
+    const loan = await seedLoan(emp.id);
+    const runA = await approvedRun(world, NOV_FIRST);
+    await lockRun(runA);
+    const runB = await draftRun(world, NOV_SECOND);
+    await simulateRun(runB);
+    expect((await rowsOf(runB)).rows, "A is locked: B has no row").toHaveLength(
+      0,
+    );
+
+    await requestReversal(runA);
+    await decideReversal(runA);
+    expect(await runStatus(runA)).toBe("reversed");
+    expect(await outstandingOf(loan), "the reversal gave it back").toBe(
+      1_000_000,
+    );
+
+    await simulateRun(runB);
+    expect((await rowsOf(runB)).byLoan, "A is reversed: B deducts").toEqual({
+      [loan]: 100_000,
+    });
+    await approve(runB);
+    await lockRun(runB);
+    expect(await outstandingOf(loan)).toBe(900_000);
+  }, 300_000);
+
+  it.each(["first run already locked", "first run still approved"])(
+    "[monthly-cap-lock-conflict] %s: a second run of the same month that also holds a row for the loan cannot lock, 409 PAYROLL_RUN_RESULT_STALE, balance unchanged",
+    async (scenario) => {
+      // ASSUMPTION: the writer never gives run B a row while run A holds one, so B's
+      // row is a replica of A's row inserted by SQL (a row the simulation did not make).
+      const world = await makeWorld();
+      const emp = await makeEmployee(world);
+      const loan = await seedLoan(emp.id);
+      const runA = await draftRun(world, NOV_FIRST);
+      await simulateRun(runA);
+      await approve(runA);
+      const runB = await draftRun(world, NOV_SECOND);
+      await simulateRun(runB);
+      await approve(runB);
+      const firstLocked = scenario === "first run already locked";
+      if (firstLocked) await lockRun(runA);
+
+      await asTenant(async (conn) => {
+        await conn.query(insertDeductionSql, [
+          tenant.id,
+          runB,
+          emp.id,
+          loan,
+          100_000,
+        ]);
+      }, true);
+      const balanceBefore = firstLocked ? 900_000 : 1_000_000;
+      expect(await outstandingOf(loan), "precondition").toBe(balanceBefore);
+
+      const refused = await failureOf(lockRun(runB));
+      expect(
+        refused,
+        "a second row of the same loan in the same month must be refused",
+      ).not.toBeNull();
+      expect(refused!.status).toBe(409);
+      expect(refused!.code).toBe("PAYROLL_RUN_RESULT_STALE");
+      expect(await runStatus(runB), "B stays approved").toBe("approved");
+      expect(await outstandingOf(loan), "balance unchanged").toBe(
+        balanceBefore,
+      );
+      expect((await loanOf(loan)).status).toBe("disbursed");
+    },
+    300_000,
+  );
+});
+
+// ---- 16. [settlement] pesangon summary shows the pending payroll deduction --
+
+type Settlement = {
+  outstandingLoans: { count: number; amountIdr: number; loanIds: string[] };
+  pendingPayrollDeductions: {
+    count: number;
+    amountIdr: number;
+    loanIds: string[];
+  };
+};
+
+async function offboardingFor(
+  hr: Awaited<ReturnType<typeof signedInUser>>,
+  employeeId: string,
+) {
+  const created = await hr.client
+    .post(`/api/hris/employees/${employeeId}/offboarding`)
+    .set(originHeader)
+    .send({
+      exitType: "resignation",
+      reason: "Akhir hubungan kerja uji kasbon.",
+      lastWorkingDate: "2034-09-30",
+    });
+  expect(created.status, JSON.stringify(created.body)).toBe(201);
+  const id = created.body.data.id as string;
+  return async (): Promise<Settlement> => {
+    const res = await hr.client.get(`/api/hris/offboardings/${id}/settlement`);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    return res.body.data as Settlement;
+  };
+}
+
+describe("final settlement summary and the kasbon of an unlocked run", () => {
+  let hr: Awaited<ReturnType<typeof signedInUser>>;
+  beforeAll(async () => {
+    hr = await signedInUser("Run loans HR");
+    await grantRole(hr.userId, ["hr.employee.manage", "payroll.view"]);
+  });
+
+  it("[settlement-pending-deduction] balance minus the unlocked run's deductions, with the pending deductions listed apart; a locked run is not subtracted twice; a reversal gives it all back", async () => {
+    const world = await makeWorld();
+    const emp = await makeEmployee(world);
+    const full = await seedLoan(emp.id); // 1.000.000, installment 100.000
+    const small = await seedLoan(emp.id, {
+      principal: 500_000,
+      installment: 80_000,
+      history: 450_000, // 50.000 left
+    });
+    const summary = await offboardingFor(hr, emp.id);
+
+    const none = await summary();
+    expect(none.outstandingLoans.amountIdr).toBe(1_050_000);
+    expect(none.pendingPayrollDeductions).toEqual({
+      count: 0,
+      amountIdr: 0,
+      loanIds: [],
+    });
+
+    const runId = await draftRun(world, NOV);
+    await simulateRun(runId);
+    expect((await rowsOf(runId)).sum).toBe(150_000);
+    for (const stage of ["simulated", "approved"]) {
+      if (stage === "approved") await approve(runId);
+      const pending = await summary();
+      expect(pending.outstandingLoans.amountIdr, stage).toBe(900_000);
+      expect(pending.pendingPayrollDeductions.amountIdr, stage).toBe(150_000);
+      expect(pending.pendingPayrollDeductions.count, stage).toBe(2);
+      expect(new Set(pending.pendingPayrollDeductions.loanIds), stage).toEqual(
+        new Set([full, small]),
+      );
+    }
+    // Showing the pending deduction changes no money.
+    expect(await outstandingOf(full)).toBe(1_000_000);
+    expect(await outstandingOf(small)).toBe(50_000);
+
+    await lockRun(runId);
+    const locked = await summary();
+    expect(locked.outstandingLoans.amountIdr, "balance already lowered").toBe(
+      900_000,
+    );
+    expect(locked.outstandingLoans.loanIds).toEqual([full]);
+    expect(locked.pendingPayrollDeductions).toEqual({
+      count: 0,
+      amountIdr: 0,
+      loanIds: [],
+    });
+
+    await requestReversal(runId);
+    await decideReversal(runId);
+    const reversed = await summary();
+    expect(reversed.outstandingLoans.amountIdr).toBe(1_050_000);
+    expect(reversed.pendingPayrollDeductions.amountIdr).toBe(0);
+  }, 300_000);
+
+  it("[settlement-fully-reserved] a loan whose whole balance is held by an unlocked run shows 0 owed and the amount as pending, never a negative number", async () => {
+    const world = await makeWorld();
+    const emp = await makeEmployee(world);
+    const loan = await seedLoan(emp.id, { history: 900_000 }); // 100.000 = one installment
+    const summary = await offboardingFor(hr, emp.id);
+    const runId = await draftRun(world, NOV);
+    await simulateRun(runId);
+    expect((await rowsOf(runId)).byLoan).toEqual({ [loan]: 100_000 });
+
+    const result = await summary();
+    expect(result.outstandingLoans.amountIdr).toBe(0);
+    expect(result.pendingPayrollDeductions).toEqual({
+      count: 1,
+      amountIdr: 100_000,
+      loanIds: [loan],
+    });
+  }, 300_000);
+
+  it("[settlement-snapshot-default] a frozen snapshot saved before pendingPayrollDeductions existed parses with the default none; a stored value is kept", () => {
+    const loanId = randomUUID();
+    const legacy = {
+      offboardingId: randomUUID(),
+      employeeId: randomUUID(),
+      exitType: "resignation",
+      joinDate: "2030-01-01",
+      lastWorkingDate: "2034-09-30",
+      runningSalary: {
+        lastPayrollRun: null,
+        unpaidFrom: null,
+        unpaidTo: "2034-09-30",
+        unpaidCalendarDays: 0,
+      },
+      outstandingLoans: { count: 1, amountIdr: 400_000, loanIds: [loanId] },
+      unpaidReimbursements: { count: 0, amountIdr: 0, pendingCount: 0 },
+      leave: [],
+      pendingPayrollEngine: [],
+      computedAt: "2034-10-01T00:00:00.000Z",
+      frozen: true,
+    };
+    expect("pendingPayrollDeductions" in legacy).toBe(false);
+
+    const parsed = finalSettlementSummarySchema.parse(legacy);
+    expect(parsed.pendingPayrollDeductions).toEqual({
+      count: 0,
+      amountIdr: 0,
+      loanIds: [],
+    });
+    expect(parsed.outstandingLoans.amountIdr).toBe(400_000);
+    expect(parsed.frozen).toBe(true);
+
+    const withValue = finalSettlementSummarySchema.parse({
+      ...legacy,
+      pendingPayrollDeductions: {
+        count: 1,
+        amountIdr: 100_000,
+        loanIds: [loanId],
+      },
+    });
+    expect(withValue.pendingPayrollDeductions).toEqual({
+      count: 1,
+      amountIdr: 100_000,
+      loanIds: [loanId],
+    });
+  });
+
+  it("[settlement-pending-capped] the pending deduction of a loan never exceeds what the loan still owes, and loans that are not disbursed are never listed as pending", async () => {
+    const world = await makeWorld();
+    const emp = await makeEmployee(world);
+    const disbursed = await seedLoan(emp.id, { history: 940_000 }); // 60.000 left
+    const approvedLoan = await seedLoan(emp.id, {
+      principal: 500_000,
+      installment: 50_000,
+      status: "approved",
+    });
+    const pendingLoan = await seedLoan(emp.id, {
+      principal: 300_000,
+      installment: 30_000,
+      status: "pending",
+    });
+    const summary = await offboardingFor(hr, emp.id);
+    const runId = await draftRun(world, NOV);
+    await simulateRun(runId);
+    expect(
+      (await rowsOf(runId)).byLoan,
+      "the writer reserves only the disbursed loan, capped at its balance",
+    ).toEqual({ [disbursed]: 60_000 });
+
+    // ASSUMPTION: rows of loans that are not disbursed, and a row above the balance,
+    // cannot come from the writer; they are seeded by SQL to prove the summary
+    // does not trust the rows blindly.
+    await asTenant(async (conn) => {
+      await conn.query(
+        `UPDATE payroll_loan_deductions SET amount_idr = 150000
+          WHERE tenant_id = $1 AND payroll_run_id = $2 AND loan_id = $3`,
+        [tenant.id, runId, disbursed],
+      );
+      await conn.query(insertDeductionSql, [
+        tenant.id,
+        runId,
+        emp.id,
+        approvedLoan,
+        50_000,
+      ]);
+      await conn.query(insertDeductionSql, [
+        tenant.id,
+        runId,
+        emp.id,
+        pendingLoan,
+        30_000,
+      ]);
+    }, true);
+
+    const result = await summary();
+    expect(
+      result.pendingPayrollDeductions.amountIdr,
+      "pending is capped at the 60.000 the loan still owes",
+    ).toBe(60_000);
+    expect(result.pendingPayrollDeductions.count).toBe(1);
+    expect(result.pendingPayrollDeductions.loanIds).toEqual([disbursed]);
+    expect(result.pendingPayrollDeductions.loanIds).not.toContain(approvedLoan);
+    expect(result.pendingPayrollDeductions.loanIds).not.toContain(pendingLoan);
+    expect(
+      result.outstandingLoans.amountIdr,
+      "never negative",
+    ).toBeGreaterThanOrEqual(0);
+    expect(await outstandingOf(disbursed), "no money moved").toBe(60_000);
+  }, 300_000);
 });
