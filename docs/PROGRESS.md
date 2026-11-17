@@ -7145,3 +7145,25 @@ Cabang `ghostex/60a93dca` dari `5e1f9d9fc`; commit `33b2aac77`. Kartu legend-7uq
 **Bukti**: gagal-dulu di logika base (17 tes gagal karena audit tidak ada, payout selesai, resolve berhasil, bukan setup), lalu hijau: 958 (2 berkas) 35 tes, ditambah hold-release dan refund-webhook 77 lulus; 5 grup terkait 376 lulus (payment-doit, refund, qris-hold open-funds, pos-qris-hold, migrasi/registry); typecheck API exit 0; prettier dan eslint hijau; text-contract 11/11; `db:generate` kosong. Architect xhigh: r1 2 P1 (race late-paid vs refunded, bill terkunci) dibetulkan, r2 tanpa P1.
 
 **Belum / tindak lanjut**: event refund parsial tidak disimpan (hanya envelope); refund transaksi tambahan (id berbeda dari intent) diabaikan `findBoundIntent`; refund `approved` chain tetap tertahan sampai staf release; dana tanpa `evidence_id` tetap diblok tapi tidak ber-stamp. Run awal sempat gagal `Connection terminated unexpectedly` (DB test), rerun hijau.
+
+## Batch83 merge train (17 Nov 2026)
+
+Basis `origin/milestone/m1` 1c185edc0 (batch82, ujung migrasi 0435). Cabang `int/batch83`, tujuh cabang masuk berurutan:
+1. `ghostex/baca-brief-memori-pg` 9203d4648 (legend-3id81: PG test 1536m full/e2e, 1024m terarah).
+2. `ghostex/baca-brief-flaky-created-at` aea2aa3b6 (legend-0l3v4).
+3. `ghostex/0967e46a` 2be7cfd8d (legend-dq4y3, mock e2e 36/38 pulih).
+4. `ghostex/954-payout-so950-followups` f1a512f44 (legend-628t9, e3m8d, lf0oj).
+5. `ghostex/60a93dca` d26caed3c (legend-7uqbs, 3wwme; recon 958).
+6. `ghostex/940-qr-va-sisa-p3` fbd0235e7 (legend-9vmit, founder Q15).
+7. `ghostex/ebc31074` fa79bcdd2 (legend-ra1k0).
+
+**Peta migrasi (lama -> baru)**: 0440_payout_grant_expiry_after_lock -> 0436 (when ...051); 0432_finance_policy_recon_case_due_days -> 0437, 0433_bank_match_stale -> 0438, 0434_payment_intent_provider_answered -> 0439, 0435_payment_intent_provider_refunded -> 0440, 0436_provider_refunded_after_recorded -> 0441 (when ...052 sampai ...056); 0450_payment_va_release_guest_kind -> 0442 (when ...057). Ujung m1 0442. `db:generate` kosong tiap tahap, `check-journal` hijau (peringatan FK 0438 tanpa NOT VALID dicakup tes owner NOBYPASSRLS). Perbaikan train: kunci `data-import-registry.test.ts` (0440 -> 0436, 0434 -> 0439), komentar 0440 -> 0436 di test 954, dan `migration-0433-0434-owner-populated.test.ts` diganti nama `migration-0438-0439-owner-populated.test.ts` dengan potongan journal `0438_` (tanpa itu memotong di 0433 payout).
+
+**Gerbang (semua hijau)**
+- Fast gate: 349 berkas (54 root + 285 API pemindai/area uang-akses + diff), 291 berkas vitest 4342 lulus; 24 menit.
+- Lint + check-workspace-links hijau; typecheck 1m49s.
+- e2e produksi 18 lulus/1 skip (16 dtk); build hijau.
+- Full run pertama (satu-satunya): API 1390 berkas 21345 lulus/46 skip/16 todo, web 95, root hijau; 110 menit (14:10-16:00). Bukti memori 3id81: tanpa OOM, tanpa `Connection terminated`/`57P03`/`in recovery mode`, tanpa rerun.
+- e2e mock: 2 gagal (`legend-g6d` AUTH-05 dan TEN-03, sudah di kartu baru), 1162 lulus, 2 skip; baseline batch82 40 gagal -> 2. Tidak ada kegagalan baru. 65 menit.
+
+**Angka**: 0 subagent (merge train jalan sendiri; gerbang lewat satu token heavy, pemegang: agent merge train), puncak 0.
