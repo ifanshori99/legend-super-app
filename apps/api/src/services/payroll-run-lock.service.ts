@@ -15,9 +15,14 @@
 //     order. Never take the month lock after a run row lock;
 //  3. status `approved -> locked` through the shared reducer (two distinct
 //     approvers, totals, snapshot);
-//  4. refusal of side effects this step does not perform (loans,
-//     reimbursements, service charge): refusing never pays anyone more. Rapel
-//     is locked here (receipt + full slip in the same transaction);
+//  4. refusal of side effects this step does not perform (reimbursements,
+//     service charge): refusing never pays anyone more. Kasbon is performed
+//     here (legend-8tfvr): the LOAN lines must equal the rows simulate
+//     recorded, then each loan is lowered by its row, once, in the same
+//     transaction as the guarded `approved -> locked` UPDATE (loans lock in id
+//     order after the run row and the priors; migration 0461 proves the
+//     ledger at commit). Rapel is locked here (receipt + full slip in the same
+//     transaction);
 //  5. the stored results equal the approved totals (409
 //     PAYROLL_RUN_RESULT_STALE), the tax-year priors are the ones simulated
 //     (409 PAYROLL_PPH21_MONTH_STALE), and the PPh 21 recomputed on the pinned
@@ -108,6 +113,10 @@ import {
   lockRapelInputsForRun,
 } from "./payroll-run-rapel-lock.ts";
 import {
+  applyLockLoanDeductions,
+  lockLoansForRunLock,
+} from "./payroll-run-loans.ts";
+import {
   storedRunResultSchema,
   type StoredRunResult,
 } from "./payroll-run-simulate.service.ts";
@@ -157,7 +166,7 @@ const lockUnsupported = () =>
   new HttpError(
     409,
     "PAYROLL_RUN_LOCK_UNSUPPORTED",
-    "Payroll ini memuat pinjaman, reimbursement, atau service charge yang belum didukung langkah kunci. Penguncian ditahan.",
+    "Payroll ini memuat reimbursement atau service charge yang belum didukung langkah kunci. Penguncian ditahan.",
   );
 
 /** Maps a stored `payroll_runs` row to the contract run (dates as ISO strings). */
@@ -419,11 +428,7 @@ export async function lockPayrollRunInTransaction(
   const configSnapshot = payrollConfigSnapshotSchema.parse(run.configSnapshot);
 
   // Side effects this step does not perform: refuse, never pay more.
-  if (
-    totals.loanRepaymentIdr > 0 ||
-    totals.reimbursementIdr > 0 ||
-    totals.serviceChargeIdr > 0
-  )
+  if (totals.reimbursementIdr > 0 || totals.serviceChargeIdr > 0)
     throw lockUnsupported();
   // A run the rapel finalizer already wrote slips for cannot lock again.
   const [finalized] = await tx
@@ -651,7 +656,17 @@ export async function lockPayrollRunInTransaction(
       ? new Date(latestLock.at.getTime() + 1)
       : now;
 
-  // All checks done: the writes. Order: status, receipts, payslips.
+  // Kasbon: the LOAN lines equal the recorded rows and every loan still owes
+  // them (locks the loans FOR UPDATE in id order, after the run and priors).
+  const loanDeductions = await lockLoansForRunLock(
+    tx,
+    tenantId,
+    run,
+    plan,
+    configSnapshot.loanMaxDeductionOfNetPayBp,
+  );
+
+  // All checks done: the writes. Order: status, loans, receipts, payslips.
   const updated = await tx
     .update(payrollRuns)
     .set({ status: "locked", lockedBy: actor, lockedAt, updatedAt: now })
@@ -665,6 +680,8 @@ export async function lockPayrollRunInTransaction(
     .returning({ id: payrollRuns.id });
   if (updated.length !== 1)
     throw new PayrollError("PAYROLL_RUN_INVALID_TRANSITION");
+  // The rows are frozen now (0460): lower each loan by its row, once.
+  await applyLockLoanDeductions(tx, tenantId, loanDeductions, lockedAt);
 
   const slips = plan.map((entry) => ({
     payslipId: entry.payslipId,

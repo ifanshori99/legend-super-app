@@ -25,8 +25,15 @@
 //  - A deduction above the loan principal is refused with any DB error.
 //  - The reversal "marks or removes" the deduction rows (brief); the test does
 //    not assert which, only the loan balance and the idempotence.
-//  - A locked run carrying loans is seeded with raw SQL (the lock itself still
-//    refuses loans, brief xo0xx): totals.loanRepaymentIdr + deduction rows.
+//  - A locked run carrying loans is seeded with raw SQL on top of a real
+//    simulate and lock (replica role): totals.loanRepaymentIdr + deduction rows.
+//    The simulate/lock writer of legend-8tfvr is covered in
+//    payroll-run-loans.test.ts; this file keeps the raw fixtures of the reversal.
+//  - Ledger invariant I3 (legend-8tfvr, migration 0461): for a disbursed loan,
+//    principal - outstanding = the deductions of its locked or paid runs. Every
+//    loan the reversal touches is seeded that way (see expectLedgerHolds); only
+//    [reversal-refuses-unrecorded] seeds the broken state on purpose, and the
+//    refused reversal never writes the loan.
 import { randomUUID } from "node:crypto";
 import { Writable } from "node:stream";
 import { Pool, type PoolClient } from "pg";
@@ -333,6 +340,30 @@ async function seedLoan(
   return loanId;
 }
 
+/**
+ * Ledger invariant I3 as a fixture check: principal - outstanding equals the
+ * rows recorded by locked/paid runs. A seed that breaks it would make the
+ * deferred ledger trigger refuse the restore commit with 23514.
+ */
+async function expectLedgerHolds(loanIds: string[]) {
+  for (const loanId of loanIds) {
+    const row = await scalar(
+      `SELECT l.principal_idr - l.outstanding_idr AS owed_paid,
+              COALESCE((SELECT SUM(d.amount_idr)
+                          FROM payroll_loan_deductions d
+                          JOIN payroll_runs r ON r.tenant_id = d.tenant_id AND r.id = d.payroll_run_id
+                         WHERE d.tenant_id = l.tenant_id AND d.loan_id = l.id
+                           AND r.status IN ('locked', 'paid')), 0) AS recorded
+         FROM employee_loans l WHERE l.tenant_id = $1 AND l.id = $2`,
+      [tenant.id, loanId],
+    );
+    expect(
+      Number(row.owed_paid),
+      `fixture loan ${loanId} satisfies the ledger invariant I3`,
+    ).toBe(Number(row.recorded));
+  }
+}
+
 const insertDeductionSql = `INSERT INTO payroll_loan_deductions
   (tenant_id, payroll_run_id, employee_id, loan_id, amount_idr)
   VALUES ($1, $2, $3, $4, $5)`;
@@ -637,11 +668,18 @@ describe("reversal restores loan deductions", () => {
     const emp = await makeEmployee(world);
     const first = await seedLoan(emp.id, PRINCIPAL - DEDUCTED);
     const second = await seedLoan(emp.id, 400_000 - 50_000, 400_000);
-    const unrelated = await seedLoan(emp.id, 700_000, PRINCIPAL);
     const runId = await lockedRunWithDeductions(world, emp, [
       { loanId: first, amount: DEDUCTED },
       { loanId: second, amount: 50_000 },
     ]);
+    // The unrelated loan paid 300_000 in ANOTHER locked run (I3 holds for it too).
+    const otherWorld = await makeWorld();
+    const otherEmp = await makeEmployee(otherWorld);
+    const unrelated = await seedLoan(otherEmp.id, 700_000, PRINCIPAL);
+    await lockedRunWithDeductions(otherWorld, otherEmp, [
+      { loanId: unrelated, amount: 300_000 },
+    ]);
+    await expectLedgerHolds([first, second, unrelated]);
 
     await requestReversal(runId);
     await decideReversal(runId);
@@ -650,6 +688,7 @@ describe("reversal restores loan deductions", () => {
     expect(await outstandingOf(first)).toBe(PRINCIPAL);
     expect(await outstandingOf(second)).toBe(400_000);
     expect(await outstandingOf(unrelated)).toBe(700_000);
+    await expectLedgerHolds([first, second, unrelated]);
 
     // Deciding again must not restore a second time.
     const again = await failureOf(decideReversal(runId));
@@ -659,7 +698,8 @@ describe("reversal restores loan deductions", () => {
     ).not.toBeNull();
     expect(await outstandingOf(first)).toBe(PRINCIPAL);
     expect(await outstandingOf(second)).toBe(400_000);
-  }, 120_000);
+    expect(await outstandingOf(unrelated)).toBe(700_000);
+  }, 180_000);
 
   it("[reversal-refuses-unrecorded] loan repayment in totals without deduction rows stays refused (409); run stays locked, loans untouched", async () => {
     const world = await makeWorld();

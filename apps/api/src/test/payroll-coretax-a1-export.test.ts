@@ -14,11 +14,25 @@
 //   as payroll-coretax-export.test.ts. This file replaces that file's
 //   [coretax-annual-not-supported] test once the A1 ships (the stub 422 stays
 //   for unknown kinds only).
-// - The XML root is `<A1Bulk>` (older brief) with `<TIN>` (entity NPWP), one
-//   `<A1>` block per employee, `<CounterpartTin>` = employee NIK (as BPMP),
-//   `<TaxPeriodYear>` = the requested year. Block element name `A1` and these
-//   tags are assumptions; only the A1Bulk root and the brief's field names
-//   (SalaryPensionJhtTht, StatusOfWithholding, ...) come from the brief.
+// - FORMAT (legend-y6w4q): the official DJP BPA1 layout, documented in
+//   docs/qa/coretax-bpa1-format.md (XSD embedded in the DJP converter): root
+//   `<A1Bulk>` > `<TIN>` (entity NPWP) > `<ListOfA1>` > one `<A1>` per employee
+//   with exactly 27 elements in the mandatory xsd:sequence order. The official
+//   sample is stored unchanged as fixtures/payroll/bpa1-official.xml (golden).
+//   `<CounterpartTin>` = employee NIK, `<TaxPeriodYear>` = the requested year.
+// - Article21IncomeTax = the PPh 21 already withheld, i.e. the sum of the
+//   sealed locked payslips' PPh 21 of the year; it is never recomputed from
+//   gross x rate. Money-critical: the A1 total must equal the slips' total.
+// - Engine constants (format doc "Fix plan"): WorkForSecondEmployer No,
+//   GrossUpOpt No, IncomeTaxBenefit 0, NumberOfMonths 0, CounterpartPassport and
+//   PrevWhTaxSlip xsi:nil, TaxCertificate N/A, CounterpartOpt Resident,
+//   TaxObjectCode 21-100-01, TaxExemptOpt = the slip's PTKP status.
+// - Assumptions (doc silent): TaxPeriodMonthStart/End = first/last month with a
+//   locked slip of the employee; StatusOfWithholding FullYear when that is
+//   1..12, else PartialYear (Annualized is never emitted); WithholdingDate is a
+//   YYYY-MM-DD date not earlier than the first day of the last paid month;
+//   IDPlaceOfBusinessActivity = 22 digits starting with the entity NPWP
+//   (NITKU, as in the sample).
 // - Fixture slips are pure base salary (category base_salary), which the brief
 //   maps to SalaryPensionJhtTht. The sum of that field over the blocks must
 //   equal the sum of the locked payslips' gross for the year. Fixture slips are
@@ -31,6 +45,7 @@
 //   annual_statement: 422 (code not fixed: only the status is asserted, plus the
 //   codes already named by the monthly export for the same conditions).
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { Writable } from "node:stream";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -743,6 +758,57 @@ function a1ByNik(xml: string): Map<string, string> {
   return map;
 }
 const salary = (block: string) => Number(field(block, "SalaryPensionJhtTht"));
+const withheld = (block: string) => Number(field(block, "Article21IncomeTax"));
+const sumPph = (slips: Slip[]) => slips.reduce((s, x) => s + x.pph, 0);
+
+/** The 27 A1 elements in the mandatory XSD order (docs/qa/coretax-bpa1-format.md). */
+const A1_ORDER = [
+  "WorkForSecondEmployer",
+  "TaxPeriodMonthStart",
+  "TaxPeriodMonthEnd",
+  "TaxPeriodYear",
+  "CounterpartOpt",
+  "CounterpartPassport",
+  "CounterpartTin",
+  "TaxExemptOpt",
+  "StatusOfWithholding",
+  "CounterpartPosition",
+  "TaxObjectCode",
+  "NumberOfMonths",
+  "SalaryPensionJhtTht",
+  "GrossUpOpt",
+  "IncomeTaxBenefit",
+  "OtherBenefit",
+  "Honorarium",
+  "InsurancePaidByEmployer",
+  "Natura",
+  "TantiemBonusThr",
+  "PensionContributionJhtThtFee",
+  "Zakat",
+  "PrevWhTaxSlip",
+  "TaxCertificate",
+  "Article21IncomeTax",
+  "IDPlaceOfBusinessActivity",
+  "WithholdingDate",
+];
+
+/** Names of the opening tags in `xml`, in document order. */
+const tagNames = (xml: string): string[] =>
+  [...xml.matchAll(/<([A-Za-z][A-Za-z0-9]*)\b[^>]*>/g)].map((m) => m[1]!);
+/** Element names directly inside one `<A1>` block, in order. */
+const a1Tags = (block: string) =>
+  tagNames(block.replace(/^<A1>/, "").replace(/<\/A1>$/, ""));
+const a1Blocks = (xml: string) => xml.match(/<A1>[\s\S]*?<\/A1>/g) ?? [];
+/** Everything outside the A1 blocks: the envelope (root, TIN, ListOfA1). */
+const envelopeTags = (xml: string) =>
+  tagNames(xml.replace(/<A1>[\s\S]*?<\/A1>/g, ""));
+const isNil = (block: string, tag: string) =>
+  new RegExp(`<${tag}\\s+xsi:nil="true"\\s*(/>|></${tag}>)`).test(block);
+
+const OFFICIAL_SAMPLE = readFileSync(
+  new URL("./fixtures/payroll/bpa1-official.xml", import.meta.url),
+  "utf8",
+);
 const sumGross = (slips: Slip[]) => slips.reduce((s, x) => s + x.gross, 0);
 
 // Valid TER brackets (see the monthly test header): A 40M = 16%, 12M = 4%,
@@ -964,6 +1030,186 @@ describe("Coretax A1 export: content", () => {
   });
 });
 
+describe("Coretax A1 export: official DJP BPA1 format (legend-y6w4q)", () => {
+  it("[coretax-a1-golden-bpa1] the official DJP sample defines the layout: the 27 element names and their order, and the envelope, match the export", async () => {
+    // Guard the fixture itself: it is the unchanged DJP sample.
+    const officialBlocks = a1Blocks(OFFICIAL_SAMPLE);
+    expect(officialBlocks).toHaveLength(2);
+    for (const block of officialBlocks) expect(a1Tags(block)).toEqual(A1_ORDER);
+
+    const world = await makeWorld(digits(16));
+    const emp = await makeEmployee(world);
+    await seedRun(world, "locked", [slipA(emp)], runDates(3));
+    const { xml } = await exportA1Ok(world);
+    const blocks = a1Blocks(xml);
+    expect(blocks).toHaveLength(1);
+    expect(a1Tags(blocks[0]!)).toEqual(a1Tags(officialBlocks[0]!));
+    expect(envelopeTags(xml)).toEqual(envelopeTags(OFFICIAL_SAMPLE));
+    expect(envelopeTags(xml)).toEqual(["A1Bulk", "TIN", "ListOfA1"]);
+    expect(xml).toContain(
+      'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"',
+    );
+    expect(xml.startsWith('<?xml version="1.0" encoding="UTF-8"')).toBe(true);
+  });
+
+  it("[coretax-a1-27-elements-in-xsd-order] every A1 block has exactly the 27 official elements in XSD order, with no guessed or renamed element, and TIN is the entity NPWP before ListOfA1", async () => {
+    const world = await makeWorld(digits(16));
+    const a = await makeEmployee(world);
+    const b = await makeEmployee(world);
+    await seedRun(world, "locked", [slipA(a), slipB(b)], runDates(3));
+    const { xml } = await exportA1Ok(world);
+    const blocks = a1Blocks(xml);
+    expect(blocks).toHaveLength(2);
+    for (const block of blocks) {
+      const tags = a1Tags(block);
+      expect(tags).toHaveLength(27);
+      expect(tags).toEqual(A1_ORDER);
+      for (const guessed of ["StatusTaxExemption", "Position"])
+        expect(tags).not.toContain(guessed);
+    }
+    expect(field(xml, "TIN")).toBe(world.npwp);
+    expect(xml.indexOf("<TIN>")).toBeLessThan(xml.indexOf("<ListOfA1>"));
+  });
+
+  it("[coretax-a1-official-values] fixed and mapped elements carry the official values: constants, nil elements, PTKP, position, NITKU, withholding date", async () => {
+    const world = await makeWorld(digits(16));
+    const a = await makeEmployee(world);
+    const b = await makeEmployee(world);
+    await seedRun(world, "locked", [slipA(a), slipB(b)], runDates(3));
+    const { xml } = await exportA1Ok(world);
+    const blocks = a1ByNik(xml);
+    const blockA = blocks.get(a.nik!)!;
+    const blockB = blocks.get(b.nik!)!;
+    for (const block of [blockA, blockB]) {
+      expect(field(block, "WorkForSecondEmployer")).toBe("No");
+      expect(field(block, "CounterpartOpt")).toBe("Resident");
+      expect(isNil(block, "CounterpartPassport")).toBe(true);
+      expect(isNil(block, "PrevWhTaxSlip")).toBe(true);
+      expect(field(block, "TaxObjectCode")).toBe("21-100-01");
+      expect(field(block, "NumberOfMonths")).toBe("0");
+      expect(field(block, "GrossUpOpt")).toBe("No");
+      expect(field(block, "IncomeTaxBenefit")).toBe("0");
+      expect(field(block, "TaxCertificate")).toBe("N/A");
+      expect(field(block, "CounterpartPosition")).toBe("Kasir");
+      expect(field(block, "IDPlaceOfBusinessActivity")).toMatch(/^\d{22}$/);
+      expect(
+        field(block, "IDPlaceOfBusinessActivity")!.startsWith(world.npwp),
+      ).toBe(true);
+      expect(field(block, "WithholdingDate")).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(field(block, "WithholdingDate")! >= `${YEAR}-03-01`).toBe(true);
+      // Plain decimals: no separators, no currency.
+      for (const amount of [
+        "SalaryPensionJhtTht",
+        "OtherBenefit",
+        "Honorarium",
+        "InsurancePaidByEmployer",
+        "Natura",
+        "TantiemBonusThr",
+        "PensionContributionJhtThtFee",
+        "Zakat",
+        "Article21IncomeTax",
+      ])
+        expect(field(block, amount), amount).toMatch(/^\d+(\.\d+)?$/);
+    }
+    expect(field(blockA, "TaxExemptOpt")).toBe("TK/0");
+    expect(field(blockB, "TaxExemptOpt")).toBe("K/1");
+  });
+
+  it("[coretax-a1-tax-period-and-status] a full-year employee is FullYear 1..12; a part-year employee is PartialYear with the first and last paid month", async () => {
+    const world = await makeWorld(digits(16));
+    const full = await makeEmployee(world);
+    const part = await makeEmployee(world);
+    // One run per month and policy: the part-year employee shares runs 5 and 6.
+    for (let month = 1; month <= 12; month++)
+      await seedRun(
+        world,
+        "locked",
+        month === 5 || month === 6
+          ? [slip12(full), slip9(part)]
+          : [slip12(full)],
+        runDates(month),
+      );
+    const { xml } = await exportA1Ok(world);
+    const blocks = a1ByNik(xml);
+    const fullBlock = blocks.get(full.nik!)!;
+    const partBlock = blocks.get(part.nik!)!;
+    expect(field(fullBlock, "StatusOfWithholding")).toBe("FullYear");
+    expect(field(fullBlock, "TaxPeriodMonthStart")).toBe("1");
+    expect(field(fullBlock, "TaxPeriodMonthEnd")).toBe("12");
+    expect(field(fullBlock, "WithholdingDate")! >= `${YEAR}-12-01`).toBe(true);
+    expect(field(partBlock, "StatusOfWithholding")).toBe("PartialYear");
+    expect(field(partBlock, "TaxPeriodMonthStart")).toBe("5");
+    expect(field(partBlock, "TaxPeriodMonthEnd")).toBe("6");
+    expect(field(partBlock, "TaxPeriodYear")).toBe(String(YEAR));
+    expect(field(partBlock, "WithholdingDate")! >= `${YEAR}-06-01`).toBe(true);
+  });
+});
+
+describe("Coretax A1 export: Article21IncomeTax is the PPh 21 already withheld", () => {
+  it("[coretax-a1-article21-equals-slip-pph21] per employee Article21IncomeTax is the sum of the year's locked slips' PPh 21; other years and reversed runs are left out", async () => {
+    const world = await makeWorld(digits(16));
+    const a = await makeEmployee(world);
+    const b = await makeEmployee(world);
+    const aSlips = [slipA(a), slip12(a), slip9(a)];
+    await seedRun(world, "locked", [aSlips[0]!, slipB(b)], runDates(3));
+    await seedRun(world, "locked", [aSlips[1]!], runDates(6));
+    await seedRun(world, "locked", [aSlips[2]!], runDates(9));
+    await seedRun(world, "locked", [slip12(a)], runDates(12, YEAR - 1)); // other year
+    const reversed = await seedRun(world, "locked", [slip12(a)], runDates(10));
+    await reverseRun(reversed);
+
+    const { xml } = await exportA1Ok(world);
+    const blocks = a1ByNik(xml);
+    expect(withheld(blocks.get(a.nik!)!)).toBe(sumPph(aSlips)); // 7_037_500
+    expect(withheld(blocks.get(b.nik!)!)).toBe(80_000);
+  });
+
+  it("[coretax-a1-article21-not-recomputed] the withheld amount is copied from the slips, never recomputed: an annual-recalculation slip with a PPh 21 no TER rate gives is carried as is", async () => {
+    const world = await makeWorld(digits(16));
+    const emp = await makeEmployee(world);
+    const ter = slip12(emp); // 480_000
+    const december: Slip = {
+      emp,
+      gross: 20_000_000,
+      bp: null,
+      pph: 1_234_567, // not gross x any rate
+      method: "annual_recalculation",
+    };
+    await seedRun(world, "locked", [ter], runDates(11));
+    await seedRun(world, "locked", [december], runDates(12));
+    const { xml } = await exportA1Ok(world);
+    const block = a1ByNik(xml).get(emp.nik!)!;
+    expect(withheld(block)).toBe(480_000 + 1_234_567);
+    expect(salary(block)).toBe(12_000_000 + 20_000_000);
+  });
+
+  it("[coretax-a1-total-equals-sealed-slips] the file total of PPh 21 and of gross equals the sum of every sealed locked slip of the year: no pay-over, no under-report", async () => {
+    const world = await makeWorld(digits(16));
+    const a = await makeEmployee(world);
+    const b = await makeEmployee(world);
+    const c = await makeEmployee(world);
+    const sealed: Slip[] = [];
+    const lock = async (slips: Slip[], month: number) => {
+      sealed.push(...slips);
+      await seedRun(world, "locked", slips, runDates(month));
+    };
+    await lock([slipA(a), slipB(b)], 2);
+    await lock([slip12(a), slip9(c)], 5);
+    await lock([slip12(b), slip9(c)], 8);
+    // Not sealed for this A1: other year, reversed run, approved (unlocked) run.
+    await seedRun(world, "locked", [slipA(a)], runDates(12, YEAR - 1));
+    await reverseRun(await seedRun(world, "locked", [slipA(b)], runDates(10)));
+    await seedRun(world, "approved", [slipA(c)], runDates(11));
+
+    const { file, xml } = await exportA1Ok(world);
+    const blocks = [...a1ByNik(xml).values()];
+    expect(blocks).toHaveLength(3);
+    expect(blocks.reduce((s, x) => s + withheld(x), 0)).toBe(sumPph(sealed));
+    expect(blocks.reduce((s, x) => s + salary(x), 0)).toBe(sumGross(sealed));
+    expect(file.summary?.rowCount).toBe(3);
+  });
+});
+
 describe("Coretax A1 export: refusals (never guess)", () => {
   it("[coretax-a1-missing-nik] an employee without NIK refuses the whole export with 422 listing employee ids, never NIKs", async () => {
     const world = await makeWorld(digits(16));
@@ -993,6 +1239,66 @@ describe("Coretax A1 export: refusals (never guess)", () => {
       "PAYROLL_TAX_EXPORT_WITHHOLDER_NPWP_INVALID",
     );
     expect(await exportCount(world.entityId)).toBe(0);
+  });
+
+  it("[coretax-a1-zero-gross-tax-invalid] an employee with gross 0 but a sealed slip PPh 21 above 0 refuses the whole export with 422 PAYROLL_TAX_EXPORT_A1_TAX_INVALID, never listing NIKs", async () => {
+    // Assumption: a slip that withheld tax on no income is inconsistent data the
+    // exporter must not report or silently drop (money-critical: no under-report).
+    // The slip is an annual_recalculation one so no TER bracket is involved.
+    const world = await makeWorld(digits(16));
+    const ok = await makeEmployee(world);
+    const broken = await makeEmployee(world);
+    await seedRun(
+      world,
+      "locked",
+      [
+        slip9(ok),
+        {
+          emp: broken,
+          gross: 0,
+          bp: null,
+          pph: 500,
+          method: "annual_recalculation",
+        },
+      ],
+      runDates(3),
+    );
+    const response = await exportTax(exporter, annual(world));
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(response.body.error?.code).toBe("PAYROLL_TAX_EXPORT_A1_TAX_INVALID");
+    expect(response.text).not.toContain(broken.nik!);
+    expect(response.text).not.toContain(ok.nik!);
+    expect(await exportCount(world.entityId)).toBe(0);
+  });
+
+  it("[coretax-a1-zero-gross-zero-tax-skipped] an employee with gross 0 and PPh 21 0 is left out of the file; the export still succeeds for the others", async () => {
+    // Assumption: "skipped" means no A1 block and not counted in summary.rowCount.
+    const world = await makeWorld(digits(16));
+    const paid = await makeEmployee(world);
+    const idle = await makeEmployee(world);
+    await seedRun(
+      world,
+      "locked",
+      [
+        slip9(paid),
+        {
+          emp: idle,
+          gross: 0,
+          bp: null,
+          pph: 0,
+          method: "annual_recalculation",
+        },
+      ],
+      runDates(3),
+    );
+    const { file, xml } = await exportA1Ok(world);
+    const blocks = a1ByNik(xml);
+    expect(blocks.has(paid.nik!), "the paid employee has an A1").toBe(true);
+    expect(blocks.has(idle.nik!), "the zero-gross employee has none").toBe(
+      false,
+    );
+    expect(blocks.size).toBe(1);
+    expect(file.summary?.rowCount).toBe(1);
   });
 
   it("[coretax-a1-no-pii-in-response] the response carries no NIK, NPWP or employee name", async () => {

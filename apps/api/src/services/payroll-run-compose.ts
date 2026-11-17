@@ -18,17 +18,29 @@
 // - PPh 21 - gross deductions, so net is never negative and the collection never
 // exceeds the open balance (`planPph21ReceivableCollection`, founder B8).
 //
-// OPEN O2: loan installments are not composed here; the simulate service
-// refuses runs with loans, reimbursements or service charge (422
+// Kasbon (legend-8tfvr, D4): after the receivable, `planLoanDeductions` plans
+// the installments over the pay left (gross - every deduction so far), capped
+// by the policy's share of that pay. One LOAN line per loan that takes money:
+// category `loan_installment`, kind `deduction`, not taxable, `sourceId` = the
+// loan id. The simulate service writes one `payroll_loan_deductions` row per
+// line, so the rows and the lines bind 1:1. The simulate service still refuses
+// runs with reimbursements or service charge (422
 // PAYROLL_RUN_SIMULATE_UNSUPPORTED).
 
-import { idr, sumIdr, type Idr, type OutletId } from "@starter/shared/core";
+import {
+  idr,
+  sumIdr,
+  type BasisPoints,
+  type Idr,
+  type OutletId,
+} from "@starter/shared/core";
 import type { EmployeeId } from "@starter/shared/hris";
 import {
   payslipBpjsLineSchema,
   payslipCalculationSchema,
   payslipLineSchema,
   payslipWithholdingCap,
+  planLoanDeductions,
   planPph21ReceivableCollection,
   type BpjsContribution,
   type PayComponentCategory,
@@ -51,6 +63,7 @@ const SYSTEM_LINES = {
     name: "Penagihan Kekurangan PPh 21",
     category: "pph21_receivable",
   },
+  LOAN: { name: "Cicilan Kasbon", category: "loan_installment" },
 } as const satisfies Record<
   string,
   { name: string; category: PayComponentCategory }
@@ -59,6 +72,7 @@ const SYSTEM_LINES = {
 function systemLine(
   code: keyof typeof SYSTEM_LINES,
   amountIdr: number,
+  sourceId: string | null = null,
 ): PayslipLine {
   const { name, category } = SYSTEM_LINES[code];
   return payslipLineSchema.parse({
@@ -68,13 +82,14 @@ function systemLine(
     kind:
       category === "bpjs_employee" ||
       category === "pph21" ||
-      category === "pph21_receivable"
+      category === "pph21_receivable" ||
+      category === "loan_installment"
         ? "deduction"
         : "earning",
     amountIdr,
     taxable: false,
     quantity: null,
-    sourceId: null,
+    sourceId,
   });
 }
 
@@ -170,6 +185,18 @@ export type ComposePayslipInput = {
    * (which only counts what this payslip may collect); absent = the same.
    */
   totalOpenReceivableIdr?: Idr | number;
+  /**
+   * Loans this payslip may deduct from (already locked and reduced by what
+   * other live runs reserve). Absent = none. See `loanMaxDeductionOfNetPayBp`.
+   */
+  loans?: readonly PlannableLoan[];
+  /** Policy share of the pay left that all installments may take (absent = 0). */
+  loanMaxDeductionOfNetPayBp?: BasisPoints;
+};
+
+/** A loan the composer may plan an installment for (`planLoanDeductions`). */
+export type PlannableLoan = Parameters<typeof planLoanDeductions>[0][number] & {
+  employeeId: EmployeeId;
 };
 
 /** The full payslip body of one employee (see the header). */
@@ -201,6 +228,15 @@ export function composePayslipCalculation(
     deductions.push(
       systemLine("PPH21_RECEIVABLE", receivableCollection.collectedIdr),
     );
+  // Kasbon: whatever the deductions above leave, up to the policy share.
+  const loanPlan = planLoanDeductions(
+    input.loans ?? [],
+    idr(grossIdr - sumIdr(deductions.map((l) => l.amountIdr))),
+    input.loanMaxDeductionOfNetPayBp ?? 0,
+  );
+  for (const plan of loanPlan)
+    if (plan.deductedIdr > 0)
+      deductions.push(systemLine("LOAN", plan.deductedIdr, plan.loanId));
 
   const lines = [...earnings, ...deductions];
   const deductionsIdr = sumIdr(deductions.map((l) => l.amountIdr));
