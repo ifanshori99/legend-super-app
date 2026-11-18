@@ -43,7 +43,10 @@ import {
 import { db } from "../db/index.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
-import { sweepEdgeOfflineAlerts } from "../services/edge-offline-sweep.ts";
+import {
+  startEdgeOfflineSweepWorker,
+  sweepEdgeOfflineAlerts,
+} from "../services/edge-offline-sweep.ts";
 import {
   registerEdgeNode,
   revokeEdgeNode,
@@ -262,6 +265,7 @@ const setHours = (site: Site, hours: OpeningHours, timeZone = "Asia/Jakarta") =>
   );
 
 type AlertRow = {
+  id: string;
   edge_node_id: string;
   outlet_id: string;
   tenant_id: string;
@@ -273,7 +277,7 @@ type AlertRow = {
 async function alertsOf(tid: string, nodeId?: string): Promise<AlertRow[]> {
   return asOwnerTenant(tid, async (client) => {
     const { rows } = await client.query<AlertRow>(
-      `SELECT edge_node_id, outlet_id, tenant_id, raised_at, last_seen_at, resolved_at
+      `SELECT id, edge_node_id, outlet_id, tenant_id, raised_at, last_seen_at, resolved_at
          FROM edge_node_alerts
         WHERE tenant_id = $1 AND kind = $2 AND ($3::uuid IS NULL OR edge_node_id = $3::uuid)
         ORDER BY raised_at, created_at`,
@@ -303,6 +307,39 @@ const aboutOutlet = (rows: NotificationRow[], name: string) =>
 const sweep = (now: Date, thresholdMinutes = 30) =>
   sweepEdgeOfflineAlerts(db, { now, thresholdMinutes });
 
+async function restartedWorkerSweep(now: Date) {
+  let finish!: (result: Awaited<ReturnType<typeof sweep>>) => void;
+  let fail!: (error: unknown) => void;
+  const done = new Promise<Awaited<ReturnType<typeof sweep>>>(
+    (resolve, reject) => {
+      finish = resolve;
+      fail = reject;
+    },
+  );
+  const worker = startEdgeOfflineSweepWorker(
+    db,
+    { intervalMs: 3_600_000, thresholdMinutes: 30 },
+    async (database, options) => {
+      try {
+        const result = await sweepEdgeOfflineAlerts(database, {
+          ...options,
+          now,
+        });
+        finish(result);
+        return result;
+      } catch (error) {
+        fail(error);
+        throw error;
+      }
+    },
+  );
+  try {
+    return await done;
+  } finally {
+    await worker.stop();
+  }
+}
+
 async function resetState() {
   for (const tid of [tenantId, tenant2Id]) {
     await asOwnerTenant(tid, async (client) => {
@@ -324,6 +361,11 @@ async function resetState() {
     ]);
   }
   for (const site of [siteA, siteB, siteC]) await setHours(site, DAILY);
+  await asOwnerTenant(tenantId, (client) =>
+    client.query("UPDATE outlets SET status = 'active' WHERE id = $1", [
+      outletA,
+    ]),
+  );
 }
 
 // ------------------------------------------------------------------- set up
@@ -409,6 +451,50 @@ afterAll(async () => {
 // -------------------------------------------------------------- T29 closed
 
 describe("legend-5ab0l offline sweep: closed outlet", () => {
+  it("legend-tj9y6 a closed outlet never alarms even when its old schedule is open and its node remains active", async () => {
+    await asOwnerTenant(tenantId, (client) =>
+      client.query("UPDATE outlets SET status = 'closed' WHERE id = $1", [
+        outletA,
+      ]),
+    );
+    await setHeartbeat(siteA, before(NOW_OPEN, 60));
+
+    expect(await sweep(NOW_OPEN)).toMatchObject({
+      raised: 0,
+      resolved: 0,
+      failed: 0,
+    });
+    expect(await alertsOf(tenantId, siteA.nodeId)).toHaveLength(0);
+    expect(await notificationsOf(tenantId)).toHaveLength(0);
+  });
+
+  it("legend-tj9y6 closing an outlet resolves its existing offline alarm without another notification", async () => {
+    await setHeartbeat(siteA, before(NOW_OPEN, 60));
+    await sweep(NOW_OPEN);
+    expect(await openAlertsOf(tenantId, siteA.nodeId)).toHaveLength(1);
+    const notesBefore = await notificationsOf(tenantId);
+
+    await asOwnerTenant(tenantId, (client) =>
+      client.query("UPDATE outlets SET status = 'closed' WHERE id = $1", [
+        outletA,
+      ]),
+    );
+    expect(await sweep(after(NOW_OPEN, 1))).toMatchObject({
+      raised: 0,
+      resolved: 1,
+      failed: 0,
+    });
+    expect(await openAlertsOf(tenantId, siteA.nodeId)).toHaveLength(0);
+    expect(await alertsOf(tenantId, siteA.nodeId)).toHaveLength(1);
+    expect(await notificationsOf(tenantId)).toHaveLength(notesBefore.length);
+    expect(await sweep(after(NOW_OPEN, 60))).toMatchObject({
+      raised: 0,
+      resolved: 0,
+      failed: 0,
+    });
+    expect(await notificationsOf(tenantId)).toHaveLength(notesBefore.length);
+  });
+
   it("T29 an outlet that is closed now gets no alert and no notification, however old the heartbeat", async () => {
     // Thu 00:00 WIB, hours 08:00-22:00: closed.
     const now = new Date("2026-03-04T17:00:00.000Z");
@@ -581,6 +667,56 @@ describe("legend-5ab0l offline sweep: heartbeat returns", () => {
     expect(await notificationsOf(tenantId)).toHaveLength(4);
   });
 
+  it.each([
+    ["a delayed sweep", sweep],
+    ["a restarted worker", restartedWorkerSweep],
+  ] as const)(
+    "legend-qwuqq %s recognises recovery between sweeps and notifies once for the new episode",
+    async (_label, runSweep) => {
+      // Wed 09:00 WIB: the first outage has already crossed the threshold.
+      const first = new Date("2026-03-04T02:00:00.000Z");
+      await setHeartbeat(siteA, before(first, 40));
+      await runSweep(first);
+      const firstAlert = (await alertsOf(tenantId, siteA.nodeId))[0]!;
+      expect(await notificationsOf(tenantId)).toHaveLength(2);
+
+      // A heartbeat arrives at 09:01, but by the 10:00 sweep it is 59 minutes old.
+      await setHeartbeat(siteA, after(first, 1));
+      const second = after(first, 60);
+      expect(await runSweep(second)).toMatchObject({
+        raised: 1,
+        resolved: 1,
+        failed: 0,
+      });
+
+      const alerts = await alertsOf(tenantId, siteA.nodeId);
+      expect(alerts).toHaveLength(2);
+      expect(
+        alerts.find((alert) => alert.id === firstAlert.id)?.resolved_at,
+      ).not.toBeNull();
+      const open = await openAlertsOf(tenantId, siteA.nodeId);
+      expect(open).toHaveLength(1);
+      expect(open[0]!.id).not.toBe(firstAlert.id);
+      expect(open[0]!.raised_at).toEqual(second);
+      const notes = await notificationsOf(tenantId);
+      expect(
+        notes.filter((row) => row.user_id === supervisorUserId),
+      ).toHaveLength(2);
+      expect(notes.filter((row) => row.user_id === ownerUserId)).toHaveLength(
+        2,
+      );
+
+      // Restarting again while the second outage continues must not duplicate it.
+      expect(await runSweep(after(second, 1))).toMatchObject({
+        raised: 0,
+        resolved: 0,
+        failed: 0,
+      });
+      expect(await alertsOf(tenantId, siteA.nodeId)).toHaveLength(2);
+      expect(await notificationsOf(tenantId)).toHaveLength(4);
+    },
+  );
+
   it("T32 a fresh heartbeat resolves the alert even after the outlet has closed", async () => {
     await setHeartbeat(siteA, before(NOW_OPEN, 31));
     await sweep(NOW_OPEN);
@@ -596,6 +732,46 @@ describe("legend-5ab0l offline sweep: heartbeat returns", () => {
 // --------------------------------------------- T33 past midnight and zones
 
 describe("legend-5ab0l offline sweep: open window and time zone", () => {
+  it("legend-l83d2 spring DST counts elapsed time from the actual opening instant", async () => {
+    await setHours(
+      siteA,
+      week({ sun: { opens: "01:50", closes: "05:00" } }),
+      "America/New_York",
+    );
+    await setHeartbeat(siteA, new Date("2026-03-08T06:00:00.000Z"));
+
+    // 03:10 EDT, but only 20 real minutes since 01:50 EST (06:50Z).
+    expect(await sweep(new Date("2026-03-08T07:10:00.000Z"))).toMatchObject({
+      raised: 0,
+      failed: 0,
+    });
+    expect(await alertsOf(tenantId, siteA.nodeId)).toHaveLength(0);
+    expect(await notificationsOf(tenantId)).toHaveLength(0);
+    expect(await sweep(new Date("2026-03-08T07:20:00.000Z"))).toMatchObject({
+      raised: 1,
+      failed: 0,
+    });
+    expect(await openAlertsOf(tenantId, siteA.nodeId)).toHaveLength(1);
+    expect(await notificationsOf(tenantId)).toHaveLength(2);
+  });
+
+  it("legend-l83d2 autumn DST includes the repeated hour in elapsed open time", async () => {
+    await setHours(
+      siteA,
+      week({ sun: { opens: "00:50", closes: "05:00" } }),
+      "America/New_York",
+    );
+    await setHeartbeat(siteA, new Date("2026-11-01T04:00:00.000Z"));
+
+    // The second 01:10 is 80 real minutes after 00:50 EDT (04:50Z).
+    expect(await sweep(new Date("2026-11-01T06:10:00.000Z"))).toMatchObject({
+      raised: 1,
+      failed: 0,
+    });
+    expect(await openAlertsOf(tenantId, siteA.nodeId)).toHaveLength(1);
+    expect(await notificationsOf(tenantId)).toHaveLength(2);
+  });
+
   it("T33 a window that runs past midnight alarms after midnight, counted from its opening", async () => {
     await setHours(siteA, week({ wed: { opens: "18:00", closes: "02:00" } }));
     // Thu 01:30 WIB. Last heartbeat Wed 12:00 WIB, before the window opened.

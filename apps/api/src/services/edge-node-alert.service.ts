@@ -7,7 +7,7 @@
 // the edge link applier calls these inside its own transaction (kept apart
 // from edge-sync-conflict.service.ts for the same reason as
 // edge-sync-conflict-alert.ts).
-import { and, eq, isNull, lte, sql } from "drizzle-orm";
+import { and, eq, isNull, lt, lte, sql } from "drizzle-orm";
 import { createUlid, type OutletId, type TenantId } from "@starter/shared/core";
 import type { EdgeNodeAlertKind } from "@starter/shared/edge/node-status";
 import { edgeNodeAlerts } from "../db/schema/edge-node-alert.ts";
@@ -73,6 +73,8 @@ export interface ResolveEdgeNodeAlertsInput {
   at: Date;
   /** Resolve only a row last confirmed at or before this time. */
   quietSince?: Date;
+  /** Resolve only an episode opened before this recovery heartbeat. */
+  raisedBefore?: Date;
 }
 
 /**
@@ -97,6 +99,9 @@ export async function resolveEdgeNodeAlerts(
         isNull(edgeNodeAlerts.resolvedAt),
         input.quietSince
           ? lte(edgeNodeAlerts.lastSeenAt, input.quietSince)
+          : undefined,
+        input.raisedBefore
+          ? lt(edgeNodeAlerts.raisedAt, input.raisedBefore)
           : undefined,
       ),
     )

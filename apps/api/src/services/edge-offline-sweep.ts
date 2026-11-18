@@ -88,6 +88,35 @@ function localAxis(at: Date, timeZone: string): number {
 }
 
 /**
+ * Convert a scheduled wall time with the offsets around that date, rather
+ * than the offset at sweep time. A repeated time uses its first occurrence;
+ * a skipped time moves forward by the gap. These choices keep the opening
+ * stable across both sides of a DST transition.
+ */
+function scheduledInstant(wall: number, timeZone: string): number {
+  const offsets = new Set(
+    [wall - DAY_MS, wall, wall + DAY_MS].map(
+      (sample) => localAxis(new Date(sample), timeZone) - sample,
+    ),
+  );
+  const candidates = [...offsets].map((offset) => {
+    const instant = wall - offset;
+    return { instant, local: localAxis(new Date(instant), timeZone) };
+  });
+  const exact = candidates
+    .filter((candidate) => candidate.local === wall)
+    .map((candidate) => candidate.instant);
+  if (exact.length > 0) return Math.min(...exact);
+  // No exact instant means this wall time was skipped. Choose the nearest
+  // wall time after it, preserving minutes within the forward clock gap.
+  const after = candidates
+    .filter((candidate) => candidate.local > wall)
+    .sort((a, b) => a.local - b.local || a.instant - b.instant)[0];
+  if (!after) throw new RangeError("Opening time cannot be resolved");
+  return after.instant;
+}
+
+/**
  * Start of the outlet's CURRENT open window, or null when it is closed at
  * `now`. Hours are read in `timeZone`; a `null` day is closed; `closes` earlier
  * than `opens` runs into the next local day, so yesterday's window can still be
@@ -99,18 +128,21 @@ export function outletOpenSince(
   now: Date,
 ): Date | null {
   const nowLocal = localAxis(now, timeZone);
-  // Offset of the zone at `now`; maps a local wall-clock instant back to UTC.
-  const offset = nowLocal - now.getTime();
   const today = nowLocal - (((nowLocal % DAY_MS) + DAY_MS) % DAY_MS);
   // Today's window first: it starts later than a window left from yesterday.
   for (const dayStart of [today, today - DAY_MS]) {
     const hours = openingHours[WEEKDAYS[new Date(dayStart).getUTCDay()]!];
     if (!hours) continue;
-    const start = dayStart + minutesOfDay(hours.opens);
+    const start = scheduledInstant(
+      dayStart + minutesOfDay(hours.opens),
+      timeZone,
+    );
     const closes = minutesOfDay(hours.closes);
-    const end =
-      dayStart + closes + (closes < minutesOfDay(hours.opens) ? DAY_MS : 0);
-    if (start <= nowLocal && nowLocal < end) return new Date(start - offset);
+    const end = scheduledInstant(
+      dayStart + closes + (closes < minutesOfDay(hours.opens) ? DAY_MS : 0),
+      timeZone,
+    );
+    if (start <= now.getTime() && now.getTime() < end) return new Date(start);
   }
   return null;
 }
@@ -162,28 +194,45 @@ async function sweepNode(
   tx: EdgeTx,
   context: ScopedTenantContext,
   node: SweepNode,
-  hasOpenAlert: boolean,
+  openAlertRaisedAt: Date | undefined,
   now: Date,
   thresholdMinutes: number,
 ): Promise<{ raised: number; resolved: number }> {
   const thresholdMs = thresholdMinutes * MINUTE_MS;
   const tenantId = context.tenant.tenantId;
-  // A heartbeat inside the threshold ends the episode, open outlet or not.
-  if (now.getTime() - node.lastHeartbeatAt.getTime() < thresholdMs) {
-    if (!hasOpenAlert) return { raised: 0, resolved: 0 };
-    const resolved = await resolveEdgeNodeAlerts(tx, {
+  let resolved = 0;
+  // A heartbeat after the persisted episode proves recovery even if the
+  // worker next runs only after that heartbeat has itself gone stale. The
+  // SQL guard cannot close a replacement episode from a concurrent sweep.
+  if (
+    openAlertRaisedAt &&
+    node.lastHeartbeatAt.getTime() > openAlertRaisedAt.getTime()
+  ) {
+    resolved = await resolveEdgeNodeAlerts(tx, {
       tenantId,
       edgeNodeId: node.edgeNodeId,
       kind: "edge_offline",
-      at: now,
+      at: node.lastHeartbeatAt,
+      raisedBefore: node.lastHeartbeatAt,
     });
-    return { raised: 0, resolved: resolved > 0 ? 1 : 0 };
+  }
+  // A heartbeat inside the threshold ends the episode, open outlet or not.
+  if (now.getTime() - node.lastHeartbeatAt.getTime() < thresholdMs) {
+    if (openAlertRaisedAt && resolved === 0)
+      resolved = await resolveEdgeNodeAlerts(tx, {
+        tenantId,
+        edgeNodeId: node.edgeNodeId,
+        kind: "edge_offline",
+        at: now,
+        quietSince: now,
+      });
+    return { raised: 0, resolved };
   }
   const openSince = outletOpenSince(node.openingHours, node.timeZone, now);
-  if (!openSince) return { raised: 0, resolved: 0 };
+  if (!openSince) return { raised: 0, resolved };
   const since = Math.max(node.lastHeartbeatAt.getTime(), openSince.getTime());
   const offlineMs = now.getTime() - since;
-  if (offlineMs < thresholdMs) return { raised: 0, resolved: 0 };
+  if (offlineMs < thresholdMs) return { raised: 0, resolved };
   const { opened } = await raiseEdgeNodeAlert(tx, {
     tenantId,
     outletId: node.outletId,
@@ -195,7 +244,7 @@ async function sweepNode(
       lastHeartbeatAt: node.lastHeartbeatAt.toISOString(),
     },
   });
-  if (!opened) return { raised: 0, resolved: 0 };
+  if (!opened) return { raised: 0, resolved };
   const [alert] = await tx
     .select({ id: edgeNodeAlerts.id })
     .from(edgeNodeAlerts)
@@ -209,7 +258,7 @@ async function sweepNode(
     );
   if (!alert) throw new Error("Edge offline alert missing after raise");
   await notifyEdgeOffline(tx, context, node, alert.id, thresholdMinutes, now);
-  return { raised: 1, resolved: 0 };
+  return { raised: 1, resolved };
 }
 
 async function sweepTenant(
@@ -249,13 +298,16 @@ async function sweepTenant(
         and(
           eq(edgeNodes.tenantId, tenantId),
           eq(edgeNodes.status, "active"),
+          eq(outlets.status, "active"),
           isNotNull(edgeNodes.lastHeartbeatAt),
         ),
       );
     const openAlerts = await tx
       .select({
         edgeNodeId: edgeNodeAlerts.edgeNodeId,
+        raisedAt: edgeNodeAlerts.raisedAt,
         nodeStatus: edgeNodes.status,
+        outletStatus: outlets.status,
       })
       .from(edgeNodeAlerts)
       .innerJoin(
@@ -265,6 +317,13 @@ async function sweepTenant(
           eq(edgeNodes.id, edgeNodeAlerts.edgeNodeId),
         ),
       )
+      .innerJoin(
+        outlets,
+        and(
+          eq(outlets.tenantId, edgeNodeAlerts.tenantId),
+          eq(outlets.id, edgeNodeAlerts.outletId),
+        ),
+      )
       .where(
         and(
           eq(edgeNodeAlerts.tenantId, tenantId),
@@ -272,17 +331,22 @@ async function sweepTenant(
           isNull(edgeNodeAlerts.resolvedAt),
         ),
       );
-    const withAlert = new Set(openAlerts.map((row) => row.edgeNodeId));
+    const withAlert = new Map(
+      openAlerts.map((row) => [row.edgeNodeId, row.raisedAt]),
+    );
 
-    // A revoked node no longer reports: its open alert closes (D10).
-    const revoked = openAlerts
-      .filter((row) => row.nodeStatus === "revoked")
+    // A revoked node or a closed outlet no longer reports: its alert closes.
+    // This also handles a node whose heartbeat has been cleared to null.
+    const retired = openAlerts
+      .filter(
+        (row) => row.nodeStatus === "revoked" || row.outletStatus === "closed",
+      )
       .map((row) => row.edgeNodeId);
-    if (revoked.length > 0) {
+    if (retired.length > 0) {
       try {
         result.resolved += await tx.transaction(async (savepoint) => {
           let closed = 0;
-          for (const edgeNodeId of revoked)
+          for (const edgeNodeId of retired)
             closed += await resolveEdgeNodeAlerts(savepoint, {
               tenantId,
               edgeNodeId,
@@ -297,9 +361,9 @@ async function sweepTenant(
           {
             errName: error instanceof Error ? error.name : "Error",
             tenantId,
-            nodes: revoked.length,
+            nodes: retired.length,
           },
-          "Edge offline sweep: resolving revoked nodes failed",
+          "Edge offline sweep: resolving retired nodes failed",
         );
       }
     }
@@ -320,7 +384,7 @@ async function sweepTenant(
             savepoint,
             context,
             node,
-            withAlert.has(node.edgeNodeId),
+            withAlert.get(node.edgeNodeId),
             now,
             thresholdMinutes,
           ),

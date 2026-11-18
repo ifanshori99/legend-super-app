@@ -232,3 +232,39 @@ describe("legend-5ab0l outletOpenSince: the outlet's own time zone decides", () 
     ).toBeNull();
   });
 });
+
+describe("legend-l83d2 outletOpenSince: DST transitions", () => {
+  // Conversion policy: an ambiguous opening uses its first occurrence; an
+  // opening in a DST gap shifts forward by the gap (02:30 becomes 03:30).
+  it("spring forward uses the offset at opening, before the clock jumped", () => {
+    const sunday = week({ sun: { opens: "01:50", closes: "05:00" } });
+    expect(
+      iso(openSince(sunday, "America/New_York", "2026-03-08T07:10:00.000Z")),
+    ).toBe("2026-03-08T06:50:00.000Z");
+  });
+
+  it("autumn fallback uses the opening offset before the repeated hour", () => {
+    const sunday = week({ sun: { opens: "00:50", closes: "05:00" } });
+    expect(
+      iso(openSince(sunday, "America/New_York", "2026-11-01T06:10:00.000Z")),
+    ).toBe("2026-11-01T04:50:00.000Z");
+  });
+
+  it("an ambiguous opening stays open during the repeated hour even before its wall-clock time repeats", () => {
+    const sunday = week({ sun: { opens: "01:50", closes: "05:00" } });
+    // The first 01:50 was at 05:50Z; 06:10Z is the second 01:10.
+    expect(
+      iso(openSince(sunday, "America/New_York", "2026-11-01T06:10:00.000Z")),
+    ).toBe("2026-11-01T05:50:00.000Z");
+  });
+
+  it("a nonexistent spring opening shifts forward by the gap and stays closed until that instant", () => {
+    const sunday = week({ sun: { opens: "02:30", closes: "05:00" } });
+    expect(
+      openSince(sunday, "America/New_York", "2026-03-08T07:10:00.000Z"),
+    ).toBeNull();
+    expect(
+      iso(openSince(sunday, "America/New_York", "2026-03-08T07:30:00.000Z")),
+    ).toBe("2026-03-08T07:30:00.000Z");
+  });
+});
