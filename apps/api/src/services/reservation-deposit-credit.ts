@@ -31,11 +31,9 @@
 import type { TenantId } from "@starter/shared/core";
 import { sql, type SQL } from "drizzle-orm";
 import type { Tx } from "./permission-resolver.ts";
+import { holdFactCoveredIdrSql } from "./refund-hold-coverage.ts";
 import { HOLD_TRANSACTION_CONFLICT_REASON } from "./refund-hold-reasons.ts";
-import {
-  ownRefundEchoesFactSql,
-  providerRefundedForeignIdrSql,
-} from "./payment-provider-refunded-foreign-sql.ts";
+import { providerRefundedForeignIdrSql } from "./payment-provider-refunded-foreign-sql.ts";
 
 /** Advisory key of one DP intent's refund-vs-credit lock. */
 function depositIntentLockKey(tenantId: TenantId, intentId: string): string {
@@ -175,15 +173,7 @@ export function openReconHoldIdrSql(tenant: SQL, intent: SQL): SQL {
         -- from the pool), so it never hides the hold. A fact of the same id and
         -- transaction that covers the hold gives 0: the money is not taken
         -- twice. A hold that names no transaction is never covered.
-        ELSE greatest(h.amount_idr - coalesce((SELECT sum(hr.amount_idr)
-          FROM payment_provider_refunds hr
-          WHERE hr.tenant_id=h.tenant_id AND hr.payment_intent_id=h.payment_intent_id
-            AND hr.refund_id_kind=h.provider_refund_id_kind
-            AND hr.provider_refund_id=h.provider_refund_id
-            AND hr.provider_payment_ref=h.provider_payment_ref
-            AND NOT EXISTS (SELECT 1 FROM payment_refunds own
-              WHERE own.status <> 'failed'
-                AND ${ownRefundEchoesFactSql("own", "hr")})), 0), 0)
+        ELSE greatest(h.amount_idr - ${holdFactCoveredIdrSql}, 0)
       END) FROM refund_recon_holds h
     WHERE h.tenant_id=${tenant} AND h.payment_intent_id=${intent}
       AND h.resolved_at IS NULL

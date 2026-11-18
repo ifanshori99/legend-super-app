@@ -53,10 +53,13 @@ import {
   type ProviderRefundIdKind,
 } from "./payment-provider-partial-refund.ts";
 import { alertOwnRefundFailedUnverified } from "./payment-provider-refunded-alert.ts";
-import { ownRefundEchoesFactSql } from "./payment-provider-refunded-foreign-sql.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import { assertPaymentPermission } from "./payment-support.ts";
 import type { Tx } from "./permission-resolver.ts";
+import {
+  holdFactCoverage,
+  transactionLeftIdr,
+} from "./refund-hold-coverage.ts";
 import { lockDepositIntentsExclusive } from "./reservation-deposit-credit.ts";
 
 type Query = ReturnType<typeof listEndpoint.query.parse>;
@@ -85,6 +88,16 @@ const transactionConflict = () =>
     409,
     "HOLD_TRANSACTION_CONFLICT",
     "This refund id is already on record for another provider transaction; it cannot be counted against this one. Check the provider, then close the hold as not this intent.",
+  );
+
+/** 1119 P1-1: the facts on record for this refund carry less than the hold
+ * holds; counting it would let the rest of the money go out twice. The hold
+ * stays open in full. */
+const holdFactShort = (coveredIdr: number, heldIdr: number) =>
+  new HttpError(
+    409,
+    "REFUND_HOLD_FACT_SHORT",
+    `The refund on record for this hold carries Rp${coveredIdr}, less than the Rp${heldIdr} the hold holds. The hold stays open in full and is not counted. Close it as not this intent only if the provider confirms that this refund returned no more than what is on record.`,
   );
 
 type HoldRow = typeof refundReconHolds.$inferSelect;
@@ -310,63 +323,6 @@ async function heldPaymentRefOf(
   return providerPaymentRefOf(tx, tenantId, intent);
 }
 
-/** Completed refunds of ours on one provider transaction that no provider row
- * echoes: those of the intent's own transaction (not a fund's), and those of a
- * parked fund whose evidence is this transaction (sent on the fund's own
- * transaction, whichever it is). A fund without that evidence is not counted. */
-const ownCompletedIdrSql = (
-  tenantId: TenantId,
-  intentId: string,
-  providerPaymentRef: string,
-  ownTransaction: boolean,
-) => sql`(
-  SELECT coalesce(sum(r.amount_idr), 0) FROM payment_refunds r
-   WHERE r.tenant_id = ${tenantId}::uuid
-     AND r.payment_intent_id = ${intentId}::uuid
-     AND r.status = 'completed'
-     AND ((r.unallocated_fund_id IS NULL AND ${ownTransaction}::boolean)
-       OR EXISTS (SELECT 1 FROM payment_unallocated_funds f
-         JOIN payment_evidence fe
-           ON fe.tenant_id = f.tenant_id AND fe.id = f.evidence_id
-         WHERE f.tenant_id = r.tenant_id
-           AND f.id = r.unallocated_fund_id
-           AND fe.provider = ${PROVIDER}
-           AND fe.provider_ref = ${providerPaymentRef}))
-     -- 1063 9uz9n: a fact echoes our refund only from the same intent and
-     -- transaction (and not above our amount); else both count.
-     AND NOT EXISTS (SELECT 1 FROM payment_provider_refunds p
-       WHERE ${ownRefundEchoesFactSql("r", "p")}))`;
-
-/**
- * What is left of one provider transaction of the intent: its amount (the
- * recorded evidence of the reference, else the intent's own amount) minus the
- * provider refunds recorded on it, minus our completed refunds of it (see
- * `ownCompletedIdrSql`). Read under the intent lock.
- */
-async function transactionLeftIdr(
-  tx: Tx,
-  tenantId: TenantId,
-  intent: IntentRow,
-  providerPaymentRef: string,
-): Promise<number> {
-  const { rows } = await tx.execute(sql`SELECT
-      (SELECT sum(e.amount_idr) FROM payment_evidence e
-        WHERE e.tenant_id = ${tenantId}::uuid
-          AND e.payment_intent_id = ${intent.id}::uuid
-          AND e.provider = ${PROVIDER}
-          AND e.provider_ref = ${providerPaymentRef})::text AS evidence,
-      (SELECT coalesce(sum(p.amount_idr), 0) FROM payment_provider_refunds p
-        WHERE p.tenant_id = ${tenantId}::uuid
-          AND p.payment_intent_id = ${intent.id}::uuid
-          AND p.provider = ${PROVIDER}
-          AND p.provider_payment_ref = ${providerPaymentRef})::text AS provider,
-      ${ownCompletedIdrSql(tenantId, intent.id, providerPaymentRef, providerPaymentRef === intent.providerRef)}::text AS own`);
-  const row = rows[0];
-  const amount =
-    row?.evidence == null ? Number(intent.amountIdr) : Number(row.evidence);
-  return amount - Number(row?.provider ?? 0) - Number(row?.own ?? 0);
-}
-
 /** What counting a hold decided: the identity finance gave when it was
  * applied (stored on the hold), and the transaction it was applied to. */
 type CountedHold = {
@@ -478,6 +434,35 @@ async function countHold(
   };
   const notRecorded = () =>
     unprocessable("This refund could not be recorded against the intent.");
+  /** 1119 P1-1: one rule for closing a hold as counted: the facts on record
+   * for its refund carry at least its amount. Else 409, the hold untouched. */
+  const assertFactCovers = async (
+    refundIdKind: ProviderRefundIdKind,
+    providerRefundId: string,
+    providerPaymentRef: string,
+    allowWhenNothingLeft = false,
+  ) => {
+    const coverage = await holdFactCoverage(
+      tx,
+      tenantId,
+      {
+        intentId: intent.id,
+        refundIdKind,
+        providerRefundId,
+        providerPaymentRef,
+      },
+      hold.amountIdr,
+    );
+    if (coverage.covers) return;
+    // A hold without a refund id books at most what the transaction has left,
+    // so a fact below the hold is fine only when nothing is left of it.
+    if (
+      allowWhenNothingLeft &&
+      (await transactionLeftIdr(tx, tenantId, intent, providerPaymentRef)) <= 0
+    )
+      return;
+    throw holdFactShort(coverage.coveredIdr, coverage.heldIdr);
+  };
   // Counting books money against the payment, so nothing of ours may still be
   // on its way: a pending or approved refund of the intent refuses it (422,
   // nothing recorded, the hold stays open).
@@ -574,8 +559,12 @@ async function countHold(
   const providerRefundId = named ?? matchedRefundId ?? hold.id;
   // Already on record for this transaction: counted, nothing new (a matched id
   // binds the hold to that refund).
-  if (await rowOf(refundIdKind, providerRefundId, providerPaymentRef))
+  if (await rowOf(refundIdKind, providerRefundId, providerPaymentRef)) {
+    // 1119 P1-1: a fact of this refund on record closes the hold only when it
+    // carries at least the hold's amount (same intent lock, same transaction).
+    await assertFactCovers(refundIdKind, providerRefundId, providerPaymentRef);
     return counted;
+  }
   // 1055 G2: the same id on record for another transaction (or intent) is not
   // this hold's refund, and cannot be booked again under that id.
   if (await anyRowOf(refundIdKind, providerRefundId))
@@ -726,6 +715,17 @@ async function countHold(
   // refund, an unbound or a delayed one counted nothing.
   if (!(await rowOf(refundIdKind, providerRefundId, providerPaymentRef)))
     throw notRecorded();
+  // 1119: the fact booked above is capped at what the transaction has left
+  // (`Math.min(hold, left)`) only for a hold without a refund id, so only
+  // there may it be smaller than the hold, and only with nothing left of the
+  // transaction. A hold with a refund id books its full amount: less on record
+  // keeps it open (409).
+  await assertFactCovers(
+    refundIdKind,
+    providerRefundId,
+    providerPaymentRef,
+    named === null,
+  );
   return counted;
 }
 

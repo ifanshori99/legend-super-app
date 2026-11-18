@@ -60,6 +60,10 @@ import {
   lockDepositIntentsExclusive,
 } from "./reservation-deposit-credit.ts";
 import { appendPaymentEvent } from "./payment-support.ts";
+import {
+  holdFactCoversSql,
+  transactionLeftIdr,
+} from "./refund-hold-coverage.ts";
 import { HOLD_TRANSACTION_CONFLICT_REASON } from "./refund-hold-reasons.ts";
 import type { Tx } from "./permission-resolver.ts";
 
@@ -348,6 +352,18 @@ export async function recordProviderRefundInTx(
    * other reports are not touched; a hold resolve closes its own. */
   const closeLiveOwnHold = async (): Promise<void> => {
     if (input.holdResolve) return;
+    // 1119 P1-2: the hold closes as counted only when the facts on record for
+    // its refund carry at least its amount (one atomic statement, under the
+    // intent and deposit-intent locks). Less: the hold stays open in full, and
+    // keeps counting against the refund limit; finance decides.
+    // A `synthetic_full` hold carries the remainder plus our refunds still on
+    // their way, while its fact is the remainder only: it closes only when the
+    // whole transaction is accounted for (the rule of the hold resolver).
+    if (
+      refundIdKind === "synthetic_full" &&
+      (await transactionLeftIdr(tx, tenantId, intent, providerPaymentRef)) > 0
+    )
+      return;
     await tx
       .update(refundReconHolds)
       .set({
@@ -368,6 +384,9 @@ export async function recordProviderRefundInTx(
           // 1072 F-P1: a hold raised to the conflict reason (R2) is finance's
           // to close, never closed by itself.
           ne(refundReconHolds.reason, HOLD_TRANSACTION_CONFLICT_REASON),
+          refundIdKind === "synthetic_full"
+            ? undefined
+            : holdFactCoversSql(tenantId, refundReconHolds.id),
         ),
       );
   };
