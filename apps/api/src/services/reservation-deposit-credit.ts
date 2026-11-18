@@ -15,6 +15,8 @@
 //   never exceed what the intent received (refundableBalance). A refund locks
 //   every DP of the sessions involved, since refunding one DP of a table moves
 //   the share of the others.
+// - Credit moved to another session (reservation_customer_credit_uses) is
+//   capped by the source intent's net (legend-svwdz, see transferredCreditPools).
 //
 // Race (refund vs DP use): the bill reads the credit before it takes the
 // session deposit lock (`lockSessionDeposit`, a leaf lock taken after the promo
@@ -126,6 +128,156 @@ async function allocationCredits(
   });
 }
 
+/**
+ * legend-svwdz (1020): what the credit moved to other sessions
+ * (reservation_customer_credit_uses) may still be worth. The source intent
+ * holds, for the transferred credit, the sum of its customer_credit
+ * remainders (what the first sessions left over) minus the provider refunds
+ * made AFTER those remainders: a remainder is already net of what the provider
+ * had refunded when its session closed (`provider_refunded_snapshot_idr`), so
+ * only the growth since then comes off again, measured from the smallest
+ * snapshot (restrictive; created_at is not used, the refund recorder does not
+ * hold the deposit-intent lock). With `liveOnly`, an intent that is not paid /
+ * partially refunded, or is flagged refunded after paid, holds nothing; the
+ * refund guard passes false and keeps its stricter gross view. Floor 0.
+ */
+async function transferredCreditPools(
+  tx: Tx,
+  tenantId: TenantId,
+  intentIds: string[],
+  liveOnly: boolean,
+): Promise<Map<string, bigint>> {
+  const pools = new Map<string, bigint>();
+  if (intentIds.length === 0) return pools;
+  const result = await tx.execute(sql`
+    SELECT i.id::text AS intent_id,
+           (i.status IN ('paid', 'partially_refunded')
+             AND i.provider_refunded_after_paid_at IS NULL) AS live,
+           coalesce((SELECT sum(x.amount_idr) FROM reservation_deposit_remainders x
+             WHERE x.tenant_id = i.tenant_id AND x.payment_intent_id = i.id
+               AND x.kind = 'customer_credit'), 0)::text AS credit,
+           coalesce((SELECT min(x.provider_refunded_snapshot_idr) FROM reservation_deposit_remainders x
+             WHERE x.tenant_id = i.tenant_id AND x.payment_intent_id = i.id
+               AND x.kind = 'customer_credit'), 0)::text AS snapshot,
+           ${providerRefundedForeignIdrSql(sql`i.tenant_id`, sql`i.id`)}::text AS provider
+      FROM payment_intents i
+     WHERE i.tenant_id = ${tenantId}
+       AND i.id IN (${sql.join(
+         intentIds.map((id) => sql`${id}::uuid`),
+         sql`, `,
+       )})
+  `);
+  for (const row of result.rows) {
+    const refundedSince =
+      BigInt(String(row.provider)) - BigInt(String(row.snapshot));
+    const net =
+      BigInt(String(row.credit)) - (refundedSince > 0n ? refundedSince : 0n);
+    const pool = liveOnly && row.live !== true ? 0n : net > 0n ? net : 0n;
+    pools.set(String(row.intent_id), pool);
+  }
+  return pools;
+}
+
+/**
+ * Recon flags of every credit use of one source intent (any session, closed
+ * ones included), judged against the intent's current pool in the same
+ * (created_at, id) order as effectiveCreditUseIdr. A use the pool no longer
+ * covers gets a flag; an existing flag whose values changed is updated, so a
+ * later provider refund is not frozen out. The used value is never cut; finance
+ * looks at the row (legend-svwdz, 1020). Called where a provider refund is
+ * recorded (same transaction) and when a session's credit is read.
+ */
+export async function flagCreditReconForIntent(
+  tx: Tx,
+  tenantId: TenantId,
+  intentId: string,
+): Promise<void> {
+  const pool = (
+    await transferredCreditPools(tx, tenantId, [intentId], true)
+  ).get(intentId.toLowerCase());
+  if (pool === undefined) return;
+  const uses = await tx.execute(sql`
+    SELECT u.id::text AS use_id, u.table_session_id::text AS session_id,
+           (u.amount_idr - u.returned_idr)::text AS amount
+      FROM reservation_customer_credit_uses u
+      JOIN reservation_deposit_remainders x
+        ON x.tenant_id = u.tenant_id AND x.id = u.remainder_id
+     WHERE u.tenant_id = ${tenantId} AND x.payment_intent_id = ${intentId}::uuid
+     ORDER BY u.created_at, u.id`);
+  let left = pool;
+  for (const row of uses.rows) {
+    const used = BigInt(String(row.amount));
+    if (used <= 0n) continue;
+    const effective = used < left ? used : left;
+    left -= effective;
+    if (effective >= used) continue;
+    await tx.execute(sql`
+      INSERT INTO reservation_credit_recon_flags
+        (tenant_id, credit_use_id, payment_intent_id, table_session_id,
+         used_idr, effective_idr)
+      VALUES (${tenantId}, ${String(row.use_id)}::uuid, ${intentId}::uuid,
+              ${String(row.session_id)}::uuid, ${used.toString()}::bigint,
+              ${effective.toString()}::bigint)
+      ON CONFLICT (tenant_id, credit_use_id) DO UPDATE
+        SET used_idr = excluded.used_idr, effective_idr = excluded.effective_idr
+        WHERE reservation_credit_recon_flags.used_idr <> excluded.used_idr
+           OR reservation_credit_recon_flags.effective_idr <> excluded.effective_idr`);
+  }
+}
+
+/**
+ * What the credit uses of one session are worth after the source intent's
+ * pool (see transferredCreditPools): every use of the intent's remainders, in
+ * every session, takes from the pool in (created_at, id) order with a running
+ * cap, so the same net value is never counted for two sessions. A use the pool
+ * no longer covers is reduced, never negative; the difference is only flagged
+ * for reconciliation (log), nothing is deducted from what was already spent.
+ */
+async function effectiveCreditUseIdr(
+  tx: Tx,
+  tenantId: TenantId,
+  tableSessionId: string,
+): Promise<bigint> {
+  const own = await tx.execute(sql`
+    SELECT DISTINCT x.payment_intent_id::text AS intent_id
+      FROM reservation_customer_credit_uses u
+      JOIN reservation_deposit_remainders x
+        ON x.tenant_id = u.tenant_id AND x.id = u.remainder_id
+     WHERE u.tenant_id = ${tenantId} AND u.table_session_id = ${tableSessionId}::uuid
+     ORDER BY 1`);
+  const intentIds = own.rows.map((row) => String(row.intent_id));
+  if (intentIds.length === 0) return 0n;
+  const pools = await transferredCreditPools(tx, tenantId, intentIds, true);
+  const uses = await tx.execute(sql`
+    SELECT u.id::text AS use_id, u.table_session_id::text AS session_id,
+           x.payment_intent_id::text AS intent_id,
+           (u.amount_idr - u.returned_idr)::text AS amount
+      FROM reservation_customer_credit_uses u
+      JOIN reservation_deposit_remainders x
+        ON x.tenant_id = u.tenant_id AND x.id = u.remainder_id
+     WHERE u.tenant_id = ${tenantId}
+       AND x.payment_intent_id IN (${sql.join(
+         intentIds.map((id) => sql`${id}::uuid`),
+         sql`, `,
+       )})
+     ORDER BY u.created_at, u.id`);
+  let total = 0n;
+  for (const row of uses.rows) {
+    const intentId = String(row.intent_id);
+    const used = BigInt(String(row.amount));
+    if (used <= 0n) continue;
+    const left = pools.get(intentId) ?? 0n;
+    const effective = used < left ? used : left;
+    pools.set(intentId, left - effective);
+    if (String(row.session_id) === tableSessionId) total += effective;
+  }
+  // Uses of other sessions of the same intents are re-judged too: a closed
+  // session is never read again, so its flag would otherwise stay frozen.
+  for (const intentId of intentIds)
+    await flagCreditReconForIntent(tx, tenantId, intentId);
+  return total;
+}
+
 /** RSV-02 credit of a table session: the sum of its allocation credits. */
 export async function sessionDepositCredit(
   tx: Tx,
@@ -143,23 +295,19 @@ export async function sessionDepositCredit(
       sql`SELECT pg_advisory_xact_lock_shared(hashtextextended(${depositIntentLockKey(tenantId, String(row.intent_id))}, 0))`,
     );
   const credits = await allocationCredits(tx, tenantId, { tableSessionId });
-  const uses =
-    await tx.execute(sql`SELECT coalesce(sum(u.amount_idr-u.returned_idr),0)::text AS amount
-    FROM reservation_customer_credit_uses u WHERE u.tenant_id=${tenantId}
-      AND u.table_session_id=${tableSessionId}::uuid`);
+  // legend-svwdz: transferred credit is capped by the source intent's net.
+  const usedCredit = await effectiveCreditUseIdr(tx, tenantId, tableSessionId);
   const releases =
     await tx.execute(sql`SELECT coalesce(sum(p.amount_idr),0)::text AS amount
     FROM pos_deposit_refunds p JOIN orders o ON o.tenant_id=p.tenant_id AND o.id=p.order_id
     WHERE p.tenant_id=${tenantId} AND o.table_session_id=${tableSessionId}::uuid`);
   const total =
-    credits.reduce((sum, row) => sum + row.creditIdr, 0n) +
-    BigInt(String(uses.rows[0]?.amount ?? "0"));
+    credits.reduce((sum, row) => sum + row.creditIdr, 0n) + usedCredit;
   const released = BigInt(String(releases.rows[0]?.amount ?? "0"));
   // Native held already subtracts nonfailed WS05 refunds; a release must not
   // reopen credit when its provider request later fails. Keep the stricter cap.
   const gross =
-    credits.reduce((sum, row) => sum + row.grossIdr, 0n) +
-    BigInt(String(uses.rows[0]?.amount ?? "0"));
+    credits.reduce((sum, row) => sum + row.grossIdr, 0n) + usedCredit;
   const releasedCap = gross > released ? gross - released : 0n;
   return Number(total < releasedCap ? total : releasedCap);
 }
@@ -213,6 +361,9 @@ export async function depositInUseOfIntent(
           AND x.payment_intent_id=p.payment_intent_id)),0),0)::text AS amount
     FROM reservation_deposit_remainders r WHERE r.tenant_id=${tenantId}
       AND r.payment_intent_id=${intentId}::uuid AND r.kind='customer_credit'`);
+  // Gross view, not capped by the pool: the caller's refund check already
+  // subtracts the provider's refunds from what was paid, so capping here would
+  // count them twice and raise the refund limit (legend-svwdz, 1020).
   const heldCredit = BigInt(String(creditHeld.rows[0]?.amount ?? "0"));
   if (credits.length === 0) return heldCredit;
   const sessionIds = [...new Set(credits.map((row) => row.tableSessionId))];

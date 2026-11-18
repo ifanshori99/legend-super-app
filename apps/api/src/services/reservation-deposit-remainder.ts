@@ -223,16 +223,21 @@ export async function finalizeReservationDepositRemainders(
   used = used > released ? used - released : 0n;
   // legend-30hfs: money the provider refunded outside our own refunds is not
   // free credit, so it is subtracted from what the deposit still holds.
-  const allocations = await tx.execute(sql`
-    SELECT a.reservation_id::text, a.outlet_id::text, a.payment_intent_id::text,
-      r.customer_profile_id::text, r.source::text AS source,
-      least(a.amount_idr,greatest(least(r.deposit_idr,i.amount_idr,
+  const heldBaseSql = sql`least(r.deposit_idr,i.amount_idr,
         greatest(coalesce((SELECT sum(e.amount_idr) FROM payment_evidence e
           WHERE e.tenant_id=a.tenant_id AND e.payment_intent_id=i.id),0)
           - coalesce((SELECT sum(f.amount_idr) FROM payment_unallocated_funds f
           WHERE f.tenant_id=a.tenant_id AND f.payment_intent_id=i.id),0),0))
-        - ${depositPrincipalReservedSql(sql`a.tenant_id`, sql`i.id`)}
-        - ${providerRefundedForeignIdrSql(sql`a.tenant_id`, sql`i.id`)},0))::text AS held
+        - ${depositPrincipalReservedSql(sql`a.tenant_id`, sql`i.id`)}`;
+  const heldSql = sql`least(a.amount_idr,greatest(${heldBaseSql}
+        - ${providerRefundedForeignIdrSql(sql`a.tenant_id`, sql`i.id`)},0))`;
+  const allocations = await tx.execute(sql`
+    SELECT a.reservation_id::text, a.outlet_id::text, a.payment_intent_id::text,
+      r.customer_profile_id::text, r.source::text AS source,
+      ${heldSql}::text AS held,
+      -- Only the part of the provider refund that actually cut this
+      -- allocation's held amount (the cap by a.amount_idr may absorb it).
+      greatest(least(a.amount_idr,${heldBaseSql}) - ${heldSql},0)::text AS provider_refunded
     FROM reservation_deposit_allocations a
     JOIN reservations r ON r.tenant_id=a.tenant_id AND r.id=a.reservation_id
     JOIN payment_intents i ON i.tenant_id=a.tenant_id AND i.id=a.payment_intent_id
@@ -285,6 +290,8 @@ export async function finalizeReservationDepositRemainders(
         amountIdr: idr(Number(remainder)),
         remainingIdr: idr(Number(remainder)),
         kind,
+        // legend-svwdz: `held` is already net of this refund (credit pool).
+        providerRefundedSnapshotIdr: idr(Number(allocation.provider_refunded)),
         createdAt: input.now,
       })
       .onConflictDoNothing()
