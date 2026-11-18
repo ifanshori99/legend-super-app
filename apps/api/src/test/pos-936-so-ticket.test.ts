@@ -11,9 +11,14 @@
 //   Guards: session + trusted origin + a tenant/outlet permission of the door
 //     staff. The test caller holds `facility.booth.operate` and
 //     `facility.access.assist` (and `order.view`); it holds no POS sale rights.
-//   Body (strict, exactly one of the two shapes):
-//     { qrToken: string }                    the QR token minted for the ticket
-//     { ticketId: <ulid>, pin: "<6 digits>" } the PIN minted for the ticket
+//   Body (strict, `facilityId` plus exactly one of the two shapes):
+//     { facilityId: <uuid>, qrToken: string }
+//         the facility being opened and the QR token minted for the ticket
+//     { facilityId: <uuid>, ticketId: <ulid>, pin: "<6 digits>" }
+//         the facility being opened and the PIN minted for the ticket
+//   `facilityId` must be the facility of the ticket; a ticket of facility A
+//   checked with the facilityId of facility B is refused like any other bad
+//   credential (uniform 403 below) and the ticket stays unopened.
 //   200 -> { data: { ticket: { id, status: "in_use", ... } } }
 //     First success moves a paid (`issued`) ticket to `in_use` and sets
 //     `first_opened_at` once. A repeat check of the same valid credential
@@ -23,8 +28,14 @@
 //     wrong: unknown token, wrong PIN, rotated (not newest) pair, revoked
 //     pair (refund or void), outside valid_from/valid_until, a ticket that is
 //     not paid or in use, a ticket of another tenant.
-//   400 or 422 for a malformed body (PIN that is not 6 digits, both or neither
-//     of the two shapes).
+//   400 or 422 for a malformed body (missing facilityId, PIN that is not 6
+//     digits, both or neither of the two shapes).
+//   429 { error: { code: "DOOR_PIN_LOCKED" } } (ASSUMED code; the test only
+//     requires status 429 plus this code) for the PIN shape once 5 WRONG PINs
+//     were tried for the same ticket within the lock window (rolling, longer
+//     than this test run). From then on every PIN attempt for that ticket,
+//     even with the right PIN, answers 429 and never opens it. A QR check and
+//     the PIN attempts of other tickets are unaffected.
 //   A refused check never changes the ticket.
 //
 // Other assumptions:
@@ -110,6 +121,7 @@ const ids = {
   category: randomUUID(),
   ticketItem: randomUUID(),
   facility: randomUUID(),
+  facilityB: randomUUID(),
   area: randomUUID(),
   product: randomUUID(),
   mismatchProduct: randomUUID(),
@@ -428,6 +440,15 @@ beforeAll(async () => {
           noShowResolution: "no_refund",
         }),
       ],
+    );
+    // Facility B: a second facility of the outlet (door check mismatch).
+    await db.query(
+      `INSERT INTO facilities (id, tenant_id, outlet_id, name, type, session_minutes, cleaning_minutes,
+                               arrival_grace_minutes, operating_hours, overtime_policy, cancellation_policy)
+       SELECT $3::uuid, tenant_id, outlet_id, 'Shower Tiket B', type, session_minutes, cleaning_minutes,
+              arrival_grace_minutes, operating_hours, overtime_policy, cancellation_policy
+         FROM facilities WHERE tenant_id = $1::uuid AND id = $2::uuid`,
+      [tenant.tenantId, ids.facility, ids.facilityB],
     );
     await db.query(
       `INSERT INTO facility_areas (id, tenant_id, outlet_id, facility_id, name, sort_order)
@@ -843,6 +864,10 @@ async function mintOk(
   return credential!;
 }
 
+/**
+ * `facilityId` defaults to the facility of the sold ticket; a test overrides it
+ * (or passes `facilityId: undefined` to leave it out).
+ */
 function doorCheck(
   body: Record<string, unknown>,
   who: Staff = doorStaff,
@@ -852,7 +877,7 @@ function doorCheck(
     .post("/api/facility/tickets/door-check")
     .set(host)
     .set(originHeader)
-    .send(body);
+    .send({ facilityId: ids.facility, ...body });
 }
 
 const byQr = (credential: Credential) => ({ qrToken: credential.qrToken });
@@ -1131,6 +1156,51 @@ describe("SO-T door check", () => {
     expect((await ticketState(bought.ticketId)).status).toBe("issued");
   });
 
+  it("SO-T-32 the door check names the facility: the matching facilityId opens the ticket", async () => {
+    const bought = await paidTicket();
+    const credential = await mintOk(bought);
+    expectDoorOpened(
+      await doorCheck({ ...byQr(credential), facilityId: ids.facility }),
+      bought.ticketId,
+    );
+    expect((await ticketState(bought.ticketId)).status).toBe("in_use");
+  });
+
+  it("SO-T-33 a ticket of facility A checked with the facilityId of facility B is refused (uniform 403) by QR and by PIN, and stays unopened", async () => {
+    const bought = await paidTicket();
+    const credential = await mintOk(bought);
+    expectDoorRefused(
+      await doorCheck({ ...byQr(credential), facilityId: ids.facilityB }),
+    );
+    expectDoorRefused(
+      await doorCheck({
+        ...byPin(bought, credential),
+        facilityId: ids.facilityB,
+      }),
+    );
+    const state = await ticketState(bought.ticketId);
+    expect(state.status).toBe("issued");
+    expect(state.first_opened_at).toBeNull();
+    // The right facility still opens it afterwards.
+    expectDoorOpened(await doorCheck(byQr(credential)), bought.ticketId);
+  });
+
+  it("SO-T-34 a door check without facilityId, or with one that is not a uuid, is rejected (400 or 422)", async () => {
+    const bought = await paidTicket();
+    const credential = await mintOk(bought);
+    for (const body of [
+      { ...byQr(credential), facilityId: undefined },
+      { ...byPin(bought, credential), facilityId: undefined },
+      { ...byQr(credential), facilityId: "not-a-uuid" },
+    ]) {
+      const response = await doorCheck(body);
+      expect([400, 422], JSON.stringify(response.body)).toContain(
+        response.status,
+      );
+    }
+    expect((await ticketState(bought.ticketId)).status).toBe("issued");
+  });
+
   it("SO-T-29 the door does not accept before valid_from: the minted window (the sale slot, tomorrow) is still in the future", async () => {
     const bought = await paidTicket();
     // Default window as minted: not opened by the test.
@@ -1172,5 +1242,59 @@ describe("SO-T door check", () => {
       .send(byQr(credential));
     expect(anonymous.status).toBe(401);
     expect((await ticketState(bought.ticketId)).status).toBe("issued");
+  });
+});
+
+// ---- PIN guess limit -------------------------------------------------------------------
+
+describe("SO-T door PIN guess limit", () => {
+  it("SO-T-40 after 5 wrong PINs the next PIN attempt, even the right one, answers 429 DOOR_PIN_LOCKED; a QR check and another ticket are unaffected", async () => {
+    const bought = await paidTicket();
+    const credential = await mintOk(bought);
+    const other = await paidTicket();
+    const otherCredential = await mintOk(other);
+    const wrongPins = ["000000", "111111", "222222", "333333", "444444"].map(
+      (pin) => (pin === credential.pin ? "999999" : pin),
+    );
+
+    for (const pin of wrongPins)
+      expectDoorRefused(await doorCheck({ ticketId: bought.ticketId, pin }));
+
+    const locked = await doorCheck(byPin(bought, credential));
+    expect(locked.status, JSON.stringify(locked.body)).toBe(429);
+    expect(errorCode(locked.body)).toBe("DOOR_PIN_LOCKED");
+    expect(JSON.stringify(locked.body)).not.toContain(credential.pin);
+    const lockedAgain = await doorCheck({
+      ticketId: bought.ticketId,
+      pin: "555555",
+    });
+    expect(lockedAgain.status, JSON.stringify(lockedAgain.body)).toBe(429);
+    let state = await ticketState(bought.ticketId);
+    expect(state.status).toBe("issued");
+    expect(state.first_opened_at).toBeNull();
+
+    // Another ticket's PIN is not affected by the guesses on this one.
+    expectDoorOpened(
+      await doorCheck(byPin(other, otherCredential)),
+      other.ticketId,
+    );
+    // The QR of the locked ticket is a different credential: it still works.
+    expectDoorOpened(await doorCheck(byQr(credential)), bought.ticketId);
+    state = await ticketState(bought.ticketId);
+    expect(state.status).toBe("in_use");
+  });
+
+  it("SO-T-41 four wrong PINs do not lock: the right PIN still opens the ticket", async () => {
+    const bought = await paidTicket();
+    const credential = await mintOk(bought);
+    const wrongPins = ["000000", "111111", "222222", "333333"].map((pin) =>
+      pin === credential.pin ? "999999" : pin,
+    );
+    for (const pin of wrongPins)
+      expectDoorRefused(await doorCheck({ ticketId: bought.ticketId, pin }));
+    expectDoorOpened(
+      await doorCheck(byPin(bought, credential)),
+      bought.ticketId,
+    );
   });
 });

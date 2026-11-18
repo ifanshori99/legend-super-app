@@ -43,6 +43,12 @@ export type LedgerPostInput = {
   createdBy?: string | null;
   /** Extra payload fields for the outbox event (e.g. rewardId). */
   event?: Record<string, unknown>;
+  /**
+   * No outbox event for this row. Only for the restore of a `pos_tender`
+   * redeem: that redeem booked no journal, so its give-back must not credit
+   * the loyalty liability (936).
+   */
+  skipEvent?: boolean;
 };
 
 export type LedgerPostResult = {
@@ -276,14 +282,15 @@ export async function postLedgerEntry(
     input.tenantId,
     input.customerProfileId,
   );
-  await appendPointsEvent(
-    tx,
-    context,
-    inserted,
-    balanceAfter,
-    input.event ?? {},
-    now,
-  );
+  if (!input.skipEvent)
+    await appendPointsEvent(
+      tx,
+      context,
+      inserted,
+      balanceAfter,
+      input.event ?? {},
+      now,
+    );
   return { entry: inserted, balanceAfter, inserted: true };
 }
 

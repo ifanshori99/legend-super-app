@@ -83,6 +83,9 @@ export async function restorePointsTenders(
           businessDate: redeem.businessDate,
           reason: "pos_void_points_restored",
           createdBy: input.actorUserId,
+          // The redeem booked no journal and emitted no event; neither may
+          // its give-back (points.adjusted would credit loyalty liability).
+          skipEvent: true,
         },
         input.now,
       );

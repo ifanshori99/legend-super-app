@@ -77,6 +77,7 @@ import {
   asTenant,
   balanceOf,
   ledgerOf,
+  outboxEvents,
   owner as memberOwner,
   seedMember,
   seedProgram,
@@ -799,6 +800,202 @@ describe("SO-R manual refund counts only non-points money", () => {
   });
 });
 
+// ---- a manual refund must not pay out a facility ticket line (SO-R-12) -----------
+
+type TicketBase = {
+  facilityId: string;
+  areaId: string;
+  productId: string;
+  customerId: string;
+};
+let ticketBase: TicketBase | null = null;
+
+/** One facility, area and product for the refund tenant (made on first use). */
+async function ticketFixture(): Promise<TicketBase> {
+  if (ticketBase) return ticketBase;
+  const base: TicketBase = {
+    facilityId: randomUUID(),
+    areaId: randomUUID(),
+    productId: randomUUID(),
+    customerId: (await seedMember(rf.tenant.tenantId)).id,
+  };
+  const { tenantId, outletId } = rf.tenant;
+  await asRfTenant(async (client) => {
+    await client.query(
+      `INSERT INTO facilities (id, tenant_id, outlet_id, name, type, session_minutes, cleaning_minutes,
+                               arrival_grace_minutes, operating_hours, overtime_policy, cancellation_policy)
+       VALUES ($1, $2, $3, 'Shower Refund R', 'shower', 20, 10, 10, $4, $5, $6)`,
+      [
+        base.facilityId,
+        tenantId,
+        outletId,
+        JSON.stringify([
+          {
+            daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+            opensAt: "00:00",
+            closesAt: "23:59",
+          },
+        ]),
+        JSON.stringify({
+          graceMinutes: 5,
+          blockMinutes: 15,
+          feePerBlockIdr: 5000,
+        }),
+        JSON.stringify({
+          freeCancelMinutesBefore: 30,
+          lateCancelResolution: "no_refund",
+          lateCancelFeeIdr: 0,
+          noShowResolution: "no_refund",
+        }),
+      ],
+    );
+    await client.query(
+      `INSERT INTO facility_areas (id, tenant_id, outlet_id, facility_id, name, sort_order)
+       VALUES ($1, $2, $3, $4, 'Area Refund R', 0)`,
+      [base.areaId, tenantId, outletId, base.facilityId],
+    );
+    await client.query(
+      `INSERT INTO facility_products
+         (id, tenant_id, outlet_id, facility_id, name, type, price_idr, sessions, is_active, menu_item_id)
+       VALUES ($1, $2, $3, $4, 'Tiket Shower R', 'single', $5, 1, true, $6)`,
+      [
+        base.productId,
+        tenantId,
+        outletId,
+        base.facilityId,
+        LINE_TOTAL,
+        rf.menuItem,
+      ],
+    );
+  });
+  ticketBase = base;
+  return base;
+}
+
+let ticketDay = 0;
+
+/** Make `line` of `bill` the paid line of a facility ticket in `status`. */
+async function seedTicketLine(
+  bill: Bill,
+  line: Line,
+  status: "issued" | "in_use" | "refunded" | "cancelled",
+): Promise<void> {
+  const base = await ticketFixture();
+  const { tenantId, outletId } = rf.tenant;
+  const unitId = randomUUID();
+  const ticketId = randomUUID();
+  ticketDay += 1;
+  const start = new Date(Date.UTC(2035, 0, ticketDay, 3));
+  const end = new Date(start.getTime() + 20 * 60_000);
+  const cleaningEnd = new Date(end.getTime() + 10 * 60_000);
+  const lineStatus =
+    status === "refunded" || status === "cancelled" ? status : "issued";
+  await asRfTenant(async (client) => {
+    await client.query(
+      `INSERT INTO facility_units (id, tenant_id, outlet_id, facility_id, area_id, code, status, sort_order)
+       VALUES ($1, $2, $3, $4, $5, $6, 'available', 0)`,
+      [
+        unitId,
+        tenantId,
+        outletId,
+        base.facilityId,
+        base.areaId,
+        `R-${short()}`.toUpperCase(),
+      ],
+    );
+    await client.query(
+      `INSERT INTO access_tickets
+         (id, tenant_id, outlet_id, facility_id, area_id, unit_id, customer_profile_id, product_id,
+          source, starts_at, ends_at, cleaning_ends_at, grace_minutes, status, first_opened_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'purchase', $9, $10, $11, 10, $12::varchar,
+               CASE WHEN $12::varchar = 'in_use' THEN now() ELSE NULL END)`,
+      [
+        ticketId,
+        tenantId,
+        outletId,
+        base.facilityId,
+        base.areaId,
+        unitId,
+        base.customerId,
+        base.productId,
+        start,
+        end,
+        cleaningEnd,
+        status,
+      ],
+    );
+    await client.query(
+      `INSERT INTO facility_ticket_pos_lines
+         (tenant_id, outlet_id, facility_id, access_ticket_id, order_id, order_item_id, status,
+          line_total_idr, issued_at, cancelled_at, refunded_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7::varchar, $8, now(),
+               CASE WHEN $7::varchar = 'cancelled' THEN now() ELSE NULL END,
+               CASE WHEN $7::varchar = 'refunded' THEN now() ELSE NULL END)`,
+      [
+        tenantId,
+        outletId,
+        base.facilityId,
+        ticketId,
+        bill.uuid,
+        line.itemUuid,
+        lineStatus,
+        LINE_TOTAL,
+      ],
+    );
+  });
+}
+
+describe("SO-R manual refund and facility ticket lines", () => {
+  it("SO-R-12 a manual refund of a live ticket line (issued or in use) is refused 409 and spends nothing; a normal line, and a refunded or cancelled ticket line, still refund", async () => {
+    // Assumption: only the 409 status is asserted, not the error code.
+    for (const status of ["issued", "in_use"] as const) {
+      const bill = await seedBill([
+        { method: "cash", amountIdr: LINE_TOTAL * 2 },
+      ]);
+      await seedTicketLine(bill, bill.lines[0], status);
+      const override = await lineApproval(bill.lines[0]);
+      const refused = await reportManualRefund(
+        bill,
+        bill.lines[0],
+        override.id,
+      );
+      expect(refused.status, `${status}: ${JSON.stringify(refused.body)}`).toBe(
+        409,
+      );
+      expect(await issueRows(bill.lines[0])).toBe(0);
+      expect(await approvalUses(override.id)).toBe(0);
+      expect(await ticketStatusOf(bill.lines[0])).toBe(status);
+
+      // The other, normal line of the same bill is refunded as usual.
+      const normal = await lineApproval(bill.lines[1]);
+      const ok = await reportManualRefund(bill, bill.lines[1], normal.id);
+      expect(ok.status, `${status}: ${JSON.stringify(ok.body)}`).toBe(201);
+      expect(await issueRows(bill.lines[1])).toBe(1);
+    }
+    // A ticket that is already refunded or cancelled does not block.
+    for (const status of ["refunded", "cancelled"] as const) {
+      const bill = await seedBill([
+        { method: "cash", amountIdr: LINE_TOTAL * 2 },
+      ]);
+      await seedTicketLine(bill, bill.lines[0], status);
+      const override = await lineApproval(bill.lines[0]);
+      const ok = await reportManualRefund(bill, bill.lines[0], override.id);
+      expect(ok.status, `${status}: ${JSON.stringify(ok.body)}`).toBe(201);
+    }
+  });
+});
+
+async function ticketStatusOf(line: Line): Promise<string> {
+  const { rows } = await owner.query<{ status: string }>(
+    `SELECT t.status FROM access_tickets t
+       JOIN facility_ticket_pos_lines l
+         ON l.tenant_id = t.tenant_id AND l.access_ticket_id = t.id
+      WHERE l.tenant_id = $1 AND l.order_item_id = $2`,
+    [rf.tenant.tenantId, line.itemUuid],
+  );
+  return rows[0]!.status;
+}
+
 // ================================================================================
 // Void before payment gives debited points back (decision 2)
 // ================================================================================
@@ -1012,6 +1209,31 @@ describe("SO-R void of a bill with points redeemed but not yet paid", () => {
     );
     // A pos_tender debit books no journal, and neither does its restore.
     expect(await journalLineCount()).toBe(journalBefore);
+  });
+
+  it("SO-R-11 giving the points back on a void emits no loyalty or accounting event, and still restores exactly once", async () => {
+    const member = await memberWith(5_000);
+    const order = await newOrder(member);
+    await redeemOk(order, 100);
+    const eventCount = async () =>
+      (
+        await Promise.all(
+          ["points.adjusted", "points.reversed"].map((name) =>
+            outboxEvents(world.tenant.tenantId, name, member.id),
+          ),
+        )
+      ).reduce((sum, rows) => sum + rows.length, 0);
+    const eventsBefore = await eventCount();
+
+    const voided = await voidNow(order);
+    expect(voided.status, JSON.stringify(voided.body)).toBe(200);
+
+    // Restored once...
+    expect(await balanceOf(world.tenant.tenantId, member.id)).toBe(5_000);
+    expect(await restoreRows(member)).toHaveLength(1);
+    // ...and the restore of a pos_tender debit (which booked no journal)
+    // must not book one now: no adjusted/reversed event for this member.
+    expect(await eventCount()).toBe(eventsBefore);
   });
 
   it("SO-R-06 voiding twice, one after the other, restores once", async () => {

@@ -75,6 +75,7 @@ import type { Tx } from "./menu-internals.ts";
 import { accessSnapshotInTransaction } from "./permission-resolver.ts";
 import {
   assertLineHasNoOtherCompensation,
+  assertNoLiveTicketOnLine,
   manualRefundAmountIdr,
 } from "./order-issue-manual-refund.ts";
 import { consumeApproval } from "./pos-order-support.ts";
@@ -474,6 +475,7 @@ async function storeOrderIssue(
         orderId,
         input.orderItemId,
       );
+      await assertNoLiveTicketOnLine(tx, tenantId, input.orderItemId);
       const [liveRefund] = await tx
         .select({ id: orderIssues.id })
         .from(orderIssues)

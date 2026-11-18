@@ -32,6 +32,7 @@ import { db } from "../db/index.ts";
 import { accessTickets } from "../db/schema/facility.ts";
 import { accessTicketCredentials } from "../db/schema/facility-pos-ticket.ts";
 import { withTenant } from "../db/tenant.ts";
+import { createFixedWindowCounter } from "../lib/fixed-window-counter.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { auditFacility, toTicket } from "./facility-shared.ts";
 
@@ -46,6 +47,23 @@ function invalidCredential(): HttpError {
   );
 }
 
+// PIN guess limit: a 6-digit PIN has only 10^6 values, so the wrong PINs of the
+// PIN path are counted per tenant + ticket. Five wrong PINs in 15 minutes lock
+// the PIN path of that ticket (even the right PIN answers 429); the QR path and
+// other tickets are not affected. The counter is process-local (like the other
+// fixed-window limits); the count lives OUTSIDE the transaction, which rolls
+// back when the check throws.
+export const DOOR_PIN_MAX_FAILURES = 5;
+export const DOOR_PIN_WINDOW_MS = 15 * 60 * 1000;
+const pinFailures = createFixedWindowCounter({
+  limit: DOOR_PIN_MAX_FAILURES,
+  windowMs: DOOR_PIN_WINDOW_MS,
+  capacity: 10_000,
+});
+
+const pinFailureKey = (tenantId: string, ticketId: string) =>
+  `${tenantId}:${ticketId}`;
+
 /**
  * POST /api/facility/tickets/door-check. The caller (route) checked the door
  * staff permission; the context carries the caller's outlet reach.
@@ -55,6 +73,40 @@ export async function doorCheckTicket(
   actorUserId: string,
   input: DoorCheckAccessTicketBody,
   now = new Date(),
+): Promise<{ ticket: AccessTicket }> {
+  if (!("ticketId" in input))
+    return checkCredential(context, actorUserId, input, now);
+  // One attempt is reserved BEFORE the check (so concurrent guesses cannot
+  // slip past the limit) and handed back unless the credential was wrong.
+  const attempt = pinFailures.reserve(
+    pinFailureKey(context.tenant.tenantId, input.ticketId),
+    now.getTime(),
+  );
+  // Locked: refused before any lookup, so even the right PIN opens nothing.
+  if (attempt.retryAfter !== null)
+    throw new HttpError(
+      429,
+      "DOOR_PIN_LOCKED",
+      "Terlalu banyak PIN salah untuk tiket ini; gunakan QR atau tunggu.",
+    );
+  try {
+    const result = await checkCredential(context, actorUserId, input, now);
+    attempt.release();
+    return result;
+  } catch (error) {
+    if (!(
+      error instanceof HttpError && error.code === "DOOR_CREDENTIAL_INVALID"
+    ))
+      attempt.release();
+    throw error;
+  }
+}
+
+async function checkCredential(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  input: DoorCheckAccessTicketBody,
+  now: Date,
 ): Promise<{ ticket: AccessTicket }> {
   const tenantId = context.tenant.tenantId;
   // Same digests as the mint (facility-pos-tickets.ts): the QR token alone, or
@@ -122,7 +174,9 @@ export async function doorCheckTicket(
         },
         now,
       ) ||
-      (row.status !== "issued" && row.status !== "in_use")
+      (row.status !== "issued" && row.status !== "in_use") ||
+      // The reader's facility must be the ticket's: same uniform refusal.
+      row.facilityId !== input.facilityId
     )
       throw invalidCredential();
 

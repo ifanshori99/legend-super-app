@@ -4,6 +4,11 @@
 -- key ever used for a ticket; the mint refuses a key found here. Foreign keys
 -- are inline (docs/plan/contracts.md "Migrations: foreign keys into FORCE RLS
 -- tables", pattern 1); RLS as in 0671.
+-- New table, nothing else locks it; the wrapper bounds the FK checks against
+-- tenants, outlets and access_tickets (wait at most 5s, then restore the
+-- migrator's value; contracts.md, bead legend-76azz; same as 0670).
+SELECT set_config('legend.lock_timeout_before_0672', current_setting('lock_timeout'), true);--> statement-breakpoint
+SELECT set_config('lock_timeout', '5s', true);--> statement-breakpoint
 CREATE TABLE "access_ticket_credential_keys" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"tenant_id" uuid NOT NULL,
@@ -23,3 +28,5 @@ CREATE TABLE "access_ticket_credential_keys" (
 SELECT app.enforce_tenant_rls('public.access_ticket_credential_keys'::regclass);
 --> statement-breakpoint
 SELECT app.enforce_outlet_rls('public.access_ticket_credential_keys'::regclass);
+--> statement-breakpoint
+SELECT set_config('lock_timeout', COALESCE(NULLIF(current_setting('legend.lock_timeout_before_0672', true), ''), current_setting('lock_timeout')), true);
