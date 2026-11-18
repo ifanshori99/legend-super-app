@@ -92,6 +92,10 @@ import {
   listDeviceReceiptSequences,
   localReceiptRunReport,
 } from "./pos-receipt.service.ts";
+import {
+  raiseEdgeNodeAlert,
+  resolveEdgeNodeAlerts,
+} from "./edge-node-alert.service.ts";
 import type { VerifiedEdgeNode } from "./staff-pin-sync.ts";
 import { verifiedEdgeNodeSchema } from "./staff-pin-sync.ts";
 
@@ -314,6 +318,49 @@ export async function listDeviceRecordsSince(
               : (decodeReceiptRunRefusals(receiptRefused) ?? undefined),
         });
         alert = claim.alert;
+        // legend-m8vf0: persist the cloud's receipt-run verdict for the node
+        // (edge status screen). Savepoint: a failed write is logged and never
+        // refuses the page nor rolls back the claim above. Only a decoded
+        // report counts; a stale report (claim.stale > 0) was skipped, so a
+        // clean answer then proves nothing. The alert closes only after 24 h
+        // without a new alert (no flapping between a clone and the real edge).
+        if (receiptRuns !== undefined) {
+          try {
+            await tx.transaction(async (savepoint) => {
+              if (claim.alert) {
+                await raiseEdgeNodeAlert(savepoint, {
+                  tenantId: verified.tenantId,
+                  outletId: verified.outletId,
+                  edgeNodeId: verified.edgeNodeId,
+                  kind: "receipt_run_alert",
+                  at: now,
+                  detail: {
+                    regressed: claim.regressed,
+                    throttled: claim.throttled,
+                    rotated: claim.rotated,
+                  },
+                });
+              } else if (claim.stale === 0) {
+                await resolveEdgeNodeAlerts(savepoint, {
+                  tenantId: verified.tenantId,
+                  edgeNodeId: verified.edgeNodeId,
+                  kind: "receipt_run_alert",
+                  at: now,
+                  quietSince: new Date(now.getTime() - 24 * 60 * 60 * 1000),
+                });
+              }
+            });
+          } catch (error) {
+            // Counts only: no ids beyond the node id, no error text.
+            logger.error(
+              {
+                edgeNodeId: verified.edgeNodeId,
+                errorName: error instanceof Error ? error.name : "unknown",
+              },
+              "edge receipt-run alert write failed (legend-m8vf0)",
+            );
+          }
+        }
         // legend-zsdd: a repeated rotation means two databases pull with one
         // node id. Counts only, no ids.
         if (claim.rotated > 0)

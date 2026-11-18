@@ -3277,6 +3277,20 @@
       "when": 1795000000098,
       "tag": "0481_payout_qh11l_read_error_hold",
       "breakpoints": true
+    },
+    {
+      "idx": 482,
+      "version": "7",
+      "when": 1795000000099,
+      "tag": "0482_edge_node_alerts",
+      "breakpoints": true
+    },
+    {
+      "idx": 483,
+      "version": "7",
+      "when": 1795000000100,
+      "tag": "0483_edge_offline_alert_kind",
+      "breakpoints": true
     }
   ]
 }

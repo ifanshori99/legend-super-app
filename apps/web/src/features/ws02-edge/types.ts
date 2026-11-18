@@ -1,11 +1,9 @@
 // View-model types for the back-office "Status edge" screen (legend-ph62j).
-// The cloud has no endpoint that lists edge nodes with a name yet (see
-// ./CONTRACT-GAPS.md), so these types are local until it lands.
+// Mapped from GET /api/edge-node-status (docs/design/edge-status-cloud.md
+// section 3.4).
 //
-// Plain TypeScript with no runtime imports: Node tests load it directly.
-
-/** Error code a call returns outside mock mode when the contract is missing. */
-export const CONTRACT_PENDING = "CONTRACT_PENDING";
+// Plain TypeScript with type-only imports: Node tests load it directly.
+import type { EdgeNodeStatusList } from "@starter/shared/edge/node-status";
 
 export type EdgeNodeLink = "connected" | "disconnected";
 
@@ -27,5 +25,33 @@ export interface EdgeReceiptRunAlert {
 
 export interface EdgeNodesOverview {
   nodes: EdgeNodeRow[];
-  receiptRunAlert: EdgeReceiptRunAlert | null;
+  /** One entry per node with an open receipt-run alert. */
+  receiptRunAlerts: EdgeReceiptRunAlert[];
+}
+
+/**
+ * Maps the cloud list to the screen's view model. Only `receipt_run_alert`
+ * becomes a banner; `device_registry_hard_stale` is not shown yet.
+ */
+export function mapEdgeNodeStatusList(
+  list: EdgeNodeStatusList,
+): EdgeNodesOverview {
+  const nodes: EdgeNodeRow[] = [];
+  const receiptRunAlerts: EdgeReceiptRunAlert[] = [];
+  for (const node of list.data) {
+    nodes.push({
+      id: node.id,
+      name: node.label,
+      outletName: node.outlet.name,
+      link: node.link,
+      lastUpdatedAt: node.lastHeartbeatAt,
+    });
+    const alert = node.alerts.find((a) => a.kind === "receipt_run_alert");
+    if (alert)
+      receiptRunAlerts.push({
+        nodeName: node.label,
+        alertAt: alert.lastSeenAt,
+      });
+  }
+  return { nodes, receiptRunAlerts };
 }

@@ -159,6 +159,7 @@ import { catalogRecordSyncRouter } from "./edge-catalog-sync.routes.ts";
 import { edgePeopleSnapshotRouter } from "./edge-people-snapshot.routes.ts";
 import { edgeBootstrapRouter } from "./edge-bootstrap.routes.ts";
 import { edgeSyncConflictsRouter } from "./edge-sync-conflicts.routes.ts";
+import { edgeNodeStatusRouter } from "./edge-node-status.routes.ts";
 import { deliveryChannelsRouter } from "./delivery-channels.routes.ts";
 import { deliveryOrdersRouter } from "./delivery-orders.routes.ts";
 import { deliveryReconciliationRouter } from "./delivery-reconciliation.routes.ts";
@@ -521,6 +522,8 @@ apiRouter.use("/edge-sync/catalog", catalogRecordSyncRouter);
 apiRouter.use("/edge-sync/people-snapshot", edgePeopleSnapshotRouter);
 apiRouter.use("/edge-sync/bootstrap", edgeBootstrapRouter);
 apiRouter.use("/edge-sync-conflicts", edgeSyncConflictsRouter);
+// Back-office edge node status list (legend-eo3lc): cloud only.
+apiRouter.use("/edge-node-status", edgeNodeStatusRouter);
 
 // Registry-backed EdgeDeviceLookup for /api/edge/status `thisDevice`.
 installDeviceRegistryPorts();

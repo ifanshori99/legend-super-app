@@ -83,6 +83,7 @@ export * from "./edge-receipt-skip";
 export * from "./edge-node";
 export * from "./edge-hris";
 export * from "./edge-sync-conflict";
+export * from "./edge-node-alert";
 export * from "./edge-print";
 export * from "./edge-catalog-gate-state";
 export * from "./edge-catalog-sale-overrides";
