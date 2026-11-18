@@ -74,6 +74,7 @@ import {
   markQrisHoldsPaidByIntentTx,
   openQrisHold,
 } from "./pos-qris-hold.ts";
+import { assertPosTicketsIssuable } from "./facility-pos-tickets.ts";
 import {
   appendOrderEvent,
   assertExpectedStatus,
@@ -243,7 +244,10 @@ export async function addPosTender(
   caller: PosCaller,
   outletId: OutletId,
   orderId: string,
-  input: AddTenderInput,
+  // The HTTP body always states `expectedStatus`; the points redeem route
+  // (936) does not, and then the order is taken as it is under the lock.
+  input: Omit<AddTenderInput, "expectedStatus"> &
+    Partial<Pick<AddTenderInput, "expectedStatus">>,
   now = new Date(),
 ): Promise<PosTenderResult> {
   const { idempotencyKey, ...request } = input;
@@ -261,7 +265,7 @@ export async function addPosTender(
       const { order } = locked;
       let { pos } = locked;
       const tenantId = context.tenant.tenantId;
-      assertExpectedStatus(order, input.expectedStatus);
+      assertExpectedStatus(order, input.expectedStatus ?? order.status);
       assertMutable(order);
       assertPosOrderSettleable({ status: order.status });
       // EDC-01 (legend-ig2sl): an open or unbooked ECR sale already asked the
@@ -280,6 +284,10 @@ export async function addPosTender(
       // the card tender books. Lock order: orders -> pos_orders -> holds ->
       // EDC advisory -> tender. A QR paid at the provider later meets a voided
       // tender and is refunded in full (late payment), never kept.
+      // 936 D: a bill whose ticket hold lapsed takes no money (a card sale
+      // already sent to the terminal is booked regardless: the card wins).
+      if (!settlesEcrRequest)
+        await assertPosTicketsIssuable(tx, context, order.id);
       if (!settlesEcrRequest) {
         await assertNoActiveQrisHold(tx, context, order.id);
         await assertNoOpenEdcRequest(tx, context, order);
@@ -589,6 +597,9 @@ export async function addPosTender(
             .insert(posOrderTenders)
             .values({
               ...base,
+              ...("tenderId" in settled && settled.tenderId
+                ? { id: settled.tenderId }
+                : {}),
               provider: input.method === "points" ? "manual" : "edc",
               reference: settled.reference ?? base.reference,
               edcTransactionId:
@@ -597,7 +608,15 @@ export async function addPosTender(
                   : base.edcTransactionId,
               pointsUsed:
                 input.method === "points" ? (input.pointsUsed ?? null) : null,
-              amountIdr: idr(remaining),
+              // A points tender covers what its points are worth (never more
+              // than the remaining balance); every other tender settles it all.
+              amountIdr: idr(
+                input.method === "points" &&
+                  "amountIdr" in settled &&
+                  settled.amountIdr !== undefined
+                  ? Math.min(settled.amountIdr, remaining)
+                  : remaining,
+              ),
               status: "captured",
               resolvedAt: now,
               capturedBy: caller.userId,

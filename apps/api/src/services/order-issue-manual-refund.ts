@@ -45,6 +45,8 @@ import {
 import { posEvents, orderVoidedPayloadSchema } from "@starter/shared/pos";
 import { orderIssues } from "../db/schema/kds-issues.ts";
 import { edgeOrderIngests } from "../db/schema/edge-order-ingest.ts";
+import { accessTickets } from "../db/schema/facility.ts";
+import { facilityTicketPosLines } from "../db/schema/facility-pos-ticket.ts";
 import { posOrderRefunds, posOrderVoids } from "../db/schema/pos-order.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { HttpError } from "../lib/http-error.ts";
@@ -62,6 +64,52 @@ const conflict = (message: string) =>
   new HttpError(409, "REFUND_CONFLICT", message);
 
 const asNumber = (value: unknown): number => Number(String(value ?? "0"));
+
+/**
+ * 936 (legend-hpgyw, F2): a line that sold a facility ticket not refunded or
+ * cancelled (access ticket `issued`, `in_use`, `completed`, `no_show`, ...) is
+ * not refunded by hand: the guest would keep or use the ticket and get the
+ * money back. Refused 409, nothing
+ * written. The ticket row is locked FOR UPDATE after its POS line (the order of
+ * the ticket refund hook), and the door check locks the same ticket row, so a
+ * door check cannot slip between this check and the end of the transaction.
+ * A refunded or cancelled ticket, or a line with no ticket, is unaffected.
+ */
+export async function assertNoLiveTicketOnLine(
+  tx: Tx,
+  tenantId: TenantId,
+  orderItemId: string,
+): Promise<void> {
+  const [linked] = await tx
+    .select({ accessTicketId: facilityTicketPosLines.accessTicketId })
+    .from(facilityTicketPosLines)
+    .where(
+      and(
+        eq(facilityTicketPosLines.tenantId, tenantId),
+        eq(facilityTicketPosLines.orderItemId, orderItemId),
+      ),
+    )
+    .limit(1)
+    .for("update");
+  if (!linked) return;
+  const [ticket] = await tx
+    .select({ status: accessTickets.status })
+    .from(accessTickets)
+    .where(
+      and(
+        eq(accessTickets.tenantId, tenantId),
+        eq(accessTickets.id, linked.accessTicketId),
+      ),
+    )
+    .limit(1)
+    .for("update");
+  if (ticket && ticket.status !== "refunded" && ticket.status !== "cancelled")
+    throw new HttpError(
+      409,
+      "TICKET_LIVE_NO_MANUAL_REFUND",
+      "Tiket fasilitas pada item ini masih berlaku. Refund manual ditolak; batalkan tiketnya lewat refund kasir.",
+    );
+}
 
 /**
  * The exact amount a manual refund of this line pays. Throws 422 (nothing
@@ -126,6 +174,9 @@ export async function manualRefundAmountIdr(
   // provider answered refunded (`provider_refunded_at`, or
   // `provider_refunded_after_paid_at`) with no recorded amount is uncertain:
   // refused (restrictive).
+  // 936 (legend-hpgyw, decision 1): a points tender is not money. It is left
+  // out here, so a bill paid fully with points has nothing to refund by hand
+  // and a mixed bill is bound by its non-points part only.
   const tenderRows = await tx.execute(sql`
     SELECT sum(t.amount_idr)::text AS amount,
            t.payment_intent_id IS NOT NULL AS has_intent,
@@ -138,6 +189,7 @@ export async function manualRefundAmountIdr(
      WHERE t.tenant_id = ${tenantId}
        AND t.order_id = ${ulidToUuid(orderId)}::uuid
        AND t.status = 'captured'
+       AND t.method <> 'points'
      GROUP BY t.payment_intent_id
   `);
   let grossPaidIdr = 0;

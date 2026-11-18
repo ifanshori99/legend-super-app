@@ -176,6 +176,8 @@ import { memberRewardsRouter } from "./member-rewards.routes.ts"; // legend-m4p5
 import { loyaltyRewardsRouter } from "./loyalty-rewards.routes.ts"; // legend-m4p5
 import { loyaltyTiersRouter } from "./loyalty-tiers.routes.ts"; // legend-3zd1
 import { posOrderCustomerRouter } from "./pos-order-customer.routes.ts";
+import { posPointsRouter } from "./pos-points.routes.ts";
+import { facilityPosTicketRouter } from "./facility-pos-ticket.routes.ts";
 import { installDeviceRegistryPorts } from "../services/device-ports.ts";
 
 // Mounted at /api. Add a router per resource and register it here.
@@ -392,6 +394,9 @@ apiRouter.use("/reviews", customerReviewRouter); // legend-vqicf
 apiRouter.use(loyaltyRewardsRouter); // legend-m4p5
 apiRouter.use(loyaltyTiersRouter); // legend-3zd1
 apiRouter.use(posOrderCustomerRouter);
+apiRouter.use(posPointsRouter); // 936 legend-hpgyw
+// 936 legend-hpgyw part D: ticket sale at the POS (absolute paths). Before facilityRouter.
+apiRouter.use(facilityPosTicketRouter);
 apiRouter.use("/vouchers", vouchersRouter);
 // WS-08 reservations (legend-t8bz): full paths inside the router.
 apiRouter.use(reservationRouter);

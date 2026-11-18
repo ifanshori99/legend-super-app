@@ -18,6 +18,20 @@ export const posKasirPaymentMessages = {
   bill: {
     depositPaidNoRef: "DP lunas",
     depositUnpaidNoRef: "DP belum lunas",
+    voucher: "Voucher {code}",
+    voucherRemove: "Hapus voucher",
+    voucherRemoving: "Menghapus…",
+  },
+  adjust: {
+    voucher: "Pakai voucher",
+    points: "Tukar poin",
+    removeTitle: "Hapus voucher {code}?",
+    removeBody:
+      "Potongan dari voucher ini dibatalkan dan sisa tagihan dihitung ulang oleh server.",
+    removeKeep: "Batal",
+    removeConfirm: "Ya, hapus voucher",
+    removeFailed: "Voucher belum bisa dihapus",
+    removeFailedHint: "Periksa koneksi, lalu coba lagi.",
   },
   holdActive: {
     // Mirrors the QRIS_HOLD_ACTIVE fallback in packages/shared/src/pos/errors.ts.
@@ -39,6 +53,10 @@ export const posKasirPaymentMessages = {
       "DP reservasi dan pembayaran yang lunas mengurangi sisa tagihan.",
     cash: "Pembayaran tunai",
     cashHint: "Hitung uang diterima dan kembalian sebelum konfirmasi.",
+    voucher: "Pakai voucher",
+    voucherHint: "Masukkan atau scan kode voucher. Potongan dihitung server.",
+    points: "Tukar poin member",
+    pointsHint: "Poin ditukar jadi potongan. Nilai dihitung server.",
     paid: "Tagihan lunas",
     paidHint: "Pastikan pelanggan menerima kembalian dan struk.",
     paidDeposit: "DP reservasi telah menutup seluruh tagihan.",

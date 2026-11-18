@@ -5,6 +5,7 @@
 // screen shows a clear error instead of made-up data.
 import {
   addPosTender,
+  applyPosDiscount,
   closePosDay,
   closePosShift,
   completePosOrder,
@@ -17,10 +18,17 @@ import {
   listPosShifts,
   openPosShift,
   recordPosCashMovement,
+  removePosDiscount,
   type EndOfDayRecapView,
   type PosOrderDetail,
   type PosShift,
 } from "@starter/shared/pos";
+import { validateVoucher } from "@starter/shared/crm";
+import {
+  getPosOrderPoints,
+  quotePosOrderPoints,
+  redeemPosOrderPoints,
+} from "@starter/shared/pos/points";
 import {
   createPosOverride,
   getPosOverride,
@@ -45,8 +53,11 @@ import {
   type Ewallet,
   type OpenShiftInput,
   type OverrideResult,
+  type PaymentAttempt,
   type PaymentMethodOption,
   type PaymentSession,
+  type PointsAccount,
+  type PointsQuote,
   type ReceiptResult,
   type RecordCashMovementInput,
   type RecordEdcStandaloneInput,
@@ -57,6 +68,7 @@ import {
   type SubmitBlindCountInput,
   type SupervisorOption,
   type VaBank,
+  type VoucherCheck,
 } from "./types";
 
 // ---- Helpers ---------------------------------------------------------------
@@ -166,6 +178,43 @@ export const postCloseShiftRaw = closePosShift;
 
 // ---- Mapping real responses to the screen view-models ----------------------
 
+/**
+ * The EDC request the bank refused, shown until the cashier pays another way.
+ * A refusal puts no tender on the bill, so totals and the remaining balance
+ * stay as the server priced them. Null once the bill is paid or a later tender
+ * landed (the cashier moved on).
+ */
+function declinedEdcAttempt(
+  order: PosOrderDetail,
+  captured: PosOrderDetail["tenders"],
+  remainingIdr: number,
+): PaymentAttempt | null {
+  const latest = order.edcAttempts[0];
+  if (!latest || latest.status !== "declined" || remainingIdr === 0)
+    return null;
+  const declinedAt = Date.parse(latest.createdAt);
+  if (captured.some((t) => Date.parse(t.requestedAt) >= declinedAt))
+    return null;
+  const amountIdr = Number(latest.amountIdr);
+  return {
+    id: latest.id,
+    sequence: captured.length + 1,
+    method: "edc",
+    status: "declined",
+    amountIdr,
+    edc: {
+      terminalId: latest.terminalId,
+      // The attempt does not say the bank or card/QRIS mode (gap).
+      terminalLabel: latest.terminalLabel ?? "",
+      bank: "",
+      mode: "card",
+      lockedAmountIdr: amountIdr,
+      ...(latest.declineReason ? { declineReason: latest.declineReason } : {}),
+      ...(latest.responseCode ? { responseCode: latest.responseCode } : {}),
+    },
+  };
+}
+
 function sessionFromOrder(order: PosOrderDetail): PaymentSession {
   const captured = order.tenders.filter((t) => t.status === "captured");
   const paidIdr = captured.reduce((sum, t) => sum + Number(t.amountIdr), 0);
@@ -177,6 +226,9 @@ function sessionFromOrder(order: PosOrderDetail): PaymentSession {
     depositAppliedIdr: depositIdr,
     capturedIdr: paidIdr,
   });
+  const voucherDiscount = order.discounts.find(
+    (discount) => discount.source === "voucher",
+  );
   const lastCash = [...captured].reverse().find((t) => t.method === "cash");
   const lastTender = captured.at(-1);
   return {
@@ -197,6 +249,16 @@ function sessionFromOrder(order: PosOrderDetail): PaymentSession {
         ? { deposit: { amountIdr: depositIdr, paid: true } }
         : {}),
       depositSurplusIdr: 0,
+      // The server priced it: `totalIdr` and `remainingIdr` already include it.
+      // The discount line has no voucher code (gap), so the label has none.
+      ...(voucherDiscount
+        ? {
+            voucher: {
+              code: "",
+              discountIdr: Number(voucherDiscount.amountIdr),
+            },
+          }
+        : {}),
       allocations: captured.map((tender) => ({
         id: tender.id,
         method:
@@ -212,7 +274,7 @@ function sessionFromOrder(order: PosOrderDetail): PaymentSession {
       remainingIdr,
       paid: remainingIdr === 0,
     },
-    activeAttempt: null,
+    activeAttempt: declinedEdcAttempt(order, captured, remainingIdr),
     ...(lastTender?.method === "cash" &&
     lastCash?.receivedIdr != null &&
     lastCash.changeIdr != null
@@ -598,4 +660,120 @@ export async function closeDay(
     },
   });
   return dayRecapFrom(data, cutoff);
+}
+
+// ---- Voucher and member points (brief 936) ---------------------------------
+// The server prices every discount and every redemption: these calls return
+// what it says and the screens show it as is.
+
+export async function validateVoucherCode(
+  outletId: string,
+  orderId: string,
+  code: string,
+): Promise<VoucherCheck> {
+  if (API_MOCK)
+    return runPosKasirMock((engine) => engine.validateVoucher(orderId, code));
+  // The preview needs the order subtotal; the server prices the real discount
+  // again when the voucher is applied.
+  const order = await fetchPosOrder(outletId, orderId);
+  const { data } = await callEndpoint(validateVoucher, {
+    body: {
+      code,
+      subtotalIdr: Number(order.subtotalIdr),
+      channel: "dine_in",
+    },
+  });
+  return data.valid
+    ? {
+        valid: true,
+        code,
+        discountPreviewIdr: Number(data.discountPreviewIdr),
+      }
+    : { valid: false, code, reason: data.reason };
+}
+
+// Applying is a POS order discount (source "voucher", kind "amount"): the
+// server prices it with the promo engine and caps it at the remaining bill.
+export async function applyVoucherCode(
+  outletId: string,
+  orderId: string,
+  code: string,
+  idempotencyKey: string,
+): Promise<PaymentSession> {
+  if (API_MOCK)
+    return runPosKasirMock((engine) =>
+      engine.applyVoucher(orderId, code, idempotencyKey),
+    );
+  const { data } = await callEndpoint(applyPosDiscount, {
+    params: { outletId, orderId },
+    body: {
+      source: "voucher",
+      kind: "amount",
+      voucherCode: code,
+      reason: "promo_engine",
+      idempotencyKey,
+    },
+  });
+  return sessionFromOrder(data);
+}
+
+export async function removeVoucherCode(
+  outletId: string,
+  orderId: string,
+  idempotencyKey: string,
+): Promise<PaymentSession> {
+  if (API_MOCK)
+    return runPosKasirMock((engine) => engine.removeVoucher(orderId));
+  const order = await fetchPosOrder(outletId, orderId);
+  const voucher = order.discounts.find(
+    (discount) => discount.source === "voucher",
+  );
+  // Already gone (a retry after the answer was lost): nothing left to remove.
+  if (!voucher) return sessionFromOrder(order);
+  const { data } = await callEndpoint(removePosDiscount, {
+    params: { outletId, orderId, discountId: voucher.id },
+    body: { idempotencyKey },
+  });
+  return sessionFromOrder(data);
+}
+
+export async function fetchPointsAccount(
+  orderId: string,
+): Promise<PointsAccount | null> {
+  if (API_MOCK)
+    return runPosKasirMock((engine) => engine.pointsAccount(orderId));
+  const { data } = await callEndpoint(getPosOrderPoints, {
+    params: { orderId },
+  });
+  return data.account;
+}
+
+export async function quotePointsValue(
+  orderId: string,
+  points: number,
+): Promise<PointsQuote> {
+  if (API_MOCK)
+    return runPosKasirMock((engine) => engine.quotePoints(orderId, points));
+  const { data } = await callEndpoint(quotePosOrderPoints, {
+    params: { orderId },
+    body: { points },
+  });
+  return { points: data.points, valueIdr: data.valueIdr };
+}
+
+/** Redeeming sends points only; the server prices them and answers the bill. */
+export async function redeemPointsValue(
+  orderId: string,
+  points: number,
+  idempotencyKey: string,
+): Promise<PaymentSession> {
+  if (API_MOCK)
+    return runPosKasirMock((engine) =>
+      engine.redeemPoints(orderId, points, idempotencyKey),
+    );
+  const { data } = await callEndpoint(redeemPosOrderPoints, {
+    params: { orderId },
+    body: { points, idempotencyKey },
+  });
+  return sessionFromOrder(data);
 }

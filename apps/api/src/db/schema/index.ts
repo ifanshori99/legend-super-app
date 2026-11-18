@@ -48,6 +48,8 @@ export * from "./reservation";
 export * from "./reservation-public";
 export * from "./facility";
 export * from "./facility-entitlement";
+// 936 POS facility tickets (legend-hpgyw part D).
+export * from "./facility-pos-ticket";
 export * from "./hris";
 // WS-10 leave, balances, accrual, holidays, overtime (legend-hggk).
 export * from "./hris-leave";

@@ -12,9 +12,14 @@
 // - Promo and voucher codes go through the promo engine port (order-promo
 //   port, legend-souz), redeemed inside this transaction after the order row
 //   is locked (engine lock order step 1). One live promo/voucher per order.
-// - Discounts change only before settlement: a live order with no captured
-//   tender. Removal is a soft `removed_at` (history kept); a promo is
-//   released through the port.
+// - A manual discount changes only before settlement: a live order with no
+//   captured tender. A promo/voucher may also be applied or removed while a
+//   partial payment is captured (the pay-the-rest panel), but the server caps
+//   it at the remaining bill: the repriced total (tax and service follow the
+//   discount) can never fall below what is already captured plus the deposit,
+//   so no guest is paid or credited more than the bill (founder: no loss).
+//   Removal is a soft `removed_at` (history kept); a promo is released through
+//   the port.
 
 import { and, eq, isNull } from "drizzle-orm";
 import {
@@ -50,10 +55,12 @@ import {
   itemsOf,
   liveDiscountsOf,
   loadOutlet,
+  remainingIdr,
   repriceOrder,
   tendersOf,
   type Locked,
   type PosCaller,
+  type TenderRow,
 } from "./pos-order-support.ts";
 import type { Tx } from "./menu-internals.ts";
 import { assertNoActiveQrisHold } from "./pos-qris-hold.ts";
@@ -64,13 +71,14 @@ async function assertBeforeSettlement(
   tx: Tx,
   context: ScopedTenantContext,
   locked: Locked,
-): Promise<void> {
+  options: { allowPartialPayment: boolean },
+): Promise<TenderRow[]> {
   assertMutable(locked.order);
   // legend-yhia9 D-01: no discount while a QR can still be paid.
   await assertNoActiveQrisHold(tx, context, locked.order.id);
   await assertNoOpenEdcRequest(tx, context, locked.order);
   const tenders = await tendersOf(tx, context, locked.order.id);
-  if (capturedIdr(tenders) > 0)
+  if (!options.allowPartialPayment && capturedIdr(tenders) > 0)
     throw new CoreError(
       "CONFLICT",
       "Diskon hanya dapat diubah sebelum pembayaran diterima.",
@@ -78,6 +86,22 @@ async function assertBeforeSettlement(
   // A pending QRIS bill was opened for the old total: repricing now would let
   // the guest pay a stale amount that can no longer be captured (review fix).
   assertNoPendingGatewayTender(tenders);
+  return tenders;
+}
+
+/**
+ * The repriced bill may never fall below the money already taken: the guest
+ * would have paid more than the bill. The tender stays untouched, so refuse.
+ */
+function assertNotBelowCaptured(
+  repriced: { totalIdr: number; depositAppliedIdr: number },
+  tenders: readonly TenderRow[],
+): void {
+  if (capturedIdr(tenders) > repriced.totalIdr - repriced.depositAppliedIdr)
+    throw new CoreError(
+      "CONFLICT",
+      "Total baru lebih kecil dari pembayaran yang sudah diterima.",
+    );
 }
 
 /** POST .../discounts. */
@@ -103,7 +127,9 @@ export async function applyPosDiscount(
     async (tx, locked) => {
       const { order, pos } = locked;
       const tenantId = context.tenant.tenantId;
-      await assertBeforeSettlement(tx, context, locked);
+      const tenders = await assertBeforeSettlement(tx, context, locked, {
+        allowPartialPayment: input.source !== "manual",
+      });
       const items = (await itemsOf(tx, context, order.id))
         .map(({ item }) => item)
         .filter((item) => item.status !== "voided");
@@ -216,6 +242,11 @@ export async function applyPosDiscount(
             "CONFLICT",
             "Promo ini tidak berlaku untuk pesanan ini.",
           );
+        // The cap is the remaining bill (total - deposit - captured), not just
+        // the subtotal. Checked before the redeem so a refused code is never
+        // consumed.
+        if (quote.totalDiscountIdr > remainingIdr(order, tenders))
+          throw new PosError("DISCOUNT_EXCEEDS_SUBTOTAL");
         const redeemed = await port.redeem(tx, context, {
           ...promoInput,
           orderId: order.id,
@@ -252,6 +283,7 @@ export async function applyPosDiscount(
       if (!row) throw new Error("Discount insert returned no row");
       const outlet = await loadOutlet(tx, context, outletId);
       const repriced = await repriceOrder(tx, context, { order, outlet, now });
+      assertNotBelowCaptured(repriced, tenders);
       await bumpPos(tx, context, pos, now);
       await appendOrderEvent(tx, context, {
         order,
@@ -325,7 +357,13 @@ export async function removePosDiscount(
     async (tx, locked) => {
       const { order, pos } = locked;
       const tenantId = context.tenant.tenantId;
-      await assertBeforeSettlement(tx, context, locked);
+      const live = (await liveDiscountsOf(tx, context, order.id)).find(
+        (row) => row.id === discountId,
+      );
+      if (!live) throw new CoreError("NOT_FOUND", "Diskon tidak ditemukan.");
+      await assertBeforeSettlement(tx, context, locked, {
+        allowPartialPayment: live.source !== "manual",
+      });
       const [removed] = await tx
         .update(posOrderDiscounts)
         .set({ removedAt: now, removedBy: caller.userId, updatedAt: now })

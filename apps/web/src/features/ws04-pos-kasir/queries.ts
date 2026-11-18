@@ -10,6 +10,7 @@ import {
   fetchEwallets,
   fetchPaymentMethods,
   fetchPaymentSession,
+  fetchPointsAccount,
   fetchRegisteredTerminals,
   fetchShiftReview,
   fetchSupervisors,
@@ -30,6 +31,8 @@ export const posKasirKeys = {
     ["pos-kasir", outletId, "session", orderId] as const,
   methods: (outletId: string, orderId: string) =>
     ["pos-kasir", outletId, "methods", orderId] as const,
+  points: (outletId: string, orderId: string) =>
+    ["pos-kasir", outletId, "points", orderId] as const,
   edcTerminals: (outletId: string) =>
     ["pos-kasir", outletId, "edc-terminals"] as const,
   vaBanks: (outletId: string) => ["pos-kasir", outletId, "va-banks"] as const,
@@ -77,6 +80,14 @@ export const paymentMethodsQuery = (outletId: string, orderId: string) =>
   queryOptions({
     queryKey: posKasirKeys.methods(outletId, orderId),
     queryFn: () => fetchPaymentMethods(),
+    retry: false,
+  });
+
+/** The member on the order and their points; null when there is no member. */
+export const pointsAccountQuery = (outletId: string, orderId: string) =>
+  queryOptions({
+    queryKey: posKasirKeys.points(outletId, orderId),
+    queryFn: () => fetchPointsAccount(orderId),
     retry: false,
   });
 

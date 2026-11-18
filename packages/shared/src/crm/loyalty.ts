@@ -252,6 +252,8 @@ export const pointSourceTypeSchema = z.enum([
   "adjustment",
   // legend-n1mp: a QR table guest claims the points of what they paid.
   "table_claim",
+  // 936: points paid as a POS tender (source id = the tender id).
+  "pos_tender",
 ]);
 export type PointSourceType = z.infer<typeof pointSourceTypeSchema>;
 

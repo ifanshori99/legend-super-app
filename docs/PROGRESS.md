@@ -55,6 +55,13 @@
 - Keputusan pembatas: GET butuh review.respond; POST dan PATCH moderasi butuh crm.feedback.manage; source dipaksa manual; moderasi wajib expectedStatus (409 REVIEW_STATUS_CONFLICT).
 - Gate terarah 52 berkas / 1488 test hijau, root node 3513 lulus, prettier, eslint, typecheck api+shared+web hijau, db:generate kosong. Review architect: 4 temuan sudah dibetulkan.
 - Belum diputuskan (lihat laporan): revoke token saat modul mati, discovery 404 vs unknown tenant, enforce_member_rls untuk customer_profile_id. Rollout: tenant yang memakai MCP wajib diberi flag mcp sebelum deploy.
+## 936 POS panel pembayaran: sisa legend-5w6 (17 Nov 2026)
+
+- Basis milestone/m1 c17c60df7, worktree legend-7944b492. Tanpa migrasi (db:generate kosong). Brief subagent: docs/briefs/sub-936-pos-payment.md.
+- Dibangun: panel voucher (cek kode/scan, potongan dari respons server, hapus voucher dengan konfirmasi), panel tukar poin member (saldo, kuotasi server wajib sebelum tukar), jual tiket fasilitas di /pos/tiket + cetak tiket lewat Print Agent (mock), state EDC "ditolak" eksplisit (alasan + kode respons dari server, jalan kembali ke pesanan), label penyedia QRIS di layar pelanggan dari data (doit/duitku).
+- Jangan rugi: UI tidak menghitung potongan, nilai poin, atau total; tombol terapkan/tukar/hapus/jual/cetak terkunci saat request berjalan. Di luar mock, jual tiket = CONTRACT_PENDING (belum ada kontrak pembayaran tiket; tidak boleh terbit tanpa uang) dan menu Tiket disembunyikan. Mock engine: potongan voucher <= subtotal dan <= sisa, poin <= sisa, idempotency key dicatat hanya setelah sukses (temuan reviewer, dibetulkan + test).
+- Kontrak pending dicatat di apps/web/src/features/ws04-pos-kasir/CONTRACT-GAPS.md: endpoint kasir saldo/kuotasi/tukar poin, apply/hapus voucher di order POS (body applyPosDiscount belum cocok untuk voucher), status EDC declined dari server, jual tiket + tender, cetak tiket Print Agent, cari pelanggan/produk/jam fasilitas untuk kasir, paket fasilitas berisi menu.
+- Langkah berikut: kontrak backend di atas (WS-05/WS-09), lalu legend-l2i (wiring API sungguhan).
 
 ## 925 Harness Lighthouse dan fixture withdrawal (16 Nov 2026)
 
@@ -7517,3 +7524,36 @@ Bukti: `single-refund-lane-1042.test.ts` 33 tes (dua urutan, bersamaan, replay e
 Keputusan terbuka: F2 refund manual atas pesanan hasil ingest edge diizinkan (refund kasir/void menolaknya); F3 void edge tidak memeriksa refund ORD-09 `payment_refunds` (wilayah 1035).
 
 1042 F2 (keputusan CTO 18 Nov, jangan sampai rugi): refund manual atas penjualan edge yang sudah di-ingest (edge_order_ingests state ingested/voided) ditolak 409 EDGE_ORDER_CORRECTION_BLOCKED, sama seperti refund kasir/void cloud. Test `single-refund-lane-1042` 36 tes (gagal-dulu: 3 merah di kode lama); 8 berkas terkait 169/169; eslint+prettier+tsc API hijau. F3 = legend-aja6g, pengecualian finance = legend-nbkvh.
+
+## 18 Nov 2026 — 1039 POS 936 backend: voucher di order, poin, EDC declined, tiket fasilitas (thread engineer, bead legend-hpgyw)
+
+Cabang `ghostex/8eb871ce`. Migrasi 0670 (poin sebagai tender POS: `point_ledger_source_type_check` menerima `pos_tender`) dan 0671 (tabel `facility_ticket_pos_lines`, `access_ticket_credentials`) adalah nomor kerja: merge train yang menomori ulang.
+
+Sudah:
+- Voucher/promo di order: server menghitung ulang pajak dan service setelah diskon; voucher yang potongannya lebih besar dari sisa tagihan ditolak 422 `DISCOUNT_EXCEEDS_SUBTOTAL`; satu promo per order (kedua: 409); boleh setelah bayar sebagian, asal total baru tidak di bawah uang yang sudah masuk.
+- Poin: `GET/POST` poin pesanan (`pos-points.service.ts`), nilai poin dibulatkan ke bawah, tidak melebihi sisa tagihan, tidak ganda (kunci idempotensi + kunci baris), mode edge ditolak 409 `POINTS_NEED_CLOUD`, ganti member setelah poin terpakai ditolak, refund pesanan berbayar poin ditolak 409 `REFUND_POINTS_TENDER_UNSUPPORTED`.
+- EDC declined: `edcAttempts` pada detail order; tagihan tidak berubah.
+- Tiket fasilitas = item biasa di tagihan POS; tiket tidak terbit sebelum tagihan lunas; void/refund melepas slot dan mencabut kredensial; tiket yang sudah dipakai tidak bisa direfund (409 `TICKET_ALREADY_USED`); hold yang lapse tidak dihidupkan lagi (409 `TICKET_HOLD_LAPSED`); mode edge ditolak 409 `TICKET_NEEDS_CLOUD`; kredensial QR + PIN hanya tampil sekali, server menyimpan digest.
+- Web ws04-pos-kasir: voucher, poin, EDC declined tersambung ke API nyata. Penjualan tiket di layar kasir belum disambung.
+
+Bukti: pos-936-voucher, pos-936-points, pos-936-edc-declined, pos-936-ticket + regresi (pos-refund-ceilings, pos-refund-edge-authority, accounting-refund-payout-map-race, accounting-service-charge-liability-refund, accounting-auto-journal, accounting-auto-journal-refund-split, pos-order-void-noncash, data-import-registry, facility-contract, facility-slots-db): 14 berkas, 468 tes lulus. Typecheck API dan web lulus, kontrak 873 lulus. Review architect (dua bagian) selesai, temuan dibetulkan.
+
+Sedang/berikut: merge train menomori ulang 0670/0671 dan memperbarui `_journal.json`; keputusan founder lewat CTO ada di laporan akhir thread.
+
+Biaya sesi (session-usage): total biaya* 21764k (utama sonnet 9511k, subagent sonnet 11177k, subagent opus 1056k); 16 subagent, puncak 7 bersamaan, rata-rata 1,0 berjalan; token heavy dipegang thread utama dan satu test-runner bergantian.
+
+## 18 Nov 2026 — 1048 tutup second opinion POS 936 (thread engineer, bead legend-hpgyw)
+
+Cabang `ghostex/8eb871ce`. Migrasi 0672 (`access_ticket_credential_keys`, riwayat kunci kredensial) adalah nomor kerja; 0673 tidak dipakai. `apps/web` tidak disentuh.
+
+Sudah (5 P1 + 3 P2 + temuan architect):
+- Refund manual tidak menghitung tender poin sebagai uang; bon lunas poin: batas 0. Refund manual baris tiket yang masih `issued`/`in_use` ditolak 409 `TICKET_LIVE_NO_MANUAL_REFUND`.
+- Void bon yang sudah terdebit poin tapi belum lunas: poin kembali tepat sekali (satu baris `adjust` per tender, tender `voided`), tanpa event outbox/jurnal (debit `pos_tender` tidak pernah menjurnal). Bon campuran poin + tunai tetap tidak bisa di-void; refund bon berbayar poin tetap ditolak (Q42).
+- Mode latihan: redeem poin 409 `POINTS_TRAINING_REFUSED`, penjualan tiket 409 `TICKET_TRAINING_REFUSED` sebelum hold slot.
+- Redeem poin wajib bukti member hadir (`member_qr` atau `pwa_session`); member terpasang lewat ketik nomor ditolak 409 `POINTS_NEED_MEMBER_PROOF` (kasir pindai ulang QR member). Waktu kedaluwarsa poin diambil dari jam DB setelah kunci.
+- Pintu: validator baru `POST /api/facility/tickets/door-check` (QR atau ticketId+PIN, wajib `facilityId`, 403 seragam `DOOR_CREDENTIAL_INVALID`), menolak kredensial dicabut/diganti/di luar jendela/belum lunas; batas 5 tebakan PIN per 15 menit per tiket (429 `DOOR_PIN_LOCKED`, penghitung per proses API). Replay kunci lama 409 `TICKET_CREDENTIAL_SHOWN`.
+- Voucher melebihi tagihan tetap diterima dengan batas subtotal (Q40); Q41 ke legend-kuh0w.
+
+Bukti: gagal-dulu `so1`..`so4` (tiap temuan gagal karena alasan yang benar), run gabungan 20 berkas 582 tes lulus. Review architect xhigh satu kali (F1-F4, F6 dibetulkan), reviewer untuk perbaikan sesudahnya.
+
+Keputusan terbuka: QR member tidak sekali pakai dan tidak terikat order/nominal (perlu tabel nonce); pembaca pintu offline/edge dan kunci perangkat keras (legend-bzih) belum ada; penghitung PIN per proses (butuh Redis bila API banyak instans); tiket `completed`/`no_show` belum memblokir refund manual; tiket sebelum 0672 hanya mencatat kunci terbaru.
