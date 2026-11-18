@@ -233,6 +233,36 @@ async function sweepNode(
   const since = Math.max(node.lastHeartbeatAt.getTime(), openSince.getTime());
   const offlineMs = now.getTime() - since;
   if (offlineMs < thresholdMs) return { raised: 0, resolved };
+  // The node list was read before this savepoint. Share-lock and re-read the
+  // outlet and node (FOR SHARE blocks close/revoke updates but not the FK key
+  // share locks that audit inserts take, so no lock-order cycle with revoke;
+  // rows are read in a fixed order) so a close or revoke that committed meanwhile cannot get a
+  // replacement alert or notification. A closing transaction that commits
+  // after this lock waits for this savepoint; the next sweep then resolves the
+  // alert through the closed/retired path in sweepTenant.
+  const [outletRow] = await tx
+    .select({ status: outlets.status })
+    .from(outlets)
+    .where(and(eq(outlets.tenantId, tenantId), eq(outlets.id, node.outletId)))
+    .for("share");
+  const [nodeRow] = await tx
+    .select({ status: edgeNodes.status })
+    .from(edgeNodes)
+    .where(
+      and(eq(edgeNodes.tenantId, tenantId), eq(edgeNodes.id, node.edgeNodeId)),
+    )
+    .for("share");
+  if (outletRow?.status !== "active" || nodeRow?.status !== "active") {
+    // Same outcome as the retired path in sweepTenant: close the old alert.
+    if (openAlertRaisedAt)
+      resolved += await resolveEdgeNodeAlerts(tx, {
+        tenantId,
+        edgeNodeId: node.edgeNodeId,
+        kind: "edge_offline",
+        at: now,
+      });
+    return { raised: 0, resolved };
+  }
   const { opened } = await raiseEdgeNodeAlert(tx, {
     tenantId,
     outletId: node.outletId,
@@ -301,7 +331,8 @@ async function sweepTenant(
           eq(outlets.status, "active"),
           isNotNull(edgeNodes.lastHeartbeatAt),
         ),
-      );
+      )
+      .orderBy(edgeNodes.outletId, edgeNodes.id);
     const openAlerts = await tx
       .select({
         edgeNodeId: edgeNodeAlerts.edgeNodeId,

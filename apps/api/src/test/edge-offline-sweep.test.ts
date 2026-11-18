@@ -40,7 +40,10 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
+import { drizzle } from "drizzle-orm/node-postgres";
 import { db } from "../db/index.ts";
+import { createAppPool } from "../db/role.ts";
+import * as schema from "../db/schema/index.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import {
@@ -446,6 +449,175 @@ afterAll(async () => {
     client.release();
     await owner.end();
   }
+});
+
+// ---------------------------------------------------------- race: concurrent
+// legend-tj9y6 F1 (second opinion, ronde 2). A second connection commits a
+// change (outlet closed, node revoked) after the sweep has read its node list
+// but before it reads the open alarms. The sweep gets a drizzle handle over its
+// own app pool whose connections pause, once, right before the tenant's
+// "open alarms" SELECT (the first statement touching edge_node_alerts for that
+// tenant). While paused, `during` runs on the owner pool and commits. No
+// production seam is needed: sweepEdgeOfflineAlerts already takes `database`.
+async function sweepWithConcurrentChange(
+  now: Date,
+  tid: string,
+  during: () => Promise<void>,
+) {
+  const racePool = createAppPool(
+    (process.env.APP_DATABASE_URL ?? process.env.DATABASE_URL)!,
+    { max: 3 },
+  );
+  let armed = true;
+  let paused = false;
+  const hook = (client: PoolClient) => {
+    const marker = client as PoolClient & { __raceHooked?: boolean };
+    if (marker.__raceHooked) return;
+    marker.__raceHooked = true;
+    const query = client.query.bind(client) as (
+      ...args: unknown[]
+    ) => Promise<unknown>;
+    (client as unknown as { query: typeof query }).query = async (
+      ...args: unknown[]
+    ) => {
+      const first = args[0];
+      const text =
+        typeof first === "string"
+          ? first
+          : ((first as { text?: string } | undefined)?.text ?? "");
+      const values =
+        (args[1] as unknown[] | undefined) ??
+        (first as { values?: unknown[] } | undefined)?.values ??
+        [];
+      if (
+        armed &&
+        /^\s*select/i.test(text) &&
+        text.includes('"edge_node_alerts"') &&
+        values.includes(tid)
+      ) {
+        armed = false;
+        paused = true;
+        await during();
+      }
+      return query(...args);
+    };
+  };
+  // pg-pool calls connect() with a callback for pool.query(), and drizzle
+  // awaits it for transactions: hook both forms.
+  const connect = racePool.connect.bind(racePool) as (
+    ...args: unknown[]
+  ) => Promise<PoolClient> | undefined;
+  (racePool as unknown as { connect: typeof connect }).connect = (
+    ...args: unknown[]
+  ) => {
+    const callback = args[0];
+    if (typeof callback === "function")
+      return connect(
+        (error: unknown, client: PoolClient | undefined, done: unknown) => {
+          if (client) hook(client);
+          (callback as (...a: unknown[]) => void)(error, client, done);
+        },
+      );
+    return (connect() as Promise<PoolClient>).then((client) => {
+      hook(client);
+      return client;
+    });
+  };
+  const raceDb = drizzle(racePool, { schema }) as unknown as typeof db;
+  try {
+    const result = await sweepEdgeOfflineAlerts(raceDb, {
+      now,
+      thresholdMinutes: 30,
+    });
+    // The change must really have landed between the two reads; otherwise the
+    // test would pass for the wrong reason.
+    expect(paused).toBe(true);
+    return result;
+  } finally {
+    await racePool.end();
+  }
+}
+
+const revokeNow = async (site: Site) => {
+  await revokeEdgeNode(scopeFor(site.tenantId, [site.outletId]), actor, {
+    edgeNodeId: site.nodeId,
+    reason: "Perangkat hilang",
+  });
+};
+
+const closeOutletNow = (outletId: string) =>
+  asOwnerTenant(tenantId, async (client) => {
+    await client.query("UPDATE outlets SET status = 'closed' WHERE id = $1", [
+      outletId,
+    ]);
+  });
+
+describe("legend-tj9y6 F1 offline sweep: outlet or node retired mid-sweep", () => {
+  it("legend-tj9y6 F1 outlet closed between the node read and the alarm read resolves the old alarm and raises nothing new", async () => {
+    await setHeartbeat(siteA, before(NOW_OPEN, 60));
+    expect(await sweep(NOW_OPEN)).toMatchObject({ raised: 1, resolved: 0 });
+    expect(await openAlertsOf(tenantId, siteA.nodeId)).toHaveLength(1);
+    const notesBefore = await notificationsOf(tenantId);
+    expect(notesBefore.length).toBeGreaterThan(0);
+
+    const result = await sweepWithConcurrentChange(
+      after(NOW_OPEN, 1),
+      tenantId,
+      () => closeOutletNow(outletA),
+    );
+
+    expect(result).toMatchObject({ raised: 0, resolved: 1, failed: 0 });
+    expect(await openAlertsOf(tenantId, siteA.nodeId)).toHaveLength(0);
+    expect(await alertsOf(tenantId, siteA.nodeId)).toHaveLength(1);
+    expect(await notificationsOf(tenantId)).toHaveLength(notesBefore.length);
+  });
+
+  it("legend-tj9y6 F1 outlet closed mid-sweep with no earlier alarm gets no alarm and no notification", async () => {
+    await setHeartbeat(siteA, before(NOW_OPEN, 60));
+
+    const result = await sweepWithConcurrentChange(NOW_OPEN, tenantId, () =>
+      closeOutletNow(outletA),
+    );
+
+    expect(result).toMatchObject({ raised: 0, resolved: 0, failed: 0 });
+    expect(await alertsOf(tenantId, siteA.nodeId)).toHaveLength(0);
+    expect(await notificationsOf(tenantId)).toHaveLength(0);
+  });
+
+  it("legend-tj9y6 F1 node revoked between the node read and the alarm read resolves the old alarm and raises nothing new", async () => {
+    const site = await newSite(tenantId, "Outlet Offline Race Revoke");
+    await setHeartbeat(site, before(NOW_OPEN, 60));
+    expect(await sweep(NOW_OPEN)).toMatchObject({ raised: 1, resolved: 0 });
+    expect(await openAlertsOf(tenantId, site.nodeId)).toHaveLength(1);
+    const notesBefore = await notificationsOf(tenantId);
+
+    const result = await sweepWithConcurrentChange(
+      after(NOW_OPEN, 1),
+      tenantId,
+      () => revokeNow(site),
+    );
+
+    // Assumption: only the safety outcome is specified for a node revoked
+    // mid-sweep; `resolved` (the retired path may or may not resolve the old alarm) and `failed`
+    // (silent skip vs. guarded rejection) are not asserted.
+    expect(result.raised).toBe(0);
+    expect(await openAlertsOf(tenantId, site.nodeId)).toHaveLength(0);
+    expect(await alertsOf(tenantId, site.nodeId)).toHaveLength(1);
+    expect(await notificationsOf(tenantId)).toHaveLength(notesBefore.length);
+  });
+
+  it("legend-tj9y6 F1 node revoked mid-sweep with no earlier alarm gets no alarm and no notification", async () => {
+    const site = await newSite(tenantId, "Outlet Offline Race Revoke Fresh");
+    await setHeartbeat(site, before(NOW_OPEN, 60));
+
+    const result = await sweepWithConcurrentChange(NOW_OPEN, tenantId, () =>
+      revokeNow(site),
+    );
+
+    expect(result.raised).toBe(0);
+    expect(await alertsOf(tenantId, site.nodeId)).toHaveLength(0);
+    expect(await notificationsOf(tenantId)).toHaveLength(0);
+  });
 });
 
 // -------------------------------------------------------------- T29 closed
