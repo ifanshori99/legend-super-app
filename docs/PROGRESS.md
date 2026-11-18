@@ -2112,3 +2112,4 @@ Langkah berikut CTO baru:
 - 02:16 CTO: SO refund ronde 12 (G311w) 2 P1 (hold ditutup counted meski fact < hold: resolver + closeLiveOwnHold). Resolve. Brief 1119 ke G2yc3: satu invarian cakupan nominal untuk semua penutup hold. 1072 tetap DITAHAN.
 - 02:20 CTO: G8xbm 1tke7 gate SQL di ws/1100 2b0feb16f (67/67 test, merah-dulu ok, typecheck tidak perlu: SQL+test). Architect xhigh review berjalan (subagent CTO).
 - 02:22 CTO: G9yay 1094 architect 0 P0-P2; keputusan: resolve voucher/swap di perangkat bersama ikut ditutup (membatasi).
+- 02:23 CTO: architect 1tke7: P1 kolom hilang lolos -> G8xbm fix; P2 block permanen sesudah 0691 -> ubah info saat kas landing (catat merge-queue); P3 freeze tulis payout saat deploy (runbook).
