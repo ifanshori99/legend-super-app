@@ -98,7 +98,10 @@ import {
 } from "./accounting-cash-limit.service.ts";
 import { postJournalInTransaction } from "./accounting-journal.service.ts";
 import { assertPeriodOpenForPosting } from "./accounting-period.service.ts";
-import { approvePettyTopupInTransaction } from "./accounting-petty-cash.service.ts";
+import {
+  approvePettyTopupInTransaction,
+  assertBankCreditCoveredBy1102,
+} from "./accounting-petty-cash.service.ts";
 import { requireLegalEntity } from "./accounting-shared.ts";
 import {
   loadTenantAccessInTransaction,
@@ -520,6 +523,16 @@ export async function createCashBankEntry(
             throw new AccountingError("CASH_OUT_CHAIN_MISSING");
           return { id: entryId };
         }
+        // Posting now: a cash out or transfer credits the bank account's GL,
+        // which may be petty cash 1102 (legend-rvao9 P2-2a).
+        if (input.kind !== "cash_in")
+          await assertBankCreditCoveredBy1102(
+            tx,
+            tenantId,
+            input.legalEntityId,
+            bank.glAccountId,
+            input.amountIdr,
+          );
         const lines = cashBankJournalLines(
           { kind: input.kind, amountIdr: input.amountIdr, outletId },
           {
@@ -759,6 +772,14 @@ async function approvePendingEntry(
       row.legalEntityId,
       row.counterAccountId,
     );
+    if (kind !== "cash_in")
+      await assertBankCreditCoveredBy1102(
+        tx,
+        tenantId,
+        row.legalEntityId,
+        bank.glAccountId,
+        row.amountIdr,
+      );
     journal = await postJournalInTransaction(
       tx,
       context,
@@ -976,6 +997,9 @@ const POSTING_REFUSAL_CODES: ReadonlySet<string> = new Set([
   "ACCOUNT_INACTIVE",
   "ACCOUNT_NOT_POSTABLE",
   "ACCOUNT_ENTITY_MISMATCH",
+  // Cash short for a bank account on 1102 (legend-1053b): the entry stays
+  // pending and can be approved again once cash is topped up.
+  "PETTY_CASH_GL_INSUFFICIENT",
 ]);
 
 function isPostingRefusal(error: unknown): boolean {

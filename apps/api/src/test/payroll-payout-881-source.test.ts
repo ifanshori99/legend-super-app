@@ -428,12 +428,23 @@ const clearBatchSource = (batchId: string) =>
 // ---- Scenarios -----------------------------------------------------------------
 
 /** Cash handed over with accounting off and no locked event waiting: a final settle_skipped. */
-async function cashSkipped(net = NET_CASH) {
+async function cashSkipped(net = NET_CASH, opts: { noMapping?: boolean } = {}) {
   const slips = [cash(CASHIER, net)];
   const runId = await W.seedRun(slips);
+  // Setup only (legend-rvao9): approving a cash batch needs 1102 funded and
+  // the petty_cash mapping present. A test about "no mapping at handover"
+  // removes the mapping after the approve, for the handover only.
+  await W.fundPettyCash(net);
   const batchId = await W.approvedBatch(runId, "cash");
   const itemIds = (await W.itemsOf(batchId)).map((i) => i.id as string);
-  await withAccountingOff(() => W.handover(batchId, itemIds, APP2));
+  const restoreMissing = opts.noMapping
+    ? await removeMapping("petty_cash")
+    : async () => {};
+  try {
+    await withAccountingOff(() => W.handover(batchId, itemIds, APP2));
+  } finally {
+    await restoreMissing();
+  }
   const postings = await W.postingsOf(batchId);
   expect(postings, "premise: one posting").toHaveLength(1);
   expect(postings[0]!.kind, "premise: final settle_skipped").toBe(
@@ -616,14 +627,15 @@ describe("zlcsd: the frozen cash source is kept, never replaced by the current m
 describe("zlcsd: no stored source means the settlement is held for finance", () => {
   it("[zlcsd-cash-no-mapping-at-handover-held] no petty_cash mapping at handover (accounting off, source null); the mapping is back and moved to B before the lock is consumed: the consumer does not throw, nothing is credited to B or A, the posting stays settle_skipped with reason source_account_unknown, sweeps do not resolve it", async () => {
     const before = await snapshot();
-    const restoreMissing = await removeMapping("petty_cash");
     let restoreMapping = async () => {};
     try {
-      const { runId, batchId, slips, net, posting } = await cashSkipped();
+      const { runId, batchId, slips, net, posting } = await cashSkipped(
+        NET_CASH,
+        { noMapping: true },
+      );
       expect(posting.source_gl_account_id, "premise: nothing to freeze").toBe(
         null,
       );
-      await restoreMissing();
       restoreMapping = await remapMapping("petty_cash", "1101"); // B
 
       const outboxId = await queueLocked(runId, slips);
@@ -646,7 +658,6 @@ describe("zlcsd: no stored source means the settlement is held for finance", () 
         reason: "source_account_unknown",
       });
     } finally {
-      await restoreMissing();
       await restoreMapping();
     }
   });
@@ -656,6 +667,7 @@ describe("zlcsd: no stored source means the settlement is held for finance", () 
     const slips = [cash(CASHIER, NET_CASH)];
     const runId = await W.seedRun(slips);
     const outboxId = await queueLocked(runId, slips);
+    await W.fundPettyCash(NET_CASH); // setup only: approve needs 1102 cash
     const batchId = await W.approvedBatch(runId, "cash");
     const itemIds = (await W.itemsOf(batchId)).map((i) => i.id as string);
     await W.handover(batchId, itemIds, APP2);
@@ -708,13 +720,7 @@ describe("zlcsd: no stored source means the settlement is held for finance", () 
 
 /** A held cash posting: source NULL, lock journal posted, petty_cash mapped to A (1102). */
 async function heldCashWithoutSource() {
-  const restoreMissing = await removeMapping("petty_cash");
-  let skipped: Awaited<ReturnType<typeof cashSkipped>>;
-  try {
-    skipped = await cashSkipped();
-  } finally {
-    await restoreMissing();
-  }
+  const skipped = await cashSkipped(NET_CASH, { noMapping: true });
   const outboxId = await queueLocked(skipped.runId, skipped.slips);
   expect((await consumeLocked(outboxId))?.status).toBe("posted");
   const held = await expectHeld(

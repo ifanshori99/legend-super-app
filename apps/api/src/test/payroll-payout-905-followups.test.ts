@@ -267,6 +267,8 @@ async function settledCash() {
   const slips = [cash(CASHIER, NET_CASH)];
   const runId = await W.seedRun(slips);
   await W.postLockedJournal(runId, slips);
+  // Cash approval needs 1102 to cover the batch (legend-rvao9): setup only.
+  await W.fundPettyCash(NET_CASH);
   const batchId = await W.approvedBatch(runId, "cash");
   const itemIds = (await W.itemsOf(batchId)).map((i) => i.id as string);
   await W.handover(batchId, itemIds, APP2);

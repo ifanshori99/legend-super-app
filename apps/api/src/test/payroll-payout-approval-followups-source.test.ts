@@ -278,6 +278,8 @@ describe("legend-3j9yz approve names the source account it saw", () => {
       const batchId = await W.createBatch(runId, "cash");
       await W.inTx((tx) => submitDisbursementBatch(tx, actorOf(REQ), batchId));
       const hash = (await W.batchById(batchId)).content_hash as string;
+      // Cash approval needs 1102 to cover the batch (legend-rvao9): setup only.
+      await W.fundPettyCash(900_000);
       await approveWith(batchId, hash, value);
       const batch = await W.batchById(batchId);
       expect(batch.status, `value ${String(value)}`).toBe("approved");

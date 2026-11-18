@@ -505,6 +505,7 @@ async function historicalCashPending() {
   const slips = [cash(CASHIER, NET_CASH)];
   const runId = await W.seedRun(slips);
   await queueLockedEvent(runId, slips);
+  await W.fundPettyCash(NET_CASH); // setup only: approve needs 1102 cash
   const batchId = await W.approvedBatch(runId, "cash");
   const itemIds = (await W.itemsOf(batchId)).map((i) => i.id as string);
   await W.handover(batchId, itemIds, APP2);
@@ -583,6 +584,7 @@ describe("905 a historical cash source is not filled with an unproven account (P
     const slips = [cash(CASHIER, NET_CASH)];
     const runId = await W.seedRun(slips);
     await W.postLockedJournal(runId, slips);
+    await W.fundPettyCash(NET_CASH); // setup only: approve needs 1102 cash
     const batchId = await W.approvedBatch(runId, "cash");
     const itemIds = (await W.itemsOf(batchId)).map((i) => i.id as string);
     await W.handover(batchId, itemIds, APP2);

@@ -149,6 +149,7 @@ import {
 import { requireLegalEntity } from "./accounting-shared.ts";
 import { loadOutletClock } from "./inventory-ops.shared.ts";
 import { openItemAmount } from "./payroll-payout.service.ts";
+import { accountingEnabled } from "./payroll-payout-setup.ts";
 import { EVENT_DESTINATION } from "./payment-support.ts";
 import { openApprovalRequest } from "./platform-approval.service.ts";
 
@@ -363,6 +364,8 @@ async function glBalanceOf(
     );
   return Number(row?.balance ?? 0);
 }
+
+const formatRupiah = (amount: number) => `Rp${amount.toLocaleString("id-ID")}`;
 
 /** A pending credit whose amount cannot be read: the return is refused. */
 const unreadablePendingCredit = (source: string) =>
@@ -654,6 +657,66 @@ async function pendingPettyCashCreditsIdr(
       if (ids.has(row.employeeId)) total += row.amountIdr;
   }
   return total;
+}
+
+/**
+ * Cash the entity's petty cash account (1102) can still pay out: the posted GL
+ * balance minus the credits not on the GL yet (`pendingPettyCashCreditsIdr`).
+ * Null when the entity has no `petty_cash` mapping. Shared by the petty cash
+ * return guard (legend-3k9qg) and the cash payroll batch approval (legend-rvao9).
+ * Call under `entityLock`, so the GL and the pending credits are read together.
+ */
+export async function availableCash1102(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  legalEntityId: string,
+): Promise<{
+  glIdr: number;
+  pendingCreditIdr: number;
+  availableIdr: number;
+} | null> {
+  const glIdr = await pettyCashGlBalance(tx, tenantId, legalEntityId);
+  if (glIdr === null) return null;
+  const pendingCreditIdr = await pendingPettyCashCreditsIdr(
+    tx,
+    tenantId,
+    legalEntityId,
+  );
+  return { glIdr, pendingCreditIdr, availableIdr: glIdr - pendingCreditIdr };
+}
+
+/**
+ * A bank account whose GL account is the entity's petty cash account (1102)
+ * pays out of 1102 when it is credited. Refuses a credit of `amountIdr` that
+ * exceeds the cash left after the reserve of approved cash payroll and other
+ * credits not on the GL yet (PETTY_CASH_GL_INSUFFICIENT, legend-rvao9 P2-2a).
+ * Skipped when accounting is off, when `glAccountId` is not the mapped
+ * petty_cash account, or when the entity has no mapping. Call under
+ * `entityLock`, only for a movement that reduces the bank account.
+ */
+export async function assertBankCreditCoveredBy1102(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  legalEntityId: string,
+  glAccountId: string,
+  amountIdr: number,
+): Promise<void> {
+  if (!(await accountingEnabled(tx, tenantId))) return;
+  const pettyCashAccountId = await pettyCashGlAccount(
+    tx,
+    tenantId,
+    legalEntityId,
+  );
+  if (pettyCashAccountId === null || pettyCashAccountId !== glAccountId) return;
+  const cash = await availableCash1102(tx, tenantId, legalEntityId);
+  if (cash === null || amountIdr <= cash.availableIdr) return;
+  const { glIdr, pendingCreditIdr, availableIdr } = cash;
+  const shortIdr = amountIdr - Math.max(0, availableIdr);
+  throw new AccountingError(
+    "PETTY_CASH_GL_INSUFFICIENT",
+    `Kas kecil di pembukuan tidak cukup untuk kas keluar atau transfer ini. Saldo tersedia ${formatRupiah(Math.max(0, availableIdr))} setelah dikurangi cadangan gaji tunai dan kas keluar yang belum dijurnal, jumlah ${formatRupiah(amountIdr)}, kurang ${formatRupiah(shortIdr)}.`,
+    { glIdr, pendingCreditIdr, availableIdr, shortIdr, deltaIdr: -amountIdr },
+  );
 }
 
 // ------------------------------------------------------------------- reads
@@ -1018,18 +1081,13 @@ async function applyMovement(
   // Fund shortage keeps its own code (changeBalance below); the GL check only
   // runs when a petty_cash account is mapped.
   if (input.kind === "return" && input.amountIdr <= fund.balanceIdr) {
-    const glIdr = await pettyCashGlBalance(tx, tenantId, input.legalEntityId);
-    if (glIdr !== null) {
-      // Cash credits not on the GL yet (legend-3k9qg), read under the entity
-      // lock taken above.
-      const pendingCreditIdr = await pendingPettyCashCreditsIdr(
-        tx,
-        tenantId,
-        input.legalEntityId,
-      );
+    // GL minus cash credits not on the GL yet (legend-3k9qg), read under the
+    // entity lock taken above.
+    const cash = await availableCash1102(tx, tenantId, input.legalEntityId);
+    if (cash !== null) {
+      const { glIdr, pendingCreditIdr, availableIdr } = cash;
       const allowedIdr =
-        fund.balanceIdr -
-        Math.max(0, entityFundTotal - (glIdr - pendingCreditIdr));
+        fund.balanceIdr - Math.max(0, entityFundTotal - availableIdr);
       if (input.amountIdr > allowedIdr)
         throw new AccountingError("PETTY_CASH_GL_INSUFFICIENT", undefined, {
           balanceIdr: fund.balanceIdr,
@@ -1498,6 +1556,37 @@ export async function drawPettyCashForPurchase(
   await entityLock(tx, tenantId, outlet.legalEntityId);
   const fund = await lockFund(tx, tenantId, outletId);
   if (!fund) throw new AccountingError("PETTY_CASH_FUND_REQUIRED");
+  // The purchase will credit 1102 once its journal posts, so it must fit in the
+  // cash left after the reserve of approved cash payroll and other credits not
+  // on the GL yet (legend-rvao9 P2-a: payroll approval is never blocked, the
+  // other cash outflows give way). This purchase is not counted twice: its
+  // `petty_purchase.recorded` event is appended after this call. An entity
+  // without a petty_cash mapping skips the check, like a return.
+  // Accounting module off: nothing reaches the GL (handovers are
+  // `settle_skipped`, counted pending forever), so the check is skipped like
+  // `assertCashCoversBatch` does (legend-rvao9 architect P2-1).
+  if (
+    input.amountIdr <= fund.balanceIdr &&
+    (await accountingEnabled(tx, tenantId))
+  ) {
+    const cash = await availableCash1102(tx, tenantId, outlet.legalEntityId);
+    if (cash !== null && input.amountIdr > cash.availableIdr) {
+      const { glIdr, pendingCreditIdr, availableIdr } = cash;
+      const shortIdr = input.amountIdr - Math.max(0, availableIdr);
+      throw new AccountingError(
+        "PETTY_CASH_GL_INSUFFICIENT",
+        `Kas kecil di pembukuan tidak cukup untuk pembelian ini. Saldo tersedia ${formatRupiah(Math.max(0, availableIdr))} setelah dikurangi cadangan gaji tunai dan kas keluar yang belum dijurnal, pembelian ${formatRupiah(input.amountIdr)}, kurang ${formatRupiah(shortIdr)}.`,
+        {
+          balanceIdr: fund.balanceIdr,
+          glIdr,
+          pendingCreditIdr,
+          availableIdr,
+          shortIdr,
+          deltaIdr: -input.amountIdr,
+        },
+      );
+    }
+  }
   const balanceAfter = await changeBalance(tx, fund, -input.amountIdr);
   await tx.insert(pettyCashEntries).values({
     tenantId,
