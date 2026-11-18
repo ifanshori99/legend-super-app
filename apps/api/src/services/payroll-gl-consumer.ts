@@ -326,6 +326,11 @@ export async function deliverPayrollGlEvent(
         ),
       )
       .for("update");
+    // Entity lock before the journal (1053 order: run, entity, period and
+    // journal): the posting inserts the month's period, and the payout
+    // resolver below takes this lock per batch. Taking it after the period
+    // insert closes a cycle with a petty cash return (legend-zfq7e). Re-entrant.
+    await entityLock(tx, context.tenant.tenantId, payload.legalEntityId);
     const entry = await postJournalFromRuleInTransaction(
       tx,
       context,
