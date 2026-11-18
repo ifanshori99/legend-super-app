@@ -47,6 +47,7 @@ import {
 } from "@starter/shared/core/server";
 import type { OutletId, ScopedTenantContext } from "@starter/shared/core";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
+import { env } from "../config/env";
 import { createApp } from "../app";
 import * as recurringService from "../services/payment-recurring.service";
 import { subscriptionHasAccess } from "../services/payment-recurring.service";
@@ -112,6 +113,8 @@ async function createUser(label: string, who: ReturnType<typeof agent>) {
 }
 
 beforeAll(async () => {
+  // The recurring routes answer 503 unless this gate is on (default off).
+  env.DOIT_RECURRING_ENABLED = true;
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
   dedicated = await createSecondTenant(owner, "yqne1");
