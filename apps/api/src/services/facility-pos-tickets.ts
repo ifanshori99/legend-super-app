@@ -17,8 +17,10 @@
 //   ticket).
 // - CREDENTIAL (`issuePosTicketCredential`): QR token and PIN are minted when
 //   the cashier shows or prints the ticket, only for a paid ticket; only
-//   digests are stored (a mint rotates the pair, a replay of the same key is
-//   refused because the plaintext cannot be shown twice).
+//   digests are stored (a mint rotates the pair, a replay of ANY key ever used
+//   for the ticket is refused because the plaintext cannot be shown twice; the
+//   key digests live in access_ticket_credential_keys). The door check is
+//   facility-door-check.ts.
 //
 // Every read and write filters tenant (and RLS filters outlet). Entitlement:
 // POS tickets are source `purchase`, so no ledger row backs them; a ledger id
@@ -49,6 +51,7 @@ import {
   facilityUnits,
 } from "../db/schema/facility.ts";
 import {
+  accessTicketCredentialKeys,
   accessTicketCredentials,
   facilityTicketPosLines,
 } from "../db/schema/facility-pos-ticket.ts";
@@ -510,7 +513,22 @@ export async function issuePosTicketCredential(
       )
       .limit(1)
       .for("update");
-    if (existing && existing.mintedKey === input.idempotencyKey)
+    // Any key already used for this ticket (not only the newest one, kept in
+    // `mintedKey`) was shown once: refuse it so a late replay of an old key
+    // cannot rotate the newest pair. Under the ticket row lock above.
+    const keyDigest = sha256(input.idempotencyKey);
+    const [seen] = await tx
+      .select({ id: accessTicketCredentialKeys.id })
+      .from(accessTicketCredentialKeys)
+      .where(
+        and(
+          eq(accessTicketCredentialKeys.tenantId, tenantId),
+          eq(accessTicketCredentialKeys.accessTicketId, row.id),
+          eq(accessTicketCredentialKeys.keyDigest, keyDigest),
+        ),
+      )
+      .limit(1);
+    if (seen || (existing && existing.mintedKey === input.idempotencyKey))
       throw new HttpError(
         409,
         "TICKET_CREDENTIAL_SHOWN",
@@ -549,6 +567,15 @@ export async function issuePosTicketCredential(
         createdAt: now,
         ...values,
       });
+
+    await tx.insert(accessTicketCredentialKeys).values({
+      tenantId,
+      outletId: row.outletId,
+      accessTicketId: row.id,
+      keyDigest,
+      version: existing ? existing.version + 1 : 1,
+      createdAt: now,
+    });
 
     const [detail] = await tx
       .select({

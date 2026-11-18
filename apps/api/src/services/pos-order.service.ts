@@ -138,6 +138,10 @@ import { recordTaxSnapshots } from "./tax.service.ts";
 import { assertBusinessDayOpen } from "./pos-cash-guard.ts";
 import { loadTaxConfig } from "./qr-order-pricing.ts";
 import { voidPendingQrisTenders } from "./pos-order-payment.ts";
+import {
+  isPointsOnlyCaptured,
+  restorePointsTenders,
+} from "./pos-points-restore.ts";
 import { assertNoActiveQrisHold } from "./pos-qris-hold.ts";
 import { lockTableLiveState } from "./table-session.service.ts";
 import {
@@ -1672,7 +1676,11 @@ export async function voidPosOrder(
       const next = transitionPosOrder(order.status, "void");
       await assertNoOpenEdcRequest(tx, context, order);
       const tenders = await tendersOf(tx, context, order.id);
-      if (capturedIdr(tenders) > 0)
+      // 936 (legend-hpgyw): a bill whose only captured tenders are points was
+      // not paid in money; the void gives those points back (below). Any other
+      // captured money still needs a linked refund.
+      const pointsOnly = isPointsOnlyCaptured(tenders);
+      if (capturedIdr(tenders) > 0 && !pointsOnly)
         throw new CoreError(
           "CONFLICT",
           "Pesanan sudah dibayar sebagian; selesaikan lalu koreksi dengan void/refund tertaut.",
@@ -1724,6 +1732,14 @@ export async function voidPosOrder(
             eq(posOrderTenders.status, "authorized"),
           ),
         );
+      if (pointsOnly)
+        await restorePointsTenders(tx, context, {
+          orderId: order.id,
+          outletId,
+          tenders,
+          actorUserId: caller.userId,
+          now,
+        });
       await posOrderPromoPort().release(tx, context, {
         orderId: order.id,
         reason: input.reason,

@@ -94,6 +94,9 @@ export async function manualRefundAmountIdr(
   // provider answered refunded (`provider_refunded_at`, or
   // `provider_refunded_after_paid_at`) with no recorded amount is uncertain:
   // refused (restrictive).
+  // 936 (legend-hpgyw, decision 1): a points tender is not money. It is left
+  // out here, so a bill paid fully with points has nothing to refund by hand
+  // and a mixed bill is bound by its non-points part only.
   const tenderRows = await tx.execute(sql`
     SELECT sum(t.amount_idr)::text AS amount,
            t.payment_intent_id IS NOT NULL AS has_intent,
@@ -106,6 +109,7 @@ export async function manualRefundAmountIdr(
      WHERE t.tenant_id = ${tenantId}
        AND t.order_id = ${ulidToUuid(orderId)}::uuid
        AND t.status = 'captured'
+       AND t.method <> 'points'
      GROUP BY t.payment_intent_id
   `);
   let grossPaidIdr = 0;

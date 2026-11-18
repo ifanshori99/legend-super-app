@@ -151,6 +151,35 @@ export const sellAccessTicketAtPos = defineEndpoint({
   response: dataResponseSchema(posTicketSaleSchema),
 });
 
+/**
+ * Door check (936 second-opinion fix, group T): the cloud validator of the QR
+ * token or PIN a paid ticket was given (`issuePosTicketCredential`). Exactly
+ * one of two shapes: the QR token alone, or the ticket id with its 6-digit PIN.
+ * A good credential opens the ticket (`issued` becomes `in_use`, the first
+ * open is recorded once; a repeat check answers 200 again). EVERY credential
+ * failure answers one uniform 403 `DOOR_CREDENTIAL_INVALID` so a caller cannot
+ * tell which part was wrong: unknown token, wrong PIN, a rotated or revoked
+ * pair (refund, void), outside the credential window, a ticket that is not
+ * paid or in use, a ticket of another tenant. A refused check changes nothing.
+ */
+export const doorCheckAccessTicketBodySchema = z.union([
+  z.strictObject({ qrToken: z.string().min(1).max(512) }),
+  z.strictObject({
+    ticketId: accessTicketIdSchema,
+    pin: z.string().regex(/^\d{6}$/, "The door PIN is exactly 6 digits"),
+  }),
+]);
+export type DoorCheckAccessTicketBody = z.infer<
+  typeof doorCheckAccessTicketBodySchema
+>;
+
+export const doorCheckAccessTicket = defineEndpoint({
+  method: "POST",
+  path: "/api/facility/tickets/door-check",
+  body: doorCheckAccessTicketBodySchema,
+  response: dataResponseSchema(z.strictObject({ ticket: accessTicketSchema })),
+});
+
 export const listAccessTickets = defineEndpoint({
   method: "GET",
   path: "/api/facility/tickets",
@@ -517,6 +546,7 @@ export const facilityEndpoints = [
   getFacilityAvailability,
   bookAccessTicket,
   sellAccessTicketAtPos,
+  doorCheckAccessTicket,
   listAccessTickets,
   getAccessTicket,
   cancelAccessTicket,

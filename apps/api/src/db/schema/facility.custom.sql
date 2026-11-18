@@ -78,3 +78,9 @@ SELECT app.enforce_outlet_rls('public.facility_ticket_pos_lines'::regclass);
 SELECT app.enforce_tenant_rls('public.access_ticket_credentials'::regclass);
 --> statement-breakpoint
 SELECT app.enforce_outlet_rls('public.access_ticket_credentials'::regclass);
+--> statement-breakpoint
+-- Credential key history (936 second-opinion fix, legend-hpgyw, migration
+-- 0672): a digest of every mint key of a ticket, tenant and outlet owned.
+SELECT app.enforce_tenant_rls('public.access_ticket_credential_keys'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_outlet_rls('public.access_ticket_credential_keys'::regclass);

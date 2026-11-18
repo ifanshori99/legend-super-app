@@ -152,3 +152,42 @@ export const accessTicketCredentials = pgTable(
     ),
   ],
 );
+
+/**
+ * Every idempotency key ever used to mint a credential for a ticket (migration
+ * 0672), as a SHA-256 digest only. `access_ticket_credentials.minted_key` keeps
+ * just the newest key, so an older key replayed after a newer mint would look
+ * fresh and rotate the newest pair. A key found here is refused (409
+ * TICKET_CREDENTIAL_SHOWN) and the newest pair never changes. Rows are written
+ * in the mint transaction, under the ticket row lock.
+ */
+export const accessTicketCredentialKeys = pgTable(
+  "access_ticket_credential_keys",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    accessTicketId: ulidInUuid("access_ticket_id").notNull(),
+    /** SHA-256 hex of the idempotency key; the key itself is not stored. */
+    keyDigest: varchar("key_digest", { length: 64 }).notNull(),
+    /** The credential version this key produced. */
+    version: integer("version").notNull(),
+    createdAt,
+  },
+  (table) => [
+    unique("access_ticket_credential_keys_key").on(
+      table.tenantId,
+      table.accessTicketId,
+      table.keyDigest,
+    ),
+    foreignKey({
+      name: "access_ticket_credential_keys_ticket_fk",
+      columns: [table.tenantId, table.accessTicketId],
+      foreignColumns: [accessTickets.tenantId, accessTickets.id],
+    }),
+    check(
+      "access_ticket_credential_keys_version_check",
+      sql`${table.version} >= 1`,
+    ),
+  ],
+);

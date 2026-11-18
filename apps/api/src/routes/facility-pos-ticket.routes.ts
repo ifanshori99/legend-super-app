@@ -8,7 +8,10 @@
 
 import { Router, type Request } from "express";
 import { outletIdSchema, userIdSchema } from "@starter/shared/core";
-import { sellAccessTicketAtPos } from "@starter/shared/facility";
+import {
+  doorCheckAccessTicket,
+  sellAccessTicketAtPos,
+} from "@starter/shared/facility";
 import { ACTING_STAFF_ERROR_CODES } from "@starter/shared/pos/acting-staff";
 import {
   issuePosTicketCredential,
@@ -24,10 +27,12 @@ import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
 import {
   getScopedTenantContext,
+  requireMenuPermission,
   requireOutletPermission,
 } from "../middleware/permissions";
 import { getTenantContext, requireTenantContext } from "../middleware/tenant";
 import { HttpError } from "../lib/http-error";
+import { doorCheckTicket } from "../services/facility-door-check";
 import {
   findFacilityOutletId,
   sellPosTicket,
@@ -49,6 +54,9 @@ const outletOfRequest = (req: Request) => {
 };
 const sell = requireOutletPermission("pos.sale.create", outletOfRequest);
 const view = requireOutletPermission("order.view", outletOfRequest);
+// The door check names a credential, not an outlet: the door staff reach comes
+// from the permission and the service only sees tickets inside that reach.
+const operateDoor = requireMenuPermission("facility.booth.operate");
 
 const guards = [
   requireAuth,
@@ -172,6 +180,24 @@ facilityPosTicketRouter.post(
       },
     );
     // The credential is shown once: never cached.
+    res.setHeader("Cache-Control", "no-store").json({ data });
+  },
+);
+
+// 936 second-opinion fix (group T): the door validator of the QR token or PIN.
+// Every credential failure is one uniform 403 DOOR_CREDENTIAL_INVALID.
+facilityPosTicketRouter.post(
+  "/facility/tickets/door-check",
+  ...guards,
+  jsonBody,
+  operateDoor,
+  async (req, res) => {
+    const body = doorCheckAccessTicket.body.parse(req.body);
+    const data = await doorCheckTicket(
+      getScopedTenantContext(req),
+      actorOf(req),
+      body,
+    );
     res.setHeader("Cache-Control", "no-store").json({ data });
   },
 );

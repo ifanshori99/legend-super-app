@@ -16,7 +16,7 @@
 //   A `pos_tender` redeem row emits no points.redeemed event or journal.
 
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   CoreError,
   outletIdSchema,
@@ -35,6 +35,7 @@ import { orders } from "../db/schema/qr-order.ts";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { withTenant } from "../db/tenant.ts";
+import { isTrainingOrder } from "./device-training.ts";
 import { expirePointsForProfile } from "./loyalty-expiry.service.ts";
 import type { Tx } from "./menu-internals.ts";
 import { addPosTender } from "./pos-order-payment.ts";
@@ -46,6 +47,9 @@ import {
   type PosCaller,
 } from "./pos-order-support.ts";
 import { postLedgerEntry } from "./point-ledger.service.ts";
+
+/** How the cashier attached the member that proves the member is present. */
+const MEMBER_PROOF_VIA = new Set(["member_qr", "pwa_session"]);
 
 /** No program-level minimum exists yet; one point is the smallest redemption. */
 export const POS_MIN_REDEEM_POINTS = 1;
@@ -129,6 +133,14 @@ export const posPointsTenderSettlement: PosExternalTenderPort = async (
       "Pembayaran dengan poin hanya bisa dilakukan saat terhubung ke server pusat.",
     );
   const tenantId = context.tenant.tenantId;
+  // A training order never spends real member points: refuse before the order
+  // read, any lock or any debit.
+  if (await isTrainingOrder(tx, tenantId, input.orderId))
+    throw new HttpError(
+      409,
+      "POINTS_TRAINING_REFUSED",
+      "Pesanan latihan tidak bisa membayar dengan poin member.",
+    );
   const points = input.pointsUsed;
   if (points === null)
     throw new CoreError(
@@ -139,6 +151,7 @@ export const posPointsTenderSettlement: PosExternalTenderPort = async (
     .select({
       customerProfileId: orders.customerProfileId,
       businessDate: orders.businessDate,
+      customerAttachedVia: orders.customerAttachedVia,
     })
     .from(orders)
     .where(
@@ -150,11 +163,28 @@ export const posPointsTenderSettlement: PosExternalTenderPort = async (
     );
   if (!order?.customerProfileId)
     throw new CoreError("CONFLICT", "Pesanan ini tidak punya member.");
+  // Typed phone, receipt claim or an unknown source is no proof the member is
+  // here: only a scanned member QR or the member's own PWA session counts.
+  if (
+    !order.customerAttachedVia ||
+    !MEMBER_PROOF_VIA.has(order.customerAttachedVia)
+  )
+    throw new HttpError(
+      409,
+      "POINTS_NEED_MEMBER_PROOF",
+      "Minta member memindai QR member atau masuk lewat aplikasi untuk memakai poin.",
+    );
   const profileId = order.customerProfileId;
   await withProfileLock(tx, tenantId, profileId);
+  // The expiry boundary is judged by the database clock read after the locks:
+  // `input.at` was taken before this transaction waited for them.
+  const clock = await tx.execute<{ now: Date | string }>(
+    sql`SELECT clock_timestamp() AS now`,
+  );
+  const lockedAt = new Date(clock.rows[0].now);
   // Expired points must not pay (as redeemReward): expire first, then read the
   // balance again under the same lock.
-  await expirePointsForProfile(tx, tenantId, profileId, input.at);
+  await expirePointsForProfile(tx, tenantId, profileId, lockedAt);
   const profile = await withProfileLock(tx, tenantId, profileId);
   const program = await loadProgram(tx, tenantId);
   const valueIdr = priceRedemption({
@@ -180,7 +210,7 @@ export const posPointsTenderSettlement: PosExternalTenderPort = async (
       businessDate: order.businessDate,
       createdBy: input.cashierId,
     },
-    input.at,
+    lockedAt,
   );
   return { reference: null, approvedBy: null, amountIdr: valueIdr, tenderId };
 };

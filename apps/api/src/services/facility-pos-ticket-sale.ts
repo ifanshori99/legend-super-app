@@ -19,6 +19,7 @@ import type { PosTicketSale } from "@starter/shared/pos/ticket";
 import { db } from "../db/index.ts";
 import { memberTenantContext } from "../db/member-scope.ts";
 import { customerProfiles } from "../db/schema/crm-member.ts";
+import { devices } from "../db/schema/device.ts";
 import { facilities, facilityProducts } from "../db/schema/facility.ts";
 import { facilityTicketPosLines } from "../db/schema/facility-pos-ticket.ts";
 import { withTenant } from "../db/tenant.ts";
@@ -143,6 +144,28 @@ export async function sellPosTicket(
           customer.status === "closed"
         )
           throw new HttpError(404, "NOT_FOUND", "Pelanggan tidak ditemukan.");
+
+        // Training device: a practice sale must not hold a real slot or open a
+        // real bill. Refused before the hold, so nothing is written.
+        if (caller.deviceId) {
+          const [device] = await tx
+            .select({ trainingMode: devices.trainingMode })
+            .from(devices)
+            .where(
+              and(
+                eq(devices.tenantId, tenantId),
+                eq(devices.outletId, outletId),
+                eq(devices.id, caller.deviceId),
+              ),
+            )
+            .limit(1);
+          if (device?.trainingMode === true)
+            throw new HttpError(
+              409,
+              "TICKET_TRAINING_REFUSED",
+              "Perangkat latihan tidak bisa menjual tiket fasilitas.",
+            );
+        }
 
         const held = await holdFacilitySlot(
           tx,
