@@ -64,7 +64,7 @@ import {
   pruneAckedEdgeQueue,
 } from "../services/edge-queue.service.ts";
 import { startEdgeReceiptRunReporter } from "../services/edge-receipt-run-reporter.ts";
-import { buildEdgeTxnDigest } from "../services/edge-txn-ledger.service.ts";
+import { buildEdgeTxnDigestBounded } from "../services/edge-txn-ledger.service.ts";
 import { createEdgeReconciliationSender } from "./reconciliation-sender.ts";
 import {
   bootstrapEdgeNodeIfNeeded,
@@ -1537,10 +1537,8 @@ export async function startEdgeRuntime(
     cloudUrl: config.cloudUrl,
     credential: config.credential,
     edgeNodeId: local.scope.edgeNodeId,
-    buildDigest: () =>
-      withTenant(db, local.context, (tx) =>
-        buildEdgeTxnDigest(tx, local.scope),
-      ),
+    buildDigest: (signal) =>
+      buildEdgeTxnDigestBounded(db, local.context, local.scope, { signal }),
     onError: (error) =>
       logger.warn(
         safeError(error),

@@ -282,3 +282,98 @@ describe("legend-e3k4p scheduled edge reconciliation sender", () => {
     await t.sender.stop();
   });
 });
+
+// legend-1rfy7 (fail-first, second-opinion F2). Contract assumed from the card:
+// buildDigest receives an AbortSignal, `buildDigest(signal)`. The run timeout
+// (timeoutMs) covers digest build plus HTTP, and stop() aborts a pending build
+// and resolves within a short bound, with no POST and no retry timer left.
+// Assumption: a build that rejects because its signal aborted ends the run as
+// code TIMEOUT when the timeout fired, and silently when stop() fired.
+describe("legend-1rfy7 digest build honours timeout and shutdown", () => {
+  type SignalAwareBuild = (signal: AbortSignal) => Promise<EdgeTxnDigest>;
+  const asOption = (build: SignalAwareBuild) =>
+    build as unknown as EdgeReconciliationSenderOptions["buildDigest"];
+  const sleep = (ms: number) =>
+    new Promise<"timed-out">((resolve) =>
+      setTimeout(() => resolve("timed-out"), ms),
+    );
+
+  /** A digest build that never finishes by itself but rejects when aborted. */
+  function stuckBuild() {
+    const signals: AbortSignal[] = [];
+    const rejects: ((error: Error) => void)[] = [];
+    const build = vi.fn<SignalAwareBuild>((signal) => {
+      signals.push(signal);
+      return new Promise<EdgeTxnDigest>((_resolve, reject) => {
+        signal.addEventListener("abort", () =>
+          reject(new DOMException("aborted", "AbortError")),
+        );
+        rejects.push(reject);
+      });
+    });
+    return {
+      build,
+      signals,
+      // Test cleanup only: frees a build the sender failed to abort.
+      unstick: () =>
+        rejects.forEach((reject) => reject(new Error("test cleanup"))),
+    };
+  }
+
+  it("passes a live AbortSignal to buildDigest", async () => {
+    const t = setup();
+    const seen: unknown[] = [];
+    t.buildDigest.mockImplementation(((signal: unknown) => {
+      seen.push(signal);
+      return Promise.resolve(t.digest);
+    }) as never);
+    t.sender.start();
+    await flush();
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toBeInstanceOf(AbortSignal);
+    expect((seen[0] as AbortSignal).aborted).toBe(false);
+    expect(t.fetch).toHaveBeenCalledTimes(1);
+    await t.sender.stop();
+  });
+
+  it("times out a digest build that never resolves, without any POST", async () => {
+    const stuck = stuckBuild();
+    const t = setup({ timeoutMs: 20, buildDigest: asOption(stuck.build) });
+    try {
+      t.sender.start();
+      const outcome = await Promise.race([t.sender.runOnce(), sleep(1_000)]);
+      expect(outcome).toBe(false);
+      expect(t.fetch).not.toHaveBeenCalled();
+      expect(stuck.signals).toHaveLength(1);
+      expect(stuck.signals[0]?.aborted).toBe(true);
+      expect(t.onError).toHaveBeenCalledWith(
+        expect.objectContaining({ code: "TIMEOUT" }),
+      );
+      expect(t.activeTimers()[0]?.ms).toBe(RETRY);
+    } finally {
+      stuck.unstick();
+      await Promise.race([t.sender.stop(), sleep(1_000)]);
+    }
+  });
+
+  it("stop aborts a pending digest build and resolves within the shutdown bound", async () => {
+    const stuck = stuckBuild();
+    const t = setup({ buildDigest: asOption(stuck.build) });
+    try {
+      t.sender.start();
+      await flush();
+      expect(stuck.signals).toHaveLength(1);
+      expect(stuck.signals[0]?.aborted).toBe(false);
+      const startedAt = Date.now();
+      const outcome = await Promise.race([t.sender.stop(), sleep(500)]);
+      expect(outcome).not.toBe("timed-out");
+      expect(Date.now() - startedAt).toBeLessThan(500);
+      expect(stuck.signals[0]?.aborted).toBe(true);
+      expect(t.fetch).not.toHaveBeenCalled();
+      expect(t.activeTimers()).toHaveLength(0);
+    } finally {
+      stuck.unstick();
+      await Promise.race([t.sender.stop(), sleep(1_000)]);
+    }
+  });
+});

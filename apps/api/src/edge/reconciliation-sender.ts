@@ -8,6 +8,7 @@ import { cloudHttpBaseUrl, EdgeCloudHttpError } from "./cloud-http.ts";
 const DEFAULT_INTERVAL_MS = 5 * 60_000;
 const DEFAULT_RETRY_BASE_MS = 30_000;
 const DEFAULT_TIMEOUT_MS = 15_000;
+const STOP_BOUND_MS = 2_000;
 
 type EdgeRequestInit = RequestInit & { cache: "no-store" };
 
@@ -15,7 +16,8 @@ export type EdgeReconciliationSenderOptions = {
   cloudUrl: string;
   credential: string;
   edgeNodeId: string;
-  buildDigest: () => Promise<EdgeTxnDigest>;
+  /** `signal` aborts on timeout or stop(); the build must roll back and reject. */
+  buildDigest: (signal: AbortSignal) => Promise<EdgeTxnDigest>;
   /**
    * legend-9z10p: only the primary reports. A standby never drains edge_to_cloud
    * (no cursor), so its digest would always look behind/stale. Default primary.
@@ -97,15 +99,25 @@ export function createEdgeReconciliationSender(
     let timeout: ReturnType<typeof setTimeout> | undefined;
     let timedOut = false;
     try {
-      const digest = await options.buildDigest();
-      if (run.signal.aborted) return false;
-      if (digest.edgeNodeId !== options.edgeNodeId)
-        throw new EdgeCloudHttpError("NODE_MISMATCH");
+      // One timeout covers the digest build and the HTTP request.
       timeout = setTimeout(() => {
         timedOut = true;
         run.abort();
       }, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
       timeout.unref();
+      let digest: EdgeTxnDigest;
+      try {
+        digest = await options.buildDigest(run.signal);
+      } catch (error) {
+        if (timedOut) throw new EdgeCloudHttpError("TIMEOUT");
+        throw error;
+      }
+      if (run.signal.aborted) {
+        if (timedOut) throw new EdgeCloudHttpError("TIMEOUT");
+        return false;
+      }
+      if (digest.edgeNodeId !== options.edgeNodeId)
+        throw new EdgeCloudHttpError("NODE_MISMATCH");
       const init: EdgeRequestInit = {
         method: "POST",
         headers: {
@@ -167,7 +179,20 @@ export function createEdgeReconciliationSender(
       stopped = true;
       cancelTimer();
       controller?.abort();
-      if (inFlight) await inFlight;
+      if (!inFlight) return;
+      // A build that ignores the abort must not hang shutdown.
+      let bound: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          inFlight,
+          new Promise<void>((resolve) => {
+            bound = setTimeout(resolve, STOP_BOUND_MS);
+            bound.unref();
+          }),
+        ]);
+      } finally {
+        clearTimeout(bound);
+      }
     },
   };
 }

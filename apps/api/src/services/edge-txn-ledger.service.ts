@@ -12,8 +12,14 @@
 // BOTH sides, so the two totals cannot drift by a rounding rule.
 import { createHash } from "node:crypto";
 import { sql } from "drizzle-orm";
-import { CoreError, ulidToUuid } from "@starter/shared/core";
+import type { Pool } from "pg";
+import {
+  CoreError,
+  ulidToUuid,
+  type ScopedTenantContext,
+} from "@starter/shared/core";
 import type { EventEnvelope } from "@starter/shared/events";
+import { withTenant } from "../db/tenant.ts";
 import { lockSyncCursor, type EdgeTx } from "./edge-queue.service.ts";
 
 export type EdgeTxnNode = {
@@ -190,4 +196,62 @@ export async function buildEdgeTxnDigest(
     throughLinkSeq: cursor.next_out_seq,
     totals,
   };
+}
+
+const DEFAULT_DIGEST_LOCK_TIMEOUT_MS = 10_000;
+
+/**
+ * legend-1rfy7: `buildEdgeTxnDigest` in its own bounded transaction. The cursor
+ * row lock may be held by a local sale, so the build must not wait forever:
+ * `lock_timeout` and `statement_timeout` cap every wait, and aborting `signal`
+ * cancels the running statement from a second connection so the transaction
+ * rolls back and releases its connection and lock queue slot. The cancel is
+ * scoped to this transaction's start time, so it cannot hit a later query that
+ * reuses the same backend after the rollback.
+ */
+export async function buildEdgeTxnDigestBounded(
+  database: Parameters<typeof withTenant>[0],
+  context: ScopedTenantContext,
+  node: EdgeTxnNode,
+  options: { signal?: AbortSignal; lockTimeoutMs?: number } = {},
+): Promise<EdgeTxnDigest> {
+  const { signal } = options;
+  signal?.throwIfAborted();
+  const timeoutMs = Math.max(
+    1,
+    Math.floor(options.lockTimeoutMs ?? DEFAULT_DIGEST_LOCK_TIMEOUT_MS),
+  );
+  return withTenant(database, context, async (tx) => {
+    const backend = await tx.execute(
+      sql`SELECT pg_backend_pid() AS pid, now() AS started_at`,
+    );
+    const pid = Number(backend.rows[0]?.pid);
+    const startedAt = backend.rows[0]?.started_at as Date;
+    let live = true;
+    // The drizzle node-postgres driver exposes its pool as `$client`. Without
+    // it (other drivers) lock_timeout and statement_timeout still bound the wait.
+    const cancelPool = (database as unknown as { $client?: Pool }).$client;
+    const cancel = () => {
+      if (!live || !cancelPool) return;
+      void cancelPool
+        .query(
+          "SELECT pg_cancel_backend(pid) FROM pg_stat_activity WHERE pid = $1 AND xact_start = $2",
+          [pid, startedAt],
+        )
+        .catch(() => undefined);
+    };
+    signal?.addEventListener("abort", cancel, { once: true });
+    try {
+      // An abort between statements has nothing to cancel: re-check before work.
+      signal?.throwIfAborted();
+      await tx.execute(sql.raw(`SET LOCAL lock_timeout = ${timeoutMs}`));
+      await tx.execute(sql.raw(`SET LOCAL statement_timeout = ${timeoutMs}`));
+      const digest = await buildEdgeTxnDigest(tx, node);
+      signal?.throwIfAborted();
+      return digest;
+    } finally {
+      live = false;
+      signal?.removeEventListener("abort", cancel);
+    }
+  });
 }
