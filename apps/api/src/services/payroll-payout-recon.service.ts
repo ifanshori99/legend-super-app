@@ -1795,19 +1795,11 @@ function evaluateGrants(
 }
 
 /**
- * Records a successful read of the proof file of an operation (1057, legend-qh11l,
- * migration 0674). An 'ok' observation can release a slip again after a read
- * error, so only the role `legend_payout_recon` may record it
- * (`app.payout_recon_evidence_observe_ok`); `app.payout_recon_evidence_observe`
- * refuses 'ok'. The role is taken with `SET LOCAL ROLE` for this one call and the
- * previous role is restored right after; a failure aborts the transaction, which
- * ends the role with it.
+ * Runs `run` as the role `legend_payout_recon` (`SET LOCAL ROLE`) and restores the
+ * previous role right after; a failure aborts the transaction, which ends the
+ * role with it.
  */
-export async function recordReadOk(
-  tx: Tx,
-  tenantId: string,
-  operationId: string,
-): Promise<void> {
+async function asReconRole(tx: Tx, run: () => Promise<unknown>): Promise<void> {
   const previous = text(
     rowsOf(
       await tx.execute(sql`SELECT pg_catalog.quote_ident(current_user) AS r`),
@@ -1816,10 +1808,50 @@ export async function recordReadOk(
   if (previous === null)
     throw new Error("Cannot read the current database role");
   await tx.execute(sql`SET LOCAL ROLE legend_payout_recon`);
-  await tx.execute(
-    sql`SELECT app.payout_recon_evidence_observe_ok(${tenantId}::uuid, ${operationId}::uuid)`,
-  );
+  await run();
   await tx.execute(sql.raw(`SET LOCAL ROLE ${previous}`));
+}
+
+/**
+ * Records a successful read of the proof file of an operation (1057, legend-qh11l,
+ * migration 0674). An 'ok' observation can release a slip again after a read
+ * error, so only the role `legend_payout_recon` may record it
+ * (`app.payout_recon_evidence_observe_ok`); `app.payout_recon_evidence_observe`
+ * refuses 'ok'.
+ */
+export async function recordReadOk(
+  tx: Tx,
+  tenantId: string,
+  operationId: string,
+): Promise<void> {
+  await asReconRole(tx, () =>
+    tx.execute(
+      sql`SELECT app.payout_recon_evidence_observe_ok(${tenantId}::uuid, ${operationId}::uuid)`,
+    ),
+  );
+}
+
+/**
+ * Records a fresh read of the proof file that found a problem (legend-tiw2h,
+ * migration 0674). After a read error a 'missing' or 'mismatch' observation can
+ * release a slip again (the run of the difference is back to the one of the old
+ * clearance), so only the role `legend_payout_recon` may record it
+ * (`app.payout_recon_evidence_observe_difference`);
+ * `app.payout_recon_evidence_observe` refuses it from any other caller while the
+ * last observation is an error.
+ */
+export async function recordProblemRead(
+  tx: Tx,
+  tenantId: string,
+  operationId: string,
+  state: "missing" | "mismatch",
+  observedSha: string | null,
+): Promise<void> {
+  await asReconRole(tx, () =>
+    tx.execute(
+      sql`SELECT app.payout_recon_evidence_observe_difference(${tenantId}::uuid, ${operationId}::uuid, ${state}::text, ${observedSha}::text)`,
+    ),
+  );
 }
 
 export type PayoutReconOptions = {
@@ -2059,9 +2091,17 @@ export async function reconcileTrustedPayouts(
           fileOf.set(op.operationId, state);
           if (state === "error") unreadable += 1;
           if (state === "ok") await recordReadOk(tx, tenantId, op.operationId);
+          else if (state === "missing" || state === "mismatch")
+            await recordProblemRead(
+              tx,
+              tenantId,
+              op.operationId,
+              state,
+              state === "mismatch" ? readSha : null,
+            );
           else
             await tx.execute(
-              sql`SELECT app.payout_recon_evidence_observe(${tenantId}::uuid, ${op.operationId}::uuid, ${state}::text, ${state === "mismatch" ? readSha : null}::text)`,
+              sql`SELECT app.payout_recon_evidence_observe(${tenantId}::uuid, ${op.operationId}::uuid, ${state}::text, NULL::text)`,
             );
         });
       } catch (error) {

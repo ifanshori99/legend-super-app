@@ -363,8 +363,10 @@ describe("maintenance database role", () => {
 // privilege error (SQLSTATE 42501), because the fixture has no real operation.
 describe("payout recon role: ok reads only through legend_payout_recon", () => {
   const OK = "app.payout_recon_evidence_observe_ok(uuid,uuid)";
+  const DIFFERENCE =
+    "app.payout_recon_evidence_observe_difference(uuid,uuid,text,text)";
   const INTERNAL =
-    "app.payout_recon_evidence_observe_internal(uuid,uuid,text,text)";
+    "app.payout_recon_evidence_observe_internal(uuid,uuid,text,text,boolean)";
   const OBSERVE = "app.payout_recon_evidence_observe(uuid,uuid,text,text)";
   const RECON = "legend_payout_recon";
 
@@ -461,6 +463,50 @@ describe("payout recon role: ok reads only through legend_payout_recon", () => {
       expect(await can(pool, RECON, OK), "recon role on observe_ok").toBe(true);
       expect(await can(pool, RECON, INTERNAL), "recon on internal").toBe(false);
       expect(await can(pool, login, OBSERVE), "control: observe").toBe(true);
+    });
+  });
+
+  it("[payout-recon-login-cannot-execute-difference] neither the login nor legend_app nor public may EXECUTE observe_difference; the recon role may, and the login reaches it with SET LOCAL ROLE without a privilege error (legend-tiw2h)", async () => {
+    await withLogin(async (pool) => {
+      const { current_user: login } = (await pool.query("SELECT current_user"))
+        .rows[0];
+      for (const who of [login, "legend_app", "public"]) {
+        expect(
+          await can(pool, who, DIFFERENCE),
+          `${who} on observe_difference`,
+        ).toBe(false);
+      }
+      expect(
+        await can(pool, RECON, DIFFERENCE),
+        "recon role on observe_difference",
+      ).toBe(true);
+
+      const tenantId = randomUUID();
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(
+          "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+          [tenantId],
+        );
+        await client.query(`SET LOCAL ROLE ${RECON}`);
+        let code: string | undefined;
+        await client.query("SAVEPOINT call");
+        try {
+          await client.query(
+            "SELECT app.payout_recon_evidence_observe_difference($1::uuid, $2::uuid, 'missing', NULL)",
+            [tenantId, randomUUID()],
+          );
+        } catch (error) {
+          code = (error as { code?: string }).code;
+          await client.query("ROLLBACK TO SAVEPOINT call");
+        }
+        expect(code, "not a permission error").not.toBe("42501");
+        await client.query("RESET ROLE");
+      } finally {
+        await client.query("ROLLBACK").catch(() => undefined);
+        client.release();
+      }
     });
   });
 

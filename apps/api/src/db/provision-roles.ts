@@ -986,7 +986,9 @@ async function provisionApp(client: ClientBase, login: Login) {
 
 // The proof-read role (drizzle/0674) is reached by SET ROLE only: the login must
 // not inherit it, and neither the login, legend_app nor PUBLIC may run the two
-// functions that record an observation without the caller's door.
+// functions that record an observation without the caller's door (observe_ok and
+// observe_difference are for the recon role only; the internal function takes
+// the five-argument signature with p_by_recon, legend-tiw2h).
 async function assertReconRoleReachedOnly(client: ClientBase, user: string) {
   const result = await client.query(
     `SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $2::text)
@@ -994,7 +996,8 @@ async function assertReconRoleReachedOnly(client: ClientBase, user: string) {
             ARRAY(
               SELECT f.sig || ' for ' || g.grantee
                 FROM (VALUES ('app.payout_recon_evidence_observe_ok(uuid, uuid)'),
-                             ('app.payout_recon_evidence_observe_internal(uuid, uuid, text, text)')) AS f(sig)
+                             ('app.payout_recon_evidence_observe_difference(uuid, uuid, text, text)'),
+                             ('app.payout_recon_evidence_observe_internal(uuid, uuid, text, text, boolean)')) AS f(sig)
                 CROSS JOIN (VALUES ($1::text), ('legend_app'), ('public')) AS g(grantee)
                WHERE to_regprocedure(f.sig) IS NOT NULL
                  AND has_function_privilege(g.grantee, to_regprocedure(f.sig), 'EXECUTE')

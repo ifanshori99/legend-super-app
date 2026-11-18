@@ -40,6 +40,18 @@
 --    through recordReadOk (payroll-payout-recon.service.ts). Remaining limit: code
 --    that runs free SQL on the application login can still SET ROLE; a full
 --    separation needs its own login like the grantor (bead legend-qh11l).
+--    Restrictive rule (CTO decision, bead legend-tiw2h): a caller other than the
+--    reconciliation role never turns a held slip into a released one. The internal
+--    function takes a fifth argument p_by_recon (the wrapper passes false, observe_ok
+--    and observe_difference pass true) and, under the advisory lock and after reading
+--    the last observation, refuses 'ok' and refuses missing or mismatch right after an
+--    error (PAYOUT-92), before the same-state shortcut and before the insert; without
+--    that, the same problem read again after an error would restore the old
+--    fingerprint and release the slip with no storage read. A problem read after an
+--    error is recorded through app.payout_recon_evidence_observe_difference (missing
+--    or mismatch only, legend_payout_recon only, same grant pattern as observe_ok);
+--    the service calls it through recordProblemRead. An error from any caller still
+--    only holds.
 -- No amount, item, payslip or clearance row is touched. An error holds a slip back.
 -- Unlike 0663 ("the observe function can only hold a slip, never release one"), an
 -- 'ok' observation after an error now releases the slip again, but only back to the
@@ -83,10 +95,10 @@ SET ROLE legend_payout;
 
 -- ---------------------------------------------------------------------------
 -- Record what the reconciliation observed of the proof file of an operation
--- (0663 body, plus the state 'error'). Internal: no caller but the two wrappers.
+-- (0663 body, plus the state 'error'). Internal: no caller but the three wrappers.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION app.payout_recon_evidence_observe_internal(
-  p_tenant uuid, p_operation uuid, p_state text, p_observed_sha text
+  p_tenant uuid, p_operation uuid, p_state text, p_observed_sha text, p_by_recon boolean
 ) RETURNS void
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 DECLARE
@@ -102,7 +114,8 @@ BEGIN
     RAISE EXCEPTION 'PAYOUT-68: an observation is recorded in the tenant in force only'
       USING ERRCODE = '23514';
   END IF;
-  IF p_operation IS NULL OR p_state IS NULL OR p_state NOT IN ('missing', 'mismatch', 'ok', 'error')
+  IF p_operation IS NULL OR p_state IS NULL OR p_by_recon IS NULL
+    OR p_state NOT IN ('missing', 'mismatch', 'ok', 'error')
     OR (p_state = 'mismatch' AND (p_observed_sha IS NULL OR p_observed_sha !~ '^[0-9a-f]{64}$'))
     OR (p_state <> 'mismatch' AND p_observed_sha IS NOT NULL) THEN
     RAISE EXCEPTION 'PAYOUT-68: the observation needs an operation, a state and, for a mismatch, the sha256 read'
@@ -117,6 +130,17 @@ BEGIN
    ORDER BY o.seq DESC
    LIMIT 1;
   v_last_found := FOUND;
+  -- Checked here, under the lock and after the last observation is read: an error
+  -- that lands between a check outside the lock and the insert cannot be missed.
+  IF NOT p_by_recon AND p_state = 'ok' THEN
+    RAISE EXCEPTION 'PAYOUT-92: an ok observation is recorded by the reconciliation role only'
+      USING ERRCODE = '42501';
+  END IF;
+  IF NOT p_by_recon AND v_last_found AND v_last_state = 'error'
+     AND p_state IN ('missing', 'mismatch') THEN
+    RAISE EXCEPTION 'PAYOUT-92: a problem read after a read error is recorded by the reconciliation role only'
+      USING ERRCODE = '42501';
+  END IF;
   IF v_last_found THEN
     IF v_last_state = p_state AND v_last_sha IS NOT DISTINCT FROM p_observed_sha THEN
       RETURN;
@@ -145,7 +169,7 @@ BEGIN
 END $$;
 --> statement-breakpoint
 
-REVOKE ALL ON FUNCTION app.payout_recon_evidence_observe_internal(uuid, uuid, text, text) FROM PUBLIC, legend_app, legend_payout_recon;
+REVOKE ALL ON FUNCTION app.payout_recon_evidence_observe_internal(uuid, uuid, text, text, boolean) FROM PUBLIC, legend_app, legend_payout_recon;
 --> statement-breakpoint
 
 -- ---------------------------------------------------------------------------
@@ -160,7 +184,7 @@ BEGIN
     RAISE EXCEPTION 'PAYOUT-92: an ok observation is recorded by the reconciliation role only'
       USING ERRCODE = '42501';
   END IF;
-  PERFORM app.payout_recon_evidence_observe_internal(p_tenant, p_operation, p_state, p_observed_sha);
+  PERFORM app.payout_recon_evidence_observe_internal(p_tenant, p_operation, p_state, p_observed_sha, false);
 END $$;
 --> statement-breakpoint
 REVOKE ALL ON FUNCTION app.payout_recon_evidence_observe(uuid, uuid, text, text) FROM PUBLIC;
@@ -176,12 +200,34 @@ CREATE OR REPLACE FUNCTION app.payout_recon_evidence_observe_ok(p_tenant uuid, p
 RETURNS void
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
-  PERFORM app.payout_recon_evidence_observe_internal(p_tenant, p_operation, 'ok', NULL);
+  PERFORM app.payout_recon_evidence_observe_internal(p_tenant, p_operation, 'ok', NULL, true);
 END $$;
 --> statement-breakpoint
 REVOKE ALL ON FUNCTION app.payout_recon_evidence_observe_ok(uuid, uuid) FROM PUBLIC, legend_app;
 --> statement-breakpoint
 GRANT EXECUTE ON FUNCTION app.payout_recon_evidence_observe_ok(uuid, uuid) TO legend_payout_recon;
+--> statement-breakpoint
+
+-- ---------------------------------------------------------------------------
+-- The reconciliation's door for a problem it read (missing, mismatch): the only
+-- way to record one right after a read error. Only legend_payout_recon (SET ROLE
+-- from legend_app) may run it. The sha256 rule (PAYOUT-68) is the internal one's.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION app.payout_recon_evidence_observe_difference(
+  p_tenant uuid, p_operation uuid, p_state text, p_observed_sha text
+) RETURNS void
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+BEGIN
+  IF p_state IS NULL OR p_state NOT IN ('missing', 'mismatch') THEN
+    RAISE EXCEPTION 'PAYOUT-92: only a missing or mismatch observation is recorded here'
+      USING ERRCODE = '42501';
+  END IF;
+  PERFORM app.payout_recon_evidence_observe_internal(p_tenant, p_operation, p_state, p_observed_sha, true);
+END $$;
+--> statement-breakpoint
+REVOKE ALL ON FUNCTION app.payout_recon_evidence_observe_difference(uuid, uuid, text, text) FROM PUBLIC, legend_app;
+--> statement-breakpoint
+GRANT EXECUTE ON FUNCTION app.payout_recon_evidence_observe_difference(uuid, uuid, text, text) TO legend_payout_recon;
 --> statement-breakpoint
 
 -- ---------------------------------------------------------------------------

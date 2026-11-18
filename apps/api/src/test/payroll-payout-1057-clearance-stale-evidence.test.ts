@@ -1529,11 +1529,17 @@ describe("1057 card D2: only the recon role may record an ok read", () => {
 
   it("[1057-observe-ok-internal-function-denied] the internal observe function is not callable by legend_app at all", async () => {
     const { flagged } = await heldByError();
-    const denied = await appCall(
-      `SELECT app.payout_recon_evidence_observe_internal($1::uuid, $2::uuid, 'ok', NULL)`,
-      [W.tenantId, flagged.operationId],
-    );
-    expect(denied.code, denied.message).toBe("42501");
+    // The internal function takes the by-recon flag as its fifth argument (legend-tiw2h):
+    // legend_app is denied with either value.
+    for (const byRecon of ["false", "true"]) {
+      const denied = await appCall(
+        `SELECT app.payout_recon_evidence_observe_internal($1::uuid, $2::uuid, 'ok', NULL, ${byRecon})`,
+        [W.tenantId, flagged.operationId],
+      );
+      expect(denied.code, `by_recon=${byRecon}: ${denied.message}`).toBe(
+        "42501",
+      );
+    }
     expect(await heldBySql(flagged.payslipId), "still held").toBe(true);
   });
 

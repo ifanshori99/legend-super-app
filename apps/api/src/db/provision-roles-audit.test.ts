@@ -304,4 +304,34 @@ describe("legend-qh11l audit demands legend_payout_recon to stay SET-only", () =
     }
     await expect(auditRoles(urls())).resolves.not.toThrow();
   }, 120_000);
+
+  // The two proof observation functions may be executed by legend_payout_recon
+  // only. A direct EXECUTE grant to legend_app must fail the audit; the grant is
+  // revoked again in finally so the shared state stays clean.
+  const observationFunctions = [
+    "app.payout_recon_evidence_observe_difference(uuid,uuid,text,text)",
+    "app.payout_recon_evidence_observe_internal(uuid,uuid,text,text,boolean)",
+  ];
+  for (const fn of observationFunctions) {
+    it(`fails when legend_app is granted EXECUTE on ${fn.split("(")[0]}`, async () => {
+      // Function ACLs are per database: `admin` is connected to the default
+      // database, so the grant goes through a pool on the audited database.
+      const inDatabase = new Pool({
+        connectionString: urlFor(database, bootstrap.user, bootstrap.password),
+        max: 1,
+      });
+      try {
+        await inDatabase.query(`GRANT EXECUTE ON FUNCTION ${fn} TO legend_app`);
+        await expect(auditRoles(urls())).rejects.toThrow(
+          /proof observation functions outside legend_payout_recon/,
+        );
+      } finally {
+        await inDatabase.query(
+          `REVOKE EXECUTE ON FUNCTION ${fn} FROM legend_app`,
+        );
+        await inDatabase.end();
+      }
+      await expect(auditRoles(urls())).resolves.not.toThrow();
+    }, 120_000);
+  }
 });
