@@ -96,6 +96,18 @@ const MFA_AGE_TOLERANCE_MS = 2 * 60_000;
 
 export const PAYOUT_RECON_OPERATIONS_PER_PAGE = 200;
 
+/**
+ * Longest wait for one proof read (legend-89xse). `ObjectStorage.get` has no
+ * abort signal, so the read is raced against a timer; a timeout is an `error`
+ * read like any other failed read.
+ */
+export const PAYOUT_RECON_STORAGE_READ_TIMEOUT_MS = 15_000;
+/**
+ * Longest wait for the per-operation advisory lock (legend-89xse). Longer than
+ * the storage timeout so the holder can record its result before a waiter gives up.
+ */
+export const PAYOUT_RECON_LOCK_TIMEOUT_MS = 30_000;
+
 export type PayoutReconPageResult = {
   /** Operations checked in this page. */
   readonly operations: number;
@@ -1819,7 +1831,45 @@ export type PayoutReconOptions = {
   limit?: number;
   /** Test override of `app.payout_trusted_since()`. */
   since?: Date;
+  /** Test override of `PAYOUT_RECON_STORAGE_READ_TIMEOUT_MS`. */
+  storageTimeoutMs?: number;
+  /** Test override of `PAYOUT_RECON_LOCK_TIMEOUT_MS`. */
+  lockTimeoutMs?: number;
 };
+
+class StorageReadTimeoutError extends Error {
+  constructor() {
+    super("Proof read timed out");
+    this.name = "StorageReadTimeoutError";
+  }
+}
+
+/** Races a read against a timer; the timer is always cleared, a late result is dropped. */
+async function withReadTimeout<T>(read: Promise<T>, ms: number): Promise<T> {
+  // The storage promise cannot be aborted: keep a late rejection from going unhandled.
+  read.catch(() => {});
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      read,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new StorageReadTimeoutError()), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** PostgreSQL `lock_not_available` (lock_timeout hit), also when wrapped as a cause. */
+function isLockNotAvailable(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current; depth += 1) {
+    if ((current as { code?: unknown }).code === "55P03") return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
 
 /** Known flags raised again per transaction (each call keeps an advisory lock). */
 export const PAYOUT_RECON_RERAISE_CHUNK = 100;
@@ -1951,41 +2001,84 @@ export async function reconcileTrustedPayouts(
   let unreadable = 0;
   if (options.storage) {
     const storage = options.storage;
+    const storageTimeoutMs =
+      options.storageTimeoutMs ?? PAYOUT_RECON_STORAGE_READ_TIMEOUT_MS;
+    let storageDown = false;
+    let breakerSkipped = 0;
     for (const op of operations) {
       const key = op.evidenceKey;
       const record = key === null ? undefined : facts?.records.get(key);
       if (key === null || !record) continue;
-      await withTenant(db, context, async (tx) => {
-        await tx.execute(
-          sql`SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(${`payout_recon_evidence_observe:${tenantId}:${op.operationId}`}::text, 0))`,
-        );
-        let state: FileState;
-        let readSha: string | null = null;
-        try {
-          const object = await storage.get(context, {
-            tenantId,
-            outletId: null,
-            reference: "payout-trusted-recon",
-            key,
-            visibility: "private",
-          });
-          readSha = sha256Of(object.content);
-          state =
-            readSha === (record.stored ?? record.content) ? "ok" : "mismatch";
-        } catch (error) {
-          if (error instanceof CoreError && error.code === "NOT_FOUND")
-            state = "missing";
-          else state = "error";
-        }
-        fileOf.set(op.operationId, state);
-        if (state === "error") unreadable += 1;
-        if (state === "ok") await recordReadOk(tx, tenantId, op.operationId);
-        else
+      // The wait for the lock is bounded (legend-89xse): on a lock timeout the
+      // operation counts as unreadable, no observation is written (it needs the same
+      // lock; the holder records its own result) and the next operation goes on.
+      let locked = false;
+      try {
+        await withTenant(db, context, async (tx) => {
           await tx.execute(
-            sql`SELECT app.payout_recon_evidence_observe(${tenantId}::uuid, ${op.operationId}::uuid, ${state}::text, ${state === "mismatch" ? readSha : null}::text)`,
+            sql`SELECT pg_catalog.set_config('lock_timeout', ${`${options.lockTimeoutMs ?? PAYOUT_RECON_LOCK_TIMEOUT_MS}ms`}::text, true)`,
           );
-      });
+          // No idle_in_transaction_session_timeout here (89xse review): the server
+          // would send a FATAL to a connection nobody listens on and the worker
+          // process would exit. A holder that stalls keeps the lock until its
+          // connection is gone; waiters give up after `lock_timeout`.
+          await tx.execute(
+            sql`SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(${`payout_recon_evidence_observe:${tenantId}:${op.operationId}`}::text, 0))`,
+          );
+          locked = true;
+          let state: FileState;
+          let readSha: string | null = null;
+          try {
+            // After the first timeout of this page the storage is taken as down:
+            // the rest of the page is recorded as `error` (slips held) without
+            // waiting for the storage again, so a dead storage costs one timeout
+            // per page, not one per operation.
+            if (storageDown) {
+              breakerSkipped += 1;
+              throw new StorageReadTimeoutError();
+            }
+            const object = await withReadTimeout(
+              storage.get(context, {
+                tenantId,
+                outletId: null,
+                reference: "payout-trusted-recon",
+                key,
+                visibility: "private",
+              }),
+              storageTimeoutMs,
+            );
+            readSha = sha256Of(object.content);
+            state =
+              readSha === (record.stored ?? record.content) ? "ok" : "mismatch";
+          } catch (error) {
+            if (error instanceof StorageReadTimeoutError) storageDown = true;
+            if (error instanceof CoreError && error.code === "NOT_FOUND")
+              state = "missing";
+            else state = "error";
+          }
+          fileOf.set(op.operationId, state);
+          if (state === "error") unreadable += 1;
+          if (state === "ok") await recordReadOk(tx, tenantId, op.operationId);
+          else
+            await tx.execute(
+              sql`SELECT app.payout_recon_evidence_observe(${tenantId}::uuid, ${op.operationId}::uuid, ${state}::text, ${state === "mismatch" ? readSha : null}::text)`,
+            );
+        });
+      } catch (error) {
+        if (locked || !isLockNotAvailable(error)) throw error;
+        fileOf.set(op.operationId, "error");
+        unreadable += 1;
+        logger.error(
+          { errorName: error instanceof Error ? error.name : "unknown" },
+          "payout recon: proof read lock timed out",
+        );
+      }
     }
+    if (breakerSkipped > 0)
+      logger.warn(
+        { skipped: breakerSkipped },
+        "payout recon: storage timed out, the rest of the page was recorded as unreadable without reading",
+      );
   }
 
   // A difference of the operation holds every slip of it, so an operation-wide
