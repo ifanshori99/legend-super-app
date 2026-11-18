@@ -2032,3 +2032,4 @@ Langkah berikut CTO baru:
 - 18:48 CTO: SO kas ronde 5 (G7hhf): 2 P1 (flip DB ke settle_waived tanpa jurnal oleh legend_app; reversal manual jurnal kasbon membuka saldo). Brief 1091 dikirim ke G93wj (migrasi 0691). G7hhf di-resolve.
 - 19:02 CTO: Codex 1083 lapor ws/1083-pembersihan-p3 1cdb33ed4: 3 selesai (ahgg, 9zc3, bvxs3 -> review), 6 dilewati dan kembali open dengan komentar. Reviewer sonnet berjalan. G0trp di-resolve.
 - 19:04 CTO: review 1083: ahgg dan 9zc3 bersih; bvxs3 2 P2 (timeout memutus upload besar, retry) dikembalikan ke G0trp dengan keputusan env default 120s/60s.
+- 19:14 CTO: G2y41 1087 2e178b257 SIAP batch91 sesudah 1086 (migrasi 0702; 4 kartu review). Founder: tidak mau tagihan Actions -> saran batas US$0 (repo tetap privat); ws/1092-ci-hemat d23427421 batasi push trigger CI ke main + milestone/**.
