@@ -134,7 +134,10 @@ const uid = (n: number) =>
 const T1 = "b0000000-0000-4000-8000-000000000001";
 const T2 = "b0000000-0000-4000-8000-000000000002";
 const sha = (seed: string) =>
-  seed.repeat(64).slice(0, 64).replace(/[^0-9a-f]/g, "a");
+  seed
+    .repeat(64)
+    .slice(0, 64)
+    .replace(/[^0-9a-f]/g, "a");
 const itemSetHash = (seed: string) => sha(seed);
 
 async function seed(
@@ -173,12 +176,7 @@ const item = (o: {
 });
 
 /** An item whose return waits for its second signer. */
-const pendingReturn = (
-  id: string,
-  batch: string,
-  key: string,
-  tenant = T1,
-) =>
+const pendingReturn = (id: string, batch: string, key: string, tenant = T1) =>
   item({
     id,
     tenant,
@@ -338,9 +336,10 @@ async function inPreShape(
         );
       const left = await columnsOf(client, table);
       for (const column of def.futureColumns[table] ?? [])
-        expect(left, `${table}.${column} is a post-${def.before} column`).not.toContain(
-          column,
-        );
+        expect(
+          left,
+          `${table}.${column} is a post-${def.before} column`,
+        ).not.toContain(column);
     }
     await run(client);
   } finally {
@@ -482,8 +481,16 @@ describe("[legend-0go0p] return proof reuse before 0381 (block)", () => {
 
   it("[legend-0go0p] flags a pending return whose proof is also pending in another batch", async () => {
     await inPreShape("0go0p", async (client) => {
-      await seed(client, ITEMS, pendingReturn(uid(1), B1, "SECRET-RETURN-KEY-A"));
-      await seed(client, ITEMS, pendingReturn(uid(2), B2, "SECRET-RETURN-KEY-A"));
+      await seed(
+        client,
+        ITEMS,
+        pendingReturn(uid(1), B1, "SECRET-RETURN-KEY-A"),
+      );
+      await seed(
+        client,
+        ITEMS,
+        pendingReturn(uid(2), B2, "SECRET-RETURN-KEY-A"),
+      );
       await seed(client, ITEMS, pendingReturn(uid(3), B1, "unique-return-key"));
       const rows = await gate(client, "0go0p");
       expectFlagsAny(rows, T1, [uid(1), uid(2)]);
@@ -494,7 +501,11 @@ describe("[legend-0go0p] return proof reuse before 0381 (block)", () => {
 
   it("[legend-0go0p] flags a pending return proof that a payment confirmation also uses", async () => {
     await inPreShape("0go0p", async (client) => {
-      await seed(client, ITEMS, pendingReturn(uid(4), B1, "shared-with-confirm"));
+      await seed(
+        client,
+        ITEMS,
+        pendingReturn(uid(4), B1, "shared-with-confirm"),
+      );
       await seed(
         client,
         ITEMS,
@@ -509,7 +520,11 @@ describe("[legend-0go0p] return proof reuse before 0381 (block)", () => {
 
   it("[legend-0go0p] flags a pending return proof that a failure resolution also uses", async () => {
     await inPreShape("0go0p", async (client) => {
-      await seed(client, ITEMS, pendingReturn(uid(7), B1, "shared-with-resolution"));
+      await seed(
+        client,
+        ITEMS,
+        pendingReturn(uid(7), B1, "shared-with-resolution"),
+      );
       await seed(
         client,
         ITEMS,
@@ -539,7 +554,11 @@ describe("[legend-0go0p] return proof reuse before 0381 (block)", () => {
           returnKey: "reused-after-return",
         }),
       );
-      await seed(client, ITEMS, pendingReturn(uid(10), B2, "reused-after-return"));
+      await seed(
+        client,
+        ITEMS,
+        pendingReturn(uid(10), B2, "reused-after-return"),
+      );
       const rows = await gate(client, "0go0p");
       expectFlagsAny(rows, T1, [uid(9), uid(10)]);
     });
@@ -579,8 +598,16 @@ describe("[legend-0go0p] return proof reuse before 0381 (block)", () => {
         }),
       );
       // Items with no return at all, confirmation and resolution keys unique.
-      await seed(client, ITEMS, item({ id: uid(26), batch: B1, confirmKey: "confirm-1" }));
-      await seed(client, ITEMS, item({ id: uid(27), batch: B2, resolutionKey: "resolve-1" }));
+      await seed(
+        client,
+        ITEMS,
+        item({ id: uid(26), batch: B1, confirmKey: "confirm-1" }),
+      );
+      await seed(
+        client,
+        ITEMS,
+        item({ id: uid(27), batch: B2, resolutionKey: "resolve-1" }),
+      );
       // The same key text in another tenant is another tenant's proof.
       await seed(client, ITEMS, pendingReturn(uid(28), B1, "own-key-1", T2));
       expect(await gate(client, "0go0p")).toEqual([]);
@@ -593,18 +620,30 @@ describe("[legend-0go0p] return proof reuse before 0381 (block)", () => {
 describe("[legend-7hg1q] open return claims without a bank reference before 0463 (block)", () => {
   it("[legend-7hg1q] lists each open claim without bank_ref, per tenant, and nothing else", async () => {
     await inPreShape("7hg1q", async (client) => {
-      await seed(client, CLAIMS, claim({ id: uid(1), key: "SECRET-CLAIM-KEY" }));
+      await seed(
+        client,
+        CLAIMS,
+        claim({ id: uid(1), key: "SECRET-CLAIM-KEY" }),
+      );
       await seed(client, CLAIMS, claim({ id: uid(2) }));
       await seed(client, CLAIMS, claim({ id: uid(3), tenant: T2 }));
       // Bystanders: not blocked by the 0463 rule.
-      await seed(client, CLAIMS, claim({ id: uid(4), bankRef: "BANKREF-0001" }));
+      await seed(
+        client,
+        CLAIMS,
+        claim({ id: uid(4), bankRef: "BANKREF-0001" }),
+      );
       await seed(client, CLAIMS, claim({ id: uid(5), status: "consumed" }));
       await seed(
         client,
         CLAIMS,
         claim({ id: uid(6), status: "consumed", bankRef: "BANKREF-0002" }),
       );
-      await seed(client, CLAIMS, claim({ id: uid(7), tenant: T2, bankRef: "BANKREF-0003" }));
+      await seed(
+        client,
+        CLAIMS,
+        claim({ id: uid(7), tenant: T2, bankRef: "BANKREF-0003" }),
+      );
       const rows = await gate(client, "7hg1q");
       expect(tenantsOf(rows)).toEqual([T1, T2]);
       expect(idsOf(rows, T1)).toEqual([uid(1), uid(2)]);
@@ -622,7 +661,11 @@ describe("[legend-7hg1q] open return claims without a bank reference before 0463
     await inPreShape("7hg1q", async (client) => {
       expect(await gate(client, "7hg1q"), "no claims at all").toEqual([]);
       await seed(client, CLAIMS, claim({ id: uid(11), bankRef: "REF-A" }));
-      await seed(client, CLAIMS, claim({ id: uid(12), tenant: T2, bankRef: "REF-B" }));
+      await seed(
+        client,
+        CLAIMS,
+        claim({ id: uid(12), tenant: T2, bankRef: "REF-B" }),
+      );
       // A claim already consumed is not blocked even without a reference.
       await seed(client, CLAIMS, claim({ id: uid(13), status: "consumed" }));
       expect(await gate(client, "7hg1q")).toEqual([]);
@@ -666,14 +709,42 @@ describe("[legend-9bfh7] proofs that would stall the binding backfill before 039
     await inPreShape("9bfh7", async (client) => {
       const clean = await bystander(client, 1);
       const same = sha("e");
-      await seed(client, FILES, file({ id: uid(1), key: "SECRET-PROOF-1", content: same, stored: sha("1") }));
-      await seed(client, FILES, file({ id: uid(2), key: "SECRET-PROOF-2", content: same, stored: sha("2") }));
+      await seed(
+        client,
+        FILES,
+        file({
+          id: uid(1),
+          key: "SECRET-PROOF-1",
+          content: same,
+          stored: sha("1"),
+        }),
+      );
+      await seed(
+        client,
+        FILES,
+        file({
+          id: uid(2),
+          key: "SECRET-PROOF-2",
+          content: same,
+          stored: sha("2"),
+        }),
+      );
       await seed(
         client,
         CLAIMS,
-        claim({ id: uid(3), key: "SECRET-PROOF-1", status: "consumed", content: same, stored: sha("1") }),
+        claim({
+          id: uid(3),
+          key: "SECRET-PROOF-1",
+          status: "consumed",
+          content: same,
+          stored: sha("1"),
+        }),
       );
-      await seed(client, PROPOSALS, proposal({ id: uid(4), key: "SECRET-PROOF-2" }));
+      await seed(
+        client,
+        PROPOSALS,
+        proposal({ id: uid(4), key: "SECRET-PROOF-2" }),
+      );
       const rows = await gate(client, "9bfh7");
       expectFlagsAny(rows, T1, [uid(1), uid(2), uid(3), uid(4)]);
       for (const id of clean) expect(idsOf(rows, T1)).not.toContain(id);
@@ -684,12 +755,26 @@ describe("[legend-9bfh7] proofs that would stall the binding backfill before 039
   it("[legend-9bfh7] flags one stored hash shared by a return and a failed-item correction", async () => {
     await inPreShape("9bfh7", async (client) => {
       const stored = sha("f");
-      await seed(client, FILES, file({ id: uid(11), key: "proof-r", content: sha("3"), stored }));
-      await seed(client, FILES, file({ id: uid(12), key: "proof-c", content: sha("4"), stored }));
+      await seed(
+        client,
+        FILES,
+        file({ id: uid(11), key: "proof-r", content: sha("3"), stored }),
+      );
+      await seed(
+        client,
+        FILES,
+        file({ id: uid(12), key: "proof-c", content: sha("4"), stored }),
+      );
       await seed(
         client,
         CLAIMS,
-        claim({ id: uid(13), key: "proof-r", status: "consumed", content: sha("3"), stored }),
+        claim({
+          id: uid(13),
+          key: "proof-r",
+          status: "consumed",
+          content: sha("3"),
+          stored,
+        }),
       );
       await seed(
         client,
@@ -704,14 +789,45 @@ describe("[legend-9bfh7] proofs that would stall the binding backfill before 039
   it("[legend-9bfh7] flags one hash backing operations of two different tenants, in both", async () => {
     await inPreShape("9bfh7", async (client) => {
       const same = sha("a1");
-      await seed(client, FILES, file({ id: uid(21), tenant: T1, key: "t1-proof", content: same, stored: sha("5") }));
-      await seed(client, FILES, file({ id: uid(22), tenant: T2, key: "t2-proof", content: same, stored: sha("6") }));
+      await seed(
+        client,
+        FILES,
+        file({
+          id: uid(21),
+          tenant: T1,
+          key: "t1-proof",
+          content: same,
+          stored: sha("5"),
+        }),
+      );
+      await seed(
+        client,
+        FILES,
+        file({
+          id: uid(22),
+          tenant: T2,
+          key: "t2-proof",
+          content: same,
+          stored: sha("6"),
+        }),
+      );
       await seed(
         client,
         CLAIMS,
-        claim({ id: uid(23), tenant: T1, key: "t1-proof", status: "consumed", content: same, stored: sha("5") }),
+        claim({
+          id: uid(23),
+          tenant: T1,
+          key: "t1-proof",
+          status: "consumed",
+          content: same,
+          stored: sha("5"),
+        }),
       );
-      await seed(client, PROPOSALS, proposal({ id: uid(24), tenant: T2, key: "t2-proof" }));
+      await seed(
+        client,
+        PROPOSALS,
+        proposal({ id: uid(24), tenant: T2, key: "t2-proof" }),
+      );
       const rows = await gate(client, "9bfh7");
       expect(tenantsOf(rows)).toEqual([T1, T2]);
       expectFlagsAny(rows, T1, [uid(21), uid(23)]);
@@ -722,11 +838,26 @@ describe("[legend-9bfh7] proofs that would stall the binding backfill before 039
   it("[legend-9bfh7] flags a proof whose upload record has no stored hash (unreadable)", async () => {
     await inPreShape("9bfh7", async (client) => {
       const clean = await bystander(client, 2);
-      await seed(client, FILES, file({ id: uid(31), key: "unreadable", content: sha("7"), stored: null }));
+      await seed(
+        client,
+        FILES,
+        file({
+          id: uid(31),
+          key: "unreadable",
+          content: sha("7"),
+          stored: null,
+        }),
+      );
       await seed(
         client,
         CLAIMS,
-        claim({ id: uid(32), key: "unreadable", status: "consumed", content: sha("7"), stored: null }),
+        claim({
+          id: uid(32),
+          key: "unreadable",
+          status: "consumed",
+          content: sha("7"),
+          stored: null,
+        }),
       );
       const rows = await gate(client, "9bfh7");
       expectFlagsAny(rows, T1, [uid(31), uid(32)]);
@@ -751,7 +882,11 @@ describe("[legend-9bfh7] proofs that would stall the binding backfill before 039
   it("[legend-9bfh7] flags an overpaid proposal whose proof key has no upload record", async () => {
     await inPreShape("9bfh7", async (client) => {
       const clean = await bystander(client, 7);
-      await seed(client, PROPOSALS, proposal({ id: uid(51), key: "overpaid-no-file" }));
+      await seed(
+        client,
+        PROPOSALS,
+        proposal({ id: uid(51), key: "overpaid-no-file" }),
+      );
       const rows = await gate(client, "9bfh7");
       expectFlagsAny(rows, T1, [uid(51)]);
       for (const id of clean) expect(idsOf(rows, T1)).not.toContain(id);
@@ -764,7 +899,12 @@ describe("[legend-9bfh7] proofs that would stall the binding backfill before 039
       await seed(
         client,
         CORRECTIONS,
-        correction({ id: uid(52), key: "correction-no-file", content: sha("8"), stored: sha("9") }),
+        correction({
+          id: uid(52),
+          key: "correction-no-file",
+          content: sha("8"),
+          stored: sha("9"),
+        }),
       );
       const rows = await gate(client, "9bfh7");
       expectFlagsAny(rows, T1, [uid(52)]);
@@ -778,11 +918,25 @@ describe("[legend-9bfh7] proofs that would stall the binding backfill before 039
   it("[legend-9bfh7] flags a correction whose upload record has another content hash", async () => {
     await inPreShape("9bfh7", async (client) => {
       const clean = await bystander(client, 9);
-      await seed(client, FILES, file({ id: uid(53), key: "corr-content", content: sha("c1"), stored: sha("c2") }));
+      await seed(
+        client,
+        FILES,
+        file({
+          id: uid(53),
+          key: "corr-content",
+          content: sha("c1"),
+          stored: sha("c2"),
+        }),
+      );
       await seed(
         client,
         CORRECTIONS,
-        correction({ id: uid(54), key: "corr-content", content: sha("c3"), stored: sha("c2") }),
+        correction({
+          id: uid(54),
+          key: "corr-content",
+          content: sha("c3"),
+          stored: sha("c2"),
+        }),
       );
       const rows = await gate(client, "9bfh7");
       expectReason(rows, T1, [uid(53), uid(54)], "record_hash_mismatch");
@@ -792,11 +946,25 @@ describe("[legend-9bfh7] proofs that would stall the binding backfill before 039
 
   it("[legend-9bfh7] flags a correction whose upload record has another stored hash", async () => {
     await inPreShape("9bfh7", async (client) => {
-      await seed(client, FILES, file({ id: uid(55), key: "corr-stored", content: sha("c4"), stored: sha("c5") }));
+      await seed(
+        client,
+        FILES,
+        file({
+          id: uid(55),
+          key: "corr-stored",
+          content: sha("c4"),
+          stored: sha("c5"),
+        }),
+      );
       await seed(
         client,
         CORRECTIONS,
-        correction({ id: uid(56), key: "corr-stored", content: sha("c4"), stored: sha("c6") }),
+        correction({
+          id: uid(56),
+          key: "corr-stored",
+          content: sha("c4"),
+          stored: sha("c6"),
+        }),
       );
       const rows = await gate(client, "9bfh7");
       expectReason(rows, T1, [uid(55), uid(56)], "record_hash_mismatch");
@@ -806,11 +974,25 @@ describe("[legend-9bfh7] proofs that would stall the binding backfill before 039
   it("[legend-9bfh7] flags a correction whose upload record has no stored hash", async () => {
     await inPreShape("9bfh7", async (client) => {
       const clean = await bystander(client, 10);
-      await seed(client, FILES, file({ id: uid(57), key: "corr-null-stored", content: sha("c7"), stored: null }));
+      await seed(
+        client,
+        FILES,
+        file({
+          id: uid(57),
+          key: "corr-null-stored",
+          content: sha("c7"),
+          stored: null,
+        }),
+      );
       await seed(
         client,
         CORRECTIONS,
-        correction({ id: uid(58), key: "corr-null-stored", content: sha("c7"), stored: sha("c8") }),
+        correction({
+          id: uid(58),
+          key: "corr-null-stored",
+          content: sha("c7"),
+          stored: sha("c8"),
+        }),
       );
       const rows = await gate(client, "9bfh7");
       expectFlagsAny(rows, T1, [uid(57), uid(58)]);
@@ -820,11 +1002,26 @@ describe("[legend-9bfh7] proofs that would stall the binding backfill before 039
 
   it("[legend-9bfh7] flags a return claim whose own hash differs from its upload record", async () => {
     await inPreShape("9bfh7", async (client) => {
-      await seed(client, FILES, file({ id: uid(59), key: "claim-mismatch", content: sha("d1"), stored: sha("d2") }));
+      await seed(
+        client,
+        FILES,
+        file({
+          id: uid(59),
+          key: "claim-mismatch",
+          content: sha("d1"),
+          stored: sha("d2"),
+        }),
+      );
       await seed(
         client,
         CLAIMS,
-        claim({ id: uid(60), key: "claim-mismatch", status: "consumed", content: sha("d3"), stored: sha("d2") }),
+        claim({
+          id: uid(60),
+          key: "claim-mismatch",
+          status: "consumed",
+          content: sha("d3"),
+          stored: sha("d2"),
+        }),
       );
       const rows = await gate(client, "9bfh7");
       expectReason(rows, T1, [uid(59), uid(60)], "record_hash_mismatch");
@@ -837,13 +1034,45 @@ describe("[legend-9bfh7] proofs that would stall the binding backfill before 039
     await inPreShape("9bfh7", async (client) => {
       const clean = await bystander(client, 11);
       const same = sha("e1");
-      await seed(client, FILES, file({ id: uid(71), key: "pay-confirm-key", content: same, stored: sha("e2") }));
-      await seed(client, ITEMS, item({ id: uid(72), batch: randomUUID(), confirmKey: "pay-confirm-key" }));
-      await seed(client, FILES, file({ id: uid(73), key: "return-key", content: same, stored: sha("e3") }));
+      await seed(
+        client,
+        FILES,
+        file({
+          id: uid(71),
+          key: "pay-confirm-key",
+          content: same,
+          stored: sha("e2"),
+        }),
+      );
+      await seed(
+        client,
+        ITEMS,
+        item({
+          id: uid(72),
+          batch: randomUUID(),
+          confirmKey: "pay-confirm-key",
+        }),
+      );
+      await seed(
+        client,
+        FILES,
+        file({
+          id: uid(73),
+          key: "return-key",
+          content: same,
+          stored: sha("e3"),
+        }),
+      );
       await seed(
         client,
         CLAIMS,
-        claim({ id: uid(74), key: "return-key", status: "consumed", content: same, stored: sha("e3") }),
+        claim({
+          id: uid(74),
+          key: "return-key",
+          status: "consumed",
+          content: same,
+          stored: sha("e3"),
+        }),
       );
       const rows = await gate(client, "9bfh7");
       expectReason(
@@ -860,10 +1089,40 @@ describe("[legend-9bfh7] proofs that would stall the binding backfill before 039
   it("[legend-9bfh7] flags an overpaid proof that has the same content as a resolution proof under another key", async () => {
     await inPreShape("9bfh7", async (client) => {
       const same = sha("e4");
-      await seed(client, FILES, file({ id: uid(75), key: "resolution-key", content: same, stored: sha("e5") }));
-      await seed(client, ITEMS, item({ id: uid(76), batch: randomUUID(), resolutionKey: "resolution-key" }));
-      await seed(client, FILES, file({ id: uid(77), key: "overpaid-key", content: same, stored: sha("e6") }));
-      await seed(client, PROPOSALS, proposal({ id: uid(78), key: "overpaid-key" }));
+      await seed(
+        client,
+        FILES,
+        file({
+          id: uid(75),
+          key: "resolution-key",
+          content: same,
+          stored: sha("e5"),
+        }),
+      );
+      await seed(
+        client,
+        ITEMS,
+        item({
+          id: uid(76),
+          batch: randomUUID(),
+          resolutionKey: "resolution-key",
+        }),
+      );
+      await seed(
+        client,
+        FILES,
+        file({
+          id: uid(77),
+          key: "overpaid-key",
+          content: same,
+          stored: sha("e6"),
+        }),
+      );
+      await seed(
+        client,
+        PROPOSALS,
+        proposal({ id: uid(78), key: "overpaid-key" }),
+      );
       const rows = await gate(client, "9bfh7");
       expectReason(
         rows,
@@ -878,9 +1137,26 @@ describe("[legend-9bfh7] proofs that would stall the binding backfill before 039
     await inPreShape("9bfh7", async (client) => {
       const same = sha("e7");
       const stored = sha("e8");
-      await seed(client, FILES, file({ id: uid(79), key: "pay-confirm-2", content: same, stored: sha("e9") }));
-      await seed(client, ITEMS, item({ id: uid(80), batch: randomUUID(), confirmKey: "pay-confirm-2" }));
-      await seed(client, FILES, file({ id: uid(81), key: "corr-reuse", content: same, stored }));
+      await seed(
+        client,
+        FILES,
+        file({
+          id: uid(79),
+          key: "pay-confirm-2",
+          content: same,
+          stored: sha("e9"),
+        }),
+      );
+      await seed(
+        client,
+        ITEMS,
+        item({ id: uid(80), batch: randomUUID(), confirmKey: "pay-confirm-2" }),
+      );
+      await seed(
+        client,
+        FILES,
+        file({ id: uid(81), key: "corr-reuse", content: same, stored }),
+      );
       await seed(
         client,
         CORRECTIONS,
@@ -902,7 +1178,15 @@ describe("[legend-9bfh7] proofs that would stall the binding backfill before 039
   it("[legend-9bfh7] flags a payment confirmation key that has no upload record", async () => {
     await inPreShape("9bfh7", async (client) => {
       const clean = await bystander(client, 12);
-      await seed(client, ITEMS, item({ id: uid(91), batch: randomUUID(), confirmKey: "confirm-no-file" }));
+      await seed(
+        client,
+        ITEMS,
+        item({
+          id: uid(91),
+          batch: randomUUID(),
+          confirmKey: "confirm-no-file",
+        }),
+      );
       const rows = await gate(client, "9bfh7");
       expectFlagsAny(rows, T1, [uid(91)]);
       expectReason(rows, T1, [uid(91)], "payment_proof_without_record");
@@ -917,9 +1201,49 @@ describe("[legend-9bfh7] proofs that would stall the binding backfill before 039
     });
   });
 
+  // The stored copy of a payment proof can be re-uploaded as a return proof once
+  // the backfill fills in the missing stored hash: the item would be paid twice.
+  it("[legend-9bfh7] flags a payment confirmation proof whose upload record has no stored hash", async () => {
+    await inPreShape("9bfh7", async (client) => {
+      const clean = await bystander(client, 13);
+      await seed(
+        client,
+        FILES,
+        file({
+          id: uid(95),
+          key: "confirm-unstored",
+          content: sha("c"),
+          stored: null,
+        }),
+      );
+      await seed(
+        client,
+        ITEMS,
+        item({
+          id: uid(96),
+          batch: randomUUID(),
+          confirmKey: "confirm-unstored",
+        }),
+      );
+      const rows = await gate(client, "9bfh7");
+      expectFlagsAny(rows, T1, [uid(96)]);
+      expectReason(rows, T1, [uid(96)], "missing_stored_hash");
+      for (const id of clean) expect(idsOf(rows, T1)).not.toContain(id);
+      expectNoLeak(rows, ["confirm-unstored"]);
+    });
+  });
+
   it("[legend-9bfh7] flags a resolution key that has no upload record", async () => {
     await inPreShape("9bfh7", async (client) => {
-      await seed(client, ITEMS, item({ id: uid(92), batch: randomUUID(), resolutionKey: "resolution-no-file" }));
+      await seed(
+        client,
+        ITEMS,
+        item({
+          id: uid(92),
+          batch: randomUUID(),
+          resolutionKey: "resolution-no-file",
+        }),
+      );
       const rows = await gate(client, "9bfh7");
       expectReason(rows, T1, [uid(92)], "payment_proof_without_record");
     });
@@ -931,18 +1255,63 @@ describe("[legend-9bfh7] proofs that would stall the binding backfill before 039
       await bystander(client, 4);
       await bystander(client, 5);
       await bystander(client, 6, T2);
-      await seed(client, FILES, file({ id: uid(61), key: "ok-overpaid", content: sha("b1"), stored: sha("b2") }));
-      await seed(client, PROPOSALS, proposal({ id: uid(62), key: "ok-overpaid" }));
-      await seed(client, FILES, file({ id: uid(63), key: "ok-correction", content: sha("b3"), stored: sha("b4") }));
+      await seed(
+        client,
+        FILES,
+        file({
+          id: uid(61),
+          key: "ok-overpaid",
+          content: sha("b1"),
+          stored: sha("b2"),
+        }),
+      );
+      await seed(
+        client,
+        PROPOSALS,
+        proposal({ id: uid(62), key: "ok-overpaid" }),
+      );
+      await seed(
+        client,
+        FILES,
+        file({
+          id: uid(63),
+          key: "ok-correction",
+          content: sha("b3"),
+          stored: sha("b4"),
+        }),
+      );
       await seed(
         client,
         CORRECTIONS,
-        correction({ id: uid(64), key: "ok-correction", content: sha("b3"), stored: sha("b4") }),
+        correction({
+          id: uid(64),
+          key: "ok-correction",
+          content: sha("b3"),
+          stored: sha("b4"),
+        }),
       );
       // Payment confirmation and resolution proofs with their own records and
       // own hashes are clean too.
-      await seed(client, FILES, file({ id: uid(65), key: "ok-confirm", content: sha("b5"), stored: sha("b6") }));
-      await seed(client, FILES, file({ id: uid(66), key: "ok-resolution", content: sha("b7"), stored: sha("b8") }));
+      await seed(
+        client,
+        FILES,
+        file({
+          id: uid(65),
+          key: "ok-confirm",
+          content: sha("b5"),
+          stored: sha("b6"),
+        }),
+      );
+      await seed(
+        client,
+        FILES,
+        file({
+          id: uid(66),
+          key: "ok-resolution",
+          content: sha("b7"),
+          stored: sha("b8"),
+        }),
+      );
       await seed(
         client,
         ITEMS,
@@ -968,11 +1337,20 @@ describe("[legend-ofu02] reconciliation cases without any source (info)", () => 
       await seed(client, CASES, reconCase({ id: uid(3), tenant: T2 }));
       // Cases with a source are not reported.
       await seed(client, CASES, reconCase({ id: uid(4), line: randomUUID() }));
-      await seed(client, CASES, reconCase({ id: uid(5), source: randomUUID() }));
       await seed(
         client,
         CASES,
-        reconCase({ id: uid(6), line: randomUUID(), source: randomUUID(), tenant: T2 }),
+        reconCase({ id: uid(5), source: randomUUID() }),
+      );
+      await seed(
+        client,
+        CASES,
+        reconCase({
+          id: uid(6),
+          line: randomUUID(),
+          source: randomUUID(),
+          tenant: T2,
+        }),
       );
       const rows = await gate(client, "ofu02");
       expect(rows.map((r) => r.reason)).toEqual(
@@ -994,8 +1372,16 @@ describe("[legend-ofu02] reconciliation cases without any source (info)", () => 
     await inPreShape("ofu02", async (client) => {
       expect(await gate(client, "ofu02"), "no cases at all").toEqual([]);
       await seed(client, CASES, reconCase({ id: uid(11), line: randomUUID() }));
-      await seed(client, CASES, reconCase({ id: uid(12), source: randomUUID() }));
-      await seed(client, CASES, reconCase({ id: uid(13), tenant: T2, line: randomUUID() }));
+      await seed(
+        client,
+        CASES,
+        reconCase({ id: uid(12), source: randomUUID() }),
+      );
+      await seed(
+        client,
+        CASES,
+        reconCase({ id: uid(13), tenant: T2, line: randomUUID() }),
+      );
       expect(await gate(client, "ofu02")).toEqual([]);
     });
   });
@@ -1044,7 +1430,10 @@ describe("[legend-hklnq] migration 0464 backfills one fingerprint per existing r
             AND table_name = 'payroll_payout_recon_clearances'
             AND column_name = 'flag_sha256'`,
       );
-      expect(columns.rows, "premise: pre-0464 clearances have no fingerprint").toEqual([]);
+      expect(
+        columns.rows,
+        "premise: pre-0464 clearances have no fingerprint",
+      ).toEqual([]);
 
       const clearedFlag = randomUUID();
       const heldFlag = randomUUID();
@@ -1070,9 +1459,15 @@ describe("[legend-hklnq] migration 0464 backfills one fingerprint per existing r
         [clearanceId, tenant, clearedFlag, randomUUID(), randomUUID()],
       );
 
-      await client.query("SET LOCAL session_replication_role = origin");
+      // The seeded clearance carries made-up grant ids (the grants table is not
+      // part of this fixture): its FK rows stay unchecked while the backfill
+      // rewrites the row, so the migration runs under replica and origin is
+      // restored after, before the held-slip functions are read.
       await client.query(migration);
-      await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenant]);
+      await client.query("SET LOCAL session_replication_role = origin");
+      await client.query("SELECT set_config('app.tenant_id', $1, true)", [
+        tenant,
+      ]);
 
       const sightings = await client.query<{
         exception_id: string;
@@ -1112,7 +1507,9 @@ describe("[legend-hklnq] migration 0464 backfills one fingerprint per existing r
         `SELECT flag_sha256 FROM public.payroll_payout_recon_clearances WHERE id = $1`,
         [clearanceId],
       );
-      const clearedSighting = sightings.rows.find((r) => r.exception_id === clearedFlag);
+      const clearedSighting = sightings.rows.find(
+        (r) => r.exception_id === clearedFlag,
+      );
       expect(cleared.rows[0]?.flag_sha256).toBe(clearedSighting?.flag_sha256);
       const nullable = await client.query<{ is_nullable: string }>(
         `SELECT is_nullable FROM information_schema.columns
@@ -1130,8 +1527,14 @@ describe("[legend-hklnq] migration 0464 backfills one fingerprint per existing r
             [tenant, slip],
           )
           .then((r) => r.rows[0]?.held);
-      expect(await held(clearedSlip), "approved clearance of the live data").toBe(false);
-      expect(await held(heldSlip), "flag without clearance keeps its slip held").toBe(true);
+      expect(
+        await held(clearedSlip),
+        "approved clearance of the live data",
+      ).toBe(false);
+      expect(
+        await held(heldSlip),
+        "flag without clearance keeps its slip held",
+      ).toBe(true);
     } finally {
       await client.query("ROLLBACK");
       client.release();

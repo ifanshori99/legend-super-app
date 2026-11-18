@@ -57,11 +57,11 @@ WITH ops AS (
             f.evidence_key, f.content_sha256, f.stored_sha256
   UNION ALL
   -- Payment proofs (confirmation and resolution keys of items): only compared
-  -- by hash with the operations above; never reported as an operation.
+  -- by hash with the operations above; reported only for a missing record or stored hash.
   SELECT i.tenant_id, 'confirmation'::text, i.batch_id, k.evidence_key,
          (array_agg(i.id ORDER BY i.id))[1],
          (f.evidence_key IS NOT NULL),
-         false,
+         (f.evidence_key IS NOT NULL AND f.stored_sha256 IS NULL),
          false,
          ARRAY[f.content_sha256, f.stored_sha256]::text[]
     FROM payroll_disbursement_items i
@@ -111,7 +111,7 @@ problems AS (
   UNION
   SELECT o.tenant_id, 'missing_stored_hash'::text, o.kind, o.ref_id
     FROM op_ident o
-   WHERE o.kind <> 'confirmation' AND o.stored_missing
+   WHERE o.stored_missing
   UNION
   SELECT o.tenant_id, 'record_hash_mismatch'::text, o.kind, o.ref_id
     FROM op_ident o
