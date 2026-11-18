@@ -89,6 +89,7 @@ import {
   createUlid,
   outletIdSchema,
   tenantIdSchema,
+  uuidToUlid,
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import {
@@ -1771,7 +1772,15 @@ describe("legend-kai reconciliation route", () => {
       }
       const ids = await listIds(world);
       expect(ids).toHaveLength(20);
-      expect(ids).toEqual(created.slice(-20).reverse());
+      // Newest first by the stored checked_at (database clock), not by creation
+      // order: the database clock can step between runs under load, and the
+      // table is append-only so the timestamps cannot be pinned here.
+      const stored = (await runRows(world))
+        .map((row) => uuidToUlid(row.id))
+        .reverse();
+      expect(stored).toHaveLength(30);
+      expect(new Set(stored)).toEqual(new Set(created));
+      expect(ids).toEqual(stored.slice(0, 20));
     }, 60_000);
 
     it("legend-9z10p the history is always newest first, whatever mix of manual and automatic runs is returned", async () => {
@@ -1788,17 +1797,23 @@ describe("legend-kai reconciliation route", () => {
       for (const [index, kind] of kinds.entries()) {
         created.push(await record(world, digest, kind, index + 1));
       }
+      // Newest first by the stored checked_at (database clock), not by creation
+      // order: the database clock can step between runs under load.
+      const stored = (await runRows(world))
+        .map((row) => uuidToUlid(row.id))
+        .reverse();
+      expect(new Set(stored)).toEqual(new Set(created));
       for (const limit of [1, 2, 3, 4, 6]) {
         const ids = await listIds(world, `?limit=${limit}`);
         expect(ids).toHaveLength(limit);
-        const positions = ids.map((id) => created.indexOf(id));
+        const positions = ids.map((id) => stored.indexOf(id));
         expect(positions).not.toContain(-1);
-        // Strictly decreasing creation position means newest first.
-        expect(positions).toEqual([...positions].sort((a, b) => b - a));
+        // Strictly increasing position in the newest-first stored order.
+        expect(positions).toEqual([...positions].sort((a, b) => a - b));
         expect(new Set(positions).size).toBe(limit);
       }
       // The default window, with fewer runs than 20, returns all of them newest first.
-      expect(await listIds(world)).toEqual([...created].reverse());
+      expect(await listIds(world)).toEqual(stored);
     }, 60_000);
   });
 });

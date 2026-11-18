@@ -398,7 +398,8 @@ describe("EDG-02 the edge pulls the cloud device registry", () => {
         );
       });
     });
-    const handle = await boot();
+    // legend-9z10p: only the primary reports (bootEnv defaults to standby).
+    const handle = await boot({ EDGE_NODE_ROLE: "primary" });
     await vi.waitFor(() => expect(reports).toHaveLength(1), { timeout: 5_000 });
     const report = reports[0]!;
     expect(report.init.method).toBe("POST");

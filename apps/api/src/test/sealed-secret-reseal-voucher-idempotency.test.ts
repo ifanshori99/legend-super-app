@@ -81,6 +81,7 @@ const NOISE_TABLES = new Set([
   "edge_deferred_events",
   "edge_inbound_events",
   "edge_received_events",
+  "edge_txn_ledger_events",
   "login_challenges",
   "notification_outbox",
   "notification_policies",

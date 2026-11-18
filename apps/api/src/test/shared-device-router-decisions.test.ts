@@ -80,6 +80,7 @@ const DECISIONS: Record<string, Decision> = {
   "edge-nodes": "backoffice",
   "edge-people-snapshot": "public",
   "edge-print": "backoffice",
+  "edge-reconciliation": "backoffice",
   "edge-selfie-receive": "public",
   "edge-sync-conflicts": "backoffice",
   "edge-wifi": "backoffice",
