@@ -509,6 +509,22 @@ describe("[legend-1100] runReleaseGates: fail-closed", () => {
   });
 });
 
+describe("[legend-a5viv] runReleaseGates: session settings", () => {
+  it("[legend-a5viv] gate runs with row_security off, read-only transaction and search_path public", async () => {
+    // Guard for the SET LOCAL lines in runReleaseGates: removing any one makes
+    // this gate return a row, so the run fails instead of passing.
+    await insertApplied([0, 1]);
+    writeGate({
+      name: "rilis1-legend-a5viv.sql",
+      gate: "legend-a5viv",
+      before: "none",
+      sql: "SELECT 1 AS bad WHERE current_setting('row_security') <> 'off' OR current_setting('transaction_read_only') <> 'on' OR current_setting('search_path') <> 'public'",
+    });
+    const report = await runReleaseGates(client, opts());
+    expect(report).toMatchObject({ status: "ok", ran: ["legend-a5viv"] });
+  });
+});
+
 describe("[legend-1100] migration drift (legend-fgg1h)", () => {
   it("[legend-1100] passes when every applied hash matches its journal entry", async () => {
     await insertApplied([0, 1, 2]);
