@@ -522,6 +522,9 @@ describe("SO 1036 slice H: petty purchases whose journal has not posted count ag
           await client.query("COMMIT");
         } catch (error) {
           await client.query("ROLLBACK").catch(() => {});
+          // A failed cleanup must fail the test, not leave a posted journal
+          // behind for the next tests.
+          // eslint-disable-next-line no-unsafe-finally
           throw error;
         } finally {
           client.release();
