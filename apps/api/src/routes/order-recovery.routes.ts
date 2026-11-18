@@ -85,12 +85,10 @@ orderRecoveryRouter.post(
   async (req, res) => {
     const { orderIssueId } = resolveOrderIssue.params.parse(req.params);
     const body = resolveOrderIssue.body.parse(req.body);
-    // Manual refund is money out: closed on a shared tablet (founder decision,
-    // closed by default; sub-1094 round 3). Personal devices are unchanged.
-    if (
-      body.resolution === "manual_refund" &&
-      (req.actingStaff || isRequestOnSharedDevice(req))
-    ) {
+    // Every resolution (manual refund, voucher, swap) is money out: closed on a
+    // shared tablet (founder decision, closed by default; sub-1094 round 3, CTO
+    // 19 Nov extends it to voucher and swap). Personal devices are unchanged.
+    if (req.actingStaff || isRequestOnSharedDevice(req)) {
       throw new HttpError(
         403,
         ACTING_STAFF_ERROR_CODES.SCREEN_CLOSED,

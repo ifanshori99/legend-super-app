@@ -342,15 +342,36 @@ describe("acting staff on order recovery (wave 3)", () => {
       expect(await issueStatus(issueId)).toBe("open");
     });
 
-    it("shared tablet with a cashier token: passes, the cashier is the resolver", async () => {
+    // CTO 19 Nov: swap and voucher are money out too, closed like manual refund.
+    it("shared tablet with a cashier token: swap is refused 403 SHARED_DEVICE_SCREEN_CLOSED, the issue stays open", async () => {
       const deviceId = await newDevice(true);
       const { roti } = await w.paidOrder();
       const issueId = (await w.report(roti.id)).body.data.id as string;
       const token = await cashierToken(deviceId);
-      const resolved = await resolveSwap(issueId, deviceId, token);
-      expect(resolved.status, JSON.stringify(resolved.body)).toBe(200);
-      expect(await issueStatus(issueId)).toBe("resolved");
-      expectCashier(await actorEvidence(issueId));
+      expectError(
+        await resolveSwap(issueId, deviceId, token),
+        403,
+        "SHARED_DEVICE_SCREEN_CLOSED",
+      );
+      expect(await issueStatus(issueId)).toBe("open");
+    });
+
+    it("shared tablet with a cashier token: voucher is refused 403 SHARED_DEVICE_SCREEN_CLOSED, the issue stays open", async () => {
+      const deviceId = await newDevice(true);
+      const { roti } = await w.paidOrder();
+      const issueId = (await w.report(roti.id)).body.data.id as string;
+      const token = await cashierToken(deviceId);
+      expectError(
+        await post(
+          `/api/order-issues/${issueId}/resolve`,
+          { resolution: "voucher", voucherId: randomUUID() },
+          deviceId,
+          token,
+        ),
+        403,
+        "SHARED_DEVICE_SCREEN_CLOSED",
+      );
+      expect(await issueStatus(issueId)).toBe("open");
     });
 
     it("private (unflagged) device without a token: works, the owner is the resolver", async () => {
