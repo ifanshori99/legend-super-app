@@ -289,6 +289,11 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
   // legend-l2zru (918)
   "0428_payout_batch_freeze_guards.sql":
     "trigger and function bodies only, no row edited by the migration: guards that refuse a payout step on a batch with an open dispute (PAYOUT-79), and the item/batch guard functions that update rows only when a payout function is called; the migration itself writes no row and changes no amount (it only blocks payments)",
+  // legend-yn1of / legend-uvjqq (1035 B), 1090 P1-2
+  "0656_provider_refund_id_kind.sql":
+    "sets provider_refund_id_kind to provider on the refund_recon_holds rows that already name a refund id (a copy of the id they hold, no guess, no amount touched); only rows with a null kind, idempotent, never inserts or deletes rows, FORCE RLS lifted for that one statement and restored",
+  "0696_refund_hold_invalid_report.sql":
+    "relabels to invalid_report the refund_recon_holds conflict rows whose id carries the made-up invalid: or invalid-h: prefix (restrictive, no amount touched); only the kind column changes, never inserts or deletes rows, FORCE RLS lifted for that one statement and restored",
   "0427_payout_batch_disputes.sql":
     "creates the append-only payroll_payout_batch_disputes and payroll_payout_batch_unfreezes tables, adds the disown and unfreeze grant kinds, and function bodies only: app.payout_approval_disown and app.payout_batch_unfreeze (payout role) insert a dispute or the unfreeze rows of a batch when called, app.payout_grant_issue (grantor login) inserts a grant; the migration itself writes no row and changes no amount (a dispute only freezes a batch, nobody is paid more)",
 };

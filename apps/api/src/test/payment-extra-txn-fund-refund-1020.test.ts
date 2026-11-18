@@ -1017,7 +1017,7 @@ async function overpaidScenario(
 
 describe("legend-qbsbr variant: refund of A's own parked overpayment excess is not the provider echo of A's bill", () => {
   it.each(["completed", "in_flight"] as const)(
-    "1020-qbsbr-own-fund fund refund of the excess %s, then the provider refunds A: A is stamped, one audit row, one alert, no new payout, fund refund untouched",
+    "1020-qbsbr-own-fund fund refund of the excess %s, then the provider refunds A: A is stamped, one audit row, one alert (two in flight), no new payout, fund refund untouched",
     async (fundRefund) => {
       const { code, fundRefundId: fundRefundRowId } =
         await overpaidScenario(fundRefund);
@@ -1036,10 +1036,15 @@ describe("legend-qbsbr variant: refund of A's own parked overpayment excess is n
       const newAudit = (await auditActions(code.id)).slice(auditBefore.length);
       expect(newAudit, "exactly one new audit row about A").toHaveLength(1);
       expect(newAudit[0]).toMatch(/provider_refunded/);
+      // In flight: two alerts, not one. Replaying the same report with the
+      // auto-refund switch on raises the live-own hold to CONFLICT and sends
+      // a second alert (more restrictive, never pays more). The switch-on
+      // path is not used by release 1 (see bead legend-1nb85). Completed:
+      // no live refund, so one alert.
       expect(
         (await supervisorAlerts()) - alertsBefore,
-        "exactly one alert to the outlet supervisor",
-      ).toBe(1);
+        "alerts to the outlet supervisor",
+      ).toBe(fundRefund === "in_flight" ? 2 : 1);
       expect(fake.calls, "no new payout").toHaveLength(callsBefore);
       expect(await journals(), "no journal added").toBe(journalsBefore);
       const after = await refundRow(fundRefundRowId);

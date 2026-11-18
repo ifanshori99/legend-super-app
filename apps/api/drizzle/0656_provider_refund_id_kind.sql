@@ -16,10 +16,15 @@ DROP INDEX "refund_recon_hold_provider_refund_key";--> statement-breakpoint
 ALTER TABLE "payment_provider_refunds" ADD COLUMN "refund_id_kind" varchar(20) DEFAULT 'provider' NOT NULL;--> statement-breakpoint
 ALTER TABLE "refund_recon_holds" ADD COLUMN "provider_refund_id_kind" varchar(20);--> statement-breakpoint
 -- Every hold that already names a refund id: the provider's own, id as is.
+-- refund_recon_holds is FORCE RLS and the migration role is a non-super table
+-- owner with no tenant context, so FORCE is lifted for this statement only
+-- (same pattern as 0141) and restored in the same migration transaction.
+ALTER TABLE "refund_recon_holds" NO FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 UPDATE "refund_recon_holds"
    SET "provider_refund_id_kind" = 'provider'
  WHERE "provider_refund_id" IS NOT NULL
    AND "provider_refund_id_kind" IS NULL;--> statement-breakpoint
+ALTER TABLE "refund_recon_holds" FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE UNIQUE INDEX "refund_recon_hold_provider_refund_key" ON "refund_recon_holds" USING btree ("tenant_id","payment_intent_id","provider_refund_id_kind","provider_refund_id") WHERE "refund_recon_holds"."provider_refund_id" IS NOT NULL;--> statement-breakpoint
 ALTER TABLE "payment_provider_refunds" ADD CONSTRAINT "payment_provider_refunds_provider_refund_key" UNIQUE("tenant_id","provider","refund_id_kind","provider_refund_id");--> statement-breakpoint
 ALTER TABLE "payment_provider_refunds" ADD CONSTRAINT "payment_provider_refunds_refund_id_kind_check" CHECK ("payment_provider_refunds"."refund_id_kind" IN ('provider', 'synthetic_full', 'synthetic_hold'));--> statement-breakpoint

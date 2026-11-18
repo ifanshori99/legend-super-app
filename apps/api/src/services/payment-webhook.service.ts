@@ -97,6 +97,7 @@ import {
 } from "./payment-provider-partial-refund";
 import { lockDepositIntentsExclusive } from "./reservation-deposit-credit";
 import {
+  alertProviderRefundSwitchedOff,
   alertProviderRefundTransactionConflict,
   alertProviderRefundUnbound,
   alertRefundReferenceMismatch,
@@ -1241,7 +1242,7 @@ async function holdSwitchedOffRefundSuccess(
         .onConflictDoNothing()
         .returning({ id: refundReconHolds.id });
       if (held) {
-        await alertProviderRefundTransactionConflict(
+        await alertProviderRefundSwitchedOff(
           tx,
           context,
           {

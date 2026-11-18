@@ -482,6 +482,30 @@ export async function alertProviderRefundTransactionConflict(
   );
 }
 
+/**
+ * 1112: the DOIT refund switch is off (release 1), so a provider refund event
+ * is held without being booked (CONFLICT hold from `holdSwitchedOffRefundSuccess`).
+ * Own text: the event is not a refund id that sits on another transaction.
+ */
+export async function alertProviderRefundSwitchedOff(
+  tx: Tx,
+  context: ScopedTenantContext,
+  held: ReconHoldFiledAlert,
+  now: Date,
+): Promise<void> {
+  await alertReconHoldFiled(
+    tx,
+    context,
+    held,
+    {
+      eventName: "payment.provider_refund_switched_off",
+      title: "Refund penyedia ditahan, refund otomatis belum aktif",
+      body: `Penyedia pembayaran melaporkan refund Rp ${held.amountIdr.toLocaleString("id-ID")}. Refund otomatis belum aktif, jadi laporan ini tidak dibukukan. Refund dan payout pembayaran ini ditahan sampai finance memeriksanya.`,
+    },
+    now,
+  );
+}
+
 export type ProviderRefundUnbound = {
   intentId: string;
   outletId: string;
