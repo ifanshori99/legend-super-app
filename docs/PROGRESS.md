@@ -2105,3 +2105,4 @@ Langkah berikut CTO baru:
 - 01:57 CTO: 1095 (G95kw) selesai a8885a91f (3dsih), resolve, SIAP batch94. legend-v6is2 -> cek dulu di G2yc3 apakah createRefund bisa dipanggil di rilis 1 saat saklar refund mati.
 - 01:59 CTO: 1106 lanjutan (G93wj) selesai 5c06f743c (settle net NULL + entity lock, architect 0 P0-P2), resolve. Bead gerbang legacy NULL legend-1tke7. SO kas ronde 7 brief 1115.
 - 02:00 CTO: SO kas ronde 7 (G243d) dan SO refund kasir 1114 (G71d4) di Codex. G8xbm dibuka lagi untuk legend-1tke7 (gerbang legacy net NULL di runner 1100). Retro: kirim ke thread yang sudah di-resolve tidak sampai sebelum 'coordinator reopen'.
+- 02:04 CTO: SO 1114 refund kasir (G71d4) 2 P1 di order-given.ts, resolve. 1095 DITAHAN; brief 1116 ke G95kw.
