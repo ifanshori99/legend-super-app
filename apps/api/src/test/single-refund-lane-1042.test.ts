@@ -19,6 +19,15 @@
 // - the manual refund of a one-line order pays the whole line (= what was paid),
 //   so "paid out" = POS refunds + void amount + Rp50.000 per live manual refund.
 // - a parallel race ends with exactly ONE of the money paths recorded.
+// - F2 (CTO decision): a manual refund of an edge-ingested sale (ledger state
+//   ingested or voided) is refused 409 EDGE_ORDER_CORRECTION_BLOCKED, like the
+//   cashier refund / cloud void. So a LIVE manual refund on an edge sale can no
+//   longer be created through the route; tests that need one (to prove the
+//   manual_refund_exists guard of the edge ingest and its race) seed the
+//   order_issues row directly (`seedManualIssue`, the same columns the route
+//   writes), or race a seed that takes the order row lock and checks for a void
+//   like the route does (`seedManualUnlessVoided`). The code is matched loosely
+//   in the JSON body (shape not specified).
 //
 // FAIL-FIRST: the tests that fail on the base are the ones that prove G1 (manual
 // refund after a void is not refused) and G2 (edge void ignores a live manual
@@ -382,6 +391,45 @@ async function seedManualIssue(
         state === "ord09" ? randomUUID() : null,
       ],
     );
+  });
+}
+
+/**
+ * Race helper: a manual refund written like the route would, in one transaction:
+ * lock the order row, refuse (return false) when a void already exists, else
+ * insert the live manual_refund row. Pair with a parallel edge void.
+ */
+async function seedManualUnlessVoided(order: Order): Promise<boolean> {
+  return asOwnerTenant(tenant.tenantId, async (client) => {
+    await client.query(
+      "SELECT 1 FROM orders WHERE tenant_id = $1 AND id = $2 FOR UPDATE",
+      [tenant.tenantId, order.uuid],
+    );
+    const { rows } = await client.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM pos_order_voids WHERE tenant_id = $1 AND order_id = $2",
+      [tenant.tenantId, order.uuid],
+    );
+    if (rows[0]!.n > 0) return false;
+    await client.query("SET LOCAL session_replication_role = replica");
+    await client.query(
+      `INSERT INTO order_issues (id, tenant_id, outlet_id, order_id, order_item_id, type, reason,
+         reason_note, reported_by, resolution, approved_by, cost_idr, status,
+         idempotency_key, resolved_at, refund_rejected_at, approval_request_id)
+       VALUES ($1, $2, $3, $4, $5, 'complaint', 'complaint',
+         'Pelanggan kecewa, refund manual disetujui', $6, 'manual_refund', $7, 0, 'resolved',
+         $8, now(), NULL, NULL)`,
+      [
+        randomUUID(),
+        tenant.tenantId,
+        tenant.outletId,
+        order.uuid,
+        order.itemUuid,
+        randomUUID(),
+        randomUUID(),
+        randomUUID(),
+      ],
+    );
+    return true;
   });
 }
 
@@ -914,10 +962,48 @@ describe("legend-1042 controls: each money path works on its own", () => {
     expect(await ingestOf(order.ulid)).toMatchObject({ state: "voided" });
   });
 
-  it("a lone manual refund of an ingested edge sale is accepted", async () => {
+  it("a lone manual refund of an ingested edge sale is refused (409 EDGE_ORDER_CORRECTION_BLOCKED): nothing is paid", async () => {
     const order = await edgeSale();
-    expect((await manualRefund(order)).status).toBe(201);
+    const res = await manualRefund(order);
+    expect(res.status).toBe(409);
+    expect(JSON.stringify(res.body ?? {})).toMatch(
+      /EDGE_ORDER_CORRECTION_BLOCKED/,
+    );
+    expect(await manualCount(order)).toBe(0);
+    expect(await issueCount(order)).toBe(0);
+    expect(await approvalUses(order)).toBe(0);
+    expect(await paidOut(order)).toBe(0);
+    expect(await ingestOf(order.ulid)).toMatchObject({ state: "ingested" });
+  });
+
+  it("the edge refusal also holds after the edge void (state voided): 409, still exactly one payout", async () => {
+    const order = await edgeSale();
+    await deliver([edgeVoidEvent(order)]);
+    expect(await ingestOf(order.ulid)).toMatchObject({ state: "voided" });
+    const res = await manualRefund(order);
+    expect(res.status).toBe(409);
+    expect(JSON.stringify(res.body ?? {})).toMatch(
+      /EDGE_ORDER_CORRECTION_BLOCKED/,
+    );
+    expect(await manualCount(order)).toBe(0);
+    expect(await issueCount(order)).toBe(0);
+    expect(await voidCount(order)).toBe(1);
+    expect(await paidOut(order)).toBe(PAID);
+  });
+
+  it("a cloud (non-edge) sale is not blocked by the edge rule, even next to an edge sale in the same outlet", async () => {
+    const edge = await edgeSale();
+    const order = await cloudSale();
+    const res = await manualRefund(order);
+    expect(res.status).toBe(201);
+    expect(JSON.stringify(res.body ?? {})).not.toMatch(
+      /EDGE_ORDER_CORRECTION_BLOCKED/,
+    );
     expect(await manualCount(order)).toBe(1);
+    expect(await paidOut(order)).toBe(PAID);
+    // the edge sale next to it stays refused and untouched
+    expect((await manualRefund(edge)).status).toBe(409);
+    expect(await paidOut(edge)).toBe(0);
   });
 });
 
@@ -1003,7 +1089,7 @@ describe("legend-1042 cloud void x manual refund", () => {
 describe("legend-1042 edge void x manual refund", () => {
   it("manual refund first (G2): the edge void is refused, writes no void row and leaves the ledger ingested", async () => {
     const order = await edgeSale();
-    expect((await manualRefund(order)).status).toBe(201);
+    await seedManualIssue(order, here());
     const event = edgeVoidEvent(order);
     await deliver([event]).catch(() => undefined);
     expect(await voidCount(order)).toBe(0);
@@ -1025,17 +1111,28 @@ describe("legend-1042 edge void x manual refund", () => {
     expect(await paidOut(order)).toBe(PAID);
   });
 
-  it("in parallel exactly one of edge void and manual refund wins (G2/G3)", async () => {
+  it("in parallel exactly one of edge void and a manual refund (locked seed) wins (G2/G3)", async () => {
     const order = await edgeSale();
-    const results = await Promise.allSettled([
-      deliver([edgeVoidEvent(order)]),
-      manualRefund(order),
+    const [, seeded] = await Promise.all([
+      deliver([edgeVoidEvent(order)]).catch(() => undefined),
+      seedManualUnlessVoided(order),
     ]);
     // `deliver` resolves with undefined whatever the ingest decided, so count
     // the winners in the ledger instead.
-    expect(settled(results[1]!) ? 1 : 0).toBe(
-      (await manualCount(order)) > 0 ? 1 : 0,
-    );
+    expect(seeded ? 1 : 0).toBe((await manualCount(order)) > 0 ? 1 : 0);
+    expect(seeded ? 0 : 1).toBe(await voidCount(order));
+    await onlyOnePath(order);
+  });
+
+  it("in parallel the edge void wins over the route's manual refund, which is refused 409 (F2)", async () => {
+    const order = await edgeSale();
+    const [, res] = await Promise.all([
+      deliver([edgeVoidEvent(order)]).catch(() => undefined),
+      manualRefund(order),
+    ]);
+    expect(res.status).toBe(409);
+    expect(await manualCount(order)).toBe(0);
+    expect(await voidCount(order)).toBe(1);
     await onlyOnePath(order);
   });
 
@@ -1044,7 +1141,7 @@ describe("legend-1042 edge void x manual refund", () => {
       const order = await edgeSale();
       await Promise.allSettled([
         deliver([edgeVoidEvent(order)]),
-        manualRefund(order),
+        seedManualUnlessVoided(order),
       ]);
       await onlyOnePath(order);
     }
@@ -1080,7 +1177,7 @@ describe("legend-1042 edge order.voided replay", () => {
 
   it("a void refused because of a manual refund stays refused on replay: no throw, no void row, one manual refund", async () => {
     const order = await edgeSale();
-    expect((await manualRefund(order)).status).toBe(201);
+    await seedManualIssue(order, here());
     const event = edgeVoidEvent(order);
     await deliver([event]).catch(() => undefined);
     await expect(deliver([event])).resolves.toBeUndefined();
@@ -1092,7 +1189,7 @@ describe("legend-1042 edge order.voided replay", () => {
 
   it("a different, later void event of the same sale is refused while a manual refund is live", async () => {
     const order = await edgeSale();
-    expect((await manualRefund(order)).status).toBe(201);
+    await seedManualIssue(order, here());
     await deliver([edgeVoidEvent(order, 2)]).catch(() => undefined);
     await deliver([edgeVoidEvent(order, 3)]).catch(() => undefined);
     expect(await voidCount(order)).toBe(0);
@@ -1303,7 +1400,8 @@ describe("legend-1042 a parked edge void blocks the manual refund", () => {
   });
 
   it("control: a parked void that is not a final void (voidedFinalOrder false) does not block", async () => {
-    const order = await edgeSale();
+    // F2: an edge sale is refused anyway, so the control uses a cloud sale.
+    const order = await cloudSale();
     await parkVoid(order, { voidedFinalOrder: false });
     expect(await deferredCount(order)).toBe(1);
     expect((await manualRefund(order)).status).toBe(201);
@@ -1314,7 +1412,7 @@ describe("legend-1042 a parked edge void blocks the manual refund", () => {
   it("control: a parked final void of ANOTHER order (same outlet) does not block this order", async () => {
     const other = await edgeSale();
     await parkVoid(other);
-    const order = await edgeSale();
+    const order = await cloudSale();
     expect((await manualRefund(order)).status).toBe(201);
     expect(await manualCount(order)).toBe(1);
     expect(await paidOut(order)).toBe(PAID);
@@ -1324,7 +1422,7 @@ describe("legend-1042 a parked edge void blocks the manual refund", () => {
   });
 
   it("control: a parked final void in ANOTHER TENANT (same order id) does not block this order", async () => {
-    const order = await edgeSale();
+    const order = await cloudSale();
     await parkVoid(order, { forTenant: tenantB });
     expect(
       await count(
@@ -1338,7 +1436,7 @@ describe("legend-1042 a parked edge void blocks the manual refund", () => {
   });
 
   it("control: with no parked void the lone manual refund is accepted (the refusal is not an unrelated 4xx)", async () => {
-    const order = await edgeSale();
+    const order = await cloudSale();
     expect(await deferredCount(order)).toBe(0);
     expect((await manualRefund(order)).status).toBe(201);
     expect(await paidOut(order)).toBe(PAID);

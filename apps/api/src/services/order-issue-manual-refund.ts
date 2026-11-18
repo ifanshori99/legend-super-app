@@ -11,9 +11,14 @@
 //   cumulative over the order's other live manual refunds (telescoping), so
 //   all of them together never exceed the bill. The approval is bound to
 //   exactly this amount.
+// - An order ingested from the edge (`edge_order_ingests` state `ingested` or
+//   `voided`) refuses a manual refund with 409 EDGE_ORDER_CORRECTION_BLOCKED,
+//   before every other check: the refund is made at the edge till only (F2,
+//   same as `assertNotEdgeIngested` in pos-order-corrections).
 // - A void (cloud `pos_order_voids`, an edge ingest in state `voided`, or a
 //   parked edge `order.voided` of the final sale) also refuses a manual refund
-//   (legend-1042).
+//   (legend-1042). The edge-ingest check above already covers `voided`; the
+//   older void check stays as a second guard.
 // - Exclusive with the POS refund per order (restrictive, founder to review):
 //   an order with any POS refund, or any non-failed ORD-09 refund that is not
 //   one of its live route manual refunds, refuses a manual refund (409); the
@@ -91,6 +96,28 @@ export async function manualRefundAmountIdr(
     .for("update");
   if (!order || order.status !== "completed")
     throw refuse("Refund manual hanya untuk pesanan yang sudah dibayar.");
+
+  // An order the edge ingested (state `ingested` or `voided`) was paid and
+  // corrected at the edge till, offline; the cloud cannot see every money fact,
+  // so a manual refund here could pay twice. Refused before any other check,
+  // the same rule as `assertNotEdgeIngested` in pos-order-corrections (F2).
+  const [edgeIngestRow] = await tx
+    .select({ orderId: edgeOrderIngests.orderId })
+    .from(edgeOrderIngests)
+    .where(
+      and(
+        eq(edgeOrderIngests.tenantId, tenantId),
+        eq(edgeOrderIngests.orderId, orderId),
+        inArray(edgeOrderIngests.state, ["ingested", "voided"]),
+      ),
+    )
+    .limit(1);
+  if (edgeIngestRow)
+    throw new HttpError(
+      409,
+      "EDGE_ORDER_CORRECTION_BLOCKED",
+      "Pesanan ini dibayar di kasir edge dan sudah diterima server pusat. Refund manual per item juga hanya bisa dilakukan di kasir edge tempat penjualan terjadi; hubungi kasir atau finance outlet tersebut.",
+    );
 
   // Money the guest paid for the order, per tender. A tender backed by a
   // payment intent loses what the provider refunded on its own (967, a refund
