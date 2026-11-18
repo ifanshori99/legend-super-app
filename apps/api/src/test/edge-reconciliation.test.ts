@@ -1644,6 +1644,163 @@ describe("legend-kai reconciliation route", () => {
     );
     expect([400, 404, 422]).toContain(response.status);
   });
+
+  // legend-9z10p (fail-first). Assumptions: the scheduled report repeats every
+  // 5 minutes, so an unchanged report (same status, same through_link_seq and
+  // same totals as the node's latest run) must not append a row; the response
+  // stays a success. A manual operator run (checked_by set) must stay visible
+  // in the default history even after many distinct automatic reports.
+  it("legend-9z10p an identical repeated edge report adds no row and still answers ok", async () => {
+    const { world, digest } = await readyWorld();
+    const send = () =>
+      agent(app)
+        .post(path(world))
+        .set("Authorization", `Bearer ${world.credential}`)
+        .send(digest);
+    const first = await send();
+    expect(first.status).toBe(200);
+    expect(first.body.data).toMatchObject({ status: "ok", checkedBy: null });
+    const second = await send();
+    expect(second.status).toBe(200);
+    expect(second.body.data).toMatchObject({
+      status: "ok",
+      edgeNodeId: world.node.scope.edgeNodeId,
+      throughLinkSeq: digest.throughLinkSeq,
+    });
+    expect(await runRows(world)).toHaveLength(1);
+  });
+
+  it("legend-9z10p an identical repeated mismatch report adds no row either", async () => {
+    const { world, digest } = await readyWorld();
+    const wrong = tamper(digest, "order.paid", { count: 1, amount: 1000n });
+    const send = () =>
+      agent(app)
+        .post(path(world))
+        .set("Authorization", `Bearer ${world.credential}`)
+        .send(wrong);
+    expect((await send()).status).toBe(200);
+    const again = await send();
+    expect(again.status).toBe(200);
+    expect(again.body.data).toMatchObject({ status: "mismatch" });
+    expect(await runRows(world)).toHaveLength(1);
+  });
+
+  it("legend-9z10p a changed result after an unchanged repeat is still recorded", async () => {
+    const { world, digest } = await readyWorld();
+    const send = (body: unknown) =>
+      agent(app)
+        .post(path(world))
+        .set("Authorization", `Bearer ${world.credential}`)
+        .send(body as object);
+    await send(digest);
+    await send(digest);
+    const changed = await send(
+      tamper(digest, "order.paid", { count: 1, amount: 1000n }),
+    );
+    expect(changed.status).toBe(200);
+    expect(changed.body.data).toMatchObject({ status: "mismatch" });
+    const rows = await runRows(world);
+    expect(rows.map((row) => row.status)).toEqual(["ok", "mismatch"]);
+  });
+
+  it("legend-9z10p a manual operator run is still in the default history after many automatic runs", async () => {
+    const { world, digest } = await readyWorld();
+    const manual = await post(managerA, tenantA, path(world), digest);
+    expect([200, 201]).toContain(manual.status);
+    expect(manual.body.data.checkedBy).not.toBeNull();
+    const manualId = manual.body.data.id as string;
+    // 25 automatic reports that each differ (so none can be skipped as unchanged).
+    for (let i = 1; i <= 25; i += 1) {
+      const auto = await agent(app)
+        .post(path(world))
+        .set("Authorization", `Bearer ${world.credential}`)
+        .send(tamper(digest, "order.paid", { count: i }));
+      expect(auto.status).toBe(200);
+    }
+    const listed = await get(managerA, tenantA, path(world));
+    expect(listed.status).toBe(200);
+    const items = rowsOf(listed.body.data) as { id: string }[];
+    expect(items.length).toBeGreaterThan(0);
+    expect(items.map((item) => item.id)).toContain(manualId);
+  });
+
+  // legend-9z10p history window. Assumptions: the list keeps floor(limit/2)
+  // slots for the newest manual runs and fills the rest newest-first from the
+  // remaining runs, so limit=1 reserves no manual slot and is plain newest-first;
+  // the default limit is 20; the response is always newest-first. Every run
+  // below carries a distinct count so none is skipped as an unchanged repeat.
+  describe("history window", () => {
+    // Records one run and returns its id, in creation order (oldest first).
+    async function record(
+      world: World,
+      digest: Awaited<ReturnType<typeof digestOf>>,
+      kind: "manual" | "auto",
+      count: number,
+    ) {
+      const body = tamper(digest, "order.paid", { count });
+      const response =
+        kind === "manual"
+          ? await post(managerA, tenantA, path(world), body)
+          : await agent(app)
+              .post(path(world))
+              .set("Authorization", `Bearer ${world.credential}`)
+              .send(body);
+      expect([200, 201]).toContain(response.status);
+      return response.body.data.id as string;
+    }
+    const listIds = async (world: World, query = "") => {
+      const listed = await get(managerA, tenantA, `${path(world)}${query}`);
+      expect(listed.status).toBe(200);
+      return (rowsOf(listed.body.data) as { id: string }[]).map(
+        (item) => item.id,
+      );
+    };
+
+    it("legend-9z10p limit=1 returns the newest run even when it is automatic and a manual run is older", async () => {
+      const { world, digest } = await readyWorld();
+      await record(world, digest, "manual", 1);
+      const newestAuto = await record(world, digest, "auto", 2);
+      expect(await listIds(world, "?limit=1")).toEqual([newestAuto]);
+    });
+
+    it("legend-9z10p with 30 manual runs and no automatic run the default limit returns 20 rows, newest first", async () => {
+      const { world, digest } = await readyWorld();
+      const created: string[] = [];
+      for (let i = 1; i <= 30; i += 1) {
+        created.push(await record(world, digest, "manual", i));
+      }
+      const ids = await listIds(world);
+      expect(ids).toHaveLength(20);
+      expect(ids).toEqual(created.slice(-20).reverse());
+    }, 60_000);
+
+    it("legend-9z10p the history is always newest first, whatever mix of manual and automatic runs is returned", async () => {
+      const { world, digest } = await readyWorld();
+      const created: string[] = [];
+      const kinds = [
+        "manual",
+        "auto",
+        "auto",
+        "manual",
+        "auto",
+        "auto",
+      ] as const;
+      for (const [index, kind] of kinds.entries()) {
+        created.push(await record(world, digest, kind, index + 1));
+      }
+      for (const limit of [1, 2, 3, 4, 6]) {
+        const ids = await listIds(world, `?limit=${limit}`);
+        expect(ids).toHaveLength(limit);
+        const positions = ids.map((id) => created.indexOf(id));
+        expect(positions).not.toContain(-1);
+        // Strictly decreasing creation position means newest first.
+        expect(positions).toEqual([...positions].sort((a, b) => b - a));
+        expect(new Set(positions).size).toBe(limit);
+      }
+      // The default window, with fewer runs than 20, returns all of them newest first.
+      expect(await listIds(world)).toEqual([...created].reverse());
+    }, 60_000);
+  });
 });
 
 describe("legend-kai reconcile: stale epoch (digest of another edge instance)", () => {

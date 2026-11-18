@@ -1528,9 +1528,12 @@ export async function startEdgeRuntime(
             logger.warn(safeError(error), "Edge receipt run report failed"),
         })
       : () => undefined;
-  // Both roles report their own ledger. The snapshot transaction commits
-  // before POSTing, and a failed report retries without holding the cursor.
+  // Only the primary reports: a standby has no edge_to_cloud drain, so its
+  // digest would always look behind/stale (legend-9z10p). The snapshot
+  // transaction commits before POSTing, and a failed report retries without
+  // holding the cursor.
   const reconciliationSender = createEdgeReconciliationSender({
+    role: config.role,
     cloudUrl: config.cloudUrl,
     credential: config.credential,
     edgeNodeId: local.scope.edgeNodeId,

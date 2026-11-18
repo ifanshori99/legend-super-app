@@ -159,6 +159,19 @@ function compareTotals(
   return diffs;
 }
 
+/** JSON with object keys sorted, so jsonb round-trips compare equal. */
+function stableJson(value: unknown): string {
+  return JSON.stringify(value, (_key, v: unknown) =>
+    v !== null && typeof v === "object" && !Array.isArray(v)
+      ? Object.fromEntries(
+          Object.entries(v as Record<string, unknown>).sort(([a], [b]) =>
+            a < b ? -1 : a > b ? 1 : 0,
+          ),
+        )
+      : v,
+  );
+}
+
 function toRun(row: Record<string, unknown>): EdgeReconciliationRun {
   return edgeReconciliationRunSchema.parse({
     id: uuidToUlid(String(row.id)),
@@ -260,6 +273,35 @@ export async function reconcileEdgeTransactions(
         status = diffs.length === 0 ? "ok" : "mismatch";
       }
     }
+    // Scheduled (non-manual) runs are deduplicated: when the latest scheduled
+    // run for this node has the same outcome, return it instead of appending
+    // an identical row. Manual runs (checkedBy set) always insert. Totals and
+    // diffs carry no per-run timestamps, so they are compared whole.
+    if (input.checkedBy === undefined || input.checkedBy === null) {
+      // Serialize concurrent scheduled reports for one node (an aborted
+      // request can still be running when the sender retries), so both cannot
+      // read the same "latest" row and insert twice.
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(hashtext(${"edge-reconciliation:" + input.edgeNodeId}))`,
+      );
+      const latest = await tx.execute(
+        sql`SELECT ${RUN_COLUMNS} FROM edge_reconciliation_runs WHERE tenant_id = ${context.tenant.tenantId}::uuid AND edge_node_id = ${input.edgeNodeId}::uuid AND checked_by IS NULL ORDER BY checked_at DESC, id DESC LIMIT 1`,
+      );
+      if (latest.rows[0]) {
+        const previous = toRun(latest.rows[0] as Record<string, unknown>);
+        if (
+          previous.status === status &&
+          previous.fromLinkSeq === digest.fromLinkSeq &&
+          previous.throughLinkSeq === digest.throughLinkSeq &&
+          previous.edgeInstanceId?.toLowerCase() ===
+            digest.edgeInstanceId.toLowerCase() &&
+          stableJson(previous.edgeTotals) === stableJson(digest.totals) &&
+          stableJson(previous.cloudTotals) === stableJson(cloud) &&
+          stableJson(previous.diffs) === stableJson(diffs)
+        )
+          return previous;
+      }
+    }
     const id = ulidToUuid(createUlid());
     const inserted = await tx.execute(
       sql`INSERT INTO edge_reconciliation_runs (id, tenant_id, outlet_id, edge_node_id, from_link_seq, through_link_seq, edge_instance_id, status, edge_totals, cloud_totals, diffs, checked_by) VALUES (${id}::uuid, ${context.tenant.tenantId}::uuid, ${outletId}::uuid, ${input.edgeNodeId}::uuid, ${digest.fromLinkSeq}, ${digest.throughLinkSeq}, ${digest.edgeInstanceId}::uuid, ${status}, ${JSON.stringify(digest.totals)}::jsonb, ${JSON.stringify(cloud)}::jsonb, ${JSON.stringify(diffs)}::jsonb, ${input.checkedBy ?? null}) RETURNING ${RUN_COLUMNS}`,
@@ -277,9 +319,34 @@ export async function listEdgeReconciliationRuns(
   assertTrustedScopedContext(context);
   return withTenant(database, context, async (tx) => {
     await nodeOutletId(tx, context, input.edgeNodeId);
-    const result = await tx.execute(
-      sql`SELECT ${RUN_COLUMNS} FROM edge_reconciliation_runs WHERE edge_node_id = ${input.edgeNodeId}::uuid ORDER BY checked_at DESC, id DESC LIMIT ${input.limit}`,
+    // legend-9z10p: operator (manual) runs must not be pushed out by the
+    // automatic ones. Reserve up to half the page for the newest manual runs,
+    // fill the rest with the newest automatic runs, then return both newest first.
+    const manualRows = await tx.execute(
+      sql`SELECT ${RUN_COLUMNS} FROM edge_reconciliation_runs WHERE edge_node_id = ${input.edgeNodeId}::uuid AND checked_by IS NOT NULL ORDER BY checked_at DESC, id DESC LIMIT ${input.limit}`,
     );
-    return result.rows.map((row) => toRun(row as Record<string, unknown>));
+    const autoRows = await tx.execute(
+      sql`SELECT ${RUN_COLUMNS} FROM edge_reconciliation_runs WHERE edge_node_id = ${input.edgeNodeId}::uuid AND checked_by IS NULL ORDER BY checked_at DESC, id DESC LIMIT ${input.limit}`,
+    );
+    const newestFirst = (a: EdgeReconciliationRun, b: EdgeReconciliationRun) =>
+      a.checkedAt === b.checkedAt
+        ? a.id < b.id
+          ? 1
+          : -1
+        : a.checkedAt < b.checkedAt
+          ? 1
+          : -1;
+    const manual = manualRows.rows.map((row) =>
+      toRun(row as Record<string, unknown>),
+    );
+    const auto = autoRows.rows.map((row) =>
+      toRun(row as Record<string, unknown>),
+    );
+    const reserved = Math.floor(input.limit / 2);
+    const guaranteed = manual.slice(0, reserved);
+    const rest = [...manual.slice(reserved), ...auto]
+      .sort(newestFirst)
+      .slice(0, input.limit - guaranteed.length);
+    return [...guaranteed, ...rest].sort(newestFirst);
   });
 }

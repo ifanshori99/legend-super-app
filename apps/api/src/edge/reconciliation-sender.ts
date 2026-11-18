@@ -16,6 +16,11 @@ export type EdgeReconciliationSenderOptions = {
   credential: string;
   edgeNodeId: string;
   buildDigest: () => Promise<EdgeTxnDigest>;
+  /**
+   * legend-9z10p: only the primary reports. A standby never drains edge_to_cloud
+   * (no cursor), so its digest would always look behind/stale. Default primary.
+   */
+  role?: "primary" | "standby";
   fetch?: typeof fetch;
   intervalMs?: number;
   retryBaseMs?: number;
@@ -137,6 +142,7 @@ export function createEdgeReconciliationSender(
   }
 
   function runOnce(): Promise<boolean> {
+    if (options.role === "standby") return Promise.resolve(false);
     if (inFlight) return inFlight;
     if (stopped) return Promise.resolve(false);
     cancelTimer();

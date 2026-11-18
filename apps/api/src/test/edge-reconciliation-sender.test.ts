@@ -255,4 +255,30 @@ describe("legend-e3k4p scheduled edge reconciliation sender", () => {
     expect(t.fetch).toHaveBeenCalledTimes(1);
     expect(t.activeTimers()).toHaveLength(0);
   });
+
+  // legend-9z10p (fail-first). Assumption: the sender has no notion of role
+  // today (runtime.ts passes none), so the contract tested here is a `role`
+  // option: only "primary" reports. A standby never holds an edge_to_cloud
+  // cursor, so its report would always be stale/behind.
+  it("legend-9z10p a standby node never builds or posts a report", async () => {
+    const t = setup({
+      role: "standby",
+    } as Partial<EdgeReconciliationSenderOptions>);
+    t.sender.start();
+    await flush();
+    expect(await t.sender.runOnce()).toBe(false);
+    expect(t.buildDigest).not.toHaveBeenCalled();
+    expect(t.fetch).not.toHaveBeenCalled();
+    await t.sender.stop();
+  });
+
+  it("legend-9z10p a primary node still reports at startup", async () => {
+    const t = setup({
+      role: "primary",
+    } as Partial<EdgeReconciliationSenderOptions>);
+    t.sender.start();
+    await flush();
+    expect(t.fetch).toHaveBeenCalledTimes(1);
+    await t.sender.stop();
+  });
 });
