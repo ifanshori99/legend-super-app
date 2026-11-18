@@ -164,10 +164,16 @@ export function openReconHoldIdrSql(tenant: SQL, intent: SQL): SQL {
       AND h.reason<>'credit_used_before_provider_refund'
       -- A refund already recorded for the same provider refund id counts as a
       -- provider refund; counting its hold too would take the money twice.
+      -- 1063 F2 (legend-awdwd): only a fact of the SAME provider transaction
+      -- represents the hold. The same refund id on record for another
+      -- transaction is a conflict (HOLD_TRANSACTION_CONFLICT): the hold stays
+      -- in the sum until finance resolves it. A hold that names no transaction
+      -- cannot be proven the same, so it stays in the sum too.
       AND NOT EXISTS (SELECT 1 FROM payment_provider_refunds hr
         WHERE hr.tenant_id=h.tenant_id AND hr.payment_intent_id=h.payment_intent_id
           AND hr.refund_id_kind=h.provider_refund_id_kind
-          AND hr.provider_refund_id=h.provider_refund_id)),0)`;
+          AND hr.provider_refund_id=h.provider_refund_id
+          AND hr.provider_payment_ref=h.provider_payment_ref)),0)`;
 }
 
 type AllocationCredit = {

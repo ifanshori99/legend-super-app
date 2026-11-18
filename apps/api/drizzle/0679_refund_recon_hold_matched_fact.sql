@@ -1,0 +1,3 @@
+ALTER TABLE "refund_recon_holds" ADD COLUMN "matched_fact_id" uuid;--> statement-breakpoint
+ALTER TABLE "refund_recon_holds" ADD CONSTRAINT "refund_recon_hold_matched_fact_fk" FOREIGN KEY ("matched_fact_id") REFERENCES "public"."payment_provider_refunds"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+CREATE UNIQUE INDEX "refund_recon_hold_matched_fact_key" ON "refund_recon_holds" USING btree ("tenant_id","matched_fact_id") WHERE "refund_recon_holds"."matched_fact_id" IS NOT NULL;

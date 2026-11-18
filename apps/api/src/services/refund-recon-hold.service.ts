@@ -47,7 +47,8 @@ import {
   HOLD_TRANSACTION_CONFLICT_REASON,
   recordProviderRefundInTx,
   REFUND_MAY_DUPLICATE_ANONYMOUS_REASON,
-  smallestAnonymousFactIdr,
+  pickUnboundAnonymousFact,
+  pickUnboundFact,
   unmatchedAnonymousFacts,
   type ProviderRefundIdKind,
 } from "./payment-provider-partial-refund.ts";
@@ -369,6 +370,8 @@ async function transactionLeftIdr(
 type CountedHold = {
   identity: Identity | null;
   providerPaymentRef: string | null;
+  /** 1063 F3: the fact without a refund id a `same_as_counted` hold matched. */
+  matchedFactId?: string;
 };
 
 /**
@@ -602,12 +605,17 @@ async function countHold(
         // is left of the transaction: matched against the smallest such refund
         // (restrictive: never too little on the books).
         if (unmatched === 0) throw noAnonymousToMatch();
-        const matchedIdr = await smallestAnonymousFactIdr(
+        const matchedFact = await pickUnboundAnonymousFact(
           tx,
           tenantId,
           intent.id,
           providerPaymentRef,
+          hold.amountIdr,
         );
+        // `unmatched > 0` counts facts net of older bindless matches: with no
+        // fact to bind, nothing is left to be the same money.
+        if (matchedFact === null) throw noAnonymousToMatch();
+        const matchedIdr = matchedFact.amountIdr;
         const left = await transactionLeftIdr(
           tx,
           tenantId,
@@ -627,7 +635,11 @@ async function countHold(
           if (!(await rowOf("synthetic_hold", hold.id, providerPaymentRef)))
             throw notRecorded();
         }
-        return { identity, providerPaymentRef };
+        return {
+          identity,
+          providerPaymentRef,
+          matchedFactId: matchedFact.id,
+        };
       }
       counted.identity = identity;
     } else if (identity === "same_as_counted") throw noAnonymousToMatch();
@@ -652,13 +664,24 @@ async function countHold(
         // The same money as a refund on record: what the hold names beyond
         // the smallest such refund is booked (AV-P1), at most what is left.
         if (!booked) throw noAnonymousToMatch();
+        // 1063 P2-1: matched against a fact no other hold is matched to yet
+        // (exact amount first, else the smallest), and bound to it, so one
+        // fact never serves as the base of two differences.
+        const matchedFact = await pickUnboundFact(
+          tx,
+          tenantId,
+          intent.id,
+          providerPaymentRef,
+          hold.amountIdr,
+        );
+        if (matchedFact === null) throw noAnonymousToMatch();
         const left = await transactionLeftIdr(
           tx,
           tenantId,
           intent,
           providerPaymentRef,
         );
-        const rest = Math.min(hold.amountIdr - Number(smallest), left);
+        const rest = Math.min(hold.amountIdr - matchedFact.amountIdr, left);
         if (rest > 0) {
           await record(
             "synthetic_hold",
@@ -670,7 +693,11 @@ async function countHold(
           if (!(await rowOf("synthetic_hold", hold.id, providerPaymentRef)))
             throw notRecorded();
         }
-        return { identity, providerPaymentRef };
+        return {
+          identity,
+          providerPaymentRef,
+          matchedFactId: matchedFact.id,
+        };
       }
       if (identity === "separate") counted.identity = identity;
     }
@@ -835,6 +862,9 @@ export async function resolveRefundReconHold(
             resolution: request.resolution,
             resolutionNote: request.note,
             resolutionIdentity: counted.identity,
+            ...(counted.matchedFactId !== undefined
+              ? { matchedFactId: counted.matchedFactId }
+              : {}),
             // A `same_as_counted` match is counted per transaction: the one it
             // was matched on is stored when the hold did not name it.
             ...(counted.identity === "same_as_counted" &&

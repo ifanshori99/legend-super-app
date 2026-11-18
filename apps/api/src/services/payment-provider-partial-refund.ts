@@ -96,40 +96,91 @@ export const HOLD_TRANSACTION_CONFLICT_REASON =
   "Nomor refund penyedia sudah tercatat di transaksi lain (HOLD_TRANSACTION_CONFLICT)";
 
 /**
- * 1055 AV-P1: the smallest refund of one provider transaction finance counted
- * from a hold without a refund id (0 when none). A report finance says is the
- * same money is matched against it: restrictive, the most of the report is
- * then booked. Read under the intent lock.
+ * 1055 AV-P1, 1063 F3: the refund of one provider transaction finance counted
+ * from a hold without a refund id that a report finance says is the same money
+ * is matched against, or null when none is left. Only a fact no hold is matched
+ * to yet (`refund_recon_holds.matched_fact_id`) qualifies: a fact never serves
+ * as the base of two differences. A fact of exactly the report's amount wins
+ * (no difference to book); else the smallest one (restrictive: the most of the
+ * report is then booked). Read under the intent lock.
  */
-export async function smallestAnonymousFactIdr(
+export async function pickUnboundAnonymousFact(
   tx: Tx,
   tenantId: string,
   intentId: string,
   providerPaymentRef: string,
-): Promise<number> {
+  reportIdr: number,
+): Promise<{ id: string; amountIdr: number } | null> {
+  return pickUnbound(
+    tx,
+    tenantId,
+    intentId,
+    providerPaymentRef,
+    reportIdr,
+    true,
+  );
+}
+
+/**
+ * 1063 P2-1: like `pickUnboundAnonymousFact`, for a hold without a refund id
+ * finance says is the same money as a refund on record: any fact of the
+ * transaction (a provider id's or a counted hold's) no hold is matched to yet.
+ */
+export async function pickUnboundFact(
+  tx: Tx,
+  tenantId: string,
+  intentId: string,
+  providerPaymentRef: string,
+  reportIdr: number,
+): Promise<{ id: string; amountIdr: number } | null> {
+  return pickUnbound(
+    tx,
+    tenantId,
+    intentId,
+    providerPaymentRef,
+    reportIdr,
+    false,
+  );
+}
+
+async function pickUnbound(
+  tx: Tx,
+  tenantId: string,
+  intentId: string,
+  providerPaymentRef: string,
+  reportIdr: number,
+  anonymousOnly: boolean,
+): Promise<{ id: string; amountIdr: number } | null> {
   const { rows } = await tx.execute(sql`SELECT
-      coalesce(min(p.amount_idr), 0)::text AS amount
+      p.id::text AS id, p.amount_idr::text AS amount
     FROM payment_provider_refunds p
-    JOIN refund_recon_holds h
-      ON h.tenant_id = p.tenant_id
-     AND h.payment_intent_id = p.payment_intent_id
-     AND h.id::text = p.provider_refund_id
-     AND h.provider_refund_id IS NULL
     WHERE p.tenant_id = ${tenantId}::uuid
       AND p.payment_intent_id = ${intentId}::uuid
       AND p.provider = ${PROVIDER}
       AND p.provider_payment_ref = ${providerPaymentRef}
-      AND p.refund_id_kind = 'synthetic_hold'`);
-  return Number(rows[0]?.amount ?? 0);
+      AND (NOT ${anonymousOnly}::boolean OR (p.refund_id_kind = 'synthetic_hold'
+        AND EXISTS (SELECT 1 FROM refund_recon_holds h
+          WHERE h.tenant_id = p.tenant_id
+            AND h.payment_intent_id = p.payment_intent_id
+            AND h.id::text = p.provider_refund_id
+            AND h.provider_refund_id IS NULL)))
+      AND NOT EXISTS (SELECT 1 FROM refund_recon_holds m
+        WHERE m.tenant_id = p.tenant_id AND m.matched_fact_id = p.id)
+    ORDER BY (p.amount_idr = ${reportIdr}) DESC, p.amount_idr ASC, p.id ASC
+    LIMIT 1`);
+  const row = rows[0];
+  return row ? { id: String(row.id), amountIdr: Number(row.amount) } : null;
 }
 
 /**
- * 1055 G1: how many refunds of one provider transaction finance counted from a
- * hold without a refund id (`synthetic_hold` facts of such holds) are not yet
- * matched to a report of the provider: minus the holds of that transaction
- * finance closed as `same_as_counted` (each matches one; a hold without a
- * refund id closed so matches none, its own difference is one such refund).
- * `not_this_intent` matches none. Read under the intent lock.
+ * 1055 G1, 1063 F3: how many refunds of one provider transaction finance
+ * counted from a hold without a refund id (`synthetic_hold` facts of such
+ * holds) are not yet matched to a report of the provider: the facts no hold is
+ * bound to (`matched_fact_id`), minus the holds of that transaction closed as
+ * `same_as_counted` before the binding was stored (each matched one; they name
+ * no fact). A hold without a refund id closed so matches none, its own
+ * difference is one such refund. `not_this_intent` matches none. Read under
+ * the intent lock.
  */
 export async function unmatchedAnonymousFacts(
   tx: Tx,
@@ -148,12 +199,15 @@ export async function unmatchedAnonymousFacts(
           AND p.payment_intent_id = ${intentId}::uuid
           AND p.provider = ${PROVIDER}
           AND p.provider_payment_ref = ${providerPaymentRef}
-          AND p.refund_id_kind = 'synthetic_hold')::int AS anonymous,
+          AND p.refund_id_kind = 'synthetic_hold'
+          AND NOT EXISTS (SELECT 1 FROM refund_recon_holds m
+            WHERE m.tenant_id = p.tenant_id AND m.matched_fact_id = p.id))::int AS anonymous,
       (SELECT count(*) FROM refund_recon_holds d
         WHERE d.tenant_id = ${tenantId}::uuid
           AND d.payment_intent_id = ${intentId}::uuid
           AND d.provider_payment_ref = ${providerPaymentRef}
           AND d.provider_refund_id IS NOT NULL
+          AND d.matched_fact_id IS NULL
           AND d.resolution_identity = 'same_as_counted')::int AS matched`);
   return Math.max(
     Number(rows[0]?.anonymous ?? 0) - Number(rows[0]?.matched ?? 0),
@@ -553,10 +607,15 @@ export async function recordProviderRefundInTx(
   // failed refund of ours returned nothing, so it never matches. Only a
   // provider's own refund id can be the echo (a synthetic id is a payment id or
   // a hold id, never a refund reference of ours).
-  const [own] =
+  const ownRows =
     refundIdKind === "provider"
       ? await tx
-          .select({ id: paymentRefunds.id })
+          .select({
+            id: paymentRefunds.id,
+            paymentIntentId: paymentRefunds.paymentIntentId,
+            fundId: paymentRefunds.unallocatedFundId,
+            amountIdr: paymentRefunds.amountIdr,
+          })
           .from(paymentRefunds)
           .where(
             and(
@@ -565,9 +624,64 @@ export async function recordProviderRefundInTx(
               sql`${paymentRefunds.status} <> 'failed'`,
             ),
           )
-          .limit(1)
       : [];
-  if (own) return { status: "own" };
+  if (ownRows.length > 0) {
+    // 1063 F1 (legend-9dh7x): a refund id of ours is the echo only of the
+    // transaction our refund came from. A report that names it for another
+    // transaction (or intent) contradicts our own record: it is never
+    // dismissed as our echo. It is held like any id on record for another
+    // transaction (`HOLD_TRANSACTION_CONFLICT`), which blocks the refund,
+    // approve and payout of every fund of the intent until finance decides.
+    // A source that cannot be proven the same is a conflict too (restrictive).
+    // A hold resolve answers for itself (nothing is counted for an echo).
+    let echo = false;
+    // 1063 P2-2: the echo is also bounded by the amount: what the provider
+    // reports under our refund id may not exceed what we sent under it for
+    // this transaction, else the surplus would never be booked.
+    let echoedIdr = 0;
+    for (const row of ownRows) {
+      if (row.paymentIntentId !== intent.id) continue;
+      let source: string | null = null;
+      if (row.fundId === null) {
+        // An intent-level refund belongs to the intent's primary transaction.
+        source = intent.providerRef;
+      } else {
+        const [fund] = await tx
+          .select({ evidenceId: paymentUnallocatedFunds.evidenceId })
+          .from(paymentUnallocatedFunds)
+          .where(
+            and(
+              eq(paymentUnallocatedFunds.tenantId, tenantId),
+              eq(paymentUnallocatedFunds.id, row.fundId),
+            ),
+          );
+        if (fund?.evidenceId) {
+          const [fundEvidence] = await tx
+            .select({ providerRef: paymentEvidence.providerRef })
+            .from(paymentEvidence)
+            .where(
+              and(
+                eq(paymentEvidence.tenantId, tenantId),
+                eq(paymentEvidence.id, fund.evidenceId),
+              ),
+            );
+          source = fundEvidence?.providerRef ?? null;
+        } else {
+          // A fund without an evidence mapping may hold the intent's own
+          // transaction money (same rule as step 6).
+          source = intent.providerRef;
+        }
+      }
+      if (source !== null && source === providerPaymentRef) {
+        echo = true;
+        echoedIdr += Number(row.amountIdr);
+      }
+    }
+    if (echo && amountIdr <= echoedIdr) return { status: "own" };
+    if (!input.holdResolve)
+      await fileTransactionConflictHold(amountIdr, intent.outletId);
+    return { status: "own" };
+  }
   // A refund of this intent we may have sent whose provider reference we do
   // not know yet: this message may be its echo, so count nothing for now.
   const inFlightRows = await tx

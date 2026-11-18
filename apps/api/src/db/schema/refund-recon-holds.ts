@@ -18,7 +18,7 @@ import {
 import { sql } from "drizzle-orm";
 import { idrColumn, tenantIdColumn } from "../columns.ts";
 import { tenants } from "./platform-org.ts";
-import { paymentIntents } from "./payment.ts";
+import { paymentIntents, paymentProviderRefunds } from "./payment.ts";
 
 /**
  * One row per stored webhook event (unique with the tenant), so a replay, a
@@ -57,6 +57,11 @@ export const refundReconHolds = pgTable(
     // that may be the same money. `same_as_counted`: it is that refund (no new
     // fact; it matches one such fact). `separate`: another refund (booked).
     resolutionIdentity: varchar("resolution_identity", { length: 20 }),
+    // 1063 F3 (legend-flj83): the refund counted from a hold without a refund
+    // id (a `synthetic_hold` fact of `payment_provider_refunds`) a
+    // `same_as_counted` hold was matched to. One fact is matched by one hold
+    // only (unique index), so it can never be the base of a second difference.
+    matchedFactId: uuid("matched_fact_id"),
   },
   (t) => [
     unique("refund_recon_hold_event_key").on(t.tenantId, t.webhookEventId),
@@ -80,6 +85,14 @@ export const refundReconHolds = pgTable(
       )
       .where(sql`${t.providerRefundId} IS NOT NULL`),
     index("refund_recon_hold_intent_idx").on(t.tenantId, t.paymentIntentId),
+    foreignKey({
+      name: "refund_recon_hold_matched_fact_fk",
+      columns: [t.matchedFactId],
+      foreignColumns: [paymentProviderRefunds.id],
+    }),
+    uniqueIndex("refund_recon_hold_matched_fact_key")
+      .on(t.tenantId, t.matchedFactId)
+      .where(sql`${t.matchedFactId} IS NOT NULL`),
     check("refund_recon_hold_amount_check", sql`${t.amountIdr} >= 0`),
     check(
       "refund_recon_hold_resolution_check",
