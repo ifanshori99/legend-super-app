@@ -7407,3 +7407,9 @@ Gerbang:
 - e2e produksi: 18 lulus, 1 skip, 40 dtk. e2e mock penuh (1,0 jam): 1163 lulus, 2 skip, 1 gagal: g6d AUTH-06 menghitung 31 aksi approval, kini 32 (991 menambah `supplier_payment`); spec diperbarui, `legend-g6d.mock.spec.ts` 5/5. AUTH-05 dan TEN-03 (baseline batch85, kartu sz75z) kini lulus berkat `perbaiki-test-mock-e2e-m1`. 14 spec 988 (`Rp\s?`) lulus.
 
 Subagent: 0 (thread ini tidak memanggil subagent di batch86; sesi sejak awal: 6), pemegang `heavy`: thread ini. Biaya sesi (session-usage, kumulatif batch85+86): utama 5886k, subagent 499k; selisih batch86 sekitar utama 3123k, subagent 44k.
+
+## 1042 W3b satu jalur refund per pesanan (legend-ggv6d, 18 Nov)
+
+Sudah: pesanan hanya boleh punya SATU dari refund kasir / void (cloud+edge) / refund manual. Celah yang ditutup (commit eab583b4f, cabang ghostex/d8e5216b): (G1) refund manual setelah void (cloud, edge, atau event edge `order.voided` yang diparkir di `edge_deferred_events`) ditolak 409; (G2) void edge ditolak `manual_refund_exists` bila ada refund manual hidup, dan mengunci baris `orders` FOR UPDATE agar serial dengan refund manual/kasir. Refund kasir dan void cloud sudah menolak refund manual (980).
+Bukti: `single-refund-lane-1042.test.ts` 33 tes (dua urutan, bersamaan, replay edge, tamu tak dibayar lebih, tenant/outlet lain); gagal-dulu: 13 merah di kode lama; 12 berkas terkait 240/240; eslint+prettier hijau; tsc API hijau; db:generate kosong; tanpa migrasi.
+Keputusan terbuka: F2 refund manual atas pesanan hasil ingest edge diizinkan (refund kasir/void menolaknya); F3 void edge tidak memeriksa refund ORD-09 `payment_refunds` (wilayah 1035).
