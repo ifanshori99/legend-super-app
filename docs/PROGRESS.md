@@ -2049,3 +2049,4 @@ Langkah berikut CTO baru:
   - Tenggat founder: kode beres akhir 19 Nov; 20 Nov tinggal eksternal/kredensial (bd memory founder-deadline-20nov). Actions US$0 (founder-actions-budget).
   - Cron dibuat ulang (bd memory cto-crons): push :07, akun mati :37, retro 43 1,4,...,22, Q13.
   - Tindak lanjut: legend-a37uv; 6 kartu 1083 dilewati; deployment.md:288 basi; retro catatan ping antara.
+- 20:34 CTO: G3hkz 1097 WIP 5c5106f0b (4 SQL gerbang + test) belum dites: setup antre heavy (jalur 2 tertutup swap ~2,8 GB, full run batch90 2j36m). Keputusan: ofu02 tanpa backfill otomatis rilis 1 (info, finance manual); 9bfh7 tetap block ketat + architect ulang; 0go0p cocokkan dengan bd. Thread lanjut antre.
