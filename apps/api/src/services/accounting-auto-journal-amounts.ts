@@ -58,7 +58,7 @@
 // consumption.
 
 import { createHash } from "node:crypto";
-import { and, asc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   AccountingError,
