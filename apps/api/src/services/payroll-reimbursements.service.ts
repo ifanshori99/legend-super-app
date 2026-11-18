@@ -51,6 +51,7 @@ import {
   REIMBURSEMENT_BACKDATE_DAYS,
   reimbursementIdSchema,
   reimbursementLimitFor,
+  reimbursementPaid,
   reimbursementSchema,
   reimbursementStatusSchema,
   transitionReimbursement,
@@ -71,6 +72,7 @@ import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { entityLock } from "./accounting-bank-matching.ts";
 import { assertCash1102CoversOutflow } from "./accounting-petty-cash.service.ts";
+import { emitPayrollEvent } from "./payroll-events.ts";
 import { recordAudit } from "./core-audit.ts";
 import {
   auditOutletFor,
@@ -1008,7 +1010,30 @@ export async function payReimbursementCash(
             peekEntityId,
             Number(row.approvedAmountIdr ?? row.amountIdr),
           );
-        return moveClaim(tx, context, actor, now, row, "pay", { paidAt: now });
+        const paid = await moveClaim(tx, context, actor, now, row, "pay", {
+          paidAt: now,
+        });
+        // The cash leaves petty cash (1102): announce it in the same
+        // transaction so the GL consumer posts it and the amount is a pending
+        // credit until then (legend-xf7pt). moveClaim runs once per claim
+        // (status transition plus the idempotency key), so a retry never
+        // announces it twice. A claimant without a legal entity has no 1102.
+        if (peekEntityId !== null)
+          await emitPayrollEvent(tx, context, reimbursementPaid, {
+            aggregateId: row.id,
+            actor: { type: "user", id: actor },
+            payload: {
+              reimbursementId: row.id,
+              employeeId: row.employeeId,
+              categoryId: row.categoryId,
+              amountIdr: Number(row.approvedAmountIdr ?? row.amountIdr),
+              payout: "cash",
+              payrollRunId: null,
+              paidAt: now.toISOString(),
+            },
+            now,
+          });
+        return paid;
       },
     );
   });

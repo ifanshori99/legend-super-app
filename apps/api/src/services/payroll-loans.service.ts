@@ -43,6 +43,7 @@ import {
   decideEmployeeLoan as decideEmployeeLoanEndpoint,
   employeeLoanIdSchema,
   disburseEmployeeLoan as disburseEmployeeLoanEndpoint,
+  employeeLoanDisbursed,
   employeeLoanSchema,
   listEmployeeLoans as listEmployeeLoansEndpoint,
   listMyLoans as listMyLoansEndpoint,
@@ -67,6 +68,7 @@ import { hrisOffboardings } from "../db/schema/hris-lifecycle.ts";
 import { withTenant } from "../db/tenant.ts";
 import { openPayrollAmount } from "../lib/payroll-sealed.ts";
 import { entityLock } from "./accounting-bank-matching.ts";
+import { emitPayrollEvent } from "./payroll-events.ts";
 import { assertCash1102CoversOutflow } from "./accounting-petty-cash.service.ts";
 import { recordAudit } from "./core-audit.ts";
 import { cursorPair, notFound } from "./hris-access.ts";
@@ -696,7 +698,36 @@ export async function disburseEmployeeLoan(
             peekEntityId,
             Number(row.principalIdr),
           );
-        return applyTransition(tx, context, actor, row, "disburse", now);
+        const disbursed = await applyTransition(
+          tx,
+          context,
+          actor,
+          row,
+          "disburse",
+          now,
+        );
+        // The cash leaves petty cash (1102): announce it in the same
+        // transaction so the GL consumer posts Dr employee receivable / Cr
+        // 1102 and the amount is a pending credit until then (legend-xf7pt).
+        // The transition above runs once per loan (status guard plus the
+        // idempotency key), so a retry never announces it twice. A borrower
+        // without a legal entity has no 1102 to credit.
+        if (peekEntityId !== null)
+          await emitPayrollEvent(tx, context, employeeLoanDisbursed, {
+            aggregateId: row.id,
+            actor: { type: "user", id: actor },
+            payload: {
+              employeeLoanId: row.id,
+              employeeId: row.employeeId,
+              legalEntityId: peekEntityId,
+              principalIdr: Number(row.principalIdr),
+              disbursedVia: "cash",
+              disbursedBy: actor,
+              disbursedAt: now.toISOString(),
+            },
+            now,
+          });
+        return disbursed;
       },
     );
   });

@@ -57,9 +57,16 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ROLE_TEMPLATES } from "@starter/shared/access";
 import { tenantIdSchema } from "@starter/shared/core";
 import { establishTenantContext } from "@starter/shared/core/server";
+import {
+  employeeLoanDisbursed,
+  reimbursementPaid,
+} from "@starter/shared/hris/payroll";
 import { approvalResolvedEvent } from "@starter/shared/identity";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
+import { db } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
+import { deliverPayrollGlEvent } from "../services/payroll-gl-consumer.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import { decideApprovalRequest } from "../services/platform-approval.service.ts";
@@ -650,8 +657,7 @@ describe("swn0m cash kasbon disbursement respects the available 1102 cash", () =
     await restoreBaseline();
   }, 90_000);
 
-  // Blocked by legend-xf7pt: the kasbon / reimbursement services never emit the pending-credit event at this base.
-  it.skip("[swn0m-loan-counts-as-pending] a disbursed cash kasbon is a pending 1102 credit: it leaves an employee_loan.disbursed event, and one rupiah more is then refused", async () => {
+  it("[swn0m-loan-counts-as-pending] a disbursed cash kasbon is a pending 1102 credit: it leaves an employee_loan.disbursed event, and one rupiah more is then refused", async () => {
     await drain();
     await addCash(100_000);
     await reserve(70_000); // available 30.000
@@ -745,8 +751,7 @@ describe("swn0m cash reimbursement payment respects the available 1102 cash", ()
     await restoreBaseline();
   }, 90_000);
 
-  // Blocked by legend-xf7pt: the kasbon / reimbursement services never emit the pending-credit event at this base.
-  it.skip("[swn0m-reimb-counts-as-pending] a paid cash claim is a pending 1102 credit: it leaves a reimbursement.paid event, and Rp10 more is then refused", async () => {
+  it("[swn0m-reimb-counts-as-pending] a paid cash claim is a pending 1102 credit: it leaves a reimbursement.paid event, and Rp10 more is then refused", async () => {
     await drain();
     await addCash(100_000);
     await reserve(70_000); // available 30.000
@@ -792,8 +797,7 @@ describe("swn0m cash reimbursement payment respects the available 1102 cash", ()
 // ---- races ---------------------------------------------------------------------------
 
 describe("swn0m concurrent claims on the same 1102 cash", () => {
-  // Blocked by legend-xf7pt: the kasbon / reimbursement services never emit the pending-credit event at this base.
-  it.skip("[swn0m-race-loan-vs-purchase] a cash kasbon disbursement and a petty purchase that each fit alone but not together: exactly one gets the cash, the other a business refusal, 1102 never negative, no deadlock", async () => {
+  it("[swn0m-race-loan-vs-purchase] a cash kasbon disbursement and a petty purchase that each fit alone but not together: exactly one gets the cash, the other a business refusal, 1102 never negative, no deadlock", async () => {
     for (let round = 0; round < 3; round++) {
       const shop = await crowdedScene();
       const loan = await seedLoan(await makeEmployee(), 100_000);
@@ -828,8 +832,7 @@ describe("swn0m concurrent claims on the same 1102 cash", () => {
     }
   }, 180_000);
 
-  // Blocked by legend-xf7pt: the kasbon / reimbursement services never emit the pending-credit event at this base.
-  it.skip("[swn0m-race-reimb-vs-purchase] a cash reimbursement payment and a petty purchase that each fit alone but not together: exactly one gets the cash, the other a business refusal, 1102 never negative, no deadlock", async () => {
+  it("[swn0m-race-reimb-vs-purchase] a cash reimbursement payment and a petty purchase that each fit alone but not together: exactly one gets the cash, the other a business refusal, 1102 never negative, no deadlock", async () => {
     for (let round = 0; round < 3; round++) {
       const shop = await crowdedScene();
       const claim = await seedClaim(await makeEmployee(), 100_000);
@@ -863,6 +866,209 @@ describe("swn0m concurrent claims on the same 1102 cash", () => {
       ).toBeGreaterThanOrEqual(0);
     }
   }, 180_000);
+});
+
+// ---- 2b. legend-xf7pt: exactly one outbox event and one journal per payment ---------
+//
+// Assumptions: a replay (same idempotencyKey) returns the stored response with
+// status 200 and the same body even though the first payment already consumed
+// every rupiah of the funded cash (so the replay must not be re-judged by the
+// 1102 guard). "One status change" is read as: the row stays `disbursed` / `paid`
+// and its disbursed_at / paid_at is not rewritten by the replay. The GL journal
+// is posted by delivering the real outbox event to the GL consumer, twice.
+
+async function disburseWithKey(
+  loanId: string,
+  principal: number,
+  idempotencyKey: string,
+): Promise<Res> {
+  const res = await hr.client
+    .post(`${LOANS}/${loanId}/disburse`)
+    .set(originHeader)
+    .send({ idempotencyKey });
+  if (res.status === 200) paidAmounts.set(loanId, principal);
+  return res;
+}
+
+async function payClaimWithKey(
+  claimId: string,
+  amount: number,
+  idempotencyKey: string,
+): Promise<Res> {
+  const res = await approver.client
+    .post(`${CLAIMS}/${claimId}/pay`)
+    .set(originHeader)
+    .send({ idempotencyKey });
+  if (res.status === 200) paidAmounts.set(claimId, amount);
+  return res;
+}
+
+async function stampOf(table: "employee_loans" | "reimbursements", id: string) {
+  const column = table === "employee_loans" ? "disbursed_at" : "paid_at";
+  const { rows } = await kitOwner.query<{ stamp: string | null }>(
+    `SELECT ${column}::text AS stamp FROM ${table} WHERE tenant_id = $1 AND id = $2`,
+    [tenantId, id],
+  );
+  return rows[0]!.stamp;
+}
+
+/** The one outbox event of this name for this aggregate, as stored. */
+async function outboxEventOf(name: string, id: string): Promise<unknown> {
+  const { rows } = await kitOwner.query<{ event: unknown }>(
+    `SELECT event FROM domain_event_outbox
+      WHERE tenant_id = $1 AND event->>'name' = $2 AND event::text LIKE '%' || $3 || '%'`,
+    [tenantId, name, id],
+  );
+  expect(rows, `exactly one ${name} outbox event`).toHaveLength(1);
+  return rows[0]!.event;
+}
+
+/** What the worker does after a delivery: the outbox row leaves `pending`. */
+async function markDelivered(name: string, id: string) {
+  await kitOwner.query(
+    `UPDATE domain_event_outbox SET status = 'delivered', delivered_at = now()
+      WHERE tenant_id = $1 AND event->>'name' = $2 AND event::text LIKE '%' || $3 || '%'`,
+    [tenantId, name, id],
+  );
+}
+
+/** Delivers an outbox event to the GL consumer the way the worker does. */
+function deliverToGl(event: unknown) {
+  return withTenant(db, W.scope(), (tx) =>
+    deliverPayrollGlEvent(
+      W.scope(),
+      event as Parameters<typeof deliverPayrollGlEvent>[1],
+      tx,
+      new Date(),
+    ),
+  );
+}
+
+/** Makes sure the entity maps `role` to its account `code` (setup only). */
+async function ensureMapping(role: string, code: string) {
+  const existing = await kitOwner.query(
+    "SELECT 1 FROM account_mappings WHERE tenant_id = $1 AND legal_entity_id = $2 AND role = $3",
+    [tenantId, W.entityId(), role],
+  );
+  if (existing.rows.length > 0) return;
+  const account = await kitOwner.query<{ id: string }>(
+    "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND legal_entity_id = $2 AND code = $3",
+    [tenantId, W.entityId(), code],
+  );
+  expect(account.rows, `premise: account ${code} exists`).toHaveLength(1);
+  await kitOwner.query(
+    `INSERT INTO account_mappings (tenant_id, legal_entity_id, role, account_id)
+     VALUES ($1, $2, $3, $4)`,
+    [tenantId, W.entityId(), role, account.rows[0]!.id],
+  );
+}
+
+describe("xf7pt one outbox event and one GL journal per cash payment", () => {
+  it("[xf7pt-loan-replay-one-event] disbursing the same kasbon twice with the same idempotency key gives the same response and exactly one employee_loan.disbursed event", async () => {
+    await drain();
+    await addCash(40_000);
+    const loan = await seedLoan(await makeEmployee(), 40_000);
+    const idempotencyKey = `payout-gl-swn0m-${randomUUID()}`;
+
+    const first = await disburseWithKey(loan, 40_000, idempotencyKey);
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    const stamp = await stampOf("employee_loans", loan);
+    const second = await disburseWithKey(loan, 40_000, idempotencyKey);
+
+    expect(second.status, JSON.stringify(second.body)).toBe(200);
+    expect(second.body).toEqual(first.body);
+    expect(await loanState(loan)).toEqual({
+      status: "disbursed",
+      disbursed: true,
+      events: 1,
+    });
+    expect(
+      await stampOf("employee_loans", loan),
+      "no second status change",
+    ).toBe(stamp);
+  }, 90_000);
+
+  it("[xf7pt-reimb-replay-one-event] paying the same claim twice with the same idempotency key gives the same response and exactly one reimbursement.paid event", async () => {
+    await drain();
+    await addCash(40_000);
+    const claim = await seedClaim(await makeEmployee(), 40_000);
+    const idempotencyKey = `payout-gl-swn0m-${randomUUID()}`;
+
+    const first = await payClaimWithKey(claim, 40_000, idempotencyKey);
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    const stamp = await stampOf("reimbursements", claim);
+    const second = await payClaimWithKey(claim, 40_000, idempotencyKey);
+
+    expect(second.status, JSON.stringify(second.body)).toBe(200);
+    expect(second.body).toEqual(first.body);
+    expect(await claimState(claim)).toEqual({
+      status: "paid",
+      paid: true,
+      events: 1,
+    });
+    expect(
+      await stampOf("reimbursements", claim),
+      "no second status change",
+    ).toBe(stamp);
+  }, 90_000);
+
+  it("[xf7pt-loan-journal-once] the real employee_loan.disbursed event delivered to the GL twice posts exactly one journal payroll-gl:loan:<id>, Dr 1204 / Cr 1102 for the principal", async () => {
+    await drain();
+    await addCash(40_000);
+    await ensureMapping("employee_receivable", "1204");
+    const loan = await seedLoan(await makeEmployee(), 40_000);
+    expect((await disburse(loan, 40_000)).status).toBe(200);
+    const event = employeeLoanDisbursed.envelopeSchema.parse(
+      await outboxEventOf("employee_loan.disbursed", loan),
+    );
+    const glBefore = await glBalance();
+
+    const first = await deliverToGl(event);
+    const second = await deliverToGl(event);
+    await markDelivered("employee_loan.disbursed", loan);
+
+    expect(first.status).toBe("posted");
+    expect(second).toEqual(first);
+    const gl = `payroll-gl:loan:${loan}`;
+    expect(await W.countJournals(gl), "exactly one journal").toBe(1);
+    expect(await W.journalByKey(gl)).toEqual({
+      "1204": { debit: 40_000, credit: 0 },
+      "1102": { debit: 0, credit: 40_000 },
+    });
+    expect(await glBalance(), "1102 credited once").toBe(glBefore - 40_000);
+    // The journal now holds the credit and the event is delivered: it no longer
+    // counts as a pending credit.
+    paidAmounts.delete(loan);
+    expect(await available()).toBe(0);
+  }, 90_000);
+
+  it("[xf7pt-reimb-journal-once] the real reimbursement.paid event of a cash claim delivered to the GL twice posts exactly one journal payroll-gl:reimbursement:<id>, Dr 6110 / Cr 1102 on the employee's entity", async () => {
+    await drain();
+    await addCash(40_000);
+    const claim = await seedClaim(await makeEmployee(), 40_000);
+    const paid = await payClaim(claim, 40_000);
+    expect(paid.status, JSON.stringify(paid.body)).toBe(200);
+    const event = reimbursementPaid.envelopeSchema.parse(
+      await outboxEventOf("reimbursement.paid", claim),
+    );
+    const glBefore = await glBalance();
+
+    const first = await deliverToGl(event);
+    const second = await deliverToGl(event);
+    await markDelivered("reimbursement.paid", claim);
+
+    expect(first.status).toBe("posted");
+    expect(second).toEqual(first);
+    const gl = `payroll-gl:reimbursement:${claim}`;
+    expect(await W.countJournals(gl), "exactly one journal").toBe(1);
+    expect(await W.journalByKey(gl)).toEqual({
+      "6110": { debit: 40_000, credit: 0 },
+      "1102": { debit: 0, credit: 40_000 },
+    });
+    expect(await glBalance(), "1102 credited once").toBe(glBefore - 40_000);
+    paidAmounts.delete(claim);
+    expect(await available()).toBe(0);
+  }, 90_000);
 });
 
 // ---- 3. supplier payment on a bank account that is GL 1102 -------------------------
