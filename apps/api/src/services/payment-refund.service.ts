@@ -4058,6 +4058,12 @@ export type RefundProviderRefusal = {
     "reference_mismatch" | "amount_mismatch" | "contradiction" | "not_awaiting";
   readonly refund: Refund;
   readonly intent: Intent;
+  /**
+   * 1072 I9: R was really sent to the provider (`maybeSentOf`, not settled by
+   * hand), read from the locked row. Only then can a smaller provider success
+   * be an echo of it.
+   */
+  readonly sentToProvider: boolean;
 };
 
 /**
@@ -4110,7 +4116,14 @@ export async function applyRefundProviderUpdate(
       kind: RefundProviderRefusal["kind"],
       message: string,
     ) => {
-      await onRefusedInTx?.(tx, { kind, refund, intent: locked.intent });
+      await onRefusedInTx?.(tx, {
+        kind,
+        refund,
+        intent: locked.intent,
+        sentToProvider:
+          maybeSentOf(refund) &&
+          refund.lastPayoutError !== SETTLED_OUTSIDE_PROVIDER,
+      });
       return message;
     };
     // Never re-point a refund at another provider transaction.

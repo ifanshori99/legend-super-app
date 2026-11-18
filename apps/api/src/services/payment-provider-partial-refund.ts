@@ -63,6 +63,11 @@ import { appendPaymentEvent } from "./payment-support.ts";
 import { HOLD_TRANSACTION_CONFLICT_REASON } from "./refund-hold-reasons.ts";
 import type { Tx } from "./permission-resolver.ts";
 
+/** `payment_refunds.last_payout_error` of a refund finance settled by hand
+ * (`SETTLED_OUTSIDE_PROVIDER` in payment-refund.service.ts, not imported here
+ * to keep this module free of that import cycle). */
+const SETTLED_BY_HAND = "SETTLED_OUTSIDE_PROVIDER";
+
 const PROVIDER = "doit";
 
 /**
@@ -606,6 +611,7 @@ export async function recordProviderRefundInTx(
             paymentIntentId: paymentRefunds.paymentIntentId,
             fundId: paymentRefunds.unallocatedFundId,
             amountIdr: paymentRefunds.amountIdr,
+            lastPayoutError: paymentRefunds.lastPayoutError,
           })
           .from(paymentRefunds)
           .where(
@@ -632,6 +638,10 @@ export async function recordProviderRefundInTx(
     let echoedIdr = 0;
     for (const row of ownRows) {
       if (row.paymentIntentId !== intent.id) continue;
+      // 1072 I9: a refund finance settled by hand is paid once already, so a
+      // provider report under its id is no echo of it (a second payment): it
+      // falls to the transaction conflict hold below.
+      if (row.lastPayoutError === SETTLED_BY_HAND) continue;
       let source: string | null = null;
       if (row.fundId === null) {
         // An intent-level refund belongs to the intent's primary transaction.
@@ -736,7 +746,8 @@ export async function recordProviderRefundInTx(
         (r.unallocated_fund_id IS NOT NULL) AS fund,
         (r.provider_ref IS NOT NULL OR r.payout_attempts > 0
           OR r.payout_pending_polls > 0
-          OR r.payout_claim_token IS NOT NULL) AS sent
+          OR r.payout_claim_token IS NOT NULL) AS sent,
+        (r.last_payout_error = ${SETTLED_BY_HAND}) AS by_hand
       FROM payment_refunds r
       WHERE r.tenant_id = ${tenantId}::uuid
         AND r.payment_intent_id = ${intent.id}::uuid
@@ -772,6 +783,15 @@ export async function recordProviderRefundInTx(
       (sum, row) => sum + Number(row.amount),
       0,
     );
+    // 1072 I9: a refund finance settled by hand is paid already; the provider
+    // reporting the whole transaction refunded may have paid it as well. It
+    // stays counted as ours (nothing is booked twice), but the transaction is
+    // held for what was paid by hand until finance decides.
+    const byHandIdr = completed
+      .filter((row) => row.by_hand === true)
+      .reduce((sum, row) => sum + Number(row.amount), 0);
+    if (byHandIdr > 0 && !input.holdResolve)
+      await fileTransactionConflictHold(byHandIdr, intent.outletId);
     // A refund of the bill still on its way (not a parked fund's, whose amount
     // is fixed): the provider's status may be its echo and the amount is not
     // final. Write nothing; the caller asks again later (when the retry window
@@ -984,6 +1004,40 @@ export async function recordProviderRefundInTx(
       }
     }
     return { status: "duplicate" };
+  }
+
+  // 1072 I9 (K1): a refund of ours still approved and never sent, on this very
+  // transaction (same source rule as step 3), while the provider reports a
+  // success: the customer may already have the money, so paying R by hand would
+  // pay twice. The fact stays booked; the hold keeps settle, refunds and credit
+  // stopped until finance decides. A replay never reaches here (empty insert).
+  if (!input.holdResolve) {
+    const { rows: unsent } = await tx.execute(sql`SELECT r.id
+      FROM payment_refunds r
+      WHERE r.tenant_id = ${tenantId}::uuid
+        AND r.payment_intent_id = ${intent.id}::uuid
+        AND r.status = 'approved'
+        AND r.provider_ref IS NULL
+        AND r.payout_attempts = 0
+        AND r.payout_pending_polls = 0
+        AND r.payout_claim_token IS NULL
+        AND ((r.unallocated_fund_id IS NULL
+            AND ${intent.providerRef ?? null}::text
+              IS NOT DISTINCT FROM ${providerPaymentRef}::text)
+          OR EXISTS (SELECT 1 FROM payment_unallocated_funds f
+            WHERE f.tenant_id = r.tenant_id
+              AND f.id = r.unallocated_fund_id
+              AND ((f.evidence_id IS NULL
+                  AND ${intent.providerRef ?? null}::text
+                    IS NOT DISTINCT FROM ${providerPaymentRef}::text)
+                OR EXISTS (SELECT 1 FROM payment_evidence e
+                  WHERE e.tenant_id = f.tenant_id
+                    AND e.id = f.evidence_id
+                    AND e.provider = ${PROVIDER}
+                    AND e.provider_ref = ${providerPaymentRef}))))
+      LIMIT 1`);
+    if (unsent.length > 0)
+      await fileTransactionConflictHold(amountIdr, intent.outletId);
   }
 
   // Credit already moved to sessions (closed ones too) may now exceed the

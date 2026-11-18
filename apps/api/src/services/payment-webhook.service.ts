@@ -1877,12 +1877,14 @@ async function processRefundEvent(
         },
         now,
         async (tx, refusal) => {
-          // One rule (I2): a smaller reported amount stays an echo; anything
-          // else refused here is no echo of this refund.
+          // One rule (I2, I9): a smaller reported amount stays an echo only of
+          // a refund already sent to the provider; anything else refused here
+          // is no echo of this refund.
           if (
             status !== "succeeded" ||
             match.kind === "payment_object" ||
             (refusal.kind === "amount_mismatch" &&
+              refusal.sentToProvider &&
               facts.amountIdr !== undefined &&
               facts.amountIdr < Number(refusal.refund.amountIdr))
           )

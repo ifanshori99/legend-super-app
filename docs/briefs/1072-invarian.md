@@ -112,6 +112,15 @@ Invarian: sukses bertanda tangan yang cocok ke R (bukan `payment_object`) tetapi
   - Lanjutan semua kasus di atas: refund 70k, settle R2, dan kredit DP tertahan; replay satu hold; tanpa event jurnal.
   - Kontrol: echo X/T 30k sah, `payment_object` fallback, dan status failed Y: tanpa hold.
 
+### I9. Sukses lebih kecil hanya echo bila R sudah dikirim (legend-3aign)
+
+Invarian: sukses penyedia yang cocok ke R dengan nominal lebih kecil dari R adalah echo sah hanya bila R sudah kami kirim ke penyedia: `maybeSentOf(refund)` (payoutAttempts > 0, payoutPendingPolls > 0, atau providerRef ada) DAN bukan settled-outside (`lastPayoutError !== SETTLED_OUTSIDE_PROVIDER`). R approved yang belum dikirim (antrean manual Q45) + sukses penyedia berarti pelanggan sudah dapat uang; finance membayar R lagi akan bayar dobel. Maka sukses itu wajib menjadi hold `HOLD_TRANSACTION_CONFLICT`. R completed lewat penyedia dihitung terkirim.
+
+- Pelanggar: `payment-webhook.service.ts` callback `onRefusedInTx` (pengecualian `amount_mismatch` + nominal < R berlaku tanpa melihat apakah R terkirim).
+- Fix: `RefundProviderRefusal.sentToProvider` (`payment-refund.service.ts`) dihitung dari baris R terkunci di updater (`maybeSentOf(refund) && lastPayoutError !== SETTLED_OUTSIDE_PROVIDER`). Pengecualian echo di callback webhook hanya berlaku bila `refusal.sentToProvider`. Tanpa migrasi.
+- Recorder (`payment-provider-partial-refund.ts`) memakai syarat yang sama, dengan tiga perubahan (K1-K3). K1: sesudah fact sukses dibukukan, bila intent punya refund `approved` yang belum terkirim (`provider_ref` kosong, `payout_attempts = 0`, `payout_pending_polls = 0`, `payout_claim_token` kosong) pada transaksi sumber yang sama, dipasang hold `HOLD_TRANSACTION_CONFLICT` sebesar laporan; fact tetap dibukukan, bukan pass-through. K2: echo langkah 3 (id refund penyedia = `provider_ref` refund kita) melewati baris `SETTLED_OUTSIDE_PROVIDER`, jadi laporan itu jatuh ke hold konflik transaksi. K3: pada `synthetic_full`, refund settled-outside yang completed tetap dihitung milik kita (tidak dibukukan dua kali), tetapi transaksi ditahan sebesar nominal yang dibayar manual.
+- Test (test-writer): `apps/api/src/test/refund-1075-r4-unsent-smaller-success.test.ts`.
+
 ### Risiko dan urutan
 
 - Hold I8 beralasan CONFLICT, jadi hanya `not_this_intent` yang bisa menutupnya. Bila Y ternyata refund nyata, dana tertahan sampai keputusan finance (restriktif, sesuai CTO). Perlu satu baris di runbook.

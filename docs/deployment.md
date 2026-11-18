@@ -685,14 +685,21 @@ switch on again only after a clean refund second-opinion review and a founder
 decision. The API and the worker log a startup warning when it is on.
 
 While the switch is off, settle in Legend first, then refund in the provider
-dashboard (1072 B-1). If the provider report arrives before the settle, it is
-recorded as a foreign refund and the settle can then book the same refund a
-second time (the books err on the restrictive side). If it arrives after the
-settle, it is recorded as a conflict without a fact.
+dashboard (1072 B-1). If the provider report arrives before the settle (wrong
+order), it is still recorded as a fact, and the transaction is held with a
+conflict hold while the refund is still waiting, so the settle is refused until
+finance decides (it is no longer counted twice). If a partial report arrives
+after the settle, it is booked as a separate provider refund with no hold (the
+books count the money twice, on the restrictive side); a report of the whole
+transaction after the settle holds the amount paid by hand. For a hold of this kind, `not_this_intent` may be chosen
+once finance has cancelled the waiting refund (when the provider refund is that
+refund), or has made sure the provider refund is a separate one (then settle the
+refund). The fact is already booked, so closing it is safe.
 Counting a recon hold (`count`) is refused while the intent has an `approved`
 refund, and settling is refused while a hold is open (1072 B-2): to count a
 hold, cancel the waiting `approved` refund first. A hold on a transaction
-conflict can only be closed with `not_this_intent`; do not choose it when the
+conflict can only be closed with `not_this_intent`. Outside the wrong-order
+case above (where the fact is already booked), do not choose it when the
 provider report is right (the money would open up without the surplus booked).
 Leave that hold open and the money stays held.
 Since refund round 7 (1075), every signed success matched to our refund that
