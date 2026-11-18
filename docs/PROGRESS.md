@@ -2031,3 +2031,4 @@ Langkah berikut CTO baru:
 - 18:44 CTO: kas c3d90b96b, 5 test lama hijau (test saja). G93wj di-resolve sambil menunggu SO kas ronde 5 (dibuka lagi bila ada temuan).
 - 18:48 CTO: SO kas ronde 5 (G7hhf): 2 P1 (flip DB ke settle_waived tanpa jurnal oleh legend_app; reversal manual jurnal kasbon membuka saldo). Brief 1091 dikirim ke G93wj (migrasi 0691). G7hhf di-resolve.
 - 19:02 CTO: Codex 1083 lapor ws/1083-pembersihan-p3 1cdb33ed4: 3 selesai (ahgg, 9zc3, bvxs3 -> review), 6 dilewati dan kembali open dengan komentar. Reviewer sonnet berjalan. G0trp di-resolve.
+- 19:04 CTO: review 1083: ahgg dan 9zc3 bersih; bvxs3 2 P2 (timeout memutus upload besar, retry) dikembalikan ke G0trp dengan keputusan env default 120s/60s.
