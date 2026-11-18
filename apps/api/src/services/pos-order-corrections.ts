@@ -92,6 +92,7 @@ import {
 import { requestPosRefundGatewayPart } from "./pos-refund-gateway.ts";
 import { refundPosTicketsOfRefundedLines } from "./facility-pos-tickets.ts";
 import {
+  depositRefundedByPosRefund,
   depositRefundedOfOrder,
   depositRefundFactTime,
   requestPosRefundDepositPart,
@@ -1243,16 +1244,28 @@ export async function refundPosOrder(
       // left is cut to it (as the promo payout is capped to what is due);
       // nothing left is refused. Q25 is per item: a refund that names items is
       // also bound by what each named line still holds.
-      if (!promoApplication && recoveryGivenIdr > 0 && !goodsReturnOnly) {
+      if (
+        !promoApplication &&
+        recoveryGivenIdr > 0 &&
+        payout + depositRefundIdr > 0
+      ) {
         const askedIdr = payout + depositRefundIdr;
         payout = Math.min(payout, roomIdr);
         // A deposit order: the line room holds the cash payout and the deposit
         // share together.
         if (requested.length > 0) {
+          const depositOfRefund = await depositRefundedByPosRefund(
+            tx,
+            context,
+            order.id,
+          );
           const lineRoom = lineRoomIdr(
             order,
             allItems,
-            refunds,
+            refunds.map((row) => ({
+              ...row,
+              amountIdr: row.amountIdr + (depositOfRefund.get(row.id) ?? 0),
+            })),
             given,
             requested,
           );
