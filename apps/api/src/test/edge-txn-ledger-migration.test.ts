@@ -37,7 +37,7 @@ import { runMigrations } from "../db/migration-session";
 const apiRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const drizzleDir = join(apiRoot, "drizzle");
 const adminUrl = process.env.STARTER_TEST_DATABASE_URL;
-const TAG_PREFIX = "0684_";
+const TAG_PREFIX = "0484_";
 
 type Journal = {
   entries: { idx: number; when: number; tag: string }[];
@@ -83,7 +83,7 @@ async function waitForNoSessions(admin: Pool, db: string) {
 
 // A copy of drizzle/ holding every migration before 0484 (the journal is cut at
 // the 0484 entry; its SQL file is not copied).
-function copyFolderWithout0684(workDir: string): string {
+function copyFolderWithout0484(workDir: string): string {
   const journal = readJournal();
   const kept = journal.entries.filter(
     (entry) => !entry.tag.startsWith(TAG_PREFIX),
@@ -278,7 +278,7 @@ describe("legend-kai migration 0484 baseline backfill run by a non-superuser tab
       max: 1,
     });
     workDir = mkdtempSync(join(tmpdir(), "legend-edge-ledger-owner-"));
-    await runMigrations(owner, copyFolderWithout0684(workDir), {
+    await runMigrations(owner, copyFolderWithout0484(workDir), {
       lockTimeout: "10s",
       statementTimeout: "0",
     });
@@ -483,7 +483,7 @@ describe("legend-kai migration 0484 baseline backfill run by a non-superuser tab
   it("migration 0484 is registered in the journal after every earlier migration", () => {
     const entries = readJournal().entries;
     const entry = entries.find((item) => item.tag.startsWith(TAG_PREFIX));
-    expect(entry?.tag).toBe("0684_edge_txn_ledger");
+    expect(entry?.tag).toBe("0484_edge_txn_ledger");
     // Drizzle skips a migration whose `when` is not above the last applied
     // one, so this entry must out-rank every entry before it. Later
     // migrations may legitimately out-rank it, so it is not required to be
