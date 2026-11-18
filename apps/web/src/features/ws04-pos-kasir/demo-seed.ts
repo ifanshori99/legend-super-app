@@ -18,6 +18,18 @@ export const DEMO_SHIFT_ID = "0c0c0001-0000-4000-8000-000000000001";
 export const DEMO_ORDER_ULID = "01JBQ9C0000000000000000048";
 export const DEMO_CODE_ORDER_ULID = "01JBQ9C0000000000000000044";
 
+/**
+ * Facility ticket sold at the POS (brief 1046): a Rp87.500 pool ticket on its
+ * own bill, POS-T001. `?demo=tiket-menunggu` leaves the bill unpaid (ticket
+ * pending); `?demo=tiket-lunas` has it paid (ticket issued, credential not yet
+ * shown). A ticket sold in the mock gets its own order id; these are the fixed
+ * ones for the e2e spec and screenshots.
+ */
+export const DEMO_TICKET_ORDER_ULID = "01JBQ9T0000000000000000001";
+export const DEMO_TICKET_ID = "01JBQ9K0000000000000000001";
+export const TICKET_DEMO_SEEDS = ["tiket-menunggu", "tiket-lunas"] as const;
+export type TicketDemoSeed = (typeof TICKET_DEMO_SEEDS)[number];
+
 export const PAY_DEMO_SEEDS = [
   "baru",
   "split",
@@ -68,6 +80,8 @@ function pick<T extends string>(
 export const payDemoSeed = (raw: string | null) => pick(raw, PAY_DEMO_SEEDS);
 export const shiftDemoSeed = (raw: string | null) =>
   pick(raw, SHIFT_DEMO_SEEDS);
+export const ticketDemoSeed = (raw: string | null) =>
+  pick(raw, TICKET_DEMO_SEEDS);
 export const dayDemoSeed = (raw: string | null) => pick(raw, DAY_DEMO_SEEDS);
 
 /** Orders the demo knows, by canonical id (a ULID alias maps to its uuid). */

@@ -339,7 +339,12 @@ type Order = {
   taxIdr: number;
   roundingIdr: number;
   totalIdr: number;
-  discounts: { id: string; source: string; amountIdr: number }[];
+  discounts: {
+    id: string;
+    source: string;
+    amountIdr: number;
+    voucherCode: string | null;
+  }[];
   tenders: { amountIdr: number; status: string }[];
 };
 
@@ -453,6 +458,7 @@ describe("pos-936 voucher: the server computes the cut and the bill", () => {
     expect(after.discounts[0]).toMatchObject({
       source: "voucher",
       amountIdr: 20_000,
+      voucherCode: code,
     });
     expect(after.serviceChargeIdr).toBe(0);
     // (50.000 - 20.000) x 10% = 3.000; total 33.000.

@@ -41,7 +41,11 @@ import {
 import type { Idr } from "../core/index.ts";
 import { posDiscountThresholdBpSchema } from "../core/money.ts";
 import { posOverrideIdSchema } from "../access/override.ts";
-import { edcTransactionStatusSchema } from "../edc/index.ts";
+import {
+  edcBankSchema,
+  edcMethodSchema,
+  edcTransactionStatusSchema,
+} from "../edc/index.ts";
 import { orderIdSchema } from "../kitchen/schemas.ts";
 import { PICKUP_CODE_PATTERN } from "../kitchen/pickup-code.ts";
 import {
@@ -796,6 +800,8 @@ export const posDiscountSchema = z
     approvedBy: userIdSchema.nullable(),
     approvalRequestId: approvalRequestIdSchema.nullable(),
     overrideId: overrideIdSchema.nullable(),
+    /** 936: the voucher or promo code entered; null for any other source. */
+    voucherCode: z.string().min(1).max(40).nullable(),
     createdAt: isoDateTimeSchema,
   })
   .superRefine((discount, ctx) => {
@@ -1747,6 +1753,12 @@ export const posEdcAttemptSchema = z.strictObject({
   terminalLabel: z.string().nullable(),
   declineReason: z.string().nullable(),
   responseCode: z.string().nullable(),
+  /** 936: the terminal's bank, so a refused request names it. */
+  bank: edcBankSchema.nullable(),
+  /** 936: how the customer paid on the terminal (card or QRIS). */
+  method: edcMethodSchema.nullable(),
+  /** 936: ECR (cashier app drives the terminal) or standalone. */
+  mode: z.enum(["ecr", "standalone"]).nullable(),
   createdAt: isoDateTimeSchema,
   completedAt: isoDateTimeSchema.nullable(),
 });

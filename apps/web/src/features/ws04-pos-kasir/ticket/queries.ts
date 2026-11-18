@@ -2,6 +2,7 @@
 // a cashier who switches outlet must never see another outlet's products.
 import { queryOptions } from "@tanstack/react-query";
 import {
+  fetchOrderTickets,
   fetchTicketProducts,
   fetchTicketSlots,
   searchTicketCustomers,
@@ -14,6 +15,8 @@ export const ticketKeys = {
     ["pos-kasir", outletId, "ticket", "customers", query] as const,
   slots: (outletId: string, facilityId: string, areaId: string) =>
     ["pos-kasir", outletId, "ticket", "slots", facilityId, areaId] as const,
+  orderTickets: (outletId: string, orderId: string) =>
+    ["pos-kasir", outletId, "ticket", "order", orderId] as const,
 };
 
 export function ticketProductsQuery(outletId: string) {
@@ -41,6 +44,20 @@ export function ticketSlotsQuery(
   return queryOptions({
     queryKey: ticketKeys.slots(outletId, facilityId, areaId),
     queryFn: ({ signal }) => fetchTicketSlots({ facilityId, areaId }, signal),
+    staleTime: 0,
+  });
+}
+
+/**
+ * The tickets of one bill. Only the ticket lines (status, slot, line total):
+ * the door credential is never part of a query, it exists only in the
+ * `useIssueTicketCredential` result. Payment moves a ticket to `issued`, so a
+ * cached copy is never trusted.
+ */
+export function orderTicketsQuery(outletId: string, orderId: string) {
+  return queryOptions({
+    queryKey: ticketKeys.orderTickets(outletId, orderId),
+    queryFn: ({ signal }) => fetchOrderTickets(orderId, signal),
     staleTime: 0,
   });
 }

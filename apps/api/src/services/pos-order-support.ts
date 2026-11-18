@@ -41,7 +41,12 @@ import {
   type ScopedTenantContext,
   type UserId,
 } from "@starter/shared/core";
-import { EdcError, edcTransactionStatusSchema } from "@starter/shared/edc";
+import {
+  EdcError,
+  edcBankSchema,
+  edcMethodSchema,
+  edcTransactionStatusSchema,
+} from "@starter/shared/edc";
 import {
   qrOrderErrorHttpStatus,
   qrOrderErrorMessages,
@@ -52,6 +57,7 @@ import {
   PosError,
   posEvents,
   posOrderDetailSchema,
+  posEdcAttemptSchema,
   posOrderSummarySchema,
   voidReasonSchema,
   type PosEventName,
@@ -1274,6 +1280,9 @@ export async function edcAttemptsOf(
       terminalId: edcTransactions.terminalId,
       terminalLabel: paymentEdcTerminals.terminalId,
       responseCode: edcTransactions.responseCode,
+      bank: edcTransactions.bank,
+      method: edcTransactions.method,
+      mode: edcTransactions.mode,
       message: edcTransactions.message,
       createdAt: edcTransactions.createdAt,
       completedAt: edcTransactions.completedAt,
@@ -1305,6 +1314,9 @@ export async function edcAttemptsOf(
     terminalLabel: row.terminalLabel,
     declineReason: row.status === "declined" ? row.message : null,
     responseCode: row.responseCode,
+    bank: edcBankSchema.parse(row.bank),
+    method: edcMethodSchema.parse(row.method),
+    mode: posEdcAttemptSchema.shape.mode.parse(row.mode),
     createdAt: row.createdAt.toISOString(),
     completedAt: iso(row.completedAt),
   }));
@@ -1468,6 +1480,10 @@ export async function orderDetail(
       approvedBy: row.approvedBy,
       approvalRequestId: row.approvalRequestId,
       overrideId: row.overrideId,
+      voucherCode:
+        row.source === "voucher" || row.source === "promo"
+          ? row.promoCode
+          : null,
       createdAt: row.createdAt.toISOString(),
     })),
     receipt,

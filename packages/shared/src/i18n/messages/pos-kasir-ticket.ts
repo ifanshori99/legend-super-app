@@ -62,10 +62,12 @@ export const posKasirTicketMessages = {
     slot: "{from} - {until}",
     sell: "Jual tiket",
     selling: "Menjual...",
+    billHint:
+      "Setelah tiket dijual, kasir lanjut ke layar bayar. Tiket terbit setelah lunas.",
     incomplete: "Pilih tiket, pelanggan, dan waktu dulu.",
     pendingTitle: "Jual tiket belum tersambung ke server",
     pendingHint:
-      "Pembayaran tiket dari kasir belum punya kontrak. Penjualan dikunci supaya tidak ada tiket terbit tanpa uang diterima.",
+      "Penjualan tiket dari kasir sedang dikunci. Hubungi supervisor bila perlu.",
     saleErrorTitle: "Tiket belum terjual",
     saleErrorHint:
       "Belum ada tiket yang terbit. Periksa koneksi dan pilihan, lalu coba jual lagi.",
@@ -90,5 +92,51 @@ export const posKasirTicketMessages = {
     printFailedHint:
       "Periksa printer di kasir, lalu coba cetak lagi. Tiket tetap berlaku.",
     sellAnother: "Jual tiket lain",
+    fallbackName: "Tiket fasilitas",
+    rotated:
+      "Kode baru sudah dibuat. QR dan PIN sebelumnya tidak berlaku lagi.",
+    printNotAvailable:
+      "Printer tidak tersedia. Tunjukkan QR atau PIN dari layar ini.",
+    printHint: "Mencetak membuat QR dan PIN baru. Kode lama tidak berlaku.",
+  },
+  step: {
+    title: "Terbitkan tiket",
+    loading: "Memuat tiket…",
+    errorTitle: "Tiket belum bisa dimuat",
+    notFoundTitle: "Tiket tidak ditemukan",
+    notFoundHint: "Buka lagi dari layar bayar, atau jual tiket baru.",
+    ready: "Tagihan sudah lunas. Tiket siap diterbitkan.",
+    readyHint:
+      "QR dan PIN tampil sekali di layar ini. Menerbitkan lagi membuat kode baru.",
+    issue: "Terbitkan tiket",
+    issuing: "Menerbitkan…",
+    pendingTitle: "Tagihan belum lunas",
+    pendingHint: "Tiket terbit setelah tagihan dibayar lunas.",
+    payLink: "Ke layar bayar",
+    badTitle: "Tiket ini tidak bisa diterbitkan",
+    badHint:
+      "Tiket sudah dibatalkan atau dikembalikan. Jual tiket baru bila perlu.",
+    sellNew: "Jual tiket baru",
+    issueErrorTitle: "Tiket belum terbit",
+    issueErrorHint:
+      "Kode sebelumnya mungkin sudah tidak berlaku. Terbitkan ulang.",
+    errors: {
+      notPaidTitle: "Tagihan belum lunas",
+      notPaidHint: "Selesaikan pembayaran dulu, lalu terbitkan tiket.",
+      holdLapsedTitle: "Waktu tahan tiket habis",
+      holdLapsedHint: "Tiket tidak bisa diterbitkan lagi. Hubungi supervisor.",
+      needsCloudTitle: "Kasir belum tersambung ke server",
+      needsCloudHint: "Sambungkan kasir ke internet, lalu coba lagi.",
+      invalidTitle: "Tiket tidak bisa diterbitkan",
+      invalidHint:
+        "Status tiket sudah berubah. Muat ulang, atau hubungi supervisor.",
+      notSellableTitle: "Tiket ini tidak dijual di kasir",
+      notSellableHint: "Hubungi supervisor untuk mengatur produknya.",
+    },
+  },
+  paid: {
+    title: "Tiket siap diterbitkan",
+    hint: "{name} sudah lunas. Terbitkan untuk menampilkan QR dan PIN.",
+    link: "Terbitkan tiket",
   },
 };

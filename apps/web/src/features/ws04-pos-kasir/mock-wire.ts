@@ -138,6 +138,49 @@ export function receiptWire(order: EngineOrder) {
   };
 }
 
+const EDC_BANK_WIRE: Record<string, "bca" | "bni"> = {
+  "Bank A": "bca",
+  "Bank B": "bni",
+};
+const EDC_STATUS_WIRE = {
+  waiting: "pending",
+  unknown: "unknown",
+  confirmed: "approved",
+  declined: "declined",
+  failed: "failed",
+  expired: "failed",
+  cancelled: "cancelled",
+} as const;
+
+/** The latest 5 EDC requests of the bill, newest first (936). */
+function edcAttemptsWire(order: EngineOrder) {
+  return order.attempts
+    .filter((attempt) => attempt.method === "edc" && attempt.edc)
+    .slice(-5)
+    .reverse()
+    .map((attempt) => {
+      const edc = attempt.edc!;
+      return {
+        id: attempt.id,
+        status: EDC_STATUS_WIRE[attempt.status],
+        amountIdr: attempt.amountIdr,
+        terminalId: `00000000-0000-4000-8000-${pad(Number(edc.terminalId.replace(/\D/g, "")) + 80_000, 12)}`,
+        terminalLabel: edc.terminalLabel,
+        declineReason: edc.declineReason ?? null,
+        responseCode: edc.responseCode ?? null,
+        bank: EDC_BANK_WIRE[edc.bank] ?? null,
+        method: edc.mode,
+        mode: attempt.standalone ? "standalone" : "ecr",
+        createdAt: new Date(attempt.startedAtMs).toISOString(),
+        // The mock keeps no end time: a finished request closes when it starts.
+        completedAt:
+          attempt.status === "waiting"
+            ? null
+            : new Date(attempt.startedAtMs).toISOString(),
+      };
+    });
+}
+
 export function orderDetailWire(order: EngineOrder, remainingIdr: number) {
   const orderId = orderUlidOf(order.id);
   const paid = remainingIdr === 0;
@@ -222,10 +265,12 @@ export function orderDetailWire(order: EngineOrder, remainingIdr: number) {
             approvedBy: null,
             approvalRequestId: null,
             overrideId: null,
+            voucherCode: order.voucher.code,
             createdAt: AT,
           },
         ]
       : [],
+    edcAttempts: edcAttemptsWire(order),
     receipt: paid && order.receiptNo ? receiptWire(order) : null,
   };
 }

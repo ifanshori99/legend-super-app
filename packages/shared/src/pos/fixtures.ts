@@ -546,6 +546,7 @@ const discounts: Discount[] = [
     amountIdr: 10_000,
     reason: "manager_goodwill",
     reasonNote: "Komplain pelanggan atas pesanan sebelumnya",
+    voucherCode: null,
     appliedBy: staff.cashierEvening,
     approvedBy: staff.supervisor,
     approvalRequestId: approval.discount,
