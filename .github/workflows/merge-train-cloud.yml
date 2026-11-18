@@ -2,6 +2,9 @@ name: Merge train cloud gate
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - "ci-cloud/**"
 
 permissions:
   contents: read
