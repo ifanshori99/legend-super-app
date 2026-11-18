@@ -780,17 +780,11 @@ async function heldDeliveredCashCreditsIdr(
     .select({ amount: sql<unknown>`${payload}->'amountIdr'` })
     .from(domainEventOutbox)
     .innerJoin(
-      employees,
-      and(
-        eq(employees.tenantId, domainEventOutbox.tenantId),
-        eq(employees.legalEntityId, legalEntityId),
-        sql`${employees.id}::text = ${payload}->>'employeeId'`,
-      ),
-    )
-    .innerJoin(
       journalEntries,
       and(
         eq(journalEntries.tenantId, domainEventOutbox.tenantId),
+        // The entity is the journal's own, found by its idempotency key: the
+        // employee's current entity may have changed since the payment.
         eq(journalEntries.legalEntityId, legalEntityId),
         sql`${journalEntries.idempotencyKey} = ${payrollGlKeys.reimbursement("")} || (${payload}->>'reimbursementId')`,
       ),

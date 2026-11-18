@@ -145,6 +145,25 @@ describe("1118 delivered kasbon event: reserve kept or released by the journal",
     }
   }, 120_000);
 
+  it("[1118-reimb-employee-moved-kept] the claim's employee moved to another legal entity after the payment: the Dr 1102 / Cr 1102 journal still holds the Rp100.000 reserve in the entity of the journal, a second Rp100.000 claim is refused 422 PETTY_CASH_GL_INSUFFICIENT", async () => {
+    let undo: (() => Promise<void>) | null = null;
+    try {
+      const claim = await paidClaim();
+      await H.seedReimbursementJournal(claim, AMOUNT); // net zero on 1102
+      await H.markDelivered(claim);
+      H.markStuck(claim);
+      undo = await H.moveClaimEmployeeToOtherEntity(claim);
+
+      const second = await H.seedClaim(AMOUNT);
+      expectGlRefusal(await H.payClaim(second, AMOUNT));
+      expect(await H.claimEvents(second)).toBe(0);
+      await H.expectNoCashAvailable();
+    } finally {
+      await undo?.();
+      await H.restoreBaseline();
+    }
+  }, 120_000);
+
   it("[1118-reimb-full-credit-released] delivered reimbursement.paid whose journal is Dr 6110 / Cr 1102 of the full amount: the reserve is released, with the GL refilled a second Rp100.000 claim is paid (200)", async () => {
     try {
       const claim = await paidClaim();

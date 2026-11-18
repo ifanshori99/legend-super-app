@@ -591,6 +591,33 @@ export function installLoanCashWorld(label: string) {
     stuck.delete(id);
   }
 
+  /**
+   * Moves the employee of a claim to another legal entity of the tenant (a
+   * transfer after the payment). Returns the undo: employee back, extra entity gone.
+   */
+  async function moveClaimEmployeeToOtherEntity(claimId: string) {
+    const otherEntity = randomUUID();
+    await owner.query(
+      "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'PT Pindah 1118', false)",
+      [otherEntity, tenantId],
+    );
+    const { rows } = await owner.query<{ employee_id: string }>(
+      "UPDATE employees SET legal_entity_id = $3 WHERE tenant_id = $1 AND id = (SELECT employee_id FROM reimbursements WHERE tenant_id = $1 AND id = $2) RETURNING id AS employee_id",
+      [tenantId, claimId, otherEntity],
+    );
+    expect(rows, "premise: the claim's employee moved").toHaveLength(1);
+    return async () => {
+      await owner.query(
+        "UPDATE employees SET legal_entity_id = $3 WHERE tenant_id = $1 AND id = $2",
+        [tenantId, rows[0]!.employee_id, W.entityId()],
+      );
+      await owner.query(
+        "DELETE FROM legal_entities WHERE tenant_id = $1 AND id = $2",
+        [tenantId, otherEntity],
+      );
+    };
+  }
+
   // ---- extra accounts (petty cash remaps) -------------------------------------------
 
   /** The account currently mapped to a role of the entity. */
@@ -663,6 +690,7 @@ export function installLoanCashWorld(label: string) {
     payClaim,
     claimEvents,
     forget,
+    moveClaimEmployeeToOtherEntity,
     mappedAccountId,
     createCashAccount,
     fundAccount,

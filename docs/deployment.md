@@ -1143,7 +1143,7 @@ PGOPTIONS='-c default_transaction_read_only=on -c row_security=off' \
   -f scripts/preflight/1118-shared-cash-mapping.sql
 ```
 
-File itu berisi dua statement read-only; keduanya wajib nol baris (atau
+File itu berisi tiga statement read-only; ketiganya wajib nol baris (atau
 dijelaskan finance).
 
 Aturan gerbang: baris apa pun = **blokir**. Error query (kolom atau tabel hilang,
@@ -1168,10 +1168,37 @@ tanpa snapshot dipakai mapping `petty_cash` saat ini. Setelah rilis, jumlah
 pokok tiap baris ini ikut menahan kas kecil (`availableCash1102` berkurang).
 Kolom: tenant, entitas hukum, nama event, id kasbon/reimbursement, pokok, dan
 kredit bersih. Event delivered tanpa jurnal tidak muncul (cadangannya dilepas
-seperti sebelumnya).
+seperti sebelumnya). Entitas hukum di baris dan di penahanan adalah entitas
+jurnal itu sendiri (dicari lewat kunci idempotensi), bukan badan usaha karyawan
+saat ini: karyawan yang pindah badan usaha tidak melepas jurnal lama yang salah
+dari badan usaha lamanya.
+
+**Statement 3: satu akun kas didebit dan dikredit di entri yang sama.** Satu
+baris per entri jurnal non-reversal dan per akun kas yang punya baris debit DAN
+baris kredit di entri itu, untuk semua jenis aturan: gaji tunai
+(`salaries_payable` diarahkan ke 1102), jurnal kas kecil, pengembalian kas kecil
+ke bank, kasbon, dan reimburse. Akun kas yang diukur adalah `petty_cash`,
+`cash_on_hand`, dan `bank` dari `posting_account_snapshot` entri itu; entri tanpa
+snapshot memakai mapping role tersebut hari ini. Kolom: tenant, entitas hukum,
+id entri, kunci idempotensi, jenis sumber, akun, total debit, total kredit.
+Baris apa pun = blokir.
+
+Risiko yang diterima (architect, 1132):
+
+- **P3-2, penahanan berlipat.** Bila jurnal lama kasbon atau reimburse berupa
+  Dr 1101 / Cr 1102, kredit bersih pada gabungan akun kas nol (1101 dan 1102
+  sama-sama akun kas), jadi pokoknya ditahan, padahal saldo GL 1102 sudah turun
+  oleh kredit itu: kas kecil berkurang dua kali. Arahnya aman: kas yang bisa
+  dibayarkan berkurang, tidak pernah bertambah. Finance menjelaskan atau
+  membetulkan jurnalnya sebelum rilis.
+- **P3-3, jurnal pra-0296 tanpa snapshot.** Jurnal yang dibuat sebelum migrasi
+  0296 tidak punya `posting_account_snapshot`, jadi akun kasnya diukur dengan
+  mapping hari ini. Bila mapping sudah berpindah sejak jurnal itu dibuat, hasilnya
+  bisa menahan terlalu banyak atau terlalu sedikit untuk jurnal tersebut. Diterima
+  dan dicatat; baris yang muncul dijelaskan finance.
 
 1. **Ada baris atau query gagal: tahan rilis.** Hasil nol baris dari login yang
-   benar adalah syarat gerbang untuk kedua statement, bukan sekadar exit code
+   benar adalah syarat gerbang untuk ketiga statement, bukan sekadar exit code
    `psql` nol.
 2. **Resolusi.** Statement 1: pemilik akuntansi tenant memetakan ulang role
    non-kas ke akun sendiri lewat pengaturan mapping (validasi baru menolak
