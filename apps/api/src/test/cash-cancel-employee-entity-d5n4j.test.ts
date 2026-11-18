@@ -60,6 +60,7 @@ const ENTITY_MISSING = "PAYROLL_CASH_ENTITY_MISSING";
 const REASON_REQUIRED = "PAYROLL_CANCEL_REASON_REQUIRED";
 const INVALID_TRANSITION = "PAYROLL_INVALID_TRANSITION";
 const ENTITY_SET = "EMPLOYEE_LEGAL_ENTITY_ALREADY_SET";
+const ENTITY_MISMATCH = "EMPLOYEE_LEGAL_ENTITY_OUTLET_MISMATCH";
 const SET_ACTION = "hris.employee_legal_entity_set";
 const REFUSAL = "PETTY_CASH_GL_INSUFFICIENT";
 const DECIDER = randomUUID();
@@ -82,6 +83,9 @@ let viewer: Session;
 let categoryId: string;
 let tenantB: SecondTenant;
 let otherEntityId: string;
+// An outlet whose legal entity is the world's entity: the home outlet of every
+// employee that HR sets an entity for (the entity must equal the outlet's).
+let entityOutletId: string;
 let pettyGlId: string;
 const employeeIds: string[] = [];
 const loanIds: string[] = [];
@@ -110,6 +114,19 @@ beforeAll(async () => {
   await kitOwner.query(
     "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'PT Lain d5n4j', false)",
     [otherEntityId, tenantId],
+  );
+  entityOutletId = randomUUID();
+  await kitOwner.query(
+    `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, opening_hours, status)
+     SELECT $1, tenant_id, brand_id, $2, $3, 'Outlet d5n4j', 'Jl. d5n4j', '{}', 'active'
+       FROM outlets WHERE tenant_id = $4 AND id = $5`,
+    [
+      entityOutletId,
+      W.entityId(),
+      `D5-${entityOutletId.slice(0, 8).toUpperCase()}`,
+      tenantId,
+      fixtureOutlet.id,
+    ],
   );
   pettyGlId = (
     await kitOwner.query<{ id: string }>(
@@ -140,6 +157,10 @@ afterAll(async () => {
     );
     await client.query("DELETE FROM employees WHERE id = ANY($1::uuid[])", [
       employeeIds,
+    ]);
+    await client.query("DELETE FROM outlets WHERE tenant_id = $1 AND id = $2", [
+      tenantId,
+      entityOutletId,
     ]);
     await client.query(
       "DELETE FROM reimbursement_categories WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
@@ -187,7 +208,11 @@ async function makeCategory(perClaim: number, perMonth: number | null) {
 }
 
 async function makeEmployee(
-  options: { entity?: string | null; userId?: string | null } = {},
+  options: {
+    entity?: string | null;
+    userId?: string | null;
+    outlet?: string;
+  } = {},
 ) {
   const id = randomUUID();
   employeeIds.push(id);
@@ -200,7 +225,10 @@ async function makeEmployee(
       tenantId,
       options.userId ?? null,
       `D5-${id.slice(0, 8).toUpperCase()}`,
-      fixtureOutlet.id,
+      // An employee without an entity is one HR sets it for: its home outlet
+      // belongs to the world's entity unless the test says otherwise.
+      options.outlet ??
+        (options.entity === null ? entityOutletId : fixtureOutlet.id),
       options.entity === undefined ? W.entityId() : options.entity,
     ],
   );
@@ -574,6 +602,10 @@ describe("d5n4j cancel an approved cash reimbursement", () => {
     expect(audit, "one audit row carries the reason").toHaveLength(1);
     expect(audit[0]!.action).toBe("payroll.reimbursement.cancelled");
     expect(audit[0]!.text, "the canceller is named").toContain(approver.userId);
+    expect(
+      JSON.parse(audit[0]!.text).event.maskedChanges.before,
+      "the approved amount stays in the audit",
+    ).toEqual({ status: "approved", approvedAmountIdr: 40_000 });
     expect(await eventsMentioning(claim), "no outbox event").toBe(0);
     expect(await W.countJournals(`payroll-gl:reimbursement:${claim}`)).toBe(0);
     expect(await journalCount(), "no journal").toBe(journals);
@@ -883,6 +915,31 @@ describe("d5n4j set the employee's legal entity once", () => {
     const created = await makeEmployee();
     expectError(await setEntity(created, otherEntityId), 409, ENTITY_SET);
     expect(await entityOf(created)).toBe(W.entityId());
+  }, 90_000);
+
+  it("[d5n4j-entity-outlet-mismatch] the entity must be the legal entity of the employee's home outlet: another entity is 409 EMPLOYEE_LEGAL_ENTITY_OUTLET_MISMATCH, nothing is set, no audit row; the outlet's own entity is 200", async () => {
+    const employee = await makeEmployee({ entity: null });
+
+    const res = await setEntity(employee, otherEntityId);
+
+    expectError(res, 409, ENTITY_MISMATCH);
+    expect(res.body.error?.message).toContain("badan usaha outlet asal");
+    expect(await entityOf(employee)).toBeNull();
+    expect(await setAudits(employee)).toHaveLength(0);
+    // The same employee on an outlet of a different entity: the world's entity
+    // is the mismatch there.
+    const elsewhere = await makeEmployee({
+      entity: null,
+      outlet: fixtureOutlet.id,
+    });
+    expectError(await setEntity(elsewhere, W.entityId()), 409, ENTITY_MISMATCH);
+    expect(await entityOf(elsewhere)).toBeNull();
+    expect(await setAudits(elsewhere)).toHaveLength(0);
+    // The outlet's own entity passes.
+    const ok = await setEntity(employee, W.entityId());
+    expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+    expect(await entityOf(employee)).toBe(W.entityId());
+    expect(await setAudits(employee)).toHaveLength(1);
   }, 90_000);
 
   it("[d5n4j-entity-same-value] setting the value that is already there is 200 and writes no audit row", async () => {

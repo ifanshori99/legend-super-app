@@ -96,7 +96,7 @@ const APPROVE_CODE: PermissionCode = "hr.reimbursement.approve";
 const SELF_CODE: PermissionCode = "self.reimbursement.request";
 
 /** Field names and enum values only. */
-const AUDIT_SAFE_FIELDS = ["fields", "status"] as const;
+const AUDIT_SAFE_FIELDS = ["fields", "status", "approvedAmountIdr"] as const;
 
 type CategoryRow = typeof reimbursementCategories.$inferSelect;
 type ClaimRow = typeof reimbursements.$inferSelect;
@@ -350,6 +350,7 @@ async function audit(
     action: string;
     objectType: string;
     objectId: string;
+    before?: Record<string, unknown> | null;
     after: Record<string, unknown>;
     reason?: string | null;
   },
@@ -368,7 +369,7 @@ async function audit(
       objectType: entry.objectType,
       objectId: entry.objectId,
       reason: entry.reason ?? null,
-      maskedChanges: { before: null, after: entry.after },
+      maskedChanges: { before: entry.before ?? null, after: entry.after },
       ipHash: null,
       sensitiveAccess: false,
       retentionClass: "audit_2y",
@@ -792,6 +793,11 @@ async function moveClaim(
     action: `payroll.reimbursement.${status}`,
     objectType: "reimbursement",
     objectId: row.id,
+    // A cancel clears approvedAmountIdr on the row, so the audit keeps it.
+    before:
+      action === "cancel"
+        ? { status: row.status, approvedAmountIdr: row.approvedAmountIdr }
+        : null,
     after: { status },
     reason,
   });

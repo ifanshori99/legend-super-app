@@ -9,6 +9,10 @@
 // - Rule: only while `legal_entity_id IS NULL`. The same value again is a no-op
 //   (200, no audit row); a different value is 409
 //   EMPLOYEE_LEGAL_ENTITY_ALREADY_SET. The guarded UPDATE decides a race.
+// - Outlet rule: the entity must equal the legal entity of the employee's home
+//   outlet, else 409 EMPLOYEE_LEGAL_ENTITY_OUTLET_MISMATCH. Payroll run
+//   membership is COALESCE(employee entity, outlet entity), so another entity
+//   would move the employee into a different entity's run (paid twice).
 // - Audit: exactly one `hris.employee_legal_entity_set` row with before/after.
 
 import { and, eq, isNull } from "drizzle-orm";
@@ -20,7 +24,7 @@ import {
 } from "@starter/shared/hris";
 import { db } from "../db/index.ts";
 import { employees } from "../db/schema/hris.ts";
-import { legalEntities } from "../db/schema/platform-org.ts";
+import { legalEntities, outlets } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
@@ -112,6 +116,23 @@ export async function setEmployeeLegalEntity(
           );
         if (row.legalEntityId === legalEntityId) return toEmployee(row);
         if (row.legalEntityId !== null) throw alreadySet();
+        const [outlet] = await tx
+          .select({ legalEntityId: outlets.legalEntityId })
+          .from(outlets)
+          .where(
+            and(
+              eq(outlets.tenantId, tenantId),
+              eq(outlets.id, row.homeOutletId),
+            ),
+          )
+          .limit(1)
+          .for("share");
+        if (!outlet || outlet.legalEntityId !== legalEntityId)
+          throw new HttpError(
+            409,
+            "EMPLOYEE_LEGAL_ENTITY_OUTLET_MISMATCH",
+            "Badan usaha harus sama dengan badan usaha outlet asal karyawan.",
+          );
         const lockedNow = new Date();
         const [updated] = await tx
           .update(employees)
