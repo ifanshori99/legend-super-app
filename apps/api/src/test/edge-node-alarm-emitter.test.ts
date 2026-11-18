@@ -315,6 +315,44 @@ describe("legend-0cjzz edge emitter: recovery queues cleared after raised", () =
   });
 });
 
+describe("legend-0cjzz edge emitter: ids are unique per transition", () => {
+  it("T6 raised(L1), cleared with no new pull, raised(L1) again queues three rows with three ids", async () => {
+    await newNode();
+    const emitter = makeEmitter();
+    const l1 = new Date(Date.now() - 80 * HOUR);
+    registry = hardStaleSince(l1);
+    await emitter.reconcile();
+    // Not hard stale any more, yet no pull happened: same base L1.
+    registry = fresh(l1);
+    await emitter.reconcile();
+    registry = hardStaleSince(l1);
+    await emitter.reconcile();
+
+    const rows = await alarmRows();
+    expect(rows.map((row) => row.event.name)).toEqual([
+      EDGE_NODE_ALARM_RAISED,
+      EDGE_NODE_ALARM_CLEARED,
+      EDGE_NODE_ALARM_RAISED,
+    ]);
+    expect(new Set(rows.map((row) => row.event.id)).size).toBe(3);
+  });
+
+  it("T6 a failed enqueue retried after a restart keeps the same event id", async () => {
+    await newNode();
+    registry = hardStaleSince(new Date(Date.now() - 80 * HOUR));
+    const enqueue = vi
+      .spyOn(queue, "enqueueEdgeEvent")
+      .mockRejectedValueOnce(new Error("outbound queue unavailable"));
+    await reconcileLenient(makeEmitter());
+    await makeEmitter().reconcile();
+    await makeEmitter().reconcile();
+    expect(enqueue).toHaveBeenCalledTimes(2);
+    expect(await names()).toEqual([EDGE_NODE_ALARM_RAISED]);
+    const firstTry = enqueue.mock.calls[0]![2].event as { id: string };
+    expect((await alarmRows())[0]!.event.id).toBe(firstTry.id);
+  });
+});
+
 describe("legend-0cjzz edge emitter: retry keeps the order", () => {
   it("T7 a failed raised enqueue, then hard stale ends before the retry: never cleared before raised", async () => {
     await newNode();

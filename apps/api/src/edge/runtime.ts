@@ -1161,12 +1161,16 @@ export async function startEdgeRuntime(
     },
     maxStaleSeconds: Math.floor(config.deviceRegistryMaxStaleMs / 1000),
   });
-  const reconcileNodeAlarm = () =>
+  // Not before the local checkpoint is loaded: until then the puller cannot
+  // judge its age and would read as fresh, clearing an alarm that is still on.
+  const reconcileNodeAlarm = () => {
+    if (!puller.isCheckpointLoaded()) return;
     void nodeAlarm
       .reconcile()
       .catch((error) =>
         logger.warn(safeError(error), "Edge node alarm enqueue failed"),
       );
+  };
   const puller = createDeviceRegistryPuller({
     pull: (since, signal) =>
       pullWithCursorRecovery(

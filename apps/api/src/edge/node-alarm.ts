@@ -80,9 +80,19 @@ export type NodeAlarmEmitter = {
   reconcile(): Promise<void>;
 };
 
-function alarmEventId(name: string, edgeNodeId: string, basis: string): string {
+/**
+ * Deterministic per transition: the previous transition's id is part of the
+ * hash, so the same basis in a later episode gets a new id while a retry of
+ * one transition (same previous id) keeps its id.
+ */
+function alarmEventId(
+  name: string,
+  edgeNodeId: string,
+  basis: string,
+  previousId: string,
+): string {
   const hex = createHash("sha256")
-    .update(`${name}\0${edgeNodeId}\0${KIND}\0${basis}`)
+    .update(`${name}\0${edgeNodeId}\0${KIND}\0${basis}\0${previousId}`)
     .digest("hex")
     .slice(0, 32);
   return uuidToUlid(
@@ -94,25 +104,34 @@ export function createNodeAlarmEmitter(
   deps: NodeAlarmEmitterDeps,
 ): NodeAlarmEmitter {
   const now = deps.now ?? (() => new Date());
-  // null = not read yet; otherwise whether the last emitted alarm is "raised".
-  let lastRaised: boolean | null = null;
+  // null = not read yet; otherwise the last emitted transition (no row =
+  // cleared, previous id empty).
+  let last: { raised: boolean; eventId: string } | null = null;
   let running: Promise<void> | null = null;
   let again = false;
 
-  async function loadLastRaised(): Promise<boolean> {
+  async function loadLast(): Promise<{ raised: boolean; eventId: string }> {
     const result = await withTenant(deps.database, deps.context, (tx) =>
       tx.execute(
-        sql`SELECT event->>'name' AS name FROM edge_outbound_queue WHERE edge_node_id = ${deps.edgeNodeId}::uuid AND direction = 'edge_to_cloud' AND aggregate_type = ${EDGE_NODE_ALARM_AGGREGATE} ORDER BY link_seq DESC LIMIT 1`,
+        sql`SELECT event->>'name' AS name, event->>'id' AS event_id FROM edge_outbound_queue WHERE edge_node_id = ${deps.edgeNodeId}::uuid AND direction = 'edge_to_cloud' AND aggregate_type = ${EDGE_NODE_ALARM_AGGREGATE} ORDER BY link_seq DESC LIMIT 1`,
       ),
     );
-    return result.rows[0]?.name === EDGE_NODE_ALARM_RAISED;
+    const row = result.rows[0];
+    return {
+      raised: row?.name === EDGE_NODE_ALARM_RAISED,
+      eventId: typeof row?.event_id === "string" ? row.event_id : "",
+    };
   }
 
-  async function emit(raised: boolean, state: NodeAlarmRegistryState) {
+  async function emit(
+    raised: boolean,
+    state: NodeAlarmRegistryState,
+    previousId: string,
+  ) {
     const name = raised ? EDGE_NODE_ALARM_RAISED : EDGE_NODE_ALARM_CLEARED;
     const lastPulledAt = state.lastPulledAt?.toISOString() ?? null;
     const basis = lastPulledAt ?? `boot:${state.startedAt.toISOString()}`;
-    const id = alarmEventId(name, deps.edgeNodeId, basis);
+    const id = alarmEventId(name, deps.edgeNodeId, basis, previousId);
     const event: EventEnvelope = {
       id,
       tenantId: deps.tenantId,
@@ -139,14 +158,14 @@ export function createNodeAlarmEmitter(
         event,
       }),
     );
-    lastRaised = raised;
+    last = { raised, eventId: id };
   }
 
   async function step(): Promise<void> {
-    if (lastRaised === null) lastRaised = await loadLastRaised();
+    if (last === null) last = await loadLast();
     const state = deps.getDeviceRegistryState();
-    if (state.hardStale === lastRaised) return;
-    await emit(state.hardStale, state);
+    if (state.hardStale === last.raised) return;
+    await emit(state.hardStale, state, last.eventId);
   }
 
   return {

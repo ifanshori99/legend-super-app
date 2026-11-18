@@ -104,11 +104,14 @@ credential (`meta.edgeNodeId`, `meta.context`) and `assertEdgeEventScope`.
 Deterministic ids (ULID from SHA-256, same helper style as
 `edgeDeviceRegistryHardStaleAlertId`):
 
-- raised: `sha256("edge_node_alarm.raised\0" + edgeNodeId + "\0" + kind + "\0" + basis)`,
+- raised: `sha256("edge_node_alarm.raised\0" + edgeNodeId + "\0" + kind + "\0" + basis + "\0" + previousId)`,
   `basis` = `lastPulledAt ?? "boot:" + startedAt` (the base `isHardStale`
-  measures from, `device-registry-puller.ts:152-159`). Same episode, same id,
-  so a repeated enqueue is a no-op (`enqueueEdgeEvent` is idempotent per node,
-  direction and event id).
+  measures from, `device-registry-puller.ts:152-159`). `previousId` = id of
+  the node's latest `edge_node_alarm` outbox row (any status), empty when there
+  is none. Chained ids make every transition unique even when the basis repeats
+  (raised, cleared with no pull, raised again), while a retry of one transition
+  (same previous id) keeps its id, so a repeated enqueue is a no-op
+  (`enqueueEdgeEvent` is idempotent per node, direction and event id).
 - cleared: same formula with `"edge_node_alarm.cleared"` and the basis at the
   moment of clearing.
 
@@ -126,12 +129,19 @@ Decision: new `apps/api/src/edge/node-alarm.ts` exports
 1. Wanted state = the puller's current `hardStale` (the status it already
    exposes to `getEdgeStatus`).
 2. Last emitted state = the latest `edge_node_alarm` row of this node in the
-   edge's `edge_outbound_queue` (any status), read once at boot and then kept
-   in memory after each successful enqueue. No row = "cleared".
+   edge's `edge_outbound_queue` (any status; its name and event id), read once
+   at boot and then kept in memory after each successful enqueue. No row =
+   "cleared". The event id feeds the next transition's id (D2).
 3. If wanted differs from last emitted, enqueue exactly one transition (raised
    or cleared) in its own edge-DB transaction under the edge's tenant context.
    On error, keep the last emitted state unchanged; the next call retries.
 4. Calls are serialized (one in flight; a call during a run sets "run again").
+
+Checkpoint gate: `reconcile()` does not run while the puller's local
+checkpoint is not loaded (`isCheckpointLoaded()` is false). Before that the
+puller cannot judge its age and reads as fresh, which would queue a false
+"cleared" for an alarm that is still on. The retry tick picks it up once the
+checkpoint is loaded.
 
 Wiring in `runtime.ts`: `onHardStaleChange` (~~:1208) calls `reconcile()`
 immediately (the existing local `reportDeviceRegistryHardStale` call stays for
@@ -154,9 +164,11 @@ Same module, `registerNodeAlarmEdgeApplier()` called next to
 `applyNodeAlarmRaised(tx, event, meta)`:
 
 1. `outletId = await assertEdgeEventScope(tx, event, meta)` (tenant, outlet and
-   node checked against the credential; a `CoreError` rolls back only the
-   handler's savepoint and is recorded as an `applier_refused` conflict, the
-   stream continues: `db-link-store.ts` ~:817-834).
+   node checked against the credential). Through the link a foreign tenant or
+   outlet never reaches the applier: `db-link-store.ts` aborts the batch first
+   (T11). A `CoreError` from step 2 below rolls back only the handler's
+   savepoint and is recorded as an `applier_refused` conflict, and the stream
+   continues (`db-link-store.ts` ~:817-834).
 2. Validate envelope rules (D2) and the strict payload; else `CoreError`
    `VALIDATION_ERROR` (same as print alert).
 3. `at = min(occurredAt, cloud now)` (the edge clock is not trusted to move
@@ -429,7 +441,11 @@ S2 (uvnll):
   error) -> no ack, nothing committed; resend -> exactly one alert and one
   notification.
 - T11 Cloud: event with another tenant's or outlet's ids on a valid credential
-  -> refused (`applier_refused`), no row in either tenant.
+  -> the whole link batch is aborted and rolled back (fail-closed:
+  `db-link-store.ts` refuses a foreign scope with a plain error before any
+  applier runs): no ack, no row in either tenant, and events behind it in the
+  batch are not applied. Called directly, the applier throws `CoreError`
+  (`assertEdgeEventScope`). It is NOT an `applier_refused` conflict.
 - T12 Cloud: invalid payload or envelope (sequence 2, aggregateId != id, extra
   field) -> refused, stream continues.
 - T13 Cloud: cleared resolves the open row; cleared with no open row is a
