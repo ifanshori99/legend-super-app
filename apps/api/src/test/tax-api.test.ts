@@ -22,6 +22,10 @@ import { createApp } from "../app";
 import { db } from "../db";
 import { withTenant } from "../db/tenant";
 import { recordTaxSnapshots } from "../services/tax.service";
+import {
+  createIsolatedTenant,
+  owner as fixtureOwner,
+} from "./floor-test-helpers";
 import { agent, originHeader, signUp } from "./helpers";
 
 const app = createApp();
@@ -168,6 +172,7 @@ afterAll(async () => {
     await owner.query('DELETE FROM "user" WHERE id = ANY($1)', [createdUsers]);
   }
   await owner.end();
+  await fixtureOwner.end();
 });
 
 describe("Tax API authorization", () => {
@@ -414,13 +419,106 @@ describe("ORD-03 server-side calculation preview", () => {
   });
 
   it("ORD-03 fails closed when no rule matches the line's region", async () => {
-    const { client } = await ownerClient();
-    const response = await client
-      .post("/api/tax/preview")
-      .set(originHeader)
-      .send({ ...taxFixtures.privateRoomBill, regionCode: "ID-JK" });
-    expect(response.status).toBe(422);
-    expect(response.body.error.code).toBe("TAX_RULE_NOT_FOUND");
+    const { client, userId } = await signedInClient("Tax isolated preview");
+    const isolated = await createIsolatedTenant(
+      `tax-${randomUUID().slice(0, 8)}`,
+    );
+    const overlappingRuleIds = [randomUUID(), randomUUID()];
+    const isolatedRuleId = randomUUID();
+    const settingsId = randomUUID();
+    const bill = {
+      ...taxFixtures.privateRoomBill,
+      outletId: isolated.outletId,
+      zoneId: null,
+    };
+    try {
+      await owner.query(
+        "UPDATE roles SET permissions = $1 WHERE tenant_id = $2 AND id = $3",
+        [
+          JSON.stringify(["org.tax_config.manage"]),
+          isolated.tenantId,
+          isolated.roleId,
+        ],
+      );
+      await owner.query(
+        `INSERT INTO role_assignments
+           (tenant_id, user_id, role_id, scope_type, valid_from, assigned_by)
+         VALUES ($1, $2, $3, 'tenant', now() - interval '1 minute', $2)`,
+        [isolated.tenantId, userId, isolated.roleId],
+      );
+      await owner.query(
+        `INSERT INTO tax_settings
+           (id, tenant_id, outlet_id, calculation_order, prices_include_tax,
+            service_rounding_mode, tax_rounding_mode, inclusive_base_rounding_mode,
+            bill_rounding, package_allocation, version, effective_from, status,
+            published_at, published_by)
+         VALUES ($1, $2, NULL, 'discount_service_tax', false,
+                 'half_up', 'half_up', 'half_up', NULL, 'fixed_bp', 1,
+                 '2026-01-01', 'published', now(), $3)`,
+        [settingsId, isolated.tenantId, userId],
+      );
+      await owner.query(
+        `INSERT INTO tax_rules
+           (id, tenant_id, outlet_id, code, name, tax_type, rate_bp, region_code,
+            channels, applies_to, price_includes_tax, include_service_in_base,
+            is_active, version, effective_from, status, published_at, published_by)
+         VALUES ($1, $2, NULL, $3, 'Regional preview rule', 'pbjt', 1000, $4,
+                 '[]', '{"itemClasses":["food_beverage","facility"],"categoryIds":[],"itemIds":[]}',
+                 false, true, true, 1, '2026-01-01', 'published', now(), $5)`,
+        [isolatedRuleId, isolated.tenantId, code(), bill.regionCode, userId],
+      );
+      // Finance suites publish tenant-wide PBJT rules on the shared seed.
+      // Keep that realistic overlap present while exercising the missing rule.
+      for (const id of overlappingRuleIds) {
+        await owner.query(
+          `INSERT INTO tax_rules
+             (id, tenant_id, outlet_id, code, name, tax_type, rate_bp, region_code,
+              channels, applies_to, price_includes_tax, include_service_in_base,
+              is_active, version, effective_from, status, published_at, published_by)
+           VALUES ($1, $2, NULL, $3, 'PBJT overlap regression', 'pbjt', 1000, NULL,
+                   '[]', '{"itemClasses":["food_beverage"],"categoryIds":[],"itemIds":[]}',
+                   false, true, true, 1, '2026-01-01', 'published', now(), $4)`,
+          [id, cafeLegendPlatformFixtures.tenant.id, code(), userId],
+        );
+      }
+      const control = await client
+        .post("/api/tax/preview")
+        .set(originHeader)
+        .set("Host", isolated.hostname)
+        .send(bill);
+      expect(control.status).toBe(200);
+      const response = await client
+        .post("/api/tax/preview")
+        .set(originHeader)
+        .set("Host", isolated.hostname)
+        .send({ ...bill, regionCode: "ID-JK" });
+      expect(response.status).toBe(422);
+      expect(response.body.error.code).toBe("TAX_RULE_NOT_FOUND");
+    } finally {
+      await owner.query("DELETE FROM tax_rules WHERE id = ANY($1::uuid[])", [
+        [...overlappingRuleIds, isolatedRuleId],
+      ]);
+      await owner.query("DELETE FROM tax_settings WHERE id = $1", [settingsId]);
+      await owner.query("DELETE FROM role_assignments WHERE tenant_id = $1", [
+        isolated.tenantId,
+      ]);
+      await owner.query("DELETE FROM roles WHERE tenant_id = $1", [
+        isolated.tenantId,
+      ]);
+      await owner.query("DELETE FROM tenant_domains WHERE tenant_id = $1", [
+        isolated.tenantId,
+      ]);
+      await owner.query("DELETE FROM outlets WHERE id = $1", [
+        isolated.outletId,
+      ]);
+      await owner.query("DELETE FROM brands WHERE id = $1", [isolated.brandId]);
+      await owner.query("DELETE FROM legal_entities WHERE id = $1", [
+        isolated.legalEntityId,
+      ]);
+      await owner.query("DELETE FROM tenants WHERE id = $1", [
+        isolated.tenantId,
+      ]);
+    }
   });
 });
 
