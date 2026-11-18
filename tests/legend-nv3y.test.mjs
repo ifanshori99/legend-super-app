@@ -1311,3 +1311,24 @@ test("l5tvy the catalog carries the queue-full text", () => {
     "Antrean penuh oleh pengajuan yang ditolak. Buang atau ubah salah satunya dulu.",
   );
 });
+
+test("pl8hc a storage that refuses the write is not reported as queued", async () => {
+  const { CorrectionQueueWriteError } = await import(`${featureDir}/queue.ts`);
+  const full = {
+    getItem: () => null,
+    setItem: () => {
+      throw new Error("QuotaExceededError");
+    },
+  };
+  const body = queuedBody();
+  assert.throws(
+    () => enqueueCorrection(body, ME_ID, full),
+    (error) => error instanceof CorrectionQueueWriteError,
+  );
+  assert.throws(
+    () => enqueueCorrection(body, ME_ID, null),
+    (error) => error instanceof CorrectionQueueWriteError,
+  );
+  assert.deepEqual(readCorrectionQueue(full), []);
+  assert.ok(isMessageKey("hris.correction.queueWriteFailed"));
+});

@@ -167,6 +167,11 @@ export const lifecycleMessages = {
     loan: "Kasbon belum lunas",
     loanSource: "{count} kasbon aktif, dipotong dari hak akhir",
     loanNone: "Tidak ada kasbon aktif",
+    loanUnavailable: "Ringkasan dari server belum tersedia",
+    pendingDeduction: "Potongan kasbon payroll tertunda",
+    pendingDeductionSource:
+      "{count} cicilan sudah dicadangkan payroll run, sudah dikurangkan dari kasbon di atas",
+    pendingDeductionNone: "Tidak ada cicilan yang menunggu payroll run",
     reimbursement: "Reimbursement disetujui, belum dibayar",
     reimbursementSource:
       "{count} klaim disetujui · {pending} menunggu keputusan",

@@ -1073,13 +1073,16 @@ async function assertDutyMealSubjects(
   body: RecordDutyMealBody,
 ): Promise<void> {
   const [employee] = await tx
-    .select({ id: employees.id })
+    .select({ id: employees.id, status: employees.status })
     .from(employees)
     .where(
       and(eq(employees.tenantId, tenantId), eq(employees.id, body.employeeId)),
     )
     .limit(1);
   if (!employee) throw validation("Karyawan tidak ditemukan.");
+  // Only an active employee eats on duty: an inactive or terminated one
+  // answers like a missing row.
+  if (employee.status !== "active") throw notFound("Karyawan");
   if (body.shiftAssignmentId === null) return;
   const [shift] = await tx
     .select()
@@ -1121,6 +1124,20 @@ export async function recordAttendanceDutyMeal(
       if (!inReach(access.reach(ATTENDANCE_SUPERVISOR_CODES), body.outletId))
         throw forbidden();
       const tenantId = context.tenant.tenantId;
+      // Outlet reach is not enough: a supervisor records only for direct
+      // reports. Checked before the idempotent replay so a replay cannot read
+      // another employee's record. A non-subordinate answers like a missing row.
+      if (
+        !(await isReachedEmployee(
+          tx,
+          tenantId,
+          access,
+          ATTENDANCE_SUPERVISOR_CODES,
+          body.outletId,
+          body.employeeId,
+        ))
+      )
+        throw notFound("Karyawan");
       const [existing] = await tx
         .select()
         .from(attendanceDutyMeals)
@@ -1199,6 +1216,17 @@ export async function listAttendanceDutyMeals(
       filters.push(eq(attendanceDutyMeals.outletId, query.outletId));
     else if (reach.kind === "outlets")
       filters.push(inArray(attendanceDutyMeals.outletId, [...reach.outletIds]));
+    // HR keeps its reach; a supervisor-only holder lists only direct reports.
+    filters.push(
+      reachedEmployeeCondition(
+        tx,
+        context.tenant.tenantId,
+        access,
+        ATTENDANCE_SUPERVISOR_CODES,
+        attendanceDutyMeals.outletId,
+        attendanceDutyMeals.employeeId,
+      ) ?? sql`false`,
+    );
     if (query.employeeId !== undefined)
       filters.push(eq(attendanceDutyMeals.employeeId, query.employeeId));
     if (query.businessDate !== undefined)

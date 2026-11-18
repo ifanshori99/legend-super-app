@@ -31,7 +31,6 @@ import {
   PayrollError,
   computeThr,
   resolveStatutoryTable,
-  type EmployeeLoan,
   type EmployeePayComponent,
   type PayComponent,
   type Reimbursement,
@@ -414,22 +413,6 @@ export function thrEstimate(input: {
   return { kind: "ok", ...result, wageIdr: wage };
 }
 
-/** Kasbon still owed by the employee (approved or disbursed, balance > 0). */
-export function outstandingLoans(loans: readonly EmployeeLoan[]): {
-  count: number;
-  amountIdr: Idr;
-} {
-  const open = loans.filter(
-    (loan) =>
-      (loan.status === "approved" || loan.status === "disbursed") &&
-      loan.outstandingIdr > 0,
-  );
-  return {
-    count: open.length,
-    amountIdr: idr(open.reduce((sum, loan) => sum + loan.outstandingIdr, 0)),
-  };
-}
-
 /** Approved reimbursements not paid out yet (owed to the employee). */
 export function unpaidReimbursements(claims: readonly Reimbursement[]): {
   count: number;
@@ -483,4 +466,29 @@ export function certificateFor(
 export function isMockScenarioRequest(searchStr: string): boolean {
   const scenario = new URLSearchParams(searchStr).get("mock");
   return scenario !== null && scenario !== "normal";
+}
+
+/**
+ * The offboarding the settlement summary belongs to, named by the employee's
+ * checklist tasks. A cancelled offboarding waives its open tasks but keeps
+ * its done ones, and a new offboarding may follow, so an id counts only when
+ * it is the one with open/blocked work, or the only one left on a non-waived
+ * task. Two candidates and no open work: unknown (null), never a guess.
+ */
+export function liveOffboardingId(
+  tasks: readonly {
+    offboardingId: string | null;
+    status: string;
+  }[],
+): string | null {
+  const open = new Set<string>();
+  const kept = new Set<string>();
+  for (const task of tasks) {
+    if (task.offboardingId === null || task.status === "waived") continue;
+    kept.add(task.offboardingId);
+    if (task.status === "open" || task.status === "blocked")
+      open.add(task.offboardingId);
+  }
+  const pool = open.size > 0 ? open : kept;
+  return pool.size === 1 ? ([...pool][0] ?? null) : null;
 }

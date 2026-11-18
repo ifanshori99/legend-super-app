@@ -16,7 +16,17 @@
 //   acknowledgement of v1 never counts for v2.
 
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, gt, inArray, or, sql, type SQL } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  gt,
+  inArray,
+  isNull,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import { z } from "zod";
 import {
   createUlid,
@@ -313,18 +323,52 @@ async function assertMediaExist(
   tx: Tx,
   context: ScopedTenantContext,
   mediaIds: readonly string[],
+  actorUserId: string,
+  scopeOutletId: string | null,
+  /** Media the previous version already carried (publishing a new version). */
+  carriedMediaIds: readonly string[] = [],
 ): Promise<void> {
   const wanted = [...new Set(mediaIds.map((id) => id.toLowerCase()))];
   if (wanted.length === 0) return;
+  const carried = new Set(carriedMediaIds.map((id) => id.toLowerCase()));
+  const kept = wanted.filter((id) => carried.has(id));
+  const fresh = wanted.filter((id) => !carried.has(id));
+  // Strict allowlist: only unclassified document objects. HR files carry a
+  // source kind; brand_logo, receipt and selfie purposes are refused.
+  const allowlisted = and(
+    eq(coreStorageObjects.purpose, "document"),
+    isNull(coreStorageObjects.sourceKind),
+  );
+  const candidates = [
+    // Media the previous version already had stays valid for any publisher.
+    kept.length === 0
+      ? undefined
+      : and(inArray(coreStorageObjects.id, kept), allowlisted),
+    // New media must be the actor's own, unattached, and (for an outlet SOP)
+    // of the SOP's outlet; a tenant-wide SOP has no outlet condition.
+    fresh.length === 0
+      ? undefined
+      : and(
+          inArray(coreStorageObjects.id, fresh),
+          allowlisted,
+          eq(coreStorageObjects.ownerUserId, actorUserId),
+          isNull(coreStorageObjects.sourceId),
+          scopeOutletId === null
+            ? undefined
+            : eq(coreStorageObjects.outletId, scopeOutletId),
+        ),
+  ].filter((condition) => condition !== undefined);
   const rows = await tx
     .select({ id: coreStorageObjects.id })
     .from(coreStorageObjects)
     .where(
       and(
         eq(coreStorageObjects.tenantId, context.tenant.tenantId),
-        inArray(coreStorageObjects.id, wanted),
+        or(...candidates),
       ),
-    );
+    )
+    .orderBy(coreStorageObjects.id)
+    .for("update");
   if (rows.length !== wanted.length)
     throw new HttpError(
       422,
@@ -428,7 +472,13 @@ export async function createSopDocument(
       input.stationId,
     );
     await assertPositionExists(tx, context, input.positionId);
-    await assertMediaExist(tx, context, input.mediaIds);
+    await assertMediaExist(
+      tx,
+      context,
+      input.mediaIds,
+      access.actorUserId,
+      outletId,
+    );
     const id = randomUUID();
     const [row] = await tx
       .insert(sopDocuments)
@@ -492,7 +542,14 @@ export async function publishSopVersion(
         "SOP_EFFECTIVE_DATE_INVALID",
         "Tanggal berlaku tidak boleh lebih awal dari versi sebelumnya.",
       );
-    await assertMediaExist(tx, context, input.mediaIds);
+    await assertMediaExist(
+      tx,
+      context,
+      input.mediaIds,
+      access.actorUserId,
+      outletId,
+      previous.mediaIds,
+    );
     const [row] = await tx
       .insert(sopDocuments)
       .values({

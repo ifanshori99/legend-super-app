@@ -674,6 +674,46 @@ describe("F16 waste & spoilage (PRD §16 Waste & Spoilage)", () => {
     expect(log.mediaId).toBe(mediaId);
   });
 
+  it("legend-ec8t2 WASTE-06 a waste photo cannot be a brand logo, a plain receipt or another tenant's object", async () => {
+    const location = await insertLocation("Gudang Foto Ketat");
+    const item = await insertItem("Susu Foto Ketat", gramId);
+    await receive(location, item, "10.0000", "10.0000");
+    const body = (mediaId: string) =>
+      createWasteLogInputSchema.parse({
+        outletId: outletA,
+        locationId: location,
+        targetType: "inventory_item",
+        targetId: item,
+        quantity: "1.0000",
+        reason: "spoiled",
+        mediaId,
+        idempotencyKey: key("photo-strict"),
+      });
+    const brandLogo = randomUUID();
+    const plainReceipt = randomUUID();
+    await owner.query(
+      `INSERT INTO core_storage_objects (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes, owner_user_id, source_kind)
+       VALUES ($1, NULL, $2, 'brand_logo', $3, 'image/webp', 1024, $4, NULL),
+              ($1, $5, $6, 'receipt', $7, 'image/jpeg', 1024, $4, NULL)`,
+      [
+        tenantA,
+        brandLogo,
+        `private/${tenantA}/${brandLogo}.webp`,
+        ownerUserId,
+        outletA,
+        plainReceipt,
+        `private/${tenantA}/${plainReceipt}.jpg`,
+      ],
+    );
+    for (const mediaId of [brandLogo, plainReceipt])
+      await rejectsWithStatus(
+        createWasteLog(tenantContext(), ownerUserId, body(mediaId)),
+        422,
+        "WASTE_MEDIA_NOT_FOUND",
+      );
+    expect((await balanceOf(location, item))?.quantity).toBe("10.0000");
+  });
+
   it("F16 WASTE-05 a menu portion wastes its recipe ingredients; no recipe fails closed", async () => {
     const location = await insertLocation("Bar Waste");
     const espresso = await insertItem("Biji Kopi", gramId);
