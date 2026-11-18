@@ -46,12 +46,15 @@
 //   issues of each ORIGINAL line, a replacement line mapped back to the line it
 //   replaced through the swap chain (`originalOf`).
 
-import { sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import {
   ulidToUuid,
   uuidToUlid,
   type ScopedTenantContext,
 } from "@starter/shared/core";
+import { posDepositRefunds } from "../db/schema/index.ts";
+import { posOrderRefunds } from "../db/schema/pos-order.ts";
+import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { providerRefundedForeignIdrSql } from "./payment-provider-refunded-foreign-sql.ts";
 import { HttpError } from "../lib/http-error.ts";
 import type { Tx } from "./permission-resolver.ts";
@@ -476,5 +479,106 @@ export async function assertOrderBudget(
       422,
       "REFUND_OVER_ORDER_ROOM",
       "This would give back more than the guest paid for the order.",
+    );
+}
+
+/**
+ * 1131 (Q25 per item, architect P1): does `wantedIdr` fit what the failed line
+ * still holds? Same rule as `voucherRoomIdr` (order-voucher-room.ts): the
+ * line's share of the bill less what was given for it (vouchers, live ORD-09
+ * refunds of its issues, cashier refunds that named it with the deposit part
+ * they released). The caller holds the order lock. A line nothing was given
+ * for yet always fits: its pro-rata amount is rounded half up per component,
+ * its share floored, and the order budget bounds that case.
+ */
+export async function lineFitsIdr(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+  orderId: string,
+  orderItemId: string,
+  wantedIdr: number,
+): Promise<boolean> {
+  const [order] = await tx
+    .select({ totalIdr: orders.totalIdr, subtotalIdr: orders.subtotalIdr })
+    .from(orders)
+    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, orderId)));
+  if (!order) return false;
+  const given = await orderGivenOf(tx, tenantId, orderId);
+  const items = await tx
+    .select({
+      id: orderItems.id,
+      quantity: orderItems.quantity,
+      lineTotalIdr: orderItems.lineTotalIdr,
+    })
+    .from(orderItems)
+    .where(
+      and(eq(orderItems.tenantId, tenantId), eq(orderItems.orderId, orderId)),
+    );
+  const refunds = await tx
+    .select({
+      id: posOrderRefunds.id,
+      amountIdr: posOrderRefunds.amountIdr,
+      items: posOrderRefunds.items,
+    })
+    .from(posOrderRefunds)
+    .where(
+      and(
+        eq(posOrderRefunds.tenantId, tenantId),
+        eq(posOrderRefunds.orderId, orderId),
+      ),
+    )
+    .orderBy(asc(posOrderRefunds.refundedAt), asc(posOrderRefunds.id));
+  const deposits = await tx
+    .select({
+      posRefundId: posDepositRefunds.posRefundId,
+      amountIdr: posDepositRefunds.amountIdr,
+    })
+    .from(posDepositRefunds)
+    .where(
+      and(
+        eq(posDepositRefunds.tenantId, tenantId),
+        eq(posDepositRefunds.orderId, orderId),
+      ),
+    );
+  const depositOf = new Map<string, number>();
+  for (const row of deposits)
+    depositOf.set(
+      row.posRefundId,
+      (depositOf.get(row.posRefundId) ?? 0) + Number(row.amountIdr),
+    );
+  const requested = [{ itemId: orderItemId }];
+  const room = lineRoomIdr(
+    order,
+    items,
+    refunds.map((row) => ({
+      ...row,
+      amountIdr: row.amountIdr + (depositOf.get(row.id) ?? 0),
+    })),
+    given,
+    requested,
+  );
+  const share = lineRoomIdr(
+    order,
+    items,
+    [],
+    { lineGivenIdr: new Map(), toOriginal: given.toOriginal },
+    requested,
+  );
+  return room >= share || wantedIdr <= room;
+}
+
+/** Throws 422 `REFUND_OVER_ORDER_ROOM` when `wantedIdr` does not fit the line. */
+export async function assertLineFits(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+  orderId: string,
+  orderItemId: string,
+  wantedIdr: number,
+): Promise<void> {
+  if (!(await lineFitsIdr(tx, tenantId, orderId, orderItemId, wantedIdr)))
+    throw new HttpError(
+      422,
+      "REFUND_OVER_ORDER_ROOM",
+      "This would give back more than the guest paid for this item.",
     );
 }
