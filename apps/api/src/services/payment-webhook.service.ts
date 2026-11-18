@@ -843,6 +843,9 @@ function invalidReportHoldRefundId(rawId: string): string {
   return `invalid-h:${createHash("sha256").update(rawId).digest("hex")}`;
 }
 
+const REFERENCE_MISMATCH_HOLD_REASON =
+  "Refund penyedia menyebut pembayaran lain dari pembayaran yang dikembalikan (REFERENCE_MISMATCH)";
+
 /** legend-9s33i (1025 C): a signed refund event whose reference names another
  * intent than the one owning its payment id is not dropped without a trace:
  * an open recon hold on the intent that owns the payment id (blocks its
@@ -887,15 +890,21 @@ async function holdRefundReferenceMismatch(
     const hex = createHash("sha256").update(input).digest("hex");
     return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
   };
+  // 1108 P2: a hold an earlier build stored for THIS stored event (key = the
+  // event id) is the first generation of the family: the retry of that event
+  // raises it and never files a second, countable hold under the new key.
+  // Found under the locks below.
+  let legacyFirst = false;
+  let legacyHeldAmount: number | null = null;
   const generationEventId = (generation: number): string =>
-    fixedKeyDomain === null
+    fixedKeyDomain === null || (legacyFirst && generation === 1)
       ? row.id
       : hashedEventId(
           generation === 1
             ? fixedKeyDomain
             : `${fixedKeyDomain}\0gen\0${generation}`,
         );
-  const eventKey = generationEventId(1);
+  let eventKey = generationEventId(1);
   await withTenant(db, context, async (tx) => {
     // legend-xmtih: the hold limits the DP credit of the intent, so it is made
     // under the same locks as a provider refund (the intent row, then the
@@ -912,6 +921,58 @@ async function holdRefundReferenceMismatch(
       )
       .for("update");
     await lockDepositIntentsExclusive(tx, context.tenant.tenantId, intent.id);
+    if (fixedKeyDomain !== null) {
+      const [legacy] = await tx
+        .select({ id: refundReconHolds.id })
+        .from(refundReconHolds)
+        .where(
+          and(
+            eq(refundReconHolds.tenantId, context.tenant.tenantId),
+            eq(refundReconHolds.paymentIntentId, intent.id),
+            eq(refundReconHolds.webhookEventId, row.id),
+            isNull(refundReconHolds.providerRefundId),
+          ),
+        )
+        .limit(1);
+      legacyFirst = legacy !== undefined;
+      eventKey = generationEventId(1);
+      if (!legacyFirst) {
+        // 1108 P2: another envelope (E') of the same report, after an upgrade:
+        // an earlier build already holds the report under ITS event id (a stored
+        // event of this tenant, not a hash key). A second countable mismatch
+        // hold would let finance book one report twice, so the new first
+        // generation is filed as a CONFLICT hold (finance cannot count it) for
+        // the larger of the two amounts. A retry of E itself found its own old
+        // hold above.
+        const legacyHolds = await tx
+          .select({ amountIdr: refundReconHolds.amountIdr })
+          .from(refundReconHolds)
+          .where(
+            and(
+              eq(refundReconHolds.tenantId, context.tenant.tenantId),
+              eq(refundReconHolds.paymentIntentId, intent.id),
+              isNull(refundReconHolds.providerRefundId),
+              isNull(refundReconHolds.providerRefundIdKind),
+              eq(refundReconHolds.reason, REFERENCE_MISMATCH_HOLD_REASON),
+              sql`coalesce(${refundReconHolds.providerPaymentRef}, '') = ${refund.providerPaymentRef ?? ""}`,
+              inArray(
+                refundReconHolds.webhookEventId,
+                tx
+                  .select({ id: gatewayWebhookEvents.id })
+                  .from(gatewayWebhookEvents)
+                  .where(
+                    eq(gatewayWebhookEvents.tenantId, context.tenant.tenantId),
+                  ),
+              ),
+            ),
+          )
+          .for("update");
+        if (legacyHolds.length > 0)
+          legacyHeldAmount = Math.max(
+            ...legacyHolds.map((hold) => Number(hold.amountIdr)),
+          );
+      }
+    }
     const [held] = await tx
       .insert(refundReconHolds)
       .values({
@@ -922,10 +983,12 @@ async function holdRefundReferenceMismatch(
         // The id a refund event names is the provider's own (1035).
         providerRefundIdKind:
           refund.providerRefundId === null ? null : "provider",
-        amountIdr: idr(refund.amountIdr),
+        amountIdr: idr(Math.max(refund.amountIdr, legacyHeldAmount ?? 0)),
         providerPaymentRef: refund.providerPaymentRef ?? null,
         reason:
-          "Refund penyedia menyebut pembayaran lain dari pembayaran yang dikembalikan (REFERENCE_MISMATCH)",
+          legacyHeldAmount === null
+            ? REFERENCE_MISMATCH_HOLD_REASON
+            : HOLD_TRANSACTION_CONFLICT_REASON,
         flaggedAt: now,
       })
       // Per stored event, and per provider refund id of the intent: a replay,
@@ -1119,9 +1182,10 @@ async function holdRefundReferenceMismatch(
   });
 }
 
-/** 1101 (CTO decision 1, Q45): while the DOIT refund switch is off, a signed
- * success on a matched refund (its key, its refund id, or one finance settled
- * by hand; never the payment-object fallback) is not told apart from an echo,
+/** 1101 (CTO decision 1, Q45; 1108 P1-1 covers every kind and outcome):
+ * while the DOIT refund switch is off, a signed success or failure on a
+ * matched refund (its key, its refund id, one finance settled by hand, or the
+ * payment object; valid or invalid payload) is not told apart from an echo,
  * and no made-up or alias id is guessed. One CONFLICT hold per stored event,
  * with no refund id, for the full value (`amountIdr`): only finance's
  * `not_this_intent` closes it. No fact, no journal, no refund, no stamp. The
@@ -2105,16 +2169,13 @@ async function processRefundEvent(
       return await ignoredWith("REFERENCE_MISMATCH");
     }
 
-    // 1101 (Q45): automatic DOIT refunds are off, so a signed success on a
-    // matched refund (not the payment-object fallback) is never judged as an
-    // echo here: no echo, made-up id or alias logic, only one conflict hold for
-    // the full value. Closes the replay and identity holes of those paths while
-    // the switch is off.
-    if (
-      status === "succeeded" &&
-      refundProviderSwitchedOff(PROVIDER) &&
-      (match.kind !== "payment_object" || viaSettled)
-    ) {
+    // 1101 (Q45), 1108 P1-1: automatic DOIT refunds are off, so a signed
+    // event on a matched refund (success or failure, every match kind, payment
+    // object included, valid or invalid payload) is never judged here: no
+    // echo, made-up id or alias logic, no updater, recorder or status change
+    // of the refund, only one conflict hold for the full value. One gate
+    // before the invalid, updater and recorder paths, no exemption per branch.
+    if (refundProviderSwitchedOff(PROVIDER)) {
       const switchedOffPaymentRef =
         facts.paymentId ??
         facts.payment?.id ??
@@ -2146,7 +2207,8 @@ async function processRefundEvent(
       // echo (unreadable or missing amount or payment id) is held for the
       // refund's full amount, before anything is audited or ignored. The
       // payment id may be unreadable, so the transaction comes from the
-      // refund's own source payment. The payment-object fallback is exempt.
+      // refund's own source payment. The payment-object fallback is exempt
+      // here (switch on only; with the switch off the gate above holds it).
       if (status === "succeeded" && match.kind !== "payment_object") {
         const paymentRef =
           (await refundSourcePayment(context, refund, intent))?.providerRef ??

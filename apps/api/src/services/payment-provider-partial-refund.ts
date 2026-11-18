@@ -1044,7 +1044,10 @@ export async function recordProviderRefundInTx(
     // refund it is: the hold stays for finance).
     if (refundIdKind === "provider") {
       const [existing] = await tx
-        .select({ id: paymentProviderRefunds.id })
+        .select({
+          id: paymentProviderRefunds.id,
+          amountIdr: paymentProviderRefunds.amountIdr,
+        })
         .from(paymentProviderRefunds)
         .where(
           and(
@@ -1058,6 +1061,16 @@ export async function recordProviderRefundInTx(
         )
         .limit(1);
       if (existing) {
+        // 1108 P1-2: the fact of this id is booked, but the report is above it
+        // (the checks of step 3 skip an id on record, so every door lands
+        // here). The extra money is new proof, not a replay: held through the
+        // conflict helper (open hold raised, resolved key opens its surplus
+        // generation, no hold at all opens one), before the live-own hold
+        // below is closed (a hold raised to the conflict reason stays open).
+        // The fact and its journal are not rewritten. A hold resolve files
+        // nothing.
+        if (!input.holdResolve && amountIdr > Number(existing.amountIdr))
+          await fileTransactionConflictHold(amountIdr, intent.outletId);
         if (!inFlight) await closeLiveOwnHold();
       } else if (!input.holdResolve) {
         // 1055 G2 (AP2-2): the id is on record, but not for this transaction
