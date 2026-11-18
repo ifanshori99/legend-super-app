@@ -15,7 +15,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
-const { EDC_RECON_WAIT_MS, ageMinutes, reconciliationGate } =
+const { EDC_RECON_WAIT_MS, ageMinutes, isQueueTruncated, reconciliationGate } =
   await import("../apps/web/src/features/edc-reconciliation/lib.ts");
 
 const NOW = Date.parse("2026-11-15T03:00:00.000Z"); // 10.00 WIB
@@ -227,5 +227,17 @@ describe("ageMinutes", () => {
 
   test("a sale created just now is 0 minutes old", () => {
     assert.equal(ageMinutes(item({ createdAgoMs: 0 }), NOW), 0);
+  });
+});
+
+describe("isQueueTruncated (legend-2l4s8)", () => {
+  test("a cursor left after the page cap means the queue is cut off", () => {
+    assert.equal(isQueueTruncated({ nextCursor: "abc" }), true);
+  });
+
+  test("no cursor, or no data yet, is not truncated", () => {
+    assert.equal(isQueueTruncated({ nextCursor: null }), false);
+    assert.equal(isQueueTruncated({}), false);
+    assert.equal(isQueueTruncated(undefined), false);
   });
 });

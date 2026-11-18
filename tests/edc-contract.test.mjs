@@ -80,7 +80,22 @@ test("terminal free text never keeps a card-number-like digit run", () => {
     message: "CARD 4111 1111 1111 1111 OK, ref 4111-1111-1111-1111",
     amountIdr: 1000,
   });
-  assert.doesNotMatch(parsed.message ?? "", /\d(?:[ -]?\d){11,}/);
+  assert.doesNotMatch(parsed.message ?? "", /\d(?:[\s/_-]*\d){11,}/);
+  for (const message of [
+    "CARD 4111  1111  1111  1111 OK",
+    "CARD 4111 - 1111 - 1111 - 1111 OK",
+    "CARD 4111\t1111 -\t1111  - 1111 OK",
+    "CARD 4111/1111/1111/1111 OK",
+    "CARD 4111_1111_1111_1111 OK",
+    "CARD 4111\n1111\n1111\n1111 OK",
+  ]) {
+    const masked = edc.ecrResultSchema.parse({
+      outcome: "approved",
+      message,
+      amountIdr: 1000,
+    });
+    assert.doesNotMatch(masked.message ?? "", /\d(?:[\s/_-]*\d){11,}/);
+  }
   assert.equal(
     edc.ecrResultSchema.parse({ outcome: "declined", message: "RC 51" })
       .message,

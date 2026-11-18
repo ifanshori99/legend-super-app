@@ -48,11 +48,6 @@ import {
   edcTransactionStatusSchema,
 } from "@starter/shared/edc";
 import {
-  qrOrderErrorHttpStatus,
-  qrOrderErrorMessages,
-  QR_ORDER_PRICING_MODE_MIXED,
-} from "@starter/shared/qr-order";
-import {
   canSettlePosOrder,
   PosError,
   posEvents,
@@ -93,7 +88,6 @@ import { orderIssues } from "../db/schema/kds-issues.ts"; // legend-kxoyf
 import { paymentVaReleases } from "../db/schema/payment-va-release.ts";
 import { posQrisHolds } from "../db/schema/pos-qris-hold.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
-import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { posOverrideUsableFromDevice } from "./device-pin-support.ts";
 import { appendOutbox } from "./core-outbox.ts";
@@ -1145,6 +1139,18 @@ export async function repriceOrder(
     order.tableSessionId !== null && order.serviceType === "dine_in"
       ? await zoneOfSession(tx, context, order.tableSessionId)
       : null;
+  // legend-376ob (974): a repriced order keeps the pricing mode it was created
+  // in (orders.prices_include_tax). If the outlet flipped its tax rule since,
+  // the live rules are read in the order's own mode instead of refusing, so the
+  // subtotal keeps its meaning and the total matches an unflipped reprice.
+  const liveTaxConfig = await loadPosTaxConfig(tx, context, order.outletId);
+  const ownModeTaxConfig = {
+    ...liveTaxConfig,
+    taxRules: liveTaxConfig.taxRules.map((rule) => ({
+      ...rule,
+      priceIncludesTax: order.pricesIncludeTax,
+    })),
+  };
   const bill = computePosBill({
     context,
     outletId: order.outletId as OutletId,
@@ -1156,18 +1162,10 @@ export async function repriceOrder(
     zone,
     lines,
     orderDiscountIdr: discountTotal,
-    taxConfig: await loadPosTaxConfig(tx, context, order.outletId),
+    taxConfig: ownModeTaxConfig,
   });
   if (bill.discountIdr !== discountTotal)
     throw new PosError("DISCOUNT_EXCEEDS_SUBTOTAL");
-  // legend-npnh: a repriced order keeps the pricing mode it was created in.
-  // A flipped outlet rule would otherwise rewrite the subtotal's meaning.
-  if (bill.pricesIncludeTax !== order.pricesIncludeTax)
-    throw new HttpError(
-      qrOrderErrorHttpStatus.QR_ORDER_PRICING_MODE_MIXED,
-      QR_ORDER_PRICING_MODE_MIXED,
-      qrOrderErrorMessages.QR_ORDER_PRICING_MODE_MIXED,
-    );
   const deposit =
     input.releaseDeposit || order.status === "draft"
       ? 0
@@ -1181,7 +1179,7 @@ export async function repriceOrder(
       taxIdr: bill.taxIdr,
       roundingIdr: bill.roundingIdr,
       totalIdr: bill.totalIdr,
-      pricesIncludeTax: bill.pricesIncludeTax,
+      pricesIncludeTax: order.pricesIncludeTax,
       depositAppliedIdr: idr(deposit),
       taxResult: bill.tax,
       updatedAt: input.now,

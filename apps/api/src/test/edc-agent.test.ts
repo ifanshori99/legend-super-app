@@ -944,7 +944,7 @@ describe("EDC agent (legend-apt)", () => {
     const req = request(f);
     const tx = await pay(f, req);
     expect(tx.status).toBe("approved");
-    const digitRun = /\d(?:[ -]?\d){11,}/;
+    const digitRun = /\d(?:[\s/_-]*\d){11,}/;
     expect(tx.message ?? "").not.toMatch(digitRun);
     const rows = await rowsFor(f.tenant, { reference: req.reference });
     expect(rows[0]!.message).not.toBeNull();

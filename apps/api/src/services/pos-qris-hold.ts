@@ -12,7 +12,16 @@
 // pos_orders -> pos_qris_holds -> pos_order_tenders -> payment_links ->
 // payment_intents -> funds/refunds. Every writer below follows it.
 
-import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  or,
+  sql,
+} from "drizzle-orm";
 import {
   CoreError,
   createUlid,
@@ -481,6 +490,85 @@ export async function closeQrisHoldTx(
     now,
   );
   return true;
+}
+
+/**
+ * legend-xb20o: voids every QRIS tender of the bill that still waits for its
+ * payment and closes its link, once the hold that supersedes it is closed or
+ * paid (a bill can carry an older QR whose own hold already closed, so its
+ * tender stayed `authorized`). The 0369 trigger refuses any tender void while
+ * a hold of the bill is still active (several backfilled holds can be), so
+ * with one left nothing is voided here: the tender waits for that hold, never
+ * a refused write. Voiding only: no refund (money of that QR is parked or
+ * refunded once by the late-payment path, never captured). Idempotent.
+ */
+export async function voidSupersededQrisTendersTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    order: OrderRow;
+    caller: PosCaller | null;
+    now: Date;
+    /** Wall-clock time the links close at (default `now`). */
+    linkClosedAt?: Date;
+    reason: "superseded_by_paid_qris" | "superseded_by_release";
+    holdId?: string;
+  },
+): Promise<(typeof posOrderTenders.$inferSelect)[]> {
+  const { order, now } = input;
+  const tenantId = context.tenant.tenantId;
+  if (await activeHoldOf(tx, tenantId, order.id)) return [];
+  const voided = await tx
+    .update(posOrderTenders)
+    .set({ status: "voided", resolvedAt: now, updatedAt: now })
+    .where(
+      and(
+        eq(posOrderTenders.tenantId, tenantId),
+        eq(posOrderTenders.orderId, order.id),
+        eq(posOrderTenders.status, "authorized"),
+        isNotNull(posOrderTenders.paymentLinkId),
+      ),
+    )
+    .returning();
+  for (const tender of voided) {
+    if (tender.paymentLinkId)
+      await cancelPaymentLinkInTx(tx, context, {
+        linkId: tender.paymentLinkId,
+        now: input.linkClosedAt ?? now,
+        reason: "cancelled",
+      });
+    await appendOrderEvent(tx, context, {
+      order,
+      type: "order.tender_voided",
+      payload: {
+        tenderId: tender.id,
+        method: tender.method,
+        amountIdr: tender.amountIdr,
+        reason: input.reason,
+        ...(input.holdId ? { holdId: input.holdId } : {}),
+      },
+      caller: input.caller,
+      now,
+    });
+    await auditPos(
+      tx,
+      context,
+      {
+        action: "pos_order.tender_voided",
+        order,
+        caller: input.caller,
+        before: { id: order.id, status: "authorized" },
+        after: {
+          id: order.id,
+          method: tender.method,
+          amountIdr: tender.amountIdr,
+          status: "voided",
+        },
+      },
+      now,
+    );
+  }
+  return voided;
 }
 
 function paidQrisReleaseError(): CoreError {
@@ -1174,6 +1262,15 @@ export async function releasePosQris(
           caller,
           auditAction: "pos_qris_hold.force_released",
           now,
+        });
+        // legend-xb20o: an older QR of the bill (its hold already closed) can
+        // still be `authorized`; void it now that this hold is closed.
+        await voidSupersededQrisTendersTx(tx, context, {
+          order,
+          caller,
+          now,
+          reason: "superseded_by_release",
+          holdId: hold.id,
         });
         // legend-adiov: no provider proof, so the QR may still be paid. A
         // durable row keeps asking the provider until it answers for good.
