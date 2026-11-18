@@ -8,6 +8,7 @@ import {
   REPORT_GROUPS,
   accountMappingIssues,
   CASH_ACCOUNT_SHARED_CODE,
+  type AccountMapping,
   type AccountType,
   type PostingAccountRole,
   type ReportGroup,
@@ -546,6 +547,8 @@ async function importChartOfAccounts(
     // Only the cash-sharing rule gates the import: the rest of the endpoint's
     // validation (e.g. header accounts) is not applied to bundles today and
     // would refuse charts the import has always accepted.
+    // The ids are branded in the shared schema; the rows here come from this
+    // tenant's own queries and bundle, so the cast only adds the brand.
     const issues = accountMappingIssues(
       [
         ...mapped.map((row) => ({
@@ -554,7 +557,7 @@ async function importChartOfAccounts(
           legalEntityId: entity.id,
         })),
         ...values,
-      ],
+      ] as AccountMapping[],
       chart.map((row) => ({
         id: row.id,
         tenantId: row.tenantId,
@@ -565,7 +568,7 @@ async function importChartOfAccounts(
         reportGroup: row.reportGroup,
         parentId: row.parentId,
         isActive: row.isActive,
-      })),
+      })) as unknown as Parameters<typeof accountMappingIssues>[1],
     ).filter((issue) => issue.startsWith(`${CASH_ACCOUNT_SHARED_CODE}:`));
     if (issues.length > 0)
       throw new ConfigImportError(
