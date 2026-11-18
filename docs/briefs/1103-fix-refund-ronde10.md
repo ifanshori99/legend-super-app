@@ -4,7 +4,7 @@
 Baca `~/.agents/team/roles/engineer.md` dan bagian "Paralel dulu" di `~/.agents/team/TEAM.md`, lalu ikuti. Langkah pertama: pecah tugas dan spawn subagent paralel dalam satu giliran.
 
 ## Worktree
-`/Users/ifanshori99/Projects/legend super app/legend-2ad4d9ab`, cabang `ws/1072` (head 013b83cec). Tanpa migrasi (0697 tetap bebas; bila ternyata perlu, lapor dulu). Push tanpa `--force`.
+`/Users/ifanshori99/Projects/legend super app/legend-2ad4d9ab`, cabang `ws/1072-refund-ronde6-q45` (head 013b83cec). Tanpa migrasi (0697 tetap bebas; bila ternyata perlu, lapor dulu). Push tanpa `--force`.
 
 ## Masukan
 - Laporan SO: `docs/qa/second-opinion-refund-ronde10-1101.md` (F1-F6).
