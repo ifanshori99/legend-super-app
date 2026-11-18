@@ -2004,3 +2004,4 @@ Langkah berikut CTO baru:
 - Ukuran nyata: worktree 1,2G -> 182M setelah slim, 929M setelah setup + node_modules.
 - merge-queue baris 1069 diganti ke 916e08a6d. Thread G0nuo di-resolve.
 - G3voz (refund ronde 7 fix): restore bersih, regresi 77 file berjalan.
+- 16:14 CTO: pemilih kartu ronde 3: SIAP hanya c3prg, 85qyi, 5eveh (3wss9 ditutup duplikat c3prg). Worktree legend-d7876c20 (tiw2h, bersih, sudah di origin) dihapus, disk 14,4 -> 16 GB. Mulai G1j9j Sonnet #1 brief 1078 (tiga kartu, worktree slim + sparse legend-zx8k, tanpa migrasi). Codex #3 5h 81%: disimpan untuk SO refund ronde 8 dan SO kas ronde 5; #2 pulih 17:43, #4/#5 18:35.
