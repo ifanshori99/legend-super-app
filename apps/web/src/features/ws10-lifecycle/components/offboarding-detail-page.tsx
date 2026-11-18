@@ -24,6 +24,7 @@ import {
   certificateLock,
   checklistProgress,
   exitClearance,
+  liveOffboardingId,
   templateForPosition,
   templatesFor,
 } from "../lib.ts";
@@ -173,7 +174,11 @@ export function OffboardingDetailPage({ employeeId }: { employeeId: string }) {
         }
       />
       <div className="grid gap-5 lg:grid-cols-2">
-        <FinalSettlementCard employee={row} canViewSalary={canViewSalary} />
+        <FinalSettlementCard
+          employee={row}
+          offboardingId={liveOffboardingId(taskRows)}
+          canViewSalary={canViewSalary}
+        />
         <CertificateCard
           certificate={certificateFor(row, positionRows, employees)}
           lock={lock}

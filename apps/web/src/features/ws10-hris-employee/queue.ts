@@ -6,8 +6,10 @@
 // of pretending to succeed (see `attendance-clock.tsx`).
 //
 // Storage is injectable so the root node test can exercise the queue without a
-// browser. The module never throws on a blocked storage: it degrades to the
-// in-memory copy for this page load.
+// browser. Adding an entry (`enqueueCorrection`, `replaceQueuedCorrection`)
+// throws `CorrectionQueueWriteError` when the device cannot store it, so the
+// employee is never told a request is queued when it is not (legend-pl8hc).
+// Bookkeeping writes (remove, refuse, clear) stay best effort.
 
 import type { z } from "zod";
 import type { requestAttendanceCorrection } from "@starter/shared/hris";
@@ -127,22 +129,48 @@ export function readCorrectionQueue(
   }
 }
 
+/**
+ * Thrown when a new entry could not be written to the device (storage full,
+ * blocked or absent). Nothing was queued, so the caller must say the request
+ * was not saved instead of reporting "antre" (legend-pl8hc).
+ */
+export class CorrectionQueueWriteError extends Error {
+  constructor() {
+    super("The correction could not be saved on this device.");
+    this.name = "CorrectionQueueWriteError";
+  }
+}
+
+/** Writes the queue; returns false when the storage refused or is missing. */
 export function writeCorrectionQueue(
   queue: readonly QueuedCorrection[],
   storage: StorageLike | null = browserStorage(),
-): void {
-  if (!storage) return;
-  try {
-    storage.setItem(CORRECTION_QUEUE_KEY, JSON.stringify(queue));
-  } catch {
-    // Quota or blocked storage: the in-memory list still reflects the attempt.
+): boolean {
+  let stored = false;
+  if (storage) {
+    try {
+      storage.setItem(CORRECTION_QUEUE_KEY, JSON.stringify(queue));
+      stored = true;
+    } catch {
+      // Quota or blocked storage: reported through the return value.
+    }
   }
   notifyQueueChanged();
+  return stored;
+}
+
+function writeNewEntry(
+  queue: readonly QueuedCorrection[],
+  storage: StorageLike | null,
+): void {
+  if (!writeCorrectionQueue(queue, storage))
+    throw new CorrectionQueueWriteError();
 }
 
 /**
  * Adds one attempt; replaying the same key replaces it (idempotent). Throws
- * `CorrectionQueueFullError` when the queue holds MAX_QUEUED refused entries.
+ * `CorrectionQueueFullError` when the queue holds MAX_QUEUED refused entries,
+ * and `CorrectionQueueWriteError` when the device cannot store the entry.
  */
 export function enqueueCorrection(
   body: CorrectionSubmission,
@@ -160,7 +188,7 @@ export function enqueueCorrection(
     (row) => row.key !== entry.key,
   );
   const queue = fitQueue(rest, entry);
-  writeCorrectionQueue(queue, storage);
+  writeNewEntry(queue, storage);
   return queue;
 }
 
@@ -255,7 +283,7 @@ export function replaceQueuedCorrection(
     (row) => row.key !== oldKey && row.key !== entry.key,
   );
   const queue = fitQueue(rest, entry);
-  writeCorrectionQueue(queue, storage);
+  writeNewEntry(queue, storage);
   return queue;
 }
 

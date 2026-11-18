@@ -39,7 +39,11 @@ import {
   typeLabelKey,
 } from "../state.ts";
 import { newIdempotencyKey } from "../../../lib/idempotency.ts";
-import { CorrectionQueueFullError, type QueuedCorrection } from "../queue.ts";
+import {
+  CorrectionQueueFullError,
+  CorrectionQueueWriteError,
+  type QueuedCorrection,
+} from "../queue.ts";
 
 const TYPES: readonly AttendanceType[] = [
   "in",
@@ -267,9 +271,11 @@ function CorrectionForm({
             <p className="text-sm leading-5">
               {submit.error instanceof CorrectionQueueFullError
                 ? t("hris.correction.queueFull")
-                : submit.error instanceof Error
-                  ? submit.error.message
-                  : t("hris.correction.errorTitle")}
+                : submit.error instanceof CorrectionQueueWriteError
+                  ? t("hris.correction.queueWriteFailed")
+                  : submit.error instanceof Error
+                    ? submit.error.message
+                    : t("hris.correction.errorTitle")}
             </p>
             <p className="text-sm leading-5 text-muted-foreground">
               {t("hris.correction.errorHint")}

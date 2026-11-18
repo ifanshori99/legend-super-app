@@ -18,6 +18,11 @@
 - Test: `apps/web/test/payout-recon-{data,screen}.test.ts`, `e2e/payout-recon-clearance.mock.spec.ts`. Review architect (xhigh) 2 putaran + ui-auditor 2 putaran; temuan nyata diperbaiki.
 - Berikut: merge train sesudah 1005. Header shell memotong judul panjang di 390 (seluruh shell, bukan layar ini).
 
+## 1086 HRIS kecil (engineer, legend-10tqi/e6xi5/uese/aki7/pl8hc/ec8t2, cabang ws/1086-hris-kecil dari m1 0b4fe006c, 18 Nov 2026)
+- Selesai 18:27, tanpa migrasi. k1 kartu pesangon pakai angka API (outstandingLoans, pendingPayrollDeductions), tanpa hitung ulang klien. k2 duty meal hanya bawahan langsung + karyawan aktif. k3 cursorPair tolak NUL (422). k4/k6 lampiran SOP: purpose document, sourceKind NULL, milik aktor, sourceId NULL, outlet SOP; media versi sebelumnya dikecualikan; inventory-waste sudah ketat (tanpa ubah). k5 queue koreksi lempar CorrectionQueueWriteError saat storage gagal.
+- Merah-dulu di base: 29 gagal/58 lulus (API), 1 gagal (k5 node). Hijau setelahnya; eslint, prettier, typecheck api+web lulus.
+- Keputusan: tanpa source kind khusus SOP (butuh migrasi, rentang 0700-0701 tersedia); lampiran SOP berbasis pemilik, bukan klasifikasi.
+
 ## 1005 Payout: tarik klaim return dua orang (engineer, legend-snwnn, cabang ghostex/3bb6104c dari ghostex/92055877 74e142d8b, 17 Nov 2026)
 
 - Sudah: penarikan klaim return terbuka lewat dua orang. Tabel `payroll_payout_return_withdrawals`, grant kind `return_withdraw` (password di tiap langkah), fungsi tepercaya `app.payout_return_withdraw_propose` dan `app.payout_return_withdraw_approve` (0615), kind flag recon `return_withdraw` (0616). Pengaju dan sesi pengaju tidak bisa menyetujui (PAYOUT-94). Setelah approve klaim berstatus `withdrawn`, item kembali ke status sebelum klaim dan boleh diajukan lagi dengan ref baru. Jurnal yang sudah diposting tidak disentuh, tidak ada pembayaran ulang otomatis. Recon menandai penarikan tanpa attestation dua orang yang sah.

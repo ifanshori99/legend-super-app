@@ -482,6 +482,9 @@ export function cursorPair(cursor: string): [string, string] {
   const [first, second] = keys;
   if (typeof first !== "string" || typeof second !== "string")
     throw new HttpError(422, "VALIDATION_ERROR", "Check the cursor.");
+  // PostgreSQL text cannot hold NUL; reject here so it is a 422, not a 500.
+  if (first.includes("\u0000") || second.includes("\u0000"))
+    throw new HttpError(422, "VALIDATION_ERROR", "Check the cursor.");
   return [first, second];
 }
 

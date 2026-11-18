@@ -1378,6 +1378,8 @@ export const id = {
       errorHint: "Periksa koneksi lalu coba lagi. Tidak ada pengajuan ganda.",
       queueFull:
         "Antrean penuh oleh pengajuan yang ditolak. Buang atau ubah salah satunya dulu.",
+      queueWriteFailed:
+        "Pengajuan tidak tersimpan di perangkat karena penyimpanan penuh atau diblokir. Kosongkan ruang ponsel lalu kirim ulang.",
       noLog: "Absen tidak tercatat",
       replayDropped:
         "{count} pengajuan dari antrean ditolak server. Buka Beranda untuk coba lagi, ubah, atau buang.",

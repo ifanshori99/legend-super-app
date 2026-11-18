@@ -1,13 +1,14 @@
 // "Ringkasan penyelesaian akhir" (PRD v1.7 §3 D26 "Offboarding": perhitungan
 // hak akhir).
 //
-// There is no final-settlement endpoint yet, so the card reads the payroll
-// contract's own endpoints and does only the contract's math: THR pro rata via
-// `resolveStatutoryTable` + `computeThr` (tenure by exact date up to the exit
-// date), the kasbon balance still owed and the approved reimbursements not paid
-// out. Every line is an estimate until the payroll run that settles it is
-// locked; the card never adds the lines up and never computes pesangon or
-// leave payout (no contract).
+// The kasbon lines come straight from the API's final-settlement summary
+// (`outstandingLoans`, already net of the installments a payroll run reserved,
+// and `pendingPayrollDeductions`); the client never recomputes or re-subtracts
+// them. THR pro rata still reads the payroll contract's endpoints and does the
+// contract's math (`resolveStatutoryTable` + `computeThr`, tenure by exact date
+// up to the exit date), next to the approved reimbursements not paid out. Every
+// line is an estimate until the payroll run that settles it is locked; the card
+// never adds the lines up and never computes pesangon or leave payout.
 //
 // Salary data (HR-03): a viewer without payroll.view sees no amount and the
 // reads are never requested.
@@ -24,10 +25,9 @@ import { ErrorState } from "@/components/ui/feedback-state";
 import { Money } from "@/components/ui/money";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Employee } from "@starter/shared/hris";
-import { useSettlementSources } from "../hooks.ts";
+import { useFinalSettlement, useSettlementSources } from "../hooks.ts";
 import {
   formatBusinessDate,
-  outstandingLoans,
   thrEstimate,
   unpaidReimbursements,
 } from "../lib.ts";
@@ -61,11 +61,18 @@ function Line({
   );
 }
 
-function SettlementLines({ employee }: { employee: Employee }) {
+function SettlementLines({
+  employee,
+  offboardingId,
+}: {
+  employee: Employee;
+  offboardingId: string | null;
+}) {
   const t = useT();
   const sources = useSettlementSources(employee.id, true);
+  const summary = useFinalSettlement(offboardingId, true);
 
-  if (sources.isPending)
+  if (sources.isPending || (offboardingId !== null && summary.isPending))
     return (
       <div className="grid gap-2" aria-busy="true">
         <span className="sr-only">{t("common.loading")}</span>
@@ -75,12 +82,16 @@ function SettlementLines({ employee }: { employee: Employee }) {
       </div>
     );
 
+  // A failed summary only blanks the kasbon lines below (shown as
+  // unavailable); THR and reimbursement come from the sources and still show.
   if (sources.isError)
     return (
       <ErrorState
         title={t("lifecycle.settlement.errorTitle")}
         description={t("lifecycle.settlement.errorHint")}
-        onRetry={sources.refetch}
+        onRetry={() => {
+          sources.refetch();
+        }}
       />
     );
 
@@ -90,7 +101,10 @@ function SettlementLines({ employee }: { employee: Employee }) {
     rows: sources.rows,
     components: sources.components,
   });
-  const loans = outstandingLoans(sources.loans);
+  // The API's numbers, shown as they are. No summary (no offboarding record
+  // yet) shows no amount rather than a figure computed here.
+  const loans = summary.data?.data.outstandingLoans ?? null;
+  const deductions = summary.data?.data.pendingPayrollDeductions ?? null;
   const claims = unpaidReimbursements(sources.claims);
 
   const thrSource =
@@ -111,11 +125,30 @@ function SettlementLines({ employee }: { employee: Employee }) {
       <Line
         label={t("lifecycle.settlement.loan")}
         source={
-          loans.count === 0
-            ? t("lifecycle.settlement.loanNone")
-            : t("lifecycle.settlement.loanSource", { count: loans.count })
+          loans === null
+            ? t("lifecycle.settlement.loanUnavailable")
+            : loans.count === 0
+              ? t("lifecycle.settlement.loanNone")
+              : t("lifecycle.settlement.loanSource", { count: loans.count })
         }
-        amountIdr={loans.count === 0 ? null : loans.amountIdr}
+        amountIdr={loans === null || loans.count === 0 ? null : loans.amountIdr}
+      />
+      <Line
+        label={t("lifecycle.settlement.pendingDeduction")}
+        source={
+          deductions === null
+            ? t("lifecycle.settlement.loanUnavailable")
+            : deductions.count === 0
+              ? t("lifecycle.settlement.pendingDeductionNone")
+              : t("lifecycle.settlement.pendingDeductionSource", {
+                  count: deductions.count,
+                })
+        }
+        amountIdr={
+          deductions === null || deductions.count === 0
+            ? null
+            : deductions.amountIdr
+        }
       />
       <Line
         label={t("lifecycle.settlement.reimbursement")}
@@ -137,9 +170,12 @@ function SettlementLines({ employee }: { employee: Employee }) {
 
 export function FinalSettlementCard({
   employee,
+  offboardingId,
   canViewSalary,
 }: {
   employee: Employee;
+  /** The offboarding the API summarises; null until one exists. */
+  offboardingId: string | null;
   /** payroll.view (HR-03): without it no amount is requested or shown. */
   canViewSalary: boolean;
 }) {
@@ -161,7 +197,7 @@ export function FinalSettlementCard({
         </div>
       </CardHeader>
       {canViewSalary ? (
-        <SettlementLines employee={employee} />
+        <SettlementLines employee={employee} offboardingId={offboardingId} />
       ) : (
         <p className="flex items-start gap-1.5 text-sm leading-5 text-muted-foreground">
           <Lock className="mt-0.5 size-4 shrink-0" aria-hidden="true" />

@@ -17,10 +17,10 @@ import { ApiError } from "@/lib/api/errors";
 import { runLocalTaskAction } from "./local-action.ts";
 import {
   checklistTasksQuery,
-  employeeLoansQuery,
   employeePayComponentsQuery,
   employeeQuery,
   employeeReimbursementsQuery,
+  finalSettlementQuery,
   payComponentsQuery,
   thrTablesQuery,
   employeesQuery,
@@ -114,17 +114,15 @@ export function useSettlementSources(employeeId: string, enabled: boolean) {
   });
   const components = useQuery({ ...payComponentsQuery(), enabled: on });
   const tables = useQuery({ ...thrTablesQuery(), enabled: on });
-  const loans = useQuery({ ...employeeLoansQuery(employeeId), enabled: on });
   const claims = useQuery({
     ...employeeReimbursementsQuery(employeeId),
     enabled: on,
   });
-  const all = [rows, components, tables, loans, claims];
+  const all = [rows, components, tables, claims];
   return {
     rows: rows.data?.data ?? [],
     components: components.data?.data ?? [],
     tables: tables.data?.data ?? [],
-    loans: loans.data?.data ?? [],
     claims: claims.data?.data ?? [],
     isPending: all.some((query) => query.isPending),
     isError: all.some((query) => query.isError),
@@ -132,6 +130,21 @@ export function useSettlementSources(employeeId: string, enabled: boolean) {
       for (const query of all) if (query.isError) void query.refetch();
     },
   };
+}
+
+/**
+ * The API's final-settlement summary of one offboarding (kasbon owed and the
+ * payroll deductions already pending). Never requested without payroll.view
+ * (`enabled`) or before the offboarding id is known.
+ */
+export function useFinalSettlement(
+  offboardingId: string | null,
+  enabled: boolean,
+) {
+  return useQuery({
+    ...finalSettlementQuery(offboardingId ?? ""),
+    enabled: enabled && offboardingId !== null,
+  });
 }
 
 // ---- Mutations -----------------------------------------------------------

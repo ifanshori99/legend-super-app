@@ -201,9 +201,44 @@ async function storageObject(outletId: string): Promise<string> {
   createdStorage.push(id);
   await asOwner(tenantId, (client) =>
     client.query(
-      `INSERT INTO core_storage_objects (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes)
-       VALUES ($1, $2, $3, 'document', $4, 'image/png', 1024)`,
-      [tenantId, outletId, id, `private/${tenantId}/${id}.png`],
+      `INSERT INTO core_storage_objects (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes, owner_user_id)
+       VALUES ($1, $2, $3, 'document', $4, 'image/png', 1024, $5)`,
+      [tenantId, outletId, id, `private/${tenantId}/${id}.png`, hr],
+    ),
+  );
+  return id;
+}
+
+type StoredObject = {
+  purpose: "document" | "brand_logo" | "receipt" | "selfie";
+  sourceKind?: string | null;
+  outletId?: string | null;
+  tenant?: string;
+  /** Defaults to the tenant-wide HR actor; null = no owner. */
+  ownerUserId?: string | null;
+  sourceId?: string | null;
+};
+
+/** Any storage object, so SOP attachment rules can be probed per purpose and source kind. */
+async function storedObject(input: StoredObject): Promise<string> {
+  const id = randomUUID();
+  const tenant = input.tenant ?? tenantId;
+  if (tenant === tenantId) createdStorage.push(id);
+  await asOwner(tenant, (client) =>
+    client.query(
+      `INSERT INTO core_storage_objects
+         (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes, source_kind, owner_user_id, source_id)
+       VALUES ($1, $2, $3, $4, $5, 'image/webp', 1024, $6, $7, $8)`,
+      [
+        tenant,
+        input.outletId === undefined ? outletA : input.outletId,
+        id,
+        input.purpose,
+        `private/${tenant}/${id}.webp`,
+        input.sourceKind ?? null,
+        input.ownerUserId === undefined ? hr : input.ownerUserId,
+        input.sourceId ?? null,
+      ],
     ),
   );
   return id;
@@ -338,6 +373,10 @@ afterAll(async () => {
       otherTenant,
     ]);
     await client.query("DELETE FROM roles WHERE tenant_id = $1", [otherTenant]);
+    await client.query(
+      "DELETE FROM core_storage_objects WHERE tenant_id = $1",
+      [otherTenant],
+    );
   });
   // Audit rows are append-only; the fixture tenant may stay (disposable DB).
   await owner
@@ -480,6 +519,301 @@ describe("SOP versions", () => {
     );
     expect(missing.status).toBe(422);
     expect(missing.code).toBe("SOP_MEDIA_NOT_FOUND");
+  });
+});
+
+// legend-aki7 + legend-ec8t2 (akses): an SOP attachment must be an unclassified
+// document object of this tenant (purpose 'document', no source kind). Other
+// purposes (brand_logo, receipt, selfie) and HR files that already belong to a
+// record (employee_document, employment_contract, leave_request) are refused
+// with the same SOP_MEDIA_NOT_FOUND 422 as a missing id, so the answer does not
+// reveal why. Assumption: the "update" path is publishSopVersion (SOP versions
+// are immutable; there is no in-place edit).
+describe("SOP attachments are limited to unclassified documents", () => {
+  const refused: Array<[string, StoredObject]> = [
+    [
+      "a tenant brand logo",
+      { purpose: "brand_logo", outletId: null, sourceKind: null },
+    ],
+    ["a receipt photo", { purpose: "receipt", sourceKind: null }],
+    ["an attendance selfie", { purpose: "selfie", sourceKind: "attendance" }],
+    [
+      "an employee document",
+      { purpose: "document", sourceKind: "employee_document" },
+    ],
+    [
+      "an employment contract",
+      { purpose: "document", sourceKind: "employment_contract" },
+    ],
+    [
+      "a leave request attachment",
+      { purpose: "document", sourceKind: "leave_request" },
+    ],
+  ];
+
+  for (const [label, object] of refused) {
+    it(`creating an SOP with ${label} answers 422 SOP_MEDIA_NOT_FOUND`, async () => {
+      const mediaId = await storedObject(object);
+      const result = await failure(
+        createSopDocument(
+          tenantScope(),
+          hr,
+          createInput({ mediaIds: [mediaId], title: `Lampiran ${label}` }),
+        ),
+      );
+      expect(result.status).toBe(422);
+      expect(result.code).toBe("SOP_MEDIA_NOT_FOUND");
+      // The reason is not leaked in the answer.
+      const message = String((result.error as Error).message).toLowerCase();
+      for (const word of [
+        "brand_logo",
+        "receipt",
+        "selfie",
+        "employee_document",
+        "employment_contract",
+        "leave_request",
+        "purpose",
+      ])
+        expect(message).not.toContain(word);
+    });
+
+    it(`publishing a new version with ${label} answers 422 and keeps v1 only`, async () => {
+      const v1 = await createSopDocument(
+        tenantScope(),
+        hr,
+        createInput({ title: `Versi ${label}` }),
+      );
+      const mediaId = await storedObject(object);
+      const result = await failure(
+        publishSopVersion(
+          tenantScope(),
+          hr,
+          v1.id,
+          versionInput({ mediaIds: [mediaId] }),
+        ),
+      );
+      expect(result.status).toBe(422);
+      expect(result.code).toBe("SOP_MEDIA_NOT_FOUND");
+      const versions = await listSopDocumentVersions(tenantScope(), hr, v1.id);
+      expect(versions.map((row) => row.version)).toEqual([1]);
+    });
+  }
+
+  it("one bad attachment among good ones refuses the whole SOP", async () => {
+    const good = await storedObject({ purpose: "document" });
+    const bad = await storedObject({ purpose: "receipt" });
+    const result = await failure(
+      createSopDocument(
+        tenantScope(),
+        hr,
+        createInput({ mediaIds: [good, bad], title: "Lampiran campur" }),
+      ),
+    );
+    expect(result.status).toBe(422);
+    expect(result.code).toBe("SOP_MEDIA_NOT_FOUND");
+  });
+
+  it("an unclassified document object (no source kind) is still accepted on create and on a new version", async () => {
+    const first = await storedObject({ purpose: "document" });
+    const second = await storedObject({ purpose: "document" });
+    const v1 = await createSopDocument(
+      tenantScope(),
+      hr,
+      createInput({ mediaIds: [first], title: "Lampiran dokumen" }),
+    );
+    expect(v1.mediaIds).toEqual([first]);
+    const v2 = await publishSopVersion(
+      tenantScope(),
+      hr,
+      v1.id,
+      versionInput({ mediaIds: [first, second] }),
+    );
+    expect(v2.version).toBe(2);
+    expect(v2.mediaIds).toEqual([first, second]);
+  });
+
+  // A document row needs an outlet of its own tenant (outlet FK + purpose
+  // check), so a second tenant would need a full brand/entity/outlet seed; the
+  // only outlet-less object it can hold here is a brand logo.
+  it("an object of another tenant is refused", async () => {
+    const foreign = await storedObject({
+      purpose: "brand_logo",
+      tenant: otherTenant,
+      outletId: null,
+    });
+    const result = await failure(
+      createSopDocument(
+        tenantScope(),
+        hr,
+        createInput({ mediaIds: [foreign], title: "Lampiran lintas tenant" }),
+      ),
+    );
+    expect(result.status).toBe(422);
+    expect(result.code).toBe("SOP_MEDIA_NOT_FOUND");
+  });
+
+  // Round 2 (F1): the object must be the acting user's own, unattached, and
+  // (for an outlet SOP) belong to the SOP's outlet.
+  it("a document object owned by another user is refused on create and on a new version", async () => {
+    const theirs = await storedObject({
+      purpose: "document",
+      ownerUserId: stranger,
+    });
+    const created = await failure(
+      createSopDocument(
+        tenantScope(),
+        hr,
+        createInput({ mediaIds: [theirs], title: "Milik user lain" }),
+      ),
+    );
+    expect(created.status).toBe(422);
+    expect(created.code).toBe("SOP_MEDIA_NOT_FOUND");
+    const v1 = await createSopDocument(
+      tenantScope(),
+      hr,
+      createInput({ title: "Versi milik user lain" }),
+    );
+    const published = await failure(
+      publishSopVersion(
+        tenantScope(),
+        hr,
+        v1.id,
+        versionInput({ mediaIds: [theirs] }),
+      ),
+    );
+    expect(published.status).toBe(422);
+    expect(published.code).toBe("SOP_MEDIA_NOT_FOUND");
+  });
+
+  it("a document object without an owner is refused", async () => {
+    const orphan = await storedObject({
+      purpose: "document",
+      ownerUserId: null,
+    });
+    const result = await failure(
+      createSopDocument(
+        tenantScope(),
+        hr,
+        createInput({ mediaIds: [orphan], title: "Tanpa pemilik" }),
+      ),
+    );
+    expect(result.status).toBe(422);
+    expect(result.code).toBe("SOP_MEDIA_NOT_FOUND");
+  });
+
+  it("a document object already linked to a source is refused", async () => {
+    const linked = await storedObject({
+      purpose: "document",
+      sourceKind: "employee_document",
+      sourceId: randomUUID(),
+    });
+    const result = await failure(
+      createSopDocument(
+        tenantScope(),
+        hr,
+        createInput({ mediaIds: [linked], title: "Sudah tertaut" }),
+      ),
+    );
+    expect(result.status).toBe(422);
+    expect(result.code).toBe("SOP_MEDIA_NOT_FOUND");
+  });
+
+  it("an outlet SOP refuses a document object of another outlet but takes its own outlet's", async () => {
+    const otherOutlet = await storedObject({
+      purpose: "document",
+      outletId: outletB,
+      ownerUserId: managerA,
+    });
+    const refused = await failure(
+      createSopDocument(
+        outletScope(outletA),
+        managerA,
+        createInput({
+          stationId: stationA,
+          mediaIds: [otherOutlet],
+          title: "Media outlet lain",
+        }),
+      ),
+    );
+    expect(refused.status).toBe(422);
+    expect(refused.code).toBe("SOP_MEDIA_NOT_FOUND");
+    const own = await storedObject({
+      purpose: "document",
+      outletId: outletA,
+      ownerUserId: managerA,
+    });
+    const ok = await createSopDocument(
+      outletScope(outletA),
+      managerA,
+      createInput({
+        stationId: stationA,
+        mediaIds: [own],
+        title: "Media outlet sendiri",
+      }),
+    );
+    expect(ok.mediaIds).toEqual([own]);
+    const otherForVersion = await storedObject({
+      purpose: "document",
+      outletId: outletB,
+      ownerUserId: managerA,
+    });
+    const refusedVersion = await failure(
+      publishSopVersion(
+        outletScope(outletA),
+        managerA,
+        ok.id,
+        versionInput({ mediaIds: [otherForVersion] }),
+      ),
+    );
+    expect(refusedVersion.status).toBe(422);
+    expect(refusedVersion.code).toBe("SOP_MEDIA_NOT_FOUND");
+  });
+
+  // Round 3 (F3): media the previous version already carries stays valid for a
+  // different publisher; only NEW media faces the owner/source/outlet rules.
+  it("another manager publishing v2 keeps v1's media uploaded by someone else, but cannot add new media owned by the first manager", async () => {
+    const carried = await storedObject({
+      purpose: "document",
+      outletId: outletA,
+      ownerUserId: managerA,
+    });
+    const v1 = await createSopDocument(
+      outletScope(outletA),
+      managerA,
+      createInput({
+        stationId: stationA,
+        mediaIds: [carried],
+        title: "Versi dua penerbit lain",
+      }),
+    );
+    const secondManager = await actor(["hr.sop.manage"], {
+      type: "outlet",
+      id: outletA,
+    });
+    const v2 = await publishSopVersion(
+      outletScope(outletA),
+      secondManager,
+      v1.id,
+      versionInput({ mediaIds: [carried] }),
+    );
+    expect(v2.version).toBe(2);
+    expect(v2.mediaIds).toEqual([carried]);
+
+    const freshOfFirst = await storedObject({
+      purpose: "document",
+      outletId: outletA,
+      ownerUserId: managerA,
+    });
+    const refusedNew = await failure(
+      publishSopVersion(
+        outletScope(outletA),
+        secondManager,
+        v2.id,
+        versionInput({ mediaIds: [carried, freshOfFirst] }),
+      ),
+    );
+    expect(refusedNew.status).toBe(422);
+    expect(refusedNew.code).toBe("SOP_MEDIA_NOT_FOUND");
   });
 });
 

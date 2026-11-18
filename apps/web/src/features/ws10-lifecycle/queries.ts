@@ -5,6 +5,7 @@ import { queryOptions } from "@tanstack/react-query";
 import type { CursorPage } from "@starter/shared/core";
 import {
   getEmployee,
+  getOffboardingSettlement,
   listChecklistTasks,
   listEmployees,
   listOrgUnits,
@@ -15,7 +16,6 @@ import {
   type Position,
 } from "@starter/shared/hris";
 import {
-  listEmployeeLoans,
   listEmployeePayComponents,
   listPayComponents,
   listReimbursements,
@@ -122,9 +122,14 @@ export function thrTablesQuery() {
   });
 }
 
-export function employeeLoansQuery(employeeId: string) {
-  return endpointQueryOptions(listEmployeeLoans, {
-    query: { employeeId, limit: 100 },
+/**
+ * The server's own final-settlement summary: kasbon owed (already net of the
+ * installments a payroll run reserved) and those pending deductions. The
+ * client shows these numbers as they are and never recomputes them.
+ */
+export function finalSettlementQuery(offboardingId: string) {
+  return endpointQueryOptions(getOffboardingSettlement, {
+    params: { offboardingId },
   });
 }
 

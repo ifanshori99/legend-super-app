@@ -168,7 +168,8 @@ export function useSubmitCorrection() {
       replaces?: string;
     }): Promise<CorrectionSubmitResult> => {
       // Queues the attempt; an edit swaps the old entry in one write. Throws
-      // `CorrectionQueueFullError` instead of reporting a lost request.
+      // `CorrectionQueueFullError` or `CorrectionQueueWriteError` (device
+      // storage full or blocked) instead of reporting a lost request.
       const queueAttempt = (owner: string): CorrectionSubmitResult => {
         if (replaces !== undefined && hasQueuedCorrection(replaces, owner))
           replaceQueuedCorrection(replaces, body, owner);
