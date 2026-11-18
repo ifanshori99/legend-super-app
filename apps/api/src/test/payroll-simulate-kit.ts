@@ -22,12 +22,14 @@ import {
 // Published tables are unique per (tenant, type, effective_from) and every test
 // file shares one tenant. Each file therefore publishes its own tables on its own
 // first-of-month date, well before any test pay date (2026), picked at publish
-// time among dates no published row of the tenant uses. Every file publishes the
-// same parameters, so whichever table is in force on a pay date gives the same
-// result, and a file deleting its own rows never leaves another file without one.
-const PINNED_FROM_MONTHS = 480; // 1980-01 .. 2019-12
+// time among dates no published row of the tenant uses. Reserve 1900-1949 for
+// this kit so fixed-date fixtures (for example TER/Coretax in 2001-2002) never
+// collide with it. Allocation and publication share a transaction lock, so
+// concurrent files cannot both choose the same free date. Every file publishes
+// the same parameters, so whichever table is in force gives the same result.
+const PINNED_FROM_MONTHS = 600; // 1900-01 .. 1949-12
 function pinnedFromDate(monthIndex: number) {
-  const year = 1980 + Math.floor(monthIndex / 12);
+  const year = 1900 + Math.floor(monthIndex / 12);
   const month = (monthIndex % 12) + 1;
   return `${year}-${String(month).padStart(2, "0")}-01`;
 }
@@ -59,20 +61,26 @@ export async function publishStatutoryTables(
   tenantId: string,
   publisherId: string,
 ) {
+  // Callers already opened a tenant transaction. Keep this lock until they
+  // commit, including every draft-to-published update below.
+  await conn.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+    `test:payroll-simulate-kit:statutory:${tenantId}`,
+  ]);
+  const { rows } = await conn.query<{ id: string; effective_from: string }>(
+    `SELECT id, to_char(effective_from, 'YYYY-MM-DD') AS effective_from
+       FROM statutory_rates
+      WHERE tenant_id = $1 AND status = 'published'
+        AND effective_from >= '1900-01-01' AND effective_from < '1950-01-01'`,
+    [tenantId],
+  );
+  const ownIds = new Set(statutoryIds());
+  // Re-read our persisted date instead of trusting module state: a previous
+  // caller may have rolled back after choosing a date another file then took.
+  pinnedFrom = rows.find((row) => ownIds.has(row.id))?.effective_from ?? null;
   if (pinnedFrom === null) {
-    const used = new Set(
-      (
-        await conn.query<{ effective_from: string }>(
-          `SELECT to_char(effective_from, 'YYYY-MM-DD') AS effective_from
-             FROM statutory_rates
-            WHERE tenant_id = $1 AND status = 'published' AND effective_from < '2020-01-01'`,
-          [tenantId],
-        )
-      ).rows.map((row) => row.effective_from),
-    );
-    const start = Math.floor(Math.random() * PINNED_FROM_MONTHS);
+    const used = new Set(rows.map((row) => row.effective_from));
     for (let step = 0; step < PINNED_FROM_MONTHS; step++) {
-      const candidate = pinnedFromDate((start + step) % PINNED_FROM_MONTHS);
+      const candidate = pinnedFromDate(step);
       if (!used.has(candidate)) {
         pinnedFrom = candidate;
         break;

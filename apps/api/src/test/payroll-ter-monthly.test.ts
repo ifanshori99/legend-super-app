@@ -393,11 +393,7 @@ function totalsFor(slips: Slip[]) {
 // other, but a version must not start on the same date as another file's.
 const TER_ID = randomUUID();
 const TER_VERSION = 9200;
-// 1979: below the 1980-2019 range payroll-simulate-kit picks its dates from
-// (random first-of-month, chosen before this file publishes). A date inside that
-// range can collide with a kit file's row and raise 23505 on
-// statutory_rates_tenant_type_published_from_key (batch84 full run, Retro 43).
-const TER_FROM = "1979-01-01";
+const TER_FROM = "2002-01-01";
 
 async function ensureTerTable() {
   await asTenant(async (conn) => {
