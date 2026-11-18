@@ -1,0 +1,9 @@
+# 1132 Perbaikan architect delta kas 1118 (tingkat K uang, kecil)
+Worktree `/Users/ifanshori99/Projects/legend super app/legend-bb6a2919`, cabang `ghostex/cek-kas-1102-pinjaman-reimburse-supplier` (head 9d19f87e9, bersih). Tanpa migrasi. Push tanpa `--force`.
+
+1. P2-1: tambah statement 3 di `scripts/preflight/1118-shared-cash-mapping.sql`: entri jurnal non-reversal yang satu akun kas (role kas di `posting_account_snapshot`, fallback akun mapping hari ini bila snapshot kosong) didebit DAN dikredit di entri yang sama, semua jenis aturan (gaji tunai `salaries_payable` = 1102, jurnal kas kecil, pengembalian kas kecil ke bank, kasbon, reimburse). Baca-saja, satu statement. Baris = blokir. Test positif + negatif di `apps/api/src/test/cash-1118-preflight-sql.test.ts`. Catat di `docs/deployment.md` bagian gerbang 1118.
+2. P3-1: di `accounting-petty-cash.service.ts` (sekitar `heldDeliveredCashCreditsIdr`, baris 731-810) dan SQL statement 2 (`:52-60`): jangan join badan usaha karyawan saat ini; pakai `je.legal_entity_id` dari jurnal (cari lewat kunci idempotensi). Test: karyawan pindah badan usaha, jurnal lama salah tetap ditahan di badan usaha lama.
+3. `docs/deployment.md`: catat risiko diterima P3-2 (penahanan berlipat bila jurnal lama Dr1101/Cr1102, arah aman) dan P3-3 (jurnal pra-0296 tanpa snapshot diukur dengan akun hari ini).
+
+Bukti: test gagal-dulu untuk 1 dan 2 (merah di 9d19f87e9). Test terarah lewat `heavy` (dari root worktree): `LEGEND_TEST_FILES="src/test/cash-1118-preflight-sql.test.ts <test 1118 lain yang tersentuh>" heavy pnpm test`. Prettier + eslint berkas berubah. Typecheck API sekali: `heavy pnpm --filter @starter/api typecheck`. Commit (pesan diakhiri `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`), push.
+Laporan: SHA, hasil test merah/hijau, typecheck, risiko. Maks 15 baris.
