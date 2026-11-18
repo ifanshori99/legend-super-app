@@ -127,6 +127,9 @@ const RETRYABLE_CODES = [
   "ACCOUNT_ENTITY_MISMATCH",
   "OUTLET_LEGAL_ENTITY_MISSING",
   "PERIOD_CLOSED",
+  // A void/refund reversal that would credit 1102 above the cash left (the
+  // cash may be topped up later; legend-5qqb9).
+  "PETTY_CASH_GL_INSUFFICIENT",
   "AUTO_JOURNAL_RECEIPT_PENDING",
   "AUTO_JOURNAL_SALE_PENDING",
   "AUTO_JOURNAL_RECOVERY_REFUND_PENDING",

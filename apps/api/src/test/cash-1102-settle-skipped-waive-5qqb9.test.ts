@@ -220,22 +220,26 @@ async function withPeriodsClosed<T>(work: () => Promise<T>) {
   try {
     return await work();
   } finally {
-    const client = await kitOwner.connect();
-    try {
-      await client.query("BEGIN");
-      await client.query("SET LOCAL session_replication_role = replica");
-      await client.query(
-        `UPDATE fiscal_periods SET status = 'open', closed_by = NULL, closed_at = NULL, version = version + 1
-          WHERE tenant_id = $1 AND legal_entity_id = $2 AND status = 'closed'`,
-        [tenantId, W.entityId()],
-      );
-      await client.query("COMMIT");
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
-    } finally {
-      client.release();
-    }
+    await reopenPeriods();
+  }
+}
+
+async function reopenPeriods() {
+  const client = await kitOwner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SET LOCAL session_replication_role = replica");
+    await client.query(
+      `UPDATE fiscal_periods SET status = 'open', closed_by = NULL, closed_at = NULL, version = version + 1
+        WHERE tenant_id = $1 AND legal_entity_id = $2 AND status = 'closed'`,
+      [tenantId, W.entityId()],
+    );
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
   }
 }
 

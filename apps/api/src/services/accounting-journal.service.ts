@@ -100,6 +100,7 @@ import {
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
 import { entityLock } from "./accounting-bank-matching";
+import { assertJournalCredit1102Covered } from "./accounting-petty-cash.service";
 import { markMatchStaleForReversedJournal } from "./accounting-bank-recon-stale.service";
 import { assertPeriodOpenForPosting } from "./accounting-period.service";
 import {
@@ -1209,6 +1210,14 @@ export async function reverseJournalInTransaction(
     legalEntityId: row.legalEntityId,
     entryDate: input.entryDate,
   });
+  // A reversal that mirrors a debit to 1102 credits it: pays out of petty
+  // cash, refused when the cash is short (legend-5qqb9). Entity lock is held.
+  await assertJournalCredit1102Covered(
+    tx,
+    context.tenant.tenantId,
+    row.legalEntityId,
+    reversalLines,
+  );
   const [reversalRow] = await tx
     .insert(journalEntries)
     .values({
