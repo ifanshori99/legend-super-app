@@ -7512,3 +7512,9 @@ Subagent: 0 (thread ini tidak memanggil subagent di batch86; sesi sejak awal: 6)
 - Migrasi: 0691 diedit di tempat (hanya ada di cabang ini, tidak di `int/batch*`); tidak ada 0692. DB yang sudah menerapkan 0691 lama harus dibuat ulang.
 - Bukti: `cash-1102-1106-r6-waive-lock.test.ts` merah di f3e7c14eb (6 dari 7), hijau di head; r1/r2/5qqb9/fixed-asset hijau (58); subset `payroll-payout-*` 73 berkas hijau; tsc API, eslint, prettier hijau; `db:generate` kosong.
 - Temuan architect (xhigh) terbuka, di luar diff ini: cabang `settle` pada guard posting (0691:199-203) bisa di-flip `legend_app` langsung tanpa `current_user` dan tanpa entity lock; `payout_settle_journal_ok` (0400) menerima net NULL. Usul: refuse NULL net + entity lock di cabang settle (migrasi baru). Menunggu keputusan CTO.
+
+## 1106b kas ronde 6, cabang settle (keputusan CTO) - engineer
+- 0691 diedit di tempat lagi (tetap hanya di cabang ini, `--contains` dicek ulang; tanpa 0692): `app.payout_settle_journal_ok` menolak `settle_net_idr` NULL; cabang settle pada guard posting mengambil advisory `acc-cashbank` (key/hash sama `entityLock`) sebelum pemeriksaan jurnal. Flip settle TS tetap UPDATE biasa (sistem tanpa actor, tidak bisa lewat fungsi tepercaya); pengaman = jurnal tepat net saat commit + lock.
+- TS: `resolveOnePosting` membiarkan posting legacy net NULL apa adanya (warn `settle_net_unknown`, tanpa jurnal, tanpa 500).
+- Test: `cash-1102-1106b-settle-lock.test.ts` (9) merah di 4a1c19201 (legacy Rp1 settle lolos, GL -1; race: B selesai walau A pegang lock); hijau di head. r6 diperketat `wait_event='advisory'`.
+- Architect delta xhigh: tidak ada P0-P2. P3: legacy net NULL tak punya jalan keluar (hitung `settle_net_idr IS NULL AND kind IN ('settle_pending','settle_skipped')` sebelum rilis); test consumer belum assert status posted; test race belum cek key lock lewat pg_locks.

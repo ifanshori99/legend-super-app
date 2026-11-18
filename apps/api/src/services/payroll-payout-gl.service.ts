@@ -1011,6 +1011,22 @@ async function resolveOnePosting(
   // stalls the consumer.
   const wasSkipped = posting.kind === "settle_skipped";
   if (wasSkipped && netIdr === 0) return false;
+  // A legacy posting (from before 0392) has no recorded net, so the settle
+  // flip is refused by the database (app.payout_settle_journal_ok fails closed,
+  // 0691). Nothing is posted and nothing flips: it stays pending/skipped with
+  // its reserve held, and finance settles it manually outside the system.
+  if (posting.settleNetIdr === null) {
+    logger.warn(
+      {
+        tenantId,
+        batchId: batch.id,
+        postingId: posting.id,
+        reason: "settle_net_unknown",
+      },
+      "payout settlement left as is: legacy posting has no recorded net",
+    );
+    return false;
+  }
   // A skipped posting that owes a bank fee turns into a settle only while
   // the fee can be journaled with it. No bank charges mapping: it stays
   // `settle_skipped`, `fee_posted` untouched, nothing is posted, and a later

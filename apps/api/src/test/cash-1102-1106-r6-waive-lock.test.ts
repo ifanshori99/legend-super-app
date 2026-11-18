@@ -830,6 +830,42 @@ describe("1106 P1-1: a legacy settle_skipped posting (NULL net) can not be waive
   }, 180_000);
 });
 
+describe("1106b helper level: the waive journal helper fails closed on a NULL net", () => {
+  it("[1106b-waive-helper-null-net-false] app.payout_waive_journal_ok on a legacy NULL-net settle_skipped posting with an exact-net waive journal answers false (and true for the same journal on a normal row, so the refusal is the NULL net)", async () => {
+    const legacy = await legacyHandover();
+    const normal = await skippedHandover();
+    const answers: boolean[] = [];
+    for (const h of [legacy, normal]) {
+      const header = await realWaiveHeader(h);
+      const client = await openAppTx();
+      try {
+        const entry = await insertEntry(client, h.posting.id, header);
+        await addLines(client, entry, linesOf(h, h.net), 1);
+        const { rows } = await client.query<{ ok: boolean }>(
+          "SELECT app.payout_waive_journal_ok($1, $2) AS ok",
+          [W.tenantId, h.posting.id],
+        );
+        answers.push(rows[0]!.ok);
+      } finally {
+        await client.query("ROLLBACK").catch(() => undefined);
+        client.release();
+      }
+    }
+    expect(answers[1], "control: the normal row's exact journal is ok").toBe(
+      true,
+    );
+    expect(answers[0], "legacy NULL net: never ok").toBe(false);
+    for (const h of [legacy, normal]) {
+      expect(await kindOf(h.batchId), "probe rolled back: kind").toBe(
+        "settle_skipped",
+      );
+      expect(await waiveJournalIds(h.posting.id), "probe rolled back").toEqual(
+        [],
+      );
+    }
+  }, 180_000);
+});
+
 // ---- P1-2 entity lock -------------------------------------------------------
 
 type Reader = "supplier" | "loan" | "reimbursement";
@@ -880,11 +916,18 @@ async function waitsOnLockOrDone(pid: number, isDone: () => boolean) {
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
     if (isDone()) return { blocked: false, finished: true };
-    const { rows } = await kitOwner.query<{ wait_event_type: string | null }>(
-      "SELECT wait_event_type FROM pg_stat_activity WHERE pid = $1",
+    const { rows } = await kitOwner.query<{
+      wait_event_type: string | null;
+      wait_event: string | null;
+    }>(
+      "SELECT wait_event_type, wait_event FROM pg_stat_activity WHERE pid = $1",
       [pid],
     );
-    if (rows[0]?.wait_event_type === "Lock")
+    // 1106b: the wait is on the advisory (entity) lock, not on a row lock.
+    if (
+      rows[0]?.wait_event_type === "Lock" &&
+      rows[0]?.wait_event === "advisory"
+    )
       return { blocked: true, finished: false };
     await sleep(25);
   }
@@ -1003,7 +1046,7 @@ describe("1106 P1-2: the trusted waive function waits for the entity cash lock",
       ).toBe(false);
       expect(
         probe.blocked,
-        "B must be waiting on a lock (pg_stat_activity wait_event_type = Lock)",
+        "B must wait on the advisory lock (pg_stat_activity wait_event_type = Lock, wait_event = advisory)",
       ).toBe(true);
       expect(
         observation.staleGl - observation.reserveAfterBarrier,

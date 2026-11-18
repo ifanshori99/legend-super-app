@@ -17,6 +17,9 @@
 --    found, 42501 actor, 23514 any state refusal).
 -- 4. The 0690 guard, verbatim except the waive branch (needs current_user =
 --    legend_payout and the journal helper).
+-- 4b. (SO 1105 round 6, P1-2) the settle flip by legend_app took no entity lock
+--    and app.payout_settle_journal_ok accepted a legacy NULL net: see the helper
+--    and the guard settle branch below.
 -- 5. Commit-time checks (pattern 0400): the posting check also fires on the
 --    waive flip, the journal-line check also re-checks waived postings when a
 --    line is added to a waive journal.
@@ -174,9 +177,75 @@ REVOKE CREATE ON SCHEMA app FROM legend_payout;
 --> statement-breakpoint
 REVOKE SET OPTION FOR legend_payout FROM CURRENT_USER;
 --> statement-breakpoint
+-- The 0400 body of app.payout_settle_journal_ok, only the NULL net branch
+-- changed (SO 1105 round 6): a legacy row (settle_net_idr NULL, from before
+-- 0392, sealed total unreadable here) is false, so a journal of Rp1 can no
+-- longer release its reserve. The net must be recorded, > 0 and equal to the
+-- debit sum. The legacy row stays held; finance settles it manually outside the
+-- system. Used by the guard, the commit checks and the TS settle path.
+CREATE OR REPLACE FUNCTION app.payout_settle_journal_ok(p_tenant_id uuid, p_posting_id uuid) RETURNS boolean
+LANGUAGE sql STABLE SET search_path = pg_catalog AS $$
+  SELECT EXISTS (
+    SELECT 1
+      FROM public.payroll_payout_gl_postings p
+      JOIN public.payroll_disbursement_batches b
+        ON b.tenant_id = p.tenant_id AND b.id = p.batch_id
+      JOIN public.journal_entries j
+        ON j.tenant_id = p.tenant_id
+       AND j.idempotency_key = p.journal_key
+       AND j.legal_entity_id = b.legal_entity_id
+       AND j.source_type = 'payroll'
+       AND j.source_id = b.payroll_run_id::text
+     WHERE p.tenant_id = p_tenant_id AND p.id = p_posting_id
+       AND (SELECT pg_catalog.sum(l.debit_idr)
+              FROM public.journal_lines l
+             WHERE l.tenant_id = j.tenant_id AND l.entry_id = j.id) > 0
+       AND (SELECT pg_catalog.sum(l.debit_idr)
+              FROM public.journal_lines l
+             WHERE l.tenant_id = j.tenant_id AND l.entry_id = j.id)
+         = (SELECT pg_catalog.sum(l.credit_idr)
+              FROM public.journal_lines l
+             WHERE l.tenant_id = j.tenant_id AND l.entry_id = j.id)
+       -- The journal moves exactly the principal of the posting. A NULL net
+       -- is false (fails closed), was true before this change.
+       AND p.settle_net_idr > 0
+       AND (SELECT pg_catalog.sum(l.debit_idr)
+              FROM public.journal_lines l
+             WHERE l.tenant_id = j.tenant_id AND l.entry_id = j.id)
+         = p.settle_net_idr
+       -- Every debit line is on the salaries payable account frozen on the
+       -- posting (the lock journal's), never on today's mapping.
+       AND NOT EXISTS (
+         SELECT 1
+           FROM public.journal_lines l
+          WHERE l.tenant_id = j.tenant_id AND l.entry_id = j.id
+            AND l.debit_idr > 0
+            AND l.account_id IS DISTINCT FROM p.salaries_payable_account_id
+       )
+       AND NOT EXISTS (
+         SELECT 1
+           FROM public.journal_lines l
+          WHERE l.tenant_id = j.tenant_id AND l.entry_id = j.id
+            AND l.credit_idr > 0
+            AND l.account_id IS DISTINCT FROM (
+              CASE
+                WHEN b.channel <> 'cash' AND b.source_bank_account_id IS NOT NULL
+                THEN (SELECT ba.gl_account_id
+                        FROM public.bank_accounts ba
+                       WHERE ba.tenant_id = b.tenant_id
+                         AND ba.legal_entity_id = b.legal_entity_id
+                         AND ba.id = b.source_bank_account_id)
+                ELSE p.source_gl_account_id
+              END)
+       )
+  )
+$$;
+--> statement-breakpoint
 -- The 0690 guard, verbatim except the waive branch.
 CREATE OR REPLACE FUNCTION app.payroll_payout_gl_postings_guard() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+DECLARE
+  v_settle_entity uuid;
 BEGIN
   IF current_setting('app.payroll_reseal', true) IS NOT DISTINCT FROM 'on'
     AND NEW.pii_key_version > OLD.pii_key_version
@@ -196,10 +265,27 @@ BEGIN
   -- (F3, 0400) the settle journal checks moved to app.payout_settle_journal_ok
   -- (re-checked at commit). The row read there is OLD, equal to NEW here except
   -- the kind, which the helper does not read.
+  -- (SO 1105 round 6, P1-2) takes the entity cash/bank advisory lock first (same
+  -- key and hash as the TS entityLock), held to commit: the 1102 guards read GL
+  -- and reserve under it, so a settle flip by legend_app (UPDATE(kind), 0381)
+  -- never interleaves with a spend that counted the old reserve. The TS settle
+  -- already holds it, so it re-enters. Caveat: the trigger runs after the row
+  -- lock, so a direct caller can deadlock with the TS order (entity, batch, row);
+  -- one side aborts, no loss. The TS settle flip (a plain UPDATE by the system,
+  -- no actor) is not converted to a trusted function: no actor is available.
   IF OLD.kind IN ('settle_pending', 'settle_skipped') AND NEW.kind = 'settle'
-    AND (to_jsonb(NEW) - 'kind') IS NOT DISTINCT FROM (to_jsonb(OLD) - 'kind')
-    AND app.payout_settle_journal_ok(NEW.tenant_id, NEW.id) THEN
-    RETURN NEW;
+    AND (to_jsonb(NEW) - 'kind') IS NOT DISTINCT FROM (to_jsonb(OLD) - 'kind') THEN
+    SELECT b.legal_entity_id INTO v_settle_entity
+      FROM public.payroll_disbursement_batches b
+     WHERE b.tenant_id = NEW.tenant_id AND b.id = NEW.batch_id;
+    IF v_settle_entity IS NOT NULL THEN
+      PERFORM pg_catalog.pg_advisory_xact_lock(
+        pg_catalog.hashtextextended(
+          'acc-cashbank:' || lower(NEW.tenant_id::text) || ':' || lower(v_settle_entity::text), 0));
+      IF app.payout_settle_journal_ok(NEW.tenant_id, NEW.id) THEN
+        RETURN NEW;
+      END IF;
+    END IF;
   END IF;
   -- (legend-1089, 0691) the pure flip settle_skipped -> settle_waived on a cash
   -- batch, now only by the payout role (app.payout_waive_skipped) and only with
