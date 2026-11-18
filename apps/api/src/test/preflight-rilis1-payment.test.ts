@@ -249,20 +249,32 @@ describe("[legend-47rgt] duplicate active AI promotion gate before 0446", () => 
     });
   });
 
+  it.each(["draft", "paused"] as const)(
+    "[legend-47rgt] blocks a %s duplicate of an active AI promotion",
+    async (status) => {
+      await beforeIndex("promotions", async (client) => {
+        await insertPromotion(client, { id: firstId });
+        await insertPromotion(client, { id: secondId, status });
+        const result = await client.query(gateSql("47rgt"));
+        expect(result.rows).toEqual([
+          {
+            tenant_id: tenantA,
+            ai_action_request_id: actionId,
+            promotion_count: "2",
+          },
+        ]);
+      });
+    },
+  );
+
   it("[legend-47rgt] clears after extra promotions are deactivated", async () => {
     await beforeIndex("promotions", async (client) => {
       await insertPromotion(client, { id: firstId });
-      const inactiveStatuses: Promotion["status"][] = [
-        "draft",
-        "paused",
-        "ended",
-      ];
-      for (const [index, status] of inactiveStatuses.entries()) {
-        await insertPromotion(client, {
-          id: `60000000-0000-4000-8000-00000000000${index + 2}`,
-          status,
-        });
-      }
+      // Only a status outside active/paused/draft counts as deactivated.
+      await insertPromotion(client, {
+        id: "60000000-0000-4000-8000-000000000002",
+        status: "ended",
+      });
       expect((await client.query(gateSql("47rgt"))).rows).toEqual([]);
     });
   });

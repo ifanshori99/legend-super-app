@@ -223,7 +223,9 @@ describe.skipIf(!enabled)("DOIT recurring sandbox certification", () => {
       messages.push(error instanceof Error ? error.message : String(error));
       const last = calls.at(-1);
       if (!subscriptionId && last && [404, 405, 501].includes(last.status)) {
-        outcome = "recurring-unavailable-in-sandbox";
+        outcome = "adapter-path-mismatch";
+        // Not a pass: the adapter's /v1/recurring/* paths do not exist at DOIT.
+        failure = true;
         // A created id is unavailable, but record both requested legacy GET
         // routes with an intentionally absent id/reference. These responses
         // do not certify lookup semantics or permit changing the adapter.

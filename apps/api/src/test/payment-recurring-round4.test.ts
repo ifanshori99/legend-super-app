@@ -67,6 +67,7 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import type { OutletId, ScopedTenantContext } from "@starter/shared/core";
+import { env } from "../config/env";
 import { createApp } from "../app";
 import { resetPaymentWebhookRateLimits } from "../routes/payment-webhook.routes";
 import {
@@ -156,6 +157,8 @@ const P_NEXT = jakartaMonthStart(1);
 // ---------------------------------------------------------------------------
 
 beforeAll(async () => {
+  // The recurring routes answer 503 unless this gate is on (default off).
+  env.DOIT_RECURRING_ENABLED = true;
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
   dedicated = await createSecondTenant(owner, "round4");

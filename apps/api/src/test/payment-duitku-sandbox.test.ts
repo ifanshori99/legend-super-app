@@ -16,7 +16,11 @@ import {
 
 const merchantCode = process.env.DUITKU_SANDBOX_MERCHANT_CODE ?? "";
 const apiKey = process.env.DUITKU_SANDBOX_API_KEY ?? "";
-const enabled = !process.env.CI && merchantCode.length > 0 && apiKey.length > 0;
+const enabled =
+  !process.env.CI &&
+  process.env.DUITKU_SANDBOX_PROBE === "1" &&
+  merchantCode.length > 0 &&
+  apiKey.length > 0;
 const credentials = { merchantCode, apiKey, environment: "sandbox" as const };
 const amountIdr = 10_000;
 const baseUrl = duitkuBaseUrl("sandbox");
@@ -318,7 +322,13 @@ describe.skipIf(!enabled)(
         spies.forEach((spy) => spy.mockRestore());
         ensureNoSecret(evidence);
         await mkdir(new URL(".", evidencePath), { recursive: true });
-        await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`);
+        await writeFile(
+          evidencePath,
+          `${JSON.stringify(evidence, null, 2)}\n`,
+          {
+            mode: 0o600,
+          },
+        );
         expect(leakedLog, "Sandbox log leaked key").toBe(false);
       }
     }, 240_000);
