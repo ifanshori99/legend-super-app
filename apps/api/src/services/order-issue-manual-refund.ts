@@ -11,6 +11,9 @@
 //   cumulative over the order's other live manual refunds (telescoping), so
 //   all of them together never exceed the bill. The approval is bound to
 //   exactly this amount.
+// - A void (cloud `pos_order_voids`, an edge ingest in state `voided`, or a
+//   parked edge `order.voided` of the final sale) also refuses a manual refund
+//   (legend-1042).
 // - Exclusive with the POS refund per order (restrictive, founder to review):
 //   an order with any POS refund, or any non-failed ORD-09 refund that is not
 //   one of its live route manual refunds, refuses a manual refund (409); the
@@ -34,8 +37,10 @@ import {
   type ScopedTenantContext,
   type TenantId,
 } from "@starter/shared/core";
+import { posEvents, orderVoidedPayloadSchema } from "@starter/shared/pos";
 import { orderIssues } from "../db/schema/kds-issues.ts";
-import { posOrderRefunds } from "../db/schema/pos-order.ts";
+import { edgeOrderIngests } from "../db/schema/edge-order-ingest.ts";
+import { posOrderRefunds, posOrderVoids } from "../db/schema/pos-order.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { HttpError } from "../lib/http-error.ts";
 import type { Tx } from "./menu-internals.ts";
@@ -166,6 +171,69 @@ export async function manualRefundAmountIdr(
     throw conflict(
       "Pesanan ini sudah punya refund kasir. Refund manual per item ditolak agar uang yang sama tidak dikembalikan dua kali.",
     );
+
+  // Mutually exclusive with a void too (legend-1042, restrictive): a void gave
+  // the whole bill back (or, on the edge, is recorded as voided), and it leaves
+  // orders.status `completed`, so only these rows tell. The orders row lock
+  // taken above serialises this with the cloud void.
+  const [voidRow] = await tx
+    .select({ id: posOrderVoids.id })
+    .from(posOrderVoids)
+    .where(
+      and(
+        eq(posOrderVoids.tenantId, tenantId),
+        eq(posOrderVoids.orderId, orderId),
+      ),
+    )
+    .limit(1);
+  const [edgeVoidRow] = voidRow
+    ? []
+    : await tx
+        .select({ orderId: edgeOrderIngests.orderId })
+        .from(edgeOrderIngests)
+        .where(
+          and(
+            eq(edgeOrderIngests.tenantId, tenantId),
+            eq(edgeOrderIngests.orderId, orderId),
+            eq(edgeOrderIngests.state, "voided"),
+          ),
+        )
+        .limit(1);
+  if (voidRow || edgeVoidRow)
+    throw conflict(
+      "Pesanan ini sudah di-void. Refund manual per item ditolak agar uang yang sama tidak dikembalikan dua kali.",
+    );
+
+  // A parked edge `order.voided` of the final sale paid its cash out of a
+  // drawer before anything materialized it (same facts as
+  // payment-refund-edge-history `assertNoParkedFinalVoid`). Unreadable
+  // envelope: refused. An open-order void paid nothing and is ignored.
+  const orderUuid = ulidToUuid(orderId);
+  const orderUlid = orderId.toLowerCase();
+  const parked = await tx.execute<{ envelope: unknown }>(sql`
+    SELECT envelope
+      FROM edge_deferred_events
+     WHERE tenant_id = ${tenantId}
+       AND (event_name = 'order.voided' OR envelope->>'name' = 'order.voided')
+       AND (
+         (aggregate_type = 'order'
+          AND lower(aggregate_id) IN (${orderUuid}, ${orderUlid}))
+         OR lower(envelope->>'aggregateId') IN (${orderUuid}, ${orderUlid})
+         OR lower(envelope->'payload'->>'orderId') IN (${orderUuid}, ${orderUlid})
+       )
+  `);
+  for (const row of parked.rows) {
+    const envelope = posEvents["order.voided"].envelopeSchema.safeParse(
+      row.envelope,
+    );
+    const payload = envelope.success
+      ? orderVoidedPayloadSchema.safeParse(envelope.data.payload)
+      : undefined;
+    if (!payload?.success || payload.data.voidedFinalOrder)
+      throw conflict(
+        "Pesanan ini sudah di-void di kasir (menunggu sinkron). Refund manual per item ditolak agar uang yang sama tidak dikembalikan dua kali.",
+      );
+  }
 
   // A provider or payout refund (ORD-09) that is not one of this order's live
   // route manual refunds (a failed-item refund, an ORD-09 manual issue's, a
