@@ -106,7 +106,10 @@ const SENSITIVE_TABLES = [
 // initial ACL leaves out PUBLIC EXECUTE (pg_switch_wal, pg_read_file,
 // lo_import, ...) fails the audit when the login can run it, directly or
 // through PUBLIC. A function without an initial ACL is PUBLIC by default and
-// is never flagged.
+// is never flagged. The same baseline covers extension functions (privtype
+// 'e', any schema: pg_stat_statements_reset, pg_buffercache_*, ...) and
+// pg_catalog columns (a column whose initial table and column ACLs leave out
+// PUBLIC, such as pg_subscription.subconninfo).
 // Tables with a tenant_id that are deliberately not under the restrictive
 // tenant policy (the same list as apps/api/src/db/rls.test.ts, which explains
 // each). The first three must still keep row-level security enabled: their
@@ -476,7 +479,8 @@ async function assertRestricted(
  * names per relation, "*" for any relation). TRUNCATE ignores RLS,
  * TRIGGER/REFERENCES are DDL-adjacent and MAINTAIN (PostgreSQL 17+) runs
  * REINDEX/CLUSTER/REFRESH, so none of them may appear. A grant on a single
- * column counts as the privilege on its table.
+ * column counts as the privilege on its table. `queueOnly` narrows the check
+ * to relations in the queue schema (see assertNoQueueSchemaAccess).
  */
 async function assertTableRights(
   client: ClientBase,
@@ -484,6 +488,7 @@ async function assertTableRights(
   label: string,
   ownSchemas: string[],
   allowed: Record<string, string[]>,
+  queueOnly = false,
 ) {
   const privileges = [
     "SELECT",
@@ -503,6 +508,7 @@ async function assertTableRights(
      CROSS JOIN unnest($3::text[]) AS p(privilege)
      WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
        AND n.nspname <> ALL($2::text[])
+       AND ($4::text IS NULL OR n.nspname = $4)
        AND n.nspname NOT LIKE 'pg\\_toast%' AND n.nspname NOT LIKE 'pg\\_temp\\_%'
        AND CASE
          -- System catalogs: only what goes beyond PUBLIC's own rights (a
@@ -530,7 +536,7 @@ async function assertTableRights(
          AND EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e')
        )
      ORDER BY 1, 2`,
-    [user, ownSchemas, privileges],
+    [user, ownSchemas, privileges, queueOnly ? QUEUE_SCHEMA : null],
   );
   // "*" covers application relations only; a system catalog right beyond
   // PUBLIC's is never allowed unless listed by name.
@@ -626,6 +632,31 @@ async function assertNoSensitive(
     throw new ProvisionError(
       `Cannot audit the ${label} role: the built-in function baseline (pg_init_privs) is empty or incomplete for ${anchor.rows.map((row: { name: string }) => row.name).join(", ")}, so sensitive functions could not be told apart. Restore the baseline or re-initialise the cluster, then re-run.`,
     );
+  // Same for the extension baseline (privtype 'e', recorded when an extension
+  // script runs GRANT/REVOKE): pg_stat_statements_reset() is revoked from
+  // PUBLIC by its script, so an installed pg_stat_statements without that entry
+  // means the baseline is lost and extension functions could not be told apart.
+  const extensionAnchor = await client.query(
+    `SELECT f.oid::regprocedure::text AS name
+     FROM pg_catalog.pg_proc f
+     JOIN pg_catalog.pg_depend d
+       ON d.classid = 'pg_catalog.pg_proc'::regclass AND d.objid = f.oid AND d.deptype = 'e'
+     JOIN pg_catalog.pg_extension e
+       ON d.refclassid = 'pg_catalog.pg_extension'::regclass AND e.oid = d.refobjid
+     WHERE e.extname = 'pg_stat_statements' AND f.proname = 'pg_stat_statements_reset'
+       AND NOT EXISTS (
+         SELECT 1 FROM pg_catalog.pg_init_privs ip
+         WHERE ip.classoid = 'pg_catalog.pg_proc'::regclass
+           AND ip.objoid = f.oid AND ip.objsubid = 0 AND ip.privtype = 'e'
+           AND NOT EXISTS (
+             SELECT 1 FROM pg_catalog.aclexplode(ip.initprivs) x
+             WHERE x.grantee = 0 AND x.privilege_type = 'EXECUTE'))
+     ORDER BY 1`,
+  );
+  if (extensionAnchor.rows.length)
+    throw new ProvisionError(
+      `Cannot audit the ${label} role: the extension function baseline (pg_init_privs) is empty or incomplete for ${extensionAnchor.rows.map((row: { name: string }) => row.name).join(", ")}, so sensitive extension functions could not be told apart. Re-create the extension, then re-run.`,
+    );
   const reached = await client.query(
     `SELECT ARRAY(
        SELECT format('%s on pg_catalog.%I', p.privilege, c.relname)
@@ -636,19 +667,34 @@ async function assertNoSensitive(
                   THEN has_table_privilege($1, c.oid, 'DELETE')
                   ELSE has_any_column_privilege($1, c.oid, p.privilege) END
        UNION ALL
-       SELECT 'SELECT on pg_catalog.pg_subscription.subconninfo'
-       WHERE has_column_privilege($1, 'pg_catalog.pg_subscription', 'subconninfo', 'SELECT')
+       SELECT DISTINCT format('%s on pg_catalog.%I.%I', p.privilege, c.relname, a.attname)
+       FROM pg_class c
+       JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+       CROSS JOIN unnest(ARRAY['SELECT', 'INSERT', 'UPDATE']) AS p(privilege)
+       WHERE c.relnamespace = 'pg_catalog'::regnamespace
+         AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+         AND c.relname <> ALL($2::text[])
+         AND has_column_privilege($1, c.oid, a.attnum, p.privilege)
+         AND NOT EXISTS (
+           SELECT 1
+           FROM pg_catalog.pg_init_privs ip
+           CROSS JOIN LATERAL pg_catalog.aclexplode(ip.initprivs) x
+           WHERE ip.classoid = 'pg_catalog.pg_class'::regclass
+             AND ip.objoid = c.oid AND ip.privtype = 'i'
+             AND ip.objsubid IN (0, a.attnum)
+             AND x.grantee = 0 AND x.privilege_type = p.privilege)
        UNION ALL
        SELECT DISTINCT format('EXECUTE on %I.%I', n.nspname, f.proname)
        FROM pg_proc f JOIN pg_namespace n ON n.oid = f.pronamespace
-       WHERE ((n.nspname = 'pg_catalog'
-               AND EXISTS (
-                 SELECT 1 FROM pg_catalog.pg_init_privs ip
-                 WHERE ip.classoid = 'pg_catalog.pg_proc'::regclass
-                   AND ip.objoid = f.oid AND ip.objsubid = 0 AND ip.privtype = 'i'
-                   AND NOT EXISTS (
-                     SELECT 1 FROM pg_catalog.aclexplode(ip.initprivs) x
-                     WHERE x.grantee = 0 AND x.privilege_type = 'EXECUTE')))
+       WHERE (EXISTS (
+                SELECT 1 FROM pg_catalog.pg_init_privs ip
+                WHERE ip.classoid = 'pg_catalog.pg_proc'::regclass
+                  AND ip.objoid = f.oid AND ip.objsubid = 0
+                  AND (ip.privtype = 'e'
+                       OR (ip.privtype = 'i' AND n.nspname = 'pg_catalog'))
+                  AND NOT EXISTS (
+                    SELECT 1 FROM pg_catalog.aclexplode(ip.initprivs) x
+                    WHERE x.grantee = 0 AND x.privilege_type = 'EXECUTE'))
               OR f.proname LIKE 'dblink%')
          AND has_function_privilege($1, f.oid, 'EXECUTE')
        ORDER BY 1
@@ -1016,6 +1062,120 @@ async function assertReconRoleReachedOnly(client: ClientBase, user: string) {
     );
 }
 
+/**
+ * A SECURITY DEFINER function runs as its owner, so one in schema app that
+ * kept PUBLIC's default EXECUTE lets every login (the application and queue
+ * logins included) act as that owner. Every migration revokes EXECUTE from
+ * PUBLIC and grants it to the one role that needs it; a function that did not
+ * is drift or a missed revoke, and the audit refuses it.
+ */
+async function assertSecurityDefinerNotPublic(client: ClientBase) {
+  const open = await client.query(
+    `SELECT ARRAY(
+       SELECT p.oid::regprocedure::text
+       FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+       WHERE n.nspname = 'app'
+         AND p.prosecdef
+         AND has_function_privilege('public', p.oid, 'EXECUTE')
+       ORDER BY 1
+     ) AS names`,
+  );
+  const names: string[] = open.rows[0].names;
+  if (names.length)
+    throw new ProvisionError(
+      `SECURITY DEFINER functions in schema app can be run by every login through PUBLIC: ${names.slice(0, 5).join(", ")}${names.length > 5 ? ", ..." : ""}. Revoke EXECUTE from PUBLIC, then re-run.`,
+    );
+}
+
+/**
+ * The queue schema belongs to the queue login alone. The application login
+ * must reach nothing in it: no table or column right, no sequence right, no
+ * USAGE or CREATE on the schema, and no default privilege that would hand it
+ * rights on objects the queue owner creates later (pg-boss creates its tables
+ * at run time). Anything here is drift, so the "*" allowance for application
+ * tables never covers it.
+ */
+async function assertNoQueueSchemaAccess(client: ClientBase, user: string) {
+  await assertTableRights(client, user, "application", [], {}, true);
+  const sequences = await client.query(
+    `SELECT format('%I.%I', n.nspname, c.relname) AS relation, p.privilege
+     FROM pg_class c
+     JOIN pg_namespace n ON n.oid = c.relnamespace
+     CROSS JOIN unnest(ARRAY['USAGE', 'SELECT', 'UPDATE']) AS p(privilege)
+     WHERE c.relkind = 'S' AND n.nspname = $2
+       AND has_sequence_privilege($1, c.oid, p.privilege)
+     ORDER BY 1, 2`,
+    [user, QUEUE_SCHEMA],
+  );
+  if (sequences.rows.length)
+    throw new ProvisionError(
+      `The application role has sequence rights in the queue schema it must not have: ${sequences.rows
+        .slice(0, 5)
+        .map(
+          (row: { relation: string; privilege: string }) =>
+            `${row.privilege} on ${row.relation}`,
+        )
+        .join(
+          ", ",
+        )}${sequences.rows.length > 5 ? ", ..." : ""}. Revoke them, then re-run.`,
+    );
+  const schema = await client.query(
+    `SELECT p.privilege
+     FROM pg_namespace n
+     CROSS JOIN unnest(ARRAY['USAGE', 'CREATE']) AS p(privilege)
+     WHERE n.nspname = $2 AND has_schema_privilege($1, n.oid, p.privilege)
+     ORDER BY 1`,
+    [user, QUEUE_SCHEMA],
+  );
+  if (schema.rows.length)
+    throw new ProvisionError(
+      `The application role has rights on the queue schema ${QUEUE_SCHEMA} it must not have: ${schema.rows
+        .map(
+          (row: { privilege: string }) => `${row.privilege} on ${QUEUE_SCHEMA}`,
+        )
+        .join(", ")}. Revoke them, then re-run.`,
+    );
+  const defaults = await client.query(
+    `SELECT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END AS grantee,
+            pg_get_userbyid(d.defaclrole) AS owner,
+            COALESCE(n.nspname::text, '') AS schema,
+            d.defaclobjtype AS type, a.privilege_type AS privilege
+     FROM pg_default_acl d
+     LEFT JOIN pg_namespace n ON n.oid = d.defaclnamespace
+     CROSS JOIN LATERAL aclexplode(d.defaclacl) a
+     WHERE a.grantee <> d.defaclrole
+       AND (a.grantee = 0 OR pg_has_role($1, a.grantee, 'USAGE'))
+       -- A global default for functions or types always lists the built-in
+       -- PUBLIC EXECUTE/USAGE next to any other grantee: not a new grant.
+       AND NOT (a.grantee = 0 AND d.defaclnamespace = 0 AND d.defaclobjtype IN ('f', 'T'))
+       AND (n.nspname = $2
+            OR d.defaclrole IN (SELECT nspowner FROM pg_namespace WHERE nspname = $2))
+     ORDER BY 2, 3, 4, 5`,
+    [user, QUEUE_SCHEMA],
+  );
+  type Default = {
+    grantee: string;
+    owner: string;
+    schema: string;
+    type: string;
+    privilege: string;
+  };
+  if (defaults.rows.length)
+    throw new ProvisionError(
+      `The application role would get default privileges on the queue schema ${QUEUE_SCHEMA} it must not have: ${(
+        defaults.rows as Default[]
+      )
+        .slice(0, 5)
+        .map(
+          (row) =>
+            `${row.privilege} on new ${{ n: "schemas", S: "sequences", f: "functions", T: "types" }[row.type] ?? "tables"} created by ${row.owner}${row.schema ? ` in ${row.schema}` : ` (default privileges in every schema, including ${QUEUE_SCHEMA})`} (granted to ${row.grantee})`,
+        )
+        .join(
+          ", ",
+        )}${defaults.rows.length > 5 ? ", ..." : ""}. Remove them with ALTER DEFAULT PRIVILEGES ... REVOKE, then re-run.`,
+    );
+}
+
 async function auditApp(client: ClientBase, user: string) {
   await assertRestricted(
     client,
@@ -1046,6 +1206,7 @@ async function auditApp(client: ClientBase, user: string) {
   await assertNoSensitive(client, user, "application");
   await assertNoParameterGrants(client, user, "application");
   await assertTenantRls(client, user);
+  await assertNoQueueSchemaAccess(client, user);
 }
 
 async function auditWorker(client: ClientBase, user: string) {
@@ -1533,6 +1694,7 @@ export async function auditRoles(options: {
           );
         await auditGrantor(client, grantor.user);
       }
+      await assertSecurityDefinerNotPublic(client);
       return currentDatabase(client);
     },
     false,

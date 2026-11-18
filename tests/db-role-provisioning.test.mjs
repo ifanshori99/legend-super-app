@@ -665,7 +665,9 @@ test("legend-zoqc job provisions restricted roles on a fresh database, idempoten
         ],
         [
           "ALTER TABLE zoqc_fixture NO FORCE ROW LEVEL SECURITY",
-          "ALTER TABLE zoqc_fixture FORCE ROW LEVEL SECURITY",
+          // The helper is not idempotent (CREATE POLICY), so drop both of its
+          // policies first; it then restores ENABLE, FORCE, policies and grant.
+          "DROP POLICY tenant_access ON zoqc_fixture; DROP POLICY tenant_isolation ON zoqc_fixture; SELECT app.enforce_tenant_rls('public.zoqc_fixture'::regclass)",
           /TEN-02.*public\.zoqc_fixture \(not forced\)/,
         ],
         [

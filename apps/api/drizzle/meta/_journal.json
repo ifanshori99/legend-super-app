@@ -3340,6 +3340,13 @@
       "when": 1795000000107,
       "tag": "0490_member_qr_redeem_nonces",
       "breakpoints": true
+    },
+    {
+      "idx": 491,
+      "version": "7",
+      "when": 1795000000108,
+      "tag": "0491_customer_reviews_member_rls",
+      "breakpoints": true
     }
   ]
 }
