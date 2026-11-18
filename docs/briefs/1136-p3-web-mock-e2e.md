@@ -9,6 +9,8 @@ Kartu (`bd show <id>` dulu; cek prasyarat ada di m1; klaim `bd update <id> --cla
 4. `legend-yf2b`: `apps/web/src/features/ws11-report-builder/mock-preview.ts` dukung metrik selain sales. Cek dulu duplikat dengan `legend-x73li`; bila sudah tercakup, tutup dengan komentar.
 5. `legend-z274`: kategori checklist sendiri di kontrak + preferensi notifikasi (sekarang dipetakan ke `schedule_update`). Cek dulu bentrok dengan `origin/ws/1120-akses-outlet-order-recovery` (`notification-realtime.ts`); bila bertumpuk, lewati dan lapor.
 
+6. `legend-lw7gv` (P2, kerjakan PERTAMA): `scripts/test.mjs:26` memperlakukan `LEGEND_TEST_FILES` yang diset tapi kosong (`?.trim()` falsy) sebagai "jalankan suite penuh". Tolak dengan exit non-nol dan pesan jelas bila variabel diset tapi kosong. Test root untuk kasus kosong/spasi.
+
 Teks UI baru: daftarkan ke katalog (`node --test tests/text-contract.test.mjs`). Jangan sentuh `design-system/v2/sample.ts` (ws/1123).
 Bukti: test gagal-dulu per kartu (unit/vitest web; e2e hanya untuk 46vt, sekali di akhir lewat `heavy`). Prettier, eslint. Typecheck web (dan API bila shared berubah) sekali lewat `heavy`. `reviewer` sonnet sekali.
 Laporan: head SHA, kartu selesai/dilewati, risiko. `Subagent: total X, puncak Y bersamaan, token heavy dipegang <siapa>.` Lapor sekali.
