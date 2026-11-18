@@ -125,10 +125,7 @@ async function setupTenant(label: string): Promise<Tenant> {
     [
       adminRoleId,
       world.tenantId,
-      JSON.stringify([
-        "access.approval_policy.manage",
-        "access.role.view",
-      ]),
+      JSON.stringify(["access.approval_policy.manage", "access.role.view"]),
       JSON.stringify(["tenant"]),
     ],
   );
@@ -354,7 +351,11 @@ describe("SO 1036 finding 2: supplier payment is always two-person", () => {
     expect(row!.status).toBe("pending_approval");
     expect(row!.approval_chain_id).toBeTruthy();
 
-    const own = await decide(A, A.financeApprover, row!.approval_chain_id!).then(
+    const own = await decide(
+      A,
+      A.financeApprover,
+      row!.approval_chain_id!,
+    ).then(
       () => null,
       (error: unknown) => error,
     );

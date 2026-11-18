@@ -20,10 +20,12 @@
 // (old behaviour: it took no common lock) or is blocked by the return's
 // backend (fixed behaviour: same lock), and only then releases the barrier.
 //
-// Expected: 1102 is never spent twice. Rp150.000 cannot leave a Rp100.000
-// fund, so either the return or the payroll posting is held or refused, GL
-// 1102 never ends below zero and the fund never goes below zero. Which of the
-// two is held is left open (the report says "salah satu").
+// Expected (SO 1036 slice G): the return is the side that gives way. A cash
+// payout that is already approved counts against the return, so a return of
+// Rp100.000 is refused up front (see the slice G test below). What may still
+// race is the part that fits: a return of Rp50.000 held at the barrier while
+// the Rp50.000 handover waits for the return's lock. GL 1102 and the fund
+// never go below zero.
 //
 // Assumptions where the report is silent:
 // - The payroll side is the cash handover (confirmCashHandover) of an approved
@@ -62,6 +64,8 @@ const W = installPayoutWorld("so1036");
 const FUND = 100_000;
 const RETURN_AMOUNT = 100_000;
 const PAYROLL_CASH = 50_000;
+// What a return may take while the Rp50 cash payout is scheduled (slice G).
+const RACE_RETURN = FUND - PAYROLL_CASH;
 
 let finance: Session;
 let outletId: string;
@@ -170,14 +174,21 @@ async function seedPayrollOutboxEvent(
   const id = randomUUID();
   await kitOwner.query(
     `INSERT INTO domain_event_outbox
-       (tenant_id, id, event_id, aggregate_type, aggregate_id, sequence, event, destination, status)
-     VALUES ($1, $2, $3, 'payroll_run', $4, 1, $5, 'cloud-sync', $6)`,
+       (tenant_id, id, event_id, aggregate_type, aggregate_id, sequence, event, destination, status, delivered_at)
+     VALUES ($1, $2, $3, 'payroll_run', $4, 1, $5, 'cloud-sync', $6::varchar,
+             CASE WHEN $6::text = 'delivered' THEN now() END)`,
     [
       tenantId,
       id,
       randomUUID(),
       randomUUID(),
-      JSON.stringify({ name, tenantId, payload }),
+      JSON.stringify({
+        name,
+        tenantId,
+        aggregateType: "payroll_run",
+        sequence: 1,
+        payload,
+      }),
       status,
     ],
   );
@@ -308,8 +319,7 @@ describe("SO 1036 finding 3: petty cash return versus payroll cash payout on GL 
     };
 
     let returnResult:
-      | PromiseSettledResult<{ status: number; body: unknown }>
-      | undefined;
+      PromiseSettledResult<{ status: number; body: unknown }> | undefined;
     let payrollResult: PromiseSettledResult<unknown> | undefined;
     let returnDone: Promise<void> | undefined;
     let payrollDone: Promise<void> | undefined;
@@ -335,7 +345,7 @@ describe("SO 1036 finding 3: petty cash return versus payroll cash payout on GL 
 
       // 1. The return runs and stops at the barrier, balance already read.
       returnDone = Promise.allSettled([
-        movement("return", RETURN_AMOUNT).then((res) => ({
+        movement("return", RACE_RETURN).then((res) => ({
           status: res.status,
           body: res.body as unknown,
         })),
@@ -396,18 +406,49 @@ describe("SO 1036 finding 3: petty cash return versus payroll cash payout on GL 
       payrollSettled,
     });
 
-    // Rp150 cannot leave a Rp100 cash box: GL 1102 never goes below zero and
-    // the fund never does either.
-    expect(await glBalance(), `GL 1102 went negative: ${detail}`).toBeGreaterThanOrEqual(0);
-    expect(await fundBalance(), detail).toBeGreaterThanOrEqual(0);
-    // Money is not spent twice: the return and the payroll payout do not both
-    // reach the ledger.
+    // The return took only what the Rp50 payout leaves, and the payout, which
+    // waited for the return's lock, then posted: GL 1102 and the fund are
+    // never below zero.
     expect(
-      returnPosted > 0 && payrollSettled > 0,
-      `both the return and the payroll payout posted against Rp${FUND}: ${detail}`,
-    ).toBe(false);
-    // Control: the race is not "both refused". At least one of them took the
-    // money out, so the held one is the exception, not the rule.
-    expect(returnPosted + payrollSettled, detail).toBeGreaterThan(0);
+      await glBalance(),
+      `GL 1102 went negative: ${detail}`,
+    ).toBeGreaterThanOrEqual(0);
+    expect(await fundBalance(), detail).toBeGreaterThanOrEqual(0);
+    expect(returnPosted, detail).toBeGreaterThan(0);
+    expect(payrollSettled, detail).toBeGreaterThan(0);
+  });
+});
+
+describe("SO 1036 slice G: scheduled cash payroll counts against a petty cash return", () => {
+  it("[legend-3k9qg-scheduled-cash] fund and GL Rp100 with an approved cash payout of Rp50 not handed over: return Rp100 is refused, Rp50 goes through, the handover succeeds and GL 1102 never goes below zero", async () => {
+    // Relative to whatever the earlier tests left (the entity is shared).
+    const gl0 = await glBalance();
+    const topup = await movement("topup", FUND);
+    expect(topup.status, JSON.stringify(topup.body)).toBe(201);
+    expect(await glBalance()).toBe(gl0 + FUND);
+
+    const slips = [cash(CASHIER, PAYROLL_CASH)];
+    const runId = await W.seedRun(slips);
+    await W.postLockedJournal(runId, slips);
+    const batchId = await W.approvedBatch(runId, "cash");
+    const itemIds = (await W.itemsOf(batchId)).map((item) => item.id as string);
+    expect(itemIds).toHaveLength(1);
+
+    // The Rp50 promised to the employee is not the fund's to return.
+    const tooMuch = await movement("return", RETURN_AMOUNT);
+    expect(tooMuch.status, JSON.stringify(tooMuch.body)).toBe(422);
+    expect(JSON.stringify(tooMuch.body)).toContain(
+      "PETTY_CASH_GL_INSUFFICIENT",
+    );
+    expect(await glBalance()).toBe(gl0 + FUND);
+
+    const fits = await movement("return", RACE_RETURN);
+    expect(fits.status, JSON.stringify(fits.body)).toBe(201);
+    expect(await glBalance()).toBe(gl0 + FUND - RACE_RETURN);
+
+    // The handover then posts Cr 1102 Rp50 and the books stay non-negative.
+    await W.handover(batchId, itemIds);
+    expect(await glBalance()).toBe(gl0 + FUND - RACE_RETURN - PAYROLL_CASH);
+    expect(await glBalance()).toBeGreaterThanOrEqual(0);
   });
 });

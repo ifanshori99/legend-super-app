@@ -11,8 +11,9 @@
 // the source is credited exactly once. The fill itself goes through the trusted
 // SQL function `app.payout_posting_record_source` (905, migration 0412).
 //
-// Lock order: run row, batch row (`loadBatchRunFirst`), batch advisory lock,
-// then the posting row. Nothing here logs an amount.
+// Lock order: run row, batch row (`loadBatchRunFirst`), the legal entity's
+// cash/bank lock, batch advisory lock (both via `lockBatchPayoutGl`), then the
+// posting row. Nothing here logs an amount.
 
 import { and, eq, sql } from "drizzle-orm";
 import { AccountingError } from "@starter/shared/accounting";
@@ -21,7 +22,10 @@ import { logger } from "../lib/logger.ts";
 import { chartOfAccounts } from "../db/schema/accounting.ts";
 import { payrollPayoutGlPostings } from "../db/schema/payroll-payout.ts";
 import type { Tx } from "./hris-access.ts";
-import { recoverPayoutGlOfBatch } from "./payroll-payout-gl.service.ts";
+import {
+  lockBatchPayoutGl,
+  recoverPayoutGlOfBatch,
+} from "./payroll-payout-gl.service.ts";
 import {
   PAYOUT_SOURCE_ACCOUNT_MISSING,
   assertActiveBankGlAccount,
@@ -117,9 +121,7 @@ export async function recordPostingSource(
       "PAYOUT_SOURCE_SELF_RECORD",
       "Pembuat batch tidak boleh mencatat sumber dana batchnya sendiri.",
     );
-  await tx.execute(
-    sql`SELECT pg_advisory_xact_lock(hashtext(${`payroll-payout-gl:${tenantId}:${batch.id}`}))`,
-  );
+  await lockBatchPayoutGl(tx, tenantId, batch);
   const [posting] = await tx
     .select()
     .from(payrollPayoutGlPostings)

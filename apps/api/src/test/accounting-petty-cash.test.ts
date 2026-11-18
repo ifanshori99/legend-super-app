@@ -1553,9 +1553,9 @@ describe("legend-6ipij held top-up opens its approval chain (SO 1036 finding 6)"
     });
     expect(await fundRow(outletId)).toBeNull();
     expect(await entryRows(outletId)).toHaveLength(0);
-    expect(await journalsByKey(world.entityId, `pc:${documentId}`)).toHaveLength(
-      0,
-    );
+    expect(
+      await journalsByKey(world.entityId, `pc:${documentId}`),
+    ).toHaveLength(0);
   });
 
   it("[legend-6ipij-PC-3] a split top-up tiers on the creator's day total: the chain carries the total, the payload the real amount", async () => {

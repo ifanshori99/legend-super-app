@@ -901,7 +901,8 @@ export async function approveCashBankEntry(
     // Still open: the direct endpoint may not post before every level of the
     // chain has approved (the inbox does that, through the consumer). The
     // chain is left open.
-    if (outcome !== "approved") throw new AccountingError("CASH_OUT_CHAIN_OPEN");
+    if (outcome !== "approved")
+      throw new AccountingError("CASH_OUT_CHAIN_OPEN");
     const updated = await approvePendingEntry(tx, context, row, actorId, now);
     await closeInboxChain(tx, context, row.id, actorId, now);
     return { entry: cashBankEntryDto(updated), refused: false };

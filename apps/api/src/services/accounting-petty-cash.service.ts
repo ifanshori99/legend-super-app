@@ -32,6 +32,13 @@
 //   will credit petty cash (`payroll.paid` cash part unless settled per item,
 //   `employee_loan.disbursed` not by bank, cash `reimbursement.paid`). An amount
 //   that cannot be read refuses the return (fail closed).
+//   Scheduled cash payroll (SO 1036 slice G): lock order alone does not stop a
+//   return that wins the lock and then lets the handover credit 1102 into the
+//   negative. The return is the side that gives way: cash payout items of the
+//   entity still `approved` (batch approved, not expired, not yet handed over;
+//   `confirmCashHandover` is what turns them `succeeded` and creates the
+//   `settle_*` posting) count as pending too. No overlap with the postings
+//   above: those exist only after the item is `succeeded`.
 //   `getPettyCashReconciliation` shows fund vs GL without changing anything.
 // - Founder Q7 (13 Nov 2026): a top-up above the tenant cash limit, or one that
 //   takes the creator's day total of cash outs and top-ups at the outlet past
@@ -111,6 +118,7 @@ import { domainEventOutbox } from "../db/schema/core-events.ts";
 import { employees } from "../db/schema/hris.ts";
 import {
   payrollDisbursementBatches,
+  payrollDisbursementItems,
   payrollPayoutGlPostings,
 } from "../db/schema/payroll-payout.ts";
 import { outlets } from "../db/schema/platform-org.ts";
@@ -140,6 +148,7 @@ import {
 } from "./accounting-period.service.ts";
 import { requireLegalEntity } from "./accounting-shared.ts";
 import { loadOutletClock } from "./inventory-ops.shared.ts";
+import { openItemAmount } from "./payroll-payout.service.ts";
 import { EVENT_DESTINATION } from "./payment-support.ts";
 import { openApprovalRequest } from "./platform-approval.service.ts";
 
@@ -374,6 +383,10 @@ function readableIdr(value: unknown, source: string): number {
  * (legend-3k9qg). Sum of:
  * - cash payout postings of the entity still `settle_pending` / `settle_skipped`
  *   (`settle_net_idr`, else the sealed net of the posting);
+ * - cash payout items of the entity that are `approved` (scheduled, approval
+ *   not expired, handover not confirmed yet): their sealed net pay. Handing
+ *   over turns the item `succeeded` and creates the posting above, so an item
+ *   is never in both;
  * - undelivered `cloud-sync` outbox events (pending, retrying, dead letter):
  *   `payroll.paid` cash part (not when settled per item), `employee_loan.disbursed`
  *   unless `disbursedVia` is bank, `reimbursement.paid` with a cash payout (the
@@ -440,6 +453,45 @@ async function pendingPettyCashCreditsIdr(
     } catch (error) {
       if (error instanceof AccountingError) throw error;
       throw unreadablePendingCredit("payout_posting");
+    }
+  }
+
+  const scheduled = await tx
+    .select({
+      id: payrollDisbursementItems.id,
+      tenantId: payrollDisbursementItems.tenantId,
+      amountEncrypted: payrollDisbursementItems.amountEncrypted,
+      piiKeyVersion: payrollDisbursementItems.piiKeyVersion,
+    })
+    .from(payrollDisbursementItems)
+    .innerJoin(
+      payrollDisbursementBatches,
+      and(
+        eq(
+          payrollDisbursementBatches.tenantId,
+          payrollDisbursementItems.tenantId,
+        ),
+        eq(payrollDisbursementBatches.id, payrollDisbursementItems.batchId),
+      ),
+    )
+    .where(
+      and(
+        eq(payrollDisbursementItems.tenantId, tenantId),
+        eq(payrollDisbursementItems.channel, "cash"),
+        eq(payrollDisbursementItems.status, "approved"),
+        eq(payrollDisbursementBatches.legalEntityId, legalEntityId),
+        eq(payrollDisbursementBatches.channel, "cash"),
+        eq(payrollDisbursementBatches.status, "approved"),
+        // An expired approval cannot be handed over (confirmCashHandover).
+        sql`${payrollDisbursementBatches.approvalExpiresAt} > now()`,
+      ),
+    );
+  for (const item of scheduled) {
+    try {
+      total += readableIdr(openItemAmount(item), "payout_item");
+    } catch (error) {
+      if (error instanceof AccountingError) throw error;
+      throw unreadablePendingCredit("payout_item");
     }
   }
 
