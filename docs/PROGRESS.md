@@ -7578,3 +7578,20 @@ Sudah (5 P1 + 3 P2 + temuan architect):
 Bukti: gagal-dulu `so1`..`so4` (tiap temuan gagal karena alasan yang benar), run gabungan 20 berkas 582 tes lulus. Review architect xhigh satu kali (F1-F4, F6 dibetulkan), reviewer untuk perbaikan sesudahnya.
 
 Keputusan terbuka: QR member tidak sekali pakai dan tidak terikat order/nominal (perlu tabel nonce); pembaca pintu offline/edge dan kunci perangkat keras (legend-bzih) belum ada; penghitung PIN per proses (butuh Redis bila API banyak instans); tiket `completed`/`no_show` belum memblokir refund manual; tiket sebelum 0672 hanya mencatat kunci terbaru.
+## Merge train batch88 (18 Nov 2026, `int/batch88` -> `milestone/m1`)
+
+Basis m1 63d467e27 (batch87). Cabang masuk (urut): `1005-payout-tarik-klaim-return` (1005), `987-fasilitas-4-kartu` (987), `985-charge-refund-manual-void` (985), `1031-qrsaleinuseofintent-net-refund` (1031), `1029-followup-dana-parkir-tampil` (1029), `1014-runbook-pensiun-kunci-reseal` (1014), `1012-guard-router-perangkat-bersama` (1012).
+
+Peta migrasi (lama -> baru, `when` 1795000000089 dst): 0615/0616 -> 0472/0473 (1005), 0570 -> 0474 (987), 0565/0566 -> 0475/0476 (985). `db:generate`: "No schema changes"; check-journal ok. Snapshot baru diberi id baru dengan rantai prevId. Kunci `data-import-registry.test.ts` dinamai ulang (0615->0472, 0616->0473, 0570->0474).
+
+Konflik dan penyesuaian (semua tes disesuaikan ke keputusan cabang, tidak dilonggarkan):
+- `order-recovery-charge.routes.ts` (985 x 1012): impor `requireAuth` ditambah; approve dan reject refund manual tetap `requireAuth` polos (sesi perangkat bersama ditolak: aturan uang, ragu = batasi pembayaran); dicatat sebagai pengecualian di `shared-device-router-decisions.test.ts`. Dua router payout baru (`payroll-payout-recon-clearance`, `payroll-payout-return-withdraw`) = backoffice.
+- `packages/shared/src/dashboard/fixtures.ts`: fixture revpash diberi nilai zona (tes DASH-02).
+- Tes mengikuti keputusan 1012/1026: `device-shared-mode.test.ts` (kelola perangkat dari perangkat bersama = 403 ACTING_STAFF_NOT_ALLOWED, status tidak berubah), mock auth notifikasi (`requireAuthAllowSharedDevice`), `order-issue-charge-cash-migration.test.ts` (hapus baris refund manual 985 dulu), e2e `legend-zx8k` (RevPASH kini punya baris zona).
+
+Gerbang (Retro 47: gagal dibetulkan + rerun terarah hijau, tanpa full run kedua):
+- lint, typecheck: hijau. Root kontrak: hijau setelah fixture revpash.
+- Full run 10235 dtk (2 jam 50 menit termasuk antre): 23055 lulus, 7 gagal (6 `device-shared-mode`, 1 migrasi 0230) + 2 berkas gagal impor (mock auth notifikasi). Semua dibetulkan; rerun terarah 4 berkas hijau (36/36).
+- e2e produksi hijau; e2e mock terarah (smoke + 5 spec terkait) 40 lulus; 5 gagal `legend-zx8k` dibetulkan (lihat atas). e2e mock penuh batch89.
+
+Subagent: implementer x4 (fixture revpash, device-shared-mode, migrasi 0230, zx8k), test-runner x2. Biaya sesi (session-usage, kumulatif batch85-88): total biaya* 13293k, puncak konteks 267k, 3 compact.
