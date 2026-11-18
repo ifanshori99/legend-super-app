@@ -150,6 +150,37 @@ other safety checks or delete Docker volumes. Use this wrapper instead of bare
 `git worktree remove` so a discarded worktree does not leave its database running
 and using VM memory.
 
+## Slim worktrees (disk)
+
+A full worktree is about 1.9 GB: `apps/api/drizzle/meta` alone is about 720 MB
+(one JSON snapshot per migration), `node_modules` about 750 MB, and the
+screenshot folders `docs/design`, `docs/screenshots` and `design/` about 350 MB.
+On a Mac with a small disk, make worktrees for threads that do **not** create
+migrations slim with Git sparse checkout:
+
+```sh
+git worktree add ../legend-x -b ws/x milestone/m1   # or let Ghostex create it
+cd ../legend-x
+node scripts/worktree-slim.mjs                      # enable slim
+heavy pnpm worktree:setup
+```
+
+The script is idempotent and works per worktree (`extensions.worktreeConfig`),
+so the main checkout and other worktrees are untouched. It keeps `_journal.json`,
+every `.sql` migration, the newest five snapshots, and the older snapshots that
+tests read by number (found by scanning `apps/api/src/test`). Everything else
+under `meta/`, plus the `.png`/`.jpg` files under `docs/design`, `docs/screenshots` and `design/` (the `.md` specs and `.html` mockups stay), is left out
+of the working tree (still in Git history). Re-run it after rebasing onto a newer
+`milestone/m1`.
+
+- `node scripts/worktree-slim.mjs --status` shows slim or full and the folder sizes.
+- `node scripts/worktree-slim.mjs --dry-run` prints the patterns only.
+- `node scripts/worktree-slim.mjs --full` restores everything.
+
+Use `--full` (or do not slim) in any worktree that creates a migration: run it
+before `pnpm db:generate`, and use a full checkout for `scripts/migration-renumber.mjs`
+and the merge train, which read old snapshots.
+
 ## Logs
 
 Both dev servers print colorized single-line logs prefixed by Turborepo (`@starter/api:dev`, `@starter/web:dev`). Each request shows its method, path, status, duration, and `reqId`; API lines also show `userId` once signed in. An SSR page load shows the same `reqId` on the web line and on the API calls it made. Set `LOG_SQL=true` to see SQL, or `LOG_LEVEL=info` to quiet health checks and debug lines.
