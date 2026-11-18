@@ -39,7 +39,11 @@ import {
 import type { TenantId } from "@starter/shared/core";
 import { accountMappings } from "../db/schema/accounting.ts";
 import { payrollPayoutGlPostings } from "../db/schema/payroll-payout.ts";
-import { glBalanceOf } from "./accounting-petty-cash.service.ts";
+import {
+  glBalanceOf,
+  payoutPostingNetIdr,
+  pettyCashGlAccount,
+} from "./accounting-petty-cash.service.ts";
 import { postJournalInTransaction } from "./accounting-journal.service.ts";
 import { payrollEntryDateOf } from "./payroll-gl-consumer.ts";
 import type { Tx } from "./hris-access.ts";
@@ -153,7 +157,7 @@ export async function waiveSkippedPosting(
       "PAYOUT_WAIVE_NOT_ALLOWED",
       "Posting ini tidak bisa dibebaskan selagi akuntansi mati: jurnal koreksinya butuh akuntansi. Nyalakan akuntansi dulu, lalu coba lagi.",
     );
-  const netIdr = posting.settleNetIdr ?? 0;
+  const netIdr = payoutPostingNetIdr(tenantId, posting);
   if (netIdr <= 0)
     throw payoutRefuse(
       409,
@@ -165,6 +169,17 @@ export async function waiveSkippedPosting(
       409,
       "PAYOUT_SOURCE_ACCOUNT_MISSING",
       "Akun kas kecil (1102) serah terima ini tidak tercatat, jadi jurnal koreksinya tidak bisa dibuat. Hubungi tim teknis.",
+    );
+  // The credit must hit the entity's current petty cash account: that is the
+  // account the reserve and every 1102 guard watch.
+  if (
+    posting.sourceGlAccountId !==
+    (await pettyCashGlAccount(tx, tenantId, batch.legalEntityId))
+  )
+    throw payoutRefuse(
+      409,
+      "PAYOUT_WAIVE_NOT_ALLOWED",
+      "Akun kas kecil (1102) serah terima ini bukan lagi akun kas kecil yang dipetakan, jadi jurnal koreksinya tidak bisa dibuat. Hubungi tim teknis.",
     );
   const expenseAccountId = await salaryExpenseAccount(
     tx,

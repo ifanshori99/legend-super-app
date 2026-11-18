@@ -158,6 +158,8 @@ export type PostFromRuleInput = {
   readonly orderId?: string | null;
   /** Trusted internal role identities recovered from the original sale. */
   readonly accountOverrides?: Partial<Record<PostingAccountRole, string>>;
+  /** Refuse a net credit to GL 1102 above the available cash (legend-5qqb9); fixed asset posters set it. */
+  readonly guardPettyCash?: boolean;
 };
 
 type ParsedPost = PostJournalInput & {
@@ -694,6 +696,13 @@ export async function postJournalFromRuleInTransaction(
     outletId: input.outletId as OutletId | null,
     costCenter: input.costCenter ?? null,
   });
+  if (input.guardPettyCash === true)
+    await assertJournalCredit1102Covered(
+      tx,
+      context.tenant.tenantId,
+      input.legalEntityId,
+      lines,
+    );
   return postJournalInTransaction(
     tx,
     context,
@@ -976,6 +985,12 @@ export type ReverseJournalTxInput = {
   readonly lateAdjustmentFrom?: string | null;
   /** Null records a system reversal (auto-journal void). */
   readonly postedBy: UserId | null;
+  /**
+   * True only for the manual endpoint: a reversal that credits GL 1102 is
+   * refused above the available cash (legend-5qqb9). System reversals mirror
+   * cash that already moved and stay unguarded.
+   */
+  readonly guardPettyCash?: boolean;
 };
 
 /**
@@ -996,7 +1011,12 @@ export async function reverseJournal(
       tx,
       context,
       entryId,
-      { ...request, lateAdjustmentFrom: null, postedBy: actorId },
+      {
+        ...request,
+        lateAdjustmentFrom: null,
+        postedBy: actorId,
+        guardPettyCash: true,
+      },
       now,
     ),
   );
@@ -1195,6 +1215,14 @@ export async function reverseJournalInTransaction(
     )
     .limit(1);
   await assertNotDepreciationJournal(tx, context.tenant.tenantId, entryId);
+  // The correction of a waived cash handover (legend-5qqb9): reversing it would
+  // open cash that the employee already holds again.
+  if (row.idempotencyKey?.startsWith("payroll-payout-waive:"))
+    throw new HttpError(
+      409,
+      "PAYOUT_WAIVE_JOURNAL_LOCKED",
+      "This journal corrects a waived cash payroll handover and cannot be reversed.",
+    );
   assertReversible(row, reversal?.id ?? null);
   await assertReturnBackingNotPaidOut(tx, context.tenant.tenantId, row);
   const reversalLines = buildReversalLines(
@@ -1210,14 +1238,16 @@ export async function reverseJournalInTransaction(
     legalEntityId: row.legalEntityId,
     entryDate: input.entryDate,
   });
-  // A reversal that mirrors a debit to 1102 credits it: pays out of petty
-  // cash, refused when the cash is short (legend-5qqb9). Entity lock is held.
-  await assertJournalCredit1102Covered(
-    tx,
-    context.tenant.tenantId,
-    row.legalEntityId,
-    reversalLines,
-  );
+  // The manual endpoint only: a reversal that mirrors a debit to 1102 credits
+  // it, pays out of petty cash and is refused when the cash is short
+  // (legend-5qqb9). Entity lock is held.
+  if (input.guardPettyCash === true)
+    await assertJournalCredit1102Covered(
+      tx,
+      context.tenant.tenantId,
+      row.legalEntityId,
+      reversalLines,
+    );
   const [reversalRow] = await tx
     .insert(journalEntries)
     .values({

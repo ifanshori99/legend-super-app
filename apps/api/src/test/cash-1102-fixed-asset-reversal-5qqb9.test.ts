@@ -44,8 +44,13 @@ import {
 } from "@starter/shared/core";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app";
+import { db } from "../db";
+import { withTenant } from "../db/tenant";
+import { reverseJournalInTransaction } from "../services/accounting-journal.service";
 import {
   createFixedAsset,
+  disposeFixedAsset,
+  revalueFixedAsset,
   runDepreciation,
 } from "../services/accounting-fixed-assets.service";
 import { agent, originHeader, signUp } from "./helpers";
@@ -410,5 +415,162 @@ describe("legend-5qqb9 C reversal of a journal that debited GL 1102", () => {
     expect(response.status, JSON.stringify(response.body)).toBeLessThan(300);
     expect(await entryCount(s, "reversal")).toBe(1);
     expect(await gl1102(s)).toBe(1_800_000);
+  });
+});
+
+// Round 2 M2: only the manual endpoint guards a reversal; a system reversal (sale
+// void, refund rejected, payroll.reversed) mirrors cash that already moved, so it
+// must post even above the available 1102 cash.
+describe("legend-5qqb9 round 2 M2: system reversal is not guarded", () => {
+  it("[5qqb9-consumer-reversal-above-available-posts] top-up of Rp2.000.000 then Rp1.800.000 paid out leaves Rp200.000: a system reversal (postedBy null, like the void consumer) of the top-up still posts, GL 1102 goes to Rp-1.800.000 because the cash really left", async () => {
+    const s = await scenario("rev consumer");
+    const topUp = await seedEntry(s, "debit_1102", 2_000_000);
+    await seedEntry(s, "credit_1102", 1_800_000);
+
+    const entry = await withTenant(db, scopedContext(), (tx) =>
+      reverseJournalInTransaction(
+        tx,
+        scopedContext(),
+        topUp,
+        {
+          entryDate: "2026-11-02" as never,
+          reason: "Void sistem uji 5qqb9",
+          idempotencyKey: `aj-void-${randomUUID()}`,
+          postedBy: null,
+        },
+        NOW,
+      ),
+    );
+
+    expect(entry.reversalOf).toBe(topUp);
+    expect(await entryCount(s, "reversal")).toBe(1);
+    expect(await gl1102(s)).toBe(-1_800_000);
+  });
+});
+
+// Round 2 L5: disposal and revaluation can credit 1102 when their account roles
+// are mapped to it (aliased here by direct insert, setup only, like depreciation).
+async function assetOn(s: Scenario) {
+  const account = async (
+    code: string,
+    type: string,
+    group: string,
+  ): Promise<string> =>
+    (
+      await owner.query<{ id: string }>(
+        `INSERT INTO chart_of_accounts (tenant_id, legal_entity_id, code, name, type, report_group)
+         VALUES ($1, $2, $3, $3, $4, $5) RETURNING id`,
+        [tenantId, s.entity, code, type, group],
+      )
+    ).rows[0]!.id;
+  await s.map(
+    "accumulated_depreciation",
+    await account("1591", "asset", "non_current_asset"),
+  );
+  const created = await createFixedAsset(
+    scopedContext(),
+    {
+      legalEntityId: s.entity,
+      outletId: null,
+      name: "Mesin espresso uji 5qqb9 L5",
+      acquiredOn: "2026-10-01",
+      costIdr: 12_000_000,
+      residualValueIdr: 0,
+      usefulLifeMonths: 12,
+      depreciationStartPeriod: "2026-10",
+      sourceDocumentId: null,
+      idempotencyKey: `fa-${randomUUID()}`,
+    },
+    actor,
+    NOW,
+  );
+  return { id: created.id, account };
+}
+
+describe("legend-5qqb9 round 2 L5: disposal and revaluation crediting GL 1102", () => {
+  const dispose = (s: Scenario, id: string) =>
+    disposeFixedAsset(
+      scopedContext(),
+      id,
+      {
+        disposedOn: "2026-10-31",
+        proceedsIdr: 0,
+        reason: "Dibuang uji 5qqb9",
+        idempotencyKey: `disp-${randomUUID()}`,
+      },
+      actor,
+      NOW,
+    ).then(
+      () => null,
+      (error: unknown) => error,
+    );
+
+  it("[5qqb9-disposal-credit-above-available-refused] disposal credits the asset cost (Rp12.000.000, role fixed_assets aliased to 1102) while 1102 holds Rp300.000: refused PETTY_CASH_GL_INSUFFICIENT, no disposal journal, GL 1102 unchanged", async () => {
+    const s = await scenario("disp refused");
+    const { id, account } = await assetOn(s);
+    await s.map("fixed_assets", s.petty);
+    await s.map(
+      "asset_disposal_result",
+      await account("7101", "expense", "other_expense"),
+    );
+    await seedEntry(s, "debit_1102", 300_000);
+
+    const failure = await dispose(s, id);
+
+    expect(failure, "the disposal must be refused").toMatchObject({
+      code: REFUSAL,
+    });
+    expect(await entryCount(s, "asset_disposal")).toBe(0);
+    expect(await gl1102(s)).toBe(300_000);
+  });
+
+  it("[5qqb9-disposal-credit-within-available-posts] same disposal while 1102 holds Rp20.000.000: posts one disposal journal, GL 1102 is Rp8.000.000", async () => {
+    const s = await scenario("disp fits");
+    const { id, account } = await assetOn(s);
+    await s.map("fixed_assets", s.petty);
+    await s.map(
+      "asset_disposal_result",
+      await account("7101", "expense", "other_expense"),
+    );
+    await seedEntry(s, "debit_1102", 20_000_000);
+
+    const failure = await dispose(s, id);
+
+    expect(failure).toBeNull();
+    expect(await entryCount(s, "asset_disposal")).toBe(1);
+    expect(await gl1102(s)).toBe(8_000_000);
+  });
+
+  it("[5qqb9-revaluation-credit-above-available-refused] revaluation surplus (role revaluation_surplus aliased to 1102) of Rp9.000.000 while 1102 holds Rp300.000: refused PETTY_CASH_GL_INSUFFICIENT, no revaluation journal, GL 1102 unchanged", async () => {
+    const s = await scenario("reval refused");
+    const { id, account } = await assetOn(s);
+    await s.map("revaluation_surplus", s.petty);
+    await s.map(
+      "fixed_assets",
+      await account("1501", "asset", "non_current_asset"),
+    );
+    await seedEntry(s, "debit_1102", 300_000);
+
+    const failure = await revalueFixedAsset(
+      scopedContext(),
+      id,
+      {
+        revaluedOn: "2026-10-31",
+        newCarryingAmountIdr: 20_000_000,
+        reason: "Revaluasi uji 5qqb9",
+        idempotencyKey: `reval-${randomUUID()}`,
+      },
+      actor,
+      NOW,
+    ).then(
+      () => null,
+      (error: unknown) => error,
+    );
+
+    expect(failure, "the revaluation must be refused").toMatchObject({
+      code: REFUSAL,
+    });
+    expect(await entryCount(s, "asset_revaluation")).toBe(0);
+    expect(await gl1102(s)).toBe(300_000);
   });
 });

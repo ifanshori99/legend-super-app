@@ -1579,6 +1579,7 @@ export async function disposeFixedAsset(
             sourceId: asset.id,
             postedBy: actorId,
             idempotencyKey: `fa-disp:${asset.id}`,
+            guardPettyCash: true,
           },
           now,
         );
@@ -1687,6 +1688,7 @@ export async function revalueFixedAsset(
             sourceId: revaluationId,
             postedBy: actorId,
             idempotencyKey: `fa-reval:${revaluationId}`,
+            guardPettyCash: true,
           },
           now,
         );

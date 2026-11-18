@@ -659,6 +659,98 @@ describe("5qqb9 P2: finance waives a skipped posting", () => {
   }, 90_000);
 });
 
+describe("5qqb9 round 2: waive journal and source account", () => {
+  it("[5qqb9-waive-journal-not-reversible-409] reversing the waive journal through the reversal endpoint is refused 409: no reversal journal, GL 1102 and available cash unchanged (a reversal would re-open the cash the employee already holds)", async () => {
+    const { batchId, net, posting } = await skippedHandover();
+    const res = await waive(waiver, batchId, posting.id);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    reserve -= net;
+    const [journalId] = await waiveJournalIds(posting.id);
+    expect(journalId, "premise: waive journal exists").toBeDefined();
+    const glBefore = await glBalance();
+    const journals = await journalCount();
+
+    const reversal = await probeFinance.client
+      .post(`/api/accounting/journals/${journalId}/reversal`)
+      .set(originHeader)
+      .send({
+        entryDate: daysAgo(0),
+        reason: "Koreksi uji 5qqb9 M1",
+        idempotencyKey: key(),
+      });
+
+    expect(reversal.status, JSON.stringify(reversal.body)).toBe(409);
+    expect(await journalCount(), "no reversal journal").toBe(journals);
+    expect(await glBalance(), "GL 1102 unchanged").toBe(glBefore);
+    await expectAvailableIs(free, "available cash unchanged");
+  }, 90_000);
+
+  it("[5qqb9-waive-source-account-not-current-409] the handover's 1102 account is no longer the entity's petty_cash mapping account: refused 409 PAYOUT_WAIVE_NOT_ALLOWED, no flip, no journal, no audit row; with the account back the same waive works", async () => {
+    const { batchId, net, posting } = await skippedHandover();
+    await W.asTenant(
+      (c) =>
+        c.query(
+          `UPDATE payroll_payout_gl_postings SET source_gl_account_id = $3
+            WHERE tenant_id = $1 AND id = $2`,
+          [W.tenantId, posting.id, expenseAccountId],
+        ),
+      true,
+    );
+    let res: Awaited<ReturnType<typeof waive>>;
+    const journals = await journalCount();
+    const audit = await auditRowsOf(batchId);
+    try {
+      res = await waive(waiver, batchId, posting.id);
+    } finally {
+      await W.asTenant(
+        (c) =>
+          c.query(
+            `UPDATE payroll_payout_gl_postings SET source_gl_account_id = $3
+              WHERE tenant_id = $1 AND id = $2`,
+            [W.tenantId, posting.id, pettyGlId],
+          ),
+        true,
+      );
+    }
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error?.code).toBe("PAYOUT_WAIVE_NOT_ALLOWED");
+    expect(await kindOf(batchId), "no flip").toBe("settle_skipped");
+    expect(await journalCount(), "no journal").toBe(journals);
+    expect(await auditRowsOf(batchId)).toBe(audit);
+
+    const retry = await waive(waiver, batchId, posting.id);
+    expect(retry.status, JSON.stringify(retry.body)).toBe(200);
+    reserve -= net;
+  }, 90_000);
+
+  it("[5qqb9-waive-legacy-null-net-matches-reserve] a legacy settle_skipped row (settle_net_idr NULL, net only in the sealed total, pre-0392): the waive books exactly the net the reserve counts, so available cash is unchanged", async () => {
+    const { batchId, net, posting } = await skippedHandover();
+    await W.asTenant(
+      (c) =>
+        c.query(
+          `UPDATE payroll_payout_gl_postings SET settle_net_idr = NULL
+            WHERE tenant_id = $1 AND id = $2`,
+          [W.tenantId, posting.id],
+        ),
+      true,
+    );
+    await expectAvailableIs(free, "premise: legacy row counts as the same net");
+    const glBefore = await glBalance();
+
+    const res = await waive(waiver, batchId, posting.id);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    reserve -= net;
+    expect(await glBalance(), "GL 1102 down by the net").toBe(glBefore - net);
+    expect(await W.journalByKey(waiveKeyOf(posting.id))).toEqual({
+      [salaryCode]: { debit: net, credit: 0 },
+      "1102": { debit: 0, credit: net },
+    });
+    await expectAvailableIs(free, "available cash unchanged by the waive");
+  }, 90_000);
+});
+
 describe("5qqb9 P2: refusals change nothing", () => {
   it("[5qqb9-waive-skipped-reason-422] no reason, a blank reason and a reason over 500 characters are refused 422: posting stays settle_skipped, reserve kept, no audit row", async () => {
     const { batchId, posting } = await skippedHandover();

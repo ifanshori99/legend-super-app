@@ -303,7 +303,7 @@ const PETTY_JOURNAL_SOURCES = [
 ] as const;
 
 /** The GL account the `petty_cash` role maps to for the entity, or null. */
-async function pettyCashGlAccount(
+export async function pettyCashGlAccount(
   tx: TenantTransaction,
   tenantId: TenantId,
   legalEntityId: string,
@@ -503,6 +503,43 @@ async function pendingParkedReturnCreditsIdr(
 }
 
 /**
+ * Net cash of one payout posting: `settle_net_idr`, else (written before
+ * migration 0392) the net sealed in its total. The reserve and the settle_skipped
+ * waive share this, so the waived amount is exactly the reserved one. Unreadable:
+ * PETTY_CASH_GL_INSUFFICIENT (fail closed).
+ */
+export function payoutPostingNetIdr(
+  tenantId: TenantId,
+  posting: {
+    id: string;
+    settleNetIdr: number | null;
+    totalEncrypted: Buffer | Uint8Array;
+    piiKeyVersion: number;
+  },
+): number {
+  if (posting.settleNetIdr !== null)
+    return readableIdr(posting.settleNetIdr, "payout_posting");
+  try {
+    const sealed = JSON.parse(
+      openPayrollValue(
+        posting.totalEncrypted,
+        {
+          tenantId,
+          table: "payroll_payout_gl_postings",
+          rowId: posting.id,
+          field: "total",
+        },
+        posting.piiKeyVersion,
+      ),
+    ) as Record<string, unknown>;
+    return readableIdr(sealed.netIdr, "payout_posting");
+  } catch (error) {
+    if (error instanceof AccountingError) throw error;
+    throw unreadablePendingCredit("payout_posting");
+  }
+}
+
+/**
  * Cash that already left, or leaves through an event not delivered yet, and
  * will credit the entity's petty cash account (1102) once its journal posts
  * (legend-3k9qg). Sum of:
@@ -561,31 +598,8 @@ async function pendingPettyCashCreditsIdr(
         eq(payrollDisbursementBatches.channel, "cash"),
       ),
     );
-  for (const posting of postings) {
-    if (posting.settleNetIdr !== null) {
-      total += readableIdr(posting.settleNetIdr, "payout_posting");
-      continue;
-    }
-    // Written before migration 0392: only the sealed total holds the net.
-    try {
-      const sealed = JSON.parse(
-        openPayrollValue(
-          posting.totalEncrypted,
-          {
-            tenantId,
-            table: "payroll_payout_gl_postings",
-            rowId: posting.id,
-            field: "total",
-          },
-          posting.piiKeyVersion,
-        ),
-      ) as Record<string, unknown>;
-      total += readableIdr(sealed.netIdr, "payout_posting");
-    } catch (error) {
-      if (error instanceof AccountingError) throw error;
-      throw unreadablePendingCredit("payout_posting");
-    }
-  }
+  for (const posting of postings)
+    total += payoutPostingNetIdr(tenantId, posting);
 
   const scheduled = await tx
     .select({
