@@ -4,15 +4,17 @@
 -- Now the flip needs the correcting journal, and only the payout role flips it.
 -- 1. legend_payout may UPDATE postings.kind and read what the checks read.
 -- 2. app.payout_waive_journal_ok: journal `payroll-payout-waive:<posting>` of the
---    batch entity, debit sum = credit sum > 0, equal to settle_net_idr when it is known, credits only
+--    batch entity, debit sum = credit sum > 0, equal to settle_net_idr (a legacy
+--    NULL net fails closed, nothing is waivable without a recorded net), credits only
 --    on the posting's frozen source (1102) account, which must still be the
 --    entity's current petty_cash mapping, debits only on the entity's
 --    salary_expense mapping account.
 -- 3. app.payout_waive_skipped (SECURITY DEFINER, owner legend_payout): actor
 --    (live MFA session, accounting.petty_cash.manage), lock order batch row,
---    advisory lock, posting row; cash batch, kind settle_skipped, no
---    payroll.locked journal of the run, journal ok; flips the kind. Errors
---    PAYOUT-60..PAYOUT-65 (P0002 not found, 42501 actor, 23514 any state refusal).
+--    entity cash/bank advisory lock, batch advisory lock, posting row; cash
+--    batch, kind settle_skipped, net recorded, no payroll.locked journal of the
+--    run, journal ok; flips the kind. Errors PAYOUT-60..PAYOUT-66 (P0002 not
+--    found, 42501 actor, 23514 any state refusal).
 -- 4. The 0690 guard, verbatim except the waive branch (needs current_user =
 --    legend_payout and the journal helper).
 -- 5. Commit-time checks (pattern 0400): the posting check also fires on the
@@ -51,15 +53,14 @@ LANGUAGE sql STABLE SET search_path = pg_catalog AS $$
          = (SELECT pg_catalog.sum(l.credit_idr)
               FROM public.journal_lines l
              WHERE l.tenant_id = j.tenant_id AND l.entry_id = j.id)
-       -- The journal moves exactly the net of the posting. NULL: a row from
-       -- before 0392 (sealed total unreadable here; the service books the
-       -- sealed net, same rule as app.payout_settle_journal_ok).
-       AND (p.settle_net_idr IS NULL
-            OR (p.settle_net_idr > 0
-                AND (SELECT pg_catalog.sum(l.debit_idr)
-                       FROM public.journal_lines l
-                      WHERE l.tenant_id = j.tenant_id AND l.entry_id = j.id)
-                  = p.settle_net_idr))
+       -- The journal moves exactly the net of the posting. A NULL net (a row
+       -- from before 0392, sealed total unreadable here) is false: the waive
+       -- fails closed, its reserve stays held (SO 1105 P1-1).
+       AND p.settle_net_idr > 0
+       AND (SELECT pg_catalog.sum(l.debit_idr)
+              FROM public.journal_lines l
+             WHERE l.tenant_id = j.tenant_id AND l.entry_id = j.id)
+         = p.settle_net_idr
        -- Every credit line is on the 1102 account frozen on the posting, and
        -- that account is still the entity's current petty_cash mapping (the
        -- account the reserve and every 1102 guard watch).
@@ -107,6 +108,13 @@ BEGIN
   IF NOT FOUND THEN
     RAISE EXCEPTION 'PAYOUT-60: payout batch not found' USING ERRCODE = 'P0002';
   END IF;
+  -- Entity cash/bank lock first (same key and hash as the TS entityLock), held
+  -- to commit: the 1102 guards read GL and reserve under it, so the flip never
+  -- interleaves with a spend that counted the old reserve (SO 1105 P1-2). Taken
+  -- before the batch advisory lock, as lockBatchPayoutGl does.
+  PERFORM pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(
+      'acc-cashbank:' || lower(v_tenant::text) || ':' || lower(v_batch.legal_entity_id::text), 0));
   -- Same advisory key as the services (payroll-payout-gl:<tenant>:<batch>),
   -- taken before the posting row, as the TS lock order does.
   PERFORM pg_catalog.pg_advisory_xact_lock(
@@ -124,6 +132,11 @@ BEGIN
   END IF;
   IF v_posting.kind <> 'settle_skipped' THEN
     RAISE EXCEPTION 'PAYOUT-62: payout posting % is not settle_skipped', v_posting.id
+      USING ERRCODE = '23514';
+  END IF;
+  -- Legacy row (before 0392): no recorded net, nothing to check the journal against.
+  IF v_posting.settle_net_idr IS NULL THEN
+    RAISE EXCEPTION 'PAYOUT-66: payout posting % has legacy net unknown', v_posting.id
       USING ERRCODE = '23514';
   END IF;
   -- The run's payroll.locked journal exists: the salary expense is already

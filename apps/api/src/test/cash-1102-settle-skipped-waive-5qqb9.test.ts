@@ -748,7 +748,11 @@ describe("5qqb9 round 2: waive journal and source account", () => {
     reserve -= net;
   }, 90_000);
 
-  it("[5qqb9-waive-legacy-null-net-matches-reserve] a legacy settle_skipped row (settle_net_idr NULL, net only in the sealed total, pre-0392): the waive books exactly the net the reserve counts, so available cash is unchanged", async () => {
+  // 1106 (CTO decision, brief 1106 P1-1): a legacy row whose net is only in the
+  // sealed total can no longer be waived (fail closed). It used to be the
+  // success case "books exactly the net the reserve counts"; now the reserve
+  // stays held, finance settles it outside the system.
+  it("[5qqb9-waive-legacy-null-net-refused-409] a legacy settle_skipped row (settle_net_idr NULL, net only in the sealed total, pre-0392) is refused 409 PAYOUT_WAIVE_LEGACY_NET_UNKNOWN: no flip, no journal, no audit row, the reserve stays held so available cash is unchanged", async () => {
     const { batchId, net, posting } = await skippedHandover();
     await W.asTenant(
       (c) =>
@@ -761,17 +765,23 @@ describe("5qqb9 round 2: waive journal and source account", () => {
     );
     await expectAvailableIs(free, "premise: legacy row counts as the same net");
     const glBefore = await glBalance();
+    const journals = await journalCount();
+    const audit = await auditRowsOf(batchId);
 
     const res = await waive(waiver, batchId, posting.id);
 
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
-    reserve -= net;
-    expect(await glBalance(), "GL 1102 down by the net").toBe(glBefore - net);
-    expect(await W.journalByKey(waiveKeyOf(posting.id))).toEqual({
-      [salaryCode]: { debit: net, credit: 0 },
-      "1102": { debit: 0, credit: net },
-    });
-    await expectAvailableIs(free, "available cash unchanged by the waive");
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error?.code, JSON.stringify(res.body)).toBe(
+      "PAYOUT_WAIVE_LEGACY_NET_UNKNOWN",
+    );
+    expect(await kindOf(batchId), "no flip").toBe("settle_skipped");
+    expect(await waiveJournalIds(posting.id), "no waive journal").toEqual([]);
+    expect(await journalCount(), "no journal").toBe(journals);
+    expect(await auditRowsOf(batchId), "no audit row").toBe(audit);
+    expect(await glBalance(), "GL 1102 unchanged").toBe(glBefore);
+    // The reserve is still held: `reserve` (tracked above) still includes `net`.
+    expect(net, "premise: the row still reserves its net").toBeGreaterThan(0);
+    await expectAvailableIs(free, "reserve still held after the refusal");
   }, 90_000);
 });
 

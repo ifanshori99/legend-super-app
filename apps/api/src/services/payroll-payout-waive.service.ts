@@ -155,6 +155,15 @@ export async function waiveSkippedPosting(
       "PAYOUT_POSTING_NOT_SKIPPED",
       "Hanya posting yang dilewati karena akuntansi mati yang bisa dibebaskan.",
     );
+  // A cash handover from before 0392 has no recorded net: the reserve still
+  // holds it, but the waive journal cannot be checked against it (fails closed
+  // in SQL too, PAYOUT-66). Finance settles it by hand outside the system.
+  if (posting.settleNetIdr === null)
+    throw payoutRefuse(
+      409,
+      "PAYOUT_WAIVE_LEGACY_NET_UNKNOWN",
+      "Posting tunai lama ini belum punya nilai net tercatat, jadi tidak bisa dibebaskan dari sistem. Cadangannya tetap tertahan; finance menyelesaikannya manual di luar sistem.",
+    );
   if (
     batch.channel !== "cash" ||
     (await runHasLockedJournal(tx, tenantId, batch.payrollRunId)) ||
