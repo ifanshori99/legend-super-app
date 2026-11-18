@@ -71,6 +71,9 @@ let finance: Session;
 let outletId: string;
 let bankAccountId: string;
 let pettyGlId: string;
+// Slice H: a second outlet of the entity, and one of another legal entity.
+let outletBId: string | undefined;
+let foreignOutletId: string | undefined;
 
 withLimitSharedLock();
 
@@ -110,6 +113,18 @@ afterAll(async () => {
       [tenantId, outletId],
     );
     await client.query("DELETE FROM outlets WHERE id = $1", [outletId]);
+    for (const extra of [outletBId, foreignOutletId]) {
+      if (!extra) continue;
+      await client.query(
+        "DELETE FROM petty_cash_entries WHERE tenant_id = $1 AND outlet_id = $2",
+        [tenantId, extra],
+      );
+      await client.query(
+        "DELETE FROM petty_cash_funds WHERE tenant_id = $1 AND outlet_id = $2",
+        [tenantId, extra],
+      );
+      await client.query("DELETE FROM outlets WHERE id = $1", [extra]);
+    }
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK").catch(() => {});
@@ -120,13 +135,17 @@ afterAll(async () => {
   await closeKit();
 });
 
-const movement = (kind: "topup" | "return", amountIdr: number) =>
+const movement = (
+  kind: "topup" | "return",
+  amountIdr: number,
+  forOutletId: string = outletId,
+) =>
   finance.client
     .post(MOVEMENTS)
     .set(originHeader)
     .send({
       kind,
-      outletId,
+      outletId: forOutletId,
       bankAccountId,
       amountIdr,
       description:
@@ -279,6 +298,243 @@ describe("SO 1036 slice E: pending credits to 1102 count against a petty cash re
     expect(rest.status, JSON.stringify(rest.body)).toBe(201);
     expect(await fundBalance()).toBe(0);
     expect(await glBalance()).toBe(0);
+  });
+});
+
+/** A `petty_purchase.recorded` payload (id-only fact of the purchase). */
+const purchasePayload = (
+  pettyPurchaseId: string,
+  purchaseOutletId: string,
+  amountIdr: number,
+) => ({
+  pettyPurchaseId,
+  outletId: purchaseOutletId,
+  amountIdr,
+  businessDate: "2026-11-10",
+  paidBy: randomUUID(),
+  paidAt: "2026-11-10T03:00:00.000Z",
+});
+
+/** The outbox event of one petty purchase (status as given). */
+async function seedPurchaseOutboxEvent(
+  payload: Record<string, unknown>,
+  status: "pending" | "delivered" = "pending",
+): Promise<string> {
+  const id = randomUUID();
+  await kitOwner.query(
+    `INSERT INTO domain_event_outbox
+       (tenant_id, id, event_id, aggregate_type, aggregate_id, sequence, event, destination, status, delivered_at)
+     VALUES ($1, $2, $3, 'petty_purchase', $4, 1, $5, 'cloud-sync', $6::varchar,
+             CASE WHEN $6::text = 'delivered' THEN now() END)`,
+    [
+      tenantId,
+      id,
+      randomUUID(),
+      randomUUID(),
+      JSON.stringify({
+        name: "petty_purchase.recorded",
+        tenantId,
+        aggregateType: "petty_purchase",
+        sequence: 1,
+        payload,
+      }),
+      status,
+    ],
+  );
+  return id;
+}
+
+async function seedParkedPurchase(
+  payload: Record<string, unknown>,
+): Promise<void> {
+  await kitOwner.query(
+    `INSERT INTO auto_journal_parked
+       (tenant_id, outlet_id, idempotency_key, event_id, event_name, payload, error_code, retryable)
+     VALUES ($1, $2, $3, $4, 'petty_purchase.recorded', $5, 'PERIOD_CLOSED', true)`,
+    [
+      tenantId,
+      payload.outletId,
+      `aj:petty-purchase:${String(payload.pettyPurchaseId)}`,
+      randomUUID(),
+      JSON.stringify(payload),
+    ],
+  );
+}
+
+describe("SO 1036 slice H: petty purchases whose journal has not posted count against a petty cash return", () => {
+  it("[legend-3k9qg-pending-purchase] outbox or parked purchase of another outlet of the entity is charged once; posted, delivered-and-posted and other-entity ones are not; unreadable refuses", async () => {
+    outletBId = await makeOutlet(W.entityId());
+    const other = await kitOwner.query<{ id: string }>(
+      "SELECT id FROM legal_entities WHERE tenant_id = $1 AND id <> $2 LIMIT 1",
+      [tenantId, W.entityId()],
+    );
+    const foreignEntityId = other.rows[0]?.id;
+    expect(foreignEntityId, "a second legal entity of the tenant").toBeTruthy();
+    foreignOutletId = await makeOutlet(foreignEntityId!);
+    const period = await kitOwner.query<{ id: string; first_day: string }>(
+      "SELECT id, (period || '-01') AS first_day FROM fiscal_periods WHERE tenant_id = $1 AND legal_entity_id = $2 ORDER BY period LIMIT 1",
+      [tenantId, W.entityId()],
+    );
+    const periodId = period.rows[0]!.id;
+    const periodDay = period.rows[0]!.first_day;
+
+    // Outlets A and B hold Rp100 each, GL 1102 holds Rp200.
+    const gl0 = await glBalance();
+    expect(await fundBalance()).toBe(0);
+    expect((await movement("topup", FUND)).status).toBe(201);
+    expect((await movement("topup", FUND, outletBId)).status).toBe(201);
+    expect(await glBalance()).toBe(gl0 + 2 * FUND);
+
+    const seeded: string[] = [];
+    const parkedIds: string[] = [];
+    let postedEntryId: string | undefined;
+    const clear = async () => {
+      await kitOwner.query(
+        "DELETE FROM domain_event_outbox WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+        [tenantId, seeded.splice(0)],
+      );
+      await kitOwner.query(
+        "DELETE FROM auto_journal_parked WHERE tenant_id = $1 AND idempotency_key = ANY($2::text[])",
+        [tenantId, parkedIds.splice(0).map((id) => `aj:petty-purchase:${id}`)],
+      );
+    };
+    try {
+      // 1. A's Rp100 purchase is still in the outbox: B may not return Rp100
+      //    (the entity funds Rp200 would stand on a GL that owes Rp100 more).
+      const queued = randomUUID();
+      seeded.push(
+        await seedPurchaseOutboxEvent(purchasePayload(queued, outletId, FUND)),
+      );
+      const refused = await movement("return", FUND, outletBId);
+      expect(refused.status, JSON.stringify(refused.body)).toBe(422);
+      expect(JSON.stringify(refused.body)).toContain(
+        "PETTY_CASH_GL_INSUFFICIENT",
+      );
+      expect(await glBalance()).toBe(gl0 + 2 * FUND);
+      await clear();
+
+      // 2. Rp40 purchase in the outbox AND parked (counted once). Not charged:
+      //    the same kind of purchase already posted (even if its event is still
+      //    queued) and one of another legal entity.
+      const both = randomUUID();
+      const posted = randomUUID();
+      const foreign = randomUUID();
+      seeded.push(
+        await seedPurchaseOutboxEvent(purchasePayload(both, outletId, 40_000)),
+        await seedPurchaseOutboxEvent(
+          purchasePayload(posted, outletId, 30_000),
+        ),
+        await seedPurchaseOutboxEvent(
+          purchasePayload(randomUUID(), outletId, 30_000),
+          "delivered",
+        ),
+        await seedPurchaseOutboxEvent(
+          purchasePayload(foreign, foreignOutletId, 80_000),
+        ),
+      );
+      await seedParkedPurchase(purchasePayload(both, outletId, 40_000));
+      parkedIds.push(both);
+      await seedParkedPurchase(
+        purchasePayload(foreign, foreignOutletId, 80_000),
+      );
+      parkedIds.push(foreign);
+      // Its journal (Cr of an account other than 1102, so the GL is untouched
+      // here; the guard only looks at the source) is already posted.
+      const accounts = await kitOwner.query<{ id: string }>(
+        `SELECT a.id FROM chart_of_accounts a
+          WHERE a.tenant_id = $1 AND a.legal_entity_id = $2 AND a.id <> $3 AND a.is_active
+            AND NOT EXISTS (SELECT 1 FROM chart_of_accounts c WHERE c.tenant_id = a.tenant_id AND c.parent_id = a.id)
+          ORDER BY a.code LIMIT 2`,
+        [tenantId, W.entityId(), pettyGlId],
+      );
+      const postedClient = await kitOwner.connect();
+      try {
+        await postedClient.query("BEGIN");
+        const entry = await postedClient.query<{ id: string }>(
+          `INSERT INTO journal_entries
+             (tenant_id, legal_entity_id, outlet_id, entry_date, fiscal_period_id, source_type,
+              source_id, description, idempotency_key, request_fingerprint)
+           VALUES ($1, $2, $3, $7::date, $4, 'petty_purchase', $5, 'Belanja kas kecil', $6, 'x')
+           RETURNING id`,
+          [
+            tenantId,
+            W.entityId(),
+            outletId,
+            periodId,
+            posted,
+            `aj:petty-purchase:${posted}`,
+            periodDay,
+          ],
+        );
+        postedEntryId = entry.rows[0]!.id;
+        await postedClient.query(
+          `INSERT INTO journal_lines (tenant_id, entry_id, account_id, line_no, debit_idr, credit_idr)
+           VALUES ($1, $2, $3, 1, 30000, 0), ($1, $2, $4, 2, 0, 30000)`,
+          [tenantId, postedEntryId, accounts.rows[0]!.id, accounts.rows[1]!.id],
+        );
+        await postedClient.query("COMMIT");
+      } catch (error) {
+        await postedClient.query("ROLLBACK").catch(() => {});
+        postedEntryId = undefined;
+        throw error;
+      } finally {
+        postedClient.release();
+      }
+
+      // Pending credit is Rp40 only: B may return 100 - 40 = Rp60.
+      const tooMuch = await movement("return", 70_000, outletBId);
+      expect(tooMuch.status, JSON.stringify(tooMuch.body)).toBe(422);
+      expect(JSON.stringify(tooMuch.body)).toContain(
+        "PETTY_CASH_GL_INSUFFICIENT",
+      );
+      const fits = await movement("return", 60_000, outletBId);
+      expect(fits.status, JSON.stringify(fits.body)).toBe(201);
+      expect(await glBalance()).toBe(gl0 + 2 * FUND - 60_000);
+      await clear();
+
+      // 3. A purchase event whose amount cannot be read: fail closed.
+      seeded.push(
+        await seedPurchaseOutboxEvent({
+          pettyPurchaseId: randomUUID(),
+          outletId,
+          amountIdr: "garbage",
+        }),
+      );
+      const unreadable = await movement("return", 10_000, outletBId);
+      expect(unreadable.status, JSON.stringify(unreadable.body)).toBe(422);
+      expect(JSON.stringify(unreadable.body)).toContain(
+        "PETTY_CASH_GL_INSUFFICIENT",
+      );
+      await clear();
+    } finally {
+      await clear();
+      if (postedEntryId) {
+        const client = await kitOwner.connect();
+        try {
+          await client.query("BEGIN");
+          await client.query("SET LOCAL session_replication_role = replica");
+          await client.query("DELETE FROM journal_lines WHERE entry_id = $1", [
+            postedEntryId,
+          ]);
+          await client.query("DELETE FROM journal_entries WHERE id = $1", [
+            postedEntryId,
+          ]);
+          await client.query("COMMIT");
+        } catch (error) {
+          await client.query("ROLLBACK").catch(() => {});
+          throw error;
+        } finally {
+          client.release();
+        }
+      }
+    }
+
+    // Nothing pending any more: both funds go back, leaving fund and GL at
+    // zero for the next tests.
+    expect((await movement("return", FUND)).status).toBe(201);
+    expect((await movement("return", 40_000, outletBId)).status).toBe(201);
+    expect(await fundBalance()).toBe(0);
+    expect(await glBalance()).toBe(gl0);
   });
 });
 

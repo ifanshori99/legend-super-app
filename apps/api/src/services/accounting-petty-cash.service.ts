@@ -378,6 +378,92 @@ function readableIdr(value: unknown, source: string): number {
 }
 
 /**
+ * Petty purchases of the entity whose `petty_purchase.recorded` event is
+ * undelivered or parked and whose journal has not posted: each will credit 1102
+ * with its amount. One purchase counts once, by id, however many places hold
+ * its event. Unreadable payload: PETTY_CASH_GL_INSUFFICIENT (fail closed).
+ */
+async function pendingPettyPurchaseCreditsIdr(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  legalEntityId: string,
+): Promise<number> {
+  const source = "petty_purchase.recorded";
+  const amounts = new Map<string, number>();
+  const read = (payload: unknown, inEntity: Set<string> | null) => {
+    if (payload === null || typeof payload !== "object")
+      throw unreadablePendingCredit(source);
+    const p = payload as Record<string, unknown>;
+    if (typeof p.pettyPurchaseId !== "string" || typeof p.outletId !== "string")
+      throw unreadablePendingCredit(source);
+    if (inEntity !== null && !inEntity.has(p.outletId)) return;
+    amounts.set(p.pettyPurchaseId, readableIdr(p.amountIdr, source));
+  };
+
+  const entityOutlets = await tx
+    .select({ id: outlets.id })
+    .from(outlets)
+    .where(
+      and(
+        eq(outlets.tenantId, tenantId),
+        eq(outlets.legalEntityId, legalEntityId),
+      ),
+    );
+  const outletIds = new Set<string>(entityOutlets.map((row) => row.id));
+
+  const queued = await tx
+    .select({ payload: sql<unknown>`${domainEventOutbox.event}->'payload'` })
+    .from(domainEventOutbox)
+    .where(
+      and(
+        eq(domainEventOutbox.tenantId, tenantId),
+        eq(domainEventOutbox.destination, EVENT_DESTINATION),
+        ne(domainEventOutbox.status, "delivered"),
+        sql`${domainEventOutbox.event}->>'name' = ${source}`,
+      ),
+    );
+  for (const row of queued) read(row.payload, outletIds);
+
+  const parked = await tx
+    .select({ payload: autoJournalParked.payload })
+    .from(autoJournalParked)
+    .innerJoin(
+      outlets,
+      and(
+        eq(outlets.tenantId, autoJournalParked.tenantId),
+        eq(outlets.id, autoJournalParked.outletId),
+      ),
+    )
+    .where(
+      and(
+        eq(autoJournalParked.tenantId, tenantId),
+        eq(outlets.legalEntityId, legalEntityId),
+        eq(autoJournalParked.eventName, source),
+      ),
+    );
+  // The parked row sits under an outlet of the entity: its own payload only
+  // has to be readable.
+  for (const row of parked) read(row.payload, null);
+
+  if (amounts.size === 0) return 0;
+  const posted = await tx
+    .select({ sourceId: journalEntries.sourceId })
+    .from(journalEntries)
+    .where(
+      and(
+        eq(journalEntries.tenantId, tenantId),
+        eq(journalEntries.legalEntityId, legalEntityId),
+        eq(journalEntries.sourceType, "petty_purchase"),
+        inArray(journalEntries.sourceId, [...amounts.keys()]),
+      ),
+    );
+  for (const row of posted) if (row.sourceId) amounts.delete(row.sourceId);
+  let total = 0;
+  for (const amount of amounts.values()) total += amount;
+  return total;
+}
+
+/**
  * Cash that already left, or leaves through an event not delivered yet, and
  * will credit the entity's petty cash account (1102) once its journal posts
  * (legend-3k9qg). Sum of:
@@ -390,7 +476,11 @@ function readableIdr(value: unknown, source: string): number {
  * - undelivered `cloud-sync` outbox events (pending, retrying, dead letter):
  *   `payroll.paid` cash part (not when settled per item), `employee_loan.disbursed`
  *   unless `disbursedVia` is bank, `reimbursement.paid` with a cash payout (the
- *   employee's legal entity).
+ *   employee's legal entity);
+ * - `petty_purchase.recorded` of an outlet of the entity, undelivered in the
+ *   outbox or parked in `auto_journal_parked`, whose journal (source
+ *   `petty_purchase`) has not posted yet. A purchase in both places, or already
+ *   posted, counts once or not at all (keyed by the petty purchase id).
  * Counts whatever it cannot rule out; an unreadable amount throws
  * PETTY_CASH_GL_INSUFFICIENT. Call under `entityLock`.
  */
@@ -544,6 +634,7 @@ async function pendingPettyCashCreditsIdr(
       total += readableIdr(payload.principalIdr, row.name);
     }
   }
+  total += await pendingPettyPurchaseCreditsIdr(tx, tenantId, legalEntityId);
   if (reimbursements.length > 0) {
     const inEntity = await tx
       .select({ id: employees.id })
