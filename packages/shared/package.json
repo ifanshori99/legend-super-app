@@ -30,7 +30,6 @@
     "./edge/catalog-sync": "./src/edge/catalog-sync.ts",
     "./edge/node-alarm": "./src/edge/node-alarm.ts",
     "./edge/node-status": "./src/edge/node-status.ts",
-
     "./edge/reconciliation": "./src/edge/reconciliation.ts",
     "./edc": "./src/edc/index.ts",
     "./edc/events": "./src/edc/events.ts",
