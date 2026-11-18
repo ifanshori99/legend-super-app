@@ -1,8 +1,14 @@
 name: Express + TanStack Start monorepo checks
 
 on:
+  # Hemat menit Actions (founder 18 Nov: tanpa tagihan): push hanya cabang utama;
+  # cabang kerja diuji lokal lewat heavy dan lewat pull request.
   push:
+    branches:
+      - main
+      - milestone/**
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
