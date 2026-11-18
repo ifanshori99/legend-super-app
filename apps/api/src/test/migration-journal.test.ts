@@ -116,7 +116,9 @@ describe("[legend-1100] checked-in rilis1 preflight files", () => {
           "SELECT to_regclass($1) IS NOT NULL AS present",
           [table],
         );
-        expect(result.rows[0].present, `${table} missing in test DB`).toBe(true);
+        expect(result.rows[0].present, `${table} missing in test DB`).toBe(
+          true,
+        );
       }
     });
   }

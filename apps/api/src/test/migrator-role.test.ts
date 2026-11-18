@@ -25,6 +25,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { provisionMigrator, MIGRATOR_LOGIN } from "../db/migrator-role";
 import { runPredeployCheck } from "../db/predeploy-check";
+import { readJournal } from "../db/release-gates";
 import { provisionRoles } from "../db/provision-roles";
 
 const drizzleFolder = resolve(
@@ -251,13 +252,20 @@ describe("legend-jtnd dedicated migrator login owns the database", () => {
   });
 
   it("passes the pre-deploy check on the empty database (outbox absent)", async () => {
-    const report = await runPredeployCheck(migratorUrl);
+    const lines: string[] = [];
+    const report = await runPredeployCheck(migratorUrl, {
+      log: (line) => lines.push(line),
+    });
     expect(report.migrator).toEqual({
       user: migratorUser,
       superuser: false,
       bypassRls: true,
     });
     expect(report.outbox.present).toBe(false);
+    // legend-1100: a brand new database has no applied migrations, so the
+    // release 1 data gates are N/A and say so in the log.
+    expect(report.releaseGates).toEqual({ status: "n/a" });
+    expect(lines).toContain("gerbang data rilis 1: N/A (DB baru)");
   });
 
   it("applies every migration from zero as the migrator", async () => {
@@ -401,6 +409,20 @@ describe("legend-jtnd dedicated migrator login owns the database", () => {
       rows: total.rows[0].n,
       oldSchemeStreams: 0,
     });
+    // legend-1100: after a full migration the 1100 gates have their "before"
+    // migration applied, so they are skipped and nothing is blocked. Gates
+    // with "before: none" (other branches) may still run on clean data.
+    expect(clean.releaseGates.status).toBe("ok");
+    if (clean.releaseGates.status === "ok") {
+      expect(clean.releaseGates.applied).toBe(
+        readJournal(drizzleFolder).length,
+      );
+      for (const gate of ["legend-176r3", "legend-oh2a5"])
+        expect(clean.releaseGates.skipped).toContainEqual({
+          gate,
+          reason: "before-applied",
+        });
+    }
 
     // Old scheme: one count shared across destinations, so destination
     // dest-old-y starts at 2.
@@ -428,6 +450,46 @@ describe("legend-jtnd dedicated migrator login owns the database", () => {
     // Destination names only: no tenant id, no URL, no password.
     expect(message).not.toContain(tenantA);
     expect(message).not.toContain(migratorPassword);
+  }, 60_000);
+
+  it("fails the pre-deploy check with legend-fgg1h when an applied migration hash differs from its file", async () => {
+    // Assumption: the outbox check (legend-k1np) runs first, so remove the
+    // old-scheme rows of the previous test; this test is about migration drift.
+    await migrator.query(
+      "DELETE FROM domain_event_outbox WHERE destination LIKE 'dest-old-%'",
+    );
+    const entries = readJournal(drizzleFolder);
+    const target = entries[entries.length - 1] as (typeof entries)[number];
+    const original = await migrator.query(
+      "SELECT hash FROM drizzle.__drizzle_migrations WHERE created_at = $1",
+      [target.when],
+    );
+    expect(original.rowCount).toBe(1);
+    const originalHash = original.rows[0].hash as string;
+    await migrator.query(
+      "UPDATE drizzle.__drizzle_migrations SET hash = $1 WHERE created_at = $2",
+      ["0".repeat(64), target.when],
+    );
+    try {
+      const failure = await runPredeployCheck(migratorUrl).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(failure).toBeInstanceOf(Error);
+      const message = (failure as Error).message;
+      expect(message).toMatch(/legend-fgg1h/);
+      expect(message).toContain(target.tag);
+      expect(message).not.toMatch(/postgres(ql)?:\/\//);
+      expect(message).not.toContain(migratorPassword);
+    } finally {
+      await migrator.query(
+        "UPDATE drizzle.__drizzle_migrations SET hash = $1 WHERE created_at = $2",
+        [originalHash, target.when],
+      );
+    }
+    // Restored: the check no longer reports drift.
+    const after = await runPredeployCheck(migratorUrl);
+    expect(after.releaseGates.status).toBe("ok");
   }, 60_000);
 });
 

@@ -20,7 +20,15 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Pool, type PoolClient } from "pg";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from "vitest";
 import {
   checkMigrationDrift,
   migrationHash,
@@ -190,7 +198,8 @@ afterAll(async () => {
 
 describe("[legend-1100] migration hash and journal helpers", () => {
   it("[legend-1100] migrationHash is the sha256 hex of the whole file, like the drizzle migrator", () => {
-    const text = "CREATE TABLE a (id int);\n--> statement-breakpoint\nSELECT 1;\n";
+    const text =
+      "CREATE TABLE a (id int);\n--> statement-breakpoint\nSELECT 1;\n";
     expect(migrationHash(text)).toBe(
       createHash("sha256").update(text).digest("hex"),
     );
@@ -239,7 +248,10 @@ describe("[legend-1100] parsePreflightFile", () => {
   it("[legend-1100] rejects a bad mode, swapped header order and a missing header line", () => {
     const bad = [
       good.replace("mode: info", "mode: warn"),
-      good.replace("-- mode: info\n-- resolve: Satu kalimat.", "-- resolve: Satu kalimat.\n-- mode: info"),
+      good.replace(
+        "-- mode: info\n-- resolve: Satu kalimat.",
+        "-- resolve: Satu kalimat.\n-- mode: info",
+      ),
       good.replace("-- resolve: Satu kalimat.\n", ""),
       good.replace("-- gate: legend-abc12\n", ""),
       "SELECT 1\n",
@@ -513,7 +525,10 @@ describe("[legend-1100] migration drift (legend-fgg1h)", () => {
     await insertApplied([0, 1]);
     await client.query(
       `INSERT INTO ${schema}.__drizzle_migrations (hash, created_at) VALUES ($1, $2)`,
-      [createHash("sha256").update("edited after apply").digest("hex"), WHENS[2]],
+      [
+        createHash("sha256").update("edited after apply").digest("hex"),
+        WHENS[2],
+      ],
     );
     const message = await messageOf(checkMigrationDrift(client, opts()));
     expect(message).toContain("drift migrasi (legend-fgg1h)");

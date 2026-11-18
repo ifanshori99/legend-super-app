@@ -4,10 +4,10 @@ Runbook ini untuk operator rilis. Isinya satu tempat untuk menjawab "edge dulu a
 
 Dua aturan urutan yang berlawanan, keduanya benar untuk perubahan yang berbeda:
 
-| Perubahan | Kartu | Urutan | Alasan |
-| --- | --- | --- | --- |
-| Record sync membawa field `sharedMode` | legend-ir8n8 | **Edge dulu, cloud kemudian** | Edge lama dengan skema strict diduga menolak record sync yang membawa field `sharedMode`. Perilaku edge lama untuk field ini belum diverifikasi. |
-| Katalog edge: `syncTxid` dan kursor `cat2`, atau event `catalog_record.updated` dengan field baru | legend-zn3wl, legend-dciax | **Cloud dulu, edge kemudian** | Edge baru menolak record katalog tanpa `syncTxid`. Edge lama menolak (strict) event `catalog_record.updated` berfield baru dari cloud. |
+| Perubahan                                                                                         | Kartu                      | Urutan                        | Alasan                                                                                                                                           |
+| ------------------------------------------------------------------------------------------------- | -------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Record sync membawa field `sharedMode`                                                            | legend-ir8n8               | **Edge dulu, cloud kemudian** | Edge lama dengan skema strict diduga menolak record sync yang membawa field `sharedMode`. Perilaku edge lama untuk field ini belum diverifikasi. |
+| Katalog edge: `syncTxid` dan kursor `cat2`, atau event `catalog_record.updated` dengan field baru | legend-zn3wl, legend-dciax | **Cloud dulu, edge kemudian** | Edge baru menolak record katalog tanpa `syncTxid`. Edge lama menolak (strict) event `catalog_record.updated` berfield baru dari cloud.           |
 
 Gerbang rilis 1 (`predeploy-check`, drift migrasi) hanya melindungi database cloud. Edge hanya menjalankan `migrate.js` (`deploy/edge/README.md`, bagian "Database migrations"), jadi gerbang data dan cek drift ini **tidak** melindungi database edge.
 
@@ -29,13 +29,13 @@ Catatan: pada instalasi pertama, jangan memindahkan brand outlet sebelum semua e
 
 Tentukan dulu perubahan apa yang dibawa rilis, dari diff `apps/api` dan `packages/shared/src/edge` terhadap rilis sebelumnya.
 
-| Rilis membawa | Urutan |
-| --- | --- |
-| Perubahan `sharedMode` saja | Edge dulu, lalu cloud. |
-| Perubahan katalog edge saja (`syncTxid`, `cat2`, field baru di `catalog_record.updated`) | Cloud dulu, lalu edge. Ikuti `edge-catalog-deploy-order.md`. |
-| Keduanya sekaligus | Pecah jadi dua rilis berurutan: rilis `sharedMode` (edge, lalu cloud) selesai penuh, baru rilis katalog (cloud, lalu edge). Satu rilis tidak bisa memenuhi dua urutan yang berlawanan. Bila tidak bisa dipecah, bawa keputusannya ke CTO sebelum deploy. |
-| Placeholder antrean `edge_link.dead_lettered` (legend-3k41y) | Edge dulu, lalu cloud. Lihat "Edge host" di `docs/deployment.md`. |
-| Tidak menyentuh sync edge | Cloud dulu, karena migrasi dijalankan di cloud. |
+| Rilis membawa                                                                            | Urutan                                                                                                                                                                                                                                                   |
+| ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Perubahan `sharedMode` saja                                                              | Edge dulu, lalu cloud.                                                                                                                                                                                                                                   |
+| Perubahan katalog edge saja (`syncTxid`, `cat2`, field baru di `catalog_record.updated`) | Cloud dulu, lalu edge. Ikuti `edge-catalog-deploy-order.md`.                                                                                                                                                                                             |
+| Keduanya sekaligus                                                                       | Pecah jadi dua rilis berurutan: rilis `sharedMode` (edge, lalu cloud) selesai penuh, baru rilis katalog (cloud, lalu edge). Satu rilis tidak bisa memenuhi dua urutan yang berlawanan. Bila tidak bisa dipecah, bawa keputusannya ke CTO sebelum deploy. |
+| Placeholder antrean `edge_link.dead_lettered` (legend-3k41y)                             | Edge dulu, lalu cloud. Lihat "Edge host" di `docs/deployment.md`.                                                                                                                                                                                        |
+| Tidak menyentuh sync edge                                                                | Cloud dulu, karena migrasi dijalankan di cloud.                                                                                                                                                                                                          |
 
 Bila ragu apa yang dibawa rilis, anggap perubahan itu ada dan tanyakan CTO. Salah urutan tidak menghilangkan data (checkpoint tidak maju, edge memakai data terakhir yang sudah tersinkron), tetapi sync edge berhenti sampai sisi yang tertinggal dinaikkan, dan harga atau katalog lama bertahan selama itu.
 
