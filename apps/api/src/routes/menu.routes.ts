@@ -3,6 +3,7 @@
 // service inside the caller's server-minted scope, choose the status. Every
 // route runs after requireAuth, the origin check, requireTenantContext and a
 // menu permission gate; services re-check the concrete brand/outlet target.
+// /availability alone also serves the KDS on a shared device (legend-3z0ds).
 //
 // One exception to the API's 100 kB body limit: the menu-image upload carries
 // a base64 JPEG (contract MENU_IMAGE_MAX_BYTES ≈ 600 kB decoded), so this
@@ -108,7 +109,15 @@ import {
   uploadMenuImage as uploadMenuImageEndpoint,
 } from "@starter/shared/menu";
 import type { AnyEndpoint } from "@starter/shared/api";
-import { getAuth, requireAuth } from "../middleware/auth";
+import {
+  requireActingStaffOnSharedDevice,
+  resolveActingStaff,
+} from "../middleware/acting-staff";
+import {
+  getAuth,
+  requireAuth,
+  requireAuthAllowSharedDevice,
+} from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
 import {
@@ -131,6 +140,14 @@ function location(endpoint: AnyEndpoint, id: string): string {
   return /:[A-Za-z]/.test(endpoint.path)
     ? endpoint.path.replace(/:[A-Za-z][A-Za-z0-9]*/, id)
     : `${endpoint.path}/${id}`;
+}
+
+const AVAILABILITY_PATH = /^\/availability(?:\/|$)/i;
+
+/** Skips `guard` for /availability, which has its own guard chain above it. */
+function exceptAvailability(guard: RequestHandler): RequestHandler {
+  return (req, res, next) =>
+    AVAILABILITY_PATH.test(req.path) ? next() : guard(req, res, next);
 }
 
 const IMAGE_BODY_LIMIT_BYTES = 1024 * 1024;
@@ -159,7 +176,22 @@ export function createMenuRouter(
 ): Router {
   const router = Router();
   const resolveMediaUrls = createMenuMediaUrls(options.storage ?? null);
-  router.use(requireAuth, requireTrustedOrigin, requireTenantContext);
+  // Availability is the one POS/KDS part ("sold out" button): it opts in to
+  // shared devices and then needs the cashier token there. Every other menu
+  // route is back office and refuses a session used on a shared device.
+  router.use(
+    "/availability",
+    requireAuthAllowSharedDevice,
+    requireTrustedOrigin,
+    requireTenantContext,
+    resolveActingStaff,
+    requireActingStaffOnSharedDevice,
+  );
+  router.use(
+    exceptAvailability(requireAuth),
+    exceptAvailability(requireTrustedOrigin),
+    exceptAvailability(requireTenantContext),
+  );
 
   const view = requireMenuPermission("menu.item.view");
   const manage = requireMenuPermission("menu.item.manage");

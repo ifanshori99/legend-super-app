@@ -48,6 +48,16 @@ const ROWS: readonly Row[] = [
     detail: "tax_missing",
   },
   {
+    kind: "edge_void_refused",
+    outlet: 0,
+    daysAgo: 0,
+    time: "12:08",
+    refType: "order",
+    refId: "ORD-BDG-1411-077",
+    amountIdr: 85_000,
+    detail: "manual_refund_exists",
+  },
+  {
     kind: "edge_void_unsupported",
     outlet: 1,
     daysAgo: 0,

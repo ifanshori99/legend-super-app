@@ -65,6 +65,7 @@ import {
   paymentLinks,
   tableSessions,
 } from "../db/schema/index.ts";
+import { paymentVaReleases } from "../db/schema/payment-va-release.ts";
 import { posQrisHolds } from "../db/schema/pos-qris-hold.ts";
 import { orders } from "../db/schema/qr-order.ts";
 import { withTenant } from "../db/tenant.ts";
@@ -89,6 +90,7 @@ import { pendingRefundIdr } from "./pos-order-late-payment.ts";
 import { markSplitQrisHoldPaidByIntentTx } from "./pos-qris-hold.ts";
 import {
   HOLDS_REFUNDABLE_MONEY,
+  QR_SYSTEM_ACTOR,
   requestQrDoublePaymentRefund,
   requestQrLatePaymentRefund,
 } from "./qr-order-late-payment.ts";
@@ -118,6 +120,10 @@ const closedPayloadSchema = z.looseObject({
   intentId: uuidSchema,
   reason: z.string().optional(),
 });
+const fundsPayloadSchema = z.looseObject({
+  unallocatedFundId: uuidSchema,
+  intentId: uuidSchema,
+});
 
 export type QrPaymentPaidOutcome =
   | "ignored"
@@ -133,6 +139,8 @@ export type QrPaymentPaidOutcome =
 
 export type QrPaymentClosedOutcome =
   "ignored" | "unchanged" | "voided" | "retry_allowed" | "awaiting_grace";
+
+export type QrFundsOutcome = "ignored" | "unchanged" | "funds_refund_requested";
 
 // ---- Decision (pure) ------------------------------------------------------------
 
@@ -245,29 +253,43 @@ async function orderSessionActive(
 }
 
 /**
- * Intents of the link that WS-05 superseded because the guest picked another
- * bank or method (`supersedePending` appends `payment.expired` with reason
- * `superseded`; the intent row keeps no reason). A provider or timeout expiry
- * carries another reason, so it still counts as an attempt.
+ * Intents of the link the guest left by picking another bank or method:
+ * WS-05 `supersedePending` appends `payment.expired` with reason `superseded`,
+ * and the 9vmit guest method change (`voidLiveCodesForMethodChange`) writes
+ * `method_changed` (the intent row keeps no reason). A provider or timeout
+ * expiry carries another reason, so it still counts as an attempt. Without
+ * `reason` both reasons count (legend-kt3t1); `reason` picks one expiry reason
+ * to read (`method_changed` for the abandon window, legend-8m23m). Maps each
+ * intent to the time of its (earliest) expiry event.
  */
 async function supersededIntentIds(
   tx: Tx,
   context: ScopedTenantContext,
   intentIds: readonly string[],
-): Promise<Set<string>> {
-  if (intentIds.length === 0) return new Set();
+  reason?: "superseded" | "method_changed",
+): Promise<Map<string, Date>> {
+  if (intentIds.length === 0) return new Map();
   const rows = await tx
-    .selectDistinct({ intentId: domainEventOutbox.aggregateId })
+    .select({
+      intentId: domainEventOutbox.aggregateId,
+      at: sql<string>`min((${domainEventOutbox.event}->>'occurredAt')::timestamptz)::text`,
+    })
     .from(domainEventOutbox)
     .where(
       and(
         eq(domainEventOutbox.tenantId, context.tenant.tenantId),
         inArray(domainEventOutbox.aggregateId, [...intentIds]),
         sql`${domainEventOutbox.event}->>'name' = 'payment.expired'`,
-        sql`${domainEventOutbox.event}->'payload'->>'reason' = 'superseded'`,
+        // legend-kt3t1: a code the guest left by changing method is no failed
+        // attempt either (the 9vmit void writes `method_changed`). legend-8m23m:
+        // the abandon window asks for `method_changed` alone.
+        reason === undefined
+          ? sql`${domainEventOutbox.event}->'payload'->>'reason' IN ('superseded', 'method_changed')`
+          : sql`${domainEventOutbox.event}->'payload'->>'reason' = ${reason}`,
       ),
-    );
-  return new Set(rows.map((row) => row.intentId));
+    )
+    .groupBy(domainEventOutbox.aggregateId);
+  return new Map(rows.map((row) => [row.intentId, new Date(row.at)]));
 }
 
 /**
@@ -391,10 +413,28 @@ async function loadUnpaidState(
     context,
     intents.map((row) => row.id),
   );
+  // legend-8m23m: a code the guest swapped out (WS-05 `method_changed`) is not
+  // one the guest waits on, so its longer life (a VA lives 180 minutes) must not
+  // hold the window open past the swap. But the swap itself is the last moment
+  // the guest was offered that code: the window never runs back before it, or an
+  // order whose VA was released and whose new code was not (yet) made would void
+  // at once. It still counts as an attempt above, and if it is paid late the
+  // late-payment path (refund or parked money) still handles it.
+  const swappedOut = await supersededIntentIds(
+    tx,
+    context,
+    intents.map((row) => row.id),
+    "method_changed",
+  );
   const windowClosedAt = new Date(
     Math.max(
       order.placedAt.getTime(),
-      ...intents.map((row) => row.expiresAt.getTime()),
+      ...intents.map((row) => {
+        const swappedAt = swappedOut.get(row.id);
+        return swappedAt === undefined
+          ? row.expiresAt.getTime()
+          : Math.min(row.expiresAt.getTime(), swappedAt.getTime());
+      }),
     ),
   );
   // Split bill: codes are counted per part, so a part that already used its
@@ -1019,6 +1059,72 @@ export async function handleQrOrderPaymentClosed(
   if (!(await voidUnlessEdcOpen(tx, context, order, decision.reason, now)))
     return "unchanged";
   return "voided";
+}
+
+// ---- payment.funds_unallocated -------------------------------------------------
+
+/**
+ * Late money on a code the guest voided by changing the payment method
+ * (legend-hs1rc, founder Q15): the gateway parked it, and it goes straight back
+ * to the guest as one refund request for that fund. Only a code with a
+ * `guest_method_change` release counts; a staff release and every other parked
+ * fund keep the old behavior (left for a person to resolve). The amount is the
+ * locked fund row's, never the event's; a fund with a live refund files
+ * nothing, so a replay is safe.
+ */
+export async function handleQrOrderFundsUnallocated(
+  context: ScopedTenantContext,
+  event: EventEnvelope,
+  tx: Tx,
+  now = new Date(),
+): Promise<QrFundsOutcome> {
+  if (event.name !== "payment.funds_unallocated") return "ignored";
+  if (event.tenantId !== context.tenant.tenantId) return "ignored";
+  const payload = fundsPayloadSchema.safeParse(event.payload);
+  if (!payload.success) return "ignored";
+  const { unallocatedFundId, intentId } = payload.data;
+  const [intent] = await tx
+    .select({ paymentLinkId: paymentIntents.paymentLinkId })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, context.tenant.tenantId),
+        eq(paymentIntents.id, intentId),
+      ),
+    );
+  if (!intent) return "ignored";
+  // Lock order: orders -> intent -> fund -> refund.
+  const order = await lockOrderOfLink(tx, context, intent.paymentLinkId);
+  if (!order) return "ignored";
+  const [release] = await tx
+    .select({ id: paymentVaReleases.id })
+    .from(paymentVaReleases)
+    .where(
+      and(
+        eq(paymentVaReleases.tenantId, context.tenant.tenantId),
+        eq(paymentVaReleases.paymentIntentId, intentId),
+        eq(paymentVaReleases.kind, "guest_method_change"),
+      ),
+    );
+  if (!release) return "ignored";
+  const ids = await requestQrDoublePaymentRefund(tx, context, {
+    order,
+    paymentLinkId: intent.paymentLinkId,
+    intentId,
+    now,
+    fundId: unallocatedFundId,
+    source: {
+      requestedBy: QR_SYSTEM_ACTOR,
+      reason:
+        "Refund uang yang masuk ke kode pembayaran lama (tamu sudah mengganti metode)",
+    },
+  });
+  if (ids.length === 0) return "unchanged";
+  logger.warn(
+    { orderId: order.id, intentId, unallocatedFundId, refundIds: ids },
+    "QR: method-change late money refund requested",
+  );
+  return "funds_refund_requested";
 }
 
 // ---- Sweep (relay tick) ---------------------------------------------------------

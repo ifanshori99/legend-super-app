@@ -22,7 +22,7 @@
 //   the shapes the existing scanner tests use.
 // - Old behaviour that must hold: cash channel -> 409, draft / approved but not
 //   exported batch -> 409 (brief says 409; the older suite accepted 409 or 422).
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import sharp from "sharp";
 import { PDFDocument, PDFName, PDFString } from "pdf-lib";
@@ -54,6 +54,11 @@ import {
   installPayoutWorld,
   type Row,
 } from "./payroll-payout-fixtures.ts";
+
+// Bank reference of a return claim: unique per claim (evidence key), identical
+// on both steps of the same claim.
+const bankRefOf = (evidenceKey: string) =>
+  `TRX${createHash("sha256").update(evidenceKey).digest("hex").slice(0, 8)}`;
 
 const W = installPayoutWorld("evidence-shared-scanner");
 const BASE = "/api/hris/payroll/disbursement-batches";
@@ -373,6 +378,8 @@ describe("legend-egrrp payout proof uses the shared scan pipeline", () => {
     const cashSlips = [cash(CASHIER, 900_000)];
     const cashRun = await W.seedRun(cashSlips);
     await W.postLockedJournal(cashRun, cashSlips);
+    // 1053: approving a cash batch needs the 1102 cash to cover it.
+    await W.fundPettyCash(900_000);
     const cashId = await W.approvedBatch(cashRun, "cash");
     const wrongChannel = await upload(who, cashId, pdf);
     expect(wrongChannel.status, JSON.stringify(wrongChannel.body)).toBe(409);
@@ -433,6 +440,8 @@ describe("legend-egrrp payout proof uses the shared scan pipeline", () => {
     const cashSlips = [cash(CASHIER, 900_000)];
     const cashRun = await W.seedRun(cashSlips);
     await W.postLockedJournal(cashRun, cashSlips);
+    // 1053: approving a cash batch needs the 1102 cash to cover it.
+    await W.fundPettyCash(900_000);
     const cashId = await W.approvedBatch(cashRun, "cash");
     const wrongChannel = await upload(who, cashId, bad);
     expect(wrongChannel.status, JSON.stringify(wrongChannel.body)).toBe(409);
@@ -485,6 +494,7 @@ describe("legend-egrrp payout proof uses the shared scan pipeline", () => {
           {
             itemIds: [idOf(siti)],
             evidenceKey: forged,
+            bankRef: bankRefOf(forged),
             note: "Bank mengembalikan dana, rekening tujuan ditutup",
           } as never,
           store,

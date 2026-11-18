@@ -43,6 +43,7 @@ const deviceFields = {
   revokedAt: isoDateTimeSchema.nullable(),
   status: deviceStatusSchema,
   trainingMode: z.boolean(),
+  sharedMode: z.boolean(),
 };
 const revocationAgrees = (d: {
   status: z.infer<typeof deviceStatusSchema>;
@@ -107,6 +108,8 @@ export type DeviceHeartbeatBody = z.infer<typeof deviceHeartbeatBodySchema>;
 export const deviceSyncRecordSchema = z
   .strictObject({
     ...deviceFields,
+    /** Absent = false: records from before shared mode still parse. */
+    sharedMode: z.boolean().optional(),
     updatedAt: isoDateTimeSchema,
     /** Token floor: the edge refuses tokens issued before it (reissue rotates). */
     tokenIssuedAt: isoDateTimeSchema.nullable(),

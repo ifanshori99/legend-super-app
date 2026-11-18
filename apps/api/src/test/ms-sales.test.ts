@@ -826,11 +826,20 @@ describe("sales metric source: recovery refunds (legend-n6fek)", () => {
   /** A resolved ORD-09 issue of the order; returns its id. */
   async function seedIssue(w: World, outlet: string, orderId: string) {
     const issueId = randomUUID();
+    // One manual refund per order line (order_issues_manual_refund_once_idx,
+    // legend-uyw0v): each issue gets its own voided line, a copy of the first
+    // one, so several refunds of one order stay seedable. A voided line is
+    // outside every sales line total.
     const {
       rows: [item],
     } = await owner.query<{ id: string }>(
-      `SELECT id FROM order_items WHERE order_id = $1 LIMIT 1`,
-      [orderId],
+      `INSERT INTO order_items (id, tenant_id, outlet_id, order_id, menu_item_id, name, quantity,
+         unit_price_idr, modifiers_total_idr, line_total_idr, fire_status, status, reserved_business_date)
+       SELECT $2, tenant_id, outlet_id, order_id, menu_item_id, name, quantity,
+         unit_price_idr, modifiers_total_idr, line_total_idr, fire_status, 'voided', reserved_business_date
+       FROM order_items WHERE order_id = $1 AND status <> 'voided' ORDER BY id LIMIT 1
+       RETURNING id`,
+      [orderId, randomUUID()],
     );
     // The user FKs (reported_by, approved_by) are skipped: no real staff needed.
     const client = await owner.connect();

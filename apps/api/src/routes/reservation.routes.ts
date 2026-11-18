@@ -37,7 +37,16 @@ import {
   seatReservation as seatEndpoint,
 } from "@starter/shared/reservation";
 import { HttpError } from "../lib/http-error.ts";
-import { getAuth, requireAuth } from "../middleware/auth.ts";
+import {
+  actorOf,
+  requireActingStaffOnSharedDevice,
+  resolveActingStaff,
+} from "../middleware/acting-staff.ts";
+import {
+  getAuth,
+  requireAuth,
+  requireAuthAllowSharedDevice,
+} from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
@@ -75,6 +84,17 @@ const view = requireOutletPermission("reservation.view", outletOf);
 const manage = requireOutletPermission("reservation.manage", outletOf);
 const bookingLimits = createPublicBookingLimits();
 const staff = [requireAuth, requireTrustedOrigin, requireTenantContext];
+// Shared-device cashier PIN: the actor (and audit) is the PIN cashier, not the
+// session owner. Only on the money-touching mutations below.
+// requireAuthAllowSharedDevice lets a shared-tablet session reach the PIN guard
+// (plain requireAuth would refuse it before the cashier can identify).
+const sharedStaff = [
+  requireAuthAllowSharedDevice,
+  requireTrustedOrigin,
+  requireTenantContext,
+  resolveActingStaff,
+  requireActingStaffOnSharedDevice,
+];
 
 /** The `Idempotency-Key` header only; the body is returned unchanged. */
 function takeIdempotencyKey(req: Request): {
@@ -209,7 +229,7 @@ reservationRouter.post(
 
 reservationRouter.post(
   "/outlets/:outletId/reservations/:reservationId/cancel",
-  ...staff,
+  ...sharedStaff,
   jsonBody,
   manage,
   async (req, res) => {
@@ -218,7 +238,7 @@ reservationRouter.post(
     res.json({
       data: await cancelReservation(
         getScopedTenantContext(req),
-        getAuth(req).user.id,
+        actorOf(req),
         outletId,
         reservationId,
         cancelEndpoint.body.parse(body),
@@ -230,7 +250,7 @@ reservationRouter.post(
 
 reservationRouter.post(
   "/outlets/:outletId/reservations/:reservationId/deposit-link",
-  ...staff,
+  ...sharedStaff,
   jsonBody,
   manage,
   async (req, res) => {
@@ -242,7 +262,7 @@ reservationRouter.post(
     res.json({
       data: await resendReservationDepositLink(
         getScopedTenantContext(req),
-        getAuth(req).user.id,
+        actorOf(req),
         outletId,
         reservationId,
         key,
@@ -253,7 +273,7 @@ reservationRouter.post(
 
 reservationRouter.post(
   "/outlets/:outletId/reservations/:reservationId/no-show",
-  ...staff,
+  ...sharedStaff,
   jsonBody,
   manage,
   async (req, res) => {
@@ -262,7 +282,7 @@ reservationRouter.post(
     res.json({
       data: await markReservationNoShow(
         getScopedTenantContext(req),
-        getAuth(req).user.id,
+        actorOf(req),
         outletId,
         reservationId,
         noShowEndpoint.body.parse(body),
@@ -274,7 +294,7 @@ reservationRouter.post(
 
 reservationRouter.post(
   "/outlets/:outletId/reservation-customer-credit/apply",
-  ...staff,
+  ...sharedStaff,
   manage,
   jsonBody,
   async (req, res) => {
@@ -284,7 +304,7 @@ reservationRouter.post(
     res.json({
       data: await applyReservationCustomerCredit(
         getScopedTenantContext(req),
-        getAuth(req).user.id,
+        actorOf(req),
         outletId,
         input,
         key,

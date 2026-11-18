@@ -39,6 +39,20 @@ const CODE_KEYS: Record<string, MessageKey> = {
   PAYOUT_RETURN_EVIDENCE_MISMATCH:
     "payrollPayoutReview.error.returnEvidenceMismatch",
   PAYOUT_RETURN_SAME_PERSON: "payrollPayoutReview.error.returnSamePerson",
+  PAYOUT_RETURN_BANK_REF_REQUIRED:
+    "payrollPayoutReview.error.returnBankRefRequired",
+  PAYOUT_RETURN_BANK_REF_MISMATCH:
+    "payrollPayoutReview.error.returnBankRefMismatch",
+  PAYOUT_RETURN_BANK_REF_REUSED:
+    "payrollPayoutReview.error.returnBankRefReused",
+  PAYOUT_RECON_CLEAR_REASON_INVALID:
+    "payrollPayoutReview.error.reconClearReasonInvalid",
+  PAYOUT_RECON_CLEAR_SELF_APPROVAL:
+    "payrollPayoutReview.error.reconClearSelfApproval",
+  PAYOUT_RECON_CLEAR_STATE: "payrollPayoutReview.error.reconClearState",
+  PAYOUT_RECON_FLAG_CHANGED: "payrollPayoutReview.error.reconFlagChanged",
+  PAYOUT_RECON_PROOF_UNREADABLE:
+    "payrollPayoutReview.error.reconProofUnreadable",
   PAYOUT_PROPOSAL_NOT_WITHDRAWABLE:
     "payrollPayoutReview.error.proposalNotWithdrawable",
   PAYOUT_PROOF_SPENT_BY_WITHDRAWN:

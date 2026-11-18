@@ -17,6 +17,8 @@ export const zoneConfigItemSchema = z.strictObject({
   hours: floorZoneSchema.shape.hours.max(50),
   status: floorZoneSchema.shape.status,
   sortOrder: z.number().int().min(0),
+  /** Absent in templates exported before legend-p4q10; the importer reads absent as false. */
+  isWfc: floorZoneSchema.shape.isWfc.optional(),
 });
 
 export type ZoneConfigItem = z.infer<typeof zoneConfigItemSchema>;
@@ -33,7 +35,7 @@ export type ZoneConfigRow = Pick<
   | "hours"
   | "status"
   | "sortOrder"
-> & { createdAt?: string | Date };
+> & { isWfc?: boolean; createdAt?: string | Date };
 
 export type ZoneConfigExportContext = {
   /** Source outlet id to the lower-case portable outlet code. */
@@ -109,6 +111,7 @@ export const zonesConfigCodec = {
         hours: row.hours,
         status: row.status,
         sortOrder: row.sortOrder,
+        ...(row.isWfc === undefined ? {} : { isWfc: row.isWfc }),
       });
     });
   },

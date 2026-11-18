@@ -8,7 +8,9 @@
 //  1. permission `payroll.run`;
 //  2. LOCK ORDER (design §0.4): month advisory lock, rapel component locks +
 //     employees/outlets FOR SHARE, then the run row FOR UPDATE, then the
-//     prior runs FOR SHARE (`loadTaxYearPriors`), then reads, then writes;
+//     prior runs FOR SHARE (`loadTaxYearPriors`), then the receivable reads,
+//     then the loans FOR UPDATE in id order (`payroll-run-loans.ts`), then
+//     reads, then writes. Never lock a run row after a loan row;
 //  3. population: employees of the run's legal entity (own, else the home
 //     outlet's), in the policy's employment types, employed during the period
 //     (THR runs: also THR-eligible and in the schedule's list);
@@ -16,10 +18,17 @@
 //     tax facts from the employee row, tax-year priors;
 //  5. PPh 21 for all employees in one call, then the pure composer;
 //  6. writes: run row (reducer `simulate`), old results deleted, new results
-//     inserted, audit with counts only. No payslip, no outbox event (PAYR-01).
+//     inserted, the run's kasbon rows replaced (one per LOAN line: a
+//     reservation, the loan balance only drops at lock; legend-8tfvr), audit
+//     with counts only. No payslip, no outbox event (PAYR-01).
 //
-// OPEN O7: population rule (legal entity + employment type + period overlap).
-// OPEN O8: `partialYearTaxSubject` is always false.
+// Decided O7 (legend-0ytbu): population = employees whose legal entity (own,
+// else the home outlet's) is the run's, whose employment type is one of the
+// policy's, and whose employment overlaps the period inclusively:
+// joinDate <= periodEnd AND (endDate IS NULL OR endDate >= periodStart).
+// Decided O8 (legend-0ytbu): `partialYearTaxSubject` is false for every
+// employee. Only a foreign national staying under 183 days is a partial-year
+// subject and no such field exists; false never under-withholds.
 // OPEN O1: payment method = bank_transfer when a bank account is on file.
 
 import { randomUUID } from "node:crypto";
@@ -66,6 +75,7 @@ import {
   sumPayrollRunTotals,
   taxSchemeSchema,
   type BpjsTableType,
+  type EmployeeLoanId,
   type PayrollRun,
   type PayrollRunId,
   type PayslipCalculation,
@@ -102,9 +112,16 @@ import { recordAudit } from "./core-audit.ts";
 import { assertPayrollTenantCan } from "./payroll-access.ts";
 import { computeEmployeeGrossInTransaction } from "./payroll-components.service.ts";
 import {
+  OVERTIME_CORRECTION_LINES,
+  planOvertimeCorrection,
+  planOvertimeCorrectionDeduction,
+  type OvertimeCorrectionPlan,
+} from "./payroll-overtime-correction.service.ts";
+import {
   bpjsLinesOf,
   composePayslipCalculation,
   payslipTaxFactsOf,
+  type PlannableLoan,
 } from "./payroll-run-compose.ts";
 import {
   calculatePayrollRunTax,
@@ -118,6 +135,10 @@ import {
   loadRunRapelAllocations,
   lockRapelInputsForRun,
 } from "./payroll-run-rapel-lock.ts";
+import {
+  replaceRunLoanDeductions,
+  lockLoansForRunSimulation,
+} from "./payroll-run-loans.ts";
 import {
   calculatePayrollRunStatutory,
   captureStatutoryForLock,
@@ -518,7 +539,7 @@ export async function simulatePayrollRunInTransaction(
     types: tableTypes,
   });
 
-  // Population (OPEN O7), ordered by id.
+  // Population (decided O7, see header), ordered by id.
   const memberRows = await tx
     .select({
       id: employees.id,
@@ -594,6 +615,10 @@ export async function simulatePayrollRunInTransaction(
         ...(run.runType === "regular" ? { payrollRunId: runId } : {}),
       },
     );
+    // Only the loan writer may produce a loan line (design D5): a tenant
+    // component of that category would have no loan behind it.
+    if (gross.lines.some((l) => l.category === "loan_installment"))
+      throw simulateUnsupported();
     const earnings = gross.lines.filter((l) => l.kind === "earning");
     const sumFlag = (flag: "bpjsBase" | "thrBase") =>
       sumIdr(
@@ -730,6 +755,48 @@ export async function simulatePayrollRunInTransaction(
     })),
   );
 
+  // Kasbon (legend-8tfvr): only regular runs deduct loans. Loans lock after
+  // the priors (design §2); no policy row means bp 0, so nothing is deducted.
+  const [loanPolicy] = await tx
+    .select({ bp: payrollLoanPolicies.maxDeductionOfNetPayBp })
+    .from(payrollLoanPolicies)
+    .where(eq(payrollLoanPolicies.tenantId, tenantId))
+    .limit(1);
+  const loansByEmployee = isThr
+    ? new Map<string, PlannableLoan[]>()
+    : await lockLoansForRunSimulation(tx, tenantId, {
+        runId,
+        employeeIds: population.map((m) => m.id),
+        periodEnd: run.periodEnd,
+      });
+
+  // Overtime correction of frozen periods (legend-72nod): regular runs only;
+  // a held source gets no line (manual handling, reported in the audit row),
+  // never more than owed.
+  const correctionById = new Map<string, OvertimeCorrectionPlan>();
+  if (!isThr)
+    for (const member of population)
+      correctionById.set(
+        member.id,
+        await planOvertimeCorrection(tx, context, {
+          employeeId: member.id,
+          targetRunId: runId,
+        }),
+      );
+  const correctionLine = (
+    kind: "positive" | "negative",
+    sourceRunId: string,
+    amountIdr: number,
+  ): PayslipLine => {
+    const spec = OVERTIME_CORRECTION_LINES[kind];
+    return payslipLineSchema.parse({
+      ...spec,
+      amountIdr,
+      quantity: null,
+      sourceId: sourceRunId,
+    });
+  };
+
   type Prepared = {
     member: (typeof population)[number];
     payslipId: PayslipId;
@@ -740,13 +807,24 @@ export async function simulatePayrollRunInTransaction(
     priorPayslipIds: string[];
     rapelAllocationRevision: number | null;
     paymentMethod: PayslipPaymentMethod;
+    correction: OvertimeCorrectionPlan;
   };
   const prepared: Prepared[] = [];
   const taxEmployees: PayrollRunTaxEmployee[] = [];
   for (const member of population) {
     const gross = grossById.get(member.id)!;
     const statutoryLine = statutoryById.get(member.id)!;
+    const correction: OvertimeCorrectionPlan = correctionById.get(
+      member.id,
+    ) ?? { kind: "none", positive: [], negative: [], sources: [], held: [] };
     let earnings = gross.earnings;
+    if (correction.kind === "correction")
+      earnings = [
+        ...earnings,
+        ...correction.positive.map((entry) =>
+          correctionLine("positive", entry.sourceRunId, entry.amountIdr),
+        ),
+      ];
     let deductions = gross.deductions;
     let bpjs = bpjsLinesOf(statutoryLine.contributions);
     if (isThr) {
@@ -791,7 +869,7 @@ export async function simulatePayrollRunInTransaction(
       hasTaxId: member.npwpHmac !== null || member.nikHmac !== null,
       lastTaxPeriod: lastTaxPeriodOf(member.endDate),
       monthsWorked: monthsWorkedIn(member.joinDate, run.payDate),
-      // OPEN O8.
+      // Decided O8: always false (see header).
       partialYearTaxSubject: false,
       earnings: facts.earnings,
       employerBenefitIdr: facts.employerBenefitIdr,
@@ -820,6 +898,7 @@ export async function simulatePayrollRunInTransaction(
       taxInput,
       priorPayslipIds: [...new Set(prior.payslipIds)].sort(),
       rapelAllocationRevision: gross.rapelAllocationRevision,
+      correction,
       // OPEN O1.
       paymentMethod: member.bankAccountHmac !== null ? "bank_transfer" : "cash",
     });
@@ -862,6 +941,12 @@ export async function simulatePayrollRunInTransaction(
       openReceivableIdr: openReceivableById.get(entry.member.id) ?? 0,
       totalOpenReceivableIdr:
         receivableBalances.total.get(entry.member.id) ?? 0,
+      loans: loansByEmployee.get(entry.member.id) ?? [],
+      loanMaxDeductionOfNetPayBp: loanPolicy?.bp ?? 0,
+      overtimeCorrectionDeductions: (roomIdr) =>
+        planOvertimeCorrectionDeduction(entry.correction, roomIdr).map((item) =>
+          correctionLine("negative", item.sourceRunId, item.amountIdr),
+        ),
     });
     results.push({
       entry,
@@ -879,18 +964,9 @@ export async function simulatePayrollRunInTransaction(
 
   const totals = sumPayrollRunTotals(results.map((r) => r.stored.calculation));
   // Side effects simulate does not compose: refuse, never pay more.
-  if (
-    totals.loanRepaymentIdr > 0 ||
-    totals.reimbursementIdr > 0 ||
-    totals.serviceChargeIdr > 0
-  )
+  if (totals.reimbursementIdr > 0 || totals.serviceChargeIdr > 0)
     throw simulateUnsupported();
 
-  const [loanPolicy] = await tx
-    .select({ bp: payrollLoanPolicies.maxDeductionOfNetPayBp })
-    .from(payrollLoanPolicies)
-    .where(eq(payrollLoanPolicies.tenantId, tenantId))
-    .limit(1);
   const at = isoDateTimeSchema.parse(now.toISOString());
   const snapshot = payrollConfigSnapshotSchema.safeParse({
     statutoryVersions: captured.statutoryVersions,
@@ -914,7 +990,7 @@ export async function simulatePayrollRunInTransaction(
         overtimeBase: c.overtimeBase,
         thrBase: c.thrBase,
       })),
-    // Kasbon off: no loan is deducted (simulate refuses loans anyway).
+    // The policy share of net pay kasbon may take; 0 (no policy) = none.
     loanMaxDeductionOfNetPayBp: loanPolicy?.bp ?? 0,
     pph21Policy: tax.pph21Policy,
     capturedAt: at,
@@ -963,6 +1039,21 @@ export async function simulatePayrollRunInTransaction(
       createdAt: now,
     })),
   );
+  // One kasbon row per LOAN line (a reservation until the run locks).
+  await replaceRunLoanDeductions(
+    tx,
+    tenantId,
+    runId,
+    results.flatMap(({ entry, stored }) =>
+      stored.calculation.lines
+        .filter((l) => l.category === "loan_installment")
+        .map((l) => ({
+          employeeId: employeeIdSchema.parse(entry.member.id),
+          loanId: l.sourceId as EmployeeLoanId,
+          amountIdr: l.amountIdr,
+        })),
+    ),
+  );
 
   await recordAudit(
     tx,
@@ -993,5 +1084,57 @@ export async function simulatePayrollRunInTransaction(
     ["employeeCount", "simulationCount"],
   );
 
-  return toRun(updated);
+  // Held overtime corrections are reported, never silent (architect R2): one
+  // audit row with (employee, source run, reason) of each held source.
+  const heldCorrections = results.flatMap(({ entry }) =>
+    entry.correction.held.map(
+      (held) =>
+        `${entry.member.id}|${held.sourceRunId}|${held.reason}|${held.outstandingIdr ?? ""}`,
+    ),
+  );
+  if (heldCorrections.length > 0)
+    await recordAudit(
+      tx,
+      context,
+      {
+        id: createUlid(now.getTime()),
+        tenantId,
+        outletId: null,
+        actorType: "user",
+        actorId: actor,
+        deviceId: null,
+        action: "payroll.run.overtime_correction_held",
+        objectType: "payroll_run",
+        objectId: runId,
+        reason: null,
+        maskedChanges: {
+          before: null,
+          after: {
+            simulationCount: next.simulationCount,
+            heldCount: heldCorrections.length,
+            heldItems: heldCorrections,
+          },
+        },
+        ipHash: null,
+        sensitiveAccess: false,
+        retentionClass: "audit_2y",
+        createdAt: now.toISOString(),
+      },
+      ["simulationCount", "heldCount", "heldItems"],
+    );
+
+  // Same held list as the audit row, surfaced to the caller (legend-oayhe).
+  // Omitted when nothing is held; never part of the pay values.
+  const heldOvertimeCorrections = results.flatMap(({ entry }) =>
+    entry.correction.held.map((held) => ({
+      employeeId: employeeIdSchema.parse(entry.member.id),
+      sourceRunId: held.sourceRunId,
+      reason: held.reason,
+      outstandingIdr: held.outstandingIdr,
+    })),
+  );
+  const simulated = toRun(updated);
+  return heldOvertimeCorrections.length > 0
+    ? { ...simulated, heldOvertimeCorrections }
+    : simulated;
 }

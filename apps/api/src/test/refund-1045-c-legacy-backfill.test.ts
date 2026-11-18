@@ -1,5 +1,5 @@
 // legend-0656 / F3 (brief 1045, tier K "jangan sampai rugi"): the backfill of
-// migration 0656 (`refund_id_kind`) must NOT guess. A provider's real refund id
+// migration 0490 (`refund_id_kind`) must NOT guess. A provider's real refund id
 // may legitimately look like `payment:foo`, `payment:h:<64 hex>` or
 // `hold:<uuid>`, so rows written before the kind column existed keep the id as
 // sent and are all kind `provider`; the same for old holds that carry a refund
@@ -36,7 +36,7 @@
 //          across tenants.
 // 1045c-T1 a second tenant with the same legacy ids: neither tenant's status or
 //          refund touches the other.
-// 1045c-G1 regression guard: the SQL of 0656 has no UPDATE that guesses
+// 1045c-G1 regression guard: the SQL of 0490 has no UPDATE that guesses
 //          `synthetic_full` / `synthetic_hold` or rewrites a refund id.
 //
 // Assumptions (the brief does not fix them):
@@ -1553,10 +1553,10 @@ describe("1045c-T another tenant with the same old refund ids is not affected", 
 // G: regression guard on the migration file
 // ===========================================================================
 
-describe("1045c-G migration 0656 does not guess the kind of old rows", () => {
+describe("1045c-G migration 0490 does not guess the kind of old rows", () => {
   const sqlPath = resolve(
     dirname(fileURLToPath(import.meta.url)),
-    "../../drizzle/0656_provider_refund_id_kind.sql",
+    "../../drizzle/0490_provider_refund_id_kind.sql",
   );
   const statements = readFileSync(sqlPath, "utf8")
     .split("--> statement-breakpoint")

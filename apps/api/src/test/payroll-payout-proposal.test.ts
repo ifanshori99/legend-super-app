@@ -4,7 +4,7 @@
 // items waiting for their second person: kind (resolve or return), proposed
 // outcome, proof key, proposer and time. It needs payroll.disburse.approve and
 // only reads: no batch, item or journal changes.
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { FakeObjectStorage } from "@starter/shared/adapters";
@@ -159,6 +159,10 @@ const postResolve = (
     .post(`${BASE}/${batchId}/resolve`)
     .set(originHeader)
     .send(resolveBody(itemId, evidenceKey, outcome));
+// Bank reference of a return claim: unique per claim (evidence key), identical
+// on both steps of the same claim.
+const bankRefOf = (evidenceKey: string) =>
+  `TRX${createHash("sha256").update(evidenceKey).digest("hex").slice(0, 8)}`;
 const postReturn = (
   who: Staff,
   batchId: string,
@@ -171,6 +175,7 @@ const postReturn = (
     .send({
       itemIds: [itemId],
       evidenceKey,
+      bankRef: bankRefOf(evidenceKey),
       note: "Bank mengembalikan dana, rekening tujuan ditutup",
     });
 const moneyState = async (batchId: string) =>

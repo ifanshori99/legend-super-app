@@ -3,9 +3,14 @@
 // the list stays quiet. Shown only to people who hold
 // accounting.cash_bank.record, because the endpoint answers 403 to everyone
 // else. A cash out above the tenant limit waits for a second person (Q7): the
-// row says so, and Setujui/Tolak show only to someone who holds
-// accounting.cash_bank.approve and did not create the entry.
+// row says so. Approving goes through the approval inbox (legend-fukt6): a
+// pending cash out always has a chain, and the direct approve answers
+// CASH_OUT_CHAIN_OPEN/MISSING until every level approved, so the row links to
+// the inbox instead of offering a direct Setujui. Tolak (reject) stays here and
+// shows only to someone who holds accounting.cash_bank.approve and did not
+// create the entry.
 import * as React from "react";
+import { Link } from "@tanstack/react-router";
 import { ChevronDown, Plus } from "lucide-react";
 import type {
   BankAccount,
@@ -13,6 +18,7 @@ import type {
   CreatableCashBankEntryKind,
 } from "@starter/shared/accounting";
 import { useT } from "@/components/i18n";
+import { cn } from "cn";
 import { Button } from "@/components/ui/button";
 import {
   DataTableShell,
@@ -40,14 +46,15 @@ import {
   formatMonthLabel,
   monthRange,
 } from "../lib";
-import { useApproveCashBankEntry, useCashBankEntries } from "../hooks";
-import { useToast } from "@/components/ui/toast";
-import { ApiError } from "@/lib/api/errors";
+import { useCashBankEntries } from "../hooks";
 import { useAccounts } from "@/features/ws07-accounting/hooks";
 import { useCurrentAuth } from "@/features/ws01-approvals/hooks";
 import { useSupportReadOnly } from "@/features/ws01-support-access/read-only";
-import { useCanApproveCashBank, useCanManageCashApprovalLimit } from "../guard";
-import { moneyErrorKey } from "../lib";
+import {
+  useCanApproveCashBank,
+  useCanManageCashApprovalLimit,
+  useCanViewApprovalInbox,
+} from "../guard";
 import { CashApprovalLimitCard } from "./cash-approval-limit-card";
 import { CashEntryRejectDialog } from "./cash-entry-reject-dialog";
 import { CashEntryKindBadge, CashEntryStatusBadge } from "./status-badges";
@@ -65,12 +72,11 @@ export function CashEntriesSection({
   onAdd: (kind: CreatableCashBankEntryKind) => void;
 }) {
   const t = useT();
-  const toast = useToast();
   const canApprove = useCanApproveCashBank();
   const supportReadOnly = useSupportReadOnly();
+  const canViewInbox = useCanViewApprovalInbox();
   const canManageLimit = useCanManageCashApprovalLimit();
   const userId = useCurrentAuth().data?.data.user.id ?? null;
-  const approve = useApproveCashBankEntry();
   const [rejectTarget, setRejectTarget] = React.useState<CashBankEntry | null>(
     null,
   );
@@ -112,29 +118,7 @@ export function CashEntriesSection({
     entry.status === "pending_approval" &&
     userId !== null &&
     entry.createdBy !== userId;
-  const approveEntry = (entry: CashBankEntry) =>
-    approve.mutate(entry.id, {
-      onSuccess: () =>
-        toast({
-          title: t("accounting.cash.entries.approval.approved", {
-            kind: t(CASH_ENTRY_KIND_KEYS[entry.kind]),
-          }),
-          tone: "success",
-        }),
-      onError: (error) => {
-        const key =
-          error instanceof ApiError ? moneyErrorKey(error.code) : null;
-        toast({
-          title: key
-            ? t(key)
-            : error instanceof ApiError
-              ? error.message
-              : t("accounting.cash.entries.approval.failed"),
-          tone: "danger",
-        });
-      },
-    });
-  // Setujui/Tolak for someone else's pending entry; the hint for your own.
+  // Inbox link + Tolak for someone else's pending entry; the hint for your own.
   // Table and card share it, so both honor canDecide.
   const decisionControls = (
     entry: CashBankEntry,
@@ -143,21 +127,26 @@ export function CashEntriesSection({
     if (!canApprove) return null;
     if (canDecide(entry)) {
       return (
-        <div className="flex gap-2">
-          <Button
-            type="button"
-            size={size}
-            className={size === "default" ? "min-h-11" : undefined}
-            aria-label={t("accounting.cash.entries.approval.actionLabel", {
-              action: t("accounting.cash.entries.approval.approve"),
-              description: entry.description,
-            })}
-            loading={approve.isPending && approve.variables === entry.id}
-            disabled={approve.isPending || supportReadOnly}
-            onClick={() => approveEntry(entry)}
-          >
-            {t("accounting.cash.entries.approval.approve")}
-          </Button>
+        <div className="flex flex-wrap gap-2">
+          {canViewInbox ? (
+            <Button
+              asChild
+              size={size}
+              className={cn(
+                "whitespace-normal",
+                size === "default" && "min-h-11",
+              )}
+            >
+              <Link
+                to="/kelola/persetujuan"
+                aria-label={t("accounting.cash.entries.approval.inboxLabel", {
+                  description: entry.description,
+                })}
+              >
+                {t("accounting.cash.entries.approval.inbox")}
+              </Link>
+            </Button>
+          ) : null}
           <Button
             type="button"
             size={size}
@@ -167,7 +156,7 @@ export function CashEntriesSection({
               action: t("accounting.cash.entries.approval.reject"),
               description: entry.description,
             })}
-            disabled={approve.isPending || supportReadOnly}
+            disabled={supportReadOnly}
             onClick={() => setRejectTarget(entry)}
           >
             {t("accounting.cash.entries.approval.reject")}

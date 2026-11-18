@@ -30,8 +30,11 @@ export type PayoutGrantBinding = {
     | "posting_source"
     | "resolve"
     | "bank_confirm"
+    | "batch_approve"
     | "disown"
-    | "unfreeze";
+    | "unfreeze"
+    | "recon_clear"
+    | "return_withdraw";
   step: "propose" | "approve" | "record" | "confirm" | "withdraw";
   batchId: string | null;
   itemIds: readonly string[];
@@ -41,7 +44,8 @@ export type PayoutGrantBinding = {
   /**
    * The outcome a grant covers (legend-r86qa): `failed` or `not_sent` for kind
    * `resolve`, `succeeded` for kind `bank_confirm`, the sha256 (hex) of the
-   * reason for kind `disown` and `unfreeze` (legend-l2zru); NULL for every
+   * reason for kind `disown`, `unfreeze` (legend-l2zru), `recon_clear`
+   * (legend-xbagc) and `return_withdraw` (legend-snwnn); NULL for every
    * other kind.
    */
   detail?: string | null;
@@ -114,6 +118,46 @@ function issueError(error: unknown): unknown {
         409,
         "PAYOUT_UNFREEZE_REFUSED",
         "Anda tidak dapat membuka pembekuan batch ini.",
+      );
+    case "83":
+      // A batch approval grant for a batch that no longer waits for approval
+      // (a lost approve race): same answer as the approve path itself.
+      return new HttpError(
+        409,
+        "PAYOUT_BATCH_STATE",
+        "Batch belum diajukan atau sudah diproses.",
+      );
+    case "16":
+      return new HttpError(
+        403,
+        "PAYOUT_SELF_APPROVAL",
+        "Pembuat batch tidak boleh menyetujui batchnya sendiri.",
+      );
+    case "84":
+      // The person who said "not me" to a main approval cannot approve it again.
+      return new HttpError(
+        403,
+        "PAYOUT_DISOWNER_REFUSED",
+        'Anda sudah menyatakan "bukan saya" pada persetujuan batch ini, jadi tidak boleh menyetujuinya lagi.',
+      );
+    case "85":
+      return new HttpError(
+        422,
+        "PAYOUT_RECON_CLEAR_REASON_INVALID",
+        "Alasan penutupan flag wajib diisi (10 sampai 500 karakter).",
+      );
+    case "86":
+      // The proposer of a recon clearance cannot approve it (legend-xbagc).
+      return new HttpError(
+        403,
+        "PAYOUT_RECON_CLEAR_SELF_APPROVAL",
+        "Pengusul penutupan flag tidak boleh menyetujuinya sendiri.",
+      );
+    case "87":
+      return new HttpError(
+        409,
+        "PAYOUT_RECON_CLEAR_STATE",
+        "Penutupan flag ini sudah disetujui.",
       );
     case "72":
       return new HttpError(

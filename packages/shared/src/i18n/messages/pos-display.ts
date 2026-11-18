@@ -60,6 +60,11 @@ export const posDisplayMessages = {
       "Pindai kode di layar dengan aplikasi bank atau dompet digital Anda.",
     countdown: "Berlaku {time} lagi",
     wait: "Tunggu hingga pembayaran terkonfirmasi.",
+    providerLabel: "QRIS diproses oleh {provider}",
+    provider: {
+      doit: "DOIT",
+      duitku: "Duitku",
+    },
     unknownTitle: "Status pembayaran belum dapat dipastikan",
     loadingBadge: "Memuat QRIS",
     loadingTitle: "Menyiapkan kode pembayaran",

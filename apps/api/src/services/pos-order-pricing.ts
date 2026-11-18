@@ -303,6 +303,12 @@ export type PosBill = {
   taxIdr: Idr;
   roundingIdr: Idr;
   totalIdr: Idr;
+  /**
+   * Inclusive prices (harga nett, legend-npnh): `subtotalIdr` is the gross line
+   * sum with service and tax already inside it, and `totalIdr` is subtotal -
+   * discount + rounding (orders_total_check branches on this).
+   */
+  pricesIncludeTax: boolean;
   tax: TaxCalculationResult | null;
 };
 
@@ -317,7 +323,9 @@ export function lineSubtotalIdr(line: {
 /**
  * The bill of the live lines: discount (bill level) -> service -> tax ->
  * rounding, by the shared engine. Fails closed on a configuration gap
- * (TaxError) and on a tax-inclusive rule (POS prices exclude tax, like QR).
+ * (TaxError) and on a cart mixing inclusive and exclusive rules (no single
+ * total formula, like QR). A tax-inclusive rule yields an inclusive bill
+ * (legend-npnh): the same engine and formula as the QR order (legend-zmc2).
  */
 export function computePosBill(input: {
   context: ScopedTenantContext;
@@ -341,6 +349,7 @@ export function computePosBill(input: {
       taxIdr: idr(0),
       roundingIdr: idr(0),
       totalIdr: idr(0),
+      pricesIncludeTax: false,
       tax: null,
     };
   const discount = Math.min(Math.max(0, input.orderDiscountIdr), subtotal);
@@ -372,7 +381,10 @@ export function computePosBill(input: {
       settings: input.taxConfig.settings,
     },
   );
-  if (tax.taxes.some((summary) => summary.priceIncludesTax))
+  const inclusiveRules = tax.taxes.filter(
+    (summary) => summary.priceIncludesTax,
+  );
+  if (inclusiveRules.length > 0 && inclusiveRules.length < tax.taxes.length)
     throw new HttpError(
       qrOrderErrorHttpStatus.QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED,
       QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED,
@@ -385,6 +397,7 @@ export function computePosBill(input: {
     taxIdr: tax.taxIdr,
     roundingIdr: tax.roundingIdr,
     totalIdr: tax.totalIdr,
+    pricesIncludeTax: inclusiveRules.length > 0,
     tax,
   };
 }

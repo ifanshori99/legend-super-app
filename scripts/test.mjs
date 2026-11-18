@@ -23,6 +23,16 @@ const databaseName = process.env.LEGEND_TEST_DB_NAME || "starter_test";
 if (!/^[a-z_][a-z0-9_]{0,62}$/.test(databaseName))
   throw new Error("LEGEND_TEST_DB_NAME must be a lowercase PostgreSQL name.");
 
+const selected = process.env.LEGEND_TEST_FILES?.trim()
+  ? process.env.LEGEND_TEST_FILES.trim().split(/\s+/)
+  : undefined;
+const targeted =
+  mode === "unit" &&
+  selected?.length > 0 &&
+  selected.every(
+    (file) => !file.startsWith("-") && /\.test\.[cm]?[jt]sx?$/.test(file),
+  );
+
 // Business-logic coverage gate (legend-dd0g): pnpm test:coverage, or
 // LEGEND_COVERAGE=1 pnpm test (CI sets it on the pnpm check step so the suite
 // runs once). Thresholds live in apps/api/vitest.config.ts.
@@ -39,6 +49,10 @@ const password = randomBytes(24).toString("hex");
 const dockerArgs = ["compose", "-p", project, "-f", "compose.test.yaml"];
 const env = {
   ...process.env,
+  // Two targeted runs fit in the local VM; full and browser runs keep their
+  // larger budget because tmpfs database files accumulate throughout the run.
+  STARTER_TEST_PG_MEM:
+    process.env.STARTER_TEST_PG_MEM || (targeted ? "1024m" : "1536m"),
   LEGEND_TEST_DB_NAME: databaseName,
   STARTER_TEST_PASSWORD: password,
   // Marks this run's containers and network so a later run can sweep them if
@@ -161,9 +175,6 @@ try {
     testEnv,
   );
   if (mode === "unit") {
-    const selected = process.env.LEGEND_TEST_FILES?.trim()
-      ? process.env.LEGEND_TEST_FILES.trim().split(/\s+/)
-      : undefined;
     const rootFiles = selected?.filter((file) => file.endsWith(".test.mjs"));
     const webFiles = selected?.filter((file) =>
       file.startsWith("apps/web/test/"),

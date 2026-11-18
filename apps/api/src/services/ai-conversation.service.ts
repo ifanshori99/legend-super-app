@@ -235,6 +235,11 @@ export async function getConversationDetail(
   now: Date = new Date(),
 ): Promise<{ conversation: AiConversation; messages: AiMessage[] }> {
   const callable = await callableToolCodes(access, now);
+  // TL-09 payslip amounts are bound to the login session that typed the PIN
+  // (legend-3e1ut). A stored answer would show them to every other session of
+  // the same user (and `defaultLoadHistory` would feed them back to the model),
+  // so a replayed TL-09 answer is always hidden.
+  callable.delete("TL-09");
   return withTenant(db, context, async (tx) => {
     const { conversation, messages } = await loadOwned(
       tx,

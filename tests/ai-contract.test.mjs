@@ -67,9 +67,9 @@ test("WS-12 fixtures parse and cover the whole AI and MCP contract", () => {
   accepts(ai.aiGovernanceSettingsSchema, f.governanceSettings);
 });
 
-test("WS-12 all 20 tool samples parse against their input and output schemas", () => {
+test("WS-12 all 21 tool samples parse against their input and output schemas", () => {
   ai.toolSamplesSchema.parse(f.toolSamples);
-  assert.equal(Object.keys(f.toolSamples).length, 20);
+  assert.equal(Object.keys(f.toolSamples).length, 21);
   for (const code of ai.AI_TOOL_CODES) {
     assert.ok(f.toolSamples[code], `sample for ${code}`);
     accepts(ai.AI_TOOL_IO[code].input, f.toolSamples[code].input);
@@ -212,8 +212,8 @@ test("WS-12 other contract rejects: mcp client uri, client status trail, strict 
 
 // ---- Catalog ---------------------------------------------------------------
 
-test("WS-12 catalog has 20 tools in PRD order with a code and name each", () => {
-  assert.equal(ai.AI_TOOL_CATALOG.length, 20);
+test("WS-12 catalog has 21 tools in PRD order with a code and name each", () => {
+  assert.equal(ai.AI_TOOL_CATALOG.length, 21);
   assert.ok(Object.isFrozen(ai.AI_TOOL_CATALOG));
   assert.deepEqual(
     ai.AI_TOOL_CATALOG.map((row) => row.code),
@@ -669,7 +669,7 @@ test("MCP-01 a token without the scope neither sees nor calls the tool", () => {
     ["TL-01"],
   );
   assert.deepEqual(ai.toolsVisibleForScopes(["mcp:unknown:read", "bogus"]), []);
-  assert.equal(ai.toolsVisibleForScopes(ai.MCP_SCOPES).length, 20);
+  assert.equal(ai.toolsVisibleForScopes(ai.MCP_SCOPES).length, 21);
   const sales = tool("TL-01");
   assert.deepEqual(
     ai.canCallTool({ tool: sales, scopes: [], roles: [anyRole("TL-01")] }),
@@ -722,7 +722,7 @@ test("AIG-04 the per-tool kill switch hides and blocks a tool", () => {
   const visible = ai.toolsVisibleForScopes(scopes, {
     disabledToolCodes: ["TL-01", "TL-13"],
   });
-  assert.equal(visible.length, 18);
+  assert.equal(visible.length, 19);
   assert.ok(!visible.some((row) => row.code === "TL-01"));
   assert.deepEqual(
     ai.canCallTool({

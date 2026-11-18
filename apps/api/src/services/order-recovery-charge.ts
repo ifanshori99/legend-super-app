@@ -617,15 +617,28 @@ export async function handleIssueChargePaid(
   const { intentId, paymentLinkId, currency } = payload.data;
   const locked = await lockChargeChain(tx, tenantId, { paymentLinkId });
   if (!locked) return "ignored";
-  const { charge, issue } = locked;
+  const { charge, issue, order } = locked;
 
   // Paid in cash at the till: the guest's code was cancelled then, so money on
   // it now is a late payment on a closed charge (refunded in full).
   if (charge.status === "paid" && charge.cashMovementId !== null)
     return "late_payment_on_closed_charge";
+  // Paid at the till by card/EDC (no intent, no cash movement): the guest's
+  // code is dead, so a QRIS landing now is a late payment on a closed charge.
+  if (charge.status === "paid" && charge.paymentIntentId === null)
+    return "late_payment_on_closed_charge";
   if (charge.status === "paid")
     return charge.paymentIntentId === intentId ? "unchanged" : "double_payment";
-  if (charge.status !== "open") return "late_payment_on_closed_charge";
+  // A cashier bill (`routed_pos`) is open to exactly the QRIS the cashier asked
+  // for at the till (`collect-at-pos`); any other intent is a late payment.
+  // The void of the order leaves a `routed_pos` charge and its live QRIS alone,
+  // so that QRIS paid on a voided order is late (refunded in full).
+  const cashierQris =
+    charge.status === "routed_pos" &&
+    charge.paymentIntentId === intentId &&
+    order.status !== "voided";
+  if (charge.status !== "open" && !cashierQris)
+    return "late_payment_on_closed_charge";
   if (currency !== undefined && currency !== "IDR") return "currency_mismatch";
 
   const [link] = await tx
@@ -766,6 +779,8 @@ export async function appendChargePaidEvent(
     /** Null when the cashier took the charge in cash (`cashMovementId`). */
     intentId: string | null;
     cashMovementId?: string;
+    /** Paid by an approved EDC sale at the till (no intent, no cash). */
+    edc?: boolean;
     paidAt: Date;
     at: Date;
   },
@@ -808,7 +823,9 @@ export async function appendChargePaidEvent(
       chargeId: charge.id,
       paymentIntentId: input.intentId,
       ...(input.cashMovementId === undefined
-        ? {}
+        ? input.edc === true
+          ? { method: "pos_edc" }
+          : {}
         : { method: "pos_cash", cashMovementId: input.cashMovementId }),
       differenceIdr: charge.differenceIdr,
       grossSalesIdr: charge.grossSalesIdr,

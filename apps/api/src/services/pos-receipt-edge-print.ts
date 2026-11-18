@@ -36,6 +36,7 @@ function receiptData(document: ReceiptDocument): ReceiptData {
     discount: document.discountIdr,
     serviceCharge: document.serviceChargeIdr,
     tax: document.taxIdr,
+    pricesIncludeTax: document.pricesIncludeTax,
     total: document.totalIdr,
     rounding: document.roundingIdr,
     status: document.status,

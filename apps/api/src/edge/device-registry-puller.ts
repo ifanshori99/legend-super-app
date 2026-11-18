@@ -17,6 +17,14 @@ export type DeviceRegistrySyncState = {
   readonly consecutiveFailures: number;
   /** Computed on read: no success yet, or the last one is older than staleAfterMs. */
   readonly stale: boolean;
+  /**
+   * legend-2lgu, computed on read: the last success (or, with none yet, the
+   * time this puller started) is older than the hard limit. Past it the edge
+   * refuses NEW device sessions.
+   */
+  readonly hardStale: boolean;
+  /** The hard limit in seconds (0 when the puller has none). */
+  readonly maxStaleSeconds: number;
   /** legend-zsdd: sequences the last successful pull refused (0 until one). */
   readonly receiptSequencesRefused: number;
   /** Time of the last successful pull that refused at least one, else null. */
@@ -42,6 +50,13 @@ export type DeviceRegistryPuller = {
   /** Clears the timer, aborts the in-flight fetch and awaits it. Idempotent. */
   stop(): Promise<void>;
   getState(): DeviceRegistrySyncState;
+  /** legend-2lgu: hard-stale predicate at `at` (default: now). */
+  isHardStale(at?: Date): boolean;
+  /**
+   * True once the local checkpoint was read, so the replica's age can be
+   * judged. Does not wait for the cloud.
+   */
+  isCheckpointLoaded(): boolean;
 };
 
 export type DeviceRegistryPullerDeps = {
@@ -62,6 +77,8 @@ export type DeviceRegistryPullerDeps = {
   save(input: { watermark: string | null; succeededAt: Date }): Promise<void>;
   intervalMs: number;
   staleAfterMs: number;
+  /** legend-2lgu: hard limit in ms; absent = never hard stale. */
+  hardStaleAfterMs?: number;
   maxBackoffMs: number;
   now?: () => Date;
   random?: () => number;
@@ -70,6 +87,8 @@ export type DeviceRegistryPullerDeps = {
   clearTimer?: (handle: unknown) => void;
   /** Fired on transitions (and once after the first run), checked after each run. */
   onStaleChange?: (stale: boolean) => void;
+  /** legend-2lgu: same, for the hard limit (fired on transitions only). */
+  onHardStaleChange?: (hardStale: boolean) => void;
   onError?: (error: unknown) => void;
 };
 
@@ -118,6 +137,10 @@ export function createDeviceRegistryPuller(
   let inFlight: Promise<boolean> | null = null;
   let controller: AbortController | null = null;
   let reportedStale: boolean | null = null;
+  let reportedHardStale = false;
+  // legend-2lgu: no success yet counts from here, so the first minutes after
+  // boot are never hard stale.
+  let startedAt = now();
 
   function isStale(): boolean {
     if (!lastSuccessAt) return true;
@@ -126,7 +149,28 @@ export function createDeviceRegistryPuller(
     return age < 0 || age > deps.staleAfterMs;
   }
 
+  function isHardStale(at: Date = now()): boolean {
+    if (deps.hardStaleAfterMs === undefined) return false;
+    const base = lastSuccessAt ?? startedAt;
+    const age = at.getTime() - base.getTime();
+    // A clock that moved back proves no age: not hard stale (the soft flag
+    // already fails visible).
+    return age > deps.hardStaleAfterMs;
+  }
+
+  function checkHardStale(): void {
+    const hardStale = isHardStale();
+    if (hardStale === reportedHardStale) return;
+    reportedHardStale = hardStale;
+    try {
+      deps.onHardStaleChange?.(hardStale);
+    } catch {
+      // Same as onStaleChange: never stop the schedule.
+    }
+  }
+
   function checkStale(): void {
+    checkHardStale();
     const stale = isStale();
     if (stale === reportedStale) return;
     reportedStale = stale;
@@ -223,6 +267,7 @@ export function createDeviceRegistryPuller(
     start() {
       if (started || stopped) return;
       started = true;
+      startedAt = now();
       void runOnce();
     },
     runOnce,
@@ -232,6 +277,8 @@ export function createDeviceRegistryPuller(
       controller?.abort();
       if (inFlight) await inFlight;
     },
+    isHardStale,
+    isCheckpointLoaded: () => loaded,
     getState() {
       return {
         lastSuccessAt: lastSuccessAt ? lastSuccessAt.toISOString() : null,
@@ -239,6 +286,8 @@ export function createDeviceRegistryPuller(
         lastError,
         consecutiveFailures,
         stale: isStale(),
+        hardStale: isHardStale(),
+        maxStaleSeconds: Math.floor((deps.hardStaleAfterMs ?? 0) / 1000),
         receiptSequencesRefused,
         receiptSequencesRefusedAt: receiptSequencesRefusedAt
           ? receiptSequencesRefusedAt.toISOString()

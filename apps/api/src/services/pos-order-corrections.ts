@@ -48,10 +48,16 @@ import {
   type PosRefundLineRow,
 } from "../db/schema/pos-order.ts";
 import { withTenant } from "../db/tenant.ts";
+import { pointLedger } from "../db/schema/crm-ledger.ts";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
 import { HttpError } from "../lib/http-error.ts";
 import type { Tx } from "./menu-internals.ts";
 import { liveRouteManualRefundWhere } from "./order-issue-route-refund.ts";
+import {
+  lockIssuesOfOrder,
+  paidChargesOfOrder,
+  returnPaidChargesOfVoidedOrder,
+} from "./order-recovery-charge-void.ts";
 import { loadDeferredRefundCommitments } from "./payment-refund-edge-history.ts";
 import {
   monotonicFactTime,
@@ -82,6 +88,7 @@ import {
   type PosCaller,
 } from "./pos-order-support.ts";
 import { requestPosRefundGatewayPart } from "./pos-refund-gateway.ts";
+import { refundPosTicketsOfRefundedLines } from "./facility-pos-tickets.ts";
 import {
   depositRefundedOfOrder,
   depositRefundFactTime,
@@ -178,6 +185,9 @@ async function correct<T>(
   },
   run: (tx: Tx, locked: Locked, factAt: Date) => Promise<T>,
   requestedAt: Date,
+  // Locks taken BEFORE the order row (legend-s61sg: the issues of the order,
+  // the module's lock order is issue, order, charge).
+  beforeOrderLock?: (tx: Tx) => Promise<void>,
 ): Promise<T> {
   return withTenant(db, context, (tx) =>
     posIdempotent(
@@ -192,6 +202,7 @@ async function correct<T>(
         request: input.request,
       },
       async () => {
+        if (beforeOrderLock) await beforeOrderLock(tx);
         const locked = await lockPosOrder(
           tx,
           context,
@@ -303,6 +314,18 @@ export async function voidPosOrderCorrection(
           "CONFLICT",
           "Transaksi ini dibayar dengan DP reservasi dan tidak bisa di-void; hubungi admin untuk koreksi.",
         );
+      // legend-s61sg: a swap charge already paid on this order goes back with
+      // the void, in this transaction, or the void is refused (409).
+      const paidCharges = await paidChargesOfOrder(tx, context, order.id);
+      // 936 D: the facility tickets of the bill are refunded; one already used
+      // refuses the void here, before any money moves.
+      await refundPosTicketsOfRefundedLines(tx, context, {
+        orderId: order.id,
+        itemIds: null,
+        moneyRefund: true,
+        now,
+        actorUserId: caller.userId,
+      });
       const override = await consumeApproval(tx, context, {
         action: "void",
         purpose: "correction_void",
@@ -359,25 +382,36 @@ export async function voidPosOrderCorrection(
       // answers to the same cumulative ceiling and paid cap. It has no native
       // refund rows (a prior refund refuses the void above), so any deferred
       // edge refund fact or earlier admin refund must be reconciled first.
+      // legend-s61sg: the drawer also gives back the cash charges of the order.
+      const outflowIdr = voidCashIdr + paidCharges.cashIdr;
       if (voidCashIdr > 0) {
-        const candidate = {
-          tenantId: context.tenant.tenantId,
-          outletId: order.outletId,
-          orderId: order.id,
-          amountIdr: voidCashIdr,
-        };
-        const committed = await refundCommittedAmount(tx, candidate, {
-          includePendingReservations: true,
-          paidCapScope: true,
-        });
+        const committed = await refundCommittedAmount(
+          tx,
+          {
+            tenantId: context.tenant.tenantId,
+            outletId: order.outletId,
+            orderId: order.id,
+            amountIdr: voidCashIdr,
+          },
+          { includePendingReservations: true, paidCapScope: true },
+        );
         if (committed > BigInt(voidCashIdr))
           throw new PosError("REFUND_EXCEEDS_PAID");
+      }
+      // The approver's ceiling covers the whole outflow, also when the order
+      // itself holds no captured cash and only the charge cash goes out.
+      if (outflowIdr > 0) {
         if (
           !(await refundApprovalWithinLimit(
             tx,
             context,
             override.approvedBy!,
-            candidate,
+            {
+              tenantId: context.tenant.tenantId,
+              outletId: order.outletId,
+              orderId: order.id,
+              amountIdr: outflowIdr,
+            },
             now,
           ))
         )
@@ -395,7 +429,7 @@ export async function voidPosOrderCorrection(
           );
       }
       const shift =
-        voidCashIdr > 0
+        outflowIdr > 0
           ? await lockCashierShiftForCash(tx, context, {
               outletId,
               cashierId: caller.userId,
@@ -405,11 +439,11 @@ export async function voidPosOrderCorrection(
             })
           : null;
       // legend-q7jj F3: every outflow of the drawer stays a safe integer.
-      if (shift !== null) await assertShiftOutflowBound(tx, shift, voidCashIdr);
+      if (shift !== null) await assertShiftOutflowBound(tx, shift, outflowIdr);
       // Held, not refused: a refusal would let the cashier probe the expected
       // drawer cash (legend-utqr). Nothing the cashier reads shows the flag.
       const needsApproval =
-        shift !== null && (await cashOutExceedsDrawer(tx, shift, voidCashIdr));
+        shift !== null && (await cashOutExceedsDrawer(tx, shift, outflowIdr));
       const [row] = await tx
         .insert(posOrderVoids)
         .values({
@@ -430,6 +464,15 @@ export async function voidPosOrderCorrection(
         })
         .returning();
       if (!row) throw new Error("Void insert returned no row");
+      await returnPaidChargesOfVoidedOrder(tx, context, {
+        charges: paidCharges,
+        shift,
+        voidId: row.id,
+        held: needsApproval,
+        caller,
+        orderNumber: order.number,
+        now,
+      });
       // POS-06: the receipt is marked voided; its number stays on record.
       await receipts.voidForOrder(tx, context, {
         orderId: order.id,
@@ -513,6 +556,7 @@ export async function voidPosOrderCorrection(
       return voidDto(row);
     },
     requestedAt,
+    (tx) => lockIssuesOfOrder(tx, context, orderId),
   );
 }
 
@@ -885,6 +929,37 @@ export async function refundPosOrder(
       // legend-980: never next to a live manual refund of the same order.
       await assertNoLiveManualRefund(tx, context, order.id);
       const tenders = (await tendersOf(tx, context, order.id)).map(tenderDto);
+      // 936: a points tender redeemed through the member ledger (a
+      // `pos_tender` redeem row keyed by the tender id) has no return path yet:
+      // no points would be given back. Refuse before anything is written;
+      // founder decides the rule. Older points tenders without that row refund
+      // as before.
+      const pointsTenderIds = tenders
+        .filter(
+          (tender) =>
+            tender.status === "captured" && tender.method === "points",
+        )
+        .map((tender) => tender.id);
+      if (pointsTenderIds.length > 0) {
+        const [ledgered] = await tx
+          .select({ id: pointLedger.id })
+          .from(pointLedger)
+          .where(
+            and(
+              eq(pointLedger.tenantId, context.tenant.tenantId),
+              eq(pointLedger.type, "redeem"),
+              eq(pointLedger.sourceType, "pos_tender"),
+              inArray(pointLedger.sourceId, pointsTenderIds),
+            ),
+          )
+          .limit(1);
+        if (ledgered)
+          throw new HttpError(
+            409,
+            "REFUND_POINTS_TENDER_UNSUPPORTED",
+            "Transaksi ini dibayar dengan poin member; refund transaksi berpoin belum tersedia.",
+          );
+      }
       const paid = tenders
         .filter((tender) => tender.status === "captured")
         .reduce((sum, tender) => sum + Number(tender.amountIdr), 0);
@@ -929,6 +1004,15 @@ export async function refundPosOrder(
           );
         refundedNow.set(entry.itemId, entry.quantity);
       }
+      // 936 D: a returned ticket line refunds its ticket (a used one refuses);
+      // money without any item on a bill with an issued ticket is refused.
+      await refundPosTicketsOfRefundedLines(tx, context, {
+        orderId: order.id,
+        itemIds: [...refundedNow.keys()],
+        moneyRefund: Number(input.amountIdr) > 0,
+        now,
+        actorUserId: caller.userId,
+      });
 
       // A promo order is re-priced (founder rules, legend-q1e0): the payout is
       // what the guest paid minus what the kept items still cost. A failing

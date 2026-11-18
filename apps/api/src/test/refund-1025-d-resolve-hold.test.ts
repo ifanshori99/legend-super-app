@@ -14,7 +14,7 @@
 //
 // Assumptions (the brief does not fix them):
 //  - Holds are seeded straight into refund_recon_holds (columns of migration
-//    0642); the webhook pipeline that files them is covered by 1025-C.
+//    0487); the webhook pipeline that files them is covered by 1025-C.
 //  - Resolving twice (new idempotency key) answers 409 with error.code
 //    CONFLICT and changes nothing, no second audit row.
 //  - Audit is counted tenant-wide (audit_logs rows of the tenant): the first

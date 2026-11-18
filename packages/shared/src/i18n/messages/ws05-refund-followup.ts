@@ -177,6 +177,15 @@ export const paymentRefundFollowupMessages = {
     emptyHint: "Refund yang perlu diperiksa akan muncul di sini.",
     needsCheck: "Perlu pemeriksaan",
   },
+  // Alarm to the outlet's supervisors when a failed system refund is not filed
+  // again (legend-weuo2, legend-of9kp). A parked fund is refunded per fund, not
+  // per payment, so its text does not send staff to the refund screen.
+  followupAlarm: {
+    title: "Refund tamu perlu ditindaklanjuti",
+    body: "Refund otomatis untuk tamu gagal dan tidak diajukan ulang. Rp {amount} masih menjadi hak tamu. Ajukan refund baru untuk pembayaran ini di layar refund; orang lain harus menyetujuinya.",
+    bodyParkedFund:
+      "Dana tamu yang diparkir sebesar Rp {amount} belum kembali ke tamu. Sistem sudah mencoba mengembalikannya dan berhenti. Selesaikan dana ini lewat daftar dana parkir: kembalikan ke tamu atau tangani secara manual.",
+  },
   loadError: {
     title: "Daftar refund belum dapat dimuat",
     hint: "Periksa koneksi, lalu muat ulang. Status pengembalian belum dapat dipastikan dari layar ini.",

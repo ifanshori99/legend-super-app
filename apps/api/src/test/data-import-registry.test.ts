@@ -55,6 +55,10 @@ const NOT_A_WRITER: Record<string, string> = {
     "release-only replay (legend-ka1hg): recomputes metrics_daily for past outlet days from the tenant's own source rows through the metric service (same locks and upserts as the live sweep), tenant by tenant, with --dry-run; imports no external data",
   "apps/api/src/db/backfill-employee-managers.ts":
     "one-off repair of employees.manager_id on existing rows (legend-qhqf8): dry-run by default, --apply writes only HR-reviewed before/after tuples from a manifest, one audit row each; imports no data",
+  "apps/api/src/scripts/payroll-pph21-receivable-backfill.ts":
+    "release-only backfill (legend-i848k) of the employee PPh 21 receivable open item for receivables that predate the 972 open item: one transaction per tenant, --dry-run available, idempotent (ON CONFLICT DO NOTHING on a deterministic id), inserts only the missing gap to the employee's own payslip balance (never more), holds doubtful cases and reports them; derives everything from the tenant's own payslips and employees, imports no external data",
+  "apps/api/src/services/payroll-pph21-receivable-backfill.service.ts":
+    "the per-tenant backfill the script above runs (legend-i848k): reads the tenant's own payslips and open items, inserts only the missing accounting_open_items receivable up to the payslip balance, never updates or deletes a row and never exceeds the balance; imports no external data",
 };
 
 // Files under apps/api/src/db referenced from scripts/*.mjs that are not
@@ -68,6 +72,10 @@ const SCRIPT_NOT_A_WRITER: Record<string, string> = {
 // upgrades of existing data, never imports. A new data statement in a
 // migration must be added here with a reason, so it gets looked at.
 const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
+  "0454_payroll_overtime_correction_activations.sql":
+    "backfills one payroll_overtime_correction_activations row (tenant id plus the migration time) for each tenant that already has payroll runs (legend-72nod): the stamp after which a locked run may be corrected for late overtime, so no old history is paid or taken back twice; idempotent, ON CONFLICT DO NOTHING, edits no existing row, no amount touched, FORCE RLS lifted on payroll_runs for that one read and restored",
+  "0456_mcp_flag_backfill.sql":
+    "adds the mcp module to feature_flags.modules of tenants that already use MCP (approved client or live token) so enforcing the module (legend-hbuq3) does not switch MCP off silently; idempotent, touches no other tenant or flag, no imports",
   "0408_print_alert_notification_retry.sql":
     "marks legacy print alerts delivered because their historical event ids cannot be reconstructed safely; new alerts retain a null marker for durable retry; restores FORCE RLS",
   "0312_public_tarantula.sql":
@@ -82,6 +90,8 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "copies existing edge inbound events into the renamed table",
   "0376_edge_link_slots.sql":
     "backfills edge_link_slots from existing edge_inbound_events: one row per link slot with exactly one counted receipt (legend-pz641); idempotent, ON CONFLICT DO NOTHING, edits no existing row, FORCE RLS lifted for that one statement and restored",
+  "0484_edge_txn_ledger.sql":
+    "backfills edge_txn_ledger_baselines from sync_cursors: one row per edge node that already queued edge_to_cloud events, so reconciliation counts only later events (legend-kai); idempotent, ON CONFLICT DO NOTHING, edits no existing row, runs tenant by tenant under that tenant's GUCs because both tables are FORCE RLS (GUCs restored afterwards)",
   "0090_pos_day_close_permission.sql":
     "adds a permission string to each tenant's existing roles",
   "0096_menu_station_type_backfill.sql":
@@ -112,6 +122,12 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "inserts the reserved banned system user (id 00000000-0000-4000-8000-000000000002, no role, no sign-in account) that opens system refund approval chains, ON CONFLICT DO NOTHING with a check that an existing row is that account; adds the user and role-assignment guard triggers (legend-2dnh)",
   "0145_cash_shift_close_approval_policies_data.sql":
     "gives each tenant without a cash_shift_close approval policy the default rows (floor 0, level 1, supervisor, outlet_manager and general_manager template roles); idempotent, never touches a tenant that configured shift close (legend-ccpn)",
+  "0459_session_shared_device_ids.sql":
+    "backfill only (legend-jqurl): copies each session's single shared_device_id into the new shared_device_ids array before the old column is dropped, and clears shared_mode on devices that are not POS before the pos-only CHECK is added; no import, no money.",
+  "0467_supplier_payment_approval_policies_data.sql":
+    "gives each tenant without a supplier_payment approval policy the default rows (floor 0, level 1, finance and owner template roles, distinct actor); idempotent, never touches a tenant that configured supplier_payment, no amount, journal or payment touched (it only makes every supplier payment wait for a second person), FORCE RLS lifted for that one statement and restored (legend-xxqz3)",
+  "0466_cash_out_approval_policies_data.sql":
+    "gives each tenant without a cash_out approval policy the default row (floor 0, level 1, finance template role, distinct actor); idempotent, never touches a tenant that configured cash_out, no amount, journal or cash entry touched, FORCE RLS lifted for that one statement and restored (legend-4qowr)",
   "0147_accounting_coa_backfill_1204.sql":
     "backfills accounts 1204, 6110 and 6111 and the employee_receivable, reimbursement_expense and pph21_borne_expense mappings for every already provisioned legal entity that lacks them (legend-s8a3); idempotent, never updates or deletes, keeps a custom account with the same code",
   "0148_open_bill_roles_permissions.sql":
@@ -278,9 +294,41 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "function bodies only, no row edited by the migration: app.payout_grant_issue (grantor login), app.payout_correction_propose, app.payout_overpaid_propose and the withdraw functions (payout role) insert a grant or a proposal, or mark an open correction or overpaid proposal withdrawn, when called; a withdrawn proposal stays as a row and the item is untouched; the migration itself writes no row and changes no amount",
   "0426_payout_approval_log.sql":
     "creates the append-only payroll_payout_approval_log table and replaces the function body of app.payout_attest (payout role), which inserts an attestation and a log row when called; the migration itself writes no row and changes no amount",
+  // legend-xbagc (990 card A)
+  "0461_payout_990_recon_clear.sql":
+    "function bodies only, no row edited by the migration: app.payout_grant_issue (grantor login) inserts a recon_clear grant, app.payout_recon_clear_propose and app.payout_recon_clear_approve (payout role) insert and approve a clearance of a reconciliation flag when called (two different finance people, step-up grants), and the item guard and app.payout_resolve_approve read the clearance; the migration itself writes no row and changes no amount (it only releases a payslip held by a false flag, nobody is paid by it)",
+  // legend-nsqhm (990 card E)
+  "0463_payout_990_return_bank_ref.sql":
+    "function bodies and a guard trigger only, no row edited by the migration: app.payout_return_propose and app.payout_return_confirm (payout role) store the bank transaction reference of a return on the claim and the item when called, and refuse a missing, differing or reused reference; the migration itself writes no row and changes no amount (it only adds a refusal)",
+  "0480_payout_1038_evidence_observations.sql":
+    "creates the append-only payroll_payout_recon_evidence_observations table and function bodies only, no row edited by the migration: app.payout_recon_evidence_observe (payout role) inserts an observation of an operation's proof file when the nightly recon calls it, and app.payout_recon_flag_fingerprint adds the latest non-ok observation to a flag's fingerprint; a flag with no observation keeps its fingerprint, no amount, item, payslip or clearance row is touched, and a changed proof only holds a slip back (legend-63gyr)",
+  "0481_payout_qh11l_read_error_hold.sql":
+    "function bodies, a check constraint and one NOLOGIN role (legend_payout_recon, SET-only membership of the app role) only, no row edited by the migration: app.payout_recon_evidence_observe_ok (recon role only) is the one path that records an 'ok' read, and app.payout_recon_evidence_observe refuses 'ok'; app.payout_recon_evidence_observe_difference (recon role only) is the one path that records a missing or mismatch read after a read error, and app.payout_recon_evidence_observe refuses that from any other caller, so only a fresh recon read can release a held slip (legend-tiw2h); app.payout_recon_evidence_observe (payout role) also records an 'error' observation when the nightly recon cannot read a proof file for a reason other than not found, and app.payout_recon_flag_fingerprint adds a read_error key while the latest observation of an operation is an error, so a clearance held against the earlier fingerprint stops releasing the slip until a later read succeeds; app.payout_recon_clear_approve refuses while the error is the latest observation; a fingerprint without an error observation is unchanged, no amount, item, payslip or clearance row is touched, and the error only holds a slip back (legend-qh11l)",
+  "0464_payout_990_flag_fingerprint.sql":
+    "backfill only (legend-hklnq): one fingerprint sighting per existing payout recon exception, computed from that exception's own item, attestation and posting rows, so a later recon can tell whether the flagged data changed; no amount, item, payslip or clearance row is edited, and an exception without a matching clearance keeps holding its payslip",
+  // legend-snwnn (1005)
+  "0472_payout_1005_return_withdraw.sql":
+    "creates the payroll_payout_return_withdrawals table, widens the return claim status and adds withdrawn_at, adds the return_withdraw kind to the grant, attestation and recon-exception CHECKs, and replaces function bodies and guards; no row is edited by the migration: app.payout_return_withdraw_propose and app.payout_return_withdraw_approve (payout role) insert a withdrawal row and, when called by two different finance people under step-up grants, move an OPEN return claim to withdrawn and clear the five return columns of its items (the item stays succeeded, no journal, payment record or batch is touched, nobody is paid again by it), app.payout_grant_issue (grantor login) inserts a grant, and the claim and item guards refuse any other change; the one existing-row effect is the unique bank_ref index, rebuilt to ignore withdrawn claims",
+  "0473_payout_1005_recon_flag_kind.sql":
+    "function body only, no row edited by the migration: app.payout_recon_flag (payout role) also accepts the return_withdraw kind and inserts a reconciliation exception and a sighting when called; no backfill, no amount touched",
+  // legend-628t9 (954)
+  "0436_payout_grant_expiry_after_lock.sql":
+    "function body only, no row edited by the migration: app.payout_grant_consume (payout role) reads its clock after the run, batch and grant row locks and refuses a grant that expired while it waited, marking a grant consumed only when called; it keeps the existing grant rules and changes no amount (it only blocks a late approval, nobody is paid)",
+  // legend-s20iu, legend-dz8ci (947)
+  "0433_payout_934_followups.sql":
+    "trigger and function bodies only, no row edited by the migration: app.payout_batch_unfreeze (payout role) sends an approved batch back to pending_approval and its approved items back to prepared when called after a 'not me' on the main approval, app.payout_grant_issue (grantor login) and app.payout_batch_approve_attest (payout role) refuse the person who disowned a batch approval, and a new trigger refuses any change of the approval columns of a batch outside the approval step; the migration itself writes no row and changes no amount (it only blocks approvals and reopens one, nobody is paid)",
+  // legend-xp8mc (934)
+  "0432_payout_batch_approve_grant.sql":
+    "adds the batch_approve grant and attestation kind, a trigger on payroll_disbursement_batches and function bodies only, no row edited by the migration: app.payout_grant_issue (grantor login) inserts a grant, app.payout_batch_approve_attest (payout role) spends it and inserts an attestation and an approval log row when called, app.payout_recon_flag (payout role) accepts the batch_approve kind and inserts a reconciliation flag when called; the trigger only refuses an approval without the grant; the migration itself writes no row and changes no amount (it only blocks approvals)",
+  // legend-4us1a (987)
+  "0474_facility_hours_wfc_breakfast.sql":
+    "seeds one baseline facility_operating_hours_versions row per existing facility at 1970-01-01 (a copy of facilities.operating_hours, so every date resolves to the hours it has today) and adds the floor_zones.is_wfc and menu_items.is_breakfast flags with a default of false; no amount, status or bill touched, so nobody is paid more",
   // legend-3wpf (941 card C)
-  "0434_payment_intent_provider_answered.sql":
+  "0439_payment_intent_provider_answered.sql":
     "adds the nullable payment_intents.provider_answered_at column and backfills it from provider_final_at on the rows that already have one (the provider already answered final, a copy of an existing value, NULL to a value only); no amount, status or bill touched, so nobody is paid more",
+  // legend-39d.4 (964)
+  "0446_promotion_ai_action_request_key.sql":
+    "adds promotions.ai_action_request_id and backfills it only from the `[ai:<id>]` marker already at the end of promotions.description (the earliest promotion per tenant and marker keeps the key, so the partial unique index can be created); the description, money fields and every other row stay as they are, never imports data, FORCE RLS lifted on promotions and restored in the same migration",
   // legend-yd9u2 (923)
   "0430_payout_backfill_unfreeze_lock_order.sql":
     "function body only, no row edited by the migration: app.payout_batch_unfreeze acquires same-run batches in id order before its target; it keeps the existing grant, dispute and unfreeze rules and changes no amount",
@@ -290,9 +338,9 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
   "0428_payout_batch_freeze_guards.sql":
     "trigger and function bodies only, no row edited by the migration: guards that refuse a payout step on a batch with an open dispute (PAYOUT-79), and the item/batch guard functions that update rows only when a payout function is called; the migration itself writes no row and changes no amount (it only blocks payments)",
   // legend-yn1of / legend-uvjqq (1035 B), 1090 P1-2
-  "0656_provider_refund_id_kind.sql":
+  "0490_provider_refund_id_kind.sql":
     "sets provider_refund_id_kind to provider on the refund_recon_holds rows that already name a refund id (a copy of the id they hold, no guess, no amount touched); only rows with a null kind, idempotent, never inserts or deletes rows, FORCE RLS lifted for that one statement and restored",
-  "0696_refund_hold_invalid_report.sql":
+  "0493_refund_hold_invalid_report.sql":
     "relabels to invalid_report the refund_recon_holds conflict rows whose id carries the made-up invalid: or invalid-h: prefix (restrictive, no amount touched); only the kind column changes, never inserts or deletes rows, FORCE RLS lifted for that one statement and restored",
   "0427_payout_batch_disputes.sql":
     "creates the append-only payroll_payout_batch_disputes and payroll_payout_batch_unfreezes tables, adds the disown and unfreeze grant kinds, and function bodies only: app.payout_approval_disown and app.payout_batch_unfreeze (payout role) insert a dispute or the unfreeze rows of a batch when called, app.payout_grant_issue (grantor login) inserts a grant; the migration itself writes no row and changes no amount (a dispute only freezes a batch, nobody is paid more)",
@@ -331,6 +379,8 @@ const SCRIPT_NAME_ALLOWLIST: Record<string, string> = {
     "one-off repair of employees.manager_id from an HR-reviewed manifest (dry-run by default); not an importer, listed in POOL_OPENERS_NOT_IMPORTERS",
   "apps/api/package.json#db:backfill-defaults":
     "runs the registered, guarded source backfill.tenant-defaults",
+  "apps/api/package.json#payroll:backfill-pph21-receivable":
+    "release-only backfill of the employee PPh 21 receivable open item from the tenant's own payslips (legend-i848k), --dry-run available, idempotent, never above the payslip balance; not an importer, no external data, listed in NOT_A_WRITER",
 };
 
 function walk(dir: string, out: string[] = []): string[] {

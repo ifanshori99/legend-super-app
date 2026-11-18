@@ -6,8 +6,8 @@
 // `session_replication_role = replica` so the append-only triggers and the
 // order/FK parents of the POS tables do not have to be built for a read test.
 //
-// TL-09 (get_my_payslip) is not registered (no payslip storage exists), so it
-// has no test here. TL-07, TL-08 and TL-12 are tested for their access rules
+// TL-09 (get_my_payslip) has its own file: ai-tool-tl09-my-payslip.test.ts.
+// TL-07, TL-08 and TL-12 are tested for their access rules
 // and against real rows seeded here (customers/tiers, shift assignments,
 // shareholder allocations and distribution runs), including rows of another
 // tenant and rows the caller may not see (small segments, drafts, other
@@ -1361,6 +1361,7 @@ afterAll(async () => {
   for (const f of createdFacilities)
     await asOwner(f.tenant, async (client) => {
       for (const table of [
+        "facility_operating_hours_versions",
         "access_tickets",
         "facility_products",
         "facility_units",
@@ -1376,6 +1377,10 @@ afterAll(async () => {
       );
     });
   await asOwner(tenantId, async (client) => {
+    await client.query(
+      "DELETE FROM facility_operating_hours_versions WHERE tenant_id = $1 AND facility_id IN (SELECT id FROM facilities WHERE tenant_id = $1 AND name LIKE 'Read B Cap %')",
+      [tenantId],
+    );
     await client.query(
       "DELETE FROM facilities WHERE tenant_id = $1 AND name LIKE 'Read B Cap %'",
       [tenantId],
@@ -1417,14 +1422,16 @@ afterAll(async () => {
 // ---- Registry --------------------------------------------------------------
 
 describe("readToolsB registry", () => {
-  it("registers TL-07, 08, 10, 11, 12, 20 and leaves TL-09 to the engineer", () => {
+  it("registers TL-07, 08, 09, 10, 11, 12, 20, 21", () => {
     expect(Object.keys(readToolsB).sort()).toEqual([
       "TL-07",
       "TL-08",
+      "TL-09",
       "TL-10",
       "TL-11",
       "TL-12",
       "TL-20",
+      "TL-21",
     ]);
   });
 });
@@ -1540,6 +1547,41 @@ describe("TL-08 get_shift_schedule", () => {
     expect(rows.map(key)).toContain("2026-10-08 06:00-14:00");
     for (const row of rows)
       expect(row.outletId.toLowerCase()).toBe(outletB.toLowerCase());
+  });
+
+  // legend-xloqn: on the manage path (tenant-wide hr.schedule.manage) an outlet
+  // id outside the tenant must be rejected, like TL-11/TL-21, not answered with
+  // empty data. Assumption: an unknown id is treated like a foreign one.
+  it("a manager is forbidden for another tenant's outlet id", async () => {
+    await expect(
+      call("TL-08", "hr", { period, outletIds: [otherOutlet] }),
+    ).rejects.toMatchObject(forbidden);
+  });
+
+  it("a manager is forbidden when one id in the list is another tenant's", async () => {
+    await expect(
+      call("TL-08", "hr", { period, outletIds: [outletA, otherOutlet] }),
+    ).rejects.toMatchObject(forbidden);
+  });
+
+  it("a manager is forbidden for an outlet id that exists nowhere", async () => {
+    await expect(
+      call("TL-08", "hr", { period, outletIds: [randomUUID()] }),
+    ).rejects.toMatchObject(forbidden);
+  });
+
+  it("a manager may still ask for several of their own outlets", async () => {
+    const out = await call("TL-08", "hr", {
+      period,
+      outletIds: [outletA, outletB],
+    });
+    const keys = rowsOf(out).map(key);
+    expect(keys).toEqual(
+      expect.arrayContaining([
+        "2026-10-06 10:00-18:00",
+        "2026-10-08 06:00-14:00",
+      ]),
+    );
   });
 
   it("an outlet manager sees only their outlet and is denied another outlet filter", async () => {
@@ -1793,6 +1835,69 @@ describe("TL-11 get_anomalies", () => {
     ).rejects.toMatchObject(forbidden);
   });
 
+  // Brief docs/briefs/981-followup.md item 5: with tenant-wide reach, an outlet id
+  // that does not belong to this tenant must be rejected, like TL-21 does, not
+  // answered with empty data.
+  it("a tenant-wide role asking for another tenant's outlet id is forbidden", async () => {
+    await expect(
+      call("TL-11", "owner", {
+        period: ANOMALY_PERIOD,
+        outletIds: [otherOutlet],
+      }),
+    ).rejects.toMatchObject(forbidden);
+  });
+
+  it("a tenant-wide role is forbidden when one id in the list is another tenant's", async () => {
+    await expect(
+      call("TL-11", "owner", {
+        period: ANOMALY_PERIOD,
+        outletIds: [outletA, otherOutlet],
+      }),
+    ).rejects.toMatchObject(forbidden);
+  });
+
+  it("a tenant-wide role is forbidden for an outlet id that exists nowhere", async () => {
+    // Assumption: an unknown id is treated like a foreign one (TL-21 'known' count).
+    await expect(
+      call("TL-11", "owner", {
+        period: ANOMALY_PERIOD,
+        outletIds: [randomUUID()],
+      }),
+    ).rejects.toMatchObject(forbidden);
+  });
+
+  it("a tenant-wide role may still ask for its own outlets", async () => {
+    const out = await call("TL-11", "owner", {
+      period: ANOMALY_PERIOD,
+      types: ["void"],
+      outletIds: [outletA, outletB],
+    });
+    expect(out.anomalies.map((a) => a.outletId).sort()).toEqual(
+      [outletA, outletB].sort(),
+    );
+  });
+
+  it("an outlet-scoped role is forbidden for another tenant's outlet and for a sibling outlet", async () => {
+    await expect(
+      call("TL-11", "outletManager", {
+        period: ANOMALY_PERIOD,
+        outletIds: [otherOutlet],
+      }),
+    ).rejects.toMatchObject(forbidden);
+    await expect(
+      call("TL-11", "outletManager", {
+        period: ANOMALY_PERIOD,
+        outletIds: [outletA, outletB],
+      }),
+    ).rejects.toMatchObject(forbidden);
+    const own = await call("TL-11", "outletManager", {
+      period: ANOMALY_PERIOD,
+      types: ["void"],
+      outletIds: [outletA],
+    });
+    expect(own.anomalies.map((a) => a.outletId)).toEqual([outletA]);
+  });
+
   it("reports saved cash variance and respects tenant and outlet reach", async () => {
     const out = await call("TL-11", "owner", { period: ANOMALY_PERIOD });
     expect(out.anomalies.some((a) => a.outletId === otherOutlet)).toBe(false);
@@ -1988,6 +2093,37 @@ describe("TL-20 get_facility_utilization", () => {
       facilityId: facilityA.id,
     });
     expect(out.rows.map((r) => r.facilityId)).toEqual([facilityA.id]);
+  });
+
+  // legend-xloqn: tenant-wide role + outlet id outside the tenant is forbidden
+  // (like TL-11/TL-21), not empty data. Unknown id treated like a foreign one.
+  it("a tenant-wide role asking for another tenant's outlet id is forbidden", async () => {
+    await expect(
+      call("TL-20", "owner", { period: PERIOD, outletIds: [otherOutlet] }),
+    ).rejects.toMatchObject(forbidden);
+  });
+
+  it("a tenant-wide role is forbidden when one id in the list is another tenant's", async () => {
+    await expect(
+      call("TL-20", "owner", {
+        period: PERIOD,
+        outletIds: [outletA, otherOutlet],
+      }),
+    ).rejects.toMatchObject(forbidden);
+  });
+
+  it("a tenant-wide role is forbidden for an outlet id that exists nowhere", async () => {
+    await expect(
+      call("TL-20", "owner", { period: PERIOD, outletIds: [randomUUID()] }),
+    ).rejects.toMatchObject(forbidden);
+  });
+
+  it("a tenant-wide role may still ask for its own outlets", async () => {
+    const out = await call("TL-20", "owner", {
+      period: PERIOD,
+      outletIds: [outletA, outletB],
+    });
+    expect(out.rows.map((r) => r.facilityId)).toContain(facilityA.id);
   });
 
   it("an outlet manager is denied an outlet outside their scope", async () => {

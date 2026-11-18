@@ -1,4 +1,4 @@
-// Tool catalog TL-01..TL-20 (bead legend-1zxo, WS-12).
+// Tool catalog TL-01..TL-21 (bead legend-1zxo, WS-12).
 // PRD v1.7 §3 Fitur 38 (Tanya AI), 39 (MCP Server: tool table, MCP-01), 40
 // (Tata Kelola). One catalog serves Tanya AI and MCP (D32): the same tools,
 // annotated read or write. Write tools never change data: they only create an
@@ -199,10 +199,7 @@ const WRITE_TOOLS: readonly AiToolDefinition[] = [
     featureCodes: ["AI-05", "AI-08"],
     scope: "mcp:purchasing:draft",
     requiredPermissions: ["purchasing.request.create", "ai.action.propose"],
-    minRoles: [
-      role("purchasing", "tenant"),
-      role("kitchen_lead", "assigned_outlets"),
-    ],
+    minRoles: [role("purchasing", "tenant")],
   }),
   write({
     code: "TL-14",
@@ -486,6 +483,22 @@ const READ_TOOLS = {
       role("owner", "tenant"),
     ],
   }),
+  "TL-21": read({
+    code: "TL-21",
+    name: "get_review_summary",
+    titleId: "Ringkasan Ulasan",
+    description:
+      "Aggregate customer review summary per outlet for a period: review count, average rating, 1 to 5 star distribution and mention counts for fixed themes. Aggregates only: no review text, customer name, phone or customer id.",
+    featureCodes: ["AI-11"],
+    scope: "mcp:reviews:read",
+    requiredPermissions: ["review.respond"],
+    minRoles: [
+      role("outlet_manager", "assigned_outlets"),
+      role("general_manager", "tenant"),
+      role("marketing", "tenant"),
+      role("owner", "tenant"),
+    ],
+  }),
 } as const;
 
 // ---- Catalog ---------------------------------------------------------------
@@ -496,7 +509,7 @@ function toolFor(code: AiToolCode): AiToolDefinition {
     : writeTool(code);
 }
 
-/** Frozen, 20 entries, PRD order (TL-01..TL-20). */
+/** Frozen, 21 entries, PRD order (TL-01..TL-21). */
 export const AI_TOOL_CATALOG: readonly AiToolDefinition[] = Object.freeze(
   AI_TOOLS.map(([code]) => toolFor(code)),
 );
@@ -519,7 +532,7 @@ function assertCatalog(): void {
   const fail = (message: string): never => {
     throw new Error(`AI tool catalog: ${message}`);
   };
-  if (AI_TOOL_CATALOG.length !== AI_TOOLS.length) fail("must have 20 entries");
+  if (AI_TOOL_CATALOG.length !== AI_TOOLS.length) fail("must have 21 entries");
   const writeCodes = new Set<string>(ACTION_REQUEST_TOOL_CODES);
   const usedScopes = new Set<string>();
   AI_TOOL_CATALOG.forEach((tool, index) => {

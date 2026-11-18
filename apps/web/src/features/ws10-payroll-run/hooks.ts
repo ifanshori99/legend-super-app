@@ -39,13 +39,28 @@ function useRefresh(endpoints: readonly AnyEndpoint[]) {
     );
 }
 
-/** Writes the fresh run into the detail cache, so the header advances at once. */
+/**
+ * Writes the fresh run into the detail cache, so the header advances at once.
+ * `heldOvertimeCorrections` only comes with a simulate response: an approve
+ * response omits it, so with `keepHeld` (approve_hr / approve_final only) carry
+ * the cached list over or the block would vanish mid-review. It still
+ * disappears after a page refresh or a refetch of the run (the plain GET does
+ * not carry it); that is the accepted limit, the reviewer simulates again to
+ * see it.
+ */
 function useStoreRun() {
   const queryClient = useQueryClient();
-  return (run: PayrollRun) => {
+  return (run: PayrollRun, options?: { keepHeld?: boolean }) => {
+    const key = endpointQueryKey(getPayrollRun, {
+      params: { payrollRunId: run.id },
+    });
+    const held = options?.keepHeld
+      ? (run.heldOvertimeCorrections ??
+        queryClient.getQueryData<PayrollRun>(key)?.heldOvertimeCorrections)
+      : run.heldOvertimeCorrections;
     queryClient.setQueryData(
-      endpointQueryKey(getPayrollRun, { params: { payrollRunId: run.id } }),
-      run,
+      key,
+      held === undefined ? run : { ...run, heldOvertimeCorrections: held },
     );
   };
 }
@@ -138,10 +153,23 @@ export function useRunAction() {
   const refresh = useRefresh(RUN_LISTS);
   const storeRun = useStoreRun();
   return useMutation({
-    mutationFn: (variables: { action: SimpleRunAction; runId: string }) =>
-      api.runAction(variables.action, variables.runId, newIdempotencyKey()),
-    onSuccess: (run) => {
-      storeRun(run);
+    mutationFn: (variables: {
+      action: SimpleRunAction;
+      runId: string;
+      expectedSimulationCount: number;
+    }) =>
+      api.runAction(
+        variables.action,
+        variables.runId,
+        newIdempotencyKey(),
+        variables.expectedSimulationCount,
+      ),
+    onSuccess: (run, variables) => {
+      storeRun(run, {
+        keepHeld:
+          variables.action === "approve_hr" ||
+          variables.action === "approve_final",
+      });
       return refresh();
     },
   });

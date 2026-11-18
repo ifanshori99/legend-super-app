@@ -17,8 +17,12 @@ import {
   tableSessionIdSchema,
 } from "@starter/shared/qr-order";
 import { z } from "@starter/shared/core";
-import { actorOf, resolveActingStaff } from "../middleware/acting-staff";
-import { requireAuth } from "../middleware/auth";
+import {
+  actorOf,
+  requireActingStaffOnSharedDevice,
+  resolveActingStaff,
+} from "../middleware/acting-staff";
+import { requireAuthAllowSharedDevice } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
 import { requireTenantContext } from "../middleware/tenant";
@@ -39,10 +43,11 @@ export const tableSessionsRouter = Router();
 
 /** Staff session + trusted origin + resolved tenant, per staff route. */
 const staffGuard = [
-  requireAuth,
+  requireAuthAllowSharedDevice,
   requireTrustedOrigin,
   requireTenantContext,
   resolveActingStaff,
+  requireActingStaffOnSharedDevice,
 ];
 
 tableSessionsRouter.post(

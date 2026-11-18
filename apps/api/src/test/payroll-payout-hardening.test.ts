@@ -21,6 +21,7 @@
 //   `PAYOUT_SOURCE_ACCOUNT_MISSING` (HTTP 409), like PAYOUT_CONFIG_BUSY.
 // - The same step-up as confirm/resolve applies to the return route.
 // - The fee re-post needs no step-up: it only books the stored fee as expense.
+import { createHash } from "node:crypto";
 import { Pool } from "pg";
 import { afterAll, describe, expect, it } from "vitest";
 import { originHeader } from "./helpers.ts";
@@ -306,9 +307,18 @@ async function paidBatchCreatedBy(creator: Approver) {
   return { runId, batchId };
 }
 
+/** Bank reference of a return: one per claim, the same in both steps (990). */
+const returnBankRef = (evidenceKey: string, itemIds: string[]) =>
+  "TRX" +
+  createHash("sha256")
+    .update(`${evidenceKey}|${itemIds.join(",")}`)
+    .digest("hex")
+    .slice(0, 12);
+
 const returnBody = (batchId: string, itemId: string, password?: string) => ({
   itemIds: [itemId],
   evidenceKey: uploadEvidence(batchId, "dana-kembali.pdf"),
+  bankRef: returnBankRef(batchId, [itemId]),
   note: "Bank mengembalikan dana, rekening tujuan ditutup",
   ...(password === undefined ? {} : { password }),
 });
@@ -679,6 +689,7 @@ describe("return of a paid item over HTTP (qxkm6)", () => {
           {
             itemIds: [idOf(budi)],
             evidenceKey: uploadEvidence(batchId, file),
+            bankRef: returnBankRef(batchId, [idOf(budi)]),
             note: "Bank mengembalikan dana, rekening tujuan ditutup",
           } as never,
           W.proofs(),

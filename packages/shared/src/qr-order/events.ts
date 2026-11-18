@@ -193,8 +193,11 @@ export const orderIssueRefundReversalRequestedPayloadSchema = z.strictObject({
  * with the account rules of `order.paid`: the money arrived through the
  * gateway intent `paymentIntentId`. gross + service + pbjt = amount.
  * At the till the cashier takes the charge in cash (`method` pos_cash): no
- * intent, the `cash_movements` row `cashMovementId` holds the money. Absent
- * `method` is qr_link (events stored before the cash variant).
+ * intent, the `cash_movements` row `cashMovementId` holds the money. An EDC
+ * card payment at the till (`method` pos_edc, legend-gt98h) has neither: the
+ * approved EDC sale (reference = chargeId) holds the money. A QRIS taken at
+ * the till is a qr_link payment (its intent). Absent `method` is qr_link
+ * (events stored before the cash variant).
  */
 export const orderIssueChargePaidPayloadSchema = z
   .strictObject({
@@ -204,7 +207,7 @@ export const orderIssueChargePaidPayloadSchema = z
     chargeId: z.string().uuid(),
     /** Null exactly when the charge was paid in cash at the POS. */
     paymentIntentId: z.string().uuid().nullable(),
-    method: z.enum(["qr_link", "pos_cash"]).optional(),
+    method: z.enum(["qr_link", "pos_cash", "pos_edc"]).optional(),
     /** The cash_in movement of a pos_cash payment; null or absent otherwise. */
     cashMovementId: z.string().uuid().nullable().optional(),
     /** Price difference of the swap line, before service charge and PBJT. */
@@ -228,15 +231,70 @@ export const orderIssueChargePaidPayloadSchema = z
         message: "amountIdr must equal gross + service + pbjt",
       });
     const cash = payload.method === "pos_cash";
+    const noIntent = cash || payload.method === "pos_edc";
     if (
       cash !== (payload.cashMovementId != null) ||
-      cash !== (payload.paymentIntentId === null)
+      noIntent !== (payload.paymentIntentId === null)
     )
       ctx.addIssue({
         code: "custom",
         path: ["method"],
         message:
-          "pos_cash needs cashMovementId and no paymentIntentId; qr_link the opposite",
+          "pos_cash needs cashMovementId and no paymentIntentId; pos_edc has neither; qr_link has the intent only",
+      });
+  });
+
+/**
+ * legend-nsvu0: staff refunded part (or all) of a paid swap-difference charge.
+ * One event per refund request: `refundId` is the `payment_refunds` row (its
+ * own payment intent, never the order's), the split is the refund's share of
+ * the charge's gross, service charge and PBJT (cumulative, so all refunds of a
+ * charge together never pass the charge).
+ * legend-s61sg: voiding the order of a charge paid in cash at the till gives
+ * the whole charge back out of the drawer (`method` pos_cash): `refundId` is
+ * the cash_out movement of that return, there is no intent.
+ * legend-mrwtp: staff gave part (or all) of a till-paid charge back by hand,
+ * after a second person approved it: `method` pos_cash (refundId = the shift's
+ * cash_out movement) or `edc_manual` (refundId = the
+ * `order_issue_charge_manual_refunds` row, the money went back on the EDC
+ * machine). Neither has an intent.
+ */
+export const orderIssueChargeRefundedPayloadSchema = z
+  .strictObject({
+    orderId: orderIdSchema,
+    orderIssueId: orderIssueIdSchema,
+    chargeId: z.string().uuid(),
+    refundId: z.string().uuid(),
+    /** Null exactly when the charge was paid in cash and returned from the drawer. */
+    paymentIntentId: z.string().uuid().nullable(),
+    /** Absent is the gateway refund of an intent (legend-nsvu0). */
+    method: z.enum(["gateway", "pos_cash", "edc_manual"]).optional(),
+    grossSalesIdr: idrSchema.refine((value) => value >= 0),
+    serviceChargeIdr: idrSchema.refine((value) => value >= 0),
+    pbjtIdr: idrSchema.refine((value) => value >= 0),
+    amountIdr: idrSchema.refine((value) => value > 0),
+    refundedAt: isoDateTimeSchema,
+  })
+  .superRefine((payload, ctx) => {
+    const noIntent =
+      payload.method === "pos_cash" || payload.method === "edc_manual";
+    if (noIntent !== (payload.paymentIntentId === null))
+      ctx.addIssue({
+        code: "custom",
+        path: ["method"],
+        message:
+          "pos_cash and edc_manual have no paymentIntentId; a gateway refund has one",
+      });
+    if (
+      Number(payload.amountIdr) !==
+      Number(payload.grossSalesIdr) +
+        Number(payload.serviceChargeIdr) +
+        Number(payload.pbjtIdr)
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["amountIdr"],
+        message: "amountIdr must equal gross + service + pbjt",
       });
   });
 
@@ -275,6 +333,7 @@ export const qrOrderEventNames = [
   "order_issue.manual_refund_approved",
   "order_issue.refund_reversal_requested",
   "order_issue.charge_paid",
+  "order_issue.charge_refunded",
   "service_request.created",
   "service_request.overdue",
   "table.status_changed",
@@ -303,6 +362,7 @@ export const qrOrderEventPayloads: Record<
   "order_issue.refund_reversal_requested":
     orderIssueRefundReversalRequestedPayloadSchema,
   "order_issue.charge_paid": orderIssueChargePaidPayloadSchema,
+  "order_issue.charge_refunded": orderIssueChargeRefundedPayloadSchema,
   "service_request.created": serviceRequestCreatedPayloadSchema,
   "service_request.overdue": serviceRequestOverduePayloadSchema,
   "table.status_changed": tableStatusChangedPayloadSchema,
@@ -365,6 +425,9 @@ export type OrderIssueRefundReversalRequestedPayload = z.infer<
 >;
 export type OrderIssueChargePaidPayload = z.infer<
   typeof orderIssueChargePaidPayloadSchema
+>;
+export type OrderIssueChargeRefundedPayload = z.infer<
+  typeof orderIssueChargeRefundedPayloadSchema
 >;
 export type ServiceRequestCreatedPayload = z.infer<
   typeof serviceRequestCreatedPayloadSchema

@@ -82,7 +82,11 @@ import {
   setStaffPin,
 } from "../services/device-pin.service.ts";
 import { enrollDevice } from "../services/device.service.ts";
-import { withEdgeModeEnv } from "./edge-mode-env.ts";
+import {
+  installEdgeNodeForTests,
+  removeEdgeNodeForTests,
+  withEdgeModeEnv,
+} from "./edge-mode-env.ts";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers.ts";
 
 // The clock attack uses the tenant's verified Host so a rotated-out token
@@ -356,6 +360,7 @@ beforeAll(async () => {
     .toBuffer();
   pepper = randomBytes(32);
   outletId = randomUUID();
+  installEdgeNodeForTests({ tenantId: tenant.id, outletId: outletId });
   await asTenant((c) =>
     c.query(
       `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
@@ -420,6 +425,7 @@ beforeAll(async () => {
 afterEach(() => holdPepper());
 
 afterAll(async () => {
+  removeEdgeNodeForTests();
   resetEdgeStaffPinPeppers();
   setAuditWriter(null);
   setDeviceOutletResolver(null);

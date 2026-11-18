@@ -39,7 +39,7 @@ const namesByWorkstream = {
   "WS-02":
     "device.registered device.revoked print_job.created sync.batch_applied edge_link.dead_lettered edge_outbox.blocked catalog_record.updated",
   "WS-03":
-    "menu_item.updated price_list.updated table_session.opened table_session.joined cart.updated menu.updated item.sold_out item.restored table_session.closed table_session.moved table_session.merged table_session.items_moved order.placed item.failed order_issue.resolved order_issue.manual_refund_approved order_issue.refund_reversal_requested order_issue.charge_paid service_request.created service_request.overdue open_bill.inactive open_bill.limit_exceeded table.status_changed table_session.linked table_session.unlinked",
+    "menu_item.updated price_list.updated table_session.opened table_session.joined cart.updated menu.updated item.sold_out item.restored table_session.closed table_session.moved table_session.merged table_session.items_moved order.placed item.failed order_issue.resolved order_issue.manual_refund_approved order_issue.refund_reversal_requested order_issue.charge_paid order_issue.charge_refunded service_request.created service_request.overdue open_bill.inactive open_bill.limit_exceeded table.status_changed table_session.linked table_session.unlinked",
   "WS-04":
     "order.submitted order.paid order.voided order.refunded kitchen_ticket.created kitchen_ticket.started kitchen_ticket.bumped kitchen_ticket.recalled kitchen_ticket.voided pacing.updated cashier_shift.opened cashier_shift.closed day.closed cash_movement.recorded cash_movement.approved receipt_run.reported",
   "WS-05":
@@ -53,7 +53,7 @@ const namesByWorkstream = {
   "WS-09":
     "facility_entitlement.issued facility_entitlement.expired facility_entitlement.revoked access_ticket.issued access_ticket.redeemed access_event.recorded facility_session.started facility_session.ended cleaning_task.created subscription.billed wifi_quota.updated facility_incident.raised panic_alert.raised panic_alert.pressed panic_alert.delivered panic_alert.acknowledged panic_alert.resolved",
   "WS-10":
-    "employee.updated attendance.logged shift.published shift.cancelled leave.approved leave.changed leave.rededucted_after_settlement payslip.created payroll.locked payroll.paid payroll.reversed employee_loan.disbursed reimbursement.paid payout.step_attested payout.batch_disputed payout.batch_unfrozen",
+    "employee.updated attendance.logged shift.published shift.cancelled leave.approved leave.changed leave.rededucted_after_settlement payslip.created payroll.locked payroll.approval_requested payroll.paid payroll.reversed employee_loan.disbursed reimbursement.paid payout.step_attested payout.batch_disputed payout.batch_unfrozen",
   "WS-11": "metrics.aggregated report.generated",
   "WS-12":
     "ai_job.completed action_request.rejected action_request.failed action_request.expired ai_conversation.deleted mcp_client.registered mcp_client.approved mcp_client.revoked mcp_token.issued mcp_token.revoked ai_settings.updated ai_budget.threshold_reached ai_tool.invoked ai_insight.anomaly_detected ai_insight.daily_summary_ready",

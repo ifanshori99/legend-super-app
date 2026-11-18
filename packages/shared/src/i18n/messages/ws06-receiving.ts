@@ -72,6 +72,7 @@ export const inventoryReceivingMessages = {
     listDescription:
       "Catatan penerimaan dengan hasil QC, jumlah ditolak, dan nilai yang masuk stok.",
     newReceipt: "Terima barang",
+    viewFor: "Lihat rincian penerimaan {number}",
     columns: {
       number: "Nomor penerimaan",
       supplier: "Supplier",
@@ -143,6 +144,49 @@ export const inventoryReceivingMessages = {
         "Catatan QC melebihi 500 karakter. Ringkas alasan penolakan.",
       errorNote: "Catatan melebihi 300 karakter.",
       errorExpiry: "Tanggal kedaluwarsa butuh kode batch.",
+    },
+  },
+  journalize: {
+    action: "Jurnalkan penerimaan",
+    title: "Jurnalkan penerimaan {number}",
+    description:
+      "Mencatat nilai barang yang lolos QC ke pembukuan: persediaan bertambah, utang belum difakturkan tercatat.",
+    summary: "Penerimaan",
+    valueLabel: "Nilai yang akan dijurnalkan",
+    detailError: "Nilai penerimaan gagal dimuat.",
+    zeroValueNotice:
+      "Nilai barang yang lolos QC di penerimaan ini 0, jadi tidak ada yang bisa dijurnalkan.",
+    actionFor: "Jurnalkan penerimaan {number}",
+    warningTitle: "Periksa jurnal pembuka dulu",
+    warning:
+      "Bila stok penerimaan ini sudah dimasukkan di jurnal pembuka manual, persediaan akan terhitung dua kali. Jurnal yang sudah terposting tidak bisa dihapus, hanya dikoreksi dengan jurnal baru.",
+    confirmCheck:
+      "Saya sudah memeriksa bahwa stok penerimaan ini belum ada di jurnal pembuka manual.",
+    back: "Batal",
+    submit: "Jurnalkan sekarang",
+    done: "Selesai",
+    successTitle: "Penerimaan dijurnalkan",
+    successBody: "Jurnal penerimaan sudah terposting di pembukuan.",
+    alreadyTitle: "Sudah pernah dijurnalkan",
+    alreadyBody:
+      "Jurnal penerimaan ini sudah ada. Tidak ada jurnal baru yang dibuat.",
+    errors: {
+      postingDisabled:
+        "Pencatatan jurnal pembelian belum diaktifkan untuk bisnis ini. Hubungi pemilik atau admin akuntansi.",
+      parked:
+        "Jurnal belum bisa diposting sekarang, misalnya akun pemetaan belum diatur atau periode sudah ditutup. Periksa pengaturan akuntansi lalu coba lagi. Tidak ada yang tercatat.",
+      parkedMapping:
+        "Jurnal belum bisa diposting karena akun pemetaan persediaan atau utang belum diatur atau tidak aktif. Atur pemetaan di pengaturan akuntansi lalu coba lagi. Tidak ada yang tercatat.",
+      parkedPeriod:
+        "Jurnal belum bisa diposting karena periode pembukuan sudah ditutup. Buka periodenya atau minta admin akuntansi, lalu coba lagi. Tidak ada yang tercatat.",
+      parkedEntity:
+        "Jurnal belum bisa diposting karena outlet ini belum punya badan hukum. Minta admin akuntansi mengaturnya, lalu coba lagi. Tidak ada yang tercatat.",
+      zeroValue:
+        "Nilai barang yang lolos QC di penerimaan ini 0, jadi tidak ada yang dijurnalkan.",
+      notFound: "Penerimaan tidak ditemukan. Muat ulang daftar lalu coba lagi.",
+      forbidden: "Akun Anda tidak boleh memposting jurnal.",
+      network: "Internet terputus. Sambungkan perangkat lalu coba lagi.",
+      generic: "Penerimaan gagal dijurnalkan. Coba lagi sebentar lagi.",
     },
   },
   invoices: {

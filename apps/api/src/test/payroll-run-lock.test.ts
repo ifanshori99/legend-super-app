@@ -38,8 +38,11 @@
 //  5. [lock-guards] a lock refuses what is not what was approved: a result row
 //     missing, run totals that differ from the stored results, a stored tax
 //     that no longer equals the recomputed one (all 409
-//     PAYROLL_RUN_RESULT_STALE), and loans/reimbursements/service charge in the
-//     totals (409 PAYROLL_RUN_LOCK_UNSUPPORTED).
+//     PAYROLL_RUN_RESULT_STALE), and reimbursements/service charge in the
+//     totals (409 PAYROLL_RUN_LOCK_UNSUPPORTED). Loans are supported since
+//     legend-8tfvr (docs/briefs/955-loan-design.md): kasbon totals that no
+//     deduction row backs are 409 PAYROLL_RUN_RESULT_STALE; the happy path is
+//     in payroll-run-loans.test.ts.
 //
 // ASSUMPTIONS (design silent or OPEN; stated so the engineer can contest them)
 //  - Gross of a run = the employee's fixed base-salary component; a THR run's
@@ -1121,8 +1124,22 @@ describe("[lock-guards] the lock refuses a run that is not what was approved", (
     expect(await snapshotCount(runId)).toBe(0);
   }, 90_000);
 
+  it("[lock-loan-unrecorded] approved totals with loanRepaymentIdr > 0 that no deduction row backs: 409 PAYROLL_RUN_RESULT_STALE (no longer LOCK_UNSUPPORTED), nothing persisted", async () => {
+    const world = await makeWorld();
+    await makeEmployee(world);
+    const { runId } = await approvedRun(world, NOV(THR_PAY));
+    await tamperTotals(runId, { loanRepaymentIdr: 50_000 });
+
+    const refused = await failureOf(lockRun(runId));
+    expect(refused, "loan totals without rows must be refused").not.toBeNull();
+    expect(refused!.status).toBe(409);
+    expect(refused!.code).toBe("PAYROLL_RUN_RESULT_STALE");
+    expect(await runStatus(runId)).toBe("approved");
+    expect(await payslipCount(runId)).toBe(0);
+    expect(await snapshotCount(runId)).toBe(0);
+  }, 90_000);
+
   it.each([
-    ["loanRepaymentIdr", 50_000],
     ["reimbursementIdr", 75_000],
     ["serviceChargeIdr", 25_000],
   ])(

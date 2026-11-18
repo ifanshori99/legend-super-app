@@ -38,6 +38,7 @@ import type { ReceiptRunRefusalReport } from "@starter/shared/edge";
 import { db, pool } from "../db/index.ts";
 import { env } from "../config/env.ts";
 import { logger } from "../lib/logger.ts";
+import { isEdgeNode } from "./mode.ts";
 import {
   authenticateEdgeCredential,
   EDGE_NODE_REVOKED_CHANNEL,
@@ -63,6 +64,8 @@ import {
   pruneAckedEdgeQueue,
 } from "../services/edge-queue.service.ts";
 import { startEdgeReceiptRunReporter } from "../services/edge-receipt-run-reporter.ts";
+import { buildEdgeTxnDigestBounded } from "../services/edge-txn-ledger.service.ts";
+import { createEdgeReconciliationSender } from "./reconciliation-sender.ts";
 import {
   bootstrapEdgeNodeIfNeeded,
   startAfterBootMasters,
@@ -89,6 +92,11 @@ import { registerStockMovedEdgeApplier } from "./stock-moved-applier.ts";
 import { registerAccessEdgeApplier } from "./access-applier.ts";
 import { registerPanicAlertEdgeApplier } from "./panic-alert-applier.ts";
 import { registerPrintAlertEdgeApplier } from "./print/alert-applier.ts";
+import {
+  createNodeAlarmEmitter,
+  registerNodeAlarmEdgeApplier,
+} from "./node-alarm.ts";
+import { registerStaffPinAlertEdgeApplier } from "./staff-pin-alert-applier.ts";
 import { resendMateriallessStaffPinSets } from "./staff-pin-resend.ts";
 import {
   WIFI_RECONCILE_INTERVAL_MS,
@@ -134,6 +142,7 @@ import {
 import { withTenant } from "../db/tenant.ts";
 import {
   notifyEdgeCatalogStale,
+  notifyEdgeDeviceRegistryHardStale,
   notifyOutletSupervisors,
 } from "../services/edge-sync-conflict-alert.ts";
 import { parseEdgeRuntimeConfig } from "./config.ts";
@@ -147,6 +156,7 @@ import type { LinkScope } from "./link-peer.ts";
 import { LINK_CLOSE, type CatalogStale } from "./protocol.ts";
 import { recordUploaderRejection } from "./selfie-health.ts";
 import { startEdgeSelfieSweep } from "./selfie-retention.ts";
+import type { TrustedClock } from "./trusted-clock.ts";
 import {
   startEdgeAuditRetention,
   resolveEdgeAuditRetentionUrl,
@@ -378,6 +388,70 @@ export function getDeviceRegistrySyncState(): DeviceRegistrySyncState | null {
   return registryPuller?.getState() ?? null;
 }
 
+/**
+ * legend-2lgu: this edge's device-registry replica passed the hard limit, so
+ * new device sessions are refused. False on the cloud and before boot.
+ */
+export function isDeviceRegistryHardStale(now: Date = new Date()): boolean {
+  return getDeviceRegistryStatus(now) === "stale";
+}
+
+/**
+ * The replica's age verdict for admitting device sessions. Cloud: "fresh".
+ * Edge (EDGE_MODE or an installed edge state): "not_ready" without the node
+ * identity or until the local checkpoint is loaded (never waits for the
+ * cloud), then "stale" past the hard limit, else "fresh".
+ */
+export function getDeviceRegistryStatus(
+  now: Date = new Date(),
+): "not_ready" | "fresh" | "stale" {
+  if (!state.edgeMode && !isEdgeNode()) return "fresh";
+  // An edge process without its node identity cannot judge its replica.
+  if (!state.identity) return "not_ready";
+  if (!registryPuller?.isCheckpointLoaded()) return "not_ready";
+  return registryPuller.isHardStale(now) ? "stale" : "fresh";
+}
+
+let hardStaleAlertedKey: string | null = null;
+
+/**
+ * legend-2lgu: tell the outlet's supervisors and owners the replica is hard
+ * stale. Called on the puller's transition and on every refused new session;
+ * once per outlet and UTC day here (and by the alert's stable id in the
+ * database). Never throws: a failed alert must not change the 503.
+ */
+export async function reportDeviceRegistryHardStale(
+  now: Date = new Date(),
+): Promise<void> {
+  const identity = state.identity;
+  const puller = registryPuller;
+  if (!state.edgeMode || !identity || !puller) return;
+  const key = `${identity.scope.outletId}:${now.toISOString().slice(0, 10)}`;
+  if (hardStaleAlertedKey === key) return;
+  hardStaleAlertedKey = key;
+  const registry = puller.getState();
+  try {
+    await withTenant(db, identity.context, (tx) =>
+      notifyEdgeDeviceRegistryHardStale(
+        tx,
+        identity.context,
+        {
+          tenantId: identity.context.tenant.tenantId,
+          outletId: outletIdSchema.parse(identity.scope.outletId),
+          edgeNodeId: identity.scope.edgeNodeId,
+          maxStaleSeconds: registry.maxStaleSeconds,
+          lastPulledAt: registry.lastSuccessAt,
+        },
+        now,
+      ),
+    );
+  } catch (error) {
+    // Try again on the next refusal or transition.
+    hardStaleAlertedKey = null;
+    logger.warn(safeError(error), "Edge device registry alert failed");
+  }
+}
+
 let catalogFreshness: CatalogFreshnessTracker | null = null;
 
 /** Critical catalog stream freshness (edge only); null on the cloud or before boot. */
@@ -388,6 +462,26 @@ export function getCatalogFreshness(): CatalogFreshnessTracker | null {
 /** Test seam: install a runtime state without starting a link. */
 export function setEdgeRuntimeStateForTests(next: EdgeRuntimeState): void {
   state = next;
+}
+
+/**
+ * Test seam: install a device-registry puller with a loaded checkpoint (fresh
+ * unless `hardStale`), or clear it with `null`. For tests that fake an edge
+ * with setEdgeRuntimeStateForTests and still need device sessions admitted.
+ */
+export function setDeviceRegistryReadyForTests(
+  ready: { readonly hardStale?: boolean } | null,
+): void {
+  registryPuller = ready
+    ? ({
+        start: () => undefined,
+        runOnce: async () => true,
+        stop: async () => undefined,
+        getState: () => ({}) as DeviceRegistrySyncState,
+        isHardStale: () => ready.hardStale ?? false,
+        isCheckpointLoaded: () => true,
+      } satisfies DeviceRegistryPuller)
+    : null;
 }
 
 function safeError(error: unknown) {
@@ -875,6 +969,7 @@ export async function startEdgeRuntime(
   }
   const identity = { context: local.context, scope: local.scope };
   state = { edgeMode: true, identity, link: disconnected };
+  hardStaleAlertedKey = null;
   // legend-ideif: from here on pin hashing uses only the outlet peppers the
   // cloud sent (none yet = fail closed). Restore the sealed ones from the
   // database so a restart verifies pins offline; rows sealed under a rotated
@@ -915,7 +1010,13 @@ export async function startEdgeRuntime(
   // Clock for the alarm queue only. It is set as soon as the gate builds the
   // trusted clock (before the boot alarm), while `catalogClock` stays null until
   // the freshness tracker exists, so applyServerTime keeps its old timing.
-  let queueClock: { now(): Date } | null = null;
+  let queueClock: Pick<TrustedClock, "now" | "purgeSafeNow"> | null = null;
+  // legend-4sesc: retention sweeps start before the gate builds the clock.
+  // Until it exists there is no safe purge time, so a sweep waits for the
+  // next interval instead of running on the box clock.
+  const retentionClock: Pick<TrustedClock, "purgeSafeNow"> = {
+    purgeSafeNow: () => (queueClock ? queueClock.purgeSafeNow() : null),
+  };
   // Wall time of this boot, taken before the gate: alarms of this boot have a
   // staleSince at or after it, alarms of earlier boots are older.
   const bootAt = new Date();
@@ -1041,6 +1142,37 @@ export async function startEdgeRuntime(
   });
   // legend-hfq3z: clash refusals of the previous pull, reported on the next.
   let receiptRunRefusals: ReceiptRunRefusalReport = new Map();
+  // legend-0cjzz: the hard-stale alarm travels on the event stream; boot time
+  // is the age base while the replica never pulled (as in the puller).
+  const registryBootAt = new Date();
+  const nodeAlarm = createNodeAlarmEmitter({
+    database: db,
+    context: local.context,
+    tenantId: local.context.tenant.tenantId,
+    outletId: outletIdSchema.parse(local.scope.outletId),
+    edgeNodeId: local.scope.edgeNodeId,
+    getDeviceRegistryState: () => {
+      const registry = puller.getState();
+      return {
+        hardStale: registry.hardStale,
+        lastPulledAt: registry.lastSuccessAt
+          ? new Date(registry.lastSuccessAt)
+          : null,
+        startedAt: registryBootAt,
+      };
+    },
+    maxStaleSeconds: Math.floor(config.deviceRegistryMaxStaleMs / 1000),
+  });
+  // Not before the local checkpoint is loaded: until then the puller cannot
+  // judge its age and would read as fresh, clearing an alarm that is still on.
+  const reconcileNodeAlarm = () => {
+    if (!puller.isCheckpointLoaded()) return;
+    void nodeAlarm
+      .reconcile()
+      .catch((error) =>
+        logger.warn(safeError(error), "Edge node alarm enqueue failed"),
+      );
+  };
   const puller = createDeviceRegistryPuller({
     pull: (since, signal) =>
       pullWithCursorRecovery(
@@ -1098,6 +1230,7 @@ export async function startEdgeRuntime(
       ),
     intervalMs: config.deviceSyncIntervalMs,
     staleAfterMs: config.deviceSyncStaleAfterMs,
+    hardStaleAfterMs: config.deviceRegistryMaxStaleMs,
     maxBackoffMs: Math.max(
       config.deviceSyncIntervalMs,
       MIN_MAX_PULL_BACKOFF_MS,
@@ -1108,6 +1241,15 @@ export async function startEdgeRuntime(
           "Edge device registry replica is stale; device revocations may be missing",
         );
       else logger.info("Edge device registry replica is fresh again");
+    },
+    onHardStaleChange: (hardStale) => {
+      if (hardStale) {
+        logger.error(
+          "Edge device registry replica is past its hard limit; new device sessions are refused",
+        );
+        void reportDeviceRegistryHardStale();
+      } else logger.info("Edge device registry replica is within its limit");
+      reconcileNodeAlarm();
     },
     onError: (error) =>
       logger.warn(safeError(error), "Edge device registry pull failed"),
@@ -1232,6 +1374,7 @@ export async function startEdgeRuntime(
     context: local.context,
     dir: env.EDGE_SELFIE_DIR,
     maxAgeDays: env.EDGE_SELFIE_MAX_AGE_DAYS,
+    clock: retentionClock,
   });
   // legend-6xcy (legend-9ppw): re-pull stock locations, UOMs and the chart of
   // accounts. No master tick at start: a fresh bootstrap (or missing masters)
@@ -1316,10 +1459,12 @@ export async function startEdgeRuntime(
   await catalogAlarmQueue.flush().catch(reportCatalogAlarmError);
   // A failed write stays dirty even if no second alarm is emitted; retry in
   // the background without holding Q62 sales or waiting for a reconnect.
-  const catalogAlarmRetry = setInterval(
-    () => void catalogAlarmQueue.flush().catch(reportCatalogAlarmError),
-    CATALOG_GATE_PERSIST_MS,
-  );
+  const catalogAlarmRetry = setInterval(() => {
+    void catalogAlarmQueue.flush().catch(reportCatalogAlarmError);
+    // legend-0cjzz: retries a failed alarm enqueue and covers a clear missed
+    // by a crash.
+    reconcileNodeAlarm();
+  }, CATALOG_GATE_PERSIST_MS);
   catalogAlarmRetry.unref();
   const freshness = catalogGate.freshness;
   catalogFreshness = freshness;
@@ -1421,6 +1566,24 @@ export async function startEdgeRuntime(
             logger.warn(safeError(error), "Edge receipt run report failed"),
         })
       : () => undefined;
+  // Only the primary reports: a standby has no edge_to_cloud drain, so its
+  // digest would always look behind/stale (legend-9z10p). The snapshot
+  // transaction commits before POSTing, and a failed report retries without
+  // holding the cursor.
+  const reconciliationSender = createEdgeReconciliationSender({
+    role: config.role,
+    cloudUrl: config.cloudUrl,
+    credential: config.credential,
+    edgeNodeId: local.scope.edgeNodeId,
+    buildDigest: (signal) =>
+      buildEdgeTxnDigestBounded(db, local.context, local.scope, { signal }),
+    onError: (error) =>
+      logger.warn(
+        safeError(error),
+        "Edge transaction reconciliation report failed",
+      ),
+  });
+  reconciliationSender.start();
   const handle: EdgeRuntimeHandle = {
     async stop() {
       stopReceiptRunReporter();
@@ -1432,6 +1595,7 @@ export async function startEdgeRuntime(
       // Torn down together: a pull stuck in a slow local write must not hold
       // the link and the wakeup listener open during shutdown.
       await Promise.all([
+        reconciliationSender.stop(),
         puller.stop(),
         peoplePuller.stop(),
         pinPuller.stop(),
@@ -1455,7 +1619,10 @@ export async function startEdgeRuntime(
   // legend-0cqql: activate audit retention only after runtime initialization.
   // A refused maintenance login closes every already-started component.
   try {
-    auditRetention = await startEdgeAuditRetention({ source });
+    auditRetention = await startEdgeAuditRetention({
+      source,
+      clock: retentionClock,
+    });
   } catch (error) {
     await handle
       .stop()
@@ -1502,6 +1669,10 @@ export async function registerEdgeLink(
   // legend-bod.5: emergency button alerts (panic_alert.*) mirrored idempotently.
   registerPanicAlertEdgeApplier();
   registerPrintAlertEdgeApplier();
+  registerNodeAlarmEdgeApplier();
+  // legend-62jtd: staff_pin.device_throttled raised on an edge reaches the
+  // outlet's supervisors in the cloud.
+  registerStaffPinAlertEdgeApplier();
   // Last: anything still unregistered is parked as unclassified, not a stall.
   registerEdgeDeferredFallback();
   const version = env.EDGE_NODE_VERSION;

@@ -1,5 +1,6 @@
 import { cn } from "cn";
 import { useT } from "@/components/i18n";
+import { Button } from "@/components/ui/button";
 import { Money } from "@/components/ui/money";
 import { StatusPill } from "./status-pill";
 
@@ -22,6 +23,10 @@ export type BillPanelProps = {
   }>;
   remainingIdr: number;
   paid: boolean;
+  /** Voucher already applied; the discount is priced by the server and total already includes it. */
+  voucher?: { code: string; discountIdr: number } | null;
+  onRemoveVoucher?: () => void;
+  removingVoucher?: boolean;
   className?: string;
 };
 
@@ -67,6 +72,9 @@ export function BillPanel({
   allocations,
   remainingIdr,
   paid,
+  voucher,
+  onRemoveVoucher,
+  removingVoucher = false,
   className,
 }: BillPanelProps) {
   const t = useT();
@@ -116,6 +124,29 @@ export function BillPanel({
         <Line label={t("posKasirCommon.bill.tax")}>
           <Money amount={taxIdr} />
         </Line>
+        {voucher && (
+          <Line
+            label={t("posKasirPayment.bill.voucher", { code: voucher.code })}
+          >
+            <Money amount={-voucher.discountIdr} className="font-semibold" />
+          </Line>
+        )}
+        {voucher && onRemoveVoucher && !paid && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="justify-self-end"
+            disabled={removingVoucher}
+            aria-busy={removingVoucher}
+            onClick={onRemoveVoucher}
+          >
+            {t(
+              removingVoucher
+                ? "posKasirPayment.bill.voucherRemoving"
+                : "posKasirPayment.bill.voucherRemove",
+            )}
+          </Button>
+        )}
         <Line label={t("posKasirCommon.bill.total")} strong>
           <Money amount={totalIdr} />
         </Line>

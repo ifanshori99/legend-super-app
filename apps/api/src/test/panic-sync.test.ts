@@ -109,7 +109,7 @@ import {
   registerEdgeNode,
   type AuthenticatedEdgeNode,
 } from "../services/edge-node.service.ts";
-import { withEdgeModeEnv } from "./edge-mode-env.ts";
+import { setEdgeNodeForEnvTests, withEdgeModeEnv } from "./edge-mode-env.ts";
 import {
   createIsolatedTenant,
   owner,
@@ -163,13 +163,15 @@ async function enrollPanicDevice(
   exactLabel = false,
 ): Promise<Device> {
   const full = exactLabel ? label : `${label} ${randomUUID().slice(0, 6)}`;
-  const enrolled = await enrollDevice(scope(), actor, {
-    outletId,
-    type: "panic_button",
-    label: full,
-    stationId: null,
-    idempotencyKey: randomUUID(),
-  });
+  const enrolled = await withEdgeModeEnv(() =>
+    enrollDevice(scope(), actor, {
+      outletId,
+      type: "panic_button",
+      label: full,
+      stationId: null,
+      idempotencyKey: randomUUID(),
+    }),
+  );
   return { id: enrolled.device.id, token: enrolled.token, label: full };
 }
 
@@ -615,6 +617,10 @@ async function deleteRoom(room: {
       [tenant.tenantId, room.areaId],
     );
     await client.query(
+      "DELETE FROM facility_operating_hours_versions WHERE tenant_id = $1 AND facility_id = $2",
+      [tenant.tenantId, room.facilityId],
+    );
+    await client.query(
       "DELETE FROM facilities WHERE tenant_id = $1 AND id = $2",
       [tenant.tenantId, room.facilityId],
     );
@@ -653,6 +659,7 @@ beforeAll(async () => {
     `psync-${randomBytes(3).toString("hex")}`,
   );
   outletId = tenant.outletId;
+  setEdgeNodeForEnvTests({ tenantId: tenant.tenantId, outletId: outletId });
   pepper = randomBytes(32);
   resetEdgeStaffPinPeppers();
   installEdgeStaffPinPeppers(tenant.tenantId, outletId, [
@@ -666,13 +673,17 @@ beforeAll(async () => {
   const authenticated = await authenticateEdgeCredential(registered.credential);
   if (!authenticated) throw new Error("Edge node did not authenticate");
   node = authenticated;
-  const enrolled = await enrollDevice(scope(), actor, {
-    outletId,
-    type: "pos",
-    label: `Layar darurat ${randomUUID().slice(0, 6)}`,
-    stationId: null,
-    idempotencyKey: randomUUID(),
-  });
+  // legend-91u09: enrolling is refused on an edge whose device registry is not
+  // judged yet, so enroll as the registered edge node (registry loaded).
+  const enrolled = await withEdgeModeEnv(() =>
+    enrollDevice(scope(), actor, {
+      outletId,
+      type: "pos",
+      label: `Layar darurat ${randomUUID().slice(0, 6)}`,
+      stationId: null,
+      idempotencyKey: randomUUID(),
+    }),
+  );
   posDevice = { id: enrolled.device.id, token: enrolled.token };
   staff = await seedStaff();
 }, 120_000);
@@ -690,6 +701,7 @@ afterEach(() => {
 });
 
 afterAll(async () => {
+  setEdgeNodeForEnvTests(null);
   resetEdgeApplierRegistryForTests();
   resetEdgeStaffPinPeppers();
   setAuditWriter(null);

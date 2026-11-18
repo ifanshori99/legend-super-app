@@ -1,7 +1,7 @@
 // The cashier takes a dearer-swap charge in cash at the till (legend-800h1).
 //
-// Cash only; EDC / QRIS at the till is a later step. A POS tender can never
-// carry charge money (`remainingIdr` caps it at the order), so the charge is
+// Cash here; EDC and QRIS at the till are in order-recovery-charge-pos-nontunai.ts
+// (legend-gt98h). A POS tender can never carry charge money (`remainingIdr` caps it at the order), so the charge is
 // collected by this explicit action:
 //
 // - ONE transaction. Lock order: issue, order, charge row (`lockChargeChain`),
@@ -36,7 +36,10 @@ import {
   type UserId,
 } from "@starter/shared/core";
 import { assertCashMovementAllowed } from "@starter/shared/pos";
-import type { CollectChargeAtPosInput } from "@starter/shared/qr-order";
+import type {
+  CollectChargeAtPosInput,
+  GuestPayment,
+} from "@starter/shared/qr-order";
 import { db } from "../db/index.ts";
 import { orderIssueCharges } from "../db/schema/kds-issues.ts";
 import { paymentIntents, paymentLinks } from "../db/schema/payment.ts";
@@ -51,6 +54,10 @@ import {
   confirmChargeLinksUnpaid,
   lockChargeChain,
 } from "./order-recovery-charge.ts";
+import {
+  collectChargeAtPosEdc,
+  collectChargeAtPosQris,
+} from "./order-recovery-charge-pos-nontunai.ts";
 import { toView, type IssueChargeView } from "./order-recovery-charge-staff.ts";
 import { accessSnapshotInTransaction } from "./permission-resolver.ts";
 import { cancelPaymentLinkInTx } from "./payment.service.ts";
@@ -72,6 +79,8 @@ export type CollectChargeAtPosCaller = {
 export type CollectedChargeAtPos = {
   charge: IssueChargeView;
   changeIdr: number;
+  /** QRIS only: the pending code the guest scans (legend-gt98h). */
+  payment?: GuestPayment;
 };
 
 export async function collectChargeAtPos(
@@ -80,6 +89,20 @@ export async function collectChargeAtPos(
   chargeId: string,
   input: CollectChargeAtPosInput,
   now = new Date(),
+): Promise<CollectedChargeAtPos> {
+  if (input.method === "qris")
+    return collectChargeAtPosQris(context, caller, chargeId, input, now);
+  if (input.method === "edc_card")
+    return collectChargeAtPosEdc(context, caller, chargeId, input, now);
+  return collectChargeAtPosCash(context, caller, chargeId, input, now);
+}
+
+async function collectChargeAtPosCash(
+  context: ScopedTenantContext,
+  caller: CollectChargeAtPosCaller,
+  chargeId: string,
+  input: Extract<CollectChargeAtPosInput, { method: "cash" }>,
+  now: Date,
 ): Promise<CollectedChargeAtPos> {
   const tenantId = context.tenant.tenantId;
   // legend-ukbq3: ask the provider first (outside the transaction). Money the

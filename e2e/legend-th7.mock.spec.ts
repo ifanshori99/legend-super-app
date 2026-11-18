@@ -39,7 +39,7 @@ test.describe("legend-th7 · floor plan & table editor", () => {
     });
     await expect(privateRoom).toContainText("Open bill");
     await expect(privateRoom).toContainText("10%");
-    await expect(privateRoom).toContainText("Rp 500.000");
+    await expect(privateRoom).toContainText(/Rp\s?500\.000/);
 
     expect(errors).toEqual([]);
   });
@@ -68,7 +68,7 @@ test.describe("legend-th7 · floor plan & table editor", () => {
     const indoor = page.getByRole("row", { name: /Indoor Reguler/ });
     await expect(indoor).toContainText("Open bill");
     await expect(indoor).toContainText("7.5%");
-    await expect(indoor).toContainText("Rp 150.000");
+    await expect(indoor).toContainText(/Rp\s?150\.000/);
   });
 
   test("F9 a zone without a name is refused before it reaches the API", async ({

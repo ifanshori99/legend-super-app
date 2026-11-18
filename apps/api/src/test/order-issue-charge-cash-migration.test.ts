@@ -51,6 +51,13 @@ async function inRolledBackTx(work: (client: PoolClient) => Promise<void>) {
   try {
     await client.query("BEGIN");
     await client.query("SET LOCAL lock_timeout = '10s'");
+    // The table is shared with other test files and what they leave behind
+    // (paid-at-POS and voided charges, legend-gt98h / legend-s61sg) breaks the
+    // 0229 route/status CHECK this test puts back. The simulated 0229 table
+    // starts empty; the ROLLBACK below restores every row. Manual refund rows
+    // (legend-985, FK to the charges) go first or the charges delete fails.
+    await client.query("DELETE FROM order_issue_charge_manual_refunds");
+    await client.query("DELETE FROM order_issue_charges");
     await work(client);
   } finally {
     await client.query("ROLLBACK");
@@ -104,8 +111,7 @@ describe("legend-44g8n migration 0230: swap charge cash columns", () => {
     expect(snap0230.id).not.toBe(snap0229.id);
     const table = (snap: {
       tables: Record<string, { columns: Record<string, unknown> }>;
-    }) =>
-      snap.tables["public.order_issue_charges"].columns;
+    }) => snap.tables["public.order_issue_charges"].columns;
     expect(Object.keys(table(snap0229))).not.toContain("cash_movement_id");
     expect(Object.keys(table(snap0230))).toContain("cash_movement_id");
     expect(Object.keys(table(snap0230))).toContain("paid_by");

@@ -506,13 +506,19 @@ registerMock(returnPayrollRunToDraft, ({ params, body }) => {
 registerMock(approvePayrollRunHr, ({ params, body }) => {
   requirePermission(RUN);
   const run = requireRun(params.payrollRunId);
-  const next = onceAction(body.idempotencyKey, run.id, "approve_hr", () =>
-    applyRun(run, {
+  const next = onceAction(body.idempotencyKey, run.id, "approve_hr", () => {
+    if (body.expectedSimulationCount !== run.simulationCount)
+      throw new ApiError(
+        409,
+        "PAYROLL_RUN_SIMULATION_STALE",
+        "Simulasi payroll sudah berubah sejak Anda membukanya.",
+      );
+    return applyRun(run, {
       action: "approve_hr",
       actorId: currentActor(),
       at: now(),
-    }),
-  );
+    });
+  });
   return { data: next };
 });
 

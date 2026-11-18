@@ -11,8 +11,12 @@
 
 import { Router } from "express";
 import type { Request } from "express";
-import { actorOf, resolveActingStaff } from "../middleware/acting-staff";
-import { requireAuth } from "../middleware/auth";
+import {
+  actorOf,
+  requireActingStaffOnSharedDevice,
+  resolveActingStaff,
+} from "../middleware/acting-staff";
+import { requireAuthAllowSharedDevice } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
 import { loadRequestAccess } from "../middleware/permissions";
@@ -71,10 +75,11 @@ async function floorBoardFilters(
 
 export const floorRouter = Router();
 floorRouter.use(
-  requireAuth,
+  requireAuthAllowSharedDevice,
   requireTrustedOrigin,
   requireTenantContext,
   resolveActingStaff,
+  requireActingStaffOnSharedDevice,
 );
 
 /** Zones, tables and live sessions of the caller's outlet (editor read model). */
@@ -160,10 +165,11 @@ floorRouter.put("/layout", jsonBody, async (req, res) => {
 
 export const tablesRouter = Router();
 tablesRouter.use(
-  requireAuth,
+  requireAuthAllowSharedDevice,
   requireTrustedOrigin,
   requireTenantContext,
   resolveActingStaff,
+  requireActingStaffOnSharedDevice,
 );
 
 /** The table's current signed QR; never rotates (contract issueTableQr). */
@@ -193,17 +199,35 @@ tablesRouter.post("/:tableId/status", jsonBody, async (req, res) => {
 // ---- Live floor board for one explicit outlet -----------------------------
 
 export const outletFloorRouter = Router();
-outletFloorRouter.use(requireAuth, requireTrustedOrigin, requireTenantContext);
+outletFloorRouter.use(
+  requireAuthAllowSharedDevice,
+  requireTrustedOrigin,
+  requireTenantContext,
+);
 
-outletFloorRouter.get("/:outletId/floor", async (req, res) => {
-  const { outletId } = floorBoardEndpoint.params.parse(req.params);
-  const query = floorBoardEndpoint.query.parse(req.query);
-  const context = await resolveOutletContext(req, "floor.table.view", outletId);
-  res.json({
-    data: await listFloorBoard(
-      context,
+// legend-42gqp: same shared-device guard as floorRouter; without it an owner
+// cookie (or a cashier token) on a shared device read another outlet's board.
+// Mounted on the route, not with `.use`: this router shares the /outlets prefix
+// with other routers, and a router-level guard would also run (with no
+// :outletId to bind the cashier token to) for every request that falls through.
+outletFloorRouter.get(
+  "/:outletId/floor",
+  resolveActingStaff,
+  requireActingStaffOnSharedDevice,
+  async (req, res) => {
+    const { outletId } = floorBoardEndpoint.params.parse(req.params);
+    const query = floorBoardEndpoint.query.parse(req.query);
+    const context = await resolveOutletContext(
+      req,
+      "floor.table.view",
       outletId,
-      await floorBoardFilters(req, outletId, query),
-    ),
-  });
-});
+    );
+    res.json({
+      data: await listFloorBoard(
+        context,
+        outletId,
+        await floorBoardFilters(req, outletId, query),
+      ),
+    });
+  },
+);

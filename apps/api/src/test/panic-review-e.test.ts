@@ -90,7 +90,7 @@ import {
   resendDue,
   sendOpenAlertsTo,
 } from "../services/panic-relay.service.ts";
-import { withEdgeModeEnv } from "./edge-mode-env.ts";
+import { setEdgeNodeForEnvTests, withEdgeModeEnv } from "./edge-mode-env.ts";
 import {
   createIsolatedTenant,
   owner,
@@ -146,13 +146,15 @@ async function asTenant<T>(run: (client: PoolClient) => Promise<T>) {
 
 /** A real press on the edge: returns the alert id (read from the press link). */
 async function pressAlert(): Promise<string> {
-  const enrolled = await enrollDevice(scope(), actor, {
-    outletId,
-    type: "panic_button",
-    label: `Tombol ${randomUUID().slice(0, 6)}`,
-    stationId: null,
-    idempotencyKey: randomUUID(),
-  });
+  const enrolled = await withEdgeModeEnv(() =>
+    enrollDevice(scope(), actor, {
+      outletId,
+      type: "panic_button",
+      label: `Tombol ${randomUUID().slice(0, 6)}`,
+      stationId: null,
+      idempotencyKey: randomUUID(),
+    }),
+  );
   const eventId = `evt-${randomUUID()}`;
   const response = await withEdgeModeEnv(() =>
     agent(edge)
@@ -295,6 +297,7 @@ beforeAll(async () => {
     `prev-e-${randomBytes(3).toString("hex")}`,
   );
   outletId = tenant.outletId;
+  setEdgeNodeForEnvTests({ tenantId: tenant.tenantId, outletId: outletId });
   const registered = await registerEdgeNode(scope(), actor, {
     outletId,
     role: "primary",
@@ -303,13 +306,17 @@ beforeAll(async () => {
   const authenticated = await authenticateEdgeCredential(registered.credential);
   if (!authenticated) throw new Error("Edge node did not authenticate");
   node = authenticated;
-  const enrolled = await enrollDevice(scope(), actor, {
-    outletId,
-    type: "pos",
-    label: `Layar darurat ${randomUUID().slice(0, 6)}`,
-    stationId: null,
-    idempotencyKey: randomUUID(),
-  });
+  // legend-91u09: enrolling is refused on an edge whose device registry is not
+  // judged yet, so enroll as the registered edge node (registry loaded).
+  const enrolled = await withEdgeModeEnv(() =>
+    enrollDevice(scope(), actor, {
+      outletId,
+      type: "pos",
+      label: `Layar darurat ${randomUUID().slice(0, 6)}`,
+      stationId: null,
+      idempotencyKey: randomUUID(),
+    }),
+  );
   posDevice = { id: enrolled.device.id, token: enrolled.token };
 }, 120_000);
 
@@ -322,6 +329,7 @@ afterEach(() => {
 });
 
 afterAll(async () => {
+  setEdgeNodeForEnvTests(null);
   resetEdgeApplierRegistryForTests();
   setAuditWriter(null);
   setDeviceOutletResolver(null);

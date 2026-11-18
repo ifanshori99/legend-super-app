@@ -191,7 +191,7 @@ function ReceivingFormContent() {
       const fileToUpload = await normalizeImageFile(file);
       if (controller.signal.aborted) return;
       const object = await uploadPhoto.mutateAsync({
-        purpose: "receipt",
+        purpose: "goods_receipt_photo",
         sourceKind: "goods_receipt",
         outletId: outlet.id,
         file: fileToUpload,

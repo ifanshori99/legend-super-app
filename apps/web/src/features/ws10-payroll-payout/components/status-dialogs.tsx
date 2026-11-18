@@ -780,6 +780,8 @@ export function ReturnDialog({
   const stepUp = useStepUp({ acceptsPassword: false });
   const waiting = proposal !== undefined && mine;
   const proof = useProofForm(batchId, { noFile: proposal !== undefined });
+  const [bankRef, setBankRef] = React.useState("");
+  const [refProblem, setRefProblem] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const busy = giveBack.isPending || proof.uploading;
 
@@ -790,7 +792,17 @@ export function ReturnDialog({
   const submit = (password?: string) => {
     if (busy) return;
     setError(null);
+    setRefProblem(null);
     if (waiting) return;
+    const ref = bankRef.trim();
+    if (ref === "") {
+      setRefProblem(t("payrollPayoutReview.result.returnBankRefRequired"));
+      return;
+    }
+    if (ref.length < 4) {
+      setRefProblem(t("payrollPayoutReview.result.returnBankRefShort"));
+      return;
+    }
     if (!proof.validate()) return;
     const send = (evidenceKey: string) => {
       giveBack.mutate(
@@ -799,6 +811,7 @@ export function ReturnDialog({
           itemIds: [item.id],
           evidenceKey,
           note: proof.note.trim(),
+          bankRef: ref,
           password,
         },
         {
@@ -849,6 +862,23 @@ export function ReturnDialog({
       ) : (
         <ProofFields form={proof} busy={busy} variant="return" />
       )}
+      <FormField
+        label={t("payrollPayoutReview.result.returnBankRef")}
+        hint={t("payrollPayoutReview.result.returnBankRefHint")}
+        error={refProblem ?? undefined}
+        required
+      >
+        <Input
+          value={bankRef}
+          maxLength={64}
+          spellCheck={false}
+          autoComplete="off"
+          className="min-h-11"
+          disabled={busy || waiting}
+          data-testid="payout-return-bank-ref"
+          onChange={(event) => setBankRef(event.target.value)}
+        />
+      </FormField>
     </div>
   );
 

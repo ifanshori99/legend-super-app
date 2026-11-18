@@ -31,6 +31,7 @@ import {
 import { userIdSchema, type ScopedTenantContext } from "@starter/shared/core";
 import {
   accountingErrorHttpStatus,
+  taxReportExportedEvent,
   type FiscalPeriod,
   type TaxReport,
   type TaxReportLine,
@@ -324,6 +325,19 @@ async function dbRow(id: string) {
       [id],
     )
   ).rows[0];
+}
+
+async function exportEvents(reportId: string) {
+  const { rows } = await owner.query<{
+    aggregate_id: string;
+    event: { payload: unknown; tenantId: string };
+  }>(
+    `SELECT aggregate_id, event FROM domain_event_outbox
+      WHERE tenant_id = $1 AND event->>'name' = 'tax_report.exported'
+        AND event->'payload'->>'taxReportId' = $2`,
+    [tenantA, reportId],
+  );
+  return rows;
 }
 
 async function currentRows(fx: { entity: string; p: Period }, type = "pbjt") {
@@ -716,6 +730,160 @@ describe("legend-5nhkp stale draft and amount check", () => {
     const after = await dbRow(rev0.id);
     expect(after.superseded_at).toBeNull();
     expect(after.version).toBe(before.version);
+  });
+});
+
+describe("legend-0cnqt tax export outbox", () => {
+  it("WS-07 emits one strict tax_report.exported payload for a successful export without changing the reported amount", async () => {
+    const fx = await fresh();
+    const { runtime } = makeRuntime();
+    const report = await normalFiling(fx);
+    const before = await dbRow(report.id);
+
+    await exportReport(report, runtime);
+
+    const events = await exportEvents(report.id);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.aggregate_id).toBe(report.id);
+    expect(events[0]!.event.tenantId).toBe(tenantA);
+    expect(
+      taxReportExportedEvent.payloadSchema.parse(events[0]!.event.payload),
+    ).toEqual({
+      taxReportId: report.id,
+      legalEntityId: fx.entity,
+      type: "pbjt",
+      period: fx.p.period,
+      amountIdr: report.amountIdr,
+    });
+    expect((await dbRow(report.id)).amount_idr).toBe(before.amount_idr);
+  });
+
+  it("WS-07 sequential export replays keep a single outbox event", async () => {
+    const fx = await fresh();
+    const { runtime, storage } = makeRuntime();
+    const report = await normalFiling(fx);
+    const first = await exportReport(report, runtime);
+    const replay = await exportReport(report, runtime);
+
+    expect(replay.fileKey).toBe(first.fileKey);
+    expect(storage.puts).toHaveLength(1);
+    expect(await exportEvents(report.id)).toHaveLength(1);
+  });
+
+  it("WS-07 concurrent first exports share one file and one outbox event", async () => {
+    const fx = await fresh();
+    const { runtime, storage } = makeRuntime();
+    const report = await normalFiling(fx);
+    const results = await Promise.all([
+      exportReport(report, runtime),
+      exportReport(report, runtime),
+    ]);
+
+    expect(results[0]!.fileKey).toBe(results[1]!.fileKey);
+    expect(storage.puts).toHaveLength(1);
+    expect(await exportEvents(report.id)).toHaveLength(1);
+  });
+
+  it("WS-07 failed uploads emit no export event; a successful retry emits one", async () => {
+    const fx = await fresh();
+    const { runtime, storage } = makeRuntime();
+    const report = await normalFiling(fx);
+    storage.failNext = true;
+
+    await expect(exportReport(report, runtime)).rejects.toThrow(
+      "storage offline",
+    );
+    expect(await exportEvents(report.id)).toHaveLength(0);
+    expect((await dbRow(report.id)).status).toBe("final");
+
+    await exportReport(report, runtime);
+    expect(await exportEvents(report.id)).toHaveLength(1);
+  });
+
+  it("WS-07 rejected draft export leaves no outbox event or uploaded file", async () => {
+    const fx = await fresh();
+    const { runtime, storage } = makeRuntime();
+    const report = await generate(fx);
+
+    await expectCode(exportReport(report, runtime), "INVALID_TRANSITION", 409);
+    expect(await exportEvents(report.id)).toHaveLength(0);
+    expect(storage.puts).toHaveLength(0);
+  });
+
+  it("WS-07 an outbox insert failure rolls back export state and removes the uploaded file", async () => {
+    const fx = await fresh();
+    const { runtime, storage } = makeRuntime();
+    const report = await normalFiling(fx);
+    const triggerName = `tax_export_outbox_failure_${unique()}`;
+    try {
+      // Test-only failure targets this report, leaving other exports untouched.
+      await owner.query(`CREATE FUNCTION public.${triggerName}() RETURNS trigger
+        LANGUAGE plpgsql AS $$
+        BEGIN
+          IF NEW.tenant_id::text = TG_ARGV[0]
+             AND NEW.aggregate_id::text = TG_ARGV[1]
+             AND NEW.event->>'name' = 'tax_report.exported' THEN
+            RAISE EXCEPTION 'tax export outbox unavailable';
+          END IF;
+          RETURN NEW;
+        END $$`);
+      await owner.query(`CREATE TRIGGER ${triggerName}
+        BEFORE INSERT ON domain_event_outbox FOR EACH ROW
+        EXECUTE FUNCTION public.${triggerName}('${tenantA}', '${report.id}')`);
+
+      await expect(exportReport(report, runtime)).rejects.toMatchObject({
+        cause: { message: "tax export outbox unavailable" },
+      });
+
+      expect(await exportEvents(report.id)).toHaveLength(0);
+      expect(await dbRow(report.id)).toMatchObject({
+        status: "final",
+        file_key: null,
+        exported_at: null,
+      });
+      expect(storage.puts).toHaveLength(1);
+      await expect(
+        storage.get(scopedContext(), {
+          tenantId: tenantA,
+          outletId: null,
+          key: storage.puts[0]!.key,
+          reference: "verify-tax-export-cleanup",
+          visibility: "private",
+        }),
+      ).rejects.toThrow();
+    } finally {
+      await owner.query(
+        `DROP TRIGGER IF EXISTS ${triggerName} ON domain_event_outbox`,
+      );
+      await owner.query(`DROP FUNCTION IF EXISTS public.${triggerName}()`);
+    }
+  });
+
+  it("WS-07 an exported original and its correction each emit one event; a superseded export emits none", async () => {
+    const fx = await fresh();
+    const { runtime, storage } = makeRuntime();
+    const original = await normalFiling(fx);
+    await exportReport(original, runtime);
+    await reopenAndReclose(fx.p);
+    const correction = await file(fx, 150, "Koreksi rekap pajak");
+
+    await expectCode(
+      exportReport(original, runtime),
+      "TAX_REPORT_SUPERSEDED",
+      409,
+    );
+    expect(await exportEvents(original.id)).toHaveLength(1);
+    expect(storage.puts).toHaveLength(1);
+
+    await exportReport(correction, runtime);
+    const events = await exportEvents(correction.id);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.event.payload).toMatchObject({
+      taxReportId: correction.id,
+      amountIdr: 150,
+    });
+    expect(await exportEvents(original.id)).toHaveLength(1);
+    expect(storage.puts).toHaveLength(2);
   });
 });
 

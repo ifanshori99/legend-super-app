@@ -67,6 +67,22 @@ import {
 vi.setConfig({ testTimeout: 180_000, hookTimeout: 180_000 });
 
 /** One connection for the manual writer transaction. */
+/**
+ * legend-154wr (940): a code the provider made and the write refused is kept as
+ * an orphan row (derived key `...:orphan:<id>`); the intents the guest can see
+ * on the bill are the others.
+ */
+async function intentsOnLinkExceptOrphans(tenantId: string, linkId: string) {
+  const { rows } = await owner.query<{ id: string }>(
+    `SELECT id FROM payment_intents
+      WHERE tenant_id = $1 AND payment_link_id = $2
+        AND idempotency_key NOT LIKE '%:orphan:%'
+      ORDER BY created_at, id`,
+    [tenantId, linkId],
+  );
+  return rows.map((row) => row.id);
+}
+
 const writerPool = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
   max: 1,
@@ -202,8 +218,8 @@ describe("legend-154wr: a hold or a live code committed while the token call wai
 
     expectHoldRefusal(response);
     expect(
-      await intentsOnLink(tenantId, b.linkId),
-      "no intent stored on the bill's link",
+      await intentsOnLinkExceptOrphans(tenantId, b.linkId),
+      "no intent stored on the bill's link (an orphan of the refused code is kept, legend-154wr 940)",
     ).toEqual([]);
     expect(await holdStates(tenantId, b.orderUuid)).toEqual(["open"]);
     expect(
@@ -228,7 +244,9 @@ describe("legend-154wr: a hold or a live code committed while the token call wai
     });
 
     expectRefusal(response, "ORDER_CODE_ACTIVE");
-    expect(await intentsOnLink(tenantId, b.linkId)).toEqual([liveId]);
+    expect(await intentsOnLinkExceptOrphans(tenantId, b.linkId)).toEqual([
+      liveId,
+    ]);
     expect((await intentRow(tenantId, liveId)).status).toBe("pending");
   });
 

@@ -119,6 +119,9 @@ import { posKasirCommonMessages } from "./pos-kasir-common.ts";
 import { posKasirPaymentMessages } from "./pos-kasir-payment.ts";
 import { posKasirGatewayMessages } from "./pos-kasir-gateway.ts";
 import { posKasirEdcMessages } from "./pos-kasir-edc.ts";
+import { posKasirVoucherMessages } from "./pos-kasir-voucher.ts";
+import { posKasirPointsMessages } from "./pos-kasir-points.ts";
+import { posKasirTicketMessages } from "./pos-kasir-ticket.ts";
 import { posKasirCodeMessages } from "./pos-kasir-code.ts";
 import { posKasirShiftMessages } from "./pos-kasir-shift.ts";
 import { posKasirSupervisorMessages } from "./pos-kasir-supervisor.ts";
@@ -179,6 +182,9 @@ export const id = {
   posKasirPayment: posKasirPaymentMessages,
   posKasirGateway: posKasirGatewayMessages,
   posKasirEdc: posKasirEdcMessages,
+  posKasirVoucher: posKasirVoucherMessages,
+  posKasirPoints: posKasirPointsMessages,
+  posKasirTicket: posKasirTicketMessages,
   edcRecon: {
     queue: edcReconQueueMessages,
     resolve: edcReconResolveMessages,
@@ -970,6 +976,9 @@ export const id = {
     formHoursHint: "Zona hanya menerima pesanan pada hari dan jam yang dibuka.",
     formHoursRequired: "Buka minimal satu hari.",
     formStatus: "Zona aktif",
+    formWfc: "Zona WFC",
+    formWfcHint:
+      "Tandai zona untuk tamu yang bekerja dari kafe. Dipakai laporan hunian kursi WFC dan pengingat belanja minimum.",
     formSortOrder: "Urutan tampil",
     formSortOrderHint: "Angka kecil tampil lebih dulu di daftar zona.",
     formCreate: "Buat zona",
@@ -1496,6 +1505,7 @@ export const id = {
       reservation_confirmation: "Konfirmasi reservasi",
       reservation_reminder: "Pengingat reservasi",
       facility_session: "Sesi fasilitas",
+      wfc_min_spend: "Pengingat belanja minimum",
       subscription_billing: "Tagihan langganan",
       schedule_update: "Perubahan jadwal",
       payslip: "Slip gaji",
@@ -1757,7 +1767,7 @@ export const id = {
     },
     method: {
       qris: "QRIS",
-      qris_doit: "QRIS DOIT",
+      qris_doit: "QRIS di layar kasir",
       card: "Kartu",
       ewallet: "E-wallet",
       va: "Virtual Account",
@@ -1831,7 +1841,7 @@ export const id = {
       defaultMethod: "Metode default",
       terminal: "Terminal",
       noTerminal: "Tanpa terminal",
-      noTerminalHint: "QRIS diproses lewat DOIT di layar kasir.",
+      noTerminalHint: "QRIS diproses lewat penyedia pembayaran di layar kasir.",
       defaultSaved: "Metode default {cashier} tersimpan.",
       terminalRequired: "Pilih terminal untuk metode ini.",
       terminalIdRequired: "Terminal ID wajib diisi.",
@@ -2893,6 +2903,7 @@ export const id = {
         allergens: "Alergen",
         photo: "Foto",
         active: "Tampil di menu",
+        breakfast: "Menu sarapan fasilitas",
       },
       station: {
         title: "Routing stasiun",
@@ -2954,6 +2965,8 @@ export const id = {
         "Isi hanya alergen yang benar-benar dipakai resep item ini.",
       activeHint:
         "Item yang disembunyikan tidak tampil di QR order, POS, maupun kanal lain.",
+      breakfastHint:
+        "Item yang dinyalakan bisa dipesan tamu fasilitas sebagai sarapan dari tiketnya. Item lama tidak masuk menu sarapan sebelum dinyalakan.",
       photoRequired: "Foto wajib",
       photoRequiredHint:
         "Item hanya bisa tampil di menu setelah fotonya diunggah. Unggah foto atau matikan pilihan tampil di menu.",

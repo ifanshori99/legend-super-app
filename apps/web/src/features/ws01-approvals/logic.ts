@@ -49,6 +49,7 @@ export const ACTION_MODULE: Readonly<
   apology_voucher: "pos",
   expense: "finance",
   supplier_payment: "finance",
+  cash_out: "finance",
   unallocated_funds: "finance",
   reconciliation_case: "finance",
   manual_journal: "finance",

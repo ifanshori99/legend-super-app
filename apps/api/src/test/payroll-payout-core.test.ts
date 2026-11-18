@@ -51,7 +51,7 @@
 // with returned_at = now().
 // - Direct SQL by the table owner is used for seeding final states (replica
 //   role, triggers off) and for proving the DB triggers/CHECKs (normal role).
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { tenantIdSchema } from "@starter/shared/core";
@@ -85,6 +85,7 @@ import {
 } from "../services/payroll-payout.service.ts";
 import { requestPayrollRunReversalInTransaction } from "../services/payroll-run-reversal.service.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
+import { testGrantIssuer } from "./payroll-payout-fixtures.ts";
 
 const app = createApp();
 const tenant = cafeLegendPlatformFixtures.tenant;
@@ -97,7 +98,18 @@ const owner = new Pool({
 const otherTenant = randomUUID();
 const REQ = `payout-req-${randomUUID()}`;
 const APP = `payout-app-${randomUUID()}`;
-const actor = (userId: string) => ({ tenantId: tenant.id as string, userId });
+const sessionIdOf = (userId: string) => `payout-core-session-${userId}`;
+// The approval spends a step-up grant (legend-xp8mc), so the actor carries a
+// session id and the test grant issuer (live session, fresh MFA: see APP in
+// `beforeAll`).
+const actor = (userId: string) => {
+  const base = {
+    tenantId: tenant.id as string,
+    userId,
+    sessionId: sessionIdOf(userId),
+  };
+  return { ...base, grants: testGrantIssuer(base) };
+};
 
 const scope = () =>
   establishScopedTenantContext(
@@ -563,6 +575,21 @@ beforeAll(async () => {
   await grantRole(hrUser.userId, ["hr.employee.manage", "hr.employee.view"]);
   hr = hrUser.client;
 
+  // The approver of the main approval: what `app.payout_assert_actor` checks
+  // (user row, live session with fresh MFA, payroll.disburse.approve).
+  await owner.query(
+    `INSERT INTO "user" (id, name, email, email_verified)
+     VALUES ($1, 'Payout core approver', $2, true)`,
+    [APP, `${APP}@payout-core.test`],
+  );
+  await owner.query(
+    `INSERT INTO session (id, expires_at, token, user_id, tenant_id, mfa_verified_at)
+     VALUES ($1, now() + interval '1 day', $2, $3, $4, now())`,
+    [sessionIdOf(APP), randomUUID(), APP, tenant.id],
+  );
+  createdUsers.push(APP);
+  await grantRole(APP, ["payroll.disburse.approve"]);
+
   await asTenant(async (c) => {
     await c.query(
       `INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'PT Payout Core', false)`,
@@ -608,6 +635,58 @@ beforeAll(async () => {
        SELECT $1, $2, 'bank_charges', id FROM chart_of_accounts
         WHERE tenant_id = $1 AND legal_entity_id = $2 AND code = '8101'`,
       [tenant.id, entityId],
+    );
+    // legend-rvao9: approving a cash batch needs the petty cash role mapped and
+    // enough cash in 1102. Setup only: 1102 mapped as petty_cash and one plain
+    // journal Dr 1102 / Cr 1103 (far above any batch of this file); the
+    // journal is removed in afterAll.
+    await c.query(
+      `INSERT INTO chart_of_accounts
+         (tenant_id, legal_entity_id, code, name, type, report_group, parent_id, is_active)
+       VALUES ($1, $2, '1102', 'Kas Kecil', 'asset', 'cash_and_equivalents', NULL, true)`,
+      [tenant.id, entityId],
+    );
+    await c.query(
+      `INSERT INTO account_mappings (tenant_id, legal_entity_id, role, account_id)
+       SELECT $1, $2, 'petty_cash', id FROM chart_of_accounts
+        WHERE tenant_id = $1 AND legal_entity_id = $2 AND code = '1102'`,
+      [tenant.id, entityId],
+    );
+    const fundDate = new Date(Date.now() + 7 * 3_600_000)
+      .toISOString()
+      .slice(0, 10);
+    const fundPeriod = (
+      await c.query(
+        `INSERT INTO fiscal_periods (tenant_id, legal_entity_id, period)
+         VALUES ($1, $2, $3) RETURNING id`,
+        [tenant.id, entityId, fundDate.slice(0, 7)],
+      )
+    ).rows[0].id as string;
+    const fundEntry = (
+      await c.query(
+        `INSERT INTO journal_entries
+           (tenant_id, legal_entity_id, entry_date, fiscal_period_id, source_type,
+            source_id, description, idempotency_key, request_fingerprint)
+         VALUES ($1, $2, $3, $4, 'sale', NULL, 'Saldo kas kecil uji payout', $5, $6)
+         RETURNING id`,
+        [
+          tenant.id,
+          entityId,
+          fundDate,
+          fundPeriod,
+          `payout-fund-1102-${randomUUID()}`,
+          randomBytes(32).toString("hex"),
+        ],
+      )
+    ).rows[0].id as string;
+    await c.query(
+      `INSERT INTO journal_lines (tenant_id, entry_id, account_id, line_no, debit_idr, credit_idr)
+       SELECT $1, $2, id, CASE code WHEN '1102' THEN 1 ELSE 2 END,
+              CASE code WHEN '1102' THEN 1000000000 ELSE 0 END,
+              CASE code WHEN '1102' THEN 0 ELSE 1000000000 END
+         FROM chart_of_accounts
+        WHERE tenant_id = $1 AND legal_entity_id = $3 AND code IN ('1102', '1103')`,
+      [tenant.id, fundEntry, entityId],
     );
     for (const p of ALL_PEOPLE) {
       createdEmployees.push(p.id);
@@ -688,6 +767,18 @@ afterAll(async () => {
       [tenant.id, entityId],
     );
     await del(
+      "DELETE FROM journal_lines WHERE tenant_id = $1 AND entry_id IN (SELECT id FROM journal_entries WHERE tenant_id = $1 AND legal_entity_id = $2)",
+      [tenant.id, entityId],
+    );
+    await del(
+      "DELETE FROM journal_entries WHERE tenant_id = $1 AND legal_entity_id = $2",
+      [tenant.id, entityId],
+    );
+    await del(
+      "DELETE FROM fiscal_periods WHERE tenant_id = $1 AND legal_entity_id = $2",
+      [tenant.id, entityId],
+    );
+    await del(
       "DELETE FROM chart_of_accounts WHERE tenant_id = $1 AND legal_entity_id = $2",
       [tenant.id, entityId],
     );
@@ -735,6 +826,8 @@ afterAll(async () => {
   await owner.query("DELETE FROM tenant_integrations WHERE id = ANY($1)", [
     createdIntegrations,
   ]);
+  await owner.query("DELETE FROM session WHERE id = $1", [sessionIdOf(APP)]);
+  await owner.query(`DELETE FROM "user" WHERE id = $1`, [APP]);
   if (otherTenantCreated)
     await owner.query("DELETE FROM tenants WHERE id = $1", [otherTenant]);
   await owner.end();

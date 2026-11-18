@@ -32,6 +32,7 @@ import {
 import { AccessError, type PermissionCode } from "@starter/shared/access";
 import {
   businessDateOf,
+  CoreError,
   createUlid,
   divideRounded,
   encodeCursor,
@@ -80,6 +81,7 @@ import {
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { appendOutbox } from "./core-outbox.ts";
+import { linkStorageObjectSource } from "./core-storage.ts";
 import { recordStockMovementInTransaction } from "./inventory.service.ts";
 import {
   assertOutlet,
@@ -113,7 +115,9 @@ export type GoodsReceiptQuery = z.infer<typeof goodsReceiptQuerySchema>;
 
 const CREATE_OPERATION = "goods_receipt.create";
 const RECEIVE_PERMISSION = "inventory.stock.receive";
-const PHOTO_PURPOSE = "receipt";
+const PHOTO_PURPOSE = "goods_receipt_photo";
+/** A receipt photo must be taken at most this long before the receipt. */
+const PHOTO_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const RECEIPT_AUDIT_FIELDS = [
   "number",
   "purchaseOrderId",
@@ -175,6 +179,7 @@ function toLine(row: ReceiptLineRow) {
 async function loadMediaIds(
   tx: Tx,
   tenantId: ReceiptRow["tenantId"],
+  outletId: ReceiptRow["outletId"],
   receiptIds: readonly string[],
 ): Promise<Map<string, string[]>> {
   const byReceipt = new Map<string, string[]>();
@@ -188,6 +193,7 @@ async function loadMediaIds(
     .where(
       and(
         eq(goodsReceiptMedia.tenantId, tenantId),
+        eq(goodsReceiptMedia.outletId, outletId),
         inArray(goodsReceiptMedia.goodsReceiptId, [...receiptIds]),
       ),
     )
@@ -217,7 +223,7 @@ export async function detailOf(
       ),
     )
     .orderBy(asc(goodsReceiptLines.lineNo));
-  const media = await loadMediaIds(tx, row.tenantId, [row.id]);
+  const media = await loadMediaIds(tx, row.tenantId, row.outletId, [row.id]);
   return goodsReceiptDetailSchema.parse({
     receipt: toReceipt(row, media.get(row.id) ?? []),
     lines: lines.map(toLine),
@@ -324,10 +330,14 @@ async function assertPhotos(
   context: ScopedTenantContext,
   outletId: string,
   mediaIds: readonly string[],
+  now: Date,
 ): Promise<void> {
   if (mediaIds.length === 0) return;
   const rows = await tx
-    .select({ id: coreStorageObjects.id })
+    .select({
+      id: coreStorageObjects.id,
+      createdAt: coreStorageObjects.createdAt,
+    })
     .from(coreStorageObjects)
     .where(
       and(
@@ -339,6 +349,10 @@ async function assertPhotos(
     );
   if (rows.length !== mediaIds.length)
     throw invalid("A photo is not a receipt photo of this outlet.");
+  // Photos are checked before any is linked: a stale one refuses the receipt.
+  const oldest = now.getTime() - PHOTO_MAX_AGE_MS;
+  if (rows.some((row) => row.createdAt.getTime() < oldest))
+    throw invalid("A receipt photo must be uploaded within the last 24 hours.");
   // One upload documents one receipt: refuse a photo another receipt owns.
   const attached = await tx
     .select({ id: goodsReceiptMedia.storageObjectId })
@@ -346,6 +360,7 @@ async function assertPhotos(
     .where(
       and(
         eq(goodsReceiptMedia.tenantId, context.tenant.tenantId),
+        eq(goodsReceiptMedia.outletId, outletId),
         inArray(goodsReceiptMedia.storageObjectId, [...mediaIds]),
       ),
     )
@@ -629,7 +644,8 @@ export async function createGoodsReceipt(
         contractReceiptLines(priorLines),
         contractReceiptLines(newLines),
       );
-      await assertPhotos(tx, context, input.outletId, mediaIds);
+      const now = new Date();
+      await assertPhotos(tx, context, input.outletId, mediaIds, now);
 
       const itemIds = [...new Set(orderLines.map((l) => l.inventoryItemId))];
       const items = await tx
@@ -650,7 +666,6 @@ export async function createGoodsReceipt(
         factor: row.factor,
       })) as UomConversion[];
 
-      const now = new Date();
       const businessDate = businessDateOf(
         now,
         await loadOutletClock(tx, input.outletId),
@@ -739,6 +754,28 @@ export async function createGoodsReceipt(
         });
       }
       await tx.insert(goodsReceiptLines).values(lineValues);
+      // Link each photo to this receipt: only the uploader's own unattached
+      // receipt photo of this outlet links, and the link is what lets the
+      // outlet's receiving readers open it.
+      for (const objectId of mediaIds) {
+        try {
+          await linkStorageObjectSource(tx, {
+            tenantId: context.tenant.tenantId,
+            objectId,
+            sourceKind: "goods_receipt",
+            sourceId: receiptId,
+            actorUserId,
+            outletId: input.outletId,
+          });
+        } catch (error) {
+          // The storage helper answers a core 400; this contract answers 422.
+          if (error instanceof CoreError && error.code === "VALIDATION_ERROR")
+            throw invalid(
+              "A photo must be your own unattached receipt photo of this outlet.",
+            );
+          throw error;
+        }
+      }
       if (mediaIds.length > 0)
         await tx.insert(goodsReceiptMedia).values(
           mediaIds.map((storageObjectId, position) => ({
@@ -897,6 +934,7 @@ export async function listGoodsReceipts(
     const media = await loadMediaIds(
       tx,
       context.tenant.tenantId,
+      query.outletId,
       page.map((row) => row.id),
     );
     return {

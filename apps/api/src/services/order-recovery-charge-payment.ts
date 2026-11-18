@@ -163,6 +163,77 @@ function assertTakesMoney(charge: ChargeRow): void {
 }
 
 /**
+ * Opens the charge's WS-05 bill inside the caller's transaction (which holds
+ * the charge row) and points the charge at it. The guest session and the
+ * cashier at the till (legend-gt98h, no table) both come through here.
+ */
+export async function openChargeLinkInTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  charge: ChargeRow,
+  table: { tableLabel: string; pax: number } | { tableLabel: null; pax: null },
+  now: Date,
+): Promise<{ linkId: string; token: string }> {
+  // `createPaymentLink` commits on its own: a crash before the charge got
+  // its `payment_link_id` leaves an orphan `oic:<chargeId>` link. Its token
+  // was never handed out, so no intent can exist on it and it cannot be
+  // reused (only the sealed token on the charge could be). Cancel it so one
+  // active link per charge remains.
+  const orphans = await tx
+    .select({ id: paymentLinks.id })
+    .from(paymentLinks)
+    .where(
+      and(
+        eq(paymentLinks.tenantId, context.tenant.tenantId),
+        eq(paymentLinks.reference, linkReference(charge.id)),
+        or(isNull(paymentLinks.expiresAt), gt(paymentLinks.expiresAt, now)),
+      ),
+    )
+    .orderBy(asc(paymentLinks.id));
+  for (const orphan of orphans)
+    await cancelPaymentLinkInTx(tx, context, {
+      linkId: orphan.id,
+      now,
+      reason: "issue_charge_orphan_link",
+    });
+  const opened = await createPaymentLink(
+    context,
+    {
+      outletId: charge.outletId,
+      reference: linkReference(charge.id),
+      ...table,
+      // Same total as the charge: gross + service + PBJT, no discount.
+      subtotalIdr: Number(charge.grossSalesIdr),
+      discountIdr: 0,
+      serviceChargeIdr: Number(charge.serviceChargeIdr),
+      taxIdr: Number(charge.pbjtIdr),
+      roundingIdr: 0,
+      totalIdr: Number(charge.amountIdr),
+      returnPath: null,
+    },
+    LINK_CREATED_BY,
+    now,
+  );
+  await tx
+    .update(orderIssueCharges)
+    .set({
+      paymentLinkId: opened.linkId,
+      paymentLinkTokenSealed: sealSecret(
+        opened.token,
+        chargeLinkSealAad(context.tenant.tenantId, charge.id),
+      ),
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(orderIssueCharges.tenantId, context.tenant.tenantId),
+        eq(orderIssueCharges.id, charge.id),
+      ),
+    );
+  return { linkId: opened.linkId, token: opened.token };
+}
+
+/**
  * Step 1: the charge's WS-05 bill, opened once. The link is created through
  * `createPaymentLink` (its own transaction) while this transaction holds the
  * charge row, so concurrent payers never open two bills for one charge.
@@ -189,63 +260,13 @@ async function ensureChargeLink(
       return session.outletId;
     assertTakesMoney(charge);
     const { tableCode } = await loadQrZoneOfSession(tx, context, session);
-    // `createPaymentLink` commits on its own: a crash before the charge got
-    // its `payment_link_id` leaves an orphan `oic:<chargeId>` link. Its token
-    // was never handed out, so no intent can exist on it and it cannot be
-    // reused (only the sealed token on the charge could be). Cancel it so one
-    // active link per charge remains.
-    const orphans = await tx
-      .select({ id: paymentLinks.id })
-      .from(paymentLinks)
-      .where(
-        and(
-          eq(paymentLinks.tenantId, context.tenant.tenantId),
-          eq(paymentLinks.reference, linkReference(charge.id)),
-          or(isNull(paymentLinks.expiresAt), gt(paymentLinks.expiresAt, now)),
-        ),
-      )
-      .orderBy(asc(paymentLinks.id));
-    for (const orphan of orphans)
-      await cancelPaymentLinkInTx(tx, context, {
-        linkId: orphan.id,
-        now,
-        reason: "issue_charge_orphan_link",
-      });
-    const opened = await createPaymentLink(
+    await openChargeLinkInTx(
+      tx,
       context,
-      {
-        outletId: charge.outletId,
-        reference: linkReference(charge.id),
-        tableLabel: tableCode,
-        pax: session.pax,
-        // Same total as the charge: gross + service + PBJT, no discount.
-        subtotalIdr: Number(charge.grossSalesIdr),
-        discountIdr: 0,
-        serviceChargeIdr: Number(charge.serviceChargeIdr),
-        taxIdr: Number(charge.pbjtIdr),
-        roundingIdr: 0,
-        totalIdr: Number(charge.amountIdr),
-        returnPath: null,
-      },
-      LINK_CREATED_BY,
+      charge,
+      { tableLabel: tableCode, pax: session.pax },
       now,
     );
-    await tx
-      .update(orderIssueCharges)
-      .set({
-        paymentLinkId: opened.linkId,
-        paymentLinkTokenSealed: sealSecret(
-          opened.token,
-          chargeLinkSealAad(context.tenant.tenantId, charge.id),
-        ),
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(orderIssueCharges.tenantId, context.tenant.tenantId),
-          eq(orderIssueCharges.id, charge.id),
-        ),
-      );
     return session.outletId;
   });
 }

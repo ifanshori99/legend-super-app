@@ -1357,6 +1357,57 @@ export const dashboardMetricDefinitions: readonly MetricDefinition[] = [
     officiality: "live",
     reportCode: "facility.unit_utilization",
   }),
+  // Sum inputs behind the WFC ratios (bead legend-p4q10): seat_occupancy_pct
+  // and revpash are recomputed from them per bucket and zone.
+  defineMetric({
+    id: "49fc4405-89c1-43b9-89b3-e64408b99d25",
+    code: "seat_available_minutes",
+    name: "Menit kursi WFC tersedia",
+    description:
+      "Kapasitas kursi meja aktif zona WFC dikali menit buka zona pada tanggal bisnis.",
+    ownerModule: "facility",
+    formulaRef: "facility.seat_available_minutes",
+    expression: "sum(seats × open minutes of the WFC zone)",
+    unit: "count",
+    aggregation: "sum",
+    dimensions: ["outlet", "zone"],
+    grain: "day",
+    officiality: "live",
+    reportCode: "facility.revpash",
+  }),
+  defineMetric({
+    id: "d3ed0a03-79b2-426e-b39b-f636852fe0c9",
+    code: "seat_used_minutes",
+    name: "Menit kursi WFC terpakai",
+    description:
+      "Jumlah tamu sesi meja dikali menit sesi di dalam jam buka zona WFC, paling banyak sebesar menit kursi tersedia.",
+    ownerModule: "facility",
+    formulaRef: "facility.seat_used_minutes",
+    expression: "sum(table_session.pax × minutes inside zone open hours)",
+    unit: "count",
+    aggregation: "sum",
+    dimensions: ["outlet", "zone"],
+    grain: "day",
+    officiality: "live",
+    reportCode: "facility.revpash",
+  }),
+  defineMetric({
+    id: "75bfbf3b-8a50-41d5-b797-d4f32db0dcc3",
+    code: "wfc_net_sales",
+    name: "Penjualan bersih zona WFC",
+    description:
+      "Penjualan bersih pesanan selesai di meja zona WFC (setelah diskon dan refund, tanpa pajak dan biaya layanan), per tanggal bisnis.",
+    ownerModule: "facility",
+    formulaRef: "facility.wfc_net_sales",
+    expression:
+      "sum(order subtotal - discount - refunds, minus tax and service charge when prices include tax) of completed orders at zone tables",
+    unit: "idr",
+    aggregation: "sum",
+    dimensions: ["outlet", "zone"],
+    grain: "day",
+    officiality: "live",
+    reportCode: "facility.revpash",
+  }),
   defineMetric({
     id: "e01b5bdb-b2dc-4e69-ab9d-79d40f6ca2b8",
     code: "facility_incident_response_total_seconds",

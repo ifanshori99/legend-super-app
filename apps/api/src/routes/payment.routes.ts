@@ -41,6 +41,7 @@ import {
   requestPayAtCashier,
   resolvePaymentLinkToken,
 } from "../services/payment.service";
+import { voidLiveCodesForMethodChange } from "../services/payment-va-release";
 
 /** Resolves the guest credential and mints the outlet-scoped context. */
 async function paymentLinkContext(token: string): Promise<ScopedTenantContext> {
@@ -70,7 +71,11 @@ paymentRouter.post("/links/:token/intents", jsonBody, async (req, res) => {
   const token = paymentLinkTokenSchema.parse(req.params.token);
   const input = createPaymentIntentInputSchema.parse(req.body);
   const context = await paymentLinkContext(token);
-  const intent = await createIntent(context, token, input);
+  // legend-9vmit: a guest who switches method or bank voids the old code.
+  const intent = await createIntent(context, token, input, new Date(), {
+    voidLiveCodesForChange: (scope) =>
+      voidLiveCodesForMethodChange(context, scope),
+  });
   res
     .status(201)
     .location(`/api/payments/links/${token}/intents/${intent.id}`)

@@ -70,7 +70,7 @@ export const accountingOpenItems = pgTable(
     legalEntityId: uuid("legal_entity_id").notNull(),
     outletId: uuid("outlet_id").$type<OutletId>(),
     counterpartyType: varchar("counterparty_type", { length: 20 })
-      .$type<"supplier" | "corporate_account" | "event_customer">()
+      .$type<"supplier" | "corporate_account" | "event_customer" | "employee">()
       .notNull(),
     counterpartyId: uuid("counterparty_id").notNull(),
     counterpartyName: varchar("counterparty_name", { length: 150 }).notNull(),
@@ -112,10 +112,11 @@ export const accountingOpenItems = pgTable(
       "accounting_open_items_kind_check",
       sql`${table.kind} IN ('payable', 'receivable')`,
     ),
-    // §3.19: utang = supplier; piutang = event dan corporate account.
+    // §3.19: utang = supplier; piutang = event dan corporate account; plus the
+    // employee PPh 21 receivable (legend-itph).
     check(
       "accounting_open_items_counterparty_check",
-      sql`(${table.kind} = 'payable' AND ${table.counterpartyType} = 'supplier') OR (${table.kind} = 'receivable' AND ${table.counterpartyType} IN ('corporate_account', 'event_customer'))`,
+      sql`(${table.kind} = 'payable' AND ${table.counterpartyType} = 'supplier') OR (${table.kind} = 'receivable' AND ${table.counterpartyType} IN ('corporate_account', 'event_customer', 'employee'))`,
     ),
     check(
       "accounting_open_items_amounts_check",
@@ -154,8 +155,14 @@ export const accountingOpenItemSettlements = pgTable(
       .notNull(),
     openItemId: uuid("open_item_id").notNull(),
     method: varchar("method", { length: 12 })
-      .$type<"payment" | "write_off" | "debit_note">()
+      .$type<"payment" | "write_off" | "debit_note" | "reversal">()
       .notNull(),
+    /**
+     * A `reversal` row cancels the `payment` it names (legend-2ln9t): the
+     * ledger is append-only for legend_app, so an undone settlement is
+     * cancelled by a new row, never deleted. Readers count it as negative.
+     */
+    reversalOf: uuid("reversal_of"),
     /** Source document (supplier payment, AR receipt) when there is one. */
     sourceId: uuid("source_id"),
     settledOn: businessDate("settled_on").notNull(),
@@ -186,14 +193,28 @@ export const accountingOpenItemSettlements = pgTable(
       columns: [table.tenantId, table.journalEntryId],
       foreignColumns: [journalEntries.tenantId, journalEntries.id],
     }),
+    foreignKey({
+      name: "accounting_open_item_settlements_reversal_of_fk",
+      columns: [table.tenantId, table.reversalOf],
+      foreignColumns: [table.tenantId, table.id],
+    }),
     check(
       "accounting_open_item_settlements_amount_check",
       sql`${table.amountIdr} > 0`,
     ),
     check(
       "accounting_open_item_settlements_method_check",
-      sql`${table.method} IN ('payment', 'write_off', 'debit_note')`,
+      sql`${table.method} IN ('payment', 'write_off', 'debit_note', 'reversal')`,
     ),
+    // A reversal names the payment it cancels, and only a reversal does; one
+    // payment is cancelled at most once.
+    check(
+      "accounting_open_item_settlements_reversal_check",
+      sql`(${table.method} = 'reversal') = (${table.reversalOf} IS NOT NULL)`,
+    ),
+    uniqueIndex("accounting_open_item_settlements_reversal_key")
+      .on(table.tenantId, table.reversalOf)
+      .where(sql`${table.reversalOf} IS NOT NULL`),
     // A debit note is the supplier-return credit: it always names the return
     // document, and one return reduces one open item at most once.
     check(

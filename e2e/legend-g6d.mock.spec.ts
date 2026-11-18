@@ -75,6 +75,18 @@ test("AUTH-05 · a custom role built from the catalog is created and opens its d
     .check();
   await expect(page.getByText("1 izin dipilih")).toBeVisible();
 
+  // The mock viewer (Admin Tenant) does not hold pos.void.approve, so adding
+  // it asks for a second-factor check first (RBAC grant rule). The first save
+  // surfaces the step; the role is created only after the code is verified.
+  await page.getByRole("button", { name: "Buat peran" }).click();
+  await expect(
+    page.getByText("Verifikasi ulang diperlukan.").first(),
+  ).toBeVisible();
+  await expect(page.getByText("Peran khusus dibuat.")).toHaveCount(0);
+  await page.getByLabel("Kode autentikator").fill("123456");
+  await page.getByRole("button", { name: "Verifikasi kode" }).click();
+  await expect(page.getByLabel("Kode autentikator")).toBeDisabled();
+
   await page.getByRole("button", { name: "Buat peran" }).click();
   await expect(page.getByText("Peran khusus dibuat.").first()).toBeVisible();
   await expect(
@@ -136,9 +148,9 @@ test("AUTH-06 · the matrix states the distinct-approver rule and saves a new ti
       exact: true,
     }),
   ).toBeVisible();
-  // Fixture matrix: 14 of the 30 approval actions (edc_standalone joined upstream) have a policy.
+  // Fixture matrix: 14 of the 32 approval actions have a policy.
   await expect(
-    page.getByText("14 dari 30 tindakan memiliki kebijakan."),
+    page.getByText("14 dari 32 tindakan memiliki kebijakan."),
   ).toBeVisible();
 
   // Reimbursement has no policy yet: it is denied until a tier exists.
@@ -165,7 +177,7 @@ test("AUTH-06 · the matrix states the distinct-approver rule and saves a new ti
     page.getByText("Matriks approval disimpan.").first(),
   ).toBeVisible();
   await expect(
-    page.getByText("15 dari 30 tindakan memiliki kebijakan."),
+    page.getByText("15 dari 32 tindakan memiliki kebijakan."),
   ).toBeVisible();
 });
 

@@ -30,7 +30,11 @@ import {
   type Device,
   type PrintJob,
 } from "@starter/shared/edge";
-import { createUlid, CoreError } from "@starter/shared/core";
+import {
+  cafeLegendFixtures,
+  createUlid,
+  CoreError,
+} from "@starter/shared/core";
 import { ApiError } from "@/lib/api/errors";
 import { newIdempotencyKey } from "@/lib/idempotency";
 import { paginateFixture } from "@/lib/mock/paginate";
@@ -39,6 +43,13 @@ import { createMockStore } from "@/lib/mock/store";
 
 const OVERRIDE_KEY = "legend-edge-mock";
 type LinkOverride = "cloud_down" | "syncing";
+
+// The generic edge contract examples use their own ids. The running web mock
+// shares the active Cafe Legend scope used by tenant context and outlet filters.
+const mockScope = {
+  tenantId: cafeLegendFixtures.tenant.id,
+  outletId: cafeLegendFixtures.outlets[0].id,
+};
 
 function nowIso(offsetMs = 0): string {
   return new Date(Date.now() + offsetMs).toISOString();
@@ -87,6 +98,7 @@ const devices = createMockStore<Device[]>(() =>
   deviceFixtures.map((device) =>
     deviceSchema.parse({
       ...device,
+      ...mockScope,
       lastSeenAt:
         device.id === edgeFixtureIds.printerKitchenId
           ? nowIso(-13 * 60_000)
@@ -110,10 +122,49 @@ const jobs = createMockStore<PrintJob[]>(() => {
   };
   return printJobFixtures
     .map((job) =>
-      printJobSchema.parse({ ...job, createdAt: nowIso(offsets[job.id] ?? 0) }),
+      printJobSchema.parse({
+        ...job,
+        ...mockScope,
+        createdAt: nowIso(offsets[job.id] ?? 0),
+      }),
     )
     .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
 });
+
+type RegistryFreshness = "fresh" | "stale" | "hardStale";
+
+const HOUR_MS = 3_600_000;
+const REGISTRY_MAX_STALE_SECONDS = 72 * 3600;
+
+// Fresh pull, a late pull (soft) and a pull older than the hard limit.
+const REGISTRY_VARIANTS: Record<
+  RegistryFreshness,
+  () => {
+    lastPulledAt: string;
+    stale: boolean;
+    hardStale: boolean;
+    maxStaleSeconds: number;
+  }
+> = {
+  fresh: () => ({
+    lastPulledAt: nowIso(-30_000),
+    stale: false,
+    hardStale: false,
+    maxStaleSeconds: REGISTRY_MAX_STALE_SECONDS,
+  }),
+  stale: () => ({
+    lastPulledAt: nowIso(-2 * HOUR_MS),
+    stale: true,
+    hardStale: false,
+    maxStaleSeconds: REGISTRY_MAX_STALE_SECONDS,
+  }),
+  hardStale: () => ({
+    lastPulledAt: nowIso(-80 * HOUR_MS),
+    stale: true,
+    hardStale: true,
+    maxStaleSeconds: REGISTRY_MAX_STALE_SECONDS,
+  }),
+};
 
 const status = createMockStore(() => {
   const override = browser ? readOverride() : null;
@@ -128,6 +179,8 @@ const status = createMockStore(() => {
     // legend-s7szu: a restored or cloned edge database (receipt run alert).
     receiptRunAlert: false,
     receiptRunAlertAt: null as string | null,
+    // legend-2lgu: freshness of the edge's copy of the device registry.
+    registry: "fresh" as RegistryFreshness,
   };
 });
 
@@ -166,6 +219,7 @@ declare global {
       setCloudLink: (link: CloudLink) => void;
       setPendingEvents: (count: number) => void;
       setReceiptRunAlert: (on: boolean) => void;
+      setDeviceRegistry: (state: RegistryFreshness) => void;
     };
   }
 }
@@ -174,8 +228,7 @@ registerMock(getEdgeStatus, ({ scenario }) => {
   if (scenario === "empty")
     return {
       data: edgeStatusSchema.parse({
-        tenantId: edgeNodeFixture.tenantId,
-        outletId: edgeNodeFixture.outletId,
+        ...mockScope,
         cloudLink: "connected",
         edgeNode: null,
         pendingEventCount: 0,
@@ -187,18 +240,17 @@ registerMock(getEdgeStatus, ({ scenario }) => {
   const devicesNow = devices.get();
   return {
     data: edgeStatusSchema.parse({
-      tenantId: edgeNodeFixture.tenantId,
-      outletId: edgeNodeFixture.outletId,
+      ...mockScope,
       cloudLink: demoCloudDown() ? "disconnected" : current.cloudLink,
       edgeNode: edgeNodeSchema.parse({
         ...edgeNodeFixture,
+        ...mockScope,
         lastHeartbeatAt: nowIso(-5_000),
       }),
       pendingEventCount: current.pendingEventCount,
       lastSyncedAt: current.lastSyncedAt,
       deviceRegistry: {
-        lastPulledAt: nowIso(-30_000),
-        stale: false,
+        ...REGISTRY_VARIANTS[current.registry](),
         receiptRunAlert: current.receiptRunAlert,
         receiptRunAlertAt: current.receiptRunAlertAt,
       },
@@ -314,6 +366,7 @@ registerMock(enrollDevice, ({ body }) => {
   const template = deviceFixtures[0];
   const device: Device = deviceSchema.parse({
     ...template,
+    ...mockScope,
     id: newIdempotencyKey(),
     outletId: body.outletId,
     type: body.type,
@@ -349,6 +402,9 @@ if (browser)
     },
     setPendingEvents: (count) => {
       status.set({ ...status.get(), pendingEventCount: Math.max(0, count) });
+    },
+    setDeviceRegistry: (state) => {
+      status.set({ ...status.get(), registry: state });
     },
     setReceiptRunAlert: (on) => {
       status.set({

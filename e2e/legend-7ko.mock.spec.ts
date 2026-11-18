@@ -66,10 +66,10 @@ test("ORD-10 a table with an outstanding bill cannot be emptied", async ({
   // The server refuses (waiter has not confirmed), the bill is untouched and
   // the reason says how to proceed (ORD-10).
   await expect(dialog).toContainText("tagihan belum lunas");
-  await expect(dialog).toContainText("Rp 114.350");
+  await expect(dialog).toContainText(/Rp\s?114\.350/);
   await dialog.getByRole("button", { name: "Tutup", exact: true }).click();
   const panel = page.getByRole("dialog").last();
-  await expect(panel.getByText("Rp 114.350")).toBeVisible();
+  await expect(panel.getByText(/Rp\s?114\.350/)).toBeVisible();
   await panel
     .getByRole("button", { name: "Tutup", exact: true })
     .first()

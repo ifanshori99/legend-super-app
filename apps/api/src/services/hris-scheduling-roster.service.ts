@@ -546,8 +546,9 @@ export async function createShiftAssignment(
   actorUserId: string,
   input: CreateBody,
   now = new Date(),
+  onOutcome?: (outcome: { created: boolean }) => void,
 ): Promise<ShiftAssignment> {
-  return withTenant(db, context, async (tx) => {
+  const result = await withTenant(db, context, async (tx) => {
     const access = await loadHrisAccess(tx, context, actorUserId, now);
     assertManage(access, input.outletId);
     const tenantId = context.tenant.tenantId;
@@ -576,12 +577,12 @@ export async function createShiftAssignment(
       return toShiftAssignment(row);
     };
     const early = await storedByKey();
-    if (early) return early;
+    if (early) return { assignment: early, created: false };
 
     const zone = await loadOutletZone(tx, tenantId, input.outletId);
     await lockKey(tx, `hris:shift:${tenantId}:${input.employeeId}`);
     const locked = await storedByKey();
-    if (locked) return locked;
+    if (locked) return { assignment: locked, created: false };
 
     await assertSchedulable(tx, tenantId, input.employeeId, input.outletId);
     const snapshot = await materialise(
@@ -620,7 +621,7 @@ export async function createShiftAssignment(
       if (constraint === SHIFT_KEY_CONSTRAINT) {
         // A concurrent create with this key won: its row is the replay.
         const raced = await storedByKey();
-        if (raced) return raced;
+        if (raced) return { assignment: raced, created: false };
         // RLS hides the row of an outlet outside the caller's reach: the key
         // is taken tenant-wide all the same.
         throw keyReused();
@@ -636,8 +637,10 @@ export async function createShiftAssignment(
       inserted,
       "hris.shift_assignment.created",
     );
-    return toShiftAssignment(inserted);
+    return { assignment: toShiftAssignment(inserted), created: true };
   });
+  onOutcome?.({ created: result.created });
+  return result.assignment;
 }
 
 /** PATCH /api/hris/shifts/:assignmentId — draft only; segments are re-derived. */
@@ -737,12 +740,18 @@ export async function updateShiftAssignment(
  * cancelled row. A pending swap on the shift is withdrawn with it. A published
  * or swapped shift emits `shift.cancelled` for its owner (the employee was
  * told about it); a draft was never announced, so nothing is emitted.
+ *
+ * `onlyDraft` cancels the shift only if it is still a draft, checked on the
+ * locked row in the same transaction as the cancel (no read-then-cancel gap):
+ * a shift a manager published meanwhile is returned untouched. For the Tanya
+ * AI rollback of the drafts it inserted. Same access check and effects.
  */
 export async function cancelShiftAssignment(
   context: ScopedTenantContext,
   actorUserId: string,
   assignmentId: string,
   now = new Date(),
+  onlyDraft = false,
 ): Promise<ShiftAssignment> {
   return withTenant(db, context, async (tx) => {
     const access = await loadHrisAccess(tx, context, actorUserId, now);
@@ -759,6 +768,7 @@ export async function cancelShiftAssignment(
       access.actorUserId,
       assignmentId,
       now,
+      onlyDraft,
     );
   });
 }
@@ -771,6 +781,7 @@ export async function cancelShiftAssignment(
  * the last working day in the same transaction as the access revocation.
  * Same effects either way: pending swaps withdrawn, `shift.cancelled` for a
  * published or swapped shift, audit rows. A cancelled row is returned as is.
+ * `onlyDraft` returns a non-draft row as is, judged on the locked row.
  */
 export async function cancelShiftAssignmentInTx(
   tx: Tx,
@@ -778,6 +789,7 @@ export async function cancelShiftAssignmentInTx(
   actorUserId: string | HrisActor,
   assignmentId: string,
   now: Date,
+  onlyDraft = false,
 ): Promise<ShiftAssignment> {
   const tenantId = context.tenant.tenantId;
   const found = await findAssignment(tx, tenantId, assignmentId);
@@ -805,6 +817,8 @@ export async function cancelShiftAssignmentInTx(
   const current = await findAssignment(tx, tenantId, assignmentId, true);
   if (!current) throw scheduleNotFound();
   if (current.status === "cancelled") return toShiftAssignment(current);
+  if (onlyDraft && current.status !== "draft")
+    return toShiftAssignment(current);
 
   const status = transitionShiftAssignment(current.status, "cancel");
   const [updated] = await tx

@@ -265,6 +265,7 @@ export function toZone(row: typeof floorZones.$inferSelect): FloorZone {
     hours: row.hours,
     status: row.status,
     sortOrder: row.sortOrder,
+    isWfc: row.isWfc,
   });
 }
 

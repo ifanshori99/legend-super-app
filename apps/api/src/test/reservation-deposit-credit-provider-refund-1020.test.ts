@@ -24,7 +24,7 @@
 //   is rejected or clamped. Asserted: total effective credit afterwards <= net
 //   value, never negative.
 // - The recon flag for "already consumed beyond net value" is the insert-only
-//   row in reservation_credit_recon_flags (migration 0637), one per credit use.
+//   row in reservation_credit_recon_flags (migration 0486), one per credit use.
 // - The provider refund is seeded as payment_provider_refunds (columns from
 //   brief 967 D1), as in payment-doit-partial-refund-967-deposit.test.ts.
 //
@@ -732,7 +732,7 @@ describe("legend-svwdz race between the credit transfer and the provider refund"
 // Ronde 3 (architect findings on the delta). Written from the brief's numbers,
 // not from the implementation.
 // Assumptions:
-// - T1 "old row" = a remainder written before migration 0636, so its
+// - T1 "old row" = a remainder written before migration 0485, so its
 //   provider_refunded_snapshot_idr is 0; the test forces that with an owner
 //   UPDATE. "Refund guard" = refundableBalance cap - reserved, plus
 //   createRefund rejecting a 1 IDR request (money rule: never refundable more

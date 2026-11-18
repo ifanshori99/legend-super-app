@@ -157,7 +157,7 @@ export async function pickUnboundFact(
   );
 }
 
-// 1072 I5: no fact is picked while a legacy (pre-0679) `same_as_counted` hold
+// 1072 I5: no fact is picked while a legacy (pre-0492) `same_as_counted` hold
 // without a binding is open on the intent and transaction: it does not say which
 // fact it used, so the pick is refused instead of guessed.
 async function pickUnbound(

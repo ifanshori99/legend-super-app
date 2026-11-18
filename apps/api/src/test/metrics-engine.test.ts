@@ -483,17 +483,19 @@ describe("derived sources", () => {
 
 describe("unavailable sources", () => {
   it("an unclaimed code answers null points and source_not_built", async () => {
-    const result = await evaluate({ metricCodes: ["net_sales", "revpash"] });
+    const result = await evaluate({
+      metricCodes: ["net_sales", "wifi_sessions"],
+    });
     expect(result.availability).toEqual([
       { metricCode: "net_sales", status: "available" },
       {
-        metricCode: "revpash",
+        metricCode: "wifi_sessions",
         status: "unavailable",
         reason: "source_not_built",
         message: "Data metrik ini belum tersedia.",
       },
     ]);
-    expect(totalOf(result, "revpash").value).toBeNull();
+    expect(totalOf(result, "wifi_sessions").value).toBeNull();
     expect(numberOf(totalOf(result, "net_sales"))).toBe(1_400_000);
   });
 
@@ -501,7 +503,7 @@ describe("unavailable sources", () => {
     const response = await queryMetrics(
       context(world.tenantId),
       metricQueryRequestSchema.parse({
-        metricCodes: ["net_sales", "revpash"],
+        metricCodes: ["net_sales", "wifi_sessions"],
         period: { startDate: JUNE.start, endDate: JUNE.end },
       }),
       { viewer: "full", now: NOW },

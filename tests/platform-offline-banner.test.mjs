@@ -25,7 +25,8 @@ registerHooks({
       "@/lib/use-online": "export const useOnline = () => true;",
       "../hooks.ts":
         "export const useEdgeStatus = () => ({isError:true,error:new Error('unreachable')});",
-      "../use-now.ts": "export const useHydrated = () => true;",
+      "../use-now.ts":
+        "export const useHydrated = () => true; export const useNowMs = () => 0;",
       "./catalog-sales-notice.tsx":
         "export const CatalogSalesNotice = () => null;",
       "./training-mode-watermark.tsx":

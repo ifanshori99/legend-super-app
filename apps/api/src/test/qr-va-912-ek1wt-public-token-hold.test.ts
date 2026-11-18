@@ -873,10 +873,27 @@ describe("legend-ek1wt E1: recovery charge, a hold appears after the first check
       created + 1,
     );
     expectHoldRefusal(refused);
+    // legend-154wr (940): the code the provider made is kept as ONE orphan row
+    // (failed, not final, derived key) so a late payment is found; it is not
+    // bound to the charge and never pending. Seeded intent + orphan = +2.
     expect(
       await intentCount(tenantId),
-      "only the seeded intent exists, nothing stored for the charge",
-    ).toBe(intents + 1);
+      "the seeded intent plus one orphan of the refused code",
+    ).toBe(intents + 2);
+    const orphanRows = await owner.query<{
+      status: string;
+      provider_final_at: Date | null;
+      provider_ref: string | null;
+    }>(
+      `SELECT status, provider_final_at, provider_ref FROM payment_intents
+        WHERE tenant_id = $1 AND idempotency_key LIKE '%:orphan:%'
+          AND id <> $2
+        ORDER BY created_at DESC LIMIT 1`,
+      [tenantId, seeded!.intentId],
+    );
+    expect(orphanRows.rows[0]?.status).toBe("failed");
+    expect(orphanRows.rows[0]?.provider_final_at).toBeNull();
+    expect(orphanRows.rows[0]?.provider_ref).not.toBeNull();
     const { rows } = await owner.query<{
       payment_intent_id: string | null;
       payment_link_id: string | null;
@@ -891,9 +908,16 @@ describe("legend-ek1wt E1: recovery charge, a hold appears after the first check
         "SELECT count(*) AS n FROM payment_intents WHERE tenant_id = $1 AND payment_link_id = $2",
         [tenantId, rows[0]!.payment_link_id],
       );
-      expect(Number(onLink.rows[0]!.n), "no intent on the charge's link").toBe(
-        0,
+      expect(
+        Number(onLink.rows[0]!.n),
+        "no intent on the charge's link except the failed orphan",
+      ).toBe(1);
+      const live = await owner.query(
+        `SELECT 1 FROM payment_intents
+          WHERE tenant_id = $1 AND payment_link_id = $2 AND status <> 'failed'`,
+        [tenantId, rows[0]!.payment_link_id],
       );
+      expect(live.rows, "no live code on the charge's link").toHaveLength(0);
     }
     expect(
       (await intentRow(tenantId, seeded!.intentId)).status,

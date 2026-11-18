@@ -90,8 +90,8 @@ const enrolledUsers: string[] = [];
 
 const PROPOSE = `SELECT app.payout_correction_propose($1::uuid, $2::uuid[], $3::varchar, $4::text, $5::text) AS id`;
 const APPROVE = `SELECT app.payout_correction_approve($1::uuid, $2::varchar, $3::text) AS n`;
-const RETURN_PROPOSE = `SELECT app.payout_return_propose($1::uuid, $2::uuid[], $3::varchar, $4::text, $5::text) AS id`;
-const RETURN_CONFIRM = `SELECT app.payout_return_confirm($1::uuid, $2::varchar, $3::text) AS n`;
+const RETURN_PROPOSE = `SELECT app.payout_return_propose($1::uuid, $2::uuid[], $3::varchar, $4::text, $5::text, $6::varchar) AS id`;
+const RETURN_CONFIRM = `SELECT app.payout_return_confirm($1::uuid, $2::varchar, $3::text, $4::varchar) AS n`;
 
 // ---- legend_app helpers ------------------------------------------------------------------
 
@@ -509,6 +509,7 @@ describe("911 P1-1: legend_app can no longer name an actor or a session", () => 
     // --- return ---
     const paid = await succeededWorld();
     const returnKey = await boundUpload(paid, "bukti", "return");
+    const returnBankRef = `TRX${randomUUID().slice(0, 8)}`;
     before = await trailOf(paid.batchId);
     expectGrantRefused(
       await appCall(RETURN_PROPOSE, [
@@ -517,6 +518,7 @@ describe("911 P1-1: legend_app can no longer name an actor or a session", () => 
         returnKey,
         NOTE,
         forged,
+        returnBankRef,
       ]),
       "return propose",
     );
@@ -531,6 +533,7 @@ describe("911 P1-1: legend_app can no longer name an actor or a session", () => 
       returnKey,
       NOTE,
       returnGrant,
+      returnBankRef,
     ]);
     expect(
       claimed.code,
@@ -539,7 +542,7 @@ describe("911 P1-1: legend_app can no longer name an actor or a session", () => 
     const claim = claimed.rows[0]!.id as string;
     before = await trailOf(paid.batchId);
     expectGrantRefused(
-      await appCall(RETURN_CONFIRM, [claim, returnKey, forged]),
+      await appCall(RETURN_CONFIRM, [claim, returnKey, forged, returnBankRef]),
       "return confirm",
     );
     expect(await trailOf(paid.batchId)).toEqual(before);
@@ -563,8 +566,8 @@ describe("911 P1-1: legend_app can no longer name an actor or a session", () => 
       "app.payout_correction_approve(uuid, character varying, text)",
       "app.payout_overpaid_propose(uuid, uuid[], character varying, text, text)",
       "app.payout_overpaid_record(uuid, character varying, uuid, text)",
-      "app.payout_return_propose(uuid, uuid[], character varying, text, text)",
-      "app.payout_return_confirm(uuid, character varying, text)",
+      "app.payout_return_propose(uuid, uuid[], character varying, text, text, character varying)",
+      "app.payout_return_confirm(uuid, character varying, text, character varying)",
       "app.payout_proof_closure_propose(character varying, text, text)",
       "app.payout_proof_closure_approve(uuid, text)",
       "app.payout_posting_record_source(uuid, uuid, uuid, text)",

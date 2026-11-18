@@ -52,6 +52,7 @@ import { db } from "../db/index.ts";
 import { outlets, tenantIntegrations, tenants } from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { logger } from "../lib/logger.ts";
 import { newSecretRef, openSecret, sealSecret } from "../lib/secrets.ts";
 import { recordAudit, type AuditTransaction } from "./audit-writer.ts";
 import { clearDoitWebhookSecretCache } from "./payment-webhook.service.ts";
@@ -481,6 +482,11 @@ export async function listIntegrations(
       try {
         data.push(toIntegration(row));
       } catch {
+        // Id only: never the error message or any credential material.
+        logger.warn(
+          { tenantId: context.tenant.tenantId, integrationId: row.id },
+          "integration row skipped: stored credentials unreadable",
+        );
         continue;
       }
     }

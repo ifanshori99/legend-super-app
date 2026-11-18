@@ -76,6 +76,10 @@ import { createApp } from "../app.ts";
 import { signDeviceToken } from "../lib/device-token.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
+import {
+  installEdgeNodeForTests,
+  removeEdgeNodeForTests,
+} from "./edge-mode-env.ts";
 
 const PASSWORD = "Test-password-123!"; // the helpers.ts sign-up password
 const PIN = "482915";
@@ -399,6 +403,7 @@ beforeAll(async () => {
     .jpeg()
     .toBuffer();
   sealedOutlet = await seedOutlet();
+  installEdgeNodeForTests({ tenantId: tenant.id, outletId: sealedOutlet });
   keylessOutlet = await seedOutlet();
   await owner.query(
     `INSERT INTO edge_people_sync_state (tenant_id, outlet_id, selfie_seal_kid, selfie_seal_public_key)
@@ -408,6 +413,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  removeEdgeNodeForTests();
   await asTenant(async (client) => {
     await client.query(
       "DELETE FROM edge_selfie_uploads WHERE tenant_id = $1 AND outlet_id = ANY($2::uuid[])",

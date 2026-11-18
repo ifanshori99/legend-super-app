@@ -99,12 +99,18 @@ export const accountingErrorHttpStatus = {
   PETTY_CASH_INSUFFICIENT: 422,
   /** The outlet has no petty cash fund, so a petty purchase is refused (founder Q8, 13 Nov 2026). */
   PETTY_CASH_FUND_REQUIRED: 422,
+  /** A petty cash return is above the GL balance of petty cash (1102) of the entity: the books hold less than the fund (legend-a4z2f). */
+  PETTY_CASH_GL_INSUFFICIENT: 422,
   /** Cash in/out counter account is a cash or bank account: use a transfer instead (legend-4961). */
   CASH_BANK_COUNTER_ACCOUNT_INVALID: 422,
   /** The creator of a cash out cannot approve or reject it (founder Q7, 13 Nov 2026). */
   CASH_OUT_SELF_APPROVAL: 403,
   /** The cash entry is not waiting for approval (already rejected). */
   CASH_ENTRY_NOT_PENDING: 409,
+  /** The approval chain of a pending cash entry is still open: the direct endpoint cannot post before every level approved (legend-3bkvl). */
+  CASH_OUT_CHAIN_OPEN: 409,
+  /** A pending cash entry has no approval chain: nothing proves the matrix was met, so nothing posts (legend-3bkvl, legend-lhyt0). */
+  CASH_OUT_CHAIN_MISSING: 409,
   /** No such cash/bank entry for this tenant. */
   CASH_ENTRY_NOT_FOUND: 404,
 } as const satisfies Record<string, number>;
@@ -186,12 +192,18 @@ const defaultMessages: Record<AccountingErrorCode, string> = {
   PETTY_CASH_INSUFFICIENT: "Saldo kas kecil outlet tidak cukup.",
   PETTY_CASH_FUND_REQUIRED:
     "Outlet ini belum punya dana kas kecil. Buat dana dulu di layar Kas kecil.",
+  PETTY_CASH_GL_INSUFFICIENT:
+    "Saldo kas kecil di pembukuan lebih kecil dari jumlah ini. Periksa rekonsiliasi kas kecil.",
   CASH_BANK_COUNTER_ACCOUNT_INVALID:
     "Akun lawan tidak boleh akun kas atau bank. Gunakan transfer antar-rekening.",
   CASH_OUT_SELF_APPROVAL:
     "Pembuat kas keluar tidak boleh menyetujui atau menolaknya sendiri.",
   CASH_ENTRY_NOT_PENDING:
     "Entri ini sudah diputuskan dan tidak bisa diubah lagi.",
+  CASH_OUT_CHAIN_OPEN:
+    "Persetujuan bertingkat belum selesai. Selesaikan semua tingkat di kotak persetujuan.",
+  CASH_OUT_CHAIN_MISSING:
+    "Kas keluar ini tidak punya alur persetujuan, jadi tidak bisa disetujui langsung.",
   CASH_ENTRY_NOT_FOUND: "Transaksi kas dan bank tidak ditemukan.",
 };
 

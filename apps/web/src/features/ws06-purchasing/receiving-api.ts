@@ -26,6 +26,7 @@ import {
   getPurchaseReturn,
   getSupplierInvoice,
   getSupplierPayment,
+  journalizeGoodsReceipt as journalizeGoodsReceiptEndpoint,
   listGoodsReceipts,
   listPettyPurchases,
   listPurchaseReturns,
@@ -129,6 +130,16 @@ export const createGoodsReceipt = async (
     { body },
     { headers: { "Idempotency-Key": body.idempotencyKey } },
   );
+};
+
+// The journal key is the receipt itself (server side), so a retry never books
+// twice and the request carries no idempotency header.
+export const journalizeGoodsReceipt = async (id: string) => {
+  await ensureMockHandlers();
+  return callEndpoint(journalizeGoodsReceiptEndpoint, {
+    params: { goodsReceiptId: id },
+    body: {},
+  });
 };
 
 export const createSupplierInvoice = async (

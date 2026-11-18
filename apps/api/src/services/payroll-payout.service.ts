@@ -72,6 +72,8 @@ import {
   sealPayrollAmount,
   sealPayrollValue,
 } from "../lib/payroll-sealed.ts";
+import { entityLock } from "./accounting-bank-matching.ts";
+import { availableCash1102 } from "./accounting-petty-cash.service.ts";
 import { recordAudit } from "./core-audit.ts";
 import type { Tx } from "./hris-access.ts";
 import { openPayeeBankSnapshot } from "./payroll-bank-snapshot.service.ts";
@@ -80,6 +82,7 @@ import type {
   PayoutGrantIssuer,
 } from "./payroll-payout-grant.service.ts";
 import {
+  accountingEnabled,
   assertManualPayoutSetup,
   configuredSourceBankAccountId,
 } from "./payroll-payout-setup.ts";
@@ -227,6 +230,13 @@ export function payoutGuardViolation(error: unknown): HttpError | null {
       "PAYOUT_STEP_GRANT_INVALID",
       "Izin langkah pembayaran kedaluwarsa. Coba lagi.",
     );
+  // PAYOUT-84 (42501): the disowner of a batch main approval approves again.
+  if (sqlStateOf(error) === "42501" && messageHas(error, /PAYOUT-84:/))
+    return payoutRefuse(
+      403,
+      "PAYOUT_DISOWNER_REFUSED",
+      'Anda sudah menyatakan "bukan saya" pada persetujuan batch ini, jadi tidak boleh menyetujuinya lagi.',
+    );
   // PAYOUT-6x (42501), e.g. PAYOUT-64: a separation-of-duties or step order
   // refusal (same person twice, requester, first step not attested).
   if (sqlStateOf(error) === "42501" && messageHas(error, /PAYOUT-6\d:/))
@@ -245,6 +255,20 @@ export function payoutGuardViolation(error: unknown): HttpError | null {
   // PAYOUT-79 (23514): the batch has an open "not me" dispute (legend-l2zru).
   if (checkViolation(error) && messageHas(error, /PAYOUT-79:/))
     return batchFrozen();
+  // PAYOUT-88 (23514): a return without a usable bank transaction reference.
+  if (checkViolation(error) && messageHas(error, /PAYOUT-88:/))
+    return payoutRefuse(
+      422,
+      "PAYOUT_RETURN_BANK_REF_REQUIRED",
+      "Nomor referensi transaksi bank wajib diisi (4-64 karakter).",
+    );
+  // PAYOUT-89 (23514): the second step names another bank reference.
+  if (checkViolation(error) && messageHas(error, /PAYOUT-89:/))
+    return payoutRefuse(
+      409,
+      "PAYOUT_RETURN_BANK_REF_MISMATCH",
+      "Nomor referensi bank berbeda dari catatan orang pertama.",
+    );
   if (!checkViolation(error)) return null;
   return payoutRefuse(
     409,
@@ -643,13 +667,19 @@ async function lockRun(
   return run;
 }
 
-/** Step gate: the run must still be locked (or paid, for a follow-up batch). */
+/**
+ * Step gate: the run must still be locked (or paid, for a follow-up batch).
+ * `mode` is the run lock: `share` by default; a step that spends a trusted
+ * grant (approve) takes `update`, because the database function asks for the
+ * run `FOR UPDATE` and a share lock held by two callers would deadlock.
+ */
 export async function assertRunPayable(
   tx: Tx,
   tenantId: string,
   runId: string,
+  mode: "update" | "share" = "share",
 ): Promise<void> {
-  const run = await lockRun(tx, tenantId, runId, "share");
+  const run = await lockRun(tx, tenantId, runId, mode);
   if (run.status !== "locked" && run.status !== "paid")
     throw payoutRefuse(
       409,
@@ -995,8 +1025,12 @@ type PlannedItem = {
 
 /**
  * Slip ids with an open row in `payroll_payout_recon_exceptions` (migration
- * 0410, insert-only) on one of their items. Every row counts as open: the table
- * has no clear step yet, and when unsure the slip stays held.
+ * 0410, insert-only) on one of their items. A row is open until it has an
+ * approved two-person clearance (`payroll_payout_recon_clearances`, migration
+ * 0461, same test as `app.payout_payslip_held_by_recon`) bound to the flag's
+ * LIVE fingerprint (`app.payout_recon_flag_fingerprint`, migration 0464): a
+ * clearance of other flagged data, or a proposal alone (`approved_at` null),
+ * still holds the slip, also when the data changed after the approval.
  */
 async function slipsHeldByReconException(
   tx: Tx,
@@ -1010,6 +1044,13 @@ async function slipsHeldByReconException(
           JOIN payroll_disbursement_items i
             ON i.tenant_id = e.tenant_id AND i.id = e.item_id
          WHERE e.tenant_id = ${tenantId}
+           AND NOT EXISTS (
+             SELECT 1
+               FROM payroll_payout_recon_clearances c
+              WHERE c.tenant_id = e.tenant_id AND c.exception_id = e.id
+                AND c.approved_at IS NOT NULL
+                AND c.flag_sha256 =
+                  app.payout_recon_flag_fingerprint(e.tenant_id, e.id))
            AND i.payslip_id IN (${sql.join(
              payslipIds.map((id) => sql`${id}`),
              sql`, `,
@@ -1553,6 +1594,58 @@ export async function submitDisbursementBatch(
 
 // ------------------------------------------------------------------ approve
 
+const rupiah = (amount: number) => `Rp${amount.toLocaleString("id-ID")}`;
+
+/**
+ * Refuses (409 PAYOUT_CASH_INSUFFICIENT) a cash batch whose net total is more
+ * than the entity's available petty cash: GL 1102 minus the credits not on the
+ * GL yet, the same figure the petty cash return guard uses (legend-rvao9). The
+ * entity lock comes AFTER the run and batch rows (every payout GL writer takes
+ * them in that order, `lockBatchPayoutGl`; the other order deadlocks with a
+ * handover of another batch of the same run) and BEFORE the pending credits are
+ * read, so a return, a top-up or another approval of the entity cannot slip in
+ * between. The items of this batch are still `prepared` here, so the pending
+ * sum does not count them: call this before they turn `approved`. Accounting on
+ * and no `petty_cash` mapping: refused 409 PAYOUT_PETTY_CASH_MAPPING_MISSING
+ * (the handover would fail ACCOUNT_MAPPING_MISSING). Accounting off: skipped.
+ */
+async function assertCashCoversBatch(
+  tx: Tx,
+  tenantId: string,
+  batch: BatchRow,
+): Promise<void> {
+  // Accounting module off: a handover never reaches the GL (`settle_skipped`),
+  // so 1102 cannot go negative and the skipped credits would count as pending
+  // forever, blocking every later cash batch (architect 1053 P1).
+  if (!(await accountingEnabled(tx, asTenant(tenantId)))) return;
+  await entityLock(tx, tenantId, batch.legalEntityId);
+  const cash = await availableCash1102(
+    tx,
+    asTenant(tenantId),
+    batch.legalEntityId,
+  );
+  // Accounting on but no petty_cash mapping: the handover could not post to the
+  // GL (ACCOUNT_MAPPING_MISSING) and the money would be stuck, so refuse the
+  // approval now instead of skipping the check.
+  if (cash === null)
+    throw payoutRefuse(
+      409,
+      "PAYOUT_PETTY_CASH_MAPPING_MISSING",
+      "Mapping kas kecil (petty_cash) belum diatur. Atur mapping akun kas kecil lalu setujui batch lagi.",
+    );
+  const items = await loadBatchItems(tx, tenantId, batch.id);
+  let totalIdr = 0;
+  for (const item of items)
+    if (item.status === "prepared") totalIdr += Number(openItemAmount(item));
+  if (totalIdr <= cash.availableIdr) return;
+  const availableIdr = Math.max(0, cash.availableIdr);
+  throw payoutRefuse(
+    409,
+    "PAYOUT_CASH_INSUFFICIENT",
+    `Kas tunai (1102) tidak cukup untuk batch ini. Saldo tersedia ${rupiah(availableIdr)} (sudah dikurangi pembayaran tunai lain yang menunggu dijurnal), total batch ${rupiah(totalIdr)}, kurang ${rupiah(totalIdr - availableIdr)}. Isi kas (top-up kas kecil) lalu setujui batch lagi.`,
+  );
+}
+
 /**
  * A second person approves the batch they saw (same content hash). Valid for
  * 24 hours. The database also refuses approver = requester (CHECK).
@@ -1566,7 +1659,50 @@ export async function approveDisbursementBatch(
   const tenantId = actor.tenantId;
   const peek = await readBatch(tx, tenantId, batchId);
   await assertBatchNotFrozen(tx, tenantId, batchId);
-  await assertRunPayable(tx, tenantId, peek.payrollRunId);
+  // Same answers as the checks under the lock, so the grant (which the
+  // database issues only for a pending batch of another requester) is rarely
+  // the first thing to refuse them. A batch that changes between this peek and
+  // the grant (a lost approve race) is refused by the grant with PAYOUT-83 or
+  // PAYOUT-16, which the grant service maps to the same 409 and 403.
+  if (peek.status !== "pending_approval")
+    throw payoutRefuse(
+      409,
+      "PAYOUT_BATCH_STATE",
+      "Batch belum diajukan atau sudah diproses.",
+    );
+  if (peek.requestedBy === actor.userId)
+    throw payoutRefuse(
+      403,
+      "PAYOUT_SELF_APPROVAL",
+      "Pembuat batch tidak boleh menyetujui batchnya sendiri.",
+    );
+  // Whoever said "not me" to a main approval of this batch cannot approve it
+  // again (legend-s20iu, PAYOUT-84); the grant and the attest refuse the same.
+  const disowned = await tx.execute(
+    sql`SELECT app.payout_batch_approval_disowned_by(${tenantId}::uuid, ${batchId}::uuid, ${actor.userId}::text) AS disowned`,
+  );
+  if ((disowned.rows[0] as { disowned: boolean }).disowned)
+    throw payoutRefuse(
+      403,
+      "PAYOUT_DISOWNER_REFUSED",
+      'Anda sudah menyatakan "bukan saya" pada persetujuan batch ini, jadi tidak boleh menyetujuinya lagi.',
+    );
+  // The main approval spends one step-up grant (legend-xp8mc): issued before
+  // any lock, like the correction grant. No session or step-up: refused
+  // 401 before anything is written.
+  const approveGrant = await payoutTrustedGrant(actor, {
+    kind: "batch_approve",
+    step: "approve",
+    batchId,
+    itemIds: [],
+    evidenceKey: null,
+    refId: null,
+    targetId: null,
+  });
+  // Lock order as `loadBatchRunFirst`: run `update` (the attest function
+  // asks for it, so a `share` lock here would deadlock two approvals), then
+  // the batch row. The second approval of a batch waits, then sees 409.
+  await assertRunPayable(tx, tenantId, peek.payrollRunId, "update");
   const batch = await loadBatchForUpdate(tx, tenantId, batchId);
   await assertBatchOpenUnderRunLock(tx, tenantId, batchId);
   if (batch.status !== "pending_approval")
@@ -1634,10 +1770,23 @@ export async function approveDisbursementBatch(
       "Isi batch berubah sejak diajukan. Buka ulang batch lalu setujui.",
     );
 
-  const now = new Date();
-  const expires = new Date(
-    now.getTime() + PAYOUT_APPROVAL_TTL_HOURS * 3_600_000,
+  // A cash batch is refused when the entity's petty cash (1102) cannot pay it
+  // (legend-rvao9, founder Q43).
+  if (batch.channel === "cash")
+    await assertCashCoversBatch(tx, tenantId, batch);
+
+  // Spends the grant and writes the append-only approval log row, so the
+  // "not me" notice reaches the approver of the main approval too.
+  await tx.execute(
+    sql`SELECT app.payout_batch_approve_attest(${batchId}::uuid, ${approveGrant}) AS grant_id`,
   );
+
+  // The approval window runs on the database clock, the same one the pending
+  // cash credits (`approval_expires_at > now()`), the export and the handover
+  // compare against (legend-f250r): an app server with a skewed clock cannot
+  // open a gap between them.
+  const now = sql`now()`;
+  const expires = sql`now() + make_interval(hours => ${PAYOUT_APPROVAL_TTL_HOURS})`;
   const [approved] = await tx
     .update(payrollDisbursementBatches)
     .set({

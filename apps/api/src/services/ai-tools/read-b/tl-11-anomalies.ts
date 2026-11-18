@@ -22,6 +22,7 @@ import type { AiToolHandler } from "../types.ts";
 import {
   TOOL_MAX_ROWS,
   addDays,
+  assertKnownOutlets,
   daysInPeriod,
   outletClause,
   resolveReach,
@@ -173,6 +174,8 @@ export const getAnomalies: AiToolHandler = async (ctx, raw) => {
 
   const anomalies: GetAnomaliesOutput["anomalies"] = [];
   await withTenant(db, reach.context, async (tx) => {
+    // An outlet that is not this tenant's is denied, never dropped.
+    await assertKnownOutlets(tx, tenantId, input.outletIds, wanted);
     const outletRows = (
       await tx.execute(sql`
         select id, timezone, business_day_cutoff from outlets

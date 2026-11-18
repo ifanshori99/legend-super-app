@@ -30,10 +30,11 @@
 // - Throttle: the 10th wrong PIN still answers 401; the 11th request on that
 //   device inside the window answers 429 PIN_DEVICE_THROTTLED with a
 //   Retry-After of 1..300 seconds, whatever the PIN.
-// - "Notification" = rows in notifications / notification_outbox for the
-//   outlet (or a domain event whose name mentions notification or alert)
-//   that appear when the 10th failure lands and do not grow afterwards. The
-//   exact channel is not fixed by the card.
+// - "Alert" = (legend-62jtd) one edge_to_cloud event staff_pin.device_throttled
+//   in edge_outbound_queue for that device, queued when the 10th failure lands
+//   and not queued again for the same window. The edge no longer writes a
+//   local notification; the cloud applier notifies the supervisors (see
+//   edge-staff-pin-throttle-alert.test.ts).
 // - Audit: exactly one audit_logs row with action staff_pin.device_throttled
 //   for the outlet or the device.
 // - The log the staff clocks is read from attendance_logs by employee id; the
@@ -117,7 +118,12 @@ import {
   setStaffPin,
 } from "../services/device-pin.service.ts";
 import { enrollDevice } from "../services/device.service.ts";
-import { withEdgeModeEnv } from "./edge-mode-env.ts";
+import { registerEdgeNode } from "../services/edge-node.service.ts";
+import {
+  installEdgeNodeForTests,
+  removeEdgeNodeForTests,
+  withEdgeModeEnv,
+} from "./edge-mode-env.ts";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers.ts";
 
 const PROOF_HEADER = "X-Pin-Proof";
@@ -482,6 +488,23 @@ async function storageObject(objectId: string) {
   return rows[0];
 }
 
+/**
+ * Runs the process as a REGISTERED edge node of `outlet`: the throttle alert is
+ * queued in edge_outbound_queue, which needs a real edge_nodes row (legend-62jtd).
+ */
+async function installRegisteredEdgeNode(outlet: string) {
+  const registered = await registerEdgeNode(outletScope(outlet), actor, {
+    outletId: outlet,
+    role: "primary",
+    label: `Edge throttle ${outlet.slice(0, 6)}`,
+  });
+  installEdgeNodeForTests({
+    tenantId: tenant.id,
+    outletId: outlet,
+    edgeNodeId: registered.edgeNode.id,
+  });
+}
+
 async function throttleAudits(outlet: string, device: string) {
   const { rows } = await owner.query(
     `SELECT 1 FROM audit_logs
@@ -492,16 +515,15 @@ async function throttleAudits(outlet: string, device: string) {
   return rows.length;
 }
 
-async function alertRows(outlet: string) {
+/** Queued edge_to_cloud staff_pin.device_throttled events of one device (legend-62jtd). */
+async function throttleEvents(outlet: string, device: string) {
   const { rows } = await owner.query<{ n: number }>(
-    `SELECT (
-        (SELECT count(*) FROM notifications WHERE tenant_id = $1 AND outlet_id = $2)
-      + (SELECT count(*) FROM notification_outbox WHERE tenant_id = $1 AND outlet_id = $2)
-      + (SELECT count(*) FROM domain_event_outbox
-          WHERE tenant_id = $1 AND outlet_id = $2
-            AND event->>'name' ILIKE ANY (ARRAY['%notif%', '%alert%']))
-      )::int AS n`,
-    [tenant.id, outlet],
+    `SELECT count(*)::int AS n FROM edge_outbound_queue
+      WHERE tenant_id = $1 AND direction = 'edge_to_cloud'
+        AND event->>'name' = 'staff_pin.device_throttled'
+        AND event->>'outletId' = $2
+        AND event->'payload'->>'deviceId' = $3`,
+    [tenant.id, outlet, device],
   );
   return rows[0]!.n;
 }
@@ -517,6 +539,7 @@ beforeAll(async () => {
     .jpeg()
     .toBuffer();
   outletId = await seedOutlet("Outlet bukti PIN");
+  installEdgeNodeForTests({ tenantId: tenant.id, outletId: outletId });
   holdEdgePepper(outletId);
   const first = await enrollAt(outletId, "Layar satu");
   deviceToken = first.token;
@@ -564,6 +587,7 @@ afterEach(() => {
 });
 
 afterAll(async () => {
+  removeEdgeNodeForTests();
   resetEdgeStaffPinPeppers();
   setAuditWriter(null);
   setDeviceOutletResolver(null);
@@ -919,8 +943,14 @@ describe("(e) a second proof on the same device ends the first", () => {
 // ---- (f) per-device throttle ----------------------------------------------------------
 
 describe("(f) 10 wrong PINs from one device across staff", () => {
-  it("(f) 11th request -> 429 PIN_DEVICE_THROTTLED with Retry-After for that device only; one audit, one alert, staff counters untouched", async () => {
+  // Each test runs as the edge node of its own outlet; back to outlet O after.
+  afterEach(() => {
+    installEdgeNodeForTests({ tenantId: tenant.id, outletId });
+  });
+
+  it("(f) 11th request -> 429 PIN_DEVICE_THROTTLED with Retry-After for that device only; one audit, one queued throttle event, staff counters untouched", async () => {
     const throttleOutlet = await seedOutlet("Outlet throttle PIN");
+    await installRegisteredEdgeNode(throttleOutlet);
     holdEdgePepper(throttleOutlet);
     const flooded = await enrollAt(throttleOutlet, "Layar banjir");
     const calm = await enrollAt(throttleOutlet, "Layar tenang");
@@ -948,7 +978,8 @@ describe("(f) 10 wrong PINs from one device across staff", () => {
       expect(codeOf(response.body)).toBe("PIN_INVALID");
     };
 
-    const alertsAtStart = await alertRows(throttleOutlet);
+    const eventsAtStart = await throttleEvents(throttleOutlet, flooded.id);
+    expect(eventsAtStart).toBe(0);
     // Wrong PINs 1..9: 4 for staff 1, 4 for staff 2, 1 for staff 3.
     for (let i = 0; i < 4; i += 1)
       await expectWrongPin(staff1, "attendance_clock");
@@ -956,15 +987,14 @@ describe("(f) 10 wrong PINs from one device across staff", () => {
       await expectWrongPin(staff2, "attendance_clock");
     await expectWrongPin(staff3, null);
     expect(await throttleAudits(throttleOutlet, flooded.id)).toBe(0);
-    const alertsAt9 = await alertRows(throttleOutlet);
+    expect(await throttleEvents(throttleOutlet, flooded.id)).toBe(0);
     // The 10th wrong PIN is still an ordinary wrong PIN.
     await expectWrongPin(staff3, null);
 
-    // The window now throttles the device: this window's single audit + alert.
+    // The window now throttles the device: this window's single audit + a
+    // single queued staff_pin.device_throttled event.
     expect(await throttleAudits(throttleOutlet, flooded.id)).toBe(1);
-    const alertsAt10 = await alertRows(throttleOutlet);
-    expect(alertsAt10).toBeGreaterThan(alertsAt9);
-    expect(alertsAt9).toBe(alertsAtStart);
+    expect(await throttleEvents(throttleOutlet, flooded.id)).toBe(1);
 
     const blockedWrong = await wrong(staff3, null);
     expect(blockedWrong.status, JSON.stringify(blockedWrong.body)).toBe(429);
@@ -996,7 +1026,9 @@ describe("(f) 10 wrong PINs from one device across staff", () => {
       4,
     );
     expect(await throttleAudits(throttleOutlet, flooded.id)).toBe(1);
-    expect(await alertRows(throttleOutlet)).toBe(alertsAt10);
+    expect(await throttleEvents(throttleOutlet, flooded.id)).toBe(1);
+    // The calm device of the same outlet queued no throttle event.
+    expect(await throttleEvents(throttleOutlet, calm.id)).toBe(0);
 
     // Another device of the same outlet keeps working: right and wrong PIN.
     const okElsewhere = await verify(calm.token, staff1.userId, PIN);
@@ -1011,6 +1043,7 @@ describe("(f) 10 wrong PINs from one device across staff", () => {
 
   it("(f) 20 wrong PINs at once from one device -> at most 10 answer 401, the rest 429, staff counters rise by at most 10", async () => {
     const throttleOutlet = await seedOutlet("Outlet salah serentak");
+    await installRegisteredEdgeNode(throttleOutlet);
     holdEdgePepper(throttleOutlet);
     const device = await enrollAt(throttleOutlet, "Layar serentak");
     const options = { outlet: throttleOutlet };
@@ -1039,10 +1072,13 @@ describe("(f) 10 wrong PINs from one device across staff", () => {
         (await pinRow(staff.userId, throttleOutlet))?.failed_attempts ?? 0;
     expect(rise).toBeLessThanOrEqual(10);
     expect(await throttleAudits(throttleOutlet, device.id)).toBe(1);
+    // 20 concurrent requests, one window: exactly one throttle event, no double.
+    expect(await throttleEvents(throttleOutlet, device.id)).toBe(1);
   });
 
   it("(f) a failing alert does not change the answers: 10th wrong PIN stays 401, 11th stays 429", async () => {
     const throttleOutlet = await seedOutlet("Outlet alarm gagal");
+    await installRegisteredEdgeNode(throttleOutlet);
     holdEdgePepper(throttleOutlet);
     const device = await enrollAt(throttleOutlet, "Layar alarm gagal");
     await seedSupervisor(throttleOutlet);
@@ -1077,6 +1113,7 @@ describe("(f) 10 wrong PINs from one device across staff", () => {
 
   it("(f) legend-sp9vq: guesses that newly lock a staff PIN still count on the device; an already locked PIN does not", async () => {
     const throttleOutlet = await seedOutlet("Outlet kunci baru");
+    await installRegisteredEdgeNode(throttleOutlet);
     holdEdgePepper(throttleOutlet);
     const device = await enrollAt(throttleOutlet, "Layar kunci baru");
     await seedSupervisor(throttleOutlet);
@@ -1097,7 +1134,7 @@ describe("(f) 10 wrong PINs from one device across staff", () => {
       expect(codeOf(response.body)).toBe("PIN_LOCKED");
     }
     // 10 locking guesses used the 10 device slots: the 11th is refused 429
-    // before any staff counter moves, and the window alert was written once.
+    // before any staff counter moves, and the window event was queued once.
     const blocked = await verify(device.token, crowd[10]!.userId, WRONG, null);
     expect(blocked.status, JSON.stringify(blocked.body)).toBe(429);
     expect(codeOf(blocked.body)).toBe("PIN_DEVICE_THROTTLED");
@@ -1105,6 +1142,7 @@ describe("(f) 10 wrong PINs from one device across staff", () => {
       (await pinRow(crowd[10]!.userId, throttleOutlet))?.failed_attempts,
     ).toBe(4);
     expect(await throttleAudits(throttleOutlet, device.id)).toBe(1);
+    expect(await throttleEvents(throttleOutlet, device.id)).toBe(1);
 
     // A PIN that was already locked never looks at the guess: it gives the
     // slot back, so on a calm device many tries stay PIN_LOCKED.
@@ -1118,6 +1156,7 @@ describe("(f) 10 wrong PINs from one device across staff", () => {
 
   it("(f) legend-sp9vq: 12 locking guesses at once -> exactly 10 answer PIN_LOCKED, 2 answer 429", async () => {
     const throttleOutlet = await seedOutlet("Outlet kunci serentak");
+    await installRegisteredEdgeNode(throttleOutlet);
     holdEdgePepper(throttleOutlet);
     const device = await enrollAt(throttleOutlet, "Layar kunci serentak");
     const options = { outlet: throttleOutlet };
@@ -1139,6 +1178,7 @@ describe("(f) 10 wrong PINs from one device across staff", () => {
 
   it("(f) 9 wrong PINs do not throttle: the next correct PIN still works", async () => {
     const throttleOutlet = await seedOutlet("Outlet sembilan salah");
+    await installRegisteredEdgeNode(throttleOutlet);
     holdEdgePepper(throttleOutlet);
     const device = await enrollAt(throttleOutlet, "Layar sembilan");
     const options = { outlet: throttleOutlet };

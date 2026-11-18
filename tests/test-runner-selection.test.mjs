@@ -82,6 +82,8 @@ const apiCall = (calls) =>
       call.args.slice(0, 4).join(" ") === "--filter @starter/api run test",
   );
 const rootCall = (calls) => calls.find((call) => call.command === "/test/node");
+const postgresCall = (calls) =>
+  calls.find((call) => call.command === "docker" && call.args.includes("up"));
 
 test("node:test failure runs first and stops before the API vitest run", async () => {
   const calls = await dispatch(
@@ -186,6 +188,83 @@ test("Empty and whitespace-only selections preserve the default suites", async (
   }
 });
 
+test("Full unit suites keep the 1536m PostgreSQL budget for absent or blank selections", async () => {
+  for (const selection of [undefined, "", " ", "\t\n"]) {
+    const env = selection === undefined ? {} : { LEGEND_TEST_FILES: selection };
+    const calls = await dispatch(env);
+    assert.equal(postgresCall(calls).env.STARTER_TEST_PG_MEM, "1536m");
+  }
+});
+
+test("Unit selections with flags keep the full-suite PostgreSQL budget", async () => {
+  for (const selection of [
+    "--coverage",
+    "--maxWorkers=2",
+    "--outputFile=report.test.ts",
+    "--exclude src/test/example.test.ts",
+    "--reporter=json --outputFile report.test.ts",
+    "tests/one.test.mjs --exclude src/test/example.test.ts",
+    "src/test/example.test.ts --maxWorkers=2",
+  ]) {
+    const calls = await dispatch({ LEGEND_TEST_FILES: selection });
+    assert.equal(postgresCall(calls).env.STARTER_TEST_PG_MEM, "1536m");
+  }
+});
+
+test("Targeted unit suites use the 1024m PostgreSQL budget", async () => {
+  for (const selection of [
+    "src/test/example.test.ts",
+    "tests/one.test.mjs",
+    "apps/web/test/example.test.ts",
+    " \tsrc/test/example.test.ts tests/one.test.mjs\n",
+  ]) {
+    const calls = await dispatch({ LEGEND_TEST_FILES: selection });
+    assert.equal(postgresCall(calls).env.STARTER_TEST_PG_MEM, "1024m");
+  }
+});
+
+test("Production browser suites keep the 1536m PostgreSQL budget even with unit selections", async () => {
+  for (const env of [{}, { LEGEND_TEST_FILES: "src/test/example.test.ts" }]) {
+    const calls = await dispatch(env, { mode: "e2e" });
+    assert.equal(postgresCall(calls).env.STARTER_TEST_PG_MEM, "1536m");
+  }
+});
+
+test("Explicit PostgreSQL memory budgets are preserved for full, targeted, and browser suites", async () => {
+  for (const { mode, selection } of [
+    { mode: "unit" },
+    { mode: "unit", selection: "" },
+    { mode: "unit", selection: "src/test/example.test.ts" },
+    { mode: "e2e" },
+    { mode: "e2e", selection: "src/test/example.test.ts" },
+  ]) {
+    const calls = await dispatch(
+      { STARTER_TEST_PG_MEM: "2048m", LEGEND_TEST_FILES: selection },
+      { mode },
+    );
+    assert.equal(postgresCall(calls).env.STARTER_TEST_PG_MEM, "2048m");
+  }
+});
+
+test("An empty PostgreSQL memory override restores the default for each suite", async () => {
+  for (const { mode, selection, expected } of [
+    { mode: "unit", expected: "1536m" },
+    { mode: "unit", selection: "--coverage", expected: "1536m" },
+    {
+      mode: "unit",
+      selection: "src/test/example.test.ts",
+      expected: "1024m",
+    },
+    { mode: "e2e", expected: "1536m" },
+  ]) {
+    const calls = await dispatch(
+      { STARTER_TEST_PG_MEM: "", LEGEND_TEST_FILES: selection },
+      { mode },
+    );
+    assert.equal(postgresCall(calls).env.STARTER_TEST_PG_MEM, expected);
+  }
+});
+
 test("Worktree database name reaches Compose and every database connection", async () => {
   const calls = await dispatch({ LEGEND_TEST_DB_NAME: "legend_infra_qa_509" });
   const setup = calls.find((call) => call.command === "docker");
@@ -227,6 +306,32 @@ test("Compose creates and health-checks the configured database name", () => {
   assert.match(
     compose,
     /pg_isready -U starter_test -d \$\{LEGEND_TEST_DB_NAME:-starter_test\}/,
+  );
+});
+
+test("Compose preserves the full-suite PostgreSQL fallback and conservative tuning", () => {
+  const compose = readFileSync(
+    new URL("../compose.test.yaml", import.meta.url),
+    "utf8",
+  );
+  assert.match(compose, /mem_limit: \$\{STARTER_TEST_PG_MEM:-1536m\}/);
+  assert.match(compose, /memswap_limit: \$\{STARTER_TEST_PG_MEM:-1536m\}/);
+  for (const setting of [
+    "shared_buffers=64MB",
+    "work_mem=2MB",
+    "max_connections=50",
+  ]) {
+    assert.ok(compose.includes(setting), `PostgreSQL must set ${setting}`);
+  }
+});
+
+test("Worktree removal command uses the database cleanup launcher", () => {
+  const packageJson = JSON.parse(
+    readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+  );
+  assert.equal(
+    packageJson.scripts["worktree:remove"],
+    "node scripts/worktree-remove.mjs",
   );
 });
 

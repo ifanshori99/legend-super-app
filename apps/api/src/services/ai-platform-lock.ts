@@ -46,6 +46,24 @@ export async function isAiPlatformLockedShared(
   return !isModuleEnabled(row?.featureFlags ?? null, "ai_assistant");
 }
 
+/**
+ * 981 / legend-hbuq3: the `mcp` module (tenants.feature_flags) gates every MCP
+ * path (bearer endpoint, OAuth, consent, admin). Same fail-closed rule as
+ * `isModuleEnabled`. Callers answer exactly as for an unknown tenant or token,
+ * never naming the module or the flag. Tanya AI is not affected.
+ */
+export async function isMcpModuleDisabled(
+  executor: LockExecutor,
+  tenantId: string,
+): Promise<boolean> {
+  const [row] = await executor
+    .select({ featureFlags: tenants.featureFlags })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId))
+    .limit(1);
+  return !isModuleEnabled(row?.featureFlags ?? null, "mcp");
+}
+
 export async function assertAiPlatformUnlockedShared(
   executor: LockExecutor,
   tenantId: string,

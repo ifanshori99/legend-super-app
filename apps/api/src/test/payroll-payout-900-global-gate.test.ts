@@ -388,6 +388,14 @@ const correctCall = (
       note: "Mutasi bank menunjukkan transfer ternyata berhasil, tidak ada transfer lain",
       password: PASSWORD,
     });
+/** Bank reference of a return: one per claim, the same in both steps (990). */
+const returnBankRef = (evidenceKey: string, itemIds: string[]) =>
+  "TRX" +
+  createHash("sha256")
+    .update(`${evidenceKey}|${itemIds.join(",")}`)
+    .digest("hex")
+    .slice(0, 12);
+
 const returnCall = (
   w: { batchId: string },
   itemIds: string[],
@@ -402,6 +410,7 @@ const returnCall = (
       {
         itemIds,
         evidenceKey,
+        bankRef: returnBankRef(evidenceKey, itemIds),
         note: "Bank mengembalikan dana, rekening tujuan ditutup",
       } as never,
       store(),

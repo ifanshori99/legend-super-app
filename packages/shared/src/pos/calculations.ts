@@ -166,7 +166,7 @@ export type ShiftCashInput = {
 /**
  * What the drawer should hold (the number the cashier must not see while
  * counting): modal awal + penjualan tunai − refund tunai + kas masuk − kas
- * keluar − setoran brankas.
+ * keluar − setoran brankas. Boleh negatif (legend-4wu4).
  */
 export function shiftExpectedCashIdr(input: ShiftCashInput): Idr {
   const sum = sumIdr([
@@ -179,12 +179,9 @@ export function shiftExpectedCashIdr(input: ShiftCashInput): Idr {
     input.cashOutIdr,
     input.cashDropIdr,
   ]);
-  const expected = Number(sum) - Number(out);
-  if (expected < 0)
-    throw new RangeError(
-      "Cash movements exceed the drawer: check refunds and drops",
-    );
-  return idr(expected);
+  // May be negative (legend-4wu4): cash out is never refused on the drawer, so
+  // the gap is a variance for the supervisor, not an error for the cashier.
+  return idr(Number(sum) - Number(out));
 }
 
 /**

@@ -132,10 +132,7 @@ import {
   overtimeRequestStatusSchema,
   overtimeRestDayTypeSchema,
 } from "./leave.ts";
-import {
-  overtimeDayTypeSchema,
-  overtimeParametersSchema,
-} from "./payroll/statutory.ts";
+import { overtimeParametersSchema } from "./payroll/statutory.ts";
 import {
   announcementReceiptSchema,
   announcementSchema,
@@ -1272,8 +1269,6 @@ export const createOvertimeRequest = defineEndpoint({
     date: businessDateSchema,
     minutes: z.number().int().min(1).max(720),
     reason: z.string().min(1).max(500),
-    /** Employee's rest day; a holiday on `date` overrides it server side. */
-    dayType: overtimeDayTypeSchema.optional(),
     idempotencyKey: idempotencyKeySchema,
   }),
   response: dataResponseSchema(overtimeRequestSchema),

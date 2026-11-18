@@ -25,7 +25,7 @@
 //   - The legacy hold is built through the black box: the current build files H1 for E, then
 //     the test rewrites H1's `webhook_event_id` to the stored event's row id (the key the
 //     old build used, `013b83cec`). Column names come from the committed migration
-//     0642_refund_recon_holds.sql. If the column is not what the old build used, the test's
+//     0487_refund_recon_holds.sql. If the column is not what the old build used, the test's
 //     premise assertion (`webhook_event_id` equals the stored row id) fails loudly.
 //   - Worker retry of E is simulated as in refund-1101-f6 (event row put back as `failed`,
 //     30 minutes old, then the harness worker runs), plus the same envelope delivered again.

@@ -730,12 +730,31 @@ describe("POS createIntent racing a link cancellation (legend-b0au)", () => {
     // Refused like an expired link, and no pending code on the closed link.
     const outcome = await racing;
     expect(outcome.ok).toBe(false);
-    expect(await intentCountOfLink(linkId)).toBe(1);
+    // legend-154wr (940): the code the gateway made is kept as ONE orphan row
+    // (failed, not final, derived key, id = intent id) so a late payment on it
+    // is found by webhook and poll; it is never a pending (live) code.
+    expect(await intentCountOfLink(linkId)).toBe(2);
     const { rows } = await owner.query(
       `SELECT 1 FROM payment_intents
-       WHERE tenant_id = $1 AND payment_link_id = $2 AND status = 'pending'`,
+       WHERE tenant_id = $1 AND payment_link_id = $2 AND status = 'pending'
+         AND idempotency_key NOT LIKE '%:orphan:%'`,
       [tenant.tenantId, linkId],
     );
     expect(rows).toHaveLength(0);
+    const orphans = await owner.query<{
+      id: string;
+      status: string;
+      provider_final_at: Date | null;
+      provider_ref: string | null;
+    }>(
+      `SELECT id, status, provider_final_at, provider_ref FROM payment_intents
+       WHERE tenant_id = $1 AND payment_link_id = $2
+         AND idempotency_key LIKE '%:orphan:%'`,
+      [tenant.tenantId, linkId],
+    );
+    expect(orphans.rows).toHaveLength(1);
+    expect(orphans.rows[0]!.status).toBe("failed");
+    expect(orphans.rows[0]!.provider_final_at).toBeNull();
+    expect(orphans.rows[0]!.provider_ref).not.toBeNull();
   });
 });

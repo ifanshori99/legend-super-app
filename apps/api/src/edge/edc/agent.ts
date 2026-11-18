@@ -86,6 +86,7 @@ import {
   assertPaymentPermission,
   uniqueViolation,
 } from "../../services/payment-support.ts";
+import { assertPosTicketsIssuableForReference } from "../../services/facility-pos-tickets.ts";
 import { assertNoOpenFundsForEdcSaleTx } from "../../services/pos-order-open-funds.ts";
 import {
   assertEdcSaleBillPayable,
@@ -1579,6 +1580,13 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
   ): Promise<WriteAhead> {
     try {
       return await withTenant(db, ctx, async (tx): Promise<WriteAhead> => {
+        // 936 D: a bill whose facility ticket hold lapsed takes no card sale.
+        // First in the transaction: ticket rows are locked before the advisory
+        // lock below (the order addPosTender uses).
+        await assertPosTicketsIssuableForReference(tx, ctx, {
+          outletId: input.outletId,
+          reference: input.reference,
+        });
         // Serialise attempts for one reference, then re-check under the lock:
         // two cashiers with different keys cannot both start a sale.
         await tx.execute(

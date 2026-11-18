@@ -13,6 +13,7 @@
 // cold Vite compile (frontend.md "Browser specs in mock mode").
 import { expect, test, type Page } from "@playwright/test";
 import { captureScreenshot } from "./screenshots.ts";
+import { waitForHydration } from "./hydration.ts";
 
 const base = process.env.LEGEND_MOCK_WEB_URL;
 test.skip(
@@ -40,25 +41,35 @@ async function openEmployee(page: Page, path: string, theme: Theme = "light") {
     theme,
   );
   await page.goto(`${base}${path}`, { waitUntil: "networkidle" });
+  await waitForHydration(page);
 }
 
 async function openPayslipGate(page: Page) {
-  await page.getByRole("link", { name: "Lihat slip" }).first().click();
+  await page
+    .getByRole("link", { name: /^Lihat slip/ })
+    .first()
+    .click();
   await expect(
-    page.getByRole("heading", { name: "Masukkan PIN slip gaji" }),
+    page.getByRole("heading", { name: "Masukkan PIN", exact: true }),
   ).toBeVisible({ timeout: COLD_START_TIMEOUT_MS });
+}
+
+async function submitPin(page: Page, pin: string) {
+  await page.getByLabel("PIN slip gaji", { exact: true }).fill(pin);
+  await page
+    .getByRole("button", { name: /^(Buka slip gaji|Coba lagi)$/ })
+    .click();
 }
 
 async function openPayslipDetail(page: Page) {
   await openPayslipGate(page);
-  await page.getByLabel("PIN 6 digit").fill(DEMO_PIN);
-  await page.getByRole("button", { name: "Buka slip" }).click();
+  await submitPin(page, DEMO_PIN);
   await expect(
     page.getByText("Gaji bersih", { exact: false }).first(),
   ).toBeVisible({ timeout: COLD_START_TIMEOUT_MS });
 }
 
-test("HR-01 the payslip history lists periods and paid status but no amounts before the PIN", async ({
+test("HR-01 the payslip history lists periods without paid status or amounts before the PIN", async ({
   page,
 }) => {
   await openEmployee(page, "/karyawan/slip-gaji");
@@ -66,7 +77,7 @@ test("HR-01 the payslip history lists periods and paid status but no amounts bef
     page.getByRole("heading", { name: "Slip gaji", level: 1 }),
   ).toBeVisible({ timeout: COLD_START_TIMEOUT_MS });
   await expect(page.getByText(/26 Sep 2026/)).toBeVisible();
-  await expect(page.getByText("Dibayar", { exact: true })).toBeVisible();
+  await expect(page.getByText("Dibayar", { exact: true })).toHaveCount(0);
   await expect(page.getByText("Dilindungi PIN")).toBeVisible();
   // myPayslipSummarySchema has no amounts: nothing may render as rupiah here.
   await expect(page.getByText(/Rp/)).toHaveCount(0);
@@ -77,27 +88,38 @@ test("HR-01 a wrong PIN shows an error and keeps the amounts hidden", async ({
 }) => {
   await openEmployee(page, "/karyawan/slip-gaji");
   await openPayslipGate(page);
-  await page.getByLabel("PIN 6 digit").fill("000000");
-  await page.getByRole("button", { name: "Buka slip" }).click();
-  await expect(page.getByText("PIN salah.")).toBeVisible();
+  await submitPin(page, "000000");
+  await expect(page.getByText(/PIN belum benar/)).toBeVisible();
+  await expect(page.getByText(/4 percobaan tersisa/)).toBeVisible();
   await expect(page.getByText("Gaji bersih")).toHaveCount(0);
   await expect(page.getByText(/Rp/)).toHaveCount(0);
 });
 
-test("HR-01 three wrong PINs lock the gate and the amounts stay hidden", async ({
+test("HR-01 five wrong PINs lock the gate and the amounts stay hidden", async ({
   page,
 }) => {
   await openEmployee(page, "/karyawan/slip-gaji");
   await openPayslipGate(page);
-  const pin = page.getByLabel("PIN 6 digit");
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    await pin.fill("000000");
-    await page.getByRole("button", { name: "Buka slip" }).click();
-    await expect(pin).toHaveValue("");
+  const pin = page.getByLabel("PIN slip gaji", { exact: true });
+  // The payroll contract locks after five failed attempts, for 15 minutes.
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    await submitPin(page, "000000");
+    if (attempt < 4) {
+      await expect(pin).toHaveValue("");
+      await expect(
+        page.getByText(new RegExp(`${4 - attempt} percobaan tersisa`)),
+      ).toBeVisible();
+      await expect(page.getByText(/Rp/)).toHaveCount(0);
+    }
   }
   await expect(page.getByText("PIN terkunci sementara")).toBeVisible();
-  await expect(pin).toBeDisabled();
-  await expect(page.getByRole("button", { name: "Buka slip" })).toBeDisabled();
+  await expect(page.getByText(/15 menit/).first()).toBeVisible();
+  // The locked screen removes the form entirely: no additional attempt.
+  await expect(pin).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: /^(Buka slip gaji|Coba lagi)$/ }),
+  ).toHaveCount(0);
+  await expect(page.getByText("Gaji bersih")).toHaveCount(0);
   await expect(page.getByText(/Rp/)).toHaveCount(0);
 });
 
@@ -109,8 +131,7 @@ test("HR-01 another employee's payslip id in the URL is not found, even with the
     page,
     "/karyawan/slip-gaji/00000000-0000-4000-8000-000000005701",
   );
-  await page.getByLabel("PIN 6 digit").fill(DEMO_PIN);
-  await page.getByRole("button", { name: "Buka slip" }).click();
+  await submitPin(page, DEMO_PIN);
   await expect(page.getByText("Slip gaji tidak ditemukan")).toBeVisible({
     timeout: COLD_START_TIMEOUT_MS,
   });
@@ -125,7 +146,9 @@ test("HR-01 a malformed payslip id shows not found without asking for the PIN", 
   await expect(page.getByText("Slip gaji tidak ditemukan")).toBeVisible({
     timeout: COLD_START_TIMEOUT_MS,
   });
-  await expect(page.getByLabel("PIN 6 digit")).toHaveCount(0);
+  await expect(page.getByLabel("PIN slip gaji", { exact: true })).toHaveCount(
+    0,
+  );
 });
 
 test("HR-01 the correct PIN reveals the payslip with gross, deductions and net", async ({

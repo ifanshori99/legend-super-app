@@ -6,6 +6,7 @@
 // Historical returned clones represent pre-0381 records, not new payments.
 import { createHash, randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/node-postgres";
 import type { PoolClient } from "pg";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { tenantIdSchema } from "@starter/shared/core";
@@ -13,8 +14,8 @@ import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
-import { db } from "../db/index.ts";
-import { withTenant } from "../db/tenant.ts";
+import * as schema from "../db/schema/index.ts";
+import { recoverPayoutGlOfBatch } from "../services/payroll-payout-gl.service.ts";
 import {
   bindHistoricalOperation,
   bindHistoricalOperations,
@@ -72,6 +73,10 @@ afterEach(async () => {
           `DELETE FROM ${table} WHERE tenant_id = $1 AND batch_id = ANY($2::uuid[])`,
           [W.tenantId, [history.batchId, history.realBatchId]],
         );
+      await c.query(
+        `DELETE FROM payroll_payout_approval_log WHERE tenant_id = $1 AND batch_id = $2`,
+        [W.tenantId, history.batchId],
+      );
       await c.query(
         `DELETE FROM payroll_payout_proof_hashes WHERE binding_id IN
       (SELECT id FROM payroll_payout_proof_bindings WHERE tenant_id = $1 AND evidence_key = $2)`,
@@ -136,15 +141,30 @@ async function grant(
   }
 }
 
-async function world() {
+async function world(pending = false) {
   const slips = [bank(BUDI, 1_000_000)];
   const runId = await W.seedRun(slips);
-  await W.postLockedJournal(runId, slips);
+  if (!pending) await W.postLockedJournal(runId, slips);
   const bId = await W.exportedBatch(runId);
   const items = await W.itemsOf(bId);
-  await W.confirm(bId, W.succeedItems(bId, items), APP2);
-  const aId = `00000000-${randomUUID().slice(9)}`;
-  expect(aId < bId, "fixture: A precedes B").toBe(true);
+  const chargesActive = (active: boolean) =>
+    W.asTenant(
+      (c) =>
+        c.query(
+          `UPDATE chart_of_accounts SET is_active = $3
+      WHERE tenant_id = $1 AND legal_entity_id = $2 AND code = '8101'`,
+          [W.tenantId, W.entityId(), active],
+        ),
+      true,
+    );
+  if (pending) await chargesActive(false);
+  try {
+    await W.confirm(bId, W.succeedItems(bId, items), APP2);
+  } finally {
+    if (pending) await chargesActive(true);
+  }
+  const aId = `${pending ? "ffffffff" : "00000000"}-${randomUUID().slice(9)}`;
+  expect(pending ? bId < aId : aId < bId, "fixture: A precedes B").toBe(true);
   const key = `tenants/${W.tenantId}/payroll-payout/${bId}/shared-923-${randomUUID()}.pdf`;
   histories.push({ batchId: aId, key, realBatchId: bId });
   await W.legacyReturnItem(items[0]!.id as string, key);
@@ -171,6 +191,12 @@ async function world() {
     await c.query(
       `INSERT INTO payroll_disbursement_items SELECT * FROM item_923`,
     );
+    if (pending)
+      await c.query(
+        `UPDATE payroll_disbursement_items SET gl_posting_id = NULL
+          WHERE tenant_id = $1 AND return_evidence_key = $2`,
+        [W.tenantId, key],
+      );
     await c.query(
       `INSERT INTO payroll_payout_evidence_files
       (tenant_id, batch_id, evidence_key, content_sha256, stored_sha256, created_by)
@@ -183,7 +209,26 @@ async function world() {
     [W.tenantId, bId, APP2],
   );
   expect(log, "real confirmation produced the disowned log").toBeTruthy();
-  const disown = await grant("disown", APP2, bId, REASON, log!.id as string);
+  const disputedBatch = pending ? aId : bId;
+  if (pending)
+    // Historical batch B carries the original confirmation's audit record;
+    // the real unpaid GL obligation stays on sibling A. Replica seeding is
+    // confined to history, like the returned clones above, not a new payout.
+    await W.asTenant(
+      (c) =>
+        c.query(
+          `UPDATE payroll_payout_approval_log SET batch_id = $3 WHERE tenant_id = $1 AND id = $2`,
+          [W.tenantId, log!.id, disputedBatch],
+        ),
+      true,
+    );
+  const disown = await grant(
+    "disown",
+    APP2,
+    disputedBatch,
+    REASON,
+    log!.id as string,
+  );
   await W.asTenant((c) =>
     c.query(`SELECT app.payout_approval_disown($1::uuid, $2::text, $3::text)`, [
       log!.id,
@@ -191,18 +236,67 @@ async function world() {
       REASON,
     ]),
   );
-  const token = await grant("unfreeze", ownerId, bId, UNFREEZE_REASON);
-  return { runId, aId, bId, key, token };
+  if (pending) await W.postLockedJournal(runId, slips);
+  const token = await grant(
+    "unfreeze",
+    ownerId,
+    disputedBatch,
+    UNFREEZE_REASON,
+  );
+  return { runId, aId: pending ? bId : aId, bId: disputedBatch, key, token };
 }
 type World = Awaited<ReturnType<typeof world>>;
 
 async function raw() {
   const c = await W.owner.connect();
-  await c.query("BEGIN");
-  await c.query("SET LOCAL statement_timeout = '15s'");
-  await c.query("SET LOCAL deadlock_timeout = '100ms'");
-  await c.query("SELECT set_config('app.tenant_id', $1, true)", [W.tenantId]);
-  return c;
+  try {
+    await c.query("BEGIN");
+    await c.query("SET LOCAL statement_timeout = '5s'");
+    await c.query("SET LOCAL deadlock_timeout = '100ms'");
+    await c.query("SELECT set_config('app.tenant_id', $1, true)", [W.tenantId]);
+    return c;
+  } catch (error) {
+    await dispose(c);
+    throw error;
+  }
+}
+async function dispose(c: PoolClient) {
+  try {
+    await c.query("ROLLBACK");
+  } finally {
+    c.release();
+  }
+}
+function observed<T>(promise: Promise<T>): Promise<T> {
+  void promise.catch(() => undefined);
+  return promise;
+}
+async function bounded<T>(promise: Promise<T>): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("923 barrier timed out")),
+          5_000,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+async function expectLocked(c: PoolClient, table: string, id: string) {
+  await c.query("SAVEPOINT probe_923");
+  try {
+    await expect(
+      c.query(`SELECT id FROM ${table} WHERE id = $1 FOR UPDATE NOWAIT`, [id]),
+    ).rejects.toMatchObject({ code: "55P03" });
+  } finally {
+    await c.query("ROLLBACK TO SAVEPOINT probe_923");
+    await c.query("RELEASE SAVEPOINT probe_923");
+  }
 }
 const unfreeze = (c: PoolClient, w: World) =>
   c.query(
@@ -210,7 +304,7 @@ const unfreeze = (c: PoolClient, w: World) =>
     [w.bId, w.token, UNFREEZE_REASON],
   );
 async function blockedBy(pid: number, finished: () => boolean) {
-  const until = Date.now() + 10_000;
+  const until = Date.now() + 3_000;
   while (Date.now() < until && !finished()) {
     const found = await W.owner.query(
       `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))) AS waiting`,
@@ -223,11 +317,6 @@ async function blockedBy(pid: number, finished: () => boolean) {
 }
 const pidOf = async (c: PoolClient) =>
   Number((await c.query("SELECT pg_backend_pid() AS pid")).rows[0]!.pid);
-const message = (error: unknown): string => {
-  if (!error || typeof error !== "object") return String(error);
-  const e = error as { code?: string; message?: string; cause?: unknown };
-  return `${e.code ?? ""} ${e.message ?? ""} ${e.cause ? message(e.cause) : ""}`;
-};
 async function money(w: World) {
   return JSON.stringify({
     items: await W.rowsOf(
@@ -248,16 +337,17 @@ async function money(w: World) {
     ),
   });
 }
-async function expectReleasedOnce(w: World, before: string) {
+async function expectReleasedOnce(w: World, before?: string) {
   const [count] = await W.rowsOf(
     `SELECT count(*)::int AS n FROM payroll_payout_batch_unfreezes WHERE tenant_id = $1 AND batch_id = $2`,
     [W.tenantId, w.bId],
   );
   expect(count!.n, "one committed opening").toBe(1);
-  expect(
-    await money(w),
-    "no new payment, net or fee posting, or account movement",
-  ).toBe(before);
+  if (before !== undefined)
+    expect(
+      await money(w),
+      "no new payment, net or fee posting, or account movement",
+    ).toBe(before);
   const [binding] = await W.rowsOf(
     `SELECT app.payout_proof_contested(ARRAY[content_sha256, stored_sha256]::varchar[]) AS contested FROM payroll_payout_proof_bindings WHERE tenant_id = $1 AND evidence_key = $2`,
     [W.tenantId, w.key],
@@ -268,48 +358,99 @@ async function expectReleasedOnce(w: World, before: string) {
 }
 
 describe("923 historical proof worker and unfreeze use the same run-first lock order", () => {
-  it("[923-unfreeze-first] SQL unfreeze B held before catch-up, shared-key worker A then B: no 40P01; both commit once with unchanged net/fee money", async () => {
-    const w = await world();
-    const before = await money(w);
-    const c = await raw();
-    let error: unknown;
+  it("[923-unfreeze-first] real GL recovery after SQL unfreeze collides with shared-key worker; run and sorted batches protect exactly one net and fee journal", async () => {
+    const w = await world(true);
+    type Snapshot = { items: unknown; journals: unknown[]; lines: unknown[] };
+    const before = JSON.parse(await money(w)) as Snapshot;
+    const [pending] = await W.postingsOf(w.aId);
+    expect(
+      pending,
+      "the frozen confirmation has a real GL obligation",
+    ).toBeTruthy();
+    expect(["settle_pending", "settle_skipped"]).toContain(pending!.kind);
+    const netKey = `payroll-payout:${pending!.item_set_hash}`;
+    const feeKey = `payroll-payout-fee:${pending!.item_set_hash}`;
+    expect(await W.countJournals(netKey), "net is held during freeze").toBe(0);
+    expect(await W.countJournals(feeKey), "fee is held during freeze").toBe(0);
+    const c = await W.owner.connect();
     let finished = false;
     let worker: ReturnType<typeof bindHistoricalOperations> | undefined;
     try {
-      expect((await unfreeze(c, w)).rows[0]!.released).toBe(1);
-      worker = bindHistoricalOperations(W.scope(), new Date()).finally(() => {
-        finished = true;
-      });
-      expect(
-        await blockedBy(await pidOf(c), () => finished),
-        "worker reaches database lock barrier",
-      ).toBe(true);
-      try {
-        // The first operation recoverPayoutGlOfBatch performs on sibling A.
-        await c.query(
-          `SELECT id FROM payroll_disbursement_batches WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
-          [W.tenantId, w.aId],
+      await drizzle(c, { schema }).transaction(async (tx) => {
+        await tx.execute(sql`SET LOCAL statement_timeout = '5s'`);
+        await tx.execute(sql`SET LOCAL deadlock_timeout = '100ms'`);
+        await tx.execute(
+          sql`SELECT set_config('app.tenant_id', ${W.tenantId}, true)`,
         );
-        await c.query("COMMIT");
-      } catch (caught) {
-        error = caught;
-        await c.query("ROLLBACK");
-      }
+        expect((await unfreeze(c, w)).rows[0]!.released).toBe(1);
+        worker = observed(
+          bindHistoricalOperations(W.scope(), new Date()).finally(() => {
+            finished = true;
+          }),
+        );
+        const pid = await pidOf(c);
+        expect(
+          await blockedBy(pid, () => finished),
+          "worker reaches database lock barrier before real recovery",
+        ).toBe(true);
+        // These are the actual catch-up operations, in the same transaction as
+        // SQL unfreeze. No replacement SELECT stands in for GL recovery.
+        const recovered = await tx.transaction((savepoint) =>
+          recoverPayoutGlOfBatch(savepoint, W.scope().tenant.tenantId, w.aId),
+        );
+        expect(recovered).toEqual({ resolved: 1, feesReposted: 0 });
+        await tx.transaction((savepoint) =>
+          recoverPayoutGlOfBatch(savepoint, W.scope().tenant.tenantId, w.bId),
+        );
+      });
     } finally {
-      await c.query("ROLLBACK");
       c.release();
+      await Promise.allSettled(worker ? [worker] : []);
     }
     const result = await worker;
-    expect(
-      error,
-      `catch-up must commit without SQLSTATE 40P01: ${message(error)}`,
-    ).toBeUndefined();
     expect(
       result?.failed,
       "worker must not hide a deadlock as bind_failed",
     ).toBe(0);
-    await expectReleasedOnce(w, before);
-  }, 120_000);
+    await expectReleasedOnce(w);
+    const postings = await W.postingsOf(w.aId);
+    expect(postings).toHaveLength(1);
+    expect(postings[0]!.kind).toBe("settle");
+    expect(postings[0]!.fee_posted).toBe(true);
+    expect(await W.countJournals(netKey)).toBe(1);
+    expect(await W.countJournals(feeKey)).toBe(1);
+    expect(await W.journalByKey(netKey)).toEqual({
+      "2103": { debit: 1_000_000, credit: 0 },
+      "1103": { debit: 0, credit: 1_000_000 },
+    });
+    expect(await W.journalByKey(feeKey)).toEqual({
+      "8101": { debit: 5_000, credit: 0 },
+      "1103": { debit: 0, credit: 5_000 },
+    });
+    const after = JSON.parse(await money(w)) as Snapshot;
+    expect(after.items, "no new payment or changed net/fee amount").toEqual(
+      before.items,
+    );
+    expect(
+      after.journals,
+      "only the owed net and fee journals, no extra return or payout",
+    ).toHaveLength(before.journals.length + 2);
+    expect(
+      after.lines,
+      "only the two balanced net/fee journal pairs",
+    ).toHaveLength(before.lines.length + 4);
+    const recovered = await money(w);
+    expect(
+      await W.inTx((tx) =>
+        recoverPayoutGlOfBatch(tx, W.scope().tenant.tenantId, w.aId),
+      ),
+    ).toEqual({ resolved: 0, feesReposted: 0 });
+    await bindHistoricalOperations(W.scope(), new Date());
+    expect(
+      await money(w),
+      "replaying recovery and worker cannot pay or post twice",
+    ).toBe(recovered);
+  }, 20_000);
 
   it("[923-worker-first] shared-key worker holds its run/batches before SQL unfreeze: opening queues, then both commit with no extra payout", async () => {
     const w = await world();
@@ -322,55 +463,81 @@ describe("923 historical proof worker and unfreeze use the same run-first lock o
     const ready = new Promise<number>((resolve) => {
       reached = resolve;
     });
-    const worker = bindHistoricalOperations(W.scope(), new Date(), {
-      binder: async (tx, tenantId, op, now) => {
-        reached(
-          Number(
-            (await tx.execute(sql`SELECT pg_backend_pid() AS pid`)).rows[0]!
-              .pid,
-          ),
-        );
-        await gate;
-        return bindHistoricalOperation(tx, tenantId, op, now);
-      },
-    });
-    const workerPid = await ready;
-    const c = await raw();
-    let finished = false;
-    const opening = unfreeze(c, w).finally(() => {
-      finished = true;
-    });
+    const worker = observed(
+      bindHistoricalOperations(W.scope(), new Date(), {
+        binder: async (tx, tenantId, op, now) => {
+          reached(
+            Number(
+              (await tx.execute(sql`SELECT pg_backend_pid() AS pid`)).rows[0]!
+                .pid,
+            ),
+          );
+          await bounded(gate);
+          return bindHistoricalOperation(tx, tenantId, op, now);
+        },
+      }),
+    );
+    let c: PoolClient | undefined;
+    let opening: ReturnType<typeof unfreeze> | undefined;
     try {
+      const workerPid = await bounded(
+        Promise.race([
+          ready,
+          worker.then(() => {
+            throw new Error("worker finished before binder barrier");
+          }),
+        ]),
+      );
+      c = await raw();
+      const openerPid = await pidOf(c);
+      let finished = false;
+      opening = observed(
+        unfreeze(c, w).finally(() => {
+          finished = true;
+        }),
+      );
       expect(
         await blockedBy(workerPid, () => finished),
         "unfreeze waits for worker's commit",
       ).toBe(true);
+      const locks = await W.owner.query(
+        `SELECT relation::regclass::text AS relation FROM pg_locks
+          WHERE pid = $1 AND locktype = 'tuple'`,
+        [openerPid],
+      );
+      expect(
+        locks.rows,
+        "unfreeze queues at the run, never at a batch",
+      ).toContainEqual({ relation: "payroll_runs" });
       release();
       expect((await worker).failed).toBe(0);
       expect((await opening).rows[0]!.released).toBe(1);
       await c.query("COMMIT");
     } finally {
       release();
-      await c.query("ROLLBACK");
-      c.release();
+      await Promise.allSettled([worker, ...(opening ? [opening] : [])]);
+      if (c) await dispose(c);
     }
     await expectReleasedOnce(w, before);
-  }, 120_000);
+  }, 20_000);
 
   it("[923-unfreeze-sorted-batches] unfreeze of high B waits on low A before taking B", async () => {
     const w = await world();
     const holder = await raw();
-    const opener = await raw();
+    let opener: PoolClient | undefined;
     let finished = false;
     let opening: ReturnType<typeof unfreeze> | undefined;
     try {
+      opener = await raw();
       await holder.query(
         `SELECT id FROM payroll_disbursement_batches WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
         [W.tenantId, w.aId],
       );
-      opening = unfreeze(opener, w).finally(() => {
-        finished = true;
-      });
+      opening = observed(
+        unfreeze(opener, w).finally(() => {
+          finished = true;
+        }),
+      );
       expect(
         await blockedBy(await pidOf(holder), () => finished),
         "low batch is the first batch barrier",
@@ -381,13 +548,17 @@ describe("923 historical proof worker and unfreeze use the same run-first lock o
         [W.tenantId, w.bId],
       );
     } finally {
-      await holder.query("ROLLBACK");
-      holder.release();
-      await opening;
-      await opener.query("ROLLBACK");
-      opener.release();
+      try {
+        await dispose(holder);
+      } finally {
+        // A rejected opening must still release its client; do not await it
+        // before entering the cleanup that owns that client.
+        await Promise.allSettled(opening ? [opening] : []);
+        if (opener) await dispose(opener);
+      }
     }
-  }, 120_000);
+    await opening;
+  }, 20_000);
 
   it("[923-worker-run-before-batch] helper passed B,A,A queues on run before taking any batch", async () => {
     const w = await world();
@@ -399,15 +570,18 @@ describe("923 historical proof worker and unfreeze use the same run-first lock o
         `SELECT id FROM payroll_runs WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
         [W.tenantId, w.runId],
       );
-      worker = W.inTx((tx) =>
-        lockBatchesBeforeHashes(tx, W.scope().tenant.tenantId, [
-          w.bId,
-          w.aId,
-          w.aId,
-        ]),
-      ).finally(() => {
-        finished = true;
-      });
+      worker = observed(
+        W.inTx(async (tx) => {
+          await tx.execute(sql`SET LOCAL statement_timeout = '5s'`);
+          await lockBatchesBeforeHashes(tx, W.scope().tenant.tenantId, [
+            w.bId,
+            w.aId,
+            w.aId,
+          ]);
+        }).finally(() => {
+          finished = true;
+        }),
+      );
       expect(
         await blockedBy(await pidOf(c), () => finished),
         "worker waits for run",
@@ -417,11 +591,14 @@ describe("923 historical proof worker and unfreeze use the same run-first lock o
         [W.tenantId, [w.aId, w.bId]],
       );
     } finally {
-      await c.query("ROLLBACK");
-      c.release();
-      await worker;
+      try {
+        await dispose(c);
+      } finally {
+        await Promise.allSettled(worker ? [worker] : []);
+      }
     }
-  }, 120_000);
+    await worker;
+  }, 20_000);
 
   it("[923-phase1-run-before-batch] fingerprint completion also waits for run before locking batch", async () => {
     const w = await world();
@@ -433,18 +610,21 @@ describe("923 historical proof worker and unfreeze use the same run-first lock o
         `SELECT id FROM payroll_runs WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
         [W.tenantId, w.runId],
       );
-      worker = W.inTx((tx) =>
-        completeKey(
-          tx,
-          W.scope().tenant.tenantId,
-          w.bId,
-          w.key,
-          sha(w.key),
-          new Date(),
-        ),
-      ).finally(() => {
-        finished = true;
-      });
+      worker = observed(
+        W.inTx(async (tx) => {
+          await tx.execute(sql`SET LOCAL statement_timeout = '5s'`);
+          return completeKey(
+            tx,
+            W.scope().tenant.tenantId,
+            w.bId,
+            w.key,
+            sha(w.key),
+            new Date(),
+          );
+        }).finally(() => {
+          finished = true;
+        }),
+      );
       expect(
         await blockedBy(await pidOf(c), () => finished),
         "phase 1 waits for run",
@@ -454,11 +634,14 @@ describe("923 historical proof worker and unfreeze use the same run-first lock o
         [W.tenantId, w.bId],
       );
     } finally {
-      await c.query("ROLLBACK");
-      c.release();
-      await worker;
+      try {
+        await dispose(c);
+      } finally {
+        await Promise.allSettled(worker ? [worker] : []);
+      }
     }
-  }, 120_000);
+    await worker;
+  }, 20_000);
 
   it("[923-multiple-runs-sorted] reverse batch input spanning runs queues on lowest run before locking the higher run", async () => {
     const w = await world();
@@ -487,14 +670,17 @@ describe("923 historical proof worker and unfreeze use the same run-first lock o
         `SELECT id FROM payroll_runs WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
         [W.tenantId, runs[0]!.run],
       );
-      worker = W.inTx((tx) =>
-        lockBatchesBeforeHashes(tx, W.scope().tenant.tenantId, [
-          runs[1]!.batch,
-          runs[0]!.batch,
-        ]),
-      ).finally(() => {
-        finished = true;
-      });
+      worker = observed(
+        W.inTx(async (tx) => {
+          await tx.execute(sql`SET LOCAL statement_timeout = '5s'`);
+          await lockBatchesBeforeHashes(tx, W.scope().tenant.tenantId, [
+            runs[1]!.batch,
+            runs[0]!.batch,
+          ]);
+        }).finally(() => {
+          finished = true;
+        }),
+      );
       expect(
         await blockedBy(await pidOf(c), () => finished),
         "worker waits on lowest run despite reverse input",
@@ -504,13 +690,16 @@ describe("923 historical proof worker and unfreeze use the same run-first lock o
         [W.tenantId, runs[1]!.run],
       );
     } finally {
-      await c.query("ROLLBACK");
-      c.release();
-      await worker;
+      try {
+        await dispose(c);
+      } finally {
+        await Promise.allSettled(worker ? [worker] : []);
+      }
     }
-  }, 120_000);
+    await worker;
+  }, 20_000);
 
-  it("[923-other-tenant] locked tenant A cannot block tenant B's run and batch; foreign batch IDs are ignored", async () => {
+  it("[923-other-tenant] without RLS the helper locks tenant B run and batch, ignoring visible foreign tenant A IDs", async () => {
     const w = await world();
     const tenant = randomUUID();
     const run = randomUUID();
@@ -538,26 +727,56 @@ describe("923 historical proof worker and unfreeze use the same run-first lock o
         [batch, tenant, run, w.bId],
       );
     }, true);
-    const c = await raw();
+    const c = await W.owner.connect();
     try {
-      await c.query(
-        `SELECT id FROM payroll_runs WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
-        [W.tenantId, w.runId],
-      );
-      await c.query(
-        `SELECT id FROM payroll_disbursement_batches WHERE tenant_id = $1 AND id = ANY($2::uuid[]) ORDER BY id FOR UPDATE`,
-        [W.tenantId, [w.aId, w.bId]],
-      );
-      await withTenant(db, scope, async (tx) => {
+      // withTenant intentionally uses legend_app and would let RLS conceal a
+      // missing SQL predicate. The owner transaction sees both tenants here.
+      await drizzle(c, { schema }).transaction(async (tx) => {
+        await tx.execute(sql`SET LOCAL statement_timeout = '5s'`);
         await tx.execute(sql`SET LOCAL lock_timeout = '1s'`);
+        await tx.execute(
+          sql`SELECT set_config('app.tenant_id', ${tenant}, true)`,
+        );
+        const bypass = await tx.execute(sql`
+          SELECT (rolsuper OR rolbypassrls) AS bypass,
+                 row_security_active('payroll_runs'::regclass) AS run_rls,
+                 row_security_active('payroll_disbursement_batches'::regclass) AS batch_rls
+            FROM pg_roles WHERE rolname = current_user`);
+        expect(bypass.rows[0], "the helper really bypasses RLS").toEqual({
+          bypass: true,
+          run_rls: false,
+          batch_rls: false,
+        });
+        const visible = await tx.execute(sql`
+          SELECT (SELECT count(*)::int FROM payroll_runs WHERE id = ${w.runId}::uuid) AS runs,
+                 (SELECT count(*)::int FROM payroll_disbursement_batches WHERE id IN (${w.aId}::uuid, ${w.bId}::uuid)) AS batches`);
+        expect(
+          visible.rows[0],
+          "foreign rows are visible before helper filters them",
+        ).toEqual({ runs: 1, batches: 2 });
         await lockBatchesBeforeHashes(tx, scope.tenant.tenantId, [
           w.aId,
           batch,
           w.bId,
         ]);
+        const probe = await raw();
+        try {
+          await probe.query(
+            `SELECT id FROM payroll_runs WHERE id = $1 FOR UPDATE NOWAIT`,
+            [w.runId],
+          );
+          const foreign = await probe.query(
+            `SELECT id FROM payroll_disbursement_batches WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE NOWAIT`,
+            [[w.aId, w.bId]],
+          );
+          expect(foreign.rows).toHaveLength(2);
+          await expectLocked(probe, "payroll_runs", run);
+          await expectLocked(probe, "payroll_disbursement_batches", batch);
+        } finally {
+          await dispose(probe);
+        }
       });
     } finally {
-      await c.query("ROLLBACK");
       c.release();
       await W.asTenant(async (cleanup) => {
         await cleanup.query(
@@ -570,5 +789,5 @@ describe("923 historical proof worker and unfreeze use the same run-first lock o
         await cleanup.query(`DELETE FROM tenants WHERE id = $1`, [tenant]);
       }, true);
     }
-  }, 120_000);
+  }, 20_000);
 });

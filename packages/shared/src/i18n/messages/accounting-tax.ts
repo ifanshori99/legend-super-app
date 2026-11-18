@@ -133,6 +133,20 @@ export const accountingTaxMessages = {
     periodNotClosed:
       "Periode buku ini belum ditutup, jadi rekap belum dapat difinalkan.",
     notApplicable: "Jenis pajak ini tidak berlaku untuk badan usaha ini.",
+    superseded:
+      "Laporan pajak ini sudah digantikan revisi yang lebih baru. Buka laporan yang berlaku untuk mengekspor.",
+    stale:
+      "Periode buku berubah sejak draf dibuat. Buat ulang draf laporan pajak.",
+    correctionReasonRequired:
+      "Isi alasan pembetulan untuk membuat revisi laporan pajak.",
+    sourceUnavailable:
+      "Sumber data untuk jenis pajak ini belum tersedia. Hubungi pengelola sebelum membuat rekap.",
+    amountMismatch:
+      "Jumlah laporan tidak sama dengan total pajak per baris. Periksa sumber data lalu buat ulang draf.",
+    notFound:
+      "Laporan pajak tidak ditemukan. Muat ulang daftar laporan lalu coba lagi.",
+    noChange:
+      "Tidak ada perubahan dari laporan pajak yang berlaku. Revisi baru tidak diperlukan.",
   },
   csv: {
     subjectType: "Tipe subjek",

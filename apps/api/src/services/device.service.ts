@@ -54,6 +54,7 @@ import { menuUpdatedEvent } from "@starter/shared/menu";
 import type { Request, RequestHandler } from "express";
 import type { z } from "zod";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
+import { ACTING_STAFF_ERROR_CODES } from "@starter/shared/pos/acting-staff";
 import { db } from "../db/index.ts";
 import {
   deviceTrainingPeriods,
@@ -69,12 +70,24 @@ import {
   signDeviceToken,
   verifyDeviceToken,
 } from "../lib/device-token.ts";
-import { getEdgeRuntimeState } from "../edge/runtime.ts";
+import {
+  getEdgeRuntimeState,
+  getDeviceRegistryStatus,
+  reportDeviceRegistryHardStale,
+} from "../edge/runtime.ts";
+import { isEdgeNode } from "../edge/mode.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { findTenantContext } from "../middleware/tenant.ts";
 import { recordAudit } from "./audit-writer.ts";
 import { findActiveDeviceForToken } from "./device-registry-check.ts";
+import {
+  assertDeviceSessionAdmitted,
+  deviceRegistryStaleError,
+  EDGE_DEVICE_REGISTRY_STALE_CODE,
+} from "./device-session-admission.ts";
+import { recheckKdsSockets } from "./kds-realtime.ts";
 import { appendMenuEvent } from "./menu-internals.ts";
+import { closeSessionsOfSharedDevice } from "./shared-device.service.ts";
 import type { Tx } from "./permission-resolver.ts";
 import {
   deviceTakesReceipts,
@@ -108,6 +121,7 @@ export function toDevice(row: DeviceRow): Device {
     revokedAt: row.revokedAt?.toISOString() ?? null,
     status: row.status,
     trainingMode: row.trainingMode,
+    sharedMode: row.sharedMode,
   });
 }
 
@@ -194,6 +208,22 @@ function mintForRow(
   );
 }
 
+export { EDGE_DEVICE_REGISTRY_STALE_CODE };
+
+/**
+ * legend-2lgu: an edge whose device-registry replica is past its hard limit
+ * refuses NEW device sessions (enroll, token): a revocation may be missing.
+ * Device sessions are admitted by `assertDeviceSessionAdmitted`. No-op on the
+ * cloud. Alerts the outlet's supervisors (once a day).
+ */
+async function assertDeviceRegistryFresh(now: Date): Promise<void> {
+  const status = getDeviceRegistryStatus(now);
+  if (status === "fresh") return;
+  // not_ready (replica not judged yet) refuses too, but is not a stale alert.
+  if (status === "stale") await reportDeviceRegistryHardStale(now);
+  throw deviceRegistryStaleError();
+}
+
 export type EnrollDeviceInput = {
   outletId: string;
   type: DeviceType;
@@ -209,6 +239,7 @@ export async function enrollDevice(
   now: Date = new Date(),
 ): Promise<{ device: Device; token: string }> {
   assertTrustedScopedContext(context);
+  await assertDeviceRegistryFresh(now);
   const outletId = outletIdSchema.parse(input.outletId);
   assertOutletInScope(context.outletScope, outletId);
   const tenantId = context.tenant.tenantId;
@@ -343,6 +374,7 @@ export async function issueDeviceToken(
   now: Date = new Date(),
 ): Promise<{ device: Device; token: string }> {
   assertTrustedScopedContext(context);
+  await assertDeviceRegistryFresh(now);
   const tenantId = context.tenant.tenantId;
   return withTenant(db, context, async (tx) => {
     const [current] = await tx
@@ -422,6 +454,33 @@ export async function closeTrainingPeriod(
   return true;
 }
 
+/**
+ * Defense in depth behind requireAuth (legend-a6aq6). Since 1012, requireAuth
+ * already refuses every marked session or shared-device token request on the
+ * device routes (403 ACTING_STAFF_NOT_ALLOWED), for any device. This check
+ * still refuses, with its own message, a session marked with the device or a
+ * request carrying that device's own token that reaches the service anyway
+ * (for example a mark whose session close failed after revoke or unflag): it must not switch
+ * the guard off (disable shared mode or revoke the device): 403. Pass the
+ * session's `sharedDeviceIds` and the request's resolved device id (null
+ * without a device header).
+ */
+export function assertNotOwnSharedDevice(
+  deviceId: string,
+  sessionSharedDeviceIds: readonly string[] | null | undefined,
+  requestDeviceId: string | null,
+): void {
+  if (
+    sessionSharedDeviceIds?.includes(deviceId) ||
+    requestDeviceId === deviceId
+  )
+    throw new HttpError(
+      403,
+      ACTING_STAFF_ERROR_CODES.SHARED_MODE_SELF_DISABLE,
+      "Matikan mode perangkat bersama dari perangkat lain.",
+    );
+}
+
 export async function revokeDevice(
   context: ScopedTenantContext,
   actorUserId: string,
@@ -430,7 +489,8 @@ export async function revokeDevice(
 ): Promise<Device> {
   assertTrustedScopedContext(context);
   const tenantId = context.tenant.tenantId;
-  return withTenant(db, context, async (tx) => {
+  let revoked = false;
+  const result = await withTenant(db, context, async (tx) => {
     const [current] = await tx
       .select()
       .from(devices)
@@ -438,7 +498,12 @@ export async function revokeDevice(
       .for("update");
     if (!current || current.tenantId !== tenantId) throw notFound();
     assertOutletInScope(context.outletScope, current.outletId);
-    if (current.status === "revoked") return toDevice(current); // idempotent
+    if (current.status === "revoked") {
+      // Idempotent, but still re-run the post-commit cleanup: an earlier
+      // revoke may have committed and then failed before closing sessions.
+      revoked = true;
+      return toDevice(current);
+    }
     const status: DeviceStatus = transitionDevice(current.status, "revoke");
     const [updated] = await tx
       .update(devices)
@@ -504,8 +569,85 @@ export async function revokeDevice(
       },
       { tx, context },
     );
+    revoked = true;
     return toDevice(updated);
   });
+  // legend-1024: after the commit, close the login sessions used on this
+  // device and make open KDS screens re-resolve, so neither the cookie nor the
+  // old tokens keep working as the login owner. Best effort: the registry
+  // check already refuses the revoked device token on its own.
+  if (revoked) {
+    await closeSessionsOfSharedDevice(input.deviceId);
+    recheckKdsSockets();
+  }
+  return result;
+}
+
+/**
+ * Shared-device mode on/off (legend-f586w). Only flagged devices are guarded by
+ * requireActingStaffOnSharedDevice. Revoked devices cannot change; same value
+ * is a no-op without audit.
+ */
+export async function setDeviceSharedMode(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  input: { deviceId: string; sharedMode: boolean },
+): Promise<Device> {
+  assertTrustedScopedContext(context);
+  const tenantId = context.tenant.tenantId;
+  let turnedOff = false;
+  const result = await withTenant(db, context, async (tx) => {
+    const [current] = await tx
+      .select()
+      .from(devices)
+      .where(eq(devices.id, input.deviceId))
+      .for("update");
+    if (!current || current.tenantId !== tenantId) throw notFound();
+    assertOutletInScope(context.outletScope, current.outletId);
+    if (current.status !== "active")
+      throw new CoreError("CONFLICT", "Perangkat sudah dicabut.");
+    if (input.sharedMode === true && current.type !== "pos")
+      throw new CoreError(
+        "CONFLICT",
+        "Mode perangkat bersama hanya untuk perangkat POS.",
+      );
+    if (current.sharedMode === input.sharedMode) return toDevice(current);
+    const [updated] = await tx
+      .update(devices)
+      .set({ sharedMode: input.sharedMode, updatedAt: dbClock })
+      .where(and(eq(devices.id, current.id), eq(devices.status, "active")))
+      .returning();
+    if (!updated)
+      throw new CoreError("CONFLICT", "Perangkat berubah, coba lagi.");
+    await recordAudit(
+      {
+        tenantId,
+        outletId: current.outletId,
+        actorType: "user",
+        actorId: actorUserId,
+        deviceId: null,
+        action: input.sharedMode
+          ? "device.shared_mode_enabled"
+          : "device.shared_mode_disabled",
+        objectType: "device",
+        objectId: current.id,
+        reason: null,
+        before: { sharedMode: current.sharedMode },
+        after: { sharedMode: input.sharedMode },
+        sensitiveAccess: false,
+      },
+      { tx, context },
+    );
+    turnedOff = current.sharedMode === true && input.sharedMode === false;
+    return toDevice(updated);
+  });
+  // Shared mode switched off: close the login sessions used on this device and
+  // make open KDS screens re-resolve (same cleanup as revokeDevice).
+  if (turnedOff) {
+    await closeSessionsOfSharedDevice(input.deviceId);
+    recheckKdsSockets();
+  }
+  return result;
 }
 
 /**
@@ -787,9 +929,11 @@ const heartbeatRefused = () =>
  * agree with the token (same tenant, same brand when it pins one). On an edge
  * node the registry check also pins the node's outlet.
  */
-async function heartbeatDevice(
-  req: Request,
-): Promise<{ tenant: TenantContext; deviceId: string }> {
+async function heartbeatDevice(req: Request): Promise<{
+  tenant: TenantContext;
+  deviceId: string;
+  registryStatus: "fresh" | "not_ready" | "stale";
+}> {
   const raw = req.get(DEVICE_TOKEN_HEADER);
   const payload = raw ? verifyDeviceToken(raw) : null;
   if (payload === null) throw heartbeatRefused();
@@ -811,7 +955,8 @@ async function heartbeatDevice(
       "Tenant does not match this device.",
     );
   const runtime = getEdgeRuntimeState();
-  if (runtime.edgeMode && !runtime.identity) throw heartbeatRefused();
+  if ((runtime.edgeMode || isEdgeNode()) && !runtime.identity)
+    throw heartbeatRefused();
   const identity = runtime.edgeMode ? runtime.identity : null;
   if (identity && identity.scope.tenantId !== payload.tenantId)
     throw heartbeatRefused();
@@ -820,6 +965,10 @@ async function heartbeatDevice(
     identity ? { outletId: identity.scope.outletId } : undefined,
   );
   if (!device) throw heartbeatRefused();
+  // legend-2lgu / legend-91u09: only a NEW session is gated. A device that
+  // reported within the live window keeps running through a stale or
+  // not-yet-judged replica; in the latter lastSeenAt must not move.
+  const registryStatus = await assertDeviceSessionAdmitted(device, new Date());
   return {
     tenant: establishTenantContext({
       tenantId: payload.tenantId,
@@ -827,6 +976,7 @@ async function heartbeatDevice(
       source: "device",
     }),
     deviceId: device.id,
+    registryStatus,
   };
 }
 
@@ -837,17 +987,22 @@ async function heartbeatDevice(
  * edge); an update that touches no row is refused too.
  */
 export const deviceHeartbeatHandler: RequestHandler = async (req, res) => {
-  const { tenant, deviceId } = await heartbeatDevice(req);
+  const { tenant, deviceId, registryStatus } = await heartbeatDevice(req);
   const body = deviceHeartbeatBodySchema.parse(req.body);
   const now = new Date();
-  const recorded = await recordDeviceHeartbeat(
-    tenantWideContext(tenant),
-    deviceId,
-    body,
-    now,
-  );
-  if (!recorded)
-    throw new CoreError("UNAUTHORIZED", "Perangkat tidak terdaftar.");
+  // legend-91u09: a running session is let through a not-yet-judged replica,
+  // but its heartbeat does not move lastSeenAt (that would keep a revoked
+  // device's session alive on an edge that cannot tell yet).
+  if (registryStatus !== "not_ready") {
+    const recorded = await recordDeviceHeartbeat(
+      tenantWideContext(tenant),
+      deviceId,
+      body,
+      now,
+    );
+    if (!recorded)
+      throw new CoreError("UNAUTHORIZED", "Perangkat tidak terdaftar.");
+  }
   res.setHeader("Cache-Control", "private, no-store");
   res.json({ data: { deviceId, serverTime: now.toISOString() } });
 };

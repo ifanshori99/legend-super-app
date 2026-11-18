@@ -15,7 +15,10 @@ import {
 } from "@starter/shared/ai";
 import { tenantIdSchema, userIdSchema } from "@starter/shared/core";
 import { env } from "../config/env.ts";
-import { isAiPlatformLockedShared } from "./ai-platform-lock.ts";
+import {
+  isAiPlatformLockedShared,
+  isMcpModuleDisabled,
+} from "./ai-platform-lock.ts";
 import { listCallableTools } from "./ai-tool-invoke.service.ts";
 import type { AccessSnapshot } from "./permission-resolver.ts";
 import { db } from "../db/index.ts";
@@ -331,11 +334,18 @@ export async function exchangeAuthorizationCode(
   const now = new Date();
 
   const outcome = await withTenant(db, context, async (tx) => {
-    // Platform lock first, before the code row is read or burned: a locked
-    // tenant leaves the code untouched. The shared tenant row lock serializes
-    // this with a lock change, so no token is issued after the lock commits.
-    if (await isAiPlatformLockedShared(tx, tenantId))
-      return { error: "platform_locked" as const };
+    // Take the shared tenant row lock first (platform lock check), before the
+    // code row is read or burned: a locked tenant leaves the code untouched,
+    // and no token is issued after a lock change commits.
+    const platformLocked = await isAiPlatformLockedShared(tx, tenantId);
+    // `mcp` module off: same answer as an unknown code (981 / legend-hbuq3).
+    // Checked before the platform lock answer, so a tenant with the module off
+    // never learns the platform state (invalid_grant, not AI_PLATFORM_DISABLED).
+    // Still before the code row is read or burned: a module switched off
+    // mid-exchange leaves the code unused and issues no token or event.
+    if (await isMcpModuleDisabled(tx, tenantId))
+      return { error: "module_disabled" as const };
+    if (platformLocked) return { error: "platform_locked" as const };
     // Lock the code row: concurrent exchanges of one code issue one token.
     const [row] = await tx
       .select()
@@ -407,6 +417,8 @@ export async function exchangeAuthorizationCode(
 
   if ("error" in outcome && outcome.error === "platform_locked")
     throw platformLockedError();
+  if ("error" in outcome && outcome.error === "module_disabled")
+    throw new OAuthError("invalid_grant", "Invalid authorization code.");
   if ("error" in outcome)
     throw new OAuthError(
       outcome.error === "not_approved"

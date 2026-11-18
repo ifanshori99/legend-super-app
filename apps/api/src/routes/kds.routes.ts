@@ -50,8 +50,12 @@ import {
   updateKitchenTicketItem,
   voidKitchenTicket,
 } from "@starter/shared/kitchen";
-import { actorOf, resolveActingStaff } from "../middleware/acting-staff.ts";
-import { requireAuth } from "../middleware/auth.ts";
+import {
+  actorOf,
+  requireActingStaffOnSharedDevice,
+  resolveActingStaff,
+} from "../middleware/acting-staff.ts";
+import { requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
@@ -73,11 +77,21 @@ import type { KdsActor } from "../services/kds.service.ts";
 
 export const kdsRouter = Router({ mergeParams: true });
 
+// A kitchen station's heartbeat is device bootstrap: it runs before any cook
+// signs in, so it stays exempt from the shared-device cashier requirement.
+const STATION_HEARTBEAT_PATH = /^\/stations\/[^/]+\/heartbeat\/?$/;
+const requireCookTokenOnSharedDevice: RequestHandler = (req, res, next) => {
+  if (req.method === "POST" && STATION_HEARTBEAT_PATH.test(req.path))
+    return next();
+  return requireActingStaffOnSharedDevice(req, res, next);
+};
+
 kdsRouter.use(
-  requireAuth,
+  requireAuthAllowSharedDevice,
   requireTrustedOrigin,
   requireTenantContext,
   resolveActingStaff,
+  requireCookTokenOnSharedDevice,
 );
 
 const stationOf = (req: Request) => {

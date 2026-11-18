@@ -166,7 +166,7 @@ test("[legend-avf8m M1-02] uploads normalized multipart with authenticated cooki
     return json({ data: object() }, 201);
   };
   const result = await uploadStorageFile({
-    purpose: "receipt",
+    purpose: "goods_receipt_photo",
     sourceKind: "goods_receipt",
     outletId,
     file: await normalizeImageFile(
@@ -180,7 +180,7 @@ test("[legend-avf8m M1-02] uploads normalized multipart with authenticated cooki
   assert.equal(calls[0].init.method, "POST");
   const form = calls[0].init.body;
   assert.ok(form instanceof FormData);
-  assert.equal(form.get("purpose"), "receipt");
+  assert.equal(form.get("purpose"), "goods_receipt_photo");
   assert.equal(form.get("sourceKind"), "goods_receipt");
   assert.equal(form.get("outletId"), outletId);
   assert.equal(form.get("file").type, "image/jpeg");
@@ -198,7 +198,7 @@ test("[legend-avf8m M1-02] rejects image bytes at 5MiB before any upload request
   };
   await assert.rejects(
     uploadStorageFile({
-      purpose: "receipt",
+      purpose: "goods_receipt_photo",
       sourceKind: "goods_receipt",
       outletId,
       file: new Blob([new Uint8Array(imageBytes)], { type: "image/jpeg" }),
@@ -230,7 +230,7 @@ for (const [status, code] of [
       );
     await assert.rejects(
       uploadStorageFile({
-        purpose: "receipt",
+        purpose: "goods_receipt_photo",
         sourceKind: "goods_receipt",
         outletId,
         file: new File(["photo"], "photo.jpg", { type: "image/jpeg" }),
@@ -250,7 +250,7 @@ test("[legend-avf8m M1-03] rejects malformed success and preserves network failu
     await import("../apps/web/src/features/storage/api.ts");
   browserImage();
   const input = {
-    purpose: "receipt",
+    purpose: "goods_receipt_photo",
     sourceKind: "goods_receipt",
     outletId,
     file: new File(["photo"], "photo.jpg", { type: "image/jpeg" }),
@@ -282,7 +282,7 @@ test("[legend-avf8m M1-03] preserves cancellation while the response body is bei
   globalThis.fetch = async () => response;
   await assert.rejects(
     uploadStorageFile({
-      purpose: "receipt",
+      purpose: "goods_receipt_photo",
       sourceKind: "goods_receipt",
       outletId,
       file: new Blob(["photo"], { type: "image/jpeg" }),

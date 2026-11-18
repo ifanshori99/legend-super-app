@@ -390,7 +390,7 @@ const supplierDueReader: DailyMetricReader = {
       SELECT supplier_id, SUM(remaining)::text AS amount FROM (
         SELECT oi.counterparty_id::text AS supplier_id,
                oi.original_idr - COALESCE((
-                 SELECT SUM(st.amount_idr)
+                 SELECT SUM(CASE WHEN st.method = 'reversal' THEN -st.amount_idr ELSE st.amount_idr END)
                    FROM accounting_open_item_settlements st
                   WHERE st.tenant_id = oi.tenant_id AND st.kind = oi.kind
                     AND st.open_item_id = oi.id

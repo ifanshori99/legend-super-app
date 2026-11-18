@@ -50,6 +50,7 @@ import { createApp } from "../app.ts";
 import { guardEdgeUpgrades } from "../edge/mode.ts";
 import {
   getEdgeRuntimeState,
+  setDeviceRegistryReadyForTests,
   setEdgeRuntimeStateForTests,
 } from "../edge/runtime.ts";
 import {
@@ -140,6 +141,7 @@ async function asTenantOwner<T>(run: (client: PoolClient) => Promise<T>) {
 // ---- edge process + outlet world -----------------------------------------
 
 function actAsEdge(outletId: string) {
+  setDeviceRegistryReadyForTests({});
   setEdgeRuntimeStateForTests({
     edgeMode: true,
     identity: {
@@ -595,6 +597,7 @@ beforeAll(async () => {
 afterEach(async () => {
   while (cleanups.length > 0) await cleanups.pop()?.();
   setEdgeRuntimeStateForTests(cloudState);
+  setDeviceRegistryReadyForTests(null);
 });
 
 afterAll(async () => {

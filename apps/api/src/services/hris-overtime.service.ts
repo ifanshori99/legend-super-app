@@ -51,8 +51,10 @@ import type { TenantId, z } from "@starter/shared/core";
 import {
   overtimeFormulaSchema,
   overtimeHours,
+  addBusinessDays,
   overtimeRequestSchema,
   transitionOvertimeRequest,
+  weekStartOf,
   createOvertimeFormula as createOvertimeFormulaEndpoint,
   createOvertimeRequest as createOvertimeRequestEndpoint,
   decideOvertimeRequest as decideOvertimeRequestEndpoint,
@@ -74,6 +76,7 @@ import {
   overtimeFormulas,
   overtimeRequests,
 } from "../db/schema/hris-leave.ts";
+import { shiftAssignments } from "../db/schema/hris-scheduling.ts";
 import { approvalRequests } from "../db/schema/platform-approval.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
@@ -439,6 +442,38 @@ async function holidayOn(
   return holiday !== undefined;
 }
 
+/**
+ * Whether `date` is the employee's rest day. A national/company holiday is.
+ * Otherwise only a published roster can prove it: the employee must have at
+ * least one published or swapped shift in that Monday-Sunday week and none on
+ * `date` itself. Anyone else (never rostered that week, office staff, managers,
+ * an unpublished roster) is a workday, the lowest tier, so nobody is paid a
+ * rest-day rate the roster does not support.
+ */
+async function isRestDayFor(
+  tx: Tx,
+  tenantId: TenantId,
+  employeeId: string,
+  outletId: string,
+  date: string,
+): Promise<boolean> {
+  if (await holidayOn(tx, tenantId, date, outletId)) return true;
+  const weekStart = weekStartOf(date);
+  const rows = await tx
+    .select({ businessDate: shiftAssignments.businessDate })
+    .from(shiftAssignments)
+    .where(
+      and(
+        eq(shiftAssignments.tenantId, tenantId),
+        eq(shiftAssignments.employeeId, employeeId),
+        gte(shiftAssignments.businessDate, weekStart),
+        lte(shiftAssignments.businessDate, addBusinessDays(weekStart, 6)),
+        inArray(shiftAssignments.status, ["published", "swapped"]),
+      ),
+    );
+  return rows.length > 0 && !rows.some((row) => row.businessDate === date);
+}
+
 const OVERTIME_DAILY_LIMIT_MINUTES = 720;
 
 /**
@@ -474,23 +509,12 @@ export async function createOvertimeRequest(
       )
       .limit(1);
     if (existing) {
-      // A holiday forces the rest-day type, so the stored type may legitimately
-      // differ from the requested one while a holiday stands on that date.
-      const dayTypeDiffers =
-        existing.dayType !== (input.dayType ?? "workday") &&
-        !(await holidayOn(
-          tx,
-          context.tenant.tenantId,
-          existing.date,
-          existing.outletId,
-        ));
       if (
         lower(existing.requestedBy) !== lower(access.actorUserId) ||
         lower(existing.outletId) !== lower(input.outletId) ||
         existing.date !== input.date ||
         existing.minutes !== input.minutes ||
-        existing.reason !== input.reason ||
-        dayTypeDiffers
+        existing.reason !== input.reason
       )
         throw new CoreError(
           "IDEMPOTENCY_KEY_REUSED",
@@ -531,14 +555,18 @@ export async function createOvertimeRequest(
         "OVERTIME_FORMULA_MISSING",
         "Belum ada rumus lembur yang berlaku pada tanggal ini.",
       );
-    const dayType: OvertimeDayType = (await holidayOn(
+    // The tier is derived on the server, never taken from the employee: a
+    // holiday, or a day off inside a week they are rostered for, is a rest day;
+    // everything else is a workday.
+    const dayType: OvertimeDayType = (await isRestDayFor(
       tx,
       context.tenant.tenantId,
-      input.date,
+      own.id,
       input.outletId,
+      input.date,
     ))
       ? formula.restDayType
-      : (input.dayType ?? "workday");
+      : "workday";
 
     // One employee's daily total (pending + approved) is capped; the lock
     // serialises concurrent filings (different idempotency keys) for them.

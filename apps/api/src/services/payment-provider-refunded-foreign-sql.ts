@@ -50,6 +50,10 @@ export const ownRefundEchoesFactSql = (r: string, p: string): SQL =>
  * fail (the echo of
  * our own payout that was recorded before we matched it: never counted twice).
  *
+ * `onlyIf` (legend-tlm3h, the auto journals) is a predicate over alias `pr`
+ * that keeps only the refunds recorded by a moment, so a journal judged at its
+ * own time is not changed by a refund that came after it.
+ *
  * legend-g6ept (1016): a transaction that paid more than the bill and was
  * split (the bill took its part, the rest parked as a fund of the SAME
  * evidence) takes the provider's refunds of that transaction off the parked
@@ -61,17 +65,22 @@ export const ownRefundEchoesFactSql = (r: string, p: string): SQL =>
  * reserved (not failed: the excess may be returned twice) counts in full, the
  * restrictive side.
  *
- * `onlyIf` (legend-tlm3h, the auto journals) is a predicate over alias `pr`
- * that keeps only the refunds recorded by a moment, so a journal judged at its
- * own time is not changed by a refund that came after it.
+ * `excessOffBill` false (the auto journals, 1013 x 1016 merge): every provider
+ * refund counts, the excess ones too. Each one is journalled out of
+ * customer_deposit (payment.provider_refunded), so the receipt backing checks
+ * (sessionDepositAt, forfeit, QR share, payout and refund caps) see all of it
+ * and nobody is paid more than the books hold. Only the bill (the callers that
+ * leave the default) takes the excess off.
  */
 export function providerRefundedForeignIdrSql(
   tenantIdSql: SQL,
   intentIdSql: SQL,
   onlyIf?: SQL,
+  excessOffBill = true,
 ): SQL {
   return sql`coalesce((SELECT sum(g.counted) FROM (
-    SELECT CASE WHEN sum(pr.amount_idr) <= coalesce((
+    SELECT CASE WHEN ${excessOffBill ? sql`true` : sql`false`}
+      AND sum(pr.amount_idr) <= coalesce((
         SELECT sum(uf.amount_idr)
           FROM payment_unallocated_funds uf
           JOIN payment_evidence pe

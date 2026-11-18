@@ -3,10 +3,10 @@
 // docs/qa/second-opinion-refund-ronde6-1068.md (finding 4) with the 1063-c
 // fixture as the pattern, not from the implementation.
 //
-// Scenario (legacy data from before migration 0679, which added the nullable
+// Scenario (legacy data from before migration 0492, which added the nullable
 // refund_recon_holds.matched_fact_id): bill Rp100.000 paid; two anonymous facts
 // A Rp10.000 and B Rp20.000 on it. The provider's report P1 (Rp10.000) was
-// resolved `same_as_counted` BEFORE 0679, so A was used as its partner only
+// resolved `same_as_counted` BEFORE 0492, so A was used as its partner only
 // implicitly: the resolved hold has matched_fact_id NULL. Now the provider
 // reports P2 (Rp30.000), the final amount of refund B, and finance picks
 // `same_as_counted`. A is already used: B (20.000) is the partner and only the
@@ -15,7 +15,7 @@
 // Rp40.000, and the net balance is too small.
 //
 // Assumptions (the brief does not fix them):
-//  - "pre-0679 data" is simulated with an owner-side UPDATE that sets
+//  - "pre-0492 data" is simulated with an owner-side UPDATE that sets
 //    refund_recon_holds.matched_fact_id = NULL on the hold of P1 after it was
 //    resolved (column named in the brief), the rest of the row stays.
 //  - Outcome of resolving P2 (brief 1072 I5, tightened): 422, the hold stays
@@ -119,7 +119,7 @@ async function expectRefused(
 }
 
 describe("A4 (P2) a legacy resolved hold without binding must not let a used anonymous fact be paired again", () => {
-  it("1072-a4-01 pre-0679 data: P1=10k resolved same_as_counted with matched_fact_id NULL, then P2=30k same_as_counted: the pick is refused 422 (A is not used twice), total facts <= Rp40.000, a second resolve and replays add nothing more", async () => {
+  it("1072-a4-01 pre-0492 data: P1=10k resolved same_as_counted with matched_fact_id NULL, then P2=30k same_as_counted: the pick is refused 422 (A is not used twice), total facts <= Rp40.000, a second resolve and replays add nothing more", async () => {
     const t = await world();
     const first = await h.sameAsCounted(t.holdP1);
     expect(first.status, JSON.stringify(first.body)).toBe(200);

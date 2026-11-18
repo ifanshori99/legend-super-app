@@ -52,6 +52,7 @@ import { seedAnalytics } from "./ai-eval/seed-analytics.ts";
 import { seedFinancialEval } from "./ai-eval/seed-financial.ts";
 import { seedCustomerEval } from "./ai-eval/seed-customers.ts";
 import { seedOperationalEval } from "./ai-eval/seed-operational.ts";
+import { seedPayrollEval } from "./ai-eval/seed-payroll.ts";
 import { seedProfitShareEval } from "./ai-eval/seed-profit-share.ts";
 import { seedShiftEval } from "./ai-eval/seed-shifts.ts";
 import {
@@ -689,6 +690,12 @@ beforeAll(async () => {
       legalEntityId: tenantX.entityId,
       outletId: outletA,
       creatorId: ids[0]!,
+    }),
+  );
+  await asOwner(tenantX.id, (client) =>
+    seedPayrollEval(client, {
+      tenantId: tenantX.id,
+      legalEntityId: tenantX.entityId,
     }),
   );
   await asOwner(tenantX.id, (client) =>

@@ -8,8 +8,12 @@ import {
   unlinkTablesInputSchema,
 } from "@starter/shared/qr-order";
 import { z } from "@starter/shared/core";
-import { actorOf, resolveActingStaff } from "../middleware/acting-staff";
-import { requireAuth } from "../middleware/auth";
+import {
+  actorOf,
+  requireActingStaffOnSharedDevice,
+  resolveActingStaff,
+} from "../middleware/acting-staff";
+import { requireAuthAllowSharedDevice } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
 import { requireTenantContext } from "../middleware/tenant";
@@ -24,10 +28,11 @@ const groupParams = z.strictObject({ groupId: tableLinkGroupIdSchema });
 export const tableLinksRouter = Router();
 
 const staffGuard = [
-  requireAuth,
+  requireAuthAllowSharedDevice,
   requireTrustedOrigin,
   requireTenantContext,
   resolveActingStaff,
+  requireActingStaffOnSharedDevice,
 ];
 
 tableLinksRouter.post("/", ...staffGuard, jsonBody, async (req, res) => {

@@ -72,6 +72,11 @@ import {
   type Row,
 } from "./payroll-payout-fixtures.ts";
 
+// Bank reference of a return claim: unique per claim (evidence key), identical
+// on both steps of the same claim.
+const bankRefOf = (evidenceKey: string) =>
+  `TRX${createHash("sha256").update(evidenceKey).digest("hex").slice(0, 8)}`;
+
 const W = installPayoutWorld("897proof");
 const PASSWORD = "Test-password-123!";
 const BASE = "/api/hris/payroll/disbursement-batches";
@@ -322,6 +327,7 @@ const returnCall = (
       {
         itemIds,
         evidenceKey,
+        bankRef: bankRefOf(evidenceKey),
         note: "Bank mengembalikan dana, rekening tujuan ditutup",
       } as never,
       proofs,

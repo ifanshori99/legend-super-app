@@ -51,6 +51,7 @@ import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { verifyDeviceToken } from "../lib/device-token.ts";
 import {
   getEdgeRuntimeState,
+  setDeviceRegistryReadyForTests,
   setEdgeRuntimeStateForTests,
 } from "../edge/runtime.ts";
 import { setAuditWriter } from "../services/audit-writer.ts";
@@ -196,6 +197,7 @@ function credentialOf(token: string) {
 
 /** This process becomes the edge node of `outletId`. */
 function actAsEdge(outletId: string) {
+  setDeviceRegistryReadyForTests({});
   setEdgeRuntimeStateForTests({
     edgeMode: true,
     identity: {
@@ -216,6 +218,7 @@ beforeAll(() => {
 
 afterEach(() => {
   setEdgeRuntimeStateForTests(cloudState);
+  setDeviceRegistryReadyForTests(null);
   vi.restoreAllMocks();
 });
 

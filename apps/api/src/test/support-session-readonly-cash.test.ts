@@ -54,6 +54,7 @@ import {
   type Session,
   type World,
 } from "./helpers/cash-bank-world.ts";
+import { approveChainLevelAs } from "./helpers/cash-out-chain.ts";
 
 const app = createApp();
 const BASE = "/api/accounting";
@@ -406,6 +407,8 @@ describe("TEN-04 support read_only session vs cash/bank mutations", () => {
   it("control 2: under a read_write grant the same approve is not refused by the support guard", async () => {
     const id = await newPendingEntry();
     const writer = await readWriteSupport();
+    // The direct approve only posts once the chain is approved (legend-3bkvl).
+    await approveChainLevelAs({ client: writer, userId: tenantUserId }, id);
     const res = await writer
       .post(`${ENTRIES}/${encodeURIComponent(id)}/approve`)
       .set(originHeader)

@@ -172,7 +172,8 @@ test("TEN-05 a module switched off is refused on UI, API, Tanya AI and MCP", () 
   for (const surface of platform.MODULE_SURFACES) {
     platform.assertModuleEnabled(flags, "pos", surface);
     assert.throws(
-      () => platform.assertModuleEnabled(flags, "mcp", surface),
+      () =>
+        platform.assertModuleEnabled(flags, "shareholder_dashboard", surface),
       (error) =>
         error instanceof CoreError &&
         error.code === "FEATURE_DISABLED" &&

@@ -25,17 +25,22 @@ import {
 
 const userId = "00000000-0000-4000-8000-0000000000a1";
 
-vi.mock("../middleware/auth.ts", () => ({
-  requireAuth: (
+vi.mock("../middleware/auth.ts", () => {
+  const requireAuth = (
     req: express.Request,
     res: express.Response,
     next: express.NextFunction,
   ) => {
     if (!req.get("x-test-auth")) return res.status(401).end();
     next();
-  },
-  getAuth: () => ({ user: { id: "00000000-0000-4000-8000-0000000000a1" } }),
-}));
+  };
+  return {
+    requireAuth,
+    // 1012: the notification router opts some operations in to shared devices.
+    requireAuthAllowSharedDevice: requireAuth,
+    getAuth: () => ({ user: { id: "00000000-0000-4000-8000-0000000000a1" } }),
+  };
+});
 vi.mock("../middleware/origin.ts", () => ({
   requireTrustedOrigin: (
     _req: express.Request,

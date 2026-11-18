@@ -247,6 +247,7 @@ async function recordCall(
       channel,
       userId: access.userId as never,
       mcpClientId: channel === "mcp" ? ctx.mcpClientId : null,
+      mcpTokenId: channel === "mcp" ? (ctx.mcpTokenId ?? null) : null,
       conversationId: record.conversationId,
       params: auditParams(record.rawInput),
       // The table allows ok/denied/error; the event keeps the finer outcome.

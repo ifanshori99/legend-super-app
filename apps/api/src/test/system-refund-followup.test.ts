@@ -291,7 +291,18 @@ type FollowUp = {
   id: string;
   paymentIntentId: string;
   blockedReason?: string;
+  /** Failed refunds of the payment by the same system requester. */
+  attempts?: number;
+  /** Still owed to the guest: paid less the live refunds. */
+  remainingIdr?: number;
 };
+async function followUpOf(intentId: string): Promise<FollowUp[]> {
+  const response = await followUps();
+  expect(response.status, JSON.stringify(response.body)).toBe(200);
+  return (response.body.data as FollowUp[]).filter(
+    (item) => item.paymentIntentId === intentId,
+  );
+}
 async function followUps(
   client: ReturnType<typeof agent> = approver,
   headers: { Host: string } = world.headers,
@@ -343,6 +354,42 @@ describe("legend-weuo2 weuo2-A a failed system refund is re-filed once", () => {
       [first.id, refiled.id].sort(),
     );
     expect(liveSum(rows)).toBe(paidIdr);
+  });
+});
+
+describe("legend-weuo2 weuo2-A the follow-up shows what is still owed after a re-file", () => {
+  it("weuo2-A the re-filed cancel refund is then rejected by a person: the list says the whole paid amount is still owed after 2 attempts, with one alarm and one audit row, only for the last refund", async () => {
+    const paid = await paidTicket();
+    const paidIdr = (await linkedOf(world, paid.order.id)).paid;
+    await cancelOrder(paid);
+    const first = await liveSystemRefund(paid.intentId, paidIdr);
+    await expireRefund(first.id);
+    const refiled = await liveSystemRefund(paid.intentId, paidIdr);
+    expect(refiled.id).not.toBe(first.id);
+    const alarmsBefore = (await supervisorNotifications()).length;
+
+    await rejectRefund(refiled.id);
+
+    const rows = await expectCapped(paid.intentId, paidIdr);
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.status === "failed")).toBe(true);
+    // The failed first refund (the one that was re-filed) never counts as
+    // money held: the guest is still owed the whole payment.
+    const items = await followUpOf(paid.intentId);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      id: refiled.id,
+      blockedReason: "person_rejection",
+      attempts: 2,
+      remainingIdr: paidIdr,
+    });
+    expect(await auditRows(first.id)).toHaveLength(0);
+    expect(await auditRows(refiled.id)).toHaveLength(1);
+    const alarms = (await supervisorNotifications()).slice(alarmsBefore);
+    expect(
+      alarms,
+      "one alarm, for the refund nobody will re-file",
+    ).toHaveLength(1);
   });
 });
 
@@ -504,6 +551,70 @@ describe("legend-weuo2 weuo2-F a provider decline is not re-filed (CTO 15 Nov)",
   });
 });
 
+describe("legend-weuo2 weuo2-F a declined system refund leaves a pending sibling alone", () => {
+  it("weuo2-F a pending admin refund of 10.000 stays pending and unchanged when the system refund for the rest is declined; the list says only the rest is still owed", async () => {
+    const paid = await paidTicket();
+    const paidIdr = (await linkedOf(world, paid.order.id)).paid;
+    const held = 10_000;
+    expect(paidIdr).toBeGreaterThan(held);
+    const admin = await adminRefund(paid.intentId, held);
+    expect(admin.status, JSON.stringify(admin.body)).toBe(201);
+    const siblingId = admin.body.data.id as string;
+    await cancelOrder(paid);
+    const first = await liveSystemRefund(paid.intentId, paidIdr);
+    expect(first.amount).toBe(paidIdr - held);
+    const siblingBefore = (await refundDetailsOf(world, paid.intentId)).find(
+      (row) => row.id === siblingId,
+    );
+    expect(siblingBefore).toMatchObject({ status: "pending", amount: held });
+    const alarmsBefore = (await supervisorNotifications()).length;
+
+    const fake = new FakeRefundGateway();
+    fake.enqueue("failed");
+    setPaymentRefundGateway(fake);
+    try {
+      const response = await approver
+        .post(`${ADMIN}/refunds/${first.id}/approve`)
+        .set(world.headers)
+        .set(originHeader)
+        .send({ idempotencyKey: `apr-${randomUUID()}` });
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(response.body.data.status).toBe("failed");
+    } finally {
+      setPaymentRefundGateway(null);
+    }
+    await settleRefundFromChain(world.context, first.id);
+
+    // The sibling is exactly as it was: nothing re-filed, nothing paid out.
+    const rows = await expectCapped(paid.intentId, paidIdr);
+    expect(rows).toHaveLength(2);
+    expect(rows.find((row) => row.id === siblingId)).toEqual(siblingBefore);
+    expect(rows.find((row) => row.id === first.id)?.status).toBe("failed");
+    expect(liveSum(rows)).toBe(held);
+    expect(fake.calls).toHaveLength(1);
+
+    // One alarm and one audit row for the declined refund only.
+    expect(await auditRows(first.id)).toHaveLength(1);
+    expect(await auditRows(siblingId)).toHaveLength(0);
+    expect((await supervisorNotifications()).length).toBe(alarmsBefore + 1);
+    // The list owes the guest only the rest: paid less the live sibling.
+    const items = await followUpOf(paid.intentId);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      id: first.id,
+      blockedReason: "failure_needs_person",
+      attempts: 1,
+      remainingIdr: paidIdr - held,
+    });
+
+    // Replays leave the sibling alone too.
+    await settleRefundFromChain(world.context, first.id);
+    const replayed = await expectCapped(paid.intentId, paidIdr);
+    expect(replayed.find((row) => row.id === siblingId)).toEqual(siblingBefore);
+    expect(replayed).toHaveLength(2);
+  });
+});
+
 describe("legend-weuo2 weuo2-D money cap with a pending sibling", () => {
   it("weuo2-D an admin refund holds 10.000; the failed system refund is re-filed only for the free rest, concurrent settles never push live refunds above what was paid, and a new request over the cap is refused", async () => {
     const paid = await paidTicket();
@@ -596,6 +707,45 @@ describe("legend-weuo2 weuo2-E follow-up list API", () => {
     expect(await followUpIds()).not.toContain(older.id);
     const rows = await expectCapped(olderPaid.intentId, olderIdr);
     expect(liveSum(rows)).toBe(olderIdr);
+  });
+
+  it("weuo2-E when the manual re-request is itself rejected, the failed system refund is a follow-up again, with no second audit row and no second alarm", async () => {
+    const paid = await paidTicket();
+    const paidIdr = (await linkedOf(world, paid.order.id)).paid;
+    await cancelOrder(paid);
+    const first = await liveSystemRefund(paid.intentId, paidIdr);
+    await rejectRefund(first.id);
+    expect(await followUpIds()).toContain(first.id);
+    expect(await auditRows(first.id)).toHaveLength(1);
+
+    // Ops file the refund again: a live refund covers it, the item leaves.
+    const manual = await adminRefund(paid.intentId, paidIdr);
+    expect(manual.status, JSON.stringify(manual.body)).toBe(201);
+    const manualId = manual.body.data.id as string;
+    expect(await followUpIds()).not.toContain(first.id);
+
+    // The manual refund is rejected: nothing live covers the guest's money
+    // again, so the same failed system refund shows up again. It was already
+    // announced once (alarm and audit are once per refund id), so it is not
+    // announced a second time.
+    const alarmsBefore = (await supervisorNotifications()).length;
+    await rejectRefund(manualId);
+    const items = await followUpOf(paid.intentId);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      id: first.id,
+      attempts: 1,
+      remainingIdr: paidIdr,
+    });
+    expect(await auditRows(first.id)).toHaveLength(1);
+    expect(await auditRows(manualId)).toHaveLength(0);
+    expect((await supervisorNotifications()).length).toBe(alarmsBefore);
+    await settleRefundFromChain(world.context, first.id);
+    await followUps();
+    expect(await auditRows(first.id)).toHaveLength(1);
+    expect((await supervisorNotifications()).length).toBe(alarmsBefore);
+    const rows = await expectCapped(paid.intentId, paidIdr);
+    expect(liveSum(rows)).toBe(0);
   });
 
   it("weuo2-E another tenant never sees these entries, and anonymous 401 / no payment permission 403", async () => {

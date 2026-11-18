@@ -6,6 +6,7 @@ import { z } from "zod";
 export const FINANCE_EXCEPTION_KINDS = [
   "edge_tax_unsnapshotted",
   "edge_void_unsupported",
+  "edge_void_refused",
   "edge_receipt_skipped",
   "edge_link_dead_letter",
   "payout_fee_not_posted",

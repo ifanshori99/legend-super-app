@@ -2932,112 +2932,434 @@
       "idx": 432,
       "version": "7",
       "when": 1795000000047,
-      "tag": "0432_finance_policy_recon_case_due_days",
+      "tag": "0432_payout_batch_approve_grant",
       "breakpoints": true
     },
     {
       "idx": 433,
       "version": "7",
       "when": 1795000000048,
-      "tag": "0433_bank_match_stale",
+      "tag": "0433_payout_934_followups",
       "breakpoints": true
     },
     {
       "idx": 434,
       "version": "7",
       "when": 1795000000049,
-      "tag": "0434_payment_intent_provider_answered",
+      "tag": "0434_sealed_secret_reseal_state",
       "breakpoints": true
     },
     {
       "idx": 435,
       "version": "7",
       "when": 1795000000050,
-      "tag": "0435_payment_intent_provider_refunded",
+      "tag": "0435_payroll_loan_deductions",
       "breakpoints": true
     },
     {
       "idx": 436,
       "version": "7",
       "when": 1795000000051,
-      "tag": "0436_provider_refunded_after_recorded",
+      "tag": "0436_payout_grant_expiry_after_lock",
       "breakpoints": true
     },
     {
       "idx": 437,
       "version": "7",
       "when": 1795000000052,
-      "tag": "0505_provider_partial_refunds",
+      "tag": "0437_finance_policy_recon_case_due_days",
       "breakpoints": true
     },
     {
       "idx": 438,
       "version": "7",
       "when": 1795000000053,
-      "tag": "0540_order_issues_manual_refund_once",
+      "tag": "0438_bank_match_stale",
       "breakpoints": true
     },
     {
       "idx": 439,
       "version": "7",
       "when": 1795000000054,
-      "tag": "0636_reservation_dp_remainder_provider_refund_snapshot",
+      "tag": "0439_payment_intent_provider_answered",
       "breakpoints": true
     },
     {
       "idx": 440,
       "version": "7",
       "when": 1795000000055,
-      "tag": "0637_reservation_credit_recon_flags",
+      "tag": "0440_payment_intent_provider_refunded",
       "breakpoints": true
     },
     {
       "idx": 441,
       "version": "7",
       "when": 1795000000056,
-      "tag": "0642_refund_recon_holds",
+      "tag": "0441_provider_refunded_after_recorded",
       "breakpoints": true
     },
     {
       "idx": 442,
       "version": "7",
       "when": 1795000000057,
-      "tag": "0649_refund_recon_hold_resolution",
+      "tag": "0442_payment_va_release_guest_kind",
       "breakpoints": true
     },
     {
       "idx": 443,
       "version": "7",
       "when": 1795000000058,
-      "tag": "0650_refund_recon_hold_payment_ref",
+      "tag": "0443_payroll_loan_ledger",
       "breakpoints": true
     },
     {
       "idx": 444,
       "version": "7",
       "when": 1795000000059,
-      "tag": "0656_provider_refund_id_kind",
+      "tag": "0444_payroll_pph21_receivable_open_item",
       "breakpoints": true
     },
     {
       "idx": 445,
       "version": "7",
       "when": 1795000000060,
-      "tag": "0658_refund_recon_hold_identity",
+      "tag": "0445_recurring_unresolved_start_key",
       "breakpoints": true
     },
     {
       "idx": 446,
       "version": "7",
-      "when": 1795000000070,
-      "tag": "0679_refund_recon_hold_matched_fact",
+      "when": 1795000000061,
+      "tag": "0446_promotion_ai_action_request_key",
       "breakpoints": true
     },
     {
       "idx": 447,
       "version": "7",
+      "when": 1795000000062,
+      "tag": "0447_ai_tool_calls_mcp_token",
+      "breakpoints": true
+    },
+    {
+      "idx": 448,
+      "version": "7",
+      "when": 1795000000063,
+      "tag": "0448_pos_shift_expected_signed",
+      "breakpoints": true
+    },
+    {
+      "idx": 449,
+      "version": "7",
+      "when": 1795000000064,
+      "tag": "0449_provider_partial_refunds",
+      "breakpoints": true
+    },
+    {
+      "idx": 450,
+      "version": "7",
+      "when": 1795000000065,
+      "tag": "0450_order_issues_manual_refund_once",
+      "breakpoints": true
+    },
+    {
+      "idx": 451,
+      "version": "7",
+      "when": 1795000000066,
+      "tag": "0451_order_charge_voided_status",
+      "breakpoints": true
+    },
+    {
+      "idx": 452,
+      "version": "7",
+      "when": 1795000000067,
+      "tag": "0452_payroll_overtime_corrections",
+      "breakpoints": true
+    },
+    {
+      "idx": 453,
+      "version": "7",
+      "when": 1795000000068,
+      "tag": "0453_payroll_overtime_source_reversal_guard",
+      "breakpoints": true
+    },
+    {
+      "idx": 454,
+      "version": "7",
+      "when": 1795000000069,
+      "tag": "0454_payroll_overtime_correction_activations",
+      "breakpoints": true
+    },
+    {
+      "idx": 455,
+      "version": "7",
+      "when": 1795000000070,
+      "tag": "0455_customer_reviews",
+      "breakpoints": true
+    },
+    {
+      "idx": 456,
+      "version": "7",
+      "when": 1795000000071,
+      "tag": "0456_mcp_flag_backfill",
+      "breakpoints": true
+    },
+    {
+      "idx": 457,
+      "version": "7",
+      "when": 1795000000072,
+      "tag": "0457_device_shared_mode",
+      "breakpoints": true
+    },
+    {
+      "idx": 458,
+      "version": "7",
+      "when": 1795000000073,
+      "tag": "0458_session_shared_device",
+      "breakpoints": true
+    },
+    {
+      "idx": 459,
+      "version": "7",
+      "when": 1795000000074,
+      "tag": "0459_session_shared_device_ids",
+      "breakpoints": true
+    },
+    {
+      "idx": 460,
+      "version": "7",
+      "when": 1795000000075,
+      "tag": "0460_payout_990_schema",
+      "breakpoints": true
+    },
+    {
+      "idx": 461,
+      "version": "7",
+      "when": 1795000000076,
+      "tag": "0461_payout_990_recon_clear",
+      "breakpoints": true
+    },
+    {
+      "idx": 462,
+      "version": "7",
+      "when": 1795000000077,
+      "tag": "0462_payout_990_fee_commit",
+      "breakpoints": true
+    },
+    {
+      "idx": 463,
+      "version": "7",
+      "when": 1795000000078,
+      "tag": "0463_payout_990_return_bank_ref",
+      "breakpoints": true
+    },
+    {
+      "idx": 464,
+      "version": "7",
+      "when": 1795000000079,
+      "tag": "0464_payout_990_flag_fingerprint",
+      "breakpoints": true
+    },
+    {
+      "idx": 465,
+      "version": "7",
+      "when": 1795000000080,
+      "tag": "0465_supplier_payments",
+      "breakpoints": true
+    },
+    {
+      "idx": 466,
+      "version": "7",
+      "when": 1795000000081,
+      "tag": "0466_cash_out_approval_policies_data",
+      "breakpoints": true
+    },
+    {
+      "idx": 467,
+      "version": "7",
+      "when": 1795000000082,
+      "tag": "0467_supplier_payment_approval_policies_data",
+      "breakpoints": true
+    },
+    {
+      "idx": 468,
+      "version": "7",
+      "when": 1795000000085,
+      "tag": "0468_payroll_overtime_ledger_reverse_guard",
+      "breakpoints": true
+    },
+    {
+      "idx": 469,
+      "version": "7",
+      "when": 1795000000086,
+      "tag": "0469_payroll_loan_principal_ledger_guard",
+      "breakpoints": true
+    },
+    {
+      "idx": 470,
+      "version": "7",
+      "when": 1795000000087,
+      "tag": "0470_payroll_pph21_receivable_settlement_reversal",
+      "breakpoints": true
+    },
+    {
+      "idx": 471,
+      "version": "7",
+      "when": 1795000000088,
+      "tag": "0471_payroll_loan_status_backward_guard",
+      "breakpoints": true
+    },
+    {
+      "idx": 472,
+      "version": "7",
+      "when": 1795000000089,
+      "tag": "0472_payout_1005_return_withdraw",
+      "breakpoints": true
+    },
+    {
+      "idx": 473,
+      "version": "7",
+      "when": 1795000000090,
+      "tag": "0473_payout_1005_recon_flag_kind",
+      "breakpoints": true
+    },
+    {
+      "idx": 474,
+      "version": "7",
+      "when": 1795000000091,
+      "tag": "0474_facility_hours_wfc_breakfast",
+      "breakpoints": true
+    },
+    {
+      "idx": 475,
+      "version": "7",
+      "when": 1795000000092,
+      "tag": "0475_outbox_charge_refunded_idx",
+      "breakpoints": true
+    },
+    {
+      "idx": 476,
+      "version": "7",
+      "when": 1795000000093,
+      "tag": "0476_order_issue_charge_manual_refunds",
+      "breakpoints": true
+    },
+    {
+      "idx": 477,
+      "version": "7",
+      "when": 1795000000094,
+      "tag": "0477_pos_points_tender",
+      "breakpoints": true
+    },
+    {
+      "idx": 478,
+      "version": "7",
+      "when": 1795000000095,
+      "tag": "0478_facility_pos_tickets",
+      "breakpoints": true
+    },
+    {
+      "idx": 479,
+      "version": "7",
       "when": 1795000000096,
-      "tag": "0696_refund_hold_invalid_report",
+      "tag": "0479_access_ticket_credential_keys",
+      "breakpoints": true
+    },
+    {
+      "idx": 480,
+      "version": "7",
+      "when": 1795000000097,
+      "tag": "0480_payout_1038_evidence_observations",
+      "breakpoints": true
+    },
+    {
+      "idx": 481,
+      "version": "7",
+      "when": 1795000000098,
+      "tag": "0481_payout_qh11l_read_error_hold",
+      "breakpoints": true
+    },
+    {
+      "idx": 482,
+      "version": "7",
+      "when": 1795000000099,
+      "tag": "0482_edge_node_alerts",
+      "breakpoints": true
+    },
+    {
+      "idx": 483,
+      "version": "7",
+      "when": 1795000000100,
+      "tag": "0483_edge_offline_alert_kind",
+      "breakpoints": true
+    },
+    {
+      "idx": 484,
+      "version": "7",
+      "when": 1795000000101,
+      "tag": "0484_edge_txn_ledger",
+      "breakpoints": true
+    },
+    {
+      "idx": 485,
+      "version": "7",
+      "when": 1795000001101,
+      "tag": "0485_reservation_dp_remainder_provider_refund_snapshot",
+      "breakpoints": true
+    },
+    {
+      "idx": 486,
+      "version": "7",
+      "when": 1795000002101,
+      "tag": "0486_reservation_credit_recon_flags",
+      "breakpoints": true
+    },
+    {
+      "idx": 487,
+      "version": "7",
+      "when": 1795000003101,
+      "tag": "0487_refund_recon_holds",
+      "breakpoints": true
+    },
+    {
+      "idx": 488,
+      "version": "7",
+      "when": 1795000004101,
+      "tag": "0488_refund_recon_hold_resolution",
+      "breakpoints": true
+    },
+    {
+      "idx": 489,
+      "version": "7",
+      "when": 1795000005101,
+      "tag": "0489_refund_recon_hold_payment_ref",
+      "breakpoints": true
+    },
+    {
+      "idx": 490,
+      "version": "7",
+      "when": 1795000006101,
+      "tag": "0490_provider_refund_id_kind",
+      "breakpoints": true
+    },
+    {
+      "idx": 491,
+      "version": "7",
+      "when": 1795000007101,
+      "tag": "0491_refund_recon_hold_identity",
+      "breakpoints": true
+    },
+    {
+      "idx": 492,
+      "version": "7",
+      "when": 1795000008101,
+      "tag": "0492_refund_recon_hold_matched_fact",
+      "breakpoints": true
+    },
+    {
+      "idx": 493,
+      "version": "7",
+      "when": 1795000009101,
+      "tag": "0493_refund_hold_invalid_report",
       "breakpoints": true
     }
   ]

@@ -38,6 +38,7 @@ export type FinanceExceptionSearch = {
 export const KIND_LABEL_KEYS: Record<FinanceExceptionKind, MessageKey> = {
   edge_tax_unsnapshotted: "financeExceptions.kinds.edge_tax_unsnapshotted",
   edge_void_unsupported: "financeExceptions.kinds.edge_void_unsupported",
+  edge_void_refused: "financeExceptions.kinds.edge_void_refused",
   edge_receipt_skipped: "financeExceptions.kinds.edge_receipt_skipped",
   edge_link_dead_letter: "financeExceptions.kinds.edge_link_dead_letter",
   payout_fee_not_posted: "financeExceptions.kinds.payout_fee_not_posted",
@@ -51,6 +52,7 @@ export const KIND_LABEL_KEYS: Record<FinanceExceptionKind, MessageKey> = {
 export const KIND_HELP_KEYS: Record<FinanceExceptionKind, MessageKey> = {
   edge_tax_unsnapshotted: "financeExceptions.kindHelp.edge_tax_unsnapshotted",
   edge_void_unsupported: "financeExceptions.kindHelp.edge_void_unsupported",
+  edge_void_refused: "financeExceptions.kindHelp.edge_void_refused",
   edge_receipt_skipped: "financeExceptions.kindHelp.edge_receipt_skipped",
   edge_link_dead_letter: "financeExceptions.kindHelp.edge_link_dead_letter",
   payout_fee_not_posted: "financeExceptions.kindHelp.payout_fee_not_posted",
@@ -87,6 +89,7 @@ export const OUTBOX_STATE_KEYS: Record<
 const DETAIL_KEYS: Record<string, MessageKey> = {
   tax_missing: "financeExceptions.details.tax_missing",
   tax_mismatch: "financeExceptions.details.tax_mismatch",
+  manual_refund_exists: "financeExceptions.details.manual_refund_exists",
   unreadable: "financeExceptions.details.proofUnreadable",
   hash_conflict: "financeExceptions.details.proofHashConflict",
   legacy_duplicate: "financeExceptions.details.proofLegacyDuplicate",

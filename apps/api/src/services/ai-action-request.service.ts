@@ -84,7 +84,10 @@ import {
   outletIdsOf,
 } from "./ai-action-executors/access.ts";
 import { toolMatches } from "./ai-metrics/scope.ts";
-import { assertAiPlatformUnlockedShared } from "./ai-platform-lock.ts";
+import {
+  assertAiPlatformUnlockedShared,
+  isMcpModuleDisabled,
+} from "./ai-platform-lock.ts";
 import type { AiToolContext } from "./ai-tools/types.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import {
@@ -125,10 +128,14 @@ function summaryOf(
   const count = (key: string) =>
     Array.isArray(payload[key]) ? (payload[key] as unknown[]).length : 0;
   switch (toolCode) {
+    case "TL-13":
+      return `Draf pesanan pembelian untuk ${count("lines")} item.`;
     case "TL-14":
       return `Penyesuaian stok untuk ${count("lines")} item.`;
     case "TL-15":
       return `Promo "${String(payload.name ?? "").slice(0, 120)}" untuk ${count("outletIds")} outlet.`;
+    case "TL-16":
+      return `Draf jadwal shift untuk ${count("shifts")} shift.`;
     case "TL-17":
       return `Perubahan harga untuk ${count("changes")} item menu.`;
     case "TL-18":
@@ -836,6 +843,10 @@ async function assertActorStillValid(
   // (not a `failed` action: the request is retried once the platform unlocks).
   await assertAiPlatformUnlockedShared(tx, row.tenantId);
   if (row.source === "mcp") {
+    // The `mcp` module (tenants.feature_flags) is read after the shared lock
+    // on the same tenant row above: a module change waits for this execution.
+    if (await isMcpModuleDisabled(tx, row.tenantId))
+      throw new ActionExecutionError("MCP dimatikan oleh admin.");
     const [client] = await tx
       .select({ status: mcpClients.status })
       .from(mcpClients)

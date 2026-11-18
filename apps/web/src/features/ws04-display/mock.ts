@@ -10,14 +10,16 @@
 // Demo switch (browser only, same idea as the edge mock override): set
 //   localStorage["legend-display-mock"] = "unpaired" | "idle" | "ordering" |
 //     "awaiting_payment" | "awaiting_expired" | "awaiting_loading" |
-//     "awaiting_deposit" | "paid"
+//     "awaiting_deposit" | "awaiting_duitku" | "paid"
 // and reload. The default is a live bill awaiting QRIS payment — the screen's
 // main purpose. "awaiting_expired" serves one expired code so the refresh path
 // can be exercised, then continues with a fresh one. "awaiting_loading" keeps
 // the code unissued (qris null) so the "preparing the code" panel shows.
 // "awaiting_deposit" is an order with a DP: its orderId resolves, in the POS
 // kasir mock, to the order with a Rp100.000 deposit, so the screen shows "pay
-// at the cashier" and no QR. Every other demo's orderId resolves to an order
+// at the cashier" and no QR. "awaiting_duitku" is a QRIS issued by the Duitku
+// provider, so the screen shows the "Duitku" label instead of "DOIT" (brief
+// 936, bead legend-5w6). Every other demo's orderId resolves to an order
 // without a deposit (the display reads the order's deposit; sub-539-u2).
 import {
   cafeLegendPosFixtures,
@@ -56,6 +58,7 @@ const DEMO_STATES = [
   "awaiting_expired",
   "awaiting_loading",
   "awaiting_deposit",
+  "awaiting_duitku",
   "paid",
 ] as const;
 type DemoState = (typeof DEMO_STATES)[number];
@@ -100,9 +103,13 @@ const billTotals = {
   totalIdr: fixture.totalIdr,
 };
 
-function qrisAt(nowMs: number, expired: boolean): DisplayQrisWire {
+function qrisAt(
+  nowMs: number,
+  expired: boolean,
+  provider: DisplayQrisWire["provider"] = "doit",
+): DisplayQrisWire {
   return {
-    provider: "doit",
+    provider,
     amountIdr: fixture.totalIdr,
     payload: QRIS_PAYLOAD,
     expiresAt: new Date(
@@ -183,7 +190,14 @@ function buildState(entry: DisplayStore, nowMs: number): DisplayStateWire {
       entry.demo === "awaiting_deposit" ? ORDER_WITH_DEPOSIT : ORDER_NO_DEPOSIT,
     orderNumber: fixture.orderNumber,
     ...billTotals,
-    qris: entry.demo === "awaiting_loading" ? null : qrisAt(nowMs, expired),
+    qris:
+      entry.demo === "awaiting_loading"
+        ? null
+        : qrisAt(
+            nowMs,
+            expired,
+            entry.demo === "awaiting_duitku" ? "duitku" : "doit",
+          ),
     tenders: [],
     changeIdr: null,
   };

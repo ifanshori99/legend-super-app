@@ -96,6 +96,7 @@ import {
   facilityUnitIdSchema,
   subscriptionPlanIdSchema,
 } from "./ids.ts";
+import { posTicketSaleSchema } from "../pos/ticket.ts";
 import {
   currentEntitlementsSchema,
   facilityCustomerEndpoints,
@@ -144,7 +145,47 @@ export const sellAccessTicketAtPos = defineEndpoint({
   method: "POST",
   path: "/api/facility/tickets/pos",
   body: staffSellTicketSchema,
-  response: dataResponseSchema(issuedTicketSchema),
+  // 936 D: the sale opens a POS bill and holds the slot; the ticket is issued
+  // only when the bill is paid, and its door credential comes from
+  // `issuePosTicketCredential` (@starter/shared/pos/ticket).
+  response: dataResponseSchema(posTicketSaleSchema),
+});
+
+/**
+ * Door check (936 second-opinion fix, group T): the cloud validator of the QR
+ * token or PIN a paid ticket was given (`issuePosTicketCredential`). The reader
+ * names its facility, plus exactly one of two shapes: the QR token alone, or the
+ * ticket id with its 6-digit PIN. A ticket of another facility is refused like
+ * any bad credential (no oracle). Five wrong PINs on one ticket within 15
+ * minutes lock the PIN path of that ticket (429 `DOOR_PIN_LOCKED`, even for the
+ * right PIN); the QR path and other tickets are not affected.
+ * A good credential opens the ticket (`issued` becomes `in_use`, the first
+ * open is recorded once; a repeat check answers 200 again). EVERY credential
+ * failure answers one uniform 403 `DOOR_CREDENTIAL_INVALID` so a caller cannot
+ * tell which part was wrong: unknown token, wrong PIN, a rotated or revoked
+ * pair (refund, void), outside the credential window, a ticket that is not
+ * paid or in use, a ticket of another tenant or facility. A refused check changes nothing.
+ */
+export const doorCheckAccessTicketBodySchema = z.union([
+  z.strictObject({
+    facilityId: facilityIdSchema,
+    qrToken: z.string().min(1).max(512),
+  }),
+  z.strictObject({
+    facilityId: facilityIdSchema,
+    ticketId: accessTicketIdSchema,
+    pin: z.string().regex(/^\d{6}$/, "The door PIN is exactly 6 digits"),
+  }),
+]);
+export type DoorCheckAccessTicketBody = z.infer<
+  typeof doorCheckAccessTicketBodySchema
+>;
+
+export const doorCheckAccessTicket = defineEndpoint({
+  method: "POST",
+  path: "/api/facility/tickets/door-check",
+  body: doorCheckAccessTicketBodySchema,
+  response: dataResponseSchema(z.strictObject({ ticket: accessTicketSchema })),
 });
 
 export const listAccessTickets = defineEndpoint({
@@ -513,6 +554,7 @@ export const facilityEndpoints = [
   getFacilityAvailability,
   bookAccessTicket,
   sellAccessTicketAtPos,
+  doorCheckAccessTicket,
   listAccessTickets,
   getAccessTicket,
   cancelAccessTicket,

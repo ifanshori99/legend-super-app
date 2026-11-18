@@ -705,7 +705,13 @@ describe("legend-tiie storage request resolver", () => {
       expect(entry.read.length).toBeGreaterThan(0);
     }
     // Every purpose has a strict legacy read list.
-    for (const purpose of ["menu_photo", "selfie", "document", "receipt"]) {
+    for (const purpose of [
+      "menu_photo",
+      "selfie",
+      "document",
+      "receipt",
+      "goods_receipt_photo",
+    ]) {
       expect(storageLegacyReadMap[purpose as "selfie"].length).toBeGreaterThan(
         0,
       );
@@ -717,6 +723,9 @@ describe("legend-tiie storage request resolver", () => {
       ).toBeGreaterThan(0);
     }
     expect(storageLegacyUploadMap.receipt).toEqual([]);
+    expect(Reflect.get(storageLegacyUploadMap, "goods_receipt_photo")).toEqual(
+      [],
+    );
   });
 
   it("refuses a purchasing reviewer a reimbursement receipt but allows a purchase invoice receipt", async () => {
@@ -1113,5 +1122,134 @@ describe("legend-tiie storage request resolver", () => {
       });
       expectDenied(await read(wide, foreign));
     }
+  });
+
+  // ---- legacy goods-receipt photo: purpose "receipt" + kind goods_receipt ----
+  // Assumptions (from the brief + shared storage map, not the implementation):
+  // goods receipt photos now use purpose goods_receipt_photo, but rows stored
+  // before that stay readable under purpose "receipt" + kind goods_receipt
+  // (read only; upload/link stay strict). Readers: the uploader while still
+  // holding inventory.stock.receive at the outlet, any inventory.stock.receive
+  // holder at the outlet, and accounting.reconcile at the outlet.
+  describe("legacy goods-receipt photo (purpose receipt, kind goods_receipt)", () => {
+    it("is readable by the uploader and a stock receiver at its outlet, not by others", async () => {
+      const uploader = await signedIn(
+        "LegacyGrUploader",
+        atOutlet(["inventory.stock.receive"], outletA),
+      );
+      const receiverA = await signedIn(
+        "LegacyGrReceiverA",
+        atOutlet(["inventory.stock.receive"], outletA),
+      );
+      const receiverB = await signedIn(
+        "LegacyGrReceiverB",
+        atOutlet(["inventory.stock.receive"], outletB),
+      );
+      const stranger = await signedIn("LegacyGrNobody", []);
+      const legacy = await seedObject({
+        purpose: "receipt",
+        outletId: outletA,
+        owner: uploader,
+        sourceKind: "goods_receipt",
+      });
+      expectAllowed(await read(uploader, legacy));
+      expectAllowed(await read(receiverA, legacy));
+      expectDenied(await read(receiverB, legacy));
+      expectDenied(await read(stranger, legacy));
+    });
+
+    it("is readable by a purchasing.invoice.match holder at its outlet only; accounting.reconcile alone is refused (kind-based rule)", async () => {
+      const legacy = await seedObject({
+        purpose: "receipt",
+        outletId: outletA,
+        owner: null,
+        sourceKind: "goods_receipt",
+      });
+      // A linked row uses its kind's own read codes; accounting.reconcile only
+      // applies to rows with no source kind.
+      expectAllowed(await read(purchasingReviewerA, legacy));
+      const matcherB = await signedIn(
+        "LegacyGrMatcherB",
+        atOutlet(["purchasing.invoice.match"], outletB),
+      );
+      expectDenied(await read(matcherB, legacy));
+      expectDenied(await read(reconcilerA, legacy));
+    });
+
+    it("stays refused for an uploader who lost inventory.stock.receive", async () => {
+      const uploader = await signedIn(
+        "LegacyGrRevoked",
+        atOutlet(["inventory.stock.receive"], outletA),
+      );
+      const legacy = await seedObject({
+        purpose: "receipt",
+        outletId: outletA,
+        owner: uploader,
+        sourceKind: "goods_receipt",
+      });
+      // Positive control: still entitled.
+      expectAllowed(await read(uploader, legacy));
+      await revokeAll(uploader);
+      expectDenied(await read(uploader, legacy));
+    });
+
+    it("keeps a purpose/kind mismatch refused for read", async () => {
+      const wide = await signedIn("LegacyGrWide", [
+        {
+          permissions: [
+            "inventory.stock.receive",
+            "accounting.reconcile",
+            "hr.attendance.manage",
+            "hr.reimbursement.approve",
+            "purchasing.invoice.match",
+          ],
+          scope: { type: "tenant" },
+        },
+      ]);
+      // Positive controls: matching pairs are readable by the same caller.
+      const legacy = await seedObject({
+        purpose: "receipt",
+        outletId: outletA,
+        owner: null,
+        sourceKind: "goods_receipt",
+      });
+      const current = await seedObject({
+        purpose: "goods_receipt_photo",
+        outletId: outletA,
+        owner: null,
+        sourceKind: "goods_receipt",
+      });
+      expectAllowed(await read(wide, legacy));
+      expectAllowed(await read(wide, current));
+      // "attendance" belongs to purpose selfie, not receipt.
+      const receiptWithSelfieKind = await seedObject({
+        purpose: "receipt",
+        outletId: outletA,
+        owner: null,
+        sourceKind: "attendance",
+      });
+      // goods_receipt_photo only pairs with kind goods_receipt.
+      const photoWithOtherKind = await seedObject({
+        purpose: "goods_receipt_photo",
+        outletId: outletA,
+        owner: null,
+        sourceKind: "reimbursement",
+      });
+      expectDenied(await read(wide, receiptWithSelfieKind));
+      expectDenied(await read(wide, photoWithOtherKind));
+    });
+
+    it("still refuses uploading purpose receipt with kind goods_receipt", async () => {
+      const receiver = await signedIn(
+        "LegacyGrUploadReceiver",
+        atOutlet(["inventory.stock.receive"], outletA),
+      );
+      // Positive control: the current purpose uploads for the same caller.
+      expectAllowed(
+        await upload(receiver, "goods_receipt_photo", outletA, "goods_receipt"),
+      );
+      expectDenied(await upload(receiver, "receipt", outletA, "goods_receipt"));
+      expectDenied(await upload(admin, "receipt", outletA, "goods_receipt"));
+    });
   });
 });

@@ -174,7 +174,6 @@ export const posShifts = pgTable(
       sql`${table.openingFloatIdr} >= 0 AND ${table.cashSalesIdr} >= 0
         AND ${table.cashRefundsIdr} >= 0 AND ${table.cashInIdr} >= 0
         AND ${table.cashOutIdr} >= 0 AND ${table.cashDropIdr} >= 0
-        AND (${table.expectedIdr} IS NULL OR ${table.expectedIdr} >= 0)
         AND (${table.countedIdr} IS NULL OR ${table.countedIdr} >= 0)`,
     ),
     // Open: no close figure at all. Closed: every close figure, and they agree

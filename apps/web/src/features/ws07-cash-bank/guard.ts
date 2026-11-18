@@ -15,6 +15,7 @@ const CASH_BANK_APPROVE: readonly PermissionCode[] = [
 const CASH_BANK_LIMIT_MANAGE: readonly PermissionCode[] = [
   "accounting.cash_bank.limit.manage",
 ];
+const APPROVAL_INBOX_VIEW: readonly PermissionCode[] = ["approval.inbox.view"];
 const PETTY_CASH_MANAGE: readonly PermissionCode[] = [
   "accounting.petty_cash.manage",
 ];
@@ -44,4 +45,9 @@ export function useCanApproveCashBank(): boolean {
 /** Change the cash out approval limit. */
 export function useCanManageCashApprovalLimit(): boolean {
   return useHolds(CASH_BANK_LIMIT_MANAGE);
+}
+
+/** The approval inbox a pending cash out is approved in (legend-fukt6). */
+export function useCanViewApprovalInbox(): boolean {
+  return useHolds(APPROVAL_INBOX_VIEW);
 }

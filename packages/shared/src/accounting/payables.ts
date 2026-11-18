@@ -24,6 +24,8 @@ export const counterpartyTypeSchema = z.enum([
   "supplier",
   "corporate_account",
   "event_customer",
+  // Employee PPh 21 receivable (legend-itph; account 1204).
+  "employee",
 ]);
 
 /** One unpaid (or partly paid) invoice: kartu utang / kartu piutang row. */
@@ -70,6 +72,7 @@ export const openItemListRowSchema = z
   .strictObject({
     id: uuidSchema,
     outletId: outletIdSchema.nullable(),
+    counterpartyType: counterpartyTypeSchema,
     counterpartyId: uuidSchema,
     counterpartyName: z.string().trim().min(1).max(150),
     documentNumber: z.string().trim().min(1).max(60),

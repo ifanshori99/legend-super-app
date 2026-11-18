@@ -99,7 +99,7 @@ test("F12 · Pickup display calls a waiting number and lists it as called", asyn
 test("F12 · Pickup display shows the promotion slide", async ({ page }) => {
   await page.goto("/pickup");
   const promo = page.locator('[data-slot="pickup-promo"]');
-  await expect(promo).toContainText("Kopi Susu Aren · 2 gelas Rp 45.000");
+  await expect(promo).toContainText(/Kopi Susu Aren · 2 gelas Rp\s?45\.000/);
   await expect(promo).toContainText("Berlaku sampai");
 });
 

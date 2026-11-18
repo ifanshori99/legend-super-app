@@ -764,12 +764,16 @@ const PII_TOOL_CASES: PiiToolCase[] = [
       return {
         input: { period: SALES_INPUT.period, facilityId: id },
         cleanup: async () => {
-          await asTenant((db) =>
-            db.query(
+          await asTenant(async (db) => {
+            await db.query(
+              "DELETE FROM facility_operating_hours_versions WHERE tenant_id = $1 AND facility_id = $2",
+              [tenantId, id],
+            );
+            await db.query(
               "DELETE FROM facilities WHERE tenant_id = $1 AND id = $2",
               [tenantId, id],
-            ),
-          );
+            );
+          });
         },
       };
     },

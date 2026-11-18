@@ -11,7 +11,7 @@
 // code files a hold for the literal provider id X (kind `provider`) when a report of X on
 // T is larger than our own refund R (as refund-1072-a1-01/03). Its event key is then
 // derived from kind `provider` + X. Finance closes it `not_this_intent`; an owner-side
-// UPDATE rewrites its kind to `invalid_report`, exactly what migration 0696 did to old
+// UPDATE rewrites its kind to `invalid_report`, exactly what migration 0493 did to old
 // rows (the event key stays). A later report of the SAME literal id X (new envelope id,
 // smaller Rp60.000, so no "larger report" generation path applies) computes the same event
 // key: the insert collides, the lookup by kind `provider` finds nothing (the row is now
@@ -90,7 +90,7 @@ const reportOf = (w: World, door: Door, amountIdr: number) => () =>
 
 /**
  * The legacy hold: filed by the current code for X/T Rp80.000, closed by finance, then
- * (rewrite = true) its kind rewritten as migration 0696 did. The event key stays.
+ * (rewrite = true) its kind rewritten as migration 0493 did. The event key stays.
  */
 async function legacyClosedHold(
   w: World,
@@ -115,7 +115,7 @@ async function legacyClosedHold(
   const resolved = await h.resolveHold(hold.id, "not_this_intent");
   expect(resolved.status, JSON.stringify(resolved.body)).toBe(200);
   if (rewrite) {
-    // What migration 0696 did: kind changed, event key left as it was.
+    // What migration 0493 did: kind changed, event key left as it was.
     await h.owner.query(
       `UPDATE refund_recon_holds SET provider_refund_id_kind = 'invalid_report'
         WHERE tenant_id = $1 AND id = $2`,
@@ -141,7 +141,7 @@ async function expectRefundRefused(intentId: string, label: string) {
   }
 }
 
-describe("F1 (P1) a report whose hold event key collides with a pre-0696 hold is never dropped", () => {
+describe("F1 (P1) a report whose hold event key collides with a pre-0493 hold is never dropped", () => {
   it.each([
     ["1101-f1-01", "recorder", "payment.refunded"],
     ["1101-f1-02", "matched", "refund.succeeded"],

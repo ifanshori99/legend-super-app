@@ -114,6 +114,14 @@ export const edgeStatusSchema = z.strictObject({
       /** Last successful pull of the device registry from the cloud. */
       lastPulledAt: isoDateTimeSchema.nullable(),
       stale: z.boolean(),
+      /**
+       * legend-2lgu: the replica is past its hard limit, so the edge refuses
+       * NEW device sessions (running ones continue). Optional: an older edge
+       * image does not send it.
+       */
+      hardStale: z.boolean().optional(),
+      /** The hard limit in seconds (EDGE_DEVICE_REGISTRY_MAX_STALE_SECONDS). */
+      maxStaleSeconds: z.number().int().positive().optional(),
       /** Receipt sequences the last successful pull refused (legend-zsdd). */
       receiptSequencesRefused: z.number().int().nonnegative().optional(),
       /** Last successful pull that refused at least one; null if never. */
@@ -292,6 +300,19 @@ export const setOutletDeviceTrainingMode = defineEndpoint({
   path: "/api/devices/:deviceId/training-mode",
   params: deviceParams,
   body: clientInputSchema({ trainingMode: z.boolean() }),
+  response: dataResponseSchema(deviceSchema),
+});
+
+/**
+ * Shared-device mode on/off (legend-f586w). A flagged device needs an
+ * acting-staff token on POS, floor and KDS requests. Same guards as training
+ * mode: `device.registry.manage`, tenant and outlet scope, audit event.
+ */
+export const setOutletDeviceSharedMode = defineEndpoint({
+  method: "PATCH",
+  path: "/api/devices/:deviceId/shared-mode",
+  params: deviceParams,
+  body: clientInputSchema({ sharedMode: z.boolean() }),
   response: dataResponseSchema(deviceSchema),
 });
 

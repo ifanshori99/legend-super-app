@@ -198,7 +198,9 @@ export type PayoutApprovalLogDto = {
     | "posting_source"
     | "closure"
     | "resolve"
-    | "bank_confirm";
+    | "bank_confirm"
+    | "batch_approve"
+    | "return_withdraw";
   step: "propose" | "approve" | "record" | "confirm" | "withdraw";
   itemCount: number;
   /** Payroll period label of the batch, as in the receipt notification. */
@@ -209,6 +211,62 @@ export type PayoutApprovalLogDto = {
   disowned: boolean;
   /** The batch is frozen now (by this claim or another). */
   batchFrozen: boolean;
+};
+
+/**
+ * One reconciliation flag and the state of its two-person clearance (GET
+ * /payout-recon-flags). `clearance` is the clearance of the flag's current
+ * fingerprint, null until someone proposes for it; the flag holds the payslip
+ * back until `clearance.status` is `approved`. No amount, name or account
+ * number.
+ */
+export type PayoutReconFlagDto = {
+  id: string;
+  kind: string;
+  itemId: string;
+  payslipId: string;
+  batchId: string;
+  reason: string;
+  /** ISO datetime the reconciliation flagged it. */
+  flaggedAt: string;
+  /**
+   * True when a clearance was approved for other flagged data (an earlier
+   * fingerprint, legend-hklnq) and none is approved for the current one: the
+   * flag holds the payslip again and needs a new clearance.
+   */
+  reopened: boolean;
+  clearance: {
+    id: string;
+    status: "proposed" | "approved";
+    reason: string;
+    proposedBy: string;
+    proposedAt: string;
+    approvedBy: string | null;
+    approvedAt: string | null;
+  } | null;
+};
+
+/**
+ * One return claim of a batch and its two-person withdrawal (legend-snwnn; GET
+ * /disbursement-batches/:id/return-claims). `withdrawal` is the open (not yet
+ * approved) proposal to withdraw an `open` claim, null when there is none.
+ * `itemCount` counts the items still tied to the claim (0 once withdrawn). No
+ * amount, name or account number.
+ */
+export type PayoutReturnClaimDto = {
+  id: string;
+  status: "open" | "consumed" | "withdrawn";
+  bankRef: string | null;
+  itemCount: number;
+  createdBy: string;
+  /** ISO datetime the claim was made. */
+  createdAt: string;
+  withdrawal: {
+    id: string;
+    reason: string;
+    proposedBy: string;
+    proposedAt: string;
+  } | null;
 };
 
 /** A disbursement batch for one payroll run. totalIdr is the sum of items. */

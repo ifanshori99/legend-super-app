@@ -29,6 +29,7 @@ function ReceivingListScreen() {
     <PurchasingFrame active="receiving">
       <ReceivingListPage
         canReceive={holdsAny(access, ["inventory.stock.receive"])}
+        canJournalize={holdsAny(access, ["accounting.journal.post"])}
       />
     </PurchasingFrame>
   );

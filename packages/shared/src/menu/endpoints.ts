@@ -259,6 +259,7 @@ export const createItemInputSchema = clientInputSchema({
   allergens: z.array(name).max(30).default([]),
   mediaId: uuidSchema.nullable().optional(),
   isActive: z.boolean().default(false),
+  isBreakfast: z.boolean().default(false),
   sortOrder: z.number().int().nonnegative().optional(),
 });
 
@@ -282,6 +283,7 @@ export const updateItemInputSchema = clientInputSchema({
   allergens: z.array(name).max(30).optional(),
   mediaId: uuidSchema.nullable().optional(),
   isActive: z.boolean().optional(),
+  isBreakfast: z.boolean().optional(),
   sortOrder: z.number().int().nonnegative().optional(),
 });
 

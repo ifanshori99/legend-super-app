@@ -801,6 +801,7 @@ async function buildState(tx: Tx, pairing: PairingRow, now: Date) {
     taxIdr: included ? 0 : Number(order.taxIdr),
     roundingIdr: Number(order.roundingIdr),
     totalIdr: total,
+    pricesIncludeTax: included,
     depositAppliedIdr: deposit,
     remainingIdr: remaining,
     qris,
@@ -849,6 +850,16 @@ export async function readStateForTerminal(
   const context = outletContext(tenant, outletId);
   const tenantId = tenant.tenantId;
   return withTenant(db, context, async (tx) => {
+    // The id must be an active terminal (not a display) of this very outlet
+    // and tenant, filtered in SQL. Every refusal is the same 404 as an
+    // unpaired terminal, so a foreign id leaks neither a bill nor its existence.
+    const terminal = await activeDevice(
+      tx,
+      tenantId,
+      outletId,
+      terminalDeviceId,
+    );
+    if (!terminal || terminal.type === "display") throw notPaired();
     const pairing = await activePairingOfTerminal(
       tx,
       tenantId,

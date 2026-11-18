@@ -15,9 +15,14 @@
 //     order. Never take the month lock after a run row lock;
 //  3. status `approved -> locked` through the shared reducer (two distinct
 //     approvers, totals, snapshot);
-//  4. refusal of side effects this step does not perform (loans,
-//     reimbursements, service charge): refusing never pays anyone more. Rapel
-//     is locked here (receipt + full slip in the same transaction);
+//  4. refusal of side effects this step does not perform (reimbursements,
+//     service charge): refusing never pays anyone more. Kasbon is performed
+//     here (legend-8tfvr): the LOAN lines must equal the rows simulate
+//     recorded, then each loan is lowered by its row, once, in the same
+//     transaction as the guarded `approved -> locked` UPDATE (loans lock in id
+//     order after the run row and the priors; migration 0443 proves the
+//     ledger at commit). Rapel is locked here (receipt + full slip in the same
+//     transaction);
 //  5. the stored results equal the approved totals (409
 //     PAYROLL_RUN_RESULT_STALE), the tax-year priors are the ones simulated
 //     (409 PAYROLL_PPH21_MONTH_STALE), and the PPh 21 recomputed on the pinned
@@ -90,6 +95,11 @@ import { assertPayrollTenantCan } from "./payroll-access.ts";
 import { snapshotPayeeBankForLock } from "./payroll-bank-snapshot.service.ts";
 import { emitPayrollEvent } from "./payroll-events.ts";
 import {
+  lockOvertimeCorrectionScope,
+  syncOvertimeCorrectionLedgerInTransaction,
+} from "./payroll-overtime-correction.service.ts";
+import { syncPph21ReceivableOpenItemsInTransaction } from "./payroll-pph21-receivable-open-items.service.ts";
+import {
   expectedReceivableCollection,
   loadMonthPriorRunIds,
   loadPph21ReceivableBalances,
@@ -107,6 +117,10 @@ import {
   loadRunRapelAllocations,
   lockRapelInputsForRun,
 } from "./payroll-run-rapel-lock.ts";
+import {
+  applyLockLoanDeductions,
+  lockLoansForRunLock,
+} from "./payroll-run-loans.ts";
 import {
   storedRunResultSchema,
   type StoredRunResult,
@@ -157,11 +171,11 @@ const lockUnsupported = () =>
   new HttpError(
     409,
     "PAYROLL_RUN_LOCK_UNSUPPORTED",
-    "Payroll ini memuat pinjaman, reimbursement, atau service charge yang belum didukung langkah kunci. Penguncian ditahan.",
+    "Payroll ini memuat reimbursement atau service charge yang belum didukung langkah kunci. Penguncian ditahan.",
   );
 
 /** Maps a stored `payroll_runs` row to the contract run (dates as ISO strings). */
-function toRun(row: typeof payrollRuns.$inferSelect): PayrollRun {
+export function toRun(row: typeof payrollRuns.$inferSelect): PayrollRun {
   const iso = (value: Date | null) => (value ? value.toISOString() : null);
   const parsed = payrollRunSchema.safeParse({
     id: row.id,
@@ -385,12 +399,17 @@ export async function lockPayrollRunInTransaction(
   const tenantId = context.tenant.tenantId;
   const runId = payrollRunIdSchema.parse(input.payrollRunId);
 
-  // LOCK 1: the month advisory lock. LOCK 2: rapel components, employees and
-  // outlets. LOCK 3: the run row. Never the reverse.
+  // LOCK 1: the month advisory lock. LOCK 1b/1c: pph21 receivable, overtime
+  // correction scope. LOCK 2: rapel components, employees and outlets. LOCK 3:
+  // the run row. Never the reverse.
   const month = await lockPayrollRunMonth(tx, tenantId, runId);
   // LOCK 1b: the receivable of this legal entity (after the month lock, before
   // any run row lock): one receivable is collected by one locked run.
   await lockPph21ReceivableScope(tx, tenantId, month.legalEntityId);
+  // LOCK 1c: the overtime correction scope of this legal entity (legend-pxzhy).
+  // Taken before any run row lock, so it never waits behind the row of a source
+  // run; the later ledger sync takes it again (re-entrant in this transaction).
+  await lockOvertimeCorrectionScope(tx, tenantId, month.legalEntityId);
   await lockRapelInputsForRun(tx, context, {
     runId,
     legalEntityId: month.legalEntityId,
@@ -419,11 +438,7 @@ export async function lockPayrollRunInTransaction(
   const configSnapshot = payrollConfigSnapshotSchema.parse(run.configSnapshot);
 
   // Side effects this step does not perform: refuse, never pay more.
-  if (
-    totals.loanRepaymentIdr > 0 ||
-    totals.reimbursementIdr > 0 ||
-    totals.serviceChargeIdr > 0
-  )
+  if (totals.reimbursementIdr > 0 || totals.serviceChargeIdr > 0)
     throw lockUnsupported();
   // A run the rapel finalizer already wrote slips for cannot lock again.
   const [finalized] = await tx
@@ -651,7 +666,17 @@ export async function lockPayrollRunInTransaction(
       ? new Date(latestLock.at.getTime() + 1)
       : now;
 
-  // All checks done: the writes. Order: status, receipts, payslips.
+  // Kasbon: the LOAN lines equal the recorded rows and every loan still owes
+  // them (locks the loans FOR UPDATE in id order, after the run and priors).
+  const loanDeductions = await lockLoansForRunLock(
+    tx,
+    tenantId,
+    run,
+    plan,
+    configSnapshot.loanMaxDeductionOfNetPayBp,
+  );
+
+  // All checks done: the writes. Order: status, loans, receipts, payslips.
   const updated = await tx
     .update(payrollRuns)
     .set({ status: "locked", lockedBy: actor, lockedAt, updatedAt: now })
@@ -665,6 +690,8 @@ export async function lockPayrollRunInTransaction(
     .returning({ id: payrollRuns.id });
   if (updated.length !== 1)
     throw new PayrollError("PAYROLL_RUN_INVALID_TRANSITION");
+  // The rows are frozen now (0460): lower each loan by its row, once.
+  await applyLockLoanDeductions(tx, tenantId, loanDeductions, lockedAt);
 
   const slips = plan.map((entry) => ({
     payslipId: entry.payslipId,
@@ -717,6 +744,12 @@ export async function lockPayrollRunInTransaction(
         createdAt: now,
       })),
     );
+  // legend-itph: the receivable raised or collected by these payslips becomes
+  // (or settles) the employee open item, under the receivable lock held above.
+  await syncPph21ReceivableOpenItemsInTransaction(tx, context, runId);
+  // legend-72nod: the overtime correction lines become ledger rows; a line above
+  // the outstanding amount (another draft locked first) refuses with 409.
+  await syncOvertimeCorrectionLedgerInTransaction(tx, context, runId);
   const bankSnapshotCount = await snapshotPayeeBankForLock(
     tx,
     tenantId,

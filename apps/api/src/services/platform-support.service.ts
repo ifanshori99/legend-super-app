@@ -603,13 +603,7 @@ async function requestDtos(
   now: Date,
 ): Promise<SupportAccessRequest[]> {
   if (rows.length === 0) return [];
-  const people = await db
-    .select({ id: user.id, name: user.name })
-    .from(user)
-    .where(
-      inArray(user.id, [...new Set(rows.map((row) => row.superAdminUserId))]),
-    );
-  const names = new Map(people.map((person) => [person.id, person.name]));
+  const names = await actorNames(rows);
   return rows.map((row) =>
     toRequest(row, now, names.get(row.superAdminUserId) ?? null),
   );
@@ -1167,9 +1161,11 @@ async function listTenantPage(
   });
 }
 
-/** Super Admin display names for a page of grants. A name that looks like an
- * email address is dropped: the list must never leak the email. */
-async function actorNames(rows: GrantRow[]): Promise<Map<string, string>> {
+/** Super Admin display names for a page of grants or requests. A name that
+ * looks like an email address is dropped: the list must never leak the email. */
+async function actorNames(
+  rows: { superAdminUserId: string }[],
+): Promise<Map<string, string>> {
   const ids = [...new Set(rows.map((row) => row.superAdminUserId))];
   if (ids.length === 0) return new Map();
   const people = await db
@@ -1562,6 +1558,27 @@ export class ImpersonationRefused extends Error {
 }
 
 export type ImpersonationMatch = { tenantId: string; grant: GrantRow };
+
+/**
+ * Tenant ids an impersonating super admin may see of `targetUserId`'s
+ * account-level data (own push devices and login sessions, which carry no
+ * tenant context): tenants where the admin holds a live grant (not ended, not
+ * expired) and the target has an active role assignment (same match as
+ * findImpersonationGrants). No match returns an empty list, so the caller
+ * shows nothing.
+ */
+export async function supportGrantedTenantIds(input: {
+  adminUserId: string;
+  targetUserId: string;
+  now?: Date;
+}): Promise<string[]> {
+  const matches = await findImpersonationGrants({
+    adminUserId: input.adminUserId,
+    targetUserId: input.targetUserId,
+    now: input.now ?? new Date(),
+  });
+  return matches.map((match) => match.tenantId);
+}
 export type ImpersonationEndCause =
   | "stopped"
   | "signed_out"

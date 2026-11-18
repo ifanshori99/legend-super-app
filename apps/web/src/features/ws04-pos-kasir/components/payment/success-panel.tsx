@@ -6,7 +6,9 @@ import { Button } from "@/components/ui/button";
 import { Money } from "@/components/ui/money";
 import { Notice, PosPanel, StateBlock, StatusPill } from "../shared";
 import { usePaymentSession, usePrintReceipt } from "../../hooks";
+import { useOrderTickets } from "../../ticket/hooks";
 import { confirmedAllocations } from "./payment-helpers";
+import { PaidTicketCard } from "./paid-ticket-card";
 import type { PaymentPanelProps } from "./panel-types";
 
 function Row({ label, amountIdr }: { label: string; amountIdr: number }) {
@@ -28,6 +30,12 @@ export function SuccessPanel({ orderId }: PaymentPanelProps) {
   const navigate = useNavigate();
   const { bill, cash, receiptNo } = usePaymentSession(orderId);
   const print = usePrintReceipt();
+  // Same query as the ticket card (shared cache): with a ticket ready, issuing
+  // it is the one primary action and the footer print button steps back.
+  const tickets = useOrderTickets(orderId);
+  const hasIssuedTicket = (tickets.data ?? []).some(
+    (line) => line.lineStatus === "issued",
+  );
   if (!bill) return null;
 
   const confirmed = confirmedAllocations(bill);
@@ -54,6 +62,7 @@ export function SuccessPanel({ orderId }: PaymentPanelProps) {
           </Button>
           <Button
             type="button"
+            variant={hasIssuedTicket ? "outline" : "default"}
             disabled={print.isPending}
             aria-busy={print.isPending}
             onClick={() =>
@@ -126,6 +135,7 @@ export function SuccessPanel({ orderId }: PaymentPanelProps) {
             </>
           )}
         </dl>
+        <PaidTicketCard orderId={orderId} />
         {print.isError && (
           <div className="grid w-full max-w-2xl justify-items-start gap-3">
             <Notice

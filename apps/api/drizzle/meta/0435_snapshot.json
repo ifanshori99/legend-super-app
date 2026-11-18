@@ -1,6 +1,6 @@
 {
-  "id": "d5ad9415-14f7-4e82-9334-d746aa4e15b3",
-  "prevId": "f7939ca4-e5cb-49ee-81d0-333949c71ad1",
+  "id": "0c6300f0-4d4e-4535-9d25-7e0a711274ad",
+  "prevId": "0b2d0e3b-9cbf-4221-b654-c3d246863648",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -11607,18 +11607,6 @@
         },
         "provider_final_at": {
           "name": "provider_final_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "provider_answered_at": {
-          "name": "provider_answered_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "provider_refunded_at": {
-          "name": "provider_refunded_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
@@ -36698,13 +36686,6 @@
           "notNull": true,
           "default": 2
         },
-        "recon_case_due_days": {
-          "name": "recon_case_due_days",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 7
-        },
         "cash_out_approval_limit_idr": {
           "name": "cash_out_approval_limit_idr",
           "type": "bigint",
@@ -36759,10 +36740,6 @@
         "finance_policies_undeposited_check": {
           "name": "finance_policies_undeposited_check",
           "value": "\"finance_policies\".\"max_days_undeposited\" BETWEEN 0 AND 30"
-        },
-        "finance_policies_recon_case_due_days_check": {
-          "name": "finance_policies_recon_case_due_days_check",
-          "value": "\"finance_policies\".\"recon_case_due_days\" BETWEEN 1 AND 60"
         },
         "finance_policies_cash_out_limit_check": {
           "name": "finance_policies_cash_out_limit_check",
@@ -39473,18 +39450,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "stale_at": {
-          "name": "stale_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "stale_by_reversal_entry_id": {
-          "name": "stale_by_reversal_entry_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -39540,21 +39505,6 @@
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
-        },
-        "bank_statement_line_matches_stale_reversal_fk": {
-          "name": "bank_statement_line_matches_stale_reversal_fk",
-          "tableFrom": "bank_statement_line_matches",
-          "tableTo": "journal_entries",
-          "columnsFrom": [
-            "tenant_id",
-            "stale_by_reversal_entry_id"
-          ],
-          "columnsTo": [
-            "tenant_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -39578,10 +39528,6 @@
         "bank_statement_line_matches_source_check": {
           "name": "bank_statement_line_matches_source_check",
           "value": "\"bank_statement_line_matches\".\"source\" IN ('auto','manual')"
-        },
-        "bank_statement_line_matches_stale_check": {
-          "name": "bank_statement_line_matches_stale_check",
-          "value": "(\"bank_statement_line_matches\".\"stale_at\" IS NULL) = (\"bank_statement_line_matches\".\"stale_by_reversal_entry_id\" IS NULL)"
         }
       },
       "isRLSEnabled": false
@@ -69446,7 +69392,7 @@
       "checkConstraints": {
         "payroll_payout_attestations_kind_check": {
           "name": "payroll_payout_attestations_kind_check",
-          "value": "\"payroll_payout_attestations\".\"kind\" IN ('correction', 'overpaid', 'return', 'posting_source', 'closure', 'resolve', 'bank_confirm')"
+          "value": "\"payroll_payout_attestations\".\"kind\" IN ('correction', 'overpaid', 'return', 'posting_source', 'closure', 'resolve', 'bank_confirm', 'batch_approve')"
         },
         "payroll_payout_attestations_step_check": {
           "name": "payroll_payout_attestations_step_check",
@@ -70965,7 +70911,7 @@
       "checkConstraints": {
         "payroll_payout_grants_kind_check": {
           "name": "payroll_payout_grants_kind_check",
-          "value": "\"payroll_payout_grants\".\"kind\" IN ('correction', 'overpaid', 'return', 'posting_source', 'closure', 'resolve', 'bank_confirm', 'disown', 'unfreeze')"
+          "value": "\"payroll_payout_grants\".\"kind\" IN ('correction', 'overpaid', 'return', 'posting_source', 'closure', 'resolve', 'bank_confirm', 'batch_approve', 'disown', 'unfreeze')"
         },
         "payroll_payout_grants_detail_check": {
           "name": "payroll_payout_grants_detail_check",
@@ -71906,7 +71852,7 @@
       "checkConstraints": {
         "payroll_payout_recon_exceptions_kind_check": {
           "name": "payroll_payout_recon_exceptions_kind_check",
-          "value": "\"payroll_payout_recon_exceptions\".\"kind\" IN ('correction', 'overpaid', 'return', 'posting_source', 'closure', 'resolve', 'bank_confirm')"
+          "value": "\"payroll_payout_recon_exceptions\".\"kind\" IN ('correction', 'overpaid', 'return', 'posting_source', 'closure', 'resolve', 'bank_confirm', 'batch_approve')"
         }
       },
       "isRLSEnabled": false
@@ -93833,6 +93779,202 @@
         "panic_receiver_sessions_revoke_pair_check": {
           "name": "panic_receiver_sessions_revoke_pair_check",
           "value": "(\"panic_receiver_sessions\".\"revoked_at\" IS NULL) = (\"panic_receiver_sessions\".\"revoke_reason\" IS NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.sealed_secret_reseal_state": {
+      "name": "sealed_secret_reseal_state",
+      "schema": "",
+      "columns": {
+        "table_name": {
+          "name": "table_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "column_name": {
+          "name": "column_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "scope_key": {
+          "name": "scope_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "last_id": {
+          "name": "last_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "key_version": {
+          "name": "key_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "resealed_count": {
+          "name": "resealed_count",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "failed_count": {
+          "name": "failed_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "sealed_secret_reseal_state_pkey": {
+          "name": "sealed_secret_reseal_state_pkey",
+          "columns": [
+            "table_name",
+            "column_name",
+            "scope_key"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.payroll_loan_deductions": {
+      "name": "payroll_loan_deductions",
+      "schema": "",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "payroll_run_id": {
+          "name": "payroll_run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "employee_id": {
+          "name": "employee_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "loan_id": {
+          "name": "loan_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "amount_idr": {
+          "name": "amount_idr",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "payroll_loan_deductions_tenant_id_tenants_id_fk": {
+          "name": "payroll_loan_deductions_tenant_id_tenants_id_fk",
+          "tableFrom": "payroll_loan_deductions",
+          "tableTo": "tenants",
+          "columnsFrom": [
+            "tenant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payroll_loan_deductions_run_fk": {
+          "name": "payroll_loan_deductions_run_fk",
+          "tableFrom": "payroll_loan_deductions",
+          "tableTo": "payroll_runs",
+          "columnsFrom": [
+            "tenant_id",
+            "payroll_run_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payroll_loan_deductions_employee_fk": {
+          "name": "payroll_loan_deductions_employee_fk",
+          "tableFrom": "payroll_loan_deductions",
+          "tableTo": "employees",
+          "columnsFrom": [
+            "tenant_id",
+            "employee_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "payroll_loan_deductions_loan_fk": {
+          "name": "payroll_loan_deductions_loan_fk",
+          "tableFrom": "payroll_loan_deductions",
+          "tableTo": "employee_loans",
+          "columnsFrom": [
+            "tenant_id",
+            "loan_id"
+          ],
+          "columnsTo": [
+            "tenant_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "payroll_loan_deductions_pkey": {
+          "name": "payroll_loan_deductions_pkey",
+          "columns": [
+            "tenant_id",
+            "payroll_run_id",
+            "loan_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "payroll_loan_deductions_amount_check": {
+          "name": "payroll_loan_deductions_amount_check",
+          "value": "\"payroll_loan_deductions\".\"amount_idr\" > 0"
         }
       },
       "isRLSEnabled": false

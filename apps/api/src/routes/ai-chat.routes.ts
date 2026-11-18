@@ -14,7 +14,7 @@ import {
   getAiConversation as getAiConversationEndpoint,
   listAiConversations as listAiConversationsEndpoint,
 } from "@starter/shared/ai";
-import { requireAuth } from "../middleware/auth.ts";
+import { getAuth, requireAuth } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireAiPlatformEnabled } from "../middleware/module.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
@@ -76,6 +76,8 @@ export function createAiChatRouter(): Router {
           getAccessSnapshot(req),
           getScopedTenantContext(req),
           body,
+          undefined,
+          getAuth(req).session.id,
         ),
       });
     },

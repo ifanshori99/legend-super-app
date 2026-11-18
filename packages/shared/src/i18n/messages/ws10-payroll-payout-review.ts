@@ -286,6 +286,11 @@ export const payrollPayoutReviewMessages = {
     returnDescription:
       "Untuk {name} · {amount}. Pakai ini bila transfer yang sudah berhasil dikembalikan bank. Perlu dua orang berbeda.",
     returnAction: "Catat dana kembali",
+    returnBankRef: "Nomor referensi transaksi bank",
+    returnBankRefHint:
+      "Salin dari mutasi atau bukti dana kembali di internet banking. Orang kedua mengisi nomor yang sama dari bukti banknya sendiri.",
+    returnBankRefRequired: "Nomor referensi transaksi bank wajib diisi.",
+    returnBankRefShort: "Nomor referensi minimal 4 karakter.",
     returnSubmit: "Simpan dana kembali",
     returnProposed:
       "Usulan tercatat. Orang kedua perlu mengonfirmasi dengan bukti yang sama.",
@@ -344,6 +349,21 @@ export const payrollPayoutReviewMessages = {
       "Bukti berbeda dari usulan orang pertama. Muat ulang lalu periksa usulan; tidak ada dana yang dicatat kembali.",
     returnSamePerson:
       "Konfirmasi kedua harus dilakukan orang lain, bukan orang yang mencatat pertama.",
+    returnBankRefRequired:
+      "Nomor referensi transaksi bank wajib diisi (4-64 karakter). Tidak ada dana yang dicatat kembali.",
+    returnBankRefMismatch:
+      "Nomor referensi bank berbeda dari catatan orang pertama. Periksa bukti bank; tidak ada dana yang dicatat kembali.",
+    returnBankRefReused:
+      "Nomor referensi bank ini sudah dipakai untuk pengembalian lain. Isi nomor referensi transaksi dana kembali yang sesuai dengan item ini.",
+    reconClearReasonInvalid:
+      "Alasan penutupan flag wajib diisi (10 sampai 500 karakter).",
+    reconClearSelfApproval:
+      "Pengusul penutupan flag tidak boleh menyetujuinya sendiri.",
+    reconClearState: "Penutupan flag ini sudah disetujui.",
+    reconFlagChanged:
+      "Data yang ditandai berubah sejak penutupan flag diusulkan. Ajukan usulan penutupan baru.",
+    reconProofUnreadable:
+      "Bukti payout tidak bisa dibaca. Tunggu bacaan sukses berikutnya, jangan ajukan usulan baru.",
     proposalNotWithdrawable:
       "Usulan ini sudah berubah (disimpan, dibatalkan, atau hanya sebagian item). Muat ulang lalu periksa. Tidak ada yang dibatalkan.",
     proofSpentByWithdrawn:

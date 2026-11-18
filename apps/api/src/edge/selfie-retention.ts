@@ -39,8 +39,12 @@ import {
   edgeSealedFilePath,
   parseEdgeSealedObjectKey,
 } from "./selfie-paths.ts";
+import type { TrustedClock } from "./trusted-clock.ts";
 
 type Database = NodePgDatabase<typeof schema>;
+
+/** legend-4sesc: the part of the edge trusted clock a purge relies on. */
+export type RetentionClock = Pick<TrustedClock, "purgeSafeNow">;
 
 const DAY_MS = 86_400_000;
 const REJECTED_KEEP_DAYS = 7;
@@ -64,6 +68,14 @@ export interface EdgeSelfieSweepOptions {
   /** EDGE_SELFIE_MAX_AGE_DAYS: a pending selfie older than this is given up. */
   maxAgeDays: number;
   now?: () => Date;
+  /**
+   * legend-4sesc: trusted clock. Cutoffs come from `clock.purgeSafeNow()` (not
+   * `now`): never later than the last cloud server time plus the monotonic time
+   * since, so a wall clock set forward deletes nothing early. The whole sweep
+   * is skipped, with nothing deleted, until the cloud has been heard since
+   * boot. The next interval retries.
+   */
+  clock?: RetentionClock;
   /** Grace for objects without an upload row and stray files. Default 25 h. */
   orphanMs?: number;
   /** Default: the shared API pool. */
@@ -519,13 +531,20 @@ async function purgeOldAttendance(
   return { logsPurged, uploadRowsPurged };
 }
 
-/** Proofs are single-use and leave the edge after one day, used or unused. */
-async function purgeOldPinProofs(
+/**
+ * Proofs are single-use and leave the edge after one day, used or unused.
+ * With a `clock` (legend-4sesc) the cutoff is `clock.purgeSafeNow()` minus one
+ * day, and nothing is purged before the cloud has been heard since boot.
+ */
+export async function purgeOldPinProofs(
   database: Database,
   context: ScopedTenantContext,
   now: Date,
+  clock?: RetentionClock,
 ): Promise<number> {
-  const cutoff = new Date(now.getTime() - DAY_MS);
+  const base = clock ? clock.purgeSafeNow() : now;
+  if (base === null) return 0;
+  const cutoff = new Date(base.getTime() - DAY_MS);
   let purged = 0;
   for (;;) {
     const page = await withTenant(database, context, async (tx) => {
@@ -567,7 +586,6 @@ export async function sweepEdgeSelfies(
 ): Promise<EdgeSelfieSweepResult> {
   const database = options.database ?? sharedDb;
   const { context, dir } = options;
-  const now = (options.now ?? (() => new Date()))();
   const orphanMs = options.orphanMs ?? DEFAULT_ORPHAN_MS;
   const result: EdgeSelfieSweepResult = {
     expiredPending: 0,
@@ -579,6 +597,16 @@ export async function sweepEdgeSelfies(
     uploadRowsPurged: 0,
     pinProofsPurged: 0,
   };
+  const safeNow = options.clock ? options.clock.purgeSafeNow() : undefined;
+  if (safeNow === null) {
+    // No cloud server time since boot: nothing is deleted on a clock that may
+    // be wrong; the next interval looks again once the cloud has been heard.
+    logger.warn(
+      "Edge selfie retention sweep skipped: edge clock is not trusted",
+    );
+    return result;
+  }
+  const now = safeNow ?? (options.now ?? (() => new Date()))();
   const failures: unknown[] = [];
   const step = async (run: () => Promise<void>) => {
     try {

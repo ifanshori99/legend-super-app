@@ -9,6 +9,7 @@ export * from "./errors.ts";
 export * from "./schemas.ts";
 export * from "./events.ts";
 export * from "./endpoints.ts";
+export * from "./supplier-payment-request.ts";
 export * from "./fixtures.ts";
 export * from "./preview.ts";
 export * from "./preview-fixtures.ts";

@@ -42,13 +42,13 @@ test("[legend-avf8m M1-05] mock upload returns a schema-valid object and a worki
     throw new Error("Mock storage must not call the network");
   };
   const object = await uploadStorageFile({
-    purpose: "receipt",
+    purpose: "goods_receipt_photo",
     sourceKind: "goods_receipt",
     outletId,
     file: photo,
   });
   assert.equal(storageObjectSchema.safeParse(object).success, true);
-  assert.equal(object.purpose, "receipt");
+  assert.equal(object.purpose, "goods_receipt_photo");
   const signed = await fetchStorageObjectUrl(object.id, "thumbnail");
   assert.match(signed.url, /^blob:/);
   assert.ok(Date.parse(signed.expiresAt) > Date.now());
@@ -62,7 +62,7 @@ test("[legend-avf8m M1-05] mock upload applies the same strict client image limi
     await import("../apps/web/src/features/storage/api.ts");
   await assert.rejects(
     uploadStorageFile({
-      purpose: "receipt",
+      purpose: "goods_receipt_photo",
       sourceKind: "goods_receipt",
       outletId,
       file: new Blob([new Uint8Array(5 * 1024 * 1024)], { type: "image/jpeg" }),

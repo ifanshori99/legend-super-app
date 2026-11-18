@@ -23,7 +23,7 @@ import { appendPosEvent, type OrderRow } from "./pos-order-support.ts";
 
 /**
  * The POS tender method a QR payment intent books as. A QR guest pays by
- * QRIS or VA only (`GUEST_PAYMENT_METHODS`); any other method has no QR
+ * QRIS, VA, e-wallet or card (`GUEST_PAYMENT_METHODS`); any other method has no QR
  * meaning and fails closed.
  */
 export function qrTenderMethod(method: PaymentMethod): PosTenderMethod {
@@ -32,6 +32,10 @@ export function qrTenderMethod(method: PaymentMethod): PosTenderMethod {
       return "qris";
     case "va":
       return "va";
+    case "ewallet":
+      return "ewallet";
+    case "card":
+      return "card";
     default:
       throw new RangeError(`Method ${method} is not a QR order payment method`);
   }

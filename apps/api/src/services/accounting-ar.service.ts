@@ -23,6 +23,7 @@ import {
   type UserId,
 } from "@starter/shared/core";
 import { legalEntityIdSchema, type OpenItem } from "@starter/shared/accounting";
+import { HttpError } from "../lib/http-error.ts";
 import type { TenantTransaction } from "./accounting-ap-fa-shared.ts";
 import {
   recordOpenItemInTransaction,
@@ -102,7 +103,9 @@ export const settleReceivableInputSchema = z
 /**
  * Receipt or write-off against a receivable, allocated under the open item's
  * row lock (no over-allocation). The linked journal must exist in the same
- * legal entity.
+ * legal entity. An employee receivable (PPh 21 raised by payroll) is never
+ * settled here: only the payroll deduction settles it (payroll-pph21-
+ * receivable-open-items.service.ts), otherwise the employee is billed twice.
  */
 export async function settleReceivableInTransaction(
   tx: TenantTransaction,
@@ -125,6 +128,14 @@ export async function settleReceivableInTransaction(
       idempotencyKey: input.idempotencyKey,
     },
     actorId,
-    async () => input.journalEntryId,
+    async (item) => {
+      if (item.counterpartyType === "employee")
+        throw new HttpError(
+          409,
+          "PAYROLL_EMPLOYEE_RECEIVABLE_NOT_SETTLEABLE",
+          "An employee PPh 21 receivable can only be settled by a payroll deduction.",
+        );
+      return input.journalEntryId;
+    },
   );
 }

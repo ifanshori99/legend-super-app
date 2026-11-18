@@ -7,7 +7,6 @@ import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
-import { AiError } from "@starter/shared/ai";
 import { approvalRequestIdSchema } from "@starter/shared/identity";
 import {
   establishScopedTenantContext,
@@ -269,15 +268,43 @@ describe("action requests (AIG-03)", () => {
     ).rejects.toMatchObject({ code: "AI_TOOL_FORBIDDEN" });
   });
 
-  it("TL-13 and TL-16 have no module to write to: AI_TOOL_DISABLED", async () => {
+  it("TL-13 and TL-16 propose like the other write tools (no longer AI_TOOL_DISABLED), still pending", async () => {
     const { requester } = await requesterWithApprover();
     await grantTemplateRole(requester.userId, "purchasing", { type: "tenant" });
     await grantTemplateRole(requester.userId, "hr", { type: "tenant" });
     const ctx = await ctxOf(requester);
+    const inputs = {
+      "TL-13": {
+        outletId: outletA,
+        supplierId: randomUUID(),
+        lines: [
+          {
+            inventoryItemId: randomUUID(),
+            qty: "2.0000",
+            unitCostIdr: "10000.0000",
+          },
+        ],
+      },
+      "TL-16": {
+        outletId: outletA,
+        weekStart: "2071-01-05",
+        shifts: [
+          {
+            employeeId: randomUUID(),
+            date: "2071-01-05",
+            startTime: "07:00",
+            endTime: "15:00",
+          },
+        ],
+      },
+    } as const;
     for (const code of ["TL-13", "TL-16"] as const) {
-      const error = await writeTools[code]!(ctx, {}).catch((e: unknown) => e);
-      expect(error).toBeInstanceOf(AiError);
-      expect((error as AiError).code).toBe("AI_TOOL_DISABLED");
+      const receipt = (await writeTools[code]!(ctx, inputs[code])) as {
+        status: string;
+        toolCode: string;
+      };
+      expect(receipt.status).toBe("pending");
+      expect(receipt.toolCode).toBe(code);
     }
   });
 

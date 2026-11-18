@@ -13,7 +13,7 @@
 import { Router, type Request } from "express";
 import { CoreError } from "@starter/shared/core";
 import { posSessionRequestSchema } from "@starter/shared/pos/acting-staff";
-import { getAuth, requireAuth } from "../middleware/auth";
+import { getAuth, requireAuthAllowSharedDevice } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
 import { getTenantContext, requireTenantContext } from "../middleware/tenant";
@@ -22,6 +22,11 @@ import {
   endActingStaff,
   issueActingStaff,
 } from "../services/pos-acting-staff.service";
+import {
+  isActiveSharedDevice,
+  markSessionSharedDevice,
+  sharedDeviceMarkLimit,
+} from "../services/shared-device.service";
 
 /**
  * The signed device id. Unlike `/verify` (no session), this route has a login
@@ -46,7 +51,7 @@ export const posActingStaffRouter = Router();
 // staffPinRouter, whose /verify must stay reachable without a session.
 posActingStaffRouter.post(
   "/pos-session",
-  requireAuth,
+  requireAuthAllowSharedDevice,
   requireTrustedOrigin,
   requireTenantContext,
   jsonBody,
@@ -54,6 +59,15 @@ posActingStaffRouter.post(
     const deviceId = await signedDeviceId(req);
     const input = posSessionRequestSchema.parse(req.body);
     const auth = getAuth(req);
+    // Shared-device mode: mark the login session at activation, before any
+    // guarded POS request (middleware/acting-staff.ts).
+    // legend-dn7uo: a 9th device the session cannot record is refused, no PIN
+    // session is issued for it.
+    if (
+      (await isActiveSharedDevice(getTenantContext(req), deviceId)) &&
+      !(await markSessionSharedDevice(auth.session.id, deviceId))
+    )
+      throw await sharedDeviceMarkLimit(auth.session.id, auth.user.id);
     res.setHeader("Cache-Control", "private, no-store");
     res.status(201).json({
       data: await issueActingStaff(getTenantContext(req), {
@@ -69,7 +83,7 @@ posActingStaffRouter.post(
 
 posActingStaffRouter.post(
   "/pos-session/end",
-  requireAuth,
+  requireAuthAllowSharedDevice,
   requireTrustedOrigin,
   requireTenantContext,
   async (req, res) => {

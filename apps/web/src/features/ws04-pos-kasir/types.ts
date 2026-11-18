@@ -3,7 +3,16 @@
 // strings. Types marked DEMO-CONTRACT have no shared endpoint yet (see
 // ./CONTRACT-GAPS.md); they are local until the contract lands.
 //
-// Plain TypeScript with no runtime imports: Node tests load it directly.
+// Plain TypeScript with no runtime imports (type imports only): Node tests load
+// it directly.
+import type { VoucherRejectionReason } from "@starter/shared/crm";
+
+/**
+ * One EDC request of a bill as `getPosOrder` lists it (`edcAttempts`, newest
+ * first). A declined one carries `declineReason` and `responseCode` and never
+ * puts a tender on the bill.
+ */
+export type { PosEdcAttempt } from "@starter/shared/pos";
 
 /** Error code a hook returns outside mock mode when the contract is missing. */
 export const CONTRACT_PENDING = "CONTRACT_PENDING";
@@ -62,15 +71,48 @@ export type PaymentBill = {
   };
   /** Deposit above the bill: becomes customer balance (founder Q7). */
   depositSurplusIdr: number;
+  /**
+   * The voucher on this bill (brief 936), read from `order.discounts`. The
+   * server priced the discount: `totalIdr` and `remainingIdr` already include
+   * it. `code` is the server's `voucherCode` ("" when the line has none).
+   */
+  voucher?: { code: string; discountIdr: number } | null;
   allocations: PaymentAllocation[];
   remainingIdr: number;
   paid: boolean;
 };
 
+/**
+ * `declined`: the bank or terminal refused the payment (not a technical
+ * `failed`, and not `unknown`, where the result is not known yet).
+ */
 export type AttemptStatus =
-  "waiting" | "expired" | "failed" | "confirmed" | "unknown";
+  "waiting" | "expired" | "failed" | "confirmed" | "unknown" | "declined";
 
 export type EdcMode = "card" | "qris";
+
+// ---- Voucher and member points (brief 936) ---------------------------------
+
+/**
+ * The preview of one voucher code. The discount is the server's estimate; the
+ * server prices it again when the voucher is applied to the bill.
+ */
+export type VoucherCheck =
+  | { valid: true; code: string; discountPreviewIdr: number }
+  | { valid: false; code: string; reason: VoucherRejectionReason };
+
+/** The member on the order and what they may spend now (server-computed). */
+export type PointsAccount = {
+  memberId: string;
+  memberName: string;
+  balancePoints: number;
+  minRedeemPoints: number;
+  /** min(balance, remaining bill): the server decides, the screen never does. */
+  maxRedeemPoints: number;
+};
+
+/** What the server says a number of points is worth on this bill. */
+export type PointsQuote = { points: number; valueIdr: number };
 
 export type PaymentAttempt = {
   id: string;
@@ -88,6 +130,10 @@ export type PaymentAttempt = {
     bank: string;
     mode: EdcMode;
     lockedAmountIdr: number;
+    /** Server message for a declined payment, e.g. "Saldo tidak cukup". */
+    declineReason?: string;
+    /** Bank response code for a declined payment, e.g. "51". */
+    responseCode?: string;
   };
   /** Masked card, e.g. "Kartu debit · •••• 4821". */
   cardMasked?: string;
@@ -354,7 +400,7 @@ export type CloseDayInput = { inventoryDeduction: boolean };
 
 export type EngineTender = {
   id: string;
-  method: PaymentMethodCode;
+  method: AllocationMethod;
   label: string;
   amountIdr: number;
   confirmedAt: string;
@@ -405,6 +451,10 @@ export type EngineOrder = {
   version: number;
   /** Code shown to customers ("LG-0044"), when the order came from a code. */
   code: string | null;
+  /** The voucher applied to the bill; the engine prices `discountIdr`. */
+  voucher?: { code: string; discountIdr: number } | null;
+  /** The loyalty member on the order, when there is one. */
+  member?: { id: string; name: string } | null;
 };
 
 /**
@@ -470,4 +520,11 @@ export type EngineState = {
   /** Which demo seed each area was last seeded with (re-seed on change). */
   applied: Record<string, string>;
   counters: { override: number; movement: number; shift: number; id: number };
+  /** Voucher and points state (brief 936); created on first use. */
+  loyalty?: {
+    balances: Record<string, number>;
+    redeemedVouchers: string[];
+    /** Idempotency keys already served: a repeat returns the session as is. */
+    keys: string[];
+  };
 };

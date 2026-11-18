@@ -621,6 +621,52 @@ export const payrollRunResults = pgTable(
 );
 
 /**
+ * legend-xo0xx: the kasbon (loan) installment a payroll run deducts, one row
+ * per (run, loan). Written only while the run is draft/simulated, never
+ * edited, and deleted only while the run is draft/simulated or when its
+ * reversal is approved (the reversal restores each loan by exactly this
+ * amount, once). The amount never exceeds the loan's outstanding balance at
+ * write time (payroll-loan-deductions.custom.sql). Until the run locks a row
+ * is only a reservation: the lock step lowers the loan's outstanding balance
+ * by it (legend-8tfvr), and payroll-loan-ledger.custom.sql proves at commit
+ * that principal - outstanding equals the rows of locked or paid runs.
+ */
+export const payrollLoanDeductions = pgTable(
+  "payroll_loan_deductions",
+  {
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    payrollRunId: uuid("payroll_run_id").$type<PayrollRunId>().notNull(),
+    employeeId: uuid("employee_id").$type<EmployeeId>().notNull(),
+    loanId: uuid("loan_id").$type<EmployeeLoanId>().notNull(),
+    amountIdr: idrColumn("amount_idr").notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    primaryKey({
+      name: "payroll_loan_deductions_pkey",
+      columns: [table.tenantId, table.payrollRunId, table.loanId],
+    }),
+    foreignKey({
+      name: "payroll_loan_deductions_run_fk",
+      columns: [table.tenantId, table.payrollRunId],
+      foreignColumns: [payrollRuns.tenantId, payrollRuns.id],
+    }),
+    foreignKey({
+      name: "payroll_loan_deductions_employee_fk",
+      columns: [table.tenantId, table.employeeId],
+      foreignColumns: [employees.tenantId, employees.id],
+    }),
+    foreignKey({
+      name: "payroll_loan_deductions_loan_fk",
+      columns: [table.tenantId, table.loanId],
+      foreignColumns: [employeeLoans.tenantId, employeeLoans.id],
+    }),
+    index("payroll_loan_deductions_loan_idx").on(table.tenantId, table.loanId),
+    check("payroll_loan_deductions_amount_check", sql`${table.amountIdr} > 0`),
+  ],
+);
+
+/**
  * legend-89cl7: the payee bank details frozen when the run locks, one row per
  * bank_transfer payslip, written in the lock transaction and read by the bank
  * export instead of the employee's current account. Sealed (HR-03 key ring,

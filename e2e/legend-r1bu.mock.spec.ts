@@ -394,7 +394,7 @@ test.describe("payroll configuration", () => {
     await expect(
       panel.getByRole("heading", { name: /^Komponen tetap/ }),
     ).toBeVisible();
-    await expect(panel.getByText("Rp 12.000.000")).toBeVisible();
+    await expect(panel.getByText(/Rp\s?12\.000\.000/)).toBeVisible();
 
     await panel.getByLabel("Nominal gaji").fill("13500000");
     await panel.getByRole("button", { name: "Simpan nominal" }).click();
@@ -404,7 +404,7 @@ test.describe("payroll configuration", () => {
 
     // The contract closes the old row the day before and opens a new one; the
     // write-only field never echoes the saved amount back.
-    await expect(panel.getByText("Rp 13.500.000")).toBeVisible();
+    await expect(panel.getByText(/Rp\s?13\.500\.000/)).toBeVisible();
     await expect(panel.getByText(/sekarang/).first()).toBeVisible();
     await expect(panel.getByLabel("Nominal gaji")).toHaveValue("");
   });
@@ -444,9 +444,9 @@ test.describe("payroll configuration", () => {
       await openSection(page, "components", theme);
       await expectShellTitle(page);
       // The table and the 390px list duplicate the rows; the pager footer is
-      // outside both, so this assertion holds at every viewport. 14 = the 12
-      // seeded components + TAX_ALLOWANCE and PPH21_REFUND (legend-iwgb).
-      await expect(page.getByText("14 baris", { exact: true })).toBeVisible();
+      // outside both, so this assertion holds at every viewport. 15 = the 12
+      // seeded components + TAX_ALLOWANCE, PPH21_REFUND and PPH21_RECEIVABLE.
+      await expect(page.getByText("15 baris", { exact: true })).toBeVisible();
       await captureScreenshot(
         page,
         `legend-r1bu/components-${width}-${theme}.png`,

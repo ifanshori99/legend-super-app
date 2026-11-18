@@ -337,8 +337,13 @@ export function createDuitkuGateway(
   async function methods(
     context: ScopedTenantContext,
     outletId?: string,
+    amountIdr?: number,
   ): Promise<readonly GatewayMethodAvailability[]> {
     const resolved = await requireCredentials(context, outletId);
+    // At the real bill amount: a method can be out of limits for it. The
+    // probe amount keeps its cache; any other amount is read fresh.
+    if (amountIdr !== undefined && amountIdr !== PROBE_AMOUNT_IDR)
+      return groupMethods(await fetchMethods(resolved, amountIdr));
     return groupMethods(await cachedMethods(resolved));
   }
 
@@ -347,17 +352,19 @@ export function createDuitkuGateway(
     method: OnlinePaymentMethod,
     outletId?: string,
   ): Promise<PaymentChannel[]> {
-    if (method !== "va") return [];
+    // Channel-bearing methods only; QRIS and card need no pick.
+    if (method !== "va" && method !== "ewallet") return [];
     const resolved = await resolveDetailed(context, outletId);
     if (typeof resolved === "string") return [];
     const group = groupMethods(await cachedMethods(resolved)).find(
-      (entry) => entry.method === "va",
+      (entry) => entry.method === method,
     );
     return [...(group?.channels ?? [])];
   }
 
-  /** The Duitku code to pay with: first enabled QRIS code, or the enabled code
-   * the caller named for va, ewallet or card. */
+  /** The Duitku code to pay with: the first enabled code of the category for
+   * QRIS and card (card is VC), or the enabled code the caller named for va
+   * and ewallet. */
   function chooseCode(
     rows: readonly DuitkuPaymentMethod[],
     method: GatewayPaymentMethod,
@@ -367,14 +374,16 @@ export function createDuitkuGateway(
       (row) => METHOD_OF_CATEGORY[duitkuMethodCategory(row.code)] === method,
     );
     const chosen =
-      method === "qris"
+      method === "qris" || method === "card"
         ? inMethod[0]
         : inMethod.find((row) => row.code === channelCode);
     if (!chosen)
       throw validation(
         method === "qris"
           ? "QRIS tidak aktif di gateway ini."
-          : "Kanal pembayaran tidak tersedia.",
+          : method === "card"
+            ? "Kartu tidak aktif di gateway ini."
+            : "Kanal pembayaran tidak tersedia.",
       );
     return chosen;
   }
@@ -382,19 +391,44 @@ export function createDuitkuGateway(
   function instructionsFor(
     method: GatewayPaymentMethod,
     code: DuitkuPaymentMethod,
-    inquiry: { vaNumber: string | null; qrString: string | null },
+    inquiry: {
+      vaNumber: string | null;
+      qrString: string | null;
+      paymentUrl: string;
+    },
   ): PaymentInstructions {
+    // Pay-by-link (ewallet, card): the guest is sent to Duitku's page. The
+    // schema accepts https only, so any other URL fails closed below.
     const candidate =
       method === "qris"
         ? { method, qrPayload: inquiry.qrString, issuer: null }
-        : {
-            method,
-            channelCode: code.code,
-            channelName: code.name.slice(0, 60),
-            virtualAccountNumber: inquiry.vaNumber,
-          };
+        : method === "ewallet" || method === "card"
+          ? {
+              method,
+              channelCode: code.code,
+              channelName: code.name.slice(0, 60),
+              paymentUrl: inquiry.paymentUrl,
+            }
+          : {
+              method,
+              channelCode: code.code,
+              channelName: code.name.slice(0, 60),
+              virtualAccountNumber: inquiry.vaNumber,
+            };
     const parsed = paymentInstructionsSchema.safeParse(candidate);
     if (!parsed.success) throw duitkuUnavailable();
+    // legend-kt3t1: the guest is sent to this page, so only a Duitku host is
+    // trusted (https is enforced by the schema); anything else fails closed.
+    if (parsed.data.method === "ewallet" || parsed.data.method === "card") {
+      let host: string;
+      try {
+        host = new URL(parsed.data.paymentUrl).hostname.toLowerCase();
+      } catch {
+        throw duitkuUnavailable();
+      }
+      if (host !== "duitku.com" && !host.endsWith(".duitku.com"))
+        throw duitkuUnavailable();
+    }
     return parsed.data;
   }
 
@@ -409,10 +443,6 @@ export function createDuitkuGateway(
     // Fresh list at the real amount: a method can be out of limits for it.
     const rows = await fetchMethods(resolved, input.amountIdr);
     const code = chooseCode(rows, input.method, input.channelCode);
-    // Pay-by-link answers (ewallet, card) have no PaymentInstructions variant
-    // yet: the contract change and the guest screen are a separate bead.
-    if (input.method === "ewallet" || input.method === "card")
-      throw validation("Metode pembayaran ini belum didukung.");
 
     const expiresAtMs = Date.parse(input.expiresAt);
     const inquiry = await duitkuInquiry({

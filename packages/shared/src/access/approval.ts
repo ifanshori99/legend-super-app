@@ -69,6 +69,7 @@ export const APPROVAL_ACTIONS = {
   reconciliation_case: "PAY recon; §3.7 Matriks Approval",
   purchase_request: "§3.15 Alur Pengadaan (Purchase Request → approval)",
   supplier_payment: "§3.15 Alur Pengadaan (Supplier Payment dengan approval)",
+  cash_out: "§3.19 Kas & Bank (kas keluar di atas batas; founder Q7)",
   manual_journal: "§3.16 Jurnal Manual & Berulang",
   period_reopen: "§3.16 Tutup Periode; ACC-02",
   payroll_cancel: "PAYR-05",
@@ -130,6 +131,25 @@ export const approvalMatrixSchema = z
             message: `Approval tier ${key} skips level ${level}`,
           });
     }
+    // Supplier payments always need one other person (founder Q27): a
+    // threshold may only ADD levels, so a matrix that has supplier_payment rows
+    // needs a base tier (threshold null or 0) with a level 1 row.
+    const supplierRows = rows.filter(
+      (row) => row.actionType === "supplier_payment",
+    );
+    if (
+      supplierRows.length > 0 &&
+      !supplierRows.some(
+        (row) =>
+          row.levels === 1 &&
+          (row.thresholdIdr === null || row.thresholdIdr === 0),
+      )
+    )
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "supplier_payment needs a base tier (threshold null or 0) with a level 1 approver: one person alone may never pay a supplier",
+      });
   });
 
 /**
@@ -183,6 +203,47 @@ export const DEFAULT_CASH_SHIFT_CLOSE_APPROVAL_POLICIES: readonly {
   { thresholdIdr: 0, level: 1, roleTemplateKey: "supervisor" },
   { thresholdIdr: 0, level: 1, roleTemplateKey: "outlet_manager" },
   { thresholdIdr: 0, level: 1, roleTemplateKey: "general_manager" },
+];
+
+/**
+ * Default cash out approval matrix (legend-4qowr, founder Q7 13 Nov 2026), the
+ * single source for new tenants (seedTenantRoleTemplates), the dev tenant and
+ * the data migration for existing tenants. Whether a cash out waits for
+ * approval is decided by the tenant limit and the anti-split sum
+ * (`finance_policies`, accounting-cash-limit.service.ts), not by this matrix:
+ * the matrix only names who decides once the entry is pending, so one tier,
+ * one level, floor 0, for the Finance template (it holds
+ * `accounting.cash_bank.approve`). The creator never decides their own entry
+ * (distinct actor). Applied only to a tenant with no cash_out row and a
+ * Finance template role; a tenant that configured its own matrix is never
+ * touched.
+ */
+export const DEFAULT_CASH_OUT_APPROVAL_POLICIES: readonly {
+  readonly thresholdIdr: number;
+  readonly level: number;
+  readonly roleTemplateKey: "finance";
+}[] = [{ thresholdIdr: 0, level: 1, roleTemplateKey: "finance" }];
+
+/**
+ * Default supplier payment approval matrix (legend-xxqz3, CTO money decision
+ * 17 Nov 2026), the single source for new tenants (seedTenantRoleTemplates),
+ * the dev tenant and migration 0467. The most restrictive default: EVERY
+ * supplier payment (floor 0, tiered on the cumulative amount of the invoice)
+ * needs one approval at level 1 from the Finance or Owner template role, and
+ * the row requires a distinct actor, so the requester never approves their own
+ * payment (the consumer also refuses a chain the requester took part in).
+ * Without any `supplier_payment` row the approval service still fails closed
+ * (APPROVAL_POLICY_MISSING). Applied only to a tenant with no supplier_payment
+ * row; a tenant that configured its own matrix is never touched, and a
+ * template role that does not exist adds no row.
+ */
+export const DEFAULT_SUPPLIER_PAYMENT_APPROVAL_POLICIES: readonly {
+  readonly thresholdIdr: number;
+  readonly level: number;
+  readonly roleTemplateKey: "finance" | "owner";
+}[] = [
+  { thresholdIdr: 0, level: 1, roleTemplateKey: "finance" },
+  { thresholdIdr: 0, level: 1, roleTemplateKey: "owner" },
 ];
 
 /**

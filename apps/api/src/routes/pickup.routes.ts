@@ -17,7 +17,11 @@ import {
   getPickupDisplay,
   markPickupPickedUp,
 } from "@starter/shared/kitchen";
-import { requireAuth } from "../middleware/auth.ts";
+import {
+  requireActingStaffOnSharedDevice,
+  resolveActingStaff,
+} from "../middleware/acting-staff.ts";
+import { requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
   getScopedTenantContext,
@@ -29,9 +33,11 @@ import * as pickup from "../services/pickup.service.ts";
 export const pickupRouter = Router({ mergeParams: true });
 
 const guard = [
-  requireAuth,
+  requireAuthAllowSharedDevice,
   requireTrustedOrigin,
   requireTenantContext,
+  resolveActingStaff,
+  requireActingStaffOnSharedDevice,
   requireOutletPermission("kds.expo.operate", (req) =>
     String(req.params.outletId),
   ),

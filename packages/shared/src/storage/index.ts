@@ -14,6 +14,7 @@ export const storagePurposeSchema = z.enum([
   "selfie",
   "document",
   "receipt",
+  "goods_receipt_photo",
   "brand_logo",
 ]);
 export type StoragePurpose = z.infer<typeof storagePurposeSchema>;
@@ -28,6 +29,8 @@ export const storagePurposePolicy = {
   selfie: { visibility: "private", maxBytes: 5 * 1024 * 1024 },
   document: { visibility: "private", maxBytes: 10 * 1024 * 1024 },
   receipt: { visibility: "private", maxBytes: 10 * 1024 * 1024 },
+  // Goods receipt photos: private, taken at the dock (bead legend-5v7oq).
+  goods_receipt_photo: { visibility: "private", maxBytes: 10 * 1024 * 1024 },
   // Tenant-level asset: no outlet, no source kind, public like menu photos.
   brand_logo: { visibility: "public", maxBytes: 2 * 1024 * 1024 },
 } as const satisfies Record<
@@ -61,7 +64,7 @@ export type StorageSourceKind = z.infer<typeof storageSourceKindSchema>;
 /** The purpose each source kind belongs to. */
 export const storageSourceKindPurpose = {
   purchase_invoice: "receipt",
-  goods_receipt: "receipt",
+  goods_receipt: "goods_receipt_photo",
   expense: "receipt",
   cash_deposit: "receipt",
   reimbursement: "receipt",

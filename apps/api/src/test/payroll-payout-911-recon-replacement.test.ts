@@ -516,6 +516,7 @@ describe("911 recon: legit proposal evidence replacement", () => {
           {
             itemIds: [w.itemId],
             evidenceKey: w.k1,
+            bankRef: `TRX${randomUUID().slice(0, 8)}`,
             note: NOTE_ITEM,
           } as never,
           W.proofs(),

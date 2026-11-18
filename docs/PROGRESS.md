@@ -25,6 +25,107 @@
 - B legend-kmrto: flag mati -> 503 `REFUND_PROVIDER_DISABLED`, refund tetap approved (antrean manual), sweep warn tanpa retry; doit terdaftar tetap dianggap tak terpasang saat flag mati; shim test `setPaymentRefundGateway` melempar di production; settle manual cek ulang cap (tolak 409 bila tanpa jejak penyedia, catat `capExcessIdr` bila ada jejak); warn startup bila flag true; runbook di `docs/deployment.md`.
 - Bukti: test 1072 a1-a4 + b merah di base (24 gagal), hijau di HEAD; regresi 74 file refund 1379 lulus; typecheck API exit 0; db:generate kosong; eslint+prettier file berubah bersih. Tanpa migrasi.
 - Tindak lanjut: legend-55up0 (P3 laporan tanpa nominal/ref beda), legend-h6k7c (refund ber-jejak macet tak bisa dicatat manual saat flag mati), legend-l9ey4 (pool DP 0 bila ada refund + fact echo).
+## legend-e3k4p: pengirim digest reconciliation edge berkala (18 Nov 2026)
+
+- Dasar: `a915c9409` (`ghostex/bawa-kai-upsync-ke-m1`, ledger 0684), cabang kerja `ghostex/job-rekonsiliasi-edge-berkala`. Referensi runtime S1-S5 dibaca tanpa merge. Tidak merencanakan migrasi atau perubahan perhitungan ledger.
+- Selesai: `edge/reconciliation-sender.ts` membangun digest baru pada startup lalu tiap lima menit; retry mulai 30 detik, eksponensial maksimal lima menit, reset setelah sukses. Tidak overlap, timeout HTTP 15 detik, redirect ditolak, shutdown membatalkan POST dan menunggu run. Runtime primary dan standby memakai `withTenant` + `buildEdgeTxnDigest`; transaksi/kunci cursor selesai sebelum HTTP dimulai.
+- POST bearer dijalankan sebelum guard sesi registry. Tenant/outlet/node berasal dari `authenticateEdgeCredential`; path node asing 404, body node asing 400, domain tenant asing 403, token invalid/dicabut 401. Tidak ada fallback ke cookie bila bearer invalid. POST/GET operator mempertahankan guard izin/origin/surface lama; run otomatis `checkedBy = null`. Test memastikan hanya baris laporan bertambah, tanpa mengubah uang atau ledger.
+- Bukti gagal-dulu: `LEGEND_TEST_FILES="src/test/edge-reconciliation-sender.test.ts src/test/edge-reconciliation.test.ts src/test/edge-registry-pull.test.ts" heavy pnpm test` menghasilkan 12 gagal/61 lulus, bukan kegagalan setup (`/tmp/legend-e3k4p-red.log`). Setelah implementasi, tiga file tersebut + dua gate worker cloud menghasilkan 87/87 hijau; tiga kontrak root (text/edge/edge-master-data) 19/19 hijau (`/tmp/legend-e3k4p-green.log`). Test tambahan timeout dan digest node asing hijau.
+- Satu subagent reviewer konteks segar: tidak ada temuan konkret. Setup worktree, `pnpm dev:prepare`, dan `pnpm run doctor` berhasil. `heavy pnpm --filter @starter/api typecheck` exit 0 (`/tmp/legend-e3k4p-typecheck.log`); `heavy pnpm --filter @starter/api build` exit 0 (`/tmp/legend-e3k4p-build.log`); `heavy pnpm db:generate` exit 0, "No schema changes, nothing to migrate" (`/tmp/legend-e3k4p-db-generate.log`). Tidak ada perubahan drizzle. Gate penuh (check, build web, e2e) milik merge train sesuai TEAM.md, tidak dijalankan thread ini.
+- Pra-gate: `pnpm exec eslint` dan `pnpm exec prettier --check` pada tujuh file TS berubah hijau; `git diff --check` hijau. Format seluruh arsip `docs/PROGRESS.md` merah juga pada salinan dasar `a915c9409` (`/tmp/legend-e3k4p-progress-base.md`); perubahan formatter berada di arsip lama, bukan entri ini, dan tidak diformat ulang di luar scope.
+- Perintah lint (exit 0): `pnpm exec eslint apps/api/src/edge/reconciliation-sender.ts apps/api/src/edge/runtime.ts apps/api/src/routes/edge-reconciliation.routes.ts apps/api/src/routes/index.ts apps/api/src/test/edge-reconciliation-sender.test.ts apps/api/src/test/edge-reconciliation.test.ts apps/api/src/test/edge-registry-pull.test.ts`. Perintah format TS (exit 0): `pnpm exec prettier --check apps/api/src/edge/reconciliation-sender.ts apps/api/src/edge/runtime.ts apps/api/src/routes/edge-reconciliation.routes.ts apps/api/src/routes/index.ts apps/api/src/test/edge-reconciliation-sender.test.ts apps/api/src/test/edge-reconciliation.test.ts apps/api/src/test/edge-registry-pull.test.ts`. Entri progress baru lulus format saat diekstrak sendiri; arsip lama dipertahankan.
+- Batas lama `legend-b3k` (standby already_received) tetap di kartu terpisah. Status kartu diurus CTO sesuai aturan engineer Codex. Subagent: total 5, puncak 4 bersamaan, token heavy parent untuk setup lalu test-writer/test-runner untuk semua test/gate. Alat `session-usage.py` tidak menemukan transkrip UUID Codex; `parallel-report` hanya membaca sesi Claude, sehingga biaya/token/rata-rata native tidak tersedia.
+
+## 1005 Payout: tarik klaim return dua orang (engineer, legend-snwnn, cabang ghostex/3bb6104c dari ghostex/92055877 74e142d8b, 17 Nov 2026)
+
+- Sudah: penarikan klaim return terbuka lewat dua orang. Tabel `payroll_payout_return_withdrawals`, grant kind `return_withdraw` (password di tiap langkah), fungsi tepercaya `app.payout_return_withdraw_propose` dan `app.payout_return_withdraw_approve` (0615), kind flag recon `return_withdraw` (0616). Pengaju dan sesi pengaju tidak bisa menyetujui (PAYOUT-94). Setelah approve klaim berstatus `withdrawn`, item kembali ke status sebelum klaim dan boleh diajukan lagi dengan ref baru. Jurnal yang sudah diposting tidak disentuh, tidak ada pembayaran ulang otomatis. Recon menandai penarikan tanpa attestation dua orang yang sah.
+- API: route di bawah `/hris/payroll` (file `payroll-payout-return-withdraw.routes.ts`). Layar menyusul di legend-o2b4m.
+- Migrasi nomor kerja 0615-0616 (journal idx 585/586); merge train menomori ulang. Kode galat baru PAYOUT-92..96 (96 dicadangkan): cek bentrok dengan 991 sebelum merge.
+- Keputusan: bukti return yang sudah dipakai tetap terbakar (ajukan lagi butuh berkas bukti baru); indeks `bank_ref` menjadi parsial (tidak termasuk klaim `withdrawn`); konfirmasi tidak diblokir oleh penarikan yang menunggu.
+- Uji: gagal-dulu 36/36 merah di base, 36/36 hijau di hasil; suite payout terarah 12 berkas 214/214 lulus; typecheck api exit 0; db:generate kosong; prettier dan eslint bersih. Architect xhigh: P2 dan P3 murah dibetulkan (`docs/briefs/1005/review-fixes.md`). Suite penuh dan `pnpm check` belum dijalankan (gerbang merge train).
+- Bead lanjutan: audit propose bersamaan, usulan lama tanpa pembatalan, filter `since` recon pada cabang approved/withdrawn/open.
+## 1050 Web: tombol setujui langsung kas keluar ikut chain (ui-engineer Sonnet, legend-fukt6, 18 Nov 2026)
+- Sudah: baris kas keluar menunggu persetujuan tidak lagi punya tombol Setujui langsung; diganti tautan "Ke kotak persetujuan" (`/kelola/persetujuan`, hanya bila pemegang `approval.inbox.view`). Tolak tetap. `moneyErrorKey` memetakan `CASH_OUT_CHAIN_OPEN`/`CASH_OUT_CHAIN_MISSING` ke kalimat jelas. Tanpa field DTO baru, tanpa migrasi (entri pending selalu punya chain, jadi fail-closed).
+- Bukti: node:test cash-bank lulus, tsc web lulus, prettier/eslint hijau, e2e mock `e2e/legend-fukt6.mock.spec.ts` 360/1280 lulus (screenshot di test-results/screenshots/legend-fukt6).
+- Tindak lanjut: tautan masih ke daftar inbox, bukan ke permintaan itu (DTO belum membawa id request); `useApproveCashBankEntry` dan kunci teks `approval.approve` kini tak terpakai di layar ini.
+
+## 1037 Perbaikan SO 1036 kas + supplier (engineer Opus, legend-3bkvl/j6v6v/3k9qg/lhyt0/6ipij, cabang ghostex/b49350e5 dari m1 8f544e5ea, 18 Nov 2026)
+- Sudah: approve langsung kas hanya bila chain `approved` (409 `CASH_OUT_CHAIN_OPEN`/`CASH_OUT_CHAIN_MISSING`); anti-split memilih tier dari total harian + `alwaysRequire`; top-up tertahan membuka chain `cash_out`; bayar supplier selalu chain (tier terendah bila nominal di bawah semua tier, founder Q27); semua poster kredit 1102 ambil `entityLock` dulu (urutan: row run/batch -> entity -> batch advisory -> fund); guard return kas kecil mengurangi kredit 1102 yang menunggu (settle_pending/skipped, outbox payroll/pinjaman/reimburse tunai, item gaji tunai disetujui belum diserahkan, pembelian kas kecil belum terjurnal).
+- Tanpa migrasi (0660-0662 tidak terpakai); db:generate kosong. Architect xhigh: P1 pembelian belum terjurnal sudah ditutup, delta bersih.
+- Tindak lanjut: legend-rvao9 (guard saat approve batch gaji tunai, butuh founder), legend-vgutl (entri pending lama tanpa chain), legend-fukt6 (tombol web approve langsung).
+- Angka: 113 menit, 28 subagent, puncak 8, rata-rata 1,15; biaya* 8.392k (Sonnet 5.309k, Opus utama 1.916k, Opus sub 866k, Haiku 301k).
+## 1046 POS jual tiket fasilitas web (ui-engineer, legend-l65nz, 18 Nov 2026)
+
+- Sudah: alur nyata jual tiket → bayar di layar bayar → kartu "tiket siap diterbitkan" saat lunas → `/pos/tiket?order&tiket` terbitkan atas klik → QR+PIN tampil sekali (state komponen saja) → Cetak tiket = terbit ulang kunci baru (kode lama tidak berlaku). Gagal terbit ulang membuang kode lama.
+- Kontrak: `posDiscountSchema.voucherCode`, `posEdcAttemptSchema.bank/method/mode` (nullable, dari kolom DB yang ada), `display` di daftar tiket pesanan (join baca saja). Tanpa migrasi.
+- Review architect (K): 2 temuan (mock-wire voucherCode, QR basi setelah cetak ulang gagal) sudah dibetulkan.
+- Berikut: merge train; screenshot di `docs/review/img/pos1046-*`.
+
+## 1067 Perbaikan second opinion status edge (engineer S, 18 Nov 2026)
+
+- Basis ec1314e8f dari ghostex/status-edge-ke-cloud-s1-s5; push yang diminta tetap ke cabang itu. Kartu legend-qwuqq, legend-tj9y6, legend-l83d2. Tidak ada migrasi; rentang 0685 tidak dipakai.
+- Episode: heartbeat setelah raised_at alarm lama menyelesaikan episode itu pada waktu heartbeat, walau heartbeat sudah basi saat worker berjalan lagi. Alarm pengganti memakai ID baru dan notifikasi baru; pengulangan tetap satu notifikasi per penerima per episode. Guard SQL raisedBefore mencegah sweep lama menutup episode pengganti. Status dan identitas episode memakai data persisten, bukan memori worker.
+- Outlet: hanya status active dapat membuka alarm, outlet closed menyelesaikan alarm lama termasuk bila heartbeat null. DST: konversi awal/akhir jendela memakai offset di masing-masing instant; fold memakai kejadian pertama dan gap bergeser maju sebesar gap. Desain bagian 8 diperjelas.
+- Bukti gagal-dulu: LEGEND_TEST_FILES dua file offline melalui heavy pnpm test exit 1, 10 gagal sesuai temuan dan 32 lulus; tanpa kegagalan setup (/tmp/edge-status-1067-red.log). Sesudah perbaikan: lima file API edge 96/96 dan tiga file root text/edge/edge-master-data contract 19/19, exit 0 (/tmp/edge-status-1067-green.log). Cakupan termasuk delayed sweep, worker dibuat ulang, dedup per episode, outlet ditutup, DST maju/mundur, fold/gap.
+- Satu subagent reviewer konteks segar selesai: tidak ada temuan P1/P2/P3. Gate setelah kode beku: `heavy pnpm --filter @starter/api typecheck` exit 0; `heavy pnpm build` exit 0 (API + web, 2/2 task, tanpa cache); `heavy pnpm db:generate` exit 0, No schema changes, nothing to migrate. Tidak ada perubahan file hasil build/generate. Log /tmp/edge-status-1067-typecheck.log, /tmp/edge-status-1067-build.log, /tmp/edge-status-1067-generate.log. Full pnpm check diserahkan merge train sesuai TEAM bagian Paralel dulu; e2e tidak dijalankan (tidak mengubah auth/routing/session/CORS/UI).
+- Pra-gate file berubah: `pnpm exec eslint apps/api/src/services/edge-offline-sweep.ts apps/api/src/services/edge-node-alert.service.ts apps/api/src/test/edge-offline-sweep.test.ts apps/api/src/test/edge-offline-open-since.test.ts` exit 0; `pnpm exec prettier --check apps/api/src/services/edge-offline-sweep.ts apps/api/src/services/edge-node-alert.service.ts apps/api/src/test/edge-offline-sweep.test.ts apps/api/src/test/edge-offline-open-since.test.ts docs/design/edge-status-cloud.md docs/PROGRESS.md` exit 0. Prettier PROGRESS juga merapikan spasi/format Markdown lama; catatan lama dipertahankan.
+- Subagent: total 6, puncak 4 bersamaan; token heavy setup parent, RED/GREEN dan gate final test-runner; semua job selesai. session-usage.py tidak menemukan transkrip Codex; parallel-report hanya memuat Claude. Snapshot native akhir 14:31 WIB (sesi sejak 14:02): rata-rata 1,36 subagent aktif; 26.596.559 token termasuk 25.850.368 cached input, output 48.173 (cache sudah bagian input, bukan tambahan); biaya uang tidak tersedia. Sumber /tmp/edge-status-1067-usage.json. Status Beads dipindah CTO sesuai aturan engineer Codex.
+- Kuota akhir (5h/7d, ghostex accounts 14:30 WIB): Claude #1 0/36%, #2 0/93%, #3 0/62%, #4 24/13%, #5 31/10%; Codex #2 0/100%, #3 100/34%, #4 65/31%, #5 76/33%, #6/#7/#8 pembacaan tidak tersedia. Snapshot awal tidak dicatat; tidak mengarang delta kuota. Checkpoint perbaikan aa462cbf0; commit catatan gate melengkapi checkpoint itu. Push tanpa force ke ghostex/status-edge-ke-cloud-s1-s5 setelah catatan final diverifikasi.
+
+## 1054 Tablet bersama: PIN kasir wajib untuk aksi uang/reservasi, route darurat tetap terbuka (engineer, legend-i0ipj, legend-m05vx, 18 Nov 2026)
+
+- Cabang ghostex/pin-kasir-tablet-bersama = m1 + merge origin/ghostex/1027-guard-http-perangkat-bersama (requireAuth menolak sesi tablet; route kasir wajib requireAuthAllowSharedDevice). 8b2dc0b1 (1043 allowlist Q29) TIDAK digabung: konflik dengan 1027 di app.ts, middleware/auth.ts, device-shared-mode.test.ts (7 hunk), dibawa ke merge train batch91.
+- i0ipj: reservation cancel, deposit-link, no-show, customer-credit apply (sharedStaff) dan order-issue resolve/report (1027 sudah memasang guard, di sini aktor dijadikan actorOf) memakai PIN kasir; temuan architect: order-recovery-charge (waive/refund/collect-at-pos) dan open-bill ikut actorOf supaya penyetuju != pelaksana tidak bisa diakali.
+- m05vx: keputusan di docs/DECISIONS.md; test pengunci emergency-no-money-routes.test.ts (daftar route persis, tanpa path uang).
+- Temuan terbuka: seat dan PATCH tables reservasi tetap requireAuth (ditolak di tablet bersama; kasir tidak bisa melihat/mengatur meja dari tablet), keputusan CTO.
+
+## 990 Payout lanjutan: recon flag dua orang, jurnal fee, recon closure/attestation, ref bank return (engineer, legend-xbagc/d9pxr/y2lk2/r8nas/nsqhm, cabang dari origin/milestone/m1 1b0fd2a9e, 17 Nov 2026)
+
+- Sudah: tabel `payroll_payout_recon_clearances` + grant kind `recon_clear` (0580), fungsi tepercaya propose/approve dua orang password step-up + helper `payout_payslip_held_by_recon` dipakai guard item dan `payout_resolve_approve` (0581), cek jurnal `payroll-payout-overpaid-fee:<item>` saat COMMIT, PAYOUT-90 (0582), ref bank wajib di return propose/confirm, unik per tenant, PAYOUT-88/89 (0583). API `/api/hris/payroll/payout-recon-flags` + clearance/approve. Recon: jurnal fee, closure (kind closure), attestation resolve/bank_confirm di batch tanpa operasi lain, grant item_set_hash/detail/ref_id. Web: field ref bank di dialog return + pesan error.
+- Migrasi nomor kerja 0580-0583 (renumber oleh merge train). 0583 berhenti bila ada klaim return terbuka tanpa ref bank (keputusan ops).
+- Keputusan: clearance hanya disetujui yang melepas tahanan; kunci flag yang sama tidak muncul lagi setelah clear; grant recon_clear password saja; kartu wrz3v dilewati (tidak ada layar recon payout, melebar).
+- Bead lanjutan: legend-snwnn (tarik klaim return), legend-w9od2 (fee_idr bisa dipalsukan legend_app), legend-o2b4m (UI clearance).
+- Uji: gagal-dulu 39/43 merah di base; suite payout terarah 71 file 864 lulus (1 fixture E-4, dibetulkan); run delta 7 file 113/113 lulus; typecheck api/shared/web exit 0; db:generate kosong. Architect xhigh: P1 trigger 0583 (dibetulkan), P2 x2 + P3 x6 dibetulkan; P3 fee_idr diterima ke legend-w9od2.
+- Sesi 18:27-20:02 (95 menit): 33 subagent, puncak 8, rata 0.58 berjalan; biaya* ~9.9M (utama opus 2.4M, sonnet 5.7M, opus sub 1.3M, haiku 0.6M). Token heavy: test-runner.
+- Lanjutan keputusan CTO (17 Nov malam): legend-hklnq (0584) clearance terikat sidik flag (hash dihitung SQL dari item, attestation, posting; kolom volatile/terenkripsi dibuang), sighting insert-only, tahanan membandingkan sidik LIVE (lebih membatasi dari kontrak: data berubah setelah approve langsung menahan), approve ditolak PAYOUT-91 bila data berubah sejak propose, recon memanggil ulang flag lama per potongan 100 (flag baru ditulis dulu, potongan gagal tidak menahan cursor). legend-w9od2: recon membandingkan fee_idr posting overpaid dengan fee tersegel (didekripsi) dan nominal jurnal fee; fee 0 sah hanya bila akuntansi mati dan tanpa jurnal; NULL fail closed. Architect xhigh 2 ronde: P2 x3 dibetulkan, P3 dicatat di docs/briefs/990/phase5.md. Suite payout terarah akhir 73 file 889 lulus 0 gagal.
+
+## 947 Lanjutan 934: unfreeze buka ulang persetujuan, kolom persetujuan halted (legend-s20iu, legend-dz8ci, 17 Nov 2026)
+
+- Cabang ghostex/947-payout-934-followups dari tip 934 d7bb598a4, migrasi sementara 0433_payout_934_followups.sql (tanpa tabel baru).
+- legend-s20iu: unfreeze setelah "Bukan saya" atas persetujuan utama mengembalikan batch approved ke pending_approval dalam transaksi yang sama (approver, waktu, kedaluwarsa, rekening sumber dikosongkan; item approved kembali prepared). Persetujuan baru wajib grant batch_approve baru oleh orang yang bukan pemohon dan bukan penyangkal (PAYOUT-84, di service, grant_issue, dan attest). Bila cash sudah sebagian diserahkan, batch tidak dibuka ulang (akan macet): item approved jadi not_sent dan batch partially_failed (keputusan engineer yang membatasi pembayaran; perlu pengakuan CTO). Audit batch_reopened/batch_stopped. Penyangkal yang menarik klaim tetap tidak bisa menyetujui ulang.
+- legend-dz8ci: trigger payroll_disbursement_batches_approval_cols_trg menolak perubahan approved_by/approved_at/approval_expires_at/source_bank_account_id pada status apa pun (termasuk halted) kecuali persetujuan dengan grant terpakai di txid yang sama, ekspor batch lama, atau jalur unfreeze (bukti txid dari payroll_payout_batch_unfreezes yang hanya bisa ditulis legend_payout). Guard 0344/0355/item/freeze dilonggarkan hanya dengan bukti itu.
+- Bukti: test gagal-dulu di HEAD lalu hijau (reapprove: tidak ada uang keluar sebelum persetujuan ulang, tidak ada pihak dibayar lebih, file ekspor/item terkirim tak berubah; halted: SQL langsung ditolak); suite payout 67 file, 974 lulus, 1 timeout beban (897-sweeps-reach-valid-targets) lulus 7/7 saat dijalankan sendiri; typecheck API hijau, db:generate kosong.
+- Architect xhigh: tanpa P1; P2 (cash sebagian macet, case "84" ganda) ditutup; P3 test diperketat.
+- Subagent 947: sekitar 11 (34 sesi total, 23 milik 934), token heavy dipegang test-runner.
+
+## 934 Persetujuan utama batch payout lewat grant + log (legend-xp8mc, 17 Nov 2026)
+
+- Cabang ghostex/934-payout-persetujuan-utama-grant dari milestone/m1 c17c60df7, tip 0c5f37cef (6 commit, push tanpa force). Migrasi sementara 0432_payout_batch_approve_grant.sql.
+- Perubahan: grant sekali pakai baru kind batch_approve (step approve) wajib untuk persetujuan utama batch; app.payout_batch_approve_attest memakai grant dan menulis attestation + baris payroll_payout_approval_log lewat app.payout_attest, sehingga notifikasi dan "Bukan saya" berlaku untuk persetujuan utama. Trigger PAYOUT-83 menolak status pending_approval ke approved tanpa grant terpakai di transaksi yang sama (juga lewat SQL langsung). Aturan dua orang tetap (tolak di grant_issue, consume, service, dan CHECK). Urutan kunci approve: grant, run (update), batch, sama dengan disown/unfreeze. Recon (app.payout_recon_flag dan loadWithdrawals) ikut memeriksa grant persetujuan utama. Kalah balapan menjawab 409.
+- Bukti: 5 test gagal-dulu di HEAD lalu hijau, plus 2 test konkurensi dan 1 test recon; suite payout 65 file 965 lulus (0 gagal), typecheck penuh hijau, db:generate kosong, migrator non-superuser 12/12, root text-contract + access-i18n 16/16. Test 918/920 disesuaikan: approver kini aktor log.
+- Architect xhigh: pass 1 tanpa P1, dua P2 (kunci run SHARE ke UPDATE bisa deadlock; fixture core tanpa grant), keduanya ditutup; pass 2 tanpa P1/P2.
+- Subagent: total 23, puncak 4 bersamaan, token heavy dipegang test-runner.
+
+## 981 tindak lanjut CTO (17 Nov 2026)
+
+- Revoke token/klien MCP tetap terbuka saat modul mati; discovery, authorize, register tenant bermodul mati sama dengan tanpa tenant; cek modul di token exchange di dalam transaksi terkunci (sebelum platform_locked); TL-11 menolak id outlet asing (helper assertKnownOutlets, dipakai juga TL-21).
+- Migrasi 0546_mcp_flag_backfill (data saja, idempoten): flag mcp untuk tenant aktif yang paketnya memuat mcp dan punya klien approved atau token aktif; audit satu baris per tenant yang berubah. Tenant di paket tanpa mcp tidak diubah (setTenantPackage menolaknya).
+- Gate: grup tes terarah 55 berkas hijau (satu tes diperbaiki lalu 2 berkas ulang 45/45), lint 0 error, typecheck 0 error, db:generate kosong, prettier hijau. Architect xhigh: 5 temuan, semua dibetulkan.
+
+## 981 Ulasan pelanggan, AI-11 dan modul MCP (17 Nov 2026)
+
+- Kartu legend-vqicf (tabel customer_reviews, migrasi 0545, RLS tenant+outlet, API /api/reviews), legend-39d.5 (TL-21 get_review_summary, agregat tanpa PII), legend-hbuq3 (modul mcp ditegakkan di bearer, OAuth, admin, registrasi, discovery, dan eksekusi aksi MCP yang sudah disetujui).
+- Keputusan pembatas: GET butuh review.respond; POST dan PATCH moderasi butuh crm.feedback.manage; source dipaksa manual; moderasi wajib expectedStatus (409 REVIEW_STATUS_CONFLICT).
+- Gate terarah 52 berkas / 1488 test hijau, root node 3513 lulus, prettier, eslint, typecheck api+shared+web hijau, db:generate kosong. Review architect: 4 temuan sudah dibetulkan.
+- Belum diputuskan (lihat laporan): revoke token saat modul mati, discovery 404 vs unknown tenant, enforce_member_rls untuk customer_profile_id. Rollout: tenant yang memakai MCP wajib diberi flag mcp sebelum deploy.
+
+## 936 POS panel pembayaran: sisa legend-5w6 (17 Nov 2026)
+
+- Basis milestone/m1 c17c60df7, worktree legend-7944b492. Tanpa migrasi (db:generate kosong). Brief subagent: docs/briefs/sub-936-pos-payment.md.
+- Dibangun: panel voucher (cek kode/scan, potongan dari respons server, hapus voucher dengan konfirmasi), panel tukar poin member (saldo, kuotasi server wajib sebelum tukar), jual tiket fasilitas di /pos/tiket + cetak tiket lewat Print Agent (mock), state EDC "ditolak" eksplisit (alasan + kode respons dari server, jalan kembali ke pesanan), label penyedia QRIS di layar pelanggan dari data (doit/duitku).
+- Jangan rugi: UI tidak menghitung potongan, nilai poin, atau total; tombol terapkan/tukar/hapus/jual/cetak terkunci saat request berjalan. Di luar mock, jual tiket = CONTRACT_PENDING (belum ada kontrak pembayaran tiket; tidak boleh terbit tanpa uang) dan menu Tiket disembunyikan. Mock engine: potongan voucher <= subtotal dan <= sisa, poin <= sisa, idempotency key dicatat hanya setelah sukses (temuan reviewer, dibetulkan + test).
+- Kontrak pending dicatat di apps/web/src/features/ws04-pos-kasir/CONTRACT-GAPS.md: endpoint kasir saldo/kuotasi/tukar poin, apply/hapus voucher di order POS (body applyPosDiscount belum cocok untuk voucher), status EDC declined dari server, jual tiket + tender, cetak tiket Print Agent, cari pelanggan/produk/jam fasilitas untuk kasir, paket fasilitas berisi menu.
+- Langkah berikut: kontrak backend di atas (WS-05/WS-09), lalu legend-l2i (wiring API sungguhan).
 
 ## 925 Harness Lighthouse dan fixture withdrawal (16 Nov 2026)
 
@@ -6988,6 +7089,123 @@ pnpm exec prettier --check apps/web/src/features/ws03-floor/components/dialogs.t
 - Ditutup sesudah landing: legend-i78o6, legend-40nvj, dan kartu train legend-qhsex. Kedua kartu implementasi dibaca lengkap: description/AC formal kosong, komentar CTO930 menyatakan hold selesai dan regresi AC1..14 hijau; gate integrasi lengkap membuktikan perilaku kontrak/isolasi/resync. Batas shell eksternal dan mock web disebut saat penutupan. Komentar final kartu memuat SHA m1 setelah commit dokumentasi ini.
 - Laporan cleanup awal disk24,11GB; integrasi masih dikunci sampai seluruh dokumentasi dipush. Handoff hanya membersihkan worktree/cabang int batch80, menjaga lock worktree d8fc7d19 dan dev-seed yang kotor, serta mengedit docs/merge-queue.md pada checkout utama tanpa commit. Semua job selesai. Subagent3 unik/puncak3, satu runner berat; helper biaya/token native tidak tersedia.
 
+### 937 — WS-07 event ekspor dan bukti hambatan XSD (17 Nov 2026)
+
+- Basis worktree milestone/m1 c17c60df7; kedua kartu diperiksa dan belum ada pada m1. legend-0cnqt: tax_report.exported kini masuk outbox dalam transaksi ekspor, satu kali per laporan/revisi, replay tidak menulis lagi. Tujuh kode TAX_REPORT yang belum dipetakan mendapat teks Indonesia khusus. Tidak ada perubahan angka pajak, jurnal, akses, migrasi, atau format XML.
+- Bukti gagal-dulu: empat assertion event gagal karena outbox kosong; text-contract gagal karena TAX_REPORT_SUPERSEDED masih memakai pesan umum. Bukti hijau sebelum commit: accounting-tax-reports-service 63/63 dan text-contract 12/12. Test baru mencakup payload/angka tetap, replay, konkurensi, upload gagal/retry, draf ditolak, rollback outbox+hapus file, dan koreksi/superseded. Log /tmp/legend-937-outbox-red.log, /tmp/legend-937-text-red.log, /tmp/legend-937-outbox-green.log, /tmp/legend-937-text-green.log.
+- Reviewer konteks segar: nol temuan; route accounting khusus cloud sehingga event tenant-wide tidak mengubah akses edge. Prettier dan ESLint lima berkas kode/test serta format dokumen blocker hijau sesudah edit terakhir. Gate akhir accounting/pajak terarah dan satu typecheck API dijalankan runner setelah commit; hasil akhir ada pada laporan handoff. Tidak menjalankan gate penuh merge train.
+- legend-igclp belum selesai: XSD resmi tertanam dalam converter BPMP/BPPU DJP v3, tetapi root TaxReport internal dan data rekap tidak memenuhi dokumen resmi. NITKU, kode objek, tarif, tanggal potong dan rincian legal lain tidak tersedia. Bukti URL/versi/hash serta keputusan kontrak yang dibutuhkan ada di docs/briefs/937-coretax-xsd-blocker.md. Tidak memasang validator palsu atau gerbang yang menolak semua ekspor.
+- Subagent native Codex: total 7, puncak 5 bersamaan; dua Explore, dua implementer, satu test-writer, satu runner, satu reviewer. Token heavy bergilir test-writer lalu runner. session-usage tidak menemukan transkrip native; parallel-report hanya membaca sesi Claude, jadi biaya/token/rata-rata native tidak tersedia.
+- Pengecualian format arsip: Prettier docs/PROGRESS.md merah pada basis c17c60df7 dan sesudah penambahan ini; perbandingan basis /tmp/legend-937-PROGRESS-base.md juga merah. Tidak memformat ulang seluruh arsip di luar cakupan.
+
+## Task 938 — loyalty report current members (legend-eqdcd, 17 Nov 2026)
+
+- Cabang `fix/938-loyalty-current-metrics` dari milestone/m1 `c17c60df7`; tanpa migrasi atau perubahan nilai/aturan poin.
+- Keputusan sumber: active_members membaca snapshot status aktif saat query, termasuk member tanpa home outlet pada total tenant. Metadata bernama `(saat ini)`, estimasi, hanya bucket terakhir, tanpa perbandingan historis; tidak membuat histori harian palsu.
+- points_redeemed tetap unavailable dengan alasan outlet/tanggal bisnis penukaran belum tercatat lengkap. Kartu lanjutan `legend-iuhjc` menyimpan kebutuhan atribusi otoritatif; outlet pengambilan hadiah tidak dianggap outlet penukaran.
+- Paralel: 6 subagent Codex (2 Explore, test-writer, implementer, test-runner, reviewer), puncak 6. Token heavy tunggal dipegang test-runner. Red sah: 7 gagal/5 lulus. Review API tanpa temuan; gate awal menemukan daftar mock unavailable yang usang. Reviewer menemukan mock historis perlu label/finality/nilai snapshot yang sama; regresi mock red sah 1 gagal/5 lulus, diperbaiki agar active_members mengikuti registry, berlabel saat ini, tetap estimate, dan nilainya memakai tanggal data terkini. Verifikasi akhir dilaporkan pada komentar kartu serta handover. Helper session-usage tidak menemukan transkrip native Codex; parallel-report hanya memuat sesi Claude, jadi biaya/token/rata-rata native tidak tersedia.
+
+### Kartu 935: foto penerimaan barang dan batas basi replika perangkat edge (17 Nov 2026)
+
+- Cabang `ghostex/935-foto-penerimaan-stale-edge`, dari `milestone/m1` (c17c60df7). Tanpa migrasi baru (`core_storage_objects.purpose` varchar tanpa constraint); `db:generate` tidak menghasilkan apa pun.
+- legend-iy5l0: foto penerimaan barang kini ditautkan lewat `linkStorageObjectSource` di dalam transaksi pembuatan penerimaan (hanya pemilik foto, outlet yang sama, belum tertaut). Cek "sudah terlampir" dan `loadMediaIds` memfilter outlet di SQL. Foto milik user lain, outlet lain, atau tenant lain ditolak 422.
+- legend-5v7oq: purpose baru `goods_receipt_photo` (privat, 10 MiB) untuk kind `goods_receipt`; foto lebih tua dari 24 jam ditolak 422 sebelum ditautkan. Foto lama berpurpose `receipt` yang sudah tertaut tetap bisa dibaca (izin baca khusus di `core-storage-access.ts`); unggahan lama yang belum tertaut ditolak (hanya unggahan menggantung saat deploy).
+- legend-2lgu: env `EDGE_DEVICE_REGISTRY_MAX_STALE_SECONDS` (bawaan 72 jam, 1 jam sampai 30 hari, minimal 2x batas basi lunak). Lewat batas, edge menolak sesi perangkat baru (enroll, issue token, heartbeat perangkat tanpa sesi hidup 5 menit) dengan 503 `EDGE_DEVICE_REGISTRY_STALE`; sesi berjalan tidak diputus. Panel Koneksi menampilkan status dengan teks katalog.
+- Keputusan: peringatan hard-stale hanya sampai ke outbox lokal edge; jalur ke cloud dicatat di legend-uvnll. Replika yang belum pernah berhasil ditarik dihitung dari waktu proses mulai (restart mengulang hitungan).
+- Review architect: satu P1 (foto penerimaan lama tidak terbaca) sudah dibetulkan; P2 peringatan dicatat sebagai bead.
+- Subagent: total sekitar 21, puncak 5 bersamaan, token heavy dipegang bergantian (test-writer, implementer, test-runner).
+
+## Batch81 merge train (17 Nov 2026) -> int/batch81 -> milestone/m1
+
+Basis `c17c60df7` (batch80). Empat cabang, tanpa migrasi (ujung tetap 0431), konflik hanya `docs/PROGRESS.md` (dua sisi disimpan, direview): `ghostex/bf531619` 784facadd (legend-0cnqt), `fix/938-loyalty-current-metrics` 7d173a189 (legend-eqdcd), `ghostex/935-foto-penerimaan-stale-edge` 8a661cd90 (K akses: legend-iy5l0, legend-5v7oq, legend-2lgu; deploy API+web bersamaan), `ghostex/160d3d37` 825123713 (legend-xtj5t). Audit cabang SIAP tambahan: tidak ada (934/940/5w6/929/5e8ae9c0 bukan SIAP).
+
+Gate per tahap:
+
+- Lint per cabang (eslint + prettier 42 berkas berubah): hijau.
+- Fast gate 383 berkas (311 API + 72 root; seluruh pemindai `*-single-path*`/`*-contract*`/`*registry*`, text-contract, pajak/loyalty/storage-foto/edge/payout): 05:51 -> 06:18, 26,5 mnt. API 4422 lulus, root 1235 lulus, 0 gagal.
+- `pnpm run lint`: 1 mnt 07 dtk, hijau (0 error, 2 warning).
+- `pnpm run typecheck`: 2 mnt 44 dtk, hijau.
+- e2e produksi: 2 mnt 19 dtk, 18 lulus / 1 skip. Build: 6 mnt 34 dtk, hijau.
+- e2e mock penuh: dihentikan pada 17 gagal dari ~520 (spesifikasi legend-23nc, 5k0, 9bh, diq, g6d, ik9g tidak disentuh diff). Run mock penuh di m1 murni (tanpa batch81) 07:02 -> 08:20 (1,2 jam): 38 gagal, mencakup keenam berkas itu. Jadi kegagalan mock sudah ada di m1, bukan dari batch81. Perlu kartu terpisah (belum dibuat).
+- Full run #1 (08:20, 5 mnt 27 dtk): satu gagal root `tests/platform-offline-banner.test.mjs` karena stub `../use-now.ts` tanpa `useNowMs` (dipakai `device-registry-stale-notice.tsx` dari 935). Diperbaiki di commit chore `7e0b4b056` (stub menambah `useNowMs`); tes 14/14 hijau terarah (+operations-checklist-labels, 2lgu-edge-stale-panel).
+- Full run #2 (08:26 -> 10:08, 102 mnt): root 3513, web 92, API 20976 lulus; 14 gagal di 6 berkas API (`edge-print-db`, `member-feedback`, `qr-va-912-r2-close-rules`, `rbac-audit-writer`, `recipes-resync-migration-0377-edge`, `service-request-api`) dengan `Connection terminated unexpectedly` / `57P03` / `Sign-up failed with 500` = kegagalan lingkungan DB. Rerun 6 berkas terarah 10:09 -> 10:11, 103/103 lulus. Tanpa patch kode.
+- Catatan: kerja test thread 935 tidak mencakup `tests/platform-offline-banner.test.mjs` (kelas tes root yang mengimpor komponen web). Saran: gate thread web ws02-edge ikut menjalankan `tests/platform-*.test.mjs`.
+
+Pemakaian: session-usage merge train 1400k biaya* (Sonnet 5.5); subagent 2 (Explore audit, reviewer konflik), puncak 1-2; token heavy dipegang train sendiri (satu lajur sekaligus).
+
+### 951 WS-01 pengerasan akses (17 Nov 2026)
+
+- Cabang `ghostex/ws-01-pengerasan-akses-951` dari m1 `c17c60df7`, head `21093a7b7` (sebelum commit dokumen ini), dipush biasa. Kartu: legend-ijcxc (kunci FOR SHARE baris role_assignments target dan roles kustom plus advisory lock role-assignment-end di PATCH manajer), legend-p0ms5 (requestDtos memakai actorNames, email peminta tidak bocor), legend-d3quc (kode sudah benar sejak 6b350e143 dan migrasi 0273; hanya tes regresi ditambah, tanpa migrasi), legend-tetyr (job reseal `worker/sealed-secret-reseal.job.ts`, tabel state, migrasi kerja 0473, nomor di m1 0434 pada batch82).
+- Keputusan tetyr: stale dideteksi dari byte versi envelope, tanpa kolom versi per kolom; 17 kolom tercakup. Baris order/tender selesai (trigger POS-04) dan `apology_vouchers.code_sealed` (UPDATE dicabut migrasi 0212) berstatus frozen: tetap dihitung di `remaining`, dan kunci lama TIDAK boleh dipensiunkan sebelum remaining 0 termasuk frozen. Di luar cakupan: kode voucher di JSON idempotensi promo, token ChatGPT, push subscription.
+- Bukti: tes terarah 10 berkas/207 tes hijau, prettier+eslint, typecheck API, db:generate kosong, tes kontrak root, semuanya pada 21093a7b7. Architect xhigh: tanpa P1; dua P2 dan satu P3 dibetulkan.
+
+## 17 Nov 2026 — 949 WS-10 payroll run BE (thread G716r)
+
+- Branch ghostex/ba6c8a6b, commits 4ca4de1a1, 6fbf43520, 50753bcb4 (base m1 c17c60df7). Kartu xo0xx, 0ytbu, vepv0, 838hi selesai di cabang; migrasi 0460 (payroll_loan_deductions; payroll_run_results sudah ada sejak 0328).
+- Review architect xhigh: tanpa P1. P2 dibetulkan: persetujuan HR terikat expectedSimulationCount (409 PAYROLL_RUN_SIMULATION_STALE); guard potongan pinjaman membatasi jumlah antar-run per pinjaman.
+- Gerbang thread: typecheck shared/api/web exit 0, db:generate kosong, tes area hijau, tes kontrak root hijau. Belum: pnpm check penuh (merge train).
+- Keputusan menunggu CTO/founder: O8 partialYearTaxSubject tetap false (aturan aman); format A1 Coretax adalah tebakan (tanpa sampel DJP).
+
+### Batch82 merge train (17 Nov 2026)
+
+- Basis `origin/milestone/m1` 0c31ff40e (batch81, ujung migrasi 0431). Cabang int `int/batch82`, urutan masuk: `ghostex/947-payout-934-followups` aca164ca5 (memuat 934), `ghostex/a46177dd` a3f7af1a1 (946), `ghostex/ws-01-pengerasan-akses-951` b4f260a98, `ghostex/ba6c8a6b` cdec4ae29 (payroll WS-10), `ghostex/940-qr-va-sisa-p3` d79767788 (tanpa legend-9vmit; belum ada commitnya). `ghostex/952-recon-so-fix` tidak ikut: merge-queue menulisnya TAHAN, bukan SIAP.
+- Peta migrasi lama -> baru: 0432_payout_batch_approve_grant dan 0433_payout_934_followups tetap (sudah berurutan dari 0431); 0473_sealed_secret_reseal_state -> 0434; 0460_payroll_loan_deductions -> 0435. Snapshot 0434 dan 0435 dibangun ulang di atas ujung m1 (tabel masing-masing ditambahkan ke snapshot sebelumnya, prevId berantai). `pnpm db:generate` kosong, `check-journal` hijau.
+- Konflik: hanya `_journal.json` dan `docs/PROGRESS.md` (951 dan ba6c8a6b), diselesaikan dengan menyimpan kedua sisi. Tanpa konflik berkas uang.
+- Perbaikan train (tes saja, commit eff766b91): `panic-review-e.test.ts` dan `panic-sync.test.ts` gagal sejak ujung a46177dd sendirian (503 EDGE_DEVICE_REGISTRY_STALE di `enrollDevice`, batas basi 946/legend-91u09). Fix: `enrollDevice` dibungkus `withEdgeModeEnv` (4 titik panggil), 29/29 hijau. Tidak ada longgar assertion.
+- Gate: fast gate 563 berkas (API 508, root 54, web 1) 3215 dtk; 43 berkas API gagal semuanya DB `in recovery mode`/57P03 (lingkungan, Colima), rerun terarah 41/43 hijau, 2 sisanya adalah dua berkas panic di atas. Lint 67 dtk (0 error, 2 warning), typecheck 221 dtk, e2e produksi 18 lulus/1 skip (145 dtk), build 71 dtk. Lint dan typecheck diulang setelah fix tes, hijau. Full run `pnpm run test` 6085 dtk (~104 menit, ikut berjalan paralel dengan e2e mock): root + web + API 1375 berkas lulus/2 skip, 21194 tes lulus/46 skip/16 todo, tanpa gagal. e2e mock penuh 40 gagal/2 skip/1124 lulus (1,6 jam): 38 sama dengan baseline 953 (legend-dq4y3), 2 baru (`legend-0z5k` strict-mode toast, `legend-kmndq` animasi finish) lulus pada rerun terarah 17/17, dinilai flake beban.
+- Subagent: 4 test-runner total (puncak 1 sekaligus); pemegang heavy: thread ini (full run dan e2e mock berjalan bersamaan sekali, ditegur CTO, tidak diulang).
+- Catatan: `session-usage.py` melaporkan sesi ini 105 permintaan utama, biaya* 2423k.
+
+### 963 — Anggaran memori PostgreSQL test dan cleanup worktree (legend-3id81, 17 Nov 2026)
+
+- Basis `origin/milestone/m1` `0c31ff40e`; cabang `ghostex/baca-brief-memori-pg`. VM terukur 2898 MiB tanpa swap. Batas test sebelumnya 1536 MiB per container (3072 MiB untuk dua run); kini 1024 MiB per container (2048 MiB total), dengan `shared_buffers=64MB`, `work_mem=2MB`, `max_connections=50`. Tanpa migrasi atau kode produk.
+- Repo belum memiliki penghapus worktree. Menambah `pnpm worktree:remove <path>`: verifikasi target terdaftar/bersih, tolak current/primary/main/locked dan project bersama, cocokkan label direktori container, lalu Compose `down` tanpa penghapusan volume sebelum Git removal tanpa force. Project lokal lama tetap dibersihkan setelah `DATABASE_URL` beralih ke external; identity parsial/invalid gagal tertutup. Tidak menjalankan penghapusan pada worktree pengguna atau menghentikan container milik worktree lain.
+- Red sah: kontrak root 13 lulus/2 gagal (batas lama dan launcher belum ada). Green final: 55/55 root pada `test-runner-selection`, `worktree-remove` (12 kasus), `setup`, `database`, `test-sweep`, `test-discovery`, `vitest-serial`; melalui `LEGEND_TEST_FILES="..." heavy pnpm test`. Reviewer menemukan satu gap cleanup former-local; sudah diperbaiki dan review fix tanpa temuan baru. ESLint tiga berkas JavaScript, Prettier berkas berubah, `node --check`, dan Compose `config --quiet` hijau.
+- Bukti simultan: `platform-theme-db` 13/13 dan `platform-integrations-db` 8/8 hijau, Vitest 3,46/6,28 detik, tanpa `Connection terminated`. Kedua light lane heavy diperoleh normal sebelum barrier scratch melepas pnpm asli; tidak mengubah heavy atau kapasitas jalur. Empat sampel kedua container hidup bersamaan, satu sampel kedua API aktif. Pengaturan PostgreSQL aktual keduanya `64MB|2MB|50`; batas aktual 1 GiB. Puncak sampel Docker theme 197,1 MiB, integrations 211,5 MiB (jumlah puncak 408,6 MiB). Report/log/sampel: `/tmp/legend-963-proof/after-barrier-20261117-113051/`. Cleanup kedua container selesai. Run awal lulus tetapi berurutan akibat antrean, sehingga tidak dipakai sebagai bukti simultan.
+- Batas bukti: memori merupakan puncak sampel `docker stats --no-stream`, bukan pengukuran kontinu. Kebutuhan memori dan kecepatan suite penuh belum dibuktikan; `tmpfs` ikut anggaran, override untuk run besar tunggal dijelaskan di `docs/local-development.md`. Build/typecheck tidak mencakup sumber `.mjs`/YAML yang berubah; gate penuh diserahkan merge train. Tidak menjalankan `test:setup` yang menghapus volume fixture Docker.
+- Subagent Codex total 6 (5 langsung + 1 pembantu reviewer), puncak teramati 3 bersamaan; token heavy bergilir root (red/kontrak) lalu test-runner (bukti dua lane eksplisit brief). `session-usage.py` tidak menemukan transkrip native Codex; `parallel-report --since 11:08` hanya membaca sesi Claude, sehingga biaya/token/rata-rata native tidak tersedia. Status Beads tidak diubah sesuai brief; CTO memindahkan kartu.
+
+#### 963 — Perbaikan review CTO atas 513621816 (17 Nov 2026)
+
+- P2 memori: fallback Compose kembali `1536m`; runner menetapkan `1024m` hanya untuk unit dengan pilihan seluruhnya nama berkas test tanpa opsi. Full/blank/e2e dan pilihan berisi opsi memakai `1536m`; override `STARTER_TEST_PG_MEM` tetap prioritas. Parsing pilihan digunakan ulang untuk dispatch, tuning PostgreSQL tetap. Kasus `--exclude foo.test.ts` serta campuran root test dan opsi tetap memakai anggaran besar karena nilai opsi bukan filter Vitest.
+- P2 kredensial: sebelum membaca konfigurasi atau menjalankan Docker, Git menginventaris ignored `.env*` dengan pemisah NUL dan pathspec recursive. Default menolak removal; hanya `--discard-env` eksplisit mengizinkan pembuangan settings. Inventaris gagal membatalkan removal; guard dirty/current/main/locked/shared-project/owner dan preservasi volume tetap berlaku. Fixture Git nyata membuktikan file root/nested dan direktori dengan newline tetap terlindungi; seluruh isi env fixture sintetis.
+- Red sah awal: 29 lulus/11 gagal pada dua berkas kontrak. Review menemukan nilai opsi masih dapat dianggap filter; red tambahan 20 lulus/1 gagal, lalu selector diperketat ke filename-only. Review fix terakhir tanpa temuan. Green final kode terakhir: root 68/68, API dua berkas 21/21, tanpa gagal/skip atau `Connection terminated`; root 1,11 detik, Vitest 6,05 detik. Container/network milik run dibersihkan. Log `/tmp/legend-963-proof/final-targeted-cto.log`.
+- Perintah gate: `LEGEND_TEST_FILES="tests/test-runner-selection.test.mjs tests/worktree-remove.test.mjs tests/setup.test.mjs tests/database.test.mjs tests/test-sweep.test.mjs tests/test-discovery.test.mjs tests/vitest-serial.test.mjs src/test/platform-theme-db.test.ts src/test/platform-integrations-db.test.ts" heavy pnpm test`. ESLint: `pnpm exec eslint scripts/test.mjs scripts/worktree-remove.mjs tests/test-runner-selection.test.mjs tests/worktree-remove.test.mjs`, hijau. Prettier berkas berubah, `node --check` kedua script, dan Compose `config --quiet` hijau. Tidak menjalankan ulang suite penuh/e2e; pemilihan anggaran full dibuktikan kontrak dispatch dan fallback Compose.
+- Putaran ini memakai 6 subagent Codex, puncak 4 bersamaan; token heavy bergilir root (red) dan test-runner (green), satu job sekaligus. `session-usage.py` masih tidak menemukan transkrip native; `parallel-report --since 11:37` hanya memuat Claude, sehingga biaya/token/rata-rata native tidak tersedia. Tetap pada cabang yang sama; tanpa perubahan produk/migrasi, tanpa operasi pada env atau worktree pengguna, status Beads tetap diurus CTO.
+
+## 961 Selektor fixture tanpa created_at (17 Nov 2026)
+
+- Kartu legend-0l3v4, scope lima berkas test sesuai brief 961. Worktree disiapkan lewat `heavy pnpm worktree:setup` dan basis diselaraskan ke `origin/milestone/m1` 0c31ff40e; tidak ada perubahan produk atau migrasi.
+- Approval stock count memakai ID chain yang disimpan objek. Notifikasi memakai selisih ID sebelum/sesudah aksi. Helper profit-share memilih run atau entity/version unik tanpa pengurutan waktu atau LIMIT yang menyembunyikan duplikasi.
+- Bukti gagal-dulu deterministik: helper waktu lama gagal menemukan notifikasi yang timestamp-nya dimundurkan (18 lulus/1 gagal). Run awal menemukan konflik parameter UUID/teks di join baru; diperbaiki dengan `request.object_id = count.id::text` dan direview ulang. Dua run setelah perbaikan masing-masing hijau 5 berkas/102 tes; run pertama memakai skenario timestamp mundur yang sama, run kedua memakai source akhir tanpa probe. Log `/tmp/961-{red,run1-before-cast,run1,run2}.log`.
+- Review konteks segar akhir: nol temuan tersisa. `heavy pnpm --filter @starter/api typecheck`, `pnpm exec eslint` dan `pnpm exec prettier --check` pada kelima berkas test hijau (exit 0); log `/tmp/961-{typecheck,eslint,prettier}.log`. Satu test_runner memegang token heavy; tidak ada job tersisa. Probe sementara dipulihkan persis (cmp hijau). `git diff --check` hijau. Prettier `docs/PROGRESS.md` merah pada baseline maupun setelah tambahan catatan ini; format dokumen lama tidak diubah. Gate penuh/build tidak dijalankan oleh thread test-only ini.
+- Subagent: total 5, puncak 3 bersamaan; dua pembaca dipakai ulang untuk implementasi, satu implementer chain, satu test_runner dan satu reviewer. `session-usage.py` tidak menemukan transkrip Codex; `parallel-report` hanya menemukan sesi Claude coordinator, jadi biaya dan rata-rata sesi ini tidak tersedia.
+
+### 953 — Pemulihan mock E2E m1 (legend-dq4y3, 17 Nov 2026)
+
+- Cabang `ghostex/0967e46a`, base `origin/milestone/m1` terverifikasi `c17c60df7`. Brief dibaca dari checkout utama karena belum ada pada base worktree. Codex tidak menjalankan `bd`; komentar/status kartu diserahkan kepada CTO. Tidak merge atau deploy; brief mengizinkan commit dan push biasa.
+- Bukti merah awal: log base-mock mencatat 38 kegagalan pada 14 spec. Perbaikan test mengikuti teks PIN/lockout lima percobaan, schema impor zona, selektor yang bercabang, katalog approval31/komponen gaji15, penerima jadwal berbasis pengguna, hydration routing, serta sumber laporan yang secara eksplisit belum tersedia. Angka uang yang didukung tetap exact; sumber belum tersedia wajib kosong tanpa angka rekaan; tautan laporan dibatasi daftar jalur yang diizinkan.
+- Akar perangkat: contoh kontrak edge memakai tenant/outlet terpisah dari konteks web aktif. Overlay scope hanya pada handler mock web menyelaraskan registry/status/node/antrean/enrollment, tanpa mengubah fixture bersama atau filter outlet. Regresi web dua test benar-benar merah sebelum fix (`/tmp/953-edge-red-vitest.log`), lalu 2/2 hijau (`/tmp/953-edge-green.log`). Percobaan awal harness root tidak valid karena alias `@/lib`; dipindahkan ke Vitest web sebelum membuktikan merah.
+- Batas scope: dua happy path akses `g6d` masih memerlukan viewer dari sesi Better Auth; mock permission tersedia tetapi sesi kosong. Tidak mengubah guard, tidak melemahkan assertion, dan tidak skip. Perubahan desain identitas/akses dikembalikan ke CTO untuk jalur Claude tingkat K.
+- Source beku untuk satu job browser berisi tepat 14 spec, lalu gate format/lint, lima kontrak root dan regresi web, serta satu typecheck web melalui runner. Hasil akhir dilaporkan setelah job selesai; tidak menjalankan seluruh mock suite atau gate penuh.
+- Subagent native Codex total6, puncak5 aktif; token heavy hanya `test_runner`. Helper session-usage tidak menemukan transkrip native; parallel-report hanya menghitung sesi Claude sehingga biaya/token/rata-rata native tidak tersedia.
+- Checkpoint `bb70a3495` dipush biasa. Browser pertama pada commit itu selesai 110 lulus/7 gagal dari117 setelah antre sekitar50 menit; log `/tmp/953-mock-e2e.log`. Dua kegagalan g6d tetap batas identitas akses. Lima lainnya membuka kegagalan lanjutan: respons impor tanpa field wajib warnings, tombol Cabut ganda, URL laporan dengan query scope, okupansi tanpa sumber yang seharusnya kosong, dan boot mock POS yang masih memanggil randomUUID secara langsung.
+- Koreksi source beku: mock impor mendapat warnings kosong; selektor sesi dibatasi region; URL sumber diperiksa pathname serta tanggal/outlet/groupBy fixture tetap; okupansi unavailable diperiksa kosong. Tiga pemanggilan UUID di engine yang hanya dipakai mock memakai helper fallback yang sudah ada. Regresi root menonaktifkan randomUUID dan membuktikan total dua tagihan seed identik dengan konteks biasa. Tidak ada perubahan perhitungan uang atau guard akses. Review ronde koreksi bersih; gate berikut memakai commit koreksi, bukan checkpoint lama.
+- `e44afacce` dipush biasa; gate terarah enam root78/78 + unit web2/2 hijau. Browser kedua114/117 lulus; hanya g6d2 dan zrdy tersisa (`/tmp/953-mock-e2e-final.log`). Zrdy membuka seed eager berikutnya: ID domain organisasi masih memakai randomUUID. Dua audit independen tidak menemukan jalur eager lain; pemanggilan di handler mutasi tidak diubah.
+- Regresi baru memuat transport asli beserta102 berkas handler, memeriksa routing dan reset/reseed tanpa randomUUID. RED valid tepat pada seedDomains:130 (`/tmp/953-bootstrap-red-valid.log`); setelah satu ID seed memakai fallback, GREEN1/1 (`/tmp/953-bootstrap-green-final.log`). Harness memakai flag logging Vite dan alias foto demo ke peta aset asli, tanpa handler/transport double; dua percobaan harness sebelum lengkap tidak dihitung sebagai bukti fungsional. Alias Vitest mengharuskan gate akhir seluruh berkas unit web. Review source dan harness bersih.
+- Bukti akhir kode `c9e3c8ff9`: seluruh lima berkas unit web95/95 lulus lewat perintah Vitest tanpa database yang didokumentasikan konfigurasi (`/tmp/953-web-proof.log`); satu typecheck web exit0 (`/tmp/953-web-typecheck.log`); ESLint/Prettier seluruh20 berkas kode exit0, diff check bersih. Arsip PROGRESS tetap gagal format seperti base, tidak diformat ulang keseluruhan. Tidak menjalankan suite mock penuh, build, atau gate integrasi penuh.
+- Browser akhir tepat14 spec117 test:115 lulus/2 gagal dalam8,6 menit (`/tmp/953-mock-e2e-proof.log`). Tiga belas spec hijau: legend-23nc,5k0,9bh,diq,ik9g,k8fk,q2c,qdc,r1bu,rp3fk,x9r2,zrdy,zx8k. Jadi36 dari38 kegagalan awal sudah pulih. Dua g6d tetap gagal di baris75 (void disabled) dan101 (Kasir tidak ditawarkan), tanpa skip atau pelemahan guard; perlu Claude pemilik akses menyambungkan aktor mock ke konteks sesi. Kartu legend-dq4y3 belum layak ditutup; Codex tidak menjalankan bd atau mengomentari kartu.
+- Gate enam root terbaru dua kali berhenti sebelum assertion saat db:migrate: Connection terminated unexpectedly (`/tmp/953-targeted-proof.log`, `/tmp/953-targeted-proof-retry.log`). Tidak restart/prune Colima bersama. Bukti root78/78 sebelumnya pada e44afacce tetap terpisah, bukan klaim hijau SHA akhir. Setelah infra pulih, ulangi dari worktree: `LEGEND_TEST_FILES="tests/text-contract.test.mjs tests/ws11-mock-availability.test.mjs tests/ws11-report-pages.test.mjs tests/ws11-owner-dashboard.test.mjs tests/ws11-fixture-reconcile.test.mjs tests/ws03-mock-engine.test.mjs" heavy pnpm test`.
+- Seluruh job thread selesai; source sudah dipush biasa pada ghostex/0967e46a, tidak merge/deploy. Total6 subagent native, puncak5 aktif, heavy tunggal pada test_runner. Helper akhir tetap tidak mengenali transkrip native; biaya/token/rata-rata tidak tersedia. Pengamatan runner akhir RAM67%, disk14,4GB (kuning); tidak menghapus worktree, artefak bukti, atau container bersama karena brief melarang delete.
+
+### 954 susulan second opinion payout 950 (17 Nov 2026)
+
+- legend-628t9 (P2): migrasi `0440_payout_grant_expiry_after_lock` (nomor kerja; merge train menomori ulang dan mengatur `when`, bentrok dengan `0434` di `ghostex/952-recon-so-fix` dan `0440_*` di cabang lain) mengganti `app.payout_grant_consume`. Probe `FOR UPDATE` pada baris grant, jam dibaca sesudah lock run, batch, dan grant, lalu UPDATE. Grant yang kedaluwarsa saat antre lock ditolak PAYOUT-70 dan tetap unspent. Test `payroll-payout-954-grant-expiry-lock-wait` gagal-dulu (`attest succeeded`), hijau sesudah 0440.
+- legend-e3m8d (P3): test audit `batch_reopened`, `batch_stopped`, dan tanpa audit saat batch sudah exported (`payroll-payout-954-audit-reopen-stop`), 3/3 hijau.
+- Review architect xhigh: tanpa P1. P2 (entri registry `data-import-registry.test.ts`) dan P3 (cek UPDATE persetujuan sungguhan di test) sudah dibetulkan. Dicatat tidak ditest: grant yang kedaluwarsa saat menunggu baris grant itu sendiri (consumer kedua yang rollback); disown dan unfreeze mengambil lock run sesudah grant dipakai, `consumed_at` tetap sebelum expiry (dipakai recon), diterima.
+- Bukti: area payout 65 berkas 811 lulus/5 skip/13 todo, 0 gagal; prettier, eslint, `db:generate` kosong, cek journal ok.
+- Angka: 9 subagent (2 Explore, test-writer, 3 test-runner, implementer, architect xhigh), puncak 3 bersamaan; pemegang heavy hanya test-runner.
+
 ### Batch 941 rekonsiliasi sisa: kebijakan bank recon, match basi, DOIT recon (17 Nov 2026)
 
 Cabang `ghostex/rekonsiliasi-sisa-bank-dan-doit`, dasar m1 `c17c60df7`. Tiga kartu, tiga migrasi (0432 sampai 0434), tanpa perubahan nomor atau saldo jurnal. Approver penutup kasus tetap Owner atau Finance Manager (founder Q12).
@@ -7050,6 +7268,85 @@ Cabang `ghostex/60a93dca` dari `5e1f9d9fc`; commit `33b2aac77`. Kartu legend-7uq
 
 **Belum / tindak lanjut**: event refund parsial tidak disimpan (hanya envelope); refund transaksi tambahan (id berbeda dari intent) diabaikan `findBoundIntent`; refund `approved` chain tetap tertahan sampai staf release; dana tanpa `evidence_id` tetap diblok tapi tidak ber-stamp. Run awal sempat gagal `Connection terminated unexpectedly` (DB test), rerun hijau.
 
+## Batch83 merge train (17 Nov 2026)
+
+Basis `origin/milestone/m1` 1c185edc0 (batch82, ujung migrasi 0435). Cabang `int/batch83`, tujuh cabang masuk berurutan:
+
+1. `ghostex/baca-brief-memori-pg` 9203d4648 (legend-3id81: PG test 1536m full/e2e, 1024m terarah).
+2. `ghostex/baca-brief-flaky-created-at` aea2aa3b6 (legend-0l3v4).
+3. `ghostex/0967e46a` 2be7cfd8d (legend-dq4y3, mock e2e 36/38 pulih).
+4. `ghostex/954-payout-so950-followups` f1a512f44 (legend-628t9, e3m8d, lf0oj).
+5. `ghostex/60a93dca` d26caed3c (legend-7uqbs, 3wwme; recon 958).
+6. `ghostex/940-qr-va-sisa-p3` fbd0235e7 (legend-9vmit, founder Q15).
+7. `ghostex/ebc31074` fa79bcdd2 (legend-ra1k0).
+
+**Peta migrasi (lama -> baru)**: 0440_payout_grant_expiry_after_lock -> 0436 (when ...051); 0432_finance_policy_recon_case_due_days -> 0437, 0433_bank_match_stale -> 0438, 0434_payment_intent_provider_answered -> 0439, 0435_payment_intent_provider_refunded -> 0440, 0436_provider_refunded_after_recorded -> 0441 (when ...052 sampai ...056); 0450_payment_va_release_guest_kind -> 0442 (when ...057). Ujung m1 0442. `db:generate` kosong tiap tahap, `check-journal` hijau (peringatan FK 0438 tanpa NOT VALID dicakup tes owner NOBYPASSRLS). Perbaikan train: kunci `data-import-registry.test.ts` (0440 -> 0436, 0434 -> 0439), komentar 0440 -> 0436 di test 954, dan `migration-0433-0434-owner-populated.test.ts` diganti nama `migration-0438-0439-owner-populated.test.ts` dengan potongan journal `0438_` (tanpa itu memotong di 0433 payout).
+
+**Gerbang (semua hijau)**
+
+- Fast gate: 349 berkas (54 root + 285 API pemindai/area uang-akses + diff), 291 berkas vitest 4342 lulus; 24 menit.
+- Lint + check-workspace-links hijau; typecheck 1m49s.
+- e2e produksi 18 lulus/1 skip (16 dtk); build hijau.
+- Full run pertama (satu-satunya): API 1390 berkas 21345 lulus/46 skip/16 todo, web 95, root hijau; 110 menit (14:10-16:00). Bukti memori 3id81: tanpa OOM, tanpa `Connection terminated`/`57P03`/`in recovery mode`, tanpa rerun.
+- e2e mock: 2 gagal (`legend-g6d` AUTH-05 dan TEN-03, sudah di kartu baru), 1162 lulus, 2 skip; baseline batch82 40 gagal -> 2. Tidak ada kegagalan baru. 65 menit.
+
+**Angka**: 0 subagent (merge train jalan sendiri; gerbang lewat satu token heavy, pemegang: agent merge train), puncak 0.
+
+## Thread 966 — scanner typed errors dan SQL purchase suggestions (17 Nov 2026)
+
+Cabang `fix/966-scanner-suggestion`, base `0c31ff40e`; kartu `legend-bkoim` dan `legend-julap`, engineer Codex tingkat S. Tanpa migrasi, pembayaran, atau perubahan area milik thread 964.
+
+- `legend-bkoim` sudah diperbaiki di base oleh `d4c02fa0aad40b5a774fb7dfcf6325dd1bee4660`; selfie test sudah aktif oleh `5e767ceeb46b4896dba5352238904057e82b4c76`. Tidak membuat perubahan atau gagal-dulu palsu untuk kartu yang sudah selesai. Verifikasi ulang empat berkas (core-image, core-image-scanner-fail-open, core-storage-pdf-scanner, hris-attendance-selfie-bind): 48/48 lulus lewat `LEGEND_TEST_FILES=... heavy pnpm test`.
+- `legend-julap`: shortage dipilih PostgreSQL dengan `coalesce(quantity, 0) < par_min`, sebelum limit/offset. Urutan nama item, nama lokasi, ID par dipertahankan. Shared Zod menetapkan limit bawaan 25, maksimum 100 dan offset nonnegatif; alias WS06 mengikuti endpoint yang sama, envelope respons tetap.
+- Gagal-dulu: `LEGEND_TEST_FILES="src/test/ai-forecast.test.ts src/test/ws06-purchasing-preview-contract.test.ts src/test/ai-insights-api.test.ts" heavy pnpm test`, exit 1, 3 gagal/33 lulus: layanan belum membatasi baris, API menolak pagination valid, default kontrak belum ada. Log `/tmp/966-red.log`.
+- Satu reviewer Codex konteks segar: PASS tanpa temuan pada lima file TypeScript. Gate final oleh test_runner dengan satu token heavy: 36/36 test API suggestion dan 9/9 root ai-insights-contract lulus; ESLint lima TS dan Prettier lima TS + dokumen lulus; `heavy pnpm --filter @starter/api typecheck` dan `heavy pnpm --filter @starter/web typecheck` exit 0. Log `/tmp/966-green.log`, `/tmp/966-api-tc.log`, `/tmp/966-web-tc.log`. Full suite/build tidak dijalankan sesuai gate thread; diserahkan ke merge train.
+- Subagent Codex: total 6, puncak 4 bersamaan (dua Explore, dua test-writer/implementer, satu reviewer, satu test-runner). Token heavy parent saat red/scanner, lalu test_runner saat gate final. `session-usage.py` tidak menemukan transkrip Codex; `parallel-report` hanya menampilkan sesi Claude, jadi biaya/rata-rata Codex tidak terukur oleh alat itu.
+
+## 17 Nov 2026 — 955 payroll penulis pinjaman + BPA1 (thread G6kc8)
+
+- Cabang ghostex/1a1b16fe (dari cdec4ae29, payroll 949), commit 2d4582502, 76563fdc4, b56a6d405. Kartu legend-8tfvr dan legend-y6w4q selesai di cabang; migrasi 0461 (trigger ledger pinjaman, INSERT/UPDATE; journal when 1795000000048).
+- Desain: docs/briefs/955-loan-design.md. Simulate menulis baris dan garis LOAN, lock menurunkan saldo sekali, reversal restore sekali; lock/simulate tidak lagi menolak run berpinjaman. A1 mengikuti format resmi DJP (docs/qa/coretax-bpa1-format.md, fixture golden bpa1-official.xml).
+- Review architect xhigh: tanpa P0/P1; 3 P2 dibetulkan (trigger INSERT, uji konkurensi beda tahun, bruto 0 dengan pph21 != 0 ditolak).
+- Gerbang thread: tes terarah 368/368 hijau, prettier dan eslint hijau, db:generate kosong, typecheck API + shared bersih. Belum: pnpm check penuh (merge train).
+- Keputusan menunggu CTO/founder: karyawan di dua run regular satu bulan bisa kena dua cicilan (dibatasi sisa pinjaman); ringkasan pesangon hris-settlement.service.ts:113-126 memuat potongan run belum locked.
+
+### 955 lanjutan: cap satu cicilan per bulan + pesangon (17 Nov 2026, keputusan CTO)
+
+- Commit d0f4ca821, 687cfced2, f111d4217, 43bc79232 di ghostex/1a1b16fe (tanpa migrasi baru).
+- Satu cicilan per pinjaman per bulan kalender period_end: pinjaman yang sudah punya baris di run regular lain (draft..approved, locked, paid; reversed tidak dihitung) tidak dipotong lagi; lock memberi 409 bila bentrok. Pesangon: outstandingLoans = sisa dikurangi potongan run draft..approved, plus pendingPayrollDeductions {count, amountIdr, loanIds} terpisah (default aman untuk snapshot lama).
+- Review architect xhigh: tanpa P0. P1 terbuka: snapshot pesangon yang dibekukan saat offboarding selesai sudah mengurangi potongan run yang belum locked; run itu masih bisa kembali ke draft. Usul architect: tolak penyelesaian 409 selama ada potongan di run draft..approved. Menunggu keputusan CTO. 3 P2 dibetulkan.
+- Gerbang: tes terarah 434/434, prettier/eslint hijau, typecheck API dan shared exit 0. Fail-first 5 test baru terbukti merah di HEAD sebelumnya. Belum: kartu web final-settlement-card.tsx menghitung sisa sendiri dari sources.loans (tidak menampilkan potongan tertunda).
+
+### 955 lanjutan 2: guard offboarding (17 Nov 2026, keputusan CTO opsi a)
+
+- Commit 67d26efc7 di ghostex/1a1b16fe (tanpa migrasi). Selesaikan offboarding ditolak 409 PAYROLL_DEDUCTION_PENDING selama karyawan punya potongan pinjaman di run draft, simulated, hr_approved, approved. HR kunci run atau keluarkan karyawan dari run dulu. Run locked/paid/reversed tidak menahan; snapshot beku memakai sisa setelah potongan locked saja (tidak lagi mengurangi potongan belum locked).
+- Fail-first: 4 test section 18 payroll-run-loans.test.ts; 2 merah (200 bukan 409) di kode tanpa guard, 2 hijau (reversed, tanpa run). Kartu web legend-10tqi terpisah, apps/web tidak disentuh.
+- Review architect xhigh atas guard: 1 P1 dibetulkan di commit 15344ad49: simulate yang jalan SETELAH offboarding selesai masih memotong pinjaman karyawan itu (saldo turun di bawah snapshot beku, HR bisa menagih ganda). Sekarang simulate melewati pinjaman karyawan dengan offboarding completed (aturan yang membatasi pembayaran; snapshot jadi satu-satunya sumber). P2: pesan 409 tidak lagi menyebut "keluarkan karyawan dari run" (fitur itu tidak ada). Test [offboarding-guard-after-complete] merah tanpa fix, hijau dengan fix; urutan test [offboarding-guard-locked] dibetulkan (revoke sebelum simulate).
+- Gerbang: tes terarah 19 file / 503 test hijau, typecheck API exit 0, prettier/eslint hijau. Belum: pencairan pinjaman untuk karyawan offboarding completed tidak ditolak (payroll-loans.service.ts:504, P2, kartu terpisah); pnpm check penuh (merge train).
+
+## 17 Nov 2026 — 972 payroll sisa: pencairan pinjaman, refund PPh21, piutang PPh21 (thread engineer)
+
+- Cabang ghostex/dd932307 (dari c6ab51bbc, 955). Kartu legend-bckn9, legend-51h1, legend-itph. Migrasi 0515 (CHECK counterparty open item + `employee`; journal idx 462). Brief: docs/briefs/972-payroll-sisa.md.
+- bckn9: `disburseEmployeeLoan` menolak 409 `PAYROLL_LOAN_OFFBOARDING_COMPLETED` bila offboarding completed (kunci pinjaman dulu, urutan sama dengan guard 955, tanpa deadlock). Test balapan simulate vs complete: 6 balapan bebas + satu transaksi simulate terbuka, hasil tanpa potongan ganda.
+- 51h1: jurnal PPh21 refund sudah ada sejak legend-w6vah (posting-rules, payroll-journal, totals run). Ditambah test regresi (utang 2202 = withheld + borne + piutang - refund karyawan - refund perusahaan; seimbang; idempoten per run; reversal netto nol). Tidak ada kode jurnal baru.
+- itph: party `employee` di open item; service `payroll-pph21-receivable-open-items.service.ts` dipanggil dari lock dan reversal (hanya membuka payslip run itu sendiri; item per slip, settlement FIFO bersumber run, dihapus saat reversal; 409 bila ragu). Hapus/write-off tidak dikerjakan (legend-45lm). `settleReceivableInTransaction` menolak item employee (409 `PAYROLL_EMPLOYEE_RECEIVABLE_NOT_SETTLEABLE`): potongan payroll satu-satunya jalur pelunasan.
+- Review architect xhigh: tanpa P1. P2 #1 (keputusan founder): pencairan masih jalan selama offboarding belum completed (revoked/berjalan); usul tolak bila ada offboarding aktif. P2 #2: piutang lama sebelum fitur tidak punya item, daftar finance bisa lebih kecil dari saldo slip (bead legend-i848k backfill). P2 #3 dibetulkan (guard AR). P3: tes API untuk pph21Idr negatif belum ada.
+- Gerbang thread: prettier/eslint hijau, typecheck API + web exit 0, tes terarah 7 file 158 hijau (+31 file area payroll/accounting/hris dari gate: hijau kecuali payroll-loans-caps 4 tes merah, penyebab trigger 0461 milik 955 vs UPDATE outstanding_idr langsung di tes; tidak disentuh diff ini), db:generate kosong. Belum: pnpm check penuh (merge train).
+
+### 972 putaran 2 (17 Nov 2026, keputusan CTO)
+
+- Pencairan pinjaman ditolak juga selama offboarding aktif: 409 `PAYROLL_LOAN_OFFBOARDING_ACTIVE` (status `open` atau `revoked`; di skema ini `revoked` = akses dicabut, tahap sebelum completed, jadi ikut menahan), `PAYROLL_LOAN_OFFBOARDING_COMPLETED` untuk completed; hanya `cancelled` atau tanpa offboarding yang boleh cair. Fail-first: `[disburse-offboarding-open]` merah di service sebelumnya (200 bukan 409), hijau dengan guard.
+- payroll-loans-caps.test.ts: 4 test PAYR-02 merah juga di c6ab51bbc (terbukti di worktree base). Seed `UPDATE employee_loans` diganti helper `repayThroughLedger` (run locked Okt 2024 + baris payroll_loan_deductions, trigger 0461 tidak disentuh); 38/38 hijau.
+- Gerbang: 8 file 197 test hijau (1 skip lama), node --test refund journal 10/10, typecheck API dan web exit 0, prettier/eslint hijau.
+
+### 974 POS laci dan harga inklusif (17 Nov 2026)
+
+- Kartu legend-4wu4 dan legend-npnh, cabang ghostex/974-pos-laci-dan-harga-inklusif (base m1 1c185edc0). Migrasi 0520_pos_shift_expected_signed (journal idx 436): CHECK pos_shifts_amounts_check tanpa batas expected_idr >= 0. Kontrak expectedIdr (count, shift, event shift closed) jadi signed; shiftExpectedCashIdr tidak lagi throw (sinyal 409 saat hitung laci hilang).
+- Keputusan agent (butuh konfirmasi CTO): mekanisme "held" kas keluar/setor (legend-67dt, 3l4q, ym2kr; respons kasir identik, flag hanya supervisor) DIPERTAHANKAN, tidak dihapus: penghapusan membuat 88 test lama gagal dan membuka bayar kas di atas isi laci tanpa persetujuan. Kebocoran isi laci ke kasir sudah tertutup oleh desain held; yang tersisa hanya 409 RangeError dan CHECK, sudah dibuang.
+- Harga inklusif: computePosBill tidak lagi menolak, order menyimpan pricesIncludeTax, guard QR_ORDER_PRICING_MODE_MIXED di create dan reprice, pos-day gross lewat orderRevenueSplit, skema order/struk/layar pelanggan punya cabang inklusif, struk PDF dan edge melabeli "Termasuk".
+- Void item dan diskon saat mode pajak outlet dibalik tetap ditolak (aman: tidak menagih lebih); void order tetap bisa. Keputusan CTO: reprice dengan mode asli order, atau biarkan.
+- Gate: typecheck api dan web exit 0, db:generate kosong, tes terarah 433 hijau (17 berkas), eslint dan prettier berkas berubah hijau. Belum: pnpm check penuh (merge train).
+
 ## Batch 967: recon, refund parsial provider + refund transaksi tambahan (17 Nov 2026)
 
 Cabang worktree `ghostex/d1e44aa2` dari `d26caed3c` (958). Kartu legend-30hfs (P1) dan legend-wourt (P2). Migrasi 0505 (nomor kerja; journal idx 437, `when` 1795000000052 = 958 + 1; CTO atur nomor saat merge).
@@ -7065,6 +7362,57 @@ Cabang worktree `ghostex/d1e44aa2` dari `d26caed3c` (958). Kartu legend-30hfs (P
 **Bukti**: gagal-dulu di logika base (service dikembalikan ke d26caed3c): 20 dari 32 tes 967 gagal karena AssertionError perilaku, bukan setup. Lalu hijau (lihat laporan akhir batch). Architect xhigh 4 ronde: r1 2 P1 (payout tidak memeriksa uang dipakai penjualan, kredit sisa deposit) + 7 P2; r2 2 P1 (dana parkir muncul setelah refund, kredit deposit) + 1 P2 (koneksi kedua di bawah kunci); r3 1 P1 (transaksi terbelah tidak dihitung) + 2 P2 (alert ganda, `when` journal); r4 tanpa P1, 1 P2 (alert flag penuh) dibetulkan. Semua dibetulkan.
 
 **Diterima / catatan**: echo refund kita yang masih berjalan dan baru tercatat setelah jendela retry bisa dihitung sekali sebagai refund provider (hanya memblok, alert bisa palsu). Jumlah mentah refund provider yang tersimpan bisa melebihi nilai bayar (fakta dari provider); efeknya dipotong di 0 dan intent di-flag. Tindak lanjut: legend-m9pf6 (cek "sudah dibayar" di bill-split, pos-order-payment, pos-qris-hold, qr-order-consumers, facility-breakfast-consumers belum mengurangi refund provider).
+
+## Batch84 merge train (17 Nov 2026)
+
+Basis m1 1b0fd2a9e (ujung migrasi 0442). Cabang int/batch84 (thread merge train, Sonnet 5.5).
+
+**Masuk (urut)**
+
+1. `fix/966-scanner-suggestion` d8785fcbe (S legend-julap; tanpa migrasi).
+2. `ghostex/dd932307` 71b1155f7 (955+972 payroll; menggantikan 1a1b16fe dan 972-payroll-pinjaman-pph21). Migrasi 0461 -> 0443, 0515 -> 0444.
+3. `ghostex/965-doit-cegah-tagih-dobel` 3793464f1. Migrasi 0500 -> 0445 (teks "see 0445 header" di RAISE ikut).
+4. `ghostex/ee902477` 132131605 (964+976 Tanya AI; menggantikan 964-ws-12-*). Migrasi 0495 -> 0446, 0496 -> 0447; registry data-import ikut (kunci 0446).
+5. `ghostex/969-duitku-e-wallet-kartu-be` ad0507789 (tanpa migrasi).
+6. `ghostex/974-pos-laci-dan-harga-inklusif` 7b05fb24e. Migrasi 0520 -> 0448 (snapshot 0436 bentrok add/add: ambil m1).
+7. `ghostex/recon-refund-parsial-provider` 9788dc422. Migrasi 0505 -> 0449.
+   Ujung migrasi m1 sekarang 0449. `when` 1795000000058..64. `check --from-idx 442` hijau tiap tahap, `db:generate` kosong.
+   Tidak diambil: a846fbcc (983), 980, batch85 (4badcac8, 978, 981, 982) dan cabang larangan lain.
+
+**Perbaikan train (4 commit, di luar isi cabang)**
+
+- Tes 969 `qr-va-969-kt3t1-method-change-attempts` (3 gagal, lulus di cabang 969 sendiri, gagal di m1+969): commit cebf58ec1 (3wpf, m1) membuat `expireDueIntents` tidak pernah mengadaluarsakan intent milik gateway. Tes kini mengadaluarsakan lewat `pollPendingGatewayIntents` (jawaban gateway expired). Aturan "method_changed tidak dihitung percobaan" dan "3 kode habis sendiri tetap payment_attempts_exhausted" TIDAK dilonggarkan.
+- Edge: kolom server-only `promotions.ai_action_request_id` (0446, 964) bocor ke stream promo edge, skema strict menolak (`unrecognized_keys`). `edge-catalog-sync.ts` kini membuangnya (`withoutAiActionRequestId`); skema strict tidak diubah.
+- Migrasi 0447 (FK `ai_tool_calls_mcp_token_fk`) gagal saat dijalankan pemilik tabel non-superuser ("tenant context is required": validasi FK memindai tabel FORCE RLS). SQL kini NO FORCE RLS pada `ai_tool_calls` dan `mcp_tokens` lalu FORCE lagi di migrasi yang sama. Bahan 7 tes migrasi (edge-received-events, accounting-depreciation-0274, profit-share-0217, migration-0438-0439).
+- Sarapan (facility-breakfast) vs 974: BRK-TAX-03 mengharuskan outlet pajak-inklusif ditolak; 974 membuat `computePosBill` menerima inklusif untuk kasir. Pilihan membatasi (jangan sampai rugi): jalur sarapan menolak `bill.pricesIncludeTax` dengan QR_ORDER_INCLUSIVE_TAX_UNSUPPORTED sebelum order/link/intent/uang dibuat; kasir POS tetap inklusif. Tes BRK-TAX-03 tidak diubah. KEPUTUSAN CTO bila sarapan inklusif mau didukung nanti (kartu baru).
+
+**Gate**
+
+- Fast gate: API 54 berkas 1337 tes (3 gagal 969, dibetulkan), root 65 berkas hijau; lint exit 0 (74 dtk, 2 warning lama); typecheck exit 0 (111 dtk; ulang 58 dtk setelah perbaikan); build exit 0 (55 dtk).
+- Full run ke-1 (17:44 -> 19:34, 107 mnt): 21707 lulus, 55 gagal di 10 berkas (empat penyebab di atas, 0 putus DB); rerun terarah 10 berkas 115/115 hijau (143 dtk).
+- Retro 42: commit perbaikan dibuat saat full run ke-1 jalan, jadi full run ke-2 dengan int dibeku (b1ba19de1): 21747 lulus, 15 gagal semuanya `payroll-ter-monthly.test.ts` (23505 `statutory_rates_tenant_type_published_from_key` pph21_ter 2002-01-01). Lulus di full run ke-1 dan 4x terarah (sendiri 3x, bersama payout-core/manual/bank-code, bersama a1-export). Bukan kode batch ini; kartu flake baru. Node:test root hijau di kedua run.
+- e2e produksi: 18 lulus, 1 skip (118 dtk). e2e mock (19:38 -> 20:46): 1159 lulus, 2 skip, 5 gagal: baseline g6d AUTH-05 dan TEN-03, ditambah legend-cz9g OPS-04/05 retry dan legend-kmndq "Ya, masuk" 390px dan 1280px; ketiganya lulus di rerun terisolasi (32/32, 243 dtk): flake beban.
+- Review: reviewer sonnet atas hunk resolusi konflik dan rechain: bersih (payment-webhook.service auto-merge 965+969+967 utuh; journal, prevId, snapshot 0436-0449 konsisten; entri registry 0446 cocok).
+
+**Subagent**: total 6 (test-runner 1, reviewer 1, implementer 4), puncak 3 bersamaan. Pemegang heavy: thread merge train; test-runner memegang satu fast gate. Sesi ±5 jam 43 menit, biaya sesi 4093k (utama 3062k, subagent 1031k).
+
+## 960 — Filter berkas mock e2e (legend-1ek1l, 17 Nov 2026)
+
+- Basis `origin/milestone/m1` `0c31ff40e`; cabang `ghostex/4badcac8`. Script root memakai wrapper `scripts/e2e-mock.mjs` yang membuang hanya pemisah `--` awal sebelum meneruskan filter berkas dan opsi ke Playwright. Tanpa argumen tetap seluruh suite. Tidak mengubah spec e2e atau migrasi.
+- Bukti gagal-dulu: 2 lulus/4 gagal, termasuk literal `--` yang bocor sebelum filter berkas. GREEN: `LEGEND_TEST_FILES="tests/e2e-mock-runner.test.mjs tests/test-runner-selection.test.mjs" heavy pnpm test` lulus 19/19 (73,44 ms node:test). Log `/tmp/legend-960-contract-green.log`.
+- Bukti browser nyata: `LEGEND_MOCK_WARM_ROUTES=/design-system heavy pnpm run test:e2e:mock -- e2e/mock-mode.mock.spec.ts` menjalankan tepat 3 test dari satu berkas, satu worker, 3/3 lulus (19,1 detik). Log `/tmp/legend-960-e2e-green.log`.
+- Prettier berkas implementasi/test/panduan, ESLint kedua berkas JavaScript, dan `git diff --check` hijau. Review konteks segar tanpa temuan. Gate penuh diserahkan ke merge train; tidak menjalankan seluruh suite mock, build, atau typecheck untuk perubahan wrapper JavaScript ini.
+- Subagent native Codex: total 4, puncak 3 bersamaan; token heavy tunggal bergilir dari root (worktree setup) ke test-writer/runner. Helper session-usage tidak menemukan transkrip native; parallel-report hanya membaca sesi Claude, jadi biaya/token/rata-rata native tidak tersedia. CTO yang memperbarui kartu Beads.
+- Format arsip `docs/PROGRESS.md` masih merah; salinan basis `0c31ff40e` di `/tmp/legend-960-PROGRESS-base.md` juga merah. Tidak memformat ulang arsip di luar lingkup.
+
+### 978 Edge ketahanan (17 Nov 2026, cabang ghostex/978-edge-ketahanan-katalog-purge-pin)
+
+- l1wux: antrean global `catalogPullQueue` + `pendingStreams` di promo-gate sudah menutup balapan (legend-09sxa); tidak ada perubahan kode, ditambah test regresi `edge-catalog-pull-serial.test.ts` (3 tes, lulus; fail-first tidak mungkin karena perilaku sudah benar).
+- 4sesc: `TrustedClock.purgeSafeNow()` = min(jam dinding, waktu server terakhir + monotonik); purge audit/PIN/selfie dilewati bila null. Audit tanpa migrasi (SQL 0187 tetap CURRENT_TIMESTAMP, dijaga selisih <= 5 menit dari waktu aman).
+- 62jtd: edge mengantre `staff_pin.device_throttled` v1 (payload `{deviceId}`), applier cloud `edge/staff-pin-alert-applier.ts` memberi tahu supervisor outlet node saja; audit tidak hilang bila enqueue gagal (savepoint).
+- ngyd7: `replayRefusedAccessEvents` idempoten; penanda `refusal=audit_unavailable` di envelope; baris warisan butuh `acknowledgeUnmarked`; runbook bagian 5 diperbarui.
+- Migrasi: tidak ada. Gate: eslint + prettier file berubah hijau, typecheck API exit 0, 21 berkas test terarah 373 tes hijau, db:generate kosong. Review architect high: 2 temuan medium 4sesc dibetulkan (purgeSafeNow), 2 low ditangani (penanda refusal; catatan clock).
+- Subagent: total 21 (4 Explore, 8 test-writer, 8 implementer, 1 architect), puncak 7 bersamaan; token heavy: thread ini.
 
 ## Batch 980: refund sisa (17 Nov 2026)
 
@@ -7112,6 +7460,147 @@ Cabang worktree `ghostex/980-refund-sisa-4-kartu` dari `9788dc422` (958 + 967). 
 - Risiko sisa (di luar cakupan): kredit yang sudah dipakai sebelum refund provider susulan bisa melebihi pool (hanya ditandai recon); pencatat refund provider tidak mengambil lock intent deposit; refund payer pending memblokir apply kredit sepenuhnya (restriktif).
 - Biaya sesi (session-usage, belum termasuk subagent baru setelah angka ini): total 7365k unit, subagent 8.
   **1013 Jurnal otomatis dan breakfast memakai net setelah refund provider (legend-tlm3h, 17 Nov 2026, base daf8ace2a, tingkat K)**
+### 982 charge tukar menu: refund, void, tagih POS non-tunai (17 Nov 2026)
+
+- Cabang `ghostex/982-charge-tukar-menu-refund-void-pos` dari m1 `1c185edc0`. Kartu: legend-nsvu0 (refund charge paid gateway, `POST /api/order-issue-charges/:chargeId/refund`, total tidak melebihi charge, refund berulang dijumlah lewat `recoveryChargeRefundSplit` kumulatif, jurnal balik `aj:order-charge-refund:<paymentRefundId>` hanya dibukukan saat refund `completed`), legend-s61sg (void order dengan charge paid: charge tunai dapat `cash_out` + jurnal balik, charge gateway direfund dalam transaksi yang sama, EDC atau yang tak bisa dikembalikan: 409; void ditahan memakai id turunan voidId+chargeId), legend-gt98h (`collect-at-pos` menerima QRIS dan EDC; QRIS memakai link `oic:<chargeId>`, EDC butuh `edc_transactions` approved sejumlah persis, satu persetujuan per charge; gagal/timeout tidak menandai paid).
+- Migrasi 0550_order_charge_voided_status (status `voided` + 4 CHECK, hanya melonggarkan). Ganti nomor jadi 0436 saat merge (prevId ke 0435; 980 memakai 0432-0436 dan 0505). `db:generate` kosong.
+- Architect xhigh: 2 putaran. Blok P1 diperbaiki (kartu lalu QRIS terlambat tanpa refund; QRIS kasir pada `routed_pos`), medium/low diperbaiki (jurnal refund failed, batas persetujuan, void ditahan menguras kas, charge habis direfund, selisih split kumulatif, N1/N2/N3). Belum diperbaiki: pencarian JSON outbox tanpa indeks di `chargeInUseOfIntent`. Putaran 3 tanpa review architect, hanya test.
+- Gate: lint, typecheck (shared, api, web), 17 berkas test/239 tes, db:generate kosong, prettier hijau. Overlap thread 980: `payment-admin.service.ts` (`chargeInUseOfIntent`), berkas jurnal otomatis bersama; `payment-refund.service.ts` tidak disentuh.
+- Subagent: puncak 3 sekaligus; pemegang heavy: thread ini (satu lajur). Catatan terbuka: charge tunai/EDC tanpa intent tidak bisa lewat endpoint refund (409); web `charge-endpoints.ts` belum mendeklarasikan field `payment` opsional; mock web hanya mendukung tunai.
+
+## 17 Nov 2026 — 983 HR sisa: backfill piutang PPh21, lampiran cuti, koreksi lembur (thread engineer)
+
+- Cabang ghostex/a846fbcc (dari ghostex/dd932307, 972). Kartu legend-i848k, legend-qu04u, legend-72nod. Migrasi 0556 (ledger `payroll_overtime_corrections`), 0557 (trigger tolak reversal run sumber), 0558 (aktivasi per tenant). Brief + rancangan + temuan architect: docs/briefs/983-hr-sisa.md.
+- i848k: `payroll-pph21-receivable-backfill.service.ts` + skrip `pnpm --filter @starter/api payroll:backfill-pph21-receivable [--dry-run]` (TS, bukan SQL: slip terenkripsi). Item = saldo slip - item yang ada, id uuid v5, ON CONFLICT DO NOTHING, hold bila slip tak terbaca / saldo tak konsisten. Reversal run yang menaikkan atau menagih piutang ditolak bila ada item backfill. BELUM dijalankan ke DB mana pun: dry-run di staging dulu.
+- qu04u: kode sudah benar sejak f161bcca7 (cek self.leave.request aktif di outlet cuti atau hr.leave.approve); ditambah 8 test lintas tenant/karyawan (hris-leave-attachment-access.test.ts).
+- 72nod: koreksi lembur periode beku otomatis terbatas. Selisih = lembur sekarang - lembur set yang sudah dibayar (disetujui sebelum lock S); positif jadi baris `LEMBUR_KOREKSI` di run T, negatif baris `LEMBUR_KOREKSI_POTONGAN` bertahap (dibatasi sisa gaji dan yang pernah dibayar). Ledger ditulis saat lock, dibalik saat reversal; lock menolak 409 bila baris > outstanding. Ditahan (held, per sumber, dilaporkan di audit `payroll.run.overtime_correction_held`): offboarding open/revoked/completed, jendela simulate-lock +- 5 dtk, request berchain tanpa audit approve, sumber sebelum aktivasi.
+- Architect xhigh 3 putaran: putaran 1 dua P0 + P1 (reversal run sumber, jendela simulate-lock, batas tarik balik), putaran 2 P0 aktivasi + 2 P1 (held per sumber, cancel berchain), putaran 3 tanpa P0/P1. P2 jadi kartu lanjutan (deadlock urutan lock, indeks audit, held di UI).
+- Gerbang: eslint/prettier, tsc API exit 0, tes terarah hijau (983 18, backfill/cuti 58, 972 32, rapel/components 261, registry 46, payroll-run* 169), db:generate kosong. Belum: pnpm check penuh (merge train).
+
+## Merge train batch85 (17-18 Nov 2026, `int/batch85` -> `milestone/m1`)
+
+Basis m1 a981c1a53 (batch84). Cabang masuk (urut): `ghostex/4badcac8` (1ek1l, S), `978-edge-ketahanan-katalog-purge-pin` (K edge), `980-refund-sisa-4-kartu` (K uang), `982-charge-tukar-menu-refund-void-pos` (K uang), `a846fbcc` (983, K uang/migrasi/akses), `981-ulasan-ai-11-modul-mcp` (K), `984-akses-outlet-asing-perangkat` (K akses). Semua tip sama dengan brief, tidak ada yang sudah ancestor m1.
+
+Peta migrasi (lama -> baru, `when` 1795000000065 dst): 0540 -> 0450 (980), 0550 -> 0451 (982), 0556/0557/0558 -> 0452/0453/0454 (983), 0545/0546 -> 0455/0456 (981; 984 tanpa migrasi, membawa 981 saja). Ujung journal 0456, `when` terakhir 1795000000071. `db:generate` kosong, `check-journal` hijau tiap tahap. Registry `data-import-registry.test.ts`: 0454 dan 0456 (kunci per nama berkas). Catatan: 0557 tidak punya snapshot cabang; snapshot sementara disalin dari 0556 dengan id baru (tanpa itu `migration-renumber` menolak dan db:generate collision). Komentar kode + `mcp-flag-backfill-migration.test.ts` (idx 456, tag) + teks audit 0456 ikut nomor baru.
+
+Konflik: hanya `docs/PROGRESS.md` (simpan keduanya) dan satu konflik impor di `pos-order-corrections.ts` (980 + 982, simpan keduanya) serta `db/schema/index.ts` + `data-import-registry.test.ts` (981 vs 983, simpan keduanya). Reviewer satu kali atas tumpang tindih 980+982 di jalur uang: tidak ada cacat (catatan: `qrSaleInUseOfIntent` belum memakai net provider-refund 980, hanya membuat batas refund lebih ketat, tidak bisa membayar lebih).
+
+Gerbang:
+
+- check-workspace-links + lint: hijau (2 warning lama).
+- typecheck: 3m14s hijau.
+- Test kontrak root (`text-contract`, `*-contract`, `platform-*`, e2e-mock-runner): 967/967, 8 dtk.
+- Fast gate API 532 berkas (kontrak/registry/single-path/migration/edge/refund/charge/void/pos/ai-tool/device/support/mcp/payout/journal + berkas tersentuh): 49m52s, 7885 lulus, 1 gagal NYATA: `order-issue-charge-cash-migration.test.ts` (test migrasi 0230 mengembalikan CHECK 0229 di tabel bersama; baris charge paid/voided sisa test 982 melanggarnya). Dibetulkan: test memulai dari `order_issue_charges` kosong dalam transaksi yang di-rollback.
+- Retro 43 `payroll-ter-monthly.test.ts`: masuk pemeriksaan, lulus 3x terarah. Akar masalah yang paling mungkin: `payroll-simulate-kit` memilih tanggal berlaku acak 1980-2019 untuk tabel statutory publish di tenant bersama sedangkan test ini memakai `2002-01-01` tetap, jadi bisa bentrok di `statutory_rates_tenant_type_published_from_key` (23505) saat kit lebih dulu memegang tanggal itu (bukan flake bebas). Perbaikan: `TER_FROM` = `1979-01-01`, di luar rentang kit. Tidak direproduksi secara paksa; dibuktikan hanya lulus 3x.
+- Full run `heavy pnpm run test` (111m20s, vitest api 6680s): 22153 lulus, 3 gagal (nol gagal koneksi DB): (a) `payment-admin-ws05-fuv7` PAY-04 settle manual kini 409 PROVIDER_REFUND_STATUS_UNKNOWN karena keputusan 980 (hanya bila provider menjawab failed): test diberi FakeRefundGateway yang menjawab failed, assertion lain utuh; (b) `ms-sales` seed bentrok indeks unik `order_issues_manual_refund_once_idx` (0450): seed memberi tiap issue salinan item `voided`; (c) `access-owner-grant` 7vsby flake jam (now lebih awal dari re-auth, umur negatif membuang bypass Owner): `now` = instan re-auth. Tidak ada perubahan izin batch85 (diff `packages/shared/src/access` kosong). Commit 9d2d2f378; rerun terarah 5 berkas 149/149 dan 3 berkas Retro 44 39/39; tanpa full run kedua (perbaikan test-saja, Retro 40/44).
+- e2e produksi: 18 lulus, 1 skip, 42 dtk. e2e mock: 1162 lulus, 2 gagal = baseline (legend-g6d AUTH-05, TEN-03), 2 skip, 1,0 jam.
+
+Subagent: total 5 (reviewer 1, Explore 1, implementer 3), puncak 3 bersamaan, pemegang `heavy`: thread ini. Biaya sesi (session-usage, unit biaya*): utama 2763k, subagent 455k.
+
+## 17 Nov 2026 — 992 lanjutan 983: lock koreksi lembur, held di simulate + UI, batas audit (thread engineer)
+
+- Cabang ghostex/992-koreksi-lembur-payroll (dari c9c096052, 983). Kartu legend-pxzhy, legend-oayhe, legend-xrop2. Tanpa migrasi (0590-0594 tidak dipakai). Brief kerja di scratchpad.
+- pxzhy: `lockOvertimeCorrectionScope` dipanggil di lock run tepat setelah `lockPph21ReceivableScope`; urutan semua jalur: bulan, pph21, scope lembur, baris run. Komentar LOCK ORDER diperbarui. Test balapan dua transaksi (lock T vs request reversal): tanpa 40P01, lembur dibayar tepat sekali (T + U = delta), tenant lain tak berubah. Gagal-dulu di HEAD: "deadlock detected".
+- oayhe: field opsional `heldOvertimeCorrections` {employeeId, sourceRunId, reason, outstandingIdr} di `payrollRunSchema`, diisi hanya di respons simulate dari `plan.held` yang sama dengan audit; tidak masuk nilai gaji. UI: blok "Koreksi lembur ditahan" di layar run (tanpa izin gaji hanya jumlah dan alasan). Alias `OvertimeCorrectionHeldReason` = tipe shared. Batas: daftar bertahan di cache setelah approve_hr/approve_final tetapi hilang setelah muat ulang halaman (tidak ada GET run); simulate ulang menampilkannya lagi.
+- xrop2: query audit approve dibatasi `created_at >= min(requestedAt) - 1 hari` (serap selisih jam app vs DB; hanya melebarkan pemindaian).
+- Architect xhigh: API aman (tanpa deadlock, tanpa bayar ganda); temuan P2 label web, P3 test lemah, P3 tipe disalin, P3 selisih jam: semua dibetulkan. ui-auditor: 11 temuan, 8 dibetulkan, 3 dilewati (#6 periode sumber, #8 lipat daftar, #10 ukuran font).
+- Gerbang: prettier, eslint, tsc API dan web exit 0, tes terarah 48/48 (held 6, lock-order 3, 983, run-lock, rapel), kontrak 35/35 (text-contract + payroll-contract), db:generate kosong. Belum: pnpm check penuh (merge train).
+- Angka: 13 subagent, puncak 5 bersamaan, rata-rata 1,0; token heavy dipegang test-writer/test-runner bergantian.
+
+## Merge train batch86 (18 Nov 2026, `int/batch86` -> `milestone/m1`)
+
+Basis m1 f92a5c904 (batch85). Cabang masuk (urut, 7 pertama antrean SIAP batch86): `ghostex/perbaiki-test-mock-e2e-m1` (4jo2d/dq4y3, S), `988-ui-bug-kecil-ponsel` (S UI), `995-refund-voucher-hardening-kecil` (K uang), `992-koreksi-lembur-payroll` (K gaji), `984-f586w-shared-device-wip` (K akses), `92055877` (K uang 990 payout recon), `991-bayar-supplier-approval-kas` (K uang). Tidak masuk: 1005 (sempat ke-merge sebagai cabang ke-8, dibuang sebelum gerbang), 1025 dan 3d4eb7b8 (TAHAN, SO 1032 P1).
+
+Peta migrasi (lama -> baru, `when` 1795000000072 dst): 0560/0561/0575 -> 0457/0458/0459 (984-f586w), 0580-0584 -> 0460-0464 (990), 0585/0586/0587 -> 0465/0466/0467 (991). Journal ok (idx 440+, 454 entri), `db:generate` kosong. Snapshot 0466/0467 dibuat dari 0465 (migrasi data tanpa snapshot) dengan id baru dan rantai prevId 0465 -> 0466 -> 0467 supaya tidak tabrakan.
+
+Konflik: `qr-order-consumers.ts` (995 vs m1: `supersededIntentIds` menerima `reason?`, tanpa reason = dua alasan seperti kt3t1, `method_changed` saja untuk jendela 8m23m), `PROGRESS.md` (simpan keduanya), `_journal.json` + `apps/api/package.json` (991 vs 992: simpan kedua skrip).
+
+Gerbang:
+
+- check-workspace-links + lint: hijau (2 warning lama, 59 dtk). typecheck hijau (87 dtk).
+- Fast gate API 97 berkas: 552 dtk, 1 gagal NYATA: `data-import-registry` (kunci nama berkas migrasi baru + 0459 belum diterangkan). Dibetulkan, 46/46.
+- Full run (`heavy pnpm run test`, 112 menit): root node:test 3558 (0 gagal), web vitest 99/99, API vitest 22427 lulus, 20 gagal di 8 berkas. Penyebab nyata di migrasi (bukan test): (a) 0459 `UPDATE devices` kena FORCE RLS untuk pemilik migrasi non-superuser (42501 `app.require_tenant_id`): kini NO FORCE / FORCE di sekelilingnya (pola 0150/0454); (b) 0463 cek klaim return terbuka membaca `payroll_payout_return_claims` tanpa konteks tenant: kini per tenant lewat `app.tenant_id` (pola 0464), semantik sama (tetap menolak bila ada klaim terbuka tanpa referensi); (c) `accounting-cash-limit-antisplit` AS-2b menyemai dana mentah tanpa GL 1102, ditolak aturan a4z2f (`PETTY_CASH_GL_INSUFFICIENT`): kini disemai lewat top-up yang disetujui. Rerun terarah 49 berkas (semua yang menyebut shared_device_ids/shared_mode/return_bank_ref/payout-990 + semua _migration_): 602/602.
+- Retro 45: node:test root pada head akhir `LEGEND_TEST_FILES=tests/*.test.mjs heavy pnpm test`: 3558 tes, 3557 lulus, 1 skip, 0 gagal (141 dtk). Catatan: `node --test` mentah tanpa harness (tanpa DB) gagal 21 di tes DB/Docker, bukan regresi. Legend-usyi dan legend-4lm6 lulus lewat harness.
+- Terarah batch85 (Retro 44) 3 berkas access-owner-grant, ms-sales, payment-admin-ws05-fuv7: 39/39 hijau.
+- e2e produksi: 18 lulus, 1 skip, 40 dtk. e2e mock penuh (1,0 jam): 1163 lulus, 2 skip, 1 gagal: g6d AUTH-06 menghitung 31 aksi approval, kini 32 (991 menambah `supplier_payment`); spec diperbarui, `legend-g6d.mock.spec.ts` 5/5. AUTH-05 dan TEN-03 (baseline batch85, kartu sz75z) kini lulus berkat `perbaiki-test-mock-e2e-m1`. 14 spec 988 (`Rp\s?`) lulus.
+
+Subagent: 0 (thread ini tidak memanggil subagent di batch86; sesi sejak awal: 6), pemegang `heavy`: thread ini. Biaya sesi (session-usage, kumulatif batch85+86): utama 5886k, subagent 499k; selisih batch86 sekitar utama 3123k, subagent 44k.
+
+## 1006 perbaikan SO 997 akses (17 Nov 2026) - ghostex/f12296d2, setelah ghostex/984-f586w-shared-device-wip (839500696)
+
+Brief: `docs/briefs/1006-so-akses-fix.md`. Tingkat K (akses). Tanpa migrasi (`db:generate`: "No schema changes").
+
+- legend-sq1ux (P1): sesi dari sign-in Better Auth di perangkat bersama distempel saat dibuat (`session.create.before` membaca `X-Device-Token`, `sharedDeviceIdsFromToken`). Web: `authClient` mengirim token perangkat lewat `fetchOptions.onRequest` (tanpa itu hook tak pernah melihat token).
+- legend-42gqp (P1): `GET /api/outlets/:outletId/floor` memasang `resolveActingStaff` + `requireActingStaffOnSharedDevice` di rute (bukan `.use` router: guard tingkat router ikut jalan untuk request jatuh-lewat `/api/outlets/*` tanpa `:outletId`). Web: `POS_PATH` ikut `outlets/:id/floor`, kalau tidak papan di perangkat bersama selalu 401.
+- legend-dn7uo (P2): perangkat ke-9 saat 8 penanda aktif ditolak 403 `SHARED_DEVICE_MARK_LIMIT` dan sesinya ditutup lewat `revokeOwnSession` (audit; sesi support dihapus dengan `impersonation_ended` cause revoked). Tanpa penutupan, cookie perangkat ke-9 lolos tanpa header setelah perangkat 1-8 dimatikan.
+- Review architect (xhigh) ronde 1: 3 P1 + 1 P2 (guard router-level, POS_PATH tanpa floor, authClient tanpa header, cookie ke-9) semua dibetulkan. Ronde 2: tertutup, 1 temuan rendah (audit sesi support) dibetulkan.
+- Rute tanpa guard perangkat bersama yang belum ditutup (keputusan CTO): pickup, expo, order-issues, serving-time, open-bill (approvers dan convert POST), delivery-orders (guard ringan), emergency-cloud (belum jelas).
+- Subagent: total 8, puncak 3 bersamaan, token heavy dipegang bergantian (test-writer, test-runner).
+## 987 Fasilitas: jam berlaku-mulai, pengingat min-spend, revpash, tanda sarapan (17 Nov 2026)
+
+Cabang `ghostex/987-fasilitas-4-kartu` dari `origin/milestone/m1` (1b0fd2a9e). Migrasi tunggal 0570 (nomor kerja; idx 570, when 1795000000058): tabel `facility_operating_hours_versions` (RLS tenant+outlet, seed satu versi 1970-01-01 per fasilitas), `floor_zones.is_wfc`, `menu_items.is_breakfast` (default false).
+- legend-4us1a: jam fasilitas dengan `effectiveFrom` (tidak boleh di masa lalu); resolver `resolveOperatingHoursOn`; konsumen: menit tersedia metrik dan cek slot; roll-forward kolom `facilities.operating_hours` lewat worker `facility-hours-roll` dan baca config; baseline versi juga untuk impor dan update.
+- legend-e24cz: `evaluateMinSpend` baru (`wfc-min-spend.service.ts`) + job `wfc-min-spend.job.ts`; pengingat per peserta bertanda-masuk per jam-sesi, dedupe key `wfc_min_spend:<sesi>:<jam>:<user>`; kategori notifikasi `wfc_min_spend` (web_push). Peserta anonim tidak dapat pengingat.
+- legend-p4q10: `revpash` dan `seat_occupancy_pct` hidup sebagai metrik derived dari kode harian baru `seat_available_minutes`, `seat_used_minutes`, `wfc_net_sales` (net setelah diskon dan refund, tanpa pajak dan service charge); zona WFC = `floor_zones.is_wfc`.
+- legend-lgyfh: menu sarapan hanya item `is_breakfast`; pemesanan menolak item tidak bertanda; Switch di editor menu. Perubahan perilaku disengaja: menu lama kosong di alur sarapan sampai ditandai.
+- Bukti: gagal-dulu 4 file tes (25 gagal); target 130/130 hijau terakhir, putaran lebar 541 lulus; typecheck shared/api/web, eslint, prettier, root contract (873), `db:generate` kosong. Review architect high: 1 High + 2 Medium + 3 Low; High/Medium dibetulkan, Low #4 (tanggal kalender vs hari bisnis di slot hari ganti jam) dan #5 (tulis di GET) dicatat.
+- Sisa: retired_at unit dan batas basi tiket in_use (komentar 4us1a) belum dikerjakan; push notifikasi untuk tamu anonim butuh model penerima baru.
+
+### 987b tambahan CTO (17 Nov 2026 malam)
+- legend-lgyfh: outlet tanpa satu pun item `is_breakfast` (aktif, tidak terhapus, kategori tidak terhapus, tenant+brand sama) memakai perilaku lama (semua menu tampil, pemesanan tidak ditolak); begitu ada satu item bertanda, hanya item bertanda tampil dan lainnya 409. Satu helper `outletUsesBreakfastFlag` untuk menu dan jalur order. Seed demo (`cafeLegendMenuFixtures`) menandai 5 item sarapan. Lingkup helper per tenant+brand (menu tidak punya outlet).
+- legend-p4q10: `is_wfc` di validator, DTO, layanan zona (create opsional, PATCH, izin `floor.table.manage`), config export/import (opsional, mundur-kompatibel), mock web, dan Switch di `zone-form-dialog.tsx`. Owner tenant-wide boleh mengubah zona outlet lain di tenant yang sama (desain `updateFloorZone`); manajer outlet lain ditolak.
+- Bukti: gagal-dulu 15 gagal (4 sarapan, 11 zona); putaran lebar 64 berkas 735 lulus (1 gagal = asumsi tes P4Q10-10 yang salah, dibetulkan); akhir 69/69; typecheck shared/api/web, eslint, prettier, root contract 873, `db:generate` kosong. Reviewer delta: 2 Low (kategori terhapus dibetulkan; stale-menu UX diterima).
+### 985 charge tukar menu sisa: refund manual tunai/EDC, status setelah void, indeks outbox (17 Nov 2026)
+
+- Cabang `ghostex/19188cf7` (dasar 982 `2ba47d846`). Kartu: legend-mrwtp (refund manual charge tunai/EDC tanpa intent: tabel `order_issue_charge_manual_refunds`, request, approve oleh orang lain dengan `pos.refund.approve`, reject; tunai = `cash_out` dari shift terbuka dengan guard laci tidak negatif, EDC dengan referensi unik; jurnal balik method `pos_cash` atau `edc_manual`; total manual + intent + void tidak melebihi nilai charge), legend-v5z4h (void order: charge habis direfund jadi `voided`, hanya bila refund COMPLETED = nilai charge; refund belum selesai atau manual `requested`: 409), legend-9e21l (indeks ekspresi parsial outbox `charge_refunded` atas `refundId`, predikat query sama teks).
+- Migrasi (nomor kerja): 0565 indeks outbox, 0566 tabel manual refund (FK inline, RLS tenant + outlet), prevId ke 0550 (982). Ganti nomor saat merge. `db:generate` kosong.
+- Architect xhigh 2 putaran. Putaran 1: 2 High (jurnal balik void sebagian setelah manual refund ditolak mismatch; charge gateway ditutup voided saat refund baru pending), 1 Medium (guard kas approve), 1 Low (guard route). Semua dibetulkan dengan test gagal-dulu (`order-charge-review-985.test.ts`). Putaran 2: bersih untuk uang. Bead lanjutan: approve EDC tanpa kunci hari bisnis, reject salah tolak antar scope outlet. Diterima tanpa perubahan: 0565 tanpa CONCURRENTLY (migrasi dalam transaksi), request tanpa idempotency key, 409 saldo laci (legend-utqr), void ditahan 409 bila charge tunai sudah direfund manual.
+- Gate: prettier dan eslint file berubah hijau, typecheck shared + api hijau, `db:generate` kosong, 17 berkas/251 tes hijau (985, 982, jurnal order-charge, collect-pos, pos-tender, order-issues, pos-cash-guard, data-import-registry). `pnpm check` dan `pnpm test` penuh tidak dijalankan (merge train).
+- Subagent: total 16, puncak 3 bersamaan, token heavy dipegang thread ini (satu lajur bergantian).
+- 985 aturan lantai laci (CTO 17 Nov, setelah 974 batch84 membolehkan expected laci negatif untuk alur lama): approve refund manual TUNAI menolak (409) bila jumlah > expected laci shift (`liveExpectedCashIdr`), dicek sendiri di `order-recovery-charge-manual-refund.ts`, terpisah dari `cashOutExceedsDrawer`. Test `order-charge-drawer-floor-985.test.ts` memock guard bersama jadi selalu longgar; hijau dengan aturan, merah tanpa aturan (dibuktikan). Void tunai sisa (`insertCashReturn`) masih memakai guard bersama, tidak punya lantai sendiri.
+
+### 1029 QR/VA replay + refund otomatis dana parkir (18 Nov 2026)
+
+- legend-kis0u: replay kunci lama kini membaca status nyata kode (void/timeout menjadi expired, paid membawa paidAt) untuk semua kode, bukan hanya e-wallet/kartu; kode lama tidak dibuka lagi. legend-p45yq: kembar yang menunggu lock memakai kunci sendiri (`intentKey`) dan menerima jawaban tersimpan, bukan 409 VA_RELEASE_PROVIDER_UNREAD. legend-nqfov: sudah diperbaiki 1004 (peek sebelum cek metode); test regresi saja.
+- legend-9pz0m: refund sistem dana parkir yang gagal approval_expired/approver_unauthorized dibuka ulang otomatis, maks 3 gagal per dana, satu refund hidup per dana, jumlah = dana; alasan keputusan orang (rejected/provider_declined) atau jatah habis tidak dibuka lagi, event ulang pun tidak. Setelah jatah habis alarm payment.refund_followup_required. Tanpa migrasi.
+- Test: qr-va-1029-replay, qr-va-1029-9pz0m-parked-refile + 10 berkas 1004/940/969 terkait hijau (12 berkas, 91 test). Typecheck API hijau. Review architect xhigh: bersih untuk uang; temuan kecil (daftar followup tidak menampilkan refund dana) jadi kartu terpisah.
+
+
+### legend-of9kp followup dana parkir tampil (18 Nov 2026)
+
+- `listRefundFollowups` kini memuat dana parkir yang jatah refund otomatisnya habis atau ditolak orang: satu item per dana (`fundId` baru di `refundFollowupViewSchema`, `remainingIdr` = jumlah dana, `attempts` per dana); dana ber-resolution atau punya refund hidup/selesai tidak tampil. Tanpa UI baru (belum ada konsumen web).
+- Teks alarm `payment.refund_followup_required` pindah ke katalog (`ws05-refund-followup.ts` `followupAlarm`); versi dana parkir menyebut dana tamu yang diparkir dan jumlahnya, tidak menyuruh "ajukan refund baru". Teks non-dana tetap.
+- Test `qr-va-1029-of9kp-followup-list` (9) + 3 berkas terkait hijau (42); `tests/text-contract` dan `payment-admin-contract` hijau; typecheck API hijau; reviewer S bersih. Tidak mengubah alur uang.
+
+## 1012 Akses: router tanpa guard perangkat bersama (legend-3z0ds), 17 Nov 2026
+
+Cabang `ghostex/1012-guard-router-perangkat-bersama`, tanpa migrasi, tanpa logika uang.
+
+- Desain: `requireAuth` (apps/api/src/middleware/auth.ts) default-tolak sesi bertanda perangkat bersama aktif (403 `ACTING_STAFF_NOT_ALLOWED`); varian opt-in `requireAuthAllowSharedDevice` untuk router POS (plus `resolveActingStaff` + `requireActingStaffOnSharedDevice`) dan shell (me GET /access, pos-acting-staff, push key/delete, identity push-devices GET). Router baru otomatis tertutup.
+- Kontrak: `apps/api/src/test/shared-device-router-decisions.test.ts` (182 router eksplisit, per kemunculan; scan `getSession` ber-allowlist). HTTP: `shared-device-backoffice-guard.test.ts`. Web: `apps/web/test/acting-staff-shared-routers-path.test.ts`, POS_PATH diperluas.
+- Router POS baru: expo, pickup, serving-time, service-request, open-bill, order-issues, order-recovery(-charge), menu /availability, device-pin pos-overrides (guard kasir), customer-display (perintah).
+- Dua tes lama diperbarui karena premisnya berubah: acting-staff-w2-floor (reservation-policy kini 403 NOT_ALLOWED), pos-acting-staff (router tanpa middleware: delivery-channels).
+- Lanjutan (kartu bd dibuat): handler POS memakai pemilik sesi bukan `actorOf` (menyentuh uang, keputusan founder); websocket KDS dan `/api/auth/*` Better Auth belum lewat gate; layar reservasi/Tanya AI/_ops kini 403 di perangkat bersama (keputusan produk).
+- Subagent: total 14, puncak 5 bersamaan, token heavy dipegang induk dan test-runner bergantian.
+
+## Merge train batch87 (18 Nov 2026, `int/batch87` -> `milestone/m1` 63d467e27)
+
+Basis m1 8f544e5ea (batch86). Cabang masuk (urut): `ghostex/a5117d45` (1001 c1gnr), `1002-reseal-chatgpt-push` (1002), `1004-fix-temuan-so-qr-va` (1004), `f12296d2` (1006), `1009-so996-f1-lunas-refund` (1009), `perbaikan-so-998-kas-supplier` (1008), `1007-perbaikan-temuan-so-971-payroll` (1007). Hanya 1007 membawa migrasi.
+
+Peta migrasi (lama -> baru, `when` 1795000000085 dst): 0621/0622/0623/0624 -> 0468/0469/0470/0471 (1007). `db:generate`: "No schema changes"; check-journal ok. Snapshot 0468-0471 diberi id baru dengan rantai prevId (cabang hanya membawa snapshot 0623). 0470 menambah FK self-reference pada `accounting_open_item_settlements` (FORCE RLS): dibungkus `NO FORCE ROW LEVEL SECURITY` / `FORCE ROW LEVEL SECURITY` (pola 0438) supaya upgrade sebagai pemilik tidak gagal.
+
+Konflik: `order-issues.service.ts` (1001 vs m1): dua penjaga unik dipertahankan (`MANUAL_REFUND_ONCE_INDEX` dan `VOUCHER_ONCE_INDEX`). `docs/PROGRESS.md`: simpan kedua sisi.
+
+Gerbang (aturan percepatan Retro, tanpa fast gate terpisah):
+- check-workspace-links, lint (82 dtk, 2 warning lama), typecheck (153 dtk), kontrak root `tests/*.test.mjs` (230 dtk): hijau.
+- Full run `heavy pnpm run test` 10358 dtk (2 jam 52 menit termasuk antre): API vitest 22585 lulus, 2 gagal: (1) `pos-acting-staff` ACTING_STAFF_UNSUPPORTED memakai `GET /outlets/:id/floor` sebagai router tanpa middleware, padahal 1006 (42gqp) memasangnya: tes disesuaikan ke keputusan, contoh pindah ke `GET /api/menu/categories` (76/76 bersama `acting-staff-w2-floor`); (2) `payroll-payout-870-return-proof` timeout 20 dtk saat beban penuh, berkas tak disentuh batch, sendirian 14/14 (flake beban).
+- e2e produksi 121 dtk hijau; e2e mock terarah: tidak ada spec e2e tersentuh cabang batch, hanya smoke `mock-mode.mock.spec.ts` 3/3 (267 dtk). e2e mock penuh batch89.
+
+Kartu ditutup: c1gnr, 7rd7l, g24b5, 4w7rf, iqzet, hs1rc, nqfov, sq1ux, 42gqp, dn7uo, bf8f2, ycb4h, 6i91b, xo4cn, qcioh, 2ln9t, rtrbj. Terbuka: p45yq (replay kembar ganti metode, ada juga di 1029, batch88).
+
+Subagent: 1 test-runner (pemantau log, haiku) di batch87; sesi sejak awal 7. Biaya sesi (session-usage, kumulatif batch85-87): total biaya* 9007k (utama 8480k, subagent 527k), puncak konteks 267k, 2 compact. parallel-report sejak 06:30: 7 spawn, rata-rata 0,01 subagent bersamaan, rentetan terpanjang tanpa subagent 213 langkah. Selama full run batch87, `int/batch88` disiapkan (7 cabang, migrasi 0472-0476) sehingga langsung masuk gerbang.
+
+**1013 Jurnal otomatis dan breakfast memakai net setelah refund provider (legend-tlm3h, 17 Nov 2026, base daf8ace2a, tingkat K)**
 
 - Sudah: event baru `payment.provider_refunded` (satu per baris `payment_provider_refunds` yang baru direkam, kunci jurnal `aj:provider-refund:<id>`), rule Dr customer_deposit / Cr gateway_clearing. Penerimaan tetap bruto, jadi clearing = net dan pendapatan = net. Tanpa migrasi (rule ada di kode, `db:generate` kosong).
 - Cap refund provider hanya terhadap receipt (refund kita completed + refund provider <= receipt); `intentBackedAt` menghitung refund provider sebagai payout sehingga payout kita berikutnya tetap dibatasi. `sessionDepositAt`, `assertForfeitWithinIntent`, share sale QR memakai net pada waktu paid (refund provider setelah jurnal paid tidak mengubah jurnal lama).
@@ -7248,3 +7737,209 @@ Cabang worktree `ghostex/980-refund-sisa-4-kartu` dari `9788dc422` (958 + 967). 
 - Test: refund-1088-r1 (16, termasuk kredit DP dan dua urutan kunci dengan barrier), r1b (3), r2 (9), r3 (7); `it.todo` DP di refund-1077-r2 diganti. Merah di 306010aba: r1 12, r2 3, r3 6, r1b 3 (perbaikan dimatikan).
 - Runbook: `docs/deployment.md` memuat aturan hold laporan lebih besar sesudah resolve dan hold laporan tak terbaca.
 - Langkah berikut: merge train; second opinion ronde 10 atas area ini sebelum rilis.
+## 1042 W3b satu jalur refund per pesanan (legend-ggv6d, 18 Nov)
+
+Sudah: pesanan hanya boleh punya SATU dari refund kasir / void (cloud+edge) / refund manual. Celah yang ditutup (commit eab583b4f, cabang ghostex/d8e5216b): (G1) refund manual setelah void (cloud, edge, atau event edge `order.voided` yang diparkir di `edge_deferred_events`) ditolak 409; (G2) void edge ditolak `manual_refund_exists` bila ada refund manual hidup, dan mengunci baris `orders` FOR UPDATE agar serial dengan refund manual/kasir. Refund kasir dan void cloud sudah menolak refund manual (980).
+Bukti: `single-refund-lane-1042.test.ts` 33 tes (dua urutan, bersamaan, replay edge, tamu tak dibayar lebih, tenant/outlet lain); gagal-dulu: 13 merah di kode lama; 12 berkas terkait 240/240; eslint+prettier hijau; tsc API hijau; db:generate kosong; tanpa migrasi.
+Keputusan terbuka: F2 refund manual atas pesanan hasil ingest edge diizinkan (refund kasir/void menolaknya); F3 void edge tidak memeriksa refund ORD-09 `payment_refunds` (wilayah 1035).
+
+1042 F2 (keputusan CTO 18 Nov, jangan sampai rugi): refund manual atas penjualan edge yang sudah di-ingest (edge_order_ingests state ingested/voided) ditolak 409 EDGE_ORDER_CORRECTION_BLOCKED, sama seperti refund kasir/void cloud. Test `single-refund-lane-1042` 36 tes (gagal-dulu: 3 merah di kode lama); 8 berkas terkait 169/169; eslint+prettier+tsc API hijau. F3 = legend-aja6g, pengecualian finance = legend-nbkvh.
+
+## 18 Nov 2026 — 1039 POS 936 backend: voucher di order, poin, EDC declined, tiket fasilitas (thread engineer, bead legend-hpgyw)
+
+Cabang `ghostex/8eb871ce`. Migrasi 0670 (poin sebagai tender POS: `point_ledger_source_type_check` menerima `pos_tender`) dan 0671 (tabel `facility_ticket_pos_lines`, `access_ticket_credentials`) adalah nomor kerja: merge train yang menomori ulang.
+
+Sudah:
+
+- Voucher/promo di order: server menghitung ulang pajak dan service setelah diskon; voucher yang potongannya lebih besar dari sisa tagihan ditolak 422 `DISCOUNT_EXCEEDS_SUBTOTAL`; satu promo per order (kedua: 409); boleh setelah bayar sebagian, asal total baru tidak di bawah uang yang sudah masuk.
+- Poin: `GET/POST` poin pesanan (`pos-points.service.ts`), nilai poin dibulatkan ke bawah, tidak melebihi sisa tagihan, tidak ganda (kunci idempotensi + kunci baris), mode edge ditolak 409 `POINTS_NEED_CLOUD`, ganti member setelah poin terpakai ditolak, refund pesanan berbayar poin ditolak 409 `REFUND_POINTS_TENDER_UNSUPPORTED`.
+- EDC declined: `edcAttempts` pada detail order; tagihan tidak berubah.
+- Tiket fasilitas = item biasa di tagihan POS; tiket tidak terbit sebelum tagihan lunas; void/refund melepas slot dan mencabut kredensial; tiket yang sudah dipakai tidak bisa direfund (409 `TICKET_ALREADY_USED`); hold yang lapse tidak dihidupkan lagi (409 `TICKET_HOLD_LAPSED`); mode edge ditolak 409 `TICKET_NEEDS_CLOUD`; kredensial QR + PIN hanya tampil sekali, server menyimpan digest.
+- Web ws04-pos-kasir: voucher, poin, EDC declined tersambung ke API nyata. Penjualan tiket di layar kasir belum disambung.
+
+Bukti: pos-936-voucher, pos-936-points, pos-936-edc-declined, pos-936-ticket + regresi (pos-refund-ceilings, pos-refund-edge-authority, accounting-refund-payout-map-race, accounting-service-charge-liability-refund, accounting-auto-journal, accounting-auto-journal-refund-split, pos-order-void-noncash, data-import-registry, facility-contract, facility-slots-db): 14 berkas, 468 tes lulus. Typecheck API dan web lulus, kontrak 873 lulus. Review architect (dua bagian) selesai, temuan dibetulkan.
+
+Sedang/berikut: merge train menomori ulang 0670/0671 dan memperbarui `_journal.json`; keputusan founder lewat CTO ada di laporan akhir thread.
+
+Biaya sesi (session-usage): total biaya* 21764k (utama sonnet 9511k, subagent sonnet 11177k, subagent opus 1056k); 16 subagent, puncak 7 bersamaan, rata-rata 1,0 berjalan; token heavy dipegang thread utama dan satu test-runner bergantian.
+
+## 18 Nov 2026 — 1048 tutup second opinion POS 936 (thread engineer, bead legend-hpgyw)
+
+Cabang `ghostex/8eb871ce`. Migrasi 0672 (`access_ticket_credential_keys`, riwayat kunci kredensial) adalah nomor kerja; 0673 tidak dipakai. `apps/web` tidak disentuh.
+
+Sudah (5 P1 + 3 P2 + temuan architect):
+- Refund manual tidak menghitung tender poin sebagai uang; bon lunas poin: batas 0. Refund manual baris tiket yang masih `issued`/`in_use` ditolak 409 `TICKET_LIVE_NO_MANUAL_REFUND`.
+- Void bon yang sudah terdebit poin tapi belum lunas: poin kembali tepat sekali (satu baris `adjust` per tender, tender `voided`), tanpa event outbox/jurnal (debit `pos_tender` tidak pernah menjurnal). Bon campuran poin + tunai tetap tidak bisa di-void; refund bon berbayar poin tetap ditolak (Q42).
+- Mode latihan: redeem poin 409 `POINTS_TRAINING_REFUSED`, penjualan tiket 409 `TICKET_TRAINING_REFUSED` sebelum hold slot.
+- Redeem poin wajib bukti member hadir (`member_qr` atau `pwa_session`); member terpasang lewat ketik nomor ditolak 409 `POINTS_NEED_MEMBER_PROOF` (kasir pindai ulang QR member). Waktu kedaluwarsa poin diambil dari jam DB setelah kunci.
+- Pintu: validator baru `POST /api/facility/tickets/door-check` (QR atau ticketId+PIN, wajib `facilityId`, 403 seragam `DOOR_CREDENTIAL_INVALID`), menolak kredensial dicabut/diganti/di luar jendela/belum lunas; batas 5 tebakan PIN per 15 menit per tiket (429 `DOOR_PIN_LOCKED`, penghitung per proses API). Replay kunci lama 409 `TICKET_CREDENTIAL_SHOWN`.
+- Voucher melebihi tagihan tetap diterima dengan batas subtotal (Q40); Q41 ke legend-kuh0w.
+
+Bukti: gagal-dulu `so1`..`so4` (tiap temuan gagal karena alasan yang benar), run gabungan 20 berkas 582 tes lulus. Review architect xhigh satu kali (F1-F4, F6 dibetulkan), reviewer untuk perbaikan sesudahnya.
+
+Keputusan terbuka: QR member tidak sekali pakai dan tidak terikat order/nominal (perlu tabel nonce); pembaca pintu offline/edge dan kunci perangkat keras (legend-bzih) belum ada; penghitung PIN per proses (butuh Redis bila API banyak instans); tiket `completed`/`no_show` belum memblokir refund manual; tiket sebelum 0672 hanya mencatat kunci terbaru.
+## Merge train batch88 (18 Nov 2026, `int/batch88` -> `milestone/m1`)
+
+Basis m1 63d467e27 (batch87). Cabang masuk (urut): `1005-payout-tarik-klaim-return` (1005), `987-fasilitas-4-kartu` (987), `985-charge-refund-manual-void` (985), `1031-qrsaleinuseofintent-net-refund` (1031), `1029-followup-dana-parkir-tampil` (1029), `1014-runbook-pensiun-kunci-reseal` (1014), `1012-guard-router-perangkat-bersama` (1012).
+
+Peta migrasi (lama -> baru, `when` 1795000000089 dst): 0615/0616 -> 0472/0473 (1005), 0570 -> 0474 (987), 0565/0566 -> 0475/0476 (985). `db:generate`: "No schema changes"; check-journal ok. Snapshot baru diberi id baru dengan rantai prevId. Kunci `data-import-registry.test.ts` dinamai ulang (0615->0472, 0616->0473, 0570->0474).
+
+Konflik dan penyesuaian (semua tes disesuaikan ke keputusan cabang, tidak dilonggarkan):
+- `order-recovery-charge.routes.ts` (985 x 1012): impor `requireAuth` ditambah; approve dan reject refund manual tetap `requireAuth` polos (sesi perangkat bersama ditolak: aturan uang, ragu = batasi pembayaran); dicatat sebagai pengecualian di `shared-device-router-decisions.test.ts`. Dua router payout baru (`payroll-payout-recon-clearance`, `payroll-payout-return-withdraw`) = backoffice.
+- `packages/shared/src/dashboard/fixtures.ts`: fixture revpash diberi nilai zona (tes DASH-02).
+- Tes mengikuti keputusan 1012/1026: `device-shared-mode.test.ts` (kelola perangkat dari perangkat bersama = 403 ACTING_STAFF_NOT_ALLOWED, status tidak berubah), mock auth notifikasi (`requireAuthAllowSharedDevice`), `order-issue-charge-cash-migration.test.ts` (hapus baris refund manual 985 dulu), e2e `legend-zx8k` (RevPASH kini punya baris zona).
+
+Gerbang (Retro 47: gagal dibetulkan + rerun terarah hijau, tanpa full run kedua):
+- lint, typecheck: hijau. Root kontrak: hijau setelah fixture revpash.
+- Full run 10235 dtk (2 jam 50 menit termasuk antre): 23055 lulus, 7 gagal (6 `device-shared-mode`, 1 migrasi 0230) + 2 berkas gagal impor (mock auth notifikasi). Semua dibetulkan; rerun terarah 4 berkas hijau (36/36).
+- e2e produksi hijau; e2e mock terarah (smoke + 5 spec terkait) 40 lulus; 5 gagal `legend-zx8k` dibetulkan (lihat atas). e2e mock penuh batch89.
+
+Subagent: implementer x4 (fixture revpash, device-shared-mode, migrasi 0230, zx8k), test-runner x2. Biaya sesi (session-usage, kumulatif batch85-88): total biaya* 13293k, puncak konteks 267k, 3 compact.
+
+## Merge train batch89 (18 Nov 2026, `int/batch89` -> `milestone/m1`)
+
+Basis m1 68422e367 (batch88). Cabang masuk (urut): `1016-refund-kelebihan-provider` (g6ept), `1013-jurnal-breakfast-net-refund` (tlm3h), `d8e5216b` (1042 F2, ggv6d), `b49350e5` (1037 kas+supplier SO1036, j6v6v/3bkvl/3k9qg/6ipij), `1050-web-tombol-kas-keluar-chain`, `8eb871ce` a93468ca8 (1048 fix SO POS 936), `fc88d48f` (1046 jual tiket fasilitas).
+
+Peta migrasi: 0670/0671/0672 -> 0477/0478/0479 (8eb871ce), `when` 1795000000094-96. `db:generate`: "No schema changes"; check-journal ok. Snapshot baru memakai id baru dengan rantai prevId.
+
+Penyesuaian dan keputusan:
+- Kas keluar (1037 x 998): aturan restriktif memakai KEDUANYA (keputusan CTO): direct approve tidak pernah memutus level dan hanya posting bila rantai sudah disetujui (1037), DAN MFA tetap wajib di direct approve (998). Test baru `[cash-out-approve-matrix-bypass-F1-f]`: tanpa MFA ditolak 403 `MFA_REQUIRED` walau rantai sudah disetujui, tidak ada posting; dengan MFA + rantai disetujui posting sekali. Helper `approveChainLevelAs` memberi stempel MFA ke pemanggil.
+- Router `pos-points` dan `facility-pos-ticket` (936/1046) memakai `requireAuthAllowSharedDevice` (keputusan "pos", penjaga kasir sudah terpasang) dan masuk `shared-device-router-decisions.test.ts`.
+- `accounting-refund-payout-map-race.test.ts`: 1037 menambah satu SELECT `account_mappings` (kunci entitas kas) setelah penjaga remap-telat 48ft7; seam tes disesuaikan (`reads - 1`), semua assertion sama. Architect: SOUND (garis jurnal dibangun dari satu pembacaan mapping yang sama dengan penjaga; pembacaan tambahan hanya menentukan kunci).
+- e2e `legend-k8fk` mengikuti okupansi kursi per zona yang kini hidup (p4q10, batch88), sama seperti zx8k.
+
+Gerbang (kebijakan landing Retro 47/49, tanpa full run ulang):
+- lint dan typecheck hijau (ulang setelah semua perbaikan). Full run sekitar 2 jam 12 menit: 23322 lulus, 6 gagal: 3 map-race (dibetulkan, 17/17), `payroll-payout-897-proof-binding` 503 "sistem sibuk" dan `rbac-audit-writer` ZodError actionType (2 tes) lulus sendiri (flake, dua bead dicatat). Rerun terarah 11 berkas (180/180) hijau.
+- e2e produksi hijau. e2e mock PENUH (gerbang tiap batch ketiga): 1168 lulus, 4 gagal: `legend-k8fk` DASH-01 (dibetulkan), `legend-kmndq` (InvalidStateError animasi, flake), `legend-9bh` AUTH-05 dan `legend-azt` F11 (lulus sendiri); bead flake dicatat.
+
+Subagent: implementer x4, architect x1, test-runner x1 di batch89. Biaya sesi kumulatif (batch85-89): total biaya* 16071k, puncak konteks 267k, 3 compact.
+
+## legend-nbkvh void edge ditolak di pengecualian finance (18 Nov)
+
+Sudah: jenis baru `edge_void_refused` di daftar pengecualian finance (`/kelola/akuntansi/pengecualian`). Sumber: `edge_order_ingests` state `ingested` dengan reason `void_refused:manual_refund_exists` (1042 F2: void edge ditolak karena refund manual sudah membayar tamu). Nilai = total order, tanggal = `updated_at` di zona waktu outlet, detail = `manual_refund_exists`. Tanpa migrasi, read-only. File: validator shared, `accounting-finance-exceptions.service.ts` (`voidRefused`), `lib.ts`, `mock.ts`, katalog `ws07-finance-exceptions.ts`, brief 662.
+Teks: label "Void edge ditolak, refund manual sudah ada" (bukan "laci kas kurang" mentah: reviewer menunjuk kasus QRIS/kartu tidak menyentuh laci, nilai di daftar adalah total order, bukan selisih laci pasti; help text menjelaskan laci bisa kurang bila kasir mengembalikan tunai). Keputusan untuk founder via CTO: perlu filter tender bila ingin nilai khusus tunai.
+Bukti: API `accounting-finance-exceptions.test.ts` 73/73 (blok baru: terdaftar, tidak terdaftar untuk state voided/alasan lain/tenant lain/di luar jangkauan outlet/di luar jendela, batas tengah malam WIB vs UTC); root `text-contract` + `ws07-finance-exceptions-known-count` 21/21; e2e mock finance 14 tes (2 baru 390 px dan 1280 px: tanpa scroll horizontal, catatan laci tampil); tsc 3/3 hijau; eslint+prettier hijau pada berkas yang diubah. Review: satu reviewer sonnet, temuan label dan batas zona waktu sudah dibetulkan.
+Subagent: total 4 (2 Explore, 1 test-writer, 1 reviewer), puncak 2 bersamaan, token heavy dipegang thread ini.
+
+
+## 18 Nov 2026 — 1053 kas kecil: tolak batch gaji tunai bila saldo kurang + urutan kunci (thread engineer)
+
+- Cabang ghostex/62ea31e4 (dari 69461a987, 1037). Kartu legend-rvao9 dan legend-f250r. Tanpa migrasi.
+- rvao9 (founder Q43): `approveDisbursementBatch` untuk batch tunai menolak 409 `PAYOUT_CASH_INSUFFICIENT` bila total item `prepared` > `availableCash1102` (GL 1102 dikurangi kredit menunggu, helper baru dipakai juga oleh guard return 1037). Entity lock diambil SETELAH baris run dan batch (urutan semua penulis GL payout), sebelum kredit menunggu dibaca. Dilewati bila modul akuntansi mati (temuan P1 architect: settle_skipped dihitung pending selamanya) atau tanpa mapping petty_cash (handover tetap gagal 422).
+- f250r: urutan kanonik entity advisory -> entity row share -> period. `assertJournalPeriodPostable`, `lockAsset`, dan `wouldPostingBeBlockedByClosedPeriod` kini mengambil `entityLock` lebih dulu. Deadlock nyata terbukti di base (manual approve 500, recurring failed:1, 3 kasus lain menunggu entity lock), lulus setelah perbaikan.
+- Test: payroll-payout-1053-cash-approve-guard (12), accounting-lock-order-1053 (13). Setup 4 test lama didanai kas lewat `fundPettyCash` (aturan baru). Regresi terarah 143 + 330 lulus.
+- Architect xhigh: tidak ada deadlock baru. Terbuka (keputusan founder via CTO): P2-a petty purchase setelah approve bisa membuat 1102 minus (guard tidak menyisihkan saldo dana); P2-b mapping petty_cash dibuat finance antara approve dan handover; P3 selisih jam app vs DB pada batas kedaluwarsa.
+- Gerbang: prettier, eslint, tsc API (heavy) exit 0, db:generate kosong.
+
+## 18 Nov 2026 — 1053b cadangan gaji tunai, mapping kas kecil, jam DB (thread engineer, keputusan CTO)
+
+- Cabang ghostex/1053-kas-gaji-tunai-guard-lock-order (dari dbc4c44f5). Tanpa migrasi. Aturan yang membatasi pembayaran.
+- P2-a: approve gaji tunai TIDAK diperketat (gajian tidak terblokir). Batch tunai yang sudah disetujui tapi belum diserahkan dihitung sebagai cadangan di `availableCash1102`. `drawPettyCashForPurchase` kini menolak 422 `PETTY_CASH_GL_INSUFFICIENT` (pesan Indonesia: tersedia setelah cadangan, jumlah, kurang) bila pembelian > tersedia; dilewati bila akuntansi mati atau tanpa mapping. Rekening bank yang GL-nya 1102: kas keluar dan transfer (buat dan approve, bukan kas masuk) dicek sama lewat `assertBankCreditCoveredBy1102`; penolakan dari inbox approval membiarkan entri tetap `pending_approval` (kode masuk `POSTING_REFUSAL_CODES`) dan bisa disetujui lagi setelah kas ditambah atau batch dibatalkan.
+- P2-b: akuntansi aktif tanpa mapping petty_cash: approve batch tunai ditolak 409 `PAYOUT_PETTY_CASH_MAPPING_MISSING` ("Mapping kas kecil (petty_cash) belum diatur"). Akuntansi mati tetap lewat.
+- P3: jendela kedaluwarsa batch memakai jam DB di dua sisi: set `approval_expires_at = now() + 24 jam` dan banding `<= now()` di SQL (ekspor manual dan handover tunai), sama dengan sisi kredit menunggu.
+- Test baru: petty-cash-1053b-reserve (15), payroll-payout-1053b-mapping-clock (9), 2 test inbox di cash-out-approval-inbox; karakterisasi mapping di payroll-payout-1053-cash-approve-guard diubah ke perilaku baru. Setup 14 test lama didanai/dipasang mapping (nol asersi diubah). Fail-first dibuktikan dengan revert sementara layanan; mutasi `POSTING_REFUSAL_CODES` membuat 2 test inbox gagal.
+- Terbuka (keputusan CTO): pinjaman, reimbursement, dan bagian tunai `payroll.paid` dihitung pending tetapi tidak ditolak saat mulai (posting asinkron) sehingga 1102 masih bisa minus; jurnal manual/berulang yang mengkredit 1102 dan pembayaran supplier belum dijaga (bead); celah balapan di tepat 24 jam; mapping dihapus setelah approve melewati cek selama cadangan ada; penolakan pembelian 422, bukan 409.
+
+
+## 1038 payout recon clearance (18 Nov 2026, cabang `1038-payout-recon-clearance`, base m1 8f544e5ea)
+
+- legend-63gyr (SO 1036 temuan 4): hasil baca berkas bukti kini ikut sidik clearance. Migrasi kerja `0663_payout_1038_evidence_observations` (journal idx 468, snapshot `0468_snapshot.json`; merge train menomori ulang): tabel append-only `payroll_payout_recon_evidence_observations` (seq identity, state missing/mismatch/ok, sha teramati, episode), fungsi tepercaya `app.payout_recon_evidence_observe`, dan sidik baru yang memuat observasi bukan-ok terakhir (state, sha, episode, seq). Bukti A lalu B, atau pulih lalu hilang lagi, mengubah sidik: clearance lama tidak cocok dan slip tertahan lagi. Pulih saja tidak menahan. Observe oleh app role hanya bisa menahan, tidak melepas. Service mencatat observasi di transaksi sendiri sebelum flag diangkat (gagal = halaman gagal).
+- legend-f1c7n (temuan 7): `readLostResolutions` di `payroll-payout-recon.service.ts` mendeteksi item `failed|not_sent` yang sudah ber-resolution_outcome, batch-nya punya baris resolve di approval_log sejak cutover, tanpa attestation resolve sejak cutover: flag `attestation_count` (kind resolve) menahan slip. Tanpa migrasi 0664.
+- Review architect xhigh: ronde 1 menemukan F1 (A,B,A tanpa ok mengembalikan sidik lama; sekarang seq identity) dan F2 (NOT EXISTS tanpa batas cutover; sekarang sejak cutover); ronde 2 lolos.
+- Risiko diterima (semua fail-closed): flag yang dibebaskan sebelum migrasi terbuka sekali saat observasi pertama; clearance alasan lain pada operasi yang sama juga terbuka sekali; item resolve sebelum cutover yang `updated_at`-nya naik lalu batch punya resolve baru bisa tertahan; batch yang attestation dan baris approval_log-nya sama-sama hilang tidak terdeteksi; belum ada indeks GIN `item_ids` (catat bead).
+- Gerbang: prettier + eslint file berubah hijau; typecheck API exit 0 (dua kali, setelah perbaikan terakhir); test 1038 (evidence-clearance, concurrent, resolve-attestations-lost) + 990 recon clear/reopen/attest + 905/911 recon + data-import-registry + migration-force-rls-guard: 129/129; node:test root 873/873; db:generate kosong. Belum: `pnpm check` dan suite penuh (gate akhir milik merge train).
+- Subagent: total 10 (2 Explore, 3 test-writer, 2 implementer dilanjutkan 3 kali, 2 architect, 1 test-runner), puncak 2 bersamaan, token heavy dipegang test-writer/implementer/test-runner bergantian dan thread ini untuk typecheck.
+
+## 1052 fix SO1049 payout (18 Nov 2026, cabang `1038-payout-recon-clearance`, lanjutan 0832bf581)
+
+- SO ronde 2 temuan 1 (P1): `reconcileTrustedPayouts` kini membaca berkas bukti dan mencatat observasi dalam SATU transaksi per operasi di bawah advisory lock yang sama dengan `app.payout_recon_evidence_observe` (kunci `payout_recon_evidence_observe:<tenant>:<operasi>`). Urutan catat = urutan baca. `ok` ditentukan DB (dibuang bila belum ada riwayat), bukan snapshot flag basi; filter `evidenceFlagged` dihapus. Hasil baca disimpan per `operationId` (`fileOf`), jadi dua operasi berbagi `evidenceKey` masing-masing dinilai dari bacaannya sendiri (P3-1 architect). Tanpa migrasi baru (0664/0665 tidak dipakai; 0663 tidak diubah).
+- SO ronde 2 temuan 3 (P2): `readLostResolutions` mengikat operasi flag ke item lewat `payroll_payout_approval_log.grant_id` -> `payroll_payout_grants` (evidence_key = `resolution_evidence_key` item, detail = `resolution_outcome`, batch sama, propose, `logged_at <= item.updated_at`, sejak cutover); cadangan stabil = propose resolve paling awal di batch sejak cutover. Resolve item lain tidak lagi menggeser kunci flag item yang sudah di-clear.
+- Tes baru: `payroll-payout-1052-evidence-order` (A stale snapshot, B urutan tertukar, C kunci bersama) dan `payroll-payout-1052-lost-resolve-item-bound` (4). Cek mutasi: pada service 0832bf581 ketiga tes evidence-order gagal; pulih identik.
+- Review: architect xhigh lolos untuk uang (dua P3 dibetulkan: kunci bersama, tes deterministik); reviewer sonnet atas perbaikan: tanpa temuan pemblokir.
+- Gerbang: prettier + eslint file berubah hijau; typecheck API exit 0 (setelah perbaikan terakhir); tes terarah 11 berkas 130/130 (1052, 1038, 990, 905/911, data-import-registry); node:test root 873/873; db:generate kosong. Belum: `pnpm check` dan suite penuh (gerbang merge train).
+- Risiko dicatat: `storage.get` kini di dalam transaksi DB yang memegang lock dan satu koneksi pool (storage menggantung menahan run lain di operasi yang sama; cek timeout storage); flag `attestation_count` lama yang kuncinya berpindah ke operasi milik item sendiri terbuka sekali (fail closed). Temuan 2 SO (urutan lock periode/entity pada return, bukan tugas ini) belum dikerjakan.
+- Subagent: total 14 (2 Explore, 2 test-writer dilanjutkan, 3 implementer dilanjutkan, 1 mutasi, 1 architect, 1 reviewer, 2 test-runner), puncak 3 bersamaan, token heavy dipegang test-writer/implementer/test-runner bergantian dan thread ini untuk typecheck.
+
+## 89xse timeout bukti dan lock recon payout (18 Nov 2026, cabang ghostex/45f9887e, lanjutan 50e62920b)
+
+- legend-89xse: `reconcileTrustedPayouts` membatasi `storage.get` (`PAYOUT_RECON_STORAGE_READ_TIMEOUT_MS` = 15 dtk, `Promise.race`, timer dibersihkan, promise yatim diberi `.catch`) dan tunggu advisory lock (`PAYOUT_RECON_LOCK_TIMEOUT_MS` = 30 dtk, `set_config('lock_timeout')` per transaksi). Timeout storage = bacaan `error`: dicatat di transaksi yang sama, slip ditahan seperti qh11l, lock dan koneksi pool lepas. Setelah timeout pertama dalam satu halaman, sisa operasi dicatat `error` tanpa memanggil storage lagi (satu timeout per halaman, bukan per operasi). Log `warn` saat breaker menyala. `idle_in_transaction_session_timeout` sempat dipasang lalu DICABUT (architect ronde 2 F1: FATAL 25P03 ke koneksi tanpa listener `error` bisa menjatuhkan proses worker). 55P03 sebelum lock didapat: operasi dihitung `unreadable`, tanpa observasi (observe butuh lock yang sama), lanjut; 55P03 setelah lock didapat tetap melempar (fail closed). Opsi tes `storageTimeoutMs` dan `lockTimeoutMs`. Teks alert di `payout-trusted-recon.job.ts` diperjelas. Tanpa migrasi baru.
+- Tes baru `payroll-payout-89xse-storage-timeout` (11): gagal-dulu pada service HEAD (5 dari 7 awal menggantung); breaker, default 15 dtk dan 30 dtk, 55P03 setelah lock, tidak ada unhandled rejection.
+- Review architect xhigh ronde 1 dan 2: aman untuk uang, tidak ada jalur slip terlepas. Ronde 1 dibetulkan: breaker per halaman, teks alert, test orphan dan guard `locked`. Ronde 2: F1 (idle timeout menjatuhkan worker) dibetulkan dengan mencabutnya; F2 (breaker tanpa jejak) dibetulkan dengan log warn dan teks alert. Bead baru legend-bvxs3 (S3Client tanpa requestTimeout).
+- Risiko tersisa: lock-skip tidak menulis observasi; bila pemegang lock macet tanpa error DB, lock tertahan sampai koneksinya putus; waiter menyerah setelah 30 dtk dan slip bertahan di status catatan terakhir. Ronde 2 menyarankan listener `error` per koneksi di `db/index.ts` (di luar scope): usul bead.
+- Gerbang (setelah perubahan terakhir): prettier + eslint 3 file berubah hijau; typecheck API exit 0; test terarah 7 berkas (89xse, 1052 x2, 1057 x2, 1038 x2) 77/77, 89xse 11/11 sekali lagi setelah perbaikan tipe test. Belum: `pnpm check` dan suite penuh (gerbang merge train).
+- Subagent: total 4 (2 test-writer, 1 implementer, 1 architect), puncak 2 bersamaan, token heavy: thread ini dan test-writer bergantian.
+
+## tiw2h pemanggil biasa tidak boleh melepas hold bukti error (18 Nov 2026, cabang ghostex/d7876c20, lanjutan e7d803748)
+
+- legend-tiw2h (SO 1066 temuan 1, P1): wrapper `app.payout_recon_evidence_observe` menerima `mismatch` identik atau `missing` sesudah baris `error`; run/seq mengabaikan error dan `read_error` hilang, sehingga fingerprint clearance lama pulih dan slip lepas tanpa bacaan storage. Aturan restriktif: pemanggil selain `legend_payout_recon` tidak boleh melepas hold sama sekali; hanya bacaan recon yang segar.
+- Perbaikan langsung di 0674 (belum landing, tanpa migrasi baru): `app.payout_recon_evidence_observe_internal` jadi 5 argumen (`p_by_recon boolean`); DI DALAM advisory lock, setelah membaca observasi terakhir dan sebelum jalan pintas "state sama" dan insert: `ok` oleh bukan-recon dan `missing`/`mismatch` oleh bukan-recon saat observasi terakhir `error` ditolak PAYOUT-92 (42501); `p_by_recon` NULL ditolak PAYOUT-68. Wrapper `observe` lewat `false` (error tetap boleh, hanya menahan), `observe_ok` lewat `true`, fungsi baru `app.payout_recon_evidence_observe_difference` (hanya `legend_payout_recon`, state `missing`/`mismatch`). Layanan recon: helper `asReconRole`, `recordProblemRead` untuk missing/mismatch, `recordReadOk` tetap; `error` tetap lewat wrapper. Audit provisioning (`assertReconRoleReachedOnly`) memeriksa `_difference` dan `_internal` 5 argumen.
+- Tes: `payroll-payout-tiw2h-recon-only-release` (19 kasus; gagal-dulu pada service+migrasi HEAD: a dan b "slip stays held: expected false to be true" = slip lepas), `role.test.ts` (+kasus `_difference`), `provision-roles-audit.test.ts` (+2 kasus; sempat lolos kosong karena GRANT dikirim ke database default, diperbaiki dengan pool di database yang diaudit), 1057 `_internal` 5 argumen. Test terarah 6 berkas (tiw2h, 1057, 89xse, 1038, data-import-registry, role) 142/142; audit 10/10.
+- Review architect xhigh (uang + akses): tanpa P1/P2. Risiko dicatat: DB yang sudah menjalankan 0674 LAMA (cabang `ghostex/1057-clearance-lembur-roster-runbook`, `timeout-storage-dan-lock-recon` di origin) tidak menjalankan ulang migrasi: wrapper lama tetap rentan dan `_difference` tidak ada (recon gagal 42883 untuk missing/mismatch). Dev/staging yang sudah memakai 0674 lama harus dibuat ulang. Catatan rendah: cek di dalam lock membaca snapshot lama pada REPEATABLE READ; butuh SQL bebas, yang sudah bisa `SET ROLE` (batas yang diterima).
+- Biaya sesi (session-usage): total 2074k biaya*; subagent: 6 (2 test-writer + 1 test-writer audit, 2 implementer, 1 architect; implementer ketiga untuk migrasi), puncak 2 bersamaan.
+
+
+## 1061 Status edge ke cloud S1-S5 + 5ab0l (18 Nov 2026) - ghostex/status-edge-ke-cloud-s1-s5, dasar origin/milestone/m1
+
+Desain: `docs/design/edge-status-cloud.md` (D1-D12). Tingkat K. Migrasi kerja 0678 (tabel `edge_node_alerts`) dan 0679 (kind `edge_offline`); merge train menomori ulang.
+
+- S1 uux9k tabel + RLS + service raise/resolve + kontrak shared. S2 0cjzz alarm hard_stale lewat event `edge_node_alarm.raised/cleared` (id berantai, gerbang checkpoint puller). S3 eo3lc `GET /api/edge-node-status` (`report.operational.view`, tenant_admin tidak diberi). S4 m8vf0 alarm rotasi struk disimpan di savepoint tarikan registry. S5 n5u8w layar web ke API asli. S6 5ab0l sweep edge offline 30 menit saat jam buka (founder Q44; env `EDGE_OFFLINE_ALARM_MINUTES`).
+- Architect xhigh: 0 P1, 1 P2 (alarm kedua hilang bila id sama; dibetulkan). Deviasi T11: event berscope asing membatalkan batch (fail-closed, perilaku lama db-link-store), bukan applier_refused; desain dikoreksi.
+- Bukti: typecheck API dan web hijau, `db:generate` kosong, kontrak teks hijau, 9 berkas tes API (159 tes) + qr-order-edge-forwarding (13) hijau, e2e mock `e2e/legend-n5u8w.mock.spec.ts` 3/3 (screenshot `design/screens/n5u8w/` 360 dan 1280), prettier + eslint hijau.
+- Risiko: edge harus dirilis SESUDAH cloud (event tak dikenal diparkir). Outlet 24 jam menghitung ulang offline tiap tengah malam (P3). Baris `edge_node_alarm` di outbox edge tidak dipangkas (P3).
+- Subagent: total 15, puncak 6 bersamaan, token heavy dipegang test-runner.
+
+## legend-n45mn: kai edge up-sync dibawa ke m1 (18 Nov 2026, cabang `ghostex/ade86b14`)
+
+Dasar `origin/milestone/m1` 68422e367 (cabang di-fast-forward dulu; 50 komit di belakang). Dua komit `origin/ws/kai-edge-upsync` (e52264d4a, 80bd8e6e4; legend-kai, legend-4vwaj) digabung jadi satu komit.
+
+- Migrasi lama 0286 diberi nomor kerja `0684_edge_txn_ledger` (journal idx 477, `when` 1795000000094 = tepat di atas m1; pola sama dengan 0621 dulu, merge train yang menomori ulang). Isi SQL = versi akhir kai (round 2), FK sudah inline di `CREATE TABLE`. Snapshot `0684_snapshot.json` dibuat ulang dengan `db:generate` di atas snapshot 0476 (prevId cocok). Migrasi 0286 milik m1 tidak disentuh.
+- Isi: tabel `edge_txn_ledger`, `_baselines`, `_events`, `edge_reconciliation_runs`; `buildEdgeTxnDigest`; `POST /api/edge-nodes/:id/reconciliation`; kontrak `@starter/shared/edge/reconciliation`.
+- Penyesuaian tes (tidak ada batas dilonggarkan): `edge-txn-ledger-migration` memakai tag 0684, migrator uji diberi ADMIN OPTION atas `legend_payout` (sama dengan tes migrasi owner lain), dan tes "terdaftar terakhir" diganti "di atas semua migrasi sebelumnya" (temuan architect: migrasi m1 berikutnya tidak boleh memecahkan tes ini); `data-import-registry` mengakui 0684 (backfill baseline).
+- Review architect xhigh (migrasi): tidak ada temuan pada SQL, RLS, snapshot, rute, isolasi tenant, uang (satu event dihitung sekali, bigint). Dua temuan nomor/`when` sudah diterapkan seperlunya. Catatan: tak ada pemanggil produksi `buildEdgeTxnDigest` (sama di kai); itu isi legend-e3k4p.
+- Untuk merge train: `migration-renumber check` akan menandai `0684` idx 477 sampai dinomori ulang; ubah tag, nama berkas, snapshot, `when`, dan konstanta di `edge-txn-ledger-migration.test.ts` (`TAG_PREFIX`, nama) serta kunci di `data-import-registry.test.ts`.
+- Bukti (setelah perubahan terakhir): 5 berkas test terarah (edge-txn-ledger-migration, edge-txn-ledger, edge-reconciliation, edge-outage-replay, data-import-registry) 151/151 lulus lewat `heavy`; prettier + eslint 14 berkas .ts berubah hijau; `db:generate` "No schema changes"; tsc api dan shared exit 0. Test root `tests/*.test.mjs` tidak dijalankan (tak ada izin/label/event baru; gate penuh oleh merge train). Subagent: Explore x2, architect x1 (xhigh), test-runner x1; puncak 2 bersamaan; token heavy dipegang test-runner.
+
+## 1017 Akses: websocket KDS, /api/auth/*, preview customer-display di perangkat bersama (legend-wa9n7, legend-dgtz0), 17 Nov 2026
+
+Cabang `ghostex/34755844`, dasar 1012 (ca8ba4eb7). Tingkat K (akses). Tanpa migrasi, tanpa logika uang.
+
+- KDS websocket (`services/kds-realtime-auth.ts`): sesi bertanda perangkat bersama aktif (dari sesi atau header `x-device-token` bertanda tangan) wajib membawa token perangkat terdaftar dan `x-acting-staff` hidup (`resolveActingStaffToken`, terikat perangkat, sesi, outlet). Koki yang bertindak menjadi pemilik hak `kds.ticket.process`. Gagal berarti tolak, dan dicek ulang tiap bangun/recheck. Upgrade ws juga menstempel penanda ke sesi; perangkat ke-9 saat 8 penanda aktif ditolak. Perangkat pribadi tidak berubah. Helper header mentah: `services/raw-device-token.ts`.
+- `/api/auth/*` (`middleware/shared-device-auth.ts`, dipasang di `app.ts` sebelum Better Auth): sesi perangkat bersama hanya boleh get-session, sign-out, dan sign-in/*. Sisanya (profil, password, email, sesi, MFA, passkey, tautan akun, hapus akun, admin, login-challenges, callback sosial) 403 `ACTING_STAFF_NOT_ALLOWED`. Path dinormalisasi (query, slash ganda, decode satu kali, huruf kecil, `..` dan backslash tak pernah lolos). Perangkat pribadi tidak berubah.
+- Preview customer-display (`routes/customer-display.routes.ts`, `services/customer-display.service.ts`): cabang kasir di perangkat bersama wajib token kasir hidup; `terminalDeviceId` harus perangkat terminal aktif (bukan layar display) di outlet dan tenant jalur, difilter di SQL; token perangkat terdaftar harus sama dengan `terminalDeviceId`; selain itu 404 tanpa data tagihan. Kebocoran lintas outlet/tenant tidak terbukti di dasar (sudah ditolak), filter SQL jadi lapis tambahan.
+- Kontrak 1012 diperbarui: entri customer-display keluar dari NO_TOKEN_GUARD, allowlist getSession menambah `shared-device-auth.ts`.
+- Tes (gagal-dulu di dasar: 12/15, 28/41, 4/14): `kds-realtime-shared-device`, `auth-shared-device-guard`, `pos-customer-display-preview-access`, plus `shared-device-router-decisions` dan `acting-staff-shared-device`: 5 berkas, 336 lulus.
+- Review architect (xhigh): tidak ada bypass. Dibetulkan: komentar app.ts, stempel penanda di upgrade ws, activity dikeluarkan dari allowlist. Kartu lanjutan: carrier ws untuk browser (subprotocol, P2), schema preview data-minimal (P3), keep-alive `sessions/current/activity` ditolak di perangkat bersama (P3, putuskan perlu `requireAuthAllowSharedDevice` atau tidak).
+- Subagent: total 14, puncak 6 bersamaan, token heavy dipegang induk (bukan subagent).
+
+## 1021 KDS: layar memakai client realtime + reconnect 1008 (legend-t0m89), 17 Nov 2026
+
+Cabang `ghostex/4b06e171`, dasar 1018 (f854663f9). Tingkat K (akses). Tanpa migrasi, tanpa uang.
+
+- `kds-page.tsx` (`StationBoard`) memasang `useKdsRealtime`: frame tiket menyegarkan query board + ringkasan stasiun; resync mengambil snapshot (`fetchStationSnapshot`) lalu `resume(sequence)`, gagal ambil = coba `reconnect()` lagi 5 detik. Polling 2 detik tetap cadangan. Chip status kecil (Tersambung / Menyambung ulang / Terputus + tombol Sambung ulang), teks di `kds.realtime.*`, live region selalu terpasang.
+- Client (`kds-realtime.ts`): close 1008 setelah socket terbuka = baca ulang token dan reconnect SEKALI; jatah dikembalikan hanya bila socket retry bertahan `stableMs` (10 dtk) setelah hello. Retry putus sebelum hello, 1008 lagi, atau socket tak pernah terbuka = "denied" (minta PIN), tanpa loop. `reconnect()` baru (hook + client).
+- Tes: client 33 (gagal-dulu 13/15 awal), halaman 11 (gagal-dulu 8/11), API real-socket cabut token tengah koneksi: tutup 1008 + tak ada event sesudahnya, plus kasus recheck 60 dtk (tiket langsung setelah cabut tidak terkirim). Hijau: 46 tes root, 45 API shared-device + 64 KDS, prettier, eslint, tsc web + API.
+- Review reviewer: tanpa bug fungsional (a11y live region dibetulkan). Review architect (K): akses disetujui; dibetulkan loop hello->1008 tiap detik (jatah retry kini bergantung `stableMs`), snapshot gagal membuat client macet, tes API diperkuat. Sisa catatan rendah: chip bisa menyebut "sesi berakhir" untuk retry yang putus 1006 sebelum hello; `after: null` (jeda board-hello ditutup polling 2 dtk).
+- Screenshot 1280: `docs/review/img/ui1021-kds-connected.png`, `ui1021-kds-disconnected.png`.
+- Subagent: total 12, puncak 3 bersamaan, token heavy dipegang test-runner/implementer bergantian. Biaya sesi (session-usage): 3260k.
+
+## Merge train batch90 (18 Nov 2026, `int/batch90` -> `milestone/m1`)
+
+Dasar `origin/milestone/m1` 0b4fe006c (batch89). Cabang masuk (urut): `ghostex/a99498c8` (nbkvh), `ghostex/1053-kas-gaji-tunai-guard-lock-order`, `ghostex/legend-tiw2h-recon-clearance-restriktif` (menggantikan 1057 dan timeout-storage-dan-lock-recon), `ws/1073-edge-sweep-race` (memuat 1061), `ws/1073-edge-digest-cancel` (memuat bawa-kai), `ws/1069-worktree-hemat`, `ws/1078-kartu-kecil`. Tidak ada yang keluar.
+
+Peta migrasi (lama -> baru, `when`): 0663 -> 0480 (1795000000097), 0674 -> 0481 (…098), 0678 -> 0482 (…099), 0679 -> 0483 (…100), 0684 -> 0484 (…101). Angka lama di komentar, registry impor (`data-import-registry.test.ts`), `edge-txn-ledger-migration.test.ts` (TAG_PREFIX, nama fungsi) dan `docs/design/edge-status-cloud.md` ikut diganti; `db:generate` kosong, `migration-renumber check` hijau.
+
+Konflik: PROGRESS.md/package.json (simpan dua sisi); `payroll-payout-recon.service.ts` `loadWithdrawals` (tiw2h `lostResolves` dan 1005 `withdrawFacts` digabung, operationIds memuat keduanya; reviewer: 0 P1/P2). Penyesuaian (tidak ada guard dilonggarkan): (1) `shared-device-router-decisions.test.ts` + keputusan `edge-node-status: backoffice`; (2) `approveCashBankEntry` kini meneruskan penolakan posting ke jalur langsung (`settleCashBankEntryForApproval(..., { rethrowPostingRefusal: true })`): approve langsung atas rantai yang sudah disetujui saat kas 1102 kurang menjawab `PETTY_CASH_GL_INSUFFICIENT` (bukan `CASH_OUT_CHAIN_OPEN`), tetap tanpa jurnal; konsumen outbox tetap tidak melempar; (3) `payout-evidence-shared-scanner.test.ts` mendanai kas 1102 sebelum approve batch tunai (guard 1053).
+
+Gerbang (kebijakan landing Retro 47/49): lint hijau (2 warning lama); typecheck hijau 1m38 (run pertama) dan 1m00 sesudah perbaikan; fast gate 233 berkas (API 1722 tes + root 965) hijau sesudah 3 perbaikan di atas, 7m51 (gagal 3 sebelum perbaikan); build hijau; e2e produksi 18 lulus/1 skip (17 menit antre browser); e2e mock terarah (smoke, finance-exceptions, n5u8w, diq) 23/23 (2m20). Full run 17:57-20:35 (2j38m): 23763 lulus, 5 gagal di 4 berkas, semuanya lulus terarah sesudahnya: `payroll-payout-888-fingerprint` (timeout 20 dtk, lulus 3/3), `tax-api` ORD-03 409 vs 422 (lulus 3/3; kartu lama legend-1dhpu), `rbac-audit-writer` (flake dikenal), `payroll-payout-990-recon-attest` (2 tes beda; lulus 6 dari 6 sendiri, gagal 1 dari 3 saat 3 berkas bersamaan; kartu baru legend-inflf P3). Tes root 224/224 hijau.
+
+Catatan: tsc API mendekati batas heap 6 GB: dua run dengan batas bawaan mati OOM (exit 137, "heap out of memory" di 6,1 GB), lulus dengan `NODE_OPTIONS=--max-old-space-size=8192` (1m00). Bila `pnpm check` rilis gagal 137 di typecheck API, pakai itu.
+
+Subagent: total 3 (reviewer 1, implementer 0 untuk batch90; 2 implementer untuk persiapan batch91), puncak 2 bersamaan, token heavy dipegang thread merge train ini. Biaya sesi (batch90 + persiapan batch91, sampai 20:50): total biaya* 4130k, puncak konteks 260k, 0 compact.
+
+## Merge train batch91 (18 Nov 2026, `int/batch91` -> `milestone/m1`)
+
+Dasar `origin/milestone/m1` 3ddf85f3b (batch90). Cabang masuk: `ghostex/pin-kasir-tablet-bersama` a20420a6f (rantai akses 34755844, 1018, 4b06e171, 6acce68c, 1026, 1027 dan 1054 sudah termuat di dalamnya) dan `ws/1092-ci-hemat` d23427421. Keluar: `ghostex/8b2dc0b1` e589b3476 (1043 allowlist layar tablet bersama). Tanpa migrasi.
+
+Alasan 8b2dc0b1 keluar: allowlist default-tolak 1043 bertabrakan dengan desain 1027/1054/wa9n7 (guard bertanda sesi). Hasil merge membuat 53 tes perangkat bersama gagal (`shared-device-allowlist`, `shared-device-backoffice-guard`, `auth-shared-device-guard`, `push-removal-shared-device-1024`, `shared-device-fail-closed-stamp-vzvok`); rute keep-alive `POST /api/auth/sessions/current/activity` juga tidak ada di allowlist 1043. Menyatukan dua desain akses ini keputusan pemilik cabang, bukan merge train: cabang 1043 perlu di-rebase di atas 1027/1054 (allowlist ditambah keep-alive, urutan guard mengikuti wa9n7 lalu allowlist). Dilaporkan ke CTO.
+
+Gerbang: workspace links + lint hijau (6m32 antre, 2 warning lama); typecheck API+web hijau 2m29 (heap 8 GB); fast gate 16 berkas (580 tes API + 46 root) hijau 4m27, ditambah keluarga perangkat bersama 45 berkas (1033 tes) hijau; build hijau; e2e produksi 18 lulus/1 skip. Full run 20:58-23:20 (2j21m): 23991 lulus, 4 gagal di 3 berkas, semuanya lulus pada rerun terarah (2x): `hris-employee-bank-code`, `tax-api` ORD-03, `rbac-audit-writer` x2 (flake dikenal).

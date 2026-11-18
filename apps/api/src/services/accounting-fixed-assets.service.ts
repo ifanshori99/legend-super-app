@@ -103,6 +103,7 @@ import {
   postJournalInTransaction,
 } from "./accounting-journal.service.ts";
 import { recordSupplierInvoicePayableInTransaction } from "./accounting-ap.service.ts";
+import { entityLock } from "./accounting-bank-matching.ts";
 import { assertPeriodOpenForPosting } from "./accounting-period.service.ts";
 import {
   advisoryLock,
@@ -393,6 +394,9 @@ async function lockAsset(
   if (!peek || !outletVisible(context, peek.outletId))
     throw new HttpError(404, "NOT_FOUND", "Fixed asset not found.");
   await advisoryLock(tx, `fa-dep:${tenantId}:${peek.legalEntityId}`);
+  // Canonical order (legend-f250r): entity advisory lock before the period
+  // gates and journal posts this command runs, like postJournalInTransaction.
+  await entityLock(tx, tenantId, peek.legalEntityId);
   const [row] = await tx
     .select()
     .from(fixedAssets)

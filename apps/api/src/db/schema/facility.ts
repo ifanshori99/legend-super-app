@@ -31,6 +31,7 @@ import { sql } from "drizzle-orm";
 import {
   boolean,
   check,
+  date,
   foreignKey,
   index,
   integer,
@@ -122,6 +123,48 @@ export const facilities = pgTable(
     check(
       "facilities_minutes_check",
       sql`${table.sessionMinutes} BETWEEN 1 AND 480 AND ${table.cleaningMinutes} BETWEEN 0 AND 240 AND ${table.arrivalGraceMinutes} BETWEEN 0 AND 1440 AND ${table.sessionMinutes} + ${table.cleaningMinutes} <= 720`,
+    ),
+  ],
+);
+
+/**
+ * Operating hours of a facility with an effective date (legend-4us1a). The
+ * hours of a business date are the version with the latest `effective_from`
+ * at or before that date, so a change never rewrites a past day or a booking
+ * already confirmed. `facilities.operating_hours` stays the hours valid today
+ * (the latest version whose `effective_from` is not in the future); the
+ * migration seeds one version per facility at 1970-01-01 so a tenant with no
+ * change behaves as before.
+ */
+export const facilityOperatingHoursVersions = pgTable(
+  "facility_operating_hours_versions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    facilityId: uuid("facility_id").notNull(),
+    /** Business date (outlet calendar) from which these hours apply. */
+    effectiveFrom: date("effective_from").notNull(),
+    operatingHours: jsonb("operating_hours")
+      .$type<FacilityDayHours[]>()
+      .notNull(),
+    createdAt,
+  },
+  (table) => [
+    unique("facility_operating_hours_versions_key").on(
+      table.tenantId,
+      table.facilityId,
+      table.effectiveFrom,
+    ),
+    foreignKey({
+      name: "facility_operating_hours_versions_facility_fk",
+      columns: [table.tenantId, table.outletId, table.facilityId],
+      foreignColumns: [facilities.tenantId, facilities.outletId, facilities.id],
+    }),
+    index("facility_operating_hours_versions_lookup_idx").on(
+      table.tenantId,
+      table.facilityId,
+      table.effectiveFrom,
     ),
   ],
 );

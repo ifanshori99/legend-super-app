@@ -48,6 +48,8 @@ export * from "./reservation";
 export * from "./reservation-public";
 export * from "./facility";
 export * from "./facility-entitlement";
+// 936 POS facility tickets (legend-hpgyw part D).
+export * from "./facility-pos-ticket";
 export * from "./hris";
 // WS-10 leave, balances, accrual, holidays, overtime (legend-hggk).
 export * from "./hris-leave";
@@ -78,9 +80,12 @@ export * from "./edge-deferred-event";
 export * from "./edge-link-dead-letter";
 export * from "./edge-order-ingest";
 export * from "./edge-receipt-skip";
+export * from "./edge-reconciliation";
+export * from "./edge-txn-ledger";
 export * from "./edge-node";
 export * from "./edge-hris";
 export * from "./edge-sync-conflict";
+export * from "./edge-node-alert";
 export * from "./edge-print";
 export * from "./edge-catalog-gate-state";
 export * from "./edge-catalog-sale-overrides";
@@ -109,6 +114,8 @@ export * from "./kds-capacity";
 export * from "./kds-pacing";
 // WS-06 purchasing: suppliers, price history, PR/PO (legend-9yz).
 export * from "./purchasing";
+// WS-06 supplier invoice payments with approval (legend-xxqz3).
+export * from "./supplier-payments";
 // WS-04 cashier shift, cash movements, end-of-day close (legend-6c0).
 export * from "./pos-shift";
 // Acting cashier token per POS device (legend-aruta).
@@ -118,6 +125,8 @@ export * from "./payroll-pph21-policy";
 // WS-10 payroll core tables (legend-gfcr).
 export * from "./payroll";
 export * from "./payroll-rapel";
+// WS-10 payroll overtime correction ledger (legend-72nod).
+export * from "./payroll-overtime-corrections";
 // WS-10 payroll disbursement: payout config, batches, items (legend-wnkep.1).
 export * from "./payroll-payout";
 // WS-10 payslip PIN and its WhatsApp reset challenges (legend-2ap3).
@@ -204,3 +213,7 @@ export * from "./ai-chatgpt";
 
 // legend-bod emergency (panic) button tables.
 export * from "./panic-alert";
+export * from "./sealed-secret-reseal";
+
+// legend-vqicf customer reviews (migration 0455).
+export * from "./customer-reviews";

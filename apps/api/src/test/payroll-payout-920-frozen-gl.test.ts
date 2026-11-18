@@ -369,6 +369,9 @@ const settle = (batchId: string, by = APP2) =>
  * confirmation: B is frozen, A is not.
  */
 async function frozenBankBatchWorld() {
+  // Setup only (legend-rvao9): approving the cash batch needs 1102 funded. Done
+  // before the baseline so the funding journal is not part of any delta.
+  await W.fundPettyCash(CASH_NET);
   const before = await snapshot();
   const slips = [cash(CASHIER, CASH_NET), bank(BUDI, BANK_NET)];
   const runId = await W.seedRun(slips);
@@ -551,6 +554,7 @@ describe("920 frozen batch does not break the GL consumer of its run", () => {
   });
 
   it("[920-frozen-gl-control-unfrozen] control: the same world without the freeze settles both batches in the consumer, bank credited net plus fee, cash credited the cash net", async () => {
+    await W.fundPettyCash(CASH_NET); // setup only, before the baseline
     const before = await snapshot();
     const slips = [cash(CASHIER, CASH_NET), bank(BUDI, BANK_NET)];
     const runId = await W.seedRun(slips);

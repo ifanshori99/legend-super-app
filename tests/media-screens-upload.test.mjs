@@ -312,7 +312,10 @@ for (const [kind, component, props] of screens) {
       "selected photo must upload before creating a record",
     );
     assert.equal(state.normalized[0], file);
-    assert.equal(state.uploads[0].purpose, "receipt");
+    assert.equal(
+      state.uploads[0].purpose,
+      kind === "goods_receipt" ? "goods_receipt_photo" : "receipt",
+    );
     assert.equal(state.uploads[0].sourceKind, kind);
     assert.equal(state.uploads[0].outletId, outletId);
     assert.equal(await state.uploads[0].file.text(), "normalized");

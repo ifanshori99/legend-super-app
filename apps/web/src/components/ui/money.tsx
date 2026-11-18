@@ -16,7 +16,7 @@ const SIZE: Record<Size, string> = {
   hero: "type-money-hero",
 };
 const SCALED: ReadonlySet<Size> = new Set(["stat", "hero"]);
-const RUPIAH = /^(−?)(Rp)\u00a0(.+)$/;
+const RUPIAH = /^(−?)(Rp)(.+)$/;
 
 function Money({
   amount,

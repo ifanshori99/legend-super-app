@@ -104,10 +104,12 @@ export function renderReceipt(
   if (data.discount) {
     b.columns("Diskon", formatRupiah(-Math.abs(data.discount)), width);
   }
+  // legend-974: an inclusive bill's subtotal already holds service and tax.
+  const included = data.pricesIncludeTax ? "Termasuk " : "";
   if (data.serviceCharge) {
-    b.columns("Service", formatRupiah(data.serviceCharge), width);
+    b.columns(`${included}Service`, formatRupiah(data.serviceCharge), width);
   }
-  if (data.tax) b.columns("Pajak", formatRupiah(data.tax), width);
+  if (data.tax) b.columns(`${included}Pajak`, formatRupiah(data.tax), width);
   if (data.rounding)
     b.columns(
       messagesId.deviceRegistry.receiptPrintLabels.rounding,

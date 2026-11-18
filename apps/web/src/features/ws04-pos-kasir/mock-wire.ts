@@ -16,7 +16,7 @@ import {
   MOCK_SUPERVISOR_ID,
   dayFixture,
 } from "./fixtures.ts";
-import { depositUsedIdr } from "./mock-engine.ts";
+import { depositUsedIdr, orderTotalIdr } from "./mock-engine.ts";
 import type {
   CashMovement,
   DayCloseRecap,
@@ -63,14 +63,20 @@ function tenderWire(order: EngineOrder, tender: EngineTender) {
     ...scope,
     orderId: orderUlidOf(order.id),
     method: tender.method === "edc" ? "edc_card" : tender.method,
-    provider: tender.method === "cash" ? "manual" : gateway ? "doit" : "edc",
+    provider:
+      tender.method === "cash" || tender.method === "points"
+        ? "manual"
+        : gateway
+          ? "doit"
+          : "edc",
     paymentIntentId: gateway ? tender.id : null,
     amountIdr: tender.amountIdr,
     receivedIdr: tender.method === "cash" ? (tender.receivedIdr ?? null) : null,
     changeIdr: tender.method === "cash" ? (tender.changeIdr ?? null) : null,
     reference: tender.reference ?? null,
     edcTransactionId: tender.method === "edc" ? tender.id : null,
-    pointsUsed: null,
+    // One point is worth Rp1 in the mock (brief 936).
+    pointsUsed: tender.method === "points" ? tender.amountIdr : null,
     status: "captured",
     requestedAt: tender.confirmedAt,
     resolvedAt: tender.confirmedAt,
@@ -81,7 +87,7 @@ function tenderWire(order: EngineOrder, tender: EngineTender) {
 
 function depositTenderWire(order: EngineOrder) {
   const amountIdr = depositUsedIdr(
-    order.totalIdr,
+    orderTotalIdr(order),
     order.deposit?.amountIdr ?? 0,
   );
   return {
@@ -107,7 +113,8 @@ function depositTenderWire(order: EngineOrder) {
 
 function allTenders(order: EngineOrder) {
   const deposit =
-    order.deposit && depositUsedIdr(order.totalIdr, order.deposit.amountIdr) > 0
+    order.deposit &&
+    depositUsedIdr(orderTotalIdr(order), order.deposit.amountIdr) > 0
       ? [depositTenderWire(order)]
       : [];
   return [...deposit, ...order.tenders.map((t) => tenderWire(order, t))];
@@ -131,6 +138,49 @@ export function receiptWire(order: EngineOrder) {
   };
 }
 
+const EDC_BANK_WIRE: Record<string, "bca" | "bni"> = {
+  "Bank A": "bca",
+  "Bank B": "bni",
+};
+const EDC_STATUS_WIRE = {
+  waiting: "pending",
+  unknown: "unknown",
+  confirmed: "approved",
+  declined: "declined",
+  failed: "failed",
+  expired: "failed",
+  cancelled: "cancelled",
+} as const;
+
+/** The latest 5 EDC requests of the bill, newest first (936). */
+function edcAttemptsWire(order: EngineOrder) {
+  return order.attempts
+    .filter((attempt) => attempt.method === "edc" && attempt.edc)
+    .slice(-5)
+    .reverse()
+    .map((attempt) => {
+      const edc = attempt.edc!;
+      return {
+        id: attempt.id,
+        status: EDC_STATUS_WIRE[attempt.status],
+        amountIdr: attempt.amountIdr,
+        terminalId: `00000000-0000-4000-8000-${pad(Number(edc.terminalId.replace(/\D/g, "")) + 80_000, 12)}`,
+        terminalLabel: edc.terminalLabel,
+        declineReason: edc.declineReason ?? null,
+        responseCode: edc.responseCode ?? null,
+        bank: EDC_BANK_WIRE[edc.bank] ?? null,
+        method: edc.mode,
+        mode: attempt.standalone ? "standalone" : "ecr",
+        createdAt: new Date(attempt.startedAtMs).toISOString(),
+        // The mock keeps no end time: a finished request closes when it starts.
+        completedAt:
+          attempt.status === "waiting"
+            ? null
+            : new Date(attempt.startedAtMs).toISOString(),
+      };
+    });
+}
+
 export function orderDetailWire(order: EngineOrder, remainingIdr: number) {
   const orderId = orderUlidOf(order.id);
   const paid = remainingIdr === 0;
@@ -148,15 +198,15 @@ export function orderDetailWire(order: EngineOrder, remainingIdr: number) {
     deviceId: MOCK_DEVICE_ID,
     cashierId: MOCK_CASHIER_ID,
     subtotalIdr: order.subtotalIdr,
-    discountIdr: 0,
+    discountIdr: order.voucher?.discountIdr ?? 0,
     serviceChargeIdr: order.serviceIdr,
     taxIdr: order.taxIdr,
     roundingIdr: 0,
-    totalIdr: order.totalIdr,
+    totalIdr: orderTotalIdr(order),
     // The reservation DP is the order's `depositAppliedIdr`, never a tender
     // (contract, legend-p7lx): the customer display reads it to hold QRIS.
     depositAppliedIdr: depositUsedIdr(
-      order.totalIdr,
+      orderTotalIdr(order),
       order.deposit?.amountIdr ?? 0,
     ),
     status: paid ? "completed" : "awaiting_payment",
@@ -199,7 +249,28 @@ export function orderDetailWire(order: EngineOrder, remainingIdr: number) {
       createdAt: AT,
     })),
     tenders: order.tenders.map((t) => tenderWire(order, t)),
-    discounts: [],
+    discounts: order.voucher
+      ? [
+          {
+            id: `00000000-0000-4000-8000-${pad(idTail + 90_000, 12)}`,
+            tenantId,
+            orderId,
+            source: "voucher",
+            kind: "amount",
+            percentBp: null,
+            amountIdr: order.voucher.discountIdr,
+            reason: "promo_engine",
+            reasonNote: null,
+            appliedBy: MOCK_CASHIER_ID,
+            approvedBy: null,
+            approvalRequestId: null,
+            overrideId: null,
+            voucherCode: order.voucher.code,
+            createdAt: AT,
+          },
+        ]
+      : [],
+    edcAttempts: edcAttemptsWire(order),
     receipt: paid && order.receiptNo ? receiptWire(order) : null,
   };
 }
@@ -241,7 +312,15 @@ export function receiptIssueWire(order: EngineOrder) {
         lineTotalIdr: Math.round(item.amountIdr / item.qty) * item.qty,
         note: null,
       })),
-      discounts: [],
+      discounts: order.voucher
+        ? [
+            {
+              label: `Voucher ${order.voucher.code}`,
+              source: "voucher",
+              amountIdr: order.voucher.discountIdr,
+            },
+          ]
+        : [],
       serviceCharge: {
         rateBp: rate(order.serviceIdr, order.subtotalIdr),
         baseIdr: order.subtotalIdr,
@@ -257,11 +336,11 @@ export function receiptIssueWire(order: EngineOrder) {
         },
       ],
       subtotalIdr: order.subtotalIdr,
-      discountIdr: 0,
+      discountIdr: order.voucher?.discountIdr ?? 0,
       serviceChargeIdr: order.serviceIdr,
       taxIdr: order.taxIdr,
       roundingIdr: 0,
-      totalIdr: order.totalIdr,
+      totalIdr: orderTotalIdr(order),
       tenders: allTenders(order).map((tender) => ({
         method: tender.method,
         amountIdr: tender.amountIdr,

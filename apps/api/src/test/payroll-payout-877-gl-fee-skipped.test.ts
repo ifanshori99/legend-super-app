@@ -30,7 +30,7 @@
 // - Whether the fee is journaled or only marked at the pending stage is not
 //   asserted; only the invariant "fee_posted = true implies a fee journal
 //   exists" and the final outcome (exactly one fee journal) are.
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { createUlid } from "@starter/shared/core";
 import { payrollLocked } from "@starter/shared/hris/payroll";
@@ -55,6 +55,11 @@ import {
   type Row,
   type Slip,
 } from "./payroll-payout-fixtures.ts";
+
+// Bank reference of a return claim: unique per claim (evidence key), identical
+// on both steps of the same claim.
+const bankRefOf = (evidenceKey: string) =>
+  `TRX${createHash("sha256").update(evidenceKey).digest("hex").slice(0, 8)}`;
 
 type Tx = Parameters<Parameters<typeof W.inTx>[0]>[0];
 
@@ -304,20 +309,23 @@ async function remapMapping(role: string, code: string) {
   return () => set(mapping!.account_id as string);
 }
 
-const returnItems = (batchId: string, itemIds: string[], by: string) =>
-  W.inTx((tx) =>
+const returnItems = (batchId: string, itemIds: string[], by: string) => {
+  const evidenceKey = uploadEvidence(batchId, "dana-kembali.pdf");
+  return W.inTx((tx) =>
     returnManualItems(
       tx,
       actorOf(by),
       batchId,
       {
         itemIds,
-        evidenceKey: uploadEvidence(batchId, "dana-kembali.pdf"),
+        evidenceKey,
+        bankRef: bankRefOf(evidenceKey),
         note: "Bank mengembalikan dana, rekening tujuan ditutup",
       } as never,
       W.proofs(),
     ),
   );
+};
 
 // ---------------------------------------------------------------------------
 // A. Fee of a second batch that became pending while accounting was off.
@@ -328,6 +336,8 @@ async function pendingCashThenExportedBank() {
   const slips = [cash(CASHIER, NET_CASH), bank(BUDI, NET_BANK)];
   const runId = await W.seedRun(slips);
   const { outboxId, event } = await queueLockedViaOutbox(runId, slips);
+  // 1102 is funded by the caller before its `before` snapshot (the funding
+  // journal credits 1103, which these tests measure as the bank).
   const batchA = await W.approvedBatch(runId, "cash");
   const itemsA = await W.itemsOf(batchA);
   await W.handover(
@@ -362,6 +372,8 @@ async function confirmBWithAccountingOff(batchB: string) {
 
 describe("A (legend-1t65x): fee of a second batch that was pending while accounting was off", () => {
   it("[a-pending-second-batch-fee-posted-once] A pending, accounting off, B (with bank fee) confirmed: when the consumer resolves both, the fee is journaled exactly once (Dr 8101 / Cr 1103), the bank is credited net + fee, 2103 is net zero, and replays add nothing", async () => {
+    // Setup (legend-rvao9): the cash approve guard needs 1102 to cover batch A.
+    await W.fundPettyCash(1_000_000_000);
     const before = await snapshot();
     const { runId, slips, outboxId, event, batchA, batchB } =
       await pendingCashThenExportedBank();
@@ -412,6 +424,8 @@ describe("A (legend-1t65x): fee of a second batch that was pending while account
   });
 
   it("[a-pending-second-batch-fee-mapping-missing] the bank_charges mapping is gone when the consumer resolves B: the consumer does not throw, B still settles (net journal, 2103 net zero), the fee stays unposted (fee_posted = false, no fee journal) and finance re-posts it exactly once later", async () => {
+    // Setup (legend-rvao9): the cash approve guard needs 1102 to cover batch A.
+    await W.fundPettyCash(1_000_000_000);
     const before = await snapshot();
     const { runId, slips, outboxId, batchB } =
       await pendingCashThenExportedBank();
@@ -466,10 +480,16 @@ describe("A (legend-1t65x): fee of a second batch that was pending while account
 // ---------------------------------------------------------------------------
 
 /** Cash handed over with accounting off and no locked event waiting: final settle_skipped. */
-async function cashSkipped(net = NET_CASH) {
+async function cashSkipped(
+  net = NET_CASH,
+  beforeHandover?: () => Promise<void>,
+) {
   const slips = [cash(CASHIER, net)];
   const runId = await W.seedRun(slips);
+  // Setup (legend-rvao9): the cash approve guard needs 1102 to cover the batch.
+  await W.fundPettyCash(1_000_000_000);
   const batchId = await W.approvedBatch(runId, "cash");
+  await beforeHandover?.();
   const itemIds = (await W.itemsOf(batchId)).map((i) => i.id as string);
   await withAccountingOff(() => W.handover(batchId, itemIds, APP2));
   const postings = await W.postingsOf(batchId);
@@ -698,10 +718,15 @@ describe("D (legend-vvzij): settle_skipped becomes settle when the lock journal 
 
   it("[d-cash-skipped-no-petty-cash-mapping-stays] no petty_cash mapping at the handover and none when the locked event is consumed (nothing frozen, nothing to fall back on): the consumer does not throw, the lock journal still posts, the posting stays settle_skipped and cash is not credited", async () => {
     const before = await snapshot();
-    const restore = await removeMapping("petty_cash");
+    // Setup (legend-rvao9): approving a cash batch with accounting on needs the
+    // petty_cash mapping, so it is removed after the approve, right before the
+    // handover (the premise of this test is "no mapping at the handover").
+    let restore: () => Promise<unknown> = async () => {};
     let batchId = "";
     try {
-      const skipped = await cashSkipped();
+      const skipped = await cashSkipped(NET_CASH, async () => {
+        restore = await removeMapping("petty_cash");
+      });
       batchId = skipped.batchId;
       const { outboxId } = await queueLockedViaOutbox(
         skipped.runId,

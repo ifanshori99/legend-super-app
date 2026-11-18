@@ -9,7 +9,7 @@
 //   requested) and equals the refund id once that refund completes.
 import { randomBytes, randomUUID } from "node:crypto";
 import { Pool } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { cafeLegendAccessFixtures } from "@starter/shared/access";
 import {
   paymentRoutingSchema,
@@ -17,7 +17,9 @@ import {
 } from "@starter/shared/payment";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app";
+import { setPaymentRefundGateway } from "../services/payment-refund-gateway";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers";
+import { FakeRefundGateway } from "./refund-fake-gateway";
 
 const app = createApp();
 const tenantId = cafeLegendPlatformFixtures.tenant.id;
@@ -119,6 +121,10 @@ async function listFunds(
 beforeAll(async () => {
   managerOne = await tenantManager("one");
   managerTwo = await tenantManager("two");
+});
+
+afterEach(() => {
+  setPaymentRefundGateway(null);
 });
 
 afterAll(async () => {
@@ -241,6 +247,16 @@ describe("WS-05 fuv7 contract: unallocated funds carry reason and approvalRef", 
     );
     expect(refunds.rows).toHaveLength(1);
     const refundId = refunds.rows[0]!.id;
+
+    // legend-980: a refund is settleable by hand only when the provider answers
+    // `failed`; any other answer is refused as uncertain (409).
+    const fake = new FakeRefundGateway();
+    fake.setStatus(`refund:${refundId}`, {
+      status: "failed",
+      providerRef: "PR-DECLINED",
+      code: "declined",
+    });
+    setPaymentRefundGateway(fake);
 
     // Bring the refund to the settleable state (approved by a third person,
     // payout exhausted), then a second owner settles it by hand.

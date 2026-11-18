@@ -8,12 +8,27 @@ import { cafeLegendFixtures } from "../packages/shared/src/core/index.ts";
 import * as events from "../packages/shared/src/events/index.ts";
 import * as i18n from "../packages/shared/src/i18n/index.ts";
 import * as text from "../packages/shared/src/text/index.ts";
+import { ACCOUNTING_ERROR_CODES } from "../packages/shared/src/accounting/index.ts";
+import { taxErrorMessageKey } from "../apps/web/src/features/ws07-tax/lib.ts";
 
 // WS-00 text contract: catalog, tenant term dictionary and text_overrides
 // (PRD §3 F4 "Teks & Kamus Istilah", §6 `text_overrides`, §2 "UI Bahasa
 // Indonesia"). TEN-02 for the tenant boundary; TEN-07 for hardcoded strings.
 
 const tenantId = cafeLegendFixtures.tenant.id;
+
+test("legend-0cnqt WS-07 every tax report error has specific catalog text", () => {
+  const t = i18n.createTranslator();
+  for (const code of ACCOUNTING_ERROR_CODES.filter((value) =>
+    value.startsWith("TAX_REPORT_"),
+  )) {
+    const key = taxErrorMessageKey(code);
+    assert.notEqual(key, "accounting.tax.errors.generic", code);
+    assert.ok(i18n.isMessageKey(key), `${code}: ${key}`);
+    assert.notEqual(t(key), key, code);
+    assert.ok(t(key).trim().length > 0, code);
+  }
+});
 
 test("Cafe Legend term overrides parse and are unique per tenant, locale and key", () => {
   const fixture = text.cafeLegendTextFixtures;

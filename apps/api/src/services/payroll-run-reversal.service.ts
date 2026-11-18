@@ -11,17 +11,26 @@
 // same tax month was computed on this run (`payroll_run_month_priors`, written
 // at lock): reverse the later run first. The database trigger
 // `payroll_runs_reversal_dependency_trg` enforces the same rule. Runs whose
-// side effects the lock step does not perform (loans, reimbursements, service
-// charge, rapel) are not reversed here either: refusing never pays anyone more.
+// side effects the lock step does not perform (reimbursements, service charge,
+// rapel) are not reversed here either: refusing never pays anyone more.
+// Loans: the lock step lowers each loan by its recorded deduction
+// (`payroll_loan_deductions`, legend-xo0xx, legend-8tfvr), so an approved
+// reversal restores each loan's outstanding balance by exactly the recorded
+// amount, once, and deletes those rows in the same transaction (a repeat finds
+// none). The recorded sum has to equal the run's `loanRepaymentIdr`, otherwise
+// the reversal is refused. Migration 0443 proves at commit that principal -
+// outstanding equals the rows of locked or paid runs, so a missed or doubled
+// restore cannot commit.
 //
 // A run that raised an employee receivable (`pph21ReceivableIdr` > 0) is also
 // refused while another live run collected a receivable (`pph21_receivable`
 // line) from the same employee: the collection would be left without its
 // receivable. The collecting run has to be reversed first.
 
-import { and, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
 import {
   createUlid,
+  idr,
   type ScopedTenantContext,
   type TenantId,
 } from "@starter/shared/core";
@@ -34,6 +43,8 @@ import {
   type PayrollRun,
   type PayrollRunId,
 } from "@starter/shared/hris/payroll";
+import { accountingOpenItems } from "../db/schema/accounting-ap-fa.ts";
+import { hrisOffboardings } from "../db/schema/hris-lifecycle.ts";
 import {
   payrollDisbursementBatches,
   payrollDisbursementItems,
@@ -44,6 +55,8 @@ import {
 } from "../db/schema/payroll-rapel.ts";
 import {
   bankTransferFiles,
+  employeeLoans,
+  payrollLoanDeductions,
   payrollRunMonthPriors,
   payrollRuns,
   payslips,
@@ -54,6 +67,13 @@ import { recordAudit } from "./core-audit.ts";
 import type { Tx } from "./hris-access.ts";
 import { assertPayrollTenantCan } from "./payroll-access.ts";
 import { emitPayrollEvent } from "./payroll-events.ts";
+import {
+  assertNoSettledOvertimeCorrectionFromRun,
+  lockOvertimeCorrectionScope,
+  syncOvertimeCorrectionLedgerInTransaction,
+} from "./payroll-overtime-correction.service.ts";
+import { PPH21_BACKFILL_DOCUMENT_PREFIX } from "./payroll-pph21-receivable-backfill.service.ts";
+import { syncPph21ReceivableOpenItemsInTransaction } from "./payroll-pph21-receivable-open-items.service.ts";
 import {
   disputeFreezesBatchSql,
   disputeIsOpenSql,
@@ -119,14 +139,15 @@ async function lockRunRow(
   return row;
 }
 
-/** Totals that carry side effects the lock step does not perform. */
+/**
+ * Totals that carry side effects the lock step does not perform. Loans are
+ * checked apart (`restoreLoanDeductions`): they need recorded deductions.
+ */
 function hasUnsupportedTotals(run: PayrollRun): boolean {
   const totals = run.totals;
   return (
     totals !== null &&
-    (totals.loanRepaymentIdr > 0 ||
-      totals.reimbursementIdr > 0 ||
-      totals.serviceChargeIdr > 0)
+    (totals.reimbursementIdr > 0 || totals.serviceChargeIdr > 0)
   );
 }
 
@@ -157,6 +178,143 @@ async function assertNoRapelSideEffects(
     )
     .limit(1);
   if (finalized || allocated) throw unsupported();
+}
+
+/**
+ * Gives every loan the run deducted its recorded amount back, once, then
+ * deletes the deduction rows so a repeat restores nothing. The recorded sum has
+ * to equal the run's loan total; a run with a loan total and no matching rows
+ * is refused (never guess an amount). A restore that would lift a loan above
+ * its principal is refused. Loans lock in id order.
+ */
+async function restoreLoanDeductions(
+  tx: Tx,
+  tenantId: TenantId,
+  run: PayrollRun,
+  now: Date,
+): Promise<void> {
+  const rows = await tx
+    .select({
+      loanId: payrollLoanDeductions.loanId,
+      amountIdr: payrollLoanDeductions.amountIdr,
+    })
+    .from(payrollLoanDeductions)
+    .where(
+      and(
+        eq(payrollLoanDeductions.tenantId, tenantId),
+        eq(payrollLoanDeductions.payrollRunId, run.id),
+      ),
+    )
+    .orderBy(payrollLoanDeductions.loanId);
+  const recorded = rows.reduce((sum, row) => sum + Number(row.amountIdr), 0);
+  if (recorded !== (run.totals?.loanRepaymentIdr ?? 0)) throw unsupported();
+  if (rows.length === 0) return;
+  for (const row of rows) {
+    const [loan] = await tx
+      .select({
+        principalIdr: employeeLoans.principalIdr,
+        outstandingIdr: employeeLoans.outstandingIdr,
+        status: employeeLoans.status,
+      })
+      .from(employeeLoans)
+      .where(
+        and(
+          eq(employeeLoans.tenantId, tenantId),
+          eq(employeeLoans.id, row.loanId),
+        ),
+      )
+      .for("update");
+    const restored = loan
+      ? Number(loan.outstandingIdr) + Number(row.amountIdr)
+      : 0;
+    if (
+      !loan ||
+      (loan.status !== "disbursed" && loan.status !== "settled") ||
+      restored > Number(loan.principalIdr)
+    )
+      throw unsupported();
+    await tx
+      .update(employeeLoans)
+      .set({
+        outstandingIdr: idr(restored),
+        status: "disbursed",
+        settledAt: null,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(employeeLoans.tenantId, tenantId),
+          eq(employeeLoans.id, row.loanId),
+        ),
+      );
+  }
+  await tx
+    .delete(payrollLoanDeductions)
+    .where(
+      and(
+        eq(payrollLoanDeductions.tenantId, tenantId),
+        eq(payrollLoanDeductions.payrollRunId, run.id),
+      ),
+    );
+}
+
+/**
+ * legend-xo4cn: refuses the reversal of a run whose loan deductions touch an
+ * employee with a completed offboarding. The frozen settlement snapshot holds
+ * the loan balance as it was; restoring the deductions would lift the balance
+ * above what the snapshot billed. Refusing is the safe rule (nobody is paid
+ * more, no automatic difference is opened); reopening the settlement is a
+ * separate, explicit decision. The employee's loans lock FOR UPDATE in id
+ * order BEFORE the offboarding query, like `assertNoPendingPayrollDeduction`
+ * in hris-offboarding.service.ts, so a completion running at the same time
+ * either commits first (refused here) or waits for this transaction. One
+ * affected employee refuses the whole run.
+ */
+async function assertNoCompletedSettlementLoanImpact(
+  tx: Tx,
+  tenantId: TenantId,
+  run: Pick<PayrollRun, "id">,
+): Promise<void> {
+  const deducted = await tx
+    .selectDistinct({ employeeId: payrollLoanDeductions.employeeId })
+    .from(payrollLoanDeductions)
+    .where(
+      and(
+        eq(payrollLoanDeductions.tenantId, tenantId),
+        eq(payrollLoanDeductions.payrollRunId, run.id),
+      ),
+    );
+  if (deducted.length === 0) return;
+  const employeeIds = deducted.map((row) => row.employeeId);
+  await tx
+    .select({ id: employeeLoans.id })
+    .from(employeeLoans)
+    .where(
+      and(
+        eq(employeeLoans.tenantId, tenantId),
+        inArray(employeeLoans.employeeId, employeeIds),
+      ),
+    )
+    .orderBy(asc(employeeLoans.id))
+    .for("update");
+  const [settled] = await tx
+    .select({ id: hrisOffboardings.id })
+    .from(hrisOffboardings)
+    .where(
+      and(
+        eq(hrisOffboardings.tenantId, tenantId),
+        inArray(hrisOffboardings.employeeId, employeeIds),
+        eq(hrisOffboardings.status, "completed"),
+        sql`${hrisOffboardings.settlementSnapshot} IS NOT NULL`,
+      ),
+    )
+    .limit(1);
+  if (settled)
+    throw new HttpError(
+      409,
+      "PAYROLL_REVERSAL_LOAN_SETTLED",
+      "Run tidak bisa dibatalkan: pinjaman karyawan sudah dibekukan di settlement offboarding yang selesai. Koreksi settlement dulu.",
+    );
 }
 
 function unsupported(): HttpError {
@@ -404,6 +562,32 @@ async function assertNoCollectedReceivable(
     })
     .from(payrollRuns)
     .where(and(eq(payrollRuns.tenantId, tenantId), eq(payrollRuns.id, runId)));
+  // legend-i848k: a run before the open item existed was given ONE backfill
+  // item for its employee. Reversing a run that raised OR collected a
+  // receivable of that employee would move the slip balance away from that item
+  // and the finance list would show more (or less) than the employee owes.
+  if (touched.length > 0) {
+    const [backfilled] = await tx
+      .select({ id: accountingOpenItems.id })
+      .from(accountingOpenItems)
+      .where(
+        and(
+          eq(accountingOpenItems.tenantId, tenantId),
+          eq(accountingOpenItems.kind, "receivable"),
+          eq(accountingOpenItems.counterpartyType, "employee"),
+          inArray(accountingOpenItems.counterpartyId, touched),
+          thisRun
+            ? eq(accountingOpenItems.legalEntityId, thisRun.legalEntityId)
+            : undefined,
+          sql`${accountingOpenItems.documentNumber} LIKE ${`${PPH21_BACKFILL_DOCUMENT_PREFIX}%`}`,
+        ),
+      )
+      .limit(1);
+    if (backfilled)
+      throw reversalBlocked(
+        "Kekurangan PPh 21 karyawan dari payroll ini sudah dicatat sebagai piutang susulan. Hubungi finance untuk menyelesaikan piutang itu sebelum payroll dibatalkan.",
+      );
+  }
   const others = await tx
     .select({ ...PAYSLIP_COLUMNS, runLockedAt: payrollRuns.lockedAt })
     .from(payslips)
@@ -538,6 +722,23 @@ export async function requestPayrollRunReversalInTransaction(
     actorUserId,
     "payroll.lock",
   );
+  // LOCK ORDER (legend-72nod): the overtime correction lock comes BEFORE the
+  // run row. The lock of a target run holds it while the ledger trigger waits
+  // for a share lock on this (source) row.
+  const [entityRow] = await tx
+    .select({ legalEntityId: payrollRuns.legalEntityId })
+    .from(payrollRuns)
+    .where(
+      and(eq(payrollRuns.tenantId, tenantId), eq(payrollRuns.id, payrollRunId)),
+    )
+    .limit(1);
+  if (!entityRow)
+    throw new HttpError(
+      404,
+      "PAYROLL_RUN_NOT_FOUND",
+      "Payroll tidak ditemukan.",
+    );
+  await lockOvertimeCorrectionScope(tx, tenantId, entityRow.legalEntityId);
   const row = await lockRunRow(tx, tenantId, payrollRunId);
   const run = toPayrollRun(row);
   const next = applyPayrollRunCommand(run, {
@@ -551,6 +752,13 @@ export async function requestPayrollRunReversalInTransaction(
   await assertNoPayoutBatch(tx, tenantId, payrollRunId);
   await assertNoLiveDependents(tx, tenantId, payrollRunId);
   await assertNoCollectedReceivable(tx, tenantId, payrollRunId);
+  await assertNoSettledOvertimeCorrectionFromRun(
+    tx,
+    tenantId,
+    row.legalEntityId,
+    payrollRunId,
+  );
+  await assertNoCompletedSettlementLoanImpact(tx, tenantId, run);
   await writeRun(tx, tenantId, payrollRunId, next);
   await audit(
     tx,
@@ -583,6 +791,8 @@ export async function decidePayrollRunReversalInTransaction(
   // LOCK 1: tax month. LOCK 2: receivable scope. LOCK 3: run row.
   const month = await lockPayrollRunMonth(tx, tenantId, payrollRunId);
   await lockPph21ReceivableScope(tx, tenantId, month.legalEntityId);
+  // LOCK 2b: overtime correction scope, before the run row (see the request).
+  await lockOvertimeCorrectionScope(tx, tenantId, month.legalEntityId);
   const row = await lockRunRow(tx, tenantId, payrollRunId);
   if (
     row.legalEntityId !== month.legalEntityId ||
@@ -618,6 +828,14 @@ export async function decidePayrollRunReversalInTransaction(
   await assertNoPayoutBatch(tx, tenantId, payrollRunId);
   await assertNoLiveDependents(tx, tenantId, payrollRunId);
   await assertNoCollectedReceivable(tx, tenantId, payrollRunId);
+  await assertNoSettledOvertimeCorrectionFromRun(
+    tx,
+    tenantId,
+    row.legalEntityId,
+    payrollRunId,
+  );
+  await assertNoCompletedSettlementLoanImpact(tx, tenantId, run);
+  await restoreLoanDeductions(tx, tenantId, run, now);
   const { totals, reversal } = next;
   if (totals === null || reversal === null)
     throw new HttpError(
@@ -626,6 +844,11 @@ export async function decidePayrollRunReversalInTransaction(
       "Perubahan status payroll tidak diizinkan.",
     );
   await writeRun(tx, tenantId, payrollRunId, next);
+  // legend-itph: the reversed run leaves no employee receivable open item, and
+  // a receivable it collected is open again (receivable lock held above).
+  await syncPph21ReceivableOpenItemsInTransaction(tx, context, payrollRunId);
+  // legend-72nod: the overtime correction it settled becomes outstanding again.
+  await syncOvertimeCorrectionLedgerInTransaction(tx, context, payrollRunId);
   await emitPayrollEvent(tx, context, payrollReversed, {
     aggregateId: payrollRunId,
     actor: { type: "user", id: actor },

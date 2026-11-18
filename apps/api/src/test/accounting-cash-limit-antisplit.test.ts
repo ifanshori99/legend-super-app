@@ -76,6 +76,7 @@ import {
   type Session,
   type World,
 } from "./helpers/cash-bank-world.ts";
+import { approveChainLevelAs } from "./helpers/cash-out-chain.ts";
 import { withLimitSharedLock } from "./helpers/cash-limit-lock.ts";
 
 const app = createApp();
@@ -161,7 +162,10 @@ const decide = (
     .post(`${ENTRIES}/${encodeURIComponent(entryId)}/${action}`)
     .set(originHeader)
     .send(body);
-const approve = (who: Session, id: string) => decide(who, id, "approve");
+const approve = async (who: Session, id: string) => {
+  await approveChainLevelAs(who, id);
+  return decide(who, id, "approve");
+};
 const reject = (who: Session, id: string, reason = "Tidak sesuai") =>
   decide(who, id, "reject", { reason });
 
@@ -456,12 +460,18 @@ describe("top-up limit: above the limit needs approval", () => {
   it("[cash-limit-antisplit-AS-2b] a return (petty cash back to bank) is not gated and is not summed into the daily total", async () => {
     const creator = await finance("as2b");
     const outlet = await freshOutlet();
-    // Seed a fund of Rp9.000.000 as the owner so the creator's own sum is 0.
-    await owner.query(
-      `INSERT INTO petty_cash_funds (tenant_id, legal_entity_id, outlet_id, balance_idr, created_by)
-       VALUES ($1, $2, $3, 9000000, $4)`,
-      [tenantId, world.entityId, outlet, creator.userId],
+    // Seed a fund of Rp9.000.000 through an approved top-up by two OTHER users, so
+    // the creator's own sum is 0 and GL 1102 backs the fund (legend-a4z2f refuses a
+    // return of money the books do not show; a raw INSERT left the GL at 0).
+    const seeder = await finance("as2b seeder");
+    const seedApprover = await finance("as2b seed approver");
+    const seeded = await topup(seeder, outlet, 9 * MIL);
+    expect(tuOutcome(seeded)).toBe("pending");
+    const seedApproved = await approve(
+      seedApprover,
+      seeded.body.data.id as string,
     );
+    expect(seedApproved.status, JSON.stringify(seedApproved.body)).toBe(200);
     // A return above the limit posts at once.
     const back = await postMove(creator, {
       kind: "return",

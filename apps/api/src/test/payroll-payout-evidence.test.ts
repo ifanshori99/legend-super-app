@@ -153,6 +153,8 @@ describe("payment proof must belong to the tenant (service level)", () => {
     const slips = [cash(CASHIER, 1_200_000)];
     const runId = await W.seedRun(slips);
     await W.postLockedJournal(runId, slips);
+    // legend-rvao9: approving a cash batch needs enough cash in 1102.
+    await W.fundPettyCash(2_000_000);
     const batchId = await W.approvedBatch(runId, "cash");
     const items = await W.itemsOf(batchId);
     for (const [label, key] of Object.entries(foreignKeys(batchId))) {
@@ -324,6 +326,8 @@ describe("step-up: password again when MFA was only just enrolled", () => {
     const slips = [cash(CASHIER, 900_000)];
     const runId = await W.seedRun(slips);
     await W.postLockedJournal(runId, slips);
+    // legend-rvao9: approving a cash batch needs enough cash in 1102.
+    await W.fundPettyCash(2_000_000);
     const batchId = await W.approvedBatch(runId, "cash");
     const items = await W.itemsOf(batchId);
     const { client } = await enrollmentOnlyApprover("Tunai");

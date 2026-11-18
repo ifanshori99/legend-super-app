@@ -26,6 +26,7 @@ import {
   assertTrustedScopedContext,
   createUlid,
   idempotencyKeySchema,
+  localDateOf,
   userIdSchema,
   uuidSchema,
   z,
@@ -73,7 +74,9 @@ import {
   type Tx,
   type UnitRow,
 } from "./facility-shared.ts";
+import { posTicketPaymentNotInFlightSql } from "./facility-pos-ticket-hold.ts";
 import { unitAcceptsSlot, unitIsBookable } from "./facility-rules.ts";
+import { resolveOperatingHoursOn } from "./facility-hours-versions.service.ts";
 
 /** How long a `pending_payment` hold keeps its unit (PRD silent: 10 min). */
 export const SLOT_HOLD_TTL_MINUTES = 10;
@@ -294,7 +297,11 @@ export async function getFacilityAvailability(
     const [year, month, day] = query.date.split("-").map(Number);
     const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
     const grid: FacilitySlot[] = [];
-    for (const hours of facility.operatingHours) {
+    // Hours valid on the requested date (legend-4us1a), not today's.
+    const dayHours =
+      (await resolveOperatingHoursOn(tx, tenantId, facility.id, query.date)) ??
+      facility.operatingHours;
+    for (const hours of dayHours) {
       if (!hours.daysOfWeek.includes(weekday)) continue;
       const [oh, om] = hours.opensAt.split(":").map(Number);
       const [ch, cm] = hours.closesAt.split(":").map(Number);
@@ -309,8 +316,7 @@ export async function getFacilityAvailability(
           zonedInstant(query.date, at, timeZone),
           config,
         );
-        if (slotFitsOperatingHours(slot, facility.operatingHours, timeZone))
-          grid.push(slot);
+        if (slotFitsOperatingHours(slot, dayHours, timeZone)) grid.push(slot);
       }
     }
     const dayStart = zonedInstant(query.date, 0, timeZone);
@@ -376,6 +382,8 @@ export const holdSlotInputSchema = z.strictObject({
   entitlementLedgerId: uuidSchema.optional(),
   issuedOffline: z.boolean().optional(),
   idempotencyKey: idempotencyKeySchema,
+  /** Hold length override (POS sale keeps the slot while the bill is paid). */
+  holdMinutes: z.number().int().min(1).max(60).optional(),
   /** Acting staff user, when a human triggered the hold (audit actor). */
   actorUserId: uuidSchema.nullable().optional(),
 });
@@ -442,10 +450,11 @@ export async function holdFacilitySlot(
         eq(accessTickets.facilityId, facility.id),
         eq(accessTickets.status, "pending_payment"),
         lt(accessTickets.holdExpiresAt, now),
+        posTicketPaymentNotInFlightSql,
       ),
     );
   for (const { id } of lapsed)
-    await cancelFacilitySlotHold(tx, context, id, null, now);
+    await cancelLapsedHoldUnlessPaying(tx, context, id, now);
   // Same for queue guests who did not claim in time (legend-ke4z): they must
   // not keep the guests behind them waiting.
   await expireStaleQueueNotifications(tx, context, now, facility.id);
@@ -486,7 +495,15 @@ export async function holdFacilitySlot(
   const cleaningEndsAt = new Date(slot.cleaningEndsAt);
   if (input.timing.kind === "slot" && startsAt.getTime() < now.getTime())
     throw new FacilityError("SLOT_UNAVAILABLE");
-  if (!slotFitsOperatingHours(slot, facility.operatingHours, timeZone))
+  // Hours valid on the slot's own date; a later change never reaches back.
+  const slotHours =
+    (await resolveOperatingHoursOn(
+      tx,
+      tenantId,
+      facility.id,
+      localDateOf(slot.startsAt, timeZone),
+    )) ?? facility.operatingHours;
+  if (!slotFitsOperatingHours(slot, slotHours, timeZone))
     throw new FacilityError("FACILITY_CLOSED");
 
   const candidates = await tx
@@ -621,7 +638,9 @@ export async function holdFacilitySlot(
         addons: [],
         status: "pending_payment",
         issuedOffline: input.issuedOffline ?? false,
-        holdExpiresAt: new Date(now.getTime() + SLOT_HOLD_TTL_MINUTES * 60_000),
+        holdExpiresAt: new Date(
+          now.getTime() + (input.holdMinutes ?? SLOT_HOLD_TTL_MINUTES) * 60_000,
+        ),
         idempotencyKey: input.idempotencyKey,
         requestFingerprint: fingerprint,
         createdBy: input.actorUserId ?? null,
@@ -733,6 +752,45 @@ export async function cancelFacilitySlotHold(
   return toTicket(row);
 }
 
+/**
+ * Releases one lapsed hold unless a POS payment is in flight on it (936 D). The
+ * ticket row is locked first, and the lapsed + not-paying predicate is read
+ * again in a NEW statement (own snapshot): a tender that committed while this
+ * waited for the lock is seen, so a ticket with money on its bill is never
+ * cancelled by the sweeper. True when the hold was released.
+ */
+async function cancelLapsedHoldUnlessPaying(
+  tx: Tx,
+  context: ScopedTenantContext,
+  ticketId: string,
+  now: Date,
+): Promise<boolean> {
+  const tenantId = context.tenant.tenantId;
+  await tx
+    .select({ id: accessTickets.id })
+    .from(accessTickets)
+    .where(
+      and(eq(accessTickets.tenantId, tenantId), eq(accessTickets.id, ticketId)),
+    )
+    .for("update");
+  const [still] = await tx
+    .select({ id: accessTickets.id })
+    .from(accessTickets)
+    .where(
+      and(
+        eq(accessTickets.tenantId, tenantId),
+        eq(accessTickets.id, ticketId),
+        eq(accessTickets.status, "pending_payment"),
+        lt(accessTickets.holdExpiresAt, now),
+        posTicketPaymentNotInFlightSql,
+      ),
+    )
+    .limit(1);
+  if (!still) return false;
+  await cancelFacilitySlotHold(tx, context, ticketId, null, now);
+  return true;
+}
+
 /** Sweeper: cancels `pending_payment` holds whose TTL passed; returns the ids. */
 export async function releaseExpiredSlotHolds(
   tx: Tx,
@@ -749,14 +807,14 @@ export async function releaseExpiredSlotHolds(
         eq(accessTickets.tenantId, tenantId),
         eq(accessTickets.status, "pending_payment"),
         lt(accessTickets.holdExpiresAt, now),
+        posTicketPaymentNotInFlightSql,
       ),
     )
     .for("update", { skipLocked: true });
   const released: string[] = [];
-  for (const { id } of expired) {
-    await cancelFacilitySlotHold(tx, context, id, null, now);
-    released.push(id);
-  }
+  for (const { id } of expired)
+    if (await cancelLapsedHoldUnlessPaying(tx, context, id, now))
+      released.push(id);
   return released;
 }
 

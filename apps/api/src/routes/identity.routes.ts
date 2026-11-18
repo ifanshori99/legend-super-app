@@ -18,7 +18,12 @@ import {
   mfaVerifySchema,
   sessionParamsSchema,
 } from "@starter/shared/identity";
-import { getAuth, requireAuth } from "../middleware/auth";
+import { PlatformError } from "@starter/shared/platform";
+import {
+  getAuth,
+  requireAuth,
+  requireAuthAllowSharedDevice,
+} from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
 import {
@@ -37,6 +42,7 @@ import {
   issuePasskeyChallenge,
   verifyPasskeyAssertion,
 } from "../services/identity-passkey.service";
+import { supportGrantedTenantIds } from "../services/platform-support.service";
 import {
   extendCurrentSession,
   listOwnSessions,
@@ -188,7 +194,7 @@ identityAuthRouter.post(
 
 identityAuthRouter.post(
   "/sessions/current/activity",
-  requireAuth,
+  requireAuthAllowSharedDevice,
   requireTrustedOrigin,
   async (req, res) => {
     const auth = getAuth(req);
@@ -202,10 +208,23 @@ identityAuthRouter.post(
 
 identityAuthRouter.get("/sessions", requireAuth, async (req, res) => {
   const auth = getAuth(req);
+  // legend-xqkr7: a support (impersonated) session lists only sessions of
+  // tenants where its super admin holds a live grant.
+  const impersonatedBy = (
+    auth.session as { impersonatedBy?: string | null } | undefined
+  )?.impersonatedBy;
   res.json({
     data: await listOwnSessions({
       userId: auth.user.id,
       currentSessionId: auth.session.id,
+      ...(impersonatedBy
+        ? {
+            onlyTenantIds: await supportGrantedTenantIds({
+              adminUserId: impersonatedBy,
+              targetUserId: auth.user.id,
+            }),
+          }
+        : {}),
     }),
   });
 });
@@ -215,8 +234,13 @@ identityAuthRouter.delete(
   requireAuth,
   requireTrustedOrigin,
   async (req, res) => {
+    // legend-xqkr7: a support (impersonated) session is read-only here and
+    // must not end other sessions of the user it impersonates.
+    const auth = getAuth(req);
+    if ((auth.session as { impersonatedBy?: string | null }).impersonatedBy)
+      throw new PlatformError("SUPPORT_ACCESS_READ_ONLY");
     const { sessionId } = sessionParamsSchema.parse(req.params);
-    await revokeOwnSession({ userId: getAuth(req).user.id, sessionId });
+    await revokeOwnSession({ userId: auth.user.id, sessionId });
     res.status(204).end();
   },
 );

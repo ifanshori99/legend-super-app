@@ -232,6 +232,9 @@ export const returnManualItemsSchema = z
   .strictObject({
     itemIds: z.array(z.uuid()).min(1).max(1000),
     evidenceKey: text(200),
+    // Bank transaction reference of the funds that came back (legend-nsqhm).
+    // The service and the database normalize it (spaces out, upper case).
+    bankRef: z.string().trim().min(4).max(64),
     note: text(500),
     password: reauthPasswordSchema,
   })

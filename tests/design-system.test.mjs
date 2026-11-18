@@ -193,16 +193,14 @@ test("derived tint ramp follows each tenant primary and passes AA", () => {
 
 test("Rupiah formatting is deterministic Indonesian notation", () => {
   const { formatRupiah, formatNumber } = i18n;
-  assert.equal(formatRupiah(25000), "Rp\u00a025.000");
-  assert.equal(formatRupiah(1250000), "Rp\u00a01.250.000");
-  assert.equal(formatRupiah(-5000), "\u2212Rp\u00a05.000");
-  assert.equal(formatRupiah(0), "Rp\u00a00");
-  assert.equal(formatRupiah(-0), "Rp\u00a00");
-  assert.equal(
-    formatRupiah(9007199254740993n),
-    "Rp\u00a09.007.199.254.740.993",
-  );
-  assert.equal(formatRupiah(1999.5), "Rp\u00a02.000");
+  assert.equal(formatRupiah(25000), "Rp25.000");
+  assert.equal(formatRupiah(1250000), "Rp1.250.000");
+  assert.equal(formatRupiah(-5000), "\u2212Rp5.000");
+  assert.equal(formatRupiah(0), "Rp0");
+  assert.equal(formatRupiah(-0), "Rp0");
+  assert.equal(formatRupiah(9007199254740993n), "Rp9.007.199.254.740.993");
+  assert.equal(formatRupiah(1999.5), "Rp2.000");
+  assert.doesNotMatch(formatRupiah(38000), /[\s\u00a0]/);
   assert.throws(() => formatRupiah(Number.NaN), RangeError);
   assert.throws(() => formatRupiah(Number.POSITIVE_INFINITY), RangeError);
   assert.equal(formatNumber(1234567), "1.234.567");

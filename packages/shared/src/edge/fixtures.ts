@@ -27,6 +27,7 @@ export const deviceFixture = {
   revokedAt: null,
   status: "active",
   trainingMode: false,
+  sharedMode: false,
 };
 export const syncBatchFixture = {
   ...scope,
@@ -154,6 +155,7 @@ export const deviceFixtures = [
     revokedAt: null,
     status: "active",
     trainingMode: false,
+    sharedMode: false,
   },
   {
     ...scope,
@@ -167,6 +169,7 @@ export const deviceFixtures = [
     revokedAt: null,
     status: "active",
     trainingMode: false,
+    sharedMode: false,
   },
   {
     ...scope,
@@ -180,6 +183,7 @@ export const deviceFixtures = [
     revokedAt: null,
     status: "active",
     trainingMode: false,
+    sharedMode: false,
   },
 ] as const;
 

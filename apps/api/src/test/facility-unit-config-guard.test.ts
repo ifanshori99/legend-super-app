@@ -102,6 +102,10 @@ afterAll(async () => {
       [tenant.id],
     );
     await client.query(
+      "DELETE FROM facility_operating_hours_versions WHERE tenant_id = $1 AND facility_id = $2",
+      [tenant.id, facilityId],
+    );
+    await client.query(
       "DELETE FROM facilities WHERE tenant_id = $1 AND id = $2",
       [tenant.id, facilityId],
     );

@@ -354,6 +354,7 @@ async function chainOfVersion(
   entityId: string,
   version: number,
 ): Promise<string> {
+  // The test's entity/version identifies one chain, independently of DB time.
   const { rows } = await owner.query<{ chain_id: string }>(
     `SELECT r.chain_id
        FROM approval_requests r
@@ -361,8 +362,7 @@ async function chainOfVersion(
          ON v.tenant_id = r.tenant_id AND v.id::text = r.object_id
       WHERE r.tenant_id = $1 AND r.source_module = 'profit_share'
         AND r.object_type = 'share_allocation_version' AND r.level = 1
-        AND v.profit_entity_id = $2 AND v.version = $3
-      ORDER BY r.created_at DESC LIMIT 1`,
+        AND v.profit_entity_id = $2 AND v.version = $3`,
     [tenantId, entityId, version],
   );
   expect(rows, "the submit opened an approval chain").toHaveLength(1);

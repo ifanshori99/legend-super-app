@@ -729,7 +729,9 @@ describe("item 4: start is blocked by an unresolved DOIT row; resume refuses a s
     expect(await subsForPlan(plan.planId)).toHaveLength(1);
   });
 
-  it("REC-54 control: a needs_reconcile PLAN_MISMATCH row with a DOIT id does not block a new start", async () => {
+  // legend-ycb85 / legend-965 (reverses the old controls): a PLAN_MISMATCH row
+  // with a DOIT id is still a live DOIT subscription, so it BLOCKS a new start.
+  it("REC-54 a needs_reconcile PLAN_MISMATCH row with a DOIT id blocks a new start with CONFLICT and no DOIT call", async () => {
     const plan = await seedPlan();
     const profileId = await seedProfile();
     await seedSub({
@@ -739,22 +741,9 @@ describe("item 4: start is blocked by an unresolved DOIT row; resume refuses a s
       customerProfileId: profileId,
     });
     const { outcome, calls } = await startWith(plan, profileId);
-    expect(outcome).toBeNull();
-    expect(calls).toBe(1);
-  });
-
-  it("REC-54 control: a needs_reconcile row with reason PLAN_MISMATCH does not block a new start", async () => {
-    const plan = await seedPlan();
-    const profileId = await seedProfile();
-    await seedSub({
-      plan,
-      status: "needs_reconcile",
-      reconcileReason: "PLAN_MISMATCH",
-      customerProfileId: profileId,
-    });
-    const { outcome, calls } = await startWith(plan, profileId);
-    expect(outcome).toBeNull();
-    expect(calls).toBe(1);
+    expect(outcome).toMatchObject({ code: "CONFLICT" });
+    expect(calls).toBe(0);
+    expect(await subsForPlan(plan.planId)).toHaveLength(1);
   });
 
   const stale = (plan: Plan, profileId: string) =>
@@ -815,14 +804,19 @@ describe("item 4: start is blocked by an unresolved DOIT row; resume refuses a s
     expect((await subRow(old.subId)).status).toBe("needs_reconcile");
   });
 
-  it("REC-54 resume is refused with CONFLICT while another unresolved (needs_reconcile with DOIT id) row exists", async () => {
+  // legend-965: provisioning + needs_reconcile are one unresolved set per
+  // tenant + plan + customer (unique index), so a second unresolved sibling can
+  // no longer exist: the database refuses it, and the first row stays as it was.
+  it("REC-54 a second unresolved (needs_reconcile with DOIT id) row for the same customer and plan is refused by the database", async () => {
     const plan = await seedPlan();
     const profileId = await seedProfile();
     const old = await stale(plan, profileId);
-    await stale(plan, profileId);
-    const { outcome, calls } = await resumeOf(old);
-    expect(outcome).toMatchObject({ code: "CONFLICT" });
-    expect(calls).toBe(0);
+    const second = await stale(plan, profileId).then(
+      () => null,
+      (error: unknown) => (error as { code?: string }).code ?? "NO_CODE",
+    );
+    expect(second).toBe("23505");
+    expect((await subRow(old.subId)).status).toBe("needs_reconcile");
   });
 
   it("REC-54 control: resume works when the only other row is cancelled, and for another customer", async () => {

@@ -286,7 +286,7 @@ test.describe("accounting back office", () => {
     ).toBeVisible();
     // The mobile row shows the status badge and the total, not a clipped table.
     await expect(page.getByText("Menunggu persetujuan").first()).toBeVisible();
-    await expect(page.getByText("Rp 15.000.000").first()).toBeVisible();
+    await expect(page.getByText("Rp15.000.000").first()).toBeVisible();
     await page
       .getByRole("link", { name: /Akrual sewa gedung November 2026/ })
       .click();

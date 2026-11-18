@@ -169,6 +169,15 @@ export const NOTIFICATION_CATEGORY_CATALOG = {
     defaultChannels: ["web_push"],
     prd: "§3 Fasilitas Sesi & Pengingat",
   },
+  // legend-e24cz: polite reminder to a WFC guest who sat for full hours without
+  // reaching the zone's minimum spend per hour (PRD §3 F39).
+  wfc_min_spend: {
+    audience: "customer",
+    realtime: false,
+    bypassQuietHours: false,
+    defaultChannels: ["web_push"],
+    prd: "§3 F39 Wi-Fi Berbasis Belanja; legend-e24cz",
+  },
   subscription_billing: {
     audience: "customer",
     realtime: false,

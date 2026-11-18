@@ -572,6 +572,8 @@ describe("pfk3q: unjournalable settlements are recovered by the worker sweep", (
     const before = await snapshot();
     const slips = [cash(CASHIER, NET)];
     const runId = await W.seedRun(slips);
+    // Setup (legend-rvao9): the cash approve guard needs 1102 to cover the batch.
+    await W.fundPettyCash(1_000_000_000);
     const batchId = await W.approvedBatch(runId, "cash");
     const itemIds = (await W.itemsOf(batchId)).map((i) => i.id as string);
     await withAccountingOff(() => W.handover(batchId, itemIds, APP2));
@@ -1075,6 +1077,8 @@ async function clonePosting(postingId: string, count: number) {
 async function cashSkippedWithLock() {
   const slips = [cash(CASHIER, NET)];
   const runId = await W.seedRun(slips);
+  // Setup (legend-rvao9): the cash approve guard needs 1102 to cover the batch.
+  await W.fundPettyCash(1_000_000_000);
   const batchId = await W.approvedBatch(runId, "cash");
   const itemIds = (await W.itemsOf(batchId)).map((i) => i.id as string);
   await withAccountingOff(() => W.handover(batchId, itemIds, APP2));

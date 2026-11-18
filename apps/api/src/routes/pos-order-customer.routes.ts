@@ -8,8 +8,12 @@ import { Router, type Request } from "express";
 import { userIdSchema } from "@starter/shared/core";
 import { ACTING_STAFF_ERROR_CODES } from "@starter/shared/pos/acting-staff";
 import { setOrderCustomer as setOrderCustomerEndpoint } from "@starter/shared/crm";
-import { actorOf, resolveActingStaff } from "../middleware/acting-staff";
-import { requireAuth } from "../middleware/auth";
+import {
+  actorOf,
+  requireActingStaffOnSharedDevice,
+  resolveActingStaff,
+} from "../middleware/acting-staff";
+import { requireAuthAllowSharedDevice } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
 import {
@@ -31,10 +35,11 @@ const sell = requireOutletPermission("pos.sale.create", (req) => {
 
 posOrderCustomerRouter.put(
   "/pos/orders/:orderId/customer",
-  requireAuth,
+  requireAuthAllowSharedDevice,
   requireTrustedOrigin,
   requireTenantContext,
   resolveActingStaff,
+  requireActingStaffOnSharedDevice,
   jsonBody,
   async (req, _res, next) => {
     const { orderId } = setOrderCustomerEndpoint.params.parse(req.params);

@@ -61,6 +61,7 @@ import {
   resolveTenantCustomAiProvider,
   type ResolvedAiProvider,
 } from "./ai-provider-config.service.ts";
+import { recordAudit } from "./audit-writer.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { costMicroUsd, microUsdToIdr, USD_IDR_RATE } from "./ai-pricing.ts";
 import {
@@ -1069,5 +1070,39 @@ export async function aiCachePut(
           expiresAt: sql`now() + make_interval(secs => ${ttl})`,
         },
       });
+  });
+}
+
+/**
+ * Audit row for a model answer that carried personal data and was masked
+ * before it was cached, stored or shown. Kinds only, never the matched text.
+ */
+export async function recordAiOutputPiiRedacted(
+  access: AccessSnapshot,
+  p: { feature: string; channel: AiGatewayChannel; kinds: readonly PiiKind[] },
+): Promise<void> {
+  const context = gatewayContext(access);
+  await withTenant(db, context, async (tx) => {
+    await recordAudit(
+      {
+        tenantId: access.tenant.tenantId,
+        outletId: null,
+        actorType: "user",
+        actorId: access.userId,
+        deviceId: null,
+        action: "ai_output.pii_redacted",
+        objectType: "ai_output",
+        objectId: null,
+        reason: null,
+        before: null,
+        after: {
+          feature: p.feature,
+          channel: p.channel,
+          kinds: [...p.kinds],
+        },
+        sensitiveAccess: false,
+      },
+      { tx, context },
+    );
   });
 }

@@ -3,6 +3,26 @@
 Technical decisions the PRD leaves open. Newest first. Each entry names its
 bead so the code comments and tests can be traced back.
 
+## 2026-11-18: Tablet bersama: PIN kasir wajib untuk aksi uang/reservasi; route darurat tetap terbuka (legend-i0ipj, legend-m05vx)
+
+Tingkat K (akses + uang). Keputusan CTO 18 Nov, asal temuan architect 1043 (legend-iq0jz).
+
+1. **PIN kasir wajib di tablet bersama untuk aksi uang/reservasi.** `POST .../reservations/:id/cancel`, `.../deposit-link`, `.../no-show`, `POST .../reservation-customer-credit/apply`, dan `POST /order-issues/:id/resolve` (serta `POST /order-items/:id/issues`) memasang `resolveActingStaff` + `requireActingStaffOnSharedDevice`. Aktor dan subjek izin = kasir ber-PIN (`actorOf`), bukan pemilik sesi tablet; audit log mencatat kasir. Tanpa token di perangkat bertanda `shared_mode`: 401 `ACTING_STAFF_REQUIRED`. Keempat route reservasi memakai `requireAuthAllowSharedDevice` (basis legend-1027), karena `requireAuth` biasa menolak sesi tablet sebelum kasir sempat memasukkan PIN. Alasan: aturan membatasi pembayaran, tidak ada pembatalan, kredit, atau refund atas nama pemilik sesi yang dipakai bergantian.
+2. **Perangkat pribadi tidak berubah.** Tanpa flag `shared_mode`, pemilik sesi tetap aktor.
+3. **Route darurat tetap terbuka di tablet bersama (keselamatan).** `emergency.routes.ts` (`POST /api/emergency/sessions`, `DELETE .../current`) dan `emergency-press.routes.ts` (`POST /press`, `POST /alerts/:id/ack`, `GET /fallback`, `GET /open-alerts`) tidak lewat `requireAuth`/allowlist tablet bersama dan tidak diubah. Batas: hanya buka sesi darurat, ack alert, dan POS fallback (daftar alarm tanpa data uang). Tidak ada aksi uang. Dikunci oleh `apps/api/src/test/emergency-no-money-routes.test.ts` (daftar route persis, tak ada path uang, sesi darurat ditolak di route uang).
+
+Konsekuensi: kasir wajib PIN dulu di tablet bersama sebelum membatalkan reservasi atau menerapkan kredit; route baru di router darurat yang menyentuh uang akan menggagalkan test pengunci.
+
+## 2026-11-17: Rotasi kunci mencakup token ChatGPT dan langganan push (legend-rj284)
+
+Tingkat K. Rancangan lengkap di `docs/design/reseal-chatgpt-push.md` (Opsi B).
+
+1. **Langganan push lewat registry reseal umum.** `push_subscriptions.subscription_ciphertext` dipindahkan oleh job `sealed-secret-reseal`, dan kolom `key_version` ikut diperbarui lewat label versi di registry.
+2. **Token ChatGPT dipindahkan oleh service-nya sendiri.** `resealChatgptConnectionAny` berjalan di bawah kunci koneksi yang sama dengan refresh dan poll. Tidak pernah berjalan saat panggilan OpenAI sedang berjalan (ditambah 10 menit), jadi rotasi tidak bisa menghilangkan token yang baru di-refresh atau kode perangkat yang sudah disetujui.
+3. **Pensiun kunci hanya setelah laporan job bersih.** Kunci lama keluar dari ring hanya jika laporan lengkap job terakhir (`tables`) menunjukkan `failed` 0 dan `remaining` 0 untuk SETIAP entri registry `SEALED_SECRET_COLUMNS`, JSON `SEALED_JSON_SECRETS`, dan `SEALED_SERVICE_SWEEPS` di `apps/api/src/worker/sealed-secret-reseal.job.ts`, termasuk baris `frozen` dan `busy`, bukan hanya tiga kolom baru (push dan dua kolom ChatGPT). Selain itu `failedTenants` 0 dan `aborted` false, serta cek `rotate-data-key` dan `hris-pii-reseal` terpenuhi. Satu baris `frozen` atau `busy` di kolom mana pun (misalnya token order selesai yang masih versi lama) menahan pensiun. Daftar kolom dan cara mencari barisnya: `docs/deployment.md` bagian "Job `sealed-secret-reseal` dan pensiun kunci".
+
+Konsekuensi: pensiun kunci terlalu cepat memutus ChatGPT untuk semua tenant dan menghilangkan langganan push (pengguna tidak dapat notifikasi sampai perangkatnya mendaftar ulang). Nilai yang tidak bisa dibuka tidak pernah dihapus otomatis; operator menanganinya per tenant sesuai `docs/deployment.md` bagian "Job `sealed-secret-reseal` dan pensiun kunci".
+
 ## 2026-11-11: Bukti WhatsApp masuk untuk login dan reset PIN slip gaji (legend-lgfru, legend-9h2oj, legend-s5rgo)
 
 Tingkat K. Rancangan lengkap rev 2.1 (D-WA1 sampai D-WA6). Kirimdev tidak punya sandbox; pesan keluar tetap mati (AUTH-03).

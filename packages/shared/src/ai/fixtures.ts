@@ -3,7 +3,7 @@
 // (one per status, both sources), two conversations with sourced answers, AI
 // jobs including blocked ones, MCP tool-call audit rows, tenant governance
 // settings, three MCP clients (pending / approved / revoked) with hash-only
-// tokens, and one valid input + output sample for every tool TL-01..TL-20.
+// tokens, and one valid input + output sample for every tool TL-01..TL-21.
 //
 // Cross-contract references point at the real fixtures: people from the access
 // contract, outlets from core, menu items, inventory items and suppliers from
@@ -744,7 +744,7 @@ const governanceSettings = aiGovernanceSettingsSchema.parse({
   updatedBy: people.tenantAdmin.id,
 });
 
-// ---- One valid input + output per tool (TL-01..TL-20) ----------------------
+// ---- One valid input + output per tool (TL-01..TL-21) ----------------------
 
 const receipt = (n: number, toolCode: AiToolCode, summary: string) => ({
   actionRequestId: id(GROUP.receipt, n),
@@ -1172,6 +1172,42 @@ const toolSamples = {
           period: octoberPeriod,
           finality: "final",
           link: "/fasilitas/laporan",
+        },
+      ],
+    },
+  },
+  "TL-21": {
+    input: { period: octoberPeriod },
+    output: {
+      rows: [
+        {
+          outletId: bandung.id,
+          outletName: bandung.name,
+          reviewCount: 84,
+          averageRating: "4.3000",
+          ratingDistribution: {
+            "1": 2,
+            "2": 5,
+            "3": 9,
+            "4": 24,
+            "5": 44,
+          },
+          themes: [
+            { theme: "makanan", mentions: 41 },
+            { theme: "pelayanan", mentions: 27 },
+            { theme: "harga", mentions: 12 },
+            { theme: "kebersihan", mentions: 6 },
+            { theme: "waktu_tunggu", mentions: 15 },
+          ],
+        },
+      ],
+      truncated: false,
+      sources: [
+        {
+          label: "Ringkasan ulasan",
+          period: octoberPeriod,
+          finality: "estimate",
+          link: "/kelola/ulasan",
         },
       ],
     },

@@ -28,7 +28,7 @@ import {
   type ChatgptTokenBundle,
 } from "../lib/ai/chatgpt-codex.ts";
 import { HttpError } from "../lib/http-error.ts";
-import { openSecret, sealSecret } from "../lib/secrets.ts";
+import { openSecret, sealSecret, sealedVersion } from "../lib/secrets.ts";
 import { recordAudit, type AuditTransaction } from "./audit-writer.ts";
 import { accessSnapshotInTransaction } from "./permission-resolver.ts";
 
@@ -72,10 +72,21 @@ function assertScope(context: ScopedTenantContext): void {
 function assertEnabled(): void {
   if (!env.AI_CHATGPT_ENABLED) throw new AiError("AI_CHATGPT_DISABLED");
 }
+const lockKey = (tenantId: TenantId) => `ai_chatgpt:${tenantId}`;
 async function lock(tx: AuditTransaction, tenantId: TenantId): Promise<void> {
   await tx.execute(
-    sql`select pg_advisory_xact_lock(hashtextextended(${`ai_chatgpt:${tenantId}`}, 0))`,
+    sql`select pg_advisory_xact_lock(hashtextextended(${lockKey(tenantId)}, 0))`,
   );
+}
+/** Non-blocking `lock()`: false when a request already holds the connection lock. */
+async function tryLock(
+  tx: AuditTransaction,
+  tenantId: TenantId,
+): Promise<boolean> {
+  const { rows } = await tx.execute<{ locked: boolean }>(
+    sql`select pg_try_advisory_xact_lock(hashtextextended(${lockKey(tenantId)}, 0)) as locked`,
+  );
+  return rows[0]?.locked === true;
 }
 async function read(
   tx: AuditTransaction,
@@ -878,6 +889,100 @@ export async function getChatgptCredentials(
     env.AI_CHATGPT_ENABLED
     ? issuedCredentials(refreshed, saved.tokensEncrypted!)
     : null;
+}
+
+type ResealCounts = { resealed: number; failed: number; busy: number };
+
+/**
+ * Key-rotation reseal of one tenant's connection, called only by the
+ * `sealed-secret-reseal` job (hence `Any`), inside withTenant. It never waits
+ * on a request and never changes a ciphertext an operation has read: a row with
+ * a live (or recently expired, +10 minutes) operation lease, or whose
+ * connection lock is held, is reported busy and left untouched. One CAS UPDATE
+ * moves both columns; updated_at (AI answer cache key), generation, operation
+ * and lease columns stay as they are. No audit row. An unreadable value is
+ * counted failed and left as is: the live path owns invalidate/disconnect.
+ * Runs even when AI_CHATGPT_ENABLED is off so the data stays readable.
+ */
+export async function resealChatgptConnectionAny(
+  tx: AuditTransaction,
+  tenantId: TenantId,
+  active: number,
+): Promise<Record<string, ResealCounts>> {
+  const result: Record<string, ResealCounts> = {
+    tokens_encrypted: { resealed: 0, failed: 0, busy: 0 },
+    pending_encrypted: { resealed: 0, failed: 0, busy: 0 },
+  };
+  const isStale = (value: string | null): value is string => {
+    if (value === null) return false;
+    try {
+      return sealedVersion(value) < active;
+    } catch {
+      // Empty envelope: cannot be moved; surfaces as failed below.
+      return true;
+    }
+  };
+  const columns = [
+    { name: "tokens_encrypted", kind: "tokens", field: "tokensEncrypted" },
+    { name: "pending_encrypted", kind: "pending", field: "pendingEncrypted" },
+  ] as const;
+
+  const locked = await tryLock(tx, tenantId);
+  const row = await read(tx, tenantId, locked);
+  if (!row) return result;
+  const stale = columns.filter((c) => isStale(row[c.field]));
+  if (stale.length === 0) return result;
+  if (!locked) {
+    for (const c of stale) result[c.name]!.busy = 1;
+    return result;
+  }
+  // A save may land after the lease ends, so the margin keeps the row busy.
+  const {
+    rows: [lease],
+  } = await tx.execute<{ busy: boolean }>(
+    sql`select coalesce(${T.operationId} is not null and ${T.operationLeaseUntil} > now() - interval '10 minutes', false) as busy
+        from ${T} where ${T.tenantId} = ${tenantId} and ${T.id} = ${row.id}`,
+  );
+  if (lease?.busy !== false) {
+    for (const c of stale) result[c.name]!.busy = 1;
+    return result;
+  }
+
+  const changed: Partial<
+    Record<"tokensEncrypted" | "pendingEncrypted", string>
+  > = {};
+  for (const c of stale) {
+    try {
+      const value = row[c.field]!;
+      const next = sealSecret(
+        openSecret(value, aad(row, c.kind)),
+        aad(row, c.kind),
+      );
+      changed[c.field] = next;
+    } catch {
+      result[c.name]!.failed = 1;
+    }
+  }
+  if (Object.keys(changed).length === 0) return result;
+
+  const updated = await tx
+    .update(T)
+    .set({ ...changed, updatedAt: sql`${T.updatedAt}` })
+    .where(
+      and(
+        eq(T.tenantId, row.tenantId),
+        eq(T.id, row.id),
+        eq(T.generation, row.generation),
+        sql`${T.operationId} is not distinct from ${row.operationId}`,
+        sql`${T.tokensEncrypted} is not distinct from ${row.tokensEncrypted}`,
+        sql`${T.pendingEncrypted} is not distinct from ${row.pendingEncrypted}`,
+      ),
+    )
+    .returning({ id: T.id });
+  // A CAS miss (row changed since the read) is retried next run, not a failure.
+  if (updated.length === 1)
+    for (const c of stale) if (changed[c.field]) result[c.name]!.resealed = 1;
+  return result;
 }
 
 /** Cache version includes the global switch even for an absent tenant row. */

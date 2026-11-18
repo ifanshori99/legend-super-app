@@ -254,7 +254,10 @@ describe("legend-7vsby only an Owner may grant the Owner template", () => {
       ),
     ).rejects.toMatchObject({ status: 422, code: "PERMISSION_OWNER_ONLY" });
 
-    // C holds every Owner code the service still allows.
+    // C holds every Owner code the service still allows. `now` must not be
+    // earlier than the re-auth time (negative age drops the Owner/Admin
+    // bypass and flakes under load), so reuse the re-auth instant.
+    const fresh = freshAuth();
     const roleC = await createCustomRole(
       context,
       createCustomRoleSchema.parse({
@@ -263,8 +266,8 @@ describe("legend-7vsby only an Owner may grant the Owner template", () => {
         allowedScopeTypes: ["tenant"],
       }),
       admin,
-      new Date(),
-      freshAuth(),
+      fresh.reauthenticatedAt,
+      fresh,
     );
     const accountB = await signedInMember(tenant, founder, "Chain Account B");
     await grantRoleAssignment(

@@ -93,6 +93,7 @@ import { attachEmergencyRealtime } from "../edge/panic-relay-realtime.ts";
 import { subscribe, type HubSubscriber } from "../edge/panic-relay-hub.ts";
 import {
   getEdgeRuntimeState,
+  setDeviceRegistryReadyForTests,
   setEdgeRuntimeStateForTests,
 } from "../edge/runtime.ts";
 import {
@@ -175,6 +176,7 @@ async function asTenantOwner<T>(run: (client: PoolClient) => Promise<T>) {
 // ---- edge process + outlet world -------------------------------------------
 
 function actAsEdge(outletId: string, edgeNodeId: string = randomUUID()) {
+  setDeviceRegistryReadyForTests({});
   setEdgeRuntimeStateForTests({
     edgeMode: true,
     identity: {
@@ -584,6 +586,7 @@ afterEach(async () => {
   recheckHook.calls = 0;
   while (cleanups.length > 0) await cleanups.pop()?.();
   setEdgeRuntimeStateForTests(cloudState);
+  setDeviceRegistryReadyForTests(null);
 });
 
 afterAll(async () => {

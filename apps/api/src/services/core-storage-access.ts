@@ -129,6 +129,7 @@ export const storageLegacyUploadMap = {
   // A receipt names its kind: an unclassified one would reach the wrong
   // reviewers (legend-pszrm review). Legacy rows keep the strict read list.
   receipt: [],
+  goods_receipt_photo: [],
   // Tenant-level: decided at tenant scope in the resolver, never per outlet.
   brand_logo: [],
 } as const satisfies Record<StoragePurpose, readonly PermissionCode[]>;
@@ -139,6 +140,7 @@ export const storageLegacyReadMap = {
   selfie: ["hr.attendance.manage"],
   document: ["hr.employee.manage"],
   receipt: ["accounting.reconcile"],
+  goods_receipt_photo: ["accounting.reconcile"],
   menu_photo: ["menu.item.manage"],
   brand_logo: ["org.theme.manage"],
 } as const satisfies Record<StoragePurpose, readonly PermissionCode[]>;
@@ -152,6 +154,16 @@ type ResolveRequest = Parameters<
 >[0]["resolveRequest"];
 
 const purposeKeys = Object.keys(storageLegacyUploadMap) as StoragePurpose[];
+
+/** Read-side kind/purpose agreement. Goods-receipt photos stored before the
+ * `goods_receipt_photo` purpose existed are `receipt` objects linked to the
+ * `goods_receipt` kind; they stay readable. Upload and link stay strict. */
+const readKindMatchesPurpose = (
+  kind: StorageSourceKind,
+  purpose: StoragePurpose,
+) =>
+  storageSourceKindPurpose[kind] === purpose ||
+  (kind === "goods_receipt" && purpose === "receipt");
 
 const sourceKindsOf = (purpose: StoragePurpose) =>
   (Object.keys(storageSourcePermissionMap) as StorageSourceKind[]).filter(
@@ -222,7 +234,7 @@ export function createStorageRequestResolver(): ResolveRequest {
     const canRead = (object: ReadableObject, outletId: OutletId) => {
       if (
         object.sourceKind !== null &&
-        storageSourceKindPurpose[object.sourceKind] !== object.purpose
+        !readKindMatchesPurpose(object.sourceKind, object.purpose)
       )
         return false;
       if (object.ownerUserId !== null && object.ownerUserId === actorUserId) {
@@ -360,7 +372,7 @@ export function createStorageRequestResolver(): ResolveRequest {
           // A kind that disagrees with the row's purpose is never valid.
           if (
             target.sourceKind != null &&
-            storageSourceKindPurpose[target.sourceKind] !== object.purpose
+            !readKindMatchesPurpose(target.sourceKind, object.purpose)
           )
             return false;
           return (

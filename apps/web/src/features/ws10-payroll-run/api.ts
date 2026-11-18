@@ -154,16 +154,24 @@ export type SimpleRunAction =
 
 const SIMPLE_ACTIONS = {
   simulate: simulatePayrollRun,
-  approve_hr: approvePayrollRunHr,
   approve_final: approvePayrollRunFinal,
   lock: lockPayrollRun,
 } as const;
 
+/** `expectedSimulationCount` is the run's count as the reviewer loaded it. */
 export async function runAction(
   action: SimpleRunAction,
   runId: string,
   idempotencyKey: string,
+  expectedSimulationCount: number,
 ): Promise<PayrollRun> {
+  if (action === "approve_hr") {
+    const approval = await callEndpoint(approvePayrollRunHr, {
+      params: { payrollRunId: runId },
+      body: { expectedSimulationCount, idempotencyKey },
+    });
+    return approval.data;
+  }
   const response = await callEndpoint(SIMPLE_ACTIONS[action], {
     params: { payrollRunId: runId },
     body: { idempotencyKey },

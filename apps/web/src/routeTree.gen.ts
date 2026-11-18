@@ -86,6 +86,7 @@ import { Route as OpsPosGantiPenggunaRouteImport } from './routes/_ops/pos.ganti
 import { Route as OpsPosKasirRouteImport } from './routes/_ops/pos.kasir'
 import { Route as OpsPosKodeRouteImport } from './routes/_ops/pos.kode'
 import { Route as OpsPosReservasiRouteImport } from './routes/_ops/pos.reservasi'
+import { Route as OpsPosTiketRouteImport } from './routes/_ops/pos.tiket'
 import { Route as OpsPosTutupHariRouteImport } from './routes/_ops/pos.tutup-hari'
 import { Route as OwnerOwnerIndexRouteImport } from './routes/_owner/owner.index'
 import { Route as OwnerOwnerTanyaAiRouteImport } from './routes/_owner/owner.tanya-ai'
@@ -773,6 +774,11 @@ const OpsPosKodeRoute = OpsPosKodeRouteImport.update({
 const OpsPosReservasiRoute = OpsPosReservasiRouteImport.update({
   id: '/pos/reservasi',
   path: '/pos/reservasi',
+  getParentRoute: () => OpsRoute,
+} as any)
+const OpsPosTiketRoute = OpsPosTiketRouteImport.update({
+  id: '/pos/tiket',
+  path: '/pos/tiket',
   getParentRoute: () => OpsRoute,
 } as any)
 const OpsPosTutupHariRoute = OpsPosTutupHariRouteImport.update({
@@ -2638,6 +2644,7 @@ export interface FileRoutesByFullPath {
   '/pos/kasir': typeof OpsPosKasirRoute
   '/pos/kode': typeof OpsPosKodeRoute
   '/pos/reservasi': typeof OpsPosReservasiRoute
+  '/pos/tiket': typeof OpsPosTiketRoute
   '/pos/tutup-hari': typeof OpsPosTutupHariRoute
   '/owner/tanya-ai': typeof OwnerOwnerTanyaAiRoute
   '/platform/akses-dukungan': typeof PlatformPlatformAksesDukunganRoute
@@ -3014,6 +3021,7 @@ export interface FileRoutesByTo {
   '/pos/kasir': typeof OpsPosKasirRoute
   '/pos/kode': typeof OpsPosKodeRoute
   '/pos/reservasi': typeof OpsPosReservasiRoute
+  '/pos/tiket': typeof OpsPosTiketRoute
   '/pos/tutup-hari': typeof OpsPosTutupHariRoute
   '/owner/tanya-ai': typeof OwnerOwnerTanyaAiRoute
   '/platform/akses-dukungan': typeof PlatformPlatformAksesDukunganRoute
@@ -3403,6 +3411,7 @@ export interface FileRoutesById {
   '/_ops/pos/kasir': typeof OpsPosKasirRoute
   '/_ops/pos/kode': typeof OpsPosKodeRoute
   '/_ops/pos/reservasi': typeof OpsPosReservasiRoute
+  '/_ops/pos/tiket': typeof OpsPosTiketRoute
   '/_ops/pos/tutup-hari': typeof OpsPosTutupHariRoute
   '/_owner/owner/tanya-ai': typeof OwnerOwnerTanyaAiRoute
   '/_platform/platform/akses-dukungan': typeof PlatformPlatformAksesDukunganRoute
@@ -3784,6 +3793,7 @@ export interface FileRouteTypes {
     | '/pos/kasir'
     | '/pos/kode'
     | '/pos/reservasi'
+    | '/pos/tiket'
     | '/pos/tutup-hari'
     | '/owner/tanya-ai'
     | '/platform/akses-dukungan'
@@ -4160,6 +4170,7 @@ export interface FileRouteTypes {
     | '/pos/kasir'
     | '/pos/kode'
     | '/pos/reservasi'
+    | '/pos/tiket'
     | '/pos/tutup-hari'
     | '/owner/tanya-ai'
     | '/platform/akses-dukungan'
@@ -4548,6 +4559,7 @@ export interface FileRouteTypes {
     | '/_ops/pos/kasir'
     | '/_ops/pos/kode'
     | '/_ops/pos/reservasi'
+    | '/_ops/pos/tiket'
     | '/_ops/pos/tutup-hari'
     | '/_owner/owner/tanya-ai'
     | '/_platform/platform/akses-dukungan'
@@ -5427,6 +5439,13 @@ declare module '@tanstack/react-router' {
       path: '/pos/reservasi'
       fullPath: '/pos/reservasi'
       preLoaderRoute: typeof OpsPosReservasiRouteImport
+      parentRoute: typeof OpsRoute
+    }
+    '/_ops/pos/tiket': {
+      id: '/_ops/pos/tiket'
+      path: '/pos/tiket'
+      fullPath: '/pos/tiket'
+      preLoaderRoute: typeof OpsPosTiketRouteImport
       parentRoute: typeof OpsRoute
     }
     '/_ops/pos/tutup-hari': {
@@ -8376,6 +8395,7 @@ interface OpsRouteChildren {
   OpsPosKasirRoute: typeof OpsPosKasirRoute
   OpsPosKodeRoute: typeof OpsPosKodeRoute
   OpsPosReservasiRoute: typeof OpsPosReservasiRoute
+  OpsPosTiketRoute: typeof OpsPosTiketRoute
   OpsPosTutupHariRoute: typeof OpsPosTutupHariRoute
   OpsPosIndexRoute: typeof OpsPosIndexRoute
   OpsOperasionalChecklistRunIdRoute: typeof OpsOperasionalChecklistRunIdRoute
@@ -8411,6 +8431,7 @@ const OpsRouteChildren: OpsRouteChildren = {
   OpsPosKasirRoute: OpsPosKasirRoute,
   OpsPosKodeRoute: OpsPosKodeRoute,
   OpsPosReservasiRoute: OpsPosReservasiRoute,
+  OpsPosTiketRoute: OpsPosTiketRoute,
   OpsPosTutupHariRoute: OpsPosTutupHariRoute,
   OpsPosIndexRoute: OpsPosIndexRoute,
   OpsOperasionalChecklistRunIdRoute: OpsOperasionalChecklistRunIdRoute,

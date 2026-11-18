@@ -20,7 +20,7 @@ import type {
   CustomerPaymentIntent,
 } from "@starter/shared/payment";
 import { paymentErrorKey } from "../errors";
-import { PAYMENT_METHOD_LABEL } from "../labels";
+import { paymentMethodLabelKey } from "../labels";
 import { formatTimeInZone, isRefunded } from "../status";
 
 function DetailRow({
@@ -48,6 +48,7 @@ export function PaymentPaid({
   timeZone: string;
 }) {
   const t = useT();
+  const labelKey = paymentMethodLabelKey(intent.method);
   const channel =
     intent.instructions.method === "qris"
       ? null
@@ -73,8 +74,8 @@ export function PaymentPaid({
           <Money amount={intent.amountIdr} size="sm" />
         </DetailRow>
         <DetailRow label={t("payment.methodLegend")}>
-          {t(PAYMENT_METHOD_LABEL[intent.method])}
-          {channel ? ` · ${channel}` : ""}
+          {labelKey !== null ? t(labelKey) : ""}
+          {channel ? `${labelKey !== null ? " · " : ""}${channel}` : ""}
         </DetailRow>
         {intent.paidAt && (
           <DetailRow label={t("payment.paidAtLabel")}>

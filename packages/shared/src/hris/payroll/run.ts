@@ -36,6 +36,7 @@ import {
 import type { BusinessDate, IsoDateTime, UserId } from "../../core/index.ts";
 import { legalEntityIdSchema } from "../../accounting/ids.ts";
 import { payComponentCategorySchema, taxSchemeSchema } from "./components.ts";
+import { employeeIdSchema } from "../ids.ts";
 import { PayrollError } from "./errors.ts";
 import {
   payComponentIdSchema,
@@ -413,6 +414,39 @@ const STATUS_RANK: Record<PayrollRunStatus, number> = {
   reversed: 5,
 };
 
+/**
+ * Why an overtime correction source was held back for an employee. Mirrors
+ * the API's `OvertimeCorrectionHeldReason` (payroll-overtime-correction
+ * service); keep the two in step.
+ */
+export const payrollOvertimeCorrectionHeldReasonSchema = z.enum([
+  "offboarding",
+  "employee_ended",
+  "formula_missing",
+  "approval_unclear",
+  "source_unreadable",
+  "overlapping_sources",
+  "deduction_exceeds_paid",
+]);
+export type PayrollOvertimeCorrectionHeldReason = z.infer<
+  typeof payrollOvertimeCorrectionHeldReasonSchema
+>;
+
+/**
+ * One overtime correction source held back for one employee in a simulation:
+ * nothing is paid or taken for it. `outstandingIdr` is signed (> 0 owed to the
+ * employee, < 0 to the outlet) and null when the source could not be priced.
+ */
+export const payrollHeldOvertimeCorrectionSchema = z.strictObject({
+  employeeId: employeeIdSchema,
+  sourceRunId: payrollRunIdSchema,
+  reason: payrollOvertimeCorrectionHeldReasonSchema,
+  outstandingIdr: z.number().int().nullable(),
+});
+export type PayrollHeldOvertimeCorrection = z.infer<
+  typeof payrollHeldOvertimeCorrectionSchema
+>;
+
 export const payrollRunSchema = z
   .strictObject({
     id: payrollRunIdSchema,
@@ -438,6 +472,10 @@ export const payrollRunSchema = z
     paidBy: userIdSchema.nullable(),
     paidAt: isoDateTimeSchema.nullable(),
     reversal: payrollRunReversalSchema.nullable(),
+    /** Only present on a simulate response; never part of the pay values. */
+    heldOvertimeCorrections: z
+      .array(payrollHeldOvertimeCorrectionSchema)
+      .optional(),
     createdBy: userIdSchema,
     createdAt: isoDateTimeSchema,
     updatedAt: isoDateTimeSchema,
@@ -632,6 +670,15 @@ export type CreatePayrollRunInput = z.infer<typeof createPayrollRunInputSchema>;
 
 /** Body of every run action route; the action is the route itself. */
 export const payrollRunActionInputSchema = clientInputSchema({
+  idempotencyKey: idempotencyKeySchema,
+});
+
+/**
+ * HR approval is bound to the simulation HR reviewed: the count must still be
+ * the run's `simulationCount`, else PAYROLL_RUN_SIMULATION_STALE (409).
+ */
+export const approvePayrollRunHrInputSchema = clientInputSchema({
+  expectedSimulationCount: z.number().int().min(1).max(10_000),
   idempotencyKey: idempotencyKeySchema,
 });
 

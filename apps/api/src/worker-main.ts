@@ -104,6 +104,7 @@ import { handleHrisApprovalResolved } from "./services/hris-approval-consumers.t
 import { runScheduledLeaveJobs } from "./services/hris-leave-jobs.ts";
 import { runScheduledExitClearance } from "./services/hris-offboarding-jobs.ts";
 import { handleJournalApprovalResolved } from "./services/accounting-journal-consumers.ts";
+import { handleCashBankApprovalResolved } from "./services/cash-bank-approval-consumer.ts";
 import { handleProfitShareApprovalResolved } from "./services/profit-share-approval-consumers.ts";
 import { handleReconciliationApprovalResolved } from "./services/payment-reconciliation-approval-consumer.ts";
 import { handleApprovalResolved } from "./services/staff-override-consumers.ts";
@@ -128,6 +129,8 @@ import {
 } from "./worker/relay";
 import { touchHeartbeat } from "./worker/heartbeat";
 import { runInventoryParAlertJob } from "./worker/inventory-par-alerts.job.ts";
+import { runFacilityHoursRollJob } from "./worker/facility-hours-roll.job.ts";
+import { runWfcMinSpendJob } from "./worker/wfc-min-spend.job.ts";
 import { runHppRecomputeJob } from "./worker/hpp-recompute.job.ts";
 import {
   createMaintenancePool,
@@ -167,6 +170,7 @@ import { registerEdgeSelfieOrphanSweepJob } from "./worker/edge-selfie-orphan-sw
 import { registerBlindIndexRebuildJob } from "./worker/blind-index-rebuild.job.ts";
 import { registerHrisPiiResealJob } from "./worker/hris-pii-reseal.job.ts";
 import { registerDataKeyRotationJob } from "./worker/data-key-rotation.job.ts";
+import { registerSealedSecretResealJob } from "./worker/sealed-secret-reseal.job.ts";
 import { logger } from "./lib/logger";
 
 assertDeploymentEnv(process.env);
@@ -420,6 +424,9 @@ const runtime = createWorkerRuntime({
           await handleHrisApprovalResolved(context, event);
           // Manual/recurring journals (legend-vmyg): settle from the chain.
           await handleJournalApprovalResolved(context, event);
+          // Cash out held for approval (legend-4qowr, Q7): approved/rejected
+          // settles from the chain re-read under the entry row lock.
+          await handleCashBankApprovalResolved(context, event);
           // Profit share (legend-33im6): distribution runs and recipient
           // changes settle from the chain outcome re-read under the row lock.
           await handleProfitShareApprovalResolved(context, event);
@@ -745,6 +752,18 @@ const relay = createRelayRuntime({
     } catch {
       console.error("Inventory expiry sweep failed");
     }
+    // Facility hours with an effective date roll onto the column (legend-4us1a); self-throttled.
+    try {
+      await runFacilityHoursRollJob(context);
+    } catch {
+      console.error("Facility hours roll-forward failed");
+    }
+    // §3 F39 WFC minimum spend per hour reminder (legend-e24cz); self-throttled.
+    try {
+      await runWfcMinSpendJob(context);
+    } catch {
+      console.error("WFC minimum spend sweep failed");
+    }
     // §17 HPP menu costs follow ingredient cost changes within 5 minutes
     // (legend-2qq); self-throttled to once a minute per tenant.
     try {
@@ -1013,6 +1032,12 @@ try {
   });
   // legend-rg8yl: daily re-seal of integration and AI keys left on an old data key.
   await registerDataKeyRotationJob({
+    boss,
+    database: db,
+    log: consoleLikeLog(logger),
+  });
+  // legend-tetyr: weekly re-seal of sealSecret columns without a key version column.
+  await registerSealedSecretResealJob({
     boss,
     database: db,
     log: consoleLikeLog(logger),

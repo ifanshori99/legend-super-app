@@ -85,6 +85,102 @@ Use these commands instead of bare `docker compose up`: the wrappers load `.env.
 
 Preserve `.env.local` across restarts. Do not delete the volume to fix a password or migration error. If a saved port becomes occupied, update both `POSTGRES_PORT` and the port in the managed `DATABASE_URL`, then run `db:up` again. Changing the environment password does not change an existing database role's password.
 
+## Disposable test databases
+
+`pnpm test` and `pnpm test:e2e` create a separate PostgreSQL container for each run
+through `compose.test.yaml`. They never use the development database. Full unit
+suites, e2e runs, and direct use of `compose.test.yaml` default to `1536m` for both
+the container memory and memory-plus-swap limits. Unit runs that select only test
+filenames with `LEGEND_TEST_FILES` default to `1024m`. An empty selection, any CLI
+option (including options mixed with filenames), or other argument keeps the
+full-suite budget, because options can change which tests actually run. All runs
+use `shared_buffers=64MB`, `work_mem=2MB`, and `max_connections=50`.
+
+Two simultaneous targeted test containers therefore have a combined 2 GiB limit,
+leaving room for the operating system in a roughly 3 GiB Colima VM. Other running
+containers still consume that remaining room. Run a full suite or e2e database
+alone when VM capacity cannot accommodate another container. `LEGEND_TEST_FILES`
+does not select e2e tests and does not reduce an e2e run's memory budget.
+
+Test database files live on `tmpfs`, so stored data counts toward the container's
+memory limit as well as PostgreSQL's buffers and connection memory. Large or
+long-running suites can need more memory than targeted runs; passing two targeted
+runs does not establish the memory needs or speed of a full suite. A nonempty
+`STARTER_TEST_PG_MEM` override takes priority over either default. Check VM
+capacity before increasing it, and avoid running a second database beside a
+larger run. For example, give a targeted run the full-suite budget with:
+
+```sh
+STARTER_TEST_PG_MEM=1536m LEGEND_TEST_FILES="src/test/example.test.ts" pnpm test
+```
+
+On the shared team Mac, run tests through `heavy` and select focused API files
+with `LEGEND_TEST_FILES="src/test/example.test.ts" heavy pnpm test`. Increasing a
+container limit does not increase the memory assigned to Colima.
+
+## Removing a worktree
+
+From another checkout, remove a finished, clean worktree with:
+
+```sh
+pnpm worktree:remove /absolute/path/to/finished-worktree
+```
+
+The command stops that worktree's managed development database with
+`docker compose down` before removing the worktree. It keeps the Docker data
+volume and does not pass `-v` or delete a Git branch. It refuses the current
+worktree, the main checkout, a dirty target, or a Compose project shared with
+another existing worktree. A saved local Compose project is still cleaned up if
+`DATABASE_URL` has since changed to an external database; the external database
+is never connected to. Incomplete local settings stop removal so they can be
+repaired first. Keep `.env.local` somewhere private if you need its
+credentials to reconnect to the preserved data later.
+
+Ignored `.env*` files also block removal: a clean Git status does not mean those
+private settings are safe to discard. Save the credentials in a private location
+outside the worktree first, or decide that they are no longer needed. Only then
+explicitly allow their removal with:
+
+```sh
+pnpm worktree:remove /absolute/path/to/finished-worktree --discard-env
+```
+
+`--discard-env` permits discarding those ignored settings; it does not bypass the
+other safety checks or delete Docker volumes. Use this wrapper instead of bare
+`git worktree remove` so a discarded worktree does not leave its database running
+and using VM memory.
+
+## Slim worktrees (disk)
+
+A full worktree is about 1.9 GB: `apps/api/drizzle/meta` alone is about 720 MB
+(one JSON snapshot per migration), `node_modules` about 750 MB, and the
+screenshot folders `docs/design`, `docs/screenshots` and `design/` about 350 MB.
+On a Mac with a small disk, make worktrees for threads that do **not** create
+migrations slim with Git sparse checkout:
+
+```sh
+git worktree add ../legend-x -b ws/x milestone/m1   # or let Ghostex create it
+cd ../legend-x
+node scripts/worktree-slim.mjs                      # enable slim
+heavy pnpm worktree:setup
+```
+
+The script is idempotent and works per worktree (`extensions.worktreeConfig`),
+so the main checkout and other worktrees are untouched. It keeps `_journal.json`,
+every `.sql` migration, the newest five snapshots, and the older snapshots that
+tests read by number (found by scanning `apps/api/src/test`). Everything else
+under `meta/`, plus the `.png`/`.jpg` files under `docs/design`, `docs/screenshots` and `design/` (the `.md` specs and `.html` mockups stay), is left out
+of the working tree (still in Git history). Re-run it after rebasing onto a newer
+`milestone/m1`.
+
+- `node scripts/worktree-slim.mjs --status` shows slim or full and the folder sizes.
+- `node scripts/worktree-slim.mjs --dry-run` prints the patterns only.
+- `node scripts/worktree-slim.mjs --full` restores everything.
+
+Use `--full` (or do not slim) in any worktree that creates a migration: run it
+before `pnpm db:generate`, and use a full checkout for `scripts/migration-renumber.mjs`
+and the merge train, which read old snapshots.
+
 ## Logs
 
 Both dev servers print colorized single-line logs prefixed by Turborepo (`@starter/api:dev`, `@starter/web:dev`). Each request shows its method, path, status, duration, and `reqId`; API lines also show `userId` once signed in. An SSR page load shows the same `reqId` on the web line and on the API calls it made. Set `LOG_SQL=true` to see SQL, or `LOG_LEVEL=info` to quiet health checks and debug lines.
@@ -92,6 +188,23 @@ Both dev servers print colorized single-line logs prefixed by Turborepo (`@start
 ## Existing PostgreSQL connections
 
 If you set `DATABASE_URL` before setup, the script keeps it and skips Docker. Use a database dedicated to your app. `MIGRATION_DATABASE_URL` is optional for a separate direct connection. The local container status/log/stop commands do not operate on external databases; use `pnpm run doctor` to check their connection.
+
+## Mock browser tests
+
+Run one mock spec by passing its file path after `--`:
+
+```sh
+pnpm run test:e2e:mock -- e2e/mock-mode.mock.spec.ts
+```
+
+You can pass several files and Playwright options in the same command:
+
+```sh
+pnpm run test:e2e:mock -- e2e/mock-mode.mock.spec.ts e2e/legend-1j7.mock.spec.ts --reporter=line
+```
+
+With no arguments, `pnpm run test:e2e:mock` runs the entire mock suite. Add
+`--list` to list the selected tests without running them.
 
 ## Verify a fresh start
 

@@ -21,6 +21,12 @@ import { Notice } from "./shared";
 import { SignedIn } from "./signed-in";
 import { WhatsAppLogin } from "./whatsapp-login";
 
+// At 320px the labels ("Masuk dengan tautan email") are wider than the card,
+// and a nowrap button sets the grid's min-content (legend-rxida). Let the
+// label wrap on phones; from sm up the button keeps its single-line pill.
+const WRAP_BUTTON =
+  "h-auto! min-h-control-lg px-4 py-2 text-center whitespace-normal sm:px-8";
+
 export function SignInScreen({ returnTo }: { returnTo?: string }) {
   const t = useT();
   const navigate = useNavigate();
@@ -52,8 +58,8 @@ export function SignInScreen({ returnTo }: { returnTo?: string }) {
   }, [result, safeReturnTo, navigate]);
 
   return (
-    <div className="mx-auto grid w-full max-w-md gap-5">
-      <header className="grid gap-2">
+    <div className="mx-auto grid w-full max-w-md grid-cols-1 gap-5">
+      <header className="grid min-w-0 gap-2">
         <p className="type-eyebrow text-muted-foreground">
           {t("login.eyebrow")}
         </p>
@@ -73,7 +79,7 @@ export function SignInScreen({ returnTo }: { returnTo?: string }) {
         />
       ) : (
         <>
-          <Card className="gap-5">
+          <Card className="min-w-0 gap-5">
             <WhatsAppLogin
               copy={{
                 heading: t("login.whatsapp.heading"),
@@ -91,14 +97,24 @@ export function SignInScreen({ returnTo }: { returnTo?: string }) {
               </span>
               <span className="h-px flex-1 bg-border" aria-hidden="true" />
             </div>
-            <div className="grid gap-2">
-              <Button asChild variant="outline" size="lg">
+            <div className="grid grid-cols-1 gap-2">
+              <Button
+                asChild
+                variant="outline"
+                size="lg"
+                className={WRAP_BUTTON}
+              >
                 <Link to="/masuk/email" search={{ lanjut: safeReturnTo }}>
                   <Mail aria-hidden="true" />
                   {t("login.email.action")}
                 </Link>
               </Button>
-              <Button asChild variant="outline" size="lg">
+              <Button
+                asChild
+                variant="outline"
+                size="lg"
+                className={WRAP_BUTTON}
+              >
                 <Link to="/masuk/google" search={{ lanjut: safeReturnTo }}>
                   <Globe aria-hidden="true" />
                   {t("login.google.action")}
