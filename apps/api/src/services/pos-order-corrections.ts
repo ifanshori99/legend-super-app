@@ -52,7 +52,11 @@ import { pointLedger } from "../db/schema/crm-ledger.ts";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
 import { HttpError } from "../lib/http-error.ts";
 import type { Tx } from "./menu-internals.ts";
-import { lineRoomIdr, orderGivenOf } from "./order-given.ts";
+import {
+  assertNothingBackThroughProvider,
+  lineRoomIdr,
+  orderGivenOf,
+} from "./order-given.ts";
 import { assertNoOrd09Refund } from "./order-refund-lane.ts";
 import { settleOrderVouchersForVoid } from "./order-voucher-void.ts";
 import { liveRouteManualRefundWhere } from "./order-issue-route-refund.ts";
@@ -305,6 +309,10 @@ export async function voidPosOrderCorrection(
       // live manual refund of one of the order's lines.
       await assertNoLiveManualRefund(tx, context, order.id);
       await assertNoOrd09Refund(tx, context.tenant.tenantId, order.id);
+      // 1116 (SO 1114 P1): the void pays the whole bill back, so any money
+      // that already went back through the provider (or an intent flagged
+      // refunded with no sure amount) refuses it.
+      await assertNothingBackThroughProvider(tx, context, order.id);
       // legend-3dsih (1095): a voucher given for this order is cancelled with
       // the void, or the void is refused when the guest already used it.
       const vouchersOfOrder = await settleOrderVouchersForVoid(tx, context, {
@@ -1003,7 +1011,21 @@ export async function refundPosOrder(
           "Tagihan selisih penukaran pesanan ini belum selesai; selesaikan tagihan selisih dulu.",
         );
       let capCutIdr = 0;
-      const roomIdr = Math.max(0, paid - refunded - recoveryGivenIdr);
+      // 1116 (SO 1114 P1): money that already went back through the provider
+      // (its own refunds, our gateway refunds not inside `refunded`, or an
+      // intent flagged refunded with no sure amount, counted whole) comes off
+      // too. `given.paidIdr` is the non-points tenders net of it.
+      const nonPointsPaid = tenders
+        .filter(
+          (tender) =>
+            tender.status === "captured" && tender.method !== "points",
+        )
+        .reduce((sum, tender) => sum + Number(tender.amountIdr), 0);
+      const providerOutIdr = Math.max(0, nonPointsPaid - given.paidIdr);
+      const roomIdr = Math.max(
+        0,
+        paid - providerOutIdr - refunded - recoveryGivenIdr,
+      );
 
       // Items: quantities already refunded by earlier rows, then this request.
       const requested = (input.items ?? []).map(({ itemId, quantity }) => ({

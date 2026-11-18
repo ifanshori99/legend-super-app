@@ -13,10 +13,31 @@
 // - POS refunds: every `pos_order_refunds` row of the order.
 // - Recovery refunds: per issue, the largest refund while the issue still has a
 //   live one (same rule as `recoveryReleasedOf`).
-// - Paid: the captured tenders of a POS order; otherwise the order total less
-//   the deposit applied, plus the dearer-swap charges the guest paid, each less
-//   what was already refunded of it (payment refunds of its intent that are not
-//   failed, manual refunds that are not rejected).
+// - Paid (1116, restrictive: when in doubt, count less): money the guest
+//   finally paid, less what went back through the provider.
+//   * POS order: the captured tenders, a points tender left out (not money,
+//     936). A tender backed by an intent counts net of the provider's own
+//     refunds (`providerRefundedForeignIdrSql`, excessOffBill false) and of our
+//     gateway refunds of the intent (`payment_refunds`, not failed) that are
+//     not counted elsewhere. An intent flagged `provider_refunded_at` or
+//     `provider_refunded_after_paid_at` counts 0 (no sure amount; same rule as
+//     `manualRefundAmountIdr`).
+//   * Otherwise: the intents of the order that ended paid (`paid`,
+//     `partially_refunded`, `refunded` with `paid_at`; pending, expired and
+//     failed count 0), net as above, at most the order total less the deposit
+//     applied; plus the dearer-swap charges the guest paid, each less what was
+//     already refunded of it (payment refunds of its intent that are not
+//     failed, manual refunds that are not rejected). A swap charge intent is
+//     not counted twice as an order intent.
+//   * Refunds not subtracted from an intent because they are counted elsewhere:
+//     the recovery refunds of the order's issues (`recovery_refunds`, the
+//     largest per issue; a further live refund of the same issue is
+//     subtracted from paid) and the gateway part of a POS refund (a
+//     `system:pos` `payment_refunds` row filed under the idempotency key
+//     `pos-refund-gateway:<pos_order_refunds.id>:<intent>`, already inside
+//     `pos_refunds`). No column links the two tables; the key row's
+//     `response.refundId` is the only link. Not matched = counted (restrictive).
+//   * Open refund holds (`refund_recon_holds`) are not on this branch yet.
 // - Per line (Q25 is per item): the vouchers and live recovery refunds of the
 //   issues of each ORIGINAL line, a replacement line mapped back to the line it
 //   replaced through the swap chain (`originalOf`).
@@ -27,7 +48,38 @@ import {
   uuidToUlid,
   type ScopedTenantContext,
 } from "@starter/shared/core";
+import { providerRefundedForeignIdrSql } from "./payment-provider-refunded-foreign-sql.ts";
+import { HttpError } from "../lib/http-error.ts";
 import type { Tx } from "./permission-resolver.ts";
+
+// 1116: the provider answered "refunded" with no sure amount -> count the
+// intent as 0 (fail closed). `alias` is the payment_intents alias.
+const flagged = (alias: string) =>
+  sql.raw(
+    `(${alias}.provider_refunded_at IS NOT NULL OR ${alias}.provider_refunded_after_paid_at IS NOT NULL)`,
+  );
+
+// 1116: our own gateway refunds of the intent (not failed) that no other part
+// of `OrderGiven` counts: not a recovery refund of an issue of this order
+// (`recovery_refunds`), not the gateway part of a POS refund of this order
+// (`pos_refunds`). Needs the `issues` CTE of `orderGivenOf`.
+const ownRefunds = (alias: string, orderUuid: string) =>
+  sql`coalesce((SELECT sum(r.amount_idr)
+      FROM payment_refunds r
+     WHERE r.tenant_id = ${sql.raw(alias)}.tenant_id
+       AND r.payment_intent_id = ${sql.raw(alias)}.id
+       AND r.status <> 'failed'
+       AND (r.order_issue_id IS NULL
+            OR NOT EXISTS (SELECT 1 FROM issues x WHERE x.id = r.order_issue_id))
+       AND NOT EXISTS (
+         SELECT 1
+           FROM payment_admin_idempotency k
+           JOIN pos_order_refunds por
+             ON k.key = 'pos-refund-gateway:' || por.id::text || ':' || r.payment_intent_id::text
+          WHERE k.tenant_id = r.tenant_id
+            AND por.tenant_id = r.tenant_id
+            AND por.order_id = ${orderUuid}::uuid
+            AND k.response ->> 'refundId' = r.id::text)), 0)`;
 
 export type OrderGiven = {
   /** What the guest paid for the order (see the header). */
@@ -84,14 +136,46 @@ export async function orderGivenOf(
          WHEN EXISTS (SELECT 1 FROM pos_orders p
                        WHERE p.tenant_id = ${tenantId}
                          AND p.order_id = ${orderUuid}::uuid)
-         THEN (SELECT coalesce(sum(t.amount_idr), 0)
-                 FROM pos_order_tenders t
-                WHERE t.tenant_id = ${tenantId}
-                  AND t.order_id = ${orderUuid}::uuid
-                  AND t.status = 'captured')
-         ELSE (SELECT coalesce(max(o.total_idr - o.deposit_applied_idr), 0)
-                 FROM orders o
-                WHERE o.tenant_id = ${tenantId} AND o.id = ${orderUuid}::uuid)
+         THEN (SELECT coalesce(sum(CASE
+                  WHEN s.payment_intent_id IS NULL THEN s.amount
+                  WHEN i.id IS NULL THEN 0
+                  WHEN ${flagged("i")} THEN 0
+                  ELSE greatest(0, s.amount
+                         - ${providerRefundedForeignIdrSql(sql`${tenantId}::uuid`, sql`i.id`, undefined, false)}
+                         - ${ownRefunds("i", orderUuid)}) END), 0)
+                 FROM (SELECT t.payment_intent_id, sum(t.amount_idr) AS amount
+                         FROM pos_order_tenders t
+                        WHERE t.tenant_id = ${tenantId}
+                          AND t.order_id = ${orderUuid}::uuid
+                          AND t.status = 'captured'
+                          AND t.method <> 'points'
+                        GROUP BY t.payment_intent_id) s
+                 LEFT JOIN payment_intents i
+                   ON i.tenant_id = ${tenantId} AND i.id = s.payment_intent_id)
+         ELSE greatest(0, least(
+                (SELECT coalesce(max(o.total_idr - o.deposit_applied_idr), 0)
+                   FROM orders o
+                  WHERE o.tenant_id = ${tenantId} AND o.id = ${orderUuid}::uuid),
+                (SELECT coalesce(sum(CASE
+                          WHEN ${flagged("i")} THEN 0
+                          ELSE greatest(0, i.amount_idr
+                                 - ${providerRefundedForeignIdrSql(sql`${tenantId}::uuid`, sql`i.id`, undefined, false)}
+                                 - ${ownRefunds("i", orderUuid)}) END), 0)
+                   FROM payment_intents i
+                  WHERE i.tenant_id = ${tenantId}
+                    AND i.order_id = ${orderUuid}::uuid
+                    AND i.status IN ('paid', 'partially_refunded', 'refunded')
+                    AND i.paid_at IS NOT NULL
+                    AND NOT EXISTS (SELECT 1 FROM order_issue_charges c
+                                     WHERE c.tenant_id = i.tenant_id
+                                       AND c.payment_intent_id = i.id)))
+            - (SELECT coalesce(sum(greatest(0, e.live - e.largest)), 0)
+                 FROM (SELECT sum(r.amount_idr) FILTER (WHERE r.status <> 'failed') AS live,
+                              max(r.amount_idr) AS largest
+                         FROM payment_refunds r
+                        WHERE r.tenant_id = ${tenantId}
+                          AND r.order_issue_id IN (SELECT id FROM issues)
+                        GROUP BY r.order_issue_id) e))
             + (SELECT coalesce(sum(greatest(0, c.amount_idr
                       - coalesce((SELECT sum(r.amount_idr)
                                     FROM payment_refunds r
@@ -248,4 +332,36 @@ export function lineRoomIdr(
     );
   }
   return room;
+}
+
+/**
+ * 1116 (SO 1114 P1): a POS void pays the whole bill back, so it is refused
+ * when any money of the order's tenders already went back through the
+ * provider: its own refunds, our gateway refunds not filed by a POS refund, or
+ * an intent flagged refunded with no sure amount (`orderGivenOf().paidIdr`
+ * counts all of those off the non-points captured tenders). The caller holds
+ * the order lock.
+ */
+export async function assertNothingBackThroughProvider(
+  tx: Tx,
+  context: ScopedTenantContext,
+  orderId: string,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const tenders = await tx.execute(sql`
+    SELECT coalesce(sum(t.amount_idr), 0)::text AS amount
+      FROM pos_order_tenders t
+     WHERE t.tenant_id = ${tenantId}
+       AND t.order_id = ${ulidToUuid(orderId)}::uuid
+       AND t.status = 'captured'
+       AND t.method <> 'points'
+  `);
+  const nonPointsPaid = Number(String(tenders.rows[0]?.amount ?? "0"));
+  const given = await orderGivenOf(tx, tenantId, orderId);
+  if (given.paidIdr < nonPointsPaid)
+    throw new HttpError(
+      409,
+      "VOID_PROVIDER_REFUNDED",
+      "Sebagian pembayaran pesanan ini sudah dikembalikan lewat penyedia pembayaran; tidak bisa di-void. Hubungi finance.",
+    );
 }
