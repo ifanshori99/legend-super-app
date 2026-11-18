@@ -4,6 +4,11 @@ Ditulis oleh merge train batch64g. Sumber: pesan CTO G6evw, G6w9t, G4j04. Tip SH
 
 ## Sudah mendarat 16–17 Nov
 
+
+## Kebijakan landing (keputusan CTO 18 Nov, Retro 47, dikonfirmasi Retro 48)
+
+Batch boleh landing tanpa full run kedua bila tiap kegagalan full run (a) dibetulkan lalu lulus di rerun terarah berkas itu, atau (b) terbukti flake beban dan dicatat sebagai bead. Typecheck dijalankan sekali sesudah semua konflik selesai. Kegagalan di luar dua jenis itu: full run ulang wajib.
+
 - Batch73 -> m1 719171d33. Batch74 -> m1 40f6f3c95: payout-so895-897 (migrasi 0395-0400), qris-hold-so-879 (0401-0406), seat-reservation-lock-order-f7rnw, kecil-859 (0407), print-alert-supervisor, print-agent-kds-retry (0408). Jangan antre ulang.
 
 - Batch75 -> m1 2cd7c7564: `ghostex/911-payout-905-perbaikan-p1-p2` 3cfecb901, `ghostex/ajakan-wa-poin-grid-qr-meja` bcfbdf011, `ui/ops-statusbar-mobile` ca0b1bf0a (memuat 780 + ops-statusbar-contrast), `ui/member-whatsapp-link` c3e616ddb, `ghostex/52c30e92` 9fc198918, `ghostex/19eebc7a` 738731095. Migrasi 0643-0657 -> 0409-0423. Gate akhir Retro37 hijau; fullrun ketiga tidak dimulai sesuai ralat CTO. Jangan antre ulang.
