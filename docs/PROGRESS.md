@@ -1,3 +1,14 @@
+## 1072 Refund ronde 6 + refund otomatis mati Q45 (18 Nov 2026)
+
+- Cabang `ws/1072-refund-ronde6-q45` (base 1c9e3fcaa). Invarian uang: `docs/briefs/1072-invarian.md`; keputusan per temuan: `docs/briefs/1072-refund-ronde6-q45.md`.
+- A1 legend-qag4h: webhook matched dengan nominal sukses > refund kita (atau refund kita failed) kini memasang hold `HOLD_TRANSACTION_CONFLICT` dengan kunci dedup sama dengan recorder; hold live-own yang dieskalasi tidak ditutup otomatis; hold resolved + laporan lebih besar -> hold surplus kedua (nominal penuh, naik bila laporan naik).
+- A2 legend-xon8p: pengurang hold di kredit DP (asli + pindahan) tidak lagi dibuang oleh fact echo; hold konflik selalu mengurangi penuh.
+- A3 legend-bmk0h: counted (identity apa pun) ditolak 409 untuk hold konflik sebelum memilih fact.
+- A4 legend-sbh9j: picker menolak (422) bila ada hold same_as_counted legacy tanpa binding pada intent/T itu.
+- B legend-kmrto: flag mati -> 503 `REFUND_PROVIDER_DISABLED`, refund tetap approved (antrean manual), sweep warn tanpa retry; doit terdaftar tetap dianggap tak terpasang saat flag mati; shim test `setPaymentRefundGateway` melempar di production; settle manual cek ulang cap (tolak 409 bila tanpa jejak penyedia, catat `capExcessIdr` bila ada jejak); warn startup bila flag true; runbook di `docs/deployment.md`.
+- Bukti: test 1072 a1-a4 + b merah di base (24 gagal), hijau di HEAD; regresi 74 file refund 1379 lulus; typecheck API exit 0; db:generate kosong; eslint+prettier file berubah bersih. Tanpa migrasi.
+- Tindak lanjut: legend-55up0 (P3 laporan tanpa nominal/ref beda), legend-h6k7c (refund ber-jejak macet tak bisa dicatat manual saat flag mati), legend-l9ey4 (pool DP 0 bila ada refund + fact echo).
+
 ## 925 Harness Lighthouse dan fixture withdrawal (16 Nov 2026)
 
 - Basis milestone/m1 7b7cc52df, cabang fix/925-ci-grantor-withdraw-flake. Dua kartu dikerjakan terpisah: legend-kj50i oleh lighthouse, legend-61umg oleh flake; test_runner memegang satu token heavy dan reviewer memeriksa diff.
