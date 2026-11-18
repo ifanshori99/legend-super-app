@@ -157,7 +157,14 @@ export type PosExternalTenderPort = (
   tx: Tx,
   context: ScopedTenantContext,
   input: PosExternalTenderInput,
-) => Promise<{ reference: string | null; approvedBy: UserId | null }>;
+) => Promise<{
+  reference: string | null;
+  approvedBy: UserId | null;
+  /** Points tender (936): what the points cover, at most the remaining balance. */
+  amountIdr?: number;
+  /** Points tender: the tender id the ledger row already points at. */
+  tenderId?: string;
+}>;
 
 const refuseExternalTender: PosExternalTenderPort = async (
   _tx,

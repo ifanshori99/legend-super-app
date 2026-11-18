@@ -48,6 +48,8 @@ export * from "./reservation";
 export * from "./reservation-public";
 export * from "./facility";
 export * from "./facility-entitlement";
+// 936 POS facility tickets (legend-hpgyw part D).
+export * from "./facility-pos-ticket";
 export * from "./hris";
 // WS-10 leave, balances, accrual, holidays, overtime (legend-hggk).
 export * from "./hris-leave";
@@ -78,9 +80,12 @@ export * from "./edge-deferred-event";
 export * from "./edge-link-dead-letter";
 export * from "./edge-order-ingest";
 export * from "./edge-receipt-skip";
+export * from "./edge-reconciliation";
+export * from "./edge-txn-ledger";
 export * from "./edge-node";
 export * from "./edge-hris";
 export * from "./edge-sync-conflict";
+export * from "./edge-node-alert";
 export * from "./edge-print";
 export * from "./edge-catalog-gate-state";
 export * from "./edge-catalog-sale-overrides";

@@ -317,6 +317,12 @@ export const updateFacilitySchema = nonEmptyUpdate(
     cleaningMinutes: minuteCount.optional(),
     arrivalGraceMinutes: minuteCount.optional(),
     operatingHours: facilityHoursSchema.optional(),
+    /**
+     * Outlet business date from which `operatingHours` apply (legend-4us1a);
+     * default today, a date before today is refused (the past is never
+     * rewritten). Ignored when `operatingHours` is absent.
+     */
+    effectiveFrom: businessDateSchema.optional(),
     overtimePolicy: overtimePolicySchema.optional(),
     cancellationPolicy: cancellationPolicySchema.optional(),
     expectedUpdatedAt,

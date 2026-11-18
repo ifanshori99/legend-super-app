@@ -541,7 +541,13 @@ export const payrollPayoutEvidenceFiles = pgTable(
 
 // ------------------------------------------------------------- return claims
 
-export const PAYOUT_RETURN_CLAIM_STATUSES = ["open", "consumed"] as const;
+export const PAYOUT_RETURN_CLAIM_STATUSES = [
+  "open",
+  "consumed",
+  // An open claim withdrawn by two finance people (legend-snwnn, migration
+  // 0472): its items go back to plain `succeeded`, the proof stays burned.
+  "withdrawn",
+] as const;
 export type PayoutReturnClaimStatus =
   (typeof PAYOUT_RETURN_CLAIM_STATUSES)[number];
 
@@ -564,13 +570,15 @@ export const payrollPayoutReturnClaims = pgTable(
     evidenceKey: varchar("evidence_key", { length: 500 }).notNull(),
     /** SHA-256 of the sorted item ids of the return request. */
     itemSetHash: varchar("item_set_hash", { length: 64 }).notNull(),
-    status: varchar("status", { length: 8 })
+    status: varchar("status", { length: 16 })
       .$type<PayoutReturnClaimStatus>()
       .notNull()
       .default("open"),
     createdBy: actor("created_by").notNull(),
     createdAt: createdAt(),
     consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    /** Set when the claim is withdrawn (legend-snwnn, migration 0472). */
+    withdrawnAt: timestamp("withdrawn_at", { withTimezone: true }),
     /**
      * SHA-256 of the proof file's content, copied from its upload record
      * (`payroll_payout_evidence_files`, legend-w3691). One file content is
@@ -601,7 +609,9 @@ export const payrollPayoutReturnClaims = pgTable(
     ),
     uniqueIndex("payroll_payout_return_claims_bank_ref_key")
       .on(table.tenantId, table.bankRef)
-      .where(sql`${table.bankRef} IS NOT NULL`),
+      .where(
+        sql`${table.bankRef} IS NOT NULL AND ${table.status} <> 'withdrawn'`,
+      ),
     unique("payroll_payout_return_claims_tenant_batch_id_key").on(
       table.tenantId,
       table.batchId,
@@ -651,7 +661,7 @@ export const payrollPayoutReturnClaims = pgTable(
     ),
     check(
       "payroll_payout_return_claims_consumed_check",
-      sql`(${table.status} = 'open' AND ${table.consumedAt} IS NULL) OR (${table.status} = 'consumed' AND ${table.consumedAt} IS NOT NULL)`,
+      sql`(${table.status} = 'open' AND ${table.consumedAt} IS NULL AND ${table.withdrawnAt} IS NULL) OR (${table.status} = 'consumed' AND ${table.consumedAt} IS NOT NULL AND ${table.withdrawnAt} IS NULL) OR (${table.status} = 'withdrawn' AND ${table.consumedAt} IS NULL AND ${table.withdrawnAt} IS NOT NULL)`,
     ),
   ],
 );
@@ -1358,6 +1368,8 @@ export const PAYOUT_ATTESTATION_KINDS = [
   "resolve",
   "bank_confirm",
   "batch_approve",
+  // Two-person withdrawal of an open return claim (legend-snwnn, 0472).
+  "return_withdraw",
 ] as const;
 export type PayoutAttestationKind = (typeof PAYOUT_ATTESTATION_KINDS)[number];
 
@@ -1451,7 +1463,7 @@ export const payrollPayoutGrants = pgTable(
     ),
     check(
       "payroll_payout_grants_detail_check",
-      sql`(${table.kind} = 'resolve' AND ${table.detail} IN ('failed', 'not_sent')) OR (${table.kind} = 'bank_confirm' AND ${table.detail} = 'succeeded') OR (${table.kind} IN ('disown', 'unfreeze', 'recon_clear') AND ${table.detail} ~ '^[0-9a-f]{64}$') OR (${table.kind} NOT IN ('resolve', 'bank_confirm', 'disown', 'unfreeze', 'recon_clear') AND ${table.detail} IS NULL)`,
+      sql`(${table.kind} = 'resolve' AND ${table.detail} IN ('failed', 'not_sent')) OR (${table.kind} = 'bank_confirm' AND ${table.detail} = 'succeeded') OR (${table.kind} IN ('disown', 'unfreeze', 'recon_clear', 'return_withdraw') AND ${table.detail} ~ '^[0-9a-f]{64}$') OR (${table.kind} NOT IN ('resolve', 'bank_confirm', 'disown', 'unfreeze', 'recon_clear', 'return_withdraw') AND ${table.detail} IS NULL)`,
     ),
     check(
       "payroll_payout_grants_step_check",
@@ -1888,6 +1900,56 @@ export const payrollPayoutReconFlagSightings = pgTable(
 );
 
 /**
+ * What the reconciliation observed of the proof file of one operation (1038,
+ * finding 4, bead legend-63gyr): `missing`, `mismatch` (with the sha256 of the
+ * bytes read), `ok` (recovery, only after an earlier observation) or `error` (a
+ * read error other than not-found, no sha256; legend-qh11l, migration 0481: it
+ * holds the slips of the flag until a later successful read). One row per
+ * change of state or bytes; `episode` counts the problem runs (an `ok` ends one,
+ * the next problem starts a new one). The latest non-ok row (by `seq`, the insert order) enters the flag
+ * fingerprint, so a clearance of problem A never covers problem B or a return of
+ * A after a recovery. Insert-only, written by `app.payout_recon_evidence_observe`
+ * (payout role) only.
+ */
+export const payrollPayoutReconEvidenceObservations = pgTable(
+  "payroll_payout_recon_evidence_observations",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    /** Insert order (identity): the observation order, not the clock. */
+    seq: bigint("seq", { mode: "number" })
+      .generatedAlwaysAsIdentity()
+      .notNull(),
+    operationId: uuid("operation_id").notNull(),
+    state: varchar("state", { length: 8 }).notNull(),
+    observedSha256: varchar("observed_sha256", { length: 64 }),
+    episode: integer("episode").notNull(),
+    observedAt: timestamp("observed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("payroll_payout_recon_evidence_observations_operation_idx").on(
+      table.tenantId,
+      table.operationId,
+      table.seq.desc(),
+    ),
+    check(
+      "payroll_payout_recon_evidence_observations_state_check",
+      sql`${table.state} IN ('missing', 'mismatch', 'ok') OR (${table.state} = 'error' AND ${table.observedSha256} IS NULL)`,
+    ),
+    check(
+      "payroll_payout_recon_evidence_observations_sha_check",
+      sql`${table.observedSha256} IS NULL OR ${table.observedSha256} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      "payroll_payout_recon_evidence_observations_episode_check",
+      sql`${table.episode} >= 1`,
+    ),
+  ],
+);
+
+/**
  * Two-person clearance of a false reconciliation flag (legend-xbagc). The flag
  * row stays (insert-only); an approved clearance stops it holding the payslip
  * back. Written only by the trusted payout functions: a finance person proposes
@@ -1955,6 +2017,85 @@ export const payrollPayoutReconClearances = pgTable(
     check(
       "payroll_payout_recon_clearances_approved_check",
       sql`(${table.approvedBy} IS NULL AND ${table.approvedSessionId} IS NULL AND ${table.approvedGrantId} IS NULL AND ${table.approvedAt} IS NULL) OR (${table.approvedBy} IS NOT NULL AND ${table.approvedSessionId} IS NOT NULL AND ${table.approvedGrantId} IS NOT NULL AND ${table.approvedAt} IS NOT NULL AND ${table.approvedBy} <> ${table.proposedBy})`,
+    ),
+  ],
+);
+
+/**
+ * Two-person withdrawal of an open return claim (legend-snwnn, migration 0472).
+ * A finance person proposes with a reason, a different one (and a different
+ * session) approves, each with a one-time password step-up grant (kind
+ * `return_withdraw`). Approval moves the claim `open -> withdrawn` and clears
+ * the return columns of its items; the claim, its proof and the withdrawal row
+ * stay. Written only by the trusted payout functions; the approval fills the
+ * `approved_*` columns once. Never deleted.
+ */
+export const payrollPayoutReturnWithdrawals = pgTable(
+  "payroll_payout_return_withdrawals",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    claimId: uuid("claim_id").notNull(),
+    batchId: uuid("batch_id").notNull(),
+    reason: text("reason").notNull(),
+    /** SHA-256 (hex) of the reason: the detail of both grants. */
+    reasonSha256: varchar("reason_sha256", { length: 64 }).notNull(),
+    proposedBy: actor("proposed_by").notNull(),
+    proposedSessionId: text("proposed_session_id").notNull(),
+    proposedGrantId: uuid("proposed_grant_id").notNull(),
+    proposedAt: timestamp("proposed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    approvedBy: actor("approved_by"),
+    approvedSessionId: text("approved_session_id"),
+    approvedGrantId: uuid("approved_grant_id"),
+    approvedAt: timestamp("approved_at", { withTimezone: true }),
+  },
+  (table) => [
+    unique("payroll_payout_return_withdrawals_tenant_id_key").on(
+      table.tenantId,
+      table.id,
+    ),
+    uniqueIndex("payroll_payout_return_withdrawals_open_key")
+      .on(table.tenantId, table.claimId)
+      .where(sql`${table.approvedAt} IS NULL`),
+    uniqueIndex("payroll_payout_return_withdrawals_approved_key")
+      .on(table.tenantId, table.claimId)
+      .where(sql`${table.approvedAt} IS NOT NULL`),
+    index("payroll_payout_return_withdrawals_tenant_batch_idx").on(
+      table.tenantId,
+      table.batchId,
+    ),
+    foreignKey({
+      name: "payroll_payout_return_withdrawals_claim_fk",
+      columns: [table.tenantId, table.batchId, table.claimId],
+      foreignColumns: [
+        payrollPayoutReturnClaims.tenantId,
+        payrollPayoutReturnClaims.batchId,
+        payrollPayoutReturnClaims.id,
+      ],
+    }),
+    foreignKey({
+      name: "payroll_payout_return_withdrawals_proposed_grant_fk",
+      columns: [table.tenantId, table.proposedGrantId],
+      foreignColumns: [payrollPayoutGrants.tenantId, payrollPayoutGrants.id],
+    }),
+    foreignKey({
+      name: "payroll_payout_return_withdrawals_approved_grant_fk",
+      columns: [table.tenantId, table.approvedGrantId],
+      foreignColumns: [payrollPayoutGrants.tenantId, payrollPayoutGrants.id],
+    }),
+    check(
+      "payroll_payout_return_withdrawals_reason_check",
+      sql`char_length(btrim(${table.reason})) >= 10 AND char_length(${table.reason}) <= 500`,
+    ),
+    check(
+      "payroll_payout_return_withdrawals_sha_check",
+      sql`${table.reasonSha256} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      "payroll_payout_return_withdrawals_approved_check",
+      sql`(${table.approvedBy} IS NULL AND ${table.approvedSessionId} IS NULL AND ${table.approvedGrantId} IS NULL AND ${table.approvedAt} IS NULL) OR (${table.approvedBy} IS NOT NULL AND ${table.approvedSessionId} IS NOT NULL AND ${table.approvedGrantId} IS NOT NULL AND ${table.approvedAt} IS NOT NULL AND ${table.approvedBy} <> ${table.proposedBy} AND ${table.approvedSessionId} <> ${table.proposedSessionId})`,
     ),
   ],
 );

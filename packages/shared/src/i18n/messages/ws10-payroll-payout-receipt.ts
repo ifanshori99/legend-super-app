@@ -15,6 +15,7 @@ export const payrollPayoutReceiptMessages = {
     correction: "koreksi gaji",
     overpaid: "pencatatan kelebihan bayar",
     return: "pengembalian dana",
+    return_withdraw: "penarikan klaim return",
     posting_source: "pengisian sumber jurnal",
     closure: "penutupan bukti",
     resolve: "penyelesaian transfer",

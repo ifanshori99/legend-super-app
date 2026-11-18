@@ -701,6 +701,62 @@ export function installPayoutWorld(label: string) {
     };
   }
 
+  // ---- Cash in 1102 (approve guard, legend-rvao9) ----------------------
+
+  /**
+   * Puts `amountIdr` into GL 1102 (Dr 1102 / Cr 1103, a plain balanced journal
+   * seeded by SQL) so approving a cash batch passes the cash-cover guard. Setup
+   * only: no petty cash fund or outbox event is touched. The journal is removed
+   * with the rest of the entity in afterAll.
+   */
+  async function fundPettyCash(amountIdr: number) {
+    const now = new Date(Date.now() + 7 * 3_600_000);
+    const date = now.toISOString().slice(0, 10);
+    await asTenant(async (c) => {
+      const account = async (code: string) =>
+        (
+          await c.query(
+            `SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND legal_entity_id = $2 AND code = $3`,
+            [tenant.id, entityId, code],
+          )
+        ).rows[0].id as string;
+      const period = (
+        await c.query(
+          `SELECT id FROM fiscal_periods WHERE tenant_id = $1 AND legal_entity_id = $2 AND period = $3`,
+          [tenant.id, entityId, date.slice(0, 7)],
+        )
+      ).rows[0].id as string;
+      const entry = (
+        await c.query(
+          `INSERT INTO journal_entries
+             (tenant_id, legal_entity_id, entry_date, fiscal_period_id, source_type,
+              source_id, description, idempotency_key, request_fingerprint)
+           VALUES ($1, $2, $3, $4, 'sale', NULL, 'Saldo kas kecil uji payout', $5, $6)
+           RETURNING id`,
+          [
+            tenant.id,
+            entityId,
+            date,
+            period,
+            `payout-fund-1102-${randomUUID()}`,
+            randomBytes(32).toString("hex"),
+          ],
+        )
+      ).rows[0].id as string;
+      await c.query(
+        `INSERT INTO journal_lines (tenant_id, entry_id, account_id, line_no, debit_idr, credit_idr)
+         VALUES ($1, $2, $3, 1, $5, 0), ($1, $2, $4, 2, 0, $5)`,
+        [
+          tenant.id,
+          entry,
+          await account("1102"),
+          await account("1103"),
+          amountIdr,
+        ],
+      );
+    }, true);
+  }
+
   // ---- Reading the ledger -------------------------------------------------
 
   type LineByCode = Record<string, { debit: number; credit: number }>;
@@ -1225,6 +1281,7 @@ export function installPayoutWorld(label: string) {
     grantRole,
     seedRun,
     postLockedJournal,
+    fundPettyCash,
     deliverGl,
     paidEnvelope,
     journalByKey,

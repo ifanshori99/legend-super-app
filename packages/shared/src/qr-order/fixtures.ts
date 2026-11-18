@@ -89,6 +89,7 @@ const zones: FloorZone[] = [
     ],
     status: "active" as const,
     sortOrder: 0,
+    isWfc: false,
   },
   {
     id: id(101),
@@ -102,6 +103,7 @@ const zones: FloorZone[] = [
     ],
     status: "active" as const,
     sortOrder: 1,
+    isWfc: false,
   },
   {
     id: id(102),
@@ -115,6 +117,7 @@ const zones: FloorZone[] = [
     ],
     status: "active" as const,
     sortOrder: 2,
+    isWfc: false,
   },
   {
     id: id(103),
@@ -126,6 +129,7 @@ const zones: FloorZone[] = [
     hours: [{ daysOfWeek: [1, 2, 3, 4, 5], start: "08:00", end: "18:00" }],
     status: "active" as const,
     sortOrder: 3,
+    isWfc: true,
   },
 ].map((zone) => floorZoneSchema.parse(zone));
 

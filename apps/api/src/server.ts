@@ -7,6 +7,7 @@ import { env } from "./config/env";
 import { checkDatabase, db, pool } from "./db";
 import { closePayoutGrantorPool } from "./db/grantor";
 import { startCatalogPublisherWorker } from "./services/edge-master-data-publisher.ts";
+import { startEdgeOfflineSweepWorker } from "./services/edge-offline-sweep.ts";
 import { logger } from "./lib/logger";
 import { createDoitGateway } from "./services/payment-doit.ts";
 import { createDuitkuGateway } from "./services/payment-duitku.ts";
@@ -169,6 +170,8 @@ let printAgent: { stop(): Promise<void> } | null = null;
 let edcAgent: { stop(): Promise<void> } | null = null;
 let edgeLink: EdgeLinkHandle | null = null;
 let catalogPublisher: { stop(): Promise<void> } | null = null;
+// Cloud "edge offline" alarm (legend-5ab0l): cloud only, edges have no sweep.
+let edgeOfflineSweep: { stop(): Promise<void> } | null = null;
 const edgeReady = (async () => {
   try {
     if (env.EDGE_MODE) {
@@ -181,6 +184,10 @@ const edgeReady = (async () => {
         clientAddress: expressClientAddress(app),
       });
       catalogPublisher = startCatalogPublisherWorker(db);
+      edgeOfflineSweep = startEdgeOfflineSweepWorker(db, {
+        intervalMs: env.EDGE_OFFLINE_SWEEP_SECONDS * 1000,
+        thresholdMinutes: env.EDGE_OFFLINE_ALARM_MINUTES,
+      });
     }
   } catch (error) {
     if (error instanceof EdgeBootError) {
@@ -237,6 +244,7 @@ async function shutdown(signal: string) {
   )();
   await edgeReady.catch(() => {});
   await catalogPublisher?.stop();
+  await edgeOfflineSweep?.stop();
   // Waits for sales already on the wire (up to the sale timeout); the force
   // timer above is sized for that when EDC is on. Cutting it short is NOT
   // safe: the approval evidence of a sale on the wire would be lost

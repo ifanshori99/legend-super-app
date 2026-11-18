@@ -27,7 +27,7 @@ import type {
 } from "@starter/shared/crm";
 import { db } from "../db";
 import { customerProfiles, loyaltyPrograms } from "../db/schema/crm-member";
-import { posOrders } from "../db/schema/pos-order";
+import { posOrders, posOrderTenders } from "../db/schema/pos-order";
 import { orders, type OrderStatus } from "../db/schema/qr-order";
 import { memberTenantContext } from "../db/member-scope";
 import { withTenant } from "../db/tenant";
@@ -154,6 +154,26 @@ export async function setPosOrderCustomer(
           409,
           "ORDER_NOT_UNPAID",
           "Pelanggan hanya bisa diubah sebelum pesanan dibayar.",
+        );
+      // 936: points already spent belong to this member; changing or removing
+      // the member would leave them paid out of another account.
+      const [pointsTender] = await tx
+        .select({ id: posOrderTenders.id })
+        .from(posOrderTenders)
+        .where(
+          and(
+            eq(posOrderTenders.tenantId, tenantId),
+            eq(posOrderTenders.orderId, orderId),
+            eq(posOrderTenders.method, "points"),
+            eq(posOrderTenders.status, "captured"),
+          ),
+        )
+        .limit(1);
+      if (pointsTender)
+        throw new HttpError(
+          409,
+          "ORDER_HAS_POINTS_TENDER",
+          "Member tidak bisa diganti karena pesanan ini sudah dibayar sebagian dengan poin.",
         );
 
       const setCustomer = async (

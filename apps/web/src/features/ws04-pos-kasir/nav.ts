@@ -1,9 +1,28 @@
-import { CalendarCheck, Clock, ReceiptText, ShoppingCart } from "lucide-react";
+import {
+  CalendarCheck,
+  Clock,
+  ReceiptText,
+  ShoppingCart,
+  Ticket,
+} from "lucide-react";
 import type { AreaNavEntry } from "@/lib/areas/nav";
+import { TICKET_SALE_CONNECTED } from "./ticket/connected";
 
 // Cashier screens inside the operations area (PRD §5: `/pos/*`, §3 F8 shift
 // and day close, §3 F11 "Bayar di kasir" code). Payment itself opens from an
 // order (`/pos/bayar/$orderId`), so it has no menu item.
+// The ticket sale stays off the menu while it has no payment contract: the
+// route still exists and says so, but production must not lead to a locked
+// screen.
+const ticketEntry: AreaNavEntry = {
+  area: "ops",
+  labelKey: "posKasirTicket.nav",
+  to: "/pos/tiket",
+  icon: Ticket,
+  order: 29.5,
+  anyPermission: ["pos.sale.create"],
+};
+
 const nav: AreaNavEntry[] = [
   {
     area: "ops",
@@ -37,6 +56,7 @@ const nav: AreaNavEntry[] = [
     order: 32,
     anyPermission: ["shift.cash.approve_close"],
   },
+  ...(TICKET_SALE_CONNECTED ? [ticketEntry] : []),
 ];
 
 export default nav;

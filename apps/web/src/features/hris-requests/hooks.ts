@@ -271,7 +271,6 @@ export type CreateOvertimeRequestInput = {
   date: string;
   minutes: number;
   reason: string;
-  dayType?: OvertimeRequest["dayType"];
   /** Defaults to the employee's own outlet when empty. */
   outletId?: OutletId;
   idempotencyKey?: string;

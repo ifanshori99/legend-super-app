@@ -318,6 +318,8 @@ async function approvedWorld(
       WHERE tenant_id = $1 AND legal_entity_id = $2`,
     [W.tenantId, W.entityId()],
   );
+  // Cash approval needs 1102 to cover the batch (legend-rvao9): setup only.
+  if (channel === "cash") await W.fundPettyCash(NET * 2);
   const world = { runId, batchId, hash, source: source!.id as string };
   await approveAs(approverA, world);
   const batch = await W.batchById(batchId);

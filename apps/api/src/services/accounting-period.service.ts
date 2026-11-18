@@ -46,6 +46,7 @@ import { db } from "../db";
 import { fiscalPeriods, legalEntities } from "../db/schema";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
+import { entityLock } from "./accounting-bank-matching";
 import {
   requireLegalEntity,
   type TenantTransaction,
@@ -237,6 +238,9 @@ export async function wouldPostingBeBlockedByClosedPeriod(
   legalEntityId: string,
   period: string,
 ): Promise<boolean> {
+  // Canonical lock order (legend-f250r): entity advisory lock before the
+  // entity row share, same as postJournalInTransaction.
+  await entityLock(tx, tenantId, legalEntityId);
   await lockLegalEntity(tx, tenantId, legalEntityId, "share");
   const [closed] = await tx
     .select({ id: fiscalPeriods.id })

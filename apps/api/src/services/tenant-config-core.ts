@@ -282,6 +282,12 @@ export const coreSectionHandlers: SectionHandler[] = [
   modulesHandler,
   textOverridesHandler,
   themeHandler,
+  // GUARD (legend-85qyi): when the loyalty_policy import handler is built, its
+  // update of an existing program must OMIT `legalEntityId` from the update
+  // input (never write null): a program's legal entity (PT) is not in the
+  // config bundle and must never be wiped by an import. Requirement: replace
+  // the "still rejects" test in test/tenant-config-loyalty-import-guard.test.ts
+  // with a DB test proving an import keeps the PT of an existing program.
   unsupportedSection("loyalty_policy"),
   unsupportedSection("payroll_settings"),
 ];

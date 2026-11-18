@@ -220,6 +220,8 @@ export async function provisionMigrator(options: {
         // have created them, and the non-superuser migrator re-keys the login
         // and adds it to the group only with ADMIN on both.
         "legend_payout_grantor",
+        // The proof-read role (drizzle/0481): the migrator grants it to legend_app.
+        "legend_payout_recon",
         ...restricted,
       ]);
       return { outcome, database } as const;

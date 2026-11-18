@@ -51,7 +51,7 @@
 //   'definitive' on `failed` (brief) and nothing extra on `not_sent`.
 // - M2: cancelling a cash batch with some succeeded items is allowed for the
 //   requester; the cash handover also checks approval_expires_at.
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { CoreError, tenantIdSchema } from "@starter/shared/core";
@@ -652,6 +652,58 @@ beforeAll(async () => {
         WHERE tenant_id = $1 AND legal_entity_id = $2 AND code = '8101'`,
       [tenant.id, entityId],
     );
+    // legend-rvao9: approving a cash batch needs the petty cash role mapped and
+    // enough cash in 1102. Setup only: 1102 mapped as petty_cash and one plain
+    // journal Dr 1102 / Cr 1103 (far above any batch of this file); the
+    // journal is removed in afterAll.
+    await c.query(
+      `INSERT INTO chart_of_accounts
+         (tenant_id, legal_entity_id, code, name, type, report_group, parent_id, is_active)
+       VALUES ($1, $2, '1102', 'Kas Kecil', 'asset', 'cash_and_equivalents', NULL, true)`,
+      [tenant.id, entityId],
+    );
+    await c.query(
+      `INSERT INTO account_mappings (tenant_id, legal_entity_id, role, account_id)
+       SELECT $1, $2, 'petty_cash', id FROM chart_of_accounts
+        WHERE tenant_id = $1 AND legal_entity_id = $2 AND code = '1102'`,
+      [tenant.id, entityId],
+    );
+    const fundDate = new Date(Date.now() + 7 * 3_600_000)
+      .toISOString()
+      .slice(0, 10);
+    const fundPeriod = (
+      await c.query(
+        `INSERT INTO fiscal_periods (tenant_id, legal_entity_id, period)
+         VALUES ($1, $2, $3) RETURNING id`,
+        [tenant.id, entityId, fundDate.slice(0, 7)],
+      )
+    ).rows[0].id as string;
+    const fundEntry = (
+      await c.query(
+        `INSERT INTO journal_entries
+           (tenant_id, legal_entity_id, entry_date, fiscal_period_id, source_type,
+            source_id, description, idempotency_key, request_fingerprint)
+         VALUES ($1, $2, $3, $4, 'sale', NULL, 'Saldo kas kecil uji payout', $5, $6)
+         RETURNING id`,
+        [
+          tenant.id,
+          entityId,
+          fundDate,
+          fundPeriod,
+          `payout-fund-1102-${randomUUID()}`,
+          randomBytes(32).toString("hex"),
+        ],
+      )
+    ).rows[0].id as string;
+    await c.query(
+      `INSERT INTO journal_lines (tenant_id, entry_id, account_id, line_no, debit_idr, credit_idr)
+       SELECT $1, $2, id, CASE code WHEN '1102' THEN 1 ELSE 2 END,
+              CASE code WHEN '1102' THEN 1000000000 ELSE 0 END,
+              CASE code WHEN '1102' THEN 0 ELSE 1000000000 END
+         FROM chart_of_accounts
+        WHERE tenant_id = $1 AND legal_entity_id = $3 AND code IN ('1102', '1103')`,
+      [tenant.id, fundEntry, entityId],
+    );
     for (const p of ALL_PEOPLE) {
       createdEmployees.push(p.id);
       await c.query(
@@ -736,6 +788,18 @@ afterAll(async () => {
     );
     await del(
       "DELETE FROM account_mappings WHERE tenant_id = $1 AND legal_entity_id = $2",
+      [tenant.id, entityId],
+    );
+    await del(
+      "DELETE FROM journal_lines WHERE tenant_id = $1 AND entry_id IN (SELECT id FROM journal_entries WHERE tenant_id = $1 AND legal_entity_id = $2)",
+      [tenant.id, entityId],
+    );
+    await del(
+      "DELETE FROM journal_entries WHERE tenant_id = $1 AND legal_entity_id = $2",
+      [tenant.id, entityId],
+    );
+    await del(
+      "DELETE FROM fiscal_periods WHERE tenant_id = $1 AND legal_entity_id = $2",
       [tenant.id, entityId],
     );
     await del(

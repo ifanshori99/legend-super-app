@@ -141,7 +141,7 @@ export type MetricSource =
       readonly code: string;
       readonly numerator: string;
       readonly denominator: string;
-      readonly scale: 1 | 100; // 100 for percent
+      readonly scale: 1 | 60 | 100; // 100 for percent
     }
   | {
       /**

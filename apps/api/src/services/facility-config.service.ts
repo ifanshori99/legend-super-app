@@ -13,6 +13,7 @@
 // permission and re-checked per distinct outlet of the page.
 import { and, asc, eq, gt, inArray, or, sql } from "drizzle-orm";
 import {
+  businessDateOf,
   decodeCursor,
   encodeCursor,
   type CursorPage,
@@ -68,6 +69,13 @@ import {
 } from "./facility-products.service.ts";
 import { listWifiPoliciesForFacility } from "./wifi-policy.service.ts";
 import {
+  ensureBaselineHoursVersion,
+  FIRST_HOURS_VERSION_DATE,
+  rollForwardOutletHoursNow,
+  upsertOperatingHoursVersion,
+} from "./facility-hours-versions.service.ts";
+import { outletBusinessDayClock } from "./outlet-clock.ts";
+import {
   assertConfigFresh,
   createOnce,
   lockConfigRow,
@@ -85,9 +93,23 @@ export async function listFacilities(
   context: ScopedTenantContext,
   actorUserId: string,
   query: { cursor?: string; limit: number },
+  now = new Date(),
 ): Promise<CursorPage<FacilityListItem>> {
   const actor = userIdSchema.parse(actorUserId);
   return withTenant(db, context, async (tx) => {
+    // Hours whose effective date has arrived reach the column before the
+    // page is read, so the admin never sees stale hours (legend-4us1a).
+    const hoursOutlets = await tx
+      .selectDistinct({ outletId: facilities.outletId })
+      .from(facilities)
+      .where(eq(facilities.tenantId, context.tenant.tenantId));
+    for (const { outletId } of hoursOutlets)
+      await rollForwardOutletHoursNow(
+        tx,
+        context.tenant.tenantId,
+        outletId,
+        now,
+      );
     const filters = [eq(facilities.tenantId, context.tenant.tenantId)];
     if (query.cursor) {
       const cursor = decodeFacilityCursor(query.cursor);
@@ -177,17 +199,27 @@ export async function getFacilityConfig(
   context: ScopedTenantContext,
   actorUserId: string,
   query: { facilityId: string },
+  now = new Date(),
 ): Promise<FacilityConfig> {
   const actor = userIdSchema.parse(actorUserId);
   return withTenant(db, context, async (tx) => {
-    const facility = await loadFacility(tx, context, query.facilityId);
+    const found = await loadFacility(tx, context, query.facilityId);
     await assertFacilityPermission(
       tx,
       context,
       actor,
       CONFIG_PERMISSION,
-      facility.outletId,
+      found.outletId,
     );
+    // Hours whose effective date has arrived reach the column first, so the
+    // admin never sees stale hours (legend-4us1a); reload the row after.
+    await rollForwardOutletHoursNow(
+      tx,
+      context.tenant.tenantId,
+      found.outletId,
+      now,
+    );
+    const facility = await loadFacility(tx, context, query.facilityId);
     const tenantId = context.tenant.tenantId;
     const areas = await tx
       .select()
@@ -259,8 +291,40 @@ export async function updateFacility(
       CONFIG_PERMISSION,
       locked.outletId,
     );
-    const { expectedUpdatedAt, ...changes } = input;
+    const { expectedUpdatedAt, effectiveFrom, ...changes } = input;
     assertConfigFresh(locked.updatedAt, expectedUpdatedAt);
+    // New hours start on `effectiveFrom` (default: today, outlet business
+    // date). The past is never rewritten, and a future date leaves the hours
+    // valid today (`facilities.operating_hours`) alone (legend-4us1a).
+    const newHours = changes.operatingHours;
+    let hoursStart: string | null = null;
+    let hoursApplyNow = false;
+    if (newHours !== undefined) {
+      const [outlet] = await tx
+        .select({
+          timezone: outlets.timezone,
+          businessDayCutoff: outlets.businessDayCutoff,
+        })
+        .from(outlets)
+        .where(
+          and(
+            eq(outlets.tenantId, context.tenant.tenantId),
+            eq(outlets.id, locked.outletId),
+          ),
+        )
+        .limit(1);
+      if (!outlet) throw notFound("Outlet");
+      const today = businessDateOf(now, outletBusinessDayClock(outlet));
+      hoursStart = effectiveFrom ?? today;
+      if (hoursStart < today)
+        throw new HttpError(
+          422,
+          "VALIDATION_ERROR",
+          "Tanggal berlaku jam operasional tidak boleh di masa lalu.",
+        );
+      hoursApplyNow = hoursStart <= today;
+    }
+    if (!hoursApplyNow) delete changes.operatingHours;
     const before = toFacility(locked);
     const merged = { ...before, ...changes };
     const slot = slotConfigSchema.safeParse({
@@ -295,6 +359,23 @@ export async function updateFacility(
       )
       .returning();
     const after = toFacility(row);
+    if (hoursStart !== null) {
+      // A facility without a 1970-01-01 baseline (imported, or created before
+      // the versions) keeps its current hours for every earlier day.
+      await ensureBaselineHoursVersion(tx, {
+        tenantId: context.tenant.tenantId,
+        outletId: locked.outletId,
+        facilityId: locked.id,
+        operatingHours: before.operatingHours,
+      });
+      await upsertOperatingHoursVersion(tx, {
+        tenantId: context.tenant.tenantId,
+        outletId: locked.outletId,
+        facilityId: locked.id,
+        effectiveFrom: hoursStart,
+        operatingHours: newHours ?? before.operatingHours,
+      });
+    }
     await auditFacility(tx, context, actor, now, {
       action: "facility.updated",
       objectType: "facility",
@@ -738,6 +819,13 @@ export async function createFacility(
             updatedAt: now,
           })
           .returning();
+        await upsertOperatingHoursVersion(tx, {
+          tenantId: context.tenant.tenantId,
+          outletId: row.outletId,
+          facilityId: row.id,
+          effectiveFrom: FIRST_HOURS_VERSION_DATE,
+          operatingHours: row.operatingHours,
+        });
         await auditFacility(tx, context, actor, now, {
           action: "facility.created",
           objectType: "facility",

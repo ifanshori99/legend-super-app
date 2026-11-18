@@ -267,12 +267,16 @@ const journalCount = async () =>
   );
 
 /** A held cash posting: source NULL, lock journal posted, not settled (the 881 scenario). */
-async function heldCashWithoutSource() {
-  const restore = await removePettyCashMapping();
+async function heldCashWithoutSource(prefunded = false) {
   const slips = [cash(CASHIER, NET_CASH)];
   const runId = await W.seedRun(slips);
+  // Setup only (legend-rvao9): approving a cash batch needs 1102 funded and the
+  // petty_cash mapping present; the mapping is removed after the approve, for
+  // the handover only.
+  if (!prefunded) await W.fundPettyCash(NET_CASH);
   const batchId = await W.approvedBatch(runId, "cash");
   const itemIds = (await W.itemsOf(batchId)).map((i) => i.id as string);
+  const restore = await removePettyCashMapping();
   try {
     await withAccountingOff(() => W.handover(batchId, itemIds, APP2));
   } finally {
@@ -480,8 +484,11 @@ const postSource = (
 
 describe("905 finance records the posting source through the trusted function (card 2b)", () => {
   it("[905-source-record-journals-once] finance (not the requester) records account X for the held cash posting: it settles once, Dr 2103 / Cr X for the net, the petty cash mapping is untouched, a replay (also parallel) adds no second journal", async () => {
+    // Setup only (legend-rvao9): fund 1102 before the baseline so the funding
+    // journal is not part of the "mapping untouched" delta.
+    await W.fundPettyCash(NET_CASH);
     const before = { x: await account("1101"), cash: await account("1102") };
-    const { held, batchId, itemIds, net } = await heldCashWithoutSource();
+    const { held, batchId, itemIds, net } = await heldCashWithoutSource(true);
     const postingId = held.id as string;
     const x = await accountId("1101");
 

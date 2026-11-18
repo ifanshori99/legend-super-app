@@ -773,8 +773,6 @@ describe("unavailable facility metrics", () => {
     "shower_fnb_conversion_pct",
     "facility_cleaning_count",
     "facility_cleaning_seconds",
-    "revpash",
-    "seat_occupancy_pct",
   ];
 
   it("claims each code as unavailable with a reason, never a zero", async () => {

@@ -277,6 +277,7 @@ afterAll(async () => {
   for (const f of seeded)
     await asOwner(f.tenant, async (client) => {
       for (const table of [
+        "facility_operating_hours_versions",
         "access_tickets",
         "facility_queue_entries",
         "facility_units",

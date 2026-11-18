@@ -53,6 +53,11 @@ import {
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { createApp } from "../app.ts";
 import { handleCashBankApprovalResolved } from "../services/cash-bank-approval-consumer.ts";
+import {
+  approveDisbursementBatch,
+  cancelDisbursementBatch,
+  submitDisbursementBatch,
+} from "../services/payroll-payout.service.ts";
 import { decideApprovalRequest } from "../services/platform-approval.service.ts";
 import { originHeader, verifySessionMfa } from "./helpers.ts";
 import {
@@ -61,6 +66,7 @@ import {
   journalLinesOf,
   journalsByKey,
   key,
+  makeBankAccount,
   makeWorld,
   owner,
   short,
@@ -73,8 +79,19 @@ import {
   limitExclusiveLock,
   withLimitSharedLock,
 } from "./helpers/cash-limit-lock.ts";
+import {
+  APP,
+  CASHIER,
+  REQ,
+  actorOf,
+  cash,
+  installPayoutWorld,
+} from "./payroll-payout-fixtures.ts";
 
 const app = createApp();
+// Own legal entity (with GL 1102 and cash payroll batches) for the 1053b
+// "cash short at approval" describe at the end of this file.
+const W = installPayoutWorld("cashoutinbox1053b");
 const ENTRIES = "/api/accounting/cash-bank/entries";
 const DEFAULT_LIMIT = 5_000_000;
 const ACTION = "cash_out";
@@ -419,6 +436,41 @@ describe("cash-out approval inbox: approve posts exactly once", () => {
     expect(await bankNet()).toBe(netBefore - amountIdr);
   });
 
+  it("[cash-out-approval-inbox-6b] a direct approve while the chain is open posts nothing (409 CASH_OUT_CHAIN_OPEN) and the chain still decides (legend-3bkvl)", async () => {
+    const amountIdr = 7_400_000;
+    const entry = await submitPending(creator, { amountIdr });
+    const request = await onlyRequest(entry.id);
+    const netBefore = await bankNet();
+
+    const early = await directApprove(approver, entry.id);
+    expect(early.status, JSON.stringify(early.body)).toBe(409);
+    expect(early.body.error.code).toBe("CASH_OUT_CHAIN_OPEN");
+    expect(await journalsOf(entry.id)).toHaveLength(0);
+    expect(await bankNet()).toBe(netBefore);
+    expect((await entryRow(entry.id)).status).toBe("pending_approval");
+    expect((await onlyRequest(entry.id)).status).toBe("pending");
+
+    await decideAndApply(approver.userId, request, "approved");
+    expect(await journalsOf(entry.id)).toHaveLength(1);
+    expect(await bankNet()).toBe(netBefore - amountIdr);
+  });
+
+  it("[cash-out-approval-inbox-6c] a pending entry without any chain cannot be approved directly (409 CASH_OUT_CHAIN_MISSING)", async () => {
+    const entry = await submitPending(creator, { amountIdr: 7_500_000 });
+    const netBefore = await bankNet();
+    await owner.query(
+      "DELETE FROM approval_requests WHERE tenant_id = $1 AND object_type = 'cash_bank_entry' AND object_id = $2",
+      [tenantId, entry.id],
+    );
+
+    const res = await directApprove(approver, entry.id);
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error.code).toBe("CASH_OUT_CHAIN_MISSING");
+    expect(await journalsOf(entry.id)).toHaveLength(0);
+    expect(await bankNet()).toBe(netBefore);
+    expect((await entryRow(entry.id)).status).toBe("pending_approval");
+  });
+
   it("[cash-out-approval-inbox-7] the creator cannot decide their own request; nothing is posted and it stays pending", async () => {
     const entry = await submitPending(creator, { amountIdr: 5_900_000 });
     const request = await onlyRequest(entry.id);
@@ -599,4 +651,226 @@ describe("cash-out approval inbox: missing policy fails closed", () => {
       await restorePolicies();
     }
   });
+});
+
+// ============================================================================
+// 1053b: a cash out from a bank account on GL 1102 whose approval chain ends
+// "approved" while the available 1102 cash (GL 1102 minus the approved cash
+// payroll reserve) is below the amount. Written from the brief of this task and
+// the public HTTP / service surface, not from the implementation.
+//
+// Assumptions (stated so they can be contested):
+// - The outbox consumer `handleCashBankApprovalResolved` must NOT throw for
+//   this business refusal (a throw makes the outbox retry forever). The entry
+//   stays `pending_approval`, no journal, no GL movement. The chain decision
+//   itself stays "approved" (that is the human decision).
+// - While cash is short, the direct approve endpoint refuses with
+//   PETTY_CASH_GL_INSUFFICIENT (409 or 422, never 5xx).
+// - Once cash is back (batch cancelled, or 1102 topped up) the SAME entry is
+//   approved through the direct endpoint (200 or 201) and posts exactly one
+//   journal, even if the consumer event is replayed afterwards.
+// - Available cash = GL 1102 of the payout entity minus the net of cash
+//   batches this describe approved and did not cancel (`committed`).
+// ============================================================================
+
+describe("cash-out approval inbox: approval chain done while 1102 cash is short (1053b)", () => {
+  withLimitSharedLock();
+
+  let pettyGlId: string;
+  let pettyBankId: string;
+  let expenseId: string;
+  /** Net of the cash batches approved here and not cancelled. */
+  let committed = 0;
+  const AMOUNT = DEFAULT_LIMIT + 1;
+
+  beforeAll(async () => {
+    const gl = await owner.query<{ id: string }>(
+      "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND legal_entity_id = $2 AND code = '1102'",
+      [tenantId, W.entityId()],
+    );
+    pettyGlId = gl.rows[0]!.id;
+    pettyBankId = await makeBankAccount(W.entityId(), pettyGlId);
+    await owner.query(
+      `INSERT INTO chart_of_accounts (tenant_id, legal_entity_id, code, name, type, report_group)
+       VALUES ($1, $2, '6991', 'Beban Uji Inbox 1053b', 'expense', 'operating_expense')
+       ON CONFLICT (tenant_id, legal_entity_id, code) DO NOTHING`,
+      [tenantId, W.entityId()],
+    );
+    const exp = await owner.query<{ id: string }>(
+      "SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND legal_entity_id = $2 AND code = '6991'",
+      [tenantId, W.entityId()],
+    );
+    expenseId = exp.rows[0]!.id;
+  });
+
+  async function glBalance(): Promise<number> {
+    const { rows } = await owner.query<{ balance: string }>(
+      `SELECT coalesce(sum(l.debit_idr - l.credit_idr), 0)::text AS balance
+         FROM journal_lines l
+         JOIN journal_entries e ON e.tenant_id = l.tenant_id AND e.id = l.entry_id
+        WHERE l.tenant_id = $1 AND e.legal_entity_id = $2 AND l.account_id = $3`,
+      [tenantId, W.entityId(), pettyGlId],
+    );
+    return Number(rows[0]!.balance);
+  }
+  const available = async () => (await glBalance()) - committed;
+
+  /** Approves a one-slip cash batch (the reserve); returns its id and net. */
+  async function reserve(net: number) {
+    const slips = [cash(CASHIER, net)];
+    const runId = await W.seedRun(slips);
+    const batchId = await W.createBatch(runId, "cash");
+    await W.inTx((tx) => submitDisbursementBatch(tx, actorOf(REQ), batchId));
+    const hash = (await W.batchById(batchId)).content_hash as string;
+    await W.inTx((tx) =>
+      approveDisbursementBatch(tx, actorOf(APP), batchId, {
+        contentHash: hash,
+        sourceBankAccountId: null,
+      } as never),
+    );
+    expect((await W.batchById(batchId)).status).toBe("approved");
+    committed += net;
+    return { batchId, net };
+  }
+
+  /** Baseline: available 1102 cash becomes exactly 0. */
+  async function drain() {
+    const avail = await available();
+    expect(avail, "available cash is never negative between tests").toBe(
+      Math.max(avail, 0),
+    );
+    if (avail > 0) await reserve(avail);
+    expect(await available()).toBe(0);
+  }
+
+  /** Hygiene: a failed test must not leave a negative baseline behind. */
+  async function restoreBaseline() {
+    const gap = -(await available());
+    if (gap > 0) await W.fundPettyCash(gap);
+  }
+
+  const cashOutFrom1102 = (extra: Record<string, unknown> = {}) =>
+    cashOutBody({
+      legalEntityId: W.entityId(),
+      bankAccountId: pettyBankId,
+      counterAccountId: expenseId,
+      amountIdr: AMOUNT,
+      entryDate: daysAgo(0),
+      ...extra,
+    });
+
+  const w1102Journals = (entryId: string) =>
+    journalsByKey(W.entityId(), `cb:${entryId}`);
+
+  async function pendingEntryWithChainApproved() {
+    const who = await freshCreator("1053b creator");
+    const res = await post(who, cashOutFrom1102());
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.data.status).toBe("pending_approval");
+    const entryId = res.body.data.id as string;
+    const request = await onlyRequest(entryId);
+    await inboxDecide(approver.userId, request.id, "approved");
+    const event = await resolvedEventOfChain(request.chain_id);
+    return { entryId, event };
+  }
+
+  it("[cash-out-approval-inbox-1053b-short-cancel] chain approved while 1102 is short: the consumer does not throw, the entry stays pending with no journal; after the cash batch is cancelled the direct approve posts once", async () => {
+    try {
+      await drain();
+      await W.fundPettyCash(6_000_000);
+      const batch = await reserve(1_500_000); // available 4.500.000 < AMOUNT
+      const { entryId, event } = await pendingEntryWithChainApproved();
+      const gl = await glBalance();
+
+      // Outbox must not retry: the consumer resolves.
+      await expect(
+        handleCashBankApprovalResolved(tenantWide, event, new Date()),
+      ).resolves.toBeUndefined();
+      // A redelivery is a no-op too.
+      await expect(
+        handleCashBankApprovalResolved(tenantWide, event, new Date()),
+      ).resolves.toBeUndefined();
+
+      expect(await entryRow(entryId)).toMatchObject({
+        status: "pending_approval",
+        journal_entry_id: null,
+      });
+      expect(await w1102Journals(entryId)).toHaveLength(0);
+      expect(await glBalance(), "1102 unchanged").toBe(gl);
+      expect((await onlyRequest(entryId)).status, "the decision stands").toBe(
+        "approved",
+      );
+
+      // The direct endpoint refuses for the same business reason.
+      const refused = await directApprove(approver, entryId);
+      expect([409, 422], JSON.stringify(refused.body)).toContain(
+        refused.status,
+      );
+      expect(refused.body.error?.code).toBe("PETTY_CASH_GL_INSUFFICIENT");
+      expect((await entryRow(entryId)).status).toBe("pending_approval");
+
+      // Cash is back: the payroll batch is cancelled.
+      await W.inTx((tx) =>
+        cancelDisbursementBatch(tx, actorOf(REQ), batch.batchId, {
+          reason: "uji batal 1053b inbox",
+        } as never),
+      );
+      committed -= batch.net;
+
+      const approved = await directApprove(approver, entryId);
+      expect([200, 201], JSON.stringify(approved.body)).toContain(
+        approved.status,
+      );
+      const after = await entryRow(entryId);
+      expect(after.status).toBe("approved");
+      const journals = await w1102Journals(entryId);
+      expect(journals).toHaveLength(1);
+      expect(after.journal_entry_id).toBe(journals[0]!.id);
+      expect(await glBalance(), "1102 reduced once").toBe(gl - AMOUNT);
+
+      // Replaying the consumer and the endpoint adds nothing.
+      await handleCashBankApprovalResolved(tenantWide, event, new Date());
+      const again = await directApprove(approver, entryId);
+      expect([200, 201], JSON.stringify(again.body)).toContain(again.status);
+      expect(await w1102Journals(entryId)).toHaveLength(1);
+      expect(await glBalance()).toBe(gl - AMOUNT);
+    } finally {
+      await restoreBaseline();
+    }
+  }, 120_000);
+
+  it("[cash-out-approval-inbox-1053b-short-topup] chain approved while 1102 is short: the consumer does not throw, the entry stays pending; after 1102 is topped up the direct approve posts once", async () => {
+    try {
+      await drain();
+      await W.fundPettyCash(6_000_000);
+      await reserve(1_500_000); // available 4.500.000 < AMOUNT
+      const { entryId, event } = await pendingEntryWithChainApproved();
+      const gl = await glBalance();
+
+      await expect(
+        handleCashBankApprovalResolved(tenantWide, event, new Date()),
+      ).resolves.toBeUndefined();
+      expect(await entryRow(entryId)).toMatchObject({
+        status: "pending_approval",
+        journal_entry_id: null,
+      });
+      expect(await w1102Journals(entryId)).toHaveLength(0);
+      expect(await glBalance()).toBe(gl);
+
+      await W.fundPettyCash(1_000_000); // available 5.500.000 >= AMOUNT
+      const approved = await directApprove(approver, entryId);
+      expect([200, 201], JSON.stringify(approved.body)).toContain(
+        approved.status,
+      );
+      expect((await entryRow(entryId)).status).toBe("approved");
+      expect(await w1102Journals(entryId)).toHaveLength(1);
+      expect(await glBalance()).toBe(gl + 1_000_000 - AMOUNT);
+
+      await handleCashBankApprovalResolved(tenantWide, event, new Date());
+      expect(await w1102Journals(entryId)).toHaveLength(1);
+      expect(await glBalance()).toBe(gl + 1_000_000 - AMOUNT);
+    } finally {
+      await restoreBaseline();
+    }
+  }, 120_000);
 });

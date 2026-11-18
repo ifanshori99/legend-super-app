@@ -129,6 +129,8 @@ import {
 } from "./worker/relay";
 import { touchHeartbeat } from "./worker/heartbeat";
 import { runInventoryParAlertJob } from "./worker/inventory-par-alerts.job.ts";
+import { runFacilityHoursRollJob } from "./worker/facility-hours-roll.job.ts";
+import { runWfcMinSpendJob } from "./worker/wfc-min-spend.job.ts";
 import { runHppRecomputeJob } from "./worker/hpp-recompute.job.ts";
 import {
   createMaintenancePool,
@@ -745,6 +747,18 @@ const relay = createRelayRuntime({
       await runInventoryExpiryJob(context);
     } catch {
       console.error("Inventory expiry sweep failed");
+    }
+    // Facility hours with an effective date roll onto the column (legend-4us1a); self-throttled.
+    try {
+      await runFacilityHoursRollJob(context);
+    } catch {
+      console.error("Facility hours roll-forward failed");
+    }
+    // §3 F39 WFC minimum spend per hour reminder (legend-e24cz); self-throttled.
+    try {
+      await runWfcMinSpendJob(context);
+    } catch {
+      console.error("WFC minimum spend sweep failed");
     }
     // §17 HPP menu costs follow ingredient cost changes within 5 minutes
     // (legend-2qq); self-throttled to once a minute per tenant.

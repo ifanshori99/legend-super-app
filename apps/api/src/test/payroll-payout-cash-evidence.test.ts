@@ -51,6 +51,8 @@ async function moneyState(runId: string, batchId: string) {
 
 async function approvedCashBatch() {
   const runId = await W.seedRun([cash(CASHIER, 2_000_000)]);
+  // legend-rvao9: approving a cash batch needs enough cash in 1102.
+  await W.fundPettyCash(2_000_000);
   const batchId = await W.approvedBatch(runId, "cash");
   const [item] = await W.itemsOf(batchId);
   return { runId, batchId, itemId: item!.id as string };
@@ -136,6 +138,7 @@ describe("legend-styqg cash handover refuses a payment proof key", () => {
       cash(CASHIER, 2_000_000),
       cash(SITI, 1_000_000),
     ]);
+    await W.fundPettyCash(3_000_000);
     const batchId = await W.approvedBatch(runId, "cash");
     const items = await W.itemsOf(batchId);
     const [first, second] = items.map((i) => i.id as string);

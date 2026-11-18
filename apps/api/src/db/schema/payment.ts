@@ -533,7 +533,9 @@ export const paymentEvidence = pgTable(
  * webhook, a poller and a webhook racing each other record it once; the winner
  * of the insert writes the audit row and the supervisor alert. The sum of the
  * rows of an intent (`providerRefundedForeignIdrSql`) is taken off what the
- * intent may still refund or pay out. Append-only evidence: never updated.
+ * intent may still refund or pay out (refunds that fit in the parked excess of
+ * the same transaction are left out, legend-g6ept). Append-only evidence:
+ * never updated.
  */
 export const paymentProviderRefunds = pgTable(
   "payment_provider_refunds",

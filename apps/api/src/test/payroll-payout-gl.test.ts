@@ -237,6 +237,7 @@ describe("settle: the ledger is credited exactly once (R10)", () => {
     const slips = [cash(CASHIER, 1_500_000)];
     const runId = await W.seedRun(slips);
     await W.postLockedJournal(runId, slips);
+    await W.fundPettyCash(1_500_000); // setup only: approve needs 1102 cash
     const batchId = await W.approvedBatch(runId, "cash");
     const items = await W.itemsOf(batchId);
     await W.handover(batchId, items.map(idOf), APP2);

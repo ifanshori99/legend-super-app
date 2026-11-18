@@ -399,6 +399,20 @@ const schema = z
       .int()
       .min(1_000)
       .default(30_000),
+    // Cloud "edge offline" alarm (legend-5ab0l, edge-status-cloud D9): sweep
+    // interval and how many open minutes without a heartbeat raise it.
+    EDGE_OFFLINE_SWEEP_SECONDS: z.coerce
+      .number()
+      .int()
+      .min(5)
+      .max(3_600)
+      .default(60),
+    EDGE_OFFLINE_ALARM_MINUTES: z.coerce
+      .number()
+      .int()
+      .min(5)
+      .max(1_440)
+      .default(30),
     EDGE_SELFIE_MAX_AGE_DAYS: z.coerce
       .number()
       .int()

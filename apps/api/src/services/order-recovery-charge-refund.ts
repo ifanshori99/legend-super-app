@@ -306,7 +306,9 @@ async function refundedOfIntent(
 /**
  * Appends `order_issue.charge_refunded` on the issue's stream, in `tx`.
  * `intentId` null with `method` pos_cash is the cash return of a voided order
- * (legend-s61sg); `refundId` is then its cash_out movement.
+ * (legend-s61sg); `refundId` is then its cash_out movement. Method pos_cash
+ * with a manual refund's cash_out, or edc_manual with the manual refund row
+ * as `refundId`, is the till refund of legend-mrwtp (no intent either).
  */
 export async function appendChargeRefundedEvent(
   tx: Tx,
@@ -315,7 +317,7 @@ export async function appendChargeRefundedEvent(
     charge: ChargeRow;
     refundId: string;
     intentId: string | null;
-    method?: "gateway" | "pos_cash";
+    method?: "gateway" | "pos_cash" | "edc_manual";
     amountIdr: number;
     split: {
       grossSalesIdr: number;

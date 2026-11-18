@@ -32,7 +32,9 @@
 //   BEFORE the last of those reads, i.e. after the fact builder and before the
 //   posting read. If that seam never fires the test fails with an explicit
 //   "seam did not fire" message instead of silently passing or failing for the
-//   wrong reason. Assumption: the posting read is the last mapping read.
+//   wrong reason. Assumption: the posting read is the second-to-last mapping
+//   read; the last one is the petty-cash entity-lock read that
+//   postJournalInTransaction makes afterwards (legend-1037).
 
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -328,8 +330,11 @@ async function probeMappingReads(
     );
   });
   expect(outcome).toBe("posted"); // probe must be a clean, successful refund
-  expect(reads).toBeGreaterThan(0);
-  return reads;
+  // The last read is the entity-lock read of postJournalInTransaction
+  // (legend-1037), which runs after the late-remap guard's read; the seam sits
+  // before the guard's read, the one just ahead of it.
+  expect(reads).toBeGreaterThan(1);
+  return reads - 1;
 }
 
 // ---- case 1: payout map collides with a sale tax / service charge account ---

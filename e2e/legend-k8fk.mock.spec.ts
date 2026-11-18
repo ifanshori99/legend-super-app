@@ -179,11 +179,28 @@ test("DASH-01: operations, shower, and seats tabs show their report-backed tiles
   const zoneOccupancy = page.getByRole("region", {
     name: "Okupansi kursi per zona",
   });
-  await expect(
-    zoneOccupancy.getByText("Belum ada data hari ini"),
-  ).toBeVisible();
-  await expect(zoneOccupancy.getByRole("table")).toHaveCount(0);
-  await expect(page.getByText("68,8%", { exact: true })).toHaveCount(0);
+  // Seat occupancy and RevPASH are live report metrics (legend-p4q10): each
+  // zone row carries its occupancy and RevPASH, with no empty-state copy.
+  await expect(zoneOccupancy.getByRole("table")).toHaveCount(1);
+  await expect(zoneOccupancy.getByText("Belum ada data hari ini")).toHaveCount(
+    0,
+  );
+  for (const [zone, occupancy, revpash] of [
+    ["Indoor Reguler", "68,8%", "Rp18.500"],
+    ["Taman Outdoor", "42,5%", "Rp9.200"],
+    ["Private Room Nusantara", "75%", "Rp26.400"],
+    ["WFC Corner", "55%", "Rp12.800"],
+  ] as const) {
+    const row = zoneOccupancy.getByRole("row").filter({
+      has: page.getByRole("cell", { name: zone, exact: true }),
+    });
+    await expect(
+      row.getByRole("cell", { name: occupancy, exact: true }),
+    ).toBeVisible();
+    await expect(
+      row.getByRole("cell", { name: revpash, exact: true }),
+    ).toBeVisible();
+  }
   await expect(
     page.getByRole("heading", { name: "Durasi duduk dan belanja" }),
   ).toBeVisible();

@@ -496,12 +496,13 @@ export type OpenApprovalRequestInput = {
   readonly payload?: Record<string, unknown>;
   readonly deadlineMinutes?: number;
   readonly idempotencyKey?: string | null;
+  readonly now?: Date;
   /**
-   * Never answer `{ required: false }`: when the amount is below every tier,
-   * the lowest tier applies (supplier payments always need another person).
+   * True: the action always needs another person. An amount below every tier
+   * takes the lowest tier's chain instead of `{ required: false }` (founder
+   * Q27 supplier payments; held cash and top-ups, SO 1036 findings 2, 5, 6).
    */
   readonly alwaysRequire?: boolean;
-  readonly now?: Date;
 };
 
 export type OpenApprovalResult =
@@ -612,8 +613,9 @@ export async function openApprovalRequest(
     input.actionType,
     input.amountIdr,
   );
-  if (!requirement.required && input.alwaysRequire) {
-    // Below every tier: fall back to the lowest tier of the matrix.
+  if (!requirement.required && input.alwaysRequire === true) {
+    // Below every tier: fall back to the lowest tier of the matrix (a null
+    // threshold always applies, so a non-null row exists when we get here).
     const lowest = Math.min(
       ...policies.flatMap((row) =>
         row.thresholdIdr === null ? [] : [row.thresholdIdr],

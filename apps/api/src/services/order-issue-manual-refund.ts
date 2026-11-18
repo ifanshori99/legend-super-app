@@ -11,6 +11,14 @@
 //   cumulative over the order's other live manual refunds (telescoping), so
 //   all of them together never exceed the bill. The approval is bound to
 //   exactly this amount.
+// - An order ingested from the edge (`edge_order_ingests` state `ingested` or
+//   `voided`) refuses a manual refund with 409 EDGE_ORDER_CORRECTION_BLOCKED,
+//   before every other check: the refund is made at the edge till only (F2,
+//   same as `assertNotEdgeIngested` in pos-order-corrections).
+// - A void (cloud `pos_order_voids`, an edge ingest in state `voided`, or a
+//   parked edge `order.voided` of the final sale) also refuses a manual refund
+//   (legend-1042). The edge-ingest check above already covers `voided`; the
+//   older void check stays as a second guard.
 // - Exclusive with the POS refund per order (restrictive, founder to review):
 //   an order with any POS refund, or any non-failed ORD-09 refund that is not
 //   one of its live route manual refunds, refuses a manual refund (409); the
@@ -34,8 +42,12 @@ import {
   type ScopedTenantContext,
   type TenantId,
 } from "@starter/shared/core";
+import { posEvents, orderVoidedPayloadSchema } from "@starter/shared/pos";
 import { orderIssues } from "../db/schema/kds-issues.ts";
-import { posOrderRefunds } from "../db/schema/pos-order.ts";
+import { edgeOrderIngests } from "../db/schema/edge-order-ingest.ts";
+import { accessTickets } from "../db/schema/facility.ts";
+import { facilityTicketPosLines } from "../db/schema/facility-pos-ticket.ts";
+import { posOrderRefunds, posOrderVoids } from "../db/schema/pos-order.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { HttpError } from "../lib/http-error.ts";
 import type { Tx } from "./menu-internals.ts";
@@ -52,6 +64,52 @@ const conflict = (message: string) =>
   new HttpError(409, "REFUND_CONFLICT", message);
 
 const asNumber = (value: unknown): number => Number(String(value ?? "0"));
+
+/**
+ * 936 (legend-hpgyw, F2): a line that sold a facility ticket not refunded or
+ * cancelled (access ticket `issued`, `in_use`, `completed`, `no_show`, ...) is
+ * not refunded by hand: the guest would keep or use the ticket and get the
+ * money back. Refused 409, nothing
+ * written. The ticket row is locked FOR UPDATE after its POS line (the order of
+ * the ticket refund hook), and the door check locks the same ticket row, so a
+ * door check cannot slip between this check and the end of the transaction.
+ * A refunded or cancelled ticket, or a line with no ticket, is unaffected.
+ */
+export async function assertNoLiveTicketOnLine(
+  tx: Tx,
+  tenantId: TenantId,
+  orderItemId: string,
+): Promise<void> {
+  const [linked] = await tx
+    .select({ accessTicketId: facilityTicketPosLines.accessTicketId })
+    .from(facilityTicketPosLines)
+    .where(
+      and(
+        eq(facilityTicketPosLines.tenantId, tenantId),
+        eq(facilityTicketPosLines.orderItemId, orderItemId),
+      ),
+    )
+    .limit(1)
+    .for("update");
+  if (!linked) return;
+  const [ticket] = await tx
+    .select({ status: accessTickets.status })
+    .from(accessTickets)
+    .where(
+      and(
+        eq(accessTickets.tenantId, tenantId),
+        eq(accessTickets.id, linked.accessTicketId),
+      ),
+    )
+    .limit(1)
+    .for("update");
+  if (ticket && ticket.status !== "refunded" && ticket.status !== "cancelled")
+    throw new HttpError(
+      409,
+      "TICKET_LIVE_NO_MANUAL_REFUND",
+      "Tiket fasilitas pada item ini masih berlaku. Refund manual ditolak; batalkan tiketnya lewat refund kasir.",
+    );
+}
 
 /**
  * The exact amount a manual refund of this line pays. Throws 422 (nothing
@@ -87,6 +145,28 @@ export async function manualRefundAmountIdr(
   if (!order || order.status !== "completed")
     throw refuse("Refund manual hanya untuk pesanan yang sudah dibayar.");
 
+  // An order the edge ingested (state `ingested` or `voided`) was paid and
+  // corrected at the edge till, offline; the cloud cannot see every money fact,
+  // so a manual refund here could pay twice. Refused before any other check,
+  // the same rule as `assertNotEdgeIngested` in pos-order-corrections (F2).
+  const [edgeIngestRow] = await tx
+    .select({ orderId: edgeOrderIngests.orderId })
+    .from(edgeOrderIngests)
+    .where(
+      and(
+        eq(edgeOrderIngests.tenantId, tenantId),
+        eq(edgeOrderIngests.orderId, orderId),
+        inArray(edgeOrderIngests.state, ["ingested", "voided"]),
+      ),
+    )
+    .limit(1);
+  if (edgeIngestRow)
+    throw new HttpError(
+      409,
+      "EDGE_ORDER_CORRECTION_BLOCKED",
+      "Pesanan ini dibayar di kasir edge dan sudah diterima server pusat. Refund manual per item juga hanya bisa dilakukan di kasir edge tempat penjualan terjadi; hubungi kasir atau finance outlet tersebut.",
+    );
+
   // Money the guest paid for the order, per tender. A tender backed by a
   // payment intent loses what the provider refunded on its own (967, a refund
   // in the provider dashboard): `providerRefundedForeignIdrSql`, the same rule
@@ -94,6 +174,9 @@ export async function manualRefundAmountIdr(
   // provider answered refunded (`provider_refunded_at`, or
   // `provider_refunded_after_paid_at`) with no recorded amount is uncertain:
   // refused (restrictive).
+  // 936 (legend-hpgyw, decision 1): a points tender is not money. It is left
+  // out here, so a bill paid fully with points has nothing to refund by hand
+  // and a mixed bill is bound by its non-points part only.
   const tenderRows = await tx.execute(sql`
     SELECT sum(t.amount_idr)::text AS amount,
            t.payment_intent_id IS NOT NULL AS has_intent,
@@ -106,6 +189,7 @@ export async function manualRefundAmountIdr(
      WHERE t.tenant_id = ${tenantId}
        AND t.order_id = ${ulidToUuid(orderId)}::uuid
        AND t.status = 'captured'
+       AND t.method <> 'points'
      GROUP BY t.payment_intent_id
   `);
   let grossPaidIdr = 0;
@@ -166,6 +250,69 @@ export async function manualRefundAmountIdr(
     throw conflict(
       "Pesanan ini sudah punya refund kasir. Refund manual per item ditolak agar uang yang sama tidak dikembalikan dua kali.",
     );
+
+  // Mutually exclusive with a void too (legend-1042, restrictive): a void gave
+  // the whole bill back (or, on the edge, is recorded as voided), and it leaves
+  // orders.status `completed`, so only these rows tell. The orders row lock
+  // taken above serialises this with the cloud void.
+  const [voidRow] = await tx
+    .select({ id: posOrderVoids.id })
+    .from(posOrderVoids)
+    .where(
+      and(
+        eq(posOrderVoids.tenantId, tenantId),
+        eq(posOrderVoids.orderId, orderId),
+      ),
+    )
+    .limit(1);
+  const [edgeVoidRow] = voidRow
+    ? []
+    : await tx
+        .select({ orderId: edgeOrderIngests.orderId })
+        .from(edgeOrderIngests)
+        .where(
+          and(
+            eq(edgeOrderIngests.tenantId, tenantId),
+            eq(edgeOrderIngests.orderId, orderId),
+            eq(edgeOrderIngests.state, "voided"),
+          ),
+        )
+        .limit(1);
+  if (voidRow || edgeVoidRow)
+    throw conflict(
+      "Pesanan ini sudah di-void. Refund manual per item ditolak agar uang yang sama tidak dikembalikan dua kali.",
+    );
+
+  // A parked edge `order.voided` of the final sale paid its cash out of a
+  // drawer before anything materialized it (same facts as
+  // payment-refund-edge-history `assertNoParkedFinalVoid`). Unreadable
+  // envelope: refused. An open-order void paid nothing and is ignored.
+  const orderUuid = ulidToUuid(orderId);
+  const orderUlid = orderId.toLowerCase();
+  const parked = await tx.execute<{ envelope: unknown }>(sql`
+    SELECT envelope
+      FROM edge_deferred_events
+     WHERE tenant_id = ${tenantId}
+       AND (event_name = 'order.voided' OR envelope->>'name' = 'order.voided')
+       AND (
+         (aggregate_type = 'order'
+          AND lower(aggregate_id) IN (${orderUuid}, ${orderUlid}))
+         OR lower(envelope->>'aggregateId') IN (${orderUuid}, ${orderUlid})
+         OR lower(envelope->'payload'->>'orderId') IN (${orderUuid}, ${orderUlid})
+       )
+  `);
+  for (const row of parked.rows) {
+    const envelope = posEvents["order.voided"].envelopeSchema.safeParse(
+      row.envelope,
+    );
+    const payload = envelope.success
+      ? orderVoidedPayloadSchema.safeParse(envelope.data.payload)
+      : undefined;
+    if (!payload?.success || payload.data.voidedFinalOrder)
+      throw conflict(
+        "Pesanan ini sudah di-void di kasir (menunggu sinkron). Refund manual per item ditolak agar uang yang sama tidak dikembalikan dua kali.",
+      );
+  }
 
   // A provider or payout refund (ORD-09) that is not one of this order's live
   // route manual refunds (a failed-item refund, an ORD-09 manual issue's, a

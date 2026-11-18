@@ -79,9 +79,11 @@ const DECISIONS: Record<string, Decision> = {
   "edge-catalog-sync": "public",
   "edge-device": "backoffice",
   "edge-device-sync": "public",
+  "edge-node-status": "backoffice",
   "edge-nodes": "backoffice",
   "edge-people-snapshot": "public",
   "edge-print": "backoffice",
+  "edge-reconciliation": "backoffice",
   "edge-selfie-receive": "public",
   "edge-sync-conflicts": "backoffice",
   "edge-wifi": "backoffice",
@@ -94,6 +96,7 @@ const DECISIONS: Record<string, Decision> = {
   "facility-customer": "backoffice",
   "facility-entitlement": "backoffice",
   "facility-incidents": "backoffice",
+  "facility-pos-ticket": "pos",
   feedback: "backoffice",
   floor: "pos",
   health: "public",
@@ -162,6 +165,7 @@ const DECISIONS: Record<string, Decision> = {
   "payroll-payout-proof-closure": "backoffice",
   "payroll-payout-recon-clearance": "backoffice",
   "payroll-payout-return": "backoffice",
+  "payroll-payout-return-withdraw": "backoffice",
   "payroll-policy": "backoffice",
   "payroll-pph21-policy": "backoffice",
   "payroll-rapel": "backoffice",
@@ -186,6 +190,7 @@ const DECISIONS: Record<string, Decision> = {
   "pos-order": "pos",
   "pos-order-customer": "pos",
   "pos-parked-order": "pos",
+  "pos-points": "pos",
   "pos-receipt": "pos",
   "pos-receipt-writeoff": "backoffice",
   "pos-shift": "pos",
@@ -294,6 +299,11 @@ const ROUTE_LEVEL_GUARDS: Record<string, { count: number; reason: string }> = {
 
 /** "pos" files that keep a plain requireAuth, with the reason. */
 const PLAIN_REQUIRE_AUTH: Record<string, { count: number; reason: string }> = {
+  "order-recovery-charge": {
+    count: 2,
+    reason:
+      "approve and reject of a manual refund (985): second-pair-of-eyes decisions of pos.refund.approve holders; a shared-device session is refused (money rule: when in doubt, limit the payment). Staff close and cash collection stay opt-in.",
+  },
   menu: {
     count: 1,
     reason:

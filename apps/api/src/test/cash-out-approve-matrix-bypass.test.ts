@@ -103,6 +103,7 @@ import {
   type Session,
   type World,
 } from "./helpers/cash-bank-world.ts";
+import { stampMfa } from "./helpers/cash-out-chain.ts";
 import { limitExclusiveLock } from "./helpers/cash-limit-lock.ts";
 import {
   addUser,
@@ -138,6 +139,7 @@ let world: World;
 let approver: Session; // Finance, decides level 1
 let bypasser: Session; // Finance, calls the direct endpoint (not the creator)
 let financeOther: Session; // Finance, tries to take level 2
+let noMfaCaller: Session; // Finance, never verifies a second factor
 let ownerUser: Session; // Owner, decides level 2
 
 const tenantWide: ScopedTenantContext = establishScopedTenantContext(
@@ -606,6 +608,11 @@ beforeAll(async () => {
   approver = await freshCreator("approver");
   bypasser = await freshCreator("bypasser");
   financeOther = await freshCreator("finance other");
+  noMfaCaller = await freshCreator("no mfa");
+  // The direct endpoint needs a verified second factor (998) on top of the
+  // chain rule (1037): the callers that are meant to get past it carry one.
+  await stampMfa(approver);
+  await stampMfa(bypasser);
   ownerUser = await signedIn(app, "BP owner", [
     { role: "owner", outletId: null },
   ]);
@@ -738,6 +745,39 @@ describe("legend-bf8f2 cash out: a direct approve cannot skip matrix levels", ()
       await handleCashBankApprovalResolved(tenantWide, event, new Date());
       const again = await directApprove(bypasser, id);
       expect(again.status, JSON.stringify(again.body)).toBe(200);
+      expect(await journalsOf(id)).toHaveLength(1);
+      expect(await bankNet()).toBe(netBefore - amountIdr);
+    });
+  });
+
+  it("[cash-out-approve-matrix-bypass-F1-f] a direct approve without a verified second factor is refused although the chain is already approved: nothing posted, then the same call with MFA posts once", async () => {
+    await withTwoLevelMatrix(async () => {
+      const amountIdr = 6_040_000;
+      const { id } = await submitPending(amountIdr);
+      const level1 = await pendingRequest(id);
+      await inboxDecide(approver.userId, level1.id, "approved");
+      const level2 = await pendingRequest(id);
+      await inboxDecide(ownerUser.userId, level2.id, "approved");
+      expect(await journalsOf(id)).toHaveLength(0);
+      const netBefore = await bankNet();
+
+      // The chain is fully approved, yet a session without MFA gets nothing.
+      const refused = await directApprove(noMfaCaller, id);
+      expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+      expect(refused.body.error.code).toBe("MFA_REQUIRED");
+      expect(await entryRow(id)).toMatchObject({
+        status: "pending_approval",
+        approver_id: null,
+        journal_entry_id: null,
+      });
+      expect(await journalsOf(id)).toHaveLength(0);
+      expect(await bankNet()).toBe(netBefore);
+
+      // Control: the same caller after verifying MFA posts exactly once.
+      await stampMfa(noMfaCaller);
+      const ok = await directApprove(noMfaCaller, id);
+      expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+      expect(ok.body.data.status).toBe("approved");
       expect(await journalsOf(id)).toHaveLength(1);
       expect(await bankNet()).toBe(netBefore - amountIdr);
     });

@@ -376,6 +376,8 @@ export const accountingCashMessages = {
     },
     approval: {
       approve: "Setujui",
+      inbox: "Ke kotak persetujuan",
+      inboxLabel: "Ke kotak persetujuan: {description}",
       actionLabel: "{action} {description}",
       rejectTarget: "Yang ditolak: {description}",
       approved: "{kind} disetujui dan dijurnal.",
@@ -661,6 +663,10 @@ export const accountingCashMessages = {
     notPending:
       "Kas keluar ini sudah diputuskan. Muat ulang daftar lalu cek statusnya.",
     entryNotFound: "Kas keluar tidak ditemukan. Muat ulang daftar.",
+    chainOpen:
+      "Persetujuan bertingkat belum selesai. Selesaikan semua tingkat di kotak persetujuan.",
+    chainMissing:
+      "Kas keluar ini tidak punya alur persetujuan, jadi tidak bisa disetujui langsung. Hubungi admin.",
   },
 
   common: {

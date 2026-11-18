@@ -108,6 +108,7 @@ import { payrollPayoutCorrectionRouter } from "./payroll-payout-correction.route
 import { payrollPayoutProofClosureRouter } from "./payroll-payout-proof-closure.routes";
 import { payrollPayoutDisputeRouter } from "./payroll-payout-dispute.routes";
 import { payrollPayoutReconClearanceRouter } from "./payroll-payout-recon-clearance.routes";
+import { payrollPayoutReturnWithdrawRouter } from "./payroll-payout-return-withdraw.routes";
 import { payrollRunsRouter } from "./payroll-runs.routes";
 import {
   payrollMyReimbursementsRouter,
@@ -136,6 +137,7 @@ import { operationsEquipmentRouter } from "./operations-equipment.routes";
 import { edgeRouter } from "./edge.routes.ts";
 import { edgePrintRouter } from "./edge-print.routes.ts";
 import { edgeNodesRouter } from "./edge-nodes.routes.ts";
+import { edgeReconciliationRouter } from "./edge-reconciliation.routes.ts";
 import { expoRouter } from "./expo.routes.ts";
 import { pickupRouter } from "./pickup.routes.ts";
 import { servingTimeRouter } from "./serving-time.routes.ts";
@@ -158,6 +160,7 @@ import { catalogRecordSyncRouter } from "./edge-catalog-sync.routes.ts";
 import { edgePeopleSnapshotRouter } from "./edge-people-snapshot.routes.ts";
 import { edgeBootstrapRouter } from "./edge-bootstrap.routes.ts";
 import { edgeSyncConflictsRouter } from "./edge-sync-conflicts.routes.ts";
+import { edgeNodeStatusRouter } from "./edge-node-status.routes.ts";
 import { deliveryChannelsRouter } from "./delivery-channels.routes.ts";
 import { deliveryOrdersRouter } from "./delivery-orders.routes.ts";
 import { deliveryReconciliationRouter } from "./delivery-reconciliation.routes.ts";
@@ -175,6 +178,8 @@ import { memberRewardsRouter } from "./member-rewards.routes.ts"; // legend-m4p5
 import { loyaltyRewardsRouter } from "./loyalty-rewards.routes.ts"; // legend-m4p5
 import { loyaltyTiersRouter } from "./loyalty-tiers.routes.ts"; // legend-3zd1
 import { posOrderCustomerRouter } from "./pos-order-customer.routes.ts";
+import { posPointsRouter } from "./pos-points.routes.ts";
+import { facilityPosTicketRouter } from "./facility-pos-ticket.routes.ts";
 import { installDeviceRegistryPorts } from "../services/device-ports.ts";
 
 // Mounted at /api. Add a router per resource and register it here.
@@ -391,6 +396,9 @@ apiRouter.use("/reviews", customerReviewRouter); // legend-vqicf
 apiRouter.use(loyaltyRewardsRouter); // legend-m4p5
 apiRouter.use(loyaltyTiersRouter); // legend-3zd1
 apiRouter.use(posOrderCustomerRouter);
+apiRouter.use(posPointsRouter); // 936 legend-hpgyw
+// 936 legend-hpgyw part D: ticket sale at the POS (absolute paths). Before facilityRouter.
+apiRouter.use(facilityPosTicketRouter);
 apiRouter.use("/vouchers", vouchersRouter);
 // WS-08 reservations (legend-t8bz): full paths inside the router.
 apiRouter.use(reservationRouter);
@@ -435,6 +443,7 @@ apiRouter.use("/hris/payroll", payrollPayoutCorrectionRouter);
 apiRouter.use("/hris/payroll", payrollPayoutProofClosureRouter);
 apiRouter.use("/hris/payroll", payrollPayoutDisputeRouter);
 apiRouter.use("/hris/payroll", payrollPayoutReconClearanceRouter);
+apiRouter.use("/hris/payroll", payrollPayoutReturnWithdrawRouter);
 apiRouter.use(
   "/hris/payroll/reimbursement-categories",
   payrollReimbursementCategoriesRouter,
@@ -497,6 +506,9 @@ apiRouter.use("/edge/devices", edgeDeviceRouter);
 apiRouter.use("/edge/wifi", edgeWifiRouter);
 apiRouter.use("/edge", edgePrintRouter);
 apiRouter.use("/edge", edgeRouter);
+// Up-sync reconciliation (legend-kai): /edge-nodes/:id/reconciliation, cloud only.
+// Before the registry's session guards so edge Bearer credentials can POST.
+apiRouter.use("/edge-nodes", edgeReconciliationRouter);
 apiRouter.use("/edge-nodes", edgeNodesRouter);
 // Staff PIN hash down-sync for edge nodes (legend-obh5): edge credential
 // only, deny-all until server.ts installs the registry verifier.
@@ -514,6 +526,8 @@ apiRouter.use("/edge-sync/catalog", catalogRecordSyncRouter);
 apiRouter.use("/edge-sync/people-snapshot", edgePeopleSnapshotRouter);
 apiRouter.use("/edge-sync/bootstrap", edgeBootstrapRouter);
 apiRouter.use("/edge-sync-conflicts", edgeSyncConflictsRouter);
+// Back-office edge node status list (legend-eo3lc): cloud only.
+apiRouter.use("/edge-node-status", edgeNodeStatusRouter);
 
 // Registry-backed EdgeDeviceLookup for /api/edge/status `thisDevice`.
 installDeviceRegistryPorts();

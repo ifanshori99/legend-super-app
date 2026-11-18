@@ -217,8 +217,8 @@ export async function createBreakfastWorld(
       [ids.kopi, "Kopi Hitam"],
     ] as const)
       await client.query(
-        `INSERT INTO menu_items (id, tenant_id, brand_id, category_id, name, is_active, media_id, station_id, station_type)
-         VALUES ($1, $2, $3, $4, $5, true, $6, $7, 'hot_kitchen')`,
+        `INSERT INTO menu_items (id, tenant_id, brand_id, category_id, name, is_active, is_breakfast, media_id, station_id, station_type)
+         VALUES ($1, $2, $3, $4, $5, true, true, $6, $7, 'hot_kitchen')`,
         [
           id,
           tenant.tenantId,

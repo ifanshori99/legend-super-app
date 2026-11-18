@@ -158,8 +158,6 @@ const OWNER_BOARD_UNAVAILABLE: ReadonlySet<string> = new Set([
   "active_subscriptions",
   "shower_fnb_conversion_pct",
   "shower_sessions_with_fnb",
-  "revpash",
-  "seat_occupancy_pct",
   "wifi_quota_used",
   "wifi_sessions",
 ]);
@@ -955,19 +953,31 @@ export const ownerDashboardBoardRuns: Readonly<Record<string, ReportResult>> =
       [
         {
           dims: [["zone", "Indoor Reguler"]],
-          values: {},
+          values: {
+            revpash: { unit: "idr", valueIdr: 18500 },
+            seat_occupancy_pct: { unit: "percent", value: "68.7500" },
+          },
         },
         {
           dims: [["zone", "Taman Outdoor"]],
-          values: {},
+          values: {
+            revpash: { unit: "idr", valueIdr: 9200 },
+            seat_occupancy_pct: { unit: "percent", value: "42.5000" },
+          },
         },
         {
           dims: [["zone", "Private Room Nusantara"]],
-          values: {},
+          values: {
+            revpash: { unit: "idr", valueIdr: 26400 },
+            seat_occupancy_pct: { unit: "percent", value: "75.0000" },
+          },
         },
         {
           dims: [["zone", "WFC Corner"]],
-          values: {},
+          values: {
+            revpash: { unit: "idr", valueIdr: 12800 },
+            seat_occupancy_pct: { unit: "percent", value: "55.0000" },
+          },
         },
       ],
     ),

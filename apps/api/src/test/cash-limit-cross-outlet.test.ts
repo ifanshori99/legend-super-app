@@ -67,6 +67,7 @@ import {
   type Session,
   type World,
 } from "./helpers/cash-bank-world.ts";
+import { approveChainLevelAs } from "./helpers/cash-out-chain.ts";
 import { withLimitSharedLock } from "./helpers/cash-limit-lock.ts";
 
 const app = createApp();
@@ -503,11 +504,9 @@ describe("anti-split across outlets: hidden top-ups (migration 0341)", () => {
     // which writes the ledger row with key `pt/<entryId>`.
     const pending = await topup(creator, outletB, 3 * MIL);
     expect(tuOutcome(pending)).toBe("pending");
-    const approved = await decide(
-      approver,
-      pending.body.data.id as string,
-      "approve",
-    );
+    const pendingId = pending.body.data.id as string;
+    await approveChainLevelAs(approver, pendingId);
+    const approved = await decide(approver, pendingId, "approve");
     expect(approved.status, JSON.stringify(approved.body)).toBe(200);
 
     // Premise: the pt/ ledger row exists for outlet B.

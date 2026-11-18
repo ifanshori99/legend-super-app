@@ -1,8 +1,11 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
+import { sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { describe, expect, it } from "vitest";
 import { createPgBoss } from "../worker/runtime";
 import { createRelayScheduler, createWakeListener } from "../worker/relay";
+import { recordReadOk } from "../services/payroll-payout-recon.service";
 import {
   assertQueueRole,
   createAppPool,
@@ -343,6 +346,180 @@ describe("maintenance database role", () => {
         expect(result.rows[0].current_user).toBe(role);
       } finally {
         await pool.end();
+      }
+    });
+  });
+});
+
+// legend-qh11l F1/F3: only the recon role may record an 'ok' read of a payout
+// proof (drizzle/0481). The provisioned application login (DATABASE_URL, a
+// non-superuser member of legend_app) reaches legend_payout_recon with SET ROLE
+// only: legend_app is a member of it WITH INHERIT FALSE, SET TRUE, so nothing
+// of its EXECUTE rights is inherited. Written from docs/CONTRACT.md and the
+// brief of the card, not from the migration body.
+//
+// Assumptions: a call of observe_ok on an operation nobody observed either
+// returns or raises a business error; the tests only demand that it is NOT a
+// privilege error (SQLSTATE 42501), because the fixture has no real operation.
+describe("payout recon role: ok reads only through legend_payout_recon", () => {
+  const OK = "app.payout_recon_evidence_observe_ok(uuid,uuid)";
+  const DIFFERENCE =
+    "app.payout_recon_evidence_observe_difference(uuid,uuid,text,text)";
+  const INTERNAL =
+    "app.payout_recon_evidence_observe_internal(uuid,uuid,text,text,boolean)";
+  const OBSERVE = "app.payout_recon_evidence_observe(uuid,uuid,text,text)";
+  const RECON = "legend_payout_recon";
+
+  async function withLogin<T>(run: (pool: Pool) => Promise<T>) {
+    const pool = new Pool({
+      connectionString: process.env.DATABASE_URL!,
+      max: 1,
+    });
+    try {
+      return await run(pool);
+    } finally {
+      await pool.end();
+    }
+  }
+  const can = async (pool: Pool, who: string, fn: string) =>
+    (
+      await pool.query(
+        "SELECT has_function_privilege($1, $2, 'EXECUTE') AS can",
+        [who, fn],
+      )
+    ).rows[0].can as boolean;
+
+  it("[payout-recon-login-can-set-role-and-call-observe-ok] the provisioned login can SET LOCAL ROLE legend_payout_recon and call observe_ok and recordReadOk without a privilege error", async () => {
+    await withLogin(async (pool) => {
+      const tenantId = randomUUID();
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(
+          "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+          [tenantId],
+        );
+        await client.query(`SET LOCAL ROLE ${RECON}`);
+        expect((await client.query("SELECT current_user")).rows[0]).toEqual({
+          current_user: RECON,
+        });
+        let code: string | undefined;
+        await client.query("SAVEPOINT call");
+        try {
+          await client.query(
+            "SELECT app.payout_recon_evidence_observe_ok($1::uuid, $2::uuid)",
+            [tenantId, randomUUID()],
+          );
+        } catch (error) {
+          code = (error as { code?: string }).code;
+          await client.query("ROLLBACK TO SAVEPOINT call");
+        }
+        expect(code, "not a permission error").not.toBe("42501");
+        await client.query("RESET ROLE");
+      } finally {
+        await client.query("ROLLBACK").catch(() => undefined);
+        client.release();
+      }
+
+      // The service helper, in a transaction opened by the login itself.
+      const db = drizzle(pool);
+      let helperCode: string | undefined;
+      let roleAfter = "";
+      try {
+        await db.transaction(async (tx) => {
+          await tx.execute(
+            sql`SELECT set_config('app.tenant_id', ${tenantId}, true), set_config('app.outlet_ids', '*', true)`,
+          );
+          await recordReadOk(tx as never, tenantId, randomUUID());
+          const res = (await tx.execute(
+            sql`SELECT current_user AS who, session_user AS own`,
+          )) as unknown as { rows: { who: string; own: string }[] };
+          roleAfter = `${res.rows[0]!.who}|${res.rows[0]!.own}`;
+        });
+      } catch (error) {
+        const cause = error as { code?: string; cause?: { code?: string } };
+        helperCode = cause.code ?? cause.cause?.code;
+      }
+      expect(helperCode, "recordReadOk: not a permission error").not.toBe(
+        "42501",
+      );
+      if (roleAfter) {
+        const [who, own] = roleAfter.split("|");
+        expect(who, "recordReadOk gives the role back").toBe(own);
+      }
+    });
+  });
+
+  it("[payout-recon-login-cannot-execute-ok-or-internal] neither the login nor legend_app may EXECUTE observe_ok or the internal function; the recon role may run observe_ok only; the ordinary observe stays callable", async () => {
+    await withLogin(async (pool) => {
+      const { current_user: login } = (await pool.query("SELECT current_user"))
+        .rows[0];
+      for (const who of [login, "legend_app", "public"]) {
+        expect(await can(pool, who, OK), `${who} on observe_ok`).toBe(false);
+        expect(await can(pool, who, INTERNAL), `${who} on internal`).toBe(
+          false,
+        );
+      }
+      expect(await can(pool, RECON, OK), "recon role on observe_ok").toBe(true);
+      expect(await can(pool, RECON, INTERNAL), "recon on internal").toBe(false);
+      expect(await can(pool, login, OBSERVE), "control: observe").toBe(true);
+    });
+  });
+
+  it("[payout-recon-login-cannot-execute-difference] neither the login nor legend_app nor public may EXECUTE observe_difference; the recon role may, and the login reaches it with SET LOCAL ROLE without a privilege error (legend-tiw2h)", async () => {
+    await withLogin(async (pool) => {
+      const { current_user: login } = (await pool.query("SELECT current_user"))
+        .rows[0];
+      for (const who of [login, "legend_app", "public"]) {
+        expect(
+          await can(pool, who, DIFFERENCE),
+          `${who} on observe_difference`,
+        ).toBe(false);
+      }
+      expect(
+        await can(pool, RECON, DIFFERENCE),
+        "recon role on observe_difference",
+      ).toBe(true);
+
+      const tenantId = randomUUID();
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(
+          "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+          [tenantId],
+        );
+        await client.query(`SET LOCAL ROLE ${RECON}`);
+        let code: string | undefined;
+        await client.query("SAVEPOINT call");
+        try {
+          await client.query(
+            "SELECT app.payout_recon_evidence_observe_difference($1::uuid, $2::uuid, 'missing', NULL)",
+            [tenantId, randomUUID()],
+          );
+        } catch (error) {
+          code = (error as { code?: string }).code;
+          await client.query("ROLLBACK TO SAVEPOINT call");
+        }
+        expect(code, "not a permission error").not.toBe("42501");
+        await client.query("RESET ROLE");
+      } finally {
+        await client.query("ROLLBACK").catch(() => undefined);
+        client.release();
+      }
+    });
+  });
+
+  it("[payout-recon-login-does-not-inherit-recon-role] pg_has_role(login, legend_payout_recon, 'USAGE') is false, and so is it for legend_app: the role is reached only by SET ROLE", async () => {
+    await withLogin(async (pool) => {
+      const { current_user: login } = (await pool.query("SELECT current_user"))
+        .rows[0];
+      for (const who of [login, "legend_app"]) {
+        const res = await pool.query(
+          "SELECT pg_has_role($1, $2, 'USAGE') AS usage",
+          [who, RECON],
+        );
+        expect(res.rows[0].usage, `${who} inherits ${RECON}`).toBe(false);
       }
     });
   });

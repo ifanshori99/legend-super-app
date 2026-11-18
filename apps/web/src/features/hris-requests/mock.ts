@@ -639,7 +639,7 @@ registerMock(createOvertimeRequest, ({ body }) => {
         date: body.date,
         minutes: body.minutes,
         reason: body.reason,
-        dayType: body.dayType ?? "workday",
+        dayType: "workday",
         formulaId: null,
         status: "pending",
         requestedAt: new Date().toISOString(),

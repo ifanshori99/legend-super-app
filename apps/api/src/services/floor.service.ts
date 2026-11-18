@@ -65,7 +65,11 @@ import { lockTableLiveState } from "./table-session.service";
 type Database = NodePgDatabase<typeof schema>;
 type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
 
-type CreateFloorZoneInput = z.infer<typeof createFloorZoneInputSchema>;
+// isWfc may be left out by in-process callers; the route schema always sets it.
+type CreateFloorZoneInput = Omit<
+  z.infer<typeof createFloorZoneInputSchema>,
+  "isWfc"
+> & { isWfc?: boolean };
 type UpdateFloorZoneInput = z.infer<typeof updateFloorZoneInputSchema>;
 type CreateTableInput = z.infer<typeof createTableInputSchema>;
 type UpdateTableInput = z.infer<typeof updateTableInputSchema>;
@@ -114,6 +118,7 @@ function toZone(row: ZoneRow): FloorZone {
     hours: row.hours,
     status: row.status,
     sortOrder: row.sortOrder,
+    isWfc: row.isWfc,
   });
 }
 
@@ -423,6 +428,7 @@ export async function createFloorZone(
           hours: input.hours,
           status: input.status,
           sortOrder: input.sortOrder,
+          isWfc: input.isWfc ?? false,
           updatedAt: now,
         })
         .returning();
@@ -488,6 +494,7 @@ export async function updateFloorZone(
           ...(input.sortOrder === undefined
             ? {}
             : { sortOrder: input.sortOrder }),
+          ...(input.isWfc === undefined ? {} : { isWfc: input.isWfc }),
           updatedAt: now,
         })
         .where(

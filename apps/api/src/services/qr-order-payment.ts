@@ -642,7 +642,11 @@ async function voidOldCodesForChange(
         ),
       );
     if (replay) return null;
-    return { paymentLinkId: order.paymentLinkId, billSplitId: splitId };
+    return {
+      paymentLinkId: order.paymentLinkId,
+      billSplitId: splitId,
+      intentKey,
+    };
   });
   if (scope === null) return;
   // `next` is read again where the candidates are read: a twin request that
@@ -1234,7 +1238,8 @@ async function closePayLinkIfNotPending(
   answer: GuestPayment,
   now: Date,
 ): Promise<GuestPayment> {
-  if (answer.redirectUrl === null) return answer;
+  // Every code is read, not only an e-wallet or card with a pay link: a VA
+  // that was voided or lapsed since (legend-kis0u) must not come back as pending.
   const [row] = await tx
     .select({
       status: paymentIntents.status,

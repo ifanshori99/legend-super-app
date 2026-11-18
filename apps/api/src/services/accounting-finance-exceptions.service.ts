@@ -1,5 +1,5 @@
 // Finance exceptions list (bead legend-4oclu; brief
-// docs/briefs/662-finance-exceptions-contract.md). Read-only: seven kinds of
+// docs/briefs/662-finance-exceptions-contract.md). Read-only: kinds of
 // rows finance must look at, each from its own source table and each listed
 // exactly once. Every query filters `tenant_id` from the session context and
 // the caller's outlet reach; no payload or bank data leaves this file.
@@ -211,6 +211,33 @@ function receiptSkipped(tx: Executor, scope: Scope) {
     ref: sql`s.order_id::text || ':' || s.receipt_number || ':' || s.reason`,
     amount: sql`ord.total_idr`,
     detail: sql`NULL::text`,
+  });
+}
+
+/**
+ * Edge voids the cloud refused because a manual refund already paid the guest
+ * (legend-nbkvh, 1042 F2): the cashier voided on the edge, the cloud kept the
+ * refund, so the outlet drawer can be short. `edge_order_ingests.reason` holds
+ * `void_refused:manual_refund_exists`; only state `ingested` counts (a later
+ * successful void sets `voided` and leaves the old reason behind). Dated by the
+ * refusal time in the outlet time zone; the amount is the order total.
+ */
+function voidRefused(tx: Executor, scope: Scope) {
+  return collectSql(tx, "edge_void_refused", "order", {
+    from: sql`edge_order_ingests i
+                JOIN outlets o ON o.tenant_id = i.tenant_id AND o.id = i.outlet_id
+                LEFT JOIN orders ord ON ord.tenant_id = i.tenant_id AND ord.id = i.order_id`,
+    where: sql`i.tenant_id = ${scope.tenantId}::uuid
+      AND i.state = 'ingested'
+      AND i.reason = 'void_refused:manual_refund_exists'
+      AND (i.updated_at AT TIME ZONE o.timezone)::date
+          BETWEEN ${scope.from}::date AND ${scope.to}::date
+      AND ${outletClause(sql`i.outlet_id`, scope.reach)}`,
+    at: sql`i.updated_at`,
+    outlet: sql`i.outlet_id`,
+    ref: sql`i.order_id::text`,
+    amount: sql`ord.total_idr`,
+    detail: sql`'manual_refund_exists'::text`,
   });
 }
 
@@ -916,6 +943,7 @@ export async function listFinanceExceptions(
       parts.push(await taxUnsnapshotted(tx, scope));
     if (wants("edge_void_unsupported"))
       parts.push(await voidUnsupported(tx, scope));
+    if (wants("edge_void_refused")) parts.push(await voidRefused(tx, scope));
     if (wants("edge_receipt_skipped"))
       parts.push(await receiptSkipped(tx, scope));
     if (wants("edge_link_dead_letter"))

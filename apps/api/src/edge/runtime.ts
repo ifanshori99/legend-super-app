@@ -64,6 +64,8 @@ import {
   pruneAckedEdgeQueue,
 } from "../services/edge-queue.service.ts";
 import { startEdgeReceiptRunReporter } from "../services/edge-receipt-run-reporter.ts";
+import { buildEdgeTxnDigestBounded } from "../services/edge-txn-ledger.service.ts";
+import { createEdgeReconciliationSender } from "./reconciliation-sender.ts";
 import {
   bootstrapEdgeNodeIfNeeded,
   startAfterBootMasters,
@@ -90,6 +92,10 @@ import { registerStockMovedEdgeApplier } from "./stock-moved-applier.ts";
 import { registerAccessEdgeApplier } from "./access-applier.ts";
 import { registerPanicAlertEdgeApplier } from "./panic-alert-applier.ts";
 import { registerPrintAlertEdgeApplier } from "./print/alert-applier.ts";
+import {
+  createNodeAlarmEmitter,
+  registerNodeAlarmEdgeApplier,
+} from "./node-alarm.ts";
 import { registerStaffPinAlertEdgeApplier } from "./staff-pin-alert-applier.ts";
 import { resendMateriallessStaffPinSets } from "./staff-pin-resend.ts";
 import {
@@ -1136,6 +1142,37 @@ export async function startEdgeRuntime(
   });
   // legend-hfq3z: clash refusals of the previous pull, reported on the next.
   let receiptRunRefusals: ReceiptRunRefusalReport = new Map();
+  // legend-0cjzz: the hard-stale alarm travels on the event stream; boot time
+  // is the age base while the replica never pulled (as in the puller).
+  const registryBootAt = new Date();
+  const nodeAlarm = createNodeAlarmEmitter({
+    database: db,
+    context: local.context,
+    tenantId: local.context.tenant.tenantId,
+    outletId: outletIdSchema.parse(local.scope.outletId),
+    edgeNodeId: local.scope.edgeNodeId,
+    getDeviceRegistryState: () => {
+      const registry = puller.getState();
+      return {
+        hardStale: registry.hardStale,
+        lastPulledAt: registry.lastSuccessAt
+          ? new Date(registry.lastSuccessAt)
+          : null,
+        startedAt: registryBootAt,
+      };
+    },
+    maxStaleSeconds: Math.floor(config.deviceRegistryMaxStaleMs / 1000),
+  });
+  // Not before the local checkpoint is loaded: until then the puller cannot
+  // judge its age and would read as fresh, clearing an alarm that is still on.
+  const reconcileNodeAlarm = () => {
+    if (!puller.isCheckpointLoaded()) return;
+    void nodeAlarm
+      .reconcile()
+      .catch((error) =>
+        logger.warn(safeError(error), "Edge node alarm enqueue failed"),
+      );
+  };
   const puller = createDeviceRegistryPuller({
     pull: (since, signal) =>
       pullWithCursorRecovery(
@@ -1212,6 +1249,7 @@ export async function startEdgeRuntime(
         );
         void reportDeviceRegistryHardStale();
       } else logger.info("Edge device registry replica is within its limit");
+      reconcileNodeAlarm();
     },
     onError: (error) =>
       logger.warn(safeError(error), "Edge device registry pull failed"),
@@ -1421,10 +1459,12 @@ export async function startEdgeRuntime(
   await catalogAlarmQueue.flush().catch(reportCatalogAlarmError);
   // A failed write stays dirty even if no second alarm is emitted; retry in
   // the background without holding Q62 sales or waiting for a reconnect.
-  const catalogAlarmRetry = setInterval(
-    () => void catalogAlarmQueue.flush().catch(reportCatalogAlarmError),
-    CATALOG_GATE_PERSIST_MS,
-  );
+  const catalogAlarmRetry = setInterval(() => {
+    void catalogAlarmQueue.flush().catch(reportCatalogAlarmError);
+    // legend-0cjzz: retries a failed alarm enqueue and covers a clear missed
+    // by a crash.
+    reconcileNodeAlarm();
+  }, CATALOG_GATE_PERSIST_MS);
   catalogAlarmRetry.unref();
   const freshness = catalogGate.freshness;
   catalogFreshness = freshness;
@@ -1526,6 +1566,24 @@ export async function startEdgeRuntime(
             logger.warn(safeError(error), "Edge receipt run report failed"),
         })
       : () => undefined;
+  // Only the primary reports: a standby has no edge_to_cloud drain, so its
+  // digest would always look behind/stale (legend-9z10p). The snapshot
+  // transaction commits before POSTing, and a failed report retries without
+  // holding the cursor.
+  const reconciliationSender = createEdgeReconciliationSender({
+    role: config.role,
+    cloudUrl: config.cloudUrl,
+    credential: config.credential,
+    edgeNodeId: local.scope.edgeNodeId,
+    buildDigest: (signal) =>
+      buildEdgeTxnDigestBounded(db, local.context, local.scope, { signal }),
+    onError: (error) =>
+      logger.warn(
+        safeError(error),
+        "Edge transaction reconciliation report failed",
+      ),
+  });
+  reconciliationSender.start();
   const handle: EdgeRuntimeHandle = {
     async stop() {
       stopReceiptRunReporter();
@@ -1537,6 +1595,7 @@ export async function startEdgeRuntime(
       // Torn down together: a pull stuck in a slow local write must not hold
       // the link and the wakeup listener open during shutdown.
       await Promise.all([
+        reconciliationSender.stop(),
         puller.stop(),
         peoplePuller.stop(),
         pinPuller.stop(),
@@ -1610,6 +1669,7 @@ export async function registerEdgeLink(
   // legend-bod.5: emergency button alerts (panic_alert.*) mirrored idempotently.
   registerPanicAlertEdgeApplier();
   registerPrintAlertEdgeApplier();
+  registerNodeAlarmEdgeApplier();
   // legend-62jtd: staff_pin.device_throttled raised on an edge reaches the
   // outlet's supervisors in the cloud.
   registerStaffPinAlertEdgeApplier();

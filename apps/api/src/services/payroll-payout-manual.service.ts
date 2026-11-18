@@ -180,6 +180,26 @@ async function auditBatch(
   });
 }
 
+/**
+ * True when the batch has no approval window or it ended, judged on the
+ * database clock: the same `now()` the pending cash credits use
+ * (`approval_expires_at > now()`), so the export, the handover and the 1102
+ * reserve always agree (legend-f250r). Call after the batch row is locked.
+ */
+async function approvalExpiredOnDbClock(
+  tx: Tx,
+  tenantId: string,
+  batchId: string,
+): Promise<boolean> {
+  const result = await tx.execute(
+    sql`SELECT (approval_expires_at IS NULL OR approval_expires_at <= now()) AS expired
+          FROM payroll_disbursement_batches
+         WHERE tenant_id = ${tenantId}::uuid AND id = ${batchId}::uuid`,
+  );
+  const row = result.rows[0] as { expired: boolean } | undefined;
+  return row === undefined ? true : row.expired;
+}
+
 // ---------------------------------------------------------------- bank export
 
 /**
@@ -214,10 +234,7 @@ export async function exportManualBatch(
       "PAYOUT_BATCH_NOT_APPROVED",
       "Batch belum disetujui, jadi berkas transfer belum bisa dibuat.",
     );
-  if (
-    batch.approvalExpiresAt === null ||
-    batch.approvalExpiresAt.getTime() <= now.getTime()
-  )
+  if (await approvalExpiredOnDbClock(tx, actor.tenantId, batchId))
     throw refuse(
       409,
       "PAYOUT_APPROVAL_EXPIRED",
@@ -1634,10 +1651,7 @@ export async function confirmCashHandover(
       "PAYOUT_BATCH_NOT_APPROVED",
       "Batch tunai belum disetujui atau sudah selesai.",
     );
-  if (
-    batch.approvalExpiresAt === null ||
-    batch.approvalExpiresAt.getTime() <= now.getTime()
-  )
+  if (await approvalExpiredOnDbClock(tx, actor.tenantId, batchId))
     throw refuse(
       409,
       "PAYOUT_APPROVAL_EXPIRED",

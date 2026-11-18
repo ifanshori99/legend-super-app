@@ -72,10 +72,12 @@ import { edgeRouteGuard } from "./edge/mode.ts";
 import {
   setPosEdcTenderPort,
   setPosOrderPromoPort,
+  setPosPointsTenderPort,
   setPosReceiptPort,
   setPosShiftLookup,
 } from "./services/pos-order-ports.ts";
 import { edcTenderSettlement } from "./services/pos-edc-tender.ts";
+import { posPointsTenderSettlement } from "./services/pos-points.service.ts";
 import {
   createPosReceiptPort,
   receiptGapsForDevice,
@@ -119,8 +121,10 @@ setPosOutletReceiptGapsPort((tx, context, { outletId }) =>
 // WS-04 cashier shift (legend-6c0): orders attach to the cashier's open shift.
 setPosShiftLookup(findOpenShiftId);
 // WS-04 EDC tender (legend-dahk): settles only against an approved ledger sale
-// of the EDC agent. Points tenders keep their fail-closed default.
+// of the EDC agent.
 setPosEdcTenderPort(edcTenderSettlement);
+// 936 (legend-hpgyw): points tender debits the member ledger in the order transaction.
+setPosPointsTenderPort(posPointsTenderSettlement);
 // INV-02 (legend-db6): production orders and menu waste read recipes from the BOM engine.
 setInventoryRecipeSource(recipeBomSource);
 

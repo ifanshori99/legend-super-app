@@ -126,6 +126,8 @@ async function cashHandedOverBeforeLockedJournal(net = 1_000_000) {
   const slips = [cash(CASHIER, net)];
   const runId = await W.seedRun(slips);
   const event = await queueLockedEvent(runId, slips);
+  // Setup (legend-rvao9): the cash approve guard needs 1102 to cover the batch.
+  await W.fundPettyCash(1_000_000_000);
   const batchId = await W.approvedBatch(runId, "cash");
   const items = await W.itemsOf(batchId);
   await W.handover(
@@ -231,6 +233,8 @@ describe("legend-2aspe: settle before the payroll.locked journal is consumed", (
   it("[2aspe-skipped-stays-when-accounting-off] control: no locked journal and no locked event waiting (accounting switched on after the lock) stays the final settle_skipped; nothing resolves it later", async () => {
     const slips = [cash(CASHIER, 700_000)];
     const runId = await W.seedRun(slips);
+    // Setup (legend-rvao9): the cash approve guard needs 1102 to cover the batch.
+    await W.fundPettyCash(1_000_000_000);
     const batchId = await W.approvedBatch(runId, "cash");
     const items = await W.itemsOf(batchId);
     await W.handover(
@@ -250,6 +254,8 @@ describe("legend-2aspe: settle before the payroll.locked journal is consumed", (
     const slips = [cash(CASHIER, 900_000)];
     const runId = await W.seedRun(slips);
     await W.postLockedJournal(runId, slips);
+    // Setup (legend-rvao9): the cash approve guard needs 1102 to cover the batch.
+    await W.fundPettyCash(1_000_000_000);
     const batchId = await W.approvedBatch(runId, "cash");
     const items = await W.itemsOf(batchId);
     await W.handover(
@@ -582,6 +588,8 @@ describe("second-opinion F1 (legend-2aspe): accounting switched off before the l
     const slips = [cash(CASHIER, 1_000_000)];
     const runId = await W.seedRun(slips);
     const { outboxId, event } = await queueLockedViaOutbox(runId, slips);
+    // Setup (legend-rvao9): the cash approve guard needs 1102 to cover the batch.
+    await W.fundPettyCash(1_000_000_000);
     const batchId = await W.approvedBatch(runId, "cash");
     const items = await W.itemsOf(batchId);
     await W.handover(
@@ -650,6 +658,8 @@ describe("second-opinion F3 (legend-cnpap): pending cash settlement keeps the ca
     const slips = [cash(CASHIER, 1_000_000)];
     const runId = await W.seedRun(slips);
     const { outboxId, event } = await queueLockedViaOutbox(runId, slips);
+    // Setup (legend-rvao9): the cash approve guard needs 1102 to cover the batch.
+    await W.fundPettyCash(1_000_000_000);
     const batchId = await W.approvedBatch(runId, "cash");
     const items = await W.itemsOf(batchId);
     await W.handover(
@@ -806,6 +816,8 @@ async function pendingCashThenExportedBank() {
   const slips = [cash(CASHIER, 1_000_000), bank(BUDI, 2_000_000)];
   const runId = await W.seedRun(slips);
   const { outboxId, event } = await queueLockedViaOutbox(runId, slips);
+  // Setup (legend-rvao9): the cash approve guard needs 1102 to cover the batch.
+  await W.fundPettyCash(1_000_000_000);
   const batchA = await W.approvedBatch(runId, "cash");
   const itemsA = await W.itemsOf(batchA);
   await W.handover(
@@ -896,6 +908,8 @@ describe("round 2 R6: frozen cash account must be active and postable at handove
       const slips = [cash(CASHIER, 800_000)];
       const runId = await W.seedRun(slips);
       await queueLockedEvent(runId, slips);
+      // Setup (legend-rvao9): the cash approve guard needs 1102 to cover the batch.
+      await W.fundPettyCash(1_000_000_000);
       const batchId = await W.approvedBatch(runId, "cash");
       const itemIds = (await W.itemsOf(batchId)).map((i) => i.id as string);
 
@@ -926,6 +940,8 @@ describe("round 2 R3b: pending cash posting without a frozen account fails close
     const slips = [cash(CASHIER, 1_000_000)];
     const runId = await W.seedRun(slips);
     const { outboxId } = await queueLockedViaOutbox(runId, slips);
+    // Setup (legend-rvao9): the cash approve guard needs 1102 to cover the batch.
+    await W.fundPettyCash(1_000_000_000);
     const batchId = await W.approvedBatch(runId, "cash");
     const items = await W.itemsOf(batchId);
     await W.handover(

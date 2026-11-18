@@ -90,6 +90,8 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "copies existing edge inbound events into the renamed table",
   "0376_edge_link_slots.sql":
     "backfills edge_link_slots from existing edge_inbound_events: one row per link slot with exactly one counted receipt (legend-pz641); idempotent, ON CONFLICT DO NOTHING, edits no existing row, FORCE RLS lifted for that one statement and restored",
+  "0484_edge_txn_ledger.sql":
+    "backfills edge_txn_ledger_baselines from sync_cursors: one row per edge node that already queued edge_to_cloud events, so reconciliation counts only later events (legend-kai); idempotent, ON CONFLICT DO NOTHING, edits no existing row, runs tenant by tenant under that tenant's GUCs because both tables are FORCE RLS (GUCs restored afterwards)",
   "0090_pos_day_close_permission.sql":
     "adds a permission string to each tenant's existing roles",
   "0096_menu_station_type_backfill.sql":
@@ -298,8 +300,17 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
   // legend-nsqhm (990 card E)
   "0463_payout_990_return_bank_ref.sql":
     "function bodies and a guard trigger only, no row edited by the migration: app.payout_return_propose and app.payout_return_confirm (payout role) store the bank transaction reference of a return on the claim and the item when called, and refuse a missing, differing or reused reference; the migration itself writes no row and changes no amount (it only adds a refusal)",
+  "0480_payout_1038_evidence_observations.sql":
+    "creates the append-only payroll_payout_recon_evidence_observations table and function bodies only, no row edited by the migration: app.payout_recon_evidence_observe (payout role) inserts an observation of an operation's proof file when the nightly recon calls it, and app.payout_recon_flag_fingerprint adds the latest non-ok observation to a flag's fingerprint; a flag with no observation keeps its fingerprint, no amount, item, payslip or clearance row is touched, and a changed proof only holds a slip back (legend-63gyr)",
+  "0481_payout_qh11l_read_error_hold.sql":
+    "function bodies, a check constraint and one NOLOGIN role (legend_payout_recon, SET-only membership of the app role) only, no row edited by the migration: app.payout_recon_evidence_observe_ok (recon role only) is the one path that records an 'ok' read, and app.payout_recon_evidence_observe refuses 'ok'; app.payout_recon_evidence_observe_difference (recon role only) is the one path that records a missing or mismatch read after a read error, and app.payout_recon_evidence_observe refuses that from any other caller, so only a fresh recon read can release a held slip (legend-tiw2h); app.payout_recon_evidence_observe (payout role) also records an 'error' observation when the nightly recon cannot read a proof file for a reason other than not found, and app.payout_recon_flag_fingerprint adds a read_error key while the latest observation of an operation is an error, so a clearance held against the earlier fingerprint stops releasing the slip until a later read succeeds; app.payout_recon_clear_approve refuses while the error is the latest observation; a fingerprint without an error observation is unchanged, no amount, item, payslip or clearance row is touched, and the error only holds a slip back (legend-qh11l)",
   "0464_payout_990_flag_fingerprint.sql":
     "backfill only (legend-hklnq): one fingerprint sighting per existing payout recon exception, computed from that exception's own item, attestation and posting rows, so a later recon can tell whether the flagged data changed; no amount, item, payslip or clearance row is edited, and an exception without a matching clearance keeps holding its payslip",
+  // legend-snwnn (1005)
+  "0472_payout_1005_return_withdraw.sql":
+    "creates the payroll_payout_return_withdrawals table, widens the return claim status and adds withdrawn_at, adds the return_withdraw kind to the grant, attestation and recon-exception CHECKs, and replaces function bodies and guards; no row is edited by the migration: app.payout_return_withdraw_propose and app.payout_return_withdraw_approve (payout role) insert a withdrawal row and, when called by two different finance people under step-up grants, move an OPEN return claim to withdrawn and clear the five return columns of its items (the item stays succeeded, no journal, payment record or batch is touched, nobody is paid again by it), app.payout_grant_issue (grantor login) inserts a grant, and the claim and item guards refuse any other change; the one existing-row effect is the unique bank_ref index, rebuilt to ignore withdrawn claims",
+  "0473_payout_1005_recon_flag_kind.sql":
+    "function body only, no row edited by the migration: app.payout_recon_flag (payout role) also accepts the return_withdraw kind and inserts a reconciliation exception and a sighting when called; no backfill, no amount touched",
   // legend-628t9 (954)
   "0436_payout_grant_expiry_after_lock.sql":
     "function body only, no row edited by the migration: app.payout_grant_consume (payout role) reads its clock after the run, batch and grant row locks and refuses a grant that expired while it waited, marking a grant consumed only when called; it keeps the existing grant rules and changes no amount (it only blocks a late approval, nobody is paid)",
@@ -309,6 +320,9 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
   // legend-xp8mc (934)
   "0432_payout_batch_approve_grant.sql":
     "adds the batch_approve grant and attestation kind, a trigger on payroll_disbursement_batches and function bodies only, no row edited by the migration: app.payout_grant_issue (grantor login) inserts a grant, app.payout_batch_approve_attest (payout role) spends it and inserts an attestation and an approval log row when called, app.payout_recon_flag (payout role) accepts the batch_approve kind and inserts a reconciliation flag when called; the trigger only refuses an approval without the grant; the migration itself writes no row and changes no amount (it only blocks approvals)",
+  // legend-4us1a (987)
+  "0474_facility_hours_wfc_breakfast.sql":
+    "seeds one baseline facility_operating_hours_versions row per existing facility at 1970-01-01 (a copy of facilities.operating_hours, so every date resolves to the hours it has today) and adds the floor_zones.is_wfc and menu_items.is_breakfast flags with a default of false; no amount, status or bill touched, so nobody is paid more",
   // legend-3wpf (941 card C)
   "0439_payment_intent_provider_answered.sql":
     "adds the nullable payment_intents.provider_answered_at column and backfills it from provider_final_at on the rows that already have one (the provider already answered final, a copy of an existing value, NULL to a value only); no amount, status or bill touched, so nobody is paid more",
