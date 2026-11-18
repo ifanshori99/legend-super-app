@@ -10,6 +10,7 @@
 // router mounts a 1 MiB parser for that path only (contract note on
 // menuImageUploadInputSchema).
 
+import { outletIdSchema } from "@starter/shared/core";
 import express, { Router, type RequestHandler } from "express";
 import { and, eq, isNull } from "drizzle-orm";
 import { ACTING_STAFF_ERROR_CODES } from "@starter/shared/pos/acting-staff";
@@ -866,6 +867,21 @@ export function createMenuRouter(
 
   router.get(relative(listAvailabilityEndpoint), view, async (req, res) => {
     const query = listAvailabilityEndpoint.query.parse(req.query);
+    // The path carries no outlet, so with a cashier token the list is held to
+    // the token's outlet: another outlet is refused, none given means the
+    // token's outlet (never the cashier's whole reach, nor its expiry sweep).
+    if (req.actingStaff) {
+      if (
+        query.outletId !== undefined &&
+        query.outletId.toLowerCase() !== req.actingStaff.outletId.toLowerCase()
+      )
+        throw new HttpError(
+          403,
+          ACTING_STAFF_ERROR_CODES.OUTLET_MISMATCH,
+          "Kasir aktif bukan untuk outlet ini.",
+        );
+      query.outletId = outletIdSchema.parse(req.actingStaff.outletId);
+    }
     res.json(
       await listAvailability(getScopedTenantContext(req), actorOf(req), query),
     );
