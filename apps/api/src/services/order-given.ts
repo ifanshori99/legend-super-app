@@ -63,6 +63,36 @@ const flagged = (alias: string) =>
     `(${alias}.provider_refunded_at IS NOT NULL OR ${alias}.provider_refunded_after_paid_at IS NOT NULL)`,
   );
 
+// 1127: parked-money rule, stated once. Money the guest sent that is not the
+// bill's (parked) is neither paid nor subtracted from paid; the two sides below
+// must stay symmetric:
+// - Overpayment: the part of an intent parked as a `payment_unallocated_funds`
+//   row is left out of paid by `allocated()`, and a refund of it
+//   (`payment_refunds.unallocated_fund_id`) is not subtracted in `ownRefunds`.
+// - Late payment (the order was already expired or voided when the guest paid):
+//   an intent with a late-payment request key (`latePaid`) counts 0 paid, and
+//   the refund filed by that request is not subtracted in `ownRefunds`. Key
+//   prefixes follow LATE_PAYMENT_REFUND_KEY_PREFIXES (payment-refund.service.ts).
+const LATE_PAYMENT_KEY_PREFIXES = [
+  "pos-late-payment-refund:",
+  "qr-late-payment-refund:",
+  "facility-breakfast-refund:late:",
+  "fb-refile:late:",
+];
+
+// 1127: the intent was paid late (see the parked-money rule above): its key row
+// is `<prefix><intent id>` or `<prefix><intent id>:<failed refund id>`, matched
+// exactly, never by a loose prefix. `alias` is the payment_intents alias.
+const latePaid = (alias: string) =>
+  sql.raw(
+    `EXISTS (SELECT 1 FROM payment_admin_idempotency pk
+              WHERE pk.tenant_id = ${alias}.tenant_id
+                AND (${LATE_PAYMENT_KEY_PREFIXES.map(
+                  (prefix) =>
+                    `pk.key = '${prefix}' || ${alias}.id::text OR pk.key LIKE '${prefix}' || ${alias}.id::text || ':%'`,
+                ).join(" OR ")}))`,
+  );
+
 // 1116: our own gateway refunds of the intent (not failed) that no other part
 // of `OrderGiven` counts: not a recovery refund of an issue of this order
 // (`recovery_refunds`), not the gateway part of a POS refund of this order
@@ -74,16 +104,14 @@ const ownRefunds = (alias: string, orderUuid: string) =>
        AND r.payment_intent_id = ${sql.raw(alias)}.id
        AND r.status <> 'failed'
        -- a refund of parked money (an overpayment fund, a late payment) is not
-       -- the bill's money (refundableBalance leaves it out the same way)
+       -- the bill's money (refundableBalance leaves it out the same way); see
+       -- the parked-money rule above
        AND r.unallocated_fund_id IS NULL
        AND NOT EXISTS (
          SELECT 1 FROM payment_admin_idempotency lk
           WHERE lk.tenant_id = r.tenant_id
             AND lk.response ->> 'refundId' = r.id::text
-            AND (lk.key LIKE 'pos-late-payment-refund:%'
-                 OR lk.key LIKE 'qr-late-payment-refund:%'
-                 OR lk.key LIKE 'facility-breakfast-refund:late:%'
-                 OR lk.key LIKE 'fb-refile:late:%'))
+            AND (${sql.raw(LATE_PAYMENT_KEY_PREFIXES.map((prefix) => `lk.key LIKE '${prefix}%'`).join(" OR "))}))
        AND (r.order_issue_id IS NULL
             OR NOT EXISTS (SELECT 1 FROM issues x WHERE x.id = r.order_issue_id))
        AND NOT EXISTS (
@@ -169,7 +197,7 @@ export async function orderGivenOf(
          THEN (SELECT coalesce(sum(CASE
                   WHEN s.payment_intent_id IS NULL THEN s.amount
                   WHEN i.id IS NULL THEN 0
-                  WHEN ${flagged("i")} THEN 0
+                  WHEN ${flagged("i")} OR ${latePaid("i")} THEN 0
                   ELSE greatest(0, s.amount
                          - ${providerRefundedForeignIdrSql(sql`${tenantId}::uuid`, sql`i.id`, undefined, false)}
                          - ${ownRefunds("i", orderUuid)}) END), 0)
@@ -187,7 +215,7 @@ export async function orderGivenOf(
                    FROM orders o
                   WHERE o.tenant_id = ${tenantId} AND o.id = ${orderUuid}::uuid),
                 (SELECT coalesce(sum(CASE
-                          WHEN ${flagged("i")} THEN 0
+                          WHEN ${flagged("i")} OR ${latePaid("i")} THEN 0
                           ELSE greatest(0, ${allocated("i")}
                                  - ${providerRefundedForeignIdrSql(sql`${tenantId}::uuid`, sql`i.id`, undefined, false)}
                                  - ${ownRefunds("i", orderUuid)}) END), 0)
@@ -213,7 +241,7 @@ export async function orderGivenOf(
                         GROUP BY r.order_issue_id) e))
             + (SELECT coalesce(sum(CASE
                       WHEN c.payment_intent_id IS NOT NULL
-                           AND (ci.id IS NULL OR ${flagged("ci")}) THEN 0
+                           AND (ci.id IS NULL OR ${flagged("ci")} OR ${latePaid("ci")}) THEN 0
                       ELSE greatest(0, CASE WHEN ci.id IS NULL THEN c.amount_idr
                                             ELSE least(c.amount_idr, ${allocated("ci")})
                                                  - ${providerRefundedForeignIdrSql(sql`${tenantId}::uuid`, sql`ci.id`, undefined, false)} END

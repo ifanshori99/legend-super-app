@@ -424,6 +424,8 @@ export async function voidPosOrderCorrection(
       // that already went back through the provider (or an intent flagged
       // refunded with no sure amount) refuses it. After the paid cap above,
       // so a refund it already sees keeps its REFUND_EXCEEDS_PAID answer.
+      // 1127: currently unreachable for gateway sales (the non-cash void
+      // refusal fires first); kept as defense in depth.
       await assertNothingBackThroughProvider(tx, context, order.id);
       // The approver's ceiling covers the whole outflow, also when the order
       // itself holds no captured cash and only the charge cash goes out.

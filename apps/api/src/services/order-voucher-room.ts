@@ -40,10 +40,17 @@ export async function voucherRoomIdr(
   if (lane !== null && lane !== "pos_refunded") return 0;
 
   const [order] = await tx
-    .select({ totalIdr: orders.totalIdr, subtotalIdr: orders.subtotalIdr })
+    .select({
+      totalIdr: orders.totalIdr,
+      subtotalIdr: orders.subtotalIdr,
+      status: orders.status,
+    })
     .from(orders)
     .where(and(eq(orders.tenantId, tenantId), eq(orders.id, orderId)));
   if (!order) return 0;
+  // 1127: a voided order (an expired QR order voided, then paid late) has
+  // nothing left to give, whatever its intents show.
+  if (order.status === "voided") return 0;
 
   const given = await orderGivenOf(tx, tenantId, orderId);
   const orderRoomIdr = Math.max(0, given.paidIdr - given.givenIdr);
