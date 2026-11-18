@@ -2115,3 +2115,4 @@ Langkah berikut CTO baru:
 - 02:23 CTO: architect 1tke7: P1 kolom hilang lolos -> G8xbm fix; P2 block permanen sesudah 0691 -> ubah info saat kas landing (catat merge-queue); P3 freeze tulis payout saat deploy (runbook).
 - 02:27 CTO: G8xbm fix P1 1tke7 abc71bfbb (68/68, merah-dulu ok), resolve, bead 1tke7 tutup. 1100 head abc71bfbb SIAP batch94.
 - 02:36 CTO: G9yay 1094 fix 1113 selesai f3a6ced98 (P1 isu pesanan + P2 availability + P2 socket panic + voucher/swap ditutup; 780 lulus; tsc 0; architect 0 P0-P2 sebelum voucher/swap). Resolve. Architect xhigh delta voucher/swap berjalan (subagent CTO); lolos -> 1094 SIAP batch94.
+- 02:37 CTO: cq0u7 (P1 akses outlet token order-recovery) dimulai G5hn9 Sonnet #4, base ws/1094 (worktree ghostex/f2a577d8), brief 1120. Codex 3 slot kosong: tidak ada kartu S non-uang/akses tanpa prasyarat.
