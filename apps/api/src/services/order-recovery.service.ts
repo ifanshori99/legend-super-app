@@ -978,6 +978,7 @@ async function settleIssue(
       context.tenant.tenantId,
       found.issue.orderId,
       found.line.lineTotalIdr,
+      found.issue.orderItemId,
     );
   const [row] = await tx
     .update(orderIssues)
