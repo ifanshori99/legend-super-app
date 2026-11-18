@@ -16,7 +16,7 @@ import { Pool, type PoolClient } from "pg";
 import request from "supertest";
 import WebSocket from "ws";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { outletIdSchema } from "@starter/shared/core";
+import { createUlid, outletIdSchema, uuidToUlid } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -36,6 +36,10 @@ import {
   setEdgeRuntimeStateForTests,
 } from "../edge/runtime.ts";
 import { signDeviceToken } from "../lib/device-token.ts";
+import { consumeOutbox } from "../services/core-outbox.ts";
+import { createNotificationConsumer } from "../services/notification-consumer.ts";
+import { createNotificationRecipientResolver } from "../worker/notification-adapters.ts";
+import { createProductionWorkerConfig } from "../worker/production-config.ts";
 import { createDeviceOutletResolver } from "../services/device-outlet-resolver.ts";
 import { setDeviceOutletResolver } from "../services/device-pin.service.ts";
 import { queuePanicAlertEvent } from "../services/panic-alert-outbox.ts";
@@ -72,6 +76,56 @@ const outletScope = (id: string) =>
 const deviceIds: string[] = [];
 const servers: Server[] = [];
 const cleanups: Array<() => void | Promise<void>> = [];
+
+async function seedPanicRecipient(outlet: string) {
+  const userId = randomUUID();
+  const roleId = randomUUID();
+  const employeeId = randomUUID();
+  const sessionId = randomUUID();
+  await owner.query(
+    'INSERT INTO "user" (id, name, email) VALUES ($1, $2, $3)',
+    [userId, "Petugas", `${userId}@example.test`],
+  );
+  await asTenantOwner(async (client) => {
+    await client.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, permissions, mfa_required, allowed_scope_types) VALUES ($1, $2, $3, false, $4::jsonb, false, $5::jsonb)`,
+      [
+        roleId,
+        tenant.id,
+        `Petugas ${roleId}`,
+        JSON.stringify(["facility.emergency.respond"]),
+        JSON.stringify(["outlet"]),
+      ],
+    );
+    await client.query(
+      `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by) VALUES ($1, $2, $3, 'outlet', $4, now() - interval '1 hour', $2)`,
+      [tenant.id, userId, roleId, outlet],
+    );
+    await client.query(
+      `INSERT INTO employees (id, tenant_id, user_id, employee_no, full_name, home_outlet_id, employment_type, join_date, status) VALUES ($1, $2, $3, $4, 'Petugas', $5, 'pkwtt', '2025-03-01', 'active')`,
+      [
+        employeeId,
+        tenant.id,
+        userId,
+        `FC-${employeeId.slice(0, 8).toUpperCase()}`,
+        outlet,
+      ],
+    );
+    await client.query(
+      `INSERT INTO attendance_logs (id, tenant_id, outlet_id, employee_id, type, method, occurred_at, received_at, validity, business_date, client_event_id) VALUES ($1, $2, $3, $4, 'in', 'outlet_device', now() - interval '1 minute', now() - interval '1 minute', 'valid', (now() AT TIME ZONE 'Asia/Jakarta')::date, $5)`,
+      [randomUUID(), tenant.id, outlet, employeeId, createUlid()],
+    );
+    await client.query(
+      "INSERT INTO \"session\" (id, expires_at, token, user_id) VALUES ($1, now() + interval '7 days', $2, $3)",
+      [sessionId, randomUUID(), userId],
+    );
+    await client.query(
+      `INSERT INTO push_subscriptions (tenant_id, id, user_id, endpoint_hash, subscription_ciphertext, key_version, outlet_id, session_id, registered_at) VALUES ($1, $2, $3, $4, 'cipher', 'v1', $5, $6, now())`,
+      [tenant.id, randomUUID(), userId, randomUUID(), outlet, sessionId],
+    );
+  });
+  return userId;
+}
 
 async function asTenantOwner<T>(run: (client: PoolClient) => Promise<T>) {
   const client = await owner.connect();
@@ -262,6 +316,61 @@ describe("F-C (3) the cloud does not serve an outlet that has an active edge nod
       .send(pressBody(`evt-${randomUUID()}`));
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(await alertCount(outlet)).toBe(1);
+  });
+
+  it("legend-kkojp delivers a cloud-only press through the notification consumer once", async () => {
+    const outlet = await seedOutlet("FC notification cloud only", false);
+    const button = await registerDevice(outlet, "panic_button");
+    const res = await request(cloudApp)
+      .post(PANIC_ROUTES.press)
+      .set(DEVICE_TOKEN_HEADER, button.token)
+      .send(pressBody(`evt-${randomUUID()}`));
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const rows = await asTenantOwner((client) =>
+      client.query<{ id: string }>(
+        `SELECT id FROM domain_event_outbox WHERE tenant_id = $1 AND outlet_id = $2 AND destination = $3 AND event->>$4 = $5`,
+        [tenant.id, outlet, "notification", "name", "panic_alert.raised"],
+      ),
+    );
+    expect(rows.rows).toHaveLength(1);
+    const userId = await seedPanicRecipient(outlet);
+    const resolver = createNotificationRecipientResolver({
+      email: false,
+      push: true,
+    });
+    const worker = createProductionWorkerConfig(
+      { deliverEvent: async () => {}, requestMissing: async () => {} },
+      {
+        resolveNotificationRecipients: resolver,
+        notificationDelivery: {
+          resolve: async () => {
+            throw new Error("not used");
+          },
+          email: { send: async () => {} },
+          push: { send: async () => {} },
+        },
+      } as never,
+    );
+    const context = await worker.resolveContext(tenant.id);
+    const deliver = createNotificationConsumer(
+      context,
+      worker.resolveNotificationRecipients,
+    );
+    const input = {
+      outboxId: uuidToUlid(rows.rows[0].id),
+      authorize: (event: Parameters<typeof worker.authorizeEvent>[1]) =>
+        worker.authorizeEvent(context, event),
+      deliver,
+    };
+    expect(await consumeOutbox(db, context, input)).toBe(true);
+    expect(await consumeOutbox(db, context, input)).toBe(false);
+    const attempts = await asTenantOwner((client) =>
+      client.query<{ status: string }>(
+        `SELECT a.status FROM delivery_attempts a JOIN notifications n ON n.id = a.notification_id AND n.tenant_id = a.tenant_id WHERE n.tenant_id = $1 AND n.outlet_id = $2 AND n.user_id = $3 AND a.channel = $4`,
+        [tenant.id, outlet, userId, "web_push"],
+      ),
+    );
+    expect(attempts.rows).toEqual([{ status: "queued" }]);
   });
 
   it("a press on the edge for an outlet with an edge node still works", async () => {
