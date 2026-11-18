@@ -40,6 +40,7 @@ import { handlePurchasingApprovalResolved } from "./services/purchasing-approval
 import {
   expireStaleQueueNotifications,
   releaseExpiredSlotHolds,
+  releaseStaleInUseTickets,
 } from "./services/facility-slots.service.ts";
 import {
   handlePaymentPaid,
@@ -551,6 +552,15 @@ const relay = createRelayRuntime({
       );
     } catch {
       console.error("Facility hold expiry sweep failed");
+    }
+    // legend-etawy: an in_use ticket left open far past its end is closed
+    // without a charge. Same fail-closed rule: an error never blocks the relay.
+    try {
+      await withTenant(db, context, (tx) =>
+        releaseStaleInUseTickets(tx, context),
+      );
+    } catch {
+      console.error("Facility stale in-use ticket sweep failed");
     }
     // FAC-02 (legend-ke4z): a notified queue guest who did not claim the unit
     // in time expires and the next guest is notified.

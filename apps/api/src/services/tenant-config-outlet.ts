@@ -346,6 +346,7 @@ type FacilityKind =
       areaKey: string;
       code: string;
       status: UnitRow["status"];
+      retired?: true;
       sortOrder: number;
     }
   | {
@@ -467,6 +468,7 @@ const facilitiesHandler: SectionHandler = {
         areaKey,
         code: row.code,
         status: row.status === "maintenance" ? "maintenance" : "available",
+        ...(row.retiredAt ? { retired: true as const } : {}),
         sortOrder: row.sortOrder,
       });
     }
@@ -713,6 +715,8 @@ const facilitiesHandler: SectionHandler = {
         areaId: keys.need("facilityAreas", item.areaKey),
         code: item.code,
         status: item.status,
+        // Importing a retired unit keeps it retired (legend-etawy).
+        retiredAt: item.retired ? new Date() : null,
         sortOrder: item.sortOrder,
       });
     }

@@ -50,6 +50,9 @@ export * from "./facility";
 export * from "./facility-entitlement";
 // 936 POS facility tickets (legend-hpgyw part D).
 export * from "./facility-pos-ticket";
+
+// WFC min-spend reminder outbox for guests without an account (legend-qr3sd).
+export * from "./wfc-guest-reminder";
 export * from "./hris";
 // WS-10 leave, balances, accrual, holidays, overtime (legend-hggk).
 export * from "./hris-leave";

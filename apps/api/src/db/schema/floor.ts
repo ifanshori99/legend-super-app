@@ -301,6 +301,10 @@ export const sessionParticipants = pgTable(
     deviceHash: varchar("device_hash", { length: 128 }).notNull(),
     /** Set when the guest is signed in; guests may order without it (ORD-01). */
     userId: uuid("user_id"),
+    /** Optional WhatsApp number (E.164) left by a guest without an account (legend-qr3sd). */
+    contactWhatsapp: text("contact_whatsapp"),
+    /** Optional email left by a guest without an account (legend-qr3sd). */
+    contactEmail: text("contact_email"),
     joinedAt: timestamp("joined_at", { withTimezone: true })
       .defaultNow()
       .notNull(),

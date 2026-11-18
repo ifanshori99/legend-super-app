@@ -133,11 +133,16 @@ export async function listFacilities(
       .select({
         facility: facilities,
         areaCount: childCount("facility_areas"),
-        unitCount: childCount("facility_units"),
+        // Retired units (legend-etawy) are not counted.
+        unitCount: childCount(
+          "facility_units",
+          sql`AND ${sql.identifier("facility_units")}.retired_at IS NULL`,
+        ),
         // Active = every status except maintenance (the admin unit summary rule).
         activeUnitCount: childCount(
           "facility_units",
-          sql`AND ${sql.identifier("facility_units")}.status <> 'maintenance'`,
+          sql`AND ${sql.identifier("facility_units")}.status <> 'maintenance'
+            AND ${sql.identifier("facility_units")}.retired_at IS NULL`,
         ),
         productCount: childCount("facility_products"),
       })

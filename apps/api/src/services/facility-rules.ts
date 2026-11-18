@@ -12,7 +12,12 @@ const BLOCKING_UNIT_STATUSES: readonly FacilityUnitStatus[] = [
 ];
 
 /** DTO `bookable`: false when the unit needs cleaning or is under maintenance. */
-export function unitIsBookable(status: FacilityUnitStatus): boolean {
+export function unitIsBookable(
+  status: FacilityUnitStatus,
+  retiredAt: Date | null = null,
+): boolean {
+  // A retired unit (legend-etawy) is never offered, whatever its state.
+  if (retiredAt !== null) return false;
   return !BLOCKING_UNIT_STATUSES.includes(status);
 }
 
@@ -21,8 +26,9 @@ export function unitAcceptsSlot(
   status: FacilityUnitStatus,
   slotStartsAt: Date,
   now: Date,
+  retiredAt: Date | null = null,
 ): boolean {
-  if (!unitIsBookable(status)) return false;
+  if (!unitIsBookable(status, retiredAt)) return false;
   return status !== "in_use" || slotStartsAt.getTime() > now.getTime();
 }
 
