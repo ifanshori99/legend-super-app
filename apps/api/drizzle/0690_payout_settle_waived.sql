@@ -5,11 +5,16 @@
 -- needs it), so finance gets an official manual waive instead: new terminal
 -- kind `settle_waived`, set once with a reason and an audit row, no journal.
 -- 1. The kind check accepts `settle_waived` (varchar(14) holds it).
--- 2. The 0412 guard of app.payroll_payout_gl_postings_guard, verbatim except one
+-- 2. The waive is cash-only (F1, architect): a bank handover is never waivable,
+--    mirrored by the EXISTS on the batch channel below. (The service also refuses
+--    a run with a locked journal or a queued lock event, which the resolver
+--    catches up; that part is not a trigger condition.)
+-- 3. The 0412 guard of app.payroll_payout_gl_postings_guard, verbatim except one
 --    new branch: the pure flip settle_skipped -> settle_waived (only `kind`
---    changes). The settle commit checks (0400) are untouched: they fire only on
---    a flip to `settle`. A waived row matches no branch as OLD.kind, so it can
---    never go back to pending/skipped/settle nor be journaled.
+--    changes) on a cash batch. The settle commit checks (0400) are untouched:
+--    they fire only on a flip to `settle`. A waived row matches no branch as
+--    OLD.kind, so it can never go back to pending/skipped/settle nor be
+--    journaled.
 ALTER TABLE "payroll_payout_gl_postings" DROP CONSTRAINT "payroll_payout_gl_postings_kind_check";--> statement-breakpoint
 ALTER TABLE "payroll_payout_gl_postings" ADD CONSTRAINT "payroll_payout_gl_postings_kind_check" CHECK ("payroll_payout_gl_postings"."kind" IN ('settle', 'settle_pending', 'settle_skipped', 'settle_waived', 'return', 'overpaid'));--> statement-breakpoint
 CREATE OR REPLACE FUNCTION app.payroll_payout_gl_postings_guard() RETURNS trigger
@@ -44,7 +49,12 @@ BEGIN
   -- payable exists to settle). settle_waived is terminal: no branch above or
   -- below accepts it as OLD.kind, so it never flips back or gets journaled.
   IF OLD.kind = 'settle_skipped' AND NEW.kind = 'settle_waived'
-    AND (to_jsonb(NEW) - 'kind') IS NOT DISTINCT FROM (to_jsonb(OLD) - 'kind') THEN
+    AND (to_jsonb(NEW) - 'kind') IS NOT DISTINCT FROM (to_jsonb(OLD) - 'kind')
+    AND EXISTS (
+      SELECT 1
+        FROM public.payroll_disbursement_batches b
+       WHERE b.tenant_id = NEW.tenant_id AND b.id = NEW.batch_id
+         AND b.channel = 'cash') THEN
     RETURN NEW;
   END IF;
   -- (F4, 0400) on a non-cash batch with a frozen bank account the source is

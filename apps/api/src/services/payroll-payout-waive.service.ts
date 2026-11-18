@@ -9,6 +9,12 @@
 // net simply stops counting as a reserve, so the available cash rises by it.
 // That is the intended, explicit effect of the decision.
 //
+// Only for a cash batch whose run has NO locked journal and NO queued
+// `payroll.locked` event. Otherwise the resolver (legend-vvzij) catches the
+// skipped posting up by itself, and a waive would drop a credit that must be
+// journaled (a bank handover is never waivable). Migration 0690 mirrors the
+// cash condition in the guard trigger.
+//
 // Lock order matches `recordPostingSource`: run row, batch row
 // (`loadBatchRunFirst`), the legal entity's cash/bank lock and the batch
 // advisory lock (`lockBatchPayoutGl`), then the posting row. The entity lock is
@@ -19,7 +25,11 @@ import { and, eq } from "drizzle-orm";
 import type { TenantId } from "@starter/shared/core";
 import { payrollPayoutGlPostings } from "../db/schema/payroll-payout.ts";
 import type { Tx } from "./hris-access.ts";
-import { lockBatchPayoutGl } from "./payroll-payout-gl.service.ts";
+import {
+  lockBatchPayoutGl,
+  runHasLockedJournal,
+  runLockPending,
+} from "./payroll-payout-gl.service.ts";
 import {
   loadBatchRunFirst,
   payoutGuardViolation,
@@ -80,6 +90,16 @@ export async function waiveSkippedPosting(
       409,
       "PAYOUT_POSTING_NOT_SKIPPED",
       "Hanya posting yang dilewati karena akuntansi mati yang bisa dibebaskan.",
+    );
+  if (
+    batch.channel !== "cash" ||
+    (await runHasLockedJournal(tx, tenantId, batch.payrollRunId)) ||
+    (await runLockPending(tx, tenantId, batch.payrollRunId))
+  )
+    throw payoutRefuse(
+      409,
+      "PAYOUT_WAIVE_NOT_ALLOWED",
+      "Posting ini tidak bisa dibebaskan. Hanya batch tunai yang run-nya belum punya jurnal kunci gaji dan tidak sedang menunggunya yang boleh; selain itu jurnalnya dibuat otomatis.",
     );
   try {
     await tx

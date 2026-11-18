@@ -203,7 +203,7 @@ async function sourceBankOverride(
   return glAccountId === null ? null : { bank: glAccountId };
 }
 
-async function runHasLockedJournal(
+export async function runHasLockedJournal(
   tx: Tx,
   tenantId: TenantId,
   runId: string,
@@ -289,7 +289,7 @@ async function feeJournalMismatched(
  * yet. A delivered event that left no journal (all-zero run, accounting off at
  * that time) is not pending.
  */
-async function runLockPending(
+export async function runLockPending(
   tx: Tx,
   tenantId: TenantId,
   runId: string,

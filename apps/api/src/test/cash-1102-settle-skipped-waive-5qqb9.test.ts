@@ -34,7 +34,7 @@
 //   no journal exists for a waived posting after replay and flip-back is refused.
 // - "Other tenant -> 404" is not covered over HTTP (no second tenant client in
 //   this world); unknown ids are the stand-in. Flagged in the report.
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../app.ts";
@@ -280,7 +280,7 @@ async function skippedHandover(net = NET) {
   expect(postings, "premise: one posting").toHaveLength(1);
   expect(postings[0]!.kind, "premise: settle_skipped").toBe("settle_skipped");
   reserve += net;
-  return { batchId, net, posting: postings[0] as Posting };
+  return { batchId, runId, slips, net, posting: postings[0] as Posting };
 }
 
 /** Body part with the default reason. */
@@ -518,6 +518,142 @@ describe("5qqb9 P2: refusals change nothing", () => {
     // The route exists: this is a business 404, not "Route not found."
     notRouteMissing(noPosting);
     notRouteMissing(noBatch);
+    expect(await kindOf(batchId)).toBe("settle_skipped");
+  }, 90_000);
+});
+
+describe("5qqb9 P2 (F1): the waive is only for a cash run nothing can catch up", () => {
+  const NOT_ALLOWED = "PAYOUT_WAIVE_NOT_ALLOWED";
+
+  /** Channel of the batch, set by SQL with triggers off (the fixtures only build cash handovers). */
+  const setChannel = (batchId: string, channel: string) =>
+    W.asTenant(
+      (c) =>
+        c.query(
+          `UPDATE payroll_disbursement_batches SET channel = $3
+            WHERE tenant_id = $1 AND id = $2`,
+          [W.tenantId, batchId, channel],
+        ),
+      true,
+    );
+
+  async function expectNotAllowed(
+    batchId: string,
+    postingId: string,
+    why: string,
+  ) {
+    const audit = await auditRowsOf(batchId);
+    const journals = await journalCount();
+
+    const res = await waive(waiver, batchId, postingId);
+
+    expect(res.status, `${why}: ${JSON.stringify(res.body)}`).toBe(409);
+    expect(res.body.error?.code, why).toBe(NOT_ALLOWED);
+    expect(String(res.body.error?.message ?? ""), why).not.toBe("");
+    expect(await kindOf(batchId), `${why}: kind unchanged`).toBe(
+      "settle_skipped",
+    );
+    expect(await auditRowsOf(batchId), `${why}: no audit row`).toBe(audit);
+    expect(await journalCount(), `${why}: no journal`).toBe(journals);
+    expect(await available(), `${why}: reserve still counted`).toBe(free);
+  }
+
+  it("[5qqb9-waive-not-cash-409] a skipped posting of a bank-channel batch is refused 409 PAYOUT_WAIVE_NOT_ALLOWED: kind, audit and reserve unchanged", async () => {
+    const { batchId, posting } = await skippedHandover();
+    await setChannel(batchId, "manual_bank");
+    try {
+      await expectNotAllowed(batchId, posting.id, "bank channel");
+    } finally {
+      // Back to cash: the reserve is counted for cash batches only, and later
+      // scenarios track this posting as a reserve.
+      await setChannel(batchId, "cash");
+    }
+  }, 90_000);
+
+  it("[5qqb9-waive-locked-journal-409] a run that has its payroll.locked journal is refused 409 PAYOUT_WAIVE_NOT_ALLOWED: the resolver catches the posting up, a waive would drop a credit that must be journaled", async () => {
+    const { batchId, runId, posting } = await skippedHandover();
+    // A header-only journal under the locked key, placed by SQL with triggers
+    // off, so the posting stays settle_skipped: this tests the guard, not the
+    // resolver that would catch it up with a real journal.
+    const client = await kitOwner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query(
+        `INSERT INTO journal_entries
+           (tenant_id, legal_entity_id, entry_date, fiscal_period_id, source_type, description, idempotency_key, request_fingerprint)
+         SELECT tenant_id, legal_entity_id, entry_date, fiscal_period_id, 'payroll',
+                'Uji jurnal kunci 5qqb9', $3, repeat('0', 64)
+           FROM journal_entries
+          WHERE tenant_id = $1 AND legal_entity_id = $2
+          LIMIT 1`,
+        [tenantId, W.entityId(), `payroll-gl:locked:${runId}`],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+    expect(
+      (
+        await kitOwner.query(
+          "SELECT 1 FROM journal_entries WHERE tenant_id = $1 AND idempotency_key = $2",
+          [tenantId, `payroll-gl:locked:${runId}`],
+        )
+      ).rowCount,
+      "premise: locked journal exists",
+    ).toBe(1);
+
+    await expectNotAllowed(batchId, posting.id, "locked journal");
+  }, 90_000);
+
+  it("[5qqb9-waive-lock-queued-409] a run whose payroll.locked event is still queued (not delivered) is refused 409 PAYOUT_WAIVE_NOT_ALLOWED", async () => {
+    const { batchId, runId, posting } = await skippedHandover();
+    const eventRowId = randomUUID();
+    await kitOwner.query(
+      `INSERT INTO domain_event_outbox
+         (tenant_id, id, event_id, aggregate_type, aggregate_id, sequence, event, destination, status)
+       VALUES ($1, $2, $3, 'payroll', $4, 9001, $5, 'cloud-sync', 'pending')`,
+      [
+        tenantId,
+        eventRowId,
+        randomUUID(),
+        runId,
+        JSON.stringify({
+          name: "payroll.locked",
+          tenantId,
+          aggregateType: "payroll",
+          sequence: 9001,
+          payload: { payrollRunId: runId },
+        }),
+      ],
+    );
+    try {
+      await expectNotAllowed(batchId, posting.id, "lock event queued");
+    } finally {
+      await kitOwner.query(
+        "DELETE FROM domain_event_outbox WHERE tenant_id = $1 AND id = $2",
+        [tenantId, eventRowId],
+      );
+    }
+  }, 90_000);
+
+  it("[5qqb9-waive-db-not-cash-refused] a direct UPDATE flip settle_skipped -> settle_waived on a non-cash batch is refused by the guard trigger (not the kind check): the row stays settle_skipped", async () => {
+    const { batchId, posting } = await skippedHandover();
+    await setChannel(batchId, "manual_bank");
+
+    const error = await dbError(
+      updatePosting(posting.id, "kind = 'settle_waived'"),
+    );
+    await setChannel(batchId, "cash");
+
+    expect(error, "the guard must refuse a non-cash flip").not.toBeNull();
+    expect(
+      error!.constraint,
+      `refused by the trigger, not the kind check (${error!.message})`,
+    ).not.toBe(KIND_CHECK);
     expect(await kindOf(batchId)).toBe("settle_skipped");
   }, 90_000);
 });
