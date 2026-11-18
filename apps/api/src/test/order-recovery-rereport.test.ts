@@ -389,8 +389,13 @@ describe("legend-wumm8 a rejected recovery refund can be reported again", () => 
 
     const resolved = await resolveRefund(forcedId, PRICES.roti);
 
-    expect(resolved.status).toBe(409);
-    expect(JSON.stringify(resolved.body)).toContain(ALREADY_RESOLVED);
+    // 1131: the order budget may refuse first (the pending refund already
+    // holds the line's room): 422 REFUND_OVER_ORDER_ROOM; either way nothing
+    // resolves and no second refund is filed.
+    expect([409, 422]).toContain(resolved.status);
+    expect(JSON.stringify(resolved.body)).toMatch(
+      new RegExp(`${ALREADY_RESOLVED}|REFUND_OVER_ORDER_ROOM`),
+    );
     expect(await issueRow(forcedId)).toMatchObject({
       status: "open",
       resolution: null,

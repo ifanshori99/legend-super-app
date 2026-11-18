@@ -259,6 +259,12 @@ async function recoveryRefund(
          VALUES ($1, $2, $3, 'doit', $4, 'qris', 'verified_webhook', 110000, now())`,
         [seededTenantId, seededOutletA, intentId, `evidence-${intentId}`],
       );
+      // 1131: the order pays through this intent (the order budget reads paid
+      // from the order's own intent; an unlinked intent pays nothing).
+      await client.query(
+        "UPDATE orders SET payment_intent_id = $1 WHERE tenant_id = $2 AND id = $3",
+        [intentId, seededTenantId, orderUuid],
+      );
       await client.query(
         `INSERT INTO payment_refunds
            (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status, requested_by, order_issue_id)
