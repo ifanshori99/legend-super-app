@@ -1080,13 +1080,36 @@ describe("§29 Lembur", () => {
     );
     expect(created.status, JSON.stringify(created.body)).toBe(201);
     expect(created.body.data.dayType).toBe("rest_day_6_day_week");
-    const normalDayRest = await post(
+    // legend-arj.2: a normal day without a roster rest day is a workday; the
+    // employee cannot pick a rest-day type (see the 422 test below).
+    const normalDay = await post(
       staffClient,
       "/api/hris/overtime-requests",
-      overtimeBody({ date: "2026-10-16", dayType: "rest_day_5_day_week" }),
+      overtimeBody({ date: "2026-10-16" }),
     );
-    expect(normalDayRest.status).toBe(201);
-    expect(normalDayRest.body.data.dayType).toBe("rest_day_5_day_week");
+    expect(normalDay.status, JSON.stringify(normalDay.body)).toBe(201);
+    expect(normalDay.body.data.dayType).toBe("workday");
+  });
+
+  it("[legend-arj.2] a day type sent by the client is refused with 422, whatever its value; the day kind comes from the roster and holidays", async () => {
+    for (const dayType of [
+      "rest_day_5_day_week",
+      "rest_day_6_day_week",
+      "workday",
+    ]) {
+      const refused = await post(
+        staffClient,
+        "/api/hris/overtime-requests",
+        overtimeBody({ date: "2026-10-18", dayType }),
+      );
+      expect(refused.status, dayType).toBe(422);
+    }
+    // Nothing was created for that date.
+    const none = await staffClient.get(
+      "/api/hris/overtime-requests?from=2026-10-18&to=2026-10-18",
+    );
+    expect(none.status).toBe(200);
+    expect(none.body.data).toEqual([]);
   });
 
   it("[§29 Lembur] a replay with the same idempotency key returns the same request", async () => {

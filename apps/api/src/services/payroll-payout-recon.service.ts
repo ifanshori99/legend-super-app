@@ -101,6 +101,18 @@ const MFA_AGE_TOLERANCE_MS = 2 * 60_000;
 
 export const PAYOUT_RECON_OPERATIONS_PER_PAGE = 200;
 
+/**
+ * Longest wait for one proof read (legend-89xse). `ObjectStorage.get` has no
+ * abort signal, so the read is raced against a timer; a timeout is an `error`
+ * read like any other failed read.
+ */
+export const PAYOUT_RECON_STORAGE_READ_TIMEOUT_MS = 15_000;
+/**
+ * Longest wait for the per-operation advisory lock (legend-89xse). Longer than
+ * the storage timeout so the holder can record its result before a waiter gives up.
+ */
+export const PAYOUT_RECON_LOCK_TIMEOUT_MS = 30_000;
+
 export type PayoutReconPageResult = {
   /** Operations checked in this page. */
   readonly operations: number;
@@ -638,6 +650,76 @@ async function readResolutions(
   return resolutions;
 }
 
+/**
+ * Resolved items whose resolve attestations are gone (1038, finding 7). The
+ * flags above start from the attestations that still exist, so deleting both
+ * leaves nothing to check. The independent traces stay: the item row (status
+ * `failed` / `not_sent`, an outcome, touched after the cutover) and the
+ * append-only approval log (a resolve step on its batch after the cutover). An
+ * item like that with no resolve attestation naming it is flagged
+ * `attestation_count`, under the operation bound to the item itself (1052): the
+ * propose step in the log whose grant carries the item's evidence key and
+ * outcome (newest at or before the item's last update). With no such step the
+ * fallback is the EARLIEST resolve propose of the batch since the cutover, so
+ * resolving another item never moves the key; still flagged. A withdrawn proposal leaves no outcome on the
+ * item, so it is not a candidate. Fail closed: a failed read fails the page.
+ */
+async function readLostResolutions(
+  tx: Tx,
+  tenantId: TenantId,
+  grantsSince: Date,
+): Promise<Flag[]> {
+  const since = grantsSince.toISOString();
+  return rowsOf(
+    await tx.execute(sql`
+      SELECT i.id::text AS item_id, l.operation_id::text AS operation_id
+        FROM payroll_disbursement_items i
+        CROSS JOIN LATERAL (
+          SELECT COALESCE(
+            (SELECT g.operation_id
+               FROM payroll_payout_approval_log g
+               JOIN payroll_payout_grants gr
+                 ON gr.tenant_id = g.tenant_id AND gr.id = g.grant_id
+              WHERE g.tenant_id = ${tenantId}::uuid
+                AND gr.tenant_id = ${tenantId}::uuid
+                AND g.batch_id = i.batch_id
+                AND gr.batch_id = i.batch_id
+                AND g.kind = 'resolve' AND g.step = 'propose'
+                AND gr.kind = 'resolve' AND gr.step = 'propose'
+                AND gr.evidence_key = i.resolution_evidence_key
+                AND gr.detail = i.resolution_outcome
+                AND g.logged_at >= ${since}::timestamptz
+                AND g.logged_at <= i.updated_at
+              ORDER BY g.logged_at DESC, g.id DESC
+              LIMIT 1),
+            (SELECT g.operation_id
+               FROM payroll_payout_approval_log g
+              WHERE g.tenant_id = ${tenantId}::uuid
+                AND g.batch_id = i.batch_id
+                AND g.kind = 'resolve'
+                AND g.logged_at >= ${since}::timestamptz
+              ORDER BY (g.step = 'propose') DESC, g.logged_at ASC, g.id ASC
+              LIMIT 1)) AS operation_id) l
+       WHERE i.tenant_id = ${tenantId}::uuid
+         AND l.operation_id IS NOT NULL
+         AND i.status IN ('failed', 'not_sent')
+         AND i.resolution_outcome IS NOT NULL
+         AND i.updated_at >= ${since}::timestamptz
+         AND NOT EXISTS (
+           SELECT 1
+             FROM payroll_payout_attestations a
+            WHERE a.tenant_id = ${tenantId}::uuid
+              AND a.kind = 'resolve'
+              AND a.attested_at >= ${since}::timestamptz
+              AND i.id = ANY(a.item_ids))`),
+  ).map((row): Flag => ({
+    kind: "resolve",
+    operationId: String(row.operation_id),
+    itemId: String(row.item_id),
+    reason: "attestation_count",
+  }));
+}
+
 async function readGrants(
   tx: Tx,
   tenantId: TenantId,
@@ -699,8 +781,10 @@ async function loadWithdrawals(
   grants: Map<string, GrantRow>;
   resolutions: Map<string, ResolutionFacts>;
   withdrawFacts: Map<string, WithdrawFacts>;
+  lostResolves: Flag[];
   flagged: Set<string>;
 }> {
+  const lostResolves = await readLostResolutions(tx, tenantId, grantsSince);
   const attestations = await readAttestations(
     tx,
     tenantId,
@@ -710,7 +794,6 @@ async function loadWithdrawals(
   );
   const grants = await readGrants(tx, tenantId, attestations);
   const resolutions = await readResolutions(tx, tenantId, attestations);
-  const operationIds = [...new Set(attestations.map((a) => a.operationId))];
   const withdrawFacts = await readWithdrawFacts(
     tx,
     tenantId,
@@ -719,6 +802,12 @@ async function loadWithdrawals(
       .map((a) => a.operationId),
   );
   const flagged = new Set<string>();
+  const operationIds = [
+    ...new Set([
+      ...attestations.map((a) => a.operationId),
+      ...lostResolves.map((flag) => flag.operationId),
+    ]),
+  ];
   if (operationIds.length > 0)
     for (const row of rowsOf(
       await tx.execute(sql`
@@ -735,7 +824,14 @@ async function loadWithdrawals(
           String(row.reason),
         ),
       );
-  return { attestations, grants, resolutions, withdrawFacts, flagged };
+  return {
+    attestations,
+    grants,
+    resolutions,
+    withdrawFacts,
+    lostResolves,
+    flagged,
+  };
 }
 
 /** A proof closure with the facts its check needs. */
@@ -1467,7 +1563,7 @@ function evaluateReturnWithdraw(op: Operation, facts: Facts): Flag[] {
 function evaluate(
   op: Operation,
   facts: Facts,
-  fileOf: ReadonlyMap<string, FileState>,
+  fileOf: ReadonlyMap<string, FileState>, // by operation id
 ): Flag[] {
   if (op.missing)
     return op.terminalItemIds.map((itemId) => ({
@@ -1625,7 +1721,7 @@ function evaluate(
     )
       addAll("binding_duplicate");
     if (!record) addAll("evidence_record_missing");
-    const file = fileOf.get(op.evidenceKey);
+    const file = fileOf.get(op.operationId);
     if (file === "missing") addAll("evidence_missing");
     if (file === "mismatch") addAll("evidence_hash_mismatch");
   }
@@ -1960,6 +2056,66 @@ function evaluateGrants(
   return flags;
 }
 
+/**
+ * Runs `run` as the role `legend_payout_recon` (`SET LOCAL ROLE`) and restores the
+ * previous role right after; a failure aborts the transaction, which ends the
+ * role with it.
+ */
+async function asReconRole(tx: Tx, run: () => Promise<unknown>): Promise<void> {
+  const previous = text(
+    rowsOf(
+      await tx.execute(sql`SELECT pg_catalog.quote_ident(current_user) AS r`),
+    )[0]?.r,
+  );
+  if (previous === null)
+    throw new Error("Cannot read the current database role");
+  await tx.execute(sql`SET LOCAL ROLE legend_payout_recon`);
+  await run();
+  await tx.execute(sql.raw(`SET LOCAL ROLE ${previous}`));
+}
+
+/**
+ * Records a successful read of the proof file of an operation (1057, legend-qh11l,
+ * migration 0481). An 'ok' observation can release a slip again after a read
+ * error, so only the role `legend_payout_recon` may record it
+ * (`app.payout_recon_evidence_observe_ok`); `app.payout_recon_evidence_observe`
+ * refuses 'ok'.
+ */
+export async function recordReadOk(
+  tx: Tx,
+  tenantId: string,
+  operationId: string,
+): Promise<void> {
+  await asReconRole(tx, () =>
+    tx.execute(
+      sql`SELECT app.payout_recon_evidence_observe_ok(${tenantId}::uuid, ${operationId}::uuid)`,
+    ),
+  );
+}
+
+/**
+ * Records a fresh read of the proof file that found a problem (legend-tiw2h,
+ * migration 0481). After a read error a 'missing' or 'mismatch' observation can
+ * release a slip again (the run of the difference is back to the one of the old
+ * clearance), so only the role `legend_payout_recon` may record it
+ * (`app.payout_recon_evidence_observe_difference`);
+ * `app.payout_recon_evidence_observe` refuses it from any other caller while the
+ * last observation is an error.
+ */
+export async function recordProblemRead(
+  tx: Tx,
+  tenantId: string,
+  operationId: string,
+  state: "missing" | "mismatch",
+  observedSha: string | null,
+): Promise<void> {
+  await asReconRole(tx, () =>
+    tx.execute(
+      sql`SELECT app.payout_recon_evidence_observe_difference(${tenantId}::uuid, ${operationId}::uuid, ${state}::text, ${observedSha}::text)`,
+    ),
+  );
+}
+
 export type PayoutReconOptions = {
   /** Object storage for the proof files; without it the file check is skipped. */
   storage: ObjectStorage | null | undefined;
@@ -1969,7 +2125,45 @@ export type PayoutReconOptions = {
   limit?: number;
   /** Test override of `app.payout_trusted_since()`. */
   since?: Date;
+  /** Test override of `PAYOUT_RECON_STORAGE_READ_TIMEOUT_MS`. */
+  storageTimeoutMs?: number;
+  /** Test override of `PAYOUT_RECON_LOCK_TIMEOUT_MS`. */
+  lockTimeoutMs?: number;
 };
+
+class StorageReadTimeoutError extends Error {
+  constructor() {
+    super("Proof read timed out");
+    this.name = "StorageReadTimeoutError";
+  }
+}
+
+/** Races a read against a timer; the timer is always cleared, a late result is dropped. */
+async function withReadTimeout<T>(read: Promise<T>, ms: number): Promise<T> {
+  // The storage promise cannot be aborted: keep a late rejection from going unhandled.
+  read.catch(() => {});
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      read,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new StorageReadTimeoutError()), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** PostgreSQL `lock_not_available` (lock_timeout hit), also when wrapped as a cause. */
+function isLockNotAvailable(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current; depth += 1) {
+    if ((current as { code?: unknown }).code === "55P03") return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
 
 /** Known flags raised again per transaction (each call keeps an advisory lock). */
 export const PAYOUT_RECON_RERAISE_CHUNK = 100;
@@ -2070,6 +2264,7 @@ export async function reconcileTrustedPayouts(
   if (
     facts === null &&
     (withdrawals?.attestations.length ?? 0) === 0 &&
+    (withdrawals?.lostResolves.length ?? 0) === 0 &&
     (closures?.closures.length ?? 0) === 0
   )
     return {
@@ -2083,37 +2278,109 @@ export async function reconcileTrustedPayouts(
     };
 
   // The stored proof read again must hash to its record. "Not found" is a
-  // difference; any other read error is retried by the next cycle, not flagged.
+  // difference; any other read error is recorded as an `error` observation
+  // (1057, legend-qh11l, migration 0481) and holds the slips of the flags of the
+  // operation at once (it adds a key to their fingerprint) until a later
+  // successful read; it raises no flag of its own and the next cycle reads again.
+  // The read and the observation of an operation share one transaction under the
+  // advisory lock `app.payout_recon_evidence_observe` takes (1038, 1052): the read
+  // happens inside the lock, so the order of the observations is the order of the
+  // reads for every run, and whether a recovery (`ok`) is kept is decided by the
+  // database at that moment, never by the snapshot taken at the start of the run.
+  // A failure to record fails the page (fail closed). The operations are bounded
+  // by the page size.
+  // What an operation read is kept per operation id (1052): two operations may
+  // share an evidence key and each is judged by its own read.
   const fileOf = new Map<string, FileState>();
   let unreadable = 0;
   if (options.storage) {
+    const storage = options.storage;
+    const storageTimeoutMs =
+      options.storageTimeoutMs ?? PAYOUT_RECON_STORAGE_READ_TIMEOUT_MS;
+    let storageDown = false;
+    let breakerSkipped = 0;
     for (const op of operations) {
       const key = op.evidenceKey;
       const record = key === null ? undefined : facts?.records.get(key);
-      if (key === null || !record || fileOf.has(key)) continue;
+      if (key === null || !record) continue;
+      // The wait for the lock is bounded (legend-89xse): on a lock timeout the
+      // operation counts as unreadable, no observation is written (it needs the same
+      // lock; the holder records its own result) and the next operation goes on.
+      let locked = false;
       try {
-        const object = await options.storage.get(context, {
-          tenantId,
-          outletId: null,
-          reference: "payout-trusted-recon",
-          key,
-          visibility: "private",
+        await withTenant(db, context, async (tx) => {
+          await tx.execute(
+            sql`SELECT pg_catalog.set_config('lock_timeout', ${`${options.lockTimeoutMs ?? PAYOUT_RECON_LOCK_TIMEOUT_MS}ms`}::text, true)`,
+          );
+          // No idle_in_transaction_session_timeout here (89xse review): the server
+          // would send a FATAL to a connection nobody listens on and the worker
+          // process would exit. A holder that stalls keeps the lock until its
+          // connection is gone; waiters give up after `lock_timeout`.
+          await tx.execute(
+            sql`SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(${`payout_recon_evidence_observe:${tenantId}:${op.operationId}`}::text, 0))`,
+          );
+          locked = true;
+          let state: FileState;
+          let readSha: string | null = null;
+          try {
+            // After the first timeout of this page the storage is taken as down:
+            // the rest of the page is recorded as `error` (slips held) without
+            // waiting for the storage again, so a dead storage costs one timeout
+            // per page, not one per operation.
+            if (storageDown) {
+              breakerSkipped += 1;
+              throw new StorageReadTimeoutError();
+            }
+            const object = await withReadTimeout(
+              storage.get(context, {
+                tenantId,
+                outletId: null,
+                reference: "payout-trusted-recon",
+                key,
+                visibility: "private",
+              }),
+              storageTimeoutMs,
+            );
+            readSha = sha256Of(object.content);
+            state =
+              readSha === (record.stored ?? record.content) ? "ok" : "mismatch";
+          } catch (error) {
+            if (error instanceof StorageReadTimeoutError) storageDown = true;
+            if (error instanceof CoreError && error.code === "NOT_FOUND")
+              state = "missing";
+            else state = "error";
+          }
+          fileOf.set(op.operationId, state);
+          if (state === "error") unreadable += 1;
+          if (state === "ok") await recordReadOk(tx, tenantId, op.operationId);
+          else if (state === "missing" || state === "mismatch")
+            await recordProblemRead(
+              tx,
+              tenantId,
+              op.operationId,
+              state,
+              state === "mismatch" ? readSha : null,
+            );
+          else
+            await tx.execute(
+              sql`SELECT app.payout_recon_evidence_observe(${tenantId}::uuid, ${op.operationId}::uuid, ${state}::text, NULL::text)`,
+            );
         });
-        fileOf.set(
-          key,
-          sha256Of(object.content) === (record.stored ?? record.content)
-            ? "ok"
-            : "mismatch",
-        );
       } catch (error) {
-        if (error instanceof CoreError && error.code === "NOT_FOUND")
-          fileOf.set(key, "missing");
-        else {
-          fileOf.set(key, "error");
-          unreadable += 1;
-        }
+        if (locked || !isLockNotAvailable(error)) throw error;
+        fileOf.set(op.operationId, "error");
+        unreadable += 1;
+        logger.error(
+          { errorName: error instanceof Error ? error.name : "unknown" },
+          "payout recon: proof read lock timed out",
+        );
       }
     }
+    if (breakerSkipped > 0)
+      logger.warn(
+        { skipped: breakerSkipped },
+        "payout recon: storage timed out, the rest of the page was recorded as unreadable without reading",
+      );
   }
 
   // A difference of the operation holds every slip of it, so an operation-wide
@@ -2150,6 +2417,7 @@ export async function reconcileTrustedPayouts(
               withdrawals.resolutions,
               grantsSince.getTime(),
             ),
+            withdrawals.lostResolves,
           ),
     )
     .concat(

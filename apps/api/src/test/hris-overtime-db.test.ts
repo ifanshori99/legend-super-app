@@ -38,6 +38,12 @@ import {
 import { setAuditWriter } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import { createEmployee } from "../services/hris-employee.service.ts";
+import {
+  cancelShiftAssignment,
+  createShiftAssignment,
+  publishRoster,
+} from "../services/hris-scheduling-roster.service.ts";
+import { createShiftTemplate } from "../services/hris-scheduling-setup.service.ts";
 import type { CreateEmployeeInput } from "../services/hris-employee.service.ts";
 import {
   createHoliday,
@@ -465,6 +471,14 @@ afterAll(async () => {
       [tenantId, createdUsers],
     );
     await client.query(
+      `DELETE FROM shift_assignments WHERE tenant_id = $1 AND employee_id IN (SELECT id FROM employees WHERE tenant_id = $1 AND created_by = ANY($2::text[]))`,
+      [tenantId, createdUsers],
+    );
+    await client.query(
+      `DELETE FROM shift_templates WHERE tenant_id = $1 AND name LIKE 'OTROSTER %'`,
+      [tenantId],
+    );
+    await client.query(
       `DELETE FROM employees WHERE tenant_id = $1 AND created_by = ANY($2::text[])`,
       [tenantId, createdUsers],
     );
@@ -725,7 +739,7 @@ describe("§3 D.29 Lembur: request, approval matrix and pay", () => {
     );
   });
 
-  it("[§29 Hari Libur] an outlet company holiday applies only to that outlet; the employee's own rest day applies on a normal day", async () => {
+  it("[§29 Hari Libur] an outlet company holiday applies only to that outlet", async () => {
     await createHoliday(tenantScope(), hr, {
       date: "2026-10-15",
       name: "OTDB Libur outlet A",
@@ -737,15 +751,8 @@ describe("§3 D.29 Lembur: request, approval matrix and pay", () => {
     expect(inA.dayType).toBe("rest_day_6_day_week");
     const inB = await requestOvertime(staffB, outletB, "2026-10-15", 60);
     expect(inB.dayType).toBe("workday");
-
-    const restDay = await requestOvertime(staffA1, outletA, "2026-10-16", 90, {
-      dayType: "rest_day_5_day_week",
-    });
-    expect(restDay.dayType).toBe("rest_day_5_day_week");
-    await decide(mgrA, outletA, restDay.id, "approve");
-    const feed = await pay(e1.id, "2026-10-16");
-    // 5-day-week rest day: 1.5h x 2.0 x Rp100.000.
-    expect(feed.items[0]!.payIdr).toBe(300_000);
+    // legend-arj.2: the employee's own weekly rest day is no longer chosen by
+    // the employee; it comes from the published roster (see the 1057 block).
   });
 
   it("[§29 Lembur] a newer formula version never changes overtime that was already pinned", async () => {
@@ -1357,19 +1364,25 @@ describe("Lembur review fixes (O1-O7)", () => {
     );
   });
 
-  it("[O5] replaying a create key with a different day type is refused", async () => {
+  it("[O5] replaying a create key with a different (employee-typed) day type never creates a second or different request", async () => {
+    // legend-arj.2: the typed day type is no longer an input that counts, so a
+    // replay is either refused (reused key) or answers the first row.
     const replayKey = key();
-    await requestOvertime(staffA1, outletA, "2026-12-07", 30, {
+    const first = await requestOvertime(staffA1, outletA, "2026-12-07", 30, {
       idempotencyKey: replayKey,
       dayType: "workday",
     });
-    const reused = await failure(
-      requestOvertime(staffA1, outletA, "2026-12-07", 30, {
+    try {
+      const replay = await requestOvertime(staffA1, outletA, "2026-12-07", 30, {
         idempotencyKey: replayKey,
         dayType: "rest_day_5_day_week",
-      }),
-    );
-    expect(reused.code).toBe("IDEMPOTENCY_KEY_REUSED");
+      });
+      expect(replay.id).toBe(first.id);
+      expect(replay.dayType).toBe("workday");
+    } catch (error) {
+      expect(statusOf(error)).toBeGreaterThanOrEqual(400);
+      expect(statusOf(error)).toBeLessThan(500);
+    }
   });
 
   it("[O6] a holiday added after filing is honoured when the request is approved", async () => {
@@ -1425,5 +1438,272 @@ describe("Lembur review fixes (O1-O7)", () => {
       ])
         expect((await failure(call())).status).toBe(422);
     }
+  });
+});
+
+// legend-arj.2 (bead 1057 card B): the day kind of an overtime request comes
+// from the employee's PUBLISHED roster, never from what the employee types.
+//
+// Assumptions (the spec leaves these open; source: bead legend-arj.2 text
+// "Derive rest day from the published shift schedule ... and refuse
+// employee-chosen rest-day tiers"):
+//  - Only published shifts count. A day on which the employee has no published
+//    shift, in a week where they have published shifts, is their weekly rest
+//    day. No published shift at all that week (nothing rostered, or only
+//    drafts) means the day cannot be shown to be a rest day: it stays
+//    "workday" (fail closed: never pay the higher rest-day tiers unproven).
+//  - Rest-day tier (coordinator decision): not derived from the number of
+//    shift days. A roster-derived rest day takes the tenant's published
+//    formula `restDayType` (here rest_day_6_day_week for formula v2).
+//  - A national/company holiday still forces rest_day_6_day_week (existing
+//    contract: "a holiday on `date` overrides it server side").
+//  - An employee-sent rest_day_* dayType is either refused (any thrown error)
+//    or ignored; it never becomes the stored or paid day type.
+describe("1057 Lembur: day type from the published roster (legend-arj.2)", () => {
+  // Mondays in June 2027: no seeded holidays, formula v2 is in effect.
+  const WEEK_5DAY = "2027-06-07"; // e4 works Mon-Fri; Sat 12 and Sun 13 rest
+  const WEEK_6DAY = "2027-06-14"; // e5 works Mon-Sat; Sun 20 rests
+  const WEEK_DRAFT = "2027-06-21"; // e6 has only draft shifts
+  let scheduler: string;
+  let staffA3: string;
+  let staffA4: string;
+  let staffA5: string;
+  let e4: Employee;
+  let e5: Employee;
+  let e6: Employee;
+  let staffA6: string;
+  let e7: Employee;
+
+  const addDays = (date: string, days: number) => {
+    const d = new Date(`${date}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + days);
+    return d.toISOString().slice(0, 10);
+  };
+
+  /** The tenant formula's rest-day type, read from the published formula. */
+  async function formulaRestDayType() {
+    const formulas = await listOvertimeFormulas(tenantScope(), hr, {
+      limit: 100,
+    } as never);
+    const row = formulas.data.find((f) => f.id === formulaV2.id);
+    const type = (row as { restDayType?: string } | undefined)?.restDayType;
+    if (!type) throw new Error("Published formula has no restDayType");
+    return type as "rest_day_6_day_week" | "rest_day_5_day_week";
+  }
+
+  async function rosterShifts(
+    employee: Employee,
+    weekStart: string,
+    workDays: number,
+    publish: boolean,
+  ) {
+    const template = await createShiftTemplate(tenantScope(), scheduler, {
+      outletId: outletA,
+      name: `OTROSTER ${randomUUID().slice(0, 8)}`,
+      segments: [{ startTime: "10:00", endTime: "17:00" }],
+      breakMinutes: 0,
+      stationId: null,
+      positionId: null,
+    } as never);
+    const created: { id: string }[] = [];
+    for (let offset = 0; offset < workDays; offset += 1)
+      created.push(
+        await createShiftAssignment(tenantScope(), scheduler, {
+          outletId: outletA,
+          employeeId: employee.id,
+          businessDate: addDays(weekStart, offset),
+          shiftTemplateId: template.id,
+          stationId: null,
+          idempotencyKey: key(),
+        } as never),
+      );
+    if (publish)
+      await publishRoster(tenantScope(), scheduler, {
+        outletId: outletA,
+        weekStart,
+        idempotencyKey: key(),
+      } as never);
+    return created;
+  }
+
+  /** Either the request is refused, or it resolved to a created row. */
+  async function tryRequest(
+    user: string,
+    date: string,
+    minutes: number,
+    extra: Record<string, unknown>,
+  ) {
+    try {
+      return {
+        created: await requestOvertime(user, outletA, date, minutes, extra),
+      };
+    } catch (error) {
+      return { refused: error };
+    }
+  }
+
+  beforeAll(async () => {
+    scheduler = await customUser(["hr.schedule.manage"], { type: "tenant" });
+    staffA3 = await customUser(SELF_CODES, { type: "outlet", id: outletA });
+    staffA4 = await customUser(SELF_CODES, { type: "outlet", id: outletA });
+    staffA5 = await customUser(SELF_CODES, { type: "outlet", id: outletA });
+    const make = (userId: string, fullName: string) =>
+      createEmployee(
+        tenantScope(),
+        hr,
+        employeeInput({ userId: userIdSchema.parse(userId), fullName }),
+      );
+    e4 = await make(staffA3, "Lembur Roster 5 hari");
+    e5 = await make(staffA4, "Lembur Roster 6 hari");
+    e6 = await make(staffA5, "Lembur Roster draft");
+    staffA6 = await customUser(SELF_CODES, { type: "outlet", id: outletA });
+    e7 = await make(staffA6, "Lembur Roster batal");
+    await rosterShifts(e4, WEEK_5DAY, 5, true);
+    await rosterShifts(e5, WEEK_6DAY, 6, true);
+    await rosterShifts(e6, WEEK_DRAFT, 5, false);
+  });
+
+  it("[legend-arj.2] a roster rest day is derived without any input and takes the formula's restDayType", async () => {
+    const restType = await formulaRestDayType();
+    // Wednesday: rostered, so a normal workday.
+    const workday = await requestOvertime(staffA3, outletA, "2027-06-09", 60);
+    expect(workday.dayType).toBe("workday");
+
+    // Saturday: no published shift in a week that has published shifts.
+    const rest = await requestOvertime(staffA3, outletA, "2027-06-12", 90);
+    expect(rest.dayType).toBe(restType);
+    await decide(mgrA, outletA, rest.id, "approve");
+    const feed = await pay(e4.id, "2027-06-12");
+    expect(feed.items[0]).toMatchObject({ dayType: restType, hours: "1.5000" });
+    expect(feed.items[0]!.payIdr).toBe(
+      computeOvertimePay(FORMULA_V2, restType, "1.5000" as never, BASE_EXACT),
+    );
+  });
+
+  it("[legend-arj.2] the weekly rest day of a 6-day roster takes the formula's restDayType too", async () => {
+    const restType = await formulaRestDayType();
+    const rest = await requestOvertime(staffA4, outletA, "2027-06-20", 150);
+    expect(rest.dayType).toBe(restType);
+    const workday = await requestOvertime(staffA4, outletA, "2027-06-19", 60);
+    expect(workday.dayType).toBe("workday");
+    await decide(mgrA, outletA, rest.id, "approve");
+    const feed = await pay(e5.id, "2027-06-20");
+    expect(feed.items[0]!.payIdr).toBe(
+      computeOvertimePay(FORMULA_V2, restType, "2.5000" as never, BASE_EXACT),
+    );
+  });
+
+  it("[legend-arj.2] an employee-chosen rest-day type on a rostered workday is refused or ignored, never stored", async () => {
+    const outcome = await tryRequest(staffA3, "2027-06-08", 120, {
+      dayType: "rest_day_5_day_week",
+    });
+    if ("refused" in outcome) {
+      expect(statusOf(outcome.refused) ?? 422).toBeGreaterThanOrEqual(400);
+      expect(statusOf(outcome.refused) ?? 422).toBeLessThan(500);
+      return;
+    }
+    expect(outcome.created.dayType).toBe("workday");
+    // The approver's inbox shows the real day type, not the typed one.
+    const { rows } = await owner.query<{ request_reason: string }>(
+      "SELECT request_reason FROM approval_requests WHERE tenant_id = $1 AND object_id = $2",
+      [tenantId, outcome.created.id],
+    );
+    expect(rows[0]!.request_reason).toContain("workday");
+    expect(rows[0]!.request_reason).not.toContain("rest_day");
+    // Approved, it pays workday tiers (v2: 2.0x first hour, then 2.5x).
+    await decide(mgrA, outletA, outcome.created.id, "approve");
+    const feed = await pay(e4.id, "2027-06-08");
+    expect(feed.items[0]).toMatchObject({ dayType: "workday" });
+    expect(feed.items[0]!.payIdr).toBe(
+      computeOvertimePay(FORMULA_V2, "workday", "2.0000" as never, BASE_EXACT),
+    );
+  });
+
+  it("[legend-arj.2] a rest-day type typed on a day with no roster proof (no shifts, or only drafts) is refused or ignored", async () => {
+    for (const [user, date] of [
+      [staffA5, "2027-06-26"], // week with draft shifts only
+      [staffA5, "2027-07-14"], // week with nothing rostered at all
+    ] as const) {
+      const outcome = await tryRequest(user, date, 60, {
+        dayType: "rest_day_5_day_week",
+      });
+      if ("refused" in outcome) {
+        expect(statusOf(outcome.refused) ?? 422).toBeGreaterThanOrEqual(400);
+        expect(statusOf(outcome.refused) ?? 422).toBeLessThan(500);
+      } else expect(outcome.created.dayType).toBe("workday");
+    }
+    // Without any input the same days are plain workdays.
+    expect(
+      (await requestOvertime(staffA5, outletA, "2027-06-27", 60)).dayType,
+    ).toBe("workday");
+  });
+
+  it("[legend-arj.2] a typed workday cannot downgrade a derived rest day", async () => {
+    const outcome = await tryRequest(staffA3, "2027-06-13", 60, {
+      dayType: "workday",
+    });
+    if ("refused" in outcome) {
+      expect(statusOf(outcome.refused) ?? 422).toBeGreaterThanOrEqual(400);
+      expect(statusOf(outcome.refused) ?? 422).toBeLessThan(500);
+    } else expect(outcome.created.dayType).toBe(await formulaRestDayType());
+  });
+
+  it("[legend-arj.2] a national holiday still forces the rest-day type on a rostered workday, whatever the employee types", async () => {
+    await createHoliday(tenantScope(), hr, {
+      date: "2027-06-11",
+      name: "OTDB Libur roster",
+      type: "national",
+      outletId: null,
+      idempotencyKey: key(),
+    } as never);
+    const created = await requestOvertime(staffA3, outletA, "2027-06-11", 60, {
+      dayType: "workday",
+    });
+    expect(created.dayType).toBe("rest_day_6_day_week");
+  });
+
+  // Money bug (review of 1057): an employee with NO usable shift at all in a
+  // week the outlet published (office staff, a manager) must not get the
+  // rest-day tiers on an ordinary working day: that would overpay. Only an
+  // employee who has published shifts that week and a free day has a rest day.
+  const OFFICE_WEEK = "2027-07-05"; // outlet publishes; e4 works Mon-Fri
+  const CANCEL_WEEK = "2027-07-26"; // outlet publishes; e7 cancelled, e5 draft
+
+  it("[legend-arj.2] an employee with no shift at all in a published outlet week gets workday on Monday to Friday, and the rest-day type only where they have rostered shifts and a free day", async () => {
+    await rosterShifts(e4, OFFICE_WEEK, 5, true);
+    for (let offset = 0; offset < 5; offset += 1) {
+      const date = addDays(OFFICE_WEEK, offset);
+      const created = await requestOvertime(staffA5, outletA, date, 60);
+      expect(created.dayType, date).toBe("workday");
+    }
+    // Control: e4 has published shifts Mon-Fri that week, so Saturday is
+    // their rest day and takes the formula's restDayType.
+    const control = await requestOvertime(
+      staffA3,
+      outletA,
+      addDays(OFFICE_WEEK, 5),
+      60,
+    );
+    expect(control.dayType).toBe(await formulaRestDayType());
+  });
+
+  it("[legend-arj.2] an employee whose shifts that week are all cancelled or all still draft gets workday on a weekday", async () => {
+    // e7: shifts published with the week, then every one cancelled.
+    const cancelled = await rosterShifts(e7, CANCEL_WEEK, 5, false);
+    await rosterShifts(e4, CANCEL_WEEK, 5, true);
+    for (const shift of cancelled)
+      await cancelShiftAssignment(tenantScope(), scheduler, shift.id);
+    // e5: shifts created after the publication, so they stay drafts.
+    await rosterShifts(e5, CANCEL_WEEK, 5, false);
+    // The outlet-week is published (e4), yet neither has a usable shift.
+    for (const [user, label] of [
+      [staffA6, "all cancelled"],
+      [staffA4, "all draft"],
+    ] as const)
+      for (let offset = 0; offset < 5; offset += 1) {
+        const date = addDays(CANCEL_WEEK, offset);
+        const created = await requestOvertime(user, outletA, date, 60);
+        expect(created.dayType, `${label} ${date}`).toBe("workday");
+      }
   });
 });

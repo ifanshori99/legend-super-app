@@ -38,6 +38,9 @@ const MAINT_FUNCTIONS = [
   "app.audit_retention_due_tenants()",
   "app.purge_audit_retention_batch(uuid, integer)",
 ];
+// legend_app may SET ROLE to it (INHERIT FALSE, drizzle/0481): the only role that
+// may record an 'ok' observation of a proof file. Reached, never inherited.
+const RECON_GROUP = "legend_payout_recon";
 const GRANTOR_GROUP = "legend_payout_grantor";
 const PAYOUT_OWNER = "legend_payout";
 // The only routine the grantor group may run (migration 0419).
@@ -981,8 +984,47 @@ async function provisionApp(client: ClientBase, login: Login) {
   return outcome;
 }
 
+// The proof-read role (drizzle/0481) is reached by SET ROLE only: the login must
+// not inherit it, and neither the login, legend_app nor PUBLIC may run the two
+// functions that record an observation without the caller's door (observe_ok and
+// observe_difference are for the recon role only; the internal function takes
+// the five-argument signature with p_by_recon, legend-tiw2h).
+async function assertReconRoleReachedOnly(client: ClientBase, user: string) {
+  const result = await client.query(
+    `SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $2::text)
+              AND pg_has_role($1::text, $2::text, 'USAGE') AS inherits,
+            ARRAY(
+              SELECT f.sig || ' for ' || g.grantee
+                FROM (VALUES ('app.payout_recon_evidence_observe_ok(uuid, uuid)'),
+                             ('app.payout_recon_evidence_observe_difference(uuid, uuid, text, text)'),
+                             ('app.payout_recon_evidence_observe_internal(uuid, uuid, text, text, boolean)')) AS f(sig)
+                CROSS JOIN (VALUES ($1::text), ('legend_app'), ('public')) AS g(grantee)
+               WHERE to_regprocedure(f.sig) IS NOT NULL
+                 AND has_function_privilege(g.grantee, to_regprocedure(f.sig), 'EXECUTE')
+               ORDER BY 1
+            ) AS executable`,
+    [user, RECON_GROUP],
+  );
+  const { inherits, executable } = result.rows[0];
+  if (inherits)
+    throw new ProvisionError(
+      `The application role inherits ${RECON_GROUP}; it may only reach it with SET ROLE (membership INHERIT FALSE, SET TRUE).`,
+    );
+  if (executable.length)
+    throw new ProvisionError(
+      `The application role can run proof observation functions outside ${RECON_GROUP}: ${executable.join(", ")}.`,
+    );
+}
+
 async function auditApp(client: ClientBase, user: string) {
-  await assertRestricted(client, user, "application", [APP_GROUP], []);
+  await assertRestricted(
+    client,
+    user,
+    "application",
+    [APP_GROUP, RECON_GROUP],
+    [],
+  );
+  await assertReconRoleReachedOnly(client, user);
   await assertTableRights(client, user, "application", [], {
     "*": APP_TABLE_RIGHTS,
   });
