@@ -7786,3 +7786,14 @@ Dasar `origin/milestone/m1` 3ddf85f3b (batch90). Cabang masuk: `ghostex/pin-kasi
 Alasan 8b2dc0b1 keluar: allowlist default-tolak 1043 bertabrakan dengan desain 1027/1054/wa9n7 (guard bertanda sesi). Hasil merge membuat 53 tes perangkat bersama gagal (`shared-device-allowlist`, `shared-device-backoffice-guard`, `auth-shared-device-guard`, `push-removal-shared-device-1024`, `shared-device-fail-closed-stamp-vzvok`); rute keep-alive `POST /api/auth/sessions/current/activity` juga tidak ada di allowlist 1043. Menyatukan dua desain akses ini keputusan pemilik cabang, bukan merge train: cabang 1043 perlu di-rebase di atas 1027/1054 (allowlist ditambah keep-alive, urutan guard mengikuti wa9n7 lalu allowlist). Dilaporkan ke CTO.
 
 Gerbang: workspace links + lint hijau (6m32 antre, 2 warning lama); typecheck API+web hijau 2m29 (heap 8 GB); fast gate 16 berkas (580 tes API + 46 root) hijau 4m27, ditambah keluarga perangkat bersama 45 berkas (1033 tes) hijau; build hijau; e2e produksi 18 lulus/1 skip. Full run 20:58-23:20 (2j21m): 23991 lulus, 4 gagal di 3 berkas, semuanya lulus pada rerun terarah (2x): `hris-employee-bank-code`, `tax-api` ORD-03, `rbac-audit-writer` x2 (flake dikenal).
+
+## 1113 Perbaikan second-opinion akses 1094 (19 Nov 2026)
+
+Cabang `ws/1094-akses-perangkat-bersama-sisa`, dasar 4f5e3cc08. Tingkat K (akses + uang). Tanpa migrasi.
+
+- P1 isu pesanan: POST pembuatan isu menolak resolusi apa pun yang bukan null (manual_refund, voucher, swap) di tablet bersama (403 `SHARED_DEVICE_SCREEN_CLOSED`) sebelum service jalan. Laporan tanpa resolusi tetap jalan.
+- Keputusan CTO: resolve di order-recovery juga menolak voucher dan swap di tablet bersama, sama seperti manual_refund. Hanya batal reservasi yang tetap buka (Q29).
+- P2 availability: GET `/api/menu/availability` dengan token kasir menolak outlet lain (403 `ACTING_STAFF_OUTLET_MISMATCH`) dan tanpa `outletId` dipersempit ke outlet token; pemulihan sold_out kedaluwarsa tidak menyentuh outlet lain.
+- P2 socket panic: perangkat bersama gagal recheck sesi receiver (`device_revoked`), dan saat shared mode menyala socket receiver perangkat itu diputus (4401). Upgrade baru dari perangkat bersama kini 401 (recheck lebih dulu), bukan 403.
+- Tes: gagal-dulu terbukti (order-issues 3/5 merah, availability 2/4, panic 2/4, resolve voucher/swap 2 merah), regresi 16 berkas 780 lulus, tsc API 0 (heap 8 GB). Review architect (xhigh) pada delta: tanpa P0-P2.
+- Subagent: total 33, puncak 3 bersamaan, token heavy dipegang induk (bukan subagent).
