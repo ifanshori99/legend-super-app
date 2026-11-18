@@ -335,6 +335,65 @@ export type RecoveryChargeRefundSplit = {
 };
 
 /**
+ * legend-0zfr1: the share of a paid charge that one NEW refund gives back,
+ * taken from what is still left of each component (the charge's component
+ * less the components of the non-failed refunds that exist), not from a
+ * cumulative IDR figure. A failed refund frees its components, so the next
+ * refund cannot overshoot a component. A refund that takes all the money left
+ * takes the left components exactly; otherwise PBJT = round(Pleft * r / Tleft)
+ * half up, service = round(Sleft * (r - PBJT) / (Sleft + Gleft)), gross is the
+ * rest. Each component is <= its left amount, the sum is the refund. Throws
+ * `RangeError` when the refund passes the money left or the refunded
+ * components pass the charge.
+ */
+export function recoveryChargeRefundSplitFromRemaining(input: {
+  charge: {
+    grossSalesIdr: number;
+    serviceChargeIdr: number;
+    pbjtIdr: number;
+    amountIdr: number;
+  };
+  refunded: RecoveryChargeRefundSplit;
+  refundIdr: number;
+}): RecoveryChargeRefundSplit {
+  const { charge, refunded } = input;
+  const left = {
+    gross: BigInt(charge.grossSalesIdr) - BigInt(refunded.grossSalesIdr),
+    service:
+      BigInt(charge.serviceChargeIdr) - BigInt(refunded.serviceChargeIdr),
+    pbjt: BigInt(charge.pbjtIdr) - BigInt(refunded.pbjtIdr),
+  };
+  const total = left.gross + left.service + left.pbjt;
+  const refund = BigInt(Math.max(0, input.refundIdr));
+  if (
+    left.gross < 0n ||
+    left.service < 0n ||
+    left.pbjt < 0n ||
+    refund <= 0n ||
+    refund > total
+  )
+    throw new RangeError("Charge refund is outside the paid charge");
+  if (refund === total)
+    return {
+      grossSalesIdr: Number(left.gross),
+      serviceChargeIdr: Number(left.service),
+      pbjtIdr: Number(left.pbjt),
+    };
+  const pbjt = mulDivHalfUp(left.pbjt, refund, total);
+  const rest = refund - pbjt;
+  const base = left.service + left.gross;
+  const service = base === 0n ? 0n : mulDivHalfUp(left.service, rest, base);
+  const gross = rest - service;
+  if (pbjt > left.pbjt || service > left.service || gross > left.gross)
+    throw new RangeError("Charge refund is outside the paid charge");
+  return {
+    grossSalesIdr: Number(gross),
+    serviceChargeIdr: Number(service),
+    pbjtIdr: Number(pbjt),
+  };
+}
+
+/**
  * legend-nsvu0: the share of a paid swap-difference charge that one refund
  * gives back. Cumulative: with `priorIdr` already refunded, this refund takes
  * `F(prior + refund) - F(prior)` per component, where F(x) is the split of the

@@ -26,7 +26,7 @@
 // `refundPaidChargeInTx` is the core, callable inside an existing transaction
 // (the void of an order calls it). Lock order: issue, order, charge, intent.
 
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { AccessError } from "@starter/shared/access";
 import {
   assertOutletInScope,
@@ -46,7 +46,7 @@ import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { auditCharge, lockChargeChain } from "./order-recovery-charge.ts";
-import { recoveryChargeRefundSplit } from "./order-recovery-refund-amount.ts";
+import { recoveryChargeRefundSplitFromRemaining } from "./order-recovery-refund-amount.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import { openRefundChainSafely } from "./payment-refund.service.ts";
 import { appendPaymentEvent } from "./payment-support.ts";
@@ -148,9 +148,26 @@ export async function refundPaidChargeInTx(
       `Refund melebihi sisa tagihan yang dibayar; paling banyak ${Math.max(0, remaining)} IDR.`,
     );
 
-  const split = recoveryChargeRefundSplit({
+  // legend-0zfr1: the split comes from what is left of each component after
+  // the non-failed refunds that exist, so a failed refund frees its share.
+  const refundedParts = await refundedComponentsOfCharge(
+    tx,
+    tenantId,
     charge,
-    priorIdr: refundedBefore,
+    intent.id,
+  );
+  if (
+    refundedParts.grossSalesIdr +
+      refundedParts.serviceChargeIdr +
+      refundedParts.pbjtIdr !==
+    refundedBefore
+  )
+    throw conflict(
+      "Rincian refund tagihan ini tidak sesuai dengan refund yang tercatat; hubungi tim teknis.",
+    );
+  const split = recoveryChargeRefundSplitFromRemaining({
+    charge,
+    refunded: refundedParts,
     refundIdr: input.amountIdr,
   });
 
@@ -298,9 +315,59 @@ async function refundedOfIntent(
         eq(paymentRefunds.tenantId, tenantId),
         eq(paymentRefunds.paymentIntentId, intentId),
         sql`${paymentRefunds.status} <> 'failed'`,
+        // A refund of an unallocated fund gives back money that is not the charge's.
+        isNull(paymentRefunds.unallocatedFundId),
       ),
     );
   return Number(row?.total ?? "0");
+}
+
+/**
+ * legend-0zfr1: gross / service / PBJT already given back by the non-failed
+ * refunds of the charge's intent, read from their `order_issue.charge_refunded`
+ * events (the split is frozen there), under the charge and intent locks.
+ */
+async function refundedComponentsOfCharge(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+  charge: ChargeRow,
+  intentId: string,
+): Promise<{
+  grossSalesIdr: number;
+  serviceChargeIdr: number;
+  pbjtIdr: number;
+}> {
+  const payload = sql`${domainEventOutbox.event}->'payload'`;
+  const [row] = await tx
+    .select({
+      gross: sql<string>`coalesce(sum((${payload}->>'grossSalesIdr')::bigint), 0)::text`,
+      service: sql<string>`coalesce(sum((${payload}->>'serviceChargeIdr')::bigint), 0)::text`,
+      pbjt: sql<string>`coalesce(sum((${payload}->>'pbjtIdr')::bigint), 0)::text`,
+    })
+    .from(domainEventOutbox)
+    .innerJoin(
+      paymentRefunds,
+      and(
+        eq(paymentRefunds.tenantId, domainEventOutbox.tenantId),
+        sql`${paymentRefunds.id}::text = ${payload}->>'refundId'`,
+      ),
+    )
+    .where(
+      and(
+        eq(domainEventOutbox.tenantId, tenantId),
+        eq(domainEventOutbox.destination, EVENT_DESTINATION),
+        eq(domainEventOutbox.aggregateId, charge.orderIssueId),
+        sql`${domainEventOutbox.event}->>'name' = ${CHARGE_REFUNDED_EVENT}`,
+        sql`${payload}->>'chargeId' = ${charge.id}`,
+        eq(paymentRefunds.paymentIntentId, intentId),
+        sql`${paymentRefunds.status} <> 'failed'`,
+      ),
+    );
+  return {
+    grossSalesIdr: Number(row?.gross ?? "0"),
+    serviceChargeIdr: Number(row?.service ?? "0"),
+    pbjtIdr: Number(row?.pbjt ?? "0"),
+  };
 }
 
 /**

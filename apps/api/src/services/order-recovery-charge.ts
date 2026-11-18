@@ -53,6 +53,7 @@ import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { OrderRevenueMismatch } from "./order-revenue.ts";
+import { isOrderVoidedByCorrection } from "./order-recovery-charge-void-guard.ts";
 import { recoveryChargeSplit } from "./order-recovery-refund-amount.ts";
 import { confirmLinkUnpaidAtProvider } from "./payment-provider-proof.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
@@ -633,6 +634,14 @@ export async function handleIssueChargePaid(
   // for at the till (`collect-at-pos`); any other intent is a late payment.
   // The void of the order leaves a `routed_pos` charge and its live QRIS alone,
   // so that QRIS paid on a voided order is late (refunded in full).
+  // A POS void correction (`pos_order_voids`) leaves the order `completed`: an
+  // unpaid charge of it takes no money either, `open` or `routed_pos`
+  // (legend-vl6bk, SO 996 F2). The one refund of the late payment follows.
+  if (
+    (charge.status === "open" || charge.status === "routed_pos") &&
+    (await isOrderVoidedByCorrection(tx, tenantId, order.id))
+  )
+    return "late_payment_on_closed_charge";
   const cashierQris =
     charge.status === "routed_pos" &&
     charge.paymentIntentId === intentId &&

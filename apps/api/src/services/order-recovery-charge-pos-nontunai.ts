@@ -31,6 +31,7 @@ import {
   CoreError,
   outletIdSchema,
   type ScopedTenantContext,
+  type TenantId,
 } from "@starter/shared/core";
 import type { CollectChargeAtPosInput } from "@starter/shared/qr-order";
 import { db } from "../db/index.ts";
@@ -54,6 +55,7 @@ import type {
   CollectChargeAtPosCaller,
   CollectedChargeAtPos,
 } from "./order-recovery-charge-pos.ts";
+import { assertOrderNotVoidedByCorrection } from "./order-recovery-charge-void-guard.ts";
 import { toView } from "./order-recovery-charge-staff.ts";
 import { accessSnapshotInTransaction } from "./permission-resolver.ts";
 import {
@@ -100,7 +102,11 @@ async function lockChargeForCashier(
   return locked;
 }
 
-function assertCollectable(locked: Locked): void {
+async function assertCollectable(
+  tx: Tx,
+  tenantId: TenantId,
+  locked: Locked,
+): Promise<void> {
   const { charge, order } = locked;
   if (charge.status !== "open" && charge.status !== "routed_pos")
     throw new HttpError(
@@ -114,6 +120,7 @@ function assertCollectable(locked: Locked): void {
       "CONFLICT",
       "Pesanan sudah dibatalkan; tagihan selisih tidak dapat dibayar.",
     );
+  await assertOrderNotVoidedByCorrection(tx, tenantId, order.id);
 }
 
 /**
@@ -182,7 +189,7 @@ export async function collectChargeAtPosQris(
       chargeId,
       now,
     );
-    assertCollectable(locked);
+    await assertCollectable(tx, tenantId, locked);
     if (settled)
       throw new HttpError(
         409,
@@ -328,7 +335,7 @@ export async function collectChargeAtPosEdc(
       sale.status === "approved"
     )
       return { charge: toView(charge), changeIdr: 0 };
-    assertCollectable(locked);
+    await assertCollectable(tx, tenantId, locked);
     if (settled)
       throw new HttpError(
         409,
