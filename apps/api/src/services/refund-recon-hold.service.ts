@@ -53,6 +53,7 @@ import {
   type ProviderRefundIdKind,
 } from "./payment-provider-partial-refund.ts";
 import { alertOwnRefundFailedUnverified } from "./payment-provider-refunded-alert.ts";
+import { ownRefundEchoesFactSql } from "./payment-provider-refunded-foreign-sql.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import { assertPaymentPermission } from "./payment-support.ts";
 import type { Tx } from "./permission-resolver.ts";
@@ -331,9 +332,10 @@ const ownCompletedIdrSql = (
            AND f.id = r.unallocated_fund_id
            AND fe.provider = ${PROVIDER}
            AND fe.provider_ref = ${providerPaymentRef}))
+     -- 1063 9uz9n: a fact echoes our refund only from the same intent and
+     -- transaction (and not above our amount); else both count.
      AND NOT EXISTS (SELECT 1 FROM payment_provider_refunds p
-       WHERE p.tenant_id = r.tenant_id AND p.refund_id_kind = 'provider'
-         AND p.provider_refund_id = r.provider_ref))`;
+       WHERE ${ownRefundEchoesFactSql("r", "p")}))`;
 
 /**
  * What is left of one provider transaction of the intent: its amount (the

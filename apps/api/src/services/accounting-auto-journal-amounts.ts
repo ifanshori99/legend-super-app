@@ -134,7 +134,10 @@ import {
 } from "./accounting-auto-journal-tax-split.ts";
 import { salePostingAccountsOf } from "./accounting-sale-account-history.ts";
 import { netAllocatedIdrSql } from "./payment-net-allocated-sql.ts";
-import { providerRefundedForeignIdrSql } from "./payment-provider-refunded-foreign-sql.ts";
+import {
+  ownRefundEchoesFactSql,
+  providerRefundedForeignIdrSql,
+} from "./payment-provider-refunded-foreign-sql.ts";
 
 type TenantId = ScopedTenantContext["tenant"]["tenantId"];
 
@@ -2468,6 +2471,11 @@ export async function autoJournalFactOf(
               // Only a provider's own refund id can be ours echoed (1035).
               eq(paymentProviderRefunds.refundIdKind, "provider"),
               eq(paymentProviderRefunds.providerRefundId, refund.providerRef),
+              // 1063 9uz9n: only from the same intent and transaction (and not
+              // above our amount): the id alone is not our echo.
+              sql`EXISTS (SELECT 1 FROM payment_refunds er
+                WHERE er.tenant_id = ${tenantId}::uuid AND er.id = ${p.refundId}::uuid
+                  AND ${ownRefundEchoesFactSql("er", "payment_provider_refunds")})`,
             ),
           );
         if (echoed) {
@@ -2581,8 +2589,15 @@ export async function autoJournalFactOf(
             or(
               // Only the provider's own refund id can be the reference of a
               // refund of ours (1035): a synthetic id never echoes.
+              // 1063 9uz9n: ... from the same intent and transaction only.
               refund.refundIdKind === "provider"
-                ? eq(paymentRefunds.providerRef, refund.providerRefundId)
+                ? and(
+                    eq(paymentRefunds.providerRef, refund.providerRefundId),
+                    sql`EXISTS (SELECT 1 FROM payment_provider_refunds ep
+                      WHERE ep.tenant_id = ${tenantId}::uuid
+                        AND ep.id = ${p.providerRefundId}::uuid
+                        AND ${ownRefundEchoesFactSql("payment_refunds", "ep")})`,
+                  )
                 : sql`false`,
               and(
                 eq(paymentRefunds.paymentIntentId, p.paymentIntentId),

@@ -289,9 +289,9 @@ async function seedIntent(world: World, amountIdr: number): Promise<string> {
   await owner.query(
     `INSERT INTO payment_intents
        (id, tenant_id, outlet_id, payment_link_id, method, provider, amount_idr, idempotency_key,
-        status, paid_at, instructions, expires_at)
+        status, paid_at, instructions, expires_at, provider_ref)
      VALUES ($1, $2, $3, $4, 'qris', 'doit', $5, $6, 'paid', $7,
-             '{"method":"qris","qrPayload":"test","issuer":null}', now())`,
+             '{"method":"qris","qrPayload":"test","issuer":null}', now(), $8)`,
     [
       intentId,
       world.tenant.id,
@@ -300,6 +300,10 @@ async function seedIntent(world: World, amountIdr: number): Promise<string> {
       amountIdr,
       `pr-${intentId}`,
       DAY,
+      // 1063 9uz9n: a paid intent carries the provider payment id its refund
+      // facts name (`seedProviderRefund`); our intent-level refund echoes a
+      // fact only from that transaction.
+      `pay_${intentId.slice(0, 12)}`,
     ],
   );
   return intentId;

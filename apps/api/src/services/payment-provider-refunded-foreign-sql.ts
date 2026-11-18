@@ -4,6 +4,41 @@
 import { sql, type SQL } from "drizzle-orm";
 
 /**
+ * 1063 (legend-9uz9n): SQL predicate, true when our refund `r` (alias of
+ * `payment_refunds`) is the echo of the provider refund fact `p` (alias of
+ * `payment_provider_refunds`). The refund id alone proves nothing: it must be
+ * a provider refund id, of the same intent, carry at least the fact's amount,
+ * and our refund must come from the very transaction the fact names (same
+ * rule as the recorder's `own` check): an intent-level refund and a fund
+ * without an evidence mapping come from the intent's own transaction, a fund
+ * with one from its evidence's transaction. Anything else is NOT an echo, so
+ * the fact stays counted (restrictive). The caller adds the status test.
+ */
+export const ownRefundEchoesFactSql = (r: string, p: string): SQL =>
+  sql.raw(`(${r}.tenant_id = ${p}.tenant_id
+    AND ${p}.refund_id_kind = 'provider'
+    AND ${r}.provider_ref = ${p}.provider_refund_id
+    AND ${r}.payment_intent_id = ${p}.payment_intent_id
+    AND ${r}.amount_idr >= ${p}.amount_idr
+    AND (
+      ((${r}.unallocated_fund_id IS NULL OR NOT EXISTS (
+          SELECT 1 FROM payment_unallocated_funds ef
+           WHERE ef.tenant_id = ${r}.tenant_id
+             AND ef.id = ${r}.unallocated_fund_id
+             AND ef.evidence_id IS NOT NULL))
+        AND EXISTS (SELECT 1 FROM payment_intents ri
+           WHERE ri.tenant_id = ${r}.tenant_id
+             AND ri.id = ${r}.payment_intent_id
+             AND ri.provider_ref = ${p}.provider_payment_ref))
+      OR EXISTS (SELECT 1 FROM payment_unallocated_funds ff
+          JOIN payment_evidence fe
+            ON fe.tenant_id = ff.tenant_id AND fe.id = ff.evidence_id
+         WHERE ff.tenant_id = ${r}.tenant_id
+           AND ff.id = ${r}.unallocated_fund_id
+           AND fe.provider = ${p}.provider
+           AND fe.provider_ref = ${p}.provider_payment_ref)))`);
+
+/**
  * SQL: money the provider refunded on its own for the intent (given as tenant
  * and intent id expressions), counted against what the intent may refund. Left
  * out: a refund of a transaction a parked fund holds WHOLE (the fund itself is
@@ -63,10 +98,9 @@ export function providerRefundedForeignIdrSql(
           AND uf.evidence_id = pr.evidence_id
           AND uf.amount_idr >= pe.amount_idr)
        AND NOT EXISTS (SELECT 1 FROM payment_refunds own
-         WHERE own.tenant_id = pr.tenant_id
-           -- Only a provider's own refund id can echo ours (1035).
-           AND pr.refund_id_kind = 'provider'
-           AND own.provider_ref = pr.provider_refund_id
-           AND own.status <> 'failed')
+         WHERE own.status <> 'failed'
+           -- Only a provider's own refund id can echo ours (1035), and only
+           -- from the same intent and transaction (1063 9uz9n).
+           AND ${ownRefundEchoesFactSql("own", "pr")})
      GROUP BY pr.tenant_id, pr.payment_intent_id, pr.evidence_id) g), 0)`;
 }
