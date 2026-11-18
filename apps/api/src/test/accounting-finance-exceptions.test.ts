@@ -87,6 +87,7 @@ host.use(errorHandler);
 type Kind =
   | "edge_tax_unsnapshotted"
   | "edge_void_unsupported"
+  | "edge_void_refused"
   | "edge_receipt_skipped"
   | "edge_link_dead_letter"
   | "payout_fee_not_posted"
@@ -1173,6 +1174,352 @@ describe("finance-exceptions: outlet scope", () => {
       kind: "edge_receipt_skipped",
     });
     expect(summaryOf(payload, "edge_receipt_skipped").count).toBe(1);
+  });
+});
+
+// Kind edge_void_refused (legend-nbkvh, 1042 F2; brief
+// docs/briefs/662-finance-exceptions-contract.md item 2b). Own outlets and own
+// dates so the exact counts of the suites above stay untouched.
+// Assumptions: the item date is edge_order_ingests.updated_at (brief), so the
+// seeded created_at is deliberately on a different day than updated_at; the
+// seeded state 'voided' with the stale reason is a legal row (the reason is
+// kept after a later successful void).
+describe("finance-exceptions: edge_void_refused", () => {
+  const KIND = "edge_void_refused";
+  const REASON = "void_refused:manual_refund_exists";
+  const WINDOW = { from: "2026-03-17", to: "2026-03-18" };
+  const UPDATED = {
+    r1a: stamp("17", 5, 1),
+    r1b: stamp("18", 5, 2),
+    r2: stamp("17", 6, 1),
+  };
+  let outletR1: string;
+  let outletR2: string;
+  let outletR3: string;
+  let scopedR1: { cookie: string; userId: string };
+  const ids = {} as {
+    listedA: { uuid: string; totalIdr: number };
+    listedB: { uuid: string; totalIdr: number };
+    listedR2: { uuid: string; totalIdr: number };
+    zoned: { uuid: string; totalIdr: number };
+    excluded: string[];
+    otherTenant: string;
+  };
+
+  async function seedRefused(seed: {
+    tenant: string;
+    outlet: string;
+    updatedAt: string;
+    state: string;
+    reason: string | null;
+    taxIdr?: number;
+    subtotalIdr?: number;
+    snapshotRuleId?: string;
+  }) {
+    const order = await seedOrder({
+      tenant: seed.tenant,
+      outlet: seed.outlet,
+      at: stamp("17", 5, 0),
+      taxIdr: seed.taxIdr ?? 0,
+      subtotalIdr: seed.subtotalIdr,
+      snapshotRuleId: seed.snapshotRuleId,
+      ingest: null,
+    });
+    await asTenant(seed.tenant, (client) =>
+      client.query(
+        `INSERT INTO edge_order_ingests
+           (tenant_id, order_id, outlet_id, paid_event_id, state, reason, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz, $8::timestamptz)`,
+        [
+          seed.tenant,
+          order.uuid,
+          seed.outlet,
+          randomUUID(),
+          seed.state,
+          seed.reason,
+          stamp("16", 5, 0),
+          seed.updatedAt,
+        ],
+      ),
+    );
+    return order;
+  }
+
+  beforeAll(async () => {
+    outletR1 = await newOutlet("Void ditolak 1");
+    outletR2 = await newOutlet("Void ditolak 2");
+    outletR3 = await newOutlet("Void ditolak zona waktu");
+    // A tax snapshot keeps the taxed order out of edge_tax_unsnapshotted.
+    const ruleId = randomUUID();
+    await owner.query(
+      `INSERT INTO tax_rules
+         (id, tenant_id, outlet_id, code, name, tax_type, rate_bp, region_code, channels, applies_to,
+          price_includes_tax, include_service_in_base, is_active, version, effective_from, status,
+          published_at, published_by)
+       VALUES ($1, $2, NULL, $3, 'pbjt uji void', 'pbjt', 1000, NULL, '[]',
+               '{"itemClasses":["food_beverage"],"categoryIds":[],"itemIds":[]}',
+               false, true, true, 1, '2026-01-01', 'published', now(), $4)`,
+      [ruleId, tenantId, `PBJT-VR-${unique()}`.toUpperCase(), finance.userId],
+    );
+    scopedR1 = await signedIn();
+    await assignTemplate(scopedR1.userId, "finance", outletR1);
+
+    // Listed. The first order carries tax, so its amount proves "order total".
+    ids.listedA = await seedRefused({
+      tenant: tenantId,
+      outlet: outletR1,
+      updatedAt: UPDATED.r1a,
+      state: "ingested",
+      reason: REASON,
+      subtotalIdr: 100_000,
+      taxIdr: 10_000,
+      snapshotRuleId: ruleId,
+    });
+    ids.listedB = await seedRefused({
+      tenant: tenantId,
+      outlet: outletR1,
+      updatedAt: UPDATED.r1b,
+      state: "ingested",
+      reason: REASON,
+      subtotalIdr: 45_000,
+    });
+    ids.listedR2 = await seedRefused({
+      tenant: tenantId,
+      outlet: outletR2,
+      updatedAt: UPDATED.r2,
+      state: "ingested",
+      reason: REASON,
+      subtotalIdr: 30_000,
+    });
+
+    // 17:30 UTC on the 17th is 00:30 on the 18th in Asia/Jakarta: the item
+    // belongs to the 18th by the outlet's clock, not the UTC date.
+    ids.zoned = await seedRefused({
+      tenant: tenantId,
+      outlet: outletR3,
+      updatedAt: "2026-03-17T17:30:00.000Z",
+      state: "ingested",
+      reason: REASON,
+      subtotalIdr: 20_000,
+    });
+
+    // Not listed on outlet R1.
+    const voided = await seedRefused({
+      tenant: tenantId,
+      outlet: outletR1,
+      updatedAt: UPDATED.r1a,
+      state: "voided",
+      reason: REASON,
+    });
+    const otherReason = await seedRefused({
+      tenant: tenantId,
+      outlet: outletR1,
+      updatedAt: UPDATED.r1a,
+      state: "ingested",
+      reason: "void_refused:refund_exists",
+    });
+    const noReason = await seedRefused({
+      tenant: tenantId,
+      outlet: outletR1,
+      updatedAt: UPDATED.r1a,
+      state: "ingested",
+      reason: null,
+    });
+    const tooOld = await seedRefused({
+      tenant: tenantId,
+      outlet: outletR1,
+      updatedAt: stamp("05", 5, 0),
+      state: "ingested",
+      reason: REASON,
+    });
+    const tooNew = await seedRefused({
+      tenant: tenantId,
+      outlet: outletR1,
+      updatedAt: stamp("25", 5, 0),
+      state: "ingested",
+      reason: REASON,
+    });
+    ids.excluded = [voided, otherReason, noReason, tooOld, tooNew].map(
+      (order) => order.uuid,
+    );
+    const foreign = await seedRefused({
+      tenant: other.tenant,
+      outlet: other.outlet,
+      updatedAt: UPDATED.r1a,
+      state: "ingested",
+      reason: REASON,
+      subtotalIdr: 999_000,
+    });
+    ids.otherTenant = foreign.uuid;
+  }, 60_000);
+
+  const refIds = (items: Item[]) => items.map((item) => item.refId).sort();
+
+  it("lists state=ingested with the manual-refund reason: order ref, detail, amount = order total, dated by updated_at", async () => {
+    const payload = await fetchList(finance.cookie, {
+      ...WINDOW,
+      outletId: outletR1,
+      kind: KIND,
+    });
+    expect(refIds(payload.items)).toEqual(
+      [ids.listedA.uuid, ids.listedB.uuid].sort(),
+    );
+    for (const item of payload.items) {
+      expect(item.kind).toBe(KIND);
+      expect(item.refType).toBe("order");
+      expect(item.detail).toBe("manual_refund_exists");
+      expect(item.outletId).toBe(outletR1);
+    }
+    const byRef = new Map(payload.items.map((item) => [item.refId, item]));
+    expect(ids.listedA.totalIdr).toBe(110_000);
+    expect(byRef.get(ids.listedA.uuid)?.amountIdr).toBe(110_000);
+    expect(byRef.get(ids.listedB.uuid)?.amountIdr).toBe(45_000);
+    expect(instants(payload.items)).toEqual([UPDATED.r1a, UPDATED.r1b].sort());
+    expect(payload.truncated).toBe(false);
+    expect(payload.summary).toEqual([
+      { kind: KIND, count: 2, amountIdr: 155_000, knownAmountCount: 2 },
+    ]);
+  });
+
+  it("does not list a stale reason on a voided row, another reason, a missing reason, other windows or another tenant", async () => {
+    const [voided, otherReason, noReason, tooOld, tooNew] = ids.excluded;
+    const day = await fetchList(finance.cookie, { ...WINDOW, kind: KIND });
+    // Tenant-wide, the window holds exactly the four listed rows.
+    expect(refIds(day.items)).toEqual(
+      [
+        ids.listedA.uuid,
+        ids.listedB.uuid,
+        ids.listedR2.uuid,
+        ids.zoned.uuid,
+      ].sort(),
+    );
+    expect(day.items.map((item) => item.amountIdr)).not.toContain(999_000);
+    expect(day.items.every((item) => item.outletId !== other.outlet)).toBe(
+      true,
+    );
+    expect(summaryOf(day, KIND)).toEqual({ count: 4, amountIdr: 205_000 });
+
+    // A wide window adds the rows dated by updated_at on the 5th and 25th, and
+    // still leaves out the voided/other-reason/no-reason rows and the foreign tenant.
+    const march = await fetchList(finance.cookie, {
+      from: "2026-03-01",
+      to: "2026-03-31",
+      outletId: outletR1,
+      kind: KIND,
+    });
+    expect(refIds(march.items)).toEqual(
+      [ids.listedA.uuid, ids.listedB.uuid, tooOld!, tooNew!].sort(),
+    );
+    for (const excluded of [voided!, otherReason!, noReason!, ids.otherTenant])
+      expect(refIds(march.items)).not.toContain(excluded);
+    expect(summaryOf(march, KIND).count).toBe(4);
+  });
+
+  it("filters by outlet and date window", async () => {
+    const r2 = await fetchList(finance.cookie, {
+      ...WINDOW,
+      outletId: outletR2,
+      kind: KIND,
+    });
+    expect(refIds(r2.items)).toEqual([ids.listedR2.uuid]);
+    expect(r2.items[0]!.amountIdr).toBe(30_000);
+
+    const firstDay = await fetchList(finance.cookie, {
+      from: "2026-03-17",
+      to: "2026-03-17",
+      outletId: outletR1,
+      kind: KIND,
+    });
+    expect(refIds(firstDay.items)).toEqual([ids.listedA.uuid]);
+
+    const quiet = await fetchList(finance.cookie, {
+      from: "2026-03-19",
+      to: "2026-03-24",
+      outletId: outletR1,
+      kind: KIND,
+    });
+    expect(quiet.items).toEqual([]);
+    expect(quiet.summary.every((row) => row.count === 0)).toBe(true);
+  });
+
+  it("dates an item by the outlet's own timezone, not UTC", async () => {
+    const query = { outletId: outletR3, kind: KIND };
+    const seventeenth = await fetchList(finance.cookie, {
+      from: "2026-03-17",
+      to: "2026-03-17",
+      ...query,
+    });
+    expect(seventeenth.items).toEqual([]);
+    expect(summaryOf(seventeenth, KIND).count).toBe(0);
+
+    const eighteenth = await fetchList(finance.cookie, {
+      from: "2026-03-18",
+      to: "2026-03-18",
+      ...query,
+    });
+    expect(refIds(eighteenth.items)).toEqual([ids.zoned.uuid]);
+    expect(eighteenth.items[0]!.amountIdr).toBe(20_000);
+
+    const both = await fetchList(finance.cookie, { ...WINDOW, ...query });
+    expect(refIds(both.items)).toEqual([ids.zoned.uuid]);
+  });
+
+  it("a refused-void order with a tax snapshot does not leak into edge_tax_unsnapshotted", async () => {
+    const taxKind = await fetchList(finance.cookie, {
+      ...WINDOW,
+      outletId: outletR1,
+      kind: "edge_tax_unsnapshotted",
+    });
+    expect(taxKind.items).toEqual([]);
+  });
+
+  it("the kind filter keeps only this kind; without it the kind joins the mixed list", async () => {
+    const only = await fetchList(finance.cookie, {
+      ...WINDOW,
+      outletId: outletR1,
+      kind: KIND,
+    });
+    expect(only.items.every((item) => item.kind === KIND)).toBe(true);
+    expect(
+      only.summary.filter((row) => row.count > 0).map((row) => row.kind),
+    ).toEqual([KIND]);
+
+    // Another kind filter leaves the refused voids out.
+    const otherKind = await fetchList(finance.cookie, {
+      ...WINDOW,
+      outletId: outletR1,
+      kind: "edge_void_unsupported",
+    });
+    expect(itemsOfKind(otherKind, KIND)).toEqual([]);
+    expect(summaryOf(otherKind, KIND).count).toBe(0);
+
+    const mixed = await fetchList(finance.cookie, {
+      ...WINDOW,
+      outletId: outletR1,
+    });
+    expect(refIds(itemsOfKind(mixed, KIND))).toEqual(
+      [ids.listedA.uuid, ids.listedB.uuid].sort(),
+    );
+    expect(summaryOf(mixed, KIND)).toEqual({ count: 2, amountIdr: 155_000 });
+  });
+
+  it("an outlet-scoped caller sees only its own refused voids; an outlet out of reach shows nothing", async () => {
+    const own = await fetchList(scopedR1.cookie, { ...WINDOW, kind: KIND });
+    expect(refIds(own.items)).toEqual(
+      [ids.listedA.uuid, ids.listedB.uuid].sort(),
+    );
+    expect(own.items.map((item) => item.refId)).not.toContain(
+      ids.listedR2.uuid,
+    );
+    expect(summaryOf(own, KIND)).toEqual({ count: 2, amountIdr: 155_000 });
+
+    const outOfReach = await fetchList(scopedR1.cookie, {
+      ...WINDOW,
+      outletId: outletR2,
+      kind: KIND,
+    });
+    expect(outOfReach.items).toEqual([]);
+    expect(outOfReach.summary.every((row) => row.count === 0)).toBe(true);
   });
 });
 

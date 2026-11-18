@@ -219,3 +219,39 @@ test("finance-exceptions has no horizontal scroll at 390px", async ({
   );
   expect(overflow).toBeLessThanOrEqual(0);
 });
+
+// legend-nbkvh: a void the cloud refused because a manual refund already paid
+// the guest (the outlet drawer can be short).
+for (const width of [390, 1280]) {
+  test(`finance-exceptions lists the refused edge void with its drawer note at ${width}px`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 });
+    await open(page, "kind=edge_void_refused");
+    const row = page
+      .getByText(/Void edge ditolak, refund manual sudah ada/)
+      .filter({ visible: true })
+      .first();
+    await expect(row).toBeVisible({ timeout: COLD_START_TIMEOUT_MS });
+    await page
+      .locator("summary", { hasText: "11-077" })
+      .filter({ visible: true })
+      .click();
+    await expect(
+      page.getByText(/Periksa selisih laci/).filter({ visible: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText(/Order sudah di-refund manual/).filter({ visible: true }),
+    ).toBeVisible();
+    const overflow = await page.evaluate(
+      () =>
+        document.documentElement.scrollWidth -
+        document.documentElement.clientWidth,
+    );
+    expect(overflow).toBeLessThanOrEqual(0);
+    await page.screenshot({
+      path: testInfo.outputPath(`void-refused-${width}.png`),
+      fullPage: true,
+    });
+  });
+}
