@@ -96,6 +96,7 @@ import {
   facilityUnitIdSchema,
   subscriptionPlanIdSchema,
 } from "./ids.ts";
+import { posTicketSaleSchema } from "../pos/ticket.ts";
 import {
   currentEntitlementsSchema,
   facilityCustomerEndpoints,
@@ -144,7 +145,10 @@ export const sellAccessTicketAtPos = defineEndpoint({
   method: "POST",
   path: "/api/facility/tickets/pos",
   body: staffSellTicketSchema,
-  response: dataResponseSchema(issuedTicketSchema),
+  // 936 D: the sale opens a POS bill and holds the slot; the ticket is issued
+  // only when the bill is paid, and its door credential comes from
+  // `issuePosTicketCredential` (@starter/shared/pos/ticket).
+  response: dataResponseSchema(posTicketSaleSchema),
 });
 
 export const listAccessTickets = defineEndpoint({

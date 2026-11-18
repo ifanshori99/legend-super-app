@@ -149,7 +149,7 @@ export const pointLedger = pgTable(
       sql`CASE ${table.type}
             WHEN 'earn' THEN ${table.sourceType} IN ('order', 'table_claim')
             WHEN 'bonus' THEN ${table.sourceType} IN ('mission', 'referral', 'birthday', 'adjustment')
-            WHEN 'redeem' THEN ${table.sourceType} = 'reward_redemption'
+            WHEN 'redeem' THEN ${table.sourceType} IN ('reward_redemption', 'pos_tender')
             WHEN 'expire' THEN ${table.sourceType} = 'expiry'
             WHEN 'reverse' THEN ${table.sourceType} IN ('refund', 'void')
             ELSE ${table.sourceType} = 'adjustment' END`,

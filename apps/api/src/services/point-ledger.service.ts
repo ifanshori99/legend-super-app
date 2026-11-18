@@ -129,6 +129,9 @@ function eventFor(
         },
       };
     case "redeem":
+      // 936: a POS points tender has no reward; its liability move is booked
+      // by order.paid (paidPointsIdr), so it emits no points.redeemed event.
+      if (entry.sourceType === "pos_tender") return null;
       return {
         name: "points.redeemed",
         payload: { ...base, redemptionId: entry.sourceId, ...extra },

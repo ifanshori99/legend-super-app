@@ -7,6 +7,13 @@
 // it directly.
 import type { VoucherRejectionReason } from "@starter/shared/crm";
 
+/**
+ * One EDC request of a bill as `getPosOrder` lists it (`edcAttempts`, newest
+ * first). A declined one carries `declineReason` and `responseCode` and never
+ * puts a tender on the bill.
+ */
+export type { PosEdcAttempt } from "@starter/shared/pos";
+
 /** Error code a hook returns outside mock mode when the contract is missing. */
 export const CONTRACT_PENDING = "CONTRACT_PENDING";
 
@@ -65,8 +72,9 @@ export type PaymentBill = {
   /** Deposit above the bill: becomes customer balance (founder Q7). */
   depositSurplusIdr: number;
   /**
-   * DEMO-CONTRACT: the voucher on this bill (brief 936). The server priced the
-   * discount: `totalIdr` and `remainingIdr` already include it.
+   * The voucher on this bill (brief 936), read from `order.discounts`. The
+   * server priced the discount: `totalIdr` and `remainingIdr` already include
+   * it. The discount line has no voucher code, so `code` is "" outside mock.
    */
   voucher?: { code: string; discountIdr: number } | null;
   allocations: PaymentAllocation[];

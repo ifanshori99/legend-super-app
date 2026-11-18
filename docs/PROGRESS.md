@@ -7414,3 +7414,20 @@ Gerbang:
 - e2e produksi: 18 lulus, 1 skip, 40 dtk. e2e mock penuh (1,0 jam): 1163 lulus, 2 skip, 1 gagal: g6d AUTH-06 menghitung 31 aksi approval, kini 32 (991 menambah `supplier_payment`); spec diperbarui, `legend-g6d.mock.spec.ts` 5/5. AUTH-05 dan TEN-03 (baseline batch85, kartu sz75z) kini lulus berkat `perbaiki-test-mock-e2e-m1`. 14 spec 988 (`Rp\s?`) lulus.
 
 Subagent: 0 (thread ini tidak memanggil subagent di batch86; sesi sejak awal: 6), pemegang `heavy`: thread ini. Biaya sesi (session-usage, kumulatif batch85+86): utama 5886k, subagent 499k; selisih batch86 sekitar utama 3123k, subagent 44k.
+
+## 18 Nov 2026 — 1039 POS 936 backend: voucher di order, poin, EDC declined, tiket fasilitas (thread engineer, bead legend-hpgyw)
+
+Cabang `ghostex/8eb871ce`. Migrasi 0670 (poin sebagai tender POS: `point_ledger_source_type_check` menerima `pos_tender`) dan 0671 (tabel `facility_ticket_pos_lines`, `access_ticket_credentials`) adalah nomor kerja: merge train yang menomori ulang.
+
+Sudah:
+- Voucher/promo di order: server menghitung ulang pajak dan service setelah diskon; voucher yang potongannya lebih besar dari sisa tagihan ditolak 422 `DISCOUNT_EXCEEDS_SUBTOTAL`; satu promo per order (kedua: 409); boleh setelah bayar sebagian, asal total baru tidak di bawah uang yang sudah masuk.
+- Poin: `GET/POST` poin pesanan (`pos-points.service.ts`), nilai poin dibulatkan ke bawah, tidak melebihi sisa tagihan, tidak ganda (kunci idempotensi + kunci baris), mode edge ditolak 409 `POINTS_NEED_CLOUD`, ganti member setelah poin terpakai ditolak, refund pesanan berbayar poin ditolak 409 `REFUND_POINTS_TENDER_UNSUPPORTED`.
+- EDC declined: `edcAttempts` pada detail order; tagihan tidak berubah.
+- Tiket fasilitas = item biasa di tagihan POS; tiket tidak terbit sebelum tagihan lunas; void/refund melepas slot dan mencabut kredensial; tiket yang sudah dipakai tidak bisa direfund (409 `TICKET_ALREADY_USED`); hold yang lapse tidak dihidupkan lagi (409 `TICKET_HOLD_LAPSED`); mode edge ditolak 409 `TICKET_NEEDS_CLOUD`; kredensial QR + PIN hanya tampil sekali, server menyimpan digest.
+- Web ws04-pos-kasir: voucher, poin, EDC declined tersambung ke API nyata. Penjualan tiket di layar kasir belum disambung.
+
+Bukti: pos-936-voucher, pos-936-points, pos-936-edc-declined, pos-936-ticket + regresi (pos-refund-ceilings, pos-refund-edge-authority, accounting-refund-payout-map-race, accounting-service-charge-liability-refund, accounting-auto-journal, accounting-auto-journal-refund-split, pos-order-void-noncash, data-import-registry, facility-contract, facility-slots-db): 14 berkas, 468 tes lulus. Typecheck API dan web lulus, kontrak 873 lulus. Review architect (dua bagian) selesai, temuan dibetulkan.
+
+Sedang/berikut: merge train menomori ulang 0670/0671 dan memperbarui `_journal.json`; keputusan founder lewat CTO ada di laporan akhir thread.
+
+Biaya sesi (session-usage): total biaya* 21764k (utama sonnet 9511k, subagent sonnet 11177k, subagent opus 1056k); 16 subagent, puncak 7 bersamaan, rata-rata 1,0 berjalan; token heavy dipegang thread utama dan satu test-runner bergantian.

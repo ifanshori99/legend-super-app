@@ -3179,6 +3179,20 @@
       "when": 1795000000082,
       "tag": "0467_supplier_payment_approval_policies_data",
       "breakpoints": true
+    },
+    {
+      "idx": 468,
+      "version": "7",
+      "when": 1795000000670,
+      "tag": "0670_pos_points_tender",
+      "breakpoints": true
+    },
+    {
+      "idx": 469,
+      "version": "7",
+      "when": 1795000000671,
+      "tag": "0671_facility_pos_tickets",
+      "breakpoints": true
     }
   ]
 }

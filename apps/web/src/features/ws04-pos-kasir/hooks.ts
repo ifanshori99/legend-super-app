@@ -292,11 +292,13 @@ export function useValidateVoucher(orderId: string) {
 }
 
 export function useApplyVoucher(orderId: string) {
+  const outletId = useOutletId();
   const refresh = useRefreshBill(orderId);
   const intent = useIntentKey("voucher");
   return useMutation<PaymentSession, Error, { code: string }>({
     mutationFn: async (input) => {
       const session = await applyVoucherCode(
+        outletId,
         orderId,
         input.code,
         intent.keyFor({ orderId, ...input }),
@@ -310,9 +312,19 @@ export function useApplyVoucher(orderId: string) {
 }
 
 export function useRemoveVoucher(orderId: string) {
+  const outletId = useOutletId();
   const refresh = useRefreshBill(orderId);
+  const intent = useIntentKey("voucher-remove");
   return useMutation<PaymentSession, Error, void>({
-    mutationFn: () => removeVoucherCode(orderId),
+    mutationFn: async () => {
+      const session = await removeVoucherCode(
+        outletId,
+        orderId,
+        intent.keyFor({ orderId }),
+      );
+      intent.clear();
+      return session;
+    },
     onSuccess: refresh.put,
     onError: refresh.invalidate,
   });

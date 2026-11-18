@@ -48,6 +48,8 @@
     "./accounting": "./src/accounting/index.ts",
     "./pos": "./src/pos/index.ts",
     "./pos/acting-staff": "./src/pos/acting-staff.ts",
+    "./pos/points": "./src/pos/points.ts",
+    "./pos/ticket": "./src/pos/ticket.ts",
     "./identity": "./src/identity/index.ts",
     "./reservation": "./src/reservation/index.ts",
     "./delivery": "./src/delivery/index.ts",

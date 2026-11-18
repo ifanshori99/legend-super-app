@@ -4,7 +4,13 @@
 // print have no mock handler: they run on ./mock.ts in mock mode, and the print
 // fails with CONTRACT_PENDING elsewhere (see ../CONTRACT-GAPS.md).
 import { listCustomers } from "@starter/shared/crm";
-import { getFacilityConfig, listFacilities } from "@starter/shared/facility";
+import {
+  getFacilityConfig,
+  listFacilities,
+  sellAccessTicketAtPos,
+} from "@starter/shared/facility";
+import { submitPosOrder } from "@starter/shared/pos";
+import { issuePosTicketCredential } from "@starter/shared/pos/ticket";
 import { callEndpoint } from "@/lib/api/endpoint";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { fetchAvailability } from "../../facility/api";
@@ -16,6 +22,8 @@ import type {
   PrintTicketResult,
   SellTicketInput,
   SoldTicket,
+  TicketBillSale,
+  TicketCredential,
   TicketCustomer,
   TicketProduct,
   TicketSlot,
@@ -27,8 +35,9 @@ const CUSTOMER_PAGE = 10;
 
 /**
  * Active single-ticket products of every facility. A plan (subscription) is
- * sold elsewhere, and a product that carries a menu package ("Paket Sarapan +
- * Shower") would be sold without its food, so neither is offered here.
+ * sold elsewhere. Outside mock mode a ticket is an ordinary bill line (936 D1),
+ * so only a product with a POS menu item can be sold; the mock catalog has none
+ * and keeps its products without one.
  */
 export async function fetchTicketProducts(
   signal?: AbortSignal,
@@ -53,7 +62,9 @@ export async function fetchTicketProducts(
         (product) =>
           product.isActive &&
           product.type === "single" &&
-          product.menuItemId === null,
+          (API_MOCK
+            ? product.menuItemId === null
+            : product.menuItemId !== null),
       )
       .map((product) => ({
         id: product.id,
@@ -103,9 +114,13 @@ export async function fetchTicketSlots(
   }));
 }
 
-/** Why the sale is locked outside mock mode (shown in the error message). */
+/**
+ * Why the sale screen stays locked outside mock mode: the real sale opens a
+ * bill and the ticket exists only after it is paid, but the screen still shows
+ * an issued ticket right after the sale (see ../CONTRACT-GAPS.md).
+ */
 const SALE_PENDING_FEATURE =
-  "Jual tiket fasilitas dari POS: pembayaran belum ada kontrak";
+  "Jual tiket fasilitas dari POS: layar belum menunggu pembayaran tagihan";
 
 export async function sellTicket(
   input: SellTicketInput,
@@ -113,14 +128,77 @@ export async function sellTicket(
 ): Promise<SoldTicket> {
   if (API_MOCK)
     return runPosKasirMock(() => mockSellTicket(input, idempotencyKey));
-  // Money rule: the sale endpoint takes no payment, so a real ticket would be
-  // issued without money received. Locked until the contract has a tender.
   throw contractPending(SALE_PENDING_FEATURE);
 }
 
 /**
- * Prints the ticket through the Print Agent on the edge node (same route as
- * the receipt). No endpoint exists yet: DEMO-CONTRACT, see CONTRACT-GAPS.md.
+ * The real sale (936 D): holds the slot and opens a POS bill with one ticket
+ * line at the POS price list's price (the client sends no price). The ticket is
+ * `pending_payment`. The bill is submitted so it can be paid; the cashier pays
+ * it on the payment screen and the ticket is issued when it is paid.
+ */
+export async function sellTicketAtPos(
+  outletId: string,
+  input: SellTicketInput,
+  idempotencyKey: string,
+): Promise<TicketBillSale> {
+  const { data } = await callEndpoint(sellAccessTicketAtPos, {
+    body: {
+      facilityId: input.product.facilityId,
+      areaId: input.areaId,
+      productId: input.product.id,
+      customerProfileId: input.customer.id,
+      timing: input.timing,
+      idempotencyKey,
+    },
+  });
+  const order =
+    data.order.status === "draft"
+      ? (
+          await callEndpoint(submitPosOrder, {
+            params: { outletId, orderId: data.order.id },
+            body: {
+              expectedStatus: data.order.status,
+              idempotencyKey: `${idempotencyKey}:submit`,
+            },
+          })
+        ).data
+      : data.order;
+  return {
+    ticketId: data.ticket.id,
+    orderId: order.id,
+    orderNo: order.number,
+    totalIdr: Number(order.totalIdr),
+  };
+}
+
+/**
+ * Mints the door credential of a PAID ticket and prints it through the Print
+ * Agent on the edge node (same route as the receipt). The key must be new for
+ * each reprint: the server never shows the same credential twice.
+ */
+export async function issueTicketCredential(
+  orderId: string,
+  ticketId: string,
+  idempotencyKey: string,
+): Promise<TicketCredential> {
+  const { data } = await callEndpoint(issuePosTicketCredential, {
+    params: { orderId, ticketId },
+    body: { idempotencyKey },
+  });
+  return {
+    ticketId: data.credential.ticketId,
+    qrToken: data.credential.qrToken,
+    pin: data.credential.pin,
+    validFrom: data.credential.validFrom,
+    validUntil: data.credential.validUntil,
+    print: data.print,
+  };
+}
+
+/**
+ * Mock mode only: the real print is part of `issueTicketCredential`, which
+ * needs the order and a new key per reprint. Not wired to the screen yet.
  */
 export async function printTicket(
   ticketId: string,

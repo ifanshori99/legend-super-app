@@ -56,3 +56,30 @@ export type PrintTicketResult = {
   printerName: string;
   reprint: boolean;
 };
+
+/**
+ * The bill a real ticket sale opens (936 D). The ticket is `pending_payment`:
+ * it is issued only when the bill is paid, so there is no door credential yet.
+ * Every figure on the bill comes from the server.
+ */
+export type TicketBillSale = {
+  ticketId: string;
+  orderId: string;
+  orderNo: string;
+  totalIdr: number;
+};
+
+/** What `issueTicketCredential` returns for a paid ticket: shown once. */
+export type TicketCredential = {
+  ticketId: string;
+  qrToken: string;
+  pin: string;
+  validFrom: string;
+  validUntil: string;
+  /** Null when the API runs in the cloud: show the credential on screen. */
+  print: {
+    printedAt: string | null;
+    printerName: string | null;
+    reprint: boolean;
+  };
+};
