@@ -43,7 +43,9 @@ it("publishes fixed 2001 and 2002 TER fixtures after kit tables without collisio
         cafeLegendPlatformFixtures.tenant.id,
       ],
     );
-    await conn.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
+    await conn.query("SELECT set_config('app.tenant_id', $1, true)", [
+      tenantId,
+    ]);
     await publishStatutoryTables(conn, tenantId, "payroll-kit-isolation");
 
     for (const [index, effectiveFrom] of [
