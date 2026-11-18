@@ -310,6 +310,33 @@ async function gatewayRefund(
   );
 }
 
+/**
+ * A late-payment refund of the intent as the system leaves it: a pending payment_refunds
+ * row requested by `system:pos` and its once-only key `pos-late-payment-refund:<intent>`
+ * (same fixture as pos-refund-ceilings.test.ts).
+ */
+async function fileLatePaymentRefund(intentId: string, amountIdr: number) {
+  const refund = await owner.query<{ id: string }>(
+    `INSERT INTO payment_refunds
+       (tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status, requested_by)
+     SELECT tenant_id, outlet_id, id, $3::bigint, 'Refund pembayaran telat uji 1127',
+            'pending', 'system:pos'
+       FROM payment_intents WHERE tenant_id = $1 AND id = $2
+     RETURNING id`,
+    [tenantId(), intentId, amountIdr],
+  );
+  await owner.query(
+    `INSERT INTO payment_admin_idempotency (tenant_id, key, fingerprint, response)
+     VALUES ($1, $2, $3, $4::jsonb)`,
+    [
+      tenantId(),
+      `pos-late-payment-refund:${intentId}`,
+      "c".repeat(64),
+      JSON.stringify({ refundId: refund.rows[0]!.id }),
+    ],
+  );
+}
+
 async function flagProviderRefunded(
   intentId: string,
   column: "provider_refunded_at" | "provider_refunded_after_paid_at",
@@ -949,6 +976,8 @@ type External = {
   providerIdr?: number;
   gatewayIdr?: number;
   flag?: boolean;
+  /** 1127: a late-payment refund (pos-late-payment-refund:<intent>) is parked money. */
+  lateParkedIdr?: number;
 };
 
 /** Money that already left (or may have left) through the provider, before any guarded path runs. */
@@ -967,6 +996,10 @@ const EXTERNALS: External[] = [
   },
   { name: "provider 49.665 (all of it)", providerIdr: ORDER_PAID },
   { name: "provider-refunded flag, no amount", flag: true },
+  // 1127: parked late-payment money is neither paid nor subtracted; it is handed back
+  // by its own late refund, which is not part of the sale's paid money, so total out
+  // (not counting it) must still stay <= what was paid.
+  { name: "late-payment refund 25.000 parked", lateParkedIdr: 25_000 },
 ];
 
 type Guarded = "voucher" | "cashier" | "void";
@@ -1001,6 +1034,8 @@ describe("1116 property: refund + provider refund + voucher + void <= verified p
             intent.id,
             "provider_refunded_after_paid_at",
           );
+        if (external.lateParkedIdr)
+          await fileLatePaymentRefund(intent.id, external.lateParkedIdr);
 
         const issueIds: string[] = [];
         let accepted = 0;

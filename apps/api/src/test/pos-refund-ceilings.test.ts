@@ -652,9 +652,69 @@ describe("POS-04 Q63 cumulative refund ceilings (brief 530)", () => {
   });
 
   it("a late-payment refund (pos-late-payment-refund:) does not eat the refundable balance of the sale", async () => {
+    // Real shape (1127): the guest paid LATE on a separate intent whose tender was
+    // voided (the bill had closed); the sale's own captured tender intent carries no
+    // late key. The late money is parked: it neither lifts nor eats the sale's balance.
     const bill = await sale(100_000, "qris");
-    const lateId = await adminRefund(bill, 30_000, "system:pos");
-    const lateKey = `pos-late-payment-refund:${bill.intentId}`;
+    const lateIntentId = randomUUID();
+    const lateLinkId = randomUUID();
+    intentIds.push(lateIntentId);
+    linkIds.push(lateLinkId);
+    await asOwner(async (client) => {
+      await client.query(
+        `INSERT INTO payment_links (id, tenant_id, outlet_id, token_hash, reference,
+           subtotal_idr, total_idr, paid_idr, created_by)
+         VALUES ($1, $2, $3, $4, $5, 30000, 30000, 30000, $6)`,
+        [
+          lateLinkId,
+          seededTenantId,
+          seededOutletA,
+          randomBytes(32).toString("hex"),
+          `Q27-${lateLinkId}`,
+          cashier.userId,
+        ],
+      );
+      await client.query(
+        `INSERT INTO payment_intents (id, tenant_id, outlet_id, payment_link_id,
+           method, provider, amount_idr, idempotency_key, status, paid_at,
+           instructions, expires_at)
+         VALUES ($1, $2, $3, $4, 'qris', 'doit', 30000, $5, 'paid', now(),
+           '{"method":"qris","qrPayload":"test","issuer":null}', now() + interval '1 hour')`,
+        [lateIntentId, seededTenantId, seededOutletA, lateLinkId, randomUUID()],
+      );
+      await client.query(
+        `INSERT INTO pos_order_tenders (tenant_id, outlet_id, order_id, method, provider,
+           amount_idr, status, requested_at, resolved_at, payment_intent_id,
+           payment_link_id, payment_link_token_sealed)
+         VALUES ($1, $2, $3, 'qris', 'doit', 30000, 'voided', now(), now(), $4, $5,
+           'sealed-test-token')`,
+        [
+          seededTenantId,
+          seededOutletA,
+          ulidToUuid(bill.orderId),
+          lateIntentId,
+          lateLinkId,
+        ],
+      );
+      await client.query(
+        `INSERT INTO payment_evidence (tenant_id, outlet_id, payment_intent_id,
+           provider, provider_ref, method, source, amount_idr, received_at)
+         VALUES ($1, $2, $3, 'doit', $4, 'qris', 'verified_webhook', 30000, now())`,
+        [
+          seededTenantId,
+          seededOutletA,
+          lateIntentId,
+          `evidence-${lateIntentId}`,
+        ],
+      );
+    });
+    const lateId = await adminRefund(
+      { ...bill, intentId: lateIntentId },
+      30_000,
+      "system:pos",
+      "pending",
+    );
+    const lateKey = `pos-late-payment-refund:${lateIntentId}`;
     mirrorKeys.push(lateKey);
     await owner.query(
       `INSERT INTO payment_admin_idempotency (tenant_id, key, fingerprint, response)
@@ -670,5 +730,6 @@ describe("POS-04 Q63 cumulative refund ceilings (brief 530)", () => {
     expect(Number(result.amountIdr)).toBe(100_000);
     expect(await nativeTotal(bill)).toBe(100_000);
     await expect(refund(bill, 1, "supervisor")).rejects.toBeDefined();
+    expect(await nativeTotal(bill)).toBe(100_000);
   });
 });
