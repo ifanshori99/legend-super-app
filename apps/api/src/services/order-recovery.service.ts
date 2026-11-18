@@ -78,6 +78,7 @@ import { appendOutbox } from "./core-outbox.ts";
 import type { Tx } from "./menu-internals.ts";
 import { accessSnapshotInTransaction } from "./permission-resolver.ts";
 import { assertLineNotManuallyRefunded } from "./order-issue-manual-refund.ts";
+import { lockOrderAndAssertManualRefundFits } from "./order-recovery-refund.ts";
 import { voucherRoomIdr } from "./order-voucher-room.ts";
 import { estimateDeductionCostIdr } from "./recipe-deduction.service.ts";
 import { notifyQrOrderChange } from "./qr-order-realtime-signal.ts";
@@ -967,6 +968,16 @@ async function settleIssue(
       context.tenant.tenantId,
       found.issue.orderId,
       found.issue.orderItemId,
+    );
+  // 1131 (ORD-09): the order's one money-out budget. The order lock follows the
+  // issue lock the callers hold (issue -> orders); the refund must fit what the
+  // guest paid less what the order already gave back. 422, never clamped.
+  else
+    await lockOrderAndAssertManualRefundFits(
+      tx,
+      context.tenant.tenantId,
+      found.issue.orderId,
+      found.line.lineTotalIdr,
     );
   const [row] = await tx
     .update(orderIssues)
