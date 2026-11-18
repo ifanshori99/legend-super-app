@@ -7472,3 +7472,20 @@ Cabang `ghostex/1012-guard-router-perangkat-bersama`, tanpa migrasi, tanpa logik
 - Dua tes lama diperbarui karena premisnya berubah: acting-staff-w2-floor (reservation-policy kini 403 NOT_ALLOWED), pos-acting-staff (router tanpa middleware: delivery-channels).
 - Lanjutan (kartu bd dibuat): handler POS memakai pemilik sesi bukan `actorOf` (menyentuh uang, keputusan founder); websocket KDS dan `/api/auth/*` Better Auth belum lewat gate; layar reservasi/Tanya AI/_ops kini 403 di perangkat bersama (keputusan produk).
 - Subagent: total 14, puncak 5 bersamaan, token heavy dipegang induk dan test-runner bergantian.
+
+## Merge train batch87 (18 Nov 2026, `int/batch87` -> `milestone/m1` 63d467e27)
+
+Basis m1 8f544e5ea (batch86). Cabang masuk (urut): `ghostex/a5117d45` (1001 c1gnr), `1002-reseal-chatgpt-push` (1002), `1004-fix-temuan-so-qr-va` (1004), `f12296d2` (1006), `1009-so996-f1-lunas-refund` (1009), `perbaikan-so-998-kas-supplier` (1008), `1007-perbaikan-temuan-so-971-payroll` (1007). Hanya 1007 membawa migrasi.
+
+Peta migrasi (lama -> baru, `when` 1795000000085 dst): 0621/0622/0623/0624 -> 0468/0469/0470/0471 (1007). `db:generate`: "No schema changes"; check-journal ok. Snapshot 0468-0471 diberi id baru dengan rantai prevId (cabang hanya membawa snapshot 0623). 0470 menambah FK self-reference pada `accounting_open_item_settlements` (FORCE RLS): dibungkus `NO FORCE ROW LEVEL SECURITY` / `FORCE ROW LEVEL SECURITY` (pola 0438) supaya upgrade sebagai pemilik tidak gagal.
+
+Konflik: `order-issues.service.ts` (1001 vs m1): dua penjaga unik dipertahankan (`MANUAL_REFUND_ONCE_INDEX` dan `VOUCHER_ONCE_INDEX`). `docs/PROGRESS.md`: simpan kedua sisi.
+
+Gerbang (aturan percepatan Retro, tanpa fast gate terpisah):
+- check-workspace-links, lint (82 dtk, 2 warning lama), typecheck (153 dtk), kontrak root `tests/*.test.mjs` (230 dtk): hijau.
+- Full run `heavy pnpm run test` 10358 dtk (2 jam 52 menit termasuk antre): API vitest 22585 lulus, 2 gagal: (1) `pos-acting-staff` ACTING_STAFF_UNSUPPORTED memakai `GET /outlets/:id/floor` sebagai router tanpa middleware, padahal 1006 (42gqp) memasangnya: tes disesuaikan ke keputusan, contoh pindah ke `GET /api/menu/categories` (76/76 bersama `acting-staff-w2-floor`); (2) `payroll-payout-870-return-proof` timeout 20 dtk saat beban penuh, berkas tak disentuh batch, sendirian 14/14 (flake beban).
+- e2e produksi 121 dtk hijau; e2e mock terarah: tidak ada spec e2e tersentuh cabang batch, hanya smoke `mock-mode.mock.spec.ts` 3/3 (267 dtk). e2e mock penuh batch89.
+
+Kartu ditutup: c1gnr, 7rd7l, g24b5, 4w7rf, iqzet, hs1rc, nqfov, sq1ux, 42gqp, dn7uo, bf8f2, ycb4h, 6i91b, xo4cn, qcioh, 2ln9t, rtrbj. Terbuka: p45yq (replay kembar ganti metode, ada juga di 1029, batch88).
+
+Subagent: 1 test-runner (pemantau log, haiku) di batch87; sesi sejak awal 7. Biaya sesi (session-usage, kumulatif batch85-87): total biaya* 9007k (utama 8480k, subagent 527k), puncak konteks 267k, 2 compact. parallel-report sejak 06:30: 7 spawn, rata-rata 0,01 subagent bersamaan, rentetan terpanjang tanpa subagent 213 langkah. Selama full run batch87, `int/batch88` disiapkan (7 cabang, migrasi 0472-0476) sehingga langsung masuk gerbang.
