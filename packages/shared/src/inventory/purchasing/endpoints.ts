@@ -27,6 +27,10 @@ import {
 import { defineEndpoint } from "../../api/index.ts";
 import { getPurchaseOrderPdfPreview } from "./preview.ts";
 import {
+  retrySupplierPaymentSettlementInputSchema,
+  supplierInvoicePaymentSchema,
+} from "./supplier-payment-request.ts";
+import {
   inventoryItemIdSchema,
   nonnegativeDecimal4Schema,
   nonnegativeIdrSchema,
@@ -749,6 +753,14 @@ export const postSupplierPaymentTransition = defineEndpoint({
   response: dataResponseSchema(supplierPaymentSchema),
 });
 
+export const retrySupplierPaymentSettlement = defineEndpoint({
+  method: "POST",
+  path: "/api/inventory/supplier-payments/:supplierPaymentId/retry-settlement",
+  params: z.strictObject({ supplierPaymentId: supplierPaymentIdSchema }),
+  body: retrySupplierPaymentSettlementInputSchema,
+  response: dataResponseSchema(supplierInvoicePaymentSchema),
+});
+
 export const createPurchaseReturn = defineEndpoint({
   method: "POST",
   path: "/api/inventory/purchase-returns",
@@ -818,6 +830,7 @@ export const purchasingEndpoints = [
   putPurchasingPolicy,
   createSupplierPayment,
   postSupplierPaymentTransition,
+  retrySupplierPaymentSettlement,
   createPurchaseReturn,
   createPettyPurchase,
   upsertPettyPurchasePolicy,

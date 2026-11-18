@@ -19,8 +19,8 @@
 //
 // Assumptions (stated so they can be contested):
 // - A refusal on HTTP is 422 PETTY_CASH_GL_INSUFFICIENT (swn0m). A refused
-//   supplier settle leaves the payment `rejected` with a note naming
-//   PETTY_CASH_GL_INSUFFICIENT (`posting_refused:...`), as in swn0m.
+//   supplier settle (legend-5qqb9: retryable) leaves the payment
+//   `pending_approval`: no journal, no settlement, payable untouched.
 // - The cash out / transfer / petty cash routes stay reachable while the
 //   accounting module is off (the brief says the service posts the journal
 //   regardless). If a route answered 403/404 the test fails on the status
@@ -542,20 +542,6 @@ async function paymentRow(t: Supplier, paymentId: string) {
   return rows[0]!;
 }
 
-async function paymentNote(t: Supplier, invoiceId: string, id: string) {
-  const res = await api.get(
-    t.world,
-    t.finance,
-    `/supplier-invoices/${invoiceId}/payments`,
-  );
-  expect(res.status, JSON.stringify(res.body)).toBe(200);
-  const data = (res.body as { data: unknown }).data;
-  const rows = (
-    Array.isArray(data) ? data : (data as { items: unknown[] }).items
-  ) as { id: string; note?: string | null }[];
-  return rows.find((row) => row.id === id)?.note ?? null;
-}
-
 /** Requests the payment and lets the second person approve; returns the event. */
 async function requestAndApprove(
   t: Supplier,
@@ -625,11 +611,9 @@ describe("socwi supplier payment on a bank account that is GL 1102, accounting o
     gl: number,
   ) {
     const row = await paymentRow(t, paymentId);
-    expect(row.status, "payment is not paid").toBe("rejected");
-    expect(
-      (await paymentNote(t, invoiceId, paymentId)) ?? "",
-      "the note names the refusal",
-    ).toContain(REFUSAL);
+    expect(row.status, "payment is not paid, parked for retry").toBe(
+      "pending_approval",
+    );
     expect(await supplierJournalCount(t), "no journal").toBe(journals);
     expect(await payableOutstanding(t, invoiceId), "payable untouched").toBe(
       PAYABLE,
@@ -637,7 +621,7 @@ describe("socwi supplier payment on a bank account that is GL 1102, accounting o
     expect(await supplierGl(t), "1102 never negative").toBe(gl);
   }
 
-  it("[socwi-supplier-accounting-off-refused] GL 1102 Rp30.000, a Rp50.000 payment approved, accounting switched off before the consumer runs: rejected posting_refused PETTY_CASH_GL_INSUFFICIENT, no settlement or journal, payable and GL unchanged, a replay changes nothing", async () => {
+  it("[socwi-supplier-accounting-off-refused] GL 1102 Rp30.000, a Rp50.000 payment approved, accounting switched off before the consumer runs: stays pending_approval (retryable, PETTY_CASH_GL_INSUFFICIENT), no settlement or journal, payable and GL unchanged, a replay changes nothing", async () => {
     const t = await setupSupplier("socwi-s1");
     await fundSupplier1102(t, 30_000);
     const invoiceId = await supplierInvoice(t);

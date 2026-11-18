@@ -759,6 +759,51 @@ export async function assertBankCreditCoveredBy1102(
 }
 
 /**
+ * A manual or recurring journal that CREDITS the entity's petty cash account
+ * pays out of 1102 like a cash-out (legend-5qqb9). The credit is the NET of its
+ * lines on that account (credit minus debit); a net debit or no line on 1102 is
+ * not guarded. Refuses a net credit above the cash left after the reserve
+ * (PETTY_CASH_GL_INSUFFICIENT). Takes the entity lock only when a line touches
+ * 1102, so the check and the posting that follows are one serial step. Not
+ * gated by the accounting module (same as `assertBankCreditCoveredBy1102`):
+ * the caller posts a journal crediting 1102 right after. Central posting is not
+ * guarded on purpose: other posters already reserve their own amount.
+ */
+export async function assertJournalCredit1102Covered(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  legalEntityId: string,
+  lines: readonly {
+    accountId: string;
+    debitIdr: number;
+    creditIdr: number;
+  }[],
+): Promise<void> {
+  const pettyCashAccountId = await pettyCashGlAccount(
+    tx,
+    tenantId,
+    legalEntityId,
+  );
+  if (
+    pettyCashAccountId === null ||
+    !lines.some((line) => line.accountId === pettyCashAccountId)
+  )
+    return;
+  await entityLock(tx, tenantId, legalEntityId);
+  const netCreditIdr = lines
+    .filter((line) => line.accountId === pettyCashAccountId)
+    .reduce((sum, line) => sum + line.creditIdr - line.debitIdr, 0);
+  if (netCreditIdr <= 0) return;
+  await assertBankCreditCoveredBy1102(
+    tx,
+    tenantId,
+    legalEntityId,
+    pettyCashAccountId,
+    netCreditIdr,
+  );
+}
+
+/**
  * Cash outflow paid out of petty cash (1102) that is not a petty purchase: an
  * approved cash kasbon or cash reimbursement (legend-swn0m). Refuses an
  * `amountIdr` above the cash left after the reserve of approved cash payroll

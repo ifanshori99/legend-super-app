@@ -15,7 +15,9 @@ import {
   decideSupplierInvoiceInputSchema,
   recordSupplierInvoiceMatchInputSchema,
   requestSupplierInvoicePaymentInputSchema,
+  retrySupplierPaymentSettlementInputSchema,
   supplierInvoiceIdSchema,
+  supplierPaymentIdSchema,
   supplierInvoiceQuerySchema,
 } from "@starter/shared/inventory";
 import { AccessError, type PermissionCode } from "@starter/shared/access";
@@ -53,6 +55,7 @@ import {
 import {
   listSupplierInvoicePayments,
   requestSupplierInvoicePayment,
+  retrySupplierPaymentSettlement,
 } from "../services/purchasing-supplier-payment.service.ts";
 import {
   getPurchasingPolicy,
@@ -264,6 +267,25 @@ export function createPurchasingInvoiceRouter(): Router {
           invoiceId(req),
         ),
       );
+    },
+  );
+
+  // Retry of a parked payment (approved chain, cash 1102 was short;
+  // legend-5qqb9). Same permission as the request; the service re-checks it at
+  // the payment's own outlet and settles through the approval settlement.
+  router.post(
+    "/supplier-payments/:supplierPaymentId/retry-settlement",
+    jsonBody,
+    requireMenuPermission(RELEASE_PERMISSION),
+    async (req, res) => {
+      retrySupplierPaymentSettlementInputSchema.parse(req.body);
+      res.json({
+        data: await retrySupplierPaymentSettlement(
+          getScopedTenantContext(req),
+          getAuth(req).user.id,
+          supplierPaymentIdSchema.parse(req.params.supplierPaymentId),
+        ),
+      });
     },
   );
 

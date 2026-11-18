@@ -25,7 +25,10 @@
 //   FOR UPDATE, the chain outcome re-read from the database, a replay is a
 //   no-op, a chain the requester took part in never pays, and the outstanding
 //   balance is re-checked at execution. Any refusal records `rejected` with a
-//   note and writes no money.
+//   note and writes no money, except cash 1102 too short: the payment stays
+//   `pending_approval` (nothing moved) and can be retried after a top-up.
+// - `retrySupplierPaymentSettlement` re-runs that settlement on demand for a
+//   pending payment whose chain is already approved (legend-5qqb9).
 
 import { randomUUID } from "node:crypto";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
@@ -364,6 +367,8 @@ export async function listSupplierInvoicePayments(
  * Business refusals of the posting guards (closed period, missing or unusable
  * account, a date the settlement refuses). Infra errors are not refusals.
  */
+const CASH_SHORT_CODE = "PETTY_CASH_GL_INSUFFICIENT";
+
 const POSTING_REFUSAL_CODES: ReadonlySet<string> = new Set([
   "PERIOD_CLOSED",
   "PERIOD_MISMATCH",
@@ -372,7 +377,8 @@ const POSTING_REFUSAL_CODES: ReadonlySet<string> = new Set([
   "ACCOUNT_NOT_POSTABLE",
   "ACCOUNT_ENTITY_MISMATCH",
   // Cash 1102 too small for a payment credited to petty cash (legend-swn0m).
-  "PETTY_CASH_GL_INSUFFICIENT",
+  // Not final: the payment stays pending and is retried (legend-5qqb9).
+  CASH_SHORT_CODE,
 ]);
 
 function postingRefusalCode(error: unknown): string | null {
@@ -492,6 +498,11 @@ export async function settleSupplierPaymentForApproval(
           // released and nothing is paid. Any other error is rethrown.
           const code = postingRefusalCode(error);
           if (code === null) throw error;
+          // Cash 1102 too short clears after a top-up (legend-5qqb9): the
+          // payment stays `pending_approval`, nothing moved (the savepoint
+          // rolled back), and the retry endpoint or a redelivered approval
+          // event pays it once the cash is there. The guard is not loosened.
+          if (code === CASH_SHORT_CODE) return toPayment(row);
           settlement = null;
           decision = { status: "rejected", note: `posting_refused:${code}` };
         }
@@ -548,4 +559,68 @@ export async function settleSupplierPaymentForApproval(
       });
     return toPayment(updated);
   });
+}
+
+// ------------------------------------------------------------------- retry
+
+/**
+ * POST retry of the settlement of a parked payment (legend-5qqb9): same
+ * permission as the request. Only a `pending_approval` payment whose approval
+ * chain is already approved is settled, through the same code as the approval
+ * consumer (row lock, balance re-check, cash 1102 guard); anything else is 409.
+ * A payment that is no longer pending is returned unchanged (no double payment).
+ * Still-short cash leaves the payment pending and answers it unchanged.
+ */
+export async function retrySupplierPaymentSettlement(
+  context: ScopedTenantContext,
+  actorUserId: string,
+  supplierPaymentId: string,
+  now = new Date(),
+): Promise<SupplierInvoicePayment> {
+  const tenantId = context.tenant.tenantId;
+  const parked = await withTenant(db, context, async (tx) => {
+    const [row] = await tx
+      .select()
+      .from(supplierPayments)
+      .where(
+        and(
+          eq(supplierPayments.tenantId, tenantId),
+          eq(supplierPayments.id, supplierPaymentId),
+        ),
+      );
+    if (!row) throw paymentNotFound();
+    await requireOpsPermission(
+      tx,
+      context,
+      actorUserId,
+      PAY_PERMISSION,
+      row.outletId,
+    );
+    if (row.status !== "pending_approval") return { row, chainId: null };
+    if (row.approvalChainId === null)
+      throw notRetryable("The payment has no approval chain.");
+    const outcome = await getApprovalChainOutcome(tx, {
+      chainId: row.approvalChainId,
+      sourceModule: PURCHASING_SOURCE_MODULE,
+    });
+    if (outcome !== "approved")
+      throw notRetryable("The payment approval is not approved.");
+    return { row, chainId: row.approvalChainId };
+  });
+  if (parked.chainId === null) return toPayment(parked.row);
+  const settled = await settleSupplierPaymentForApproval(
+    context,
+    parked.chainId,
+    now,
+  );
+  if (!settled) throw paymentNotFound();
+  return settled;
+}
+
+function paymentNotFound(): HttpError {
+  return new HttpError(404, "NOT_FOUND", "Supplier payment not found.");
+}
+
+function notRetryable(message: string): HttpError {
+  return new HttpError(409, "SUPPLIER_PAYMENT_NOT_RETRYABLE", message);
 }

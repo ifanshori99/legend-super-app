@@ -39,10 +39,9 @@
 //   Every test starts from `drain()`, which approves one exact cash batch for
 //   whatever is available, so the baseline is exactly 0.
 // - Supplier payment: the payment waits for a second person (founder Q27), the
-//   approval consumer settles it. A refused settle leaves the payment
-//   `rejected` with a note that names PETTY_CASH_GL_INSUFFICIENT (brief:
-//   `posting_refused:PETTY_CASH_GL_INSUFFICIENT`), no journal, the payable
-//   untouched. The "bank role = petty_cash account" setup maps both roles to
+//   approval consumer settles it. A refused settle (legend-5qqb9: retryable,
+//   no longer final) leaves the payment `pending_approval` (parked, can be
+//   retried after a top-up), no journal, the payable untouched. The "bank role = petty_cash account" setup maps both roles to
 //   one 1102 account of a fresh tenant. Its pending reserve is a seeded
 //   `payroll.paid` cash outbox event of that entity.
 // - Not covered here: accounting-off for the supplier path (the settle itself
@@ -1715,7 +1714,7 @@ describe("swn0m supplier payment on a bank account that is GL 1102", () => {
     await aparOwner.end();
   });
 
-  it("[swn0m-supplier-refused-when-1102-short] a payment above the cash in 1102 (the bank role is the petty cash account) is rejected with PETTY_CASH_GL_INSUFFICIENT: no journal, the payable untouched, 1102 untouched, a replay changes nothing", async () => {
+  it("[swn0m-supplier-refused-when-1102-short] a payment above the cash in 1102 (the bank role is the petty cash account) is refused (PETTY_CASH_GL_INSUFFICIENT) and stays pending_approval, retryable: no journal, the payable untouched, 1102 untouched", async () => {
     const t = await setupSupplier("swn0m-s1", {
       bankOn1102: true,
       pettyMapping: true,
@@ -1726,14 +1725,14 @@ describe("swn0m supplier payment on a bank account that is GL 1102", () => {
 
     const row = await payViaSecondPerson(t, invoiceId, 50_000);
 
-    expect(row.status).toBe("rejected");
-    expect(row.note ?? "", "the note names the refusal").toContain(REFUSAL);
+    // legend-5qqb9: retryable, parked as pending_approval (not final rejected).
+    expect(row.status).toBe("pending_approval");
     expect(await supplierJournalCount(t), "no journal").toBe(journals);
     expect(await payableOutstanding(t, invoiceId)).toBe(PAYABLE);
     expect(await supplierGl(t)).toBe(30_000);
   }, 120_000);
 
-  it("[swn0m-supplier-fits-and-boundary] a payment equal to the cash in 1102 is paid (one journal Dr AP / Cr 1102); then one rupiah more is rejected because 1102 is empty", async () => {
+  it("[swn0m-supplier-fits-and-boundary] a payment equal to the cash in 1102 is paid (one journal Dr AP / Cr 1102); then one rupiah more is refused (stays pending_approval) because 1102 is empty", async () => {
     const t = await setupSupplier("swn0m-s2", {
       bankOn1102: true,
       pettyMapping: true,
@@ -1750,13 +1749,12 @@ describe("swn0m supplier payment on a bank account that is GL 1102", () => {
     expect(await supplierGl(t), "1102 reduced by the payment").toBe(0);
 
     const more = await payViaSecondPerson(t, invoiceId, 1);
-    expect(more.status).toBe("rejected");
-    expect(more.note ?? "").toContain(REFUSAL);
+    expect(more.status).toBe("pending_approval");
     expect(await supplierGl(t), "1102 never negative").toBe(0);
     expect(await payableOutstanding(t, invoiceId)).toBe(PAYABLE - 50_000);
   }, 120_000);
 
-  it("[swn0m-supplier-reserve-counted] a pending cash payroll credit of the entity is a reserve: with 100.000 in 1102 and 70.000 reserved, 50.000 is rejected and 30.000 is paid", async () => {
+  it("[swn0m-supplier-reserve-counted] a pending cash payroll credit of the entity is a reserve: with 100.000 in 1102 and 70.000 reserved, 50.000 is refused (stays pending_approval) and 30.000 is paid", async () => {
     const t = await setupSupplier("swn0m-s3", {
       bankOn1102: true,
       pettyMapping: true,
@@ -1766,8 +1764,7 @@ describe("swn0m supplier payment on a bank account that is GL 1102", () => {
     const invoiceId = await supplierInvoice(t);
 
     const refused = await payViaSecondPerson(t, invoiceId, 50_000);
-    expect(refused.status).toBe("rejected");
-    expect(refused.note ?? "").toContain(REFUSAL);
+    expect(refused.status).toBe("pending_approval");
     expect(await supplierGl(t)).toBe(100_000);
     expect(await payableOutstanding(t, invoiceId)).toBe(PAYABLE);
 

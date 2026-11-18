@@ -52,6 +52,7 @@ import {
   assertJournalLinesPostable,
   postJournalInTransaction,
 } from "./accounting-journal.service";
+import { assertJournalCredit1102Covered } from "./accounting-petty-cash.service";
 import {
   auditAccountingChange,
   journalRequestFingerprint,
@@ -318,6 +319,14 @@ async function postApproved(
     legalEntityId: row.legalEntityId,
     entryDate: row.entryDate,
   });
+  // A credit to 1102 pays out of petty cash: refused when the cash is short
+  // (not a final refusal, the request stays pending; legend-5qqb9).
+  await assertJournalCredit1102Covered(
+    tx,
+    context.tenant.tenantId,
+    row.legalEntityId,
+    row.lines,
+  );
   const entry = await postJournalInTransaction(
     tx,
     context,
