@@ -276,6 +276,22 @@ const CLOSED: Entry[] = [
     }),
   ],
   [
+    // Round 3: the `pos/*` wildcard must not open the refund correction (money).
+    "pos: POST orders/:id/corrections/refund (uang, DENY sebelum wildcard pos)",
+    () => ({
+      method: "post",
+      path: `${outletBase()}/pos/orders/${randomUUID()}/corrections/refund`,
+    }),
+  ],
+  [
+    // Round 3b: a cash void of a paid order pays the cash back out (Q63).
+    "pos: POST orders/:id/corrections/void (uang tunai keluar, DENY sebelum wildcard pos)",
+    () => ({
+      method: "post",
+      path: `${outletBase()}/pos/orders/${randomUUID()}/corrections/void`,
+    }),
+  ],
+  [
     "default tolak: GET outlet delivery-orders (di luar semua grup)",
     () => ({ method: "get", path: `${outletBase()}/delivery-orders` }),
   ],
@@ -529,6 +545,15 @@ describe("legend-iq0jz isSharedDeviceApiAllowed", () => {
     ["POST", "/api/wifi/sessions"],
     ["GET", "/api/notifications"],
     ["GET", "/api/ai/governance"],
+    ["GET", "/api/ai/kds"],
+    ["POST", "/api/ai/kds/anything"],
+    ["POST", `/api/outlets/${o}/pos/orders/${randomUUID()}/corrections/refund`],
+    ["POST", `/api/outlets/${o}/pos/orders/${randomUUID()}/corrections/void`],
+    [
+      "POST",
+      `/api/outlets/${o}/pos/orders/${randomUUID()}/corrections/refund/`,
+    ],
+    ["POST", `/API/Outlets/${o}/POS/orders/${randomUUID()}/corrections/refund`],
     ["GET", "/api/inventory/balances"],
     ["GET", `/api/outlets/${o}/delivery-orders`],
     ["POST", "/api/floor/zones"],

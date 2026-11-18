@@ -7458,3 +7458,16 @@ Cabang `ghostex/4b06e171`, dasar 1018 (f854663f9). Tingkat K (akses). Tanpa migr
 - Review reviewer: tanpa bug fungsional (a11y live region dibetulkan). Review architect (K): akses disetujui; dibetulkan loop hello->1008 tiap detik (jatah retry kini bergantung `stableMs`), snapshot gagal membuat client macet, tes API diperkuat. Sisa catatan rendah: chip bisa menyebut "sesi berakhir" untuk retry yang putus 1006 sebelum hello; `after: null` (jeda board-hello ditutup polling 2 dtk).
 - Screenshot 1280: `docs/review/img/ui1021-kds-connected.png`, `ui1021-kds-disconnected.png`.
 - Subagent: total 12, puncak 3 bersamaan, token heavy dipegang test-runner/implementer bergantian. Biaya sesi (session-usage): 3260k.
+
+## 1094 Akses perangkat bersama, sisa (legend-13vhb, legend-tlr6p, legend-ypwsp, legend-iq0jz), 19 Nov 2026
+
+Cabang `ws/1094-akses-perangkat-bersama-sisa`, dasar a20420a6f (pin-kasir-tablet-bersama). Tingkat K (akses + uang). Tanpa migrasi.
+
+- Voucher maaf dan delivery-orders: `resolveActingStaff` + `requireActingStaffOnSharedDevice` + `actorOf`. Voucher maaf menolak kasir outlet lain (403 `ACTING_STAFF_OUTLET_MISMATCH`). Delivery tetap tertutup di tablet bersama oleh allowlist, guard PIN jadi lapisan cadangan.
+- Service-request, order-issues, expo, menu availability: aktor `actorOf(req)`; route tanpa `:outletId` menolak token kasir outlet lain. Tes: kasir outlet A tidak bisa collect charge outlet B.
+- Lintas tenant (ypwsp): sudah tertutup, dikunci `shared-device-marks.test.ts`, tanpa kode baru.
+- Allowlist layar tablet bersama Q29 diport ulang (`lib/shared-device-allowlist.ts`, `middleware/shared-device-allowlist.ts`, dipasang di `requireAuth`), default tolak, upgrade websocket ditolak, guard web. Refund dan void tunai (POS corrections/refund dan corrections/void, resolve manual_refund) ditutup di tablet bersama; Tanya AI KDS belum jalan di tablet (router /api/ai/* masih requireAuth, bead legend-f7ybx).
+- Keputusan terbuka untuk founder lewat CTO: refund di tablet bersama (kini ditolak; bisa dibuka lagi dengan menghapus entri DENY dan blokir manual_refund).
+- Bead lanjutan: legend-cq0u7, legend-f7ybx, legend-5f6is.
+- Tes: 11 berkas plus void-982 (money, pos, allowlist-1043, router-decisions, shared-device, w2-floor, marks, device-shared-mode, auth-guard, backoffice-guard, w3-recovery) 670 lulus.
+- Subagent: total 27, puncak 6 bersamaan (perkiraan), token heavy dipegang induk dan test-runner bergantian.

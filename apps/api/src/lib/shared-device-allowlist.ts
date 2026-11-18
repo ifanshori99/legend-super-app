@@ -2,7 +2,7 @@
 // of a session marked with a shared device (session.shared_device_ids, a mark
 // never lapses, legend 1027) that reaches a router opted in with
 // requireAuthAllowSharedDevice may only use what POS/kasir (incl. reservasi),
-// floor, KDS and Tanya AI at KDS use. Everything else is closed by default: a
+// floor and KDS use (Tanya AI at KDS is closed until legend-f7ybx). Everything else is closed by default: a
 // route nobody listed here stays closed (403 SHARED_DEVICE_SCREEN_CLOSED).
 // Routers that did not opt in are refused earlier by requireAuth
 // (ACTING_STAFF_NOT_ALLOWED). Pure and synchronous; the mark question lives in
@@ -13,7 +13,7 @@
 // Patterns are fully anchored and match whole segments. Each carries the router
 // it comes from, so a route change has one place to follow.
 
-type Group = "pos" | "floor" | "kds" | "reservation" | "ai-kds" | "shell";
+type Group = "pos" | "floor" | "kds" | "reservation" | "shell";
 type Rule = {
   group: Group;
   methods: readonly string[] | "*";
@@ -27,6 +27,17 @@ const rule = (
   methods: readonly string[] | "*",
   pattern: string,
 ): Rule => ({ group, methods, pattern: new RegExp(`^${pattern}$`) });
+
+// Checked before RULES: a route here stays closed even when a wildcard below
+// opens it. Refund on a shared tablet is a founder decision, closed by default
+// (sub-1094 round 3).
+const DENY: readonly Rule[] = [
+  // pos-order.routes.ts corrections/refund (inside the pos wildcard)
+  rule("pos", ["POST"], `${OUTLET}/pos/orders/${ID}/corrections/refund`),
+  // corrections/void of a paid order hands captured cash back out (founder Q63:
+  // a cash void is a refund), so it is closed the same way.
+  rule("pos", ["POST"], `${OUTLET}/pos/orders/${ID}/corrections/void`),
+];
 
 const RULES: readonly Rule[] = [
   // ---- pos -----------------------------------------------------------------
@@ -132,16 +143,6 @@ const RULES: readonly Rule[] = [
   ),
   rule("reservation", ["POST"], `${OUTLET}/reservation-customer-credit/apply`),
 
-  // ---- ai-kds (TanyaAiPage and its guide page only) ------------------------
-  // ai-chat.routes.ts and aiGovernanceRouter are back office routers
-  // (requireAuth) that refuse a marked session before this list is read; the
-  // rules stay so Tanya AI at KDS opens the day those routers opt in. Governance,
-  // provider, MCP, insights and actions stay closed.
-  rule("ai-kds", ["POST"], "/api/ai/ask"),
-  rule("ai-kds", ["GET", "POST"], "/api/ai/conversations"),
-  rule("ai-kds", ["GET", "DELETE"], `/api/ai/conversations/${ID}`),
-  rule("ai-kds", ["GET"], "/api/ai/(?:usage|tools|guidelines)"),
-
   // ---- shell (GET only unless noted) ---------------------------------------
   // me.routes.ts, called by the area layout and root loader.
   rule("shell", ["GET"], "/api/me/access"),
@@ -175,6 +176,7 @@ export function isSharedDeviceApiAllowed(
   method: string,
   path: string,
 ): boolean {
+  if (matches(DENY, method, path)) return false;
   return matches(RULES, method, path);
 }
 

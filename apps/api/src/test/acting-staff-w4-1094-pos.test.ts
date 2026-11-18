@@ -677,6 +677,72 @@ describe("menu availability on a shared tablet (legend-tlr6p)", () => {
   });
 });
 
+// ---- manual refund is closed on a shared tablet (round 3) ----------------------
+
+async function issueState(issueId: string) {
+  const { rows } = await owner.query<{
+    status: string;
+    resolution: string | null;
+  }>(
+    "SELECT status, resolution FROM order_issues WHERE tenant_id = $1 AND id::text = $2",
+    [w.tenant.tenantId, issueId],
+  );
+  return rows[0]!;
+}
+
+describe("manual refund resolve on a shared tablet (round 3, refuse when in doubt)", () => {
+  // Assumption: the PIN guard runs first, so without a token the tablet gets
+  // 401 ACTING_STAFF_REQUIRED; with a valid cashier token the route is closed
+  // (403 SHARED_DEVICE_SCREEN_CLOSED). A resolve of the same kind from a
+  // private browser is unchanged (200).
+  it("tablet: 401 ACTING_STAFF_REQUIRED without a PIN token, 403 SHARED_DEVICE_SCREEN_CLOSED with one, nothing resolved; private browser still resolves 200", async () => {
+    const paid = await w.paidOrder();
+    const reported = await w.report(paid.roti.id);
+    expect(reported.status, JSON.stringify(reported.body)).toBe(201);
+    const issueId = reported.body.data.id as string;
+    const approvalId = await w.insertApproval({
+      actionType: "refund",
+      objectType: "order_issue",
+      objectId: issueId,
+      amountIdr: PRICES.roti,
+      status: "approved",
+      requestedBy: w.floorStaff.userId,
+    });
+    const body = {
+      resolution: "manual_refund",
+      approvalRequestId: approvalId,
+      reason: "Pelanggan kecewa, refund manual disetujui",
+    };
+    const path = `/api/order-issues/${issueId}/resolve`;
+    const before = await issueState(issueId);
+
+    // Shared tablet, no PIN token: the PIN guard answers first.
+    expectError(
+      await asTablet("post", path, body, { deviceId: deviceA }),
+      401,
+      "ACTING_STAFF_REQUIRED",
+    );
+    // Shared tablet, valid cashier PIN token: still closed.
+    const token = await tokenA();
+    expectError(
+      await asTablet("post", path, body, { deviceId: deviceA, token }),
+      403,
+      "SHARED_DEVICE_SCREEN_CLOSED",
+    );
+    expect(await issueState(issueId)).toEqual(before);
+    expect(
+      await w.outboxRows("order_issue.manual_refund_approved", issueId),
+    ).toHaveLength(0);
+
+    // Private device / ordinary browser: behaviour unchanged.
+    const resolved = await w.staffPost(w.supervisor, path, body);
+    expect(resolved.status, JSON.stringify(resolved.body)).toBe(200);
+    expect(
+      await w.outboxRows("order_issue.manual_refund_approved", issueId),
+    ).toHaveLength(1);
+  });
+});
+
 // ---- collect an order-issue charge at the till ---------------------------------
 
 function contextOf(tenantId: string): ScopedTenantContext {

@@ -34,6 +34,9 @@ import {
 } from "../middleware/acting-staff.ts";
 import { requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
+import { HttpError } from "../lib/http-error.ts";
+import { ACTING_STAFF_ERROR_CODES } from "@starter/shared/pos/acting-staff";
+import { isRequestOnSharedDevice } from "../middleware/shared-device-allowlist.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
   getScopedTenantContext,
@@ -82,6 +85,18 @@ orderRecoveryRouter.post(
   async (req, res) => {
     const { orderIssueId } = resolveOrderIssue.params.parse(req.params);
     const body = resolveOrderIssue.body.parse(req.body);
+    // Manual refund is money out: closed on a shared tablet (founder decision,
+    // closed by default; sub-1094 round 3). Personal devices are unchanged.
+    if (
+      body.resolution === "manual_refund" &&
+      (req.actingStaff || isRequestOnSharedDevice(req))
+    ) {
+      throw new HttpError(
+        403,
+        ACTING_STAFF_ERROR_CODES.SCREEN_CLOSED,
+        "Layar ini tidak tersedia di tablet bersama.",
+      );
+    }
     res.json({
       data: await recovery.resolveOrderIssue(
         getScopedTenantContext(req),

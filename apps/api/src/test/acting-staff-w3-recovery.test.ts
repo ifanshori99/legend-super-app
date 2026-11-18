@@ -410,7 +410,8 @@ describe("acting staff on order recovery (wave 3)", () => {
       expect(await paymentRefundCount(issueId)).toBe(0);
     });
 
-    it("manual refund: the tablet login owner approving does not block the cashier (executor is the cashier, not the session)", async () => {
+    // legend-iq0jz round 3: manual refund closed on shared tablet, founder decision pending.
+    it("manual refund on a shared tablet: tablet login owner approving does not unlock it (401 without token, 403 SHARED_DEVICE_SCREEN_CLOSED with the cashier token)", async () => {
       const deviceId = await newDevice(true);
       const { roti } = await w.paidOrder();
       const issueId = (await w.report(roti.id)).body.data.id as string;
@@ -423,25 +424,38 @@ describe("acting staff on order recovery (wave 3)", () => {
         requestedBy: w.floorStaff.userId,
         decidedBy: session.userId,
       });
-      const token = await cashierToken(deviceId);
-      const response = await post(
-        `/api/order-issues/${issueId}/resolve`,
-        { resolution: "manual_refund", approvalRequestId, reason: REASON },
-        deviceId,
-        token,
+      const path = `/api/order-issues/${issueId}/resolve`;
+      const body = {
+        resolution: "manual_refund",
+        approvalRequestId,
+        reason: REASON,
+      };
+      expectError(
+        await post(path, body, deviceId),
+        401,
+        "ACTING_STAFF_REQUIRED",
       );
-      expect(response.status, JSON.stringify(response.body)).toBe(200);
-      expect(await refundEvents(issueId)).toHaveLength(1);
+      const token = await cashierToken(deviceId);
+      expectError(
+        await post(path, body, deviceId, token),
+        403,
+        "SHARED_DEVICE_SCREEN_CLOSED",
+      );
+      expect(await issueStatus(issueId)).toBe("open");
+      expect(await refundEvents(issueId)).toHaveLength(0);
+      expect(await paymentRefundCount(issueId)).toBe(0);
     });
 
-    it("manual refund on a shared tablet: refused without a token, then resolving twice with a token queues one refund", async () => {
+    // legend-iq0jz round 3: manual refund closed on shared tablet, founder decision pending.
+    it("manual refund on a shared tablet: refused without a token (401) and with a token (403 SHARED_DEVICE_SCREEN_CLOSED), repeated calls never queue a refund", async () => {
       const deviceId = await newDevice(true);
       const { roti } = await w.paidOrder();
       const issueId = (await w.report(roti.id)).body.data.id as string;
       const body = await approvedRefundBody(issueId);
+      const path = `/api/order-issues/${issueId}/resolve`;
 
       expectError(
-        await post(`/api/order-issues/${issueId}/resolve`, body, deviceId),
+        await post(path, body, deviceId),
         401,
         "ACTING_STAFF_REQUIRED",
       );
@@ -449,34 +463,24 @@ describe("acting staff on order recovery (wave 3)", () => {
       expect(await issueStatus(issueId)).toBe("open");
 
       const token = await cashierToken(deviceId);
-      const first = await post(
-        `/api/order-issues/${issueId}/resolve`,
-        body,
-        deviceId,
-        token,
-      );
-      expect(first.status, JSON.stringify(first.body)).toBe(200);
-      expect(await refundEvents(issueId)).toHaveLength(1);
-      expectCashier(await actorEvidence(issueId));
+      for (let i = 0; i < 2; i += 1) {
+        expectError(
+          await post(path, body, deviceId, token),
+          403,
+          "SHARED_DEVICE_SCREEN_CLOSED",
+        );
+        expect(await refundEvents(issueId)).toHaveLength(0);
+        expect(await issueStatus(issueId)).toBe("open");
+      }
+      expect(await paymentRefundCount(issueId)).toBe(0);
 
-      // Same call again (idempotent replay or conflict): never a second refund.
-      const again = await post(
-        `/api/order-issues/${issueId}/resolve`,
-        body,
-        deviceId,
-        token,
-      );
-      expect([200, 409], JSON.stringify(again.body)).toContain(again.status);
-      expect(await refundEvents(issueId)).toHaveLength(1);
-      expect(await paymentRefundCount(issueId)).toBeLessThanOrEqual(1);
-
-      // And again without any token: still refused, still one refund.
+      // And again without any token: still refused, still no refund.
       expectError(
-        await post(`/api/order-issues/${issueId}/resolve`, body, deviceId),
+        await post(path, body, deviceId),
         401,
         "ACTING_STAFF_REQUIRED",
       );
-      expect(await refundEvents(issueId)).toHaveLength(1);
+      expect(await refundEvents(issueId)).toHaveLength(0);
     });
   });
 });
