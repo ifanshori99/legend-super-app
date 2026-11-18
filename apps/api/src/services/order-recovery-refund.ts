@@ -55,6 +55,7 @@ import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { orderPromoPartialRefundPort } from "./order-promo-refund.ts";
+import { orderMoneyBackLaneOf } from "./order-refund-lane.ts";
 import { OrderRevenueMismatch, orderRevenueSplit } from "./order-revenue.ts";
 import {
   recoveryRefundSplit,
@@ -231,6 +232,15 @@ export async function deliverOrderRecoveryRefundEvent(
       { id: issue.id, orderId: order.id, blockedReason, ...extra },
       "Refund item gagal tidak dibuka",
     );
+
+  // 0. One money-back lane per order (legend-aja6g, 1095): a void (cloud, edge,
+  // or an edge void still parked) or a cashier refund already settled the
+  // order. Read under the order lock above; no issue lock is added here.
+  const lane = await orderMoneyBackLaneOf(tx, tenantId, order.id);
+  if (lane !== null) {
+    await blocked(`money_back_lane_${lane}`);
+    return;
+  }
 
   // 1. A POS bill: the cashier refunds it (`refundPosOrder`).
   const [pos] = await tx
@@ -987,6 +997,34 @@ export async function refileRecoveryRefundAfterFailure(
     )
     .limit(1);
   if (live) return;
+  // One money-back lane per order (legend-aja6g, 1095): a refile pays the guest
+  // again, so a void or cashier refund that settled the order blocks it. Plain
+  // reads, no issue or order lock: the caller holds intent, fund, refund, and
+  // the ORD-09 consumer locks issue, order, intent, so locks taken here would
+  // invert that sequence. Safe without them: void and cashier refund refuse
+  // while any non-failed ORD-09 row exists, and this refund goes failed to
+  // refiled atomically in this transaction.
+  const [laneIssue] = await tx
+    .select({ orderId: orderIssues.orderId })
+    .from(orderIssues)
+    .where(and(eq(orderIssues.tenantId, tenantId), eq(orderIssues.id, issueId)));
+  const lane = laneIssue
+    ? await orderMoneyBackLaneOf(tx, tenantId, laneIssue.orderId)
+    : null;
+  if (lane !== null) {
+    await auditIssue(
+      AUDIT_REFILE_BLOCKED,
+      {
+        id: issueId,
+        refundId: failedRefund.id,
+        blockedReason: `money_back_lane_${lane}`,
+        failureReason,
+      },
+      "Refund item gagal tidak diajukan ulang: pesanan sudah dikembalikan lewat jalur lain",
+    );
+    await settleFinalFailure();
+    return;
+  }
   // This refund is already `failed` in this transaction, so it counts.
   const [failures] = await tx
     .select({ count: sql<number>`count(*)::int` })

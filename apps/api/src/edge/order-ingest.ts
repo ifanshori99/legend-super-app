@@ -58,6 +58,7 @@ import type { EdgeTx } from "../services/edge-queue.service.ts";
 import { deliverAutoJournalEvent } from "../services/accounting-auto-journal-consumer.ts";
 import { sourceIdToDb } from "../services/inventory.service.ts";
 import { liveRouteManualRefundWhere } from "../services/order-issue-route-refund.ts";
+import { ord09RefundExistsOf } from "../services/order-refund-lane.ts";
 import { lockLoyaltyJournalEntity } from "../services/accounting-auto-journal-amounts.ts";
 import { deliverLoyaltyEarnEvent } from "../services/loyalty-earn-consumer.ts";
 import { recordTaxSnapshotsFromPayload } from "../services/tax.service.ts";
@@ -776,6 +777,10 @@ async function applyVoided(
     )
     .limit(1);
   if (manualRefund) throw new IngestRefusal("manual_refund_exists");
+  // legend-aja6g (1095): a live ORD-09 failed-item refund already pays the guest
+  // back; read under the orders row lock above, same transaction.
+  if (await ord09RefundExistsOf(tx, tenantId, payload.orderId))
+    throw new IngestRefusal("ord09_refund_exists");
 
   const total = Number(order.totalIdr);
   if (total <= 0 || Number(payload.amountIdr) !== total)
