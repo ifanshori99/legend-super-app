@@ -169,7 +169,7 @@ test("the shell renders the screen title and the slot actions", () => {
       "Body",
     ),
   );
-  assert.match(html, /<p class="[^"]*type-title[^"]*">Expo<\/p>/);
+  assert.match(html, /<p[^>]*class="[^"]*type-title[^"]*"[^>]*>Expo<\/p>/);
   assert.match(html, /data-slot-action="refresh"/);
 });
 
@@ -236,12 +236,13 @@ test("an outlet sheet control renders behind a labelled outlet button", () => {
   assert.match(html, /max-sm:hidden[^>]*>Sari<\/span>/);
 });
 
-test("the phone status bar is one 56px row", () => {
+test("the phone status bar is a 56px minimum row", () => {
   const html = renderToStaticMarkup(
     h(OperationsShell, { title: "Expo", online: true }, "Body"),
   );
   const header = html.match(/<header[^>]*class="([^"]*)"/)?.[1] ?? "";
-  assert.match(header, /max-sm:h-14/);
+  // legend-1082: min-h-14, so a two-line phone title grows the bar instead of clipping.
+  assert.match(header, /max-sm:min-h-14/);
   assert.match(header, /max-sm:py-1/);
   assert.doesNotMatch(header, /(^|\s)flex-wrap/);
   assert.match(header, /sm:min-h-16/);
