@@ -6,6 +6,7 @@ import { auth } from "../lib/auth";
 import { HttpError } from "../lib/http-error";
 import { setRequestAuthMethod, setRequestUser } from "../lib/request-context";
 import { stampSharedDeviceFromToken } from "../services/shared-device.service";
+import { enforceSharedDeviceAllowlist } from "./shared-device-allowlist";
 import { enforceSupportSession } from "./support-session";
 
 // Authenticates against the database on every request (no cookie cache), so a
@@ -29,6 +30,11 @@ export const requireAuth: RequestHandler = async (req, _res, next) => {
     session.session.sharedDeviceIds,
     req.get(DEVICE_TOKEN_HEADER),
   );
+  // legend-iq0jz (founder Q29): on a shared tablet only the POS, floor, KDS and
+  // Tanya AI at KDS allowlist is open; any other route answers 403
+  // SHARED_DEVICE_SCREEN_CLOSED. One point for every cookie router, so a route
+  // added later is closed by default. See lib/shared-device-allowlist.ts.
+  await enforceSharedDeviceAllowlist(req);
   // A support (impersonated) session is checked against its support access
   // grant here, the one chokepoint of every cookie router. See
   // middleware/support-session.ts.

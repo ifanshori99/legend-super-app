@@ -15,6 +15,7 @@ import {
 import { getAuth, requireAuth } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
+import { isRequestOnSharedDevice } from "../middleware/shared-device-allowlist";
 import {
   getRequestAccessData,
   loadRequestAccess,
@@ -85,6 +86,8 @@ meRouter.get("/access", async (req, res) => {
         ? { accessMode: support.accessMode, expiresAt: support.expiresAt }
         : null,
       canChangeEmployeeManager,
+      // Presentation only (legend-iq0jz): the API closes the screens itself.
+      sharedDevice: await isRequestOnSharedDevice(req),
     }),
   });
 });

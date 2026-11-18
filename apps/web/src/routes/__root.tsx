@@ -4,6 +4,7 @@ import {
   createRootRouteWithContext,
   HeadContent,
   Link,
+  notFound,
   Outlet,
   Scripts,
   rootRouteId,
@@ -16,6 +17,7 @@ import { useT } from "@/components/i18n";
 import { Providers } from "@/components/providers";
 import { Button } from "@/components/ui/button";
 import { PushOwnerGuard } from "@/features/ws05-notifications/components/push-owner-guard";
+import { isScreenClosedOnSharedDevice } from "@/lib/areas/guard";
 import { loadAreaAccess } from "@/lib/areas/load-access";
 import type { AreaAccess } from "@/lib/areas/access";
 import { getSessionFn, type Session } from "@/lib/session";
@@ -49,7 +51,7 @@ export const Route = createRootRouteWithContext<RouterContext>()({
   // One session read per navigation (the API, via the auth middleware), shared
   // with every route as context. Layouts decide what to do with it; the API
   // still authenticates every request on its own.
-  beforeLoad: async () => {
+  beforeLoad: async ({ location }) => {
     const [session, brand] = await Promise.all([
       getSessionFn(),
       getTenantBrandFn(),
@@ -66,9 +68,14 @@ export const Route = createRootRouteWithContext<RouterContext>()({
       );
       if (isBrowser) lastTenantTheme = tenantTheme;
     }
+    const access = await loadAreaAccess(session);
+    // Shared tablet (founder Q29): screens outside the allowlist do not exist
+    // there, in every area. The API refuses their requests as well.
+    if (isScreenClosedOnSharedDevice(access, location.pathname))
+      throw notFound({ data: { sharedDevice: true } });
     return {
       session,
-      access: await loadAreaAccess(session),
+      access,
       tenantTheme,
       textOverrides: brand.overrides,
     };
@@ -152,8 +159,14 @@ function RootDocument({ children }: { children: ReactNode }) {
   );
 }
 
-function NotFound() {
+function NotFound({ data }: { data?: unknown }) {
   const t = useT();
+  // A shared tablet (founder Q29) has no public home: "go home" opens the POS.
+  // The thrown notFound carries the flag (the root context is not built yet).
+  const sharedDevice =
+    typeof data === "object" &&
+    data !== null &&
+    (data as { sharedDevice?: unknown }).sharedDevice === true;
   return (
     <main id="main-content" className="mx-auto max-w-lg px-6 py-24">
       <p className="mb-3 font-mono text-sm text-primary">404</p>
@@ -164,7 +177,7 @@ function NotFound() {
         {t("errorPage.notFoundHint")}
       </p>
       <Button asChild>
-        <Link to="/">{t("errorPage.goHome")}</Link>
+        <Link to={sharedDevice ? "/pos" : "/"}>{t("errorPage.goHome")}</Link>
       </Button>
     </main>
   );

@@ -147,7 +147,10 @@ export function loginErrorKey(error: unknown): LoginErrorKey {
  */
 export function postLoginPath(session: {
   readonly kind: "customer" | "management";
+  /** A shared tablet (founder Q29) opens the POS: kelola and member are closed. */
+  readonly sharedDevice?: boolean;
 }): string {
+  if (session.sharedDevice) return "/pos";
   return session.kind === "management" ? "/kelola" : "/member";
 }
 

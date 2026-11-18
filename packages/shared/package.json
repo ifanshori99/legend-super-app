@@ -35,6 +35,7 @@
     "./menu": "./src/menu/index.ts",
     "./access": "./src/access/index.ts",
     "./access/override": "./src/access/override.ts",
+    "./access/shared-device-screens": "./src/access/shared-device-screens.ts",
     "./metrics": "./src/metrics/index.ts",
     "./kitchen": "./src/kitchen/index.ts",
     "./tax": "./src/tax/index.ts",

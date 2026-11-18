@@ -1,3 +1,10 @@
+## 1043 Q29 allowlist layar tablet bersama (engineer, legend-iq0jz, cabang ghostex/8b2dc0b1 dari origin/milestone/m1, 18 Nov 2026)
+
+- Sudah: API default tolak di tablet bersama (sesi bertanda shared device aktif atau header device shared). requireAuth memanggil enforceSharedDeviceAllowlist (403 SHARED_DEVICE_SCREEN_CLOSED); /api/auth dijaga guardSharedDeviceAuthRoutes (sign-in, sign-out, get-session, two-factor verify, login-challenge saja); notification realtime + panic relay ditolak, KDS realtime buka. Daftar: apps/api/src/lib/shared-device-allowlist.ts (POS, floor, KDS + 86, reservasi, Tanya AI KDS, shell GET me/access dan me/active-outlet).
+- Web: isSharedDeviceScreenAllowed (packages/shared/src/access/shared-device-screens.ts); root beforeLoad notFound untuk layar tertutup, nav + area tersaring, post-login ke /pos; /api/me/access memberi sharedDevice.
+- Keputusan: refund/waive/expire order-issue-charges ditutup (tanpa PIN kasir), hanya collect-at-pos. Aturan PIN kasir tidak diubah. Tanpa migrasi.
+- Bead lanjutan: legend-i0ipj (aksi uang/reservasi tanpa PIN), legend-m05vx (route darurat HTTP di luar allowlist).
+
 ## 990 Payout lanjutan: recon flag dua orang, jurnal fee, recon closure/attestation, ref bank return (engineer, legend-xbagc/d9pxr/y2lk2/r8nas/nsqhm, cabang dari origin/milestone/m1 1b0fd2a9e, 17 Nov 2026)
 
 - Sudah: tabel `payroll_payout_recon_clearances` + grant kind `recon_clear` (0580), fungsi tepercaya propose/approve dua orang password step-up + helper `payout_payslip_held_by_recon` dipakai guard item dan `payout_resolve_approve` (0581), cek jurnal `payroll-payout-overpaid-fee:<item>` saat COMMIT, PAYOUT-90 (0582), ref bank wajib di return propose/confirm, unik per tenant, PAYOUT-88/89 (0583). API `/api/hris/payroll/payout-recon-flags` + clearance/approve. Recon: jurnal fee, closure (kind closure), attestation resolve/bank_confirm di batch tanpa operasi lain, grant item_set_hash/detail/ref_id. Web: field ref bank di dialog return + pesan error.

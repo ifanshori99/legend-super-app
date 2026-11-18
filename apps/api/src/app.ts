@@ -18,6 +18,7 @@ import { requestContext } from "./lib/request-context";
 import { developmentPublicSiteCredential } from "./lib/development-public-site";
 import { limitAuthBody } from "./middleware/body";
 import { guardImpersonatedAuthRoutes } from "./middleware/support-session";
+import { guardSharedDeviceAuthRoutes } from "./middleware/shared-device-allowlist";
 import {
   loginChallengeRateLimit,
   type LoginChallengeRateLimitOptions,
@@ -359,6 +360,11 @@ export function createApp({
   // identityAuthRouter and Better Auth below, and reads headers only (never
   // the body).
   app.use("/api/auth", guardImpersonatedAuthRoutes);
+  // A shared tablet (legend-iq0jz, founder Q29) may only sign in and out, read
+  // its session, verify a second factor and run the login challenges; the rest
+  // of /api/auth answers 403 SHARED_DEVICE_SCREEN_CLOSED. Allowed paths cost no
+  // query.
+  app.use("/api/auth", guardSharedDeviceAuthRoutes);
 
   // WhatsApp reverse-OTP sign-in (WS-01, AUTH-01/04) is public, so it has no
   // session. It must run before Better Auth's catch-all because the identity

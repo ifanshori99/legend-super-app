@@ -354,18 +354,19 @@ describe("PATCH /api/devices/:deviceId/shared-mode", () => {
   });
 });
 
-// ---- round C: a shared device cannot switch its own guard off ------------------
-// Spec (card brief, round C): when the caller's login session is marked with the
-// device (`session.shared_device_ids` contains the device) or the request itself carries
-// that device's token header, turning shared mode OFF for that device, or revoking
-// it, answers 403 with the Indonesian message "Matikan mode perangkat bersama dari
-// perangkat lain." Turning it ON stays allowed, and so does any other session.
-// Assumptions: the mark is written by SQL here (the middleware stamping is covered
-// in acting-staff-shared-device.test.ts); other devices of the same outlet stay
-// manageable from the marked session; the error code is not fixed, only the
-// status 403 and the message text.
+// ---- round C: a shared device cannot manage devices (Q29 allowlist) -----------
+// Spec (founder Q29, 18 Nov): a request from a shared tablet (login session
+// marked with the device, or carrying the device's token header) may only reach
+// POS, floor, KDS and Tanya AI at KDS routes. Device management is not one of
+// them, so PATCH /api/devices/:id/shared-mode and POST /api/devices/:id/revoke
+// from the tablet answer 403 SHARED_DEVICE_SCREEN_CLOSED, for ON and OFF, for
+// its own device and for any other, and change nothing (flag, status, audit).
+// This replaces the earlier round C rule ("Matikan mode perangkat bersama dari
+// perangkat lain."), which the allowlist now covers by closing the whole screen.
+// Managing devices from a clean personal session (no mark, no device header)
+// keeps working. Assumption: the mark is written by SQL here.
 describe("shared mode cannot be switched off from the device itself", () => {
-  const MESSAGE = "Matikan mode perangkat bersama dari perangkat lain.";
+  const CLOSED_CODE = "SHARED_DEVICE_SCREEN_CLOSED";
   let powerRole: string;
 
   beforeAll(async () => {
@@ -435,9 +436,12 @@ describe("shared mode cannot be switched off from the device itself", () => {
   }
 
   function expectSelfRefusal(response: { status: number; body: unknown }) {
-    const body = response.body as { error?: { message?: string } };
+    const body = response.body as {
+      error?: { code?: string; message?: string };
+    };
     expect(response.status, JSON.stringify(response.body)).toBe(403);
-    expect(body.error?.message ?? "").toContain(MESSAGE);
+    expect(body.error?.code, JSON.stringify(response.body)).toBe(CLOSED_CODE);
+    expect(body.error?.message ?? "").not.toBe("");
   }
 
   it("a session marked with the device cannot switch its shared mode off: 403, flag and audit unchanged", async () => {
@@ -475,25 +479,38 @@ describe("shared mode cannot be switched off from the device itself", () => {
     expect(await auditRows(id, DISABLED)).toHaveLength(1);
   });
 
-  it("the marked session may still switch shared mode ON, and manage other devices", async () => {
+  it("the marked session cannot switch shared mode on for any device either: 403, nothing changes", async () => {
     const id = await flaggedDevice();
     const marked = await powerMember("Sesi Bertanda Hidupkan");
     await mark(marked, id);
 
-    const enableOther = await addDevice(tenant.tenantId, outletA);
-    const on = await patch(marked, enableOther, { sharedMode: true });
-    expect(on.status, JSON.stringify(on.body)).toBe(200);
-    expect(await flagOf(enableOther)).toBe(true);
+    const other = await addDevice(tenant.tenantId, outletA);
+    const on = await patch(marked, other, { sharedMode: true });
+    expectSelfRefusal(on);
+    expect(await flagOf(other)).toBe(false);
+    expect(await auditRows(other, ENABLED)).toHaveLength(0);
 
-    // Same device, enabling again (already on) is allowed and idempotent.
     const again = await patch(marked, id, { sharedMode: true });
-    expect(again.status, JSON.stringify(again.body)).toBe(200);
+    expectSelfRefusal(again);
     expect(await flagOf(id)).toBe(true);
+    expect(await auditRows(id, ENABLED)).toHaveLength(0);
+  });
 
-    // A different flagged device can be switched off from this session.
-    const off = await patch(marked, enableOther, { sharedMode: false });
+  it("a clean personal session switches shared mode on and off for other devices: 200", async () => {
+    const id = await flaggedDevice();
+    const marked = await powerMember("Sesi Bertanda Sisi");
+    await mark(marked, id);
+    const clean = await powerMember("Sesi Pribadi Bersih");
+
+    const other = await addDevice(tenant.tenantId, outletA);
+    const on = await patch(clean, other, { sharedMode: true });
+    expect(on.status, JSON.stringify(on.body)).toBe(200);
+    expect(await flagOf(other)).toBe(true);
+
+    const off = await patch(clean, other, { sharedMode: false });
     expect(off.status, JSON.stringify(off.body)).toBe(200);
-    expect(await flagOf(enableOther)).toBe(false);
+    expect(await flagOf(other)).toBe(false);
+    expect(await flagOf(id)).toBe(true);
   });
 
   it("a session marked with the device cannot revoke it: 403 and the device stays active", async () => {
@@ -523,12 +540,24 @@ describe("shared mode cannot be switched off from the device itself", () => {
     expect(await statusOf(id)).toBe("revoked");
   });
 
-  it("the marked session can revoke a different device", async () => {
+  it("the marked session cannot revoke a different device either: 403 and it stays active", async () => {
     const id = await flaggedDevice();
     const marked = await powerMember("Sesi Bertanda Cabut Beda");
     await mark(marked, id);
     const otherDevice = await addDevice(tenant.tenantId, outletA);
     const response = await revoke(marked, otherDevice);
+    expectSelfRefusal(response);
+    expect(await statusOf(otherDevice)).toBe("active");
+    expect(await statusOf(id)).toBe("active");
+  });
+
+  it("a clean personal session revokes a different device: 200", async () => {
+    const id = await flaggedDevice();
+    const marked = await powerMember("Sesi Bertanda Cabut Sisi");
+    await mark(marked, id);
+    const clean = await powerMember("Sesi Pribadi Pencabut");
+    const otherDevice = await addDevice(tenant.tenantId, outletA);
+    const response = await revoke(clean, otherDevice);
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     expect(await statusOf(otherDevice)).toBe("revoked");
     expect(await statusOf(id)).toBe("active");

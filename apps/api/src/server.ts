@@ -28,6 +28,7 @@ import {
   attachKdsRealtime,
   listenKdsWakeups,
 } from "./services/kds-realtime.ts";
+import { isUpgradeOnSharedDevice } from "./middleware/shared-device-allowlist.ts";
 import { resolveKdsStaffConnection } from "./services/kds-realtime-auth.ts";
 import { createDeviceOutletResolver } from "./services/device-outlet-resolver.ts";
 import { setDeviceOutletResolver } from "./services/device-pin.service.ts";
@@ -114,6 +115,8 @@ guardEdgeUpgrades(server, { edgeMode: env.EDGE_MODE });
 // subscriptions deny by default. Wakeups contain IDs only and follow commit.
 const realtime = attachNotificationRealtime(server, {
   trustedOrigins: env.trustedOrigins,
+  // Shared tablets get no notifications (legend-iq0jz, founder Q29).
+  isSharedDevice: isUpgradeOnSharedDevice,
 });
 const stopWakeups = listenNotificationWakeups(pool, realtime.dispatch).catch(
   (error: unknown) => {
