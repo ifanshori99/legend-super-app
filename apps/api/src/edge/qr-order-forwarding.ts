@@ -30,14 +30,12 @@ import {
   type QrOrderPlacedEdgePayload,
 } from "@starter/shared/qr-order";
 import { edgeNodes } from "../db/schema/edge-node.ts";
+import { isHeartbeatFresh } from "./link-freshness.ts";
 import type { orderItems, orders } from "../db/schema/qr-order.ts";
 import {
   enqueueEdgeEvent,
   type EdgeTx,
 } from "../services/edge-queue.service.ts";
-
-/** Link is up when the node's last heartbeat is at most this old. */
-const DEFAULT_EDGE_LINK_STALE_SECONDS = 45;
 
 export type OutletEdgeLinkState = {
   hasEdge: boolean;
@@ -45,13 +43,6 @@ export type OutletEdgeLinkState = {
   /** The node to queue for (a live one when any; else the primary/first). */
   edgeNodeId: string | null;
 };
-
-function staleSeconds(): number {
-  const parsed = Number(process.env.EDGE_LINK_STALE_SECONDS);
-  return Number.isFinite(parsed) && parsed > 0
-    ? parsed
-    : DEFAULT_EDGE_LINK_STALE_SECONDS;
-}
 
 /**
  * Edge link state of one outlet, read on the caller's tenant transaction
@@ -81,10 +72,8 @@ export async function getOutletEdgeLinkState(
     .orderBy(asc(edgeNodes.role));
   if (nodes.length === 0)
     return { hasEdge: false, linkUp: false, edgeNodeId: null };
-  const cutoff = now.getTime() - staleSeconds() * 1000;
-  const live = nodes.find(
-    (node) =>
-      node.lastHeartbeatAt !== null && node.lastHeartbeatAt.getTime() >= cutoff,
+  const live = nodes.find((node) =>
+    isHeartbeatFresh(node.lastHeartbeatAt, now),
   );
   return live
     ? { hasEdge: true, linkUp: true, edgeNodeId: live.id }

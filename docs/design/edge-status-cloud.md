@@ -490,3 +490,13 @@ S5 (web):
   claim.
 - R9 One owner notification per outlet per day (D4), even for two nodes or two
   episodes; the alert rows keep the detail.
+
+## 8. Addendum: cloud "edge offline" alarm (legend-5ab0l, S6)
+
+Founder Q44 (18 Nov 2026): threshold = 30 minutes offline while the outlet is open. Closes R3.
+
+- D9 Sweep: a cloud worker (`startEdgeOfflineSweepWorker`, pattern `startCatalogPublisherWorker`, `setInterval` + `unref` + `pending` guard, wired next to it in `server.ts`, interval 60 s, env `EDGE_OFFLINE_SWEEP_SECONDS`, threshold env `EDGE_OFFLINE_ALARM_MINUTES` default 30, min 5).
+- D10 Rule per active node with a heartbeat: `openSince` = start of the outlet's current open window (outlet `openingHours` in `outlets.timezone`, past-midnight `closes < opens` handled, `null` day = closed). Outlet closed now: no new alert. Offline when `now - max(lastHeartbeatAt, openSince) >= threshold` (so an overnight gap alone does not alarm at opening; the clock counts open time only). Node with `last_heartbeat_at` null (never connected) is skipped. Only the active node is considered; a revoked node resolves its open alert.
+- D11 Persistence: kind `edge_offline` added to `edge_node_alerts` (migration 0679: replace the CHECK; `EDGE_NODE_ALERT_KINDS` and the DTO `alerts.max(3)` follow). `raiseEdgeNodeAlert` on offline; owner and supervisors notified only when the call returns `opened: true` (one notification per episode, notification id from the alert id; `alsoOwners: true`). Resolve (`resolveEdgeNodeAlerts`) as soon as a heartbeat is within the threshold of now, or the node is revoked. The screen already shows "Terputus" live; it does not render the new alert (no new UI).
+- D12 Safety: each sweep runs per tenant under `withTenant`, node-by-node savepoint, a failure is logged (counts and node id) and never stops the sweep; no money touched. Notification copy: "Edge outlet tidak terhubung lebih dari {menit} menit saat jam buka" with the outlet name and link to Kelola > Status edge.
+- Tests T29-T34: closed outlet no alert; open outlet offline >= 30 min raises one alert and one notification; sweep twice keeps one alert and one notification; heartbeat returns resolves; past-midnight window and timezone; null heartbeat skipped, revoked node resolves; failure in one tenant does not stop others; tenant isolation.

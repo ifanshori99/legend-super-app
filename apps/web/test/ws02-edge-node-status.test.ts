@@ -13,18 +13,24 @@
 //     CONTRACT_PENDING.
 //   - Only `receipt_run_alert` becomes a banner; `device_registry_hard_stale`
 //     is returned but not shown yet (design 3.4, legend-qhymx).
-import { createElement } from "react";
+import { randomUUID } from "node:crypto";
+import { createElement, type ReactNode } from "react";
 import { renderToString } from "react-dom/server";
 import { Server } from "lucide-react";
-import { createUlid } from "@starter/shared/core";
 import { createTranslator, messagesId } from "@starter/shared/i18n";
 import { edgeNodeStatusListSchema } from "@starter/shared/edge/node-status";
 
-const state = vi.hoisted(() => ({
-  overview: null as unknown,
-  apiAnswer: null as unknown,
-  apiCalls: [] as unknown[][],
-}));
+const state = vi.hoisted(() => {
+  // Vite normally injects this compile-time flag; the unit-test runner does
+  // not load vite.config.ts. Hoisted so it is set before the real client
+  // module (loaded by the apiFetch mock below) reads it.
+  vi.stubGlobal("__WEB_DEV_SERVER__", false);
+  return {
+    overview: null as unknown,
+    apiAnswer: null as unknown,
+    apiCalls: [] as unknown[][],
+  };
+});
 
 // API_MOCK is a build-time flag; T28 needs it off (a real deployment).
 vi.mock("@/lib/api/mock-flag", () => ({ API_MOCK: false }));
@@ -40,6 +46,13 @@ vi.mock("@/lib/api/client", async (original) => {
     },
   };
 });
+
+// The page renders router links; a plain anchor needs no router context.
+vi.mock("@tanstack/react-router", async (original) => ({
+  ...(await original<typeof import("@tanstack/react-router")>()),
+  Link: ({ to, children, ...rest }: { to: string; children?: ReactNode }) =>
+    createElement("a", { href: to, ...rest }, children),
+}));
 
 vi.mock("@/features/ws02-edge/hooks", async (original) => {
   const real = await original<typeof import("@/features/ws02-edge/hooks")>();
@@ -65,12 +78,12 @@ import type { AreaAccess } from "@/lib/areas/access";
 
 const t = createTranslator(messagesId);
 
-const outletJakarta = createUlid();
-const outletBandung = createUlid();
-const nodeA = createUlid();
-const nodeB = createUlid();
-const nodeC = createUlid();
-const nodeD = createUlid();
+const outletJakarta = randomUUID();
+const outletBandung = randomUUID();
+const nodeA = randomUUID();
+const nodeB = randomUUID();
+const nodeC = randomUUID();
+const nodeD = randomUUID();
 
 const NOW = "2026-11-18T03:00:00.000Z";
 const HEARTBEAT = "2026-11-18T02:59:30.000Z";

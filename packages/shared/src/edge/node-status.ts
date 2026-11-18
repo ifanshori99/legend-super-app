@@ -15,6 +15,7 @@ import {
 export const EDGE_NODE_ALERT_KINDS = [
   "device_registry_hard_stale",
   "receipt_run_alert",
+  "edge_offline",
 ] as const;
 export const edgeNodeAlertKindSchema = z.enum(EDGE_NODE_ALERT_KINDS);
 export type EdgeNodeAlertKind = z.infer<typeof edgeNodeAlertKindSchema>;
@@ -46,7 +47,7 @@ export const edgeNodeStatusSchema = z.strictObject({
   link: z.enum(["connected", "disconnected"]),
   lastHeartbeatAt: isoDateTimeSchema.nullable(),
   /** Open alerts only. */
-  alerts: z.array(edgeNodeStatusAlertSchema).max(2),
+  alerts: z.array(edgeNodeStatusAlertSchema).max(3),
 });
 export type EdgeNodeStatus = z.infer<typeof edgeNodeStatusSchema>;
 

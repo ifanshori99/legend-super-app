@@ -3214,6 +3214,13 @@
       "when": 1795000000089,
       "tag": "0678_edge_node_alerts",
       "breakpoints": true
+    },
+    {
+      "idx": 679,
+      "version": "7",
+      "when": 1795000000090,
+      "tag": "0679_edge_offline_alert_kind",
+      "breakpoints": true
     }
   ]
 }

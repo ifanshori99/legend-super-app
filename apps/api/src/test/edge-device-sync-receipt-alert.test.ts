@@ -479,7 +479,7 @@ describe("T24 a pull that did not process a report changes nothing", () => {
     // Close the alert the clone pull opened, then pull as an old edge.
     await asOwnerTenant((client) =>
       client.query(
-        "UPDATE edge_node_alerts SET resolved_at = now() WHERE tenant_id = $1 AND edge_node_id = $2 AND resolved_at IS NULL",
+        "UPDATE edge_node_alerts SET resolved_at = GREATEST(now(), raised_at) WHERE tenant_id = $1 AND edge_node_id = $2 AND resolved_at IS NULL",
         [tenant.tenantId, own.edgeNodeId],
       ),
     );

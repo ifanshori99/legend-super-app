@@ -58,6 +58,8 @@ import { resetEdgeApplierRegistryForTests } from "../edge/applier-registry.ts";
 import { registerEdgeDeferredFallback } from "../edge/deferred-event-applier.ts";
 import { createDbLinkStore } from "../edge/db-link-store.ts";
 import { edgeEventApplier, type EdgeApplyMeta } from "../edge/ports.ts";
+import { setAuditWriter } from "../services/audit-writer.ts";
+import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import * as alerts from "../services/edge-sync-conflict-alert.ts";
 import {
   authenticateEdgeCredential,
@@ -322,6 +324,7 @@ async function resetState() {
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
+  setAuditWriter(coreAuditWriter);
   await createTenantFixture(tenantId, [outletA, outletB]);
   await createTenantFixture(tenant2Id, [outlet2]);
   await addUser(supervisorUserId, "Supervisor Alarm", "supervisor", {
@@ -347,6 +350,7 @@ afterEach(() => {
 });
 
 afterAll(async () => {
+  setAuditWriter(null);
   resetEdgeApplierRegistryForTests();
   const client = await owner.connect();
   try {
@@ -506,21 +510,18 @@ describe("legend-0cjzz cloud applier: scope comes from the credential", () => {
     ["another tenant", { tenant: tenant2Id, outlet: outlet2 }],
     ["another outlet of the tenant", { outlet: outletB }],
   ] as const)(
-    "T11 through the link, an event for %s is recorded as applier_refused and the stream continues",
+    "T11 through the link, an event for %s aborts the batch: no ack, nothing applied",
     async (_label, ids) => {
-      const refused = raisedEvent(ids);
-      const good = raisedEvent();
-      await deliver([refused, good]);
-
-      expect(await conflictsOf(refused.id)).toBe(1);
+      // db-link-store refuses a foreign scope before any applier runs (a
+      // plain Error, not an applier_refused conflict), so the good event
+      // behind it is not applied either.
+      const before = await cursor();
+      await expect(
+        deliver([raisedEvent(ids), raisedEvent()]),
+      ).rejects.toThrow();
+      expect(await cursor()).toBe(before);
+      expect(await alertRows(tenantId)).toHaveLength(0);
       expect(await alertRows(tenant2Id)).toHaveLength(0);
-      const rows = await alertRows(tenantId);
-      expect(rows).toHaveLength(1);
-      expect(rows[0]).toMatchObject({
-        outlet_id: outletA,
-        edge_node_id: node.scope.edgeNodeId,
-        source_event_id: ulidToUuid(good.id),
-      });
     },
   );
 
@@ -620,7 +621,11 @@ describe("legend-0cjzz cloud applier: invalid events are refused, the stream con
 
   it("T12 a refused raised event sends no notification", async () => {
     await deliver([raisedEvent({ aggregateId: createUlid(Date.now() + 1) })]);
-    expect(await notificationRows()).toHaveLength(0);
+    // The refusal itself notifies supervisors as a sync conflict; the hard
+    // stale notice must not go out.
+    expect(
+      (await notificationRows()).filter((row) => row.title === TITLE),
+    ).toHaveLength(0);
   });
 
   it("T12 a cleared event with an extra payload field is refused and resolves nothing", async () => {

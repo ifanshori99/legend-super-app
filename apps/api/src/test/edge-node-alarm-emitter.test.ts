@@ -275,7 +275,8 @@ describe("legend-0cjzz edge emitter: recovery queues cleared after raised", () =
       EDGE_NODE_ALARM_RAISED,
       EDGE_NODE_ALARM_CLEARED,
     ]);
-    expect(rows[0]!.link_seq).toBeLessThan(rows[1]!.link_seq);
+    // pg returns bigint columns as strings.
+    expect(Number(rows[0]!.link_seq)).toBeLessThan(Number(rows[1]!.link_seq));
     const cleared = rows[1]!.event;
     expect(cleared).toMatchObject({
       version: 1,

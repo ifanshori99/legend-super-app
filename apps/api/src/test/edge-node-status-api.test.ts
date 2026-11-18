@@ -265,13 +265,15 @@ beforeAll(async () => {
   outletA2 = await insertOutlet(tenantA, "ENS-A2", "Outlet Status A2");
 
   nodeA1Primary = await register(tenantA, outletA1, "primary", "Utama A1");
-  nodeA1Standby = await register(tenantA, outletA1, "standby", "Siaga A1");
-  nodeA2Primary = await register(tenantA, outletA2, "primary", "Utama A2");
+  // An outlet has one active node per role: the revoked standby is registered
+  // and revoked first, then the live standby takes the role.
   nodeA1Revoked = await register(tenantA, outletA1, "standby", "Dicabut A1");
   await revokeEdgeNode(contextOf(tenantA.tenantId, [outletA1]), actor, {
     edgeNodeId: nodeA1Revoked.edgeNode.id,
     reason: "Perangkat hilang",
   });
+  nodeA1Standby = await register(tenantA, outletA1, "standby", "Siaga A1");
+  nodeA2Primary = await register(tenantA, outletA2, "primary", "Utama A2");
   nodeB = await register(tenantB, tenantB.outletId, "primary", "Utama B");
 
   // The column default is "unknown": the API must show it as no version.

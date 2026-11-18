@@ -63,7 +63,7 @@ export const edgeNodeAlerts = pgTable(
       .where(sql`${table.resolvedAt} IS NULL`),
     check(
       "edge_node_alerts_kind_check",
-      sql`${table.kind} IN ('device_registry_hard_stale', 'receipt_run_alert')`,
+      sql`${table.kind} IN ('device_registry_hard_stale', 'receipt_run_alert', 'edge_offline')`,
     ),
     check(
       "edge_node_alerts_resolved_check",

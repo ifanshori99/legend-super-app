@@ -3,7 +3,7 @@
 // alert (legend-s7szu). The POS keeps its own screen at /operasional/koneksi.
 import { useEffect, useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { CircleCheck, HardDrive, Link2Off } from "lucide-react";
+import { CircleCheck, HardDrive } from "lucide-react";
 import { useT } from "@/components/i18n";
 import { Badge, StatusPill } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -11,7 +11,7 @@ import { Card, CardShell } from "@/components/ui/card";
 import { EmptyState, ErrorState } from "@/components/ui/feedback-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { API_MOCK } from "@/lib/api/mock-flag";
-import { isEdgeContractPending, useEdgeNodes } from "../hooks.ts";
+import { useEdgeNodes } from "../hooks.ts";
 import { formatAlertTime } from "../logic.ts";
 import type { EdgeNodeRow } from "../types.ts";
 import { ReceiptRunAlert } from "./receipt-run-alert.tsx";
@@ -60,7 +60,7 @@ export function EdgeNodesPage() {
   const t = useT();
   const nodes = useEdgeNodes();
   const data = nodes.data;
-  const alert = data?.receiptRunAlert ?? null;
+  const alerts = data?.receiptRunAlerts ?? [];
   // Confirms a manual refresh that found no receipt-run alert. It remembers the
   // fetch it confirmed and goes away after 5 s or when the next fetch lands.
   const [refreshedAt, setRefreshedAt] = useState<number | null>(null);
@@ -79,12 +79,11 @@ export function EdgeNodesPage() {
     void nodes
       .refetch()
       .then((result) => {
-        if (result.isSuccess && result.data.receiptRunAlert === null)
+        if (result.isSuccess && result.data.receiptRunAlerts.length === 0)
           setRefreshedAt(result.dataUpdatedAt);
       })
       .finally(() => setRefreshing(false));
   };
-  const pending = nodes.isError && isEdgeContractPending(nodes.error);
 
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-4">
@@ -108,7 +107,7 @@ export function EdgeNodesPage() {
         </Button>
       </header>
 
-      {refreshed && !alert && !refreshing && (
+      {refreshed && alerts.length === 0 && !refreshing && (
         <p
           role="status"
           className="flex items-start gap-2 rounded-container border-(length:--border-w) border-success bg-success-subtle p-4 text-sm leading-5 font-semibold text-foreground"
@@ -121,13 +120,14 @@ export function EdgeNodesPage() {
         </p>
       )}
 
-      {alert && (
+      {alerts.map((alert) => (
         <ReceiptRunAlert
+          key={alert.nodeName}
           edgeNodeId={alert.nodeName}
           alertAt={alert.alertAt}
           guideOpen
         />
-      )}
+      ))}
 
       {nodes.isPending && (
         <Skeleton className="h-72 rounded-container" aria-hidden="true" />
@@ -153,23 +153,9 @@ export function EdgeNodesPage() {
           {nodes.isError && (
             <ErrorState
               error={nodes.error}
-              icon={pending ? Link2Off : undefined}
-              title={t(
-                pending ? "edgeNodes.pendingTitle" : "edgeNodes.errorTitle",
-              )}
-              description={t(
-                pending ? "edgeNodes.pendingHint" : "edgeNodes.errorHint",
-              )}
-              onRetry={pending ? undefined : () => void nodes.refetch()}
-              action={
-                pending ? (
-                  <Button asChild variant="outline" size="sm">
-                    <Link to="/operasional/koneksi">
-                      {t("edgeNodes.connectivityLink")}
-                    </Link>
-                  </Button>
-                ) : undefined
-              }
+              title={t("edgeNodes.errorTitle")}
+              description={t("edgeNodes.errorHint")}
+              onRetry={() => void nodes.refetch()}
             />
           )}
 

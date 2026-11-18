@@ -39,7 +39,7 @@ export async function mockEdgeNodes(): Promise<EdgeNodesOverview> {
     throw new ApiError(500, "INTERNAL", "Status edge tidak dapat dimuat.");
   if (seed === "memuat") return new Promise(() => {});
   if (scenario === "empty" || seed === "kosong")
-    return { nodes: [], receiptRunAlert: null };
+    return { nodes: [], receiptRunAlerts: [] };
   if (seed === "terputus")
     return {
       nodes: [
@@ -58,7 +58,7 @@ export async function mockEdgeNodes(): Promise<EdgeNodesOverview> {
           lastUpdatedAt: null,
         },
       ],
-      receiptRunAlert: null,
+      receiptRunAlerts: [],
     };
   const updatedAt = isoAgo(60_000);
   return {
@@ -71,9 +71,9 @@ export async function mockEdgeNodes(): Promise<EdgeNodesOverview> {
         lastUpdatedAt: updatedAt,
       },
     ],
-    receiptRunAlert:
+    receiptRunAlerts:
       seed === "normal"
-        ? null
-        : { nodeName: "edge-jakarta-01", alertAt: updatedAt },
+        ? []
+        : [{ nodeName: "edge-jakarta-01", alertAt: updatedAt }],
   };
 }

@@ -420,12 +420,17 @@ export function edgeDeviceRegistryHardStaleAlertId(
  * replica passed its hard limit and the edge now refuses NEW device sessions
  * (legend-2lgu). Running sessions are untouched. Idempotent per outlet and UTC
  * day (see `edgeDeviceRegistryHardStaleAlertId`).
+ *
+ * `source` "cloud" (legend-0cjzz): the alarm reaches the cloud through the
+ * edge event stream, possibly after the link came back, so the copy says so
+ * and names the outage limit in hours. `now` is then the cloud clock.
  */
 export async function notifyEdgeDeviceRegistryHardStale(
   tx: EdgeTx,
   context: ScopedTenantContext,
   stale: EdgeDeviceRegistryHardStale,
   now: Date = new Date(),
+  source: "edge" | "cloud" = "edge",
 ): Promise<void> {
   const id = edgeDeviceRegistryHardStaleAlertId(stale.outletId, now);
   await notifyOutletSupervisors(
@@ -445,8 +450,14 @@ export async function notifyEdgeDeviceRegistryHardStale(
         // An empty string (not null) when the replica never pulled.
         lastPulledAt: stale.lastPulledAt ?? "",
       },
-      title: "Data perangkat di edge terlalu lama tidak diperbarui",
-      body: "Server lokal sudah terlalu lama tidak menerima data perangkat dari cloud, jadi perangkat baru tidak dapat masuk. Perangkat yang sedang aktif tetap berjalan. Sambungkan server lokal ke cloud agar data perangkat diperbarui.",
+      title:
+        source === "cloud"
+          ? "Data perangkat di edge sempat terlalu lama tidak diperbarui"
+          : "Data perangkat di edge terlalu lama tidak diperbarui",
+      body:
+        source === "cloud"
+          ? `Server lokal outlet ini lebih dari ${Math.round((stale.maxStaleSeconds / 3600) * 10) / 10} jam tidak menerima data perangkat dari cloud, jadi perangkat baru tidak dapat masuk. Peringatan ini bisa tiba setelah sambungan pulih. Lihat Kelola > Status edge.`
+          : "Server lokal sudah terlalu lama tidak menerima data perangkat dari cloud, jadi perangkat baru tidak dapat masuk. Perangkat yang sedang aktif tetap berjalan. Sambungkan server lokal ke cloud agar data perangkat diperbarui.",
     },
     now,
   );
