@@ -2020,3 +2020,4 @@ Langkah berikut CTO baru:
 - 18:28 CTO: G4z5a 1086 HRIS kecil selesai ws/1086-hris-kecil 3b0baeb2e (6 kartu, tanpa migrasi, architect + 2 reviewer, 5 temuan dibetulkan; review ulang final belum) -> reviewer CTO atas diff final berjalan; resolve; worktree legend-1044b46d ditahan sampai review. Bead baru: legend-m7yeb P2 (source kind SOP, migrasi), legend-5bx8v P2 (duty meal tolak outlet tidak bertugas, keputusan CTO membatasi), legend-p30t3 P3 (NUL di decoder cursor lain).
 
 - 18:31 CTO: review 1086 bersih (0 P0-P2, 2 P3 -> legend-m7yeb di 1087). merge-queue SIAP batch91, worktree legend-1044b46d dihapus. Brief 1087 akses lanjutan (huz8, m7yeb, 5bx8v, p30t3; base ws/1086, migrasi 0702-0703) ditulis; kpg76 ditahan (butuh desain verifikasi nomor WhatsApp).
+- 18:32 CTO: thread G2y41 (Opus, akun #4) mulai 1087 akses lanjutan, base ws/1086.
