@@ -7507,3 +7507,14 @@ Gerbang (Retro 47: gagal dibetulkan + rerun terarah hijau, tanpa full run kedua)
 - e2e produksi hijau; e2e mock terarah (smoke + 5 spec terkait) 40 lulus; 5 gagal `legend-zx8k` dibetulkan (lihat atas). e2e mock penuh batch89.
 
 Subagent: implementer x4 (fixture revpash, device-shared-mode, migrasi 0230, zx8k), test-runner x2. Biaya sesi (session-usage, kumulatif batch85-88): total biaya* 13293k, puncak konteks 267k, 3 compact.
+
+## legend-n45mn: kai edge up-sync dibawa ke m1 (18 Nov 2026, cabang `ghostex/ade86b14`)
+
+Dasar `origin/milestone/m1` 68422e367 (cabang di-fast-forward dulu; 50 komit di belakang). Dua komit `origin/ws/kai-edge-upsync` (e52264d4a, 80bd8e6e4; legend-kai, legend-4vwaj) digabung jadi satu komit.
+
+- Migrasi lama 0286 diberi nomor kerja `0684_edge_txn_ledger` (journal idx 477, `when` 1795000000094 = tepat di atas m1; pola sama dengan 0621 dulu, merge train yang menomori ulang). Isi SQL = versi akhir kai (round 2), FK sudah inline di `CREATE TABLE`. Snapshot `0684_snapshot.json` dibuat ulang dengan `db:generate` di atas snapshot 0476 (prevId cocok). Migrasi 0286 milik m1 tidak disentuh.
+- Isi: tabel `edge_txn_ledger`, `_baselines`, `_events`, `edge_reconciliation_runs`; `buildEdgeTxnDigest`; `POST /api/edge-nodes/:id/reconciliation`; kontrak `@starter/shared/edge/reconciliation`.
+- Penyesuaian tes (tidak ada batas dilonggarkan): `edge-txn-ledger-migration` memakai tag 0684, migrator uji diberi ADMIN OPTION atas `legend_payout` (sama dengan tes migrasi owner lain), dan tes "terdaftar terakhir" diganti "di atas semua migrasi sebelumnya" (temuan architect: migrasi m1 berikutnya tidak boleh memecahkan tes ini); `data-import-registry` mengakui 0684 (backfill baseline).
+- Review architect xhigh (migrasi): tidak ada temuan pada SQL, RLS, snapshot, rute, isolasi tenant, uang (satu event dihitung sekali, bigint). Dua temuan nomor/`when` sudah diterapkan seperlunya. Catatan: tak ada pemanggil produksi `buildEdgeTxnDigest` (sama di kai); itu isi legend-e3k4p.
+- Untuk merge train: `migration-renumber check` akan menandai `0684` idx 477 sampai dinomori ulang; ubah tag, nama berkas, snapshot, `when`, dan konstanta di `edge-txn-ledger-migration.test.ts` (`TAG_PREFIX`, nama) serta kunci di `data-import-registry.test.ts`.
+- Bukti (setelah perubahan terakhir): 5 berkas test terarah (edge-txn-ledger-migration, edge-txn-ledger, edge-reconciliation, edge-outage-replay, data-import-registry) 151/151 lulus lewat `heavy`; prettier + eslint 14 berkas .ts berubah hijau; `db:generate` "No schema changes"; tsc api dan shared exit 0. Test root `tests/*.test.mjs` tidak dijalankan (tak ada izin/label/event baru; gate penuh oleh merge train). Subagent: Explore x2, architect x1 (xhigh), test-runner x1; puncak 2 bersamaan; token heavy dipegang test-runner.

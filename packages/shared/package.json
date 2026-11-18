@@ -28,6 +28,7 @@
     "./edge/people-snapshot": "./src/edge/people-snapshot.ts",
     "./edge/snapshot-safety": "./src/edge/snapshot-safety.ts",
     "./edge/catalog-sync": "./src/edge/catalog-sync.ts",
+    "./edge/reconciliation": "./src/edge/reconciliation.ts",
     "./edc": "./src/edc/index.ts",
     "./edc/events": "./src/edc/events.ts",
     "./adapters": "./src/adapters/index.ts",

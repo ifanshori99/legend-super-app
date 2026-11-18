@@ -90,6 +90,8 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "copies existing edge inbound events into the renamed table",
   "0376_edge_link_slots.sql":
     "backfills edge_link_slots from existing edge_inbound_events: one row per link slot with exactly one counted receipt (legend-pz641); idempotent, ON CONFLICT DO NOTHING, edits no existing row, FORCE RLS lifted for that one statement and restored",
+  "0684_edge_txn_ledger.sql":
+    "backfills edge_txn_ledger_baselines from sync_cursors: one row per edge node that already queued edge_to_cloud events, so reconciliation counts only later events (legend-kai); idempotent, ON CONFLICT DO NOTHING, edits no existing row, runs tenant by tenant under that tenant's GUCs because both tables are FORCE RLS (GUCs restored afterwards)",
   "0090_pos_day_close_permission.sql":
     "adds a permission string to each tenant's existing roles",
   "0096_menu_station_type_backfill.sql":

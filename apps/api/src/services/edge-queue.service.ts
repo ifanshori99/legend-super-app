@@ -56,6 +56,11 @@ import {
   hasEdgeEnvelopeSecrets,
   withoutSecretErrorDetail,
 } from "../edge/envelope-secrets.ts";
+import {
+  isReconciledEvent,
+  recordSentTransaction,
+  transactionAmountIdr,
+} from "./edge-txn-ledger.service.ts";
 
 type Database = NodePgDatabase<typeof schema>;
 export type EdgeTx = Parameters<Parameters<Database["transaction"]>[0]>[0];
@@ -283,6 +288,13 @@ export async function enqueueEdgeEvent(
     sequence: event.sequence,
   });
   if (violation) throw new CoreError("CONFLICT", violation);
+  // legend-kai: a transaction event with an unreadable amount is refused here,
+  // before anything is queued (fail closed), not after the insert.
+  const countsAsSent =
+    input.kind === "transaction_event" &&
+    direction === "edge_to_cloud" &&
+    isReconciledEvent(event.name);
+  if (countsAsSent) transactionAmountIdr(event);
   const linkSeq = cursor.next_out_seq + 1;
   const insert = () =>
     tx.execute(
@@ -293,6 +305,8 @@ export async function enqueueEdgeEvent(
   if (hasEdgeEnvelopeSecrets(event))
     await withoutSecretErrorDetail("Edge queue write failed", insert);
   else await insert();
+  // legend-kai: the edge ledger of what was sent, in the same transaction.
+  if (countsAsSent) await recordSentTransaction(tx, ids, event, linkSeq);
   await tx.execute(
     sql`UPDATE sync_cursors SET next_out_seq = ${linkSeq}, updated_at = now() WHERE edge_node_id = ${input.edgeNodeId}::uuid AND direction = ${direction}`,
   );
