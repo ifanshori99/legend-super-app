@@ -53,7 +53,11 @@ import { manualRefundedOfCharge } from "./order-charge-manual-refund-sum.ts";
 import { recoveryChargeRefundSplit } from "./order-recovery-refund-amount.ts";
 import { accessSnapshotInTransaction } from "./permission-resolver.ts";
 import type { Tx } from "./permission-resolver.ts";
-import { cashOutExceedsDrawer } from "./pos-cash-guard.ts";
+import {
+  assertBusinessDayOpen,
+  cashOutExceedsDrawer,
+} from "./pos-cash-guard.ts";
+import { businessDateFor, loadOutlet } from "./pos-order-support.ts";
 import {
   assertShiftOutflowBound,
   auditShift,
@@ -273,6 +277,7 @@ async function lockManualRefund(
   tx: Tx,
   context: ScopedTenantContext,
   manualRefundId: string,
+  options: { checkScope?: boolean } = {},
 ) {
   const tenantId = context.tenant.tenantId;
   const [probe] = await tx
@@ -302,7 +307,8 @@ async function lockManualRefund(
     )
     .for("update");
   if (!row) throw new CoreError("NOT_FOUND", "Refund manual tidak ditemukan.");
-  assertOutletInScope(context.outletScope, locked.charge.outletId);
+  if (options.checkScope !== false)
+    assertOutletInScope(context.outletScope, locked.charge.outletId);
   return { row, ...locked };
 }
 
@@ -444,11 +450,24 @@ export async function approveChargeManualRefund(
         },
         now,
       );
-    } else if (input.shiftId)
-      throw new CoreError(
-        "VALIDATION_ERROR",
-        "Refund EDC tidak memakai shift kasir.",
-      );
+    } else {
+      if (input.shiftId)
+        throw new CoreError(
+          "VALIDATION_ERROR",
+          "Refund EDC tidak memakai shift kasir.",
+        );
+      // legend-ng3tf: an EDC refund has no open shift to imply an open day, so
+      // a closed business day refuses it (BUSINESS_DAY_ALREADY_CLOSED) before
+      // the row is completed or the refunded event is appended; the day lock
+      // is held until this transaction ends. Cash needs an open shift, which
+      // already implies an open day.
+      await assertBusinessDayOpen(tx, context, {
+        outletId,
+        businessDates: [
+          businessDateFor(await loadOutlet(tx, context, outletId), now),
+        ],
+      });
+    }
 
     // Conditional on `requested`: decided by exactly one approval.
     const [done] = await tx
@@ -526,12 +545,23 @@ export async function rejectChargeManualRefund(
       actorUserId,
       now,
     );
-    const { row, charge } = await lockManualRefund(tx, context, manualRefundId);
+    // legend-ayobh: the permission check comes before the outlet-scope check,
+    // so a caller who is neither the requester nor an approver at the charge
+    // outlet gets the permission denial, not a scope message about the outlet.
+    // Nothing is widened: the same two callers pass, and the scope is still
+    // asserted for them before anything is written.
+    const { row, charge } = await lockManualRefund(
+      tx,
+      context,
+      manualRefundId,
+      { checkScope: false },
+    );
     if (
       row.requestedBy !== actorUserId &&
       !snapshot.allows(APPROVE, { type: "outlet", id: charge.outletId })
     )
       throw denied("Anda tidak dapat menolak refund di outlet ini.");
+    assertOutletInScope(context.outletScope, charge.outletId);
     if (row.status !== "requested")
       throw conflict("Refund manual ini sudah diputuskan.");
 

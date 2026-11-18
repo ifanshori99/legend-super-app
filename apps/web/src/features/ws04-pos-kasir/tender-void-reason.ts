@@ -11,7 +11,12 @@ export const TENDER_VOID_REASONS = [
 
 export type TenderVoidReason = (typeof TENDER_VOID_REASONS)[number];
 
-export function tenderVoidMessageKey(reason: string | null | undefined) {
+export type TenderVoidMessageKey =
+  `posKasirGateway.tenderVoided.${TenderVoidReason | "unknown"}`;
+
+export function tenderVoidMessageKey(
+  reason: string | null | undefined,
+): TenderVoidMessageKey {
   const known = TENDER_VOID_REASONS.find((r) => r === reason);
   return `posKasirGateway.tenderVoided.${known ?? "unknown"}`;
 }

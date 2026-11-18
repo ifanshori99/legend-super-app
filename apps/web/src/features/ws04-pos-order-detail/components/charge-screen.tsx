@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { ArrowLeft, ArrowRight, CircleCheck, RotateCw } from "lucide-react";
+import { idr } from "@starter/shared/core";
 import { formatRupiah } from "@starter/shared/i18n";
 import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
@@ -358,7 +359,10 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
             className="w-full"
             onClick={() => {
               setNotRecorded(false);
-              collector.collect(charge.amountIdr);
+              collector.collect({
+                method: "cash",
+                receivedIdr: idr(charge.amountIdr),
+              });
             }}
           >
             <RotateCw aria-hidden="true" />
@@ -397,7 +401,10 @@ function ChargeBody({ chargeId }: { chargeId: string }) {
           className="w-full"
           onClick={() => {
             setNotRecorded(false);
-            collector.collect(charge.amountIdr);
+            collector.collect({
+              method: "cash",
+              receivedIdr: idr(charge.amountIdr),
+            });
           }}
         >
           {t("posIssueCharge.collect.action", { amount })}

@@ -663,6 +663,20 @@ export const posTenderStatusSchema = z.enum([
 ]);
 export type PosTenderStatus = z.infer<typeof posTenderStatusSchema>;
 
+/**
+ * Why the server voided a QRIS tender and refunded the money (event
+ * `order.tender_voided`, payload `reason`). Only the reasons the cashier text
+ * names; any other void reason is reported as null (generic text).
+ */
+export const POS_TENDER_VOID_REASONS = [
+  "bill_below_tender",
+  "business_day_closed",
+  "refund_reserved",
+  "edc_request_open",
+] as const;
+export const posTenderVoidReasonSchema = z.enum(POS_TENDER_VOID_REASONS);
+export type PosTenderVoidReason = z.infer<typeof posTenderVoidReasonSchema>;
+
 export const posTenderSchema = z
   .strictObject({
     id: posTenderIdSchema,
@@ -687,6 +701,12 @@ export const posTenderSchema = z
     capturedBy: userIdSchema.nullable(),
     /** Supervisor PIN for the standalone EDC mode (§3.13 EDC). */
     approvedBy: userIdSchema.nullable(),
+    /**
+     * Order detail only: why a voided QRIS tender was voided (from its
+     * `order.tender_voided` event). Null/absent when not voided, or when the
+     * void reason has no dedicated cashier text.
+     */
+    voidReason: posTenderVoidReasonSchema.nullable().optional(),
   })
   .superRefine((tender, ctx) => {
     if (tender.method === "cash") {

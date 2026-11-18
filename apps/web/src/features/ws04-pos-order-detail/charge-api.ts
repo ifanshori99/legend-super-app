@@ -5,6 +5,10 @@
 import { callEndpoint } from "@/lib/api/endpoint";
 import { ApiError } from "@/lib/api/errors";
 import { API_MOCK } from "@/lib/api/mock-flag";
+import type {
+  CollectChargeAtPosInput,
+  GuestPayment,
+} from "@starter/shared/qr-order";
 import {
   collectIssueChargeAtPos,
   getIssueCharge,
@@ -33,20 +37,23 @@ export async function fetchIssueCharge(
 }
 
 /**
- * Takes the exact amount in cash. `idempotencyKey` is kept by the hook until
- * the answer is known, so a retry replays instead of recording twice.
+ * Takes the charge at the till. Cash sends what the guest handed over; QRIS
+ * sends no amount (the server's charge is the only one) and answers a pending
+ * code; EDC names the approved card sale that paid it. `idempotencyKey` is kept
+ * by the hook until the answer is known, so a retry replays instead of
+ * recording twice.
  */
 export async function collectCharge(
   chargeId: string,
-  input: { receivedIdr: number; idempotencyKey: string },
-): Promise<{ charge: IssueChargeView; changeIdr: number }> {
+  input: CollectChargeAtPosInput,
+): Promise<{
+  charge: IssueChargeView;
+  changeIdr: number;
+  payment?: GuestPayment;
+}> {
   const { data } = await callEndpoint(collectIssueChargeAtPos, {
     params: { chargeId },
-    body: {
-      idempotencyKey: input.idempotencyKey,
-      method: "cash",
-      receivedIdr: input.receivedIdr,
-    },
+    body: input,
   });
   return data;
 }

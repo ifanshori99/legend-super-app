@@ -8,6 +8,7 @@ import { defineEndpoint } from "@starter/shared/api";
 import { uuidSchema, z } from "@starter/shared/core";
 import {
   collectChargeAtPosInputSchema,
+  guestPaymentSchema,
   orderIssueChargeStatusSchema,
 } from "@starter/shared/qr-order";
 
@@ -60,6 +61,8 @@ export const collectIssueChargeAtPos = defineEndpoint({
     data: z.object({
       charge: issueChargeViewSchema,
       changeIdr: idr,
+      /** QRIS only: the pending code the guest scans (legend-gt98h). */
+      payment: guestPaymentSchema.optional(),
     }),
   }),
 });

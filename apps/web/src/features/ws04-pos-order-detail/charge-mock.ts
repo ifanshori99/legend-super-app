@@ -7,9 +7,11 @@
 //                               it paid, a retry with the same key replays
 //   ?mock=error | empty | slow  the shared scenarios (transport)
 //
-// Mirrors apps/api/src/services/order-recovery-charge-pos.ts: cash only, the
-// amount must reach the charge, a replay with the same key answers the same, a
-// different key on a paid charge is a 409.
+// Mirrors apps/api/src/services/order-recovery-charge-pos.ts: cash must reach
+// the charge amount (change is the surplus); QRIS sends no amount and answers a
+// pending code while the charge stays open (the gateway pays it, never this
+// mock); EDC card pays the exact amount at once. A replay with the same key
+// answers the same, a different key on a paid charge is a 409.
 import { ApiError } from "@/lib/api/errors";
 import { registerMock } from "@/lib/mock/registry";
 import { collectIssueChargeAtPos, getIssueCharge } from "./charge-endpoints";
@@ -67,24 +69,40 @@ registerMock(getIssueCharge, ({ params }) => ({
 
 registerMock(collectIssueChargeAtPos, ({ params, body }) => {
   const entry = stored(params.chargeId);
-  // legend-gt98h: QRIS and EDC are real API paths; this mock models cash only.
-  if (body.method !== "cash")
-    throw new ApiError(
-      422,
-      "VALIDATION_ERROR",
-      "Metode ini belum didukung di mode contoh.",
-    );
+  const received = body.method === "cash" ? body.receivedIdr : 10_000;
   if (entry.status === "paid") {
     if (entry.paidKey === body.idempotencyKey)
       return {
         data: {
           charge: chargeWire(params.chargeId, entry),
-          changeIdr: body.receivedIdr - 10_000,
+          changeIdr: received - 10_000,
         },
       };
     throw new ApiError(409, "CONFLICT", "Tagihan selisih ini sudah lunas.");
   }
-  if (body.receivedIdr < 10_000)
+  // legend-gt98h: the code is pending; the charge is paid by the gateway.
+  if (body.method === "qris")
+    return {
+      data: {
+        charge: chargeWire(params.chargeId, entry),
+        changeIdr: 0,
+        payment: {
+          id: body.idempotencyKey,
+          target: { kind: "issue_charge" as const, chargeId: params.chargeId },
+          method: "qris" as const,
+          amountIdr: 10_000,
+          status: "pending" as const,
+          qrisPayload: `MOCK-QRIS-${params.chargeId}`,
+          redirectUrl: null,
+          vaNumber: null,
+          bankCode: null,
+          bankName: null,
+          expiresAt: "2026-11-12T07:47:00.000Z",
+          paidAt: null,
+        },
+      },
+    };
+  if (received < 10_000)
     throw new ApiError(
       422,
       "VALIDATION_ERROR",
@@ -103,7 +121,7 @@ registerMock(collectIssueChargeAtPos, ({ params, body }) => {
   return {
     data: {
       charge: chargeWire(params.chargeId, entry),
-      changeIdr: body.receivedIdr - 10_000,
+      changeIdr: received - 10_000,
     },
   };
 });

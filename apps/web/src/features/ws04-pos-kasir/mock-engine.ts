@@ -923,6 +923,7 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
       ...(attempt.approvalCode ? { approvalCode: attempt.approvalCode } : {}),
       ...(attempt.posRef ? { posRef: attempt.posRef } : {}),
       ...(attempt.standalone ? { standalone: true } : {}),
+      ...(attempt.voidReason ? { voidReason: attempt.voidReason } : {}),
     };
   }
 

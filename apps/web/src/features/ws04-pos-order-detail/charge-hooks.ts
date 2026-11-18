@@ -4,6 +4,7 @@
 // answer replays the same request instead of recording the cash twice.
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef } from "react";
+import type { CollectChargeAtPosInput } from "@starter/shared/qr-order";
 import { ApiError } from "@/lib/api/errors";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { useTenantContext } from "@/lib/tenant-context";
@@ -15,6 +16,13 @@ import { issueChargeKeys, issueChargeQuery } from "./charge-queries";
 export function isChargeContractPending(error: unknown): boolean {
   return error instanceof ApiError && error.code === CONTRACT_PENDING;
 }
+
+/** What the cashier chose to collect with; the hook adds the idempotency key. */
+export type ChargeCollectRequest = CollectChargeAtPosInput extends infer Input
+  ? Input extends unknown
+    ? Omit<Input, "idempotencyKey">
+    : never
+  : never;
 
 function useOutletId(): string {
   return useTenantContext().outlet?.id ?? "";
@@ -31,20 +39,21 @@ export function useIssueCharge(chargeId: string) {
 export function useCollectIssueCharge(chargeId: string) {
   const outletId = useOutletId();
   const queryClient = useQueryClient();
-  const intent = useRef<{ receivedIdr: number; key: string } | null>(null);
+  const intent = useRef<{ request: string; key: string } | null>(null);
   const mutation = useMutation({
-    mutationFn: async (receivedIdr: number) => {
-      // Same amount, same key: a retry replays. A different amount is a new
-      // intent.
-      if (intent.current?.receivedIdr !== receivedIdr)
+    mutationFn: async (request: ChargeCollectRequest) => {
+      // Same request, same key: a retry replays. A different method, amount or
+      // card sale is a new intent.
+      const signature = JSON.stringify(request);
+      if (intent.current?.request !== signature)
         intent.current = {
-          receivedIdr,
+          request: signature,
           key: globalThis.crypto.randomUUID(),
         };
       return collectCharge(chargeId, {
-        receivedIdr,
+        ...request,
         idempotencyKey: intent.current.key,
-      });
+      } as CollectChargeAtPosInput);
     },
     onSuccess: () => {
       intent.current = null;
@@ -66,7 +75,7 @@ export function useCollectIssueCharge(chargeId: string) {
   });
   const error = mutation.error instanceof ApiError ? mutation.error : null;
   return {
-    collect: (receivedIdr: number) => mutation.mutate(receivedIdr),
+    collect: (request: ChargeCollectRequest) => mutation.mutate(request),
     pending: mutation.isPending,
     succeeded: mutation.isSuccess,
     failure: error

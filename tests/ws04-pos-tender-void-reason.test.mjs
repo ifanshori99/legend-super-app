@@ -24,10 +24,10 @@ test("every known reason maps to its own non-empty Indonesian message", () => {
   assert.equal(seen.size, TENDER_VOID_REASONS.length);
 });
 
-test("edc_request_open says QRIS is refunded and the guest pays again", () => {
+test("edc_request_open says QRIS is returned and the guest pays again", () => {
   const text = textOf(tenderVoidMessageKey("edc_request_open"));
   assert.match(text, /EDC/);
-  assert.match(text, /direfund/);
+  assert.match(text, /dikembalikan/);
   assert.match(text, /membayar ulang/);
 });
 
