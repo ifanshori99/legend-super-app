@@ -7765,3 +7765,11 @@ Gerbang (kebijakan landing Retro 47/49): lint hijau (2 warning lama); typecheck 
 Catatan: tsc API mendekati batas heap 6 GB: dua run dengan batas bawaan mati OOM (exit 137, "heap out of memory" di 6,1 GB), lulus dengan `NODE_OPTIONS=--max-old-space-size=8192` (1m00). Bila `pnpm check` rilis gagal 137 di typecheck API, pakai itu.
 
 Subagent: total 3 (reviewer 1, implementer 0 untuk batch90; 2 implementer untuk persiapan batch91), puncak 2 bersamaan, token heavy dipegang thread merge train ini. Biaya sesi (batch90 + persiapan batch91, sampai 20:50): total biaya* 4130k, puncak konteks 260k, 0 compact.
+
+## Merge train batch91 (18 Nov 2026, `int/batch91` -> `milestone/m1`)
+
+Dasar `origin/milestone/m1` 3ddf85f3b (batch90). Cabang masuk: `ghostex/pin-kasir-tablet-bersama` a20420a6f (rantai akses 34755844, 1018, 4b06e171, 6acce68c, 1026, 1027 dan 1054 sudah termuat di dalamnya) dan `ws/1092-ci-hemat` d23427421. Keluar: `ghostex/8b2dc0b1` e589b3476 (1043 allowlist layar tablet bersama). Tanpa migrasi.
+
+Alasan 8b2dc0b1 keluar: allowlist default-tolak 1043 bertabrakan dengan desain 1027/1054/wa9n7 (guard bertanda sesi). Hasil merge membuat 53 tes perangkat bersama gagal (`shared-device-allowlist`, `shared-device-backoffice-guard`, `auth-shared-device-guard`, `push-removal-shared-device-1024`, `shared-device-fail-closed-stamp-vzvok`); rute keep-alive `POST /api/auth/sessions/current/activity` juga tidak ada di allowlist 1043. Menyatukan dua desain akses ini keputusan pemilik cabang, bukan merge train: cabang 1043 perlu di-rebase di atas 1027/1054 (allowlist ditambah keep-alive, urutan guard mengikuti wa9n7 lalu allowlist). Dilaporkan ke CTO.
+
+Gerbang: workspace links + lint hijau (6m32 antre, 2 warning lama); typecheck API+web hijau 2m29 (heap 8 GB); fast gate 16 berkas (580 tes API + 46 root) hijau 4m27, ditambah keluarga perangkat bersama 45 berkas (1033 tes) hijau; build hijau; e2e produksi 18 lulus/1 skip. Full run 20:58-23:20 (2j21m): 23991 lulus, 4 gagal di 3 berkas, semuanya lulus pada rerun terarah (2x): `hris-employee-bank-code`, `tax-api` ORD-03, `rbac-audit-writer` x2 (flake dikenal).
