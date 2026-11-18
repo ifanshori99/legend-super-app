@@ -53,6 +53,7 @@ import {
   gatewayWebhookEvents,
   paymentIntents,
   paymentEvidence,
+  paymentProviderRefunds,
   paymentRecurringSubscriptions,
   paymentRefunds,
   paymentUnallocatedFunds,
@@ -100,6 +101,8 @@ import {
   alertProviderRefundSwitchedOff,
   alertProviderRefundTransactionConflict,
   alertProviderRefundUnbound,
+  alertProviderRefundUnmatched,
+  alertProviderRefundUnmatchedUnmapped,
   alertRefundReferenceMismatch,
 } from "./payment-provider-refunded-alert";
 import { gatewayWebhookTolerance } from "./platform-payment-gateway.service";
@@ -1207,15 +1210,31 @@ async function holdRefundReferenceMismatch(
  * `not_this_intent` closes it. No fact, no journal, no refund, no stamp. The
  * stored event id is the key: a replay or a worker retry adds none (an open
  * hold of the event is only raised). Same locks as every hold that limits the
- * deposit credit: the intent row, then the deposit-intent locks exclusive. */
+ * deposit credit: the intent row, then the deposit-intent locks exclusive.
+ * 1126: the same hold (and key rule) serves a signed success no refund of ours
+ * matches (`variant: "unmatched"`); only the finance alert text differs. */
 async function holdSwitchedOffRefundSuccess(
   context: ScopedTenantContext,
   row: GatewayWebhookEvent,
   intent: PaymentIntentRow,
-  hold: { providerPaymentRef: string | null; amountIdr: number },
+  hold: {
+    providerPaymentRef: string | null;
+    amountIdr: number;
+    /** 1126 (`unmatched` only): the provider refund id the event names. The
+     * hold then goes through the one conflict-hold helper
+     * (`fileTransactionConflictHoldInTx`): once per intent, refund id and
+     * payment, raised and surplus generations as for every other door. Without
+     * it the key is the stored event id. */
+    providerRefundId?: string | null;
+    /** 1126 (`unmatched` with a refund id): the amount the event reports
+     * readably. Only a fact of this very intent, refund id and transaction
+     * that covers it makes the report a replay (no hold). */
+    reportedAmountIdr?: number;
+  },
   now: Date,
-): Promise<void> {
-  await withTenant(db, context, async (tx) => {
+  variant: "switched_off" | "unmatched" = "switched_off",
+): Promise<"filed" | "skipped"> {
+  return await withTenant(db, context, async (tx) => {
     await tx
       .select({ id: paymentIntents.id })
       .from(paymentIntents)
@@ -1227,13 +1246,100 @@ async function holdSwitchedOffRefundSuccess(
       )
       .for("update");
     await lockDepositIntentsExclusive(tx, context.tenant.tenantId, intent.id);
+    // 1126: an unmatched success that names a provider refund id. A fact of
+    // THIS intent, this refund id and this transaction that covers the readable
+    // reported amount is the replay of money booked once: no hold. Anything
+    // else (the id booked on another intent or transaction, a smaller fact, an
+    // unreadable amount) is held, through the one conflict-hold helper (1045
+    // A4, 1055 G2, 1108 P1-2): once per (intent, refund id, transaction), an
+    // open hold raised to the conflict reason and the larger amount, a
+    // resolved one opens a surplus generation. Finance is told here, only when
+    // a hold was filed or changed.
+    if (variant === "unmatched" && hold.providerRefundId) {
+      const refundId = hold.providerRefundId;
+      if (hold.reportedAmountIdr !== undefined) {
+        const [covering] = await tx
+          .select({ id: paymentProviderRefunds.id })
+          .from(paymentProviderRefunds)
+          .where(
+            and(
+              eq(paymentProviderRefunds.tenantId, context.tenant.tenantId),
+              eq(paymentProviderRefunds.paymentIntentId, intent.id),
+              eq(paymentProviderRefunds.provider, PROVIDER),
+              eq(paymentProviderRefunds.refundIdKind, "provider"),
+              eq(paymentProviderRefunds.providerRefundId, refundId),
+              eq(
+                paymentProviderRefunds.providerPaymentRef,
+                hold.providerPaymentRef ?? "",
+              ),
+              sql`${paymentProviderRefunds.amountIdr} >= ${hold.reportedAmountIdr}`,
+            ),
+          )
+          .limit(1);
+        if (covering) return "skipped";
+      }
+      const snapshot = async (): Promise<string> =>
+        JSON.stringify(
+          (
+            await tx
+              .select({
+                id: refundReconHolds.id,
+                amountIdr: refundReconHolds.amountIdr,
+                reason: refundReconHolds.reason,
+                resolvedAt: refundReconHolds.resolvedAt,
+              })
+              .from(refundReconHolds)
+              .where(
+                and(
+                  eq(refundReconHolds.tenantId, context.tenant.tenantId),
+                  eq(refundReconHolds.paymentIntentId, intent.id),
+                  sql`coalesce(${refundReconHolds.providerPaymentRef}, '') = ${hold.providerPaymentRef ?? ""}`,
+                ),
+              )
+              .orderBy(refundReconHolds.id)
+          ).map((held) => [
+            held.id,
+            Number(held.amountIdr),
+            held.reason,
+            held.resolvedAt === null,
+          ]),
+        );
+      const before = await snapshot();
+      await fileTransactionConflictHoldInTx(
+        tx,
+        context,
+        {
+          intentId: intent.id,
+          outletId: intent.outletId,
+          providerRefundId: refundId,
+          providerRefundIdKind: "provider",
+          providerPaymentRef: hold.providerPaymentRef,
+          amountIdr: hold.amountIdr,
+          silent: true,
+        },
+        now,
+      );
+      if ((await snapshot()) !== before)
+        await alertProviderRefundUnmatched(
+          tx,
+          context,
+          {
+            intentId: intent.id,
+            outletId: intent.outletId,
+            dedupKey: `${hold.providerPaymentRef ?? ""}\0unmatched\0${refundId}\0${hold.amountIdr}`,
+            amountIdr: hold.amountIdr,
+          },
+          now,
+        );
+      return "filed";
+    }
     // Key of the hold: the stored event id. When that id is already used by a
     // hold of another intent (the table is unique per tenant and event), a
     // fixed fallback key of this event and intent is used: never a silent
     // return without a hold of this intent (fail closed).
     const fallbackKey = createHash("sha256")
       .update(
-        `refund_recon_hold.switched_off\0${context.tenant.tenantId}\0${intent.id.toLowerCase()}\0${row.id}`,
+        `refund_recon_hold.${variant}\0${context.tenant.tenantId}\0${intent.id.toLowerCase()}\0${row.id}`,
       )
       .digest("hex");
     const keys = [
@@ -1257,18 +1363,22 @@ async function holdSwitchedOffRefundSuccess(
         .onConflictDoNothing()
         .returning({ id: refundReconHolds.id });
       if (held) {
-        await alertProviderRefundSwitchedOff(
+        await (
+          variant === "unmatched"
+            ? alertProviderRefundUnmatched
+            : alertProviderRefundSwitchedOff
+        )(
           tx,
           context,
           {
             intentId: intent.id,
             outletId: intent.outletId,
-            dedupKey: `${hold.providerPaymentRef ?? ""}\0switched_off\0${key}`,
+            dedupKey: `${hold.providerPaymentRef ?? ""}\0${variant}\0${key}`,
             amountIdr: hold.amountIdr,
           },
           now,
         );
-        return;
+        return "filed";
       }
       // The key is taken. A hold of THIS intent under it is the hold of this
       // event: never lowered, raised to the larger value and to the conflict
@@ -1297,10 +1407,135 @@ async function holdSwitchedOffRefundSuccess(
             isNull(refundReconHolds.resolvedAt),
           ),
         );
-      return;
+      return "filed";
     }
     throw new Error("Refund hold of a switched-off provider was not filed");
   });
+}
+
+const UNMATCHED_NO_MONEY_STATUSES = [
+  "pending",
+  "processing",
+  "requested",
+  "failed",
+];
+
+/** 1126: a signed refund success that matches no refund of Legend must not end
+ * without a hold (a refund made in the provider's dashboard otherwise leaves
+ * the refund room untouched and a manual refund pays twice). The payment the
+ * event names is mapped to ONE intent: by the intent the caller already proved
+ * (`known`: the refund's own intent whose updater said 404), else by
+ * `findRefundCandidate` on the named payment id (null on none or two intents,
+ * and a flat id that differs from the payment object's id is no mapping), and
+ * the signature must be that intent's own integration. Mapped: one CONFLICT
+ * hold (per stored event, or per intent, refund id and transaction when the
+ * event names a provider refund id) for the full reported value (an amount the event does
+ * not give readably holds the whole payment: restrictive). No fact, no
+ * journal, no refund. Not mapped: no hold, one finance alert per event and a
+ * structured warning (`unmatched_unmapped_payment`). Callers gate on a
+ * succeeded status and the end of the retry window where one applies. */
+async function holdUnmatchedRefundSuccess(
+  context: ScopedTenantContext,
+  row: GatewayWebhookEvent,
+  facts: DoitRefundFacts,
+  verifiedSecret: string | undefined,
+  now: Date,
+  known?: PaymentIntentRow,
+): Promise<"held" | "unmapped" | "skipped"> {
+  // Only a KNOWN pending or failed status moved no money and is skipped; a
+  // success status, no status, and any status we do not know are held
+  // (restrictive: an unknown spelling may still be money back to the payer).
+  if (
+    facts.refundStatus !== undefined &&
+    UNMATCHED_NO_MONEY_STATUSES.includes(facts.refundStatus)
+  )
+    return "skipped";
+  // 1126: `namedPaymentId` is the id of a payment object that could not be
+  // read as a whole; it maps the event for the hold only.
+  const readPaymentId = facts.payment?.id ?? facts.namedPaymentId;
+  const conflictingIds =
+    facts.paymentId !== undefined &&
+    readPaymentId !== undefined &&
+    facts.paymentId !== readPaymentId;
+  const namedPaymentId = conflictingIds
+    ? undefined
+    : (facts.paymentId ?? readPaymentId);
+  const candidate = namedPaymentId
+    ? await findRefundCandidate(context, namedPaymentId)
+    : null;
+  let owner: {
+    intent: PaymentIntentRow;
+    evidenceAmountIdr: number | null;
+  } | null = null;
+  if (known) {
+    owner = {
+      intent: known,
+      evidenceAmountIdr:
+        candidate && candidate.intent.id === known.id
+          ? candidate.evidenceAmountIdr
+          : null,
+    };
+  } else if (
+    candidate &&
+    candidate.intent.provider === PROVIDER &&
+    (await signedByIntentIntegration(
+      context,
+      candidate.intent,
+      row,
+      verifiedSecret,
+      now,
+    ))
+  ) {
+    owner = candidate;
+  }
+  const full = owner
+    ? Math.max(Number(owner.intent.amountIdr), owner.evidenceAmountIdr ?? 0)
+    : 0;
+  const reported =
+    facts.amountIdr !== undefined &&
+    Number.isFinite(facts.amountIdr) &&
+    facts.amountIdr > 0
+      ? facts.amountIdr
+      : undefined;
+  // The reported value when readable, else the whole payment; a mapped owner
+  // whose whole payment reads as zero is still held for the reported value.
+  const heldAmount = reported ?? (Number.isFinite(full) ? full : 0);
+  if (!owner || heldAmount <= 0) {
+    logger.warn(
+      { webhookEventId: row.id, code: "unmatched_unmapped_payment" },
+      "Unmatched DOIT refund.succeeded names no single Legend payment; no hold, finance told",
+    );
+    await withTenant(db, context, (tx) =>
+      alertProviderRefundUnmatchedUnmapped(
+        tx,
+        context,
+        { webhookEventId: row.id },
+        now,
+      ),
+    );
+    return "unmapped";
+  }
+  const filed = await holdSwitchedOffRefundSuccess(
+    context,
+    row,
+    owner.intent,
+    {
+      providerPaymentRef: namedPaymentId ?? owner.intent.providerRef ?? null,
+      providerRefundId: facts.refundId ?? null,
+      ...(reported !== undefined ? { reportedAmountIdr: reported } : {}),
+      amountIdr: heldAmount,
+    },
+    now,
+    "unmatched",
+  );
+  if (filed === "skipped") {
+    logger.warn(
+      { webhookEventId: row.id, code: "unmatched_refund_id_already_recorded" },
+      "Unmatched DOIT refund.succeeded names a refund id already booked; no hold",
+    );
+    return "skipped";
+  }
+  return "held";
 }
 
 /** Records a provider refund through the shared helper, in two phases: a
@@ -2033,7 +2268,10 @@ async function processRefundEvent(
         : null;
     if (settledOutside?.kind === "found") target = settledOutside;
     const viaSettled = settledOutside?.kind === "found";
-    const unmatched = async (foreign = false): Promise<ProcessOutcome> => {
+    const unmatched = async (
+      foreign = false,
+      knownIntent?: PaymentIntentRow,
+    ): Promise<ProcessOutcome> => {
       const retryable =
         now.getTime() - row.receivedAt.getTime() <
         WEBHOOK_UNKNOWN_REFERENCE_RETRY_MS;
@@ -2091,11 +2329,23 @@ async function processRefundEvent(
           return "processed";
         }
       }
-      if (!retryable && status === "succeeded")
+      if (!retryable && status === "succeeded") {
+        // 1126: never ignored without a hold. Inside the retry window the
+        // refund may still be storing its provider ref, so no hold there.
+        // The hold is filed before the row is marked (idempotent by event).
+        await holdUnmatchedRefundSuccess(
+          context,
+          row,
+          facts,
+          verifiedSecret,
+          now,
+          knownIntent,
+        );
         logger.warn(
           { webhookEventId: row.id },
           "Unmatched DOIT refund.succeeded ignored; check the provider for a refund Legend does not know (paid twice?)",
         );
+      }
       await markRow(
         context,
         row.id,
@@ -2120,8 +2370,19 @@ async function processRefundEvent(
       return "ignored";
     };
     if (target.kind === "none") return await unmatched(true);
-    if (target.kind === "ambiguous")
+    if (target.kind === "ambiguous") {
+      // 1126: two refunds match: the event is a conflict, and a success that
+      // names a mappable payment is held too (restrictive).
+      if (status === "succeeded")
+        await holdUnmatchedRefundSuccess(
+          context,
+          row,
+          facts,
+          verifiedSecret,
+          now,
+        );
       return await ignoredWith("REJECTED_CONFLICT");
+    }
 
     const { refund, intent } = target;
     if (
@@ -2369,7 +2630,7 @@ async function processRefundEvent(
         return await ignoredWith("REJECTED_CONFLICT");
       }
       if (error instanceof HttpError && error.status === 404)
-        return await unmatched();
+        return await unmatched(false, intent);
       throw error;
     }
     await markRow(

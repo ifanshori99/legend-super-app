@@ -100,6 +100,34 @@ const holdFactShort = (coveredIdr: number, heldIdr: number) =>
     `The refund on record for this hold carries Rp${coveredIdr}, less than the Rp${heldIdr} the hold holds. The hold stays open in full and is not counted. Close it as not this intent only if the provider confirms that this refund returned no more than what is on record.`,
   );
 
+/** 1126 P3-4: the fact on record for this refund already serves another hold;
+ * a fact closes one hold only, else the same money would be counted twice. */
+const holdFactClaimed = () =>
+  new HttpError(
+    409,
+    "REFUND_HOLD_FACT_CLAIMED",
+    "The refund on record for this hold already counts for another hold, and one refund closes one hold only. This hold stays open and is not counted. Close it as not this intent only if the provider confirms it is a different refund from the one on record.",
+  );
+
+const MATCHED_FACT_KEY = "refund_recon_hold_matched_fact_key";
+
+/** A unique violation of the one-hold-per-fact index (drizzle wraps the pg
+ * error in `cause`). */
+function isMatchedFactViolation(error: unknown): boolean {
+  for (
+    let current: unknown = error, depth = 0;
+    current instanceof Object && depth < 4;
+    current = (current as { cause?: unknown }).cause, depth += 1
+  ) {
+    const { code, constraint } = current as {
+      code?: unknown;
+      constraint?: unknown;
+    };
+    if (code === "23505" && constraint === MATCHED_FACT_KEY) return true;
+  }
+  return false;
+}
+
 type HoldRow = typeof refundReconHolds.$inferSelect;
 
 type HoldLabels = {
@@ -434,6 +462,43 @@ async function countHold(
   };
   const notRecorded = () =>
     unprocessable("This refund could not be recorded against the intent.");
+  /** 1126 P3-4: a fact serves one hold. 409, the hold untouched, when another
+   * hold of the intent is bound to the fact (`matched_fact_id`), or owns its
+   * key (same intent, refund id kind, id and transaction) while open or closed
+   * as counted. A transaction-conflict hold claims no fact. Under the intent
+   * lock, so two resolves never both pass. */
+  const assertFactUnclaimed = async (factId: string) => {
+    const { rows } = await tx.execute(sql`SELECT 1
+      FROM refund_recon_holds o
+      WHERE o.tenant_id = ${tenantId}::uuid
+        AND o.payment_intent_id = ${intent.id}::uuid
+        AND o.id <> ${hold.id}::uuid
+        AND (o.matched_fact_id = ${factId}::uuid
+          OR (o.reason <> ${HOLD_TRANSACTION_CONFLICT_REASON}
+            AND o.provider_refund_id IS NOT NULL
+            AND (o.resolved_at IS NULL
+              OR o.resolution = 'counted_against_intent')
+            AND EXISTS (SELECT 1 FROM payment_provider_refunds f
+              WHERE f.tenant_id = o.tenant_id
+                AND f.id = ${factId}::uuid
+                AND f.payment_intent_id = o.payment_intent_id
+                AND f.refund_id_kind = o.provider_refund_id_kind
+                AND f.provider_refund_id = o.provider_refund_id
+                AND f.provider_payment_ref = o.provider_payment_ref)))
+      LIMIT 1`);
+    if (rows.length > 0) throw holdFactClaimed();
+  };
+  /** 1126 P3-4: the fact a counted hold closes on is bound to it (stored when
+   * the hold closes), except the hold's own `synthetic_hold` fact, which only
+   * this hold can have written. */
+  const claimedFact = (
+    refundIdKind: ProviderRefundIdKind,
+    providerRefundId: string,
+    factId: string,
+  ): Pick<CountedHold, "matchedFactId"> =>
+    refundIdKind !== "provider" && providerRefundId === hold.id
+      ? {}
+      : { matchedFactId: factId };
   /** 1119 P1-1: one rule for closing a hold as counted: the facts on record
    * for its refund carry at least its amount. Else 409, the hold untouched. */
   const assertFactCovers = async (
@@ -446,6 +511,7 @@ async function countHold(
       tx,
       tenantId,
       {
+        holdId: hold.id,
         intentId: intent.id,
         refundIdKind,
         providerRefundId,
@@ -559,11 +625,21 @@ async function countHold(
   const providerRefundId = named ?? matchedRefundId ?? hold.id;
   // Already on record for this transaction: counted, nothing new (a matched id
   // binds the hold to that refund).
-  if (await rowOf(refundIdKind, providerRefundId, providerPaymentRef)) {
+  const onRecord = await rowOf(
+    refundIdKind,
+    providerRefundId,
+    providerPaymentRef,
+  );
+  if (onRecord) {
+    // 1126 P3-4: a fact serves one hold; one another hold claims closes none.
+    await assertFactUnclaimed(onRecord.id);
     // 1119 P1-1: a fact of this refund on record closes the hold only when it
     // carries at least the hold's amount (same intent lock, same transaction).
     await assertFactCovers(refundIdKind, providerRefundId, providerPaymentRef);
-    return counted;
+    return {
+      ...counted,
+      ...claimedFact(refundIdKind, providerRefundId, onRecord.id),
+    };
   }
   // 1055 G2: the same id on record for another transaction (or intent) is not
   // this hold's refund, and cannot be booked again under that id.
@@ -713,8 +789,15 @@ async function countHold(
   );
   // Only a refund that is on record may close the hold: an echo of our own
   // refund, an unbound or a delayed one counted nothing.
-  if (!(await rowOf(refundIdKind, providerRefundId, providerPaymentRef)))
-    throw notRecorded();
+  const recorded = await rowOf(
+    refundIdKind,
+    providerRefundId,
+    providerPaymentRef,
+  );
+  if (!recorded) throw notRecorded();
+  // 1126 P3-4: the fact just booked may be one another hold already claims
+  // (same key under another transaction reference of the hold).
+  await assertFactUnclaimed(recorded.id);
   // 1119: the fact booked above is capped at what the transaction has left
   // (`Math.min(hold, left)`) only for a hold without a refund id, so only
   // there may it be smaller than the hold, and only with nothing left of the
@@ -726,7 +809,10 @@ async function countHold(
     providerPaymentRef,
     named === null,
   );
-  return counted;
+  return {
+    ...counted,
+    ...claimedFact(refundIdKind, providerRefundId, recorded.id),
+  };
 }
 
 export async function resolveRefundReconHold(
@@ -865,32 +951,40 @@ export async function resolveRefundReconHold(
             request.identity,
           );
         }
-        const [closed] = await tx
-          .update(refundReconHolds)
-          .set({
-            resolvedAt: now,
-            resolvedBy: actor,
-            resolution: request.resolution,
-            resolutionNote: request.note,
-            resolutionIdentity: counted.identity,
-            ...(counted.matchedFactId !== undefined
-              ? { matchedFactId: counted.matchedFactId }
-              : {}),
-            // A `same_as_counted` match is counted per transaction: the one it
-            // was matched on is stored when the hold did not name it.
-            ...(counted.identity === "same_as_counted" &&
-            hold.providerPaymentRef === null
-              ? { providerPaymentRef: counted.providerPaymentRef }
-              : {}),
-          })
-          .where(
-            and(
-              eq(refundReconHolds.tenantId, tenantId),
-              eq(refundReconHolds.id, holdId),
-              sql`${refundReconHolds.resolvedAt} IS NULL`,
-            ),
-          )
-          .returning();
+        // 1126 P3-4: the unique index of the fact binding is the backstop of
+        // `assertFactUnclaimed`: a second hold on one fact is the same 409.
+        let closed: HoldRow | undefined;
+        try {
+          [closed] = await tx
+            .update(refundReconHolds)
+            .set({
+              resolvedAt: now,
+              resolvedBy: actor,
+              resolution: request.resolution,
+              resolutionNote: request.note,
+              resolutionIdentity: counted.identity,
+              ...(counted.matchedFactId !== undefined
+                ? { matchedFactId: counted.matchedFactId }
+                : {}),
+              // A `same_as_counted` match is counted per transaction: the one it
+              // was matched on is stored when the hold did not name it.
+              ...(counted.identity === "same_as_counted" &&
+              hold.providerPaymentRef === null
+                ? { providerPaymentRef: counted.providerPaymentRef }
+                : {}),
+            })
+            .where(
+              and(
+                eq(refundReconHolds.tenantId, tenantId),
+                eq(refundReconHolds.id, holdId),
+                sql`${refundReconHolds.resolvedAt} IS NULL`,
+              ),
+            )
+            .returning();
+        } catch (error) {
+          if (isMatchedFactViolation(error)) throw holdFactClaimed();
+          throw error;
+        }
         if (!closed)
           throw new HttpError(409, "CONFLICT", "Hold already resolved.");
         await recordAudit(

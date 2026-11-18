@@ -4,6 +4,8 @@
 // transaction) add up to the hold's amount: the amounts are compared, never
 // the mere presence of a fact. A fact below the hold leaves the hold open in
 // full (it still counts against the refund limit); nothing lowers a hold.
+// 1126 P3-4: a fact serves one hold only. A fact another hold is bound to
+// (`refund_recon_holds.matched_fact_id`) is not counted for this one.
 //
 // Leaf module (imports no refund service) so the hold resolver, the live-own
 // auto-close and `openReconHoldIdrSql` share one definition.
@@ -20,7 +22,8 @@ const PROVIDER = "doit";
  * for a row aliased `h` (a `refund_recon_holds` row, or a row with the same
  * key columns). A fact that is the echo of our own refund is not counted (the
  * refund is already subtracted from the pool). A hold that names no
- * transaction (`provider_payment_ref` NULL) is covered by nothing.
+ * transaction (`provider_payment_ref` NULL) is covered by nothing. 1126 P3-4:
+ * a fact another hold (`b.id <> h.id`) is bound to is not counted either.
  */
 export const holdFactCoveredIdrSql: SQL = sql`coalesce((SELECT sum(hr.amount_idr)
           FROM payment_provider_refunds hr
@@ -29,6 +32,9 @@ export const holdFactCoveredIdrSql: SQL = sql`coalesce((SELECT sum(hr.amount_idr
             AND hr.refund_id_kind=h.provider_refund_id_kind
             AND hr.provider_refund_id=h.provider_refund_id
             AND hr.provider_payment_ref=h.provider_payment_ref
+            AND NOT EXISTS (SELECT 1 FROM refund_recon_holds b
+              WHERE b.tenant_id=hr.tenant_id AND b.matched_fact_id=hr.id
+                AND b.id <> h.id)
             AND NOT EXISTS (SELECT 1 FROM payment_refunds own
               WHERE own.status <> 'failed'
                 AND ${ownRefundEchoesFactSql("own", "hr")})), 0)`;
@@ -58,6 +64,8 @@ export async function holdFactCoverage(
   tx: Tx,
   tenantId: TenantId,
   key: {
+    /** The hold being closed: a fact bound to another hold is not counted. */
+    holdId: string;
     intentId: string;
     refundIdKind: string;
     providerRefundId: string;
@@ -68,6 +76,7 @@ export async function holdFactCoverage(
   const { rows } =
     await tx.execute(sql`SELECT ${holdFactCoveredIdrSql}::text AS covered
     FROM (SELECT ${tenantId}::uuid AS tenant_id,
+        ${key.holdId}::uuid AS id,
         ${key.intentId}::uuid AS payment_intent_id,
         ${key.refundIdKind}::text AS provider_refund_id_kind,
         ${key.providerRefundId}::text AS provider_refund_id,

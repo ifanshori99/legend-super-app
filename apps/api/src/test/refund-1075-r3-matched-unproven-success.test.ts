@@ -40,6 +40,7 @@
 import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { env } from "../config/env";
+import { HOLD_TRANSACTION_CONFLICT_REASON } from "../services/refund-hold-reasons";
 import {
   BILL_IDR,
   createRefundHarness,
@@ -408,10 +409,26 @@ describe("R7-3 (P1) a matched success that is not provably the echo of our refun
       amount_idr: String(BILL_IDR),
       provider_ref: own.x,
     });
+    // Round 1 completes R (no hold). Round 2 is a new event id for the same
+    // report: R is completed now, so no refund of ours matches it. Since 1126
+    // (CTO decision 1) a signed success that names a Legend payment but
+    // matches no refund is held: EXACTLY one CONFLICT hold for the full
+    // Rp100.000 (the event gives no readable refund amount), keyed by the
+    // stored event, no fact, no journal, no refund. Replays add no second one.
+    const holds = await h.allHolds(code.id);
     expect(
-      await h.allHolds(code.id),
-      "the payment id is not a refund id: no hold",
-    ).toHaveLength(holdsBefore);
+      holds,
+      `round 2 (R completed): exactly one new hold (${JSON.stringify(holds)})`,
+    ).toHaveLength(holdsBefore + 1);
+    expect(
+      holds.at(-1),
+      "the 1126 conflict hold of the unmatched report",
+    ).toMatchObject({
+      reason: HOLD_TRANSACTION_CONFLICT_REASON,
+      amount_idr: BILL_IDR,
+      provider_refund_id: null,
+      resolved_at: null,
+    });
     expect(await h.providerRows(code.id), "no fact").toEqual(factsBefore);
     expect(await h.refundEventsOfIntent(code.id), "no event").toBe(
       eventsBefore,

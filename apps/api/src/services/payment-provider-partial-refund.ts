@@ -187,6 +187,19 @@ async function pickUnbound(
             AND h.provider_refund_id IS NULL)))
       AND NOT EXISTS (SELECT 1 FROM refund_recon_holds m
         WHERE m.tenant_id = p.tenant_id AND m.matched_fact_id = p.id)
+      -- 1126 P3-4: a fact is never the base of a difference while a hold that
+      -- names its key (same refund id kind, id and transaction; not a
+      -- transaction-conflict hold) is open or closed as counted: that hold owns it.
+      AND (${anonymousOnly}::boolean OR NOT EXISTS (SELECT 1
+        FROM refund_recon_holds o
+        WHERE o.tenant_id = p.tenant_id
+          AND o.payment_intent_id = p.payment_intent_id
+          AND o.provider_refund_id_kind = p.refund_id_kind
+          AND o.provider_refund_id = p.provider_refund_id
+          AND o.provider_payment_ref = p.provider_payment_ref
+          AND o.reason <> ${HOLD_TRANSACTION_CONFLICT_REASON}
+          AND (o.resolved_at IS NULL
+            OR o.resolution = 'counted_against_intent')))
       AND NOT EXISTS (SELECT 1 FROM refund_recon_holds d
         WHERE d.tenant_id = p.tenant_id
           AND d.payment_intent_id = p.payment_intent_id

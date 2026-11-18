@@ -506,6 +506,90 @@ export async function alertProviderRefundSwitchedOff(
   );
 }
 
+/**
+ * 1126: a signed provider refund success matches no refund of Legend (a refund
+ * made in the provider's dashboard, or a flat success without a refund id) but
+ * names a Legend payment. It is held (CONFLICT hold, `holdSwitchedOffRefundSuccess`
+ * with variant `unmatched`) until finance matches it. Own text: the switch may
+ * be on, so the "automatic refunds not active" text of the switched-off alert
+ * would be wrong. Sent only by the winner of the hold insert.
+ */
+export async function alertProviderRefundUnmatched(
+  tx: Tx,
+  context: ScopedTenantContext,
+  held: ReconHoldFiledAlert,
+  now: Date,
+): Promise<void> {
+  await alertReconHoldFiled(
+    tx,
+    context,
+    held,
+    {
+      eventName: "payment.provider_refund_unmatched",
+      title: "Refund penyedia tidak cocok dengan refund Legend",
+      body: `Penyedia pembayaran melaporkan refund Rp ${held.amountIdr.toLocaleString("id-ID")} yang tidak cocok dengan refund Legend mana pun. Uang mungkin sudah kembali ke pembayar. Laporan ini tidak dibukukan otomatis. Refund dan payout pembayaran ini ditahan di antrean finance sampai finance memeriksanya di dashboard penyedia.`,
+    },
+    now,
+  );
+}
+
+export type ProviderRefundUnmatchedUnmapped = {
+  /** The stored webhook event: the alert is one per event. */
+  webhookEventId: string;
+};
+
+/**
+ * 1126: a signed provider refund success matches no refund of Legend and names
+ * no payment Legend can map to a single payment. No hold is possible (no
+ * intent to hold), so finance (the owners: a tenant-wide alert) is told once
+ * per stored event. Same savepoint rule as above.
+ */
+export async function alertProviderRefundUnmatchedUnmapped(
+  tx: Tx,
+  context: ScopedTenantContext,
+  unmapped: ProviderRefundUnmatchedUnmapped,
+  now: Date,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const hex = createHash("sha256")
+    .update(
+      `payment.provider_refund_unmatched_unmapped\0${tenantId}\0${unmapped.webhookEventId}`,
+    )
+    .digest("hex")
+    .slice(0, 32);
+  const id = uuidToUlid(
+    `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
+  );
+  try {
+    await tx.transaction(async (savepoint) => {
+      await notifyOutletSupervisors(
+        savepoint,
+        context,
+        {
+          tenantId,
+          outletId: null,
+          category: "operational_anomaly",
+          alsoOwners: true,
+          recordEmpty: true,
+          id,
+          eventName: "payment.provider_refund_unmatched_unmapped",
+          aggregateType: "payment",
+          aggregateId: id,
+          payload: { webhookEventId: unmapped.webhookEventId },
+          title: "Refund penyedia tidak bisa dikaitkan ke pembayaran",
+          body: "Penyedia pembayaran melaporkan refund yang tidak cocok dengan refund Legend dan tidak menyebut pembayaran yang bisa dikenali. Tidak ada yang ditahan atau dibukukan otomatis. Finance harus memeriksa dashboard penyedia: uang mungkin sudah kembali ke pembayar.",
+        },
+        now,
+      );
+    });
+  } catch (err) {
+    logger.warn(
+      { err, tenantId, webhookEventId: unmapped.webhookEventId },
+      "Provider refund unmatched (unmapped payment): notification failed",
+    );
+  }
+}
+
 export type ProviderRefundUnbound = {
   intentId: string;
   outletId: string;
