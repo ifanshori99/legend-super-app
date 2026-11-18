@@ -18,11 +18,17 @@ import {
   doorCheckAccessTicket,
   sellAccessTicketAtPos,
 } from "@starter/shared/facility";
+import { MINUTE_MS } from "@starter/shared/identity";
 import { ACTING_STAFF_ERROR_CODES } from "@starter/shared/pos/acting-staff";
 import {
   issuePosTicketCredential,
   listPosOrderTickets,
 } from "@starter/shared/pos/ticket";
+import {
+  listPosTicketProducts,
+  listPosTicketSlots,
+  searchPosTicketCustomers,
+} from "@starter/shared/pos/ticket-cashier";
 import {
   actorOf,
   requireActingStaffOnSharedDevice,
@@ -31,6 +37,7 @@ import {
 import { requireAuth } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
+import { rejectRateLimited } from "../middleware/public-rate-limit";
 import {
   getScopedTenantContext,
   requireMenuPermission,
@@ -40,8 +47,10 @@ import { getTenantContext, requireTenantContext } from "../middleware/tenant";
 import { devices } from "../db/schema/device.ts";
 import { withTenant } from "../db/tenant";
 import { db } from "../db";
+import { createFixedWindowCounter } from "../lib/fixed-window-counter";
 import { HttpError } from "../lib/http-error";
 import { doorCheckTicket } from "../services/facility-door-check";
+import * as cashierReads from "../services/facility-pos-ticket-catalog";
 import {
   findFacilityOutletId,
   sellPosTicket,
@@ -256,6 +265,90 @@ facilityPosTicketRouter.post(
     );
     // The credential is shown once: never cached.
     res.setHeader("Cache-Control", "no-store").json({ data });
+  },
+);
+
+// 1096 (legend-hpgyw card 1): the cashier's reads for the ticket sale. The
+// path names the outlet, so resolveActingStaff compares it and the cashier
+// needs `pos.sale.create` on it, like the sale itself.
+const sellOnPathOutlet = requireOutletPermission("pos.sale.create", (req) =>
+  String(req.params.outletId ?? ""),
+);
+
+// 1096 architect P2: the customer search returns names, so a cashier could
+// enumerate the customer list with many short queries. Cap it per user and
+// tenant. Same process-local fixed-window counter the public and edge limits
+// use (lib/fixed-window-counter.ts); no shared store, so with several API
+// instances each one counts on its own. Mounted after the permission check:
+// only an allowed cashier is counted, and every refusal is the same 429.
+export const TICKET_CUSTOMER_SEARCH_PER_MINUTE = 30;
+const customerSearchLimit = createFixedWindowCounter({
+  limit: TICKET_CUSTOMER_SEARCH_PER_MINUTE,
+  windowMs: MINUTE_MS,
+  capacity: 5_000,
+});
+
+function limitCustomerSearch(
+  req: Request,
+  res: Parameters<typeof rejectRateLimited>[0],
+  next: (error?: unknown) => void,
+): void {
+  // The acting cashier (PIN session on a shared device), not the device's
+  // owner session, so cashiers on one tablet do not share a counter.
+  const key = `${getTenantContext(req).tenantId}:${actorOf(req)}`;
+  const retry = customerSearchLimit.take(key, Date.now());
+  if (retry !== null) rejectRateLimited(res, retry);
+  next();
+}
+
+facilityPosTicketRouter.get(
+  "/outlets/:outletId/pos/tickets/customers",
+  ...guards,
+  sellOnPathOutlet,
+  limitCustomerSearch,
+  async (req, res) => {
+    const { outletId } = searchPosTicketCustomers.params.parse(req.params);
+    const { q } = searchPosTicketCustomers.query.parse(req.query);
+    res.json({
+      data: await cashierReads.searchPosTicketCustomers(
+        getScopedTenantContext(req),
+        outletId,
+        q,
+      ),
+    });
+  },
+);
+
+facilityPosTicketRouter.get(
+  "/outlets/:outletId/pos/tickets/products",
+  ...guards,
+  sellOnPathOutlet,
+  async (req, res) => {
+    const { outletId } = listPosTicketProducts.params.parse(req.params);
+    res.json({
+      data: await cashierReads.listPosTicketProducts(
+        getScopedTenantContext(req),
+        outletId,
+      ),
+    });
+  },
+);
+
+facilityPosTicketRouter.get(
+  "/outlets/:outletId/pos/tickets/slots",
+  ...guards,
+  sellOnPathOutlet,
+  async (req, res) => {
+    const { outletId } = listPosTicketSlots.params.parse(req.params);
+    const query = listPosTicketSlots.query.parse(req.query);
+    res.json({
+      data: await cashierReads.listPosTicketSlots(
+        getScopedTenantContext(req),
+        actorOf(req),
+        outletId,
+        query,
+      ),
+    });
   },
 );
 

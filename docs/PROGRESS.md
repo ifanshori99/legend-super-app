@@ -7482,3 +7482,14 @@ Bukti: gagal-dulu di 930b61c77: 6 dari 10 test `pos-1065-*` gagal (200/201 alih-
 
 Belum: suite penuh `pnpm test`/`pnpm check` (gate akhir merge train); `pos-next-call-number`, `edc-reconciliation-queue`, `order-charge-void-982-s61sg` disarankan architect untuk dijalankan di gate (mengirim device token saat buat order).
 Biaya sesi 1065 (session-usage 06:19-07:13Z): total biaya* 2210k (utama sonnet 505k, subagent sonnet 1262k, opus 443k); 6 subagent, puncak 3 bersamaan.
+
+## 1096: POS kasir kontrak tiket + struk edge (legend-hpgyw, legend-ain0, legend-ol6v)
+Cabang `ws/1096-pos-kasir-tiket-struk` (dasar `ghostex/45769078` b8927ea90, mendarat SESUDAH 45769078). Tanpa migrasi.
+
+Sudah:
+- hpgyw: tiga baca kasir `GET /api/outlets/:outletId/pos/tickets/{customers?q=,products,slots}` (izin `pos.sale.create` di outlet path; kontrak `packages/shared/src/pos/ticket-cashier.ts`; service `facility-pos-ticket-catalog.ts`). Pelanggan: q >= 3, maks 10, keluaran hanya id dan nama, batas laju 30/menit per kasir pelaksana. Katalog: produk `single` aktif ber-`menuItemId` di outlet itu, harga dari server. Hook web `useTicketCustomerSearch/Products/Slots` tersambung; CONTRACT-GAPS.md diperbarui.
+- ain0/ol6v: merge struk edge menstempel `edge_reported_at` (jam app, GREATEST) hanya bila `lastNumber` naik pada run terikat edge yang belum pensiun (keputusan architect). Test end-to-end edge->cloud: jual + void offline tidak deadlock `RECEIPT_VOID_UNMATCHED`, replay no-op, stempel.
+
+Keputusan terbuka untuk CTO: (1) 4 digit akhir telepon tidak ada sumbernya (`customer_profiles` hanya menyimpan hash WhatsApp), keluaran hanya id + nama; (2) jam kosong untuk kasir murni 403 karena `getFacilityAvailability` butuh `facility.booth.operate`, perbaikan menunggu ekstraksi inti setelah ghostex/993 landing (legend-tkxhs).
+Bead susulan: legend-rh1hk (rotasi palsu restore-detect), legend-tkxhs (slot kasir), P2 hitungan struk belum sinkron di rekap hari (dibuat, tidak dikerjakan).
+Catatan: `pnpm db:generate` di dasar ini menghasilkan 0473 (tabel access_ticket_credential*), diduga drift bawaan base (belum diverifikasi di base bersih); schema tidak disentuh 1096; berkas hasil generate dihapus.

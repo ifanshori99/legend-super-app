@@ -19,7 +19,7 @@ export const ticketKeys = {
 export function ticketProductsQuery(outletId: string) {
   return queryOptions({
     queryKey: ticketKeys.products(outletId),
-    queryFn: ({ signal }) => fetchTicketProducts(signal),
+    queryFn: ({ signal }) => fetchTicketProducts(outletId, signal),
     staleTime: 60_000,
   });
 }
@@ -27,7 +27,7 @@ export function ticketProductsQuery(outletId: string) {
 export function ticketCustomersQuery(outletId: string, query: string) {
   return queryOptions({
     queryKey: ticketKeys.customers(outletId, query),
-    queryFn: ({ signal }) => searchTicketCustomers(query, signal),
+    queryFn: ({ signal }) => searchTicketCustomers(outletId, query, signal),
     staleTime: 30_000,
   });
 }
@@ -40,7 +40,8 @@ export function ticketSlotsQuery(
 ) {
   return queryOptions({
     queryKey: ticketKeys.slots(outletId, facilityId, areaId),
-    queryFn: ({ signal }) => fetchTicketSlots({ facilityId, areaId }, signal),
+    queryFn: ({ signal }) =>
+      fetchTicketSlots(outletId, { facilityId, areaId }, signal),
     staleTime: 0,
   });
 }

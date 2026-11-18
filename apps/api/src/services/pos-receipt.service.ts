@@ -38,7 +38,8 @@
 //   restored box may have behind or ahead): one not newer than the report that
 //   last raised the high-water (`edge_reported_at`) is stale (a request that
 //   timed out and arrived late) and is skipped, never read as a regression.
-//   The puller is single-flight, so arrival order is read order.
+//   The puller is single-flight, so arrival order is read order. A merge that
+//   advances a live edge-owned run stamps `edge_reported_at` too (legend-ol6v).
 //   Limits, stated plainly: (1) sales between a restore and the first
 //   successful pull still reuse numbers already issued (only legend-ol6v receipt
 //   events can catch them); a backup newer than the last pull is not seen.
@@ -1768,9 +1769,26 @@ export async function mergeDeviceReceiptRun(
   // last_number), then receipts, all in the caller's transaction.
   let sequenceRow = cloudRow;
   if (newLast !== sequenceRow.lastNumber) {
+    // legend-ol6v: advancing a live edge-owned run stamps the cloud arrival
+    // time (app clock, read after the outlet sequence lock), so a pull report
+    // sent before this merge is stale. GREATEST because trigger 0154 refuses a
+    // backward edge_reported_at; a retired run's stamp is never changed.
+    const stampReported =
+      newLast > sequenceRow.lastNumber &&
+      sequenceRow.retiredAt === null &&
+      sequenceRow.edgeNodeId !== null;
+    const stamp = new Date();
     const [row] = await tx
       .update(receiptSequences)
-      .set({ lastNumber: newLast, updatedAt: sql`now()` })
+      .set({
+        lastNumber: newLast,
+        updatedAt: sql`now()`,
+        ...(stampReported
+          ? {
+              edgeReportedAt: sql`GREATEST(${receiptSequences.edgeReportedAt}, ${stamp.toISOString()}::timestamptz)`,
+            }
+          : {}),
+      })
       .where(
         and(
           eq(receiptSequences.tenantId, tenantId),
