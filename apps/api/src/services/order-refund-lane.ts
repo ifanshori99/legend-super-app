@@ -55,10 +55,7 @@ export async function assertNoOrd09Refund(
 
 /** Why an order can no longer take an ORD-09 refund. */
 export type OrderMoneyBackLane =
-  | "voided"
-  | "edge_voided"
-  | "edge_void_parked"
-  | "pos_refunded";
+  "voided" | "edge_voided" | "edge_void_parked" | "pos_refunded";
 
 /**
  * ORD-09 side: the order already gave the guest money back another way, or

@@ -1007,7 +1007,9 @@ export async function refileRecoveryRefundAfterFailure(
   const [laneIssue] = await tx
     .select({ orderId: orderIssues.orderId })
     .from(orderIssues)
-    .where(and(eq(orderIssues.tenantId, tenantId), eq(orderIssues.id, issueId)));
+    .where(
+      and(eq(orderIssues.tenantId, tenantId), eq(orderIssues.id, issueId)),
+    );
   const lane = laneIssue
     ? await orderMoneyBackLaneOf(tx, tenantId, laneIssue.orderId)
     : null;
