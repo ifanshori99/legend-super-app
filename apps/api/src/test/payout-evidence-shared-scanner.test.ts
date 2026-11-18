@@ -378,6 +378,8 @@ describe("legend-egrrp payout proof uses the shared scan pipeline", () => {
     const cashSlips = [cash(CASHIER, 900_000)];
     const cashRun = await W.seedRun(cashSlips);
     await W.postLockedJournal(cashRun, cashSlips);
+    // 1053: approving a cash batch needs the 1102 cash to cover it.
+    await W.fundPettyCash(900_000);
     const cashId = await W.approvedBatch(cashRun, "cash");
     const wrongChannel = await upload(who, cashId, pdf);
     expect(wrongChannel.status, JSON.stringify(wrongChannel.body)).toBe(409);
@@ -438,6 +440,8 @@ describe("legend-egrrp payout proof uses the shared scan pipeline", () => {
     const cashSlips = [cash(CASHIER, 900_000)];
     const cashRun = await W.seedRun(cashSlips);
     await W.postLockedJournal(cashRun, cashSlips);
+    // 1053: approving a cash batch needs the 1102 cash to cover it.
+    await W.fundPettyCash(900_000);
     const cashId = await W.approvedBatch(cashRun, "cash");
     const wrongChannel = await upload(who, cashId, bad);
     expect(wrongChannel.status, JSON.stringify(wrongChannel.body)).toBe(409);
