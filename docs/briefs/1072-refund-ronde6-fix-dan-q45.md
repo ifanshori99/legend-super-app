@@ -7,6 +7,7 @@ Model Opus karena rantai refund sudah 6 ronde SO dan masih P1 (naik tingkat). Se
 
 ## Repo
 Worktree base `ghostex/1033-kredit-dp-pool-net-bersama` (head 1c9e3fcaa). Rename cabang ke `ws/1072-refund-ronde6-q45`, push tanpa force.
+Langkah 0 (disk sempit): di root worktree jalankan `node ~/.claude/scripts/worktree-slim.mjs && heavy pnpm worktree:setup`. Bila butuh migrasi: `node ~/.claude/scripts/worktree-slim.mjs --full` sebelum `pnpm db:generate`.
 
 ## Tugas A — temuan SO ronde 6
 Laporan: `docs/qa/second-opinion-refund-ronde6-1068.md` (di folder utama; baca lewat path absolut `/Users/ifanshori99/Projects/legend super app/legend/docs/qa/second-opinion-refund-ronde6-1068.md`). P1 x2 (webhook matched melewati batas nominal echo; fact kecil menyembunyikan hold lebih besar dari pool DP), P2 x2 (hold konflik ditutup lewat same_as_counted pasangan anonymous; fact pra-0679 dipakai ulang). Ronde sebelumnya: `docs/qa/second-opinion-refund-*.md`. Yang sudah diterima CTO/founder: brief 1055, 1062, 1068 bagian "Diterima".

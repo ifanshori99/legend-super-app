@@ -198,3 +198,4 @@ Induk lebih dulu. Migrasi dinomori ulang dari ujung m1 saat batch disusun.
 - Batch92: `1020-so-recon-ronde-2-fix` (0636-0637, sesudah 1016), `so996-f2-f3-charge-void-split` + sisa SIAP.
 - Menunggu: `1033-kredit-dp-pool-net-bersama` 2a525b3d3 (TAHAN, SO ronde 5 1062 G5l73), cabang 1035 (membawa 1025; belum ada di antrean).
 - Urutan rantai dicek: tiap cabang sesudah dasarnya (1013/1016 sesudah 1009; 1020 sesudah 1016; 1018 sesudah 34755844 sesudah 1012 sesudah f12296d2; 4b06e171 sesudah 1018; 1026/1027 sesudah 6acce68c; 847b580a sesudah 985; 993 sesudah 987).
+- `ws/1069-worktree-hemat` f08d6c161 (legend-jjg6i, skrip worktree slim + docs; tanpa migrasi; reviewer 2 ronde bersih; tingkat S). Merge train tetap pakai worktree penuh.
