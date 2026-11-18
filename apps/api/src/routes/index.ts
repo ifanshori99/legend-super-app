@@ -500,9 +500,10 @@ apiRouter.use("/edge/devices", edgeDeviceRouter);
 apiRouter.use("/edge/wifi", edgeWifiRouter);
 apiRouter.use("/edge", edgePrintRouter);
 apiRouter.use("/edge", edgeRouter);
-apiRouter.use("/edge-nodes", edgeNodesRouter);
 // Up-sync reconciliation (legend-kai): /edge-nodes/:id/reconciliation, cloud only.
+// Before the registry's session guards so edge Bearer credentials can POST.
 apiRouter.use("/edge-nodes", edgeReconciliationRouter);
+apiRouter.use("/edge-nodes", edgeNodesRouter);
 // Staff PIN hash down-sync for edge nodes (legend-obh5): edge credential
 // only, deny-all until server.ts installs the registry verifier.
 apiRouter.use("/edge-sync/staff-pin-records", staffPinSyncRouter);

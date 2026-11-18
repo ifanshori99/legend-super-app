@@ -110,6 +110,7 @@ import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import {
   authenticateEdgeCredential,
   registerEdgeNode,
+  revokeEdgeNode,
   type AuthenticatedEdgeNode,
 } from "../services/edge-node.service.ts";
 import { enqueueEdgeEvent } from "../services/edge-queue.service.ts";
@@ -133,6 +134,7 @@ type Member = { client: ReturnType<typeof agent> };
 type Digest = Awaited<ReturnType<typeof buildEdgeTxnDigest>>;
 type World = {
   node: AuthenticatedEdgeNode;
+  credential: string;
   outletId: string;
   tenant: IsolatedTenant;
   instanceId: string;
@@ -251,7 +253,13 @@ async function newWorld(tenant: IsolatedTenant): Promise<World> {
   );
   const node = await authenticateEdgeCredential(registered.credential);
   if (!node) throw new Error("Edge node did not authenticate");
-  const world: World = { node, outletId, tenant, instanceId: randomUUID() };
+  const world: World = {
+    node,
+    credential: registered.credential,
+    outletId,
+    tenant,
+    instanceId: randomUUID(),
+  };
   await setInstanceId(world, world.instanceId);
   return world;
 }
@@ -1351,6 +1359,97 @@ describe("legend-kai reconciliation route", () => {
     await cloudReceive(world);
     return { world, digest: await digestOf(world) };
   }
+
+  it("legend-e3k4p the edge posts its own digest using only its bearer credential", async () => {
+    const { world, digest } = await readyWorld();
+    const before = await snapshot(tenantA.tenantId);
+    // No session, Origin or tenant hostname: identity comes from the edge credential.
+    const response = await agent(app)
+      .post(path(world))
+      .set("Authorization", `Bearer ${world.credential}`)
+      .send(digest);
+    expect(response.status).toBe(200);
+    expect(response.body.data).toMatchObject({
+      edgeNodeId: world.node.scope.edgeNodeId,
+      tenantId: tenantA.tenantId,
+      outletId: world.outletId,
+      checkedBy: null,
+      status: "ok",
+    });
+    expectOnlyRunsChanged(before, await snapshot(tenantA.tenantId), 1);
+  });
+
+  it.each(["same tenant", "other tenant"])(
+    "legend-e3k4p a credential cannot submit to another node in the %s",
+    async (location) => {
+      const { world } = await readyWorld();
+      const other = await newWorld(
+        location === "same tenant" ? tenantA : tenantB,
+      );
+      const digest = await digestOf(other);
+      const beforeOwn = await runRows(world);
+      const beforeOther = await runRows(other);
+      // Both URL and digest point to the victim, so only the credential can reject this.
+      const response = await agent(app)
+        .post(path(other))
+        .set("Authorization", `Bearer ${world.credential}`)
+        .send(digest);
+      expect([403, 404]).toContain(response.status);
+      expect(await runRows(world)).toEqual(beforeOwn);
+      expect(await runRows(other)).toEqual(beforeOther);
+    },
+  );
+
+  it("legend-e3k4p the digest body cannot override the credential node", async () => {
+    const { world } = await readyWorld();
+    const other = await newWorld(tenantA);
+    const response = await agent(app)
+      .post(path(world))
+      .set("Authorization", `Bearer ${world.credential}`)
+      .send(await digestOf(other));
+    expect([400, 403, 404, 422]).toContain(response.status);
+    expect(await runRows(world)).toEqual([]);
+    expect(await runRows(other)).toEqual([]);
+  });
+
+  it("legend-e3k4p a malformed bearer is refused and cannot read operator run history", async () => {
+    const { world, digest } = await readyWorld();
+    const refused = await agent(app)
+      .post(path(world))
+      .set("Authorization", "Bearer invalid-edge-credential")
+      .send(digest);
+    expect(refused.status).toBe(401);
+    const history = await agent(app)
+      .get(path(world))
+      .set("Authorization", `Bearer ${world.credential}`);
+    expect([401, 403, 404]).toContain(history.status);
+    expect(await runRows(world)).toEqual([]);
+  });
+
+  it("legend-e3k4p a valid credential cannot use another tenant domain", async () => {
+    const { world, digest } = await readyWorld();
+    const response = await agent(app)
+      .post(path(world))
+      .set("Host", tenantB.hostname)
+      .set("Authorization", `Bearer ${world.credential}`)
+      .send(digest);
+    expect([403, 404]).toContain(response.status);
+    expect(await runRows(world)).toEqual([]);
+  });
+
+  it("legend-e3k4p a revoked credential cannot submit a reconciliation report", async () => {
+    const { world, digest } = await readyWorld();
+    await revokeEdgeNode(operator(world), actor, {
+      edgeNodeId: world.node.scope.edgeNodeId,
+      reason: "Credential revoked before the scheduled report",
+    });
+    const response = await agent(app)
+      .post(path(world))
+      .set("Authorization", `Bearer ${world.credential}`)
+      .send(digest);
+    expect(response.status).toBe(401);
+    expect(await runRows(world)).toEqual([]);
+  });
 
   it("a permitted operator posts a digest and reads the run back", async () => {
     const { world, digest } = await readyWorld();

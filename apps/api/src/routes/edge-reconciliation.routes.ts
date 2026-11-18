@@ -6,11 +6,13 @@
 //                                      one run row (report only, 200)
 //   GET  /:edgeNodeId/reconciliation?limit=   past runs, newest first
 //
-// Both need `device.registry.manage` on the node's own outlet (read from the
-// node row, never from the client); unknown, foreign or out-of-reach nodes
-// are the same 404, like the other /edge-nodes/:id routes. Signed-in,
-// trusted origin, tenant from the domain (TEN-02), back-office surface
-// (AUTH-05).
+// POST also accepts the node's Bearer credential for the periodic edge job;
+// its tenant, outlet and node come only from that credential. Operators need
+// `device.registry.manage` on the node's own outlet (read from the node row,
+// never from the client); unknown, foreign or out-of-reach nodes are the same
+// 404, like the other /edge-nodes/:id routes. Operator requests require a
+// session, trusted origin, domain tenant (TEN-02), and back-office surface
+// (AUTH-05). GET remains operator-only.
 import {
   Router,
   type NextFunction,
@@ -25,6 +27,7 @@ import {
   edgeReconciliationParamsSchema,
 } from "@starter/shared/edge/reconciliation";
 import { db } from "../db/index.ts";
+import { HttpError } from "../lib/http-error.ts";
 import { getAuth, requireAuth } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireBackOfficeSurface } from "../middleware/identity-surface.ts";
@@ -34,15 +37,21 @@ import {
   requireOutletPermission,
 } from "../middleware/permissions.ts";
 import {
+  findTenantContext,
   getTenantContext,
   requireTenantContext,
 } from "../middleware/tenant.ts";
-import { findEdgeNodeOutletId } from "../services/edge-node.service.ts";
+import {
+  authenticateEdgeCredential,
+  findEdgeNodeOutletId,
+  type AuthenticatedEdgeNode,
+} from "../services/edge-node.service.ts";
 import {
   listEdgeReconciliationRuns,
   parseEdgeTxnDigest,
   reconcileEdgeTransactions,
 } from "../services/edge-reconciliation.service.ts";
+import { edgeCredentialFromAuthorization } from "../services/staff-pin-sync.ts";
 
 const notFound = () => new CoreError("NOT_FOUND", "Edge node tidak ditemukan.");
 const nodeOutlets = new WeakMap<Request, string>();
@@ -74,6 +83,59 @@ const requireNodeManage: RequestHandler = (() => {
 })();
 
 export const edgeReconciliationRouter = Router();
+
+const edgeCallers = new WeakMap<Request, AuthenticatedEdgeNode>();
+
+// Credential authentication runs before parsing the digest. A presented
+// invalid credential never falls back to an operator's session cookie.
+edgeReconciliationRouter.post(
+  "/:edgeNodeId/reconciliation",
+  async (req, _res, next) => {
+    const authorization = req.get("Authorization");
+    if (authorization === undefined) {
+      next("route");
+      return;
+    }
+    const credential = edgeCredentialFromAuthorization(authorization);
+    const node =
+      credential === null ? null : await authenticateEdgeCredential(credential);
+    if (node === null)
+      throw new CoreError("UNAUTHORIZED", "Kredensial edge node tidak valid.");
+    const resolved = findTenantContext(req);
+    if (
+      resolved !== undefined &&
+      resolved.tenantId.toLowerCase() !== node.scope.tenantId.toLowerCase()
+    )
+      throw new HttpError(
+        403,
+        "TENANT_MISMATCH",
+        "Tenant does not match this domain.",
+      );
+    const { edgeNodeId } = edgeReconciliationParamsSchema.parse(req.params);
+    if (edgeNodeId !== node.scope.edgeNodeId) throw notFound();
+    edgeCallers.set(req, node);
+    next();
+  },
+  jsonBody,
+  async (req, res) => {
+    const node = edgeCallers.get(req);
+    if (!node)
+      throw new CoreError("UNAUTHORIZED", "Kredensial edge node tidak valid.");
+    const digest = parseEdgeTxnDigest(req.body);
+    if (digest.edgeNodeId !== node.scope.edgeNodeId)
+      throw new CoreError(
+        "VALIDATION_ERROR",
+        "Digest bukan milik edge node ini.",
+      );
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json({
+      data: await reconcileEdgeTransactions(db, node.context, {
+        edgeNodeId: node.scope.edgeNodeId,
+        digest,
+      }),
+    });
+  },
+);
 
 edgeReconciliationRouter.use(
   requireAuth,
