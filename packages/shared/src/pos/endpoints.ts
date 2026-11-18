@@ -413,6 +413,8 @@ export const addPosTender = defineEndpoint({
       .max(1_000_000)
       .nullable()
       .optional(),
+    /** A points tender: the member's QR token for this order and amount. */
+    memberToken: z.string().min(1).max(512).optional(),
     ...expectedStatus,
   })
     .refine(

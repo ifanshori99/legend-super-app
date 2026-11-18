@@ -325,3 +325,9 @@ WHERE "is_template"
   AND NOT ("permissions" @> '["crm.feedback.manage"]'::jsonb);
 --> statement-breakpoint
 ALTER TABLE public.roles FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+-- Spent member QR nonces of points redeemed at the POS (weexf, migration 0677):
+-- tenant and outlet owned.
+SELECT app.enforce_tenant_rls('public.member_qr_redeem_nonces'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_outlet_rls('public.member_qr_redeem_nonces'::regclass);

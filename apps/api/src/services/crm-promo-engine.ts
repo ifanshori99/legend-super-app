@@ -1137,6 +1137,11 @@ export async function appendPromoEvent(
     actorUserId: string | null;
     payload: Record<string, unknown>;
     idempotencyKey: string;
+    /**
+     * legend-1059: an order can be redeemed and released more than once (cashier
+     * voucher swap), so the key also carries the per-aggregate sequence.
+     */
+    cycleKey?: boolean;
     now: Date;
   },
 ): Promise<void> {
@@ -1162,7 +1167,10 @@ export async function appendPromoEvent(
         ? { type: "system" }
         : { type: "user", id: input.actorUserId },
     deviceId: null,
-    idempotencyKey: input.idempotencyKey.slice(0, 100),
+    idempotencyKey: (input.cycleKey === true
+      ? `${input.idempotencyKey}:${sequence}`
+      : input.idempotencyKey
+    ).slice(0, 100),
     payloadSchemaRef: definition.payloadSchemaRef,
     payload: input.payload,
   });
@@ -1188,6 +1196,13 @@ export type RedeemPromotionsInput = PromoCheckoutInput & {
    * charging a different price.
    */
   readonly expected?: PromotionApplicationResult;
+  /**
+   * POS cashier swap (legend-1059, founder Q41): a promo/voucher that was
+   * released from this order may be replaced by another one (or the same one
+   * again). The released application row is reused for the new cycle. Off by
+   * default: a voided order never re-redeems on a retry.
+   */
+  readonly reapplyReleased?: boolean;
 };
 
 /**
@@ -1259,7 +1274,7 @@ export async function redeemPromotions(
     return quoted;
   }
 
-  const [existing] = await tx
+  const [existingRow] = await tx
     .select()
     .from(promotionOrderApplications)
     .where(
@@ -1269,6 +1284,26 @@ export async function redeemPromotions(
       ),
     )
     .limit(1);
+  // legend-1059: a released row is reused (updated) for the next cycle only on
+  // an explicit cashier swap; every other caller still sees it as released.
+  const reapplying =
+    existingRow !== undefined &&
+    existingRow.status === "released" &&
+    redeem.reapplyReleased === true;
+  if (reapplying) {
+    // Lock order step 3: the application row, before voucher and promotions.
+    await tx
+      .select({ orderId: promotionOrderApplications.orderId })
+      .from(promotionOrderApplications)
+      .where(
+        and(
+          eq(promotionOrderApplications.tenantId, tenantId),
+          eq(promotionOrderApplications.orderId, orderId),
+        ),
+      )
+      .for("update");
+  }
+  const existing = reapplying ? undefined : existingRow;
   if (existing) {
     if (existing.requestFingerprint !== fingerprint)
       throw new HttpError(
@@ -1337,7 +1372,7 @@ export async function redeemPromotions(
     };
   }
 
-  await tx.insert(promotionOrderApplications).values({
+  const applicationValues = {
     tenantId,
     outletId,
     orderId,
@@ -1363,7 +1398,26 @@ export async function redeemPromotions(
       redeem.actorUserId === null
         ? null
         : userIdSchema.parse(redeem.actorUserId),
-  });
+  };
+  if (reapplying)
+    await tx
+      .update(promotionOrderApplications)
+      .set({
+        ...applicationValues,
+        refundedSubtotalIdr: idr(0),
+        refundedPaidIdr: idr(0),
+        status: "applied",
+        releasedAt: null,
+        releaseReason: null,
+      })
+      .where(
+        and(
+          eq(promotionOrderApplications.tenantId, tenantId),
+          eq(promotionOrderApplications.orderId, orderId),
+          eq(promotionOrderApplications.status, "released"),
+        ),
+      );
+  else await tx.insert(promotionOrderApplications).values(applicationValues);
 
   if (voucherUsed) {
     // Single-use: issued -> redeemed, guarded, under the row lock (LOY-03).
@@ -1467,6 +1521,26 @@ export async function redeemPromotions(
       }
     }
 
+    // A released line of an earlier cycle holds the unique (order, promotion)
+    // or (order, voucher) key; the release event and audit row keep the history.
+    if (reapplying)
+      await tx
+        .delete(promotionRedemptions)
+        .where(
+          and(
+            eq(promotionRedemptions.tenantId, tenantId),
+            eq(promotionRedemptions.orderId, orderId),
+            eq(promotionRedemptions.status, "released"),
+            promotionId !== null
+              ? eq(promotionRedemptions.promotionId, promotionId)
+              : and(
+                  isNull(promotionRedemptions.promotionId),
+                  voucherId === null
+                    ? sql`false`
+                    : eq(promotionRedemptions.voucherId, voucherId),
+                ),
+          ),
+        );
     await tx.insert(promotionRedemptions).values({
       tenantId,
       outletId,
@@ -1528,6 +1602,7 @@ export async function redeemPromotions(
       outletId,
       actorUserId: redeem.actorUserId,
       idempotencyKey: `promo_application.redeemed:${orderId}`,
+      cycleKey: true,
       now,
       payload: {
         orderId,
@@ -1752,6 +1827,7 @@ export async function releasePromotions(
     outletId: application.outletId,
     actorUserId: release.actorUserId,
     idempotencyKey: `promo_application.released:${orderId}`,
+    cycleKey: true,
     now,
     payload,
   });

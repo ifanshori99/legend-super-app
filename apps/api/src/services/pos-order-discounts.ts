@@ -252,6 +252,8 @@ export async function applyPosDiscount(
           orderId: order.id,
           actorUserId: caller.userId,
           expected: quote.result,
+          // Q41: the cashier may release a wrong voucher and apply another.
+          reapplyReleased: true,
         });
         amount = redeemed.totalDiscountIdr;
         if (amount <= 0 || existingTotal + amount > subtotal)

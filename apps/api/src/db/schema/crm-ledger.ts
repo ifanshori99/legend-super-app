@@ -356,3 +356,39 @@ export const loyaltyAnomalies = pgTable(
     ),
   ],
 );
+
+/**
+ * `member_qr_redeem_nonces` (T+O, migration 0677, bead weexf): the nonce of a
+ * member QR spent to redeem points at the POS. One row per QR, written in the
+ * same transaction as the points debit, so a QR pays once and a failed debit
+ * leaves the nonce unspent.
+ */
+export const memberQrRedeemNonces = pgTable(
+  "member_qr_redeem_nonces",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    nonce: varchar("nonce", { length: 64 }).notNull(),
+    orderId: ulidInUuid("order_id").notNull(),
+    customerProfileId: uuid("customer_profile_id").notNull(),
+    points: bigint("points", { mode: "number" }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    unique("member_qr_redeem_nonces_nonce_key").on(table.tenantId, table.nonce),
+    foreignKey({
+      name: "member_qr_redeem_nonces_order_fk",
+      columns: [table.tenantId, table.orderId],
+      foreignColumns: [orders.tenantId, orders.id],
+    }),
+    foreignKey({
+      name: "member_qr_redeem_nonces_profile_fk",
+      columns: [table.tenantId, table.customerProfileId],
+      foreignColumns: [customerProfiles.tenantId, customerProfiles.id],
+    }),
+    check("member_qr_redeem_nonces_points_check", sql`${table.points} > 0`),
+  ],
+);

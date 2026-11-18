@@ -58,6 +58,8 @@ export const redeemPosOrderPoints = defineEndpoint({
   body: clientInputSchema({
     points: pointsAmountSchema,
     idempotencyKey: idempotencyKeySchema,
+    /** The member's QR token for this order and amount (weexf). */
+    memberToken: z.string().min(1).max(512).optional(),
   }),
   response: dataResponseSchema(posOrderDetailSchema),
 });

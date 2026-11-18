@@ -194,6 +194,7 @@ export const orderPromoPort: OrderPromoPort = {
       orderId: input.orderId,
       actorUserId: input.actorUserId,
       ...(input.expected === undefined ? {} : { expected: input.expected }),
+      ...(input.reapplyReleased === true ? { reapplyReleased: true } : {}),
     });
     return toQuote(result, lines);
   },

@@ -84,3 +84,9 @@ SELECT app.enforce_outlet_rls('public.access_ticket_credentials'::regclass);
 SELECT app.enforce_tenant_rls('public.access_ticket_credential_keys'::regclass);
 --> statement-breakpoint
 SELECT app.enforce_outlet_rls('public.access_ticket_credential_keys'::regclass);
+--> statement-breakpoint
+-- PIN guess counter of the door check (R2-04, migration 0676): tenant and
+-- outlet owned.
+SELECT app.enforce_tenant_rls('public.access_ticket_pin_guesses'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_outlet_rls('public.access_ticket_pin_guesses'::regclass);

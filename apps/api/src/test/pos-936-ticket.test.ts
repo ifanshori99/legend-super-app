@@ -97,6 +97,7 @@ import {
   type Profile,
 } from "./member-loyalty-helpers.ts";
 import { grantPoints } from "./member-rewards-helpers.ts";
+import { memberQrFor } from "./member-qr-redeem-helper.ts";
 
 const PIN = "582914";
 const TICKET_LIST_IDR = 70_000;
@@ -727,11 +728,20 @@ async function payPoints(orderId: string) {
       [tenant.tenantId, ulidToUuid(orderId), member.id],
     ),
   );
+  const memberToken = await memberQrFor(
+    tenant.tenantId,
+    orderId,
+    POINTS_FOR_FULL_BILL,
+  );
   const redeemed = await cashier.client
     .post(`/api/pos/orders/${orderId}/points/redeem`)
     .set(headers)
     .set(originHeader)
-    .send({ points: POINTS_FOR_FULL_BILL, idempotencyKey: randomUUID() });
+    .send({
+      points: POINTS_FOR_FULL_BILL,
+      idempotencyKey: randomUUID(),
+      ...(memberToken ? { memberToken } : {}),
+    });
   expect(redeemed.status, JSON.stringify(redeemed.body)).toBeLessThan(300);
 }
 

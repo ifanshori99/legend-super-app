@@ -7,13 +7,14 @@
 // requireMember({ allow }). The profile always comes from the session; this
 // module imports `withMemberScope` and never `withTenant`.
 
-import { Router } from "express";
+import { Router, type RequestHandler } from "express";
 import {
   crmErrorMessages,
   customerProfileDtoSchema,
   listMemberPoints as listMemberPointsEndpoint,
   updateMemberConsentInputSchema,
 } from "@starter/shared/crm";
+import { memberQrTokenMintInputSchema } from "@starter/shared/validators/member-qr-token";
 import { db } from "../db/index.ts";
 import { withMemberScope } from "../db/member-scope.ts";
 import { HttpError } from "../lib/http-error.ts";
@@ -130,15 +131,36 @@ memberRouter.get("/consent-policies", ...base, async (req, res) => {
   });
 });
 
-memberRouter.post("/qr-token", ...base, requireMember(), async (req, res) => {
-  const scope = getMemberScope(req);
-  res.json({
-    data: issueMemberQrToken(
-      {
-        tenantId: scope.tenantId,
-        customerProfileId: profileIdOf(scope),
-      },
-      new Date(),
-    ),
-  });
-});
+// A body is optional here (the PWA's attach QR sends none): parse JSON only
+// when the request carries one, so an empty POST keeps issuing an attach token.
+const optionalJsonBody: RequestHandler = (req, res, next) => {
+  const hasBody =
+    req.get("transfer-encoding") !== undefined ||
+    Number(req.get("content-length") ?? 0) > 0;
+  if (hasBody) jsonBody(req, res, next);
+  else next();
+};
+
+// Mints an attach token, or a redeem token when `{ orderId, points }` come
+// along. The mint does not trust the order: the POS verifies it on redeem.
+memberRouter.post(
+  "/qr-token",
+  ...base,
+  optionalJsonBody,
+  requireMember(),
+  async (req, res) => {
+    const scope = getMemberScope(req);
+    const input = memberQrTokenMintInputSchema.parse(req.body ?? {});
+    res.json({
+      data: issueMemberQrToken(
+        {
+          tenantId: scope.tenantId,
+          customerProfileId: profileIdOf(scope),
+          orderId: input.orderId,
+          points: input.points,
+        },
+        new Date(),
+      ),
+    });
+  },
+);

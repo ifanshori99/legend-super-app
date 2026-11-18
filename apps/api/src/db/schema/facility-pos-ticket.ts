@@ -191,3 +191,42 @@ export const accessTicketCredentialKeys = pgTable(
     ),
   ],
 );
+
+/**
+ * PIN guess counter of the door check (migration 0676, R2-04 / legend-0xt77).
+ * One row per ticket that had a PIN guess: `failures` guesses reserved since
+ * `window_started_at` (fixed window). Five reserved guesses lock the PIN path
+ * of that ticket until the window ends. The counter lives in the database so
+ * every API instance shares it, and nothing evicts a row, so churn of other
+ * ticket ids can never reset a lock. Rows exist only for real tickets (the
+ * insert selects from `access_tickets`), so unknown ids add nothing.
+ */
+export const accessTicketPinGuesses = pgTable(
+  "access_ticket_pin_guesses",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    accessTicketId: ulidInUuid("access_ticket_id").notNull(),
+    windowStartedAt: timestamp("window_started_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    failures: integer("failures").notNull(),
+    updatedAt,
+  },
+  (table) => [
+    unique("access_ticket_pin_guesses_ticket_key").on(
+      table.tenantId,
+      table.accessTicketId,
+    ),
+    foreignKey({
+      name: "access_ticket_pin_guesses_ticket_fk",
+      columns: [table.tenantId, table.accessTicketId],
+      foreignColumns: [accessTickets.tenantId, accessTickets.id],
+    }),
+    check(
+      "access_ticket_pin_guesses_failures_check",
+      sql`${table.failures} >= 0`,
+    ),
+  ],
+);

@@ -7447,3 +7447,26 @@ Sudah (5 P1 + 3 P2 + temuan architect):
 Bukti: gagal-dulu `so1`..`so4` (tiap temuan gagal karena alasan yang benar), run gabungan 20 berkas 582 tes lulus. Review architect xhigh satu kali (F1-F4, F6 dibetulkan), reviewer untuk perbaikan sesudahnya.
 
 Keputusan terbuka: QR member tidak sekali pakai dan tidak terikat order/nominal (perlu tabel nonce); pembaca pintu offline/edge dan kunci perangkat keras (legend-bzih) belum ada; penghitung PIN per proses (butuh Redis bila API banyak instans); tiket `completed`/`no_show` belum memblokir refund manual; tiket sebelum 0672 hanya mencatat kunci terbaru.
+
+## 18 Nov 2026 — 1059 POS: SO ronde 2, QR member sekali pakai, ganti voucher, pintu (thread engineer; beads legend-kuh0w, legend-weexf, legend-g7l20, legend-0xt77)
+
+Cabang `ghostex/8eb871ce`. Migrasi kerja 0676 (`access_ticket_pin_guesses`) dan 0677 (`member_qr_redeem_nonces`); merge train menomori ulang. `apps/web` tidak disentuh (typecheck web hijau).
+
+Sudah:
+- R2-01 P1: tukar poin lintas PT ditolak 409 `POINTS_ENTITY_REFUSED` sebelum ledger/tender. Entitas sedang dipakai proses lain: 409 `POINTS_ENTITY_BUSY` (boleh diulang, tidak ada poin keluar).
+- R2-02: kunci pra-0672 diarsipkan saat mint ulang (digest + versi, di bawah kunci yang sama); replay kunci lama tidak membatalkan mint terbaru.
+- R2-03: pintu membaca jam DB (`clock_timestamp()`) setelah lock tiket untuk jendela kredensial, `firstOpenedAt`, audit.
+- R2-04 + 0xt77: penghitung tebakan PIN pindah ke tabel DB (bersama antar instans), hanya lookup gagal dihitung, 5 per 15 menit lalu 429; ID tak dikenal tidak menulis baris; PIN benar mengembalikan jatah. Gagal melepas jatah setelah pintu terbuka dicatat, tidak jadi 500.
+- R2-05: token staf outlet A tidak bisa mengubah tiket outlet B (jangkauan diiris ke outlet token; tolak seragam 403 `DOOR_CREDENTIAL_INVALID`).
+- R2-06: pembacaan mode perangkat `FOR SHARE` di transaksi penjualan tiket; order latihan setelah menunggu lock ditolak 409 `TICKET_TRAINING_REFUSED` tanpa slot/tiket tersisa.
+- g7l20: pintu menolak perangkat mode latihan dengan 403 seragam; perangkat yang barisnya tidak terbaca juga ditolak (gagal tertutup).
+- weexf: QR member untuk tukar poin sekali pakai, terikat order dan jumlah poin, maks 120 detik (jam DB). Nonce dibakar atomik dengan debit (debit gagal = nonce utuh). Order `member_qr` WAJIB kirim `memberToken`; fingerprint idempotensi tidak memuat token; method selain poin dengan `memberToken` ditolak. Mint: `POST /member/qr-token` menerima body opsional `{orderId, points}`.
+- kuh0w (founder Q41): kasir bisa melepas voucher salah lalu memasang voucher lain di order yang sama; voucher pertama kembali utuh dan tidak bisa dipakai dua kali; tetap dibatasi subtotal (Q40). Void lalu retry tidak me-redeem ulang. Kunci event `promo_application.redeemed|released:` sekarang diakhiri `:${sequence}`.
+
+Bukti: tes terarah 15 berkas / 248 lulus (`pos-1059-door` 16, `pos-1059-points` 19, `pos-1059-voucher` 15, `pos-1059-arch`, `member-qr-mint` 4, plus regresi 936 dan promo); typecheck API dan web hijau (pra-fix P3; ulang setelah fix); eslint + prettier hijau; `db:generate` kosong untuk tabel kita (diff lain di snapshot adalah pekerjaan cabang lain, bukan milik 1059; keluaran generator dibuang). Review architect xhigh satu kali: 0 P0/P1, 1 P2 (urutan migrasi lintas cabang, urusan merge train), 4 P3 (3 dibetulkan; backfill R2-02 di migrasi tidak dibuat).
+
+Sedang/berikut: klien PWA/web member yang meminta token `{orderId, points}` (rute mint sudah ada; sampai klien ada, order `member_qr` tidak bisa tukar poin di kasir: sisi aman). Merge train: 0674 (cabang 1057) harus digabung lebih dulu atau diberi nomor/`when` baru sesudah 0677.
+
+Keputusan terbuka untuk founder lewat CTO: `memberToken` wajib untuk `member_qr` (aturan yang membatasi pembayaran; konsekuensi: kasir tidak bisa tukar poin lewat member terpasang QR sebelum klien mint ada).
+
+Biaya sesi (session-usage, 04:08-05:23Z): total biaya* 9438k (utama sonnet 4798k, subagent sonnet 3840k, opus 728k, haiku 73k); 17+ subagent, puncak 6 bersamaan, rata-rata 1,65 berjalan. Token heavy dipegang thread ini saat typecheck/tes terarah.

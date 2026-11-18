@@ -3200,6 +3200,20 @@
       "when": 1795000000672,
       "tag": "0672_access_ticket_credential_keys",
       "breakpoints": true
+    },
+    {
+      "idx": 471,
+      "version": "7",
+      "when": 1795000000676,
+      "tag": "0676_access_ticket_pin_guesses",
+      "breakpoints": true
+    },
+    {
+      "idx": 472,
+      "version": "7",
+      "when": 1795000000677,
+      "tag": "0677_member_qr_redeem_nonces",
+      "breakpoints": true
     }
   ]
 }
