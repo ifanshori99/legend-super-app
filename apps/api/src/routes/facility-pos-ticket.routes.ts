@@ -22,7 +22,7 @@ import {
   requireActingStaffOnSharedDevice,
   resolveActingStaff,
 } from "../middleware/acting-staff";
-import { requireAuth } from "../middleware/auth";
+import { requireAuthAllowSharedDevice } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
 import {
@@ -59,7 +59,7 @@ const view = requireOutletPermission("order.view", outletOfRequest);
 const operateDoor = requireMenuPermission("facility.booth.operate");
 
 const guards = [
-  requireAuth,
+  requireAuthAllowSharedDevice,
   requireTrustedOrigin,
   requireTenantContext,
   resolveActingStaff,

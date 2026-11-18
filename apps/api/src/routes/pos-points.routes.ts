@@ -17,7 +17,7 @@ import {
   requireActingStaffOnSharedDevice,
   resolveActingStaff,
 } from "../middleware/acting-staff";
-import { requireAuth } from "../middleware/auth";
+import { requireAuthAllowSharedDevice } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
 import {
@@ -40,7 +40,7 @@ const pay = requireOutletPermission("pos.payment.accept", (req) => {
 });
 
 const guards = [
-  requireAuth,
+  requireAuthAllowSharedDevice,
   requireTrustedOrigin,
   requireTenantContext,
   resolveActingStaff,
