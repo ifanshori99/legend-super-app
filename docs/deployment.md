@@ -1146,6 +1146,12 @@ PGOPTIONS='-c default_transaction_read_only=on -c row_security=off' \
 File itu berisi dua statement read-only; keduanya wajib nol baris (atau
 dijelaskan finance).
 
+Aturan gerbang: baris apa pun = **blokir**. Error query (kolom atau tabel hilang,
+skema bergeser) juga = **blokir**: `ON_ERROR_STOP=1` membuat `psql` keluar dengan
+kode bukan nol, dan itu tidak boleh dibaca sebagai "nol baris" atau "N/A". Hanya
+keluaran nol baris dengan kode keluar 0 yang meloloskan gerbang. Perilaku ini
+diuji di `apps/api/src/test/cash-1118-preflight-sql.test.ts`.
+
 **Statement 1: akun ganda.** Satu baris per akun yang dipetakan ke role kas
 (`cash_on_hand`, `petty_cash`, `bank`) sekaligus ke role lain, misalnya
 `employee_receivable` yang diarahkan ke akun kas kecil 1102. Mapping seperti itu
