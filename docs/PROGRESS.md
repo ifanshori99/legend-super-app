@@ -2094,3 +2094,4 @@ Langkah berikut CTO baru:
 - 01:11 CTO: 1104b (G94pl) revisi review diterima fa6d0aa07, resolve, SIAP batch94.
 - 01:17 CTO: 1094 (G9yay) lapor 392c2b2b9+7070c9162 (13vhb, tlr6p, ypwsp, iq0jz). Keputusan: refund di tablet bersama tetap tutup; batal reservasi tetap buka (refund ke pembayar asli, Q29) dengan tes pengunci. Sisa: merge m1 (konflik), gagal-dulu DENY void tunai, typecheck. Lalu SO Codex area akses (1094) di slot Codex kosong.
 - 01:18 CTO: 1095 eajpb selesai 61a95d659 (voucher dibatasi sisa, 23 test). Keputusan 3dsih: void membatalkan voucher maaf yang belum dipakai di transaksi yang sama; voucher sudah dipakai -> void ditolak (409/void_refused). Lanjut G95kw.
+- 01:24 CTO: 1106 (G93wj) selesai 4a1c19201 (P1-1/P1-2 tutup, 0691 edit di tempat). P1 lama cabang settle (0691:199-203, net NULL + tanpa lock) -> perbaiki sekarang di 0691 yang sama, lanjut G93wj. SO kas ronde 7 setelahnya.
