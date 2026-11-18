@@ -82,6 +82,7 @@ import {
 import { outletIdSchema } from "@starter/shared/core";
 import type { OutletId, ScopedTenantContext } from "@starter/shared/core";
 import { createApp } from "../app";
+import { env } from "../config/env";
 import { resetPaymentWebhookRateLimits } from "../routes/payment-webhook.routes";
 import { createDoitGateway } from "../services/payment-doit";
 import { setPaymentGateway } from "../services/payment-gateway";
@@ -340,7 +341,13 @@ async function assign(
   );
 }
 
+// 1108: these suites exercise the ACTIVE refund webhook path; with the switch off
+// every matched refund event is hold-only (1101/1108 P1-1), so turn it on here.
+const flags = env as unknown as { DOIT_REFUNDS_ENABLED: boolean };
+const flagBefore = flags.DOIT_REFUNDS_ENABLED;
+
 beforeAll(async () => {
+  flags.DOIT_REFUNDS_ENABLED = true;
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
   await scope.seed(owner);
@@ -412,6 +419,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  flags.DOIT_REFUNDS_ENABLED = flagBefore;
   setPaymentGateway(null);
   setPaymentRefundGateway(null);
   await owner.query("DELETE FROM gateway_webhook_events WHERE tenant_id = $1", [

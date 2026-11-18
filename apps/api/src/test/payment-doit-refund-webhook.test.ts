@@ -56,6 +56,7 @@ import {
 } from "@starter/shared/core/server";
 import type { OutletId, ScopedTenantContext } from "@starter/shared/core";
 import { createApp } from "../app";
+import { env } from "../config/env";
 import { resetPaymentWebhookRateLimits } from "../routes/payment-webhook.routes";
 import { createDoitGateway } from "../services/payment-doit";
 import { setPaymentGateway } from "../services/payment-gateway";
@@ -75,6 +76,17 @@ import {
 import { agent, signUp } from "./helpers";
 
 const app = createApp();
+
+// These suites exercise the active provider-refund path: DOIT refunds are off
+// by default, so switch them on here and restore the value afterwards.
+const flags = env as unknown as { DOIT_REFUNDS_ENABLED: boolean };
+const flagBefore = flags.DOIT_REFUNDS_ENABLED;
+beforeAll(() => {
+  flags.DOIT_REFUNDS_ENABLED = true;
+});
+afterAll(() => {
+  flags.DOIT_REFUNDS_ENABLED = flagBefore;
+});
 const tenantId = cafeLegendPlatformFixtures.tenant.id;
 const outletA = cafeLegendAccessFixtures.outletIds.bandung;
 const outletB = cafeLegendAccessFixtures.outletIds.bandung2;

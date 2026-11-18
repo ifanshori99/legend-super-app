@@ -31,6 +31,7 @@ import {
   readDoitRefundFacts,
 } from "../services/payment-doit-refund-webhook";
 import { createApp } from "../app";
+import { env } from "../config/env";
 import { resetPaymentWebhookRateLimits } from "../routes/payment-webhook.routes";
 import { createDoitGateway } from "../services/payment-doit";
 import { setPaymentGateway } from "../services/payment-gateway";
@@ -74,6 +75,17 @@ const webhookContext: ScopedTenantContext = establishScopedTenantContext(
   establishTenantContext({ tenantId, brandId: null, source: "webhook" }),
   { kind: "tenant" },
 );
+
+// These suites exercise the active provider-refund path: DOIT refunds are off
+// by default, so switch them on here and restore the value afterwards.
+const flags = env as unknown as { DOIT_REFUNDS_ENABLED: boolean };
+const flagBefore = flags.DOIT_REFUNDS_ENABLED;
+beforeAll(() => {
+  flags.DOIT_REFUNDS_ENABLED = true;
+});
+afterAll(() => {
+  flags.DOIT_REFUNDS_ENABLED = flagBefore;
+});
 
 const integrationIds: string[] = [];
 const linkIds: string[] = [];

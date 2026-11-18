@@ -34,8 +34,12 @@
 //     "invalid" = an unreadable amount "100000.0" (as the success tests).
 //   - Payment-object failure shapes mirror the success ones of the p1-1 test (nested
 //     `data.payment` and flat payment object, no key, no refund id) with payment status
-//     "failed", built from the fake DOIT's payment of T. The spec does not define this shape
-//     for failures; the rule says the gate holds the payment-object kind too.
+//     "failed", built from the fake DOIT's payment of T. By design (matchDoitRefundEvent,
+//     "refund.failed never takes (c)") a failure carrying only a payment object matches NO
+//     refund of ours, so the switch-off gate is never reached: the event is "unmatched"
+//     (retried 15 minutes, then ignored) and nothing changes. These variants (`matched:
+//     false`) pin that: no hold, no fact, no journal or outbox event, no refund, R and the
+//     intent untouched, no provider call, money within paid.
 //   - "DP stays cut in full" = the hold is worth at least the whole payment (Rp100.000).
 //   - "One hold per stored event" is pinned for the same event id (replay, worker retry).
 //     For a second envelope with another event id only "an open conflict hold of the full
@@ -171,7 +175,13 @@ const failedPaymentObject = (w: World) => ({
 });
 
 type Shape = (w: World) => Record<string, unknown>;
-type Variant = { label: string; world: "waiting" | "in-flight"; shape: Shape };
+type Variant = {
+  label: string;
+  world: "waiting" | "in-flight";
+  shape: Shape;
+  /** false: the failure names no key and no refund id, so it matches no refund of ours. */
+  matched?: boolean;
+};
 
 const variants: Variant[] = [
   {
@@ -192,11 +202,13 @@ const variants: Variant[] = [
   },
   {
     label: "payment object nested, valid, waiting",
+    matched: false,
     world: "waiting",
     shape: (w) => ({ payment: failedPaymentObject(w) }),
   },
   {
     label: "payment object nested + unreadable refund amount, waiting",
+    matched: false,
     world: "waiting",
     shape: (w) => ({
       payment: failedPaymentObject(w),
@@ -205,6 +217,7 @@ const variants: Variant[] = [
   },
   {
     label: "payment object flat, valid, waiting",
+    matched: false,
     world: "waiting",
     shape: (w) => ({
       ...h.doit.payments.get(w.code.providerRef)!,
@@ -235,6 +248,7 @@ const variants: Variant[] = [
   },
   {
     label: "payment object nested, valid, in-flight",
+    matched: false,
     world: "in-flight",
     shape: (w) => ({ payment: failedPaymentObject(w) }),
   },
@@ -250,12 +264,15 @@ const envelope = (w: World, shape: Shape, id: string = eventId()) => ({
   data: shape(w),
 });
 
-async function send(body: object) {
+async function send(body: object, opts: { allow5xx?: boolean } = {}) {
   const answered = await h.deliver(body);
-  expect(
-    answered.status,
-    `webhook never answers 5xx: ${JSON.stringify(answered.body)}`,
-  ).toBeLessThan(500);
+  // An unmatched event inside the retry window is answered 5xx on purpose (the provider
+  // resends it), so only the unmatched variants may skip this check.
+  if (!opts.allow5xx)
+    expect(
+      answered.status,
+      `webhook never answers 5xx: ${JSON.stringify(answered.body)}`,
+    ).toBeLessThan(500);
   await h.runWorker();
 }
 
@@ -318,6 +335,28 @@ const openConflicts = async (w: World) =>
 describe("P1-1b (P1) while the switch is off a signed refund.failed is hold-only", () => {
   variants.forEach((variant, index) => {
     const nn = String(index + 1).padStart(2, "0");
+    if (variant.matched === false) {
+      it(`1108-p1-1b-${nn} ${variant.label}: matches no refund of ours (refund.failed never takes the payment object), nothing held, booked or changed`, async () => {
+        const w = await buildWorld(variant.world);
+        const before = await ledger(w);
+        const refundBefore = await h.refundRow(w.refundId);
+        const holdsBefore = JSON.stringify(await h.allHolds(w.code.id));
+        const first = envelope(w, variant.shape);
+        await send(first, { allow5xx: true });
+        await h.replayAll(() => first, 2);
+        await markFailed(first.id);
+        await h.runWorker();
+        await h.runWorker();
+
+        expect(
+          JSON.stringify(await h.allHolds(w.code.id)),
+          "an unmatched failure files no hold",
+        ).toBe(holdsBefore);
+        await expectUntouched(w, before, refundBefore, "unmatched failure");
+        await h.expectMoneyWithinPaid(w.code, "unmatched failure");
+      });
+      return;
+    }
     it(`1108-p1-1b-${nn} ${variant.label}: one conflict hold of the full value, R and intent untouched, replays add no row`, async () => {
       const w = await buildWorld(variant.world);
       const before = await ledger(w);
