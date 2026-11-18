@@ -259,6 +259,16 @@ const schema = z
       .enum(["true", "false", "1", "0"])
       .optional()
       .transform((value) => value === "true" || value === "1"),
+    // Gate for the DOIT recurring billing back office, /api/payments/recurring
+    // (legend-6c6). Off by default: the adapter calls /v1/recurring/*, but the
+    // DOIT docs publish /v1/billing/*, so a live call would hit a path DOIT does
+    // not document. While off, every request answers 503 before any DOIT call or
+    // database write. Webhook ingest and the worker are not gated. Turn on only
+    // once the adapter paths are verified against DOIT.
+    DOIT_RECURRING_ENABLED: z
+      .enum(["true", "false", "1", "0"])
+      .optional()
+      .transform((value) => value === "true" || value === "1"),
     // Duitku (sub-302): the public origin Duitku posts callbacks to and the
     // page it sends a customer back to. https in production. Unset = the Duitku
     // adapter stays unregistered. Sandbox or production Duitku comes from the

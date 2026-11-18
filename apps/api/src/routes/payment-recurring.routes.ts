@@ -20,11 +20,25 @@ import type {
   PaymentRecurringSubscription,
   SubscriptionInvoice,
 } from "../db/schema/payment-recurring.ts";
+import { env } from "../config/env.ts";
+import { HttpError } from "../lib/http-error.ts";
 import { logger } from "../lib/logger.ts";
 import * as service from "../services/payment-recurring.service.ts";
 import { reprocessParkedRecurringEvents } from "../services/payment-webhook.service.ts";
 
 export const paymentRecurringRouter = Router();
+// Kill switch (DOIT_RECURRING_ENABLED, off by default): the adapter paths
+// /v1/recurring/* are not the DOIT docs' /v1/billing/*. First in the chain and
+// read per request, so an off flag means no auth lookup, no DOIT call, no row.
+paymentRecurringRouter.use((_req, _res, next) => {
+  if (!env.DOIT_RECURRING_ENABLED)
+    throw new HttpError(
+      503,
+      "RECURRING_BILLING_DISABLED",
+      "Penagihan berulang belum diaktifkan.",
+    );
+  next();
+});
 paymentRecurringRouter.use(
   requireAuth,
   requireTrustedOrigin,

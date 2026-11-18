@@ -17,6 +17,7 @@ import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
+import { env } from "../config/env";
 import { createApp } from "../app";
 import {
   cancelSubscription,
@@ -170,6 +171,8 @@ async function subStatus(id: string): Promise<string> {
 }
 
 beforeAll(async () => {
+  // The recurring routes answer 503 unless this gate is on (default off).
+  env.DOIT_RECURRING_ENABLED = true;
   requireDisposableDatabase();
   owner = createOwnerPool();
   appPool = createAppPool();

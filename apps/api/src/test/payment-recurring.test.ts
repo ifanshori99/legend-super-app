@@ -43,6 +43,7 @@ import {
   establishTenantContext,
 } from "@starter/shared/core/server";
 import type { OutletId, ScopedTenantContext } from "@starter/shared/core";
+import { env } from "../config/env";
 import { createApp } from "../app";
 import {
   cancelSubscription,
@@ -229,6 +230,8 @@ async function signedIn(label: string, scope: "tenant" | "outlet" | "none") {
 }
 
 beforeAll(async () => {
+  // The recurring routes answer 503 unless this gate is on (default off).
+  env.DOIT_RECURRING_ENABLED = true;
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
   // Dedicated active tenant with two outlets, a brand and a legal entity.
