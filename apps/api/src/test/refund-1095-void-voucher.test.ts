@@ -36,7 +36,7 @@
 //
 // Run: LEGEND_TEST_FILES="src/test/refund-1095-void-voucher.test.ts" heavy pnpm test
 import { randomBytes, randomUUID } from "node:crypto";
-import type { PoolClient } from "pg";
+import { Pool, type PoolClient } from "pg";
 import {
   afterAll,
   beforeAll,
@@ -80,6 +80,16 @@ import {
 vi.setConfig({ testTimeout: 120_000 });
 
 const short = () => randomUUID().slice(0, 6);
+
+/**
+ * Connections of the simulated checkout. `owner` has only 2 connections: the lock holder
+ * and the waiter probe already use both, so a third user of that pool would deadlock the
+ * test itself. The checkout therefore gets its own small pool.
+ */
+const checkoutPool = new Pool({
+  connectionString: process.env.STARTER_TEST_DATABASE_URL,
+  max: 2,
+});
 
 let p: PosWorld;
 /** A second tenant (cloud side) with its own paid order and voucher. */
@@ -178,6 +188,7 @@ beforeEach(() => {
 
 afterAll(async () => {
   resetEdge();
+  await checkoutPool.end();
   // One teardown only: it ends the process-wide test pools, shared by both worlds.
   await p.teardown();
 });
@@ -232,7 +243,7 @@ async function redeemVoucher(
   voucherId: string,
   otherOrderUuid: string,
 ): Promise<boolean> {
-  const client = await owner.connect();
+  const client = await checkoutPool.connect();
   try {
     await client.query("BEGIN");
     await client.query(
@@ -648,6 +659,24 @@ async function seedEdgeVoucher(
   return voucherId;
 }
 
+/**
+ * `order.void_refused` audit rows of the order. Assumption: the row names the order by its
+ * uuid or its ulid somewhere in the event (the exact field is not part of the brief), so
+ * both spellings are matched on the event text.
+ */
+async function refusalAuditRows(
+  tenantId: string,
+  order: Order,
+): Promise<number> {
+  const { rows } = await owner.query<{ n: number }>(
+    `SELECT count(*)::int AS n FROM audit_logs
+      WHERE tenant_id = $1 AND event->>'action' = 'order.void_refused'
+        AND (event::text ILIKE '%' || $2 || '%' OR event::text ILIKE '%' || $3 || '%')`,
+    [tenantId, order.uuid, order.ulid],
+  );
+  return rows[0]!.n;
+}
+
 const REFUSED = {
   state: "ingested",
   reason: expect.stringMatching(/(^|:)apology_voucher_exists$/),
@@ -708,6 +737,42 @@ describe("legend-3dsih edge void of an order with a voucher", () => {
     expect(await voucherStatus(site.tenant.tenantId, voucherId)).toBe(
       "redeemed",
     );
+  });
+
+  it("audit: a refused void is audited ONCE (order.void_refused) however often it is replayed", async () => {
+    const order = await edgeSale();
+    const used = await edgeSale();
+    await seedEdgeVoucher(site, order, "redeemed", used);
+    const event = site.kit.voidEvent(order.ulid);
+
+    await site.kit.deliver([event, event]).catch(() => undefined);
+    await site.kit.deliver([event]).catch(() => undefined);
+    await site.kit.deliver([event]).catch(() => undefined); // a third delivery
+
+    expect(await site.kit.voidRows(order.ulid)).toBe(0);
+    expect(await site.kit.ingestOf(order.ulid)).toMatchObject(REFUSED);
+    expect(
+      await refusalAuditRows(site.tenant.tenantId, order),
+      "one audit row per reason change, not per delivery",
+    ).toBe(1);
+  });
+
+  it("audit: further, different void events of the same sale (same reason) add no second audit row", async () => {
+    const order = await edgeSale();
+    const used = await edgeSale();
+    await seedEdgeVoucher(site, order, "redeemed", used);
+
+    for (const sequence of [2, 3, 4])
+      await site.kit
+        .deliver([site.kit.voidEvent(order.ulid, sequence)])
+        .catch(() => undefined);
+
+    expect(await site.kit.voidRows(order.ulid)).toBe(0);
+    expect(await site.kit.ingestOf(order.ulid)).toMatchObject(REFUSED);
+    expect(
+      await refusalAuditRows(site.tenant.tenantId, order),
+      "same reason refused again: still one row",
+    ).toBe(1);
   });
 
   it("a later, different void event of the same sale is refused too while the voucher is redeemed", async () => {

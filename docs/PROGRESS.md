@@ -4,7 +4,8 @@
 - Kunci: guard dibaca setelah kunci `orders` yang sudah ada; tidak ada kunci baru (architect 3 ronde: tanpa deadlock).
 - Uji: refund-1095-* 5 berkas, 28/50 merah di m1, 2 test DP merah juga di d8785e6f1; 15 berkas terarah 281 lulus + 2 todo.
 - Sudah eajpb (keputusan CTO 19 Nov, di cabang ini): `services/order-voucher-room.ts` (ruang = min(order, baris) dari order-given; void apa pun = 0). Voucher staf di atas ruang ditolak 422 `APOLOGY_VOUCHER_NOTHING_DUE`/`APOLOGY_VOUCHER_OVER_ROOM` (tolak, bukan potong: nilai terikat approval dan replay); voucher sistem/tamu dan kredit swap dipotong ke ruang, 0 ditolak; attach voucher tanpa laporan dan voucher saat laporan dibuat ikut dicek; voucher CRM di `order_issues.voucher_id` kini dihitung order-given. Kunci: issue lalu orders (laporan baru: orders lalu vouchers).
-- Terbuka: legend-3dsih (void setelah voucher maaf, sudah ada sebelum 1095, perlu keputusan tolak vs batalkan voucher).
+- Sudah 3dsih (keputusan CTO 19 Nov): `services/order-voucher-void.ts`. Void cloud dan edge, setelah kunci orders: voucher terikat pesanan yang `issued` dibatalkan di transaksi void (+ audit `voucher.cancelled`); ada yang `redeemed` -> void ditolak (cloud 409 `VOID_APOLOGY_VOUCHER_USED`, edge `void_refused:apology_voucher_exists`, replay tetap ditolak). Void edge yang ditolak final diaudit sekali (`order.void_refused`) untuk finance; transien tidak. Kunci orders -> vouchers urut id (sama dengan redeem). Architect xhigh: tanpa P0/P1, P2-1 (audit dobel) dibetulkan.
+- Bead lanjutan: legend-v6is2 (P1, refund gateway createRefund tidak menghitung voucher; berkas ws/1072), legend-ee8aa (P3, voucher hadiah poin sebagai resolusi), legend-kbzz6 (P3, lock_timeout voucher di edge).
 
 ## 1005 Payout: tarik klaim return dua orang (engineer, legend-snwnn, cabang ghostex/3bb6104c dari ghostex/92055877 74e142d8b, 17 Nov 2026)
 
