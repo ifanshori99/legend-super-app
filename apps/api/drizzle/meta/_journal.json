@@ -3291,6 +3291,13 @@
       "when": 1795000000100,
       "tag": "0483_edge_offline_alert_kind",
       "breakpoints": true
+    },
+    {
+      "idx": 484,
+      "version": "7",
+      "when": 1795000000101,
+      "tag": "0484_edge_txn_ledger",
+      "breakpoints": true
     }
   ]
 }

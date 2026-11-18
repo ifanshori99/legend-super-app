@@ -137,6 +137,7 @@ import { operationsEquipmentRouter } from "./operations-equipment.routes";
 import { edgeRouter } from "./edge.routes.ts";
 import { edgePrintRouter } from "./edge-print.routes.ts";
 import { edgeNodesRouter } from "./edge-nodes.routes.ts";
+import { edgeReconciliationRouter } from "./edge-reconciliation.routes.ts";
 import { expoRouter } from "./expo.routes.ts";
 import { pickupRouter } from "./pickup.routes.ts";
 import { servingTimeRouter } from "./serving-time.routes.ts";
@@ -505,6 +506,9 @@ apiRouter.use("/edge/devices", edgeDeviceRouter);
 apiRouter.use("/edge/wifi", edgeWifiRouter);
 apiRouter.use("/edge", edgePrintRouter);
 apiRouter.use("/edge", edgeRouter);
+// Up-sync reconciliation (legend-kai): /edge-nodes/:id/reconciliation, cloud only.
+// Before the registry's session guards so edge Bearer credentials can POST.
+apiRouter.use("/edge-nodes", edgeReconciliationRouter);
 apiRouter.use("/edge-nodes", edgeNodesRouter);
 // Staff PIN hash down-sync for edge nodes (legend-obh5): edge credential
 // only, deny-all until server.ts installs the registry verifier.

@@ -80,6 +80,8 @@ export * from "./edge-deferred-event";
 export * from "./edge-link-dead-letter";
 export * from "./edge-order-ingest";
 export * from "./edge-receipt-skip";
+export * from "./edge-reconciliation";
+export * from "./edge-txn-ledger";
 export * from "./edge-node";
 export * from "./edge-hris";
 export * from "./edge-sync-conflict";

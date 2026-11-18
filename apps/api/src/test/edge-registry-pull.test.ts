@@ -383,6 +383,40 @@ afterAll(async () => {
 });
 
 describe("EDG-02 the edge pulls the cloud device registry", () => {
+  it("legend-e3k4p runtime starts its reconciliation sender and stop aborts its pending report", async () => {
+    const reconciliationPath = `/api/edge-nodes/${node.id}/reconciliation`;
+    const reports: Array<{ init: RequestInit; signal: AbortSignal }> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      if (urlOf([input]).pathname !== reconciliationPath)
+        return cloudAnswer(input);
+      if (!init?.signal)
+        throw new Error("Reconciliation report needs an abort signal");
+      reports.push({ init, signal: init.signal });
+      return new Promise<Response>((_resolve, reject) => {
+        init.signal!.addEventListener("abort", () =>
+          reject(new DOMException("aborted", "AbortError")),
+        );
+      });
+    });
+    // legend-9z10p: only the primary reports (bootEnv defaults to standby).
+    const handle = await boot({ EDGE_NODE_ROLE: "primary" });
+    await vi.waitFor(() => expect(reports).toHaveLength(1), { timeout: 5_000 });
+    const report = reports[0]!;
+    expect(report.init.method).toBe("POST");
+    expect(new Headers(report.init.headers).get("Authorization")).toBe(
+      `Bearer ${node.credential}`,
+    );
+    expect(JSON.parse(String(report.init.body))).toMatchObject({
+      edgeNodeId: node.id,
+      edgeInstanceId: expect.any(String),
+      throughLinkSeq: expect.any(Number),
+    });
+    expect(report.signal.aborted).toBe(false);
+    await handle.stop();
+    expect(report.signal.aborted).toBe(true);
+    handles.length = 0;
+  });
+
   it.each([undefined, "   "])(
     "G5b P1 production boot without maintenance URL (%j) pulls at once with the edge credential, and stop() releases the puller",
     async (maintenanceUrl) => {

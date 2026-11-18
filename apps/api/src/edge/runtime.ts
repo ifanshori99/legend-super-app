@@ -64,6 +64,8 @@ import {
   pruneAckedEdgeQueue,
 } from "../services/edge-queue.service.ts";
 import { startEdgeReceiptRunReporter } from "../services/edge-receipt-run-reporter.ts";
+import { buildEdgeTxnDigestBounded } from "../services/edge-txn-ledger.service.ts";
+import { createEdgeReconciliationSender } from "./reconciliation-sender.ts";
 import {
   bootstrapEdgeNodeIfNeeded,
   startAfterBootMasters,
@@ -1564,6 +1566,24 @@ export async function startEdgeRuntime(
             logger.warn(safeError(error), "Edge receipt run report failed"),
         })
       : () => undefined;
+  // Only the primary reports: a standby has no edge_to_cloud drain, so its
+  // digest would always look behind/stale (legend-9z10p). The snapshot
+  // transaction commits before POSTing, and a failed report retries without
+  // holding the cursor.
+  const reconciliationSender = createEdgeReconciliationSender({
+    role: config.role,
+    cloudUrl: config.cloudUrl,
+    credential: config.credential,
+    edgeNodeId: local.scope.edgeNodeId,
+    buildDigest: (signal) =>
+      buildEdgeTxnDigestBounded(db, local.context, local.scope, { signal }),
+    onError: (error) =>
+      logger.warn(
+        safeError(error),
+        "Edge transaction reconciliation report failed",
+      ),
+  });
+  reconciliationSender.start();
   const handle: EdgeRuntimeHandle = {
     async stop() {
       stopReceiptRunReporter();
@@ -1575,6 +1595,7 @@ export async function startEdgeRuntime(
       // Torn down together: a pull stuck in a slow local write must not hold
       // the link and the wakeup listener open during shutdown.
       await Promise.all([
+        reconciliationSender.stop(),
         puller.stop(),
         peoplePuller.stop(),
         pinPuller.stop(),
