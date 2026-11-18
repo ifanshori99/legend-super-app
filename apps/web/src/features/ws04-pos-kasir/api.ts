@@ -55,7 +55,6 @@ import {
   type OverrideResult,
   type PaymentAttempt,
   type PaymentMethodOption,
-  type PaymentAttempt,
   type PaymentSession,
   type PointsAccount,
   type PointsQuote,
