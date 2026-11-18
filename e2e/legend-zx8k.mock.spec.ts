@@ -52,6 +52,22 @@ async function openReport(page: Page, path: string, name: string) {
   await expect(page.getByRole("heading", { name, level: 2 })).toBeVisible();
 }
 
+/** The four floor-zone rows of the RevPASH report (owner board fixture). */
+async function expectRevpashZoneRows(page: Page) {
+  await expect(page.getByRole("table")).toHaveCount(1);
+  for (const zone of [
+    "Indoor Reguler",
+    "Taman Outdoor",
+    "Private Room Nusantara",
+    "WFC Corner",
+  ]) {
+    await expect(page.getByRole("cell", { name: zone })).toBeVisible();
+  }
+  await expect(page.getByText("Belum ada data untuk periode ini")).toHaveCount(
+    0,
+  );
+}
+
 const FACILITY_REPORTS = [
   "Pendapatan fasilitas",
   "RevPASH",
@@ -160,11 +176,8 @@ test("ZX8K-04 the RevPASH and shower utilization routes render", async ({
   page,
 }) => {
   await openReport(page, "/reports/facility/revpash?mock=normal", "RevPASH");
-  // Both RevPASH sources are unavailable, so the grouped result is empty.
-  await expect(
-    page.getByText("Belum ada data untuk periode ini"),
-  ).toBeVisible();
-  await expect(page.getByRole("table")).toHaveCount(0);
+  // RevPASH is available (legend-p4q10): the report shows one row per floor zone.
+  await expectRevpashZoneRows(page);
 
   await openReport(
     page,
@@ -277,10 +290,7 @@ for (const width of [390, 1440]) {
         "/reports/facility/revpash?mock=normal",
         "RevPASH",
       );
-      await expect(
-        page.getByText("Belum ada data untuk periode ini"),
-      ).toBeVisible();
-      await expect(page.getByRole("table")).toHaveCount(0);
+      await expectRevpashZoneRows(page);
       await page.waitForTimeout(250);
       await captureScreenshot(
         page,
