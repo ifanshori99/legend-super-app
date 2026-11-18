@@ -865,6 +865,106 @@ describe("[legend-9bfh7] proofs that would stall the binding backfill before 039
     });
   });
 
+  // 0413 keeps a tenant pending for ANY upload record without a stored hash, used
+  // by an operation or not; the gate must not pass it.
+  it("[legend-9bfh7] flags an upload record without stored hash that no operation uses", async () => {
+    await inPreShape("9bfh7", async (client) => {
+      const clean = await bystander(client, 12);
+      await seed(
+        client,
+        FILES,
+        file({
+          id: uid(0x71),
+          key: "orphan-unreadable",
+          content: sha("e1"),
+          stored: null,
+        }),
+      );
+      const rows = await gate(client, "9bfh7");
+      expectReason(rows, T1, [uid(0x71)], "missing_stored_hash");
+      for (const id of clean) expect(idsOf(rows, T1)).not.toContain(id);
+    });
+  });
+
+  it("[legend-9bfh7] flags the orphan upload record of one tenant only in that tenant", async () => {
+    await inPreShape("9bfh7", async (client) => {
+      await bystander(client, 13, T2);
+      await seed(
+        client,
+        FILES,
+        file({
+          id: uid(0x72),
+          key: "orphan-unreadable-t1",
+          content: sha("e2"),
+          stored: null,
+        }),
+      );
+      const rows = await gate(client, "9bfh7");
+      expect(tenantsOf(rows)).toEqual([T1]);
+      expect(idsOf(rows, T1)).toEqual([uid(0x72)]);
+    });
+  });
+
+  // 0413 keeps a tenant pending for a claim with a NULL hash, though both hashes
+  // of its upload record are complete and the old comparison skipped the NULL.
+  it("[legend-9bfh7] flags a return claim with a NULL hash whose upload record is complete", async () => {
+    await inPreShape("9bfh7", async (client) => {
+      const clean = await bystander(client, 14);
+      await seed(
+        client,
+        FILES,
+        file({
+          id: uid(0x73),
+          key: "claim-null-hash",
+          content: sha("e3"),
+          stored: sha("e4"),
+        }),
+      );
+      await seed(
+        client,
+        CLAIMS,
+        claim({
+          id: uid(0x74),
+          key: "claim-null-hash",
+          status: "consumed",
+          content: null,
+          stored: null,
+        }),
+      );
+      const rows = await gate(client, "9bfh7");
+      expectReason(rows, T1, [uid(0x74)], "claim_hash_missing");
+      for (const id of clean) expect(idsOf(rows, T1)).not.toContain(id);
+    });
+  });
+
+  it("[legend-9bfh7] flags a return claim with only one hash missing", async () => {
+    await inPreShape("9bfh7", async (client) => {
+      await seed(
+        client,
+        FILES,
+        file({
+          id: uid(0x75),
+          key: "claim-half-hash",
+          content: sha("e5"),
+          stored: sha("e6"),
+        }),
+      );
+      await seed(
+        client,
+        CLAIMS,
+        claim({
+          id: uid(0x76),
+          key: "claim-half-hash",
+          status: "consumed",
+          content: sha("e5"),
+          stored: null,
+        }),
+      );
+      const rows = await gate(client, "9bfh7");
+      expectReason(rows, T1, [uid(0x76)], "claim_hash_missing");
+    });
+  });
+
   it("[legend-9bfh7] flags a return proof key that has no upload record", async () => {
     await inPreShape("9bfh7", async (client) => {
       const clean = await bystander(client, 3);

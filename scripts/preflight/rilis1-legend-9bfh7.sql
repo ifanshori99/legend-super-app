@@ -2,7 +2,7 @@
 -- before: 0395_payout_proof_bindings
 -- requires: public.payroll_payout_return_claims, public.payroll_disbursement_items, public.payroll_payout_failed_corrections, public.payroll_payout_overpaid_proposals, public.payroll_payout_evidence_files
 -- mode: block
--- resolve: Give each listed payout operation its own proof, with an evidence record whose content and stored hashes are complete and match the operation, before 0395, so the proof binding backfill and the 0399 gate do not stop; each id reads as <reason>:<kind>.
+-- resolve: Give each listed payout operation its own proof, with an evidence record whose content and stored hashes are complete and match the operation, and settle each listed upload record without a stored hash or return claim with a missing hash by hand, before 0395, so the proof binding backfill and the 0399 gate do not stop; each id reads as <reason>:<kind>.
 WITH ops AS (
   SELECT c.tenant_id, 'return'::text AS kind, c.batch_id, c.evidence_key, c.id AS ref_id,
          (f.evidence_key IS NOT NULL) AS has_record,
@@ -112,6 +112,22 @@ problems AS (
   SELECT o.tenant_id, 'missing_stored_hash'::text, o.kind, o.ref_id
     FROM op_ident o
    WHERE o.stored_missing
+  UNION
+  -- An upload record without a stored hash that no operation above reports
+  -- (nothing refers to it): the 0413 pending test still counts it.
+  SELECT f.tenant_id, 'missing_stored_hash'::text, 'file'::text, f.id
+    FROM payroll_payout_evidence_files f
+   WHERE f.stored_sha256 IS NULL
+     AND NOT EXISTS (
+       SELECT 1 FROM op_ident o
+        WHERE o.tenant_id = f.tenant_id AND o.evidence_key = f.evidence_key
+          AND o.stored_missing)
+  UNION
+  -- A return claim with a NULL hash: the record comparison skips the NULL,
+  -- but the 0413 pending test counts the claim whatever its upload record says.
+  SELECT c.tenant_id, 'claim_hash_missing'::text, 'return'::text, c.id
+    FROM payroll_payout_return_claims c
+   WHERE c.content_sha256 IS NULL OR c.stored_sha256 IS NULL
   UNION
   SELECT o.tenant_id, 'record_hash_mismatch'::text, o.kind, o.ref_id
     FROM op_ident o
