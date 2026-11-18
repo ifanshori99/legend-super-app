@@ -249,7 +249,9 @@ export async function orderGivenOf(
                                     FROM payment_refunds r
                                    WHERE r.tenant_id = c.tenant_id
                                      AND r.payment_intent_id = c.payment_intent_id
-                                     AND r.status <> 'failed'), 0)
+                                     AND r.status <> 'failed'
+                                     -- parked money is already off allocated()
+                                     AND r.unallocated_fund_id IS NULL), 0)
                       - coalesce((SELECT sum(m.amount_idr)
                                     FROM order_issue_charge_manual_refunds m
                                    WHERE m.tenant_id = c.tenant_id
