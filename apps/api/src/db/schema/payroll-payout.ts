@@ -1888,6 +1888,54 @@ export const payrollPayoutReconFlagSightings = pgTable(
 );
 
 /**
+ * What the reconciliation observed of the proof file of one operation (1038,
+ * finding 4, bead legend-63gyr): `missing`, `mismatch` (with the sha256 of the
+ * bytes read) or `ok` (recovery, only after an earlier observation). One row per
+ * change of state or bytes; `episode` counts the problem runs (an `ok` ends one,
+ * the next problem starts a new one). The latest non-ok row (by `seq`, the insert order) enters the flag
+ * fingerprint, so a clearance of problem A never covers problem B or a return of
+ * A after a recovery. Insert-only, written by `app.payout_recon_evidence_observe`
+ * (payout role) only.
+ */
+export const payrollPayoutReconEvidenceObservations = pgTable(
+  "payroll_payout_recon_evidence_observations",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    /** Insert order (identity): the observation order, not the clock. */
+    seq: bigint("seq", { mode: "number" })
+      .generatedAlwaysAsIdentity()
+      .notNull(),
+    operationId: uuid("operation_id").notNull(),
+    state: varchar("state", { length: 8 }).notNull(),
+    observedSha256: varchar("observed_sha256", { length: 64 }),
+    episode: integer("episode").notNull(),
+    observedAt: timestamp("observed_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("payroll_payout_recon_evidence_observations_operation_idx").on(
+      table.tenantId,
+      table.operationId,
+      table.seq.desc(),
+    ),
+    check(
+      "payroll_payout_recon_evidence_observations_state_check",
+      sql`${table.state} IN ('missing', 'mismatch', 'ok')`,
+    ),
+    check(
+      "payroll_payout_recon_evidence_observations_sha_check",
+      sql`${table.observedSha256} IS NULL OR ${table.observedSha256} ~ '^[0-9a-f]{64}$'`,
+    ),
+    check(
+      "payroll_payout_recon_evidence_observations_episode_check",
+      sql`${table.episode} >= 1`,
+    ),
+  ],
+);
+
+/**
  * Two-person clearance of a false reconciliation flag (legend-xbagc). The flag
  * row stays (insert-only); an approved clearance stops it holding the payslip
  * back. Written only by the trusted payout functions: a finance person proposes

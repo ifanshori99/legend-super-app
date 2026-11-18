@@ -518,6 +518,55 @@ async function readResolutions(
   return resolutions;
 }
 
+/**
+ * Resolved items whose resolve attestations are gone (1038, finding 7). The
+ * flags above start from the attestations that still exist, so deleting both
+ * leaves nothing to check. The independent traces stay: the item row (status
+ * `failed` / `not_sent`, an outcome, touched after the cutover) and the
+ * append-only approval log (a resolve step on its batch after the cutover). An
+ * item like that with no resolve attestation naming it is flagged
+ * `attestation_count`, under the newest resolve operation of its batch in the
+ * log (the propose step first). A withdrawn proposal leaves no outcome on the
+ * item, so it is not a candidate. Fail closed: a failed read fails the page.
+ */
+async function readLostResolutions(
+  tx: Tx,
+  tenantId: TenantId,
+  grantsSince: Date,
+): Promise<Flag[]> {
+  const since = grantsSince.toISOString();
+  return rowsOf(
+    await tx.execute(sql`
+      SELECT i.id::text AS item_id, l.operation_id::text AS operation_id
+        FROM payroll_disbursement_items i
+        CROSS JOIN LATERAL (
+          SELECT g.operation_id
+            FROM payroll_payout_approval_log g
+           WHERE g.tenant_id = ${tenantId}::uuid
+             AND g.batch_id = i.batch_id
+             AND g.kind = 'resolve'
+             AND g.logged_at >= ${since}::timestamptz
+           ORDER BY (g.step = 'propose') DESC, g.logged_at DESC, g.id DESC
+           LIMIT 1) l
+       WHERE i.tenant_id = ${tenantId}::uuid
+         AND i.status IN ('failed', 'not_sent')
+         AND i.resolution_outcome IS NOT NULL
+         AND i.updated_at >= ${since}::timestamptz
+         AND NOT EXISTS (
+           SELECT 1
+             FROM payroll_payout_attestations a
+            WHERE a.tenant_id = ${tenantId}::uuid
+              AND a.kind = 'resolve'
+              AND a.attested_at >= ${since}::timestamptz
+              AND i.id = ANY(a.item_ids))`),
+  ).map((row): Flag => ({
+    kind: "resolve",
+    operationId: String(row.operation_id),
+    itemId: String(row.item_id),
+    reason: "attestation_count",
+  }));
+}
+
 async function readGrants(
   tx: Tx,
   tenantId: TenantId,
@@ -577,8 +626,10 @@ async function loadWithdrawals(
   attestations: Attestation[];
   grants: Map<string, GrantRow>;
   resolutions: Map<string, ResolutionFacts>;
+  lostResolves: Flag[];
   flagged: Set<string>;
 }> {
+  const lostResolves = await readLostResolutions(tx, tenantId, grantsSince);
   const attestations = await readAttestations(
     tx,
     tenantId,
@@ -589,7 +640,12 @@ async function loadWithdrawals(
   const grants = await readGrants(tx, tenantId, attestations);
   const resolutions = await readResolutions(tx, tenantId, attestations);
   const flagged = new Set<string>();
-  const operationIds = [...new Set(attestations.map((a) => a.operationId))];
+  const operationIds = [
+    ...new Set([
+      ...attestations.map((a) => a.operationId),
+      ...lostResolves.map((flag) => flag.operationId),
+    ]),
+  ];
   if (operationIds.length > 0)
     for (const row of rowsOf(
       await tx.execute(sql`
@@ -606,7 +662,7 @@ async function loadWithdrawals(
           String(row.reason),
         ),
       );
-  return { attestations, grants, resolutions, flagged };
+  return { attestations, grants, resolutions, lostResolves, flagged };
 }
 
 /** A proof closure with the facts its check needs. */
@@ -1815,6 +1871,7 @@ export async function reconcileTrustedPayouts(
   if (
     facts === null &&
     (withdrawals?.attestations.length ?? 0) === 0 &&
+    (withdrawals?.lostResolves.length ?? 0) === 0 &&
     (closures?.closures.length ?? 0) === 0
   )
     return {
@@ -1830,6 +1887,8 @@ export async function reconcileTrustedPayouts(
   // The stored proof read again must hash to its record. "Not found" is a
   // difference; any other read error is retried by the next cycle, not flagged.
   const fileOf = new Map<string, FileState>();
+  // sha256 of the bytes read, kept for the evidence observations (1038).
+  const readShaOf = new Map<string, string>();
   let unreadable = 0;
   if (options.storage) {
     for (const op of operations) {
@@ -1844,11 +1903,11 @@ export async function reconcileTrustedPayouts(
           key,
           visibility: "private",
         });
+        const readSha = sha256Of(object.content);
+        readShaOf.set(key, readSha);
         fileOf.set(
           key,
-          sha256Of(object.content) === (record.stored ?? record.content)
-            ? "ok"
-            : "mismatch",
+          readSha === (record.stored ?? record.content) ? "ok" : "mismatch",
         );
       } catch (error) {
         if (error instanceof CoreError && error.code === "NOT_FOUND")
@@ -1860,6 +1919,46 @@ export async function reconcileTrustedPayouts(
       }
     }
   }
+
+  // What the run read of each proof file is recorded before any flag is raised
+  // (1038): a clearance is bound to the evidence problem it cleared, so the
+  // fingerprint must see problem B or a returning problem A. Own transaction;
+  // a failure fails the page (fail closed). A recovery (`ok`) is recorded only
+  // for an operation that already has an evidence flag.
+  const evidenceFlagged = new Set<string>();
+  for (const key of facts?.flagged ?? []) {
+    const [, operationId, , reason] = key.split("|");
+    if (
+      operationId &&
+      (reason === "evidence_missing" || reason === "evidence_hash_mismatch")
+    )
+      evidenceFlagged.add(operationId);
+  }
+  const observations: {
+    operationId: string;
+    state: string;
+    sha: string | null;
+  }[] = [];
+  for (const op of operations) {
+    const state =
+      op.evidenceKey === null ? undefined : fileOf.get(op.evidenceKey);
+    if (op.evidenceKey === null || state === undefined || state === "error")
+      continue;
+    if (state === "ok" && !evidenceFlagged.has(op.operationId)) continue;
+    observations.push({
+      operationId: op.operationId,
+      state,
+      sha:
+        state === "mismatch" ? (readShaOf.get(op.evidenceKey) ?? null) : null,
+    });
+  }
+  if (observations.length > 0)
+    await withTenant(db, context, async (tx) => {
+      for (const o of observations)
+        await tx.execute(
+          sql`SELECT app.payout_recon_evidence_observe(${tenantId}::uuid, ${o.operationId}::uuid, ${o.state}::text, ${o.sha}::text)`,
+        );
+    });
 
   // A difference of the operation holds every slip of it, so an operation-wide
   // reason is flagged once per terminal item (the flag carries the payslip).
@@ -1894,6 +1993,7 @@ export async function reconcileTrustedPayouts(
               withdrawals.resolutions,
               grantsSince.getTime(),
             ),
+            withdrawals.lostResolves,
           ),
     )
     .concat(
