@@ -41,6 +41,7 @@
 
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, or, sql, type SQL } from "drizzle-orm";
+import { AccessError } from "@starter/shared/access";
 import {
   AccountingError,
   type PostingAccountRole,
@@ -867,9 +868,14 @@ export async function approveCashBankEntry(
   context: ScopedTenantContext,
   entryId: string,
   actorId: UserId,
+  options: { readonly mfaVerified: boolean } = { mfaVerified: false },
 ): Promise<CashBankEntry> {
   assertTrustedScopedContext(context);
   assertTenantScope(context);
+  // legend-bf8f2 (998): a direct approve is a money action by a person, so the
+  // session must have verified a second factor, even when the chain (1037) is
+  // already approved and this call only posts. Fail closed, nothing is read.
+  if (!options.mfaVerified) throw new AccessError("MFA_REQUIRED");
   const result = await withTenant(db, context, async (tx) => {
     const tenantId = context.tenant.tenantId;
     const row = await lockEntryForDecision(tx, tenantId, entryId, actorId);

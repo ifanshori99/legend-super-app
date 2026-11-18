@@ -3,15 +3,20 @@
 // so the helper first lets `who` decide the open chain level in the inbox
 // (what a real approver does), then the caller hits the direct endpoint. A
 // refused decision (creator, no permission, already decided, rejected chain)
-// is ignored: the direct endpoint then answers on its own rules.
+// is ignored: the direct endpoint then answers on its own rules. The helper
+// also stamps the caller's session as MFA-verified: the direct approve needs a
+// second factor on top of the chain (legend-bf8f2, 998). Tests of the refusal
+// without MFA call the endpoint directly, not through this helper.
 import { establishTenantContext } from "@starter/shared/core/server";
 import { decideApprovalRequest } from "../../services/platform-approval.service.ts";
+import { verifySessionMfa } from "../helpers.ts";
 import { owner, tenantId, type Session } from "./cash-bank-world.ts";
 
 export async function approveChainLevelAs(
   who: Session,
   entryId: string,
 ): Promise<void> {
+  await stampMfa(who);
   const { rows } = await owner.query<{ id: string }>(
     `SELECT id FROM approval_requests
       WHERE tenant_id = $1 AND object_type = 'cash_bank_entry'
@@ -32,4 +37,14 @@ export async function approveChainLevelAs(
       // Not this user's decision to make; the direct endpoint answers.
     }
   }
+}
+
+/** Marks the signed-in user's session as MFA-verified (looked up by user id). */
+export async function stampMfa(who: Session): Promise<void> {
+  const { rows } = await owner.query<{ email: string }>(
+    'SELECT email FROM "user" WHERE id = $1',
+    [who.userId],
+  );
+  if (!rows[0]) throw new Error(`No user ${who.userId}`);
+  await verifySessionMfa(rows[0].email);
 }
