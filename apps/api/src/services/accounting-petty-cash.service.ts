@@ -764,15 +764,18 @@ export async function assertBankCreditCoveredBy1102(
  * and other credits not on the GL yet (PETTY_CASH_GL_INSUFFICIENT), the same
  * rule as a petty purchase. Skipped when accounting is off or the entity has
  * no petty_cash mapping. Call under `entityLock`, BEFORE the outbox event of
- * the outflow is appended, so the amount is not counted twice.
+ * the outflow is appended, so the amount is not counted twice. A caller that
+ * already read the accounting flag under a share lock passes it as
+ * `accountingOn`, so the whole outflow decides on one value (legend-kt8em).
  */
 export async function assertCash1102CoversOutflow(
   tx: TenantTransaction,
   tenantId: TenantId,
   legalEntityId: string,
   amountIdr: number,
+  accountingOn?: boolean,
 ): Promise<void> {
-  if (!(await accountingEnabled(tx, tenantId))) return;
+  if (!(accountingOn ?? (await accountingEnabled(tx, tenantId)))) return;
   const cash = await availableCash1102(tx, tenantId, legalEntityId);
   if (cash === null || amountIdr <= cash.availableIdr) return;
   const { glIdr, pendingCreditIdr, availableIdr } = cash;

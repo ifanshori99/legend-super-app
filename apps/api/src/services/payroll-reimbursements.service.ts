@@ -73,7 +73,7 @@ import { HttpError } from "../lib/http-error.ts";
 import { entityLock } from "./accounting-bank-matching.ts";
 import { assertCash1102CoversOutflow } from "./accounting-petty-cash.service.ts";
 import { emitPayrollEvent } from "./payroll-events.ts";
-import { accountingEnabled } from "./payroll-payout-setup.ts";
+import { accountingEnabledShared } from "./payroll-payout-setup.ts";
 import { recordAudit } from "./core-audit.ts";
 import {
   auditOutletFor,
@@ -1004,7 +1004,7 @@ export async function payReimbursementCash(
         // Only an approved claim pays out; any other status is a plain invalid
         // transition (moveClaim answers it). Under the entity lock and before
         // the paid event, so the amount is not counted twice.
-        const accountingOn = await accountingEnabled(
+        const accountingOn = await accountingEnabledShared(
           tx,
           context.tenant.tenantId,
         );
@@ -1025,6 +1025,7 @@ export async function payReimbursementCash(
               context.tenant.tenantId,
               peekEntityId,
               Number(row.approvedAmountIdr ?? row.amountIdr),
+              accountingOn,
             );
         }
         const paid = await moveClaim(tx, context, actor, now, row, "pay", {

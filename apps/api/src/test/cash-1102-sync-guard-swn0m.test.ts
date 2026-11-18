@@ -1236,6 +1236,116 @@ describe("kt8em the GL consumer follows the accounting state at the time of paym
   }, 90_000);
 });
 
+/**
+ * Simulates an in-flight package toggle: a separate connection holds a
+ * row lock on the test tenant (`setTenantPackage` locks that row before it
+ * writes the flags). Nothing is written, so the shared fixture tenant's flags
+ * are never changed. FOR NO KEY UPDATE conflicts with the payout's FOR SHARE
+ * exactly like FOR UPDATE does, but not with the FOR KEY SHARE that
+ * foreign-key inserts of other test files take on the same row.
+ */
+async function holdTenantRowLock() {
+  const client = await kitOwner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "SELECT id FROM tenants WHERE id = $1 FOR NO KEY UPDATE",
+      [tenantId],
+    );
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    client.release();
+    throw error;
+  }
+  return {
+    async commit() {
+      try {
+        await client.query("COMMIT");
+      } finally {
+        client.release();
+      }
+    },
+  };
+}
+
+/** "blocked" when `call` is still pending after `ms`, else "resolved". */
+function blockedWithin(call: Promise<unknown>, ms: number) {
+  return Promise.race([
+    call.then(
+      () => "resolved" as const,
+      () => "resolved" as const,
+    ),
+    new Promise<"blocked">((resolve) =>
+      setTimeout(() => resolve("blocked"), ms),
+    ),
+  ]);
+}
+
+describe("kt8em the cash payout reads the accounting flag under a share lock", () => {
+  // Assumption: the toggle's lock is simulated by a lock on the tenants row held
+  // by another connection; the flags themselves are left on (the shared fixture
+  // tenant is never flipped here). After the lock is released the payout must
+  // finish as a normal accounting-on payment.
+  it("[kt8em-share-lock-loan] a cash kasbon disbursement waits while another transaction holds the tenant row lock, then completes as an accounting-on payment", async () => {
+    await drain();
+    await addCash(40_000);
+    await ensureMapping("employee_receivable", "1204");
+    const loan = await seedLoan(await makeEmployee(), 40_000);
+
+    const held = await holdTenantRowLock();
+    let call: Promise<Res> | undefined;
+    let early: "blocked" | "resolved";
+    try {
+      call = disburse(loan, 40_000);
+      early = await blockedWithin(call, 600);
+    } finally {
+      await held.commit();
+    }
+    const res = await call;
+
+    expect(early, "the disbursement waits for the tenant row lock").toBe(
+      "blocked",
+    );
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(await loanState(loan)).toMatchObject({
+      status: "disbursed",
+      disbursed: true,
+      events: 1,
+    });
+    const stored = await outboxEventOf("employee_loan.disbursed", loan);
+    expect(payloadOf(stored).accountingOnAtEmit).toBe(true);
+    await markDelivered("employee_loan.disbursed", loan);
+    paidAmounts.delete(loan);
+    await drain();
+  }, 90_000);
+
+  it("[kt8em-share-lock-reimb] a cash claim payment waits while another transaction holds the tenant row lock, then completes as an accounting-on payment", async () => {
+    await drain();
+    await addCash(40_000);
+    const claim = await seedClaim(await makeEmployee(), 40_000);
+
+    const held = await holdTenantRowLock();
+    let call: Promise<Res> | undefined;
+    let early: "blocked" | "resolved";
+    try {
+      call = payClaim(claim, 40_000);
+      early = await blockedWithin(call, 600);
+    } finally {
+      await held.commit();
+    }
+    const res = await call;
+
+    expect(early, "the payment waits for the tenant row lock").toBe("blocked");
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(await claimState(claim)).toMatchObject({ paid: true, events: 1 });
+    const stored = await outboxEventOf("reimbursement.paid", claim);
+    expect(payloadOf(stored).accountingOnAtEmit).toBe(true);
+    await markDelivered("reimbursement.paid", claim);
+    paidAmounts.delete(claim);
+    await drain();
+  }, 90_000);
+});
+
 describe("cv00j a cash payment needs the employee's legal entity while accounting is on", () => {
   it("[cv00j-loan-no-entity-refused] a cash kasbon of an employee without a legal entity is refused 422 PAYROLL_CASH_ENTITY_MISSING: still approved, no event, no journal, GL 1102 unchanged", async () => {
     await drain();

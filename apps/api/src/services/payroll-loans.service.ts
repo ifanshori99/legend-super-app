@@ -69,7 +69,7 @@ import { withTenant } from "../db/tenant.ts";
 import { openPayrollAmount } from "../lib/payroll-sealed.ts";
 import { entityLock } from "./accounting-bank-matching.ts";
 import { emitPayrollEvent } from "./payroll-events.ts";
-import { accountingEnabled } from "./payroll-payout-setup.ts";
+import { accountingEnabledShared } from "./payroll-payout-setup.ts";
 import { assertCash1102CoversOutflow } from "./accounting-petty-cash.service.ts";
 import { recordAudit } from "./core-audit.ts";
 import { cursorPair, notFound } from "./hris-access.ts";
@@ -692,7 +692,7 @@ export async function disburseEmployeeLoan(
         // Only an approved loan pays out; any other status is a plain invalid
         // transition (applyTransition answers it). Under the entity lock and
         // before the disbursed event, so the amount is not counted twice.
-        const accountingOn = await accountingEnabled(
+        const accountingOn = await accountingEnabledShared(
           tx,
           context.tenant.tenantId,
         );
@@ -713,6 +713,7 @@ export async function disburseEmployeeLoan(
               context.tenant.tenantId,
               peekEntityId,
               Number(row.principalIdr),
+              accountingOn,
             );
         }
         const disbursed = await applyTransition(
