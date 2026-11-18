@@ -50,6 +50,7 @@ import { HttpError } from "../lib/http-error.ts";
 import { auditCharge, lockChargeChain } from "./order-recovery-charge.ts";
 import { appendChargeRefundedEvent } from "./order-recovery-charge-refund.ts";
 import { manualRefundedOfCharge } from "./order-charge-manual-refund-sum.ts";
+import { assertOrderBudget } from "./order-given.ts";
 import { recoveryChargeRefundSplit } from "./order-recovery-refund-amount.ts";
 import { accessSnapshotInTransaction } from "./permission-resolver.ts";
 import type { Tx } from "./permission-resolver.ts";
@@ -219,6 +220,9 @@ export async function requestChargeManualRefund(
         })
         .returning();
       if (!inserted) throw new Error("Manual refund insert returned no row");
+      // 1131: the one order budget (vouchers, POS and ORD-09 refunds count);
+      // under the order lock of lockChargeChain, the throw rolls the row back.
+      await assertOrderBudget(tx, tenantId, charge.orderId);
       await auditCharge(tx, context, {
         outletId: charge.outletId,
         issueId: charge.orderIssueId,
@@ -348,6 +352,9 @@ export async function approveChargeManualRefund(
     // The row itself is in `reserved`; what is already paid is `completed`.
     if (held.completed + amountIdr > Number(charge.amountIdr))
       throw conflict("Refund manual melebihi tagihan yang dibayar.");
+    // 1131: re-check the order budget before money moves (the row is already
+    // reserved in it), under the order lock of lockManualRefund.
+    await assertOrderBudget(tx, tenantId, charge.orderId);
 
     let movement: typeof cashMovements.$inferSelect | null = null;
     let shiftId: string | null = null;
