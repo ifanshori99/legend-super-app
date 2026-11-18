@@ -895,7 +895,9 @@ describe("1116-P1b cashier refund and void on a POS sale paid by QRIS", () => {
 
   // Decision 1116: a cloud void of a sale whose QRIS payment already had provider money
   // out (provider refund, gateway refund not made by a POS refund, or the
-  // provider-refunded flag) is refused 409 VOID_PROVIDER_REFUNDED.
+  // provider-refunded flag) is refused with a 409. A gateway-paid POS sale is also
+  // refused earlier as a non-cash void (legend-ioyg, CONFLICT), so either code is
+  // accepted; what must hold is: refused, no void row, no void amount.
   const providerMoney: [string, (intent: Intent) => Promise<void>][] = [
     [
       "a provider refund",
@@ -908,7 +910,7 @@ describe("1116-P1b cashier refund and void on a POS sale paid by QRIS", () => {
     ],
   ];
   for (const [name, apply] of providerMoney)
-    it(`void of the sale is refused 409 VOID_PROVIDER_REFUNDED after ${name}`, async () => {
+    it(`void of the sale is refused 409 (CONFLICT or VOID_PROVIDER_REFUNDED) after ${name}`, async () => {
       const { paid, intent } = await paidOrderOfKind("pos");
       await apply(intent);
 
@@ -916,10 +918,12 @@ describe("1116-P1b cashier refund and void on a POS sale paid by QRIS", () => {
       expect(voided.ok, "void refused").toBe(false);
       if (!voided.ok) {
         expect(voided.error.status, JSON.stringify(voided.error)).toBe(409);
-        expect(voided.error.code, JSON.stringify(voided.error)).toBe(
-          "VOID_PROVIDER_REFUNDED",
-        );
+        expect(
+          ["CONFLICT", "VOID_PROVIDER_REFUNDED"],
+          JSON.stringify(voided.error),
+        ).toContain(voided.error.code);
       }
+      expect(await voidedIdr(paid.orderId)).toBe(0);
       expect(await p.voidCount(paid.orderId)).toBe(0);
     });
 

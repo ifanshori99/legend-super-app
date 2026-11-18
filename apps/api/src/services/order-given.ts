@@ -73,6 +73,17 @@ const ownRefunds = (alias: string, orderUuid: string) =>
      WHERE r.tenant_id = ${sql.raw(alias)}.tenant_id
        AND r.payment_intent_id = ${sql.raw(alias)}.id
        AND r.status <> 'failed'
+       -- a refund of parked money (an overpayment fund, a late payment) is not
+       -- the bill's money (refundableBalance leaves it out the same way)
+       AND r.unallocated_fund_id IS NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM payment_admin_idempotency lk
+          WHERE lk.tenant_id = r.tenant_id
+            AND lk.response ->> 'refundId' = r.id::text
+            AND (lk.key LIKE 'pos-late-payment-refund:%'
+                 OR lk.key LIKE 'qr-late-payment-refund:%'
+                 OR lk.key LIKE 'facility-breakfast-refund:late:%'
+                 OR lk.key LIKE 'fb-refile:late:%'))
        AND (r.order_issue_id IS NULL
             OR NOT EXISTS (SELECT 1 FROM issues x WHERE x.id = r.order_issue_id))
        AND NOT EXISTS (
