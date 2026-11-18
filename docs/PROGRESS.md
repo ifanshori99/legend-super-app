@@ -2034,3 +2034,4 @@ Langkah berikut CTO baru:
 - 19:04 CTO: review 1083: ahgg dan 9zc3 bersih; bvxs3 2 P2 (timeout memutus upload besar, retry) dikembalikan ke G0trp dengan keputusan env default 120s/60s.
 - 19:14 CTO: G2y41 1087 2e178b257 SIAP batch91 sesudah 1086 (migrasi 0702; 4 kartu review). Founder: tidak mau tagihan Actions -> saran batas US$0 (repo tetap privat); ws/1092-ci-hemat d23427421 batasi push trigger CI ke main + milestone/**.
 - 19:16 CTO: founder Q46 Done: batas Actions US$0 terpasang (Q39 US$10 digantikan).
+- 19:18 FOUNDER: tenggat kode beres akhir 19 Nov; 20 Nov tinggal urusan eksternal/kredensial production. CTO memilah blocker rilis 1.
