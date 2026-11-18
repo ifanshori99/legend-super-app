@@ -9,14 +9,16 @@
 // is never touched. When in doubt the payment is blocked.
 //
 // Ids used in test names:
-// - SP-1  below the limit: still pending for a second person (Q27), no journal
+// - SP-1  below the limit: still waits for a second person (founder Q27), then
+//         one balanced journal Dr AP / Cr bank
 // - SP-2  above the limit: pending until approved; the consumer pays once
 // - SP-3  rejected: no journal, no money moved, the room is released
 // - SP-4  the requester can never be the approver (forged decision refused)
 // - SP-5  never more than the outstanding amount; bad amounts; held invoice
 // - SP-6  pending requests count against the outstanding amount
 // - SP-7  two parallel requests that together exceed it: one is refused
-// - SP-8  two parallel requests (huge threshold, no direct pay) exceed it: one is refused
+// - SP-8  two parallel requests below every tier that together exceed it: one
+//         is refused
 // - SP-9  same idempotency key: one payment, one journal
 // - SP-10 no supplier_payment policy: blocked (fail closed), nothing written
 // - SP-11 other tenant / outlet / role / no session cannot see or pay
@@ -45,8 +47,10 @@
 //   IDEMPOTENCY_KEY_REUSED; another tenant answers 404.
 // - Policy semantics follow the platform matrix: an amount at or above the
 //   tier's `threshold_idr` opens an approval chain; below the lowest tier no
-//   chain is needed and the payment is made at once. Limits used here (50.000)
-//   keep every amount far from the boundary.
+//   chain is needed by the matrix, but a supplier payment always opens the
+//   chain of the lowest tier (`alwaysRequire`, founder Q27, SO 1036 finding 2):
+//   no tier removes the second person. Limits used here (50.000) keep every
+//   amount far from the boundary.
 // - The approval decision alone changes nothing; the `approval.resolved`
 //   consumer (`handlePurchasingApprovalResolved`) applies it, as for POs. The
 //   consumer refuses (does not pay) when the approver equals `requested_by`,
@@ -521,17 +525,30 @@ async function approveAndApply(t: Tenant, chainId: string) {
 }
 
 /**
- * Q27: there is no direct payment. Requests (always pending), a second person
- * approves, the consumer pays. Returns the payment id.
+ * Requests a payment (any amount, also below every tier), expects it to wait
+ * for a second person, then lets the approver decide and the consumer pay it.
  */
-async function payViaApproval(
+async function payViaSecondPerson(
   t: Tenant,
   invoiceId: string,
   amountIdr: number,
+  overrides: Record<string, unknown> = {},
 ): Promise<string> {
-  const { id, chainId } = await pendingPayment(t, invoiceId, amountIdr);
-  await approveAndApply(t, chainId);
-  return id;
+  const res = await requestPayment(
+    t,
+    t.finance,
+    invoiceId,
+    amountIdr,
+    overrides,
+  );
+  expectAccepted(res);
+  expect(dataOf(res).status).toBe("pending_approval");
+  const row = (await paymentRows(t, invoiceId)).find(
+    (r) => r.id === dataOf(res).id,
+  );
+  expect(row?.approval_chain_id).toBeTruthy();
+  await approveAndApply(t, row!.approval_chain_id!);
+  return row!.id;
 }
 
 // ---- setup -----------------------------------------------------------------
@@ -563,7 +580,7 @@ afterAll(async () => {
 });
 
 describe("legend-xxqz3 supplier payment with approval", () => {
-  it("SP-1 below the limit the payment still waits for a second person: pending, no journal, nothing settled", async () => {
+  it("SP-1 below the limit the payment still waits for a second person: then one balanced journal Dr AP / Cr bank", async () => {
     await setPolicy(A, LIMIT);
     const invoiceId = await invoiceFor(A);
     const before = await paymentEntryIds(A);
@@ -572,7 +589,8 @@ describe("legend-xxqz3 supplier payment with approval", () => {
     expectAccepted(res);
     expect(dataOf(res).status).toBe("pending_approval");
 
-    const rows = await paymentRows(A, invoiceId);
+    // Waiting: no money moved, nothing journalled, the card is untouched.
+    let rows = await paymentRows(A, invoiceId);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       id: dataOf(res).id,
@@ -583,6 +601,18 @@ describe("legend-xxqz3 supplier payment with approval", () => {
     expect(rows[0]!.approval_chain_id).toBeTruthy();
     expect((await newPaymentJournals(A, before)).count).toBe(0);
     expect(await outstanding(A, invoiceId)).toBe(PAYABLE);
+
+    // The requester cannot approve it; a second person does.
+    await approveAndApply(A, rows[0]!.approval_chain_id!);
+    rows = await paymentRows(A, invoiceId);
+    expect(rows[0]).toMatchObject({ id: dataOf(res).id, status: "paid" });
+    const journals = await newPaymentJournals(A, before);
+    expect(journals.count).toBe(1);
+    expect(journals.debit).toBe(20_000);
+    expect(journals.credit).toBe(20_000);
+    expect(journals.ap).toEqual({ debit: 20_000, credit: 0 });
+    expect(journals.bank).toEqual({ debit: 0, credit: 20_000 });
+    expect(await outstanding(A, invoiceId)).toBe(PAYABLE - 20_000);
   });
 
   it("SP-2 above the limit the payment waits for approval; the consumer pays it exactly once", async () => {
@@ -676,8 +706,7 @@ describe("legend-xxqz3 supplier payment with approval", () => {
   });
 
   it("SP-5 nobody is paid more than the invoice: over-payment, bad amounts and a held invoice are refused", async () => {
-    // Huge threshold (Q27: it still needs a second person): one rupiah over
-    // the outstanding amount is refused at request time.
+    // Below every tier: one rupiah over the outstanding amount.
     await setPolicy(A, NEVER);
     const invoiceId = await invoiceFor(A);
     const before = await paymentEntryIds(A);
@@ -700,10 +729,10 @@ describe("legend-xxqz3 supplier payment with approval", () => {
     // Partial payments add up to the outstanding amount, never beyond it.
     // Each one is pending until a second person approves it (Q27).
     await setPolicy(A, NEVER);
-    const firstId = await payViaApproval(A, invoiceId, 40_000);
+    const firstId = await payViaSecondPerson(A, invoiceId, 40_000);
     expect(await outstanding(A, invoiceId)).toBe(60_000);
     expectRefused(await requestPayment(A, A.finance, invoiceId, 70_000));
-    const secondId = await payViaApproval(A, invoiceId, 60_000);
+    const secondId = await payViaSecondPerson(A, invoiceId, 60_000);
     expect(firstId).not.toBe(secondId);
     expect(await outstanding(A, invoiceId)).toBe(0);
     expectRefused(await requestPayment(A, A.finance, invoiceId, 1));
@@ -774,7 +803,7 @@ describe("legend-xxqz3 supplier payment with approval", () => {
     expect(await outstanding(A, invoiceId)).toBe(40_000);
   });
 
-  it("SP-8 two parallel requests with a huge threshold (Q27: no direct payment) that together exceed the outstanding amount: only one is accepted and paid", async () => {
+  it("SP-8 two parallel requests below every tier that together exceed the outstanding amount: only one is paid", async () => {
     await setPolicy(A, NEVER);
     const invoiceId = await invoiceFor(A);
     const before = await paymentEntryIds(A);
@@ -805,8 +834,8 @@ describe("legend-xxqz3 supplier payment with approval", () => {
     expect(await outstanding(A, invoiceId)).toBe(40_000);
   });
 
-  it("SP-9 the same idempotency key makes one payment and one journal (Q27: always via approval)", async () => {
-    // Huge threshold: still pending. Sequential replay returns the first one.
+  it("SP-9 the same idempotency key makes one payment and one journal, below or above the limit", async () => {
+    // Below every tier, sequential replay returns the first payment.
     await setPolicy(A, NEVER);
     const invoiceId = await invoiceFor(A);
     const before = await paymentEntryIds(A);
@@ -821,6 +850,7 @@ describe("legend-xxqz3 supplier payment with approval", () => {
     });
     expectAccepted(replay);
     expect(dataOf(replay).id).toBe(dataOf(first).id);
+    expect(dataOf(replay).status).toBe("pending_approval");
     expect(await paymentRows(A, invoiceId)).toHaveLength(1);
     expect((await newPaymentJournals(A, before)).count).toBe(0);
     expect(await outstanding(A, invoiceId)).toBe(PAYABLE);
@@ -908,7 +938,7 @@ describe("legend-xxqz3 supplier payment with approval", () => {
     const before = await paymentEntryIds(A);
     // Control: the right finance user requests 20.000 (Q27: another person
     // approves it) and sees it.
-    const mineId = await payViaApproval(A, invoiceId, 20_000);
+    const mineId = await payViaSecondPerson(A, invoiceId, 20_000);
     expect(
       rowsOf(await listPayments(A, A.finance, invoiceId)).map((r) => r.id),
     ).toEqual([mineId]);

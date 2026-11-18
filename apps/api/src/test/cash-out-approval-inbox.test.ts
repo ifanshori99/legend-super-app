@@ -419,6 +419,41 @@ describe("cash-out approval inbox: approve posts exactly once", () => {
     expect(await bankNet()).toBe(netBefore - amountIdr);
   });
 
+  it("[cash-out-approval-inbox-6b] a direct approve while the chain is open posts nothing (409 CASH_OUT_CHAIN_OPEN) and the chain still decides (legend-3bkvl)", async () => {
+    const amountIdr = 7_400_000;
+    const entry = await submitPending(creator, { amountIdr });
+    const request = await onlyRequest(entry.id);
+    const netBefore = await bankNet();
+
+    const early = await directApprove(approver, entry.id);
+    expect(early.status, JSON.stringify(early.body)).toBe(409);
+    expect(early.body.error.code).toBe("CASH_OUT_CHAIN_OPEN");
+    expect(await journalsOf(entry.id)).toHaveLength(0);
+    expect(await bankNet()).toBe(netBefore);
+    expect((await entryRow(entry.id)).status).toBe("pending_approval");
+    expect((await onlyRequest(entry.id)).status).toBe("pending");
+
+    await decideAndApply(approver.userId, request, "approved");
+    expect(await journalsOf(entry.id)).toHaveLength(1);
+    expect(await bankNet()).toBe(netBefore - amountIdr);
+  });
+
+  it("[cash-out-approval-inbox-6c] a pending entry without any chain cannot be approved directly (409 CASH_OUT_CHAIN_MISSING)", async () => {
+    const entry = await submitPending(creator, { amountIdr: 7_500_000 });
+    const netBefore = await bankNet();
+    await owner.query(
+      "DELETE FROM approval_requests WHERE tenant_id = $1 AND object_type = 'cash_bank_entry' AND object_id = $2",
+      [tenantId, entry.id],
+    );
+
+    const res = await directApprove(approver, entry.id);
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error.code).toBe("CASH_OUT_CHAIN_MISSING");
+    expect(await journalsOf(entry.id)).toHaveLength(0);
+    expect(await bankNet()).toBe(netBefore);
+    expect((await entryRow(entry.id)).status).toBe("pending_approval");
+  });
+
   it("[cash-out-approval-inbox-7] the creator cannot decide their own request; nothing is posted and it stays pending", async () => {
     const entry = await submitPending(creator, { amountIdr: 5_900_000 });
     const request = await onlyRequest(entry.id);

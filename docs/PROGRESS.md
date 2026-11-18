@@ -6,6 +6,11 @@
 - Keputusan: bukti return yang sudah dipakai tetap terbakar (ajukan lagi butuh berkas bukti baru); indeks `bank_ref` menjadi parsial (tidak termasuk klaim `withdrawn`); konfirmasi tidak diblokir oleh penarikan yang menunggu.
 - Uji: gagal-dulu 36/36 merah di base, 36/36 hijau di hasil; suite payout terarah 12 berkas 214/214 lulus; typecheck api exit 0; db:generate kosong; prettier dan eslint bersih. Architect xhigh: P2 dan P3 murah dibetulkan (`docs/briefs/1005/review-fixes.md`). Suite penuh dan `pnpm check` belum dijalankan (gerbang merge train).
 - Bead lanjutan: audit propose bersamaan, usulan lama tanpa pembatalan, filter `since` recon pada cabang approved/withdrawn/open.
+## 1037 Perbaikan SO 1036 kas + supplier (engineer Opus, legend-3bkvl/j6v6v/3k9qg/lhyt0/6ipij, cabang ghostex/b49350e5 dari m1 8f544e5ea, 18 Nov 2026)
+- Sudah: approve langsung kas hanya bila chain `approved` (409 `CASH_OUT_CHAIN_OPEN`/`CASH_OUT_CHAIN_MISSING`); anti-split memilih tier dari total harian + `alwaysRequire`; top-up tertahan membuka chain `cash_out`; bayar supplier selalu chain (tier terendah bila nominal di bawah semua tier, founder Q27); semua poster kredit 1102 ambil `entityLock` dulu (urutan: row run/batch -> entity -> batch advisory -> fund); guard return kas kecil mengurangi kredit 1102 yang menunggu (settle_pending/skipped, outbox payroll/pinjaman/reimburse tunai, item gaji tunai disetujui belum diserahkan, pembelian kas kecil belum terjurnal).
+- Tanpa migrasi (0660-0662 tidak terpakai); db:generate kosong. Architect xhigh: P1 pembelian belum terjurnal sudah ditutup, delta bersih.
+- Tindak lanjut: legend-rvao9 (guard saat approve batch gaji tunai, butuh founder), legend-vgutl (entri pending lama tanpa chain), legend-fukt6 (tombol web approve langsung).
+- Angka: 113 menit, 28 subagent, puncak 8, rata-rata 1,15; biaya* 8.392k (Sonnet 5.309k, Opus utama 1.916k, Opus sub 866k, Haiku 301k).
 
 ## 990 Payout lanjutan: recon flag dua orang, jurnal fee, recon closure/attestation, ref bank return (engineer, legend-xbagc/d9pxr/y2lk2/r8nas/nsqhm, cabang dari origin/milestone/m1 1b0fd2a9e, 17 Nov 2026)
 

@@ -20,8 +20,11 @@
 //   outcome from the database under the entry's row lock, through the same
 //   approve/reject code as the direct endpoints: one journal, one key. A chain
 //   that expires, is cancelled or whose approver may not decide leaves the
-//   entry pending (no journal); the direct endpoints can still decide it, and
-//   a direct decision cancels the open chain. A tenant with no cash_out policy
+//   entry pending (no journal). The direct approve posts only when the chain
+//   is fully approved (CASH_OUT_CHAIN_OPEN / CASH_OUT_CHAIN_MISSING otherwise,
+//   legend-3bkvl); the direct reject still works and cancels the open chain.
+//   The matrix tiers on the creator's day total (anti-split) and a pending
+//   entry always has a chain (`alwaysRequire`, fail closed; legend-lhyt0). A tenant with no cash_out policy
 //   cannot submit above the limit (APPROVAL_POLICY_MISSING 409, fail closed).
 // - Bank accounts live on the legal entity, so a write needs tenant scope
 //   (assertTenantScope). The optional outlet tag is only a cost tag.
@@ -63,7 +66,6 @@ import {
   userIdSchema,
   type UserId,
 } from "@starter/shared/core";
-import { IdentityError } from "@starter/shared/identity";
 import { db } from "../db";
 import { accountMappings, chartOfAccounts } from "../db/schema/accounting.ts";
 import { financePolicies } from "../db/schema/accounting-ap-fa.ts";
@@ -91,7 +93,7 @@ import {
 } from "./accounting-cash-bank-shared.ts";
 import {
   readLimitIdr,
-  requiresApproval,
+  cashApprovalCheck,
 } from "./accounting-cash-limit.service.ts";
 import { postJournalInTransaction } from "./accounting-journal.service.ts";
 import { assertPeriodOpenForPosting } from "./accounting-period.service.ts";
@@ -103,7 +105,6 @@ import {
 } from "./permission-resolver.ts";
 import {
   cancelApprovalRequest,
-  decideApprovalRequest,
   openApprovalRequest,
   resolveApprovalChainOutcome,
 } from "./platform-approval.service.ts";
@@ -135,13 +136,6 @@ type DocumentKind = keyof typeof SOURCE_TYPES;
 
 const invalid = (message: string) =>
   new HttpError(422, "VALIDATION_ERROR", message);
-
-const chainNotApproved = () =>
-  new HttpError(
-    409,
-    "CASH_OUT_APPROVAL_PENDING",
-    "Persetujuan bertingkat belum selesai: semua tingkat harus menyetujui di kotak masuk persetujuan.",
-  );
 
 /** Outlet ids the caller may see: filter for SQL, or null for "all". */
 function reachOf(context: ScopedTenantContext): readonly string[] | null {
@@ -445,14 +439,15 @@ export async function createCashBankEntry(
         await entityLock(tx, tenantId, input.legalEntityId);
 
         const entryId = randomUUID();
-        if (
-          input.kind === "cash_out" &&
-          (await requiresApproval(tx, {
-            tenantId,
-            actorId,
-            amountIdr: input.amountIdr,
-          }))
-        ) {
+        const approval =
+          input.kind === "cash_out"
+            ? await cashApprovalCheck(tx, {
+                tenantId,
+                actorId,
+                amountIdr: input.amountIdr,
+              })
+            : null;
+        if (input.kind === "cash_out" && approval?.required) {
           // Above the tenant limit, or the creator's cash outs and top-ups of
           // the day (all outlets) add up past it (anti-split): validated like a
           // posting (period open, accounts usable) but parked without a
@@ -495,12 +490,15 @@ export async function createCashBankEntry(
           // APPROVAL_POLICY_MISSING (409) propagates: with no cash_out policy
           // nobody may decide, so the submission rolls back whole (no entry,
           // no request, no journal). Fail closed.
-          await openApprovalRequest(tx, context, {
+          // The matrix tiers on the creator's day total (anti-split, SO 1036
+          // finding 5), not on this fragment; the entry's own amount rides in
+          // the payload. `alwaysRequire`: a pending entry always has a chain.
+          const opened = await openApprovalRequest(tx, context, {
             sourceModule: CASH_BANK_APPROVAL_SOURCE_MODULE,
             actionType: "cash_out",
             objectType: CASH_BANK_ENTRY_OBJECT_TYPE,
             objectId: entryId,
-            amountIdr: input.amountIdr,
+            amountIdr: approval.dayTotalIdr,
             outletId,
             requestedBy: actorId,
             source: "user",
@@ -508,8 +506,17 @@ export async function createCashBankEntry(
               description.length >= 3
                 ? description.slice(0, 500)
                 : `Kas keluar: ${description}`,
+            payload: {
+              entryAmountIdr: input.amountIdr,
+              dayTotalIdr: approval.dayTotalIdr,
+            },
+            alwaysRequire: true,
             now,
           });
+          // Fail closed: a pending entry without a chain could never be
+          // decided by the matrix. Roll the whole submission back.
+          if (!opened.required)
+            throw new AccountingError("CASH_OUT_CHAIN_MISSING");
           return { id: entryId };
         }
         const lines = cashBankJournalLines(
@@ -849,82 +856,6 @@ async function rejectPendingEntry(
 }
 
 /**
- * legend-bf8f2: when the entry's chain has exactly one level left (the last),
- * the direct endpoint decides it as the caller through the approval service:
- * the level's role, MFA, order, scope and "different person from the creator and
- * from earlier levels" all apply, and a refusal propagates (nothing is posted).
- * A chain with more than one level open is not touched: the caller cannot skip
- * a level, and `approveCashBankEntry` refuses it afterwards.
- */
-async function decideLastOpenLevel(
-  context: ScopedTenantContext,
-  entryId: string,
-  actorId: UserId,
-  mfaVerified: boolean,
-): Promise<void> {
-  const tenantId = context.tenant.tenantId;
-  const open = await withTenant(db, context, async (tx) => {
-    const chainId = await inboxChainOf(tx, tenantId, entryId);
-    if (chainId === null) return null;
-    // Same refusals as the decision lock, before a level is recorded: nobody
-    // decides their own document, and a settled entry has nothing to decide.
-    const [entry] = await tx
-      .select({
-        createdBy: cashBankEntries.createdBy,
-        status: cashBankEntries.status,
-      })
-      .from(cashBankEntries)
-      .where(
-        and(
-          eq(cashBankEntries.tenantId, tenantId),
-          eq(cashBankEntries.id, entryId),
-        ),
-      )
-      .limit(1);
-    if (!entry) return null;
-    if (entry.createdBy === actorId)
-      throw new AccountingError("CASH_OUT_SELF_APPROVAL");
-    if (entry.status !== "pending_approval") return null;
-    const [request] = await tx
-      .select({
-        id: approvalRequests.id,
-        level: approvalRequests.level,
-        requiredLevels: approvalRequests.requiredLevels,
-      })
-      .from(approvalRequests)
-      .where(
-        and(
-          eq(approvalRequests.tenantId, tenantId),
-          eq(approvalRequests.chainId, chainId),
-          eq(approvalRequests.status, "pending"),
-        ),
-      )
-      .orderBy(approvalRequests.level)
-      .limit(1);
-    return request ?? null;
-  });
-  if (open === null || open.level < open.requiredLevels) return;
-  try {
-    await decideApprovalRequest(
-      context.tenant,
-      actorId,
-      open.id,
-      { decision: "approved", reason: "Disetujui langsung dari entri kas." },
-      { mfaVerified, idempotencyKey: null },
-    );
-  } catch (error) {
-    // Someone else decided this level between our read and the decision (two
-    // approvers racing): not an error here. The transaction below reads the
-    // chain's real outcome and posts once, or refuses it.
-    if (
-      !(error instanceof IdentityError) ||
-      error.code !== "APPROVAL_REQUEST_NOT_PENDING"
-    )
-      throw error;
-  }
-}
-
-/**
  * Approves a pending cash out (or petty cash top-up): counter account and period are checked again,
  * the journal is posted once (key `cb:<entryId>`) and the entry turns
  * `approved` in the same transaction. An approved entry is returned as it is
@@ -936,11 +867,9 @@ export async function approveCashBankEntry(
   context: ScopedTenantContext,
   entryId: string,
   actorId: UserId,
-  options: { readonly mfaVerified: boolean } = { mfaVerified: false },
 ): Promise<CashBankEntry> {
   assertTrustedScopedContext(context);
   assertTenantScope(context);
-  await decideLastOpenLevel(context, entryId, actorId, options.mfaVerified);
   const result = await withTenant(db, context, async (tx) => {
     const tenantId = context.tenant.tenantId;
     const row = await lockEntryForDecision(tx, tenantId, entryId, actorId);
@@ -953,39 +882,40 @@ export async function approveCashBankEntry(
     // direct endpoint must not override it. Apply the rejection (when a
     // distinct rejecter exists) and commit it, then refuse after the commit.
     const chainId = await inboxChainOf(tx, tenantId, row.id);
-    if (chainId !== null) {
-      const outcome = await resolveApprovalChainOutcome(tx, context, {
-        chainId,
-        sourceModule: CASH_BANK_APPROVAL_SOURCE_MODULE,
-        now,
-      });
-      if (
-        outcome === "rejected" ||
-        outcome === "expired" ||
-        outcome === "cancelled"
-      ) {
-        await settleCashBankEntryForApproval(tx, context, row.id, now);
-        return { entry: null, refused: true };
-      }
-      // A document with a chain is decided by the chain, level by level, each
-      // level by a different person of that level's role (decided before this
-      // transaction by `decideLastOpenLevel`). The direct endpoint never skips
-      // a level: it posts only once every level approved, through the same code
-      // the inbox uses (exactly one journal, key `cb:<entryId>`). Anything else
-      // is refused and nothing is written: the entry stays pending.
-      if (outcome !== "approved") throw chainNotApproved();
-      const settled = await settleCashBankEntryForApproval(
-        tx,
-        context,
-        row.id,
-        now,
-      );
-      if (settled?.status !== "approved") throw chainNotApproved();
-      return { entry: settled, refused: false };
+    // No chain: nothing proves the matrix levels (roles, order) were met, so
+    // there is no journal (SO 1036 finding 1). Fail closed.
+    if (chainId === null) throw new AccountingError("CASH_OUT_CHAIN_MISSING");
+    const outcome = await resolveApprovalChainOutcome(tx, context, {
+      chainId,
+      sourceModule: CASH_BANK_APPROVAL_SOURCE_MODULE,
+      now,
+    });
+    if (
+      outcome === "rejected" ||
+      outcome === "expired" ||
+      outcome === "cancelled"
+    ) {
+      await settleCashBankEntryForApproval(tx, context, row.id, now);
+      return { entry: null, refused: true };
     }
-    const updated = await approvePendingEntry(tx, context, row, actorId, now);
-    await closeInboxChain(tx, context, row.id, actorId, now);
-    return { entry: cashBankEntryDto(updated), refused: false };
+    // A document with a chain is decided by the chain, level by level, each
+    // level by a different person of that level's role, with that level's MFA, in
+    // the approval inbox. The direct endpoint never decides or skips a level
+    // (legend-bf8f2, legend-3bkvl): it posts only once every level approved,
+    // through the same code the inbox uses (exactly one journal, key
+    // `cb:<entryId>`). Anything else is refused and nothing is written: the
+    // entry stays pending and the chain is left open.
+    if (outcome !== "approved")
+      throw new AccountingError("CASH_OUT_CHAIN_OPEN");
+    const settled = await settleCashBankEntryForApproval(
+      tx,
+      context,
+      row.id,
+      now,
+    );
+    if (settled?.status !== "approved")
+      throw new AccountingError("CASH_OUT_CHAIN_OPEN");
+    return { entry: settled, refused: false };
   });
   if (result.refused || result.entry === null)
     throw new AccountingError("CASH_ENTRY_NOT_PENDING");

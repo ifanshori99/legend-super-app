@@ -98,10 +98,25 @@ export async function requiresApproval(
     amountIdr: number;
   },
 ): Promise<boolean> {
+  return (await cashApprovalCheck(tx, input)).required;
+}
+
+/**
+ * `requiresApproval` plus the creator's day total including this entry
+ * (`dayTotalIdr`). The approval matrix tiers on that total, not on the
+ * fragment, so a split cannot pick a lower tier (SO 1036 finding 5).
+ */
+export async function cashApprovalCheck(
+  tx: TenantTransaction,
+  input: {
+    tenantId: TenantId;
+    actorId: string;
+    amountIdr: number;
+  },
+): Promise<{ required: boolean; dayTotalIdr: number }> {
   const { tenantId, actorId, amountIdr } = input;
   await advisoryLock(tx, `acc-cashlimit:${tenantId.toLowerCase()}:${actorId}`);
   const { limitIdr } = await readLimitIdr(tx, tenantId);
-  if (amountIdr > limitIdr) return true;
 
   // The DB clock, not the app clock: stored rows get `created_at DEFAULT now()`
   // (transaction start), so this entry's own day must come from the same clock.
@@ -142,5 +157,8 @@ export async function requiresApproval(
   for (const row of [...documents, ...topups])
     if (businessDateOf(row.createdAt, TENANT_DAY_CLOCK) === today)
       total += row.amountIdr;
-  return total > limitIdr;
+  return {
+    required: amountIdr > limitIdr || total > limitIdr,
+    dayTotalIdr: total,
+  };
 }

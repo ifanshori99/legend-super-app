@@ -25,7 +25,6 @@ import {
 } from "@starter/shared/accounting";
 import type { PermissionCode } from "@starter/shared/access";
 import { userIdSchema } from "@starter/shared/core";
-import { sessionMfaVerifiedAt } from "../lib/mfa";
 import { getAuth, requireAuth } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
@@ -132,7 +131,6 @@ export function createAccountingCashBankEntriesRouter(): Router {
           getScopedTenantContext(req),
           entryId,
           actorId(req),
-          { mfaVerified: (await sessionMfaVerifiedAt(req)) !== null },
         ),
       });
     },
