@@ -128,6 +128,15 @@ string, including for `ai_jobs.cost_idr`. `businessDate("business_date")` is
 an outlet-local calendar date, not a timestamp. Construct values using the
 shared core schemas and helpers, never floating point for decimal arithmetic.
 
+For Drizzle predicates, keep each ID's brand: parse untrusted strings with the
+matching shared schema before using them in `eq`, `inArray`, or a `sql`
+template. For example, `tenantIdSchema.parse(rawTenantId)` returns a `TenantId`,
+and `rawOutletIds.map((id) => outletIdSchema.parse(id))` returns `OutletId[]`.
+For another aggregate, use its exported ID schema (or its shared
+`uuidIdSchema` / `ulidIdSchema` definition). Reuse the parsed values rather than
+casting strings to an ID type. A `sql<T>` result annotation is only a TypeScript
+type; validate IDs read from raw SQL before treating them as branded values.
+
 Use `tenantIdColumn(() => tenants.id).notNull()` and, for outlet-owned tables,
 `outletIdColumn(() => outlets.id).notNull()`. The domain schema must define
 appropriate tenant-scoped composite foreign keys where needed to prevent
