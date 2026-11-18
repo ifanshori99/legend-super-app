@@ -6,7 +6,9 @@
 -- Tenant aktif yang sudah memakai MCP (klien approved atau token aktif) tetapi
 -- paketnya tidak memuat mcp: migrasi 0456 tidak menyalakan flag mcp untuknya,
 -- jadi MCP-nya terkunci setelah rilis. Paket yang barisnya tidak ada dihitung
--- tanpa mcp. Keluaran hanya id tenant dan jumlah; nol baris berarti lolos.
+-- tanpa mcp. Bentuk modules yang bukan array juga menahan rilis: data paket
+-- yang rusak tidak membuktikan hak MCP. Keluaran hanya id tenant dan jumlah;
+-- nol baris berarti lolos.
 SELECT
   t.id AS tenant_id,
   (
@@ -20,7 +22,11 @@ SELECT
 FROM tenants t
 LEFT JOIN platform_packages p ON p.key = t.plan
 WHERE t.status = 'active'
-  AND (p.key IS NULL OR NOT (p.modules ? 'mcp'))
+  AND (
+    p.key IS NULL
+    OR jsonb_typeof(p.modules) IS DISTINCT FROM 'array'
+    OR (p.modules ? 'mcp') IS NOT TRUE
+  )
   AND (
     EXISTS (
       SELECT 1 FROM mcp_clients c
