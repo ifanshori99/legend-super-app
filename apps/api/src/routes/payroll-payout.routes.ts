@@ -455,9 +455,10 @@ payrollPayoutRouter.post(
 
 // A `settle_skipped` cash handover (accounting was off) that cannot be
 // journaled: finance closes it by hand (legend-5qqb9). The kind flips to
-// `settle_waived`, so its net stops counting as a 1102 reserve; nothing is
-// posted. Needs the petty cash finance permission (it releases cash for
-// spending), the second factor and the password, a reason, and an audit row.
+// `settle_waived` and a correcting journal (Dr salary expense / Cr 1102) is
+// posted in the same transaction, so the net leaves the GL and the reserve
+// together. Needs the petty cash finance permission, the second factor and the
+// password, a reason, and an audit row.
 payrollPayoutRouter.post(
   "/disbursement-batches/:id/postings/:postingId/waive-skipped",
   requireAuth,

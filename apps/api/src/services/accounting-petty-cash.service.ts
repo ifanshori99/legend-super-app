@@ -337,7 +337,8 @@ async function pettyCashGlBalance(
     : glBalanceOf(tx, tenantId, legalEntityId, accountId);
 }
 
-async function glBalanceOf(
+/** Debit minus credit of the posted journal lines on one account of the entity. */
+export async function glBalanceOf(
   tx: TenantTransaction,
   tenantId: TenantId,
   legalEntityId: string,

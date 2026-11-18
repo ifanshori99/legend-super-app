@@ -322,12 +322,13 @@ const PAYOUT_AUDIT_SAFE_FIELDS = [
   "sourceGlId",
   "kind",
   "settleNetIdr",
+  "journalEntryId",
 ] as const;
 
 /**
  * Audit row of a payout step. Values are ids, statuses and counts only: no
  * names or account numbers; the one amount kept is the net of a waived posting
- * (`settleNetIdr`, legend-5qqb9). The masker redacts anything else.
+ * (`settleNetIdr`, legend-5qqb9) with the id of its correcting journal. The masker redacts anything else.
  */
 export async function recordPayoutAudit(
   tx: Tx,

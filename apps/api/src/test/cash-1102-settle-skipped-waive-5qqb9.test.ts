@@ -1,8 +1,12 @@
-// 5qqb9 P2 (revised): a cash payroll handover done while accounting was OFF
+// 5qqb9 P2 (round 2): a cash payroll handover done while accounting was OFF
 // ends as a `settle_skipped` posting. It keeps counting as a reserve against GL
 // 1102 (nobody may spend that cash twice). The catch-up journal is impossible
 // without the payroll.locked journal, so finance gets an official MANUAL
-// "waive" instead (kind `settle_waived`, terminal, audited, no journal):
+// "waive" instead (kind `settle_waived`, terminal, audited). Round 2: the waive
+// posts a correcting journal in the SAME transaction (Dr salary expense / Cr
+// 1102 of the handover, net, key `payroll-payout-waive:<postingId>`), so the
+// cash that left the till is really booked: GL 1102 -net, reserve -net,
+// available cash UNCHANGED:
 //   POST /api/hris/payroll/disbursement-batches/:id/postings/:postingId/waive-skipped
 //   body { password, reason (trimmed, 1..500) }
 // Written fail-first from the brief (scratchpad brief-5qqb9.md, "P2 REVISED"),
@@ -19,11 +23,17 @@
 //   settle_skipped (here settle_pending) -> 409; unknown ids -> 404; missing or
 //   wrong password -> a 4xx in {400,401,403,422} (exact code not pinned); never
 //   "Route not found.".
-// - Accounting state is irrelevant: waiving works with accounting OFF too.
-// - Waiving removes the net from the reserve, so available cash rises by net.
-//   GL 1102 and journals do not move.
+// - Round 2 (brief "ROUND 2 A"): the journal needs accounting ON (409
+//   PAYOUT_WAIVE_NOT_ALLOWED when off). Salary expense is the account mapped to
+//   role `salary_expense` (the role the payroll.locked journal debits; the
+//   standard chart maps it to 6101). Role unmapped -> 409 (code not pinned,
+//   non-empty message), no flip, no journal. GL 1102 below the net -> 422
+//   PETTY_CASH_GL_INSUFFICIENT, no flip, no journal. Closed fiscal period ->
+//   a 4xx refusal in {409,422} (code not pinned), no flip, no journal.
+// - Waiving moves the net out of GL 1102 (journal) AND out of the reserve:
+//   available cash is UNCHANGED, exactly one journal exists under the waive key.
 // - Audit: exactly one new audit_logs row mentioning the batch, containing the
-//   reason and the net; its action name is not pinned.
+//   reason, the net and the journal entry id; its action name is not pinned.
 // - DB level: the guard trigger must allow a pure flip settle_skipped ->
 //   settle_waived (only `kind` changes) and refuse the flip when any other
 //   column changes in the same UPDATE (refused by the trigger, NOT by the
@@ -87,6 +97,8 @@ let probeFinance: Session;
 let pettyGlId: string;
 let pettyBankId: string;
 let expenseAccountId: string;
+/** GL code mapped to role salary_expense (the account the payroll.locked journal debits). */
+let salaryCode: string;
 /** Net of the settle_skipped / settle_pending postings this file created and nobody caught up. */
 let reserve = 0;
 /** Free cash (GL 1102 minus reserve) every scenario must find: EXTRA plus the nets finance waived. */
@@ -148,6 +160,14 @@ beforeAll(async () => {
     [tenantId, W.entityId()],
   );
   expenseAccountId = expense.rows[0]!.id;
+  const salary = await kitOwner.query<{ code: string }>(
+    `SELECT a.code FROM account_mappings m
+       JOIN chart_of_accounts a ON a.tenant_id = m.tenant_id AND a.id = m.account_id
+      WHERE m.tenant_id = $1 AND m.legal_entity_id = $2 AND m.role = 'salary_expense'`,
+    [tenantId, W.entityId()],
+  );
+  expect(salary.rows, "premise: salary_expense is mapped").toHaveLength(1);
+  salaryCode = salary.rows[0]!.code;
   await W.fundPettyCash(EXTRA);
 });
 
@@ -189,6 +209,119 @@ async function withAccountingOff<T>(work: () => Promise<T>) {
     );
   }
 }
+
+/** Runs `work` with every fiscal period of the entity closed; reopens them after (triggers off, test setup only). */
+async function withPeriodsClosed<T>(work: () => Promise<T>) {
+  await kitOwner.query(
+    `UPDATE fiscal_periods SET status = 'closed', closed_by = $3, closed_at = now(), version = version + 1
+      WHERE tenant_id = $1 AND legal_entity_id = $2 AND status = 'open'`,
+    [tenantId, W.entityId(), randomUUID()],
+  );
+  try {
+    return await work();
+  } finally {
+    const client = await kitOwner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query(
+        `UPDATE fiscal_periods SET status = 'open', closed_by = NULL, closed_at = NULL, version = version + 1
+          WHERE tenant_id = $1 AND legal_entity_id = $2 AND status = 'closed'`,
+        [tenantId, W.entityId()],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+}
+
+/** Runs `work` with the salary_expense role unmapped (setup SQL, triggers off); the mapping is restored after. */
+async function withSalaryMappingMissing<T>(work: () => Promise<T>) {
+  const removed = await W.asTenant(
+    (c) =>
+      c.query<{ account_id: string }>(
+        `DELETE FROM account_mappings
+          WHERE tenant_id = $1 AND legal_entity_id = $2 AND role = 'salary_expense'
+          RETURNING account_id`,
+        [W.tenantId, W.entityId()],
+      ),
+    true,
+  );
+  expect(removed.rows, "premise: mapping removed").toHaveLength(1);
+  try {
+    return await work();
+  } finally {
+    await W.asTenant(
+      (c) =>
+        c.query(
+          `INSERT INTO account_mappings (tenant_id, legal_entity_id, role, account_id)
+           VALUES ($1, $2, 'salary_expense', $3)`,
+          [W.tenantId, W.entityId(), removed.rows[0]!.account_id],
+        ),
+      true,
+    );
+  }
+}
+
+/** Drains GL 1102 (Dr 1103 / Cr 1102, seeded by SQL like W.fundPettyCash) until `leave` rupiah remain; returns the drained amount. */
+async function drainGlTo(leave: number) {
+  const amount = (await glBalance()) - leave;
+  expect(amount, "premise: GL can be drained").toBeGreaterThan(0);
+  const date = new Date(Date.now() + 7 * 3_600_000).toISOString().slice(0, 10);
+  await W.asTenant(async (c) => {
+    const account = async (code: string) =>
+      (
+        await c.query(
+          `SELECT id FROM chart_of_accounts WHERE tenant_id = $1 AND legal_entity_id = $2 AND code = $3`,
+          [W.tenantId, W.entityId(), code],
+        )
+      ).rows[0].id as string;
+    const period = (
+      await c.query(
+        `SELECT id FROM fiscal_periods WHERE tenant_id = $1 AND legal_entity_id = $2 AND period = $3`,
+        [W.tenantId, W.entityId(), date.slice(0, 7)],
+      )
+    ).rows[0].id as string;
+    const entry = (
+      await c.query(
+        `INSERT INTO journal_entries
+           (tenant_id, legal_entity_id, entry_date, fiscal_period_id, source_type,
+            source_id, description, idempotency_key, request_fingerprint)
+         VALUES ($1, $2, $3, $4, 'sale', NULL, 'Kuras kas kecil uji 5qqb9', $5, $6)
+         RETURNING id`,
+        [
+          W.tenantId,
+          W.entityId(),
+          date,
+          period,
+          `drain-1102-${randomUUID()}`,
+          randomBytes(32).toString("hex"),
+        ],
+      )
+    ).rows[0].id as string;
+    await c.query(
+      `INSERT INTO journal_lines (tenant_id, entry_id, account_id, line_no, debit_idr, credit_idr)
+       VALUES ($1, $2, $3, 1, $5, 0), ($1, $2, $4, 2, 0, $5)`,
+      [W.tenantId, entry, await account("1103"), await account("1102"), amount],
+    );
+  }, true);
+  return amount;
+}
+
+const waiveKeyOf = (postingId: string) => `payroll-payout-waive:${postingId}`;
+
+/** Journal entry ids under the waive key of this posting (0 or 1 expected). */
+const waiveJournalIds = async (postingId: string) =>
+  (
+    await kitOwner.query<{ id: string }>(
+      "SELECT id FROM journal_entries WHERE tenant_id = $1 AND legal_entity_id = $2 AND idempotency_key = $3",
+      [tenantId, W.entityId(), waiveKeyOf(postingId)],
+    )
+  ).rows.map((r) => r.id);
 
 async function glBalance(): Promise<number> {
   const { rows } = await kitOwner.query<{ balance: string }>(
@@ -351,12 +484,15 @@ describe("5qqb9 P2: settle_skipped keeps counting as a reserve", () => {
 });
 
 describe("5qqb9 P2: finance waives a skipped posting", () => {
-  it("[5qqb9-waive-skipped-releases-reserve] waive with a reason: 200, kind settle_waived, reserve released (available cash up by the net), GL 1102 and journals unchanged, exactly one audit row with the reason and the net", async () => {
+  it("[5qqb9-waive-skipped-posts-journal] waive with a reason: 200, kind settle_waived, one journal Dr salary expense / Cr 1102 for the net under key payroll-payout-waive:<postingId>, GL 1102 down by the net, reserve down by the net so available cash is UNCHANGED, exactly one audit row with the reason, the net and the journal id", async () => {
     const { batchId, net, posting } = await skippedHandover();
     const glBefore = await glBalance();
     const journals = await journalCount();
     const auditBefore = await auditRowsOf(batchId);
     await expectAvailableIs(free, "before the waive");
+    expect(await waiveJournalIds(posting.id), "premise: no journal").toEqual(
+      [],
+    );
     const reason = `Waive uji ${randomBytes(3).toString("hex")}`;
 
     const res = await waive(waiver, batchId, posting.id, {
@@ -366,12 +502,17 @@ describe("5qqb9 P2: finance waives a skipped posting", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     reserve -= net;
-    free += net;
     expect(await kindOf(batchId)).toBe("settle_waived");
-    expect(await glBalance(), "GL 1102 unchanged").toBe(glBefore);
-    expect(await journalCount(), "no journal").toBe(journals);
-    expect(await W.journalByKey(posting.journal_key)).toBeUndefined();
-    await expectAvailableIs(free, "after the waive: the net is free cash");
+    expect(await glBalance(), "GL 1102 down by the net").toBe(glBefore - net);
+    expect(await journalCount(), "exactly one new journal").toBe(journals + 1);
+    expect(
+      await W.journalByKey(waiveKeyOf(posting.id)),
+      "Dr salary expense / Cr 1102, net each",
+    ).toEqual({
+      [salaryCode]: { debit: net, credit: 0 },
+      "1102": { debit: 0, credit: net },
+    });
+    await expectAvailableIs(free, "available cash unchanged by the waive");
     expect(await auditRowsOf(batchId), "one audit row").toBe(auditBefore + 1);
     const audit = await W.rowsOf(
       `SELECT event::text AS event FROM audit_logs
@@ -379,36 +520,125 @@ describe("5qqb9 P2: finance waives a skipped posting", () => {
       [W.tenantId, reason],
     );
     expect(audit, "the audit row carries the reason").toHaveLength(1);
-    expect(digitsOf(String(audit[0]!.event)), "and the net").toContain(
-      String(net),
-    );
+    const text = String(audit[0]!.event);
+    expect(digitsOf(text), "and the net").toContain(String(net));
+    const [journalId] = await waiveJournalIds(posting.id);
+    expect(journalId, "premise: journal exists").toBeDefined();
+    expect(text, "and the journal id").toContain(journalId);
   }, 90_000);
 
-  it("[5qqb9-waive-skipped-accounting-off-ok] accounting state is irrelevant: waiving while accounting is off is 200 and releases the reserve", async () => {
-    const { batchId, net, posting } = await skippedHandover();
+  it("[5qqb9-waive-skipped-accounting-off-409] accounting off: the journal cannot be posted, so the waive is refused 409 PAYOUT_WAIVE_NOT_ALLOWED: kind, GL, journals, audit and reserve unchanged", async () => {
+    const { batchId, posting } = await skippedHandover();
     const journals = await journalCount();
+    const gl = await glBalance();
+    const audit = await auditRowsOf(batchId);
 
     const res = await withAccountingOff(() =>
       waive(waiver, batchId, posting.id),
     );
 
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
-    reserve -= net;
-    free += net;
-    expect(await kindOf(batchId)).toBe("settle_waived");
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error?.code).toBe("PAYOUT_WAIVE_NOT_ALLOWED");
+    expect(String(res.body.error?.message ?? "")).not.toBe("");
+    expect(await kindOf(batchId)).toBe("settle_skipped");
     expect(await journalCount()).toBe(journals);
-    await expectAvailableIs(free, "reserve released");
+    expect(await glBalance()).toBe(gl);
+    expect(await auditRowsOf(batchId)).toBe(audit);
+    await expectAvailableIs(free, "reserve still counted");
   }, 90_000);
 
-  it("[5qqb9-waive-skipped-replay-noop] a second call is a no-op 200: still settle_waived, no second audit row, GL, journals and available cash unchanged", async () => {
+  it("[5qqb9-waive-skipped-expense-mapping-missing-409] the salary_expense role is unmapped: refused 409 with a message for finance, no flip, no journal, no audit row; with the mapping back the same waive works", async () => {
+    const { batchId, net, posting } = await skippedHandover();
+    const journals = await journalCount();
+    const gl = await glBalance();
+    const audit = await auditRowsOf(batchId);
+
+    const res = await withSalaryMappingMissing(() =>
+      waive(waiver, batchId, posting.id),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    notRouteMissing(res);
+    expect(String(res.body.error?.message ?? "")).not.toBe("");
+    expect(await kindOf(batchId), "no flip").toBe("settle_skipped");
+    expect(await journalCount(), "no journal").toBe(journals);
+    expect(await glBalance()).toBe(gl);
+    expect(await auditRowsOf(batchId)).toBe(audit);
+    await expectAvailableIs(free, "reserve still counted");
+
+    const retry = await waive(waiver, batchId, posting.id);
+    expect(retry.status, JSON.stringify(retry.body)).toBe(200);
+    reserve -= net;
+    expect(await kindOf(batchId)).toBe("settle_waived");
+    expect(await waiveJournalIds(posting.id)).toHaveLength(1);
+  }, 90_000);
+
+  it("[5qqb9-waive-skipped-gl-insufficient-422] GL 1102 below the net: refused 422 PETTY_CASH_GL_INSUFFICIENT (GL must never go negative): no flip, no journal, no audit row; after filling the till the same waive works", async () => {
+    const { batchId, net, posting } = await skippedHandover();
+    const drained = await drainGlTo(net - 1);
+    let res: Awaited<ReturnType<typeof waive>>;
+    let journalsAfter: number;
+    let glAfter: number;
+    const journalsBefore = await journalCount();
+    const audit = await auditRowsOf(batchId);
+    try {
+      res = await waive(waiver, batchId, posting.id);
+      journalsAfter = await journalCount();
+      glAfter = await glBalance();
+    } finally {
+      await W.fundPettyCash(drained);
+    }
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error?.code).toBe("PETTY_CASH_GL_INSUFFICIENT");
+    expect(String(res.body.error?.message ?? ""), "Indonesian message").toMatch(
+      /kas/i,
+    );
+    expect(await kindOf(batchId), "no flip").toBe("settle_skipped");
+    expect(journalsAfter, "no journal").toBe(journalsBefore);
+    expect(glAfter, "GL untouched").toBe(net - 1);
+    expect(await waiveJournalIds(posting.id)).toEqual([]);
+    expect(await auditRowsOf(batchId)).toBe(audit);
+    await expectAvailableIs(free, "reserve still counted after refill");
+
+    const retry = await waive(waiver, batchId, posting.id);
+    expect(retry.status, JSON.stringify(retry.body)).toBe(200);
+    reserve -= net;
+    expect(await kindOf(batchId)).toBe("settle_waived");
+  }, 90_000);
+
+  it("[5qqb9-waive-skipped-period-closed-refused] every fiscal period closed: the waive is refused (409 or 422), no flip, no journal, no audit row, GL and reserve unchanged", async () => {
+    const { batchId, posting } = await skippedHandover();
+    const journals = await journalCount();
+    const gl = await glBalance();
+    const audit = await auditRowsOf(batchId);
+
+    const res = await withPeriodsClosed(() =>
+      waive(waiver, batchId, posting.id),
+    );
+
+    expect([409, 422], JSON.stringify(res.body)).toContain(res.status);
+    notRouteMissing(res);
+    expect(res.body.error?.code, "a real refusal").not.toBe(
+      "PAYOUT_WAIVE_NOT_ALLOWED",
+    );
+    expect(await kindOf(batchId), "no flip").toBe("settle_skipped");
+    expect(await journalCount(), "no journal").toBe(journals);
+    expect(await glBalance()).toBe(gl);
+    expect(await auditRowsOf(batchId)).toBe(audit);
+    await expectAvailableIs(free, "reserve still counted");
+  }, 90_000);
+
+  it("[5qqb9-waive-skipped-replay-noop] a second call is a no-op 200: still settle_waived, still exactly one journal under the waive key, no second audit row, GL, journals and available cash unchanged", async () => {
     const { batchId, net, posting } = await skippedHandover();
     const first = await waive(waiver, batchId, posting.id);
     expect(first.status, JSON.stringify(first.body)).toBe(200);
     reserve -= net;
-    free += net;
     const audit = await auditRowsOf(batchId);
     const gl = await glBalance();
     const journals = await journalCount();
+    const [journalId] = await waiveJournalIds(posting.id);
+    expect(journalId, "premise: first call posted the journal").toBeDefined();
 
     const replay = await waive(waiver, batchId, posting.id, {
       password: PASSWORD,
@@ -419,8 +649,8 @@ describe("5qqb9 P2: finance waives a skipped posting", () => {
     expect(await kindOf(batchId)).toBe("settle_waived");
     expect(await auditRowsOf(batchId), "no second audit row").toBe(audit);
     expect(await glBalance()).toBe(gl);
-    expect(await journalCount()).toBe(journals);
-    expect(await W.journalByKey(posting.journal_key)).toBeUndefined();
+    expect(await journalCount(), "no second journal").toBe(journals);
+    expect(await waiveJournalIds(posting.id)).toEqual([journalId]);
     await expectAvailableIs(free, "replay changed nothing");
   }, 90_000);
 });
