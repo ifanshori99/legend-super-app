@@ -11,8 +11,16 @@
 // - split: false (unit tests): `core` is the whole catalog and the area chunks
 //   are empty, so a component rendered without loading chunks sees every text.
 //
+// The same plugin keeps the whole catalog out of the web bundle (split: true):
+// every import that resolves to packages/shared/src/i18n/index.ts, whoever
+// writes it (web code through `@starter/shared/i18n`, or shared code such as
+// text/schemas.ts through a relative path), is redirected to i18n/runtime.ts.
+// That file has the same value exports minus the catalog; `messagesId` and
+// `isMessageKey` there read the chunks loaded so far. The API and the unit
+// tests do not use this plugin and keep index.ts.
+//
 // The consumer is apps/web/src/components/i18n.tsx.
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import type { Plugin } from "vite";
 import {
   AREA_MANIFEST,
@@ -23,6 +31,9 @@ import {
 
 const PREFIX = "virtual:i18n/";
 const RESOLVED_PREFIX = `\0${PREFIX}`;
+const I18N_DIR = resolve(import.meta.dirname, "../../packages/shared/src/i18n");
+const INDEX_MODULE = resolve(I18N_DIR, "index");
+const RUNTIME_FILE = resolve(I18N_DIR, "runtime.ts");
 const CATALOG_FILE = JSON.stringify(
   resolve(import.meta.dirname, "../../packages/shared/src/i18n/messages/id.ts"),
 );
@@ -74,7 +85,25 @@ export function i18nChunks({ split }: { split: boolean }): Plugin {
     configResolved(config) {
       isBuild = config.command === "build";
     },
-    resolveId(source) {
+    // Before Vite's own resolver, so the catalog barrel never gets resolved.
+    enforce: "pre",
+    resolveId(source, importer) {
+      if (split) {
+        // Same path for both specifiers: one runtime module, one store.
+        if (
+          source === "@starter/shared/i18n" ||
+          source === "@starter/shared/i18n/runtime"
+        )
+          return RUNTIME_FILE;
+        if (
+          importer &&
+          !importer.startsWith("\0") &&
+          /(?:^|\/)i18n\/index(?:\.ts)?$/.test(source) &&
+          resolve(dirname(importer), source).replace(/\.ts$/, "") ===
+            INDEX_MODULE
+        )
+          return RUNTIME_FILE;
+      }
       if (!source.startsWith(PREFIX)) return null;
       const chunk = source.slice(PREFIX.length);
       return (CATALOG_CHUNKS as readonly string[]).includes(chunk)

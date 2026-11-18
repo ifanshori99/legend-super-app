@@ -337,3 +337,121 @@ test("literal catalog keys in area-only web files are in core or that area's chu
   }
   assert.deepEqual([...new Set(problems)].sort(), []);
 });
+
+// ---------------------------------------------------------------------------
+// The web bundle must never hold the whole catalog (messages/id.ts). The web
+// build redirects every import of i18n/index.ts to i18n/runtime.ts
+// (apps/web/vite-i18n-chunks.ts), so the graph below applies the same rule:
+// an import that resolves to index.ts continues at runtime.ts.
+// ---------------------------------------------------------------------------
+
+const sharedSrc = path.resolve(import.meta.dirname, "../packages/shared/src");
+const INDEX_FILE = path.join(sharedSrc, "i18n/index.ts");
+const RUNTIME_FILE = path.join(sharedSrc, "i18n/runtime.ts");
+const CATALOG_FILE = path.join(sharedSrc, "i18n/messages/id.ts");
+
+// Statements that vanish at compile time: `import type ...` / `export type ...`.
+const typeOnlyStatement =
+  /\b(?:import|export)\s+type\b[^;'"]*?from\s*["'][^"']+["']/g;
+const importPattern = /(?:\bfrom|\bimport)\s*\(?\s*["']([^"'\n]+)["']/g;
+
+test("web imports never reach the catalog file (messages/id.ts)", async () => {
+  const sharedPackage = JSON.parse(
+    await readFile(path.join(sharedSrc, "../package.json"), "utf8"),
+  );
+  const exportsMap = Object.fromEntries(
+    Object.entries(sharedPackage.exports).map(([key, value]) => [
+      key,
+      typeof value === "string" ? value : (value.default ?? value.import),
+    ]),
+  );
+
+  const webFiles = (await allSourceFiles(webSrc)).filter(
+    (file) => !isMock(file),
+  );
+  const sharedFiles = await allSourceFiles(sharedSrc);
+  const known = new Set([...webFiles, ...sharedFiles]);
+  const source = new Map(
+    await Promise.all(
+      [...known].map(async (file) => [file, await readFile(file, "utf8")]),
+    ),
+  );
+
+  const withExtension = (base) =>
+    [
+      base,
+      base.replace(/\.(m?js)$/, ".ts"),
+      `${base}.ts`,
+      `${base}.tsx`,
+      path.join(base, "index.ts"),
+      path.join(base, "index.tsx"),
+    ].find((candidate) => known.has(candidate));
+
+  const resolveSpecifier = (from, specifier) => {
+    let target;
+    if (specifier.startsWith("@/"))
+      target = withExtension(path.join(webSrc, specifier.slice(2)));
+    else if (specifier.startsWith("."))
+      target = withExtension(path.resolve(path.dirname(from), specifier));
+    else if (specifier.startsWith("@starter/shared")) {
+      const exported =
+        exportsMap[`.${specifier.slice("@starter/shared".length)}`];
+      if (exported)
+        target = withExtension(path.resolve(sharedSrc, "..", exported));
+    }
+    return target === INDEX_FILE ? RUNTIME_FILE : target;
+  };
+
+  const edges = (file) => {
+    const found = new Set();
+    const code = source.get(file).replace(typeOnlyStatement, "");
+    for (const match of code.matchAll(importPattern)) {
+      const target = resolveSpecifier(file, match[1]);
+      if (target && !isMock(target)) found.add(target);
+    }
+    return found;
+  };
+
+  // Walk from every web file, remembering how each file was reached.
+  const parent = new Map(webFiles.map((file) => [file, null]));
+  const queue = [...webFiles];
+  while (queue.length) {
+    const file = queue.shift();
+    for (const next of edges(file))
+      if (!parent.has(next)) {
+        parent.set(next, file);
+        queue.push(next);
+      }
+  }
+
+  const chain = [];
+  for (
+    let file = CATALOG_FILE;
+    parent.has(file) && file;
+    file = parent.get(file)
+  )
+    chain.unshift(path.relative(path.resolve(sharedSrc, "../.."), file));
+  assert.ok(
+    !parent.has(CATALOG_FILE) && !parent.has(INDEX_FILE),
+    `the web graph reaches the whole catalog: ${chain.join(" -> ")}`,
+  );
+
+  // The redirect only works if the runtime offers every value web code asks
+  // of `@starter/shared/i18n`.
+  const runtime = await import("../packages/shared/src/i18n/runtime.ts");
+  const clause =
+    /(?<!\btype\s)\bimport\s*\{([^}]*)\}\s*from\s*["']@starter\/shared\/i18n(?:\/runtime)?["']/g;
+  const missing = [];
+  for (const file of webFiles)
+    for (const match of source.get(file).matchAll(clause))
+      for (const entry of match[1].split(",")) {
+        const name = entry.trim();
+        if (!name || name.startsWith("type ")) continue;
+        const imported = name.split(/\s+as\s+/)[0];
+        if (!(imported in runtime))
+          missing.push(
+            `${path.relative(webSrc, file)} imports ${imported}, which runtime.ts does not export`,
+          );
+      }
+  assert.deepEqual(missing, []);
+});

@@ -90,32 +90,14 @@ export default defineConfig(({ command, mode }) => {
       // The demo photo map is swapped at build time (legend-6vki): mock/demo
       // builds get the shared Unsplash map, a normal build an empty stub, so
       // no `/sample/menu` path can enter the production bundle.
-      alias: [
-        {
-          find: "virtual:demo-photo-map",
-          replacement: resolve(
-            import.meta.dirname,
-            demo
-              ? "src/lib/mock/demo-photos.ts"
-              : "src/lib/mock/demo-photos-empty.ts",
-          ),
-        },
-        // The web bundle never holds the whole text catalog (legend-nmn9j):
-        // `@starter/shared/i18n` resolves to the catalog-free runtime entry,
-        // and the catalog arrives per route area through virtual:i18n/<chunk>
-        // (vite-i18n-chunks.ts, components/i18n.tsx). Types still come from
-        // index.ts. Both specifiers map to one path so the runtime module is
-        // a single instance. `messagesId` / `MESSAGE_KEYS` do not exist there,
-        // so a web import of them fails the build instead of pulling the
-        // catalog back in.
-        {
-          find: /^@starter\/shared\/i18n(?:\/runtime)?$/,
-          replacement: resolve(
-            import.meta.dirname,
-            "../../packages/shared/src/i18n/runtime.ts",
-          ),
-        },
-      ],
+      alias: {
+        "virtual:demo-photo-map": resolve(
+          import.meta.dirname,
+          demo
+            ? "src/lib/mock/demo-photos.ts"
+            : "src/lib/mock/demo-photos-empty.ts",
+        ),
+      },
     },
     server: { port, strictPort: true },
     // True only while `vite dev` serves the app. Builds always report false,
@@ -142,6 +124,8 @@ export default defineConfig(({ command, mode }) => {
       },
     },
     plugins: [
+      // Per-area text catalog, and every import of the catalog barrel
+      // redirected to its catalog-free runtime (legend-nmn9j).
       i18nChunks({ split: true }),
       tailwindcss(),
       demoSampleAssets(demo),

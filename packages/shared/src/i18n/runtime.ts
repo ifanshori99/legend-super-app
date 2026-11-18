@@ -3,9 +3,12 @@
 // bundle never holds the whole Indonesian catalog: the translator below works
 // on whatever messages the app has loaded (apps/web/src/components/i18n.tsx).
 //
-// Same names and behavior as index.ts for everything it exports, except the
-// catalog values: `messagesId` and `MESSAGE_KEYS` stay in index.ts, and
-// `isMessageKey` answers from the loaded messages. Keep the two in step.
+// Same names as index.ts for everything the web uses, with one difference:
+// there is no whole catalog here. `messagesId` is a live view of the messages
+// loaded so far, `isMessageKey` answers from them, and `MESSAGE_KEYS` does not
+// exist (nothing in the web needs the full key list). The web build redirects
+// every import of index.ts to this file (apps/web/vite-i18n-chunks.ts), also
+// the relative ones in text/*. Keep the two files in step.
 // No runtime imports besides ./format.ts and ./area-manifest.ts: tests load
 // this file with Node type stripping.
 
@@ -83,3 +86,18 @@ export function createTranslator(
 export function isMessageKey(value: string): value is MessageKey {
   return lookup(defaultCatalog(), value) !== undefined;
 }
+
+/**
+ * Stands in for the catalog where shared code defaults to `messagesId`
+ * (text/dictionary.ts): reads the messages loaded so far at access time.
+ */
+export const messagesId: CatalogNode = new Proxy({} as CatalogNode, {
+  get: (_target, key) =>
+    typeof key === "string" ? defaultCatalog()[key] : undefined,
+  has: (_target, key) => typeof key === "string" && key in defaultCatalog(),
+  ownKeys: () => Reflect.ownKeys(defaultCatalog()),
+  getOwnPropertyDescriptor: (_target, key) => {
+    const descriptor = Reflect.getOwnPropertyDescriptor(defaultCatalog(), key);
+    return descriptor && { ...descriptor, configurable: true };
+  },
+});
