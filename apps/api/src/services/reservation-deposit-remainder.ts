@@ -8,7 +8,7 @@ import {
   type ScopedTenantContext,
   uuidToUlid,
 } from "@starter/shared/core";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { maskAuditChanges } from "@starter/shared/audit";
 import {
   reservationCustomerCreditUses,
@@ -525,6 +525,9 @@ export async function applyReservationCustomerCredit(
       AND id=${input.customerProfileId}::uuid AND membership_status='active'
       AND whatsapp_verified_at IS NOT NULL AND merged_into_profile_id IS NULL FOR SHARE`);
     if (profile.rows.length !== 1) throw unavailable();
+    // legend-8cm5k: lock only the candidates whose intents were locked and are
+    // validated below. A remainder another session finalised since the first
+    // read has an unvalidated receipt and is ignored by this apply.
     const credits = await tx
       .select()
       .from(reservationDepositRemainders)
@@ -532,6 +535,10 @@ export async function applyReservationCustomerCredit(
         and(
           eq(reservationDepositRemainders.tenantId, tenantId),
           eq(reservationDepositRemainders.outletId, outletId),
+          inArray(
+            reservationDepositRemainders.id,
+            candidates.map((row) => row.id),
+          ),
           eq(
             reservationDepositRemainders.customerProfileId,
             input.customerProfileId,

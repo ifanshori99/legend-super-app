@@ -64,6 +64,8 @@ export function providerRefundedForeignIdrSql(
           AND uf.amount_idr >= pe.amount_idr)
        AND NOT EXISTS (SELECT 1 FROM payment_refunds own
          WHERE own.tenant_id = pr.tenant_id
+           -- Only a provider's own refund id can echo ours (1035).
+           AND pr.refund_id_kind = 'provider'
            AND own.provider_ref = pr.provider_refund_id
            AND own.status <> 'failed')
      GROUP BY pr.tenant_id, pr.payment_intent_id, pr.evidence_id) g), 0)`;

@@ -36,6 +36,9 @@ export const refundReconHolds = pgTable(
     paymentIntentId: uuid("payment_intent_id").notNull(),
     webhookEventId: uuid("webhook_event_id").notNull(),
     providerRefundId: varchar("provider_refund_id", { length: 100 }),
+    // legend-yn1of (1035): the kind of `provider_refund_id`, same values as
+    // `payment_provider_refunds.refund_id_kind`; set exactly when the id is.
+    providerRefundIdKind: varchar("provider_refund_id_kind", { length: 20 }),
     amountIdr: idrColumn("amount_idr").notNull(),
     reason: varchar("reason", { length: 200 }).notNull(),
     flaggedAt: timestamp("flagged_at", { withTimezone: true })
@@ -60,13 +63,22 @@ export const refundReconHolds = pgTable(
     // One hold per provider refund of an intent: the provider resending the
     // same refund under a new event id adds none.
     uniqueIndex("refund_recon_hold_provider_refund_key")
-      .on(t.tenantId, t.paymentIntentId, t.providerRefundId)
+      .on(
+        t.tenantId,
+        t.paymentIntentId,
+        t.providerRefundIdKind,
+        t.providerRefundId,
+      )
       .where(sql`${t.providerRefundId} IS NOT NULL`),
     index("refund_recon_hold_intent_idx").on(t.tenantId, t.paymentIntentId),
     check("refund_recon_hold_amount_check", sql`${t.amountIdr} >= 0`),
     check(
       "refund_recon_hold_resolution_check",
       sql`${t.resolution} IS NULL OR ${t.resolution} IN ('not_this_intent', 'counted_against_intent')`,
+    ),
+    check(
+      "refund_recon_hold_provider_refund_id_kind_check",
+      sql`(${t.providerRefundId} IS NULL) = (${t.providerRefundIdKind} IS NULL) AND (${t.providerRefundIdKind} IS NULL OR ${t.providerRefundIdKind} IN ('provider', 'synthetic_full', 'synthetic_hold'))`,
     ),
   ],
 );

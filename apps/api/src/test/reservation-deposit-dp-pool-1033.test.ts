@@ -344,7 +344,7 @@ async function providerRefunded(
        (tenant_id, outlet_id, payment_intent_id, provider, provider_refund_id,
         provider_payment_ref, amount_idr, source)
      VALUES ($1, $2, $3, 'doit', $4, $5, $6, 'payment_webhook')
-     ON CONFLICT (tenant_id, provider, provider_refund_id) DO NOTHING`,
+     ON CONFLICT (tenant_id, provider, refund_id_kind, provider_refund_id) DO NOTHING`,
     [
       seededTenantId,
       outletId,
@@ -642,8 +642,8 @@ async function openHold(
   await asTenantTx(seededTenantId, (client) =>
     client.query(
       `INSERT INTO refund_recon_holds
-         (id, tenant_id, payment_intent_id, webhook_event_id, provider_refund_id, amount_idr, reason)
-       VALUES ($1, $2, $3, $4, $5, $6, 'Reference names another intent')`,
+         (id, tenant_id, payment_intent_id, webhook_event_id, provider_refund_id, provider_refund_id_kind, amount_idr, reason)
+       VALUES ($1, $2, $3, $4, $5, 'provider', $6, 'Reference names another intent')`,
       [id, seededTenantId, intentId, randomUUID(), providerRefundId, amountIdr],
     ),
   );

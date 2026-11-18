@@ -88,8 +88,8 @@ import {
   SETTLED_OUTSIDE_PROVIDER,
 } from "./payment-refund.service";
 import {
-  providerPaymentSyntheticRefundId,
   recordProviderRefundInTx,
+  type ProviderRefundIdKind,
 } from "./payment-provider-partial-refund";
 import { lockDepositIntentsExclusive } from "./reservation-deposit-credit";
 import {
@@ -874,6 +874,9 @@ async function holdRefundReferenceMismatch(
         paymentIntentId: intent.id,
         webhookEventId: row.id,
         providerRefundId: refund.providerRefundId,
+        // The id a refund event names is the provider's own (1035).
+        providerRefundIdKind:
+          refund.providerRefundId === null ? null : "provider",
         amountIdr: idr(refund.amountIdr),
         providerPaymentRef: refund.providerPaymentRef ?? null,
         reason:
@@ -916,6 +919,7 @@ async function recordRefundFor(
   row: GatewayWebhookEvent,
   input: {
     providerRefundId: string;
+    refundIdKind: ProviderRefundIdKind;
     providerPaymentRef: string;
     amountIdr: number;
     source: "refund_webhook" | "payment_webhook";
@@ -960,7 +964,8 @@ async function recordRefundFor(
         row,
         candidate.intent,
         {
-          providerRefundId: input.providerRefundId,
+          providerRefundId:
+            input.refundIdKind === "provider" ? input.providerRefundId : null,
           amountIdr: input.amountIdr,
           providerPaymentRef: input.providerPaymentRef,
           refundStatus,
@@ -1042,7 +1047,8 @@ async function flagRefundInDoubt(
       context,
       row,
       {
-        providerRefundId: providerPaymentSyntheticRefundId(paymentId),
+        providerRefundId: paymentId,
+        refundIdKind: "synthetic_full",
         providerPaymentRef: paymentId,
         amountIdr: candidate.evidenceAmountIdr,
         source: "payment_webhook",
@@ -1123,9 +1129,8 @@ async function processPaymentEvent(
               context,
               row,
               {
-                providerRefundId: providerPaymentSyntheticRefundId(
-                  event.data.id,
-                ),
+                providerRefundId: event.data.id,
+                refundIdKind: "synthetic_full",
                 providerPaymentRef: event.data.id,
                 amountIdr: extra.amountIdr,
                 source: "payment_webhook",
@@ -1645,6 +1650,7 @@ async function processRefundEvent(
           row,
           {
             providerRefundId: providerRefund.refundId,
+            refundIdKind: "provider",
             providerPaymentRef: providerRefund.paymentId,
             amountIdr: providerRefund.amountIdr,
             source: "refund_webhook",
@@ -1945,6 +1951,7 @@ async function processRefundedStatusEvent(
         row,
         {
           providerRefundId: refundId,
+          refundIdKind: "provider",
           providerPaymentRef: paymentId,
           amountIdr,
           source: "payment_webhook",

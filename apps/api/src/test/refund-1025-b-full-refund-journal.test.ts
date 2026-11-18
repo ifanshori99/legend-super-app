@@ -676,10 +676,11 @@ async function providerRows(intentId: string): Promise<ProviderRefundRow[]> {
   return rows.map((row) => ({ ...row, amount_idr: Number(row.amount_idr) }));
 }
 
-/** The row the full refund wrote (key `payment:<providerRef>`). */
+/** The row the full refund wrote (1035: kind `synthetic_full`, id = the raw
+ * providerRef). */
 const fullRowOf = async (code: Code) =>
   (await providerRows(code.id)).filter(
-    (row) => row.provider_refund_id === `payment:${code.providerRef}`,
+    (row) => row.provider_refund_id === code.providerRef,
   );
 
 /** Distinct provider-refund events emitted for a row. */
@@ -1428,7 +1429,7 @@ describe("1025-B a forced full-refund write with our refund still in flight file
     expect(await fullRowOf(code), "the forced write happened").toHaveLength(1);
     const holds = await holdsFor(code);
     expect(holds, "one hold for the forced write").toHaveLength(1);
-    expect(holds[0]!.provider_refund_id).toBe(`payment:${code.providerRef}`);
+    expect(holds[0]!.provider_refund_id).toBe(code.providerRef);
     expect(holds[0]!.resolved_at, "open").toBeNull();
     expect(
       (await supervisorAlerts()) - alertsBefore,
@@ -1503,7 +1504,7 @@ describe("1025-B our refund of the FULL amount in flight, and an intent without 
 
     const holds = await holdsOfIntent(code);
     expect(holds, "one hold for the forced full refund").toHaveLength(1);
-    expect(holds[0]!.provider_refund_id).toBe(`payment:${code.providerRef}`);
+    expect(holds[0]!.provider_refund_id).toBe(code.providerRef);
     expect(holds[0]!.resolved_at, "open").toBeNull();
     const alerts = (await supervisorAlerts()) - alertsBefore;
     expect(alerts, "finance is alerted").toBeGreaterThanOrEqual(1);

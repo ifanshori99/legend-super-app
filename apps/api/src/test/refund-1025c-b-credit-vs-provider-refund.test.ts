@@ -468,7 +468,11 @@ type Source = "refund_webhook" | "payment_webhook" | "poller";
 function recordRefund(
   d: Pick<Deposit, "intentId" | "providerRef">,
   amountIdr: number,
-  opts: { providerRefundId?: string; source?: Source } = {},
+  opts: {
+    providerRefundId?: string;
+    refundIdKind?: "provider" | "synthetic_full";
+    source?: Source;
+  } = {},
 ) {
   const context = scope();
   return withTenant(db, context, (tx) =>
@@ -479,6 +483,7 @@ function recordRefund(
         provider: "doit",
         providerRefundId:
           opts.providerRefundId ?? `rf_${randomUUID().slice(0, 12)}`,
+        refundIdKind: opts.refundIdKind ?? "provider",
         providerPaymentRef: d.providerRef,
         amountIdr,
         source: opts.source ?? "payment_webhook",
@@ -1097,8 +1102,8 @@ async function seedHoldRow(
     );
     await client.query(
       `INSERT INTO refund_recon_holds
-         (id, tenant_id, payment_intent_id, webhook_event_id, provider_refund_id, amount_idr, reason, provider_payment_ref)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+         (id, tenant_id, payment_intent_id, webhook_event_id, provider_refund_id, amount_idr, reason, provider_payment_ref, provider_refund_id_kind)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
       [
         id,
         seededTenantId,
@@ -1108,6 +1113,7 @@ async function seedHoldRow(
         opts.amountIdr,
         opts.reason,
         d.providerRef,
+        opts.providerRefundId === null ? null : "provider",
       ],
     );
     await client.query("COMMIT");
@@ -1243,9 +1249,10 @@ describe("legend-ua9ja review B: live own refund and credit surplus in one recor
     await addOwnRefundInFlight(d);
 
     // The full-refund door (webhook "refunded", poller, release recon) records
-    // the whole payment under payment:<ref>.
+    // the whole payment as `synthetic_full` (keyed by the payment id).
     await recordRefund(d, 100_000, {
-      providerRefundId: `payment:${d.providerRef}`,
+      providerRefundId: d.providerRef,
+      refundIdKind: "synthetic_full",
       source: "refund_webhook",
     });
 
@@ -1254,14 +1261,15 @@ describe("legend-ua9ja review B: live own refund and credit surplus in one recor
     expect(live, "exactly one live-own hold").toHaveLength(1);
   });
 
-  it("1025c-ua9ja-B exactly one credit hold, one live-own hold (payment:<ref>) and its alert", async () => {
+  it("1025c-ua9ja-B exactly one credit hold, one live-own hold (synthetic_full) and its alert", async () => {
     const d = await creditUsedSceneWithOwnRefund(40_000);
     const alertsBefore = await supervisorAlerts();
 
     // The full-refund door (webhook "refunded", poller, release recon) records
-    // the whole payment under payment:<ref>.
+    // the whole payment as `synthetic_full` (keyed by the payment id).
     await recordRefund(d, 100_000, {
-      providerRefundId: `payment:${d.providerRef}`,
+      providerRefundId: d.providerRef,
+      refundIdKind: "synthetic_full",
       source: "refund_webhook",
     });
 
@@ -1289,7 +1297,7 @@ describe("legend-ua9ja review C: resolving a credit hold books nothing", () => {
       reason: HOLD_REASON,
     });
 
-  it("1025c-ua9ja-C1 counted_against_intent closes the hold and writes NO provider refund row (no hold:<id>)", async () => {
+  it("1025c-ua9ja-C1 counted_against_intent closes the hold and writes NO provider refund row (none keyed by the hold)", async () => {
     const d = await creditUsedScene(40_000);
     await recordRefund(d, 30_000, { providerRefundId: "rf_prior_c1" });
     const before = await providerRefundIdsOf(d.intentId);
@@ -1301,9 +1309,7 @@ describe("legend-ua9ja review C: resolving a credit hold books nothing", () => {
     expect(await isHoldOpen(holdId)).toBe(false);
     expect(await providerRefundIdsOf(d.intentId)).toEqual(before);
     expect(
-      (await providerRefundIdsOf(d.intentId)).some((id) =>
-        id.startsWith("hold:"),
-      ),
+      (await providerRefundIdsOf(d.intentId)).some((id) => id === holdId),
     ).toBe(false);
   });
 
@@ -1334,9 +1340,10 @@ describe("legend-ua9ja review D: a refund that empties the pool still files the 
     const d = await creditUsedScene(40_000);
 
     // The full-refund door (webhook "refunded", poller, release recon) records
-    // the whole payment under payment:<ref>.
+    // the whole payment as `synthetic_full` (keyed by the payment id).
     await recordRefund(d, 100_000, {
-      providerRefundId: `payment:${d.providerRef}`,
+      providerRefundId: d.providerRef,
+      refundIdKind: "synthetic_full",
       source: "refund_webhook",
     });
 

@@ -166,6 +166,7 @@ export function openReconHoldIdrSql(tenant: SQL, intent: SQL): SQL {
       -- provider refund; counting its hold too would take the money twice.
       AND NOT EXISTS (SELECT 1 FROM payment_provider_refunds hr
         WHERE hr.tenant_id=h.tenant_id AND hr.payment_intent_id=h.payment_intent_id
+          AND hr.refund_id_kind=h.provider_refund_id_kind
           AND hr.provider_refund_id=h.provider_refund_id)),0)`;
 }
 

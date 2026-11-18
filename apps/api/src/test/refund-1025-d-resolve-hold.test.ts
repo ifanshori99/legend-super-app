@@ -272,8 +272,11 @@ async function seedHold(
     amountIdr = 30_000,
     tenant = tenantId,
     providerPaymentRef,
+    kind,
   }: {
     refundId?: string | null;
+    /** Kind of the refund id (1035); default `provider` when an id is set. */
+    kind?: "provider" | "synthetic_full" | "synthetic_hold";
     amountIdr?: number;
     tenant?: string;
     /** The provider payment id the refund names (new column, 1025-d). */
@@ -281,19 +284,27 @@ async function seedHold(
   } = {},
 ): Promise<string> {
   const holdId = randomUUID();
-  const base = [holdId, tenant, intent.id, randomUUID(), refundId, amountIdr];
+  const base = [
+    holdId,
+    tenant,
+    intent.id,
+    randomUUID(),
+    refundId,
+    amountIdr,
+    refundId === null ? null : (kind ?? "provider"),
+  ];
   await asTenantTx(tenant, (client) =>
     providerPaymentRef === undefined
       ? client.query(
           `INSERT INTO refund_recon_holds
-             (id, tenant_id, payment_intent_id, webhook_event_id, provider_refund_id, amount_idr, reason)
-           VALUES ($1, $2, $3, $4, $5, $6, 'Reference names another intent')`,
+             (id, tenant_id, payment_intent_id, webhook_event_id, provider_refund_id, amount_idr, provider_refund_id_kind, reason)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, 'Reference names another intent')`,
           base,
         )
       : client.query(
           `INSERT INTO refund_recon_holds
-             (id, tenant_id, payment_intent_id, webhook_event_id, provider_refund_id, amount_idr, reason, provider_payment_ref)
-           VALUES ($1, $2, $3, $4, $5, $6, 'Reference names another intent', $7)`,
+             (id, tenant_id, payment_intent_id, webhook_event_id, provider_refund_id, amount_idr, provider_refund_id_kind, reason, provider_payment_ref)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, 'Reference names another intent', $8)`,
           [...base, providerPaymentRef],
         ),
   );
@@ -346,13 +357,14 @@ async function seedProviderRow(
   providerRefundId: string,
   amountIdr: number,
   paymentRef: string = intent.providerRef,
+  kind: "provider" | "synthetic_full" | "synthetic_hold" = "provider",
 ) {
   await asTenantTx(tenantId, (client) =>
     client.query(
       `INSERT INTO payment_provider_refunds
          (id, tenant_id, outlet_id, payment_intent_id, provider, provider_refund_id,
-          provider_payment_ref, amount_idr, source)
-       VALUES ($1, $2, $3, $4, 'doit', $5, $6, $7, 'refund_webhook')`,
+          provider_payment_ref, amount_idr, source, refund_id_kind)
+       VALUES ($1, $2, $3, $4, 'doit', $5, $6, $7, 'refund_webhook', $8)`,
       [
         randomUUID(),
         tenantId,
@@ -361,6 +373,7 @@ async function seedProviderRow(
         providerRefundId,
         paymentRef,
         amountIdr,
+        kind,
       ],
     ),
   );
@@ -801,8 +814,8 @@ describe("1025-d who may resolve, and what is refused", () => {
         const id = randomUUID();
         await client.query(
           `INSERT INTO refund_recon_holds
-           (id, tenant_id, payment_intent_id, webhook_event_id, provider_refund_id, amount_idr, reason)
-         VALUES ($1, $2, $3, $4, 'rf_foreign', 30000, 'Reference names another intent')`,
+           (id, tenant_id, payment_intent_id, webhook_event_id, provider_refund_id, provider_refund_id_kind, amount_idr, reason)
+         VALUES ($1, $2, $3, $4, 'rf_foreign', 'provider', 30000, 'Reference names another intent')`,
           [id, otherScope.tenantId, foreign.id, randomUUID()],
         );
         return id;
@@ -921,7 +934,8 @@ describe("1025-d holds filed for our own refund (payment:<ref>) are restrictive"
   it("1025-d-16 not_this_intent is refused with 422: the money may already have gone back", async () => {
     const intent = await seedIntent();
     const holdId = await seedHold(intent, {
-      refundId: `payment:${"dp_x"}`,
+      refundId: "dp_x",
+      kind: "synthetic_full",
       amountIdr: BILL,
     });
     const auditBefore = await auditCount();
@@ -935,9 +949,13 @@ describe("1025-d holds filed for our own refund (payment:<ref>) are restrictive"
 
   it("1025-d-17 counted_against_intent with the payment:<ref> row already recorded closes the hold without a second row", async () => {
     const intent = await seedIntent();
-    const refundId = `payment:${intent.providerRef}`;
-    await seedProviderRow(intent, refundId, BILL);
-    const holdId = await seedHold(intent, { refundId, amountIdr: BILL });
+    const refundId = intent.providerRef;
+    await seedProviderRow(intent, refundId, BILL, refundId, "synthetic_full");
+    const holdId = await seedHold(intent, {
+      refundId,
+      kind: "synthetic_full",
+      amountIdr: BILL,
+    });
 
     const response = await resolveHold(staff, holdId, "counted_against_intent");
     expect(response.status, JSON.stringify(response.body)).toBe(200);
@@ -972,8 +990,8 @@ describe("1025-d the list of holds", () => {
         const id = randomUUID();
         await client.query(
           `INSERT INTO refund_recon_holds
-           (id, tenant_id, payment_intent_id, webhook_event_id, provider_refund_id, amount_idr, reason)
-         VALUES ($1, $2, $3, $4, 'rf_foreign_list', 30000, 'Reference names another intent')`,
+           (id, tenant_id, payment_intent_id, webhook_event_id, provider_refund_id, provider_refund_id_kind, amount_idr, reason)
+         VALUES ($1, $2, $3, $4, 'rf_foreign_list', 'provider', 30000, 'Reference names another intent')`,
           [id, otherScope.tenantId, foreign.id, randomUUID()],
         );
         return id;
@@ -1139,7 +1157,8 @@ describe("1025-d (1) a hold naming an extra transaction Y is counted against Y, 
 });
 
 describe("1025-d (2) holds of our own refund (payment:<ref>) close only when nothing is in flight; what is left of the transaction is counted", () => {
-  const OWN = (intent: Intent) => `payment:${intent.providerRef}`;
+  /** The `synthetic_full` id of the intent's payment: its raw payment id. */
+  const OWN = (intent: Intent) => intent.providerRef;
 
   it.each(["pending", "approved"] as const)(
     "1025-d-25 an own refund still %s: counted_against_intent is 422 even when the provider row exists",
@@ -1151,9 +1170,16 @@ describe("1025-d (2) holds of our own refund (payment:<ref>) close only when not
         "UPDATE payment_refunds SET status = $3 WHERE tenant_id = $1 AND id = $2",
         [tenantId, filed.body.data.id as string, status],
       );
-      await seedProviderRow(intent, OWN(intent), BILL);
+      await seedProviderRow(
+        intent,
+        OWN(intent),
+        BILL,
+        intent.providerRef,
+        "synthetic_full",
+      );
       const holdId = await seedHold(intent, {
         refundId: OWN(intent),
+        kind: "synthetic_full",
         amountIdr: BILL,
       });
       const auditBefore = await auditCount();
@@ -1174,6 +1200,7 @@ describe("1025-d (2) holds of our own refund (payment:<ref>) close only when not
     const intent = await seedIntent();
     const holdId = await seedHold(intent, {
       refundId: OWN(intent),
+      kind: "synthetic_full",
       amountIdr: BILL,
     });
 
@@ -1196,6 +1223,7 @@ describe("1025-d (2) holds of our own refund (payment:<ref>) close only when not
     await seedProviderRow(intent, "rf_part_1", 40_000);
     const holdId = await seedHold(intent, {
       refundId: OWN(intent),
+      kind: "synthetic_full",
       amountIdr: BILL,
     });
 
@@ -1216,6 +1244,7 @@ describe("1025-d (2) holds of our own refund (payment:<ref>) close only when not
     await seedProviderRow(full, "rf_full_2", 40_000);
     const fullHold = await seedHold(full, {
       refundId: OWN(full),
+      kind: "synthetic_full",
       amountIdr: BILL,
     });
     const covered = await resolveHold(
@@ -1235,6 +1264,7 @@ describe("1025-d (2) holds of our own refund (payment:<ref>) close only when not
     expect(await providerRows(intent.id)).toEqual([]);
     const holdId = await seedHold(intent, {
       refundId: OWN(intent),
+      kind: "synthetic_full",
       amountIdr: BILL,
     });
 
@@ -1262,7 +1292,7 @@ describe("1025-d (3) a hold without a provider refund id can be counted under ho
     const rows = await providerRows(intent.id);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
-      provider_refund_id: `hold:${holdId}`,
+      provider_refund_id: holdId,
       amount_idr: "30000",
     });
     expect((await holdRow(holdId)).resolution).toBe("counted_against_intent");
@@ -1280,9 +1310,9 @@ describe("1025-d (3) a hold without a provider refund id can be counted under ho
 
     const rows = await providerRows(intent.id);
     expect(rows).toHaveLength(2);
-    expect(
-      rows.find((r) => r.provider_refund_id === `hold:${holdId}`),
-    ).toMatchObject({ amount_idr: "60000" });
+    expect(rows.find((r) => r.provider_refund_id === holdId)).toMatchObject({
+      amount_idr: "60000",
+    });
     const refused = await manualRefund(intent.id, 1_000);
     expect([409, 422], JSON.stringify(refused.body)).toContain(refused.status);
     expect(await refundRowCount(intent.id)).toBe(0);
@@ -1298,7 +1328,7 @@ describe("1025-d (3) a hold without a provider refund id can be counted under ho
     const rows = await providerRows(intent.id);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
-      provider_refund_id: `hold:${holdId}`,
+      provider_refund_id: holdId,
       amount_idr: String(BILL),
     });
   });
@@ -1309,7 +1339,13 @@ describe("1025-d (3) a hold without a provider refund id can be counted under ho
       refundId: null,
       amountIdr: 30_000,
     });
-    await seedProviderRow(intent, `hold:${holdId}`, 30_000);
+    await seedProviderRow(
+      intent,
+      holdId,
+      30_000,
+      intent.providerRef,
+      "synthetic_hold",
+    );
 
     const first = await resolveHold(staff, holdId, "counted_against_intent");
     expect(first.status, JSON.stringify(first.body)).toBe(200);
@@ -1385,9 +1421,16 @@ describe("1025-d round 2: counting never leaves part of the payment refundable t
     expect(filed.status, JSON.stringify(filed.body)).toBe(201);
     const refundId = filed.body.data.id as string;
     await approveWithoutSending(refundId);
-    await seedProviderRow(intent, `payment:${intent.providerRef}`, 70_000);
+    await seedProviderRow(
+      intent,
+      intent.providerRef,
+      70_000,
+      intent.providerRef,
+      "synthetic_full",
+    );
     const holdId = await seedHold(intent, {
-      refundId: `payment:${intent.providerRef}`,
+      refundId: intent.providerRef,
+      kind: "synthetic_full",
       amountIdr: 70_000,
     });
     // The provider refunded the whole payment anyway; our 30.000 then fails.
@@ -1399,9 +1442,9 @@ describe("1025-d round 2: counting never leaves part of the payment refundable t
     const row = await holdRow(holdId);
     expect(row.resolved_at).not.toBeNull();
     const rows = await providerRows(intent.id);
-    expect(
-      rows.find((r) => r.provider_refund_id === `hold:${holdId}`),
-    ).toMatchObject({ amount_idr: "30000" });
+    expect(rows.find((r) => r.provider_refund_id === holdId)).toMatchObject({
+      amount_idr: "30000",
+    });
     expect(
       await providerSum(intent.id),
       "the whole payment is accounted for",
@@ -1419,7 +1462,8 @@ describe("1025-d round 2: counting never leaves part of the payment refundable t
     const refundId = filed.body.data.id as string;
     await approveWithoutSending(refundId);
     const holdId = await seedHold(intent, {
-      refundId: `payment:${intent.providerRef}`,
+      refundId: intent.providerRef,
+      kind: "synthetic_full",
       amountIdr: BILL,
     });
     await setRefundStatus(refundId, "failed");
@@ -1439,7 +1483,8 @@ describe("1025-d round 2: counting never leaves part of the payment refundable t
     expect(filed.status, JSON.stringify(filed.body)).toBe(201);
     await approveWithoutSending(filed.body.data.id as string);
     const holdId = await seedHold(intent, {
-      refundId: `payment:${intent.providerRef}`,
+      refundId: intent.providerRef,
+      kind: "synthetic_full",
       amountIdr: BILL,
     });
 
@@ -1456,7 +1501,8 @@ describe("1025-d round 2: counting never leaves part of the payment refundable t
     const refundId = filed.body.data.id as string;
     await approveWithoutSending(refundId);
     const holdId = await seedHold(intent, {
-      refundId: `payment:${intent.providerRef}`,
+      refundId: intent.providerRef,
+      kind: "synthetic_full",
       amountIdr: 30_000,
     });
     await setRefundStatus(refundId, "failed");
@@ -1494,9 +1540,9 @@ describe("1025-d round 2: a hold without a provider refund id and an amount of 0
     expect(response.status, JSON.stringify(response.body)).toBe(200);
 
     const rows = await providerRows(intent.id);
-    expect(
-      rows.find((r) => r.provider_refund_id === `hold:${holdId}`),
-    ).toMatchObject({ amount_idr: String(BILL) });
+    expect(rows.find((r) => r.provider_refund_id === holdId)).toMatchObject({
+      amount_idr: String(BILL),
+    });
     // Nothing of the 100.000 payment can be refunded or paid again.
     await expectNothingRefundable(intent);
     expect(fake.calls).toHaveLength(0);
@@ -1588,9 +1634,16 @@ async function transactionWithFundRefunded(): Promise<Intent> {
 describe("1025-d round 3: our completed refund of a parked fund is subtracted from what is left of the transaction", () => {
   it("1025-d-41 payment:<ref> hold (recorder wrote 60.000): counting books no top-up, the total stays at the 150.000 of X", async () => {
     const intent = await transactionWithFundRefunded();
-    await seedProviderRow(intent, `payment:${intent.providerRef}`, 60_000);
+    await seedProviderRow(
+      intent,
+      intent.providerRef,
+      60_000,
+      intent.providerRef,
+      "synthetic_full",
+    );
     const holdId = await seedHold(intent, {
-      refundId: `payment:${intent.providerRef}`,
+      refundId: intent.providerRef,
+      kind: "synthetic_full",
       amountIdr: 60_000,
     });
 
@@ -1630,7 +1683,13 @@ describe("1025-d round 3: our completed refund of a parked fund is subtracted fr
 describe("1025-d round 3: counting books at most what is left", () => {
   it("1025-d-43 a NULL-id hold with an amount whose transaction is already fully counted by payment:<ref> closes with no new row and an unchanged total", async () => {
     const intent = await seedIntent();
-    await seedProviderRow(intent, `payment:${intent.providerRef}`, BILL);
+    await seedProviderRow(
+      intent,
+      intent.providerRef,
+      BILL,
+      intent.providerRef,
+      "synthetic_full",
+    );
     const holdId = await seedHold(intent, {
       refundId: null,
       amountIdr: 30_000,
@@ -1709,9 +1768,16 @@ describe("1025-d round 3: a hold never closes with money unaccounted", () => {
   // accepted outcome here.
   it("1025-d-47 payment:<ref> hold whose row already exists (60.000 of 100.000), nothing in flight: the exact left (40.000) is booked as hold:<id>, the hold closes, nothing is refundable", async () => {
     const intent = await seedIntent();
-    await seedProviderRow(intent, `payment:${intent.providerRef}`, 60_000);
+    await seedProviderRow(
+      intent,
+      intent.providerRef,
+      60_000,
+      intent.providerRef,
+      "synthetic_full",
+    );
     const holdId = await seedHold(intent, {
-      refundId: `payment:${intent.providerRef}`,
+      refundId: intent.providerRef,
+      kind: "synthetic_full",
       amountIdr: 60_000,
     });
 
@@ -1722,7 +1788,7 @@ describe("1025-d round 3: a hold never closes with money unaccounted", () => {
     const rows = await providerRows(intent.id);
     expect(rows, "the 60.000 row plus one top-up row").toHaveLength(2);
     expect(
-      rows.find((r) => r.provider_refund_id === `hold:${holdId}`),
+      rows.find((r) => r.provider_refund_id === holdId),
       "the exact left is booked",
     ).toMatchObject({ amount_idr: "40000" });
     expect(await providerSum(intent.id)).toBe(BILL);

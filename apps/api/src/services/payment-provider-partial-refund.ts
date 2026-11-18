@@ -58,29 +58,43 @@ import { appendPaymentEvent } from "./payment-support.ts";
 import type { Tx } from "./permission-resolver.ts";
 
 const PROVIDER = "doit";
-/** Id prefix of the refund derived from a payment's own `refunded` status. */
-const SYNTHETIC_PREFIX = "payment:";
 
 /**
- * Synthetic provider refund id of a transaction's own `refunded` status. The
- * id column holds 100 characters and a payment id may be 100 long, so a ref
- * that does not fit after the prefix is keyed by its hash; the raw ref is
- * never cut and is kept in `provider_payment_ref` (legend-hpwpt, 1025d).
+ * What a provider refund id is (legend-yn1of + legend-uvjqq, 1035), stored next
+ * to it (`refund_id_kind`) and part of its unique key. Every branch reads the
+ * kind, never a prefix of the id: a provider may send any id.
+ * - `provider`: the provider's own refund id, as sent.
+ * - `synthetic_full`: the payment's own `refunded` status (the whole
+ *   transaction); the id is the raw provider payment id.
+ * - `synthetic_hold`: what finance counted from a recon hold that names no
+ *   refund id (or the top-up of a `synthetic_full` hold); the id is the hold's.
  */
-export function providerPaymentSyntheticRefundId(ref: string): string {
-  return SYNTHETIC_PREFIX.length + ref.length <= 100
-    ? `${SYNTHETIC_PREFIX}${ref}`
-    : `${SYNTHETIC_PREFIX}h:${createHash("sha256").update(ref).digest("hex").slice(0, 64)}`;
-}
+export const PROVIDER_REFUND_ID_KINDS = [
+  "provider",
+  "synthetic_full",
+  "synthetic_hold",
+] as const;
+export type ProviderRefundIdKind = (typeof PROVIDER_REFUND_ID_KINDS)[number];
 
-/** True for the hashed form made by `providerPaymentSyntheticRefundId`. */
-export const isHashedSyntheticRefundId = (id: string): boolean =>
-  /^payment:h:[0-9a-f]{64}$/.test(id);
+/** One string per (kind, id), for alert and hold dedup keys. A provider id is
+ * kept as it was (stable keys); a synthetic one carries its kind after a NUL,
+ * which no stored id can contain, so the two never meet. */
+export function providerRefundKey(
+  kind: ProviderRefundIdKind,
+  providerRefundId: string,
+): string {
+  return kind === "provider"
+    ? providerRefundId
+    : `${kind}\0${providerRefundId}`;
+}
 
 export type ProviderRefundInput = {
   provider: string;
-  /** The provider's own refund id (never ours). */
+  /** The refund id within its kind (see `ProviderRefundIdKind`). */
   providerRefundId: string;
+  /** What `providerRefundId` is. A `synthetic_full` id must be the provider
+   * payment id itself. */
+  refundIdKind: ProviderRefundIdKind;
   /** The provider transaction the refund names. */
   providerPaymentRef: string;
   amountIdr: number;
@@ -104,7 +118,7 @@ export type ProviderRefundInput = {
   quiet?: boolean;
   /**
    * Only the resolve of a refund recon hold passes it: the row tops up a
-   * `payment:<ref>` row already recorded for the transaction (the second
+   * `synthetic_full` row already recorded for the transaction (the second
    * refund of one transaction is otherwise a duplicate of the first).
    */
   topUp?: boolean;
@@ -137,14 +151,15 @@ export async function recordProviderRefundInTx(
   now: Date,
 ): Promise<ProviderRefundOutcome> {
   const tenantId = context.tenant.tenantId;
-  const { providerRefundId, providerPaymentRef } = input;
+  const { providerRefundId, providerPaymentRef, refundIdKind } = input;
+  const refundKey = providerRefundKey(refundIdKind, providerRefundId);
   let amountIdr = input.amountIdr;
   // The remainder counted a refund of ours that is not final (1025 B).
   let countedLiveOwn = false;
   let tellSupervisors = false;
   /** Holds the intent (refunds and payouts stop) because the books count a
    * refund of ours that is not final, and tells finance once. The hold is
-   * keyed by a stable id of (tenant, intent, provider refund id): a replay, or
+   * keyed by a stable id of (tenant, intent, refund kind and id): a replay, or
    * the case with no provider row at all, stays one hold and one alert. */
   const fileLiveOwnHold = async (
     heldIdr: number,
@@ -156,7 +171,7 @@ export async function recordProviderRefundInTx(
     await lockDepositIntentsExclusive(tx, tenantId, input.expectedIntentId);
     const hex = createHash("sha256")
       .update(
-        `refund_recon_hold.live_own\0${tenantId}\0${input.expectedIntentId.toLowerCase()}\0${providerRefundId}`,
+        `refund_recon_hold.live_own\0${tenantId}\0${input.expectedIntentId.toLowerCase()}\0${refundKey}`,
       )
       .digest("hex");
     const [held] = await tx
@@ -166,6 +181,7 @@ export async function recordProviderRefundInTx(
         paymentIntentId: input.expectedIntentId,
         webhookEventId: `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`,
         providerRefundId,
+        providerRefundIdKind: refundIdKind,
         providerPaymentRef,
         amountIdr: idr(heldIdr),
         reason:
@@ -181,7 +197,7 @@ export async function recordProviderRefundInTx(
         {
           intentId: input.expectedIntentId,
           outletId: tellSupervisors ? intentOutletId : null,
-          providerRefundId,
+          providerRefundId: refundKey,
           amountIdr: heldIdr,
         },
         now,
@@ -189,6 +205,9 @@ export async function recordProviderRefundInTx(
   };
   if (
     input.provider !== PROVIDER ||
+    !PROVIDER_REFUND_ID_KINDS.includes(refundIdKind) ||
+    (refundIdKind === "synthetic_full" &&
+      providerRefundId !== providerPaymentRef) ||
     providerRefundId.length === 0 ||
     providerRefundId.length > 100 ||
     providerPaymentRef.length === 0 ||
@@ -280,18 +299,23 @@ export async function recordProviderRefundInTx(
   const evidenceId = evidence?.id ?? null;
 
   // 3. The echo of a refund we sent is not a provider refund of its own. A
-  // failed refund of ours returned nothing, so it never matches.
-  const [own] = await tx
-    .select({ id: paymentRefunds.id })
-    .from(paymentRefunds)
-    .where(
-      and(
-        eq(paymentRefunds.tenantId, tenantId),
-        eq(paymentRefunds.providerRef, providerRefundId),
-        sql`${paymentRefunds.status} <> 'failed'`,
-      ),
-    )
-    .limit(1);
+  // failed refund of ours returned nothing, so it never matches. Only a
+  // provider's own refund id can be the echo (a synthetic id is a payment id or
+  // a hold id, never a refund reference of ours).
+  const [own] =
+    refundIdKind === "provider"
+      ? await tx
+          .select({ id: paymentRefunds.id })
+          .from(paymentRefunds)
+          .where(
+            and(
+              eq(paymentRefunds.tenantId, tenantId),
+              eq(paymentRefunds.providerRef, providerRefundId),
+              sql`${paymentRefunds.status} <> 'failed'`,
+            ),
+          )
+          .limit(1)
+      : [];
   if (own) return { status: "own" };
   // A refund of this intent we may have sent whose provider reference we do
   // not know yet: this message may be its echo, so count nothing for now.
@@ -314,15 +338,16 @@ export async function recordProviderRefundInTx(
   // remainder is known (legend-tiyce): a live parked-fund refund of ours that
   // already covers all of it is held, not waited for.
   const waitForInFlight = inFlight !== undefined && !input.force;
-  if (waitForInFlight && !providerRefundId.startsWith(SYNTHETIC_PREFIX))
+  if (waitForInFlight && refundIdKind !== "synthetic_full")
     return { status: "retry" };
 
   // One transaction, one refund: the payment's own `refunded` status
-  // (`payment:<ref>`, the whole transaction) and a provider refund id of the
+  // (`synthetic_full`, the whole transaction) and a provider refund id of the
   // same transaction describe the same money, so the second never adds to it.
   const recorded = await tx
     .select({
       refundId: paymentProviderRefunds.providerRefundId,
+      kind: paymentProviderRefunds.refundIdKind,
       amountIdr: paymentProviderRefunds.amountIdr,
     })
     .from(paymentProviderRefunds)
@@ -333,7 +358,7 @@ export async function recordProviderRefundInTx(
         eq(paymentProviderRefunds.providerPaymentRef, providerPaymentRef),
       ),
     );
-  if (providerRefundId.startsWith(SYNTHETIC_PREFIX)) {
+  if (refundIdKind === "synthetic_full") {
     // Refunds of ours on THIS provider transaction went back to the payer and
     // journal through `payment.refunded`: the provider's `refunded` status is
     // their echo, so they are not booked a second time (1025 B). A refund of a
@@ -362,7 +387,12 @@ export async function recordProviderRefundInTx(
               AND e.payment_intent_id = ${intent.id}::uuid
               AND e.provider = ${PROVIDER}
               AND e.provider_ref = ${providerPaymentRef}))`);
-    const echoed = new Set(recorded.map((row) => row.refundId));
+    // Only a provider's own refund id can echo a refund of ours.
+    const echoed = new Set(
+      recorded
+        .filter((row) => row.kind === "provider")
+        .map((row) => row.refundId),
+    );
     const unrecorded = ours.filter(
       (row) => !(row.provider_ref && echoed.has(String(row.provider_ref))),
     );
@@ -398,26 +428,30 @@ export async function recordProviderRefundInTx(
     )
       return { status: "retry" };
     if (left <= 0) {
-      // Our refunds leave nothing of the transaction. One not yet accepted by
-      // the provider (no provider reference) may still fail: not told apart
-      // yet, ask again. Past the window (forced) the money is held instead:
-      // nothing new is booked (ours journals itself), but should ours fail the
-      // intent's refunds and payouts stay stopped until finance checks.
+      // Our refunds leave nothing of the transaction. A refund of the bill
+      // not sent yet (no provider reference) is asked again inside the window.
+      // A refund sent with a reference is NOT waited on: a pending answer
+      // stores the reference and may still end failed (legend-04izi, 1035), and
+      // while the provider's report waits for a retry nothing would stop a new
+      // refund of the same money once ours fails. So it is held at once.
       if (live.length > 0) {
-        if (!input.force && live.some((row) => !row.provider_ref && !row.fund))
+        if (
+          !input.force &&
+          live.some((row) => !row.provider_ref && row.fund !== true)
+        )
           return { status: "retry" };
-        // legend-tiyce: a live parked-fund refund without a provider reference
-        // is not yet known to have been accepted: should it fail, the provider's
-        // refund is the only money back and the books keep it, so it is held
-        // (once) and finance and the supervisors told, forced or not.
-        if (input.force || live.some((row) => !row.provider_ref)) {
-          tellSupervisors = true;
-          await fileLiveOwnHold(
-            live.reduce((sum, row) => sum + Number(row.amount), 0),
-            intent.outletId,
-          );
-          return { status: "own" };
-        }
+        // Otherwise (`force`, a sent refund, or only a parked fund's refund on
+        // its way, legend-tiyce) a refund of ours still on its way is in flight:
+        // nothing new is booked (ours journals itself), but the intent is held
+        // (once) and finance and the supervisors told, so should ours fail its
+        // refunds and payouts stay stopped until finance counts the provider's
+        // refund. Never `own` without the hold.
+        tellSupervisors = true;
+        await fileLiveOwnHold(
+          live.reduce((sum, row) => sum + Number(row.amount), 0),
+          intent.outletId,
+        );
+        return { status: "own" };
       }
       return { status: ownIdr > 0 ? "own" : "duplicate" };
     }
@@ -426,9 +460,9 @@ export async function recordProviderRefundInTx(
     countedLiveOwn = live.length > 0;
   } else if (
     // Finance topping up what the transaction still has left (resolve of a
-    // recon hold) is added to the `payment:` row on purpose.
+    // recon hold) is added to the `synthetic_full` row on purpose.
     !input.topUp &&
-    recorded.some((row) => row.refundId.startsWith(SYNTHETIC_PREFIX))
+    recorded.some((row) => row.kind === "synthetic_full")
   )
     return { status: "duplicate" };
 
@@ -446,6 +480,7 @@ export async function recordProviderRefundInTx(
       paymentIntentId: intent.id,
       evidenceId,
       provider: PROVIDER,
+      refundIdKind,
       providerRefundId,
       providerPaymentRef,
       amountIdr: idr(amountIdr),
@@ -462,6 +497,7 @@ export async function recordProviderRefundInTx(
       target: [
         paymentProviderRefunds.tenantId,
         paymentProviderRefunds.provider,
+        paymentProviderRefunds.refundIdKind,
         paymentProviderRefunds.providerRefundId,
       ],
     })
@@ -587,7 +623,7 @@ export async function recordProviderRefundInTx(
   if (creditSurplus > 0n) {
     const hex = createHash("sha256")
       .update(
-        `refund_recon_hold.credit_used\0${tenantId}\0${intent.id.toLowerCase()}\0${providerRefundId}`,
+        `refund_recon_hold.credit_used\0${tenantId}\0${intent.id.toLowerCase()}\0${refundKey}`,
       )
       .digest("hex");
     const [creditHold] = await tx
@@ -611,7 +647,7 @@ export async function recordProviderRefundInTx(
         {
           intentId: intent.id,
           outletId: intent.outletId,
-          providerRefundId,
+          providerRefundId: refundKey,
           amountIdr: Number(creditSurplus),
         },
         now,
@@ -641,6 +677,7 @@ export async function recordProviderRefundInTx(
             intentId: intent.id,
             evidenceId,
             providerRefundId,
+            refundIdKind,
             amountIdr,
             cumulativeIdr,
             paidIdr,
@@ -658,6 +695,7 @@ export async function recordProviderRefundInTx(
         "intentId",
         "evidenceId",
         "providerRefundId",
+        "refundIdKind",
         "amountIdr",
         "cumulativeIdr",
         "paidIdr",
@@ -675,7 +713,7 @@ export async function recordProviderRefundInTx(
       {
         intentId: intent.id,
         outletId: intent.outletId,
-        providerRefundId,
+        providerRefundId: refundKey,
         amountIdr,
         cumulativeIdr,
       },

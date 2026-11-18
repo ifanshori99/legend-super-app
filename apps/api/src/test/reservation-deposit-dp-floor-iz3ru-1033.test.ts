@@ -319,7 +319,7 @@ async function providerRefunded(
        (tenant_id, outlet_id, payment_intent_id, provider, provider_refund_id,
         provider_payment_ref, amount_idr, source)
      VALUES ($1, $2, $3, 'doit', $4, $5, $6, 'payment_webhook')
-     ON CONFLICT (tenant_id, provider, provider_refund_id) DO NOTHING`,
+     ON CONFLICT (tenant_id, provider, refund_id_kind, provider_refund_id) DO NOTHING`,
     [
       seededTenantId,
       outletId,

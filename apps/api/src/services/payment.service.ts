@@ -136,10 +136,7 @@ import {
   type PaymentIntentRow,
   type PaymentLinkRow,
 } from "./payment-support";
-import {
-  providerPaymentSyntheticRefundId,
-  recordProviderRefundInTx,
-} from "./payment-provider-partial-refund";
+import { recordProviderRefundInTx } from "./payment-provider-partial-refund";
 import type { Tx } from "./permission-resolver";
 
 /** PRD §3.13 "QRIS Dinamis": a QR code lives about 10 minutes. VA and bank
@@ -3409,7 +3406,7 @@ export async function markProviderRefunded(
     // is flagged and alerted instead of staying silent.
     await flagProviderRefundedAfterRecordedInTx(tx, context, intentId, now);
     // legend-gjt5q (1025 B): the whole payment is also written once as a
-    // provider refund (`payment:<providerRef>`, the remainder after earlier
+    // provider refund (`synthetic_full` keyed by the providerRef, the remainder after earlier
     // partial ones), so the 1013 event books it Dr customer_deposit / Cr
     // gateway_clearing once. The unique key makes webhook, poller and replays
     // add nothing. Refunds of ours already sent are the echo of our payout
@@ -3435,7 +3432,8 @@ export async function markProviderRefunded(
       context,
       {
         provider: "doit",
-        providerRefundId: providerPaymentSyntheticRefundId(target.providerRef),
+        providerRefundId: target.providerRef,
+        refundIdKind: "synthetic_full",
         providerPaymentRef: target.providerRef,
         amountIdr: Number(target.amountIdr),
         source,

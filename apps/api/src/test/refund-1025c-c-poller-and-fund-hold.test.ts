@@ -496,7 +496,7 @@ async function providerRows(intentId: string): Promise<ProviderRefundRow[]> {
 
 const fullRowOf = async (code: Code) =>
   (await providerRows(code.id)).filter(
-    (row) => row.provider_refund_id === `payment:${code.providerRef}`,
+    (row) => row.provider_refund_id === code.providerRef,
   );
 
 const refundEventsOfIntent = (intentId: string) =>

@@ -348,6 +348,7 @@ async function recordMatchedProviderRefund(sale: Sale, amountIdr: number) {
       {
         provider: "doit",
         providerRefundId: `rf_${randomUUID().slice(0, 12)}`,
+        refundIdKind: "provider",
         providerPaymentRef: sale.evidence.providerRef,
         amountIdr,
         source: "payment_webhook",

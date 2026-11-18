@@ -56,7 +56,7 @@
 // Run just this file (from the repo root):
 //   LEGEND_TEST_FILES="src/test/refund-1025d-b-long-payment-id.test.ts" heavy pnpm test
 
-import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
+import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import {
   createServer,
   type IncomingMessage,
@@ -152,11 +152,10 @@ function outletContext(outletIds: readonly OutletId[]): ScopedTenantContext {
 const makeRef = (length: number) =>
   `dp_${randomBytes(64).toString("hex")}`.slice(0, length);
 
-/** The synthetic provider refund id of the decided design (brief 1025d). */
-const syntheticId = (ref: string) =>
-  8 + ref.length <= 100
-    ? `payment:${ref}`
-    : `payment:h:${createHash("sha256").update(ref).digest("hex").slice(0, 64)}`;
+/** The id of the payment's own `refunded` fact. Adjusted in 1035
+ * (legend-yn1of): the kind is its own column (`synthetic_full`) and the id is
+ * the raw payment id, so it always fits and is never cut or hashed. */
+const syntheticId = (ref: string) => ref;
 
 // ---------------------------------------------------------------------------
 // Fake DOIT server (same contract as the 958 / 967 / 1025 files). The id of the
@@ -946,12 +945,7 @@ describe("1025d-b-U the synthetic id never collides", () => {
       ]);
       const id = mine[0]!.provider_refund_id;
       expect(id.length).toBeLessThanOrEqual(100);
-      if (ref.length > 92) {
-        expect(id, "never the ref cut short").not.toBe(
-          `payment:${ref.slice(0, 92)}`,
-        );
-        expect(id).toMatch(/^payment:h:[0-9a-f]{64}$/);
-      }
+      expect(id, "never the ref cut short").toBe(ref);
     }
     expect(await refundEventsOfIntent(code.id), "one event per fact").toBe(5);
   });
@@ -1026,8 +1020,8 @@ async function seedHold(
   await asTenantTx((client) =>
     client.query(
       `INSERT INTO refund_recon_holds
-         (id, tenant_id, payment_intent_id, webhook_event_id, provider_refund_id, amount_idr, reason, provider_payment_ref)
-       VALUES ($1, $2, $3, $4, $5, $6, 'Our refund was in flight', $7)`,
+         (id, tenant_id, payment_intent_id, webhook_event_id, provider_refund_id, provider_refund_id_kind, amount_idr, reason, provider_payment_ref)
+       VALUES ($1, $2, $3, $4, $5, 'synthetic_full', $6, 'Our refund was in flight', $7)`,
       [
         holdId,
         tenantId,

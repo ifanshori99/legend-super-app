@@ -11,7 +11,7 @@
 //   limits count it) BEFORE the hold closes, in the same transaction. A refund
 //   of the same id already recorded counts once (the recorder is idempotent).
 // Restrictive on purpose: a hold that cannot be counted (no provider refund id,
-// 0 rupiah), a `payment:<ref>` hold that is not already recorded, or one the
+// 0 rupiah), a `synthetic_full` hold that is not already recorded, or one the
 // recorder does not write, is refused with 422 and stays open.
 import {
   assertTrustedScopedContext,
@@ -43,9 +43,8 @@ import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
 import {
-  isHashedSyntheticRefundId,
-  providerPaymentSyntheticRefundId,
   recordProviderRefundInTx,
+  type ProviderRefundIdKind,
 } from "./payment-provider-partial-refund.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import { assertPaymentPermission } from "./payment-support.ts";
@@ -56,8 +55,6 @@ type Params = ReturnType<typeof resolveEndpoint.params.parse>;
 type Input = ReturnType<typeof resolveEndpoint.body.parse>;
 
 const PROVIDER = "doit";
-/** Id prefix of the refund derived from a payment's own `refunded` status. */
-const SYNTHETIC_PREFIX = "payment:";
 
 const notFound = () =>
   new HttpError(404, "NOT_FOUND", "Refund hold not found.");
@@ -240,7 +237,8 @@ const ownCompletedIdrSql = (
            AND fe.provider = ${PROVIDER}
            AND fe.provider_ref = ${providerPaymentRef}))
      AND NOT EXISTS (SELECT 1 FROM payment_provider_refunds p
-       WHERE p.tenant_id = r.tenant_id AND p.provider_refund_id = r.provider_ref))`;
+       WHERE p.tenant_id = r.tenant_id AND p.refund_id_kind = 'provider'
+         AND p.provider_refund_id = r.provider_ref))`;
 
 /**
  * What is left of one provider transaction of the intent: its amount (the
@@ -286,9 +284,17 @@ async function countHold(
 ): Promise<void> {
   const tenantId = context.tenant.tenantId;
   const named = hold.providerRefundId;
+  // The kind decides, never a prefix of the id (legend-yn1of, 1035). The table
+  // sets it exactly when the id is set.
+  const namedKind: ProviderRefundIdKind | null =
+    named === null
+      ? null
+      : ((hold.providerRefundIdKind as ProviderRefundIdKind | null) ??
+        "provider");
   if (named !== null && hold.amountIdr <= 0)
     throw unprocessable("This hold has no amount to count against the intent.");
   const record = async (
+    refundIdKind: ProviderRefundIdKind,
     providerRefundId: string,
     providerPaymentRef: string,
     amountIdr: number,
@@ -302,6 +308,7 @@ async function countHold(
       {
         provider: PROVIDER,
         providerRefundId,
+        refundIdKind,
         providerPaymentRef,
         amountIdr,
         source: "refund_webhook",
@@ -314,7 +321,10 @@ async function countHold(
     );
     return status;
   };
-  const rowOf = async (providerRefundId: string) => {
+  const rowOf = async (
+    refundIdKind: ProviderRefundIdKind,
+    providerRefundId: string,
+  ) => {
     const [row] = await tx
       .select({ id: paymentProviderRefunds.id })
       .from(paymentProviderRefunds)
@@ -323,6 +333,7 @@ async function countHold(
           eq(paymentProviderRefunds.tenantId, tenantId),
           eq(paymentProviderRefunds.paymentIntentId, intent.id),
           eq(paymentProviderRefunds.provider, PROVIDER),
+          eq(paymentProviderRefunds.refundIdKind, refundIdKind),
           eq(paymentProviderRefunds.providerRefundId, providerRefundId),
         ),
       );
@@ -353,33 +364,29 @@ async function countHold(
     return;
   }
 
-  if (named?.startsWith(SYNTHETIC_PREFIX)) {
+  if (named !== null && namedKind === "synthetic_full") {
     // The provider's `refunded` status of the payment, filed while a refund of
     // ours ran. The hold does not store the transaction amount, so what is
     // left of the transaction is worked out here. It closes only when nothing
     // of ours is still on its way; whatever is not yet accounted for is
     // recorded first, so nothing more than the payment can ever leave.
-    // A hashed id (long payment id) cannot be sliced: the raw ref is the one
-    // stored on the hold (or the intent's only transaction), and it must hash
-    // to the named id (legend-hpwpt).
-    let providerPaymentRef: string;
-    if (isHashedSyntheticRefundId(named)) {
-      const held = await heldPaymentRefOf(tx, tenantId, hold, intent);
-      if (!held || providerPaymentSyntheticRefundId(held) !== named)
-        throw unprocessable(
-          "The provider transaction of this refund is not known.",
-        );
-      providerPaymentRef = held;
-    } else providerPaymentRef = named.slice(SYNTHETIC_PREFIX.length);
+    // The id of a `synthetic_full` hold is the raw provider payment id; a
+    // payment id stored on the hold must be the same one.
+    if (hold.providerPaymentRef !== null && hold.providerPaymentRef !== named)
+      throw unprocessable(
+        "The provider transaction of this refund is not known.",
+      );
+    const providerPaymentRef = named;
     await assertNoRefundInFlight();
     const leftNow = () =>
       transactionLeftIdr(tx, tenantId, intent, providerPaymentRef);
     let left = await leftNow();
     if (left <= 0) return;
-    if (!(await rowOf(named))) {
+    if (!(await rowOf("synthetic_full", named))) {
       // The recorder works out the remainder itself; it needs the amount of
       // the transaction only when no evidence names it.
       const status = await record(
+        "synthetic_full",
         named,
         providerPaymentRef,
         Number(intent.amountIdr),
@@ -389,11 +396,10 @@ async function countHold(
     }
     if (left > 0) {
       // Part of the transaction is still not accounted for (a refund of ours
-      // that failed since): top it up with exactly that.
-      const topUp = `hold:${hold.id}`;
-      if (!(await rowOf(topUp)))
-        await record(topUp, providerPaymentRef, left, true);
-      if (!(await rowOf(topUp))) throw notRecorded();
+      // that failed since): top it up with exactly that, keyed by the hold.
+      if (!(await rowOf("synthetic_hold", hold.id)))
+        await record("synthetic_hold", hold.id, providerPaymentRef, left, true);
+      if (!(await rowOf("synthetic_hold", hold.id))) throw notRecorded();
       left = await leftNow();
     }
     // Closed only with the whole transaction accounted for, to the rupiah.
@@ -407,8 +413,10 @@ async function countHold(
     throw unprocessable(
       "The provider transaction of this refund is not known; the intent has more than one.",
     );
-  const providerRefundId = named ?? `hold:${hold.id}`;
-  if (await rowOf(providerRefundId)) return;
+  // A hold that names no refund id is counted under its own id.
+  const refundIdKind: ProviderRefundIdKind = namedKind ?? "synthetic_hold";
+  const providerRefundId = named ?? hold.id;
+  if (await rowOf(refundIdKind, providerRefundId)) return;
   let amountIdr = hold.amountIdr;
   if (named === null) {
     // No refund id: at most what is left of the named transaction is counted
@@ -423,10 +431,16 @@ async function countHold(
     if (left <= 0) return;
     amountIdr = idr(hold.amountIdr > 0 ? Math.min(hold.amountIdr, left) : left);
   }
-  await record(providerRefundId, providerPaymentRef, amountIdr, named === null);
+  await record(
+    refundIdKind,
+    providerRefundId,
+    providerPaymentRef,
+    amountIdr,
+    named === null,
+  );
   // Only a refund that is on record may close the hold: an echo of our own
   // refund, an unbound or a delayed one counted nothing.
-  if (!(await rowOf(providerRefundId))) throw notRecorded();
+  if (!(await rowOf(refundIdKind, providerRefundId))) throw notRecorded();
 }
 
 export async function resolveRefundReconHold(
@@ -499,8 +513,9 @@ export async function resolveRefundReconHold(
       async () => {
         if (hold.resolvedAt)
           throw new HttpError(409, "CONFLICT", "Hold already resolved.");
-        const refundId = hold.providerRefundId;
-        const synthetic = refundId?.startsWith(SYNTHETIC_PREFIX) === true;
+        const synthetic =
+          hold.providerRefundId !== null &&
+          hold.providerRefundIdKind === "synthetic_full";
         if (request.resolution === "not_this_intent") {
           // Our own refund ran while the full refund was recorded: the money
           // may already have gone back, so it is only closed by counting it.

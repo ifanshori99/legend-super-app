@@ -419,14 +419,16 @@ async function seedOwnRow(code: Code, amountIdr: number) {
   await owner.query(
     `INSERT INTO payment_provider_refunds
        (id, tenant_id, outlet_id, payment_intent_id, provider, provider_refund_id,
-        provider_payment_ref, amount_idr, source)
-     VALUES ($1, $2, $3, $4, 'doit', $5, $6, $7, 'refund_webhook')`,
+        provider_payment_ref, amount_idr, source, refund_id_kind)
+     VALUES ($1, $2, $3, $4, 'doit', $5, $6, $7, 'refund_webhook', 'synthetic_full')`,
     [
       randomUUID(),
       tenantId,
       outletId,
       code.id,
-      `payment:${code.providerRef}`,
+      // 1035: the payment's own refunded fact is `synthetic_full`, keyed by
+      // the raw payment id.
+      code.providerRef,
       code.providerRef,
       amountIdr,
     ],

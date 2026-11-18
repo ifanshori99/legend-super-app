@@ -451,6 +451,10 @@ afterAll(async () => {
       [tenantId, createdLinkIds],
     );
     await owner.query(
+      `DELETE FROM refund_recon_holds WHERE tenant_id = $1 AND payment_intent_id IN (${intents})`,
+      [tenantId, createdLinkIds],
+    );
+    await owner.query(
       `DELETE FROM payment_provider_refunds WHERE tenant_id = $1 AND payment_intent_id IN (${intents})`,
       [tenantId, createdLinkIds],
     );
@@ -1115,7 +1119,35 @@ describe("legend-7uqbs the provider echo of our own refund is not a provider-ini
     await pollLater().catch(() => null);
   }
 
-  async function expectEchoIgnored(
+  /** Open recon holds of the intent. */
+  async function openHolds(intentId: string): Promise<number> {
+    const { rows } = await owner.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM refund_recon_holds
+        WHERE tenant_id = $1 AND payment_intent_id = $2 AND resolved_at IS NULL`,
+      [tenantId, intentId],
+    );
+    return Number(rows[0]!.n);
+  }
+
+  /** Provider refund facts recorded for the intent. */
+  async function providerFacts(intentId: string): Promise<number> {
+    const { rows } = await owner.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM payment_provider_refunds
+        WHERE tenant_id = $1 AND payment_intent_id = $2`,
+      [tenantId, intentId],
+    );
+    return Number(rows[0]!.n);
+  }
+
+  /**
+   * legend-04izi (1035): a pending answer stores the provider reference and may
+   * still end failed, so the echo of a refund of ours still on its way is NOT
+   * taken as proof it succeeded: nothing new is booked (no provider fact, our
+   * refund untouched), but the intent is held ONCE (duplicate events and the
+   * poller add nothing) and finance told ONCE, so a failure of ours cannot
+   * reopen the money for a second refund.
+   */
+  async function expectEchoHeldOnce(
     code: Code,
     refundStatusesBefore: string[],
     refundAuditBefore: string[],
@@ -1125,13 +1157,17 @@ describe("legend-7uqbs the provider echo of our own refund is not a provider-ini
       (await auditActions(code.id)).filter((a) => /refund/i.test(a)),
       "no new refund audit row",
     ).toEqual(refundAuditBefore);
-    expect(await supervisorAlerts(), "no false alert").toBe(alertsBefore);
+    expect(await providerFacts(code.id), "no provider fact").toBe(0);
+    expect(await openHolds(code.id), "one in-flight hold").toBe(1);
+    expect(await supervisorAlerts(), "one alert, not per event").toBe(
+      alertsBefore + 1,
+    );
     expect(await refundStatuses(code.id), "our refund untouched").toEqual(
       refundStatusesBefore,
     );
   }
 
-  it("958-a6 paid intent, our manual refund sent and still pending at the provider, then the provider echoes refunded: nothing flagged, no alert, refund untouched", async () => {
+  it("958-a6 paid intent, our manual refund sent and still pending at the provider, then the provider echoes refunded: nothing booked, ONE in-flight hold and alert (legend-04izi), refund untouched", async () => {
     const code = await newCode();
     expect((await paid(code)).status).toBe(200);
     const filed = await manualRefund(code.id, BILL_TOTAL);
@@ -1149,11 +1185,11 @@ describe("legend-7uqbs the provider echo of our own refund is not a provider-ini
     );
     const alerts = await supervisorAlerts();
     await echo(code);
-    await expectEchoIgnored(code, statuses, audit, alerts);
+    await expectEchoHeldOnce(code, statuses, audit, alerts);
     expect(fake.calls, "no second payout").toHaveLength(1);
   });
 
-  it("958-a6 parked fund, our refund of it sent and still pending, then the provider echoes refunded: nothing flagged, no alert", async () => {
+  it("958-a6 parked fund, our refund of it sent and still pending, then the provider echoes refunded: nothing booked, ONE in-flight hold and alert (legend-04izi)", async () => {
     const code = await newCode();
     expect((await paid(code, BILL_TOTAL - SHORT_BY)).status).toBeLessThan(500);
     const [fund] = await fundsOf(code.id);
@@ -1169,7 +1205,7 @@ describe("legend-7uqbs the provider echo of our own refund is not a provider-ini
     const alerts = await supervisorAlerts();
 
     await echo(code);
-    await expectEchoIgnored(code, statuses, audit, alerts);
+    await expectEchoHeldOnce(code, statuses, audit, alerts);
     expect(fake.calls, "no second payout").toHaveLength(1);
     expect(await refundRowsOfFund(fund!.id)).toBe(1);
   });

@@ -522,7 +522,7 @@ async function addOwnRefundInFlight(d: Deposit, amountIdr: number) {
   );
 }
 
-/** The full-refund door (`payment:<ref>`) with our whole-DP refund in flight. */
+/** The full-refund door (`synthetic_full`) with our whole-DP refund in flight. */
 function recordFullRefund(d: Deposit) {
   const context = scope();
   return withTenant(db, context, (tx) =>
@@ -531,7 +531,8 @@ function recordFullRefund(d: Deposit) {
       context,
       {
         provider: "doit",
-        providerRefundId: `payment:${d.providerRef}`,
+        providerRefundId: d.providerRef,
+        refundIdKind: "synthetic_full",
         providerPaymentRef: d.providerRef,
         amountIdr: d.deposit,
         source: "refund_webhook",
