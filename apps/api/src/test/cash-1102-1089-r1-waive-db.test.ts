@@ -462,6 +462,25 @@ const correctLines = (h: Handover): Line[] => [
   { accountId: sourceAccountOf(h), debit: 0, credit: h.net },
 ];
 
+/** Owner-role transaction with triggers off (setup only). */
+async function withOwnerNoTriggers<T>(
+  work: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  const client = await kitOwner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SET LOCAL session_replication_role = replica");
+    const result = await work(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 /** The refusal is a real guard, not a missing function. */
 const expectGuardError = (
   error: { code?: string; message: string } | null,
@@ -643,6 +662,88 @@ describe("1089 R1: settle_waived only through the trusted function with its jour
     });
     expectGuardError(unbalancedLate, "late unbalanced line");
     await expectUntouched(h, "late unbalanced line");
+  }, 120_000);
+});
+
+describe("1089 R1 round 2: the trusted function re-checks the current petty cash mapping and the locked journal", () => {
+  it("[1089-r1-f-remapped-petty-cash-refused] after the entity's petty_cash mapping is moved to another account, the function with an otherwise right journal (credit on the handover's old 1102 account) is refused: the row stays settle_skipped, no journal stays", async () => {
+    const h = await skippedHandover();
+    const header = await realWaiveHeader(h);
+    const mapping = [W.tenantId, W.entityId()];
+    await kitOwner.query(
+      `UPDATE account_mappings SET account_id = $3
+        WHERE tenant_id = $1 AND legal_entity_id = $2 AND role = 'petty_cash'`,
+      [...mapping, otherCreditAccountId],
+    );
+    let error: Awaited<ReturnType<typeof appTx>>;
+    try {
+      error = await appTx(async (client) => {
+        const entry = await insertEntry(client, h.posting.id, header);
+        await addLines(client, entry, correctLines(h), 1);
+        await callWaiveFunction(client, h);
+      });
+    } finally {
+      await kitOwner.query(
+        `UPDATE account_mappings SET account_id = $3
+          WHERE tenant_id = $1 AND legal_entity_id = $2 AND role = 'petty_cash'`,
+        [...mapping, pettyGlId],
+      );
+    }
+
+    expectGuardError(error, "petty_cash remapped");
+    await expectUntouched(h, "petty_cash remapped");
+  }, 120_000);
+
+  it("[1089-r1-g-run-with-locked-journal-refused] when the run already has its payroll.locked journal (key payroll-gl:locked:<run>), the function with an otherwise right journal is refused: the row stays settle_skipped, no waive journal stays", async () => {
+    const h = await skippedHandover();
+    const header = await realWaiveHeader(h);
+    const lockedKey = `payroll-gl:locked:${h.runId}`;
+    const lockedId = await withOwnerNoTriggers(async (client) => {
+      const { rows } = await client.query<{ id: string }>(
+        `INSERT INTO journal_entries
+           (tenant_id, legal_entity_id, entry_date, fiscal_period_id, source_type,
+            source_id, description, idempotency_key, request_fingerprint)
+         VALUES ($1, $2, $3, $4, 'payroll', $5, 'Jurnal kunci gaji uji 1089 r1', $6, $7)
+         RETURNING id`,
+        [
+          W.tenantId,
+          W.entityId(),
+          header.entryDate,
+          header.periodId,
+          h.runId,
+          lockedKey,
+          randomBytes(32).toString("hex"),
+        ],
+      );
+      await client.query(
+        `INSERT INTO journal_lines (tenant_id, entry_id, account_id, line_no, debit_idr, credit_idr)
+         VALUES ($1, $2, $3, 1, $5, 0), ($1, $2, $4, 2, 0, $5)`,
+        [W.tenantId, rows[0]!.id, salaryAccountId, otherCreditAccountId, h.net],
+      );
+      return rows[0]!.id;
+    });
+    let error: Awaited<ReturnType<typeof appTx>>;
+    try {
+      error = await appTx(async (client) => {
+        const entry = await insertEntry(client, h.posting.id, header);
+        await addLines(client, entry, correctLines(h), 1);
+        await callWaiveFunction(client, h);
+      });
+    } finally {
+      await withOwnerNoTriggers(async (client) => {
+        await client.query(
+          "DELETE FROM journal_lines WHERE tenant_id = $1 AND entry_id = $2",
+          [W.tenantId, lockedId],
+        );
+        await client.query(
+          "DELETE FROM journal_entries WHERE tenant_id = $1 AND id = $2",
+          [W.tenantId, lockedId],
+        );
+      });
+    }
+
+    expectGuardError(error, "run has a locked journal");
+    await expectUntouched(h, "run has a locked journal");
   }, 120_000);
 });
 

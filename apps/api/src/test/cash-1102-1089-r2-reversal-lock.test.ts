@@ -610,6 +610,57 @@ describe("1089 R2 manual reversal of the settle journal of a cash payroll handov
   }, 120_000);
 });
 
+// ---- 3b. other journals that credit 1102 (default refusal) ----------------------------------
+
+describe("1089 R2 manual reversal of any other journal that credits the current 1102 account", () => {
+  it("[1089-r2-petty-purchase-reversal-locked-409] reversing the journal of a petty purchase (source_type petty_purchase, Dr 6101 / Cr 1102) is refused 409 CASH_OUT_JOURNAL_LOCKED: no reversal journal, GL 1102 stays Rp0, and a kasbon of the same amount is refused 422 PETTY_CASH_GL_INSUFFICIENT", async () => {
+    await drain();
+    await addCash(AMOUNT);
+    const journalId = await seedJournal(AMOUNT, {
+      sourceType: "petty_purchase",
+      key: `r2-petty-purchase-${randomUUID()}`,
+      debitCode: "6101",
+      creditCode: "1102",
+    });
+    expect(await glBalance(), "premise: 1102 is empty").toBe(0);
+    expect(await available(), "premise: nothing available").toBe(0);
+    const journals = await journalCount();
+
+    const reversal = await reverseManually(journalId);
+
+    expectLocked(reversal);
+    expect(await journalCount(), "no reversal journal").toBe(journals);
+    expect(await glBalance(), "GL 1102 unchanged").toBe(0);
+    expect(await available(), "available unchanged").toBe(0);
+
+    await ensureMapping("employee_receivable", "1204");
+    const other = await seedLoan(await makeEmployee(), AMOUNT);
+    expectGlRefusal(await disburse(other, AMOUNT));
+    expect(await loanState(other)).toEqual({ status: "approved", events: 0 });
+    expect(await journalCount(), "no new journal").toBe(journals);
+  }, 120_000);
+
+  it("[1089-r2-petty-return-journal-reversal-locked-409] reversing a petty cash return journal (source_type petty_cash_return, key pc:<entryId>, Dr 1103 / Cr 1102) is refused 409 CASH_OUT_JOURNAL_LOCKED: no reversal journal, GL 1102 stays Rp0", async () => {
+    await drain();
+    await addCash(AMOUNT);
+    const journalId = await seedJournal(AMOUNT, {
+      sourceType: "petty_cash_return",
+      key: `pc:${randomUUID()}`,
+      debitCode: "1103",
+      creditCode: "1102",
+    });
+    expect(await glBalance(), "premise: 1102 is empty").toBe(0);
+    const journals = await journalCount();
+
+    const reversal = await reverseManually(journalId);
+
+    expectLocked(reversal);
+    expect(await journalCount(), "no reversal journal").toBe(journals);
+    expect(await glBalance(), "GL 1102 unchanged").toBe(0);
+    expect(await available(), "available unchanged").toBe(0);
+  }, 120_000);
+});
+
 // ---- 4. controls ----------------------------------------------------------------------------
 
 describe("1089 R2 controls: reversals that must keep working", () => {
@@ -657,8 +708,27 @@ describe("1089 R2 controls: reversals that must keep working", () => {
   }, 120_000);
 });
 
+type SeedShape = {
+  sourceType: string;
+  key: string;
+  debitCode: string;
+  creditCode: string;
+};
+
 /** A balanced journal of source `manual` (Dr 1103 / Cr 6101-class expense), seeded by SQL; returns its id. */
-async function seedManualJournal(amountIdr: number): Promise<string> {
+const seedManualJournal = (amountIdr: number) =>
+  seedJournal(amountIdr, {
+    sourceType: "manual",
+    key: `r2-manual-${randomUUID()}`,
+    debitCode: "1103",
+    creditCode: "6101",
+  });
+
+/** A balanced journal of the given shape, seeded by SQL (setup only); returns its id. */
+async function seedJournal(
+  amountIdr: number,
+  shape: SeedShape,
+): Promise<string> {
   const client = await kitOwner.connect();
   try {
     await client.query("BEGIN");
@@ -682,22 +752,29 @@ async function seedManualJournal(amountIdr: number): Promise<string> {
         `INSERT INTO journal_entries
            (tenant_id, legal_entity_id, entry_date, fiscal_period_id, source_type,
             source_id, description, idempotency_key, request_fingerprint)
-         VALUES ($1, $2, $3, $4, 'manual', NULL, 'Jurnal manual uji 1089 R2', $5, $6)
+         VALUES ($1, $2, $3, $4, $7, NULL, 'Jurnal uji 1089 R2', $5, $6)
          RETURNING id`,
         [
           tenantId,
           W.entityId(),
           date,
           period,
-          `r2-manual-${randomUUID()}`,
+          shape.key,
           randomBytes(32).toString("hex"),
+          shape.sourceType,
         ],
       )
     ).rows[0]!.id;
     await client.query(
       `INSERT INTO journal_lines (tenant_id, entry_id, account_id, line_no, debit_idr, credit_idr)
        VALUES ($1, $2, $3, 1, $5, 0), ($1, $2, $4, 2, 0, $5)`,
-      [tenantId, entry, await code("1103"), await code("6101"), amountIdr],
+      [
+        tenantId,
+        entry,
+        await code(shape.debitCode),
+        await code(shape.creditCode),
+        amountIdr,
+      ],
     );
     await client.query("COMMIT");
     return entry;

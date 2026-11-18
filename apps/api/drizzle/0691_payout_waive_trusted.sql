@@ -5,13 +5,14 @@
 -- 1. legend_payout may UPDATE postings.kind and read what the checks read.
 -- 2. app.payout_waive_journal_ok: journal `payroll-payout-waive:<posting>` of the
 --    batch entity, debit sum = credit sum > 0, equal to settle_net_idr when it is known, credits only
---    on the posting's frozen source (1102) account, debits only on the entity's
+--    on the posting's frozen source (1102) account, which must still be the
+--    entity's current petty_cash mapping, debits only on the entity's
 --    salary_expense mapping account.
 -- 3. app.payout_waive_skipped (SECURITY DEFINER, owner legend_payout): actor
 --    (live MFA session, accounting.petty_cash.manage), lock order batch row,
---    advisory lock, posting row; cash batch, kind settle_skipped, journal ok;
---    flips the kind. Errors PAYOUT-60..PAYOUT-64 (P0002 not found, 42501 actor,
---    23514 any state refusal).
+--    advisory lock, posting row; cash batch, kind settle_skipped, no
+--    payroll.locked journal of the run, journal ok; flips the kind. Errors
+--    PAYOUT-60..PAYOUT-65 (P0002 not found, 42501 actor, 23514 any state refusal).
 -- 4. The 0690 guard, verbatim except the waive branch (needs current_user =
 --    legend_payout and the journal helper).
 -- 5. Commit-time checks (pattern 0400): the posting check also fires on the
@@ -59,7 +60,15 @@ LANGUAGE sql STABLE SET search_path = pg_catalog AS $$
                        FROM public.journal_lines l
                       WHERE l.tenant_id = j.tenant_id AND l.entry_id = j.id)
                   = p.settle_net_idr))
-       -- Every credit line is on the 1102 account frozen on the posting.
+       -- Every credit line is on the 1102 account frozen on the posting, and
+       -- that account is still the entity's current petty_cash mapping (the
+       -- account the reserve and every 1102 guard watch).
+       AND p.source_gl_account_id IN (
+         SELECT m.account_id
+           FROM public.account_mappings m
+          WHERE m.tenant_id = b.tenant_id
+            AND m.legal_entity_id = b.legal_entity_id
+            AND m.role = 'petty_cash')
        AND NOT EXISTS (
          SELECT 1
            FROM public.journal_lines l
@@ -115,6 +124,16 @@ BEGIN
   END IF;
   IF v_posting.kind <> 'settle_skipped' THEN
     RAISE EXCEPTION 'PAYOUT-62: payout posting % is not settle_skipped', v_posting.id
+      USING ERRCODE = '23514';
+  END IF;
+  -- The run's payroll.locked journal exists: the salary expense is already
+  -- booked there, so a waive would book it twice (same check as the service).
+  IF EXISTS (
+    SELECT 1
+      FROM public.journal_entries j
+     WHERE j.tenant_id = v_tenant
+       AND j.idempotency_key = 'payroll-gl:locked:' || v_batch.payroll_run_id::text) THEN
+    RAISE EXCEPTION 'PAYOUT-65: payroll run % already has its locked journal', v_batch.payroll_run_id
       USING ERRCODE = '23514';
   END IF;
   IF NOT app.payout_waive_journal_ok(v_tenant, v_posting.id) THEN

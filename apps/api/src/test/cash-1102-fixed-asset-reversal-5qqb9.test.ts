@@ -404,7 +404,7 @@ describe("legend-5qqb9 C reversal of a journal that debited GL 1102", () => {
     expect(await gl1102(s)).toBe(0);
   });
 
-  it("[5qqb9-reversal-of-credit-never-guarded] reversing a Rp1.800.000 payout that credited 1102 debits 1102: posts although 1102 holds nothing else, GL 1102 rises to Rp1.800.000", async () => {
+  it("[5qqb9-reversal-of-credit-locked-by-1089] manual reversal of a Rp1.800.000 payout that credited 1102 is refused 409 CASH_OUT_JOURNAL_LOCKED (SO 1089 P1-2: it would reopen cash that already left): no reversal journal, GL 1102 stays Rp0", async () => {
     const s = await scenario("rev credit");
     await seedEntry(s, "debit_1102", 1_800_000);
     const payout = await seedEntry(s, "credit_1102", 1_800_000);
@@ -412,9 +412,10 @@ describe("legend-5qqb9 C reversal of a journal that debited GL 1102", () => {
 
     const response = await reverse(s, payout);
 
-    expect(response.status, JSON.stringify(response.body)).toBeLessThan(300);
-    expect(await entryCount(s, "reversal")).toBe(1);
-    expect(await gl1102(s)).toBe(1_800_000);
+    expect(response.status, JSON.stringify(response.body)).toBe(409);
+    expect(JSON.stringify(response.body)).toContain("CASH_OUT_JOURNAL_LOCKED");
+    expect(await entryCount(s, "reversal")).toBe(0);
+    expect(await gl1102(s)).toBe(0);
   });
 });
 

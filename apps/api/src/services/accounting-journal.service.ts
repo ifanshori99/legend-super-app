@@ -1077,49 +1077,44 @@ async function assertNotDepreciationJournal(
 }
 
 /**
- * A manual reversal of an auto cash-out journal that credits GL 1102 would
- * reopen cash that already left the till while its source (loan, cash
- * reimbursement, cash payroll settle posting, supplier payment) is still paid
- * (legend-5qqb9, bead 1091). The correction goes through the source's own
- * return flow. A source row that is missing or unknown is refused. Caller
- * holds the entity lock and the journal row lock.
+ * A manual reversal of a journal that credits the entity's CURRENT petty cash
+ * account (GL 1102) would reopen cash that already left the till
+ * (legend-5qqb9, bead 1091). Refused by default: only journals the finance user
+ * writes by hand (source `manual`, `recurring`) pass, and the known cash-out
+ * sources (loan, cash reimbursement, cash payroll settle posting, supplier
+ * payment) pass once their source is no longer paid. Every other journal that
+ * credits 1102 (petty purchase, petty cash return `pc:<entryId>`, old
+ * `payroll-gl:paid:<run>`) is refused: the correction goes through its own
+ * flow. A known source row that is missing or unknown is refused. Caller holds
+ * the entity lock and the journal row lock.
  */
 async function assertAutoCashOutSourceNotPaid(
   tx: TenantTransaction,
   tenantId: TenantId,
   row: EntryRow,
-  lines: readonly { accountId: string; creditIdr: number }[],
+  lines: readonly { accountId: string; debitIdr: number; creditIdr: number }[],
 ): Promise<void> {
+  if (row.sourceType === "manual" || row.sourceType === "recurring") return;
+  const pettyCashAccountId = await pettyCashGlAccount(
+    tx,
+    tenantId,
+    row.legalEntityId,
+  );
+  if (pettyCashAccountId === null) return;
+  const netCredit = lines
+    .filter((line) => line.accountId === pettyCashAccountId)
+    .reduce((sum, line) => sum + line.creditIdr - line.debitIdr, 0);
+  if (netCredit <= 0) return;
   const key = row.idempotencyKey;
-  if (key === null) return;
   const uuidPart = (prefix: string): string | null | undefined => {
-    if (!key.startsWith(prefix)) return undefined;
+    if (key === null || !key.startsWith(prefix)) return undefined;
     const id = uuidSchema.safeParse(key.slice(prefix.length));
     return id.success ? id.data : null;
   };
   const loanId = uuidPart("payroll-gl:loan:");
   const reimbursementId = uuidPart("payroll-gl:reimbursement:");
   const settlementId = uuidPart("ap-pay:");
-  const payoutSettle = key.startsWith("payroll-payout:");
-  if (
-    loanId === undefined &&
-    reimbursementId === undefined &&
-    settlementId === undefined &&
-    !payoutSettle
-  )
-    return;
-  const pettyCashAccountId = await pettyCashGlAccount(
-    tx,
-    tenantId,
-    row.legalEntityId,
-  );
-  if (
-    pettyCashAccountId === null ||
-    !lines.some(
-      (line) => line.accountId === pettyCashAccountId && line.creditIdr > 0,
-    )
-  )
-    return;
+  const payoutSettle = key !== null && key.startsWith("payroll-payout:");
   let paid: boolean;
   if (loanId !== undefined) {
     // Loan disbursed (or settled later): the cash left the till.
@@ -1175,7 +1170,7 @@ async function assertAutoCashOutSourceNotPaid(
       )
       .limit(1);
     paid = !posting || posting.kind === "settle";
-  } else {
+  } else if (settlementId !== undefined) {
     // Supplier payment journal: the payment row that points at it, status paid.
     const [payment] = await tx
       .select({ status: supplierPayments.status })
@@ -1188,12 +1183,15 @@ async function assertAutoCashOutSourceNotPaid(
       )
       .limit(1);
     paid = !payment || payment.status === "paid";
+  } else {
+    // No known source says the cash came back: the default is refusal.
+    paid = true;
   }
   if (paid)
     throw new HttpError(
       409,
       "CASH_OUT_JOURNAL_LOCKED",
-      "This journal records a cash payout that is still paid and cannot be reversed by hand; correct it through its source (return flow).",
+      "This journal takes cash out of petty cash and cannot be reversed by hand; correct it through its source (return flow).",
     );
 }
 
