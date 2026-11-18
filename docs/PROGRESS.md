@@ -7417,3 +7417,12 @@ Brief: `docs/briefs/1006-so-akses-fix.md`. Tingkat K (akses). Tanpa migrasi (`db
 - Review architect (xhigh) ronde 1: 3 P1 + 1 P2 (guard router-level, POS_PATH tanpa floor, authClient tanpa header, cookie ke-9) semua dibetulkan. Ronde 2: tertutup, 1 temuan rendah (audit sesi support) dibetulkan.
 - Rute tanpa guard perangkat bersama yang belum ditutup (keputusan CTO): pickup, expo, order-issues, serving-time, open-bill (approvers dan convert POST), delivery-orders (guard ringan), emergency-cloud (belum jelas).
 - Subagent: total 8, puncak 3 bersamaan, token heavy dipegang bergantian (test-writer, test-runner).
+## 1061 Status edge ke cloud S1-S5 + 5ab0l (18 Nov 2026) - ghostex/status-edge-ke-cloud-s1-s5, dasar origin/milestone/m1
+
+Desain: `docs/design/edge-status-cloud.md` (D1-D12). Tingkat K. Migrasi kerja 0678 (tabel `edge_node_alerts`) dan 0679 (kind `edge_offline`); merge train menomori ulang.
+
+- S1 uux9k tabel + RLS + service raise/resolve + kontrak shared. S2 0cjzz alarm hard_stale lewat event `edge_node_alarm.raised/cleared` (id berantai, gerbang checkpoint puller). S3 eo3lc `GET /api/edge-node-status` (`report.operational.view`, tenant_admin tidak diberi). S4 m8vf0 alarm rotasi struk disimpan di savepoint tarikan registry. S5 n5u8w layar web ke API asli. S6 5ab0l sweep edge offline 30 menit saat jam buka (founder Q44; env `EDGE_OFFLINE_ALARM_MINUTES`).
+- Architect xhigh: 0 P1, 1 P2 (alarm kedua hilang bila id sama; dibetulkan). Deviasi T11: event berscope asing membatalkan batch (fail-closed, perilaku lama db-link-store), bukan applier_refused; desain dikoreksi.
+- Bukti: typecheck API dan web hijau, `db:generate` kosong, kontrak teks hijau, 9 berkas tes API (159 tes) + qr-order-edge-forwarding (13) hijau, e2e mock `e2e/legend-n5u8w.mock.spec.ts` 3/3 (screenshot `design/screens/n5u8w/` 360 dan 1280), prettier + eslint hijau.
+- Risiko: edge harus dirilis SESUDAH cloud (event tak dikenal diparkir). Outlet 24 jam menghitung ulang offline tiap tengah malam (P3). Baris `edge_node_alarm` di outbox edge tidak dipangkas (P3).
+- Subagent: total 15, puncak 6 bersamaan, token heavy dipegang test-runner.
