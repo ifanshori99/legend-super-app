@@ -656,6 +656,32 @@ async function pendingPettyCashCreditsIdr(
   return total;
 }
 
+/**
+ * Cash the entity's petty cash account (1102) can still pay out: the posted GL
+ * balance minus the credits not on the GL yet (`pendingPettyCashCreditsIdr`).
+ * Null when the entity has no `petty_cash` mapping. Shared by the petty cash
+ * return guard (legend-3k9qg) and the cash payroll batch approval (legend-rvao9).
+ * Call under `entityLock`, so the GL and the pending credits are read together.
+ */
+export async function availableCash1102(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  legalEntityId: string,
+): Promise<{
+  glIdr: number;
+  pendingCreditIdr: number;
+  availableIdr: number;
+} | null> {
+  const glIdr = await pettyCashGlBalance(tx, tenantId, legalEntityId);
+  if (glIdr === null) return null;
+  const pendingCreditIdr = await pendingPettyCashCreditsIdr(
+    tx,
+    tenantId,
+    legalEntityId,
+  );
+  return { glIdr, pendingCreditIdr, availableIdr: glIdr - pendingCreditIdr };
+}
+
 // ------------------------------------------------------------------- reads
 
 /** Funds of one legal entity (optionally one outlet) in the caller's outlets. */
@@ -1018,18 +1044,13 @@ async function applyMovement(
   // Fund shortage keeps its own code (changeBalance below); the GL check only
   // runs when a petty_cash account is mapped.
   if (input.kind === "return" && input.amountIdr <= fund.balanceIdr) {
-    const glIdr = await pettyCashGlBalance(tx, tenantId, input.legalEntityId);
-    if (glIdr !== null) {
-      // Cash credits not on the GL yet (legend-3k9qg), read under the entity
-      // lock taken above.
-      const pendingCreditIdr = await pendingPettyCashCreditsIdr(
-        tx,
-        tenantId,
-        input.legalEntityId,
-      );
+    // GL minus cash credits not on the GL yet (legend-3k9qg), read under the
+    // entity lock taken above.
+    const cash = await availableCash1102(tx, tenantId, input.legalEntityId);
+    if (cash !== null) {
+      const { glIdr, pendingCreditIdr, availableIdr } = cash;
       const allowedIdr =
-        fund.balanceIdr -
-        Math.max(0, entityFundTotal - (glIdr - pendingCreditIdr));
+        fund.balanceIdr - Math.max(0, entityFundTotal - availableIdr);
       if (input.amountIdr > allowedIdr)
         throw new AccountingError("PETTY_CASH_GL_INSUFFICIENT", undefined, {
           balanceIdr: fund.balanceIdr,

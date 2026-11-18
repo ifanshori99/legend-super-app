@@ -7413,3 +7413,12 @@ Gerbang:
 - e2e produksi: 18 lulus, 1 skip, 40 dtk. e2e mock penuh (1,0 jam): 1163 lulus, 2 skip, 1 gagal: g6d AUTH-06 menghitung 31 aksi approval, kini 32 (991 menambah `supplier_payment`); spec diperbarui, `legend-g6d.mock.spec.ts` 5/5. AUTH-05 dan TEN-03 (baseline batch85, kartu sz75z) kini lulus berkat `perbaiki-test-mock-e2e-m1`. 14 spec 988 (`Rp\s?`) lulus.
 
 Subagent: 0 (thread ini tidak memanggil subagent di batch86; sesi sejak awal: 6), pemegang `heavy`: thread ini. Biaya sesi (session-usage, kumulatif batch85+86): utama 5886k, subagent 499k; selisih batch86 sekitar utama 3123k, subagent 44k.
+
+## 18 Nov 2026 — 1053 kas kecil: tolak batch gaji tunai bila saldo kurang + urutan kunci (thread engineer)
+
+- Cabang ghostex/62ea31e4 (dari 69461a987, 1037). Kartu legend-rvao9 dan legend-f250r. Tanpa migrasi.
+- rvao9 (founder Q43): `approveDisbursementBatch` untuk batch tunai menolak 409 `PAYOUT_CASH_INSUFFICIENT` bila total item `prepared` > `availableCash1102` (GL 1102 dikurangi kredit menunggu, helper baru dipakai juga oleh guard return 1037). Entity lock diambil SETELAH baris run dan batch (urutan semua penulis GL payout), sebelum kredit menunggu dibaca. Dilewati bila modul akuntansi mati (temuan P1 architect: settle_skipped dihitung pending selamanya) atau tanpa mapping petty_cash (handover tetap gagal 422).
+- f250r: urutan kanonik entity advisory -> entity row share -> period. `assertJournalPeriodPostable`, `lockAsset`, dan `wouldPostingBeBlockedByClosedPeriod` kini mengambil `entityLock` lebih dulu. Deadlock nyata terbukti di base (manual approve 500, recurring failed:1, 3 kasus lain menunggu entity lock), lulus setelah perbaikan.
+- Test: payroll-payout-1053-cash-approve-guard (12), accounting-lock-order-1053 (13). Setup 4 test lama didanai kas lewat `fundPettyCash` (aturan baru). Regresi terarah 143 + 330 lulus.
+- Architect xhigh: tidak ada deadlock baru. Terbuka (keputusan founder via CTO): P2-a petty purchase setelah approve bisa membuat 1102 minus (guard tidak menyisihkan saldo dana); P2-b mapping petty_cash dibuat finance antara approve dan handover; P3 selisih jam app vs DB pada batas kedaluwarsa.
+- Gerbang: prettier, eslint, tsc API (heavy) exit 0, db:generate kosong.

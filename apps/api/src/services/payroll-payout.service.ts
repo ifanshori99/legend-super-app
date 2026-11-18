@@ -72,6 +72,8 @@ import {
   sealPayrollAmount,
   sealPayrollValue,
 } from "../lib/payroll-sealed.ts";
+import { entityLock } from "./accounting-bank-matching.ts";
+import { availableCash1102 } from "./accounting-petty-cash.service.ts";
 import { recordAudit } from "./core-audit.ts";
 import type { Tx } from "./hris-access.ts";
 import { openPayeeBankSnapshot } from "./payroll-bank-snapshot.service.ts";
@@ -80,6 +82,7 @@ import type {
   PayoutGrantIssuer,
 } from "./payroll-payout-grant.service.ts";
 import {
+  accountingEnabled,
   assertManualPayoutSetup,
   configuredSourceBankAccountId,
 } from "./payroll-payout-setup.ts";
@@ -1591,6 +1594,50 @@ export async function submitDisbursementBatch(
 
 // ------------------------------------------------------------------ approve
 
+const rupiah = (amount: number) => `Rp${amount.toLocaleString("id-ID")}`;
+
+/**
+ * Refuses (409 PAYOUT_CASH_INSUFFICIENT) a cash batch whose net total is more
+ * than the entity's available petty cash: GL 1102 minus the credits not on the
+ * GL yet, the same figure the petty cash return guard uses (legend-rvao9). The
+ * entity lock comes AFTER the run and batch rows (every payout GL writer takes
+ * them in that order, `lockBatchPayoutGl`; the other order deadlocks with a
+ * handover of another batch of the same run) and BEFORE the pending credits are
+ * read, so a return, a top-up or another approval of the entity cannot slip in
+ * between. The items of this batch are still `prepared` here, so the pending
+ * sum does not count them: call this before they turn `approved`. No `petty_cash`
+ * mapping: no 1102 balance exists to go negative, so the check is skipped, as
+ * in the petty cash return guard (the payout settles as `settle_skipped`).
+ */
+async function assertCashCoversBatch(
+  tx: Tx,
+  tenantId: string,
+  batch: BatchRow,
+): Promise<void> {
+  // Accounting module off: a handover never reaches the GL (`settle_skipped`),
+  // so 1102 cannot go negative and the skipped credits would count as pending
+  // forever, blocking every later cash batch (architect 1053 P1).
+  if (!(await accountingEnabled(tx, asTenant(tenantId)))) return;
+  await entityLock(tx, tenantId, batch.legalEntityId);
+  const cash = await availableCash1102(
+    tx,
+    asTenant(tenantId),
+    batch.legalEntityId,
+  );
+  if (cash === null) return;
+  const items = await loadBatchItems(tx, tenantId, batch.id);
+  let totalIdr = 0;
+  for (const item of items)
+    if (item.status === "prepared") totalIdr += Number(openItemAmount(item));
+  if (totalIdr <= cash.availableIdr) return;
+  const availableIdr = Math.max(0, cash.availableIdr);
+  throw payoutRefuse(
+    409,
+    "PAYOUT_CASH_INSUFFICIENT",
+    `Kas tunai (1102) tidak cukup untuk batch ini. Saldo tersedia ${rupiah(availableIdr)} (sudah dikurangi pembayaran tunai lain yang menunggu dijurnal), total batch ${rupiah(totalIdr)}, kurang ${rupiah(totalIdr - availableIdr)}. Isi kas (top-up kas kecil) lalu setujui batch lagi.`,
+  );
+}
+
 /**
  * A second person approves the batch they saw (same content hash). Valid for
  * 24 hours. The database also refuses approver = requester (CHECK).
@@ -1714,6 +1761,11 @@ export async function approveDisbursementBatch(
       "PAYOUT_HASH_MISMATCH",
       "Isi batch berubah sejak diajukan. Buka ulang batch lalu setujui.",
     );
+
+  // A cash batch is refused when the entity's petty cash (1102) cannot pay it
+  // (legend-rvao9, founder Q43).
+  if (batch.channel === "cash")
+    await assertCashCoversBatch(tx, tenantId, batch);
 
   // Spends the grant and writes the append-only approval log row, so the
   // "not me" notice reaches the approver of the main approval too.
