@@ -161,6 +161,116 @@ async function journalCountBySource(source: string): Promise<number> {
 const advisoryKey = (gateKey: string) =>
   `((classid::bigint << 32) | objid::bigint) = hashtextextended('${gateKey}', 0)`;
 
+/** One outbox event of the payroll GL bridge (status as given). */
+async function seedPayrollOutboxEvent(
+  name: string,
+  payload: Record<string, unknown>,
+  status: "pending" | "delivered" = "pending",
+): Promise<string> {
+  const id = randomUUID();
+  await kitOwner.query(
+    `INSERT INTO domain_event_outbox
+       (tenant_id, id, event_id, aggregate_type, aggregate_id, sequence, event, destination, status)
+     VALUES ($1, $2, $3, 'payroll_run', $4, 1, $5, 'cloud-sync', $6)`,
+    [
+      tenantId,
+      id,
+      randomUUID(),
+      randomUUID(),
+      JSON.stringify({ name, tenantId, payload }),
+      status,
+    ],
+  );
+  return id;
+}
+
+describe("SO 1036 slice E: pending credits to 1102 count against a petty cash return", () => {
+  it("[legend-3k9qg-pending-credit] fund and GL Rp100 with a Rp50 cash credit still in the outbox: return Rp100 is refused, Rp50 goes through", async () => {
+    // Premise: fund and GL 1102 both hold exactly Rp100 (the race test below
+    // starts from the same empty state, so this test leaves both at zero).
+    const topup = await movement("topup", FUND);
+    expect(topup.status, JSON.stringify(topup.body)).toBe(201);
+    expect(await fundBalance()).toBe(FUND);
+    expect(await glBalance()).toBe(FUND);
+
+    const entityId = W.entityId();
+    const seeded: string[] = [];
+    try {
+      // The payroll cash that left but whose 1102 journal is not posted yet.
+      seeded.push(
+        await seedPayrollOutboxEvent("payroll.paid", {
+          payrollRunId: randomUUID(),
+          legalEntityId: entityId,
+          netIdr: PAYROLL_CASH,
+          bankTransferIdr: 0,
+          cashIdr: PAYROLL_CASH,
+        }),
+        // Not counted: another legal entity, a bank loan, a delivered event,
+        // a payout settled per item.
+        await seedPayrollOutboxEvent("payroll.paid", {
+          payrollRunId: randomUUID(),
+          legalEntityId: randomUUID(),
+          netIdr: 80_000,
+          bankTransferIdr: 0,
+          cashIdr: 80_000,
+        }),
+        await seedPayrollOutboxEvent("employee_loan.disbursed", {
+          employeeLoanId: randomUUID(),
+          legalEntityId: entityId,
+          principalIdr: 80_000,
+          disbursedVia: "bank",
+        }),
+        await seedPayrollOutboxEvent(
+          "payroll.paid",
+          {
+            payrollRunId: randomUUID(),
+            legalEntityId: entityId,
+            netIdr: 80_000,
+            bankTransferIdr: 0,
+            cashIdr: 80_000,
+          },
+          "delivered",
+        ),
+        await seedPayrollOutboxEvent("payroll.paid", {
+          payrollRunId: randomUUID(),
+          legalEntityId: entityId,
+          netIdr: 80_000,
+          bankTransferIdr: 0,
+          cashIdr: 80_000,
+          settledPerItem: true,
+        }),
+      );
+
+      // Rp100 would leave Rp50 of cash that the books already owe: refused.
+      const tooMuch = await movement("return", RETURN_AMOUNT);
+      expect(tooMuch.status, JSON.stringify(tooMuch.body)).toBe(422);
+      expect(JSON.stringify(tooMuch.body)).toContain(
+        "PETTY_CASH_GL_INSUFFICIENT",
+      );
+      expect(await fundBalance()).toBe(FUND);
+      expect(await glBalance()).toBe(FUND);
+
+      // The Rp50 that is really there goes through.
+      const fits = await movement("return", PAYROLL_CASH);
+      expect(fits.status, JSON.stringify(fits.body)).toBe(201);
+      expect(await fundBalance()).toBe(FUND - PAYROLL_CASH);
+      expect(await glBalance()).toBe(FUND - PAYROLL_CASH);
+    } finally {
+      await kitOwner.query(
+        "DELETE FROM domain_event_outbox WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+        [tenantId, seeded],
+      );
+    }
+
+    // The credit is gone (delivered and posted, in real life): the rest of the
+    // fund can be returned, which also leaves both balances at zero.
+    const rest = await movement("return", PAYROLL_CASH);
+    expect(rest.status, JSON.stringify(rest.body)).toBe(201);
+    expect(await fundBalance()).toBe(0);
+    expect(await glBalance()).toBe(0);
+  });
+});
+
 describe("SO 1036 finding 3: petty cash return versus payroll cash payout on GL 1102", () => {
   it("[legend-3k9qg-return-vs-payroll-cash] a return that already read Rp100 and a concurrent payroll cash payout of Rp50 never spend 1102 twice", async () => {
     // Premise: fund and GL 1102 both hold exactly Rp100.

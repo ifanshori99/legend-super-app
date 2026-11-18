@@ -25,6 +25,13 @@
 //   entity (account map and payroll journals carry no outlet), so the entity's
 //   whole shortfall is charged to the returning outlet (conservative). With no petty_cash
 //   mapping the check is skipped: the return parks as before.
+//   Pending 1102 credits (legend-3k9qg, SO 1036 slice E): cash can leave before
+//   its credit to 1102 is posted, so GL 1102 is read net of what still waits for
+//   the entity (`pendingPettyCashCreditsIdr`): cash payout postings
+//   `settle_pending` / `settle_skipped` (net), and undelivered outbox events that
+//   will credit petty cash (`payroll.paid` cash part unless settled per item,
+//   `employee_loan.disbursed` not by bank, cash `reimbursement.paid`). An amount
+//   that cannot be read refuses the return (fail closed).
 //   `getPettyCashReconciliation` shows fund vs GL without changing anything.
 // - Founder Q7 (13 Nov 2026): a top-up above the tenant cash limit, or one that
 //   takes the creator's day total of cash outs and top-ups at the outlet past
@@ -47,7 +54,17 @@
 //   are narrowed to the caller's outlets.
 
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, gte, inArray, max, sql, type SQL } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  gte,
+  inArray,
+  max,
+  ne,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import {
   AccountingError,
   pettyCashMovementInputSchema,
@@ -90,9 +107,16 @@ import {
   journalLines,
 } from "../db/schema/accounting.ts";
 import { autoJournalParked } from "../db/schema/accounting-auto-journal.ts";
+import { domainEventOutbox } from "../db/schema/core-events.ts";
+import { employees } from "../db/schema/hris.ts";
+import {
+  payrollDisbursementBatches,
+  payrollPayoutGlPostings,
+} from "../db/schema/payroll-payout.ts";
 import { outlets } from "../db/schema/platform-org.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { openPayrollValue } from "../lib/payroll-sealed.ts";
 import {
   assertTenantScope,
   auditApFa,
@@ -116,6 +140,7 @@ import {
 } from "./accounting-period.service.ts";
 import { requireLegalEntity } from "./accounting-shared.ts";
 import { loadOutletClock } from "./inventory-ops.shared.ts";
+import { EVENT_DESTINATION } from "./payment-support.ts";
 import { openApprovalRequest } from "./platform-approval.service.ts";
 
 const OPERATION = "petty_cash.movement.create";
@@ -328,6 +353,164 @@ async function glBalanceOf(
       ),
     );
   return Number(row?.balance ?? 0);
+}
+
+/** A pending credit whose amount cannot be read: the return is refused. */
+const unreadablePendingCredit = (source: string) =>
+  new AccountingError("PETTY_CASH_GL_INSUFFICIENT", undefined, {
+    pendingCreditUnreadable: source,
+  });
+
+function readableIdr(value: unknown, source: string): number {
+  const amount = Number(value);
+  if (value === null || !Number.isSafeInteger(amount) || amount < 0)
+    throw unreadablePendingCredit(source);
+  return amount;
+}
+
+/**
+ * Cash that already left, or leaves through an event not delivered yet, and
+ * will credit the entity's petty cash account (1102) once its journal posts
+ * (legend-3k9qg). Sum of:
+ * - cash payout postings of the entity still `settle_pending` / `settle_skipped`
+ *   (`settle_net_idr`, else the sealed net of the posting);
+ * - undelivered `cloud-sync` outbox events (pending, retrying, dead letter):
+ *   `payroll.paid` cash part (not when settled per item), `employee_loan.disbursed`
+ *   unless `disbursedVia` is bank, `reimbursement.paid` with a cash payout (the
+ *   employee's legal entity).
+ * Counts whatever it cannot rule out; an unreadable amount throws
+ * PETTY_CASH_GL_INSUFFICIENT. Call under `entityLock`.
+ */
+async function pendingPettyCashCreditsIdr(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  legalEntityId: string,
+): Promise<number> {
+  let total = 0;
+
+  const postings = await tx
+    .select({
+      id: payrollPayoutGlPostings.id,
+      settleNetIdr: payrollPayoutGlPostings.settleNetIdr,
+      totalEncrypted: payrollPayoutGlPostings.totalEncrypted,
+      piiKeyVersion: payrollPayoutGlPostings.piiKeyVersion,
+    })
+    .from(payrollPayoutGlPostings)
+    .innerJoin(
+      payrollDisbursementBatches,
+      and(
+        eq(
+          payrollDisbursementBatches.tenantId,
+          payrollPayoutGlPostings.tenantId,
+        ),
+        eq(payrollDisbursementBatches.id, payrollPayoutGlPostings.batchId),
+      ),
+    )
+    .where(
+      and(
+        eq(payrollPayoutGlPostings.tenantId, tenantId),
+        inArray(payrollPayoutGlPostings.kind, [
+          "settle_pending",
+          "settle_skipped",
+        ]),
+        eq(payrollDisbursementBatches.legalEntityId, legalEntityId),
+        eq(payrollDisbursementBatches.channel, "cash"),
+      ),
+    );
+  for (const posting of postings) {
+    if (posting.settleNetIdr !== null) {
+      total += readableIdr(posting.settleNetIdr, "payout_posting");
+      continue;
+    }
+    // Written before migration 0392: only the sealed total holds the net.
+    try {
+      const sealed = JSON.parse(
+        openPayrollValue(
+          posting.totalEncrypted,
+          {
+            tenantId,
+            table: "payroll_payout_gl_postings",
+            rowId: posting.id,
+            field: "total",
+          },
+          posting.piiKeyVersion,
+        ),
+      ) as Record<string, unknown>;
+      total += readableIdr(sealed.netIdr, "payout_posting");
+    } catch (error) {
+      if (error instanceof AccountingError) throw error;
+      throw unreadablePendingCredit("payout_posting");
+    }
+  }
+
+  const eventName = sql<string>`${domainEventOutbox.event}->>'name'`;
+  const undelivered = await tx
+    .select({
+      name: eventName,
+      payload: sql<unknown>`${domainEventOutbox.event}->'payload'`,
+    })
+    .from(domainEventOutbox)
+    .where(
+      and(
+        eq(domainEventOutbox.tenantId, tenantId),
+        eq(domainEventOutbox.destination, EVENT_DESTINATION),
+        ne(domainEventOutbox.status, "delivered"),
+        inArray(eventName, [
+          "payroll.paid",
+          "employee_loan.disbursed",
+          "reimbursement.paid",
+        ]),
+      ),
+    );
+  const reimbursements: { employeeId: string; amountIdr: number }[] = [];
+  for (const row of undelivered) {
+    const payload =
+      row.payload !== null && typeof row.payload === "object"
+        ? (row.payload as Record<string, unknown>)
+        : null;
+    if (!payload) throw unreadablePendingCredit(row.name);
+    if (row.name === "reimbursement.paid") {
+      // A payroll payout is carried by the run journal. A cash one belongs to
+      // the employee's entity: resolved below in one query.
+      if (payload.payout === "payroll") continue;
+      if (typeof payload.employeeId !== "string")
+        throw unreadablePendingCredit(row.name);
+      reimbursements.push({
+        employeeId: payload.employeeId,
+        amountIdr: readableIdr(payload.amountIdr, row.name),
+      });
+      continue;
+    }
+    if (typeof payload.legalEntityId !== "string")
+      throw unreadablePendingCredit(row.name);
+    if (payload.legalEntityId !== legalEntityId) continue;
+    if (row.name === "payroll.paid") {
+      // Settled per item: the payout journals carry it, nothing more posts.
+      if (payload.settledPerItem === true) continue;
+      total += readableIdr(payload.cashIdr, row.name);
+    } else if (payload.disbursedVia !== "bank") {
+      total += readableIdr(payload.principalIdr, row.name);
+    }
+  }
+  if (reimbursements.length > 0) {
+    const inEntity = await tx
+      .select({ id: employees.id })
+      .from(employees)
+      .where(
+        and(
+          eq(employees.tenantId, tenantId),
+          eq(employees.legalEntityId, legalEntityId),
+          inArray(
+            employees.id,
+            reimbursements.map((row) => row.employeeId),
+          ),
+        ),
+      );
+    const ids = new Set<string>(inEntity.map((row) => row.id));
+    for (const row of reimbursements)
+      if (ids.has(row.employeeId)) total += row.amountIdr;
+  }
+  return total;
 }
 
 // ------------------------------------------------------------------- reads
@@ -694,11 +877,21 @@ async function applyMovement(
   if (input.kind === "return" && input.amountIdr <= fund.balanceIdr) {
     const glIdr = await pettyCashGlBalance(tx, tenantId, input.legalEntityId);
     if (glIdr !== null) {
-      const allowedIdr = fund.balanceIdr - Math.max(0, entityFundTotal - glIdr);
+      // Cash credits not on the GL yet (legend-3k9qg), read under the entity
+      // lock taken above.
+      const pendingCreditIdr = await pendingPettyCashCreditsIdr(
+        tx,
+        tenantId,
+        input.legalEntityId,
+      );
+      const allowedIdr =
+        fund.balanceIdr -
+        Math.max(0, entityFundTotal - (glIdr - pendingCreditIdr));
       if (input.amountIdr > allowedIdr)
         throw new AccountingError("PETTY_CASH_GL_INSUFFICIENT", undefined, {
           balanceIdr: fund.balanceIdr,
           glIdr,
+          pendingCreditIdr,
           entityFundIdr: entityFundTotal,
           allowedIdr: Math.max(0, allowedIdr),
           deltaIdr: -input.amountIdr,
