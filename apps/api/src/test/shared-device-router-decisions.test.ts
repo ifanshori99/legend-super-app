@@ -158,7 +158,9 @@ const DECISIONS: Record<string, Decision> = {
   "payroll-payout-evidence": "backoffice",
   "payroll-payout-overpaid": "backoffice",
   "payroll-payout-proof-closure": "backoffice",
+  "payroll-payout-recon-clearance": "backoffice",
   "payroll-payout-return": "backoffice",
+  "payroll-payout-return-withdraw": "backoffice",
   "payroll-policy": "backoffice",
   "payroll-pph21-policy": "backoffice",
   "payroll-rapel": "backoffice",
@@ -296,6 +298,11 @@ const ROUTE_LEVEL_GUARDS: Record<string, { count: number; reason: string }> = {
 
 /** "pos" files that keep a plain requireAuth, with the reason. */
 const PLAIN_REQUIRE_AUTH: Record<string, { count: number; reason: string }> = {
+  "order-recovery-charge": {
+    count: 2,
+    reason:
+      "approve and reject of a manual refund (985): second-pair-of-eyes decisions of pos.refund.approve holders; a shared-device session is refused (money rule: when in doubt, limit the payment). Staff close and cash collection stay opt-in.",
+  },
   menu: {
     count: 1,
     reason:
