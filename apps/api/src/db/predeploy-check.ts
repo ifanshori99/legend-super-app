@@ -1,6 +1,13 @@
 // Read-only checks run before migrations (legend-jtnd, legend-k1np). Used by
 // deploy.sh and first-boot provisioning through dist/predeploy-check.js.
+import { basename, dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Client } from "pg";
+import {
+  ReleaseGateError,
+  type ReleaseGateReport,
+  runReleaseGates,
+} from "./release-gates";
 
 /** An operator-facing failure. Its message never contains a credential. */
 export class PredeployCheckError extends Error {
@@ -13,15 +20,48 @@ export class PredeployCheckError extends Error {
 export type PredeployReport = {
   migrator: { user: string; superuser: boolean; bypassRls: boolean };
   outbox: { present: boolean; rows: number; oldSchemeStreams: number };
+  releaseGates: ReleaseGateReport;
 };
+
+export type PredeployOptions = {
+  log?: (line: string) => void;
+  migrationsFolder?: string;
+  preflightDir?: string;
+};
+
+/**
+ * Where the migrations and the rilis1-*.sql gates live. Env wins. Otherwise
+ * derive from this file: src/db/ in the repo (tsx, tests), dist/ in the
+ * migrator image (WORKDIR /app holds dist/, drizzle/ and scripts/preflight/).
+ */
+function releaseGatePaths(options: PredeployOptions) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const inRepo = basename(here) === "db";
+  return {
+    migrationsFolder:
+      options.migrationsFolder ||
+      process.env.LEGEND_MIGRATIONS_DIR ||
+      resolve(here, inRepo ? "../../drizzle" : "../drizzle"),
+    preflightDir:
+      options.preflightDir ||
+      process.env.LEGEND_PREFLIGHT_DIR ||
+      resolve(
+        here,
+        inRepo ? "../../../../scripts/preflight" : "../scripts/preflight",
+      ),
+  };
+}
 
 /**
  * Checks that the migration login can migrate (legend-jtnd) and that no
  * outbox stream still uses the old shared per-aggregate sequence (legend-k1np).
- * Changes nothing: one connection, one read-only transaction.
+ * Then runs the release gate 1 data checks and the migration drift check
+ * (legend-1100, db/release-gates.ts). Changes nothing: one connection,
+ * read-only transactions that are always rolled back.
  */
 export async function runPredeployCheck(
   migrationUrl: string,
+  options: PredeployOptions = {},
 ): Promise<PredeployReport> {
   try {
     new URL(migrationUrl);
@@ -35,6 +75,27 @@ export async function runPredeployCheck(
     connectionTimeoutMillis: 5000,
   });
   await client.connect();
+  try {
+    const base = await baseChecks(client);
+    try {
+      const releaseGates = await runReleaseGates(client, {
+        ...releaseGatePaths(options),
+        log: options.log,
+      });
+      return { ...base, releaseGates };
+    } catch (error) {
+      if (error instanceof ReleaseGateError)
+        throw new PredeployCheckError(error.message);
+      throw error;
+    }
+  } finally {
+    await client.end().catch(() => undefined);
+  }
+}
+
+async function baseChecks(
+  client: Client,
+): Promise<Omit<PredeployReport, "releaseGates">> {
   try {
     await client.query("BEGIN READ ONLY");
     await client.query("SET LOCAL search_path = pg_catalog");
@@ -103,6 +164,5 @@ export async function runPredeployCheck(
     return { migrator, outbox: { present: true, rows, oldSchemeStreams: 0 } };
   } finally {
     await client.query("ROLLBACK").catch(() => undefined);
-    await client.end().catch(() => undefined);
   }
 }

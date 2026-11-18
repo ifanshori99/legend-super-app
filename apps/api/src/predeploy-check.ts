@@ -73,13 +73,19 @@ try {
   // Refuse a bad MIGRATION_*_TIMEOUT here, before the database is touched,
   // rather than at the migrate step (db/migration-session.ts, legend-jluo).
   migrationTimeouts();
-  const report = await runPredeployCheck(setting("MIGRATION_DATABASE_URL"));
+  const report = await runPredeployCheck(setting("MIGRATION_DATABASE_URL"), {
+    log: (line) => console.log(line),
+  });
   const who = report.migrator.superuser ? "superuser" : "BYPASSRLS";
   const outbox = report.outbox.present
     ? `${report.outbox.rows} rows, per-destination sequences intact`
     : "absent";
+  const gates =
+    report.releaseGates.status === "n/a"
+      ? "release gates N/A (new database)"
+      : `release gates ok (${report.releaseGates.applied} migrations applied, ${report.releaseGates.ran.length} gate(s) run, ${report.releaseGates.skipped.length} skipped)`;
   console.log(
-    `Pre-deploy check passed: migrator ${report.migrator.user} (${who}), outbox ${outbox}.`,
+    `Pre-deploy check passed: migrator ${report.migrator.user} (${who}), outbox ${outbox}, ${gates}.`,
   );
 } catch (error) {
   console.error(
