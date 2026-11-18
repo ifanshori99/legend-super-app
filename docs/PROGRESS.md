@@ -2090,3 +2090,4 @@ Langkah berikut CTO baru:
 - 00:09 Retro: G2yc3 suite penuh tak sengaja (glob zsh gagal -> LEGEND_TEST_FILES kosong) menahan heavy 40+ menit; bead dibuat untuk penjaga di heavy.
 - 00:21 Founder Q49=Ya: heavy jalur 2 buka bila free >= 70% dan swap < 4096 MB (~/.claude/scripts/heavy slot_allowed, main.md baris 52). Berlaku untuk job yang antre sesudah ini.
 - 01:02 CTO: hentikan suite penuh tak sengaja G2yc3 di heavy jalur 1 (1j31m, menahan 9 job, antrean diam). Antrean jalan lagi (typecheck kepala). Retro: waiter lama tidak memakai aturan Q48/Q49 -> jalur 2 tertutup untuk mereka walau free 77%.
+- 01:07 CTO: G94pl (1104b) resolve, reviewer berjalan. Slot Codex 2 kosong: tidak ada bundel kartu S siap (cq0u7 tunggu 1094 landing; sisanya uang/akses/gerbang/EXT/UI/butuh keputusan). SO Codex berikut: refund ronde 12 (tunggu G2yc3), kas ronde 7 (tunggu G93wj), refund kasir 1095 (tunggu G95kw).
