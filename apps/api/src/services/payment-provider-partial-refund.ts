@@ -490,6 +490,7 @@ export async function recordProviderRefundInTx(
   const fileTransactionConflictHold = async (
     heldIdr: number,
     intentOutletId: string,
+    silent = false,
   ): Promise<void> =>
     fileTransactionConflictHoldInTx(
       tx,
@@ -501,6 +502,7 @@ export async function recordProviderRefundInTx(
         providerRefundIdKind: refundIdKind,
         providerPaymentRef,
         amountIdr: heldIdr,
+        silent,
       },
       now,
     );
@@ -1012,6 +1014,7 @@ export async function recordProviderRefundInTx(
     return { status: "duplicate" };
   }
 
+  let unsentHoldFiled = false;
   // 1072 I9 (K1, L2): a refund of ours still pending or approved and never
   // sent, on this very transaction (same source rule as step 3), while the
   // provider reports a success: the customer may already have the money, so
@@ -1043,8 +1046,12 @@ export async function recordProviderRefundInTx(
                     AND e.provider = ${PROVIDER}
                     AND e.provider_ref = ${providerPaymentRef}))))
       LIMIT 1`);
-    if (unsent.length > 0)
-      await fileTransactionConflictHold(amountIdr, intent.outletId);
+    // Silent: the 958 partial-refund alert below tells finance of the same
+    // report once; the conflict alert is sent only where that one is not.
+    if (unsent.length > 0) {
+      await fileTransactionConflictHold(amountIdr, intent.outletId, true);
+      unsentHoldFiled = true;
+    }
   }
 
   // Credit already moved to sessions (closed ones too) may now exceed the
@@ -1262,6 +1269,21 @@ export async function recordProviderRefundInTx(
       },
       now,
     );
+  // K1: the conflict alert, unless the partial-refund alert just told finance
+  // of this very report (one alert per report; the hold is filed either way).
+  // Its id is deterministic, so a repeat is a no-op.
+  if (unsentHoldFiled && (input.quiet || (alreadyAlerted && !intentFlagged)))
+    await alertProviderRefundTransactionConflict(
+      tx,
+      context,
+      {
+        intentId: input.expectedIntentId,
+        outletId: intent.outletId,
+        dedupKey: `${providerPaymentRef}\0${refundKey}`,
+        amountIdr,
+      },
+      now,
+    );
   // The books were written counting a refund of ours that is not final: if it
   // later fails the journal is short. Held until finance checks (the intent's
   // refunds and payouts stop), finance told once.
@@ -1348,6 +1370,8 @@ async function fileTransactionConflictHoldInTx(
     providerRefundIdKind: ProviderRefundIdKind;
     providerPaymentRef: string | null;
     amountIdr: number;
+    /** The caller tells finance itself (no alert from here). */
+    silent?: boolean;
   },
   now: Date,
 ): Promise<void> {
@@ -1379,8 +1403,9 @@ async function fileTransactionConflictHoldInTx(
     })
     .onConflictDoNothing()
     .returning({ id: refundReconHolds.id });
-  const alert = () =>
-    alertProviderRefundTransactionConflict(
+  const alert = async () => {
+    if (input.silent) return;
+    await alertProviderRefundTransactionConflict(
       tx,
       context,
       {
@@ -1391,6 +1416,7 @@ async function fileTransactionConflictHoldInTx(
       },
       now,
     );
+  };
   if (held) {
     await alert();
     return;

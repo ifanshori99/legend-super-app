@@ -46,6 +46,7 @@ import {
   resetPaymentRefundGateways,
   setPaymentRefundGateway,
 } from "../services/payment-refund-gateway";
+import { HOLD_TRANSACTION_CONFLICT_REASON } from "../services/refund-hold-reasons";
 import {
   BILL_IDR,
   createRefundHarness,
@@ -237,7 +238,7 @@ describe("I9 (P1) a smaller provider success is an echo only when R was really s
     await h.expectMoneyWithinPaid(t.code, "r4-04");
   });
 
-  it("1075-r4-08 (K3) flag off, R Rp30.000 approved, never sent, then settled BY HAND (completed outside the provider); signed payment.refunded status object for the WHOLE bill (Rp100.000, no refund id) arrives: it is still counted as ours but leaves an open hold of Rp30.000 (the by-hand money), replays add no hold, a refund of Rp70.000 is refused", async () => {
+  it("1075-r4-08 (K3) flag off, R Rp30.000 approved, never sent, then settled BY HAND (completed outside the provider); signed payment.refunded status object for the WHOLE bill (Rp100.000, no refund id) arrives: it is still counted as ours but leaves an open conflict hold of at least Rp30.000 (the by-hand money; the hold may be larger, restrictive), replays add no hold, a refund of Rp70.000 is refused", async () => {
     const t = await unsentWorld();
     const settled = await h.settleManually(t.refundId, R_IDR);
     expect(settled.status, JSON.stringify(settled.body)).toBe(200);
@@ -247,8 +248,12 @@ describe("I9 (P1) a smaller provider success is an echo only when R was really s
     await h.replayAll(full, 1);
     const open = await h.openOf(t.code.id);
     expect(
-      open.some((row) => row.amount_idr === R_IDR),
-      `r4-08: an open hold worth the by-hand R (${R_IDR}) exists (holds: ${JSON.stringify(await h.allHolds(t.code.id))})`,
+      open.some(
+        (row) =>
+          row.reason === HOLD_TRANSACTION_CONFLICT_REASON &&
+          row.amount_idr >= R_IDR,
+      ),
+      `r4-08: an open HOLD_TRANSACTION_CONFLICT hold of at least the by-hand R (${R_IDR}) exists (holds: ${JSON.stringify(await h.allHolds(t.code.id))})`,
     ).toBe(true);
     const holdsAfterFirst = (await h.allHolds(t.code.id)).length;
 
