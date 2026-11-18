@@ -11,3 +11,7 @@ Test kasir dua-outlet per route: merah di base, hijau di head; login pribadi tet
 
 ## Laporan
 Commit, head SHA, daftar route yang dijaga, risiko. `Subagent: total X, puncak Y bersamaan, token heavy dipegang <siapa>.` Lapor sekali.
+
+## Tambahan CTO (architect xhigh delta 1094, P1)
+`apps/api/src/lib/shared-device-allowlist.ts:82` masih mengizinkan `POST /api/apology-vouchers` di perangkat bersama; `issueApologyVoucherForStaff` -> `settleIssueWithVoucher` (`apology-voucher.service.ts:936`) menerbitkan voucher dan me-resolve isu = jalan pintas resolve voucher yang sudah ditutup 403. Keputusan (membatasi): pindahkan `POST /api/apology-vouchers` ke DENY perangkat bersama untuk SEMUA bentuk (dengan atau tanpa `orderIssueId`), 403 `SHARED_DEVICE_SCREEN_CLOSED`. Grep route lain di allowlist yang menerbitkan nilai ke tamu (voucher, kredit, swap, refund, poin) dan tutup juga; laporkan daftarnya. Test: perangkat bersama -> 403, tidak ada baris voucher, isu tetap `open`; perangkat pribadi tetap lolos.
+Catatan: cabang 1094 dan 1120 landing BERSAMA (1094 sendiri masih punya celah ini).
