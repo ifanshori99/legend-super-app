@@ -1,0 +1,363 @@
+{
+  "baseUrl": "http://localhost:3241",
+  "axe": "axe-core bundle",
+  "tags": [
+    "wcag2a",
+    "wcag2aa",
+    "wcag21aa",
+    "wcag22aa"
+  ],
+  "states": {
+    "recon-normal": {
+      "status": "pass",
+      "runs": {
+        "1280-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "1280-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "390-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "390-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        }
+      }
+    },
+    "recon-empty": {
+      "status": "pass",
+      "runs": {
+        "1280-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "1280-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "390-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "390-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        }
+      }
+    },
+    "recon-loading": {
+      "status": "pass",
+      "runs": {
+        "1280-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "1280-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "390-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "390-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        }
+      }
+    },
+    "recon-error": {
+      "status": "pass",
+      "runs": {
+        "1280-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "1280-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "390-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "390-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        }
+      }
+    },
+    "recon-validation": {
+      "status": "pass",
+      "runs": {
+        "1280-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "1280-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "390-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "390-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        }
+      }
+    },
+    "recon-success": {
+      "status": "pass",
+      "runs": {
+        "1280-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "1280-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "390-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "390-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        }
+      }
+    },
+    "recon-approve": {
+      "status": "pass",
+      "runs": {
+        "1280-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "1280-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "390-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "390-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        }
+      }
+    },
+    "recon-self": {
+      "status": "pass",
+      "runs": {
+        "1280-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "1280-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "390-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "390-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        }
+      }
+    },
+    "recon-changed": {
+      "status": "pass",
+      "runs": {
+        "1280-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "1280-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "390-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "390-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        }
+      }
+    },
+    "recon-reopened": {
+      "status": "pass",
+      "runs": {
+        "1280-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "1280-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "390-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "390-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        }
+      }
+    },
+    "status-return-withdraw": {
+      "status": "pass",
+      "runs": {
+        "1280-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "1280-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "390-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "390-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        }
+      }
+    },
+    "status-return-propose": {
+      "status": "pass",
+      "runs": {
+        "1280-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "1280-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "390-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "390-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        }
+      }
+    },
+    "status-return-approve": {
+      "status": "pass",
+      "runs": {
+        "1280-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "1280-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": []
+        },
+        "390-light": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        },
+        "390-dark": {
+          "blocking": 0,
+          "overflow": null,
+          "violations": [],
+          "overflow320": null
+        }
+      }
+    }
+  }
+}

@@ -364,12 +364,250 @@ export const payrollPayoutReviewMessages = {
       "Data yang ditandai berubah sejak penutupan flag diusulkan. Ajukan usulan penutupan baru.",
     reconProofUnreadable:
       "Bukti payout tidak bisa dibaca. Tunggu bacaan sukses berikutnya, jangan ajukan usulan baru.",
+
+    reconNotFound:
+      "Flag atau usulan penutupan tidak ditemukan. Muat ulang daftar lalu periksa lagi.",
+    returnWithdrawReasonInvalid:
+      "Alasan penarikan klaim wajib diisi (10 sampai 500 karakter).",
+    returnWithdrawSelfApproval:
+      "Pengusul penarikan klaim tidak boleh menyetujuinya sendiri.",
+    returnWithdrawState: "Penarikan klaim ini sudah disetujui.",
+    returnWithdrawRefused:
+      "Klaim pengembalian ini tidak dapat ditarik (sudah dikonfirmasi, berubah, atau sudah ditarik). Muat ulang lalu periksa. Tidak ada yang dibatalkan.",
+    returnWithdrawNotFound:
+      "Klaim atau usulan penarikan tidak ditemukan. Muat ulang daftar lalu periksa lagi.",
     proposalNotWithdrawable:
       "Usulan ini sudah berubah (disimpan, dibatalkan, atau hanya sebagian item). Muat ulang lalu periksa. Tidak ada yang dibatalkan.",
     proofSpentByWithdrawn:
       "Bukti ini pernah dipakai usulan yang dibatalkan dan tidak bisa dipakai lagi. Unggah bukti baru.",
     requesterCannotWithdraw:
       "Pembuat pengajuan tidak boleh membatalkan usulan ini.",
+  },
+  returnWithdraw: {
+    title: "Klaim dana kembali",
+    description:
+      "Klaim dana kembali yang belum dikonfirmasi bisa ditarik oleh dua orang. Menarik klaim tidak membayar apa pun dan tidak mengubah status pembayaran.",
+    loading: "Memuat klaim dana kembali",
+    empty: {
+      title: "Belum ada klaim dana kembali",
+      description: "Klaim muncul di sini setelah dana kembali dicatat.",
+    },
+    error: {
+      title: "Klaim dana kembali belum bisa dimuat",
+      description: "Coba muat ulang. Tidak ada yang berubah.",
+    },
+    refresh: "Muat ulang",
+    status: {
+      open: "Terbuka",
+      proposed: "Penarikan diusulkan",
+      consumed: "Sudah dikonfirmasi",
+      withdrawn: "Ditarik",
+    },
+    claim: {
+      items: "{count} item",
+      bankRef: "Referensi bank {ref}",
+      noBankRef: "Tanpa referensi bank",
+      createdAt: "Dicatat {time}",
+    },
+    proposal: {
+      by: "Diusulkan oleh",
+      you: "Anda",
+      other: "Orang lain",
+      reason: "Alasan",
+      at: "Waktu",
+    },
+    action: {
+      propose: "Tarik klaim",
+      approve: "Setujui penarikan",
+    },
+    blocked: {
+      creator:
+        "Pembuat pengajuan pembayaran tidak boleh menarik atau menyetujui penarikan klaim ini.",
+      self: "Anda yang mengusulkan penarikan ini. Orang lain yang menyetujuinya.",
+      consumed:
+        "Klaim ini sudah dikonfirmasi dan tidak bisa ditarik. Jurnal tidak pernah diubah.",
+    },
+    propose: {
+      title: "Tarik klaim dana kembali",
+      description:
+        "Klaim {count} item{ref}. Orang lain perlu menyetujui penarikan ini.",
+      warning:
+        "Menarik klaim tidak membayar apa pun dan tidak mengubah status pembayaran. Bukti klaim ini tidak bisa dipakai lagi; klaim baru perlu bukti baru.",
+      reasonLabel: "Alasan penarikan",
+      reasonHint: "10 sampai 500 karakter.",
+      reasonShort: "Alasan minimal 10 karakter.",
+      cancel: "Batal",
+      submit: "Usulkan penarikan",
+      submitting: "Mengusulkan…",
+      done: "Penarikan diusulkan. Menunggu persetujuan orang lain.",
+    },
+    approve: {
+      title: "Setujui penarikan klaim",
+      description:
+        "Klaim {count} item{ref}. Alasan dari pengusul ada di bawah.",
+      warning:
+        "Setelah disetujui, klaim ditarik dan item kembali ke status sebelum klaim. Tidak ada pembayaran yang berubah.",
+      cancel: "Batal",
+      submit: "Setujui penarikan",
+      submitting: "Menyetujui…",
+      done: "Penarikan klaim disetujui. Tidak ada pembayaran yang berubah.",
+    },
+    conflict:
+      "Klaim ini sudah berubah. Data dimuat ulang. Periksa lagi, lalu ajukan usulan baru bila masih perlu.",
+  },
+  recon: {
+    nav: "Flag rekonsiliasi payout",
+    subtitle:
+      "Tinjau selisih dan bukti yang belum sesuai. Clearance memerlukan dua orang yang berbeda.",
+    loading: "Memuat flag rekonsiliasi",
+    loadingHint: "Mengambil flag dan status clearance terbaru.",
+    unknown: "—",
+    required: "wajib",
+    scope: {
+      batch: "Batch payout",
+      option: "Batch {id} · {count} flag · ditandai {date}",
+      meta: "{items} item · {channel}",
+      metaUnavailable: "Rincian batch tidak tersedia untuk akun ini.",
+      flags: "Flag dalam batch",
+      held: "Slip tertahan",
+      heldValue: "Nilai slip tertahan",
+      placeholderEmpty: "Belum ada batch berflag",
+      placeholderLoading: "Memuat batch…",
+      placeholderError: "Batch belum dapat dimuat",
+      incomplete:
+        "Tanda + berarti angka belum lengkap: daftar flag terpotong di 200, jadi slip tertahan bisa lebih banyak.",
+    },
+    list: {
+      title: "Flag dalam batch",
+      hint: "Setiap flag ditinjau terpisah.",
+      count: "{count} flag",
+      limit:
+        "Daftar berisi 200 flag terbaru. Flag yang lebih lama mungkin belum tercakup di layar ini.",
+    },
+    status: {
+      open: "Terbuka",
+      proposed: "Diusulkan",
+      approved: "Disetujui",
+      reopened: "Terbuka ulang",
+    },
+    flag: {
+      id: "Flag {id}",
+      ref: "Item {item} · Slip {slip}",
+      noName: "Nama tidak tersedia",
+      loadingName: "Memuat…",
+      noDetail: "Rincian nominal batch tidak tersedia",
+      fee: "Biaya PT {fee}, di luar gaji",
+      held: "Slip tertahan · Belum boleh diterbitkan",
+      released: "Flag ini tidak lagi menahan slip",
+      reopened: "Terbuka ulang · Clearance lama tidak berlaku.",
+      reopenedHint: "Slip tetap tertahan sampai clearance baru disetujui.",
+      proposedBy: "Diusulkan {name} · {time}",
+      approvedBy: "Diusulkan {proposer} · Disetujui {approver} · {time}",
+      flaggedAt: "Ditandai {time}",
+      review: "Tinjau flag",
+      viewProposal: "Lihat usulan",
+      viewApproval: "Lihat persetujuan",
+    },
+    who: {
+      you: "Anda",
+      unknown: "Identitas belum tersedia ({id})",
+    },
+    selection: {
+      slipValue: "Nilai slip terkait · Slip {slip}",
+    },
+    propose: {
+      title: "Usulkan clearance",
+      copy: "Gunakan setelah memastikan flag tidak lagi menunjukkan masalah yang belum selesai.",
+      reopenedTitle: "Clearance lama tidak berlaku",
+      reopenedBody:
+        "Data rekonsiliasi berubah setelah clearance disetujui. Slip kembali ditahan oleh flag ini dan perlu pemeriksaan ulang.",
+      reasonLabel: "Alasan clearance",
+      reasonPlaceholder: "Jelaskan hasil pemeriksaan dan bukti pendukung.",
+      reasonHint: "Wajib 10–500 karakter. Jelaskan mengapa flag dapat ditutup.",
+      counter: "{count}/500 karakter",
+      reasonError: "Tulis alasan minimal 10 karakter.",
+      passwordLabel: "Konfirmasi kata sandi akun",
+      passwordError: "Isi konfirmasi kata sandi untuk melanjutkan.",
+      submit: "Usulkan clearance",
+      note: "Usulan belum menutup flag. Orang lain yang berwenang harus meninjau dan menyetujuinya. Sistem juga memeriksa verifikasi identitas terbaru.",
+      invalidTitle: "Usulan belum dapat dikirim",
+      invalidBody:
+        "Lengkapi alasan dan konfirmasi kata sandi pada kolom yang ditandai.",
+      failedTitle: "Usulan belum dapat dikirim",
+      sent: "Usulan berhasil dikirim · Menunggu persetujuan orang lain",
+      sentBody:
+        "Flag tetap menahan slip sampai orang lain menyetujui usulan ini.",
+    },
+    approve: {
+      title: "Setujui clearance",
+      copy: "Tinjau alasan dan bukti sebelum memberikan persetujuan kedua.",
+      proposedBy: "Diusulkan oleh",
+      reasonCaption: "Alasan usulan",
+      reopenedTitle: "Terbuka ulang · Clearance lama tidak berlaku",
+      reopenedBody:
+        "Usulan baru sedang diperiksa. Slip tetap tertahan sampai disetujui orang lain.",
+      submit: "Setujui clearance",
+      note: "Clearance hanya menutup flag ini. Tidak mengirim uang, tidak mengubah nominal, dan tidak mengabaikan flag lain.",
+      back: "Kembali ke pemeriksaan",
+      failedTitle: "Persetujuan belum dapat dikirim",
+    },
+    self: {
+      title: "Anda adalah pengusul",
+      body: "Anda mengusulkan clearance ini. Persetujuan harus dilakukan oleh orang lain.",
+      noteTitle: "Usulan Anda menunggu orang lain",
+      noteBody: "Anda mengusulkan pada {time}.",
+      explain:
+        "Pengusul tidak dapat menyetujui usulannya sendiri. Minta orang lain yang berwenang untuk meninjau.",
+      detail: "Lihat rincian usulan",
+    },
+    history: {
+      title: "Riwayat persetujuan",
+      proposer: "Pengusul: {name}",
+      approver: "Disetujui: {name}",
+      note: "Flag ini telah ditutup. Persetujuan clearance tidak melakukan pembayaran.",
+      scope:
+        "Clearance hanya menghapus penahanan oleh flag ini. Flag lain atau syarat payout lain masih dapat menahan slip.",
+      back: "Kembali ke pemeriksaan",
+    },
+    done: {
+      title: "Clearance selesai",
+      by: "Disetujui oleh {approver} setelah diusulkan oleh {proposer}.",
+      closedTitle: "Flag ini sudah ditutup",
+      closedBody:
+        "Periksa flag lain yang masih terbuka sebelum melanjutkan penerbitan slip.",
+      note: "Persetujuan ini tidak mengirim uang dan tidak mengubah nominal pembayaran.",
+      banner: "Clearance disetujui oleh orang kedua",
+      bannerBody:
+        "{proposer} mengusulkan; {approver} menyetujui pada {time}. Flag {id} ditutup. Pembayaran tidak dijalankan oleh tindakan ini.",
+    },
+    changed: {
+      title: "Data berubah setelah usulan dibuat",
+      body: "Usulan ini tidak dapat disetujui. Periksa data terbaru, lalu buat usulan clearance baru. Slip tetap tertahan.",
+      action: "Buat usulan baru",
+      staleTitle: "Status clearance sudah berubah",
+      staleBody:
+        "Data sudah dimuat ulang. Periksa status terbaru sebelum melanjutkan.",
+      staleAction: "Periksa data terbaru",
+    },
+    empty: {
+      title: "Tidak ada flag rekonsiliasi",
+      description:
+        "Belum ada flag yang perlu ditinjau. Status pembayaran dan penerbitan slip tetap mengikuti pemeriksaan batch.",
+      action: "Muat ulang",
+    },
+    noAccess: {
+      title: "Layar ini memerlukan izin persetujuan pencairan",
+      description:
+        "Akun Anda belum memiliki izin untuk meninjau atau menyetujui clearance flag rekonsiliasi.",
+    },
+    error: {
+      title: "Flag rekonsiliasi belum dapat dimuat",
+      description:
+        "Periksa koneksi, lalu coba lagi. Status flag belum dapat dipastikan; jangan lanjutkan penerbitan slip berdasarkan layar ini.",
+      noData: "Data belum tersedia",
+      noDataBody: "Daftar flag dan usulan clearance belum berhasil diambil.",
+      retry: "Coba lagi",
+    },
   },
   detail: {
     title: "Rincian pembayaran",

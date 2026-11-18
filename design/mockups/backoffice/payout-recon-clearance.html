@@ -1,0 +1,1078 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Rekonsiliasi payout — Legend</title>
+    <style>
+      @font-face {
+        font-family: Jakarta;
+        src: url("../assets/plus-jakarta-sans-latin.woff2");
+        font-display: swap;
+      }
+      :root {
+        --canvas: oklch(97.1% 0.003 80);
+        --shell: oklch(98.5% 0.002 80);
+        --paper: oklch(100% 0 0);
+        --ink: oklch(22.2% 0.004 80);
+        --muted: oklch(47.2% 0.012 75);
+        --line: oklch(91.6% 0.006 80);
+        --edge: oklch(61.8% 0.015 75);
+        --action: oklch(44.5% 0.073 210);
+        --tint: oklch(94.5% 0.014 205);
+        --warning: oklch(40.7% 0.084 75);
+        --warning-bg: oklch(96.2% 0.036 85);
+        --danger: oklch(45.5% 0.16 25);
+        --danger-bg: oklch(96% 0.022 25);
+        --success: oklch(42.2% 0.095 155);
+        --success-bg: oklch(95.4% 0.025 155);
+        --raised: oklch(95.1% 0.005 75);
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--canvas);
+        color: var(--ink);
+        font:
+          14px/1.55 Jakarta,
+          sans-serif;
+      }
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+      h1 {
+        font-size: 27px;
+        line-height: 1.25;
+        letter-spacing: -0.035em;
+      }
+      h2 {
+        font-size: 18px;
+        line-height: 1.4;
+        letter-spacing: -0.02em;
+      }
+      h3 {
+        font-size: 15px;
+      }
+      button,
+      input,
+      textarea,
+      select {
+        font: inherit;
+      }
+      button {
+        cursor: pointer;
+      }
+      button:disabled {
+        cursor: not-allowed;
+      }
+      button,
+      a,
+      input,
+      textarea,
+      select {
+        outline-offset: 4px;
+      }
+      :focus-visible {
+        outline: 3px solid var(--action);
+      }
+      .app {
+        display: flex;
+        min-height: 100vh;
+      }
+      .side {
+        width: 208px;
+        flex: none;
+        padding: 26px 14px;
+        background: var(--shell);
+        border-right: 1px solid var(--line);
+      }
+      .logo {
+        font-size: 22px;
+        font-weight: 800;
+        margin: 0 12px 34px;
+        letter-spacing: -0.05em;
+      }
+      .nav-group {
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.09em;
+        margin: 24px 12px 8px;
+      }
+      .nav {
+        padding: 11px 12px;
+        color: var(--muted);
+      }
+      .nav.active {
+        color: var(--action);
+        background: var(--tint);
+        border-left: 3px solid var(--action);
+        font-weight: 700;
+      }
+      .main {
+        flex: 1;
+        min-width: 0;
+      }
+      .top {
+        min-height: 72px;
+        padding: 16px 28px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+        background: var(--paper);
+        border-bottom: 1px solid var(--line);
+      }
+      .top strong {
+        font-size: 16px;
+      }
+      .account {
+        font-size: 12px;
+        text-align: right;
+        color: var(--muted);
+      }
+      .account b {
+        color: var(--ink);
+        font-size: 13px;
+      }
+      .content {
+        max-width: 1280px;
+        margin: auto;
+        padding: 24px 28px 36px;
+      }
+      .back {
+        font-size: 12px;
+        font-weight: 700;
+        color: var(--muted);
+        margin-bottom: 14px;
+      }
+      .heading {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 20px;
+      }
+      .heading p {
+        color: var(--muted);
+        margin-top: 8px;
+        max-width: 580px;
+      }
+      .eyebrow {
+        font-size: 11px;
+        font-weight: 700;
+        color: var(--muted);
+        letter-spacing: 0.07em;
+        margin-bottom: 7px;
+      }
+      .sample-label {
+        color: var(--muted);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 5px 8px;
+        font-size: 11px;
+        white-space: nowrap;
+      }
+      .shell {
+        background: var(--shell);
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 7px;
+      }
+      .card {
+        background: var(--paper);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 20px;
+      }
+      .scope {
+        display: grid;
+        grid-template-columns: minmax(0, 1.15fr) 1fr;
+        gap: 24px;
+        align-items: center;
+        margin-bottom: 16px;
+      }
+      .scope label {
+        font-size: 12px;
+        font-weight: 700;
+        display: block;
+        margin-bottom: 6px;
+      }
+      select,
+      input,
+      textarea {
+        width: 100%;
+        border: 1px solid var(--edge);
+        border-radius: 8px;
+        padding: 10px 12px;
+        min-height: 44px;
+        background: var(--paper);
+        color: var(--ink);
+      }
+      textarea {
+        min-height: 116px;
+        resize: vertical;
+      }
+      .scope select {
+        max-width: 420px;
+        font-weight: 600;
+      }
+      .batch-meta {
+        display: flex;
+        gap: 22px;
+        justify-content: flex-end;
+      }
+      .batch-meta b {
+        font-size: 19px;
+        display: block;
+      }
+      .batch-meta span {
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .numeric {
+        font-variant-numeric: tabular-nums;
+      }
+      .caption,
+      .hint {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .caption {
+        margin-top: 5px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.38fr) minmax(310px, 1fr);
+        gap: 16px;
+        align-items: start;
+      }
+      .list-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        padding-bottom: 14px;
+        border-bottom: 1px solid var(--line);
+      }
+      .count {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .flag {
+        padding: 18px 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .flag:last-child {
+        border-bottom: 0;
+        padding-bottom: 2px;
+      }
+      .flag-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 8px;
+      }
+      .flag-id {
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        border-radius: 99px;
+        font-size: 10px;
+        font-weight: 700;
+        line-height: 1.5;
+        padding: 4px 8px;
+        white-space: nowrap;
+      }
+      .pill.open,
+      .pill.reopened {
+        color: var(--warning);
+        background: var(--warning-bg);
+      }
+      .pill.proposed {
+        color: var(--action);
+        background: var(--tint);
+      }
+      .pill.approved {
+        color: var(--success);
+        background: var(--success-bg);
+      }
+      .flag h3 {
+        max-width: 43ch;
+        margin-bottom: 10px;
+      }
+      .employee {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-end;
+        gap: 8px;
+      }
+      .employee strong {
+        display: block;
+        font-size: 13px;
+      }
+      .employee .amount {
+        font-size: 15px;
+      }
+      .employee span {
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .slip {
+        margin-top: 11px;
+        font-size: 11px;
+        color: var(--warning);
+        font-weight: 600;
+      }
+      .slip.free {
+        color: var(--success);
+      }
+      .flag-note {
+        font-size: 11px;
+        color: var(--muted);
+        margin-top: 7px;
+      }
+      .row-actions {
+        display: flex;
+        justify-content: flex-end;
+        margin-top: 9px;
+      }
+      .text-button {
+        border: 0;
+        background: transparent;
+        color: var(--action);
+        font-size: 12px;
+        padding: 6px 0 6px 10px;
+        min-height: 32px;
+        font-weight: 700;
+      }
+      .selected {
+        box-shadow: inset 3px 0 var(--action);
+        padding-left: 14px;
+        margin-left: -14px;
+      }
+      .panel-title {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 6px;
+      }
+      .step {
+        display: inline-flex;
+        justify-content: center;
+        align-items: center;
+        width: 24px;
+        height: 24px;
+        border: 1px solid var(--edge);
+        border-radius: 50%;
+        flex: none;
+        font-size: 11px;
+        font-weight: 700;
+      }
+      .panel-copy {
+        font-size: 12px;
+        color: var(--muted);
+        margin-bottom: 17px;
+      }
+      .selection {
+        border-top: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+        padding: 13px 0;
+        margin-bottom: 17px;
+      }
+      .selection strong {
+        font-size: 13px;
+      }
+      .selection .amount {
+        margin-top: 5px;
+        font-weight: 700;
+        font-size: 16px;
+      }
+      .selection .caption {
+        font-size: 11px;
+      }
+      .field {
+        margin-top: 16px;
+      }
+      .field label {
+        display: block;
+        font-size: 12px;
+        font-weight: 700;
+        margin-bottom: 6px;
+      }
+      .field small {
+        font-size: 11px;
+        color: var(--muted);
+        display: block;
+        margin-top: 6px;
+      }
+      .counter {
+        text-align: right;
+      }
+      .btn {
+        border: 1px solid var(--edge);
+        border-radius: 8px;
+        background: var(--paper);
+        padding: 10px 14px;
+        min-height: 44px;
+        color: var(--ink);
+        font-weight: 700;
+      }
+      .btn.primary {
+        color: var(--paper);
+        border-color: var(--action);
+        background: var(--action);
+      }
+      .btn:disabled {
+        background: var(--raised);
+        border-color: var(--line);
+        color: var(--muted);
+      }
+      .wide {
+        width: 100%;
+        margin-top: 18px;
+      }
+      .note {
+        border-left: 3px solid var(--edge);
+        padding-left: 11px;
+        margin-top: 16px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .self-note {
+        margin-top: 12px;
+      }
+      .self-note h3 {
+        font-size: 13px;
+      }
+      .self-note p {
+        font-size: 11px;
+        color: var(--muted);
+        margin-top: 6px;
+      }
+      .self-note .btn {
+        margin-top: 12px;
+        font-size: 12px;
+      }
+      .banner {
+        margin-bottom: 16px;
+        border-left: 4px solid var(--warning);
+        background: var(--warning-bg);
+        border-radius: 6px;
+        padding: 14px 16px;
+      }
+      .banner strong {
+        display: block;
+        font-size: 13px;
+        margin-bottom: 4px;
+      }
+      .banner p {
+        font-size: 12px;
+      }
+      .banner.error {
+        border-color: var(--danger);
+        background: var(--danger-bg);
+      }
+      .banner.ok {
+        border-color: var(--success);
+        background: var(--success-bg);
+      }
+      .banner .code {
+        display: block;
+        font-size: 10px;
+        color: var(--muted);
+        margin-top: 7px;
+        overflow-wrap: anywhere;
+      }
+      .banner .btn {
+        margin-top: 12px;
+        font-size: 12px;
+      }
+      .invalid {
+        border: 2px solid var(--danger);
+      }
+      .issue {
+        color: var(--danger);
+        font-size: 11px;
+        margin-top: 6px;
+        font-weight: 600;
+      }
+      .proposal {
+        padding: 13px;
+        background: var(--canvas);
+        border-radius: 8px;
+        margin: 16px 0;
+      }
+      .proposal blockquote {
+        margin: 10px 0;
+        font-size: 12px;
+      }
+      .proposal p {
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .proposal strong {
+        color: var(--ink);
+      }
+      .empty {
+        text-align: center;
+        padding: 54px 24px;
+      }
+      .empty .symbol {
+        font-size: 30px;
+        margin-bottom: 12px;
+        color: var(--action);
+      }
+      .empty p {
+        color: var(--muted);
+        max-width: 470px;
+        margin: 10px auto 20px;
+      }
+      .skeleton {
+        height: 15px;
+        background: var(--raised);
+        border-radius: 5px;
+        margin: 12px 0;
+      }
+      .skeleton.short {
+        width: 48%;
+      }
+      .loading-block {
+        border-bottom: 1px solid var(--line);
+        padding: 12px 0;
+      }
+      .footer {
+        margin-top: 18px;
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .mobile-menu {
+        display: none;
+      }
+      @media (max-width: 800px) {
+        body {
+          font-size: 16px;
+        }
+        .side {
+          display: none;
+        }
+        .top {
+          padding: 14px 16px;
+          min-height: 64px;
+        }
+        .top strong {
+          font-size: 16px;
+        }
+        .mobile-menu {
+          display: inline;
+        }
+        .account {
+          font-size: 10px;
+        }
+        .account b {
+          font-size: 11px;
+        }
+        .content {
+          padding: 20px 16px 32px;
+        }
+        .heading {
+          display: block;
+        }
+        h1 {
+          font-size: 25px;
+        }
+        .heading p {
+          font-size: 16px;
+        }
+        .sample-label {
+          display: inline-block;
+          margin-top: 12px;
+        }
+        .card {
+          padding: 16px;
+        }
+        .scope {
+          grid-template-columns: 1fr;
+          gap: 18px;
+        }
+        .scope label {
+          font-size: 13px;
+        }
+        .scope select {
+          font-size: 14px;
+        }
+        .batch-meta {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+          gap: 14px 20px;
+          border-top: 1px solid var(--line);
+          padding-top: 14px;
+        }
+        .batch-meta > div:last-child {
+          grid-column: 1 / -1;
+        }
+        .batch-meta > div:last-child b {
+          white-space: nowrap;
+        }
+        .batch-meta b {
+          font-size: 18px;
+        }
+        .batch-meta span {
+          font-size: 11px;
+        }
+        .grid {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .list-head {
+          align-items: flex-start;
+        }
+        h2 {
+          font-size: 18px;
+        }
+        .flag h3 {
+          font-size: 16px;
+        }
+        .pill {
+          font-size: 11px;
+        }
+        .employee {
+          align-items: flex-start;
+          flex-wrap: wrap;
+        }
+        .employee strong {
+          font-size: 14px;
+        }
+        .employee .amount {
+          font-size: 15px;
+        }
+        .employee span,
+        .slip,
+        .flag-note,
+        .flag-id {
+          font-size: 12px;
+        }
+        .text-button {
+          min-height: 44px;
+          font-size: 13px;
+        }
+        .field label,
+        .panel-copy,
+        .selection strong,
+        .banner p,
+        input,
+        textarea {
+          font-size: 16px;
+        }
+        .field small,
+        .selection .caption,
+        .note,
+        .proposal p,
+        .self-note p,
+        .issue {
+          font-size: 12px;
+        }
+        .proposal blockquote {
+          font-size: 16px;
+        }
+        .banner strong {
+          font-size: 14px;
+        }
+        .self-note h3 {
+          font-size: 14px;
+        }
+        .self-note .btn {
+          width: 100%;
+          font-size: 14px;
+        }
+        .footer {
+          font-size: 12px;
+        }
+      }
+      @media (prefers-contrast: more) {
+        :root {
+          --line: oklch(60% 0 0);
+          --edge: oklch(40% 0 0);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          scroll-behavior: auto !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <aside class="side" aria-label="Navigasi backoffice">
+        <div class="logo">
+          Legend<span style="color: var(--action)">.</span>
+        </div>
+        <div class="nav-group">OPERASIONAL</div>
+        <div class="nav">Ringkasan</div>
+        <div class="nav">Penjualan</div>
+        <div class="nav">Persediaan</div>
+        <div class="nav-group">KEUANGAN</div>
+        <div class="nav">Jurnal</div>
+        <div class="nav">Laporan keuangan</div>
+        <div class="nav active">Payout gaji</div>
+      </aside>
+      <div class="main">
+        <header class="top">
+          <strong
+            ><span class="mobile-menu" aria-hidden="true">☰ &nbsp;</span
+            >Keuangan</strong
+          >
+          <div class="account">
+            <b id="actor-name">Sari Wulandari</b><br />Finance Manager · PT
+            Legend Indonesia
+          </div>
+        </header>
+        <main class="content">
+          <div class="back">Payout gaji &nbsp; / &nbsp; Rekonsiliasi</div>
+          <div class="heading">
+            <div>
+              <div class="eyebrow">KONTROL PEMBAYARAN GAJI</div>
+              <h1>Flag rekonsiliasi payout</h1>
+              <p>
+                Tinjau selisih dan bukti yang belum sesuai. Clearance memerlukan
+                dua orang yang berbeda.
+              </p>
+            </div>
+            <span class="sample-label">Mockup · Data ilustrasi</span>
+          </div>
+          <div id="page"></div>
+          <p class="footer">
+            Data, identitas, dan nominal adalah ilustrasi. Nama karyawan serta
+            nominal ditampilkan dari rincian batch; nama pengusul dari data
+            identitas. Mockup ini tidak terhubung ke pembayaran.
+          </p>
+        </main>
+      </div>
+    </div>
+    <script>
+      const params = new URLSearchParams(location.search);
+      let state = params.get("state") || "normal";
+      let view = params.get("view") || "propose";
+      let localReason = state === "validation" ? "Sudah" : "";
+      let notice = "";
+      let activeProposalId = "RF-002";
+      let approvedFlagId = "RF-001";
+      let inspectedFlagId = "RF-003";
+      const page = document.getElementById("page");
+      const flags = [
+        {
+          id: "RF-001",
+          status: "open",
+          label: "Terbuka",
+          reason: "Biaya transfer tidak cocok dengan nilai terkunci",
+          name: "Andi Pratama",
+          item: "ITEM-014",
+          slip: "SLIP-014",
+          amount: "Rp 4.000.000",
+          note: "Biaya terkunci Rp 5.000 · Biaya tercatat Rp 7.500",
+        },
+        {
+          id: "RF-002",
+          status: "proposed",
+          label: "Diusulkan",
+          reason: "Bukti penutupan tanpa tanda tangan",
+          name: "Rina Lestari",
+          item: "ITEM-022",
+          slip: "SLIP-022",
+          amount: "Rp 4.250.000",
+          note: "Diusulkan Sari Wulandari · 17 Nov 2026, 14.10 WIB",
+        },
+        {
+          id: "RF-003",
+          status: "approved",
+          label: "Disetujui",
+          reason: "Biaya transfer tidak cocok dengan nilai terkunci",
+          name: "Budi Santoso",
+          item: "ITEM-008",
+          slip: "SLIP-008",
+          amount: "Rp 3.750.000",
+          note: "Sari Wulandari → Dimas Saputra · 17 Nov, 13.45 WIB",
+        },
+        {
+          id: "RF-004",
+          status: "reopened",
+          label: "Terbuka ulang",
+          reason: "Bukti penutupan tanpa tanda tangan",
+          name: "Maya Anggraini",
+          item: "ITEM-031",
+          slip: "SLIP-031",
+          amount: "Rp 4.500.000",
+          note: "Data berubah. Clearance lama tidak berlaku.",
+        },
+      ];
+      flags[1].proposal = {
+        reason:
+          "Dokumen penutupan yang benar sudah diperiksa. Tanda tangan tercantum pada berkas pengganti; flag berasal dari berkas lama.",
+        proposedBy: "Sari Wulandari",
+        proposedAt: "17 November 2026, 14.10 WIB",
+      };
+      flags[2].proposal = {
+        reason:
+          "Bukti transfer sudah diperiksa dan sesuai dengan nominal terkunci.",
+        proposedBy: "Sari Wulandari",
+        proposedAt: "17 November 2026, 13.20 WIB",
+        approvedBy: "Dimas Saputra",
+        approvedAt: "17 November 2026, 13.45 WIB",
+      };
+      flags[3].reopened = true;
+      const escapeText = (value) =>
+        String(value)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+      function recordApproval(flag) {
+        flag.status = "approved";
+        flag.label = "Disetujui";
+        flag.proposal ||= {
+          reason:
+            "Bukti transfer sudah diperiksa dan sesuai dengan nilai terkunci.",
+          proposedBy: "Sari Wulandari",
+          proposedAt: "17 November 2026, 14.10 WIB",
+        };
+        flag.proposal.approvedBy = "Dimas Saputra";
+        flag.proposal.approvedAt = "17 November 2026, 14.42 WIB";
+        flag.note = "Disetujui Dimas Saputra · 17 Nov 2026, 14.42 WIB";
+      }
+      if (state === "success")
+        recordApproval(flags.find((flag) => flag.id === approvedFlagId));
+      const symbols = {
+        open: "!",
+        proposed: "◷",
+        approved: "✓",
+        reopened: "↻",
+      };
+      function pill(flag) {
+        return `<span class="pill ${flag.status}"><span aria-hidden="true">${symbols[flag.status]}</span> ${flag.label}</span>`;
+      }
+      function scope() {
+        const unknown = state === "loading" || state === "error";
+        const heldFlags = flags.filter((flag) => flag.status !== "approved");
+        const heldTotal = heldFlags.reduce(
+          (total, flag) => total + Number(flag.amount.replace(/\D/g, "")),
+          0,
+        );
+        const heldAmount = new Intl.NumberFormat("id-ID", {
+          style: "currency",
+          currency: "IDR",
+          maximumFractionDigits: 0,
+        }).format(heldTotal);
+        return `<section class="shell" style="margin-bottom:16px"><div class="card scope"><div><label for="batch">Batch payout</label><select id="batch"><option>PAY-NOV26-01 · Gaji November 2026</option><option value="clear" ${state === "empty" ? "selected" : ""}>PAY-OKT26-01 · Gaji Oktober 2026</option></select><p class="caption">PT Legend Indonesia · 42 karyawan · Transfer manual</p></div><div class="batch-meta numeric"><div><b>${unknown ? "—" : state === "empty" ? "0" : "4"}</b><span>Flag dalam batch</span></div><div><b>${unknown ? "—" : state === "empty" ? "0" : heldFlags.length}</b><span>Slip tertahan</span></div><div><b>${unknown ? "—" : state === "empty" ? "Rp 0" : heldAmount}</b><span>Nilai slip tertahan</span></div></div></div></section>`;
+      }
+      function selectedFlag() {
+        return view === "history"
+          ? flags.find((flag) => flag.id === inspectedFlagId)
+          : view === "approve" || view === "self"
+            ? flags.find((flag) => flag.id === activeProposalId)
+            : view === "reopened"
+              ? flags[3]
+              : flags.find(
+                  (flag) =>
+                    flag.status === "open" || flag.status === "reopened",
+                ) || flags[0];
+      }
+      function list() {
+        const selected = selectedFlag().id;
+        return `<section class="shell"><div class="card"><div class="list-head"><div><h2>Flag dalam batch</h2><p class="caption">Setiap flag ditinjau terpisah.</p></div><span class="count">4 flag</span></div>${flags
+          .map((flag) => {
+            const approved = flag.status === "approved";
+            const display = approved
+              ? { ...flag, status: "approved", label: "Disetujui" }
+              : flag;
+            return `<article class="flag ${flag.id === selected ? "selected" : ""}" data-flag-id="${flag.id}"><div class="flag-top"><span class="flag-id">${flag.id}</span>${pill(display)}</div><h3>${flag.reason}</h3><div class="employee"><div><strong>${flag.name}</strong><span>${flag.item} · ${flag.slip}</span></div><strong class="amount numeric">${flag.amount}</strong></div><p class="slip ${approved ? "free" : ""}">${approved ? "✓ Flag ini tidak lagi menahan slip" : "⏸ Slip tertahan · Belum boleh diterbitkan"}</p><p class="flag-note">${flag.note}</p>${flag.reopened && flag.status !== "approved" ? '<p class="flag-note"><strong>↻ Terbuka ulang · Clearance lama tidak berlaku.</strong><br>Slip tetap tertahan sampai clearance baru disetujui.</p>' : ""}<div class="row-actions"><button class="text-button" data-flag-id="${flag.id}" data-action="${approved ? "history" : flag.status === "proposed" ? "self" : flag.status === "reopened" ? "reopened" : "propose"}">${approved ? "Lihat persetujuan" : flag.status === "proposed" ? "Lihat usulan" : "Tinjau flag"} <span aria-hidden="true">→</span></button></div></article>`;
+          })
+          .join("")}</div></section>`;
+      }
+      function selection(flag) {
+        return `<div class="selection"><strong>${flag.name} · ${flag.id}</strong><p class="caption">${flag.reason}</p><div class="amount numeric">${flag.amount}</div><p class="caption">Nilai slip terkait · ${flag.slip}</p></div>`;
+      }
+      function changedBanner() {
+        return `<div class="banner error" id="changed-alert" role="alert"><strong>Data berubah setelah usulan dibuat</strong><p>Usulan ini tidak dapat disetujui. Periksa data terbaru, lalu buat usulan baru. Slip tetap tertahan.</p><!-- API refusal: PAYOUT_RECON_FLAG_CHANGED --><button class="btn" data-action="new-proposal">Buat usulan baru</button></div>`;
+      }
+      function proposalForm() {
+        const invalid = state === "validation";
+        return `<form id="proposal-form" novalidate><div class="field"><label for="clearance-reason">Alasan clearance <span aria-hidden="true">*</span></label><textarea id="clearance-reason" name="reason" minlength="10" maxlength="500" required ${invalid ? 'class="invalid" aria-invalid="true" aria-describedby="reason-error reason-help"' : 'aria-describedby="reason-help"'} placeholder="Jelaskan hasil pemeriksaan dan bukti pendukung.">${escapeText(localReason)}</textarea>${invalid ? '<p id="reason-error" class="issue">! Tulis alasan minimal 10 karakter.</p>' : ""}<small id="reason-help">Wajib 10–500 karakter. Jelaskan mengapa flag dapat ditutup.</small><small class="counter" id="reason-counter">${localReason.length}/500 karakter</small></div><div class="field"><label for="clearance-password">Konfirmasi kata sandi akun <span aria-hidden="true">*</span></label><input id="clearance-password" type="password" name="password" autocomplete="off" maxlength="128" required placeholder="Jangan masukkan kata sandi asli" ${invalid ? 'class="invalid" aria-invalid="true" aria-describedby="password-error password-help"' : 'aria-describedby="password-help"'} />${invalid ? '<p id="password-error" class="issue">! Isi konfirmasi kata sandi untuk melanjutkan.</p>' : ""}<small id="password-help">Pratinjau saja. Gunakan teks contoh, bukan kata sandi asli.</small></div><button id="propose-clearance" class="btn primary wide" type="submit">Usulkan clearance</button></form><p class="note">Usulan belum menutup flag. Orang lain yang berwenang harus meninjau dan menyetujuinya. Sistem juga memeriksa verifikasi identitas terbaru.</p>`;
+      }
+      function ownProposal() {
+        const flag =
+          flags.find(
+            (flag) =>
+              flag.id === activeProposalId && flag.status === "proposed",
+          ) ||
+          flags.find(
+            (flag) =>
+              flag.status === "proposed" &&
+              flag.proposal?.proposedBy === "Sari Wulandari",
+          );
+        if (!flag) return "";
+        return `<section class="shell self-note"><div class="card"><h3>Usulan Anda menunggu orang lain</h3><p><strong>${flag.name} · ${flag.id}</strong><br>Anda, ${flag.proposal.proposedBy}, mengusulkan pada ${flag.proposal.proposedAt}.</p><button id="self-approval" class="btn" disabled aria-describedby="self-explanation">Setujui clearance</button><p id="self-explanation">Pengusul tidak dapat menyetujui usulannya sendiri. Minta orang lain yang berwenang untuk meninjau.</p><button class="text-button" data-flag-id="${flag.id}" data-action="self">Lihat rincian usulan →</button></div></section>`;
+      }
+      function approvePanel() {
+        const flag = selectedFlag();
+        const proposal = flag.proposal;
+        const self = view === "self";
+        return `<section class="shell"><div class="card"><div class="panel-title"><span class="step">2</span><h2>Setujui clearance</h2></div><p class="panel-copy">Tinjau alasan dan bukti sebelum memberikan persetujuan kedua.</p>${selection(selectedFlag())}${flag.reopened ? '<div class="banner"><strong>↻ Terbuka ulang · Clearance lama tidak berlaku</strong><p>Usulan baru sedang diperiksa. Slip tetap tertahan sampai disetujui orang lain.</p></div>' : ""}<div class="proposal"><p>Diusulkan oleh <strong>${proposal.proposedBy}</strong><br><time>${proposal.proposedAt}</time></p><blockquote id="proposal-reason"></blockquote><p>Alasan usulan · Data ilustrasi</p></div>${self ? `<div class="banner"><strong>Anda adalah pengusul</strong><p id="self-approval-reason">Persetujuan harus diberikan oleh orang lain yang berwenang. Anda tidak dapat menyetujui usulan sendiri.</p></div><button class="btn wide" id="approve-clearance" disabled aria-describedby="self-approval-reason">Setujui clearance</button>` : `<form id="approval-form" novalidate><div class="field"><label for="clearance-password">Konfirmasi kata sandi akun <span aria-hidden="true">*</span></label><input id="clearance-password" name="password" type="password" maxlength="128" required autocomplete="off" placeholder="Jangan masukkan kata sandi asli" aria-describedby="password-help"><small id="password-help">Pratinjau saja. Gunakan teks contoh, bukan kata sandi asli.</small></div><button class="btn primary wide" id="approve-clearance" type="submit">Setujui clearance</button></form>`}<p class="note">Clearance hanya menutup flag ini. Tidak mengirim uang, tidak mengubah nominal, dan tidak mengabaikan flag lain.</p><button class="text-button" data-action="propose">Kembali ke pemeriksaan →</button></div></section>`;
+      }
+      function panel() {
+        if (state === "success")
+          return `<section class="shell"><div class="card"><div class="panel-title"><span class="step">✓</span><h2>Clearance selesai</h2></div>${selection(flags.find((flag) => flag.id === approvedFlagId))}<p class="panel-copy">Disetujui oleh Dimas Saputra setelah diusulkan oleh Sari Wulandari.</p><div class="banner ok"><strong>Flag ini sudah ditutup</strong><p>Periksa flag lain yang masih terbuka sebelum melanjutkan penerbitan slip.</p></div><p class="note">Persetujuan ini tidak mengirim uang dan tidak mengubah nominal pembayaran.</p></div></section>`;
+        if (view === "approve" || view === "self") return approvePanel();
+        if (view === "history" || selectedFlag().status === "approved") {
+          const flag =
+            view === "history"
+              ? flags.find((flag) => flag.id === inspectedFlagId)
+              : selectedFlag();
+          const proposal = flag.proposal;
+          return `<section class="shell"><div class="card"><h2>Riwayat persetujuan</h2>${selection(flag)}<div class="proposal"><p><strong>Pengusul: ${proposal.proposedBy}</strong><br>${proposal.proposedAt}</p><blockquote id="history-reason">${escapeText(proposal.reason)}</blockquote><p><strong>Disetujui: ${proposal.approvedBy}</strong><br>${proposal.approvedAt}</p></div><p class="note">Flag ini telah ditutup. Persetujuan clearance tidak melakukan pembayaran.</p><button class="btn wide" data-action="propose">Kembali ke pemeriksaan</button></div></section>`;
+        }
+        return `<div>${view === "changed" ? changedBanner() : ""}<section class="shell"><div class="card"><div class="panel-title"><span class="step">1</span><h2>Usulkan clearance</h2></div><p class="panel-copy">Gunakan setelah memastikan flag tidak lagi menunjukkan masalah yang belum selesai.</p>${selection(selectedFlag())}${view === "reopened" ? '<div class="banner"><strong>↻ Clearance lama tidak berlaku</strong><p>Data bukti berubah setelah disetujui. Slip tertahan kembali sampai pemeriksaan dan clearance baru selesai.</p></div>' : ""}${proposalForm()}</div></section>${ownProposal()}</div>`;
+      }
+      function render() {
+        document.getElementById("actor-name").textContent =
+          view === "approve" || state === "success"
+            ? "Dimas Saputra"
+            : "Sari Wulandari";
+        let html = scope();
+        if (state === "empty")
+          html += `<section class="shell"><div class="card empty"><div class="symbol" aria-hidden="true">✓</div><h2>Tidak ada flag rekonsiliasi</h2><p>Batch ini tidak memiliki flag yang perlu ditinjau. Status pembayaran dan penerbitan slip tetap mengikuti pemeriksaan batch.</p><button class="btn" data-action="normal">Lihat contoh batch berflag</button></div></section>`;
+        else if (state === "loading")
+          html += `<div class="grid" aria-busy="true"><section class="shell"><div class="card"><h2>Memuat flag rekonsiliasi</h2><p class="caption">Mengambil flag dan status clearance terbaru.</p>${Array.from({ length: 3 }, () => '<div class="loading-block"><div class="skeleton short"></div><div class="skeleton"></div><div class="skeleton"></div></div>').join("")}</div></section><section class="shell"><div class="card"><div class="skeleton short"></div><div class="skeleton"></div><div class="skeleton" style="height:110px"></div><div class="skeleton" style="height:44px"></div></div></section></div>`;
+        else if (state === "error")
+          html += `<div class="banner error" role="alert"><strong>Flag rekonsiliasi belum dapat dimuat</strong><p>Periksa koneksi, lalu coba lagi. Status flag belum dapat dipastikan; jangan lanjutkan penerbitan slip berdasarkan layar ini.</p></div><section class="shell"><div class="card empty"><h2>Data belum tersedia</h2><p>Daftar flag dan usulan clearance belum berhasil diambil.</p><button class="btn primary" data-action="retry">Coba lagi</button></div></section>`;
+        else {
+          if (state === "validation")
+            html += `<div class="banner error" role="alert"><strong>Usulan belum dapat dikirim</strong><p>Lengkapi alasan dan konfirmasi kata sandi pada kolom yang ditandai.</p></div>`;
+          if (state === "success")
+            html += `<div class="banner ok" role="status"><strong>✓ Clearance disetujui oleh orang kedua</strong><p>Sari Wulandari mengusulkan; Dimas Saputra menyetujui pada 17 Nov 2026, 14.42 WIB. Flag ${approvedFlagId} ditutup. Pembayaran tidak dijalankan oleh tindakan ini.</p></div>`;
+          if (notice)
+            html += `<div class="banner ok" role="status"><strong>${notice}</strong><p>Ini simulasi lokal. Tidak ada permintaan yang dikirim ke API.</p></div>`;
+          html += `<div class="grid">${list()}${panel()}</div>`;
+        }
+        page.innerHTML = html;
+        const reasonDisplay = document.getElementById("proposal-reason");
+        if (reasonDisplay)
+          reasonDisplay.textContent = selectedFlag().proposal.reason;
+      }
+      page.addEventListener("input", (event) => {
+        if (event.target.id === "clearance-reason") {
+          localReason = event.target.value;
+          document.getElementById("reason-counter").textContent =
+            `${localReason.length}/500 karakter`;
+        }
+      });
+      page.addEventListener("change", (event) => {
+        if (event.target.id === "batch") {
+          state = event.target.value === "clear" ? "empty" : "normal";
+          render();
+        }
+      });
+      page.addEventListener("click", (event) => {
+        const actionButton = event.target.closest("[data-action]");
+        const action = actionButton?.dataset.action;
+        if (!action) return;
+        if (actionButton.dataset.flagId) {
+          if (action === "self") activeProposalId = actionButton.dataset.flagId;
+          if (action === "history")
+            inspectedFlagId = actionButton.dataset.flagId;
+        }
+        notice = "";
+        if (action === "retry") {
+          state = "loading";
+          render();
+          setTimeout(() => {
+            state = "normal";
+            render();
+          }, 450);
+          return;
+        }
+        if (action === "normal" || action === "new-proposal") {
+          state = "normal";
+          view = "propose";
+          localReason = "";
+        } else {
+          state = "normal";
+          view = action;
+        }
+        render();
+        if (
+          innerWidth < 800 &&
+          ["self", "reopened", "history", "propose"].includes(action)
+        )
+          document.querySelector(".grid")?.lastElementChild.scrollIntoView({
+            behavior: "auto",
+            block: "start",
+          });
+      });
+      page.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const password = document.getElementById("clearance-password");
+        if (event.target.id === "proposal-form") {
+          if (
+            localReason.trim().length < 10 ||
+            localReason.trim().length > 500 ||
+            !password.value
+          ) {
+            state = "validation";
+            render();
+            return;
+          }
+          const target = selectedFlag();
+          activeProposalId = target.id;
+          target.proposal = {
+            reason: localReason.trim(),
+            proposedBy: "Sari Wulandari",
+            proposedAt: "17 November 2026, 14.10 WIB",
+          };
+          target.status = "proposed";
+          target.label = "Diusulkan";
+          target.note = "Diusulkan Sari Wulandari · 17 Nov 2026, 14.10 WIB";
+          notice =
+            "✓ Usulan berhasil dikirim · Menunggu persetujuan orang lain";
+          state = "normal";
+          view = "self";
+          render();
+        } else if (event.target.id === "approval-form") {
+          if (!password.value) {
+            password.setAttribute("aria-invalid", "true");
+            password.classList.add("invalid");
+            password.focus();
+            if (!document.getElementById("approval-password-error"))
+              password.insertAdjacentHTML(
+                "afterend",
+                '<p id="approval-password-error" class="issue" role="alert">! Isi konfirmasi kata sandi untuk melanjutkan.</p>',
+              );
+            password.setAttribute(
+              "aria-describedby",
+              "approval-password-error password-help",
+            );
+            return;
+          }
+          approvedFlagId = activeProposalId;
+          recordApproval(flags.find((flag) => flag.id === approvedFlagId));
+          state = "success";
+          view = "propose";
+          render();
+          scrollTo(0, 0);
+        }
+      });
+      render();
+    </script>
+  </body>
+</html>

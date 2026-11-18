@@ -201,6 +201,7 @@ export function VerifyPanel({
         >
           <Input
             type="password"
+            name="password"
             autoComplete="current-password"
             autoFocus={!codeFirst}
             value={password}

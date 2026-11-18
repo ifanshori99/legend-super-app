@@ -26,6 +26,15 @@
 // `?mock=two-pending` adds a second pending-approval manual batch (203, its own
 // run, same PT and same source account, asked by finance) next to batch 201, so
 // a spec can move from one batch to the other with the approval tab still open.
+// Recon flags and return-claim withdrawal (legend-o2b4m) are two-person steps.
+// `?mock=recon-approve` has a clearance and a withdrawal proposed by the other
+// user (the signed-in one can approve), `recon-self` has them proposed by the
+// signed-in user (approve refused), `recon-changed` makes the approve answer 409
+// PAYOUT_RECON_FLAG_CHANGED / PAYOUT_RETURN_WITHDRAW_REFUSED once, `recon-reopened`
+// shows a flag whose old clearance no longer fits. Plain `normal`, `empty`,
+// `slow` and `error` work as everywhere. The proposals live in sessionStorage
+// (key `payoutReconMock`), so a spec can reload and switch the mock role cookie
+// (`finance` / `hr`) to approve as a different person.
 // Every call of the approve endpoint is also logged in
 // `window.__payoutApproveCalls` (batch ids), to prove nothing was sent.
 // Bank items carry the locked payee snapshot (name + "****1234"); cash items
@@ -64,6 +73,8 @@ import {
 } from "@starter/shared/hris/payroll/payout";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import type {
+  PayoutReconFlagDto,
+  PayoutReturnClaimDto,
   PayrollDisbursementBatchDto,
   PayrollDisbursementItemDto,
   PayrollPayoutConfigDto,
@@ -72,7 +83,16 @@ import { ApiError } from "@/lib/api/errors";
 import { MOCK_ROLE_COOKIE, parseMockRole } from "@/lib/areas/access";
 import { registerMock } from "@/lib/mock/registry";
 import { createMockStore } from "@/lib/mock/store";
-import type { PayableRun, PayoutEmployee } from "./api";
+import {
+  approveReconClearanceEndpoint,
+  approveReturnWithdrawalEndpoint,
+  listBatchReturnClaimsEndpoint,
+  listPayoutReconFlagsEndpoint,
+  proposeReconClearanceEndpoint,
+  proposeReturnWithdrawalEndpoint,
+  type PayableRun,
+  type PayoutEmployee,
+} from "./api";
 
 const LEGAL_ENTITY_ID = cafeLegendPlatformFixtures.legalEntity.id;
 const { userIds } = cafeLegendPayrollFixtures;
@@ -80,12 +100,19 @@ const { userIds } = cafeLegendPayrollFixtures;
 /** Deterministic RFC 4122 ids so e2e and demos can name a batch in the URL. */
 const uid = (n: number) =>
   `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+/**
+ * Same shape, but the first 8 hex chars differ per `n`: the screens name an id
+ * by those chars (`shortId`), so rows must not all read 00000000. Ids that
+ * specs name literally (runs, the two pending batches) stay on `uid`.
+ */
+const spreadUid = (n: number) =>
+  `${(Math.imul(n, 0x9e3779b1) >>> 0).toString(16).padStart(8, "0")}-0000-4000-8000-${String(n).padStart(12, "0")}`;
 export const MOCK_PAYOUT_IDS = {
   runApproval: uid(101),
   runNew: uid(102),
   runStatus: uid(100),
   batchApproval: uid(201),
-  batchStatus: uid(202),
+  batchStatus: spreadUid(202),
   /** `two-pending` only: a second batch awaiting approval (own run). */
   runTwoPending: uid(103),
   batchTwoPending: uid(203),
@@ -253,9 +280,9 @@ function item(
   const channel = overrides.channel ?? "manual_bank";
   const holder = PEOPLE.find((person) => person.id === uid(employee))?.name;
   return {
-    id: uid(n),
+    id: spreadUid(n),
     batchId,
-    payslipId: uid(n + 500),
+    payslipId: spreadUid(n + 500),
     employeeId: uid(employee),
     channel,
     attemptNo: 1,
@@ -435,6 +462,9 @@ const state = () => store.get();
 let counter = 5000;
 const nextId = () => uid((counter += 1));
 
+/** The signed-in mock user (the role cookie picks it); the UI reads it for two-person checks. */
+export const mockActorId = () => currentActor();
+
 function currentActor(): string {
   if (typeof document === "undefined") return userIds.hrApprover;
   const raw = document.cookie
@@ -449,12 +479,23 @@ function currentActor(): string {
 
 // ---- Payout-only scenarios ------------------------------------------------------
 
+const RECON_SCENARIOS = [
+  "recon-approve",
+  "recon-self",
+  "recon-changed",
+  "recon-reopened",
+] as const;
+type ReconScenario = (typeof RECON_SCENARIOS)[number];
+const isReconScenario = (value: string | null): value is ReconScenario =>
+  (RECON_SCENARIOS as readonly (string | null)[]).includes(value);
+
 type PayoutScenario =
   | "legacy-account"
   | "batches-paged"
   | "batches-paged-open"
   | "resolve-proposal"
-  | "two-pending";
+  | "two-pending"
+  | ReconScenario;
 let rememberedScenario: PayoutScenario | null = null;
 
 /**
@@ -469,7 +510,8 @@ function payoutScenario(): PayoutScenario | null {
       value === "batches-paged" ||
       value === "batches-paged-open" ||
       value === "resolve-proposal" ||
-      value === "two-pending"
+      value === "two-pending" ||
+      isReconScenario(value)
     )
       rememberedScenario = value;
     else if (value !== null) rememberedScenario = null;
@@ -511,7 +553,7 @@ function seedScenarioProposals() {
     proposalsSeeded: true,
     proposals: {
       ...state().proposals,
-      [`resolve:${uid(2005)}`]: {
+      [`resolve:${spreadUid(2005)}`]: {
         kind: "resolve",
         outcome: "failed",
         by: userIds.financeApprover,
@@ -519,7 +561,7 @@ function seedScenarioProposals() {
         note: "Bank menolak transfer, saldo tujuan tidak aktif.",
         at: "2026-10-31T03:20:00.000Z",
       },
-      [`return:${uid(2002)}`]: {
+      [`return:${spreadUid(2002)}`]: {
         kind: "return",
         outcome: "returned",
         by: userIds.financeApprover,
@@ -555,7 +597,7 @@ const MOCK_RIGHT_PASSWORD = "benar-123";
 const MOCK_WRONG_LIMIT = 5;
 let wrongPasswordStreak = 0;
 
-type PayoutMockAction = "approve" | "export" | "config";
+type PayoutMockAction = "approve" | "export" | "config" | "recon";
 type PayoutMockCalls = Record<PayoutMockAction, number>;
 
 declare global {
@@ -614,6 +656,7 @@ function passwordStepUp(
     approve: 0,
     export: 0,
     config: 0,
+    recon: 0,
   });
   calls[action] += 1;
 }
@@ -1303,4 +1346,389 @@ registerMock(unfreezeDisbursementBatch, ({ params }) => {
   const released = current.freeze.disputes.length;
   save({ ...current, freeze: { frozen: false, disputes: [] } });
   return { data: { released } };
+});
+
+// ---- Recon flags and return-claim withdrawal ---------------------------------------
+
+type ReconClearance = NonNullable<PayoutReconFlagDto["clearance"]>;
+type ReconMockState = {
+  /** Scenario the state was seeded for; another scenario re-seeds it. */
+  seededFor: string;
+  flags: PayoutReconFlagDto[];
+  claims: PayoutReturnClaimDto[];
+};
+
+const RECON_STORAGE_KEY = "payoutReconMock";
+const reconId = (n: number) => spreadUid(7000 + n);
+export const MOCK_RECON_IDS = {
+  flagOpen: reconId(1),
+  flagProposed: reconId(2),
+  flagApproved: reconId(3),
+  flagReopened: reconId(4),
+  claimOpen: reconId(21),
+  claimWithdrawProposed: reconId(22),
+  claimConsumed: reconId(23),
+  claimWithdrawn: reconId(24),
+} as const;
+
+/** The mock "other person": whoever the signed-in mock user is not. */
+const otherUser = () =>
+  currentActor() === userIds.financeApprover
+    ? userIds.hrApprover
+    : userIds.financeApprover;
+
+function seedRecon(scenario: string, seededFor: string): ReconMockState {
+  const other = otherUser();
+  // `recon-self` puts every proposal under the signed-in user.
+  const proposer = scenario === "recon-self" ? currentActor() : other;
+  const flag = (
+    n: number,
+    itemNo: number,
+    reason: string,
+    clearance: ReconClearance | null,
+    reopened = false,
+  ): PayoutReconFlagDto => ({
+    id: reconId(n),
+    kind: n === 4 ? "return_withdraw" : n === 3 ? "posting_source" : "return",
+    itemId: spreadUid(2000 + itemNo),
+    payslipId: spreadUid(6000 + itemNo),
+    batchId: MOCK_PAYOUT_IDS.batchStatus,
+    reason,
+    flaggedAt: `2026-11-1${n}T03:15:00.000Z`,
+    reopened,
+    clearance,
+  });
+  const proposed = (n: number, reason: string): ReconClearance => ({
+    id: reconId(10 + n),
+    status: "proposed",
+    reason,
+    proposedBy: proposer,
+    proposedAt: "2026-11-16T08:40:00.000Z",
+    approvedBy: null,
+    approvedAt: null,
+  });
+  const claim = (
+    n: number,
+    patch: Partial<PayoutReturnClaimDto>,
+  ): PayoutReturnClaimDto => ({
+    id: reconId(20 + n),
+    status: "open",
+    bankRef: `RTN2026110${n}`,
+    itemCount: 1,
+    createdBy: other,
+    createdAt: `2026-11-0${n}T04:00:00.000Z`,
+    withdrawal: null,
+    ...patch,
+  });
+  const claims = [
+    claim(1, {}),
+    claim(2, {
+      itemCount: 2,
+      withdrawal: {
+        id: reconId(30),
+        reason: "Dana kembali dicatat ke item yang salah, perlu dicatat ulang.",
+        proposedBy: proposer,
+        proposedAt: "2026-11-16T09:05:00.000Z",
+      },
+    }),
+    claim(3, { status: "consumed" }),
+    claim(4, { status: "withdrawn" }),
+  ];
+  if (scenario === "empty") return { seededFor, flags: [], claims: [] };
+  if (scenario === "recon-reopened")
+    return {
+      seededFor,
+      flags: [
+        flag(
+          4,
+          4,
+          "Data pengembalian berubah setelah clearance disetujui.",
+          null,
+          true,
+        ),
+      ],
+      claims,
+    };
+  if (
+    scenario === "recon-approve" ||
+    scenario === "recon-self" ||
+    scenario === "recon-changed"
+  )
+    return {
+      seededFor,
+      flags: [
+        flag(
+          2,
+          2,
+          "Dana kembali dicatat tanpa jurnal yang cocok.",
+          proposed(2, "Selisih sudah dicocokkan dengan mutasi bank."),
+        ),
+      ],
+      claims,
+    };
+  return {
+    seededFor,
+    flags: [
+      flag(1, 1, "Biaya PT tidak cocok dengan jurnal biaya.", null),
+      flag(
+        2,
+        2,
+        "Dana kembali dicatat tanpa jurnal yang cocok.",
+        proposed(2, "Selisih sudah dicocokkan dengan mutasi bank."),
+      ),
+      flag(3, 3, "Sumber dana jurnal berbeda dari rekening batch.", {
+        id: reconId(13),
+        status: "approved",
+        reason: "Rekening sumber sudah diperiksa dan sesuai.",
+        proposedBy: userIds.financeApprover,
+        proposedAt: "2026-11-15T08:00:00.000Z",
+        approvedBy: userIds.hrApprover,
+        approvedAt: "2026-11-15T09:30:00.000Z",
+      }),
+      flag(4, 4, "Data pengembalian berubah setelah clearance.", null, true),
+    ],
+    claims,
+  };
+}
+
+const reconStore = createMockStore<ReconMockState | null>(() => null);
+
+/**
+ * Proposals survive a reload (sessionStorage), so a spec can approve as another
+ * user after the proposer's page is gone. A different scenario re-seeds. The
+ * server render holds the seed in memory only.
+ */
+function reconState(scenario: string): ReconMockState {
+  // Only `empty` and the recon scenarios change the data; `slow` and `error`
+  // act in the transport and must not wipe a stored proposal.
+  const effective = isReconScenario(payoutScenario())
+    ? (payoutScenario() as string)
+    : scenario === "empty"
+      ? "empty"
+      : "normal";
+  const stored = (() => {
+    if (typeof window === "undefined") return reconStore.get();
+    try {
+      const raw = window.sessionStorage.getItem(RECON_STORAGE_KEY);
+      return raw ? (JSON.parse(raw) as ReconMockState) : null;
+    } catch {
+      return reconStore.get();
+    }
+  })();
+  // The proposer is picked relative to the signed-in user at seed time only;
+  // a changed user keeps the stored state, which is what a two-person spec needs.
+  if (stored?.seededFor === effective) return stored;
+  const seeded = seedRecon(effective, effective);
+  saveRecon(seeded);
+  return seeded;
+}
+
+function saveRecon(next: ReconMockState) {
+  reconStore.set(next);
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(RECON_STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    // Storage blocked: the in-memory copy still serves this page.
+  }
+}
+
+registerMock(listPayoutReconFlagsEndpoint, ({ scenario }) => ({
+  data: reconState(scenario).flags,
+}));
+
+registerMock(proposeReconClearanceEndpoint, ({ params, body, scenario }) => {
+  passwordStepUp("recon", body.password);
+  const current = reconState(scenario);
+  const found = current.flags.find((row) => row.id === params.flagId);
+  if (!found)
+    throw refuse(
+      404,
+      "PAYOUT_RECON_FLAG_NOT_FOUND",
+      "Flag rekonsiliasi tidak ditemukan.",
+    );
+  // The same proposal again answers the same id; the first reason stays.
+  if (found.clearance?.status === "proposed")
+    return { data: { clearanceId: found.clearance.id } };
+  if (found.clearance?.status === "approved")
+    throw refuse(
+      409,
+      "PAYOUT_RECON_CLEAR_STATE",
+      "Penutupan flag ini sudah disetujui.",
+    );
+  const clearanceId = nextId();
+  saveRecon({
+    ...current,
+    flags: current.flags.map((row) =>
+      row.id === found.id
+        ? {
+            ...row,
+            clearance: {
+              id: clearanceId,
+              status: "proposed" as const,
+              reason: body.reason,
+              proposedBy: currentActor(),
+              proposedAt: new Date().toISOString(),
+              approvedBy: null,
+              approvedAt: null,
+            },
+          }
+        : row,
+    ),
+  });
+  return { data: { clearanceId } };
+});
+
+registerMock(approveReconClearanceEndpoint, ({ params, body, scenario }) => {
+  passwordStepUp("recon", body.password);
+  const current = reconState(scenario);
+  const found = current.flags.find(
+    (row) => row.clearance?.id === params.clearanceId,
+  );
+  const clearance = found?.clearance;
+  if (!found || !clearance)
+    throw refuse(
+      404,
+      "PAYOUT_RECON_CLEARANCE_NOT_FOUND",
+      "Usulan penutupan flag tidak ditemukan.",
+    );
+  if (clearance.status === "approved")
+    throw refuse(
+      409,
+      "PAYOUT_RECON_CLEAR_STATE",
+      "Penutupan flag ini sudah disetujui.",
+    );
+  if (clearance.proposedBy === currentActor())
+    throw refuse(
+      403,
+      "PAYOUT_RECON_CLEAR_SELF_APPROVAL",
+      "Pengusul penutupan flag tidak boleh menyetujuinya sendiri.",
+    );
+  if (payoutScenario() === "recon-changed") {
+    // The flagged data changed after the proposal: it falls away, flag reopens.
+    saveRecon({
+      ...current,
+      flags: current.flags.map((row) =>
+        row.id === found.id ? { ...row, clearance: null } : row,
+      ),
+    });
+    throw refuse(
+      409,
+      "PAYOUT_RECON_FLAG_CHANGED",
+      "Data yang ditandai berubah sejak penutupan flag diusulkan. Ajukan usulan penutupan baru.",
+    );
+  }
+  saveRecon({
+    ...current,
+    flags: current.flags.map((row) =>
+      row.id === found.id
+        ? {
+            ...row,
+            reopened: false,
+            clearance: {
+              ...clearance,
+              status: "approved" as const,
+              approvedBy: currentActor(),
+              approvedAt: new Date().toISOString(),
+            },
+          }
+        : row,
+    ),
+  });
+  return { data: { clearanceId: clearance.id } };
+});
+
+registerMock(listBatchReturnClaimsEndpoint, ({ params, scenario }) => {
+  find(params.id);
+  return {
+    data:
+      params.id === MOCK_PAYOUT_IDS.batchStatus
+        ? reconState(scenario).claims
+        : [],
+  };
+});
+
+registerMock(proposeReturnWithdrawalEndpoint, ({ params, body, scenario }) => {
+  passwordStepUp("recon", body.password);
+  const current = reconState(scenario);
+  const found = current.claims.find((row) => row.id === params.claimId);
+  if (!found)
+    throw refuse(
+      404,
+      "PAYOUT_RETURN_CLAIM_NOT_FOUND",
+      "Klaim pengembalian tidak ditemukan.",
+    );
+  if (found.withdrawal) return { data: { withdrawalId: found.withdrawal.id } };
+  if (found.status !== "open")
+    throw refuse(
+      409,
+      "PAYOUT_RETURN_WITHDRAW_REFUSED",
+      "Klaim pengembalian ini tidak dapat ditarik (sudah dikonfirmasi, berubah, atau sudah ditarik).",
+    );
+  const withdrawalId = nextId();
+  saveRecon({
+    ...current,
+    claims: current.claims.map((row) =>
+      row.id === found.id
+        ? {
+            ...row,
+            withdrawal: {
+              id: withdrawalId,
+              reason: body.reason,
+              proposedBy: currentActor(),
+              proposedAt: new Date().toISOString(),
+            },
+          }
+        : row,
+    ),
+  });
+  return { data: { withdrawalId } };
+});
+
+registerMock(approveReturnWithdrawalEndpoint, ({ params, body, scenario }) => {
+  passwordStepUp("recon", body.password);
+  const current = reconState(scenario);
+  const found = current.claims.find(
+    (row) => row.withdrawal?.id === params.withdrawalId,
+  );
+  const withdrawal = found?.withdrawal;
+  if (!found || !withdrawal)
+    throw refuse(
+      404,
+      "PAYOUT_RETURN_WITHDRAWAL_NOT_FOUND",
+      "Usulan penarikan klaim tidak ditemukan.",
+    );
+  if (withdrawal.proposedBy === currentActor())
+    throw refuse(
+      403,
+      "PAYOUT_RETURN_WITHDRAW_SELF_APPROVAL",
+      "Pengusul penarikan klaim tidak boleh menyetujuinya sendiri.",
+    );
+  if (payoutScenario() === "recon-changed") {
+    // The claim moved on after the proposal: it can no longer be withdrawn.
+    saveRecon({
+      ...current,
+      claims: current.claims.map((row) =>
+        row.id === found.id
+          ? { ...row, status: "consumed" as const, withdrawal: null }
+          : row,
+      ),
+    });
+    throw refuse(
+      409,
+      "PAYOUT_RETURN_WITHDRAW_REFUSED",
+      "Klaim pengembalian ini tidak dapat ditarik (sudah dikonfirmasi, berubah, atau sudah ditarik).",
+    );
+  }
+  saveRecon({
+    ...current,
+    claims: current.claims.map((row) =>
+      row.id === found.id
+        ? { ...row, status: "withdrawn" as const, withdrawal: null }
+        : row,
+    ),
+  });
+  return {
+    data: { withdrawalId: withdrawal.id, restoredItems: found.itemCount },
+  };
 });
