@@ -88,6 +88,7 @@ import {
   SETTLED_OUTSIDE_PROVIDER,
 } from "./payment-refund.service";
 import {
+  fileOwnRefundSurplusHoldInTx,
   recordProviderRefundInTx,
   type ProviderRefundIdKind,
 } from "./payment-provider-partial-refund";
@@ -1852,6 +1853,43 @@ async function processRefundEvent(
             ["amount_mismatch"],
             now,
           );
+        // 1072 I2 (A1): a success report bigger than our refund is not its
+        // echo. The refund stays refused, but the provider says more money
+        // went back: hold the intent for the reported amount, as the
+        // recorder does. A smaller one stays a plain refusal (also an echo
+        // there). 1072 R3: a success on a refund of ours that already failed
+        // is no echo of anything (the recorder counts a failed refund as no
+        // echo, `status <> 'failed'`): the money went back, no fact is
+        // written, so it is held whatever its amount.
+        if (
+          status === "succeeded" &&
+          match.kind !== "payment_object" &&
+          facts.amountIdr !== undefined &&
+          (facts.amountIdr > Number(refund.amountIdr) ||
+            refund.status === "failed")
+        ) {
+          const reportedAmountIdr = facts.amountIdr;
+          const paymentRef =
+            facts.paymentId ??
+            facts.payment?.id ??
+            (await refundSourcePayment(context, refund, intent))?.providerRef ??
+            intent.providerRef;
+          await withTenant(db, context, async (tx) =>
+            fileOwnRefundSurplusHoldInTx(
+              tx,
+              context,
+              {
+                intentId: intent.id,
+                outletId: intent.outletId,
+                providerRefundId:
+                  facts.refundId ?? refund.providerRef ?? `refund:${refund.id}`,
+                providerPaymentRef: paymentRef,
+                amountIdr: reportedAmountIdr,
+              },
+              now,
+            ),
+          );
+        }
         return await ignoredWith("REJECTED_CONFLICT");
       }
       if (error instanceof HttpError && error.status === 404)

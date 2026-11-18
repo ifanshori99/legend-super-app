@@ -846,6 +846,10 @@ export async function resolveRefundReconHold(
               "This hold names the payment's own refund; it can only be counted against the intent.",
             );
         } else {
+          // 1072 I4: a transaction-conflict hold is never counted (no fact is
+          // read, picked, bound, or booked); it only closes as not this intent.
+          if (hold.reason === HOLD_TRANSACTION_CONFLICT_REASON)
+            throw transactionConflict();
           counted = await countHold(
             tx,
             context,

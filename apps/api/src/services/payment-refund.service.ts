@@ -2079,6 +2079,19 @@ async function takeSendRight(
   return rows.length > 0 ? deadline : null;
 }
 
+/** Stable code of the refusal while no refund adapter is installed (Q45,
+ * DOIT_REFUNDS_ENABLED off): the refund stays `approved`, which is the manual
+ * queue finance closes with `settleRefundManually`. Nothing was claimed or
+ * counted. */
+export const REFUND_PROVIDER_DISABLED = "REFUND_PROVIDER_DISABLED";
+
+const refundProviderDisabled = () =>
+  new HttpError(
+    503,
+    REFUND_PROVIDER_DISABLED,
+    "Refund otomatis penyedia dimatikan; catat refund manual oleh finance.",
+  );
+
 /** False while the fail-closed default port stands in for `provider` (no
  * adapter). A provider without a refund API (Duitku) never has one: its refunds
  * stay `approved` and finance closes them with `settleRefundManually`. */
@@ -2252,10 +2265,7 @@ export async function runRefundPayout(
   // Before any claim or write: an attempt counted against no provider would
   // make a later first send look like a possible duplicate.
   if (!(await refundGatewayInstalledFor(context, refundId)))
-    throw new CoreError(
-      "SERVICE_UNAVAILABLE",
-      "Belum ada gateway refund yang aktif. Refund akan dicoba lagi nanti.",
-    );
+    throw refundProviderDisabled();
   const token = randomUUID();
   const claim = await withTenant(
     db,
@@ -2990,9 +3000,36 @@ export async function sweepApprovedRefundPayouts(
       "Refund escalation sweep failed",
     );
   }
-  // No gateway: claim nothing and flag nothing (see runRefundPayout).
-  if (!anyRefundGatewayInstalled())
+  // No gateway: claim nothing and flag nothing (see runRefundPayout). The
+  // approved refunds only wait for finance to record them by hand; one warn
+  // with the count, no retry counted, no personal data.
+  if (!anyRefundGatewayInstalled()) {
+    try {
+      const waiting = await withTenant(db, context, async (tx) => {
+        const [row] = await tx
+          .select({ count: sql<number>`count(*)::int` })
+          .from(paymentRefunds)
+          .where(
+            and(
+              eq(paymentRefunds.tenantId, context.tenant.tenantId),
+              eq(paymentRefunds.status, "approved"),
+            ),
+          );
+        return row?.count ?? 0;
+      });
+      if (waiting > 0)
+        logger.warn(
+          { tenantId: context.tenant.tenantId, waiting },
+          "Approved refunds wait for manual settlement: automatic provider refunds are off",
+        );
+    } catch {
+      logger.warn(
+        { tenantId: context.tenant.tenantId },
+        "Counting refunds waiting for manual settlement failed",
+      );
+    }
     return { attempted: 0, exhausted: 0, escalated };
+  }
   const tenantId = context.tenant.tenantId;
   // Each payout may take up to a minute: advance the (possibly injected) clock
   // by the real elapsed time so a later row's lease is not born expired.
@@ -3219,10 +3256,7 @@ export async function retryRefundPayout(
   void key;
   // Before the evidence mapping below writes anything.
   if (!(await refundGatewayInstalledFor(context, params.refundId)))
-    throw new CoreError(
-      "SERVICE_UNAVAILABLE",
-      "Belum ada gateway refund yang aktif. Refund akan dicoba lagi nanti.",
-    );
+    throw refundProviderDisabled();
   await withTenant(db, context, async (tx) => {
     const [refund] = await tx
       .select()
@@ -3773,6 +3807,31 @@ export async function settleRefundManually(
         // legend-7uqbs: paying it by hand would pay money the provider already
         // returned to the payer; release the refund instead.
         await assertNotProviderRefunded(tx, refund.tenantId, refund);
+        // Q45 (1072): with automatic provider refunds off this is the only way
+        // money leaves, so the cap is judged again at the moment finance pays,
+        // like approval: DP a seated session used, a POS or QR sale that took
+        // the money, or a forfeited DP since the approval must not be paid
+        // back by hand. A fund refund is judged by its fund (guard above).
+        // A refund with a provider trace is not blocked: the provider may
+        // already have sent it, so the excess is recorded in the audit detail
+        // (like `approvalDefect`) and the books follow the money.
+        let capExcessIdr: string | null = null;
+        if (!locked.fund) {
+          const balance = await refundableBalance(tx, locked.intent);
+          const otherPending = (await isLatePaymentRefund(tx, refund))
+            ? await otherPendingRefundIdr(tx, refund)
+            : 0n;
+          const excess = balance.reserved - otherPending - balance.cap;
+          if (excess > 0n) {
+            if (!hasProviderTrace(refund) && !isStuckAtProvider(refund))
+              throw new HttpError(
+                409,
+                "REFUND_CAP_EXCEEDED",
+                "Refund exceeds the amount still available to refund; do not pay it.",
+              );
+            capExcessIdr = excess.toString();
+          }
+        }
         // legend-17ml: a provider reference or poll count blocks settling unless
         // ops flagged the refund stuck (MANUAL_RECONCILIATION, or
         // PAYOUT_NOT_FOUND_MAYBE_SENT); any other error keeps the refusal.
@@ -3824,7 +3883,11 @@ export async function settleRefundManually(
           actorId: actor,
           action: "payment.refund_settled_manually",
           reason: note,
-          detail: { ...evidence, approvalDefect: defect },
+          detail: {
+            ...evidence,
+            approvalDefect: defect,
+            capExcessIdr,
+          },
           marker: SETTLED_OUTSIDE_PROVIDER,
         });
         return { settled: true };

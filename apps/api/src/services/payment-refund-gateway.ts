@@ -28,6 +28,7 @@
 //   that never left, e.g. no payment ref). Any unrecognised answer throws.
 
 import { CoreError, type ScopedTenantContext } from "@starter/shared/core";
+import { env } from "../config/env";
 
 export type GatewayRefundRequest = {
   readonly context: ScopedTenantContext;
@@ -127,9 +128,20 @@ export function registerPaymentRefundGateway(port: PaymentRefundPort): void {
   registry.set(port.provider, port);
 }
 
-/** Refund port of `provider`; fails closed when none is registered. */
+/** Provider whose automatic refunds sit behind `DOIT_REFUNDS_ENABLED`. */
+const DOIT_REFUND_PROVIDER = "doit";
+
+/** Defence in depth: a registered DOIT adapter stays unreachable while the
+ * switch is off, even if some bootstrap registered it by mistake. */
+function refundProviderSwitchedOff(provider: string): boolean {
+  return provider === DOIT_REFUND_PROVIDER && !env.DOIT_REFUNDS_ENABLED;
+}
+
+/** Refund port of `provider`; fails closed when none is registered, or when
+ * the provider is DOIT and `DOIT_REFUNDS_ENABLED` is off. */
 export function paymentRefundGatewayFor(provider: string): PaymentRefundPort {
   if (legacyPort) return legacyPort;
+  if (refundProviderSwitchedOff(provider)) return unconfiguredRefundGateway;
   return registry.get(provider) ?? unconfiguredRefundGateway;
 }
 
@@ -140,7 +152,9 @@ export function paymentRefundGatewayLegacyMode(): boolean {
 
 export function registeredRefundProviders(): readonly string[] {
   if (legacyPort) return [legacyPort.provider];
-  return [...registry.keys()];
+  return [...registry.keys()].filter(
+    (provider) => !refundProviderSwitchedOff(provider),
+  );
 }
 
 export function resetPaymentRefundGateways(): void {
@@ -148,8 +162,15 @@ export function resetPaymentRefundGateways(): void {
   legacyPort = null;
 }
 
-/** Test-only shim (sub-302 D6): one port answers for every provider. */
+/** Test-only shim (sub-302 D6): one port answers for every provider. Throws in
+ * production so legacy mode (which ignores `DOIT_REFUNDS_ENABLED`) can never run
+ * there. */
 export function setPaymentRefundGateway(next: PaymentRefundPort | null): void {
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(
+      "setPaymentRefundGateway is test-only; not allowed in production",
+    );
+  }
   resetPaymentRefundGateways();
   if (!next) return;
   registry.set(next.provider, next);

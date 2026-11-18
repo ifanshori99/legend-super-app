@@ -477,6 +477,8 @@ export async function refundAudit(
       "channel",
       "externalReference",
       "approvalDefect",
+      // Q45 (1072): the amount a settled refund went over the cap by (digits).
+      "capExcessIdr",
       "lastPayoutError",
     ],
   );

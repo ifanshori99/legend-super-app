@@ -39,6 +39,7 @@ vi.mock("../services/platform-payment-gateway.service", () => ({
     platform.enabled.has(provider),
 }));
 
+import { env } from "../config/env";
 import {
   paymentGatewayFor,
   registerPaymentGateway,
@@ -853,9 +854,11 @@ describe("refund of a provider without a refund API (D6)", () => {
     registerPaymentRefundGateway(port);
     const refundId = await seedApprovedRefund("duitku");
 
+    // legend-kmrto (Q45): the refusal is the stable REFUND_PROVIDER_DISABLED
+    // (also with the switch on, Duitku has no refund port: still refused).
     await expect(
       runRefundPayout(tenantContext(), refundId),
-    ).rejects.toMatchObject({ code: "SERVICE_UNAVAILABLE" });
+    ).rejects.toMatchObject({ code: "REFUND_PROVIDER_DISABLED" });
     await sweepApprovedRefundPayouts(tenantContext(), new Date());
 
     expect(port.sent).toHaveLength(0);
@@ -876,7 +879,16 @@ describe("refund of a provider without a refund API (D6)", () => {
       [refundId],
     );
 
-    await runRefundPayout(tenantContext(), refundId);
+    // legend-kmrto (Q45): the DOIT port is reachable only with the switch on;
+    // the config is read once at import, so flip the object and restore it.
+    const flags = env as unknown as { DOIT_REFUNDS_ENABLED: boolean };
+    const before = flags.DOIT_REFUNDS_ENABLED;
+    flags.DOIT_REFUNDS_ENABLED = true;
+    try {
+      await runRefundPayout(tenantContext(), refundId);
+    } finally {
+      flags.DOIT_REFUNDS_ENABLED = before;
+    }
 
     expect(port.lookups).toContain(`refund:${refundId}`);
     expect(port.sent).toHaveLength(0);

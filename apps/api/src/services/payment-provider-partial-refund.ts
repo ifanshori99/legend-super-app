@@ -28,6 +28,7 @@ import {
   inArray,
   isNotNull,
   isNull,
+  ne,
   or,
   sql,
   type SQL,
@@ -40,6 +41,7 @@ import {
   refundReconHolds,
   paymentUnallocatedFunds,
 } from "../db/schema/index.ts";
+import { logger } from "../lib/logger.ts";
 import { recordAudit } from "./core-audit.ts";
 import { refundableBalance } from "./payment-admin.service.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
@@ -58,6 +60,7 @@ import {
   lockDepositIntentsExclusive,
 } from "./reservation-deposit-credit.ts";
 import { appendPaymentEvent } from "./payment-support.ts";
+import { HOLD_TRANSACTION_CONFLICT_REASON } from "./refund-hold-reasons.ts";
 import type { Tx } from "./permission-resolver.ts";
 
 const PROVIDER = "doit";
@@ -87,13 +90,9 @@ export type ProviderRefundIdKind = (typeof PROVIDER_REFUND_ID_KINDS)[number];
 export const REFUND_MAY_DUPLICATE_ANONYMOUS_REASON =
   "Refund penyedia mungkin sama dengan refund tanpa nomor yang sudah dihitung finance (REFUND_MAY_DUPLICATE_ANONYMOUS)";
 
-/**
- * 1055 G2 (architect AP2-2): reason of the hold filed when the provider reports
- * a refund id on one transaction that is on record for another transaction (or
- * intent): the reports disagree on whose refund it is.
- */
-export const HOLD_TRANSACTION_CONFLICT_REASON =
-  "Nomor refund penyedia sudah tercatat di transaksi lain (HOLD_TRANSACTION_CONFLICT)";
+// 1072 F-P3: the constant lives in a leaf module so raw SQL elsewhere can use
+// it; re-exported so existing imports keep working.
+export { HOLD_TRANSACTION_CONFLICT_REASON };
 
 /**
  * 1055 AV-P1, 1063 F3: the refund of one provider transaction finance counted
@@ -143,6 +142,9 @@ export async function pickUnboundFact(
   );
 }
 
+// 1072 I5: no fact is picked while a legacy (pre-0679) `same_as_counted` hold
+// without a binding is open on the intent and transaction: it does not say which
+// fact it used, so the pick is refused instead of guessed.
 async function pickUnbound(
   tx: Tx,
   tenantId: string,
@@ -166,6 +168,13 @@ async function pickUnbound(
             AND h.provider_refund_id IS NULL)))
       AND NOT EXISTS (SELECT 1 FROM refund_recon_holds m
         WHERE m.tenant_id = p.tenant_id AND m.matched_fact_id = p.id)
+      AND NOT EXISTS (SELECT 1 FROM refund_recon_holds d
+        WHERE d.tenant_id = p.tenant_id
+          AND d.payment_intent_id = p.payment_intent_id
+          AND (d.provider_payment_ref = ${providerPaymentRef}
+            OR d.provider_payment_ref IS NULL)
+          AND d.resolution_identity = 'same_as_counted'
+          AND d.matched_fact_id IS NULL)
     ORDER BY (p.amount_idr = ${reportIdr}) DESC, p.amount_idr ASC, p.id ASC
     LIMIT 1`);
   const row = rows[0];
@@ -341,6 +350,9 @@ export async function recordProviderRefundInTx(
           // of the same id on another transaction closes nothing.
           eq(refundReconHolds.providerPaymentRef, providerPaymentRef),
           isNull(refundReconHolds.resolvedAt),
+          // 1072 F-P1: a hold raised to the conflict reason (R2) is finance's
+          // to close, never closed by itself.
+          ne(refundReconHolds.reason, HOLD_TRANSACTION_CONFLICT_REASON),
         ),
       );
   };
@@ -473,41 +485,20 @@ export async function recordProviderRefundInTx(
   const fileTransactionConflictHold = async (
     heldIdr: number,
     intentOutletId: string,
-  ): Promise<void> => {
-    await lockDepositIntentsExclusive(tx, tenantId, input.expectedIntentId);
-    const hex = createHash("sha256")
-      .update(
-        `refund_recon_hold.transaction_conflict\0${tenantId}\0${input.expectedIntentId.toLowerCase()}\0${providerPaymentRef}\0${refundKey}`,
-      )
-      .digest("hex");
-    const [held] = await tx
-      .insert(refundReconHolds)
-      .values({
-        tenantId,
-        paymentIntentId: input.expectedIntentId,
-        webhookEventId: `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`,
+  ): Promise<void> =>
+    fileTransactionConflictHoldInTx(
+      tx,
+      context,
+      {
+        intentId: input.expectedIntentId,
+        outletId: intentOutletId,
         providerRefundId,
         providerRefundIdKind: refundIdKind,
         providerPaymentRef,
-        amountIdr: idr(heldIdr),
-        reason: HOLD_TRANSACTION_CONFLICT_REASON,
-        flaggedAt: now,
-      })
-      .onConflictDoNothing()
-      .returning({ id: refundReconHolds.id });
-    if (held)
-      await alertProviderRefundTransactionConflict(
-        tx,
-        context,
-        {
-          intentId: input.expectedIntentId,
-          outletId: intentOutletId,
-          dedupKey: `${providerPaymentRef}\0${refundKey}`,
-          amountIdr: heldIdr,
-        },
-        now,
-      );
-  };
+        amountIdr: heldIdr,
+      },
+      now,
+    );
   if (
     input.provider !== PROVIDER ||
     !PROVIDER_REFUND_ID_KINDS.includes(refundIdKind) ||
@@ -1233,4 +1224,242 @@ export async function recordProviderRefundInTx(
     now,
   });
   return { status: "recorded" };
+}
+
+/**
+ * 1072 I2 (A1): a signed success report that names OUR refund (matched by its
+ * provider id or key) with a bigger amount than the refund is not its echo:
+ * the updater refuses to settle the refund with it, and this holds the intent
+ * for the reported amount, as the recorder does (`fileTransactionConflictHold`:
+ * same reason, same dedup key, so both doors file one hold). Same lock order:
+ * the intent row, then the deposit-intent locks exclusive. Once per (intent,
+ * transaction, refund id); finance told once.
+ */
+export async function fileOwnRefundSurplusHoldInTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    intentId: string;
+    outletId: string;
+    providerRefundId: string;
+    providerPaymentRef: string | null;
+    amountIdr: number;
+  },
+  now: Date,
+): Promise<void> {
+  await tx
+    .select({ id: paymentIntents.id })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, context.tenant.tenantId),
+        eq(paymentIntents.id, input.intentId),
+      ),
+    )
+    .for("update");
+  await fileTransactionConflictHoldInTx(
+    tx,
+    context,
+    { ...input, providerRefundIdKind: "provider" },
+    now,
+  );
+}
+
+/**
+ * 1072 R2: the one way a `HOLD_TRANSACTION_CONFLICT` hold is filed, for the
+ * recorder and for the matched-webhook door. Once per (intent, refund id kind
+ * and id, transaction): same unique key as the table. When that key already
+ * has an OPEN hold that is smaller than this report or has another reason (a
+ * live-own hold closes by itself once the refund is recorded, and would open
+ * the surplus), the hold is raised to the larger amount and to the conflict
+ * reason, so only finance's `not_this_intent` closes it. A hold of this key
+ * that is already resolved is never reopened: warned and audited (a separate
+ * case for finance). The caller holds the intent row lock; this takes the
+ * deposit-intent locks exclusive.
+ */
+async function fileTransactionConflictHoldInTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    intentId: string;
+    outletId: string;
+    providerRefundId: string;
+    providerRefundIdKind: ProviderRefundIdKind;
+    providerPaymentRef: string | null;
+    amountIdr: number;
+  },
+  now: Date,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const { intentId, providerRefundId, providerRefundIdKind } = input;
+  const providerPaymentRef = input.providerPaymentRef;
+  const refundKey = providerRefundKey(providerRefundIdKind, providerRefundId);
+  await lockDepositIntentsExclusive(tx, tenantId, intentId);
+  const holdEventId = (suffix: string): string => {
+    const hex = createHash("sha256")
+      .update(
+        `refund_recon_hold.transaction_conflict\0${tenantId}\0${intentId.toLowerCase()}\0${providerPaymentRef ?? ""}\0${refundKey}${suffix}`,
+      )
+      .digest("hex");
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+  };
+  const [held] = await tx
+    .insert(refundReconHolds)
+    .values({
+      tenantId,
+      paymentIntentId: intentId,
+      webhookEventId: holdEventId(""),
+      providerRefundId,
+      providerRefundIdKind,
+      providerPaymentRef,
+      amountIdr: idr(input.amountIdr),
+      reason: HOLD_TRANSACTION_CONFLICT_REASON,
+      flaggedAt: now,
+    })
+    .onConflictDoNothing()
+    .returning({ id: refundReconHolds.id });
+  const alert = () =>
+    alertProviderRefundTransactionConflict(
+      tx,
+      context,
+      {
+        intentId,
+        outletId: input.outletId,
+        dedupKey: `${providerPaymentRef ?? ""}\0${refundKey}`,
+        amountIdr: input.amountIdr,
+      },
+      now,
+    );
+  if (held) {
+    await alert();
+    return;
+  }
+  const [existing] = await tx
+    .select({
+      id: refundReconHolds.id,
+      amountIdr: refundReconHolds.amountIdr,
+      reason: refundReconHolds.reason,
+      resolvedAt: refundReconHolds.resolvedAt,
+    })
+    .from(refundReconHolds)
+    .where(
+      and(
+        eq(refundReconHolds.tenantId, tenantId),
+        eq(refundReconHolds.paymentIntentId, intentId),
+        eq(refundReconHolds.providerRefundIdKind, providerRefundIdKind),
+        eq(refundReconHolds.providerRefundId, providerRefundId),
+        sql`coalesce(${refundReconHolds.providerPaymentRef}, '') = ${providerPaymentRef ?? ""}`,
+      ),
+    )
+    .for("update");
+  // Same webhook event id with another key (a replay of the filed report):
+  // nothing to raise.
+  if (!existing) return;
+  if (
+    existing.resolvedAt !== null &&
+    input.amountIdr > Number(existing.amountIdr)
+  ) {
+    // 1072 F-P2: finance resolved the hold for a smaller amount and the
+    // provider now reports more under the same key. A resolved hold is never
+    // reopened, so a second hold carries the FULL reported amount (restrictive;
+    // no refund id, so the unique key does not apply). Its event id is derived
+    // from the same hash: a replay adds nothing and alerts nothing, a replay
+    // with a larger amount raises the same open surplus hold.
+    const [surplus] = await tx
+      .insert(refundReconHolds)
+      .values({
+        tenantId,
+        paymentIntentId: intentId,
+        webhookEventId: holdEventId("\0surplus"),
+        providerRefundId: null,
+        providerRefundIdKind: null,
+        providerPaymentRef,
+        amountIdr: idr(input.amountIdr),
+        reason: HOLD_TRANSACTION_CONFLICT_REASON,
+        flaggedAt: now,
+      })
+      .onConflictDoNothing()
+      .returning({ id: refundReconHolds.id });
+    const surplusAlert = () =>
+      alertProviderRefundTransactionConflict(
+        tx,
+        context,
+        {
+          intentId,
+          outletId: input.outletId,
+          dedupKey: `${providerPaymentRef ?? ""}\0${refundKey}\0surplus`,
+          amountIdr: input.amountIdr,
+        },
+        now,
+      );
+    if (surplus) {
+      await surplusAlert();
+      return;
+    }
+    const raised = await tx
+      .update(refundReconHolds)
+      .set({
+        amountIdr: sql`greatest(${refundReconHolds.amountIdr}, ${input.amountIdr})`,
+      })
+      .where(
+        and(
+          eq(refundReconHolds.tenantId, tenantId),
+          eq(refundReconHolds.webhookEventId, holdEventId("\0surplus")),
+          isNull(refundReconHolds.resolvedAt),
+          sql`${refundReconHolds.amountIdr} < ${input.amountIdr}`,
+        ),
+      )
+      .returning({ id: refundReconHolds.id });
+    if (raised.length > 0) await surplusAlert();
+    return;
+  }
+  if (existing.resolvedAt !== null) {
+    logger.warn(
+      { intentId, holdId: existing.id },
+      "Provider refund conflict hold already resolved; not reopened",
+    );
+    await recordAudit(
+      tx,
+      context,
+      {
+        id: createUlid(now.getTime()),
+        tenantId,
+        outletId: input.outletId,
+        actorType: "system",
+        actorId: null,
+        deviceId: null,
+        action: "payment.refund_conflict_hold_already_resolved",
+        objectType: "payment_intent",
+        objectId: intentId,
+        reason: null,
+        maskedChanges: {
+          before: { holdId: existing.id },
+          after: {
+            holdId: existing.id,
+            reportedAmountIdr: input.amountIdr,
+            holdAmountIdr: Number(existing.amountIdr),
+          },
+        },
+        ipHash: null,
+        sensitiveAccess: false,
+        retentionClass: "audit_2y",
+        createdAt: now.toISOString(),
+      },
+      ["holdId", "reportedAmountIdr", "holdAmountIdr"],
+    );
+    return;
+  }
+  if (
+    Number(existing.amountIdr) >= input.amountIdr &&
+    existing.reason === HOLD_TRANSACTION_CONFLICT_REASON
+  )
+    return;
+  await tx
+    .update(refundReconHolds)
+    .set({
+      amountIdr: sql`greatest(${refundReconHolds.amountIdr}, ${input.amountIdr})`,
+      reason: HOLD_TRANSACTION_CONFLICT_REASON,
+    })
+    .where(eq(refundReconHolds.id, existing.id));
+  await alert();
 }

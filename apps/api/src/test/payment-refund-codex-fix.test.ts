@@ -1747,7 +1747,7 @@ describe("legend-0ogy: no refund gateway installed claims nothing", () => {
     setPaymentRefundGateway(null);
 
     await expect(runRefundPayout(tenantWide, refundId)).rejects.toMatchObject({
-      code: "SERVICE_UNAVAILABLE",
+      code: "REFUND_PROVIDER_DISABLED",
     });
     expect(await refundRow(refundId)).toMatchObject({
       payout_attempts: 0,

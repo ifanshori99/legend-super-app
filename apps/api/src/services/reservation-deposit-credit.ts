@@ -31,7 +31,11 @@
 import type { TenantId } from "@starter/shared/core";
 import { sql, type SQL } from "drizzle-orm";
 import type { Tx } from "./permission-resolver.ts";
-import { providerRefundedForeignIdrSql } from "./payment-provider-refunded-foreign-sql.ts";
+import { HOLD_TRANSACTION_CONFLICT_REASON } from "./refund-hold-reasons.ts";
+import {
+  ownRefundEchoesFactSql,
+  providerRefundedForeignIdrSql,
+} from "./payment-provider-refunded-foreign-sql.ts";
 
 /** Advisory key of one DP intent's refund-vs-credit lock. */
 function depositIntentLockKey(tenantId: TenantId, intentId: string): string {
@@ -158,22 +162,32 @@ export function otherAllocationClaimsSql(
  * `counted_against_intent` is a provider refund of the intent from then on.
  */
 export function openReconHoldIdrSql(tenant: SQL, intent: SQL): SQL {
-  return sql`coalesce((SELECT sum(h.amount_idr) FROM refund_recon_holds h
+  return sql`coalesce((SELECT sum(
+      CASE
+        -- 1072 I3 (A2): a transaction-conflict hold limits the credit in full
+        -- until finance resolves it, whatever fact is on record. The reason
+        -- comes from the leaf module refund-hold-reasons.ts (1072 F-P3).
+        WHEN h.reason = ${HOLD_TRANSACTION_CONFLICT_REASON}
+          THEN h.amount_idr
+        -- Otherwise the hold is covered only up to what a counted fact of the
+        -- SAME provider transaction already carries. A fact that is the echo of
+        -- our own refund is not counted here (the refund is already subtracted
+        -- from the pool), so it never hides the hold. A fact of the same id and
+        -- transaction that covers the hold gives 0: the money is not taken
+        -- twice. A hold that names no transaction is never covered.
+        ELSE greatest(h.amount_idr - coalesce((SELECT sum(hr.amount_idr)
+          FROM payment_provider_refunds hr
+          WHERE hr.tenant_id=h.tenant_id AND hr.payment_intent_id=h.payment_intent_id
+            AND hr.refund_id_kind=h.provider_refund_id_kind
+            AND hr.provider_refund_id=h.provider_refund_id
+            AND hr.provider_payment_ref=h.provider_payment_ref
+            AND NOT EXISTS (SELECT 1 FROM payment_refunds own
+              WHERE own.status <> 'failed'
+                AND ${ownRefundEchoesFactSql("own", "hr")})), 0), 0)
+      END) FROM refund_recon_holds h
     WHERE h.tenant_id=${tenant} AND h.payment_intent_id=${intent}
       AND h.resolved_at IS NULL
-      AND h.reason<>'credit_used_before_provider_refund'
-      -- A refund already recorded for the same provider refund id counts as a
-      -- provider refund; counting its hold too would take the money twice.
-      -- 1063 F2 (legend-awdwd): only a fact of the SAME provider transaction
-      -- represents the hold. The same refund id on record for another
-      -- transaction is a conflict (HOLD_TRANSACTION_CONFLICT): the hold stays
-      -- in the sum until finance resolves it. A hold that names no transaction
-      -- cannot be proven the same, so it stays in the sum too.
-      AND NOT EXISTS (SELECT 1 FROM payment_provider_refunds hr
-        WHERE hr.tenant_id=h.tenant_id AND hr.payment_intent_id=h.payment_intent_id
-          AND hr.refund_id_kind=h.provider_refund_id_kind
-          AND hr.provider_refund_id=h.provider_refund_id
-          AND hr.provider_payment_ref=h.provider_payment_ref)),0)`;
+      AND h.reason<>'credit_used_before_provider_refund'), 0)`;
 }
 
 type AllocationCredit = {

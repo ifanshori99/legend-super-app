@@ -674,6 +674,28 @@ Known limits of push registration:
   The previous user's alarm (while still on duty and authorized) keeps showing
   until 30 days pass or the new user registers.
 
+**Release 1 (Q45): `DOIT_REFUNDS_ENABLED` must be `false` or unset.** No refund
+is sent to the payment provider automatically. An approved refund stays
+`approved` (the manual queue; the API answers `REFUND_PROVIDER_DISABLED`, the
+sweep logs one warning with the count waiting) and finance records the payout
+once with `settle-manually` (idempotent, never more than the refund amount, and
+refused again when the cap, a provider refund or an open hold no longer allows
+it). Provider refund reports are still matched; an odd one is held. Turn the
+switch on again only after a clean refund second-opinion review and a founder
+decision. The API and the worker log a startup warning when it is on.
+
+While the switch is off, settle in Legend first, then refund in the provider
+dashboard (1072 B-1). If the provider report arrives before the settle, it is
+recorded as a foreign refund and the settle can then book the same refund a
+second time (the books err on the restrictive side). If it arrives after the
+settle, it is recorded as a conflict without a fact.
+Counting a recon hold (`count`) is refused while the intent has an `approved`
+refund, and settling is refused while a hold is open (1072 B-2): to count a
+hold, cancel the waiting `approved` refund first. A hold on a transaction
+conflict can only be closed with `not_this_intent`; do not choose it when the
+provider report is right (the money would open up without the surplus booked).
+Leave that hold open and the money stays held.
+
 `DOIT_REFUNDS_ENABLED` must have the same value in `api.env` and `worker.env`
 (legend-3gna): the API queues approved refunds and the worker pays them, so a
 split would queue refunds nobody pays, or pay refunds the API treats as off.
