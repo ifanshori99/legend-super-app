@@ -93,7 +93,7 @@ export function TicketIssueStep({
         }
       >
         <div data-slot="ticket-issue-step" className="grid gap-4">
-          {tickets.isLoading ? (
+          {tickets.isPending ? (
             <div role="status" aria-busy="true" className="grid gap-3">
               <span className="sr-only">
                 {t("posKasirTicket.step.loading")}

@@ -77,11 +77,50 @@ async function setLightTheme(page: Page): Promise<void> {
   await page.addInitScript(() => localStorage.setItem("legend-theme", "light"));
 }
 
+/**
+ * Scrolls the app shell's scroll container (and the window) to the end, so the
+ * evidence shot shows PIN, price and print status like the approved
+ * pos936-tiket-terbit-light-*.png (scrolled to the end). No-op when it fits.
+ */
+async function scrollToEnd(page: Page): Promise<void> {
+  // The area frame scrolls an inner `overflow-y-auto` box, not the window:
+  // scroll every scrollable box to its end, like the approved 936 shots.
+  const remaining = () =>
+    page.evaluate(() =>
+      Array.from(document.querySelectorAll<HTMLElement>("*"))
+        .filter((el) => {
+          const overflow = getComputedStyle(el).overflowY;
+          return (
+            (overflow === "auto" || overflow === "scroll") &&
+            el.scrollHeight > el.clientHeight
+          );
+        })
+        .reduce(
+          (max, el) =>
+            Math.max(
+              max,
+              Math.abs(el.scrollHeight - el.clientHeight - el.scrollTop),
+            ),
+          0,
+        ),
+    );
+  await page.evaluate(() => {
+    for (const el of Array.from(document.querySelectorAll<HTMLElement>("*"))) {
+      const overflow = getComputedStyle(el).overflowY;
+      if (overflow === "auto" || overflow === "scroll")
+        el.scrollTop = el.scrollHeight;
+    }
+    window.scrollTo(0, document.documentElement.scrollHeight);
+  });
+  await expect.poll(remaining).toBeLessThanOrEqual(1);
+}
+
 /** Evidence screenshot; hides the mock support-access banner (as legend-mjmm). */
 async function shot(page: Page, name: string): Promise<void> {
   await page.addStyleTag({
     content: '[data-slot="support-session-bar"]{display:none !important}',
   });
+  await scrollToEnd(page);
   await captureScreenshot(page, `legend-1046/${name}.png`, {
     fullPage: false,
   });
@@ -363,6 +402,11 @@ test.describe("360 px", () => {
     });
     expect(overflow.page).toBeLessThanOrEqual(1);
     expect(overflow.main).toBeLessThanOrEqual(1);
+    // Print so the evidence also shows the print status under the ticket.
+    await page.getByRole("button", { name: /^Cetak (tiket|ulang)/ }).click();
+    await expect(
+      page.locator('[data-slot="ticket-print-status"]'),
+    ).toContainText(/(tercetak|dicetak( ulang)?) di|tidak tersedia/i);
     await shot(page, "pos-tiket-terbit-light-360");
   });
 });

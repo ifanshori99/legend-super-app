@@ -70,24 +70,32 @@ export function IssuedTicket({
           </StatusPill>
         }
         footer={
-          <div className="flex w-full flex-col-reverse gap-3 sm:w-auto sm:flex-row">
-            <Button asChild variant="outline" className="w-full sm:w-auto">
-              <Link to="/pos/tiket">
-                {t("posKasirTicket.issued.sellAnother")}
-              </Link>
-            </Button>
-            <Button
-              type="button"
-              className="w-full sm:w-auto"
-              disabled={reissuing}
-              aria-busy={reissuing}
-              onClick={onReissue}
+          <div className="grid w-full gap-2 sm:w-auto sm:justify-items-end">
+            <p
+              data-slot="ticket-print-hint"
+              className="text-sm text-muted-foreground"
             >
-              <Printer aria-hidden="true" />
-              {reissuing
-                ? t("posKasirTicket.issued.printing")
-                : t("posKasirTicket.issued.print")}
-            </Button>
+              {t("posKasirTicket.issued.printHint")}
+            </p>
+            <div className="flex w-full flex-col-reverse gap-3 sm:w-auto sm:flex-row">
+              <Button asChild variant="outline" className="w-full sm:w-auto">
+                <Link to="/pos/tiket">
+                  {t("posKasirTicket.issued.sellAnother")}
+                </Link>
+              </Button>
+              <Button
+                type="button"
+                className="w-full sm:w-auto"
+                disabled={reissuing}
+                aria-busy={reissuing}
+                onClick={onReissue}
+              >
+                <Printer aria-hidden="true" />
+                {reissuing
+                  ? t("posKasirTicket.issued.printing")
+                  : t("posKasirTicket.issued.print")}
+              </Button>
+            </div>
           </div>
         }
       >
@@ -135,9 +143,6 @@ export function IssuedTicket({
               <Money amount={line.priceIdr} className="mt-1 font-bold" />
             </div>
           </div>
-          <p className="max-w-2xl text-sm text-muted-foreground">
-            {t("posKasirTicket.issued.printHint")}
-          </p>
           {/* Always in the DOM so a screen reader announces the text that arrives. */}
           <p
             data-slot="ticket-rotated-note"

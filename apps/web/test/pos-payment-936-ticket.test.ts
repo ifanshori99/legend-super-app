@@ -397,7 +397,7 @@ describe("issue step: the cashier issues the ticket explicitly", () => {
   );
 
   test("loading shows a status, not an empty card", () => {
-    state.tickets = ticketsQuery({ isLoading: true });
+    state.tickets = ticketsQuery({ isPending: true });
     expect(visibleText(step())).toMatch(/memuat tiket/i);
   });
 

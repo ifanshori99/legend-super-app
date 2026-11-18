@@ -101,7 +101,7 @@ export const posKasirTicketMessages = {
   },
   step: {
     title: "Terbitkan tiket",
-    loading: "Memuat tiket...",
+    loading: "Memuat tiket…",
     errorTitle: "Tiket belum bisa dimuat",
     notFoundTitle: "Tiket tidak ditemukan",
     notFoundHint: "Buka lagi dari layar bayar, atau jual tiket baru.",
@@ -109,7 +109,7 @@ export const posKasirTicketMessages = {
     readyHint:
       "QR dan PIN tampil sekali di layar ini. Menerbitkan lagi membuat kode baru.",
     issue: "Terbitkan tiket",
-    issuing: "Menerbitkan...",
+    issuing: "Menerbitkan…",
     pendingTitle: "Tagihan belum lunas",
     pendingHint: "Tiket terbit setelah tagihan dibayar lunas.",
     payLink: "Ke layar bayar",
@@ -117,7 +117,6 @@ export const posKasirTicketMessages = {
     badHint:
       "Tiket sudah dibatalkan atau dikembalikan. Jual tiket baru bila perlu.",
     sellNew: "Jual tiket baru",
-    amount: "Harga",
     issueErrorTitle: "Tiket belum terbit",
     issueErrorHint:
       "Kode sebelumnya mungkin sudah tidak berlaku. Terbitkan ulang.",
