@@ -1,3 +1,13 @@
+## 1075 Refund ronde 7 (18 Nov 2026)
+
+- Cabang `ws/1072-refund-ronde6-q45`, lanjut dari 74172df44. Invarian I6-I8 di `docs/briefs/1072-invarian.md` (bagian "Ronde 7").
+- R7-1 legend-ertk0 (I6): hold konflik webhook matched kini ditulis di transaksi yang memegang kunci intent dan DP, lalu 409 dilempar sesudah commit. Settle manual dan kredit DP selalu melihat hold. Test race dua koneksi `refund-1075-r1-hold-atomic-race`.
+- R7-2 legend-fr2lk (I7): hold surplus bergenerasi. Laporan di atas nominal terbesar yang pernah ditahan untuk kunci bukti yang sama membuka hold baru walau hold sebelumnya resolved; replay <= nominal itu no-op. Test `refund-1075-r2-surplus-generation`.
+- R7-3 legend-55up0 (I8, keputusan CTO): sukses matched yang tidak terbukti echo (ref beda, nominal tak terbaca atau hilang, R failed/ditolak/settled-outside, tanpa id refund) selalu jadi hold konflik. Nominal tak terbaca ditahan sebesar intent dengan kunci `invalid:<id>`. Test `refund-1075-r3-matched-unproven-success`.
+- Review architect xhigh: 1 P1 (hold pengganti 100k menelan laporan sah sesudah resolve) dan 1 P3 (sukses tanpa id refund lolos tanpa hold), keduanya diperbaiki dengan test r3-09/r3-10. Runbook `docs/deployment.md` ditambah satu paragraf. Tanpa migrasi.
+- Bukti: test 1075 r1/r2/r3 merah di base 74172df44 (13 gagal, 6 kontrol hijau), hijau di HEAD; regresi refund 77 file 1398 lulus (satu file, `payment-refund-settled-fund-conflict`, hanya perlu cleanup hold dan kini menegaskan hold terbuka, 4/4 lulus); typecheck API exit 0; db:generate kosong; eslint dan prettier file berubah bersih.
+- Untuk CTO: settled-outside + sukses kini juga hold; nominal tak terbaca ditahan sebesar intent (cek sampel payload DOIT staging); laporan lebih kecil dari R tetap dianggap echo (I2).
+
 ## 1072 Refund ronde 6 + refund otomatis mati Q45 (18 Nov 2026)
 
 - Cabang `ws/1072-refund-ronde6-q45` (base 1c9e3fcaa). Invarian uang: `docs/briefs/1072-invarian.md`; keputusan per temuan: `docs/briefs/1072-refund-ronde6-q45.md`.

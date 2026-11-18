@@ -156,6 +156,11 @@ afterAll(async () => {
 });
 
 async function cleanupRows() {
+  // 1075 I8: a success on a refund settled outside the provider is held.
+  await owner.query(
+    "DELETE FROM refund_recon_holds WHERE payment_intent_id = ANY($1::uuid[])",
+    [intentIds],
+  );
   await owner.query(
     "DELETE FROM payment_refunds WHERE payment_intent_id = ANY($1::uuid[])",
     [intentIds],
@@ -398,6 +403,12 @@ describe("legend-kl46s DOIT reports a fund refund that finance settled by hand",
     ]);
     expect((await conflictAudits(refundId)).length).toBeGreaterThanOrEqual(1);
     expect(await refundRow(refundId)).toEqual(before);
+    // 1075 I8: paying twice is possible, so the intent stays held.
+    const { rows: holds } = await owner.query<{ n: string }>(
+      "SELECT count(*)::text AS n FROM refund_recon_holds WHERE payment_intent_id = (SELECT payment_intent_id FROM payment_refunds WHERE id = $1) AND resolved_at IS NULL",
+      [refundId],
+    );
+    expect(Number(holds[0]?.n)).toBeGreaterThanOrEqual(1);
   });
 
   it("two live refunds on p2 are ambiguous: no conflict, nothing changes", async () => {

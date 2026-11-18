@@ -695,6 +695,14 @@ hold, cancel the waiting `approved` refund first. A hold on a transaction
 conflict can only be closed with `not_this_intent`; do not choose it when the
 provider report is right (the money would open up without the surplus booked).
 Leave that hold open and the money stays held.
+Since refund round 7 (1075), every signed success matched to our refund that
+is not a proven echo opens such a hold: a different provider refund id, an
+amount larger than the refund, a report on a refund that is failed, refused or
+settled by hand, and a report whose amount cannot be read. The last one holds
+the full payment amount under an `invalid:` id, because the real amount is
+unknown. A report larger than any amount already held for the same provider
+refund opens a new hold even after earlier holds were closed. Check the
+provider dashboard before closing any of them.
 
 `DOIT_REFUNDS_ENABLED` must have the same value in `api.env` and `worker.env`
 (legend-3gna): the API queues approved refunds and the worker pays them, so a
