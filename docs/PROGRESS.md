@@ -2035,3 +2035,4 @@ Langkah berikut CTO baru:
 - 19:14 CTO: G2y41 1087 2e178b257 SIAP batch91 sesudah 1086 (migrasi 0702; 4 kartu review). Founder: tidak mau tagihan Actions -> saran batas US$0 (repo tetap privat); ws/1092-ci-hemat d23427421 batasi push trigger CI ke main + milestone/**.
 - 19:16 CTO: founder Q46 Done: batas Actions US$0 terpasang (Q39 US$10 digantikan).
 - 19:18 FOUNDER: tenggat kode beres akhir 19 Nov; 20 Nov tinggal urusan eksternal/kredensial production. CTO memilah blocker rilis 1.
+- 19:26 CTO (catatan retro): G88n4 lapor 'Masih jalan' tiap kali subagent test-runner miliknya mengirim notifikasi interim (subagent berhenti dengan kerja latar sendiri). Usul retro: test-runner jangan menyelesaikan giliran sebelum run selesai (Monitor until), supaya thread tidak bangun dan lapor kabar antara.
