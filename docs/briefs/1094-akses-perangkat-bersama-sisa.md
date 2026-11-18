@@ -12,6 +12,8 @@ Di awal: `ghostex board associate <id>` + `bd update <id> --status in_progress`.
 2. `legend-tlr6p` aktor = kasir ber-PIN, bukan pemilik sesi. Sisa pemakai `getAuth(req).user.id`: `service-request.routes.ts` (acknowledge/resolve/delete), `order-issues.routes.ts`, `expo.routes.ts` (helper actor baris ~47), dan `menu.routes.ts` (handler availability status). Ganti ke `actorOf(req)` untuk aktor, izin, dan audit. `getAuth` tetap dipakai untuk MFA/support/"self". Wajib ada test: kasir outlet A tidak bisa collect charge outlet B.
 3. `legend-ypwsp` audit sisa. "Stempel pertama" sudah ditutup 5pipx/7yvmm/vzvok (1027). "Satu kolom" sudah ditutup 0459 `shared_device_ids`. Yang tersisa: lintas tenant. Sesi yang ditandai di perangkat bersama tenant A lalu dipakai ke tenant B harus tetap ditolak atau diperlakukan bertanda. Kalau sudah tertutup: test pengunci + `bd comment` bukti. Kalau belum: perbaiki (migrasi 0704-0705 hanya bila tak terhindar).
 
+4. `legend-iq0jz` (1043, keputusan founder Q29: allowlist layar tablet bersama, default tolak). Cabang lama `ghostex/8b2dc0b1` e589b3476 dikeluarkan merge train dari batch91: bentrok dengan desain guard 1027/1054 (53 test perangkat bersama gagal). Port ulang allowlist di atas base ini (desain 1027/1054 menang), bukan merge cabang lama. Untuk kartu ini saja boleh menyentuh `app.ts`, `middleware/auth.ts`, `device-shared-mode.test.ts`. Semua test `shared-device-*`/`acting-staff-*` + test 1043 harus hijau.
+
 ## Aturan
 - Keputusan CTO 18 Nov (1054): aksi uang di tablet bersama WAJIB PIN kasir. Perangkat pribadi tidak berubah.
 - Jangan sentuh `app.ts`, `middleware/auth.ts`, `device-shared-mode.test.ts` (konflik 1043) dan `order-recovery-charge.routes.ts` (sudah memakai actorOf; konflik dengan m1).
