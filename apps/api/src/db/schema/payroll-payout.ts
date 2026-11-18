@@ -1890,7 +1890,9 @@ export const payrollPayoutReconFlagSightings = pgTable(
 /**
  * What the reconciliation observed of the proof file of one operation (1038,
  * finding 4, bead legend-63gyr): `missing`, `mismatch` (with the sha256 of the
- * bytes read) or `ok` (recovery, only after an earlier observation). One row per
+ * bytes read), `ok` (recovery, only after an earlier observation) or `error` (a
+ * read error other than not-found, no sha256; legend-qh11l, migration 0674: it
+ * holds the slips of the flag until a later successful read). One row per
  * change of state or bytes; `episode` counts the problem runs (an `ok` ends one,
  * the next problem starts a new one). The latest non-ok row (by `seq`, the insert order) enters the flag
  * fingerprint, so a clearance of problem A never covers problem B or a return of
@@ -1922,7 +1924,7 @@ export const payrollPayoutReconEvidenceObservations = pgTable(
     ),
     check(
       "payroll_payout_recon_evidence_observations_state_check",
-      sql`${table.state} IN ('missing', 'mismatch', 'ok')`,
+      sql`${table.state} IN ('missing', 'mismatch', 'ok') OR (${table.state} = 'error' AND ${table.observedSha256} IS NULL)`,
     ),
     check(
       "payroll_payout_recon_evidence_observations_sha_check",

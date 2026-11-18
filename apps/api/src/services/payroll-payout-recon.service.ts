@@ -1906,7 +1906,10 @@ export async function reconcileTrustedPayouts(
     };
 
   // The stored proof read again must hash to its record. "Not found" is a
-  // difference; any other read error is retried by the next cycle, not flagged.
+  // difference; any other read error is recorded as an `error` observation
+  // (1057, legend-qh11l, migration 0674) and holds the slips of the flags of the
+  // operation at once (it adds a key to their fingerprint) until a later
+  // successful read; it raises no flag of its own and the next cycle reads again.
   // The read and the observation of an operation share one transaction under the
   // advisory lock `app.payout_recon_evidence_observe` takes (1038, 1052): the read
   // happens inside the lock, so the order of the observations is the order of the
@@ -1944,13 +1947,10 @@ export async function reconcileTrustedPayouts(
         } catch (error) {
           if (error instanceof CoreError && error.code === "NOT_FOUND")
             state = "missing";
-          else {
-            fileOf.set(op.operationId, "error");
-            unreadable += 1;
-            return;
-          }
+          else state = "error";
         }
         fileOf.set(op.operationId, state);
+        if (state === "error") unreadable += 1;
         await tx.execute(
           sql`SELECT app.payout_recon_evidence_observe(${tenantId}::uuid, ${op.operationId}::uuid, ${state}::text, ${state === "mismatch" ? readSha : null}::text)`,
         );

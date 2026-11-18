@@ -125,6 +125,14 @@ function clearanceError(error: unknown, notFound: () => unknown): unknown {
       "Pengusul penutupan flag tidak boleh menyetujuinya sendiri.",
     );
   if (messageHas(error, /PAYOUT-87:/)) return alreadyApproved();
+  // 1057 (legend-qh11l): while the proof file cannot be read the clearance waits
+  // for a successful read; a new proposal would not help.
+  if (messageHas(error, /PAYOUT-91:.*could not be read/))
+    return payoutRefuse(
+      409,
+      "PAYOUT_RECON_PROOF_UNREADABLE",
+      "Bukti pembayaran belum dapat dibaca. Tunggu pemeriksaan berikutnya berhasil membacanya, lalu setujui lagi; usulan baru tidak diperlukan.",
+    );
   if (messageHas(error, /PAYOUT-91:/))
     return payoutRefuse(
       409,

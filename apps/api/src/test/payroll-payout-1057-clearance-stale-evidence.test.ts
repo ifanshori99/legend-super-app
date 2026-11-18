@@ -23,7 +23,15 @@
 // - "Held" = app.payout_payslip_held_by_recon plus the flag list `reopened`.
 import { createHash, randomUUID } from "node:crypto";
 import { Pool } from "pg";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { CoreError } from "@starter/shared/core";
 import { totpCode, totpStep } from "../lib/totp.ts";
 import { createDisbursementBatch } from "../services/payroll-payout.service.ts";
@@ -234,6 +242,44 @@ const observationsOf = (operationId: string) =>
       ORDER BY observed_at, id`,
     [W.tenantId, operationId],
   );
+
+const clearanceIds = async () =>
+  (
+    await W.rowsOf(
+      `SELECT id FROM ${CLEARANCE_TABLE} WHERE tenant_id = $1 ORDER BY id`,
+      [W.tenantId],
+    )
+  ).map((r) => r.id as string);
+/** The trusted observe function for this tenant, as legend_app, real COMMIT. */
+const observeOwn = (operationId: string, state: string, sha: string | null) =>
+  appCall(
+    `SELECT app.payout_recon_evidence_observe($1::uuid, $2::uuid, $3::text, $4::text)`,
+    [W.tenantId, operationId, state, sha],
+  );
+const FLAG_REASON = "recon test: forged transition";
+/** A non-evidence flag (the night run's flag function) on an operation nobody observed. */
+async function flagNonEvidence(itemId: string) {
+  const operationId = randomUUID();
+  await W.asTenant(
+    (c) =>
+      c.query(`SELECT app.payout_recon_flag($1, 'correction', $2, $3, $4)`, [
+        W.tenantId,
+        operationId,
+        itemId,
+        FLAG_REASON,
+      ]),
+    true,
+  );
+  const row = (await exceptionRows(itemId)).find(
+    (f) => f.operation_id === operationId,
+  );
+  expect(row, "premise: the non-evidence flag is on record").toBeDefined();
+  return {
+    operationId,
+    flagId: row!.id as string,
+    payslipId: row!.payslip_id as string,
+  };
+}
 
 // ---- The recon over a storage the test controls --------------------------------------------
 
@@ -706,49 +752,441 @@ describe("1057 card A: a returned slip is held by the recon, not by its status",
     expect(await counts(w), "nothing new").toEqual(before);
   });
 
-  // KNOWN GAP (P2, legend-qh11l): when the proof storage throws an error
-  // that is not "not found" (here Error("Invalid stored object")), the recon fails
-  // OPEN: the cleared slip stays free (payroll-payout-recon.service.ts:1944-1951).
-  // Founder rule: when in doubt, hold. These two cases state the RIGHT behavior
-  // and are marked it.fails until the follow-up bead fixes it; then drop `.fails`.
-  it.fails(
-    "[1057-returned-storage-error-after-clearance-held] A cleared; the storage throws Error('Invalid stored object') and the recon runs: the slip must be held and a new batch refused",
-    async () => {
-      const w = await returnedWorld();
-      const flagged = await flaggedByEvidence(
-        w,
-        BYTES_A,
-        "evidence_hash_mismatch",
-      );
-      await clearAll(flagged);
-      const before = await counts(w);
-      setProof(w.key, "invalid");
-      await runRecon().catch(() => undefined);
-      expect(await heldBySql(flagged.payslipId), "unreadable proof: held").toBe(
-        true,
-      );
-      await W.expectRefused(followUpBatch(w.runId), { status: 409 });
-      expect(await counts(w), "nothing new").toEqual(before);
-    },
-  );
+  // legend-qh11l (P2, money): a storage fault that is not "not found" (here
+  // Error("Invalid stored object")) must FAIL CLOSED at once: that cycle never
+  // releases the slip. Founder rule: when in doubt, hold. Per the CTO decision on
+  // the card: the hold lifts only after a later successful read whose bytes match
+  // the clearance that was approved (recovery, no new clearance needed).
+  it("[1057-returned-storage-error-after-clearance-held] A cleared; the storage throws Error('Invalid stored object') and the recon runs: the slip is held at once and a new batch is refused", async () => {
+    const w = await returnedWorld();
+    const flagged = await flaggedByEvidence(
+      w,
+      BYTES_A,
+      "evidence_hash_mismatch",
+    );
+    await clearAll(flagged);
+    const before = await counts(w);
+    setProof(w.key, "invalid");
+    await runRecon().catch(() => undefined);
+    expect(await heldBySql(flagged.payslipId), "unreadable proof: held").toBe(
+      true,
+    );
+    await W.expectRefused(followUpBatch(w.runId), { status: 409 });
+    expect(await counts(w), "nothing new").toEqual(before);
+  });
 
-  it.fails(
-    "[1057-corrected-storage-error-after-clearance-held] same gap for a corrected item: A cleared; the storage throws Error('Invalid stored object'): the slip must be held",
-    async () => {
-      const w = await correctedWorld();
-      const flagged = await flaggedByEvidence(
-        w,
-        BYTES_A,
-        "evidence_hash_mismatch",
-      );
-      await clearAll(flagged);
-      setProof(w.key, "invalid");
+  it("[1057-corrected-storage-error-after-clearance-held] same for a corrected item: A cleared; the storage throws Error('Invalid stored object'): the slip is held", async () => {
+    const w = await correctedWorld();
+    const flagged = await flaggedByEvidence(
+      w,
+      BYTES_A,
+      "evidence_hash_mismatch",
+    );
+    await clearAll(flagged);
+    setProof(w.key, "invalid");
+    await runRecon().catch(() => undefined);
+    expect(await heldBySql(flagged.payslipId), "unreadable proof: held").toBe(
+      true,
+    );
+  });
+
+  it("[1057-returned-transient-storage-error-recovers] A cleared; one unreadable cycle holds the slip; the next successful read of the same bytes A frees it again with the OLD clearance, no new clearance, and a new batch is accepted", async () => {
+    const w = await returnedWorld();
+    const flagged = await flaggedByEvidence(
+      w,
+      BYTES_A,
+      "evidence_hash_mismatch",
+    );
+    await clearAll(flagged);
+    const before = await counts(w);
+    const clearancesBefore = await clearanceIds();
+    expect(
+      clearancesBefore.length,
+      "premise: clearances exist",
+    ).toBeGreaterThan(0);
+
+    setProof(w.key, "invalid");
+    await runRecon().catch(() => undefined);
+    expect(await heldBySql(flagged.payslipId), "error cycle: held").toBe(true);
+    await W.expectRefused(followUpBatch(w.runId), { status: 409 });
+    expect(await counts(w), "error cycle: nothing new").toEqual(before);
+
+    // The storage recovers and serves the very bytes that were cleared.
+    setProof(w.key, BYTES_A);
+    await runRecon();
+    expect(
+      await heldBySql(flagged.payslipId),
+      "a later successful read lifts the hold",
+    ).toBe(false);
+    const failure = await W.httpFailure(followUpBatch(w.runId));
+    expect(failure, "recovered: the slip can get a new batch").toBeNull();
+    expect((await counts(w)).batches, "one new batch").toBe(before.batches + 1);
+    // No new clearance was needed: the very same clearance rows as before.
+    expect(
+      await clearanceIds(),
+      "recovery did not create or change a clearance",
+    ).toEqual(clearancesBefore);
+  });
+
+  it("[1057-corrected-transient-storage-error-recovers] corrected item: error cycle holds the cleared slip, the next successful read of the cleared bytes frees it", async () => {
+    const w = await correctedWorld();
+    const flagged = await flaggedByEvidence(
+      w,
+      BYTES_A,
+      "evidence_hash_mismatch",
+    );
+    await clearAll(flagged);
+    setProof(w.key, "invalid");
+    await runRecon().catch(() => undefined);
+    expect(await heldBySql(flagged.payslipId), "error cycle: held").toBe(true);
+    setProof(w.key, BYTES_A);
+    await runRecon();
+    expect(await heldBySql(flagged.payslipId), "recovered: free").toBe(false);
+  });
+
+  it("[1057-returned-recovery-with-changed-bytes-stays-held] A cleared; an unreadable cycle; the storage then serves different bytes B: a successful read does not free the slip (the clearance covers A only)", async () => {
+    const w = await returnedWorld();
+    const flagged = await flaggedByEvidence(
+      w,
+      BYTES_A,
+      "evidence_hash_mismatch",
+    );
+    await clearAll(flagged);
+    const before = await counts(w);
+    setProof(w.key, "invalid");
+    await runRecon().catch(() => undefined);
+    setProof(w.key, BYTES_B);
+    await runRecon();
+    expect(await heldBySql(flagged.payslipId), "B was never cleared").toBe(
+      true,
+    );
+    await W.expectRefused(followUpBatch(w.runId), { status: 409 });
+    expect(await counts(w), "nothing new").toEqual(before);
+  });
+
+  it("[1057-returned-persistent-storage-error-stays-held] A cleared; the storage keeps failing over repeated recon cycles: the slip stays held every time and a new batch stays refused", async () => {
+    const w = await returnedWorld();
+    const flagged = await flaggedByEvidence(
+      w,
+      BYTES_A,
+      "evidence_hash_mismatch",
+    );
+    await clearAll(flagged);
+    const before = await counts(w);
+    setProof(w.key, "invalid");
+    for (let cycle = 1; cycle <= 3; cycle += 1) {
       await runRecon().catch(() => undefined);
-      expect(await heldBySql(flagged.payslipId), "unreadable proof: held").toBe(
-        true,
+      expect(
+        await heldBySql(flagged.payslipId),
+        `error cycle ${cycle}: held`,
+      ).toBe(true);
+    }
+    await W.expectRefused(followUpBatch(w.runId), { status: 409 });
+    expect(await counts(w), "nothing new").toEqual(before);
+  });
+});
+
+// =========================================================================
+// 1c: legend-qh11l ordering rules between proposals, errors and recovery
+// =========================================================================
+
+describe("1057 card D: an unreadable proof and the clearance flow", () => {
+  const counts = async (w: { runId: string }) => ({
+    batches: await batchCount(w.runId),
+    items: await itemCount(w.runId),
+    postings: await postingCount(w.runId),
+  });
+
+  it("[1057-error-proposal-before-approve-during-error-refused] a clearance proposed for mismatch A before the read error cannot be approved while the proof is unreadable (409, PAYOUT-91); the slip stays held", async () => {
+    // Assumption: the refusal is checked by status 409 and the unchanged state;
+    // the PAYOUT-91 text is not asserted on the HTTP body (its mapping is not in the contract).
+    const w = await correctedWorld();
+    const flagged = await flaggedByEvidence(
+      w,
+      BYTES_A,
+      "evidence_hash_mismatch",
+    );
+    const proposals: string[] = [];
+    for (const id of flagged.flagIds) {
+      const res = await proposeHttp(proposer, id, REASON);
+      expect(res.status, `premise: propose ${detail(res)}`).toBe(201);
+      proposals.push(
+        (res.body.data?.clearanceId ?? res.body.clearanceId) as string,
       );
-    },
-  );
+    }
+    setProof(w.key, "invalid");
+    await runRecon().catch(() => undefined);
+    for (const clearanceId of proposals) {
+      const res = await approveHttp(approverA, clearanceId);
+      expect(
+        res.status,
+        `approving while the proof is unreadable is refused: ${detail(res)}`,
+      ).toBe(409);
+    }
+    expect(await heldBySql(flagged.payslipId), "still held").toBe(true);
+  });
+
+  it("[1057-error-proposal-during-error-refused-after-recovery] A cleared; a new proposal is made while the proof is unreadable; the proof recovers to A: approving that proposal is refused (409), yet the slip is free through the OLD clearance", async () => {
+    const w = await returnedWorld();
+    const flagged = await flaggedByEvidence(
+      w,
+      BYTES_A,
+      "evidence_hash_mismatch",
+    );
+    await clearAll(flagged);
+    const before = await counts(w);
+    const clearancesBefore = await clearanceIds();
+
+    setProof(w.key, "invalid");
+    await runRecon().catch(() => undefined);
+    expect(await heldBySql(flagged.payslipId), "error: held").toBe(true);
+    const proposals: string[] = [];
+    for (const id of flagged.flagIds) {
+      const res = await proposeHttp(proposer, id, SECOND_REASON);
+      expect(
+        res.status,
+        `premise: propose during the error ${detail(res)}`,
+      ).toBe(201);
+      proposals.push(
+        (res.body.data?.clearanceId ?? res.body.clearanceId) as string,
+      );
+    }
+
+    setProof(w.key, BYTES_A);
+    await runRecon();
+    for (const clearanceId of proposals) {
+      const res = await approveHttp(approverA, clearanceId);
+      expect(
+        res.status,
+        `a proposal made on the error fingerprint is refused: ${detail(res)}`,
+      ).toBe(409);
+    }
+    expect(
+      await heldBySql(flagged.payslipId),
+      "recovered: free by the old clearance",
+    ).toBe(false);
+    expect(
+      await clearanceIds(),
+      "the old clearances are still there, unchanged",
+    ).toEqual(expect.arrayContaining(clearancesBefore));
+    const failure = await W.httpFailure(followUpBatch(w.runId));
+    expect(failure, "recovered: the slip can get a new batch").toBeNull();
+    expect((await counts(w)).batches, "one new batch").toBe(before.batches + 1);
+  });
+
+  it("[1057-error-a-error-b-error-a-stays-held] A cleared; the sequence error, B, error, A (A again after B, no ok read between): the slip stays held at every step", async () => {
+    const w = await correctedWorld();
+    const flagged = await flaggedByEvidence(
+      w,
+      BYTES_A,
+      "evidence_hash_mismatch",
+    );
+    await clearAll(flagged);
+    const steps: Array<[ProofState, string]> = [
+      ["invalid", "error"],
+      [BYTES_B, "B"],
+      ["invalid", "error again"],
+      [BYTES_A, "A again after B"],
+    ];
+    for (const [state, label] of steps) {
+      setProof(w.key, state);
+      await runRecon().catch(() => undefined);
+      expect(await heldBySql(flagged.payslipId), `${label}: held`).toBe(true);
+    }
+    expect(
+      await Promise.all(flagged.flagIds.map(reopenedOf)),
+      "reopened",
+    ).toContain(true);
+  });
+
+  it("[1057-error-on-unobserved-operation-then-ok-frees-old-clearance] a non-evidence flag cleared by two people on an operation nobody observed: a read error holds the slip, the next ok frees it again by the old clearance", async () => {
+    const w = await correctedWorld();
+    const flag = await flagNonEvidence(w.itemId);
+    expect(
+      await observationsOf(flag.operationId),
+      "premise: the operation was never observed",
+    ).toHaveLength(0);
+    await clearFlag(flag.flagId);
+    expect(await heldBySql(flag.payslipId), "premise: cleared is free").toBe(
+      false,
+    );
+    const clearancesBefore = await clearanceIds();
+
+    const error = await observeOwn(flag.operationId, "error", null);
+    expect(error.code, error.message).toBeUndefined();
+    expect(
+      await heldBySql(flag.payslipId),
+      "a read error holds even a non-evidence clearance",
+    ).toBe(true);
+
+    const ok = await observeOwn(flag.operationId, "ok", null);
+    expect(ok.code, ok.message).toBeUndefined();
+    expect(
+      await heldBySql(flag.payslipId),
+      "the next ok frees the slip by the old clearance",
+    ).toBe(false);
+    expect(await clearanceIds(), "no new clearance").toEqual(clearancesBefore);
+  });
+});
+
+// =========================================================================
+// 1d: the fingerprint of a sequence without errors is the one of migration 0663
+// =========================================================================
+
+describe("1057 card D: the fingerprint is unchanged when no read error exists", () => {
+  // The fingerprint expression of drizzle/0663 (the contract of what existing
+  // clearances were bound to), evaluated here in plain SQL as the owner.
+  const FINGERPRINT_0663 = String.raw`
+    SELECT pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(
+      (pg_catalog.jsonb_build_object(
+        'item', (
+          SELECT pg_catalog.jsonb_object_agg(f.key, f.value)
+            FROM public.payroll_disbursement_items it,
+                 pg_catalog.jsonb_each(pg_catalog.to_jsonb(it)) AS f(key, value)
+           WHERE it.tenant_id = e.tenant_id AND it.id = e.item_id
+             AND f.key NOT IN ('updated_at', 'pii_key_version')
+             AND f.key NOT LIKE '%\_encrypted'),
+        'attestations', COALESCE((
+          SELECT pg_catalog.jsonb_agg(pg_catalog.to_jsonb(a) ORDER BY a.id)
+            FROM public.payroll_payout_attestations a
+           WHERE a.tenant_id = e.tenant_id AND a.operation_id = e.operation_id),
+          '[]'::jsonb),
+        'postings', COALESCE((
+          SELECT pg_catalog.jsonb_agg(
+                   (SELECT pg_catalog.jsonb_object_agg(f.key, f.value)
+                      FROM pg_catalog.jsonb_each(pg_catalog.to_jsonb(p)) AS f(key, value)
+                     WHERE f.key NOT IN ('updated_at', 'pii_key_version')
+                       AND f.key NOT LIKE '%\_encrypted')
+                   ORDER BY p.id)
+            FROM public.payroll_payout_gl_postings p
+            JOIN public.payroll_disbursement_items it
+              ON it.tenant_id = e.tenant_id AND it.id = e.item_id
+           WHERE p.tenant_id = e.tenant_id
+             AND (p.id = it.gl_posting_id
+               OR p.item_set_hash = pg_catalog.encode(pg_catalog.sha256(
+                    pg_catalog.convert_to(it.id::text, 'UTF8')), 'hex'))),
+          '[]'::jsonb)
+      ) || COALESCE((
+          SELECT pg_catalog.jsonb_build_object('evidence', pg_catalog.jsonb_build_object(
+                   'state', o.state,
+                   'observed_sha256', o.observed_sha256,
+                   'episode', o.episode,
+                   'seq', o.seq))
+            FROM public.payroll_payout_recon_evidence_observations o
+           WHERE o.tenant_id = e.tenant_id AND o.operation_id = e.operation_id
+             AND o.state <> 'ok'
+           ORDER BY o.seq DESC
+           LIMIT 1),
+          '{}'::jsonb))::text, 'UTF8')), 'hex')::varchar AS fp
+      FROM public.payroll_payout_recon_exceptions e
+     WHERE e.tenant_id = $1 AND e.id = $2`;
+  const expected = async (flagId: string) =>
+    (await W.rowsOf(FINGERPRINT_0663, [W.tenantId, flagId]))[0]!.fp as string;
+  const live = async (flagId: string) =>
+    (
+      await W.rowsOf(
+        `SELECT app.payout_recon_flag_fingerprint($1::uuid, $2::uuid) AS fp`,
+        [W.tenantId, flagId],
+      )
+    )[0]!.fp as string;
+
+  it("[1057-fingerprint-no-error-sequence-equals-0663] mismatch A, ok, mismatch B: at each step the live fingerprint equals the 0663 expression", async () => {
+    const w = await correctedWorld();
+    const flagged = await flaggedByEvidence(
+      w,
+      BYTES_A,
+      "evidence_hash_mismatch",
+    );
+    const flagId = flagged.flagIds[0]!;
+    const steps: string[] = [];
+
+    expect(await live(flagId), "mismatch A").toBe(await expected(flagId));
+    steps.push(await live(flagId));
+
+    bytesOf.delete(w.key);
+    await runRecon();
+    expect(await live(flagId), "ok").toBe(await expected(flagId));
+    steps.push(await live(flagId));
+
+    setProof(w.key, BYTES_B);
+    await runRecon();
+    expect(await live(flagId), "mismatch B").toBe(await expected(flagId));
+    steps.push(await live(flagId));
+
+    expect(
+      new Set(steps).size,
+      "sanity: the expression really follows the evidence",
+    ).toBeGreaterThan(1);
+  });
+});
+
+// =========================================================================
+// 1e: the daily sweep alerts ops when the proof stays unreadable
+// =========================================================================
+
+describe("1057 card D: the daily sweep alert", () => {
+  it("[1057-sweep-alert-two-days-unreadable] the sweep run on two consecutive days with a failing proof storage logs PAYOUT-RECON-ALERT unreadable proof on the second day, not before", async () => {
+    // Assumption: the sweep is called as in worker-main:
+    // runPayoutTrustedReconSweep(context, now, { storage }); the in-memory
+    // streak is kept by the module, and this is the only test of this file that
+    // runs the sweep (so the streak starts here).
+    const w = await correctedWorld();
+    const flagged = await flaggedByEvidence(
+      w,
+      BYTES_A,
+      "evidence_hash_mismatch",
+    );
+    await clearAll(flagged);
+    setProof(w.key, "invalid");
+
+    const { runPayoutTrustedReconSweep } =
+      (await import("../worker/payout-trusted-recon.job.ts")) as unknown as {
+        runPayoutTrustedReconSweep: (
+          context: unknown,
+          now: Date,
+          options: unknown,
+        ) => Promise<unknown>;
+      };
+    const base = W.proofs().storage;
+    const storage = {
+      async get(context: unknown, input: { key: string }) {
+        if (bytesOf.get(input.key) === "invalid")
+          throw new Error("Invalid stored object");
+        return (base.get as (c: unknown, i: unknown) => Promise<unknown>)(
+          context,
+          input,
+        );
+      },
+    };
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const alerts = () =>
+      spy.mock.calls
+        .map((call) => call.map(String).join(" "))
+        .filter((line) => line.includes("PAYOUT-RECON-ALERT unreadable proof"));
+    try {
+      const day1 = new Date();
+      await runPayoutTrustedReconSweep(W.scope(), day1, { storage }).catch(
+        () => undefined,
+      );
+      expect(
+        alerts(),
+        "day 1: one unreadable cycle, no alert yet",
+      ).toHaveLength(0);
+      const day2 = new Date(day1.getTime() + 24 * 3_600_000);
+      await runPayoutTrustedReconSweep(W.scope(), day2, { storage }).catch(
+        () => undefined,
+      );
+      expect(
+        alerts().length,
+        "day 2: still unreadable, the ops alert fires",
+      ).toBeGreaterThan(0);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await heldBySql(flagged.payslipId), "and the slip is held").toBe(
+      true,
+    );
+  });
 });
 
 // =========================================================================
@@ -845,6 +1283,80 @@ describe("1057 card A: another tenant is refused", () => {
     ).toBe(rowsBefore);
     for (const id of flagged.flagIds)
       expect(await reopenedOf(id), "not reopened by a stranger").toBe(false);
+  });
+
+  it("[1057-other-tenant-cannot-hold-cleared-slip-by-error] a cleared slip stays free when another tenant reports a read error for its operation: no hold, no observation", async () => {
+    const w = await correctedWorld();
+    const flagged = await flaggedByEvidence(
+      w,
+      BYTES_A,
+      "evidence_hash_mismatch",
+    );
+    await clearAll(flagged);
+    const other = await foreignTenant();
+    const rowsBefore = await observationCount(flagged.operationId);
+
+    for (const subject of [W.tenantId, other])
+      await observe(other, subject, flagged.operationId, "error", null);
+
+    expect(
+      await heldBySql(flagged.payslipId),
+      "the other tenant's read error did not hold this tenant's slip",
+    ).toBe(false);
+    expect(
+      await observationCount(flagged.operationId),
+      "no observation was written for this tenant's operation",
+    ).toBe(rowsBefore);
+  });
+
+  it("[1057-other-tenant-ok-does-not-lift-own-hold] while this tenant's slip is held by an unreadable proof, another tenant's successful read ('ok') does not free it", async () => {
+    const w = await correctedWorld();
+    const flagged = await flaggedByEvidence(
+      w,
+      BYTES_A,
+      "evidence_hash_mismatch",
+    );
+    await clearAll(flagged);
+    setProof(w.key, "invalid");
+    await runRecon().catch(() => undefined);
+    expect(await heldBySql(flagged.payslipId), "premise: held").toBe(true);
+    const other = await foreignTenant();
+    for (const subject of [W.tenantId, other])
+      await observe(other, subject, flagged.operationId, "ok", null);
+    expect(
+      await heldBySql(flagged.payslipId),
+      "a stranger's ok does not release the hold",
+    ).toBe(true);
+  });
+
+  it("[1057-other-tenant-error-does-not-change-own-recovery] this tenant's unreadable proof held the slip and the next own read freed it; a read error reported by another tenant for its operation afterwards does not hold it again and writes no observation", async () => {
+    const w = await correctedWorld();
+    const flagged = await flaggedByEvidence(
+      w,
+      BYTES_A,
+      "evidence_hash_mismatch",
+    );
+    await clearAll(flagged);
+    setProof(w.key, "invalid");
+    await runRecon().catch(() => undefined);
+    expect(await heldBySql(flagged.payslipId), "premise: held").toBe(true);
+    setProof(w.key, BYTES_A);
+    await runRecon();
+    expect(await heldBySql(flagged.payslipId), "premise: recovered").toBe(
+      false,
+    );
+    const other = await foreignTenant();
+    const rowsBefore = await observationCount(flagged.operationId);
+    for (const subject of [W.tenantId, other])
+      await observe(other, subject, flagged.operationId, "error", null);
+    expect(
+      await heldBySql(flagged.payslipId),
+      "another tenant's error does not hold this tenant's slip",
+    ).toBe(false);
+    expect(
+      await observationCount(flagged.operationId),
+      "no observation was written for this tenant's operation",
+    ).toBe(rowsBefore);
   });
 
   it("[1057-other-tenant-sees-no-slip-hold] asked under the other tenant's context, this tenant's payslip is not held by anything of that tenant", async () => {
