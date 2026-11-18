@@ -22,6 +22,7 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { tenantIdSchema } from "@starter/shared/core";
 import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers.ts";
@@ -511,7 +512,11 @@ describe("[legend-5bx8v] cross-tenant", () => {
       response.status,
     );
     expect(
-      await mealRowsFor(tenantBEmployee, body.businessDate, tenantB!.tenantId),
+      await mealRowsFor(
+        tenantBEmployee,
+        body.businessDate,
+        tenantIdSchema.parse(tenantB!.tenantId),
+      ),
     ).toHaveLength(0);
   });
 
@@ -522,7 +527,11 @@ describe("[legend-5bx8v] cross-tenant", () => {
       response.status,
     );
     expect(
-      await mealRowsFor(tenantBEmployee, body.businessDate, tenantB!.tenantId),
+      await mealRowsFor(
+        tenantBEmployee,
+        body.businessDate,
+        tenantIdSchema.parse(tenantB!.tenantId),
+      ),
     ).toHaveLength(0);
     expect(await mealRowsFor(tenantBEmployee, body.businessDate)).toHaveLength(
       0,

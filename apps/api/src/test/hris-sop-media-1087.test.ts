@@ -255,7 +255,6 @@ const versionInput = (overrides: Record<string, unknown> = {}) =>
 
 let hr: string; // tenant-wide hr.sop.manage
 let managerA: string; // hr.sop.manage at outlet A
-let hrOther: string; // hr.sop.manage in another tenant
 let stationA: string;
 let otherOutlet: string; // an outlet of the other tenant
 
@@ -292,7 +291,7 @@ beforeAll(async () => {
   );
   hr = await actor({ type: "tenant" });
   managerA = await actor({ type: "outlet", id: outletA });
-  hrOther = await actor({ type: "tenant" }, otherTenant);
+  await actor({ type: "tenant" }, otherTenant);
   stationA = await seedStation(outletA);
 });
 

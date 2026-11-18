@@ -20,7 +20,7 @@
 import { randomUUID } from "node:crypto";
 import { Client, Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { cafeLegendFixtures } from "@starter/shared/core";
+import { cafeLegendFixtures, tenantIdSchema } from "@starter/shared/core";
 import { createApp } from "../app";
 import { agent, originHeader, signUp } from "./helpers";
 import {
@@ -212,10 +212,13 @@ beforeAll(async () => {
      VALUES ($1, $2, $3, 'custom', 'active', now())`,
     [tenantB.tenantId, tenantB.brandId, tenantBHost],
   );
-  tenantBStation = await createStation(tenantB.outletId, tenantB.tenantId);
+  tenantBStation = await createStation(
+    tenantB.outletId,
+    tenantIdSchema.parse(tenantB.tenantId),
+  );
   const roleB = await customRole(
     ["menu.item.view", "menu.item.manage"],
-    tenantB.tenantId,
+    tenantIdSchema.parse(tenantB.tenantId),
   );
   tenantBManager = await holder(
     [
@@ -348,12 +351,18 @@ describe("[legend-huz8] cross-tenant", () => {
   });
 
   it("a manager of this tenant cannot rename or delete another tenant's station", async () => {
-    const before = await stationRow(tenantBStation, tenantB!.tenantId);
+    const before = await stationRow(
+      tenantBStation,
+      tenantIdSchema.parse(tenantB!.tenantId),
+    );
     const patch = await rename(outletManager, tenantBStation, "Lintas Tenant");
     expect([403, 404], JSON.stringify(patch.body)).toContain(patch.status);
     const del = await remove(outletManager, tenantBStation);
     expect([403, 404], JSON.stringify(del.body)).toContain(del.status);
-    const after = await stationRow(tenantBStation, tenantB!.tenantId);
+    const after = await stationRow(
+      tenantBStation,
+      tenantIdSchema.parse(tenantB!.tenantId),
+    );
     expect(after.name).toBe(before.name);
     expect(after.deleted_at).toBeNull();
   });
