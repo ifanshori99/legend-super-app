@@ -2111,3 +2111,4 @@ Langkah berikut CTO baru:
 - 02:13 CTO: retro 3 jam dimulai (Sonnet, akun Claude #5 7d 19%). Bahan: antre heavy, renomor migrasi berulang (1072 vs batch92 0485-0488), SO ronde 7 kas + 1114 refund kasir P1 baru.
 - 02:16 CTO: SO refund ronde 12 (G311w) 2 P1 (hold ditutup counted meski fact < hold: resolver + closeLiveOwnHold). Resolve. Brief 1119 ke G2yc3: satu invarian cakupan nominal untuk semua penutup hold. 1072 tetap DITAHAN.
 - 02:20 CTO: G8xbm 1tke7 gate SQL di ws/1100 2b0feb16f (67/67 test, merah-dulu ok, typecheck tidak perlu: SQL+test). Architect xhigh review berjalan (subagent CTO).
+- 02:22 CTO: G9yay 1094 architect 0 P0-P2; keputusan: resolve voucher/swap di perangkat bersama ikut ditutup (membatasi).
