@@ -1,0 +1,46 @@
+{
+  "card": "legend-bcb4p",
+  "capturedAt": "2026-11-18T13:43:43.647Z",
+  "environment": "sandbox",
+  "documentation": "https://doit.id/docs/en/",
+  "outcome": "recurring-unavailable-in-sandbox",
+  "subscriptionCreateAccepted": false,
+  "cleanupIdKnown": false,
+  "cancellationConfirmed": false,
+  "refundRequested": false,
+  "calls": [
+    {
+      "method": "POST",
+      "endpoint": "/v1/recurring/plans",
+      "status": 404,
+      "responseShape": {
+        "message": "string",
+        "error": "string",
+        "statusCode": "number"
+      },
+      "parserAccepts": false
+    },
+    {
+      "method": "GET",
+      "endpoint": "/v1/recurring/subscriptions/[redacted]",
+      "status": 404,
+      "responseShape": {
+        "message": "string",
+        "error": "string",
+        "statusCode": "number"
+      },
+      "parserAccepts": false
+    },
+    {
+      "method": "GET",
+      "endpoint": "/v1/recurring/subscriptions?reference=[redacted]",
+      "status": 404,
+      "responseShape": {
+        "message": "string",
+        "error": "string",
+        "statusCode": "number"
+      },
+      "parserAccepts": false
+    }
+  ]
+}
