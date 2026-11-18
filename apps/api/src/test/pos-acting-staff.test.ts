@@ -34,9 +34,10 @@
 //    acting staff member (same role) must still be refused, as MFA is never
 //    inherited from the session. The spec fixes "mfaVerified = false" but not
 //    the error code, so 403 PERMISSION_DENIED or MFA_REQUIRED are both accepted.
-//  - ACTING_STAFF_UNSUPPORTED: GET /api/outlets/:id/floor is a router the
-//    decision lists as a later wave (no acting-staff middleware yet). If that
-//    router gains the middleware, pick another unwired router.
+//  - ACTING_STAFF_UNSUPPORTED: GET /api/menu/categories is a router without
+//    the acting-staff middleware. GET /api/outlets/:id/floor gained it in
+//    legend-42gqp (batch87), so it can no longer serve as the unwired example;
+//    if the menu router gains the middleware, pick another unwired router.
 //  - Idempotency: POST .../pos/orders carries the key in the body
 //    (`idempotencyKey`); the same key with another acting staff is 409
 //    IDEMPOTENCY_KEY_REUSED, the same key with the same staff replays.
@@ -749,7 +750,7 @@ describe("legend-aruta acting cashier token: edge cases", () => {
   it("the acting header on a router without the acting-staff middleware is refused with 400 ACTING_STAFF_UNSUPPORTED, never ignored", async () => {
     const token = await tokenFor(cashierB);
     const response = await sessionOwner.client
-      .get(`/api/outlets/${encodeURIComponent(tenant.outletId)}/floor`)
+      .get("/api/menu/categories")
       .set(headers)
       .set(originHeader)
       .set(DEVICE_TOKEN_HEADER, deviceToken())
