@@ -78,6 +78,8 @@ export const edcReconQueueMessages = {
     stale:
       "Daftar belum berhasil diperbarui. Data di bawah mungkin sudah berubah, jangan jadikan dasar keputusan sebelum dimuat ulang.",
   },
+  truncated:
+    "Sebagian antrean belum tampil. Saring per outlet, status, atau kata kunci untuk melihat sisanya.",
   resolvedBanner: "{id} diselesaikan: {outcome}",
   resolvedOutcome: {
     approved: "Approved",

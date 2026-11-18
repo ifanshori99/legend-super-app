@@ -25,6 +25,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import type { EdcReconciliationQueueItem } from "@starter/shared/payment/admin";
 import { useEdcReconciliationQueue } from "../hooks";
+import { isQueueTruncated } from "../lib";
 import { EdcReconciliationDetail } from "./detail";
 import {
   EdcReconciliationQueueList,
@@ -197,6 +198,7 @@ export function EdcReconciliationPage() {
   // A failed refetch keeps the last list on screen (with a banner); only a
   // failure with nothing to show becomes the full error state.
   const staleError = queue.isError && queue.data !== undefined;
+  const truncated = isQueueTruncated(queue.data?.meta);
   const state = queue.isPending
     ? "loading"
     : queue.isError && !staleError
@@ -389,6 +391,15 @@ export function EdcReconciliationPage() {
             <Button type="button" variant="outline" size="sm" onClick={reload}>
               {t("common.retry")}
             </Button>
+          </div>
+        )}
+
+        {truncated && (
+          <div
+            role="status"
+            className="rounded-container border-(length:--border-w) bg-warning-subtle px-4 py-3 text-sm leading-5 text-warning"
+          >
+            {t("edcRecon.queue.truncated")}
           </div>
         )}
 

@@ -282,7 +282,7 @@ describe("EcrSimulator", () => {
     const result = await sim.sale(saleRequest("T1"));
     expect(result.outcome).toBe("approved");
     expect(result.message).toBeTruthy();
-    expect(result.message).not.toMatch(/\d(?:[ -]?\d){11,}/);
+    expect(result.message).not.toMatch(/\d(?:[\s/_-]*\d){11,}/);
   });
 
   it("ignore_abort ignores the signal and records the charge late", async () => {

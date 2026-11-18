@@ -15,6 +15,16 @@ export function displayId(tx: {
 /** Same window as the API's EDC_LATE_RESPONSE_WINDOW_MS (late-response.ts). */
 export const EDC_RECON_WAIT_MS = 10 * 60 * 1000;
 
+/**
+ * True when the queue loader stopped at its page cap: it keeps the last
+ * non-null `nextCursor`, so a cursor still set means rows are not on screen.
+ */
+export function isQueueTruncated(
+  meta: { nextCursor?: string | null } | undefined,
+): boolean {
+  return meta?.nextCursor != null;
+}
+
 export type ReconciliationOutcome = "approved" | "declined";
 
 export type ReconciliationGate =

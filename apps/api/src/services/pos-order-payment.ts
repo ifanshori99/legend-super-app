@@ -73,6 +73,7 @@ import {
   lockHoldsOfOrder,
   markQrisHoldsPaidByIntentTx,
   openQrisHold,
+  voidSupersededQrisTendersTx,
 } from "./pos-qris-hold.ts";
 import { assertPosTicketsIssuable } from "./facility-pos-tickets.ts";
 import {
@@ -1176,6 +1177,18 @@ export async function handlePosPaymentPaid(
           eq(posOrderTenders.status, "authorized"),
         ),
       );
+    // legend-xb20o: an older QR of the same bill (its hold already closed)
+    // can still be `authorized`. This QR's hold is `paid` now, so the 0369
+    // trigger lets the stale tender go (unless another hold of the bill is
+    // still active: then it waits); void it so it never takes money as a
+    // second tender (a late payment of it is parked once).
+    await voidSupersededQrisTendersTx(tx, context, {
+      order,
+      caller: null,
+      now: at,
+      linkClosedAt: now,
+      reason: "superseded_by_paid_qris",
+    });
     await bumpPos(tx, context, pos, at);
     await appendOrderEvent(tx, context, {
       order,
