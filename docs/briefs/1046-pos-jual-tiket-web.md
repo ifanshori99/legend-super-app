@@ -1,0 +1,6 @@
+# 1046 Web: jual tiket fasilitas di POS (legend-l65nz)
+Peran: ui-engineer (baca ~/.agents/team/roles/ui-engineer.md dan ~/.agents/team/ui-standard.md). Opus 5.5 high. Uang (tingkat K): reviewer architect high sekali di akhir.
+Langkah pertama: spawn paralel: Explore (layar 936 di apps/web/src/features/ws04-pos-kasir, CONTRACT-GAPS.md, API sellTicketAtPos/issueTicketCredential di ghostex/8eb871ce), test-writer (Playwright mock + unit), implementer web.
+Base: `origin/ghostex/8eb871ce` 9a530a3a9 (backend 1039, sudah berisi UI 936). UI disetujui founder Q19 (docs/review/ui-review-936-payout.html, screenshot docs/review/img/pos936-tiket-terbit-*). Ikuti screenshot itu, jangan desain ulang.
+Isi: kasir menambah tiket fasilitas ke tagihan, bayar, lalu kredensial QR+PIN tampil SEKALI (tidak bisa dibuka ulang), cetak lewat jalur print yang ada (ganti printTicket mock). Lengkapi skema shared: kode voucher di posDiscountSchema, bank/mode di posEdcAttemptSchema (kontrak sesuai backend). Tanpa migrasi.
+Bukti: e2e mock terarah lewat heavy --browser, screenshot 360 dan 1280 (light), text-contract untuk teks baru, prettier/eslint, typecheck web + API lewat heavy. Commit, push tanpa force. Laporan sekali di akhir: perilaku, screenshot path, test, SHA, angka subagent (total, puncak, pemegang heavy).
