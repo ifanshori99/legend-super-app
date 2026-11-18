@@ -1935,3 +1935,4 @@ Langkah berikut CTO baru:
 - 08:42 CTO: SO 1047 POS 936: 5 P1 + 3 P2 (poin di refund manual, poin di tagihan belum lunas, mode latihan, redeem tanpa bukti member, kredensial pintu belum tersambung). G5r4o dibuka lagi (1048) untuk fix. G2f82 resolve.
 - 08:43 CTO: 1037 G6osn SELESAI ghostex/b49350e5 69461a987 (5 temuan SO1036; tanpa migrasi; 257/257). vgutl ditutup (pre-release). fukt6 siap. rvao9 -> founder Q43. SO ronde 2 kas/payout 1049 Codex #5. G6osn resolve.
 - 08:49 CTO: SO 1049: 1 P1 + 2 P2. G0saf dibuka lagi (1052) untuk temuan 1+3 di cabang 1038. Temuan 2 deadlock (1037) -> bead legend-f250r. G4mgm resolve.
+- 08:56 CTO: Founder Q40 cap voucher (sisa hangus), Q41 boleh ganti voucher -> legend-kuh0w, Q42 refund poin ditolak rilis 1.
