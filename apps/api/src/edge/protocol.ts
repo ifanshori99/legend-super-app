@@ -40,6 +40,10 @@ export const linkCursorSchema = z
 
 const text = z.string().min(1).max(255);
 
+/** Upgrade capability: old clouds reject unknown heartbeat fields. */
+export const LINK_DEVICE_REGISTRY_HARD_STALE_HEADER =
+  "x-edge-device-registry-hard-stale";
+
 /**
  * Critical catalog streams stale for over 30 minutes while the edge reaches
  * the cloud (legend-10nex). `staleSince` is the last successful pull (the
@@ -106,6 +110,7 @@ export const linkFrameSchema = z.discriminatedUnion("type", [
     catalogStale: catalogStaleSchema.optional(),
     /** Missing local maintenance configuration; roll out cloud before edge. */
     auditRetentionDisabled: z.boolean().optional(),
+    deviceRegistryHardStale: z.boolean().optional(),
   }),
 ]);
 // Only the edge's inbound decoder discards fields introduced by a newer cloud.

@@ -18,6 +18,7 @@ import {
 } from "./link-peer.ts";
 import {
   LINK_CLOSE,
+  LINK_DEVICE_REGISTRY_HARD_STALE_HEADER,
   LINK_INSTANCE_HEADER,
   LINK_MAX_FRAME_BYTES,
   LINK_REFUSED_CREDENTIAL,
@@ -91,6 +92,7 @@ export type EdgeLinkClientOptions = {
   onServerTime?: (serverTime: Date) => void;
   /** Only a disabled purge is reported; normal heartbeats omit the field. */
   auditRetentionDisabled?: () => boolean;
+  deviceRegistryHardStale?: () => boolean;
 };
 
 export type EdgeLinkClient = {
@@ -157,9 +159,11 @@ export function createEdgeLinkClient(
     // Set by the upgrade response (below) before the socket opens, so before
     // the first hello is read: only a 854 cloud echoes the v2 header.
     let peerEchoesRestoreProof = false;
+    let peerSupportsDeviceRegistryHardStale = false;
     const ws = new WebSocket(options.url, {
       headers: {
         authorization: `Bearer ${options.credential}`,
+        [LINK_DEVICE_REGISTRY_HARD_STALE_HEADER]: "1",
         ...(options.instanceId
           ? { [LINK_INSTANCE_HEADER]: options.instanceId }
           : {}),
@@ -204,6 +208,8 @@ export function createEdgeLinkClient(
     // the socket is open, so a handshake that never completes proves nothing.
     let upgradeServerTime: Date | undefined;
     ws.on("upgrade", (response) => {
+      peerSupportsDeviceRegistryHardStale =
+        response.headers[LINK_DEVICE_REGISTRY_HARD_STALE_HEADER] === "1";
       peerEchoesRestoreProof =
         response.headers[LINK_RESTORE_PROOF_V2_HEADER] === "1";
       const header = response.headers.date;
@@ -240,6 +246,15 @@ export function createEdgeLinkClient(
         } catch {
           // An unavailable maintenance status must not stop sync traffic.
         }
+        let deviceRegistryHardStale = false;
+        if (peerSupportsDeviceRegistryHardStale) {
+          try {
+            deviceRegistryHardStale =
+              options.deviceRegistryHardStale?.() === true;
+          } catch {
+            // An unavailable status must not interrupt the link.
+          }
+        }
         ws.send(
           encodeFrame({
             type: "heartbeat",
@@ -247,6 +262,9 @@ export function createEdgeLinkClient(
             occurredAt: new Date().toISOString(),
             ...(catalogStale.length > 0 ? { catalogStale } : {}),
             ...(auditRetentionDisabled ? { auditRetentionDisabled: true } : {}),
+            ...(deviceRegistryHardStale
+              ? { deviceRegistryHardStale: true }
+              : {}),
           }),
         );
       };

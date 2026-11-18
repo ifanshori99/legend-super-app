@@ -23,6 +23,7 @@ import {
   createCatalogFreshness,
 } from "../edge/catalog-freshness.ts";
 import { decodeFrame, encodeFrame } from "../edge/protocol.ts";
+import { reportCloudDeviceRegistryHardStale } from "../edge/runtime.ts";
 import {
   edgeCatalogStaleAlertId,
   notifyEdgeCatalogStale,
@@ -205,6 +206,31 @@ describe("legend-10nex heartbeat frame", () => {
   });
 });
 
+describe("legend-uvnll device registry heartbeat", () => {
+  const base = {
+    type: "heartbeat",
+    version: "1.0.0",
+    occurredAt: "2026-11-11T04:00:00.000Z",
+  } as const;
+
+  it("accepts the hard-stale flag while remaining compatible with older edges", () => {
+    expect(
+      decodeFrame(JSON.stringify({ ...base, deviceRegistryHardStale: true })),
+    ).toMatchObject({ ...base, deviceRegistryHardStale: true });
+    expect(
+      decodeFrame(JSON.stringify({ ...base, deviceRegistryHardStale: false })),
+    ).toMatchObject({ ...base, deviceRegistryHardStale: false });
+    expect(decodeFrame(JSON.stringify(base))).toEqual(base);
+  });
+
+  it("rejects a non-boolean hard-stale flag", () => {
+    expect(
+      decodeFrame(JSON.stringify({ ...base, deviceRegistryHardStale: "true" })),
+    ).toBeNull();
+  });
+
+});
+
 describe("legend-10nex heartbeat is held back from an older cloud", () => {
   const MIN = 60_000;
   function staleFreshness(reason: string) {
@@ -361,5 +387,23 @@ describe("legend-10nex cloud notifies supervisors and owners once per episode", 
       expect(row.body).toContain("jam mundur atau katalog yang terbukti basi");
       expect(row.body).not.toContain("Penjualan tetap berjalan");
     }
+  });
+});
+
+describe("legend-uvnll cloud device registry alert", () => {
+  it("notifies cloud recipients once when the heartbeat is repeated", async () => {
+    const identity = {
+      scope: { tenantId, outletId, edgeNodeId },
+      context,
+      credentialHash: "test-only",
+    };
+    await reportCloudDeviceRegistryHardStale(identity);
+    await reportCloudDeviceRegistryHardStale(identity);
+    const rows = (await notificationRows()).filter(
+      (row) => row.title === "Data perangkat di edge terlalu lama tidak diperbarui",
+    );
+    expect(rows.map((row) => row.user_id).sort()).toEqual(
+      [supervisorUserId, ownerUserId].sort(),
+    );
   });
 });

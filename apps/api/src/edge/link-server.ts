@@ -44,6 +44,7 @@ import { bearerToken, parseEdgeCredential } from "./credential.ts";
 import { createFixedWindowCounter } from "../lib/fixed-window-counter.ts";
 import {
   LINK_CLOSE,
+  LINK_DEVICE_REGISTRY_HARD_STALE_HEADER,
   LINK_INSTANCE_HEADER,
   LINK_MAX_FRAME_BYTES,
   LINK_PATH,
@@ -196,6 +197,8 @@ export function createEdgeLinkServer<Identity extends EdgeLinkIdentity>(
   // this echo (848) never proves a partial range, so the edge must not ack on
   // a hello without proof.
   wss.on("headers", (headers, request) => {
+    if (request.headers[LINK_DEVICE_REGISTRY_HARD_STALE_HEADER] === "1")
+      headers.push(`${LINK_DEVICE_REGISTRY_HARD_STALE_HEADER}: 1`);
     if (request.headers[LINK_RESTORE_PROOF_V2_HEADER] === "1")
       headers.push(`${LINK_RESTORE_PROOF_V2_HEADER}: 1`);
   });

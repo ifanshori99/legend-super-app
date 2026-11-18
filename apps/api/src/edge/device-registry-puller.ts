@@ -212,6 +212,8 @@ export function createDeviceRegistryPuller(
         const stored = await deps.load();
         watermark = stored.watermark;
         lastSuccessAt = stored.lastSuccessAt;
+        // Report an old checkpoint before a successful first pull replaces it.
+        checkHardStale();
         loaded = true;
       }
       const result = await deps.pull(watermark, signal);

@@ -117,6 +117,7 @@ import {
 import { createPeopleSnapshotPuller } from "./people-snapshot-pull.ts";
 import { CATALOG_GATE_PERSIST_MS, startCatalogGate } from "./catalog-gate.ts";
 import { openCatalogAlarmQueue } from "./catalog-alarm-queue.ts";
+import { openDeviceRegistryAlarmQueue } from "./device-registry-alarm-queue.ts";
 import { startPromoGate } from "./promo-gate-runtime.ts";
 import {
   closeCatalogOverrides,
@@ -290,6 +291,19 @@ async function notifyCatalogStale(
     if (catalogStaleAlerted.size >= 1000) catalogStaleAlerted.clear();
     catalogStaleAlerted.add(key);
   }
+}
+
+/** Replayed by the edge until the cloud has had time to consume the alert. */
+export async function reportCloudDeviceRegistryHardStale(
+  identity: AuthenticatedEdgeNode & EdgeLinkIdentity,
+): Promise<void> {
+  await withTenant(db, identity.context, (tx) =>
+    notifyEdgeDeviceRegistryHardStale(tx, identity.context, {
+      tenantId: identity.context.tenant.tenantId,
+      outletId: outletIdSchema.parse(identity.scope.outletId),
+      edgeNodeId: identity.scope.edgeNodeId,
+    }),
+  );
 }
 
 /** Tables the edge runtime needs; missing ones mean migrations did not run. */
@@ -1025,6 +1039,12 @@ export async function startEdgeRuntime(
     now: () => (queueClock ? queueClock.now() : new Date()),
     onError: reportCatalogAlarmError,
   });
+  const deviceRegistryAlarmQueue = await openDeviceRegistryAlarmQueue({
+    directory: join(env.EDGE_STATE_DIR, "device-registry-alarms"),
+    edgeNodeId: local.scope.edgeNodeId,
+    onError: (error) =>
+      logger.warn(safeError(error), "Device registry alarm queue failed"),
+  });
   let lastServerTime: { serverTime: Date; receivedMono: number } | null = null;
   const applyServerTime = (): void => {
     if (!catalogClock || !lastServerTime) return;
@@ -1110,6 +1130,10 @@ export async function startEdgeRuntime(
       return catalogAlarmQueue.heartbeat(catalogStaleForHeartbeat(snapshot));
     },
     auditRetentionDisabled: () => auditRetentionDisabled,
+    deviceRegistryHardStale: () =>
+      deviceRegistryAlarmQueue.heartbeat(
+        registryPuller?.isHardStale() ?? false,
+      ),
     // A protocol refusal (1008) carries a fixed reason from the link code, no
     // payload; it tells the operator why the link keeps dropping (legend-a9iby:
     // a restored or cloned database). See docs/deployment.md, item 5.
@@ -1211,6 +1235,14 @@ export async function startEdgeRuntime(
           "Edge device registry replica is past its hard limit; new device sessions are refused",
         );
         void reportDeviceRegistryHardStale();
+        void deviceRegistryAlarmQueue
+          .enqueue()
+          .catch((error: unknown) =>
+            logger.warn(
+              safeError(error),
+              "Device registry alarm persist failed",
+            ),
+          );
       } else logger.info("Edge device registry replica is within its limit");
     },
     onError: (error) =>
@@ -1421,10 +1453,14 @@ export async function startEdgeRuntime(
   await catalogAlarmQueue.flush().catch(reportCatalogAlarmError);
   // A failed write stays dirty even if no second alarm is emitted; retry in
   // the background without holding Q62 sales or waiting for a reconnect.
-  const catalogAlarmRetry = setInterval(
-    () => void catalogAlarmQueue.flush().catch(reportCatalogAlarmError),
-    CATALOG_GATE_PERSIST_MS,
-  );
+  const catalogAlarmRetry = setInterval(() => {
+    void catalogAlarmQueue.flush().catch(reportCatalogAlarmError);
+    void deviceRegistryAlarmQueue
+      .flush()
+      .catch((error: unknown) =>
+        logger.warn(safeError(error), "Device registry alarm persist failed"),
+      );
+  }, CATALOG_GATE_PERSIST_MS);
   catalogAlarmRetry.unref();
   const freshness = catalogGate.freshness;
   catalogFreshness = freshness;
@@ -1552,6 +1588,11 @@ export async function startEdgeRuntime(
       promoGate.stop();
       await catalogGate.stop();
       await catalogAlarmQueue.flush().catch(reportCatalogAlarmError);
+      await deviceRegistryAlarmQueue
+        .flush()
+        .catch((error: unknown) =>
+          logger.warn(safeError(error), "Device registry alarm persist failed"),
+        );
       if (registryPuller === puller) registryPuller = null;
       if (catalogFreshness === freshness) catalogFreshness = null;
       state = { ...state, link: disconnected };
@@ -1648,6 +1689,13 @@ export async function registerEdgeLink(
       await notifyCatalogStale(identity, frame.catalogStale).catch((error) =>
         logger.warn(safeError(error), "Edge catalog stale alert failed"),
       );
+      if (frame.deviceRegistryHardStale === true)
+        await reportCloudDeviceRegistryHardStale(identity).catch((error) =>
+          logger.warn(
+            safeError(error),
+            "Edge device registry stale alert failed",
+          ),
+        );
       if (frame.auditRetentionDisabled === true)
         await reportEdgeAuditRetentionStatus(identity, true).catch((error) =>
           logger.warn(

@@ -391,9 +391,9 @@ export type EdgeDeviceRegistryHardStale = {
   outletId: OutletId;
   edgeNodeId: string;
   /** The hard limit in seconds (EDGE_DEVICE_REGISTRY_MAX_STALE_SECONDS). */
-  maxStaleSeconds: number;
+  maxStaleSeconds?: number;
   /** Last successful device-registry pull (ISO), null when there never was one. */
-  lastPulledAt: string | null;
+  lastPulledAt?: string | null;
 };
 
 /**
@@ -441,12 +441,16 @@ export async function notifyEdgeDeviceRegistryHardStale(
       aggregateId: id,
       payload: {
         edgeNodeId: stale.edgeNodeId,
-        maxStaleSeconds: String(stale.maxStaleSeconds),
+        ...(stale.maxStaleSeconds === undefined
+          ? {}
+          : { maxStaleSeconds: String(stale.maxStaleSeconds) }),
         // An empty string (not null) when the replica never pulled.
-        lastPulledAt: stale.lastPulledAt ?? "",
+        ...(stale.lastPulledAt === undefined
+          ? {}
+          : { lastPulledAt: stale.lastPulledAt ?? "" }),
       },
       title: "Data perangkat di edge terlalu lama tidak diperbarui",
-      body: "Server lokal sudah terlalu lama tidak menerima data perangkat dari cloud, jadi perangkat baru tidak dapat masuk. Perangkat yang sedang aktif tetap berjalan. Sambungkan server lokal ke cloud agar data perangkat diperbarui.",
+      body: "Server lokal sempat terlalu lama tidak menerima data perangkat dari cloud, sehingga perangkat baru tidak dapat masuk. Perangkat yang sedang aktif tetap berjalan. Peringatan dapat tertunda; periksa status terbaru dan sambungkan server lokal ke cloud jika diperlukan.",
     },
     now,
   );
