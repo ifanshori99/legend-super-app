@@ -2026,3 +2026,4 @@ Langkah berikut CTO baru:
 - 18:40 CTO: refund ws/1072 306010aba (runbook K1). G93wj kas lapor 0735559dd (waive jurnal koreksi Dr beban gaji/Cr 1102, guard aset tetap + reversal manual, architect xhigh 2 MEDIUM 3 LOW dibetulkan); 5 test lama gagal (map-race 3, shared-scanner 2) sedang dibuktikan vs base 2f319094e oleh G93wj. SO kas/payout ronde 5 (brief 1089) mulai di Codex #4 (G7hhf). SO refund ronde 9 di Codex #2 (G4an6).
 - 18:41 CTO: G7rpc POS/EDC 1085 79aa39610 SIAP batch91 (4 kartu; puzmg ditunda, butuh cabang split so996 landing dulu, dep ke legend-7e8kx). G7rpc di-resolve.
 - 18:42 CTO: Codex 1083 pembersihan 9 kartu mulai di Codex #5; 9 kartu in_progress. SO kas ronde 5 sudah jalan (G7hhf, #4).
+- 18:43 CTO: G93wj buktikan 5 test kas gagal juga di base 2f319094e; map-race diperbaiki di test (0366370e9), shared-scanner sedang dibetulkan (test saja).
