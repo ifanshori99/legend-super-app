@@ -27,6 +27,7 @@ import {
   type PayrollRapel,
   type PayslipLine,
 } from "@starter/shared/hris/payroll";
+import { eqId, inArrayIds } from "../db/branded-ids.ts";
 import { db } from "../db/index.ts";
 import { employees } from "../db/schema/hris.ts";
 import {
@@ -921,7 +922,7 @@ async function lockSources(
         .where(
           and(
             eq(payrollRuns.tenantId, tenant(context)),
-            inArray(payrollRuns.id, ids as never[]),
+            inArrayIds(payrollRuns.id, ids),
           ),
         )
         .orderBy(asc(payrollRuns.id))
@@ -1099,7 +1100,7 @@ export async function loadAllocatedRapelLines(
     .where(
       and(
         eq(payrollRuns.tenantId, tenant(context)),
-        eq(payrollRuns.id, input.payrollRunId as never),
+        eqId(payrollRuns.id, input.payrollRunId),
       ),
     )
     .limit(1)

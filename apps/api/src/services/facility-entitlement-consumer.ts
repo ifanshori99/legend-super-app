@@ -32,6 +32,7 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import type { EventEnvelope } from "@starter/shared/events";
+import { eqId } from "../db/branded-ids.ts";
 import { entitlementRules, facilities } from "../db/schema/facility.ts";
 import { entitlementLedger } from "../db/schema/facility-entitlement.ts";
 import { posOrderRefunds, posOrders } from "../db/schema/pos-order.ts";
@@ -147,7 +148,7 @@ async function ordersOfDay(
     .where(
       and(
         eq(orders.tenantId, tenantId),
-        eq(orders.outletId, input.outletId as never),
+        eqId(orders.outletId, input.outletId),
         eq(orders.customerProfileId, input.customerProfileId),
         eq(orders.businessDate, input.businessDate),
       ),
@@ -254,7 +255,7 @@ async function cancelForRefund(
         eq(entitlementLedger.type, "grant"),
         eq(entitlementLedger.sourceType, "min_spend"),
         eq(entitlementLedger.customerProfileId, customerProfileId),
-        eq(entitlementLedger.outletId, refunded.outletId as never),
+        eqId(entitlementLedger.outletId, refunded.outletId),
         inArray(
           entitlementLedger.sourceRef,
           dayOrders.map((entry) => entry.id),
@@ -341,7 +342,7 @@ async function issueForPaidOrder(
     .where(
       and(
         eq(entitlementRules.tenantId, tenantId),
-        eq(entitlementRules.outletId, paid.outletId as never),
+        eqId(entitlementRules.outletId, paid.outletId),
         eq(entitlementRules.isEnabled, true),
         inArray(entitlementRules.type, ["package", "min_spend"]),
       ),

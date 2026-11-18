@@ -26,6 +26,7 @@ import {
   businessDateSchema,
   idr,
   type ScopedTenantContext,
+  type TenantId,
 } from "@starter/shared/core";
 import type { EventEnvelope } from "@starter/shared/events";
 import { orders, wifiSpendEntries } from "../db/schema/index.ts";
@@ -68,7 +69,7 @@ const orderVoidedSchema = z.object({
   voidedFinalOrder: z.boolean(),
 });
 
-type Scope = { context: ScopedTenantContext; tenantId: string; now: Date };
+type Scope = { context: ScopedTenantContext; tenantId: TenantId; now: Date };
 
 export async function deliverWifiQuotaEvent(
   context: ScopedTenantContext,
@@ -131,9 +132,7 @@ async function spendForPaidOrder(
   const [order] = await tx
     .select({ customerProfileId: orders.customerProfileId })
     .from(orders)
-    .where(
-      and(eq(orders.tenantId, tenantId as never), eq(orders.id, paid.orderId)),
-    )
+    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, paid.orderId)))
     .limit(1);
   if (!order?.customerProfileId) return;
   if (await isTrainingOrder(tx, context.tenant.tenantId, paid.orderId)) return;
@@ -142,7 +141,7 @@ async function spendForPaidOrder(
   const [created] = await tx
     .insert(wifiSpendEntries)
     .values({
-      tenantId: tenantId as never,
+      tenantId,
       outletId: paid.outletId as never,
       customerProfileId: order.customerProfileId,
       businessDate: paid.businessDate,
@@ -188,7 +187,7 @@ async function refundForOrder(
     .from(wifiSpendEntries)
     .where(
       and(
-        eq(wifiSpendEntries.tenantId, tenantId as never),
+        eq(wifiSpendEntries.tenantId, tenantId),
         eq(wifiSpendEntries.kind, "paid"),
         eq(wifiSpendEntries.sourceId, refund.orderId),
       ),
@@ -206,7 +205,7 @@ async function refundForOrder(
       .from(wifiSpendEntries)
       .where(
         and(
-          eq(wifiSpendEntries.tenantId, tenantId as never),
+          eq(wifiSpendEntries.tenantId, tenantId),
           eq(wifiSpendEntries.kind, "refund"),
           eq(wifiSpendEntries.orderId, refund.orderId),
         ),
@@ -217,7 +216,7 @@ async function refundForOrder(
   const [created] = await tx
     .insert(wifiSpendEntries)
     .values({
-      tenantId: tenantId as never,
+      tenantId,
       outletId: paidEntry.outletId,
       customerProfileId: paidEntry.customerProfileId,
       businessDate: refund.businessDate,

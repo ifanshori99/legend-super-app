@@ -134,7 +134,7 @@ async function sweepSource(
                   domainEventOutbox.aggregateType,
                   source.event.entry.aggregateType,
                 ),
-                eq(domainEventOutbox.aggregateId, source.idColumn as never),
+                eq(domainEventOutbox.aggregateId, source.idColumn),
               ),
             ),
         ),

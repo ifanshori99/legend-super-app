@@ -29,6 +29,7 @@ import {
   idr,
   ulidToUuid,
   type ScopedTenantContext,
+  type TenantId,
 } from "@starter/shared/core";
 import { pointsForSpend, type LoyaltyProgram } from "@starter/shared/crm";
 import type { EventEnvelope } from "@starter/shared/events";
@@ -126,7 +127,7 @@ const refundReversalSchema = z.object({
   rejectedAt: time,
 });
 
-type Scope = { context: ScopedTenantContext; tenantId: string; now: Date };
+type Scope = { context: ScopedTenantContext; tenantId: TenantId; now: Date };
 
 export async function deliverLoyaltyEarnEvent(
   context: ScopedTenantContext,
@@ -333,7 +334,7 @@ function programDtoOf(row: EarnProgramRow): LoyaltyProgram {
 
 async function lockedProfile(
   tx: Tx,
-  tenantId: string,
+  tenantId: TenantId,
   profileId: string,
 ): Promise<EarnProfileRow | null> {
   await withProfileLock(tx, tenantId, profileId);
@@ -343,7 +344,7 @@ async function lockedProfile(
     .from(customerProfiles)
     .where(
       and(
-        eq(customerProfiles.tenantId, tenantId as never),
+        eq(customerProfiles.tenantId, tenantId),
         eq(customerProfiles.id, profileId),
       ),
     )
@@ -362,7 +363,7 @@ async function settleRecord(
     .set({ ...patch, updatedAt: scope.now })
     .where(
       and(
-        eq(pointEarnRecords.tenantId, scope.tenantId as never),
+        eq(pointEarnRecords.tenantId, scope.tenantId),
         eq(pointEarnRecords.id, record.id),
       ),
     )
@@ -400,16 +401,14 @@ async function earnForPaidOrder(
   paid: z.infer<typeof orderPaidSchema>,
 ): Promise<void> {
   const { tenantId, context, now } = scope;
-  if (await isTrainingOrder(tx, tenantId as never, paid.orderId)) return;
+  if (await isTrainingOrder(tx, tenantId, paid.orderId)) return;
   const [order] = await tx
     .select({
       customerProfileId: orders.customerProfileId,
       customerAttachedBy: orders.customerAttachedBy,
     })
     .from(orders)
-    .where(
-      and(eq(orders.tenantId, tenantId as never), eq(orders.id, paid.orderId)),
-    )
+    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, paid.orderId)))
     .limit(1);
   if (!order?.customerProfileId) return;
 
@@ -424,7 +423,7 @@ async function earnForPaidOrder(
   const [created] = await tx
     .insert(pointEarnRecords)
     .values({
-      tenantId: tenantId as never,
+      tenantId,
       outletId: paid.outletId as never,
       orderId: paid.orderId,
       channel: paid.channel,
@@ -443,7 +442,7 @@ async function earnForPaidOrder(
   const [programRow] = await tx
     .select()
     .from(loyaltyPrograms)
-    .where(eq(loyaltyPrograms.tenantId, tenantId as never))
+    .where(eq(loyaltyPrograms.tenantId, tenantId))
     .limit(1);
   if (!programRow || !programRow.isActive) {
     await settleRecord(tx, scope, record, {
@@ -519,7 +518,7 @@ async function earnForPaidOrder(
         .from(pointEarnRecords)
         .where(
           and(
-            eq(pointEarnRecords.tenantId, tenantId as never),
+            eq(pointEarnRecords.tenantId, tenantId),
             eq(pointEarnRecords.customerProfileId, profile.id),
             eq(pointEarnRecords.businessDate, paid.businessDate),
           ),
@@ -533,7 +532,7 @@ async function earnForPaidOrder(
         .from(pointLedger)
         .where(
           and(
-            eq(pointLedger.tenantId, tenantId as never),
+            eq(pointLedger.tenantId, tenantId),
             eq(pointLedger.customerProfileId, profile.id),
             eq(pointLedger.type, "earn"),
             eq(pointLedger.sourceType, "table_claim"),
@@ -589,7 +588,7 @@ async function earnForPaidOrder(
   await tx
     .insert(customerVisits)
     .values({
-      tenantId: tenantId as never,
+      tenantId,
       outletId: paid.outletId as never,
       customerProfileId: profile.id,
       orderId: paid.orderId,
@@ -610,7 +609,7 @@ async function earnForPaidOrder(
     })
     .where(
       and(
-        eq(customerProfiles.tenantId, tenantId as never),
+        eq(customerProfiles.tenantId, tenantId),
         eq(customerProfiles.id, profile.id),
       ),
     );
@@ -675,7 +674,7 @@ async function reversibleOfGrant(
  */
 async function rejectedRefundGrantIds(
   tx: Tx,
-  tenantId: string,
+  tenantId: TenantId,
   profileId: string,
   appliedReversalIds: readonly string[],
 ): Promise<string[]> {
@@ -688,7 +687,7 @@ async function rejectedRefundGrantIds(
     .from(pointLedger)
     .where(
       and(
-        eq(pointLedger.tenantId, tenantId as never),
+        eq(pointLedger.tenantId, tenantId),
         eq(pointLedger.customerProfileId, profileId),
         eq(pointLedger.type, "adjust"),
         eq(pointLedger.sourceType, "adjustment"),
@@ -739,9 +738,7 @@ async function reverseTableClaims(
         ELSE ${orders.subtotalIdr} END - ${orders.discountIdr})`,
     })
     .from(orders)
-    .where(
-      and(eq(orders.tenantId, tenantId as never), eq(orders.id, input.orderId)),
-    )
+    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, input.orderId)))
     .limit(1);
   if (!order) return;
   const splits = await tx
@@ -749,7 +746,7 @@ async function reverseTableClaims(
     .from(billSplits)
     .where(
       and(
-        eq(billSplits.tenantId, tenantId as never),
+        eq(billSplits.tenantId, tenantId),
         eq(billSplits.orderId, input.orderId),
       ),
     );
@@ -763,7 +760,7 @@ async function reverseTableClaims(
     .from(pointLedger)
     .where(
       and(
-        eq(pointLedger.tenantId, tenantId as never),
+        eq(pointLedger.tenantId, tenantId),
         eq(pointLedger.type, "earn"),
         eq(pointLedger.sourceType, "table_claim"),
         inArray(pointLedger.sourceId, sourceIds),
@@ -784,7 +781,7 @@ async function reverseTableClaims(
       .from(pointLedger)
       .where(
         and(
-          eq(pointLedger.tenantId, tenantId as never),
+          eq(pointLedger.tenantId, tenantId),
           eq(pointLedger.type, "reverse"),
           eq(pointLedger.sourceType, input.sourceType),
           eq(pointLedger.sourceId, reverseSourceId),
@@ -797,7 +794,7 @@ async function reverseTableClaims(
       .from(loyaltyAnomalies)
       .where(
         and(
-          eq(loyaltyAnomalies.tenantId, tenantId as never),
+          eq(loyaltyAnomalies.tenantId, tenantId),
           eq(loyaltyAnomalies.kind, "refund_after_redeem"),
           eq(loyaltyAnomalies.orderId, input.orderId),
           sql`${loyaltyAnomalies.details}->>'sourceId' = ${reverseSourceId}`,
@@ -812,7 +809,7 @@ async function reverseTableClaims(
       .from(pointLedger)
       .where(
         and(
-          eq(pointLedger.tenantId, tenantId as never),
+          eq(pointLedger.tenantId, tenantId),
           eq(pointLedger.type, "reverse"),
           eq(pointLedger.reversesEntryId, claim.id),
         ),
@@ -903,7 +900,7 @@ async function reverseReferralBonus(
     .from(pointEarnRecords)
     .where(
       and(
-        eq(pointEarnRecords.tenantId, scope.tenantId as never),
+        eq(pointEarnRecords.tenantId, scope.tenantId),
         eq(pointEarnRecords.orderId, input.orderId),
       ),
     )
@@ -941,11 +938,11 @@ async function reverseForOrder(
   input: ReverseInput,
 ): Promise<void> {
   const { tenantId, context, now } = scope;
-  if (await isTrainingOrder(tx, tenantId as never, input.orderId)) return;
+  if (await isTrainingOrder(tx, tenantId, input.orderId)) return;
   // legend-n1mp: a table claim has ledger rows only, no earn record.
   await reverseTableClaims(tx, scope, input);
   const recordWhere = and(
-    eq(pointEarnRecords.tenantId, tenantId as never),
+    eq(pointEarnRecords.tenantId, tenantId),
     eq(pointEarnRecords.orderId, input.orderId),
   );
   const [unlocked] = await tx
@@ -984,7 +981,7 @@ async function reverseForOrder(
     .from(loyaltyAnomalies)
     .where(
       and(
-        eq(loyaltyAnomalies.tenantId, tenantId as never),
+        eq(loyaltyAnomalies.tenantId, tenantId),
         eq(loyaltyAnomalies.kind, "refund_after_redeem"),
         eq(loyaltyAnomalies.orderId, input.orderId),
         sql`${loyaltyAnomalies.details}->>'sourceId' = ${input.sourceId}`,
@@ -1104,13 +1101,13 @@ async function reverseForOrder(
       })
       .where(
         and(
-          eq(customerProfiles.tenantId, tenantId as never),
+          eq(customerProfiles.tenantId, tenantId),
           eq(customerProfiles.id, profile.id),
         ),
       );
   }
   const visitWhere = and(
-    eq(customerVisits.tenantId, tenantId as never),
+    eq(customerVisits.tenantId, tenantId),
     eq(customerVisits.orderId, input.orderId),
   );
   if (removesVisit) {
@@ -1156,7 +1153,7 @@ async function restoreRejectedRefund(
 ): Promise<void> {
   const { tenantId, context, now } = scope;
   const recordWhere = and(
-    eq(pointEarnRecords.tenantId, tenantId as never),
+    eq(pointEarnRecords.tenantId, tenantId),
     eq(pointEarnRecords.orderId, input.orderId),
   );
   const [unlocked] = await tx
@@ -1195,7 +1192,7 @@ async function restoreRejectedRefund(
     .from(domainEventOutbox)
     .where(
       and(
-        eq(domainEventOutbox.tenantId, tenantId as never),
+        eq(domainEventOutbox.tenantId, tenantId),
         eq(domainEventOutbox.aggregateType, "order"),
         sql`${domainEventOutbox.event}->>'name' IN ('order.refunded', 'order.voided')`,
         sql`${domainEventOutbox.event}->'payload'->>'orderId' = ${input.orderId}`,
@@ -1281,7 +1278,7 @@ async function restoreRejectedRefund(
         .from(pointLedger)
         .where(
           and(
-            eq(pointLedger.tenantId, tenantId as never),
+            eq(pointLedger.tenantId, tenantId),
             eq(pointLedger.id, record.earnEntryId),
           ),
         )
@@ -1368,7 +1365,7 @@ async function restoreRejectedRefund(
       })
       .where(
         and(
-          eq(customerProfiles.tenantId, tenantId as never),
+          eq(customerProfiles.tenantId, tenantId),
           eq(customerProfiles.id, profile.id),
         ),
       );
@@ -1380,7 +1377,7 @@ async function restoreRejectedRefund(
     await tx
       .insert(customerVisits)
       .values({
-        tenantId: tenantId as never,
+        tenantId,
         outletId: record.outletId as never,
         customerProfileId: profile.id,
         orderId: input.orderId,
@@ -1395,7 +1392,7 @@ async function restoreRejectedRefund(
       .set({ spendIdr: sql`${customerVisits.spendIdr} + ${restored}` })
       .where(
         and(
-          eq(customerVisits.tenantId, tenantId as never),
+          eq(customerVisits.tenantId, tenantId),
           eq(customerVisits.orderId, input.orderId),
         ),
       );

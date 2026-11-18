@@ -52,6 +52,7 @@ import {
   type LeaveType,
 } from "@starter/shared/hris";
 import type { z } from "@starter/shared/core";
+import { eqId } from "../db/branded-ids.ts";
 import { db } from "../db/index.ts";
 import { employees, hrisIdempotency } from "../db/schema/hris.ts";
 import {
@@ -637,7 +638,7 @@ export async function countLeaveDays(
         lte(holidays.date, input.endDate),
         or(
           sql`${holidays.outletId} IS NULL`,
-          eq(holidays.outletId, input.outletId as never),
+          eqId(holidays.outletId, input.outletId),
         ),
       ),
     );
