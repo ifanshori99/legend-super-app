@@ -375,10 +375,9 @@ afterAll(async () => {
     );
   });
   await asOwner(otherTenant, async (client) => {
-    await client.query(
-      "DELETE FROM sop_document_media WHERE tenant_id = $1",
-      [otherTenant],
-    );
+    await client.query("DELETE FROM sop_document_media WHERE tenant_id = $1", [
+      otherTenant,
+    ]);
     await client.query("DELETE FROM sop_documents WHERE tenant_id = $1", [
       otherTenant,
     ]);

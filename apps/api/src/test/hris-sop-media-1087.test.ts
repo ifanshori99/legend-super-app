@@ -257,6 +257,7 @@ let hr: string; // tenant-wide hr.sop.manage
 let managerA: string; // hr.sop.manage at outlet A
 let hrOther: string; // hr.sop.manage in another tenant
 let stationA: string;
+let otherOutlet: string; // an outlet of the other tenant
 
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
@@ -266,6 +267,28 @@ beforeAll(async () => {
      SELECT $1, $2, 'SOP media tenant', plan, status, deployment_mode, feature_flags, limits, created_by
        FROM tenants WHERE id = $3`,
     [otherTenant, `sop-media-${otherTenant.slice(0, 8)}`, tenantId],
+  );
+  const otherBrand = randomUUID();
+  const otherEntity = randomUUID();
+  otherOutlet = randomUUID();
+  await owner.query(
+    "INSERT INTO brands (id, tenant_id, slug, name) VALUES ($1, $2, 'uji', 'Uji')",
+    [otherBrand, otherTenant],
+  );
+  await owner.query(
+    "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'Entity SOP media', false)",
+    [otherEntity, otherTenant],
+  );
+  await owner.query(
+    `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, business_day_cutoff, opening_hours, status)
+     VALUES ($1, $2, $3, $4, $5, 'Outlet SOP media', 'Jl. Uji', 'Asia/Jakarta', '04:00', '{}', 'active')`,
+    [
+      otherOutlet,
+      otherTenant,
+      otherBrand,
+      otherEntity,
+      `SM-${otherTenant.slice(0, 6)}`.toUpperCase(),
+    ],
   );
   hr = await actor({ type: "tenant" });
   managerA = await actor({ type: "outlet", id: outletA });
@@ -316,6 +339,10 @@ afterAll(async () => {
       "DELETE FROM core_storage_objects WHERE tenant_id = $1",
       [otherTenant],
     );
+    for (const table of ["outlets", "legal_entities", "brands"])
+      await client.query(`DELETE FROM ${table} WHERE tenant_id = $1`, [
+        otherTenant,
+      ]);
   });
   await owner
     .query("DELETE FROM tenants WHERE id = $1", [otherTenant])
@@ -422,7 +449,7 @@ describe("SOP media: new media are linked", () => {
     ]);
     expect(await objectRow(first)).toEqual({
       source_kind: "sop_document",
-      source_id: v1.lineageId,
+      source_id: v1.id,
     });
   });
 
@@ -450,7 +477,7 @@ describe("SOP media: new media are linked", () => {
       { media_id: carried, sort_order: 0, legacy: false },
       { media_id: fresh, sort_order: 1, legacy: false },
     ]);
-    expect((await objectRow(fresh)).source_id).toBe(v1.lineageId);
+    expect((await objectRow(fresh)).source_id).toBe(v1.id);
   });
 
   it("media of another SOP lineage is refused", async () => {
@@ -498,10 +525,12 @@ describe("SOP media: new media are linked", () => {
 
 describe("SOP media: tenant and outlet isolation", () => {
   it("media of another tenant is refused as 422 on create and on a new version", async () => {
+    // Same actor, purpose, source kind and a real outlet, only the tenant
+    // differs, so nothing but tenant isolation can refuse this object.
     const foreign = await stored({
       tenant: otherTenant,
-      ownerUserId: hrOther,
-      outletId: null,
+      ownerUserId: hr,
+      outletId: otherOutlet,
     });
     const created = await failure(
       createSopDocument(
@@ -567,7 +596,7 @@ describe("SOP media: tenant and outlet isolation", () => {
     });
   });
 
-  it("a tenant-wide SOP takes media from any outlet the publisher manages, not an outlet-less object", async () => {
+  it("a tenant-wide SOP takes media stored at any outlet the publisher manages", async () => {
     const atB = await stored({ outletId: outletB, ownerUserId: hr });
     const ok = await createSopDocument(
       tenantScope(),
@@ -575,16 +604,6 @@ describe("SOP media: tenant and outlet isolation", () => {
       createInput({ mediaIds: [atB], title: "Tenant-wide media outlet B" }),
     );
     expect(ok.mediaIds).toEqual([atB]);
-    const noOutlet = await stored({ outletId: null, ownerUserId: hr });
-    const refused = await failure(
-      createSopDocument(
-        tenantScope(),
-        hr,
-        createInput({ mediaIds: [noOutlet], title: "Tanpa outlet" }),
-      ),
-    );
-    expect(refused.status).toBe(422);
-    expect(refused.code).toBe("SOP_MEDIA_NOT_FOUND");
   });
 
   it("an actor whose access to the media's outlet ended cannot attach it", async () => {
