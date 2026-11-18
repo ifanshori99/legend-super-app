@@ -2103,3 +2103,4 @@ Langkah berikut CTO baru:
 - 01:46 CTO: SO 1111 POS/edge (G3jvd) selesai: 0 P0/P1, 1 P2 baseline (ACK void sebelum ingest) -> legend-gdjpu; resolve. Area POS kasir tiket lolos SO.
 - 01:47 CTO: SO 1112 akses (G9n79) 1 P1 + 2 P2, resolve. 1094 DITAHAN dari batch93; brief 1113 ke G9yay.
 - 01:57 CTO: 1095 (G95kw) selesai a8885a91f (3dsih), resolve, SIAP batch94. legend-v6is2 -> cek dulu di G2yc3 apakah createRefund bisa dipanggil di rilis 1 saat saklar refund mati.
+- 01:59 CTO: 1106 lanjutan (G93wj) selesai 5c06f743c (settle net NULL + entity lock, architect 0 P0-P2), resolve. Bead gerbang legacy NULL legend-1tke7. SO kas ronde 7 brief 1115.
