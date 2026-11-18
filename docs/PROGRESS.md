@@ -2133,3 +2133,9 @@ Langkah berikut CTO baru:
 - 05:13 CTO: retro 3 jam dilewati (RAM merah). Bahan retro 51: full run batch92 2j49 + batch93 restart memblok typecheck thread 1j+; heavy guard tsc exit 73.
 - 05:15 CTO: G6lx1 1124 vxuuc selesai 9197a49ba (26/26 web, tsc web 0), resolve. Reviewer sonnet berjalan.
 - 05:20 CTO: G95kw 1127 selesai 0b8b9d017, resolve. 1095 SIAP batch95. byws7+glu4e sesudah landing.
+
+## Serah terima CTO 19 Nov 05:22 (compact 2x)
+- Thread berjalan: G3w2u merge train (batch93 full run ulang, gate batch94; batch95 rencana di docs/merge-queue.md), G93wj kas 1118 (tunggu tsc, lalu architect delta), G2yc3 1126 (fix architect P1-1/P2-1/P3), G4wn2 1123 perf web, G21nj 1122 gerbang edge/MCP (fix docs + gate ir8n8), G3zub 1128 door-check outlet token (legend-wpele, worktree legend-f2a577d8, cabang ws/1128 dari ws/1120).
+- Siap batch95: 1072, 1094+1120, 1095, 1124, kas 1118 (sesudah delta). 1128 landing sesudah 1094+1120. 1126 sesudah 1072. Sesudah batch95: byws7+glu4e. Kas 0691 landing: gate 1tke7 ke mode info.
+- Disk 14 GB (kuning, worktree baru ditolak <15 GB): pakai worktree bersih yang ada; bersihkan worktree sesudah landing batch93/94 (int/batch90 legend-734d81c4 masih tertahan).
+- Q51 berikutnya. Cron dibuat ulang CTO baru (memory cto-crons).
