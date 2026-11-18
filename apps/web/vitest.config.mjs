@@ -4,8 +4,11 @@
 // Run from the repository root:
 //   pnpm --filter @starter/api exec vitest run --root ../web --config ../web/vitest.config.mjs
 import { fileURLToPath } from "node:url";
+import { i18nChunks } from "./vite-i18n-chunks.ts";
 
 export default {
+  // Unsplit: `core` is the whole catalog, so components render all text here.
+  plugins: [i18nChunks({ split: false })],
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),

@@ -11,17 +11,20 @@ z.config(z.locales.id());
 
 export function Providers({
   overrides,
+  chunks,
   children,
 }: {
   /** Tenant text overrides (PRD §7); none until a public source exists. */
   overrides?: MessageOverrides;
+  /** Catalog chunks of the matched areas, as in `data-i18n-chunks`. */
+  chunks?: string;
   children: React.ReactNode;
 }) {
   return (
     <>
       <ThemeBootScript />
       <MotionConfig reducedMotion="user">
-        <I18nProvider overrides={overrides}>
+        <I18nProvider overrides={overrides} chunks={chunks}>
           <Toaster>{children}</Toaster>
         </I18nProvider>
       </MotionConfig>

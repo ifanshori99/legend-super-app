@@ -10,9 +10,10 @@ import {
   useMatch,
   useRouteContext,
   useRouter,
+  useRouterState,
 } from "@tanstack/react-router";
-import { createTranslator, type MessageOverrides } from "@starter/shared/i18n";
-import { useT } from "@/components/i18n";
+import type { MessageOverrides } from "@starter/shared/i18n";
+import { chunksForRouteIds, defaultT, useT } from "@/components/i18n";
 import { Providers } from "@/components/providers";
 import { Button } from "@/components/ui/button";
 import { PushOwnerGuard } from "@/features/ws05-notifications/components/push-owner-guard";
@@ -25,8 +26,9 @@ import { TenantThemeStyle } from "@/lib/theme";
 import type { TenantThemeConfig } from "@starter/shared/theme";
 import globalsCss from "@/styles/globals.css?url";
 
-// Head and the document shell render outside I18nProvider: default catalog.
-const staticT = createTranslator();
+// Head and the document shell render outside I18nProvider: the core catalog
+// (app.*, shell.*) without tenant overrides.
+const staticT = defaultT;
 
 // Browser-only memory of the last resolved tenant theme (see beforeLoad).
 let lastTenantTheme: TenantThemeConfig | null = null;
@@ -129,15 +131,27 @@ function RootDocument({ children }: { children: ReactNode }) {
     shouldThrow: false,
     select: (match) => match.context.textOverrides,
   });
+  // Catalog chunks of the matched areas. components/i18n.tsx loads them before
+  // the client hydrates, so the first client render prints the same text as
+  // the server HTML.
+  const i18nChunks = useRouterState({
+    select: (state) =>
+      chunksForRouteIds(state.matches.map((match) => match.routeId)).join(","),
+  });
   return (
-    <html lang="id" data-tenant={tenantTheme?.id} suppressHydrationWarning>
+    <html
+      lang="id"
+      data-tenant={tenantTheme?.id}
+      data-i18n-chunks={i18nChunks || undefined}
+      suppressHydrationWarning
+    >
       <head>
         <HeadContent />
         {tenantTheme ? <TenantThemeStyle tenant={tenantTheme} /> : null}
       </head>
       <body>
         <HydrationMarker />
-        <Providers overrides={overrides}>
+        <Providers overrides={overrides} chunks={i18nChunks}>
           <a
             href="#main-content"
             className="sr-only z-50 rounded-md bg-foreground p-3 text-background focus:not-sr-only focus:fixed focus:top-4 focus:left-4"

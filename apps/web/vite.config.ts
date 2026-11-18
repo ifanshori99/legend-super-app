@@ -5,6 +5,7 @@ import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import { nitro } from "nitro/vite";
 import viteReact from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { i18nChunks } from "./vite-i18n-chunks.ts";
 
 // Both apps share the repository root's .env.local / .env.
 const envDir = resolve(import.meta.dirname, "../..");
@@ -89,14 +90,32 @@ export default defineConfig(({ command, mode }) => {
       // The demo photo map is swapped at build time (legend-6vki): mock/demo
       // builds get the shared Unsplash map, a normal build an empty stub, so
       // no `/sample/menu` path can enter the production bundle.
-      alias: {
-        "virtual:demo-photo-map": resolve(
-          import.meta.dirname,
-          demo
-            ? "src/lib/mock/demo-photos.ts"
-            : "src/lib/mock/demo-photos-empty.ts",
-        ),
-      },
+      alias: [
+        {
+          find: "virtual:demo-photo-map",
+          replacement: resolve(
+            import.meta.dirname,
+            demo
+              ? "src/lib/mock/demo-photos.ts"
+              : "src/lib/mock/demo-photos-empty.ts",
+          ),
+        },
+        // The web bundle never holds the whole text catalog (legend-nmn9j):
+        // `@starter/shared/i18n` resolves to the catalog-free runtime entry,
+        // and the catalog arrives per route area through virtual:i18n/<chunk>
+        // (vite-i18n-chunks.ts, components/i18n.tsx). Types still come from
+        // index.ts. Both specifiers map to one path so the runtime module is
+        // a single instance. `messagesId` / `MESSAGE_KEYS` do not exist there,
+        // so a web import of them fails the build instead of pulling the
+        // catalog back in.
+        {
+          find: /^@starter\/shared\/i18n(?:\/runtime)?$/,
+          replacement: resolve(
+            import.meta.dirname,
+            "../../packages/shared/src/i18n/runtime.ts",
+          ),
+        },
+      ],
     },
     server: { port, strictPort: true },
     // True only while `vite dev` serves the app. Builds always report false,
@@ -123,6 +142,7 @@ export default defineConfig(({ command, mode }) => {
       },
     },
     plugins: [
+      i18nChunks({ split: true }),
       tailwindcss(),
       demoSampleAssets(demo),
       tanstackStart(),

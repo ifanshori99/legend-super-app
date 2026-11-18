@@ -4,7 +4,7 @@ import {
   Outlet,
   useLocation,
 } from "@tanstack/react-router";
-import { useT } from "@/components/i18n";
+import { useT, withI18nChunks } from "@/components/i18n";
 import { AreaGateScreen } from "@/components/layout/area-gate-screen";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { ThemeScope } from "@/components/theme-scope";
@@ -22,7 +22,8 @@ import { areaHead, runGuard } from "@/lib/areas/route";
 // TEN-08: nothing here prints the platform name; brand text comes from the
 // site payload, and the sign-in screens print their own copy.
 export const Route = createFileRoute("/_public")({
-  beforeLoad: ({ context }) => runGuard(AREAS.public.guard, context.access),
+  beforeLoad: ({ context }) =>
+    withI18nChunks(["public"], runGuard(AREAS.public.guard, context.access)),
   head: () => areaHead("public"),
   component: Layout,
 });
