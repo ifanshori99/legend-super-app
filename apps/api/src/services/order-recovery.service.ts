@@ -78,6 +78,7 @@ import { appendOutbox } from "./core-outbox.ts";
 import type { Tx } from "./menu-internals.ts";
 import { accessSnapshotInTransaction } from "./permission-resolver.ts";
 import { assertLineNotManuallyRefunded } from "./order-issue-manual-refund.ts";
+import { voucherRoomIdr } from "./order-voucher-room.ts";
 import { estimateDeductionCostIdr } from "./recipe-deduction.service.ts";
 import { notifyQrOrderChange } from "./qr-order-realtime-signal.ts";
 import {
@@ -1118,6 +1119,38 @@ async function priceCorrectionApproval(
   return { approvedBy: last.decidedBy };
 }
 
+/**
+ * legend-eajpb: the value a system voucher or swap credit of this issue may
+ * have: `wantedIdr` cut to the room of the order and of the failed line.
+ * Locks the order row first (`assertLineNotManuallyRefunded`, the lock the
+ * cashier refund takes); the callers hold the issue lock already, so the order
+ * is always locked after the issue. No room left: 422, nothing is minted.
+ */
+async function voucherRoomOfLine(
+  tx: Tx,
+  context: ScopedTenantContext,
+  found: IssueContext,
+  wantedIdr: number,
+): Promise<number> {
+  await assertLineNotManuallyRefunded(
+    tx,
+    context.tenant.tenantId,
+    found.issue.orderId,
+    found.issue.orderItemId,
+  );
+  const roomIdr = await voucherRoomIdr(tx, context, {
+    orderId: found.issue.orderId,
+    orderItemId: found.issue.orderItemId,
+  });
+  if (roomIdr <= 0)
+    throw new HttpError(
+      422,
+      "APOLOGY_VOUCHER_NOTHING_DUE",
+      "Pesanan ini sudah tidak punya sisa dana yang bisa dijadikan voucher maaf.",
+    );
+  return Math.min(wantedIdr, roomIdr);
+}
+
 /** A staff swap credit waiting for its `apology_voucher` approval. */
 type SwapPendingApproval = { pendingApprovalRequestId: string };
 
@@ -1178,7 +1211,13 @@ async function swapSettlement(
     };
   }
   let voucherId: string | null = null;
+  let creditIdr = 0;
   if (difference < 0) {
+    // legend-eajpb: the credit never takes the money handed back past what the
+    // guest paid. Callers hold the issue lock; the order lock comes now, then
+    // the room is read under it (issue, then order). Cut to the room; nothing
+    // left is refused. The approval below still names the full difference.
+    creditIdr = await voucherRoomOfLine(tx, context, found, -difference);
     const creditReason =
       `Kredit selisih harga penukaran ${found.line.name}`.slice(0, 500);
     let creditApprovalId: string | null = null;
@@ -1205,7 +1244,7 @@ async function swapSettlement(
     const credit = await mintApologyVoucher(tx, context, {
       outletId: found.issue.outletId,
       issuedBy: found.issue.reportedBy,
-      valueIdr: -difference,
+      valueIdr: creditIdr,
       reason: creditReason,
       orderIssueId: found.issue.id,
       customerProfileId: found.order.customerProfileId,
@@ -1235,10 +1274,17 @@ async function systemVoucherSettlement(
   now: Date,
 ): Promise<Settlement> {
   assertRecoverable(found);
+  // legend-eajpb: worth the line, cut to what the order still has room for.
+  const valueIdr = await voucherRoomOfLine(
+    tx,
+    context,
+    found,
+    found.line.lineTotalIdr,
+  );
   const minted = await mintApologyVoucher(tx, context, {
     outletId: found.issue.outletId,
     issuedBy: found.issue.reportedBy,
-    valueIdr: found.line.lineTotalIdr,
+    valueIdr,
     reason: `Voucher pengganti item gagal ${found.line.name}`.slice(0, 500),
     orderIssueId: found.issue.id,
     customerProfileId: found.order.customerProfileId,
@@ -1444,6 +1490,7 @@ export async function resolveOrderIssue(
             orderIssueId: apologyVouchers.orderIssueId,
             status: vouchers.status,
             validUntil: vouchers.validUntil,
+            valueIdr: vouchers.valueIdr,
           })
           .from(apologyVouchers)
           .innerJoin(
@@ -1489,6 +1536,26 @@ export async function resolveOrderIssue(
             "CONFLICT",
             "Voucher maaf ini sudah dipakai laporan lain.",
           );
+        // legend-eajpb: a voucher issued without a report is not counted in
+        // what the order gave yet; attaching it must fit the room like a new
+        // one (refused, not cut: the voucher already exists). One already
+        // bound to this issue is counted already.
+        if (apology.orderIssueId === null) {
+          // A voucher without a fixed value cannot be checked: refused.
+          const valueIdr = apology.valueIdr ?? Number.POSITIVE_INFINITY;
+          const allowedIdr = await voucherRoomOfLine(
+            tx,
+            context,
+            found,
+            valueIdr,
+          );
+          if (allowedIdr < valueIdr)
+            throw new HttpError(
+              422,
+              "APOLOGY_VOUCHER_OVER_ROOM",
+              `Nilai voucher melebihi sisa dana pesanan ini, maks Rp${new Intl.NumberFormat("id-ID").format(allowedIdr)}.`,
+            );
+        }
         settlement = {
           resolution: "voucher",
           replacementItemId: null,

@@ -1,10 +1,10 @@
 // legend-5g9sn (founder rule Q25, 11 Nov 2026): what an order has already given
 // back to the guest, at order level, read without any lock. Vouchers + POS
 // refunds + live recovery refunds never exceed what the guest paid for the
-// order. Its only caller is the POS refund (`refundPosOrder`), which reads it
-// under its order lock. No issue lock is taken here: the voucher side locks
-// issue then order, so locking an issue from the POS side (order first) would
-// deadlock.
+// order. Callers: the POS refund (`refundPosOrder`) and `voucherRoomIdr`
+// (order-voucher-room.ts, the voucher side); both read it under the order
+// lock. No issue lock is taken here: the voucher side locks issue then order,
+// so locking an issue from the POS side (order first) would deadlock.
 //
 // - Vouchers: every apology voucher of an issue of the order, reached through
 //   `order_issues.voucher_id` or `apology_vouchers.order_issue_id`, each once.
