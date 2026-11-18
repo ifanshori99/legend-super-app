@@ -1,3 +1,10 @@
+## 1095 Void/refund ganda + voucher (engineer Opus, legend-5g9sn + legend-aja6g, cabang ws/1095-void-refund-ganda-voucher dari m1 0b4fe006c, 18 Nov 2026)
+- Sudah 5g9sn: `refundPosOrder` dibatasi ruang = dibayar − refund POS − voucher maaf − refund pemulihan hidup (sumber tunggal `services/order-given.ts`, batas per baris, promo `dueIdr`, DP ikut dibatasi per baris termasuk porsi DP refund sebelumnya). 422 `REFUND_NOTHING_DUE` bila tak ada sisa, 422 `REFUND_OPEN_CHARGE` bila tagihan selisih terbuka, jumlah terpotong diaudit (`recoveryCapCutIdr`). Port manual dari rat9r (cabang basi tidak di-merge).
+- Sudah aja6g: `services/order-refund-lane.ts`. Refund ORD-09 hidup menolak void cloud dan refund kasir (409 `REFUND_ORD09_REFUND_EXISTS`) dan void edge (`void_refused:ord09_refund_exists`); ORD-09 diblok (`money_back_lane_*`) bila order sudah void cloud/edge/void edge parkir/refund kasir; refile ORD-09 baca lane tanpa kunci (pemanggil sudah pegang intent→fund→refund).
+- Kunci: guard dibaca setelah kunci `orders` yang sudah ada; tidak ada kunci baru (architect 3 ronde: tanpa deadlock).
+- Uji: refund-1095-* 5 berkas, 28/50 merah di m1, 2 test DP merah juga di d8785e6f1; 15 berkas terarah 281 lulus + 2 todo.
+- Terbuka: legend-eajpb (voucher maaf dibuat sesudah refund kasir tidak dicek; urutan ini masih bisa bayar lebih), it.todo di voucher-cap.
+
 ## 1005 Payout: tarik klaim return dua orang (engineer, legend-snwnn, cabang ghostex/3bb6104c dari ghostex/92055877 74e142d8b, 17 Nov 2026)
 
 - Sudah: penarikan klaim return terbuka lewat dua orang. Tabel `payroll_payout_return_withdrawals`, grant kind `return_withdraw` (password di tiap langkah), fungsi tepercaya `app.payout_return_withdraw_propose` dan `app.payout_return_withdraw_approve` (0615), kind flag recon `return_withdraw` (0616). Pengaju dan sesi pengaju tidak bisa menyetujui (PAYOUT-94). Setelah approve klaim berstatus `withdrawn`, item kembali ke status sebelum klaim dan boleh diajukan lagi dengan ref baru. Jurnal yang sudah diposting tidak disentuh, tidak ada pembayaran ulang otomatis. Recon menandai penarikan tanpa attestation dua orang yang sah.
