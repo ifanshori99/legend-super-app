@@ -208,7 +208,7 @@ function OperationsFrame({
       {/* Padding lives on the inner box, not the scroller: a sticky footer pins to
           the scroller edge, so padding there left a gap showing content below. */}
       <div className="h-full overflow-y-auto">
-        <div className="min-h-full p-4">{children}</div>
+        <div className="flex min-h-full flex-col p-4">{children}</div>
       </div>
     </OperationsShell>
   );

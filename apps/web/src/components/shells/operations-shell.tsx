@@ -133,7 +133,10 @@ export function OperationsShell({
         className="flex shrink-0 items-center gap-x-4 gap-y-2 border-b-(length:--border-w) bg-shell px-4 max-sm:min-h-14 max-sm:gap-2 max-sm:py-1 sm:min-h-16 sm:flex-wrap sm:py-2"
       >
         <div className="min-w-0 max-sm:flex-1">
-          <p className="type-title max-sm:line-clamp-2 max-sm:leading-5 sm:truncate">
+          <p
+            title={title}
+            className="type-title max-sm:line-clamp-2 max-sm:break-words sm:truncate"
+          >
             {title}
           </p>
           {subtitle && (
