@@ -27,7 +27,12 @@ import {
   reportOrderIssue,
   resolveOrderIssue,
 } from "@starter/shared/qr-order";
-import { getAuth, requireAuth } from "../middleware/auth.ts";
+import {
+  actorOf,
+  requireActingStaffOnSharedDevice,
+  resolveActingStaff,
+} from "../middleware/acting-staff.ts";
+import { requireAuth } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
@@ -44,6 +49,8 @@ const staffGuard = [
   requireAuth,
   requireTrustedOrigin,
   requireTenantContext,
+  resolveActingStaff,
+  requireActingStaffOnSharedDevice,
   requireMenuPermission("order.recovery.handle"),
 ];
 const guestRead = [requireTenantContext];
@@ -59,7 +66,7 @@ orderRecoveryRouter.post(
     res.status(201).json({
       data: await recovery.reportFailedItem(
         getScopedTenantContext(req),
-        userIdSchema.parse(getAuth(req).user.id),
+        userIdSchema.parse(actorOf(req)),
         orderItemId,
         body,
         new Date(),
@@ -78,7 +85,7 @@ orderRecoveryRouter.post(
     res.json({
       data: await recovery.resolveOrderIssue(
         getScopedTenantContext(req),
-        userIdSchema.parse(getAuth(req).user.id),
+        userIdSchema.parse(actorOf(req)),
         orderIssueId,
         body,
         new Date(),
