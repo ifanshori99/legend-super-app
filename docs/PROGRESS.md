@@ -7489,3 +7489,21 @@ Gerbang (aturan percepatan Retro, tanpa fast gate terpisah):
 Kartu ditutup: c1gnr, 7rd7l, g24b5, 4w7rf, iqzet, hs1rc, nqfov, sq1ux, 42gqp, dn7uo, bf8f2, ycb4h, 6i91b, xo4cn, qcioh, 2ln9t, rtrbj. Terbuka: p45yq (replay kembar ganti metode, ada juga di 1029, batch88).
 
 Subagent: 1 test-runner (pemantau log, haiku) di batch87; sesi sejak awal 7. Biaya sesi (session-usage, kumulatif batch85-87): total biaya* 9007k (utama 8480k, subagent 527k), puncak konteks 267k, 2 compact. parallel-report sejak 06:30: 7 spawn, rata-rata 0,01 subagent bersamaan, rentetan terpanjang tanpa subagent 213 langkah. Selama full run batch87, `int/batch88` disiapkan (7 cabang, migrasi 0472-0476) sehingga langsung masuk gerbang.
+
+## Merge train batch88 (18 Nov 2026, `int/batch88` -> `milestone/m1`)
+
+Basis m1 63d467e27 (batch87). Cabang masuk (urut): `1005-payout-tarik-klaim-return` (1005), `987-fasilitas-4-kartu` (987), `985-charge-refund-manual-void` (985), `1031-qrsaleinuseofintent-net-refund` (1031), `1029-followup-dana-parkir-tampil` (1029), `1014-runbook-pensiun-kunci-reseal` (1014), `1012-guard-router-perangkat-bersama` (1012).
+
+Peta migrasi (lama -> baru, `when` 1795000000089 dst): 0615/0616 -> 0472/0473 (1005), 0570 -> 0474 (987), 0565/0566 -> 0475/0476 (985). `db:generate`: "No schema changes"; check-journal ok. Snapshot baru diberi id baru dengan rantai prevId. Kunci `data-import-registry.test.ts` dinamai ulang (0615->0472, 0616->0473, 0570->0474).
+
+Konflik dan penyesuaian (semua tes disesuaikan ke keputusan cabang, tidak dilonggarkan):
+- `order-recovery-charge.routes.ts` (985 x 1012): impor `requireAuth` ditambah; approve dan reject refund manual tetap `requireAuth` polos (sesi perangkat bersama ditolak: aturan uang, ragu = batasi pembayaran); dicatat sebagai pengecualian di `shared-device-router-decisions.test.ts`. Dua router payout baru (`payroll-payout-recon-clearance`, `payroll-payout-return-withdraw`) = backoffice.
+- `packages/shared/src/dashboard/fixtures.ts`: fixture revpash diberi nilai zona (tes DASH-02).
+- Tes mengikuti keputusan 1012/1026: `device-shared-mode.test.ts` (kelola perangkat dari perangkat bersama = 403 ACTING_STAFF_NOT_ALLOWED, status tidak berubah), mock auth notifikasi (`requireAuthAllowSharedDevice`), `order-issue-charge-cash-migration.test.ts` (hapus baris refund manual 985 dulu), e2e `legend-zx8k` (RevPASH kini punya baris zona).
+
+Gerbang (Retro 47: gagal dibetulkan + rerun terarah hijau, tanpa full run kedua):
+- lint, typecheck: hijau. Root kontrak: hijau setelah fixture revpash.
+- Full run 10235 dtk (2 jam 50 menit termasuk antre): 23055 lulus, 7 gagal (6 `device-shared-mode`, 1 migrasi 0230) + 2 berkas gagal impor (mock auth notifikasi). Semua dibetulkan; rerun terarah 4 berkas hijau (36/36).
+- e2e produksi hijau; e2e mock terarah (smoke + 5 spec terkait) 40 lulus; 5 gagal `legend-zx8k` dibetulkan (lihat atas). e2e mock penuh batch89.
+
+Subagent: implementer x4 (fixture revpash, device-shared-mode, migrasi 0230, zx8k), test-runner x2. Biaya sesi (session-usage, kumulatif batch85-88): total biaya* 13293k, puncak konteks 267k, 3 compact.
