@@ -16,17 +16,7 @@
 //   acknowledgement of v1 never counts for v2.
 
 import { randomUUID } from "node:crypto";
-import {
-  and,
-  asc,
-  eq,
-  gt,
-  inArray,
-  isNull,
-  or,
-  sql,
-  type SQL,
-} from "drizzle-orm";
+import { and, asc, eq, gt, inArray, or, sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import {
   createUlid,
@@ -48,11 +38,16 @@ import type { PermissionCode } from "@starter/shared/access";
 import { db } from "../db/index.ts";
 import { coreStorageObjects } from "../db/schema/core-storage.ts";
 import { employees, positions } from "../db/schema/hris.ts";
-import { sopAcknowledgements, sopDocuments } from "../db/schema/hris-sop.ts";
+import {
+  sopAcknowledgements,
+  sopDocumentMedia,
+  sopDocuments,
+} from "../db/schema/hris-sop.ts";
 import { stations } from "../db/schema/menu.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
+import { linkStorageObjectSource } from "./core-storage.ts";
 import {
   HRIS_AUDIT_SAFE_FIELDS,
   cursorPair,
@@ -319,62 +314,137 @@ async function assertPositionExists(
   if (!row) throw notFound("Jabatan");
 }
 
+const mediaNotFound = () =>
+  new HttpError(422, "SOP_MEDIA_NOT_FOUND", "Media SOP tidak ditemukan.");
+
+type BoundMedia = {
+  id: string;
+  /** Outlet the object is stored at (for relinking to the SOP lineage). */
+  outletId: string | null;
+  /** Object predates the `sop_document` source kind (no kind of its own). */
+  legacy: boolean;
+  /** Fresh upload that still has to be linked to the SOP lineage. */
+  needsLink: boolean;
+};
+
+/**
+ * Media of a SOP version (legend-m7yeb). Every id must be a `document` object
+ * of this tenant and be one of:
+ * - carried: already on the previous version (legacy object with no source
+ *   kind, or a `sop_document` object of this lineage), or a `sop_document`
+ *   object of this lineage dropped earlier; valid for any publisher who can
+ *   manage the SOP;
+ * - new: a `sop_document` upload of the actor, not attached to anything, stored
+ *   at the SOP's outlet (a tenant-wide SOP: at an outlet where the actor still
+ *   holds the manage code).
+ * Any other object (an HR file, a receipt, a colleague's upload, another SOP's
+ * media) is the same 422 so ids are not probeable. `lineageId` is null for a
+ * brand-new SOP (nothing can be carried).
+ */
 async function assertMediaExist(
   tx: Tx,
   context: ScopedTenantContext,
   mediaIds: readonly string[],
-  actorUserId: string,
+  access: HrisAccess,
   scopeOutletId: string | null,
+  lineageId: string | null,
   /** Media the previous version already carried (publishing a new version). */
   carriedMediaIds: readonly string[] = [],
-): Promise<void> {
+): Promise<BoundMedia[]> {
   const wanted = [...new Set(mediaIds.map((id) => id.toLowerCase()))];
-  if (wanted.length === 0) return;
+  if (wanted.length === 0) return [];
   const carried = new Set(carriedMediaIds.map((id) => id.toLowerCase()));
-  const kept = wanted.filter((id) => carried.has(id));
-  const fresh = wanted.filter((id) => !carried.has(id));
-  // Strict allowlist: only unclassified document objects. HR files carry a
-  // source kind; brand_logo, receipt and selfie purposes are refused.
-  const allowlisted = and(
-    eq(coreStorageObjects.purpose, "document"),
-    isNull(coreStorageObjects.sourceKind),
-  );
-  const candidates = [
-    // Media the previous version already had stays valid for any publisher.
-    kept.length === 0
-      ? undefined
-      : and(inArray(coreStorageObjects.id, kept), allowlisted),
-    // New media must be the actor's own, unattached, and (for an outlet SOP)
-    // of the SOP's outlet; a tenant-wide SOP has no outlet condition.
-    fresh.length === 0
-      ? undefined
-      : and(
-          inArray(coreStorageObjects.id, fresh),
-          allowlisted,
-          eq(coreStorageObjects.ownerUserId, actorUserId),
-          isNull(coreStorageObjects.sourceId),
-          scopeOutletId === null
-            ? undefined
-            : eq(coreStorageObjects.outletId, scopeOutletId),
-        ),
-  ].filter((condition) => condition !== undefined);
   const rows = await tx
-    .select({ id: coreStorageObjects.id })
+    .select({
+      id: coreStorageObjects.id,
+      outletId: coreStorageObjects.outletId,
+      purpose: coreStorageObjects.purpose,
+      sourceKind: coreStorageObjects.sourceKind,
+      sourceId: coreStorageObjects.sourceId,
+      ownerUserId: coreStorageObjects.ownerUserId,
+      uploadedBy: coreStorageObjects.uploadedBy,
+    })
     .from(coreStorageObjects)
     .where(
       and(
         eq(coreStorageObjects.tenantId, context.tenant.tenantId),
-        or(...candidates),
+        inArray(coreStorageObjects.id, wanted),
       ),
     )
     .orderBy(coreStorageObjects.id)
     .for("update");
-  if (rows.length !== wanted.length)
-    throw new HttpError(
-      422,
-      "SOP_MEDIA_NOT_FOUND",
-      "Media SOP tidak ditemukan.",
-    );
+  if (rows.length !== wanted.length) throw mediaNotFound();
+  return rows.map((row) => {
+    // HR files carry another source kind; brand_logo, receipt and selfie
+    // purposes are refused.
+    if (row.purpose !== "document") throw mediaNotFound();
+    const legacy = row.sourceKind === null;
+    if (legacy) {
+      // An unclassified object is only valid when the previous version had it.
+      if (!carried.has(row.id.toLowerCase()) || row.sourceId !== null)
+        throw mediaNotFound();
+      return { id: row.id, outletId: row.outletId, legacy, needsLink: false };
+    }
+    if (row.sourceKind !== "sop_document") throw mediaNotFound();
+    if (row.sourceId !== null) {
+      // Already attached: only to this same SOP lineage.
+      if (lineageId === null || row.sourceId.toLowerCase() !== lineageId)
+        throw mediaNotFound();
+      return { id: row.id, outletId: row.outletId, legacy, needsLink: false };
+    }
+    // New media: the actor's own upload, at an outlet they still manage.
+    const outletMatches =
+      scopeOutletId === null
+        ? row.outletId !== null &&
+          access.snapshot.allows(SOP_MANAGE_CODE, {
+            type: "outlet",
+            id: row.outletId,
+          })
+        : row.outletId !== null &&
+          row.outletId.toLowerCase() === scopeOutletId.toLowerCase();
+    if (
+      row.ownerUserId !== access.actorUserId ||
+      row.uploadedBy !== access.actorUserId ||
+      !outletMatches
+    )
+      throw mediaNotFound();
+    return { id: row.id, outletId: row.outletId, legacy, needsLink: true };
+  });
+}
+
+/** Binds the media to the version (link table) and, for a fresh upload, to the
+ * SOP lineage (`core_storage_objects.source_id`), in the publisher's transaction. */
+async function bindMedia(
+  tx: Tx,
+  context: ScopedTenantContext,
+  actorUserId: string,
+  row: DocumentRow,
+  mediaIds: readonly string[],
+  bound: readonly BoundMedia[],
+): Promise<void> {
+  if (mediaIds.length === 0) return;
+  const byId = new Map(bound.map((media) => [media.id.toLowerCase(), media]));
+  for (const media of bound) {
+    if (!media.needsLink || media.outletId === null) continue;
+    await linkStorageObjectSource(tx, {
+      tenantId: context.tenant.tenantId,
+      objectId: media.id,
+      sourceKind: "sop_document",
+      sourceId: row.lineageId,
+      actorUserId,
+      outletId: media.outletId,
+    });
+  }
+  const ordered = [...new Set(mediaIds.map((id) => id.toLowerCase()))];
+  await tx.insert(sopDocumentMedia).values(
+    ordered.map((id, index) => ({
+      tenantId: context.tenant.tenantId,
+      sopDocumentId: row.id,
+      mediaId: id,
+      sortOrder: index,
+      legacy: byId.get(id)?.legacy ?? false,
+    })),
+  );
 }
 
 async function auditPublished(
@@ -472,14 +542,15 @@ export async function createSopDocument(
       input.stationId,
     );
     await assertPositionExists(tx, context, input.positionId);
-    await assertMediaExist(
+    const id = randomUUID();
+    const bound = await assertMediaExist(
       tx,
       context,
       input.mediaIds,
-      access.actorUserId,
+      access,
       outletId,
+      null,
     );
-    const id = randomUUID();
     const [row] = await tx
       .insert(sopDocuments)
       .values({
@@ -500,6 +571,14 @@ export async function createSopDocument(
       })
       .returning();
     if (!row) throw new Error("SOP document insert returned no row");
+    await bindMedia(
+      tx,
+      context,
+      access.actorUserId,
+      row,
+      input.mediaIds,
+      bound,
+    );
     await auditPublished(tx, context, access.actorUserId, now, row, outletId);
     return toDocument(row);
   });
@@ -542,12 +621,13 @@ export async function publishSopVersion(
         "SOP_EFFECTIVE_DATE_INVALID",
         "Tanggal berlaku tidak boleh lebih awal dari versi sebelumnya.",
       );
-    await assertMediaExist(
+    const bound = await assertMediaExist(
       tx,
       context,
       input.mediaIds,
-      access.actorUserId,
+      access,
       outletId,
+      previous.lineageId.toLowerCase(),
       previous.mediaIds,
     );
     const [row] = await tx
@@ -574,6 +654,14 @@ export async function publishSopVersion(
         throw error;
       });
     if (!row) throw new Error("SOP version insert returned no row");
+    await bindMedia(
+      tx,
+      context,
+      access.actorUserId,
+      row,
+      input.mediaIds,
+      bound,
+    );
     await auditPublished(tx, context, access.actorUserId, now, row, outletId);
     return toDocument(row);
   });

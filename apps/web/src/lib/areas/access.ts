@@ -57,6 +57,13 @@ export type AreaAccess = {
    * PATCH /employees/:id/manager decides again and answers 403.
    */
   readonly canChangeEmployeeManager?: boolean;
+  /**
+   * The account may rename, retype or delete a kitchen station (holds
+   * `menu.item.manage` at tenant or outlet scope, not only at a station), from
+   * GET /api/me/access. Presentation only: PATCH/DELETE /menu/stations/:id
+   * decide again and answer 403.
+   */
+  readonly canManageStationConfig?: boolean;
 };
 
 export const ANONYMOUS_ACCESS: AreaAccess = Object.freeze({
@@ -98,6 +105,7 @@ export function accessFromView(view: MyAccessView): AreaAccess {
     outlets: view.outlets,
     supportSession: view.supportSession,
     canChangeEmployeeManager: view.canChangeEmployeeManager,
+    canManageStationConfig: view.canManageStationConfig,
   };
 }
 
@@ -190,6 +198,18 @@ function mockCanChangeEmployeeManager(role: RoleTemplateKey): boolean {
   );
 }
 
+/**
+ * Mock of the server's `canManageStationConfig`: the template holds
+ * menu.item.manage and may be assigned above station scope.
+ */
+function mockCanManageStationConfig(role: RoleTemplateKey): boolean {
+  const template = roleTemplate(role);
+  return (
+    template.permissions.includes("menu.item.manage") &&
+    template.allowedScopeTypes.some((scope) => scope !== "station")
+  );
+}
+
 export function accessForMockRole(role: MockRole): AreaAccess {
   if (role === "none") return ANONYMOUS_ACCESS;
   if (role === "all")
@@ -202,6 +222,7 @@ export function accessForMockRole(role: MockRole): AreaAccess {
       stations: MOCK_STATIONS,
       outlets: MOCK_OUTLETS,
       canChangeEmployeeManager: true,
+      canManageStationConfig: true,
     };
   const template = roleTemplate(role);
   return {
@@ -213,5 +234,6 @@ export function accessForMockRole(role: MockRole): AreaAccess {
     stations: mockStationsFor(role),
     outlets: MOCK_OUTLETS,
     canChangeEmployeeManager: mockCanChangeEmployeeManager(role),
+    canManageStationConfig: mockCanManageStationConfig(role),
   };
 }

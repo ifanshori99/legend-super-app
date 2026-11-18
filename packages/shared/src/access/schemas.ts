@@ -184,6 +184,17 @@ export const myAccessViewSchema = z.strictObject({
    * Defaults to false so an older server's view still parses.
    */
   canChangeEmployeeManager: z.boolean().default(false),
+  /**
+   * True when the caller holds `menu.item.manage` at tenant scope or at (or
+   * through a brand over) some outlet, i.e. may rename, retype or delete a
+   * kitchen station (PATCH name/type and DELETE /api/menu/stations/:id need
+   * the outlet permission, legend-cot3). A grant held only at station scope
+   * keeps target time and printer but gets false, so the web hides the name,
+   * type and delete controls. Presentation only: the API checks again and
+   * answers 403 PERMISSION_DENIED. Defaults to false so an older server's view
+   * still parses (fail closed).
+   */
+  canManageStationConfig: z.boolean().default(false),
 });
 export type MyAccessView = z.infer<typeof myAccessViewSchema>;
 

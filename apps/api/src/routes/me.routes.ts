@@ -31,6 +31,7 @@ import {
   setActiveOutlet,
 } from "../services/me-active-outlet.service";
 import { listMyOutlets } from "../services/me-outlets.service";
+import { MENU_ITEM_PERMISSION } from "../services/menu-internals";
 
 export const meRouter = Router();
 
@@ -80,6 +81,22 @@ async function accessRead(req: Request, res: Response) {
           getTenantContext(req),
           getAuth(req).user.id,
         );
+  // Station rename/retype/delete hint (legend-huz8): PATCH name/type and
+  // DELETE /menu/stations/:id need `menu.item.manage` on the station's outlet
+  // (legend-cot3), so a grant held only at station scope never qualifies. True
+  // when the permission holds at tenant scope or at some assigned outlet
+  // (a brand grant reaches its outlets). Presentation only: the API decides
+  // again. A read-only support session is refused writes, so false there.
+  const canManageStationConfig =
+    support?.accessMode === "read_only"
+      ? false
+      : snapshot.allows(MENU_ITEM_PERMISSION, { type: "tenant" }) ||
+        outlets.some((outlet) =>
+          snapshot.allows(MENU_ITEM_PERMISSION, {
+            type: "outlet",
+            id: outlet.id,
+          }),
+        );
   res.json({
     data: myAccessViewSchema.parse({
       permissions: snapshot.permissions,
@@ -97,6 +114,7 @@ async function accessRead(req: Request, res: Response) {
         ? { accessMode: support.accessMode, expiresAt: support.expiresAt }
         : null,
       canChangeEmployeeManager,
+      canManageStationConfig,
     }),
   });
 }

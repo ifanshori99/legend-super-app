@@ -52,6 +52,7 @@ import { recordAudit } from "./core-audit.ts";
 import {
   HRIS_AUDIT_SAFE_FIELDS,
   HRIS_MANAGE_CODE,
+  assertCursorKeysNulFree,
   cursorPair,
   forbidden,
   hrisAuditEntry,
@@ -244,6 +245,7 @@ function taskCursor(cursor: string): [string, number, string] {
     typeof id !== "string"
   )
     throw new HttpError(422, "VALIDATION_ERROR", "Check the cursor.");
+  assertCursorKeysNulFree([kind, id]);
   return [kind, Number(sortOrder), id];
 }
 

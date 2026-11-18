@@ -24,12 +24,22 @@ export function useMenuAccess(): AreaAccess {
  */
 export function useMenuWrites(): {
   readonly canManageItems: boolean;
+  /**
+   * Rename, retype, create and delete stations: needs menu.item.manage at
+   * tenant or outlet scope (GET /api/me/access `canManageStationConfig`), not
+   * a grant held only at one station, which keeps target time and printer.
+   */
+  readonly canManageStationConfig: boolean;
   readonly canManagePrices: boolean;
   readonly canToggleAvailability: boolean;
 } {
   const access = useMenuAccess();
   return {
     canManageItems: holdsAny(access, ["menu.item.manage"]),
+    // Fail closed: an access object without the flag keeps the config hidden.
+    canManageStationConfig:
+      holdsAny(access, ["menu.item.manage"]) &&
+      access.canManageStationConfig === true,
     canManagePrices: holdsAny(access, ["menu.price.manage"]),
     canToggleAvailability: holdsAny(access, ["menu.availability.toggle"]),
   };

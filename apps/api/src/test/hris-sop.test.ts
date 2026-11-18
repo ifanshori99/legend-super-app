@@ -201,8 +201,8 @@ async function storageObject(outletId: string): Promise<string> {
   createdStorage.push(id);
   await asOwner(tenantId, (client) =>
     client.query(
-      `INSERT INTO core_storage_objects (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes, owner_user_id)
-       VALUES ($1, $2, $3, 'document', $4, 'image/png', 1024, $5)`,
+      `INSERT INTO core_storage_objects (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes, owner_user_id, uploaded_by, source_kind)
+       VALUES ($1, $2, $3, 'document', $4, 'image/png', 1024, $5, $5, 'sop_document')`,
       [tenantId, outletId, id, `private/${tenantId}/${id}.png`, hr],
     ),
   );
@@ -216,6 +216,8 @@ type StoredObject = {
   tenant?: string;
   /** Defaults to the tenant-wide HR actor; null = no owner. */
   ownerUserId?: string | null;
+  /** Defaults to the owner (the upload path sets both to the uploader). */
+  uploadedBy?: string | null;
   sourceId?: string | null;
 };
 
@@ -223,12 +225,13 @@ type StoredObject = {
 async function storedObject(input: StoredObject): Promise<string> {
   const id = randomUUID();
   const tenant = input.tenant ?? tenantId;
+  const ownerUserId = input.ownerUserId === undefined ? hr : input.ownerUserId;
   if (tenant === tenantId) createdStorage.push(id);
   await asOwner(tenant, (client) =>
     client.query(
       `INSERT INTO core_storage_objects
-         (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes, source_kind, owner_user_id, source_id)
-       VALUES ($1, $2, $3, $4, $5, 'image/webp', 1024, $6, $7, $8)`,
+         (tenant_id, outlet_id, id, purpose, object_key, content_type, size_bytes, source_kind, owner_user_id, source_id, uploaded_by)
+       VALUES ($1, $2, $3, $4, $5, 'image/webp', 1024, $6, $7, $8, $9)`,
       [
         tenant,
         input.outletId === undefined ? outletA : input.outletId,
@@ -236,8 +239,9 @@ async function storedObject(input: StoredObject): Promise<string> {
         input.purpose,
         `private/${tenant}/${id}.webp`,
         input.sourceKind ?? null,
-        input.ownerUserId === undefined ? hr : input.ownerUserId,
+        ownerUserId,
         input.sourceId ?? null,
+        input.uploadedBy === undefined ? ownerUserId : input.uploadedBy,
       ],
     ),
   );
@@ -337,6 +341,11 @@ afterAll(async () => {
       [tenantId, createdEmployees],
     );
     await client.query(
+      `DELETE FROM sop_document_media WHERE tenant_id = $1
+         AND sop_document_id IN (SELECT id FROM sop_documents WHERE tenant_id = $1 AND published_by = ANY($2))`,
+      [tenantId, createdUsers],
+    );
+    await client.query(
       "DELETE FROM sop_documents WHERE tenant_id = $1 AND published_by = ANY($2)",
       [tenantId, createdUsers],
     );
@@ -366,6 +375,9 @@ afterAll(async () => {
     );
   });
   await asOwner(otherTenant, async (client) => {
+    await client.query("DELETE FROM sop_document_media WHERE tenant_id = $1", [
+      otherTenant,
+    ]);
     await client.query("DELETE FROM sop_documents WHERE tenant_id = $1", [
       otherTenant,
     ]);
@@ -522,14 +534,15 @@ describe("SOP versions", () => {
   });
 });
 
-// legend-aki7 + legend-ec8t2 (akses): an SOP attachment must be an unclassified
-// document object of this tenant (purpose 'document', no source kind). Other
+// legend-aki7 + legend-ec8t2 + legend-m7yeb (akses): NEW SOP media must be a
+// `sop_document` object of this tenant (purpose 'document', source kind
+// 'sop_document', the actor's own unattached upload). Other
 // purposes (brand_logo, receipt, selfie) and HR files that already belong to a
 // record (employee_document, employment_contract, leave_request) are refused
 // with the same SOP_MEDIA_NOT_FOUND 422 as a missing id, so the answer does not
 // reveal why. Assumption: the "update" path is publishSopVersion (SOP versions
 // are immutable; there is no in-place edit).
-describe("SOP attachments are limited to unclassified documents", () => {
+describe("SOP attachments are limited to sop_document uploads", () => {
   const refused: Array<[string, StoredObject]> = [
     [
       "a tenant brand logo",
@@ -600,7 +613,10 @@ describe("SOP attachments are limited to unclassified documents", () => {
   }
 
   it("one bad attachment among good ones refuses the whole SOP", async () => {
-    const good = await storedObject({ purpose: "document" });
+    const good = await storedObject({
+      purpose: "document",
+      sourceKind: "sop_document",
+    });
     const bad = await storedObject({ purpose: "receipt" });
     const result = await failure(
       createSopDocument(
@@ -613,9 +629,15 @@ describe("SOP attachments are limited to unclassified documents", () => {
     expect(result.code).toBe("SOP_MEDIA_NOT_FOUND");
   });
 
-  it("an unclassified document object (no source kind) is still accepted on create and on a new version", async () => {
-    const first = await storedObject({ purpose: "document" });
-    const second = await storedObject({ purpose: "document" });
+  it("a sop_document upload is accepted on create and on a new version", async () => {
+    const first = await storedObject({
+      purpose: "document",
+      sourceKind: "sop_document",
+    });
+    const second = await storedObject({
+      purpose: "document",
+      sourceKind: "sop_document",
+    });
     const v1 = await createSopDocument(
       tenantScope(),
       hr,
@@ -657,6 +679,7 @@ describe("SOP attachments are limited to unclassified documents", () => {
   it("a document object owned by another user is refused on create and on a new version", async () => {
     const theirs = await storedObject({
       purpose: "document",
+      sourceKind: "sop_document",
       ownerUserId: stranger,
     });
     const created = await failure(
@@ -688,6 +711,7 @@ describe("SOP attachments are limited to unclassified documents", () => {
   it("a document object without an owner is refused", async () => {
     const orphan = await storedObject({
       purpose: "document",
+      sourceKind: "sop_document",
       ownerUserId: null,
     });
     const result = await failure(
@@ -695,6 +719,36 @@ describe("SOP attachments are limited to unclassified documents", () => {
         tenantScope(),
         hr,
         createInput({ mediaIds: [orphan], title: "Tanpa pemilik" }),
+      ),
+    );
+    expect(result.status).toBe(422);
+    expect(result.code).toBe("SOP_MEDIA_NOT_FOUND");
+  });
+
+  it("an unclassified document object (legacy null source kind) is refused as new media", async () => {
+    const legacy = await storedObject({ purpose: "document" });
+    const result = await failure(
+      createSopDocument(
+        tenantScope(),
+        hr,
+        createInput({ mediaIds: [legacy], title: "Media lama baru" }),
+      ),
+    );
+    expect(result.status).toBe(422);
+    expect(result.code).toBe("SOP_MEDIA_NOT_FOUND");
+  });
+
+  it("a sop_document object attached to another SOP lineage is refused", async () => {
+    const attached = await storedObject({
+      purpose: "document",
+      sourceKind: "sop_document",
+      sourceId: randomUUID(),
+    });
+    const result = await failure(
+      createSopDocument(
+        tenantScope(),
+        hr,
+        createInput({ mediaIds: [attached], title: "Lineage lain" }),
       ),
     );
     expect(result.status).toBe(422);
@@ -721,6 +775,7 @@ describe("SOP attachments are limited to unclassified documents", () => {
   it("an outlet SOP refuses a document object of another outlet but takes its own outlet's", async () => {
     const otherOutlet = await storedObject({
       purpose: "document",
+      sourceKind: "sop_document",
       outletId: outletB,
       ownerUserId: managerA,
     });
@@ -739,6 +794,7 @@ describe("SOP attachments are limited to unclassified documents", () => {
     expect(refused.code).toBe("SOP_MEDIA_NOT_FOUND");
     const own = await storedObject({
       purpose: "document",
+      sourceKind: "sop_document",
       outletId: outletA,
       ownerUserId: managerA,
     });
@@ -754,6 +810,7 @@ describe("SOP attachments are limited to unclassified documents", () => {
     expect(ok.mediaIds).toEqual([own]);
     const otherForVersion = await storedObject({
       purpose: "document",
+      sourceKind: "sop_document",
       outletId: outletB,
       ownerUserId: managerA,
     });
@@ -774,6 +831,7 @@ describe("SOP attachments are limited to unclassified documents", () => {
   it("another manager publishing v2 keeps v1's media uploaded by someone else, but cannot add new media owned by the first manager", async () => {
     const carried = await storedObject({
       purpose: "document",
+      sourceKind: "sop_document",
       outletId: outletA,
       ownerUserId: managerA,
     });
@@ -801,6 +859,7 @@ describe("SOP attachments are limited to unclassified documents", () => {
 
     const freshOfFirst = await storedObject({
       purpose: "document",
+      sourceKind: "sop_document",
       outletId: outletA,
       ownerUserId: managerA,
     });

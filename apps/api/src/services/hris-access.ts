@@ -471,6 +471,12 @@ export function uniqueViolation(
   return uniqueViolation(candidate.cause, depth + 1);
 }
 
+/** PostgreSQL text cannot hold NUL; a cursor key with one is a 422, not a 500. */
+export function assertCursorKeysNulFree(keys: readonly string[]): void {
+  if (keys.some((key) => key.includes("\u0000")))
+    throw new HttpError(422, "VALIDATION_ERROR", "Check the cursor.");
+}
+
 /** Decodes a two-key cursor `[sortKey, id]`; 422 on anything else. */
 export function cursorPair(cursor: string): [string, string] {
   let keys;
@@ -482,9 +488,7 @@ export function cursorPair(cursor: string): [string, string] {
   const [first, second] = keys;
   if (typeof first !== "string" || typeof second !== "string")
     throw new HttpError(422, "VALIDATION_ERROR", "Check the cursor.");
-  // PostgreSQL text cannot hold NUL; reject here so it is a 422, not a 500.
-  if (first.includes("\u0000") || second.includes("\u0000"))
-    throw new HttpError(422, "VALIDATION_ERROR", "Check the cursor.");
+  assertCursorKeysNulFree([first, second]);
   return [first, second];
 }
 

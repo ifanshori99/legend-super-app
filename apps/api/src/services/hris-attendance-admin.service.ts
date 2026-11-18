@@ -1073,7 +1073,11 @@ async function assertDutyMealSubjects(
   body: RecordDutyMealBody,
 ): Promise<void> {
   const [employee] = await tx
-    .select({ id: employees.id, status: employees.status })
+    .select({
+      id: employees.id,
+      status: employees.status,
+      homeOutletId: employees.homeOutletId,
+    })
     .from(employees)
     .where(
       and(eq(employees.tenantId, tenantId), eq(employees.id, body.employeeId)),
@@ -1083,6 +1087,31 @@ async function assertDutyMealSubjects(
   // Only an active employee eats on duty: an inactive or terminated one
   // answers like a missing row.
   if (employee.status !== "active") throw notFound("Karyawan");
+  // legend-5bx8v: the employee must be on duty at the recorded outlet. "On
+  // duty" is the strictest data we hold: the home outlet placement, or a
+  // published or swapped shift at that outlet on the meal's business date. Outlet
+  // reach of the actor alone never makes an employee of another outlet eat
+  // on this outlet's account.
+  if (lower(employee.homeOutletId) !== lower(body.outletId)) {
+    const [dutyShift] = await tx
+      .select({ id: shiftAssignments.id })
+      .from(shiftAssignments)
+      .where(
+        and(
+          eq(shiftAssignments.tenantId, tenantId),
+          eq(shiftAssignments.employeeId, body.employeeId),
+          eq(shiftAssignments.outletId, body.outletId),
+          eq(shiftAssignments.businessDate, body.businessDate),
+          inArray(shiftAssignments.status, ["published", "swapped"]),
+        ),
+      )
+      .limit(1);
+    if (!dutyShift)
+      throw validation(
+        "Karyawan tidak bertugas di outlet ini pada tanggal makan dinas.",
+        "ATTENDANCE_DUTY_MEAL_EMPLOYEE_NOT_ON_DUTY",
+      );
+  }
   if (body.shiftAssignmentId === null) return;
   const [shift] = await tx
     .select()
@@ -1096,7 +1125,7 @@ async function assertDutyMealSubjects(
     .limit(1);
   if (
     !shift ||
-    shift.status === "cancelled" ||
+    (shift.status !== "published" && shift.status !== "swapped") ||
     lower(shift.employeeId) !== lower(body.employeeId) ||
     lower(shift.outletId) !== lower(body.outletId) ||
     shift.businessDate !== body.businessDate
