@@ -1130,6 +1130,53 @@ tidak mematikan RLS atau memberikan hak `BYPASSRLS` kepada login biasa.
    lalu buka kembali permintaan mulai langganan. Jika migrasi menolak duplikat
    baru, tetap tahan rilis dan ulangi pemeriksaan.
 
+### Gerbang rilis: akun ganda role kas (legend 1118)
+
+Sebelum rilis yang membawa validasi `CASH_ACCOUNT_SHARED`, jalankan query
+read-only berikut pada database target memakai login maintenance/migrator yang
+melihat **semua tenant** (superuser atau `BYPASSRLS`). Login aplikasi dengan RLS
+dapat menyembunyikan baris dan tidak boleh dipakai untuk bukti gerbang.
+
+```sh
+PGOPTIONS='-c default_transaction_read_only=on -c row_security=off' \
+  psql "$MIGRATION_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+  -f scripts/preflight/1118-shared-cash-mapping.sql
+```
+
+File itu berisi dua statement read-only; keduanya wajib nol baris (atau
+dijelaskan finance).
+
+**Statement 1: akun ganda.** Satu baris per akun yang dipetakan ke role kas
+(`cash_on_hand`, `petty_cash`, `bank`) sekaligus ke role lain, misalnya
+`employee_receivable` yang diarahkan ke akun kas kecil 1102. Mapping seperti itu
+membuat kasbon tunai menjurnal Dr dan Cr pada akun yang sama, sehingga cadangan
+kas terlepas tanpa GL berkurang.
+
+**Statement 2: cadangan yang baru akan ditahan.** Satu baris per kasbon tunai
+(`employee_loan.disbursed`, bukan bank) atau reimbursement tunai non-payroll
+(`reimbursement.paid`) yang event-nya sudah delivered dan jurnalnya ada, tetapi
+kredit bersih (kredit dikurangi debit) pada akun kas jurnal itu lebih kecil
+daripada pokoknya, misalnya Dr 1102 / Cr 1102. Akun kas yang diukur adalah
+`petty_cash`, `cash_on_hand`, dan `bank` dari `posting_account_snapshot` jurnal;
+tanpa snapshot dipakai mapping `petty_cash` saat ini. Setelah rilis, jumlah
+pokok tiap baris ini ikut menahan kas kecil (`availableCash1102` berkurang).
+Kolom: tenant, entitas hukum, nama event, id kasbon/reimbursement, pokok, dan
+kredit bersih. Event delivered tanpa jurnal tidak muncul (cadangannya dilepas
+seperti sebelumnya).
+
+1. **Ada baris atau query gagal: tahan rilis.** Hasil nol baris dari login yang
+   benar adalah syarat gerbang untuk kedua statement, bukan sekadar exit code
+   `psql` nol.
+2. **Resolusi.** Statement 1: pemilik akuntansi tenant memetakan ulang role
+   non-kas ke akun sendiri lewat pengaturan mapping (validasi baru menolak
+   sisanya). Jangan mengubah baris `account_mappings` langsung. Statement 2:
+   finance memeriksa tiap baris dan memutuskan koreksinya; baris yang dibiarkan
+   berarti kas kecil sebesar pokoknya tertahan sampai jurnal dikoreksi, dan
+   penahanan itu tidak punya jalan keluar otomatis. Jurnal yang sudah
+   terposting tidak dibalik otomatis; keputusan koreksinya di finance.
+3. **Cek ulang.** Jalankan file yang sama; lanjut hanya bila kedua statement
+   nol baris atau barisnya sudah dijelaskan finance.
+
 ### Reset refund pra-switch DOIT (legend-d21p)
 
 A one-off repair before `DOIT_REFUNDS_ENABLED` is turned on for the first time.

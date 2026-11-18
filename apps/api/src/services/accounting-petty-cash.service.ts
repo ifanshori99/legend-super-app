@@ -148,6 +148,7 @@ import {
 } from "./accounting-period.service.ts";
 import { requireLegalEntity } from "./accounting-shared.ts";
 import { loadOutletClock } from "./inventory-ops.shared.ts";
+import { payrollGlKeys } from "./payroll-gl-consumer.ts";
 import { openItemAmount } from "./payroll-payout.service.ts";
 import { accountingEnabled } from "./payroll-payout-setup.ts";
 import { EVENT_DESTINATION } from "./payment-support.ts";
@@ -689,6 +690,7 @@ async function pendingPettyCashCreditsIdr(
       total += readableIdr(payload.principalIdr, row.name);
     }
   }
+  total += await heldDeliveredCashCreditsIdr(tx, tenantId, legalEntityId);
   total += await pendingPettyPurchaseCreditsIdr(tx, tenantId, legalEntityId);
   total += await pendingParkedReturnCreditsIdr(tx, tenantId, legalEntityId);
   if (reimbursements.length > 0) {
@@ -709,6 +711,101 @@ async function pendingPettyCashCreditsIdr(
     for (const row of reimbursements)
       if (ids.has(row.employeeId)) total += row.amountIdr;
   }
+  return total;
+}
+
+/**
+ * A cash kasbon or cash reimbursement whose event is delivered and whose
+ * journal exists, but whose journal did not net-reduce the entity's cash by its
+ * amount (credit minus debit below it, e.g. Dr 1102 / Cr 1102 when two roles
+ * share one account, legend-1118): the cash never left the GL, so the amount
+ * stays reserved. A delivered event WITHOUT a journal (accounting off when it
+ * was consumed) releases, as before. The cash accounts measured are the ones
+ * the journal was posted on: its `posting_account_snapshot` (petty_cash, plus
+ * cash_on_hand / bank for journals posted by an older rule), so a later remap
+ * of petty_cash does not hold every old good loan; a journal without a
+ * snapshot uses today's mapping. One bounded query per kind (the scan is
+ * narrowed by aggregate type, the leading columns of the outbox aggregate key):
+ * the net is a correlated subquery over the lines of the journal, no per-event
+ * round trip.
+ */
+async function heldDeliveredCashCreditsIdr(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  legalEntityId: string,
+): Promise<number> {
+  const pettyCashAccountId = await pettyCashGlAccount(
+    tx,
+    tenantId,
+    legalEntityId,
+  );
+  if (pettyCashAccountId === null) return 0;
+  const eventName = sql<string>`${domainEventOutbox.event}->>'name'`;
+  const payload = sql`${domainEventOutbox.event}->'payload'`;
+  const snapshot = sql`${journalEntries.postingAccountSnapshot}`;
+  const netCredit = sql`(SELECT COALESCE(SUM(${journalLines.creditIdr}) - SUM(${journalLines.debitIdr}), 0) FROM ${journalLines} WHERE ${journalLines.tenantId} = ${journalEntries.tenantId} AND ${journalLines.entryId} = ${journalEntries.id} AND ${journalLines.accountId}::text IN (COALESCE(${snapshot}->>'petty_cash', ${pettyCashAccountId}::text), ${snapshot}->>'cash_on_hand', ${snapshot}->>'bank'))`;
+  const delivered = and(
+    eq(domainEventOutbox.tenantId, tenantId),
+    eq(domainEventOutbox.destination, EVENT_DESTINATION),
+    eq(domainEventOutbox.status, "delivered"),
+  );
+  let total = 0;
+
+  const loans = await tx
+    .select({ principal: sql<unknown>`${payload}->'principalIdr'` })
+    .from(domainEventOutbox)
+    .innerJoin(
+      journalEntries,
+      and(
+        eq(journalEntries.tenantId, domainEventOutbox.tenantId),
+        eq(journalEntries.legalEntityId, legalEntityId),
+        sql`${journalEntries.idempotencyKey} = ${payrollGlKeys.loan("")} || (${payload}->>'employeeLoanId')`,
+      ),
+    )
+    .where(
+      and(
+        delivered,
+        // The aggregate type is the event name's prefix (events/catalog.ts).
+        eq(domainEventOutbox.aggregateType, "employee_loan"),
+        sql`${eventName} = 'employee_loan.disbursed'`,
+        sql`${payload}->>'legalEntityId' = ${legalEntityId}`,
+        sql`${payload}->>'disbursedVia' IS DISTINCT FROM 'bank'`,
+        sql`${netCredit} < (${payload}->>'principalIdr')::numeric`,
+      ),
+    );
+  for (const row of loans)
+    total += readableIdr(row.principal, "employee_loan.disbursed");
+
+  const reimbursements = await tx
+    .select({ amount: sql<unknown>`${payload}->'amountIdr'` })
+    .from(domainEventOutbox)
+    .innerJoin(
+      employees,
+      and(
+        eq(employees.tenantId, domainEventOutbox.tenantId),
+        eq(employees.legalEntityId, legalEntityId),
+        sql`${employees.id}::text = ${payload}->>'employeeId'`,
+      ),
+    )
+    .innerJoin(
+      journalEntries,
+      and(
+        eq(journalEntries.tenantId, domainEventOutbox.tenantId),
+        eq(journalEntries.legalEntityId, legalEntityId),
+        sql`${journalEntries.idempotencyKey} = ${payrollGlKeys.reimbursement("")} || (${payload}->>'reimbursementId')`,
+      ),
+    )
+    .where(
+      and(
+        delivered,
+        eq(domainEventOutbox.aggregateType, "reimbursement"),
+        sql`${eventName} = 'reimbursement.paid'`,
+        sql`${payload}->>'payout' IS DISTINCT FROM 'payroll'`,
+        sql`${netCredit} < (${payload}->>'amountIdr')::numeric`,
+      ),
+    );
+  for (const row of reimbursements)
+    total += readableIdr(row.amount, "reimbursement.paid");
   return total;
 }
 
@@ -816,6 +913,53 @@ export async function assertJournalCredit1102Covered(
     pettyCashAccountId,
     netCreditIdr,
   );
+}
+
+/**
+ * A cash kasbon pays Dr employee_receivable / Cr petty_cash. When the
+ * employee_receivable account is the same account as petty_cash, bank or
+ * cash_on_hand, the journal nets to zero and the cash never leaves the GL
+ * (legend-1118): refuse before any money or event is written
+ * (LOAN_CASH_ACCOUNT_SHARED). Legacy mappings only: the mapping endpoint
+ * already refuses a new one. Skipped when employee_receivable is not mapped.
+ */
+export async function assertLoanCashAccountsDistinct(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  legalEntityId: string,
+): Promise<void> {
+  const rows = await tx
+    .select({
+      role: accountMappings.role,
+      accountId: accountMappings.accountId,
+    })
+    .from(accountMappings)
+    .where(
+      and(
+        eq(accountMappings.tenantId, tenantId),
+        eq(accountMappings.legalEntityId, legalEntityId),
+        inArray(accountMappings.role, [
+          "employee_receivable",
+          "petty_cash",
+          "bank",
+          "cash_on_hand",
+        ]),
+      ),
+    );
+  const receivable = rows.find((row) => row.role === "employee_receivable");
+  if (!receivable) return;
+  if (
+    rows.some(
+      (row) =>
+        row.role !== "employee_receivable" &&
+        row.accountId === receivable.accountId,
+    )
+  )
+    throw new HttpError(
+      409,
+      "LOAN_CASH_ACCOUNT_SHARED",
+      "Kasbon tunai tidak bisa dicairkan: akun piutang karyawan sama dengan akun kas kecil, kas, atau bank di pemetaan akun. Pisahkan akunnya di pengaturan pemetaan akun, lalu coba lagi.",
+    );
 }
 
 /**

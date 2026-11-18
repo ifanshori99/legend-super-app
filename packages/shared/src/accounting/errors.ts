@@ -36,6 +36,11 @@ export const accountingErrorHttpStatus = {
   /** Posted journals are final: never edited or deleted, only reversed (ACC-01). */
   JOURNAL_IMMUTABLE: 409,
   JOURNAL_ALREADY_REVERSED: 409,
+  /**
+   * One automatic entry debits and credits the same account (net zero: a
+   * mapping collapsed two roles, e.g. employee_receivable onto petty_cash).
+   */
+  JOURNAL_SAME_ACCOUNT_DEBIT_CREDIT: 422,
   /** A reversal entry cannot itself be reversed; post a new entry instead. */
   JOURNAL_NOT_REVERSIBLE: 409,
   /** Status change not allowed from the current status. */
@@ -140,6 +145,8 @@ const defaultMessages: Record<AccountingErrorCode, string> = {
   JOURNAL_IMMUTABLE:
     "Jurnal final tidak dapat diubah atau dihapus. Gunakan jurnal pembalik.",
   JOURNAL_ALREADY_REVERSED: "Jurnal ini sudah dibalik.",
+  JOURNAL_SAME_ACCOUNT_DEBIT_CREDIT:
+    "Jurnal otomatis mendebit dan mengkredit akun yang sama. Periksa pemetaan akun.",
   JOURNAL_NOT_REVERSIBLE: "Jurnal pembalik tidak dapat dibalik lagi.",
   INVALID_TRANSITION: "Perubahan status ini tidak diizinkan.",
   ACCOUNT_INACTIVE: "Akun tidak aktif.",

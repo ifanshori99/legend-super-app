@@ -50,6 +50,7 @@ import {
   assertReversible,
   buildJournalLinesFromRule,
   buildReversalLines,
+  CASH_POSTING_ROLES,
   defaultPostingRules,
   dropZeroLines,
   journalEntrySchema,
@@ -703,6 +704,29 @@ export async function postJournalFromRuleInTransaction(
     outletId: input.outletId as OutletId | null,
     costCenter: input.costCenter ?? null,
   });
+  // Fail closed (legend 1118): a rule entry that debits and credits one cash
+  // or bank account nets to zero there. A mapping that collapses two roles
+  // onto one account (e.g. employee_receivable onto petty_cash) would
+  // otherwise post a journal that never moves the cash the source already
+  // paid out. Only cash roles: payroll rules legitimately debit and credit
+  // salary_expense in one entry (a deduction credits the expense it reduces).
+  const cashAccountIds = new Set<string>();
+  for (const role of CASH_POSTING_ROLES) {
+    const accountId = accountMap.get(role);
+    if (accountId !== undefined) cashAccountIds.add(accountId);
+  }
+  const debited = new Set<string>();
+  const credited = new Set<string>();
+  for (const line of lines) {
+    if (line.debitIdr > 0) debited.add(line.accountId);
+    if (line.creditIdr > 0) credited.add(line.accountId);
+  }
+  for (const accountId of debited)
+    if (credited.has(accountId) && cashAccountIds.has(accountId))
+      throw new AccountingError(
+        "JOURNAL_SAME_ACCOUNT_DEBIT_CREDIT",
+        `Rule ${rule.key} debits and credits the same cash account`,
+      );
   if (input.guardPettyCash === true)
     await assertJournalCredit1102Covered(
       tx,

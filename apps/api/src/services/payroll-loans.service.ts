@@ -70,7 +70,10 @@ import { openPayrollAmount } from "../lib/payroll-sealed.ts";
 import { entityLock } from "./accounting-bank-matching.ts";
 import { emitPayrollEvent } from "./payroll-events.ts";
 import { accountingEnabledShared } from "./payroll-payout-setup.ts";
-import { assertCash1102CoversOutflow } from "./accounting-petty-cash.service.ts";
+import {
+  assertCash1102CoversOutflow,
+  assertLoanCashAccountsDistinct,
+} from "./accounting-petty-cash.service.ts";
 import { recordAudit } from "./core-audit.ts";
 import { cursorPair, notFound } from "./hris-access.ts";
 import { idempotentHrisWrite } from "./hris-employee.service.ts";
@@ -731,7 +734,12 @@ export async function disburseEmployeeLoan(
                 "PAYROLL_CASH_ENTITY_MISSING",
                 "Kasbon tunai tidak bisa dicairkan: karyawan belum punya badan usaha, padahal akuntansi aktif.",
               );
-          } else
+          } else {
+            await assertLoanCashAccountsDistinct(
+              tx,
+              context.tenant.tenantId,
+              peekEntityId,
+            );
             await assertCash1102CoversOutflow(
               tx,
               context.tenant.tenantId,
@@ -739,6 +747,7 @@ export async function disburseEmployeeLoan(
               Number(row.principalIdr),
               accountingOn,
             );
+          }
         }
         const disbursed = await applyTransition(
           tx,
