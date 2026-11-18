@@ -3,7 +3,8 @@
 - Sudah aja6g: `services/order-refund-lane.ts`. Refund ORD-09 hidup menolak void cloud dan refund kasir (409 `REFUND_ORD09_REFUND_EXISTS`) dan void edge (`void_refused:ord09_refund_exists`); ORD-09 diblok (`money_back_lane_*`) bila order sudah void cloud/edge/void edge parkir/refund kasir; refile ORD-09 baca lane tanpa kunci (pemanggil sudah pegang intent→fund→refund).
 - Kunci: guard dibaca setelah kunci `orders` yang sudah ada; tidak ada kunci baru (architect 3 ronde: tanpa deadlock).
 - Uji: refund-1095-* 5 berkas, 28/50 merah di m1, 2 test DP merah juga di d8785e6f1; 15 berkas terarah 281 lulus + 2 todo.
-- Terbuka: legend-eajpb (voucher maaf dibuat sesudah refund kasir tidak dicek; urutan ini masih bisa bayar lebih), it.todo di voucher-cap.
+- Sudah eajpb (keputusan CTO 19 Nov, di cabang ini): `services/order-voucher-room.ts` (ruang = min(order, baris) dari order-given; void apa pun = 0). Voucher staf di atas ruang ditolak 422 `APOLOGY_VOUCHER_NOTHING_DUE`/`APOLOGY_VOUCHER_OVER_ROOM` (tolak, bukan potong: nilai terikat approval dan replay); voucher sistem/tamu dan kredit swap dipotong ke ruang, 0 ditolak; attach voucher tanpa laporan dan voucher saat laporan dibuat ikut dicek; voucher CRM di `order_issues.voucher_id` kini dihitung order-given. Kunci: issue lalu orders (laporan baru: orders lalu vouchers).
+- Terbuka: legend-3dsih (void setelah voucher maaf, sudah ada sebelum 1095, perlu keputusan tolak vs batalkan voucher).
 
 ## 1005 Payout: tarik klaim return dua orang (engineer, legend-snwnn, cabang ghostex/3bb6104c dari ghostex/92055877 74e142d8b, 17 Nov 2026)
 

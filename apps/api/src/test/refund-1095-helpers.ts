@@ -57,6 +57,8 @@ import { seedTenantRoleTemplates } from "../services/access.service.ts";
 export const ORDER_PAID = 49_665;
 export const KOPI_PAID = 28_875;
 export const ROTI_PAID = 20_790;
+/** Promo order kopi + teh + roti (roti free, 18.000 off): paid 42.735. */
+export const PROMO_PAID = 42_735;
 /** ORD-09 approval amount is the list price of the line; the refund filed is the paid value. */
 export const ROTI_PRICE = 18_000;
 /** Swap voucher kopi -> air without promo: the list difference. */
@@ -380,6 +382,142 @@ export async function createPosWorld() {
     expect(await ord09Rows([issueId]), "no ORD-09 refund opened").toEqual([]);
   }
 
+  // ---- promo order and CRM voucher on a report (legend-eajpb) -------------------------
+
+  let promotionSeeded = false;
+
+  /**
+   * A PAID promo order: kopi 25.000 + teh 12.000 + roti 18.000 with the promotion
+   * "buy 2 of {kopi, teh}, get 1 roti free" (order-recovery-refund-promo fixture):
+   * discount 18.000, paid 42.735. The plain orders (kopi + roti) never trigger it.
+   */
+  async function paidPromoOrder(): Promise<PaidOrder & { tehLine: string }> {
+    if (!promotionSeeded) {
+      promotionSeeded = true;
+      await owner.query(
+        `INSERT INTO promotions
+           (id, tenant_id, name, description, status, code_hash, voucher_required, starts_at, ends_at,
+            conditions, benefit, stack_group, stackable, priority, quota_total, quota_per_customer,
+            budget_idr)
+         VALUES ($1, $2, 'Beli 2 minuman gratis roti', '', 'active', NULL, false,
+                 now() - interval '1 hour', NULL, $3, $4, 'g_1095', true, 0, NULL, NULL, NULL)`,
+        [
+          randomUUID(),
+          w.tenant.tenantId,
+          JSON.stringify([
+            {
+              kind: "item_quantity",
+              menuItemIds: [w.ids.kopi, w.ids.teh],
+              minQuantity: 2,
+            },
+          ]),
+          JSON.stringify({
+            kind: "free_items",
+            menuItemIds: [w.ids.roti],
+            quantityPerMultiple: 1,
+          }),
+        ],
+      );
+    }
+    const guest = await w.seat("pay_first");
+    let version = 0;
+    for (const menuItemId of [w.ids.kopi, w.ids.teh, w.ids.roti]) {
+      const added = await w
+        .as(guest)
+        .add({ menuItemId, quantity: 1, expectedCartVersion: version });
+      expect(added.status, JSON.stringify(added.body)).toBe(201);
+      version = added.body.data.cart.version as number;
+    }
+    const placed = await w.as(guest).checkout({
+      expectedCartVersion: version,
+      idempotencyKey: randomUUID(),
+    });
+    expect(placed.status, JSON.stringify(placed.body)).toBe(201);
+    const order = placed.body.data.order as {
+      id: string;
+      items: { id: string; menuItemId: string }[];
+    };
+    const { rows } = await owner.query<{
+      outlet_id: string;
+      total_idr: number;
+      discount_idr: number;
+    }>(
+      "SELECT outlet_id, total_idr::int, discount_idr::int FROM orders WHERE tenant_id = $1 AND id = $2",
+      [w.tenant.tenantId, toUuid(order.id)],
+    );
+    expect(rows[0]!.discount_idr, "promo discount").toBe(18_000);
+    expect(rows[0]!.total_idr, "promo order total").toBe(PROMO_PAID);
+    const payment = await w.as(guest).pay({ kind: "order", orderId: order.id });
+    expect(payment.status, JSON.stringify(payment.body)).toBe(201);
+    expect(await payVerified(payment.body.data.id, PROMO_PAID)).toBe(true);
+    const line = (menuItemId: string) =>
+      order.items.find((item) => item.menuItemId === menuItemId)!.id;
+    return {
+      orderId: order.id,
+      outletId: rows[0]!.outlet_id,
+      kopiLine: line(w.ids.kopi),
+      rotiLine: line(w.ids.roti),
+      tehLine: line(w.ids.teh),
+      guest,
+    };
+  }
+
+  /** A fixed-value CRM voucher of the tenant (no promotion, no customer). */
+  async function crmVoucher(valueIdr: number): Promise<string> {
+    const { rows } = await owner.query<{ id: string }>(
+      `INSERT INTO vouchers (tenant_id, promotion_id, customer_profile_id, code_hash, source,
+                             value_idr, valid_from, valid_until)
+       VALUES ($1, NULL, NULL, $2, 'manual', $3, now() - interval '1 hour', NULL)
+       RETURNING id`,
+      [w.tenant.tenantId, randomBytes(32).toString("hex"), valueIdr],
+    );
+    return rows[0]!.id;
+  }
+
+  let reportStation: string | null = null;
+
+  /**
+   * The kitchen / floor report route (POST /api/outlets/:outlet/orders/:order/issues)
+   * filed straight with resolution "voucher" + a CRM voucher. Raw answer, no expectation.
+   */
+  async function reportWithVoucher(
+    paid: PaidOrder,
+    lineId: string,
+    voucherId: string,
+  ) {
+    if (!reportStation) {
+      reportStation = randomUUID();
+      await owner.query(
+        `INSERT INTO stations (id, tenant_id, outlet_id, name, type) VALUES ($1, $2, $3, 'Bar 1095', 'beverage_bar')`,
+        [reportStation, w.tenant.tenantId, w.tenant.outletId],
+      );
+    }
+    return w.staffPost(
+      w.supervisor,
+      `/api/outlets/${w.tenant.outletId}/orders/${toUlid(paid.orderId)}/issues`,
+      {
+        orderItemId: toUlid(lineId),
+        type: "complaint",
+        reason: "complaint",
+        reasonNote: "Pelanggan kecewa, diberi voucher",
+        stationId: reportStation,
+        employeeId: null,
+        resolution: "voucher",
+        voucherId,
+        approvedBy: null,
+        idempotencyKey: `iss-${randomUUID()}`,
+      },
+    );
+  }
+
+  async function issueRowCount(lineId: string) {
+    const { rows } = await owner.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM order_issues WHERE tenant_id = $1 AND order_item_id = $2",
+      [w.tenant.tenantId, toUuid(lineId)],
+    );
+    return rows[0]!.n;
+  }
+
   /** The guest's own choice on a reported line (voucher or swap), as a raw answer. */
   function guestChoose(
     paid: PaidOrder,
@@ -618,6 +756,10 @@ export async function createPosWorld() {
     reportLine,
     voucherTotal,
     voucherValues,
+    paidPromoOrder,
+    crmVoucher,
+    reportWithVoucher,
+    issueRowCount,
     guestChoose,
     staffVoucher,
     airItem,

@@ -200,9 +200,10 @@ async function posOrder() {
 }
 
 /**
- * Marks the POS order paid (what isPaidOrder accepts) by SQL. A completed sale
- * also gets a captured cash tender for the full total and a receipt, because
- * the detail schema requires both for a completed order.
+ * Marks the POS order paid (what isPaidOrder accepts) by SQL. Both states get a
+ * captured cash tender for the full total (legend-eajpb: a swap credit is capped by
+ * what the guest paid); a completed sale also gets a receipt, because the detail
+ * schema requires both for a completed order.
  */
 async function markPaid(orderId: string, status: "sent" | "completed") {
   await owner.query(
@@ -210,7 +211,6 @@ async function markPaid(orderId: string, status: "sent" | "completed") {
      WHERE tenant_id = $1 AND id = $2`,
     [w.tenant.tenantId, toUuid(orderId), status],
   );
-  if (status !== "completed") return;
   await owner.query(
     `INSERT INTO pos_order_tenders
        (tenant_id, outlet_id, order_id, method, provider, amount_idr, received_idr,
@@ -220,6 +220,7 @@ async function markPaid(orderId: string, status: "sent" | "completed") {
      FROM orders WHERE tenant_id = $1 AND id = $2`,
     [w.tenant.tenantId, toUuid(orderId)],
   );
+  if (status !== "completed") return;
   receiptOrders.add(toUuid(orderId));
 }
 

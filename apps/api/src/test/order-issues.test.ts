@@ -273,7 +273,7 @@ async function seedOrder(
       `INSERT INTO order_items (id, tenant_id, outlet_id, order_id, menu_item_id, variant_id, name,
           quantity, unit_price_idr, modifiers_total_idr, line_total_idr, modifiers,
           fire_status, status, reserved_business_date)
-       VALUES ($1, $2, $3, $4, $5, NULL, 'Latte', $6, 0, 0, 0, '[]'::jsonb,
+       VALUES ($1, $2, $3, $4, $5, NULL, 'Latte', $6, $9, 0, 50000, '[]'::jsonb,
                'fired', $7, $8)`,
       [
         itemUuid,
@@ -284,12 +284,23 @@ async function seedOrder(
         options.quantity ?? 2,
         options.voided ? "voided" : "served",
         businessDate,
+        Math.round(50_000 / (options.quantity ?? 2)),
       ],
     );
     await client.query(
       `INSERT INTO pos_orders (order_id, tenant_id, outlet_id, channel)
        VALUES ($1, $2, $3, 'pos')`,
       [uuid, tenant.tenantId, outletId],
+    );
+    // legend-eajpb: a voucher filed with a report is capped by what the guest paid
+    // for the line, so the seeded sale is really paid (captured cash for the total
+    // of 50.000) and its single line carries that value.
+    await client.query(
+      `INSERT INTO pos_order_tenders (tenant_id, outlet_id, order_id, method, provider,
+          amount_idr, received_idr, change_idr, status, requested_at, resolved_at)
+       VALUES ($1, $2, $3, 'cash', 'manual', 50000, 50000, 0, 'captured',
+               now() - interval '1 minute', now())`,
+      [tenant.tenantId, outletId, uuid],
     );
   });
   return { ulid, uuid, itemUlid, itemUuid, businessDate };

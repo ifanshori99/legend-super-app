@@ -49,6 +49,35 @@ async function failedItem() {
 }
 
 /**
+ * A paid order whose single failed roti line is worth more than ABOVE (roti x9 paid
+ * 187.110). Since legend-eajpb a voucher tied to a report cannot exceed what the guest
+ * paid for the line, so the approval-matrix cases above the Rp100.000 floor need a line
+ * that really cost that much (the standard order's roti line paid only 20.790).
+ */
+async function failedLargeItem() {
+  const guest = await w.seat();
+  const order = await w.placeOrder(guest, [
+    { menuItemId: w.ids.roti, quantity: 9 },
+  ]);
+  const { rows } = await owner.query<{ total_idr: number }>(
+    "SELECT total_idr::int FROM orders WHERE tenant_id = $1 AND id = $2",
+    [
+      w.tenant.tenantId,
+      /^[0-9a-f]{8}-/i.test(order.id)
+        ? order.id
+        : ulidToUuid(order.id as never),
+    ],
+  );
+  const total = rows[0]!.total_idr;
+  expect(total).toBeGreaterThan(ABOVE);
+  const payment = await w.as(guest).pay({ kind: "order", orderId: order.id });
+  expect(payment.status, JSON.stringify(payment.body)).toBe(201);
+  expect(await w.payVerified(payment.body.data.id, total)).toBe(true);
+  const issueId = (await w.report(order.items[0]!.id)).body.data.id as string;
+  return { issueId };
+}
+
+/**
  * A standalone voucher (no orderIssueId) must carry an Idempotency-Key, so a
  * unique one is sent for it; a voucher tied to an order issue needs none.
  */
@@ -219,7 +248,7 @@ describe("legend-4qu voucher maaf di bawah batas matriks", () => {
 
 describe("legend-4qu voucher maaf di atas batas matriks", () => {
   it("tanpa approval 409 APPROVAL_REQUIRED, permintaan approval terbuka, tidak ada voucher", async () => {
-    const { issueId } = await failedItem();
+    const { issueId } = await failedLargeItem();
     const response = await issueVoucher({
       valueIdr: ABOVE,
       reason: REASON,
@@ -249,7 +278,7 @@ describe("legend-4qu voucher maaf di atas batas matriks", () => {
   });
 
   it("dengan approval yang disetujui voucher terbit dan mencatat approvalRequestId", async () => {
-    const { issueId } = await failedItem();
+    const { issueId } = await failedLargeItem();
     const body = { valueIdr: ABOVE, reason: REASON, orderIssueId: issueId };
     const first = await issueVoucher(body);
     expect(first.status).toBe(409);
@@ -283,7 +312,7 @@ describe("legend-4qu voucher maaf di atas batas matriks", () => {
   });
 
   it("approval untuk aksi lain, nominal lain, atau tak dikenal ditolak dan tidak ada voucher", async () => {
-    const { issueId } = await failedItem();
+    const { issueId } = await failedLargeItem();
     const body = { valueIdr: ABOVE, reason: REASON, orderIssueId: issueId };
 
     const refundApproval = await w.insertApproval({

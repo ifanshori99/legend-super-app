@@ -32,8 +32,10 @@ import { owner } from "./floor-test-helpers.ts";
 import {
   KOPI_PAID,
   ORDER_PAID,
+  PROMO_PAID,
   ROTI_PAID,
   createPosWorld,
+  sum,
   toUuid,
   type PaidOrder,
   type PosWorld,
@@ -54,7 +56,7 @@ beforeAll(async () => {
 }, 240_000);
 
 afterAll(async () => {
-  await other.teardown();
+  // One teardown only: it ends the process-wide test pools, shared by both worlds.
   await p.teardown();
 });
 
@@ -279,6 +281,89 @@ describe("legend-eajpb guest voucher choice", () => {
     expect(value, "a credit voucher was issued").toBeGreaterThan(0);
     expect(value, "cut to the remaining room").toBeLessThanOrEqual(room);
     await p.expectWithinPaid(paid.orderId, [issueId]);
+  });
+});
+
+describe("legend-eajpb CRM voucher filed with the report (resolution voucher + voucherId)", () => {
+  it("after a full cashier refund the report is refused (NOTHING_DUE) and no issue is stored", async () => {
+    const paid = await p.paidPlainOrder();
+    await p.becomePosSale(paid);
+    await refundWholeOrder(p, paid);
+
+    const voucherId = await p.crmVoucher(10_000);
+    const answer = await p.reportWithVoucher(paid, paid.rotiLine, voucherId);
+    expectRefused(answer, NOTHING_DUE);
+    expect(await p.issueRowCount(paid.rotiLine)).toBe(0);
+  });
+
+  it("a CRM voucher above the remaining room is refused (OVER_ROOM, nothing stored); exactly the room is accepted", async () => {
+    const paid = await p.paidPlainOrder();
+    await p.becomePosSale(paid);
+    await refundKopiLine(p, paid); // room left: 20.790
+
+    const over = await p.reportWithVoucher(
+      paid,
+      paid.rotiLine,
+      await p.crmVoucher(ROTI_PAID + 1),
+    );
+    expectRefused(over, OVER_ROOM);
+    expect(String(over.body.error?.message)).toMatch(/20[.,]?790/);
+    expect(await p.issueRowCount(paid.rotiLine)).toBe(0);
+
+    const exact = await p.reportWithVoucher(
+      paid,
+      paid.rotiLine,
+      await p.crmVoucher(ROTI_PAID),
+    );
+    expect(exact.status, JSON.stringify(exact.body)).toBe(201);
+    expect(await p.issueRowCount(paid.rotiLine)).toBe(1);
+  });
+
+  it("report with a CRM voucher of 20.000 first, then a full cashier refund: refund is cut, refund + voucher <= paid", async () => {
+    const paid = await p.paidPlainOrder();
+    await p.becomePosSale(paid);
+    const reported = await p.reportWithVoucher(
+      paid,
+      paid.kopiLine,
+      await p.crmVoucher(20_000),
+    );
+    expect(reported.status, JSON.stringify(reported.body)).toBe(201);
+
+    await refundWholeOrder(p, paid);
+    const refunded = sum(await p.posRefundRows(paid.orderId));
+    expect(refunded + 20_000).toBeLessThanOrEqual(ORDER_PAID);
+    expect(refunded).toBe(ORDER_PAID - 20_000);
+  });
+});
+
+describe("legend-eajpb promo order: staff voucher then full cashier refund", () => {
+  it("voucher 10.000 on the kopi, refund of the whole order without items: voucher + refunds <= paid", async () => {
+    const paid = await p.paidPromoOrder();
+    const issue = await p.apologyVoucherFor(paid.kopiLine, 10_000);
+    await p.becomePosSale(paid, PROMO_PAID);
+
+    // A refusal is acceptable for a promo order; paying out above the paid amount is not.
+    await p.posRefund(
+      paid.orderId,
+      await p.refundInput(paid.orderId, PROMO_PAID),
+    );
+    await p.expectWithinPaid(paid.orderId, [issue], PROMO_PAID);
+  });
+
+  it("voucher 10.000 on the kopi, refund of every line by items: voucher + refunds <= paid", async () => {
+    const paid = await p.paidPromoOrder();
+    const issue = await p.apologyVoucherFor(paid.kopiLine, 10_000);
+    await p.becomePosSale(paid, PROMO_PAID);
+
+    await p.posRefund(
+      paid.orderId,
+      await p.refundInput(paid.orderId, PROMO_PAID, [
+        { itemId: paid.kopiLine, quantity: 1 },
+        { itemId: paid.tehLine, quantity: 1 },
+        { itemId: paid.rotiLine, quantity: 1 },
+      ]),
+    );
+    await p.expectWithinPaid(paid.orderId, [issue], PROMO_PAID);
   });
 });
 
