@@ -125,6 +125,8 @@ import {
 
 const BASE = "/api/hris/payroll";
 const write = { idempotencyKey: idempotencyKeySchema };
+/** Why an approved, not yet paid kasbon / cash claim is cancelled (audit). */
+const cancelReason = z.string().trim().min(1).max(500).optional();
 const runParams = z.strictObject({ payrollRunId: payrollRunIdSchema });
 
 // ---- Statutory tables (PAYR-02, R20) -------------------------------------
@@ -513,6 +515,8 @@ export const decideEmployeeLoan = defineEndpoint({
   params: z.strictObject({ employeeLoanId: employeeLoanIdSchema }),
   body: clientInputSchema({
     action: z.enum(["approve", "reject", "cancel"]),
+    /** Required when cancelling an approved kasbon (PAYROLL_CANCEL_REASON_REQUIRED). */
+    reason: cancelReason,
     ...write,
   }),
   response: dataResponseSchema(employeeLoanSchema),
@@ -556,9 +560,11 @@ export const decideReimbursement = defineEndpoint({
   path: `${BASE}/reimbursements/:reimbursementId/decision`,
   params: z.strictObject({ reimbursementId: reimbursementIdSchema }),
   body: clientInputSchema({
-    action: z.enum(["approve", "reject"]),
+    action: z.enum(["approve", "reject", "cancel"]),
     approvedAmountIdr:
       createReimbursementInputSchema.shape.amountIdr.nullable(),
+    /** Required for `cancel` (PAYROLL_CANCEL_REASON_REQUIRED). */
+    reason: cancelReason,
     ...write,
   }),
   response: dataResponseSchema(reimbursementSchema),

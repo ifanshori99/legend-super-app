@@ -171,12 +171,20 @@ async function request(client: Client, overrides = {}) {
   };
 }
 
-const decide = (client: Client, id: string, action: string, headers = {}) =>
+// An approved kasbon is cancelled with a reason (legend-d5n4j).
+const CANCEL = { reason: "Karyawan membatalkan kasbon" };
+const decide = (
+  client: Client,
+  id: string,
+  action: string,
+  headers = {},
+  extra = {},
+) =>
   client
     .post(`${HR}/${id}/decision`)
     .set(originHeader)
     .set(headers)
-    .send({ action, idempotencyKey: key() });
+    .send({ action, idempotencyKey: key(), ...extra });
 const disburse = (client: Client, id: string, headers = {}) =>
   client
     .post(`${HR}/${id}/disburse`)
@@ -596,7 +604,7 @@ describe("kasbon API: decision and disbursement", () => {
 
     const cancelled = await request(staffClient);
     await decide(hrClient, cancelled.id, "approve");
-    const cancel = await decide(hrClient, cancelled.id, "cancel");
+    const cancel = await decide(hrClient, cancelled.id, "cancel", {}, CANCEL);
     expect(cancel.status).toBe(200);
     expect(cancel.body.data.status).toBe("cancelled");
     expect((await disburse(hrClient, cancelled.id)).status).toBe(409);
@@ -752,7 +760,7 @@ describe("kasbon API: review fixes", () => {
     const loan = await request(staffClient);
     const approved = await decide(hrClient, loan.id, "approve");
     expect(approved.status).toBe(200);
-    const cancel = await decide(second.client, loan.id, "cancel");
+    const cancel = await decide(second.client, loan.id, "cancel", {}, CANCEL);
     expect(cancel.status).toBe(200);
     expect(cancel.body.data.status).toBe("cancelled");
     expect(cancel.body.data.decidedBy).toBe(approved.body.data.decidedBy);

@@ -436,6 +436,7 @@ async function auditLoan(
     loanId: string;
     before: Record<string, unknown> | null;
     after: Record<string, unknown>;
+    reason?: string | null;
   },
 ): Promise<void> {
   await recordAudit(
@@ -451,7 +452,7 @@ async function auditLoan(
       action: entry.action,
       objectType: "employee_loan",
       objectId: entry.loanId,
-      reason: null,
+      reason: entry.reason ?? null,
       maskedChanges: { before: entry.before, after: entry.after },
       ipHash: null,
       sensitiveAccess: false,
@@ -503,6 +504,7 @@ async function applyTransition(
   row: LoanRow,
   action: EmployeeLoanAction,
   now: Date,
+  reason: string | null = null,
 ): Promise<EmployeeLoan> {
   const next = transitionEmployeeLoan(row.status as EmployeeLoanStatus, action);
   const changes =
@@ -531,6 +533,7 @@ async function applyTransition(
     loanId: loan.id,
     before: { status: row.status },
     after: { status: loan.status },
+    reason,
   });
   return loan;
 }
@@ -554,9 +557,22 @@ export async function decideEmployeeLoan(
       context,
       input.idempotencyKey,
       "payroll.loan.decide",
-      { actor, loanId, action: input.action },
+      { actor, loanId, action: input.action, reason: input.reason ?? null },
       async () => {
         const row = await lockLoanForDecision(tx, context, actor, loanId);
+        // Cancelling an approved kasbon (not paid yet) needs a reason for the
+        // audit trail; no money moves, so no journal and no event (legend-d5n4j).
+        // A disbursed or already cancelled kasbon is a plain invalid transition.
+        if (
+          input.action === "cancel" &&
+          row.status === "approved" &&
+          !input.reason
+        )
+          throw new HttpError(
+            422,
+            "PAYROLL_CANCEL_REASON_REQUIRED",
+            "Alasan pembatalan wajib diisi untuk kasbon yang sudah disetujui.",
+          );
         // Approving re-checks the limits against the policy of today and the
         // other open loans of the borrower (this loan excluded).
         // Only a pending loan is checked: any other status is a plain invalid
@@ -573,7 +589,15 @@ export async function decideEmployeeLoan(
             businessDateOf(now, DEFAULT_BUSINESS_DAY_CLOCK),
             row.id,
           );
-        return applyTransition(tx, context, actor, row, input.action, now);
+        return applyTransition(
+          tx,
+          context,
+          actor,
+          row,
+          input.action,
+          now,
+          input.reason ?? null,
+        );
       },
     );
   });

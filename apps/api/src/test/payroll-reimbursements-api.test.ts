@@ -822,7 +822,7 @@ describe("reimbursements API: list and decide", () => {
       (await decide(approverClient, claim.id, { tenantId: tenant.id })).status,
     ).toBe(422);
     expect(
-      (await decide(approverClient, claim.id, { action: "cancel" })).status,
+      (await decide(approverClient, claim.id, { action: "pay" })).status,
     ).toBe(422);
     expect((await decide(approverClient, "not-a-uuid")).status).toBe(422);
     expect(

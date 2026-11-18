@@ -351,6 +351,7 @@ async function audit(
     objectType: string;
     objectId: string;
     after: Record<string, unknown>;
+    reason?: string | null;
   },
 ) {
   await recordAudit(
@@ -366,7 +367,7 @@ async function audit(
       action: entry.action,
       objectType: entry.objectType,
       objectId: entry.objectId,
-      reason: null,
+      reason: entry.reason ?? null,
       maskedChanges: { before: null, after: entry.after },
       ipHash: null,
       sensitiveAccess: false,
@@ -765,6 +766,7 @@ async function moveClaim(
   row: ClaimRow,
   action: ReimbursementAction,
   values: Partial<typeof reimbursements.$inferInsert>,
+  reason: string | null = null,
 ): Promise<Reimbursement> {
   const status = transitionReimbursement(
     reimbursementStatusSchema.parse(row.status),
@@ -777,10 +779,13 @@ async function moveClaim(
       and(
         eq(reimbursements.tenantId, context.tenant.tenantId),
         eq(reimbursements.id, row.id),
+        // The row is locked; the status guard makes cancel and pay end with
+        // exactly one winner even if a caller reads a stale row.
+        eq(reimbursements.status, row.status),
       ),
     )
     .returning();
-  if (!updated) throw new Error("Reimbursement was not updated");
+  if (!updated) throw new PayrollError("PAYROLL_INVALID_TRANSITION");
   await audit(tx, context, now, {
     actor,
     outletId: null,
@@ -788,6 +793,7 @@ async function moveClaim(
     objectType: "reimbursement",
     objectId: row.id,
     after: { status },
+    reason,
   });
   return toClaim(updated);
 }
@@ -830,6 +836,35 @@ export async function decideReimbursement(
           .limit(1);
         if (own && own.id === row.employeeId)
           throw new PayrollError("PAYROLL_APPROVER_NOT_DISTINCT");
+        if (body.action === "cancel") {
+          // Only an approved, not yet paid cash claim: a submitted one is
+          // decided (rejected) or withdrawn elsewhere, a payroll payout is
+          // settled by the run, a paid one has moved money (legend-d5n4j).
+          if (row.status !== "approved" || row.payout !== "cash")
+            throw new PayrollError("PAYROLL_INVALID_TRANSITION");
+          if (body.approvedAmountIdr !== null)
+            throw unprocessable(
+              "Klaim yang dibatalkan tidak punya jumlah disetujui.",
+            );
+          if (!body.reason)
+            throw new HttpError(
+              422,
+              "PAYROLL_CANCEL_REASON_REQUIRED",
+              "Alasan pembatalan wajib diisi untuk klaim yang sudah disetujui.",
+            );
+          // Keeps decidedBy/decidedAt of the approver; the audit row names the
+          // canceller and the reason. No event: nothing was paid.
+          return moveClaim(
+            tx,
+            context,
+            actor,
+            now,
+            row,
+            "cancel",
+            { approvedAmountIdr: null },
+            body.reason,
+          );
+        }
         if (body.action === "reject") {
           if (body.approvedAmountIdr !== null)
             throw unprocessable(

@@ -187,7 +187,9 @@ const reimbursementTransitions: Partial<
   >
 > = {
   submitted: { approve: "approved", reject: "rejected", cancel: "cancelled" },
-  approved: { pay: "paid" },
+  // An approved claim that was not paid yet can still be cancelled; the
+  // service allows it for cash claims only (legend-d5n4j).
+  approved: { pay: "paid", cancel: "cancelled" },
 };
 
 export function transitionReimbursement(
