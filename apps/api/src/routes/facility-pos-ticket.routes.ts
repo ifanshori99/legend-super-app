@@ -197,6 +197,8 @@ facilityPosTicketRouter.post(
       getScopedTenantContext(req),
       actorOf(req),
       body,
+      new Date(),
+      req.actingStaff?.outletId ?? null,
     );
     res.setHeader("Cache-Control", "no-store").json({ data });
   },
