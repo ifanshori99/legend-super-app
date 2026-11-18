@@ -314,6 +314,90 @@ describe("I9 (P1) a smaller provider success is an echo only when R was really s
     ).toBe(2 * R_IDR);
   });
 
+  it("1075-r4-10 (L1) T Rp100.000; R1 Rp30.000 settled BY HAND; R2 Rp50.000 sent and live with ref X2 (approved, in flight); signed payment.refunded status object for the WHOLE bill (Rp100.000, no refund id): the hold stays at least Rp70.000 (the live R2 plus by-hand R1 are not swallowed by a smaller hold), replays add no hold, R1 stays completed and R2 is not failed", async () => {
+    const code = await h.newCode(BILL_IDR);
+    expect((await h.paid(code, BILL_IDR)).status).toBe(200);
+
+    // R1: queued with provider refunds off, then paid by hand.
+    const filed1 = await h.manualRefund(code.id, R_IDR);
+    expect(filed1.status, JSON.stringify(filed1.body)).toBe(201);
+    const r1 = filed1.body.data.id as string;
+    expect([200, 503]).toContain((await h.approveRefund(r1)).status);
+    const settled = await h.settleManually(r1, R_IDR);
+    expect(settled.status, JSON.stringify(settled.body)).toBe(200);
+    expect((await h.refundRow(r1)).status, "premise: R1 settled by hand").toBe(
+      "completed",
+    );
+
+    // R2: really sent (provider refunds on), left in flight with ref X2.
+    flags.DOIT_REFUNDS_ENABLED = true;
+    setPaymentRefundGateway(h.fake);
+    const r2 = await h.ownPendingRefund(code, 50_000);
+    flags.DOIT_REFUNDS_ENABLED = false;
+
+    const full = () => h.doit.eventFor(code.providerRef, "refunded");
+    await h.replayAll(full, 1);
+    const open = await h.openOf(code.id);
+    expect(
+      open.some((row) => row.amount_idr >= 70_000),
+      `r4-10: an open hold of at least 70000 exists (holds: ${JSON.stringify(await h.allHolds(code.id))})`,
+    ).toBe(true);
+    const holdsAfterFirst = (await h.allHolds(code.id)).length;
+
+    await h.replayAll(full, 2);
+    expect(
+      (await h.allHolds(code.id)).length,
+      "r4-10: replays add no hold",
+    ).toBe(holdsAfterFirst);
+    expect(
+      (await h.openOf(code.id)).some((row) => row.amount_idr >= 70_000),
+      "r4-10: the big hold is still open after replays",
+    ).toBe(true);
+    expect((await h.refundRow(r1)).status).toBe("completed");
+    expect((await h.refundRow(r2.refundId)).status).not.toBe("failed");
+  });
+
+  it("1075-r4-11 (L2) flag off, R Rp30.000 still PENDING (requested, not yet approved); signed payment.refunded Rp20.000 (a dashboard refund, own refund id) arrives: an open hold of at least Rp20.000, approving R is refused, settling R by hand is refused, R stays pending, replays add no hold", async () => {
+    const code = await h.newCode(BILL_IDR);
+    expect((await h.paid(code, BILL_IDR)).status).toBe(200);
+    const filed = await h.manualRefund(code.id, R_IDR);
+    expect(filed.status, JSON.stringify(filed.body)).toBe(201);
+    const refundId = filed.body.data.id as string;
+    expect((await h.refundRow(refundId)).status, "premise: R is pending").toBe(
+      "pending",
+    );
+    const z = `rf_${randomBytes(6).toString("hex")}`;
+    const report = () => h.refundIdEvent(code.providerRef, z, SMALLER_IDR);
+
+    await h.replayAll(report, 1);
+    expect(
+      (await h.openOf(code.id)).some((row) => row.amount_idr >= SMALLER_IDR),
+      `r4-11: an open hold of at least ${SMALLER_IDR} exists (holds: ${JSON.stringify(await h.allHolds(code.id))})`,
+    ).toBe(true);
+    const holdsAfterFirst = (await h.allHolds(code.id)).length;
+
+    await h.replayAll(report, 2);
+    expect(
+      (await h.allHolds(code.id)).length,
+      "r4-11: replays add no hold",
+    ).toBe(holdsAfterFirst);
+
+    const approved = await h.approveRefund(refundId);
+    expect(
+      [409, 422],
+      `r4-11: approving R is refused: ${JSON.stringify(approved.body)}`,
+    ).toContain(approved.status);
+    const settled = await h.settleManually(refundId, R_IDR);
+    expect(
+      [409, 422],
+      `r4-11: settling R by hand is refused: ${JSON.stringify(settled.body)}`,
+    ).toContain(settled.status);
+    expect((await h.refundRow(refundId)).status, "r4-11: R stays pending").toBe(
+      "pending",
+    );
+    expect(h.fake.calls, "r4-11: nothing reached the provider").toHaveLength(0);
+  });
+
   describe("controls: R really sent to the provider (flag on)", () => {
     beforeEach(() => {
       flags.DOIT_REFUNDS_ENABLED = true;

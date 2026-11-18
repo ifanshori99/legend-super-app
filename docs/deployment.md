@@ -694,7 +694,15 @@ books count the money twice, on the restrictive side); a report of the whole
 transaction after the settle holds the amount paid by hand. For a hold of this kind, `not_this_intent` may be chosen
 once finance has cancelled the waiting refund (when the provider refund is that
 refund), or has made sure the provider refund is a separate one (then settle the
-refund). The fact is already booked, so closing it is safe.
+refund). Closing is safe without further checks only when the provider fact
+with the same refund id is visible on the intent (a report that arrived while
+the refund was still waiting). The hold of a matched success that is not a proven
+echo (a smaller amount on a refund not yet sent, or a report under the id of a
+refund settled by hand) books no fact: do not choose `not_this_intent` when the
+report is right. The same holds for a report of the whole payment on an intent
+with nothing left to refund. When that report is a dashboard refund of money
+already paid by hand (1072 B-1), `not_this_intent` is safe, because the
+refund is already counted.
 Counting a recon hold (`count`) is refused while the intent has an `approved`
 refund, and settling is refused while a hold is open (1072 B-2): to count a
 hold, cancel the waiting `approved` refund first. A hold on a transaction

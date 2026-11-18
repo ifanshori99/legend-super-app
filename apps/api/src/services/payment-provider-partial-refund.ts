@@ -783,15 +783,9 @@ export async function recordProviderRefundInTx(
       (sum, row) => sum + Number(row.amount),
       0,
     );
-    // 1072 I9: a refund finance settled by hand is paid already; the provider
-    // reporting the whole transaction refunded may have paid it as well. It
-    // stays counted as ours (nothing is booked twice), but the transaction is
-    // held for what was paid by hand until finance decides.
     const byHandIdr = completed
       .filter((row) => row.by_hand === true)
       .reduce((sum, row) => sum + Number(row.amount), 0);
-    if (byHandIdr > 0 && !input.holdResolve)
-      await fileTransactionConflictHold(byHandIdr, intent.outletId);
     // A refund of the bill still on its way (not a parked fund's, whose amount
     // is fixed): the provider's status may be its echo and the amount is not
     // final. Write nothing; the caller asks again later (when the retry window
@@ -813,6 +807,18 @@ export async function recordProviderRefundInTx(
     // another transaction in flight leaves `live` empty here, and a hold of 0
     // would neither limit the credit nor let finance count it.
     const atRiskIdr = liveIdr + Math.max(left, 0);
+    // 1072 I9 (K3, L1): a refund finance settled by hand is paid already; the
+    // provider reporting the whole transaction refunded may have paid it as
+    // well. It stays counted as ours (nothing is booked twice), but the
+    // transaction is held until finance decides. The hold shares its unique key
+    // with the live-own hold below, which would swallow a larger one, so it
+    // carries the larger of the amount paid by hand and all that is at risk
+    // (an open smaller hold is raised, never left behind).
+    if (byHandIdr > 0 && !input.holdResolve)
+      await fileTransactionConflictHold(
+        Math.max(byHandIdr, atRiskIdr),
+        intent.outletId,
+      );
     if (
       waitForInFlight &&
       !(left <= 0 && live.some((row) => !row.provider_ref && row.fund === true))
@@ -1006,17 +1012,18 @@ export async function recordProviderRefundInTx(
     return { status: "duplicate" };
   }
 
-  // 1072 I9 (K1): a refund of ours still approved and never sent, on this very
-  // transaction (same source rule as step 3), while the provider reports a
-  // success: the customer may already have the money, so paying R by hand would
-  // pay twice. The fact stays booked; the hold keeps settle, refunds and credit
-  // stopped until finance decides. A replay never reaches here (empty insert).
+  // 1072 I9 (K1, L2): a refund of ours still pending or approved and never
+  // sent, on this very transaction (same source rule as step 3), while the
+  // provider reports a success: the customer may already have the money, so
+  // paying R by hand would pay twice. The fact stays booked; the hold keeps
+  // settle, refunds and credit stopped until finance decides. A replay never
+  // reaches here (empty insert).
   if (!input.holdResolve) {
     const { rows: unsent } = await tx.execute(sql`SELECT r.id
       FROM payment_refunds r
       WHERE r.tenant_id = ${tenantId}::uuid
         AND r.payment_intent_id = ${intent.id}::uuid
-        AND r.status = 'approved'
+        AND r.status IN ('pending', 'approved')
         AND r.provider_ref IS NULL
         AND r.payout_attempts = 0
         AND r.payout_pending_polls = 0
