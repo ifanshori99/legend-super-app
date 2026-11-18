@@ -252,9 +252,9 @@ const PINNED = [
     params: REFERENCE_PPH21_ANNUAL,
   },
 ] as const;
-// Older than the kit range (1980-2019): the kit tables win for simulate, so
+// Older than the kit range (1900-1949): the kit tables win for simulate, so
 // deleting these rows in afterAll never strands another file's run snapshot.
-const PINNED_FROM = "1975-01-01";
+const PINNED_FROM = "1899-01-01";
 
 async function ensureStatutoryTables() {
   await asTenant(async (conn) => {
