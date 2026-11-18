@@ -10,13 +10,8 @@
 //   3. The queued original is removed only when the response names the same
 //      owner as the entry; otherwise it stays queued.
 //
-// Assumptions: the contract's body is strict and carries no employee id, so the
-// binding may be a pre-check of `/api/hris/me` right before the POST or an
-// extra argument to `submitAttendanceCorrection`. The fake server below accepts
-// either: it refuses a POST whose extra arguments name the expected employee
-// while the session is someone else, and counts every other POST as filed under
-// the session's employee. A race between the check and the POST needs the API
-// to honour the binding and cannot be shown with this fake.
+// The server binds the POST to `expectedEmployeeId` in the request body. The
+// fake also models a session change after the profile check, before the POST.
 //
 // Server-side rendering is the harness: hooks run during `renderToString`
 // inside a real QueryClientProvider, and the returned mutation is then driven
@@ -31,8 +26,8 @@ import { createUlid } from "@starter/shared/core";
 import { requestAttendanceCorrection } from "@starter/shared/hris";
 import { ApiError } from "@/lib/api/errors";
 
-const EMPLOYEE_A = "emp-a";
-const EMPLOYEE_B = "emp-b";
+const EMPLOYEE_A = "00000000-0000-4000-8000-000000000001";
+const EMPLOYEE_B = "00000000-0000-4000-8000-000000000002";
 
 const server = vi.hoisted(() => ({
   /** Who the shared session cookie names right now. */
@@ -41,27 +36,56 @@ const server = vi.hoisted(() => ({
   responseOwner: undefined as string | undefined,
   /** True when `/api/hris/me` gives no answer (offline, 5xx). */
   profileFails: false,
+  /** Another tab changes the session immediately after the profile answered. */
+  switchAfterProfile: false,
   /** Effects React would run after mount; server rendering never does. */
   effects: [] as (() => unknown)[],
   /** Every POST that reached the server, refused or not. */
-  posts: [] as { sessionEmployee: string }[],
+  posts: [] as { sessionEmployee: string; body: unknown }[],
   /** POSTs the server accepted: filed under `employeeId`. */
   filed: [] as { employeeId: string }[],
+  /** Submit buttons captured from the dialog's server-rendered component. */
+  buttons: [] as { children: ReactNode; onClick?: () => void }[],
+  mutationInputs: [] as unknown[],
 }));
+
+vi.mock("@tanstack/react-query", async (original) => {
+  const actual = await original<typeof import("@tanstack/react-query")>();
+  return {
+    ...actual,
+    useMutation: (options: Parameters<typeof actual.useMutation>[0]) =>
+      actual.useMutation({
+        ...options,
+        mutationFn: (variables, context) => {
+          server.mutationInputs.push(variables);
+          if (!options.mutationFn) throw new Error("mutationFn is required");
+          return options.mutationFn(variables, context);
+        },
+      }),
+  };
+});
 
 vi.mock("@/features/ws10-hris-employee/api.ts", () => ({
   fetchMyHrisProfile: async () => {
     if (server.profileFails) throw new Error("no answer");
-    return { employee: { id: server.sessionEmployee } };
+    const employeeId = server.sessionEmployee;
+    if (server.switchAfterProfile) server.sessionEmployee = EMPLOYEE_B;
+    return { employee: { id: employeeId } };
   },
   submitClockAttendance: async () => {
     throw new Error("not used");
   },
-  submitAttendanceCorrection: async (_body: unknown, ...extra: unknown[]) => {
-    server.posts.push({ sessionEmployee: server.sessionEmployee });
-    const boundTo = JSON.stringify(extra).includes(EMPLOYEE_A);
-    if (boundTo && server.sessionEmployee !== EMPLOYEE_A)
-      throw new ApiError(409, "IDENTITY_CHANGED", "Session changed.");
+  submitAttendanceCorrection: async (body: { expectedEmployeeId?: string }) => {
+    server.posts.push({ sessionEmployee: server.sessionEmployee, body });
+    if (
+      body.expectedEmployeeId !== undefined &&
+      body.expectedEmployeeId !== server.sessionEmployee
+    )
+      throw new ApiError(
+        409,
+        "ATTENDANCE_CORRECTION_IDENTITY_MISMATCH",
+        "Session changed.",
+      );
     server.filed.push({ employeeId: server.sessionEmployee });
     return {
       id: createUlid(),
@@ -81,6 +105,13 @@ vi.mock("react", async (original) => ({
 
 // The toast context throws without its provider and nothing here reads it.
 vi.mock("@/components/ui/toast", () => ({ useToast: () => () => {} }));
+
+vi.mock("@/components/ui/button", () => ({
+  Button: (props: { children?: ReactNode; onClick?: () => void }) => {
+    server.buttons.push({ children: props.children, onClick: props.onClick });
+    return props.children;
+  },
+}));
 
 vi.mock("@tanstack/react-router", async (original) => ({
   ...(await original<typeof import("@tanstack/react-router")>()),
@@ -116,6 +147,7 @@ import {
   enqueueCorrection,
   hasQueuedCorrection,
   markCorrectionRefused,
+  readCorrectionQueue,
   type QueuedCorrection,
 } from "@/features/ws10-hris-employee/queue.ts";
 
@@ -187,9 +219,12 @@ beforeEach(() => {
   server.sessionEmployee = EMPLOYEE_A;
   server.responseOwner = undefined;
   server.profileFails = false;
+  server.switchAfterProfile = false;
   server.effects.length = 0;
   server.posts.length = 0;
   server.filed.length = 0;
+  server.buttons.length = 0;
+  server.mutationInputs.length = 0;
   vi.stubGlobal("window", {
     localStorage: memoryStorage(),
     addEventListener: () => {},
@@ -203,6 +238,65 @@ afterEach(() => {
 });
 
 describe("hris koreksi: tab lama setelah ganti akun", () => {
+  test("the correction dialog submits the expected employee in its body", async () => {
+    const row = refusedEntryOf(EMPLOYEE_A);
+    renderToString(
+      createElement(
+        QueryClientProvider,
+        { client: tabLoadedAs(EMPLOYEE_A) },
+        createElement(CorrectionDialog, {
+          open: true,
+          onOpenChange: () => {},
+          log: null,
+          outletId: row.body.outletId,
+          timeZone: "Asia/Jakarta",
+          editing: row,
+        }),
+      ),
+    );
+
+    const submit = server.buttons.find(
+      (button) => button.children === t("hris.correction.submit"),
+    );
+    expect(submit?.onClick).toBeTypeOf("function");
+    submit?.onClick?.();
+    await settle();
+
+    expect(server.mutationInputs[0]).toMatchObject({
+      body: { expectedEmployeeId: EMPLOYEE_A },
+    });
+    expect(server.posts).toHaveLength(1);
+    expect(server.posts[0]?.body).toMatchObject({
+      expectedEmployeeId: EMPLOYEE_A,
+    });
+  });
+
+  test("a new correction binds its payload to the employee loaded by this tab", async () => {
+    const submit = render(tabLoadedAs(EMPLOYEE_A), useSubmitCorrection);
+    const body = correctionBody();
+
+    await submit.mutateAsync({ body });
+
+    expect(server.posts[0]?.body).toEqual({
+      ...body,
+      expectedEmployeeId: EMPLOYEE_A,
+    });
+  });
+
+  test("a session change after the profile check is rejected by the bound POST", async () => {
+    const submit = render(tabLoadedAs(EMPLOYEE_A), useSubmitCorrection);
+    server.switchAfterProfile = true;
+
+    await expect(
+      submit.mutateAsync({ body: correctionBody() }),
+    ).rejects.toMatchObject({
+      status: 409,
+      code: "ATTENDANCE_CORRECTION_IDENTITY_MISMATCH",
+    });
+
+    expect(server.filed).toEqual([]);
+  });
+
   test("a new correction is not filed under the account that took over the session", async () => {
     const submit = render(tabLoadedAs(EMPLOYEE_A), useSubmitCorrection);
     server.sessionEmployee = EMPLOYEE_B; // another tab signed in as B
@@ -346,6 +440,74 @@ describe("hris koreksi: kirim hanya bila identitas terbukti", () => {
 });
 
 describe("hris koreksi: replay antrean", () => {
+  test("the automatic flush binds its payload to the queued employee", async () => {
+    const body = correctionBody();
+    enqueueCorrection(body, EMPLOYEE_A);
+    mountFlush(tabLoadedAs(EMPLOYEE_A));
+
+    await runEffects();
+
+    expect(server.posts[0]?.body).toEqual({
+      ...body,
+      expectedEmployeeId: EMPLOYEE_A,
+    });
+  });
+
+  test("the queued employee overrides a stale expected employee in the saved body", async () => {
+    const body = { ...correctionBody(), expectedEmployeeId: EMPLOYEE_B };
+    enqueueCorrection(body, EMPLOYEE_A);
+    mountFlush(tabLoadedAs(EMPLOYEE_A));
+
+    await runEffects();
+
+    expect(server.posts[0]?.body).toEqual({
+      ...body,
+      expectedEmployeeId: EMPLOYEE_A,
+    });
+    expect(server.filed).toEqual([{ employeeId: EMPLOYEE_A }]);
+    expect(hasQueuedCorrection(body.idempotencyKey, EMPLOYEE_A)).toBe(false);
+  });
+
+  test("a 409 identity mismatch stays refused and is not automatically replayed", async () => {
+    const body = correctionBody();
+    enqueueCorrection(body, EMPLOYEE_A);
+    mountFlush(tabLoadedAs(EMPLOYEE_A));
+    server.switchAfterProfile = true;
+
+    await runEffects();
+
+    expect(server.filed).toEqual([]);
+    expect(readCorrectionQueue()).toEqual([
+      expect.objectContaining({
+        key: body.idempotencyKey,
+        employeeId: EMPLOYEE_A,
+        refused: expect.objectContaining({
+          status: 409,
+          code: "ATTENDANCE_CORRECTION_IDENTITY_MISMATCH",
+        }),
+      }),
+    ]);
+    server.switchAfterProfile = false;
+    server.sessionEmployee = EMPLOYEE_A;
+    mountFlush(tabLoadedAs(EMPLOYEE_A));
+    await runEffects();
+
+    expect(server.posts).toHaveLength(1);
+    expect(hasQueuedCorrection(body.idempotencyKey, EMPLOYEE_A)).toBe(true);
+  });
+
+  test("Coba lagi binds its payload to the queued employee", async () => {
+    const row = refusedEntryOf(EMPLOYEE_A);
+    const retry = render(tabLoadedAs(EMPLOYEE_A), useRetryCorrection);
+
+    await retry.mutateAsync(row);
+
+    expect(server.posts[0]?.body).toEqual({
+      ...row.body,
+      expectedEmployeeId: EMPLOYEE_A,
+    });
+  });
+
   test("the automatic flush keeps the entry when the response names another owner", async () => {
     const body = correctionBody();
     enqueueCorrection(body, EMPLOYEE_A);

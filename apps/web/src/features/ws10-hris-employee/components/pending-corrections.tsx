@@ -73,11 +73,13 @@ function QueuedRow({
           </p>
           {refused !== undefined && (
             <p className="text-sm leading-5 font-medium text-danger">
-              {refused.reason.trim() === ""
-                ? t("hris.correction.refusedNoReason")
-                : t("hris.correction.refusedReason", {
-                    reason: refused.reason,
-                  })}
+              {refused.code === "ATTENDANCE_CORRECTION_IDENTITY_MISMATCH"
+                ? t("hris.correction.identityMismatch")
+                : refused.reason.trim() === ""
+                  ? t("hris.correction.refusedNoReason")
+                  : t("hris.correction.refusedReason", {
+                      reason: refused.reason,
+                    })}
             </p>
           )}
         </div>

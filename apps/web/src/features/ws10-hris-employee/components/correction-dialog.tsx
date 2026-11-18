@@ -40,6 +40,7 @@ import {
 } from "../state.ts";
 import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 import { CorrectionQueueFullError, type QueuedCorrection } from "../queue.ts";
+import { ApiError } from "@/lib/api/errors";
 
 const TYPES: readonly AttendanceType[] = [
   "in",
@@ -131,6 +132,7 @@ function CorrectionForm({
 }) {
   const t = useT();
   const submit = useSubmitCorrection();
+  const employeeId = useMyEmployeeId();
   // One key per distinct request: a resend of the same body reuses it (the
   // API answers the first correction); an edited body gets a fresh key, since
   // a reused key with a different body is IDEMPOTENCY_KEY_REUSED (409).
@@ -154,6 +156,12 @@ function CorrectionForm({
   const [formError, setFormError] = useState<string | null>(null);
 
   function handleSend() {
+    const expectedEmployeeId =
+      editing?.employeeId ?? log?.employeeId ?? employeeId;
+    if (expectedEmployeeId === null) {
+      setFormError(t("hris.correction.identityMismatch"));
+      return;
+    }
     const occurredAtIso = fromDateTimeLocalValue(occurredAt, timeZone);
     if (occurredAtIso === null) {
       setErrors({ requestedOccurredAt: t("hris.correction.timeInvalid") });
@@ -161,6 +169,7 @@ function CorrectionForm({
     }
     const request = {
       outletId,
+      expectedEmployeeId,
       attendanceLogId: editing
         ? (editing.body.attendanceLogId ?? null)
         : (log?.id ?? null),
@@ -267,9 +276,14 @@ function CorrectionForm({
             <p className="text-sm leading-5">
               {submit.error instanceof CorrectionQueueFullError
                 ? t("hris.correction.queueFull")
-                : submit.error instanceof Error
-                  ? submit.error.message
-                  : t("hris.correction.errorTitle")}
+                : submit.error instanceof ApiError &&
+                    (submit.error.code ===
+                      "ATTENDANCE_CORRECTION_IDENTITY_MISMATCH" ||
+                      submit.error.code === "IDENTITY_CHANGED")
+                  ? t("hris.correction.identityMismatch")
+                  : submit.error instanceof Error
+                    ? submit.error.message
+                    : t("hris.correction.errorTitle")}
             </p>
             <p className="text-sm leading-5 text-muted-foreground">
               {t("hris.correction.errorHint")}

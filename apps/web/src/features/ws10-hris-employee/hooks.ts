@@ -167,6 +167,19 @@ export function useSubmitCorrection() {
       /** Key of the queued entry an edit ("Ubah") supersedes (legend-l5tvy). */
       replaces?: string;
     }): Promise<CorrectionSubmitResult> => {
+      // Bind the POST itself, closing the gap after the session preflight.
+      // Keep an explicit owner from the form rather than rebinding a stale
+      // request to a newly signed-in employee.
+      if (
+        body.expectedEmployeeId !== undefined &&
+        employeeId !== null &&
+        body.expectedEmployeeId !== employeeId
+      )
+        throw identityChangedError();
+      body = {
+        ...body,
+        expectedEmployeeId: body.expectedEmployeeId ?? employeeId ?? undefined,
+      };
       // Queues the attempt; an edit swaps the old entry in one write. Throws
       // `CorrectionQueueFullError` instead of reporting a lost request.
       const queueAttempt = (owner: string): CorrectionSubmitResult => {
@@ -233,7 +246,10 @@ function submitForOwner(
   ownerId: string,
 ): (body: AttendanceCorrectionInput) => Promise<AttendanceCorrection> {
   return async (body) => {
-    const correction = await submitAttendanceCorrection(body);
+    const correction = await submitAttendanceCorrection({
+      ...body,
+      expectedEmployeeId: ownerId,
+    });
     if (correction.employeeId !== ownerId)
       throw new Error("Correction was filed under another employee.");
     return correction;

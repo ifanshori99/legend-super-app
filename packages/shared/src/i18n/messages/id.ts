@@ -1376,6 +1376,8 @@ export const id = {
       queuedHint: "Pengajuan terkirim otomatis saat internet tersedia.",
       errorTitle: "Pengajuan gagal dikirim",
       errorHint: "Periksa koneksi lalu coba lagi. Tidak ada pengajuan ganda.",
+      identityMismatch:
+        "Akun karyawan berubah. Muat ulang halaman, lalu ajukan koreksi dari akun yang sesuai.",
       queueFull:
         "Antrean penuh oleh pengajuan yang ditolak. Buang atau ubah salah satunya dulu.",
       noLog: "Absen tidak tercatat",

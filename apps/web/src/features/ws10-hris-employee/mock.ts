@@ -22,6 +22,7 @@ import {
   requestAttendanceCorrection,
 } from "@starter/shared/hris";
 import { localDateOf, createUlid } from "@starter/shared/core";
+import { createTranslator } from "@starter/shared/i18n";
 import { ApiError } from "../../lib/api/errors.ts";
 import { paginateFixture } from "../../lib/mock/paginate.ts";
 import {
@@ -205,6 +206,15 @@ registerMock(clockAttendance, ({ body }) => {
 });
 
 registerMock(requestAttendanceCorrection, ({ body }) => {
+  if (
+    body.expectedEmployeeId !== undefined &&
+    body.expectedEmployeeId !== me.id
+  )
+    throw new ApiError(
+      409,
+      "ATTENDANCE_CORRECTION_IDENTITY_MISMATCH",
+      createTranslator()("hris.correction.identityMismatch"),
+    );
   const state = store.get();
   const fingerprint = fingerprintOf(body);
   const replay = state.correctionReplays[body.idempotencyKey];
