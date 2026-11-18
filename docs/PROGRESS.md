@@ -2022,3 +2022,4 @@ Langkah berikut CTO baru:
 - 18:31 CTO: review 1086 bersih (0 P0-P2, 2 P3 -> legend-m7yeb di 1087). merge-queue SIAP batch91, worktree legend-1044b46d dihapus. Brief 1087 akses lanjutan (huz8, m7yeb, 5bx8v, p30t3; base ws/1086, migrasi 0702-0703) ditulis; kpg76 ditahan (butuh desain verifikasi nomor WhatsApp).
 - 18:32 CTO: thread G2y41 (Opus, akun #4) mulai 1087 akses lanjutan, base ws/1086.
 - 18:36 CTO: G88n4 lapor fix ronde 8: ws/1072 f5533778a (R1 kunci invalid-h hash, R2 hold seluruh pembayaran intent, R3 not_this_intent untuk K3; I10; regresi 135 berkas 2009 lulus; architect xhigh 0 P0-P2). 967-3 gagal juga di 6c0055dcb (diduga hold I9): G88n4 diberi tugas sesuaikan test bila penyebab terbukti. SO ronde 9 (brief 1088) dimulai di Codex #2.
+- 18:40 CTO: 967-3 test disesuaikan I9 (hold K1 sah, kode benar), ws/1072 0d8003db8, 24/24 lulus. G88n4 tambah catatan runbook K1, lalu di-resolve. Refund menunggu SO ronde 9 (G4an6).
