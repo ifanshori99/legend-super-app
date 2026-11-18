@@ -212,12 +212,13 @@ type RequestRow = {
   chain_id: string;
   status: string;
   level: number;
+  required_levels: number;
   requested_by: string;
   action_type: string;
 };
 async function requestsOf(entryId: string): Promise<RequestRow[]> {
   const { rows } = await owner.query<RequestRow>(
-    `SELECT id, chain_id, status, level, requested_by, action_type FROM approval_requests
+    `SELECT id, chain_id, status, level, required_levels, requested_by, action_type FROM approval_requests
       WHERE tenant_id = $1 AND object_type = 'cash_bank_entry' AND object_id = $2
       ORDER BY level, created_at`,
     [tenantId, entryId],
@@ -293,13 +294,18 @@ const inboxDecide = (
     { mfaVerified: true, idempotencyKey: null },
   );
 
-/** The chain the submit opened: one request per matrix level, one chain id. */
+/**
+ * The chain the submit opened. The platform approval opens level 1 only; the
+ * next level's request is created when the previous one is decided, so the
+ * chain's length shows in `required_levels`, not in the row count.
+ */
 async function chainOf(entryId: string): Promise<string> {
   const requests = await requestsOf(entryId);
+  expect(requests, "level 1 of the chain is open").toHaveLength(1);
   expect(
-    requests,
+    requests[0]!.required_levels,
     "the held top-up opened a two-level approval chain",
-  ).toHaveLength(2);
+  ).toBe(2);
   return requests[0]!.chain_id;
 }
 
@@ -328,14 +334,15 @@ describe("SO 1036 finding 6: held petty top-up goes through the approval chain",
   // Remove this test's matrix tier before the next test and before the lock goes.
   afterEach(cleanupPolicies);
 
-  it("[so1036-petty-topup-SO-6-1] an above-limit top-up opens one chain with a request per matrix level, shows in the finance inbox, and moves no money", async () => {
+  it("[so1036-petty-topup-SO-6-1] an above-limit top-up opens a two-level chain at level 1, shows in the finance inbox, and moves no money", async () => {
     await twoLevelMatrix();
     const before = await glSnapshot();
     const { outletId, entryId } = await submitHeld();
 
+    await chainOf(entryId);
     const requests = await requestsOf(entryId);
-    expect(requests.map((r) => r.level)).toEqual([1, 2]);
-    expect(new Set(requests.map((r) => r.chain_id)).size).toBe(1);
+    expect(requests.map((r) => r.level)).toEqual([1]);
+    expect(requests[0]!.required_levels).toBe(2);
     for (const request of requests)
       expect(request).toMatchObject({
         action_type: ACTION,
@@ -404,7 +411,6 @@ describe("SO 1036 finding 6: held petty top-up goes through the approval chain",
         inboxDecide(who, (await openLevel(entryId)).id, "approved"),
       ).rejects.toThrow();
     expect((await requestsOf(entryId)).map((r) => r.status)).toEqual([
-      "pending",
       "pending",
     ]);
     await expectNothingMoved(outletId, entryId, before);
@@ -567,6 +573,6 @@ describe("SO 1036 finding 6: held petty top-up goes through the approval chain",
     );
     expect(second.body.data.id).toBe(first.body.data.id);
     expect(await topupEntryCount(outletId)).toBe(1);
-    expect(await requestsOf(first.body.data.id)).toHaveLength(2);
+    await chainOf(first.body.data.id);
   });
 });

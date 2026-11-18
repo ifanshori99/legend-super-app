@@ -198,9 +198,23 @@ const listFunds = (who: Session, query: Record<string, string>) =>
 
 const ok = (status: number) => [200, 201].includes(status);
 
+/**
+ * A finance user with no cash-out history. The anti-split rule tiers on the
+ * creator's total for the day, and the shared `finance` user has held top-ups
+ * of above the limit from earlier tests, so a small top-up by it would be held
+ * too. Tests that need a direct top-up or a chain amount equal to the request
+ * use their own creator.
+ */
+const freshCreator = (label: string): Promise<Session> =>
+  signedIn(app, label, [{ role: "finance", outletId: null }]);
+
 /** Tops the outlet's fund up through the API and returns the new entry id. */
-async function fundWith(outletId: string, amountIdr: number): Promise<string> {
-  const res = await move(finance, movementBody(outletId, "topup", amountIdr));
+async function fundWith(
+  outletId: string,
+  amountIdr: number,
+  who: Session = finance,
+): Promise<string> {
+  const res = await move(who, movementBody(outletId, "topup", amountIdr));
   expect(res.status, JSON.stringify(res.body)).toBe(201);
   return res.body.data.id as string;
 }
@@ -1513,9 +1527,10 @@ describe("legend-6ipij held top-up opens its approval chain (SO 1036 finding 6)"
   });
 
   it("[legend-6ipij-PC-2] a held top-up has exactly one pending cash_out chain; no fund, no ledger row, no journal yet", async () => {
+    const creator = await freshCreator("PC chain creator");
     const outletId = await freshOutlet();
     const res = await move(
-      finance,
+      creator,
       movementBody(outletId, "topup", ABOVE_LIMIT_IDR),
     );
     expect(res.status, JSON.stringify(res.body)).toBe(202);
@@ -1529,7 +1544,7 @@ describe("legend-6ipij held top-up opens its approval chain (SO 1036 finding 6)"
         action_type: "cash_out",
         object_type: CASH_BANK_ENTRY_OBJECT_TYPE,
         status: "pending",
-        requested_by: finance.userId,
+        requested_by: creator.userId,
         amount_idr: String(ABOVE_LIMIT_IDR),
       });
     expect(chain[0]!.payload).toMatchObject({
@@ -1570,8 +1585,9 @@ describe("legend-6ipij held top-up opens its approval chain (SO 1036 finding 6)"
   });
 
   it("[legend-6ipij-PC-4] a top-up at or below the limit is direct: no document, no chain", async () => {
+    const creator = await freshCreator("PC direct creator");
     const outletId = await freshOutlet();
-    const entryId = await fundWith(outletId, 100_000);
+    const entryId = await fundWith(outletId, 100_000, creator);
     expect(await chainOf(entryId)).toHaveLength(0);
     expect(await balanceOf(outletId)).toBe(100_000);
   });
@@ -1666,18 +1682,20 @@ describe("legend-3k9qg petty cash paths take the entity lock (SO 1036 finding 3)
   }
 
   it("[legend-3k9qg-PC-1] a return waits for the entity lock", async () => {
+    const creator = await freshCreator("PC lock return");
     const outletId = await freshOutlet();
-    await fundWith(outletId, 100_000);
+    await fundWith(outletId, 100_000, creator);
     const res = await whileEntityLocked(world.entityId, async () =>
-      move(finance, movementBody(outletId, "return", 40_000)),
+      move(creator, movementBody(outletId, "return", 40_000)),
     );
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(await balanceOf(outletId)).toBe(60_000);
   });
 
   it("[legend-3k9qg-PC-2] a petty purchase waits for the entity lock", async () => {
+    const creator = await freshCreator("PC lock purchase");
     const outletId = await freshOutlet();
-    await fundWith(outletId, 100_000);
+    await fundWith(outletId, 100_000, creator);
     const body = await purchaseBody(outletId, 30_000);
     const res = await whileEntityLocked(world.entityId, async () => buy(body));
     expect(res.status, JSON.stringify(res.body)).toBe(201);
@@ -1700,7 +1718,7 @@ describe("legend-3k9qg petty cash paths take the entity lock (SO 1036 finding 3)
     let parkedId = "";
     try {
       const parked = await move(
-        finance,
+        await freshCreator("PC lock parked"),
         movementBody(outletId, "topup", 30_000, {
           bankAccountId: w.bankAccountA,
         }),
