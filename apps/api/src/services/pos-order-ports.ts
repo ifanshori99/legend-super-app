@@ -145,6 +145,8 @@ export type PosExternalTenderInput = {
   reference: string | null;
   edcTransactionId: string | null;
   pointsUsed: number | null;
+  /** Points tender: the member QR token that proves the member is present. */
+  memberToken?: string | null;
   cashierId: UserId;
   at: Date;
 };

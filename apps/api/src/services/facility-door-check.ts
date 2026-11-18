@@ -20,8 +20,8 @@
 // records `first_opened_at` once; a repeat check (guest re-enters) answers 200
 // and changes nothing.
 import { createHash } from "node:crypto";
-import { and, eq } from "drizzle-orm";
-import type { ScopedTenantContext } from "@starter/shared/core";
+import { and, eq, sql } from "drizzle-orm";
+import { ulidToUuid, type ScopedTenantContext } from "@starter/shared/core";
 import {
   isWithinCredentialWindow,
   transitionTicket,
@@ -29,47 +29,124 @@ import {
   type DoorCheckAccessTicketBody,
 } from "@starter/shared/facility";
 import { db } from "../db/index.ts";
+import { devices } from "../db/schema/device.ts";
 import { accessTickets } from "../db/schema/facility.ts";
-import { accessTicketCredentials } from "../db/schema/facility-pos-ticket.ts";
+import {
+  accessTicketCredentials,
+  accessTicketPinGuesses,
+} from "../db/schema/facility-pos-ticket.ts";
 import { withTenant } from "../db/tenant.ts";
-import { createFixedWindowCounter } from "../lib/fixed-window-counter.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { logger } from "../lib/logger.ts";
 import { auditFacility, toTicket } from "./facility-shared.ts";
 
 const sha256 = (value: string) =>
   createHash("sha256").update(value, "utf8").digest("hex");
 
-// Refusals AFTER the PIN matched the stored digest (facility, window, status,
-// revoke): the guest had the right PIN, so the PIN limit must not count them.
-// The reply is the same uniform 403; only this module can tell them apart.
+// Refusals that are NOT a wrong PIN: AFTER the PIN matched the stored digest
+// (facility, window, status, revoke) the guest had the right PIN, and a
+// training or unknown device (R3-02) says nothing about the PIN at all, so the
+// PIN limit must not count either. The reply is the same uniform 403; only this
+// module can tell them apart.
 const afterPinMatch = new WeakSet<HttpError>();
 
-function invalidCredential(options: { pinMatched?: boolean } = {}): HttpError {
+function invalidCredential(
+  options: { pinMatched?: boolean; deviceRefused?: boolean } = {},
+): HttpError {
   const error = new HttpError(
     403,
     "DOOR_CREDENTIAL_INVALID",
     "Kredensial pintu tidak valid.",
   );
-  if (options.pinMatched === true) afterPinMatch.add(error);
+  if (options.pinMatched === true || options.deviceRefused === true)
+    afterPinMatch.add(error);
   return error;
 }
 
 // PIN guess limit: a 6-digit PIN has only 10^6 values, so the wrong PINs of the
 // PIN path are counted per tenant + ticket. Five wrong PINs in 15 minutes lock
 // the PIN path of that ticket (even the right PIN answers 429); the QR path and
-// other tickets are not affected. The counter is process-local (like the other
-// fixed-window limits); the count lives OUTSIDE the transaction, which rolls
-// back when the check throws.
+// other tickets are not affected. The counter lives in the database
+// (`access_ticket_pin_guesses`, migration 0489, R2-04 / legend-0xt77): every
+// instance shares it, nothing evicts a row, and a row exists only for a real
+// ticket, so churn of unknown ticket ids can neither fill nor reset it. Each
+// reservation and release commits in its own short transaction OUTSIDE the
+// check transaction, which rolls back when the check throws.
 export const DOOR_PIN_MAX_FAILURES = 5;
 export const DOOR_PIN_WINDOW_MS = 15 * 60 * 1000;
-const pinFailures = createFixedWindowCounter({
-  limit: DOOR_PIN_MAX_FAILURES,
-  windowMs: DOOR_PIN_WINDOW_MS,
-  capacity: 10_000,
-});
+const DOOR_PIN_WINDOW_SECONDS = DOOR_PIN_WINDOW_MS / 1000;
 
-const pinFailureKey = (tenantId: string, ticketId: string) =>
-  `${tenantId}:${ticketId}`;
+type PinAttempt =
+  { locked: true } | { locked: false; release: () => Promise<void> };
+
+/**
+ * Reserves one PIN guess for the ticket before the check, atomically (the row
+ * lock of the upsert serialises concurrent guesses, so none slips past the
+ * limit). An id with no ticket reserves nothing: the lookup fails anyway and
+ * no row is written for it.
+ */
+async function reservePinAttempt(
+  context: ScopedTenantContext,
+  ticketId: string,
+): Promise<PinAttempt> {
+  const tenantId = context.tenant.tenantId;
+  const ticketUuid = ulidToUuid(ticketId);
+  return withTenant(db, context, async (tx) => {
+    const reserved = await tx.execute(sql`
+      INSERT INTO access_ticket_pin_guesses AS g
+        (tenant_id, outlet_id, access_ticket_id, window_started_at, failures, updated_at)
+      SELECT t.tenant_id, t.outlet_id, t.id, clock_timestamp(), 1, clock_timestamp()
+        FROM access_tickets t
+       WHERE t.tenant_id = ${tenantId} AND t.id = ${ticketUuid}
+      ON CONFLICT (tenant_id, access_ticket_id) DO UPDATE SET
+        window_started_at = CASE
+          WHEN g.window_started_at + make_interval(secs => ${DOOR_PIN_WINDOW_SECONDS}) <= clock_timestamp()
+          THEN clock_timestamp() ELSE g.window_started_at END,
+        failures = CASE
+          WHEN g.window_started_at + make_interval(secs => ${DOOR_PIN_WINDOW_SECONDS}) <= clock_timestamp()
+          THEN 1 ELSE g.failures + 1 END,
+        updated_at = clock_timestamp()
+      WHERE g.window_started_at + make_interval(secs => ${DOOR_PIN_WINDOW_SECONDS}) <= clock_timestamp()
+         OR g.failures < ${DOOR_PIN_MAX_FAILURES}
+      RETURNING window_started_at::text AS window_started_at
+    `);
+    const row = reserved.rows[0] as { window_started_at: string } | undefined;
+    if (!row) {
+      // Nothing reserved: the ticket is unknown (no lock) or its window is
+      // full (locked).
+      const [full] = await tx
+        .select({ id: accessTicketPinGuesses.id })
+        .from(accessTicketPinGuesses)
+        .where(
+          and(
+            eq(accessTicketPinGuesses.tenantId, tenantId),
+            eq(accessTicketPinGuesses.accessTicketId, ticketId),
+          ),
+        )
+        .limit(1);
+      return full
+        ? { locked: true as const }
+        : { locked: false as const, release: async () => {} };
+    }
+    const windowStartedAt = row.window_started_at;
+    return {
+      locked: false as const,
+      // Hands the guess back (the PIN was right) when it is still in the
+      // window it was reserved in.
+      release: () =>
+        withTenant(db, context, async (releaseTx) => {
+          await releaseTx.execute(sql`
+            UPDATE access_ticket_pin_guesses
+               SET failures = GREATEST(failures - 1, 0),
+                   updated_at = clock_timestamp()
+             WHERE tenant_id = ${tenantId}
+               AND access_ticket_id = ${ticketUuid}
+               AND window_started_at = ${windowStartedAt}::timestamptz
+          `);
+        }),
+    };
+  });
+}
 
 /**
  * POST /api/facility/tickets/door-check. The caller (route) checked the door
@@ -79,26 +156,32 @@ export async function doorCheckTicket(
   context: ScopedTenantContext,
   actorUserId: string,
   input: DoorCheckAccessTicketBody,
-  now = new Date(),
+  deviceId: string | null = null,
 ): Promise<{ ticket: AccessTicket }> {
   if (!("ticketId" in input))
-    return checkCredential(context, actorUserId, input, now);
+    return checkCredential(context, actorUserId, input, deviceId);
   // One attempt is reserved BEFORE the check (so concurrent guesses cannot
   // slip past the limit) and handed back unless the credential was wrong.
-  const attempt = pinFailures.reserve(
-    pinFailureKey(context.tenant.tenantId, input.ticketId),
-    now.getTime(),
-  );
+  const attempt = await reservePinAttempt(context, input.ticketId);
   // Locked: refused before any lookup, so even the right PIN opens nothing.
-  if (attempt.retryAfter !== null)
+  if (attempt.locked)
     throw new HttpError(
       429,
       "DOOR_PIN_LOCKED",
       "Terlalu banyak PIN salah untuk tiket ini; gunakan QR atau tunggu.",
     );
   try {
-    const result = await checkCredential(context, actorUserId, input, now);
-    attempt.release();
+    const result = await checkCredential(context, actorUserId, input, deviceId);
+    // The door is already open: a failed hand-back must not turn this 200 into
+    // a 500 (the slot just stays used until it ages out).
+    try {
+      await attempt.release();
+    } catch (releaseError) {
+      logger.warn(
+        { err: releaseError, ticketId: input.ticketId },
+        "door PIN attempt release failed after the door opened",
+      );
+    }
     return result;
   } catch (error) {
     // Keep the slot only when the PIN itself was wrong.
@@ -107,7 +190,7 @@ export async function doorCheckTicket(
       error.code === "DOOR_CREDENTIAL_INVALID" &&
       !afterPinMatch.has(error)
     ))
-      attempt.release();
+      await attempt.release();
     throw error;
   }
 }
@@ -116,7 +199,7 @@ async function checkCredential(
   context: ScopedTenantContext,
   actorUserId: string,
   input: DoorCheckAccessTicketBody,
-  now: Date,
+  deviceId: string | null,
 ): Promise<{ ticket: AccessTicket }> {
   const tenantId = context.tenant.tenantId;
   // Same digests as the mint (facility-pos-tickets.ts): the QR token alone, or
@@ -130,6 +213,33 @@ async function checkCredential(
           digest: sha256(`${input.ticketId}:${input.pin}`),
         } as const);
   return withTenant(db, context, async (tx) => {
+    // R3-02 (legend-9c76n): the calling device is locked FOR SHARE BEFORE the
+    // ticket row, the same order as the sale (facility-pos-ticket-sale.ts,
+    // R2-06): the training toggle (setDeviceTrainingMode, FOR UPDATE) waits for
+    // an open in flight, so the mode read here is the mode the ticket is
+    // opened under; a device switched to training before this lock is
+    // refused. Read tenant-wide (a device of another outlet than the staff's
+    // reach must still be seen): the outlet scope is widened for this one read
+    // and restored right after. Missing or training: the uniform refusal, and
+    // it does not use up a PIN attempt (the PIN was never judged).
+    if (deviceId !== null) {
+      const outlets =
+        context.outletScope.kind === "tenant"
+          ? "*"
+          : JSON.stringify(context.outletScope.outletIds);
+      await tx.execute(sql`SELECT set_config('app.outlet_ids', '*', true)`);
+      const [device] = await tx
+        .select({ trainingMode: devices.trainingMode })
+        .from(devices)
+        .where(and(eq(devices.tenantId, tenantId), eq(devices.id, deviceId)))
+        .limit(1)
+        .for("share");
+      await tx.execute(
+        sql`SELECT set_config('app.outlet_ids', ${outlets}, true)`,
+      );
+      if (!device || device.trainingMode === true)
+        throw invalidCredential({ deviceRefused: true });
+    }
     // Find the ticket the credential belongs to (not locked yet).
     const [found] = await tx
       .select({ ticketId: accessTicketCredentials.accessTicketId })
@@ -160,6 +270,13 @@ async function checkCredential(
       .limit(1)
       .for("update");
     if (!row) throw invalidCredential();
+    // The door clock is the database clock, read AFTER the ticket lock (R2-03):
+    // a check that waited for the lock behind a rotation or a refund must judge
+    // the credential window at the moment it holds the lock, not at request
+    // arrival. clock_timestamp() (not now()) because now() is the transaction
+    // start, before the wait.
+    const clock = await tx.execute(sql`SELECT clock_timestamp() AS now`);
+    const now = new Date((clock.rows[0] as { now: Date | string }).now);
     // Read again under the ticket lock: a rotation or a revoke may have landed
     // between the lookup and the lock.
     const [credential] = await tx

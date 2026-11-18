@@ -3326,6 +3326,20 @@
       "when": 1795000000105,
       "tag": "0488_reservation_credit_recon_flags",
       "breakpoints": true
+    },
+    {
+      "idx": 489,
+      "version": "7",
+      "when": 1795000000106,
+      "tag": "0489_access_ticket_pin_guesses",
+      "breakpoints": true
+    },
+    {
+      "idx": 490,
+      "version": "7",
+      "when": 1795000000107,
+      "tag": "0490_member_qr_redeem_nonces",
+      "breakpoints": true
     }
   ]
 }

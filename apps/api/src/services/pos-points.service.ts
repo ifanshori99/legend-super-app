@@ -30,12 +30,15 @@ import type {
 } from "@starter/shared/pos/points";
 import { db } from "../db/index.ts";
 import { withProfileLock } from "../db/member-scope.ts";
+import { memberQrRedeemNonces } from "../db/schema/crm-ledger.ts";
 import { customerProfiles, loyaltyPrograms } from "../db/schema/crm-member.ts";
 import { orders } from "../db/schema/qr-order.ts";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { verifyMemberQrRedeemToken } from "../lib/member-qr-token.ts";
 import { withTenant } from "../db/tenant.ts";
 import { isTrainingOrder } from "./device-training.ts";
+import { checkLoyaltyOutletEntity } from "./loyalty-entity-guard.ts";
 import { expirePointsForProfile } from "./loyalty-expiry.service.ts";
 import type { Tx } from "./menu-internals.ts";
 import { addPosTender } from "./pos-order-payment.ts";
@@ -113,6 +116,37 @@ function priceRedemption(input: {
   return valueIdr;
 }
 
+const memberQrRefusal = () =>
+  new HttpError(
+    409,
+    "POINTS_MEMBER_QR_REFUSED",
+    "QR member tidak berlaku untuk penukaran ini. Minta member membuat QR baru.",
+  );
+
+/**
+ * The claims of a member QR that fits this bill (tenant, member, order, amount,
+ * not expired at `now`); refuses with one answer otherwise, also when the QR is
+ * missing.
+ */
+function checkMemberQr(
+  token: string | null | undefined,
+  tenantId: string,
+  profileId: string,
+  expected: { orderId: string; points: number; now: Date },
+) {
+  const claims = token
+    ? verifyMemberQrRedeemToken(token, tenantId, expected.now)
+    : null;
+  if (
+    !claims ||
+    claims.customerProfileId !== profileId ||
+    claims.orderId !== expected.orderId ||
+    claims.points !== expected.points
+  )
+    throw memberQrRefusal();
+  return claims;
+}
+
 /**
  * The port behind a `points` tender (`setPosPointsTenderPort`): runs inside the
  * order transaction with the order row locked. `input.amountIdr` is the
@@ -174,6 +208,38 @@ export const posPointsTenderSettlement: PosExternalTenderPort = async (
       "POINTS_NEED_MEMBER_PROOF",
       "Minta member memindai QR member atau masuk lewat aplikasi untuk memakai poin.",
     );
+  // weexf: a member present by scanned QR spends points only with a QR minted
+  // for THIS order and amount, of the member on the bill, valid 120 s and never
+  // used before. Judged here, before the entity guard takes its tenant-wide
+  // lock, so a QR that does not fit this bill never blocks another redeem; the
+  // expiry is judged again on the database clock below. A PWA session needs no
+  // QR. Every refusal answers alike (no oracle).
+  const qrClaims =
+    order.customerAttachedVia === "member_qr"
+      ? checkMemberQr(input.memberToken, tenantId, order.customerProfileId, {
+          orderId: input.orderId,
+          points,
+          now: input.at,
+        })
+      : null;
+  // The program belongs to one legal entity (PT): points never pay at an outlet
+  // of another PT. Anything but "ok" (mismatch, ambiguous owner, a PT change
+  // still running) refuses before any lock or debit, so nothing is spent.
+  const entity = await checkLoyaltyOutletEntity(tx, tenantId, [
+    outletIdSchema.parse(input.outletId),
+  ]);
+  if (entity === "busy")
+    throw new HttpError(
+      409,
+      "POINTS_ENTITY_BUSY",
+      "Sistem sedang memproses poin member, coba lagi.",
+    );
+  if (entity !== "ok")
+    throw new HttpError(
+      409,
+      "POINTS_ENTITY_REFUSED",
+      "Poin member tidak bisa dipakai di outlet ini.",
+    );
   const profileId = order.customerProfileId;
   await withProfileLock(tx, tenantId, profileId);
   // The expiry boundary is judged by the database clock read after the locks:
@@ -182,6 +248,34 @@ export const posPointsTenderSettlement: PosExternalTenderPort = async (
     sql`SELECT clock_timestamp() AS now`,
   );
   const lockedAt = new Date(clock.rows[0].now);
+  if (
+    qrClaims &&
+    !checkMemberQr(input.memberToken, tenantId, profileId, {
+      orderId: input.orderId,
+      points,
+      now: lockedAt,
+    })
+  )
+    throw memberQrRefusal();
+  // weexf (second half): the nonce is spent in this transaction, so a failed
+  // debit below rolls it back (the QR stays unspent) and a second use waits on
+  // the unique key and loses. The claims were already checked above.
+  if (qrClaims) {
+    const [spent] = await tx
+      .insert(memberQrRedeemNonces)
+      .values({
+        tenantId,
+        outletId: outletIdSchema.parse(input.outletId),
+        nonce: qrClaims.nonce,
+        orderId: input.orderId,
+        customerProfileId: profileId,
+        points,
+        consumedAt: lockedAt,
+      })
+      .onConflictDoNothing()
+      .returning({ id: memberQrRedeemNonces.id });
+    if (!spent) throw memberQrRefusal();
+  }
   // Expired points must not pay (as redeemReward): expire first, then read the
   // balance again under the same lock.
   await expirePointsForProfile(tx, tenantId, profileId, lockedAt);
@@ -321,7 +415,7 @@ export async function redeemPosOrderPoints(
   caller: PosCaller,
   outletId: OutletId,
   orderId: string,
-  input: { points: number; idempotencyKey: string },
+  input: { points: number; idempotencyKey: string; memberToken?: string },
   now = new Date(),
 ): Promise<PosOrderDetail> {
   const result = await addPosTender(
@@ -332,6 +426,7 @@ export async function redeemPosOrderPoints(
     {
       method: "points",
       pointsUsed: input.points,
+      ...(input.memberToken ? { memberToken: input.memberToken } : {}),
       idempotencyKey: input.idempotencyKey,
     },
     now,

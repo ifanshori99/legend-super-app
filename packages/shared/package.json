@@ -10,6 +10,7 @@
     "./site": "./src/site.ts",
     "./validators/finance-exceptions": "./src/validators/finance-exceptions.ts",
     "./validators/kirimdev-sender": "./src/validators/kirimdev-sender.ts",
+    "./validators/member-qr-token": "./src/validators/member-qr-token.ts",
     "./validators/payroll-payout": "./src/validators/payroll-payout.ts",
     "./validators/payroll-payout-recon-clearance": "./src/validators/payroll-payout-recon-clearance.ts",
     "./validators/payroll-payout-return-withdraw": "./src/validators/payroll-payout-return-withdraw.ts",

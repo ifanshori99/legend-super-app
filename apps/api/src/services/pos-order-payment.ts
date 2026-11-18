@@ -250,7 +250,10 @@ export async function addPosTender(
     Partial<Pick<AddTenderInput, "expectedStatus">>,
   now = new Date(),
 ): Promise<PosTenderResult> {
+  // The member QR is a single-use proof, not part of what the payment is: a
+  // replay of the same key answers the stored result even with another token.
   const { idempotencyKey, ...request } = input;
+  delete request.memberToken;
   return mutatePosOrder(
     context,
     caller,
@@ -415,7 +418,10 @@ export async function addPosTender(
       const remaining = remainingIdr(order, tenders);
       if (remaining <= 0)
         throw new PosError("ORDER_NOT_PAYABLE", "Tagihan ini sudah lunas.");
-      if (input.method !== "points" && input.pointsUsed != null)
+      if (
+        input.method !== "points" &&
+        (input.pointsUsed != null || input.memberToken != null)
+      )
         throw new PosError("CASH_TENDER_MISMATCH");
       const base = {
         tenantId,
@@ -590,6 +596,7 @@ export async function addPosTender(
                   reference: input.reference ?? null,
                   edcTransactionId: input.edcTransactionId ?? null,
                   pointsUsed: input.pointsUsed ?? null,
+                  memberToken: input.memberToken ?? null,
                   cashierId: caller.userId,
                   at: now,
                 });

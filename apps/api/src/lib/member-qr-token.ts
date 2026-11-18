@@ -4,7 +4,10 @@
 // profile and nothing else:
 //   token = base64url(payload).base64url(HMAC-SHA256(key, base64url(payload)))
 //   payload = { t: tenantId, p: customerProfileId, e: expiry (Unix seconds),
-//               n: random nonce }
+//               n: random nonce, o?: orderId, a?: points }
+// `o` and `a` bind a token to one order and one amount (weexf): redeeming
+// points at the POS needs both, and spends the nonce once. A token without them
+// still attaches a member, but never redeems.
 // The key is derived from BETTER_AUTH_SECRET with a fixed label (like device
 // tokens), so no extra deployment variable is needed. Every failure verifies
 // to the same null so the answer is not an oracle.
@@ -21,6 +24,8 @@ const payloadSchema = z.strictObject({
   p: z.string().min(1).max(64),
   e: z.number().int().positive(),
   n: z.string().min(1).max(64),
+  o: z.string().min(1).max(64).optional(),
+  a: z.number().int().positive().max(1_000_000).optional(),
 });
 
 let cachedKey: Buffer | undefined;
@@ -37,7 +42,13 @@ function sign(body: string): string {
 }
 
 export function issueMemberQrToken(
-  input: { tenantId: string; customerProfileId: string },
+  input: {
+    tenantId: string;
+    customerProfileId: string;
+    /** Bind the token to one order and one amount of points (weexf). */
+    orderId?: string;
+    points?: number;
+  },
   now: Date,
 ): { token: string; expiresAt: string } {
   const expiresAtSeconds =
@@ -48,6 +59,9 @@ export function issueMemberQrToken(
       p: input.customerProfileId,
       e: expiresAtSeconds,
       n: randomBytes(12).toString("base64url"),
+      ...(input.orderId !== undefined && input.points !== undefined
+        ? { o: input.orderId, a: input.points }
+        : {}),
     }),
     "utf8",
   ).toString("base64url");
@@ -57,15 +71,11 @@ export function issueMemberQrToken(
   };
 }
 
-/**
- * The profile named by a valid, unexpired token of this tenant, else null
- * (malformed, bad signature, other tenant, expired).
- */
-export function verifyMemberQrToken(
+function parseToken(
   token: string,
   tenantId: string,
   now: Date,
-): { customerProfileId: string } | null {
+): z.infer<typeof payloadSchema> | null {
   const parts = token.split(".");
   const [body, signature] = parts;
   if (parts.length !== 2 || !body || !signature) return null;
@@ -83,5 +93,46 @@ export function verifyMemberQrToken(
   }
   if (payload.t !== tenantId) return null;
   if (payload.e * 1000 <= now.getTime()) return null;
-  return { customerProfileId: payload.p };
+  return payload;
+}
+
+/**
+ * The profile named by a valid, unexpired token of this tenant, else null
+ * (malformed, bad signature, other tenant, expired).
+ */
+export function verifyMemberQrToken(
+  token: string,
+  tenantId: string,
+  now: Date,
+): { customerProfileId: string } | null {
+  const payload = parseToken(token, tenantId, now);
+  return payload ? { customerProfileId: payload.p } : null;
+}
+
+/**
+ * A token for redeeming points (weexf): valid like `verifyMemberQrToken` and
+ * bound to an order and an amount. Anything else, including a token without
+ * those claims, verifies to null.
+ */
+export function verifyMemberQrRedeemToken(
+  token: string,
+  tenantId: string,
+  now: Date,
+): {
+  customerProfileId: string;
+  nonce: string;
+  orderId: string;
+  points: number;
+  exp: number;
+} | null {
+  const payload = parseToken(token, tenantId, now);
+  if (!payload || payload.o === undefined || payload.a === undefined)
+    return null;
+  return {
+    customerProfileId: payload.p,
+    nonce: payload.n,
+    orderId: payload.o,
+    points: payload.a,
+    exp: payload.e,
+  };
 }

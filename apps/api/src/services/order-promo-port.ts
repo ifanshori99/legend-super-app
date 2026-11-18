@@ -48,6 +48,8 @@ export interface OrderPromoPort {
       readonly orderId: string;
       readonly actorUserId: string | null;
       readonly expected?: PromotionApplicationResult;
+      /** POS cashier swap: reuse the released application row (legend-1059). */
+      readonly reapplyReleased?: boolean;
     },
   ): Promise<OrderPromoQuote>;
   /** Full void / payment failure / expiry. Idempotent. */

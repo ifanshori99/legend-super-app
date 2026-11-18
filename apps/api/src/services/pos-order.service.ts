@@ -876,8 +876,20 @@ export async function createPosOrderInTx(
           eq(devices.id, caller.deviceId),
         ),
       )
-      .limit(1);
-    isTraining = device?.trainingMode ?? false;
+      .limit(1)
+      // Kept until the transaction ends so a mode change waits for this order.
+      .for("share");
+    // A device missing or registered in another outlet cannot create an order
+    // here (R3-01: its practice mode could not be locked). Same 409 family as
+    // the facility sale, but its own code and message: a food order must not
+    // read as a facility-ticket error.
+    if (!device)
+      throw new HttpError(
+        409,
+        "DEVICE_OUTLET_MISMATCH",
+        "Perangkat ini terdaftar di outlet lain.",
+      );
+    isTraining = device.trainingMode;
   }
   await tx.insert(posOrders).values({
     orderId,

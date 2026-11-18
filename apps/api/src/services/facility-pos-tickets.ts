@@ -634,7 +634,20 @@ export async function issuePosTicketCredential(
       revokedAt: null,
       updatedAt: now,
     };
-    if (existing)
+    if (existing) {
+      // Keys minted before the key history existed have no history row: archive
+      // the digest of the key being replaced so a late replay stays refused.
+      await tx
+        .insert(accessTicketCredentialKeys)
+        .values({
+          tenantId,
+          outletId: row.outletId,
+          accessTicketId: row.id,
+          keyDigest: sha256(existing.mintedKey),
+          version: existing.version,
+          createdAt: now,
+        })
+        .onConflictDoNothing();
       await tx
         .update(accessTicketCredentials)
         .set({ ...values, version: existing.version + 1 })
@@ -644,7 +657,7 @@ export async function issuePosTicketCredential(
             eq(accessTicketCredentials.id, existing.id),
           ),
         );
-    else
+    } else
       await tx.insert(accessTicketCredentials).values({
         tenantId,
         outletId: row.outletId,

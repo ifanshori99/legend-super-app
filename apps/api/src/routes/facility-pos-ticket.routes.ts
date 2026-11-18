@@ -6,8 +6,14 @@
 // tenant's) and then the cashier needs `pos.sale.create` on it (TEN-03):
 // ticket sale and credential are the cashier's sale, the list is a read.
 
+import { and, eq } from "drizzle-orm";
 import { Router, type Request } from "express";
-import { outletIdSchema, userIdSchema } from "@starter/shared/core";
+import {
+  outletIdSchema,
+  userIdSchema,
+  type ScopedTenantContext,
+} from "@starter/shared/core";
+import { establishScopedTenantContext } from "@starter/shared/core/server";
 import {
   doorCheckAccessTicket,
   sellAccessTicketAtPos,
@@ -31,6 +37,9 @@ import {
   requireOutletPermission,
 } from "../middleware/permissions";
 import { getTenantContext, requireTenantContext } from "../middleware/tenant";
+import { devices } from "../db/schema/device.ts";
+import { withTenant } from "../db/tenant";
+import { db } from "../db";
 import { HttpError } from "../lib/http-error";
 import { doorCheckTicket } from "../services/facility-door-check";
 import {
@@ -57,6 +66,72 @@ const view = requireOutletPermission("order.view", outletOfRequest);
 // The door check names a credential, not an outlet: the door staff reach comes
 // from the permission and the service only sees tickets inside that reach.
 const operateDoor = requireMenuPermission("facility.booth.operate");
+
+// 1059 (R2-05, g7l20): the door scope after the acting-staff cut.
+const doorContexts = new WeakMap<Request, ScopedTenantContext>();
+// R3-02: the verified device of the request, handed to the service, which
+// re-reads its training mode under a row lock (this route read is the fast path).
+const doorDevices = new WeakMap<Request, string | null>();
+
+// The one refusal of every door-check failure (same body as facility-door-check).
+const doorRefused = () =>
+  new HttpError(
+    403,
+    "DOOR_CREDENTIAL_INVALID",
+    "Kredensial pintu tidak valid.",
+  );
+
+/**
+ * R2-05: with an acting-staff token the permission reach is cut to the token's
+ * outlet BEFORE any credential lookup, so RLS hides tickets of other outlets
+ * (the path carries no outlet for resolveActingStaff to compare). A token whose
+ * outlet is outside the staff's reach gets the uniform refusal.
+ * g7l20: a training-mode device never opens the door, same uniform refusal and
+ * before the service, so it neither opens a ticket nor counts as a PIN guess.
+ */
+async function sliceDoorScope(
+  req: Request,
+  _res: unknown,
+  next: (error?: unknown) => void,
+): Promise<void> {
+  const reach = getScopedTenantContext(req);
+  let context = reach;
+  const actingOutlet = req.actingStaff?.outletId;
+  if (actingOutlet !== undefined) {
+    const scope = reach.outletScope;
+    if (
+      scope.kind === "outlets" &&
+      !scope.outletIds.some(
+        (id) => id.toLowerCase() === actingOutlet.toLowerCase(),
+      )
+    )
+      throw doorRefused();
+    context = establishScopedTenantContext(reach.tenant, {
+      kind: "outlets",
+      outletIds: [outletIdSchema.parse(actingOutlet)],
+    });
+  }
+  const deviceId = await currentDeviceIdOf(req);
+  if (deviceId !== null) {
+    const tenantId = reach.tenant.tenantId;
+    // Read tenant-wide: a device of another outlet than the staff's reach must
+    // still be seen. A device row that cannot be read fails closed.
+    const [device] = await withTenant(
+      db,
+      establishScopedTenantContext(reach.tenant, { kind: "tenant" }),
+      (tx) =>
+        tx
+          .select({ trainingMode: devices.trainingMode })
+          .from(devices)
+          .where(and(eq(devices.tenantId, tenantId), eq(devices.id, deviceId)))
+          .limit(1),
+    );
+    if (!device || device.trainingMode === true) throw doorRefused();
+  }
+  doorContexts.set(req, context);
+  doorDevices.set(req, deviceId);
+  next();
+}
 
 const guards = [
   requireAuthAllowSharedDevice,
@@ -191,12 +266,16 @@ facilityPosTicketRouter.post(
   ...guards,
   jsonBody,
   operateDoor,
+  sliceDoorScope,
   async (req, res) => {
     const body = doorCheckAccessTicket.body.parse(req.body);
+    const context = doorContexts.get(req);
+    if (!context) throw new Error("Door scope was not resolved");
     const data = await doorCheckTicket(
-      getScopedTenantContext(req),
+      context,
       actorOf(req),
       body,
+      doorDevices.get(req) ?? null,
     );
     res.setHeader("Cache-Control", "no-store").json({ data });
   },

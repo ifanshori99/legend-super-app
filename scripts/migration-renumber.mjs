@@ -180,8 +180,15 @@ function apply(argv) {
   for (let i = specs.length - 1; i >= 0; i--) {
     snaps[i] = structuredClone(cur);
     if (i > 0) {
-      if (!specs[i].oldSnap || !specs[i - 1].oldSnap)
-        fail(`need the branch's old snapshots for ${specs[i].oldTag}`);
+      if (!specs[i].oldSnap || !specs[i - 1].oldSnap) {
+        // The branch never generated snapshots for these migrations (its meta
+        // stops at an earlier number): every snapshot is then the merged
+        // schema. Harmless: drizzle only diffs against the latest snapshot.
+        console.warn(
+          `migration-renumber: no old snapshots for ${specs[i].oldTag}; using the merged schema for the earlier ones too`,
+        );
+        continue;
+      }
       revert(cur, specs[i].oldSnap, specs[i - 1].oldSnap);
     }
   }

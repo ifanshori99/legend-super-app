@@ -7802,3 +7802,39 @@ Gerbang: workspace links + lint hijau (6m32 antre, 2 warning lama); typecheck AP
 - F3 legend-6jdy1: refund.succeeded dengan reference yang menyebut intent lain = ignored REFERENCE_MISMATCH, tanpa tulis refund/stamp/audit/alert.
 - Temuan di luar cabang: bead P2 (DP satu intent dua reservasi, apply kredit sah ditolak 409 setelah refund provider; perilaku lama, restriktif).
 - Bukti: 3 berkas test 1020 (38 test) + 13 berkas 958/967/980/1009/1016/registry (315 test) lulus; gagal-dulu di base 19 dari 24 (sisanya kontrol); typecheck api, eslint, prettier hijau; db:generate kosong. Review architect 3 putaran (6 temuan nyata dibetulkan).
+
+
+## 18 Nov 2026 — 1059 POS: SO ronde 2, QR member sekali pakai, ganti voucher, pintu (thread engineer; beads legend-kuh0w, legend-weexf, legend-g7l20, legend-0xt77)
+
+Cabang `ghostex/8eb871ce`. Migrasi kerja 0676 (`access_ticket_pin_guesses`) dan 0677 (`member_qr_redeem_nonces`); merge train menomori ulang. `apps/web` tidak disentuh (typecheck web hijau).
+
+Sudah:
+- R2-01 P1: tukar poin lintas PT ditolak 409 `POINTS_ENTITY_REFUSED` sebelum ledger/tender. Entitas sedang dipakai proses lain: 409 `POINTS_ENTITY_BUSY` (boleh diulang, tidak ada poin keluar).
+- R2-02: kunci pra-0672 diarsipkan saat mint ulang (digest + versi, di bawah kunci yang sama); replay kunci lama tidak membatalkan mint terbaru.
+- R2-03: pintu membaca jam DB (`clock_timestamp()`) setelah lock tiket untuk jendela kredensial, `firstOpenedAt`, audit.
+- R2-04 + 0xt77: penghitung tebakan PIN pindah ke tabel DB (bersama antar instans), hanya lookup gagal dihitung, 5 per 15 menit lalu 429; ID tak dikenal tidak menulis baris; PIN benar mengembalikan jatah. Gagal melepas jatah setelah pintu terbuka dicatat, tidak jadi 500.
+- R2-05: token staf outlet A tidak bisa mengubah tiket outlet B (jangkauan diiris ke outlet token; tolak seragam 403 `DOOR_CREDENTIAL_INVALID`).
+- R2-06: pembacaan mode perangkat `FOR SHARE` di transaksi penjualan tiket; order latihan setelah menunggu lock ditolak 409 `TICKET_TRAINING_REFUSED` tanpa slot/tiket tersisa.
+- g7l20: pintu menolak perangkat mode latihan dengan 403 seragam; perangkat yang barisnya tidak terbaca juga ditolak (gagal tertutup).
+- weexf: QR member untuk tukar poin sekali pakai, terikat order dan jumlah poin, maks 120 detik (jam DB). Nonce dibakar atomik dengan debit (debit gagal = nonce utuh). Order `member_qr` WAJIB kirim `memberToken`; fingerprint idempotensi tidak memuat token; method selain poin dengan `memberToken` ditolak. Mint: `POST /member/qr-token` menerima body opsional `{orderId, points}`.
+- kuh0w (founder Q41): kasir bisa melepas voucher salah lalu memasang voucher lain di order yang sama; voucher pertama kembali utuh dan tidak bisa dipakai dua kali; tetap dibatasi subtotal (Q40). Void lalu retry tidak me-redeem ulang. Kunci event `promo_application.redeemed|released:` sekarang diakhiri `:${sequence}`.
+
+Bukti: tes terarah 15 berkas / 248 lulus (`pos-1059-door` 16, `pos-1059-points` 19, `pos-1059-voucher` 15, `pos-1059-arch`, `member-qr-mint` 4, plus regresi 936 dan promo); typecheck API dan web hijau (pra-fix P3; ulang setelah fix); eslint + prettier hijau; `db:generate` kosong untuk tabel kita (diff lain di snapshot adalah pekerjaan cabang lain, bukan milik 1059; keluaran generator dibuang). Review architect xhigh satu kali: 0 P0/P1, 1 P2 (urutan migrasi lintas cabang, urusan merge train), 4 P3 (3 dibetulkan; backfill R2-02 di migrasi tidak dibuat).
+
+Sedang/berikut: klien PWA/web member yang meminta token `{orderId, points}` (rute mint sudah ada; sampai klien ada, order `member_qr` tidak bisa tukar poin di kasir: sisi aman). Merge train: 0674 (cabang 1057) harus digabung lebih dulu atau diberi nomor/`when` baru sesudah 0677.
+
+Keputusan terbuka untuk founder lewat CTO: `memberToken` wajib untuk `member_qr` (aturan yang membatasi pembayaran; konsekuensi: kasir tidak bisa tukar poin lewat member terpasang QR sebelum klien mint ada).
+
+Biaya sesi (session-usage, 04:08-05:23Z): total biaya* 9438k (utama sonnet 4798k, subagent sonnet 3840k, opus 728k, haiku 73k); 17+ subagent, puncak 6 bersamaan, rata-rata 1,65 berjalan. Token heavy dipegang thread ini saat typecheck/tes terarah.
+
+## 1065: POS 936 ronde 3 fix (R3-01, R3-02)
+Cabang `ghostex/45769078` (dasar 930b61c77). Tanpa migrasi. Temuan: `docs/qa/second-opinion-pos-936-ronde3-1064.md`.
+
+Sudah:
+- R3-01 (legend-xexts): perangkat penjual wajib ada di tenant dan outlet order/tiket, dikunci `FOR SHARE` sampai transaksi selesai. Tidak ditemukan, outlet lain, atau mode latihan = ditolak 409. Penjualan tiket fasilitas: `TICKET_TRAINING_REFUSED` (seragam). `createPosOrderInTx`: perangkat tak dikenal/outlet lain = 409 `DEVICE_OUTLET_MISMATCH` ("Perangkat ini terdaftar di outlet lain.") supaya pesanan makanan tidak tampil sebagai galat tiket (P3 architect). Tanpa `deviceId` perilaku tidak berubah.
+- R3-02 (legend-9c76n): `doorCheckTicket` menerima `deviceId` terverifikasi dari route; di transaksi pembukaan, perangkat dibaca tenant-wide `FOR SHARE` SEBELUM `FOR UPDATE` tiket (urutan lock sama dengan R2-06; `setDeviceTrainingMode` `FOR UPDATE` berseri dengannya). Hilang/latihan = 403 `DOOR_CREDENTIAL_INVALID` seragam, jatah PIN tidak terpakai; PIN salah tetap memakai jatah. `app.outlet_ids='*'` hanya untuk satu pembacaan itu dan dipulihkan sebelum throw.
+
+Bukti: gagal-dulu di 930b61c77: 6 dari 10 test `pos-1065-*` gagal (200/201 alih-alih 403/409; QR dan PIN membuka tiket setelah toggle). Tes service-level tambahan (PIN benar di perangkat latihan: 403, `failures` tak berubah; kontrol PIN salah naik 1). Sesudah fix: 9 berkas / 134 test lulus (`pos-1065-*`, `pos-1059-door|arch|points|voucher`, `pos-936-ticket|so-ticket|so-refund`) lewat `heavy`; tsc API exit 0; prettier hijau. Review architect xhigh satu kali: 0 P0-P2, 1 P3 (kode galat pos-order: dibetulkan), 1 celah test (service-level: ditutup).
+
+Belum: suite penuh `pnpm test`/`pnpm check` (gate akhir merge train); `pos-next-call-number`, `edc-reconciliation-queue`, `order-charge-void-982-s61sg` disarankan architect untuk dijalankan di gate (mengirim device token saat buat order).
+Biaya sesi 1065 (session-usage 06:19-07:13Z): total biaya* 2210k (utama sonnet 505k, subagent sonnet 1262k, opus 443k); 6 subagent, puncak 3 bersamaan.

@@ -96,6 +96,7 @@ import {
   type Profile,
 } from "./member-loyalty-helpers.ts";
 import { grantPoints } from "./member-rewards-helpers.ts";
+import { memberQrFor } from "./member-qr-redeem-helper.ts";
 
 const KOPI_IDR = 25_000;
 /** Kopi x2 = Rp50.000 + PBJT 10%. */
@@ -481,16 +482,26 @@ const quote = (
     .set(originHeader)
     .send({ points });
 
-const redeem = (
+const redeem = async (
   order: CreatedOrder,
   points: unknown,
   options: { key?: string; who?: Caller; headers?: { Host: string } } = {},
-) =>
-  (options.who ?? world.cashier).client
+) => {
+  const memberToken = await memberQrFor(
+    world.tenant.tenantId,
+    order.id,
+    points,
+  );
+  return (options.who ?? world.cashier).client
     .post(`/api/pos/orders/${order.id}/points/redeem`)
     .set(options.headers ?? world.headers)
     .set(originHeader)
-    .send({ points, idempotencyKey: options.key ?? randomUUID() });
+    .send({
+      points,
+      idempotencyKey: options.key ?? randomUUID(),
+      ...(memberToken ? { memberToken } : {}),
+    });
+};
 
 async function pointsTenders(order: CreatedOrder) {
   const { rows } = await asTenant(world.tenant.tenantId, (client) =>

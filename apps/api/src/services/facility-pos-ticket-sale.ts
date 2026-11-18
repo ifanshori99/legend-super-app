@@ -25,6 +25,7 @@ import { facilityTicketPosLines } from "../db/schema/facility-pos-ticket.ts";
 import { withTenant } from "../db/tenant.ts";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { isTrainingOrder } from "./device-training.ts";
 import { auditFacility, loadFacility } from "./facility-shared.ts";
 import { holdFacilitySlot } from "./facility-slots.service.ts";
 import { createPosOrderInTx } from "./pos-order.service.ts";
@@ -146,7 +147,11 @@ export async function sellPosTicket(
           throw new HttpError(404, "NOT_FOUND", "Pelanggan tidak ditemukan.");
 
         // Training device: a practice sale must not hold a real slot or open a
-        // real bill. Refused before the hold, so nothing is written.
+        // real bill. Refused before the hold, so nothing is written. The device
+        // row is locked FOR SHARE until the sale commits: a mode change
+        // (device.service.ts setDeviceTrainingMode takes FOR UPDATE) waits for
+        // the sale, so the mode read here is the mode the order is stamped
+        // with. The sale never upgrades this lock, so two sales do not deadlock.
         if (caller.deviceId) {
           const [device] = await tx
             .select({ trainingMode: devices.trainingMode })
@@ -158,8 +163,13 @@ export async function sellPosTicket(
                 eq(devices.id, caller.deviceId),
               ),
             )
-            .limit(1);
-          if (device?.trainingMode === true)
+            .limit(1)
+            .for("share");
+          // A device that is missing or belongs to another outlet is refused
+          // with the same answer as a practice device: a cashier session must
+          // not use a device outside the ticket's outlet, and the answer does
+          // not say which case it was.
+          if (!device || device.trainingMode === true)
             throw new HttpError(
               409,
               "TICKET_TRAINING_REFUSED",
@@ -201,6 +211,13 @@ export async function sellPosTicket(
           }),
           now,
         );
+        // Belt and braces: never leave a practice order with a real ticket.
+        if (await isTrainingOrder(tx, tenantId, order.id))
+          throw new HttpError(
+            409,
+            "TICKET_TRAINING_REFUSED",
+            "Perangkat latihan tidak bisa menjual tiket fasilitas.",
+          );
         const [line] = order.items;
         if (!line || order.items.length !== 1)
           throw new Error("A ticket sale opens a bill with exactly one line");
