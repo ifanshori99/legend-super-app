@@ -3179,6 +3179,13 @@
       "when": 1795000000082,
       "tag": "0467_supplier_payment_approval_policies_data",
       "breakpoints": true
+    },
+    {
+      "idx": 690,
+      "version": "7",
+      "when": 1795000000083,
+      "tag": "0690_payout_settle_waived",
+      "breakpoints": true
     }
   ]
 }

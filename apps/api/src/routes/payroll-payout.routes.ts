@@ -27,6 +27,7 @@ import {
   recordPostingSourceInputSchema,
   resolveManualItemsSchema,
   upsertPayoutConfigInputSchema,
+  waiveSkippedPostingInputSchema,
   withdrawResolutionSchema,
 } from "@starter/shared/validators/payroll-payout";
 import { db } from "../db/index.ts";
@@ -49,6 +50,7 @@ import {
   repostSkippedFees,
 } from "../services/payroll-payout-gl.service.ts";
 import { recordPostingSource } from "../services/payroll-payout-source.service.ts";
+import { waiveSkippedPosting } from "../services/payroll-payout-waive.service.ts";
 import { listPayoutBatches } from "../services/payroll-payout-batch-list.service.ts";
 import {
   getPayoutConfig,
@@ -446,6 +448,31 @@ payrollPayoutRouter.post(
     const { context, actor } = actorOf(req);
     const data = await withTenant(db, context, (tx) =>
       recordPostingSource(tx, actor, id, postingId, input.glAccountId),
+    );
+    res.json({ data });
+  },
+);
+
+// A `settle_skipped` cash handover (accounting was off) that cannot be
+// journaled: finance closes it by hand (legend-5qqb9). The kind flips to
+// `settle_waived`, so its net stops counting as a 1102 reserve; nothing is
+// posted. Needs the petty cash finance permission (it releases cash for
+// spending), the second factor and the password, a reason, and an audit row.
+payrollPayoutRouter.post(
+  "/disbursement-batches/:id/postings/:postingId/waive-skipped",
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  requireTenantPermission("accounting.petty_cash.manage"),
+  stepUp,
+  jsonBody,
+  passwordStepUp,
+  async (req, res) => {
+    const { id, postingId } = payoutPostingParamsSchema.parse(req.params);
+    const input = waiveSkippedPostingInputSchema.parse(req.body);
+    const { context, actor } = actorOf(req);
+    const data = await withTenant(db, context, (tx) =>
+      waiveSkippedPosting(tx, actor, id, postingId, input.reason),
     );
     res.json({ data });
   },
