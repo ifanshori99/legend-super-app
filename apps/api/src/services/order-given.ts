@@ -171,6 +171,9 @@ export async function orderGivenOf(
       (SELECT coalesce(sum(v.value_idr), 0)
          FROM vouchers v
         WHERE v.tenant_id = ${tenantId}
+          -- 1131: a cancelled (voided) voucher gave nothing; issued, redeemed
+          -- and expired count at face value
+          AND v.status <> 'cancelled'
           AND v.id IN (
                 SELECT a.voucher_id
                   FROM apology_vouchers a
@@ -276,6 +279,7 @@ export async function orderGivenOf(
            (SELECT coalesce(sum(v.value_idr), 0)
               FROM vouchers v
              WHERE v.tenant_id = i.tenant_id
+               AND v.status <> 'cancelled'
                AND v.id IN (
                      SELECT a.voucher_id
                        FROM apology_vouchers a
@@ -435,5 +439,42 @@ export async function assertNothingBackThroughProvider(
       409,
       "VOID_PROVIDER_REFUNDED",
       "Sebagian pembayaran pesanan ini sudah dikembalikan lewat penyedia pembayaran; tidak bisa di-void. Hubungi finance.",
+    );
+}
+
+/**
+ * 1131: the one money-out budget of an order (CTO decision 1). What is left
+ * to give back: what the guest paid (`paidIdr`, already net of provider,
+ * finance and charge refunds) less everything given (`givenIdr`: live
+ * vouchers, POS refunds, ORD-09 recovery refunds). Read under the order lock.
+ */
+export async function orderRoomIdr(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+  orderId: string,
+): Promise<number> {
+  const given = await orderGivenOf(tx, tenantId, orderId);
+  return Math.max(0, given.paidIdr - given.givenIdr);
+}
+
+/**
+ * 1131: post-check of every money-out lane (ORD-09, charge refunds, finance
+ * manual). Record the outflow row in the same transaction under the order
+ * lock (lock order issue -> orders -> charge), then call this: when the order
+ * gave back more than the guest paid it throws 422 `REFUND_OVER_ORDER_ROOM`
+ * and the transaction rolls the row back. Called again on approval and
+ * settlement before money moves. Never clamps.
+ */
+export async function assertOrderBudget(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+  orderId: string,
+): Promise<void> {
+  const given = await orderGivenOf(tx, tenantId, orderId);
+  if (given.givenIdr > given.paidIdr)
+    throw new HttpError(
+      422,
+      "REFUND_OVER_ORDER_ROOM",
+      "This would give back more than the guest paid for the order.",
     );
 }
