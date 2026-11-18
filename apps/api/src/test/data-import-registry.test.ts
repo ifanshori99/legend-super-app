@@ -300,6 +300,9 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "function bodies and a guard trigger only, no row edited by the migration: app.payout_return_propose and app.payout_return_confirm (payout role) store the bank transaction reference of a return on the claim and the item when called, and refuse a missing, differing or reused reference; the migration itself writes no row and changes no amount (it only adds a refusal)",
   "0464_payout_990_flag_fingerprint.sql":
     "backfill only (legend-hklnq): one fingerprint sighting per existing payout recon exception, computed from that exception's own item, attestation and posting rows, so a later recon can tell whether the flagged data changed; no amount, item, payslip or clearance row is edited, and an exception without a matching clearance keeps holding its payslip",
+  // legend-1089 (second opinion, round 5)
+  "0691_payout_waive_trusted.sql":
+    "function bodies and grants only, no row edited by the migration: app.payout_waive_skipped (payout role) flips kind settle_skipped -> settle_waived on a cash posting when its correcting waive journal is valid, when called; the guard and the commit-check functions are redefined; no backfill, no amount or journal touched",
   // legend-628t9 (954)
   "0436_payout_grant_expiry_after_lock.sql":
     "function body only, no row edited by the migration: app.payout_grant_consume (payout role) reads its clock after the run, batch and grant row locks and refuses a grant that expired while it waited, marking a grant consumed only when called; it keeps the existing grant rules and changes no amount (it only blocks a late approval, nobody is paid)",

@@ -3186,6 +3186,13 @@
       "when": 1795000000083,
       "tag": "0690_payout_settle_waived",
       "breakpoints": true
+    },
+    {
+      "idx": 691,
+      "version": "7",
+      "when": 1795000000084,
+      "tag": "0691_payout_waive_trusted",
+      "breakpoints": true
     }
   ]
 }

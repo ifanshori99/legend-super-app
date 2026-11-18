@@ -93,14 +93,21 @@ import {
   accountMappings,
   chartOfAccounts,
   fixedAssetDepreciationReversals,
+  employeeLoans,
   fixedAssetDepreciations,
   journalEntries,
   journalLines,
+  payrollPayoutGlPostings,
+  reimbursements,
+  supplierPayments,
 } from "../db/schema";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
 import { entityLock } from "./accounting-bank-matching";
-import { assertJournalCredit1102Covered } from "./accounting-petty-cash.service";
+import {
+  assertJournalCredit1102Covered,
+  pettyCashGlAccount,
+} from "./accounting-petty-cash.service";
 import { markMatchStaleForReversedJournal } from "./accounting-bank-recon-stale.service";
 import { assertPeriodOpenForPosting } from "./accounting-period.service";
 import {
@@ -991,6 +998,12 @@ export type ReverseJournalTxInput = {
    * cash that already moved and stay unguarded.
    */
   readonly guardPettyCash?: boolean;
+  /**
+   * True only for the manual endpoint: an auto cash-out journal that credits
+   * GL 1102 is refused while its source is still paid (legend-5qqb9, bead
+   * 1091). System reversals (void, refund, payroll.reversed) stay allowed.
+   */
+  readonly manualReversal?: boolean;
 };
 
 /**
@@ -1016,6 +1029,7 @@ export async function reverseJournal(
         lateAdjustmentFrom: null,
         postedBy: actorId,
         guardPettyCash: true,
+        manualReversal: true,
       },
       now,
     ),
@@ -1059,6 +1073,127 @@ async function assertNotDepreciationJournal(
       409,
       "DEPRECIATION_JOURNAL_LOCKED",
       "This journal belongs to fixed-asset depreciation; correct it through the fixed asset.",
+    );
+}
+
+/**
+ * A manual reversal of an auto cash-out journal that credits GL 1102 would
+ * reopen cash that already left the till while its source (loan, cash
+ * reimbursement, cash payroll settle posting, supplier payment) is still paid
+ * (legend-5qqb9, bead 1091). The correction goes through the source's own
+ * return flow. A source row that is missing or unknown is refused. Caller
+ * holds the entity lock and the journal row lock.
+ */
+async function assertAutoCashOutSourceNotPaid(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  row: EntryRow,
+  lines: readonly { accountId: string; creditIdr: number }[],
+): Promise<void> {
+  const key = row.idempotencyKey;
+  if (key === null) return;
+  const uuidPart = (prefix: string): string | null | undefined => {
+    if (!key.startsWith(prefix)) return undefined;
+    const id = uuidSchema.safeParse(key.slice(prefix.length));
+    return id.success ? id.data : null;
+  };
+  const loanId = uuidPart("payroll-gl:loan:");
+  const reimbursementId = uuidPart("payroll-gl:reimbursement:");
+  const settlementId = uuidPart("ap-pay:");
+  const payoutSettle = key.startsWith("payroll-payout:");
+  if (
+    loanId === undefined &&
+    reimbursementId === undefined &&
+    settlementId === undefined &&
+    !payoutSettle
+  )
+    return;
+  const pettyCashAccountId = await pettyCashGlAccount(
+    tx,
+    tenantId,
+    row.legalEntityId,
+  );
+  if (
+    pettyCashAccountId === null ||
+    !lines.some(
+      (line) => line.accountId === pettyCashAccountId && line.creditIdr > 0,
+    )
+  )
+    return;
+  let paid: boolean;
+  if (loanId !== undefined) {
+    // Loan disbursed (or settled later): the cash left the till.
+    const [loan] =
+      loanId === null
+        ? []
+        : await tx
+            .select({ status: employeeLoans.status })
+            .from(employeeLoans)
+            .where(
+              and(
+                eq(employeeLoans.tenantId, tenantId),
+                eq(
+                  employeeLoans.id,
+                  loanId as (typeof employeeLoans.$inferSelect)["id"],
+                ),
+              ),
+            )
+            .limit(1);
+    paid = !loan || ["disbursed", "settled"].includes(loan.status);
+  } else if (reimbursementId !== undefined) {
+    // Cash reimbursement in status paid.
+    const [claim] =
+      reimbursementId === null
+        ? []
+        : await tx
+            .select({
+              status: reimbursements.status,
+              payout: reimbursements.payout,
+            })
+            .from(reimbursements)
+            .where(
+              and(
+                eq(reimbursements.tenantId, tenantId),
+                eq(
+                  reimbursements.id,
+                  reimbursementId as (typeof reimbursements.$inferSelect)["id"],
+                ),
+              ),
+            )
+            .limit(1);
+    paid = !claim || (claim.status === "paid" && claim.payout === "cash");
+  } else if (payoutSettle) {
+    // Cash payroll settle journal: its posting row (journal_key) in kind settle.
+    const [posting] = await tx
+      .select({ kind: payrollPayoutGlPostings.kind })
+      .from(payrollPayoutGlPostings)
+      .where(
+        and(
+          eq(payrollPayoutGlPostings.tenantId, tenantId),
+          eq(payrollPayoutGlPostings.journalKey, key),
+        ),
+      )
+      .limit(1);
+    paid = !posting || posting.kind === "settle";
+  } else {
+    // Supplier payment journal: the payment row that points at it, status paid.
+    const [payment] = await tx
+      .select({ status: supplierPayments.status })
+      .from(supplierPayments)
+      .where(
+        and(
+          eq(supplierPayments.tenantId, tenantId),
+          eq(supplierPayments.journalEntryId, row.id),
+        ),
+      )
+      .limit(1);
+    paid = !payment || payment.status === "paid";
+  }
+  if (paid)
+    throw new HttpError(
+      409,
+      "CASH_OUT_JOURNAL_LOCKED",
+      "This journal records a cash payout that is still paid and cannot be reversed by hand; correct it through its source (return flow).",
     );
 }
 
@@ -1222,6 +1357,13 @@ export async function reverseJournalInTransaction(
       409,
       "PAYOUT_WAIVE_JOURNAL_LOCKED",
       "This journal corrects a waived cash payroll handover and cannot be reversed.",
+    );
+  if (input.manualReversal === true)
+    await assertAutoCashOutSourceNotPaid(
+      tx,
+      context.tenant.tenantId,
+      row,
+      lines.map(toLine),
     );
   assertReversible(row, reversal?.id ?? null);
   await assertReturnBackingNotPaidOut(tx, context.tenant.tenantId, row);

@@ -31,7 +31,7 @@
 // coverage check holds while it reads the reserve, so a waive never interleaves
 // with a spend that counted the old reserve.
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   AccountingError,
   type JournalLineInput,
@@ -61,6 +61,7 @@ import {
   payoutGuardViolation,
   payoutRefuse,
   payoutScope,
+  payoutStateChanged,
   recordPayoutAudit,
   type PayoutActor as Actor,
 } from "./payroll-payout.service.ts";
@@ -129,12 +130,25 @@ export async function waiveSkippedPosting(
       "PAYOUT_POSTING_NOT_FOUND",
       "Posting tidak ditemukan.",
     );
-  if (posting.kind === "settle_waived")
+  if (posting.kind === "settle_waived") {
+    // Idempotent success only when the waive journal is really there and right
+    // (net and accounts, same check as the commit trigger, 0691). A waived row
+    // without it (written outside this service) is never reported as done.
+    const replay = await tx.execute(
+      sql`SELECT app.payout_waive_journal_ok(${tenantId}::uuid, ${posting.id}::uuid) AS ok`,
+    );
+    if (replay.rows[0]?.ok !== true)
+      throw payoutRefuse(
+        409,
+        "PAYOUT_WAIVE_NOT_ALLOWED",
+        "Posting ini sudah berstatus dibebaskan tetapi jurnal koreksinya tidak ada atau tidak cocok. Hubungi tim teknis.",
+      );
     return {
       postingId: posting.id,
       kind: "settle_waived",
       alreadyWaived: true,
     };
+  }
   if (posting.kind !== "settle_skipped")
     throw payoutRefuse(
       409,
@@ -241,17 +255,13 @@ export async function waiveSkippedPosting(
       idempotencyKey: `payroll-payout-waive:${posting.id}`,
     },
   );
+  // 1089: only the payout role flips the kind, and only with the journal above
+  // (re-checked in SQL and at commit). `legend_app` can no longer UPDATE it.
   try {
-    await tx
-      .update(payrollPayoutGlPostings)
-      .set({ kind: "settle_waived" })
-      .where(
-        and(
-          eq(payrollPayoutGlPostings.tenantId, tenantId),
-          eq(payrollPayoutGlPostings.id, posting.id),
-          eq(payrollPayoutGlPostings.kind, "settle_skipped"),
-        ),
-      );
+    if (actor.sessionId === undefined) throw payoutStateChanged();
+    await tx.execute(
+      sql`SELECT app.payout_waive_skipped(${batch.id}::uuid, ${posting.id}::uuid, ${actor.userId}, ${actor.sessionId})`,
+    );
   } catch (error) {
     if (payoutGuardViolation(error) !== null)
       throw payoutRefuse(

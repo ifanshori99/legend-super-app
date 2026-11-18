@@ -469,6 +469,30 @@ const updatePosting = (postingId: string, setSql: string) =>
     ),
   );
 
+/**
+ * Flips the posting to settle_waived as the table owner with triggers off: the
+ * only way left to reach that state without the trusted function and journal
+ * (legend-1089, migration 0691). Used to test the terminal rule of the guard.
+ */
+async function forceWaived(postingId: string) {
+  const client = await kitOwner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SET LOCAL session_replication_role = replica");
+    await client.query(
+      `UPDATE payroll_payout_gl_postings SET kind = 'settle_waived'
+        WHERE tenant_id = $1 AND id = $2`,
+      [tenantId, postingId],
+    );
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 // ---- scenarios ----------------------------------------------------------------
 
 describe("5qqb9 P2: settle_skipped keeps counting as a reserve", () => {
@@ -985,22 +1009,24 @@ describe("5qqb9 P2 (F1): the waive is only for a cash run nothing can catch up",
 });
 
 describe("5qqb9 P2: database guard on settle_waived", () => {
-  it("[5qqb9-waive-db-pure-flip-allowed] a direct UPDATE that only flips kind settle_skipped -> settle_waived is accepted by the guard trigger and the kind check", async () => {
-    const { batchId, net, posting } = await skippedHandover();
+  it("[5qqb9-waive-db-pure-flip-refused-for-app] a direct UPDATE that only flips kind settle_skipped -> settle_waived by legend_app is refused by the guard trigger (1089: only the trusted function flips it, with its journal); the row stays settle_skipped and the available cash is unchanged", async () => {
+    const { batchId, posting } = await skippedHandover();
 
     const error = await dbError(
       updatePosting(posting.id, "kind = 'settle_waived'"),
     );
 
-    expect(error?.message, "pure flip must be accepted").toBeUndefined();
-    reserve -= net;
-    free += net;
-    expect(await kindOf(batchId)).toBe("settle_waived");
-    await expectAvailableIs(free, "waived row no longer reserves");
+    expect(error, "the guard must refuse the app flip").not.toBeNull();
+    expect(
+      error!.constraint,
+      `refused by the trigger, not the kind check (${error!.message})`,
+    ).not.toBe(KIND_CHECK);
+    expect(await kindOf(batchId)).toBe("settle_skipped");
+    await expectAvailableIs(free, "refused flip changes nothing");
   }, 90_000);
 
   it("[5qqb9-waive-db-flip-with-other-change-refused] the flip together with any other column change is refused by the guard trigger (not by the kind check constraint) and the row stays settle_skipped; the pure flip afterwards is accepted", async () => {
-    const { batchId, net, posting } = await skippedHandover();
+    const { batchId, posting } = await skippedHandover();
 
     const withSource = await dbError(
       updatePosting(
@@ -1024,22 +1050,18 @@ describe("5qqb9 P2: database guard on settle_waived", () => {
     }
     expect(await kindOf(batchId)).toBe("settle_skipped");
 
-    // The refusals are about the extra column only: the pure flip still works.
+    // The pure flip by the app role is refused too (1089), so the row stays.
     const pure = await dbError(
       updatePosting(posting.id, "kind = 'settle_waived'"),
     );
-    expect(pure?.message, "pure flip must be accepted").toBeUndefined();
-    reserve -= net;
-    free += net;
-    expect(await kindOf(batchId)).toBe("settle_waived");
+    expect(pure, "pure app flip must be refused").not.toBeNull();
+    expect(await kindOf(batchId)).toBe("settle_skipped");
   }, 90_000);
 
   it("[5qqb9-waive-db-terminal] a waived row can never be flipped back (to settle_skipped, settle_pending or settle) and is never journaled", async () => {
     const { batchId, net, posting } = await skippedHandover();
-    const flip = await dbError(
-      updatePosting(posting.id, "kind = 'settle_waived'"),
-    );
-    expect(flip?.message, "premise: waived").toBeUndefined();
+    await forceWaived(posting.id);
+    expect(await kindOf(batchId), "premise: waived").toBe("settle_waived");
     reserve -= net;
     free += net;
     const journals = await journalCount();
