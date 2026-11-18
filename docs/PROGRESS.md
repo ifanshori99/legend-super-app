@@ -2123,3 +2123,4 @@ Langkah berikut CTO baru:
 - 03:30 CTO: mulai G21nj Codex #5 (1122 gerbang rilis edge sharedMode/katalog strict/MCP: ir8n8, zn3wl, 176r3; base ws/1100, landing sesudah 1100) dan 1123 perf web i18n (nmn9j, Sonnet #5).
 - 03:30 CTO: G4pud selesai: Q50 di heavy (HEAVY_TSC_LANE2_SWAP=3072), penjaga suite penuh exit 78 ws/*+ghostex/* (HEAVY_ALLOW_FULL=1), test heavy diselaraskan, hook nudge thread. Subagent 1 (retro, sebagian besar skrip). Resolve.
 - 04:16 CTO: SO refund ronde 13 (G6dnl) 0 P0/P1, 1 P2 (legend-o5iyl, total tidak lebih dari bayar) diterima sesudah rilis. Gerbang refund LOLOS. 1072 SIAP batch95 setelah typecheck + renomor migrasi.
+- 04:32 CTO: full run batch92 2j23m+ (tidak hang, log aktif) memegang jalur 1; jalur 2 tertutup (swap ~3500, free 69%); 7 job (tsc 1095/1072/1118/1120, setup 1123) antre 1j10m+. Bahan retro: full suite memblok semua typecheck thread -> pertimbangkan shard suite penuh atau jadwal full run saat antre kosong.
