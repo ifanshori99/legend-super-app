@@ -525,8 +525,11 @@ async function readResolutions(
  * `failed` / `not_sent`, an outcome, touched after the cutover) and the
  * append-only approval log (a resolve step on its batch after the cutover). An
  * item like that with no resolve attestation naming it is flagged
- * `attestation_count`, under the newest resolve operation of its batch in the
- * log (the propose step first). A withdrawn proposal leaves no outcome on the
+ * `attestation_count`, under the operation bound to the item itself (1052): the
+ * propose step in the log whose grant carries the item's evidence key and
+ * outcome (newest at or before the item's last update). With no such step the
+ * fallback is the EARLIEST resolve propose of the batch since the cutover, so
+ * resolving another item never moves the key; still flagged. A withdrawn proposal leaves no outcome on the
  * item, so it is not a candidate. Fail closed: a failed read fails the page.
  */
 async function readLostResolutions(
@@ -540,15 +543,33 @@ async function readLostResolutions(
       SELECT i.id::text AS item_id, l.operation_id::text AS operation_id
         FROM payroll_disbursement_items i
         CROSS JOIN LATERAL (
-          SELECT g.operation_id
-            FROM payroll_payout_approval_log g
-           WHERE g.tenant_id = ${tenantId}::uuid
-             AND g.batch_id = i.batch_id
-             AND g.kind = 'resolve'
-             AND g.logged_at >= ${since}::timestamptz
-           ORDER BY (g.step = 'propose') DESC, g.logged_at DESC, g.id DESC
-           LIMIT 1) l
+          SELECT COALESCE(
+            (SELECT g.operation_id
+               FROM payroll_payout_approval_log g
+               JOIN payroll_payout_grants gr
+                 ON gr.tenant_id = g.tenant_id AND gr.id = g.grant_id
+              WHERE g.tenant_id = ${tenantId}::uuid
+                AND gr.tenant_id = ${tenantId}::uuid
+                AND g.batch_id = i.batch_id
+                AND gr.batch_id = i.batch_id
+                AND g.kind = 'resolve' AND g.step = 'propose'
+                AND gr.kind = 'resolve' AND gr.step = 'propose'
+                AND gr.evidence_key = i.resolution_evidence_key
+                AND gr.detail = i.resolution_outcome
+                AND g.logged_at >= ${since}::timestamptz
+                AND g.logged_at <= i.updated_at
+              ORDER BY g.logged_at DESC, g.id DESC
+              LIMIT 1),
+            (SELECT g.operation_id
+               FROM payroll_payout_approval_log g
+              WHERE g.tenant_id = ${tenantId}::uuid
+                AND g.batch_id = i.batch_id
+                AND g.kind = 'resolve'
+                AND g.logged_at >= ${since}::timestamptz
+              ORDER BY (g.step = 'propose') DESC, g.logged_at ASC, g.id ASC
+              LIMIT 1)) AS operation_id) l
        WHERE i.tenant_id = ${tenantId}::uuid
+         AND l.operation_id IS NOT NULL
          AND i.status IN ('failed', 'not_sent')
          AND i.resolution_outcome IS NOT NULL
          AND i.updated_at >= ${since}::timestamptz
@@ -1299,7 +1320,7 @@ type Flag = {
 function evaluate(
   op: Operation,
   facts: Facts,
-  fileOf: ReadonlyMap<string, FileState>,
+  fileOf: ReadonlyMap<string, FileState>, // by operation id
 ): Flag[] {
   if (op.missing)
     return op.terminalItemIds.map((itemId) => ({
@@ -1452,7 +1473,7 @@ function evaluate(
     )
       addAll("binding_duplicate");
     if (!record) addAll("evidence_record_missing");
-    const file = fileOf.get(op.evidenceKey);
+    const file = fileOf.get(op.operationId);
     if (file === "missing") addAll("evidence_missing");
     if (file === "mismatch") addAll("evidence_hash_mismatch");
   }
@@ -1886,79 +1907,56 @@ export async function reconcileTrustedPayouts(
 
   // The stored proof read again must hash to its record. "Not found" is a
   // difference; any other read error is retried by the next cycle, not flagged.
+  // The read and the observation of an operation share one transaction under the
+  // advisory lock `app.payout_recon_evidence_observe` takes (1038, 1052): the read
+  // happens inside the lock, so the order of the observations is the order of the
+  // reads for every run, and whether a recovery (`ok`) is kept is decided by the
+  // database at that moment, never by the snapshot taken at the start of the run.
+  // A failure to record fails the page (fail closed). The operations are bounded
+  // by the page size.
+  // What an operation read is kept per operation id (1052): two operations may
+  // share an evidence key and each is judged by its own read.
   const fileOf = new Map<string, FileState>();
-  // sha256 of the bytes read, kept for the evidence observations (1038).
-  const readShaOf = new Map<string, string>();
   let unreadable = 0;
   if (options.storage) {
+    const storage = options.storage;
     for (const op of operations) {
       const key = op.evidenceKey;
       const record = key === null ? undefined : facts?.records.get(key);
-      if (key === null || !record || fileOf.has(key)) continue;
-      try {
-        const object = await options.storage.get(context, {
-          tenantId,
-          outletId: null,
-          reference: "payout-trusted-recon",
-          key,
-          visibility: "private",
-        });
-        const readSha = sha256Of(object.content);
-        readShaOf.set(key, readSha);
-        fileOf.set(
-          key,
-          readSha === (record.stored ?? record.content) ? "ok" : "mismatch",
+      if (key === null || !record) continue;
+      await withTenant(db, context, async (tx) => {
+        await tx.execute(
+          sql`SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(${`payout_recon_evidence_observe:${tenantId}:${op.operationId}`}::text, 0))`,
         );
-      } catch (error) {
-        if (error instanceof CoreError && error.code === "NOT_FOUND")
-          fileOf.set(key, "missing");
-        else {
-          fileOf.set(key, "error");
-          unreadable += 1;
+        let state: FileState;
+        let readSha: string | null = null;
+        try {
+          const object = await storage.get(context, {
+            tenantId,
+            outletId: null,
+            reference: "payout-trusted-recon",
+            key,
+            visibility: "private",
+          });
+          readSha = sha256Of(object.content);
+          state =
+            readSha === (record.stored ?? record.content) ? "ok" : "mismatch";
+        } catch (error) {
+          if (error instanceof CoreError && error.code === "NOT_FOUND")
+            state = "missing";
+          else {
+            fileOf.set(op.operationId, "error");
+            unreadable += 1;
+            return;
+          }
         }
-      }
+        fileOf.set(op.operationId, state);
+        await tx.execute(
+          sql`SELECT app.payout_recon_evidence_observe(${tenantId}::uuid, ${op.operationId}::uuid, ${state}::text, ${state === "mismatch" ? readSha : null}::text)`,
+        );
+      });
     }
   }
-
-  // What the run read of each proof file is recorded before any flag is raised
-  // (1038): a clearance is bound to the evidence problem it cleared, so the
-  // fingerprint must see problem B or a returning problem A. Own transaction;
-  // a failure fails the page (fail closed). A recovery (`ok`) is recorded only
-  // for an operation that already has an evidence flag.
-  const evidenceFlagged = new Set<string>();
-  for (const key of facts?.flagged ?? []) {
-    const [, operationId, , reason] = key.split("|");
-    if (
-      operationId &&
-      (reason === "evidence_missing" || reason === "evidence_hash_mismatch")
-    )
-      evidenceFlagged.add(operationId);
-  }
-  const observations: {
-    operationId: string;
-    state: string;
-    sha: string | null;
-  }[] = [];
-  for (const op of operations) {
-    const state =
-      op.evidenceKey === null ? undefined : fileOf.get(op.evidenceKey);
-    if (op.evidenceKey === null || state === undefined || state === "error")
-      continue;
-    if (state === "ok" && !evidenceFlagged.has(op.operationId)) continue;
-    observations.push({
-      operationId: op.operationId,
-      state,
-      sha:
-        state === "mismatch" ? (readShaOf.get(op.evidenceKey) ?? null) : null,
-    });
-  }
-  if (observations.length > 0)
-    await withTenant(db, context, async (tx) => {
-      for (const o of observations)
-        await tx.execute(
-          sql`SELECT app.payout_recon_evidence_observe(${tenantId}::uuid, ${o.operationId}::uuid, ${o.state}::text, ${o.sha}::text)`,
-        );
-    });
 
   // A difference of the operation holds every slip of it, so an operation-wide
   // reason is flagged once per terminal item (the flag carries the payslip).
