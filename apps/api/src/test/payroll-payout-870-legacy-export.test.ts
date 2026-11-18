@@ -176,6 +176,8 @@ describe("legend-yjbjb: the legacy bank export cannot produce a payment file", (
     const runId = await W.seedRun(slips);
     await W.postLockedJournal(runId, slips);
 
+    // Setup (legend-rvao9): the cash approve guard needs 1102 to cover the batch.
+    await W.fundPettyCash(1_000_000_000);
     const cashBatch = await W.approvedBatch(runId, "cash");
     const [cashItem] = await W.itemsOf(cashBatch);
     await W.handover(cashBatch, [cashItem!.id as string], APP2);
@@ -219,6 +221,8 @@ describe("legend-yjbjb: the legacy bank export cannot produce a payment file", (
       bank(ANDI, 1_000_000),
       cash(CASHIER, 500_000),
     ]);
+    // Setup (legend-rvao9): the cash approve guard needs 1102 to cover the batch.
+    await W.fundPettyCash(1_000_000_000);
     await W.approvedBatch(cashOnly, "cash");
     const response = await legacyExport(locker, cashOnly);
     expect(response.status, JSON.stringify(response.body)).toBe(409);

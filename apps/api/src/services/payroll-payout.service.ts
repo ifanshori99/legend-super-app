@@ -1605,9 +1605,9 @@ const rupiah = (amount: number) => `Rp${amount.toLocaleString("id-ID")}`;
  * handover of another batch of the same run) and BEFORE the pending credits are
  * read, so a return, a top-up or another approval of the entity cannot slip in
  * between. The items of this batch are still `prepared` here, so the pending
- * sum does not count them: call this before they turn `approved`. No `petty_cash`
- * mapping: no 1102 balance exists to go negative, so the check is skipped, as
- * in the petty cash return guard (the payout settles as `settle_skipped`).
+ * sum does not count them: call this before they turn `approved`. Accounting on
+ * and no `petty_cash` mapping: refused 409 PAYOUT_PETTY_CASH_MAPPING_MISSING
+ * (the handover would fail ACCOUNT_MAPPING_MISSING). Accounting off: skipped.
  */
 async function assertCashCoversBatch(
   tx: Tx,
@@ -1624,7 +1624,15 @@ async function assertCashCoversBatch(
     asTenant(tenantId),
     batch.legalEntityId,
   );
-  if (cash === null) return;
+  // Accounting on but no petty_cash mapping: the handover could not post to the
+  // GL (ACCOUNT_MAPPING_MISSING) and the money would be stuck, so refuse the
+  // approval now instead of skipping the check.
+  if (cash === null)
+    throw payoutRefuse(
+      409,
+      "PAYOUT_PETTY_CASH_MAPPING_MISSING",
+      "Mapping kas kecil (petty_cash) belum diatur. Atur mapping akun kas kecil lalu setujui batch lagi.",
+    );
   const items = await loadBatchItems(tx, tenantId, batch.id);
   let totalIdr = 0;
   for (const item of items)
@@ -1773,10 +1781,12 @@ export async function approveDisbursementBatch(
     sql`SELECT app.payout_batch_approve_attest(${batchId}::uuid, ${approveGrant}) AS grant_id`,
   );
 
-  const now = new Date();
-  const expires = new Date(
-    now.getTime() + PAYOUT_APPROVAL_TTL_HOURS * 3_600_000,
-  );
+  // The approval window runs on the database clock, the same one the pending
+  // cash credits (`approval_expires_at > now()`), the export and the handover
+  // compare against (legend-f250r): an app server with a skewed clock cannot
+  // open a gap between them.
+  const now = sql`now()`;
+  const expires = sql`now() + make_interval(hours => ${PAYOUT_APPROVAL_TTL_HOURS})`;
   const [approved] = await tx
     .update(payrollDisbursementBatches)
     .set({

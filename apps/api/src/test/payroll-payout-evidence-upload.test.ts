@@ -614,6 +614,8 @@ describe("legend-zoqh1 upload payment proof for resolve and return", () => {
     const cashSlips = [cash(CASHIER, 900_000)];
     const cashRun = await W.seedRun(cashSlips);
     await W.postLockedJournal(cashRun, cashSlips);
+    // legend-rvao9: approving a cash batch needs enough cash in 1102.
+    await W.fundPettyCash(2_000_000);
     const cashId = await W.approvedBatch(cashRun, "cash");
 
     for (const [label, id] of [

@@ -50,7 +50,6 @@ import {
 } from "./helpers/cash-bank-world.ts";
 import {
   APP,
-  APP2,
   CASHIER,
   REQ,
   actorOf,
@@ -784,10 +783,11 @@ describe("1053 another tenant does not change the cash decision", () => {
 
 // ---- no petty_cash account mapped -------------------------------------------
 //
-// Not specified by the brief beyond "follow the return guard, skip". The test
-// documents what approveDisbursementBatch does TODAY for an entity without a
-// `petty_cash` mapping and where a later cash handover posts. It is a
-// characterisation, not a verdict: the CTO decides whether the behavior stays.
+// 1053b item 2 (CTO decision: the rule limits payment). With accounting ON and
+// no `petty_cash` mapping the available cash cannot be checked, so approving a
+// cash batch is refused 409 PAYOUT_PETTY_CASH_MAPPING_MISSING (it no longer
+// skips the guard). Nothing is approved, nothing is posted. With accounting OFF
+// the guard stays skipped (next section). More cases: the 1053b mapping file.
 
 async function withoutPettyCashMapping<T>(work: () => Promise<T>) {
   const rows = await W.rowsOf(
@@ -811,8 +811,8 @@ async function withoutPettyCashMapping<T>(work: () => Promise<T>) {
   }
 }
 
-describe("1053 entity without a petty_cash account mapping (characterisation)", () => {
-  it("[legend-rvao9-no-petty-cash-mapping] documents whether the guard is skipped on approve and what the later cash handover does", async () => {
+describe("1053 entity without a petty_cash account mapping", () => {
+  it("[legend-rvao9-no-petty-cash-mapping] accounting on and no petty_cash mapping: approving a cash batch is refused 409 PAYOUT_PETTY_CASH_MAPPING_MISSING and nothing moves", async () => {
     await fund(10_000);
     const avail = await available();
     const net = Math.max(avail, 0) + 5_000_000; // far above any 1102 cash
@@ -827,32 +827,18 @@ describe("1053 entity without a petty_cash account mapping (characterisation)", 
       net,
     };
 
-    // Observed today (characterisation): the approval is NOT refused (the
-    // guard is skipped when no petty_cash account is mapped), and the later
-    // cash handover fails 422 ACCOUNT_MAPPING_MISSING, so nothing is posted and
-    // the items stay `approved`. The money cannot go out until finance maps
-    // petty_cash again; no journal goes to any other account.
     const journalsBefore = await journalCount();
-    await withoutPettyCashMapping(async () => {
-      expect(await tryApprove(batch), "guard skipped, approval succeeds").toBe(
-        null,
-      );
-      await expectApproved(batch);
+    const failure = await withoutPettyCashMapping(() => tryApprove(batch));
 
-      const itemIds = (await W.itemsOf(batchId)).map((i) => i.id as string);
-      const failure = await W.httpFailure(W.handover(batchId, itemIds, APP2));
-      // An AccountingError (not an HttpError class) carrying status and code.
-      expect(failure, "handover is refused").toBeInstanceOf(Error);
-      const error = failure as HttpError;
-      expect(error.status).toBe(422);
-      expect(error.code).toBe("ACCOUNT_MAPPING_MISSING");
-      expect(error.message).toContain("petty_cash");
-    });
-
+    expect(failure, "the approval must be refused").toBeInstanceOf(HttpError);
+    const error = failure as HttpError;
+    expect(error.status, `${error.code}: ${error.message}`).toBe(409);
+    expect(error.code).toBe("PAYOUT_PETTY_CASH_MAPPING_MISSING");
+    expect(error.message).toBe(
+      "Mapping kas kecil (petty_cash) belum diatur. Atur mapping akun kas kecil lalu setujui batch lagi.",
+    );
+    await expectUntouched(batch, journalsBefore);
     expect(await W.postingsOf(batchId), "nothing posted").toHaveLength(0);
-    expect(await journalCount(), "no journal anywhere").toBe(journalsBefore);
-    for (const item of await W.itemsOf(batchId))
-      expect(item.status, "items not handed over").toBe("approved");
   }, 90_000);
 });
 
