@@ -7,7 +7,9 @@
 // so locking an issue from the POS side (order first) would deadlock.
 //
 // - Vouchers: every apology voucher of an issue of the order, reached through
-//   `order_issues.voucher_id` or `apology_vouchers.order_issue_id`, each once.
+//   `order_issues.voucher_id` or `apology_vouchers.order_issue_id`, and any CRM
+//   voucher a report stored directly in `order_issues.voucher_id` (report-time
+//   resolution, legend-eajpb), each voucher once.
 // - POS refunds: every `pos_order_refunds` row of the order.
 // - Recovery refunds: per issue, the largest refund while the issue still has a
 //   live one (same rule as `recoveryReleasedOf`).
@@ -57,11 +59,16 @@ export async function orderGivenOf(
     )
     SELECT
       (SELECT coalesce(sum(v.value_idr), 0)
-         FROM apology_vouchers a
-         JOIN vouchers v ON v.tenant_id = a.tenant_id AND v.id = a.voucher_id
-        WHERE a.tenant_id = ${tenantId}
-          AND (a.id IN (SELECT voucher_id FROM issues WHERE voucher_id IS NOT NULL)
-               OR a.order_issue_id IN (SELECT id FROM issues)))::text AS vouchers,
+         FROM vouchers v
+        WHERE v.tenant_id = ${tenantId}
+          AND v.id IN (
+                SELECT a.voucher_id
+                  FROM apology_vouchers a
+                 WHERE a.tenant_id = ${tenantId}
+                   AND (a.id IN (SELECT voucher_id FROM issues WHERE voucher_id IS NOT NULL)
+                        OR a.order_issue_id IN (SELECT id FROM issues))
+                UNION
+                SELECT voucher_id FROM issues WHERE voucher_id IS NOT NULL))::text AS vouchers,
       (SELECT coalesce(sum(r.amount_idr), 0)
          FROM pos_order_refunds r
         WHERE r.tenant_id = ${tenantId}
@@ -111,10 +118,15 @@ export async function orderGivenOf(
     SELECT i.order_item_id::text AS item,
            i.replacement_order_item_id::text AS replacement,
            (SELECT coalesce(sum(v.value_idr), 0)
-              FROM apology_vouchers a
-              JOIN vouchers v ON v.tenant_id = a.tenant_id AND v.id = a.voucher_id
-             WHERE a.tenant_id = i.tenant_id
-               AND (a.id = i.voucher_id OR a.order_issue_id = i.id))::text AS vouchers,
+              FROM vouchers v
+             WHERE v.tenant_id = i.tenant_id
+               AND v.id IN (
+                     SELECT a.voucher_id
+                       FROM apology_vouchers a
+                      WHERE a.tenant_id = i.tenant_id
+                        AND (a.id = i.voucher_id OR a.order_issue_id = i.id)
+                     UNION
+                     SELECT i.voucher_id WHERE i.voucher_id IS NOT NULL))::text AS vouchers,
            coalesce((SELECT max(r.amount_idr)
                        FROM payment_refunds r
                       WHERE r.tenant_id = i.tenant_id AND r.order_issue_id = i.id
