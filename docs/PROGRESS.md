@@ -2126,3 +2126,4 @@ Langkah berikut CTO baru:
 - 04:32 CTO: full run batch92 2j23m+ (tidak hang, log aktif) memegang jalur 1; jalur 2 tertutup (swap ~3500, free 69%); 7 job (tsc 1095/1072/1118/1120, setup 1123) antre 1j10m+. Bahan retro: full suite memblok semua typecheck thread -> pertimbangkan shard suite penuh atau jadwal full run saat antre kosong.
 - 04:40 CTO: G2yc3 1119 selesai ccd688e11 (22/22, 707 regresi, tsc 0, architect 0 P1). 1072 SIAP batch95 (renomor). Brief 1126 ke G2yc3: webhook refund unmatched -> hold + P3-4 satu fact satu hold, cabang ws/1126 atas 1072.
 - 04:43 CTO: G95kw 1116 selesai 4aea9e038 (2 P1 SO 1114 tutup, tabel 6x6, 67 berkas 1203 lulus, tsc 0). Resolve. Architect delta 2 commit pasca-review berjalan. byws7 sesudah 1072+1095 landing.
+- 04:47 CTO: architect delta 1095 P1 order-given bayar telat QR (200k dari 100k). Brief 1127 ke G95kw. 1095 DITAHAN.
