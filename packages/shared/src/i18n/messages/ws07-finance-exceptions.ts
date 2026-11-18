@@ -9,6 +9,7 @@ export const financeExceptionsMessages = {
   kinds: {
     edge_tax_unsnapshotted: "Pajak edge belum tersnapshot",
     edge_void_unsupported: "Void edge tidak didukung",
+    edge_void_refused: "Void edge ditolak, refund manual sudah ada",
     edge_receipt_skipped: "Struk edge dilewati",
     edge_link_dead_letter: "Link edge dead-letter",
     payout_fee_not_posted: "Biaya payout belum dijurnal",
@@ -24,6 +25,8 @@ export const financeExceptionsMessages = {
       "Order dari edge punya pajak, tetapi snapshot pajaknya belum tercatat. Laporan pajak bisa kurang.",
     edge_void_unsupported:
       "Pembatalan dari edge belum bisa dijurnal otomatis. Jurnal pembalik perlu diperiksa manual.",
+    edge_void_refused:
+      "Kasir membatalkan order ini di edge, tetapi pusat menolaknya karena tamu sudah menerima refund manual. Bila kasir sudah mengembalikan uang tunai dari laci, laci kas outlet bisa kurang sebesar nilai order. Nilai di daftar adalah total order, bukan selisih laci yang pasti. Periksa selisih laci dan hubungi outlet.",
     edge_receipt_skipped:
       "Struk dari edge dilewati saat sinkronisasi, jadi order ini belum lengkap di pusat.",
     edge_link_dead_letter:
@@ -55,6 +58,8 @@ export const financeExceptionsMessages = {
   },
   refTypeUnknown: "Sumber lain",
   details: {
+    manual_refund_exists:
+      "Order sudah di-refund manual, jadi void dari edge ditolak.",
     tax_missing: "Pajak tidak ada pada data edge.",
     tax_mismatch: "Pajak pada data edge tidak cocok dengan total order.",
     batchPrefix: "Batch pencairan",

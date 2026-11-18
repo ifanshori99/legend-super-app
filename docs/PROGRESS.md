@@ -7613,3 +7613,10 @@ Gerbang (kebijakan landing Retro 47/49, tanpa full run ulang):
 - e2e produksi hijau. e2e mock PENUH (gerbang tiap batch ketiga): 1168 lulus, 4 gagal: `legend-k8fk` DASH-01 (dibetulkan), `legend-kmndq` (InvalidStateError animasi, flake), `legend-9bh` AUTH-05 dan `legend-azt` F11 (lulus sendiri); bead flake dicatat.
 
 Subagent: implementer x4, architect x1, test-runner x1 di batch89. Biaya sesi kumulatif (batch85-89): total biaya* 16071k, puncak konteks 267k, 3 compact.
+
+## legend-nbkvh void edge ditolak di pengecualian finance (18 Nov)
+
+Sudah: jenis baru `edge_void_refused` di daftar pengecualian finance (`/kelola/akuntansi/pengecualian`). Sumber: `edge_order_ingests` state `ingested` dengan reason `void_refused:manual_refund_exists` (1042 F2: void edge ditolak karena refund manual sudah membayar tamu). Nilai = total order, tanggal = `updated_at` di zona waktu outlet, detail = `manual_refund_exists`. Tanpa migrasi, read-only. File: validator shared, `accounting-finance-exceptions.service.ts` (`voidRefused`), `lib.ts`, `mock.ts`, katalog `ws07-finance-exceptions.ts`, brief 662.
+Teks: label "Void edge ditolak, refund manual sudah ada" (bukan "laci kas kurang" mentah: reviewer menunjuk kasus QRIS/kartu tidak menyentuh laci, nilai di daftar adalah total order, bukan selisih laci pasti; help text menjelaskan laci bisa kurang bila kasir mengembalikan tunai). Keputusan untuk founder via CTO: perlu filter tender bila ingin nilai khusus tunai.
+Bukti: API `accounting-finance-exceptions.test.ts` 73/73 (blok baru: terdaftar, tidak terdaftar untuk state voided/alasan lain/tenant lain/di luar jangkauan outlet/di luar jendela, batas tengah malam WIB vs UTC); root `text-contract` + `ws07-finance-exceptions-known-count` 21/21; e2e mock finance 14 tes (2 baru 390 px dan 1280 px: tanpa scroll horizontal, catatan laci tampil); tsc 3/3 hijau; eslint+prettier hijau pada berkas yang diubah. Review: satu reviewer sonnet, temuan label dan batas zona waktu sudah dibetulkan.
+Subagent: total 4 (2 Explore, 1 test-writer, 1 reviewer), puncak 2 bersamaan, token heavy dipegang thread ini.
