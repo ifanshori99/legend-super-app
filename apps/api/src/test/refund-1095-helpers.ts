@@ -45,7 +45,11 @@ import {
 } from "../services/pos-order-ports.ts";
 import { openPosShift } from "../services/pos-shift.service.ts";
 import { agent, signUp } from "./helpers.ts";
-import { createWorld, type World } from "./order-recovery-helpers.ts";
+import {
+  createWorld,
+  type Guest,
+  type World,
+} from "./order-recovery-helpers.ts";
 import { createIsolatedTenant, owner } from "./floor-test-helpers.ts";
 import { pinOverrideFixtureFingerprint } from "./pos-override-fixture.ts";
 import { seedTenantRoleTemplates } from "../services/access.service.ts";
@@ -82,6 +86,8 @@ export type PaidOrder = {
   outletId: string;
   kopiLine: string;
   rotiLine: string;
+  /** The seated guest who placed the order (for the guest voucher / swap choice). */
+  guest: Guest;
 };
 
 export type PosWorld = Awaited<ReturnType<typeof createPosWorld>>;
@@ -237,6 +243,7 @@ export async function createPosWorld() {
       outletId: rows[0]!.outlet_id,
       kopiLine: line(w.ids.kopi),
       rotiLine: line(w.ids.roti),
+      guest,
     };
   }
 
@@ -371,6 +378,24 @@ export async function createPosWorld() {
       }
     }
     expect(await ord09Rows([issueId]), "no ORD-09 refund opened").toEqual([]);
+  }
+
+  /** The guest's own choice on a reported line (voucher or swap), as a raw answer. */
+  function guestChoose(
+    paid: PaidOrder,
+    issueId: string,
+    body: Record<string, unknown>,
+  ) {
+    return w.as(paid.guest).choose(issueId, body);
+  }
+
+  /** Staff apology voucher tied to an existing issue, as a raw answer (no expectation). */
+  function staffVoucher(issueId: string, valueIdr: number) {
+    return w.staffPost(w.supervisor, "/api/apology-vouchers", {
+      valueIdr,
+      reason: "Item gagal, mohon maaf",
+      orderIssueId: issueId,
+    });
   }
 
   async function voucherValues(issueId: string): Promise<number[]> {
@@ -592,6 +617,10 @@ export async function createPosWorld() {
     expectOrd09Refused,
     reportLine,
     voucherTotal,
+    voucherValues,
+    guestChoose,
+    staffVoucher,
+    airItem,
     ord09Rows,
     recoveryRefundTotal,
     becomePosSale,
