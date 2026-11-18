@@ -7595,3 +7595,21 @@ Gerbang (Retro 47: gagal dibetulkan + rerun terarah hijau, tanpa full run kedua)
 - e2e produksi hijau; e2e mock terarah (smoke + 5 spec terkait) 40 lulus; 5 gagal `legend-zx8k` dibetulkan (lihat atas). e2e mock penuh batch89.
 
 Subagent: implementer x4 (fixture revpash, device-shared-mode, migrasi 0230, zx8k), test-runner x2. Biaya sesi (session-usage, kumulatif batch85-88): total biaya* 13293k, puncak konteks 267k, 3 compact.
+
+## Merge train batch89 (18 Nov 2026, `int/batch89` -> `milestone/m1`)
+
+Basis m1 68422e367 (batch88). Cabang masuk (urut): `1016-refund-kelebihan-provider` (g6ept), `1013-jurnal-breakfast-net-refund` (tlm3h), `d8e5216b` (1042 F2, ggv6d), `b49350e5` (1037 kas+supplier SO1036, j6v6v/3bkvl/3k9qg/6ipij), `1050-web-tombol-kas-keluar-chain`, `8eb871ce` a93468ca8 (1048 fix SO POS 936), `fc88d48f` (1046 jual tiket fasilitas).
+
+Peta migrasi: 0670/0671/0672 -> 0477/0478/0479 (8eb871ce), `when` 1795000000094-96. `db:generate`: "No schema changes"; check-journal ok. Snapshot baru memakai id baru dengan rantai prevId.
+
+Penyesuaian dan keputusan:
+- Kas keluar (1037 x 998): aturan restriktif memakai KEDUANYA (keputusan CTO): direct approve tidak pernah memutus level dan hanya posting bila rantai sudah disetujui (1037), DAN MFA tetap wajib di direct approve (998). Test baru `[cash-out-approve-matrix-bypass-F1-f]`: tanpa MFA ditolak 403 `MFA_REQUIRED` walau rantai sudah disetujui, tidak ada posting; dengan MFA + rantai disetujui posting sekali. Helper `approveChainLevelAs` memberi stempel MFA ke pemanggil.
+- Router `pos-points` dan `facility-pos-ticket` (936/1046) memakai `requireAuthAllowSharedDevice` (keputusan "pos", penjaga kasir sudah terpasang) dan masuk `shared-device-router-decisions.test.ts`.
+- `accounting-refund-payout-map-race.test.ts`: 1037 menambah satu SELECT `account_mappings` (kunci entitas kas) setelah penjaga remap-telat 48ft7; seam tes disesuaikan (`reads - 1`), semua assertion sama. Architect: SOUND (garis jurnal dibangun dari satu pembacaan mapping yang sama dengan penjaga; pembacaan tambahan hanya menentukan kunci).
+- e2e `legend-k8fk` mengikuti okupansi kursi per zona yang kini hidup (p4q10, batch88), sama seperti zx8k.
+
+Gerbang (kebijakan landing Retro 47/49, tanpa full run ulang):
+- lint dan typecheck hijau (ulang setelah semua perbaikan). Full run sekitar 2 jam 12 menit: 23322 lulus, 6 gagal: 3 map-race (dibetulkan, 17/17), `payroll-payout-897-proof-binding` 503 "sistem sibuk" dan `rbac-audit-writer` ZodError actionType (2 tes) lulus sendiri (flake, dua bead dicatat). Rerun terarah 11 berkas (180/180) hijau.
+- e2e produksi hijau. e2e mock PENUH (gerbang tiap batch ketiga): 1168 lulus, 4 gagal: `legend-k8fk` DASH-01 (dibetulkan), `legend-kmndq` (InvalidStateError animasi, flake), `legend-9bh` AUTH-05 dan `legend-azt` F11 (lulus sendiri); bead flake dicatat.
+
+Subagent: implementer x4, architect x1, test-runner x1 di batch89. Biaya sesi kumulatif (batch85-89): total biaya* 16071k, puncak konteks 267k, 3 compact.
