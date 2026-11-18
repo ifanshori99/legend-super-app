@@ -292,7 +292,59 @@ async function qrSaleInUseOfIntent(
         WHERE sp.tenant_id = o.tenant_id AND sp.order_id = o.id)
   `);
   const held = BigInt(String(result.rows[0]?.amount ?? "0"));
-  return held > 0n ? held : 0n;
+  const vouchers = await orderVouchersInUseOfIntent(tx, tenantId, intentId);
+  const total = held + vouchers;
+  return total > 0n ? total : 0n;
+}
+
+/**
+ * 1131: money an apology or CRM voucher of an order the intent pays already
+ * gave, for an order `qrSaleInUseOfIntent` does not hold whole (an open bill
+ * settled by the intent, any channel). The guest already got that value, so a
+ * finance refund of the intent cannot pay it back again: paid - vouchers is
+ * the most that stays refundable. Same voucher set as `orderGivenOf`
+ * (order-given.ts): vouchers reached through `order_issues.voucher_id` or
+ * `apology_vouchers`, a cancelled (voided) one left out. A live ORD-09 refund
+ * is a refund of the intent already (`reserved`), so it is not held here.
+ * Read-only under the intent row lock; takes no order lock (intent-first).
+ * POS sales are held by `posSaleInUseOfIntent`.
+ */
+async function orderVouchersInUseOfIntent(
+  tx: Tx,
+  tenantId: Intent["tenantId"],
+  intentId: string,
+): Promise<bigint> {
+  const result = await tx.execute(sql`
+    SELECT coalesce(sum((
+      SELECT coalesce(sum(v.value_idr), 0)
+        FROM vouchers v
+       WHERE v.tenant_id = o.tenant_id
+         AND v.status <> 'cancelled'
+         AND v.id IN (
+               SELECT a.voucher_id
+                 FROM apology_vouchers a
+                WHERE a.tenant_id = o.tenant_id
+                  AND (a.id IN (SELECT i.voucher_id FROM order_issues i
+                                 WHERE i.tenant_id = o.tenant_id AND i.order_id = o.id
+                                   AND i.voucher_id IS NOT NULL)
+                       OR a.order_issue_id IN (SELECT i.id FROM order_issues i
+                                                WHERE i.tenant_id = o.tenant_id AND i.order_id = o.id))
+               UNION
+               SELECT i.voucher_id FROM order_issues i
+                WHERE i.tenant_id = o.tenant_id AND i.order_id = o.id
+                  AND i.voucher_id IS NOT NULL)
+    )), 0)::text AS amount
+    FROM orders o
+    WHERE o.tenant_id = ${tenantId}
+      AND (o.payment_intent_id = ${intentId}::uuid
+           OR o.payment_link_id = (SELECT pi.payment_link_id FROM payment_intents pi
+                                    WHERE pi.tenant_id = o.tenant_id AND pi.id = ${intentId}::uuid))
+      AND NOT (o.channel IN ('qr', 'facility') AND o.payment_mode = 'pay_first'
+               AND o.fired_at IS NOT NULL)
+      AND NOT EXISTS (SELECT 1 FROM pos_orders sp
+        WHERE sp.tenant_id = o.tenant_id AND sp.order_id = o.id)
+  `);
+  return BigInt(String(result.rows[0]?.amount ?? "0"));
 }
 
 async function paymentInfo(tx: Tx, intent: Intent) {
