@@ -820,6 +820,8 @@ export async function recordProviderRefundInTx(
       await fileTransactionConflictHold(
         Math.max(byHandIdr, atRiskIdr),
         intent.outletId,
+        // `quiet`: the caller (958 full refund) alerts this report itself.
+        input.quiet === true,
       );
     if (
       waitForInFlight &&
@@ -1272,7 +1274,8 @@ export async function recordProviderRefundInTx(
   // K1: the conflict alert, unless the partial-refund alert just told finance
   // of this very report (one alert per report; the hold is filed either way).
   // Its id is deterministic, so a repeat is a no-op.
-  if (unsentHoldFiled && (input.quiet || (alreadyAlerted && !intentFlagged)))
+  // `quiet`: the caller (958 full refund) alerts this report itself.
+  if (unsentHoldFiled && !input.quiet && alreadyAlerted && !intentFlagged)
     await alertProviderRefundTransactionConflict(
       tx,
       context,

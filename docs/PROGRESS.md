@@ -1,3 +1,10 @@
+## 1075b Refund I9: echo hanya dari refund yang sudah dikirim (18 Nov 2026)
+
+- Keputusan CTO: sukses penyedia atas refund yang di-settle manual jadi hold; sukses lebih kecil hanya echo bila R sudah dikirim ke penyedia. Invarian I9 di `docs/briefs/1072-invarian.md`, rincian K1-K3 dan L1-L3 di `docs/briefs/1072-refund-ronde6-q45.md` bagian Ronde 7b. Bead legend-3aign; r1-04 (race kredit DP) jadi legend-r7oi3 (P2).
+- Webhook: pengecualian "lebih kecil = echo" hanya bila R terkirim (`sentToProvider`). Recorder: fact penyedia pada transaksi dengan refund pending/approved yang belum dikirim tetap dibukukan dan memasang hold konflik (K1, L2); echo recorder melewati refund settle manual (K2); laporan full sesudah settle manual menahan max(nominal manual, nominal berisiko) (K3, L1). Satu alert per laporan (958).
+- Dua review architect xhigh: I9 (no P1, P2 recorder settle manual) dan K1-K3 (no P1, P2 hold K3 menelan hold live-own). Semua diperbaiki. Runbook `docs/deployment.md` memperbarui aturan penutupan hold.
+- Bukti: r4 merah di eb5f68966 (6 dari 11), r4-10/r4-11 merah di c7cff3804; typecheck dan db:generate bersih.
+
 ## 1075 Refund ronde 7 (18 Nov 2026)
 
 - Cabang `ws/1072-refund-ronde6-q45`, lanjut dari 74172df44. Invarian I6-I8 di `docs/briefs/1072-invarian.md` (bagian "Ronde 7").
