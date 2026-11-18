@@ -796,6 +796,13 @@ type PosTicketRow = {
   orderItemId: string;
   lineStatus: string;
   lineTotalIdr: number;
+  display: {
+    productName: string;
+    facilityName: string;
+    areaName: string;
+    unitCode: string | null;
+    customerName: string;
+  };
 };
 
 async function ticketsOf(orderId: string, who: Staff = cashier) {
@@ -1444,6 +1451,31 @@ describe("POS-936-TKT tickets of a bill: listing and isolation", () => {
     const response = await ticketsOf(created.body.data.id as string);
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     expect(response.body.data.tickets).toEqual([]);
+  });
+
+  it("POS-936-TKT-60b the listing carries the display names read from the ticket's own rows", async () => {
+    const bought = await buy();
+    const row = await onlyTicket(bought.orderId);
+    const { rows } = await asOwnerTenant(tenant.tenantId, (db) =>
+      db.query<{ code: string; name: string }>(
+        `SELECT u.code, c.name
+           FROM facility_units u, customer_profiles c
+          WHERE u.tenant_id = $1 AND u.id = $2 AND c.tenant_id = $1 AND c.id = $3`,
+        [tenant.tenantId, bought.unitId, ids.customer],
+      ),
+    );
+    expect(rows).toHaveLength(1);
+    expect(row.display).toEqual({
+      productName: "Tiket Shower 1x",
+      facilityName: "Shower Tiket",
+      areaName: "Area Tiket",
+      unitCode: rows[0]!.code,
+      customerName: rows[0]!.name,
+    });
+    expect(row.display.customerName).not.toBe("");
+    // Read-only: price and status are the sale's, untouched by the lookup.
+    expect(row.lineTotalIdr).toBe(TICKET_LIST_IDR);
+    expect(row.lineStatus).toBe("pending");
   });
 
   it("POS-936-TKT-61 the listing needs a real bill and a session: unknown bill 404, no session 401", async () => {

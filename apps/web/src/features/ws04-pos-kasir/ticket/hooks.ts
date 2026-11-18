@@ -1,20 +1,25 @@
 // The only data door for the ticket-sale screens: components import hooks from
-// here and never call ./api.ts, useQuery or mock data. Outside mock mode the
-// print fails with CONTRACT_PENDING (`isContractPending` from ../hooks).
-import { useMutation, useQuery } from "@tanstack/react-query";
+// here and never call ./api.ts, useQuery or mock data.
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef } from "react";
 import { ApiError } from "@/lib/api/errors";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { newIdempotencyKey } from "@/lib/idempotency";
 import { useTenantContext } from "@/lib/tenant-context";
-import { printTicket, sellTicket } from "./api";
+import { issueTicketCredential, sellTicketAtPos } from "./api";
 import { TICKET_SALE_CONNECTED } from "./connected";
 import {
+  orderTicketsQuery,
   ticketCustomersQuery,
+  ticketKeys,
   ticketProductsQuery,
   ticketSlotsQuery,
 } from "./queries";
-import type { PrintTicketResult, SellTicketInput, SoldTicket } from "./types";
+import type {
+  SellTicketInput,
+  TicketBillSale,
+  TicketCredential,
+} from "./types";
 
 /** Smallest search text sent to the server (one letter matches half the base). */
 export const CUSTOMER_SEARCH_MIN_CHARS = 2;
@@ -57,7 +62,7 @@ function useIntentKey(prefix: string) {
   };
 }
 
-/** False while the sale has no payment contract (the screen locks and says so). */
+/** False only if the sale is ever locked again (it is wired to the real API). */
 export function useTicketSaleConnected(): boolean {
   return TICKET_SALE_CONNECTED;
 }
@@ -89,11 +94,17 @@ export function useTicketSlots(facilityId: string, areaId: string) {
   });
 }
 
-export function useSellTicket() {
+/**
+ * Sells the ticket and opens its bill; the cashier pays it on the payment
+ * screen. The client sends no price: the bill total is the server's.
+ */
+export function useSellTicketAtPos() {
+  const outletId = useOutletId();
   const intent = useIntentKey("ticket-sale");
-  return useMutation<SoldTicket, ApiError, SellTicketInput>({
+  return useMutation<TicketBillSale, ApiError, SellTicketInput>({
     mutationFn: async (input) => {
-      const sold = await sellTicket(
+      const sale = await sellTicketAtPos(
+        outletId,
         input,
         intent.keyFor({
           productId: input.product.id,
@@ -103,13 +114,46 @@ export function useSellTicket() {
         }),
       );
       intent.clear();
-      return sold;
+      return sale;
     },
   });
 }
 
-export function usePrintTicket() {
-  return useMutation<PrintTicketResult, ApiError, { ticketId: string }>({
-    mutationFn: (input) => printTicket(input.ticketId),
+/** The tickets on one bill; idle until there is an order id. */
+export function useOrderTickets(orderId: string) {
+  const outletId = useOutletId();
+  const ready = useReady();
+  return useQuery({
+    ...orderTicketsQuery(outletId, orderId),
+    enabled: ready && orderId !== "",
+  });
+}
+
+/**
+ * Mints the door credential of a paid ticket and prints it. Every `mutate` is
+ * a new intent with a NEW key: the server never shows the same credential
+ * twice, and a second call rotates it (the old QR and PIN stop working). The
+ * result is for the component's own state: `gcTime: 0` drops it from the
+ * mutation cache once unobserved, and it never goes to a query or storage.
+ */
+export function useIssueTicketCredential() {
+  const client = useQueryClient();
+  const outletId = useOutletId();
+  return useMutation<
+    TicketCredential,
+    ApiError,
+    { orderId: string; ticketId: string }
+  >({
+    gcTime: 0,
+    mutationFn: ({ orderId, ticketId }) =>
+      issueTicketCredential(
+        orderId,
+        ticketId,
+        `ticket-credential:${newIdempotencyKey()}`,
+      ),
+    onSuccess: (_credential, { orderId }) =>
+      client.invalidateQueries({
+        queryKey: ticketKeys.orderTickets(outletId, orderId),
+      }),
   });
 }

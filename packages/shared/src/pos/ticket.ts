@@ -39,9 +39,23 @@ export const posTicketLineStatusSchema = z.enum([
 ]);
 export type PosTicketLineStatus = z.infer<typeof posTicketLineStatusSchema>;
 
+/**
+ * Names the cashier screen shows for a ticket (read-only lookup; empty string
+ * when the row behind an id is gone).
+ */
+export const posOrderTicketDisplaySchema = z.strictObject({
+  productName: z.string(),
+  facilityName: z.string(),
+  areaName: z.string(),
+  unitCode: z.string().nullable(),
+  customerName: z.string(),
+});
+export type PosOrderTicketDisplay = z.infer<typeof posOrderTicketDisplaySchema>;
+
 /** One ticket and the bill line that pays for it. */
 export const posOrderTicketSchema = z.strictObject({
   ticket: accessTicketSchema,
+  display: posOrderTicketDisplaySchema,
   orderItemId: orderItemIdSchema,
   lineStatus: posTicketLineStatusSchema,
   /** The line total the guest pays (server price, whole rupiah). */

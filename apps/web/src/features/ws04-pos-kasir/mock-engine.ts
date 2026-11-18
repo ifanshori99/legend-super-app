@@ -22,12 +22,15 @@ import {
   DEMO_CODE_ORDER_ID,
   DEMO_ORDER_ID,
   DEMO_SHIFT_ID,
+  DEMO_TICKET_ID,
+  DEMO_TICKET_ORDER_ULID,
   canonicalOrderId,
   BLIND_DRAWER_SEED,
   dayDemoSeed,
   payDemoSeed,
   readDemoSeed,
   shiftDemoSeed,
+  ticketDemoSeed,
   type PayDemoSeed,
 } from "./demo-seed.ts";
 import {
@@ -79,6 +82,24 @@ import {
   type SubmitForcedCountInput,
   type WitnessForcedCountInput,
 } from "./shift-extra-types.ts";
+import {
+  TICKET_PRINTER_NAME,
+  demoTicketSeed,
+  emptyTicketState,
+  mintDoorPin,
+  mintQrToken,
+  ticketOrderOf,
+  ticketOrderUlid,
+  ticketUlid,
+  type EngineTicketLine,
+  type EngineTicketState,
+  type TicketLineSeed,
+} from "./ticket/engine-ticket.ts";
+import type {
+  OrderTicketLine,
+  TicketBillSale,
+  TicketCredential,
+} from "./ticket/types.ts";
 import type {
   ActiveShift,
   ApproveShiftCloseInput,
@@ -292,6 +313,13 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
     return holder.shiftExtra;
   };
 
+  // Facility tickets sold at the POS ride on the engine state too (brief 1046).
+  const tickets = (): EngineTicketState => {
+    const holder = state as EngineState & { tickets?: EngineTicketState };
+    holder.tickets ??= emptyTicketState();
+    return holder.tickets;
+  };
+
   const nextId = () => {
     state.counters.id += 1;
     return `00000000-0000-4000-8000-${pad(state.counters.id, 12)}`;
@@ -466,6 +494,7 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
   /** The order for an id, seeded on first use or when `?demo=` changes. */
   function orderOf(rawId: string): EngineOrder {
     const id = canonicalOrderId(rawId);
+    if (id === DEMO_TICKET_ORDER_ULID) return demoTicketOrder();
     const known = id === DEMO_ORDER_ID || id === DEMO_CODE_ORDER_ID;
     if (!known && !state.orders[id]) notFound("Pesanan tidak ditemukan.");
     const seed = id === DEMO_ORDER_ID ? payDemoSeed(readSeed()) : null;
@@ -479,6 +508,63 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
       state.applied[key] = effective;
     }
     return state.orders[id];
+  }
+
+  /** The fixed demo ticket bill, seeded on first use or when `?demo=` changes. */
+  function demoTicketOrder(): EngineOrder {
+    const id = DEMO_TICKET_ORDER_ULID;
+    const explicit = ticketDemoSeed(readSeed());
+    const key = `pay:${id}`;
+    if (
+      state.orders[id] &&
+      (explicit === null || state.applied[key] === explicit)
+    )
+      return state.orders[id];
+    const seed = explicit ?? "tiket-menunggu";
+    const line = registerTicketLine(demoTicketSeed(clock()), id, {
+      orderNo: "POS-T001",
+      ticketId: DEMO_TICKET_ID,
+    });
+    const order = state.orders[id] as EngineOrder;
+    if (seed === "tiket-lunas") {
+      order.tenders.push({
+        id: nextId(),
+        method: "cash",
+        label: "Tunai",
+        amountIdr: line.priceIdr,
+        confirmedAt: iso(clock()),
+        receivedIdr: line.priceIdr,
+        changeIdr: 0,
+      });
+      order.receiptNo = receiptNumberFor(order);
+    }
+    state.applied[key] = seed;
+    return order;
+  }
+
+  /** Opens the mock bill of a ticket line and stores the line (one truth). */
+  function registerTicketLine(
+    seed: TicketLineSeed,
+    orderId: string,
+    fixed?: { orderNo: string; ticketId: string },
+  ): EngineTicketLine {
+    const store = tickets();
+    store.seq += 1;
+    const line: EngineTicketLine = {
+      ...seed,
+      ticketId: fixed?.ticketId ?? ticketUlid(store.seq),
+      orderId,
+      cancelled: false,
+      credentials: 0,
+      usedKeys: [],
+    };
+    store.lines[line.ticketId] = line;
+    state.orders[orderId] = ticketOrderOf(
+      orderId,
+      fixed?.orderNo ?? `POS-T${pad(store.seq + 1, 3)}`,
+      line,
+    );
+    return line;
   }
 
   function seedShifts() {
@@ -907,6 +993,27 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
           }
         : {}),
       ...(order.receiptNo ? { receiptNo: order.receiptNo } : {}),
+    };
+  }
+
+  /** The ticket against its bill: issued once the bill has nothing left to pay. */
+  function ticketLineView(
+    order: EngineOrder,
+    line: EngineTicketLine,
+  ): OrderTicketLine {
+    const paid = remainingOf(order) === 0 && order.tenders.length > 0;
+    return {
+      ticketId: line.ticketId,
+      orderId: line.orderId,
+      lineStatus: line.cancelled ? "cancelled" : paid ? "issued" : "pending",
+      productName: line.productName,
+      customerName: line.customerName,
+      facilityName: line.facilityName,
+      areaName: line.areaName,
+      unitCode: line.unitCode,
+      startsAt: line.startsAt,
+      endsAt: line.endsAt,
+      priceIdr: line.priceIdr,
     };
   }
 
@@ -2019,6 +2126,95 @@ export function createPosKasirEngine(options: EngineOptions = {}) {
       day.inventoryDeduction = result.stockDeductionApplied;
       day.result = result;
       return buildDayRecap();
+    },
+
+    // Facility ticket sold at the POS (brief 1046). The server's stand-in: the
+    // price is the product's, the ticket is issued when its bill is paid, and
+    // every credential call mints a new pair and refuses a replayed key.
+    ticketSaleOf(idempotencyKey: string): TicketBillSale | null {
+      const ticketId = tickets().sales[idempotencyKey];
+      const line = ticketId ? tickets().lines[ticketId] : undefined;
+      const order = line ? state.orders[line.orderId] : undefined;
+      if (!line || !order) return null;
+      return {
+        ticketId: line.ticketId,
+        orderId: line.orderId,
+        orderNo: order.orderNo,
+        totalIdr: order.totalIdr,
+      };
+    },
+    sellTicket(seed: TicketLineSeed, idempotencyKey: string): TicketBillSale {
+      const store = tickets();
+      const line = registerTicketLine(seed, ticketOrderUlid(store.seq + 1));
+      store.sales[idempotencyKey] = line.ticketId;
+      return clone({
+        ticketId: line.ticketId,
+        orderId: line.orderId,
+        orderNo: (state.orders[line.orderId] as EngineOrder).orderNo,
+        totalIdr: line.priceIdr,
+      });
+    },
+    ticketsBusy(): {
+      unitId: string;
+      startMs: number;
+      cleaningEndMs: number;
+    }[] {
+      return Object.values(tickets().lines)
+        .filter((line) => !line.cancelled)
+        .map(({ unitId, startMs, cleaningEndMs }) => ({
+          unitId,
+          startMs,
+          cleaningEndMs,
+        }));
+    },
+    orderTickets(orderId: string): OrderTicketLine[] {
+      const order = orderOf(orderId);
+      settle(order);
+      return Object.values(tickets().lines)
+        .filter((line) => line.orderId === order.id)
+        .map((line) => ticketLineView(order, line));
+    },
+    issueTicketCredential(
+      orderId: string,
+      ticketId: string,
+      idempotencyKey: string,
+    ): TicketCredential {
+      const order = orderOf(orderId);
+      settle(order);
+      const line = tickets().lines[ticketId];
+      if (!line || line.orderId !== order.id)
+        notFound("Tiket tidak ditemukan.");
+      const status = ticketLineView(order, line).lineStatus;
+      if (status === "pending")
+        conflict(
+          "TICKET_NOT_PAID",
+          "Tiket belum dibayar. Lunasi tagihan dulu.",
+        );
+      if (status !== "issued")
+        conflict(
+          "TICKET_TRANSITION_INVALID",
+          "Tiket ini sudah dibatalkan atau dikembalikan.",
+        );
+      if (line.usedKeys.includes(idempotencyKey))
+        conflict(
+          "TICKET_CREDENTIAL_SHOWN",
+          "Kode tiket ini sudah pernah ditampilkan. Cetak ulang untuk kode baru.",
+        );
+      line.usedKeys.push(idempotencyKey);
+      line.credentials += 1;
+      order.version += 1;
+      return {
+        ticketId: line.ticketId,
+        qrToken: mintQrToken(),
+        pin: mintDoorPin(),
+        validFrom: line.validFrom,
+        validUntil: line.validUntil,
+        print: {
+          printedAt: iso(clock()),
+          printerName: TICKET_PRINTER_NAME,
+          reprint: line.credentials > 1,
+        },
+      };
     },
 
     // Raw state for the endpoint mocks (./mock.ts).

@@ -204,10 +204,9 @@ function declinedEdcAttempt(
     amountIdr,
     edc: {
       terminalId: latest.terminalId,
-      // The attempt does not say the bank or card/QRIS mode (gap).
       terminalLabel: latest.terminalLabel ?? "",
-      bank: "",
-      mode: "card",
+      bank: latest.bank ?? "",
+      mode: latest.method ?? "card",
       lockedAmountIdr: amountIdr,
       ...(latest.declineReason ? { declineReason: latest.declineReason } : {}),
       ...(latest.responseCode ? { responseCode: latest.responseCode } : {}),
@@ -250,11 +249,10 @@ function sessionFromOrder(order: PosOrderDetail): PaymentSession {
         : {}),
       depositSurplusIdr: 0,
       // The server priced it: `totalIdr` and `remainingIdr` already include it.
-      // The discount line has no voucher code (gap), so the label has none.
       ...(voucherDiscount
         ? {
             voucher: {
-              code: "",
+              code: voucherDiscount.voucherCode ?? "",
               discountIdr: Number(voucherDiscount.amountIdr),
             },
           }

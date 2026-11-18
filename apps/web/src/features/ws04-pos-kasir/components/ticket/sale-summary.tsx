@@ -62,61 +62,66 @@ export function SaleSummary({
           });
 
   return (
-    <PosPanel
-      title={t("posKasirTicket.summary.title")}
-      footer={
-        <Button
-          type="button"
-          size="lg"
-          className="w-full"
-          disabled={!connected || !canSell || selling}
-          aria-busy={selling}
-          onClick={() => {
-            if (selling || !canSell || !connected) return;
-            onSell();
-          }}
-        >
-          {selling
-            ? t("posKasirTicket.summary.selling")
-            : t("posKasirTicket.summary.sell")}
-        </Button>
-      }
-    >
-      <div className="grid gap-4">
-        <dl className="grid gap-2 [&>div:last-child]:mt-1 [&>div:last-child]:border-t [&>div:last-child]:border-border [&>div:last-child]:pt-3">
-          <Row label={t("posKasirTicket.summary.product")}>
-            {product?.name ?? none}
-          </Row>
-          <Row label={t("posKasirTicket.summary.customer")}>
-            {customer?.name ?? none}
-          </Row>
-          <Row label={t("posKasirTicket.summary.area")}>{areaName ?? none}</Row>
-          <Row label={t("posKasirTicket.summary.when")}>{when}</Row>
-          <Row label={t("posKasirTicket.summary.price")}>
-            {product ? <Money amount={product.priceIdr} size="lg" /> : none}
-          </Row>
-        </dl>
-        <p className="text-sm text-muted-foreground">
-          {canSell
-            ? t("posKasirTicket.summary.priceHint")
-            : t("posKasirTicket.summary.incomplete")}
-        </p>
-        {!connected ? (
-          <Notice
-            tone="warning"
-            title={t("posKasirTicket.summary.pendingTitle")}
+    <div data-slot="sale-summary" className="h-full">
+      <PosPanel
+        title={t("posKasirTicket.summary.title")}
+        footer={
+          <Button
+            type="button"
+            size="lg"
+            className="w-full"
+            disabled={!connected || !canSell || selling}
+            aria-busy={selling}
+            onClick={() => {
+              if (selling || !canSell || !connected) return;
+              onSell();
+            }}
           >
-            {t("posKasirTicket.summary.pendingHint")}
-          </Notice>
-        ) : null}
-        {error ? (
-          <TicketError
-            error={error}
-            title={t("posKasirTicket.summary.saleErrorTitle")}
-            hint={t("posKasirTicket.summary.saleErrorHint")}
-          />
-        ) : null}
-      </div>
-    </PosPanel>
+            {selling
+              ? t("posKasirTicket.summary.selling")
+              : t("posKasirTicket.summary.sell")}
+          </Button>
+        }
+      >
+        <div className="grid gap-4">
+          <dl className="grid gap-2 [&>div:last-child]:mt-1 [&>div:last-child]:border-t [&>div:last-child]:border-border [&>div:last-child]:pt-3">
+            <Row label={t("posKasirTicket.summary.product")}>
+              {product?.name ?? none}
+            </Row>
+            <Row label={t("posKasirTicket.summary.customer")}>
+              {customer?.name ?? none}
+            </Row>
+            <Row label={t("posKasirTicket.summary.area")}>
+              {areaName ?? none}
+            </Row>
+            <Row label={t("posKasirTicket.summary.when")}>{when}</Row>
+            <Row label={t("posKasirTicket.summary.price")}>
+              {product ? <Money amount={product.priceIdr} size="lg" /> : none}
+            </Row>
+          </dl>
+          <p className="text-sm text-muted-foreground">
+            {canSell
+              ? t("posKasirTicket.summary.priceHint")
+              : t("posKasirTicket.summary.incomplete")}{" "}
+            {t("posKasirTicket.summary.billHint")}
+          </p>
+          {!connected ? (
+            <Notice
+              tone="warning"
+              title={t("posKasirTicket.summary.pendingTitle")}
+            >
+              {t("posKasirTicket.summary.pendingHint")}
+            </Notice>
+          ) : null}
+          {error ? (
+            <TicketError
+              error={error}
+              title={t("posKasirTicket.summary.saleErrorTitle")}
+              hint={t("posKasirTicket.summary.saleErrorHint")}
+            />
+          ) : null}
+        </div>
+      </PosPanel>
+    </div>
   );
 }

@@ -1,8 +1,8 @@
 // One function per ticket-sale call; components use the hooks in ./hooks.ts.
 // Catalog, customer search and availability go through the shared contract
-// (mock mode serves them from the facility and CRM mocks). The sale and the
-// print have no mock handler: they run on ./mock.ts in mock mode, and the print
-// fails with CONTRACT_PENDING elsewhere (see ../CONTRACT-GAPS.md).
+// (mock mode serves them from the facility and CRM mocks). The sale, the tickets
+// of a bill and the credential run on the POS kasir mock engine in mock mode
+// (./mock.ts), which plays the server; elsewhere they call the real endpoints.
 import { listCustomers } from "@starter/shared/crm";
 import {
   getFacilityConfig,
@@ -10,18 +10,19 @@ import {
   sellAccessTicketAtPos,
 } from "@starter/shared/facility";
 import { submitPosOrder } from "@starter/shared/pos";
-import { issuePosTicketCredential } from "@starter/shared/pos/ticket";
+import {
+  issuePosTicketCredential,
+  listPosOrderTickets,
+} from "@starter/shared/pos/ticket";
 import { callEndpoint } from "@/lib/api/endpoint";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { fetchAvailability } from "../../facility/api";
 import { availableSlots, businessDateInOutletZone } from "../../facility/flow";
-import { contractPending } from "../api";
 import { runPosKasirMock } from "../mock-engine";
-import { mockPrintTicket, mockSellTicket } from "./mock";
+import { mockSellTicketAtPos } from "./mock";
 import type {
-  PrintTicketResult,
+  OrderTicketLine,
   SellTicketInput,
-  SoldTicket,
   TicketBillSale,
   TicketCredential,
   TicketCustomer,
@@ -115,23 +116,6 @@ export async function fetchTicketSlots(
 }
 
 /**
- * Why the sale screen stays locked outside mock mode: the real sale opens a
- * bill and the ticket exists only after it is paid, but the screen still shows
- * an issued ticket right after the sale (see ../CONTRACT-GAPS.md).
- */
-const SALE_PENDING_FEATURE =
-  "Jual tiket fasilitas dari POS: layar belum menunggu pembayaran tagihan";
-
-export async function sellTicket(
-  input: SellTicketInput,
-  idempotencyKey: string,
-): Promise<SoldTicket> {
-  if (API_MOCK)
-    return runPosKasirMock(() => mockSellTicket(input, idempotencyKey));
-  throw contractPending(SALE_PENDING_FEATURE);
-}
-
-/**
  * The real sale (936 D): holds the slot and opens a POS bill with one ticket
  * line at the POS price list's price (the client sends no price). The ticket is
  * `pending_payment`. The bill is submitted so it can be paid; the cashier pays
@@ -142,6 +126,10 @@ export async function sellTicketAtPos(
   input: SellTicketInput,
   idempotencyKey: string,
 ): Promise<TicketBillSale> {
+  if (API_MOCK)
+    return runPosKasirMock((engine) =>
+      mockSellTicketAtPos(engine, input, idempotencyKey),
+    );
   const { data } = await callEndpoint(sellAccessTicketAtPos, {
     body: {
       facilityId: input.product.facilityId,
@@ -182,6 +170,10 @@ export async function issueTicketCredential(
   ticketId: string,
   idempotencyKey: string,
 ): Promise<TicketCredential> {
+  if (API_MOCK)
+    return runPosKasirMock((engine) =>
+      engine.issueTicketCredential(orderId, ticketId, idempotencyKey),
+    );
   const { data } = await callEndpoint(issuePosTicketCredential, {
     params: { orderId, ticketId },
     body: { idempotencyKey },
@@ -197,12 +189,32 @@ export async function issueTicketCredential(
 }
 
 /**
- * Mock mode only: the real print is part of `issueTicketCredential`, which
- * needs the order and a new key per reprint. Not wired to the screen yet.
+ * The tickets on one bill, as the server lists them. The contract carries ids,
+ * the slot and the line total only: names and unit code stay empty, and the
+ * price is `lineTotalIdr` (the screen never computes one).
  */
-export async function printTicket(
-  ticketId: string,
-): Promise<PrintTicketResult> {
-  if (!API_MOCK) throw contractPending("cetak tiket fasilitas");
-  return runPosKasirMock(() => mockPrintTicket(ticketId));
+export async function fetchOrderTickets(
+  orderId: string,
+  signal?: AbortSignal,
+): Promise<OrderTicketLine[]> {
+  if (API_MOCK)
+    return runPosKasirMock((engine) => engine.orderTickets(orderId));
+  const { data } = await callEndpoint(
+    listPosOrderTickets,
+    { params: { orderId } },
+    { signal },
+  );
+  return data.tickets.map((line) => ({
+    ticketId: line.ticket.id,
+    orderId,
+    lineStatus: line.lineStatus,
+    productName: line.display.productName,
+    customerName: line.display.customerName,
+    facilityName: line.display.facilityName,
+    areaName: line.display.areaName,
+    unitCode: line.display.unitCode,
+    startsAt: line.ticket.slot.startsAt,
+    endsAt: line.ticket.slot.endsAt,
+    priceIdr: line.lineTotalIdr,
+  }));
 }

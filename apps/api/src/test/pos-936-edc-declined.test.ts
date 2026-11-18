@@ -421,6 +421,9 @@ type Attempt = {
   terminalLabel: string | null;
   declineReason: string | null;
   responseCode: string | null;
+  bank: string | null;
+  method: string | null;
+  mode: string | null;
   createdAt: string;
   completedAt: string | null;
 };
@@ -606,6 +609,9 @@ describe("POS-936-C EDC declined: the order detail shows the attempt", () => {
       terminalId: ids.terminal,
       declineReason: "Saldo tidak cukup",
       responseCode: "51",
+      bank: "bca",
+      method: "card",
+      mode: "ecr",
     });
     expect(attempts[0]).toHaveProperty("terminalLabel");
     expect(typeof attempts[0]?.createdAt).toBe("string");

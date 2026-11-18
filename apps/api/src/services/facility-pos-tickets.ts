@@ -38,6 +38,7 @@ import {
 } from "@starter/shared/facility";
 import type {
   PosOrderTicket,
+  PosOrderTicketDisplay,
   PosTicketPrint,
 } from "@starter/shared/pos/ticket";
 import { db } from "../db/index.ts";
@@ -46,6 +47,7 @@ import {
   accessTickets,
   facilities,
   facilityAreas,
+  facilityProducts,
   facilityUnits,
 } from "../db/schema/facility.ts";
 import {
@@ -93,6 +95,84 @@ async function ticketsOfOrder(
   return rows;
 }
 
+const emptyDisplay: PosOrderTicketDisplay = {
+  productName: "",
+  facilityName: "",
+  areaName: "",
+  unitCode: null,
+  customerName: "",
+};
+
+/** Read-only name lookup for the tickets of one bill (no price, no status). */
+async function displayOfTickets(
+  tx: Tx,
+  tenantId: TenantId,
+  ticketIds: string[],
+): Promise<Map<string, PosOrderTicketDisplay>> {
+  const out = new Map<string, PosOrderTicketDisplay>();
+  if (ticketIds.length === 0) return out;
+  const rows = await tx
+    .select({
+      ticketId: accessTickets.id,
+      productName: facilityProducts.name,
+      facilityName: facilities.name,
+      areaName: facilityAreas.name,
+      unitCode: facilityUnits.code,
+      customerName: customerProfiles.name,
+    })
+    .from(accessTickets)
+    .leftJoin(
+      facilityProducts,
+      and(
+        eq(facilityProducts.tenantId, accessTickets.tenantId),
+        eq(facilityProducts.id, accessTickets.productId),
+      ),
+    )
+    .leftJoin(
+      facilities,
+      and(
+        eq(facilities.tenantId, accessTickets.tenantId),
+        eq(facilities.id, accessTickets.facilityId),
+      ),
+    )
+    .leftJoin(
+      facilityAreas,
+      and(
+        eq(facilityAreas.tenantId, accessTickets.tenantId),
+        eq(facilityAreas.id, accessTickets.areaId),
+      ),
+    )
+    .leftJoin(
+      facilityUnits,
+      and(
+        eq(facilityUnits.tenantId, accessTickets.tenantId),
+        eq(facilityUnits.id, accessTickets.unitId),
+      ),
+    )
+    .leftJoin(
+      customerProfiles,
+      and(
+        eq(customerProfiles.tenantId, accessTickets.tenantId),
+        eq(customerProfiles.id, accessTickets.customerProfileId),
+      ),
+    )
+    .where(
+      and(
+        eq(accessTickets.tenantId, tenantId),
+        inArray(accessTickets.id, ticketIds),
+      ),
+    );
+  for (const row of rows)
+    out.set(row.ticketId, {
+      productName: row.productName ?? "",
+      facilityName: row.facilityName ?? "",
+      areaName: row.areaName ?? "",
+      unitCode: row.unitCode ?? null,
+      customerName: row.customerName ?? "",
+    });
+  return out;
+}
+
 /** GET /api/pos/orders/:orderId/tickets. */
 export async function listPosOrderTickets(
   context: ScopedTenantContext,
@@ -103,9 +183,15 @@ export async function listPosOrderTickets(
   return withTenant(db, context, async (tx) => {
     await assertOrderOfOutlet(tx, tenantId, outletId, orderId);
     const rows = await ticketsOfOrder(tx, tenantId, orderId);
+    const names = await displayOfTickets(
+      tx,
+      tenantId,
+      rows.map(({ ticket }) => ticket.id),
+    );
     return {
       tickets: rows.map(({ line, ticket }) => ({
         ticket: toTicket(ticket),
+        display: names.get(ticket.id) ?? emptyDisplay,
         orderItemId: line.orderItemId as PosOrderTicket["orderItemId"],
         lineStatus: line.status,
         lineTotalIdr: Number(line.lineTotalIdr),

@@ -1,58 +1,29 @@
-// Mock mode for the two calls that have no mock handler yet: the POS ticket
-// sale and the ticket print. It plays the server's part: the price is the
-// product's price, a retried key returns the ticket it already issued (never a
-// second one), and a unit is never sold twice for overlapping time. Products
-// and customers come from the shared facility and CRM mocks (./api.ts).
+// Mock mode for the POS ticket sale. It plays the server's part: the price is
+// the product's price, a retried key returns the sale it already made (never a
+// second one), and a unit is never sold twice for overlapping time. The bill
+// and the ticket live in the POS kasir mock engine (so a reload keeps them and
+// the bill is paid on /pos/bayar/$orderId); this file only checks the product
+// against the shared facility mock and hands the engine a line to sell.
+// Products and customers come from the shared facility and CRM mocks (./api.ts).
 import {
   accessTicketSchema,
   cafeLegendFacilityFixtures as fx,
   slotFromStart,
   ticketCredentialWindow,
 } from "@starter/shared/facility";
-import { createUlidFactory } from "@starter/shared/core";
 import { ApiError } from "@/lib/api/errors";
-import { createMockStore } from "@/lib/mock/store";
-import type { PrintTicketResult, SellTicketInput, SoldTicket } from "./types";
+import type { PosKasirEngine } from "../mock-engine";
+import type { SellTicketInput, TicketBillSale } from "./types";
 
 const MINUTE_MS = 60_000;
-const nextUlid = createUlidFactory();
 
-type SaleRecord = {
-  ticket: SoldTicket;
-  unitId: string;
-  startMs: number;
-  cleaningEndMs: number;
-};
-
-const sales = createMockStore(() => new Map<string, SaleRecord>());
-const replies = createMockStore(() => new Map<string, string>());
-const prints = createMockStore(() => new Map<string, number>());
-
-/** Opaque door token, like the real credential (the lock never parses it). */
-function qrToken(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(24));
-  return btoa(String.fromCharCode(...bytes))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-}
-
-/** Uniform 6-digit PIN (rejection sampling, no modulo bias). */
-function doorPin(): string {
-  const limit = 4_294_000_000; // largest multiple of 10^6 below 2^32
-  for (;;) {
-    const [value] = crypto.getRandomValues(new Uint32Array(1));
-    if (value < limit) return String(value % 1_000_000).padStart(6, "0");
-  }
-}
-
-export function mockSellTicket(
+export function mockSellTicketAtPos(
+  engine: PosKasirEngine,
   input: SellTicketInput,
   idempotencyKey: string,
-): SoldTicket {
-  const replay = replies.get().get(idempotencyKey);
-  const replayed = replay ? sales.get().get(replay) : undefined;
-  if (replayed) return replayed.ticket;
+): TicketBillSale {
+  const replay = engine.ticketSaleOf(idempotencyKey);
+  if (replay) return replay;
 
   const product = fx.products.find((item) => item.id === input.product.id);
   if (!product)
@@ -82,7 +53,7 @@ export function mockSellTicket(
   const startMs = Date.parse(slot.startsAt);
   const cleaningEndMs = Date.parse(slot.cleaningEndsAt);
 
-  const taken = [...sales.get().values()];
+  const taken = engine.ticketsBusy();
   const unit = fx.units.find(
     (candidate) =>
       candidate.areaId === area.id &&
@@ -101,59 +72,47 @@ export function mockSellTicket(
       "Belum ada bilik kosong untuk waktu ini. Pilih waktu lain.",
     );
 
-  const ticket = accessTicketSchema.parse({
-    id: nextUlid(),
-    tenantId: fx.tenant.id,
-    outletId: fx.outlet.id,
-    facilityId: facility.id,
-    areaId: area.id,
-    unitId: unit.id,
-    customerProfileId: input.customer.id,
-    productId: product.id,
-    source: "purchase",
-    entitlementLedgerId: null,
-    slot,
-    graceMinutes: facility.arrivalGraceMinutes,
-    addons: [],
-    status: "issued",
-    issuedOffline: false,
-    firstOpenedAt: null,
-    endedAt: null,
-    overtimeMinutes: 0,
-    overtimeFeeIdr: 0,
-    createdAt: new Date().toISOString(),
-  });
-  const window = ticketCredentialWindow(ticket);
-  const sold: SoldTicket = {
-    ticketId: ticket.id,
-    productName: product.name,
-    priceIdr: product.priceIdr,
-    customerName: input.customer.name,
-    facilityName: facility.name,
-    areaName: area.name,
-    unitCode: unit.code,
-    startsAt: slot.startsAt,
-    endsAt: slot.endsAt,
-    validFrom: window.validFrom,
-    validUntil: window.validUntil,
-    qrToken: qrToken(),
-    pin: doorPin(),
-  };
-  sales
-    .get()
-    .set(ticket.id, { ticket: sold, unitId: unit.id, startMs, cleaningEndMs });
-  replies.get().set(idempotencyKey, ticket.id);
-  return sold;
-}
-
-export function mockPrintTicket(ticketId: string): PrintTicketResult {
-  if (!sales.get().has(ticketId))
-    throw new ApiError(404, "NOT_FOUND", "Tiket tidak ditemukan.");
-  const count = (prints.get().get(ticketId) ?? 0) + 1;
-  prints.get().set(ticketId, count);
-  return {
-    printedAt: new Date().toISOString(),
-    printerName: "Printer kasir",
-    reprint: count > 1,
-  };
+  // Only to read the credential window the real ticket would carry.
+  const window = ticketCredentialWindow(
+    accessTicketSchema.parse({
+      id: "01JBQ9K0000000000000000000",
+      tenantId: fx.tenant.id,
+      outletId: fx.outlet.id,
+      facilityId: facility.id,
+      areaId: area.id,
+      unitId: unit.id,
+      customerProfileId: input.customer.id,
+      productId: product.id,
+      source: "purchase",
+      entitlementLedgerId: null,
+      slot,
+      graceMinutes: facility.arrivalGraceMinutes,
+      addons: [],
+      status: "pending_payment",
+      issuedOffline: false,
+      firstOpenedAt: null,
+      endedAt: null,
+      overtimeMinutes: 0,
+      overtimeFeeIdr: 0,
+      createdAt: new Date().toISOString(),
+    }),
+  );
+  return engine.sellTicket(
+    {
+      productName: product.name,
+      customerName: input.customer.name,
+      facilityName: facility.name,
+      areaName: area.name,
+      unitCode: unit.code,
+      startsAt: slot.startsAt,
+      endsAt: slot.endsAt,
+      validFrom: window.validFrom,
+      validUntil: window.validUntil,
+      priceIdr: product.priceIdr,
+      unitId: unit.id,
+      startMs,
+      cleaningEndMs,
+    },
+    idempotencyKey,
+  );
 }

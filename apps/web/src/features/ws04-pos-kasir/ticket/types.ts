@@ -34,29 +34,6 @@ export type SellTicketInput = {
   timing: TicketTiming;
 };
 
-/** The issued ticket: shown once, with the door credential. */
-export type SoldTicket = {
-  ticketId: string;
-  productName: string;
-  priceIdr: number;
-  customerName: string;
-  facilityName: string;
-  areaName: string;
-  unitCode: string | null;
-  startsAt: string;
-  endsAt: string;
-  validFrom: string;
-  validUntil: string;
-  qrToken: string;
-  pin: string;
-};
-
-export type PrintTicketResult = {
-  printedAt: string;
-  printerName: string;
-  reprint: boolean;
-};
-
 /**
  * The bill a real ticket sale opens (936 D). The ticket is `pending_payment`:
  * it is issued only when the bill is paid, so there is no door credential yet.
@@ -82,4 +59,26 @@ export type TicketCredential = {
     printerName: string | null;
     reprint: boolean;
   };
+};
+
+/** Where a ticket stands against its bill line (the server's word). */
+export type TicketLineStatus = "pending" | "issued" | "cancelled" | "refunded";
+
+/**
+ * One ticket on a bill, for the cashier screens. `priceIdr` is the line total
+ * the server priced; nothing here is computed. What the contract does not carry
+ * (names, unit code) is an empty string or null.
+ */
+export type OrderTicketLine = {
+  ticketId: string;
+  orderId: string;
+  lineStatus: TicketLineStatus;
+  productName: string;
+  customerName: string;
+  facilityName: string;
+  areaName: string;
+  unitCode: string | null;
+  startsAt: string;
+  endsAt: string;
+  priceIdr: number;
 };

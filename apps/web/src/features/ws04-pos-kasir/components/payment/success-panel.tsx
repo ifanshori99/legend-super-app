@@ -7,6 +7,7 @@ import { Money } from "@/components/ui/money";
 import { Notice, PosPanel, StateBlock, StatusPill } from "../shared";
 import { usePaymentSession, usePrintReceipt } from "../../hooks";
 import { confirmedAllocations } from "./payment-helpers";
+import { PaidTicketCard } from "./paid-ticket-card";
 import type { PaymentPanelProps } from "./panel-types";
 
 function Row({ label, amountIdr }: { label: string; amountIdr: number }) {
@@ -126,6 +127,7 @@ export function SuccessPanel({ orderId }: PaymentPanelProps) {
             </>
           )}
         </dl>
+        <PaidTicketCard orderId={orderId} />
         {print.isError && (
           <div className="grid w-full max-w-2xl justify-items-start gap-3">
             <Notice

@@ -74,7 +74,7 @@ export type PaymentBill = {
   /**
    * The voucher on this bill (brief 936), read from `order.discounts`. The
    * server priced the discount: `totalIdr` and `remainingIdr` already include
-   * it. The discount line has no voucher code, so `code` is "" outside mock.
+   * it. `code` is the server's `voucherCode` ("" when the line has none).
    */
   voucher?: { code: string; discountIdr: number } | null;
   allocations: PaymentAllocation[];
