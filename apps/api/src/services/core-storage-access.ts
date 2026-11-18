@@ -116,6 +116,12 @@ export const storageSourcePermissionMap = {
     upload: ["ops.checklist.complete"],
     read: ["ops.checklist.manage"],
   },
+  // SOP media (legend-m7yeb): only SOP managers upload and read. Employees read
+  // SOP media through no storage code yet (fail closed, like legacy SOP media).
+  sop_document: {
+    upload: ["hr.sop.manage"],
+    read: ["hr.sop.manage"],
+  },
 } as const satisfies Record<
   StorageSourceKind,
   Record<StorageAction, readonly PermissionCode[]>

@@ -32,6 +32,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useToast } from "@/components/ui/toast";
+import { ApiError } from "@/lib/api/errors";
 import {
   useCreateStation,
   useDeleteStation,
@@ -61,7 +62,8 @@ function StationActions({
 }: {
   station: Station;
   onEdit: () => void;
-  onDelete: () => void;
+  /** Absent when the account may not delete stations. */
+  onDelete?: () => void;
 }) {
   const t = useT();
   return (
@@ -75,15 +77,17 @@ function StationActions({
       >
         <Pencil aria-hidden="true" />
       </Button>
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon-sm"
-        aria-label={t("menu.stations.deleteTitle", { name: station.name })}
-        onClick={onDelete}
-      >
-        <Trash2 aria-hidden="true" />
-      </Button>
+      {onDelete && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          aria-label={t("menu.stations.deleteTitle", { name: station.name })}
+          onClick={onDelete}
+        >
+          <Trash2 aria-hidden="true" />
+        </Button>
+      )}
     </div>
   );
 }
@@ -92,8 +96,10 @@ export function StationsPage() {
   const t = useT();
   const toast = useToast();
   // Station writes authorize with menu.item.manage on the API; the catalog has
-  // no menu.station.manage (kds.station.manage is KDS configuration).
-  const { canManageItems } = useMenuWrites();
+  // no menu.station.manage (kds.station.manage is KDS configuration). Name,
+  // type, create and delete need it at outlet scope (legend-cot3): an account
+  // holding it only at one station edits target time and nothing else.
+  const { canManageItems, canManageStationConfig } = useMenuWrites();
   const stationsQuery = useStations({ limit: 100 });
   const itemsQuery = useItems({ limit: 100 });
   const createStation = useCreateStation();
@@ -138,9 +144,28 @@ export function StationsPage() {
     setEditor({ mode: "edit", station });
   }
 
+  // A refused save or delete: the API answers 403 PERMISSION_DENIED when the
+  // grant does not reach the outlet (legend-huz8).
+  function isPermissionDenied(error: unknown): boolean {
+    return (
+      error instanceof ApiError &&
+      error.status === 403 &&
+      error.code === "PERMISSION_DENIED"
+    );
+  }
+
+  function saveError(error: unknown): string {
+    return isPermissionDenied(error)
+      ? t("menu.stations.permissionDenied")
+      : t("menu.errors.saveFailed");
+  }
+
   function save() {
+    // Station-only grant: name and type are not editable, so they are not
+    // validated or sent; only the target time goes.
+    const configLocked = editor?.mode === "edit" && !canManageStationConfig;
     const trimmed = name.trim();
-    if (trimmed === "") {
+    if (!configLocked && trimmed === "") {
       setError(t("menu.errors.required"));
       return;
     }
@@ -153,7 +178,9 @@ export function StationsPage() {
       setError(t("menu.errors.invalidAmount"));
       return;
     }
-    const body = { name: trimmed, type, targetSeconds };
+    const body = configLocked
+      ? { targetSeconds }
+      : { name: trimmed, type, targetSeconds };
     const onSuccess = () => {
       toast({
         title:
@@ -167,14 +194,15 @@ export function StationsPage() {
     if (editor?.mode === "edit") {
       updateStation.mutate(
         { stationId: editor.station.id, body },
-        { onSuccess, onError: () => setError(t("menu.errors.saveFailed")) },
+        { onSuccess, onError: (error) => setError(saveError(error)) },
       );
       return;
     }
-    createStation.mutate(body, {
-      onSuccess,
-      onError: () => setError(t("menu.errors.saveFailed")),
-    });
+    if (!canManageStationConfig) return;
+    createStation.mutate(
+      { name: trimmed, type, targetSeconds },
+      { onSuccess, onError: (error) => setError(saveError(error)) },
+    );
   }
 
   function confirmDelete() {
@@ -184,8 +212,13 @@ export function StationsPage() {
         toast({ title: t("menu.stations.deletedToast"), tone: "success" });
         setDeleting(null);
       },
-      onError: () =>
-        toast({ title: t("menu.errors.deleteInUse"), tone: "danger" }),
+      onError: (error) =>
+        toast({
+          title: isPermissionDenied(error)
+            ? t("menu.stations.permissionDenied")
+            : t("menu.errors.deleteInUse"),
+          tone: "danger",
+        }),
     });
   }
 
@@ -204,7 +237,7 @@ export function StationsPage() {
                 : "ready"
         }
         actions={
-          canManageItems ? (
+          canManageStationConfig ? (
             <Button type="button" onClick={openNew}>
               <Plus aria-hidden="true" />
               {t("menu.stations.add")}
@@ -218,7 +251,7 @@ export function StationsPage() {
         empty={{
           title: t("menu.stations.emptyTitle"),
           description: t("menu.stations.emptyHint"),
-          action: canManageItems ? (
+          action: canManageStationConfig ? (
             <Button type="button" variant="outline" onClick={openNew}>
               {t("menu.stations.add")}
             </Button>
@@ -275,7 +308,11 @@ export function StationsPage() {
                       <StationActions
                         station={station}
                         onEdit={() => openEdit(station)}
-                        onDelete={() => setDeleting(station)}
+                        onDelete={
+                          canManageStationConfig
+                            ? () => setDeleting(station)
+                            : undefined
+                        }
                       />
                     </TableCell>
                   )}
@@ -308,7 +345,11 @@ export function StationsPage() {
                   <StationActions
                     station={station}
                     onEdit={() => openEdit(station)}
-                    onDelete={() => setDeleting(station)}
+                    onDelete={
+                      canManageStationConfig
+                        ? () => setDeleting(station)
+                        : undefined
+                    }
                   />
                 )}
               </div>
@@ -336,38 +377,47 @@ export function StationsPage() {
                 : t("menu.stations.add")}
             </DialogTitle>
           </DialogHeader>
-          <FormField
-            label={t("menu.stations.name")}
-            hint={t("menu.stations.nameHint")}
-            error={error}
-            required
-          >
-            <Input
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              autoComplete="off"
-            />
-          </FormField>
-          <FormField label={t("menu.stations.type")} required>
-            <Select
-              value={type}
-              onValueChange={(value) => setType(value as StationType)}
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {STATION_TYPES.map((option) => (
-                  <SelectItem key={option} value={option}>
-                    {t(`menu.stations.types.${option}`)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </FormField>
+          {canManageStationConfig ? (
+            <>
+              <FormField
+                label={t("menu.stations.name")}
+                hint={t("menu.stations.nameHint")}
+                error={error}
+                required
+              >
+                <Input
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  autoComplete="off"
+                />
+              </FormField>
+              <FormField label={t("menu.stations.type")} required>
+                <Select
+                  value={type}
+                  onValueChange={(value) => setType(value as StationType)}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {STATION_TYPES.map((option) => (
+                      <SelectItem key={option} value={option}>
+                        {t(`menu.stations.types.${option}`)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </FormField>
+            </>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              {t("menu.stations.configLockedHint")}
+            </p>
+          )}
           <FormField
             label={t("menu.stations.target")}
             hint={t("menu.stations.targetHint")}
+            error={canManageStationConfig ? undefined : error}
           >
             <Input
               type="number"
@@ -398,7 +448,7 @@ export function StationsPage() {
       </Dialog>
 
       <ConfirmDialog
-        open={canManageItems && deleting !== null}
+        open={canManageStationConfig && deleting !== null}
         onOpenChange={(open) => !open && setDeleting(null)}
         title={t("menu.stations.deleteTitle", {
           name: deleting?.name ?? "",

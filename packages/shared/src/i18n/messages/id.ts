@@ -3057,6 +3057,10 @@ export const id = {
       createdToast: "Stasiun dibuat.",
       updatedToast: "Stasiun tersimpan.",
       deletedToast: "Stasiun dihapus.",
+      permissionDenied:
+        "Anda tidak punya izin untuk mengubah atau menghapus stasiun ini.",
+      configLockedHint:
+        "Nama dan jenis stasiun hanya bisa diubah oleh pengelola outlet. Anda dapat mengubah target waktu.",
     },
     combos: {
       title: "Paket & combo",

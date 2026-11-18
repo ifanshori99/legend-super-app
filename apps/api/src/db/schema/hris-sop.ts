@@ -23,6 +23,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   unique,
@@ -32,6 +33,7 @@ import {
 } from "drizzle-orm/pg-core";
 import type { UserId } from "@starter/shared/core";
 import { businessDate, tenantIdColumn } from "../columns.ts";
+import { coreStorageObjects } from "./core-storage.ts";
 import { employees, positions } from "./hris.ts";
 import { stations } from "./menu.ts";
 import { tenants } from "./platform-org.ts";
@@ -118,6 +120,48 @@ export const sopDocuments = pgTable(
       "sop_documents_lineage_check",
       sql`(${table.version} = 1 AND ${table.supersedesId} IS NULL AND ${table.lineageId} = ${table.id}) OR (${table.version} > 1 AND ${table.supersedesId} IS NOT NULL)`,
     ),
+  ],
+);
+
+/**
+ * Media of one SOP version (legend-m7yeb): one immutable row per (version,
+ * media object), written with the version. `sop_documents.media_ids` stays the
+ * list the API returns; this table is the foreign-keyed binding to
+ * `core_storage_objects`. `legacy` marks an object that predates the
+ * `sop_document` source kind (no source kind of its own): it is carried to a
+ * new version as it is and is never relinked. Versions published before this
+ * table have no rows here and keep reading `media_ids`.
+ */
+export const sopDocumentMedia = pgTable(
+  "sop_document_media",
+  {
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    sopDocumentId: uuid("sop_document_id").notNull(),
+    mediaId: uuid("media_id").notNull(),
+    sortOrder: integer("sort_order").notNull(),
+    legacy: boolean("legacy").notNull().default(false),
+    createdAt,
+  },
+  (table) => [
+    primaryKey({
+      name: "sop_document_media_pk",
+      columns: [table.tenantId, table.sopDocumentId, table.mediaId],
+    }),
+    foreignKey({
+      name: "sop_document_media_document_fk",
+      columns: [table.tenantId, table.sopDocumentId],
+      foreignColumns: [sopDocuments.tenantId, sopDocuments.id],
+    }).onDelete("restrict"),
+    foreignKey({
+      name: "sop_document_media_object_fk",
+      columns: [table.tenantId, table.mediaId],
+      foreignColumns: [coreStorageObjects.tenantId, coreStorageObjects.id],
+    }).onDelete("restrict"),
+    index("sop_document_media_tenant_media_idx").on(
+      table.tenantId,
+      table.mediaId,
+    ),
+    check("sop_document_media_sort_check", sql`${table.sortOrder} >= 0`),
   ],
 );
 

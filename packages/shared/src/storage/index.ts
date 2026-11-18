@@ -58,6 +58,7 @@ export const storageSourceKindSchema = z.enum([
   "cleaning_task",
   "maintenance_ticket",
   "checklist_evidence",
+  "sop_document",
 ]);
 export type StorageSourceKind = z.infer<typeof storageSourceKindSchema>;
 
@@ -80,6 +81,8 @@ export const storageSourceKindPurpose = {
   cleaning_task: "receipt",
   maintenance_ticket: "receipt",
   checklist_evidence: "receipt",
+  // SOP images/video (legend-m7yeb): document purpose, bound to the SOP lineage.
+  sop_document: "document",
 } as const satisfies Record<StorageSourceKind, StoragePurpose>;
 
 /** Kind used when an upload names none: only purposes with one obvious kind.
