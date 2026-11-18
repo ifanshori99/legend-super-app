@@ -6,6 +6,8 @@
 -- reach is enforced in services/hris-*.ts (like `employees`).
 SELECT app.enforce_tenant_rls('public.sop_documents'::regclass);
 --> statement-breakpoint
+SELECT app.enforce_tenant_rls('public.sop_document_media'::regclass);
+--> statement-breakpoint
 SELECT app.enforce_tenant_rls('public.sop_acknowledgements'::regclass);
 --> statement-breakpoint
 SELECT app.enforce_tenant_rls('public.trainings'::regclass);
@@ -29,6 +31,8 @@ SELECT app.enforce_tenant_rls('public.announcement_receipts'::regclass);
 -- SOP versions, acknowledgements and quiz attempts are append-only for the
 -- application role: a change is a new version / attempt row, never an edit.
 REVOKE UPDATE, DELETE ON TABLE public.sop_documents FROM legend_app;
+--> statement-breakpoint
+REVOKE UPDATE, DELETE ON TABLE public.sop_document_media FROM legend_app;
 --> statement-breakpoint
 REVOKE UPDATE, DELETE ON TABLE public.sop_acknowledgements FROM legend_app;
 --> statement-breakpoint

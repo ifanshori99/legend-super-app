@@ -66,6 +66,7 @@ const createdRoleIds: string[] = [];
 const createdStationIds: string[] = [];
 let tenantB: SecondTenant | null = null;
 let tenantBStation: string;
+let tenantBHost: string;
 
 async function createStation(
   outletId: string,
@@ -113,9 +114,13 @@ async function holder(
     scope: { type: "tenant" | "outlet" | "station"; id: string | null };
     tenantOfGrant?: string;
   }>,
+  host?: string,
 ): Promise<Holder> {
   const client = agent(app);
   await signUp(client, "Station Config User");
+  // Without a Host the dev fallback resolves tenant A; tenant B callers need
+  // their tenant's own domain to reach tenant B's grants.
+  if (host) client.set("Host", host);
   const session = await client.get("/api/auth/get-session");
   const userId = session.body.user.id as string;
   createdUserIds.push(userId);
@@ -201,25 +206,37 @@ beforeAll(async () => {
   noGrant = await holder([]);
 
   tenantB = await createSecondTenant(ownerPool, "stationcfg");
+  tenantBHost = `stationcfg-${tenantB.tenantId.slice(0, 8)}.example.test`;
+  await ownerPool.query(
+    `INSERT INTO tenant_domains (tenant_id, brand_id, hostname, kind, tls_status, verified_at)
+     VALUES ($1, $2, $3, 'custom', 'active', now())`,
+    [tenantB.tenantId, tenantB.brandId, tenantBHost],
+  );
   tenantBStation = await createStation(tenantB.outletId, tenantB.tenantId);
   const roleB = await customRole(
     ["menu.item.view", "menu.item.manage"],
     tenantB.tenantId,
   );
-  tenantBManager = await holder([
-    {
-      roleId: roleB,
-      scope: { type: "outlet", id: tenantB.outletId },
-      tenantOfGrant: tenantB.tenantId,
-    },
-  ]);
-  tenantBStationOnly = await holder([
-    {
-      roleId: roleB,
-      scope: { type: "station", id: tenantBStation },
-      tenantOfGrant: tenantB.tenantId,
-    },
-  ]);
+  tenantBManager = await holder(
+    [
+      {
+        roleId: roleB,
+        scope: { type: "outlet", id: tenantB.outletId },
+        tenantOfGrant: tenantB.tenantId,
+      },
+    ],
+    tenantBHost,
+  );
+  tenantBStationOnly = await holder(
+    [
+      {
+        roleId: roleB,
+        scope: { type: "station", id: tenantBStation },
+        tenantOfGrant: tenantB.tenantId,
+      },
+    ],
+    tenantBHost,
+  );
 }, 120_000);
 
 afterAll(async () => {
@@ -236,6 +253,11 @@ afterAll(async () => {
     await ownerPool.query("DELETE FROM stations WHERE id = ANY($1::uuid[])", [
       createdStationIds,
     ]);
+  if (tenantB) {
+    await ownerPool.query("DELETE FROM tenant_domains WHERE tenant_id = $1", [
+      tenantB.tenantId,
+    ]);
+  }
   if (tenantB) await removeSecondTenant(ownerPool, tenantB);
   await ownerPool.end();
 });

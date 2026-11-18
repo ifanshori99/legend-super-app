@@ -112,7 +112,7 @@ async function grantRole(
     );
     await client.query(
       `INSERT INTO role_assignments
-         (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, valid_to, assigned_by)
+         (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, valid_until, assigned_by)
        VALUES ($1, $2, $3, $4, $5, now() - interval '2 days', $6, $2)`,
       [
         tenant,

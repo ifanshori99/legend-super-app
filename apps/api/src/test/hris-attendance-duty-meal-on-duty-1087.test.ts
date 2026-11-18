@@ -2,8 +2,8 @@
 // employee who is on duty at the recorded outlet. The CTO decision (restrictive
 // rule): POST /api/hris/attendance/duty-meals answers 422
 // ATTENDANCE_DUTY_MEAL_EMPLOYEE_NOT_ON_DUTY unless the employee's home outlet is
-// the recorded outlet, or the employee has a non-cancelled shift assignment at
-// that outlet on the recorded business date. Nothing is stored on a refusal.
+// the recorded outlet, or the employee has a published or swapped shift
+// assignment at that outlet on the recorded business date. Nothing is stored on a refusal.
 // Expected behaviour comes from the brief and the shared endpoint contract
 // (packages/shared/src/hris/endpoints.ts recordAttendanceDutyMeal), not from
 // service code. Everything runs through HTTP against the real Express app,
@@ -166,7 +166,7 @@ async function seedShift(options: {
   employeeId: string;
   outletId: string;
   businessDate: string;
-  status: "published" | "cancelled";
+  status: "published" | "cancelled" | "draft";
   publishedBy: string;
 }): Promise<string> {
   const id = randomUUID();
@@ -175,7 +175,9 @@ async function seedShift(options: {
       `INSERT INTO shift_assignments
          (id, tenant_id, outlet_id, employee_id, business_date, segments, break_minutes,
           status, source, published_by, published_at, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, 0, $7, 'user', $8, now(), $8)`,
+       VALUES ($1, $2, $3, $4, $5, $6, 0, $7::text, 'user',
+               CASE WHEN $7::text = 'draft' THEN NULL ELSE $8::text END,
+               CASE WHEN $7::text = 'draft' THEN NULL ELSE now() END, $8)`,
       [
         id,
         tenant.id,
@@ -399,6 +401,18 @@ describe("[legend-5bx8v] duty meal needs the employee on duty at the recorded ou
       outletId: outletY,
       businessDate: date,
       status: "cancelled",
+      publishedBy: hr.userId,
+    });
+    await expectNotOnDuty(hr.client, homeX, outletY, date);
+  });
+
+  it("refuses 422 when the only shift at that outlet is a draft", async () => {
+    const date = nextDate();
+    await seedShift({
+      employeeId: homeX,
+      outletId: outletY,
+      businessDate: date,
+      status: "draft",
       publishedBy: hr.userId,
     });
     await expectNotOnDuty(hr.client, homeX, outletY, date);
