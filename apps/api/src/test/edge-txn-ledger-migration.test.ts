@@ -85,10 +85,14 @@ async function waitForNoSessions(admin: Pool, db: string) {
 // the 0484 entry; its SQL file is not copied).
 function copyFolderWithout0484(workDir: string): string {
   const journal = readJournal();
-  const kept = journal.entries.filter(
-    (entry) => !entry.tag.startsWith(TAG_PREFIX),
+  // Only the migrations before 0484: migrations numbered after it (0485+)
+  // would be applied first and the migrator, which resumes after the last
+  // applied `when`, would then skip 0484 itself.
+  const at = journal.entries.findIndex((entry) =>
+    entry.tag.startsWith(TAG_PREFIX),
   );
-  expect(kept.length).toBeLessThan(journal.entries.length);
+  expect(at).toBeGreaterThan(0);
+  const kept = journal.entries.slice(0, at);
   const keptTags = new Set(kept.map((entry) => entry.tag));
   const folder = join(workDir, "drizzle-before-0484");
   mkdirSync(join(folder, "meta"), { recursive: true });
