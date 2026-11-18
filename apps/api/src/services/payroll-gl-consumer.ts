@@ -129,6 +129,14 @@ async function accountingEnabled(
   return isModuleEnabled(row?.featureFlags ?? null, "accounting");
 }
 
+function emittedWithAccountingOn(payload: unknown): boolean {
+  return (
+    payload !== null &&
+    typeof payload === "object" &&
+    (payload as { accountingOnAtEmit?: unknown }).accountingOnAtEmit === true
+  );
+}
+
 function allZero(amounts: Readonly<Record<string, number>>): boolean {
   return Object.values(amounts).every((value) => value === 0);
 }
@@ -282,8 +290,17 @@ export async function deliverPayrollGlEvent(
   // 2103 open (paid) or the run journal standing (reversed). A locked event
   // follows a pending payout settlement the same way (legend-2aspe): the money
   // already left, so its journal is posted and the pending settle resolved.
+  //
+  // A cash kasbon or reimbursement paid while accounting was on carries
+  // `accountingOnAtEmit`: the money left under accounting, so it is journaled
+  // even if accounting was switched off before delivery, and its pending
+  // credit never disappears without a journal (legend-kt8em).
   const followsLock =
-    event.name === payrollPaid.name || event.name === payrollReversed.name;
+    event.name === payrollPaid.name ||
+    event.name === payrollReversed.name ||
+    ((event.name === employeeLoanDisbursed.name ||
+      event.name === reimbursementPaid.name) &&
+      emittedWithAccountingOn(event.payload));
   if (!followsLock && !(await accountingEnabled(tx, context))) {
     if (event.name !== payrollLocked.name) return { status: "ignored" };
     // Loaded on demand: the payout GL service imports this module.

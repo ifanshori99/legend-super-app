@@ -1071,6 +1071,239 @@ describe("xf7pt one outbox event and one GL journal per cash payment", () => {
   }, 90_000);
 });
 
+// ---- 2c. legend-kt8em / legend-cv00j: accounting toggle and missing entity -----------
+//
+// Assumptions: the flag is read from the stored outbox event at
+// `event.payload.accountingOnAtEmit`; "accounting off" is the tenant's
+// `accounting` module removed from feature_flags (withAccountingOff), both when
+// paying and when delivering to the GL consumer; the `ignored` status of the
+// consumer is the string "ignored". A cash payment of an employee without a
+// legal entity is refused with HTTP 422 and the code below. The reimbursement
+// journal debits 6110, as in [xf7pt-reimb-journal-once].
+
+const ENTITY_MISSING = "PAYROLL_CASH_ENTITY_MISSING";
+
+/** An active employee whose legal_entity_id is NULL. */
+async function makeEmployeeWithoutEntity() {
+  const id = randomUUID();
+  employeeIds.push(id);
+  await kitOwner.query(
+    `INSERT INTO employees (id, tenant_id, employee_no, full_name, home_outlet_id,
+                            legal_entity_id, employment_type, join_date, status)
+     VALUES ($1, $2, $3, 'Karyawan tanpa entitas swn0m', $4, NULL, 'pkwtt', '2025-03-01', 'active')`,
+    [id, tenantId, `SN-${id.slice(0, 8).toUpperCase()}`, fixtureOutlet.id],
+  );
+  return id;
+}
+
+/** The payload of a stored outbox event, as the database holds it. */
+function payloadOf(event: unknown): Record<string, unknown> {
+  return (event as { payload?: Record<string, unknown> }).payload ?? {};
+}
+
+/** The same event without the accountingOnAtEmit field (an old event). */
+function withoutFlag(event: unknown) {
+  const rest = { ...payloadOf(event) };
+  delete rest.accountingOnAtEmit;
+  return { ...(event as object), payload: rest };
+}
+
+describe("kt8em the GL consumer follows the accounting state at the time of payment", () => {
+  it("[kt8em-loan-toggle-posts] a cash kasbon paid while accounting is on still posts Dr 1204 / Cr 1102 when accounting is switched off before the event is consumed", async () => {
+    await drain();
+    await addCash(40_000);
+    await ensureMapping("employee_receivable", "1204");
+    const loan = await seedLoan(await makeEmployee(), 40_000);
+    expect((await disburse(loan, 40_000)).status).toBe(200);
+    const stored = await outboxEventOf("employee_loan.disbursed", loan);
+    expect(
+      payloadOf(stored).accountingOnAtEmit,
+      "the event records that accounting was on when paid",
+    ).toBe(true);
+    const event = employeeLoanDisbursed.envelopeSchema.parse(stored);
+    const glBefore = await glBalance();
+
+    const result = await withAccountingOff(() => deliverToGl(event));
+    await markDelivered("employee_loan.disbursed", loan);
+
+    expect(result.status).toBe("posted");
+    const gl = `payroll-gl:loan:${loan}`;
+    expect(await W.countJournals(gl), "exactly one journal").toBe(1);
+    expect(await W.journalByKey(gl)).toEqual({
+      "1204": { debit: 40_000, credit: 0 },
+      "1102": { debit: 0, credit: 40_000 },
+    });
+    expect(await glBalance(), "1102 credited once").toBe(glBefore - 40_000);
+    paidAmounts.delete(loan);
+    expect(await available()).toBe(0);
+  }, 90_000);
+
+  it("[kt8em-reimb-toggle-posts] a cash claim paid while accounting is on still posts Dr 6110 / Cr 1102 when accounting is switched off before the event is consumed", async () => {
+    await drain();
+    await addCash(40_000);
+    const claim = await seedClaim(await makeEmployee(), 40_000);
+    const paid = await payClaim(claim, 40_000);
+    expect(paid.status, JSON.stringify(paid.body)).toBe(200);
+    const stored = await outboxEventOf("reimbursement.paid", claim);
+    expect(
+      payloadOf(stored).accountingOnAtEmit,
+      "the event records that accounting was on when paid",
+    ).toBe(true);
+    const event = reimbursementPaid.envelopeSchema.parse(stored);
+    const glBefore = await glBalance();
+
+    const result = await withAccountingOff(() => deliverToGl(event));
+    await markDelivered("reimbursement.paid", claim);
+
+    expect(result.status).toBe("posted");
+    const gl = `payroll-gl:reimbursement:${claim}`;
+    expect(await W.countJournals(gl), "exactly one journal").toBe(1);
+    expect(await W.journalByKey(gl)).toEqual({
+      "6110": { debit: 40_000, credit: 0 },
+      "1102": { debit: 0, credit: 40_000 },
+    });
+    expect(await glBalance(), "1102 credited once").toBe(glBefore - 40_000);
+    paidAmounts.delete(claim);
+    expect(await available()).toBe(0);
+  }, 90_000);
+
+  it("[kt8em-off-at-emit-ignored] a cash kasbon paid while accounting is off is not flagged on, and the GL consumer ignores it while accounting is still off", async () => {
+    await drain();
+    const loan = await seedLoan(await makeEmployee(), 40_000);
+    const paid = await withAccountingOff(() => disburse(loan, 40_000));
+    expect(paid.status, JSON.stringify(paid.body)).toBe(200);
+    const stored = await outboxEventOf("employee_loan.disbursed", loan);
+    expect(
+      payloadOf(stored).accountingOnAtEmit,
+      "accounting was off when paid",
+    ).not.toBe(true);
+    const event = employeeLoanDisbursed.envelopeSchema.parse(stored);
+    const journals = await journalCount();
+
+    const result = await withAccountingOff(() => deliverToGl(event));
+    await markDelivered("employee_loan.disbursed", loan);
+    paidAmounts.delete(loan);
+
+    expect(result.status).toBe("ignored");
+    expect(await W.countJournals(`payroll-gl:loan:${loan}`)).toBe(0);
+    expect(await journalCount(), "no journal").toBe(journals);
+    expect(await available(), "baseline unchanged").toBe(0);
+  }, 90_000);
+
+  it("[kt8em-off-at-emit-ignored-reimb] a cash claim paid while accounting is off is not flagged on, and the GL consumer ignores it while accounting is still off", async () => {
+    await drain();
+    const claim = await seedClaim(await makeEmployee(), 40_000);
+    const paid = await withAccountingOff(() => payClaim(claim, 40_000));
+    expect(paid.status, JSON.stringify(paid.body)).toBe(200);
+    const stored = await outboxEventOf("reimbursement.paid", claim);
+    expect(
+      payloadOf(stored).accountingOnAtEmit,
+      "accounting was off when paid",
+    ).not.toBe(true);
+    const event = reimbursementPaid.envelopeSchema.parse(stored);
+    const journals = await journalCount();
+
+    const result = await withAccountingOff(() => deliverToGl(event));
+    await markDelivered("reimbursement.paid", claim);
+    paidAmounts.delete(claim);
+
+    expect(result.status).toBe("ignored");
+    expect(await W.countJournals(`payroll-gl:reimbursement:${claim}`)).toBe(0);
+    expect(await journalCount(), "no journal").toBe(journals);
+    expect(await available(), "baseline unchanged").toBe(0);
+  }, 90_000);
+
+  it("[kt8em-legacy-no-flag-ignored] an old event without accountingOnAtEmit is ignored while accounting is off (no journal)", async () => {
+    await drain();
+    await addCash(40_000);
+    const loan = await seedLoan(await makeEmployee(), 40_000);
+    expect((await disburse(loan, 40_000)).status).toBe(200);
+    const stored = await outboxEventOf("employee_loan.disbursed", loan);
+    const legacy = employeeLoanDisbursed.envelopeSchema.parse(
+      withoutFlag(stored),
+    );
+    expect(payloadOf(legacy)).not.toHaveProperty("accountingOnAtEmit");
+    const journals = await journalCount();
+
+    const result = await withAccountingOff(() => deliverToGl(legacy));
+    await markDelivered("employee_loan.disbursed", loan);
+    paidAmounts.delete(loan);
+
+    expect(result.status).toBe("ignored");
+    expect(await W.countJournals(`payroll-gl:loan:${loan}`)).toBe(0);
+    expect(await journalCount(), "no journal").toBe(journals);
+    await drain();
+  }, 90_000);
+});
+
+describe("cv00j a cash payment needs the employee's legal entity while accounting is on", () => {
+  it("[cv00j-loan-no-entity-refused] a cash kasbon of an employee without a legal entity is refused 422 PAYROLL_CASH_ENTITY_MISSING: still approved, no event, no journal, GL 1102 unchanged", async () => {
+    await drain();
+    await addCash(100_000);
+    const loan = await seedLoan(await makeEmployeeWithoutEntity(), 30_000);
+    const journals = await journalCount();
+    const gl = await glBalance();
+
+    const res = await disburse(loan, 30_000);
+
+    const detail = JSON.stringify(res.body);
+    expect(res.status, detail).toBe(422);
+    expect(res.body.error?.code, detail).toBe(ENTITY_MISSING);
+    expect(await loanState(loan)).toEqual({
+      status: "approved",
+      disbursed: false,
+      events: 0,
+    });
+    expect(await journalCount(), "no journal").toBe(journals);
+    expect(await glBalance(), "1102 unchanged").toBe(gl);
+    await drain();
+  }, 90_000);
+
+  it("[cv00j-reimb-no-entity-refused] a cash claim of an employee without a legal entity is refused 422 PAYROLL_CASH_ENTITY_MISSING: still approved, no event, no journal, GL 1102 unchanged", async () => {
+    await drain();
+    await addCash(100_000);
+    const claim = await seedClaim(await makeEmployeeWithoutEntity(), 30_000);
+    const journals = await journalCount();
+    const gl = await glBalance();
+
+    const res = await payClaim(claim, 30_000);
+
+    const detail = JSON.stringify(res.body);
+    expect(res.status, detail).toBe(422);
+    expect(res.body.error?.code, detail).toBe(ENTITY_MISSING);
+    expect(await claimState(claim)).toEqual({
+      status: "approved",
+      paid: false,
+      events: 0,
+    });
+    expect(await journalCount(), "no journal").toBe(journals);
+    expect(await glBalance(), "1102 unchanged").toBe(gl);
+    await drain();
+  }, 90_000);
+
+  it("[cv00j-accounting-off-allowed] while accounting is off an employee without a legal entity is still paid a cash kasbon and a cash claim (200)", async () => {
+    await drain();
+    const employee = await makeEmployeeWithoutEntity();
+    const loan = await seedLoan(employee, 20_000);
+    const claim = await seedClaim(employee, 20_000);
+
+    const loanRes = await withAccountingOff(() => disburse(loan, 20_000));
+    const claimRes = await withAccountingOff(() => payClaim(claim, 20_000));
+    await restoreBaseline();
+
+    expect(
+      loanRes.status,
+      `accounting off: the kasbon is paid, ${JSON.stringify(loanRes.body)}`,
+    ).toBe(200);
+    expect(
+      claimRes.status,
+      `accounting off: the claim is paid, ${JSON.stringify(claimRes.body)}`,
+    ).toBe(200);
+    expect((await loanState(loan)).status).toBe("disbursed");
+    expect((await claimState(claim)).status).toBe("paid");
+  }, 90_000);
+});
+
 // ---- 3. supplier payment on a bank account that is GL 1102 -------------------------
 //
 // Own fresh tenants (the purchasing/AP helpers), so nothing here touches the

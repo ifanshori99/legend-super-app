@@ -73,6 +73,7 @@ import { HttpError } from "../lib/http-error.ts";
 import { entityLock } from "./accounting-bank-matching.ts";
 import { assertCash1102CoversOutflow } from "./accounting-petty-cash.service.ts";
 import { emitPayrollEvent } from "./payroll-events.ts";
+import { accountingEnabled } from "./payroll-payout-setup.ts";
 import { recordAudit } from "./core-audit.ts";
 import {
   auditOutletFor,
@@ -1003,13 +1004,29 @@ export async function payReimbursementCash(
         // Only an approved claim pays out; any other status is a plain invalid
         // transition (moveClaim answers it). Under the entity lock and before
         // the paid event, so the amount is not counted twice.
-        if (row.status === "approved" && peekEntityId !== null)
-          await assertCash1102CoversOutflow(
-            tx,
-            context.tenant.tenantId,
-            peekEntityId,
-            Number(row.approvedAmountIdr ?? row.amountIdr),
-          );
+        const accountingOn = await accountingEnabled(
+          tx,
+          context.tenant.tenantId,
+        );
+        if (row.status === "approved") {
+          // No legal entity means no 1102 to check and no journal to post:
+          // with accounting on the cash would leave unrecorded, so refuse
+          // (legend-cv00j).
+          if (peekEntityId === null) {
+            if (accountingOn)
+              throw new HttpError(
+                422,
+                "PAYROLL_CASH_ENTITY_MISSING",
+                "Reimburse tunai tidak bisa dibayar: karyawan belum punya badan usaha, padahal akuntansi aktif.",
+              );
+          } else
+            await assertCash1102CoversOutflow(
+              tx,
+              context.tenant.tenantId,
+              peekEntityId,
+              Number(row.approvedAmountIdr ?? row.amountIdr),
+            );
+        }
         const paid = await moveClaim(tx, context, actor, now, row, "pay", {
           paidAt: now,
         });
@@ -1029,6 +1046,7 @@ export async function payReimbursementCash(
               amountIdr: Number(row.approvedAmountIdr ?? row.amountIdr),
               payout: "cash",
               payrollRunId: null,
+              accountingOnAtEmit: accountingOn,
               paidAt: now.toISOString(),
             },
             now,

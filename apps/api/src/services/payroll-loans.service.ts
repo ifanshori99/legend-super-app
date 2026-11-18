@@ -69,6 +69,7 @@ import { withTenant } from "../db/tenant.ts";
 import { openPayrollAmount } from "../lib/payroll-sealed.ts";
 import { entityLock } from "./accounting-bank-matching.ts";
 import { emitPayrollEvent } from "./payroll-events.ts";
+import { accountingEnabled } from "./payroll-payout-setup.ts";
 import { assertCash1102CoversOutflow } from "./accounting-petty-cash.service.ts";
 import { recordAudit } from "./core-audit.ts";
 import { cursorPair, notFound } from "./hris-access.ts";
@@ -691,13 +692,29 @@ export async function disburseEmployeeLoan(
         // Only an approved loan pays out; any other status is a plain invalid
         // transition (applyTransition answers it). Under the entity lock and
         // before the disbursed event, so the amount is not counted twice.
-        if (row.status === "approved" && peekEntityId !== null)
-          await assertCash1102CoversOutflow(
-            tx,
-            context.tenant.tenantId,
-            peekEntityId,
-            Number(row.principalIdr),
-          );
+        const accountingOn = await accountingEnabled(
+          tx,
+          context.tenant.tenantId,
+        );
+        if (row.status === "approved") {
+          // No legal entity means no 1102 to check and no journal to post:
+          // with accounting on the cash would leave unrecorded, so refuse
+          // (legend-cv00j).
+          if (peekEntityId === null) {
+            if (accountingOn)
+              throw new HttpError(
+                422,
+                "PAYROLL_CASH_ENTITY_MISSING",
+                "Kasbon tunai tidak bisa dicairkan: karyawan belum punya badan usaha, padahal akuntansi aktif.",
+              );
+          } else
+            await assertCash1102CoversOutflow(
+              tx,
+              context.tenant.tenantId,
+              peekEntityId,
+              Number(row.principalIdr),
+            );
+        }
         const disbursed = await applyTransition(
           tx,
           context,
@@ -722,6 +739,7 @@ export async function disburseEmployeeLoan(
               legalEntityId: peekEntityId,
               principalIdr: Number(row.principalIdr),
               disbursedVia: "cash",
+              accountingOnAtEmit: accountingOn,
               disbursedBy: actor,
               disbursedAt: now.toISOString(),
             },
