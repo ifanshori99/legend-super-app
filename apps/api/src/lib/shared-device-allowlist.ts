@@ -134,6 +134,10 @@ const RULES: readonly Rule[] = [
   // ---- reservation ---------------------------------------------------------
   // reservation.routes.ts (staff reads; the PIN guarded mutations), read only
   // reservation-policy.routes.ts. The public booking routes skip requireAuth.
+  // Cancel stays open on a shared tablet (founder Q29) because the deposit
+  // refund it triggers goes only to the original payer, as a pending request
+  // that another person approves. The cashier never handles cash, and the
+  // request body cannot name a different payee or amount.
   rule("reservation", ["GET"], `${OUTLET}/reservations`),
   rule("reservation", ["GET"], `${OUTLET}/reservations/${ID}`),
   rule(
