@@ -134,7 +134,12 @@ template. For example, `tenantIdSchema.parse(rawTenantId)` returns a `TenantId`,
 and `rawOutletIds.map((id) => outletIdSchema.parse(id))` returns `OutletId[]`.
 For another aggregate, use its exported ID schema (or its shared
 `uuidIdSchema` / `ulidIdSchema` definition). Reuse the parsed values rather than
-casting strings to an ID type. A `sql<T>` result annotation is only a TypeScript
+casting strings to an ID type. When a value is already a verified ID that
+TypeScript only sees as `string` (an event payload, a loose service type), type
+it as the brand upstream (`tenantId: TenantId`); if that is not possible, use
+`eqId(column, id)` / `inArrayIds(column, ids)` from `db/branded-ids.ts` instead
+of `as never` at the call site. They are type-only and emit the same SQL as
+`eq` / `inArray` (bead legend-izy5l). A `sql<T>` result annotation is only a TypeScript
 type; validate IDs read from raw SQL before treating them as branded values.
 
 Use `tenantIdColumn(() => tenants.id).notNull()` and, for outlet-owned tables,
