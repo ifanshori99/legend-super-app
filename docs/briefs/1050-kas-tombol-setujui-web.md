@@ -1,0 +1,4 @@
+# 1050 Web: tombol setujui langsung kas keluar ikut chain approval (legend-fukt6)
+Peran: ui-engineer (baca ~/.agents/team/roles/ui-engineer.md). Sonnet 5.5 high, tugas kecil. Reviewer sonnet di akhir.
+Base: `origin/ghostex/b49350e5` 69461a987 (1037). API sekarang menjawab 409 CASH_OUT_CHAIN_OPEN / CASH_OUT_CHAIN_MISSING bila chain belum lengkap. `cash-entries-section.tsx:110` di apps/web masih menampilkan tombol setujui langsung. Sembunyikan/nonaktifkan tombol saat chain terbuka dan arahkan ke inbox approval; tangani 409 dengan pesan jelas. Data chain dari DTO yang ada (tambah field di packages/shared bila perlu, tanpa migrasi).
+Bukti: test web + e2e mock terarah lewat heavy --browser, screenshot 360/1280, text-contract, prettier/eslint, typecheck web lewat heavy. Commit, push tanpa force. Laporan sekali di akhir dengan SHA dan angka subagent.
