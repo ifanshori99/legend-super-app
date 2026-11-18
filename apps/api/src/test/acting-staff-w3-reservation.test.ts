@@ -50,6 +50,7 @@ import {
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
   createIsolatedTenant,
+  fixtures,
   owner,
   staffWithRole,
   type IsolatedTenant,
@@ -491,6 +492,85 @@ describe("acting staff on reservation mutations (wave 3)", () => {
       });
     });
   }
+
+  describe("outlet binding and cookie replay", () => {
+    let outletB = "";
+
+    beforeAll(async () => {
+      outletB = randomUUID();
+      const { rows } = await owner.query<{
+        brand_id: string;
+        legal_entity_id: string;
+      }>("SELECT brand_id, legal_entity_id FROM outlets WHERE id = $1", [
+        tenant.outletId,
+      ]);
+      await owner.query(
+        `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
+         VALUES ($1, $2, $3, $4, $5, 'Outlet B Rsv', 'Jl. Uji 3', 'Asia/Jakarta', $6, 'active')`,
+        [
+          outletB,
+          tenant.tenantId,
+          rows[0]!.brand_id,
+          rows[0]!.legal_entity_id,
+          `RSVB-${randomUUID().slice(0, 6)}`.toUpperCase(),
+          JSON.stringify(fixtures.outlets[0].openingHours),
+        ],
+      );
+    });
+
+    for (const c of routeCases) {
+      it(`${c.name}: a cashier token of outlet A used on outlet B is 403 ACTING_STAFF_OUTLET_MISMATCH`, async () => {
+        const who = await fresh();
+        const id = await book();
+        const deviceId = await newDevice(true);
+        const token = await cashierToken(who, cashierB, deviceId);
+        const response = await post(
+          who,
+          path(id, c.action, outletB),
+          deviceId,
+          token,
+          c.body,
+        );
+        expectError(response, 403, ["ACTING_STAFF_OUTLET_MISMATCH"]);
+        expect(await statusOf(id)).toBe("confirmed");
+      });
+    }
+
+    it("reservation-customer-credit-apply: a cashier token of outlet A used on outlet B is 403 ACTING_STAFF_OUTLET_MISMATCH", async () => {
+      const who = await fresh();
+      const deviceId = await newDevice(true);
+      const token = await cashierToken(who, cashierB, deviceId);
+      const response = await post(
+        who,
+        `/api/outlets/${outletB}/reservation-customer-credit/apply`,
+        deviceId,
+        token,
+        {},
+      );
+      expectError(response, 403, ["ACTING_STAFF_OUTLET_MISMATCH"]);
+    });
+
+    for (const c of routeCases) {
+      it(`${c.name}: a session marked shared, replayed without the device header, is 401 and never acts as the owner`, async () => {
+        const who = await fresh();
+        const id = await book();
+        const deviceId = await newDevice(true);
+        // First hit from the shared tablet marks the login as shared.
+        const marked = await post(
+          who,
+          path(id, c.action),
+          deviceId,
+          null,
+          c.body,
+        );
+        expectError(marked, 401, GUARD_CODES);
+        // Same cookie, no device header, no token.
+        const replay = await post(who, path(id, c.action), null, null, c.body);
+        expectError(replay, 401, GUARD_CODES);
+        expect(await statusOf(id)).toBe("confirmed");
+      });
+    }
+  });
 
   it("reservation-cancel: no header, the session owner is the recorded actor (calibration)", async () => {
     const id = await book();

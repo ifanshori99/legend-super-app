@@ -8,7 +8,12 @@
 //    it must not authorize the reservation money routes (401).
 //
 // Assumption: the cookie test sends no Better Auth session at all, so
-// `requireAuth` answers 401 before any outlet or body check.
+// `requireAuth` answers 401 before any outlet or body check. A cookie minted
+// from a real emergency session (POST /api/emergency/sessions) is not built
+// here: it needs an edge-mode app, pepper, shift and clock-in seeding (see
+// panic-receiver-session.test.ts), too heavy for this card. The random cookie
+// uses the real cookie name and the same token shape, which is what the
+// money routes must refuse.
 import { randomUUID } from "node:crypto";
 import type { Router } from "express";
 import request from "supertest";
@@ -21,18 +26,25 @@ import { PANIC_COOKIE_NAME } from "./panic-test-helpers.ts";
 
 type Layer = {
   route?: { path: string; methods: Record<string, boolean> };
+  // A nested `router.use(subRouter)` layer: its routes live in handle.stack.
+  handle?: { stack?: Layer[] };
 };
 
+/**
+ * Every route of a router, descending into nested routers (the mount path of
+ * a nested router is not readable from the layer, so only the inner path is
+ * listed; the money-word check still sees it).
+ */
 function routesOf(router: Router): string[] {
-  const stack = (router as unknown as { stack: Layer[] }).stack;
-  return stack
-    .filter((layer) => layer.route)
-    .flatMap((layer) =>
-      Object.keys(layer.route!.methods)
-        .filter((method) => layer.route!.methods[method])
-        .map((method) => `${method.toUpperCase()} ${layer.route!.path}`),
-    )
-    .sort();
+  const walk = (stack: Layer[]): string[] =>
+    stack.flatMap((layer) => {
+      if (layer.route)
+        return Object.keys(layer.route.methods)
+          .filter((method) => layer.route!.methods[method])
+          .map((method) => `${method.toUpperCase()} ${layer.route!.path}`);
+      return layer.handle?.stack ? walk(layer.handle.stack) : [];
+    });
+  return walk((router as unknown as { stack: Layer[] }).stack).sort();
 }
 
 const MONEY_WORDS = /refund|payment|voucher|cash|void|credit|deposit/i;

@@ -1,3 +1,10 @@
+## 1054 Tablet bersama: PIN kasir wajib untuk aksi uang/reservasi, route darurat tetap terbuka (engineer, legend-i0ipj, legend-m05vx, 18 Nov 2026)
+
+- Cabang ghostex/pin-kasir-tablet-bersama = m1 + merge origin/ghostex/1027-guard-http-perangkat-bersama (requireAuth menolak sesi tablet; route kasir wajib requireAuthAllowSharedDevice). 8b2dc0b1 (1043 allowlist Q29) TIDAK digabung: konflik dengan 1027 di app.ts, middleware/auth.ts, device-shared-mode.test.ts (7 hunk), dibawa ke merge train batch91.
+- i0ipj: reservation cancel, deposit-link, no-show, customer-credit apply (sharedStaff) dan order-issue resolve/report (1027 sudah memasang guard, di sini aktor dijadikan actorOf) memakai PIN kasir; temuan architect: order-recovery-charge (waive/refund/collect-at-pos) dan open-bill ikut actorOf supaya penyetuju != pelaksana tidak bisa diakali.
+- m05vx: keputusan di docs/DECISIONS.md; test pengunci emergency-no-money-routes.test.ts (daftar route persis, tanpa path uang).
+- Temuan terbuka: seat dan PATCH tables reservasi tetap requireAuth (ditolak di tablet bersama; kasir tidak bisa melihat/mengatur meja dari tablet), keputusan CTO.
+
 ## 990 Payout lanjutan: recon flag dua orang, jurnal fee, recon closure/attestation, ref bank return (engineer, legend-xbagc/d9pxr/y2lk2/r8nas/nsqhm, cabang dari origin/milestone/m1 1b0fd2a9e, 17 Nov 2026)
 
 - Sudah: tabel `payroll_payout_recon_clearances` + grant kind `recon_clear` (0580), fungsi tepercaya propose/approve dua orang password step-up + helper `payout_payslip_held_by_recon` dipakai guard item dan `payout_resolve_approve` (0581), cek jurnal `payroll-payout-overpaid-fee:<item>` saat COMMIT, PAYOUT-90 (0582), ref bank wajib di return propose/confirm, unik per tenant, PAYOUT-88/89 (0583). API `/api/hris/payroll/payout-recon-flags` + clearance/approve. Recon: jurnal fee, closure (kind closure), attestation resolve/bank_confirm di batch tanpa operasi lain, grant item_set_hash/detail/ref_id. Web: field ref bank di dialog return + pesan error.

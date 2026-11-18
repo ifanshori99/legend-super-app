@@ -160,6 +160,7 @@ const DECISIONS: Record<string, Decision> = {
   "payroll-payout-evidence": "backoffice",
   "payroll-payout-overpaid": "backoffice",
   "payroll-payout-proof-closure": "backoffice",
+  "payroll-payout-recon-clearance": "backoffice",
   "payroll-payout-return": "backoffice",
   "payroll-policy": "backoffice",
   "payroll-pph21-policy": "backoffice",
@@ -323,6 +324,11 @@ const BACKOFFICE_SHARED_OPT_INS: Record<
     reason:
       "POST /sessions/current/activity: idle keep-alive of a shared-device session (legend-hlmbk).",
   },
+  reservation: {
+    count: 1,
+    reason:
+      "legend-i0ipj: cashier PIN for cancel, deposit-link, no-show and credit-apply through sharedStaff; every other reservation route keeps the default-deny requireAuth.",
+  },
 };
 
 const HOW =
@@ -463,6 +469,14 @@ describe("1012 shared-device decision per router file", () => {
       (starts[0] ?? 0) + 400,
     );
     expect(window).toMatch(/sessions\/current\/activity/);
+  });
+
+  it("reservation: the one sharedStaff chain carries the cashier guards (legend-i0ipj)", () => {
+    const code = codeNoImports("reservation");
+    const start = code.search(/\brequireAuthAllowSharedDevice\b/);
+    const chain = enclosingGroup(code, start);
+    expect(chain).toMatch(/\bresolveActingStaff\b/);
+    expect(chain).toMatch(/\brequireActingStaffOnSharedDevice\b/);
   });
 
   it("notification: removePush resolves the caller so a shared-device session removes only its own subscription (legend 1024)", () => {

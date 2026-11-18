@@ -198,7 +198,9 @@ async function actorEvidence(issueId: string): Promise<string> {
   const events = [
     ...(await w.outboxRows("order_issue.resolved", issueId)),
     ...(await w.outboxRows("order_issue.manual_refund_approved", issueId)),
-  ].map((row) => String(row.event.actor.id));
+  ].map((row) =>
+    row.event.actor.type === "user" ? row.event.actor.id : row.event.actor.type,
+  );
   return [
     ...columns,
     ...audit.rows.map((r) => String(r.actor)),
@@ -374,6 +376,62 @@ describe("acting staff on order recovery (wave 3)", () => {
         response.status,
       );
       expect(await issueStatus(issueId)).toBe("open");
+    });
+
+    it("manual refund: an approval decided by the acting cashier is refused (approver is not the executor)", async () => {
+      const deviceId = await newDevice(true);
+      const { roti } = await w.paidOrder();
+      const issueId = (await w.report(roti.id)).body.data.id as string;
+      const approvalRequestId = await w.insertApproval({
+        actionType: "refund",
+        objectType: "order_issue",
+        objectId: issueId,
+        amountIdr: 18_000,
+        status: "approved",
+        requestedBy: w.floorStaff.userId,
+        decidedBy: w.outletSupervisor.userId,
+      });
+      const token = await cashierToken(deviceId);
+      const response = await post(
+        `/api/order-issues/${issueId}/resolve`,
+        { resolution: "manual_refund", approvalRequestId, reason: REASON },
+        deviceId,
+        token,
+      );
+      // Assumption: the service rejects with 422 (unprocessable); any 4xx
+      // is accepted as long as nothing is refunded.
+      expect(
+        response.status,
+        JSON.stringify(response.body),
+      ).toBeGreaterThanOrEqual(400);
+      expect(response.status).toBeLessThan(500);
+      expect(await issueStatus(issueId)).toBe("open");
+      expect(await refundEvents(issueId)).toHaveLength(0);
+      expect(await paymentRefundCount(issueId)).toBe(0);
+    });
+
+    it("manual refund: the tablet login owner approving does not block the cashier (executor is the cashier, not the session)", async () => {
+      const deviceId = await newDevice(true);
+      const { roti } = await w.paidOrder();
+      const issueId = (await w.report(roti.id)).body.data.id as string;
+      const approvalRequestId = await w.insertApproval({
+        actionType: "refund",
+        objectType: "order_issue",
+        objectId: issueId,
+        amountIdr: 18_000,
+        status: "approved",
+        requestedBy: w.floorStaff.userId,
+        decidedBy: session.userId,
+      });
+      const token = await cashierToken(deviceId);
+      const response = await post(
+        `/api/order-issues/${issueId}/resolve`,
+        { resolution: "manual_refund", approvalRequestId, reason: REASON },
+        deviceId,
+        token,
+      );
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(await refundEvents(issueId)).toHaveLength(1);
     });
 
     it("manual refund on a shared tablet: refused without a token, then resolving twice with a token queues one refund", async () => {
