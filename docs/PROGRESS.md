@@ -2102,3 +2102,4 @@ Langkah berikut CTO baru:
 - 01:45 CTO: 1108 lanjutan 41002095d (test 1020, RLS 0656/0696/0679 di tempat, registry, teks alert). Cabang refund 335 commit di belakang m1 -> G2yc3 merge m1 + buang duplikat 0540 (=0450 m1). SO ronde 12 sesudahnya.
 - 01:46 CTO: SO 1111 POS/edge (G3jvd) selesai: 0 P0/P1, 1 P2 baseline (ACK void sebelum ingest) -> legend-gdjpu; resolve. Area POS kasir tiket lolos SO.
 - 01:47 CTO: SO 1112 akses (G9n79) 1 P1 + 2 P2, resolve. 1094 DITAHAN dari batch93; brief 1113 ke G9yay.
+- 01:57 CTO: 1095 (G95kw) selesai a8885a91f (3dsih), resolve, SIAP batch94. legend-v6is2 -> cek dulu di G2yc3 apakah createRefund bisa dipanggil di rilis 1 saat saklar refund mati.
