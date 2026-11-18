@@ -519,6 +519,9 @@ Built in: authenticated and origin-checked API routes, ownership filtered in SQL
 
 - [ ] Both origins are HTTPS and `NODE_ENV=production` is set on both services.
 - [ ] `TRUST_PROXY` matches your proxy hops, so rate limits see real client IPs (two hops with Cloudflare in front of Caddy).
+- [ ] The origin accepts ports 80 and 443 only from Cloudflare's published IP ranges (<https://www.cloudflare.com/ips/>), so nobody can reach Caddy directly and spoof `X-Forwarded-For`. Docker-published ports bypass `ufw`, so enforce it in the cloud provider's security group (allow 80/443 from the Cloudflare ranges only) or in the `DOCKER-USER` iptables chain (`ACCEPT` each Cloudflare range on `--dport 80,443`, then `DROP` the rest of 80/443). Verify from a non-Cloudflare address that `curl -m 5 http://<origin-ip>/` and `https://<origin-ip>/` are refused. Cloudflare changes its ranges now and then: re-read the list and refresh the rules on a schedule (for example every quarter) and whenever Cloudflare announces a change.
+- [ ] `SSR_SHARED_SECRET` is set to the same random value (min 32 characters, `openssl rand -hex 32`) in `api.env` and `web.env`, or deliberately left unset (the API then ignores the visitor IP the web server forwards).
+- [ ] `WEB_TRUST_PROXY_HOPS` in `web.env` equals the proxies in front of the web server (default `2` = Cloudflare + Caddy); only read when `SSR_SHARED_SECRET` is set. Check it after any proxy change.
 - [ ] The public API rate limits suit the venue: guests behind one NAT address and the web SSR traffic both share a per-IP bucket ([public API rate limits](#public-api-rate-limits)), and a Cloudflare rule covers `/api/qr/` and `/api/public/site/` at the edge.
 - [ ] Nothing untrusted is served under `COOKIE_DOMAIN` (see [Domains and cookies](#domains-and-cookies)).
 - [ ] Several API instances share rate-limit storage (see [scaling](#connection-pooling-and-scaling)).
@@ -696,6 +699,10 @@ builds and this script do not purchase or provision infrastructure.
   provider's security group or in the `DOCKER-USER` iptables chain, and verify
   from a non-Cloudflare address that 80/443 are refused.
   Use Cloudflare Full (strict) and verify custom-domain issuance and renewal.
+- Optional: set the same `SSR_SHARED_SECRET` in `api.env` and `web.env`, and
+  `WEB_TRUST_PROXY_HOPS=2` in `web.env` (Cloudflare + Caddy), so the API sees the
+  real visitor IP on SSR calls (see Visitor IP from SSR, legend-moe5). Only valid
+  with the origin allowlist above, otherwise a direct client can pick its own IP.
 - Set `TRUST_PROXY=2` for Cloudflare → Caddy → API and set
   `PUBLIC_RATE_LIMIT_INTERNAL_IPS=172.29.17.10` for this compose network. Ensure
   its subnet does not overlap another network and update both if it changes.
