@@ -1,0 +1,6 @@
+# 1040 CI cloud: test penuh merge train di GitHub Actions (founder Q35 "Ya, siapkan", 18 Nov)
+Peran: engineer (baca ~/.agents/team/roles/engineer.md). Codex high. Tingkat S (infra). Codex tidak menjalankan `bd`.
+Pelajari dulu: package.json root dan apps/*, scripts gate (pnpm check/test, harness LEGEND_TEST_FILES, Postgres disposable, e2e mock/prod, turbo), .github/ yang sudah ada. Dokumen GitHub Actions resmi untuk matrix, services postgres, cache pnpm.
+Tujuan: workflow `workflow_dispatch` saja yang menjalankan gate penuh setara Mac: lint, typecheck, API vitest di-shard paralel (Postgres service per job), root node:test, web test, e2e mock + produksi. Target satu batch < 1 jam.
+BIAYA (wajib, uang founder): sebelum run pertama baca plan dan sisa menit lewat `gh api` (billing Actions owner repo). Runner standar ubuntu-latest, bukan larger runner. Maks 2 run uji total. Laporkan: menit per run (jumlah semua job), biaya per batch, perkiraan per bulan untuk 3 batch/hari, sisa menit gratis. Jangan tambah trigger otomatis (push/PR/schedule) sampai CTO menyetujui biaya. Jangan simpan rahasia di workflow; env test pakai nilai dummy.
+Jangan ubah ~/.claude atau perilaku heavy lokal. Perintah berat lokal lewat `heavy`. Commit di cabangmu, push tanpa force. Laporan sekali di akhir: hasil run, durasi, biaya, berkas.
