@@ -24,13 +24,17 @@ import {
   it,
   vi,
 } from "vitest";
-import { cafeLegendAccessFixtures } from "@starter/shared/access";
-import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
-import type { OutletId, ScopedTenantContext } from "@starter/shared/core";
+import {
+  outletIdSchema,
+  tenantIdSchema,
+  type OutletId,
+  type ScopedTenantContext,
+  type TenantId,
+} from "@starter/shared/core";
 import { createApp } from "../app";
 import { resetPaymentWebhookRateLimits } from "../routes/payment-webhook.routes";
 import { runPaymentGatewayPollJob } from "../worker/payment-gateway-poll.job";
@@ -45,11 +49,19 @@ import {
   setIntegrationStatus,
   upsertIntegration,
 } from "../services/platform-integration.service";
+import {
+  createSecondTenant,
+  removeSecondTenant,
+  type SecondTenant,
+} from "./tenant-isolation-harness";
 
 const app = createApp();
-const tenantA = cafeLegendPlatformFixtures.tenant.id;
+// Integration upserts are keyed by tenant/provider: each file must own its
+// tenant so concurrent Duitku suites cannot rotate or delete one another's key.
+let isolatedTenant: SecondTenant;
+let tenantA: TenantId;
 const tenantB = randomUUID();
-const outletA = cafeLegendAccessFixtures.outletIds.bandung;
+let outletA: OutletId;
 const actor = randomUUID();
 const BILL_TOTAL = 144_375;
 const MERCHANT = "DS1234";
@@ -63,7 +75,6 @@ const owner = new Pool({
 const createdLinkIds: string[] = [];
 const integrationIds: string[] = [];
 let integrationId = "";
-let originalProviders: unknown;
 
 const unique = () => randomBytes(4).toString("hex");
 
@@ -163,6 +174,9 @@ async function seedIntegration(
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
+  isolatedTenant = await createSecondTenant(owner, "payment-duitku-webhook");
+  tenantA = tenantIdSchema.parse(isolatedTenant.tenantId);
+  outletA = outletIdSchema.parse(isolatedTenant.outletId);
   // A second, active tenant: its URL must never reach tenant A's orders.
   await owner.query(
     `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
@@ -183,12 +197,7 @@ beforeAll(async () => {
       actor,
     ],
   );
-  // Tenant A must be allowed to hold a Duitku integration (restored below).
-  const flags = await owner.query<{ providers: unknown }>(
-    "SELECT feature_flags->'integrationProviders' AS providers FROM tenants WHERE id = $1",
-    [tenantA],
-  );
-  originalProviders = flags.rows[0]?.providers;
+  // Only this file's tenant is allowed to hold its test Duitku integration.
   await owner.query(
     `UPDATE tenants
         SET feature_flags = jsonb_set(feature_flags, '{integrationProviders}',
@@ -255,10 +264,28 @@ afterAll(async () => {
     "DELETE FROM tenant_integrations WHERE id = ANY($1::uuid[])",
     [integrationIds],
   );
-  await owner.query(
-    "UPDATE tenants SET feature_flags = jsonb_set(feature_flags, '{integrationProviders}', $2::jsonb) WHERE id = $1",
-    [tenantA, JSON.stringify(originalProviders)],
-  );
+  // Owner-only teardown: audit_logs is append-only and references our
+  // outlet. Bypass its delete trigger only while removing this file's tenant;
+  // fixture creation and every payment operation keep integrity checks active.
+  const cleanup = await owner.connect();
+  try {
+    await cleanup.query("BEGIN");
+    await cleanup.query("SET LOCAL session_replication_role = replica");
+    await cleanup.query("DELETE FROM audit_logs WHERE tenant_id = $1", [
+      tenantA,
+    ]);
+    await cleanup.query(
+      "DELETE FROM domain_event_outbox WHERE tenant_id = $1",
+      [tenantA],
+    );
+    await cleanup.query("COMMIT");
+  } catch (error) {
+    await cleanup.query("ROLLBACK");
+    throw error;
+  } finally {
+    cleanup.release();
+  }
+  await removeSecondTenant(owner, isolatedTenant);
   await owner.query("DELETE FROM tenants WHERE id = $1", [tenantB]);
   await owner.end();
 });
@@ -298,7 +325,7 @@ async function openIntent(
         brandId: null,
         source: "session",
       }),
-      { kind: "outlets", outletIds: [outletA as OutletId] },
+      { kind: "outlets", outletIds: [outletA] },
     ),
     {
       outletId: outletA,
