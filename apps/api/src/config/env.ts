@@ -21,6 +21,7 @@ import {
   parseHrisPiiKeys,
 } from "../lib/hris-pii-keys.ts";
 import { sealKeyConfigProblems } from "../lib/selfie-seal.ts";
+import { storageTimeoutEnvShape } from "./storage-timeouts.ts";
 
 // Environment values are loaded by Node (`--env-file-if-exists` in the package
 // scripts) from the repository root's .env.local and .env. Values already in the
@@ -492,6 +493,8 @@ const schema = z
       .min(60)
       .max(86_400)
       .default(3600),
+    // Upload storage transport settings do not enable storage on their own.
+    ...storageTimeoutEnvShape,
     // S3-compatible object storage for generated documents, today the profit
     // share statement PDFs (legend-33im6). All optional: with none set the
     // statement issuer stays unconfigured (503, key stays null) and the API

@@ -101,6 +101,51 @@ test("production requires its own staff pin pepper secret (legend-dxb)", () => {
   assert.equal(run({}).status, 0);
 });
 
+test("legend-bvxs3 storage deadlines have upload-safe defaults and accept overrides", () => {
+  const show =
+    "console.log(JSON.stringify([env.STORAGE_S3_REQUEST_TIMEOUT_MS, env.STORAGE_S3_SOCKET_TIMEOUT_MS]))";
+  const defaults = run(
+    { STORAGE_S3_REQUEST_TIMEOUT_MS: " ", STORAGE_S3_SOCKET_TIMEOUT_MS: " " },
+    show,
+  );
+  assert.equal(defaults.status, 0);
+  assert.deepEqual(JSON.parse(defaults.stdout.trim()), [120_000, 60_000]);
+  const override = run(
+    {
+      STORAGE_S3_REQUEST_TIMEOUT_MS: " 180000 ",
+      STORAGE_S3_SOCKET_TIMEOUT_MS: " 90000 ",
+    },
+    show,
+  );
+  assert.equal(override.status, 0);
+  assert.deepEqual(JSON.parse(override.stdout.trim()), [180_000, 90_000]);
+});
+
+test.each(["1", "2147483647"])(
+  "legend-bvxs3 accepts Node timer boundary %s",
+  (value) => {
+    const result = run({
+      STORAGE_S3_REQUEST_TIMEOUT_MS: value,
+      STORAGE_S3_SOCKET_TIMEOUT_MS: value,
+    });
+    assert.equal(result.status, 0);
+  },
+);
+
+test.each(
+  ["STORAGE_S3_REQUEST_TIMEOUT_MS", "STORAGE_S3_SOCKET_TIMEOUT_MS"].flatMap(
+    (key) =>
+      ["0", "-1", "1.5", "2147483648", "Infinity", "bad"].map((value) => [
+        key,
+        value,
+      ]),
+  ),
+)("legend-bvxs3 rejects invalid %s=%s at startup", (key, value) => {
+  const result = run({ [key]: value });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, new RegExp(key));
+});
+
 test("object storage settings are all-or-none (legend-33im6)", () => {
   const storage = {
     OBJECT_STORAGE_REGION: "ap-southeast-3",

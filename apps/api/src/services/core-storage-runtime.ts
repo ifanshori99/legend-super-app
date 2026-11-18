@@ -1,4 +1,5 @@
 import { S3Client } from "@aws-sdk/client-s3";
+import { parseStorageTimeouts } from "../config/storage-timeouts";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { CoreError } from "@starter/shared/core";
 import type { ObjectStorage } from "@starter/shared/adapters";
@@ -56,13 +57,14 @@ export function createObjectStorageFromEnv(
     throw new Error(
       `Incomplete storage configuration: set ${missing.join(", ")}.`,
     );
+  const timeouts = parseStorageTimeouts(source);
   const client = new S3Client({
     requestHandler: {
       connectionTimeout: 5_000,
-      // Keep an idle deadline while a streamed response body is being read.
-      socketTimeout: 5_000,
-      // Bound the request until response headers arrive; SDK retries still apply.
-      requestTimeout: 30_000,
+      socketTimeout: timeouts.STORAGE_S3_SOCKET_TIMEOUT_MS,
+      // Includes uploading the body until headers arrive, per HTTP attempt.
+      // SDK retries can extend the total operation beyond this deadline.
+      requestTimeout: timeouts.STORAGE_S3_REQUEST_TIMEOUT_MS,
       throwOnRequestTimeout: true,
     },
     region: source.STORAGE_S3_REGION?.trim() || "us-east-1",

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { Socket } from "node:net";
+import { S3Client } from "@aws-sdk/client-s3";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
@@ -128,8 +128,111 @@ const FULL_ENV = {
   STORAGE_PUBLIC_BASE_URL: "https://sentinel.example/images",
 };
 
+/** Inspect the initialized SDK handler after a real successful local request. */
+async function storageHttpSettings(overrides: Record<string, string> = {}) {
+  const server = createServer((_request, response) => response.end());
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const send = vi.spyOn(S3Client.prototype, "send");
+  let client: S3Client | undefined;
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string")
+      throw new Error("Expected a local TCP server");
+    const storage = createObjectStorageFromEnv({
+      ...FULL_ENV,
+      STORAGE_S3_ENDPOINT: `http://127.0.0.1:${address.port}`,
+      STORAGE_S3_FORCE_PATH_STYLE: "true",
+      ...overrides,
+    })!;
+    const context = outletContext(tenant.tenantId, tenant.outletA);
+    await storage.put(context, {
+      tenantId: context.tenant.tenantId,
+      outletId: outletIdSchema.parse(tenant.outletA),
+      reference: "timeout-configuration",
+      key: "images/config.webp",
+      visibility: "private",
+      contentType: "image/webp",
+      content: new Uint8Array([7]),
+    });
+    const captured = send.mock.contexts[0];
+    if (!(captured instanceof S3Client))
+      throw new Error("Expected the configured S3 client");
+    client = captured;
+    const handler = client.config.requestHandler;
+    if (
+      !("httpHandlerConfigs" in handler) ||
+      typeof handler.httpHandlerConfigs !== "function"
+    )
+      throw new Error("Expected a configurable Node HTTP handler");
+    return handler.httpHandlerConfigs();
+  } finally {
+    send.mockRestore();
+    client?.destroy();
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
+}
+
 describe("legend-dzh9q storage env", () => {
-  it("legend-bvxs3 stops an S3 download whose body stalls after headers", async () => {
+  it("legend-bvxs3 gives uploads two minutes and idle sockets one minute by default", async () => {
+    expect(await storageHttpSettings()).toMatchObject({
+      connectionTimeout: 5_000,
+      requestTimeout: 120_000,
+      socketTimeout: 60_000,
+      throwOnRequestTimeout: true,
+    });
+  });
+
+  it("legend-bvxs3 applies configured deadlines and defaults blank values", async () => {
+    expect(
+      await storageHttpSettings({
+        STORAGE_S3_REQUEST_TIMEOUT_MS: " 180000 ",
+        STORAGE_S3_SOCKET_TIMEOUT_MS: " 90000 ",
+      }),
+    ).toMatchObject({ requestTimeout: 180_000, socketTimeout: 90_000 });
+    expect(
+      await storageHttpSettings({
+        STORAGE_S3_REQUEST_TIMEOUT_MS: " ",
+        STORAGE_S3_SOCKET_TIMEOUT_MS: " ",
+      }),
+    ).toMatchObject({ requestTimeout: 120_000, socketTimeout: 60_000 });
+  });
+
+  it("legend-bvxs3 allows positive Node timer boundaries without enabling storage", () => {
+    for (const value of ["1", "2147483647"]) {
+      expect(
+        createObjectStorageFromEnv({
+          STORAGE_S3_REQUEST_TIMEOUT_MS: value,
+          STORAGE_S3_SOCKET_TIMEOUT_MS: value,
+        }),
+      ).toBeNull();
+      expect(
+        createObjectStorageFromEnv({
+          ...FULL_ENV,
+          STORAGE_S3_REQUEST_TIMEOUT_MS: value,
+          STORAGE_S3_SOCKET_TIMEOUT_MS: value,
+        }),
+      ).toBeInstanceOf(S3ObjectStorage);
+    }
+  });
+
+  it("legend-bvxs3 rejects invalid raw env deadlines before creating an S3 client", () => {
+    for (const key of [
+      "STORAGE_S3_REQUEST_TIMEOUT_MS",
+      "STORAGE_S3_SOCKET_TIMEOUT_MS",
+    ]) {
+      for (const value of ["0", "-1", "1.5", "2147483648", "Infinity", "bad"]) {
+        expect(() =>
+          createObjectStorageFromEnv({ ...FULL_ENV, [key]: value }),
+        ).toThrow(key);
+      }
+    }
+  });
+
+  it("legend-bvxs3 honors a configured short socket idle timeout on a stalled download", async () => {
     let headersSent = false;
     const server = createServer((_request, response) => {
       response.writeHead(200, {
@@ -141,17 +244,6 @@ describe("legend-dzh9q storage env", () => {
     });
     server.listen(0, "127.0.0.1");
     await once(server, "listening");
-    const originalSetTimeout = Socket.prototype.setTimeout;
-    // Keep the real socket idle timer, while shortening its configured duration.
-    const socketTimer = vi
-      .spyOn(Socket.prototype, "setTimeout")
-      .mockImplementation(function (this: Socket, timeout, callback) {
-        return originalSetTimeout.call(
-          this,
-          timeout > 0 ? Math.min(timeout, 100) : timeout,
-          callback,
-        );
-      });
     let download: Promise<unknown> | undefined;
     let deadline: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -163,6 +255,8 @@ describe("legend-dzh9q storage env", () => {
         ...FULL_ENV,
         STORAGE_S3_ENDPOINT: `http://127.0.0.1:${address.port}`,
         STORAGE_S3_FORCE_PATH_STYLE: "true",
+        STORAGE_S3_SOCKET_TIMEOUT_MS: "1000",
+        STORAGE_S3_REQUEST_TIMEOUT_MS: "5000",
       })!;
       const context = outletContext(tenant.tenantId, tenant.outletA);
       download = storage
@@ -180,14 +274,13 @@ describe("legend-dzh9q storage env", () => {
       const outcome = await Promise.race([
         download,
         new Promise((resolve) => {
-          deadline = setTimeout(() => resolve({ stalled: true }), 2_000);
+          deadline = setTimeout(() => resolve({ stalled: true }), 4_000);
         }),
       ]);
       expect(headersSent).toBe(true);
       expect(outcome).toMatchObject({ failed: true });
     } finally {
       clearTimeout(deadline);
-      socketTimer.mockRestore();
       vi.unstubAllEnvs();
       server.closeAllConnections();
       await new Promise<void>((resolve, reject) => {
@@ -205,8 +298,8 @@ describe("legend-dzh9q storage env", () => {
     const server = createServer(() => requestStarted());
     server.listen(0, "127.0.0.1");
     await once(server, "listening");
-    let failure: unknown;
     let upload: Promise<unknown> | undefined;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
     try {
       const address = server.address();
       if (!address || typeof address === "string")
@@ -214,11 +307,12 @@ describe("legend-dzh9q storage env", () => {
 
       // One attempt proves the transport deadline without waiting for SDK retries.
       vi.stubEnv("AWS_MAX_ATTEMPTS", "1");
-      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       const storage = createObjectStorageFromEnv({
         ...FULL_ENV,
         STORAGE_S3_ENDPOINT: `http://127.0.0.1:${address.port}`,
         STORAGE_S3_FORCE_PATH_STYLE: "true",
+        STORAGE_S3_REQUEST_TIMEOUT_MS: "1000",
+        STORAGE_S3_SOCKET_TIMEOUT_MS: "5000",
       })!;
       const context = outletContext(tenant.tenantId, tenant.outletA);
       upload = storage
@@ -231,19 +325,28 @@ describe("legend-dzh9q storage env", () => {
           contentType: "image/webp",
           content: new Uint8Array([7]),
         })
-        .catch((error: unknown) => {
-          failure = error;
-        });
+        .then(
+          () => ({ failed: false }),
+          (error: unknown) => ({ failed: true, error }),
+        );
       await Promise.race([
         started,
         upload.then(() => {
-          throw failure ?? new Error("Upload ended before reaching the server");
+          throw new Error("Upload ended before reaching the server");
         }),
       ]);
-      await vi.advanceTimersByTimeAsync(30_001);
-      expect(failure).toMatchObject({ name: "TimeoutError" });
+      const outcome = await Promise.race([
+        upload,
+        new Promise((resolve) => {
+          deadline = setTimeout(() => resolve({ stalled: true }), 4_000);
+        }),
+      ]);
+      expect(outcome).toMatchObject({
+        failed: true,
+        error: { name: "TimeoutError" },
+      });
     } finally {
-      vi.useRealTimers();
+      clearTimeout(deadline);
       vi.unstubAllEnvs();
       server.closeAllConnections();
       await new Promise<void>((resolve, reject) => {
