@@ -1,8 +1,9 @@
 // One function per ticket-sale call; components use the hooks in ./hooks.ts.
-// Catalog, customer search and availability go through the shared contract
-// (mock mode serves them from the facility and CRM mocks). The sale, the tickets
-// of a bill and the credential run on the POS kasir mock engine in mock mode
-// (./mock.ts), which plays the server; elsewhere they call the real endpoints.
+// Catalog, customer search and availability use the cashier reads of the shared
+// contract (`pos.sale.create` on the outlet); mock mode serves them from the
+// facility and CRM mocks instead. The sale, the tickets of a bill and the
+// credential run on the POS kasir mock engine in mock mode (./mock.ts), which
+// plays the server; elsewhere they call the real endpoints.
 import { listCustomers } from "@starter/shared/crm";
 import {
   getFacilityConfig,
@@ -14,6 +15,11 @@ import {
   issuePosTicketCredential,
   listPosOrderTickets,
 } from "@starter/shared/pos/ticket";
+import {
+  listPosTicketProducts,
+  listPosTicketSlots,
+  searchPosTicketCustomers,
+} from "@starter/shared/pos/ticket-cashier";
 import { callEndpoint } from "@/lib/api/endpoint";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { fetchAvailability } from "../../facility/api";
@@ -35,14 +41,23 @@ const FACILITY_PAGE = 100;
 const CUSTOMER_PAGE = 10;
 
 /**
- * Active single-ticket products of every facility. A plan (subscription) is
- * sold elsewhere. Outside mock mode a ticket is an ordinary bill line (936 D1),
- * so only a product with a POS menu item can be sold; the mock catalog has none
- * and keeps its products without one.
+ * Active single-ticket products of the outlet. A plan (subscription) is sold
+ * elsewhere. Outside mock mode the server lists only products with a POS menu
+ * item (a ticket is an ordinary bill line, 936 D1) at its own price; the mock
+ * catalog has none and keeps its products without one.
  */
 export async function fetchTicketProducts(
+  outletId: string,
   signal?: AbortSignal,
 ): Promise<TicketProduct[]> {
+  if (!API_MOCK) {
+    const { data } = await callEndpoint(
+      listPosTicketProducts,
+      { params: { outletId } },
+      { signal },
+    );
+    return data.products;
+  }
   const facilities = await callEndpoint(
     listFacilities,
     { query: { limit: FACILITY_PAGE } },
@@ -63,9 +78,7 @@ export async function fetchTicketProducts(
         (product) =>
           product.isActive &&
           product.type === "single" &&
-          (API_MOCK
-            ? product.menuItemId === null
-            : product.menuItemId !== null),
+          product.menuItemId === null,
       )
       .map((product) => ({
         id: product.id,
@@ -84,10 +97,20 @@ export async function fetchTicketProducts(
   );
 }
 
+/** Outside mock mode the server returns only id and name (no phone digits). */
 export async function searchTicketCustomers(
+  outletId: string,
   query: string,
   signal?: AbortSignal,
 ): Promise<TicketCustomer[]> {
+  if (!API_MOCK) {
+    const { data } = await callEndpoint(
+      searchPosTicketCustomers,
+      { params: { outletId }, query: { q: query } },
+      { signal },
+    );
+    return data.customers;
+  }
   const page = await callEndpoint(
     listCustomers,
     { query: { q: query, limit: CUSTOMER_PAGE } },
@@ -98,9 +121,25 @@ export async function searchTicketCustomers(
 
 /** Start times the server marks free today in one area. */
 export async function fetchTicketSlots(
+  outletId: string,
   input: { facilityId: string; areaId: string },
   signal?: AbortSignal,
 ): Promise<TicketSlot[]> {
+  if (!API_MOCK) {
+    const { data } = await callEndpoint(
+      listPosTicketSlots,
+      {
+        params: { outletId },
+        query: {
+          facilityId: input.facilityId,
+          areaId: input.areaId,
+          date: businessDateInOutletZone(new Date()),
+        },
+      },
+      { signal },
+    );
+    return data.slots;
+  }
   const availability = await fetchAvailability(
     {
       facilityId: input.facilityId,

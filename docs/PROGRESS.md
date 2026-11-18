@@ -7878,3 +7878,14 @@ Cabang `ws/1121-flake-tax-ord03`, dasar `4418628e0` (`origin/milestone/m1`). Tin
 - Bukti gagal-dulu: reproduksi dua aturan PBJT memberi kegagalan persis 409 vs 422 (12/13 lulus). Sesudah isolasi: `LEGEND_TEST_FILES="src/test/tax-api.test.ts" heavy pnpm test` lima kali berurutan, seluruhnya 13/13 lulus (10.58s, 9.81s, 9.22s, 10.14s, 11.48s). Log lokal `/tmp/1121-red.log` dan `/tmp/1121-green-{1..5}.log`.
 - Pemeriksaan: `pnpm exec eslint apps/api/src/test/tax-api.test.ts`, `pnpm exec prettier --check apps/api/src/test/tax-api.test.ts`, dan `git diff --check` hijau. Review konteks segar: tanpa temuan. Suite penuh/build/typecheck tidak dijalankan sesuai scope brief; lanjut integrasi oleh CTO.
 - Subagent: total 5, puncak 4 bersamaan, token heavy dipegang test_runner. Kerja Codex: 2 Explore, 1 test-writer, 1 test-runner, 1 reviewer. Biaya/rata-rata subagent sesi tidak tersedia: session-usage tidak menemukan transkrip Codex dan parallel-report hanya mengenali sesi Claude. Selesai verifikasi 03:27 WIB.
+
+## 1096: POS kasir kontrak tiket + struk edge (legend-hpgyw, legend-ain0, legend-ol6v)
+Cabang `ws/1096-pos-kasir-tiket-struk` (dasar `ghostex/45769078` b8927ea90, mendarat SESUDAH 45769078). Tanpa migrasi.
+
+Sudah:
+- hpgyw: tiga baca kasir `GET /api/outlets/:outletId/pos/tickets/{customers?q=,products,slots}` (izin `pos.sale.create` di outlet path; kontrak `packages/shared/src/pos/ticket-cashier.ts`; service `facility-pos-ticket-catalog.ts`). Pelanggan: q >= 3, maks 10, keluaran hanya id dan nama, batas laju 30/menit per kasir pelaksana. Katalog: produk `single` aktif ber-`menuItemId` di outlet itu, harga dari server. Hook web `useTicketCustomerSearch/Products/Slots` tersambung; CONTRACT-GAPS.md diperbarui.
+- ain0/ol6v: merge struk edge menstempel `edge_reported_at` (jam app, GREATEST) hanya bila `lastNumber` naik pada run terikat edge yang belum pensiun (keputusan architect). Test end-to-end edge->cloud: jual + void offline tidak deadlock `RECEIPT_VOID_UNMATCHED`, replay no-op, stempel.
+
+Keputusan terbuka untuk CTO: (1) 4 digit akhir telepon tidak ada sumbernya (`customer_profiles` hanya menyimpan hash WhatsApp), keluaran hanya id + nama; (2) jam kosong untuk kasir murni 403 karena `getFacilityAvailability` butuh `facility.booth.operate`, perbaikan menunggu ekstraksi inti setelah ghostex/993 landing (legend-tkxhs).
+Bead susulan: legend-rh1hk (rotasi palsu restore-detect), legend-tkxhs (slot kasir), P2 hitungan struk belum sinkron di rekap hari (dibuat, tidak dikerjakan).
+Catatan: `pnpm db:generate` di dasar ini menghasilkan 0473 (tabel access_ticket_credential*), diduga drift bawaan base (belum diverifikasi di base bersih); schema tidak disentuh 1096; berkas hasil generate dihapus.

@@ -1,5 +1,6 @@
 // The only data door for the ticket-sale screens: components import hooks from
 // here and never call ./api.ts, useQuery or mock data.
+import { POS_TICKET_CUSTOMER_QUERY_MIN } from "@starter/shared/pos/ticket-cashier";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef } from "react";
 import { ApiError } from "@/lib/api/errors";
@@ -21,8 +22,13 @@ import type {
   TicketCredential,
 } from "./types";
 
-/** Smallest search text sent to the server (one letter matches half the base). */
-export const CUSTOMER_SEARCH_MIN_CHARS = 2;
+/**
+ * Smallest search text sent to the server (one letter matches half the base).
+ * The cashier search refuses fewer characters than its contract minimum.
+ */
+export const CUSTOMER_SEARCH_MIN_CHARS = API_MOCK
+  ? 2
+  : POS_TICKET_CUSTOMER_QUERY_MIN;
 
 /** The outlet this screen works in; "" when none (queries stay idle). */
 function useOutletId(): string {

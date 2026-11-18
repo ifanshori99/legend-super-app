@@ -66,6 +66,7 @@ import {
 import {
   outletIdSchema,
   tenantIdSchema,
+  ulidToUuid,
   type ScopedTenantContext,
   type TenantId,
 } from "@starter/shared/core";
@@ -80,7 +81,7 @@ import {
   type DeviceSyncPage,
   type ReceiptRunReport,
 } from "@starter/shared/edge";
-import { type PosReceipt } from "@starter/shared/pos";
+import { formatReceiptNumber, type PosReceipt } from "@starter/shared/pos";
 import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
@@ -101,6 +102,8 @@ import {
   allocateReceipt,
   claimDeviceReceiptSequencesForEdge,
   createPosReceiptPort,
+  mergeDeviceReceiptRun,
+  provisionReceiptSequence,
 } from "../services/pos-receipt.service.ts";
 import { agent, originHeader, signUp } from "./helpers.ts";
 import {
@@ -1401,5 +1404,264 @@ describe("yd0h8-7 the receiptRuns query parameter is parsed strictly", () => {
       `P1:1,${"X".repeat(8000)}`,
     ])
       expect(parse(bad).success, JSON.stringify(bad.slice(0, 40))).toBe(false);
+  });
+});
+
+// ---- Merge stamps edge_reported_at (architect decision) ----------------------------
+//
+// `mergeDeviceReceiptRun` stamps `receipt_sequences.edge_reported_at` with the
+// APP clock (GREATEST of the stored value and now) only when `lastNumber` rises,
+// the row is not retired and `edge_node_id` is bound. The stamp is what lets the
+// claim tell a stale report (arrived before the merge) from a real regression.
+//
+// Assumptions:
+//  - "App clock" = the clock of the API process (`Date.now()`); asserted with a
+//    5 s tolerance around the merge.
+//  - A report is judged against the merged `last_number` too: after a merge to 3,
+//    a report of P1:2 is below it.
+//  - Merging into a RETIRED run is allowed (late device batch) and must succeed.
+//  - Rows are bound by a first claim with an empty report; its own effect on
+//    `edge_reported_at` is not relied upon (the stamp is read after the merge).
+
+describe("yd0h8-10 merge stamps edge_reported_at only for a rising, live, bound run", () => {
+  const stampOf = async (outletId: string, prefix = "P1") =>
+    rowOf(await runRows(outletId), prefix);
+
+  /** `n` completed orders owned by `deviceId`, without receipts yet. */
+  async function deviceOrders(
+    outletId: string,
+    deviceId: string,
+    count: number,
+  ): Promise<string[]> {
+    const out: string[] = [];
+    for (let i = 0; i < count; i += 1) out.push(await draftOrder(outletId));
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      for (const orderId of out) {
+        await client.query(
+          `UPDATE pos_orders SET device_id = $3 WHERE tenant_id = $1 AND order_id = $2::uuid`,
+          [tenant.tenantId, ulidToUuid(orderId), deviceId],
+        );
+        await client.query(
+          `UPDATE orders SET status = 'completed' WHERE tenant_id = $1 AND id = $2::uuid`,
+          [tenant.tenantId, ulidToUuid(orderId)],
+        );
+      }
+    });
+    return out;
+  }
+
+  function receiptsOf(
+    outletId: string,
+    deviceId: string,
+    orderIds: string[],
+  ): PosReceipt[] {
+    const at = new Date().toISOString();
+    return orderIds.map(
+      (orderId, index) =>
+        ({
+          id: randomUUID(),
+          tenantId: tenant.tenantId,
+          outletId,
+          orderId,
+          deviceId,
+          number: formatReceiptNumber("P1", index + 1),
+          sequenceNumber: index + 1,
+          status: "issued",
+          issuedAt: at,
+          voidedAt: null,
+          voidReason: null,
+          voidedBy: null,
+          reprintCount: 0,
+        }) as unknown as PosReceipt,
+    );
+  }
+
+  function mergeRun(
+    outletId: string,
+    deviceId: string,
+    lastNumber: number,
+    receipts: PosReceipt[],
+  ) {
+    return inTx((tx, context) =>
+      mergeDeviceReceiptRun(tx, context, {
+        sequence: { outletId, deviceId, prefix: "P1", lastNumber },
+        receipts,
+      }),
+    );
+  }
+
+  /** Cloud outlet, one device bound to edge (N, I) at P1, three merge-ready orders. */
+  async function boundRun() {
+    const { outletId, devices, own } = await cloudOutlet(1);
+    const [deviceId] = devices as [string];
+    const past = Date.now() - 600_000;
+    await claim(outletId, own, new Map(), new Date(past));
+    const bound = await stampOf(outletId);
+    expect(bound).toMatchObject({
+      edge_node_id: own.edgeNodeId,
+      edge_instance_id: own.edgeInstanceId,
+      retired_at: null,
+      last_number: 0,
+    });
+    const orders = await deviceOrders(outletId, deviceId, 3);
+    const receipts = receiptsOf(outletId, deviceId, orders);
+    return { outletId, deviceId, own, past, receipts };
+  }
+
+  /** The first merge to 3; returns the stamp it wrote and the window around it. */
+  async function mergeThree(
+    setup: Awaited<ReturnType<typeof boundRun>>,
+  ): Promise<Date> {
+    const before = Date.now();
+    await mergeRun(setup.outletId, setup.deviceId, 3, setup.receipts);
+    const after = Date.now();
+    const row = await stampOf(setup.outletId);
+    expect(row.last_number).toBe(3);
+    expect(
+      row.edge_reported_at,
+      "the merge must stamp edge_reported_at",
+    ).not.toBeNull();
+    expect(row.edge_reported_at!.getTime()).toBeGreaterThanOrEqual(
+      before - 5_000,
+    );
+    expect(row.edge_reported_at!.getTime()).toBeLessThanOrEqual(after + 5_000);
+    return row.edge_reported_at!;
+  }
+
+  it("POS-06 EDG-02 merge raises a bound run to 3, then a report of P1:2 whose time is before the stamp is stale: stale 1, no rotation", async () => {
+    const setup = await boundRun();
+    const stamp = await mergeThree(setup);
+
+    const late = await claim(
+      setup.outletId,
+      setup.own,
+      new Map([["P1", 2]]),
+      new Date(stamp.getTime() - 1000),
+    );
+    expect(late).toMatchObject({
+      regressed: 0,
+      throttled: 0,
+      stale: 1,
+      alert: false,
+    });
+    const rows = await runRows(setup.outletId);
+    expect(rows.map((r) => r.prefix)).toEqual(["P1"]);
+    expect(rowOf(rows, "P1")).toMatchObject({
+      retired_at: null,
+      retired_reason: null,
+      last_number: 3,
+    });
+    expect(regressedCount(rows)).toBe(0);
+  });
+
+  it("POS-06 EDG-02 after the same merge, a report of P1:2 whose time is after the stamp is a real regression: regressed 1, stale 0", async () => {
+    const setup = await boundRun();
+    const stamp = await mergeThree(setup);
+
+    const real = await claim(
+      setup.outletId,
+      setup.own,
+      new Map([["P1", 2]]),
+      new Date(stamp.getTime() + 1000),
+    );
+    expect(real).toMatchObject({ regressed: 1, throttled: 0, stale: 0 });
+    const rows = await runRows(setup.outletId);
+    expect(rowOf(rows, "P1").retired_reason).toBe("edge_regressed");
+    expect(rowOf(rows, "P2").retired_at).toBeNull();
+    expect(regressedCount(rows)).toBe(1);
+  });
+
+  it("POS-06 EDG-02 a merge that raises a RETIRED run succeeds and leaves edge_reported_at as it was", async () => {
+    const { outletId, devices, own } = await cloudOutlet(1);
+    const [deviceId] = devices as [string];
+    const base = Date.now() - 600_000;
+    await claim(outletId, own, new Map(), new Date(base));
+    await claim(outletId, own, new Map([["P1", 5]]), new Date(base + 10_000));
+    const regression = await claim(
+      outletId,
+      own,
+      new Map([["P1", 1]]),
+      new Date(base + 20_000),
+    );
+    expect(regression).toMatchObject({ regressed: 1 });
+    const retired = await stampOf(outletId);
+    expect(retired.retired_reason).toBe("edge_regressed");
+    expect(retired.edge_reported_at?.getTime()).toBe(base + 20_000);
+
+    const orders = await deviceOrders(outletId, deviceId, 3);
+    await expect(
+      mergeRun(outletId, deviceId, 3, receiptsOf(outletId, deviceId, orders)),
+    ).resolves.toBeDefined();
+
+    const after = await stampOf(outletId);
+    expect(after).toMatchObject({
+      retired_reason: "edge_regressed",
+      last_number: 3,
+    });
+    expect(after.edge_reported_at?.getTime()).toBe(base + 20_000);
+  });
+
+  it("POS-06 EDG-02 a replay of the merge and an older (stale) batch do not change the stamp", async () => {
+    const setup = await boundRun();
+    const stamp = await mergeThree(setup);
+
+    // Same run again: lastNumber does not rise.
+    await mergeRun(setup.outletId, setup.deviceId, 3, setup.receipts);
+    expect((await stampOf(setup.outletId)).edge_reported_at?.getTime()).toBe(
+      stamp.getTime(),
+    );
+    // An earlier batch of the same run (2 of 3 receipts, already stored).
+    await mergeRun(
+      setup.outletId,
+      setup.deviceId,
+      2,
+      setup.receipts.slice(0, 2),
+    );
+    const row = await stampOf(setup.outletId);
+    expect(row.last_number).toBe(3);
+    expect(row.edge_reported_at?.getTime()).toBe(stamp.getTime());
+  });
+
+  it("POS-06 EDG-02 a run with no edge binding (cloud-provisioned, never claimed) is merged without any stamp", async () => {
+    const outletId = await freshOutlet();
+    const deviceId = (await enroll(outletId, "pos")).id;
+    await inTx((tx, c) =>
+      provisionReceiptSequence(tx, c, { outletId, deviceId, prefix: "P1" }),
+    );
+    const before = await stampOf(outletId);
+    expect(before).toMatchObject({
+      edge_node_id: null,
+      edge_instance_id: null,
+      edge_reported_at: null,
+    });
+    const orders = await deviceOrders(outletId, deviceId, 3);
+    await mergeRun(
+      outletId,
+      deviceId,
+      3,
+      receiptsOf(outletId, deviceId, orders),
+    );
+    const row = await stampOf(outletId);
+    expect(row.last_number).toBe(3);
+    expect(row.edge_reported_at).toBeNull();
+  });
+
+  it("POS-06 EDG-02 an edge_reported_at newer than the merge clock is kept: the merge does not fail and the value stays", async () => {
+    const { outletId, devices, own } = await cloudOutlet(1);
+    const [deviceId] = devices as [string];
+    await claim(outletId, own, new Map(), new Date(Date.now() - 600_000));
+    // A forward report with a cloud time 10 min ahead of the app clock.
+    const future = Date.now() + 600_000;
+    await claim(outletId, own, new Map([["P1", 1]]), new Date(future));
+    const primed = await stampOf(outletId);
+    expect(primed.edge_reported_at?.getTime()).toBe(future);
+
+    const orders = await deviceOrders(outletId, deviceId, 3);
+    await expect(
+      mergeRun(outletId, deviceId, 3, receiptsOf(outletId, deviceId, orders)),
+    ).resolves.toBeDefined();
+    const row = await stampOf(outletId);
+    expect(row.last_number).toBe(3);
+    expect(row.edge_reported_at?.getTime()).toBe(future);
   });
 });
