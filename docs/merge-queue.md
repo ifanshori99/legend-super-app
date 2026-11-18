@@ -233,3 +233,4 @@ Induk lebih dulu. Migrasi dinomori ulang dari ujung m1 saat batch disusun.
 - CTO 19 Nov 06:07: kas `ghostex/cek-kas-1102-pinjaman-reimburse-supplier` head eab61aa7a (1132: statement 3 gerbang SQL, je.legal_entity_id; 41 test, tsc 0). Architect delta 1118 0 P0/P1. SIAP batch95. SO kas ronde 8 sebelum gerbang rilis.
 - 06:53 SO akses ronde 2 (1133) BERSIH untuk ws/1094 + ws/1120 + ws/1128 (head 1fa7fddea); gerbang rilis akses lolos dari sisi SO.
 - 06:53 ws/1126-refund-unmatched-hold DITAHAN: SO refund ronde 14 (1134) dua P1 (hold baru dibuat sesudah jendela retry 15 menit; reference intent diabaikan mapper). Fix 1139 di atas 1135 (thread G2yc3). Landing 1126/1135/1139 bersama sesudah fix.
+- 06:59 Kas `ghostex/cek-kas-1102-pinjaman-reimburse-supplier` (eab61aa7a) DITAHAN, KELUARKAN dari batch95: SO kas ronde 8 (1138) P1 remap->reversal->remap membuka kas tersedia + 2 P2. Fix 1140. 1118 gerbang ikut menunggu.
