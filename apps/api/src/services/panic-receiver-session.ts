@@ -247,6 +247,7 @@ async function revocationReason(
       revokedAt: devices.revokedAt,
       type: devices.type,
       tokenIssuedAt: devices.tokenIssuedAt,
+      sharedMode: devices.sharedMode,
     })
     .from(devices)
     .where(
@@ -266,6 +267,10 @@ async function revocationReason(
       device.tokenIssuedAt.getTime() > session.issuedAt.getTime())
   )
     return "device_revoked";
+  // legend-iq0jz (founder Q29, 1113): a shared tablet never holds the panic
+  // stream. A session opened while the device was personal ends the moment the
+  // flag is on; the relay rechecks before every send, so no later frame leaves.
+  if (device.sharedMode) return "device_revoked";
 
   const [pin] = await tx
     .select({ pinGenerationAt: staffPins.pinGenerationAt })
@@ -357,6 +362,49 @@ export async function revokeReceiverSession(
     },
   ]);
   return true;
+}
+
+/**
+ * Ends every live receiver session of a device with its reason and tells the
+ * relay hub, so open sockets close with 4401 at once (shared mode turned on).
+ * Returns how many ended.
+ */
+export async function revokeReceiverSessionsOfDevice(
+  input: { tenantId: string; outletId: string; deviceId: string },
+  reason: PanicSessionRevokeReason,
+  now: Date = new Date(),
+): Promise<number> {
+  const tenant = cookieTenant(input.tenantId);
+  const ended = await withTenant(
+    db,
+    outletContext(tenant, input.outletId),
+    (tx) =>
+      tx
+        .update(panicReceiverSessions)
+        .set({ revokedAt: now, revokeReason: reason })
+        .where(
+          and(
+            eq(panicReceiverSessions.tenantId, input.tenantId as TenantId),
+            eq(panicReceiverSessions.deviceId, input.deviceId),
+            isNull(panicReceiverSessions.revokedAt),
+          ),
+        )
+        .returning({
+          id: panicReceiverSessions.id,
+          userId: panicReceiverSessions.userId,
+        }),
+  );
+  announceRevoked(
+    ended.map((row) => ({
+      sessionId: row.id,
+      tenantId: input.tenantId,
+      outletId: input.outletId,
+      deviceId: input.deviceId,
+      userId: row.userId,
+      reason,
+    })),
+  );
+  return ended.length;
 }
 
 export type ReceiverRecheck =
