@@ -724,6 +724,20 @@ unknown. A report larger than any amount already held for the same provider
 refund opens a new hold even after earlier holds were closed. Check the
 provider dashboard before closing any of them.
 
+A refund that is filed or `approved` but not yet sent is held too when a
+provider refund report arrives on the same transaction (1077 K1, legend-3aign):
+the report could be an echo of that refund, so the intent holds the reported
+amount and approving, paying out and requesting a new refund are refused with
+`PROVIDER_REFUNDED` (409) until finance closes the hold. Nothing is sent to the
+provider while the hold is open, even when the refund and the report together
+fit within the amount paid. Before approving, finance checks the provider
+dashboard: is the reported refund ours (sent but not yet recorded, for example
+after a crash), or a separate refund made there? If it is a separate refund, close the hold with `not_this_intent` (the
+only way to close this hold) and then approve the waiting refund; it is paid
+once. If the report is our own refund, do not approve it again: cancel the
+waiting refund instead, because the provider already paid it. When in doubt,
+leave the hold open: the money stays held.
+
 `DOIT_REFUNDS_ENABLED` must have the same value in `api.env` and `worker.env`
 (legend-3gna): the API queues approved refunds and the worker pays them, so a
 split would queue refunds nobody pays, or pay refunds the API treats as off.
