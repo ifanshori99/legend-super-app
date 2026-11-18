@@ -2041,3 +2041,11 @@ Langkah berikut CTO baru:
 - 19:33 CTO: 1083 3a39c24d4 SIAP (3 kartu), G0trp di-resolve, worktree dihapus.
 - 19:38 CTO: mulai 1094 (Sonnet #3, base pin-kasir, + port 1043) dan 1097 (Sonnet #5, m1). One-shot 19:45 untuk 1098 + 1096.
 - 19:47 CTO: slot Claude penuh (8/8) -> 1098 dijalankan di Codex #2 (review architect xhigh oleh CTO sesudahnya). 1096 ditahan.
+- 19:54 CTO G418w serah terima (compact 2x). Keadaan untuk CTO baru:
+  - Berjalan: G88n4 1090 refund r9 (regresi 85/85 hijau, db:generate bersih, tunggu typecheck; sesudah lapor: cek head ws/1072, lalu SO refund ronde 10 Codex xhigh); G93wj 1091 kas r5 (regresi 116 berkas, lalu 4 error tsc; sesudah lapor: SO kas ronde 6); G3w2u merge train batch90 full run -> batch91-93 (brief 1093; 8b2dc0b1 dikeluarkan, port di 1094); G95kw 1095; G9yay 1094; G3hkz 1097; G8be4 1100 (masih menunggu monitor); G4miq 1098 Codex (sesudah lapor: subagent architect xhigh atas diff).
+  - Ditahan: 1096 (Sonnet, base ghostex/45769078, brief docs/briefs/1096-pos-kasir-tiket-struk.md) mulai begitu 1094/1095/1097/1100 lapor selesai.
+  - 1099 (s5c1, l5tvy): subagent test-runner CTO lama antre heavy dan berhenti; CTO baru jalankan ulang test-runner (brief docs/briefs/1099-verifikasi-payroll.md), hijau -> bd close + komentar qhqf8, wxvt9.
+  - Pertanyaan founder terbuka: GoFood (9tzc) dan EDC (mooi) keluar rilis 1?; status KYC DOIT; DB production baru/kosong?; staging boleh dibuat ulang?; perangkat edge sudah di outlet?; kunci sandbox Duitku lewat kartu rahasia.
+  - Tenggat founder: kode beres akhir 19 Nov; 20 Nov tinggal eksternal/kredensial (bd memory founder-deadline-20nov). Actions US$0 (founder-actions-budget).
+  - Cron dibuat ulang (bd memory cto-crons): push :07, akun mati :37, retro 43 1,4,...,22, Q13.
+  - Tindak lanjut: legend-a37uv; 6 kartu 1083 dilewati; deployment.md:288 basi; retro catatan ping antara.
