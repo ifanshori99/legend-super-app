@@ -239,6 +239,8 @@ Fail-closed: `drift-allow.json` yang hilang (saat gerbang berjalan, bukan N/A), 
 
 Bila gerbang menahan rilis, selesaikan penyebabnya, jalankan ulang pre-deploy check, dan lanjut hanya bila hasilnya bersih. Jangan melewati gerbang dengan menghapus baris migrasi, mengedit berkas gerbang, atau menurunkan `mode`.
 
+Untuk gerbang MCP `legend-176r3`, `platform_packages.modules` harus berupa array yang memuat string `mcp`; nilai SQL `NULL`, JSON `null`, object (termasuk object berkunci `mcp`), dan bentuk lain tetap menahan rilis bagi tenant pemakai MCP.
+
 | Gerbang                                         | Kartu           | Penyebab                                                                                                                                                                                                                                                                                                                                                                      | Resolusi                                                                                                                                                                                                                                                                                                                                                      |
 | ----------------------------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Drift migrasi, 0239 lama                        | legend-fgg1h    | Berkas 0239 diedit di tempat (ps-405). Bila ada database bersama (staging atau production) yang sudah menerapkan versi lamanya, hash-nya tidak cocok.                                                                                                                                                                                                                         | Jangan menyunting berkas 0239 untuk mencocokkan hash. Tulis migrasi koreksi baru yang membawa database itu ke keadaan yang diharapkan, di-review architect. Lalu tambahkan hash lama yang persis ke `scripts/preflight/drift-allow.json` dengan id bead (keputusan CTO atau founder, lewat PR yang di-review). Butuh akses dan persetujuan founder lewat CTO. |
@@ -277,7 +279,51 @@ SELECT count(*) FROM public.<tabel> WHERE ...;
 
 Nama tabel di `requires` selalu `public.<tabel>`; di SQL jangan menulis nama skema pada nama tabel (runner mengatur `search_path`). Migrasi baru harus punya `when` di journal yang lebih besar dari entri sebelumnya (legend-ir8n8; entri 0003 pengecualian lama); cek ganda dan urutan ada di `apps/api/src/test/migration-journal.test.ts`. Test `apps/api/src/test/migration-journal.test.ts` memvalidasi tiap berkas (header sah, tag `before` ada di journal, tabel `requires` ada di skema) supaya berkas yang salah tertangkap sebelum rilis.
 
-Urutan rilis edge dan cloud untuk rilis pertama dan upgrade berikutnya ada di `docs/runbooks/rilis1-urutan-edge-cloud.md`.
+### Gerbang wajib kompatibilitas edge sebelum cloud (legend-ir8n8)
+
+Gerbang ini dijalankan operator **sebelum cloud yang mengirim field `sharedMode` dinaikkan**, termasuk sebelum API dan worker baru mulai mengirim data. Hasil hijau `predeploy-check` hanya membuktikan gerbang database; pemeriksaan citra edge di bawah tetap wajib dan tidak dijalankan otomatis oleh runner SQL.
+
+Pakai login yang melihat semua tenant (superuser atau `BYPASSRLS`) dalam transaksi read-only dengan `row_security=off`. Periksa keberadaan tabel lebih dahulu:
+
+```sql
+SELECT to_regclass('public.edge_nodes') AS edge_nodes;
+```
+
+Hanya hasil `NULL` yang berarti **N/A (tabel belum ada)**. Bila tabel ada, inventarisasi seluruh node aktif, termasuk primary, standby, dan node yang sedang offline:
+
+```sql
+SELECT id, tenant_id, outlet_id, role, version, last_heartbeat_at
+FROM public.edge_nodes
+WHERE status = 'active'
+ORDER BY tenant_id, outlet_id, role, id;
+```
+
+Jangan menyaring berdasarkan waktu heartbeat, status tenant, atau status outlet: node offline maupun standby bisa kembali terhubung setelah cloud naik. Nol baris berarti **PASS (tidak ada node aktif)**, bukan N/A. Query gagal, izin tidak cukup, atau kolom yang hilang berarti **BLOCK**; jangan menganggap kegagalan query sebagai daftar kosong.
+
+Sejak inventaris dimulai sampai rollout cloud selesai, operator menahan pendaftaran, aktivasi, pergantian citra, dan perubahan peran edge agar node lama tidak menjadi aktif sesudah pemeriksaan. Bila daftar node, citra, atau perannya berubah selama jendela itu, hasil kedua gerbang `legend-ir8n8` dan `legend-zn3wl` kembali **BLOCK**: ulangi inventaris serta seluruh bukti yang terkait sebelum melanjutkan cloud. Ini pengendalian jendela rilis oleh operator, bukan kunci otomatis di runtime.
+
+Satu baris atau lebih berarti **BLOCK** sampai operator memiliki bukti berikut untuk **setiap** node di inventaris:
+
+1. Edge sudah dinaikkan terlebih dahulu ke citra dengan digest immutable yang dicatat bersama commit sumbernya. Commit itu harus memuat perubahan `sharedMode` dan penerapan replika dari `64b1f5c2d8c7d1d34a43caff539a42316fc40a44`, beserta koreksi `8395006964021cc46c12b1fe3a7dc465a2f17753` (atau commit pengganti yang kesetaraannya sudah direview). Cocokkan digest citra yang benar-benar berjalan pada host dengan manifest build; tag semver saja tidak membuktikan isi citra.
+2. `version` pada heartbeat baru sesuai manifest build dan tidak diubah lewat override runtime. Nilai `unknown`, `dev`, versi lama, manifest hilang, atau digest yang belum bisa diverifikasi tetap **BLOCK**. Nilai `0.2.0` sendiri bukan bukti kompatibilitas `sharedMode`: tag bawaan tersebut sudah ada sebelum perubahan ini.
+3. Setelah restart edge, sync `device_registry` berhasil tanpa penolakan field; catat waktu, node, digest, commit sumber, dan bukti checkpoint berhasil di catatan rilis privat. Node offline yang belum bisa diverifikasi tetap **BLOCK**. Baru sesudah seluruh node terbukti kompatibel, jalankan ulang inventaris dan lanjutkan cloud dalam jendela rilis yang sama.
+
+**Resolve:** naikkan edge yang tertinggal dan lengkapi bukti citranya, kemudian ulangi pemeriksaan. Jangan mengedit `version` langsung di database, menghapus node, atau mencabut node hanya untuk meloloskan gerbang. Bila node benar-benar dipensiunkan, ikuti prosedur pencabutan normal dan pastikan host lama tidak dapat terhubung kembali. Bila cloud baru sudah telanjur aktif, hentikan rollout berikutnya dan pulihkan kompatibilitas sebelum melanjutkan; jangan menunggu rilis berikutnya.
+
+### Gerbang event katalog strict (legend-zn3wl)
+
+Gerbang manual ini wajib sebelum cloud mulai mengirim field baru pada event `catalog_record.updated`. Gunakan inventaris node aktif di atas dengan aturan yang sama: tabel benar-benar tidak ada = **N/A**, nol node aktif = **PASS**, query atau kolom bermasalah = **BLOCK**. Setiap node primary, standby, dan offline tetap tercakup. Satu node yang belum terbukti kompatibel menahan rollout cloud untuk seluruh rilis.
+
+Bedakan dua jalur katalog. Parser record HTTP pull dapat menerima atau membuang field tambahan yang aman, tetapi hal itu tidak membuktikan parser event link menerima field yang sama. Payload `catalog_record.updated` memakai skema record strict di `packages/shared/src/edge/catalog-record-event.ts`; field baru yang belum dikenal edge menolak event dan dapat menahan seluruh batch link, termasuk alarm di belakangnya. HTTP 200, nomor versi, atau keberhasilan pull saja tidak meloloskan gerbang event ini.
+
+1. Sebelum rollout, catat pasangan digest citra dan commit sumber **cloud calon rilis** dengan **edge calon penerima**, beserta daftar stream yang berubah. Untuk setiap stream tersebut, ambil fixture event representatif dari keluaran cloud calon rilis yang memuat seluruh field baru (termasuk field bertingkat bila ada). Jalankan fixture melalui parser envelope dan applier event dari build edge penerima; simpan hasil PASS beserta pasangan build dan nama stream di catatan rilis privat. Hasil kosong, stream yang belum diuji, atau fixture yang hanya diuji terhadap skema cloud tetap **BLOCK**.
+2. Cocokkan digest dan commit sumber citra yang benar-benar berjalan pada **setiap node** di inventaris dengan build penerima yang telah diuji untuk **setiap stream yang berubah**. Edge harus dinaikkan dahulu sebelum cloud mulai memancarkan field event baru. Node dengan skema strict lama, versi `unknown`/`dev`, digest tidak terverifikasi, atau node offline tanpa bukti restart dan sync yang berhasil tetap **BLOCK**; jangan mengubah nomor versinya untuk meloloskan pemeriksaan.
+3. Periksa prasyarat HTTP pull (`syncTxid`, kursor `cat2`, dan versi protokol) secara terpisah mengikuti `docs/runbooks/edge-catalog-deploy-order.md`. Bila edge penerima membutuhkan cloud baru untuk pull, **jangan** membalik urutan event menjadi cloud baru dahulu: siapkan build perantara yang memenuhi prasyarat pull sambil tetap mengirim bentuk event lama, atau build edge perantara yang menerima kedua bentuk. Uji pasangan build perantara dengan fixture yang sama. Tanpa jalur kompatibel yang terbukti, rollout tetap **BLOCK** dan CTO menentukan pemecahan rilis sebelum deploy.
+4. Setelah semua node lulus, inventarisasi ulang agar node yang baru diaktifkan tidak terlewat, lalu naikkan cloud. Di database edge outlet percobaan, cocokkan event uji baru dari setiap stream yang berubah dengan receipt `edge_inbound_events` pada tenant, node, `event_id`, dan `direction = 'cloud_to_edge'` yang tepat: `outcome` harus `applied`, record lokal harus memuat nilai field baru, dan `sync_cursors.received_in_seq` untuk node serta arah yang sama harus mencapai `link_seq` receipt tersebut. Receipt `conflict`, `deferred`, atau `superseded`, maupun cursor yang maju sendirian, belum membuktikan field baru diterapkan. Checkpoint `edge_pull_checkpoints` bernama `catalog:<stream>` hanya membuktikan pull HTTP, bukan penerimaan event link. Catat hasil per node dan stream bersama bukti digest sebelum melanjutkan rollout; jangan memulihkan urutan dengan melewati event atau memajukan cursor manual.
+
+**Resolve:** upgrade edge yang tertinggal ke pasangan build yang sudah diuji atau selesaikan build perantara yang kompatibel, lalu ulangi gerbang. Runbook katalog lama yang menyebut cloud dahulu hanya berlaku bagi prasyarat HTTP pull yang telah dibuktikan aman untuk penerima; itu tidak membolehkan cloud mengirim field event baru ke edge lama.
+
+Urutan rilis edge dan cloud untuk rilis pertama dan upgrade berikutnya ada di `docs/runbooks/rilis1-urutan-edge-cloud.md`; gerbang wajib di atas tetap berlaku sebelum cloud mengirim field baru.
 
 ## Logs in production
 
