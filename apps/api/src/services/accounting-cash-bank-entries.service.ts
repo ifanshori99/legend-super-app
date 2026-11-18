@@ -939,6 +939,7 @@ export async function approveCashBankEntry(
       context,
       row.id,
       now,
+      { rethrowPostingRefusal: true },
     );
     if (settled?.status !== "approved")
       throw new AccountingError("CASH_OUT_CHAIN_OPEN");
@@ -1047,6 +1048,7 @@ export async function settleCashBankEntryForApproval(
   context: ScopedTenantContext,
   entryId: string,
   now: Date = new Date(),
+  options: { readonly rethrowPostingRefusal?: boolean } = {},
 ): Promise<CashBankEntry | null> {
   const tenantId = context.tenant.tenantId;
   const row = await loadEntryForUpdate(tx, tenantId, entryId);
@@ -1104,6 +1106,10 @@ export async function settleCashBankEntryForApproval(
     );
   } catch (error) {
     if (!isPostingRefusal(error)) throw error;
+    // The direct endpoint tells the approver the business reason (cash short
+    // on 1102, closed period, ...) instead of "chain open"; the outbox
+    // consumer keeps resolving so it does not retry (batch90: 1053b on 1037).
+    if (options.rethrowPostingRefusal) throw error;
     return cashBankEntryDto(row);
   }
 }

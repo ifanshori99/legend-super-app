@@ -77,6 +77,7 @@ const DECISIONS: Record<string, Decision> = {
   "edge-catalog-sync": "public",
   "edge-device": "backoffice",
   "edge-device-sync": "public",
+  "edge-node-status": "backoffice",
   "edge-nodes": "backoffice",
   "edge-people-snapshot": "public",
   "edge-print": "backoffice",
