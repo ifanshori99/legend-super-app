@@ -99,6 +99,7 @@ import {
   reprocessStoredWebhookEvents,
 } from "../services/payment-webhook.service";
 import { agent, originHeader, signUp, verifySessionMfa } from "./helpers";
+import { HOLD_TRANSACTION_CONFLICT_REASON } from "../services/refund-hold-reasons";
 import { paymentTestScope } from "./payment-test-scope";
 import { FakeRefundGateway } from "./refund-fake-gateway";
 
@@ -1057,6 +1058,38 @@ describe("legend-30hfs staff refunds, approvals, payouts and allocation after a 
     const code = await paidCode();
     const filedId = await fileRefund(code, 20_000);
     await deliverPartial(code, refundId(), 40_000);
+
+    // 1077 I9 (K1): a provider report that arrives while our refund is still
+    // unsent could be an echo of that refund, so the intent holds the reported
+    // amount until finance looks. Approving is refused until then.
+    const { rows: openHolds } = await owner.query<{
+      id: string;
+      reason: string;
+      amount_idr: string;
+    }>(
+      `SELECT id, reason, amount_idr::text AS amount_idr
+         FROM refund_recon_holds
+        WHERE tenant_id = $1 AND payment_intent_id = $2 AND resolved_at IS NULL`,
+      [tenantId, code.id],
+    );
+    expect(openHolds, "one open K1 hold on the intent").toHaveLength(1);
+    expect(openHolds[0]!.reason).toBe(HOLD_TRANSACTION_CONFLICT_REASON);
+    expect(Number(openHolds[0]!.amount_idr)).toBe(40_000);
+    const blocked = await approveRefund(filedId);
+    expect(blocked.status, JSON.stringify(blocked.body)).toBe(409);
+    expect(fake.calls, "nothing sent while the hold is open").toHaveLength(0);
+
+    // Finance checks the provider dashboard: the 40.000 is another refund, not
+    // ours. A conflict hold only closes as not_this_intent (never counted).
+    const resolved = await staff
+      .post(`${ADMIN}/refund-recon-holds/${openHolds[0]!.id}/resolve`)
+      .set(originHeader)
+      .send({
+        idempotencyKey: key("hold"),
+        resolution: "not_this_intent",
+        note: "Dicek di dashboard provider: refund 40.000 bukan milik refund ini.",
+      });
+    expect(resolved.status, JSON.stringify(resolved.body)).toBe(200);
 
     const approved = await approveRefund(filedId);
     expect(approved.status, JSON.stringify(approved.body)).toBe(200);
