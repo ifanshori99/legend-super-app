@@ -21,7 +21,7 @@
 // - Each test uses its own node (the last emitted state is per node) and
 //   revokes it afterwards, so only one active node stays in the outlet.
 import { randomUUID } from "node:crypto";
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 import {
   afterAll,
   afterEach,
@@ -39,6 +39,7 @@ import {
   edgeNodeAlarmClearedPayloadSchema,
   edgeNodeAlarmRaisedPayloadSchema,
 } from "@starter/shared/edge/node-alarm";
+import { eventEnvelopeSchema } from "@starter/shared/events";
 import { db } from "../db/index.ts";
 import { createNodeAlarmEmitter } from "../edge/node-alarm.ts";
 import { edgeNodeContext } from "../services/edge-node.service.ts";
@@ -85,7 +86,7 @@ let nodeId = "";
 let registry: RegistryState;
 
 async function withOwner<T>(
-  run: (client: Awaited<ReturnType<Pool["connect"]>>) => Promise<T>,
+  run: (client: PoolClient) => Promise<T>,
 ): Promise<T> {
   const client = await owner.connect();
   try {
@@ -348,7 +349,7 @@ describe("legend-0cjzz edge emitter: ids are unique per transition", () => {
     await makeEmitter().reconcile();
     expect(enqueue).toHaveBeenCalledTimes(2);
     expect(await names()).toEqual([EDGE_NODE_ALARM_RAISED]);
-    const firstTry = enqueue.mock.calls[0]![2].event as { id: string };
+    const firstTry = eventEnvelopeSchema.parse(enqueue.mock.calls[0]![2].event);
     expect((await alarmRows())[0]!.event.id).toBe(firstTry.id);
   });
 });
