@@ -7431,3 +7431,19 @@ Bukti: pos-936-voucher, pos-936-points, pos-936-edc-declined, pos-936-ticket + r
 Sedang/berikut: merge train menomori ulang 0670/0671 dan memperbarui `_journal.json`; keputusan founder lewat CTO ada di laporan akhir thread.
 
 Biaya sesi (session-usage): total biaya* 21764k (utama sonnet 9511k, subagent sonnet 11177k, subagent opus 1056k); 16 subagent, puncak 7 bersamaan, rata-rata 1,0 berjalan; token heavy dipegang thread utama dan satu test-runner bergantian.
+
+## 18 Nov 2026 — 1048 tutup second opinion POS 936 (thread engineer, bead legend-hpgyw)
+
+Cabang `ghostex/8eb871ce`. Migrasi 0672 (`access_ticket_credential_keys`, riwayat kunci kredensial) adalah nomor kerja; 0673 tidak dipakai. `apps/web` tidak disentuh.
+
+Sudah (5 P1 + 3 P2 + temuan architect):
+- Refund manual tidak menghitung tender poin sebagai uang; bon lunas poin: batas 0. Refund manual baris tiket yang masih `issued`/`in_use` ditolak 409 `TICKET_LIVE_NO_MANUAL_REFUND`.
+- Void bon yang sudah terdebit poin tapi belum lunas: poin kembali tepat sekali (satu baris `adjust` per tender, tender `voided`), tanpa event outbox/jurnal (debit `pos_tender` tidak pernah menjurnal). Bon campuran poin + tunai tetap tidak bisa di-void; refund bon berbayar poin tetap ditolak (Q42).
+- Mode latihan: redeem poin 409 `POINTS_TRAINING_REFUSED`, penjualan tiket 409 `TICKET_TRAINING_REFUSED` sebelum hold slot.
+- Redeem poin wajib bukti member hadir (`member_qr` atau `pwa_session`); member terpasang lewat ketik nomor ditolak 409 `POINTS_NEED_MEMBER_PROOF` (kasir pindai ulang QR member). Waktu kedaluwarsa poin diambil dari jam DB setelah kunci.
+- Pintu: validator baru `POST /api/facility/tickets/door-check` (QR atau ticketId+PIN, wajib `facilityId`, 403 seragam `DOOR_CREDENTIAL_INVALID`), menolak kredensial dicabut/diganti/di luar jendela/belum lunas; batas 5 tebakan PIN per 15 menit per tiket (429 `DOOR_PIN_LOCKED`, penghitung per proses API). Replay kunci lama 409 `TICKET_CREDENTIAL_SHOWN`.
+- Voucher melebihi tagihan tetap diterima dengan batas subtotal (Q40); Q41 ke legend-kuh0w.
+
+Bukti: gagal-dulu `so1`..`so4` (tiap temuan gagal karena alasan yang benar), run gabungan 20 berkas 582 tes lulus. Review architect xhigh satu kali (F1-F4, F6 dibetulkan), reviewer untuk perbaikan sesudahnya.
+
+Keputusan terbuka: QR member tidak sekali pakai dan tidak terikat order/nominal (perlu tabel nonce); pembaca pintu offline/edge dan kunci perangkat keras (legend-bzih) belum ada; penghitung PIN per proses (butuh Redis bila API banyak instans); tiket `completed`/`no_show` belum memblokir refund manual; tiket sebelum 0672 hanya mencatat kunci terbaru.
