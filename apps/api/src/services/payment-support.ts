@@ -136,6 +136,7 @@ export async function appendPaymentEvent(
       | "payment.funds_unallocated"
       | "payment.refund_requested"
       | "payment.refunded"
+      | "payment.provider_refunded"
       | "payment.expired"
       | "payment.failed"
       | "payment_route.updated"
