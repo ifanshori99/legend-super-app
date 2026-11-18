@@ -467,6 +467,41 @@ async function pendingPettyPurchaseCreditsIdr(
 }
 
 /**
+ * Petty cash returns of the entity saved parked (no petty_cash mapping at the
+ * time): the fund already gave the cash back, the journal has not credited 1102
+ * yet. One return counts once, by entry id, and stops counting the moment its
+ * journal exists (`pc:<entryId>`, also when the status row is not updated yet).
+ * Unreadable amount: PETTY_CASH_GL_INSUFFICIENT (fail closed).
+ */
+async function pendingParkedReturnCreditsIdr(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  legalEntityId: string,
+): Promise<number> {
+  const rows = await tx
+    .select({ amountIdr: pettyCashEntries.amountIdr })
+    .from(pettyCashEntries)
+    .where(
+      and(
+        eq(pettyCashEntries.tenantId, tenantId),
+        eq(pettyCashEntries.legalEntityId, legalEntityId),
+        eq(pettyCashEntries.kind, "return"),
+        eq(pettyCashEntries.journalStatus, "parked"),
+        sql`NOT EXISTS (
+          SELECT 1 FROM ${journalEntries}
+           WHERE ${journalEntries.tenantId} = ${pettyCashEntries.tenantId}
+             AND ${journalEntries.legalEntityId} = ${pettyCashEntries.legalEntityId}
+             AND ${journalEntries.idempotencyKey} = 'pc:' || ${pettyCashEntries.id}::text
+        )`,
+      ),
+    );
+  let total = 0;
+  for (const row of rows)
+    total += readableIdr(row.amountIdr, "petty_cash_return");
+  return total;
+}
+
+/**
  * Cash that already left, or leaves through an event not delivered yet, and
  * will credit the entity's petty cash account (1102) once its journal posts
  * (legend-3k9qg). Sum of:
@@ -483,7 +518,9 @@ async function pendingPettyPurchaseCreditsIdr(
  * - `petty_purchase.recorded` of an outlet of the entity, undelivered in the
  *   outbox or parked in `auto_journal_parked`, whose journal (source
  *   `petty_purchase`) has not posted yet. A purchase in both places, or already
- *   posted, counts once or not at all (keyed by the petty purchase id).
+ *   posted, counts once or not at all (keyed by the petty purchase id);
+ * - petty cash returns of the entity saved parked, whose journal has not posted
+ *   (`pendingParkedReturnCreditsIdr`, keyed by the entry id, legend-srwv4).
  * Counts whatever it cannot rule out; an unreadable amount throws
  * PETTY_CASH_GL_INSUFFICIENT. Call under `entityLock`.
  */
@@ -638,6 +675,7 @@ async function pendingPettyCashCreditsIdr(
     }
   }
   total += await pendingPettyPurchaseCreditsIdr(tx, tenantId, legalEntityId);
+  total += await pendingParkedReturnCreditsIdr(tx, tenantId, legalEntityId);
   if (reimbursements.length > 0) {
     const inEntity = await tx
       .select({ id: employees.id })
@@ -1483,6 +1521,28 @@ export async function postPettyCashEntry(
     )
       return pettyCashEntryDto(row);
     const bank = await loadBankAccount(tx, tenantId, row.bankAccountId);
+    // A parked return credits 1102 when it posts: 1102 must still cover it
+    // after every other credit not on the GL yet (legend-srwv4). This entry is
+    // itself counted as pending, so its own amount is covered when the cash left
+    // is not below zero. Under the entity lock taken above; nothing written yet.
+    if (row.kind === "return" && (await accountingEnabled(tx, tenantId))) {
+      const cash = await availableCash1102(tx, tenantId, row.legalEntityId);
+      if (cash !== null && cash.availableIdr < 0) {
+        const { glIdr, pendingCreditIdr, availableIdr } = cash;
+        const shortIdr = -availableIdr;
+        throw new AccountingError(
+          "PETTY_CASH_GL_INSUFFICIENT",
+          `Kas kecil di pembukuan tidak cukup untuk memposting setoran ini. Saldo ${formatRupiah(glIdr)} setelah dikurangi cadangan gaji tunai dan kas keluar yang belum dijurnal ${formatRupiah(pendingCreditIdr)} (termasuk setoran ini ${formatRupiah(row.amountIdr)}), kurang ${formatRupiah(shortIdr)}.`,
+          {
+            glIdr,
+            pendingCreditIdr,
+            availableIdr,
+            shortIdr,
+            deltaIdr: -row.amountIdr,
+          },
+        );
+      }
+    }
     // Takes the entity FOR SHARE lock: close/reopen cannot race this post.
     const blocked = await wouldPostingBeBlockedByClosedPeriod(
       tx,
