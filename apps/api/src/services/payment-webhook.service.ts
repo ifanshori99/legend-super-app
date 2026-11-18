@@ -2279,6 +2279,11 @@ async function processRefundEvent(
       // is the provider's own (money went back to the payer): record it against
       // the payment it names. An unknown payment or the echo of our own refund
       // keeps the ignored answer below.
+      // CTO decision (1135), also with DOIT_REFUNDS_ENABLED off: a signed
+      // report that fully matches (refund id, amount, readable payment id,
+      // after the retry window) is still recorded as a fact. The money has
+      // already left at the provider, and the fact only limits later refunds.
+      // Anything that does not fully match is held, never booked.
       const providerRefund = foreign
         ? readProviderInitiatedRefund(event.type, facts)
         : null;

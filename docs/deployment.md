@@ -1308,6 +1308,58 @@ tidak mematikan RLS atau memberikan hak `BYPASSRLS` kepada login biasa.
    lalu buka kembali permintaan mulai langganan. Jika migrasi menolak duplikat
    baru, tetap tahan rilis dan ulangi pemeriksaan.
 
+### Gerbang rilis: hold counted tanpa fact terikat (legend-26ro5)
+
+Hold refund lama yang ditutup `counted_against_intent` lewat jalur `rowOf`
+sebelum 1126 punya `matched_fact_id` NULL, sehingga refund yang sama bisa
+terhitung ganda. Gerbang ini mendaftar hold itu. Berkas
+`scripts/preflight/rilis1-legend-26ro5.sql` baca-saja, satu statement `WITH ...
+SELECT`, tanpa PII. Runner `release-gates` belum ada di base ini: daftarkan ke
+runner saat landing; berkas memakai header runner (`gate`, `before`, `requires`,
+`mode: block`, `resolve`). Tabel `refund_recon_holds` belum ada di `main`/`m1`,
+jadi pada rilis yang membuat tabel itu gerbang dilewati (`requires-missing`).
+Target nyatanya adalah staging atau database yang pernah menjalankan build
+cabang sebelum 1126. Untuk dijalankan manual, pakai login yang melihat semua
+tenant:
+
+```sh
+PGOPTIONS='-c default_transaction_read_only=on -c row_security=off' \
+  psql "$MIGRATION_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+  -f scripts/preflight/rilis1-legend-26ro5.sql
+```
+
+Hasil nol baris = lolos. Satu baris per hold. Kolom `problem`: `fact_unbound`
+(hold bernama tanpa fact penyedia yang cocok, atau hold anonim yang bisa
+dipasangkan), `fact_below_hold` (JUMLAH fact untuk kuncinya kurang dari hold),
+`fact_shared` (fact yang cocok sudah diikat hold lain atau disebut hold counted
+lain dengan intent, kind, dan id yang sama). Fact yang diikat atau disebut hold
+lain dan fact echo refund kita sendiri tidak dihitung, sama seperti aturan
+cakupan 1119. Hold anonim (tanpa refund id) hanya didaftar bila intent-nya
+punya fact kind `provider` dan transaksinya masih bersisa. Tidak terdaftar
+(sah): hold anonim yang ditutup tanpa fact karena sisa transaksi nol atau
+kurang, hold `synthetic_full`, alasan `credit_used_before_provider_refund`, dan
+hold anonim yang punya fact `synthetic_hold` miliknya sendiri.
+
+Keterbatasan gerbang (sengaja dibuat membatasi bila ragu): pencocokan hold
+bernama tanpa ref transaksi lebih longgar dari aturan 1119, yang menganggapnya
+tidak tercakup apa pun (gerbang mencocokkannya ke fact kunci yang sama di
+transaksi mana pun, jadi bisa meloloskan hold yang menurut 1119 belum
+tercakup). Sisa transaksi untuk hold anonim disederhanakan dari
+`transactionLeftIdr`: refund kita dikurangkan hanya bila hold tanpa transaksi
+atau bertransaksi milik intent sendiri, dan cabang dana tak teralokasi tidak
+dihitung. Gerbang tidak membedakan hold anonim mana yang sebenarnya dipasangkan
+ke fact: semua hold anonim tak terikat pada intent yang punya fact `provider`
+dan masih bersisa didaftar, jadi mungkin ada baris yang sebenarnya sah dan
+perlu dinilai finance.
+
+**Ada baris atau query gagal: tahan rilis.** Hasil nol baris dari login yang
+benar adalah syarat gerbang, bukan sekadar exit code `psql` nol. Tidak ada alur
+resolve untuk hold yang sudah tertutup, dan `matched_fact_id` tidak boleh
+diubah langsung di database tanpa persetujuan. Remedi yang ada: perbaikan data
+sekali pakai yang direview architect dan disetujui CTO dan finance, atau
+keputusan CTO mengubah gerbang ke mode `info` setelah run bersih pertama. Tes:
+`apps/api/src/test/preflight-rilis1-26ro5.test.ts`.
+
 ### Reset refund pra-switch DOIT (legend-d21p)
 
 A one-off repair before `DOIT_REFUNDS_ENABLED` is turned on for the first time.

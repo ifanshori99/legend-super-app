@@ -593,10 +593,16 @@ describe("legend-weuo2 weuo2-F a declined system refund leaves a pending sibling
     expect(liveSum(rows)).toBe(held);
     expect(fake.calls).toHaveLength(1);
 
-    // One alarm and one audit row for the declined refund only.
+    // One audit row for the declined refund only. legend-w2td5 / 1045 (same
+    // intended change as the test above): the declined refund was already
+    // sent, so the books keep one open own_refund_failed_unverified hold for
+    // its amount and finance gets the follow-up alarm PLUS one hold alert.
     expect(await auditRows(first.id)).toHaveLength(1);
     expect(await auditRows(siblingId)).toHaveLength(0);
-    expect((await supervisorNotifications()).length).toBe(alarmsBefore + 1);
+    const holds = await openOwnFailedHolds(paid.intentId);
+    expect(holds, "one open own_refund_failed_unverified hold").toHaveLength(1);
+    expect(holds[0]!.amount_idr).toBe(String(first.amount));
+    expect((await supervisorNotifications()).length).toBe(alarmsBefore + 2);
     // The list owes the guest only the rest: paid less the live sibling.
     const items = await followUpOf(paid.intentId);
     expect(items).toHaveLength(1);
