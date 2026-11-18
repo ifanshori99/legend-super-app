@@ -74,6 +74,11 @@ Ditulis oleh merge train batch64g. Sumber: pesan CTO G6evw, G6w9t, G4j04. Tip SH
 - `ghostex/5ce165c2` 2f62ed4be: jangan diambil; port UI/delivery sudah batch79, sisa zona/waitlist tetap legend-d6d1.
 - Rujukan cabang lain pada “Urutan prioritas” sudah menjadi ancestor m1 saat audit batch78; periksa ancestry sebelum mengantre ulang.
 - `legend-whd5c` tetap terbuka untuk adapter kredit tamu (`test.fixme`).
+- `ghostex/b49350e5` 69461a987 SIAP batch89 (K uang 1037, SO 1036 kas supplier: legend-j6v6v supplier selalu 2 orang, 3bkvl kas keluar langsung butuh rantai disetujui + anti-split tingkat pada total hari, 3k9qg kas kecil memegang kunci entitas kas dan mengurangi kredit 1102 tertunda, 6ipij top-up kas kecil membuka rantai; tanpa migrasi; 16 komit, base 8f544e5ea). Menyentuh area yang sama dengan 998 (sudah di m1): cek konflik approval/kas.
+- `ghostex/8b2dc0b1` e589b3476 SIAP batch89 (K akses 1043, legend-iq0jz Q29: allowlist layar tablet bersama, default tolak; tanpa migrasi; base 8f544e5ea). Bertetangga dengan 1012 (batch88): cek POS_PATH dan daftar router.
+- `ghostex/d8e5216b` 23a0084bb SIAP batch89 (K uang 1042 F2, legend-ggv6d: refund manual ditolak pada penjualan edge yang di-ingest; tanpa migrasi; architect lolos).
+- `origin/1038-payout-recon-clearance` d62aaa8fa SIAP batch89 (K uang+migrasi 1052/1038: recon payout membaca bukti dan mencatat pengamatan di bawah satu kunci per operasi, deteksi attestation resolve hilang; migrasi kerja 0663 `0663_payout_1038_evidence_observations`; architect xhigh lolos). Cabang tanpa awalan `ghostex/`.
+- `ghostex/fc88d48f` 732ac6e6f SIAP batch89 (K uang+migrasi 1046: jual tiket fasilitas di POS pada API nyata + 936 pembayaran sisa kasir (voucher, poin, EDC ditolak, tiket fasilitas); migrasi kerja 0670-0671 (`0670_pos_points_tender`, `0671_facility_pos_tickets`); architect K lolos; tutup legend-l65nz saat landing). Bersentuhan dengan 985/987 (batch88).
 
 ## Aturan tetap
 
@@ -176,7 +181,8 @@ Induk lebih dulu. Migrasi dinomori ulang dari ujung m1 saat batch disusun.
 ## Rencana batch88+ (batch87 mendarat 18 Nov; maks 7 cabang, urutan rantai dasar dulu; TAHAN dan digabung dikeluarkan)
 
 - Batch88: `1005-payout-tarik-klaim-return` (migrasi kerja 0615-0616), `987-fasilitas-4-kartu` (0570), `985-charge-refund-manual-void` (0565-0566, jangan tabrakan 0450-0451), `1031-qrsaleinuseofintent-net-refund`, `1029-followup-dana-parkir-tampil`, `1014-runbook-pensiun-kunci-reseal`, `1012-guard-router-perangkat-bersama`.
-- Batch89 (e2e mock penuh, tiap batch ketiga): `1016-refund-kelebihan-provider`, `1013-jurnal-breakfast-net-refund` (cek konflik providerRefundedForeignIdrSql dengan 1016), `backfill-policy-supplier-tingkat-dasar` (0638), `ui-finance-recon-clearance` (routeTree.gen.ts regenerate), `847b580a`, `993-fasilitas-lanjutan` (0595), `34755844`.
-- Batch90: `1020-so-recon-ronde-2-fix` (0636-0637), `so996-f2-f3-charge-void-split`, `1018-kds-ws-subprotocol-keep-alive`, `4b06e171`, `6acce68c`, `1026-kelola-perangkat-acting-staff`, `1027-guard-http-perangkat-bersama`.
+- Batch89 (e2e mock penuh, tiap batch ketiga; keputusan susun CTO 18 Nov): `1016-refund-kelebihan-provider`, `1013-jurnal-breakfast-net-refund` (cek konflik providerRefundedForeignIdrSql dengan 1016), `ghostex/d8e5216b` (1042 F2), `ghostex/8b2dc0b1` (1043), `ghostex/b49350e5` (1037), `1038-payout-recon-clearance` (0663), `ghostex/fc88d48f` (1046, 0670-0671). Nomor migrasi mulai setelah ujung batch88 (0476): 0477 dst.
+- Batch90: `backfill-policy-supplier-tingkat-dasar` (0638), `ui-finance-recon-clearance` (routeTree.gen.ts regenerate), `847b580a`, `993-fasilitas-lanjutan` (0595), `34755844`, `1020-so-recon-ronde-2-fix` (0636-0637, sesudah 1016), `so996-f2-f3-charge-void-split`.
+- Batch91: `1018-kds-ws-subprotocol-keep-alive`, `4b06e171`, `6acce68c`, `1026-kelola-perangkat-acting-staff`, `1027-guard-http-perangkat-bersama` (plus sisa yang SIAP).
 - Menunggu: `1033-kredit-dp-pool-net-bersama` (TAHAN, SO1034), cabang 1035 (membawa 1025; belum ada di antrean).
 - Urutan rantai dicek: tiap cabang sesudah dasarnya (1013/1016 sesudah 1009; 1020 sesudah 1016; 1018 sesudah 34755844 sesudah 1012 sesudah f12296d2; 4b06e171 sesudah 1018; 1026/1027 sesudah 6acce68c; 847b580a sesudah 985; 993 sesudah 987).
