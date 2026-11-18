@@ -1053,7 +1053,20 @@ describe("1131 no over-refusal: a discounted order lets every line's ORD-09 thro
       0,
     );
     expect(teh!.filedIdr, "teh refund filed (not refused)").toBeGreaterThan(0);
+    // Exact: a failed kopi withdraws the promo, so it refunds 8.085 (order-recovery-refund-promo H3).
+    expect(kopi!.filedIdr, "kopi refund is its own paid share").toBe(8_085);
     expect(kopi!.filedIdr + teh!.filedIdr).toBeLessThanOrEqual(PROMO_PAID);
+  });
+
+  it("promo order: the ORD-09 of the kopi (8.085), then of the roti (20.790) are both filed in full, never cut", async () => {
+    const paid = await p.paidPromoOrder();
+    const kopi = await ord09Attempt(paid.kopiLine, KOPI_PRICE);
+    const roti = await ord09Attempt(paid.rotiLine, ROTI_PRICE);
+    expect(kopi?.resolveStatus, "kopi resolved").toBe(200);
+    expect(roti?.resolveStatus, "roti resolved").toBe(200);
+    expect(kopi!.filedIdr).toBe(8_085);
+    expect(roti!.filedIdr).toBe(ROTI_PAID);
+    expect(kopi!.filedIdr + roti!.filedIdr).toBeLessThanOrEqual(PROMO_PAID);
   });
 });
 
