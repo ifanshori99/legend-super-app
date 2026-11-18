@@ -51,11 +51,13 @@ import {
   posOrderVoids,
   posOrders,
 } from "../db/schema/pos-order.ts";
+import { orderIssues } from "../db/schema/kds-issues.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { logger } from "../lib/logger.ts";
 import type { EdgeTx } from "../services/edge-queue.service.ts";
 import { deliverAutoJournalEvent } from "../services/accounting-auto-journal-consumer.ts";
 import { sourceIdToDb } from "../services/inventory.service.ts";
+import { liveRouteManualRefundWhere } from "../services/order-issue-route-refund.ts";
 import { lockLoyaltyJournalEntity } from "../services/accounting-auto-journal-amounts.ts";
 import { deliverLoyaltyEarnEvent } from "../services/loyalty-earn-consumer.ts";
 import { recordTaxSnapshotsFromPayload } from "../services/tax.service.ts";
@@ -726,7 +728,10 @@ async function applyVoided(
   const [order] = await tx
     .select({ totalIdr: orders.totalIdr, status: orders.status })
     .from(orders)
-    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, payload.orderId)));
+    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, payload.orderId)))
+    // legend-1042: the cloud refund/void and the manual refund serialise on this
+    // row; the advisory lock above alone does not reach them.
+    .for("update");
   const [pos] = await tx
     .select({ cashierId: posOrders.cashierId })
     .from(posOrders)
@@ -758,6 +763,19 @@ async function applyVoided(
       ),
     );
   if (refund) throw new IngestRefusal("refund_exists");
+  // legend-1042: one order, one money-back lane. A live manual per-item refund
+  // (approval route) already gave the guest money back; a void would pay twice.
+  const [manualRefund] = await tx
+    .select({ id: orderIssues.id })
+    .from(orderIssues)
+    .where(
+      and(
+        liveRouteManualRefundWhere(tenantId),
+        eq(orderIssues.orderId, payload.orderId),
+      ),
+    )
+    .limit(1);
+  if (manualRefund) throw new IngestRefusal("manual_refund_exists");
 
   const total = Number(order.totalIdr);
   if (total <= 0 || Number(payload.amountIdr) !== total)
