@@ -25,15 +25,55 @@
 -- 4. app.payout_recon_clear_approve (0464 body): refused while the last
 --    observation of the operation of the flag is an error (PAYOUT-91), so a
 --    clearance proposed during an error cannot release the slip either.
+-- 5. Who may record 'ok' (CTO decision F1, bead legend-qh11l). An 'ok' observation
+--    is what releases a slip again after an error, so it is limited to the
+--    reconciliation path: the 0663 body becomes app.payout_recon_evidence_observe_internal
+--    (owner legend_payout, no grant to legend_app or PUBLIC);
+--    app.payout_recon_evidence_observe (legend_app, same signature) refuses 'ok'
+--    (PAYOUT-92) and passes missing, mismatch and error, which only hold a slip;
+--    app.payout_recon_evidence_observe_ok(tenant, operation) records 'ok' and may
+--    be run by the NOLOGIN role legend_payout_recon only. legend_app is a member of
+--    that role WITH INHERIT FALSE, SET TRUE: it does not inherit EXECUTE, only
+--    SET ROLE legend_payout_recon reaches the function (pattern of
+--    legend_payout_grantor, drizzle/0419 and src/db/grantor.ts). The tenant check
+--    of 0663 (PAYOUT-68) holds on both paths. The reconciliation service calls it
+--    through recordReadOk (payroll-payout-recon.service.ts). Remaining limit: code
+--    that runs free SQL on the application login can still SET ROLE; a full
+--    separation needs its own login like the grantor (bead legend-qh11l).
 -- No amount, item, payslip or clearance row is touched. An error holds a slip back.
 -- Unlike 0663 ("the observe function can only hold a slip, never release one"), an
 -- 'ok' observation after an error now releases the slip again, but only back to the
 -- state two people already approved (the old fingerprint matches its approved
--- clearance again); it never releases a slip no clearance covers. Limited impact,
--- risk accepted (bead legend-qh11l). Ownership and ACL as 0663 and 0464 (CREATE OR
--- REPLACE keeps them).
+-- clearance again); it never releases a slip no clearance covers, and only the
+-- reconciliation role can record it. Ownership and ACL as 0663 and 0464 (CREATE OR
+-- REPLACE keeps them) except the new functions, whose ACL is set below.
 ALTER TABLE "payroll_payout_recon_evidence_observations" DROP CONSTRAINT "payroll_payout_recon_evidence_observations_state_check";--> statement-breakpoint
 ALTER TABLE "payroll_payout_recon_evidence_observations" ADD CONSTRAINT "payroll_payout_recon_evidence_observations_state_check" CHECK ("payroll_payout_recon_evidence_observations"."state" IN ('missing', 'mismatch', 'ok') OR ("payroll_payout_recon_evidence_observations"."state" = 'error' AND "payroll_payout_recon_evidence_observations"."observed_sha256" IS NULL));--> statement-breakpoint
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'legend_payout_recon') THEN
+    CREATE ROLE legend_payout_recon NOLOGIN NOSUPERUSER NOBYPASSRLS NOINHERIT NOCREATEDB NOCREATEROLE NOREPLICATION;
+  ELSIF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'legend_payout_recon' AND
+                (rolsuper OR rolbypassrls OR rolcreatedb OR rolcreaterole OR rolreplication
+                 OR rolcanlogin OR rolinherit)) THEN
+    RAISE EXCEPTION 'legend_payout_recon exists with unsafe privileges';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM pg_auth_members m
+     WHERE m.roleid = 'legend_payout_recon'::regrole AND m.member = 'legend_app'::regrole) THEN
+    IF EXISTS (
+      SELECT 1 FROM pg_auth_members m
+       WHERE m.roleid = 'legend_payout_recon'::regrole AND m.member = 'legend_app'::regrole
+         AND (m.inherit_option OR m.admin_option OR NOT m.set_option)) THEN
+      RAISE EXCEPTION 'legend_app is a member of legend_payout_recon with INHERIT, ADMIN or without SET; it must be INHERIT FALSE, SET TRUE, no ADMIN';
+    END IF;
+  ELSE
+    GRANT legend_payout_recon TO legend_app WITH INHERIT FALSE, SET TRUE;
+  END IF;
+END $$;
+--> statement-breakpoint
+GRANT USAGE ON SCHEMA app TO legend_payout_recon;
+--> statement-breakpoint
 GRANT legend_payout TO CURRENT_USER WITH INHERIT FALSE, SET TRUE;
 --> statement-breakpoint
 GRANT CREATE ON SCHEMA app TO legend_payout;
@@ -43,9 +83,9 @@ SET ROLE legend_payout;
 
 -- ---------------------------------------------------------------------------
 -- Record what the reconciliation observed of the proof file of an operation
--- (0663 body, plus the state 'error').
+-- (0663 body, plus the state 'error'). Internal: no caller but the two wrappers.
 -- ---------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION app.payout_recon_evidence_observe(
+CREATE OR REPLACE FUNCTION app.payout_recon_evidence_observe_internal(
   p_tenant uuid, p_operation uuid, p_state text, p_observed_sha text
 ) RETURNS void
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
@@ -103,6 +143,45 @@ BEGIN
   VALUES (p_tenant, p_operation, p_state, p_observed_sha, v_episode,
           pg_catalog.clock_timestamp());
 END $$;
+--> statement-breakpoint
+
+REVOKE ALL ON FUNCTION app.payout_recon_evidence_observe_internal(uuid, uuid, text, text) FROM PUBLIC, legend_app, legend_payout_recon;
+--> statement-breakpoint
+
+-- ---------------------------------------------------------------------------
+-- The caller's door: holds a slip (missing, mismatch, error), never releases one.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION app.payout_recon_evidence_observe(
+  p_tenant uuid, p_operation uuid, p_state text, p_observed_sha text
+) RETURNS void
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+BEGIN
+  IF p_state IS NOT DISTINCT FROM 'ok' THEN
+    RAISE EXCEPTION 'PAYOUT-92: an ok observation is recorded by the reconciliation role only'
+      USING ERRCODE = '42501';
+  END IF;
+  PERFORM app.payout_recon_evidence_observe_internal(p_tenant, p_operation, p_state, p_observed_sha);
+END $$;
+--> statement-breakpoint
+REVOKE ALL ON FUNCTION app.payout_recon_evidence_observe(uuid, uuid, text, text) FROM PUBLIC;
+--> statement-breakpoint
+GRANT EXECUTE ON FUNCTION app.payout_recon_evidence_observe(uuid, uuid, text, text) TO legend_app;
+--> statement-breakpoint
+
+-- ---------------------------------------------------------------------------
+-- The reconciliation's door: records a successful read of the proof file. Only
+-- legend_payout_recon (SET ROLE from legend_app) may run it.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION app.payout_recon_evidence_observe_ok(p_tenant uuid, p_operation uuid)
+RETURNS void
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+BEGIN
+  PERFORM app.payout_recon_evidence_observe_internal(p_tenant, p_operation, 'ok', NULL);
+END $$;
+--> statement-breakpoint
+REVOKE ALL ON FUNCTION app.payout_recon_evidence_observe_ok(uuid, uuid) FROM PUBLIC, legend_app;
+--> statement-breakpoint
+GRANT EXECUTE ON FUNCTION app.payout_recon_evidence_observe_ok(uuid, uuid) TO legend_payout_recon;
 --> statement-breakpoint
 
 -- ---------------------------------------------------------------------------

@@ -1782,6 +1782,34 @@ function evaluateGrants(
   return flags;
 }
 
+/**
+ * Records a successful read of the proof file of an operation (1057, legend-qh11l,
+ * migration 0674). An 'ok' observation can release a slip again after a read
+ * error, so only the role `legend_payout_recon` may record it
+ * (`app.payout_recon_evidence_observe_ok`); `app.payout_recon_evidence_observe`
+ * refuses 'ok'. The role is taken with `SET LOCAL ROLE` for this one call and the
+ * previous role is restored right after; a failure aborts the transaction, which
+ * ends the role with it.
+ */
+export async function recordReadOk(
+  tx: Tx,
+  tenantId: string,
+  operationId: string,
+): Promise<void> {
+  const previous = text(
+    rowsOf(
+      await tx.execute(sql`SELECT pg_catalog.quote_ident(current_user) AS r`),
+    )[0]?.r,
+  );
+  if (previous === null)
+    throw new Error("Cannot read the current database role");
+  await tx.execute(sql`SET LOCAL ROLE legend_payout_recon`);
+  await tx.execute(
+    sql`SELECT app.payout_recon_evidence_observe_ok(${tenantId}::uuid, ${operationId}::uuid)`,
+  );
+  await tx.execute(sql.raw(`SET LOCAL ROLE ${previous}`));
+}
+
 export type PayoutReconOptions = {
   /** Object storage for the proof files; without it the file check is skipped. */
   storage: ObjectStorage | null | undefined;
@@ -1951,9 +1979,11 @@ export async function reconcileTrustedPayouts(
         }
         fileOf.set(op.operationId, state);
         if (state === "error") unreadable += 1;
-        await tx.execute(
-          sql`SELECT app.payout_recon_evidence_observe(${tenantId}::uuid, ${op.operationId}::uuid, ${state}::text, ${state === "mismatch" ? readSha : null}::text)`,
-        );
+        if (state === "ok") await recordReadOk(tx, tenantId, op.operationId);
+        else
+          await tx.execute(
+            sql`SELECT app.payout_recon_evidence_observe(${tenantId}::uuid, ${op.operationId}::uuid, ${state}::text, ${state === "mismatch" ? readSha : null}::text)`,
+          );
       });
     }
   }

@@ -22,6 +22,7 @@
 //   and the control cases show the same batch accepted when the slip is free.
 // - "Held" = app.payout_payslip_held_by_recon plus the flag list `reopened`.
 import { createHash, randomUUID } from "node:crypto";
+import { sql } from "drizzle-orm";
 import { Pool } from "pg";
 import {
   afterAll,
@@ -36,6 +37,7 @@ import { CoreError } from "@starter/shared/core";
 import { totpCode, totpStep } from "../lib/totp.ts";
 import { createDisbursementBatch } from "../services/payroll-payout.service.ts";
 import { returnManualItems } from "../services/payroll-payout-manual.service.ts";
+import { recordReadOk } from "../services/payroll-payout-recon.service.ts";
 import { originHeader } from "./helpers.ts";
 import {
   bank,
@@ -256,6 +258,42 @@ const observeOwn = (operationId: string, state: string, sha: string | null) =>
     `SELECT app.payout_recon_evidence_observe($1::uuid, $2::uuid, $3::text, $4::text)`,
     [W.tenantId, operationId, state, sha],
   );
+/**
+ * An 'ok' read as the recon job records it: the exported `recordReadOk` helper
+ * (SET LOCAL ROLE legend_payout_recon inside the tenant transaction), real COMMIT.
+ * 'ok' may come only from this path (legend-qh11l F1); `observeOwn(.., "ok", ..)`
+ * is refused. `tenantId` defaults to this tenant.
+ */
+const readOk = (operationId: string, tenantId: string = W.tenantId) =>
+  W.inTx((tx) => recordReadOk(tx, tenantId, operationId));
+/** The same, as raw SQL: legend_app switches to legend_payout_recon (what the helper does), real COMMIT. */
+async function reconRoleCall(
+  sqlText: string,
+  params: unknown[] = [],
+  tenantId: string = W.tenantId,
+): Promise<Outcome> {
+  const client = await W.owner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SET LOCAL ROLE legend_app");
+    await client.query(
+      "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+      [tenantId],
+    );
+    try {
+      await client.query("SET LOCAL ROLE legend_payout_recon");
+      const result = await client.query(sqlText, params);
+      await client.query("COMMIT");
+      return { code: undefined, message: "", rows: result.rows as Row[] };
+    } catch (error) {
+      const e = error as { code?: string; message?: string };
+      await client.query("ROLLBACK").catch(() => undefined);
+      return { code: e.code ?? "unknown", message: e.message ?? "", rows: [] };
+    }
+  } finally {
+    client.release();
+  }
+}
 const FLAG_REASON = "recon test: forged transition";
 /** A non-evidence flag (the night run's flag function) on an operation nobody observed. */
 async function flagNonEvidence(itemId: string) {
@@ -1019,11 +1057,10 @@ describe("1057 card D: an unreadable proof and the clearance flow", () => {
       "a read error holds even a non-evidence clearance",
     ).toBe(true);
 
-    const ok = await observeOwn(flag.operationId, "ok", null);
-    expect(ok.code, ok.message).toBeUndefined();
+    await readOk(flag.operationId);
     expect(
       await heldBySql(flag.payslipId),
-      "the next ok frees the slip by the old clearance",
+      "the next ok (recon path) frees the slip by the old clearance",
     ).toBe(false);
     expect(await clearanceIds(), "no new clearance").toEqual(clearancesBefore);
   });
@@ -1237,6 +1274,15 @@ describe("1057 card A: another tenant is refused", () => {
     // Under the other tenant's context, naming this tenant or itself.
     for (const subject of [W.tenantId, other])
       await observe(other, subject, flagged.operationId, "ok", null);
+    // The recon path ('ok' only comes from here): this tenant's scope naming the other tenant, and
+    // the other tenant's own scope naming either tenant. Refused or without effect, never a release.
+    await readOk(flagged.operationId, other).catch(() => undefined);
+    for (const subject of [W.tenantId, other])
+      await reconRoleCall(
+        `SELECT app.payout_recon_evidence_observe_ok($1::uuid, $2::uuid)`,
+        [subject, flagged.operationId],
+        other,
+      );
 
     expect(
       await heldBySql(flagged.payslipId),
@@ -1323,6 +1369,13 @@ describe("1057 card A: another tenant is refused", () => {
     const other = await foreignTenant();
     for (const subject of [W.tenantId, other])
       await observe(other, subject, flagged.operationId, "ok", null);
+    await readOk(flagged.operationId, other).catch(() => undefined);
+    for (const subject of [W.tenantId, other])
+      await reconRoleCall(
+        `SELECT app.payout_recon_evidence_observe_ok($1::uuid, $2::uuid)`,
+        [subject, flagged.operationId],
+        other,
+      );
     expect(
       await heldBySql(flagged.payslipId),
       "a stranger's ok does not release the hold",
@@ -1379,5 +1432,209 @@ describe("1057 card A: another tenant is refused", () => {
       await heldBySql(flagged.payslipId),
       "this tenant's own hold is unchanged",
     ).toBe(true);
+  });
+});
+
+// =========================================================================
+// 1e: legend-qh11l F1: 'ok' (the only state that can free a slip) comes only
+// from the recon role; every other caller can only hold
+// =========================================================================
+//
+// Assumptions: a refused call is any SQL error (the contract names a clear
+// RAISE for observe('ok') and "permission denied", 42501, for observe_ok without
+// SET ROLE); no exact SQLSTATE is asserted for the RAISE. "Refused" always also
+// means: no observation row written, hold unchanged.
+
+describe("1057 card D2: only the recon role may record an ok read", () => {
+  async function foreignTenant() {
+    const id = randomUUID();
+    foreignTenants.push(id);
+    await W.asTenant(
+      (c) =>
+        c.query(
+          `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
+           SELECT $1, $2, 'Payout 1057 tenant C', plan, status, deployment_mode, feature_flags, limits, created_by
+             FROM tenants WHERE id = $3`,
+          [id, `payout-1057-${id.slice(0, 8)}`, W.tenantId],
+        ),
+      true,
+    );
+    return id;
+  }
+  const OK_SQL = `SELECT app.payout_recon_evidence_observe_ok($1::uuid, $2::uuid)`;
+  /** A slip cleared for mismatch A, then held by an unreadable proof. */
+  async function heldByError() {
+    const w = await correctedWorld();
+    const flagged = await flaggedByEvidence(
+      w,
+      BYTES_A,
+      "evidence_hash_mismatch",
+    );
+    await clearAll(flagged);
+    setProof(w.key, "invalid");
+    await runRecon().catch(() => undefined);
+    expect(await heldBySql(flagged.payslipId), "premise: held by error").toBe(
+      true,
+    );
+    return { w, flagged };
+  }
+
+  it("[1057-observe-ok-by-app-role-refused] an ordinary legend_app caller of observe(..., 'ok') is refused; a slip held by a read error stays held and no observation is written", async () => {
+    const { flagged } = await heldByError();
+    const rowsBefore = (await observationsOf(flagged.operationId)).length;
+    const clearancesBefore = await clearanceIds();
+
+    const refused = await observeOwn(flagged.operationId, "ok", null);
+    expect(
+      refused.code,
+      "premise: observe('ok') raises for an ordinary caller",
+    ).toBeDefined();
+    expect(
+      await heldBySql(flagged.payslipId),
+      "the slip stays held after the refused ok",
+    ).toBe(true);
+    expect(
+      (await observationsOf(flagged.operationId)).length,
+      "no observation was written",
+    ).toBe(rowsBefore);
+    expect(await clearanceIds(), "no clearance changed").toEqual(
+      clearancesBefore,
+    );
+  });
+
+  it("[1057-observe-ok-by-app-role-uncleared-mismatch-stays-held] observe(..., 'ok') by an ordinary caller does not free a slip held by an uncleared mismatch either", async () => {
+    const w = await correctedWorld();
+    const flagged = await flaggedByEvidence(
+      w,
+      BYTES_A,
+      "evidence_hash_mismatch",
+    );
+    const rowsBefore = (await observationsOf(flagged.operationId)).length;
+    const refused = await observeOwn(flagged.operationId, "ok", null);
+    expect(refused.code, "observe('ok') raises").toBeDefined();
+    expect(await heldBySql(flagged.payslipId), "still held").toBe(true);
+    expect((await observationsOf(flagged.operationId)).length).toBe(rowsBefore);
+  });
+
+  it("[1057-observe-ok-direct-without-set-role-denied] legend_app calling observe_ok directly, without SET ROLE legend_payout_recon, gets permission denied; the hold stays", async () => {
+    const { flagged } = await heldByError();
+    const rowsBefore = (await observationsOf(flagged.operationId)).length;
+
+    const denied = await appCall(OK_SQL, [W.tenantId, flagged.operationId]);
+    expect(denied.code, denied.message).toBe("42501");
+    expect(denied.message).toMatch(/permission denied/i);
+    expect(await heldBySql(flagged.payslipId), "still held").toBe(true);
+    expect((await observationsOf(flagged.operationId)).length).toBe(rowsBefore);
+  });
+
+  it("[1057-observe-ok-internal-function-denied] the internal observe function is not callable by legend_app at all", async () => {
+    const { flagged } = await heldByError();
+    const denied = await appCall(
+      `SELECT app.payout_recon_evidence_observe_internal($1::uuid, $2::uuid, 'ok', NULL)`,
+      [W.tenantId, flagged.operationId],
+    );
+    expect(denied.code, denied.message).toBe("42501");
+    expect(await heldBySql(flagged.payslipId), "still held").toBe(true);
+  });
+
+  for (const [state, sha] of [
+    ["missing", null],
+    ["mismatch", sha256("1057 some other bytes")],
+    ["error", null],
+  ] as const)
+    it(`[1057-observe-${state}-by-app-role-holds] an ordinary caller can still report '${state}': a cleared slip is held at once, and no clearance is touched`, async () => {
+      const w = await correctedWorld();
+      const flagged = await flaggedByEvidence(
+        w,
+        BYTES_A,
+        "evidence_hash_mismatch",
+      );
+      await clearAll(flagged);
+      const clearancesBefore = await clearanceIds();
+      const rowsBefore = (await observationsOf(flagged.operationId)).length;
+
+      const res = await observeOwn(flagged.operationId, state, sha);
+      expect(res.code, res.message).toBeUndefined();
+      expect(
+        await heldBySql(flagged.payslipId),
+        `'${state}' holds the cleared slip`,
+      ).toBe(true);
+      expect(
+        (await observationsOf(flagged.operationId)).length,
+        "the observation was recorded",
+      ).toBe(rowsBefore + 1);
+      expect(await clearanceIds(), "no clearance changed").toEqual(
+        clearancesBefore,
+      );
+    });
+
+  it("[1057-recon-path-frees-again-after-error] the recon path (recordReadOk) frees the slip again with the OLD clearance after an error; no new clearance; the transaction keeps its own role", async () => {
+    const { flagged } = await heldByError();
+    const clearancesBefore = await clearanceIds();
+
+    // The proof reads fine again: the recon records an ok read.
+    const roles = await W.inTx(async (tx) => {
+      const read = async () =>
+        (
+          (await tx.execute(sql`SELECT current_user AS who`)) as unknown as {
+            rows: { who: string }[];
+          }
+        ).rows[0]!.who;
+      const before = await read();
+      await recordReadOk(tx, W.tenantId, flagged.operationId);
+      return { before, after: await read() };
+    });
+    expect(
+      roles.after,
+      "recordReadOk leaves the transaction's role as it found it",
+    ).toBe(roles.before);
+    expect(roles.after).not.toBe("legend_payout_recon");
+
+    expect(
+      await heldBySql(flagged.payslipId),
+      "the ok read through the recon role lifts the error hold",
+    ).toBe(false);
+    expect(await clearanceIds(), "recovery used the old clearance").toEqual(
+      clearancesBefore,
+    );
+  });
+
+  it("[1057-recon-role-raw-observe-ok-frees-again] the SET ROLE legend_payout_recon path as raw SQL frees the slip after an error", async () => {
+    const { flagged } = await heldByError();
+    const res = await reconRoleCall(OK_SQL, [W.tenantId, flagged.operationId]);
+    expect(res.code, res.message).toBeUndefined();
+    expect(await heldBySql(flagged.payslipId), "freed again").toBe(false);
+  });
+
+  it("[1057-observe-other-tenant-refused] another tenant is refused by observe and by observe_ok, naming either tenant: no hold, no release, no observation", async () => {
+    const { flagged } = await heldByError();
+    const other = await foreignTenant();
+    const rowsBefore = (await observationsOf(flagged.operationId)).length;
+
+    for (const subject of [W.tenantId, other]) {
+      const missing = await appCall(
+        `SELECT app.payout_recon_evidence_observe($1::uuid, $2::uuid, 'missing', NULL)`,
+        [subject, flagged.operationId],
+        other,
+      );
+      const ok = await reconRoleCall(
+        OK_SQL,
+        [subject, flagged.operationId],
+        other,
+      );
+      // Either refused, or accepted for the other tenant's own (empty) rows: never this tenant's.
+      if (subject === W.tenantId) {
+        expect(missing.code, "observe naming a foreign tenant").toBeDefined();
+        expect(ok.code, "observe_ok naming a foreign tenant").toBeDefined();
+      }
+    }
+    expect(
+      await heldBySql(flagged.payslipId),
+      "the other tenant did not release the slip",
+    ).toBe(true);
+    expect(
+      (await observationsOf(flagged.operationId)).length,
+      "no observation was written for this tenant's operation",
+    ).toBe(rowsBefore);
   });
 });
