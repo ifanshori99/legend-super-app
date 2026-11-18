@@ -20,6 +20,7 @@ import { randomUUID } from "node:crypto";
 import type { Express } from "express";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { deviceSchema } from "@starter/shared/edge";
+import { ACTING_STAFF_ERROR_CODES } from "@starter/shared/pos/acting-staff";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
 import { signDeviceToken } from "../lib/device-token.ts";
@@ -365,7 +366,6 @@ describe("PATCH /api/devices/:deviceId/shared-mode", () => {
 // manageable from the marked session; the error code is not fixed, only the
 // status 403 and the message text.
 describe("shared mode cannot be switched off from the device itself", () => {
-  const MESSAGE = "Matikan mode perangkat bersama dari perangkat lain.";
   let powerRole: string;
 
   beforeAll(async () => {
@@ -434,10 +434,12 @@ describe("shared mode cannot be switched off from the device itself", () => {
     return rows[0]!.status;
   }
 
+  // Since 1012/1026: the whole device-management router refuses a shared-device
+  // session or device token header before the handler runs.
   function expectSelfRefusal(response: { status: number; body: unknown }) {
-    const body = response.body as { error?: { message?: string } };
+    const body = response.body as { error?: { code?: string } };
     expect(response.status, JSON.stringify(response.body)).toBe(403);
-    expect(body.error?.message ?? "").toContain(MESSAGE);
+    expect(body.error?.code).toBe(ACTING_STAFF_ERROR_CODES.NOT_ALLOWED);
   }
 
   it("a session marked with the device cannot switch its shared mode off: 403, flag and audit unchanged", async () => {
@@ -475,25 +477,28 @@ describe("shared mode cannot be switched off from the device itself", () => {
     expect(await auditRows(id, DISABLED)).toHaveLength(1);
   });
 
-  it("the marked session may still switch shared mode ON, and manage other devices", async () => {
+  it("the marked session cannot manage any device: switching shared mode on or off is refused", async () => {
     const id = await flaggedDevice();
     const marked = await powerMember("Sesi Bertanda Hidupkan");
     await mark(marked, id);
 
     const enableOther = await addDevice(tenant.tenantId, outletA);
     const on = await patch(marked, enableOther, { sharedMode: true });
-    expect(on.status, JSON.stringify(on.body)).toBe(200);
-    expect(await flagOf(enableOther)).toBe(true);
+    expectSelfRefusal(on);
+    expect(await flagOf(enableOther)).toBe(false);
+    expect(await auditRows(enableOther, ENABLED)).toHaveLength(0);
 
-    // Same device, enabling again (already on) is allowed and idempotent.
+    // Its own device, enabling again (already on): still refused, stays on.
     const again = await patch(marked, id, { sharedMode: true });
-    expect(again.status, JSON.stringify(again.body)).toBe(200);
+    expectSelfRefusal(again);
     expect(await flagOf(id)).toBe(true);
 
-    // A different flagged device can be switched off from this session.
-    const off = await patch(marked, enableOther, { sharedMode: false });
-    expect(off.status, JSON.stringify(off.body)).toBe(200);
-    expect(await flagOf(enableOther)).toBe(false);
+    // A different flagged device cannot be switched off from this session.
+    const flaggedOther = await flaggedDevice();
+    const off = await patch(marked, flaggedOther, { sharedMode: false });
+    expectSelfRefusal(off);
+    expect(await flagOf(flaggedOther)).toBe(true);
+    expect(await auditRows(flaggedOther, DISABLED)).toHaveLength(0);
   });
 
   it("a session marked with the device cannot revoke it: 403 and the device stays active", async () => {
@@ -523,14 +528,14 @@ describe("shared mode cannot be switched off from the device itself", () => {
     expect(await statusOf(id)).toBe("revoked");
   });
 
-  it("the marked session can revoke a different device", async () => {
+  it("the marked session cannot revoke a different device either", async () => {
     const id = await flaggedDevice();
     const marked = await powerMember("Sesi Bertanda Cabut Beda");
     await mark(marked, id);
     const otherDevice = await addDevice(tenant.tenantId, outletA);
     const response = await revoke(marked, otherDevice);
-    expect(response.status, JSON.stringify(response.body)).toBe(200);
-    expect(await statusOf(otherDevice)).toBe("revoked");
+    expectSelfRefusal(response);
+    expect(await statusOf(otherDevice)).toBe("active");
     expect(await statusOf(id)).toBe("active");
   });
 });
