@@ -29,6 +29,7 @@ import {
   type DoorCheckAccessTicketBody,
 } from "@starter/shared/facility";
 import { db } from "../db/index.ts";
+import { devices } from "../db/schema/device.ts";
 import { accessTickets } from "../db/schema/facility.ts";
 import {
   accessTicketCredentials,
@@ -42,18 +43,23 @@ import { auditFacility, toTicket } from "./facility-shared.ts";
 const sha256 = (value: string) =>
   createHash("sha256").update(value, "utf8").digest("hex");
 
-// Refusals AFTER the PIN matched the stored digest (facility, window, status,
-// revoke): the guest had the right PIN, so the PIN limit must not count them.
-// The reply is the same uniform 403; only this module can tell them apart.
+// Refusals that are NOT a wrong PIN: AFTER the PIN matched the stored digest
+// (facility, window, status, revoke) the guest had the right PIN, and a
+// training or unknown device (R3-02) says nothing about the PIN at all, so the
+// PIN limit must not count either. The reply is the same uniform 403; only this
+// module can tell them apart.
 const afterPinMatch = new WeakSet<HttpError>();
 
-function invalidCredential(options: { pinMatched?: boolean } = {}): HttpError {
+function invalidCredential(
+  options: { pinMatched?: boolean; deviceRefused?: boolean } = {},
+): HttpError {
   const error = new HttpError(
     403,
     "DOOR_CREDENTIAL_INVALID",
     "Kredensial pintu tidak valid.",
   );
-  if (options.pinMatched === true) afterPinMatch.add(error);
+  if (options.pinMatched === true || options.deviceRefused === true)
+    afterPinMatch.add(error);
   return error;
 }
 
@@ -150,9 +156,10 @@ export async function doorCheckTicket(
   context: ScopedTenantContext,
   actorUserId: string,
   input: DoorCheckAccessTicketBody,
+  deviceId: string | null = null,
 ): Promise<{ ticket: AccessTicket }> {
   if (!("ticketId" in input))
-    return checkCredential(context, actorUserId, input);
+    return checkCredential(context, actorUserId, input, deviceId);
   // One attempt is reserved BEFORE the check (so concurrent guesses cannot
   // slip past the limit) and handed back unless the credential was wrong.
   const attempt = await reservePinAttempt(context, input.ticketId);
@@ -164,7 +171,7 @@ export async function doorCheckTicket(
       "Terlalu banyak PIN salah untuk tiket ini; gunakan QR atau tunggu.",
     );
   try {
-    const result = await checkCredential(context, actorUserId, input);
+    const result = await checkCredential(context, actorUserId, input, deviceId);
     // The door is already open: a failed hand-back must not turn this 200 into
     // a 500 (the slot just stays used until it ages out).
     try {
@@ -192,6 +199,7 @@ async function checkCredential(
   context: ScopedTenantContext,
   actorUserId: string,
   input: DoorCheckAccessTicketBody,
+  deviceId: string | null,
 ): Promise<{ ticket: AccessTicket }> {
   const tenantId = context.tenant.tenantId;
   // Same digests as the mint (facility-pos-tickets.ts): the QR token alone, or
@@ -205,6 +213,33 @@ async function checkCredential(
           digest: sha256(`${input.ticketId}:${input.pin}`),
         } as const);
   return withTenant(db, context, async (tx) => {
+    // R3-02 (legend-9c76n): the calling device is locked FOR SHARE BEFORE the
+    // ticket row, the same order as the sale (facility-pos-ticket-sale.ts,
+    // R2-06): the training toggle (setDeviceTrainingMode, FOR UPDATE) waits for
+    // an open in flight, so the mode read here is the mode the ticket is
+    // opened under; a device switched to training before this lock is
+    // refused. Read tenant-wide (a device of another outlet than the staff's
+    // reach must still be seen): the outlet scope is widened for this one read
+    // and restored right after. Missing or training: the uniform refusal, and
+    // it does not use up a PIN attempt (the PIN was never judged).
+    if (deviceId !== null) {
+      const outlets =
+        context.outletScope.kind === "tenant"
+          ? "*"
+          : JSON.stringify(context.outletScope.outletIds);
+      await tx.execute(sql`SELECT set_config('app.outlet_ids', '*', true)`);
+      const [device] = await tx
+        .select({ trainingMode: devices.trainingMode })
+        .from(devices)
+        .where(and(eq(devices.tenantId, tenantId), eq(devices.id, deviceId)))
+        .limit(1)
+        .for("share");
+      await tx.execute(
+        sql`SELECT set_config('app.outlet_ids', ${outlets}, true)`,
+      );
+      if (!device || device.trainingMode === true)
+        throw invalidCredential({ deviceRefused: true });
+    }
     // Find the ticket the credential belongs to (not locked yet).
     const [found] = await tx
       .select({ ticketId: accessTicketCredentials.accessTicketId })

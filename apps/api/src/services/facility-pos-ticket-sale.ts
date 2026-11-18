@@ -165,7 +165,11 @@ export async function sellPosTicket(
             )
             .limit(1)
             .for("share");
-          if (device?.trainingMode === true)
+          // A device that is missing or belongs to another outlet is refused
+          // with the same answer as a practice device: a cashier session must
+          // not use a device outside the ticket's outlet, and the answer does
+          // not say which case it was.
+          if (!device || device.trainingMode === true)
             throw new HttpError(
               409,
               "TICKET_TRAINING_REFUSED",

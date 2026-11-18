@@ -69,6 +69,9 @@ const operateDoor = requireMenuPermission("facility.booth.operate");
 
 // 1059 (R2-05, g7l20): the door scope after the acting-staff cut.
 const doorContexts = new WeakMap<Request, ScopedTenantContext>();
+// R3-02: the verified device of the request, handed to the service, which
+// re-reads its training mode under a row lock (this route read is the fast path).
+const doorDevices = new WeakMap<Request, string | null>();
 
 // The one refusal of every door-check failure (same body as facility-door-check).
 const doorRefused = () =>
@@ -126,6 +129,7 @@ async function sliceDoorScope(
     if (!device || device.trainingMode === true) throw doorRefused();
   }
   doorContexts.set(req, context);
+  doorDevices.set(req, deviceId);
   next();
 }
 
@@ -267,7 +271,12 @@ facilityPosTicketRouter.post(
     const body = doorCheckAccessTicket.body.parse(req.body);
     const context = doorContexts.get(req);
     if (!context) throw new Error("Door scope was not resolved");
-    const data = await doorCheckTicket(context, actorOf(req), body);
+    const data = await doorCheckTicket(
+      context,
+      actorOf(req),
+      body,
+      doorDevices.get(req) ?? null,
+    );
     res.setHeader("Cache-Control", "no-store").json({ data });
   },
 );
