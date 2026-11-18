@@ -20,6 +20,7 @@ import { randomUUID } from "node:crypto";
 import type { Express } from "express";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { deviceSchema } from "@starter/shared/edge";
+import { ACTING_STAFF_ERROR_CODES } from "@starter/shared/pos/acting-staff";
 import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
 import { signDeviceToken } from "../lib/device-token.ts";
@@ -34,6 +35,7 @@ import {
 
 const ENABLED = "device.shared_mode_enabled";
 const DISABLED = "device.shared_mode_disabled";
+const REVOKED = "device.revoked";
 
 type Client = ReturnType<typeof agent>;
 type Member = { client: Client; userId: string };
@@ -354,18 +356,24 @@ describe("PATCH /api/devices/:deviceId/shared-mode", () => {
   });
 });
 
-// ---- round C: a shared device cannot switch its own guard off ------------------
-// Spec (card brief, round C): when the caller's login session is marked with the
-// device (`session.shared_device_ids` contains the device) or the request itself carries
-// that device's token header, turning shared mode OFF for that device, or revoking
-// it, answers 403 with the Indonesian message "Matikan mode perangkat bersama dari
-// perangkat lain." Turning it ON stays allowed, and so does any other session.
+// ---- round C: device management is refused from a shared device (1012) ---------
+// Decision (CTO brief, legend-a6aq6, and the 1012 shared-device router guard):
+// managing devices (revoke, and shared mode both ON and OFF) is a back office
+// action from a PERSONAL device. When the caller's login session is marked with a
+// shared device (`session.shared_device_ids` is non-empty) or the request carries
+// a device token header, the default-closed `requireAuth` answers 403 with code
+// `ACTING_STAFF_NOT_ALLOWED` before any handler runs, for ANY device (own or
+// other). There is no step-up flow from the tablet: the tablet sees the guard text
+// "Perangkat bersama: fitur ini hanya bisa dibuka dari perangkat pribadi." and
+// the owner switches the mode off or revokes from a personal device. Another, unmarked session
+// still manages the device normally, and doing so closes the tablet's session
+// (1024 decision): its follow-up requests answer 401.
+// Earlier premise (pre-1012, now replaced): the marked session could manage OTHER
+// devices and only its own device was forbidden, with a fixed message text.
 // Assumptions: the mark is written by SQL here (the middleware stamping is covered
-// in acting-staff-shared-device.test.ts); other devices of the same outlet stay
-// manageable from the marked session; the error code is not fixed, only the
-// status 403 and the message text.
-describe("shared mode cannot be switched off from the device itself", () => {
-  const MESSAGE = "Matikan mode perangkat bersama dari perangkat lain.";
+// in acting-staff-shared-device.test.ts); the closed session is observed through
+// a 401 on a follow-up request, not through the storage of the session row.
+describe("device management is refused from a shared device", () => {
   let powerRole: string;
 
   beforeAll(async () => {
@@ -434,22 +442,37 @@ describe("shared mode cannot be switched off from the device itself", () => {
     return rows[0]!.status;
   }
 
-  function expectSelfRefusal(response: { status: number; body: unknown }) {
-    const body = response.body as { error?: { message?: string } };
+  /** 403 with the acting-staff "not allowed on a shared device" code. */
+  function expectSharedDeviceRefusal(response: {
+    status: number;
+    body: unknown;
+  }) {
+    const body = response.body as { error?: { code?: string } };
     expect(response.status, JSON.stringify(response.body)).toBe(403);
-    expect(body.error?.message ?? "").toContain(MESSAGE);
+    expect(body.error?.code).toBe(ACTING_STAFF_ERROR_CODES.NOT_ALLOWED);
   }
 
-  it("a session marked with the device cannot switch its shared mode off: 403, flag and audit unchanged", async () => {
+  /** The tablet's session was closed: an authenticated route now answers 401. */
+  async function expectSessionClosed(marked: Member) {
+    const probe = await addDevice(tenant.tenantId, outletA);
+    const response = await patch(marked, probe, { sharedMode: true });
+    expect(response.status, JSON.stringify(response.body)).toBe(401);
+    expect(await flagOf(probe)).toBe(false);
+  }
+
+  // Changed (legend-a6aq6): was a 403 with the "Matikan mode ..." message for the
+  // own device only; now the whole route is refused with ACTING_STAFF_NOT_ALLOWED.
+  it("a session marked with the device cannot switch its shared mode off: 403 ACTING_STAFF_NOT_ALLOWED, flag and audit unchanged", async () => {
     const id = await flaggedDevice();
     const marked = await powerMember("Sesi Bertanda Matikan");
     await mark(marked, id);
     const response = await patch(marked, id, { sharedMode: false });
-    expectSelfRefusal(response);
+    expectSharedDeviceRefusal(response);
     expect(await flagOf(id)).toBe(true);
     expect(await auditRows(id, DISABLED)).toHaveLength(0);
   });
 
+  // Changed (legend-a6aq6): same new code instead of the fixed message text.
   it("a request carrying the device's own token header cannot switch it off either", async () => {
     const id = await flaggedDevice();
     const caller = await powerMember("Sesi Header Perangkat");
@@ -459,12 +482,14 @@ describe("shared mode cannot be switched off from the device itself", () => {
       .set(originHeader)
       .set(tokenOf(id))
       .send({ sharedMode: false });
-    expectSelfRefusal(response);
+    expectSharedDeviceRefusal(response);
     expect(await flagOf(id)).toBe(true);
     expect(await auditRows(id, DISABLED)).toHaveLength(0);
   });
 
-  it("another session without the mark or the header switches it off: 200", async () => {
+  // Extended (legend-a6aq6, 1024): after the switch-off the tablet's own session is
+  // closed, so it can no longer act.
+  it("another session without the mark or the header switches it off: 200 and the tablet's session is closed", async () => {
     const id = await flaggedDevice();
     const marked = await powerMember("Sesi Bertanda Lain");
     await mark(marked, id);
@@ -473,47 +498,59 @@ describe("shared mode cannot be switched off from the device itself", () => {
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     expect(await flagOf(id)).toBe(false);
     expect(await auditRows(id, DISABLED)).toHaveLength(1);
+    await expectSessionClosed(marked);
   });
 
-  it("the marked session may still switch shared mode ON, and manage other devices", async () => {
+  // Changed (legend-a6aq6): was "marked session may still switch ON and manage
+  // other devices"; now it cannot manage ANY device, ON or OFF, own or other.
+  it("a marked session cannot manage ANY device: switching shared mode on or off is refused", async () => {
     const id = await flaggedDevice();
     const marked = await powerMember("Sesi Bertanda Hidupkan");
     await mark(marked, id);
 
+    // (a) switch ON another, unflagged device
     const enableOther = await addDevice(tenant.tenantId, outletA);
     const on = await patch(marked, enableOther, { sharedMode: true });
-    expect(on.status, JSON.stringify(on.body)).toBe(200);
-    expect(await flagOf(enableOther)).toBe(true);
+    expectSharedDeviceRefusal(on);
+    expect(await flagOf(enableOther)).toBe(false);
+    expect(await auditRows(enableOther, ENABLED)).toHaveLength(0);
 
-    // Same device, enabling again (already on) is allowed and idempotent.
+    // (b) switch ON its own device (already on): still refused, stays on
     const again = await patch(marked, id, { sharedMode: true });
-    expect(again.status, JSON.stringify(again.body)).toBe(200);
+    expectSharedDeviceRefusal(again);
     expect(await flagOf(id)).toBe(true);
 
-    // A different flagged device can be switched off from this session.
-    const off = await patch(marked, enableOther, { sharedMode: false });
-    expect(off.status, JSON.stringify(off.body)).toBe(200);
-    expect(await flagOf(enableOther)).toBe(false);
+    // (c) switch OFF a different flagged device: refused, flag stays
+    const flaggedOther = await flaggedDevice();
+    const off = await patch(marked, flaggedOther, { sharedMode: false });
+    expectSharedDeviceRefusal(off);
+    expect(await flagOf(flaggedOther)).toBe(true);
+    expect(await auditRows(flaggedOther, DISABLED)).toHaveLength(0);
   });
 
-  it("a session marked with the device cannot revoke it: 403 and the device stays active", async () => {
+  // Changed (legend-a6aq6): new code instead of the fixed message text.
+  it("a session marked with the device cannot revoke it: 403 ACTING_STAFF_NOT_ALLOWED and the device stays active", async () => {
     const id = await flaggedDevice();
     const marked = await powerMember("Sesi Bertanda Cabut");
     await mark(marked, id);
     const response = await revoke(marked, id);
-    expectSelfRefusal(response);
+    expectSharedDeviceRefusal(response);
     expect(await statusOf(id)).toBe("active");
+    expect(await auditRows(id, REVOKED)).toHaveLength(0);
   });
 
+  // Changed (legend-a6aq6): new code instead of the fixed message text.
   it("a request carrying the device's own token header cannot revoke it", async () => {
     const id = await flaggedDevice();
     const caller = await powerMember("Sesi Header Cabut");
     const response = await revoke(caller, id, tokenOf(id));
-    expectSelfRefusal(response);
+    expectSharedDeviceRefusal(response);
     expect(await statusOf(id)).toBe("active");
+    expect(await auditRows(id, REVOKED)).toHaveLength(0);
   });
 
-  it("another session revokes the device: 200 and it is revoked", async () => {
+  // Extended (legend-a6aq6, 1024): the revoked tablet's session is closed.
+  it("another session revokes the device: 200, it is revoked and the tablet's session is closed", async () => {
     const id = await flaggedDevice();
     const marked = await powerMember("Sesi Bertanda Cabut Lain");
     await mark(marked, id);
@@ -521,16 +558,21 @@ describe("shared mode cannot be switched off from the device itself", () => {
     const response = await revoke(other, id);
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     expect(await statusOf(id)).toBe("revoked");
+    // Control for the zero-audit checks of the refused revokes above.
+    expect(await auditRows(id, REVOKED)).toHaveLength(1);
+    await expectSessionClosed(marked);
   });
 
-  it("the marked session can revoke a different device", async () => {
+  // Changed (legend-a6aq6): was "the marked session can revoke a different
+  // device" (200); now it is refused and both devices stay active.
+  it("a marked session cannot revoke a different device either", async () => {
     const id = await flaggedDevice();
     const marked = await powerMember("Sesi Bertanda Cabut Beda");
     await mark(marked, id);
     const otherDevice = await addDevice(tenant.tenantId, outletA);
     const response = await revoke(marked, otherDevice);
-    expect(response.status, JSON.stringify(response.body)).toBe(200);
-    expect(await statusOf(otherDevice)).toBe("revoked");
+    expectSharedDeviceRefusal(response);
+    expect(await statusOf(otherDevice)).toBe("active");
     expect(await statusOf(id)).toBe("active");
   });
 });

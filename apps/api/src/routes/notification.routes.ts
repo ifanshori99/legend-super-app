@@ -19,7 +19,11 @@ import {
   updateNotificationPreferences,
 } from "@starter/shared/notification";
 import { HttpError } from "../lib/http-error.ts";
-import { getAuth, requireAuth } from "../middleware/auth.ts";
+import {
+  getAuth,
+  requireAuth,
+  requireAuthAllowSharedDevice,
+} from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import { getTenantContext } from "../middleware/tenant.ts";
@@ -49,6 +53,12 @@ export type NotificationCaller = {
    * caller with a device but no value is refused (legend-806 P1-2).
    */
   deviceTokenIssuedAt?: number | null;
+  /**
+   * The request comes from a session used on an active shared (cashier)
+   * device. Removing a push subscription is then limited to this session's or
+   * this device's own rows (legend 1024).
+   */
+  sharedDevice?: boolean;
 };
 export type NotificationInput = {
   params?: unknown;
@@ -105,7 +115,10 @@ const denied = () =>
 /** Defaults deny until production tenant membership and scoped RBAC resolvers are wired. */
 export function createNotificationRouter(ports?: NotificationRoutePorts) {
   const router = Router();
-  router.use(requireAuth, requireTrustedOrigin);
+  // Per route: only removing a push subscription (sign-out) and reading the
+  // push key are open to a shared POS device. Registering push and every other
+  // operation stay on the strict guard, so an owner's push alerts are never
+  // registered on a shared tablet.
   for (const [endpoint, operation] of routes) {
     const handler: RequestHandler = async (req, res) => {
       if (!ports) throw denied();
@@ -128,6 +141,8 @@ export function createNotificationRouter(ports?: NotificationRoutePorts) {
       if (operation === "registerPush") {
         if (!ports.resolveCaller) throw denied();
         input.caller = await ports.resolveCaller(req);
+      } else if (operation === "removePush" && ports.resolveCaller) {
+        input.caller = await ports.resolveCaller(req);
       }
       if (endpoint.params) input.params = endpoint.params.parse(req.params);
       if (endpoint.query) input.query = endpoint.query.parse(req.query);
@@ -145,7 +160,15 @@ export function createNotificationRouter(ports?: NotificationRoutePorts) {
       res.json(output);
     };
     const path = endpoint.path.slice("/api/notifications".length) || "/";
-    const handlers = endpoint.body ? [jsonBody, handler] : [handler];
+    const sharedDeviceOk =
+      operation === "removePush" || operation === "getPushKey";
+    const guards = [
+      sharedDeviceOk ? requireAuthAllowSharedDevice : requireAuth,
+      requireTrustedOrigin,
+    ];
+    const handlers = endpoint.body
+      ? [...guards, jsonBody, handler]
+      : [...guards, handler];
     switch (endpoint.method) {
       case "GET":
         router.get(path, ...handlers);

@@ -18,7 +18,14 @@ import { Router, type Request } from "express";
 import { env } from "../config/env.ts";
 import { getEdgeRuntimeState } from "../edge/runtime.ts";
 import { fromNodeHeaders } from "better-auth/node";
+import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
 import { auth } from "../lib/auth.ts";
+import { verifyDeviceToken } from "../lib/device-token.ts";
+import { logger, serializeError } from "../lib/logger.ts";
+import {
+  anySharedDeviceActive,
+  stampSharedDeviceFromToken,
+} from "../services/shared-device.service.ts";
 import {
   addCartLine,
   claimSessionPoints,
@@ -219,12 +226,62 @@ qrOrderRouter.post(
 // legend-111j (§5 QR auto-attach): a guest who is also signed in to the
 // member app attaches their profile to the order. The session is optional and
 // never required here; an impersonated (support) session never attaches.
+// legend-yizsl: a shared-device session (any entry in session.sharedDeviceIds,
+// a mark that never lapses, or a valid token of an active flagged shared device
+// on this request) is a cashier tablet's owner cookie and counts as anonymous:
+// the owner's member profile and points must never attach to a guest order.
+async function isSharedDeviceRequest(req: Request): Promise<boolean> {
+  const raw = req.get(DEVICE_TOKEN_HEADER);
+  if (!raw) return false;
+  let deviceId: string | null = null;
+  try {
+    deviceId = verifyDeviceToken(raw)?.deviceId ?? null;
+  } catch {
+    // A badly signed token adds nothing.
+  }
+  if (deviceId === null) return false;
+  try {
+    return await anySharedDeviceActive([deviceId]);
+  } catch (error) {
+    // Fail closed: when the lookup fails, treat the request as a shared device
+    // (anonymous guest) rather than attach the owner's member profile.
+    logger.warn(
+      { err: serializeError(error) },
+      "qr-order: shared device lookup failed, treating request as anonymous",
+    );
+    return true;
+  }
+}
+
 async function optionalMemberUserId(req: Request): Promise<string | null> {
   const session = await auth.api.getSession({
     headers: fromNodeHeaders(req.headers),
     query: { disableCookieCache: true },
   });
   if (!session) return null;
+  const { sharedDeviceIds } = session.session as {
+    sharedDeviceIds?: readonly string[] | null;
+  };
+  if ((sharedDeviceIds?.length ?? 0) > 0) return null;
+  // legend-vzvok: record the mark of a flagged shared device's token on the
+  // cookie session, so a header-less replay is closed too. The order stays a
+  // guest order in every case: marks found, 8-mark limit (null; the session is
+  // not closed here) or a failed stamp (503, fail closed).
+  try {
+    const marks = await stampSharedDeviceFromToken(
+      session.session.id,
+      sharedDeviceIds,
+      req.get(DEVICE_TOKEN_HEADER),
+    );
+    if (marks === null || marks.length > 0) return null;
+  } catch (error) {
+    logger.warn(
+      { err: serializeError(error) },
+      "qr-order: shared device stamp failed, treating request as anonymous",
+    );
+    return null;
+  }
+  if (await isSharedDeviceRequest(req)) return null;
   const { impersonatedBy } = session.session as {
     impersonatedBy?: string | null;
   };

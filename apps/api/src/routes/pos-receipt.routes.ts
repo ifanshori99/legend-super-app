@@ -7,7 +7,7 @@
 //   apiRouter.use("/outlets/:outletId/pos", posReceiptRouter)
 //   apiRouter.use("/public/receipts", publicReceiptRouter)
 //
-// - posReceiptRouter: requireAuth + requireTrustedOrigin + requireTenantContext,
+// - posReceiptRouter: requireAuthAllowSharedDevice + requireTrustedOrigin + requireTenantContext,
 //   then requireOutletPermission on the path's outlet (TEN-03). Issue/reprint,
 //   link and invoice need `pos.payment.accept`; reads and PDFs `order.view`.
 // - publicReceiptRouter: no session. The tenant comes from the request host
@@ -33,7 +33,7 @@ import {
   requireActingStaffOnSharedDevice,
   resolveActingStaff,
 } from "../middleware/acting-staff.ts";
-import { requireAuth } from "../middleware/auth.ts";
+import { requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
@@ -50,7 +50,7 @@ export const posReceiptRouter = Router({ mergeParams: true });
 export const publicReceiptRouter = Router();
 
 posReceiptRouter.use(
-  requireAuth,
+  requireAuthAllowSharedDevice,
   requireTrustedOrigin,
   requireTenantContext,
   resolveActingStaff,

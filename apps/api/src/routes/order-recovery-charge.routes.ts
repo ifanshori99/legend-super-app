@@ -13,7 +13,11 @@
 import { Router } from "express";
 import { userIdSchema, uuidSchema, z } from "@starter/shared/core";
 import { collectChargeAtPosInputSchema } from "@starter/shared/qr-order";
-import { getAuth, requireAuth } from "../middleware/auth.ts";
+import {
+  requireActingStaffOnSharedDevice,
+  resolveActingStaff,
+} from "../middleware/acting-staff.ts";
+import { getAuth, requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
@@ -32,9 +36,11 @@ import { currentDeviceIdOf } from "./device-id.ts";
 export const orderRecoveryChargeRouter = Router();
 
 const staffGuard = [
-  requireAuth,
+  requireAuthAllowSharedDevice,
   requireTrustedOrigin,
   requireTenantContext,
+  resolveActingStaff,
+  requireActingStaffOnSharedDevice,
   requireMenuPermission("order.recovery.handle"),
 ];
 
@@ -95,9 +101,11 @@ orderRecoveryChargeRouter.post(
 // charge's outlet by the service) and the signed device of the open shift.
 orderRecoveryChargeRouter.post(
   "/order-issue-charges/:chargeId/collect-at-pos",
-  requireAuth,
+  requireAuthAllowSharedDevice,
   requireTrustedOrigin,
   requireTenantContext,
+  resolveActingStaff,
+  requireActingStaffOnSharedDevice,
   requireMenuPermission("pos.payment.accept"),
   jsonBody,
   async (req, res) => {

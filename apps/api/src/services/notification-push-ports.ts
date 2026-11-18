@@ -9,7 +9,8 @@
 //   push is bound to is checked by the service against the caller's own
 //   permission (`facility.emergency.respond`) or the registered device.
 // - resolveCaller: the login session and the device named by a valid
-//   X-Device-Token (401 when the registry no longer accepts it).
+//   X-Device-Token (401 when the registry no longer accepts it), and whether the
+//   session is used on an active shared device (restricts push removal).
 import { isAssignmentActive } from "@starter/shared/access";
 import type { TenantContext } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
@@ -24,6 +25,7 @@ import type {
   NotificationOperation,
   NotificationRoutePorts,
 } from "../routes/notification.routes.ts";
+import { anySharedDeviceActive } from "./shared-device.service.ts";
 import { createNotificationService } from "./notification-center.ts";
 import { loadTenantAccess } from "./permission-resolver.ts";
 
@@ -55,10 +57,20 @@ export function createNotificationPushPorts(): NotificationRoutePorts {
     },
     authorize: authorizePush,
     async resolveCaller(req) {
+      const { session } = getAuth(req);
+      const deviceId = await currentDeviceIdOf(req);
+      // Restrict by default (legend 1024): a session that ever carried a mark
+      // stays a shared-device session even when the mark lapsed, and so does one
+      // whose verified device on this very request is an active shared device
+      // (the auth guard may have stamped the mark after the session loaded).
+      const sharedDevice =
+        (session.sharedDeviceIds?.length ?? 0) > 0 ||
+        (deviceId !== null && (await anySharedDeviceActive([deviceId])));
       return {
-        sessionId: getAuth(req).session.id,
-        deviceId: await currentDeviceIdOf(req),
+        sessionId: session.id,
+        deviceId,
         deviceTokenIssuedAt: deviceTokenIssuedAtOf(req),
+        sharedDevice,
       };
     },
     service: createNotificationService(

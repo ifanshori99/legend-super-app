@@ -7417,3 +7417,37 @@ Brief: `docs/briefs/1006-so-akses-fix.md`. Tingkat K (akses). Tanpa migrasi (`db
 - Review architect (xhigh) ronde 1: 3 P1 + 1 P2 (guard router-level, POS_PATH tanpa floor, authClient tanpa header, cookie ke-9) semua dibetulkan. Ronde 2: tertutup, 1 temuan rendah (audit sesi support) dibetulkan.
 - Rute tanpa guard perangkat bersama yang belum ditutup (keputusan CTO): pickup, expo, order-issues, serving-time, open-bill (approvers dan convert POST), delivery-orders (guard ringan), emergency-cloud (belum jelas).
 - Subagent: total 8, puncak 3 bersamaan, token heavy dipegang bergantian (test-writer, test-runner).
+
+## 1012 Akses: router tanpa guard perangkat bersama (legend-3z0ds), 17 Nov 2026
+
+Cabang `ghostex/1012-guard-router-perangkat-bersama`, tanpa migrasi, tanpa logika uang.
+
+- Desain: `requireAuth` (apps/api/src/middleware/auth.ts) default-tolak sesi bertanda perangkat bersama aktif (403 `ACTING_STAFF_NOT_ALLOWED`); varian opt-in `requireAuthAllowSharedDevice` untuk router POS (plus `resolveActingStaff` + `requireActingStaffOnSharedDevice`) dan shell (me GET /access, pos-acting-staff, push key/delete, identity push-devices GET). Router baru otomatis tertutup.
+- Kontrak: `apps/api/src/test/shared-device-router-decisions.test.ts` (182 router eksplisit, per kemunculan; scan `getSession` ber-allowlist). HTTP: `shared-device-backoffice-guard.test.ts`. Web: `apps/web/test/acting-staff-shared-routers-path.test.ts`, POS_PATH diperluas.
+- Router POS baru: expo, pickup, serving-time, service-request, open-bill, order-issues, order-recovery(-charge), menu /availability, device-pin pos-overrides (guard kasir), customer-display (perintah).
+- Dua tes lama diperbarui karena premisnya berubah: acting-staff-w2-floor (reservation-policy kini 403 NOT_ALLOWED), pos-acting-staff (router tanpa middleware: delivery-channels).
+- Lanjutan (kartu bd dibuat): handler POS memakai pemilik sesi bukan `actorOf` (menyentuh uang, keputusan founder); websocket KDS dan `/api/auth/*` Better Auth belum lewat gate; layar reservasi/Tanya AI/_ops kini 403 di perangkat bersama (keputusan produk).
+- Subagent: total 14, puncak 5 bersamaan, token heavy dipegang induk dan test-runner bergantian.
+
+## 1017 Akses: websocket KDS, /api/auth/*, preview customer-display di perangkat bersama (legend-wa9n7, legend-dgtz0), 17 Nov 2026
+
+Cabang `ghostex/34755844`, dasar 1012 (ca8ba4eb7). Tingkat K (akses). Tanpa migrasi, tanpa logika uang.
+
+- KDS websocket (`services/kds-realtime-auth.ts`): sesi bertanda perangkat bersama aktif (dari sesi atau header `x-device-token` bertanda tangan) wajib membawa token perangkat terdaftar dan `x-acting-staff` hidup (`resolveActingStaffToken`, terikat perangkat, sesi, outlet). Koki yang bertindak menjadi pemilik hak `kds.ticket.process`. Gagal berarti tolak, dan dicek ulang tiap bangun/recheck. Upgrade ws juga menstempel penanda ke sesi; perangkat ke-9 saat 8 penanda aktif ditolak. Perangkat pribadi tidak berubah. Helper header mentah: `services/raw-device-token.ts`.
+- `/api/auth/*` (`middleware/shared-device-auth.ts`, dipasang di `app.ts` sebelum Better Auth): sesi perangkat bersama hanya boleh get-session, sign-out, dan sign-in/*. Sisanya (profil, password, email, sesi, MFA, passkey, tautan akun, hapus akun, admin, login-challenges, callback sosial) 403 `ACTING_STAFF_NOT_ALLOWED`. Path dinormalisasi (query, slash ganda, decode satu kali, huruf kecil, `..` dan backslash tak pernah lolos). Perangkat pribadi tidak berubah.
+- Preview customer-display (`routes/customer-display.routes.ts`, `services/customer-display.service.ts`): cabang kasir di perangkat bersama wajib token kasir hidup; `terminalDeviceId` harus perangkat terminal aktif (bukan layar display) di outlet dan tenant jalur, difilter di SQL; token perangkat terdaftar harus sama dengan `terminalDeviceId`; selain itu 404 tanpa data tagihan. Kebocoran lintas outlet/tenant tidak terbukti di dasar (sudah ditolak), filter SQL jadi lapis tambahan.
+- Kontrak 1012 diperbarui: entri customer-display keluar dari NO_TOKEN_GUARD, allowlist getSession menambah `shared-device-auth.ts`.
+- Tes (gagal-dulu di dasar: 12/15, 28/41, 4/14): `kds-realtime-shared-device`, `auth-shared-device-guard`, `pos-customer-display-preview-access`, plus `shared-device-router-decisions` dan `acting-staff-shared-device`: 5 berkas, 336 lulus.
+- Review architect (xhigh): tidak ada bypass. Dibetulkan: komentar app.ts, stempel penanda di upgrade ws, activity dikeluarkan dari allowlist. Kartu lanjutan: carrier ws untuk browser (subprotocol, P2), schema preview data-minimal (P3), keep-alive `sessions/current/activity` ditolak di perangkat bersama (P3, putuskan perlu `requireAuthAllowSharedDevice` atau tidak).
+- Subagent: total 14, puncak 6 bersamaan, token heavy dipegang induk (bukan subagent).
+
+## 1021 KDS: layar memakai client realtime + reconnect 1008 (legend-t0m89), 17 Nov 2026
+
+Cabang `ghostex/4b06e171`, dasar 1018 (f854663f9). Tingkat K (akses). Tanpa migrasi, tanpa uang.
+
+- `kds-page.tsx` (`StationBoard`) memasang `useKdsRealtime`: frame tiket menyegarkan query board + ringkasan stasiun; resync mengambil snapshot (`fetchStationSnapshot`) lalu `resume(sequence)`, gagal ambil = coba `reconnect()` lagi 5 detik. Polling 2 detik tetap cadangan. Chip status kecil (Tersambung / Menyambung ulang / Terputus + tombol Sambung ulang), teks di `kds.realtime.*`, live region selalu terpasang.
+- Client (`kds-realtime.ts`): close 1008 setelah socket terbuka = baca ulang token dan reconnect SEKALI; jatah dikembalikan hanya bila socket retry bertahan `stableMs` (10 dtk) setelah hello. Retry putus sebelum hello, 1008 lagi, atau socket tak pernah terbuka = "denied" (minta PIN), tanpa loop. `reconnect()` baru (hook + client).
+- Tes: client 33 (gagal-dulu 13/15 awal), halaman 11 (gagal-dulu 8/11), API real-socket cabut token tengah koneksi: tutup 1008 + tak ada event sesudahnya, plus kasus recheck 60 dtk (tiket langsung setelah cabut tidak terkirim). Hijau: 46 tes root, 45 API shared-device + 64 KDS, prettier, eslint, tsc web + API.
+- Review reviewer: tanpa bug fungsional (a11y live region dibetulkan). Review architect (K): akses disetujui; dibetulkan loop hello->1008 tiap detik (jatah retry kini bergantung `stableMs`), snapshot gagal membuat client macet, tes API diperkuat. Sisa catatan rendah: chip bisa menyebut "sesi berakhir" untuk retry yang putus 1006 sebelum hello; `after: null` (jeda board-hello ditutup polling 2 dtk).
+- Screenshot 1280: `docs/review/img/ui1021-kds-connected.png`, `ui1021-kds-disconnected.png`.
+- Subagent: total 12, puncak 3 bersamaan, token heavy dipegang test-runner/implementer bergantian. Biaya sesi (session-usage): 3260k.

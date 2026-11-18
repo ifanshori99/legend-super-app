@@ -17,8 +17,12 @@ import {
   revokeCustomerDisplayPairing,
   selectCustomerDisplayBill,
 } from "@starter/shared/pos";
-import { actorOf, resolveActingStaff } from "../middleware/acting-staff.ts";
-import { requireAuth } from "../middleware/auth.ts";
+import {
+  actorOf,
+  requireActingStaffOnSharedDevice,
+  resolveActingStaff,
+} from "../middleware/acting-staff.ts";
+import { requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import { requireOutletPermission } from "../middleware/permissions.ts";
@@ -34,7 +38,15 @@ export const customerDisplayRouter = Router({ mergeParams: true });
 
 const BASE = "/customer-display";
 const outletOf = (req: Request) => String(req.params.outletId ?? "");
-const staff = [requireAuth, requireTrustedOrigin, resolveActingStaff];
+// Every cashier route, the preview GET included, needs the cashier token on a
+// shared device (legend-3z0ds, legend-dgtz0). The display-device branch of the
+// GET answers before this chain and authenticates by its own device token.
+const staff = [
+  requireAuthAllowSharedDevice,
+  requireTrustedOrigin,
+  resolveActingStaff,
+  requireActingStaffOnSharedDevice,
+];
 const operate = requireOutletPermission("pos.sale.create", outletOf);
 const view = requireOutletPermission("order.view", outletOf);
 
@@ -93,14 +105,21 @@ customerDisplayRouter.get(
   view,
   async (req, res) => {
     const query = getCustomerDisplayState.query.parse(req.query);
-    const terminalDeviceId =
-      query.terminalDeviceId ?? (await currentDeviceIdOf(req));
+    const ownDeviceId = await currentDeviceIdOf(req);
+    const terminalDeviceId = query.terminalDeviceId ?? ownDeviceId;
     if (!terminalDeviceId)
       throw new HttpError(
         400,
         "TERMINAL_DEVICE_REQUIRED",
         "Sebutkan terminalDeviceId atau kirim dari perangkat kasir.",
       );
+    // A registered device token pins the preview to that very terminal; the
+    // answer is the unpaired 404, so another terminal's bill stays hidden.
+    if (
+      ownDeviceId !== null &&
+      ownDeviceId.toLowerCase() !== terminalDeviceId.toLowerCase()
+    )
+      throw display.notPaired();
     res.json({
       data: await display.readStateForTerminal(
         getTenantContext(req),

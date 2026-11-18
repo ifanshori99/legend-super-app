@@ -75,6 +75,10 @@ export function createLogger({
           "req.headers.cookie",
           "req.headers.authorization",
           'req.headers["x-acting-staff"]',
+          'req.headers["x-device-token"]',
+          // legend-dsbqr: a browser KDS socket carries its device and cashier
+          // tokens as Sec-WebSocket-Protocol entries.
+          'req.headers["sec-websocket-protocol"]',
           'res.headers["set-cookie"]',
           "*.password",
           "*.newPassword",

@@ -4,8 +4,9 @@
 // requireActingStaffOnSharedDevice). A session that has been used on such a
 // device is marked in `session.shared_device_ids` (the newest 8 such devices);
 // the mark keeps the rule when the same cookie is replayed without the device
-// header, in any tenant of the login. A mark lapses when its device is
-// unflagged, revoked or gone.
+// header, in any tenant of the login. A mark never lapses (legend 1027): when
+// its device is unflagged or revoked the sessions are closed best effort, and
+// the guards stay closed even if that close fails.
 
 import { and, eq, sql } from "drizzle-orm";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
@@ -13,7 +14,7 @@ import type { TenantContext } from "@starter/shared/core";
 import { db } from "../db/index.ts";
 import { verifyDeviceToken } from "../lib/device-token.ts";
 import { HttpError } from "../lib/http-error.ts";
-import { logger } from "../lib/logger.ts";
+import { logger, serializeError } from "../lib/logger.ts";
 import { devices, session } from "../db/schema";
 import { withTenant } from "../db/tenant.ts";
 
@@ -69,8 +70,8 @@ export async function anySharedDeviceActive(
 /**
  * Marks the login session as used on this shared device: appends the id when
  * absent. One UPDATE, no write when already marked. A full list (8) makes room
- * by dropping the oldest mark that is NOT active (unflagged, revoked or gone:
- * a lapsed mark guards nothing). An active mark is never dropped, so an
+ * by dropping the oldest mark that is NOT active (unflagged, revoked or gone;
+ * its sessions were closed best effort). An active mark is never dropped, so an
  * attacker cannot evict the mark of the real shared device by flooding the
  * session with other devices.
  *
@@ -117,8 +118,8 @@ export async function markSessionSharedDevice(
 
 /**
  * legend-dn7uo: the session holds 8 active marks and a 9th device asked for
- * it. The refused device is not recorded, so once devices 1-8 lapse its cookie
- * would pass header-less as the owner. Closing the session here removes that
+ * it. The refused device is not recorded, so its cookie would carry no mark
+ * and pass header-less as the owner. Closing the session here removes that
  * cookie's access: the user signs in again on the 9th device, and the new
  * session is stamped at sign-in (legend-sq1ux). Best effort, never throws.
  */
@@ -147,10 +148,37 @@ export async function closeSessionAtMarkLimit(
   }
 }
 
+/**
+ * legend-1024: a device was revoked, so every login session that was used on it
+ * is closed (same audited revoke as closeSessionAtMarkLimit). Their cookies
+ * would otherwise stay usable. A mark never lapses, so the guards stay closed
+ * even if this close fails. Best effort per session, never throws. Returns
+ * the closed session ids.
+ */
+export async function closeSessionsOfSharedDevice(
+  deviceId: string,
+): Promise<string[]> {
+  let rows: { id: string; userId: string }[];
+  try {
+    rows = await db
+      .select({ id: session.id, userId: session.userId })
+      .from(session)
+      .where(sql`${session.sharedDeviceIds} @> ARRAY[${deviceId}]::uuid[]`);
+  } catch (selectError) {
+    logger.warn(
+      { err: selectError },
+      "shared device sessions close: select failed",
+    );
+    return [];
+  }
+  for (const row of rows) await closeSessionAtMarkLimit(row.id, row.userId);
+  return rows.map((row) => row.id);
+}
+
 // legend-dn7uo: the session already carries 8 active shared-device marks, so
 // this 9th device cannot be recorded. Refused outright, never passed as owner,
-// and the session is closed so its cookie cannot pass header-less once the 8
-// marked devices lapse. Usage: `throw await sharedDeviceMarkLimit(session.id, user.id)`.
+// and the session is closed so its cookie, which carries no mark of the 9th
+// device, cannot pass header-less. Usage: `throw await sharedDeviceMarkLimit(session.id, user.id)`.
 export async function sharedDeviceMarkLimit(
   sessionId: string,
   userId: string,
@@ -187,32 +215,92 @@ export async function sharedDeviceIdsFromToken(
   }
 }
 
+/** The marks plus `deviceId`, deduped, as a new array. */
+export function withSharedMark(
+  marked: readonly string[] | null | undefined,
+  deviceId: string,
+): string[] {
+  const list = marked ?? [];
+  return list.includes(deviceId) ? [...list] : [...list, deviceId];
+}
+
 /**
- * Early stamp (legend-jqurl), run by requireAuth. A validly signed device token
- * whose device is active and flagged shared marks the session, so the marks
- * exist before the cookie is replayed on a guarded route without the header.
- * The signature already binds tenant and device, so the lookup needs no tenant
- * context. No header, a bad signature, an unflagged device or an already marked
- * session do nothing; a failure is logged and never thrown. Returns false only
- * when the device is flagged and active but the session's 8 marks are all
- * active (markSessionSharedDevice false): the caller must refuse the request
- * with 403 SHARED_DEVICE_MARK_LIMIT. Every other outcome is true.
+ * Early stamp (legend-jqurl), run by requireAuth and the /api/auth guard. A
+ * validly signed device token whose device is active and flagged shared marks
+ * the session, so the marks exist before the cookie is replayed on a guarded
+ * route without the header. The signature already binds tenant and device, so
+ * the lookup needs no tenant context. No header, a bad signature or an
+ * unflagged device do nothing. Fail closed (legend-vzvok): when the token is
+ * valid and a database step fails, it logs and throws 503 SERVICE_UNAVAILABLE, so
+ * the first request with a token never passes unmarked. Returns
+ * the marks in effect for THIS request (legend-7yvmm): the existing marks plus
+ * the token's device when it was stamped now or was already marked, as a new
+ * array, so the caller can refresh its session snapshot and not read a stale
+ * list. Returns null only when the device is flagged and active but the
+ * session's 8 marks are all active (markSessionSharedDevice false): the caller
+ * must refuse the request with 403 SHARED_DEVICE_MARK_LIMIT.
  */
 export async function stampSharedDeviceFromToken(
   sessionId: string,
   markedDeviceIds: readonly string[] | null | undefined,
   rawToken: string | undefined,
-): Promise<boolean> {
-  if (!rawToken) return true;
+): Promise<string[] | null> {
+  const existing = [...(markedDeviceIds ?? [])];
+  if (!rawToken) return existing;
+  let deviceId: string;
   try {
     const payload = verifyDeviceToken(rawToken);
-    if (payload === null || markedDeviceIds?.includes(payload.deviceId))
-      return true;
-    if (await anySharedDeviceActive([payload.deviceId]))
-      return await markSessionSharedDevice(sessionId, payload.deviceId);
-    return true;
-  } catch (error) {
-    logger.warn({ err: error }, "shared device early stamp failed");
-    return true;
+    if (payload === null) return existing;
+    deviceId = payload.deviceId;
+  } catch {
+    // A badly signed token adds nothing.
+    return existing;
   }
+  if (existing.includes(deviceId)) return existing;
+  try {
+    if (await anySharedDeviceActive([deviceId]))
+      return (await markSessionSharedDevice(sessionId, deviceId))
+        ? withSharedMark(existing, deviceId)
+        : null;
+    return existing;
+  } catch (error) {
+    throw sharedDeviceCheckUnavailable(error, "early stamp");
+  }
+}
+
+/** Fail-closed 503 (legend-vzvok) for a database error while checking or marking a shared device. */
+function sharedDeviceCheckUnavailable(error: unknown, step: string): HttpError {
+  logger.warn(
+    { err: serializeError(error) },
+    `shared device ${step} failed, refusing request`,
+  );
+  return new HttpError(
+    503,
+    "SERVICE_UNAVAILABLE",
+    "Perangkat bersama tidak bisa diperiksa sekarang. Coba lagi sebentar.",
+  );
+}
+
+/**
+ * Race guard (legend-vzvok), for a request whose stamp saw no marks. When the
+ * token's device is NOW active shared (flagged between the stamp lookup and
+ * the guard's own lookup), record the mark before the caller refuses with 403.
+ * Returns false when the device is not active shared (the caller lets the
+ * request pass). Throws 403 SHARED_DEVICE_MARK_LIMIT when the 8 marks are full;
+ * a database error fails closed with 503 SERVICE_UNAVAILABLE.
+ */
+export async function recordMarkIfDeviceNowShared(
+  sessionId: string,
+  userId: string,
+  deviceId: string,
+): Promise<boolean> {
+  let marked: boolean;
+  try {
+    if (!(await anySharedDeviceActive([deviceId]))) return false;
+    marked = await markSessionSharedDevice(sessionId, deviceId);
+  } catch (error) {
+    throw sharedDeviceCheckUnavailable(error, "race mark");
+  }
+  if (!marked) throw await sharedDeviceMarkLimit(sessionId, userId);
+  return true;
 }

@@ -1,4 +1,5 @@
-import { useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useRouteContext } from "@tanstack/react-router";
 import type {
   KitchenTicketDetail,
@@ -36,6 +37,10 @@ import { Label } from "@/components/ui/label";
 import { ApiError } from "@/lib/api/errors.ts";
 import { useTenantContext } from "@/lib/tenant-context";
 import type { AreaAccess } from "@/lib/areas/access";
+import { fetchStationSnapshot } from "../api.ts";
+import { kdsKeys } from "../queries.ts";
+import { useKdsRealtime } from "../use-kds-realtime.ts";
+import type { KdsRealtimeStatus } from "../kds-realtime.ts";
 import {
   useBoard,
   useKdsActions,
@@ -191,6 +196,51 @@ function KdsContent() {
   );
 }
 
+/**
+ * Live connection chip of the board. Icon plus text, never color alone; the
+ * denied state tells the cashier what to do and offers the manual reconnect.
+ */
+function RealtimeStatus({
+  status,
+  onReconnect,
+}: {
+  status: KdsRealtimeStatus;
+  onReconnect: () => void;
+}) {
+  const t = useT();
+  // The live region stays mounted so screen readers announce later changes.
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      data-slot="kds-realtime-status"
+      className="flex flex-wrap items-center gap-2"
+    >
+      {status === "stopped" ? null : status === "open" ? (
+        <Badge tone="success">
+          <CircleCheck aria-hidden="true" />
+          {t("kds.realtime.open")}
+        </Badge>
+      ) : status === "denied" ? (
+        <>
+          <Badge tone="danger" className="whitespace-normal">
+            <CircleAlert aria-hidden="true" />
+            {t("kds.realtime.denied")}
+          </Badge>
+          <Button variant="outline" size="sm" onClick={onReconnect}>
+            {t("kds.realtime.reconnect")}
+          </Button>
+        </>
+      ) : (
+        <Badge tone="warning">
+          <TriangleAlert aria-hidden="true" />
+          {t("kds.realtime.connecting")}
+        </Badge>
+      )}
+    </div>
+  );
+}
+
 function StationBoard({
   outletId,
   stationId,
@@ -203,6 +253,56 @@ function StationBoard({
   const t = useT();
   const board = useBoard(outletId, stationId);
   useKdsHeartbeat(outletId, stationId);
+  const queryClient = useQueryClient();
+  const resumeRef = useRef<((after: number) => void) | null>(null);
+  const reconnectRef = useRef<(() => void) | null>(null);
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The 2s board poll stays as the backup: a ticket frame only makes the
+  // refresh immediate. No cursor is known before the socket's `hello`.
+  const realtime = useKdsRealtime({
+    outletId,
+    stationId,
+    after: null,
+    onTicket: () => {
+      void queryClient.invalidateQueries({
+        queryKey: kdsKeys.board(outletId, stationId),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: kdsKeys.stationSummary(outletId),
+      });
+    },
+    onResync: () => {
+      void (async () => {
+        try {
+          await queryClient.invalidateQueries({
+            queryKey: kdsKeys.board(outletId, stationId),
+          });
+          const snapshot = await fetchStationSnapshot(outletId, stationId);
+          resumeRef.current?.(snapshot.sequence);
+        } catch {
+          // The client stays paused until resumed: polling keeps the board
+          // current, and after 5s a reconnect restarts from the cursor (it
+          // triggers another resync if the server still asks for one).
+          if (retryTimer.current) clearTimeout(retryTimer.current);
+          retryTimer.current = setTimeout(() => {
+            retryTimer.current = null;
+            reconnectRef.current?.();
+          }, 5000);
+        }
+      })();
+    },
+  });
+  const { resume, reconnect } = realtime;
+  useEffect(() => {
+    resumeRef.current = resume;
+    reconnectRef.current = reconnect;
+  }, [resume, reconnect]);
+  useEffect(
+    () => () => {
+      if (retryTimer.current) clearTimeout(retryTimer.current);
+    },
+    [],
+  );
   const action = useKdsActions(outletId);
   const scanner = useScannerStatus(outletId);
   const toast = useToast();
@@ -245,6 +345,10 @@ function StationBoard({
   return (
     <div className="grid items-start gap-5 min-[1001px]:grid-cols-[minmax(0,1fr)_360px]">
       <div className="flex min-w-0 flex-col gap-5">
+        <RealtimeStatus
+          status={realtime.status}
+          onReconnect={realtime.reconnect}
+        />
         {action.isError && (
           <p
             role="alert"

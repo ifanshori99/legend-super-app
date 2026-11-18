@@ -551,9 +551,17 @@ export function createNotificationService(
             const { subscriptionId } = removePushSubscription.params.parse(
               input.params,
             );
-            const result = await tx.execute(
-              sql`DELETE FROM push_subscriptions WHERE user_id=${userId}::uuid AND id=${subscriptionId}::uuid RETURNING id`,
-            );
+            // A session used on a shared device removes only its own
+            // subscription (this session's or this device's), never the
+            // owner's others (legend 1024). Personal sessions keep every row.
+            const caller = input.caller;
+            const result = caller?.sharedDevice
+              ? await tx.execute(
+                  sql`DELETE FROM push_subscriptions WHERE user_id=${userId}::uuid AND id=${subscriptionId}::uuid AND (session_id=${caller.sessionId} OR (${caller.deviceId}::uuid IS NOT NULL AND device_id=${caller.deviceId}::uuid)) RETURNING id`,
+                )
+              : await tx.execute(
+                  sql`DELETE FROM push_subscriptions WHERE user_id=${userId}::uuid AND id=${subscriptionId}::uuid RETURNING id`,
+                );
             if (!result.rows.length)
               throw new HttpError(404, "NOT_FOUND", "Subscription not found.");
             return undefined;

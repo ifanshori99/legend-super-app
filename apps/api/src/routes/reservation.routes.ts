@@ -42,7 +42,11 @@ import {
   requireActingStaffOnSharedDevice,
   resolveActingStaff,
 } from "../middleware/acting-staff.ts";
-import { getAuth, requireAuth } from "../middleware/auth.ts";
+import {
+  getAuth,
+  requireAuth,
+  requireAuthAllowSharedDevice,
+} from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
@@ -82,7 +86,15 @@ const bookingLimits = createPublicBookingLimits();
 const staff = [requireAuth, requireTrustedOrigin, requireTenantContext];
 // Shared-device cashier PIN: the actor (and audit) is the PIN cashier, not the
 // session owner. Only on the money-touching mutations below.
-const actingStaffGuard = [resolveActingStaff, requireActingStaffOnSharedDevice];
+// requireAuthAllowSharedDevice lets a shared-tablet session reach the PIN guard
+// (plain requireAuth would refuse it before the cashier can identify).
+const sharedStaff = [
+  requireAuthAllowSharedDevice,
+  requireTrustedOrigin,
+  requireTenantContext,
+  resolveActingStaff,
+  requireActingStaffOnSharedDevice,
+];
 
 /** The `Idempotency-Key` header only; the body is returned unchanged. */
 function takeIdempotencyKey(req: Request): {
@@ -217,8 +229,7 @@ reservationRouter.post(
 
 reservationRouter.post(
   "/outlets/:outletId/reservations/:reservationId/cancel",
-  ...staff,
-  ...actingStaffGuard,
+  ...sharedStaff,
   jsonBody,
   manage,
   async (req, res) => {
@@ -239,8 +250,7 @@ reservationRouter.post(
 
 reservationRouter.post(
   "/outlets/:outletId/reservations/:reservationId/deposit-link",
-  ...staff,
-  ...actingStaffGuard,
+  ...sharedStaff,
   jsonBody,
   manage,
   async (req, res) => {
@@ -263,8 +273,7 @@ reservationRouter.post(
 
 reservationRouter.post(
   "/outlets/:outletId/reservations/:reservationId/no-show",
-  ...staff,
-  ...actingStaffGuard,
+  ...sharedStaff,
   jsonBody,
   manage,
   async (req, res) => {
@@ -285,8 +294,7 @@ reservationRouter.post(
 
 reservationRouter.post(
   "/outlets/:outletId/reservation-customer-credit/apply",
-  ...staff,
-  ...actingStaffGuard,
+  ...sharedStaff,
   manage,
   jsonBody,
   async (req, res) => {

@@ -11,7 +11,7 @@ import {
   requireActingStaffOnSharedDevice,
   resolveActingStaff,
 } from "../middleware/acting-staff.ts";
-import { requireAuth } from "../middleware/auth.ts";
+import { requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
@@ -23,7 +23,7 @@ import * as parked from "../services/pos-parked-order.service.ts";
 
 export const posParkedOrderRouter = Router({ mergeParams: true });
 posParkedOrderRouter.use(
-  requireAuth,
+  requireAuthAllowSharedDevice,
   requireTrustedOrigin,
   requireTenantContext,
   resolveActingStaff,

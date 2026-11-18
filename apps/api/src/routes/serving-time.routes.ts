@@ -13,7 +13,11 @@
 
 import { Router } from "express";
 import { estimateServingTime } from "@starter/shared/kitchen";
-import { requireAuth } from "../middleware/auth.ts";
+import {
+  requireActingStaffOnSharedDevice,
+  resolveActingStaff,
+} from "../middleware/acting-staff.ts";
+import { requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
   getScopedTenantContext,
@@ -25,9 +29,11 @@ import * as estimate from "../services/kds-estimate.service.ts";
 export const servingTimeRouter = Router({ mergeParams: true });
 
 const guard = [
-  requireAuth,
+  requireAuthAllowSharedDevice,
   requireTrustedOrigin,
   requireTenantContext,
+  resolveActingStaff,
+  requireActingStaffOnSharedDevice,
   requireOutletPermission("order.view", (req) => String(req.params.outletId)),
 ];
 

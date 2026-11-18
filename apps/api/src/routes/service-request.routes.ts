@@ -24,7 +24,11 @@ import {
   resolveServiceRequest as resolveEndpoint,
 } from "@starter/shared/qr-order";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
-import { getAuth, requireAuth } from "../middleware/auth";
+import {
+  requireActingStaffOnSharedDevice,
+  resolveActingStaff,
+} from "../middleware/acting-staff";
+import { getAuth, requireAuthAllowSharedDevice } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
 import { getTenantContext, requireTenantContext } from "../middleware/tenant";
@@ -44,7 +48,13 @@ import { resolveOutletContext } from "./floor-access";
 
 export const serviceRequestRouter = Router();
 
-const staffGuard = [requireAuth, requireTrustedOrigin, requireTenantContext];
+const staffGuard = [
+  requireAuthAllowSharedDevice,
+  requireTrustedOrigin,
+  requireTenantContext,
+  resolveActingStaff,
+  requireActingStaffOnSharedDevice,
+];
 
 function bearer(header: string | undefined): string {
   const match = /^Bearer ([A-Za-z0-9_-]{20,256})$/.exec(header ?? "");
