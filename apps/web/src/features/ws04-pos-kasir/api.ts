@@ -21,6 +21,7 @@ import {
   type PosOrderDetail,
   type PosShift,
 } from "@starter/shared/pos";
+import { validateVoucher } from "@starter/shared/crm";
 import {
   createPosOverride,
   getPosOverride,
@@ -47,6 +48,8 @@ import {
   type OverrideResult,
   type PaymentMethodOption,
   type PaymentSession,
+  type PointsAccount,
+  type PointsQuote,
   type ReceiptResult,
   type RecordCashMovementInput,
   type RecordEdcStandaloneInput,
@@ -57,6 +60,7 @@ import {
   type SubmitBlindCountInput,
   type SupervisorOption,
   type VaBank,
+  type VoucherCheck,
 } from "./types";
 
 // ---- Helpers ---------------------------------------------------------------
@@ -598,4 +602,70 @@ export async function closeDay(
     },
   });
   return dayRecapFrom(data, cutoff);
+}
+
+// ---- Voucher and member points (brief 936) ---------------------------------
+// The server prices every discount and every redemption: these calls return
+// what it says and the screens show it as is.
+
+export async function validateVoucherCode(
+  outletId: string,
+  orderId: string,
+  code: string,
+): Promise<VoucherCheck> {
+  if (API_MOCK)
+    return runPosKasirMock((engine) => engine.validateVoucher(orderId, code));
+  // The preview needs the order subtotal; the server prices the real discount
+  // again when the voucher is applied.
+  const order = await fetchPosOrder(outletId, orderId);
+  const { data } = await callEndpoint(validateVoucher, {
+    body: {
+      code,
+      subtotalIdr: Number(order.subtotalIdr),
+      channel: "dine_in",
+    },
+  });
+  return data.valid
+    ? {
+        valid: true,
+        code,
+        discountPreviewIdr: Number(data.discountPreviewIdr),
+      }
+    : { valid: false, code, reason: data.reason };
+}
+
+// Applying is a POS order discount (source "voucher"), but its body wants a
+// `kind` and `reason` the voucher contract does not define (CONTRACT-GAPS.md).
+export function applyVoucherCode(
+  orderId: string,
+  code: string,
+  idempotencyKey: string,
+): Promise<PaymentSession> {
+  return local("voucher di kasir", (engine) =>
+    engine.applyVoucher(orderId, code, idempotencyKey),
+  );
+}
+
+export const removeVoucherCode = (orderId: string): Promise<PaymentSession> =>
+  local("hapus voucher", (engine) => engine.removeVoucher(orderId));
+
+export const fetchPointsAccount = (
+  orderId: string,
+): Promise<PointsAccount | null> =>
+  local("poin member di kasir", (engine) => engine.pointsAccount(orderId));
+
+export const quotePointsValue = (
+  orderId: string,
+  points: number,
+): Promise<PointsQuote> =>
+  local("nilai tukar poin", (engine) => engine.quotePoints(orderId, points));
+
+export function redeemPointsValue(
+  orderId: string,
+  points: number,
+  idempotencyKey: string,
+): Promise<PaymentSession> {
+  return local("tukar poin di kasir", (engine) =>
+    engine.redeemPoints(orderId, points, idempotencyKey),
+  );
 }

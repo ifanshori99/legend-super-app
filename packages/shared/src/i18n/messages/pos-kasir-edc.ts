@@ -13,6 +13,7 @@ export const posKasirEdcMessages = {
     select: "Pilih terminal & metode EDC",
     waiting: "Pembayaran EDC",
     unknown: "Cek hasil pembayaran EDC",
+    declined: "Pembayaran ditolak",
     success: "Pembayaran EDC berhasil",
     standalone: "Catat pembayaran EDC standalone",
   },
@@ -20,6 +21,7 @@ export const posKasirEdcMessages = {
     select: "Belum dikirim ke EDC",
     waiting: "Menunggu mesin",
     unknown: "Status belum pasti",
+    declined: "Ditolak",
     paid: "Lunas",
     standalone: "Perlu rekonsiliasi",
   },
@@ -45,6 +47,8 @@ export const posKasirEdcMessages = {
       "Nominal dan metode tidak dapat diubah saat transaksi berlangsung.",
     unknownNote:
       "Pesanan tetap tersimpan. Pembayaran ini belum tercatat lunas.",
+    declinedNote:
+      "Pesanan tetap tersimpan. Belum ada pembayaran yang tercatat dari percobaan ini.",
     successNote: "DP dan pembayaran EDC sudah dialokasikan ke pesanan ini.",
     standaloneNote:
       "Pastikan nominal dan hasil berhasil pada struk EDC sebelum dicatat.",
@@ -122,6 +126,18 @@ export const posKasirEdcMessages = {
     checkError: "Status belum bisa dicek",
     footnote:
       "Jika hasil masih belum pasti, hubungi supervisor. Jangan gunakan mode standalone untuk transaksi ini.",
+  },
+  declined: {
+    subtitle: "Terminal menolak transaksi ini. Tagihan belum lunas.",
+    reasonFallback: "Bank atau terminal tidak memberi alasan.",
+    codeLabel: "Kode respons",
+    noticeTitle: "Tidak ada dana yang tercatat",
+    noticeBody:
+      "Minta pelanggan memakai kartu lain, atau pilih metode pembayaran lain.",
+    retry: "Coba lagi di terminal",
+    retrying: "Mengirim ulang…",
+    otherMethod: "Pilih metode lain",
+    retryError: "Nominal belum terkirim ulang",
   },
   success: {
     title: "Disetujui oleh bank",

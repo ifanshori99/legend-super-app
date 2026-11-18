@@ -36,6 +36,13 @@
 - Keputusan pembatas: GET butuh review.respond; POST dan PATCH moderasi butuh crm.feedback.manage; source dipaksa manual; moderasi wajib expectedStatus (409 REVIEW_STATUS_CONFLICT).
 - Gate terarah 52 berkas / 1488 test hijau, root node 3513 lulus, prettier, eslint, typecheck api+shared+web hijau, db:generate kosong. Review architect: 4 temuan sudah dibetulkan.
 - Belum diputuskan (lihat laporan): revoke token saat modul mati, discovery 404 vs unknown tenant, enforce_member_rls untuk customer_profile_id. Rollout: tenant yang memakai MCP wajib diberi flag mcp sebelum deploy.
+## 936 POS panel pembayaran: sisa legend-5w6 (17 Nov 2026)
+
+- Basis milestone/m1 c17c60df7, worktree legend-7944b492. Tanpa migrasi (db:generate kosong). Brief subagent: docs/briefs/sub-936-pos-payment.md.
+- Dibangun: panel voucher (cek kode/scan, potongan dari respons server, hapus voucher dengan konfirmasi), panel tukar poin member (saldo, kuotasi server wajib sebelum tukar), jual tiket fasilitas di /pos/tiket + cetak tiket lewat Print Agent (mock), state EDC "ditolak" eksplisit (alasan + kode respons dari server, jalan kembali ke pesanan), label penyedia QRIS di layar pelanggan dari data (doit/duitku).
+- Jangan rugi: UI tidak menghitung potongan, nilai poin, atau total; tombol terapkan/tukar/hapus/jual/cetak terkunci saat request berjalan. Di luar mock, jual tiket = CONTRACT_PENDING (belum ada kontrak pembayaran tiket; tidak boleh terbit tanpa uang) dan menu Tiket disembunyikan. Mock engine: potongan voucher <= subtotal dan <= sisa, poin <= sisa, idempotency key dicatat hanya setelah sukses (temuan reviewer, dibetulkan + test).
+- Kontrak pending dicatat di apps/web/src/features/ws04-pos-kasir/CONTRACT-GAPS.md: endpoint kasir saldo/kuotasi/tukar poin, apply/hapus voucher di order POS (body applyPosDiscount belum cocok untuk voucher), status EDC declined dari server, jual tiket + tender, cetak tiket Print Agent, cari pelanggan/produk/jam fasilitas untuk kasir, paket fasilitas berisi menu.
+- Langkah berikut: kontrak backend di atas (WS-05/WS-09), lalu legend-l2i (wiring API sungguhan).
 
 ## 925 Harness Lighthouse dan fixture withdrawal (16 Nov 2026)
 
