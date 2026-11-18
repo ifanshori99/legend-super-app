@@ -292,7 +292,7 @@ describe("[legend-1100] parsePreflightFile: only one read-only SELECT (F3)", () 
       "-- komentar\nSELECT 1 /* blok */ ;  ",
       "WITH a AS (SELECT 1 AS n) SELECT n FROM a",
       "WITH RECURSIVE a(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM a WHERE n < 3) SELECT n FROM a",
-      "SELECT 'insert; update; delete' AS teks, $$copy; set$$ AS lain, 'it''s' AS q",
+      "SELECT 'insert; update; delete' AS teks, '$$copy; set$$' AS lain, 'it''s' AS q",
       "SELECT t.id FROM tenants t WHERE t.modules ? 'mcp' AND count(*) > 0",
       "SELECT now(), jsonb_typeof(t.x), coalesce(t.y, 0) FROM tenants t",
       'SELECT 1 AS "update"',
@@ -377,6 +377,14 @@ describe("[legend-1100] parsePreflightFile: only one read-only SELECT (F3)", () 
       "SELECT 1 /* nested /* x */ */; DELETE FROM tabel_a",
       "SELECT E'\\'' ; DELETE FROM tabel_a ; --'",
       "SELECT $a$ x $a$; DELETE FROM tabel_a",
+      "SELECT $$copy; set$$ AS lain",
+      "SELECT 1 AS x$a$, pg_terminate_backend(1) AS y$a$",
+      "SELECT $é$'$é$ AS a, pg_terminate_backend(1) AS b, $é$'$é$ AS c",
+      "SELECT 1 --x\r, pg_terminate_backend(1)",
+      "SELECT * FROM ts_stat('SELECT pg_terminate_backend(pid)::text::tsvector FROM pg_stat_activity')",
+      "SELECT ts_rewrite('a'::tsquery, 'b')",
+      "SELECT lo(1)",
+      "SELECT lo_unlink(1)",
       "SELECT 'belum ditutup",
       "SELECT 1 /* belum ditutup",
     ])
@@ -686,7 +694,7 @@ describe("[legend-a5viv] runReleaseGates: session settings", () => {
       name: "rilis1-legend-a5viv.sql",
       gate: "legend-a5viv",
       before: "none",
-      sql: "SELECT 1 AS bad WHERE current_setting('row_security') <> 'off' OR current_setting('transaction_read_only') <> 'on' OR current_setting('search_path') <> 'public'",
+      sql: "SELECT 1 AS bad WHERE current_setting('row_security') <> 'off' OR current_setting('transaction_read_only') <> 'on' OR current_setting('search_path') <> 'public' OR current_setting('standard_conforming_strings') <> 'on'",
     });
     const report = await runReleaseGates(client, opts());
     expect(report).toMatchObject({ status: "ok", ran: ["legend-a5viv"] });
