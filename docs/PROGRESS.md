@@ -2110,3 +2110,4 @@ Langkah berikut CTO baru:
 - 02:09 CTO: SO kas ronde 7 (G243d) 1 P1: mapping employee_receivable ke 1102 -> jurnal Dr1102/Cr1102 lepas cadangan, kasbon kedua lolos. Resolve. Brief 1118 ke G93wj (tolak mapping ganda role kas, tolak jurnal Dr/Cr akun sama, cadangan lepas hanya bila kas turun neto, gerbang 0 baris).
 - 02:13 CTO: retro 3 jam dimulai (Sonnet, akun Claude #5 7d 19%). Bahan: antre heavy, renomor migrasi berulang (1072 vs batch92 0485-0488), SO ronde 7 kas + 1114 refund kasir P1 baru.
 - 02:16 CTO: SO refund ronde 12 (G311w) 2 P1 (hold ditutup counted meski fact < hold: resolver + closeLiveOwnHold). Resolve. Brief 1119 ke G2yc3: satu invarian cakupan nominal untuk semua penutup hold. 1072 tetap DITAHAN.
+- 02:20 CTO: G8xbm 1tke7 gate SQL di ws/1100 2b0feb16f (67/67 test, merah-dulu ok, typecheck tidak perlu: SQL+test). Architect xhigh review berjalan (subagent CTO).
