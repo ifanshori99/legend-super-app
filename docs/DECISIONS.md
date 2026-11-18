@@ -3,6 +3,16 @@
 Technical decisions the PRD leaves open. Newest first. Each entry names its
 bead so the code comments and tests can be traced back.
 
+## 2026-11-18: Tablet bersama: PIN kasir wajib untuk aksi uang/reservasi; route darurat tetap terbuka (legend-i0ipj, legend-m05vx)
+
+Tingkat K (akses + uang). Keputusan CTO 18 Nov, asal temuan architect 1043 (legend-iq0jz).
+
+1. **PIN kasir wajib di tablet bersama untuk aksi uang/reservasi.** `POST .../reservations/:id/cancel`, `.../deposit-link`, `.../no-show`, `POST .../reservation-customer-credit/apply`, dan `POST /order-issues/:id/resolve` (serta `POST /order-items/:id/issues`) memasang `resolveActingStaff` + `requireActingStaffOnSharedDevice`. Aktor dan subjek izin = kasir ber-PIN (`actorOf`), bukan pemilik sesi tablet; audit log mencatat kasir. Tanpa token di perangkat bertanda `shared_mode`: 401 `ACTING_STAFF_REQUIRED`. Keempat route reservasi memakai `requireAuthAllowSharedDevice` (basis legend-1027), karena `requireAuth` biasa menolak sesi tablet sebelum kasir sempat memasukkan PIN. Alasan: aturan membatasi pembayaran, tidak ada pembatalan, kredit, atau refund atas nama pemilik sesi yang dipakai bergantian.
+2. **Perangkat pribadi tidak berubah.** Tanpa flag `shared_mode`, pemilik sesi tetap aktor.
+3. **Route darurat tetap terbuka di tablet bersama (keselamatan).** `emergency.routes.ts` (`POST /api/emergency/sessions`, `DELETE .../current`) dan `emergency-press.routes.ts` (`POST /press`, `POST /alerts/:id/ack`, `GET /fallback`, `GET /open-alerts`) tidak lewat `requireAuth`/allowlist tablet bersama dan tidak diubah. Batas: hanya buka sesi darurat, ack alert, dan POS fallback (daftar alarm tanpa data uang). Tidak ada aksi uang. Dikunci oleh `apps/api/src/test/emergency-no-money-routes.test.ts` (daftar route persis, tak ada path uang, sesi darurat ditolak di route uang).
+
+Konsekuensi: kasir wajib PIN dulu di tablet bersama sebelum membatalkan reservasi atau menerapkan kredit; route baru di router darurat yang menyentuh uang akan menggagalkan test pengunci.
+
 ## 2026-11-17: Rotasi kunci mencakup token ChatGPT dan langganan push (legend-rj284)
 
 Tingkat K. Rancangan lengkap di `docs/design/reseal-chatgpt-push.md` (Opsi B).

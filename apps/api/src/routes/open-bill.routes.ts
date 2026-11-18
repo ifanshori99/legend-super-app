@@ -17,10 +17,11 @@ import {
   upsertOpenBillPolicyInputSchema,
 } from "@starter/shared/qr-order";
 import {
+  actorOf,
   requireActingStaffOnSharedDevice,
   resolveActingStaff,
 } from "../middleware/acting-staff";
-import { getAuth, requireAuthAllowSharedDevice } from "../middleware/auth";
+import { requireAuthAllowSharedDevice } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
 import { getTenantContext, requireTenantContext } from "../middleware/tenant";
@@ -99,12 +100,7 @@ openBillRouter.put(
       outletId,
     );
     res.json({
-      data: await upsertOpenBillPolicy(
-        context,
-        outletId,
-        input,
-        getAuth(req).user.id,
-      ),
+      data: await upsertOpenBillPolicy(context, outletId, input, actorOf(req)),
     });
   },
 );
@@ -134,7 +130,7 @@ openBillRouter.post(
           context,
           sessionId,
           input,
-          getAuth(req).user.id,
+          actorOf(req),
           { deviceId: await currentDeviceIdOf(req) },
         ),
       });

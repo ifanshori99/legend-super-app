@@ -1,5 +1,6 @@
 import {
   listKitchenStationLabels,
+  listKitchenStationTickets,
   listKitchenStations,
   getKitchenBoard,
   getKitchenStationSummary,
@@ -49,6 +50,20 @@ export async function fetchBoard(
   return (
     await callEndpoint(
       getKitchenBoard,
+      { params: { outletId, stationId } },
+      { signal },
+    )
+  ).data;
+}
+/** Open tickets plus the realtime cursor (`sequence`) they are current to. */
+export async function fetchStationSnapshot(
+  outletId: string,
+  stationId: StationConfig["stationId"],
+  signal?: AbortSignal,
+) {
+  return (
+    await callEndpoint(
+      listKitchenStationTickets,
       { params: { outletId, stationId } },
       { signal },
     )

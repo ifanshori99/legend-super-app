@@ -15,12 +15,18 @@
 //
 // - a support (impersonated) session also needs an active support access grant
 //   for this tenant (TEN-04), re-checked on every wakeup and recheck;
+// - a session used on a flagged shared device (legend-wa9n7) needs the
+//   `x-device-token` and `x-acting-staff` upgrade headers (or, for a browser,
+//   the same two tokens as Sec-WebSocket-Protocol entries); the cook is then the
+//   user whose permission is checked (see resolveKdsStaffConnection);
 //
 // Any failure answers null (deny by default).
 
 import type { IncomingMessage } from "node:http";
 import { fromNodeHeaders } from "better-auth/node";
 import { stationIdSchema } from "@starter/shared/access";
+import { DEVICE_TOKEN_HEADER } from "@starter/shared/platform";
+import { ACTING_STAFF_HEADER } from "@starter/shared/pos/acting-staff";
 import {
   assertOutletInScope,
   outletIdSchema,
@@ -36,11 +42,22 @@ import { pool } from "../db/index.ts";
 import { auth } from "../lib/auth.ts";
 import { assertSupportAccess } from "./platform-support.service.ts";
 import { parseKdsRealtimeUrl } from "./kds-realtime.ts";
+import { carryKdsCredentialsFromProtocols } from "./kds-realtime-protocol.ts";
 import { resolveHostname } from "./org-resolve.service.ts";
 import {
   loadTenantAccess,
   resolveAccessSnapshot,
 } from "./permission-resolver.ts";
+import { resolveActingStaffToken } from "./pos-acting-staff.service.ts";
+import {
+  registeredDeviceIdOfHeaders,
+  signedDeviceIdOfHeaders,
+} from "./raw-device-token.ts";
+import {
+  closeSessionAtMarkLimit,
+  isActiveSharedDevice,
+  markSessionSharedDevice,
+} from "./shared-device.service.ts";
 
 const PERMISSION = "kds.ticket.process";
 
@@ -85,6 +102,9 @@ export async function resolveKdsStaffConnection(
   try {
     const target = parseKdsRealtimeUrl(request.url);
     if (!target) return null;
+    // Browser carrier (legend-dsbqr): subprotocol tokens become the two
+    // headers below. Idempotent, so every wakeup / recheck can call it again.
+    if (!carryKdsCredentialsFromProtocols(request)) return null;
     const session = await auth.api.getSession({
       headers: fromNodeHeaders(request.headers),
       query: { disableCookieCache: true },
@@ -112,7 +132,67 @@ export async function resolveKdsStaffConnection(
         dataClass: "personal",
         intent: "read",
       });
-    const userId = session.user.id;
+    const outletId = outletIdSchema.parse(target.outletId);
+    // legend-wa9n7, legend-1024: a session used on a flagged shared device may
+    // not act as the login owner here. A session with any mark, or an upgrade
+    // whose signed device header names an active flagged device, is a shared
+    // device session EVEN when the marks have lapsed (restrict by default): it
+    // needs a registry-valid device token AND a live cashier token (bound to
+    // that device, this session and the path outlet), and the cook becomes the
+    // user checked below. A device token the registry refuses, or a cashier
+    // token that is ended or expired, is a refusal on any device, never a
+    // fall back to the login owner. A personal session with no token at all is
+    // unchanged. Headers persist on `request`, so every wakeup and recheck
+    // re-resolves the tokens (revoked or expired throws -> deny). A browser
+    // cannot set WebSocket headers: kds-realtime-protocol.ts moves its
+    // Sec-WebSocket-Protocol carrier (legend-dsbqr) into these same headers
+    // before this runs.
+    const headerDeviceId = signedDeviceIdOfHeaders(
+      request.headers,
+      tenant.tenantId,
+    );
+    // A signed header naming an active flagged device also stamps the session
+    // (as requireActingStaffOnSharedDevice does over HTTP), so the same cookie
+    // replayed without the header stays marked. A full mark list (8 active)
+    // refuses this device and closes the login session, as the HTTP route does
+    // (sharedDeviceMarkLimit), so the cookie cannot pass header-less later.
+    const headerFlagged =
+      headerDeviceId !== null &&
+      (await isActiveSharedDevice(tenant, headerDeviceId));
+    if (
+      headerDeviceId !== null &&
+      headerFlagged &&
+      !(await markSessionSharedDevice(session.session.id, headerDeviceId))
+    ) {
+      await closeSessionAtMarkLimit(session.session.id, session.user.id);
+      return null;
+    }
+    const sharedSession =
+      (session.session.sharedDeviceIds?.length ?? 0) > 0 || headerFlagged;
+    const deviceHeader = request.headers[DEVICE_TOKEN_HEADER];
+    const actingToken = request.headers[ACTING_STAFF_HEADER];
+    const hasDeviceToken =
+      typeof deviceHeader === "string" && deviceHeader !== "";
+    const hasActingToken = typeof actingToken === "string";
+    let userId = session.user.id;
+    if (sharedSession || hasDeviceToken || hasActingToken) {
+      const deviceId = await registeredDeviceIdOfHeaders(
+        request.headers,
+        tenant.tenantId,
+      );
+      if (hasDeviceToken && deviceId === null) return null;
+      if (sharedSession && (deviceId === null || !hasActingToken)) return null;
+      if (hasActingToken) {
+        if (deviceId === null) return null;
+        const acting = await resolveActingStaffToken(tenant, {
+          token: actingToken,
+          deviceId,
+          sessionId: session.session.id,
+          outletId,
+        });
+        userId = acting.staffUserId;
+      }
+    }
     const data = await loadTenantAccess(
       establishScopedTenantContext(tenant, { kind: "tenant" }),
       userId,
@@ -124,7 +204,6 @@ export async function resolveKdsStaffConnection(
       mfaVerified: false,
       now: new Date(),
     });
-    const outletId = outletIdSchema.parse(target.outletId);
     // Station grant only (a station-scoped cook reaches just their station);
     // the minted context's outlet must be the path's outlet.
     const context = snapshot.contextFor(PERMISSION, {

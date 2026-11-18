@@ -404,15 +404,14 @@ describe("1012 shell route and personal devices", () => {
     expect(after.status, JSON.stringify(after.body)).toBe(200);
   });
 
-  it("a lapsed mark (device unflagged) opens the back office again", async () => {
+  it("a lapsed mark (device unflagged) keeps the back office closed (fail closed, 1027)", async () => {
     const { who, device } = await markedMember("Sesi Tanda Lapuk");
     expectNotAllowed(await backoffice(who, "/api/org/brands"));
 
     await setFlag(device, false);
-    const reopened = await backoffice(who, "/api/org/brands");
-    expect(reopened.status, JSON.stringify(reopened.body)).toBe(200);
+    expectNotAllowed(await backoffice(who, "/api/org/brands"));
     for (const { path } of BACKOFFICE_ROUTES) {
-      expectNotGuarded(await backoffice(who, path));
+      expectNotAllowed(await backoffice(who, path));
     }
   });
 });

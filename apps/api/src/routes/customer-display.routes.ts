@@ -38,15 +38,15 @@ export const customerDisplayRouter = Router({ mergeParams: true });
 
 const BASE = "/customer-display";
 const outletOf = (req: Request) => String(req.params.outletId ?? "");
+// Every cashier route, the preview GET included, needs the cashier token on a
+// shared device (legend-3z0ds, legend-dgtz0). The display-device branch of the
+// GET answers before this chain and authenticates by its own device token.
 const staff = [
   requireAuthAllowSharedDevice,
   requireTrustedOrigin,
   resolveActingStaff,
+  requireActingStaffOnSharedDevice,
 ];
-// Commands (pair, config, clear) also need the cashier token on a shared
-// device (legend-3z0ds). The cashier preview GET stays tokenless: a second
-// window of the same device has no token of its own and only reads.
-const staffCommand = [...staff, requireActingStaffOnSharedDevice];
 const operate = requireOutletPermission("pos.sale.create", outletOf);
 const view = requireOutletPermission("order.view", outletOf);
 
@@ -105,14 +105,21 @@ customerDisplayRouter.get(
   view,
   async (req, res) => {
     const query = getCustomerDisplayState.query.parse(req.query);
-    const terminalDeviceId =
-      query.terminalDeviceId ?? (await currentDeviceIdOf(req));
+    const ownDeviceId = await currentDeviceIdOf(req);
+    const terminalDeviceId = query.terminalDeviceId ?? ownDeviceId;
     if (!terminalDeviceId)
       throw new HttpError(
         400,
         "TERMINAL_DEVICE_REQUIRED",
         "Sebutkan terminalDeviceId atau kirim dari perangkat kasir.",
       );
+    // A registered device token pins the preview to that very terminal; the
+    // answer is the unpaired 404, so another terminal's bill stays hidden.
+    if (
+      ownDeviceId !== null &&
+      ownDeviceId.toLowerCase() !== terminalDeviceId.toLowerCase()
+    )
+      throw display.notPaired();
     res.json({
       data: await display.readStateForTerminal(
         getTenantContext(req),
@@ -147,7 +154,7 @@ const pairSlots = new WeakMap<Request, string>();
 customerDisplayRouter.post(
   `${BASE}/pair`,
   requireTenantContext,
-  ...staffCommand,
+  ...staff,
   jsonBody,
   async (req, res, next) => {
     pairCustomerDisplay.body.parse(req.body);
@@ -188,7 +195,7 @@ customerDisplayRouter.post(
 customerDisplayRouter.put(
   `${BASE}/selection`,
   requireTenantContext,
-  ...staffCommand,
+  ...staff,
   operate,
   jsonBody,
   async (req, res) => {
@@ -208,7 +215,7 @@ customerDisplayRouter.put(
 customerDisplayRouter.delete(
   `${BASE}/pairings/:pairingId`,
   requireTenantContext,
-  ...staffCommand,
+  ...staff,
   operate,
   async (req, res) => {
     const params = revokeCustomerDisplayPairing.params.parse(req.params);

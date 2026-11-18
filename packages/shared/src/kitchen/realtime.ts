@@ -165,6 +165,39 @@ export const getKitchenTicket = defineEndpoint({
 /** WebSocket subprotocol; the server answers with this value only. */
 export const KITCHEN_REALTIME_PROTOCOL = "legend-kds.v1";
 
+/**
+ * Credential carriers for a browser on a shared device (legend-dsbqr). A
+ * browser cannot set headers on a WebSocket, so the client offers extra
+ * subprotocols `legend-kds-device.<device token>` and
+ * `legend-kds-staff.<acting staff token>` next to KITCHEN_REALTIME_PROTOCOL.
+ * The server maps them to the x-device-token / x-acting-staff headers (a real
+ * header wins), never echoes them back and never reads a query string.
+ */
+export const KITCHEN_REALTIME_DEVICE_PROTOCOL_PREFIX = "legend-kds-device.";
+export const KITCHEN_REALTIME_STAFF_PROTOCOL_PREFIX = "legend-kds-staff.";
+
+/** RFC 6455 subprotocol token characters that our tokens use. */
+const PROTOCOL_TOKEN = /^[A-Za-z0-9._~-]+$/;
+
+/**
+ * Subprotocol list for `new WebSocket(url, protocols)`. A token with
+ * characters a subprotocol cannot carry is left out (the server then denies).
+ */
+export function kitchenRealtimeProtocols(credentials: {
+  deviceToken?: string | null;
+  actingStaffToken?: string | null;
+}): string[] {
+  const protocols: string[] = [KITCHEN_REALTIME_PROTOCOL];
+  const { deviceToken, actingStaffToken } = credentials;
+  if (deviceToken && PROTOCOL_TOKEN.test(deviceToken))
+    protocols.push(`${KITCHEN_REALTIME_DEVICE_PROTOCOL_PREFIX}${deviceToken}`);
+  if (actingStaffToken && PROTOCOL_TOKEN.test(actingStaffToken))
+    protocols.push(
+      `${KITCHEN_REALTIME_STAFF_PROTOCOL_PREFIX}${actingStaffToken}`,
+    );
+  return protocols;
+}
+
 /** `/api/outlets/:outletId/kitchen/stations/:stationId/realtime?after=<n>` */
 export const KITCHEN_REALTIME_PATH =
   "/api/outlets/:outletId/kitchen/stations/:stationId/realtime";

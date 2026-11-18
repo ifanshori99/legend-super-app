@@ -21,7 +21,9 @@
 //    `emergency-cloud` (acknowledge/resolve are manager actions, not cashier ones) is
 //    "backoffice" (round 2 decision of legend-3z0ds).
 //  - `notification` and `me` are "shell" at file level although most of their routes stay
-//    strict; only per-route opt-ins are lenient. The per-occurrence rules below apply to
+//    strict; only per-route opt-ins are lenient. In `notification` the opt-in removePush
+//    is further limited: on a shared-device session it deletes only the subscription of
+//    that session or that device (legend 1024). The per-occurrence rules below apply to
 //    "pos" files only.
 //  - platform-* files that use `requirePlatformAuth` are "backoffice"; platform-brand,
 //    platform-text-overrides and platform-tls carry no auth middleware of their own and
@@ -284,11 +286,6 @@ const NO_TOKEN_GUARD: Record<string, { count: number; reason: string }> = {
     reason:
       "createPosCatalogRouter GET: a read of the catalog needs no cashier token (a second window of the device has none).",
   },
-  "customer-display": {
-    count: 1,
-    reason:
-      "the `staff` chain used by the preview GET reads only; commands add the guard through `staffCommand`.",
-  },
 };
 
 /** Opt-ins whose `.use` chain has no cashier guards: they sit on each route instead. */
@@ -316,6 +313,31 @@ const PLAIN_REQUIRE_AUTH: Record<string, { count: number; reason: string }> = {
     count: 1,
     reason:
       "only posOverrideRouter is POS; staffPinRouter (PIN set by a manager) is back office.",
+  },
+};
+
+/**
+ * "backoffice" files with exactly this many per-route opt-ins to shared devices
+ * (legend-hlmbk, brief 1018 part B): the idle keep-alive POST
+ * /api/auth/sessions/current/activity must work on a shared device. Every other
+ * route of the file keeps the default-deny requireAuth.
+ * Assumption: the opt-in is a single `requireAuthAllowSharedDevice` use inside
+ * identity.routes.ts (not a new router file). If the engineer moves the route to
+ * its own file, that file is a "shell" decision and this entry is removed.
+ */
+const BACKOFFICE_SHARED_OPT_INS: Record<
+  string,
+  { count: number; reason: string }
+> = {
+  identity: {
+    count: 1,
+    reason:
+      "POST /sessions/current/activity: idle keep-alive of a shared-device session (legend-hlmbk).",
+  },
+  reservation: {
+    count: 1,
+    reason:
+      "legend-i0ipj: cashier PIN for cancel, deposit-link, no-show and credit-apply through sharedStaff; every other reservation route keeps the default-deny requireAuth.",
   },
 };
 
@@ -404,6 +426,17 @@ describe("1012 shared-device decision per router file", () => {
     },
   );
 
+  it("customer-display: the one cashier chain carries the token guard and every cashier route spreads it (legend-dgtz0)", () => {
+    const code = codeNoImports("customer-display");
+    const start = code.search(/\brequireAuthAllowSharedDevice\b/);
+    const chain = enclosingGroup(code, start);
+    expect(chain).toMatch(/\bresolveActingStaff\b/);
+    expect(chain).toMatch(TOKEN_GUARD);
+    // preview GET (staff branch), pair, selection, delete: no chain without the guard.
+    expect(occurrences(code, /\.\.\.staff\b/g)).toHaveLength(4);
+    expect(code).not.toMatch(/\bstaffCommand\b/);
+  });
+
   it.each(namesOf("pos"))(
     "pos router %s keeps no plain requireAuth except the listed exceptions",
     (name) => {
@@ -425,12 +458,42 @@ describe("1012 shared-device decision per router file", () => {
   it.each(namesOf("backoffice"))(
     "backoffice router %s never opts in to shared devices",
     (name) => {
+      const uses = occurrences(
+        codeNoImports(name),
+        /\brequireAuthAllowSharedDevice\b/g,
+      ).length;
       expect(
-        codeOf(name),
-        `${name} is back office: it must keep the default-deny requireAuth`,
-      ).not.toContain("requireAuthAllowSharedDevice");
+        uses,
+        `${name} is back office: it must keep the default-deny requireAuth (allowed opt-ins, with reason, are in BACKOFFICE_SHARED_OPT_INS)`,
+      ).toBe(BACKOFFICE_SHARED_OPT_INS[name]?.count ?? 0);
     },
   );
+
+  it("identity: only the keep-alive route opts in to shared devices (legend-hlmbk)", () => {
+    const code = codeNoImports("identity");
+    const starts = occurrences(code, /\brequireAuthAllowSharedDevice\b/g);
+    expect(starts).toHaveLength(1);
+    // The opt-in sits on the sessions/current/activity route, not on a router-wide use.
+    const window = code.slice(
+      Math.max(0, (starts[0] ?? 0) - 400),
+      (starts[0] ?? 0) + 400,
+    );
+    expect(window).toMatch(/sessions\/current\/activity/);
+  });
+
+  it("reservation: the one sharedStaff chain carries the cashier guards (legend-i0ipj)", () => {
+    const code = codeNoImports("reservation");
+    const start = code.search(/\brequireAuthAllowSharedDevice\b/);
+    const chain = enclosingGroup(code, start);
+    expect(chain).toMatch(/\bresolveActingStaff\b/);
+    expect(chain).toMatch(/\brequireActingStaffOnSharedDevice\b/);
+  });
+
+  it("notification: removePush resolves the caller so a shared-device session removes only its own subscription (legend 1024)", () => {
+    const code = codeNoImports("notification");
+    expect(code).toMatch(/"removePush"\s*&&\s*ports\.resolveCaller/);
+    expect(code).toMatch(/sharedDevice\?: boolean/);
+  });
 
   it.each(namesOf("public"))(
     "public router %s has no login-session guard",
@@ -459,6 +522,8 @@ describe("1012 login-session reads are allow-listed", () => {
       "dev-only public-site credential resolver; optional session lookup, not a guard.",
     "middleware/auth.ts":
       "the guard itself (requireAuth / requireAuthAllowSharedDevice).",
+    "middleware/shared-device-auth.ts":
+      "legend-wa9n7: /api/auth/* guard; reads the session only to refuse a shared-device session, never authorises.",
     "middleware/support-session.ts":
       "blocks impersonated sessions on auth routes; reads, never authorises.",
     "routes/identity-auth.routes.ts":

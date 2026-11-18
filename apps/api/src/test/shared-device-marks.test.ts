@@ -11,7 +11,8 @@
 //  - The guard refuses a request (401 ACTING_STAFF_REQUIRED) when ANY marked
 //    device is still active and flagged, in ANY tenant of the same login
 //    (the cookie is shared across tenants through the parent cookie domain).
-//    The mark lapses only when every marked device is unflagged/revoked/gone.
+//    1027: a mark never lapses for access; lapsed entries only make room for
+//    new ones. A session with any entry stays shared-device (fail closed).
 //  - Early stamp: a request on a route that is NOT guarded but is behind
 //    requireAuth, carrying the validly signed token of an active flagged device,
 //    stamps the session (tenant taken from the token payload). Unflagged devices
@@ -267,9 +268,10 @@ describe("shared device marks: several devices on one session", () => {
     await setFlag(b, false);
     expectRequired(await parked(who, tenantA));
 
-    // Every marked device unflagged: the old behaviour returns.
+    // 1027: every marked device unflagged: the mark never lapses, the
+    // session still needs a PIN (fail closed).
     await setFlag(a, false);
-    expectOk(await parked(who, tenantA));
+    expectRequired(await parked(who, tenantA));
   });
 
   it("an unflagged device's valid token does not let a session with a live mark escape", async () => {
@@ -297,7 +299,8 @@ describe("shared device marks: several devices on one session", () => {
       "UPDATE devices SET status = 'revoked', revoked_at = now() WHERE id = $1",
       [b],
     );
-    expectOk(await parked(who, tenantA));
+    // 1027: both marked devices revoked: still shared, still a PIN.
+    expectRequired(await parked(who, tenantA));
   });
 });
 
@@ -311,9 +314,10 @@ describe("shared device marks: another tenant of the same login", () => {
     // Cookie only, no device header, Host of tenant B.
     expectRequired(await parked(who, tenantB));
 
+    // 1027: unflagging A's device does not reopen owner access anywhere.
     await setFlag(deviceOfA, false);
-    expectOk(await parked(who, tenantB));
-    expectOk(await parked(who, tenantA));
+    expectRequired(await parked(who, tenantB));
+    expectRequired(await parked(who, tenantA));
   });
 
   it("a session that never touched a flagged device is open in both tenants", async () => {
@@ -695,12 +699,13 @@ describe("shared device marks: cap of 8 never evicts a live mark", () => {
       expectRequired(await parked(who, tenantA));
     }
 
-    // Also unflag everything but D: D alone keeps the refusal; unflag D: open.
+    // Also unflag everything but D: D alone keeps the refusal; unflag D too:
+    // 1027 the session stays shared (a mark never lapses), still a PIN.
     for (const id of others) await setFlag(id, false);
     expectRequired(await parked(who, tenantA));
     expectRequired(await parked(who, tenantB));
     await setFlag(d, false);
-    expectOk(await parked(who, tenantA));
+    expectRequired(await parked(who, tenantA));
   });
 });
 

@@ -16,6 +16,7 @@ import type { PermissionCode } from "@starter/shared/access";
 import { userIdSchema, uuidSchema, z } from "@starter/shared/core";
 import { collectChargeAtPosInputSchema } from "@starter/shared/qr-order";
 import {
+  actorOf,
   requireActingStaffOnSharedDevice,
   resolveActingStaff,
 } from "../middleware/acting-staff.ts";
@@ -113,7 +114,7 @@ for (const action of [
       res.json({
         data: await closeIssueCharge(
           getScopedTenantContext(req),
-          userIdSchema.parse(getAuth(req).user.id),
+          userIdSchema.parse(actorOf(req)),
           chargeId,
           action,
           input,
@@ -139,7 +140,7 @@ orderRecoveryChargeRouter.post(
     res.json({
       data: await refundIssueCharge(
         getScopedTenantContext(req),
-        userIdSchema.parse(getAuth(req).user.id),
+        userIdSchema.parse(actorOf(req)),
         chargeId,
         input,
         new Date(),
@@ -176,7 +177,7 @@ orderRecoveryChargeRouter.post(
     res.json({
       data: await requestChargeManualRefund(
         getScopedTenantContext(req),
-        userIdSchema.parse(getAuth(req).user.id),
+        userIdSchema.parse(actorOf(req)),
         chargeId,
         input,
         new Date(),
@@ -242,7 +243,7 @@ orderRecoveryChargeRouter.post(
       data: await collectChargeAtPos(
         getScopedTenantContext(req),
         {
-          userId: userIdSchema.parse(getAuth(req).user.id),
+          userId: userIdSchema.parse(actorOf(req)),
           deviceId: await currentDeviceIdOf(req),
         },
         chargeId,

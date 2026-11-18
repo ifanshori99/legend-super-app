@@ -35,6 +35,14 @@ export const kdsMessages = {
   elapsed: "{minutes} menit",
   targetMissing: "Target belum diatur",
   sample: "Contoh data",
+  // Live connection of the board (bead legend-t0m89).
+  realtime: {
+    open: "Tersambung",
+    connecting: "Menyambung ulang...",
+    denied:
+      "Terputus: sesi kasir berakhir. Masukkan PIN kasir lalu sambung ulang.",
+    reconnect: "Sambung ulang",
+  },
   // Keyboard-wedge scanner aside (bead legend-uqfu).
   scanner: {
     title: "Aksi dengan pemindai",
