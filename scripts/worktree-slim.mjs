@@ -17,9 +17,39 @@ import { readdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const root = realpathSync(
-  resolve(dirname(fileURLToPath(import.meta.url)), ".."),
+// Git must act on the repo found below, never on one named by GIT_* env vars
+// (for example when the script runs from a git hook).
+const cleanEnv = Object.fromEntries(
+  Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")),
 );
+
+function gitToplevel(dir) {
+  const result = spawnSync("git", ["rev-parse", "--show-toplevel"], {
+    cwd: dir,
+    encoding: "utf8",
+    env: cleanEnv,
+  });
+  return result.status === 0
+    ? realpathSync(result.stdout.replace(/\r?\n$/, ""))
+    : null;
+}
+
+// Repo root: the checkout this file belongs to (scripts/worktree-slim.mjs).
+// A copy outside a checkout (for example ~/.claude/scripts) uses the
+// toplevel of the current directory instead.
+const scriptPath = realpathSync(fileURLToPath(import.meta.url));
+const ownTop = gitToplevel(dirname(scriptPath));
+const root =
+  ownTop && scriptPath === join(ownTop, "scripts", "worktree-slim.mjs")
+    ? ownTop
+    : gitToplevel(process.cwd());
+if (!root) {
+  console.error(
+    "Bukan di dalam repo git. Jalankan dari root worktree: node <skrip> [opsi]",
+  );
+  process.exit(1);
+}
+
 const metaDir = "apps/api/drizzle/meta";
 const testDir = "apps/api/src/test";
 // Only images are left out: the .md specs and .html mockups in these folders
@@ -36,6 +66,7 @@ function git(gitArgs, options = {}) {
   return spawnSync("git", gitArgs, {
     cwd: root,
     encoding: "utf8",
+    env: cleanEnv,
     ...options,
   });
 }
