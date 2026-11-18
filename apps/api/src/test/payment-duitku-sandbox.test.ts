@@ -2,7 +2,7 @@
 // The two DUITKU_SANDBOX_* variables must hold sandbox credentials only.
 // Creates unpaid sandbox inquiries; never pays, cancels, or refunds anything.
 import { randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 import {
   duitkuBaseUrl,
@@ -14,13 +14,25 @@ import {
   signTransactionStatus,
 } from "../services/payment-duitku-wire";
 
+type ProbeEnv = Partial<Record<string, string | undefined>>;
+
+// The explicit opt-in is part of the gate: credentials alone never enable it.
+function probeEnabled(env: ProbeEnv): boolean {
+  return (
+    !env.CI &&
+    env.DUITKU_SANDBOX_PROBE === "1" &&
+    (env.DUITKU_SANDBOX_MERCHANT_CODE ?? "").length > 0 &&
+    (env.DUITKU_SANDBOX_API_KEY ?? "").length > 0
+  );
+}
+
 const merchantCode = process.env.DUITKU_SANDBOX_MERCHANT_CODE ?? "";
 const apiKey = process.env.DUITKU_SANDBOX_API_KEY ?? "";
-const enabled =
-  !process.env.CI &&
-  process.env.DUITKU_SANDBOX_PROBE === "1" &&
-  merchantCode.length > 0 &&
-  apiKey.length > 0;
+const enabled = probeEnabled(process.env);
+const guidePath = new URL(
+  "../../../../docs/qa/duitku-sandbox-gerbang.md",
+  import.meta.url,
+);
 const credentials = { merchantCode, apiKey, environment: "sandbox" as const };
 const amountIdr = 10_000;
 const baseUrl = duitkuBaseUrl("sandbox");
@@ -62,6 +74,50 @@ describe("Duitku sandbox probe safety", () => {
   it("detects secrets in nested Error messages", () => {
     const secret = "duitku_sandbox_do_not_print_nested_error";
     expect(hasSecret({ err: new Error(secret) }, secret)).toBe(true);
+  });
+
+  const dummy = {
+    DUITKU_SANDBOX_MERCHANT_CODE: "dummy-merchant",
+    DUITKU_SANDBOX_API_KEY: "dummy-key",
+  };
+
+  it("runs only with the explicit opt-in, credentials, and no CI", () => {
+    expect(probeEnabled({ ...dummy, DUITKU_SANDBOX_PROBE: "1" })).toBe(true);
+    expect(probeEnabled(dummy)).toBe(false);
+    expect(probeEnabled({ ...dummy, DUITKU_SANDBOX_PROBE: "true" })).toBe(
+      false,
+    );
+    expect(
+      probeEnabled({ ...dummy, DUITKU_SANDBOX_PROBE: "1", CI: "true" }),
+    ).toBe(false);
+    expect(
+      probeEnabled({
+        DUITKU_SANDBOX_PROBE: "1",
+        DUITKU_SANDBOX_MERCHANT_CODE: "dummy-merchant",
+      }),
+    ).toBe(false);
+  });
+
+  it("documents a command that sets the opt-in so certification cannot be skipped", async () => {
+    const guide = await readFile(guidePath, "utf8");
+    const commands = guide
+      .split("\n")
+      .filter((line) => line.includes("payment-duitku-sandbox.test.ts"));
+    expect(commands.length).toBeGreaterThan(0);
+    for (const command of commands)
+      expect(command).toContain("DUITKU_SANDBOX_PROBE=1");
+    // Operator must confirm the run was not skipped and the evidence is new.
+    expect(guide).toContain("recordedAt");
+    expect(guide).toMatch(/dilewati|skipped/i);
+  });
+
+  it("fails instead of skipping when the opt-in is set outside CI without credentials", () => {
+    const optedIn = process.env.DUITKU_SANDBOX_PROBE === "1" && !process.env.CI;
+    if (optedIn)
+      expect(
+        enabled,
+        "DUITKU_SANDBOX_PROBE=1 set but sandbox credentials missing: certification would be skipped",
+      ).toBe(true);
   });
 });
 
