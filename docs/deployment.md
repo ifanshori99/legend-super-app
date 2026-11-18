@@ -203,6 +203,82 @@ The builds need no secrets. Pass real values to running containers; never put se
 
 Both images run as the unprivileged `node` user. Their `HEALTHCHECK`s report liveness only (`/api/health`, `/icon.svg`), so a database outage does not restart healthy processes. `GET /api/health/ready` additionally checks PostgreSQL for platforms that want a readiness probe. Both servers shut down gracefully on SIGTERM.
 
+## Gerbang rilis 1
+
+Gerbang rilis 1 menahan deploy ke database yang sudah berisi data bila data itu akan merusak migrasi baru, atau bila tabel migrasi tidak cocok dengan repo. Runner ada di `apps/api/src/db/release-gates.ts` dan dipanggil dari `predeploy-check` (lihat "Pre-deploy check"), sehingga `deploy/single-vm/deploy.sh` dan first boot `provision-roles.sh` ikut menahan. Runner hanya membaca: satu transaksi `READ ONLY` dengan `row_security=off`, selalu di-rollback.
+
+Urutan yang dijalankan `predeploy-check`:
+
+1. Cek migrator dan outbox yang sudah ada (legend-jtnd, legend-k1np).
+2. **Cek drift migrasi** (legend-fgg1h). Tiap baris `drizzle.__drizzle_migrations` dicocokkan dengan journal repo (`apps/api/drizzle/meta/_journal.json`) lewat `created_at` = `when`, lalu hash-nya dibandingkan dengan sha256 berkas `.sql` repo (cara hash migrator drizzle). Hash beda atau `created_at` yang tidak dikenal journal berarti gagal. Entri journal yang `when`-nya lebih kecil dari `created_at` terbaru di database tetapi tidak punya baris di database juga gagal (`missing:<tag>`): drizzle hanya menjalankan entri yang lebih baru dari yang terakhir diterapkan, jadi entri itu tidak akan pernah dijalankan. Pengecualian hash hanya lewat daftar izin `scripts/preflight/drift-allow.json` (lihat di bawah).
+3. **Berkas gerbang data.** Tiap `scripts/preflight/rilis1-*.sql` dijalankan berurutan menurut nama. Berkas lain di folder itu (mis. `0301-duplicate-subscriptions.sql`, `drift-allow.json`) tidak dibaca sebagai gerbang. Berkas gerbang dikirim ke PostgreSQL lewat protokol extended, jadi berkas berisi lebih dari satu statement gagal (pesan hanya memuat id gerbang). Header berkas: `gate`, `before` (tag journal atau `none`), `requires` (tabel), `mode` (`block` atau `info`), `resolve` (satu kalimat).
+
+Cara menjalankan manual, di host deploy dengan env file yang sama dengan `deploy.sh`:
+
+```sh
+docker compose --env-file /absolute/path/compose.env -f deploy/single-vm/compose.yaml \
+  --profile migration run --rm migrate node dist/predeploy-check.js
+```
+
+Image migrator memuat `scripts/preflight/` dan `apps/api/drizzle/` (journal dan berkas `.sql`). Path dapat ditimpa dengan env `LEGEND_PREFLIGHT_DIR` dan `LEGEND_MIGRATIONS_DIR`.
+
+### Arti hasil
+
+- **`gerbang data rilis 1: N/A (DB baru)`**: tabel `drizzle.__drizzle_migrations` belum ada atau kosong **dan** `to_regclass('public.tenants')` kosong. Ini database baru: cek drift dan semua gerbang data dilewati karena belum ada data yang bisa dirusak migrasi. Bukan kegagalan.
+- **`tabel migrasi drizzle tidak ada/kosong padahal skema aplikasi ada`**: tabel migrasi hilang atau kosong, tetapi `public.tenants` ada. Riwayat migrasi hilang dari database yang berisi aplikasi, jadi N/A tidak berlaku dan deploy berhenti. Pulihkan tabel migrasi dari backup; jangan mengisinya dengan tangan.
+- **`gerbang <id> dilewati (before-applied)`**: migrasi `before` berkas itu sudah tercatat di tabel migrasi (`created_at` = `when` tag itu). Data lama sudah melewati migrasi tersebut, jadi gerbang tidak relevan lagi. Runner mencatat `gerbang <id> dilewati (before-applied)`.
+- **`gerbang <id> dilewati (requires-missing)`**: salah satu tabel di `requires` belum ada. Tidak ada data di tabel itu yang bisa melanggar. Runner mencatat `gerbang <id> dilewati (requires-missing)`.
+- **`gerbang <id> (info): N baris`**: mode `info` hanya mencetak jumlah (untuk `legend-oh2a5`, N = jumlah tenant). Tidak menahan deploy. Catat angkanya sebagai bukti rilis.
+- **Baris sukses CLI** (`apps/api/src/predeploy-check.ts`): `Pre-deploy check passed: migrator <user> (<superuser|BYPASSRLS>), outbox <N rows, per-destination sequences intact|absent>, <release gates ok (<A> migrations applied, <R> gate(s) run, <S> skipped)|release gates N/A (new database)>.` Contoh: `Pre-deploy check passed: migrator legend_migrator (BYPASSRLS), outbox absent, release gates ok (700 migrations applied, 2 gate(s) run, 1 skipped).` Kegagalan: `Pre-deploy check failed: <pesan>` dan exit code 1.
+- **`gerbang data rilis 1 gagal: legend-x (3 baris), legend-y (1 baris)`**: mode `block` menemukan baris. Deploy berhenti sebelum migrasi apa pun, dan layanan tidak dinyalakan.
+- **`drift migrasi (legend-fgg1h): <tag>, ...`**: hash berkas repo berbeda dengan yang tercatat di database, atau ada migrasi di database yang tidak dikenal repo (`unknown@<created_at>`), atau entri journal lama yang tidak pernah diterapkan (`missing:<tag>`). Hash beda yang cocok persis dengan entri `drift-allow.json` tidak gagal dan dicatat `drift diizinkan: <tag> (<bead>)`.
+
+Fail-closed: `drift-allow.json` yang hilang (saat gerbang berjalan, bukan N/A), bukan JSON, berbentuk salah, bertag yang tidak ada di journal, atau berhash bukan 64 hex; header berkas yang rusak atau urutannya salah, `mode` tidak sah, tag `before` yang tidak ada di journal, journal dengan `when` ganda, dan error SQL di berkas gerbang semuanya menggagalkan pre-deploy check. Tidak ada yang dilewati diam-diam. Pesan tidak pernah memuat URL, password, tenant id, atau isi baris; hanya id gerbang, jumlah, dan tag migrasi. Bukti rinci diambil operator dengan menjalankan SQL berkas itu sendiri memakai login yang melihat semua tenant (superuser atau `BYPASSRLS`, `row_security=off`), dan jangan ditempel di log publik.
+
+### Resolusi per gerbang
+
+Bila gerbang menahan rilis, selesaikan penyebabnya, jalankan ulang pre-deploy check, dan lanjut hanya bila hasilnya bersih. Jangan melewati gerbang dengan menghapus baris migrasi, mengedit berkas gerbang, atau menurunkan `mode`.
+
+| Gerbang                                         | Kartu           | Penyebab                                                                                                                                                                                                                                                                                                                                                                      | Resolusi                                                                                                                                                                                                                                                                                                                                                      |
+| ----------------------------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Drift migrasi, 0239 lama                        | legend-fgg1h    | Berkas 0239 diedit di tempat (ps-405). Bila ada database bersama (staging atau production) yang sudah menerapkan versi lamanya, hash-nya tidak cocok.                                                                                                                                                                                                                         | Jangan menyunting berkas 0239 untuk mencocokkan hash. Tulis migrasi koreksi baru yang membawa database itu ke keadaan yang diharapkan, di-review architect. Lalu tambahkan hash lama yang persis ke `scripts/preflight/drift-allow.json` dengan id bead (keputusan CTO atau founder, lewat PR yang di-review). Butuh akses dan persetujuan founder lewat CTO. |
+| Drift migrasi, 0674 versi sebelum koreksi tiw2h | legend-tiw2h    | 0674 versi sebelum koreksi tiw2h (bila sebuah database bersama sempat menerapkannya): hash-nya tidak cocok dengan berkas repo.                                                                                                                                                                                                                                                | Migrasi koreksi baru yang di-review architect; jangan edit berkas lama. Lalu tambahkan hash lama yang persis ke `drift-allow.json` dengan id bead (keputusan CTO atau founder, PR yang di-review).                                                                                                                                                            |
+| `legend-176r3`                                  | legend-176r3    | Tenant aktif punya klien MCP approved atau token MCP aktif, tetapi paketnya tanpa fitur `mcp`. Baris paket yang tidak ada juga dihitung, dan menahan rilis walau `feature_flags` tenant itu sudah berisi `mcp` (konservatif, sesuai brief). Migrasi `0456_mcp_flag_backfill` hanya menyalakan flag untuk paket yang memuat `mcp`, jadi tenant itu kehilangan MCP saat deploy. | Beri tahu founder lewat CTO. Ubah paket tenant agar memuat `mcp`, atau putuskan tenant itu memang kehilangan MCP dan cabut klien dan token-nya. Pre-launch biasanya nol baris.                                                                                                                                                                                |
+| `legend-oh2a5`                                  | legend-oh2a5    | Mode `info`: jumlah tenant yang akan dinyalakan `0378_ai_assistant_auto_enable` (paket aktif memuat AI dan ada riwayat penggunaan AI).                                                                                                                                                                                                                                        | Tidak menahan rilis. Catat jumlahnya, lalu pastikan founder tahu berapa tenant yang akan mendapat asisten AI menyala otomatis.                                                                                                                                                                                                                                |
+| Gerbang cabang 1097 (payout dan rekon) dan 1098 | lihat berkasnya | Gate dari cabang `ws/1097` dan `ws/1098`, bila sudah digabung. Umumnya data payout atau bukti historis yang membuat migrasi RAISE atau backfill macet.                                                                                                                                                                                                                        | Baca baris `-- resolve:` di `scripts/preflight/rilis1-legend-<id>.sql`; berkas belum ada = gate belum aktif. Menyangkut uang: jangan hapus atau ubah baris payout untuk meloloskan gerbang; bawa keputusannya ke founder lewat CTO.                                                                                                                           |
+
+### Daftar izin drift
+
+`scripts/preflight/drift-allow.json` (default `[]`) mengizinkan hash lama yang diketahui, satu entri per hash:
+
+```json
+[
+  {
+    "tag": "<tag journal>",
+    "hash": "<64 hex hash lama>",
+    "bead": "legend-xxx",
+    "reason": "<alasan>"
+  }
+]
+```
+
+Baris database dengan `created_at` = `when` tag itu dan `hash` sama persis dengan entri diterima dan dicatat `drift diizinkan: <tag> (<bead>)`. Tidak ada wildcard; hash lain tetap gagal. Daftar ini tidak menutupi `unknown@<created_at>` maupun `missing:<tag>`. Menambah entri adalah keputusan CTO atau founder lewat PR yang di-review, setelah migrasi koreksinya di-review architect. Opsi runner: `driftAllowFile` mengganti path berkas.
+
+Gerbang baru ditambah dengan berkas `scripts/preflight/rilis1-legend-<id>.sql` saja, tanpa mengubah runner. Format header (parser `parsePreflightFile` di `release-gates.ts`), tepat lima baris pertama berurutan, lalu satu `SELECT` read-only (tanpa meta psql `\`):
+
+```sql
+-- gate: legend-<id>
+-- before: <tag journal atau none>
+-- requires: public.<tabel>[, public.<tabel>]
+-- mode: block
+-- resolve: <satu kalimat>
+SELECT count(*) FROM public.<tabel> WHERE ...;
+```
+
+Nama tabel di `requires` selalu `public.<tabel>`; di SQL jangan menulis nama skema pada nama tabel (runner mengatur `search_path`). Migrasi baru harus punya `when` di journal yang lebih besar dari entri sebelumnya (legend-ir8n8; entri 0003 pengecualian lama); cek ganda dan urutan ada di `apps/api/src/test/migration-journal.test.ts`. Test `apps/api/src/test/migration-journal.test.ts` memvalidasi tiap berkas (header sah, tag `before` ada di journal, tabel `requires` ada di skema) supaya berkas yang salah tertangkap sebelum rilis.
+
+Urutan rilis edge dan cloud untuk rilis pertama dan upgrade berikutnya ada di `docs/runbooks/rilis1-urutan-edge-cloud.md`.
+
 ## Logs in production
 
 Both servers write one JSON object per line to stdout with `level`, `time`, `service` (`api`/`web`), `env`, `msg`, and `reqId` (plus `userId` on authenticated API requests). Ship stdout to your log platform; correlate a page render across services by `reqId`. Forward an `X-Request-Id` from your load balancer and both servers reuse it. `LOG_LEVEL` adjusts verbosity; `LOG_SQL=true` is for debugging only.

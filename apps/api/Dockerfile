@@ -49,6 +49,8 @@ WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=builder --chown=node:node /app/apps/api/dist ./dist
 COPY --from=builder --chown=node:node /app/apps/api/drizzle ./drizzle
+# Release gate 1 data checks read by dist/predeploy-check.js (legend-1100).
+COPY --from=pruner --chown=node:node /app/scripts/preflight ./scripts/preflight
 USER node
 CMD ["node", "dist/migrate.js"]
 

@@ -20,11 +20,18 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { Client, Pool } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
-import { dirname, resolve } from "node:path";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { provisionMigrator, MIGRATOR_LOGIN } from "../db/migrator-role";
 import { runPredeployCheck } from "../db/predeploy-check";
+import {
+  readJournal,
+  ReleaseGateError,
+  runReleaseGates,
+} from "../db/release-gates";
 import { provisionRoles } from "../db/provision-roles";
 
 const drizzleFolder = resolve(
@@ -251,13 +258,20 @@ describe("legend-jtnd dedicated migrator login owns the database", () => {
   });
 
   it("passes the pre-deploy check on the empty database (outbox absent)", async () => {
-    const report = await runPredeployCheck(migratorUrl);
+    const lines: string[] = [];
+    const report = await runPredeployCheck(migratorUrl, {
+      log: (line) => lines.push(line),
+    });
     expect(report.migrator).toEqual({
       user: migratorUser,
       superuser: false,
       bypassRls: true,
     });
     expect(report.outbox.present).toBe(false);
+    // legend-1100: a brand new database has no applied migrations, so the
+    // release 1 data gates are N/A and say so in the log.
+    expect(report.releaseGates).toEqual({ status: "n/a" });
+    expect(lines).toContain("gerbang data rilis 1: N/A (DB baru)");
   });
 
   it("applies every migration from zero as the migrator", async () => {
@@ -401,6 +415,20 @@ describe("legend-jtnd dedicated migrator login owns the database", () => {
       rows: total.rows[0].n,
       oldSchemeStreams: 0,
     });
+    // legend-1100: after a full migration the 1100 gates have their "before"
+    // migration applied, so they are skipped and nothing is blocked. Gates
+    // with "before: none" (other branches) may still run on clean data.
+    expect(clean.releaseGates.status).toBe("ok");
+    if (clean.releaseGates.status === "ok") {
+      expect(clean.releaseGates.applied).toBe(
+        readJournal(drizzleFolder).length,
+      );
+      for (const gate of ["legend-176r3", "legend-oh2a5"])
+        expect(clean.releaseGates.skipped).toContainEqual({
+          gate,
+          reason: "before-applied",
+        });
+    }
 
     // Old scheme: one count shared across destinations, so destination
     // dest-old-y starts at 2.
@@ -429,6 +457,258 @@ describe("legend-jtnd dedicated migrator login owns the database", () => {
     expect(message).not.toContain(tenantA);
     expect(message).not.toContain(migratorPassword);
   }, 60_000);
+
+  it("fails the pre-deploy check with legend-fgg1h when an applied migration hash differs from its file", async () => {
+    // Assumption: the outbox check (legend-k1np) runs first, so remove the
+    // old-scheme rows of the previous test; this test is about migration drift.
+    await migrator.query(
+      "DELETE FROM domain_event_outbox WHERE destination LIKE 'dest-old-%'",
+    );
+    const entries = readJournal(drizzleFolder);
+    const target = entries[entries.length - 1] as (typeof entries)[number];
+    const original = await migrator.query(
+      "SELECT hash FROM drizzle.__drizzle_migrations WHERE created_at = $1",
+      [target.when],
+    );
+    expect(original.rowCount).toBe(1);
+    const originalHash = original.rows[0].hash as string;
+    await migrator.query(
+      "UPDATE drizzle.__drizzle_migrations SET hash = $1 WHERE created_at = $2",
+      ["0".repeat(64), target.when],
+    );
+    try {
+      const failure = await runPredeployCheck(migratorUrl).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(failure).toBeInstanceOf(Error);
+      const message = (failure as Error).message;
+      expect(message).toMatch(/legend-fgg1h/);
+      expect(message).toContain(target.tag);
+      expect(message).not.toMatch(/postgres(ql)?:\/\//);
+      expect(message).not.toContain(migratorPassword);
+    } finally {
+      await migrator.query(
+        "UPDATE drizzle.__drizzle_migrations SET hash = $1 WHERE created_at = $2",
+        [originalHash, target.when],
+      );
+    }
+    // Restored: the check no longer reports drift.
+    const after = await runPredeployCheck(migratorUrl);
+    expect(after.releaseGates.status).toBe("ok");
+  }, 60_000);
+
+  // legend-a5viv. The gate runner sets `SET LOCAL row_security = off`. For the
+  // production migrator (BYPASSRLS) that must still show rows of every tenant
+  // on FORCE RLS tables (mcp_clients, mcp_tokens). Assumptions: the
+  // gate scripts `rilis1-legend-176r3.sql` / `rilis1-legend-oh2a5.sql` are
+  // copied with `-- before: none` so they run on the fully migrated database;
+  // the "baris" count in the failure message follows the repo gate text
+  // "legend-176r3 (N baris)". Seeded mcp_clients are deleted in `finally`; the
+  // seeded tenants/package stay (the scratch database is dropped in afterAll).
+  const gateIds = ["legend-176r3", "legend-oh2a5"] as const;
+  const gateFiles = [
+    "rilis1-legend-176r3.sql",
+    "rilis1-legend-oh2a5.sql",
+  ] as const;
+
+  function makeGateDir() {
+    const source = resolve(
+      dirname(fileURLToPath(import.meta.url)),
+      "../../../../scripts/preflight",
+    );
+    const dir = mkdtempSync(join(tmpdir(), "legend-a5viv-"));
+    writeFileSync(join(dir, "drift-allow.json"), "[]");
+    for (const file of gateFiles) {
+      const text = readFileSync(join(source, file), "utf8");
+      expect(text).toMatch(/^-- before:.*$/m);
+      writeFileSync(
+        join(dir, file),
+        text.replace(/^-- before:.*$/m, "-- before: none"),
+      );
+    }
+    return dir;
+  }
+
+  // Two active tenants, each with one approved MCP client, on a package
+  // without the mcp module. Seeded through the migrator (bypasses RLS).
+  async function seedMcpTenants() {
+    const tenants = [randomUUID(), randomUUID()];
+    const pkg = `nomcp${hex(6)}`;
+    const userId = randomUUID();
+    await migrator.query(
+      `INSERT INTO platform_packages (key, name, modules, default_limits)
+       VALUES ($1, 'Tanpa MCP', '[]'::jsonb, '{}'::jsonb)`,
+      [pkg],
+    );
+    await migrator.query(
+      'INSERT INTO "user" (id, name, email) VALUES ($1, $2, $3)',
+      [userId, "Penyetuju uji", `a5viv-${hex(6)}@example.test`],
+    );
+    for (const [index, tenantId] of tenants.entries()) {
+      await seedTenant(migrator, tenantId, `MCP ${index}`);
+      await migrator.query("UPDATE tenants SET plan = $1 WHERE id = $2", [
+        pkg,
+        tenantId,
+      ]);
+      const status = await migrator.query(
+        "SELECT status FROM tenants WHERE id = $1",
+        [tenantId],
+      );
+      expect(status.rows[0].status).toBe("active");
+      await migrator.query(
+        `INSERT INTO mcp_clients
+           (tenant_id, name, client_id, redirect_uris, allowed_scopes,
+            status, registered_via, approved_by, approved_at)
+         VALUES ($1, 'Klien uji', $2, ARRAY['https://example.test/cb'],
+                 ARRAY['read'], 'approved', 'admin', $3, now())`,
+        [tenantId, `a5viv-${hex(6)}`, userId],
+      );
+    }
+    return {
+      tenants,
+      cleanup: () =>
+        migrator.query("DELETE FROM mcp_clients WHERE tenant_id = ANY($1)", [
+          tenants,
+        ]),
+    };
+  }
+
+  it("legend-a5viv: the migrator login runs the gates on FORCE RLS tables and sees every tenant", async () => {
+    let dir: string | undefined;
+    const lines: string[] = [];
+    try {
+      dir = makeGateDir();
+      // Precondition: the tables the gate reads really are FORCE RLS, so a
+      // pass below proves BYPASSRLS and not an unprotected table.
+      const flags = await migrator.query(
+        `SELECT relname, relrowsecurity, relforcerowsecurity FROM pg_class
+          WHERE relnamespace = 'public'::regnamespace
+            AND relname IN ('mcp_clients', 'mcp_tokens')`,
+      );
+      expect(flags.rows.map((r) => r.relname).sort()).toEqual([
+        "mcp_clients",
+        "mcp_tokens",
+      ]);
+      for (const row of flags.rows) {
+        expect(row.relrowsecurity, `${row.relname} row security`).toBe(true);
+        expect(row.relforcerowsecurity, `${row.relname} FORCE`).toBe(true);
+      }
+
+      // Clean data: both gates really run (not skipped) and nothing blocks.
+      const clean = await runPredeployCheck(migratorUrl, {
+        preflightDir: dir,
+        log: (line) => lines.push(line),
+      });
+      expect(clean.releaseGates.status).toBe("ok");
+      if (clean.releaseGates.status === "ok") {
+        expect(clean.releaseGates.ran).toEqual(
+          expect.arrayContaining([...gateIds]),
+        );
+        expect(clean.releaseGates.skipped).toEqual([]);
+      }
+
+      const seeded = await seedMcpTenants();
+      try {
+        const failure = await runPredeployCheck(migratorUrl, {
+          preflightDir: dir,
+        }).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+        expect(failure).toBeInstanceOf(Error);
+        const message = (failure as Error).message;
+        // 2 rows = both tenants seen: no silent tenant filter, no RLS error.
+        expect(message).toContain("legend-176r3 (2 baris)");
+        for (const tenantId of seeded.tenants)
+          expect(message).not.toContain(tenantId);
+        expect(message).not.toContain(migratorPassword);
+        expect(message).not.toMatch(/postgres(ql)?:\/\//);
+      } finally {
+        await seeded.cleanup();
+      }
+
+      // Seeds removed: the gate passes again.
+      const after = await runPredeployCheck(migratorUrl, { preflightDir: dir });
+      expect(after.releaseGates.status).toBe("ok");
+    } finally {
+      if (dir) rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it("legend-a5viv: a login without BYPASSRLS (the app login) fails the same gate closed instead of passing on zero rows", async () => {
+    let dir: string | undefined;
+    let seeded: Awaited<ReturnType<typeof seedMcpTenants>> | undefined;
+    let client: Client | undefined;
+    try {
+      dir = makeGateDir();
+      seeded = await seedMcpTenants();
+      // The runner only needs to read the migrations table; give the app login
+      // that read so the failure under test is the gate SQL, not a missing grant.
+      await migrator.query(`GRANT USAGE ON SCHEMA drizzle TO "${appUser}"`);
+      await migrator.query(
+        `GRANT SELECT ON drizzle.__drizzle_migrations TO "${appUser}"`,
+      );
+      client = new Client({ connectionString: appUrl });
+      await client.connect();
+
+      // The raw gate SQL (header comments stripped) as the app login with row
+      // security switched off: a login without BYPASSRLS gets an explicit
+      // error, never a silent empty result. (With row_security on and no
+      // app.tenant_id, the policy would raise "tenant context is required".)
+      const gateSql = readFileSync(
+        resolve(
+          dirname(fileURLToPath(import.meta.url)),
+          "../../../../scripts/preflight/rilis1-legend-176r3.sql",
+        ),
+        "utf8",
+      )
+        .replace(/^--.*$/gm, "")
+        .trim();
+      expect(gateSql).toMatch(/^SELECT/);
+      await client.query("BEGIN READ ONLY");
+      try {
+        await client.query("SET LOCAL row_security = off");
+        await client.query("SET LOCAL search_path = public");
+        const raw = await failureText(client.query(gateSql));
+        expect(raw).not.toBe("(resolved)");
+        expect(raw).toMatch(/row-level security/);
+      } finally {
+        await client.query("ROLLBACK").catch(() => undefined);
+      }
+
+      // The runner fails closed on the same condition: it raises a
+      // ReleaseGateError instead of passing on zero rows.
+      const failure = await runReleaseGates(client, {
+        migrationsFolder: drizzleFolder,
+        preflightDir: dir,
+      }).then(
+        (report) => ({ report }),
+        (error: unknown) => ({ error }),
+      );
+      expect(failure).not.toHaveProperty("report");
+      const error = (failure as { error: unknown }).error;
+      expect(error).toBeInstanceOf(ReleaseGateError);
+      const message = (error as Error).message;
+      expect(message).toContain("legend-176r3");
+      // No pg error text, no tenant id, no secret in the message.
+      expect(message).not.toMatch(
+        /tenant context|row-level security|permission denied|relation /i,
+      );
+      for (const tenantId of seeded.tenants)
+        expect(message).not.toContain(tenantId);
+      expect(message).not.toContain(appPassword);
+    } finally {
+      if (client) await client.end().catch(() => undefined);
+      await seeded?.cleanup();
+      // Undo the grants so later tests see the app login as provisioned.
+      await migrator.query(
+        `REVOKE SELECT ON drizzle.__drizzle_migrations FROM "${appUser}"`,
+      );
+      await migrator.query(`REVOKE USAGE ON SCHEMA drizzle FROM "${appUser}"`);
+      if (dir) rmSync(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
 });
 
 describe("legend-jtnd refusal: bootstrap-owned objects in the database", () => {
