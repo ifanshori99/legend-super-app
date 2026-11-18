@@ -47,6 +47,7 @@ type Fixture = {
 async function fixture(
   gateText: string,
   run: (fixture: Fixture) => Promise<void>,
+  { applyGateBefore = false } = {},
 ) {
   const suffix = randomBytes(6).toString("hex");
   const schema = `rg1122_${suffix}`;
@@ -85,10 +86,11 @@ async function fixture(
     await client.query(
       `CREATE TABLE ${schema}.__drizzle_migrations (hash text NOT NULL, created_at bigint NOT NULL)`,
     );
-    await client.query(
-      `INSERT INTO ${schema}.__drizzle_migrations VALUES ($1, $2)`,
-      [migrationHash(baseSql), entries[0]!.when],
-    );
+    for (const entry of applyGateBefore ? entries : entries.slice(0, 1))
+      await client.query(
+        `INSERT INTO ${schema}.__drizzle_migrations VALUES ($1, $2)`,
+        [migrationHash(baseSql), entry.when],
+      );
     await client.query(
       `CREATE TABLE ${table("tenants")} (id uuid PRIMARY KEY, plan text, status text, feature_flags jsonb)`,
     );
@@ -251,10 +253,103 @@ describe("[legend-176r3] actual MCP release gate through the runner", () => {
   });
 });
 
-// The edge gates are operator gates. These tests execute the documented
+describe("[legend-ir8n8] actual automatic edge gate through the runner", () => {
+  function gateText() {
+    return readFileSync(
+      new URL(
+        "../../../../scripts/preflight/rilis1-legend-ir8n8.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+  }
+
+  it("passes with no active nodes", async () => {
+    await fixture(gateText(), async (f) => {
+      expect(await f.run()).toMatchObject({
+        status: "ok",
+        ran: ["legend-ir8n8"],
+        skipped: [],
+      });
+    });
+  });
+
+  // A larger semver is not a verified mapping from heartbeat to image contents.
+  for (const version of [
+    null,
+    "",
+    "unknown",
+    "dev",
+    "0.2.0",
+    "1.0.0",
+    "999.999.999",
+  ]) {
+    it(`blocks one unresolved offline standby at version ${String(version)}`, async () => {
+      await fixture(gateText(), async (f) => {
+        await f.client.query(
+          `INSERT INTO ${f.table("edge_nodes")} VALUES ($1, $1, $1, 'standby', 'active', $2, NULL)`,
+          [tenantId, version],
+        );
+        await expect(f.run()).rejects.toThrow("legend-ir8n8 (1 baris)");
+      });
+    });
+  }
+
+  it("skips a revoked node", async () => {
+    await fixture(gateText(), async (f) => {
+      await f.client.query(
+        `INSERT INTO ${f.table("edge_nodes")} VALUES ($1, $1, $1, 'primary', 'revoked', 'unknown', NULL)`,
+        [tenantId],
+      );
+      expect(await f.run()).toMatchObject({
+        status: "ok",
+        ran: ["legend-ir8n8"],
+        skipped: [],
+      });
+    });
+  });
+
+  it("reports N/A when the edge table is absent", async () => {
+    await fixture(gateText(), async (f) => {
+      await f.client.query(`DROP TABLE ${f.table("edge_nodes")}`);
+      expect(await f.run()).toMatchObject({
+        status: "ok",
+        ran: [],
+        skipped: [{ gate: "legend-ir8n8", reason: "requires-missing" }],
+      });
+    });
+  });
+
+  it("blocks when the version column is absent", async () => {
+    await fixture(gateText(), async (f) => {
+      await f.client.query(
+        `ALTER TABLE ${f.table("edge_nodes")} DROP COLUMN version`,
+      );
+      await expect(f.run()).rejects.toThrow(
+        "Gerbang legend-ir8n8 gagal dijalankan (SQL error).",
+      );
+    });
+  });
+
+  it("still blocks after every migration known to the gate is applied", async () => {
+    await fixture(
+      gateText(),
+      async (f) => {
+        await f.client.query(
+          `INSERT INTO ${f.table("edge_nodes")} VALUES ($1, $1, $1, 'primary', 'active', 'unknown', now())`,
+          [tenantId],
+        );
+        await expect(f.run()).rejects.toThrow("legend-ir8n8 (1 baris)");
+      },
+      { applyGateBefore: true },
+    );
+  });
+});
+
+// The catalog gate remains an operator gate. These tests execute the documented
 // inventory unchanged under the runner's read-only transaction to prove its
 // 0/1/missing-table semantics. They do not turn provenance into a version test.
-for (const gateId of ["legend-ir8n8", "legend-zn3wl"]) {
+for (const gateId of ["legend-zn3wl"]) {
   describe(`[${gateId}] documented edge inventory`, () => {
     const inventory = [...deployment.matchAll(/```sql\n([\s\S]*?)\n```/g)]
       .map((match) => match[1])

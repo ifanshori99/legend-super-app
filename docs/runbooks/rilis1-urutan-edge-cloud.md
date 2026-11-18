@@ -10,7 +10,7 @@ Urutan mengikuti kontrak yang berubah. Penambahan field event katalog berbeda da
 | Event `catalog_record.updated` membawa field baru      | legend-zn3wl | **Edge dulu, cloud kemudian** | Record event memakai skema strict (`packages/shared/src/edge/catalog-record-event.ts`); toleransi field baru pada snapshot/pull HTTP tidak berlaku pada event. |
 | Pengenalan `syncTxid` dan kursor `cat2` pada pull HTTP | legend-dciax | **Cloud dulu, edge kemudian** | Edge baru menolak record pull tanpa `syncTxid`; ini prasyarat protokol HTTP, bukan izin mengirim field event baru ke edge lama.                                |
 
-Gerbang rilis 1 (`predeploy-check`, drift migrasi) hanya melindungi database cloud. Edge hanya menjalankan `migrate.js` (`deploy/edge/README.md`, bagian "Database migrations"), jadi gerbang data dan cek drift ini **tidak** melindungi database edge.
+Gerbang rilis 1 (`predeploy-check`) memeriksa database cloud, termasuk gerbang otomatis `legend-ir8n8` yang memblok node aktif tanpa versi/image kompatibel yang terbukti. Pemeriksaan drift tetap hanya memeriksa riwayat database cloud. Edge hanya menjalankan `migrate.js` (`deploy/edge/README.md`, bagian "Database migrations"), jadi pemeriksaan ini tidak memverifikasi riwayat migrasi database edge.
 
 Rincian katalog (gejala, cek `syncTxid`, rollback) ada di `docs/runbooks/edge-catalog-deploy-order.md`. Jangan diduplikasi di sini.
 
@@ -43,7 +43,9 @@ Bila ragu apa yang dibawa rilis, anggap perubahan itu ada dan tanyakan CTO. Sala
 
 ### Gerbang kompatibilitas wajib (legend-ir8n8, legend-zn3wl)
 
-Gerbang ini pemeriksaan operator yang **memblok rilis**, melengkapi gerbang SQL cloud. `edge_nodes.version` adalah string yang dilaporkan heartbeat, bukan bukti isi image; `0.2.0`, versi lebih besar, `dev`, atau SHA yang tidak dipetakan ke build terverifikasi tidak otomatis lolos.
+`legend-ir8n8` adalah gerbang SQL **otomatis** di `predeploy-check` (`scripts/preflight/rilis1-legend-ir8n8.sql`, `before: none`, `mode: block`). `edge_nodes.version` hanya string heartbeat dan belum punya pemetaan minimum build/image kompatibel yang dapat dipercaya. Karena itu seluruh node `active` saat ini memblok rilis, termasuk versi `0.2.0`, versi lebih besar, `unknown`, `dev`, NULL, atau SHA yang belum terbukti. Pemeriksaan citra oleh operator tidak dapat mengesampingkan BLOCK dari SQL. `legend-zn3wl` tetap gerbang operator untuk membuktikan penerimaan event katalog strict.
+
+Untuk meloloskan rilis dengan edge aktif, tetapkan pemetaan minimum build/image dan sumber bukti versi melalui review, perbarui gerbang SQL sesuai pemetaan itu, baru upgrade semua edge aktif dan ulangi `predeploy-check` beserta bukti event. Selama pemetaan dan perubahan gerbang belum direview, **BLOCK** tetap berlaku. Jangan mengganti versi/status atau menghapus node untuk meloloskan pemeriksaan.
 
 Gunakan query inventaris read-only pada bagian gerbang kompatibilitas edge di `docs/deployment.md`, dengan koneksi operator migrasi yang dapat melihat seluruh node, bukan login aplikasi yang dibatasi RLS. Jangan menafsirkan error tabel/kolom sebagai inventaris kosong; kolom hilang memblok pemeriksaan. N/A hanya jika tabel `edge_nodes` benar-benar belum ada. Inventaris yang berhasil dijalankan tanpa node aktif berarti lolos.
 
@@ -51,8 +53,8 @@ Gunakan query inventaris read-only pada bagian gerbang kompatibilitas edge di `d
 2. Catat commit dan digest image cloud yang akan dirilis serta image edge penerimanya. Buktikan pada pasangan build itu bahwa edge menerima record `sharedMode` dan setiap stream event `catalog_record.updated` yang bentuknya berubah, tanpa penolakan skema strict. Gunakan data uji; jangan memakai token atau isi event produksi dalam bukti.
 3. Periksa prasyarat cloud sebelum menaikkan edge: migrasi yang dibutuhkan edge sudah tersedia, cloud menerima payload heartbeat baru, dan protokol pull HTTP sudah kompatibel. Bila upgrade edge membutuhkan cloud baru yang langsung mengirim field event belum didukung edge lama, **BLOCK** sampai build perantara tersedia; jangan membalik urutan secara global.
 4. Naikkan edge outlet percobaan ke image terverifikasi, lalu semua node aktif lainnya. Cocokkan digest/commit image yang benar-benar berjalan dan heartbeat versi yang masuk **setelah restart**. Periksa sync dan checkpoint pada node percobaan sebelum melanjutkan.
-5. **BLOCK** bila ada satu node aktif yang masih lama, offline sehingga upgrade belum terbukti, versinya tidak dikenal, digest/commit tidak cocok, atau penerimaan record/event belum terbukti. Resolve: upgrade node dan ulangi bukti; node yang benar-benar dipensiunkan harus dicabut melalui alur operasional yang sah, bukan sekadar diabaikan dalam inventaris.
-6. Simpan bukti per node (id, role, versi, digest/commit, waktu heartbeat setelah restart, hasil sync) bersama catatan rilis. Baru setelah semua node aktif lulus, lanjutkan rollout cloud yang mengirim field baru. Jangan downgrade edge selama cloud masih mengirim field tersebut.
+5. **BLOCK** bila pemetaan minimum build dan pembaruan SQL belum direview, atau ada satu node aktif yang masih lama, offline sehingga upgrade belum terbukti, versinya tidak dikenal, digest/commit tidak cocok, atau penerimaan record/event belum terbukti. Resolve: selesaikan pemetaan dan pembaruan gerbang, upgrade node, lalu ulangi `predeploy-check` dan bukti event; node yang benar-benar dipensiunkan harus dicabut melalui alur operasional yang sah, bukan sekadar diabaikan dalam inventaris.
+6. Simpan bukti per node (id, role, versi, digest/commit, waktu heartbeat setelah restart, hasil sync) bersama catatan rilis. Baru setelah gerbang SQL dan bukti event katalog lulus untuk seluruh node aktif, lanjutkan rollout cloud yang mengirim field baru. Jangan downgrade edge selama cloud masih mengirim field tersebut.
 
 ### Cek setelah tiap langkah
 

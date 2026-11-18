@@ -1,20 +1,28 @@
-# Urutan rilis sync katalog edge: cloud dulu, edge kemudian (legend-dciax)
+# Urutan rilis katalog edge menurut kontrak yang berubah
 
-Runbook ini untuk operator rilis. Dipakai setiap kali rilis membawa perubahan sync katalog edge (`GET /api/edge-sync/catalog`) yang menyangkut `syncTxid` dan kursor `cat2` (commit 88419ea8, desain di `docs/briefs/24318-design.md`).
+Runbook ini untuk operator rilis. Bagian HTTP pull membahas perubahan `GET /api/edge-sync/catalog` yang menyangkut `syncTxid` dan kursor `cat2` (legend-dciax, commit 88419ea8, desain di `docs/briefs/24318-design.md`). Penambahan field event `catalog_record.updated` atau record sync `sharedMode` memiliki urutan tersendiri di bawah.
 
 Latar belakang singkat: setiap record katalog dari cloud membawa `syncTxid` (id transaksi cloud, dari `pg_snapshot_xmin`), dan kursor edge bertag `cat2`. Edge yang baru mem-parse `syncTxid` di tiap record dan menolak record tanpa field itu. Cloud lama tidak mengirim `syncTxid`.
 
-## Urutan wajib
+## Tentukan kontrak dan gerbang sebelum rollout
+
+- **Field baru pada event `catalog_record.updated` atau record sync `sharedMode`: edge dulu, cloud kemudian.** Sebelum cloud mengirim field baru, semua edge aktif harus memenuhi gerbang `legend-zn3wl` dan `legend-ir8n8` di `docs/deployment.md`, bagian "Gerbang rilis 1". Hasil pull HTTP yang berhasil tidak membuktikan parser event strict menerima field baru.
+- **Pengenalan HTTP pull `syncTxid` dan kursor `cat2` saja: cloud dulu, edge kemudian.** Ikuti langkah HTTP pull di bawah setelah memastikan rilis tidak sekaligus mengirim field event/record sync baru ke edge lama.
+- **Kedua perubahan dibawa sekaligus:** gunakan build perantara yang menyediakan prasyarat HTTP pull sambil mempertahankan bentuk event/record sync lama, lalu upgrade semua edge dan luluskan gerbang sebelum cloud mengirim field baru. Bila tidak ada pasangan build kompatibel yang terbukti, **BLOCK** dan bawa pemecahan rilis ke CTO; jangan memilih salah satu urutan secara global.
+
+Urutan gabungan dan bukti per node ada di `docs/runbooks/rilis1-urutan-edge-cloud.md`. Aturan gerbang `legend-ir8n8` dan `legend-zn3wl` tetap berlaku untuk semua langkah rilis dan rollback dalam runbook ini.
+
+## Urutan wajib untuk pengenalan HTTP pull saja
 
 1. **Cloud dulu.** Rilis dan pastikan cloud baru sudah melayani semua instance (tidak ada instance lama yang tersisa di belakang load balancer). Jalankan migrasi bila rilis membawanya (`pnpm db:migrate`).
 2. **Cek cloud sudah mengirim `syncTxid`** (lihat bagian cek di bawah).
 3. **Baru edge.** Naikkan versi edge outlet satu per satu, mulai dari satu outlet percobaan. Lanjut ke outlet lain setelah sync katalog outlet percobaan berjalan.
 
-Jangan pernah membalik urutan ini, dan jangan menaikkan edge sambil cloud masih setengah rilis.
+Untuk pengenalan HTTP pull saja, jangan menaikkan edge yang membutuhkan `syncTxid` sebelum seluruh instance cloud menyediakan protokol tersebut. Aturan ini tidak membolehkan cloud mengirim field `catalog_record.updated` atau `sharedMode` baru sebelum gerbang kompatibilitas edge lulus.
 
-Pengecualian yang disengaja: rilis yang mengganti baris katalog basi di antrean edge dengan placeholder `edge_link.dead_lettered` (legend-3k41y) menuntut edge dulu. Aturan dan cara menggabungkannya dengan urutan di atas ada di `docs/deployment.md`, bagian "Edge host".
+Rilis placeholder `edge_link.dead_lettered` (legend-3k41y) juga menuntut edge dulu. Gunakan tahapan kompatibilitas yang sama bila rilis ini sekaligus mengubah protokol HTTP pull; lihat `docs/deployment.md`, bagian "Edge host".
 
-## Gejala bila terbalik (edge baru, cloud lama)
+## Gejala prasyarat HTTP pull belum tersedia (edge baru, cloud lama)
 
 - Pull katalog di edge gagal untuk semua stream. Edge menolak dengan pesan `Cloud belum mendukung syncTxid katalog`, bukan gagal parse mentah.
 - Data katalog dan harga di edge berhenti bergerak. Yang sudah ada tetap dipakai dan tidak rusak. Checkpoint tidak maju, jadi tidak ada data yang hilang atau dilewati.
@@ -45,6 +53,8 @@ Pulihkan dengan menaikkan cloud ke versi baru. Tidak perlu menyentuh edge atau d
 3. Setelah edge dinaikkan: pull katalog di edge tidak lagi melaporkan error, dan checkpoint `catalog:<stream>` di `edge_pull_checkpoints` bergerak maju.
 
 ## Rollback
+
+Langkah berikut hanya untuk perubahan HTTP pull yang telah diperiksa kompatibilitasnya. Bila cloud masih mengirim field event `catalog_record.updated` atau record sync `sharedMode` baru, **jangan menurunkan edge ke parser lama**. Hentikan pengiriman field baru melalui pasangan build kompatibel terlebih dahulu dan jalankan ulang gerbang `legend-zn3wl`/`legend-ir8n8`. Tanpa jalur rollback yang terbukti, **BLOCK** dan bawa ke CTO.
 
 - **Cloud perlu dikembalikan sementara edge sudah baru:** jangan biarkan begitu. Kembalikan edge ke versi sebelumnya dulu, atau terima bahwa sync katalog berhenti (gejala di atas) sampai cloud naik lagi. Data lokal aman.
 - **Edge dikembalikan, cloud tetap baru:** tidak ada data cloud yang berubah. Perilaku edge versi lama terhadap kursor `cat2` yang tersimpan dan terhadap record ber-`syncTxid` belum diverifikasi, jadi coba di satu outlet dulu.
