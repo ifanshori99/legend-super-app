@@ -69,6 +69,7 @@ Ditulis oleh merge train batch64g. Sumber: pesan CTO G6evw, G6w9t, G4j04. Tip SH
 - `ghostex/1031-qrsaleinuseofintent-net-refund` 36695338f (base m1 f92a5c904; test saja, 11 test pengaman batas refund QR split; tanpa migrasi) SIAP batch86, mandiri. Tutup: (19j3c sudah ditutup).
 - `1038-payout-recon-clearance` 0832bf581 (tanpa prefix ghostex/; base m1 8f544e5ea; SO1036 temuan 4+7: 63gyr f1c7n; migrasi kerja 0663 journal 468 bisa bentrok 1037, renumber; architect xhigh 2 ronde lolos, 129/129 terarah). Tutup 63gyr f1c7n saat landing; area kas/payout tunggu 1037 + SO ulang.
 - `ghostex/b49350e5` 69461a987 (1037 kas+supplier SO1036 temuan 1,2,3,5,6; base m1 8f544e5ea; tanpa migrasi; 257/257 terarah; architect xhigh + reviewer bersih). Kartu sudah ditutup thread.
+- `ghostex/8b2dc0b1` e589b3476 (1043 allowlist tablet bersama Q29; base m1 8f544e5ea; tanpa migrasi; 570/570 API + 159/159 web; architect bersih). Tutup legend-iq0jz saat landing.
 - `ghostex/44c6cb5f` ca0aa9058 (1041 Codex, test saja: panic cloud-only alur penuh, 12/12; tanpa migrasi). Tutup legend-kkojp saat landing.
 - `ghostex/b322bfb5` 67a8b6411 (1045 Codex, docs/backend.md saja: panduan ID bermerek Drizzle). Tanpa kartu ditutup.
 - `ghostex/8eb871ce` 9a530a3a9 (1039 POS 936 backend, base m1 + pos-panel-bayar-sisa-5w6; K uang; migrasi kerja 0670-0671 renumber + _journal; snapshot berhenti di 0467; 468 terarah + 101 ulang). Gabung SESUDAH `ghostex/pos-panel-bayar-sisa-5w6`. hpgyw tetap terbuka (layar jual tiket web).
