@@ -309,10 +309,6 @@ export async function voidPosOrderCorrection(
       // live manual refund of one of the order's lines.
       await assertNoLiveManualRefund(tx, context, order.id);
       await assertNoOrd09Refund(tx, context.tenant.tenantId, order.id);
-      // 1116 (SO 1114 P1): the void pays the whole bill back, so any money
-      // that already went back through the provider (or an intent flagged
-      // refunded with no sure amount) refuses it.
-      await assertNothingBackThroughProvider(tx, context, order.id);
       // legend-3dsih (1095): a voucher given for this order is cancelled with
       // the void, or the void is refused when the guest already used it.
       const vouchersOfOrder = await settleOrderVouchersForVoid(tx, context, {
@@ -424,6 +420,11 @@ export async function voidPosOrderCorrection(
         if (committed > BigInt(voidCashIdr))
           throw new PosError("REFUND_EXCEEDS_PAID");
       }
+      // 1116 (SO 1114 P1): the void pays the whole bill back, so any money
+      // that already went back through the provider (or an intent flagged
+      // refunded with no sure amount) refuses it. After the paid cap above,
+      // so a refund it already sees keeps its REFUND_EXCEEDS_PAID answer.
+      await assertNothingBackThroughProvider(tx, context, order.id);
       // The approver's ceiling covers the whole outflow, also when the order
       // itself holds no captured cash and only the charge cash goes out.
       if (outflowIdr > 0) {
@@ -1332,7 +1333,8 @@ export async function refundPosOrder(
       if (!goodsReturnOnly)
         assertRefundWithinPaid(
           idr(paid),
-          idr(Math.min(paid, refunded + recoveryGivenIdr)),
+          // 1116: what already went back through the provider is spent too.
+          idr(Math.min(paid, refunded + recoveryGivenIdr + providerOutIdr)),
           idr(payout),
         );
       const override = await consumeApproval(tx, context, {
