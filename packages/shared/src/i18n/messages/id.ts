@@ -44,6 +44,7 @@ import { posCorrectionMessages } from "./pos-correction.ts";
 import { posOrderDetailMessages } from "./pos-order-detail.ts";
 import { posIssueChargeMessages } from "./pos-issue-charge.ts";
 import { posReceiptPublicMessages } from "./pos-receipt-public.ts";
+import { paymentDuitkuMessages } from "./ws05-duitku-credentials.ts";
 import { paymentRefundFollowupMessages } from "./ws05-refund-followup.ts";
 import { reservationMessages } from "./reservation.ts";
 import { reservationGuestMessages } from "./reservation-guest.ts";
@@ -1754,11 +1755,14 @@ export const id = {
   paymentAdmin: {
     // Refund follow-up: reject/retry/quarantine (legend-kfkt, legend-hn5q).
     refundFollowup: paymentRefundFollowupMessages,
+    // Duitku credentials form (legend-vntqt).
+    duitku: paymentDuitkuMessages,
     title: "Pembayaran",
     subtitle:
       "Atur gateway dan terminal EDC, putuskan refund, selesaikan dana belum teralokasi, dan cocokkan settlement dengan mutasi rekening.",
     tabs: {
       routing: "Routing gateway",
+      duitku: "Duitku",
       edc: "EDC & kasir",
       refunds: "Refund",
       unallocated: "Dana belum teralokasi",
@@ -1802,8 +1806,25 @@ export const id = {
       emptyTitle: "Belum ada metode yang dirutekan",
       emptyHint:
         "Aktifkan gateway lebih dulu, lalu atur metode online di sini.",
+      emptyAction: "Buka kredensial Duitku",
+      saveHint: "Ubah gateway untuk menyimpan",
       overridden: "Ditimpa outlet",
       inherited: "Ikut default tenant",
+      enableMethod: "Aktifkan {method}",
+      inactiveProvider: "{name} (nonaktif)",
+      outletsLoading: "Memuat daftar outlet…",
+      errors: {
+        gatewayNotAvailable:
+          "Gateway belum bisa dipakai: pastikan gateway aktif, ada di paket, dan kredensialnya sudah tersimpan untuk cakupan ini.",
+        invalid:
+          "Pengaturan routing tidak valid. Periksa pilihan lalu coba lagi.",
+        forbidden: "Akun Anda tidak boleh mengubah routing pembayaran.",
+        notFound: "Outlet atau metode ini tidak ditemukan. Muat ulang halaman.",
+        conflict:
+          "Routing berubah di perangkat lain. Muat ulang halaman, lalu coba lagi.",
+        offline: "Tidak ada koneksi. Periksa internet, lalu coba lagi.",
+        generic: "Routing belum tersimpan. Coba lagi sebentar lagi.",
+      },
     },
     edc: {
       terminalsTitle: "Terminal EDC",

@@ -1,5 +1,6 @@
 import { CreditCard } from "lucide-react";
 import type { AreaNavEntry } from "@/lib/areas/nav";
+import { PAYMENT_ADMIN_PERMISSIONS } from "./lib";
 
 // Management area: gateway routing, EDC terminals, refunds, unallocated funds
 // and settlement reconciliation (PRD §3 F13). The page guard re-checks the
@@ -11,11 +12,7 @@ const nav: AreaNavEntry[] = [
     to: "/kelola/pembayaran",
     icon: CreditCard,
     order: 42,
-    anyPermission: [
-      "payment.transaction.view",
-      "payment.reconcile",
-      "payment.edc.manage",
-    ],
+    anyPermission: PAYMENT_ADMIN_PERMISSIONS,
   },
 ];
 
