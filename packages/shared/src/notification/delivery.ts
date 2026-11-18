@@ -62,26 +62,22 @@ function minutesOf(time: string): number {
   return h * 60 + m;
 }
 
-function localSecondsOfDay(now: Date, timeZone: string): number {
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone,
-    hourCycle: "h23",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  }).formatToParts(now);
+function localWallTime(now: Date, formatter: Intl.DateTimeFormat): number {
+  const parts = formatter.formatToParts(now);
   const get = (type: string) =>
     Number(parts.find((p) => p.type === type)?.value ?? "0");
-  return get("hour") * 3600 + get("minute") * 60 + get("second");
+  const wall = new Date(0);
+  wall.setUTCFullYear(get("year"), get("month") - 1, get("day"));
+  wall.setUTCHours(get("hour"), get("minute"), get("second"), 0);
+  return wall.getTime();
 }
 
 /**
  * If `now` falls inside the quiet window (start inclusive, end exclusive,
  * windows may cross midnight), returns the instant the window ends; else null.
- * Indonesian zones (Asia/Jakarta, Asia/Makassar, Asia/Jayapura) have no DST,
- * so wall-clock arithmetic is exact for every Legend outlet. A zone with DST
- * could see the end shift by an hour; supporting one needs a zoned-instant
- * computation first (bead legend-ahgg, low priority).
+ * The end follows the recipient's local clock across DST changes. If that
+ * clock repeats the end, use its first future occurrence; if it skips the end,
+ * use the first representable instant after it.
  */
 export function quietHoursEnd(
   quietHours: QuietHours | null,
@@ -89,15 +85,51 @@ export function quietHoursEnd(
   now: Date,
 ): Date | null {
   if (!quietHours) return null;
+  const formatter = new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  const day = 86_400_000;
+  const wallNow = localWallTime(now, formatter);
   const start = minutesOf(quietHours.start) * 60;
   const end = minutesOf(quietHours.end) * 60;
-  const t = localSecondsOfDay(now, timeZone);
+  const t = (((wallNow % day) + day) % day) / 1000;
   const inside = start < end ? t >= start && t < end : t >= start || t < end;
   if (!inside) return null;
   const wait = (end - t + 86_400) % 86_400;
-  const at = new Date(now.getTime() + wait * 1000);
-  at.setUTCMilliseconds(0);
-  return at;
+  const nowAt = Math.floor(now.getTime() / 1000) * 1000;
+  const estimate = nowAt + wait * 1000;
+  const wallEnd = wallNow + wait * 1000;
+  const wallEstimate = localWallTime(new Date(estimate), formatter);
+  if (wallEstimate === wallEnd) return new Date(estimate);
+
+  const offsets = [wallNow - nowAt, wallEstimate - estimate];
+  const candidates = offsets
+    .map((offset) => wallEnd - offset)
+    .sort((a, b) => a - b);
+  const exact = candidates.find(
+    (at) =>
+      at >= now.getTime() && localWallTime(new Date(at), formatter) === wallEnd,
+  );
+  if (exact !== undefined) return new Date(exact);
+
+  // A forward clock change can remove the requested end entirely. Locate
+  // the transition between the two offset candidates, to the nearest second.
+  let low = candidates[0] / 1000;
+  let high = candidates[1] / 1000;
+  while (high - low > 1) {
+    const middle = Math.floor((low + high) / 2);
+    if (localWallTime(new Date(middle * 1000), formatter) < wallEnd)
+      low = middle;
+    else high = middle;
+  }
+  return new Date(high * 1000);
 }
 
 // ---- Channel cascade ---------------------------------------------------------

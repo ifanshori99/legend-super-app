@@ -57,6 +57,14 @@ export function createObjectStorageFromEnv(
       `Incomplete storage configuration: set ${missing.join(", ")}.`,
     );
   const client = new S3Client({
+    requestHandler: {
+      connectionTimeout: 5_000,
+      // Keep an idle deadline while a streamed response body is being read.
+      socketTimeout: 5_000,
+      // Bound the request until response headers arrive; SDK retries still apply.
+      requestTimeout: 30_000,
+      throwOnRequestTimeout: true,
+    },
     region: source.STORAGE_S3_REGION?.trim() || "us-east-1",
     ...(present("STORAGE_S3_ENDPOINT") && {
       endpoint: source.STORAGE_S3_ENDPOINT!.trim(),

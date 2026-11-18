@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
+import { createServer } from "node:http";
+import { Socket } from "node:net";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
@@ -126,6 +129,130 @@ const FULL_ENV = {
 };
 
 describe("legend-dzh9q storage env", () => {
+  it("legend-bvxs3 stops an S3 download whose body stalls after headers", async () => {
+    let headersSent = false;
+    const server = createServer((_request, response) => {
+      response.writeHead(200, {
+        "content-type": "image/webp",
+        "content-length": "2",
+      });
+      response.write(Buffer.from([7]));
+      headersSent = true;
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const originalSetTimeout = Socket.prototype.setTimeout;
+    // Keep the real socket idle timer, while shortening its configured duration.
+    const socketTimer = vi
+      .spyOn(Socket.prototype, "setTimeout")
+      .mockImplementation(function (this: Socket, timeout, callback) {
+        return originalSetTimeout.call(
+          this,
+          timeout > 0 ? Math.min(timeout, 100) : timeout,
+          callback,
+        );
+      });
+    let download: Promise<unknown> | undefined;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string")
+        throw new Error("Expected a local TCP server");
+      vi.stubEnv("AWS_MAX_ATTEMPTS", "1");
+      const storage = createObjectStorageFromEnv({
+        ...FULL_ENV,
+        STORAGE_S3_ENDPOINT: `http://127.0.0.1:${address.port}`,
+        STORAGE_S3_FORCE_PATH_STYLE: "true",
+      })!;
+      const context = outletContext(tenant.tenantId, tenant.outletA);
+      download = storage
+        .get(context, {
+          tenantId: context.tenant.tenantId,
+          outletId: outletIdSchema.parse(tenant.outletA),
+          reference: "timeout-regression",
+          key: "images/timeout.webp",
+          visibility: "private",
+        })
+        .then(
+          () => ({ failed: false }),
+          () => ({ failed: true }),
+        );
+      const outcome = await Promise.race([
+        download,
+        new Promise((resolve) => {
+          deadline = setTimeout(() => resolve({ stalled: true }), 2_000);
+        }),
+      ]);
+      expect(headersSent).toBe(true);
+      expect(outcome).toMatchObject({ failed: true });
+    } finally {
+      clearTimeout(deadline);
+      socketTimer.mockRestore();
+      vi.unstubAllEnvs();
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+      await download;
+    }
+  });
+
+  it("legend-bvxs3 stops an S3 upload when the server never responds", async () => {
+    let requestStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      requestStarted = resolve;
+    });
+    const server = createServer(() => requestStarted());
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    let failure: unknown;
+    let upload: Promise<unknown> | undefined;
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string")
+        throw new Error("Expected a local TCP server");
+
+      // One attempt proves the transport deadline without waiting for SDK retries.
+      vi.stubEnv("AWS_MAX_ATTEMPTS", "1");
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const storage = createObjectStorageFromEnv({
+        ...FULL_ENV,
+        STORAGE_S3_ENDPOINT: `http://127.0.0.1:${address.port}`,
+        STORAGE_S3_FORCE_PATH_STYLE: "true",
+      })!;
+      const context = outletContext(tenant.tenantId, tenant.outletA);
+      upload = storage
+        .put(context, {
+          tenantId: context.tenant.tenantId,
+          outletId: outletIdSchema.parse(tenant.outletA),
+          reference: "timeout-regression",
+          key: "images/timeout.webp",
+          visibility: "private",
+          contentType: "image/webp",
+          content: new Uint8Array([7]),
+        })
+        .catch((error: unknown) => {
+          failure = error;
+        });
+      await Promise.race([
+        started,
+        upload.then(() => {
+          throw failure ?? new Error("Upload ended before reaching the server");
+        }),
+      ]);
+      await vi.advanceTimersByTimeAsync(30_001);
+      expect(failure).toMatchObject({ name: "TimeoutError" });
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+      await upload;
+    }
+  });
+
   it("returns null when no storage env is set (also for blank values)", () => {
     expect(createObjectStorageFromEnv({})).toBeNull();
     expect(

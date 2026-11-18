@@ -513,7 +513,7 @@ export const ticketItems: KitchenFixtureInput["ticketItems"] = [
     status: "in_progress",
     firedAt: "2026-11-01T03:40:00.000Z",
     startedAt: "2026-11-01T03:41:00.000Z",
-    readyAt: "2026-11-01T03:47:00.000Z",
+    readyAt: null,
     servedAt: null,
     recalledCount: 1,
   },

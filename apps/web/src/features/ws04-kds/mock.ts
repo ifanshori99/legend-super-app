@@ -135,7 +135,12 @@ function transition(id: string, action: KitchenTicketAction) {
           ...item,
           status: transitionKitchenItem(item.status, itemAction),
           startedAt: itemAction === "start" ? now : item.startedAt,
-          readyAt: itemAction === "ready" ? now : item.readyAt,
+          readyAt:
+            itemAction === "ready"
+              ? now
+              : itemAction === "recall"
+                ? null
+                : item.readyAt,
           recalledCount:
             itemAction === "recall"
               ? item.recalledCount + 1
@@ -228,7 +233,12 @@ registerMock(updateKitchenTicketItem, ({ params, body }) => {
         ...item,
         status: transitionKitchenItem(item.status, body.action),
         startedAt: body.action === "start" ? now : item.startedAt,
-        readyAt: body.action === "ready" ? now : item.readyAt,
+        readyAt:
+          body.action === "ready"
+            ? now
+            : body.action === "recall"
+              ? null
+              : item.readyAt,
         servedAt: body.action === "serve" ? now : item.servedAt,
         recalledCount:
           body.action === "recall"

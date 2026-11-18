@@ -179,6 +179,90 @@ test("F12 quiet hours defer external channels except security and emergency", ()
   );
 });
 
+test("legend-ahgg quiet hours end at the local wall time across spring DST", () => {
+  assert.equal(
+    n
+      .quietHoursEnd(
+        { start: "22:00", end: "07:00" },
+        "America/New_York",
+        new Date("2026-03-08T05:30:00.125Z"), // 00:30 EST
+      )
+      ?.toISOString(),
+    "2026-03-08T11:00:00.000Z", // 07:00 EDT
+  );
+});
+
+test("legend-ahgg quiet hours end at the local wall time across fall DST", () => {
+  assert.equal(
+    n
+      .quietHoursEnd(
+        { start: "22:00", end: "07:00" },
+        "America/New_York",
+        new Date("2026-11-01T04:30:00.125Z"), // 00:30 EDT
+      )
+      ?.toISOString(),
+    "2026-11-01T12:00:00.000Z", // 07:00 EST
+  );
+});
+
+test("legend-ahgg a same-day quiet window also follows a DST offset change", () => {
+  assert.equal(
+    n
+      .quietHoursEnd(
+        { start: "01:00", end: "04:00" },
+        "America/New_York",
+        new Date("2026-03-08T06:30:00.000Z"), // 01:30 EST
+      )
+      ?.toISOString(),
+    "2026-03-08T08:00:00.000Z", // 04:00 EDT
+  );
+  assert.equal(
+    n.quietHoursEnd(
+      { start: "01:00", end: "04:00" },
+      "America/New_York",
+      new Date("2026-03-08T08:00:00.000Z"),
+    ),
+    null,
+  );
+});
+
+test("legend-ahgg a missing spring end time ends quiet hours at the clock jump", () => {
+  assert.equal(
+    n
+      .quietHoursEnd(
+        { start: "22:00", end: "02:30" },
+        "America/New_York",
+        new Date("2026-03-08T06:30:00.000Z"), // 01:30 EST
+      )
+      ?.toISOString(),
+    "2026-03-08T07:00:00.000Z", // The clock jumps straight to 03:00 EDT
+  );
+});
+
+test("legend-ahgg a repeated fall end time chooses its next future occurrence", () => {
+  const quiet = { start: "22:00", end: "01:30" };
+  assert.equal(
+    n
+      .quietHoursEnd(
+        quiet,
+        "America/New_York",
+        new Date("2026-11-01T05:15:00.000Z"), // First 01:15, EDT
+      )
+      ?.toISOString(),
+    "2026-11-01T05:30:00.000Z",
+  );
+  assert.equal(
+    n
+      .quietHoursEnd(
+        quiet,
+        "America/New_York",
+        new Date("2026-11-01T06:15:00.000Z"), // Second 01:15, EST
+      )
+      ?.toISOString(),
+    "2026-11-01T06:30:00.000Z",
+  );
+});
+
 test("F12 reliable delivery: status machine and limited retries", () => {
   assert.equal(n.canTransitionDelivery("queued", "sending"), true);
   assert.equal(n.canTransitionDelivery("failed", "queued"), true);
