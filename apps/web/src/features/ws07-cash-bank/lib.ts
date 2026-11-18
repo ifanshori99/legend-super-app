@@ -1053,6 +1053,10 @@ export function moneyErrorKey(code: string): MessageKey | null {
       return "accounting.cash.moneyError.notPending";
     case "CASH_ENTRY_NOT_FOUND":
       return "accounting.cash.moneyError.entryNotFound";
+    case "CASH_OUT_CHAIN_OPEN":
+      return "accounting.cash.moneyError.chainOpen";
+    case "CASH_OUT_CHAIN_MISSING":
+      return "accounting.cash.moneyError.chainMissing";
     default:
       return null;
   }
