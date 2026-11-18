@@ -16,7 +16,15 @@
 //  - A gate table is a real table in `public` with a unique name; gate SQL uses
 //    the bare name (the runner sets search_path = public).
 import { createHash, randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Pool, type PoolClient } from "pg";
@@ -263,6 +271,142 @@ describe("[legend-1100] parsePreflightFile", () => {
   });
 });
 
+describe("[legend-1100] parsePreflightFile: only one read-only SELECT (F3)", () => {
+  const withBody = (body: string) =>
+    [
+      "-- gate: legend-abc12",
+      "-- before: 0002_gamma",
+      "-- requires: public.tabel_a",
+      "-- mode: block",
+      "-- resolve: Satu kalimat.",
+      body,
+      "",
+    ].join("\n");
+  const parse = (body: string) =>
+    parsePreflightFile("rilis1-legend-abc12.sql", withBody(body));
+
+  it("[legend-1100] accepts plain SELECT, WITH ... SELECT, comments, literals and a trailing semicolon", () => {
+    for (const body of [
+      "SELECT 1",
+      "SELECT 1;",
+      "-- komentar\nSELECT 1 /* blok */ ;  ",
+      "WITH a AS (SELECT 1 AS n) SELECT n FROM a",
+      "WITH RECURSIVE a(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM a WHERE n < 3) SELECT n FROM a",
+      "SELECT 'insert; update; delete' AS teks, $$copy; set$$ AS lain, 'it''s' AS q",
+      "SELECT t.id FROM tenants t WHERE t.modules ? 'mcp' AND count(*) > 0",
+      "SELECT now(), jsonb_typeof(t.x), coalesce(t.y, 0) FROM tenants t",
+      'SELECT 1 AS "update"',
+    ])
+      expect(() => parse(body), body).not.toThrow();
+  });
+
+  it("[legend-1100] rejects SET, COPY, DO, CALL and other non-SELECT statements", () => {
+    for (const body of [
+      "SET LOCAL statement_timeout = '120s'",
+      "SET search_path = evil",
+      "COPY (SELECT 1 WHERE false) TO PROGRAM 'cat >/dev/null'",
+      "COPY tabel_a TO '/tmp/x'",
+      "DO $$ BEGIN PERFORM 1; END $$",
+      "CALL prosedur()",
+      "INSERT INTO tabel_a VALUES (1)",
+      "UPDATE tabel_a SET x = 1",
+      "DELETE FROM tabel_a",
+      "MERGE INTO tabel_a USING b ON true WHEN MATCHED THEN DELETE",
+      "CREATE TABLE x (id int)",
+      "ALTER TABLE tabel_a ADD COLUMN y int",
+      "DROP TABLE tabel_a",
+      "TRUNCATE tabel_a",
+      "GRANT ALL ON tabel_a TO public",
+      "EXECUTE stmt",
+      "VALUES (1)",
+      "TABLE tabel_a",
+      "EXPLAIN ANALYZE SELECT 1",
+      "(SELECT 1)",
+    ])
+      expect(() => parse(body), body).toThrow(ReleaseGateError);
+  });
+
+  it("[legend-1100] rejects writing CTEs, SELECT INTO and locking reads", () => {
+    for (const body of [
+      "WITH w AS (INSERT INTO tabel_a VALUES (1) RETURNING id) SELECT id FROM w",
+      "WITH w AS (UPDATE tabel_a SET x = 1 RETURNING id) SELECT id FROM w",
+      "WITH w AS (DELETE FROM tabel_a RETURNING id) SELECT id FROM w",
+      "WITH w AS (SELECT 1) INSERT INTO tabel_a SELECT * FROM w",
+      "SELECT id INTO tabel_baru FROM tabel_a",
+      "SELECT id FROM tabel_a FOR UPDATE",
+      "SELECT id FROM tabel_a FOR SHARE",
+      "SELECT id FROM tabel_a /* x */ for\n no key update",
+    ])
+      expect(() => parse(body), body).toThrow(ReleaseGateError);
+  });
+
+  it("[legend-1100] rejects more than one statement, hidden or not", () => {
+    for (const body of [
+      "SELECT 1; SELECT 2",
+      "SELECT 1; SET LOCAL x = 1",
+      "SELECT 1;; ",
+      "SELECT 1; -- x\nDELETE FROM tabel_a",
+    ])
+      expect(() => parse(body), body).toThrow(ReleaseGateError);
+  });
+
+  it("[legend-1100] rejects side-effect function calls, qualified, quoted or in a subquery", () => {
+    for (const body of [
+      "SELECT set_config('row_security', 'on', true)",
+      "SELECT pg_catalog.set_config('x', 'y', true)",
+      "SELECT \"set_config\"('x', 'y', true)",
+      "SELECT pg_catalog . set_config ('x', 'y', true)",
+      "SELECT nextval('seq')",
+      "SELECT setval('seq', 1)",
+      "SELECT pg_sleep(10)",
+      "SELECT pg_advisory_lock(1)",
+      "SELECT pg_notify('c', 'p')",
+      "SELECT pg_terminate_backend(1)",
+      "SELECT pg_read_file('/etc/passwd')",
+      "SELECT lo_import('/etc/passwd')",
+      "SELECT dblink_exec('x', 'y')",
+      "SELECT query_to_xml('delete from tabel_a', true, true, '')",
+      "SELECT 1 WHERE EXISTS (SELECT set_config('a', 'b', true))",
+      "SELECT PG_SLEEP(1)",
+    ])
+      expect(() => parse(body), body).toThrow(ReleaseGateError);
+  });
+
+  it("[legend-1100] does not let comments, strings or dollar quotes hide a statement", () => {
+    for (const body of [
+      "SELECT 1 /* nested /* x */ */; DELETE FROM tabel_a",
+      "SELECT E'\\'' ; DELETE FROM tabel_a ; --'",
+      "SELECT $a$ x $a$; DELETE FROM tabel_a",
+      "SELECT 'belum ditutup",
+      "SELECT 1 /* belum ditutup",
+    ])
+      expect(() => parse(body), body).toThrow(ReleaseGateError);
+  });
+
+  it("[legend-1100] the rejection message names the file, never the SQL", () => {
+    try {
+      parse("SELECT set_config('rahasia-sql-9z', 'y', true)");
+      throw new Error("expected a throw");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ReleaseGateError);
+      expect((error as Error).message).toContain("rilis1-legend-abc12.sql");
+      expect((error as Error).message).not.toContain("rahasia-sql-9z");
+    }
+  });
+
+  it("[legend-1100] every gate file shipped in scripts/preflight still parses", () => {
+    const dir = join(__dirname, "..", "..", "..", "..", "scripts", "preflight");
+    const files = readdirSync(dir).filter((name) =>
+      /^rilis1-.*\.sql$/.test(name),
+    );
+    expect(files.length).toBeGreaterThan(0);
+    for (const name of files)
+      expect(() =>
+        parsePreflightFile(name, readFileSync(join(dir, name), "utf8")),
+      ).not.toThrow();
+  });
+});
+
 describe("[legend-1100] runReleaseGates: fresh database", () => {
   it("[legend-1100] returns n/a and logs N/A when __drizzle_migrations does not exist", async () => {
     await client.query(`DROP TABLE ${schema}.__drizzle_migrations`);
@@ -490,6 +634,30 @@ describe("[legend-1100] runReleaseGates: fail-closed", () => {
     });
     const message = await messageOf(runReleaseGates(client, opts()));
     expect(message).toContain("legend-mul01");
+  });
+
+  it("[legend-1100] rejects SET, COPY TO PROGRAM and side-effect SELECTs before running the body", async () => {
+    await insertApplied([0, 1]);
+    const marker = join(root, "efek-luar.txt");
+    const bodies = [
+      "SET LOCAL statement_timeout = '120s'",
+      `COPY (SELECT 1 WHERE false) TO PROGRAM 'touch ${marker}'`,
+      `SELECT pg_sleep(0), set_config('row_security', 'on', true) FROM ${gateTable}`,
+    ];
+    for (const [i, sql] of bodies.entries()) {
+      writeGate({
+        name: `rilis1-legend-bad0${i}.sql`,
+        gate: `legend-bad0${i}`,
+        sql,
+      });
+      const message = await messageOf(runReleaseGates(client, opts()));
+      expect(message).toContain(`rilis1-legend-bad0${i}.sql`);
+      expect(message).toContain("rusak");
+      expect(message).not.toContain("gagal dijalankan");
+      rmSync(join(preflightDir, `rilis1-legend-bad0${i}.sql`));
+    }
+    expect(existsSync(marker)).toBe(false);
+    expect(logs.join("\n")).not.toContain("legend-bad0");
   });
 
   it("[legend-1100] fails when the gate tries to write (runs read-only)", async () => {

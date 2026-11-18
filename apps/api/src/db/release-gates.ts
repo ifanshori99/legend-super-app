@@ -102,6 +102,112 @@ export function migrationHash(sqlText: string): string {
 }
 
 /**
+ * Replaces comments and literals with blanks so keyword checks cannot be
+ * fooled by text inside them. Returns null on an unterminated comment,
+ * string or quoted identifier. Quoted identifiers keep their quotes.
+ */
+function stripSqlNoise(sql: string): string | null {
+  let out = "";
+  let i = 0;
+  while (i < sql.length) {
+    const c = sql[i] as string;
+    const next = sql[i + 1];
+    if (c === "-" && next === "-") {
+      const end = sql.indexOf("\n", i);
+      i = end === -1 ? sql.length : end;
+      out += " ";
+    } else if (c === "/" && next === "*") {
+      let depth = 1;
+      i += 2;
+      while (i < sql.length && depth > 0) {
+        if (sql[i] === "/" && sql[i + 1] === "*") {
+          depth += 1;
+          i += 2;
+        } else if (sql[i] === "*" && sql[i + 1] === "/") {
+          depth -= 1;
+          i += 2;
+        } else i += 1;
+      }
+      if (depth > 0) return null;
+      out += " ";
+    } else if (c === "'") {
+      // E'...' strings treat a backslash as an escape; plain ones do not.
+      const prev = sql[i - 1] ?? "";
+      const before = sql[i - 2] ?? "";
+      const escapes = /[eE]/.test(prev) && !/[A-Za-z0-9_$]/.test(before);
+      i += 1;
+      let closed = false;
+      while (i < sql.length) {
+        if (escapes && sql[i] === "\\") i += 2;
+        else if (sql[i] === "'" && sql[i + 1] === "'") i += 2;
+        else if (sql[i] === "'") {
+          closed = true;
+          i += 1;
+          break;
+        } else i += 1;
+      }
+      if (!closed) return null;
+      out += "''";
+    } else if (c === '"') {
+      const end = sql.indexOf('"', i + 1);
+      if (end === -1) return null;
+      out += '""';
+      i = end + 1;
+    } else if (c === "$") {
+      const tag = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(i));
+      if (!tag) {
+        out += c;
+        i += 1;
+      } else {
+        const end = sql.indexOf(tag[0], i + tag[0].length);
+        if (end === -1) return null;
+        out += "''";
+        i = end + tag[0].length;
+      }
+    } else {
+      out += c;
+      i += 1;
+    }
+  }
+  return out;
+}
+
+const WRITE_KEYWORDS =
+  /\b(insert|update|delete|merge|into|copy|call|do|set|create|alter|drop|truncate|grant|revoke|execute)\b/i;
+const LOCKING_READ = /\bfor\s+(no\s+key\s+)?(update|share|key\s+share)\b/i;
+const FUNCTION_CALL = /([A-Za-z_][A-Za-z0-9_$]*)\s*\(/g;
+const SAFE_PG_FUNCTIONS = new Set(["pg_typeof"]);
+const SIDE_EFFECT_FUNCTIONS =
+  /^(set_config|nextval|setval|currval|lastval|pg_.*|lo_.*|dblink.*|txid_.*|query_to_xml.*|cursor_to_xml.*|table_to_xml.*|schema_to_xml.*|database_to_xml.*|brin_.*|gin_.*|pgstat.*)$/i;
+
+/**
+ * Gate SQL must be exactly one SELECT (or WITH ... SELECT): no other statement
+ * kind, no writing CTE, no SELECT INTO, no locking read, no side-effect
+ * function. Checked before anything runs, because READ ONLY and ROLLBACK do
+ * not undo external effects such as COPY ... TO PROGRAM. Unsure means reject.
+ * Returns the reason (never the SQL) or null when the SQL is acceptable.
+ */
+function readOnlySelectViolation(sql: string): string | null {
+  const stripped = stripSqlNoise(sql);
+  if (stripped === null) return "SQL punya komentar atau kutipan tak tertutup";
+  const body = stripped.trim().replace(/;\s*$/, "");
+  if (body.includes(";")) return "hanya satu statement yang boleh";
+  if (!/^(select|with)\b/i.test(body)) return "hanya SELECT yang boleh";
+  if (WRITE_KEYWORDS.test(body)) return "SQL memuat kata kunci non-SELECT";
+  if (LOCKING_READ.test(body)) return "SELECT dengan kunci baris tidak boleh";
+  if (/"\s*\(/.test(body)) return "nama fungsi berkutip tidak boleh";
+  for (const match of body.matchAll(FUNCTION_CALL)) {
+    const name = match[1] as string;
+    if (
+      SIDE_EFFECT_FUNCTIONS.test(name) &&
+      !SAFE_PG_FUNCTIONS.has(name.toLowerCase())
+    )
+      return "fungsi berefek samping tidak boleh";
+  }
+  return null;
+}
+
+/**
  * Parses one rilis1-*.sql file. Header order is fixed (brief 1097):
  * gate, before, requires, mode, resolve, then one read-only SELECT.
  */
@@ -131,6 +237,8 @@ export function parsePreflightFile(file: string, text: string): PreflightGate {
   if (sql === "") bad("tidak ada SQL");
   if (lines.slice(5).some((line) => line.trimStart().startsWith("\\")))
     bad("meta psql tidak boleh");
+  const violation = readOnlySelectViolation(sql);
+  if (violation) bad(violation);
   return {
     file,
     gate,
