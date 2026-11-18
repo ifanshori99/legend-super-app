@@ -28,6 +28,7 @@ import {
   refundReconHoldViewSchema,
   resolveRefundReconHold as resolveEndpoint,
 } from "@starter/shared/payment/admin";
+import { createHash } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "../db/index.ts";
 import {
@@ -46,9 +47,11 @@ import {
   recordProviderRefundInTx,
   type ProviderRefundIdKind,
 } from "./payment-provider-partial-refund.ts";
+import { alertOwnRefundFailedUnverified } from "./payment-provider-refunded-alert.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import { assertPaymentPermission } from "./payment-support.ts";
 import type { Tx } from "./permission-resolver.ts";
+import { lockDepositIntentsExclusive } from "./reservation-deposit-credit.ts";
 
 type Query = ReturnType<typeof listEndpoint.query.parse>;
 type Params = ReturnType<typeof resolveEndpoint.params.parse>;
@@ -291,7 +294,9 @@ async function countHold(
       ? null
       : ((hold.providerRefundIdKind as ProviderRefundIdKind | null) ??
         "provider");
-  if (named !== null && hold.amountIdr <= 0)
+  // A `synthetic_full` hold works out the transaction's remainder itself; one
+  // filed with 0 (1045 A1) must still be countable.
+  if (named !== null && namedKind !== "synthetic_full" && hold.amountIdr <= 0)
     throw unprocessable("This hold has no amount to count against the intent.");
   const record = async (
     refundIdKind: ProviderRefundIdKind,
@@ -315,6 +320,7 @@ async function countHold(
         expectedIntentId: intent.id,
         force: true,
         quiet: true,
+        holdResolve: true,
         ...(topUp ? { topUp: true } : {}),
       },
       factAt,
@@ -344,12 +350,27 @@ async function countHold(
   // Counting books money against the payment, so nothing of ours may still be
   // on its way: a pending or approved refund of the intent refuses it (422,
   // nothing recorded, the hold stays open).
-  const assertNoRefundInFlight = async () => {
+  // With `transactionRef` (1045 A1), a refund of a parked fund whose evidence
+  // is ANOTHER transaction is not part of this one's money and does not block;
+  // every other refund of the intent still does (restrictive).
+  const assertNoRefundInFlight = async (transactionRef?: string) => {
+    const onTransaction =
+      transactionRef === undefined
+        ? sql`true`
+        : sql`NOT (r.unallocated_fund_id IS NOT NULL AND EXISTS (
+            SELECT 1 FROM payment_unallocated_funds f
+              JOIN payment_evidence fe
+                ON fe.tenant_id = f.tenant_id AND fe.id = f.evidence_id
+             WHERE f.tenant_id = r.tenant_id
+               AND f.id = r.unallocated_fund_id
+               AND (fe.provider <> ${PROVIDER}
+                 OR fe.provider_ref <> ${transactionRef})))`;
     const { rows: flying } = await tx.execute(sql`SELECT 1
       FROM payment_refunds r
       WHERE r.tenant_id = ${tenantId}::uuid
         AND r.payment_intent_id = ${intent.id}::uuid
-        AND r.status IN ('pending', 'approved') LIMIT 1`);
+        AND r.status IN ('pending', 'approved')
+        AND ${onTransaction} LIMIT 1`);
     if (flying.length > 0)
       throw unprocessable(
         "A refund of this payment is still on its way; wait until it is final. A pending refund that was never sent must first be failed or cancelled by finance.",
@@ -377,7 +398,7 @@ async function countHold(
         "The provider transaction of this refund is not known.",
       );
     const providerPaymentRef = named;
-    await assertNoRefundInFlight();
+    await assertNoRefundInFlight(providerPaymentRef);
     const leftNow = () =>
       transactionLeftIdr(tx, tenantId, intent, providerPaymentRef);
     let left = await leftNow();
@@ -599,4 +620,101 @@ export async function resolveRefundReconHold(
       },
     );
   });
+}
+
+/**
+ * legend-w2td5 (1045 F1): reason of the hold filed when a refund of ours that
+ * may have reached the provider (a provider reference, a send attempt or a
+ * pending poll) ends failed. Its failure does not prove the provider kept the
+ * money: the provider may have returned it (our refund after all, or one it
+ * made on its own whose webhook was lost). Until the provider says otherwise
+ * the intent is held, so no second refund of it can be sent. Finance closes
+ * it after checking the provider.
+ */
+export const OWN_REFUND_FAILED_UNVERIFIED = "own_refund_failed_unverified";
+
+/**
+ * Files the `OWN_REFUND_FAILED_UNVERIFIED` hold of one failed refund of ours,
+ * once per refund (the event id is a stable hash of tenant and refund id, so a
+ * replay adds none). The provider refund id of our refund when it answered one
+ * (else none), the refunded transaction as `providerPaymentRef` (null when not
+ * known), the refund's amount. A new hold alerts the supervisors and owners
+ * once. Only finance closes it (the poller records a
+ * `refunded` answer but never closes the hold: DOIT has no partial status,
+ * so `paid` proves nothing). Lock
+ * order: the caller holds the intent row (then fund and refund rows); the
+ * deposit-intent locks are taken here, last, like `fileLiveOwnHold`.
+ */
+export async function fileOwnRefundFailedHoldInTx(
+  tx: Tx,
+  context: ScopedTenantContext,
+  input: {
+    tenantId: TenantId;
+    intentId: string;
+    outletId: string;
+    refundId: string;
+    /** The provider's refund id of our refund, when it answered one. */
+    providerRefundId: string | null;
+    amountIdr: number;
+    providerPaymentRef: string | null;
+    now: Date;
+  },
+): Promise<boolean> {
+  // The hold limits the DP credit of the intent (`openReconHoldIdrSql`).
+  await lockDepositIntentsExclusive(tx, input.tenantId, input.intentId);
+  const hex = createHash("sha256")
+    .update(
+      `refund_recon_hold.own_failed\0${input.tenantId}\0${input.refundId.toLowerCase()}`,
+    )
+    .digest("hex");
+  const webhookEventId = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+  // 1045 A2: the hold names our refund's provider refund id (kind
+  // `provider`), so counting it books that id and a late echo of it is a
+  // duplicate, never a second fact.
+  const insertHold = (providerRefundId: string | null) =>
+    tx
+      .insert(refundReconHolds)
+      .values({
+        tenantId: input.tenantId,
+        paymentIntentId: input.intentId,
+        webhookEventId,
+        providerRefundId,
+        providerRefundIdKind: providerRefundId === null ? null : "provider",
+        providerPaymentRef: input.providerPaymentRef,
+        amountIdr: idr(input.amountIdr),
+        reason: OWN_REFUND_FAILED_UNVERIFIED,
+        flaggedAt: input.now,
+      })
+      .onConflictDoNothing()
+      .returning({ id: refundReconHolds.id });
+  let [held] = await insertHold(input.providerRefundId);
+  if (!held && input.providerRefundId !== null) {
+    // Not a replay of this hold: another hold of the intent already names the
+    // id. This one is still filed, without it (counting it is then capped by
+    // what is left of the transaction).
+    const [replay] = await tx
+      .select({ id: refundReconHolds.id })
+      .from(refundReconHolds)
+      .where(
+        and(
+          eq(refundReconHolds.tenantId, input.tenantId),
+          eq(refundReconHolds.webhookEventId, webhookEventId),
+        ),
+      );
+    if (!replay) [held] = await insertHold(null);
+  }
+  if (!held) return false;
+  // 1045 A3: told like the live-own hold, once (winner of the insert).
+  await alertOwnRefundFailedUnverified(
+    tx,
+    context,
+    {
+      intentId: input.intentId,
+      outletId: input.outletId,
+      dedupKey: input.refundId.toLowerCase(),
+      amountIdr: input.amountIdr,
+    },
+    input.now,
+  );
+  return true;
 }

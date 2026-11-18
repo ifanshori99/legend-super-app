@@ -7150,3 +7150,24 @@ Cabang worktree `ghostex/980-refund-sisa-4-kartu` dari `9788dc422` (958 + 967). 
 - Belum (bead): legend-w2td5 poller tidak memeriksa transaksi paid, jadi bila provider me-refund tanpa webhook lalu refund kita gagal, sistem tidak tahu (test 1035-04izi-08 mengunci batas ini, P2, perlu architect); legend-xhpng pembagian akun refund split (total benar, akun selisih); legend-0ywbv jenis ID di layar hold + data lama hold hash.
 - Bukti: 4 berkas test baru (A 17, B 18, C 8, D 5 test; gagal di base: A 6, B 14, C 5, D 4) + 23 berkas lama, total 27 berkas 470 test lulus (958 diulang sesudah penyesuaian: 5 berkas 77 test lulus); typecheck API (heavy) hijau; prettier dan eslint bersih; db:generate kosong.
 - Biaya sesi (session-usage): total biaya* 15.5M; 17 subagent (4 Explore, 4 test-writer, 5 implementer, 1 architect, 2 reviewer, 1 test-runner), puncak sekitar 8 bersamaan.
+
+**1045 Perbaikan SO refund ronde 3 (legend-w2td5, legend-d7im9; 18 Nov 2026, cabang ghostex/1033-kredit-dp-pool-net-bersama di atas c118f02a5, tingkat K)**
+
+- Sudah:
+  - F1 w2td5: refund kita yang terkirim lalu gagal memasang hold `own_refund_failed_unverified` di transaksi yang sama, dengan ref provider refund kita dan alert sekali. Refund baru, approve, kirim dan dana parkir ditolak 409 sampai finance resolve. Poller juga menanyakan intent paid yang ber-hold: jawaban `refunded` mencatat fact sekali, hold tetap. Jawaban `paid` tidak menutup hold karena DOIT tidak punya status partial.
+  - F2 d7im9: setiap retry jalur perekam (in-flight, mustWait, settlement) memasang hold dulu; nominal = laporan provider. Hold ditutup otomatis hanya bila fact laporan yang sama tercatat atau duplikat milik intent sama tanpa refund kita berjalan.
+  - F3: backfill 0656 tidak menebak lagi; semua fact lama tetap `provider`, hold ber-id jadi `provider`.
+  - F4: docs/deployment.md "stop, migrate, start".
+  - Architect xhigh A1: hold nominal 0 tidak mungkin, synthetic_full 0 tetap bisa di-count. A2: laporan provider melebihi sisa transaksi jadi hold `REFUND_EXCEEDS_LEFT`, bukan fact; hold F1 menyimpan ref provider sehingga echo terlambat = duplikat. A3: alert hold F1. A4: penutupan hold pada duplikat hanya untuk intent sama.
+- Matriks race CTO Retro 46: refund-1045-d (M1, 11 test: webhook x poller x refund kita gagal/sukses x refund baru) dan refund-1045-e (M2, 13 test: resolve hold x kredit DP x refund baru). Semua lulus, uang keluar <= dibayar di tiap skenario; tidak ada skenario yang tidak bisa dibuat aman.
+- Keputusan:
+  - Hold F1 tidak ditutup poller.
+  - Hold retry = nominal laporan, bukan nominal refund kita.
+  - Hold F1 menahan juga refund yang provider menolak dengan tegas ("declined"), karena sesudah terkirim tidak ada bukti uang belum keluar. Akibatnya setiap refund gateway yang gagal sesudah terkirim butuh cek finance sebelum refund ulang.
+  - Test lama diubah ke perilaku ini: 958-a9, PAY-04, QR-LATE P4/P5, weuo2-F, 1025-B-F3, 1035-04izi-02/-08. Teardown 15 berkas menambah DELETE refund_recon_holds.
+- Belum (bead): legend-rdg29 (poller berhenti menanyakan ulang hold F1 sesudah 12 galat/jawaban paid; aman, finance wajib cek), legend-py4xe (data lama payment:<ref> + laporan refund ID transaksi sama, belum ada production), legend-ehn19 (label resolve hold duplikat + teks "booked").
+- Bukti:
+  - 6 berkas test baru 1045 (a 11, b 13, c 24, d 11, e 13, f 9). Gagal di base c118f02a5: 37 dari 89 (a 11, b 11, c 2, d 4, e 7, 1035-a 2); f merah 7 sebelum perbaikan architect.
+  - Regresi 139 berkas refund/hold/poller: 2157 lulus pada run pertama, 19 berkas gagal (teardown FK + perilaku hold) diperbaiki lalu lulus 432/432 + 958 29/29.
+  - Typecheck API (heavy) hijau; prettier dan eslint bersih; db:generate kosong.
+- Biaya sesi (session-usage, 1035+1045): total biaya* 27.2M; 32 subagent (ronde 3: 15), puncak 8 bersamaan, rata 1.0.

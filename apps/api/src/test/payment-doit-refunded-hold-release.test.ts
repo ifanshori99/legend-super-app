@@ -587,6 +587,10 @@ describe("legend-3wpf/952 r2 verified DOIT refunded and paid webhooks", () => {
         [tenantA, createdLinkIds],
       );
       await owner.query(
+        `DELETE FROM refund_recon_holds WHERE tenant_id = $1 AND payment_intent_id IN (${intents})`,
+        [tenantA, createdLinkIds],
+      );
+      await owner.query(
         `DELETE FROM payment_evidence WHERE tenant_id = $1 AND payment_intent_id IN (${intents})`,
         [tenantA, createdLinkIds],
       );

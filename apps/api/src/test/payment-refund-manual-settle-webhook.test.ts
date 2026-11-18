@@ -159,6 +159,10 @@ afterAll(async () => {
     "DELETE FROM payment_evidence WHERE payment_intent_id = ANY($1::uuid[])",
     [intentIds],
   );
+  await owner.query(
+    "DELETE FROM refund_recon_holds WHERE payment_intent_id = ANY($1::uuid[])",
+    [intentIds],
+  );
   await owner.query("DELETE FROM payment_intents WHERE id = ANY($1::uuid[])", [
     intentIds,
   ]);

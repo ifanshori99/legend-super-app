@@ -47,6 +47,7 @@ import {
   alertCreditUsedBeforeProviderRefund,
   alertProviderPartialRefund,
   alertProviderRefundCountedWithLiveOwn,
+  alertProviderRefundExceedsLeft,
 } from "./payment-provider-refunded-alert.ts";
 import { providerRefundedForeignIdrSql } from "./payment-provider-refunded-foreign-sql.ts";
 import {
@@ -122,6 +123,12 @@ export type ProviderRefundInput = {
    * refund of one transaction is otherwise a duplicate of the first).
    */
   topUp?: boolean;
+  /**
+   * Only the resolve of a refund recon hold passes it: that resolve closes the
+   * hold itself, so recording here never closes the live-own hold of the
+   * report (legend-d7im9), else the resolve would find it closed.
+   */
+  holdResolve?: boolean;
 };
 
 export type ProviderRefundOutcome = {
@@ -157,10 +164,43 @@ export async function recordProviderRefundInTx(
   // The remainder counted a refund of ours that is not final (1025 B).
   let countedLiveOwn = false;
   let tellSupervisors = false;
+  /** The dedup key of the live-own hold of this report: a stable id of
+   * (tenant, intent, refund kind and id). */
+  const liveOwnHoldKey = (): string => {
+    const hex = createHash("sha256")
+      .update(
+        `refund_recon_hold.live_own\0${tenantId}\0${input.expectedIntentId.toLowerCase()}\0${refundKey}`,
+      )
+      .digest("hex");
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+  };
   /** Holds the intent (refunds and payouts stop) because the books count a
-   * refund of ours that is not final, and tells finance once. The hold is
-   * keyed by a stable id of (tenant, intent, refund kind and id): a replay, or
-   * the case with no provider row at all, stays one hold and one alert. */
+   * refund of ours that is not final, or because this report waits on a refund
+   * of ours still in flight (legend-d7im9), and tells finance once. Keyed by
+   * `liveOwnHoldKey`: a replay, or the case with no provider row at all, stays
+   * one hold and one alert. */
+  /** Closes the live-own hold of this report (legend-d7im9, 1045) once its
+   * refund is on record and no refund of ours is in flight any more. Holds of
+   * other reports are not touched; a hold resolve closes its own. */
+  const closeLiveOwnHold = async (): Promise<void> => {
+    if (input.holdResolve) return;
+    await tx
+      .update(refundReconHolds)
+      .set({
+        resolvedAt: now,
+        resolution: "counted_against_intent",
+        resolutionNote:
+          "Otomatis: refund kami tidak lagi berjalan, refund penyedia dicatat",
+      })
+      .where(
+        and(
+          eq(refundReconHolds.tenantId, tenantId),
+          eq(refundReconHolds.paymentIntentId, input.expectedIntentId),
+          eq(refundReconHolds.webhookEventId, liveOwnHoldKey()),
+          isNull(refundReconHolds.resolvedAt),
+        ),
+      );
+  };
   const fileLiveOwnHold = async (
     heldIdr: number,
     intentOutletId: string,
@@ -169,17 +209,12 @@ export async function recordProviderRefundInTx(
     // under the deposit-intent locks (taken after the intent row lock of step
     // 2, the order of a refund). Re-taking them in step 4 is a no-op.
     await lockDepositIntentsExclusive(tx, tenantId, input.expectedIntentId);
-    const hex = createHash("sha256")
-      .update(
-        `refund_recon_hold.live_own\0${tenantId}\0${input.expectedIntentId.toLowerCase()}\0${refundKey}`,
-      )
-      .digest("hex");
     const [held] = await tx
       .insert(refundReconHolds)
       .values({
         tenantId,
         paymentIntentId: input.expectedIntentId,
-        webhookEventId: `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`,
+        webhookEventId: liveOwnHoldKey(),
         providerRefundId,
         providerRefundIdKind: refundIdKind,
         providerPaymentRef,
@@ -198,6 +233,48 @@ export async function recordProviderRefundInTx(
           intentId: input.expectedIntentId,
           outletId: tellSupervisors ? intentOutletId : null,
           providerRefundId: refundKey,
+          amountIdr: heldIdr,
+        },
+        now,
+      );
+  };
+  /** 1045 A2: holds a provider report larger than what is left of its
+   * transaction (nothing booked), once per (intent, refund id); finance told
+   * once. Same lock order as `fileLiveOwnHold`. */
+  const fileExceedsLeftHold = async (
+    heldIdr: number,
+    intentOutletId: string,
+  ): Promise<void> => {
+    await lockDepositIntentsExclusive(tx, tenantId, input.expectedIntentId);
+    const hex = createHash("sha256")
+      .update(
+        `refund_recon_hold.exceeds_left\0${tenantId}\0${input.expectedIntentId.toLowerCase()}\0${refundKey}`,
+      )
+      .digest("hex");
+    const [held] = await tx
+      .insert(refundReconHolds)
+      .values({
+        tenantId,
+        paymentIntentId: input.expectedIntentId,
+        webhookEventId: `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`,
+        providerRefundId,
+        providerRefundIdKind: refundIdKind,
+        providerPaymentRef,
+        amountIdr: idr(heldIdr),
+        reason:
+          "Refund penyedia melebihi sisa transaksi setelah refund yang sudah dibukukan (REFUND_EXCEEDS_LEFT)",
+        flaggedAt: now,
+      })
+      .onConflictDoNothing()
+      .returning({ id: refundReconHolds.id });
+    if (held)
+      await alertProviderRefundExceedsLeft(
+        tx,
+        context,
+        {
+          intentId: input.expectedIntentId,
+          outletId: intentOutletId,
+          dedupKey: refundKey,
           amountIdr: heldIdr,
         },
         now,
@@ -319,7 +396,7 @@ export async function recordProviderRefundInTx(
   if (own) return { status: "own" };
   // A refund of this intent we may have sent whose provider reference we do
   // not know yet: this message may be its echo, so count nothing for now.
-  const [inFlight] = await tx
+  const inFlightRows = await tx
     .select({ id: paymentRefunds.id })
     .from(paymentRefunds)
     .where(
@@ -332,14 +409,23 @@ export async function recordProviderRefundInTx(
           OR ${paymentRefunds.payoutPendingPolls} > 0
           OR ${paymentRefunds.payoutClaimToken} IS NOT NULL)`,
       ),
-    )
-    .limit(1);
+    );
+  const inFlight = inFlightRows.length > 0;
   // The payment's own `refunded` status (synthetic id) decides below, once the
   // remainder is known (legend-tiyce): a live parked-fund refund of ours that
   // already covers all of it is held, not waited for.
-  const waitForInFlight = inFlight !== undefined && !input.force;
-  if (waitForInFlight && refundIdKind !== "synthetic_full")
+  const waitForInFlight = inFlight && !input.force;
+  // legend-d7im9 (1045): every "retry" that waits on a refund of ours still in
+  // flight holds the intent first (same transaction, once per report): should
+  // ours fail before the report is asked again, no new refund of the same money
+  // may go out in between. The report is still asked again.
+  // The hold carries the report's own amount: a resolve that counts it books
+  // that refund id with the hold's amount, so it must be what the provider
+  // returned, never our (maybe smaller) refund.
+  if (waitForInFlight && refundIdKind !== "synthetic_full") {
+    await fileLiveOwnHold(amountIdr, intent.outletId);
     return { status: "retry" };
+  }
 
   // One transaction, one refund: the payment's own `refunded` status
   // (`synthetic_full`, the whole transaction) and a provider refund id of the
@@ -422,11 +508,19 @@ export async function recordProviderRefundInTx(
     // the outlet supervisors hear of it too. A live parked-fund refund (fixed
     // amount, already told by the 958 alert) is told to the owners only.
     tellSupervisors = live.some((row) => row.fund !== true);
+    const liveIdr = live.reduce((sum, row) => sum + Number(row.amount), 0);
+    // 1045 A1: the hold carries all that is at risk of this transaction, its
+    // remainder and our refunds of it still on their way. A refund of ours of
+    // another transaction in flight leaves `live` empty here, and a hold of 0
+    // would neither limit the credit nor let finance count it.
+    const atRiskIdr = liveIdr + Math.max(left, 0);
     if (
       waitForInFlight &&
       !(left <= 0 && live.some((row) => !row.provider_ref && row.fund === true))
-    )
+    ) {
+      await fileLiveOwnHold(atRiskIdr, intent.outletId);
       return { status: "retry" };
+    }
     if (left <= 0) {
       // Our refunds leave nothing of the transaction. A refund of the bill
       // not sent yet (no provider reference) is asked again inside the window.
@@ -438,8 +532,10 @@ export async function recordProviderRefundInTx(
         if (
           !input.force &&
           live.some((row) => !row.provider_ref && row.fund !== true)
-        )
+        ) {
+          await fileLiveOwnHold(liveIdr, intent.outletId);
           return { status: "retry" };
+        }
         // Otherwise (`force`, a sent refund, or only a parked fund's refund on
         // its way, legend-tiyce) a refund of ours still on its way is in flight:
         // nothing new is booked (ours journals itself), but the intent is held
@@ -447,24 +543,44 @@ export async function recordProviderRefundInTx(
         // refunds and payouts stay stopped until finance counts the provider's
         // refund. Never `own` without the hold.
         tellSupervisors = true;
-        await fileLiveOwnHold(
-          live.reduce((sum, row) => sum + Number(row.amount), 0),
-          intent.outletId,
-        );
+        await fileLiveOwnHold(liveIdr, intent.outletId);
         return { status: "own" };
       }
       return { status: ownIdr > 0 ? "own" : "duplicate" };
     }
-    if (mustWait) return { status: "retry" };
+    if (mustWait) {
+      await fileLiveOwnHold(atRiskIdr, intent.outletId);
+      return { status: "retry" };
+    }
     amountIdr = left;
     countedLiveOwn = live.length > 0;
-  } else if (
+  } else {
     // Finance topping up what the transaction still has left (resolve of a
     // recon hold) is added to the `synthetic_full` row on purpose.
-    !input.topUp &&
-    recorded.some((row) => row.kind === "synthetic_full")
-  )
-    return { status: "duplicate" };
+    if (!input.topUp && recorded.some((row) => row.kind === "synthetic_full"))
+      return { status: "duplicate" };
+    // 1045 A2: a provider refund id never books more than what is left of the
+    // transaction after the refunds already booked on it (a refund finance
+    // counted from a hold may be this very one under another id). The whole
+    // report waits for finance as a hold; nothing is booked. A replay of an id
+    // already on record is left to the insert below (duplicate).
+    if (
+      refundIdKind === "provider" &&
+      !recorded.some(
+        (row) => row.kind === "provider" && row.refundId === providerRefundId,
+      )
+    ) {
+      const factLeft =
+        (evidence ? Number(evidence.amountIdr) : Number(intent.amountIdr)) -
+        recorded.reduce((sum, row) => sum + Number(row.amountIdr), 0);
+      if (amountIdr > factLeft) {
+        // A hold resolve answers 422 itself (nothing on record) and rolls back.
+        if (!input.holdResolve)
+          await fileExceedsLeftHold(amountIdr, intent.outletId);
+        return { status: "duplicate" };
+      }
+    }
+  }
 
   // 4. The insert decides the winner; a replay or a racing second path stops.
   // legend-9uvvu: a credit apply holds the deposit-intent lock shared; wait for
@@ -502,7 +618,32 @@ export async function recordProviderRefundInTx(
       ],
     })
     .returning({ id: paymentProviderRefunds.id });
-  if (!inserted) return { status: "duplicate" };
+  if (!inserted) {
+    // This very provider refund id is on record (counted with `force` while a
+    // refund of ours was in flight, legend-d7im9): with nothing of ours in
+    // flight now, its hold is closed. Only a provider id: its row is the
+    // report's own amount. A `synthetic_full` row may have counted a refund of
+    // ours that failed since, so its hold stays for finance to top up.
+    // 1045 A4: only a row of this very intent (and tenant) is its fact; the
+    // same id booked on another intent closes nothing here.
+    if (refundIdKind === "provider" && !inFlight) {
+      const [existing] = await tx
+        .select({ id: paymentProviderRefunds.id })
+        .from(paymentProviderRefunds)
+        .where(
+          and(
+            eq(paymentProviderRefunds.tenantId, tenantId),
+            eq(paymentProviderRefunds.paymentIntentId, intent.id),
+            eq(paymentProviderRefunds.provider, PROVIDER),
+            eq(paymentProviderRefunds.refundIdKind, refundIdKind),
+            eq(paymentProviderRefunds.providerRefundId, providerRefundId),
+          ),
+        )
+        .limit(1);
+      if (existing) await closeLiveOwnHold();
+    }
+    return { status: "duplicate" };
+  }
 
   // Credit already moved to sessions (closed ones too) may now exceed the
   // intent's net: flag it in this same transaction (legend-svwdz, 1020).
@@ -723,6 +864,10 @@ export async function recordProviderRefundInTx(
   // later fails the journal is short. Held until finance checks (the intent's
   // refunds and payouts stop), finance told once.
   if (countedLiveOwn) await fileLiveOwnHold(amountIdr, intent.outletId);
+  // legend-d7im9 (1045): no refund of ours is in flight any more and this
+  // report is now counted, so the hold an earlier "retry" of the same report
+  // filed is closed here (same key; holds of other reports are not touched).
+  else if (!inFlight) await closeLiveOwnHold();
   // 8. The journal of this refund (legend-tlm3h): one event per recorded row.
   await appendPaymentEvent(tx, context, {
     name: "payment.provider_refunded",

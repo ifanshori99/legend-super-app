@@ -382,8 +382,16 @@ afterAll(async () => {
     [intentIds],
   );
   await owner.query(
+    "DELETE FROM payment_provider_refunds WHERE payment_intent_id = ANY($1::uuid[])",
+    [[...intentIds, otherIntent]],
+  );
+  await owner.query(
     "DELETE FROM payment_evidence WHERE payment_intent_id = ANY($1::uuid[])",
     [intentIds],
+  );
+  await owner.query(
+    "DELETE FROM refund_recon_holds WHERE payment_intent_id = ANY($1::uuid[])",
+    [[...intentIds, otherIntent]],
   );
   await owner.query("DELETE FROM payment_intents WHERE id = ANY($1::uuid[])", [
     [...intentIds, otherIntent],
@@ -644,8 +652,38 @@ describe("PAY-04 provider failures", () => {
       refundedAmountIdr: 0,
       refundableAmountIdr: 100_000,
     });
-    // A declined refund is final; the money can be requested again.
+    // A declined refund is final. legend-w2td5 (1045 F1): it had been sent, so
+    // the intent is held until finance checks the provider: a new request is
+    // refused (409) and there is exactly one open own_refund_failed_unverified
+    // hold. Finance (owner) closes it `not_this_intent`; then the money can be
+    // requested again.
     expect((await retry(financeA, refundId)).status).toBe(409);
+    const refused = await requester
+      .post(`${ADMIN}/refunds`)
+      .set(originHeader)
+      .send({
+        idempotencyKey: key("req"),
+        paymentIntentId: intent.intentId,
+        amountIdr: 100_000,
+        reason: "Pelanggan mengembalikan pesanan",
+      });
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    const { rows: holds } = await owner.query<{ id: string }>(
+      `SELECT id FROM refund_recon_holds
+        WHERE payment_intent_id = $1 AND reason = 'own_refund_failed_unverified'
+          AND resolved_at IS NULL`,
+      [intent.intentId],
+    );
+    expect(holds).toHaveLength(1);
+    const resolved = await requester
+      .post(`${ADMIN}/refund-recon-holds/${holds[0]!.id}/resolve`)
+      .set(originHeader)
+      .send({
+        idempotencyKey: key("hold"),
+        resolution: "not_this_intent",
+        note: "Dicek di dashboard penyedia: refund gagal, dana masih di kami.",
+      });
+    expect(resolved.status, JSON.stringify(resolved.body)).toBe(200);
     await requestRefund(intent.intentId, 100_000);
   });
 });

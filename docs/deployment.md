@@ -167,6 +167,23 @@ NODE_ENV=production node apps/api/dist/server.js           # API
 NODE_ENV=production node apps/web/.output/server/index.mjs # Web
 ```
 
+### Refund migrations: stop, migrate, start (legend-uvjqq)
+
+A release that contains 0656 (`provider_refund_id_kind`) or any other refund
+migration must not be rolled out rolling. Stop the API and the worker, run
+`pnpm db:migrate`, then start both again.
+
+Why: 0656 replaces the 3-column unique key of `payment_provider_refunds` with a
+4-column key that carries `refund_id_kind`, and adds a CHECK on the kind of
+`refund_recon_holds`. An old writer still running during the migration uses
+`ON CONFLICT` on the 3 columns, which no longer matches any unique key, so its
+insert fails; it also writes holds with an id but no kind, which the CHECK
+rejects. A new writer against the old schema has no `refund_id_kind` column.
+
+Rollback is a restore of the backup taken before the migration, not a down
+migration. After the start, the worker retries the webhook events that were
+held back while the services were stopped; check that the queue drains.
+
 Apply migrations once per release. Both servers honor `PORT` and `HOST`. The API bundle (`apps/api/dist`) includes its dependencies; it needs only `dist/` (and `drizzle/` for migrations).
 
 ## Docker images

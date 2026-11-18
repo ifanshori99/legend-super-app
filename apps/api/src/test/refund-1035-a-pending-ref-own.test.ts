@@ -787,25 +787,63 @@ const succeedOwn = (providerRef: string, amountIdr: number) =>
     (error: unknown) => error,
   );
 
-async function openHoldIds(intentId: string): Promise<string[]> {
-  const { rows } = await owner.query<{ id: string }>(
-    `SELECT id FROM refund_recon_holds
+// legend-w2td5 (1045 F1): an own refund that was SENT and then failed also files
+// an `own_refund_failed_unverified` hold (finance verifies it). The assertions of
+// this file count holds PER REASON KIND: `openHoldIds` = the live-own / mismatch
+// holds this file is about (every reason except the own-failed one);
+// `openOwnFailedHoldIds` = the own-failed ones (at most one per failed refund).
+const OWN_FAILED = "own_refund_failed_unverified";
+
+async function openHoldRows(
+  intentId: string,
+): Promise<{ id: string; reason: string }[]> {
+  const { rows } = await owner.query<{ id: string; reason: string }>(
+    `SELECT id, reason FROM refund_recon_holds
       WHERE tenant_id = $1 AND payment_intent_id = $2 AND resolved_at IS NULL
       ORDER BY flagged_at`,
     [tenantId, intentId],
   );
-  return rows.map((row) => row.id);
+  return rows;
 }
 
-const resolveHold = (holdId: string) =>
+async function openHoldIds(intentId: string): Promise<string[]> {
+  return (await openHoldRows(intentId))
+    .filter((row) => row.reason !== OWN_FAILED)
+    .map((row) => row.id);
+}
+
+async function openOwnFailedHoldIds(intentId: string): Promise<string[]> {
+  return (await openHoldRows(intentId))
+    .filter((row) => row.reason === OWN_FAILED)
+    .map((row) => row.id);
+}
+
+const resolveHold = (
+  holdId: string,
+  resolution:
+    "counted_against_intent" | "not_this_intent" = "counted_against_intent",
+) =>
   staff
     .post(`${ADMIN}/refund-recon-holds/${holdId}/resolve`)
     .set(originHeader)
     .send({
       idempotencyKey: key("hold"),
-      resolution: "counted_against_intent",
+      resolution,
       note: "Provider mengembalikan dana; refund kami gagal.",
     });
+
+/**
+ * Finance closes the own-failed holds of the intent. Assumption: the provider's
+ * refund is already recorded by the live-own hold / the report, so this hold is
+ * closed `not_this_intent` (it adds no fact); the assertions that follow check
+ * the single fact.
+ */
+async function resolveOwnFailedHolds(intentId: string) {
+  for (const holdId of await openOwnFailedHoldIds(intentId)) {
+    const resolved = await resolveHold(holdId, "not_this_intent");
+    expect(resolved.status, JSON.stringify(resolved.body)).toBe(200);
+  }
+}
 
 async function listedOpenHoldIds(): Promise<string[]> {
   const listed = await staff.get(`${ADMIN}/refund-recon-holds?status=open`);
@@ -954,6 +992,7 @@ async function finishAndExpectSingleFact(p: Pending, callsBefore: number) {
     const resolved = await resolveHold(holdId);
     expect(resolved.status, JSON.stringify(resolved.body)).toBeLessThan(500);
   }
+  await resolveOwnFailedHolds(p.code.id);
   const rows = await providerRowsOfRef(p.code.id, p.extra.providerRef);
   expect(
     rows.map((row) => row.amount_idr),
@@ -1042,7 +1081,11 @@ describe("legend-04izi our live refund with a provider reference is not proof of
 
       expect(
         await openHoldIds(p.code.id),
-        "the hold stays open after R failed",
+        "the live-own hold stays open after R failed",
+      ).toHaveLength(1);
+      expect(
+        await openOwnFailedHoldIds(p.code.id),
+        "R was sent and then failed: ONE own-failed hold besides it",
       ).toHaveLength(1);
       expect(await countedB(p)).toBeLessThanOrEqual(p.extra.amountIdr);
       await expectBlocked(p, callsBefore, "R failed");
@@ -1467,23 +1510,44 @@ describe("legend-04izi our live refund with a provider reference is not proof of
       expect(fake.calls).toHaveLength(callsBefore);
     });
 
-    // KNOWN LIMIT (honest boundary, tracked as a bead by the coordinator): the
-    // POLLER cannot be the door that learns the provider refunded a transaction
-    // that is already PAID. pollPendingGatewayIntents only picks intents that
-    // are pending / expired / failed, and bill A is `paid`, so the system never
-    // finds out through polling. Only the webhook does. This test pins that
-    // boundary and nothing else: with only the poller running there is no fact
-    // and no hold. It asserts NO money outcome (a new refund is not judged here).
-    it("1035-04izi-08 poller only: a paid bill whose provider status becomes refunded is not noticed by the poller (known limit): no fact, no hold", async () => {
+    // legend-w2td5 (1045 F1) replaces the old "known limit": a paid bill that
+    // has an open own-failed hold IS found by the poller. Our refund R of A was
+    // sent, the provider refunded A on its own (no webhook), R then fails: the
+    // poller records the provider's refund once, the hold stays for finance and
+    // a new refund is refused. Before R fails (R live, no hold) the poller still
+    // has nothing to find.
+    it("1035-04izi-08 poller only: R live -> nothing recorded; R fails -> the poller finds the held paid bill: the provider's refund is ONE fact, the own-failed hold stays, a new refund is refused", async () => {
       const o = await ordinaryPending();
       for (let round = 0; round < 2; round += 1) {
         await pollSoon().catch(() => null);
         await pollLater().catch(() => null);
       }
       await expectNothingRecorded(o, "poller only, R live");
+
+      const callsBefore = fake.calls.length;
       expect(await failOwn(o.ownRef)).toBeNull();
-      await pollLater().catch(() => null);
-      await expectNothingRecorded(o, "poller only, R failed");
+      expect(
+        await openOwnFailedHoldIds(o.code.id),
+        "R was sent and failed: one own-failed hold",
+      ).toHaveLength(1);
+      for (let round = 0; round < 2; round += 1) {
+        await pollSoon().catch(() => null);
+        await pollLater().catch(() => null);
+      }
+      const rows = await providerRowsOfRef(o.code.id, o.code.providerRef);
+      expect(
+        rows.map((row) => row.amount_idr),
+        "the provider's refund is ONE fact, the real amount",
+      ).toEqual([BILL_IDR]);
+      expect(await refundEventsOfIntent(o.code.id), "one journal event").toBe(
+        1,
+      );
+      expect(
+        await openOwnFailedHoldIds(o.code.id),
+        "the hold stays for finance",
+      ).toHaveLength(1);
+      await expectNewRefundRefused(o, "poller found the refund");
+      expect(fake.calls, "no second payout").toHaveLength(callsBefore);
     });
   });
 });

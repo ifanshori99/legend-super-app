@@ -5,76 +5,17 @@
 -- (`synthetic_full`, keyed by the raw provider payment id) or a refund finance
 -- counted from a hold that names no refund id (`synthetic_hold`, keyed by the
 -- hold id). The unique keys carry the kind, so ids of two kinds never collide.
--- Existing rows are classified from the id forms the code wrote; everything
--- else is the provider's own id.
+-- This migration does not guess. An id that already exists could be the
+-- provider's own (a provider may send `payment:...` or `hold:...`), so every
+-- existing row keeps its id as is and becomes kind 'provider'. The provider's
+-- fact is deducted from the remainder when the payment's own `refunded` status
+-- arrives, so nothing is counted twice, and the old 3-column keys were unique,
+-- so the 4-column keys cannot collide.
 ALTER TABLE "payment_provider_refunds" DROP CONSTRAINT "payment_provider_refunds_provider_refund_key";--> statement-breakpoint
 DROP INDEX "refund_recon_hold_provider_refund_key";--> statement-breakpoint
 ALTER TABLE "payment_provider_refunds" ADD COLUMN "refund_id_kind" varchar(20) DEFAULT 'provider' NOT NULL;--> statement-breakpoint
 ALTER TABLE "refund_recon_holds" ADD COLUMN "provider_refund_id_kind" varchar(20);--> statement-breakpoint
--- The payment's own `refunded` status: `payment:<ref>`, or `payment:h:<sha256
--- hex of ref>` for a ref too long for the prefix (1025d).
-UPDATE "payment_provider_refunds"
-   SET "refund_id_kind" = 'synthetic_full',
-       "provider_refund_id" = "provider_payment_ref"
- WHERE "provider_refund_id" = 'payment:' || "provider_payment_ref"
-    OR "provider_refund_id" = 'payment:h:' || encode(sha256(convert_to("provider_payment_ref", 'UTF8')), 'hex');--> statement-breakpoint
--- A top-up finance counted from a hold: `hold:<uuid of a hold of the same
--- tenant and intent>`.
-UPDATE "payment_provider_refunds" p
-   SET "refund_id_kind" = 'synthetic_hold',
-       "provider_refund_id" = h."id"::text
-  FROM "refund_recon_holds" h
- WHERE p."refund_id_kind" = 'provider'
-   AND p."provider_refund_id" ~ '^hold:[0-9a-fA-F-]{36}$'
-   AND h."tenant_id" = p."tenant_id"
-   AND h."payment_intent_id" = p."payment_intent_id"
-   AND h."id"::text = lower(substring(p."provider_refund_id" from 6));--> statement-breakpoint
--- Holds naming the payment's own `refunded` status. A hold with no stored
--- payment id: the plain form names it after the prefix; the hashed form is
--- matched against the intent's own payment id or one of its transactions.
-UPDATE "refund_recon_holds"
-   SET "provider_refund_id_kind" = 'synthetic_full',
-       "provider_refund_id" = "provider_payment_ref"
- WHERE "provider_payment_ref" IS NOT NULL
-   AND ("provider_refund_id" = 'payment:' || "provider_payment_ref"
-     OR "provider_refund_id" = 'payment:h:' || encode(sha256(convert_to("provider_payment_ref", 'UTF8')), 'hex'));--> statement-breakpoint
-UPDATE "refund_recon_holds" h
-   SET "provider_refund_id_kind" = 'synthetic_full',
-       "provider_refund_id" = m."ref",
-       "provider_payment_ref" = m."ref"
-  FROM (
-    SELECT h2."id", min(c."ref") AS "ref", count(DISTINCT c."ref") AS "n"
-      FROM "refund_recon_holds" h2
-      JOIN (
-        SELECT i."tenant_id", i."id" AS "intent_id", i."provider_ref" AS "ref"
-          FROM "payment_intents" i WHERE i."provider_ref" IS NOT NULL
-        UNION
-        SELECT e."tenant_id", e."payment_intent_id", e."provider_ref"
-          FROM "payment_evidence" e
-      ) c ON c."tenant_id" = h2."tenant_id" AND c."intent_id" = h2."payment_intent_id"
-     WHERE h2."provider_payment_ref" IS NULL
-       AND h2."provider_refund_id_kind" IS NULL
-       AND h2."provider_refund_id" = 'payment:h:' || encode(sha256(convert_to(c."ref", 'UTF8')), 'hex')
-     GROUP BY h2."id"
-  ) m
- WHERE h."id" = m."id" AND m."n" = 1;--> statement-breakpoint
-UPDATE "refund_recon_holds"
-   SET "provider_refund_id_kind" = 'synthetic_full',
-       "provider_refund_id" = substring("provider_refund_id" from 9)
- WHERE "provider_payment_ref" IS NULL
-   AND "provider_refund_id_kind" IS NULL
-   AND "provider_refund_id" LIKE 'payment:%'
-   AND "provider_refund_id" !~ '^payment:h:[0-9a-f]{64}$'
-   AND length("provider_refund_id") > 8;--> statement-breakpoint
-UPDATE "refund_recon_holds" h
-   SET "provider_refund_id_kind" = 'synthetic_hold',
-       "provider_refund_id" = o."id"::text
-  FROM "refund_recon_holds" o
- WHERE h."provider_refund_id_kind" IS NULL
-   AND h."provider_refund_id" ~ '^hold:[0-9a-fA-F-]{36}$'
-   AND o."tenant_id" = h."tenant_id"
-   AND o."payment_intent_id" = h."payment_intent_id"
-   AND o."id"::text = lower(substring(h."provider_refund_id" from 6));--> statement-breakpoint
+-- Every hold that already names a refund id: the provider's own, id as is.
 UPDATE "refund_recon_holds"
    SET "provider_refund_id_kind" = 'provider'
  WHERE "provider_refund_id" IS NOT NULL

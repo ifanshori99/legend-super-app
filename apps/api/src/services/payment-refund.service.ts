@@ -71,6 +71,7 @@ import {
   refundBlockedByProviderRefundSql,
 } from "./payment-provider-refunded-guard.ts";
 import { failedRefundHoldsOrderSql } from "./payment-refund-failed-open.ts";
+import { fileOwnRefundFailedHoldInTx } from "./refund-recon-hold.service.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
 import {
   lockRefundApprovalScope,
@@ -734,6 +735,40 @@ async function failRefund(
   const { settleSystemRefundFailure } =
     await import("./system-refund-followup.ts");
   await settleSystemRefundFailure(tx, context, updated, input.now);
+  // legend-w2td5 (1045 F1): a refund that may have reached the provider ended
+  // failed, whatever the reason. That does not prove the provider kept the
+  // money (a refund it made on its own may have lost its webhook), so the
+  // intent is held until finance resolves it (the poller only records a
+  // `refunded` answer). Filed last: the re-files above run as
+  // before and their new refund stays pending; approving or sending it is
+  // refused by the open hold (`openReconHoldSql`). Lock order: the caller
+  // holds intent -> fund -> refund; the deposit-intent locks come after, as
+  // in `refundableBalance` of the re-files.
+  if (maybeSentOf(updated)) {
+    const providerPaymentRef = updated.unallocatedFundId
+      ? await fundEvidenceProviderRef(tx, updated, updated.unallocatedFundId)
+      : ((
+          await tx
+            .select({ providerRef: paymentIntents.providerRef })
+            .from(paymentIntents)
+            .where(
+              and(
+                eq(paymentIntents.tenantId, updated.tenantId),
+                eq(paymentIntents.id, updated.paymentIntentId),
+              ),
+            )
+        )[0]?.providerRef ?? null);
+    await fileOwnRefundFailedHoldInTx(tx, context, {
+      tenantId: updated.tenantId,
+      intentId: updated.paymentIntentId,
+      outletId: updated.outletId,
+      refundId: updated.id,
+      providerRefundId: updated.providerRef,
+      amountIdr: Number(updated.amountIdr),
+      providerPaymentRef,
+      now: input.now,
+    });
+  }
   return updated;
 }
 

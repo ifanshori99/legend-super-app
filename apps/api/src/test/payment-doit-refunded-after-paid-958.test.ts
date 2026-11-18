@@ -1438,6 +1438,35 @@ describe("legend-7uqbs a declined fund refund does not free the money when the p
       [fund!.id],
     );
     expect(rows[0]!.at).toBeNull();
+    // legend-w2td5 (1045 F1): the declined refund had been sent (attempt 1),
+    // so its intent is held until finance checks the provider: no second
+    // request yet. Finance closes it `not_this_intent`; then the fund frees.
+    const { rows: holds } = await owner.query<{
+      id: string;
+      amount_idr: number;
+      provider_refund_id: string | null;
+    }>(
+      `SELECT id, amount_idr, provider_refund_id FROM refund_recon_holds
+        WHERE payment_intent_id = $1 AND reason = 'own_refund_failed_unverified'
+          AND resolved_at IS NULL`,
+      [code.id],
+    );
+    expect(holds).toHaveLength(1);
+    // Architect A2: the hold keeps our refund's provider ref, so a late echo
+    // of that refund is a duplicate, never a second fact.
+    expect(holds[0]!.provider_refund_id).toBe("PR-LOOKUP-DECLINED-958C");
+    const held = await resolveFund(fund!.id, "refund");
+    expect(held.status, JSON.stringify(held.body)).toBe(409);
+    expect(held.body.error.code).toBe("PROVIDER_REFUNDED");
+    const closed = await approver
+      .post(`${ADMIN}/refund-recon-holds/${holds[0]!.id}/resolve`)
+      .set(originHeader)
+      .send({
+        idempotencyKey: key("hold"),
+        resolution: "not_this_intent",
+        note: "Dashboard penyedia: refund gagal, dana masih di kami.",
+      });
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
     const again = await resolveFund(fund!.id, "refund");
     expect(again.status, JSON.stringify(again.body)).toBe(200);
   });

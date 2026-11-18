@@ -1412,7 +1412,15 @@ describe("1025-B a forced full-refund write with our refund still in flight file
     const alertsBefore = await supervisorAlerts();
     await deliver(body);
     expect(await storedStatus(body.id)).toEqual(["failed"]);
-    expect(await holdsFor(code), "no hold while still retrying").toEqual([]);
+    // legend-d7im9 / 1045-F2 (intended change): a retry caused by our own
+    // refund still being in flight now files the "live own" hold at once, so a
+    // new refund is refused during the whole window. It is the same hold (same
+    // provider refund id, dedup per report) the forced write below keeps open:
+    // one open hold from the first delivery on, never a second one.
+    const early = await holdsFor(code);
+    expect(early, "one open hold already while retrying").toHaveLength(1);
+    expect(early[0]!.provider_refund_id).toBe(code.providerRef);
+    expect(early[0]!.resolved_at, "open").toBeNull();
 
     // The window passes with R unresolved: the worker forces the write.
     await owner.query(

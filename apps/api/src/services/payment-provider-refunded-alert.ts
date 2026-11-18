@@ -324,6 +324,115 @@ export async function alertProviderRefundCountedWithLiveOwn(
   }
 }
 
+/** A recon hold filed by the system that finance must check; one alert per
+ * hold (the id is derived from `dedupKey`). */
+export type ReconHoldFiledAlert = {
+  intentId: string;
+  /** The outlet whose supervisors are told too; null: the owners only. */
+  outletId: string | null;
+  /** Stable per hold (same input, same alert id). */
+  dedupKey: string;
+  amountIdr: number;
+};
+
+async function alertReconHoldFiled(
+  tx: Tx,
+  context: ScopedTenantContext,
+  held: ReconHoldFiledAlert,
+  message: { eventName: string; title: string; body: string },
+  now: Date,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  const hex = createHash("sha256")
+    .update(
+      `${message.eventName}\0${tenantId}\0${held.intentId.toLowerCase()}\0${held.dedupKey}`,
+    )
+    .digest("hex")
+    .slice(0, 32);
+  const id = uuidToUlid(
+    `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
+  );
+  try {
+    await tx.transaction(async (savepoint) => {
+      await notifyOutletSupervisors(
+        savepoint,
+        context,
+        {
+          tenantId,
+          outletId: held.outletId ? outletIdSchema.parse(held.outletId) : null,
+          category: "operational_anomaly",
+          alsoOwners: true,
+          recordEmpty: true,
+          id,
+          eventName: message.eventName,
+          aggregateType: "payment",
+          aggregateId: id,
+          payload: {
+            intentId: held.intentId,
+            amountIdr: String(held.amountIdr),
+          },
+          title: message.title,
+          body: message.body,
+        },
+        now,
+      );
+    });
+  } catch (err) {
+    logger.warn(
+      { err, tenantId, intentId: held.intentId, eventName: message.eventName },
+      "Refund recon hold: notification failed",
+    );
+  }
+}
+
+/**
+ * 1045 A3: a refund of ours that may have reached the provider ended failed
+ * and the intent is held (`own_refund_failed_unverified`). Same category and
+ * audience as the live-own hold; sent only by the winner of the hold insert.
+ */
+export async function alertOwnRefundFailedUnverified(
+  tx: Tx,
+  context: ScopedTenantContext,
+  held: ReconHoldFiledAlert,
+  now: Date,
+): Promise<void> {
+  await alertReconHoldFiled(
+    tx,
+    context,
+    held,
+    {
+      eventName: "payment.own_refund_failed_unverified",
+      title: "Refund kami gagal setelah mungkin sampai ke penyedia",
+      body: `Refund Rp ${held.amountIdr.toLocaleString("id-ID")} gagal setelah mungkin sudah sampai ke penyedia pembayaran. Uang mungkin sudah kembali ke pembayar. Refund dan payout pembayaran ini ditahan sampai finance memeriksanya di dashboard penyedia.`,
+    },
+    now,
+  );
+}
+
+/**
+ * 1045 A2: the provider reports a refund larger than what is left of the
+ * transaction after the refunds already booked. Nothing is booked; the intent
+ * is held and finance told once (winner of the hold insert).
+ */
+export async function alertProviderRefundExceedsLeft(
+  tx: Tx,
+  context: ScopedTenantContext,
+  held: ReconHoldFiledAlert,
+  now: Date,
+): Promise<void> {
+  await alertReconHoldFiled(
+    tx,
+    context,
+    held,
+    {
+      eventName: "payment.provider_refund_exceeds_left",
+      title: "Refund penyedia melebihi sisa pembayaran",
+      body: `Penyedia pembayaran melaporkan refund Rp ${held.amountIdr.toLocaleString("id-ID")}, lebih dari sisa pembayaran setelah refund yang sudah dibukukan. Tidak ada yang dibukukan otomatis. Refund dan payout pembayaran ini ditahan sampai finance memeriksanya.`,
+    },
+    now,
+  );
+}
+
 export type ProviderRefundUnbound = {
   intentId: string;
   outletId: string;
