@@ -29,9 +29,14 @@ import {
 } from "@starter/shared/qr-order";
 import {
   actorOf,
+  refuseActingStaffOtherOutlet,
   requireActingStaffOnSharedDevice,
   resolveActingStaff,
 } from "../middleware/acting-staff.ts";
+import {
+  issueOutletOfParam,
+  itemOutletOf,
+} from "../middleware/acting-staff-outlet.ts";
 import { requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { HttpError } from "../lib/http-error.ts";
@@ -48,12 +53,17 @@ import { guestContext, sessionCredential } from "./qr-order.routes.ts";
 
 export const orderRecoveryRouter = Router();
 
-const staffGuard = [
+// The paths carry no outlet: a token of another outlet may not touch the item
+// or issue (refuseActingStaffOtherOutlet, before the permission guard).
+const staffGuardFor = (
+  outletOf: Parameters<typeof refuseActingStaffOtherOutlet>[0],
+) => [
   requireAuthAllowSharedDevice,
   requireTrustedOrigin,
   requireTenantContext,
   resolveActingStaff,
   requireActingStaffOnSharedDevice,
+  refuseActingStaffOtherOutlet(outletOf),
   requireMenuPermission("order.recovery.handle"),
 ];
 const guestRead = [requireTenantContext];
@@ -61,7 +71,7 @@ const guestWrite = [requireTenantContext, requireTrustedOrigin];
 
 orderRecoveryRouter.post(
   "/order-items/:orderItemId/issues",
-  ...staffGuard,
+  ...staffGuardFor(itemOutletOf),
   jsonBody,
   async (req, res) => {
     const { orderItemId } = reportOrderIssue.params.parse(req.params);
@@ -80,7 +90,7 @@ orderRecoveryRouter.post(
 
 orderRecoveryRouter.post(
   "/order-issues/:orderIssueId/resolve",
-  ...staffGuard,
+  ...staffGuardFor(issueOutletOfParam),
   jsonBody,
   async (req, res) => {
     const { orderIssueId } = resolveOrderIssue.params.parse(req.params);

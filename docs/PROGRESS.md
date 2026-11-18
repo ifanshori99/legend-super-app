@@ -7797,3 +7797,12 @@ Cabang `ws/1094-akses-perangkat-bersama-sisa`, dasar 4f5e3cc08. Tingkat K (akses
 - P2 socket panic: perangkat bersama gagal recheck sesi receiver (`device_revoked`), dan saat shared mode menyala socket receiver perangkat itu diputus (4401). Upgrade baru dari perangkat bersama kini 401 (recheck lebih dulu), bukan 403.
 - Tes: gagal-dulu terbukti (order-issues 3/5 merah, availability 2/4, panic 2/4, resolve voucher/swap 2 merah), regresi 16 berkas 780 lulus, tsc API 0 (heap 8 GB). Review architect (xhigh) pada delta: tanpa P0-P2.
 - Subagent: total 33, puncak 3 bersamaan, token heavy dipegang induk (bukan subagent).
+
+## 1120 Outlet token kasir di order-recovery (19 Nov 2026, legend-cq0u7)
+
+Cabang `ws/1120-akses-outlet-order-recovery`, dasar f3a6ced98 (1094). Tingkat K (akses + uang). Tanpa migrasi. Landing BERSAMA 1094.
+
+- Helper `refuseActingStaffOtherOutlet` (middleware/acting-staff.ts) + resolver charge/item/issue (middleware/acting-staff-outlet.ts): token kasir outlet A ke target outlet B = 403 `ACTING_STAFF_OUTLET_MISMATCH`; target tak ditemukan = tolak; login pribadi tidak berubah. Dipasang di waive, expire, refund, manual-refund, collect-at-pos (charge), report item dan resolve (order-recovery). apology-voucher memakai helper yang sama (outlet tak diketahui tetap diserahkan ke service, 404).
+- Tambahan CTO: `POST /api/apology-vouchers` masuk DENY perangkat bersama (403 `SHARED_DEVICE_SCREEN_CLOSED`, semua bentuk). Temuan architect P1: `waive` dan `expire` charge juga ditutup di perangkat bersama (tamu pilih swap lebih mahal lewat customer-choice, kasir waive = gratis). `collect-at-pos` tetap buka.
+- Tes: gagal-dulu terbukti (28 dari 62 merah di base), akhir 260 lulus (outlet 56, apology perangkat bersama 6, 1094-money 22, allowlist 176); regresi 40 berkas 733 lulus sebelum penyesuaian 1094-money. Prettier/eslint bersih. Review architect (xhigh) sekali.
+- Celah tersisa (bukan 1120): `POST /api/facility/tickets/door-check` tidak membandingkan outlet token (bead baru). Value-out terbuka di tablet: diskon POS, void item, reservation-customer-credit/apply, cash movements, batal reservasi (Q29).

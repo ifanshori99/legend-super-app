@@ -323,39 +323,26 @@ describe("acting staff on apology vouchers (wave 4)", () => {
     expect(await voucherIssuer(issueId)).toBe(session.userId);
   });
 
-  it("shared tablet without a PIN token: 401 ACTING_STAFF_REQUIRED, no voucher is created", async () => {
+  it("shared tablet without a PIN token: 403 SHARED_DEVICE_SCREEN_CLOSED, no voucher is created", async () => {
     const deviceId = await newDevice(true);
     const issueId = await failedIssue();
-    expectError(
-      await issueVoucher(issueId, deviceId),
-      401,
-      "ACTING_STAFF_REQUIRED",
-    );
+    expectClosed(await issueVoucher(issueId, deviceId));
     expect(await voucherCount(issueId)).toBe(0);
   });
 
-  it("shared tablet with a garbage token: 401 ACTING_STAFF_INVALID, no voucher is created", async () => {
+  it("shared tablet with a garbage token: 403 SHARED_DEVICE_SCREEN_CLOSED (checked before the PIN), no voucher is created", async () => {
     const deviceId = await newDevice(true);
     const issueId = await failedIssue();
-    expectError(
-      await issueVoucher(issueId, deviceId, "pas_garbage-token"),
-      401,
-      "ACTING_STAFF_INVALID",
-    );
+    expectClosed(await issueVoucher(issueId, deviceId, "pas_garbage-token"));
     expect(await voucherCount(issueId)).toBe(0);
   });
 
-  it("shared tablet with a cashier token: passes, the cashier is the issuer", async () => {
+  it("shared tablet with a valid cashier token: still 403 SHARED_DEVICE_SCREEN_CLOSED, no voucher is created", async () => {
     const deviceId = await newDevice(true);
     const issueId = await failedIssue();
     const token = await cashierToken(deviceId);
-    const response = await issueVoucher(issueId, deviceId, token);
-    expect(response.status, JSON.stringify(response.body)).toBe(201);
-    expect(
-      (response.body as { data: { issuedBy: string } }).data.issuedBy,
-    ).toBe(cashierA.userId);
-    expect(await voucherIssuer(issueId)).toBe(cashierA.userId);
-    expect(await voucherIssuer(issueId)).not.toBe(session.userId);
+    expectClosed(await issueVoucher(issueId, deviceId, token));
+    expect(await voucherCount(issueId)).toBe(0);
   });
 
   it("private (unflagged) device without a token: works, the owner is the issuer", async () => {
@@ -383,8 +370,10 @@ describe("acting staff on apology vouchers (wave 4)", () => {
     expect(await voucherCount(issueId)).toBe(0);
   });
 
-  it("two-outlet cashier with an outlet A token: voucher for an outlet A issue is issued by the cashier", async () => {
-    const deviceId = await newDevice(true);
+  // Round 3 (CTO, brief 1120): vouchers are closed on a shared tablet, so the
+  // OUTLET_MISMATCH coverage runs on a registered, NOT shared device (flag off).
+  it("two-outlet cashier with an outlet A token on a non-shared device: voucher for an outlet A issue is issued by the cashier", async () => {
+    const deviceId = await newDevice(false);
     const issueId = await failedIssue();
     const token = await cashierToken(deviceId, cashierAB);
     const response = await issueVoucher(issueId, deviceId, token);
@@ -392,8 +381,8 @@ describe("acting staff on apology vouchers (wave 4)", () => {
     expect(await voucherIssuer(issueId)).toBe(cashierAB.userId);
   });
 
-  it("two-outlet cashier with an outlet A token: voucher for an outlet B issue is 403 ACTING_STAFF_OUTLET_MISMATCH, no voucher", async () => {
-    const deviceId = await newDevice(true);
+  it("two-outlet cashier with an outlet A token on a non-shared device: voucher for an outlet B issue is 403 ACTING_STAFF_OUTLET_MISMATCH, no voucher", async () => {
+    const deviceId = await newDevice(false);
     const issueId = await failedIssueOfOutletB();
     const token = await cashierToken(deviceId, cashierAB);
     expectError(

@@ -22,7 +22,6 @@ import { and, eq } from "drizzle-orm";
 import { Router, type Request, type RequestHandler } from "express";
 import { AccessError } from "@starter/shared/access";
 import { idempotencyKeySchema, userIdSchema } from "@starter/shared/core";
-import { ACTING_STAFF_ERROR_CODES } from "@starter/shared/pos/acting-staff";
 import {
   getApologyVoucher,
   issueApologyVoucher,
@@ -36,6 +35,7 @@ import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import {
   actorOf,
+  refuseActingStaffOtherOutlet,
   requireActingStaffOnSharedDevice,
   resolveActingStaff,
 } from "../middleware/acting-staff.ts";
@@ -88,28 +88,18 @@ function idempotencyKeyOf(req: Request): string | null {
 
 /**
  * The path carries no outlet, so resolveActingStaff could not compare it: a
- * cashier token issued for another outlet is refused (403 OUTLET_MISMATCH).
- * Without an acting staff (regular browser) nothing changes. A missing
- * resource is left to the service (404).
+ * cashier token issued for another outlet is refused (403 OUTLET_MISMATCH) by
+ * the shared helper. Unlike the helper's default, an unknown outlet (missing
+ * resource, or no sole outlet to infer) is left to the service (404), so it
+ * resolves to the token's own outlet here. Without an acting staff (regular
+ * browser) nothing changes.
  */
 function refuseOtherOutlet(
   outletOf: (req: Request) => Promise<string | null>,
 ): RequestHandler {
-  return async (req, _res, next) => {
-    if (req.actingStaff) {
-      const outletId = await outletOf(req);
-      if (
-        outletId !== null &&
-        outletId.toLowerCase() !== req.actingStaff.outletId.toLowerCase()
-      )
-        throw new HttpError(
-          403,
-          ACTING_STAFF_ERROR_CODES.OUTLET_MISMATCH,
-          "Kasir aktif bukan untuk outlet voucher ini.",
-        );
-    }
-    next();
-  };
+  return refuseActingStaffOtherOutlet(
+    async (req) => (await outletOf(req)) ?? req.actingStaff?.outletId ?? null,
+  );
 }
 
 /** Outlet of the order issue in the body, else the caller's sole outlet. */

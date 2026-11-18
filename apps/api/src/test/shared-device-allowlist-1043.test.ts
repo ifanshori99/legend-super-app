@@ -212,17 +212,6 @@ const OPEN: Entry[] = [
     }),
   ],
   [
-    "kasir: POST order-issue-charges waive (PIN guarded)",
-    () => ({
-      method: "post",
-      path: `/api/order-issue-charges/${randomUUID()}/waive`,
-    }),
-  ],
-  [
-    "kasir: POST apology-vouchers (PIN guarded)",
-    () => ({ method: "post", path: "/api/apology-vouchers" }),
-  ],
-  [
     "shell: GET /api/me/access",
     () => ({ method: "get", path: "/api/me/access" }),
   ],
@@ -234,6 +223,10 @@ const OPEN: Entry[] = [
 
 /** Routes of opted-in routers that no shared-tablet screen uses. */
 const CLOSED: Entry[] = [
+  [
+    "kasir: POST apology-vouchers (issue closed on a shared tablet)",
+    () => ({ method: "post", path: "/api/apology-vouchers" }),
+  ],
   [
     "floor editor: POST /api/floor/zones",
     () => ({ method: "post", path: "/api/floor/zones" }),
@@ -267,6 +260,22 @@ const CLOSED: Entry[] = [
   [
     "kds: PUT stations (kitchen setup)",
     () => ({ method: "put", path: `${outletBase()}/kitchen/stations` }),
+  ],
+  [
+    // Guest picks the dearer swap via customer-choice, then waive/expire gives
+    // the item free.
+    "kasir: POST order-issue-charges waive (uang, DENY)",
+    () => ({
+      method: "post",
+      path: `/api/order-issue-charges/${randomUUID()}/waive`,
+    }),
+  ],
+  [
+    "kasir: POST order-issue-charges expire (uang, DENY)",
+    () => ({
+      method: "post",
+      path: `/api/order-issue-charges/${randomUUID()}/expire`,
+    }),
   ],
   [
     "kasir: POST order-issue-charges refund (keputusan founder, default tolak)",
@@ -523,8 +532,6 @@ describe("legend-iq0jz isSharedDeviceApiAllowed", () => {
     ["GET", `/api/outlets/${o}/floor`],
     ["POST", "/api/staff-pins/pos-session"],
     ["POST", `/api/order-issue-charges/${randomUUID()}/collect-at-pos`],
-    ["POST", `/api/order-issue-charges/${randomUUID()}/waive`],
-    ["POST", "/api/apology-vouchers"],
     ["GET", "/api/apology-vouchers/ABC123"],
     ["POST", "/api/table-links"],
     ["POST", `/api/table-sessions/${randomUUID()}/close`],
@@ -539,6 +546,8 @@ describe("legend-iq0jz isSharedDeviceApiAllowed", () => {
   ];
 
   const closed: [string, string][] = [
+    ["POST", "/api/apology-vouchers"],
+    ["POST", "/api/apology-vouchers/"],
     ["GET", "/api/operations/checklist-templates"],
     ["GET", "/api/hris/announcements"],
     ["POST", "/api/facility/areas"],
@@ -562,6 +571,8 @@ describe("legend-iq0jz isSharedDeviceApiAllowed", () => {
     ["PUT", `/api/outlets/${o}/open-bill-policy`],
     ["PATCH", `/api/menu/availability/${randomUUID()}`],
     ["PUT", `/api/outlets/${o}/kitchen/stations`],
+    ["POST", `/api/order-issue-charges/${randomUUID()}/waive`],
+    ["POST", `/api/order-issue-charges/${randomUUID()}/expire`],
     ["GET", `/api/order-issue-charges/${randomUUID()}/waive`],
     ["GET", `/api/order-issue-charges/${randomUUID()}`],
     ["DELETE", `/api/identity/push-devices/${randomUUID()}`],

@@ -37,6 +37,16 @@ const DENY: readonly Rule[] = [
   // corrections/void of a paid order hands captured cash back out (founder Q63:
   // a cash void is a refund), so it is closed the same way.
   rule("pos", ["POST"], `${OUTLET}/pos/orders/${ID}/corrections/void`),
+  // apology-voucher.routes.ts issue: settleIssueWithVoucher issues the voucher
+  // and resolves the order issue, the same money shortcut as the closed resolve
+  // routes. Closed for every body shape (with or without orderIssueId); the
+  // look-up GET below stays open.
+  rule("pos", ["POST"], "/api/apology-vouchers"),
+  // order-recovery-charge.routes.ts waive/expire: a guest can pick the dearer
+  // swap through customer-choice, then waive/expire drops the extra charge and
+  // the item goes out free. Closed on a shared tablet; collect-at-pos stays open
+  // below (it takes the money, never gives it away).
+  rule("pos", ["POST"], `/api/order-issue-charges/${ID}/(?:waive|expire)`),
 ];
 
 const RULES: readonly Rule[] = [
@@ -66,20 +76,15 @@ const RULES: readonly Rule[] = [
     "*",
     `/api/order-issues/${ID}/(?:resolve|options|customer-choice)`,
   ),
-  // order-recovery-charge.routes.ts: every action listed carries the cashier PIN
+  // order-recovery-charge.routes.ts: collect-at-pos carries the cashier PIN
   // guard (requireActingStaffOnSharedDevice, actorOf; legend-i0ipj, legend-13vhb).
-  // refund stays closed on a shared tablet: a founder decision, closed by default
-  // (sub-1094 round 2).
-  rule(
-    "pos",
-    ["POST"],
-    `/api/order-issue-charges/${ID}/(?:waive|expire|collect-at-pos)`,
-  ),
+  // refund, waive and expire stay closed on a shared tablet (DENY above;
+  // refund is a founder decision, sub-1094 round 2).
+  rule("pos", ["POST"], `/api/order-issue-charges/${ID}/collect-at-pos`),
   // order-issues.routes.ts (remake / comp log)
   rule("pos", ["POST"], `${OUTLET}/orders/${ID}/issues`),
   rule("pos", ["GET"], `${OUTLET}/order-issues`),
-  // apology-voucher.routes.ts (issue and look up; PIN guarded)
-  rule("pos", ["POST"], "/api/apology-vouchers"),
+  // apology-voucher.routes.ts (look up only; issue is in DENY)
   rule("pos", ["GET"], `/api/apology-vouchers/${ID}`),
 
   // ---- floor ---------------------------------------------------------------

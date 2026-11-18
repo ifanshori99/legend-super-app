@@ -180,6 +180,35 @@ export const rejectActingStaff: RequestHandler = (req, _res, next) => {
 };
 
 /**
+ * For routes whose path carries no outlet, so resolveActingStaff could not
+ * compare it: a cashier token issued for another outlet than the one that owns
+ * the target is refused (403 OUTLET_MISMATCH). `outletOf` reads the target's
+ * outlet on the server (never the body). Without an acting staff (regular
+ * browser) nothing changes and no lookup runs. A target that is not found, or
+ * a lookup that returns null, is refused too (deny by default). Mount after
+ * resolveActingStaff and before the permission guard.
+ */
+export function refuseActingStaffOtherOutlet(
+  outletOf: (req: Request) => Promise<string | null>,
+): RequestHandler {
+  return async (req, _res, next) => {
+    if (req.actingStaff) {
+      const outletId = await outletOf(req);
+      if (
+        outletId === null ||
+        outletId.toLowerCase() !== req.actingStaff.outletId.toLowerCase()
+      )
+        throw new HttpError(
+          403,
+          ACTING_STAFF_ERROR_CODES.OUTLET_MISMATCH,
+          "Kasir aktif bukan untuk outlet data ini.",
+        );
+    }
+    next();
+  };
+}
+
+/**
  * The user a request acts as: the acting cashier when a token resolved, else
  * the login session owner. `getAuth` stays the session (MFA, support session,
  * "self" checks); only actor and permission subject use this.
