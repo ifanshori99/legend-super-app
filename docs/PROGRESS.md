@@ -2028,3 +2028,4 @@ Langkah berikut CTO baru:
 - 18:42 CTO: Codex 1083 pembersihan 9 kartu mulai di Codex #5; 9 kartu in_progress. SO kas ronde 5 sudah jalan (G7hhf, #4).
 - 18:43 CTO: G93wj buktikan 5 test kas gagal juga di base 2f319094e; map-race diperbaiki di test (0366370e9), shared-scanner sedang dibetulkan (test saja).
 - 18:44 CTO: SO refund ronde 9 (G4an6): 2 P1 (hold mismatch kecil menelan kenaikan R2 lewat kredit DP; alias ID invalid-h dengan ID penyedia literal) + 1 P2 (identitas fallback tanpa refund ID berubah). Brief 1090 fix dikirim ke G88n4 (cabang ws/1072). G4an6 di-resolve.
+- 18:44 CTO: kas c3d90b96b, 5 test lama hijau (test saja). G93wj di-resolve sambil menunggu SO kas ronde 5 (dibuka lagi bila ada temuan).
