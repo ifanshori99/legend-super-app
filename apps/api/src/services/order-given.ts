@@ -22,7 +22,11 @@
 //     not counted elsewhere. An intent flagged `provider_refunded_at` or
 //     `provider_refunded_after_paid_at` counts 0 (no sure amount; same rule as
 //     `manualRefundAmountIdr`).
-//   * Otherwise: the intents of the order that ended paid (`paid`,
+//   * Otherwise: the intents of the order (linked by `orders.payment_link_id`,
+//     unique per order, `orders.payment_intent_id`, or `payment_intents.order_id`;
+//     the real insert leaves `order_id` empty), each at most what it put toward
+//     the bill (evidence less unallocated funds: a parked double payment is
+//     not the bill's), that ended paid (`paid`,
 //     `partially_refunded`, `refunded` with `paid_at`; pending, expired and
 //     failed count 0), net as above, at most the order total less the deposit
 //     applied; plus the dearer-swap charges the guest paid, each less what was
@@ -80,6 +84,21 @@ const ownRefunds = (alias: string, orderUuid: string) =>
             AND por.tenant_id = r.tenant_id
             AND por.order_id = ${orderUuid}::uuid
             AND k.response ->> 'refundId' = r.id::text)), 0)`;
+
+// 1116 (architect P2-1): what the intent put toward its bill, at most its
+// amount: the provider evidence less the part parked as unallocated funds (a
+// second payment of a settled bill is `paid` but its money is parked, not
+// the bill's). `alias` is the payment_intents alias.
+const allocated = (alias: string) => {
+  const a = sql.raw(alias);
+  return sql`least(${a}.amount_idr, greatest(0,
+      coalesce((SELECT sum(e.amount_idr) FROM payment_evidence e
+                 WHERE e.tenant_id = ${a}.tenant_id
+                   AND e.payment_intent_id = ${a}.id), 0)
+      - coalesce((SELECT sum(f.amount_idr) FROM payment_unallocated_funds f
+                   WHERE f.tenant_id = ${a}.tenant_id
+                     AND f.payment_intent_id = ${a}.id), 0)))`;
+};
 
 export type OrderGiven = {
   /** What the guest paid for the order (see the header). */
@@ -158,12 +177,17 @@ export async function orderGivenOf(
                   WHERE o.tenant_id = ${tenantId} AND o.id = ${orderUuid}::uuid),
                 (SELECT coalesce(sum(CASE
                           WHEN ${flagged("i")} THEN 0
-                          ELSE greatest(0, i.amount_idr
+                          ELSE greatest(0, ${allocated("i")}
                                  - ${providerRefundedForeignIdrSql(sql`${tenantId}::uuid`, sql`i.id`, undefined, false)}
                                  - ${ownRefunds("i", orderUuid)}) END), 0)
                    FROM payment_intents i
                   WHERE i.tenant_id = ${tenantId}
-                    AND i.order_id = ${orderUuid}::uuid
+                    AND (i.order_id = ${orderUuid}::uuid
+                         OR EXISTS (SELECT 1 FROM orders lo
+                                     WHERE lo.tenant_id = i.tenant_id
+                                       AND lo.id = ${orderUuid}::uuid
+                                       AND (lo.payment_intent_id = i.id
+                                            OR lo.payment_link_id = i.payment_link_id)))
                     AND i.status IN ('paid', 'partially_refunded', 'refunded')
                     AND i.paid_at IS NOT NULL
                     AND NOT EXISTS (SELECT 1 FROM order_issue_charges c
@@ -176,7 +200,12 @@ export async function orderGivenOf(
                         WHERE r.tenant_id = ${tenantId}
                           AND r.order_issue_id IN (SELECT id FROM issues)
                         GROUP BY r.order_issue_id) e))
-            + (SELECT coalesce(sum(greatest(0, c.amount_idr
+            + (SELECT coalesce(sum(CASE
+                      WHEN c.payment_intent_id IS NOT NULL
+                           AND (ci.id IS NULL OR ${flagged("ci")}) THEN 0
+                      ELSE greatest(0, CASE WHEN ci.id IS NULL THEN c.amount_idr
+                                            ELSE least(c.amount_idr, ${allocated("ci")})
+                                                 - ${providerRefundedForeignIdrSql(sql`${tenantId}::uuid`, sql`ci.id`, undefined, false)} END
                       - coalesce((SELECT sum(r.amount_idr)
                                     FROM payment_refunds r
                                    WHERE r.tenant_id = c.tenant_id
@@ -186,8 +215,10 @@ export async function orderGivenOf(
                                     FROM order_issue_charge_manual_refunds m
                                    WHERE m.tenant_id = c.tenant_id
                                      AND m.charge_id = c.id
-                                     AND m.status <> 'rejected'), 0))), 0)
+                                     AND m.status <> 'rejected'), 0)) END), 0)
                  FROM order_issue_charges c
+                 LEFT JOIN payment_intents ci
+                   ON ci.tenant_id = c.tenant_id AND ci.id = c.payment_intent_id
                 WHERE c.tenant_id = ${tenantId}
                   AND c.order_id = ${orderUuid}::uuid
                   AND c.status = 'paid')
