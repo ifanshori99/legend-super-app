@@ -5,9 +5,11 @@
 // without touching public data.
 //
 // Assumptions (the card is silent):
-//  - "N/A" at SQL level means zero rows (nothing to block). A missing table is
-//    handled by the runner through the `-- requires:` header, so the header
-//    must list public.payroll_payout_gl_postings.
+//  - A missing settle_net_idr column is NOT a pass: the gate reads it through
+//    to_jsonb(p) ->> 'settle_net_idr', so a missing key is NULL like a legacy
+//    row and blocks (ragu = gagal). A missing table is handled by the runner
+//    through the `-- requires:` header, so the header must list
+//    public.payroll_payout_gl_postings.
 //  - A blocked result has at least one row; the resolve hint lives in the
 //    `-- resolve:` header, which the runner prints. Whether the gate returns one row per posting or
 //    one aggregate row is not fixed, so tests only assert "rows > 0".
@@ -150,11 +152,19 @@ describe("[legend-1tke7] legacy payout postings gate", () => {
     });
   });
 
-  it("[legend-1tke7] is N/A (no rows, no error) when settle_net_idr does not exist yet", async () => {
+  it("[legend-1tke7] blocks (rows > 0, no error) when settle_net_idr does not exist yet", async () => {
     const sql = gateSql();
     await shadowed(columnsWithoutSettleNet, async (client) => {
       await addPosting(client, "settle_pending", "absent");
       await addPosting(client, "settle_skipped", "absent");
+      expect((await client.query(sql)).rows.length).toBeGreaterThan(0);
+    });
+  });
+
+  it("[legend-1tke7] does not block a missing column when no settle_pending/settle_skipped rows exist", async () => {
+    const sql = gateSql();
+    await shadowed(columnsWithoutSettleNet, async (client) => {
+      await addPosting(client, "settle", "absent");
       expect((await client.query(sql)).rows).toEqual([]);
     });
   });
