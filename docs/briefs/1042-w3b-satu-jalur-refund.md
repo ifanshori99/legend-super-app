@@ -1,0 +1,7 @@
+# 1042 W3b: satu jalur refund per pesanan (legend-ggv6d)
+Peran: engineer (baca ~/.agents/team/roles/engineer.md). Sonnet 5.5 high. Tingkat K (uang): architect effort xhigh sekali di akhir (checklist interleaving di roles/architect.md).
+Langkah pertama: spawn paralel: Explore (semua jalur uang kembali per pesanan: refund kasir POS, void/batal termasuk void ingest edge 978, refund manual order-issue `order-issue-manual-refund.ts` + migrasi 0450), test-writer gagal-dulu per pasangan jalur, implementer per kelompok file.
+Base: origin/milestone/m1. Founder 18 Nov W3b = A: satu pesanan hanya boleh punya SATU dari refund kasir / batal (void) / refund manual. Celah: void ingest edge belum menghitung refund manual; cek eksklusif void/refund kasir vs refund manual belum ada di kode.
+Jangan sentuh berkas refund provider/webhook yang sedang dikerjakan 1035 (payment-refund.service.ts, fundBlockedSql, markProviderRefunded) dan kas/supplier (1037). Butuh hook di sana: tulis di laporan.
+Test: tiap pasangan jalur ditolak (409/422) di dua urutan, bersamaan (dua permintaan berlomba), replay edge; tamu tidak menerima lebih dari yang dibayar; tenant/outlet lain. Migrasi kerja 0675-0676.
+Bukti: test terarah (sebut berkas), prettier/eslint, typecheck API lewat heavy, db:generate kosong. Commit, push tanpa force. Laporan sekali di akhir: perilaku, test, temuan architect, SHA, migrasi, angka subagent (total, puncak, pemegang heavy).
