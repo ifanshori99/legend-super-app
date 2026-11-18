@@ -670,20 +670,28 @@ export async function ingestEdgeOrderVoided(
     // refusal is noted on it. A void with no ledger row has nowhere to be
     // recorded (paid_event_id is NOT NULL): the warning above is the record.
     await bestEffort(tx, event.id, reason, async (sp) => {
+      const noted = `void_refused:${reason}`;
+      const where = and(
+        eq(edgeOrderIngests.tenantId, tenantId),
+        eq(edgeOrderIngests.orderId, payload.orderId),
+        sql`${edgeOrderIngests.state} IN ('ingested', 'voided')`,
+      );
+      const [before] = await sp
+        .select({ reason: edgeOrderIngests.reason })
+        .from(edgeOrderIngests)
+        .where(where)
+        .for("update");
+      // updatedAt always moves: the redrive picks the oldest rows first.
       await sp
         .update(edgeOrderIngests)
-        .set({ reason: `void_refused:${reason}`, updatedAt: new Date() })
-        .where(
-          and(
-            eq(edgeOrderIngests.tenantId, tenantId),
-            eq(edgeOrderIngests.orderId, payload.orderId),
-            sql`${edgeOrderIngests.state} IN ('ingested', 'voided')`,
-          ),
-        );
-    });
-    // legend-3dsih (1095): the refused void is also an audit row, so finance
-    // sees why a void did not run. Own savepoint; no money moves here.
-    await bestEffort(tx, event.id, reason, async (sp) => {
+        .set({ reason: noted, updatedAt: new Date() })
+        .where(where);
+      // legend-3dsih (1095): a final refusal is also an audit row, so finance
+      // sees why a void did not run. Once per reason change: a replay or a
+      // redrive of the same refusal changes nothing and writes nothing; a
+      // transient refusal (retried) is not audited. No money moves here.
+      if (!before || before.reason === noted || isTransientReason(reason))
+        return;
       await recordAudit(
         sp,
         meta.context,
@@ -697,7 +705,7 @@ export async function ingestEdgeOrderVoided(
           action: "order.void_refused",
           objectType: "order",
           objectId: payload.orderId,
-          reason: `void_refused:${reason}`,
+          reason: noted,
           maskedChanges: {
             before: null,
             after: { orderId: payload.orderId, reason },
