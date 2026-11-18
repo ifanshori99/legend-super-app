@@ -1780,6 +1780,35 @@ async function processRefundEvent(
     // missing on the flat shape) must never settle: no amount or payment check
     // would run for it.
     if (facts.invalid) {
+      // 1072 I8: a signed success matched to this refund that is no proven
+      // echo (unreadable or missing amount or payment id) is held for the
+      // refund's full amount, before anything is audited or ignored. The
+      // payment id may be unreadable, so the transaction comes from the
+      // refund's own source payment. The payment-object fallback is exempt.
+      if (status === "succeeded" && match.kind !== "payment_object") {
+        const paymentRef =
+          (await refundSourcePayment(context, refund, intent))?.providerRef ??
+          intent.providerRef;
+        await withTenant(db, context, async (tx) =>
+          fileOwnRefundSurplusHoldInTx(
+            tx,
+            context,
+            {
+              intentId: intent.id,
+              outletId: intent.outletId,
+              // Own key: the stand-in amount was never reported, so it must
+              // not count as evidence already held for the real key (I7
+              // `maxHeld`) and swallow a later readable report (1075 P1).
+              providerRefundId: `invalid:${
+                facts.refundId ?? refund.providerRef ?? `refund:${refund.id}`
+              }`,
+              providerPaymentRef: paymentRef,
+              amountIdr: Number(intent.amountIdr),
+            },
+            now,
+          ),
+        );
+      }
       await recordRefundFactsInvalid(
         context,
         row,
@@ -1820,6 +1849,16 @@ async function processRefundEvent(
       match.kind === "payment_object"
         ? (refund.providerRef ?? match.payment.id)
         : facts.refundId;
+    // 1072 I6: a refused success that is no proven echo is held in the very
+    // transaction that holds the refund's locks (the updater commits it, then
+    // throws the 409). The payment ref is read before, on its own connection.
+    const holdPaymentRef =
+      status === "succeeded" && match.kind !== "payment_object"
+        ? (facts.paymentId ??
+          facts.payment?.id ??
+          (await refundSourcePayment(context, refund, intent))?.providerRef ??
+          intent.providerRef)
+        : null;
     try {
       await applyRefundProviderUpdate(
         context,
@@ -1837,6 +1876,33 @@ async function processRefundEvent(
             : {}),
         },
         now,
+        async (tx, refusal) => {
+          // One rule (I2): a smaller reported amount stays an echo; anything
+          // else refused here is no echo of this refund.
+          if (
+            status !== "succeeded" ||
+            match.kind === "payment_object" ||
+            (refusal.kind === "amount_mismatch" &&
+              facts.amountIdr !== undefined &&
+              facts.amountIdr < Number(refusal.refund.amountIdr))
+          )
+            return;
+          await fileOwnRefundSurplusHoldInTx(
+            tx,
+            context,
+            {
+              intentId: refusal.intent.id,
+              outletId: refusal.intent.outletId,
+              providerRefundId:
+                facts.refundId ??
+                refusal.refund.providerRef ??
+                `refund:${refusal.refund.id}`,
+              providerPaymentRef: holdPaymentRef,
+              amountIdr: facts.amountIdr ?? Number(refusal.intent.amountIdr),
+            },
+            now,
+          );
+        },
       );
     } catch (error) {
       if (error instanceof HttpError && error.status === 409) {
@@ -1853,43 +1919,6 @@ async function processRefundEvent(
             ["amount_mismatch"],
             now,
           );
-        // 1072 I2 (A1): a success report bigger than our refund is not its
-        // echo. The refund stays refused, but the provider says more money
-        // went back: hold the intent for the reported amount, as the
-        // recorder does. A smaller one stays a plain refusal (also an echo
-        // there). 1072 R3: a success on a refund of ours that already failed
-        // is no echo of anything (the recorder counts a failed refund as no
-        // echo, `status <> 'failed'`): the money went back, no fact is
-        // written, so it is held whatever its amount.
-        if (
-          status === "succeeded" &&
-          match.kind !== "payment_object" &&
-          facts.amountIdr !== undefined &&
-          (facts.amountIdr > Number(refund.amountIdr) ||
-            refund.status === "failed")
-        ) {
-          const reportedAmountIdr = facts.amountIdr;
-          const paymentRef =
-            facts.paymentId ??
-            facts.payment?.id ??
-            (await refundSourcePayment(context, refund, intent))?.providerRef ??
-            intent.providerRef;
-          await withTenant(db, context, async (tx) =>
-            fileOwnRefundSurplusHoldInTx(
-              tx,
-              context,
-              {
-                intentId: intent.id,
-                outletId: intent.outletId,
-                providerRefundId:
-                  facts.refundId ?? refund.providerRef ?? `refund:${refund.id}`,
-                providerPaymentRef: paymentRef,
-                amountIdr: reportedAmountIdr,
-              },
-              now,
-            ),
-          );
-        }
         return await ignoredWith("REJECTED_CONFLICT");
       }
       if (error instanceof HttpError && error.status === 404)

@@ -564,6 +564,20 @@ export function createRefundHarness(tag: string) {
       .post(`${ADMIN}/refunds/${refundId}/retry`)
       .set(originHeader)
       .send({ idempotencyKey: key("retry") });
+  /** Finance records a manual payout (settle-manually); the approver is not the requester. */
+  const settleManually = (refundId: string, amountIdr: number) =>
+    approver
+      .post(`${ADMIN}/refunds/${refundId}/settle-manually`)
+      .set(originHeader)
+      .send({
+        idempotencyKey: key("settle"),
+        // Must lie between the refund request (just made) and now: use now.
+        paidAt: new Date().toISOString(),
+        channel: "bank_transfer",
+        externalReference: `TRX-${randomUUID().slice(0, 8)}`,
+        amountIdr,
+        note: "Dibayar manual oleh finance lewat transfer bank.",
+      });
   const resolveFund = (fundId: string, resolution: "refund" | "credit") =>
     staff
       .post(`${ADMIN}/unallocated-funds/${fundId}/resolve`)
@@ -809,6 +823,7 @@ export function createRefundHarness(tag: string) {
     manualRefund,
     approveRefund,
     retryRefund,
+    settleManually,
     resolveFund,
     resolveHold,
     sameAsCounted,

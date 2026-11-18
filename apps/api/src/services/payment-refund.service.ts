@@ -4052,15 +4052,30 @@ export type RefundProviderUpdate = {
   readonly amountIdr?: number;
 };
 
+/** Why the updater refused a provider result (1072 I6). */
+export type RefundProviderRefusal = {
+  readonly kind:
+    "reference_mismatch" | "amount_mismatch" | "contradiction" | "not_awaiting";
+  readonly refund: Refund;
+  readonly intent: Intent;
+};
+
 /**
  * Applies an asynchronous provider result (webhook or poll). Only an `approved`
  * refund transitions; a replay of the same terminal state is a no-op and a
- * contradicting update is refused without any write.
+ * contradicting update is refused without any write of its own.
+ *
+ * 1072 I6: `onRefusedInTx` runs inside the transaction that holds the intent,
+ * fund, refund and deposit locks, right before a refusal. What it writes (a
+ * conflict hold) commits with that transaction, and only then the 409 is
+ * thrown, so a manual settle or a deposit credit never sees a refusal without
+ * its hold. It must use the `tx` it is given and open no other connection.
  */
 export async function applyRefundProviderUpdate(
   context: ScopedTenantContext,
   update: RefundProviderUpdate,
   now: Date = new Date(),
+  onRefusedInTx?: (tx: Tx, refusal: RefundProviderRefusal) => Promise<void>,
 ) {
   const keyedId = update.idempotencyKey
     ? PROVIDER_KEY.exec(update.idempotencyKey)?.[1]
@@ -4091,13 +4106,23 @@ export async function applyRefundProviderUpdate(
   const refused = await withTenant(db, context, async (tx) => {
     const locked = await lockRefundGraph(tx, context.tenant.tenantId, refundId);
     const { refund } = locked;
+    const refuse = async (
+      kind: RefundProviderRefusal["kind"],
+      message: string,
+    ) => {
+      await onRefusedInTx?.(tx, { kind, refund, intent: locked.intent });
+      return message;
+    };
     // Never re-point a refund at another provider transaction.
     if (
       refund.providerRef &&
       update.providerRef &&
       refund.providerRef !== update.providerRef
     )
-      throw conflict("Provider reference does not match the refund.");
+      return await refuse(
+        "reference_mismatch",
+        "Provider reference does not match the refund.",
+      );
     // Settled by hand: any provider success means paying twice, whatever its
     // amount, so it is recorded before the amount check can refuse it.
     if (
@@ -4105,17 +4130,29 @@ export async function applyRefundProviderUpdate(
       update.amountIdr !== refund.amountIdr &&
       !contradicts(refund, update.status)
     )
-      throw conflict("Provider amount does not match the refund.");
+      return await refuse(
+        "amount_mismatch",
+        "Provider amount does not match the refund.",
+      );
     if (contradicts(refund, update.status)) {
       await recordProviderConflict(tx, context, refund, update.status, now);
-      return "Refund is not awaiting a provider result.";
+      return await refuse(
+        "contradiction",
+        "Refund is not awaiting a provider result.",
+      );
     }
     if (update.status === "succeeded") {
       if (refund.status === "completed") return null;
       if (refund.status !== "approved")
-        throw conflict("Refund is not awaiting a provider result.");
+        return await refuse(
+          "not_awaiting",
+          "Refund is not awaiting a provider result.",
+        );
       const providerRef = update.providerRef ?? refund.providerRef;
-      if (!providerRef) throw conflict("Provider reference is required.");
+      // 1075 P3: refused through the callback like the others, so a matched
+      // success without any refund id still leaves its hold (I6/I8).
+      if (!providerRef)
+        return await refuse("not_awaiting", "Provider reference is required.");
       await completeRefund(tx, context, locked, providerRef, now);
       return null;
     }
@@ -4131,7 +4168,10 @@ export async function applyRefundProviderUpdate(
     )
       return null;
     if (refund.status !== "approved")
-      throw conflict("Refund is not awaiting a provider result.");
+      return await refuse(
+        "not_awaiting",
+        "Refund is not awaiting a provider result.",
+      );
     await failRefund(tx, context, refund, {
       reason: "provider_declined",
       action: "payment.refund_failed",

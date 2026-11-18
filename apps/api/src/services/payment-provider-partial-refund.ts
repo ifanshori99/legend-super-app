@@ -1355,63 +1355,98 @@ async function fileTransactionConflictHoldInTx(
   // Same webhook event id with another key (a replay of the filed report):
   // nothing to raise.
   if (!existing) return;
-  if (
-    existing.resolvedAt !== null &&
-    input.amountIdr > Number(existing.amountIdr)
-  ) {
-    // 1072 F-P2: finance resolved the hold for a smaller amount and the
-    // provider now reports more under the same key. A resolved hold is never
-    // reopened, so a second hold carries the FULL reported amount (restrictive;
-    // no refund id, so the unique key does not apply). Its event id is derived
-    // from the same hash: a replay adds nothing and alerts nothing, a replay
-    // with a larger amount raises the same open surplus hold.
-    const [surplus] = await tx
-      .insert(refundReconHolds)
-      .values({
-        tenantId,
-        paymentIntentId: intentId,
-        webhookEventId: holdEventId("\0surplus"),
-        providerRefundId: null,
-        providerRefundIdKind: null,
-        providerPaymentRef,
-        amountIdr: idr(input.amountIdr),
-        reason: HOLD_TRANSACTION_CONFLICT_REASON,
-        flaggedAt: now,
+  if (existing.resolvedAt !== null) {
+    // 1072 I7: finance resolved the hold of this key. A report above the
+    // largest amount ever held for the key (main hold and every surplus
+    // generation, open or resolved) leaves an open hold with the FULL reported
+    // amount (restrictive; no refund id, so the unique key does not apply).
+    // Generation g has its own event id: gen 1 keeps the plain "\0surplus"
+    // hash (existing data still matches), gen g >= 2 adds "\0<g>". A report at
+    // or below that largest amount is the same proof: no hold is added or
+    // opened, only the audit below. The intent and deposit-intent locks held
+    // here serialize the generations.
+    const surplusRows = await tx
+      .select({
+        id: refundReconHolds.id,
+        webhookEventId: refundReconHolds.webhookEventId,
+        amountIdr: refundReconHolds.amountIdr,
+        resolvedAt: refundReconHolds.resolvedAt,
       })
-      .onConflictDoNothing()
-      .returning({ id: refundReconHolds.id });
-    const surplusAlert = () =>
-      alertProviderRefundTransactionConflict(
-        tx,
-        context,
-        {
-          intentId,
-          outletId: input.outletId,
-          dedupKey: `${providerPaymentRef ?? ""}\0${refundKey}\0surplus`,
-          amountIdr: input.amountIdr,
-        },
-        now,
-      );
-    if (surplus) {
-      await surplusAlert();
-      return;
-    }
-    const raised = await tx
-      .update(refundReconHolds)
-      .set({
-        amountIdr: sql`greatest(${refundReconHolds.amountIdr}, ${input.amountIdr})`,
-      })
+      .from(refundReconHolds)
       .where(
         and(
           eq(refundReconHolds.tenantId, tenantId),
-          eq(refundReconHolds.webhookEventId, holdEventId("\0surplus")),
-          isNull(refundReconHolds.resolvedAt),
-          sql`${refundReconHolds.amountIdr} < ${input.amountIdr}`,
+          eq(refundReconHolds.paymentIntentId, intentId),
+          isNull(refundReconHolds.providerRefundId),
+          eq(refundReconHolds.reason, HOLD_TRANSACTION_CONFLICT_REASON),
+          sql`coalesce(${refundReconHolds.providerPaymentRef}, '') = ${providerPaymentRef ?? ""}`,
         ),
       )
-      .returning({ id: refundReconHolds.id });
-    if (raised.length > 0) await surplusAlert();
-    return;
+      .for("update");
+    const generationEventId = (generation: number): string =>
+      holdEventId(generation === 1 ? "\0surplus" : `\0surplus\0${generation}`);
+    const generationOf = new Map<string, number>();
+    for (let generation = 1; generation <= surplusRows.length + 1; generation++)
+      generationOf.set(generationEventId(generation), generation);
+    const family = surplusRows.filter((row) =>
+      generationOf.has(row.webhookEventId),
+    );
+    const maxHeld = Math.max(
+      Number(existing.amountIdr),
+      ...family.map((row) => Number(row.amountIdr)),
+    );
+    if (input.amountIdr > maxHeld) {
+      const surplusAlert = (generation: number) =>
+        alertProviderRefundTransactionConflict(
+          tx,
+          context,
+          {
+            intentId,
+            outletId: input.outletId,
+            dedupKey: `${providerPaymentRef ?? ""}\0${refundKey}\0surplus${generation === 1 ? "" : `\0${generation}`}`,
+            amountIdr: input.amountIdr,
+          },
+          now,
+        );
+      const open = family.find((row) => row.resolvedAt === null);
+      if (open) {
+        const raised = await tx
+          .update(refundReconHolds)
+          .set({
+            amountIdr: sql`greatest(${refundReconHolds.amountIdr}, ${input.amountIdr})`,
+          })
+          .where(
+            and(
+              eq(refundReconHolds.id, open.id),
+              isNull(refundReconHolds.resolvedAt),
+            ),
+          )
+          .returning({ id: refundReconHolds.id });
+        if (raised.length > 0)
+          await surplusAlert(generationOf.get(open.webhookEventId) ?? 1);
+        return;
+      }
+      const used = new Set(family.map((row) => row.webhookEventId));
+      let generation = 1;
+      while (used.has(generationEventId(generation))) generation++;
+      const [surplus] = await tx
+        .insert(refundReconHolds)
+        .values({
+          tenantId,
+          paymentIntentId: intentId,
+          webhookEventId: generationEventId(generation),
+          providerRefundId: null,
+          providerRefundIdKind: null,
+          providerPaymentRef,
+          amountIdr: idr(input.amountIdr),
+          reason: HOLD_TRANSACTION_CONFLICT_REASON,
+          flaggedAt: now,
+        })
+        .onConflictDoNothing()
+        .returning({ id: refundReconHolds.id });
+      if (surplus) await surplusAlert(generation);
+      return;
+    }
   }
   if (existing.resolvedAt !== null) {
     logger.warn(

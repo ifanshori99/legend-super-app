@@ -67,3 +67,56 @@ Tidak bertentangan. Rinciannya:
 
 - Hold surplus nominal di T yang sama (A1, A2, P2-2) memakai alasan `HOLD_TRANSACTION_CONFLICT`, jadi jalan keluarnya hanya `not_this_intent`. Bila laporan penyedia benar, finance tidak boleh memilih `not_this_intent` (dana akan terbuka tanpa surplus terbuku). Hold dibiarkan terbuka dan dana tetap tertahan. Ini sesuai keputusan, tetapi perlu catatan runbook.
 - Di luar lingkup (usul bead P3): pada laporan matched dengan nominal tak terbaca (`:1779-1811`) atau ref berbeda di bawah kunci `refund:<R>`, laporan juga diabaikan tanpa hold. Hold di sini berisiko false positive (ref fallback payment id, legend-r7g2), jadi perlu keputusan terpisah.
+
+## Ronde 7 (SO 1075): I6-I8
+
+Architect, 18 Nov 2026. Basis 74172df44 (kode = 7c662f8d9). Laporan: `legend/docs/qa/second-opinion-refund-ronde7-1075.md`. Nomor baris = working tree saat ini.
+
+### I6. Hold konflik atomik terhadap keputusan uang (R7-1)
+
+Invarian: bila pemeriksaan di bawah kunci intent menemukan laporan sukses yang bukan echo, hold-nya di-commit di transaksi yang sama sebelum kunci intent (baris `payment_intents FOR UPDATE` lewat `lockRefundGraph`) dan kunci DP (advisory eksklusif `lockDepositIntentsExclusive`) lepas; penolakan baru dilempar sesudah commit, sehingga settle manual (kunci intent sama) dan apply kredit DP (kunci DP shared) selalu melihat hold itu.
+
+- Pelanggar: `apps/api/src/services/payment-refund.service.ts:4100` dan `:4108` (`throw` di dalam tx, rollback, kunci lepas); `:4110` dan `:4115` (konflik/status, juga kembali tanpa hold). `apps/api/src/services/payment-webhook.service.ts:1877-1891` memasang hold di tx BARU; di antaranya ada tx audit `:1849` dan baca `refundSourcePayment` dengan koneksi lain.
+- Fix minimum (bentuk API updater): parameter opsional ke-4, kompatibel ke belakang.
+  `applyRefundProviderUpdate(context, update, now = new Date(), onRefusedInTx?: (tx: Tx, r: { kind: "reference_mismatch" | "amount_mismatch" | "contradiction" | "not_awaiting"; refund: Refund; intent: PaymentIntentRow }) => Promise<void>)`.
+  Di tx `refused` (`:4091`), keempat titik tolak menjadi `{ await onRefusedInTx?.(tx, { kind, refund, intent: locked.intent }); return "<pesan lama>"; }`; `:4146` tetap `throw conflict(refused)` (409 sesudah commit). Tanpa callback tidak ada tulisan baru, jadi perilaku sama.
+  Webhook (`:1824`): hitung `paymentRef` SEBELUM updater (`facts.paymentId ?? facts.payment?.id ?? (await refundSourcePayment(...))?.providerRef ?? intent.providerRef`), lalu kirim callback yang memanggil `fileOwnRefundSurplusHoldInTx(tx, ...)` memakai `tx` itu (callback tidak boleh membuka koneksi lain). Hapus tx hold `:1877-1891`. Aturan callback (satu aturan I2): hold bila `status === "succeeded"`, `match.kind !== "payment_object"`, dan BUKAN (`kind === "amount_mismatch"` dengan nominal < R). Nominal hold = `facts.amountIdr ?? Number(intent.amountIdr)`; id = `facts.refundId ?? refund.providerRef ?? "refund:<R>"`. Pakai `refund` dari callback (baris terkunci), bukan baris sebelum kunci.
+  Urutan kunci: dokumen, intent, fund, refund, lalu DP. Sama dengan settle, jadi tidak ada siklus; apply DP tidak mengunci intent.
+- Pemanggil updater: produksi hanya `payment-webhook.service.ts:1799` (cabang invalid settled-outside, tanpa callback, lihat I8) dan `:1824`. Tidak ada poller. 12 file test memanggil langsung, tanpa parameter ke-4: tetap 409, tanpa tulisan.
+- Test `apps/api/src/test/refund-1075-r1-atomic-hold.test.ts` (harness 1072). Pakai `vi.mock("../services/payment-provider-partial-refund")` untuk membungkus `fileOwnRefundSurplusHoldInTx` dengan barrier sebelum fungsi asli. r1-01: T 100k, R 30k/X completed, R2 70k approved (flag mati). Kirim signed X/T 80k, tahan di barrier, jalankan `settleRefundManually(R2)` di koneksi kedua. Tunggu lewat `pg_stat_activity` sampai settle `wait_event_type='Lock'` (kode lama: settle selesai = gagal-dulu), lepas barrier. Settle wajib ditolak, hold 80k terbuka, total keluar <= 100k. r1-02: urutan terbalik (settle dulu): hold tetap tercatat. r1-03: apply kredit DP sesudah webhook kembali: kredit terpotong 80k. r1-04: replay: satu hold.
+
+### I7. Generasi surplus dan "bukti sama" (R7-2)
+
+Invarian: laporan sukses dengan kunci bukti (tenant, intent, T, jenis+id refund) yang nominalnya melebihi nominal terbesar yang pernah ditahan untuk kunci itu (hold utama dan semua generasi surplus, terbuka atau resolved) selalu meninggalkan hold terbuka. "Bukti sama" = kunci itu dengan nominal <= nominal terbesar tersebut; replay bukti sama tidak menambah atau membuka hold.
+
+- Pelanggar: `apps/api/src/services/payment-provider-partial-refund.ts:1373` dan `:1407`. Id `holdEventId("\0surplus")` tunggal; bila generasi 1 resolved, insert bentrok, UPDATE `resolved_at IS NULL` gagal, lalu return tanpa hold.
+- Fix minimum (hanya di `fileTransactionConflictHoldInTx`, tanpa migrasi): generasi g memakai id `gen(1) = holdEventId("\0surplus")` (data lama tetap cocok) dan `gen(g>=2) = holdEventId("\0surplus\0" + g)`. Di cabang `existing.resolvedAt !== null` (`:1358`), lakukan langkah ini:
+  1. Baca `FOR UPDATE` hold intent itu dengan `provider_refund_id IS NULL`, alasan CONFLICT, dan T sama.
+  2. Keluarga = baris yang `webhook_event_id`-nya ada di `{gen(1..n+1)}`.
+  3. Hitung `maxHeld = max(existing, keluarga)`. Bila laporan <= `maxHeld`, no-op: bukti sama. Pertahankan audit "already resolved".
+  4. Bila ada anggota terbuka, naikkan anggota itu (`greatest`) dan kirim alert. Perilaku a1-11 tetap.
+  5. Bila tidak ada, insert `gen(g)` terkecil yang belum dipakai dengan nominal penuh laporan, `onConflictDoNothing`, alert sekali.
+     Serialisasi oleh kunci intent dan DP yang sudah dipegang.
+- Test `apps/api/src/test/refund-1075-r2-surplus-generation.test.ts`. T 100k, R 30k/X. Laporan X/T 50k lalu resolve; 80k lalu resolve surplus; 90k menghasilkan hold terbuka 90k (kode lama: tidak ada hold = gagal-dulu). Replay 90k dan 80k: tetap satu hold terbuka. Refund 70k, settle manual, dan kredit DP tertahan. Jalankan pintu matched (`refund.succeeded`) dan recorder (`payment.refunded`) dalam kedua urutan. Kontrol: generasi resolved lalu replay nominal sama, tanpa hold baru.
+
+### I8. Ref berbeda, nominal tak terbaca, dan sukses atas R yang tidak menunggu (R7-3, legend-55up0)
+
+Invarian: sukses bertanda tangan yang cocok ke R (bukan `payment_object`) tetapi tidak terbukti echo (ref Y != X, nominal tak terbaca atau hilang, atau R failed, ditolak, atau settled-outside) selalu menjadi hold `HOLD_TRANSACTION_CONFLICT`. Nominal hold = nominal laporan bila terbaca; bila tidak terbaca, nominal penuh intent (`intent.amountIdr`). Pengecualian fallback payment-object (legend-r7g2) tetap.
+
+- Pelanggar: `payment-webhook.service.ts:1864-1869` (hanya > R atau failed); `:1782-1812` (invalid hanya diaudit); `payment-refund.service.ts:4110` (settled-outside + sukses = bayar dua kali, hanya audit `recordProviderConflict`).
+- Fix minimum: ref berbeda dan settled-outside tertutup oleh aturan callback I6 (`reference_mismatch`, `contradiction`, `not_awaiting`). Blok invalid (`:1782`): bila `status === "succeeded"` dan `match.kind !== "payment_object"`, satu `withTenant` dengan `fileOwnRefundSurplusHoldInTx` (fungsi itu mengunci intent lalu DP sendiri, jadi atomik). T = `refundSourcePayment(...)?.providerRef ?? intent.providerRef`, sebab `payment_id` bisa tidak terbaca. Nominal = `Number(intent.amountIdr)`. Pasang hold sebelum audit dan `ignoredWith`.
+- Test `apps/api/src/test/refund-1075-r3-unproven-success-hold.test.ts`, dengan kasus berikut:
+  - Keyed `refund:<R>` dan `refund_id` Y, nominal 30k dan 20k: hold (provider, Y, T).
+  - `amount: "80000.0"` dan amount hilang: hold 100k.
+  - Settled-outside lalu sukses X: hold.
+  - Lanjutan semua kasus di atas: refund 70k, settle R2, dan kredit DP tertahan; replay satu hold; tanpa event jurnal.
+  - Kontrol: echo X/T 30k sah, `payment_object` fallback, dan status failed Y: tanpa hold.
+
+### Risiko dan urutan
+
+- Hold I8 beralasan CONFLICT, jadi hanya `not_this_intent` yang bisa menutupnya. Bila Y ternyata refund nyata, dana tertahan sampai keputusan finance (restriktif, sesuai CTO). Perlu satu baris di runbook.
+- I8 untuk amount hilang bisa false positive bila payload DOIT asli kadang tanpa amount. Cek sampel event staging sebelum rilis.
+- Settled-outside + sukses (I8) memperluas R7-3. CTO perlu konfirmasi; arahnya restriktif.
+- Urutan: (1) updater dan webhook I6+I8 (dua file, satu engineer, berurutan); paralel (2) I7 di `payment-provider-partial-refund.ts`. File tidak bertumpuk, kecuali webhook yang hanya memanggil fungsi ekspor. Gate: 1072-a1/a2, 1045-d/e, 1055-a, 1075-r1/r2/r3.
+- Review architect ronde 7 (P1, sudah diperbaiki): hold I8 dari cabang laporan tak terbaca memakai kunci sendiri `invalid:<id refund>`. Nominal pengganti (nominal penuh intent) tidak pernah dilaporkan, jadi tidak boleh ikut `maxHeld` kunci asli; tanpa ini laporan sah 80k sesudah hold 100k di-resolve tertelan (test r3-09). Replay laporan tak terbaca sesudah resolve tetap no-op (bukti sama).
+- Review architect ronde 7 (P3, sudah diperbaiki): sukses matched tanpa id refund pada R approved tanpa `providerRef` kini lewat `refuse("not_awaiting")`, jadi hold tetap terpasang (test r3-10).
