@@ -39,12 +39,19 @@ import { auditFacility, toTicket } from "./facility-shared.ts";
 const sha256 = (value: string) =>
   createHash("sha256").update(value, "utf8").digest("hex");
 
-function invalidCredential(): HttpError {
-  return new HttpError(
+// Refusals AFTER the PIN matched the stored digest (facility, window, status,
+// revoke): the guest had the right PIN, so the PIN limit must not count them.
+// The reply is the same uniform 403; only this module can tell them apart.
+const afterPinMatch = new WeakSet<HttpError>();
+
+function invalidCredential(options: { pinMatched?: boolean } = {}): HttpError {
+  const error = new HttpError(
     403,
     "DOOR_CREDENTIAL_INVALID",
     "Kredensial pintu tidak valid.",
   );
+  if (options.pinMatched === true) afterPinMatch.add(error);
+  return error;
 }
 
 // PIN guess limit: a 6-digit PIN has only 10^6 values, so the wrong PINs of the
@@ -94,8 +101,11 @@ export async function doorCheckTicket(
     attempt.release();
     return result;
   } catch (error) {
+    // Keep the slot only when the PIN itself was wrong.
     if (!(
-      error instanceof HttpError && error.code === "DOOR_CREDENTIAL_INVALID"
+      error instanceof HttpError &&
+      error.code === "DOOR_CREDENTIAL_INVALID" &&
+      !afterPinMatch.has(error)
     ))
       attempt.release();
     throw error;
@@ -162,11 +172,16 @@ async function checkCredential(
         ),
       )
       .limit(1);
+    // The pair is not the newest one (rotated meanwhile): a wrong credential.
     if (
       !credential ||
-      credential.revokedAt !== null ||
       (presented.kind === "qr" ? credential.qrDigest : credential.pinDigest) !==
-        presented.digest ||
+        presented.digest
+    )
+      throw invalidCredential();
+    // From here the presented token or PIN IS the stored one.
+    if (
+      credential.revokedAt !== null ||
       !isWithinCredentialWindow(
         {
           validFrom: credential.validFrom.toISOString(),
@@ -178,7 +193,7 @@ async function checkCredential(
       // The reader's facility must be the ticket's: same uniform refusal.
       row.facilityId !== input.facilityId
     )
-      throw invalidCredential();
+      throw invalidCredential({ pinMatched: true });
 
     if (row.status === "in_use") return { ticket: toTicket(row) };
 
@@ -198,7 +213,7 @@ async function checkCredential(
         ),
       )
       .returning();
-    if (!opened) throw invalidCredential();
+    if (!opened) throw invalidCredential({ pinMatched: true });
     // Never audit the token or the PIN: only that the door opened the ticket.
     await auditFacility(tx, context, actorUserId, now, {
       action: "access_ticket.door_opened",

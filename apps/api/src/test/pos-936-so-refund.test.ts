@@ -878,7 +878,8 @@ let ticketDay = 0;
 async function seedTicketLine(
   bill: Bill,
   line: Line,
-  status: "issued" | "in_use" | "refunded" | "cancelled",
+  status:
+    "issued" | "in_use" | "completed" | "no_show" | "refunded" | "cancelled",
 ): Promise<void> {
   const base = await ticketFixture();
   const { tenantId, outletId } = rf.tenant;
@@ -981,6 +982,28 @@ describe("SO-R manual refund and facility ticket lines", () => {
       const override = await lineApproval(bill.lines[0]);
       const ok = await reportManualRefund(bill, bill.lines[0], override.id);
       expect(ok.status, `${status}: ${JSON.stringify(ok.body)}`).toBe(201);
+    }
+  });
+
+  it("SO-R-13 a manual refund of a ticket line whose ticket is completed or no_show is refused 409 TICKET_LIVE_NO_MANUAL_REFUND and spends nothing", async () => {
+    for (const status of ["completed", "no_show"] as const) {
+      const bill = await seedBill([
+        { method: "cash", amountIdr: LINE_TOTAL * 2 },
+      ]);
+      await seedTicketLine(bill, bill.lines[0], status);
+      const override = await lineApproval(bill.lines[0]);
+      const refused = await reportManualRefund(
+        bill,
+        bill.lines[0],
+        override.id,
+      );
+      expect(refused.status, `${status}: ${JSON.stringify(refused.body)}`).toBe(
+        409,
+      );
+      expect(errorCodeOf(refused.body)).toBe("TICKET_LIVE_NO_MANUAL_REFUND");
+      expect(await issueRows(bill.lines[0])).toBe(0);
+      expect(await approvalUses(override.id)).toBe(0);
+      expect(await ticketStatusOf(bill.lines[0])).toBe(status);
     }
   });
 });

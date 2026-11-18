@@ -1298,3 +1298,37 @@ describe("SO-T door PIN guess limit", () => {
     );
   });
 });
+
+describe("SO-T door PIN lock counts only real PIN guesses", () => {
+  it("SO-T-42 5 checks with the right PIN but the wrong facilityId (403 each) do not lock the PIN", async () => {
+    const bought = await paidTicket();
+    const credential = await mintOk(bought);
+    for (let attempt = 0; attempt < 5; attempt += 1)
+      expectDoorRefused(
+        await doorCheck({
+          ...byPin(bought, credential),
+          facilityId: ids.facilityB,
+        }),
+      );
+    expect((await ticketState(bought.ticketId)).status).toBe("issued");
+    expectDoorOpened(
+      await doorCheck(byPin(bought, credential)),
+      bought.ticketId,
+    );
+  });
+
+  it("SO-T-43 5 right-PIN checks before valid_from (403 each) do not lock the PIN; moving the window to now then opens the ticket", async () => {
+    const bought = await paidTicket();
+    // Default window as minted: the sale slot, still in the future.
+    const credential = await mintOk(bought, randomUUID(), false);
+    for (let attempt = 0; attempt < 5; attempt += 1)
+      expectDoorRefused(await doorCheck(byPin(bought, credential)));
+    expect((await ticketState(bought.ticketId)).status).toBe("issued");
+
+    await setCredentialWindow(bought.ticketId, "-1 hour", "2 hours");
+    expectDoorOpened(
+      await doorCheck(byPin(bought, credential)),
+      bought.ticketId,
+    );
+  });
+});

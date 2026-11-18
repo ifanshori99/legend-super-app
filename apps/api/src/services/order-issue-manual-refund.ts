@@ -56,9 +56,10 @@ const conflict = (message: string) =>
 const asNumber = (value: unknown): number => Number(String(value ?? "0"));
 
 /**
- * 936 (legend-hpgyw, F2): a line that sold a facility ticket still valid at the
- * door (access ticket `issued` or `in_use`) is not refunded by hand: the guest
- * would keep or use the ticket and get the money back. Refused 409, nothing
+ * 936 (legend-hpgyw, F2): a line that sold a facility ticket not refunded or
+ * cancelled (access ticket `issued`, `in_use`, `completed`, `no_show`, ...) is
+ * not refunded by hand: the guest would keep or use the ticket and get the
+ * money back. Refused 409, nothing
  * written. The ticket row is locked FOR UPDATE after its POS line (the order of
  * the ticket refund hook), and the door check locks the same ticket row, so a
  * door check cannot slip between this check and the end of the transaction.
@@ -92,7 +93,7 @@ export async function assertNoLiveTicketOnLine(
     )
     .limit(1)
     .for("update");
-  if (ticket && (ticket.status === "issued" || ticket.status === "in_use"))
+  if (ticket && ticket.status !== "refunded" && ticket.status !== "cancelled")
     throw new HttpError(
       409,
       "TICKET_LIVE_NO_MANUAL_REFUND",
