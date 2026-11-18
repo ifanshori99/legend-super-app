@@ -433,6 +433,55 @@ export async function alertProviderRefundExceedsLeft(
   );
 }
 
+/**
+ * 1055 G1: the provider reports a refund id on a transaction that already has
+ * a refund finance counted from a hold without a refund id: it may be that
+ * same refund. Nothing is booked; the intent is held and finance told once
+ * (winner of the hold insert).
+ */
+export async function alertProviderRefundMayDuplicateAnonymous(
+  tx: Tx,
+  context: ScopedTenantContext,
+  held: ReconHoldFiledAlert,
+  now: Date,
+): Promise<void> {
+  await alertReconHoldFiled(
+    tx,
+    context,
+    held,
+    {
+      eventName: "payment.provider_refund_may_duplicate_anonymous",
+      title: "Refund penyedia mungkin sudah dihitung",
+      body: `Penyedia pembayaran melaporkan refund Rp ${held.amountIdr.toLocaleString("id-ID")}. Pembayaran ini sudah punya refund tanpa nomor yang dihitung finance, jadi laporan ini mungkin refund yang sama. Tidak ada yang dibukukan otomatis. Refund dan payout pembayaran ini ditahan sampai finance memeriksanya.`,
+    },
+    now,
+  );
+}
+
+/**
+ * 1055 G2 (AP2-2): the provider reports a refund id on one transaction that is
+ * already on record for another one. Nothing is booked; the intent is held and
+ * finance told once (winner of the hold insert).
+ */
+export async function alertProviderRefundTransactionConflict(
+  tx: Tx,
+  context: ScopedTenantContext,
+  held: ReconHoldFiledAlert,
+  now: Date,
+): Promise<void> {
+  await alertReconHoldFiled(
+    tx,
+    context,
+    held,
+    {
+      eventName: "payment.provider_refund_transaction_conflict",
+      title: "Nomor refund penyedia tercatat di transaksi lain",
+      body: `Penyedia pembayaran melaporkan refund Rp ${held.amountIdr.toLocaleString("id-ID")} dengan nomor refund yang sudah tercatat di transaksi lain. Tidak ada yang dibukukan otomatis. Refund dan payout pembayaran ini ditahan sampai finance memeriksanya.`,
+    },
+    now,
+  );
+}
+
 export type ProviderRefundUnbound = {
   intentId: string;
   outletId: string;

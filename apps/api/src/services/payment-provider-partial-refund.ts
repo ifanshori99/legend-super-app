@@ -48,6 +48,8 @@ import {
   alertProviderPartialRefund,
   alertProviderRefundCountedWithLiveOwn,
   alertProviderRefundExceedsLeft,
+  alertProviderRefundMayDuplicateAnonymous,
+  alertProviderRefundTransactionConflict,
 } from "./payment-provider-refunded-alert.ts";
 import { providerRefundedForeignIdrSql } from "./payment-provider-refunded-foreign-sql.ts";
 import {
@@ -76,6 +78,88 @@ export const PROVIDER_REFUND_ID_KINDS = [
   "synthetic_hold",
 ] as const;
 export type ProviderRefundIdKind = (typeof PROVIDER_REFUND_ID_KINDS)[number];
+
+/**
+ * 1055 G1: reason of the hold filed when the provider reports a refund id on a
+ * transaction that has a refund finance counted from a hold without a refund
+ * id (a `synthetic_hold` fact) not yet matched: the report may be that refund.
+ */
+export const REFUND_MAY_DUPLICATE_ANONYMOUS_REASON =
+  "Refund penyedia mungkin sama dengan refund tanpa nomor yang sudah dihitung finance (REFUND_MAY_DUPLICATE_ANONYMOUS)";
+
+/**
+ * 1055 G2 (architect AP2-2): reason of the hold filed when the provider reports
+ * a refund id on one transaction that is on record for another transaction (or
+ * intent): the reports disagree on whose refund it is.
+ */
+export const HOLD_TRANSACTION_CONFLICT_REASON =
+  "Nomor refund penyedia sudah tercatat di transaksi lain (HOLD_TRANSACTION_CONFLICT)";
+
+/**
+ * 1055 AV-P1: the smallest refund of one provider transaction finance counted
+ * from a hold without a refund id (0 when none). A report finance says is the
+ * same money is matched against it: restrictive, the most of the report is
+ * then booked. Read under the intent lock.
+ */
+export async function smallestAnonymousFactIdr(
+  tx: Tx,
+  tenantId: string,
+  intentId: string,
+  providerPaymentRef: string,
+): Promise<number> {
+  const { rows } = await tx.execute(sql`SELECT
+      coalesce(min(p.amount_idr), 0)::text AS amount
+    FROM payment_provider_refunds p
+    JOIN refund_recon_holds h
+      ON h.tenant_id = p.tenant_id
+     AND h.payment_intent_id = p.payment_intent_id
+     AND h.id::text = p.provider_refund_id
+     AND h.provider_refund_id IS NULL
+    WHERE p.tenant_id = ${tenantId}::uuid
+      AND p.payment_intent_id = ${intentId}::uuid
+      AND p.provider = ${PROVIDER}
+      AND p.provider_payment_ref = ${providerPaymentRef}
+      AND p.refund_id_kind = 'synthetic_hold'`);
+  return Number(rows[0]?.amount ?? 0);
+}
+
+/**
+ * 1055 G1: how many refunds of one provider transaction finance counted from a
+ * hold without a refund id (`synthetic_hold` facts of such holds) are not yet
+ * matched to a report of the provider: minus the holds of that transaction
+ * finance closed as `same_as_counted` (each matches one; a hold without a
+ * refund id closed so matches none, its own difference is one such refund).
+ * `not_this_intent` matches none. Read under the intent lock.
+ */
+export async function unmatchedAnonymousFacts(
+  tx: Tx,
+  tenantId: string,
+  intentId: string,
+  providerPaymentRef: string,
+): Promise<number> {
+  const { rows } = await tx.execute(sql`SELECT
+      (SELECT count(*) FROM payment_provider_refunds p
+        JOIN refund_recon_holds h
+          ON h.tenant_id = p.tenant_id
+         AND h.payment_intent_id = p.payment_intent_id
+         AND h.id::text = p.provider_refund_id
+         AND h.provider_refund_id IS NULL
+        WHERE p.tenant_id = ${tenantId}::uuid
+          AND p.payment_intent_id = ${intentId}::uuid
+          AND p.provider = ${PROVIDER}
+          AND p.provider_payment_ref = ${providerPaymentRef}
+          AND p.refund_id_kind = 'synthetic_hold')::int AS anonymous,
+      (SELECT count(*) FROM refund_recon_holds d
+        WHERE d.tenant_id = ${tenantId}::uuid
+          AND d.payment_intent_id = ${intentId}::uuid
+          AND d.provider_payment_ref = ${providerPaymentRef}
+          AND d.provider_refund_id IS NOT NULL
+          AND d.resolution_identity = 'same_as_counted')::int AS matched`);
+  return Math.max(
+    Number(rows[0]?.anonymous ?? 0) - Number(rows[0]?.matched ?? 0),
+    0,
+  );
+}
 
 /** One string per (kind, id), for alert and hold dedup keys. A provider id is
  * kept as it was (stable keys); a synthetic one carries its kind after a NUL,
@@ -165,11 +249,13 @@ export async function recordProviderRefundInTx(
   let countedLiveOwn = false;
   let tellSupervisors = false;
   /** The dedup key of the live-own hold of this report: a stable id of
-   * (tenant, intent, refund kind and id). */
+   * (tenant, intent, provider transaction, refund kind and id). 1055 AV-P2:
+   * the transaction is part of it, so the same id reported on another
+   * transaction is held on its own. */
   const liveOwnHoldKey = (): string => {
     const hex = createHash("sha256")
       .update(
-        `refund_recon_hold.live_own\0${tenantId}\0${input.expectedIntentId.toLowerCase()}\0${refundKey}`,
+        `refund_recon_hold.live_own\0${tenantId}\0${input.expectedIntentId.toLowerCase()}\0${providerPaymentRef}\0${refundKey}`,
       )
       .digest("hex");
     return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
@@ -197,6 +283,9 @@ export async function recordProviderRefundInTx(
           eq(refundReconHolds.tenantId, tenantId),
           eq(refundReconHolds.paymentIntentId, input.expectedIntentId),
           eq(refundReconHolds.webhookEventId, liveOwnHoldKey()),
+          // 1055 AP2-1: the hold of this report's transaction only; a replay
+          // of the same id on another transaction closes nothing.
+          eq(refundReconHolds.providerPaymentRef, providerPaymentRef),
           isNull(refundReconHolds.resolvedAt),
         ),
       );
@@ -232,7 +321,8 @@ export async function recordProviderRefundInTx(
         {
           intentId: input.expectedIntentId,
           outletId: tellSupervisors ? intentOutletId : null,
-          providerRefundId: refundKey,
+          // Per transaction, like the hold (1055 AV-P2).
+          providerRefundId: `${providerPaymentRef}\0${refundKey}`,
           amountIdr: heldIdr,
         },
         now,
@@ -248,7 +338,7 @@ export async function recordProviderRefundInTx(
     await lockDepositIntentsExclusive(tx, tenantId, input.expectedIntentId);
     const hex = createHash("sha256")
       .update(
-        `refund_recon_hold.exceeds_left\0${tenantId}\0${input.expectedIntentId.toLowerCase()}\0${refundKey}`,
+        `refund_recon_hold.exceeds_left\0${tenantId}\0${input.expectedIntentId.toLowerCase()}\0${providerPaymentRef}\0${refundKey}`,
       )
       .digest("hex");
     const [held] = await tx
@@ -274,7 +364,91 @@ export async function recordProviderRefundInTx(
         {
           intentId: input.expectedIntentId,
           outletId: intentOutletId,
-          dedupKey: refundKey,
+          dedupKey: `${providerPaymentRef}\0${refundKey}`,
+          amountIdr: heldIdr,
+        },
+        now,
+      );
+  };
+  /** 1055 G1: holds a provider refund id reported on a transaction with a
+   * `synthetic_hold` fact that may be this very refund (nothing booked), once
+   * per (intent, refund id); finance told once. Same lock order as
+   * `fileLiveOwnHold`. */
+  const fileMayDuplicateAnonymousHold = async (
+    heldIdr: number,
+    intentOutletId: string,
+  ): Promise<void> => {
+    await lockDepositIntentsExclusive(tx, tenantId, input.expectedIntentId);
+    const hex = createHash("sha256")
+      .update(
+        `refund_recon_hold.duplicate_anonymous\0${tenantId}\0${input.expectedIntentId.toLowerCase()}\0${providerPaymentRef}\0${refundKey}`,
+      )
+      .digest("hex");
+    const [held] = await tx
+      .insert(refundReconHolds)
+      .values({
+        tenantId,
+        paymentIntentId: input.expectedIntentId,
+        webhookEventId: `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`,
+        providerRefundId,
+        providerRefundIdKind: refundIdKind,
+        providerPaymentRef,
+        amountIdr: idr(heldIdr),
+        reason: REFUND_MAY_DUPLICATE_ANONYMOUS_REASON,
+        flaggedAt: now,
+      })
+      .onConflictDoNothing()
+      .returning({ id: refundReconHolds.id });
+    if (held)
+      await alertProviderRefundMayDuplicateAnonymous(
+        tx,
+        context,
+        {
+          intentId: input.expectedIntentId,
+          outletId: intentOutletId,
+          dedupKey: `${providerPaymentRef}\0${refundKey}`,
+          amountIdr: heldIdr,
+        },
+        now,
+      );
+  };
+  /** 1055 G2 (AP2-2): holds a provider refund id reported on this
+   * transaction that is on record for another one, once per (intent,
+   * transaction, refund id); finance told once. Same lock order as
+   * `fileLiveOwnHold`. */
+  const fileTransactionConflictHold = async (
+    heldIdr: number,
+    intentOutletId: string,
+  ): Promise<void> => {
+    await lockDepositIntentsExclusive(tx, tenantId, input.expectedIntentId);
+    const hex = createHash("sha256")
+      .update(
+        `refund_recon_hold.transaction_conflict\0${tenantId}\0${input.expectedIntentId.toLowerCase()}\0${providerPaymentRef}\0${refundKey}`,
+      )
+      .digest("hex");
+    const [held] = await tx
+      .insert(refundReconHolds)
+      .values({
+        tenantId,
+        paymentIntentId: input.expectedIntentId,
+        webhookEventId: `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`,
+        providerRefundId,
+        providerRefundIdKind: refundIdKind,
+        providerPaymentRef,
+        amountIdr: idr(heldIdr),
+        reason: HOLD_TRANSACTION_CONFLICT_REASON,
+        flaggedAt: now,
+      })
+      .onConflictDoNothing()
+      .returning({ id: refundReconHolds.id });
+    if (held)
+      await alertProviderRefundTransactionConflict(
+        tx,
+        context,
+        {
+          intentId: input.expectedIntentId,
+          outletId: intentOutletId,
+          dedupKey: `${providerPaymentRef}\0${refundKey}`,
           amountIdr: heldIdr,
         },
         now,
@@ -559,6 +733,58 @@ export async function recordProviderRefundInTx(
     // recon hold) is added to the `synthetic_full` row on purpose.
     if (!input.topUp && recorded.some((row) => row.kind === "synthetic_full"))
       return { status: "duplicate" };
+    // 1055 G1: a refund finance counted from a hold that names no refund id
+    // (a `synthetic_hold` fact) may be this very report under its own id: the
+    // remainder alone does not tell them apart. While such a fact of this
+    // transaction is not matched to a report (`unmatchedAnonymousFacts`), the
+    // report books nothing and waits for finance as a hold. A report already
+    // held so, or matched to it, stays a duplicate. A hold resolve checks
+    // identity itself (`countHold`, finance says which) and is booked.
+    if (
+      refundIdKind === "provider" &&
+      !input.holdResolve &&
+      !recorded.some(
+        (row) => row.kind === "provider" && row.refundId === providerRefundId,
+      )
+    ) {
+      // Held already for finance, or matched by finance to a counted refund
+      // (any hold of this id closed `same_as_counted`): nothing more.
+      const [held] = await tx
+        .select({ id: refundReconHolds.id })
+        .from(refundReconHolds)
+        .where(
+          and(
+            eq(refundReconHolds.tenantId, tenantId),
+            eq(refundReconHolds.paymentIntentId, intent.id),
+            eq(refundReconHolds.providerRefundIdKind, "provider"),
+            eq(refundReconHolds.providerRefundId, providerRefundId),
+            eq(refundReconHolds.providerPaymentRef, providerPaymentRef),
+            or(
+              and(
+                eq(
+                  refundReconHolds.reason,
+                  REFUND_MAY_DUPLICATE_ANONYMOUS_REASON,
+                ),
+                isNull(refundReconHolds.resolvedAt),
+              ),
+              eq(refundReconHolds.resolutionIdentity, "same_as_counted"),
+            ),
+          ),
+        )
+        .limit(1);
+      if (held) return { status: "duplicate" };
+      if (
+        (await unmatchedAnonymousFacts(
+          tx,
+          tenantId,
+          intent.id,
+          providerPaymentRef,
+        )) > 0
+      ) {
+        await fileMayDuplicateAnonymousHold(amountIdr, intent.outletId);
+        return { status: "duplicate" };
+      }
+    }
     // 1045 A2: a provider refund id never books more than what is left of the
     // transaction after the refunds already booked on it (a refund finance
     // counted from a hold may be this very one under another id). The whole
@@ -625,8 +851,10 @@ export async function recordProviderRefundInTx(
     // report's own amount. A `synthetic_full` row may have counted a refund of
     // ours that failed since, so its hold stays for finance to top up.
     // 1045 A4: only a row of this very intent (and tenant) is its fact; the
-    // same id booked on another intent closes nothing here.
-    if (refundIdKind === "provider" && !inFlight) {
+    // same id booked on another intent closes nothing here. 1055 G2: nor on
+    // another transaction of this intent (the reports disagree on whose
+    // refund it is: the hold stays for finance).
+    if (refundIdKind === "provider") {
       const [existing] = await tx
         .select({ id: paymentProviderRefunds.id })
         .from(paymentProviderRefunds)
@@ -637,10 +865,18 @@ export async function recordProviderRefundInTx(
             eq(paymentProviderRefunds.provider, PROVIDER),
             eq(paymentProviderRefunds.refundIdKind, refundIdKind),
             eq(paymentProviderRefunds.providerRefundId, providerRefundId),
+            eq(paymentProviderRefunds.providerPaymentRef, providerPaymentRef),
           ),
         )
         .limit(1);
-      if (existing) await closeLiveOwnHold();
+      if (existing) {
+        if (!inFlight) await closeLiveOwnHold();
+      } else if (!input.holdResolve) {
+        // 1055 G2 (AP2-2): the id is on record, but not for this transaction
+        // (and intent): whose refund it is stays for finance, and this
+        // transaction's money is held. A hold resolve answers 409 itself.
+        await fileTransactionConflictHold(amountIdr, intent.outletId);
+      }
     }
     return { status: "duplicate" };
   }

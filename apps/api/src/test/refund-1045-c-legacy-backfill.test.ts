@@ -1252,7 +1252,21 @@ describe("1045c-R a legacy refund id sent again under a new event id adds nothin
 
       expect(await providerRows(world.codeB.id)).toHaveLength(1);
       expect(await totalOf(world.codeB.id)).toBe(PART);
-      expect(await openHolds(world), "no hold").toBe(0);
+      // 1055 AP2-2: `payment.refunded` names bill B's own transaction while the
+      // legacy fact of this id is on foo: whose refund it is is in doubt, so
+      // exactly one conflict hold waits for finance (both rounds, not two).
+      expect(await openHolds(world), "only the conflict hold").toBe(1);
+      expect(
+        await count(
+          `SELECT count(*)::text AS n FROM refund_recon_holds
+            WHERE tenant_id = $1 AND payment_intent_id = $2::uuid
+              AND resolved_at IS NULL
+              AND reason LIKE '%HOLD_TRANSACTION_CONFLICT%'
+              AND provider_refund_id = $3`,
+          [tenantId, world.codeB.id, refundId],
+        ),
+        "one open HOLD_TRANSACTION_CONFLICT hold",
+      ).toBe(1);
       expect(await refundEventsOfIntent(world.codeB.id), "no new event").toBe(
         0,
       );

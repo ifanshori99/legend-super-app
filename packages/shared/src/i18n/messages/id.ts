@@ -1937,6 +1937,17 @@ export const id = {
         "Tidak bisa dipilih: nominal penahanan ini tidak tercatat. Cek dashboard provider untuk memastikan nominalnya.",
       countedWarning:
         "{amount} akan dicatat sudah kembali ke tamu dan tidak bisa dibatalkan. Pastikan dana benar-benar sudah keluar dari provider.",
+      identity: "Refund yang mana?",
+      identityHint:
+        "Pembayaran ini sudah punya refund tanpa nomor yang dihitung finance. Refund ini mungkin uang yang sama. Cek dashboard provider, lalu pilih salah satu.",
+      identityRequired:
+        "Pilih apakah ini refund yang sama atau refund terpisah.",
+      identitySame: "Sama dengan refund yang sudah dihitung",
+      identitySameHint:
+        "Ini uang yang sama dengan refund yang sudah dihitung. Penahanan ditutup. Bila nominal refund ini lebih besar, hanya selisihnya yang dicatat, paling banyak sebesar sisa pembayaran.",
+      identitySeparate: "Refund terpisah, catat juga",
+      identitySeparateHint:
+        "Provider mengembalikan uang lagi di luar refund tanpa nomor tadi. Refund ini dicatat juga, paling banyak sebesar sisa pembayaran.",
       note: "Catatan keputusan",
       noteHint:
         "Tulis dasar keputusan untuk jejak audit, minimal 4 karakter, misalnya hasil pengecekan di dashboard provider.",

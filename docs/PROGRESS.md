@@ -7171,3 +7171,15 @@ Cabang worktree `ghostex/980-refund-sisa-4-kartu` dari `9788dc422` (958 + 967). 
   - Regresi 139 berkas refund/hold/poller: 2157 lulus pada run pertama, 19 berkas gagal (teardown FK + perilaku hold) diperbaiki lalu lulus 432/432 + 958 29/29.
   - Typecheck API (heavy) hijau; prettier dan eslint bersih; db:generate kosong.
 - Biaya sesi (session-usage, 1035+1045): total biaya* 27.2M; 32 subagent (ronde 3: 15), puncak 8 bersamaan, rata 1.0.
+
+**1055 Perbaikan SO refund ronde 4 (legend-818ap P1, legend-sccyj P2; 18 Nov 2026, cabang ghostex/1033-kredit-dp-pool-net-bersama di atas 5882b0d6b, tingkat K)**
+
+- Sudah:
+  - G1 (P1, refund parsial tanpa referensi dibukukan dua kali): laporan provider ber-nomor pada transaksi yang punya fact anonim belum terikat tidak jadi fact; jadi hold `REFUND_MAY_DUPLICATE_ANONYMOUS` + alert. Count hold anonim saat transaksi sudah punya fact: 409 `HOLD_IDENTITY_AMBIGUOUS` kecuali finance memberi `providerRefundId` (ikat ke fact yang ada atau catat dengan nomor itu) atau `identity`.
+  - `identity` (`same_as_counted` | `separate`, kolom baru `resolution_identity`, migrasi 0658): wajib untuk hold dup-anon dan hold ber-nomor yang transaksinya punya fact anonim belum terikat. `same_as_counted` mencatat hanya selisih di atas fact anonim terkecil (dibatasi sisa); `separate` mencatat seperti biasa (batas sisa A2).
+  - G2 (P2, fact transaksi pertama menutup hold transaksi kedua): penutupan otomatis dan resolve counted wajib cocok `provider_payment_ref`; konflik = 409 `HOLD_TRANSACTION_CONFLICT`; laporan ID sama di transaksi lain tanpa refund kita berjalan = hold konflik + alert. Unique index hold memuat `coalesce(provider_payment_ref,'')` (0658), kunci dedupe hold/alert memuat ref.
+  - View hold: flag `needsIdentity` dari server; panel menampilkan dua pilihan identity.
+- Keputusan engineer (restriktif): identitas ambigu tidak dipilih otomatis; fact kurang dihindari (selisih dicatat), fact lebih diterima hanya bila ragu atas fact mana yang diikat (fact anonim terkecil). 1045c-R1 kini mengharapkan 1 hold konflik (ID lama di transaksi lain), assert uang tetap. 6 test 1025-d diberi `identity: "separate"`, assert uang tetap.
+- Bukti: test baru refund-1055-a (21 test: G1-01..10, G2-01..05), semua merah dulu di kode lama kecuali G1-09c (penjaga); regresi 140 berkas refund/hold/poller 2189 lulus, 0 gagal, 8 skip; typecheck API, shared, web (heavy) hijau; prettier dan eslint bersih; db:generate kosong.
+- Review: architect xhigh (satu sesi, 3 putaran verifikasi): putaran 1 2 P1 + 2 P2, putaran 2 1 P1 baru + 1 P2 sisa, putaran 3 tidak ada P0/P1; P2 tampilan (needsIdentity pada hold konflik) diperbaiki.
+- Belum (bead): legend-qwma1 (panel belum bisa menghitung hold anonim), legend-ksypc (N+1 query needsIdentity). Merge train: 0657 dipakai cabang payout 911, journal 0658 perlu disusun ulang saat merge.

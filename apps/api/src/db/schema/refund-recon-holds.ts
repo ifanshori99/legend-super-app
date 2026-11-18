@@ -52,6 +52,11 @@ export const refundReconHolds = pgTable(
     resolvedBy: uuid("resolved_by"),
     resolution: text("resolution"),
     resolutionNote: text("resolution_note"),
+    // 1055 G1: what finance said a counted hold is when the transaction has a
+    // refund counted from a hold without a refund id (a `synthetic_hold` fact)
+    // that may be the same money. `same_as_counted`: it is that refund (no new
+    // fact; it matches one such fact). `separate`: another refund (booked).
+    resolutionIdentity: varchar("resolution_identity", { length: 20 }),
   },
   (t) => [
     unique("refund_recon_hold_event_key").on(t.tenantId, t.webhookEventId),
@@ -60,14 +65,18 @@ export const refundReconHolds = pgTable(
       columns: [t.tenantId, t.paymentIntentId],
       foreignColumns: [paymentIntents.tenantId, paymentIntents.id],
     }),
-    // One hold per provider refund of an intent: the provider resending the
-    // same refund under a new event id adds none.
+    // One hold per provider refund of an intent and provider transaction: the
+    // provider resending the same refund under a new event id adds none. 1055
+    // AV-P2: the transaction is part of it (no payment id counts as one value,
+    // like NULLS NOT DISTINCT), so a closed hold of the id on one transaction
+    // never stops the hold of a conflicting report on another.
     uniqueIndex("refund_recon_hold_provider_refund_key")
       .on(
         t.tenantId,
         t.paymentIntentId,
         t.providerRefundIdKind,
         t.providerRefundId,
+        sql`coalesce(${t.providerPaymentRef}, '')`,
       )
       .where(sql`${t.providerRefundId} IS NOT NULL`),
     index("refund_recon_hold_intent_idx").on(t.tenantId, t.paymentIntentId),
@@ -75,6 +84,10 @@ export const refundReconHolds = pgTable(
     check(
       "refund_recon_hold_resolution_check",
       sql`${t.resolution} IS NULL OR ${t.resolution} IN ('not_this_intent', 'counted_against_intent')`,
+    ),
+    check(
+      "refund_recon_hold_resolution_identity_check",
+      sql`${t.resolutionIdentity} IS NULL OR ${t.resolutionIdentity} IN ('same_as_counted', 'separate')`,
     ),
     check(
       "refund_recon_hold_provider_refund_id_kind_check",

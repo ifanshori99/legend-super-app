@@ -510,6 +510,19 @@ export const refundReconHoldFilterSchema = z.enum(["open", "resolved"]);
  * it is recorded as already returned before the hold closes and the refund
  * limits count it.
  */
+/**
+ * 1055 G1: what a counted hold is when the transaction already has a refund
+ * counted from a hold without a refund id. `same_as_counted`: that very refund
+ * (nothing new is booked). `separate`: another refund (booked too).
+ */
+export const refundReconHoldIdentitySchema = z.enum([
+  "same_as_counted",
+  "separate",
+]);
+export type RefundReconHoldIdentity = z.infer<
+  typeof refundReconHoldIdentitySchema
+>;
+
 export const refundReconHoldResolutionSchema = z.enum([
   "not_this_intent",
   "counted_against_intent",
@@ -532,6 +545,11 @@ export const refundReconHoldViewSchema = z.strictObject({
   resolvedAt: isoDateTimeSchema.nullable(),
   resolution: refundReconHoldResolutionSchema.nullable(),
   resolutionNote: z.string().max(500).nullable(),
+  /**
+   * 1055 G1: counting this open hold needs `identity` (the server works it out:
+   * the hold may be a refund already counted from a hold without a refund id).
+   */
+  needsIdentity: z.boolean(),
 });
 export type RefundReconHoldView = z.infer<typeof refundReconHoldViewSchema>;
 
@@ -540,6 +558,16 @@ export const resolveRefundReconHoldInputSchema = clientInputSchema({
   idempotencyKey: idempotencyKeySchema,
   resolution: refundReconHoldResolutionSchema,
   note: noteSchema,
+  /**
+   * 1055 G1: only with `counted_against_intent` on a hold that names no refund
+   * id. The provider's refund id finance matched it to: an id already booked on
+   * the transaction closes the hold with no new fact; a new id is booked under
+   * it. Refused (422) on any other hold or resolution.
+   */
+  providerRefundId: z.string().trim().min(1).max(100).optional(),
+  /** 1055 G1: required to count a hold whose view says `needsIdentity`. Only
+   * with `counted_against_intent` on a hold that names a refund id (422). */
+  identity: refundReconHoldIdentitySchema.optional(),
 });
 export type ResolveRefundReconHoldInput = z.infer<
   typeof resolveRefundReconHoldInputSchema

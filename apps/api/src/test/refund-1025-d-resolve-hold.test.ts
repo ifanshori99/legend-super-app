@@ -493,11 +493,18 @@ const resolveHold = (
   holdId: string,
   resolution: Resolution,
   note: string = NOTE,
+  // 1055: same or separate refund, when the transaction already has a fact.
+  identity?: "same_as_counted" | "separate",
 ) =>
   client
     .post(`${ADMIN}/refund-recon-holds/${holdId}/resolve`)
     .set(originHeader)
-    .send({ idempotencyKey: key("hold"), resolution, note });
+    .send({
+      idempotencyKey: key("hold"),
+      resolution,
+      note,
+      ...(identity === undefined ? {} : { identity }),
+    });
 
 const listHolds = (client: Client, query = "") =>
   client.get(`${ADMIN}/refund-recon-holds${query}`);
@@ -1305,7 +1312,15 @@ describe("1025-d (3) a hold without a provider refund id can be counted under ho
     await seedProviderRow(intent, "rf_before", 40_000);
     const holdId = await seedHold(intent, { refundId: null, amountIdr: 0 });
 
-    const response = await resolveHold(staff, holdId, "counted_against_intent");
+    // 1055: identitas wajib saat transaksi sudah punya fact (the hold names
+    // no refund id and the transaction already has one on record).
+    const response = await resolveHold(
+      staff,
+      holdId,
+      "counted_against_intent",
+      NOTE,
+      "separate",
+    );
     expect(response.status, JSON.stringify(response.body)).toBe(200);
 
     const rows = await providerRows(intent.id);
@@ -1558,7 +1573,15 @@ describe("1025-d round 2: a hold without a provider refund id and an amount of 0
       providerPaymentRef: y.providerRef,
     });
 
-    const response = await resolveHold(staff, holdId, "counted_against_intent");
+    // 1055: identitas wajib saat transaksi sudah punya fact (the hold names
+    // no refund id and the transaction already has one on record).
+    const response = await resolveHold(
+      staff,
+      holdId,
+      "counted_against_intent",
+      NOTE,
+      "separate",
+    );
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     expect((await holdRow(holdId)).resolved_at).not.toBeNull();
     expect(await providerRows(intent.id), "no new row").toHaveLength(1);
@@ -1569,7 +1592,15 @@ describe("1025-d round 2: a hold without a provider refund id and an amount of 0
     await seedProviderRow(intent, "rf_all", BILL);
     const holdId = await seedHold(intent, { refundId: null, amountIdr: 0 });
 
-    const response = await resolveHold(staff, holdId, "counted_against_intent");
+    // 1055: identitas wajib saat transaksi sudah punya fact (the hold names
+    // no refund id and the transaction already has one on record).
+    const response = await resolveHold(
+      staff,
+      holdId,
+      "counted_against_intent",
+      NOTE,
+      "separate",
+    );
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     expect((await holdRow(holdId)).resolved_at).not.toBeNull();
     expect(await providerRows(intent.id), "no new row").toHaveLength(1);
@@ -1668,7 +1699,15 @@ describe("1025-d round 3: our completed refund of a parked fund is subtracted fr
       providerPaymentRef: intent.providerRef,
     });
 
-    const response = await resolveHold(staff, holdId, "counted_against_intent");
+    // 1055: identitas wajib saat transaksi sudah punya fact (the hold names
+    // no refund id and the transaction already has one on record).
+    const response = await resolveHold(
+      staff,
+      holdId,
+      "counted_against_intent",
+      NOTE,
+      "separate",
+    );
     expect(response.status, JSON.stringify(response.body)).toBe(200);
 
     expect((await holdRow(holdId)).resolved_at).not.toBeNull();
@@ -1695,7 +1734,15 @@ describe("1025-d round 3: counting books at most what is left", () => {
       amountIdr: 30_000,
     });
 
-    const response = await resolveHold(staff, holdId, "counted_against_intent");
+    // 1055: identitas wajib saat transaksi sudah punya fact (the hold names
+    // no refund id and the transaction already has one on record).
+    const response = await resolveHold(
+      staff,
+      holdId,
+      "counted_against_intent",
+      NOTE,
+      "separate",
+    );
     expect(response.status, JSON.stringify(response.body)).toBe(200);
 
     expect((await holdRow(holdId)).resolved_at).not.toBeNull();
@@ -1712,7 +1759,15 @@ describe("1025-d round 3: counting books at most what is left", () => {
       amountIdr: 30_000,
     });
 
-    const response = await resolveHold(staff, holdId, "counted_against_intent");
+    // 1055: identitas wajib saat transaksi sudah punya fact (the hold names
+    // no refund id and the transaction already has one on record).
+    const response = await resolveHold(
+      staff,
+      holdId,
+      "counted_against_intent",
+      NOTE,
+      "separate",
+    );
     expect(response.status, JSON.stringify(response.body)).toBe(200);
 
     expect(

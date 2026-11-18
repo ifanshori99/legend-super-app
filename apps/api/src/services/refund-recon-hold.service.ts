@@ -44,7 +44,11 @@ import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { idempotentPaymentAdminWrite } from "./payment-admin-idempotency.ts";
 import {
+  HOLD_TRANSACTION_CONFLICT_REASON,
   recordProviderRefundInTx,
+  REFUND_MAY_DUPLICATE_ANONYMOUS_REASON,
+  smallestAnonymousFactIdr,
+  unmatchedAnonymousFacts,
   type ProviderRefundIdKind,
 } from "./payment-provider-partial-refund.ts";
 import { alertOwnRefundFailedUnverified } from "./payment-provider-refunded-alert.ts";
@@ -56,6 +60,7 @@ import { lockDepositIntentsExclusive } from "./reservation-deposit-credit.ts";
 type Query = ReturnType<typeof listEndpoint.query.parse>;
 type Params = ReturnType<typeof resolveEndpoint.params.parse>;
 type Input = ReturnType<typeof resolveEndpoint.body.parse>;
+type Identity = NonNullable<Input["identity"]>;
 
 const PROVIDER = "doit";
 
@@ -63,6 +68,22 @@ const notFound = () =>
   new HttpError(404, "NOT_FOUND", "Refund hold not found.");
 const unprocessable = (message: string) =>
   new HttpError(422, "VALIDATION_ERROR", message);
+/** 1055 G1: a hold without a refund id on a transaction that already has a
+ * refund on record may be that same refund. */
+const identityAmbiguous = (
+  message = "This payment transaction already has a provider refund on record; this hold may be the same refund. Give the provider's refund id it matches (or a new one for a separate refund).",
+) => new HttpError(409, "HOLD_IDENTITY_AMBIGUOUS", message);
+const noAnonymousToMatch = () =>
+  unprocessable(
+    "No refund on record for this transaction is left to be the same as; count it as a separate refund or close it as not this intent.",
+  );
+/** 1055 G2: the refund id is on record for another provider transaction. */
+const transactionConflict = () =>
+  new HttpError(
+    409,
+    "HOLD_TRANSACTION_CONFLICT",
+    "This refund id is already on record for another provider transaction; it cannot be counted against this one. Check the provider, then close the hold as not this intent.",
+  );
 
 type HoldRow = typeof refundReconHolds.$inferSelect;
 
@@ -72,7 +93,7 @@ type HoldLabels = {
   outletName: string | null;
 };
 
-function toView(hold: HoldRow, labels: HoldLabels) {
+function toView(hold: HoldRow, labels: HoldLabels, needsIdentity = false) {
   return refundReconHoldViewSchema.parse({
     id: hold.id,
     paymentIntentId: hold.paymentIntentId,
@@ -86,7 +107,68 @@ function toView(hold: HoldRow, labels: HoldLabels) {
     resolvedAt: hold.resolvedAt ? hold.resolvedAt.toISOString() : null,
     resolution: hold.resolution,
     resolutionNote: hold.resolutionNote,
+    needsIdentity,
   });
+}
+
+/**
+ * 1055 G1 (AP1): counting this open hold needs finance's `identity`: it names
+ * a provider refund id and is either a report held as a possible duplicate of
+ * a refund counted without an id, or its transaction has such a refund not yet
+ * matched (`unmatchedAnonymousFacts`). The resolve enforces the same rule.
+ */
+async function holdNeedsIdentity(
+  tx: Tx,
+  tenantId: TenantId,
+  hold: HoldRow,
+): Promise<boolean> {
+  if (hold.resolvedAt || hold.reason === HOLD_TRANSACTION_CONFLICT_REASON)
+    return false;
+  // A hold without a refund id (not a credit hold) asks once its transaction
+  // has any refund on record (it may be that refund).
+  const anonymous =
+    hold.providerRefundId === null &&
+    hold.reason !== "credit_used_before_provider_refund";
+  if (!anonymous && hold.providerRefundIdKind !== "provider") return false;
+  if (hold.reason === REFUND_MAY_DUPLICATE_ANONYMOUS_REASON) return true;
+  let providerPaymentRef = hold.providerPaymentRef;
+  if (!providerPaymentRef) {
+    const [intent] = await tx
+      .select()
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, tenantId),
+          eq(paymentIntents.id, hold.paymentIntentId),
+        ),
+      );
+    if (!intent) return false;
+    providerPaymentRef = await heldPaymentRefOf(tx, tenantId, hold, intent);
+  }
+  if (providerPaymentRef === null) return false;
+  if (anonymous) {
+    const [onTransaction] = await tx
+      .select({ id: paymentProviderRefunds.id })
+      .from(paymentProviderRefunds)
+      .where(
+        and(
+          eq(paymentProviderRefunds.tenantId, tenantId),
+          eq(paymentProviderRefunds.paymentIntentId, hold.paymentIntentId),
+          eq(paymentProviderRefunds.provider, PROVIDER),
+          eq(paymentProviderRefunds.providerPaymentRef, providerPaymentRef),
+        ),
+      )
+      .limit(1);
+    return onTransaction !== undefined;
+  }
+  return (
+    (await unmatchedAnonymousFacts(
+      tx,
+      tenantId,
+      hold.paymentIntentId,
+      providerPaymentRef,
+    )) > 0
+  );
 }
 
 export async function listRefundReconHolds(
@@ -157,8 +239,17 @@ export async function listRefundReconHolds(
       .limit(query.limit + 1);
     const page = rows.slice(0, query.limit);
     const last = page.at(-1);
+    const data = [];
+    for (const row of page)
+      data.push(
+        toView(
+          row.hold,
+          row,
+          await holdNeedsIdentity(tx, context.tenant.tenantId, row.hold),
+        ),
+      );
     return {
-      data: page.map((row) => toView(row.hold, row)),
+      data,
       meta: {
         limit: query.limit,
         nextCursor:
@@ -273,6 +364,13 @@ async function transactionLeftIdr(
   return amount - Number(row?.provider ?? 0) - Number(row?.own ?? 0);
 }
 
+/** What counting a hold decided: the identity finance gave when it was
+ * applied (stored on the hold), and the transaction it was applied to. */
+type CountedHold = {
+  identity: Identity | null;
+  providerPaymentRef: string | null;
+};
+
 /**
  * Records the refund of a hold as a provider refund of its intent, before the
  * hold closes (same transaction). Throws 422, leaving the hold open, whenever
@@ -284,7 +382,12 @@ async function countHold(
   hold: HoldRow,
   intent: IntentRow,
   factAt: Date,
-): Promise<void> {
+  /** 1055 G1: the provider refund id finance matched an anonymous hold to. */
+  matchedRefundId?: string,
+  /** 1055 G1 (AP1): what finance says a named hold is (see `holdNeedsIdentity`). */
+  identity?: Identity,
+): Promise<CountedHold> {
+  const counted: CountedHold = { identity: null, providerPaymentRef: null };
   const tenantId = context.tenant.tenantId;
   const named = hold.providerRefundId;
   // The kind decides, never a prefix of the id (legend-yn1of, 1035). The table
@@ -327,9 +430,12 @@ async function countHold(
     );
     return status;
   };
+  // 1055 G2: a fact of the hold is one of its intent AND of its provider
+  // transaction; the same id on another transaction is not.
   const rowOf = async (
     refundIdKind: ProviderRefundIdKind,
     providerRefundId: string,
+    providerPaymentRef: string,
   ) => {
     const [row] = await tx
       .select({ id: paymentProviderRefunds.id })
@@ -341,8 +447,28 @@ async function countHold(
           eq(paymentProviderRefunds.provider, PROVIDER),
           eq(paymentProviderRefunds.refundIdKind, refundIdKind),
           eq(paymentProviderRefunds.providerRefundId, providerRefundId),
+          eq(paymentProviderRefunds.providerPaymentRef, providerPaymentRef),
         ),
       );
+    return row;
+  };
+  /** Any fact of this kind and id in the tenant (its unique key). */
+  const anyRowOf = async (
+    refundIdKind: ProviderRefundIdKind,
+    providerRefundId: string,
+  ) => {
+    const [row] = await tx
+      .select({ id: paymentProviderRefunds.id })
+      .from(paymentProviderRefunds)
+      .where(
+        and(
+          eq(paymentProviderRefunds.tenantId, tenantId),
+          eq(paymentProviderRefunds.provider, PROVIDER),
+          eq(paymentProviderRefunds.refundIdKind, refundIdKind),
+          eq(paymentProviderRefunds.providerRefundId, providerRefundId),
+        ),
+      )
+      .limit(1);
     return row;
   };
   const notRecorded = () =>
@@ -382,7 +508,7 @@ async function countHold(
     // already on record, so counting adds no refund row. Nothing of ours may
     // be on its way; then the hold closes (legend-ua9ja).
     await assertNoRefundInFlight();
-    return;
+    return counted;
   }
 
   if (named !== null && namedKind === "synthetic_full") {
@@ -402,8 +528,8 @@ async function countHold(
     const leftNow = () =>
       transactionLeftIdr(tx, tenantId, intent, providerPaymentRef);
     let left = await leftNow();
-    if (left <= 0) return;
-    if (!(await rowOf("synthetic_full", named))) {
+    if (left <= 0) return counted;
+    if (!(await rowOf("synthetic_full", named, providerPaymentRef))) {
       // The recorder works out the remainder itself; it needs the amount of
       // the transaction only when no evidence names it.
       const status = await record(
@@ -418,14 +544,15 @@ async function countHold(
     if (left > 0) {
       // Part of the transaction is still not accounted for (a refund of ours
       // that failed since): top it up with exactly that, keyed by the hold.
-      if (!(await rowOf("synthetic_hold", hold.id)))
+      if (!(await rowOf("synthetic_hold", hold.id, providerPaymentRef)))
         await record("synthetic_hold", hold.id, providerPaymentRef, left, true);
-      if (!(await rowOf("synthetic_hold", hold.id))) throw notRecorded();
+      if (!(await rowOf("synthetic_hold", hold.id, providerPaymentRef)))
+        throw notRecorded();
       left = await leftNow();
     }
     // Closed only with the whole transaction accounted for, to the rupiah.
     if (left !== 0) throw notRecorded();
-    return;
+    return counted;
   }
 
   await assertNoRefundInFlight();
@@ -434,12 +561,119 @@ async function countHold(
     throw unprocessable(
       "The provider transaction of this refund is not known; the intent has more than one.",
     );
-  // A hold that names no refund id is counted under its own id.
-  const refundIdKind: ProviderRefundIdKind = namedKind ?? "synthetic_hold";
-  const providerRefundId = named ?? hold.id;
-  if (await rowOf(refundIdKind, providerRefundId)) return;
+  // A hold that names no refund id is counted under its own id, or under the
+  // provider's refund id finance matched it to (1055 G1).
+  const refundIdKind: ProviderRefundIdKind =
+    namedKind ??
+    (matchedRefundId === undefined ? "synthetic_hold" : "provider");
+  const providerRefundId = named ?? matchedRefundId ?? hold.id;
+  // Already on record for this transaction: counted, nothing new (a matched id
+  // binds the hold to that refund).
+  if (await rowOf(refundIdKind, providerRefundId, providerPaymentRef))
+    return counted;
+  // 1055 G2: the same id on record for another transaction (or intent) is not
+  // this hold's refund, and cannot be booked again under that id.
+  if (await anyRowOf(refundIdKind, providerRefundId))
+    throw transactionConflict();
+  if (named !== null) {
+    // 1055 G1 (AP1): a refund counted from a hold without a refund id on this
+    // transaction, not yet matched, may be this very refund; and a report held
+    // as its possible duplicate always is in doubt. Finance says which: never
+    // guessed (a fact too many books the journal twice, one too few lets more
+    // money out).
+    const unmatched = await unmatchedAnonymousFacts(
+      tx,
+      tenantId,
+      intent.id,
+      providerPaymentRef,
+    );
+    if (
+      hold.reason === REFUND_MAY_DUPLICATE_ANONYMOUS_REASON ||
+      unmatched > 0
+    ) {
+      if (identity === undefined)
+        throw identityAmbiguous(
+          "This refund may be the refund already counted on this transaction without a refund id. Say whether it is the same refund or a separate one.",
+        );
+      if (identity === "same_as_counted") {
+        // The same money: the hold matches one such refund (stored on the
+        // hold when it closes). 1055 AV-P1: what the report returned beyond
+        // that refund is booked too, under this hold's id (once), at most what
+        // is left of the transaction: matched against the smallest such refund
+        // (restrictive: never too little on the books).
+        if (unmatched === 0) throw noAnonymousToMatch();
+        const matchedIdr = await smallestAnonymousFactIdr(
+          tx,
+          tenantId,
+          intent.id,
+          providerPaymentRef,
+        );
+        const left = await transactionLeftIdr(
+          tx,
+          tenantId,
+          intent,
+          providerPaymentRef,
+        );
+        const rest = Math.min(hold.amountIdr - matchedIdr, left);
+        if (rest > 0) {
+          if (!(await rowOf("synthetic_hold", hold.id, providerPaymentRef)))
+            await record(
+              "synthetic_hold",
+              hold.id,
+              providerPaymentRef,
+              idr(rest),
+              true,
+            );
+          if (!(await rowOf("synthetic_hold", hold.id, providerPaymentRef)))
+            throw notRecorded();
+        }
+        return { identity, providerPaymentRef };
+      }
+      counted.identity = identity;
+    } else if (identity === "same_as_counted") throw noAnonymousToMatch();
+  }
   let amountIdr = hold.amountIdr;
   if (named === null) {
+    // 1055 G1: a refund already on record for this transaction may be this
+    // very one; finance must say which (or prove a separate refund by its id).
+    // Regression 1055: finance without a refund id says it with `identity`.
+    if (matchedRefundId === undefined) {
+      const { rows: onTransaction } = await tx.execute(sql`SELECT
+          min(p.amount_idr)::text AS smallest
+        FROM payment_provider_refunds p
+        WHERE p.tenant_id = ${tenantId}::uuid
+          AND p.payment_intent_id = ${intent.id}::uuid
+          AND p.provider = ${PROVIDER}
+          AND p.provider_payment_ref = ${providerPaymentRef}`);
+      const smallest = onTransaction[0]?.smallest;
+      const booked = smallest !== null && smallest !== undefined;
+      if (booked && identity === undefined) throw identityAmbiguous();
+      if (identity === "same_as_counted") {
+        // The same money as a refund on record: what the hold names beyond
+        // the smallest such refund is booked (AV-P1), at most what is left.
+        if (!booked) throw noAnonymousToMatch();
+        const left = await transactionLeftIdr(
+          tx,
+          tenantId,
+          intent,
+          providerPaymentRef,
+        );
+        const rest = Math.min(hold.amountIdr - Number(smallest), left);
+        if (rest > 0) {
+          await record(
+            "synthetic_hold",
+            hold.id,
+            providerPaymentRef,
+            idr(rest),
+            true,
+          );
+          if (!(await rowOf("synthetic_hold", hold.id, providerPaymentRef)))
+            throw notRecorded();
+        }
+        return { identity, providerPaymentRef };
+      }
+      if (identity === "separate") counted.identity = identity;
+    }
     // No refund id: at most what is left of the named transaction is counted
     // (restrictive: the hold amount, or all of what is left when it is 0).
     // Nothing left means nothing to count.
@@ -449,7 +683,7 @@ async function countHold(
       intent,
       providerPaymentRef,
     );
-    if (left <= 0) return;
+    if (left <= 0) return counted;
     amountIdr = idr(hold.amountIdr > 0 ? Math.min(hold.amountIdr, left) : left);
   }
   await record(
@@ -461,7 +695,9 @@ async function countHold(
   );
   // Only a refund that is on record may close the hold: an echo of our own
   // refund, an unbound or a delayed one counted nothing.
-  if (!(await rowOf(refundIdKind, providerRefundId))) throw notRecorded();
+  if (!(await rowOf(refundIdKind, providerRefundId, providerPaymentRef)))
+    throw notRecorded();
+  return counted;
 }
 
 export async function resolveRefundReconHold(
@@ -537,6 +773,42 @@ export async function resolveRefundReconHold(
         const synthetic =
           hold.providerRefundId !== null &&
           hold.providerRefundIdKind === "synthetic_full";
+        // 1055 G1: a matched refund id only counts a hold that names none.
+        if (request.providerRefundId !== undefined) {
+          if (request.resolution !== "counted_against_intent")
+            throw unprocessable(
+              "A provider refund id is only given when counting the hold against the intent.",
+            );
+          if (
+            hold.providerRefundId !== null ||
+            hold.reason === "credit_used_before_provider_refund"
+          )
+            throw unprocessable(
+              "This hold already names its refund; no other refund id can be given.",
+            );
+        }
+        // 1055 G1 (AP1): identity only says what a counted named refund is.
+        if (request.identity !== undefined) {
+          if (request.resolution !== "counted_against_intent")
+            throw unprocessable(
+              "Same or separate refund is only chosen when counting the hold against the intent.",
+            );
+          // A provider refund id, or no refund id at all (not a credit hold);
+          // never together with a matched refund id.
+          if (!(
+            hold.providerRefundIdKind === "provider" ||
+            (hold.providerRefundId === null &&
+              hold.reason !== "credit_used_before_provider_refund")
+          ))
+            throw unprocessable(
+              "Same or separate refund can only be chosen for a refund hold, not for this one.",
+            );
+          if (request.providerRefundId !== undefined)
+            throw unprocessable(
+              "Give either the provider's refund id or same/separate, not both.",
+            );
+        }
+        let counted: CountedHold = { identity: null, providerPaymentRef: null };
         if (request.resolution === "not_this_intent") {
           // Our own refund ran while the full refund was recorded: the money
           // may already have gone back, so it is only closed by counting it.
@@ -545,7 +817,15 @@ export async function resolveRefundReconHold(
               "This hold names the payment's own refund; it can only be counted against the intent.",
             );
         } else {
-          await countHold(tx, context, hold, intent, factAt);
+          counted = await countHold(
+            tx,
+            context,
+            hold,
+            intent,
+            factAt,
+            request.providerRefundId,
+            request.identity,
+          );
         }
         const [closed] = await tx
           .update(refundReconHolds)
@@ -554,6 +834,13 @@ export async function resolveRefundReconHold(
             resolvedBy: actor,
             resolution: request.resolution,
             resolutionNote: request.note,
+            resolutionIdentity: counted.identity,
+            // A `same_as_counted` match is counted per transaction: the one it
+            // was matched on is stored when the hold did not name it.
+            ...(counted.identity === "same_as_counted" &&
+            hold.providerPaymentRef === null
+              ? { providerPaymentRef: counted.providerPaymentRef }
+              : {}),
           })
           .where(
             and(

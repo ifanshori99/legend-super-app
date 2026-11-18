@@ -28,6 +28,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import type {
+  RefundReconHoldIdentity,
   RefundReconHoldResolution,
   RefundReconHoldView,
 } from "@starter/shared/payment/admin";
@@ -195,6 +196,14 @@ function ResolveHoldDialog({
   const [idempotencyKey] = React.useState(() => newIdempotencyKey());
   const [noteError, setNoteError] = React.useState<string | undefined>();
   const [choiceError, setChoiceError] = React.useState<string | undefined>();
+  // 1055: the server says when counting needs finance to say whether this is
+  // the refund already counted without a refund id, or a separate one.
+  const [identity, setIdentity] =
+    React.useState<RefundReconHoldIdentity | null>(null);
+  const [identityError, setIdentityError] = React.useState<
+    string | undefined
+  >();
+  const firstIdentityRef = React.useRef<HTMLInputElement>(null);
   const [formError, setFormError] = React.useState<string | undefined>();
   const groupId = React.useId();
   const firstRadioRef = React.useRef<HTMLInputElement>(null);
@@ -206,6 +215,10 @@ function ResolveHoldDialog({
   // Without a provider refund id or an amount there is nothing to count.
   const canCount = hold.providerRefundId !== null && hasAmount;
   const counting = resolution === "counted_against_intent";
+  const askIdentity = counting && hold.needsIdentity;
+  // "The same refund" books at most the difference above the refund already
+  // counted (server side, 1055 AV-P1); the warning stays for plain counting.
+  const books = counting && !(askIdentity && identity === "same_as_counted");
   const warningId = `${groupId}-warning`;
 
   // A server error is announced and focused: it sits above the footer, where
@@ -223,6 +236,11 @@ function ResolveHoldDialog({
       firstRadioRef.current?.focus();
       return;
     }
+    if (askIdentity && !identity) {
+      setIdentityError(t("paymentAdmin.refundHolds.identityRequired"));
+      firstIdentityRef.current?.focus();
+      return;
+    }
     if (note.trim().length < 4) {
       setNoteError(t("paymentAdmin.refundHolds.noteRequired"));
       noteRef.current?.focus();
@@ -231,18 +249,22 @@ function ResolveHoldDialog({
     resolve.mutate(
       {
         holdId: hold.id,
-        body: { idempotencyKey, resolution, note: note.trim() },
+        body: {
+          idempotencyKey,
+          resolution,
+          note: note.trim(),
+          ...(askIdentity && identity ? { identity } : {}),
+        },
       },
       {
         onSuccess: () => {
           toast({
             tone: "success",
-            title:
-              resolution === "counted_against_intent"
-                ? t("paymentAdmin.refundHolds.toastCounted", { amount })
-                : hasAmount
-                  ? t("paymentAdmin.refundHolds.toastClosedAmount", { amount })
-                  : t("paymentAdmin.refundHolds.toastClosed"),
+            title: books
+              ? t("paymentAdmin.refundHolds.toastCounted", { amount })
+              : hasAmount
+                ? t("paymentAdmin.refundHolds.toastClosedAmount", { amount })
+                : t("paymentAdmin.refundHolds.toastClosed"),
           });
           onClose();
         },
@@ -273,6 +295,23 @@ function ResolveHoldDialog({
               ? "paymentAdmin.refundHolds.countedDisabledNoRef"
               : "paymentAdmin.refundHolds.countedDisabledZero",
           ),
+    },
+  ];
+
+  const identityOptions: {
+    value: RefundReconHoldIdentity;
+    label: string;
+    hint: string;
+  }[] = [
+    {
+      value: "same_as_counted",
+      label: t("paymentAdmin.refundHolds.identitySame"),
+      hint: t("paymentAdmin.refundHolds.identitySameHint"),
+    },
+    {
+      value: "separate",
+      label: t("paymentAdmin.refundHolds.identitySeparate"),
+      hint: t("paymentAdmin.refundHolds.identitySeparateHint"),
     },
   ];
 
@@ -356,7 +395,76 @@ function ResolveHoldDialog({
               </p>
             )}
           </fieldset>
-          {counting && (
+          {askIdentity && (
+            <fieldset
+              role="radiogroup"
+              className="grid gap-2"
+              aria-required="true"
+              aria-invalid={identityError ? true : undefined}
+              aria-describedby={
+                identityError
+                  ? `${groupId}-identity-error`
+                  : `${groupId}-identity-hint`
+              }
+            >
+              <legend className="mb-1 text-sm font-medium">
+                {t("paymentAdmin.refundHolds.identity")}
+              </legend>
+              <p
+                id={`${groupId}-identity-hint`}
+                className="text-sm text-muted-foreground"
+              >
+                {t("paymentAdmin.refundHolds.identityHint")}
+              </p>
+              {identityOptions.map((option, index) => {
+                const labelId = `${groupId}-${option.value}-label`;
+                const hintId = `${groupId}-${option.value}-hint`;
+                return (
+                  <label
+                    key={option.value}
+                    className="flex min-h-11 items-start gap-3 rounded-control border border-border p-3 has-[:checked]:border-foreground has-[:disabled]:opacity-70 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring"
+                  >
+                    <input
+                      ref={index === 0 ? firstIdentityRef : undefined}
+                      type="radio"
+                      name={`${groupId}-identity`}
+                      value={option.value}
+                      checked={identity === option.value}
+                      disabled={pending}
+                      aria-labelledby={labelId}
+                      aria-describedby={hintId}
+                      onChange={() => {
+                        setIdentity(option.value);
+                        setIdentityError(undefined);
+                      }}
+                      className="mt-1 size-4 shrink-0 accent-accent-foreground"
+                    />
+                    <span className="grid gap-0.5">
+                      <span id={labelId} className="text-sm font-semibold">
+                        {option.label}
+                      </span>
+                      <span
+                        id={hintId}
+                        className="text-sm text-muted-foreground"
+                      >
+                        {option.hint}
+                      </span>
+                    </span>
+                  </label>
+                );
+              })}
+              {identityError && (
+                <p
+                  id={`${groupId}-identity-error`}
+                  role="alert"
+                  className="text-sm text-danger"
+                >
+                  {identityError}
+                </p>
+              )}
+            </fieldset>
+          )}
+          {books && (
             <p
               id={warningId}
               className="flex items-start gap-2 rounded-control bg-warning-subtle p-3 text-sm text-warning"
@@ -406,13 +514,13 @@ function ResolveHoldDialog({
             </Button>
             <Button
               type="submit"
-              variant={counting ? "destructive" : "default"}
+              variant={books ? "destructive" : "default"}
               loading={pending}
-              aria-describedby={counting ? warningId : undefined}
+              aria-describedby={books ? warningId : undefined}
             >
               {resolution === null
                 ? t("paymentAdmin.refundHolds.confirm")
-                : counting
+                : books
                   ? t("paymentAdmin.refundHolds.confirmCount", { amount })
                   : t("paymentAdmin.refundHolds.confirmClose")}
             </Button>
