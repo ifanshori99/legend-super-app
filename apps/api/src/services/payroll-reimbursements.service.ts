@@ -69,6 +69,8 @@ import {
 } from "../db/schema/payroll.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { entityLock } from "./accounting-bank-matching.ts";
+import { assertCash1102CoversOutflow } from "./accounting-petty-cash.service.ts";
 import { recordAudit } from "./core-audit.ts";
 import {
   auditOutletFor,
@@ -907,6 +909,32 @@ async function assertMonthWithinLimitAtApproval(
   );
 }
 
+/** Unlocked read of the claimant's legal entity; null when unknown. */
+async function claimEntityId(
+  tx: Tx,
+  context: ScopedTenantContext,
+  reimbursementId: ReimbursementId,
+): Promise<string | null> {
+  const [claim] = await tx
+    .select({ legalEntityId: employees.legalEntityId })
+    .from(reimbursements)
+    .innerJoin(
+      employees,
+      and(
+        eq(employees.tenantId, reimbursements.tenantId),
+        eq(employees.id, reimbursements.employeeId),
+      ),
+    )
+    .where(
+      and(
+        eq(reimbursements.tenantId, context.tenant.tenantId),
+        eq(reimbursements.id, reimbursementId),
+      ),
+    )
+    .limit(1);
+  return claim?.legalEntityId ?? null;
+}
+
 export async function payReimbursementCash(
   context: ScopedTenantContext,
   actorUserId: string,
@@ -929,7 +957,31 @@ export async function payReimbursementCash(
       "payroll.reimbursement.pay_cash",
       { actor, reimbursementId },
       async () => {
+        // The cash comes out of petty cash (1102): entity lock BEFORE the claim
+        // lock (1053 order), so the entity is read unlocked first and
+        // re-checked under the claim lock (legend-swn0m).
+        const peekEntityId = await claimEntityId(tx, context, reimbursementId);
+        if (peekEntityId !== null)
+          await entityLock(tx, context.tenant.tenantId, peekEntityId);
         const row = await lockClaim(tx, context, reimbursementId);
+        if (peekEntityId !== null) {
+          const [claimant] = await tx
+            .select({ legalEntityId: employees.legalEntityId })
+            .from(employees)
+            .where(
+              and(
+                eq(employees.tenantId, context.tenant.tenantId),
+                eq(employees.id, row.employeeId),
+              ),
+            )
+            .limit(1);
+          if (claimant?.legalEntityId !== peekEntityId)
+            throw new HttpError(
+              409,
+              "PAYROLL_REIMBURSEMENT_ENTITY_CHANGED",
+              "Badan usaha karyawan berubah saat klaim diproses. Coba lagi.",
+            );
+        }
         // Separation of duties: nobody pays their own claim.
         const [own] = await tx
           .select({ id: employees.id })
@@ -946,6 +998,16 @@ export async function payReimbursementCash(
         // A payroll payout is paid by the run lock, never by hand.
         if (row.payout !== "cash")
           throw new PayrollError("PAYROLL_INVALID_TRANSITION");
+        // Only an approved claim pays out; any other status is a plain invalid
+        // transition (moveClaim answers it). Under the entity lock and before
+        // the paid event, so the amount is not counted twice.
+        if (row.status === "approved" && peekEntityId !== null)
+          await assertCash1102CoversOutflow(
+            tx,
+            context.tenant.tenantId,
+            peekEntityId,
+            Number(row.approvedAmountIdr ?? row.amountIdr),
+          );
         return moveClaim(tx, context, actor, now, row, "pay", { paidAt: now });
       },
     );

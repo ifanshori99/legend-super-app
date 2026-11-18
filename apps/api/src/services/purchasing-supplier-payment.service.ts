@@ -54,7 +54,10 @@ import { purchaseInvoices } from "../db/schema/purchasing.ts";
 import { supplierPayments } from "../db/schema/supplier-payments.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
-import { paySupplierInvoiceInTransaction } from "./accounting-ap.service.ts";
+import {
+  lockEntityOfPayable,
+  paySupplierInvoiceInTransaction,
+} from "./accounting-ap.service.ts";
 import { uniqueViolation } from "./accounting-shared.ts";
 import {
   outletTarget,
@@ -368,6 +371,8 @@ const POSTING_REFUSAL_CODES: ReadonlySet<string> = new Set([
   "ACCOUNT_INACTIVE",
   "ACCOUNT_NOT_POSTABLE",
   "ACCOUNT_ENTITY_MISMATCH",
+  // Cash 1102 too small for a payment credited to petty cash (legend-swn0m).
+  "PETTY_CASH_GL_INSUFFICIENT",
 ]);
 
 function postingRefusalCode(error: unknown): string | null {
@@ -444,6 +449,8 @@ export async function settleSupplierPaymentForApproval(
     else if (requesterDecided)
       decision = { status: "rejected", note: "self_approval" };
     else {
+      // Entity lock first, then the open item lock (legend-swn0m).
+      await lockEntityOfPayable(tx, tenantId, row.supplierInvoiceId);
       // The balance is re-read under the open item lock: a debit note or
       // another payment may have reduced it since the request.
       const [item] = await tx

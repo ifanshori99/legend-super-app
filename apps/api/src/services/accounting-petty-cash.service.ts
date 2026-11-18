@@ -719,6 +719,33 @@ export async function assertBankCreditCoveredBy1102(
   );
 }
 
+/**
+ * Cash outflow paid out of petty cash (1102) that is not a petty purchase: an
+ * approved cash kasbon or cash reimbursement (legend-swn0m). Refuses an
+ * `amountIdr` above the cash left after the reserve of approved cash payroll
+ * and other credits not on the GL yet (PETTY_CASH_GL_INSUFFICIENT), the same
+ * rule as a petty purchase. Skipped when accounting is off or the entity has
+ * no petty_cash mapping. Call under `entityLock`, BEFORE the outbox event of
+ * the outflow is appended, so the amount is not counted twice.
+ */
+export async function assertCash1102CoversOutflow(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  legalEntityId: string,
+  amountIdr: number,
+): Promise<void> {
+  if (!(await accountingEnabled(tx, tenantId))) return;
+  const cash = await availableCash1102(tx, tenantId, legalEntityId);
+  if (cash === null || amountIdr <= cash.availableIdr) return;
+  const { glIdr, pendingCreditIdr, availableIdr } = cash;
+  const shortIdr = amountIdr - Math.max(0, availableIdr);
+  throw new AccountingError(
+    "PETTY_CASH_GL_INSUFFICIENT",
+    `Kas kecil di pembukuan tidak cukup untuk kas keluar ini. Saldo tersedia ${formatRupiah(Math.max(0, availableIdr))} setelah dikurangi cadangan gaji tunai dan kas keluar yang belum dijurnal, jumlah ${formatRupiah(amountIdr)}, kurang ${formatRupiah(shortIdr)}.`,
+    { glIdr, pendingCreditIdr, availableIdr, shortIdr, deltaIdr: -amountIdr },
+  );
+}
+
 // ------------------------------------------------------------------- reads
 
 /** Funds of one legal entity (optionally one outlet) in the caller's outlets. */
