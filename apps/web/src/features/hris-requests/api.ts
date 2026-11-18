@@ -384,7 +384,6 @@ export async function postOvertimeRequest(
     date: string;
     minutes: number;
     reason: string;
-    dayType?: OvertimeRequest["dayType"];
   },
   idempotencyKey: string,
 ) {
