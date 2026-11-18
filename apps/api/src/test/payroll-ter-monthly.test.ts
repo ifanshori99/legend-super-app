@@ -389,15 +389,12 @@ function totalsFor(slips: Slip[]) {
   };
 }
 
-// Pinned TER table (PAYR-02). Own id/version/date: files run one after the
-// other, but a version must not start on the same date as another file's.
+// Pinned TER table (PAYR-02). Keep its date before the kit's reserved
+// 1900-1949 range so later simulations resolve the kit's own TER table, while
+// this file's snapshots continue to pin this table explicitly by id/version.
 const TER_ID = randomUUID();
 const TER_VERSION = 9200;
-// 1979: below the 1980-2019 range payroll-simulate-kit picks its dates from
-// (random first-of-month, chosen before this file publishes). A date inside that
-// range can collide with a kit file's row and raise 23505 on
-// statutory_rates_tenant_type_published_from_key (batch84 full run, Retro 43).
-const TER_FROM = "1979-01-01";
+const TER_FROM = "1898-01-01";
 
 async function ensureTerTable() {
   await asTenant(async (conn) => {
