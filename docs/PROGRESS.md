@@ -7097,6 +7097,7 @@ Cabang worktree `ghostex/980-refund-sisa-4-kartu` dari `9788dc422` (958 + 967). 
 - Bukti ronde 6: grup 106 berkas refund/order-issues/recovery: 1613 lulus, 0 gagal; typecheck api hijau.
 
 ## 1020 SO recon ronde 2 (17 Nov 2026, cabang ghostex/1020-so-recon-ronde-2-fix, 88fd5d7c8)
+
 - F1 legend-qbsbr: refund dana parkir transaksi LAIN tidak lagi dihitung sebagai refund transaksi utama; refund dana milik transaksi sendiri dibandingkan dengan nilai transaksi (greatest evidence dan tagihan), bukan tagihan saja (temuan architect: tagihan 50k dibayar 150k).
 - F2 legend-svwdz: kredit DP pindahan dibatasi nilai bersih intent sumber (pool, alokasi created_at,id, floor 0), snapshot refund provider per remainder (migrasi 0636), flag recon tercatat `reservation_credit_recon_flags` (migrasi 0637) diperbarui saat refund provider dicatat. Guard refund tetap pandangan gross.
 - F3 legend-6jdy1: refund.succeeded dengan reference yang menyebut intent lain = ignored REFERENCE_MISMATCH, tanpa tulis refund/stamp/audit/alert.
@@ -7104,12 +7105,13 @@ Cabang worktree `ghostex/980-refund-sisa-4-kartu` dari `9788dc422` (958 + 967). 
 - Bukti: 3 berkas test 1020 (38 test) + 13 berkas 958/967/980/1009/1016/registry (315 test) lulus; gagal-dulu di base 19 dari 24 (sisanya kontrol); typecheck api, eslint, prettier hijau; db:generate kosong. Review architect 3 putaran (6 temuan nyata dibetulkan).
 
 ## 1028 Kredit DP satu intent dua reservasi setelah refund provider (18 Nov 2026, cabang ghostex/3d4eb7b8, legend-mez2n)
+
 - Akar masalah: bukan finalize (1020 sengaja mencetak remainder gross, test ronde 3 T2 mengharuskan 45k+45k). Cek apply kredit memakai `depositInUse` dengan kredit tertahan GROSS, sedangkan `paid` sudah net refund provider, sehingga kredit sah ditolak 409 CUSTOMER_CREDIT_NOT_AVAILABLE.
 - Perbaikan: helper `creditProviderCutOfIntent` (potongan refund provider sekali per intent = kredit - pool 1020); `depositInUseOfIntent` / `refundableBalance` opsi `netCreditProviderCut` (hanya jalur apply kredit, jalur refund payer tetap gross); `applyReservationCustomerCredit` dibatasi sisa bersih per intent (sisa intent - potongan intent itu), jadi potongan satu intent tidak mengunci kredit intent lain dan tidak bisa membayar lebih dari net. Tanpa migrasi (db:generate kosong).
 - Bukti: berkas baru `reservation-deposit-dp-shared-intent-refund.test.ts` 14 test; gagal-dulu di base 8 dari 14 (409 pada apply sah), 14/14 lulus setelah fix; 6 berkas 1020 + remainder + 958/967 (82 test) lulus; typecheck api 0 error; eslint dan prettier hijau. Review architect (xhigh): setuju setelah satu temuan (batas per intent), dibetulkan.
 - Risiko sisa (di luar cakupan): kredit yang sudah dipakai sebelum refund provider susulan bisa melebihi pool (hanya ditandai recon); pencatat refund provider tidak mengambil lock intent deposit; refund payer pending memblokir apply kredit sepenuhnya (restriktif).
 - Biaya sesi (session-usage, belum termasuk subagent baru setelah angka ini): total 7365k unit, subagent 8.
-**1013 Jurnal otomatis dan breakfast memakai net setelah refund provider (legend-tlm3h, 17 Nov 2026, base daf8ace2a, tingkat K)**
+  **1013 Jurnal otomatis dan breakfast memakai net setelah refund provider (legend-tlm3h, 17 Nov 2026, base daf8ace2a, tingkat K)**
 
 - Sudah: event baru `payment.provider_refunded` (satu per baris `payment_provider_refunds` yang baru direkam, kunci jurnal `aj:provider-refund:<id>`), rule Dr customer_deposit / Cr gateway_clearing. Penerimaan tetap bruto, jadi clearing = net dan pendapatan = net. Tanpa migrasi (rule ada di kode, `db:generate` kosong).
 - Cap refund provider hanya terhadap receipt (refund kita completed + refund provider <= receipt); `intentBackedAt` menghitung refund provider sebagai payout sehingga payout kita berikutnya tetap dibatasi. `sessionDepositAt`, `assertForfeitWithinIntent`, share sale QR memakai net pada waktu paid (refund provider setelah jurnal paid tidak mengubah jurnal lama).
@@ -7120,6 +7122,7 @@ Cabang worktree `ghostex/980-refund-sisa-4-kartu` dari `9788dc422` (958 + 967). 
 - Bukti: 72 berkas / 1451 test terarah lulus (akuntansi, refund, breakfast, 967, 980, 1009, qr-order); tes kontrak root text/events/accounting + data-import-registry lulus; typecheck api, eslint, prettier hijau.
 
 ## 1025 Refund provider, sisa celah uang (18 Nov 2026, cabang ghostex/5e374ac9, base 1020 c15dd03aa + merge 1013 c07bf2ca3)
+
 - Merge 1013: konflik di payment-net-allocated-sql, payment-provider-partial-refund (import flagCreditReconForIntent + appendPaymentEvent keduanya dipakai), payment-provider-refunded-foreign-sql (predikat `onlyIf` 1013 ditambahkan ke SQL terkelompok 1016), PROGRESS.
 - A legend-ra4lu: refund provider tanpa evidence_id pada intent yang punya fund terbuka (resolution NULL) memblokir refund/kredit fund (`fundBlockedSql`).
 - B legend-gjt5q: refund provider penuh menulis `payment_provider_refunds` (`payment:<ref>`, sisa = bayar dikurangi refund kita yang selesai dikurangi baris tercatat) sekali, dijurnal sekali lewat `payment.provider_refunded`. Refund kita yang masih jalan: webhook gagal/retry sampai 15 menit lalu dipaksa dengan hold + alert finance. Jalur poller `markProviderAnswered` belum menulis baris (bead).
@@ -7237,3 +7240,11 @@ Cabang worktree `ghostex/980-refund-sisa-4-kartu` dari `9788dc422` (958 + 967). 
 - Test: refund-1077-r1 (13), r2 (3), r3 (2 + 1 todo). Merah di 6c0055dcb: r1 9 dari 13, r2 3 dari 3, r3 2 dari 2.
 - Review: architect xhigh sekali: tidak ada P0-P2; dua usul P3 (runbook count R2, max evidence) sudah dikerjakan.
 - Langkah berikut: merge train; sebelum rilis, second opinion ronde 9 atas area ini.
+
+**1090 refund ronde 9 (SO 1088): tiga temuan ditutup (18 Nov 2026, cabang ws/1072-refund-ronde6-q45, base 306010aba, tingkat K uang)**
+
+- Sudah: R1 (P1) hold mismatch terbuka dengan identitas sama dinaikkan `greatest(lama, baru)` di bawah kunci intent dan DP (tidak pernah turun); R2 (P1) kind hold baru `invalid_report` (migrasi 0696 mengubah check constraint dan kind hold konflik lama berawalan `invalid:`/`invalid-h:`), jadi ID penyedia literal tidak pernah menyerap placeholder; R3 (P2) identitas fallback tanpa refund ID tetap `refund:<R>` (hold lama di bawah `invalid:<providerRef>` tetap dikenali lewat `legacyProviderRefundIds`). Invarian I11 di `docs/briefs/1072-invarian.md`.
+- Review architect xhigh: tidak ada P0/P1; satu P2 (hold mismatch yang sudah di-resolve menelan laporan sama-identitas yang lebih besar) diperbaiki lewat aturan I7 pintu konflik + test `refund-1088-r1b`; P3 (alert tidak dikirim ulang saat naik, hold kedua saat `providerRef` sudah ada pada callback refusal) tercatat, keduanya restriktif.
+- Test: refund-1088-r1 (16, termasuk kredit DP dan dua urutan kunci dengan barrier), r1b (3), r2 (9), r3 (7); `it.todo` DP di refund-1077-r2 diganti. Merah di 306010aba: r1 12, r2 3, r3 6, r1b 3 (perbaikan dimatikan).
+- Runbook: `docs/deployment.md` memuat aturan hold laporan lebih besar sesudah resolve dan hold laporan tak terbaca.
+- Langkah berikut: merge train; second opinion ronde 10 atas area ini sebelum rilis.

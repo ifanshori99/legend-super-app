@@ -131,6 +131,15 @@ Invarian: (a) hold yang diwajibkan I8 tidak boleh gagal karena panjang kunci; (b
 - R3 (P2): gerbang `synthetic` di resolver (`refund-recon-hold.service.ts`) tidak berlaku untuk hold beralasan `HOLD_TRANSACTION_CONFLICT`; `not_this_intent` diizinkan (izin `payment.reconcile` + audit sama seperti resolve lain), `counted_against_intent` tetap 409.
 - Test: `refund-1077-r1-invalid-long-id`, `refund-1077-r2-mismatch-unreadable-amount`, `refund-1077-r3-synthetic-full-conflict-resolve`.
 
+### I11. Identitas bukti: domain sendiri untuk ID buatan, nominal hold terbuka tidak turun, identitas fallback tetap (SO 1088 ronde 9)
+
+Invarian: (a) hold terbuka dengan identitas sama selalu menahan `greatest(lama, baru)`; satu laporan kecil tidak boleh menelan laporan yang lebih besar, karena kredit DP hanya dipotong nominal hold terbuka; (b) ID yang kita buat untuk laporan tak terbaca (`invalid:<id>`, `invalid-h:<sha256>`) hidup di domain dedup sendiri, tidak pernah sama dengan ID penyedia literal apa pun; (c) laporan tanpa refund ID memakai identitas tetap `refund:<R>`, bukan `providerRef` yang baru terisi sesudah sukses.
+
+- R1 (P1): `holdRefundReferenceMismatch` (`payment-webhook.service.ts`) hanya INSERT dengan `onConflictDoNothing`; hold Y/T2 Rp30.000 menelan laporan Y/T2 tak terbaca (Rp100.000). Fix: bila bentrok, hold TERBUKA dengan kunci/event yang sama dinaikkan `greatest(nominal, baru)` di bawah kunci intent dan deposit-intent yang sudah dipegang, satu alert saat naik. Tidak pernah turun; alert kunci yang sama tidak dikirim ulang saat nominal naik. Hold yang sudah di-resolve tidak dibuka lagi, tetapi laporan sama identitas yang LEBIH BESAR sesudahnya lewat aturan I7 pintu konflik (`fileTransactionConflictHoldInTx`): satu hold baru sebesar laporan bila di atas nominal terbesar yang pernah ditahan untuk kunci itu (review architect ronde 9, P2; test `refund-1088-r1b-resolved-hold-larger-report`).
+- R2 (P1): kind baru `invalid_report` (cek `refund_recon_hold_provider_refund_id_kind_check`, migrasi 0696). Hold laporan tak terbaca memakai kind itu (`fileOwnRefundSurplusHoldInTx` dengan `invalidReport`), sehingga ID penyedia literal `invalid:...`/`invalid-h:...` tidak pernah cocok dengan placeholder dan membuka hold baru. Migrasi mengubah kind hold konflik lama berawalan itu menjadi `invalid_report`, jadi laporan tak terbaca yang sama tetap dikenali (dedup) dan ID literal tidak menyerapnya.
+- R3 (P2): identitas fallback `facts.refundId ?? refund:<R>`; hold lama yang tersimpan di bawah `invalid:<providerRef>` tetap dikenali lewat `legacyProviderRefundIds`. Retry stored event yang sama atau envelope baru sesudah `providerRef` terisi tidak membuka hold kedua.
+- Test: `refund-1088-r1-mismatch-hold-raise`, `refund-1088-r2-invalid-id-alias`, `refund-1088-r1b-resolved-hold-larger-report`, `refund-1088-r3-no-refund-id-identity`.
+
 ### Risiko dan urutan
 
 - Hold I8 beralasan CONFLICT, jadi hanya `not_this_intent` yang bisa menutupnya. Bila Y ternyata refund nyata, dana tertahan sampai keputusan finance (restriktif, sesuai CTO). Perlu satu baris di runbook.

@@ -104,7 +104,7 @@ export const refundReconHolds = pgTable(
     ),
     check(
       "refund_recon_hold_provider_refund_id_kind_check",
-      sql`(${t.providerRefundId} IS NULL) = (${t.providerRefundIdKind} IS NULL) AND (${t.providerRefundIdKind} IS NULL OR ${t.providerRefundIdKind} IN ('provider', 'synthetic_full', 'synthetic_hold'))`,
+      sql`(${t.providerRefundId} IS NULL) = (${t.providerRefundIdKind} IS NULL) AND (${t.providerRefundIdKind} IS NULL OR ${t.providerRefundIdKind} IN ('provider', 'synthetic_full', 'synthetic_hold', 'invalid_report'))`,
     ),
   ],
 );

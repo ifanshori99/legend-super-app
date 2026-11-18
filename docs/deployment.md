@@ -724,6 +724,15 @@ unknown. A report larger than any amount already held for the same provider
 refund opens a new hold even after earlier holds were closed. Check the
 provider dashboard before closing any of them.
 
+Since refund round 9 (1090), a hold of an unreadable report (the made-up
+`invalid:` id) is kept apart from provider refund ids: a real provider refund id
+that looks the same is a new hold, never taken for it. An open hold of a
+mismatching report (REFERENCE_MISMATCH) is raised, never lowered, when a larger
+report of the same provider refund and transaction arrives; if finance already
+closed it, a larger report of the same refund opens one new hold (closes only
+with `not_this_intent`). Migration 0696 must run before the new build starts
+(stop, migrate, start): it adds the `invalid_report` kind.
+
 A refund that is filed or `approved` but not yet sent is held too when a
 provider refund report arrives on the same transaction (1077 K1, legend-3aign):
 the report could be an echo of that refund, so the intent holds the reported

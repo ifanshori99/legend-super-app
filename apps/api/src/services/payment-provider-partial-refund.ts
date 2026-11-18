@@ -88,6 +88,16 @@ export const PROVIDER_REFUND_ID_KINDS = [
 export type ProviderRefundIdKind = (typeof PROVIDER_REFUND_ID_KINDS)[number];
 
 /**
+ * 1090 P1-2: the kinds a recon hold may carry. `invalid_report` is the hold of
+ * a signed success whose amount or payment id cannot be read: its id is one we
+ * make up (`invalid:<id>`, or `invalid-h:<sha256>` for a long id), never the
+ * provider's own. The kind keeps that domain apart from `provider`, so a
+ * provider refund id that happens to equal the made-up id is never taken for
+ * the same evidence. It is a hold kind only: no provider fact carries it.
+ */
+export type HoldRefundIdKind = ProviderRefundIdKind | "invalid_report";
+
+/**
  * 1055 G1: reason of the hold filed when the provider reports a refund id on a
  * transaction that has a refund finance counted from a hold without a refund
  * id (a `synthetic_hold` fact) not yet matched: the report may be that refund.
@@ -233,7 +243,7 @@ export async function unmatchedAnonymousFacts(
  * kept as it was (stable keys); a synthetic one carries its kind after a NUL,
  * which no stored id can contain, so the two never meet. */
 export function providerRefundKey(
-  kind: ProviderRefundIdKind,
+  kind: HoldRefundIdKind,
   providerRefundId: string,
 ): string {
   return kind === "provider"
@@ -1330,9 +1340,17 @@ export async function fileOwnRefundSurplusHoldInTx(
     providerRefundId: string;
     providerPaymentRef: string | null;
     amountIdr: number;
+    /** 1090 P1-2: the report is an unreadable one and `providerRefundId` is
+     * the id we made up for it (kind `invalid_report`), not the provider's. */
+    invalidReport?: boolean;
+    /** 1090 P2: ids an earlier build gave the same report (they depended on
+     * state that changed later). A hold already stored under one of them is
+     * the hold of this report: no second one is filed. */
+    legacyProviderRefundIds?: readonly string[];
   },
   now: Date,
 ): Promise<void> {
+  const { invalidReport, ...rest } = input;
   await tx
     .select({ id: paymentIntents.id })
     .from(paymentIntents)
@@ -1346,7 +1364,10 @@ export async function fileOwnRefundSurplusHoldInTx(
   await fileTransactionConflictHoldInTx(
     tx,
     context,
-    { ...input, providerRefundIdKind: "provider" },
+    {
+      ...rest,
+      providerRefundIdKind: invalidReport ? "invalid_report" : "provider",
+    },
     now,
   );
 }
@@ -1363,24 +1384,50 @@ export async function fileOwnRefundSurplusHoldInTx(
  * case for finance). The caller holds the intent row lock; this takes the
  * deposit-intent locks exclusive.
  */
-async function fileTransactionConflictHoldInTx(
+export async function fileTransactionConflictHoldInTx(
   tx: Tx,
   context: ScopedTenantContext,
   input: {
     intentId: string;
     outletId: string;
     providerRefundId: string;
-    providerRefundIdKind: ProviderRefundIdKind;
+    providerRefundIdKind: HoldRefundIdKind;
     providerPaymentRef: string | null;
     amountIdr: number;
     /** The caller tells finance itself (no alert from here). */
     silent?: boolean;
+    /** 1090 P2: older ids of the same report (see `fileOwnRefundSurplusHoldInTx`). */
+    legacyProviderRefundIds?: readonly string[];
   },
   now: Date,
 ): Promise<void> {
   const tenantId = context.tenant.tenantId;
-  const { intentId, providerRefundId, providerRefundIdKind } = input;
+  const { intentId, providerRefundIdKind } = input;
   const providerPaymentRef = input.providerPaymentRef;
+  let providerRefundId = input.providerRefundId;
+  if (input.legacyProviderRefundIds?.length) {
+    // An id of an earlier build already holds this report: keep its identity.
+    const stored = await tx
+      .select({ providerRefundId: refundReconHolds.providerRefundId })
+      .from(refundReconHolds)
+      .where(
+        and(
+          eq(refundReconHolds.tenantId, tenantId),
+          eq(refundReconHolds.paymentIntentId, intentId),
+          eq(refundReconHolds.providerRefundIdKind, providerRefundIdKind),
+          inArray(refundReconHolds.providerRefundId, [
+            providerRefundId,
+            ...input.legacyProviderRefundIds,
+          ]),
+          sql`coalesce(${refundReconHolds.providerPaymentRef}, '') = ${providerPaymentRef ?? ""}`,
+        ),
+      );
+    const ids = new Set(stored.map((row) => row.providerRefundId));
+    if (!ids.has(providerRefundId)) {
+      const legacy = input.legacyProviderRefundIds.find((id) => ids.has(id));
+      if (legacy !== undefined) providerRefundId = legacy;
+    }
+  }
   const refundKey = providerRefundKey(providerRefundIdKind, providerRefundId);
   await lockDepositIntentsExclusive(tx, tenantId, intentId);
   const holdEventId = (suffix: string): string => {

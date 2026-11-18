@@ -25,11 +25,11 @@
 //
 // Assumptions (the brief does not fix them):
 //   - T2 is a payment-code intent of the same tenant and integration (the harness'
-//     DOIT tenant). The DP credit read / transfer of a reservation-linked T2 needs the
-//     reservation and session fixtures of the seeded tenant, which this webhook door
-//     cannot use (see header of refund-1075-r1-hold-atomic-race); "DP credit zero,
-//     apply Rp70.000 rejected" is observed through the refund of Rp70.000 on T2 being
-//     refused, the same hold guard the credit apply reads. DP credit is it.todo.
+//     DOIT tenant). Here "DP credit zero, apply Rp70.000 rejected" is observed through
+//     the refund of Rp70.000 on T2 being refused, the same hold guard the credit apply
+//     reads. The DP credit read / transfer of a reservation-linked T2 and both lock
+//     orders are covered in refund-1088-r1-mismatch-hold-raise.test.ts
+//     (1088-r1-11 .. 1088-r1-15).
 //   - A hold of Rp30.000 (R1's amount) leaves Rp70.000 of T2 open, so the refund of
 //     Rp70.000 is accepted today: that is the red.
 //
@@ -175,9 +175,5 @@ describe("R2 (P1) refund of another transaction with an unreadable amount holds 
         `${id}: T1 refund of the rest completes: ${JSON.stringify(restApproved.body)}`,
       ).toBe(200);
     },
-  );
-
-  it.todo(
-    "1077-r2-04 DP credit read and transfer of a reservation-linked T2 are zero after the report, the credit apply of Rp70.000 is rejected, both lock orders (needs reservation and session fixtures in the DOIT-integration tenant; see header)",
   );
 });

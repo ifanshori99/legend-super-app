@@ -89,6 +89,7 @@ import {
 } from "./payment-refund.service";
 import {
   fileOwnRefundSurplusHoldInTx,
+  fileTransactionConflictHoldInTx,
   recordProviderRefundInTx,
   type ProviderRefundIdKind,
 } from "./payment-provider-partial-refund";
@@ -903,7 +904,85 @@ async function holdRefundReferenceMismatch(
       // a worker retry or the provider resending the refund adds no second hold.
       .onConflictDoNothing()
       .returning({ id: refundReconHolds.id });
-    if (!held) return;
+    if (!held) {
+      // 1090 P1-1: the same report again (same stored event) or another report
+      // of the same provider refund id and transaction. An OPEN hold of that
+      // identity is never lowered, and it is raised to the larger amount: a
+      // later report that names the whole payment (amount unreadable, 1077 R2)
+      // must not be swallowed by a smaller hold, or the deposit credit (which
+      // is limited by the open hold amount) would still spend the difference.
+      // Done under the intent row and deposit-intent locks taken above. A
+      // hold finance already resolved is not touched.
+      const raised = await tx
+        .update(refundReconHolds)
+        .set({
+          amountIdr: sql`greatest(${refundReconHolds.amountIdr}, ${refund.amountIdr})`,
+        })
+        .where(
+          and(
+            eq(refundReconHolds.tenantId, context.tenant.tenantId),
+            eq(refundReconHolds.paymentIntentId, intent.id),
+            isNull(refundReconHolds.resolvedAt),
+            sql`${refundReconHolds.amountIdr} < ${refund.amountIdr}`,
+            refund.providerRefundId === null
+              ? eq(refundReconHolds.webhookEventId, row.id)
+              : or(
+                  eq(refundReconHolds.webhookEventId, row.id),
+                  and(
+                    eq(refundReconHolds.providerRefundIdKind, "provider"),
+                    eq(
+                      refundReconHolds.providerRefundId,
+                      refund.providerRefundId,
+                    ),
+                    sql`coalesce(${refundReconHolds.providerPaymentRef}, '') = ${refund.providerPaymentRef ?? ""}`,
+                  ),
+                ),
+          ),
+        )
+        .returning({ id: refundReconHolds.id });
+      if (raised.length === 0) {
+        // Nothing open to raise. A hold of this provider refund id that finance
+        // already resolved is not reopened, but a larger report of the same
+        // identity is new evidence (the deposit credit and refunds of the
+        // transaction were open again): it goes through the one rule of the
+        // conflict door (1072 I7), which opens a hold for the full reported
+        // amount when it is above the largest ever held for the key.
+        if (refund.providerRefundId === null) return;
+        const sameKey = and(
+          eq(refundReconHolds.tenantId, context.tenant.tenantId),
+          eq(refundReconHolds.paymentIntentId, intent.id),
+          eq(refundReconHolds.providerRefundIdKind, "provider"),
+          eq(refundReconHolds.providerRefundId, refund.providerRefundId),
+          sql`coalesce(${refundReconHolds.providerPaymentRef}, '') = ${refund.providerPaymentRef ?? ""}`,
+        );
+        const [open] = await tx
+          .select({ id: refundReconHolds.id })
+          .from(refundReconHolds)
+          .where(and(sameKey, isNull(refundReconHolds.resolvedAt)))
+          .limit(1);
+        if (open) return;
+        const [resolved] = await tx
+          .select({ id: refundReconHolds.id })
+          .from(refundReconHolds)
+          .where(and(sameKey, isNotNull(refundReconHolds.resolvedAt)))
+          .limit(1);
+        if (!resolved) return;
+        await fileTransactionConflictHoldInTx(
+          tx,
+          context,
+          {
+            intentId: intent.id,
+            outletId: intent.outletId,
+            providerRefundId: refund.providerRefundId,
+            providerRefundIdKind: "provider",
+            providerPaymentRef: refund.providerPaymentRef ?? null,
+            amountIdr: refund.amountIdr,
+          },
+          now,
+        );
+        return;
+      }
+    }
     await alertRefundReferenceMismatch(
       tx,
       context,
@@ -1823,9 +1902,19 @@ async function processRefundEvent(
               // Own key: the stand-in amount was never reported, so it must
               // not count as evidence already held for the real key (I7
               // `maxHeld`) and swallow a later readable report (1075 P1).
+              // 1090 P1-2: made-up id, own kind (never a provider id).
+              // 1090 P2: no refund id in the event: the identity is the
+              // refund's own key, fixed, not a `providerRef` that a later
+              // success fills in (a replay must find the same hold). Holds an
+              // earlier build stored under that `providerRef` still count.
               providerRefundId: invalidReportHoldRefundId(
-                facts.refundId ?? refund.providerRef ?? `refund:${refund.id}`,
+                facts.refundId ?? `refund:${refund.id}`,
               ),
+              invalidReport: true,
+              legacyProviderRefundIds:
+                facts.refundId === undefined && refund.providerRef
+                  ? [invalidReportHoldRefundId(refund.providerRef)]
+                  : [],
               providerPaymentRef: paymentRef,
               amountIdr: Number(intent.amountIdr),
             },
@@ -1919,10 +2008,13 @@ async function processRefundEvent(
             {
               intentId: refusal.intent.id,
               outletId: refusal.intent.outletId,
-              providerRefundId:
-                facts.refundId ??
-                refusal.refund.providerRef ??
-                `refund:${refusal.refund.id}`,
+              // 1090 P2: fixed identity when the event names no refund id
+              // (see the unreadable-report hold above).
+              providerRefundId: facts.refundId ?? `refund:${refusal.refund.id}`,
+              legacyProviderRefundIds:
+                facts.refundId === undefined && refusal.refund.providerRef
+                  ? [refusal.refund.providerRef]
+                  : [],
               providerPaymentRef: holdPaymentRef,
               amountIdr: facts.amountIdr ?? Number(refusal.intent.amountIdr),
             },
