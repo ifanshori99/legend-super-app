@@ -393,7 +393,8 @@ async function openBill(intent: { status: string; amountIdr?: number } | null) {
   // The way the real flow links them: the order points at its payment link (and
   // intent); the intent never carries the order id. A settled intent has evidence.
   await owner.query(
-    `UPDATE orders SET payment_link_id = $3, payment_intent_id = $4
+    `UPDATE orders SET payment_link_id = $3, payment_link_token_sealed = 'sealed-test',
+            payment_intent_id = $4
       WHERE tenant_id = $1 AND id = $2`,
     [tenantId(), orderUuid, linkId, intentId],
   );

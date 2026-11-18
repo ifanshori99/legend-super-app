@@ -63,9 +63,9 @@ async function openBillWithIntent(status: string) {
   );
   await owner.query(
     `INSERT INTO payment_intents
-       (id, tenant_id, outlet_id, payment_link_id, order_id, method, provider,
+       (id, tenant_id, outlet_id, payment_link_id, method, provider,
         amount_idr, idempotency_key, status, instructions, expires_at, paid_at)
-     VALUES ($1, $2, $3, $4, $5, 'qris', 'doit', $6, $7, $8,
+     VALUES ($1, $2, $3, $4, 'qris', 'doit', $5, $6, $7,
              '{"method":"qris","qrPayload":"00020101021226TEST","issuer":null}',
              now() + interval '1 hour', ${settled ? "now()" : "NULL"})`,
     [
@@ -73,17 +73,33 @@ async function openBillWithIntent(status: string) {
       w.tenant.tenantId,
       outletId,
       linkId,
-      orderId,
       CART_TOTAL,
       `mz15j-${intentId}`,
       status,
     ],
   );
+  // legend-1116: real intents never carry orders.id; the order points at its payment
+  // link, and a settled intent has evidence of the money received.
   await owner.query(
-    `UPDATE orders SET payment_intent_id = $3
+    `UPDATE orders SET payment_link_id = $3, payment_link_token_sealed = 'sealed-test',
+            payment_intent_id = $4
       WHERE tenant_id = $1 AND id = $2`,
-    [w.tenant.tenantId, orderId, intentId],
+    [w.tenant.tenantId, orderId, linkId, intentId],
   );
+  if (settled)
+    await owner.query(
+      `INSERT INTO payment_evidence
+         (tenant_id, outlet_id, payment_intent_id, provider, provider_ref, method,
+          source, amount_idr, received_at)
+       VALUES ($1, $2, $3, 'doit', $4, 'qris', 'verified_webhook', $5, now())`,
+      [
+        w.tenant.tenantId,
+        outletId,
+        intentId,
+        `EV-${randomUUID().slice(0, 12)}`,
+        CART_TOTAL,
+      ],
+    );
   const { rows } = await owner.query<{ status: string }>(
     "SELECT status FROM orders WHERE tenant_id = $1 AND id = $2",
     [w.tenant.tenantId, orderId],
