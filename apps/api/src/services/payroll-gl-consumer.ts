@@ -137,6 +137,20 @@ function emittedWithAccountingOn(payload: unknown): boolean {
   );
 }
 
+/**
+ * A cash kasbon or reimbursement paid while accounting was off: no coverage
+ * guard ran at emit, so it is never journaled, even if accounting is on by the
+ * time it is delivered (legend-socwi). An old event without the flag is not
+ * this case.
+ */
+function emittedWithAccountingOff(payload: unknown): boolean {
+  return (
+    payload !== null &&
+    typeof payload === "object" &&
+    (payload as { accountingOnAtEmit?: unknown }).accountingOnAtEmit === false
+  );
+}
+
 function allZero(amounts: Readonly<Record<string, number>>): boolean {
   return Object.values(amounts).every((value) => value === 0);
 }
@@ -285,6 +299,14 @@ export async function deliverPayrollGlEvent(
       return { status: "ignored" };
   }
   assertTrustedScopedContext(context);
+  // Off at emit means never journaled (legend-socwi): the 1102 coverage guard
+  // did not run for this outflow, so a later switch-on must not post it.
+  if (
+    (event.name === employeeLoanDisbursed.name ||
+      event.name === reimbursementPaid.name) &&
+    emittedWithAccountingOff(event.payload)
+  )
+    return { status: "ignored" };
   // Paid and reversed follow the locked entry, not the current flag: once the
   // run's payable is booked, switching accounting off later must not leave
   // 2103 open (paid) or the run journal standing (reversed). A locked event

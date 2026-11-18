@@ -728,8 +728,10 @@ export async function availableCash1102(
  * pays out of 1102 when it is credited. Refuses a credit of `amountIdr` that
  * exceeds the cash left after the reserve of approved cash payroll and other
  * credits not on the GL yet (PETTY_CASH_GL_INSUFFICIENT, legend-rvao9 P2-2a).
- * Skipped when accounting is off, when `glAccountId` is not the mapped
- * petty_cash account, or when the entity has no mapping. Call under
+ * Skipped when `glAccountId` is not the mapped petty_cash account, or when
+ * the entity has no mapping. Not gated by the accounting module: every caller
+ * posts a journal crediting this account right after, and that poster has no
+ * module gate (legend-socwi). Call under
  * `entityLock`, only for a movement that reduces the bank account.
  */
 export async function assertBankCreditCoveredBy1102(
@@ -739,7 +741,6 @@ export async function assertBankCreditCoveredBy1102(
   glAccountId: string,
   amountIdr: number,
 ): Promise<void> {
-  if (!(await accountingEnabled(tx, tenantId))) return;
   const pettyCashAccountId = await pettyCashGlAccount(
     tx,
     tenantId,
@@ -1528,7 +1529,9 @@ export async function postPettyCashEntry(
     // after every other credit not on the GL yet (legend-srwv4). This entry is
     // itself counted as pending, so its own amount is covered when the cash left
     // is not below zero. Under the entity lock taken above; nothing written yet.
-    if (row.kind === "return" && (await accountingEnabled(tx, tenantId))) {
+    // Not gated by the accounting module: the journal below posts either way
+    // (legend-socwi).
+    if (row.kind === "return") {
       const cash = await availableCash1102(tx, tenantId, row.legalEntityId);
       if (cash !== null && cash.availableIdr < 0) {
         const { glIdr, pendingCreditIdr, availableIdr } = cash;
