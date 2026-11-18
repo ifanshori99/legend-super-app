@@ -3,6 +3,7 @@
 // @starter/shared/access: no session, then second factor, then permission.
 import { isMfaGuardedSurface } from "@starter/shared/access";
 import type { PermissionCode } from "@starter/shared/access";
+import { isSharedDeviceScreenAllowed } from "@starter/shared/access/shared-device-screens";
 import type { AreaAccess } from "./access.ts";
 import {
   AREA_LIST,
@@ -51,6 +52,21 @@ export function reachableWorkAreas(access: AreaAccess): AreaDefinition[] {
   return AREA_LIST.filter(
     (area) =>
       area.guard.kind === "permission" &&
-      evaluateArea(area, access).status === "allowed",
+      evaluateArea(area, access).status === "allowed" &&
+      // Shared tablet (founder Q29): areas whose landing page is closed are hidden.
+      !isScreenClosedOnSharedDevice(access, area.indexPath),
   );
+}
+
+/**
+ * Founder Q29: on a shared tablet (`access.sharedDevice`) every screen outside
+ * the allowlist is closed, in every area. The root route answers "not found"
+ * for it, on the server and in the browser. Presentation only: the API refuses
+ * the matching requests (`SHARED_DEVICE_SCREEN_CLOSED`).
+ */
+export function isScreenClosedOnSharedDevice(
+  access: AreaAccess,
+  pathname: string,
+): boolean {
+  return access.sharedDevice === true && !isSharedDeviceScreenAllowed(pathname);
 }

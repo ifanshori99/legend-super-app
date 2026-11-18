@@ -19,6 +19,7 @@ import {
 } from "../middleware/auth";
 import { jsonBody } from "../middleware/body";
 import { requireTrustedOrigin } from "../middleware/origin";
+import { isRequestOnSharedDevice } from "../middleware/shared-device-allowlist";
 import {
   getRequestAccessData,
   loadRequestAccess,
@@ -97,6 +98,8 @@ async function accessRead(req: Request, res: Response) {
         ? { accessMode: support.accessMode, expiresAt: support.expiresAt }
         : null,
       canChangeEmployeeManager,
+      // Presentation only (legend-iq0jz): the API closes the screens itself.
+      sharedDevice: isRequestOnSharedDevice(req),
     }),
   });
 }

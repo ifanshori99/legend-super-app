@@ -11,6 +11,8 @@
 // menuImageUploadInputSchema).
 
 import express, { Router, type RequestHandler } from "express";
+import { and, eq, isNull } from "drizzle-orm";
+import { ACTING_STAFF_ERROR_CODES } from "@starter/shared/pos/acting-staff";
 import type { ObjectStorage } from "@starter/shared/adapters";
 import {
   createCategory,
@@ -110,6 +112,7 @@ import {
 } from "@starter/shared/menu";
 import type { AnyEndpoint } from "@starter/shared/api";
 import {
+  actorOf,
   requireActingStaffOnSharedDevice,
   resolveActingStaff,
 } from "../middleware/acting-staff";
@@ -129,6 +132,9 @@ import {
 import { getScopedTenantContext } from "../middleware/permissions";
 import { requireTenantContext } from "../middleware/tenant";
 import { HttpError } from "../lib/http-error";
+import { db } from "../db";
+import { itemAvailability } from "../db/schema";
+import { withTenant } from "../db/tenant";
 
 /** Router-relative path of a contract endpoint ("/api/menu/x" -> "/x"). */
 function relative(endpoint: AnyEndpoint): string {
@@ -141,6 +147,47 @@ function location(endpoint: AnyEndpoint, id: string): string {
     ? endpoint.path.replace(/:[A-Za-z][A-Za-z0-9]*/, id)
     : `${endpoint.path}/${id}`;
 }
+
+/**
+ * The availability path carries no outlet, so resolveActingStaff could not
+ * compare it: with a cashier token, the row's outlet must be the token's
+ * outlet. Without a token (ordinary browser) nothing changes; an unknown id is
+ * left to the service (404).
+ */
+const requireAvailabilityActingOutlet: RequestHandler = async (
+  req,
+  _res,
+  next,
+) => {
+  if (!req.actingStaff) return next();
+  const context = getScopedTenantContext(req);
+  const { availabilityId } = updateAvailabilityEndpoint.params.parse(
+    req.params,
+  );
+  const row = await withTenant(db, context, async (tx) => {
+    const [found] = await tx
+      .select({ outletId: itemAvailability.outletId })
+      .from(itemAvailability)
+      .where(
+        and(
+          eq(itemAvailability.tenantId, context.tenant.tenantId),
+          eq(itemAvailability.id, availabilityId),
+          isNull(itemAvailability.deletedAt),
+        ),
+      );
+    return found;
+  });
+  if (
+    row &&
+    row.outletId.toLowerCase() !== req.actingStaff.outletId.toLowerCase()
+  )
+    throw new HttpError(
+      403,
+      ACTING_STAFF_ERROR_CODES.OUTLET_MISMATCH,
+      "Kasir aktif bukan untuk outlet item ini.",
+    );
+  next();
+};
 
 const AVAILABILITY_PATH = /^\/availability(?:\/|$)/i;
 
@@ -820,17 +867,14 @@ export function createMenuRouter(
   router.get(relative(listAvailabilityEndpoint), view, async (req, res) => {
     const query = listAvailabilityEndpoint.query.parse(req.query);
     res.json(
-      await listAvailability(
-        getScopedTenantContext(req),
-        getAuth(req).user.id,
-        query,
-      ),
+      await listAvailability(getScopedTenantContext(req), actorOf(req), query),
     );
   });
 
   router.patch(
     relative(updateAvailabilityEndpoint),
     availabilityToggle,
+    requireAvailabilityActingOutlet,
     jsonBody,
     async (req, res) => {
       const params = updateAvailabilityEndpoint.params.parse(req.params);
@@ -838,7 +882,7 @@ export function createMenuRouter(
       res.json({
         data: await updateAvailability(
           getScopedTenantContext(req),
-          getAuth(req).user.id,
+          actorOf(req),
           params.availabilityId,
           body,
         ),
@@ -849,6 +893,7 @@ export function createMenuRouter(
   router.post(
     relative(setAvailabilityStatusEndpoint),
     availabilityToggle,
+    requireAvailabilityActingOutlet,
     jsonBody,
     async (req, res) => {
       const params = setAvailabilityStatusEndpoint.params.parse(req.params);
@@ -856,7 +901,7 @@ export function createMenuRouter(
       res.json({
         data: await setAvailabilityStatus(
           getScopedTenantContext(req),
-          getAuth(req).user.id,
+          actorOf(req),
           params.availabilityId,
           body,
         ),

@@ -3,7 +3,9 @@
 //
 // Mount (routes/index.ts): `apiRouter.use("/outlets/:outletId/delivery-orders", deliveryOrdersRouter)`;
 // the router merges params. requireAuth + requireTrustedOrigin +
-// requireTenantContext like the POS routers; each handler adds
+// requireTenantContext like the POS routers; on a shared tablet the cashier PIN
+// token is required (resolveActingStaff + requireActingStaffOnSharedDevice,
+// legend-13vhb) and the actor is `actorOf(req)`; each handler adds
 // requireOutletPermission on the path's outlet. The contract has one order
 // permission (`delivery.order.handle`): list, detail, manual order and status
 // steps all need it. An optional `Idempotency-Key` header makes a retried
@@ -19,7 +21,12 @@ import {
   resolveDeliveryOrderSync,
   updateDeliveryOrderStatus,
 } from "@starter/shared/delivery";
-import { getAuth, requireAuth } from "../middleware/auth.ts";
+import {
+  actorOf,
+  requireActingStaffOnSharedDevice,
+  resolveActingStaff,
+} from "../middleware/acting-staff.ts";
+import { requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
@@ -34,9 +41,11 @@ import * as platformRetry from "../services/delivery-platform-retry.ts";
 export const deliveryOrdersRouter = Router({ mergeParams: true });
 
 deliveryOrdersRouter.use(
-  requireAuth,
+  requireAuthAllowSharedDevice,
   requireTrustedOrigin,
   requireTenantContext,
+  resolveActingStaff,
+  requireActingStaffOnSharedDevice,
 );
 
 const handle = requireOutletPermission("delivery.order.handle", (req) =>
@@ -51,7 +60,7 @@ function idempotencyKeyOf(req: Request): string | null {
 
 function caller(req: Request): deliveryOrders.DeliveryOrderCaller {
   return {
-    userId: userIdSchema.parse(getAuth(req).user.id),
+    userId: userIdSchema.parse(actorOf(req)),
     idempotencyKey: idempotencyKeyOf(req),
   };
 }
@@ -133,7 +142,7 @@ deliveryOrdersRouter.post(
     res.json({
       data: await platformRetry.resendDeliveryOrderSync(
         getScopedTenantContext(req),
-        { userId: userIdSchema.parse(getAuth(req).user.id) },
+        { userId: userIdSchema.parse(actorOf(req)) },
         outletId,
         deliveryOrderId,
       ),
@@ -153,7 +162,7 @@ deliveryOrdersRouter.post(
     res.json({
       data: await platformRetry.resolveDeliveryOrderSync(
         getScopedTenantContext(req),
-        { userId: userIdSchema.parse(getAuth(req).user.id) },
+        { userId: userIdSchema.parse(actorOf(req)) },
         outletId,
         deliveryOrderId,
         body,
@@ -176,7 +185,7 @@ deliveryOrdersRouter.post(
     res.json({
       data: await deliveryMapLines.mapDeliveryOrderLines(
         getScopedTenantContext(req),
-        { userId: userIdSchema.parse(getAuth(req).user.id) },
+        { userId: userIdSchema.parse(actorOf(req)) },
         outletId,
         deliveryOrderId,
         body,

@@ -18,10 +18,11 @@ import { Router } from "express";
 import { userIdSchema } from "@starter/shared/core";
 import { listOrderIssues, reportOrderIssue } from "@starter/shared/kitchen";
 import {
+  actorOf,
   requireActingStaffOnSharedDevice,
   resolveActingStaff,
 } from "../middleware/acting-staff.ts";
-import { getAuth, requireAuthAllowSharedDevice } from "../middleware/auth.ts";
+import { requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
@@ -54,7 +55,7 @@ orderIssuesRouter.post(
     res.status(201).json({
       data: await issues.reportOrderIssue(
         getStationScope(req).context,
-        userIdSchema.parse(getAuth(req).user.id),
+        userIdSchema.parse(actorOf(req)),
         outletId,
         orderId,
         body,
@@ -70,7 +71,7 @@ orderIssuesRouter.get("/order-issues", ...guard, async (req, res) => {
   res.json(
     await issues.listOrderIssues(
       getStationScope(req).context,
-      userIdSchema.parse(getAuth(req).user.id),
+      userIdSchema.parse(actorOf(req)),
       outletId,
       query,
       new Date(),

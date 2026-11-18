@@ -16,10 +16,11 @@ import {
   markExpoOrderDelivered,
 } from "@starter/shared/kitchen";
 import {
+  actorOf,
   requireActingStaffOnSharedDevice,
   resolveActingStaff,
 } from "../middleware/acting-staff.ts";
-import { getAuth, requireAuthAllowSharedDevice } from "../middleware/auth.ts";
+import { requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
@@ -44,7 +45,7 @@ const guard = [
 ];
 
 function actor(req: Request): KdsActor {
-  return { userId: userIdSchema.parse(getAuth(req).user.id), deviceId: null };
+  return { userId: userIdSchema.parse(actorOf(req)), deviceId: null };
 }
 
 expoRouter.get("/expo", ...guard, async (req, res) => {

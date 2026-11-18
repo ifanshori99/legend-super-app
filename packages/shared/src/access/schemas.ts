@@ -184,6 +184,14 @@ export const myAccessViewSchema = z.strictObject({
    * Defaults to false so an older server's view still parses.
    */
   canChangeEmployeeManager: z.boolean().default(false),
+  /**
+   * True when the request comes from a shared tablet (an active device with
+   * shared_mode, by its device token or by a session stamped on one; founder
+   * Q29). The web app hides the screens a shared tablet may not open.
+   * Presentation only: the API refuses those requests itself. Defaults to
+   * false so an older server's view still parses.
+   */
+  sharedDevice: z.boolean().default(false),
 });
 export type MyAccessView = z.infer<typeof myAccessViewSchema>;
 

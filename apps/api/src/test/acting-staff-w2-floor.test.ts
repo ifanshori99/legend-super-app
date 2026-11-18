@@ -714,8 +714,10 @@ describe("shared device: outlet alias board (legend-42gqp)", () => {
   it("legend-42gqp: the guard is only on the floor GET; a cashier token of outlet A on another /api/outlets/B route is not touched by it", async () => {
     // legend-3z0ds: GET /api/outlets/:id/reservation-policy is a back-office
     // route. The floor guard is not on it, but requireAuth (default-deny) now
-    // refuses a session used on a shared device there, token or not, with
-    // 403 ACTING_STAFF_NOT_ALLOWED; never with the guard's own REQUIRED/INVALID.
+    // refuses a session used on a shared device there, token or not. With the
+    // Q29 allowlist (legend-iq0jz) an opted-in router on the same prefix answers
+    // first: 403 SHARED_DEVICE_SCREEN_CLOSED (route not listed); never the
+    // guard's own REQUIRED/INVALID, and never a pass.
     const deviceId = await newDevice(true);
     const who = await member("Sesi Rute Lain Outlet", roles.till);
     const token = await cashierToken(who, cashierB, deviceId);
@@ -724,11 +726,13 @@ describe("shared device: outlet alias board (legend-42gqp)", () => {
     const without = await get(who, path, deviceId);
     const code = (r: { body: unknown }) =>
       (r.body as { error?: { code?: string } }).error?.code ?? "";
+    expect(without.status, JSON.stringify(without.body)).toBe(403);
+    expect(withToken.status, JSON.stringify(withToken.body)).toBe(403);
     expect(code(without), JSON.stringify(without.body)).toBe(
-      "ACTING_STAFF_NOT_ALLOWED",
+      "SHARED_DEVICE_SCREEN_CLOSED",
     );
     expect(code(withToken), JSON.stringify(withToken.body)).toBe(
-      "ACTING_STAFF_NOT_ALLOWED",
+      "SHARED_DEVICE_SCREEN_CLOSED",
     );
     // The floor GET alias of the cashier's own outlet still passes with a live token.
     const board = await get(who, alias(tenant.outletId), deviceId, token);

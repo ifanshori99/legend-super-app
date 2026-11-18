@@ -6,8 +6,10 @@
 // apologyVoucherRouter)`, so the contract paths `/api/apology-vouchers` and
 // `/api/apology-vouchers/:code` are served here.
 //
-// - requireAuth + requireTrustedOrigin + requireTenantContext; the tenant comes
-//   from the server-minted context (TEN-02), never the body.
+// - requireAuthAllowSharedDevice + requireTrustedOrigin + requireTenantContext;
+//   the tenant comes from the server-minted context (TEN-02), never the body.
+// - Shared tablet (legend-13vhb): resolveActingStaff + requireActingStaffOnSharedDevice
+//   demand the cashier PIN token; the issuer and permission subject is `actorOf(req)`.
 // - requireMenuPermission mints the outlet-reach context for the permission;
 //   the service re-checks the outlet of the order issue and the approval
 //   matrix limit (above the cap only with an approved request).
@@ -16,15 +18,28 @@
 // - Issuing without an `orderIssueId` requires an `Idempotency-Key` header (422).
 // - Strict contract schemas parse params and body.
 
+import { and, eq } from "drizzle-orm";
 import { Router, type Request, type RequestHandler } from "express";
 import { AccessError } from "@starter/shared/access";
 import { idempotencyKeySchema, userIdSchema } from "@starter/shared/core";
+import { ACTING_STAFF_ERROR_CODES } from "@starter/shared/pos/acting-staff";
 import {
   getApologyVoucher,
   issueApologyVoucher,
 } from "@starter/shared/qr-order";
+import { memberTenantContext } from "../db/member-scope.ts";
+import { db } from "../db/index.ts";
+import { apologyVouchers } from "../db/schema/apology-vouchers.ts";
+import { vouchers as crmVouchers } from "../db/schema/crm-promo.ts";
+import { orderIssues } from "../db/schema/kds-issues.ts";
+import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
-import { getAuth, requireAuth } from "../middleware/auth.ts";
+import {
+  actorOf,
+  requireActingStaffOnSharedDevice,
+  resolveActingStaff,
+} from "../middleware/acting-staff.ts";
+import { requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
@@ -33,6 +48,7 @@ import {
 } from "../middleware/permissions.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
 import * as vouchers from "../services/apology-voucher.service.ts";
+import { hashPromoCode } from "../services/crm-promo-engine.ts";
 
 export const apologyVoucherRouter = Router();
 
@@ -70,13 +86,103 @@ function idempotencyKeyOf(req: Request): string | null {
   return raw === undefined ? null : idempotencyKeySchema.parse(raw);
 }
 
-const base = [requireAuth, requireTrustedOrigin, requireTenantContext];
+/**
+ * The path carries no outlet, so resolveActingStaff could not compare it: a
+ * cashier token issued for another outlet is refused (403 OUTLET_MISMATCH).
+ * Without an acting staff (regular browser) nothing changes. A missing
+ * resource is left to the service (404).
+ */
+function refuseOtherOutlet(
+  outletOf: (req: Request) => Promise<string | null>,
+): RequestHandler {
+  return async (req, _res, next) => {
+    if (req.actingStaff) {
+      const outletId = await outletOf(req);
+      if (
+        outletId !== null &&
+        outletId.toLowerCase() !== req.actingStaff.outletId.toLowerCase()
+      )
+        throw new HttpError(
+          403,
+          ACTING_STAFF_ERROR_CODES.OUTLET_MISMATCH,
+          "Kasir aktif bukan untuk outlet voucher ini.",
+        );
+    }
+    next();
+  };
+}
+
+/** Outlet of the order issue in the body, else the caller's sole outlet. */
+async function issueOutletOf(req: Request): Promise<string | null> {
+  const body = issueApologyVoucher.body.parse(req.body);
+  const context = getScopedTenantContext(req);
+  if (body.orderIssueId === undefined) {
+    const scope = context.outletScope;
+    return scope.kind === "outlets" && scope.outletIds.length === 1
+      ? (scope.outletIds[0] ?? null)
+      : null;
+  }
+  const orderIssueId = body.orderIssueId;
+  return withTenant(
+    db,
+    memberTenantContext(context.tenant.tenantId),
+    async (tx) => {
+      const [row] = await tx
+        .select({ outletId: orderIssues.outletId })
+        .from(orderIssues)
+        .where(
+          and(
+            eq(orderIssues.tenantId, context.tenant.tenantId),
+            eq(orderIssues.id, orderIssueId),
+          ),
+        )
+        .limit(1);
+      return row?.outletId ?? null;
+    },
+  );
+}
+
+/** Outlet of the apology voucher named by the `:code` param. */
+async function voucherOutletOf(req: Request): Promise<string | null> {
+  const { code } = getApologyVoucher.params.parse(req.params);
+  const tenantId = getScopedTenantContext(req).tenant.tenantId;
+  const digest = hashPromoCode(code.trim().toUpperCase().replaceAll("-", ""));
+  return withTenant(db, memberTenantContext(tenantId), async (tx) => {
+    const [row] = await tx
+      .select({ outletId: apologyVouchers.outletId })
+      .from(crmVouchers)
+      .innerJoin(
+        apologyVouchers,
+        and(
+          eq(apologyVouchers.tenantId, crmVouchers.tenantId),
+          eq(apologyVouchers.voucherId, crmVouchers.id),
+        ),
+      )
+      .where(
+        and(
+          eq(crmVouchers.tenantId, tenantId),
+          eq(crmVouchers.codeHash, digest),
+        ),
+      )
+      .limit(1);
+    return row?.outletId ?? null;
+  });
+}
+
+const base = [
+  requireAuthAllowSharedDevice,
+  requireTrustedOrigin,
+  requireTenantContext,
+  resolveActingStaff,
+  requireActingStaffOnSharedDevice,
+];
 
 apologyVoucherRouter.post(
   "/",
   ...base,
   requireMenuPermission("order.apology_voucher.issue"),
   jsonBody,
+  refuseOtherOutlet(issueOutletOf),
   async (req, res) => {
     const body = issueApologyVoucher.body.parse(req.body);
     const idempotencyKey = idempotencyKeyOf(req);
@@ -90,7 +196,7 @@ apologyVoucherRouter.post(
     res.status(201).json({
       data: await vouchers.issueApologyVoucherForStaff(
         getScopedTenantContext(req),
-        userIdSchema.parse(getAuth(req).user.id),
+        userIdSchema.parse(actorOf(req)),
         body,
         new Date(),
         idempotencyKey,
@@ -103,12 +209,13 @@ apologyVoucherRouter.get(
   "/:code",
   ...base,
   anyMenuPermission("order.apology_voucher.issue", "order.recovery.handle"),
+  refuseOtherOutlet(voucherOutletOf),
   async (req, res) => {
     const { code } = getApologyVoucher.params.parse(req.params);
     res.json({
       data: await vouchers.getApologyVoucherByCode(
         getScopedTenantContext(req),
-        userIdSchema.parse(getAuth(req).user.id),
+        userIdSchema.parse(actorOf(req)),
         code,
         new Date(),
       ),

@@ -12,6 +12,7 @@ import {
   sharedDeviceMarkLimit,
   stampSharedDeviceFromToken,
 } from "../services/shared-device.service";
+import { enforceSharedDeviceAllowlist } from "./shared-device-allowlist";
 import { enforceSupportSession } from "./support-session";
 
 // legend-3z0ds (brief 1012): a login session that has been used on a shared
@@ -99,6 +100,9 @@ function createRequireAuth(options: {
         session.user.id,
         marks,
       );
+    // legend-iq0jz (founder Q29): a router that opted in is still default-deny
+    // on a shared tablet; only the paths in lib/shared-device-allowlist.ts open.
+    else enforceSharedDeviceAllowlist(req, marks);
     // A support (impersonated) session is checked against its support access
     // grant here, the one chokepoint of every cookie router. See
     // middleware/support-session.ts.
