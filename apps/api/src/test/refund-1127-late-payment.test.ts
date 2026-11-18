@@ -389,9 +389,77 @@ describe("1127 a QR order expired, voided and paid late gets no apology voucher"
     expect(await p.voucherValues(kopi)).toEqual([28_875]);
   });
 
-  it.todo(
-    "POS sale with a pos-late-payment-refund on a tender intent: cashier refund room excludes that intent. Not asserted as a room: pos-refund-ceilings.test.ts fixes the opposite for a tender whose own intent carries the late key, and the brief changes only the non-POS intent filter; see the property row in refund-1116-paid-basis.test.ts.",
-  );
+  // 1131 (second opinion P2): realized with the current fixture of
+  // pos-refund-ceilings.test.ts: the guest paid LATE on a SEPARATE intent whose tender
+  // was voided; the sale's own cash tender is untouched. The late money is parked: it
+  // neither lifts nor eats the sale's refundable balance.
+  it("POS sale with a pos-late-payment-refund on a separate late intent: the cashier refund room is the sale's full paid amount", async () => {
+    const paid = await p.paidPlainOrder();
+    await p.becomePosSale(paid);
+    const lateIntentId = randomUUID();
+    const lateLinkId = randomUUID();
+    await owner.query(
+      `INSERT INTO payment_links (id, tenant_id, outlet_id, token_hash, reference,
+         subtotal_idr, total_idr, paid_idr, created_by)
+       VALUES ($1, $2, $3, $4, $5, 30000, 30000, 30000, '1131-test')`,
+      [
+        lateLinkId,
+        tenantId(),
+        paid.outletId,
+        randomBytes(32).toString("hex"),
+        `L1131-${lateLinkId.slice(0, 8)}`,
+      ],
+    );
+    await owner.query(
+      `INSERT INTO payment_intents (id, tenant_id, outlet_id, payment_link_id,
+         method, provider, amount_idr, idempotency_key, status, paid_at,
+         instructions, expires_at)
+       VALUES ($1, $2, $3, $4, 'qris', 'doit', 30000, $5, 'paid', now(),
+         '{"method":"qris","qrPayload":"test","issuer":null}', now() + interval '1 hour')`,
+      [lateIntentId, tenantId(), paid.outletId, lateLinkId, randomUUID()],
+    );
+    await owner.query(
+      `INSERT INTO pos_order_tenders (tenant_id, outlet_id, order_id, method, provider,
+         amount_idr, status, requested_at, resolved_at, payment_intent_id,
+         payment_link_id, payment_link_token_sealed)
+       VALUES ($1, $2, $3, 'qris', 'doit', 30000, 'voided', now(), now(), $4, $5,
+         'sealed-test-token')`,
+      [
+        tenantId(),
+        paid.outletId,
+        toUuid(paid.orderId),
+        lateIntentId,
+        lateLinkId,
+      ],
+    );
+    await owner.query(
+      `INSERT INTO payment_evidence (tenant_id, outlet_id, payment_intent_id,
+         provider, provider_ref, method, source, amount_idr, received_at)
+       VALUES ($1, $2, $3, 'doit', $4, 'qris', 'verified_webhook', 30000, now())`,
+      [tenantId(), paid.outletId, lateIntentId, `evidence-${lateIntentId}`],
+    );
+    await fileLateKey(
+      `pos-late-payment-refund:${lateIntentId}`,
+      lateIntentId,
+      30_000,
+    );
+
+    expect(await paidIdrOf(paid.orderId), "late money is not the sale's").toBe(
+      ORDER_PAID,
+    );
+    const over = await p.posRefund(
+      paid.orderId,
+      await p.refundInput(paid.orderId, ORDER_PAID + 1),
+    );
+    expect(over.ok, "above the paid amount").toBe(false);
+    expect(await p.posRefundRows(paid.orderId)).toEqual([]);
+    const full = await p.posRefund(
+      paid.orderId,
+      await p.refundInput(paid.orderId, ORDER_PAID),
+    );
+    expect(full.ok, JSON.stringify(full)).toBe(true);
+    expect(await p.posRefundRows(paid.orderId)).toEqual([ORDER_PAID]);
+  });
 });
 
 // ---------------------------------------------------------------------------

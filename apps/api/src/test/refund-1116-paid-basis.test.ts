@@ -60,6 +60,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { ulidToUuid } from "@starter/shared/core";
 import { db } from "../db/index.ts";
 import { withTenant } from "../db/tenant.ts";
+import { orderGivenOf } from "../services/order-given.ts";
 import { recordProviderRefundInTx } from "../services/payment-provider-partial-refund.ts";
 import { confirmPayment } from "../services/payment.service.ts";
 import { owner } from "./floor-test-helpers.ts";
@@ -996,9 +997,8 @@ const EXTERNALS: External[] = [
   },
   { name: "provider 49.665 (all of it)", providerIdr: ORDER_PAID },
   { name: "provider-refunded flag, no amount", flag: true },
-  // 1127: parked late-payment money is neither paid nor subtracted; it is handed back
-  // by its own late refund, which is not part of the sale's paid money, so total out
-  // (not counting it) must still stay <= what was paid.
+  // 1127 / 1131 P2: a late-payment refund on the sale's own intent: that payment counts
+  // 0 paid, so every guarded path is refused, and the late refund counts as money out.
   { name: "late-payment refund 25.000 parked", lateParkedIdr: 25_000 },
 ];
 
@@ -1057,6 +1057,25 @@ describe("1116 property: refund + provider refund + voucher + void <= verified p
             const outcome = await p.cloudVoid(paid.orderId);
             if (outcome.ok) accepted += 1;
           }
+        }
+
+        // 1131 P2: a late-payment refund on the sale's OWN intent is money out of the
+        // only payment of the sale (no separate parked payment in this fixture), so it
+        // counts, and the late key makes the sale's paid money 0: every guarded path is
+        // refused (no voucher, no cashier refund, no void).
+        if (external.lateParkedIdr) {
+          const context = contextOf(tenantId());
+          const given = await withTenant(db, context, (tx) =>
+            orderGivenOf(tx, context.tenant.tenantId, paid.orderId),
+          );
+          expect(given.paidIdr, "late-keyed own intent counts 0 paid").toBe(0);
+          expect(
+            await p.posRefundRows(paid.orderId),
+            "no cashier refund",
+          ).toEqual([]);
+          expect(await p.voucherTotal(issueIds), "no voucher").toBe(0);
+          expect(await voidedIdr(paid.orderId), "no void").toBe(0);
+          externalIdr += external.lateParkedIdr;
         }
 
         const totalOut =
