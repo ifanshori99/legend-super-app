@@ -17,6 +17,7 @@ import {
   normalizeCustomRolePermissions,
   roleAssignmentSchema,
   roleSchema,
+  supplierPaymentBaseTierMissing,
   type ApprovalPolicy,
   type Role,
   type RoleAssignment,
@@ -289,6 +290,14 @@ registerMock(getApprovalMatrix, ({ scenario }) => ({
 }));
 
 registerMock(replaceApprovalMatrix, ({ body }) => {
+  // Same guard as the API (legend-98etn): a supplier_payment matrix without a
+  // base tier lets one person pay alone, so it is refused before validation.
+  if (supplierPaymentBaseTierMissing(body.policies))
+    throw new ApiError(
+      422,
+      "SUPPLIER_PAYMENT_BASE_TIER_REQUIRED",
+      new AccessError("SUPPLIER_PAYMENT_BASE_TIER_REQUIRED").message,
+    );
   const next = body.policies.map((policy, index) =>
     approvalPolicySchema.parse({
       id: uuidFrom("a9910000", policySeed + index),

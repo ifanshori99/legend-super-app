@@ -29,6 +29,8 @@ export const accessErrorHttpStatus = {
   APPROVAL_LEVEL_OUT_OF_ORDER: 409,
   /** No approval policy configured for an action: nobody can approve, so it stays blocked (fail closed). */
   APPROVAL_POLICY_MISSING: 409,
+  /** A supplier_payment matrix without a base tier (level 1, threshold null or 0): one person could pay alone (Q27). */
+  SUPPLIER_PAYMENT_BASE_TIER_REQUIRED: 422,
 } as const satisfies Record<string, number>;
 
 export type AccessErrorCode = keyof typeof accessErrorHttpStatus;
@@ -55,6 +57,8 @@ const defaultMessages: Record<AccessErrorCode, string> = {
   APPROVER_ROLE_MISMATCH: "Role Anda tidak berwenang menyetujui tingkat ini.",
   APPROVAL_LEVEL_OUT_OF_ORDER: "Tingkat approval ini belum dapat diputuskan.",
   APPROVAL_POLICY_MISSING: "Matriks approval untuk tindakan ini belum diatur.",
+  SUPPLIER_PAYMENT_BASE_TIER_REQUIRED:
+    "Pembayaran supplier wajib punya tingkat dasar: tingkat 1 untuk semua nominal (batas 0). Tambahkan tingkat 1 dengan batas 0, supaya satu orang tidak bisa membayar supplier sendirian.",
 };
 
 export class AccessError extends Error {

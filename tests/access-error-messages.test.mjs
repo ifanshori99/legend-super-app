@@ -124,6 +124,7 @@ describe("accessErrorMessage", () => {
         "APPROVER_ROLE_MISMATCH",
         "MFA_REQUIRED",
         "PERMISSION_OWNER_ONLY",
+        "SUPPLIER_PAYMENT_BASE_TIER_REQUIRED",
       ],
       "update todayText when an access code gains a camelCase key",
     );

@@ -126,6 +126,8 @@ const MIGRATION_DATA_STATEMENTS: Record<string, string> = {
     "backfill only (legend-jqurl): copies each session's single shared_device_id into the new shared_device_ids array before the old column is dropped, and clears shared_mode on devices that are not POS before the pos-only CHECK is added; no import, no money.",
   "0467_supplier_payment_approval_policies_data.sql":
     "gives each tenant without a supplier_payment approval policy the default rows (floor 0, level 1, finance and owner template roles, distinct actor); idempotent, never touches a tenant that configured supplier_payment, no amount, journal or payment touched (it only makes every supplier payment wait for a second person), FORCE RLS lifted for that one statement and restored (legend-xxqz3)",
+  "0486_supplier_payment_base_tier_backfill.sql":
+    "adds a base tier (copies every level and approver role of the lowest existing tier to floor 0, distinct actor) to each tenant whose supplier_payment matrix has rows but no level 1 row with floor null or 0 (skipped when the lowest tier has no level 1 row); only adds a requirement, never deletes or updates a row, idempotent, no amount, journal or payment touched, FORCE RLS lifted for that one statement and restored (legend-98etn)",
   "0466_cash_out_approval_policies_data.sql":
     "gives each tenant without a cash_out approval policy the default row (floor 0, level 1, finance template role, distinct actor); idempotent, never touches a tenant that configured cash_out, no amount, journal or cash entry touched, FORCE RLS lifted for that one statement and restored (legend-4qowr)",
   "0147_accounting_coa_backfill_1204.sql":

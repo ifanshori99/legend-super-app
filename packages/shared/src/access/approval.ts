@@ -111,6 +111,32 @@ export const approvalPolicySchema = z.strictObject({
 });
 export type ApprovalPolicy = z.infer<typeof approvalPolicySchema>;
 
+/**
+ * True when the matrix has supplier_payment rows but none is a base tier
+ * (level 1 with threshold null or 0). Supplier payments always need a second
+ * person (founder Q27) and a threshold may only add levels, so such a matrix
+ * would let one person pay a supplier alone.
+ */
+export function supplierPaymentBaseTierMissing(
+  rows: readonly {
+    actionType: string;
+    thresholdIdr: number | null;
+    levels: number;
+  }[],
+): boolean {
+  const supplierRows = rows.filter(
+    (row) => row.actionType === "supplier_payment",
+  );
+  return (
+    supplierRows.length > 0 &&
+    !supplierRows.some(
+      (row) =>
+        row.levels === 1 &&
+        (row.thresholdIdr === null || row.thresholdIdr === 0),
+    )
+  );
+}
+
 /** A tenant's whole matrix; every tier's levels must be contiguous from 1. */
 export const approvalMatrixSchema = z
   .array(approvalPolicySchema)
@@ -134,17 +160,7 @@ export const approvalMatrixSchema = z
     // Supplier payments always need one other person (founder Q27): a
     // threshold may only ADD levels, so a matrix that has supplier_payment rows
     // needs a base tier (threshold null or 0) with a level 1 row.
-    const supplierRows = rows.filter(
-      (row) => row.actionType === "supplier_payment",
-    );
-    if (
-      supplierRows.length > 0 &&
-      !supplierRows.some(
-        (row) =>
-          row.levels === 1 &&
-          (row.thresholdIdr === null || row.thresholdIdr === 0),
-      )
-    )
+    if (supplierPaymentBaseTierMissing(rows))
       ctx.addIssue({
         code: "custom",
         message:
