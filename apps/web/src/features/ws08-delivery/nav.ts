@@ -14,6 +14,7 @@ const nav: AreaNavEntry[] = [
     icon: Truck,
     order: 40,
     anyPermission: ["delivery.channel.manage", "delivery.order.handle"],
+    outletScopedPaths: ["/kelola/delivery"],
   },
 ];
 

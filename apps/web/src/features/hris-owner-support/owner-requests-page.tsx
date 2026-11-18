@@ -31,6 +31,7 @@ import {
   useSupportDecisionGuard,
 } from "@/features/ws01-support-access/hooks";
 import { useEndOwnerSupportAccess } from "./hooks";
+import { clockSkewMs } from "@/features/ws01-support-access/logic";
 import { useSecondClock } from "@/features/ws01-support-access/use-now";
 import { revokeErrorMessage } from "./revoke-error";
 import { OwnerActiveCard } from "./owner-active-card.tsx";
@@ -214,13 +215,16 @@ function HistoryItem({
 export function OwnerRequestsPage() {
   const t = useT();
   const online = useOnline();
-  const nowMs = useSecondClock();
+  const clockMs = useSecondClock();
   const guard = useSupportDecisionGuard();
   const requests = useSupportAccessRequests();
   const grants = useOrgGrants();
   const approve = useApproveSupportAccessRequest();
   const reject = useRejectSupportAccessRequest();
   const end = useEndOwnerSupportAccess();
+  // Shift the device clock to the API clock (see session-banner).
+  const skewMs = clockSkewMs(grants.data?.serverNow, grants.dataUpdatedAt);
+  const nowMs = clockMs === null ? null : clockMs + skewMs;
 
   const [notice, setNotice] = React.useState<Notice | null>(null);
   const [failure, setFailure] = React.useState<DecisionErrorKind | null>(null);
@@ -397,6 +401,7 @@ export function OwnerRequestsPage() {
             <CardShell key={entry.grant.id} className="gap-2">
               <OwnerActiveCard
                 entry={entry}
+                skewMs={skewMs}
                 blockedText={blockedText}
                 revoking={end.isPending}
                 revokeError={revokeFailure}

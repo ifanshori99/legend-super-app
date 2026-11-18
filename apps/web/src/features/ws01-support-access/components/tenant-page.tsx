@@ -18,7 +18,11 @@ import {
 } from "@/components/ui/table";
 import { API_MOCK } from "@/lib/api/mock-flag";
 import { useOrgGrants } from "../hooks.ts";
-import { findActiveGrant, sortGrantsNewestFirst } from "../logic.ts";
+import {
+  clockSkewMs,
+  findActiveGrant,
+  sortGrantsNewestFirst,
+} from "../logic.ts";
 import { useSecondClock } from "../use-now.ts";
 import {
   Countdown,
@@ -28,9 +32,15 @@ import {
   useGrantStatus,
 } from "./shared.tsx";
 
-function HistoryRow({ grant }: { grant: SupportAccessGrant }) {
+function HistoryRow({
+  grant,
+  skewMs,
+}: {
+  grant: SupportAccessGrant;
+  skewMs: number;
+}) {
   const t = useT();
-  const status = useGrantStatus(grant);
+  const status = useGrantStatus(grant, skewMs);
   return (
     <TableRow>
       <TableCell className="max-w-sm">
@@ -70,7 +80,13 @@ function HistoryRow({ grant }: { grant: SupportAccessGrant }) {
   );
 }
 
-function ActiveNotice({ grant }: { grant: SupportAccessGrant }) {
+function ActiveNotice({
+  grant,
+  skewMs,
+}: {
+  grant: SupportAccessGrant;
+  skewMs: number;
+}) {
   const t = useT();
   return (
     <Card
@@ -84,7 +100,7 @@ function ActiveNotice({ grant }: { grant: SupportAccessGrant }) {
         </p>
         <span className="inline-flex items-center gap-2 text-sm font-semibold">
           <ModeBadge mode={grant.accessMode} />
-          <Countdown grant={grant} />
+          <Countdown grant={grant} skewMs={skewMs} />
         </span>
       </div>
       <p className="text-sm">
@@ -100,7 +116,10 @@ function ActiveNotice({ grant }: { grant: SupportAccessGrant }) {
 export function TenantSupportAccessPage() {
   const t = useT();
   const grants = useOrgGrants();
-  const nowMs = useSecondClock();
+  const clockMs = useSecondClock();
+  // Shift the device clock to the API clock (see session-banner).
+  const skewMs = clockSkewMs(grants.data?.serverNow, grants.dataUpdatedAt);
+  const nowMs = clockMs === null ? null : clockMs + skewMs;
 
   const rows = React.useMemo(
     () => sortGrantsNewestFirst(grants.data?.data ?? []),
@@ -127,7 +146,7 @@ export function TenantSupportAccessPage() {
 
       {state === "ready" &&
         (active ? (
-          <ActiveNotice grant={active} />
+          <ActiveNotice grant={active} skewMs={skewMs} />
         ) : (
           <Card className="flex-row items-start gap-3">
             <ShieldCheck
@@ -174,7 +193,7 @@ export function TenantSupportAccessPage() {
           </TableHeader>
           <TableBody>
             {rows.map((grant) => (
-              <HistoryRow key={grant.id} grant={grant} />
+              <HistoryRow key={grant.id} grant={grant} skewMs={skewMs} />
             ))}
           </TableBody>
         </Table>

@@ -84,3 +84,22 @@ test("TEN-04: newest session first and the active one is found", () => {
 test("F4: the authenticator field keeps six digits only", () => {
   assert.equal(logic.sanitizeMfaCode("12a3-45 678"), "123456");
 });
+
+test("TEN-04: device clock is shifted to the API clock, and no skew without serverNow", () => {
+  const fetchedAt = at("2026-11-01T05:00:00.000Z");
+  // Device 10 minutes ahead of the API: skew is negative.
+  const ahead = logic.clockSkewMs("2026-11-01T04:50:00.000Z", fetchedAt);
+  assert.equal(ahead, -10 * 60_000);
+  assert.equal(logic.isGrantActive(grant, fetchedAt + 31 * 60_000), false);
+  assert.equal(
+    logic.isGrantActive(grant, fetchedAt + 31 * 60_000 + ahead),
+    true,
+  );
+  // Device behind the API: skew is positive.
+  assert.equal(
+    logic.clockSkewMs("2026-11-01T05:05:00.000Z", fetchedAt),
+    5 * 60_000,
+  );
+  assert.equal(logic.clockSkewMs(undefined, fetchedAt), 0);
+  assert.equal(logic.clockSkewMs("not a date", fetchedAt), 0);
+});

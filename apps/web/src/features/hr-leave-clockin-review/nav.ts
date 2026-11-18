@@ -13,6 +13,7 @@ const nav: AreaNavEntry[] = [
     order: 45,
     group: "team",
     anyPermission: ["hr.attendance.manage"],
+    outletScopedPaths: ["/kelola/absensi/tinjauan-cuti"],
   },
 ];
 

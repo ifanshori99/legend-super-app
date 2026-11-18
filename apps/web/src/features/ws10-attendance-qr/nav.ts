@@ -13,6 +13,7 @@ const nav: AreaNavEntry[] = [
     order: 30,
     group: "team",
     anyPermission: ["hr.attendance.manage"],
+    outletScopedPaths: ["/kelola/absensi/qr"],
   },
   {
     area: "kelola",
@@ -22,6 +23,7 @@ const nav: AreaNavEntry[] = [
     order: 40,
     group: "team",
     anyPermission: ["hr.attendance.manage"],
+    outletScopedPaths: ["/kelola/absensi/selfie"],
   },
 ];
 

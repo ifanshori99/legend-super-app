@@ -9,6 +9,7 @@ const nav: AreaNavEntry[] = [
     icon: ChefHat,
     order: 25,
     anyPermission: ["kds.station.manage"],
+    outletScopedPaths: ["/kelola/dapur"],
   },
 ];
 

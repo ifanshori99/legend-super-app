@@ -11,6 +11,7 @@ const nav: AreaNavEntry[] = [
     to: "/kelola/pengaturan",
     icon: Settings,
     order: 95,
+    outletScopedPaths: ["/kelola/pengaturan/open-bill"],
   },
   {
     area: "kelola",

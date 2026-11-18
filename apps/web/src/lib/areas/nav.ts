@@ -27,6 +27,12 @@ export type AreaNavEntry = {
   readonly anyPermission?: readonly PermissionCode[];
   /** Sidebar group in the management shell; other shells ignore it. */
   readonly group?: NavGroup;
+  /**
+   * Kelola paths of this screen (the `to` itself or sub-screens) that read the
+   * selected outlet from the tenant context. The management shell shows the
+   * outlet picker only there (legend-sp41n). Matches the path and its children.
+   */
+  readonly outletScopedPaths?: readonly string[];
 };
 
 export type ResolvedNavItem = {

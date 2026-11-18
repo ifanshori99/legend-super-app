@@ -13,6 +13,18 @@ type TimedGrant = {
   readonly endedAt: string | null;
 };
 
+/** Offset to add to the device clock so it reads like the API clock.
+ * `serverNow` is the API time at read, `fetchedAtMs` the device time when the
+ * page arrived. Without `serverNow` (or an unparsable one) there is no skew. */
+export function clockSkewMs(
+  serverNow: string | undefined,
+  fetchedAtMs: number,
+): number {
+  if (serverNow === undefined) return 0;
+  const server = Date.parse(serverNow);
+  return Number.isFinite(server) ? server - fetchedAtMs : 0;
+}
+
 /** Milliseconds until the session expires, never below zero and never above
  * the granted duration (a client clock behind the server would otherwise show
  * more time than the session has). */

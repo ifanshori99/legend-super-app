@@ -19,7 +19,7 @@ import {
   useLeaveTypes,
 } from "@/features/hris-requests/hooks";
 import { isLeavePdf, uploadLeaveFile } from "../leave-upload.ts";
-import { useStorageCapabilities } from "@/features/hris-requests/storage-capabilities/hooks";
+import { useStorageCapabilities } from "@/features/storage/capabilities";
 import { ApiError } from "@/lib/api/errors";
 import { formatBusinessDate } from "@/features/ws10-payslip/format";
 import {

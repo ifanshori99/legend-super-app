@@ -29,11 +29,9 @@ registerHooks({
       "@/components/i18n": "export const useT = () => (key) => key;",
       "@/features/hris-requests/hooks":
         "export const useLeaveTypes=()=>({data:[],isPending:false,isError:false}); export const useLeaveBalances=()=>({data:[],isPending:false,isError:false});",
-      "@/features/hris-requests/storage-capabilities/hooks":
-        "export const useStorageCapabilities=()=>({documentsAccepted:globalThis.__leaveDocumentsAccepted});",
       "@tanstack/react-query":
-        "export const useQuery=()=>globalThis.__leaveCapabilityState; export const queryOptions=(options)=>options;",
-      "../../ws10-attendance-qr/use-hydrated.ts":
+        "export const useQuery=()=>globalThis.__leaveCapabilityState ?? {isSuccess:true,isError:false,data:{data:{documentsAccepted:globalThis.__leaveDocumentsAccepted===true}}}; export const queryOptions=(options)=>options;",
+      "../ws10-attendance-qr/use-hydrated.ts":
         "export const useHydrated=()=>true;",
       "@/components/ui/input":
         "import {createElement} from 'react'; export const Input=(props)=>createElement('input',props);",
@@ -86,11 +84,12 @@ const { uploadLeaveFile } =
 const { RequestFormLeave } =
   await import("../apps/web/src/features/hris-requests/components/request-form-leave.tsx");
 const { useStorageCapabilities } =
-  await import("../apps/web/src/features/hris-requests/storage-capabilities/hooks.ts");
+  await import("../apps/web/src/features/storage/capabilities.ts");
 const originalFetch = globalThis.fetch;
 afterEach(() => {
   globalThis.fetch = originalFetch;
   globalThis.__leaveDocumentsAccepted = false;
+  globalThis.__leaveCapabilityState = undefined;
 });
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), {

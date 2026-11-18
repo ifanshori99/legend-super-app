@@ -21,12 +21,15 @@ import { OwnerDetail } from "./owner-request-card.tsx";
 
 export function OwnerActiveCard({
   entry,
+  skewMs,
   blockedText,
   revoking,
   revokeError,
   onRevoke,
 }: {
   entry: ActiveEntry;
+  /** Device clock offset from the API clock (see `clockSkewMs`). */
+  skewMs: number;
   /** Why revoking is off, already in words; null when allowed. */
   blockedText: string | null;
   revoking: boolean;
@@ -74,7 +77,7 @@ export function OwnerActiveCard({
           {formatInstant(grant.expiresAt)}
         </OwnerDetail>
         <OwnerDetail label={t("supportAccessOwner.active.remaining")}>
-          <Countdown grant={grant} />
+          <Countdown grant={grant} skewMs={skewMs} />
         </OwnerDetail>
       </dl>
 
