@@ -799,9 +799,14 @@ export async function resolveRefundReconHold(
       async () => {
         if (hold.resolvedAt)
           throw new HttpError(409, "CONFLICT", "Hold already resolved.");
+        // 1077 R3: a transaction-conflict hold of the whole-payment report (K3)
+        // keeps the `synthetic_full` kind, but it is no hold of our own refund
+        // running during the full refund: it never counts, so `not_this_intent`
+        // is its one way out (the refund paid by hand is counted already).
         const synthetic =
           hold.providerRefundId !== null &&
-          hold.providerRefundIdKind === "synthetic_full";
+          hold.providerRefundIdKind === "synthetic_full" &&
+          hold.reason !== HOLD_TRANSACTION_CONFLICT_REASON;
         // 1055 G1: a matched refund id only counts a hold that names none.
         if (request.providerRefundId !== undefined) {
           if (request.resolution !== "counted_against_intent")

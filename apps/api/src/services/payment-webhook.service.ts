@@ -824,6 +824,21 @@ async function findRefundCandidate(
   });
 }
 
+/** 1077 R1: the hold key of an unreadable matched success. `refund_recon_holds
+ * .provider_refund_id` is varchar(100) and the parser accepts ids up to 100
+ * characters, so `invalid:<id>` can overflow and roll the hold back (the
+ * webhook then fails and nothing stops the money). Up to the column limit the
+ * key stays `invalid:<id>` (keys already stored keep their identity); a longer
+ * one is `invalid-h:` plus the SHA-256 of the full id (74 characters, never
+ * truncated, so different ids stay different). The prefixes differ at the
+ * eighth character, so a hashed key never equals a plain one. */
+const REFUND_HOLD_ID_MAX = 100;
+function invalidReportHoldRefundId(rawId: string): string {
+  const plain = `invalid:${rawId}`;
+  if (plain.length <= REFUND_HOLD_ID_MAX) return plain;
+  return `invalid-h:${createHash("sha256").update(rawId).digest("hex")}`;
+}
+
 /** legend-9s33i (1025 C): a signed refund event whose reference names another
  * intent than the one owning its payment id is not dropped without a trace:
  * an open recon hold on the intent that owns the payment id (blocks its
@@ -1767,7 +1782,16 @@ async function processRefundEvent(
           owner.intent,
           {
             providerRefundId: facts.refundId ?? null,
-            amountIdr: facts.amountIdr ?? Number(refund.amountIdr),
+            // 1077 R2: an amount the event does not give readably holds the
+            // whole payment of the transaction that owns the named payment id
+            // (restrictive), never the amount of the refund another
+            // transaction's key matched.
+            amountIdr:
+              facts.amountIdr ??
+              Math.max(
+                Number(owner.intent.amountIdr),
+                owner.evidenceAmountIdr ?? 0,
+              ),
             providerPaymentRef: namedPaymentId ?? null,
             refundStatus: facts.refundStatus,
           },
@@ -1799,9 +1823,9 @@ async function processRefundEvent(
               // Own key: the stand-in amount was never reported, so it must
               // not count as evidence already held for the real key (I7
               // `maxHeld`) and swallow a later readable report (1075 P1).
-              providerRefundId: `invalid:${
-                facts.refundId ?? refund.providerRef ?? `refund:${refund.id}`
-              }`,
+              providerRefundId: invalidReportHoldRefundId(
+                facts.refundId ?? refund.providerRef ?? `refund:${refund.id}`,
+              ),
               providerPaymentRef: paymentRef,
               amountIdr: Number(intent.amountIdr),
             },

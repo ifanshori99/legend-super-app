@@ -7230,3 +7230,10 @@ Cabang worktree `ghostex/980-refund-sisa-4-kartu` dari `9788dc422` (958 + 967). 
 - Test: refund-1063-e (7 test, 4 merah di HEAD: e-02, e-03, e-05, e-07) dan refund-1063-f jurnal (3 test, 2 merah di HEAD: f-01, f-03); kontrol echo sah hijau di keduanya. Fixture accounting-provider-refund-net-1013 diberi `provider_ref` pada intent (intent terbayar selalu punya; assertion tidak berubah).
 - Review: architect xhigh sekali: tidak ada P0/P1; empat P2 kasus tepi lama jadi bead (A selisih nominal echo sebagian di sisa transaksi, B selisih R-P tak dijurnal, C hold saat ref datang belakangan, D dua refund satu ref).
 - Bukti: regresi 181 berkas refund/hold/poller/DP/jurnal: 2560 lulus, 8 skip, 1 gagal (fixture 1013, dibetulkan, 14/14 lulus); typecheck API (heavy) hijau; prettier dan eslint bersih; tanpa migrasi baru.
+
+**1084 refund ronde 8 (SO 1077): tiga temuan ditutup (18 Nov 2026, cabang ws/1072-refund-ronde6-q45, base 6c0055dcb, tingkat K uang)**
+
+- Sudah: R1 (P1) kunci hold `invalid:<id>` dibatasi: id <= 92 karakter tetap, lebih panjang menjadi `invalid-h:` + SHA-256 (74 karakter); R2 (P1) nominal tak terbaca pada transaksi beda menahan seluruh pembayaran intent pemilik (maks nominal intent dan evidence), bukan nominal R transaksi lain; R3 (P2) hold konflik `synthetic_full` (K3) bisa ditutup dengan `not_this_intent` (counted tetap 409). Invarian I10 di docs/briefs/1072-invarian.md, runbook di docs/deployment.md. Tanpa migrasi, flag refund otomatis penyedia (Q45) tidak disentuh.
+- Test: refund-1077-r1 (13), r2 (3), r3 (2 + 1 todo). Merah di 6c0055dcb: r1 9 dari 13, r2 3 dari 3, r3 2 dari 2.
+- Review: architect xhigh sekali: tidak ada P0-P2; dua usul P3 (runbook count R2, max evidence) sudah dikerjakan.
+- Langkah berikut: merge train; sebelum rilis, second opinion ronde 9 atas area ini.

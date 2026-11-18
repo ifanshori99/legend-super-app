@@ -122,6 +122,15 @@ Invarian: sukses penyedia yang cocok ke R dengan nominal lebih kecil dari R adal
 - Review architect K1-K3 (L1-L3): K3 memakai kunci unik yang sama dengan hold live-own, jadi hold `Math.max(nominal manual, atRiskIdr)` dipasang sesudah `atRiskIdr` dihitung dan sebelum jalur `retry`/`own`, supaya hold live-own yang lebih besar tidak tertelan (hold terbuka yang lebih kecil dinaikkan). K1 berlaku untuk refund `pending` dan `approved` yang belum terkirim. Runbook: `not_this_intent` aman hanya untuk hold K1 (fact dibukukan) dan hold K3 atas refund dashboard pada uang yang sudah dibayar manual; hold pintu webhook I9, K2, dan K3 dengan `left <= 0` tidak membukukan fact.
 - Test (test-writer): `apps/api/src/test/refund-1075-r4-unsent-smaller-success.test.ts`.
 
+### I10. Hold yang diwajibkan selalu tersimpan, nominalnya milik transaksi pemilik, dan hold konflik selalu bisa ditutup (SO 1077 ronde 8)
+
+Invarian: (a) hold yang diwajibkan I8 tidak boleh gagal karena panjang kunci; (b) nominal tak terbaca pada laporan transaksi lain menahan seluruh pembayaran transaksi pemilik payment id, bukan nominal R transaksi lain; (c) hold konflik `synthetic_full` (K3) tidak pernah bisa di-count, tetapi `not_this_intent` harus tersedia.
+
+- R1 (P1): `invalid:<id>` melewati `varchar(100)` bila id > 92 karakter, transaksi hold rollback, webhook 500, tidak ada penghalang uang. Fix: `invalidReportHoldRefundId` (`payment-webhook.service.ts`): id <= 92 karakter tetap `invalid:<id>` (identitas hold lama tidak berubah); lebih panjang menjadi `invalid-h:` + SHA-256 id penuh (74 karakter, tidak dipotong, id berbeda tetap berbeda; awalan berbeda di karakter ke-8 sehingga tidak bisa bertabrakan dengan kunci biasa). Tanpa migrasi.
+- R2 (P1): hold `REFERENCE_MISMATCH` memakai `facts.amountIdr ?? max(nominal intent pemilik, nominal evidence pemilik)`; tidak lagi nominal R yang dipilih key (restriktif; menghitung hold sebagai counted akan membukukan nominal pengganti, finance wajib memeriksa nominal asli di dashboard penyedia).
+- R3 (P2): gerbang `synthetic` di resolver (`refund-recon-hold.service.ts`) tidak berlaku untuk hold beralasan `HOLD_TRANSACTION_CONFLICT`; `not_this_intent` diizinkan (izin `payment.reconcile` + audit sama seperti resolve lain), `counted_against_intent` tetap 409.
+- Test: `refund-1077-r1-invalid-long-id`, `refund-1077-r2-mismatch-unreadable-amount`, `refund-1077-r3-synthetic-full-conflict-resolve`.
+
 ### Risiko dan urutan
 
 - Hold I8 beralasan CONFLICT, jadi hanya `not_this_intent` yang bisa menutupnya. Bila Y ternyata refund nyata, dana tertahan sampai keputusan finance (restriktif, sesuai CTO). Perlu satu baris di runbook.

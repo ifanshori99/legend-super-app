@@ -702,7 +702,12 @@ refund settled by hand) books no fact: do not choose `not_this_intent` when the
 report is right. The same holds for a report of the whole payment on an intent
 with nothing left to refund. When that report is a dashboard refund of money
 already paid by hand (1072 B-1), `not_this_intent` is safe, because the
-refund is already counted.
+refund is already counted. That hold (kind `synthetic_full`, reason
+transaction conflict) can be closed with `not_this_intent` (1077 R3); counting
+it stays refused. A hold of a signed report that names the payment of another
+transaction with an unreadable or missing amount (reference mismatch, 1077 R2)
+holds the whole payment of that transaction: before counting it, read the real
+amount on the provider dashboard (counting books the held amount as refunded).
 Counting a recon hold (`count`) is refused while the intent has an `approved`
 refund, and settling is refused while a hold is open (1072 B-2): to count a
 hold, cancel the waiting `approved` refund first. A hold on a transaction
