@@ -30,7 +30,10 @@
 //    (409/422, at request or approve) and the fake port is not called.
 //  - Total money out stays within the Rp100.000 paid: our refunds not failed plus
 //    provider facts (the harness' conservative net) <= Rp100.000.
-//  - Replays (new event id and the identical event again) never add a hold row.
+//  - Replays: the identical event again never adds a hold row. With the switch off
+//    (1103 contract) a keyed matched success files one conflict hold per stored
+//    event (no refund id, full value), so a NEW event id adds exactly one hold;
+//    the recorder door (b) keeps one hold per refund id whatever the event id.
 //  - Controls (flag ON, legacy fake port): R approved and really sent with ref X
 //    (in flight, or completed), signed success carrying X with Rp20.000 is a normal
 //    echo: no hold is filed and R is not failed.
@@ -152,11 +155,14 @@ async function expectNothingMoreCanBePaid(
   await h.expectMoneyWithinPaid(t.code, label);
 }
 
-/** The report left an open hold worth at least `atLeast`, R untouched, nothing more payable. */
+/** The report left an open hold worth at least `SMALLER_IDR`, R untouched, nothing more payable.
+ * `holdPerEvent`: the switch-off conflict hold of a keyed matched success is one per
+ * stored event (identical event again: none; a new event id: one more). */
 async function expectHeldAndBlocked(
   t: { code: Code; refundId: string },
   makeEvent: () => object,
   label: string,
+  holdPerEvent = false,
 ) {
   await h.replayAll(makeEvent, 1);
   const open = await h.openOf(t.code.id);
@@ -165,12 +171,31 @@ async function expectHeldAndBlocked(
     `${label}: an open hold of at least ${SMALLER_IDR} exists (holds: ${JSON.stringify(await h.allHolds(t.code.id))})`,
   ).toBe(true);
   const holdsAfterFirst = (await h.allHolds(t.code.id)).length;
+  if (holdPerEvent) {
+    expect(holdsAfterFirst, `${label}: one hold for the first event`).toBe(1);
+    const same = makeEvent();
+    await h.deliver(same);
+    await h.deliver(same);
+    await h.pollLater().catch(() => null);
+    await h.runWorker();
+    expect(
+      (await h.allHolds(t.code.id)).length,
+      `${label}: a new event delivered twice adds one hold, not two`,
+    ).toBe(holdsAfterFirst + 1);
+  }
+  const holdsBeforeReplays = (await h.allHolds(t.code.id)).length;
 
   await h.replayAll(makeEvent, 2);
   expect(
     (await h.allHolds(t.code.id)).length,
-    `${label}: replays of the same evidence add no hold`,
-  ).toBe(holdsAfterFirst);
+    holdPerEvent
+      ? `${label}: two new event ids add one hold each`
+      : `${label}: replays of the same evidence add no hold`,
+  ).toBe(holdsBeforeReplays + (holdPerEvent ? 2 : 0));
+  expect(
+    (await h.openOf(t.code.id)).length,
+    `${label}: every hold stays open`,
+  ).toBe((await h.allHolds(t.code.id)).length);
 
   expect(
     await h.refundRow(t.refundId),
@@ -192,6 +217,7 @@ describe("I9 (P1) a smaller provider success is an echo only when R was really s
       t,
       () => keyedSuccess(t.code, t.refundId, y, SMALLER_IDR),
       "r4-01",
+      true,
     );
   });
 
@@ -205,7 +231,7 @@ describe("I9 (P1) a smaller provider success is an echo only when R was really s
     );
   });
 
-  it("1075-r4-03 (c) the same keyed Rp20.000 success delivered again and again (identical event, then fresh event ids, poller and worker): exactly one open hold, R still approved and unsettled", async () => {
+  it("1075-r4-03 (c) the same keyed Rp20.000 success delivered again and again (identical event, poller and worker): exactly one open hold; fresh event ids add one hold each; R still approved and unsettled", async () => {
     const t = await unsentWorld();
     const y = `rf_${randomBytes(6).toString("hex")}`;
     const same = keyedSuccess(t.code, t.refundId, y, SMALLER_IDR);
@@ -214,19 +240,33 @@ describe("I9 (P1) a smaller provider success is an echo only when R was really s
     await h.deliver(same);
     await h.pollLater().catch(() => null);
     await h.runWorker();
-    await h.replayAll(
-      () => keyedSuccess(t.code, t.refundId, y, SMALLER_IDR),
-      2,
-    );
 
     const open = await h.openOf(t.code.id);
     expect(
       open,
-      `exactly one open hold after all replays (holds: ${JSON.stringify(await h.allHolds(t.code.id))})`,
+      `exactly one open hold after the identical replays (holds: ${JSON.stringify(await h.allHolds(t.code.id))})`,
     ).toHaveLength(1);
     expect(open[0]!.amount_idr).toBeGreaterThanOrEqual(SMALLER_IDR);
+    expect(open[0]!.provider_refund_id).toBeNull();
+
+    // 1103 contract (switch off): one conflict hold per stored event, so fresh
+    // event ids add one each, all open, no refund id.
+    await h.replayAll(
+      () => keyedSuccess(t.code, t.refundId, y, SMALLER_IDR),
+      2,
+    );
+    const all = await h.allHolds(t.code.id);
+    expect(
+      all,
+      `one hold per event after the fresh event ids (holds: ${JSON.stringify(all)})`,
+    ).toHaveLength(3);
+    expect(await h.openOf(t.code.id)).toHaveLength(3);
+    for (const row of all) {
+      expect(row.amount_idr).toBeGreaterThanOrEqual(SMALLER_IDR);
+      expect(row.provider_refund_id).toBeNull();
+    }
     expect((await h.refundRow(t.refundId)).status).toBe("approved");
-    await h.expectMoneyWithinPaid(t.code, "r4-03");
+    await expectNothingMoreCanBePaid(t, "r4-03");
   });
 
   it("1075-r4-04 control (premise): flag off, R approved and never sent, no provider report: finance settles R by hand (200) and R is completed", async () => {

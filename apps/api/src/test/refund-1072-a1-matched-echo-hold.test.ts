@@ -32,11 +32,12 @@
 //   LEGEND_TEST_FILES="src/test/refund-1072-a1-matched-echo-hold.test.ts" heavy pnpm test
 
 import { randomBytes } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   establishScopedTenantContext,
   establishTenantContext,
 } from "@starter/shared/core/server";
+import { env } from "../config/env";
 import { applyRefundProviderUpdate } from "../services/payment-refund.service.ts";
 import {
   BILL_IDR,
@@ -45,6 +46,22 @@ import {
 } from "./refund-1072-harness";
 
 const h = createRefundHarness("1072a1");
+
+// This suite pins the ACTIVE path (automatic DOIT refunds on): a signed success
+// on a matched refund is judged as an echo of our refund. With the switch off
+// that door only files one conflict hold (1103), pinned in the 1101 f2/f3 and
+// 1072-b suites. Registered after the harness hooks, so these run after them.
+const flags = env as unknown as { DOIT_REFUNDS_ENABLED: boolean };
+const flagBefore = flags.DOIT_REFUNDS_ENABLED;
+beforeEach(() => {
+  flags.DOIT_REFUNDS_ENABLED = true;
+});
+afterEach(() => {
+  flags.DOIT_REFUNDS_ENABLED = false;
+});
+afterAll(() => {
+  flags.DOIT_REFUNDS_ENABLED = flagBefore;
+});
 
 const R_IDR = 30_000;
 const REPORTED_IDR = 80_000;

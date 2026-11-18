@@ -371,6 +371,34 @@ export async function recordProviderRefundInTx(
         ),
       );
   };
+  /** 1103 F4: an insert of a hold that did not land (same key: a replay, or
+   * an older report of this id) never leaves a smaller hold behind. A report
+   * above what the key holds raises the open hold, or opens the surplus of a
+   * resolved one, through the conflict hold (`fileTransactionConflictHoldInTx`:
+   * only finance's `not_this_intent` closes it). No hold of the key at all (the
+   * insert lost on its event id) is held too, never dropped. A hold resolve
+   * files nothing. Same lock order as the insert it follows. */
+  const raiseHeldIfLarger = async (
+    heldIdr: number,
+    intentOutletId: string,
+  ): Promise<void> => {
+    if (input.holdResolve) return;
+    const [existing] = await tx
+      .select({ amountIdr: refundReconHolds.amountIdr })
+      .from(refundReconHolds)
+      .where(
+        and(
+          eq(refundReconHolds.tenantId, tenantId),
+          eq(refundReconHolds.paymentIntentId, input.expectedIntentId),
+          eq(refundReconHolds.providerRefundIdKind, refundIdKind),
+          eq(refundReconHolds.providerRefundId, providerRefundId),
+          sql`coalesce(${refundReconHolds.providerPaymentRef}, '') = ${providerPaymentRef}`,
+        ),
+      )
+      .limit(1);
+    if (existing && heldIdr <= Number(existing.amountIdr)) return;
+    await fileTransactionConflictHold(heldIdr, intentOutletId);
+  };
   const fileLiveOwnHold = async (
     heldIdr: number,
     intentOutletId: string,
@@ -395,19 +423,22 @@ export async function recordProviderRefundInTx(
       })
       .onConflictDoNothing()
       .returning({ id: refundReconHolds.id });
-    if (held)
-      await alertProviderRefundCountedWithLiveOwn(
-        tx,
-        context,
-        {
-          intentId: input.expectedIntentId,
-          outletId: tellSupervisors ? intentOutletId : null,
-          // Per transaction, like the hold (1055 AV-P2).
-          providerRefundId: `${providerPaymentRef}\0${refundKey}`,
-          amountIdr: heldIdr,
-        },
-        now,
-      );
+    if (!held) {
+      await raiseHeldIfLarger(heldIdr, intentOutletId);
+      return;
+    }
+    await alertProviderRefundCountedWithLiveOwn(
+      tx,
+      context,
+      {
+        intentId: input.expectedIntentId,
+        outletId: tellSupervisors ? intentOutletId : null,
+        // Per transaction, like the hold (1055 AV-P2).
+        providerRefundId: `${providerPaymentRef}\0${refundKey}`,
+        amountIdr: heldIdr,
+      },
+      now,
+    );
   };
   /** 1045 A2: holds a provider report larger than what is left of its
    * transaction (nothing booked), once per (intent, refund id); finance told
@@ -438,18 +469,21 @@ export async function recordProviderRefundInTx(
       })
       .onConflictDoNothing()
       .returning({ id: refundReconHolds.id });
-    if (held)
-      await alertProviderRefundExceedsLeft(
-        tx,
-        context,
-        {
-          intentId: input.expectedIntentId,
-          outletId: intentOutletId,
-          dedupKey: `${providerPaymentRef}\0${refundKey}`,
-          amountIdr: heldIdr,
-        },
-        now,
-      );
+    if (!held) {
+      await raiseHeldIfLarger(heldIdr, intentOutletId);
+      return;
+    }
+    await alertProviderRefundExceedsLeft(
+      tx,
+      context,
+      {
+        intentId: input.expectedIntentId,
+        outletId: intentOutletId,
+        dedupKey: `${providerPaymentRef}\0${refundKey}`,
+        amountIdr: heldIdr,
+      },
+      now,
+    );
   };
   /** 1055 G1: holds a provider refund id reported on a transaction with a
    * `synthetic_hold` fact that may be this very refund (nothing booked), once
@@ -480,18 +514,21 @@ export async function recordProviderRefundInTx(
       })
       .onConflictDoNothing()
       .returning({ id: refundReconHolds.id });
-    if (held)
-      await alertProviderRefundMayDuplicateAnonymous(
-        tx,
-        context,
-        {
-          intentId: input.expectedIntentId,
-          outletId: intentOutletId,
-          dedupKey: `${providerPaymentRef}\0${refundKey}`,
-          amountIdr: heldIdr,
-        },
-        now,
-      );
+    if (!held) {
+      await raiseHeldIfLarger(heldIdr, intentOutletId);
+      return;
+    }
+    await alertProviderRefundMayDuplicateAnonymous(
+      tx,
+      context,
+      {
+        intentId: input.expectedIntentId,
+        outletId: intentOutletId,
+        dedupKey: `${providerPaymentRef}\0${refundKey}`,
+        amountIdr: heldIdr,
+      },
+      now,
+    );
   };
   /** 1055 G2 (AP2-2): holds a provider refund id reported on this
    * transaction that is on record for another one, once per (intent,
@@ -895,7 +932,7 @@ export async function recordProviderRefundInTx(
       // Held already for finance, or matched by finance to a counted refund
       // (any hold of this id closed `same_as_counted`): nothing more.
       const [held] = await tx
-        .select({ id: refundReconHolds.id })
+        .select({ amountIdr: refundReconHolds.amountIdr })
         .from(refundReconHolds)
         .where(
           and(
@@ -917,7 +954,13 @@ export async function recordProviderRefundInTx(
           ),
         )
         .limit(1);
-      if (held) return { status: "duplicate" };
+      if (held) {
+        // 1103 F5: a report above what this key holds is new proof, not a
+        // replay (finance's `same_as_counted` covered the smaller amount only).
+        if (amountIdr > Number(held.amountIdr))
+          await fileTransactionConflictHold(amountIdr, intent.outletId);
+        return { status: "duplicate" };
+      }
       if (
         (await unmatchedAnonymousFacts(
           tx,
@@ -1489,9 +1532,29 @@ export async function fileTransactionConflictHoldInTx(
       ),
     )
     .for("update");
-  // Same webhook event id with another key (a replay of the filed report):
-  // nothing to raise.
-  if (!existing) return;
+  // 1103 F1: the event id is taken but no hold has this key (an id an older
+  // build stored under another kind, or the same report under another key).
+  // Nothing is dropped: the report is held under an id of its own kind, so
+  // a replay of it finds this hold by its key next time.
+  if (!existing) {
+    const [filed] = await tx
+      .insert(refundReconHolds)
+      .values({
+        tenantId,
+        paymentIntentId: intentId,
+        webhookEventId: holdEventId(`\0kind\0${providerRefundIdKind}`),
+        providerRefundId,
+        providerRefundIdKind,
+        providerPaymentRef,
+        amountIdr: idr(input.amountIdr),
+        reason: HOLD_TRANSACTION_CONFLICT_REASON,
+        flaggedAt: now,
+      })
+      .onConflictDoNothing()
+      .returning({ id: refundReconHolds.id });
+    if (filed) await alert();
+    return;
+  }
   if (existing.resolvedAt !== null) {
     // 1072 I7: finance resolved the hold of this key. A report above the
     // largest amount ever held for the key (main hold and every surplus

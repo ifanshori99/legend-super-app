@@ -48,7 +48,7 @@
 //   LEGEND_TEST_FILES="src/test/refund-1088-r2-invalid-id-alias.test.ts" heavy pnpm test
 
 import { createHash, randomBytes } from "node:crypto";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { env } from "../config/env";
 import { resetPaymentRefundGateways } from "../services/payment-refund-gateway";
 import {
@@ -65,7 +65,15 @@ const REAL_IDR = 60_000;
 
 const flags = env as unknown as { DOIT_REFUNDS_ENABLED: boolean };
 const flagBefore = flags.DOIT_REFUNDS_ENABLED;
+// Matched suites exercise the active provider-refund path: the baseline is
+// DOIT refunds on (off by default); each test restores it, afterAll restores the original.
+beforeAll(() => {
+  flags.DOIT_REFUNDS_ENABLED = true;
+});
 afterEach(() => {
+  flags.DOIT_REFUNDS_ENABLED = true;
+});
+afterAll(() => {
   flags.DOIT_REFUNDS_ENABLED = flagBefore;
 });
 
@@ -217,14 +225,40 @@ describe("R2 (P1) a literal provider id equal to an invalid-report placeholder i
       "r2-01: no journal event",
     ).toBe(eventsBefore);
 
-    // Replays of the real report add no second hold.
+    // Replays of the real report (same event id) add no second hold.
     const holdsAfter = (await h.allHolds(w.code.id)).length;
     await h.replayAll(real, 2);
-    await h.replayAll(keyed(w, H, REAL_IDR), 1);
     expect(
       (await h.allHolds(w.code.id)).length,
       "r2-01: replays add no hold",
     ).toBe(holdsAfter);
+    // The switch is off in this world (1103): the same report under a new
+    // event id is a new event, one more hold of at least the reported amount.
+    await h.replayAll(keyed(w, H, REAL_IDR), 1);
+    expect(
+      (await h.allHolds(w.code.id)).length,
+      "r2-01: a new event id adds exactly one hold",
+    ).toBe(holdsAfter + 1);
+    const openAfterNew = await h.openOf(w.code.id);
+    expect(openAfterNew, "r2-01: both holds open").toHaveLength(2);
+    for (const row of openAfterNew) {
+      expect(
+        row.amount_idr,
+        "r2-01: each hold covers at least the reported Rp60.000",
+      ).toBeGreaterThanOrEqual(REAL_IDR);
+    }
+    expect(await h.providerRows(w.code.id), "r2-01: still no fact").toEqual(
+      factsBefore,
+    );
+    expect(
+      await h.refundEventsOfIntent(w.code.id),
+      "r2-01: still no journal event",
+    ).toBe(eventsBefore);
+    const settled = await h.settleManually(w.r2, R2_IDR);
+    expect(
+      settled.status,
+      `r2-01: settle of R2 stays refused: ${JSON.stringify(settled.body)}`,
+    ).not.toBe(200);
   });
 
   it("1088-r2-02 recorder door: placeholder of L closed, then `payment.refunded` carrying the literal id H and Rp60.000 is recorded or held, never absorbed; settle of R2 refused", async () => {
@@ -295,20 +329,30 @@ describe("R2 (P1) a literal provider id equal to an invalid-report placeholder i
         ).toHaveLength(1);
         expect(open[0]!.amount_idr).toBe(BILL_IDR);
 
+        // Same event id: a replay. The switch is off in this world (1103), so
+        // the same report under a new event id is a new event: one more hold.
         await h.replayAll(report, 2);
-        await h.replayAll(keyed(w, id, "80000.0"), 1);
         expect(
           (await h.allHolds(w.code.id)).length,
-          "repeated reports of L add no hold",
+          "replays of L (same event id) add no hold",
         ).toBe(1);
+        await h.replayAll(keyed(w, id, "80000.0"), 1);
+        const afterNew = await h.openOf(w.code.id);
+        expect(
+          afterNew,
+          `a new event id of L adds exactly one open hold (holds: ${JSON.stringify(await h.allHolds(w.code.id))})`,
+        ).toHaveLength(2);
+        for (const row of afterNew) expect(row.amount_idr).toBe(BILL_IDR);
 
-        const resolved = await h.resolveHold(open[0]!.id, "not_this_intent");
-        expect(resolved.status, JSON.stringify(resolved.body)).toBe(200);
-        await h.replayAll(keyed(w, id, "80000.0"), 1);
+        for (const row of afterNew) {
+          const resolved = await h.resolveHold(row.id, "not_this_intent");
+          expect(resolved.status, JSON.stringify(resolved.body)).toBe(200);
+        }
+        await h.replayAll(report, 1);
         expect(
           (await h.allHolds(w.code.id)).length,
-          "after finance closed it, the same report L reopens nothing",
-        ).toBe(1);
+          "after finance closed them, the same event of L reopens nothing",
+        ).toBe(2);
         expect(await h.openOf(w.code.id)).toHaveLength(0);
         expect(await h.providerRows(w.code.id), "no fact").toHaveLength(0);
       });

@@ -43,7 +43,7 @@
 //   LEGEND_TEST_FILES="src/test/refund-1077-r1-invalid-long-id.test.ts" heavy pnpm test
 
 import { randomBytes } from "node:crypto";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { env } from "../config/env";
 import { resetPaymentRefundGateways } from "../services/payment-refund-gateway";
 import {
@@ -59,7 +59,15 @@ const R2_IDR = 70_000;
 
 const flags = env as unknown as { DOIT_REFUNDS_ENABLED: boolean };
 const flagBefore = flags.DOIT_REFUNDS_ENABLED;
+// Matched suites exercise the active provider-refund path: the baseline is
+// DOIT refunds on (off by default); each test restores it, afterAll restores the original.
+beforeAll(() => {
+  flags.DOIT_REFUNDS_ENABLED = true;
+});
 afterEach(() => {
+  flags.DOIT_REFUNDS_ENABLED = true;
+});
+afterAll(() => {
   flags.DOIT_REFUNDS_ENABLED = flagBefore;
 });
 
@@ -150,8 +158,11 @@ async function expectHeld(
   const factsBefore = await h.providerRows(w.code.id);
   const eventsBefore = await h.refundEventsOfIntent(w.code.id);
 
-  for (const makeEvent of deliveries) {
-    const answered = await h.deliver(makeEvent());
+  // The provider switch is off in this world (R2 waits for finance): since
+  // 1103 each signed success keeps exactly one conflict hold per event id.
+  const events = deliveries.map((makeEvent) => makeEvent());
+  for (const event of events) {
+    const answered = await h.deliver(event);
     expect(
       answered.status,
       `${label}: the webhook never answers 5xx: ${JSON.stringify(answered.body)}`,
@@ -174,10 +185,10 @@ async function expectHeld(
   }
   const holdsAfterFirst = (await h.allHolds(w.code.id)).length;
 
-  // Replays: same evidence, new event ids, poller, worker.
-  for (const makeEvent of deliveries) {
+  // Replays: the same events (same event ids), poller, worker.
+  for (const event of events) {
     for (let round = 0; round < 2; round += 1) {
-      const answered = await h.deliver(makeEvent());
+      const answered = await h.deliver(event);
       expect(
         answered.status,
         `${label}: replay never answers 5xx: ${JSON.stringify(answered.body)}`,
@@ -193,6 +204,28 @@ async function expectHeld(
   expect(await h.openOf(w.code.id), `${label}: still held`).toHaveLength(
     deliveries.length,
   );
+
+  // The same evidence under new event ids is new events: one more hold of the
+  // whole bill per event, never a fact, never fewer holds.
+  for (const makeEvent of deliveries) {
+    const answered = await h.deliver(makeEvent());
+    expect(
+      answered.status,
+      `${label}: new event never answers 5xx: ${JSON.stringify(answered.body)}`,
+    ).toBeLessThan(500);
+    await h.pollLater().catch(() => null);
+    await h.runWorker();
+  }
+  const openAfterNew = await h.openOf(w.code.id);
+  expect(
+    openAfterNew,
+    `${label}: one more open hold per new event (holds: ${JSON.stringify(await h.allHolds(w.code.id))})`,
+  ).toHaveLength(deliveries.length * 2);
+  for (const row of openAfterNew) {
+    expect(row.amount_idr, `${label}: every hold keeps the whole payment`).toBe(
+      BILL_IDR,
+    );
+  }
 
   // Nothing more can go out.
   const settled = await h.settleManually(w.r2, R2_IDR);

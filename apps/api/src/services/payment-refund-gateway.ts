@@ -133,7 +133,7 @@ const DOIT_REFUND_PROVIDER = "doit";
 
 /** Defence in depth: a registered DOIT adapter stays unreachable while the
  * switch is off, even if some bootstrap registered it by mistake. */
-function refundProviderSwitchedOff(provider: string): boolean {
+export function refundProviderSwitchedOff(provider: string): boolean {
   return provider === DOIT_REFUND_PROVIDER && !env.DOIT_REFUNDS_ENABLED;
 }
 

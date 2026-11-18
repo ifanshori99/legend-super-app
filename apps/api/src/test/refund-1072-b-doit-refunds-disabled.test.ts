@@ -95,6 +95,7 @@ import {
   runRefundPayout,
   sweepApprovedRefundPayouts,
 } from "../services/payment-refund.service";
+import { HOLD_TRANSACTION_CONFLICT_REASON } from "../services/refund-hold-reasons";
 import {
   clearDoitWebhookSecretCache,
   reprocessStoredWebhookEvents,
@@ -572,6 +573,20 @@ async function providerFactsIdr(intentId: string) {
     [tenantId, intentId],
   );
   return Number(rows[0]!.total);
+}
+
+async function openHolds(intentId: string) {
+  const { rows } = await owner.query<{
+    reason: string;
+    amount_idr: string;
+    provider_refund_id: string | null;
+  }>(
+    `SELECT reason, amount_idr::text AS amount_idr, provider_refund_id
+     FROM refund_recon_holds
+     WHERE tenant_id = $1 AND payment_intent_id = $2 AND resolved_at IS NULL`,
+    [tenantId, intentId],
+  );
+  return rows;
 }
 
 async function refundable(intentId: string) {
@@ -1166,12 +1181,13 @@ const reprocess = () =>
   reprocessStoredWebhookEvents(webhookContext, new Date(), 100);
 
 describe("legend-kmrto B3 flag off: provider refund reports are matched, odd ones held", () => {
-  it("control: a signed refund.succeeded for our approved refund still completes it, with no refund call", async () => {
+  it("control: a signed refund.succeeded for our approved refund does not complete it (1103): one conflict hold of the full value, no fact, no journal, no refund call; a replay adds no hold, a new event adds one", async () => {
     const intent = await seedPaid();
     const refundId = await seedApproved(intent, {
       amountIdr: PAID_IDR,
       attempts: 1,
     });
+    const refundsBefore = await refundCount(intent.intentId);
 
     const response = await deliver("refund.succeeded", {
       object: "refund",
@@ -1183,9 +1199,49 @@ describe("legend-kmrto B3 flag off: provider refund reports are matched, odd one
     });
 
     expect(response.status).toBe(200);
-    expect(response.body.status).toBe("processed");
-    expect((await refundRow(refundId)).status).toBe("completed");
-    expect(await intentStatus(intent.intentId)).toBe("refunded");
+    expect(response.body.status).toBe("ignored");
+    expect(await refundRow(refundId)).toMatchObject({
+      status: "approved",
+      completed_at: null,
+    });
+    expect(await intentStatus(intent.intentId)).toBe("paid");
+    expect(await providerFactsIdr(intent.intentId), "no fact").toBe(0);
+    expect(await refundedEvents(refundId, intent.intentId), "no journal").toBe(
+      0,
+    );
+    expect(await refundCount(intent.intentId), "no refund created").toBe(
+      refundsBefore,
+    );
+    const holds = await openHolds(intent.intentId);
+    expect(holds).toEqual([
+      {
+        reason: HOLD_TRANSACTION_CONFLICT_REASON,
+        amount_idr: String(PAID_IDR),
+        provider_refund_id: null,
+      },
+    ]);
+
+    // Same stored event again (worker retry): no second hold.
+    await reprocess();
+    expect(await openHolds(intent.intentId), "replay adds none").toHaveLength(
+      1,
+    );
+
+    // A new event id is a new report: one more hold, still nothing settled.
+    const second = await deliver("refund.succeeded", {
+      object: "refund",
+      id: `rf_${hex(6)}`,
+      idempotency_key: `refund:${refundId}`,
+      amount: PAID_IDR,
+      status: "succeeded",
+      payment_id: intent.paymentId,
+    });
+    expect(second.status).toBe(200);
+    expect(await openHolds(intent.intentId), "one hold per event").toHaveLength(
+      2,
+    );
+    expect((await refundRow(refundId)).status).toBe("approved");
+    expect(await providerFactsIdr(intent.intentId)).toBe(0);
     expect(doit.refundPosts).toEqual([]);
   });
 

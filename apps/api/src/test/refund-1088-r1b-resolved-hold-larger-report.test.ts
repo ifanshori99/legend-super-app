@@ -18,7 +18,8 @@
 //   LEGEND_TEST_FILES="src/test/refund-1088-r1b-resolved-hold-larger-report.test.ts" heavy pnpm test
 
 import { randomBytes } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { env } from "../config/env";
 import {
   BILL_IDR,
   createRefundHarness,
@@ -26,6 +27,17 @@ import {
 } from "./refund-1072-harness";
 
 const h = createRefundHarness("1088r1b");
+
+// The matched suites exercise the active provider-refund path: DOIT refunds
+// are off by default, so switch them on here and restore the value afterwards.
+const flags = env as unknown as { DOIT_REFUNDS_ENABLED: boolean };
+const flagBefore = flags.DOIT_REFUNDS_ENABLED;
+beforeAll(() => {
+  flags.DOIT_REFUNDS_ENABLED = true;
+});
+afterAll(() => {
+  flags.DOIT_REFUNDS_ENABLED = flagBefore;
+});
 
 const R1_IDR = 30_000;
 const NEXT_IDR = 70_000;

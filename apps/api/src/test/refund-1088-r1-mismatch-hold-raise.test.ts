@@ -43,6 +43,7 @@
 
 import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { env } from "../config/env";
 import { idr, tenantIdSchema } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
@@ -74,6 +75,17 @@ import {
 } from "./refund-1072-harness";
 
 const h = createRefundHarness("1088r1");
+
+// The matched suites exercise the active provider-refund path: DOIT refunds
+// are off by default, so switch them on here and restore the value afterwards.
+const flags = env as unknown as { DOIT_REFUNDS_ENABLED: boolean };
+const flagBefore = flags.DOIT_REFUNDS_ENABLED;
+beforeAll(() => {
+  flags.DOIT_REFUNDS_ENABLED = true;
+});
+afterAll(() => {
+  flags.DOIT_REFUNDS_ENABLED = flagBefore;
+});
 
 const R1_IDR = 30_000;
 const NEXT_IDR = 70_000;

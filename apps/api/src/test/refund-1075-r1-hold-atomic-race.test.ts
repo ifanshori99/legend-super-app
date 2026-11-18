@@ -128,14 +128,26 @@ async function prepareR2(code: Code): Promise<string> {
   expect((await h.refundRow(id)).status, "premise: R2 waits for finance").toBe(
     "approved",
   );
+  // The flag was off only to queue R2. The signed report that follows is the
+  // active matched path (switch on); with it off the webhook would only file
+  // the 1101 conflict hold and never reach the hold under test.
+  flags.DOIT_REFUNDS_ENABLED = true;
   return id;
 }
 const settle = async (id: string, amountIdr: number): Promise<Answer> =>
   await h.settleManually(id, amountIdr);
 
+// Matched suites exercise the active provider-refund path: the baseline is
+// DOIT refunds on (off by default); each test restores it, afterAll restores the original.
+beforeAll(() => {
+  flags.DOIT_REFUNDS_ENABLED = true;
+});
 afterEach(() => {
-  flags.DOIT_REFUNDS_ENABLED = flagBefore;
+  flags.DOIT_REFUNDS_ENABLED = true;
   barrier.active = null;
+});
+afterAll(() => {
+  flags.DOIT_REFUNDS_ENABLED = flagBefore;
 });
 
 // --- fixtures -------------------------------------------------------------------
