@@ -54,6 +54,7 @@ import { HttpError } from "../lib/http-error.ts";
 import type { Tx } from "./menu-internals.ts";
 import { lineRoomIdr, orderGivenOf } from "./order-given.ts";
 import { assertNoOrd09Refund } from "./order-refund-lane.ts";
+import { settleOrderVouchersForVoid } from "./order-voucher-void.ts";
 import { liveRouteManualRefundWhere } from "./order-issue-route-refund.ts";
 import {
   lockIssuesOfOrder,
@@ -304,6 +305,19 @@ export async function voidPosOrderCorrection(
       // live manual refund of one of the order's lines.
       await assertNoLiveManualRefund(tx, context, order.id);
       await assertNoOrd09Refund(tx, context.tenant.tenantId, order.id);
+      // legend-3dsih (1095): a voucher given for this order is cancelled with
+      // the void, or the void is refused when the guest already used it.
+      const vouchersOfOrder = await settleOrderVouchersForVoid(tx, context, {
+        orderId: order.id,
+        actor: { userId: caller.userId },
+        now,
+      });
+      if (vouchersOfOrder.kind === "used")
+        throw new HttpError(
+          409,
+          "VOID_APOLOGY_VOUCHER_USED",
+          "Pesanan ini punya voucher yang sudah dipakai; tidak bisa di-void.",
+        );
       if (order.totalIdr <= 0)
         throw new CoreError(
           "CONFLICT",

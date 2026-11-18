@@ -24,6 +24,7 @@ import { and, eq, sql } from "drizzle-orm";
 import {
   createUlid,
   idr,
+  toIsoDateTime,
   ulidToUuid,
   type TenantId,
 } from "@starter/shared/core";
@@ -55,10 +56,12 @@ import { orderIssues } from "../db/schema/kds-issues.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { logger } from "../lib/logger.ts";
 import type { EdgeTx } from "../services/edge-queue.service.ts";
+import { recordAudit } from "../services/core-audit.ts";
 import { deliverAutoJournalEvent } from "../services/accounting-auto-journal-consumer.ts";
 import { sourceIdToDb } from "../services/inventory.service.ts";
 import { liveRouteManualRefundWhere } from "../services/order-issue-route-refund.ts";
 import { ord09RefundExistsOf } from "../services/order-refund-lane.ts";
+import { settleOrderVouchersForVoid } from "../services/order-voucher-void.ts";
 import { lockLoyaltyJournalEntity } from "../services/accounting-auto-journal-amounts.ts";
 import { deliverLoyaltyEarnEvent } from "../services/loyalty-earn-consumer.ts";
 import { recordTaxSnapshotsFromPayload } from "../services/tax.service.ts";
@@ -678,6 +681,35 @@ export async function ingestEdgeOrderVoided(
           ),
         );
     });
+    // legend-3dsih (1095): the refused void is also an audit row, so finance
+    // sees why a void did not run. Own savepoint; no money moves here.
+    await bestEffort(tx, event.id, reason, async (sp) => {
+      await recordAudit(
+        sp,
+        meta.context,
+        {
+          id: createUlid(),
+          tenantId,
+          outletId,
+          actorType: "system",
+          actorId: null,
+          deviceId: null,
+          action: "order.void_refused",
+          objectType: "order",
+          objectId: payload.orderId,
+          reason: `void_refused:${reason}`,
+          maskedChanges: {
+            before: null,
+            after: { orderId: payload.orderId, reason },
+          },
+          ipHash: null,
+          sensitiveAccess: false,
+          retentionClass: "audit_2y",
+          createdAt: toIsoDateTime(new Date()),
+        },
+        ["orderId", "reason"],
+      );
+    });
   }
 }
 
@@ -781,6 +813,15 @@ async function applyVoided(
   // back; read under the orders row lock above, same transaction.
   if (await ord09RefundExistsOf(tx, tenantId, payload.orderId))
     throw new IngestRefusal("ord09_refund_exists");
+  // legend-3dsih (1095): a voucher given for this order is cancelled with the
+  // void (same savepoint), or the void is refused when it was already used.
+  const vouchersOfOrder = await settleOrderVouchersForVoid(tx, meta.context, {
+    orderId: payload.orderId,
+    actor: { userId: payload.approvedBy },
+    now: new Date(),
+  });
+  if (vouchersOfOrder.kind === "used")
+    throw new IngestRefusal("apology_voucher_exists");
 
   const total = Number(order.totalIdr);
   if (total <= 0 || Number(payload.amountIdr) !== total)
