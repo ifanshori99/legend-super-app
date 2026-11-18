@@ -68,9 +68,10 @@ async function asApp<T>(
       [world.tenantId],
     );
     if (member !== null)
-      await client.query("SELECT set_config('app.customer_profile_id', $1, true)", [
-        member,
-      ]);
+      await client.query(
+        "SELECT set_config('app.customer_profile_id', $1, true)",
+        [member],
+      );
     return await run(client);
   } finally {
     await client.query("ROLLBACK");

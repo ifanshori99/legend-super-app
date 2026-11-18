@@ -213,7 +213,8 @@ describe("legend-sdqni audit demands idle_in_transaction_session_timeout on app 
 //    is drift, even though app rights are allowed on other relations.
 //  - ecgfy: a grant to the app login on an extension function (pg_init_privs
 //    privtype 'e') or on a column of a sensitive catalog is drift. The
-//    subconninfo case is a regression guard (already denied by name today).
+//    pg_user_mapping.umoptions and pg_subscription.subconninfo cases are
+//    regression guards (already denied today through SENSITIVE_TABLES).
 //  - eyscy: a SECURITY DEFINER function in schema `app` that PUBLIC may still
 //    execute is drift; a SECURITY INVOKER one is not.
 describe("legend-1081 audit rejects su9c, ecgfy and eyscy drift", () => {
@@ -331,6 +332,100 @@ describe("legend-1081 audit rejects su9c, ecgfy and eyscy drift", () => {
     }, 120_000);
   }
 
+  // su9c, schema level: the app login may not even USAGE the pgboss schema.
+  const queueSchemaPrepare = [
+    `CREATE SCHEMA IF NOT EXISTS pgboss AUTHORIZATION "${workerUser}"`,
+  ];
+  it("legend-su9c audit fails when the app login holds USAGE on the pgboss schema", async () => {
+    await drift({
+      pool: sup,
+      prepare: queueSchemaPrepare,
+      drift: [`GRANT USAGE ON SCHEMA pgboss TO "${appUser}"`],
+      restore: [`REVOKE ALL ON SCHEMA pgboss FROM "${appUser}"`],
+      pattern: /pgboss/,
+    });
+  }, 120_000);
+
+  // su9c, sequences: any right on a pgboss sequence held by the app login.
+  const queueSequence = "pgboss.zz_drift_seq";
+  const queueSequencePrepare = [
+    ...queueSchemaPrepare,
+    `CREATE SEQUENCE ${queueSequence}`,
+    `ALTER SEQUENCE ${queueSequence} OWNER TO "${workerUser}"`,
+  ];
+  for (const right of ["USAGE", "SELECT", "UPDATE"]) {
+    it(`legend-su9c audit fails when the app login holds ${right} on a pgboss sequence`, async () => {
+      await drift({
+        pool: sup,
+        prepare: queueSequencePrepare,
+        drift: [`GRANT ${right} ON SEQUENCE ${queueSequence} TO "${appUser}"`],
+        restore: [
+          `REVOKE ALL ON SEQUENCE ${queueSequence} FROM "${appUser}"`,
+          `DROP SEQUENCE IF EXISTS ${queueSequence}`,
+        ],
+        pattern: /pgboss/,
+      });
+    }, 120_000);
+  }
+
+  // su9c, default privileges: a default ACL that hands the app login rights on
+  // every future table the queue login creates in pgboss is drift.
+  it("legend-su9c audit fails on a default privilege from the queue login in pgboss to the app login", async () => {
+    await drift({
+      pool: sup,
+      prepare: queueSchemaPrepare,
+      drift: [
+        `ALTER DEFAULT PRIVILEGES FOR ROLE "${workerUser}" IN SCHEMA pgboss GRANT SELECT ON TABLES TO "${appUser}"`,
+      ],
+      restore: [
+        `ALTER DEFAULT PRIVILEGES FOR ROLE "${workerUser}" IN SCHEMA pgboss REVOKE ALL ON TABLES FROM "${appUser}"`,
+      ],
+      pattern: /pgboss/,
+    });
+  }, 120_000);
+
+  // su9c, architect P2: a global default ACL of the queue login for functions
+  // lists the built-in PUBLIC EXECUTE next to the new grantee. That grants the
+  // app login nothing it did not already have, so it is not drift.
+  it("legend-su9c audit ignores the built-in PUBLIC execute in a global function default of the queue login", async () => {
+    try {
+      await run(sup, [
+        ...queueSchemaPrepare,
+        `ALTER DEFAULT PRIVILEGES FOR ROLE "${workerUser}" GRANT EXECUTE ON FUNCTIONS TO pg_monitor`,
+      ]);
+      await expect(auditRoles(urls())).resolves.not.toThrow();
+    } finally {
+      await sup
+        .query(
+          `ALTER DEFAULT PRIVILEGES FOR ROLE "${workerUser}" REVOKE ALL ON FUNCTIONS FROM pg_monitor`,
+        )
+        .catch(() => undefined);
+    }
+  }, 120_000);
+
+  // su9c control: pgboss objects (schema, table, sequence) with no right for
+  // the app login at all pass the audit.
+  it("legend-su9c audit passes when the app login holds no right on pgboss objects", async () => {
+    try {
+      await run(sup, [
+        ...queueSequencePrepare,
+        `CREATE TABLE IF NOT EXISTS ${queueFixture} (id int)`,
+        `ALTER TABLE ${queueFixture} OWNER TO "${workerUser}"`,
+        `REVOKE ALL ON SCHEMA pgboss FROM "${appUser}"`,
+        `REVOKE ALL ON TABLE ${queueFixture} FROM "${appUser}"`,
+        `REVOKE ALL ON SEQUENCE ${queueSequence} FROM "${appUser}"`,
+      ]);
+      await expect(auditRoles(urls())).resolves.not.toThrow();
+    } finally {
+      await sup
+        .query(`DROP TABLE IF EXISTS ${queueFixture}`)
+        .catch(() => undefined);
+      await sup
+        .query(`DROP SEQUENCE IF EXISTS ${queueSequence}`)
+        .catch(() => undefined);
+    }
+  }, 120_000);
+
   // ---- ecgfy: extension functions and sensitive catalog columns ----
   it("legend-ecgfy audit fails when the app login can execute an extension function", async () => {
     await drift({
@@ -347,7 +442,7 @@ describe("legend-1081 audit rejects su9c, ecgfy and eyscy drift", () => {
     });
   }, 120_000);
 
-  it("legend-ecgfy audit fails when the app login can read a sensitive catalog column (pg_user_mapping.umoptions)", async () => {
+  it("legend-ecgfy regression: audit still fails on a pg_user_mapping.umoptions column grant", async () => {
     await drift({
       pool: sup,
       prepare: [],
