@@ -307,9 +307,11 @@ export type RefundFollowupBlockedReason = z.infer<
  */
 export const refundFollowupViewSchema = z.strictObject({
   ...refundViewSchema.shape,
-  /** Failed refunds of this payment by the same system requester. */
+  /** The parked fund this refund belongs to; null for a refund of a payment. */
+  fundId: uuidSchema.nullable(),
+  /** Failed refunds of this payment (or parked fund) by the same system requester. */
   attempts: z.number().int().positive(),
-  /** Still owed to the guest on this payment (paid less the live refunds). */
+  /** Still owed to the guest on this payment (paid less the live refunds) or fund. */
   remainingIdr: positiveIdr,
   blockedReason: refundFollowupBlockedReasonSchema,
 });

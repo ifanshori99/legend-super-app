@@ -411,7 +411,7 @@ export async function getAgingReport(
       .select({
         openItemId: accountingOpenItemSettlements.openItemId,
         settledIdr:
-          sql<string>`sum(${accountingOpenItemSettlements.amountIdr})`.as(
+          sql<string>`sum(CASE WHEN ${accountingOpenItemSettlements.method} = 'reversal' THEN -${accountingOpenItemSettlements.amountIdr} ELSE ${accountingOpenItemSettlements.amountIdr} END)`.as(
             "settled_idr_as_of",
           ),
       })
@@ -518,7 +518,7 @@ export async function listOpenItems(
       .select({
         openItemId: accountingOpenItemSettlements.openItemId,
         settledIdr:
-          sql<string>`sum(${accountingOpenItemSettlements.amountIdr})`.as(
+          sql<string>`sum(CASE WHEN ${accountingOpenItemSettlements.method} = 'reversal' THEN -${accountingOpenItemSettlements.amountIdr} ELSE ${accountingOpenItemSettlements.amountIdr} END)`.as(
             "settled_idr_listed",
           ),
       })

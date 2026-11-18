@@ -24,6 +24,7 @@ import {
 } from "../db/schema/facility.ts";
 import { floorZones } from "../db/schema/floor.ts";
 import { opsChecklistTemplates } from "../db/schema/operations.ts";
+import { ensureBaselineHoursVersion } from "./facility-hours-versions.service.ts";
 import { loadTenantKeyMaps } from "./tenant-config-keys.ts";
 import {
   ConfigImportError,
@@ -106,6 +107,7 @@ type ZoneItem = {
   hours: ZoneRow["hours"];
   status: ZoneRow["status"];
   sortOrder: number;
+  isWfc?: boolean;
 };
 
 const zonesHandler: SectionHandler = {
@@ -132,6 +134,7 @@ const zonesHandler: SectionHandler = {
         hours: row.hours,
         status: row.status,
         sortOrder: row.sortOrder,
+        isWfc: row.isWfc,
       });
     }
     return exported(items);
@@ -181,6 +184,7 @@ const zonesHandler: SectionHandler = {
           hours: item.hours,
           status: item.status,
           sortOrder: item.sortOrder,
+          isWfc: item.isWfc ?? false,
         })
         .returning({ id: floorZones.id });
       if (!created) throw new ConfigImportError("Zone insert returned no row.");
@@ -617,6 +621,12 @@ const facilitiesHandler: SectionHandler = {
         if (!created)
           throw new ConfigImportError("Facility insert returned no row.");
         id = created.id;
+        await ensureBaselineHoursVersion(tx, {
+          tenantId: tid,
+          outletId: asOutlet(outletId),
+          facilityId: id,
+          operatingHours: item.operatingHours,
+        });
       }
       const claimedBy = claimed.get(id);
       if (claimedBy)

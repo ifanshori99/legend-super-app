@@ -53,7 +53,8 @@ import {
 import { PosError } from "@starter/shared/pos";
 import { db } from "../db/index.ts";
 import { stations } from "../db/schema/index.ts";
-import { vouchers } from "../db/schema/crm-promo.ts";
+import { promotions, vouchers } from "../db/schema/crm-promo.ts";
+import { apologyVouchers } from "../db/schema/apology-vouchers.ts";
 import { menuItems } from "../db/schema/menu.ts";
 import { orderIssues } from "../db/schema/kds-issues.ts";
 import { posOrderItems, posOrders } from "../db/schema/pos-order.ts";
@@ -64,6 +65,8 @@ import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
+import { promotionAvailability, voucherUsability } from "@starter/shared/crm";
+import { toVoucher } from "./crm-promo-engine.ts";
 import { promotionDisabledAtOutlet } from "./crm-promo-outlets.ts";
 import {
   cursorInstant,
@@ -90,6 +93,7 @@ const DEFAULT_LIMIT = 50;
 const COMP_ONCE_INDEX = "order_issues_comp_once_idx";
 const MANUAL_REFUND_ONCE_INDEX = "order_issues_manual_refund_once_idx";
 const IDEMPOTENCY_KEY = "order_issues_tenant_idempotency_key";
+const VOUCHER_ONCE_INDEX = "order_issues_voucher_once_idx";
 const AUDIT_SAFE_FIELDS = ["id", "type", "reason", "stationId", "costIdr"];
 
 const deniedOutlet = () =>
@@ -103,6 +107,15 @@ const itemNotFound = () =>
   new CoreError("NOT_FOUND", "Item pesanan tidak ditemukan pada pesanan ini.");
 const unprocessable = (message: string) =>
   new HttpError(422, "VALIDATION_ERROR", message);
+
+const VOUCHER_REJECTION_MESSAGE: Partial<
+  Record<NonNullable<ReturnType<typeof voucherUsability>>, string>
+> = {
+  cancelled: "Voucher yang dipilih sudah dicabut.",
+  expired: "Voucher yang dipilih sudah kedaluwarsa.",
+  not_started: "Voucher yang dipilih belum berlaku.",
+  already_redeemed: "Voucher yang dipilih sudah habis dipakai.",
+};
 
 type IssueRow = typeof orderIssues.$inferSelect;
 
@@ -146,27 +159,74 @@ function uniqueViolationOf(error: unknown, depth = 0): string | null {
 
 /**
  * The voucher and swap item named in a report must belong to this tenant, and
- * a voucher's promotion must run at this outlet (legend-o8quo). The FK is
- * tenant-scoped only and RLS hides other tenants' rows, so a stray id would
- * otherwise be stored unchecked.
+ * a voucher's promotion must run at this outlet (legend-o8quo). The voucher
+ * must also still be usable (not cancelled, expired or already redeemed) and
+ * its promotion live (active, inside its period): a dead voucher or promotion
+ * is never a compensation (legend-c1gnr). The voucher row is locked so a
+ * concurrent cancel or redeem is seen, and a voucher settles one issue only
+ * (`order_issues_voucher_once_idx`). The FK is tenant-scoped only and RLS
+ * hides other tenants' rows, so a stray id would otherwise be stored
+ * unchecked.
  */
 async function assertResolutionTargets(
   tx: Tx,
   context: ScopedTenantContext,
   outletId: OutletId,
   input: CreateOrderIssueInput,
+  now: Date,
 ): Promise<void> {
   const tenantId = context.tenant.tenantId;
   if (input.voucherId !== null) {
     const [voucher] = await tx
-      .select({ promotionId: vouchers.promotionId })
+      .select()
       .from(vouchers)
       .where(
         and(eq(vouchers.tenantId, tenantId), eq(vouchers.id, input.voucherId)),
       )
-      .limit(1);
+      .limit(1)
+      .for("update");
     if (!voucher)
       throw unprocessable("Voucher yang dipilih bukan milik tenant ini.");
+    // The voucher's own customer is not compared with the order's here.
+    const voucherRejection = voucherUsability(toVoucher(voucher), {
+      customerProfileId: voucher.customerProfileId,
+      at: now.toISOString(),
+    });
+    if (voucherRejection !== null)
+      throw unprocessable(
+        VOUCHER_REJECTION_MESSAGE[voucherRejection] ??
+          "Voucher yang dipilih tidak dapat dipakai.",
+      );
+    if (voucher.promotionId !== null) {
+      const [promotion] = await tx
+        .select({
+          status: promotions.status,
+          startsAt: promotions.startsAt,
+          endsAt: promotions.endsAt,
+        })
+        .from(promotions)
+        .where(
+          and(
+            eq(promotions.tenantId, tenantId),
+            eq(promotions.id, voucher.promotionId),
+          ),
+        )
+        .limit(1);
+      // The FK makes a missing row unreachable; refuse it anyway (as the engine does).
+      if (promotion === undefined)
+        throw unprocessable("Promo voucher yang dipilih sudah tidak berlaku.");
+      if (
+        promotionAvailability(
+          {
+            status: promotion.status,
+            startsAt: promotion.startsAt.toISOString(),
+            endsAt: promotion.endsAt?.toISOString() ?? null,
+          },
+          now.toISOString(),
+        ) !== null
+      )
+        throw unprocessable("Promo voucher yang dipilih sudah tidak berlaku.");
+    }
     if (
       voucher.promotionId !== null &&
       (await promotionDisabledAtOutlet(
@@ -177,6 +237,42 @@ async function assertResolutionTargets(
       ))
     )
       throw unprocessable("Voucher yang dipilih tidak berlaku di outlet ini.");
+    const [used] = await tx
+      .select({ id: orderIssues.id })
+      .from(orderIssues)
+      .where(
+        and(
+          eq(orderIssues.tenantId, tenantId),
+          eq(orderIssues.voucherId, input.voucherId),
+        ),
+      )
+      .limit(1);
+    if (used)
+      throw new CoreError(
+        "CONFLICT",
+        "Voucher ini sudah dipakai untuk laporan lain.",
+      );
+    // An apology voucher is linked to a report through its own id
+    // (order-recovery), so the check above cannot see that link.
+    const [apologyUsed] = await tx
+      .select({ id: apologyVouchers.id })
+      .from(apologyVouchers)
+      .where(
+        and(
+          eq(apologyVouchers.tenantId, tenantId),
+          eq(apologyVouchers.voucherId, input.voucherId),
+          or(
+            sql`${apologyVouchers.orderIssueId} IS NOT NULL`,
+            sql`EXISTS (SELECT 1 FROM ${orderIssues} WHERE ${orderIssues.tenantId} = ${apologyVouchers.tenantId} AND ${orderIssues.voucherId} = ${apologyVouchers.id})`,
+          ),
+        ),
+      )
+      .limit(1);
+    if (apologyUsed)
+      throw new CoreError(
+        "CONFLICT",
+        "Voucher ini sudah dipakai untuk laporan lain.",
+      );
   }
   if (input.replacementItemId !== null) {
     const [item] = await tx
@@ -324,6 +420,11 @@ export async function reportOrderIssue(
       throw new CoreError("CONFLICT", "Item ini sudah pernah di-comp.");
     if (violated === MANUAL_REFUND_ONCE_INDEX)
       throw new CoreError("CONFLICT", "Item ini sudah pernah direfund manual.");
+    if (violated === VOUCHER_ONCE_INDEX)
+      throw new CoreError(
+        "CONFLICT",
+        "Voucher ini sudah dipakai untuk laporan lain.",
+      );
     if (violated === IDEMPOTENCY_KEY) return store();
     throw error;
   }
@@ -426,7 +527,7 @@ async function storeOrderIssue(
       !(await isTenantStaff(tx, context, input.employeeId, now))
     )
       throw unprocessable("Staf yang dicatat bukan staf tenant ini.");
-    await assertResolutionTargets(tx, context, outletId, input);
+    await assertResolutionTargets(tx, context, outletId, input, now);
 
     const lineVoided = line.status === "voided" || line.posVoidedAt !== null;
     // A comp of a billed line is already drawn by `order.paid`; only a voided

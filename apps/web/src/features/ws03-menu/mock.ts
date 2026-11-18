@@ -443,6 +443,7 @@ registerMock(createItem, ({ body }) => {
     allergens: body.allergens,
     mediaId: body.mediaId ?? null,
     isActive: body.isActive,
+    isBreakfast: body.isBreakfast,
     sortOrder:
       body.sortOrder ??
       currentSortOrder(

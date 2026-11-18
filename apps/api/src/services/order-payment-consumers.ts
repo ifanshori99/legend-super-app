@@ -47,8 +47,10 @@ import {
   handlePosPaymentPaid,
 } from "./pos-order-payment.ts";
 import {
+  handleQrOrderFundsUnallocated,
   handleQrOrderPaymentClosed,
   handleQrOrderPaymentPaid,
+  type QrFundsOutcome,
   type QrPaymentClosedOutcome,
   type QrPaymentPaidOutcome,
 } from "./qr-order-consumers.ts";
@@ -57,7 +59,8 @@ export const ORDER_PAYMENT_EVENT_NAMES = [
   "payment.paid",
   "payment.expired",
   "payment.failed",
-  // bead 519: only a breakfast bill consumes it; every other bill ignores it.
+  // bead 519: a breakfast bill consumes it, and a QR bill for a method-change
+  // voided code (legend-hs1rc); every other bill ignores it.
   "payment.funds_unallocated",
 ] as const;
 type OrderPaymentEventName = (typeof ORDER_PAYMENT_EVENT_NAMES)[number];
@@ -70,7 +73,8 @@ export type OrderPaymentDispatch =
   | { readonly route: "ignored" }
   | {
       readonly route: "qr";
-      readonly outcome: QrPaymentPaidOutcome | QrPaymentClosedOutcome;
+      readonly outcome:
+        QrPaymentPaidOutcome | QrPaymentClosedOutcome | QrFundsOutcome;
     }
   | {
       /** legend-i83ls: the link of a dearer-swap difference charge. */
@@ -129,11 +133,14 @@ async function dispatchInTx(
           eq(orders.paymentLinkId, linkId),
         ),
       );
-    // Parked funds belong to the breakfast consumer only; the QR, charge and
-    // POS consumers never saw this event and still do not.
+    // Parked funds belong to the breakfast consumer and, for money that
+    // arrives late on a code the guest voided by changing method (legend-hs1rc),
+    // the QR consumer; the charge and POS consumers never saw this event and
+    // still do not.
     if (
       event.name === "payment.funds_unallocated" &&
-      order?.channel !== "facility"
+      order?.channel !== "facility" &&
+      order?.channel !== "qr"
     )
       return { route: "ignored" };
     if (order?.channel === "qr")
@@ -142,7 +149,9 @@ async function dispatchInTx(
         outcome:
           event.name === "payment.paid"
             ? await handleQrOrderPaymentPaid(context, event, tx, now)
-            : await handleQrOrderPaymentClosed(context, event, tx, now),
+            : event.name === "payment.funds_unallocated"
+              ? await handleQrOrderFundsUnallocated(context, event, tx, now)
+              : await handleQrOrderPaymentClosed(context, event, tx, now),
       };
     // oa0qk: a facility breakfast order is paid only by its verified event;
     // it never falls through to the POS consumer.

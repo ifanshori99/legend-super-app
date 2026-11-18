@@ -3,6 +3,8 @@
 -- role, and a guard: a row is written only for a locked run correcting an
 -- earlier locked or paid run of the same legal entity, and is never edited
 -- except settled -> reversed (the reversal of the target run).
+-- legend-qcioh (migration 0468): settled -> reversed is accepted only when the
+-- target run is already reversed.
 SELECT app.enforce_tenant_rls('public.payroll_overtime_corrections'::regclass);
 --> statement-breakpoint
 REVOKE TRUNCATE, DELETE ON TABLE public.payroll_overtime_corrections FROM legend_app;
@@ -16,6 +18,7 @@ DECLARE
   source_status text;
   source_entity uuid;
   source_end date;
+  settled_target_status text;
 BEGIN
   IF TG_OP = 'UPDATE' THEN
     IF OLD.status = 'settled' AND NEW.status = 'reversed'
@@ -25,6 +28,14 @@ BEGIN
       AND NEW.direction = OLD.direction AND NEW.amount_idr = OLD.amount_idr
       AND NEW.created_at = OLD.created_at
     THEN
+      SELECT r.status INTO settled_target_status
+        FROM public.payroll_runs r
+        WHERE r.tenant_id = OLD.tenant_id AND r.id = OLD.target_run_id
+        FOR SHARE;
+      IF settled_target_status IS DISTINCT FROM 'reversed' THEN
+        RAISE EXCEPTION 'PAYR-02: overtime correction of run % is reversed only after that run is reversed', OLD.target_run_id
+          USING ERRCODE = '23514';
+      END IF;
       RETURN NEW;
     END IF;
     RAISE EXCEPTION 'PAYR-02: overtime correction of run % is never edited', OLD.target_run_id

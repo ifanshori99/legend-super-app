@@ -43,6 +43,8 @@ import {
   createIsolatedTenant,
   fixtures,
   owner,
+  seededOutletA,
+  staffWithRole,
   type IsolatedTenant,
 } from "./floor-test-helpers.ts";
 
@@ -50,6 +52,8 @@ const ACTING_HEADER = "X-Acting-Staff";
 const PIN = "582914";
 const device = randomUUID();
 const roles = { till: randomUUID(), limited: randomUUID() };
+/** Extra devices of the isolated tenant's outlet A (resolver knows them). */
+const extraDevices = new Set<string>();
 
 type Client = ReturnType<typeof agent>;
 type Member = { client: Client; userId: string };
@@ -290,7 +294,8 @@ beforeAll(async () => {
   tenant = await createIsolatedTenant(`actf-${randomUUID().slice(0, 6)}`);
   headers = { Host: tenant.hostname };
   setDeviceOutletResolver(async ({ tenantId, deviceId }) =>
-    tenantId === tenant.tenantId && deviceId === device
+    tenantId === tenant.tenantId &&
+    (deviceId === device || extraDevices.has(deviceId))
       ? tenant.outletId
       : null,
   );
@@ -516,5 +521,241 @@ describe("acting staff stays inside the outlet of its token (wave 2)", () => {
       [tenant.tenantId, outlet2TableId],
     );
     expect(rows[0]?.status).not.toBe("dirty");
+  });
+});
+
+// ---- legend-42gqp: the outlet alias board is guarded like /api/floor --------
+// Spec (docs/briefs/1006-so-akses-fix.md section 42gqp, SO 997 P1 #2):
+// GET /api/outlets/:id/floor must apply the same shared-device rule as
+// GET /api/floor: a session marked with a shared-flagged device (or a request
+// carrying that device's token) needs a live X-Acting-Staff token, else 401
+// ACTING_STAFF_REQUIRED. A cashier token is bound to its own outlet: it never
+// opens another outlet's board.
+//
+// Assumptions:
+//  - The session mark is written by SQL (`session.shared_device_ids`), as in
+//    device-shared-mode.test.ts; the flag by `UPDATE devices SET shared_mode`.
+//  - Cashier token of outlet A used on the alias of outlet B: the brief only
+//    says "rejected", so any of 401/403/404 passes, but 200 and any board
+//    payload fail. Outlet B is a second outlet in the same tenant.
+//  - Cashier A on the alias of outlet A stays allowed per permission: 200 for
+//    `till` (holds floor.table.view).
+describe("shared device: outlet alias board (legend-42gqp)", () => {
+  let outletB: string;
+  const alias = (outletId: string) => `/api/outlets/${outletId}/floor`;
+
+  beforeAll(async () => {
+    outletB = randomUUID();
+    const { rows } = await owner.query<{
+      brand_id: string;
+      legal_entity_id: string;
+    }>("SELECT brand_id, legal_entity_id FROM outlets WHERE id = $1", [
+      tenant.outletId,
+    ]);
+    await owner.query(
+      `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, opening_hours, status)
+       VALUES ($1, $2, $3, $4, $5, 'Outlet B Uji', 'Jl. Uji 2', 'Asia/Jakarta', $6, 'active')`,
+      [
+        outletB,
+        tenant.tenantId,
+        rows[0]!.brand_id,
+        rows[0]!.legal_entity_id,
+        `OUTB-${randomUUID().slice(0, 6)}`.toUpperCase(),
+        JSON.stringify(fixtures.outlets[0].openingHours),
+      ],
+    );
+  });
+
+  async function newDevice(flagged: boolean): Promise<string> {
+    const id = randomUUID();
+    extraDevices.add(id);
+    await owner.query(
+      `INSERT INTO devices (id, tenant_id, outlet_id, type, label, token_issued_at)
+       VALUES ($1, $2, $3, 'pos', $4, now() - interval '1 minute')`,
+      [id, tenant.tenantId, tenant.outletId, `Kasir Denah ${id.slice(0, 6)}`],
+    );
+    if (flagged)
+      await owner.query("UPDATE devices SET shared_mode = true WHERE id = $1", [
+        id,
+      ]);
+    return id;
+  }
+
+  const tokenOf = (deviceId: string) =>
+    signDeviceToken({
+      version: 1,
+      issuedAt: Math.floor(Date.now() / 1000),
+      tenantId: tenant.tenantId,
+      brandId: null,
+      deviceId,
+    });
+
+  async function markSession(who: Member, deviceId: string) {
+    const { rowCount } = await owner.query(
+      `UPDATE "session" SET shared_device_ids = ARRAY[$2]::uuid[] WHERE user_id = $1`,
+      [who.userId, deviceId],
+    );
+    expect(rowCount).toBeGreaterThan(0);
+  }
+
+  /** `deviceId` null = browser without any device identity. */
+  const get = (
+    who: Member,
+    path: string,
+    deviceId: string | null,
+    acting?: string,
+  ) => {
+    let request = who.client.get(path).set(headers);
+    if (deviceId) request = request.set(DEVICE_TOKEN_HEADER, tokenOf(deviceId));
+    if (acting) request = request.set(ACTING_HEADER, acting);
+    return request;
+  };
+
+  async function cashierToken(
+    who: Member,
+    staff: Member,
+    deviceId: string,
+  ): Promise<string> {
+    await setStaffPin(
+      establishTenantContext({
+        tenantId: tenantIdSchema.parse(tenant.tenantId),
+        brandId: null,
+        source: "session",
+      }),
+      staff.userId,
+      { outletId: tenant.outletId, userId: staff.userId },
+      { pin: PIN },
+    );
+    const response = await who.client
+      .post("/api/staff-pins/pos-session")
+      .set(headers)
+      .set(originHeader)
+      .set(DEVICE_TOKEN_HEADER, tokenOf(deviceId))
+      .send({ userId: staff.userId, pin: PIN });
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    return response.body.data.token as string;
+  }
+
+  const expectNoBoard = (response: { body: unknown }) =>
+    expect(
+      (response.body as { data?: unknown }).data,
+      JSON.stringify(response.body),
+    ).toBeUndefined();
+
+  it("legend-42gqp: marked owner session without a token on the alias is 401 ACTING_STAFF_REQUIRED", async () => {
+    const deviceId = await newDevice(true);
+    const who = await member("Pemilik Tanda Denah", roles.till);
+    await markSession(who, deviceId);
+    const response = await get(who, alias(tenant.outletId), deviceId);
+    expectError(response, 401, "ACTING_STAFF_REQUIRED");
+    expectNoBoard(response);
+  });
+
+  it("legend-42gqp: marked owner session with the device header stripped is refused on the alias too", async () => {
+    const deviceId = await newDevice(true);
+    const who = await member("Pemilik Cookie Denah", roles.till);
+    await markSession(who, deviceId);
+    const response = await get(who, alias(tenant.outletId), null);
+    expectError(response, 401, "ACTING_STAFF_REQUIRED");
+    expectNoBoard(response);
+  });
+
+  it("legend-42gqp: a flagged device token without a mark yet is refused on the alias", async () => {
+    const deviceId = await newDevice(true);
+    const who = await member("Pemilik Baru Denah", roles.till);
+    const response = await get(who, alias(tenant.outletId), deviceId);
+    expectError(response, 401, "ACTING_STAFF_REQUIRED");
+  });
+
+  it("legend-42gqp: the same marked session is refused on /api/floor (baseline)", async () => {
+    const deviceId = await newDevice(true);
+    const who = await member("Pemilik Tanda Floor", roles.till);
+    await markSession(who, deviceId);
+    const response = await get(who, "/api/floor", deviceId);
+    expectError(response, 401, "ACTING_STAFF_REQUIRED");
+    expectNoBoard(response);
+    const stripped = await get(who, "/api/floor", null);
+    expectError(stripped, 401, "ACTING_STAFF_REQUIRED");
+  });
+
+  it("legend-42gqp: a garbage token on the alias of a flagged device is ACTING_STAFF_INVALID", async () => {
+    const deviceId = await newDevice(true);
+    const who = await member("Pemilik Token Rusak", roles.till);
+    await markSession(who, deviceId);
+    const response = await get(
+      who,
+      alias(tenant.outletId),
+      deviceId,
+      "pas_garbage-token",
+    );
+    expectError(response, 401, "ACTING_STAFF_INVALID");
+  });
+
+  it("legend-42gqp: a cashier of outlet A with a live token still opens the alias of outlet A", async () => {
+    const deviceId = await newDevice(true);
+    const who = await member("Sesi Perangkat Denah", roles.till);
+    const token = await cashierToken(who, cashierB, deviceId);
+    const response = await get(who, alias(tenant.outletId), deviceId, token);
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.data.outletId).toBe(tenant.outletId);
+  });
+
+  it("legend-42gqp: a cashier token of outlet A is rejected on the alias of outlet B", async () => {
+    const deviceId = await newDevice(true);
+    const who = await member("Sesi Lintas Outlet", roles.till);
+    const token = await cashierToken(who, cashierB, deviceId);
+    const response = await get(who, alias(outletB), deviceId, token);
+    expect([401, 403, 404], JSON.stringify(response.body)).toContain(
+      response.status,
+    );
+    expectNoBoard(response);
+  });
+
+  it("legend-42gqp: the guard is only on the floor GET; a cashier token of outlet A on another /api/outlets/B route is not touched by it", async () => {
+    // legend-3z0ds: GET /api/outlets/:id/reservation-policy is a back-office
+    // route. The floor guard is not on it, but requireAuth (default-deny) now
+    // refuses a session used on a shared device there, token or not, with
+    // 403 ACTING_STAFF_NOT_ALLOWED; never with the guard's own REQUIRED/INVALID.
+    const deviceId = await newDevice(true);
+    const who = await member("Sesi Rute Lain Outlet", roles.till);
+    const token = await cashierToken(who, cashierB, deviceId);
+    const path = `/api/outlets/${outletB}/reservation-policy`;
+    const withToken = await get(who, path, deviceId, token);
+    const without = await get(who, path, deviceId);
+    const code = (r: { body: unknown }) =>
+      (r.body as { error?: { code?: string } }).error?.code ?? "";
+    expect(code(without), JSON.stringify(without.body)).toBe(
+      "ACTING_STAFF_NOT_ALLOWED",
+    );
+    expect(code(withToken), JSON.stringify(withToken.body)).toBe(
+      "ACTING_STAFF_NOT_ALLOWED",
+    );
+    // The floor GET alias of the cashier's own outlet still passes with a live token.
+    const board = await get(who, alias(tenant.outletId), deviceId, token);
+    expect(board.status, JSON.stringify(board.body)).toBe(200);
+    expect(board.body.data.outletId).toBe(tenant.outletId);
+  });
+
+  it("legend-42gqp: a private (unflagged) device owner is unaffected on both board routes", async () => {
+    const deviceId = await newDevice(false);
+    const who = await member("Pemilik Perangkat Pribadi", roles.till);
+    const board = await get(who, alias(tenant.outletId), deviceId);
+    expect(board.status, JSON.stringify(board.body)).toBe(200);
+    expect(board.body.data.outletId).toBe(tenant.outletId);
+    const current = await get(who, "/api/floor", deviceId);
+    expect(current.status, JSON.stringify(current.body)).toBe(200);
+    // A plain browser without any device identity keeps working as well.
+    const browser = await get(who, alias(tenant.outletId), null);
+    expect(browser.status, JSON.stringify(browser.body)).toBe(200);
+  });
+
+  it("legend-42gqp: another tenant is untouched by a flagged device elsewhere", async () => {
+    await newDevice(true);
+    const other = await staffWithRole(app, { template: "owner" });
+    const board = await other.client.get(alias(seededOutletA));
+    expect(board.status, JSON.stringify(board.body)).toBe(200);
+    expect(board.body.data.outletId).toBe(seededOutletA);
+    const current = await other.client.get("/api/floor");
+    expect(current.status, JSON.stringify(current.body)).toBe(200);
   });
 });

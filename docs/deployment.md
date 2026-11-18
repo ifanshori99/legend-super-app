@@ -400,7 +400,88 @@ Cakupan skrip: hanya `tenant_integrations.credentials_encrypted` dan `ai_provide
 | Token sesi meja, klaim, split, QR, recovery, reservasi, promo, voucher, receipt | token tersegel per fitur                             |
 | Kredensial integrasi dan kunci AI                                               | dirotasi oleh skrip di atas                          |
 
-Reseal pemakai lain dicatat sebagai kartu lanjutan di bd.
+Pemakai `sealSecret` lain (token ChatGPT, langganan push, dan kolom lain yang terdaftar) tidak lewat skrip ini, melainkan job `sealed-secret-reseal`. Lihat bagian berikut.
+
+### Job `sealed-secret-reseal` dan pensiun kunci (legend-rj284)
+
+Job `sealed-secret-reseal` berjalan tiap Minggu 03:30 Asia/Jakarta (`SEALED_SECRET_RESEAL_CRON`). Job ini memindahkan setiap kolom yang terdaftar di `SEALED_SECRET_COLUMNS` (`apps/api/src/worker/sealed-secret-reseal.job.ts`) ke versi aktif, termasuk:
+
+- `push_subscriptions.subscription_ciphertext`. Kolom `key_version` ikut diisi `v<versi>` saat baris pindah.
+- `ai_chatgpt_connections.tokens_encrypted` dan `pending_encrypted`, lewat `resealChatgptConnectionAny` (`apps/api/src/services/ai-chatgpt.service.ts`). Baris yang sedang dipakai operasi ChatGPT (lease, ditambah margin 10 menit) dilewati dan dihitung sebagai `busy`. Job tidak menunggu permintaan pengguna, tidak mengubah `updated_at`, dan tidak pernah memutus atau mencabut koneksi.
+
+Versi lama boleh dikeluarkan dari `DATA_ENCRYPTION_KEYS` hanya jika laporan lengkap job terakhir memenuhi SEMUA syarat ini untuk setiap kunci:
+
+- `aborted` = false;
+- `failedTenants` = 0;
+- `failed` = 0 dan `remaining` = 0 untuk SETIAP entri `tables` di laporan (registry di bawah), bukan hanya tiga kolom baru. Baris `frozen` dan `busy` ikut dihitung di `remaining`: satu baris `frozen` atau `busy` di kolom mana pun menahan pensiun;
+- cek `rotate-data-key` dan `hris-pii-reseal` di bagian sebelumnya juga terpenuhi.
+
+Registry yang harus bersih (persis dari `sealed-secret-reseal.job.ts`). Kunci laporan `tables` berbentuk `<tabel>.<kolom>`:
+
+| Sumber                               | Entri `<tabel>.<kolom>`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Catatan                                                                                                                                                        |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SEALED_SECRET_COLUMNS` (global)     | `mfa_factors.secret_encrypted`, `user_identities.value_encrypted` (hanya `type` `whatsapp` dan `email`), `login_challenges.email_encrypted`                                                                                                                                                                                                                                                                                                                                                                                                                                    | Tanpa `tenant_id`.                                                                                                                                             |
+| `SEALED_SECRET_COLUMNS` (tenant)     | `legal_entities.npwp_encrypted`, `shareholders.npwp_sealed`, `shareholders.payout_account_sealed`, `bank_accounts.account_number_encrypted`, `tables.qr_token_sealed`, `table_sessions.session_token_sealed`, `bill_splits.claim_token_sealed`, `orders.payment_link_token_sealed`, `orders.claim_token_sealed`, `reservations.deposit_link_sealed`, `apology_vouchers.code_sealed`, `pos_receipt_deliveries.destination_sealed`, `pos_order_tenders.payment_link_token_sealed`, `order_issue_charges.payment_link_token_sealed`, `push_subscriptions.subscription_ciphertext` | `bank_accounts.account_number_encrypted` bertipe `bytea`, sisanya teks base64. `push_subscriptions` memperbarui `key_version` (`v<versi>`) bersama ciphertext. |
+| `SEALED_JSON_SECRETS`                | `promo_command_idempotency.response` operasi `voucher.issue` (path `code`) dan operasi `apology_voucher.issue` (path `voucher.code`, hanya `response ->> 'kind' = 'issued'`)                                                                                                                                                                                                                                                                                                                                                                                                   | Dua entri berbagi satu kunci laporan. Kunci baris `key`, bukan `id`.                                                                                           |
+| `SEALED_SERVICE_SWEEPS` (per tenant) | `ai_chatgpt_connections.tokens_encrypted`, `ai_chatgpt_connections.pending_encrypted`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Hanya di sini ada `busy` (lease operasi ChatGPT ditambah margin 10 menit).                                                                                     |
+
+Baris `frozen` (database menolak mengubahnya, jadi job tidak bisa memindahkannya): `orders.payment_link_token_sealed` dan `orders.claim_token_sealed` saat `status` `completed` atau `voided`, `pos_order_tenders.payment_link_token_sealed` saat order induknya `completed` atau `voided`, dan semua baris `apology_vouchers.code_sealed`. Contoh yang menahan pensiun: tiga kolom baru bersih, tetapi satu token order selesai masih versi lama (`remaining` 1, `frozen` 1). Job tidak bisa menyelesaikannya, jadi kunci lama tetap di ring. Keputusan mengeluarkannya tetap (menerima baris itu tidak terbuka lagi) butuh persetujuan CTO.
+
+Job tidak pernah menghapus nilai atau memutus koneksi. Nilai yang tidak bisa dibuka tetap `failed` dan menahan pensiun. Log hanya menyebut tabel, kolom, dan id tenant (hanya untuk scope yang gagal karena galat database), tidak pernah nilainya. Laporan job hanya berisi angka: TIDAK ada daftar id baris yang gagal. Untuk tahu baris mana yang menahan pensiun, pakai query read-only di bawah.
+
+#### Mencari baris yang menahan pensiun (read-only)
+
+Versi di dalam amplop adalah byte pertama nilai (setelah decode base64 untuk kolom teks). Job memakai byte itu, bukan kolom `key_version`, untuk menentukan baris mana yang masih lama. Query berikut memakai penyaring yang sama dan mencetak hanya id, tidak pernah ciphertext atau token.
+
+Aturan pakai:
+
+- Jalankan setelah run kedua job. Sebelum itu daftar masih berisi baris yang belum sempat dipindah. Setelah run kedua, sisanya adalah baris `failed`, `frozen`, atau `busy`.
+- Jalankan sebagai superuser atau role dengan `BYPASSRLS` (role migrator), dalam transaksi read-only. Tabel tenant memakai row-level security, jadi role aplikasi gagal dengan 42501.
+- Ganti `N` dengan versi aktif (`activeVersion` di laporan). Jangan `SELECT` kolom ciphertext, dan jangan tempel hasil `SELECT` kolom itu di chat atau log.
+- Banyak baris hasil query harus sama dengan `remaining` kolom itu di laporan. Bila `failedTenants` > 0, hitungan tenant yang gagal itu tidak lengkap: jalankan ulang job dan baca lognya dulu.
+
+Push (id baris untuk langkah hapus di bawah):
+
+```sql
+BEGIN READ ONLY;
+SELECT t.tenant_id, t.id, t.user_id, t.key_version
+FROM public.push_subscriptions t
+WHERE CASE WHEN t.subscription_ciphertext ~ '^[A-Za-z0-9+/]{4}'
+           THEN get_byte(decode(substring(t.subscription_ciphertext from 1 for 4), 'base64'), 0)
+      END < N
+ORDER BY t.tenant_id, t.id;
+ROLLBACK;
+```
+
+ChatGPT (cukup id tenant, karena langkah operator per tenant). Ganti `<kolom>` dengan `tokens_encrypted` lalu `pending_encrypted`:
+
+```sql
+BEGIN READ ONLY;
+SELECT t.tenant_id, t.id, t.status, t.operation_lease_until
+FROM public.ai_chatgpt_connections t
+WHERE CASE WHEN t.<kolom> ~ '^[A-Za-z0-9+/]{4}'
+           THEN get_byte(decode(substring(t.<kolom> from 1 for 4), 'base64'), 0)
+      END < N
+ORDER BY t.tenant_id;
+ROLLBACK;
+```
+
+Baris dengan `operation_lease_until` kurang dari 10 menit yang lalu atau di masa depan adalah `busy`: tunggu lalu jalankan ulang job, jangan putus koneksinya.
+
+Kolom lain di registry: pakai pola yang sama dengan `<tabel>` dan `<kolom>` dari tabel di atas.
+
+- Kolom teks: persis pola ChatGPT di atas, tanpa `status` dan `operation_lease_until`.
+- `bank_accounts.account_number_encrypted` (`bytea`): `WHERE length(t.account_number_encrypted) > 0 AND get_byte(t.account_number_encrypted, 0) < N`.
+- Tabel global (`mfa_factors`, `user_identities`, `login_challenges`): buang `t.tenant_id`. Untuk `user_identities` tambahkan `AND t.type IN ('whatsapp','email')`.
+- `orders` memakai id ULID yang disimpan sebagai uuid; id yang tercetak adalah uuid-nya.
+- `promo_command_idempotency`: kunci baris `t.key`, nilai di `t.response` pada path JSON tiap entri (`code` atau `voucher.code`), dengan `operation` dan `where` entri yang sama.
+
+Langkah operator per tenant, setelah run kedua masih menunjukkan baris `failed`:
+
+- ChatGPT: pemilik tenant memutus ChatGPT di pengaturan Tanya AI, lalu menghubungkannya lagi. Putus menghapus kedua kolom.
+- Push: hapus baris `push_subscriptions` yang tidak terbaca milik tenant itu, per `tenant_id` dan `id` dari query di atas. Perangkat mendaftar ulang saat aplikasi dibuka berikutnya. Pengguna di perangkat itu tidak menerima notifikasi sampai saat itu.
+
+Pensiun dengan `failed` > 0 atau `failedTenants` > 0 berarti menerima kehilangan itu untuk tenant terkait. Keputusan ini butuh persetujuan CTO.
 
 Catatan: penulisan baru HRIS dan payroll versi 1 (`pii_key_version = 1`) tetap di bawah kunci 1 lewat `sealSecretBaseKey`, BUKAN kunci data aktif; pembacaan lewat `openSecret` membaca byte versi amplop. Kunci 1 (`DATA_ENCRYPTION_KEY`) tidak bisa dipensiunkan selama masih ada baris versi 1. Memindahkannya ke kunci HRIS bernomor 2 ke atas dilakukan lewat rotasi HRIS di bawah.
 

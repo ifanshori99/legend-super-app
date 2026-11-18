@@ -521,6 +521,10 @@ export async function voidLiveCodesForMethodChange(
      * this very choice is the guest's code: nothing is voided (a reload that
      * picks the same bank must not kill a code that may already be paid). */
     next?: { method: string; channelCode: string | null };
+    /** The request's own intent key. A twin that stored its code under it
+     * while this request waited for the order lock has answered it: its code
+     * is the guest's new code, so nothing is voided or refused (legend-p45yq). */
+    intentKey?: string;
   },
   now = new Date(),
 ): Promise<{ voided: string[] }> {
@@ -622,6 +626,18 @@ export async function voidLiveCodesForMethodChange(
       if (!order) return;
       // Judged on what is committed now. A code that appeared or changed since
       // the read has no fresh provider answer: refuse and let the guest retry.
+      if (scope.intentKey !== undefined) {
+        const [own] = await tx
+          .select({ id: paymentIntents.id })
+          .from(paymentIntents)
+          .where(
+            and(
+              eq(paymentIntents.tenantId, tenantId),
+              eq(paymentIntents.idempotencyKey, scope.intentKey),
+            ),
+          );
+        if (own) return; // a twin already issued this request's code
+      }
       const lockedRows = await tx.select().from(paymentIntents).where(inScope);
       if (lockedRows.length === 0) return; // a twin already voided them
       if (!lockedRows.every(isVoidable)) throw methodChangeUnreadError();

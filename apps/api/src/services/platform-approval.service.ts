@@ -496,6 +496,11 @@ export type OpenApprovalRequestInput = {
   readonly payload?: Record<string, unknown>;
   readonly deadlineMinutes?: number;
   readonly idempotencyKey?: string | null;
+  /**
+   * Never answer `{ required: false }`: when the amount is below every tier,
+   * the lowest tier applies (supplier payments always need another person).
+   */
+  readonly alwaysRequire?: boolean;
   readonly now?: Date;
 };
 
@@ -602,11 +607,20 @@ export async function openApprovalRequest(
         ),
       )
   ).map(toPolicy);
-  const requirement = approvalRequirementFor(
+  let requirement = approvalRequirementFor(
     policies,
     input.actionType,
     input.amountIdr,
   );
+  if (!requirement.required && input.alwaysRequire) {
+    // Below every tier: fall back to the lowest tier of the matrix.
+    const lowest = Math.min(
+      ...policies.flatMap((row) =>
+        row.thresholdIdr === null ? [] : [row.thresholdIdr],
+      ),
+    );
+    requirement = approvalRequirementFor(policies, input.actionType, lowest);
+  }
   if (!requirement.required) return { required: false };
   const steps: ApprovalStepSnapshot[] = requirement.steps.map((step) => ({
     level: step.level,

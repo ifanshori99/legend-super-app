@@ -1361,6 +1361,7 @@ afterAll(async () => {
   for (const f of createdFacilities)
     await asOwner(f.tenant, async (client) => {
       for (const table of [
+        "facility_operating_hours_versions",
         "access_tickets",
         "facility_products",
         "facility_units",
@@ -1376,6 +1377,10 @@ afterAll(async () => {
       );
     });
   await asOwner(tenantId, async (client) => {
+    await client.query(
+      "DELETE FROM facility_operating_hours_versions WHERE tenant_id = $1 AND facility_id IN (SELECT id FROM facilities WHERE tenant_id = $1 AND name LIKE 'Read B Cap %')",
+      [tenantId],
+    );
     await client.query(
       "DELETE FROM facilities WHERE tenant_id = $1 AND name LIKE 'Read B Cap %'",
       [tenantId],

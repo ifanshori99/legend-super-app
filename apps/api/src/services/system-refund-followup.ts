@@ -17,10 +17,16 @@ import {
   uuidToUlid,
   type ScopedTenantContext,
 } from "@starter/shared/core";
+import { interpolate, messagesId } from "@starter/shared/i18n";
 import * as contract from "@starter/shared/payment/admin";
+import type { SystemRefundActor } from "@starter/shared/payment/admin";
 import type { z } from "zod";
 import { db } from "../db/index.ts";
-import { paymentIntents, paymentRefunds } from "../db/schema/index.ts";
+import {
+  paymentIntents,
+  paymentRefunds,
+  paymentUnallocatedFunds,
+} from "../db/schema/index.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { logger } from "../lib/logger.ts";
@@ -64,15 +70,22 @@ const REFILE_FAILURE_REASONS: readonly string[] = [
 export const isFollowupActor = (requestedBy: string): boolean =>
   (FOLLOWUP_ACTORS as readonly string[]).includes(requestedBy);
 
-/** Failed refunds of the payment filed by the same system requester (this one counts). */
+/**
+ * Failed refunds of the payment filed by the same system requester (this one
+ * counts). legend-9pz0m: a refund of a parked fund is counted per fund (a
+ * payment can park several funds, each with its own budget).
+ */
 async function failedAttempts(tx: Tx, refund: Refund): Promise<number> {
+  const scope = refund.unallocatedFundId
+    ? sql`unallocated_fund_id = ${refund.unallocatedFundId}::uuid`
+    : sql`payment_intent_id = ${refund.paymentIntentId}::uuid
+       AND unallocated_fund_id IS NULL`;
   const result = await tx.execute(sql`
     SELECT count(*)::int AS attempts
       FROM payment_refunds
      WHERE tenant_id = ${refund.tenantId}
-       AND payment_intent_id = ${refund.paymentIntentId}::uuid
+       AND ${scope}
        AND requested_by = ${refund.requestedBy}
-       AND unallocated_fund_id IS NULL
        AND status = 'failed'
   `);
   return Number(result.rows[0]?.attempts ?? 0);
@@ -101,10 +114,112 @@ export async function systemRefundMayRefile(
 ): Promise<boolean> {
   return (
     isFollowupActor(refund.requestedBy) &&
-    refund.unallocatedFundId === null &&
     REFILE_FAILURE_REASONS.includes(refund.failureReason ?? "") &&
     (await failedAttempts(tx, refund)) < MAX_SYSTEM_REFUND_REFILE_ATTEMPTS
   );
+}
+
+/**
+ * legend-9pz0m: whether a parked fund must not get another system refund: it
+ * has used up its budget of failed system refunds, or one of them failed for a
+ * reason a new request cannot fix (a person's rejection, `provider_declined`,
+ * ...). Checked by the event consumers before they file a refund for the fund,
+ * so a re-delivered `payment.funds_unallocated` cannot open a refund beyond
+ * `MAX_SYSTEM_REFUND_REFILE_ATTEMPTS` or after a decision of a person.
+ */
+export async function parkedFundRefileBudgetSpent(
+  tx: Tx,
+  tenantId: string,
+  fundId: string,
+): Promise<boolean> {
+  const actors = sql.join(
+    FOLLOWUP_ACTORS.map((name) => sql`${name}`),
+    sql`, `,
+  );
+  const fixable = sql.join(
+    REFILE_FAILURE_REASONS.map((name) => sql`${name}`),
+    sql`, `,
+  );
+  const result = await tx.execute(sql`
+    SELECT count(*)::int AS attempts,
+           count(*) FILTER (
+             WHERE failure_reason IS NULL OR failure_reason NOT IN (${fixable})
+           )::int AS final_failures
+      FROM payment_refunds
+     WHERE tenant_id = ${tenantId}
+       AND unallocated_fund_id = ${fundId}::uuid
+       AND requested_by IN (${actors})
+       AND status = 'failed'
+  `);
+  const row = result.rows[0];
+  return (
+    Number(row?.final_failures ?? 0) > 0 ||
+    Number(row?.attempts ?? 0) >= MAX_SYSTEM_REFUND_REFILE_ATTEMPTS
+  );
+}
+
+/**
+ * legend-9pz0m: a failed system refund of a PARKED fund is filed again for the
+ * fund, when `systemRefundMayRefile` allows. The fund row is locked by the
+ * caller; `requestQrDoublePaymentRefund` files at most one live refund per
+ * fund, for the fund's own amount, and only while the fund is unresolved.
+ * Returns the money still owed on the fund (0n when settled or covered by a
+ * live refund).
+ */
+async function refileParkedFund(
+  tx: Tx,
+  context: ScopedTenantContext,
+  refund: Refund,
+  now: Date,
+): Promise<bigint> {
+  const tenantId = refund.tenantId;
+  const fundId = refund.unallocatedFundId;
+  if (fundId === null) return 0n;
+  const [fund] = await tx
+    .select()
+    .from(paymentUnallocatedFunds)
+    .where(
+      and(
+        eq(paymentUnallocatedFunds.tenantId, tenantId),
+        eq(paymentUnallocatedFunds.id, fundId),
+      ),
+    );
+  if (!fund || fund.resolution !== null) return 0n;
+  if (await systemRefundMayRefile(tx, refund)) {
+    // Lazy import: qr-order-late-payment imports this module (cycle).
+    const { requestQrDoublePaymentRefund } =
+      await import("./qr-order-late-payment.ts");
+    const [intent] = await tx
+      .select({ paymentLinkId: paymentIntents.paymentLinkId })
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, tenantId),
+          eq(paymentIntents.id, fund.paymentIntentId),
+        ),
+      );
+    if (intent) {
+      const filed = await requestQrDoublePaymentRefund(tx, context, {
+        paymentLinkId: intent.paymentLinkId,
+        intentId: fund.paymentIntentId,
+        now,
+        fundId: fund.id,
+        source: {
+          requestedBy: refund.requestedBy as SystemRefundActor,
+          reason: refund.reason,
+        },
+      });
+      if (filed.length > 0) return 0n;
+    }
+  }
+  const live = await tx.execute(sql`
+    SELECT 1 FROM payment_refunds
+     WHERE tenant_id = ${tenantId}
+       AND unallocated_fund_id = ${fundId}::uuid
+       AND status <> 'failed'
+     LIMIT 1
+  `);
+  return live.rows.length > 0 ? 0n : BigInt(fund.amountIdr);
 }
 
 /**
@@ -121,29 +236,32 @@ export async function settleSystemRefundFailure(
   refund: Refund,
   now: Date,
 ): Promise<void> {
-  if (
-    !isFollowupActor(refund.requestedBy) ||
-    refund.unallocatedFundId !== null ||
-    refund.status !== "failed"
-  )
+  if (!isFollowupActor(refund.requestedBy) || refund.status !== "failed")
     return;
-  // No "any live refund" shortcut: a pending refund of another part (e.g. the
-  // late refund of the same payment) does not cover what THIS one held. The
-  // exact remaining balance below (pending and approved are reserved) decides.
-  const [intent] = await tx
-    .select()
-    .from(paymentIntents)
-    .where(
-      and(
-        eq(paymentIntents.tenantId, refund.tenantId),
-        eq(paymentIntents.id, refund.paymentIntentId),
-      ),
-    );
-  if (!intent) return;
-  const { cap, reserved } = await refundableBalance(tx, intent, {
-    lockDeposit: false,
-  });
-  const remaining = cap - reserved;
+  let remaining: bigint;
+  if (refund.unallocatedFundId !== null) {
+    // legend-9pz0m: parked money is re-filed here (bounded per fund); only
+    // what no live refund covers after that is raised to a person.
+    remaining = await refileParkedFund(tx, context, refund, now);
+  } else {
+    // No "any live refund" shortcut: a pending refund of another part (e.g. the
+    // late refund of the same payment) does not cover what THIS one held. The
+    // exact remaining balance below (pending and approved are reserved) decides.
+    const [intent] = await tx
+      .select()
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, refund.tenantId),
+          eq(paymentIntents.id, refund.paymentIntentId),
+        ),
+      );
+    if (!intent) return;
+    const { cap, reserved } = await refundableBalance(tx, intent, {
+      lockDeposit: false,
+    });
+    remaining = cap - reserved;
+  }
   if (remaining <= 0n) return;
   const attempts = await failedAttempts(tx, refund);
   const blocked = blockedReason(refund, attempts);
@@ -194,6 +312,7 @@ export async function settleSystemRefundFailure(
   // keeps a failed alarm from aborting the refund failure; the audit row above
   // and the follow-up list still carry the item.
   const id = uuidToUlid(refund.id);
+  const alarmCopy = messagesId.paymentAdmin.refundFollowup.followupAlarm;
   try {
     await tx.transaction(async (savepoint) => {
       await notifyOutletSupervisors(
@@ -209,8 +328,13 @@ export async function settleSystemRefundFailure(
           aggregateType: "payment",
           aggregateId: id,
           payload: { refundId: refund.id, blockedReason: blocked },
-          title: "Refund tamu perlu ditindaklanjuti",
-          body: `Refund otomatis untuk tamu gagal dan tidak diajukan ulang. Rp ${Number(remaining).toLocaleString("id-ID")} masih menjadi hak tamu. Ajukan refund baru untuk pembayaran ini di layar refund; orang lain harus menyetujuinya.`,
+          title: alarmCopy.title,
+          body: interpolate(
+            refund.unallocatedFundId !== null
+              ? alarmCopy.bodyParkedFund
+              : alarmCopy.body,
+            { amount: Number(remaining).toLocaleString("id-ID") },
+          ),
         },
         now,
       );
@@ -228,7 +352,9 @@ export async function settleSystemRefundFailure(
  * Derived on every read: the latest failed refund of a payment by a follow-up
  * requester, while the payment still has a refundable balance above zero
  * (pending and approved refunds are reserved, so a live refund that covers the
- * money removes it, and so does a completed one). Needs the refund read permission,
+ * money removes it, and so does a completed one). legend-of9kp: a parked fund
+ * is listed the same way, one item per fund (its last failed refund), while the
+ * fund is unresolved and no refund of it is live or completed. Needs the refund read permission,
  * tenant-wide or at the outlet asked for. The balance cannot be filtered in
  * SQL, so rows are scanned in batches until the page is full.
  */
@@ -276,35 +402,52 @@ export async function listRefundFollowups(
               ? eq(paymentRefunds.outletId, query.outletId)
               : undefined,
             eq(paymentRefunds.status, "failed"),
-            sql`${paymentRefunds.unallocatedFundId} IS NULL`,
             sql`${paymentRefunds.requestedBy} IN (${actors})`,
             after
               ? sql`(${paymentRefunds.createdAt}, ${paymentRefunds.id}) < (${after[0]}::timestamptz, ${after[1]}::uuid)`
               : undefined,
-            // The latest failed refund of its payment speaks for it.
+            // The latest failed refund of its payment (or, legend-of9kp, of
+            // its parked fund) speaks for it.
             sql`NOT EXISTS (
               SELECT 1 FROM payment_refunds later
                WHERE later.tenant_id = ${paymentRefunds.tenantId}
-                 AND later.payment_intent_id = ${paymentRefunds.paymentIntentId}
-                 AND later.unallocated_fund_id IS NULL
+                 AND (
+                   later.unallocated_fund_id = ${paymentRefunds.unallocatedFundId}
+                   OR (
+                     ${paymentRefunds.unallocatedFundId} IS NULL
+                     AND later.unallocated_fund_id IS NULL
+                     AND later.payment_intent_id = ${paymentRefunds.paymentIntentId}))
                  AND later.status = 'failed'
                  AND later.requested_by IN (${actors})
                  AND (later.created_at, later.id) > (${paymentRefunds.createdAt}, ${paymentRefunds.id}))`,
             // Cheap pre-filter of the balance: a payment that is not paid any
             // more, or whose refunds already add up to what was paid, owes
-            // nothing (the exact balance below can only be lower).
-            sql`EXISTS (
-              SELECT 1 FROM payment_intents pi
-               WHERE pi.tenant_id = ${paymentRefunds.tenantId}
-                 AND pi.id = ${paymentRefunds.paymentIntentId}
-                 AND pi.paid_at IS NOT NULL
-                 AND pi.status IN ('paid', 'partially_refunded')
-                 AND pi.amount_idr > coalesce((
-                   SELECT sum(done.amount_idr) FROM payment_refunds done
-                    WHERE done.tenant_id = pi.tenant_id
-                      AND done.payment_intent_id = pi.id
-                      AND done.unallocated_fund_id IS NULL
-                      AND done.status <> 'failed'), 0))`,
+            // nothing (the exact balance below can only be lower). A parked
+            // fund (legend-of9kp) owes while it is unresolved and no refund of
+            // it is live or completed.
+            sql`(
+              (${paymentRefunds.unallocatedFundId} IS NULL AND EXISTS (
+                SELECT 1 FROM payment_intents pi
+                 WHERE pi.tenant_id = ${paymentRefunds.tenantId}
+                   AND pi.id = ${paymentRefunds.paymentIntentId}
+                   AND pi.paid_at IS NOT NULL
+                   AND pi.status IN ('paid', 'partially_refunded')
+                   AND pi.amount_idr > coalesce((
+                     SELECT sum(done.amount_idr) FROM payment_refunds done
+                      WHERE done.tenant_id = pi.tenant_id
+                        AND done.payment_intent_id = pi.id
+                        AND done.unallocated_fund_id IS NULL
+                        AND done.status <> 'failed'), 0)))
+              OR (${paymentRefunds.unallocatedFundId} IS NOT NULL AND EXISTS (
+                SELECT 1 FROM payment_unallocated_funds fund
+                 WHERE fund.tenant_id = ${paymentRefunds.tenantId}
+                   AND fund.id = ${paymentRefunds.unallocatedFundId}
+                   AND fund.resolution IS NULL
+                   AND NOT EXISTS (
+                     SELECT 1 FROM payment_refunds covering
+                      WHERE covering.tenant_id = fund.tenant_id
+                        AND covering.unallocated_fund_id = fund.id
+                        AND covering.status <> 'failed'))))`,
           ),
         )
         .orderBy(desc(paymentRefunds.createdAt), desc(paymentRefunds.id))
@@ -312,6 +455,27 @@ export async function listRefundFollowups(
       for (const refund of rows) {
         scanned += 1;
         lastScanned = refund;
+        if (refund.unallocatedFundId !== null) {
+          // A parked fund owes its whole amount (the SQL above kept only an
+          // unresolved fund with no live or completed refund).
+          const [fund] = await tx
+            .select()
+            .from(paymentUnallocatedFunds)
+            .where(
+              and(
+                eq(paymentUnallocatedFunds.tenantId, tenantId),
+                eq(paymentUnallocatedFunds.id, refund.unallocatedFundId),
+              ),
+            );
+          if (fund && BigInt(fund.amountIdr) > 0n)
+            found.push({
+              refund,
+              remaining: BigInt(fund.amountIdr),
+              attempts: await failedAttempts(tx, refund),
+            });
+          if (found.length > query.limit) break;
+          continue;
+        }
         const [intent] = await tx
           .select()
           .from(paymentIntents)
@@ -347,6 +511,7 @@ export async function listRefundFollowups(
       data.push(
         contract.refundFollowupViewSchema.parse({
           ...(await refundViewFor(tx, context, refund, actor)),
+          fundId: refund.unallocatedFundId,
           attempts,
           remainingIdr: Number(remaining),
           blockedReason: blockedReason(refund, attempts),

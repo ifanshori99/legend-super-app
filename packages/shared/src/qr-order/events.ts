@@ -253,6 +253,11 @@ export const orderIssueChargePaidPayloadSchema = z
  * legend-s61sg: voiding the order of a charge paid in cash at the till gives
  * the whole charge back out of the drawer (`method` pos_cash): `refundId` is
  * the cash_out movement of that return, there is no intent.
+ * legend-mrwtp: staff gave part (or all) of a till-paid charge back by hand,
+ * after a second person approved it: `method` pos_cash (refundId = the shift's
+ * cash_out movement) or `edc_manual` (refundId = the
+ * `order_issue_charge_manual_refunds` row, the money went back on the EDC
+ * machine). Neither has an intent.
  */
 export const orderIssueChargeRefundedPayloadSchema = z
   .strictObject({
@@ -263,7 +268,7 @@ export const orderIssueChargeRefundedPayloadSchema = z
     /** Null exactly when the charge was paid in cash and returned from the drawer. */
     paymentIntentId: z.string().uuid().nullable(),
     /** Absent is the gateway refund of an intent (legend-nsvu0). */
-    method: z.enum(["gateway", "pos_cash"]).optional(),
+    method: z.enum(["gateway", "pos_cash", "edc_manual"]).optional(),
     grossSalesIdr: idrSchema.refine((value) => value >= 0),
     serviceChargeIdr: idrSchema.refine((value) => value >= 0),
     pbjtIdr: idrSchema.refine((value) => value >= 0),
@@ -271,11 +276,14 @@ export const orderIssueChargeRefundedPayloadSchema = z
     refundedAt: isoDateTimeSchema,
   })
   .superRefine((payload, ctx) => {
-    if ((payload.method === "pos_cash") !== (payload.paymentIntentId === null))
+    const noIntent =
+      payload.method === "pos_cash" || payload.method === "edc_manual";
+    if (noIntent !== (payload.paymentIntentId === null))
       ctx.addIssue({
         code: "custom",
         path: ["method"],
-        message: "pos_cash has no paymentIntentId; a gateway refund has one",
+        message:
+          "pos_cash and edc_manual have no paymentIntentId; a gateway refund has one",
       });
     if (
       Number(payload.amountIdr) !==

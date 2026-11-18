@@ -17,11 +17,21 @@
 //   cash approval, which journals again); the charge cash is held correction
 //   cash (heldCorrectionCashIdrOf) and the refund id is derived per charge
 //   from the void row (heldVoidChargeRefundId).
-// - A gateway charge with nothing left to refund (intent fully refunded) is
-//   skipped: its money is already out.
+// - Manual refunds (legend-mrwtp, brief 985): what a cash or EDC charge already
+//   gave back by hand (completed `order_issue_charge_manual_refunds`) is out;
+//   the void gives back only the rest (cash_out of the remainder, the journal
+//   event of the remainder with the manual part as prior). A request still
+//   waiting (`requested`) holds part of the charge: the void is refused (409)
+//   until it is approved or rejected. A held void is refused too when a cash
+//   charge was refunded by hand (the held cash figure counts the whole charge).
+// - A charge with nothing left to give back is closed `voided` with no money
+//   and no journal event (the refund already reversed its revenue): a gateway
+//   charge whose intent is fully refunded (legend-v5z4h), or a cash or EDC
+//   charge fully refunded by hand.
 // - Charge paid through an intent (gateway, QRIS at the till): the nsvu0 refund
-//   (`refundPaidChargeInTx`) of what is still refundable; 409 when nothing is.
-// - EDC charge (no intent, no cash): the till cannot return card money, 409.
+//   (`refundPaidChargeInTx`) of what is still refundable.
+// - EDC charge (no intent, no cash) with a part refunded by hand: the till
+//   cannot return card money, 409. Without any manual refund: 409 as well.
 //
 // Lock order of the void: issues of the order, the order, the charges (the
 // module's issue -> order -> charge). `lockIssuesOfOrder` runs BEFORE the order
@@ -30,6 +40,7 @@
 import { and, asc, eq, sql } from "drizzle-orm";
 import {
   CoreError,
+  idr,
   outletIdSchema,
   type ScopedTenantContext,
 } from "@starter/shared/core";
@@ -37,6 +48,7 @@ import { orderIssueCharges, orderIssues } from "../db/schema/kds-issues.ts";
 import { paymentRefunds } from "../db/schema/index.ts";
 import { cashMovements } from "../db/schema/pos-shift.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { manualRefundedOfCharge } from "./order-charge-manual-refund-sum.ts";
 import { auditCharge } from "./order-recovery-charge.ts";
 import {
   appendChargeRefundedEvent,
@@ -55,13 +67,19 @@ type ChargeRow = typeof orderIssueCharges.$inferSelect;
 
 const AUDIT_CHARGE_VOIDED = "order_issue.charge_voided_with_order";
 const VOID_REASON = "Pesanan di-void; selisih swap dikembalikan";
+const SETTLED_REASON =
+  "Pesanan di-void; selisih swap sudah dikembalikan sebelumnya";
 
 export type PaidChargesOfOrder = {
   /** Paid through a payment intent: refunded by the nsvu0 path. */
   gateway: ChargeRow[];
-  /** Paid in cash at the till: given back from the drawer. */
+  /** Paid in cash at the till: the rest is given back from the drawer. */
   cash: ChargeRow[];
-  /** Cash the drawer gives back for the cash charges. */
+  /** Nothing left to give back (already refunded in full): closed, no money. */
+  settled: ChargeRow[];
+  /** Completed manual refund of each cash or settled charge (by charge id). */
+  manualIdr: Map<string, number>;
+  /** Cash the drawer gives back for the cash charges (after manual refunds). */
   cashIdr: number;
 };
 
@@ -85,8 +103,10 @@ export async function lockIssuesOfOrder(
 }
 
 /**
- * The `paid` charges of the order, row locked. Refuses (409) one the void
- * cannot give back: an EDC charge has neither an intent nor cash.
+ * The `paid` charges of the order, row locked, sorted by what the void does
+ * with each. Refuses (409) one the void cannot give back: an EDC charge (neither
+ * an intent nor cash) with something left, or any charge with a manual refund
+ * request still waiting.
  */
 export async function paidChargesOfOrder(
   tx: Tx,
@@ -106,31 +126,57 @@ export async function paidChargesOfOrder(
     .orderBy(asc(orderIssueCharges.id))
     .for("update");
   // A gateway charge with nothing left to give back (its intent is already
-  // fully refunded) is skipped: its money is out, the void is not blocked.
+  // fully refunded) is closed without money: its money is out, the void is
+  // not blocked. A manual refund still waiting blocks the void (409).
+  const tenantId = context.tenant.tenantId;
   const gateway: ChargeRow[] = [];
-  for (const row of rows)
-    if (
-      row.paymentIntentId !== null &&
-      (await refundableOfGatewayCharge(tx, context, row)) > 0
-    )
-      gateway.push(row);
-  const cash = rows.filter(
-    (row) => row.paymentIntentId === null && row.cashMovementId !== null,
-  );
-  const skipped = rows.filter(
-    (row) => row.paymentIntentId !== null && !gateway.includes(row),
-  ).length;
-  if (gateway.length + cash.length + skipped !== rows.length)
-    throw new HttpError(
-      409,
-      "CONFLICT",
-      "Selisih swap pesanan ini dibayar dengan kartu EDC dan tidak bisa dikembalikan lewat void; hubungi admin.",
-    );
-  return {
-    gateway,
-    cash,
-    cashIdr: cash.reduce((sum, row) => sum + Number(row.amountIdr), 0),
-  };
+  const cash: ChargeRow[] = [];
+  const settled: ChargeRow[] = [];
+  const manualIdr = new Map<string, number>();
+  let cashIdr = 0;
+  for (const row of rows) {
+    if (row.paymentIntentId !== null) {
+      // Voided only when the COMPLETED refunds are the whole charge. A refund
+      // still pending / requested / approved may yet fail, and then the guest
+      // would have got nothing from a charge already closed: block (409).
+      const refunded = await refundedOfGatewayCharge(tx, context, row);
+      if (refunded.live > refunded.completed)
+        throw new HttpError(
+          409,
+          "CONFLICT",
+          "Selisih swap pesanan ini punya refund gateway yang belum selesai; tunggu selesai atau gagal, lalu void ulang.",
+        );
+      if (Number(row.amountIdr) - refunded.completed > 0) gateway.push(row);
+      else settled.push(row);
+      continue;
+    }
+    const manual = await manualRefundedOfCharge(tx, tenantId, row.id);
+    if (manual.reserved > 0)
+      throw new HttpError(
+        409,
+        "CONFLICT",
+        "Selisih swap pesanan ini punya permintaan refund manual yang belum diputuskan; setujui atau tolak dulu, lalu void ulang.",
+      );
+    const rest = Number(row.amountIdr) - manual.completed;
+    if (rest < 0)
+      throw new HttpError(
+        409,
+        "CONFLICT",
+        "Refund manual selisih swap melebihi nilai tagihan; hubungi admin.",
+      );
+    manualIdr.set(row.id, manual.completed);
+    if (rest === 0) settled.push(row);
+    else if (row.cashMovementId !== null) {
+      cash.push(row);
+      cashIdr += rest;
+    } else
+      throw new HttpError(
+        409,
+        "CONFLICT",
+        "Selisih swap pesanan ini dibayar dengan kartu EDC dan tidak bisa dikembalikan lewat void; hubungi admin.",
+      );
+  }
+  return { gateway, cash, settled, manualIdr, cashIdr };
 }
 
 /**
@@ -154,8 +200,31 @@ export async function returnPaidChargesOfVoidedOrder(
     now: Date;
   },
 ): Promise<void> {
-  const tenantId = context.tenant.tenantId;
   const { charges, caller, now } = input;
+  // The held cash figure (heldCorrectionCashIdrOf) counts a voided cash charge
+  // at its whole amount; one refunded by hand would be counted twice: block.
+  if (
+    input.held &&
+    [...charges.cash, ...charges.settled].some(
+      (charge) =>
+        charge.cashMovementId !== null &&
+        (charges.manualIdr.get(charge.id) ?? 0) > 0,
+    )
+  )
+    throw new HttpError(
+      409,
+      "CONFLICT",
+      "Selisih swap pesanan ini sudah direfund manual dan void ini menunggu kas laci; hubungi admin.",
+    );
+  for (const charge of charges.settled) {
+    await closeChargeVoided(tx, context, charge, {
+      caller,
+      now,
+      reason: SETTLED_REASON,
+      voidId: input.voidId,
+      manualIdr: charges.manualIdr.get(charge.id) ?? 0,
+    });
+  }
   for (const charge of charges.gateway)
     await refundPaidChargeInTx(tx, context, {
       chargeId: charge.id,
@@ -173,70 +242,32 @@ export async function returnPaidChargesOfVoidedOrder(
     );
   const shift = input.shift;
   for (const charge of charges.cash) {
+    const manualIdr = charges.manualIdr.get(charge.id) ?? 0;
+    const restIdr = Number(charge.amountIdr) - manualIdr;
     // A held void pays no cash out now: the charge cash is held correction
     // cash (heldCorrectionCashIdrOf, from the void row), not a movement that
     // the drawer counts or the cash-approval queue journals again.
     const movement = input.held
       ? null
       : await insertCashReturn(tx, charge, {
+          amountIdr: restIdr,
           shift,
           caller,
           orderNumber: input.orderNumber,
           now,
         });
-    // Conditional on `paid`: the charge is closed by exactly one return.
-    const [closed] = await tx
-      .update(orderIssueCharges)
-      .set({
-        status: "voided",
-        closedAt: now,
-        closedBy: caller.userId,
-        closeReason: VOID_REASON,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(orderIssueCharges.tenantId, tenantId),
-          eq(orderIssueCharges.id, charge.id),
-          eq(orderIssueCharges.status, "paid"),
-        ),
-      )
-      .returning({ id: orderIssueCharges.id });
-    if (!closed)
-      throw new HttpError(
-        409,
-        "CONFLICT",
-        "Selisih swap pesanan ini berubah selama void; ulangi.",
-      );
-    await appendChargeRefundedEvent(tx, context, {
-      charge: { ...charge, status: "voided" },
-      refundId: movement?.id ?? heldVoidChargeRefundId(input.voidId, charge.id),
-      intentId: null,
-      method: "pos_cash",
-      amountIdr: Number(charge.amountIdr),
-      split: recoveryChargeRefundSplit({
-        charge,
-        priorIdr: 0,
-        refundIdr: Number(charge.amountIdr),
-      }),
-      at: now,
-    });
-    await auditCharge(tx, context, {
-      outletId: charge.outletId,
-      issueId: charge.orderIssueId,
-      action: AUDIT_CHARGE_VOIDED,
-      actorUserId: caller.userId,
+    await closeChargeVoided(tx, context, charge, {
+      caller,
+      now,
       reason: VOID_REASON,
-      after: {
-        id: charge.orderIssueId,
-        orderId: charge.orderId,
-        chargeId: charge.id,
-        status: "voided",
-        amountIdr: Number(charge.amountIdr),
-        ...(movement ? { cashMovementId: movement.id } : {}),
-        voidId: input.voidId,
+      voidId: input.voidId,
+      manualIdr,
+      returned: {
+        amountIdr: restIdr,
+        refundId:
+          movement?.id ?? heldVoidChargeRefundId(input.voidId, charge.id),
+        movement,
       },
-      at: now,
     });
     if (movement)
       await auditShift(
@@ -262,10 +293,93 @@ export async function returnPaidChargesOfVoidedOrder(
   }
 }
 
+// Closes the paid charge `voided` (conditional on `paid`: exactly one close).
+// With `returned` the void gave back that rest (journal event of the rest);
+// without it nothing is left to give back, so no money and no event move.
+async function closeChargeVoided(
+  tx: Tx,
+  context: ScopedTenantContext,
+  charge: ChargeRow,
+  input: {
+    caller: ShiftCaller;
+    now: Date;
+    reason: string;
+    voidId: string;
+    /** Completed manual refund of the charge before the void. */
+    manualIdr: number;
+    returned?: {
+      amountIdr: number;
+      refundId: string;
+      movement: { id: string } | null;
+    };
+  },
+): Promise<void> {
+  const { caller, now } = input;
+  const [closed] = await tx
+    .update(orderIssueCharges)
+    .set({
+      status: "voided",
+      closedAt: now,
+      closedBy: caller.userId,
+      closeReason: input.reason,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(orderIssueCharges.tenantId, context.tenant.tenantId),
+        eq(orderIssueCharges.id, charge.id),
+        eq(orderIssueCharges.status, "paid"),
+      ),
+    )
+    .returning({ id: orderIssueCharges.id });
+  if (!closed)
+    throw new HttpError(
+      409,
+      "CONFLICT",
+      "Selisih swap pesanan ini berubah selama void; ulangi.",
+    );
+  const { returned } = input;
+  if (returned)
+    await appendChargeRefundedEvent(tx, context, {
+      charge: { ...charge, status: "voided" },
+      refundId: returned.refundId,
+      intentId: null,
+      method: "pos_cash",
+      amountIdr: returned.amountIdr,
+      split: recoveryChargeRefundSplit({
+        charge,
+        priorIdr: input.manualIdr,
+        refundIdr: returned.amountIdr,
+      }),
+      at: now,
+    });
+  await auditCharge(tx, context, {
+    outletId: charge.outletId,
+    issueId: charge.orderIssueId,
+    action: AUDIT_CHARGE_VOIDED,
+    actorUserId: caller.userId,
+    reason: input.reason,
+    after: {
+      id: charge.orderIssueId,
+      orderId: charge.orderId,
+      chargeId: charge.id,
+      status: "voided",
+      amountIdr: Number(charge.amountIdr),
+      ...(returned ? { returnedIdr: returned.amountIdr } : {}),
+      ...(input.manualIdr > 0 ? { manualRefundedIdr: input.manualIdr } : {}),
+      ...(returned?.movement ? { cashMovementId: returned.movement.id } : {}),
+      voidId: input.voidId,
+    },
+    at: now,
+  });
+}
+
 async function insertCashReturn(
   tx: Tx,
   charge: ChargeRow,
   input: {
+    /** The rest of the charge after manual refunds. */
+    amountIdr: number;
     shift: { id: string };
     caller: ShiftCaller;
     orderNumber: string;
@@ -280,7 +394,7 @@ async function insertCashReturn(
       outletId: charge.outletId,
       shiftId: shift.id,
       type: "cash_out",
-      amountIdr: charge.amountIdr,
+      amountIdr: idr(input.amountIdr),
       reasonNote:
         `Void pesanan ${input.orderNumber}: selisih swap dikembalikan`.slice(
           0,
@@ -304,17 +418,18 @@ async function insertCashReturn(
   return movement;
 }
 
-// What the charge still gives back: its amount less the non-failed refunds of
-// its intent (<= 0: nothing left). refundPaidChargeInTx re-reads this under the
-// locks and refuses (409) an amount over what is left.
-async function refundableOfGatewayCharge(
+// What the refunds of the charge's intent add up to: all that are not failed
+// (live) and those already paid back (completed). live > completed means one is
+// still on its way.
+async function refundedOfGatewayCharge(
   tx: Tx,
   context: ScopedTenantContext,
   charge: ChargeRow,
-): Promise<number> {
+): Promise<{ live: number; completed: number }> {
   const [row] = await tx
     .select({
-      total: sql<string>`coalesce(sum(${paymentRefunds.amountIdr}), 0)::text`,
+      live: sql<string>`coalesce(sum(${paymentRefunds.amountIdr}), 0)::text`,
+      completed: sql<string>`coalesce(sum(${paymentRefunds.amountIdr}) filter (where ${paymentRefunds.status} = 'completed'), 0)::text`,
     })
     .from(paymentRefunds)
     .where(
@@ -324,18 +439,22 @@ async function refundableOfGatewayCharge(
         sql`${paymentRefunds.status} <> 'failed'`,
       ),
     );
-  return Number(charge.amountIdr) - Number(row?.total ?? "0");
+  return {
+    live: Number(row?.live ?? "0"),
+    completed: Number(row?.completed ?? "0"),
+  };
 }
 
-// The same, re-read right before the refund: a refund that took the rest after
+// What is left to give back, re-read right before the refund: a refund that took the rest after
 // the charges were listed blocks the void (money: when in doubt, block).
 async function refundableOfGatewayChargeOrBlock(
   tx: Tx,
   context: ScopedTenantContext,
   charge: ChargeRow,
 ): Promise<number> {
-  const left = await refundableOfGatewayCharge(tx, context, charge);
-  if (left <= 0)
+  const refunded = await refundedOfGatewayCharge(tx, context, charge);
+  const left = Number(charge.amountIdr) - refunded.live;
+  if (left <= 0 || refunded.live > refunded.completed)
     throw new HttpError(
       409,
       "CONFLICT",

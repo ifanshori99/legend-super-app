@@ -17,8 +17,12 @@ import {
   revokeCustomerDisplayPairing,
   selectCustomerDisplayBill,
 } from "@starter/shared/pos";
-import { actorOf, resolveActingStaff } from "../middleware/acting-staff.ts";
-import { requireAuth } from "../middleware/auth.ts";
+import {
+  actorOf,
+  requireActingStaffOnSharedDevice,
+  resolveActingStaff,
+} from "../middleware/acting-staff.ts";
+import { requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import { requireOutletPermission } from "../middleware/permissions.ts";
@@ -34,7 +38,15 @@ export const customerDisplayRouter = Router({ mergeParams: true });
 
 const BASE = "/customer-display";
 const outletOf = (req: Request) => String(req.params.outletId ?? "");
-const staff = [requireAuth, requireTrustedOrigin, resolveActingStaff];
+const staff = [
+  requireAuthAllowSharedDevice,
+  requireTrustedOrigin,
+  resolveActingStaff,
+];
+// Commands (pair, config, clear) also need the cashier token on a shared
+// device (legend-3z0ds). The cashier preview GET stays tokenless: a second
+// window of the same device has no token of its own and only reads.
+const staffCommand = [...staff, requireActingStaffOnSharedDevice];
 const operate = requireOutletPermission("pos.sale.create", outletOf);
 const view = requireOutletPermission("order.view", outletOf);
 
@@ -135,7 +147,7 @@ const pairSlots = new WeakMap<Request, string>();
 customerDisplayRouter.post(
   `${BASE}/pair`,
   requireTenantContext,
-  ...staff,
+  ...staffCommand,
   jsonBody,
   async (req, res, next) => {
     pairCustomerDisplay.body.parse(req.body);
@@ -176,7 +188,7 @@ customerDisplayRouter.post(
 customerDisplayRouter.put(
   `${BASE}/selection`,
   requireTenantContext,
-  ...staff,
+  ...staffCommand,
   operate,
   jsonBody,
   async (req, res) => {
@@ -196,7 +208,7 @@ customerDisplayRouter.put(
 customerDisplayRouter.delete(
   `${BASE}/pairings/:pairingId`,
   requireTenantContext,
-  ...staff,
+  ...staffCommand,
   operate,
   async (req, res) => {
     const params = revokeCustomerDisplayPairing.params.parse(req.params);

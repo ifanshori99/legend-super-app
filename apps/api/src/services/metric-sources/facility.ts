@@ -20,10 +20,11 @@
 // `completed` ticket of the unit covers it, from `starts_at` to `ended_at`
 // (or, while the ticket has no end, up to the job's `now` capped at the day
 // end; never its planned `ends_at`). A unit under maintenance still counts
-// as available: its status has no history. Hours come from today's
-// `facilities.operating_hours`, which has no effective date yet (follow-up
-// card), so both minute readers set `keepFinal`: once a day is final, a later
-// change of hours never rewrites it.
+// as available: its status has no history. Hours of a day are the version of
+// `facility_operating_hours_versions` with the latest `effective_from` at or
+// before that day (legend-4us1a), falling back to `facilities.operating_hours`
+// when no version exists. Both minute readers still set `keepFinal`: once a
+// day is final, it is never rewritten.
 //
 // An incident is answered when it has `responded_at`; it counts on the
 // business day it was triggered. The response sums have their own reader
@@ -42,13 +43,28 @@
 //   order to an access ticket.
 // - facility_cleaning_count / _seconds: no cleaning task table (the ticket's
 //   cleaning buffer is a plan, not a measured duration).
-// - revpash, seat_occupancy_pct: the seat model of the WFC zone (pax or table
-//   capacity, zone revenue) is not defined.
+//
+// WFC zones (bead legend-p4q10): zones with `floor_zones.is_wfc`, one `zone`
+// dimension row per zone plus a total. Stored sums: seat_available_minutes
+// (seats = capacity of the zone's tables that are not inactive, times the
+// open minutes of the business date), seat_used_minutes (pax of each
+// non-voided table session times its minutes inside the open window, a
+// session still open at `now` counts up to `now`; capped at the available
+// minutes) and wfc_net_sales (completed orders by `business_date` through
+// order -> table session -> table -> zone, without tax and service charge:
+// a tax-inclusive order backs both out of its gross subtotal; the order net
+// is the dashboard's net_sales one, subtotal - discount - refunds, so revpash
+// never overstates). Open window: the zone's `hours` for the weekday of the date,
+// or the outlet's opening hours when the zone has none; a zone with no seats
+// or no open minutes writes no row (absent, never a divide by zero).
+// Derived: seat_occupancy_pct = used / available * 100 and revpash = net
+// sales / available seat-minutes * 60 (rupiah per seat-hour).
 
 import { sql } from "drizzle-orm";
-import { businessDayRange } from "@starter/shared/core";
+import { businessDayRange, idr } from "@starter/shared/core";
 import { minutesOfDay, type FacilityDayHours } from "@starter/shared/facility";
 import { outletBusinessDayClock } from "../outlet-clock";
+import { NOT_TRAINING_SQL, ORDER_NET_SQL, REFUNDS_JOIN } from "./sales";
 import type {
   DailyComputeInput,
   DailyMetricReader,
@@ -139,7 +155,15 @@ async function loadDay(tx: Tx, input: DailyComputeInput): Promise<Day> {
 
   const units = (
     await tx.execute(sql`
-      SELECT u.id, u.facility_id, f.type, f.operating_hours,
+      SELECT u.id, u.facility_id, f.type,
+             coalesce(
+               (SELECT v.operating_hours
+                  FROM facility_operating_hours_versions v
+                 WHERE v.tenant_id = f.tenant_id AND v.facility_id = f.id
+                   AND v.effective_from <= ${input.businessDate}::date
+                 ORDER BY v.effective_from DESC
+                 LIMIT 1),
+               f.operating_hours) AS operating_hours,
              extract(epoch FROM u.created_at) * 1000 AS created_at
         FROM facility_units u
         JOIN facilities f ON f.tenant_id = u.tenant_id AND f.id = u.facility_id
@@ -533,11 +557,227 @@ const unitMinutesReader: DailyMetricReader = {
   },
 };
 
+// ---- WFC zones: seat minutes and net sales (bead legend-p4q10) --------------
+
+type ClockWindow = { start: number; end: number };
+type ZoneHoursRow = { daysOfWeek: number[]; start: string; end: string };
+type OutletDayHours = { opens: string; closes: string } | null;
+
+const OUTLET_DAY_KEYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+
+/** Minutes after local midnight; a close before the open runs past midnight, equal is no window. */
+function clockWindow(start: string, end: string): ClockWindow | null {
+  const from = minutesOfDay(start);
+  const to = minutesOfDay(end);
+  if (from === to) return null;
+  return { start: from, end: to > from ? to : to + 1440 };
+}
+
+/** Open windows of a zone on a weekday (0 = Sunday); no zone hours means the outlet's. */
+function zoneWindows(
+  hours: readonly ZoneHoursRow[],
+  outletHours: Record<string, OutletDayHours>,
+  weekday: number,
+): ClockWindow[] {
+  const outletDay = outletHours[OUTLET_DAY_KEYS[weekday]!] ?? null;
+  const windows =
+    hours.length > 0
+      ? hours
+          .filter((entry) => entry.daysOfWeek.includes(weekday))
+          .map((entry) => clockWindow(entry.start, entry.end))
+      : [
+          outletDay === null
+            ? null
+            : clockWindow(outletDay.opens, outletDay.closes),
+        ];
+  return windows.filter((window): window is ClockWindow => window !== null);
+}
+
+type WfcZoneDay = {
+  zoneId: string;
+  availableMinutes: number;
+  usedMinutes: number;
+  netSalesIdr: number;
+};
+
+async function loadWfcDay(
+  tx: Tx,
+  input: DailyComputeInput,
+): Promise<WfcZoneDay[]> {
+  const { tenantId, outletId, businessDate } = input;
+  const outlet = (
+    await tx.execute(sql`
+      SELECT timezone, opening_hours FROM outlets
+       WHERE tenant_id = ${tenantId} AND id = ${outletId}`)
+  ).rows[0] as Row | undefined;
+  if (!outlet) throw new Error("Outlet not found");
+  // Local midnight of the date (a zero cutoff); windows are offsets from it.
+  const midnight = businessDayRange(businessDate, {
+    timeZone: String(outlet.timezone),
+    cutoff: "00:00",
+  }).start.getTime();
+  const weekday = new Date(`${businessDate}T00:00:00Z`).getUTCDay();
+  const outletHours = outlet.opening_hours as Record<string, OutletDayHours>;
+
+  const zones = (
+    await tx.execute(sql`
+      SELECT z.id, z.hours,
+             coalesce(sum(t.capacity) FILTER (WHERE t.status <> 'inactive'), 0) AS seats
+        FROM floor_zones z
+        LEFT JOIN tables t ON t.tenant_id = z.tenant_id AND t.zone_id = z.id
+       WHERE z.tenant_id = ${tenantId} AND z.outlet_id = ${outletId} AND z.is_wfc
+       GROUP BY z.id, z.hours
+       ORDER BY z.id`)
+  ).rows as Row[];
+
+  const open = new Map<
+    string,
+    { seats: number; windows: { from: number; to: number }[] }
+  >();
+  for (const zone of zones) {
+    const seats = num(zone.seats);
+    const windows = zoneWindows(
+      zone.hours as ZoneHoursRow[],
+      outletHours,
+      weekday,
+    ).map((window) => ({
+      from: midnight + window.start * 60_000,
+      to: midnight + window.end * 60_000,
+    }));
+    if (seats > 0 && windows.length > 0)
+      open.set(String(zone.id), { seats, windows });
+  }
+  if (open.size === 0) return [];
+
+  // Sessions that may touch a window (windows end before midnight + 2 days).
+  const rangeStart = new Date(midnight).toISOString();
+  const rangeEnd = new Date(midnight + 2 * 1440 * 60_000).toISOString();
+  const nowMs = input.now.getTime();
+  const sessions = (
+    await tx.execute(sql`
+      SELECT t.zone_id, ts.pax,
+             extract(epoch FROM ts.opened_at) * 1000 AS opened_at,
+             extract(epoch FROM ts.closed_at) * 1000 AS closed_at
+        FROM table_sessions ts
+        JOIN tables t ON t.tenant_id = ts.tenant_id AND t.id = ts.table_id
+        JOIN floor_zones z ON z.tenant_id = t.tenant_id AND z.id = t.zone_id
+       WHERE ts.tenant_id = ${tenantId} AND ts.outlet_id = ${outletId}
+         AND z.is_wfc
+         AND ts.status NOT IN ('voided', 'pending_confirmation')
+         AND ts.opened_at < ${rangeEnd}::timestamptz
+         AND coalesce(ts.closed_at, ${input.now.toISOString()}::timestamptz) > ${rangeStart}::timestamptz`)
+  ).rows as Row[];
+  const usedMs = new Map<string, number>();
+  for (const session of sessions) {
+    const zone = open.get(String(session.zone_id));
+    if (!zone) continue;
+    const from = num(session.opened_at);
+    const to = session.closed_at === null ? nowMs : num(session.closed_at);
+    for (const window of zone.windows) {
+      const overlap = Math.min(to, window.to) - Math.max(from, window.from);
+      if (overlap > 0)
+        usedMs.set(
+          String(session.zone_id),
+          (usedMs.get(String(session.zone_id)) ?? 0) +
+            num(session.pax) * overlap,
+        );
+    }
+  }
+
+  const sales = (
+    await tx.execute(sql`
+      SELECT t.zone_id,
+             sum(CASE WHEN o.prices_include_tax
+                      THEN ${ORDER_NET_SQL} - o.tax_idr - o.service_charge_idr
+                      ELSE ${ORDER_NET_SQL} END) AS net
+        FROM orders o
+        ${REFUNDS_JOIN}
+        JOIN table_sessions ts ON ts.tenant_id = o.tenant_id AND ts.id = o.table_session_id
+        JOIN tables t ON t.tenant_id = ts.tenant_id AND t.id = ts.table_id
+        JOIN floor_zones z ON z.tenant_id = t.tenant_id AND z.id = t.zone_id
+       WHERE o.tenant_id = ${tenantId} AND o.outlet_id = ${outletId}
+         AND o.status = 'completed'
+         AND ${NOT_TRAINING_SQL}
+         AND o.business_date = ${businessDate}::date
+         AND z.is_wfc
+       GROUP BY t.zone_id`)
+  ).rows as Row[];
+  const net = new Map(sales.map((row) => [String(row.zone_id), num(row.net)]));
+
+  return [...open].map(([zoneId, zone]) => {
+    const availableMinutes =
+      zone.seats *
+      zone.windows.reduce((sum, w) => sum + (w.to - w.from) / 60_000, 0);
+    return {
+      zoneId,
+      availableMinutes,
+      usedMinutes: Math.min(
+        availableMinutes,
+        Math.round((usedMs.get(zoneId) ?? 0) / 60_000),
+      ),
+      netSalesIdr: net.get(zoneId) ?? 0,
+    };
+  });
+}
+
+const WFC_SEAT_CODES = [
+  "seat_available_minutes",
+  "seat_used_minutes",
+  "wfc_net_sales",
+] as const;
+
+/** Seat minutes and net sales of each WFC zone with seats and open hours, plus the outlet total. */
+const wfcSeatReader: DailyMetricReader = {
+  metricCodes: WFC_SEAT_CODES,
+  dimensions: ["zone"],
+  requiresDailyClose: false,
+  keepFinal: true,
+  async compute(input) {
+    const zones = await loadWfcDay(input.tx, input);
+    const rows = (
+      dimension: Dimension | null,
+      available: number,
+      used: number,
+      sales: number,
+    ): DailyMetricValue[] => [
+      {
+        metricCode: "seat_available_minutes",
+        dimension,
+        value: count(available),
+      },
+      { metricCode: "seat_used_minutes", dimension, value: count(used) },
+      {
+        metricCode: "wfc_net_sales",
+        dimension,
+        value: { unit: "idr", valueIdr: idr(sales) },
+      },
+    ];
+    const sum = (pick: (zone: WfcZoneDay) => number) =>
+      zones.reduce((total, zone) => total + pick(zone), 0);
+    return [
+      ...rows(
+        null,
+        sum((zone) => zone.availableMinutes),
+        sum((zone) => zone.usedMinutes),
+        sum((zone) => zone.netSalesIdr),
+      ),
+      ...zones.flatMap((zone) =>
+        rows(
+          { key: "zone", value: zone.zoneId },
+          zone.availableMinutes,
+          zone.usedMinutes,
+          zone.netSalesIdr,
+        ),
+      ),
+    ];
+  },
+};
+
 const derived = (
   code: string,
   numerator: string,
   denominator: string,
-  scale: 1 | 100,
+  scale: 1 | 60 | 100,
 ): MetricSource => ({ kind: "derived", code, numerator, denominator, scale });
 
 const UNAVAILABLE_CODES = [
@@ -551,8 +791,6 @@ const UNAVAILABLE_CODES = [
   "shower_fnb_conversion_pct",
   "facility_cleaning_count",
   "facility_cleaning_seconds",
-  "revpash",
-  "seat_occupancy_pct",
 ] as const;
 
 export const facilitySources: MetricSourceFamilyModule = {
@@ -596,6 +834,18 @@ export const facilitySources: MetricSourceFamilyModule = {
       "facility_incident_answered_count",
       1,
     ),
+    ...WFC_SEAT_CODES.map((code): MetricSource => ({
+      kind: "daily",
+      code,
+      reader: wfcSeatReader,
+    })),
+    derived(
+      "seat_occupancy_pct",
+      "seat_used_minutes",
+      "seat_available_minutes",
+      100,
+    ),
+    derived("revpash", "wfc_net_sales", "seat_available_minutes", 60),
     ...UNAVAILABLE_CODES.map((code): MetricSource => ({
       kind: "unavailable",
       code,

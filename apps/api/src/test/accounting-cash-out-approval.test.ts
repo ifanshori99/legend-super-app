@@ -53,7 +53,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../app.ts";
-import { agent, originHeader } from "./helpers.ts";
+import { agent, originHeader, verifySessionMfa } from "./helpers.ts";
 import {
   closeKit,
   daysAgo,
@@ -105,6 +105,9 @@ beforeAll(async () => {
     { role: "finance", outletId: null },
   ]);
   nobody = await signedIn(app, "CO nobody", []);
+  // legend-bf8f2: approving a chained entry decides the last step through the
+  // approval service, which needs an MFA-verified session (like the inbox).
+  for (const who of [approver, approver2]) await verifyMfa(who);
 });
 
 afterAll(async () => {
@@ -116,6 +119,16 @@ afterAll(async () => {
     .catch(() => {});
   await closeKit();
 });
+
+/** Marks the session of a signed-in user as MFA-verified (looked up by user id). */
+async function verifyMfa(who: Session) {
+  const { rows } = await owner.query<{ email: string }>(
+    'SELECT email FROM "user" WHERE id = $1',
+    [who.userId],
+  );
+  expect(rows, `user ${who.userId}`).toHaveLength(1);
+  await verifySessionMfa(rows[0]!.email);
+}
 
 /** A fresh tenant-wide finance user: its daily anti-split total starts at zero. */
 const freshCreator = (label: string) =>
@@ -443,7 +456,12 @@ describe("cash-out approval: approve posts exactly once", () => {
       ).toHaveLength(1);
       expect(losers).toHaveLength(1);
       expect(losers[0]!.status).toBe(409);
-      expect(losers[0]!.body.error.code).toBe("CASH_ENTRY_NOT_PENDING");
+      // The approval service answers APPROVAL_REQUEST_NOT_PENDING when it loses
+      // the race; the cash-entry guard answers CASH_ENTRY_NOT_PENDING. Both 409.
+      expect([
+        "CASH_ENTRY_NOT_PENDING",
+        "APPROVAL_REQUEST_NOT_PENDING",
+      ]).toContain(losers[0]!.body.error.code);
 
       const approvedWon = approveRes.status === 200;
       const stored = await row(entry.id);

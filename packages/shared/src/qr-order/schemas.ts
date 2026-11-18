@@ -116,6 +116,8 @@ export const floorZoneSchema = z.strictObject({
   hours: z.array(zoneHoursSchema),
   status: z.enum(["active", "inactive"]),
   sortOrder: z.number().int(),
+  /** Explicit WFC zone marker (legend-p4q10); false unless an admin sets it. */
+  isWfc: z.boolean(),
 });
 export type FloorZone = z.infer<typeof floorZoneSchema>;
 
@@ -208,6 +210,7 @@ export const createFloorZoneInputSchema = clientInputSchema({
   hours: zoneOpeningHoursSchema,
   status: zoneStatusSchema.default("active"),
   sortOrder: z.number().int().min(0).max(999).default(0),
+  isWfc: z.boolean().default(false),
 });
 
 /** PATCH: only the sent fields change, and at least one must be sent. */
@@ -219,6 +222,7 @@ export const updateFloorZoneInputSchema = clientInputSchema({
   hours: zoneOpeningHoursSchema.optional(),
   status: zoneStatusSchema.optional(),
   sortOrder: z.number().int().min(0).max(999).optional(),
+  isWfc: z.boolean().optional(),
 }).refine(
   (value) => Object.values(value).some((field) => field !== undefined),
   { message: "Send at least one field to change", path: ["name"] },

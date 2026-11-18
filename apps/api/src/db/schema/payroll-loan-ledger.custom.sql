@@ -39,10 +39,39 @@ BEGIN
   RETURN NULL;
 END $$;
 --> statement-breakpoint
+-- legend-rtrbj: principal_idr is watched too; once a loan left 'pending' its
+-- principal cannot change at all (guard below), and a pending-to-disbursed update
+-- that moves principal is still caught by the deferred ledger check.
 CREATE CONSTRAINT TRIGGER employee_loans_ledger_trg
-  AFTER INSERT OR UPDATE OF outstanding_idr, status ON public.employee_loans
+  AFTER INSERT OR UPDATE OF outstanding_idr, status, principal_idr ON public.employee_loans
   DEFERRABLE INITIALLY DEFERRED FOR EACH ROW
   EXECUTE FUNCTION app.employee_loans_ledger_check();
+--> statement-breakpoint
+CREATE OR REPLACE FUNCTION app.employee_loans_principal_guard() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+  RAISE EXCEPTION 'PAYR-02: loan % principal cannot change after it left pending', OLD.id
+    USING ERRCODE = '23514';
+END $$;
+--> statement-breakpoint
+CREATE TRIGGER employee_loans_principal_guard_trg
+  BEFORE UPDATE OF principal_idr ON public.employee_loans
+  FOR EACH ROW
+  WHEN (OLD.principal_idr IS DISTINCT FROM NEW.principal_idr AND OLD.status <> 'pending')
+  EXECUTE FUNCTION app.employee_loans_principal_guard();
+--> statement-breakpoint
+CREATE OR REPLACE FUNCTION app.employee_loans_status_backward_guard() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+  RAISE EXCEPTION 'PAYR-03: loan % was paid out and cannot go back to status %', NEW.id, NEW.status
+    USING ERRCODE = '23514';
+END $$;
+--> statement-breakpoint
+CREATE TRIGGER employee_loans_status_backward_trg
+  BEFORE UPDATE OF status ON public.employee_loans
+  FOR EACH ROW
+  WHEN (OLD.status IN ('disbursed', 'settled') AND NEW.status NOT IN ('disbursed', 'settled'))
+  EXECUTE FUNCTION app.employee_loans_status_backward_guard();
 --> statement-breakpoint
 CREATE CONSTRAINT TRIGGER payroll_loan_deductions_ledger_trg
   AFTER DELETE ON public.payroll_loan_deductions

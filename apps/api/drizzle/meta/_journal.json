@@ -3179,6 +3179,69 @@
       "when": 1795000000082,
       "tag": "0467_supplier_payment_approval_policies_data",
       "breakpoints": true
+    },
+    {
+      "idx": 468,
+      "version": "7",
+      "when": 1795000000085,
+      "tag": "0468_payroll_overtime_ledger_reverse_guard",
+      "breakpoints": true
+    },
+    {
+      "idx": 469,
+      "version": "7",
+      "when": 1795000000086,
+      "tag": "0469_payroll_loan_principal_ledger_guard",
+      "breakpoints": true
+    },
+    {
+      "idx": 470,
+      "version": "7",
+      "when": 1795000000087,
+      "tag": "0470_payroll_pph21_receivable_settlement_reversal",
+      "breakpoints": true
+    },
+    {
+      "idx": 471,
+      "version": "7",
+      "when": 1795000000088,
+      "tag": "0471_payroll_loan_status_backward_guard",
+      "breakpoints": true
+    },
+    {
+      "idx": 472,
+      "version": "7",
+      "when": 1795000000089,
+      "tag": "0472_payout_1005_return_withdraw",
+      "breakpoints": true
+    },
+    {
+      "idx": 473,
+      "version": "7",
+      "when": 1795000000090,
+      "tag": "0473_payout_1005_recon_flag_kind",
+      "breakpoints": true
+    },
+    {
+      "idx": 474,
+      "version": "7",
+      "when": 1795000000091,
+      "tag": "0474_facility_hours_wfc_breakfast",
+      "breakpoints": true
+    },
+    {
+      "idx": 475,
+      "version": "7",
+      "when": 1795000000092,
+      "tag": "0475_outbox_charge_refunded_idx",
+      "breakpoints": true
+    },
+    {
+      "idx": 476,
+      "version": "7",
+      "when": 1795000000093,
+      "tag": "0476_order_issue_charge_manual_refunds",
+      "breakpoints": true
     }
   ]
 }

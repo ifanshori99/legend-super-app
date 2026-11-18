@@ -12,3 +12,9 @@ SELECT app.enforce_outlet_rls('public.order_issues'::regclass);
 SELECT app.enforce_tenant_rls('public.order_issue_charges'::regclass);
 --> statement-breakpoint
 SELECT app.enforce_outlet_rls('public.order_issue_charges'::regclass);
+--> statement-breakpoint
+-- legend-mrwtp: order_issue_charge_manual_refunds, tenant + outlet RLS. Append
+-- AFTER its generated CREATE TABLE. Rows are updated (decided); never deleted.
+SELECT app.enforce_tenant_rls('public.order_issue_charge_manual_refunds'::regclass);
+--> statement-breakpoint
+SELECT app.enforce_outlet_rls('public.order_issue_charge_manual_refunds'::regclass);

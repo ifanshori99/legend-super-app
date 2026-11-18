@@ -635,8 +635,11 @@ function salesAt(bound: Bound) {
  * earlier than a sale (an order sale never uses a charge intent anyway).
  */
 function chargesAt(bound: Bound) {
+  // legend-v5z4h: a gateway charge refunded in full and then closed `voided`
+  // with its order still counts as it did while `paid` (its refund releases
+  // the amount again once journalled).
   const paid = and(
-    eq(orderIssueCharges.status, "paid"),
+    inArray(orderIssueCharges.status, ["paid", "voided"]),
     isNotNull(orderIssueCharges.paidAt),
   );
   return bound.kind === "sale"
@@ -913,7 +916,9 @@ export async function chargeBoundOf(
       and(
         eq(orderIssueCharges.tenantId, tenantId),
         eq(orderIssueCharges.id, chargeId),
-        eq(orderIssueCharges.status, "paid"),
+        // legend-v5z4h: `voided` is a gateway charge refunded in full (or a
+        // till charge returned) whose order was voided; it was paid.
+        inArray(orderIssueCharges.status, ["paid", "voided"]),
       ),
     );
   if (!charge || charge.paidAt === null)
@@ -1176,6 +1181,9 @@ async function intentBackedAt(
         eq(paymentRefunds.tenantId, tenantId),
         eq(paymentRefunds.paymentIntentId, intentId),
         refundsAt(bound),
+        // legend-9e21l: the name and refundId predicates below match the
+        // partial expression index domain_event_outbox_charge_refunded_idx
+        // (0475); keep their text identical.
         sql`EXISTS (SELECT 1 FROM ${domainEventOutbox}
           WHERE ${domainEventOutbox.tenantId} = ${tenantId}
             AND ${domainEventOutbox.destination} = ${EVENT_DESTINATION}

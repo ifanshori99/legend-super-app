@@ -60,6 +60,8 @@ export const menuItemSchema = z.strictObject({
   allergens: z.array(name),
   mediaId: uuidSchema.nullable(),
   isActive: z.boolean(),
+  /** legend-lgyfh: offered in the facility breakfast menu (default false). */
+  isBreakfast: z.boolean().default(false),
   sortOrder: z.number().int(),
 });
 export const variantSchema = z.strictObject({

@@ -951,6 +951,373 @@ describe("reportOrderIssue: voucher and swap item belong to this tenant (legend-
   });
 });
 
+// legend-c1gnr: a voucher that is revoked, expired or used up, or whose promotion
+// is off or outside its period, is refused (422) before any insert.
+// - "Revoked" = vouchers.status 'cancelled'; "expired" = valid_until in the past
+//   (also status 'expired'); "used up" = status 'redeemed'.
+// - "Promo off" = promotions.status other than 'active'; "outside period" =
+//   starts_at in the future or ends_at in the past.
+// - Reporting does not redeem the voucher or count a promotion use; a voucher
+//   settles one issue only (order_issues_voucher_once_idx), so a second or
+//   concurrent report of the same voucher is a 409 CONFLICT.
+// - A refusal stores no order_issues row and changes no voucher or promotion.
+describe("reportOrderIssue: voucher and promotion must be usable (legend-c1gnr)", () => {
+  type VoucherPatch = {
+    status?: string;
+    validFrom?: string;
+    validUntil?: string | null;
+    redeemedOrderUuid?: string;
+    cancelledReason?: string;
+  };
+  type PromoPatch = {
+    status?: string;
+    startsAt?: string;
+    endsAt?: string | null;
+    quotaTotal?: number | null;
+    usesTotal?: number;
+  };
+
+  const resolveWith = (
+    order: Order,
+    patch: Record<string, unknown>,
+  ): Record<string, unknown> =>
+    issueBody(order, {
+      type: "complaint",
+      reason: "complaint",
+      employeeId: null,
+      reasonNote: "Pelanggan kecewa, diberi kompensasi",
+      ...patch,
+    });
+
+  async function seedPromotion(
+    forTenantId: string,
+    patch: PromoPatch = {},
+  ): Promise<string> {
+    const id = randomUUID();
+    await owner.query(
+      `INSERT INTO promotions
+         (id, tenant_id, name, description, status, voucher_required, starts_at, ends_at,
+          conditions, benefit, stack_group, stackable, priority, outlet_scope,
+          quota_total, uses_total)
+       VALUES ($1, $2, $3, 'Uji', $4, false, $5::timestamptz, $6::timestamptz,
+               '[]'::jsonb, $7, $8, true, 0, 'all_except', $9, $10)`,
+      [
+        id,
+        forTenantId,
+        `Promo Usable ${id.slice(0, 8)}`,
+        patch.status ?? "active",
+        patch.startsAt ?? new Date(Date.now() - 3 * 3600_000).toISOString(),
+        patch.endsAt === undefined ? null : patch.endsAt,
+        JSON.stringify({
+          kind: "percent_off",
+          percentBp: 1000,
+          maxDiscountIdr: null,
+        }),
+        `u${id.slice(0, 8)}`,
+        patch.quotaTotal === undefined ? null : patch.quotaTotal,
+        patch.usesTotal ?? 0,
+      ],
+    );
+    return id;
+  }
+
+  async function seedVoucher(
+    forTenantId: string,
+    promotionId: string | null,
+    patch: VoucherPatch = {},
+  ): Promise<string> {
+    const status = patch.status ?? "issued";
+    return one<string>(
+      `INSERT INTO vouchers (tenant_id, promotion_id, customer_profile_id, code_hash, source,
+                             status, value_idr, valid_from, valid_until, redeemed_at,
+                             redeemed_order_id, cancelled_reason)
+       VALUES ($1, $2, NULL, $3, 'manual', $4::varchar, 10000, $5::timestamptz, $6::timestamptz,
+               CASE WHEN $4::varchar = 'redeemed' THEN now() END, $7::uuid, $8)
+       RETURNING id`,
+      [
+        forTenantId,
+        promotionId,
+        createHash("sha256").update(randomUUID()).digest("hex"),
+        status,
+        patch.validFrom ?? new Date(Date.now() - 2 * 3600_000).toISOString(),
+        patch.validUntil === undefined ? null : patch.validUntil,
+        status === "redeemed" ? (patch.redeemedOrderUuid ?? null) : null,
+        status === "cancelled"
+          ? (patch.cancelledReason ?? "Dicabut manajer")
+          : null,
+      ],
+    );
+  }
+
+  const stateOf = async (voucherId: string, promotionId: string | null) => {
+    const voucher = (
+      await owner.query<{ status: string }>(
+        "SELECT status FROM vouchers WHERE id = $1",
+        [voucherId],
+      )
+    ).rows[0]!;
+    const promotion = promotionId
+      ? (
+          await owner.query<{ uses_total: number }>(
+            "SELECT uses_total FROM promotions WHERE id = $1",
+            [promotionId],
+          )
+        ).rows[0]!
+      : null;
+    return { voucher: voucher.status, uses: promotion?.uses_total ?? null };
+  };
+
+  const issuesOf = async (order: Order) =>
+    (
+      await owner.query(
+        "SELECT 1 FROM order_issues WHERE tenant_id = $1 AND order_item_id = $2",
+        [tenant.tenantId, order.itemUuid],
+      )
+    ).rows.length;
+
+  async function expectRefused(
+    voucherId: string,
+    promotionId: string | null,
+  ): Promise<void> {
+    const order = await seedOrder(kit.menuItem);
+    const before = await stateOf(voucherId, promotionId);
+    const res = await api(recorder).report(
+      order.ulid,
+      resolveWith(order, { resolution: "voucher", voucherId }),
+    );
+    expect(res.status).toBe(422);
+    expect(await issuesOf(order)).toBe(0);
+    expect(await stateOf(voucherId, promotionId)).toEqual(before);
+  }
+
+  const hoursFromNow = (h: number) =>
+    new Date(Date.now() + h * 3600_000).toISOString();
+
+  it("refuses a revoked (cancelled) voucher", async () => {
+    await expectRefused(
+      await seedVoucher(tenant.tenantId, null, { status: "cancelled" }),
+      null,
+    );
+  });
+
+  it("refuses an expired voucher (valid_until in the past)", async () => {
+    await expectRefused(
+      await seedVoucher(tenant.tenantId, null, {
+        validFrom: hoursFromNow(-3),
+        validUntil: hoursFromNow(-1),
+      }),
+      null,
+    );
+  });
+
+  it("refuses a voucher already marked expired", async () => {
+    await expectRefused(
+      await seedVoucher(tenant.tenantId, null, { status: "expired" }),
+      null,
+    );
+  });
+
+  it("refuses a voucher that is already used up (redeemed)", async () => {
+    const spent = await seedOrder(kit.menuItem);
+    await expectRefused(
+      await seedVoucher(tenant.tenantId, null, {
+        status: "redeemed",
+        redeemedOrderUuid: spent.uuid,
+      }),
+      null,
+    );
+  });
+
+  it.each(["draft", "paused", "ended"])(
+    "refuses a voucher whose promotion is %s (not active)",
+    async (status) => {
+      const promotion = await seedPromotion(tenant.tenantId, { status });
+      await expectRefused(
+        await seedVoucher(tenant.tenantId, promotion),
+        promotion,
+      );
+    },
+  );
+
+  it("refuses a voucher whose promotion has not started yet", async () => {
+    const promotion = await seedPromotion(tenant.tenantId, {
+      startsAt: hoursFromNow(2),
+    });
+    await expectRefused(
+      await seedVoucher(tenant.tenantId, promotion),
+      promotion,
+    );
+  });
+
+  it("refuses a voucher whose promotion period already ended", async () => {
+    const promotion = await seedPromotion(tenant.tenantId, {
+      startsAt: hoursFromNow(-3),
+      endsAt: hoursFromNow(-1),
+    });
+    await expectRefused(
+      await seedVoucher(tenant.tenantId, promotion),
+      promotion,
+    );
+  });
+
+  it("accepts a valid voucher of an active promotion inside its period", async () => {
+    const promotion = await seedPromotion(tenant.tenantId, {
+      startsAt: hoursFromNow(-3),
+      endsAt: hoursFromNow(3),
+      quotaTotal: 5,
+    });
+    const voucherId = await seedVoucher(tenant.tenantId, promotion, {
+      validUntil: hoursFromNow(3),
+    });
+    const order = await seedOrder(kit.menuItem);
+    const res = await api(recorder).report(
+      order.ulid,
+      resolveWith(order, { resolution: "voucher", voucherId }),
+    );
+    expect(res.status).toBe(201);
+    expect(res.body.data).toMatchObject({ resolution: "voucher", voucherId });
+    expect(await stateOf(voucherId, promotion)).toEqual({
+      voucher: "issued",
+      uses: 0,
+    });
+  });
+
+  it("accepts a voucher that is not expired yet and has no promotion", async () => {
+    const voucherId = await seedVoucher(tenant.tenantId, null, {
+      validUntil: hoursFromNow(1),
+    });
+    const order = await seedOrder(kit.menuItem);
+    const res = await api(recorder).report(
+      order.ulid,
+      resolveWith(order, { resolution: "voucher", voucherId }),
+    );
+    expect(res.status).toBe(201);
+  });
+
+  it("two concurrent reports of one voucher end in one 201 and one 409", async () => {
+    const voucherId = await seedVoucher(tenant.tenantId, null);
+    const orders = [
+      await seedOrder(kit.menuItem),
+      await seedOrder(kit.menuItem),
+    ];
+    const results = await Promise.all(
+      orders.map((order) =>
+        api(recorder).report(
+          order.ulid,
+          resolveWith(order, { resolution: "voucher", voucherId }),
+        ),
+      ),
+    );
+    expect(results.map((r) => r.status).sort()).toEqual([201, 409]);
+    const { rows } = await owner.query(
+      "SELECT 1 FROM order_issues WHERE tenant_id = $1 AND voucher_id = $2",
+      [tenant.tenantId, voucherId],
+    );
+    expect(rows).toHaveLength(1);
+  });
+
+  // An apology voucher (apology_vouchers row, vouchers.id = voucher_id) that is
+  // already tied to a report is spent: a second report is a 409 CONFLICT and
+  // stores no row. Assumption: "tied" means apology_vouchers.order_issue_id is
+  // set to a real issue, or an order_issues row points at it through
+  // order_issues.voucher_id = apology_vouchers.id (order-recovery flow).
+  async function seedApologyRow(
+    voucherId: string,
+    orderIssueId: string | null,
+  ) {
+    return one<string>(
+      `INSERT INTO apology_vouchers (tenant_id, outlet_id, voucher_id, order_issue_id, reason,
+                                     code_sealed, issued_by)
+       VALUES ($1, $2, $3, $4, 'Maaf atas keterlambatan', 'sealed-test', $5) RETURNING id`,
+      [
+        tenant.tenantId,
+        tenant.outletId,
+        voucherId,
+        orderIssueId,
+        recorder.userId,
+      ],
+    );
+  }
+
+  async function expectConflict(voucherId: string): Promise<void> {
+    const order = await seedOrder(kit.menuItem);
+    const res = await api(recorder).report(
+      order.ulid,
+      resolveWith(order, { resolution: "voucher", voucherId }),
+    );
+    expect(res.status).toBe(409);
+    expect(await issuesOf(order)).toBe(0);
+    expect(await stateOf(voucherId, null)).toEqual({
+      voucher: "issued",
+      uses: null,
+    });
+  }
+
+  it("refuses (409) an apology voucher already tied to an issue through apology_vouchers.order_issue_id", async () => {
+    const firstOrder = await seedOrder(kit.menuItem);
+    const first = await api(recorder).report(
+      firstOrder.ulid,
+      issueBody(firstOrder),
+    );
+    expect(first.status).toBe(201);
+    const voucherId = await seedVoucher(tenant.tenantId, null);
+    await seedApologyRow(voucherId, first.body.data.id as string);
+    await expectConflict(voucherId);
+  });
+
+  it("refuses (409) an apology voucher already tied to an issue through order_issues.voucher_id = apology_vouchers.id", async () => {
+    const voucherId = await seedVoucher(tenant.tenantId, null);
+    const apologyId = await seedApologyRow(voucherId, null);
+    const firstOrder = await seedOrder(kit.menuItem);
+    await owner.query(
+      `INSERT INTO order_issues (tenant_id, outlet_id, order_id, order_item_id, type, reason,
+          reason_note, reported_by, resolution, voucher_id, cost_idr, status, idempotency_key, resolved_at)
+       VALUES ($1, $2, $3, $4, 'complaint', 'complaint', 'Pelanggan kecewa, diberi voucher maaf',
+          $5, 'voucher', $6, 0, 'resolved', $7, now())`,
+      [
+        tenant.tenantId,
+        tenant.outletId,
+        firstOrder.uuid,
+        firstOrder.itemUuid,
+        recorder.userId,
+        apologyId,
+        `seed-${randomUUID()}`,
+      ],
+    );
+    await expectConflict(voucherId);
+  });
+
+  it("leaves another tenant's vouchers and promotions untouched", async () => {
+    const otherPromotion = await seedPromotion(tenantB.tenantId, {
+      quotaTotal: 3,
+    });
+    const otherVoucher = await seedVoucher(tenantB.tenantId, otherPromotion);
+    const ownPromotion = await seedPromotion(tenant.tenantId, {
+      quotaTotal: 3,
+    });
+    const ownVoucher = await seedVoucher(tenant.tenantId, ownPromotion);
+
+    // Naming the other tenant's voucher is refused and changes nothing there.
+    await expectRefused(otherVoucher, otherPromotion);
+
+    // A valid report in this tenant leaves both tenants' vouchers as they were.
+    const order = await seedOrder(kit.menuItem);
+    const res = await api(recorder).report(
+      order.ulid,
+      resolveWith(order, { resolution: "voucher", voucherId: ownVoucher }),
+    );
+    expect(res.status).toBe(201);
+    expect(await stateOf(ownVoucher, ownPromotion)).toEqual({
+      voucher: "issued",
+      uses: 0,
+    });
+    expect(await stateOf(otherVoucher, otherPromotion)).toEqual({
+      voucher: "issued",
+      uses: 0,
+    });
+  });
+});
+
 describe("permissions, tenant and outlet isolation", () => {
   it("denies a user without kds.remake_comp.record", async () => {
     const order = await seedOrder(kit.menuItem);

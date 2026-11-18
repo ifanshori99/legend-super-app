@@ -70,6 +70,7 @@ function ZoneFormBody({
   const [active, setActive] = React.useState(
     (zone?.status ?? "active") === "active",
   );
+  const [isWfc, setIsWfc] = React.useState(zone?.isWfc ?? false);
   const [sortOrder, setSortOrder] = React.useState(
     String(zone?.sortOrder ?? 0),
   );
@@ -98,6 +99,7 @@ function ZoneFormBody({
       hours: toZoneHours(days),
       status: active ? ("active" as const) : ("inactive" as const),
       sortOrder: Number(sortOrder) || 0,
+      isWfc,
     };
     const done = {
       onSuccess: () => {
@@ -212,6 +214,18 @@ function ZoneFormBody({
             error={hoursError ?? errors.hours}
             idPrefix="zone-hours"
           />
+
+          <div className="flex items-start gap-3">
+            <Switch id="zone-wfc" checked={isWfc} onCheckedChange={setIsWfc} />
+            <div className="grid gap-0.5">
+              <label htmlFor="zone-wfc" className="text-sm font-medium">
+                {t("floorEditor.formWfc")}
+              </label>
+              <p className="text-xs text-muted-foreground">
+                {t("floorEditor.formWfcHint")}
+              </p>
+            </div>
+          </div>
 
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="flex items-end gap-3">

@@ -274,7 +274,8 @@ export async function requestQrDoublePaymentRefund(
   tx: Tx,
   context: ScopedTenantContext,
   input: {
-    order: { id: string; outletId: string };
+    /** Not read here; a caller that has no order (a parked-fund re-file) omits it. */
+    order?: { id: string; outletId: string };
     paymentLinkId: string;
     intentId: string;
     now: Date;
@@ -329,6 +330,12 @@ export async function requestQrDoublePaymentRefund(
         ),
       );
     if (live) continue;
+    // legend-9pz0m: a fund whose budget of failed system refunds is spent is
+    // left to a person (alarm and audit row), also on a re-delivered event.
+    // Lazy import: system-refund-followup imports this module (cycle).
+    const { parkedFundRefileBudgetSpent } =
+      await import("./system-refund-followup.ts");
+    if (await parkedFundRefileBudgetSpent(tx, tenantId, fund.id)) continue;
     const [inserted] = await tx
       .insert(paymentRefunds)
       .values({

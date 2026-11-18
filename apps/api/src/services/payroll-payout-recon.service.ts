@@ -21,6 +21,11 @@
 // - for each proof closure made since the boundary: both attestations (propose,
 //   and approve once closed) of the people the closure names, from live MFA
 //   sessions, under a grant bound to the key (990-C);
+// - for each approved withdrawal of a return claim (1005): its propose and
+//   approve attestations by two people from two sessions that match the
+//   withdrawal row, and the grants of both; a withdrawn claim with no approved
+//   withdrawal, and an open claim whose attested items no longer point at it,
+//   are flagged `operation_missing` (the withdrawal bypassed the functions);
 // - every resolve / bank_confirm / closure attestation, with or without another
 //   operation on its batch, and the grant it was made under: the grant must
 //   match the attestation's item set, detail and ref (990-D).
@@ -56,7 +61,7 @@ import { itemSetHashOf } from "./payroll-payout-proof-binding.service.ts";
 import { sha256Of } from "./payroll-payout-proof-fingerprint.service.ts";
 
 export type PayoutReconKind =
-  "correction" | "overpaid" | "return" | "posting_source";
+  "correction" | "overpaid" | "return" | "posting_source" | "return_withdraw";
 
 /** Kinds a flag can carry: the operations above plus the grant-checked steps. */
 export type PayoutReconFlagKind =
@@ -150,6 +155,29 @@ type Operation = {
   missing: boolean;
 };
 
+/**
+ * Item ids a return withdrawal concerns, as a `text[]` expression over the
+ * aliases `c` (the claim) and, when given, the withdrawal row. The items of the
+ * claim are cleared by an approved withdrawal, so they are read back from the
+ * attestations of the claim and of the withdrawal and from the items that still
+ * point at the claim; with none of them left (a direct write removed the
+ * trail) every paid item of the batch is held (the most restrictive choice).
+ */
+const withdrawItemsSql = (withdrawalId: SQL): SQL => sql`coalesce(
+  (SELECT array_agg(DISTINCT u.id ORDER BY u.id) FROM (
+     SELECT unnest(a.item_ids)::text AS id
+       FROM payroll_payout_attestations a
+      WHERE a.tenant_id = c.tenant_id
+        AND ((a.kind = 'return' AND a.operation_id = c.id)
+          OR (a.kind = 'return_withdraw' AND a.operation_id = ${withdrawalId}))
+     UNION
+     SELECT i.id::text FROM payroll_disbursement_items i
+      WHERE i.tenant_id = c.tenant_id AND i.return_claim_id = c.id) u),
+  (SELECT array_agg(i.id::text ORDER BY i.id) FROM payroll_disbursement_items i
+    WHERE i.tenant_id = c.tenant_id AND i.batch_id = c.batch_id
+      AND i.status IN ('succeeded', 'returned')),
+  ARRAY[]::text[])`;
+
 /** The operations after `after`, in a stable order, newest rule set first. */
 async function listOperations(
   tx: Tx,
@@ -195,6 +223,45 @@ async function listOperations(
           FROM payroll_payout_return_claims c
          WHERE c.tenant_id = ${tenantId}::uuid AND c.status = 'consumed'
            AND c.consumed_at >= ${since}::timestamptz
+        UNION ALL
+        -- An approved withdrawal of a return claim (1005). Its proof key is not
+        -- carried: the claim's proof is not read again, the attestations are
+        -- matched by the withdrawal id.
+        SELECT 'return_withdraw'::text, w.id::text, w.batch_id::text, NULL::text,
+               li.ids, li.ids, 'return_withdraw:' || w.id::text, false
+          FROM payroll_payout_return_withdrawals w
+          JOIN payroll_payout_return_claims c
+            ON c.tenant_id = w.tenant_id AND c.id = w.claim_id
+         CROSS JOIN LATERAL (SELECT ${withdrawItemsSql(sql`w.id`)} AS ids) li
+         WHERE w.tenant_id = ${tenantId}::uuid AND w.approved_at IS NOT NULL
+           AND w.approved_at >= ${since}::timestamptz
+        UNION ALL
+        -- A withdrawn claim no approved withdrawal explains (a direct write).
+        SELECT 'return_withdraw'::text, c.id::text, c.batch_id::text, NULL::text,
+               li.ids, li.ids, 'withdrawn_claim:' || c.id::text, true
+          FROM payroll_payout_return_claims c
+         CROSS JOIN LATERAL (SELECT ${withdrawItemsSql(sql`NULL::uuid`)} AS ids) li
+         WHERE c.tenant_id = ${tenantId}::uuid AND c.status = 'withdrawn'
+           AND NOT EXISTS (SELECT 1 FROM payroll_payout_return_withdrawals w
+                            WHERE w.tenant_id = c.tenant_id AND w.claim_id = c.id
+                              AND w.approved_at IS NOT NULL)
+        UNION ALL
+        -- An open claim whose attested items were cleared without a withdrawal:
+        -- their return columns were emptied by a direct write.
+        SELECT 'return_withdraw'::text, c.id::text, c.batch_id::text, NULL::text,
+               cl.ids, cl.ids, 'withdraw_cleared:' || c.id::text, true
+          FROM payroll_payout_return_claims c
+         CROSS JOIN LATERAL (
+           SELECT array_agg(DISTINCT x::text ORDER BY x::text) AS ids
+             FROM payroll_payout_attestations a
+            CROSS JOIN LATERAL unnest(a.item_ids) AS x
+             JOIN payroll_disbursement_items i
+               ON i.tenant_id = a.tenant_id AND i.id = x
+            WHERE a.tenant_id = c.tenant_id AND a.kind = 'return'
+              AND a.step = 'propose' AND a.operation_id = c.id
+              AND i.return_claim_id IS DISTINCT FROM c.id) cl
+         WHERE c.tenant_id = ${tenantId}::uuid AND c.status = 'open'
+           AND c.created_at >= ${since}::timestamptz AND cl.ids IS NOT NULL
         UNION ALL
         SELECT 'posting_source'::text, p.id::text, p.batch_id::text, NULL::text,
                ARRAY[]::text[], ARRAY[]::text[], 'posting_source:' || p.id::text,
@@ -399,6 +466,23 @@ type Facts = {
   flagged: Set<string>;
   /** The tenant's accounting module is on (a zero posted fee is legit only when off). */
   accountingOn: boolean;
+  /** Withdrawal rows of the return_withdraw attestations and operations. */
+  withdrawFacts: Map<string, WithdrawFacts>;
+  /** Proof keys of claims withdrawn through an approved withdrawal (history). */
+  withdrawnKeys: Set<string>;
+};
+
+/** A return withdrawal row, with the items it concerns (see `withdrawItemsSql`). */
+type WithdrawFacts = {
+  claimId: string;
+  reasonSha256: string | null;
+  proposedBy: string | null;
+  proposedSessionId: string | null;
+  approvedBy: string | null;
+  approvedSessionId: string | null;
+  proposedGrantId: string | null;
+  approvedGrantId: string | null;
+  itemIds: string[];
 };
 
 const AUDIT_ACTIONS = {
@@ -412,6 +496,8 @@ const AUDIT_ACTIONS = {
   ],
   return: ["payroll.disbursement.manual_returned"],
   posting_source: ["payroll.disbursement.posting_source_recorded"],
+  // A withdrawal has no audit row of its own: attestations and grants speak.
+  return_withdraw: [] as readonly string[],
 } as const satisfies Record<PayoutReconKind, readonly string[]>;
 
 const flagKey = (
@@ -457,6 +543,40 @@ async function readAttestations(
     grantId: text(row.grant_id),
     txid: row.txid === null || row.txid === undefined ? null : Number(row.txid),
   }));
+}
+
+/** The withdrawal rows named by id (a return_withdraw operation is the withdrawal id). */
+async function readWithdrawFacts(
+  tx: Tx,
+  tenantId: TenantId,
+  ids: readonly string[],
+): Promise<Map<string, WithdrawFacts>> {
+  const found = new Map<string, WithdrawFacts>();
+  if (ids.length === 0) return found;
+  for (const row of rowsOf(
+    await tx.execute(sql`
+      SELECT w.id::text AS id, w.claim_id::text AS claim_id, w.reason_sha256,
+             w.proposed_by, w.proposed_session_id, w.approved_by,
+             w.approved_session_id, w.proposed_grant_id::text AS proposed_grant_id,
+             w.approved_grant_id::text AS approved_grant_id, ${withdrawItemsSql(sql`w.id`)} AS item_ids
+        FROM payroll_payout_return_withdrawals w
+        JOIN payroll_payout_return_claims c
+          ON c.tenant_id = w.tenant_id AND c.id = w.claim_id
+       WHERE w.tenant_id = ${tenantId}::uuid
+         AND w.id IN (${uuidList(ids)})`),
+  ))
+    found.set(String(row.id), {
+      claimId: String(row.claim_id),
+      reasonSha256: text(row.reason_sha256),
+      proposedBy: text(row.proposed_by),
+      proposedSessionId: text(row.proposed_session_id),
+      approvedBy: text(row.approved_by),
+      approvedSessionId: text(row.approved_session_id),
+      proposedGrantId: text(row.proposed_grant_id),
+      approvedGrantId: text(row.approved_grant_id),
+      itemIds: list(row.item_ids),
+    });
+  return found;
 }
 
 /** The resolution state of each item of a resolve attestation. */
@@ -562,7 +682,8 @@ async function readGrants(
 
 /**
  * The withdraw steps of corrections and overpaid proposals, the main approval
- * of every batch (legend-xp8mc) and every resolve / bank_confirm step, at or
+ * of every batch (legend-xp8mc), every resolve / bank_confirm step and every
+ * step of a return withdrawal (an open proposal is no operation yet), at or
  * after the grant cutover. A withdrawn proposal is no operation (nothing was
  * corrected or recorded), and a batch approval, a resolution or a bank
  * confirmation is none of the operations above either, so they are read on
@@ -577,19 +698,27 @@ async function loadWithdrawals(
   attestations: Attestation[];
   grants: Map<string, GrantRow>;
   resolutions: Map<string, ResolutionFacts>;
+  withdrawFacts: Map<string, WithdrawFacts>;
   flagged: Set<string>;
 }> {
   const attestations = await readAttestations(
     tx,
     tenantId,
     sql`((a.step = 'withdraw' AND a.kind IN ('correction', 'overpaid'))
-          OR a.kind IN ('batch_approve', 'resolve', 'bank_confirm'))
+          OR a.kind IN ('batch_approve', 'resolve', 'bank_confirm', 'return_withdraw'))
         AND a.attested_at >= ${grantsSince.toISOString()}::timestamptz`,
   );
   const grants = await readGrants(tx, tenantId, attestations);
   const resolutions = await readResolutions(tx, tenantId, attestations);
-  const flagged = new Set<string>();
   const operationIds = [...new Set(attestations.map((a) => a.operationId))];
+  const withdrawFacts = await readWithdrawFacts(
+    tx,
+    tenantId,
+    attestations
+      .filter((a) => a.kind === "return_withdraw")
+      .map((a) => a.operationId),
+  );
+  const flagged = new Set<string>();
   if (operationIds.length > 0)
     for (const row of rowsOf(
       await tx.execute(sql`
@@ -606,7 +735,7 @@ async function loadWithdrawals(
           String(row.reason),
         ),
       );
-  return { attestations, grants, resolutions, flagged };
+  return { attestations, grants, resolutions, withdrawFacts, flagged };
 }
 
 /** A proof closure with the facts its check needs. */
@@ -893,6 +1022,29 @@ async function loadFacts(
 
   const grants = await readGrants(tx, tenantId, attestations);
   const resolutions = await readResolutions(tx, tenantId, attestations);
+  const withdrawFacts = await readWithdrawFacts(tx, tenantId, [
+    ...new Set([
+      ...operations
+        .filter((op) => op.kind === "return_withdraw" && !op.missing)
+        .map((op) => op.operationId),
+      ...attestations
+        .filter((a) => a.kind === "return_withdraw")
+        .map((a) => a.operationId),
+    ]),
+  ]);
+  const withdrawnKeys = new Set(
+    rowsOf(
+      await tx.execute(sql`
+        SELECT c.evidence_key
+          FROM payroll_payout_return_claims c
+         WHERE c.tenant_id = ${tenantId}::uuid
+           AND c.batch_id IN (${uuidList(batchIds)})
+           AND c.status = 'withdrawn'
+           AND EXISTS (SELECT 1 FROM payroll_payout_return_withdrawals w
+                        WHERE w.tenant_id = c.tenant_id AND w.claim_id = c.id
+                          AND w.approved_at IS NOT NULL)`),
+    ).map((row) => String(row.evidence_key)),
+  );
 
   const sessions = new Map<string, SessionRow>();
   const sessionIds = [...new Set(attestations.map((a) => a.sessionId))];
@@ -1202,6 +1354,8 @@ async function loadFacts(
     sourceItems,
     flagged,
     accountingOn: await accountingEnabled(tx, tenantId),
+    withdrawFacts,
+    withdrawnKeys,
   };
 }
 
@@ -1239,6 +1393,76 @@ type Flag = {
   reason: PayoutReconReason;
 };
 
+/**
+ * An approved return withdrawal: a propose and an approve attestation by two
+ * people from two sessions, matching the actors and sessions the withdrawal row
+ * holds. The step-up is the password (no MFA snapshot), so only the identity of
+ * the session is compared. Every slip of the claim is held. Pure, no I/O.
+ */
+function evaluateReturnWithdraw(op: Operation, facts: Facts): Flag[] {
+  const reasons = new Set<PayoutReconReason>();
+  const row = facts.withdrawFacts.get(op.operationId);
+  const atts = facts.attestations.filter(
+    (a) =>
+      a.kind === "return_withdraw" &&
+      a.operationId === op.operationId &&
+      a.batchId === op.batchId,
+  );
+  const proposes = atts.filter((a) => a.step === "propose");
+  const approves = atts.filter((a) => a.step === "approve");
+  if (proposes.length === 0 || approves.length === 0)
+    reasons.add("attestation_count");
+  else {
+    if (!proposes.some((p) => approves.some((q) => q.actor !== p.actor)))
+      reasons.add("attestation_same_person");
+    if (
+      !proposes.some((p) => approves.some((q) => q.sessionId !== p.sessionId))
+    )
+      reasons.add("attestation_same_session");
+  }
+  for (const a of atts) {
+    const s = facts.sessions.get(a.sessionId);
+    if (s && (s.userId !== a.actor || s.createdAt !== a.sessionCreatedAt))
+      reasons.add("session_mismatch");
+  }
+  if (row) {
+    if (row.approvedBy === null || row.proposedBy === row.approvedBy)
+      reasons.add("attestation_same_person");
+    if (
+      row.approvedSessionId === null ||
+      row.proposedSessionId === row.approvedSessionId
+    )
+      reasons.add("attestation_same_session");
+    if (
+      proposes.some((p) => p.actor !== row.proposedBy) ||
+      approves.some((q) => q.actor !== row.approvedBy)
+    )
+      reasons.add("closure_actor_mismatch");
+    if (
+      proposes.some((p) => p.sessionId !== row.proposedSessionId) ||
+      approves.some((q) => q.sessionId !== row.approvedSessionId)
+    )
+      reasons.add("closure_session_mismatch");
+    // The grant each step was made under is the one the row holds (NULL or
+    // different: the row or the attestation was written around the functions).
+    if (
+      row.proposedGrantId === null ||
+      row.approvedGrantId === null ||
+      proposes.some((p) => p.grantId !== row.proposedGrantId) ||
+      approves.some((q) => q.grantId !== row.approvedGrantId)
+    )
+      reasons.add("grant_mismatch");
+  }
+  return op.terminalItemIds.flatMap((itemId) =>
+    [...reasons].map((reason): Flag => ({
+      kind: op.kind,
+      operationId: op.operationId,
+      itemId,
+      reason,
+    })),
+  );
+}
+
 /** The reasons of one operation; pure, no I/O. */
 function evaluate(
   op: Operation,
@@ -1252,6 +1476,7 @@ function evaluate(
       itemId,
       reason: "operation_missing",
     }));
+  if (op.kind === "return_withdraw") return evaluateReturnWithdraw(op, facts);
   const flags: Flag[] = [];
   const add = (itemId: string | null, reason: PayoutReconReason) => {
     if (itemId === null) {
@@ -1375,6 +1600,10 @@ function evaluate(
     // that completed it: neither propose nor withdraw) is history, not a second
     // completed operation. The binding stays and the proof is never reusable.
     const withdrawn = (b: Binding) => {
+      // The proof of a return claim withdrawn through an approved withdrawal
+      // (1005) stays burnt; its binding is history, not a second operation.
+      if (op.kind === "return" && facts.withdrawnKeys.has(b.evidenceKey))
+        return true;
       const own = facts.attestations.filter(
         (a) => a.kind === op.kind && a.evidenceKey === b.evidenceKey,
       );
@@ -1552,7 +1781,25 @@ function grantBindingMismatch(
   a: Attestation,
   grant: GrantRow,
   resolutions: ReadonlyMap<string, ResolutionFacts>,
+  withdrawFacts: ReadonlyMap<string, WithdrawFacts>,
 ): boolean {
+  if (a.kind === "return_withdraw") {
+    // The grant is bound to the claim (propose) or the withdrawal (approve)
+    // and carries the SHA-256 of the reason. Its item set and proof key are
+    // compared only when it holds them (the claim fixes both through its ref).
+    const w = withdrawFacts.get(a.operationId);
+    if (!w) return true;
+    if (
+      grant.itemSetHash !== null &&
+      a.itemIds.length > 0 &&
+      grant.itemSetHash !== itemSetHashOf(a.itemIds)
+    )
+      return true;
+    if (grant.detail === null || grant.detail !== w.reasonSha256) return true;
+    if (a.step === "propose") return grant.refId !== w.claimId;
+    if (a.step === "approve") return grant.refId !== a.operationId;
+    return true;
+  }
   const itemSet =
     a.kind === "batch_approve" || a.itemIds.length === 0
       ? null
@@ -1662,7 +1909,7 @@ function evaluateGrants(
   facts: Pick<
     Facts,
     "grantsSince" | "attestations" | "grants" | "sourceItems" | "resolutions"
-  >,
+  > & { withdrawFacts?: ReadonlyMap<string, WithdrawFacts> },
 ): Flag[] {
   if (facts.grantsSince === null) return [];
   const flags: Flag[] = [];
@@ -1683,9 +1930,15 @@ function evaluateGrants(
             // A bank confirmation's proof key is not part of its grant (the
             // grant is bound to actor, batch and items), so it is not compared.
             (a.kind !== "bank_confirm" &&
+              !(a.kind === "return_withdraw" && grant.evidenceKey === null) &&
               grant.evidenceKey !== a.evidenceKey) ||
             grant.consumedTxid !== a.txid ||
-            grantBindingMismatch(a, grant, facts.resolutions)
+            grantBindingMismatch(
+              a,
+              grant,
+              facts.resolutions,
+              facts.withdrawFacts ?? new Map(),
+            )
           ? "grant_mismatch"
           : null;
     if (reason === null) continue;
@@ -1693,7 +1946,9 @@ function evaluateGrants(
     const items =
       a.itemIds.length > 0
         ? a.itemIds
-        : (facts.sourceItems.get(a.operationId) ?? []);
+        : a.kind === "return_withdraw"
+          ? (facts.withdrawFacts?.get(a.operationId)?.itemIds ?? [])
+          : (facts.sourceItems.get(a.operationId) ?? []);
     for (const itemId of items)
       flags.push({
         kind: a.kind as PayoutReconFlagKind,
@@ -1888,6 +2143,7 @@ export async function reconcileTrustedPayouts(
             grants: withdrawals.grants,
             sourceItems: new Map(),
             resolutions: withdrawals.resolutions,
+            withdrawFacts: withdrawals.withdrawFacts,
           }).concat(
             evaluateResolutions(
               withdrawals.attestations,

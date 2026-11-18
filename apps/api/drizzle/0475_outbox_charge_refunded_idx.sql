@@ -1,0 +1,1 @@
+CREATE INDEX "domain_event_outbox_charge_refunded_idx" ON "domain_event_outbox" USING btree ("tenant_id",("event"->'payload'->>'refundId')) WHERE "domain_event_outbox"."event"->>'name' = 'order_issue.charge_refunded';

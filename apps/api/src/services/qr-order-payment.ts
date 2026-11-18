@@ -96,6 +96,7 @@ import {
   loadQrZoneOfSession,
   lockGuestSessionForPayment,
   qrOrderIdempotent,
+  qrOrderPeekIdempotent,
   type QrOrderRow,
 } from "./qr-order.service.ts";
 
@@ -641,7 +642,11 @@ async function voidOldCodesForChange(
         ),
       );
     if (replay) return null;
-    return { paymentLinkId: order.paymentLinkId, billSplitId: splitId };
+    return {
+      paymentLinkId: order.paymentLinkId,
+      billSplitId: splitId,
+      intentKey,
+    };
   });
   if (scope === null) return;
   // `next` is read again where the candidates are read: a twin request that
@@ -842,6 +847,34 @@ export async function createGuestPayment(
     splitId,
     now,
   );
+  // legend-nqfov: a retry of an answered request replays the stored answer
+  // before any availability check or void: it must not depend on the method
+  // being offered right now. A miss falls through to today's flow.
+  {
+    const { idempotencyKey: peekKey, ...peekRequest } = parsed;
+    const replay = await withTenant(db, context, async (tx) => {
+      const session = await lockGuestSessionForPayment(
+        tx,
+        context,
+        credential,
+        sessionId,
+        now,
+        "share",
+      );
+      const stored = await qrOrderPeekIdempotent<GuestPayment>(
+        tx,
+        context,
+        { sessionId: session.id },
+        peekKey,
+        "payment.create",
+        peekRequest,
+      );
+      return stored === undefined
+        ? undefined
+        : closePayLinkIfNotPending(tx, context, stored, now);
+    });
+    if (replay !== undefined) return replay;
+  }
   // Checked after the session lock so the outlet's own channel list decides,
   // at the real bill amount and before any old code is voided (legend-kt3t1).
   if (parsed.method === "ewallet" || parsed.method === "card") {
@@ -1205,7 +1238,8 @@ async function closePayLinkIfNotPending(
   answer: GuestPayment,
   now: Date,
 ): Promise<GuestPayment> {
-  if (answer.redirectUrl === null) return answer;
+  // Every code is read, not only an e-wallet or card with a pay link: a VA
+  // that was voided or lapsed since (legend-kis0u) must not come back as pending.
   const [row] = await tx
     .select({
       status: paymentIntents.status,

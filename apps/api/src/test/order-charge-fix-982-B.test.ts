@@ -9,8 +9,9 @@
 //     not take the charge cash out of the drawer now: no counted cash_out, no
 //     cash-approval queue row (it would journal twice); the charge cash is part
 //     of the held correction cash (heldCorrectionCashIdrOf) like the order cash.
-// B6: a gateway charge whose intent is already fully refunded is skipped by the
-//     void (the money is already out); an EDC charge still blocks the void 409.
+// B6: a gateway charge whose intent is already fully refunded is closed
+//     `voided` by the void with no new money (legend-v5z4h, brief 985); an EDC
+//     charge still blocks the void 409.
 //
 // Real path and harness as order-charge-void-982-s61sg.test.ts (Express app,
 // Better Auth, RBAC, POS void route, PostgreSQL with RLS, isolated tenant).
@@ -899,7 +900,7 @@ describe("legend-s61sg follow-up: void with a paid swap charge (finding B)", () 
     expect(await drawerCash()).toBe(before);
   });
 
-  it("B6 a gateway charge already fully refunded is skipped: the void goes through, only the cash charge is returned, no second refund", async () => {
+  it("B6 a gateway charge already fully refunded is closed voided by the void: it goes through, only the cash charge is returned, no second refund", async () => {
     CHARGE = chargeOf(20_000);
     const sale = await saleWithCashCharge();
     const linkId = await seedLink(CHARGE.amountIdr);
@@ -916,8 +917,8 @@ describe("legend-s61sg follow-up: void with a paid swap charge (finding B)", () 
 
     expect(await voidRowCount(sale.orderId)).toBe(1);
     expect(await chargeStatus(sale.chargeId)).not.toBe("paid");
-    // Nothing left to give back: untouched, and no new refund of its intent.
-    expect(await chargeStatus(gatewayChargeId)).toBe("paid");
+    // Nothing left to give back: closed voided, and no new refund of its intent.
+    expect(await chargeStatus(gatewayChargeId)).toBe("voided");
     expect(await refundRowsOfIntent(intentId)).toBe(1);
     // The drawer returns the sale and the cash charge only.
     expect(await drawerCash()).toBe(before - sale.totalIdr - CHARGE.amountIdr);

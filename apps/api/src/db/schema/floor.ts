@@ -17,6 +17,7 @@
 
 import { sql } from "drizzle-orm";
 import {
+  boolean,
   check,
   foreignKey,
   index,
@@ -67,6 +68,8 @@ export const floorZones = pgTable(
       .notNull()
       .default("active"),
     sortOrder: integer("sort_order").notNull().default(0),
+    /** legend-p4q10: explicit WFC zone marker; revpash and seat occupancy read only these zones. */
+    isWfc: boolean("is_wfc").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),

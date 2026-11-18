@@ -617,6 +617,10 @@ async function deleteRoom(room: {
       [tenant.tenantId, room.areaId],
     );
     await client.query(
+      "DELETE FROM facility_operating_hours_versions WHERE tenant_id = $1 AND facility_id = $2",
+      [tenant.tenantId, room.facilityId],
+    );
+    await client.query(
       "DELETE FROM facilities WHERE tenant_id = $1 AND id = $2",
       [tenant.tenantId, room.facilityId],
     );

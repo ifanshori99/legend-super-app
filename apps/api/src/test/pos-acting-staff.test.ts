@@ -749,7 +749,11 @@ describe("legend-aruta acting cashier token: edge cases", () => {
   it("the acting header on a router without the acting-staff middleware is refused with 400 ACTING_STAFF_UNSUPPORTED, never ignored", async () => {
     const token = await tokenFor(cashierB);
     const response = await sessionOwner.client
-      .get(`/api/outlets/${encodeURIComponent(tenant.outletId)}/floor`)
+      // legend-3z0ds: /outlets/:id/floor now supports the header; a back-office
+      // outlet route still has no acting-staff middleware.
+      .get(
+        `/api/outlets/${encodeURIComponent(tenant.outletId)}/delivery-channels`,
+      )
       .set(headers)
       .set(originHeader)
       .set(DEVICE_TOKEN_HEADER, deviceToken())

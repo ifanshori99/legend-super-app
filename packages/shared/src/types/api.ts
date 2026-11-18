@@ -199,7 +199,8 @@ export type PayoutApprovalLogDto = {
     | "closure"
     | "resolve"
     | "bank_confirm"
-    | "batch_approve";
+    | "batch_approve"
+    | "return_withdraw";
   step: "propose" | "approve" | "record" | "confirm" | "withdraw";
   itemCount: number;
   /** Payroll period label of the batch, as in the receipt notification. */
@@ -242,6 +243,29 @@ export type PayoutReconFlagDto = {
     proposedAt: string;
     approvedBy: string | null;
     approvedAt: string | null;
+  } | null;
+};
+
+/**
+ * One return claim of a batch and its two-person withdrawal (legend-snwnn; GET
+ * /disbursement-batches/:id/return-claims). `withdrawal` is the open (not yet
+ * approved) proposal to withdraw an `open` claim, null when there is none.
+ * `itemCount` counts the items still tied to the claim (0 once withdrawn). No
+ * amount, name or account number.
+ */
+export type PayoutReturnClaimDto = {
+  id: string;
+  status: "open" | "consumed" | "withdrawn";
+  bankRef: string | null;
+  itemCount: number;
+  createdBy: string;
+  /** ISO datetime the claim was made. */
+  createdAt: string;
+  withdrawal: {
+    id: string;
+    reason: string;
+    proposedBy: string;
+    proposedAt: string;
   } | null;
 };
 
