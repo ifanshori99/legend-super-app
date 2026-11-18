@@ -22,6 +22,7 @@ const nav: AreaNavEntry[] = [
     group: "finance",
     order: 30,
     anyPermission: ["payroll.run", "payroll.approve"],
+    outletScopedPaths: ["/kelola/payroll/service-charge"],
   },
 ];
 

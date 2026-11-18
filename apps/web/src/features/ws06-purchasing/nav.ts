@@ -13,6 +13,7 @@ const nav: AreaNavEntry[] = [
       "purchasing.order.create",
       "purchasing.order.approve",
     ],
+    outletScopedPaths: ["/kelola/pengadaan"],
   },
 ];
 

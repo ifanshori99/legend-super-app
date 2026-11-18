@@ -14,6 +14,7 @@ const nav: AreaNavEntry[] = [
     icon: ReceiptText,
     order: 35,
     anyPermission: ["org.tax_config.manage"],
+    outletScopedPaths: ["/kelola/pajak/service-charge"],
   },
   {
     area: "kelola",
@@ -23,6 +24,7 @@ const nav: AreaNavEntry[] = [
     icon: FileSpreadsheet,
     order: 36,
     anyPermission: ["accounting.tax_report.manage"],
+    outletScopedPaths: ["/kelola/pajak/laporan"],
   },
 ];
 

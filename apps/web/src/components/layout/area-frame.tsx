@@ -205,7 +205,11 @@ function OperationsFrame({
         ) : null
       }
     >
-      <div className="h-full overflow-y-auto p-4">{children}</div>
+      {/* Padding lives on the inner box, not the scroller: a sticky footer pins to
+          the scroller edge, so padding there left a gap showing content below. */}
+      <div className="h-full overflow-y-auto">
+        <div className="flex min-h-full flex-col p-4">{children}</div>
+      </div>
     </OperationsShell>
   );
 }
@@ -278,7 +282,7 @@ function AreaFrameBody({
   const showOutletPicker =
     outletChoice(outlets) === "multiple" &&
     (definition.shell === "operations" ||
-      (area === "kelola" && kelolaUsesOutletContext(pathname)));
+      (area === "kelola" && kelolaUsesOutletContext(pathname, registeredNav)));
   const pickOutlet = (outletId: string) => {
     onSelectOutlet(outletId);
     const name = outlets.find((row) => row.id === outletId)?.name;
@@ -310,7 +314,7 @@ function AreaFrameBody({
     area === "kelola" &&
     access.authenticated &&
     outletChoice(outlets) === "none" &&
-    kelolaUsesOutletContext(pathname);
+    kelolaUsesOutletContext(pathname, registeredNav);
   // Customer and public screens never depend on the staff outlet pick.
   const holdScreen = pickPending && definition.shell !== "customer";
   const noOutletAction =

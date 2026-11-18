@@ -9,6 +9,19 @@ const nav: AreaNavEntry[] = [
     icon: Boxes,
     order: 30,
     anyPermission: ["inventory.stock.view"],
+    outletScopedPaths: [
+      "/kelola/inventori/stok",
+      "/kelola/inventori/saldo",
+      "/kelola/inventori/lokasi",
+      "/kelola/inventori/transfer",
+      "/kelola/inventori/opname",
+      "/kelola/inventori/waste",
+      "/kelola/inventori/kedaluwarsa",
+      "/kelola/inventori/produksi",
+      "/kelola/inventori/saran",
+      "/kelola/inventori/hpp",
+      "/kelola/inventori/resep",
+    ],
   },
 ];
 

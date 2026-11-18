@@ -35,10 +35,17 @@ const STATUS_TONE = {
   expired: "neutral",
 } as const;
 
-export function useGrantStatus(grant: SupportAccessGrant): SupportAccessStatus {
+/** `skewMs` shifts the device clock to the API clock (see `clockSkewMs`). */
+export function useGrantStatus(
+  grant: SupportAccessGrant,
+  skewMs = 0,
+): SupportAccessStatus {
   const nowMs = useSecondClock();
   // Before hydration the start instant stands in for "now" (stable SSR markup).
-  return displayStatus(grant, nowMs ?? Date.parse(grant.startedAt));
+  return displayStatus(
+    grant,
+    nowMs === null ? Date.parse(grant.startedAt) : nowMs + skewMs,
+  );
 }
 
 export function GrantStatusBadge({ status }: { status: SupportAccessStatus }) {
@@ -73,15 +80,17 @@ export function ModeBadge({
 /** Live "mm:ss" until the session expires; empty before hydration. */
 export function Countdown({
   grant,
+  skewMs = 0,
 }: {
   grant: Pick<SupportAccessGrant, "expiresAt" | "durationMinutes">;
+  skewMs?: number;
 }) {
   const nowMs = useSecondClock();
   if (nowMs === null) return null;
   return (
     <span className="tabular">
       {formatCountdown(
-        remainingMs(grant.expiresAt, nowMs, grant.durationMinutes),
+        remainingMs(grant.expiresAt, nowMs + skewMs, grant.durationMinutes),
       )}
     </span>
   );

@@ -130,10 +130,15 @@ export function OperationsShell({
       <header
         data-outlet-time-zone={zone}
         data-business-day-cutoff={outletClock.businessDayCutoff}
-        className="flex shrink-0 items-center gap-x-4 gap-y-2 border-b-(length:--border-w) bg-shell px-4 max-sm:h-14 max-sm:gap-2 max-sm:py-1 sm:min-h-16 sm:flex-wrap sm:py-2"
+        className="flex shrink-0 items-center gap-x-4 gap-y-2 border-b-(length:--border-w) bg-shell px-4 max-sm:min-h-14 max-sm:gap-2 max-sm:py-1 sm:min-h-16 sm:flex-wrap sm:py-2"
       >
         <div className="min-w-0 max-sm:flex-1">
-          <p className="truncate type-title max-sm:leading-6">{title}</p>
+          <p
+            title={title}
+            className="type-title max-sm:line-clamp-2 max-sm:break-words sm:truncate"
+          >
+            {title}
+          </p>
           {subtitle && (
             <p className="truncate text-sm leading-5 text-muted-foreground max-sm:hidden">
               {subtitle}

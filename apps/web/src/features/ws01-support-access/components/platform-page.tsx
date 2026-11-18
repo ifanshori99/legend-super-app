@@ -24,7 +24,7 @@ import {
   usePlatformGrants,
   useTenants,
 } from "../hooks.ts";
-import { sortGrantsNewestFirst } from "../logic.ts";
+import { clockSkewMs, sortGrantsNewestFirst } from "../logic.ts";
 import { RequestSupportAccessDialog } from "./request-dialog.tsx";
 import {
   Countdown,
@@ -39,16 +39,18 @@ function GrantRow({
   tenantName,
   canEnd,
   ending,
+  skewMs,
   onEnd,
 }: {
   grant: SupportAccessGrant;
   tenantName: string;
   canEnd: boolean;
   ending: boolean;
+  skewMs: number;
   onEnd: (grant: SupportAccessGrant) => void;
 }) {
   const t = useT();
-  const status = useGrantStatus(grant);
+  const status = useGrantStatus(grant, skewMs);
   return (
     <TableRow>
       <TableCell>
@@ -72,7 +74,7 @@ function GrantRow({
             {status === "active" ? (
               <>
                 {t("supportAccess.platform.remaining", { time: "" })}
-                <Countdown grant={grant} />
+                <Countdown grant={grant} skewMs={skewMs} />
               </>
             ) : grant.endedAt ? (
               t("supportAccess.platform.endedAt", {
@@ -114,6 +116,8 @@ export function PlatformSupportAccessPage() {
   const t = useT();
   const toast = useToast();
   const grants = usePlatformGrants();
+  // Shift the device clock to the API clock (see session-banner).
+  const skewMs = clockSkewMs(grants.data?.serverNow, grants.dataUpdatedAt);
   const tenants = useTenants(true);
   const end = useEndSupportAccess();
   const [search, setSearch] = React.useState("");
@@ -249,6 +253,7 @@ export function PlatformSupportAccessPage() {
                 tenantName={nameOf(grant.tenantId)}
                 canEnd
                 ending={endingId === grant.id}
+                skewMs={skewMs}
                 onEnd={endNow}
               />
             ))}

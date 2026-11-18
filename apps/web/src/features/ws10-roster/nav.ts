@@ -12,6 +12,7 @@ const nav: AreaNavEntry[] = [
     order: 60,
     group: "team",
     anyPermission: ["hr.schedule.manage"],
+    outletScopedPaths: ["/kelola/roster"],
   },
   {
     area: "kelola",

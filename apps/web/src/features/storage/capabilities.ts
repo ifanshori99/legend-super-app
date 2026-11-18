@@ -1,12 +1,41 @@
-// What the upload pipeline accepts (e.g. whether PDFs may be offered): typed
-// caller, query and hook in one module, kept apart from the upload client so
-// that client does not load the generic endpoint caller.
+// What the upload pipeline accepts (e.g. whether PDFs may be offered): fetch,
+// query and hook in one module. It reads the endpoint with a plain fetch and a
+// strict parse (not the generic endpoint caller, which only validates in dev),
+// so a malformed answer can never turn PDF on.
 import { queryOptions, useQuery } from "@tanstack/react-query";
-import { getStorageCapabilities } from "@starter/shared/storage";
-import { callEndpoint } from "@/lib/api/endpoint";
+import { z } from "@starter/shared/core";
+import { API_URL } from "@/lib/env";
+import { ApiError, NETWORK_ERROR_MESSAGE } from "@/lib/api/errors";
+import { useHydrated } from "../ws10-attendance-qr/use-hydrated.ts";
 
-export const fetchStorageCapabilities = (signal?: AbortSignal) =>
-  callEndpoint(getStorageCapabilities, {}, { signal });
+// Compatible with the storage-scanner-pdf capability endpoint. Until that
+// endpoint is deployed, a failed read keeps PDF uploads unavailable.
+const storageCapabilitiesResponse = z.strictObject({
+  data: z.strictObject({ documentsAccepted: z.boolean() }),
+});
+
+/** Browser-only: callers wait for hydration, as uploads do. */
+export async function fetchStorageCapabilities(signal?: AbortSignal) {
+  let response: Response;
+  try {
+    response = await fetch(new URL("/api/storage/capabilities", API_URL), {
+      method: "GET",
+      credentials: "include",
+      headers: { accept: "application/json" },
+      signal,
+    });
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    throw new ApiError(0, "NETWORK_ERROR", NETWORK_ERROR_MESSAGE);
+  }
+  if (!response.ok)
+    throw new ApiError(
+      response.status,
+      "SCANNER_UNAVAILABLE",
+      "PDF uploads are unavailable.",
+    );
+  return storageCapabilitiesResponse.parse(await response.json());
+}
 
 /** The server's setup changes on a deploy, not during a session. */
 export const storageCapabilitiesQuery = () =>
@@ -16,10 +45,15 @@ export const storageCapabilitiesQuery = () =>
     staleTime: 5 * 60 * 1000,
   });
 
-/** Loading or failed reads as "no PDF": the safe side, photos only. */
+/**
+ * Loading, failed or malformed reads count as "no PDF": the safe side, photos
+ * only. Waits for hydration so the read is browser-only, as uploads are.
+ */
 export function useStorageCapabilities() {
-  const query = useQuery(storageCapabilitiesQuery());
+  const hydrated = useHydrated();
+  const query = useQuery({ ...storageCapabilitiesQuery(), enabled: hydrated });
   return {
-    documentsAccepted: query.data?.data.documentsAccepted === true,
+    documentsAccepted:
+      query.isSuccess && query.data?.data?.documentsAccepted === true,
   };
 }

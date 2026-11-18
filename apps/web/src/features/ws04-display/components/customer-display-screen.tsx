@@ -70,7 +70,7 @@ function CustomerDisplayContent() {
 
   if (outlet !== null && display.isPending)
     return (
-      <div className="flex h-full flex-col gap-4">
+      <div className="flex h-full flex-1 flex-col gap-4">
         {header}
         <div
           aria-busy="true"
@@ -88,7 +88,7 @@ function CustomerDisplayContent() {
       display.error instanceof ApiError &&
       display.error.code === "NETWORK_ERROR";
     return (
-      <div className="flex h-full flex-col gap-4">
+      <div className="flex h-full flex-1 flex-col gap-4">
         {header}
         <ErrorState
           error={display.error}
@@ -106,7 +106,7 @@ function CustomerDisplayContent() {
 
   if (!state || state.state === "idle")
     return (
-      <div className="flex h-full flex-col gap-4">
+      <div className="flex h-full flex-1 flex-col gap-4">
         {header}
         <IdleSlide />
       </div>
@@ -128,7 +128,7 @@ function CustomerDisplayContent() {
   const paid = state.state === "paid";
   const remaining = displayBalance(state).remainingIdr;
   return (
-    <div className="flex h-full flex-col gap-4">
+    <div className="flex h-full flex-1 flex-col gap-4">
       {header}
       {display.isError && (
         <Badge

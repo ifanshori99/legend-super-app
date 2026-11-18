@@ -6,6 +6,7 @@ import type { MyOutlet } from "@starter/shared/access";
 import type { AreaAccess } from "./access.ts";
 import { AREAS } from "./definitions.ts";
 import { evaluateArea } from "./guard.ts";
+import type { AreaNavEntry } from "./nav.ts";
 
 /** localStorage key of the last outlet the person picked. */
 export const SELECTED_OUTLET_STORAGE_KEY = "legend-selected-outlet";
@@ -19,41 +20,23 @@ export function outletChoice(outlets: readonly MyOutlet[]): OutletChoice {
 }
 
 /**
- * Kelola screens that work in the selected outlet (they read
- * `useTenantContext().outlet`). The management shell shows the picker only on
- * these paths: elsewhere it would be a control that changes nothing, or a
- * second picker next to a screen's own (legend-sp41n). Add a path here when a
- * Kelola screen starts reading the context outlet.
+ * True when a Kelola screen at `pathname` works in the selected outlet (it
+ * reads `useTenantContext().outlet`). The management shell shows the picker
+ * only on these paths: elsewhere it would be a control that changes nothing, or
+ * a second picker next to a screen's own (legend-sp41n). A screen opts in with
+ * `outletScopedPaths` on its nav entry (`features/<ws>-<name>/nav.ts`), not
+ * with a shared list.
  */
-export const KELOLA_OUTLET_SCOPED_PREFIXES: readonly string[] = [
-  "/kelola/inventori/stok",
-  "/kelola/inventori/saldo",
-  "/kelola/inventori/lokasi",
-  "/kelola/inventori/transfer",
-  "/kelola/inventori/opname",
-  "/kelola/inventori/waste",
-  "/kelola/inventori/kedaluwarsa",
-  "/kelola/inventori/produksi",
-  "/kelola/inventori/saran",
-  "/kelola/inventori/hpp",
-  "/kelola/inventori/resep",
-  "/kelola/pengadaan",
-  "/kelola/dapur",
-  "/kelola/pajak/laporan",
-  "/kelola/pajak/service-charge",
-  "/kelola/payroll/service-charge",
-  "/kelola/delivery",
-  "/kelola/roster",
-  "/kelola/pengaturan/open-bill",
-  "/kelola/absensi/qr",
-  "/kelola/absensi/selfie",
-  "/kelola/absensi/tinjauan-cuti",
-];
-
-/** True when a Kelola screen at `pathname` works in the selected outlet. */
-export function kelolaUsesOutletContext(pathname: string): boolean {
-  return KELOLA_OUTLET_SCOPED_PREFIXES.some(
-    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
+export function kelolaUsesOutletContext(
+  pathname: string,
+  entries: readonly AreaNavEntry[],
+): boolean {
+  return entries.some(
+    (entry) =>
+      entry.area === "kelola" &&
+      entry.outletScopedPaths?.some(
+        (path) => pathname === path || pathname.startsWith(`${path}/`),
+      ),
   );
 }
 

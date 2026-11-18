@@ -8,6 +8,24 @@ import { describe, test } from "node:test";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
+    // Feature nav.ts files import through the web "@/" alias (apps/web/src).
+    if (specifier === "@/lib/api/mock-flag") {
+      // import.meta.env does not exist in node.
+      return {
+        url: "data:text/javascript,export const API_MOCK=false",
+        shortCircuit: true,
+      };
+    }
+    if (specifier.startsWith("@/")) {
+      const target = new URL(
+        `../apps/web/src/${specifier.slice(2)}`,
+        import.meta.url,
+      ).href;
+      return nextResolve(
+        /\.[cm]?[jt]s$/.test(target) ? target : `${target}.ts`,
+        context,
+      );
+    }
     try {
       return nextResolve(specifier, context);
     } catch (error) {
@@ -464,26 +482,70 @@ describe("FE-AREA-10 outlet selection from the session outlets", () => {
     assert.equal(outletSel.resolveSelectedOutlet([a, b], undefined), a);
   });
 
-  test("kelola picker: only paths that read the context outlet (legend-sp41n)", () => {
-    assert.equal(outletSel.kelolaUsesOutletContext("/kelola/roster"), true);
-    assert.equal(
-      outletSel.kelolaUsesOutletContext("/kelola/inventori/stok/abc"),
-      true,
-    );
-    assert.equal(outletSel.kelolaUsesOutletContext("/kelola/pengadaan"), true);
-    // Own pickers and name-only lookups: no second control.
-    assert.equal(outletSel.kelolaUsesOutletContext("/kelola/perangkat"), false);
-    assert.equal(outletSel.kelolaUsesOutletContext("/kelola/inventori"), false);
-    assert.equal(outletSel.kelolaUsesOutletContext("/kelola/rosterx"), false);
-    assert.equal(outletSel.kelolaUsesOutletContext("/"), false);
+  // The real registry (import.meta.glob) is not available in node: load each
+  // feature's nav.ts the same way the glob does.
+  const loadFeatureNav = async () => {
+    const { readdirSync, existsSync } = await import("node:fs");
+    const root = new URL("../apps/web/src/features/", import.meta.url);
+    const entries = [];
+    for (const name of readdirSync(root)) {
+      const file = new URL(`${name}/nav.ts`, root);
+      if (existsSync(file)) entries.push(...(await import(file.href)).default);
+    }
+    return entries;
+  };
+  const scopedEntry = (area, outletScopedPaths) => ({
+    area,
+    labelKey: "nav.management.inventory",
+    to: "/kelola/x",
+    icon,
+    outletScopedPaths,
   });
 
-  test("kelola picker: every listed prefix is a real Kelola route", async () => {
+  test("kelola picker: only nav-declared outlet paths (legend-gyq04)", () => {
+    const entries = [
+      scopedEntry("kelola", ["/kelola/roster", "/kelola/inventori/stok"]),
+      scopedEntry("ops", ["/pos/meja"]),
+      { ...scopedEntry("kelola", undefined), to: "/kelola/perangkat" },
+    ];
+    const uses = (path) => outletSel.kelolaUsesOutletContext(path, entries);
+    assert.equal(uses("/kelola/roster"), true);
+    assert.equal(uses("/kelola/inventori/stok/abc"), true);
+    // Own pickers and name-only lookups: no second control.
+    assert.equal(uses("/kelola/perangkat"), false);
+    assert.equal(uses("/kelola/inventori"), false);
+    assert.equal(uses("/kelola/rosterx"), false);
+    assert.equal(uses("/"), false);
+    // Only Kelola entries count.
+    assert.equal(uses("/pos/meja"), false);
+    assert.equal(
+      outletSel.kelolaUsesOutletContext("/kelola/roster", []),
+      false,
+    );
+  });
+
+  test("kelola picker: registered nav keeps the legend-sp41n screens", async () => {
+    const entries = await loadFeatureNav();
+    const uses = (path) => outletSel.kelolaUsesOutletContext(path, entries);
+    assert.equal(uses("/kelola/roster"), true);
+    assert.equal(uses("/kelola/inventori/stok/abc"), true);
+    assert.equal(uses("/kelola/pengadaan"), true);
+    assert.equal(uses("/kelola/pengaturan/open-bill"), true);
+    assert.equal(uses("/kelola/perangkat"), false);
+    assert.equal(uses("/kelola/inventori"), false);
+    assert.equal(uses("/kelola/rosterx"), false);
+  });
+
+  test("kelola picker: every declared path is a real Kelola route", async () => {
     const { readdirSync } = await import("node:fs");
     const routes = readdirSync(
       new URL("../apps/web/src/routes/_kelola/", import.meta.url),
     ).map((name) => name.replace(/\.tsx$/, "").replace(/_(?=\.)/g, ""));
-    for (const prefix of outletSel.KELOLA_OUTLET_SCOPED_PREFIXES) {
+    const paths = (await loadFeatureNav())
+      .filter((entry) => entry.area === "kelola")
+      .flatMap((entry) => entry.outletScopedPaths ?? []);
+    assert.ok(paths.length > 0);
+    for (const prefix of paths) {
       const dotted = prefix.slice(1).replaceAll("/", ".");
       assert.ok(
         routes.some((name) => name === dotted || name.startsWith(`${dotted}.`)),

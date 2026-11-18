@@ -2,7 +2,7 @@ import { uploadLeaveAttachment } from "@starter/shared/hris";
 import { apiErrorBodySchema } from "@starter/shared/core";
 import { API_URL } from "@/lib/env";
 import { ApiError, NETWORK_ERROR_MESSAGE } from "@/lib/api/errors";
-import { fetchStorageCapabilities } from "./storage-capabilities/api.ts";
+import { fetchStorageCapabilities } from "@/features/storage/capabilities";
 
 export function isLeavePdf(file: File): boolean {
   return file.type === "application/pdf" || /\.pdf$/i.test(file.name);
