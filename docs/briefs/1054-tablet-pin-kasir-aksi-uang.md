@@ -1,0 +1,8 @@
+# 1054 Tablet bersama: PIN kasir wajib untuk aksi uang/reservasi (legend-i0ipj) + keputusan route darurat (legend-m05vx)
+Peran: engineer (baca ~/.agents/team/roles/engineer.md). Sonnet 5.5 high. Tingkat K (akses + uang): architect xhigh sekali di akhir.
+Langkah pertama: pecah tugas dan spawn subagent paralel dalam satu giliran: Explore (route di allowlist Q29 reservasi/POS yang belum memakai requireActingStaffOnSharedDevice; pola route yang sudah memakainya), test-writer gagal-dulu, implementer per kelompok route (berkas tidak bertumpuk).
+Base: origin/milestone/m1. Migrasi kerja 0668-0669 hanya bila perlu (diharapkan tidak).
+- i0ipj (keputusan CTO 18 Nov: WAJIB PIN): deposit-link, cancel, no-show, customer-credit apply, order-issue resolve di tablet bersama harus memakai requireActingStaffOnSharedDevice, sehingga aktor = kasir ber-PIN, bukan pemilik sesi tablet. Perangkat pribadi (bukan tablet bersama) tidak berubah. Audit log mencatat kasir ber-PIN.
+- m05vx (keputusan CTO: route darurat TETAP terbuka di tablet bersama demi keselamatan): jangan ubah perilaku emergency.routes.ts / emergency-press.routes.ts; tambah entri di docs/DECISIONS.md (alasan, batas: hanya buka sesi darurat, ack alert, POS fallback; tidak ada aksi uang) dan satu test yang mengunci bahwa route darurat tidak membuka aksi uang.
+Test: tanpa PIN di tablet bersama -> 401/403 dengan kode jelas; dengan PIN -> aktor = kasir; perangkat pribadi tetap jalan; tenant lain ditolak; tidak ada aksi uang ganda.
+Bukti: test terarah (sebut berkas), prettier/eslint, typecheck API (dan web bila tersentuh) lewat heavy, db:generate kosong. Commit, push tanpa force. Laporan sekali di akhir: perilaku, test, temuan architect, SHA, angka subagent (total, puncak, pemegang heavy).
