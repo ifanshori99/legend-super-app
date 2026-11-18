@@ -29,6 +29,7 @@ import {
   z,
   type BusinessDate,
   type ScopedTenantContext,
+  type TenantId,
   type UserId,
 } from "@starter/shared/core";
 import { legalEntityIdSchema, type OpenItem } from "@starter/shared/accounting";
@@ -262,7 +263,7 @@ export const paySupplierInvoiceInputSchema = z.strictObject({
  */
 export async function lockEntityOfPayable(
   tx: TenantTransaction,
-  tenantId: string,
+  tenantId: TenantId,
   openItemId: string,
 ): Promise<string | null> {
   const [item] = await tx
