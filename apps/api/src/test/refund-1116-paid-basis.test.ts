@@ -190,24 +190,19 @@ async function expectNoVoucher(issueId: string | null, before: number) {
 type Intent = { id: string; providerRef: string | null };
 
 async function intentOf(orderId: string): Promise<Intent> {
-  const byOrder = await owner.query<{ id: string; provider_ref: string }>(
-    `SELECT id, provider_ref FROM payment_intents
-      WHERE tenant_id = $1 AND order_id = $2 ORDER BY created_at LIMIT 1`,
-    [tenantId(), toUuid(orderId)],
-  );
-  if (byOrder.rows[0])
-    return {
-      id: byOrder.rows[0].id,
-      providerRef: byOrder.rows[0].provider_ref,
-    };
-  const pinned = await owner.query<{ id: string; provider_ref: string }>(
+  // Real QR intents never carry orders.id: they hang off the order's payment link
+  // (orders.payment_link_id) and/or are pinned by orders.payment_intent_id.
+  const found = await owner.query<{ id: string; provider_ref: string }>(
     `SELECT i.id, i.provider_ref FROM orders o
-       JOIN payment_intents i ON i.tenant_id = o.tenant_id AND i.id = o.payment_intent_id
-      WHERE o.tenant_id = $1 AND o.id = $2`,
+       JOIN payment_intents i ON i.tenant_id = o.tenant_id
+        AND (i.id = o.payment_intent_id
+             OR (o.payment_link_id IS NOT NULL AND i.payment_link_id = o.payment_link_id))
+      WHERE o.tenant_id = $1 AND o.id = $2
+      ORDER BY i.created_at LIMIT 1`,
     [tenantId(), toUuid(orderId)],
   );
-  expect(pinned.rows, "the QR order has a payment intent").toHaveLength(1);
-  return { id: pinned.rows[0]!.id, providerRef: pinned.rows[0]!.provider_ref };
+  expect(found.rows, "the QR order has a payment intent").toHaveLength(1);
+  return { id: found.rows[0]!.id, providerRef: found.rows[0]!.provider_ref };
 }
 
 /** The POS sale of a QR order: a captured QRIS tender that names the QR intent. */
@@ -299,11 +294,11 @@ async function gatewayRefund(
     `INSERT INTO payment_refunds
        (tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status,
         requested_by, approved_by, decided_at, provider_ref)
-     SELECT tenant_id, outlet_id, id, $3, 'Refund gateway uji 1116', $4,
+     SELECT tenant_id, outlet_id, id, $3::bigint, 'Refund gateway uji 1116', $4::text,
             'refund-1116-test',
-            CASE WHEN $4 IN ('approved', 'completed') THEN 'refund-1116-approver' END,
-            CASE WHEN $4 IN ('approved', 'completed') THEN now() END,
-            CASE WHEN $4 = 'completed' THEN $5 END
+            CASE WHEN $4::text IN ('approved', 'completed') THEN 'refund-1116-approver' END,
+            CASE WHEN $4::text IN ('approved', 'completed') THEN now() END,
+            CASE WHEN $4::text = 'completed' THEN $5::text END
        FROM payment_intents WHERE tenant_id = $1 AND id = $2`,
     [
       tenantId(),
@@ -380,9 +375,9 @@ async function openBill(intent: { status: string; amountIdr?: number } | null) {
   );
   await owner.query(
     `INSERT INTO payment_intents
-       (id, tenant_id, outlet_id, payment_link_id, order_id, method, provider,
+       (id, tenant_id, outlet_id, payment_link_id, method, provider,
         amount_idr, idempotency_key, status, instructions, expires_at, paid_at)
-     VALUES ($1, $2, $3, $4, $5, 'qris', 'doit', $6, $7, $8,
+     VALUES ($1, $2, $3, $4, 'qris', 'doit', $5, $6, $7,
              '{"method":"qris","qrPayload":"00020101021226TEST","issuer":null}',
              now() + interval '1 hour', ${settled ? "now()" : "NULL"})`,
     [
@@ -390,16 +385,32 @@ async function openBill(intent: { status: string; amountIdr?: number } | null) {
       tenantId(),
       outletId,
       linkId,
-      orderUuid,
       amountIdr,
       `p1116-${intentId}`,
       intent.status,
     ],
   );
+  // The way the real flow links them: the order points at its payment link (and
+  // intent); the intent never carries the order id. A settled intent has evidence.
   await owner.query(
-    "UPDATE orders SET payment_intent_id = $3 WHERE tenant_id = $1 AND id = $2",
-    [tenantId(), orderUuid, intentId],
+    `UPDATE orders SET payment_link_id = $3, payment_intent_id = $4
+      WHERE tenant_id = $1 AND id = $2`,
+    [tenantId(), orderUuid, linkId, intentId],
   );
+  if (settled)
+    await owner.query(
+      `INSERT INTO payment_evidence
+         (tenant_id, outlet_id, payment_intent_id, provider, provider_ref, method,
+          source, amount_idr, received_at)
+       VALUES ($1, $2, $3, 'doit', $4, 'qris', 'verified_webhook', $5, now())`,
+      [
+        tenantId(),
+        outletId,
+        intentId,
+        `EV-${randomBytes(6).toString("hex")}`,
+        amountIdr,
+      ],
+    );
   return { ...made, kopi, intentId: intentId as string | null, outletId };
 }
 
@@ -646,6 +657,53 @@ for (const kind of ["qr", "pos"] as const) {
       });
     }
 
+    it("a double payment parked as an unallocated fund does not raise paid: once the whole order is handed back nothing more is due", async () => {
+      const { paid, intent } = await paidOrderOfKind(kind);
+      const evidence = await owner.query<{ id: string }>(
+        `INSERT INTO payment_evidence
+           (tenant_id, outlet_id, payment_intent_id, provider, provider_ref, method,
+            source, amount_idr, received_at)
+         VALUES ($1, $2, $3, 'doit', $4, 'qris', 'verified_webhook', $5, now())
+         RETURNING id`,
+        [
+          tenantId(),
+          paid.outletId,
+          intent.id,
+          `DBL-${randomBytes(6).toString("hex")}`,
+          ORDER_PAID,
+        ],
+      );
+      await owner.query(
+        `INSERT INTO payment_unallocated_funds
+           (tenant_id, outlet_id, payment_intent_id, amount_idr, reason, evidence_id)
+         VALUES ($1, $2, $3, $4, 'double_payment', $5)`,
+        [
+          tenantId(),
+          paid.outletId,
+          intent.id,
+          ORDER_PAID,
+          evidence.rows[0]!.id,
+        ],
+      );
+
+      const kopi = await p.reportLine(paid.kopiLine);
+      expectIssued(await p.staffVoucher(kopi, KOPI_PAID));
+      const roti = await p.reportLine(paid.rotiLine);
+      expectIssued(await p.staffVoucher(roti, ROTI_PAID));
+
+      const third = await kitchenReport(paid.orderId, paid.kopiLine);
+      expect(third.issueId, "a third report is stored").not.toBeNull();
+      expectRefused(await p.staffVoucher(third.issueId!, 1_000), NOTHING_DUE);
+      expect(await p.voucherValues(third.issueId!)).toEqual([]);
+      if (kind === "pos") {
+        const more = await p.posRefund(
+          paid.orderId,
+          await p.refundInput(paid.orderId, 1_000),
+        );
+        expect(more.ok, "the second payment is not sales money").toBe(false);
+      }
+    });
+
     it.todo(
       "an open refund hold (refund_recon_holds) on the payment also reduces the room: not on this branch (ws/1072 only), follow-up bead for the merge train",
     );
@@ -666,6 +724,102 @@ describe("1116-P1b ORD-09 refund is counted once (no double counting with the ga
     expect(await p.returnedTotal(paid.orderId, [ord09, issueId])).toBe(
       ORDER_PAID,
     );
+  });
+});
+
+// A paid swap-difference charge (order_issue_charges.payment_intent_id) is money of the
+// order counted on top of the order's own payment. Assumption (brief "Ronde 1116": the
+// swap-charge intent is "already counted separately"): paid = order intent net + charge
+// intent net. A provider refund of the charge's payment must reduce it.
+const CHARGE_IDR = 11_550; // 10.000 + 5% service 500 + 10% PBJT 1.050
+
+async function swapChargeOn(paid: PaidOrder, providerRefundIdr: number) {
+  const issueId = await p.reportLine(paid.rotiLine);
+  const linkId = randomUUID();
+  const intentId = randomUUID();
+  const providerRef = `CHG-${randomBytes(6).toString("hex")}`;
+  await owner.query(
+    `INSERT INTO payment_links
+       (id, tenant_id, outlet_id, token_hash, reference, subtotal_idr, total_idr, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $6, '1116-test')`,
+    [
+      linkId,
+      tenantId(),
+      paid.outletId,
+      randomUUID().replaceAll("-", "").padEnd(64, "0"),
+      `C1116-${linkId.slice(0, 8)}`,
+      CHARGE_IDR,
+    ],
+  );
+  await owner.query(
+    `INSERT INTO payment_intents
+       (id, tenant_id, outlet_id, payment_link_id, method, provider, amount_idr,
+        idempotency_key, status, instructions, expires_at, paid_at, provider_ref)
+     VALUES ($1, $2, $3, $4, 'qris', 'doit', $5, $6, 'paid',
+             '{"method":"qris","qrPayload":"00020101021226CHG","issuer":null}',
+             now() + interval '1 hour', now(), $7)`,
+    [
+      intentId,
+      tenantId(),
+      paid.outletId,
+      linkId,
+      CHARGE_IDR,
+      `c1116-${intentId}`,
+      providerRef,
+    ],
+  );
+  await owner.query(
+    `INSERT INTO payment_evidence
+       (tenant_id, outlet_id, payment_intent_id, provider, provider_ref, method,
+        source, amount_idr, received_at)
+     VALUES ($1, $2, $3, 'doit', $4, 'qris', 'verified_webhook', $5, now())`,
+    [tenantId(), paid.outletId, intentId, providerRef, CHARGE_IDR],
+  );
+  await owner.query(
+    `INSERT INTO order_issue_charges
+       (tenant_id, outlet_id, order_issue_id, order_id, route, status, difference_idr,
+        gross_sales_idr, service_charge_idr, pbjt_idr, amount_idr, payment_intent_id, paid_at)
+     VALUES ($1, $2, $3, $4, 'qr_link', 'paid', 10000, 10000, 500, 1050, $5, $6, now())`,
+    [
+      tenantId(),
+      paid.outletId,
+      issueId,
+      toUuid(paid.orderId),
+      CHARGE_IDR,
+      intentId,
+    ],
+  );
+  if (providerRefundIdr > 0)
+    await recordProviderRefund(
+      { id: intentId, providerRef },
+      providerRefundIdr,
+    );
+}
+
+describe("1116-P1b a paid swap charge counts as paid, net of its provider refund", () => {
+  it("control: order paid 49.665 less provider 40.000 plus a paid charge 11.550 leaves room 21.215", async () => {
+    const { paid, intent } = await paidOrderOfKind("qr");
+    await recordProviderRefund(intent, 40_000);
+    await swapChargeOn(paid, 0);
+    await expectRoom(paid, ORDER_PAID - 40_000 + CHARGE_IDR, paid.kopiLine);
+  });
+
+  it("the provider refunded 5.000 of the swap charge's payment: the room drops to 16.215", async () => {
+    const { paid, intent } = await paidOrderOfKind("qr");
+    await recordProviderRefund(intent, 40_000);
+    await swapChargeOn(paid, 5_000);
+    await expectRoom(
+      paid,
+      ORDER_PAID - 40_000 + CHARGE_IDR - 5_000,
+      paid.kopiLine,
+    );
+  });
+
+  it("the provider refunded the whole swap charge: it adds nothing (room 9.665)", async () => {
+    const { paid, intent } = await paidOrderOfKind("qr");
+    await recordProviderRefund(intent, 40_000);
+    await swapChargeOn(paid, CHARGE_IDR);
+    await expectRoom(paid, ORDER_PAID - 40_000, paid.kopiLine);
   });
 });
 
