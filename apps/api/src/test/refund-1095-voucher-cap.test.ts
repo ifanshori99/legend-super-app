@@ -162,15 +162,14 @@ describe("legend-5g9sn cashier refund then voucher", () => {
     const apology = await p.apologyVoucherFor(paid.kopiLine, 20_000);
     // 10.000 + 20.000 is inside 49.665 whatever the order of events.
     await p.expectWithinPaid(paid.orderId, [apology]);
-    // The voucher counts for the next refund: room is 49.665 - 10.000 - 20.000.
+    // The voucher counts for the next refund: room is 49.665 - 10.000 - 20.000. The ask is
+    // the paid money still left (39.665), which the old rules accept in full.
     const next = await p.posRefund(
       paid.orderId,
-      await p.refundInput(paid.orderId, ORDER_PAID),
+      await p.refundInput(paid.orderId, ORDER_PAID - 10_000),
     );
     expect(next.ok, JSON.stringify(next)).toBe(true);
-    expect(sum(await p.posRefundRows(paid.orderId))).toBe(
-      ORDER_PAID - 20_000,
-    );
+    expect(sum(await p.posRefundRows(paid.orderId))).toBe(ORDER_PAID - 20_000);
     await p.expectWithinPaid(paid.orderId, [apology]);
   });
 

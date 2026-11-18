@@ -33,11 +33,7 @@ import {
   it,
   vi,
 } from "vitest";
-import {
-  createUlid,
-  tenantIdSchema,
-  ulidToUuid,
-} from "@starter/shared/core";
+import { createUlid, tenantIdSchema, ulidToUuid } from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -301,7 +297,9 @@ describe("legend-aja6g edge void with an ORD-09 refund already there", () => {
     async (status) => {
       const order = await edgeSale();
       await seedOrd09(order, status);
-      await site.kit.deliver([site.kit.voidEvent(order.ulid)]).catch(() => undefined);
+      await site.kit
+        .deliver([site.kit.voidEvent(order.ulid)])
+        .catch(() => undefined);
 
       expect(await site.kit.voidRows(order.ulid)).toBe(0);
       expect(await site.kit.ingestOf(order.ulid)).toMatchObject(REFUSED);
@@ -369,8 +367,12 @@ describe("legend-aja6g edge void replay with an ORD-09 refund", () => {
   it("a different, later void event of the same sale is refused while ORD-09 is live", async () => {
     const order = await edgeSale();
     await seedOrd09(order);
-    await site.kit.deliver([site.kit.voidEvent(order.ulid, 2)]).catch(() => undefined);
-    await site.kit.deliver([site.kit.voidEvent(order.ulid, 3)]).catch(() => undefined);
+    await site.kit
+      .deliver([site.kit.voidEvent(order.ulid, 2)])
+      .catch(() => undefined);
+    await site.kit
+      .deliver([site.kit.voidEvent(order.ulid, 3)])
+      .catch(() => undefined);
 
     expect(await site.kit.voidRows(order.ulid)).toBe(0);
     expect(await liveOrd09(order)).toBe(1);
@@ -394,7 +396,9 @@ describe("legend-aja6g edge void racing the ORD-09 writer: exactly one lane wins
     for (let round = 0; round < 3; round += 1) {
       const order = await edgeSale();
       const [, filed] = await Promise.all([
-        site.kit.deliver([site.kit.voidEvent(order.ulid)]).catch(() => undefined),
+        site.kit
+          .deliver([site.kit.voidEvent(order.ulid)])
+          .catch(() => undefined),
         seedOrd09UnlessVoided(order),
       ]);
 
@@ -419,8 +423,12 @@ describe("legend-aja6g edge void racing the ORD-09 writer: exactly one lane wins
       const order = await edgeSale();
       await seedOrd09(order);
       await Promise.all([
-        site.kit.deliver([site.kit.voidEvent(order.ulid)]).catch(() => undefined),
-        site.kit.deliver([site.kit.voidEvent(order.ulid, 3)]).catch(() => undefined),
+        site.kit
+          .deliver([site.kit.voidEvent(order.ulid)])
+          .catch(() => undefined),
+        site.kit
+          .deliver([site.kit.voidEvent(order.ulid, 3)])
+          .catch(() => undefined),
       ]);
       expect(await site.kit.voidRows(order.ulid)).toBe(0);
       expect(await liveOrd09(order)).toBe(1);

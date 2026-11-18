@@ -47,6 +47,8 @@ import { openPosShift } from "../services/pos-shift.service.ts";
 import { agent, signUp } from "./helpers.ts";
 import { createWorld, type World } from "./order-recovery-helpers.ts";
 import { createIsolatedTenant, owner } from "./floor-test-helpers.ts";
+import { pinOverrideFixtureFingerprint } from "./pos-override-fixture.ts";
+import { seedTenantRoleTemplates } from "../services/access.service.ts";
 
 export const ORDER_PAID = 49_665;
 export const KOPI_PAID = 28_875;
@@ -122,6 +124,32 @@ export async function createPosWorld() {
      VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 minute', $2)`,
     [w.tenant.tenantId, gate.cashierId, cashierRole],
   );
+  // POS approvals need an approver with refund / void authority (the seeded `owner`
+  // template, no ceiling), like the 1042 fixture.
+  const existingOwnerRole = await owner.query<{ id: string }>(
+    "SELECT id FROM roles WHERE tenant_id = $1 AND template_key = 'owner'",
+    [w.tenant.tenantId],
+  );
+  if (existingOwnerRole.rows.length === 0)
+    await withTenant(db, contextOf(w.tenant.tenantId), (tx) =>
+      seedTenantRoleTemplates(tx, w.tenant.tenantId),
+    );
+  const ownerRoleId = (
+    await owner.query<{ id: string }>(
+      "SELECT id FROM roles WHERE tenant_id = $1 AND template_key = 'owner'",
+      [w.tenant.tenantId],
+    )
+  ).rows[0]!.id;
+  const approverClient = agent(w.app);
+  await signUp(approverClient, "Supervisor POS Satu Jalur 1095");
+  const approverSession = await approverClient.get("/api/auth/get-session");
+  const approverId = approverSession.body.user.id as string;
+  await owner.query(
+    `INSERT INTO role_assignments
+       (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+     VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 minute', $2)`,
+    [w.tenant.tenantId, approverId, ownerRoleId],
+  );
   await openPosShift(
     contextOf(w.tenant.tenantId),
     { userId: userIdSchema.parse(gate.cashierId), deviceId: tillDevice },
@@ -131,14 +159,22 @@ export async function createPosWorld() {
   await owner.query(
     `INSERT INTO menu_items (id, tenant_id, brand_id, category_id, name, is_active, media_id)
      VALUES ($1, $2, $3, $4, 'Air Mineral Swap', true, $5)`,
-    [airItem, w.tenant.tenantId, w.tenant.brandId, w.ids.category, randomUUID()],
+    [
+      airItem,
+      w.tenant.tenantId,
+      w.tenant.brandId,
+      w.ids.category,
+      randomUUID(),
+    ],
   );
   await owner.query(
     `INSERT INTO price_list_items (id, tenant_id, price_list_id, item_id, price_idr)
      VALUES ($1, $2, $3, $4, $5)`,
     [randomUUID(), w.tenant.tenantId, w.ids.priceList, airItem, AIR_PRICE],
   );
-  setPosReceiptPort(memoryReceiptPort(w.tenant.tenantId, w.tenant.outletId, tillDevice));
+  setPosReceiptPort(
+    memoryReceiptPort(w.tenant.tenantId, w.tenant.outletId, tillDevice),
+  );
 
   // ---- recovery side (QR order) ---------------------------------------------------
 
@@ -191,9 +227,7 @@ export async function createPosWorld() {
       [w.tenant.tenantId, toUuid(order.id)],
     );
     expect(rows[0]!.total_idr, "plain order total").toBe(ORDER_PAID);
-    const payment = await w
-      .as(guest)
-      .pay({ kind: "order", orderId: order.id });
+    const payment = await w.as(guest).pay({ kind: "order", orderId: order.id });
     expect(payment.status, JSON.stringify(payment.body)).toBe(201);
     expect(await payVerified(payment.body.data.id, ORDER_PAID)).toBe(true);
     const line = (menuItemId: string) =>
@@ -254,9 +288,7 @@ export async function createPosWorld() {
       { resolution: "voucher", voucherId: issued.body.data.id as string },
     );
     expect(resolved.status, JSON.stringify(resolved.body)).toBe(200);
-    expect(await voucherValues(issueId), "apology voucher").toEqual([
-      valueIdr,
-    ]);
+    expect(await voucherValues(issueId), "apology voucher").toEqual([valueIdr]);
     return issueId;
   }
 
@@ -406,25 +438,36 @@ export async function createPosWorld() {
     valueIdr: number,
   ) {
     const overrideId = toUlid(randomUUID());
+    const reason = "Pelanggan salah pesan";
     await owner.query(
       `INSERT INTO pos_overrides
          (id, tenant_id, outlet_id, action, method, status, requested_by, approved_by,
           reason, value_idr, object_type, object_id, request_fingerprint, created_at, resolved_at)
        VALUES ($1, $2, $3, $9, 'supervisor_pin', 'approved', $4, $5,
-               'Pelanggan salah pesan', $6, 'order', $7, $8, now(), now())`,
+               $10, $6, 'order', $7, $8, now(), now())`,
       [
         ulidToUuid(overrideId as never),
         w.tenant.tenantId,
         w.tenant.outletId,
         gate.cashierId,
-        w.supervisor.userId,
+        approverId,
         valueIdr,
         toUlid(orderId),
-        randomUUID().replaceAll("-", "").padEnd(64, "0"),
+        pinOverrideFixtureFingerprint({
+          requestedBy: gate.cashierId,
+          outletId: w.tenant.outletId,
+          action,
+          valueIdr,
+          reason,
+          objectType: "order",
+          objectId: toUlid(orderId),
+          approverUserId: approverId,
+        }),
         action,
+        reason,
       ],
     );
-    return { overrideId, approvedBy: w.supervisor.userId };
+    return { overrideId, approvedBy: approverId };
   }
 
   /** A POS refund input with an approved override; reuse one to replay. */

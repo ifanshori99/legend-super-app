@@ -10,7 +10,10 @@ import {
   tenantIdSchema,
   ulidToUuid,
 } from "@starter/shared/core";
-import { establishScopedTenantContext, establishTenantContext } from "@starter/shared/core/server";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
 import type { EventEnvelope } from "@starter/shared/events";
 import { db } from "../db/index.ts";
 import { resetEdgeApplierRegistryForTests } from "../edge/applier-registry.ts";
@@ -49,7 +52,9 @@ export function resetEdge() {
   setAuditWriter(null);
 }
 
-export async function registerNode(where: Where): Promise<AuthenticatedEdgeNode> {
+export async function registerNode(
+  where: Where,
+): Promise<AuthenticatedEdgeNode> {
   setAuditWriter(coreAuditWriter);
   const context = establishTenantContext({
     tenantId: tenantIdSchema.parse(where.tenantId),
@@ -133,7 +138,9 @@ export function edgeKit(
       paidEdcIdr: 0,
       paidPointsIdr: 0,
       paidDepositIdr: 0,
-      tenders: [{ method: "cash", amountIdr: EDGE_PAID, receivedIdr: EDGE_PAID }],
+      tenders: [
+        { method: "cash", amountIdr: EDGE_PAID, receivedIdr: EDGE_PAID },
+      ],
       shiftId: null,
       cashierId: people.requestedBy,
       deviceId: randomUUID(),
@@ -199,7 +206,10 @@ export function edgeKit(
   }
 
   async function ingestOf(orderUlid: string) {
-    const { rows } = await owner.query<{ state: string; reason: string | null }>(
+    const { rows } = await owner.query<{
+      state: string;
+      reason: string | null;
+    }>(
       "SELECT state, reason FROM edge_order_ingests WHERE tenant_id = $1 AND order_id = $2::uuid",
       [where.tenantId, ulidToUuid(orderUlid as never)],
     );
@@ -215,14 +225,28 @@ export function edgeKit(
     return rows[0]!.n;
   }
 
-  /** Parked rows of the order's `order.voided` events. */
+  /** Parked rows of the order's `order.voided` events (RLS: read with the tenant set). */
   async function parkedVoids(orderUlid: string) {
-    const { rows } = await owner.query<{ n: number }>(
-      `SELECT count(*)::int AS n FROM edge_deferred_events
-        WHERE tenant_id = $1 AND event_name = 'order.voided' AND aggregate_id = $2`,
-      [where.tenantId, orderUlid],
-    );
-    return rows[0]!.n;
+    const client = await owner.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT set_config('app.tenant_id', $1, true), set_config('app.outlet_ids', '*', true)",
+        [where.tenantId],
+      );
+      const { rows } = await client.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM edge_deferred_events
+          WHERE tenant_id = $1 AND event_name = 'order.voided' AND aggregate_id = $2`,
+        [where.tenantId, orderUlid],
+      );
+      await client.query("COMMIT");
+      return rows[0]!.n;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   return { paidEvent, voidEvent, deliver, ingestOf, voidRows, parkedVoids };

@@ -23,18 +23,12 @@
 // - ORD-09 filed while the order is still a QR order, then the order becomes a POS cash
 //   sale (written directly), as in 3f5c50aed. This is the only way one order meets both
 //   lanes in a test.
-// - "Parked edge void" = an `order.voided` delivered by the edge node for an order the cloud
-//   never ingested: refused by the ingest but kept in edge_deferred_events.
+// - The parked edge void cases live in refund-1095-ord09-parked.test.ts (an edge node in the
+//   tenant makes QR ordering answer EDGE_LINK_DOWN, so that file orders first, then registers).
 // - A `failed` ORD-09 refund frees the lane (brief: status <> failed).
 //
 // Run: LEGEND_TEST_FILES="src/test/refund-1095-ord09-lane.test.ts" heavy pnpm test
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  edgeKit,
-  registerEdgeAppliers,
-  registerNode,
-  resetEdge,
-} from "./refund-1095-edge-helpers.ts";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   KOPI_PAID,
   ORDER_PAID,
@@ -43,7 +37,6 @@ import {
   createPosWorld,
   errorText,
   sum,
-  toUlid,
   type PaidOrder,
   type PosWorld,
 } from "./refund-1095-helpers.ts";
@@ -52,23 +45,12 @@ import { owner } from "./floor-test-helpers.ts";
 vi.setConfig({ testTimeout: 120_000 });
 
 let p: PosWorld;
-let kit: ReturnType<typeof edgeKit>;
 
 beforeAll(async () => {
   p = await createPosWorld();
-  const node = await registerNode(p.w.tenant);
-  kit = edgeKit(p.w.tenant, node, {
-    requestedBy: p.w.floorStaff.userId,
-    approvedBy: p.w.supervisor.userId,
-  });
 }, 120_000);
 
-beforeEach(() => {
-  registerEdgeAppliers();
-});
-
 afterAll(async () => {
-  resetEdge();
   await p.teardown();
 });
 
@@ -277,73 +259,6 @@ describe("legend-aja6g cloud void first, then ORD-09", () => {
 });
 
 // ============================================================================
-// Edge void parked in the cloud, then ORD-09 (and the other way round)
-// ============================================================================
-
-describe("legend-aja6g parked edge void x ORD-09", () => {
-  /** An edge void for a cloud order the edge never sold: refused by the ingest, parked. */
-  async function parkVoid(paid: PaidOrder) {
-    const ulid = toUlid(paid.orderId);
-    await kit.deliver([kit.voidEvent(ulid, 2, ORDER_PAID)]).catch(() => undefined);
-    expect(await kit.parkedVoids(ulid), "void event is parked").toBe(1);
-    expect(await kit.voidRows(ulid), "ingest wrote no void row").toBe(0);
-    return ulid;
-  }
-
-  it("a parked edge void first: ORD-09 is refused (409) or opens no refund", async () => {
-    const paid = await p.paidPlainOrder();
-    const { issueId, approvalId } = await p.prepareOrd09(
-      paid.rotiLine,
-      ROTI_PRICE,
-    );
-    await parkVoid(paid);
-
-    await p.expectOrd09Refused(issueId, approvalId);
-    await p.expectWithinPaid(paid.orderId, [issueId]);
-  });
-
-  it("the parked void replayed does not unblock ORD-09", async () => {
-    const paid = await p.paidPlainOrder();
-    const { issueId, approvalId } = await p.prepareOrd09(
-      paid.rotiLine,
-      ROTI_PRICE,
-    );
-    const ulid = toUlid(paid.orderId);
-    const event = kit.voidEvent(ulid, 2, ORDER_PAID);
-    await kit.deliver([event]).catch(() => undefined);
-    await kit.deliver([event]).catch(() => undefined);
-
-    await p.expectOrd09Refused(issueId, approvalId);
-    expect(await kit.voidRows(ulid)).toBe(0);
-  });
-
-  it("ORD-09 first, then an edge void event: no void row is written, ORD-09 money intact", async () => {
-    const { paid, ord09 } = await paidWithOrd09();
-    const ulid = toUlid(paid.orderId);
-    await kit.deliver([kit.voidEvent(ulid, 2, ORDER_PAID)]).catch(() => undefined);
-    await kit.deliver([kit.voidEvent(ulid, 3, ORDER_PAID)]).catch(() => undefined);
-
-    expect(await kit.voidRows(ulid)).toBe(0);
-    expect(await p.recoveryRefundTotal([ord09])).toBe(ROTI_PAID);
-    await p.expectWithinPaid(paid.orderId, [ord09]);
-  });
-
-  it("isolation: a parked void of order X does not block ORD-09 of order Y", async () => {
-    const x = await p.paidPlainOrder();
-    await parkVoid(x);
-    const y = await p.paidPlainOrder();
-    const ord09 = await p.recoveryRefundFor(y.rotiLine, ROTI_PRICE, ROTI_PAID);
-    await p.expectWithinPaid(y.orderId, [ord09]);
-  });
-
-  it("control: an ORD-09 refund with no void anywhere is filed (the lane is open)", async () => {
-    const { paid, ord09 } = await paidWithOrd09();
-    expect(await p.recoveryRefundTotal([ord09])).toBe(ROTI_PAID);
-    await p.expectWithinPaid(paid.orderId, [ord09]);
-  });
-});
-
-// ============================================================================
 // Races: exactly one lane wins
 // ============================================================================
 
@@ -407,29 +322,5 @@ describe("legend-aja6g races: ORD-09 against the other lanes", () => {
       ).toBe(false);
       await p.expectWithinPaid(paid.orderId, [issueId]);
     }
-  });
-
-  it("ORD-09 delivery racing a parked edge void: the void is not applied, total <= paid", async () => {
-    const paid = await p.paidPlainOrder();
-    const { issueId, approvalId } = await p.prepareOrd09(
-      paid.rotiLine,
-      ROTI_PRICE,
-    );
-    const resolved = await p.resolveOrd09(issueId, approvalId);
-    expect(resolved.status, JSON.stringify(resolved.body)).toBe(200);
-    const event = await p.ord09Event(issueId);
-    expect(event).not.toBeNull();
-    const ulid = toUlid(paid.orderId);
-
-    await Promise.allSettled([
-      p.deliverOrd09(event!),
-      kit.deliver([kit.voidEvent(ulid, 2, ORDER_PAID)]),
-    ]);
-
-    // Whatever the order of arrival: the order is never both voided and refunded.
-    const voided = await kit.voidRows(ulid);
-    const ord09Money = await p.recoveryRefundTotal([issueId]);
-    expect(voided > 0 && ord09Money > 0).toBe(false);
-    await p.expectWithinPaid(paid.orderId, [issueId]);
   });
 });
