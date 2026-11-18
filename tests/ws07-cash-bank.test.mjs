@@ -1372,6 +1372,14 @@ describe("legend-4961: cash in/out, transfers and petty cash (mock)", () => {
       cash.moneyErrorKey("PERIOD_CLOSED"),
       "accounting.cash.moneyError.periodClosed",
     );
+    assert.equal(
+      cash.moneyErrorKey("CASH_OUT_CHAIN_OPEN"),
+      "accounting.cash.moneyError.chainOpen",
+    );
+    assert.equal(
+      cash.moneyErrorKey("CASH_OUT_CHAIN_MISSING"),
+      "accounting.cash.moneyError.chainMissing",
+    );
     assert.equal(cash.moneyErrorKey("SOMETHING_ELSE"), null);
     assert.equal(cash.formatMonthLabel("2026-11-13"), "November 2026");
   });
