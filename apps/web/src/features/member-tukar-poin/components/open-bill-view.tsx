@@ -450,13 +450,13 @@ function ActivePanel({
           {t("member.tukarPoin.openBill.refresh")}
         </Button>
       </div>
-      <p className="text-sm leading-5 text-muted-foreground">
-        {checking
-          ? t("member.tukarPoin.openBill.checking")
-          : blocker === null
-            ? t("member.tukarPoin.openBill.chooseHint")
-            : null}
-      </p>
+      {(checking || blocker === null) && (
+        <p className="text-sm leading-5 text-muted-foreground">
+          {checking
+            ? t("member.tukarPoin.openBill.checking")
+            : t("member.tukarPoin.openBill.chooseHint")}
+        </p>
+      )}
     </Panel>
   );
 }

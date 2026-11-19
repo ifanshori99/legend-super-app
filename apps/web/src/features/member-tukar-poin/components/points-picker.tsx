@@ -3,11 +3,9 @@ import { useT } from "@/components/i18n";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import type {
-  MemberOpenBill,
-  MemberPointsQuote,
-} from "@starter/shared/crm/member-points-redeem";
-import { formatIdr, formatPoints, previewRedeem } from "../view-model";
+import type { MemberOpenBill, MemberPointsQuote } from "@starter/shared/crm";
+import { formatNumber } from "@starter/shared/i18n";
+import { formatIdr, previewRedeem } from "../view-model";
 import { BillCard } from "./bill-card";
 import {
   Eyebrow,
@@ -51,13 +49,14 @@ export function PointsPicker({
   const [touched, setTouched] = useState(false);
 
   const preview = previewRedeem(quote, raw);
-  const showError = preview.error !== null && (touched || raw !== "");
+  const showError = preview.error !== null && touched;
   const canSubmit =
     preview.error === null &&
     preview.points !== null &&
     !submitting &&
     !blockedReason;
-  const key = (name: string) => `member.tukarPoin.picker.${name}`;
+  const key = <N extends string>(name: N) =>
+    `member.tukarPoin.picker.${name}` as const;
 
   function errorText(error: PreviewError): string {
     switch (error) {
@@ -66,14 +65,14 @@ export function PointsPicker({
       case "not_integer":
         return t(key("errorNotInteger"));
       case "below_min":
-        return t(key("errorBelowMin"), { min: formatPoints(quote.minPoints) });
+        return t(key("errorBelowMin"), { min: formatNumber(quote.minPoints) });
       case "over_balance":
         return t(key("errorOverBalance"), {
-          balance: formatPoints(quote.balancePoints),
+          balance: formatNumber(quote.balancePoints),
         });
       case "over_bill":
         return t(key("errorOverBill"), {
-          max: formatPoints(quote.maxPoints),
+          max: formatNumber(quote.maxPoints),
           amount: formatIdr(quote.maxPoints * quote.pointValueIdr),
         });
       case "not_eligible":
@@ -104,10 +103,35 @@ export function PointsPicker({
         <SummaryRow
           label={t(key("balanceLabel"))}
           value={t(key("balanceValue"), {
-            points: formatPoints(quote.balancePoints),
+            points: formatNumber(quote.balancePoints),
           })}
         />
       </SummaryBox>
+    </div>
+  );
+
+  const outlet = bill.outletArea
+    ? t(key("outletArea"), { outlet: bill.outletName, area: bill.outletArea })
+    : bill.outletName;
+  const ref = bill.tableLabel
+    ? t(key("billRefTable"), {
+        number: bill.billNumber,
+        table: bill.tableLabel,
+      })
+    : t(key("billRef"), { number: bill.billNumber });
+
+  // Phone only: the short bill line above the form; the full context is in the
+  // disclosure below the card.
+  const compactBill = (
+    <div className="grid gap-1 border-y border-border py-3 md:hidden">
+      <p className="font-semibold">{outlet}</p>
+      <p>{ref}</p>
+      <p className="flex items-baseline justify-between gap-3">
+        <span>{t(key("remainingLabel"))}</span>
+        <span className="font-semibold tabular">
+          {formatIdr(quote.remainingIdr)}
+        </span>
+      </p>
     </div>
   );
 
@@ -125,11 +149,13 @@ export function PointsPicker({
           </h2>
           <p className="mt-1 text-sm text-muted-foreground">
             {t(key("rateHint"), {
-              points: formatPoints(1),
+              points: formatNumber(1),
               amount: formatIdr(quote.pointValueIdr),
             })}
           </p>
         </div>
+
+        {compactBill}
 
         <div className="grid gap-1.5">
           <Label htmlFor={fieldId}>{t(key("fieldLabel"))}</Label>
@@ -143,23 +169,20 @@ export function PointsPicker({
             disabled={submitting}
             aria-invalid={showError ? true : undefined}
             aria-describedby={showError ? `${hintId} ${errorId}` : hintId}
-            onChange={(event) => {
-              setRaw(event.target.value);
-              setTouched(true);
-            }}
+            onChange={(event) => setRaw(event.target.value)}
             onBlur={() => setTouched(true)}
           />
-          <p id={hintId} className="text-sm text-muted-foreground">
+          <p id={hintId} className="text-base text-muted-foreground">
             {t(key("fieldHint"), {
-              min: formatPoints(quote.minPoints),
-              max: formatPoints(quote.maxPoints),
+              min: formatNumber(quote.minPoints),
+              max: formatNumber(quote.maxPoints),
             })}
           </p>
           {showError && preview.error !== null ? (
             <p
               id={errorId}
               role="alert"
-              className="text-sm font-medium text-danger"
+              className="text-base font-medium text-danger"
             >
               {errorText(preview.error)}
             </p>
@@ -171,7 +194,7 @@ export function PointsPicker({
             <SummaryBox label={t(key("summaryLabel"))}>
               <SummaryRow
                 label={t(key("valueLabel"), {
-                  points: formatPoints(preview.points),
+                  points: formatNumber(preview.points),
                 })}
                 value={formatIdr(preview.valueIdr)}
               />
@@ -183,16 +206,14 @@ export function PointsPicker({
                 strong
                 label={t(key("balanceAfterLabel"))}
                 value={t(key("balanceValue"), {
-                  points: formatPoints(preview.balanceAfter),
+                  points: formatNumber(preview.balanceAfter),
                 })}
               />
             </SummaryBox>
             <Note>
-              {t(key("scopeNote"), { points: formatPoints(preview.points) })}
+              {t(key("scopeNote"), { points: formatNumber(preview.points) })}
             </Note>
           </>
-        ) : showError ? (
-          <Note tone="warning">{t(key("limitNote"))}</Note>
         ) : null}
 
         {blockedReason ? <Note tone="warning">{blockedReason}</Note> : null}
@@ -206,7 +227,7 @@ export function PointsPicker({
             {submitting
               ? t(key("submitting"))
               : preview.error === null && preview.points !== null
-                ? t(key("submit"), { points: formatPoints(preview.points) })
+                ? t(key("submit"), { points: formatNumber(preview.points) })
                 : t(key("submitDisabled"))}
           </Button>
           <Button
@@ -222,5 +243,19 @@ export function PointsPicker({
     </Panel>
   );
 
-  return <FlowGrid context={context} panel={panel} busy={submitting} />;
+  return (
+    <div className="grid gap-6">
+      <FlowGrid
+        context={<div className="hidden md:block">{context}</div>}
+        panel={panel}
+        busy={submitting}
+      />
+      <details className="group border-t border-border pt-3 md:hidden">
+        <summary className="flex min-h-11 cursor-pointer items-center font-semibold">
+          {t(key("detailsToggle"))}
+        </summary>
+        <div className="pt-3">{context}</div>
+      </details>
+    </div>
+  );
 }

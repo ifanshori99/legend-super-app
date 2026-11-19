@@ -113,3 +113,32 @@ Template: `scripts/shot-1082.mjs` (spawn dev server sendiri, PORT 3316, env sama
 - **R1-vm** `view-model.ts` + test: cap = `min(quote.maxPoints, quote.balancePoints, floor(quote.remainingIdr / quote.pointValueIdr))`; `remainingAfterIdr` tidak pernah negatif; test maxPoints menggelembung dan quote basi.
 - **R1-panel** `components/redeem-qr-panel.tsx`: breakpoint sembunyi/tampil konteks `lg:` → `md:` (cocok `FlowGrid` md); hilangkan teks ganda di SummaryBox consumed (label vs `<p>`). Plus `components/points-picker.tsx`: prop opsional `blockedReason?: ReactNode` → render Note warning di atas tombol dan nonaktifkan submit.
 - **R1-mock** `features/member-tukar-poin/mock.ts` + `features/ws08-member/mock.ts`: saldo overview member ikut store penukaran (consumed/redeemed → 740 untuk 500 poin).
+
+## Ronde R2 (review kedua) — `components/tukar-poin-page.tsx` + `components/redeem-qr-panel.tsx` (+ `hooks.ts` bila perlu)
+
+1. (medium) Poll mendeteksi `consumed` → invalidasi `memberKeys.all` + kunci tukar-poin di titik transisi (bukan bergantung pada effect `useRedeemStatus` yang datanya hilang setelah `setOutstanding(null)`).
+2. Mint sukses terlambat (setelah timeout 15 dtk): token tetap dicatat sebagai `outstanding` (memblokir mint baru, terus di-poll); view tetap `failed` sampai member memeriksa status; bila status `pending`, QR boleh ditampilkan lagi dengan sisa waktunya.
+3. Selama `outstanding` dan langkah bukan `qr`: Note blockedReason punya tombol "Periksa status" yang memanggil pemeriksaan status token (bukan hanya di langkah qr).
+4. `verify()` mendapat `expired` saat timer lokal belum habis → pindah ke view expired.
+5. `redeem-qr-panel.tsx:124` clamp `Math.max(0, quote.remainingIdr - discountIdr)`.
+Teks baru lewat katalog `member-tukar-poin-page.ts`. Jangan jalankan tsc/test; prettier + eslint file sendiri.
+
+## Ronde R3 (ui-auditor). Prettier + eslint file sendiri, tanpa tsc/test.
+
+- **R3-page** (`tukar-poin-page.tsx`, `status-view.tsx`, `member-tukar-poin-page.ts`):
+  1. Fokus: `viewKey` ikut varian render (loading/offline/error/picker/qr/...) supaya fokus pindah ke judul tiap kali view berganti (termasuk loading → picker, qr → offline).
+  2. Mint menggantung setelah timeout 15 dtk: beri jalan keluar (tombol "Coba lagi" / "Periksa status" yang me-reset `mintInFlight` sesudah timeout, guard double-mint tetap: mint baru hanya bila token lama tidak diketahui ada — bila ragu, minta periksa status dulu).
+  3. Countdown di blockedReason: jangan di live region; teks waktu `aria-hidden` (atau `role="timer" aria-live="off"`), kalimat statis untuk pembaca layar.
+  4. `errorNote` "Poin belum digunakan." hanya bila tidak ada `outstanding`; bila ada → "Status poin belum bisa dipastikan." (key baru).
+  5. `checkFailed`: tampilkan sebagai Note di dekat tombol pemicunya (lewat prop ke panel/StatusView), bukan di bawah grid.
+  6. "..." → "…" di katalog page.
+- **R3-picker** (`points-picker.tsx`, `member-tukar-poin-picker.ts`):
+  1. Mobile (<md): panel dulu; konteks penuh `hidden md:block`; di mobile tampil baris tagihan ringkas + `<details>` "Rincian tagihan dan poin" (pola sama `redeem-qr-panel.tsx` ActiveQr/CompactBill — salin, jangan impor dari panel).
+  2. Validasi `touched` saat blur/submit, bukan onChange; jangan tampilkan error `<p>` dan `limitNote` bersamaan.
+  3. Error dan field hint `text-base` (16 px).
+  4. "..." → "…".
+- **R3-panel** (`redeem-qr-panel.tsx`, `member-tukar-poin-qr.ts`, `open-bill-view.tsx`, `member-tukar-poin-bill.ts`):
+  1. Tombol back di QR aktif berlabel "Ubah jumlah poin" (key baru; page tetap memanggil onBack → picker).
+  2. `open-bill-view.tsx` ~453: `<p>` kosong dirender kondisional.
+  3. Consumed: bila `status.points`/`discountIdr` null → teks netral tanpa "tepat N poin"; hapus `??` mati pada field wajib.
+  4. `chooseHint` "Kamu" → "Anda".

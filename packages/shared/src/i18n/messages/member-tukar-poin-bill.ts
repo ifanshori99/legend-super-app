@@ -50,7 +50,7 @@ export const memberTukarPoinBillMessages = {
     usableNone: "Belum ada",
     usableHint: "Nilai maksimal {value}. Minimum penukaran {min} poin.",
     choosePoints: "Pilih jumlah poin",
-    chooseHint: "Poin belum dipotong. Kamu memilih jumlahnya terlebih dahulu.",
+    chooseHint: "Poin belum dipotong. Anda memilih jumlahnya terlebih dahulu.",
     checking: "Memeriksa poin untuk tagihan ini.",
     refusalLabel: "Poin belum bisa dipakai.",
     refusal: {

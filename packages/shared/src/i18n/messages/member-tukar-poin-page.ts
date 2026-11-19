@@ -36,7 +36,7 @@ export const memberTukarPoinPageMessages = {
     offlineNote:
       "Jika kasir baru memindai QR, periksa hasilnya setelah terhubung. Jangan mengulang penukaran sebelum statusnya jelas.",
     offlineAction: "Periksa koneksi & status",
-    offlineChecking: "Memeriksa...",
+    offlineChecking: "Memeriksa…",
     // Read error
     errorContextTitle: "Tagihan belum bisa dimuat",
     errorContextSub: "Data tagihan atau saldo poin belum diterima dari server.",
@@ -45,6 +45,8 @@ export const memberTukarPoinPageMessages = {
     errorBody:
       "Periksa koneksi Anda, lalu coba lagi. QR tidak ditampilkan sampai tagihan dan saldo terbaca.",
     errorNote: "Poin belum digunakan.",
+    // A QR may still be live (or a mint went unanswered): do not claim unspent.
+    errorNoteUncertain: "Status poin belum bisa dipastikan.",
     errorAction: "Coba lagi",
     // Several open bills: back to the list after one was chosen.
     chooseOtherBill: "Pilih tagihan lain",
@@ -53,6 +55,10 @@ export const memberTukarPoinPageMessages = {
       "QR sebelumnya masih berlaku sampai {time}. Tunggu sampai berakhir sebelum membuat QR baru.",
     outstandingChecking:
       "QR sebelumnya sedang diperiksa. Tunggu sebentar sebelum membuat QR baru.",
+    outstandingBlockedSr:
+      "QR sebelumnya masih berlaku. Tunggu sampai berakhir sebelum membuat QR baru.",
+    outstandingCheckAction: "Periksa status",
+    outstandingCheckBusy: "Memeriksa…",
     // Status check that did not complete
     checkFailed:
       "Status belum bisa diperiksa. Periksa koneksi, lalu coba lagi. Jangan membuat QR baru sebelum statusnya jelas.",

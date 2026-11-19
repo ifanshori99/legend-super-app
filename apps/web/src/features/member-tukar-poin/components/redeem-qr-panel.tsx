@@ -41,6 +41,7 @@ export function RedeemQrPanel({
   onExpired,
   onCheckStatus,
   checking,
+  checkFailed = false,
   onBack,
   onDone,
 }: {
@@ -54,6 +55,8 @@ export function RedeemQrPanel({
   onExpired: () => void;
   onCheckStatus: () => void;
   checking: boolean;
+  // The last status check did not complete: shown above the check button.
+  checkFailed?: boolean;
   onBack: () => void;
   onDone: () => void;
 }) {
@@ -77,19 +80,25 @@ export function RedeemQrPanel({
   );
 
   if (view === "consumed") {
-    const usedPoints = status?.points ?? points;
-    const usedIdr = status?.discountIdr ?? discountIdr;
-    const remaining = status?.remainingIdr ?? bill.remainingIdr - usedIdr;
-    const balance = status?.balancePoints ?? quote.balancePoints - usedPoints;
+    // The server may confirm a redeem without echoing points or value; then
+    // say so neutrally instead of repeating what the member chose.
+    const used =
+      status !== null && status.points !== null && status.discountIdr !== null
+        ? { points: status.points, idr: status.discountIdr }
+        : null;
+    const remaining = status ? status.remainingIdr : bill.remainingIdr;
+    const balance = status ? status.balancePoints : quote.balancePoints;
     return (
       <FlowGrid
         context={
           <div className="grid content-start gap-3">
             <Eyebrow>{t("member.tukarPoin.qr.consumedContextEyebrow")}</Eyebrow>
             <h2 className="font-brand type-title">
-              {t("member.tukarPoin.qr.consumedTitle", {
-                points: formatNumber(usedPoints),
-              })}
+              {used
+                ? t("member.tukarPoin.qr.consumedTitle", {
+                    points: formatNumber(used.points),
+                  })
+                : t("member.tukarPoin.qr.consumedTitleNeutral")}
             </h2>
             <p className="text-muted-foreground">
               {t("member.tukarPoin.qr.consumedSub", {
@@ -105,12 +114,14 @@ export function RedeemQrPanel({
                   points: formatNumber(balance),
                 })}
               </BigAmount>
-              <p className="text-sm text-muted-foreground">
-                {t("member.tukarPoin.qr.balanceMath", {
-                  before: formatNumber(balance + usedPoints),
-                  points: formatNumber(usedPoints),
-                })}
-              </p>
+              {used && (
+                <p className="text-sm text-muted-foreground">
+                  {t("member.tukarPoin.qr.balanceMath", {
+                    before: formatNumber(balance + used.points),
+                    points: formatNumber(used.points),
+                  })}
+                </p>
+              )}
             </SummaryBox>
           </div>
         }
@@ -121,16 +132,20 @@ export function RedeemQrPanel({
               {heading(t("member.tukarPoin.qr.consumedPanelTitle"))}
             </div>
             <SummaryBox>
-              <SummaryRow
-                label={t("member.tukarPoin.qr.remainingBefore")}
-                value={formatRupiah(remaining + usedIdr)}
-              />
-              <SummaryRow
-                label={t("member.tukarPoin.qr.discountLine", {
-                  points: formatNumber(usedPoints),
-                })}
-                value={formatRupiah(-usedIdr)}
-              />
+              {used && (
+                <>
+                  <SummaryRow
+                    label={t("member.tukarPoin.qr.remainingBefore")}
+                    value={formatRupiah(remaining + used.idr)}
+                  />
+                  <SummaryRow
+                    label={t("member.tukarPoin.qr.discountLine", {
+                      points: formatNumber(used.points),
+                    })}
+                    value={formatRupiah(-used.idr)}
+                  />
+                </>
+              )}
               <SummaryRow
                 strong
                 label={t("member.tukarPoin.qr.remainingBill")}
@@ -143,9 +158,11 @@ export function RedeemQrPanel({
               })}
             </p>
             <Note tone="success">
-              {t("member.tukarPoin.qr.consumedNote", {
-                points: formatNumber(usedPoints),
-              })}
+              {used
+                ? t("member.tukarPoin.qr.consumedNote", {
+                    points: formatNumber(used.points),
+                  })
+                : t("member.tukarPoin.qr.consumedNoteNeutral")}
             </Note>
             <Button className="min-h-11 w-full" onClick={onDone}>
               {t("member.tukarPoin.qr.backToPoints")}
@@ -189,6 +206,13 @@ export function RedeemQrPanel({
               />
             </SummaryBox>
             <Note tone="warning">{t("member.tukarPoin.qr.expiredNote")}</Note>
+            {checkFailed && (
+              <Note tone="warning">
+                <span role="alert">
+                  {t("member.tukarPoin.page.checkFailed")}
+                </span>
+              </Note>
+            )}
             <Button
               className="min-h-11 w-full"
               loading={checking}
@@ -226,6 +250,13 @@ export function RedeemQrPanel({
                 {t("member.tukarPoin.qr.failedRecheck")}
               </p>
             </SummaryBox>
+            {checkFailed && (
+              <Note tone="warning">
+                <span role="alert">
+                  {t("member.tukarPoin.page.checkFailed")}
+                </span>
+              </Note>
+            )}
             <Button
               className="min-h-11 w-full"
               loading={checking}
@@ -272,7 +303,7 @@ export function RedeemQrPanel({
               className="min-h-11 w-full"
               onClick={onBack}
             >
-              {t("member.tukarPoin.qr.back")}
+              {t("member.tukarPoin.qr.changePoints")}
             </Button>
           </Panel>
         }
@@ -320,7 +351,7 @@ function ActiveContext({
         />
         <SummaryRow
           label={t("member.tukarPoin.qr.remainingAfter")}
-          value={formatRupiah(quote.remainingIdr - discountIdr)}
+          value={formatRupiah(Math.max(0, quote.remainingIdr - discountIdr))}
         />
         <SummaryRow
           strong

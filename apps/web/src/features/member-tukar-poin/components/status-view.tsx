@@ -23,6 +23,8 @@ export function StatusView({
   balancePoints,
   onAction,
   actionBusy = false,
+  checkFailed = false,
+  pointsUncertain = false,
 }: {
   variant: StatusVariant;
   memberName?: string;
@@ -30,9 +32,14 @@ export function StatusView({
   balancePoints: number | null;
   onAction?: () => void;
   actionBusy?: boolean;
+  /** The last status check did not complete: shown next to the action. */
+  checkFailed?: boolean;
+  /** A token may still exist: the error note cannot say points are unspent. */
+  pointsUncertain?: boolean;
 }) {
   const t = useT();
-  const key = (name: string) => `member.tukarPoin.page.${name}`;
+  const key = <N extends string>(name: N) =>
+    `member.tukarPoin.page.${name}` as const;
   const identity =
     memberName === undefined
       ? t(key("identityFallback"))
@@ -100,8 +107,13 @@ export function StatusView({
           )}
           <p>{t(key(`${variant}Body`))}</p>
           <Note tone={variant === "offline" ? "warning" : "info"}>
-            {t(key(`${variant}Note`))}
+            {variant === "error" && pointsUncertain
+              ? t(key("errorNoteUncertain"))
+              : t(key(`${variant}Note`))}
           </Note>
+          {variant !== "loading" && onAction && checkFailed && (
+            <Note tone="warning">{t(key("checkFailed"))}</Note>
+          )}
           {variant !== "loading" && onAction && (
             <Button
               className="min-h-11 w-full"

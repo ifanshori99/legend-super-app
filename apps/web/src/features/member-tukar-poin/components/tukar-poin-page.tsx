@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { ChevronLeft } from "lucide-react";
 import type {
@@ -12,7 +13,12 @@ import { ApiError } from "@/lib/api/errors";
 import { useOnlineStatus } from "@/features/ws06-inventory/hpp-hooks";
 import { useMemberOverview } from "@/features/ws08-member/hooks";
 import { QrTokenDialog } from "@/features/ws08-member/components/qr-token-dialog";
-import { formatCountdown, secondsLeft } from "@/features/ws08-member/qr-token";
+import { memberKeys } from "@/features/ws08-member/queries";
+import {
+  formatCountdown,
+  localExpiry,
+  secondsLeft,
+} from "@/features/ws08-member/qr-token";
 import {
   useCheckRedeemStatus,
   useMemberOpenBills,
@@ -72,6 +78,7 @@ function isNetworkError(error: unknown): boolean {
 export function TukarPoinPage() {
   const t = useT();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const online = useOnlineStatus();
   const overviewQuery = useMemberOverview();
   const billsQuery = useMemberOpenBills();
@@ -79,6 +86,7 @@ export function TukarPoinPage() {
   const [step, setStep] = useState<Step>({ name: "bill" });
   const [lastPoints, setLastPoints] = useState<number | undefined>();
   const [outstanding, setOutstanding] = useState<Issued | null>(null);
+  const [mintInFlight, setMintInFlight] = useState(false);
   const [pickSyncing, setPickSyncing] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [checking, setChecking] = useState(false);
@@ -105,7 +113,6 @@ export function TukarPoinPage() {
   const mintTimer = useRef<number | undefined>(undefined);
   useEffect(() => () => window.clearTimeout(mintTimer.current), []);
 
-  const qrStep = step.name === "qr" ? step : null;
   // Polls the outstanding token on every step until the server says it is
   // consumed, expired, or invalid.
   const statusQuery = useRedeemStatus(
@@ -142,6 +149,14 @@ export function TukarPoinPage() {
     }
   }
 
+  // Consumed at the till: balance, bills and quotes all changed. Invalidated
+  // here, at the transition itself, because once `outstanding` is cleared the
+  // status query's own data is gone and its hook never sees the result.
+  useEffect(() => {
+    if (step.name === "consumed")
+      void queryClient.invalidateQueries({ queryKey: memberKeys.all });
+  }, [step, queryClient]);
+
   // Countdown for the picker's "still valid" note.
   const hasOutstanding = outstanding !== null;
   useEffect(() => {
@@ -149,23 +164,6 @@ export function TukarPoinPage() {
     const id = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, [hasOutstanding]);
-
-  // Focus follows the step. The first settled view keeps the page's own
-  // focus order; later changes land on the new panel's title.
-  const viewKey = `${step.name}:${qrStep?.expired ?? ""}`;
-  const regionRef = useRef<HTMLDivElement>(null);
-  const settled = useRef(false);
-  useEffect(() => {
-    if (!settled.current) {
-      settled.current = true;
-      return;
-    }
-    const section = regionRef.current?.querySelector(
-      "section[aria-labelledby]",
-    );
-    const titleId = section?.getAttribute("aria-labelledby");
-    if (titleId) document.getElementById(titleId)?.focus();
-  }, [viewKey]);
 
   // The quote is the freshest balance; the overview only fills in before it.
   const balanceKnown =
@@ -182,27 +180,41 @@ export function TukarPoinPage() {
     setChecking(true);
     setCheckFailed(false);
     try {
-      if (step.name === "qr") {
+      // Ask about the live token wherever the member is: it may have been
+      // minted late (after a failed view) or be left over from the QR step.
+      if (outstanding) {
         const result = await check.mutateAsync({
-          orderId: step.bill.orderId,
-          token: step.token,
+          orderId: outstanding.bill.orderId,
+          token: outstanding.token,
         });
         if (result.state === "consumed") {
-          setStep(consumedFrom(step, result));
+          setStep(consumedFrom(outstanding, result));
           setOutstanding(null);
           return;
         }
         if (result.state === "invalid") {
           setOutstanding(null);
-          setStep({
-            name: "failed",
-            points: step.points,
-            bill: step.bill,
-            quote: step.quote,
-          });
+          if (step.name === "qr") {
+            setStep({
+              name: "failed",
+              points: step.points,
+              bill: step.bill,
+              quote: step.quote,
+            });
+            return;
+          }
+        } else if (result.state === "expired") {
+          setOutstanding(null);
+          // The server ended it before the local timer did.
+          if (step.name === "qr" && !step.expired) {
+            setStep({ ...step, expired: true });
+            return;
+          }
+        } else if (step.name === "failed") {
+          // Still pending: the late QR is valid, show it with what is left.
+          setStep({ name: "qr", expired: false, ...outstanding });
           return;
         }
-        if (result.state === "expired") setOutstanding(null);
       }
       // The overview is read too but never blocks the flow: the quote carries
       // the balance.
@@ -215,6 +227,9 @@ export function TukarPoinPage() {
         setCheckFailed(true);
         return;
       }
+      // The server answered and no token is known: a mint that never came back
+      // may start over. A late answer still lands as `outstanding` and blocks.
+      if (!outstanding && !mint.isPending) setMintInFlight(false);
       // A failed or expired attempt is over once the server has answered; a
       // live QR or an open picker stays where it is.
       setStep((current) =>
@@ -238,42 +253,55 @@ export function TukarPoinPage() {
   }
 
   function submitPoints(points: number) {
-    if (!bill || !quote || outstanding) return;
+    if (!bill || !quote || outstanding || mintInFlight) return;
     const attempt = ++mintAttempt.current;
     const snapshot: Snapshot = { bill, quote };
+    const startedAt = Date.now();
     setLastPoints(points);
     setCheckFailed(false);
+    setMintInFlight(true);
     const fail = () => {
-      window.clearTimeout(mintTimer.current);
+      // A stale attempt must not cancel the newer attempt's timer.
       if (mintAttempt.current !== attempt) return;
+      window.clearTimeout(mintTimer.current);
       mintAttempt.current += 1;
       mint.reset();
       setStep({ name: "failed", points, ...snapshot });
     };
     window.clearTimeout(mintTimer.current);
     mintTimer.current = window.setTimeout(fail, MINT_TIMEOUT_MS);
-    mint.mutate(
-      { orderId: bill.orderId, points },
-      {
-        onSuccess: (result) => {
-          window.clearTimeout(mintTimer.current);
-          if (mintAttempt.current !== attempt) return;
-          const issued: Issued = {
-            points,
-            token: result.token,
-            expiresAt: result.expiresAt,
-            ...snapshot,
-          };
-          setNowMs(Date.now());
-          setOutstanding(issued);
-          setStep({ name: "qr", expired: false, ...issued });
-        },
-        onError: fail,
+    // mutateAsync, not mutate callbacks: after the timeout the mutation is
+    // reset, and an answer that still arrives must not be lost.
+    mint.mutateAsync({ orderId: bill.orderId, points }).then(
+      (result) => {
+        // A newer attempt may already be in flight: leave its flag alone.
+        if (mintAttempt.current <= attempt + 1) setMintInFlight(false);
+        const onTime = mintAttempt.current === attempt;
+        if (onTime) window.clearTimeout(mintTimer.current);
+        // A late token is real and may be scanned: keep it as outstanding (it
+        // blocks a new mint and is polled) but leave the view on "failed" until
+        // the member checks. Its clock runs from the request, not the answer.
+        const issued: Issued = {
+          points,
+          token: result.token,
+          expiresAt: onTime ? result.expiresAt : localExpiry(startedAt),
+          ...snapshot,
+        };
+        setNowMs(Date.now());
+        // An on-time answer is the QR on screen, so it always becomes the token
+        // that is polled; a late one only fills an empty slot.
+        setOutstanding(onTime ? issued : (current) => current ?? issued);
+        if (onTime) setStep({ name: "qr", expired: false, ...issued });
+      },
+      () => {
+        if (mintAttempt.current <= attempt + 1) setMintInFlight(false);
+        fail();
       },
     );
   }
 
   function refreshBills() {
+    setCheckFailed(false);
     void billsQuery.refetch();
     if (activeOrderId !== null) void quoteQuery.refetch();
     void overviewQuery.refetch();
@@ -287,18 +315,68 @@ export function TukarPoinPage() {
     setMemberQrOpen(true);
   }
 
-  // While a minted token may still be scanned, the picker cannot mint another.
-  const blockedReason = outstanding
-    ? secondsLeft(outstanding.expiresAt, nowMs) > 0
-      ? t("member.tukarPoin.page.outstandingBlocked", {
-          time: formatCountdown(secondsLeft(outstanding.expiresAt, nowMs)),
-        })
-      : t("member.tukarPoin.page.outstandingChecking")
-    : undefined;
+  // While a minted token may still be scanned (or a mint is unanswered), the
+  // picker cannot mint another. With a known token the member can ask the server
+  // what became of it.
+  const outstandingSeconds = outstanding
+    ? secondsLeft(outstanding.expiresAt, nowMs)
+    : 0;
+  // A mint that never answered leaves no token to ask about: the check then
+  // re-reads the bill, and only a clean answer frees the picker.
+  const mintHung = mintInFlight && !mint.isPending;
+  const counting = outstanding !== null && outstandingSeconds > 0;
+  const blockedText = counting
+    ? t("member.tukarPoin.page.outstandingBlocked", {
+        time: formatCountdown(outstandingSeconds),
+      })
+    : outstanding || mintHung
+      ? t("member.tukarPoin.page.outstandingChecking")
+      : null;
+  const blockedReason =
+    blockedText === null ? undefined : (
+      <span className="grid gap-2">
+        {counting ? (
+          <>
+            {/* The ticking time stays out of the live region: screen readers get
+                a static sentence, sighted members the countdown. */}
+            <span className="sr-only">
+              {t("member.tukarPoin.page.outstandingBlockedSr")}
+            </span>
+            <span aria-hidden="true">{blockedText}</span>
+          </>
+        ) : (
+          <span>{blockedText}</span>
+        )}
+        {(outstanding || mintHung) && step.name !== "qr" ? (
+          <Button
+            type="button"
+            variant="outline"
+            className="min-h-11 w-fit"
+            disabled={checking}
+            onClick={() => void verify()}
+          >
+            {checking
+              ? t("member.tukarPoin.page.outstandingCheckBusy")
+              : t("member.tukarPoin.page.outstandingCheckAction")}
+          </Button>
+        ) : null}
+        {checkFailed ? (
+          <span role="alert">{t("member.tukarPoin.page.checkFailed")}</span>
+        ) : null}
+      </span>
+    );
+
+  // The view that renders, keyed so focus can follow it; `inlineCheck` marks a
+  // view that shows a failed status check next to its own button.
+  function view(key: string, node: ReactNode, inlineCheck = false) {
+    return { key, node, inlineCheck };
+  }
 
   function renderBody() {
+    const pointsUncertain = outstanding !== null || mintHung;
     if (step.name === "consumed") {
-      return (
+      return view(
+        "consumed",
         <RedeemQrPanel
           bill={step.bill}
           points={step.points}
@@ -312,7 +390,7 @@ export function TukarPoinPage() {
           checking={false}
           onBack={leave}
           onDone={leave}
-        />
+        />,
       );
     }
 
@@ -321,14 +399,17 @@ export function TukarPoinPage() {
       isNetworkError(billsQuery.error) ||
       isNetworkError(quoteQuery.error);
     if (offline) {
-      return (
+      return view(
+        "offline",
         <StatusView
           variant="offline"
           memberName={memberName}
           balancePoints={balanceKnown}
           onAction={() => void verify()}
           actionBusy={checking}
-        />
+          checkFailed={checkFailed}
+        />,
+        true,
       );
     }
 
@@ -337,31 +418,35 @@ export function TukarPoinPage() {
       reading &&
       (billsQuery.isPending || (step.name === "pick" && pickSyncing))
     ) {
-      return (
+      return view(
+        "loading",
         <StatusView
           variant="loading"
           memberName={memberName}
           balancePoints={null}
-        />
+        />,
       );
     }
     // A failed overview read does not block: the quote carries the balance.
     const readFailed =
       billsQuery.isError || (bill !== undefined && quoteQuery.isError);
     if (reading && (readFailed || bills === undefined)) {
-      return (
+      return view(
+        "error",
         <StatusView
           variant="error"
           memberName={memberName}
           balancePoints={balanceKnown}
+          pointsUncertain={pointsUncertain}
           onAction={refreshBills}
-        />
+        />,
       );
     }
 
     if (step.name === "qr" || step.name === "failed") {
       const expired = step.name === "qr" && step.expired;
-      return (
+      return view(
+        `${step.name}:${expired ? "expired" : "active"}`,
         <RedeemQrPanel
           bill={step.bill}
           points={step.points}
@@ -379,13 +464,15 @@ export function TukarPoinPage() {
           }
           onCheckStatus={() => void verify()}
           checking={checking}
+          checkFailed={checkFailed}
           onBack={() =>
             step.name === "qr" && expired
               ? setStep({ name: "bill" })
               : enterPick()
           }
           onDone={leave}
-        />
+        />,
+        expired || step.name === "failed",
       );
     }
 
@@ -407,19 +494,21 @@ export function TukarPoinPage() {
       // Balance after the redemption comes from the fresh quote, never from the
       // overview (stale) or a made-up 0: wait for it.
       if (quote === undefined) {
-        return (
+        return view(
+          "points-after-loading",
           <StatusView
             variant="loading"
             memberName={memberName}
             balancePoints={null}
-          />
+          />,
         );
       }
-      return (
+      return view(
+        "points-after",
         <>
           <PointsAfterView bill={bill} balancePoints={quote.balancePoints} />
           {otherBill}
-        </>
+        </>,
       );
     }
 
@@ -429,7 +518,8 @@ export function TukarPoinPage() {
       quote !== undefined &&
       quote.refusal === null
     ) {
-      return (
+      return view(
+        "picker",
         <PointsPicker
           bill={bill}
           quote={quote}
@@ -438,11 +528,13 @@ export function TukarPoinPage() {
           submitting={mint.isPending}
           onSubmit={submitPoints}
           onBack={() => setStep({ name: "bill" })}
-        />
+        />,
+        blockedReason !== undefined,
       );
     }
 
-    return (
+    return view(
+      "bill",
       <>
         <OpenBillView
           bills={bills ?? []}
@@ -458,9 +550,27 @@ export function TukarPoinPage() {
           refreshing={billsQuery.isFetching || quoteQuery.isFetching}
         />
         {otherBill}
-      </>
+      </>,
     );
   }
+
+  const body = renderBody();
+
+  // Focus follows the view that renders (loading, offline, picker, qr, ...),
+  // not just the step. The first render keeps the page's own focus order.
+  const regionRef = useRef<HTMLDivElement>(null);
+  const settled = useRef(false);
+  useEffect(() => {
+    if (!settled.current) {
+      settled.current = true;
+      return;
+    }
+    const section = regionRef.current?.querySelector(
+      "section[aria-labelledby]",
+    );
+    const titleId = section?.getAttribute("aria-labelledby");
+    if (titleId) document.getElementById(titleId)?.focus();
+  }, [body.key]);
 
   return (
     <div className="grid gap-6">
@@ -481,8 +591,8 @@ export function TukarPoinPage() {
       </header>
 
       <div ref={regionRef} className="grid gap-4">
-        {renderBody()}
-        {checkFailed && (
+        {body.node}
+        {checkFailed && !body.inlineCheck && (
           <p role="alert" className="text-sm leading-5 text-danger">
             {t("member.tukarPoin.page.checkFailed")}
           </p>

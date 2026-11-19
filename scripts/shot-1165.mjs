@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* global document, window -- used only inside page.evaluate callbacks */
+/* global document, getComputedStyle, window -- used only inside page.evaluate callbacks */
 // Screenshots for card 1165 (member tukar poin, legend-0ne0z): starts the mock
 // dev server and the browser inside one heavy job, so nothing queues behind itself.
 //   heavy --browser node scripts/shot-1165.mjs            (all states)
@@ -52,6 +52,30 @@ async function makeQr(page, points = 500) {
   await btn(page, new RegExp(`buat qr untuk ${points} poin`, "i")).click({
     timeout: 10000,
   });
+}
+// The customer area scrolls an inner container (bottom nav stays fixed), so a
+// fullPage shot only gets the viewport. Grow the viewport height (width stays)
+// by the largest hidden scroll amount among document + scrollable ancestors of
+// `main`; bottom nav stays in view at the bottom edge.
+async function fitViewportToContent(page, vp) {
+  const height = await page.evaluate(() => {
+    const doc = document.documentElement;
+    let hidden = doc.scrollHeight - window.innerHeight;
+    for (
+      let el = document.querySelector("main");
+      el && el !== doc;
+      el = el.parentElement
+    ) {
+      if (/auto|scroll/.test(getComputedStyle(el).overflowY)) {
+        hidden = Math.max(hidden, el.scrollHeight - el.clientHeight);
+      }
+    }
+    return window.innerHeight + Math.max(0, hidden);
+  });
+  if (height > vp.h) {
+    await page.setViewportSize({ width: vp.w, height });
+    await page.waitForTimeout(300);
+  }
 }
 // Pause the page clock a hair ahead so the countdown stays at 02:00.
 async function freezeClock(page) {
@@ -264,6 +288,7 @@ try {
         });
         await s.run(page, ctx);
         await page.waitForTimeout(300);
+        await fitViewportToContent(page, vp);
         const overflow = await page.evaluate(() => {
           const el = document.documentElement;
           return el.scrollWidth - el.clientWidth;

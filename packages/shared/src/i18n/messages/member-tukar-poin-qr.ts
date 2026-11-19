@@ -15,7 +15,7 @@ export const memberTukarPoinQrMessages = {
     endingSoon: "QR hampir kedaluwarsa. Tunjukkan ke kasir sekarang.",
     shareWarning:
       "Jangan bagikan QR atau tangkapan layarnya kepada orang lain.",
-    back: "Kembali ke tagihan",
+    changePoints: "Ubah jumlah poin",
     // Context (left column on desktop, disclosure on mobile)
     confirmEyebrow: "Konfirmasi penukaran",
     confirmTitle: "{points} poin · {value}",
@@ -52,6 +52,7 @@ export const memberTukarPoinQrMessages = {
     // Consumed
     consumedContextEyebrow: "Poin saya",
     consumedTitle: "{points} poin sudah digunakan",
+    consumedTitleNeutral: "Poin sudah digunakan",
     consumedSub: "Penukaran dikonfirmasi oleh server untuk tagihan {outlet}.",
     balanceLeft: "Sisa poin tersedia",
     balanceMath: "{before} − {points} poin",
@@ -64,6 +65,8 @@ export const memberTukarPoinQrMessages = {
       "Lanjutkan pembayaran {amount} di kasir. Status ini mengonfirmasi penukaran poin, bukan pelunasan tagihan.",
     consumedNote:
       "QR ini tidak dapat dipakai lagi. Saldo sudah berkurang tepat {points} poin.",
+    consumedNoteNeutral:
+      "QR ini tidak dapat dipakai lagi. Saldo poin sudah diperbarui.",
     backToPoints: "Kembali ke poin saya",
   },
 } as const;
