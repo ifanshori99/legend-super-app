@@ -7837,3 +7837,12 @@ Cabang `ws/1121-flake-tax-ord03`, dasar `4418628e0` (`origin/milestone/m1`). Tin
 - Bukti gagal-dulu: reproduksi dua aturan PBJT memberi kegagalan persis 409 vs 422 (12/13 lulus). Sesudah isolasi: `LEGEND_TEST_FILES="src/test/tax-api.test.ts" heavy pnpm test` lima kali berurutan, seluruhnya 13/13 lulus (10.58s, 9.81s, 9.22s, 10.14s, 11.48s). Log lokal `/tmp/1121-red.log` dan `/tmp/1121-green-{1..5}.log`.
 - Pemeriksaan: `pnpm exec eslint apps/api/src/test/tax-api.test.ts`, `pnpm exec prettier --check apps/api/src/test/tax-api.test.ts`, dan `git diff --check` hijau. Review konteks segar: tanpa temuan. Suite penuh/build/typecheck tidak dijalankan sesuai scope brief; lanjut integrasi oleh CTO.
 - Subagent: total 5, puncak 4 bersamaan, token heavy dipegang test_runner. Kerja Codex: 2 Explore, 1 test-writer, 1 test-runner, 1 reviewer. Biaya/rata-rata subagent sesi tidak tersedia: session-usage tidak menemukan transkrip Codex dan parallel-report hanya mengenali sesi Claude. Selesai verifikasi 03:27 WIB.
+
+## 1137 Layar AI tindak lanjut audit + waktu pasca-lock platform-approval (legend-b2kq3, legend-ijy8u), 19 Nov 2026
+
+Cabang `ghostex/ai-layar-approval-waktu-1137`, tanpa migrasi.
+
+- legend-ijy8u (K uang): `decideApprovalRequest` memakai waktu sesudah `lockChain` untuk cek peran, tenggat level, dan `createdAt`/`deadlineAt` level berikutnya; `options.now` eksplisit (dipakai hris-leave, attendance-correction, inventory-count) ditambah waktu tunggu lock; waktu cek sama dengan `decided_at`. Keputusan terlambat ditolak `APPROVAL_REQUEST_EXPIRED`, rollback, tidak tercatat. Review architect xhigh menemukan 2 bug (options.now produksi, waktu cek lain dari waktu simpan), keduanya dibetulkan. Sisa: peran dicabut saat menunggu lock belum terlihat, bead `legend-k8g62`.
+- legend-b2kq3 (S web): Cabut/Batalkan aktif saat kunci platform, penjelasan polling berhenti, satu tombol utama, badge `Dikunci platform` satu aturan (`lock-status.ts`) untuk badge dan baris urutan, `type-eyebrow`, teks baru di katalog. Hydration div-in-p tidak bisa direproduksi (sudah diperbaiki di `4e8347327`).
+- Bukti: test ijy8u gagal 5/5 di service lama, lulus 5/5; regresi approval 38/38 dan inventory/hris 151/151; web e2e mock gagal 5 sebelum perbaikan, 41/41 sesudah; contract test, eslint, prettier, typecheck api (heap 8 GB; 6 GB abort dua kali) dan web hijau.
+- Belum: `tsc -p tsconfig.json` root, suite penuh `pnpm test`/`pnpm check`.
