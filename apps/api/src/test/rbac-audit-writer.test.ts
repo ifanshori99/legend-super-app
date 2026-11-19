@@ -41,9 +41,15 @@ import {
 } from "../services/audit-writer.ts";
 import { coreAuditWriter } from "../services/core-audit-writer.ts";
 import { deleteHires, seedHire } from "./hire-seed.ts";
+import {
+  createSecondTenant,
+  removeSecondTenant,
+  type SecondTenant,
+} from "./tenant-isolation-harness.ts";
 
-const seededTenantId = cafeLegendPlatformFixtures.tenant.id;
-const bandung: string = cafeLegendAccessFixtures.outletIds.bandung;
+let suiteTenant: SecondTenant | undefined;
+let seededTenantId: string;
+let bandung: string;
 const owner = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
   max: 2,
@@ -53,7 +59,6 @@ const createdRoleIds: string[] = [];
 const createdAssignmentIds: string[] = [];
 const createdHireIds: string[] = [];
 const otherTenantIds: string[] = [];
-let savedPolicies: Record<string, unknown>[] = [];
 
 type StoredEvent = {
   action: string;
@@ -187,11 +192,32 @@ async function policyFingerprint(): Promise<string> {
 beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
-  savedPolicies = (
-    await owner.query("SELECT * FROM approval_policies WHERE tenant_id = $1", [
-      seededTenantId,
-    ])
-  ).rows;
+  // Matrix replacement reads and replaces every policy of its tenant. Keep
+  // this suite away from seeded policies temporarily held by parallel tests.
+  suiteTenant = await createSecondTenant(owner, "rbac-audit");
+  seededTenantId = suiteTenant.tenantId;
+  bandung = suiteTenant.outletId;
+  for (const role of cafeLegendAccessFixtures.roles.filter(
+    (role) =>
+      role.templateKey !== null &&
+      ["owner", "supervisor", "cashier"].includes(role.templateKey),
+  )) {
+    const id = randomUUID();
+    await owner.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+       VALUES ($1, $2, $3, true, $4, $5, $6, $7)`,
+      [
+        id,
+        seededTenantId,
+        role.name,
+        role.templateKey,
+        JSON.stringify(role.permissions),
+        role.mfaRequired,
+        JSON.stringify(role.allowedScopeTypes),
+      ],
+    );
+    createdRoleIds.push(id);
+  }
   setAuditWriter(coreAuditWriter);
 });
 
@@ -201,24 +227,13 @@ afterEach(() => {
 
 afterAll(async () => {
   setAuditWriter(null);
-  // Put the seeded approval matrix back (replaceApprovalMatrix replaces it).
+  if (!suiteTenant) {
+    await owner.end();
+    return;
+  }
   await owner.query("DELETE FROM approval_policies WHERE tenant_id = $1", [
     seededTenantId,
   ]);
-  for (const row of savedPolicies)
-    await owner.query(
-      `INSERT INTO approval_policies (id, tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [
-        row.id,
-        row.tenant_id,
-        row.action_type,
-        row.threshold_idr,
-        row.approver_role_id,
-        row.levels,
-        row.requires_distinct_actor,
-      ],
-    );
   if (createdUserIds.length > 0)
     await owner.query(
       "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = ANY($2::text[])",
@@ -236,6 +251,9 @@ afterAll(async () => {
   for (const id of otherTenantIds)
     await owner.query("DELETE FROM tenants WHERE id = $1", [id]);
   await deleteHires(owner, seededTenantId, createdHireIds);
+  // Access audit rows are tenant-wide (outlet_id is null), so the append-only
+  // rows can remain in this disposable database without blocking outlet cleanup.
+  await removeSecondTenant(owner, suiteTenant);
   if (createdUserIds.length > 0)
     await owner.query('DELETE FROM "user" WHERE id = ANY($1::text[])', [
       createdUserIds,
@@ -369,28 +387,46 @@ describe("§3.7 RBAC audit rolls back with the domain write", () => {
 
   it("§3.7 a failing audit writer leaves the approval matrix and audit log unchanged", async () => {
     const actor = await ownerUser("Rollback Matrix Actor");
-    const before = await policyFingerprint();
-    setAuditWriter(writeThenFail);
+    const parkedPolicyId = randomUUID();
+    // Other suites temporarily park fixture policies under action names that
+    // are outside the API enum. This suite must not read their matrix.
+    const parkedPolicy = await owner.query(
+      `INSERT INTO approval_policies (id, tenant_id, action_type, approver_role_id, levels)
+       SELECT $1, tenant_id, 'cash_out_held_by_test', id, 1 FROM roles
+        WHERE tenant_id = $2 AND template_key = 'supervisor'`,
+      [parkedPolicyId, cafeLegendPlatformFixtures.tenant.id],
+    );
+    try {
+      expect(parkedPolicy.rowCount).toBe(1);
+      const before = await policyFingerprint();
+      setAuditWriter(writeThenFail);
 
-    await expect(
-      replaceApprovalMatrix(
-        scopedContext(),
-        {
-          policies: [
-            {
-              actionType: "void",
-              thresholdIdr: null,
-              approverRoleId: roleIdSchema.parse(await roleIdOf("supervisor")),
-              levels: 1,
-            },
-          ],
-        },
-        actor,
-      ),
-    ).rejects.toThrow("audit writer failed after appending");
+      await expect(
+        replaceApprovalMatrix(
+          scopedContext(),
+          {
+            policies: [
+              {
+                actionType: "void",
+                thresholdIdr: null,
+                approverRoleId: roleIdSchema.parse(
+                  await roleIdOf("supervisor"),
+                ),
+                levels: 1,
+              },
+            ],
+          },
+          actor,
+        ),
+      ).rejects.toThrow("audit writer failed after appending");
 
-    expect(await policyFingerprint()).toBe(before);
-    expect(await auditByActor(actor)).toEqual([]);
+      expect(await policyFingerprint()).toBe(before);
+      expect(await auditByActor(actor)).toEqual([]);
+    } finally {
+      await owner.query("DELETE FROM approval_policies WHERE id = $1", [
+        parkedPolicyId,
+      ]);
+    }
   });
 
   it("§3.7 an audit row appended on a transaction that later throws is absent", async () => {

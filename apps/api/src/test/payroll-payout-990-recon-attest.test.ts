@@ -330,9 +330,10 @@ const financeFlags = async () => {
 };
 
 async function expectNotFlagged(itemId: string, label: string, kind?: string) {
+  const exceptions = await exceptionsOf(itemId, kind);
   expect(
-    await exceptionsOf(itemId, kind),
-    `${label}: no recon exception`,
+    exceptions,
+    `${label}: no recon exception; got ${JSON.stringify(exceptions)}`,
   ).toHaveLength(0);
   if (!kind)
     expect(
