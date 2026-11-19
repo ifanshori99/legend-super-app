@@ -16,6 +16,7 @@
     "./validators/payroll-payout-return-withdraw": "./src/validators/payroll-payout-return-withdraw.ts",
     "./theme": "./src/theme/index.ts",
     "./i18n": "./src/i18n/index.ts",
+    "./i18n/runtime": "./src/i18n/runtime.ts",
     "./env": "./src/env/index.ts",
     "./core": "./src/core/index.ts",
     "./core/server": "./src/core/server.ts",

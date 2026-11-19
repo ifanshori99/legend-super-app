@@ -6,6 +6,27 @@
 @import "@fontsource-variable/inter";
 @import "./tokens.css";
 
+/* Metric-matched fallbacks: while a variable font swaps in, text sits in
+ * Arial scaled to the web font's width and vertical metrics, so the swap does
+ * not move the layout (CLS). Values from each font's hhea/hmtx tables
+ * (Arial: 2048 upm, average width 0.441 em). */
+@font-face {
+  font-family: "Plus Jakarta Sans Fallback";
+  src: local("Arial"), local("Helvetica"), local("Liberation Sans");
+  size-adjust: 105.1%;
+  ascent-override: 98.8%;
+  descent-override: 21.1%;
+  line-gap-override: 0%;
+}
+@font-face {
+  font-family: "Inter Fallback";
+  src: local("Arial"), local("Helvetica"), local("Liberation Sans");
+  size-adjust: 107.4%;
+  ascent-override: 90.2%;
+  descent-override: 22.5%;
+  line-gap-override: 0%;
+}
+
 /* Dark applies under html.dark or any [data-theme="dark"] island. Prefer
  * tokens over dark: utilities; tokens already switch per mode. */
 @custom-variant dark (&:where(.dark, .dark *, [data-theme="dark"], [data-theme="dark"] *));

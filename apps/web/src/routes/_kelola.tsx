@@ -1,4 +1,5 @@
 import { createFileRoute, Outlet } from "@tanstack/react-router";
+import { withI18nChunks } from "@/components/i18n";
 import { AreaFrame } from "@/components/layout/area-frame";
 import { kelolaGuardForPath } from "@/lib/areas/kelola-guard";
 import { areaHead, runGuard } from "@/lib/areas/route";
@@ -8,7 +9,10 @@ import { areaHead, runGuard } from "@/lib/areas/route";
 // report.aggregate.view (lib/areas/kelola-guard.ts, legend-5bjh).
 export const Route = createFileRoute("/_kelola")({
   beforeLoad: ({ context, location }) =>
-    runGuard(kelolaGuardForPath(location.pathname), context.access),
+    withI18nChunks(
+      ["kelola"],
+      runGuard(kelolaGuardForPath(location.pathname), context.access),
+    ),
   head: () => areaHead("kelola"),
   component: Layout,
 });
