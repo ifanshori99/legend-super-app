@@ -344,7 +344,7 @@ describe("legend-h1dyy refund item gagal pada pesanan QR berpromo", () => {
     );
   });
 
-  it("H3 kopi gagal: promo ditarik, refund 8.085 (bukan pro-rata 19.425), payout promo 7.000; ditolak lalu roti gagal: tanpa 422, refund 20.790, uang kopi tidak dibayar lagi", async () => {
+  it("H3 kopi gagal: promo ditarik, refund 8.085 (bukan pro-rata 19.425), payout promo 7.000; ditolak lalu roti gagal: 20.790 dipotong ke bagian barisnya 13.986", async () => {
     const paid = await paidPromoOrder();
     const kopi = await approvedRefund(paid.kopi.id, 25_000);
 
@@ -379,58 +379,48 @@ describe("legend-h1dyy refund item gagal pada pesanan QR berpromo", () => {
     await failAndRunHook(refunds[0]!.id, "rejected");
     expect((await application(paid.order.id)).refunded_paid_idr).toBe(7_000);
 
+    // Like a system voucher (legend-wpn5v): the roti recompute is 20.790 but
+    // its share of the bill is 18.000 x 42.735 / 55.000 = 13.986, so the
+    // consumer files exactly the share and audits the cut (6.804).
     const roti = await approvedRefund(paid.roti.id, 18_000);
     await deliver(roti.event);
     expect(
       (await issueRefunds(roti.issueId)).map((row) => row.amount_idr),
-    ).toEqual([20_790]);
-    const rotiRefunded = (
-      await w.outboxRows("order.refunded", paid.order.id)
-    ).map((row) => orderRefundedPayloadSchema.parse(row.event.payload));
-    expect(
-      rotiRefunded.find((row) => row.refundId === roti.issueId),
-    ).toMatchObject({
-      amountIdr: 20_790,
-      serviceChargeIdr: 900,
-      pbjtIdr: 1_890,
-    });
-    expect(await application(paid.order.id)).toMatchObject({
-      refunded_subtotal_idr: 43_000,
-      refunded_paid_idr: 25_000,
-    });
+    ).toEqual([13_986]);
+    const cut = await auditRows(roti.issueId, "order_issue.refund_shortfall");
+    expect(cut).toHaveLength(1);
+    expect(JSON.stringify(cut[0])).toContain("roomCutIdr");
+    expect(await auditRows(roti.issueId, "order_issue.refund_blocked")).toEqual(
+      [],
+    );
   });
 
-  it("H2 roti gratis gagal (nothing_left), lalu kopi gagal: roti tidak dihitung tetap dimiliki -> refund 28.875 (bukan 8.085)", async () => {
+  it("H2 roti gratis gagal (nothing_left), lalu kopi gagal: roti tidak dihitung tetap dimiliki -> 28.875 dipotong ke bagian kopi 19.425", async () => {
     const paid = await paidPromoOrder();
     const roti = await approvedRefund(paid.roti.id, 18_000);
     await deliver(roti.event);
     expect(await issueRefunds(roti.issueId)).toEqual([]);
 
+    // With the roti kept out the kopi recompute is 28.875, over the kopi's
+    // share 25.000 x 42.735 / 55.000 = 19.425: capped at the share (legend-wpn5v).
     const kopi = await approvedRefund(paid.kopi.id, 25_000);
     await deliver(kopi.event);
     expect(
       (await issueRefunds(kopi.issueId)).map((row) => row.amount_idr),
-    ).toEqual([28_875]);
+    ).toEqual([19_425]);
+    const cut = await auditRows(kopi.issueId, "order_issue.refund_shortfall");
+    expect(cut).toHaveLength(1);
+    expect(JSON.stringify(cut[0])).toContain("roomCutIdr");
     const refunded = await w.outboxRows("order.refunded", paid.order.id);
     expect(refunded).toHaveLength(1);
     expect(
-      orderRefundedPayloadSchema.parse(refunded[0]!.event.payload),
-    ).toMatchObject({
-      amountIdr: 28_875,
-      grossSalesIdr: 25_000,
-      discountIdr: 0,
-      serviceChargeIdr: 1_250,
-      pbjtIdr: 2_625,
-    });
-    expect(await application(paid.order.id)).toMatchObject({
-      refunded_subtotal_idr: 43_000,
-      refunded_paid_idr: 25_000,
-    });
+      orderRefundedPayloadSchema.parse(refunded[0]!.event.payload).amountIdr,
+    ).toBe(19_425);
   });
 });
 
 describe("legend-h1dyy dua item gagal diselesaikan sebelum event mana pun berjalan", () => {
-  it("kopi lalu roti: event kopi merefund barisnya saja (8.085), event roti lalu 20.790; total 28.875", async () => {
+  it("kopi lalu roti: event kopi merefund barisnya saja (8.085), event roti 20.790 dipotong ke bagian barisnya 13.986; total 22.071", async () => {
     const paid = await paidPromoOrder();
     // Both resolved before either refund event runs.
     const kopi = await approvedRefund(paid.kopi.id, 25_000);
@@ -444,20 +434,16 @@ describe("legend-h1dyy dua item gagal diselesaikan sebelum event mana pun berjal
     ).toEqual([8_085]);
     expect((await application(paid.order.id)).refunded_paid_idr).toBe(7_000);
 
-    // The roti event then refunds its own line: kept teh only, goods 18.000.
+    // The roti event then recomputes 20.790 (kept teh only, goods 18.000), over
+    // the roti's share 13.986: capped at the share (legend-wpn5v).
     await deliver(roti.event);
     expect(
       (await issueRefunds(roti.issueId)).map((row) => row.amount_idr),
-    ).toEqual([20_790]);
-    expect(await application(paid.order.id)).toMatchObject({
-      refunded_subtotal_idr: 43_000,
-      refunded_paid_idr: 25_000,
-    });
-    // Same total as the two refunds one after the other (H2): 28.875.
+    ).toEqual([13_986]);
     const refunded = (await w.outboxRows("order.refunded", paid.order.id)).map(
       (row) => orderRefundedPayloadSchema.parse(row.event.payload),
     );
-    expect(refunded.reduce((sum, row) => sum + row.amountIdr, 0)).toBe(28_875);
+    expect(refunded.reduce((sum, row) => sum + row.amountIdr, 0)).toBe(22_071);
   });
 });
 

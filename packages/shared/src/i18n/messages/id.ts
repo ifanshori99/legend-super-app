@@ -1909,6 +1909,20 @@ export const id = {
       noRefundable:
         "Tidak ada pembayaran lunas yang masih bisa direfund saat ini.",
       reasonRequired: "Tulis alasan refund.",
+      refusal: {
+        overOrderRoom:
+          "Refund ini ditolak: tamu sudah menerima voucher atau pengembalian lain untuk pesanan yang sama, sehingga total yang kembali akan melebihi yang dibayar. Kurangi nominal atau selesaikan lewat voucher/pengembalian yang sudah ada.",
+        inPosSale:
+          "Pembayaran ini masih menanggung penjualan di POS. Refund penjualan itu di POS dulu.",
+        inQrSale:
+          "Pembayaran ini masih menanggung pesanan QR yang sudah dikirim ke dapur, jadi tidak bisa direfund dari sini.",
+        sourceDocument:
+          "Pembayaran ini milik dokumen penjualan. Refund dari modul pemiliknya.",
+        depositForfeited:
+          "Deposit reservasi sudah hangus, jadi hanya sisa lainnya yang bisa direfund. Kurangi nominal.",
+        depositInUse:
+          "Deposit reservasi dipakai pada tagihan meja. Kurangi nominal atau tunggu tagihan selesai.",
+      },
     },
     unallocated: {
       title: "Dana belum teralokasi",

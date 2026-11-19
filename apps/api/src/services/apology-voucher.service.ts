@@ -59,6 +59,7 @@ import { appendPromoEvent, hashPromoCode } from "./crm-promo-engine.ts";
 import { promoIdempotentCommand } from "./crm-promo-idempotency.ts";
 import type { Tx } from "./menu-internals.ts";
 import { assertLineNotManuallyRefunded } from "./order-issue-manual-refund.ts";
+import { voucherRoomIdr } from "./order-voucher-room.ts";
 import { accessSnapshotInTransaction } from "./permission-resolver.ts";
 import { openApprovalRequest } from "./platform-approval.service.ts";
 
@@ -876,6 +877,35 @@ export async function issueApologyVoucherForStaff(
         "CONFLICT",
         "Laporan ini sudah diselesaikan atau dibatalkan.",
       );
+    // legend-eajpb: the voucher of a failed-item report never takes the money
+    // handed back past what the guest paid. Lock order: the issue lock above,
+    // then this order lock (the one `assertLineNotManuallyRefunded` takes),
+    // then the room is read under it. Refused, not cut: the value is what the
+    // approval (and a replay) names.
+    if (issue !== null && orderIssueId !== null) {
+      await assertLineNotManuallyRefunded(
+        tx,
+        tenantId,
+        issue.orderId,
+        issue.orderItemId,
+      );
+      const roomIdr = await voucherRoomIdr(tx, context, {
+        orderId: issue.orderId,
+        orderItemId: issue.orderItemId,
+      });
+      if (roomIdr <= 0)
+        throw new HttpError(
+          422,
+          "APOLOGY_VOUCHER_NOTHING_DUE",
+          "Pesanan ini sudah tidak punya sisa dana yang bisa dijadikan voucher maaf.",
+        );
+      if (input.valueIdr > roomIdr)
+        throw new HttpError(
+          422,
+          "APOLOGY_VOUCHER_OVER_ROOM",
+          `Nilai voucher melebihi sisa dana pesanan ini, maks Rp${new Intl.NumberFormat("id-ID").format(roomIdr)}.`,
+        );
+    }
 
     let approvalRequestId: string | null = input.approvalRequestId ?? null;
     if (approvalRequestId !== null) {

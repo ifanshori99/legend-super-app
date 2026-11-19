@@ -45,6 +45,7 @@ import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
+import { assertChargeChainBudget, assertOrderBudget } from "./order-given.ts";
 import { auditCharge, lockChargeChain } from "./order-recovery-charge.ts";
 import { recoveryChargeRefundSplitFromRemaining } from "./order-recovery-refund-amount.ts";
 import { lockIntentsForFact } from "./payment-refund-fact-time.ts";
@@ -188,6 +189,16 @@ export async function refundPaidChargeInTx(
     .returning();
   if (!inserted) throw new Error("Charge refund insert returned no row");
   const row = await openRefundChainSafely(tx, context, inserted, at);
+  // 1131: the one order budget (vouchers, POS and ORD-09 refunds count);
+  // under the order lock of lockChargeChain, the throw rolls the row back.
+  await assertOrderBudget(tx, tenantId, charge.orderId);
+  // 1145: and the swap chain of the charge's item.
+  await assertChargeChainBudget(
+    tx,
+    tenantId,
+    charge.orderId,
+    charge.orderIssueId,
+  );
 
   await recordAudit(
     tx,

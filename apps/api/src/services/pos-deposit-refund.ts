@@ -44,6 +44,33 @@ export async function depositRefundedOfOrder(
   return rows.reduce((total, row) => total + Number(row.amountIdr), 0);
 }
 
+/** Deposit part each POS refund of the order released, keyed by refund id. */
+export async function depositRefundedByPosRefund(
+  tx: Tx,
+  context: ScopedTenantContext,
+  orderId: string,
+): Promise<Map<string, number>> {
+  const rows = await tx
+    .select({
+      posRefundId: posDepositRefunds.posRefundId,
+      amountIdr: posDepositRefunds.amountIdr,
+    })
+    .from(posDepositRefunds)
+    .where(
+      and(
+        eq(posDepositRefunds.tenantId, context.tenant.tenantId),
+        eq(posDepositRefunds.orderId, orderId),
+      ),
+    );
+  const byRefund = new Map<string, number>();
+  for (const row of rows)
+    byRefund.set(
+      row.posRefundId,
+      (byRefund.get(row.posRefundId) ?? 0) + Number(row.amountIdr),
+    );
+  return byRefund;
+}
+
 /** Source fact lock precedes approval and the immutable native return row. */
 export async function depositRefundFactTime(
   tx: Tx,

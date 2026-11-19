@@ -150,6 +150,56 @@ async function paidRotiRefund() {
   return { ...paid, ...approved };
 }
 
+/** Report + approved refund approval + the resolve call, whatever its answer. */
+async function refusedRefund(itemId: string, lineTotalIdr: number) {
+  const reported = await w.report(itemId);
+  expect(reported.status).toBe(201);
+  const issueId = reported.body.data.id as string;
+  const approvalId = await w.insertApproval({
+    actionType: "refund",
+    objectType: "order_issue",
+    objectId: issueId,
+    amountIdr: lineTotalIdr,
+    status: "approved",
+    requestedBy: w.floorStaff.userId,
+  });
+  const resolved = await w.staffPost(
+    w.supervisor,
+    `/api/order-issues/${issueId}/resolve`,
+    {
+      resolution: "manual_refund",
+      approvalRequestId: approvalId,
+      reason: REASON,
+    },
+  );
+  return { issueId, approvalId, resolved };
+}
+
+function expectRoomRefusal(resolved: { status: number; body: unknown }) {
+  expect(resolved.status, JSON.stringify(resolved.body)).toBe(422);
+  expect(
+    (resolved.body as { error?: { code?: string } }).error?.code,
+    JSON.stringify(resolved.body),
+  ).toBe("REFUND_OVER_ORDER_ROOM");
+}
+
+async function expectIssueNotResolved(issueId: string) {
+  const { rows } = await owner.query<{
+    status: string;
+    resolution: string | null;
+  }>(
+    "SELECT status, resolution FROM order_issues WHERE tenant_id = $1 AND id = $2",
+    [w.tenant.tenantId, issueId],
+  );
+  expect(rows[0], "issue is not resolved").toMatchObject({
+    status: "open",
+    resolution: null,
+  });
+  expect(
+    await w.outboxRows("order_issue.manual_refund_approved", issueId),
+  ).toHaveLength(0);
+}
+
 async function intentIdOf(orderId: string): Promise<string> {
   const { rows } = await owner.query<{ payment_intent_id: string | null }>(
     "SELECT payment_intent_id FROM orders WHERE tenant_id = $1 AND id = $2",
@@ -905,7 +955,9 @@ describe("legend-94q2l cabang 4: intent belum settled", () => {
 // ---- shortfall and nothing left --------------------------------------------
 
 describe("legend-94q2l selisih dan sisa habis (cabang 5)", () => {
-  it("room lebih kecil dari wanted: refund dipotong ke room, selisih diaudit, komponen order.refunded ikut diskalakan", async () => {
+  // 1131 (CTO rule "422, never clamped"): an ORD-09 refund that does not fit the order's
+  // room is refused when it is resolved; it is never cut to the room.
+  it("room lebih kecil dari wanted: resolve ditolak 422 REFUND_OVER_ORDER_ROOM, issue tidak selesai, tanpa refund dan tanpa order.refunded", async () => {
     const paid = await w.paidOrder();
     const intentId = await intentIdOf(paid.order.id);
     // Another issue of this order already released 75.000: room = 90.090 - 75.000 = 15.090.
@@ -916,31 +968,15 @@ describe("legend-94q2l selisih dan sisa habis (cabang 5)", () => {
       status: "pending",
       orderIssueId: kopiIssue,
     });
-    const roti = await approvedRefund(paid.roti.id, PRICES.roti);
+    const refused = await refusedRefund(paid.roti.id, PRICES.roti);
 
-    await deliver(roti.event);
-
-    const refunds = await issueRefunds(roti.issueId);
-    expect(refunds).toHaveLength(1);
-    expect(refunds[0]!.amount_idr).toBe(15_090);
-    await onlyAudit(roti.issueId, "order_issue.refund_shortfall");
-    expect(await auditCount(roti.issueId, "order_issue.refund_blocked")).toBe(
-      0,
-    );
-
-    const events = await orderRefundedEvents(paid.order.id);
-    expect(events).toHaveLength(1);
-    const payload = events[0]!.event.payload as Record<string, unknown>;
-    expect(() => orderRefundedPayloadSchema.parse(payload)).not.toThrow();
-    // wanted 20.790 scaled by 15.090 / 20.790, gross is the rest.
-    expect(payload).toMatchObject({
-      amountIdr: 15_090,
-      refundGatewayIdr: 15_090,
-      grossSalesIdr: 13_065,
-      discountIdr: 0,
-      serviceChargeIdr: 653,
-      pbjtIdr: 1_372,
-    });
+    expectRoomRefusal(refused.resolved);
+    await expectIssueNotResolved(refused.issueId);
+    expect(await issueRefunds(refused.issueId)).toHaveLength(0);
+    expect(await orderRefundedEvents(paid.order.id)).toHaveLength(0);
+    expect(await idempotencyRow(refused.issueId)).toHaveLength(0);
+    // The money that already left stays the only refund of the order.
+    expect(await issueRefunds(kopiIssue)).toHaveLength(1);
   });
 
   it("hanya jumlah terbesar per issue yang dihitung sebagai dilepas (refund gagal + refund baru untuk issue yang sama)", async () => {
@@ -971,7 +1007,7 @@ describe("legend-94q2l selisih dan sisa habis (cabang 5)", () => {
     );
   });
 
-  it("tidak ada sisa (room 0): refund_blocked nothing_left, tanpa refund dan tanpa order.refunded", async () => {
+  it("tidak ada sisa (room 0): resolve ditolak 422 REFUND_OVER_ORDER_ROOM, issue tidak selesai, tanpa refund dan tanpa order.refunded", async () => {
     const paid = await w.paidOrder();
     const intentId = await intentIdOf(paid.order.id);
     const kopiIssue = (await w.report(paid.kopi.id)).body.data.id as string;
@@ -981,16 +1017,13 @@ describe("legend-94q2l selisih dan sisa habis (cabang 5)", () => {
       status: "pending",
       orderIssueId: kopiIssue,
     });
-    const roti = await approvedRefund(paid.roti.id, PRICES.roti);
+    const refused = await refusedRefund(paid.roti.id, PRICES.roti);
 
-    await deliver(roti.event);
-
-    expect(await issueRefunds(roti.issueId)).toHaveLength(0);
+    expectRoomRefusal(refused.resolved);
+    await expectIssueNotResolved(refused.issueId);
+    expect(await issueRefunds(refused.issueId)).toHaveLength(0);
     expect(await orderRefundedEvents(paid.order.id)).toHaveLength(0);
-    expect(await idempotencyRow(roti.issueId)).toHaveLength(0);
-    expect(await onlyAudit(roti.issueId, "order_issue.refund_blocked")).toMatch(
-      /"blockedReason":\s*"nothing_left"/,
-    );
+    expect(await idempotencyRow(refused.issueId)).toHaveLength(0);
   });
 
   it("refund issue lain yang gagal (status failed, alasan apa pun) tidak dihitung dilepas: penjualan menahan uangnya lagi (legend-iu91r)", async () => {

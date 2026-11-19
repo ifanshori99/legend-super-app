@@ -389,6 +389,59 @@ type SeedTender = {
 };
 
 /** create -> submit -> seed captured tenders -> complete. */
+/**
+ * A really paid gateway payment (link, paid intent, evidence) for a POS tender to name.
+ * legend-1116: a tender naming an intent that does not exist (or is not paid) is not
+ * proof of money received, so the fixture must pay for real.
+ */
+async function seedPaidIntent(
+  client: { query: (sql: string, params: unknown[]) => Promise<unknown> },
+  tenantId: string,
+  outletId: string,
+  amountIdr: number,
+): Promise<string> {
+  const linkId = randomUUID();
+  const intentId = randomUUID();
+  await client.query(
+    `INSERT INTO payment_links
+       (id, tenant_id, outlet_id, token_hash, reference, subtotal_idr, total_idr, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $6, '1116-fixture')`,
+    [
+      linkId,
+      tenantId,
+      outletId,
+      randomUUID().replaceAll("-", "").padEnd(64, "0"),
+      `F1116-${linkId.slice(0, 8)}`,
+      amountIdr,
+    ],
+  );
+  await client.query(
+    `INSERT INTO payment_intents
+       (id, tenant_id, outlet_id, payment_link_id, method, provider, amount_idr,
+        idempotency_key, status, instructions, expires_at, paid_at, provider_ref)
+     VALUES ($1, $2, $3, $4, 'qris', 'doit', $5, $6, 'paid',
+             '{"method":"qris","qrPayload":"00020101021226FIX","issuer":null}',
+             now() + interval '1 hour', now(), $7)`,
+    [
+      intentId,
+      tenantId,
+      outletId,
+      linkId,
+      amountIdr,
+      `f1116-${intentId}`,
+      `FIX-${intentId.slice(0, 12)}`,
+    ],
+  );
+  await client.query(
+    `INSERT INTO payment_evidence
+       (tenant_id, outlet_id, payment_intent_id, provider, provider_ref, method,
+        source, amount_idr, received_at)
+     VALUES ($1, $2, $3, 'doit', $4, 'qris', 'verified_webhook', $5, now())`,
+    [tenantId, outletId, intentId, `FIXEV-${intentId.slice(0, 12)}`, amountIdr],
+  );
+  return intentId;
+}
+
 async function completedSaleWith(
   seed: (totalIdr: number) => SeedTender[],
 ): Promise<{ orderId: string; totalIdr: number }> {
@@ -412,6 +465,15 @@ async function completedSaleWith(
           : tender.method === "points"
             ? "manual"
             : "doit";
+      const intentId =
+        provider === "doit"
+          ? await seedPaidIntent(
+              client,
+              tenant.tenantId,
+              tenant.outletId,
+              tender.amountIdr,
+            )
+          : null;
       await client.query(
         `INSERT INTO pos_order_tenders
            (tenant_id, outlet_id, order_id, method, provider, amount_idr,
@@ -428,7 +490,7 @@ async function completedSaleWith(
           cash ? tender.amountIdr : null,
           cash ? 0 : null,
           tender.method === "points" ? tender.amountIdr / 100 : null,
-          provider === "doit" ? randomUUID() : null,
+          intentId,
           provider === "edc" ? `BANKREF-${randomUUID().slice(0, 8)}` : null,
         ],
       );

@@ -212,6 +212,25 @@ export function payoutErrorKey(code: string): MessageKey | null {
   return PAYOUT_ERROR_KEYS[code] ?? null;
 }
 
+/**
+ * Refusals the API gives when a finance refund is requested while the money is
+ * still held by an order, a sale, or a deposit (payment-admin.service.ts
+ * createRefund). The server text is English; the screen shows these instead.
+ */
+const REFUND_REFUSAL_KEYS: Record<string, MessageKey> = {
+  REFUND_OVER_ORDER_ROOM: "paymentAdmin.refunds.refusal.overOrderRoom",
+  REFUND_INTENT_IN_POS_SALE: "paymentAdmin.refunds.refusal.inPosSale",
+  REFUND_INTENT_IN_QR_SALE: "paymentAdmin.refunds.refusal.inQrSale",
+  REFUND_SOURCE_DOCUMENT: "paymentAdmin.refunds.refusal.sourceDocument",
+  REFUND_DEPOSIT_FORFEITED: "paymentAdmin.refunds.refusal.depositForfeited",
+  REFUND_DEPOSIT_IN_USE: "paymentAdmin.refunds.refusal.depositInUse",
+};
+
+/** Catalog key for a known create-refund refusal code; unknown codes: null. */
+export function refundRefusalKey(code: string): MessageKey | null {
+  return REFUND_REFUSAL_KEYS[code] ?? null;
+}
+
 /** Refund list filter: the usual statuses plus the quarantine queue. */
 export type RefundListFilter = RefundView["status"] | "quarantined" | "all";
 

@@ -54,7 +54,16 @@ import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { HttpError } from "../lib/http-error.ts";
+import {
+  assertLineFits,
+  assertOrderBudget,
+  lineRefundRoomIdr,
+  orderGivenOf,
+  orderRoomIdr,
+  trimToLineRoomIdr,
+} from "./order-given.ts";
 import { orderPromoPartialRefundPort } from "./order-promo-refund.ts";
+import { orderMoneyBackLaneOf } from "./order-refund-lane.ts";
 import { OrderRevenueMismatch, orderRevenueSplit } from "./order-revenue.ts";
 import {
   recoveryRefundSplit,
@@ -89,10 +98,89 @@ const AUDIT_SAFE_FIELDS = [
   "wantedIdr",
   "amountIdr",
   "shortfallIdr",
+  "roomCutIdr",
   "status",
   "blockedReason",
   "failureReason",
 ];
+
+/**
+ * 1131 (ORD-09 budget): resolve-time gate of a failed-item manual refund. Locks
+ * the order row (the caller holds the issue lock already: issue -> orders, the
+ * consumer's sequence) and refuses with 422 `REFUND_OVER_ORDER_ROOM` when the
+ * refund could give back more than the guest paid for the order, or more than
+ * the failed line still holds (Q25 per item, `assertLineFits`). The exact
+ * amount is only known when the consumer splits it (promo recompute), so the
+ * bound is the pro-rata amount (`recoveryRefundSplit` without promo) capped at
+ * what the guest paid. The consumer then CAPS the exact amount at min(line
+ * room, order room) like a system voucher; this gate only refuses an amount
+ * over that room by more than the rounding trim. `orderItemId` names the failed line for the per-line
+ * check; without it only the order budget is checked.
+ */
+export async function lockOrderAndAssertManualRefundFits(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+  orderId: string,
+  lineTotalIdr: number,
+  orderItemId?: string,
+): Promise<void> {
+  const [order] = await tx
+    .select()
+    .from(orders)
+    .where(and(eq(orders.tenantId, tenantId), eq(orders.id, orderId)))
+    .for("update");
+  const given = await orderGivenOf(tx, tenantId, orderId);
+  let wantedIdr = Math.min(lineTotalIdr, given.paidIdr);
+  if (order) {
+    // Line totals other issues of the order already refunded (cumulative
+    // rounding, as the consumer reads them).
+    const prior = await tx.execute(sql`
+      SELECT coalesce(sum(m.line_total), 0)::text AS prior_lines
+        FROM (
+        SELECT max(oi.line_total_idr) AS line_total
+          FROM payment_refunds r
+          JOIN order_issues i
+            ON i.tenant_id = r.tenant_id AND i.id = r.order_issue_id
+          LEFT JOIN order_items oi
+            ON oi.tenant_id = i.tenant_id AND oi.id = i.order_item_id
+         WHERE r.tenant_id = ${tenantId}
+           AND i.order_id = ${ulidToUuid(orderId)}::uuid
+         GROUP BY r.order_issue_id
+        HAVING coalesce(bool_or(r.status <> 'failed'), false)) m
+    `);
+    try {
+      const split = recoveryRefundSplit({
+        order,
+        lineTotalIdr,
+        priorLinesIdr: Number(String(prior.rows[0]?.prior_lines ?? "0")),
+        releasedIdr: 0,
+      });
+      wantedIdr = Math.min(split.amountIdr, given.paidIdr);
+    } catch (error) {
+      // Amounts that fail their tax-mode identity: the consumer blocks them;
+      // here the line total stays the (larger) bound.
+      if (!(error instanceof OrderRevenueMismatch)) throw error;
+    }
+  }
+  // The consumer files min(line room, order room); an amount over it by a few
+  // IDR is rounding and passes (`trimToLineRoomIdr`), over by more is refused.
+  const orderRoomIdr = Math.max(0, given.paidIdr - given.givenIdr);
+  if (trimToLineRoomIdr(wantedIdr, orderRoomIdr) === null)
+    throw new HttpError(
+      422,
+      "REFUND_OVER_ORDER_ROOM",
+      "This would give back more than the guest paid for the order.",
+    );
+  if (orderItemId !== undefined)
+    await assertLineFits(
+      tx,
+      tenantId,
+      orderId,
+      orderItemId,
+      wantedIdr,
+      orderRoomIdr,
+    );
+}
 
 const REVERSAL_EVENT = "order_issue.refund_reversal_requested";
 const REVERSAL_DESTINATION = "cloud-sync";
@@ -231,6 +319,15 @@ export async function deliverOrderRecoveryRefundEvent(
       { id: issue.id, orderId: order.id, blockedReason, ...extra },
       "Refund item gagal tidak dibuka",
     );
+
+  // 0. One money-back lane per order (legend-aja6g, 1095): a void (cloud, edge,
+  // or an edge void still parked) or a cashier refund already settled the
+  // order. Read under the order lock above; no issue lock is added here.
+  const lane = await orderMoneyBackLaneOf(tx, tenantId, order.id);
+  if (lane !== null) {
+    await blocked(`money_back_lane_${lane}`);
+    return;
+  }
 
   // 1. A POS bill: the cashier refunds it (`refundPosOrder`).
   const [pos] = await tx
@@ -433,7 +530,7 @@ export async function deliverOrderRecoveryRefundEvent(
       // (nothing_left, rejected, ...): the item of every other manual_refund
       // issue this consumer already processed is out of the kept lines, this
       // one included. Processed = it has a refund row (any status) or a
-      // `refund_blocked` audit row for nothing_left (its recompute ran). A
+      // `refund_blocked` audit row for nothing_left or over_order_room (its recompute ran). A
       // promo_state_mismatch issue is not: its recompute never ran, so the
       // promo still holds its line and a later refund must not pay it. An
       // issue whose event has not run yet keeps its item here: its own event
@@ -471,7 +568,7 @@ export async function deliverOrderRecoveryRefundEvent(
                 others.map((id) => sql`${id}`),
                 sql`, `,
               )})`,
-              sql`${auditLogs.event}->'maskedChanges'->'after'->>'blockedReason' = 'nothing_left'`,
+              sql`${auditLogs.event}->'maskedChanges'->'after'->>'blockedReason' IN ('nothing_left', 'over_order_room')`,
             ),
           );
         for (const row of blockedIssues) processed.add(row.id);
@@ -557,6 +654,41 @@ export async function deliverOrderRecoveryRefundEvent(
     }
     throw error;
   }
+  // 1131/1145: the one money-out budget, like a system voucher: the amount is
+  // CAPPED at min(failed line's room, order room), read under the order lock
+  // (issue -> orders -> intent), never blocked while the room is above 0. The cut
+  // goes in the audit row (`roomCutIdr`). No room left is a business condition:
+  // no refund is filed and the audit row says why (a retry gives the same answer).
+  let roomCutIdr = 0;
+  if (split.amountIdr > 0) {
+    const lineRoomIdr = await lineRefundRoomIdr(
+      tx,
+      tenantId,
+      order.id,
+      issue.orderItemId,
+    );
+    const capIdr = Math.min(
+      lineRoomIdr ?? 0,
+      await orderRoomIdr(tx, tenantId, order.id),
+    );
+    if (capIdr <= 0) {
+      await blocked("over_order_room", { wantedIdr: split.amountIdr });
+      return;
+    }
+    if (split.amountIdr > capIdr) {
+      roomCutIdr = split.amountIdr - capIdr;
+      split = recoveryRefundSplit({
+        order,
+        lineTotalIdr: line.lineTotalIdr,
+        priorLinesIdr,
+        releasedIdr: Math.max(
+          releasedIdr,
+          order.totalIdr - order.depositAppliedIdr - capIdr,
+        ),
+        ...(promo === undefined ? {} : { promo }),
+      });
+    }
+  }
   if (split.shortfallIdr > 0)
     await auditOnce(
       AUDIT_SHORTFALL,
@@ -567,6 +699,7 @@ export async function deliverOrderRecoveryRefundEvent(
         wantedIdr: split.wantedIdr,
         amountIdr: split.amountIdr,
         shortfallIdr: split.shortfallIdr,
+        ...(roomCutIdr > 0 ? { roomCutIdr } : {}),
       },
       "Refund item gagal dipotong sisa yang bisa dikembalikan",
     );
@@ -632,6 +765,8 @@ export async function deliverOrderRecoveryRefundEvent(
         amountIdr: split.amountIdr,
         at,
       });
+      // 1131: post-check under the order lock; a throw rolls the refund back.
+      await assertOrderBudget(tx, tenantId, order.id);
       // The goods part of the refund goes on the promo ledger, on its
       // item-price basis (`goodsIdr`: tax included for inclusive prices).
       // Only after a recompute that adjusted the promo (never a released
@@ -987,6 +1122,57 @@ export async function refileRecoveryRefundAfterFailure(
     )
     .limit(1);
   if (live) return;
+  // One money-back lane per order (legend-aja6g, 1095): a refile pays the guest
+  // again, so a void or cashier refund that settled the order blocks it. Plain
+  // reads, no issue or order lock: the caller holds intent, fund, refund, and
+  // the ORD-09 consumer locks issue, order, intent, so locks taken here would
+  // invert that sequence. Safe without them: void and cashier refund refuse
+  // while any non-failed ORD-09 row exists, and this refund goes failed to
+  // refiled atomically in this transaction.
+  const [laneIssue] = await tx
+    .select({ orderId: orderIssues.orderId })
+    .from(orderIssues)
+    .where(
+      and(eq(orderIssues.tenantId, tenantId), eq(orderIssues.id, issueId)),
+    );
+  const lane = laneIssue
+    ? await orderMoneyBackLaneOf(tx, tenantId, laneIssue.orderId)
+    : null;
+  if (lane !== null) {
+    await auditIssue(
+      AUDIT_REFILE_BLOCKED,
+      {
+        id: issueId,
+        refundId: failedRefund.id,
+        blockedReason: `money_back_lane_${lane}`,
+        failureReason,
+      },
+      "Refund item gagal tidak diajukan ulang: pesanan sudah dikembalikan lewat jalur lain",
+    );
+    await settleFinalFailure();
+    return;
+  }
+  // 1131: a refile pays the guest again; a voucher minted since the first
+  // filing may have used the room. Read-only (no order lock, see above): the
+  // refile does not fit, so it is a final failure, never a silent cut.
+  if (
+    laneIssue &&
+    failedRefund.amountIdr >
+      (await orderRoomIdr(tx, tenantId, laneIssue.orderId))
+  ) {
+    await auditIssue(
+      AUDIT_REFILE_BLOCKED,
+      {
+        id: issueId,
+        refundId: failedRefund.id,
+        blockedReason: "over_order_room",
+        failureReason,
+      },
+      "Refund item gagal tidak diajukan ulang: melebihi sisa dana pesanan",
+    );
+    await settleFinalFailure();
+    return;
+  }
   // This refund is already `failed` in this transaction, so it counts.
   const [failures] = await tx
     .select({ count: sql<number>`count(*)::int` })

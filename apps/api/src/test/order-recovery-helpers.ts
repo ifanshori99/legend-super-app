@@ -666,6 +666,7 @@ export async function createWorld() {
     seat,
     placeOrder,
     paidOrder,
+    payVerified,
     unpaidOrder,
     openBillOrder,
     outboxRows,

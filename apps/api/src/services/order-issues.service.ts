@@ -78,9 +78,11 @@ import type { Tx } from "./menu-internals.ts";
 import { accessSnapshotInTransaction } from "./permission-resolver.ts";
 import {
   assertLineHasNoOtherCompensation,
+  assertLineNotManuallyRefunded,
   assertNoLiveTicketOnLine,
   manualRefundAmountIdr,
 } from "./order-issue-manual-refund.ts";
+import { voucherRoomIdr } from "./order-voucher-room.ts";
 import { consumeApproval } from "./pos-order-support.ts";
 import { estimateDeductionCostIdr } from "./recipe-deduction.service.ts";
 import {
@@ -528,6 +530,48 @@ async function storeOrderIssue(
       !(await isTenantStaff(tx, context, input.employeeId, now))
     )
       throw unprocessable("Staf yang dicatat bukan staf tenant ini.");
+    // legend-eajpb: a voucher given with the report is what the order gives
+    // back too; it must fit what the guest paid and was not yet given (order
+    // and line). The order row lock first (no issue exists yet, so issue-then-
+    // order is not at stake), the voucher row lock after it in
+    // `assertResolutionTargets`; the room is read under the order lock.
+    if (input.resolution === "voucher" && input.voucherId !== null) {
+      await assertLineNotManuallyRefunded(
+        tx,
+        tenantId,
+        orderId,
+        input.orderItemId,
+      );
+      const [attached] = await tx
+        .select({ valueIdr: vouchers.valueIdr })
+        .from(vouchers)
+        .where(
+          and(
+            eq(vouchers.tenantId, tenantId),
+            eq(vouchers.id, input.voucherId),
+          ),
+        )
+        .limit(1);
+      if (attached) {
+        const roomIdr = await voucherRoomIdr(tx, context, {
+          orderId,
+          orderItemId: input.orderItemId,
+        });
+        if (roomIdr <= 0)
+          throw new HttpError(
+            422,
+            "APOLOGY_VOUCHER_NOTHING_DUE",
+            "Pesanan ini sudah tidak punya sisa dana yang bisa dijadikan voucher maaf.",
+          );
+        // A voucher without a fixed value cannot be checked: refused.
+        if (attached.valueIdr === null || attached.valueIdr > roomIdr)
+          throw new HttpError(
+            422,
+            "APOLOGY_VOUCHER_OVER_ROOM",
+            `Nilai voucher melebihi sisa dana pesanan ini, maks Rp${new Intl.NumberFormat("id-ID").format(roomIdr)}.`,
+          );
+      }
+    }
     await assertResolutionTargets(tx, context, outletId, input, now);
 
     const lineVoided = line.status === "voided" || line.posVoidedAt !== null;
