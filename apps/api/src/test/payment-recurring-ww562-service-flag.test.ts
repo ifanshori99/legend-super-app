@@ -4,24 +4,36 @@
 // docs/briefs/1164-payout-recurring-approval.md (Kartu B) and the route-level
 // switch test payment-recurring-doit-off.test.ts, NOT from the implementation.
 //
-// Rule pinned: with the flag off, a service call WITHOUT injected deps (the
-// shape every real caller uses) is refused with `code` SERVICE_UNAVAILABLE,
-// DOIT receives no HTTP request, and nothing changes in the database.
+// Rule pinned (founder decision, brief ronde 2, Kartu D): with the flag off, a
+// service call WITHOUT injected deps (the shape every real caller uses) is
+// refused with `code` SERVICE_UNAVAILABLE for create (start), resume and
+// charging, so DOIT receives no HTTP request and nothing changes locally. A STOP
+// (pause, cancel) is always allowed because it only limits payment: it still
+// reaches DOIT. If DOIT fails during a stop, the subscription is parked as
+// `cancel_pending` locally and no new charge happens for it.
 //
 // ASSUMPTIONS
-// - "Refused" covers every service function that talks to DOIT: start, resume,
-//   pause and cancel. The route switch answers 503 for cancel too, and the
-//   brief says to restrict when in doubt, so the service does the same. (The
-//   REC-19 rule "pause/cancel still reach DOIT after the provider was withdrawn
-//   from the tenant plan" is about the plan, not this kill switch.)
+// - The old decision "pause/cancel are refused too" is replaced by the above.
+// - `cancel_pending` is NOT in the DB CHECK constraint nor in the shared status
+//   enum (recurringSubscriptionStatusSchema), and the brief forbids a migration.
+//   The brief says to use an existing status mechanism and report. The closest
+//   existing one is `needs_reconcile` (never has access, a person or retry
+//   resolves it, `reconcileReason` carries a code). So a failed stop is accepted
+//   as EITHER status `cancel_pending` OR status `needs_reconcile` with a
+//   reconcileReason that mentions "cancel" (case-insensitive). Any other
+//   outcome (still `active`/`paused`, or `cancelled` without DOIT confirming)
+//   fails: the subscription must not look healthy after a failed stop.
+// - The same parking rule is applied to pause and cancel ("stop" path).
+// - Whether the service throws or returns on a DOIT failure is not pinned.
+// - "No new charge" is observed as: no subscription_invoices row appears, DOIT
+//   gets no resume/start call, and a later resume (flag on) is refused.
 // - The flag is `env.DOIT_RECURRING_ENABLED` (boolean, mutable like the route
-//   test does). It is set through a cast so this file typechecks whether or not
-//   the property is declared yet; the cast can go once the flag is on the base.
+//   test does), set through a cast so this file typechecks either way.
 // - "No DOIT call" is observed on a real local HTTP stub the integration's
 //   `baseUrl` points at (the same technique as REC-18), so the check does not
-//   depend on any internal seam.
-// - The control (flag on, same fixtures, reaches the stub) is what makes the
-//   refusals meaningful: the tests fail only because the gate is missing.
+//   depend on any internal seam. The stub can be told to fail stop calls.
+// - The controls (flag on, same fixtures, reaches the stub) make the refusals
+//   meaningful: tests fail only because behavior is missing.
 import { randomBytes, randomUUID } from "node:crypto";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
@@ -82,6 +94,7 @@ const profileCleanups: (() => Promise<void>)[] = [];
 
 let server: http.Server;
 let requests: { method: string; path: string }[] = [];
+let failStop = false;
 const sockets = new Set<import("node:net").Socket>();
 const doitCalls = () => requests.filter((r) => r.path.includes("/recurring"));
 
@@ -103,6 +116,11 @@ beforeAll(async () => {
       const action = /subscriptions\/([^/]+)\/(pause|resume|cancel)$/.exec(
         req.url ?? "",
       );
+      if (action && failStop && action[2] !== "resume") {
+        res.statusCode = 500;
+        res.end(JSON.stringify({ error: "boom" }));
+        return;
+      }
       if (action) {
         const status = {
           pause: "paused",
@@ -174,6 +192,7 @@ beforeAll(async () => {
 afterEach(() => {
   flag.DOIT_RECURRING_ENABLED = wasEnabled;
   requests = [];
+  failStop = false;
 });
 
 afterAll(async () => {
@@ -366,7 +385,7 @@ const startInput = (planId: string, customerProfileId: string) => ({
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("ww562 the service refuses DOIT recurring work when DOIT_RECURRING_ENABLED is off", () => {
+describe("ww562 with DOIT_RECURRING_ENABLED off the service blocks create/resume/charge but always allows stop", () => {
   it("ww562 control: flag on, resume without injected deps reaches DOIT", async () => {
     flag.DOIT_RECURRING_ENABLED = true;
     const subId = await seedSubscription("paused");
@@ -413,23 +432,73 @@ describe("ww562 the service refuses DOIT recurring work when DOIT_RECURRING_ENAB
     expect(await statusOf(subId)).toBe("paused");
   });
 
-  it("ww562 flag off: pause is SERVICE_UNAVAILABLE, DOIT is not called, the subscription stays active", async () => {
+  it("ww562 flag off: pause still works, reaches DOIT and the subscription is paused", async () => {
     flag.DOIT_RECURRING_ENABLED = false;
     const subId = await seedSubscription("active");
-    expect(await codeOf(pauseSubscription(context(), subId, new Date()))).toBe(
-      "SERVICE_UNAVAILABLE",
-    );
-    expect(doitCalls()).toEqual([]);
-    expect(await statusOf(subId)).toBe("active");
+    const result = await pauseSubscription(context(), subId, new Date());
+    expect(result.status).toBe("paused");
+    expect(
+      doitCalls().map((r) => `${r.method} ${r.path.split("/").pop()}`),
+    ).toEqual(["POST pause"]);
+    expect(await statusOf(subId)).toBe("paused");
   });
 
-  it("ww562 flag off: cancel is SERVICE_UNAVAILABLE, DOIT is not called, the subscription stays active", async () => {
+  it("ww562 flag off: cancel still works, reaches DOIT and the subscription is cancelled", async () => {
     flag.DOIT_RECURRING_ENABLED = false;
     const subId = await seedSubscription("active");
-    expect(await codeOf(cancelSubscription(context(), subId, new Date()))).toBe(
-      "SERVICE_UNAVAILABLE",
-    );
-    expect(doitCalls()).toEqual([]);
-    expect(await statusOf(subId)).toBe("active");
+    const result = await cancelSubscription(context(), subId, new Date());
+    expect(result.status).toBe("cancelled");
+    expect(
+      doitCalls().map((r) => `${r.method} ${r.path.split("/").pop()}`),
+    ).toEqual(["POST cancel"]);
+    expect(await statusOf(subId)).toBe("cancelled");
   });
+
+  for (const stop of ["cancel", "pause"] as const) {
+    it(`ww562 flag off: DOIT fails during ${stop} -> parked as cancel_pending, no new charge`, async () => {
+      flag.DOIT_RECURRING_ENABLED = false;
+      failStop = true;
+      const subId = await seedSubscription("active");
+      const run = stop === "cancel" ? cancelSubscription : pauseSubscription;
+      await run(context(), subId, new Date()).catch(() => undefined);
+
+      const { rows } = await owner.query<{
+        status: string;
+        reconcile_reason: string | null;
+      }>(
+        "SELECT status, reconcile_reason FROM payment_recurring_subscriptions WHERE id = $1",
+        [subId],
+      );
+      const { status, reconcile_reason: reason } = rows[0]!;
+      const parked =
+        status === "cancel_pending" ||
+        (status === "needs_reconcile" && /cancel/i.test(reason ?? ""));
+      expect(
+        parked,
+        `status=${status} reason=${reason ?? "null"} is not a cancel-pending state`,
+      ).toBe(true);
+
+      // No new charge: nothing but stop attempts reached DOIT, no invoice row.
+      expect(
+        doitCalls().filter((r) => !/\/(pause|cancel)$/.test(r.path)),
+      ).toEqual([]);
+      const invoices = await owner.query(
+        "SELECT id FROM subscription_invoices WHERE subscription_id = $1",
+        [subId],
+      );
+      expect(invoices.rows).toHaveLength(0);
+
+      // Even with the flag on and DOIT healthy again, the parked subscription
+      // cannot be resumed into billing.
+      flag.DOIT_RECURRING_ENABLED = true;
+      failStop = false;
+      requests = [];
+      expect(
+        await codeOf(resumeSubscription(context(), subId, new Date())),
+      ).not.toBeNull();
+      expect(doitCalls()).toEqual([]);
+      const after = await statusOf(subId);
+      expect(after).not.toBe("active");
+    });
+  }
 });
