@@ -37,6 +37,7 @@ import { idr } from "@starter/shared/core";
 import { formatMoment, methodLabelKey } from "../format";
 import {
   filterRefundList,
+  refundRefusalKey,
   refundUiLabelKey,
   refundUiState,
   refundUiTone,
@@ -49,6 +50,7 @@ import {
   useRefundablePayments,
   useRefunds,
 } from "../hooks";
+import { ApiError } from "../../../lib/api/errors.ts";
 import { newIdempotencyKey } from "../../../lib/idempotency.ts";
 
 const ALL = "all";
@@ -248,7 +250,11 @@ function CreateRefundDialog({ onClose }: { onClose: () => void }) {
           toast({ title: t("paymentAdmin.refunds.created") });
           onClose();
         },
-        onError: (error) => setErrors({ form: error.message }),
+        onError: (error) => {
+          const refusalKey =
+            error instanceof ApiError ? refundRefusalKey(error.code) : null;
+          setErrors({ form: refusalKey ? t(refusalKey) : error.message });
+        },
       },
     );
   };
