@@ -263,7 +263,9 @@ const schema = z
     // (legend-6c6). Off by default: the adapter calls /v1/recurring/*, but the
     // DOIT docs publish /v1/billing/*, so a live call would hit a path DOIT does
     // not document. While off, every request answers 503 before any DOIT call or
-    // database write. Webhook ingest and the worker are not gated. Turn on only
+    // database write, except pause and cancel (a stop only limits payment, 1164),
+    // which reach auth and the service. Webhook ingest and the worker are not
+    // gated. Turn on only
     // once the adapter paths are verified against DOIT.
     DOIT_RECURRING_ENABLED: z
       .enum(["true", "false", "1", "0"])

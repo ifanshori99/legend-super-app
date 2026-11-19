@@ -4,7 +4,7 @@
 // and keeps counting as a pending credit against GL 1102 (the cash left the
 // till, nobody may spend it twice). Its catch-up journal is impossible without
 // the run's payroll.locked journal, so finance may close it by hand: the kind
-// flips `settle_skipped` -> `settle_waived` (terminal, migration 0690), with a
+// flips `settle_skipped` -> `settle_waived` (terminal, migration 0500), with a
 // reason and an audit row.
 //
 // Round 2: the waive posts a correcting journal in the SAME transaction, so the
@@ -21,7 +21,7 @@
 // Only for a cash batch whose run has NO locked journal and NO queued
 // `payroll.locked` event. Otherwise the resolver (legend-vvzij) catches the
 // skipped posting up by itself, and a waive would drop a credit that must be
-// journaled (a bank handover is never waivable). Migration 0690 mirrors the
+// journaled (a bank handover is never waivable). Migration 0500 mirrors the
 // cash condition in the guard trigger.
 //
 // Lock order matches `recordPostingSource`: run row, batch row
@@ -132,7 +132,7 @@ export async function waiveSkippedPosting(
     );
   if (posting.kind === "settle_waived") {
     // Idempotent success only when the waive journal is really there and right
-    // (net and accounts, same check as the commit trigger, 0691). A waived row
+    // (net and accounts, same check as the commit trigger, 0501). A waived row
     // without it (written outside this service) is never reported as done.
     const replay = await tx.execute(
       sql`SELECT app.payout_waive_journal_ok(${tenantId}::uuid, ${posting.id}::uuid) AS ok`,

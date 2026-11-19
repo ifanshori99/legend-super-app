@@ -1,5 +1,5 @@
 // SO 1105 (brief 1106, ronde 6), both P1 on the trusted waive function
-// app.payout_waive_skipped(batch, posting, actor, session) of migration 0691.
+// app.payout_waive_skipped(batch, posting, actor, session) of migration 0501.
 // Written fail-first from the brief, the CTO decisions and the second-opinion
 // report (HTTP + DB surface and the exported cash guards), NOT from the
 // function or migration code. Model: the r1 waive file (world, helpers, how a

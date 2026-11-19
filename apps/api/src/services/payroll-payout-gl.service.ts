@@ -1013,7 +1013,7 @@ async function resolveOnePosting(
   if (wasSkipped && netIdr === 0) return false;
   // A legacy posting (from before 0392) has no recorded net, so the settle
   // flip is refused by the database (app.payout_settle_journal_ok fails closed,
-  // 0691). Nothing is posted and nothing flips: it stays pending/skipped with
+  // 0501). Nothing is posted and nothing flips: it stays pending/skipped with
   // its reserve held, and finance settles it manually outside the system.
   if (posting.settleNetIdr === null) {
     logger.warn(

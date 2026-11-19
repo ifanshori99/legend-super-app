@@ -472,7 +472,7 @@ const updatePosting = (postingId: string, setSql: string) =>
 /**
  * Flips the posting to settle_waived as the table owner with triggers off: the
  * only way left to reach that state without the trusted function and journal
- * (legend-1089, migration 0691). Used to test the terminal rule of the guard.
+ * (legend-1089, migration 0501). Used to test the terminal rule of the guard.
  */
 async function forceWaived(postingId: string) {
   const client = await kitOwner.connect();

@@ -1477,6 +1477,13 @@ tetap sama. Satu gerbang yang gagal menahan rilis dengan nama `legend-gwqjp<n>`
 dan jumlah barisnya; baca penjelasan tiap statement di bawah untuk
 resolusinya.
 
+Catatan keputusan (CTO, batch96): gerbang `legend-1tke7` (posting payout GL
+legacy tanpa `settle_net_idr`) kini `-- mode: info`: runner hanya mencatat
+jumlah barisnya dan tidak menahan rilis. Dari sisi uang ini aman: migrasi 0501
+menolak baris dengan net NULL dan cadangannya tetap tertahan, jadi tidak ada
+pihak yang dibayar lebih. Finance tetap menyelesaikan baris yang tercatat
+sebelum atau sesudah rilis.
+
 Aturan gerbang: baris apa pun = **blokir**. Error query (kolom atau tabel hilang,
 skema bergeser) juga = **blokir**: `ON_ERROR_STOP=1` membuat `psql` keluar dengan
 kode bukan nol, dan itu tidak boleh dibaca sebagai "nol baris" atau "N/A". Hanya

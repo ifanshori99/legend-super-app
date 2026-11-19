@@ -29,7 +29,8 @@ import { reprocessParkedRecurringEvents } from "../services/payment-webhook.serv
 export const paymentRecurringRouter = Router();
 // Kill switch (DOIT_RECURRING_ENABLED, off by default): the adapter paths
 // /v1/recurring/* are not the DOIT docs' /v1/billing/*. First in the chain and
-// read per request, so an off flag means no auth lookup, no DOIT call, no row.
+// read per request, so an off flag means no auth lookup, no DOIT call, no row
+// (except the two stop paths below).
 // Pause and cancel pass: a stop only limits payment (founder decision, brief
 // 1164 ronde 2, Kartu D); the service parks the row if DOIT fails.
 const STOP_PATH = /^\/subscriptions\/[^/]+\/(?:pause|cancel)\/?$/;
