@@ -79,6 +79,28 @@ let supplierName: string;
 let supplierUpdatedAt: string;
 let categoryIds: string[] = [];
 let legalEntityId: string;
+let rowCountsAtSessionStart: Record<string, number>;
+
+/** Row counts of the tables the refused writes aim at, for the shared tenant. */
+async function tenantRowCounts(): Promise<Record<string, number>> {
+  const counts: Record<string, number> = {};
+  for (const table of [
+    "menu_categories",
+    "suppliers",
+    "legal_entities",
+    "stations",
+    "roles",
+    "role_assignments",
+  ]) {
+    counts[table] = (
+      await db.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM ${table} WHERE tenant_id = $1`,
+        [tenantId],
+      )
+    ).rows[0]!.n;
+  }
+  return counts;
+}
 
 async function asOwnerTenant<T>(
   run: (client: PoolClient) => Promise<T>,
@@ -265,6 +287,7 @@ beforeAll(async () => {
   expect(started.status).toBe(200);
   await verifySessionMfa(tenant.email);
   support = admin.client;
+  rowCountsAtSessionStart = await tenantRowCounts();
 }, 120_000);
 
 afterAll(async () => {
@@ -276,6 +299,36 @@ afterAll(async () => {
   await db.query(
     "DELETE FROM stations WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
     [tenantId, createdStationIds],
+  );
+  // Rows made by the normal owner session in beforeAll live in the shared
+  // fixture tenant: remove them so other suites never see them (legend-5voa6).
+  await db.query(
+    "DELETE FROM menu_categories WHERE tenant_id = $1 AND id = ANY($2::uuid[])",
+    [tenantId, categoryIds],
+  );
+  await db.query("DELETE FROM suppliers WHERE tenant_id = $1 AND id = $2", [
+    tenantId,
+    supplierId,
+  ]);
+  // Creating a legal entity seeds child rows (for example account_mappings):
+  // remove only this entity's children, found through the foreign keys.
+  const children = await db.query<{ tbl: string; col: string }>(
+    `SELECT c.conrelid::regclass::text AS tbl, a.attname AS col
+       FROM pg_constraint c
+       JOIN pg_attribute a
+         ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+      WHERE c.contype = 'f'
+        AND c.confrelid = 'legal_entities'::regclass
+        AND a.attname <> 'tenant_id'`,
+  );
+  for (const { tbl, col } of children.rows)
+    await db.query(`DELETE FROM ${tbl} WHERE tenant_id = $1 AND ${col} = $2`, [
+      tenantId,
+      legalEntityId,
+    ]);
+  await db.query(
+    "DELETE FROM legal_entities WHERE tenant_id = $1 AND id = $2",
+    [tenantId, legalEntityId],
   );
   await db.query(
     "DELETE FROM support_access_grants WHERE super_admin_user_id = ANY($1::text[])",
@@ -577,5 +630,25 @@ describe("legend-hmig6 TEN-04 read_only support session refuses writes on every 
         200,
       );
     }
+  });
+});
+
+describe("TEN-04 nothing written by the read_only session", () => {
+  it("the shared tenant holds exactly the fixture rows made before the session", async () => {
+    const count = async (table: string, ids: string[]) =>
+      (
+        await db.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM ${table}
+           WHERE tenant_id = $1 AND id = ANY($2::uuid[])`,
+          [tenantId, ids],
+        )
+      ).rows[0]!.n;
+    // Every fixture row is still there, and the snapshot taken when the support
+    // session started equals the count now: no refused write left a row behind.
+    expect(await count("menu_categories", categoryIds)).toBe(2);
+    expect(await count("suppliers", [supplierId])).toBe(1);
+    expect(await count("legal_entities", [legalEntityId])).toBe(1);
+    const after = await tenantRowCounts();
+    expect(after).toEqual(rowCountsAtSessionStart);
   });
 });
