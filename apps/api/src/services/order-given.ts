@@ -58,6 +58,7 @@ import { orderIssues } from "../db/schema/kds-issues.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { providerRefundedForeignIdrSql } from "./payment-provider-refunded-foreign-sql.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { allocateRefundRowIdr } from "./order-given-history.ts";
 import type { Tx } from "./permission-resolver.ts";
 
 // 1116: the provider answered "refunded" with no sure amount -> count the
@@ -180,6 +181,8 @@ export type OrderGiven = {
   givenIdr: number;
   /** Original line id -> vouchers + live recovery refunds of its issues. */
   lineGivenIdr: Map<string, number>;
+  /** Original line id -> GROSS amount of its paid swap charges (1169 clamp room). */
+  lineChargeIdr: Map<string, number>;
   /** Maps a line (a replacement too) to the original line of its swap chain. */
   toOriginal: (lineId: string) => string;
   /** Original lines whose chain holds a swap (an issue with a replacement). */
@@ -339,6 +342,30 @@ export async function orderGivenOf(
         read(issue.refunds),
     );
   }
+  // 1169 (architect P1): the GROSS amount of the PAID swap charges, per chain.
+  // The chain keeps share + charge, so a cashier refund naming the chain may
+  // debit up to that much before the history clamp moves the rest elsewhere.
+  // Gross, not net: a later charge refund must not shrink the room an earlier
+  // POS refund was read with (the chain guard runs after that refund is
+  // recorded), or the history would be re-cut by the very refund being checked.
+  const chargeRows = await tx.execute(sql`
+    SELECT i.order_item_id::text AS item,
+           c.amount_idr::text AS gross
+      FROM order_issue_charges c
+      JOIN order_issues i
+        ON i.tenant_id = c.tenant_id AND i.id = c.order_issue_id
+     WHERE c.tenant_id = ${tenantId}
+       AND c.order_id = ${orderUuid}::uuid
+       AND c.status = 'paid'
+  `);
+  const lineChargeIdr = new Map<string, number>();
+  for (const charge of chargeRows.rows) {
+    const line = toOriginal(uuidToUlid(String(charge.item)));
+    lineChargeIdr.set(
+      line,
+      (lineChargeIdr.get(line) ?? 0) + read(charge.gross),
+    );
+  }
   const vouchersIdr = read(row?.vouchers);
   const posRefundsIdr = read(row?.pos_refunds);
   const recoveryRefundsIdr = read(row?.recovery_refunds);
@@ -350,6 +377,7 @@ export async function orderGivenOf(
     openChargesCount: read(row?.open_charges),
     givenIdr: vouchersIdr + posRefundsIdr + recoveryRefundsIdr,
     lineGivenIdr,
+    lineChargeIdr,
     toOriginal,
     swappedLines,
   };
@@ -370,14 +398,16 @@ type RefundRowLike = {
  * hold. Per original line (a replacement maps back through the swap chain):
  * its share of the bill (line total x total / subtotal, floor) less the
  * vouchers and live recovery refunds of its issues and its part of the earlier
- * POS refunds that named items (each row split over its items by value, the
- * last item taking the rest). Rows without items are covered by the order room.
+ * POS refunds that named items (1169: each row split over its named lines by
+ * largest remainder of their shares, held to each line's room, see
+ * `allocateRefundRowIdr`). Rows without items are covered by the order room.
  */
 export function lineRoomIdr(
   order: { totalIdr: number; subtotalIdr: number },
   items: readonly LineItem[],
   refunds: readonly RefundRowLike[],
-  given: Pick<OrderGiven, "lineGivenIdr" | "toOriginal">,
+  given: Pick<OrderGiven, "lineGivenIdr" | "toOriginal"> &
+    Partial<Pick<OrderGiven, "lineChargeIdr">>,
   requested: readonly { itemId: string }[],
 ): number {
   let room = 0;
@@ -452,7 +482,8 @@ function lineBalancesIdr(
   order: { totalIdr: number; subtotalIdr: number },
   items: readonly LineItem[],
   refunds: readonly RefundRowLike[],
-  given: Pick<OrderGiven, "lineGivenIdr" | "toOriginal">,
+  given: Pick<OrderGiven, "lineGivenIdr" | "toOriginal"> &
+    Partial<Pick<OrderGiven, "lineChargeIdr">>,
   requested: readonly { itemId: string }[],
 ): Map<string, number> {
   const byId = new Map(items.map((item) => [item.id as string, item]));
@@ -462,30 +493,44 @@ function lineBalancesIdr(
       ? (Number(item.lineTotalIdr) * quantity) / item.quantity
       : 0;
   };
+  const shares = lineSharesIdr(order, items, given.toOriginal);
+  // 1169 (SO 1166 P2): each earlier POS refund that named items is read back
+  // the way the limit cut it: largest remainder over the named lines' shares
+  // of the bill (not floor + last item), each debit held to the room its line
+  // still has, the rest to the other named lines with room. Rows run in the
+  // order given (refunded_at, id); the item order inside a row never matters.
+  // Weight = what the named quantity is worth on the bill (a swap replacement
+  // by its own value, as before). Same ratios as the lines' shares of the
+  // bill; the clamp to each line's share below absorbs the sub-IDR difference.
+  const weightOf = (itemId: string, quantity: number): bigint =>
+    BigInt(Math.max(0, Math.round(valueOf(itemId, quantity) * 100)));
   const priorPos = new Map<string, number>();
+  // A swapped chain also holds its paid charge money (see `chainBalanceOf`).
+  const roomOf = (line: string) =>
+    (shares.get(line) ?? 0) +
+    (given.lineChargeIdr?.get(line) ?? 0) -
+    (given.lineGivenIdr.get(line) ?? 0) -
+    (priorPos.get(line) ?? 0);
   for (const row of refunds) {
     if (row.items.length === 0) continue;
-    const weights = row.items.map((entry) =>
-      valueOf(entry.itemId, entry.quantity),
-    );
-    const total = weights.reduce((sum, weight) => sum + weight, 0);
-    let left = Number(row.amountIdr);
-    row.items.forEach((entry, index) => {
-      const share =
-        index === row.items.length - 1
-          ? left
-          : total > 0
-            ? Math.floor((row.amountIdr * weights[index]!) / total)
-            : 0;
-      left -= share;
+    const weights = new Map<string, bigint>();
+    for (const entry of row.items) {
       const line = given.toOriginal(entry.itemId);
-      priorPos.set(line, (priorPos.get(line) ?? 0) + share);
-    });
+      weights.set(
+        line,
+        (weights.get(line) ?? 0n) + weightOf(entry.itemId, entry.quantity),
+      );
+    }
+    for (const [line, debit] of allocateRefundRowIdr(
+      Number(row.amountIdr),
+      weights,
+      roomOf,
+    ))
+      priorPos.set(line, (priorPos.get(line) ?? 0) + debit);
   }
   const lines = new Set(
     requested.map((entry) => given.toOriginal(entry.itemId)),
   );
-  const shares = lineSharesIdr(order, items, given.toOriginal);
   const balances = new Map<string, number>();
   for (const line of lines) {
     const paid = shares.get(line) ?? 0;
