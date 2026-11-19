@@ -2290,3 +2290,4 @@ Langkah berikut CTO baru:
 - 19:40 CTO cek akun: Claude #1 5h 85% (reset 20:30, laju ~14 poin/50 menit -> pas). Tidak dipindah (thread bekerja/job background); Ghostex pindah sendiri bila limit. RAM merah: tanpa thread baru.
 - 19:55 CTO: 1191 (G1tw8) SIAP 48da44a3f, resolve. Koreksi angka fail-first dicatat di merge-queue saja (baris PROGRESS cabang tidak diubah).
 - 20:31 CTO: Claude #1 5h habis 20:29 (reset). Claude #5 ikut disabled ('organization has disabled Claude subscription access'): G3oqb/G8u3h kembali ke #1. Retro jadwal 19:43 dilewati (Retro 53 baru 18:25; kuota Claude tinggal #1). 1198/1199/1192 lanjut sesudah kuota.
+- 20:37 CTO: 1198 (G8wau) SIAP dacdbc33f, resolve. P3 sisa di bead baru. Catatan rilis: RESEAL_DATABASE_URL baru.
