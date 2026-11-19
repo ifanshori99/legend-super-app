@@ -2265,3 +2265,4 @@ Langkah berikut CTO baru:
 - 17:13 CTO: retro 17:13 ditolak hook (Claude 8/8: 6 thread + CTO + CTO lama G448j masih running); one-shot 18:23. Antrean heavy diam (bug FIFO tsc menahan non-tsc di lajur 2): bead legend-q43y5 P1, fix lewat implementer (backup heavy.bak-q43y5).
 - 17:29 CTO: 1178 (G02j3) SIAP 15e1fa0ea, resolve. heavy q43y5 fix live (bead ditutup). Full test batch96 selesai ~17:15.
 - 17:30 CTO: batch96 MENDARAT m1 2b23b324f (7 cabang; migrasi renumber 0500-0502; full run 2j43m; 14 gagal dijelaskan, 6 nyata di teardown test 870 dibetulkan). Bead df7qv P3 (restore mapping kas di test). batch97 dikirim ke G1kc6: 1163, 1178, 1167, 1176, 1182, 1172, 1175. Batch98: eb4d9add, 1159, 1162, 1177, 1179, 1183. RAM merah (tsc).
+- 17:33 CTO: 1184 (G9p6a) SIAP 356b357e6, resolve. Keputusan CTO: 6qp12 tetap fail-closed (tutup), re-point akun ke bead P3 baru (aturan membatasi pembayaran).
