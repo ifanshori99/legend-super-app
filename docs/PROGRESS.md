@@ -2287,3 +2287,4 @@ Langkah berikut CTO baru:
 - 19:34 CTO: SO 1196 -> P1 (lintas tenant via GUC) + 3 P2, bead legend-qwm9r. 1189 ditarik dari SIAP sampai 1198 (G?, Sonnet) siap; batch98 bawa 1198 menggantikan 1189.
 - 19:38 CTO: SO 1197 -> P1 + 2 P2, bead legend-7r7q6. 1190 ditahan, 1199 (Sonnet) menggantikan di batch98. Semua area SO putaran ini sudah diperiksa; Codex #2 dihemat sampai 00:22.
 - 19:38 CTO: 1179 SIAP d58a535de. G8u3h lanjut (2) ws/1192 lepas hold: API + UI ikut pola finance exceptions, screenshot 390/1280 untuk review founder.
+- 19:40 CTO cek akun: Claude #1 5h 85% (reset 20:30, laju ~14 poin/50 menit -> pas). Tidak dipindah (thread bekerja/job background); Ghostex pindah sendiri bila limit. RAM merah: tanpa thread baru.
