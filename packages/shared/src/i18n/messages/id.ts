@@ -1511,6 +1511,7 @@ export const id = {
       wfc_min_spend: "Pengingat belanja minimum",
       subscription_billing: "Tagihan langganan",
       schedule_update: "Perubahan jadwal",
+      checklist_alert: "Peringatan checklist",
       payslip: "Slip gaji",
       daily_summary: "Ringkasan harian",
       operational_anomaly: "Anomali operasional",

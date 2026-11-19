@@ -8154,3 +8154,16 @@ Cabang `ws/1130-p2-pajak-sarapan-rekap`, dasar `e2a63062e` (`origin/milestone/m1
 - Temuan: `handleBreakfastPaymentPaid` menunggu penyedia (`confirmOtherCodesBeforeRefuse`) untuk pembayaran valid sambil memegang lock outbox dan offset `consumeOutbox`.
 - Perbaikan: consumer memutuskan `refuse` secara lokal lebih dulu. Pembayaran valid langsung `paid` tanpa panggilan penyedia. Jalur tolak tanpa bukti melempar `BreakfastProviderProofNeeded` sebelum menulis; `withBreakfastProviderProof` (di `facility-breakfast-consumers.ts`) bertanya ke penyedia di luar transaksi konsumsi, lalu mengulang sekali dengan `providerProven` sehingga `refuse` dihitung ulang di bawah lock. Jawaban tidak jelas tetap 409 `PAYMENT_PROVIDER_UNCONFIRMED` (tidak ada batal/refund; uang tetap di outlet). `worker-main.ts` dan jalur tanpa tx di `deliverOrderPaymentEvent` memakai pembungkus itu; helper test `deliver()` ikut dibungkus (temuan reviewer).
 - Bukti: `facility-breakfast-consumer-proof-lock-1146.test.ts` (BRK-PROOFLOCK-01 dan 02 merah di base: valid menunggu penyedia, lock outbox/offset tertahan selama penantian; 03 sampai 05 kontrol hijau). Satu run terarah 16 berkas, 158 test hijau; typecheck api (heap 8192) hijau; prettier dan eslint hijau. Reviewer sonnet: satu cacat (helper test), diperbaiki.
+## 1136 Bundel P3 web mock/e2e/teks (19 Nov 2026)
+
+Cabang `ws/1136-p3-web-mock-e2e`, dasar `origin/milestone/m1`. Tingkat S, tanpa migrasi, tanpa uang/akses.
+
+- legend-lw7gv: `scripts/test.mjs` menolak `LEGEND_TEST_FILES` diset tapi kosong/spasi (exit 1, pesan jelas); test root `tests/test-files-selection.test.mjs` (docker stub).
+- legend-5vcqk: mock ws04-expo `markPickupPickedUp`, `markExpoOrderDelivered`, `PICKUP_CALL_CLOSED`, `EXPO_ORDER_DELIVERED`; 11 test vitest web.
+- legend-46vt (sebagian): `?mock=claim-login` + spec claim-card (e2e lulus). consent-form dan area-frame belum terjangkau (bead tetap terbuka).
+- legend-eukn: snapshot tutup periode menampilkan `periodStatus`/`periodVersion` + penanda riwayat; 3 test vitest web (gagal-dulu terbukti di sumber HEAD).
+- legend-yf2b: preview report builder memakai angka viewer untuk family batch A/B (bukan duplikat x73li, belum di m1).
+- legend-z274: kategori notifikasi `checklist_alert` (tanpa migrasi, kolom varchar); preferensi `schedule_update` lama untuk alert checklist tidak dimigrasi.
+- Bukti: vitest web 14/14, text-contract + selection 17/17, typecheck shared+web hijau, API hijau dengan heap 8 GB (heap default ~6 GB OOM), e2e `legend-46vt` lulus, eslint+prettier hijau.
+- Keputusan CTO z274 (19 Nov): `checklist_alert` tanpa preferensi eksplisit mewarisi `schedule_update` per kanal saat dibaca (`packages/shared/src/notification/delivery.ts`, tanpa migrasi data); preferensi eksplisit menang. Test `notification-checklist-alert-inherit.test.ts` (gagal-dulu 2 dari 6, lalu 50/50 bersama adapter). Typecheck shared+web+api hijau (heap 8 GB). Catatan: setelah user menyimpan panel preferensi, `checklist_alert` jadi eksplisit dan lepas dari `schedule_update`.
+- Bead baru P3: mock `assignExpoRunner` 422 `EXPO_RUNNER_INVALID` (lihat `bd list`).

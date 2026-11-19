@@ -774,6 +774,25 @@ export function reopenReasonIssue(
   return null;
 }
 
+// ---- Snapshot history ------------------------------------------------------
+
+/**
+ * A close snapshot is history once its period is open again or its version no
+ * longer matches the period's (reopened, maybe closed again). Older mocks omit
+ * periodStatus/periodVersion: then nothing says the snapshot is stale.
+ */
+export function isSnapshotHistory(snapshot: {
+  version: number;
+  periodStatus?: FiscalPeriodStatus;
+  periodVersion?: number;
+}): boolean {
+  if (snapshot.periodStatus === "open") return true;
+  return (
+    snapshot.periodVersion !== undefined &&
+    snapshot.periodVersion !== snapshot.version
+  );
+}
+
 // ---- Catalog keys of period statuses --------------------------------------
 
 export const PERIOD_STATUS_KEYS: Record<FiscalPeriodStatus, MessageKey> = {

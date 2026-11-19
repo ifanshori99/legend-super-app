@@ -218,6 +218,11 @@ export const accountingReportMessages = {
       description:
         "Saldo yang dibekukan saat periode ditutup. Snapshot tidak berubah selama periode tertutup.",
       version: "Versi snapshot",
+      periodStatus: "Status periode saat ini",
+      periodVersion: "Versi periode saat ini",
+      historyTitle: "Snapshot ini riwayat",
+      historyHint:
+        "Periode sudah dibuka ulang setelah snapshot ini diambil, jadi saldonya bisa berbeda dari kondisi sekarang. Tutup ulang periode untuk snapshot baru.",
       takenAt: "Diambil",
       takenBy: "Diambil oleh",
       totalDebit: "Total debit",

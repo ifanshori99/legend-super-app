@@ -11,9 +11,14 @@
 // node test still compares their generated output single-split by single-split
 // (DASH-02), so a drift fails the test instead of showing two numbers.
 //
-// Nothing is invented: a metric the day model has no source figure for is
-// returned as `null` ("no data", never zero), and a split the model cannot
-// break down returns no rows. `day_of_week` is the exact sum of the model's
+// Every family the viewer mock serves (sales, batch A and B) previews here:
+// the figures, the cells and the availability come from the viewer's own
+// `periodFigures`, `cellFor` and `availabilityOf` (legend-yf2b), so a builder
+// cell never drifts from the report of the same metric.
+//
+// Nothing is invented: a metric no family has a source figure for, or one the
+// API answers `unavailable`, is returned as `null` ("no data", never zero),
+// and a split the model cannot break down returns no rows. `day_of_week` is the exact sum of the model's
 // own days and lives in the day model, like every other split.
 //
 // Loaded in Node: bare package imports and relative `.ts` only.
@@ -26,22 +31,28 @@ import {
 import { cafeLegendFixtures } from "@starter/shared/core";
 import {
   metricDefinitionRefSchema,
+  type MetricAvailability,
   type MetricDefinition,
 } from "@starter/shared/metrics";
 import {
-  ATOM_KEYS,
   BUSINESS_DATE,
   MONTH_START,
   distribute,
   outletSplit,
-  periodAtoms,
   splitSpecFor,
-  zeroAtoms,
-  type AtomKey,
-  type Atoms,
   type DateRange,
   type SplitSpec,
 } from "../ws11-reports/mock-day-model.ts";
+import {
+  EXTRA_SPLITS,
+  FIGURE_KEYS,
+  availabilityOf,
+  cellFor,
+  periodFigures,
+  weightsFor,
+  type FigureKey,
+  type Figures,
+} from "../ws11-reports/mock.ts";
 
 const outlet = cafeLegendFixtures.outlets[0];
 
@@ -49,84 +60,19 @@ const outlet = cafeLegendFixtures.outlets[0];
 
 function splitFor(key: string, range: DateRange): SplitSpec | null {
   if (key === "outlet") return outletSplit(outlet.id);
-  return splitSpecFor(key, range);
+  return splitSpecFor(key, range) ?? EXTRA_SPLITS[key] ?? null;
 }
 
-// ---- Metric cells (same formulas as the viewer) -------------------------------
+// ---- Metric cells (the viewer's own, `ws11-reports/mock.ts`) ------------------
 
-type Cell = { unit: string; valueIdr?: number; value?: number | string } | null;
+type Cell = ReturnType<typeof cellFor>;
 
-function decimal4(numerator: number, denominator: number): string {
-  return ((numerator * 100) / denominator).toFixed(4);
-}
-
-// Same ratio as the viewer's derived `salesTarget` (mock-families/sales.ts).
-const SALES_TARGET_RATIO = 1.05;
-
-function cellFor(metricCode: string, atoms: Atoms): Cell {
-  const ratio = (num: number, den: number) =>
-    den === 0 ? null : { unit: "percent" as const, value: decimal4(num, den) };
-  const idr = (valueIdr: number) => ({ unit: "idr" as const, valueIdr });
-  const count = (value: number) => ({ unit: "count" as const, value });
-  switch (metricCode) {
-    case "sales_target":
-      return idr(Math.round(atoms.net * SALES_TARGET_RATIO));
-    case "target_achievement_pct":
-      return ratio(atoms.net, Math.round(atoms.net * SALES_TARGET_RATIO));
-    case "net_sales":
-      return idr(atoms.net);
-    case "gross_sales":
-      return idr(atoms.gross);
-    case "discount_amount":
-      return idr(atoms.discount);
-    case "refund_amount":
-      return idr(atoms.refund);
-    case "void_amount":
-      return idr(atoms.voided);
-    case "transaction_count":
-      return count(atoms.tx);
-    case "pax":
-      return count(atoms.pax);
-    case "menu_sold_qty":
-      return count(atoms.qty);
-    case "avg_ticket":
-      return atoms.tx === 0 ? null : idr(Math.round(atoms.net / atoms.tx));
-    case "avg_spend_per_pax":
-      return atoms.pax === 0 ? null : idr(Math.round(atoms.net / atoms.pax));
-    case "discount_rate_pct":
-      return ratio(atoms.discount, atoms.gross);
-    case "refund_rate_pct":
-      return ratio(atoms.refund, atoms.net);
-    case "void_rate_pct":
-      return ratio(atoms.voided, atoms.net);
-    default:
-      // No source figure in the mock model: no data, never a made-up number.
-      return null;
-  }
-}
-
-/** Metric codes the mock model has figures for (the rest preview as "—"). */
-export const MOCK_PREVIEW_METRIC_CODES: readonly string[] = Object.freeze([
-  "sales_target",
-  "target_achievement_pct",
-  "net_sales",
-  "gross_sales",
-  "discount_amount",
-  "refund_amount",
-  "void_amount",
-  "transaction_count",
-  "pax",
-  "menu_sold_qty",
-  "avg_ticket",
-  "avg_spend_per_pax",
-  "discount_rate_pct",
-  "refund_rate_pct",
-  "void_rate_pct",
-]);
+const zeroFigures = (): Figures =>
+  Object.fromEntries(FIGURE_KEYS.map((key) => [key, 0])) as Figures;
 
 // ---- Splits, filters and aggregation -----------------------------------------
 
-type Leaf = { values: Record<string, string>; atoms: Atoms };
+type Leaf = { values: Record<string, string>; atoms: Figures };
 
 function splitLeaves(
   leaves: readonly Leaf[],
@@ -135,16 +81,16 @@ function splitLeaves(
 ): Leaf[] {
   return leaves.flatMap((leaf) => {
     const columns = Object.fromEntries(
-      ATOM_KEYS.map((atom) => [
-        atom,
-        distribute(leaf.atoms[atom], spec.weights[atom] ?? spec.weights.net),
+      FIGURE_KEYS.map((figure) => [
+        figure,
+        distribute(leaf.atoms[figure], weightsFor(figure, spec)),
       ]),
-    ) as Record<AtomKey, number[]>;
+    ) as Record<FigureKey, number[]>;
     return spec.values.map((value, index) => ({
       values: { ...leaf.values, [key]: value },
       atoms: Object.fromEntries(
-        ATOM_KEYS.map((atom) => [atom, columns[atom][index] ?? 0]),
-      ) as Atoms,
+        FIGURE_KEYS.map((figure) => [figure, columns[figure][index] ?? 0]),
+      ) as Figures,
     }));
   });
 }
@@ -153,14 +99,14 @@ function splitLeaves(
 function aggregate(
   query: ReportBuilderQuery,
   range: DateRange,
-): { dims: string[]; atoms: Atoms }[] {
+): { dims: string[]; atoms: Figures }[] {
   // Every outlet figure in the model belongs to the first fixture outlet.
   if (query.outletIds !== undefined && !query.outletIds.includes(outlet.id))
     return [];
   const filterKeys = query.filters
     .map((filter) => filter.key)
     .filter((key) => !query.groupBy.includes(key));
-  let leaves: Leaf[] = [{ values: {}, atoms: periodAtoms(range) }];
+  let leaves: Leaf[] = [{ values: {}, atoms: periodFigures(range) }];
   for (const key of [...query.groupBy, ...new Set(filterKeys)]) {
     const spec = splitFor(key, range);
     if (spec === null) return [];
@@ -171,12 +117,12 @@ function aggregate(
       filter.values.includes(leaf.values[filter.key] ?? ""),
     ),
   );
-  const rows = new Map<string, { dims: string[]; atoms: Atoms }>();
+  const rows = new Map<string, { dims: string[]; atoms: Figures }>();
   for (const leaf of leaves) {
     const dims = query.groupBy.map((key) => leaf.values[key] ?? "");
     const id = dims.join("\u0000");
-    const row = rows.get(id) ?? { dims, atoms: zeroAtoms() };
-    for (const key of ATOM_KEYS) row.atoms[key] += leaf.atoms[key];
+    const row = rows.get(id) ?? { dims, atoms: zeroFigures() };
+    for (const key of FIGURE_KEYS) row.atoms[key] += leaf.atoms[key];
     rows.set(id, row);
   }
   return [...rows.values()];
@@ -287,6 +233,21 @@ export function buildPreviewResult(
       ? ("final" as const)
       : ("estimate" as const);
 
+  // The viewer's availability per metric: the source is not built, or a split
+  // the API refuses (the first of the query's splits that it refuses).
+  const availability: MetricAvailability[] = definitions.map(
+    (definition) =>
+      [null, ...query.groupBy]
+        .map((key) => availabilityOf(definition.code, key))
+        .find((entry) => entry.status === "unavailable") ??
+      availabilityOf(definition.code, null),
+  );
+  const unavailable = new Set(
+    availability
+      .filter((entry) => entry.status === "unavailable")
+      .map((entry) => entry.metricCode),
+  );
+
   const toRow = (
     bucketRange: DateRange,
     row: ReturnType<typeof aggregate>[number],
@@ -299,7 +260,9 @@ export function buildPreviewResult(
     })),
     values: definitions.map((definition) => ({
       metricCode: definition.code,
-      value: cellFor(definition.code, row.atoms),
+      value: unavailable.has(definition.code)
+        ? null
+        : cellFor(definition.code, row.atoms, periodFigures(bucketRange)),
       finality: finalityOf(bucketRange.endDate, definition.officiality),
     })),
   });
@@ -354,12 +317,7 @@ export function buildPreviewResult(
         ? { kind: "all" }
         : { kind: "outlets", outletIds: query.outletIds },
     definitions: definitions.map(definitionRef),
-    availability: definitions
-      .map((definition) => definition.code)
-      .map((metricCode) => ({
-        metricCode,
-        status: "available",
-      })),
+    availability,
     groupBy: query.groupBy,
     // The limit applies after the sort, like the service.
     rows: rows.slice(0, query.limit),
