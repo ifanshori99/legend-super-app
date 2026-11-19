@@ -25,6 +25,11 @@
 //   too: every difference the nightly trusted-boundary recon flagged
 //   (`payroll_payout_recon_exceptions`, insert-only, so a flag stays listed).
 //   The reason is the detail; the ref is the flagged item.
+// - `payout_recon_hold` (legend-6o7pc) is tenant-wide and standing too: a hold
+//   of a slip whose recon flag could not be written
+//   (`payroll_payout_recon_unwritten_holds`) that no flag took over and no
+//   two-person release lifted. The base reason of the flag is the detail (may
+//   be empty); the ref is the hold. No name, account or amount.
 
 import { sql, type SQL } from "drizzle-orm";
 import {
@@ -865,6 +870,40 @@ async function payoutReconFlags(
   };
 }
 
+/** Holds of unwritten recon flags still holding a slip (own tenant, standing). */
+async function payoutReconHolds(
+  tx: Executor,
+  scope: Scope,
+): Promise<Collected> {
+  const rows = rowsOf(
+    await tx.execute(
+      sql`SELECT h.id::text AS ref_id, h.reason AS detail,
+                 h.created_at AS occurred_at
+            FROM payroll_payout_recon_unwritten_holds h
+           WHERE h.tenant_id = ${scope.tenantId}::uuid
+             AND app.payout_recon_hold_status(h.tenant_id, h.id)
+                 IN ('clean', 'unclean')
+           ORDER BY h.created_at DESC, h.id DESC`,
+    ),
+  );
+  const items = rows.map((row) =>
+    toItem("payout_recon_hold", "payout_recon_hold", {
+      occurred_at: row.occurred_at,
+      ref_id: row.ref_id,
+      outlet_id: null,
+      detail: row.detail,
+      amount: null,
+    }),
+  );
+  return {
+    kind: "payout_recon_hold",
+    count: items.length,
+    knownAmountCount: 0,
+    amountIdr: 0,
+    items,
+  };
+}
+
 /**
  * Payout batches frozen by a "not me" dispute (legend-l2zru), standing until
  * the unfreeze rows cover every dispute. One row per frozen batch, a batch that
@@ -935,6 +974,7 @@ export async function listFinanceExceptions(
   const includePayout = wants("payout_fee_not_posted") && tenantWide;
   const includeProofStuck = wants("payout_proof_stuck") && tenantWide;
   const includeReconFlags = wants("payout_recon_flag") && tenantWide;
+  const includeReconHolds = wants("payout_recon_hold") && tenantWide;
   const includeBatchDisputed = wants("payout_batch_disputed") && tenantWide;
 
   const collected = await withTenant(db, context, async (tx) => {
@@ -955,6 +995,7 @@ export async function listFinanceExceptions(
     if (includePayout) parts.push(await payoutFeeNotPosted(tx, scope));
     if (includeProofStuck) parts.push(await payoutProofStuck(tx, scope));
     if (includeReconFlags) parts.push(await payoutReconFlags(tx, scope));
+    if (includeReconHolds) parts.push(await payoutReconHolds(tx, scope));
     if (includeBatchDisputed) parts.push(await payoutBatchDisputed(tx, scope));
     return parts;
   });

@@ -39,6 +39,7 @@ import {
 import { orgEndpoints } from "@starter/shared/platform";
 import type {
   PayoutReconFlagDto,
+  PayoutReconHoldDto,
   PayoutReturnClaimDto,
   PayrollPayoutEvidenceUploadDto,
 } from "@starter/shared/types";
@@ -46,6 +47,12 @@ import type { PayoutBankFormat } from "@starter/shared/validators/payroll-payout
 import { apiErrorBodySchema } from "@starter/shared/core";
 import { z } from "zod";
 import { defineEndpoint } from "@starter/shared/api";
+import {
+  approvePayoutReconHoldReleaseInputSchema,
+  payoutReconHoldParamsSchema,
+  payoutReconHoldReleaseParamsSchema,
+  proposePayoutReconHoldReleaseInputSchema,
+} from "@starter/shared/validators/payroll-payout-recon-hold";
 import {
   approvePayoutReconClearanceInputSchema,
   payoutReconClearanceParamsSchema,
@@ -594,6 +601,56 @@ export const approveReturnWithdrawalEndpoint = defineEndpoint({
   }),
 });
 
+// ---- Recon holds (legend-6o7pc) --------------------------------------------------
+// A hold is made when a recon flag could not be written: the slip stays held
+// until a later flag takes it over or two people release it on clean evidence.
+
+const reconHoldSchema = z.object({
+  id: z.string(),
+  kind: z.string(),
+  itemId: z.string(),
+  payslipId: z.string(),
+  batchId: z.string(),
+  reason: z.string().nullable(),
+  heldAt: instant,
+  takenOver: z.boolean(),
+  releasable: z.boolean(),
+  release: z
+    .object({
+      id: z.string(),
+      status: z.enum(["proposed", "approved"]),
+      reason: z.string(),
+      proposedBy: z.string(),
+      proposedAt: instant,
+      approvedBy: z.string().nullable(),
+      approvedAt: instant.nullable(),
+    })
+    .nullable(),
+});
+
+export const listPayoutReconHoldsEndpoint = defineEndpoint({
+  method: "GET",
+  path: `${PAYROLL_BASE}/payout-recon-holds`,
+  response: z.object({ data: z.array(reconHoldSchema) }),
+});
+
+/** 201 `{ releaseId }`. */
+export const proposeReconHoldReleaseEndpoint = defineEndpoint({
+  method: "POST",
+  path: `${PAYROLL_BASE}/payout-recon-holds/:holdId/release`,
+  params: payoutReconHoldParamsSchema,
+  body: proposePayoutReconHoldReleaseInputSchema,
+  response: z.object({ data: z.object({ releaseId: z.string() }) }),
+});
+
+export const approveReconHoldReleaseEndpoint = defineEndpoint({
+  method: "POST",
+  path: `${PAYROLL_BASE}/payout-recon-hold-releases/:releaseId/approve`,
+  params: payoutReconHoldReleaseParamsSchema,
+  body: approvePayoutReconHoldReleaseInputSchema,
+  response: z.object({ data: z.object({ releaseId: z.string() }) }),
+});
+
 /** Reason (10 to 500 characters) plus the password the grant re-asks. */
 export type ReconClearanceProposalInput = { reason: string; password?: string };
 export type PasswordStepInput = { password?: string };
@@ -666,6 +723,42 @@ export async function approveReturnWithdrawal(
 ): Promise<{ withdrawalId: string; restoredItems: number }> {
   const response = await callEndpoint(approveReturnWithdrawalEndpoint, {
     params: { withdrawalId },
+    body,
+  });
+  return response.data;
+}
+
+/** Every slip hold of the tenant with its release state, newest first. */
+export async function listPayoutReconHolds(
+  signal?: AbortSignal,
+): Promise<PayoutReconHoldDto[]> {
+  const response = await callEndpoint(
+    listPayoutReconHoldsEndpoint,
+    {},
+    { signal },
+  );
+  return response.data;
+}
+
+/** First person: proposes lifting a hold. Lifts nothing by itself. */
+export async function proposeReconHoldRelease(
+  holdId: string,
+  body: ReconClearanceProposalInput,
+): Promise<{ releaseId: string }> {
+  const response = await callEndpoint(proposeReconHoldReleaseEndpoint, {
+    params: { holdId },
+    body,
+  });
+  return response.data;
+}
+
+/** Second person (not the proposer): approves; the slip is no longer held by this hold. */
+export async function approveReconHoldRelease(
+  releaseId: string,
+  body: PasswordStepInput = {},
+): Promise<{ releaseId: string }> {
+  const response = await callEndpoint(approveReconHoldReleaseEndpoint, {
+    params: { releaseId },
     body,
   });
   return response.data;

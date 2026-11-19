@@ -13,6 +13,7 @@ export const FINANCE_EXCEPTION_KINDS = [
   "receipt_pending_stale",
   "payout_proof_stuck",
   "payout_recon_flag",
+  "payout_recon_hold",
   "release_recon_unproven",
   "payout_batch_disputed",
 ] as const;

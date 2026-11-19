@@ -12,6 +12,7 @@
     "./validators/kirimdev-sender": "./src/validators/kirimdev-sender.ts",
     "./validators/payroll-payout": "./src/validators/payroll-payout.ts",
     "./validators/payroll-payout-recon-clearance": "./src/validators/payroll-payout-recon-clearance.ts",
+    "./validators/payroll-payout-recon-hold": "./src/validators/payroll-payout-recon-hold.ts",
     "./validators/payroll-payout-return-withdraw": "./src/validators/payroll-payout-return-withdraw.ts",
     "./theme": "./src/theme/index.ts",
     "./i18n": "./src/i18n/index.ts",

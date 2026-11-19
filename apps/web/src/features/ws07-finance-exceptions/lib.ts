@@ -45,6 +45,7 @@ export const KIND_LABEL_KEYS: Record<FinanceExceptionKind, MessageKey> = {
   receipt_pending_stale: "financeExceptions.kinds.receipt_pending_stale",
   payout_proof_stuck: "financeExceptions.kinds.payout_proof_stuck",
   payout_recon_flag: "financeExceptions.kinds.payout_recon_flag",
+  payout_recon_hold: "financeExceptions.kinds.payout_recon_hold",
   release_recon_unproven: "financeExceptions.kinds.release_recon_unproven",
   payout_batch_disputed: "financeExceptions.kinds.payout_batch_disputed",
 };
@@ -59,6 +60,7 @@ export const KIND_HELP_KEYS: Record<FinanceExceptionKind, MessageKey> = {
   receipt_pending_stale: "financeExceptions.kindHelp.receipt_pending_stale",
   payout_proof_stuck: "financeExceptions.kindHelp.payout_proof_stuck",
   payout_recon_flag: "financeExceptions.kindHelp.payout_recon_flag",
+  payout_recon_hold: "financeExceptions.kindHelp.payout_recon_hold",
   release_recon_unproven: "financeExceptions.kindHelp.release_recon_unproven",
   payout_batch_disputed: "financeExceptions.kindHelp.payout_batch_disputed",
 };
@@ -71,6 +73,7 @@ const REF_TYPE_KEYS: Record<string, MessageKey> = {
   payout_posting: "financeExceptions.refTypes.payout_posting",
   payout_proof: "financeExceptions.refTypes.payout_proof",
   payout_recon: "financeExceptions.refTypes.payout_recon",
+  payout_recon_hold: "financeExceptions.refTypes.payout_recon_hold",
   qris_release_recon: "financeExceptions.refTypes.qris_release_recon",
   va_release_recon: "financeExceptions.refTypes.va_release_recon",
   payout_batch_dispute: "financeExceptions.refTypes.payout_batch_dispute",
@@ -96,6 +99,16 @@ const DETAIL_KEYS: Record<string, MessageKey> = {
   shared_key: "financeExceptions.details.proofSharedKey",
   bind_failed: "financeExceptions.details.proofBindFailed",
 };
+
+/** Where finance works on a recon flag or hold (the payout reconciliation screen). */
+export const RECON_SCREEN_PATH = "/kelola/payroll/rekonsiliasi" as const;
+
+/** The screen that can act on this kind, or null when the row is read-only here. */
+export function reconScreenPath(kind: string): typeof RECON_SCREEN_PATH | null {
+  return kind === "payout_recon_flag" || kind === "payout_recon_hold"
+    ? RECON_SCREEN_PATH
+    : null;
+}
 
 export function isFinanceExceptionKind(
   value: unknown,

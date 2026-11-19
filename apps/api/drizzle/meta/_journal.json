@@ -3354,6 +3354,27 @@
       "when": 1795000000709,
       "tag": "0709_payout_t1ufu_hold_unwritten",
       "breakpoints": true
+    },
+    {
+      "idx": 710,
+      "version": "7",
+      "when": 1795000000710,
+      "tag": "0710_payout_1192_hold_release",
+      "breakpoints": true
+    },
+    {
+      "idx": 711,
+      "version": "7",
+      "when": 1795000000711,
+      "tag": "0711_payout_1192_hold_release_grant",
+      "breakpoints": true
+    },
+    {
+      "idx": 712,
+      "version": "7",
+      "when": 1795000000712,
+      "tag": "0712_payout_1192_hold_release_functions",
+      "breakpoints": true
     }
   ]
 }

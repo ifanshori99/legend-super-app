@@ -307,6 +307,7 @@ const PAYOUT_AUDIT_SAFE_FIELDS = [
   "channel",
   "itemCount",
   "runId",
+  "holdId",
   "by",
   "contentHash",
   "checksum",

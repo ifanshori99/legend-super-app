@@ -4,6 +4,7 @@
 // Each row's reference opens a native <details> with the source, the full
 // reference and a plain sentence about the kind (no raw payload, no PII).
 import * as React from "react";
+import { Link } from "@tanstack/react-router";
 import { useT } from "@/components/i18n";
 import { Money } from "@/components/ui/money";
 import {
@@ -21,6 +22,7 @@ import {
   OUTBOX_STATE_KEYS,
   detailKey,
   formatOccurred,
+  reconScreenPath,
   refTypeKey,
   shortRef,
 } from "../lib";
@@ -69,6 +71,7 @@ function Reference({ item }: { item: FinanceExceptionItemDto }) {
   const t = useT();
   const short = shortRef(item.refId);
   const detailSentenceKey = item.detail ? detailKey(item.detail) : undefined;
+  const reconPath = reconScreenPath(item.kind);
   return (
     <details className="group min-w-0 text-sm">
       <summary
@@ -141,6 +144,14 @@ function Reference({ item }: { item: FinanceExceptionItemDto }) {
             </>
           )}
         </dl>
+        {reconPath && (
+          <Link
+            to={reconPath}
+            className="inline-flex min-h-11 items-center font-semibold text-primary underline-offset-4 hover:underline focus-visible:rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2"
+          >
+            {t("financeExceptions.list.reconLink")}
+          </Link>
+        )}
       </div>
     </details>
   );

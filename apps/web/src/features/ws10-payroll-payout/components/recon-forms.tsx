@@ -283,7 +283,7 @@ export function ReconApproveForm({
 }
 
 /** Label text with a visible "*" and a spoken "wajib". */
-function Required({ children }: { children: React.ReactNode }) {
+export function Required({ children }: { children: React.ReactNode }) {
   const t = useT();
   return (
     <>
@@ -296,12 +296,20 @@ function Required({ children }: { children: React.ReactNode }) {
   );
 }
 
-function PasswordField({
+export function PasswordField({
   value,
   onChange,
   onBlur,
   invalid,
+  id = "recon-password",
+  label,
+  error,
 }: {
+  /** Unique per form when several forms share a page. */
+  id?: string;
+  /** Replaces the default label/problem text, e.g. for the hold forms. */
+  label?: string;
+  error?: string;
   value: string;
   onChange: (value: string) => void;
   onBlur: () => void;
@@ -310,16 +318,16 @@ function PasswordField({
   const t = useT();
   return (
     <FormField
-      id="recon-password"
+      id={id}
       required
       label={
         <Required>
-          {t("payrollPayoutReview.recon.propose.passwordLabel")}
+          {label ?? t("payrollPayoutReview.recon.propose.passwordLabel")}
         </Required>
       }
       error={
         invalid
-          ? t("payrollPayoutReview.recon.propose.passwordError")
+          ? (error ?? t("payrollPayoutReview.recon.propose.passwordError"))
           : undefined
       }
     >
