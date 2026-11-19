@@ -86,6 +86,9 @@ const RECONCILE_BATCH = 100;
  * the row's age since `ended_at` (frozen), so it roughly doubles per try. */
 const REVOKE_RETRY_MIN_SECONDS = 30;
 const REVOKE_RETRY_MAX_SECONDS = 300;
+/** A revoke still failing this long after `ended_at` is given up: the marker
+ * is cleared so retention can purge the row, and an error is logged. */
+export const WIFI_REVOKE_GIVE_UP_AFTER_SECONDS = 86_400;
 const LIST_LIMIT = 500;
 /** An active grant within this much of the wanted expiry is reused. */
 const REUSE_TOLERANCE_SECONDS = 60;
@@ -439,7 +442,10 @@ export function createWifiAgent(options: {
   /**
    * Re-sends the controller revoke of a terminal row that owes one
    * (`revoke_retry_at` set). Success clears the marker; a failure moves it
-   * out by the backoff. Only `revoke_retry_at` is written: every other
+   * out by the backoff. Once the grant's `expires_at` has passed (the
+   * controller dropped it) or `WIFI_REVOKE_GIVE_UP_AFTER_SECONDS` have gone by
+   * since `ended_at`, a failed revoke is given up: the marker is cleared and
+   * an error is logged. Only `revoke_retry_at` is written: every other
    * column of a terminal row is frozen.
    */
   async function retryTerminalRevoke(
@@ -465,10 +471,19 @@ export function createWifiAgent(options: {
         seconds(at.getTime() - (row.endedAt ?? at).getTime()),
       ),
     );
+    const giveUp =
+      failure !== null &&
+      ((row.expiresAt !== null && row.expiresAt.getTime() <= at.getTime()) ||
+        (row.endedAt !== null &&
+          seconds(at.getTime() - row.endedAt.getTime()) >=
+            WIFI_REVOKE_GIVE_UP_AFTER_SECONDS));
     await withTenant(db, ctx, (tx) =>
       tx
         .update(wifiDeviceGrants)
-        .set({ revokeRetryAt: failure === null ? null : addSeconds(at, delay) })
+        .set({
+          revokeRetryAt:
+            failure === null || giveUp ? null : addSeconds(at, delay),
+        })
         .where(
           scoped(
             tenantId,
@@ -478,7 +493,23 @@ export function createWifiAgent(options: {
           ),
         ),
     );
-    if (failure !== null)
+    // Log only: the supervisor notification (`notifyOutletSupervisors`) needs
+    // the cloud user/role tables, which the edge process does not have.
+    if (giveUp)
+      logger.error(
+        {
+          module: "edge-wifi",
+          alert: "wifi_revoke_given_up",
+          tenantId,
+          outletId,
+          grantId: row.id,
+          endedAt: row.endedAt?.toISOString() ?? null,
+          expiresAt: row.expiresAt?.toISOString() ?? null,
+          err: { name: (failure as Error)?.name, code: errorCode(failure) },
+        },
+        "Wi-Fi revoke of an ended grant gave up; the device may stay online until the controller drops it.",
+      );
+    else if (failure !== null)
       logger.warn(
         {
           module: "edge-wifi",

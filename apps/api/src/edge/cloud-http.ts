@@ -14,12 +14,14 @@ import {
   encodeReceiptRunReport,
   encodeReceiptRunRefusals,
   receiptRunReportQuerySchema,
+  type DeviceHeartbeatUpsyncBody,
   type ReceiptRunRefusalReport,
   type ReceiptRunReport,
 } from "@starter/shared/edge";
 import { logger } from "../lib/logger.ts";
 
 const DEVICE_RECORDS_PATH = "/api/edge-sync/device-records";
+const DEVICE_HEARTBEATS_PATH = "/api/edge-sync/device-heartbeats";
 const STAFF_PIN_RECORDS_PATH = "/api/edge-sync/staff-pin-records";
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_LIMIT = 100;
@@ -126,6 +128,8 @@ async function cloudGet(
     signal?: AbortSignal;
     headers?: Record<string, string>;
     allowNotModified?: boolean;
+    /** Set only by `cloudPostJson`; every other caller is a GET. */
+    jsonBody?: unknown;
   },
 ): Promise<CloudGetResult> {
   const base = cloudHttpBaseUrl(options.cloudUrl);
@@ -145,12 +149,18 @@ async function cloudGet(
 
   try {
     const init: EdgeRequestInit = {
-      method: "GET",
+      method: options.jsonBody === undefined ? "GET" : "POST",
       headers: {
         ...options.headers,
+        ...(options.jsonBody === undefined
+          ? {}
+          : { "Content-Type": "application/json" }),
         Authorization: `Bearer ${options.credential}`,
         Accept: "application/json",
       },
+      ...(options.jsonBody === undefined
+        ? {}
+        : { body: JSON.stringify(options.jsonBody) }),
       redirect: "error",
       cache: "no-store",
       signal: request.signal,
@@ -199,6 +209,39 @@ export async function cloudGetJson(
 ): Promise<unknown> {
   const result = await cloudGet(options);
   return result.status === 200 ? result.body : undefined;
+}
+
+/**
+ * One authenticated POST of a JSON body to `path` on the cloud (legend-2lp.10),
+ * returning the parsed JSON answer. Same credential, timeout and error type as
+ * `cloudGetJson`; the body is never read into an error.
+ */
+export async function cloudPostJson(
+  options: CloudGetOptions & {
+    path: string;
+    body: unknown;
+    signal?: AbortSignal;
+  },
+): Promise<unknown> {
+  const result = await cloudGet({ ...options, jsonBody: options.body });
+  if (result.status !== 200) throw new EdgeCloudHttpError("BAD_JSON");
+  return result.body;
+}
+
+/** Edge -> cloud: POST /api/edge-sync/device-heartbeats (legend-2lp.10). */
+export function createDeviceHeartbeatSender(
+  options: CloudGetOptions,
+): (
+  devices: DeviceHeartbeatUpsyncBody["devices"],
+  signal?: AbortSignal,
+) => Promise<unknown> {
+  return (devices, signal) =>
+    cloudPostJson({
+      ...options,
+      path: DEVICE_HEARTBEATS_PATH,
+      body: { devices },
+      signal,
+    });
 }
 
 export type CloudConditionalGetResult =

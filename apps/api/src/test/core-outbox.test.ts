@@ -191,14 +191,14 @@ describe("transactional domain event outbox", () => {
     });
     expect(await relayOutbox(database, context(tenantA), enqueue)).toBe(1);
     expect(sent.map((job) => job.generation)).toEqual([0, 1]);
-    await expect(
-      consumeOutbox(database, context(tenantA), {
+    expect(
+      await consumeOutbox(database, context(tenantA), {
         outboxId: second.id,
         generation: 0,
         authorize: async () => true,
         deliver: async () => {},
       }),
-    ).rejects.toThrow("Stale or dead-lettered job");
+    ).toBe("superseded");
     await markOutboxDead(database, context(tenantA), {
       outboxId: second.id,
       generation: 0,
@@ -338,14 +338,14 @@ describe("transactional domain event outbox", () => {
     expect(await relayOutbox(database, context(tenant), enqueue)).toBe(1);
     expect(sent.map((job) => job.generation)).toEqual([0, 1]);
     // The lost job is fenced; only the re-dispatched generation may deliver.
-    await expect(
-      consumeOutbox(database, context(tenant), {
+    expect(
+      await consumeOutbox(database, context(tenant), {
         outboxId: first.id,
         generation: 0,
         authorize: async () => true,
         deliver: async () => {},
       }),
-    ).rejects.toThrow("Stale or dead-lettered job");
+    ).toBe("superseded");
     expect(
       await consumeOutbox(database, context(tenant), {
         outboxId: first.id,

@@ -42,6 +42,8 @@
 //   `applyDeviceReceiptWriteoffs`. Only when the edge asks
 //   (`?receiptWriteoffs=1`), parsed apart from the page like the sequences.
 import {
+  DEVICE_HEARTBEAT_UPSYNC_MAX,
+  deviceHeartbeatUpsyncBodySchema,
   deviceReceiptSequenceSyncSchema,
   deviceReceiptWriteoffSyncSchema,
   deviceSyncCloudPageSchema,
@@ -52,6 +54,7 @@ import {
   RECEIPT_WRITEOFF_SYNC_MAX,
   receiptRunReportQuerySchema,
   receiptRunRefusalQuerySchema,
+  type DeviceHeartbeatUpsyncBody,
   type DeviceReceiptSequenceBinding,
   type DeviceReceiptSequenceSync,
   type DeviceReceiptWriteoffSync,
@@ -71,7 +74,18 @@ import {
   type ScopedTenantContext,
 } from "@starter/shared/core";
 import { establishTenantContext } from "@starter/shared/core/server";
-import { and, asc, desc, eq, inArray, lte, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gte,
+  inArray,
+  isNotNull,
+  isNull,
+  lte,
+  sql,
+} from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db/index.ts";
 import { devices } from "../db/schema/device.ts";
@@ -1315,4 +1329,111 @@ export async function pullDeviceRegistry(
     receiptRunAlert,
     receiptRunRefusals: pending,
   };
+}
+
+// ------------------------------------------------- heartbeat up-sync (edge -> cloud)
+
+/**
+ * legend-2lp.10: a device that heartbeats only to its edge never reaches the
+ * cloud's `devices.last_seen_at`. The edge posts the recent `last_seen_at` of
+ * its outlet's devices to `POST /api/edge-sync/device-heartbeats`; this is the
+ * cloud side. Tenant and outlet come only from the verified credential. A
+ * device is touched only if it is active and belongs to that outlet; unknown,
+ * revoked and other-outlet ids are ignored. `last_seen_at` only moves forward
+ * and never past the cloud's clock. `updated_at` is left alone: this is
+ * telemetry, it must not make the device registry feed re-send rows.
+ */
+export async function applyDeviceHeartbeatUpsync(
+  node: VerifiedEdgeNode,
+  body: unknown,
+  options: { now?: Date } = {},
+): Promise<{ applied: number; ignored: number }> {
+  const verified = verifiedEdgeNodeSchema.parse(node);
+  const parsed: DeviceHeartbeatUpsyncBody =
+    deviceHeartbeatUpsyncBodySchema.parse(body);
+  const now = options.now ?? new Date();
+  // One entry per device: the latest time wins when an id repeats.
+  const latest = new Map<string, Date>();
+  for (const entry of parsed.devices) {
+    const id = entry.id.toLowerCase();
+    const seenAt = new Date(entry.lastSeenAt);
+    const kept = latest.get(id);
+    if (kept === undefined || seenAt.getTime() > kept.getTime())
+      latest.set(id, seenAt);
+  }
+  const tenant = establishTenantContext({
+    tenantId: verified.tenantId,
+    brandId: null,
+    source: "device",
+  });
+  const context = outletContext(tenant, verified.outletId);
+  const applied = await withTenant(db, context, async (tx) => {
+    let count = 0;
+    for (const [id, seenAt] of latest) {
+      const target = new Date(Math.min(seenAt.getTime(), now.getTime()));
+      const rows = await tx
+        .update(devices)
+        .set({ lastSeenAt: target })
+        .where(
+          and(
+            eq(devices.id, id),
+            eq(devices.tenantId, verified.tenantId),
+            eq(devices.outletId, verified.outletId),
+            eq(devices.status, "active"),
+            isNull(devices.revokedAt),
+            sql`(${devices.lastSeenAt} IS NULL OR ${devices.lastSeenAt} < ${target.toISOString()}::timestamptz)`,
+          ),
+        )
+        .returning({ id: devices.id });
+      count += rows.length;
+    }
+    return count;
+  });
+  return { applied, ignored: latest.size - applied };
+}
+
+/** Devices whose edge-side `last_seen_at` is newer than this are posted. */
+export const DEVICE_HEARTBEAT_UPSYNC_WINDOW_MS = 15 * 60 * 1000;
+
+/**
+ * Edge side of the heartbeat up-sync: the active devices of this edge's outlet
+ * seen within the window, newest first, at most
+ * `DEVICE_HEARTBEAT_UPSYNC_MAX`. Empty = nothing to send.
+ */
+export async function listRecentDeviceHeartbeats(
+  context: ScopedTenantContext,
+  options: { now?: Date; windowMs?: number } = {},
+): Promise<DeviceHeartbeatUpsyncBody["devices"]> {
+  if (
+    context.outletScope.kind !== "outlets" ||
+    context.outletScope.outletIds.length !== 1
+  )
+    refuse("Device heartbeat up-sync needs a context of exactly one outlet.");
+  const outletId = context.outletScope.outletIds[0]!;
+  const now = options.now ?? new Date();
+  const since = new Date(
+    now.getTime() - (options.windowMs ?? DEVICE_HEARTBEAT_UPSYNC_WINDOW_MS),
+  );
+  const rows = await withTenant(db, context, (tx) =>
+    tx
+      .select({ id: devices.id, lastSeenAt: devices.lastSeenAt })
+      .from(devices)
+      .where(
+        and(
+          eq(devices.tenantId, context.tenant.tenantId),
+          eq(devices.outletId, outletId),
+          eq(devices.status, "active"),
+          isNull(devices.revokedAt),
+          isNotNull(devices.lastSeenAt),
+          gte(devices.lastSeenAt, since),
+        ),
+      )
+      .orderBy(desc(devices.lastSeenAt), asc(devices.id))
+      .limit(DEVICE_HEARTBEAT_UPSYNC_MAX),
+  );
+  return rows.flatMap((row) =>
+    row.lastSeenAt === null
+      ? []
+      : [{ id: row.id, lastSeenAt: row.lastSeenAt.toISOString() }],
+  );
 }

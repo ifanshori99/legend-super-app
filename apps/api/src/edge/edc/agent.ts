@@ -142,6 +142,10 @@ export type EdcAgentDeps = {
    * of `releaseOutlet`: past it the connection is destroyed, which drops the
    * lock all the same. Default 15s. */
   lockHeartbeatTimeoutMs?: number;
+  /** Upper bound on how long `releaseOutlet` waits for the sales and wire
+   * calls of an outlet to settle. Past it a warning is logged and the release
+   * goes on (unlock, then release the client). Default 10s. */
+  stopTimeoutMs?: number;
   /** Called when the outlet lock is lost and this process has NO adapter call
    * on the wire for that outlet (with one, `onFatal` is called instead). The
    * outlet is simply not ready any more: the caller can start the agent again
@@ -556,6 +560,11 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
   const staleWireSweepMs = deps.staleWireSweepMs ?? 60_000;
   const lockHeartbeatMs = deps.lockHeartbeatMs ?? 10_000;
   const lockHeartbeatTimeoutMs = deps.lockHeartbeatTimeoutMs ?? 15_000;
+  // legend-1ffe: the drain must outlast a normal sale (it waits on the
+  // customer for up to saleTimeoutMs) plus its cancel, or a live sale would be
+  // abandoned with the lock freed. Only a call that never settles hits the cap.
+  const stopTimeoutMs =
+    deps.stopTimeoutMs ?? saleTimeoutMs + cancelTimeoutMs + 5_000;
   const onFatal =
     deps.onFatal ??
     ((info: { tenantId: string; outletId: string; liveCalls: number }) => {
@@ -775,10 +784,35 @@ export function createEdcAgent(deps: EdcAgentDeps): EdcAgent {
     // Sales first, then every call still on the wire (a timed-out call or a
     // bypass cancel is not a sale). Nothing new starts: each call re-checks
     // ownership in the tick it goes out.
+    // Bounded: a call that never settles must not hold the lock for ever.
+    const drainDeadline = Date.now() + stopTimeoutMs;
     for (;;) {
       const pending = [...(sales.get(key) ?? []), ...(wires.get(key) ?? [])];
       if (pending.length === 0) break;
-      await Promise.allSettled(pending);
+      const remainingMs = drainDeadline - Date.now();
+      let drainTimer: ReturnType<typeof setTimeout> | undefined;
+      const timedOut = await Promise.race([
+        Promise.allSettled(pending).then(() => false),
+        new Promise<boolean>((resolve) => {
+          drainTimer = setTimeout(
+            () => resolve(true),
+            Math.max(0, remainingMs),
+          );
+        }),
+      ]).finally(() => clearTimeout(drainTimer));
+      if (timedOut) {
+        const sep = key.indexOf(":");
+        logger.warn(
+          {
+            tenantId: key.slice(0, sep),
+            outletId: key.slice(sep + 1),
+            pending: pending.length,
+            stopTimeoutMs,
+          },
+          "EDC release drain timed out; releasing the outlet with calls still pending",
+        );
+        break;
+      }
     }
     // The lock was lost during the drain: `lost` already released the client.
     if (locks.get(key) !== entry) return;

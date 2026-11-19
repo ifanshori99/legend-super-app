@@ -104,6 +104,24 @@ export const deviceHeartbeatBodySchema = z.strictObject({
 });
 export type DeviceHeartbeatBody = z.infer<typeof deviceHeartbeatBodySchema>;
 
+/** Most device summaries one edge heartbeat up-sync carries (legend-2lp.10). */
+export const DEVICE_HEARTBEAT_UPSYNC_MAX = 200;
+
+/**
+ * Edge -> cloud: when the devices of the edge's outlet were last seen by the
+ * edge (legend-2lp.10). Tenant and outlet come from the edge credential only,
+ * never from this body. The cloud moves `last_seen_at` forward only.
+ */
+export const deviceHeartbeatUpsyncBodySchema = z.strictObject({
+  devices: z
+    .array(z.strictObject({ id: uuidSchema, lastSeenAt: isoDateTimeSchema }))
+    .min(1)
+    .max(DEVICE_HEARTBEAT_UPSYNC_MAX),
+});
+export type DeviceHeartbeatUpsyncBody = z.infer<
+  typeof deviceHeartbeatUpsyncBodySchema
+>;
+
 /** Registry row as the cloud replicates it to an edge node (cloud wins). */
 export const deviceSyncRecordSchema = z
   .strictObject({

@@ -158,12 +158,23 @@ export async function recoverExpiredDispatches(
     context.outletScope.kind === "tenant"
       ? sql`TRUE`
       : sql`o.outlet_id = ANY(${outletArray(context)}::uuid[])`;
-  return withTenant(database, context, async (tx) => {
+  const recovered = await withTenant(database, context, async (tx) => {
     const result = await tx.execute(
       sql`UPDATE domain_event_outbox SET dispatch_state = 'ready', dispatch_generation = dispatch_generation + 1, dispatch_job_id = NULL, dispatch_lease_token = NULL, dispatch_lease_until = NULL, dead_lettered_at = NULL WHERE id IN (SELECT id FROM domain_event_outbox o WHERE dispatch_state = 'queued' AND status <> 'delivered' AND dispatch_lease_until IS NOT NULL AND dispatch_lease_until < now() AND ${outletFilter} ORDER BY dispatch_lease_until, id FOR UPDATE SKIP LOCKED LIMIT 100) RETURNING id, dispatch_generation`,
     );
     return result.rows as { id: string; dispatch_generation: number }[];
   });
+  // A recovery means a pg-boss job vanished; surface it so repeated loss is visible.
+  if (recovered.length)
+    logger.warn(
+      {
+        tenantId: context.tenant.tenantId,
+        recovered: recovered.length,
+        outboxIds: recovered.slice(0, 20).map((row) => row.id),
+      },
+      "Outbox dispatches recovered after queued lease expired",
+    );
+  return recovered;
 }
 
 /** Claim only ready rows; a fenced lease recovers a relay crash. Stable job IDs
@@ -350,6 +361,10 @@ export async function replayOutbox(
   });
 }
 
+/** Returned by consumeOutbox for a job whose generation was advanced (recovery
+ * or replay): a no-op so pg-boss completes it instead of retrying. */
+export const OUTBOX_SUPERSEDED = "superseded" as const;
+
 /** Serializes each outbox delivery, applies database effects and consumption in
  * one transaction, and supplies the event ID as the provider idempotency key.
  * Providers must honor that key: their external side effects cannot be rolled back. */
@@ -368,57 +383,72 @@ export async function consumeOutbox(
   },
 ) {
   try {
-    return await withTenant(database, context, async (tx) => {
-      const result = await tx.execute(
-        sql`SELECT * FROM domain_event_outbox WHERE id = ${ulidToUuid(input.outboxId)}::uuid FOR UPDATE`,
-      );
-      const row = result.rows[0];
-      if (!row) throw new Error("Outbox row not found");
-      const event = eventEnvelopeSchema.parse(row.event);
-      if (
-        Number(row.dispatch_generation) !== (input.generation ?? 0) ||
-        row.dispatch_state === "dead"
-      )
-        throw new Error("Stale or dead-lettered job");
-      if (event.tenantId !== context.tenant.tenantId)
-        throw new Error("Event tenant does not match context");
-      if (event.outletId)
-        assertOutletInScope(context.outletScope, event.outletId);
-      else if (context.outletScope.kind !== "tenant")
-        throw new Error("Tenant-wide event requires tenant scope");
-      if (!(await input.authorize(event)))
-        throw new Error("Worker permission denied");
-      const consumer = String(row.destination);
-      const aggregateId = String(row.aggregate_id);
-      await tx.execute(
-        sql`INSERT INTO domain_event_offsets (tenant_id, outlet_id, consumer, aggregate_type, aggregate_id) VALUES (${event.tenantId}::uuid, ${event.outletId}::uuid, ${consumer}, ${event.aggregateType}, ${aggregateId}::uuid) ON CONFLICT DO NOTHING`,
-      );
-      const offset = await tx.execute(
-        sql`SELECT last_sequence, outlet_id FROM domain_event_offsets WHERE consumer = ${consumer} AND aggregate_type = ${event.aggregateType} AND aggregate_id = ${aggregateId}::uuid FOR UPDATE`,
-      );
-      if (offset.rows[0]?.outlet_id !== event.outletId)
-        throw new Error("Aggregate outlet changed");
-      const consumed = await tx.execute(
-        sql`SELECT 1 FROM domain_event_consumptions WHERE consumer = ${consumer} AND event_id = ${String(row.event_id)}::uuid`,
-      );
-      if (consumed.rows.length) return false;
-      if (event.sequence !== Number(offset.rows[0]?.last_sequence) + 1)
-        throw new Error("Aggregate sequence gap");
-      await input.deliver(event, event.id, tx);
-      await tx.execute(
-        sql`INSERT INTO domain_event_consumptions (tenant_id, outlet_id, consumer, event_id, aggregate_type, aggregate_id, sequence) VALUES (${event.tenantId}::uuid, ${event.outletId}::uuid, ${String(row.destination)}, ${String(row.event_id)}::uuid, ${event.aggregateType}, ${String(row.aggregate_id)}::uuid, ${event.sequence})`,
-      );
-      await tx.execute(
-        sql`UPDATE domain_event_offsets SET last_sequence = ${event.sequence}, updated_at = now() WHERE consumer = ${consumer} AND aggregate_type = ${event.aggregateType} AND aggregate_id = ${aggregateId}::uuid`,
-      );
-      await tx.execute(
-        sql`UPDATE domain_event_outbox SET status = 'delivered', delivered_at = now(), lease_owner = NULL, lease_until = NULL, attempts = attempts + 1 WHERE id = ${String(row.id)}::uuid`,
-      );
-      // The next sequence of this aggregate is claimable now; wake the relay on
-      // commit instead of waiting for the next scheduled sweep.
-      await tx.execute(sql`SELECT pg_notify('legend_outbox_wakeup', '')`);
-      return true;
-    });
+    return await withTenant<boolean | typeof OUTBOX_SUPERSEDED>(
+      database,
+      context,
+      async (tx) => {
+        const result = await tx.execute(
+          sql`SELECT * FROM domain_event_outbox WHERE id = ${ulidToUuid(input.outboxId)}::uuid FOR UPDATE`,
+        );
+        const row = result.rows[0];
+        if (!row) throw new Error("Outbox row not found");
+        const event = eventEnvelopeSchema.parse(row.event);
+        if (Number(row.dispatch_generation) !== (input.generation ?? 0)) {
+          // A newer generation owns this row; applying here could double-deliver.
+          logger.info(
+            {
+              outboxId: input.outboxId,
+              tenantId: context.tenant.tenantId,
+              jobGeneration: input.generation ?? 0,
+              currentGeneration: Number(row.dispatch_generation),
+            },
+            "Outbox job superseded by a newer generation; skipped",
+          );
+          return OUTBOX_SUPERSEDED;
+        }
+        // Same generation but dead-lettered: still an error, never delivered.
+        if (row.dispatch_state === "dead")
+          throw new Error("Stale or dead-lettered job");
+        if (event.tenantId !== context.tenant.tenantId)
+          throw new Error("Event tenant does not match context");
+        if (event.outletId)
+          assertOutletInScope(context.outletScope, event.outletId);
+        else if (context.outletScope.kind !== "tenant")
+          throw new Error("Tenant-wide event requires tenant scope");
+        if (!(await input.authorize(event)))
+          throw new Error("Worker permission denied");
+        const consumer = String(row.destination);
+        const aggregateId = String(row.aggregate_id);
+        await tx.execute(
+          sql`INSERT INTO domain_event_offsets (tenant_id, outlet_id, consumer, aggregate_type, aggregate_id) VALUES (${event.tenantId}::uuid, ${event.outletId}::uuid, ${consumer}, ${event.aggregateType}, ${aggregateId}::uuid) ON CONFLICT DO NOTHING`,
+        );
+        const offset = await tx.execute(
+          sql`SELECT last_sequence, outlet_id FROM domain_event_offsets WHERE consumer = ${consumer} AND aggregate_type = ${event.aggregateType} AND aggregate_id = ${aggregateId}::uuid FOR UPDATE`,
+        );
+        if (offset.rows[0]?.outlet_id !== event.outletId)
+          throw new Error("Aggregate outlet changed");
+        const consumed = await tx.execute(
+          sql`SELECT 1 FROM domain_event_consumptions WHERE consumer = ${consumer} AND event_id = ${String(row.event_id)}::uuid`,
+        );
+        if (consumed.rows.length) return false;
+        if (event.sequence !== Number(offset.rows[0]?.last_sequence) + 1)
+          throw new Error("Aggregate sequence gap");
+        await input.deliver(event, event.id, tx);
+        await tx.execute(
+          sql`INSERT INTO domain_event_consumptions (tenant_id, outlet_id, consumer, event_id, aggregate_type, aggregate_id, sequence) VALUES (${event.tenantId}::uuid, ${event.outletId}::uuid, ${String(row.destination)}, ${String(row.event_id)}::uuid, ${event.aggregateType}, ${String(row.aggregate_id)}::uuid, ${event.sequence})`,
+        );
+        await tx.execute(
+          sql`UPDATE domain_event_offsets SET last_sequence = ${event.sequence}, updated_at = now() WHERE consumer = ${consumer} AND aggregate_type = ${event.aggregateType} AND aggregate_id = ${aggregateId}::uuid`,
+        );
+        await tx.execute(
+          sql`UPDATE domain_event_outbox SET status = 'delivered', delivered_at = now(), lease_owner = NULL, lease_until = NULL, attempts = attempts + 1 WHERE id = ${String(row.id)}::uuid`,
+        );
+        // The next sequence of this aggregate is claimable now; wake the relay on
+        // commit instead of waiting for the next scheduled sweep.
+        await tx.execute(sql`SELECT pg_notify('legend_outbox_wakeup', '')`);
+        return true;
+      },
+    );
   } catch (error) {
     if (!(error instanceof EdgeOutletRequiredError)) throw error;
     const parked = await markOutboxDead(database, context, {

@@ -155,7 +155,10 @@ import { deviceRouter } from "./device.routes.ts";
 import { printerRouter } from "./printer.routes.ts";
 import { edgeDeviceRouter } from "./edge-device.routes.ts";
 import { edgeWifiRouter } from "./edge-wifi.routes.ts";
-import { deviceRecordSyncRouter } from "./edge-device-sync.routes.ts";
+import {
+  deviceHeartbeatUpsyncRouter,
+  deviceRecordSyncRouter,
+} from "./edge-device-sync.routes.ts";
 import { catalogRecordSyncRouter } from "./edge-catalog-sync.routes.ts";
 import { edgePeopleSnapshotRouter } from "./edge-people-snapshot.routes.ts";
 import { edgeBootstrapRouter } from "./edge-bootstrap.routes.ts";
@@ -520,6 +523,8 @@ apiRouter.use("/devices", deviceRouter);
 apiRouter.use("/printers", printerRouter);
 // Device registry replica feed for edge nodes: edge credential only.
 apiRouter.use("/edge-sync/device-records", deviceRecordSyncRouter);
+// Edge -> cloud device heartbeat up-sync (legend-2lp.10): edge credential only.
+apiRouter.use("/edge-sync/device-heartbeats", deviceHeartbeatUpsyncRouter);
 // Catalog (menu, prices, recipes) down-sync for edge nodes (legend-97p): edge credential only.
 apiRouter.use("/edge-sync/catalog", catalogRecordSyncRouter);
 // People snapshot for edge clocking (WS-02/WS-10 C2, legend-ye4j1): edge credential only.

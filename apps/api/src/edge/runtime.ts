@@ -50,6 +50,7 @@ import {
 } from "../services/edge-node.service.ts";
 import {
   isDeviceSyncCursorError,
+  listRecentDeviceHeartbeats,
   pullDeviceRegistry,
 } from "../services/edge-device-sync.ts";
 import {
@@ -105,6 +106,7 @@ import {
 } from "../services/edge-wifi-agent.service.ts";
 import { purgeExpiredWifiGrants } from "../services/edge-wifi-retention.service.ts";
 import {
+  createDeviceHeartbeatSender,
   createDeviceRecordsFetcher,
   createStaffPinRecordsFetcher,
   EdgeCloudHttpError,
@@ -1140,6 +1142,22 @@ export async function startEdgeRuntime(
     credential: config.credential,
     edgeInstanceId: local.instanceId,
   });
+  // legend-2lp.10: edge -> cloud device heartbeat up-sync, sent after each
+  // device-registry pull. Best effort: a failure is logged, never thrown, so it
+  // cannot change the pull's verdict (a dead cloud can still add up to the POST
+  // timeout to one pull cycle).
+  const sendDeviceHeartbeats = createDeviceHeartbeatSender({
+    cloudUrl: config.cloudUrl,
+    credential: config.credential,
+  });
+  const upsyncDeviceHeartbeats = async (signal: AbortSignal) => {
+    try {
+      const devices = await listRecentDeviceHeartbeats(local.context);
+      if (devices.length > 0) await sendDeviceHeartbeats(devices, signal);
+    } catch (error) {
+      logger.warn(safeError(error), "Edge device heartbeat up-sync failed");
+    }
+  };
   // legend-hfq3z: clash refusals of the previous pull, reported on the next.
   let receiptRunRefusals: ReceiptRunRefusalReport = new Map();
   // legend-0cjzz: the hard-stale alarm travels on the event stream; boot time
@@ -1174,52 +1192,59 @@ export async function startEdgeRuntime(
       );
   };
   const puller = createDeviceRegistryPuller({
-    pull: (since, signal) =>
-      pullWithCursorRecovery(
-        async (from) => {
-          let first = true;
-          const result = await pullDeviceRegistry({
-            context: local.context,
-            // S-K1 (legend-3yqy): a standby never applies receipt sequences.
-            role: config.role,
-            // legend-zsdd: the sequences this database may number.
-            binding: {
-              edgeNodeId: local.scope.edgeNodeId,
-              edgeInstanceId: local.instanceId,
-            },
-            since: from,
-            refusals: receiptRunRefusals,
-            fetchPage: async (cursor, receiptRuns, refusals) => {
-              const isFirst = first;
-              first = false;
-              try {
-                return await fetchDeviceRecords(
-                  cursor,
-                  signal,
-                  receiptRuns,
-                  refusals,
-                );
-              } catch (error) {
-                if (
-                  isFirst &&
-                  error instanceof EdgeCloudHttpError &&
-                  error.code === "HTTP_400"
-                )
-                  throw new StoredCursorRefusedError();
-                throw error;
-              }
-            },
-          });
-          receiptRunRefusals = result.receiptRunRefusals;
-          return result;
-        },
-        since,
-        isRejectedCursor,
-        () =>
-          logger.warn(
-            "Edge device registry cursor refused; pulling from the start",
-          ),
-      ),
+    pull: async (since, signal) => {
+      try {
+        return await pullWithCursorRecovery(
+          async (from) => {
+            let first = true;
+            const result = await pullDeviceRegistry({
+              context: local.context,
+              // S-K1 (legend-3yqy): a standby never applies receipt sequences.
+              role: config.role,
+              // legend-zsdd: the sequences this database may number.
+              binding: {
+                edgeNodeId: local.scope.edgeNodeId,
+                edgeInstanceId: local.instanceId,
+              },
+              since: from,
+              refusals: receiptRunRefusals,
+              fetchPage: async (cursor, receiptRuns, refusals) => {
+                const isFirst = first;
+                first = false;
+                try {
+                  return await fetchDeviceRecords(
+                    cursor,
+                    signal,
+                    receiptRuns,
+                    refusals,
+                  );
+                } catch (error) {
+                  if (
+                    isFirst &&
+                    error instanceof EdgeCloudHttpError &&
+                    error.code === "HTTP_400"
+                  )
+                    throw new StoredCursorRefusedError();
+                  throw error;
+                }
+              },
+            });
+            receiptRunRefusals = result.receiptRunRefusals;
+            return result;
+          },
+          since,
+          isRejectedCursor,
+          () =>
+            logger.warn(
+              "Edge device registry cursor refused; pulling from the start",
+            ),
+        );
+      } finally {
+        // After the pull, whatever its verdict: a poisoned page must not
+        // silence the heartbeats.
+        await upsyncDeviceHeartbeats(signal);
+      }
+    },
     load: () =>
       loadDeviceRegistryCheckpoint(local.context, local.scope.edgeNodeId),
     save: (input) =>
