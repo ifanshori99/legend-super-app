@@ -58,13 +58,17 @@ import { inventorySettings } from "../db/schema/inventory-setup.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
   assertOutlet,
+  blindCountLocked,
   insufficientStock,
   loadOutletClock,
   lockLocations,
   requireOpsPermission,
   type Tx,
 } from "./inventory-ops.shared.ts";
-import { blindCountHiddenFilter } from "./inventory-count.visibility.ts";
+import {
+  blindCountHiddenFilter,
+  isBlindCountCounterOfPair,
+} from "./inventory-count.visibility.ts";
 import { recordStockMovementInTransaction } from "./inventory.service.ts";
 
 // ---- Response contract (proposed for packages/shared/src/inventory) -------
@@ -296,6 +300,16 @@ export async function consumeStockFefo(
   if (wanted <= 0n)
     throw new Error("FEFO consumption needs a positive quantity");
   await lockLocations(tx, context.tenant.tenantId, [input.locationId]);
+  // A counter of an open blind count must not learn the hidden quantity from
+  // a stock-out that succeeds or fails on it: refuse BEFORE the stock check.
+  if (
+    await isBlindCountCounterOfPair(tx, {
+      locationId: input.locationId,
+      inventoryItemId: input.inventoryItemId,
+      userId: input.actorUserId,
+    })
+  )
+    throw blindCountLocked();
   const [balance] = await tx
     .select()
     .from(stockBalances)

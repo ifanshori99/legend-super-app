@@ -74,3 +74,40 @@ export async function hiddenBlindPairs(
     ).map((row) => `${row.location_id}:${row.inventory_item_id}`),
   );
 }
+
+/**
+ * True when the (location, item) pair sits in an open blind count that `userId`
+ * counts (creator, the append-only `counter_ids` history, or a line counter;
+ * same set as `counterIds` in inventory-count.service.ts). Stock-out movements
+ * of such a pair are refused before any stock check, so the answer never
+ * depends on the hidden quantity.
+ */
+export async function isBlindCountCounterOfPair(
+  tx: { execute: (query: SQL) => Promise<{ rows: unknown[] }> },
+  input: { locationId: string; inventoryItemId: string; userId: string },
+): Promise<boolean> {
+  const result = await tx.execute(sql`
+    SELECT 1
+    FROM stock_counts sc
+    JOIN stock_count_lines scl
+      ON scl.tenant_id = sc.tenant_id AND scl.stock_count_id = sc.id
+    WHERE sc.blind
+      AND sc.status IN ('draft', 'counting', 'pending_approval', 'approved')
+      AND sc.location_id = ${input.locationId}::uuid
+      AND scl.inventory_item_id = ${input.inventoryItemId}::uuid
+      AND (
+        lower(sc.counted_by) = lower(${input.userId})
+        OR EXISTS (
+          SELECT 1 FROM unnest(sc.counter_ids) AS cid
+          WHERE lower(cid) = lower(${input.userId})
+        )
+        OR EXISTS (
+          SELECT 1 FROM stock_count_lines mine
+          WHERE mine.tenant_id = sc.tenant_id
+            AND mine.stock_count_id = sc.id
+            AND lower(mine.counted_by) = lower(${input.userId})
+        )
+      )
+    LIMIT 1`);
+  return result.rows.length > 0;
+}

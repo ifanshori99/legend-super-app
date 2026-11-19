@@ -50,6 +50,8 @@ export const INVENTORY_ERROR_CODES = [
   "PRODUCTION_INVALID_TRANSITION",
   /** A stock-out would take the location below zero on hand (F16/F17). */
   "INSUFFICIENT_STOCK",
+  /** A counter of an open blind count cannot move that item out of the counted location (409). */
+  "BLIND_COUNT_LOCKED",
   /** Production could not resolve a single kitchen location for the outlet. */
   "PRODUCTION_LOCATION_UNRESOLVED",
   /** A waste entry points at a photo or media file that does not exist (404). */
@@ -98,6 +100,7 @@ export const inventoryErrorHttpStatus = {
   STOCK_COUNT_APPROVAL_EXPIRED: 409,
   PRODUCTION_INVALID_TRANSITION: 409,
   INSUFFICIENT_STOCK: 409,
+  BLIND_COUNT_LOCKED: 409,
   PRODUCTION_LOCATION_UNRESOLVED: 422,
   WASTE_MEDIA_NOT_FOUND: 422,
 } as const satisfies Record<InventoryErrorCode, number>;
@@ -144,6 +147,8 @@ export const inventoryErrorMessages: Record<InventoryErrorCode, string> = {
   PRODUCTION_INVALID_TRANSITION:
     "Aksi ini tidak dapat dilakukan pada status produksi saat ini.",
   INSUFFICIENT_STOCK: "Stok di lokasi ini tidak mencukupi.",
+  BLIND_COUNT_LOCKED:
+    "Barang ini terkunci untuk Anda selama stok opname buta masih terbuka.",
   PRODUCTION_LOCATION_UNRESOLVED:
     "Lokasi dapur untuk produksi di outlet ini tidak dapat ditentukan.",
   WASTE_MEDIA_NOT_FOUND: "Foto atau berkas waste tidak ditemukan.",

@@ -8442,3 +8442,9 @@ Verifikasi:
 - prettier dan eslint bersih. `pnpm db:generate`: tidak ada perubahan.
 
 Pemakaian (`session-usage.py`, sesi 81d47474): 54 menit sejak 10:53, puncak konteks 267k, 7 kali compact. Biaya* total 26564k (utama sonnet 22144k, subagent sonnet 3269k, opus 943k, haiku 207k). `parallel-report`: 46 spawn, maks 6 bersamaan, rata-rata 1,1 subagent berjalan, rentetan terpanjang tanpa subagent 21 langkah.
+## 1176 webhook + opname P3 (19 Nov 2026, `ws/1176-webhook-opname-p3`, base 1167 1014c8963)
+
+- legend-dhzqb: baris webhook `received` yang macet kini dibatasi. Klaim baris `received` macet menambah `attempts`; jendela macet = max(5 menit, backoff attempts); sesudah 6 klaim baris yang belum pernah mencatat hasil pindah ke `failed`/`STUCK_EXHAUSTED` + satu alert (flip dan alert satu transaksi; gagal alert membatalkan flip). Worker dan sweep recurring tidak mengulang `STUCK_EXHAUSTED`; kirim ulang manual tetap memproses. Baris dengan kegagalan tercatat tidak pernah dihentikan (backoff per jam). Tanpa migrasi.
+- legend-nxqrw: retur pembelian menjawab `BLIND_COUNT_LOCKED` 409 untuk penghitung opname buta sebelum cek stok.
+- Tes PAY-03 dua worker: attempts 1 -> 2 (klaim macet + hasil).
+- Bukti: 75 tes terarah hijau, tsc api exit 0, prettier + eslint hijau, architect 2 ronde.

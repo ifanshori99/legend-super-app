@@ -1186,10 +1186,15 @@ describe("F16 par levels, critical alerts and AI-08 suggestions", () => {
     return Number(rows[0]!.count);
   }
 
-  const waste = (locationId: string, itemId: string, quantity: string) =>
+  const waste = (
+    locationId: string,
+    itemId: string,
+    quantity: string,
+    actorUserId = ownerUserId,
+  ) =>
     createWasteLog(
       tenantContext(),
-      ownerUserId,
+      actorUserId,
       createWasteLogInputSchema.parse({
         outletId: outletA,
         locationId,
@@ -1281,7 +1286,9 @@ describe("F16 par levels, critical alerts and AI-08 suggestions", () => {
       }),
     );
 
-    await waste(location, item, "6.0000");
+    // The counter (ownerUserId) is locked out of moving the hidden pair out
+    // (0hzu), so a second, non-counter actor posts the breaching waste.
+    await waste(location, item, "6.0000", otherUserId);
     await waste(location, free, "6.0000");
     const quantityOf = async (itemId: string) => {
       const { rows } = await owner.query<{ quantity: string | null }>(

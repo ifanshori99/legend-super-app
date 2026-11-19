@@ -590,7 +590,8 @@ describe("PAY-03 a retried event id stays bound to the integration that stored i
     const bill = await openIntent();
     const eventId = newEventId();
     const stored = doit.eventFor(bill.providerRef, "paid", eventId);
-    await storeRow(eventId, integrationAId, "received", stored);
+    // Claimable only once idle past the stuck window (1167), so age the row.
+    await storeAged(eventId, "received", stored, 1, 600);
     const before = await eventRow(eventId);
 
     // Same event id, same signer, a body that would expire the intent.
@@ -802,9 +803,10 @@ describe("PAY-03 the retry worker leaves a recently stored received event alone"
     const row = await eventRow(eventId);
     expect(row.status).toBe("processed");
     // The payment-evidence filter alone would hide a double run, so also
-    // prove the event was claimed by exactly one worker: one attempt, and the
-    // two sweeps together processed it once.
-    expect(row.attempts).toBe(1);
+    // prove the event was claimed by exactly one worker: the stuck claim counts
+    // one attempt (1176) and the recorded outcome one more, so 2 (a double run
+    // would show 4), and the two sweeps together processed it once.
+    expect(row.attempts).toBe(2);
     expect(results.reduce((sum, r) => sum + r.processed, 0)).toBe(1);
   });
 
@@ -812,8 +814,9 @@ describe("PAY-03 the retry worker leaves a recently stored received event alone"
     const bill = await openIntent();
     const eventId = newEventId();
     const body = doit.eventFor(bill.providerRef, "paid", eventId);
-    // Fresh row, as the request would have stored it before processing.
-    await storeAged(eventId, "received", body, 0, 90);
+    // A received row is claimable only once idle past the stuck window (1167),
+    // so age it (10 minutes): both the delivery and the sweep may now claim it.
+    await storeAged(eventId, "received", body, 0, 600);
 
     const [delivery, sweep] = await Promise.all([
       deliver(body, secretA),
@@ -825,10 +828,11 @@ describe("PAY-03 the retry worker leaves a recently stored received event alone"
     expect(await evidenceCount(bill.intentId)).toBe(1);
     const row = await eventRow(eventId);
     expect(row.status).toBe("processed");
-    // Processed once in total: the sweep leaves a 90 second old received row
-    // to the live request, and the row records a single attempt.
-    expect(sweep.processed).toBe(0);
-    expect(row.attempts).toBe(1);
+    // Processed once in total: whichever of the delivery and the sweep claims
+    // the row first processes it, and the other skips, so the row records a
+    // single claim (stuck claim counts one attempt, 1176) plus its outcome: 2.
+    expect(sweep.processed).toBeLessThanOrEqual(1);
+    expect(row.attempts).toBe(2);
   });
 
   // Deterministic claim proof (no timing): a competing transaction holds the

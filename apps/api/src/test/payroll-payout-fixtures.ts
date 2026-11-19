@@ -18,7 +18,7 @@
 // different format.
 import { randomBytes, randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
-import { afterAll, beforeAll, expect } from "vitest";
+import { afterAll, beforeAll, beforeEach, expect } from "vitest";
 import type { ObjectStorage } from "@starter/shared/adapters";
 import { CoreError, createUlid, tenantIdSchema } from "@starter/shared/core";
 import {
@@ -365,7 +365,6 @@ export function installPayoutWorld(label: string) {
   const createdRoles: string[] = [];
   const actorUsers: string[] = [];
   const actorSessions: string[] = [];
-  let mfaRefresh: NodeJS.Timeout | undefined;
   let bankAccountId = "";
   let hr: ReturnType<typeof agent>;
 
@@ -945,16 +944,6 @@ export function installPayoutWorld(label: string) {
     setAuditWriter(coreAuditWriter);
     for (const id of [REQ, APP, APP2, APP3])
       await provisionActor(id, { user: true, permit: true });
-    // The step-up must stay fresh (15 minutes) for the whole file.
-    mfaRefresh = setInterval(() => {
-      owner
-        .query(
-          `UPDATE session SET mfa_verified_at = now() WHERE id = ANY($1)`,
-          [actorSessions],
-        )
-        .catch(() => {});
-    }, 60_000);
-    mfaRefresh.unref();
     const hrUser = await signedInClient(`Payout ${label} HR`);
     await grantRole(hrUser.userId, ["hr.employee.manage", "hr.employee.view"]);
     hr = hrUser.client;
@@ -1074,9 +1063,21 @@ export function installPayoutWorld(label: string) {
     }, true);
   });
 
+  // The step-up must stay fresh (15 minutes). Refreshed between tests, never on
+  // a timer: a refresh landing inside a running payout step makes the stored
+  // mfa_verified_at later than that step's attested_at, and the night recon
+  // flags the legit operation `mfa_stale` (legend-inflf). Tests of one file run
+  // one after another, so no step is running here.
+  beforeEach(async () => {
+    await owner.query(
+      `UPDATE session SET mfa_verified_at = now()
+        WHERE id = ANY($1) AND mfa_verified_at < now() - interval '10 minutes'`,
+      [actorSessions],
+    );
+  });
+
   afterAll(async () => {
     setAuditWriter(null);
-    if (mfaRefresh) clearInterval(mfaRefresh);
     await asTenant(async (c) => {
       const del = (sql: string, params: unknown[]) => c.query(sql, params);
       const runs = [tenant.id, createdRuns];

@@ -365,6 +365,19 @@ export function insufficientStock(itemId: string): HttpError {
   );
 }
 
+/**
+ * A counter of an open blind count tried to move that item out of the counted
+ * location. Same status and generic message whatever the stock, so the answer
+ * cannot leak the hidden quantity.
+ */
+export function blindCountLocked(): HttpError {
+  return new HttpError(
+    inventoryErrorHttpStatus.BLIND_COUNT_LOCKED,
+    "BLIND_COUNT_LOCKED",
+    "This item is locked for you while a blind stock count is open.",
+  );
+}
+
 /** Contract status and safe message per code (see domain-error-http.shared.ts). */
 export function translateInventoryError(error: unknown): unknown {
   return translateDomainError(error);

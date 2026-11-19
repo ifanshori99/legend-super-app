@@ -3631,6 +3631,8 @@ export const id = {
       PRODUCTION_INVALID_TRANSITION:
         "Tindakan ini tidak bisa dilakukan pada status order produksi saat ini.",
       INSUFFICIENT_STOCK: "Stok tidak cukup untuk pengeluaran ini.",
+      BLIND_COUNT_LOCKED:
+        "Barang ini terkunci untuk Anda selama stok opname buta masih terbuka.",
       PRODUCTION_LOCATION_UNRESOLVED:
         "Lokasi dapur untuk outlet ini belum bisa ditentukan.",
       WASTE_MEDIA_NOT_FOUND: "Foto atau berkas waste tidak ditemukan.",
