@@ -8,6 +8,7 @@
  * intent row locks (see the lock order above), so the answer cannot change before its write.
  */
 import type { ScopedTenantContext } from "@starter/shared/core";
+import { reservationPolicySnapshotSchema } from "@starter/shared/reservation";
 import { and, asc, eq, inArray, or } from "drizzle-orm";
 import { orders, posOrders, posOrderTenders, reservations } from "../db/schema";
 import {
@@ -107,14 +108,65 @@ export async function lockBillOwner(
 const CLOSED_ORDER_STATUSES = ["voided", "completed"] as const;
 const CLOSED_TENDER_STATUSES = ["voided", "failed"];
 
+/** Same fallback as `DEPOSIT_ATTACH_GRACE_MINUTES` in `reservation-core.ts`
+ * (not imported: that module imports the payment services). */
+const DEPOSIT_WINDOW_FALLBACK_MINUTES = 30;
+
+/**
+ * legend-pdi5u: a reservation deposit confirmed AFTER its payment window is
+ * proven late. `confirmedAt` is the evidence time (the provider's paid time or
+ * the first receipt), never the local clock at processing. The window is the
+ * later of the reservation's link limit and the intent's own expiry, and only
+ * a reservation still `pending_deposit` is affected: the money is then parked
+ * as unallocated funds instead of crediting the reservation or the bill.
+ */
+export async function depositProvenLate(
+  tx: Tx,
+  context: ScopedTenantContext,
+  link: PaymentLinkRow,
+  intent: PaymentIntentRow,
+  confirmedAt: Date,
+): Promise<boolean> {
+  const [reservation] = await tx
+    .select({
+      createdAt: reservations.createdAt,
+      policySnapshot: reservations.policySnapshot,
+      depositLinkExpiresAt: reservations.depositLinkExpiresAt,
+    })
+    .from(reservations)
+    .where(
+      and(
+        eq(reservations.tenantId, context.tenant.tenantId),
+        eq(reservations.depositPaymentLinkId, link.id),
+        eq(reservations.status, "pending_deposit"),
+      ),
+    )
+    .limit(1);
+  if (!reservation) return false;
+  const policy = reservationPolicySnapshotSchema.safeParse(
+    reservation.policySnapshot,
+  );
+  const windowMinutes = policy.success
+    ? policy.data.paymentWindowMinutes
+    : DEPOSIT_WINDOW_FALLBACK_MINUTES;
+  const linkLimit =
+    reservation.depositLinkExpiresAt ??
+    new Date(reservation.createdAt.getTime() + windowMinutes * 60_000);
+  const limit = Math.max(linkLimit.getTime(), intent.expiresAt.getTime());
+  return confirmedAt.getTime() > limit;
+}
+
 export async function billClosedForLateSettlement(
   tx: Tx,
   context: ScopedTenantContext,
   link: PaymentLinkRow,
   intent: PaymentIntentRow,
+  confirmedAt: Date,
 ): Promise<boolean> {
   // Covered, fully or partly, by another payment since this intent closed.
   if (outstandingIdr(link) < intent.amountIdr) return true;
+  if (await depositProvenLate(tx, context, link, intent, confirmedAt))
+    return true;
 
   const tenantId = context.tenant.tenantId;
   const [closedOrder] = await tx

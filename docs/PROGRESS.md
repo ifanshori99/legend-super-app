@@ -7936,3 +7936,34 @@ pnpm exec prettier --check --ignore-unknown apps/api/src/test/payment-doit-recur
 heavy pnpm --filter @starter/api typecheck
 git diff --check
 ```
+
+## WS1163 — Reservasi waktu, slot tiket, nomor panggil (engineer, 19 Nov)
+
+Cabang `ws/1163-reservasi-slot-pickup`, basis m1. Tanpa migrasi. Tingkat K (uang DP). Berkas yang tidak boleh disentuh tidak disentuh: `reservation-deposit-credit.ts`, `reservation-deposit-remainder.ts`, `order-given.ts`, `payment-admin.service.ts`.
+
+Sudah:
+- legend-pdi5u: bukti waktu lokal diganti bukti penyedia. `depositIntentMayStillPay` (helper murni, `services/reservation-deposit-proof.ts`) dipakai `loadDepositState` (field `providerPending`) dan `oldLinkBlock`. Selama intent berpenyedia belum final (`provider_final_at` null, belum paid/refunded), reservasi tetap `pending_deposit` dan tautan lama tidak diganti. Duplikat legend-ytwlo ditutup ke pdi5u.
+- Temuan architect: DP yang terbukti terlambat diparkir di `payment_unallocated_funds` (jalur BILL_CLOSED yang sudah ada, tanpa nilai `reason` baru) dan intent parkir ditandai final, status expired, sehingga tidak membuat helper bertahan selamanya. Webhook DOIT kini meneruskan `receivedAt`.
+- legend-tkxhs: inti jam kosong dipisah dari cek izin `facility.booth.operate`. `listPosTicketSlots` memakai inti; `GET .../availability` tetap butuh `operate`. Izin kasir tidak ditambah.
+- legend-hpze7: tidak ada kode baru. Alokasi nomor panggil (`allocatePickupCall`, `formatPickupCode`) sudah di m1. Kartu dapat ditutup setelah tes pickup hijau.
+
+Keputusan terbuka untuk CTO:
+- Reservasi dengan kode berpenyedia yang tidak pernah dijawab final menahan meja tanpa batas atas. Usul: batas atas `payableUntil + GATEWAY_POLL_WINDOW`, dicatat di audit. Sweep dengan `LIMIT 100` bisa kelaparan bila banyak reservasi tertahan, jadi perlu urutan atau batas per putaran yang jelas.
+
+Bukti (T1 `src/test/reservation-1163-proof-db.test.ts`, T2 `src/test/pos-1096-ticket-cashier-reads.test.ts`):
+- Lewat batas lokal, intent belum final: reconcile dan resend tidak mengubah.
+- Penyedia final tanpa uang: reconcile dan resend berjalan seperti sebelumnya.
+- DP terlambat: tagihan tautan tidak berkurang, reservasi tidak `confirmed`, dana belum teralokasi tercatat.
+- DP tepat waktu: tetap mengkonfirmasi (regresi).
+- Kasir murni: 200 untuk slots, 403 untuk `availability`, akses tanpa `pos.sale.create` tetap ditolak, fasilitas outlet lain tidak bocor.
+
+Verifikasi:
+- `LEGEND_TEST_FILES=<8 berkas> heavy pnpm test`: 167/169 di putaran pertama, 2 gagal di tes baru sendiri; diperbaiki, `reservation-1163-proof-db.test.ts` ulang 10/10 hijau. Berkas lain hijau (termasuk `pickup.test.ts`, `pos-order-pickup-call.test.ts`).
+- `heavy pnpm --filter @starter/api typecheck`: exit 0.
+- `pnpm exec prettier --check <11 berkas>`: bersih. `pnpm exec eslint <11 berkas>`: exit 0.
+- `pnpm db:generate`: tidak ada perubahan skema. Tes kontrak root: 873/873.
+- Review: architect xhigh + dua putaran reviewer; temuan diperbaiki kecuali yang tercatat di atas.
+
+Pemakaian (`session-usage.py`, sesi 81d47474): 30 menit sejak 10:53, puncak konteks 267k, 4 kali compact. Biaya* total 18789k (utama sonnet 16163k, subagent sonnet 2014k, opus 404k, haiku 207k). `parallel-report`: 27 spawn, maks 6 bersamaan, rata-rata 1,5 subagent berjalan per agent, rentetan terpanjang tanpa subagent 21 langkah.
+
+Subagent: total 27, puncak 6 bersamaan (batas RAM merah), token heavy dipegang agent engineer sendiri lewat job latar `heavy`.

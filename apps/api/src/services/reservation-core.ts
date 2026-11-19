@@ -36,6 +36,7 @@ import {
 import { HttpError } from "../lib/http-error.ts";
 import { recordAudit } from "./core-audit.ts";
 import { appendOutbox } from "./core-outbox.ts";
+import { depositIntentMayStillPay } from "./reservation-deposit-proof.ts";
 import {
   loadTenantAccessInTransaction,
   resolveAccessSnapshot,
@@ -674,6 +675,11 @@ export type DepositState = {
    * creation time plus the payment window (the attach grace).
    */
   readonly payableUntil: Date;
+  /**
+   * legend-pdi5u: an intent of the DP is still open at the provider (see
+   * `depositIntentMayStillPay`), so the local `payableUntil` is not proof.
+   */
+  readonly providerPending: boolean;
 };
 
 /**
@@ -700,6 +706,8 @@ export async function loadDepositState(
             status: paymentIntents.status,
             expiresAt: paymentIntents.expiresAt,
             paidAt: paymentIntents.paidAt,
+            providerRef: paymentIntents.providerRef,
+            providerFinalAt: paymentIntents.providerFinalAt,
           })
           .from(paymentIntents)
           .where(
@@ -718,7 +726,11 @@ export async function loadDepositState(
   for (const intent of intents)
     if (intent.status === "pending" && intent.expiresAt > payableUntil)
       payableUntil = intent.expiresAt;
-  return { settledIntentId: settled?.id ?? null, payableUntil };
+  return {
+    settledIntentId: settled?.id ?? null,
+    payableUntil,
+    providerPending: intents.some(depositIntentMayStillPay),
+  };
 }
 
 /**
@@ -899,7 +911,7 @@ export async function reconcileDeposit(
     });
     return updated;
   }
-  if (state.payableUntil <= now)
+  if (state.payableUntil <= now && !state.providerPending)
     return cancelUnpaidDeposit(tx, context, row, now);
   return row;
 }

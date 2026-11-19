@@ -110,7 +110,12 @@ async function oldLinkBlock(
   if (row.depositPaymentLinkId === null && row.depositPaymentId === null)
     return null;
   const state = await loadDepositState(tx, context, row);
-  if (state.settledIntentId === null && state.payableUntil <= now) return null;
+  if (
+    state.settledIntentId === null &&
+    state.payableUntil <= now &&
+    !state.providerPending
+  )
+    return null;
   return new ReservationError("RESERVATION_DEPOSIT_PAYMENT_PENDING");
 }
 

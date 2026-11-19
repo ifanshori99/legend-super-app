@@ -70,8 +70,9 @@ let otherTenant: IsolatedTenant;
 let outletC: string;
 let wideCashier: { client: ReturnType<typeof agent>; userId: string };
 // Supervisor-like staff of outlet A: pos.sale.create AND facility.booth.operate.
-// The slots read needs both today (getFacilityAvailability asks for the booth
-// permission), so the 200 slot tests use this user, not the pure cashier.
+// Bead legend-tkxhs: the slots read needs only pos.sale.create (the pure
+// cashier `world.cashier`), so this user is a control that a holder of both
+// permissions still reads slots, and the one who may read /api/facility/availability.
 let boothCashier: { client: ReturnType<typeof agent>; userId: string };
 let anonymous: ReturnType<typeof agent>;
 
@@ -663,7 +664,7 @@ describe("legend-hpgyw ticket cashier products: catalog", () => {
 
 describe("legend-hpgyw ticket cashier slots: free start times", () => {
   it("legend-hpgyw a free area lists ordered, well-formed slots that include the usual sale time", async () => {
-    const reply = await slotsOf(boothA(), world.outletA, {
+    const reply = await slotsOf(cashierA(), world.outletA, {
       facilityId: world.facilityId,
       areaId: ids.slotArea,
       date: slotDate(),
@@ -705,7 +706,7 @@ describe("legend-hpgyw ticket cashier slots: free start times", () => {
       areaId: ids.slotArea,
       date: slotDate(),
     };
-    const before = await slotsOf(boothA(), world.outletA, query);
+    const before = await slotsOf(cashierA(), world.outletA, query);
     const beforeStarts = (before.body.data.slots as { startsAt: string }[]).map(
       (s) => Date.parse(s.startsAt),
     );
@@ -721,7 +722,7 @@ describe("legend-hpgyw ticket cashier slots: free start times", () => {
     });
     expect(sold.status, JSON.stringify(sold.body)).toBe(200);
 
-    const after = await slotsOf(boothA(), world.outletA, query);
+    const after = await slotsOf(cashierA(), world.outletA, query);
     expect(after.status, JSON.stringify(after.body)).toBe(200);
     const afterStarts = (after.body.data.slots as { startsAt: string }[]).map(
       (s) => Date.parse(s.startsAt),
@@ -735,23 +736,48 @@ describe("legend-hpgyw ticket cashier slots: free start times", () => {
     );
   });
 
-  it("legend-hpgyw a pure cashier (pos.sale.create without facility.booth.operate) gets 403 on slots today", async () => {
-    // keputusan CTO menunggu: ekstraksi inti slot setelah ghostex/993 landing.
-    // Until then slots reuse getFacilityAvailability, which needs the booth
-    // permission, so a pure cashier is refused. When the slot core is extracted
-    // this test is expected to flip to 200 and be rewritten.
-    expectRefused(
-      await slotsOf(cashierA(), world.outletA, {
-        facilityId: world.facilityId,
-        areaId: ids.slotArea,
-        date: slotDate(),
-      }),
-      [403],
-    );
+  it("legend-tkxhs a pure cashier (pos.sale.create without facility.booth.operate) reads the slots (200)", async () => {
+    // Spec (brief 1163 card 2): the POS ticket slots need only pos.sale.create.
+    const reply = await slotsOf(cashierA(), world.outletA, {
+      facilityId: world.facilityId,
+      areaId: ids.slotArea,
+      date: slotDate(),
+    });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(200);
+    expect(reply.body.data).toMatchObject({
+      facilityId: world.facilityId,
+      areaId: ids.slotArea,
+      businessDate: slotDate(),
+    });
+    const slots = reply.body.data.slots as { startsAt: string }[];
+    // Not asserting the usual sale time here: the test above sells that slot.
+    expect(slots.length).toBeGreaterThan(0);
+  });
+
+  it("legend-tkxhs a staff with pos.sale.create AND facility.booth.operate still reads the slots (200), same list as the pure cashier", async () => {
+    const query = {
+      facilityId: world.facilityId,
+      areaId: ids.slotArea,
+      date: slotDate(),
+    };
+    const booth = await slotsOf(boothA(), world.outletA, query);
+    const pure = await slotsOf(cashierA(), world.outletA, query);
+    expect(booth.status, JSON.stringify(booth.body)).toBe(200);
+    expect(pure.status, JSON.stringify(pure.body)).toBe(200);
+    expect(booth.body.data.slots).toEqual(pure.body.data.slots);
+  });
+
+  it("legend-tkxhs the pure cashier still gets 403 on the booth availability route (/api/facility/availability needs facility.booth.operate), while the supervisor gets 200", async () => {
+    const path = `/api/facility/availability?facilityId=${world.facilityId}&date=${slotDate()}`;
+    const refused = await get(cashierA(), path);
+    expect(refused.status, JSON.stringify(refused.body)).toBe(403);
+    expect(errorCode(refused.body), JSON.stringify(refused.body)).toBeTruthy();
+    const allowed = await get(boothA(), path);
+    expect(allowed.status, JSON.stringify(allowed.body)).toBe(200);
   });
 
   it("legend-hpgyw empty state: an area without units has no free slots (200, empty list)", async () => {
-    const reply = await slotsOf(boothA(), world.outletA, {
+    const reply = await slotsOf(cashierA(), world.outletA, {
       facilityId: world.facilityId,
       areaId: ids.emptyArea,
       date: slotDate(),
@@ -768,7 +794,7 @@ describe("legend-hpgyw ticket cashier slots: free start times", () => {
       `slots?areaId=${world.areaId}&date=${slotDate()}`,
     ])
       expectRefused(
-        await get(boothA(), `${base(world.outletA)}/${path}`),
+        await get(cashierA(), `${base(world.outletA)}/${path}`),
         [400, 422],
       );
   });
@@ -776,7 +802,7 @@ describe("legend-hpgyw ticket cashier slots: free start times", () => {
   it("legend-hpgyw a facility or area of another outlet is refused through outlet A's path", async () => {
     // Facility of outlet B through outlet A.
     expectRefused(
-      await slotsOf(boothA(), world.outletA, {
+      await slotsOf(cashierA(), world.outletA, {
         facilityId: ids.facilityB,
         areaId: ids.areaB,
         date: slotDate(),
@@ -785,7 +811,7 @@ describe("legend-hpgyw ticket cashier slots: free start times", () => {
     );
     // Area of outlet B under outlet A's facility.
     expectRefused(
-      await slotsOf(boothA(), world.outletA, {
+      await slotsOf(cashierA(), world.outletA, {
         facilityId: world.facilityId,
         areaId: ids.areaB,
         date: slotDate(),
@@ -837,9 +863,7 @@ describe("legend-hpgyw ticket cashier reads: access", () => {
 
     it(`legend-hpgyw ${endpoint}: a cashier whose role reaches outlet A only is refused at outlet B of the same tenant`, async () => {
       expectRefused(
-        await readers(world.outletB)[endpoint](
-          endpoint === "slots" ? boothA() : cashierA(),
-        ),
+        await readers(world.outletB)[endpoint](cashierA()),
         [403, 404],
       );
     });
@@ -862,10 +886,7 @@ describe("legend-hpgyw ticket cashier reads: access", () => {
   it("legend-hpgyw control: the cashier of outlet A reads all three at outlet A (200), so the refusals above are about access", async () => {
     const r = readers(world.outletA);
     for (const endpoint of ["customers", "products", "slots"] as const) {
-      // Slots need the booth permission too (see the pure-cashier 403 test).
-      const reply = await r[endpoint](
-        endpoint === "slots" ? boothA() : cashierA(),
-      );
+      const reply = await r[endpoint](cashierA());
       expect(reply.status, `${endpoint}: ${JSON.stringify(reply.body)}`).toBe(
         200,
       );

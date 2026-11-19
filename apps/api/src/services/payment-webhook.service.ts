@@ -1088,6 +1088,9 @@ async function processPaymentEvent(
               amountIdr,
               providerRef: event.data.id,
               at,
+              // A retried event with no paid time must not look late: the
+              // delivery time, not the retry's processing time, is the bound.
+              receivedAt: row.receivedAt,
             },
             { type: "system" },
             now,

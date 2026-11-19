@@ -41,7 +41,7 @@ import {
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { findFacilityOutletId } from "./facility-pos-ticket-sale.ts";
-import { getFacilityAvailability } from "./facility-slots.service.ts";
+import { computeFacilityAvailability } from "./facility-slots.service.ts";
 import { likePattern } from "./menu-internals.ts";
 
 /**
@@ -189,7 +189,7 @@ export async function listPosTicketProducts(
  */
 export async function listPosTicketSlots(
   context: ScopedTenantContext,
-  actorUserId: string,
+  _actorUserId: string,
   outletId: OutletId,
   query: { facilityId: string; areaId: string; date: string },
   now = new Date(),
@@ -209,12 +209,7 @@ export async function listPosTicketSlots(
     facilityOutlet.toLowerCase() !== outletId.toLowerCase()
   )
     throw new HttpError(404, "NOT_FOUND", "Fasilitas tidak ditemukan.");
-  const availability = await getFacilityAvailability(
-    context,
-    actorUserId,
-    query,
-    now,
-  );
+  const availability = await computeFacilityAvailability(context, query, now);
   const area = availability.areas.find((row) => row.areaId === query.areaId);
   const byStart = new Map<string, PosTicketSlot>();
   for (const unit of area?.units ?? [])

@@ -267,16 +267,41 @@ export async function getFacilityAvailability(
   now = new Date(),
 ): Promise<FacilityAvailability> {
   const actor = userIdSchema.parse(actorUserId);
-  return withTenant(db, context, async (tx) => {
-    const tenantId = context.tenant.tenantId;
-    const facility = await loadFacility(tx, context, query.facilityId);
-    await assertFacilityPermission(
+  return buildFacilityAvailability(context, query, now, (tx, facility) =>
+    assertFacilityPermission(
       tx,
       context,
       actor,
       OPERATE_PERMISSION,
       facility.outletId,
-    );
+    ),
+  );
+}
+
+/**
+ * The availability grid without the `facility.booth.operate` check
+ * (legend-tkxhs). For callers whose route already authorised the caller and
+ * pinned the facility to the outlet, e.g. the cashier ticket sale
+ * (`pos.sale.create`). Runs under RLS (withTenant) like the checked variant.
+ */
+export async function computeFacilityAvailability(
+  context: ScopedTenantContext,
+  query: { facilityId: string; date: string; areaId?: string },
+  now = new Date(),
+): Promise<FacilityAvailability> {
+  return buildFacilityAvailability(context, query, now);
+}
+
+async function buildFacilityAvailability(
+  context: ScopedTenantContext,
+  query: { facilityId: string; date: string; areaId?: string },
+  now: Date,
+  authorize?: (tx: Tx, facility: FacilityRow) => Promise<unknown>,
+): Promise<FacilityAvailability> {
+  return withTenant(db, context, async (tx) => {
+    const tenantId = context.tenant.tenantId;
+    const facility = await loadFacility(tx, context, query.facilityId);
+    await authorize?.(tx, facility);
     const timeZone = await outletTimeZone(tx, context, facility.outletId);
     if (query.areaId) {
       const area = await loadArea(tx, context, query.areaId);
