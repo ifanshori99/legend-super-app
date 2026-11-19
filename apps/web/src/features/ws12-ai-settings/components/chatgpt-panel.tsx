@@ -664,9 +664,11 @@ function PendingView({
         </Button>
       </div>
       <ActionError error={cancel.error} />
-      <p className="text-sm leading-5 text-muted-foreground">
-        {t("aiSettingsChatgpt.pending.cancelHint")}
-      </p>
+      {!locked && (
+        <p className="text-sm leading-5 text-muted-foreground">
+          {t("aiSettingsChatgpt.pending.cancelHint")}
+        </p>
+      )}
     </>
   );
 }
