@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="ghostex-page" content="v2">
+<title>Review tampilan: member tukar poin di kasir (alur A)</title>
+<style>
+  .how { margin: 0 0 8px; font-size: 13px; line-height: 1.45; color: var(--gx-muted); }
+  .how b { color: var(--gx-fg); font-weight: 600; }
+  .shots { display: grid; grid-template-columns: minmax(0, 390px) minmax(0, 1fr); gap: 14px; align-items: start; margin-bottom: 18px; }
+  .shots figure { margin: 0; min-width: 0; }
+  .shots img { box-sizing: border-box; display: block; max-width: 100%; height: auto; border-radius: 10px; border: 1px solid var(--gx-line); }
+  .shots figcaption { margin-top: 6px; font-size: 12.5px; line-height: 1.45; color: var(--gx-muted); }
+  .shots figcaption b { color: var(--gx-fg); font-weight: 600; }
+  .shots.duo { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .narrow { max-width: 390px; }
+  @media (max-width: 760px) { .shots, .shots.duo { grid-template-columns: minmax(0, 1fr); } }
+</style>
+</head>
+<body>
+<gx-questions submit="Kirim ke CTO">
+  <header>
+    <span class="gx-eyebrow">Review tampilan · untuk founder</span>
+    <h1>Member tukar poin di kasir (alur A)</h1>
+    <p class="gx-lede">Member memindai QR identitas, kasir menautkan tagihan, lalu member memilih berapa poin dipakai dan menunjukkan QR sekali pakai ke kasir. Di bawah ini 14 keadaan layar dalam urutan alur, HP dan layar lebar berdampingan. Cukup lihat, lalu jawab dua pertanyaan.</p>
+    <div class="gx-chips">
+      <span class="gx-chip"><b>14</b> keadaan, 28 gambar</span>
+      <span class="gx-chip"><b>2</b> pertanyaan (Q53, Q54)</span>
+      <span class="gx-chip">Contoh data, bukan uang sungguhan</span>
+    </div>
+  </header>
+
+  <h2>A. Keadaan layar sesuai urutan alur</h2>
+  <gx-wide>
+    <h3>1. Tagihan aktif</h3>
+    <p class="how">Member sudah dipindai kasir, satu tagihan terhubung. Dia melihat outlet, nomor tagihan, sisa bayar, dan batas poin yang bisa dipakai (maks. 1.240 poin, setara Rp124.000).</p>
+    <div class="shots">
+      <figure class="narrow"><img src="img/member-tukar-poin-tagihan-aktif-390.png" alt="1. Tagihan aktif, HP 390"><figcaption><b>HP (390)</b></figcaption></figure>
+      <figure><img src="img/member-tukar-poin-tagihan-aktif-1280.png" alt="1. Tagihan aktif, layar lebar 1280"><figcaption><b>Layar lebar (1280)</b></figcaption></figure>
+    </div>
+
+    <h3>2. Pilih tagihan</h3>
+    <p class="how">Ada dua tagihan terhubung (Kemang dan Senopati). Member wajib memilih sendiri; aplikasi tidak memilihkan.</p>
+    <div class="shots">
+      <figure class="narrow"><img src="img/member-tukar-poin-pilih-tagihan-390.png" alt="2. Pilih tagihan, HP 390"><figcaption><b>HP (390)</b></figcaption></figure>
+      <figure><img src="img/member-tukar-poin-pilih-tagihan-1280.png" alt="2. Pilih tagihan, layar lebar 1280"><figcaption><b>Layar lebar (1280)</b></figcaption></figure>
+    </div>
+
+    <h3>3. Pilih jumlah poin</h3>
+    <p class="how">Member mengetik jumlah poin. Layar langsung menghitung nilai potongan, sisa bayar, dan sisa poin. Contoh: 500 poin jadi Rp50.000, sisa bayar Rp135.000.</p>
+    <div class="shots">
+      <figure class="narrow"><img src="img/member-tukar-poin-pilih-poin-390.png" alt="3. Pilih jumlah poin, HP 390"><figcaption><b>HP (390)</b></figcaption></figure>
+      <figure><img src="img/member-tukar-poin-pilih-poin-1280.png" alt="3. Pilih jumlah poin, layar lebar 1280"><figcaption><b>Layar lebar (1280)</b></figcaption></figure>
+    </div>
+
+    <h3>4. Pilih poin, contoh 740 poin</h3>
+    <p class="how">Contoh lain: 740 poin jadi Rp74.000, sisa bayar Rp111.000, sisa poin 500. Angka ikut berubah saat jumlah diganti.</p>
+    <div class="shots">
+      <figure class="narrow"><img src="img/member-tukar-poin-pilih-poin-740-390.png" alt="4. Pilih poin, contoh 740 poin, HP 390"><figcaption><b>HP (390)</b></figcaption></figure>
+      <figure><img src="img/member-tukar-poin-pilih-poin-740-1280.png" alt="4. Pilih poin, contoh 740 poin, layar lebar 1280"><figcaption><b>Layar lebar (1280)</b></figcaption></figure>
+    </div>
+
+    <h3>5. Poin tidak cukup</h3>
+    <p class="how">Member mengetik 1500, lebih dari saldo 1.240. Kotak jadi merah, ada penjelasan batas saldo, dan tombol Buat QR tidak bisa ditekan.</p>
+    <div class="shots">
+      <figure class="narrow"><img src="img/member-tukar-poin-poin-kurang-390.png" alt="5. Poin tidak cukup, HP 390"><figcaption><b>HP (390)</b></figcaption></figure>
+      <figure><img src="img/member-tukar-poin-poin-kurang-1280.png" alt="5. Poin tidak cukup, layar lebar 1280"><figcaption><b>Layar lebar (1280)</b></figcaption></figure>
+    </div>
+
+    <h3>6. QR tukar poin aktif</h3>
+    <p class="how">QR untuk 500 poin (Rp50.000) dengan hitung mundur 2:00. QR berlaku 120 detik, hanya sekali pakai, dan hanya untuk tagihan ini. Ada peringatan jangan bagikan QR atau tangkapan layarnya, dan tombol Ubah jumlah poin.</p>
+    <div class="shots">
+      <figure class="narrow"><img src="img/member-tukar-poin-qr-aktif-390.png" alt="6. QR tukar poin aktif, HP 390"><figcaption><b>HP (390)</b></figcaption></figure>
+      <figure><img src="img/member-tukar-poin-qr-aktif-1280.png" alt="6. QR tukar poin aktif, layar lebar 1280"><figcaption><b>Layar lebar (1280)</b></figcaption></figure>
+    </div>
+
+    <h3>7. QR kedaluwarsa</h3>
+    <p class="how">Hitungan sudah 00:00 dan layar berkata QR 500 poin tidak bisa dipakai lagi. Ada peringatan bahwa waktu habis tidak memastikan hasil penukaran, jadi member menekan Periksa status dulu (cek status, tagihan, dan saldo) sebelum membuat QR baru. QR lama tidak ditampilkan.</p>
+    <div class="shots">
+      <figure class="narrow"><img src="img/member-tukar-poin-qr-kedaluwarsa-390.png" alt="7. QR kedaluwarsa, HP 390"><figcaption><b>HP (390)</b></figcaption></figure>
+      <figure><img src="img/member-tukar-poin-qr-kedaluwarsa-1280.png" alt="7. QR kedaluwarsa, layar lebar 1280"><figcaption><b>Layar lebar (1280)</b></figcaption></figure>
+    </div>
+
+    <h3>8. QR sudah dipakai</h3>
+    <p class="how">Judul 500 poin sudah digunakan, sisa poin 740 (1.240 dikurangi 500). Potongan Rp50.000 masuk tagihan, sisa Rp135.000 tetap dibayar di kasir. Layar menegaskan ini bukan pelunasan dan QR tidak bisa dipakai lagi.</p>
+    <div class="shots">
+      <figure class="narrow"><img src="img/member-tukar-poin-sudah-dipakai-390.png" alt="8. QR sudah dipakai, HP 390"><figcaption><b>HP (390)</b></figcaption></figure>
+      <figure><img src="img/member-tukar-poin-sudah-dipakai-1280.png" alt="8. QR sudah dipakai, layar lebar 1280"><figcaption><b>Layar lebar (1280)</b></figcaption></figure>
+    </div>
+
+    <h3>9. Poin setelah tukar</h3>
+    <p class="how">Saldo baru 740 poin, potongan Rp50.000 tercatat, dan sisa tagihan Rp135.000 masih dibayar di kasir.</p>
+    <div class="shots">
+      <figure class="narrow"><img src="img/member-tukar-poin-poin-setelah-390.png" alt="9. Poin setelah tukar, HP 390"><figcaption><b>HP (390)</b></figcaption></figure>
+      <figure><img src="img/member-tukar-poin-poin-setelah-1280.png" alt="9. Poin setelah tukar, layar lebar 1280"><figcaption><b>Layar lebar (1280)</b></figcaption></figure>
+    </div>
+
+    <h3>10. Gagal</h3>
+    <p class="how">Permintaan belum mendapat jawaban. QR disembunyikan dan member diminta memeriksa status dulu sebelum mencoba lagi, supaya poin tidak terpotong dua kali.</p>
+    <div class="shots">
+      <figure class="narrow"><img src="img/member-tukar-poin-gagal-390.png" alt="10. Gagal, HP 390"><figcaption><b>HP (390)</b></figcaption></figure>
+      <figure><img src="img/member-tukar-poin-gagal-1280.png" alt="10. Gagal, layar lebar 1280"><figcaption><b>Layar lebar (1280)</b></figcaption></figure>
+    </div>
+
+    <h3>11. Belum ada tagihan</h3>
+    <p class="how">Judul Belum ada tagihan terhubung dengan saldo 1.240 poin di atas. Member diminta menunjukkan QR member ke kasir, ada tombol Tampilkan QR member dan Periksa tagihan lagi. Poin belum digunakan.</p>
+    <div class="shots">
+      <figure class="narrow"><img src="img/member-tukar-poin-tanpa-tagihan-390.png" alt="11. Belum ada tagihan, HP 390"><figcaption><b>HP (390)</b></figcaption></figure>
+      <figure><img src="img/member-tukar-poin-tanpa-tagihan-1280.png" alt="11. Belum ada tagihan, layar lebar 1280"><figcaption><b>Layar lebar (1280)</b></figcaption></figure>
+    </div>
+
+    <h3>12. QR member</h3>
+    <p class="how">Lembar yang naik dari bawah di atas layar tanpa tagihan, berisi QR member untuk dipindai kasir agar tagihan terhubung. Berlaku 2:00 menit dan sekali pakai, ada tombol Tutup. Poin belum digunakan.</p>
+    <div class="shots">
+      <figure class="narrow"><img src="img/member-tukar-poin-qr-member-390.png" alt="12. QR member, HP 390"><figcaption><b>HP (390)</b></figcaption></figure>
+      <figure><img src="img/member-tukar-poin-qr-member-1280.png" alt="12. QR member, layar lebar 1280"><figcaption><b>Layar lebar (1280)</b></figcaption></figure>
+    </div>
+
+    <h3>13. Memuat</h3>
+    <p class="how">Judul Tunggu sebentar. Saldo tampil sebagai tanda hubung (belum ada angka) dan isi kartu berupa kotak abu-abu pengganti. Ada pesan agar member tidak memindai ulang atau mengulangi penukaran selama pemeriksaan berlangsung.</p>
+    <div class="shots">
+      <figure class="narrow"><img src="img/member-tukar-poin-loading-390.png" alt="13. Memuat, HP 390"><figcaption><b>HP (390)</b></figcaption></figure>
+      <figure><img src="img/member-tukar-poin-loading-1280.png" alt="13. Memuat, layar lebar 1280"><figcaption><b>Layar lebar (1280)</b></figcaption></figure>
+    </div>
+
+    <h3>14. Tidak ada internet</h3>
+    <p class="how">Judul Koneksi terputus. Saldo terakhir 1.240 poin diberi tanda Belum diperbarui dan bukan konfirmasi saldo saat ini. QR tidak ditampilkan saat offline. Ada peringatan agar tidak mengulang penukaran sebelum statusnya jelas, dan tombol Periksa koneksi dan status.</p>
+    <div class="shots">
+      <figure class="narrow"><img src="img/member-tukar-poin-offline-390.png" alt="14. Tidak ada internet, HP 390"><figcaption><b>HP (390)</b></figcaption></figure>
+      <figure><img src="img/member-tukar-poin-offline-1280.png" alt="14. Tidak ada internet, layar lebar 1280"><figcaption><b>Layar lebar (1280)</b></figcaption></figure>
+    </div>
+
+  </gx-wide>
+
+  <h2>B. Beda dengan mockup</h2>
+  <p class="how">Mockup yang dulu dibuat memakai warna rust dan ivory. Layar jadi memakai warna petrol seperti aplikasi member sekarang. Tiga layar kunci di bawah menunjukkan bedanya. Layar jadi juga punya dua keadaan yang tidak ada di mockup: pilih tagihan dan pilih poin dengan saldo sisa 740.</p>
+  <gx-wide>
+    <h3>Tagihan aktif</h3>
+    <p class="how">Mockup: foto kafe di belakang header, warna rust dan ivory, tombol oranye bata. Layar jadi: header polos, warna petrol, ada menu bawah (Member, Poin, Hadiah, Voucher, Lainnya), dan tombol tambahan Periksa tagihan lagi. Bahasa memakai Anda, bukan Kamu.</p>
+    <div class="shots">
+      <figure class="narrow"><img src="img/mockup-member-tukar-poin-tagihan-aktif-390.png" alt="Mockup Tagihan aktif, HP 390"><figcaption><b>Mockup (rust/ivory)</b></figcaption></figure>
+      <figure class="narrow"><img src="img/member-tukar-poin-tagihan-aktif-390.png" alt="Layar jadi Tagihan aktif, HP 390"><figcaption><b>Layar jadi (petrol)</b></figcaption></figure>
+    </div>
+
+    <h3>Pilih poin</h3>
+    <p class="how">Isinya sama. Bedanya warna, header, dan menu bawah. Mockup punya baris Saldo tersedia di dalam kartu; di layar jadi saldo tampil di layar tagihan aktif.</p>
+    <div class="shots">
+      <figure class="narrow"><img src="img/mockup-member-tukar-poin-pilih-poin-390.png" alt="Mockup Pilih poin, HP 390"><figcaption><b>Mockup (rust/ivory)</b></figcaption></figure>
+      <figure class="narrow"><img src="img/member-tukar-poin-pilih-poin-390.png" alt="Layar jadi Pilih poin, HP 390"><figcaption><b>Layar jadi (petrol)</b></figcaption></figure>
+    </div>
+
+    <h3>QR aktif</h3>
+    <p class="how">Hitung mundur mockup 02:00, layar jadi 2:00. Tombol bawah mockup Kembali ke tagihan, layar jadi Ubah jumlah poin. QR di layar jadi lebih besar, dan tulisan QR contoh pada mockup tidak ada.</p>
+    <div class="shots">
+      <figure class="narrow"><img src="img/mockup-member-tukar-poin-qr-aktif-390.png" alt="Mockup QR aktif, HP 390"><figcaption><b>Mockup (rust/ivory)</b></figcaption></figure>
+      <figure class="narrow"><img src="img/member-tukar-poin-qr-aktif-390.png" alt="Layar jadi QR aktif, HP 390"><figcaption><b>Layar jadi (petrol)</b></figcaption></figure>
+    </div>
+
+  </gx-wide>
+
+  <gx-question tag="Q53" title="Layar tukar poin member boleh lanjut ke backend?">
+    <p>Bila memilih Ada perbaikan, tulis layar mana dan maunya bagaimana di kotak catatan.</p>
+    <gx-choice value="Setuju, lanjut" recommended>Setuju, lanjut<small>Rekomendasi. Layar sesuai alur A, tim lanjut menyambungkan ke backend.</small></gx-choice>
+    <gx-choice value="Ada perbaikan">Ada perbaikan (tulis)<small>Tulis catatan: layar mana, apa yang diubah.</small></gx-choice>
+  </gx-question>
+
+  <gx-question tag="Q54" title="Warna layar member">
+    <gx-choice value="Petrol" recommended>Petrol seperti aplikasi member sekarang<small>Rekomendasi: konsisten dengan layar poin dan QR yang sudah ada.</small></gx-choice>
+    <gx-choice value="Rust/ivory">Rust/ivory seperti mockup<small>Hangat seperti mockup, tapi beda dari layar member lain.</small></gx-choice>
+  </gx-question>
+</gx-questions>
+</body>
+</html>
