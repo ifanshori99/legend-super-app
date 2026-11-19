@@ -19,3 +19,13 @@ Cabang `ws/1172-access-audit-guard` (base `milestone/m1`). Tingkat K (akses). Ta
 ## Bukti
 
 Test gagal-dulu per kartu di `src/test/...`. Test-writer menulis; agent utama menjalankan.
+
+## Tambahan: legend-e3qgo (jam DB di jalur lain pemegang kunci tenant)
+
+Ganti jam aplikasi dengan `await readDbClock(tx)` (export dari `src/services/access.service.ts`), dibaca SESUDAH kunci advisory `legend:role-assignment-end:<tenant>`:
+
+- `src/services/sole-owner-self-approval.ts` (~:73, jalur uang: jangan sampai lebih longgar).
+- `src/services/hris-offboarding.service.ts` (~:678).
+- `src/services/hris-employee-manager.service.ts` (~:150; default parameter `now = new Date()` dibaca sebelum kunci: pindahkan ke sesudah kunci, parameter tetap boleh sebagai override test).
+
+Tiap jalur: test jam miring (jam aplikasi dipalsukan tertinggal DAN maju lewat `vi.useFakeTimers({ toFake: ["Date"] })`, pola di `src/test/access-update-role-advisory-lock.test.ts` dan `access-role-assignment-db-clock.test.ts`; lower bound SQL pakai `date_trunc('milliseconds', ...)`). Jangan sentuh `packages/shared/.../grants.ts`.
