@@ -303,6 +303,8 @@ describe("legend-t4y7 GET /api/me/access", () => {
       supportSession: null,
       // No assignment, so no right to change an employee's manager (legend-qhqf8).
       canChangeEmployeeManager: false,
+      // No assignment, so no menu.item.manage for the station rename hint (legend-huz8).
+      canManageStationConfig: false,
     });
 
     const ownerUser = await signedIn("Owner Access", { mfa: false });

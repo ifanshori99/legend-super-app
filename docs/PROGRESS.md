@@ -7826,6 +7826,20 @@ Gerbang (per tahap): workspace links + lint hijau; typecheck API+web hijau 2m49 
 
 Biaya sesi merge train (sampai 22:00 18 Nov, batch90 + persiapan): session-usage total biaya* 9367k, puncak konteks 267k, compact 2, subagent 7. parallel-report sejak 18:00: sesi merge train bukan sesi tercatat (rata-rata subagent per agent 0.07, maks 2.33 untuk 6 sesi). Subagent batch92: total 2 (implementer 1, architect 1), puncak 2 bersamaan, token heavy dipegang thread merge train ini.
 
+## Merge train batch93 (19 Nov 2026, `int/batch93` -> `milestone/m1`)
+
+Dasar `origin/milestone/m1` e2a63062e (batch92). Cabang masuk (6): `ghostex/45769078` (b8927ea90; memuat 8eb871ce), `ws/1081-provisioning-rls` (418510aeb), `ws/1082-ui-ponsel` (15bfa3a80), `ws/1086-hris-kecil` (3b0baeb2e), `ws/1087-akses-lanjutan` (2e178b257), `ws/1085-pos-edc-kecil` (79aa39610). Keluar: `ws/1094-akses-perangkat-bersama-sisa` (ditahan CTO, SO 1112 P1); `ws/1096-pos-kasir-tiket-struk` pindah ke batch94.
+
+Peta migrasi (nomor lama -> baru, `when`): 0676 -> 0489 (1795000000106), 0677 -> 0490 (...107), 0692 -> 0491 (...108), 0702 -> 0492 (...109). `db:generate` kosong sesudah tiap renumber (legend-w8cwg: kosong di batch yang memuat 45769078). `scripts/migration-renumber.mjs` dilonggarkan: bila cabang tak punya snapshot lama untuk migrasinya, seluruh snapshot memakai skema gabungan dengan peringatan (drizzle hanya membandingkan snapshot terakhir). Komentar nomor lama di kode diganti.
+
+Konflik: `provision-roles.ts` + `provision-roles-audit.test.ts` (qh11l SET-only recon role + 1081 su9c/ecgfy/eyscy): kedua sisi dipertahankan, `auditApp` memanggil `assertReconRoleReachedOnly` + `assertNoQueueSchemaAccess`, `auditRoles` memanggil `assertSecurityDefinerNotPublic`; satu architect: tanpa P1/P2. Snapshot `0480_snapshot.json` (bentrok dengan snapshot cabang 1087) diambil dari sisi m1 lalu renumber membuat 0492.
+
+Perbaikan di cabang batch: `tests/operations-screen-slot.test.mjs` mengikuti header ponsel 1082 (min-h-14, atribut title pada judul); `platform-access-api.test.ts` kasus kosong menambah `canManageStationConfig: false` (kunci baru 1087).
+
+Gerbang (per tahap): links 0s; lint 2m49; typecheck 2m28 (heap 8 GB); fast gate 40 berkas API + 12 root, hijau 12m30; build 12 detik; e2e produksi 18 lulus, 1 skip. Full run percobaan 1 (05:01, 7m): 2 gagal di tes root `operations-screen-slot` (tes basi karena 1082), diperbaiki. Percobaan 2 (05:10-07:57, 2j47m, berjalan bersamaan dengan full run batch94): root 3632 lulus, web 420 lulus, API 24320 lulus, 3 gagal: `platform-access-api` TEN-03 (nyata: kunci baru 1087, tes diperbaiki, 34/34 lulus bersama tes 1087) dan `rbac-audit-writer` (2 tes, flake lama; lulus terisolasi; perbaikan ada di `ws/1104a-flake-api`, batch94). Aturan Retro 50: kegagalan nyata diperbaiki dan terbukti; sisanya flake terdokumentasi.
+
+Biaya sesi merge train sampai batch93: session-usage total biaya* 11728k (utama 10789k), puncak konteks 267k, compact 2, subagent 8. Subagent batch93: implementer 1 (konflik 1081), architect 1 (review 1081), implementer 1 (konflik 1096, untuk batch94); puncak 2 bersamaan, token heavy dipegang thread merge train ini.
+
 ## 1020 SO recon ronde 2 (17 Nov 2026, cabang ghostex/1020-so-recon-ronde-2-fix, 88fd5d7c8)
 - F1 legend-qbsbr: refund dana parkir transaksi LAIN tidak lagi dihitung sebagai refund transaksi utama; refund dana milik transaksi sendiri dibandingkan dengan nilai transaksi (greatest evidence dan tagihan), bukan tagihan saja (temuan architect: tagihan 50k dibayar 150k).
 - F2 legend-svwdz: kredit DP pindahan dibatasi nilai bersih intent sumber (pool, alokasi created_at,id, floor 0), snapshot refund provider per remainder (migrasi 0636), flag recon tercatat `reservation_credit_recon_flags` (migrasi 0637) diperbarui saat refund provider dicatat. Guard refund tetap pandangan gross.
