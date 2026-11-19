@@ -610,6 +610,37 @@ export async function markRow(
   });
 }
 
+/** A repeated signed callback inside the recheck window hands a FINISHED row
+ * (`processed` or `ignored`) back to the worker so its backoff asks the
+ * provider again. This is the one deliberate way a closed row reopens: the
+ * caller proved the payment is still unsettled. `markRow` never does it
+ * (legend-tipkj), so a late failure cannot undo a finished row. Only a closed
+ * row is touched, never an open one. */
+export async function reopenFinishedRowForRecheck(
+  context: ScopedTenantContext,
+  rowId: string,
+  now: Date,
+): Promise<void> {
+  await withTenant(db, context, async (tx) => {
+    await tx
+      .update(gatewayWebhookEvents)
+      .set({
+        status: "failed",
+        lastErrorCode: "RECHECK_QUEUED",
+        processedAt: null,
+        attempts: sql`${gatewayWebhookEvents.attempts} + 1`,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(gatewayWebhookEvents.tenantId, context.tenant.tenantId),
+          eq(gatewayWebhookEvents.id, rowId),
+          inArray(gatewayWebhookEvents.status, ["processed", "ignored"]),
+        ),
+      );
+  });
+}
+
 /** Intent the event names: provider ref and `data.reference` (the intent id)
  * must both match. `unknown` may still resolve later (early event); `mismatch`
  * never will. legend-wourt: a provider ref that is not the intent's own is

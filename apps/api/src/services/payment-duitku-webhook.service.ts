@@ -63,6 +63,7 @@ import { duitkuCredentialSet } from "./payment-duitku";
 import {
   errorCodeOf,
   markRow,
+  reopenFinishedRowForRecheck,
   recordRejectedAttempt,
   tenantIsActive,
   tenantWideContext,
@@ -606,16 +607,7 @@ export async function receiveDuitkuCallback(input: {
       return { status: "duplicate", eventId };
     if (now.getTime() - row.updatedAt.getTime() < REPEAT_RECHECK_MS) {
       if (row.status === "processed" || row.status === "ignored")
-        await markRow(
-          context,
-          row.id,
-          {
-            status: "failed",
-            lastErrorCode: "RECHECK_QUEUED",
-            processedAt: null,
-          },
-          now,
-        );
+        await reopenFinishedRowForRecheck(context, row.id, now);
       return { status: "duplicate", eventId };
     }
   }
