@@ -252,3 +252,4 @@ Induk lebih dulu. Migrasi dinomori ulang dari ujung m1 saat batch disusun.
 - 09:09 ghostex/ai-layar-approval-waktu-1137 DITAHAN: SO 1148 P1 (options.now melewati jam server) + P2 (jam sebelum lock sole Owner). Keluar dari batch95. Fix 1151.
 - 09:21 ws/1144-refund-hold-echo 41b89605d (memuat 1135+1139; P2 echo-hold, SO 15 dua P2) DITAHAN sampai fix P3 R approved->refund.failed (G2yc3). 1139 tetap SIAP batch95. SO refund ronde 16 (1153, G03qv) menahan gerbang rilis.
 - 09:36 ws/1130-p2-pajak-sarapan-rekap 86ed0ec32 (fix SO 1146 P2: bukti penyedia di luar tx, valid tidak menunggu; 158 test hijau, tsc hijau) SIAP batch95 menggantikan 013a20709. SO 1154 (retry idempoten) menahan gerbang rilis saja.
+- 09:39 ghostex/member-qr-token-klien-1150 3ad22a061 (fmw1u QR attach-only member, kontrak shared body aditif; 28 vitest, tsc shared/web/api hijau, reviewer + ui-auditor) SIAP batch96 (tingkat S).
