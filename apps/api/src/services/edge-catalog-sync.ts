@@ -1038,8 +1038,14 @@ export async function listCatalogRecordsSinceTx(
     ),
     nextCursor: lastMark ?? input.query.since ?? null,
     hasMore: rows.length > limit,
-    visibleBelow: visibleBelow.toString(),
-    horizon: horizon.toString(),
+    // Same rule as protocolVersion: only an edge that asked gets the snapshot
+    // fields (an older edge's strict page schema would refuse them).
+    ...(stamped === undefined
+      ? {}
+      : {
+          visibleBelow: visibleBelow.toString(),
+          horizon: horizon.toString(),
+        }),
   });
   // Versioned HTTP readers tolerate optional station additions. Preserve the
   // legacy unversioned shape used by the strict catalog event publisher.

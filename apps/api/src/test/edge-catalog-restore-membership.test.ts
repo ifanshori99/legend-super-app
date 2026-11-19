@@ -554,6 +554,92 @@ describe("7r7q6 R2: an item missing from the restored cloud is deactivated on th
   }, 120_000);
 });
 
+describe("7r7q6 R2: a second rewind restarts the confirmation", () => {
+  it("marker h:H, then another rewind: the new replay replaces the old horizon, so a later page with H <= visibleBelow < new horizon deactivates nothing", async () => {
+    await seedBeforeRestore();
+    await rewind(ITEMS);
+    const restored = cloudWith(restoredItems());
+    let view: Visibility | null = SETTLED;
+    const served = {
+      fetchPage: withVisibility(restored.fetchPage, () => view),
+    };
+
+    await pull(served);
+    expect(await replayMarker(ITEMS), "first replay remembers H").toBe(
+      `h:${SETTLED.horizon}`,
+    );
+
+    // A second rewind (e.g. the cloud refused the cursor again); the cloud
+    // moved on (horizon 1010) and a row committed above its oldest open
+    // transaction (visibleBelow 1005) may still be hidden.
+    await rewind(ITEMS);
+    view = { visibleBelow: "1005", horizon: "1010" };
+    const second = await pull(served);
+
+    expect(second.streams[ITEMS]?.error, "second replay").toBeFalsy();
+    await expectXStillActive("a replay pull never deactivates");
+    // ASSUMPTION: per the header contract the last page of a replay moves the
+    // marker "1" -> h:<its horizon>; the old h:1000 must be gone either way.
+    expect(
+      await replayMarker(ITEMS),
+      "the old horizon h:1000 no longer counts",
+    ).not.toBe(`h:${SETTLED.horizon}`);
+
+    // Under the stale h:1000, visibleBelow 1005 would prove absence.
+    await pull(served);
+    await expectXStillActive(
+      "visibleBelow 1005 is below the new replay's horizon 1010: absence is not proven",
+    );
+
+    // Recovery still works once the cloud shows everything below 1010.
+    view = { visibleBelow: "1010", horizon: "1010" };
+    await pull(served);
+    await expectSoftRemoved(X, "X deactivated after a fresh confirmation");
+    expect(await replayMarker(ITEMS)).toBeNull();
+  }, 120_000);
+
+  it("marker h:H, then another rewind with a settled last page: the pull itself still deactivates nothing", async () => {
+    await seedBeforeRestore();
+    await rewind(ITEMS);
+    const restored = cloudWith(restoredItems());
+    const view: Visibility = { visibleBelow: "1010", horizon: "1010" };
+    const served = {
+      fetchPage: withVisibility(restored.fetchPage, () => view),
+    };
+
+    await pull(served);
+    await rewind(ITEMS);
+    await pull(served);
+
+    await expectXStillActive("every rewound pull is a first pull of a replay");
+  }, 120_000);
+});
+
+describe("7r7q6 R2: the cloud sends visibleBelow/horizon only to clients that ask with protocolVersion", () => {
+  const ask = async (withProtocol: boolean) =>
+    (await listCatalogRecordsSince(db, {
+      tenantId: tenantId as never,
+      outletId: O1 as never,
+      query: catalogSyncQuerySchema.parse({
+        stream: CATEGORIES,
+        limit: 100,
+        ...(withProtocol ? { protocolVersion: CATALOG_PROTOCOL_VERSION } : {}),
+      }),
+    })) as unknown as Rec;
+
+  it("a page requested without protocolVersion has no visibleBelow and no horizon", async () => {
+    const page = await ask(false);
+    expect(page).not.toHaveProperty("visibleBelow");
+    expect(page).not.toHaveProperty("horizon");
+  });
+
+  it("a page requested with protocolVersion carries both as decimal strings", async () => {
+    const page = await ask(true);
+    expect(page.visibleBelow).toMatch(/^\d+$/);
+    expect(page.horizon).toMatch(/^\d+$/);
+  });
+});
+
 describe("7r7q6 R2: absence is not inferred from partial information", () => {
   it("an incremental pull (valid stored cursor, one page without X) does not deactivate X", async () => {
     await seedBeforeRestore();

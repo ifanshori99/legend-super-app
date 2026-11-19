@@ -840,41 +840,38 @@ async function pullStream(
           // protecting rows (before the reset and the receipt filter below),
           // and the full replay that follows decides which items are absent.
           await raiseCatalogReceiptFloor(tx, options.edgeNodeId, succeededAt);
-          // A pinned horizon of an earlier replay survives another rewind
-          // while the cloud's snapshot is not below it (a cloud that refuses
-          // every cursor would otherwise never get past the first step).
-          const [earlier] = await tx
-            .select({ watermark: edgePullCheckpoints.watermark })
-            .from(edgePullCheckpoints)
-            .where(
-              and(
-                eq(edgePullCheckpoints.edgeNodeId, options.edgeNodeId),
-                eq(edgePullCheckpoints.stream, catalogReplayCheckpoint(stream)),
-              ),
-            )
-            .limit(1);
-          const pinnedBefore = /^h:([0-9]{1,20})$/.exec(
-            earlier?.watermark ?? "",
+          // Every rewind starts the two-step replay over: an older pinned
+          // horizon must not let this replay's own last page deactivate.
+          await saveCheckpointRow(
+            tx,
+            options.edgeNodeId,
+            catalogReplayCheckpoint(stream),
+            "1",
+            succeededAt,
           );
-          const keepsPin =
-            pinnedBefore !== null &&
-            page.horizon !== undefined &&
-            BigInt(pinnedBefore[1] ?? "0") <= BigInt(page.horizon);
-          if (!keepsPin)
-            await saveCheckpointRow(
-              tx,
-              options.edgeNodeId,
-              catalogReplayCheckpoint(stream),
-              "1",
-              succeededAt,
-            );
         }
         if (
           rewindFrom !== null ||
           current === null ||
           !isCurrentCursor(current)
-        )
+        ) {
           await resetCatalogSyncTxid(tx, tenantId, stream, options.edgeNodeId);
+          // A reset restarts the replay: a pinned horizon from before it no
+          // longer proves anything (only an existing marker is touched).
+          if (rewindFrom === null)
+            await tx
+              .update(edgePullCheckpoints)
+              .set({ watermark: "1", updatedAt: new Date() })
+              .where(
+                and(
+                  eq(edgePullCheckpoints.edgeNodeId, options.edgeNodeId),
+                  eq(
+                    edgePullCheckpoints.stream,
+                    catalogReplayCheckpoint(stream),
+                  ),
+                ),
+              );
+        }
       }
       // Canonical station events carry the original v3 shape. An equal-version
       // HTTP row can fill only its optional KDS settings before receipt filtering.
