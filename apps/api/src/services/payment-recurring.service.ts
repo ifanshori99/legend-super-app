@@ -56,6 +56,7 @@ import {
   RECURRING_GRACE_DAYS_MIN,
 } from "@starter/shared/payment/recurring";
 import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { env } from "../config/env";
 import { db } from "../db";
 import { customerProfiles } from "../db/schema/crm-member";
 import {
@@ -121,6 +122,13 @@ async function defaultClientFor(
   integrationId?: string | null,
   purpose: RecurringClientPurpose = "bill",
 ): Promise<DoitRecurringClient> {
+  // Kill switch (legend-ww562): the HTTP route gates it too, but a job or
+  // consumer calls the service directly. Every DOIT call goes through here.
+  if (!env.DOIT_RECURRING_ENABLED)
+    throw new CoreError(
+      "SERVICE_UNAVAILABLE",
+      "Penagihan berulang sedang dinonaktifkan.",
+    );
   const loaded = integrationId
     ? await loadIntegrationCredentialsById(
         context,
