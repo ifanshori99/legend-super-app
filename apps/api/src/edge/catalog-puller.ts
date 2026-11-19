@@ -34,8 +34,10 @@
 //   checkpoint is saved page by page, so a bigger backlog just continues from
 //   the last page: the stream reports `backlog: true` and the next pull
 //   goes on (no error, no repeated page).
-// - A cursor the cloud refuses on the first request of a stream (HTTP 400 or
-//   the cursor error): one more pull of that stream from the start.
+// - A cursor the cloud refuses on the first request of a stream (the cursor
+//   error, or HTTP 400 with the `X-Edge-Error: CATALOG_CURSOR_REJECTED` marker,
+//   legend-75kly): one more pull of that stream from the start. A 400 without
+//   the marker never resets; it is probed once (see pullStream).
 // - Read only: nothing here writes to the cloud. Errors carry codes, never
 //   record data.
 // - Promotions/vouchers fail closed while a pull is incomplete. Their cursor
@@ -76,6 +78,7 @@ import {
   type CatalogApplyResult,
   type DeferredCategoryParent,
 } from "../services/edge-catalog-apply.ts";
+import { CATALOG_CURSOR_REJECTED_MARKER } from "./catalog-cursor-marker.ts";
 import { EdgeCloudHttpError } from "./cloud-http.ts";
 import {
   completePromoCatalogStream,
@@ -595,11 +598,17 @@ export function savePendingParents(
   );
 }
 
-/** The cloud no longer understands the stored cursor (HTTP 400 / cursor error). */
+/**
+ * The cloud refused the stored cursor: the cursor error itself, or an HTTP 400
+ * carrying the cloud's marker (legend-75kly). A 400 without the marker is
+ * ambiguous and must not reset the checkpoint.
+ */
 function isRejectedCursor(error: unknown): boolean {
   return (
     isCatalogSyncCursorError(error) ||
-    (error instanceof EdgeCloudHttpError && error.code === "HTTP_400")
+    (error instanceof EdgeCloudHttpError &&
+      error.code === "HTTP_400" &&
+      error.reason === CATALOG_CURSOR_REJECTED_MARKER)
   );
 }
 
@@ -695,6 +704,24 @@ async function pullStream(
         error.code === "HTTP_400"
       )
         throw new CatalogCloudOutdatedError();
+      // legend-75kly: a 400 without the cursor marker is ambiguous (an old
+      // cloud refusing `protocolVersion`, or any other 400). Never reset the
+      // checkpoint on it. Probe once from the start and discard the result:
+      // a 400 there too means an outdated cloud; a clean page means the
+      // cursor was not the problem, so the original error stands.
+      if (
+        since !== null &&
+        error instanceof EdgeCloudHttpError &&
+        error.code === "HTTP_400"
+      ) {
+        try {
+          await options.fetchPage(stream, null);
+        } catch (probe) {
+          if (probe instanceof EdgeCloudHttpError && probe.code === "HTTP_400")
+            throw new CatalogCloudOutdatedError();
+          throw probe;
+        }
+      }
       throw error;
     }
     first = false;

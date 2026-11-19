@@ -323,19 +323,31 @@ export type EdgeCatalogStale = {
   /** Start of the stale episode as the edge reported it (ISO). */
   staleSince: string;
   reason: string;
+  /**
+   * legend-ssnf9: the whole stale set of one heartbeat, including the entry
+   * above. With two or more, one notification covers them all.
+   */
+  streams?: readonly { stream: string; staleSince: string; reason: string }[];
 };
 
 /**
- * Stable alert id for one edge, stream and stale episode: the same heartbeat
- * repeated every few seconds maps to the same ULID, and the notification
- * consumer ignores an event id it has seen. A new episode (a later success
- * moves `staleSince`) notifies again.
+ * Stable alert id for one edge and stale episode: the same heartbeat repeated
+ * every few seconds maps to the same ULID, and the notification consumer
+ * ignores an event id it has seen. A new episode (a later success moves
+ * `staleSince`) notifies again. One stream: id of that stream and episode.
+ * Several streams (legend-ssnf9): id of the sorted set, so the same set is
+ * one alert and a set with a new stream is another.
  */
 export function edgeCatalogStaleAlertId(stale: EdgeCatalogStale): string {
+  const group =
+    stale.streams && stale.streams.length > 1
+      ? [...stale.streams]
+          .map((entry) => `${entry.stream}\0${entry.staleSince}`)
+          .sort()
+          .join("\0")
+      : `${stale.stream}\0${stale.staleSince}`;
   const hex = createHash("sha256")
-    .update(
-      `edge_catalog.stale\0${stale.edgeNodeId}\0${stale.stream}\0${stale.staleSince}`,
-    )
+    .update(`edge_catalog.stale\0${stale.edgeNodeId}\0${group}`)
     .digest("hex")
     .slice(0, 32);
   return uuidToUlid(
@@ -357,7 +369,14 @@ export async function notifyEdgeCatalogStale(
   now: Date = new Date(),
 ): Promise<void> {
   const id = edgeCatalogStaleAlertId(stale);
-  const elapsedTimeUnproven = stale.reason === "CLOCK_ELAPSED_UNPROVEN";
+  const grouped =
+    stale.streams && stale.streams.length > 1 ? stale.streams : null;
+  const elapsedTimeUnproven = grouped
+    ? grouped.every((entry) => entry.reason === "CLOCK_ELAPSED_UNPROVEN")
+    : stale.reason === "CLOCK_ELAPSED_UNPROVEN";
+  const names = grouped
+    ? [...new Set(grouped.map((entry) => entry.stream))].sort().join(", ")
+    : null;
   await notifyOutletSupervisors(
     tx,
     context,
@@ -374,13 +393,16 @@ export async function notifyEdgeCatalogStale(
         stream: stale.stream,
         staleSince: stale.staleSince,
         reason: stale.reason,
+        ...(names
+          ? { streams: names, streamCount: String(grouped!.length) }
+          : {}),
       },
       title: elapsedTimeUnproven
         ? "Usia katalog edge sempat belum dapat dibuktikan"
         : "Katalog edge belum diperbarui",
       body: elapsedTimeUnproven
         ? `Alarm ini tercatat pada ${stale.staleSince}: usia katalog server lokal belum dapat dibuktikan setelah perangkat menyala kembali. Jika tidak ada alasan lain yang menahan penjualan, penjualan boleh berjalan dengan harga normal; promo dan voucher dimatikan selama usia data belum dapat dibuktikan. Alarm dapat tertunda saat offline; periksa status terbaru karena jam mundur atau katalog yang terbukti basi tetap dapat menahan penjualan.`
-        : "Harga atau status produk di server lokal gagal diperbarui padahal internet tersambung. Jika belum tersinkron lebih dari 24 jam, penjualan ditahan sampai owner mengizinkan; periksa sinkronisasi.",
+        : `Harga atau status produk di server lokal gagal diperbarui padahal internet tersambung${names ? ` (${names})` : ""}. Jika belum tersinkron lebih dari 24 jam, penjualan ditahan sampai owner mengizinkan; periksa sinkronisasi.`,
     },
     now,
   );

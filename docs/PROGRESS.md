@@ -8392,3 +8392,15 @@ Belum / celah:
 - Tanpa suite penuh `pnpm test`/`pnpm check` dan e2e (gate merge train).
 
 Biaya sesi (session-usage 02:07-02:39Z): total biaya* 2374k (utama sonnet 767k, subagent sonnet 1607k); 14 subagent, puncak 3 bersamaan.
+
+## 1190 Edge catalog sync hardening (19 Nov 2026, cabang `ws/1190-edge-catalog-hardening`)
+
+Tanpa migrasi.
+
+- legend-75kly: penolakan kursor katalog diberi penanda header `X-Edge-Error: CATALOG_CURSOR_REJECTED`; 400 tanpa penanda tidak lagi mereset `sync_txid`; logika probe ditambah.
+- legend-y9y8y (sebagian): cloud menolak kursor dengan txid > `pg_snapshot_xmax`; runbook restore ada di `docs/deployment.md`. Tanpa cat3/epoch karena merusak edge lama. Tidak ada deteksi otomatis bila txid hasil restore masih >= kursor edge.
+- legend-ssnf9: satu notifikasi stale per edge per heartbeat, id = hash seluruh set stale.
+- legend-n6mkr: frame heartbeat toleran terhadap field tak dikenal; edge menahan `catalogStale` 1 jam setelah close 1008 "Invalid frame" dalam 10 dtk.
+- legend-jcgbk: sudah terisolasi sejak `5c7fc0ad6`, tanpa perubahan.
+- Bukti: 4 berkas test baru + stub `edge-catalog-rewind.test.ts` diperbarui; 78 test hijau di 7 berkas; prettier dan eslint berkas berubah hijau.
+- Belum: typecheck (tertunda saat catatan ini ditulis), suite penuh `pnpm test`/`pnpm check`.

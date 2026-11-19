@@ -166,6 +166,40 @@ function encodeMark(mark: Mark): string {
   return encodeCursor([CURSOR_TAG, mark.txid, ...mark.keys]);
 }
 
+type CatalogTx = Parameters<Parameters<typeof withTenant>[2]>[0];
+
+/** Current `pg_snapshot_xmax`: the next transaction id this cluster hands out. */
+async function readSnapshotXmax(tx: CatalogTx): Promise<bigint> {
+  const result = await tx.execute<{ xmax: string }>(
+    sql`SELECT pg_snapshot_xmax(pg_current_snapshot())::text AS xmax`,
+  );
+  return BigInt(result.rows[0]!.xmax);
+}
+
+let snapshotXmaxProvider: (tx: CatalogTx) => Promise<bigint> = readSnapshotXmax;
+
+/** Test seam (legend-y9y8y): force the xmax a cursor is compared with. */
+export function setCatalogSnapshotXmaxProvider(
+  provider: ((tx: CatalogTx) => Promise<bigint>) | null,
+): void {
+  snapshotXmaxProvider = provider ?? readSnapshotXmax;
+}
+
+/**
+ * legend-y9y8y: a cursor whose txid is above this cluster's xmax cannot have
+ * come from this database history (a restore made txids go backwards), so it
+ * is refused like a malformed one and the edge rewinds. A restore whose txids
+ * already passed the cursor is not detectable here (see docs/deployment.md).
+ */
+async function assertCursorNotFromFuture(
+  tx: CatalogTx,
+  since: Mark | null,
+): Promise<void> {
+  if (since === null) return;
+  if (BigInt(since.txid) > (await snapshotXmaxProvider(tx)))
+    throw new CoreError("VALIDATION_ERROR", CURSOR_INVALID_MESSAGE);
+}
+
 /** Exact decimal text of a `sync_txid` column: the keyset version. */
 function txidOf(column: AnyPgColumn): SQL<string> {
   return sql<string>`${column}::text`;
@@ -883,7 +917,13 @@ export async function listCatalogRecordsForNode(
         "FORBIDDEN",
         "Edge node diblokir: brand outlet berubah, provisi ulang node.",
       );
-    return listCatalogRecordsSinceTx(tx, { ...node, query });
+    // Horizon check on the HTTP path only: the publisher's watermark lives in
+    // this same database and must not be refused here.
+    return listCatalogRecordsSinceTx(tx, {
+      ...node,
+      query,
+      checkCursorHorizon: true,
+    });
   });
 }
 
@@ -916,6 +956,8 @@ export async function listCatalogRecordsSinceTx(
     readonly tenantId: VerifiedEdgeNode["tenantId"];
     readonly outletId: VerifiedEdgeNode["outletId"];
     readonly query: CatalogSyncQuery;
+    /** legend-y9y8y: refuse a cursor ahead of this cluster (HTTP path only). */
+    readonly checkCursorHorizon?: boolean;
   },
 ): Promise<CatalogSyncPage> {
   const { tenantId, outletId } = verifiedEdgeNodeSchema
@@ -925,6 +967,8 @@ export async function listCatalogRecordsSinceTx(
     input.query,
   );
   const since = parseCursor(stream, input.query.since);
+  if (input.checkCursorHorizon === true)
+    await assertCursorNotFromFuture(tx, since);
   const rows = await (async () => {
     // Fail closed: an inactive tenant or a closed / unknown outlet syncs nothing.
     const [tenantRow] = await tx
