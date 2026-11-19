@@ -2164,3 +2164,4 @@ Langkah berikut CTO baru:
 - 08:55 CTO: fix kas P2 SO 9 selesai (G5kzm resolved, f1f0c4987). SO kas 10 (1147) mulai.
 - 08:56 CTO: SO sarapan 1 P2 -> G3bom.
 - 08:59 CTO: 1136 final ed4e373c9 (G4ovu resolved).
+- 09:01 CTO: SO kas 10 P1 -> keputusan struktural: role kas tidak boleh di-remap ke akun yang sudah punya baris jurnal + kembalikan penolakan reversal bayar-bank; fix G5kzm. Kas keluar batch95.
