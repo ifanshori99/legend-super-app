@@ -2167,3 +2167,4 @@ Langkah berikut CTO baru:
 - 09:01 CTO: SO kas 10 P1 -> keputusan struktural: role kas tidak boleh di-remap ke akun yang sudah punya baris jurnal + kembalikan penolakan reversal bayar-bank; fix G5kzm. Kas keluar batch95.
 - 09:02 CTO: heavy kini heap tsc 8192 default + kolom antre di heavy-log (G00on resolved). Insiden: heavy tidak executable 08:36-08:48, job heavy di jendela itu gagal 'permission denied' (bukan kegagalan kode).
 - 09:05 CTO: 1137 selesai (G0s0c resolved, bf1567dec). SO approval 1148 mulai.
+- 09:08 CTO: mulai 1149 flake (G4d60, Codex #5, cabang ghostex/769735ff: 5voa6, h4ary, c2z4x, inflf) dan 1150 member QR (G4fbc, Claude #5 sonnet, ghostex/0a8ebb6f: fmw1u). Cabang nyata beda dari nama di brief (Ghostex).
