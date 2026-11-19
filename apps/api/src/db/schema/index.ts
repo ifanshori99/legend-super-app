@@ -209,6 +209,7 @@ export * from "./hpp";
 export * from "./pos-deposit-refund";
 
 export * from "./reservation-deposit-remainder";
+export * from "./refund-recon-holds";
 
 // WS-12 opt-in ChatGPT device-code connection.
 export * from "./ai-chatgpt";

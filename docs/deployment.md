@@ -167,6 +167,23 @@ NODE_ENV=production node apps/api/dist/server.js           # API
 NODE_ENV=production node apps/web/.output/server/index.mjs # Web
 ```
 
+### Refund migrations: stop, migrate, start (legend-uvjqq)
+
+A release that contains 0496 (`provider_refund_id_kind`) or any other refund
+migration must not be rolled out rolling. Stop the API and the worker, run
+`pnpm db:migrate`, then start both again.
+
+Why: 0496 replaces the 3-column unique key of `payment_provider_refunds` with a
+4-column key that carries `refund_id_kind`, and adds a CHECK on the kind of
+`refund_recon_holds`. An old writer still running during the migration uses
+`ON CONFLICT` on the 3 columns, which no longer matches any unique key, so its
+insert fails; it also writes holds with an id but no kind, which the CHECK
+rejects. A new writer against the old schema has no `refund_id_kind` column.
+
+Rollback is a restore of the backup taken before the migration, not a down
+migration. After the start, the worker retries the webhook events that were
+held back while the services were stopped; check that the queue drains.
+
 Apply migrations once per release. Both servers honor `PORT` and `HOST`. The API bundle (`apps/api/dist`) includes its dependencies; it needs only `dist/` (and `drizzle/` for migrations).
 
 ## Docker images
@@ -817,6 +834,79 @@ Known limits of push registration:
   The previous user's alarm (while still on duty and authorized) keeps showing
   until 30 days pass or the new user registers.
 
+**Release 1 (Q45): `DOIT_REFUNDS_ENABLED` must be `false` or unset.** No refund
+is sent to the payment provider automatically. An approved refund stays
+`approved` (the manual queue; the API answers `REFUND_PROVIDER_DISABLED`, the
+sweep logs one warning with the count waiting) and finance records the payout
+once with `settle-manually` (idempotent, never more than the refund amount, and
+refused again when the cap, a provider refund or an open hold no longer allows
+it). Provider refund reports are still matched; an odd one is held. Turn the
+switch on again only after a clean refund second-opinion review and a founder
+decision. The API and the worker log a startup warning when it is on.
+
+While the switch is off, settle in Legend first, then refund in the provider
+dashboard (1072 B-1). If the provider report arrives before the settle (wrong
+order), it is still recorded as a fact, and the transaction is held with a
+conflict hold while the refund is still waiting, so the settle is refused until
+finance decides (it is no longer counted twice). If a partial report arrives
+after the settle, it is booked as a separate provider refund with no hold (the
+books count the money twice, on the restrictive side); a report of the whole
+transaction after the settle holds the amount paid by hand. For a hold of this kind, `not_this_intent` may be chosen
+once finance has cancelled the waiting refund (when the provider refund is that
+refund), or has made sure the provider refund is a separate one (then settle the
+refund). Closing is safe without further checks only when the provider fact
+with the same refund id is visible on the intent (a report that arrived while
+the refund was still waiting). The hold of a matched success that is not a proven
+echo (a smaller amount on a refund not yet sent, or a report under the id of a
+refund settled by hand) books no fact: do not choose `not_this_intent` when the
+report is right. The same holds for a report of the whole payment on an intent
+with nothing left to refund. When that report is a dashboard refund of money
+already paid by hand (1072 B-1), `not_this_intent` is safe, because the
+refund is already counted. That hold (kind `synthetic_full`, reason
+transaction conflict) can be closed with `not_this_intent` (1077 R3); counting
+it stays refused. A hold of a signed report that names the payment of another
+transaction with an unreadable or missing amount (reference mismatch, 1077 R2)
+holds the whole payment of that transaction: before counting it, read the real
+amount on the provider dashboard (counting books the held amount as refunded).
+Counting a recon hold (`count`) is refused while the intent has an `approved`
+refund, and settling is refused while a hold is open (1072 B-2): to count a
+hold, cancel the waiting `approved` refund first. A hold on a transaction
+conflict can only be closed with `not_this_intent`. Outside the wrong-order
+case above (where the fact is already booked), do not choose it when the
+provider report is right (the money would open up without the surplus booked).
+Leave that hold open and the money stays held.
+Since refund round 7 (1075), every signed success matched to our refund that
+is not a proven echo opens such a hold: a different provider refund id, an
+amount larger than the refund, a report on a refund that is failed, refused or
+settled by hand, and a report whose amount cannot be read. The last one holds
+the full payment amount under an `invalid:` id, because the real amount is
+unknown. A report larger than any amount already held for the same provider
+refund opens a new hold even after earlier holds were closed. Check the
+provider dashboard before closing any of them.
+
+Since refund round 9 (1090), a hold of an unreadable report (the made-up
+`invalid:` id) is kept apart from provider refund ids: a real provider refund id
+that looks the same is a new hold, never taken for it. An open hold of a
+mismatching report (REFERENCE_MISMATCH) is raised, never lowered, when a larger
+report of the same provider refund and transaction arrives; if finance already
+closed it, a larger report of the same refund opens one new hold (closes only
+with `not_this_intent`). Migration 0499 must run before the new build starts
+(stop, migrate, start): it adds the `invalid_report` kind.
+
+A refund that is filed or `approved` but not yet sent is held too when a
+provider refund report arrives on the same transaction (1077 K1, legend-3aign):
+the report could be an echo of that refund, so the intent holds the reported
+amount and approving, paying out and requesting a new refund are refused with
+`PROVIDER_REFUNDED` (409) until finance closes the hold. Nothing is sent to the
+provider while the hold is open, even when the refund and the report together
+fit within the amount paid. Before approving, finance checks the provider
+dashboard: is the reported refund ours (sent but not yet recorded, for example
+after a crash), or a separate refund made there? If it is a separate refund, close the hold with `not_this_intent` (the
+only way to close this hold) and then approve the waiting refund; it is paid
+once. If the report is our own refund, do not approve it again: cancel the
+waiting refund instead, because the provider already paid it. When in doubt,
+leave the hold open: the money stays held.
+
 `DOIT_REFUNDS_ENABLED` must have the same value in `api.env` and `worker.env`
 (legend-3gna): the API queues approved refunds and the worker pays them, so a
 split would queue refunds nobody pays, or pay refunds the API treats as off.
@@ -1293,6 +1383,58 @@ tidak mematikan RLS atau memberikan hak `BYPASSRLS` kepada login biasa.
    `payment_recurring_subscriptions_live_customer_plan_key` berhasil dibuat,
    lalu buka kembali permintaan mulai langganan. Jika migrasi menolak duplikat
    baru, tetap tahan rilis dan ulangi pemeriksaan.
+
+### Gerbang rilis: hold counted tanpa fact terikat (legend-26ro5)
+
+Hold refund lama yang ditutup `counted_against_intent` lewat jalur `rowOf`
+sebelum 1126 punya `matched_fact_id` NULL, sehingga refund yang sama bisa
+terhitung ganda. Gerbang ini mendaftar hold itu. Berkas
+`scripts/preflight/rilis1-legend-26ro5.sql` baca-saja, satu statement `WITH ...
+SELECT`, tanpa PII. Runner `release-gates` belum ada di base ini: daftarkan ke
+runner saat landing; berkas memakai header runner (`gate`, `before`, `requires`,
+`mode: block`, `resolve`). Tabel `refund_recon_holds` belum ada di `main`/`m1`,
+jadi pada rilis yang membuat tabel itu gerbang dilewati (`requires-missing`).
+Target nyatanya adalah staging atau database yang pernah menjalankan build
+cabang sebelum 1126. Untuk dijalankan manual, pakai login yang melihat semua
+tenant:
+
+```sh
+PGOPTIONS='-c default_transaction_read_only=on -c row_security=off' \
+  psql "$MIGRATION_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+  -f scripts/preflight/rilis1-legend-26ro5.sql
+```
+
+Hasil nol baris = lolos. Satu baris per hold. Kolom `problem`: `fact_unbound`
+(hold bernama tanpa fact penyedia yang cocok, atau hold anonim yang bisa
+dipasangkan), `fact_below_hold` (JUMLAH fact untuk kuncinya kurang dari hold),
+`fact_shared` (fact yang cocok sudah diikat hold lain atau disebut hold counted
+lain dengan intent, kind, dan id yang sama). Fact yang diikat atau disebut hold
+lain dan fact echo refund kita sendiri tidak dihitung, sama seperti aturan
+cakupan 1119. Hold anonim (tanpa refund id) hanya didaftar bila intent-nya
+punya fact kind `provider` dan transaksinya masih bersisa. Tidak terdaftar
+(sah): hold anonim yang ditutup tanpa fact karena sisa transaksi nol atau
+kurang, hold `synthetic_full`, alasan `credit_used_before_provider_refund`, dan
+hold anonim yang punya fact `synthetic_hold` miliknya sendiri.
+
+Keterbatasan gerbang (sengaja dibuat membatasi bila ragu): pencocokan hold
+bernama tanpa ref transaksi lebih longgar dari aturan 1119, yang menganggapnya
+tidak tercakup apa pun (gerbang mencocokkannya ke fact kunci yang sama di
+transaksi mana pun, jadi bisa meloloskan hold yang menurut 1119 belum
+tercakup). Sisa transaksi untuk hold anonim disederhanakan dari
+`transactionLeftIdr`: refund kita dikurangkan hanya bila hold tanpa transaksi
+atau bertransaksi milik intent sendiri, dan cabang dana tak teralokasi tidak
+dihitung. Gerbang tidak membedakan hold anonim mana yang sebenarnya dipasangkan
+ke fact: semua hold anonim tak terikat pada intent yang punya fact `provider`
+dan masih bersisa didaftar, jadi mungkin ada baris yang sebenarnya sah dan
+perlu dinilai finance.
+
+**Ada baris atau query gagal: tahan rilis.** Hasil nol baris dari login yang
+benar adalah syarat gerbang, bukan sekadar exit code `psql` nol. Tidak ada alur
+resolve untuk hold yang sudah tertutup, dan `matched_fact_id` tidak boleh
+diubah langsung di database tanpa persetujuan. Remedi yang ada: perbaikan data
+sekali pakai yang direview architect dan disetujui CTO dan finance, atau
+keputusan CTO mengubah gerbang ke mode `info` setelah run bersih pertama. Tes:
+`apps/api/src/test/preflight-rilis1-26ro5.test.ts`.
 
 ### Reset refund pra-switch DOIT (legend-d21p)
 

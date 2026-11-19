@@ -276,6 +276,17 @@ async function supervisorNotifications() {
   return rows;
 }
 
+/** Open holds filed because a refund of ours failed after it was sent (1045-F1). */
+async function openOwnFailedHolds(intentId: string) {
+  const { rows } = await owner.query<{ id: string; amount_idr: string }>(
+    `SELECT id, amount_idr::text AS amount_idr FROM refund_recon_holds
+      WHERE tenant_id = $1 AND payment_intent_id = $2
+        AND reason = 'own_refund_failed_unverified' AND resolved_at IS NULL`,
+    [world.tenant.tenantId, intentId],
+  );
+  return rows;
+}
+
 type FollowUp = {
   id: string;
   paymentIntentId: string;
@@ -505,11 +516,24 @@ describe("legend-weuo2 weuo2-F a provider decline is not re-filed (CTO 15 Nov)",
     expect(liveSum(rows)).toBeLessThanOrEqual(paidIdr);
 
     expect(await auditRows(first.id)).toHaveLength(1);
+    // legend-w2td5 / 1045 (intended change): the refund was already sent to
+    // the provider when it failed, so its outcome is unverified. The books
+    // keep ONE open hold `own_refund_failed_unverified` for the amount of the
+    // refund (nothing is re-filed until finance closes it), and finance is
+    // alerted about the hold too (architect A3). So the supervisor now gets
+    // the follow-up alarm PLUS one hold alert: two, and a replay adds none.
+    // Assumption: the alarm text is the one of the old assert; the hold alert
+    // text is not asserted.
+    const holds = await openOwnFailedHolds(paid.intentId);
+    expect(holds, "one open own_refund_failed_unverified hold").toHaveLength(1);
+    expect(holds[0]!.amount_idr).toBe(String(first.amount));
     const alarms = (await supervisorNotifications()).slice(alarmsBefore);
-    expect(alarms).toHaveLength(1);
-    expect(`${alarms[0]!.title} ${alarms[0]!.body}`).toMatch(
-      /pengembalian|refund/i,
-    );
+    expect(alarms, "follow-up alarm plus hold alert").toHaveLength(2);
+    expect(
+      alarms.some((alarm) =>
+        /pengembalian|refund/i.test(`${alarm.title} ${alarm.body}`),
+      ),
+    ).toBe(true);
     const response = await followUps();
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     const items = (response.body.data as FollowUp[]).filter(
@@ -521,7 +545,8 @@ describe("legend-weuo2 weuo2-F a provider decline is not re-filed (CTO 15 Nov)",
     // Replays add nothing.
     await settleRefundFromChain(world.context, first.id);
     expect(await auditRows(first.id)).toHaveLength(1);
-    expect((await supervisorNotifications()).length).toBe(alarmsBefore + 1);
+    expect((await supervisorNotifications()).length).toBe(alarmsBefore + 2);
+    expect(await openOwnFailedHolds(paid.intentId)).toHaveLength(1);
     expect(await expectCapped(paid.intentId, paidIdr)).toHaveLength(1);
   });
 });
@@ -568,10 +593,16 @@ describe("legend-weuo2 weuo2-F a declined system refund leaves a pending sibling
     expect(liveSum(rows)).toBe(held);
     expect(fake.calls).toHaveLength(1);
 
-    // One alarm and one audit row for the declined refund only.
+    // One audit row for the declined refund only. legend-w2td5 / 1045 (same
+    // intended change as the test above): the declined refund was already
+    // sent, so the books keep one open own_refund_failed_unverified hold for
+    // its amount and finance gets the follow-up alarm PLUS one hold alert.
     expect(await auditRows(first.id)).toHaveLength(1);
     expect(await auditRows(siblingId)).toHaveLength(0);
-    expect((await supervisorNotifications()).length).toBe(alarmsBefore + 1);
+    const holds = await openOwnFailedHolds(paid.intentId);
+    expect(holds, "one open own_refund_failed_unverified hold").toHaveLength(1);
+    expect(holds[0]!.amount_idr).toBe(String(first.amount));
+    expect((await supervisorNotifications()).length).toBe(alarmsBefore + 2);
     // The list owes the guest only the rest: paid less the live sibling.
     const items = await followUpOf(paid.intentId);
     expect(items).toHaveLength(1);

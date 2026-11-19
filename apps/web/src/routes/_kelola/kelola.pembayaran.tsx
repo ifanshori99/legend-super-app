@@ -23,6 +23,7 @@ const PAYMENT_ADMIN_TAB_IDS = [
   "refunds",
   "unallocated",
   "reconciliation",
+  "refund-holds",
 ] as const satisfies readonly PaymentAdminTab[];
 
 export const Route = createFileRoute("/_kelola/kelola/pembayaran")({

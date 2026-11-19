@@ -836,19 +836,18 @@ describe("legend-svwdz ronde 3 T2 snapshot is only the part of the provider refu
       ...(await remainders(reservation2)),
     ];
     expect(rows).toHaveLength(2);
-    // The remainders stay at 50k each (the cut is not forced onto them), so
-    // the snapshot must NOT claim the 10k as already deducted: otherwise the
-    // pool counts the full 100k. The pool alone keeps the credit within the
-    // net value.
+    // legend-6n4p3 (1033): the two sessions share one net pool in a fixed
+    // order. The first allocation claims its 50k, the second takes the 10k
+    // refund (45k + 35k = 80k, i.e. 100k - 10k refund - 10k consumed). The
+    // snapshots add up to the 10k the remainders really absorbed, so the pool
+    // does not cut it a second time. The value the guest can take stays 80k
+    // (before 1033: 90k remainders minus the 10k cut later).
     const { rows: snaps } = await owner.query<{ snap: string }>(
       "SELECT provider_refunded_snapshot_idr::text AS snap FROM reservation_deposit_remainders WHERE payment_intent_id = $1",
       [d.intentId],
     );
-    for (const r of snaps) expect(Number(r.snap)).toBe(0);
-
-    // Both remainders hold their real leftover (45k each): the provider cut
-    // was not forced onto them, so the pool still has to subtract it later.
-    expect(rows.reduce((sum, r) => sum + r.amount, 0)).toBe(90_000);
+    expect(snaps.reduce((sum, r) => sum + Number(r.snap), 0)).toBe(10_000);
+    expect(rows.reduce((sum, r) => sum + r.amount, 0)).toBe(80_000);
   });
 });
 

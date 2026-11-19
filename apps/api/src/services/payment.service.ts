@@ -93,7 +93,10 @@ import {
   lockBillOwner,
 } from "./payment-late-settlement";
 import { plausiblePaidAt } from "./payment-paid-at";
-import { alertProviderRefundedAfterRecorded } from "./payment-provider-refunded-alert.ts";
+import {
+  alertProviderRefundedAfterRecorded,
+  alertProviderRefundUnbound,
+} from "./payment-provider-refunded-alert.ts";
 import {
   activeHoldBlockingSplitPart,
   assertNoActiveQrisHold,
@@ -133,6 +136,8 @@ import {
   type PaymentIntentRow,
   type PaymentLinkRow,
 } from "./payment-support";
+import { recordProviderRefundInTx } from "./payment-provider-partial-refund";
+import { OWN_REFUND_FAILED_UNVERIFIED } from "./refund-recon-hold.service.ts";
 import type { Tx } from "./permission-resolver";
 
 /** PRD §3.13 "QRIS Dinamis": a QR code lives about 10 minutes. VA and bank
@@ -782,9 +787,17 @@ export async function cancelSupersededAtGateway(
       // 952 round 2: a `refunded` answer is recorded whether or not the code is
       // final yet (before expiry + 60s), so a late `paid` message cannot settle
       // it. Only a closed code (expired / failed) is ever stamped.
-      if (answer.rawStatus === "refunded")
+      // legend-t9g3i: the whole refund is also written (once) as a provider
+      // refund; a refund of ours still in flight keeps the code in the poll.
+      let refundHeld = false;
+      if (answer.rawStatus === "refunded") {
         await markProviderAnswered(context, intent.intentId, now, true);
+        refundHeld =
+          (await markProviderRefunded(context, intent.intentId, now)) ===
+          "retry";
+      }
       if (
+        refundHeld ||
         !providerAnswerFinal(
           { provider: intent.provider, expiresAt: row.expiresAt },
           answer,
@@ -2344,6 +2357,13 @@ async function syncPendingIntentDetailed(
   }
   // SO-896: an answer about another reference says nothing about this code.
   const aboutThisCode = providerStatus?.providerRef === intent.providerRef;
+  // legend-t9g3i: the provider gave this code's payment back. The whole refund
+  // is written once as a provider refund (as the webhook does); a refund of ours
+  // still in flight keeps the code from being final, so the poll asks again.
+  const refundHeld =
+    aboutThisCode &&
+    providerStatus?.rawStatus === "refunded" &&
+    (await markProviderRefunded(context, intent.id, now)) === "retry";
   if (pastExpiry) {
     // A provider that still says `pending` past our expiry can still take the
     // money (its own expiry may lag ours): only paid / expired / failed are
@@ -2376,6 +2396,7 @@ async function syncPendingIntentDetailed(
     const providerFinal =
       (providerStatus !== undefined &&
         aboutThisCode &&
+        !refundHeld &&
         !providerStatus.extraPayments?.length &&
         providerAnswerFinal(intent, providerStatus, now)) ||
       fundsParked;
@@ -2384,7 +2405,7 @@ async function syncPendingIntentDetailed(
       intent,
       now,
       "timeout",
-      providerFinal
+      providerFinal || refundHeld
         ? undefined
         : {
             action: "payment.provider_paid_confirmation_rejected",
@@ -2421,6 +2442,7 @@ async function syncPendingIntentDetailed(
       intent,
       now,
       aboutThisCode &&
+        !refundHeld &&
         !providerStatus.extraPayments?.length &&
         providerAnswerFinal(intent, providerStatus, now),
       aboutThisCode && providerStatus.rawStatus === "refunded",
@@ -3559,8 +3581,15 @@ async function syncExpiredIntentPayment(
     // SO-889: final only once the code lapsed on its own (+ margin); before
     // that the poll keeps asking.
     const refunded = providerStatus.rawStatus === "refunded";
+    // legend-t9g3i: the whole refund is written once as a provider refund; a
+    // refund of ours still in flight keeps the code in the poll (not final).
+    const refundHeld =
+      refunded &&
+      providerStatus.providerRef === intent.providerRef &&
+      (await markProviderRefunded(context, intent.id, now)) === "retry";
     if (
       providerStatus.providerRef === intent.providerRef &&
+      !refundHeld &&
       !providerStatus.extraPayments?.length &&
       providerAnswerFinal(intent, providerStatus, now)
     ) {
@@ -3684,8 +3713,13 @@ export async function markProviderRefunded(
   context: ScopedTenantContext,
   intentId: string,
   now: Date,
-): Promise<void> {
-  await withTenant(db, context, async (tx) => {
+  /** Which door saw the refund (recorded on the provider refund row). */
+  source: "payment_webhook" | "poller" = "poller",
+  /** The caller's retry window is over: count a refund of ours still in
+   * flight instead of asking again. */
+  force = false,
+): Promise<"done" | "retry"> {
+  return withTenant(db, context, async (tx) => {
     await tx
       .update(paymentIntents)
       .set({ providerRefundedAt: now })
@@ -3700,6 +3734,58 @@ export async function markProviderRefunded(
     // legend-7uqbs: money we already recorded (parked funds, a settled bill)
     // is flagged and alerted instead of staying silent.
     await flagProviderRefundedAfterRecordedInTx(tx, context, intentId, now);
+    // legend-gjt5q (1025 B): the whole payment is also written once as a
+    // provider refund (`synthetic_full` keyed by the providerRef, the remainder after earlier
+    // partial ones), so the 1013 event books it Dr customer_deposit / Cr
+    // gateway_clearing once. The unique key makes webhook, poller and replays
+    // add nothing. Refunds of ours already sent are the echo of our payout
+    // (journaled by `payment.refunded`) and are taken off. 958 already audited
+    // and alerted above, so the recorder stays quiet.
+    const [target] = await tx
+      .select({
+        id: paymentIntents.id,
+        outletId: paymentIntents.outletId,
+        providerRef: paymentIntents.providerRef,
+        amountIdr: paymentIntents.amountIdr,
+      })
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          eq(paymentIntents.id, intentId),
+        ),
+      );
+    if (!target?.providerRef) return "done";
+    const outcome = await recordProviderRefundInTx(
+      tx,
+      context,
+      {
+        provider: "doit",
+        providerRefundId: target.providerRef,
+        refundIdKind: "synthetic_full",
+        providerPaymentRef: target.providerRef,
+        amountIdr: Number(target.amountIdr),
+        source,
+        expectedIntentId: target.id,
+        quiet: true,
+        force,
+      },
+      now,
+    );
+    // `unbound`: not recorded, so finance is told (the stamp stays).
+    if (outcome.status === "unbound")
+      await alertProviderRefundUnbound(
+        tx,
+        context,
+        {
+          intentId: target.id,
+          outletId: target.outletId,
+          providerPaymentRef: target.providerRef,
+        },
+        now,
+      );
+    // `retry`: a refund of ours is still in flight, nothing was written yet.
+    return outcome.status === "retry" ? "retry" : "done";
   });
 }
 
@@ -4219,5 +4305,128 @@ export async function pollPendingGatewayIntents(
       leaseUntil,
     );
   }
+  // legend-w2td5 (1045 F1): failed refunds of ours that may have reached the
+  // provider hold their intent; asked after the codes above (not counted in
+  // `checked`), so they never delay a live code.
+  await verifyOwnRefundFailedHolds(context, now, limit);
   return { checked, settled };
+}
+
+/**
+ * legend-w2td5 (1045 F1): asks the provider about the own transaction of each
+ * intent with an open `OWN_REFUND_FAILED_UNVERIFIED` hold on it (a hold on a
+ * fund's other transaction is left to finance), with no transaction open.
+ * A `refunded` answer goes the usual `markProviderRefunded` way (the
+ * remainder, recorded once). The hold is never closed here: DOIT has no
+ * partial status, so `paid` does not prove the provider refunded nothing.
+ * Finance closes it (`not_this_intent` after checking the provider, or
+ * `counted_against_intent`). An error or any other answer changes nothing.
+ * Claimed with the poll lease (two workers never ask about the same intent),
+ * at most once a minute per intent (`gateway_polled_at`), least recently
+ * asked first.
+ */
+async function verifyOwnRefundFailedHolds(
+  context: ScopedTenantContext,
+  now: Date,
+  limit: number,
+): Promise<void> {
+  const providers = registeredGatewayProviders();
+  if (providers.length === 0) return;
+  const leaseNow = new Date();
+  const leaseUntil = new Date(leaseNow.getTime() + GATEWAY_POLL_LEASE_MS);
+  const dueBefore = new Date(now.getTime() - GATEWAY_POLL_GRACE_MS);
+  const claimed = await withTenant(db, context, async (tx) => {
+    const rows = await tx
+      .select({ id: paymentIntents.id })
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          or(
+            isNull(paymentIntents.gatewayPollLeaseUntil),
+            lte(paymentIntents.gatewayPollLeaseUntil, leaseNow),
+          ),
+          inArray(paymentIntents.provider, [...providers]),
+          isNotNull(paymentIntents.providerRef),
+          or(
+            isNull(paymentIntents.gatewayPolledAt),
+            lte(paymentIntents.gatewayPolledAt, dueBefore),
+          ),
+          sql`exists (select 1 from refund_recon_holds h
+             where h.tenant_id = ${paymentIntents.tenantId}
+               and h.payment_intent_id = ${paymentIntents.id}
+               and h.resolved_at is null
+               and h.reason = ${OWN_REFUND_FAILED_UNVERIFIED}
+               and h.provider_payment_ref = ${paymentIntents.providerRef})`,
+        ),
+      )
+      .orderBy(
+        sql`${paymentIntents.gatewayPolledAt} asc nulls first`,
+        asc(paymentIntents.createdAt),
+      )
+      .limit(limit)
+      .for("update", { skipLocked: true });
+    if (rows.length === 0) return [];
+    return tx
+      .update(paymentIntents)
+      .set({ gatewayPollLeaseUntil: leaseUntil })
+      .where(
+        and(
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          inArray(
+            paymentIntents.id,
+            rows.map((row) => row.id),
+          ),
+        ),
+      )
+      .returning();
+  });
+  const startedAt = Date.now();
+  try {
+    for (const row of claimed) {
+      if (Date.now() - startedAt >= GATEWAY_POLL_BUDGET_MS) break;
+      const providerRef = row.providerRef;
+      if (providerRef === null) continue;
+      try {
+        await withTenant(db, context, async (tx) =>
+          tx
+            .update(paymentIntents)
+            .set({ gatewayPolledAt: now })
+            .where(
+              and(
+                eq(paymentIntents.tenantId, context.tenant.tenantId),
+                eq(paymentIntents.id, row.id),
+              ),
+            ),
+        );
+        const outletContext =
+          context.outletScope.kind === "tenant"
+            ? establishScopedTenantContext(context.tenant, {
+                kind: "outlets",
+                outletIds: [row.outletId],
+              })
+            : context;
+        const answer = await paymentGatewayFor(row.provider).getStatus({
+          context: outletContext,
+          outletId: row.outletId,
+          integrationId: row.gatewayIntegrationId,
+          providerRef,
+          intentId: row.id,
+        });
+        if (
+          answer.providerRef === providerRef &&
+          answer.rawStatus === "refunded"
+        )
+          await markProviderRefunded(outletContext, row.id, now);
+      } catch {
+        // No answer: the next run asks again.
+      }
+    }
+  } finally {
+    await releasePollLease(
+      context,
+      claimed.map((row) => row.id),
+      leaseUntil,
+    );
+  }
 }

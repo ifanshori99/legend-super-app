@@ -21,13 +21,20 @@ export const PAYMENT_ADMIN_PERMISSIONS: readonly PermissionCode[] = [
 ];
 
 export type PaymentAdminTab =
-  "routing" | "duitku" | "edc" | "refunds" | "unallocated" | "reconciliation";
+  | "routing"
+  | "duitku"
+  | "edc"
+  | "refunds"
+  | "unallocated"
+  | "reconciliation"
+  | "refund-holds";
 
 /**
  * Tab order with the permissions each tab's API reads need (any one is
  * enough), taken from apps/api/src/routes/payment-admin.routes.ts: refunds
  * list is gated by payment.transaction.view; unallocated funds and
- * reconciliation by payment.reconcile.
+ * reconciliation by payment.reconcile; refund holds (listRefundReconHolds,
+ * resolveRefundReconHold) by payment.reconcile.
  */
 export const PAYMENT_ADMIN_TABS: ReadonlyArray<{
   readonly tab: PaymentAdminTab;
@@ -39,6 +46,7 @@ export const PAYMENT_ADMIN_TABS: ReadonlyArray<{
   { tab: "refunds", permissions: ["payment.transaction.view"] },
   { tab: "unallocated", permissions: ["payment.reconcile"] },
   { tab: "reconciliation", permissions: ["payment.reconcile"] },
+  { tab: "refund-holds", permissions: ["payment.reconcile"] },
 ];
 
 /** Tabs the holder may open, in display order. The first one is the default. */

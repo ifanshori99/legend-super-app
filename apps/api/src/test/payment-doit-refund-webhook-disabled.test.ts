@@ -48,6 +48,7 @@ import {
 } from "@starter/shared/core/server";
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { createApp } from "../app";
+import { env } from "../config/env";
 import { resetPaymentWebhookRateLimits } from "../routes/payment-webhook.routes";
 import { createDoitGateway } from "../services/payment-doit";
 import { setPaymentGateway } from "../services/payment-gateway";
@@ -62,6 +63,17 @@ import {
 } from "../services/platform-integration.service";
 
 const app = createApp();
+
+// These suites exercise the active provider-refund path: DOIT refunds are off
+// by default, so switch them on here and restore the value afterwards.
+const flags = env as unknown as { DOIT_REFUNDS_ENABLED: boolean };
+const flagBefore = flags.DOIT_REFUNDS_ENABLED;
+beforeAll(() => {
+  flags.DOIT_REFUNDS_ENABLED = true;
+});
+afterAll(() => {
+  flags.DOIT_REFUNDS_ENABLED = flagBefore;
+});
 const tenantId = cafeLegendPlatformFixtures.tenant.id;
 const outletA = cafeLegendAccessFixtures.outletIds.bandung;
 const actor = randomUUID();
@@ -228,8 +240,16 @@ afterAll(async () => {
     [[...intentIds, otherIntent]],
   );
   await owner.query(
+    "DELETE FROM payment_provider_refunds WHERE payment_intent_id = ANY($1::uuid[])",
+    [[...intentIds, otherIntent]],
+  );
+  await owner.query(
     "DELETE FROM payment_evidence WHERE payment_intent_id = ANY($1::uuid[])",
     [intentIds],
+  );
+  await owner.query(
+    "DELETE FROM refund_recon_holds WHERE payment_intent_id = ANY($1::uuid[])",
+    [[...intentIds, otherIntent]],
   );
   await owner.query("DELETE FROM payment_intents WHERE id = ANY($1::uuid[])", [
     [...intentIds, otherIntent],
