@@ -7967,3 +7967,22 @@ Verifikasi:
 Pemakaian (`session-usage.py`, sesi 81d47474): 30 menit sejak 10:53, puncak konteks 267k, 4 kali compact. Biaya* total 18789k (utama sonnet 16163k, subagent sonnet 2014k, opus 404k, haiku 207k). `parallel-report`: 27 spawn, maks 6 bersamaan, rata-rata 1,5 subagent berjalan per agent, rentetan terpanjang tanpa subagent 21 langkah.
 
 Subagent: total 27, puncak 6 bersamaan (batas RAM merah), token heavy dipegang agent engineer sendiri lewat job latar `heavy`.
+
+## WS1163 legend-m0kqn: provider cap + sweep starvation (19 Nov)
+
+Cabang sama (`ws/1163-reservasi-slot-pickup`), tanpa migrasi. Menutup keputusan terbuka di atas.
+
+Sudah:
+- `reconcileDeposit` memakai batas atas `payableUntil + GATEWAY_POLL_WINDOW_MS` (24 jam, modul daun `services/payment-poll-window.ts`). Lewat batas, kode berpenyedia yang tidak pernah dijawab final dibatalkan; audit pembatalan membawa `providerUnanswered`.
+- `loadDepositState` kini menghitung kedaluwarsa intent yang pending/`mayStillPay`, jadi tampilan tidak menahan meja selamanya.
+- `sweepStaleDepositHolds`: prefilter SQL melewati baris yang masih bisa dipolling, sehingga 150 baris macet tidak lagi membuat baris yang lebih baru kelaparan.
+- Tes baru `src/test/reservation-m0kqn-cap-db.test.ts` (4 tes). Sweep di tes lama `reservation-1163-proof-db.test.ts` dipindah dari 48 jam ke 20 jam agar tetap di dalam batas.
+
+DEVIASI dari keputusan CTO: bayar sesudah batas tidak diparkir. Ia di-settle lalu direfund penuh sekali lewat jalur RSV-02 (`late_refund_requested`); booking tidak dikreditkan. Menunggu konfirmasi CTO.
+
+Verifikasi:
+- Tes terarah 6 berkas: 46/46 lulus.
+- `pnpm --filter @starter/api typecheck`: exit 0.
+- prettier dan eslint bersih. `pnpm db:generate`: tidak ada perubahan.
+
+Pemakaian (`session-usage.py`, sesi 81d47474): 54 menit sejak 10:53, puncak konteks 267k, 7 kali compact. Biaya* total 26564k (utama sonnet 22144k, subagent sonnet 3269k, opus 943k, haiku 207k). `parallel-report`: 46 spawn, maks 6 bersamaan, rata-rata 1,1 subagent berjalan, rentetan terpanjang tanpa subagent 21 langkah.

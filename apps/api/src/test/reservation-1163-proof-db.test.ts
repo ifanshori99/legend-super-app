@@ -457,8 +457,8 @@ describe("legend-pdi5u 1 past the local limit, the provider has not answered fin
       expect(row.close_reason).toBeNull();
       expect(await liveHolds(id)).toBe(1);
 
-      // Two days later: still no answer from the provider, still payable.
-      await sweepAt(new Date(t0.getTime() + 48 * 60 * MINUTE));
+      // Twenty hours later: still inside the 24h poll-window cap (legend-m0kqn).
+      await sweepAt(new Date(t0.getTime() + 20 * 60 * MINUTE));
       row = await reservationRow(id);
       expect(row.status).toBe("pending_deposit");
       expect(await liveHolds(id)).toBe(1);

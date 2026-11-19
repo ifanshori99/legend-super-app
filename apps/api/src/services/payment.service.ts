@@ -93,6 +93,7 @@ import {
   depositProvenLate,
   lockBillOwner,
 } from "./payment-late-settlement";
+import { GATEWAY_POLL_WINDOW_MS } from "./payment-poll-window";
 import { plausiblePaidAt } from "./payment-paid-at";
 import { alertProviderRefundedAfterRecorded } from "./payment-provider-refunded-alert.ts";
 import {
@@ -3445,7 +3446,7 @@ export const GATEWAY_POLL_GRACE_MS = 60_000;
  * documented cancel call, so a VA the guest abandoned by switching bank stays
  * payable at DOIT until it lapses there; the window keeps reconciling it
  * (late payment, refund request) for at least that long. */
-export const GATEWAY_POLL_WINDOW_MS = 24 * 60 * 60_000;
+export { GATEWAY_POLL_WINDOW_MS };
 
 /** Longest wait between two polls of a lapsed code. Before it, the wait is
  * half the time since expiry (1, 2, 4… minutes), so a lapsed code costs a
