@@ -2208,3 +2208,4 @@ Langkah berikut CTO baru:
 - 11:27 CTO: 1163 lapor 8a5e5cd70; keputusan CTO legend-m0kqn (batasi kode DP penyedia tak pernah final di payableUntil + jendela poll, batal + audit, bayar terlambat tetap diparkir) dikirim ke G88jh. ytwlo/hpze7 ditutup.
 - 11:43 CTO: 1095 SIAP batch96 (4bfae8476), G95kw resolve. 1163 lanjut m0kqn; 1162 lanjut rh1hk (migrasi kerja 0704) + vet9d sesudah batch95. SO 1166 antre.
 - 11:44 CTO: mulai 1167 P3 (f03o, tipkj, 0hzu, qi21, inflf; Sonnet #1, base ws/1144-refund-hold-echo karena payment-webhook.service.ts berubah besar di batch95/96).
+- 11:50 CTO: SO 1160 approval r2 (G7r4c, Codex #4) dan SO 1161 refund r17 (G4gc3, Codex #5) mulai (tertunda RAM merah 11:47). SO 1166 refund kasir r5 antre sampai salah satu selesai.
