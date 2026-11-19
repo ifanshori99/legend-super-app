@@ -714,6 +714,15 @@ async function pendingPettyCashCreditsIdr(
   return total;
 }
 
+function heldAmount(amount: unknown, journalDebit: unknown): number {
+  if (typeof amount === "number" && Number.isSafeInteger(amount) && amount > 0)
+    return amount;
+  // Missing, NULL or non-positive amount: the cash stays held by what the
+  // journal moved; never released and never an error (legend 1140).
+  const moved = Number(journalDebit);
+  return Number.isSafeInteger(moved) && moved > 0 ? moved : 0;
+}
+
 /**
  * A cash kasbon or cash reimbursement whose event is delivered and whose
  * journal exists, but whose journal did not net-reduce the entity's cash by its
@@ -743,7 +752,17 @@ async function heldDeliveredCashCreditsIdr(
   const eventName = sql<string>`${domainEventOutbox.event}->>'name'`;
   const payload = sql`${domainEventOutbox.event}->'payload'`;
   const snapshot = sql`${journalEntries.postingAccountSnapshot}`;
-  const netCredit = sql`(SELECT COALESCE(SUM(${journalLines.creditIdr}) - SUM(${journalLines.debitIdr}), 0) FROM ${journalLines} WHERE ${journalLines.tenantId} = ${journalEntries.tenantId} AND ${journalLines.entryId} = ${journalEntries.id} AND ${journalLines.accountId}::text IN (COALESCE(${snapshot}->>'petty_cash', ${pettyCashAccountId}::text), ${snapshot}->>'cash_on_hand', ${snapshot}->>'bank'))`;
+  const cashAccountIds = sql`COALESCE(${snapshot}->>'petty_cash', ${pettyCashAccountId}::text), ${snapshot}->>'cash_on_hand', ${snapshot}->>'bank'`;
+  // The net counts a reversal of the journal too (journal_entries.reversal_of):
+  // a reversal debits the account back on the GL without any money returning
+  // to the till, so the cash stays reserved (legend 1140).
+  const netCredit = sql`(SELECT COALESCE(SUM(${journalLines.creditIdr}) - SUM(${journalLines.debitIdr}), 0) FROM ${journalLines} WHERE ${journalLines.tenantId} = ${journalEntries.tenantId} AND (${journalLines.entryId} = ${journalEntries.id} OR ${journalLines.entryId} IN (SELECT rev.id FROM journal_entries AS rev WHERE rev.tenant_id = ${journalEntries.tenantId} AND rev.reversal_of = ${journalEntries.id})) AND ${journalLines.accountId}::text IN (${cashAccountIds}))`;
+  // What the journal moved, held when the event's amount is unreadable.
+  const journalDebit = sql`(SELECT COALESCE(SUM(${journalLines.debitIdr}), 0) FROM ${journalLines} WHERE ${journalLines.tenantId} = ${journalEntries.tenantId} AND ${journalLines.entryId} = ${journalEntries.id})`;
+  // NULL when the amount is missing or not a JSON number (checked before any
+  // cast, and before the net filter).
+  const amountOf = (key: "principalIdr" | "amountIdr") =>
+    sql`(CASE WHEN jsonb_typeof(${payload}->${sql.raw(`'${key}'`)}) = 'number' THEN (${payload}->>${sql.raw(`'${key}'`)})::numeric END)`;
   const delivered = and(
     eq(domainEventOutbox.tenantId, tenantId),
     eq(domainEventOutbox.destination, EVENT_DESTINATION),
@@ -752,7 +771,10 @@ async function heldDeliveredCashCreditsIdr(
   let total = 0;
 
   const loans = await tx
-    .select({ principal: sql<unknown>`${payload}->'principalIdr'` })
+    .select({
+      principal: sql<unknown>`${payload}->'principalIdr'`,
+      journalDebit: sql<unknown>`${journalDebit}`,
+    })
     .from(domainEventOutbox)
     .innerJoin(
       journalEntries,
@@ -770,14 +792,16 @@ async function heldDeliveredCashCreditsIdr(
         sql`${eventName} = 'employee_loan.disbursed'`,
         sql`${payload}->>'legalEntityId' = ${legalEntityId}`,
         sql`${payload}->>'disbursedVia' IS DISTINCT FROM 'bank'`,
-        sql`${netCredit} < (${payload}->>'principalIdr')::numeric`,
+        sql`(${amountOf("principalIdr")} IS NULL OR ${amountOf("principalIdr")} <= 0 OR ${netCredit} < ${amountOf("principalIdr")})`,
       ),
     );
-  for (const row of loans)
-    total += readableIdr(row.principal, "employee_loan.disbursed");
+  for (const row of loans) total += heldAmount(row.principal, row.journalDebit);
 
   const reimbursements = await tx
-    .select({ amount: sql<unknown>`${payload}->'amountIdr'` })
+    .select({
+      amount: sql<unknown>`${payload}->'amountIdr'`,
+      journalDebit: sql<unknown>`${journalDebit}`,
+    })
     .from(domainEventOutbox)
     .innerJoin(
       journalEntries,
@@ -795,11 +819,11 @@ async function heldDeliveredCashCreditsIdr(
         eq(domainEventOutbox.aggregateType, "reimbursement"),
         sql`${eventName} = 'reimbursement.paid'`,
         sql`${payload}->>'payout' IS DISTINCT FROM 'payroll'`,
-        sql`${netCredit} < (${payload}->>'amountIdr')::numeric`,
+        sql`(${amountOf("amountIdr")} IS NULL OR ${amountOf("amountIdr")} <= 0 OR ${netCredit} < ${amountOf("amountIdr")})`,
       ),
     );
   for (const row of reimbursements)
-    total += readableIdr(row.amount, "reimbursement.paid");
+    total += heldAmount(row.amount, row.journalDebit);
   return total;
 }
 

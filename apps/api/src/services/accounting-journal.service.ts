@@ -1119,17 +1119,43 @@ async function assertAutoCashOutSourceNotPaid(
   lines: readonly { accountId: string; debitIdr: number; creditIdr: number }[],
 ): Promise<void> {
   if (row.sourceType === "manual" || row.sourceType === "recurring") return;
-  const pettyCashAccountId = await pettyCashGlAccount(
+  // The cash account is the one the journal was posted on (its snapshot), not
+  // only today's mapping: a remap of petty_cash A -> B -> A must not let a
+  // reversal of a still-paid source slip through while the mapping points
+  // elsewhere (legend 1140). Today's mapping stays in the set, and a journal
+  // without a snapshot (older rule) is measured on it alone.
+  const currentPettyCashId = await pettyCashGlAccount(
     tx,
     tenantId,
     row.legalEntityId,
   );
-  if (pettyCashAccountId === null) return;
-  const netCredit = lines
-    .filter((line) => line.accountId === pettyCashAccountId)
-    .reduce((sum, line) => sum + line.creditIdr - line.debitIdr, 0);
-  if (netCredit <= 0) return;
+  const cashAccountIds = new Set<string>();
+  if (currentPettyCashId !== null) cashAccountIds.add(currentPettyCashId);
+  const snapshotPettyCashId = row.postingAccountSnapshot?.petty_cash;
+  if (typeof snapshotPettyCashId === "string")
+    cashAccountIds.add(snapshotPettyCashId);
   const key = row.idempotencyKey;
+  // A journal without a snapshot (posted before the snapshot existed) has no
+  // record of its cash account, and today's mapping may have moved since. For
+  // the known cash-out sources the source row decides, not the mapping: when
+  // in doubt the cash stays held (legend 1140, CTO decision).
+  const knownCashOutSource =
+    key !== null &&
+    (key.startsWith("payroll-gl:loan:") ||
+      key.startsWith("payroll-gl:reimbursement:") ||
+      key.startsWith("ap-pay:") ||
+      key.startsWith("payroll-payout:"));
+  const judgeOnSourceOnly =
+    (row.postingAccountSnapshot === null ||
+      row.postingAccountSnapshot === undefined) &&
+    knownCashOutSource;
+  if (!judgeOnSourceOnly) {
+    if (cashAccountIds.size === 0) return;
+    const netCredit = lines
+      .filter((line) => cashAccountIds.has(line.accountId))
+      .reduce((sum, line) => sum + line.creditIdr - line.debitIdr, 0);
+    if (netCredit <= 0) return;
+  }
   const uuidPart = (prefix: string): string | null | undefined => {
     if (key === null || !key.startsWith(prefix)) return undefined;
     const id = uuidSchema.safeParse(key.slice(prefix.length));

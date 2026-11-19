@@ -18,6 +18,12 @@
 // `edge-master-sync` lock, no other path does, then lock 1 for its one legal
 // entity, then lock 2 for its outlet (it writes CoA, mappings and the outlet's
 // stock locations; tenant-wide uoms have no lock in this list).
+// The config import (tenant-config.service.ts) takes lock 1 for every legal
+// entity of the target, by createdAt/id, BEFORE its `tenants FOR UPDATE`: an
+// owner mapping writer holds lock 1 and then needs a KEY SHARE on the tenant
+// row for its INSERT, which that FOR UPDATE would block, so waiting for lock 1
+// after the row lock would be a cycle. An entity created in between is only
+// try-locked (`tryLockChartOfAccounts`); failure aborts the import, never waits.
 // Holders today: tenant creation takes 3 then 4; legal-entity creation takes 1;
 // outlet creation takes 2 then 4; each owner writer takes exactly one. The
 // backfill runs each domain in its own transaction and, within one domain,
@@ -54,6 +60,24 @@ export function lockChartOfAccounts(
   legalEntityId: string,
 ): Promise<void> {
   return advisoryXactLock(tx, `chart_of_accounts:${tenantId}:${legalEntityId}`);
+}
+
+/**
+ * Non-blocking form of lock 1, for a caller that already holds a row lock
+ * the chart writers wait on (the config import's `tenants FOR UPDATE`) and so
+ * must never wait for the chart lock itself. Advisory xact locks are
+ * re-entrant in one session, so this returns true when the caller already
+ * holds the lock.
+ */
+export async function tryLockChartOfAccounts(
+  tx: TenantTransaction,
+  tenantId: string,
+  legalEntityId: string,
+): Promise<boolean> {
+  const result = await tx.execute(
+    sql`SELECT pg_try_advisory_xact_lock(hashtextextended(${`chart_of_accounts:${tenantId}:${legalEntityId}`}, 0)) AS locked`,
+  );
+  return (result.rows as { locked: boolean }[])[0]?.locked === true;
 }
 
 /**

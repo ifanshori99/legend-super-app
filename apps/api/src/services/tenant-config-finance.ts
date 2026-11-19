@@ -50,6 +50,7 @@ import {
 import {
   lockServiceChargeConfig,
   lockTaxConfig,
+  tryLockChartOfAccounts,
 } from "./tenant-config-locks.ts";
 import { loadTenantKeyMaps } from "./tenant-config-keys.ts";
 import {
@@ -413,6 +414,15 @@ async function importChartOfAccounts(
     );
     return;
   }
+
+  // importConfig locked every entity's chart before the tenant row lock. This
+  // list is read after it, so an entity created in between is only try-locked:
+  // waiting here could deadlock with an owner writer (see tenant-config-locks).
+  for (const entity of entities)
+    if (!(await tryLockChartOfAccounts(tx, tenantId, entity.id)))
+      throw new ConfigImportError(
+        "Chart of accounts is being changed by another request; retry the import.",
+      );
 
   const byKey = new Map(accounts.map((item) => [item.key, item]));
   for (const item of accounts) {

@@ -485,6 +485,8 @@ export function installLoanCashWorld(label: string) {
     snapshot?: Record<string, string> | null;
     /** Account the journal credits; 1102 (the current petty cash account) by default. */
     creditAccountId?: string;
+    /** Account the journal debits; overrides the default (1204/6110, or the credit account when net zero). */
+    debitAccountId?: string;
   };
 
   /**
@@ -502,7 +504,9 @@ export function installLoanCashWorld(label: string) {
     await insertJournal({
       key: `payroll-gl:loan:${loanId}`,
       sourceId: loanId,
-      debitAccountId: netCredit > 0 ? await accountId("1204") : credit,
+      debitAccountId:
+        options.debitAccountId ??
+        (netCredit > 0 ? await accountId("1204") : credit),
       creditAccountId: credit,
       amount,
       snapshot: options.snapshot,
@@ -520,7 +524,9 @@ export function installLoanCashWorld(label: string) {
     await insertJournal({
       key: `payroll-gl:reimbursement:${claimId}`,
       sourceId: claimId,
-      debitAccountId: netCredit > 0 ? await accountId("6110") : credit,
+      debitAccountId:
+        options.debitAccountId ??
+        (netCredit > 0 ? await accountId("6110") : credit),
       creditAccountId: credit,
       amount,
       snapshot: options.snapshot,
