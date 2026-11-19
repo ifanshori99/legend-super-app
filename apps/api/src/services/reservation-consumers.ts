@@ -20,7 +20,7 @@
 // is open would see `pending_deposit`, then find the row cancelled under the
 // lock. Reading the status again after the lock is what makes that payment a
 // late payment instead of a silent loss.
-import { and, eq, isNull, or } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, ne, or } from "drizzle-orm";
 import {
   idr,
   uuidSchema,
@@ -109,15 +109,19 @@ async function refundLateDeposit(
         ),
       );
     if (!intent) return null;
-    // legend-3dfri: skip the DP refund only when the transaction that settled
-    // this code is itself parked as unallocated funds (a second, double payment
-    // on the DP link): its money is refunded through that fund, once, by the
-    // staff flow, and refunding it here too would return it twice (the fund
-    // refund is not counted by `loadHeldDeposit`). Another transaction parked
-    // on this code (paid twice) is separate money and does not stop the refund
-    // of the settling one. Funds without evidence (old rows) also skip: the
-    // rule that limits payment. Idempotent per code, whatever order the events
-    // of two late codes are consumed in.
+    // legend-3dfri / legend-qs2r4: skip the DP refund only on PROOF that the
+    // transaction that settled this code is itself parked in full as a double
+    // payment (a second code on the DP link): that money is refunded through
+    // its fund, once, by the staff flow, and refunding it here too would
+    // return it twice (the fund refund is not counted by `loadHeldDeposit`).
+    // Proof is either (a) a `double_payment` fund tied to the evidence of the
+    // settling transaction, or (b) for rows written before evidence existed
+    // (`evidence_id` NULL): a `double_payment` fund of at least the whole code
+    // while ANOTHER code of the link holds the allocated money. Anything else
+    // never holds the refund: an `overpayment` fund, a fund of another
+    // transaction on this code (paid twice), a legacy fund that proves nothing.
+    // Idempotent per code, whatever order the events of two late codes are
+    // consumed in.
     const [settlingEvidence] =
       intent.providerRef === null
         ? []
@@ -132,6 +136,18 @@ async function refundLateDeposit(
               ),
             )
             .limit(1);
+    const [otherPaid] = await tx
+      .select({ id: paymentIntents.id })
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          eq(paymentIntents.paymentLinkId, locked.depositPaymentLinkId),
+          ne(paymentIntents.id, intent.id),
+          inArray(paymentIntents.status, ["paid", "partially_refunded"]),
+        ),
+      )
+      .limit(1);
     const [parkedFund] = await tx
       .select({ id: paymentUnallocatedFunds.id })
       .from(paymentUnallocatedFunds)
@@ -139,15 +155,15 @@ async function refundLateDeposit(
         and(
           eq(paymentUnallocatedFunds.tenantId, context.tenant.tenantId),
           eq(paymentUnallocatedFunds.paymentIntentId, intent.id),
+          eq(paymentUnallocatedFunds.reason, "double_payment"),
           or(
-            isNull(paymentUnallocatedFunds.evidenceId),
             settlingEvidence
+              ? eq(paymentUnallocatedFunds.evidenceId, settlingEvidence.id)
+              : undefined,
+            otherPaid
               ? and(
-                  eq(paymentUnallocatedFunds.evidenceId, settlingEvidence.id),
-                  // A part parked as `overpayment` leaves the allocated
-                  // part of the DP refundable: only a settling transaction
-                  // parked in full (a double payment) skips the refund.
-                  eq(paymentUnallocatedFunds.reason, "double_payment"),
+                  isNull(paymentUnallocatedFunds.evidenceId),
+                  gte(paymentUnallocatedFunds.amountIdr, intent.amountIdr),
                 )
               : undefined,
           ),
