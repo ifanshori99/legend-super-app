@@ -54,6 +54,7 @@ import {
 } from "@starter/shared/core";
 import { posDepositRefunds } from "../db/schema/index.ts";
 import { posOrderRefunds } from "../db/schema/pos-order.ts";
+import { orderIssues } from "../db/schema/kds-issues.ts";
 import { orderItems, orders } from "../db/schema/qr-order.ts";
 import { providerRefundedForeignIdrSql } from "./payment-provider-refunded-foreign-sql.ts";
 import { HttpError } from "../lib/http-error.ts";
@@ -142,6 +143,31 @@ const allocated = (alias: string) => {
                      AND f.payment_intent_id = ${a}.id), 0)))`;
 };
 
+// What a paid dearer-swap charge still holds: the money the guest paid for it
+// (online: evidence less parked funds, less provider refunds; cash: its
+// amount) less the payment refunds (not failed) and the manual refunds (not
+// rejected) of it. Needs the aliases `c` (order_issue_charges) and `ci` (its
+// payment intent, left joined). Used by the order's paid (`orderGivenOf`) and
+// by the swap chain's (`chainBalanceOf`) so the two never drift apart.
+const chargeNetSql = (tenantId: string) => sql`(CASE
+    WHEN c.payment_intent_id IS NOT NULL
+         AND (ci.id IS NULL OR ${flagged("ci")} OR ${latePaid("ci")}) THEN 0
+    ELSE greatest(0, CASE WHEN ci.id IS NULL THEN c.amount_idr
+                          ELSE least(c.amount_idr, ${allocated("ci")})
+                               - ${providerRefundedForeignIdrSql(sql`${tenantId}::uuid`, sql`ci.id`, undefined, false)} END
+    - coalesce((SELECT sum(r.amount_idr)
+                  FROM payment_refunds r
+                 WHERE r.tenant_id = c.tenant_id
+                   AND r.payment_intent_id = c.payment_intent_id
+                   AND r.status <> 'failed'
+                   -- parked money is already off allocated()
+                   AND r.unallocated_fund_id IS NULL), 0)
+    - coalesce((SELECT sum(m.amount_idr)
+                  FROM order_issue_charge_manual_refunds m
+                 WHERE m.tenant_id = c.tenant_id
+                   AND m.charge_id = c.id
+                   AND m.status <> 'rejected'), 0)) END)`;
+
 export type OrderGiven = {
   /** What the guest paid for the order (see the header). */
   paidIdr: number;
@@ -156,6 +182,8 @@ export type OrderGiven = {
   lineGivenIdr: Map<string, number>;
   /** Maps a line (a replacement too) to the original line of its swap chain. */
   toOriginal: (lineId: string) => string;
+  /** Original lines whose chain holds a swap (an issue with a replacement). */
+  swappedLines: Set<string>;
 };
 
 export async function orderGivenOf(
@@ -245,24 +273,7 @@ export async function orderGivenOf(
                         WHERE r.tenant_id = ${tenantId}
                           AND r.order_issue_id IN (SELECT id FROM issues)
                         GROUP BY r.order_issue_id) e))
-            + (SELECT coalesce(sum(CASE
-                      WHEN c.payment_intent_id IS NOT NULL
-                           AND (ci.id IS NULL OR ${flagged("ci")} OR ${latePaid("ci")}) THEN 0
-                      ELSE greatest(0, CASE WHEN ci.id IS NULL THEN c.amount_idr
-                                            ELSE least(c.amount_idr, ${allocated("ci")})
-                                                 - ${providerRefundedForeignIdrSql(sql`${tenantId}::uuid`, sql`ci.id`, undefined, false)} END
-                      - coalesce((SELECT sum(r.amount_idr)
-                                    FROM payment_refunds r
-                                   WHERE r.tenant_id = c.tenant_id
-                                     AND r.payment_intent_id = c.payment_intent_id
-                                     AND r.status <> 'failed'
-                                     -- parked money is already off allocated()
-                                     AND r.unallocated_fund_id IS NULL), 0)
-                      - coalesce((SELECT sum(m.amount_idr)
-                                    FROM order_issue_charge_manual_refunds m
-                                   WHERE m.tenant_id = c.tenant_id
-                                     AND m.charge_id = c.id
-                                     AND m.status <> 'rejected'), 0)) END), 0)
+            + (SELECT coalesce(sum(${chargeNetSql(tenantId)}), 0)
                  FROM order_issue_charges c
                  LEFT JOIN payment_intents ci
                    ON ci.tenant_id = c.tenant_id AND ci.id = c.payment_intent_id
@@ -316,8 +327,11 @@ export async function orderGivenOf(
     return id;
   };
   const lineGivenIdr = new Map<string, number>();
+  const swappedLines = new Set<string>();
   for (const issue of perIssue.rows) {
     const line = toOriginal(uuidToUlid(String(issue.item)));
+    if (issue.replacement !== null && issue.replacement !== undefined)
+      swappedLines.add(line);
     lineGivenIdr.set(
       line,
       (lineGivenIdr.get(line) ?? 0) +
@@ -337,6 +351,7 @@ export async function orderGivenOf(
     givenIdr: vouchersIdr + posRefundsIdr + recoveryRefundsIdr,
     lineGivenIdr,
     toOriginal,
+    swappedLines,
   };
 }
 
@@ -365,6 +380,26 @@ export function lineRoomIdr(
   given: Pick<OrderGiven, "lineGivenIdr" | "toOriginal">,
   requested: readonly { itemId: string }[],
 ): number {
+  let room = 0;
+  for (const balance of lineBalancesIdr(
+    order,
+    items,
+    refunds,
+    given,
+    requested,
+  ).values())
+    room += Math.max(0, balance);
+  return room;
+}
+
+/** The per-line balance behind `lineRoomIdr`, not clamped at zero. */
+function lineBalancesIdr(
+  order: { totalIdr: number; subtotalIdr: number },
+  items: readonly LineItem[],
+  refunds: readonly RefundRowLike[],
+  given: Pick<OrderGiven, "lineGivenIdr" | "toOriginal">,
+  requested: readonly { itemId: string }[],
+): Map<string, number> {
   const byId = new Map(items.map((item) => [item.id as string, item]));
   const valueOf = (itemId: string, quantity: number) => {
     const item = byId.get(itemId);
@@ -395,7 +430,7 @@ export function lineRoomIdr(
   const lines = new Set(
     requested.map((entry) => given.toOriginal(entry.itemId)),
   );
-  let room = 0;
+  const balances = new Map<string, number>();
   for (const line of lines) {
     const item = byId.get(line);
     const paid =
@@ -405,12 +440,12 @@ export function lineRoomIdr(
               BigInt(order.subtotalIdr),
           )
         : 0;
-    room += Math.max(
-      0,
+    balances.set(
+      line,
       paid - (given.lineGivenIdr.get(line) ?? 0) - (priorPos.get(line) ?? 0),
     );
   }
-  return room;
+  return balances;
 }
 
 /**
@@ -482,27 +517,42 @@ export async function assertOrderBudget(
     );
 }
 
+// 1145: the rounding the pro-rata refund may carry over a floored line share:
+// each component (goods, discount, service, PBJT) is rounded half up while the
+// share is floored. Applies to a swap chain only, and never past what the
+// chain paid.
+const CHAIN_ROUNDING_IDR = 5;
+
+type ChainBalance = {
+  /** Original line of the chain. */
+  line: string;
+  /** The chain holds a swap (a replacement line or a dearer-swap charge). */
+  swapped: boolean;
+  /** Original line share + live paid charge money of the chain. */
+  paidIdr: number;
+  /** paidIdr less what went out for the chain (not clamped at zero). */
+  balanceIdr: number;
+};
+
 /**
- * 1131 (Q25 per item, architect P1): does `wantedIdr` fit what the failed line
- * still holds? Same rule as `voucherRoomIdr` (order-voucher-room.ts): the
- * line's share of the bill less what was given for it (vouchers, live ORD-09
- * refunds of its issues, cashier refunds that named it with the deposit part
- * they released). The caller holds the order lock. A line nothing was given
- * for yet always fits: its pro-rata amount is rounded half up per component,
- * its share floored, and the order budget bounds that case.
+ * 1145 (SO round 3 P1): the money of one swap chain. Paid = the original
+ * line's share of the bill + the live paid money of the dearer-swap charges of
+ * the chain (the charge less its refunds). Out = the vouchers and live ORD-09
+ * refunds of the chain's issues (`lineGivenIdr`) + the cashier refunds that
+ * named it; a refund of the charge already lowered the charge money. The
+ * caller holds the order lock.
  */
-export async function lineFitsIdr(
+async function chainBalanceOf(
   tx: Tx,
   tenantId: ScopedTenantContext["tenant"]["tenantId"],
   orderId: string,
   orderItemId: string,
-  wantedIdr: number,
-): Promise<boolean> {
+): Promise<ChainBalance | null> {
   const [order] = await tx
     .select({ totalIdr: orders.totalIdr, subtotalIdr: orders.subtotalIdr })
     .from(orders)
     .where(and(eq(orders.tenantId, tenantId), eq(orders.id, orderId)));
-  if (!order) return false;
+  if (!order) return null;
   const given = await orderGivenOf(tx, tenantId, orderId);
   const items = await tx
     .select({
@@ -546,8 +596,8 @@ export async function lineFitsIdr(
       row.posRefundId,
       (depositOf.get(row.posRefundId) ?? 0) + Number(row.amountIdr),
     );
-  const requested = [{ itemId: orderItemId }];
-  const room = lineRoomIdr(
+  const line = given.toOriginal(orderItemId);
+  const balances = lineBalancesIdr(
     order,
     items,
     refunds.map((row) => ({
@@ -555,16 +605,110 @@ export async function lineFitsIdr(
       amountIdr: row.amountIdr + (depositOf.get(row.id) ?? 0),
     })),
     given,
-    requested,
+    [{ itemId: line }],
   );
-  const share = lineRoomIdr(
-    order,
-    items,
-    [],
-    { lineGivenIdr: new Map(), toOriginal: given.toOriginal },
-    requested,
+  const lineBalance = balances.get(line) ?? 0;
+  const share =
+    lineBalancesIdr(
+      order,
+      items,
+      [],
+      { lineGivenIdr: new Map(), toOriginal: given.toOriginal },
+      [{ itemId: line }],
+    ).get(line) ?? 0;
+  // The paid charges of the order, each with the item of its issue; the ones
+  // whose item maps to this chain add their live money.
+  const charges = await tx.execute(sql`
+    SELECT i.order_item_id::text AS item,
+           ${chargeNetSql(tenantId)}::text AS net
+      FROM order_issue_charges c
+      JOIN order_issues i
+        ON i.tenant_id = c.tenant_id AND i.id = c.order_issue_id
+      LEFT JOIN payment_intents ci
+        ON ci.tenant_id = c.tenant_id AND ci.id = c.payment_intent_id
+     WHERE c.tenant_id = ${tenantId}
+       AND c.order_id = ${ulidToUuid(orderId)}::uuid
+       AND c.status = 'paid'
+  `);
+  let chargeIdr = 0;
+  for (const row of charges.rows)
+    if (given.toOriginal(uuidToUlid(String(row.item))) === line)
+      chargeIdr += Number(String(row.net ?? "0"));
+  const swapped =
+    given.swappedLines.has(line) ||
+    charges.rows.some(
+      (row) => given.toOriginal(uuidToUlid(String(row.item))) === line,
+    );
+  return {
+    line,
+    swapped,
+    paidIdr: share + chargeIdr,
+    balanceIdr: lineBalance + chargeIdr,
+  };
+}
+
+/**
+ * 1145: a charge refund (manual or online) may not leave the swap chain of its
+ * issue with more going out than it paid. Call it after the refund row is
+ * recorded (its money is already off the chain) under the order lock (issue ->
+ * orders -> charge); 422 `REFUND_OVER_ORDER_ROOM` rolls the row back. Example:
+ * A (10.000) swapped to a 100.000 replacement, charge 90.000, ORD-09 already
+ * gave 100.000 for the chain: the charge refund is refused, B's 90.000 stays.
+ */
+export async function assertChargeChainBudget(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+  orderId: string,
+  orderIssueId: string,
+): Promise<void> {
+  const [issue] = await tx
+    .select({ itemId: orderIssues.orderItemId })
+    .from(orderIssues)
+    .where(
+      and(eq(orderIssues.tenantId, tenantId), eq(orderIssues.id, orderIssueId)),
+    );
+  if (!issue) return;
+  const chain = await chainBalanceOf(tx, tenantId, orderId, issue.itemId);
+  if (chain && chain.balanceIdr + CHAIN_ROUNDING_IDR < 0)
+    throw new HttpError(
+      422,
+      "REFUND_OVER_ORDER_ROOM",
+      "This would give back more than the guest paid for this item.",
+    );
+}
+
+/**
+ * 1131 (Q25 per item, architect P1) + 1145: does `wantedIdr` fit what the
+ * failed line still holds? A line of a swap chain holds what the whole chain
+ * paid (original share + live charge money) less what went out for the chain
+ * (vouchers, live ORD-09 refunds, cashier refunds that named it, charge
+ * refunds), plus at most a few IDR of rounding, never past what the chain paid.
+ * It never borrows the share of another item the guest keeps. A line outside a
+ * swap chain holds its share of the bill less what was given for it (same rule
+ * as `voucherRoomIdr`, order-voucher-room.ts); nothing given yet always fits
+ * there (its pro-rata amount is rounded half up per component, its share
+ * floored, a promo recompute may differ), the order budget bounds that case.
+ * The caller holds the order lock.
+ */
+export async function lineFitsIdr(
+  tx: Tx,
+  tenantId: ScopedTenantContext["tenant"]["tenantId"],
+  orderId: string,
+  orderItemId: string,
+  wantedIdr: number,
+): Promise<boolean> {
+  const chain = await chainBalanceOf(tx, tenantId, orderId, orderItemId);
+  if (!chain) return false;
+  if (chain.swapped)
+    return (
+      wantedIdr <=
+      Math.min(chain.paidIdr, chain.balanceIdr + CHAIN_ROUNDING_IDR)
+    );
+  // Outside a swap the chain paid only the line's share.
+  return (
+    chain.balanceIdr >= chain.paidIdr ||
+    wantedIdr <= Math.max(0, chain.balanceIdr)
   );
-  return room >= share || wantedIdr <= room;
 }
 
 /** Throws 422 `REFUND_OVER_ORDER_ROOM` when `wantedIdr` does not fit the line. */
