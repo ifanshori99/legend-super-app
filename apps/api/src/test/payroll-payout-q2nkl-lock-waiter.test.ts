@@ -456,7 +456,8 @@ async function watchProcessErrors(body: () => Promise<void>) {
     seen.push(reason);
   };
   const events = ["uncaughtException", "unhandledRejection"] as const;
-  const others = events.map((e) => process.listeners(e));
+  const emitter: NodeJS.EventEmitter = process;
+  const others = events.map((e) => emitter.listeners(e));
   for (const e of events) {
     process.removeAllListeners(e);
     process.on(e, listener);
