@@ -8,8 +8,9 @@
 // its keys is reachable from a single route area (`routes/_<area>`) and none
 // from the document shell, `_auth`, or a route outside an area. Namespaces read
 // from several areas, from the shell, or built dynamically across areas stay in
-// core (kds, supportAccess, approvals, deviceRegistry, devicePin, qrRecovery,
-// aiChat, theme, status, nav, facility, hrisRequests*, payslipPin, payroll*,
+// core (paymentAdmin: the guest pay dialog reads its EDC card and the routing
+// error keys from the customer area, legend-mp44v; kds, supportAccess,
+// approvals, deviceRegistry, devicePin, qrRecovery, aiChat, theme, status, nav, facility, hrisRequests*, payslipPin, payroll*,
 // staffAuth, login, qrGlass, qrOrders, edge, common, toast, app, shell,
 // errorPage, ...). tests/i18n-area-split.test.mjs pins this contract.
 //
@@ -107,7 +108,6 @@ export const AREA_MANIFEST: Readonly<
   openBillPolicy: "kelola",
   opname: "kelola",
   orgDomain: "kelola",
-  paymentAdmin: "kelola",
   payrollPayoutSettings: "kelola",
   promo: "kelola",
   purchasing: "kelola",
