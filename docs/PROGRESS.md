@@ -2181,3 +2181,4 @@ Langkah berikut CTO baru:
 - 09:42 CTO: batch93+94 landed m1 6b3288bc2. Merge train batch95 (1155) mulai.
 - 09:43 CTO: 1149 selesai a3aba228c (G4d60 resolved).
 - 09:50 Pelajaran: 1149 (Codex, test saja) tidak menjalankan typecheck -> import hilang rbac-audit-writer.test.ts:396 tertangkap di merge train. Brief test-only berikut: typecheck API wajib.
+- 09:59 CTO: 1095 7fba91ddb; keputusan wpn5v batasi ketat (founder rule), 4yez0 void kas disamakan. SO 1156 mulai.
