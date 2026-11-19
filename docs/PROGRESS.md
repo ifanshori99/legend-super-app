@@ -2273,3 +2273,4 @@ Langkah berikut CTO baru:
 - 17:44 CTO: cek akun: semua thread Claude #1 (7d 66%), tidak ada pindah. Codex tidak bisa (2 5h 82%, 3 tolak model, 4 limit, 5 7d 98%). Mulai 1190 edge catalog hardening (75kly, y9y8y, ssnf9, n6mkr, jcgbk; P3, tanpa P1/P2 bebas tersisa).
 - 17:45 CTO: 1187 9d4a39810 (vn40t/xh240 diisolasi, open sampai full run 2 worker; df7qv tutup tanpa perubahan; cz9g hydration). Lanjut di G05dq: gx3i4, s4ou8, e2e cz9g.
 - 17:59 CTO: 1187 (G05dq) SIAP 23701452f, resolve. s4ou8 dibuktikan nanti di full run 2 worker (bersama h2wvx), bukan run terarah (jalur ringan padat).
+- 18:27 CTO: Retro 53 (G27dj) resolve. Keputusan: (1) thread Claude baru dipindah ke #5 via switch-account (flag --account diabaikan); (2) landing batch hanya dengan full run lulus di kode final atau catatan eksplisit per berkas; (3) jalur tsc saat full run = Q56 founder; (4) thread tunggu job background tanpa Monitor/loop, tanpa laporan antara.
