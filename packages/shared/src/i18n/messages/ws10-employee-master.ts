@@ -5,7 +5,6 @@ export const employeeMasterMessages = {
   title: "Data Karyawan",
   nav: {
     employees: "Karyawan",
-    organization: "Struktur Organisasi",
   },
   // PRD §6 H `employees.status`.
   status: {

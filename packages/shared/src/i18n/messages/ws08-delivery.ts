@@ -3,7 +3,6 @@
 // Manual"). One file so the parallel squad never edits the big catalog inline;
 // id.ts imports it under `deliveryOps`.
 export const deliveryOpsMessages = {
-  nav: "Ojek online",
   title: "Integrasi ojek online",
   subtitle:
     "Buka-tutup toko per platform, pesanan ojek online yang masuk, dan rekonsiliasi komisi platform.",

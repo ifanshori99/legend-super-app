@@ -9,7 +9,6 @@
 // local template and is labelled as a draft — never as live model output.
 
 export const crmCampaignsMessages = {
-  nav: "Kampanye",
   title: "Kampanye",
   subtitle:
     "Kampanye ke segmen pelanggan lewat web push, email, atau WhatsApp template, dengan jadwal, uji A/B sederhana, dan pengukuran hasil.",

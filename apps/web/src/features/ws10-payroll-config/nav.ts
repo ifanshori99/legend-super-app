@@ -8,7 +8,7 @@ const nav: AreaNavEntry[] = [
   {
     area: "kelola",
     group: "finance",
-    labelKey: "payrollConfig.nav.config",
+    labelKey: "nav.management.payrollConfig",
     to: "/kelola/payroll/pengaturan",
     icon: Wallet,
     order: 10,

@@ -337,7 +337,7 @@ const BACKOFFICE_SHARED_OPT_INS: Record<
   reservation: {
     count: 1,
     reason:
-      "legend-i0ipj: cashier PIN for cancel, deposit-link, no-show and credit-apply through sharedStaff; every other reservation route keeps the default-deny requireAuth.",
+      "legend-i0ipj, legend-jvaqa, legend-5f6is: every staff reservation route (list, get, tables, seat, cancel, deposit-link, deposit-remainder, no-show, credit-apply) goes through the one sharedStaff chain (cashier PIN, actor = cashier); no staff route keeps the default-deny requireAuth.",
   },
 };
 

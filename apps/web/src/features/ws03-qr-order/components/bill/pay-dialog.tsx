@@ -48,7 +48,7 @@ const METHOD_LABEL: Record<string, MessageKey> = {
   qris: "qrOrders.bill.methodQris",
   va: "payment.methodVa",
   ewallet: "qrOrders.bill.methodEwallet",
-  card: "paymentAdmin.edc.methodCard",
+  card: "payment.methodCard",
 };
 const METHOD_HINT: Record<string, MessageKey> = {
   qris: "qrOrders.bill.methodQrisHint",

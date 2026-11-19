@@ -3,9 +3,6 @@
 // Opsional", "Langganan Bulanan", "Pembatalan & Pengembalian", and §3 "Wi-Fi
 // Tamu & WFC"). Own file so parallel beads never edit the same catalog lines.
 export const facilityAdminMessages = {
-  nav: {
-    title: "Fasilitas",
-  },
   index: {
     title: "Konfigurasi fasilitas",
   },

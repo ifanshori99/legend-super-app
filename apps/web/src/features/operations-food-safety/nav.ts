@@ -7,7 +7,7 @@ import type { AreaNavEntry } from "@/lib/areas/nav";
 const nav: AreaNavEntry[] = [
   {
     area: "ops",
-    labelKey: "opsFoodSafety.nav.temperature",
+    labelKey: "nav.ops.temperature",
     to: "/operasional/suhu",
     icon: Thermometer,
     order: 30,
@@ -15,7 +15,7 @@ const nav: AreaNavEntry[] = [
   },
   {
     area: "ops",
-    labelKey: "opsFoodSafety.nav.prepLabels",
+    labelKey: "nav.ops.prepLabels",
     to: "/operasional/label-prep",
     icon: Printer,
     order: 31,
@@ -23,7 +23,7 @@ const nav: AreaNavEntry[] = [
   },
   {
     area: "ops",
-    labelKey: "opsFoodSafety.nav.prepList",
+    labelKey: "nav.ops.prepList",
     to: "/operasional/prep",
     icon: ClipboardList,
     order: 32,

@@ -16,7 +16,7 @@ import { TICKET_SALE_CONNECTED } from "./ticket/connected";
 // screen.
 const ticketEntry: AreaNavEntry = {
   area: "ops",
-  labelKey: "posKasirTicket.nav",
+  labelKey: "nav.ops.kasirTicket",
   to: "/pos/tiket",
   icon: Ticket,
   order: 29.5,
@@ -26,7 +26,7 @@ const ticketEntry: AreaNavEntry = {
 const nav: AreaNavEntry[] = [
   {
     area: "ops",
-    labelKey: "posOrderCart.nav.kasir",
+    labelKey: "nav.ops.orderKasir",
     to: "/pos/kasir",
     icon: ShoppingCart,
     order: 29,

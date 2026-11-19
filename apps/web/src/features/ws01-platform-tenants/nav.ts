@@ -7,7 +7,7 @@ import type { MessageKey } from "@starter/shared/i18n";
 const nav: AreaNavEntry[] = [
   {
     area: "platform",
-    labelKey: "platformTenants.nav.tenants" as MessageKey,
+    labelKey: "nav.platform.tenants" as MessageKey,
     to: "/platform/tenant",
     icon: Building2,
     order: 10,

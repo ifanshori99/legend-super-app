@@ -3,10 +3,6 @@
 // parallel WS-10 beads never edit the same catalog lines.
 export const lifecycleMessages = {
   title: "Siklus Karyawan",
-  nav: {
-    onboarding: "Onboarding",
-    offboarding: "Offboarding",
-  },
   common: {
     employee: "Karyawan",
     nip: "NIP",

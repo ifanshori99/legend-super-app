@@ -2,9 +2,6 @@
 // Copy follows design/mockups/hr-leave-clockin-review/README.md. Own file so
 // parallel WS-10 beads never edit the same catalog lines.
 export const leaveClockinReviewMessages = {
-  nav: {
-    label: "Tinjauan absensi",
-  },
   queue: {
     title: "Tinjauan absensi",
     description: "Tinjau absensi yang memerlukan keputusan HR.",

@@ -8,28 +8,28 @@ import type { AreaNavEntry } from "@/lib/areas/nav";
 const nav: AreaNavEntry[] = [
   {
     area: "customer",
-    labelKey: "member.nav.points",
+    labelKey: "nav.customer.memberPoints",
     to: "/member/poin",
     icon: Coins,
     order: 10,
   },
   {
     area: "customer",
-    labelKey: "member.nav.rewards",
+    labelKey: "nav.customer.memberRewards",
     to: "/member/reward",
     icon: Gift,
     order: 20,
   },
   {
     area: "customer",
-    labelKey: "member.nav.vouchers",
+    labelKey: "nav.customer.memberVouchers",
     to: "/member/voucher",
     icon: Ticket,
     order: 30,
   },
   {
     area: "customer",
-    labelKey: "member.nav.missions",
+    labelKey: "nav.customer.memberMissions",
     to: "/member/misi",
     icon: Target,
     order: 40,

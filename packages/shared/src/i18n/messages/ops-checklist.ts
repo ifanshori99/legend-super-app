@@ -2,10 +2,6 @@
 // legend-td4f; PRD v1.7 §3 F41 "Checklist Operasional"). Own file so parallel
 // beads never edit the same catalog lines.
 export const opsChecklistMessages = {
-  nav: {
-    checklist: "Checklist",
-    template: "Template checklist",
-  },
   runs: {
     title: "Checklist operasional",
     subtitle:

@@ -4,7 +4,7 @@ import type { AreaNavEntry } from "@/lib/areas/nav";
 const nav: AreaNavEntry[] = [
   {
     area: "ops",
-    labelKey: "opsEquipment.nav.equipment",
+    labelKey: "nav.ops.equipment",
     to: "/operasional/peralatan",
     icon: Wrench,
     order: 20,
@@ -12,7 +12,7 @@ const nav: AreaNavEntry[] = [
   },
   {
     area: "ops",
-    labelKey: "opsEquipment.nav.handover",
+    labelKey: "nav.ops.equipmentHandover",
     to: "/operasional/serah-terima",
     icon: ClipboardCheck,
     order: 21,

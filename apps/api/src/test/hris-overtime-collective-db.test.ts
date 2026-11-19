@@ -3,13 +3,22 @@
 // tiers; a national or company holiday forces the formula's rest-day type and
 // wins when it falls on the same date as a collective day.
 //
-// Assumptions: dates are in 2045 with a formula effective from 2045-01-01 (no
-// other test file uses that year). Approval goes through the real matrix with
-// an `overtime` policy routed to the outlet manager, like hris-overtime-db.
+// Assumptions: dates are in 2045 with a formula effective from 2045-01-01.
+// The file runs on its own private tenant (copied from the fixture tenant's
+// plan, with a seat quota that is ours alone): sharing the fixture tenant made
+// createEmployee fail with QUOTA_EXCEEDED when another hris file held seats at
+// the same time, and the shared `overtime` approval policy was swapped under
+// hris-overtime-db. Approval goes through the real matrix with an `overtime`
+// policy routed to the outlet manager, like hris-overtime-db.
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { idr, outletIdSchema, userIdSchema } from "@starter/shared/core";
+import {
+  idr,
+  outletIdSchema,
+  tenantIdSchema,
+  userIdSchema,
+} from "@starter/shared/core";
 import {
   establishScopedTenantContext,
   establishTenantContext,
@@ -35,8 +44,12 @@ import {
   publishOvertimeFormula,
 } from "../services/hris-overtime.service.ts";
 
-const tenantId = cafeLegendPlatformFixtures.tenant.id;
-const outletA = outletIdSchema.parse(cafeLegendPlatformFixtures.outlets[0].id);
+// Private fixtures: this file never touches the shared fixture tenant rows.
+const templateTenantId = cafeLegendPlatformFixtures.tenant.id;
+const tenantId = tenantIdSchema.parse(randomUUID());
+const outletA = outletIdSchema.parse(randomUUID());
+const brandId = randomUUID();
+const legalEntityId = randomUUID();
 
 const owner = new Pool({
   connectionString: process.env.STARTER_TEST_DATABASE_URL,
@@ -44,7 +57,6 @@ const owner = new Pool({
 });
 const createdUsers: string[] = [];
 const createdRoles: string[] = [];
-let savedPolicies: Record<string, unknown>[] = [];
 
 const base = () =>
   establishTenantContext({ tenantId, brandId: null, source: "session" });
@@ -115,13 +127,19 @@ async function customUser(
   return userId;
 }
 
+/** Copies a seeded template role of the fixture tenant into the private one. */
 async function templateRoleId(templateKey: string): Promise<string> {
-  const { rows } = await owner.query<{ id: string }>(
-    "SELECT id FROM roles WHERE tenant_id = $1 AND template_key = $2",
-    [tenantId, templateKey],
+  const roleId = randomUUID();
+  const { rowCount } = await asOwner((client) =>
+    client.query(
+      `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+       SELECT $1, $2, name, is_template, template_key, permissions, mfa_required, allowed_scope_types
+         FROM roles WHERE tenant_id = $3 AND template_key = $4`,
+      [roleId, tenantId, templateTenantId, templateKey],
+    ),
   );
-  if (!rows[0]) throw new Error(`No ${templateKey} role`);
-  return rows[0].id;
+  if (!rowCount) throw new Error(`No ${templateKey} role`);
+  return roleId;
 }
 
 const key = () => `otcb-${randomUUID()}`;
@@ -212,20 +230,43 @@ beforeAll(async () => {
   if (!process.env.STARTER_TEST_RUN?.startsWith("starter-pg-test-"))
     throw new Error("Requires the disposable test database");
   setAuditWriter(coreAuditWriter);
-  savedPolicies = (
-    await owner.query(
-      `SELECT * FROM approval_policies WHERE tenant_id = $1 AND action_type = 'overtime'`,
-      [tenantId],
-    )
-  ).rows;
+  // Same plan as the fixture tenant, but a seat quota big enough for this file
+  // alone (it only ever holds one employee).
   await owner.query(
-    `DELETE FROM approval_policies WHERE tenant_id = $1 AND action_type = 'overtime'`,
-    [tenantId],
+    `INSERT INTO tenants (id, slug, name, plan, status, deployment_mode, feature_flags, limits, created_by)
+     SELECT $1, $2, 'OTCB tenant', plan, status, deployment_mode, feature_flags,
+            jsonb_set(limits, '{maxActiveEmployees}', '10'::jsonb), created_by
+       FROM tenants WHERE id = $3`,
+    [tenantId, `otcb-${tenantId.slice(0, 8)}`, templateTenantId],
   );
-  await owner.query(
-    `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels)
-     VALUES ($1, 'overtime', NULL, $2, 1)`,
-    [tenantId, await templateRoleId("outlet_manager")],
+  await asOwner(async (client) => {
+    await client.query(
+      "INSERT INTO brands (id, tenant_id, slug, name) VALUES ($1, $2, 'otcb', 'OTCB')",
+      [brandId, tenantId],
+    );
+    await client.query(
+      "INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'Entity OTCB', false)",
+      [legalEntityId, tenantId],
+    );
+    await client.query(
+      `INSERT INTO outlets (id, tenant_id, brand_id, legal_entity_id, code, name, address, timezone, business_day_cutoff, opening_hours, status)
+       VALUES ($1, $2, $3, $4, $5, 'Outlet OTCB', 'Jl. OTCB', 'Asia/Jakarta', '04:00', '{}', 'active')`,
+      [
+        outletA,
+        tenantId,
+        brandId,
+        legalEntityId,
+        `OTCB-${tenantId.slice(0, 8)}`.toUpperCase(),
+      ],
+    );
+  });
+  const managerRoleId = await templateRoleId("outlet_manager");
+  await asOwner((client) =>
+    client.query(
+      `INSERT INTO approval_policies (tenant_id, action_type, threshold_idr, approver_role_id, levels)
+       VALUES ($1, 'overtime', NULL, $2, 1)`,
+      [tenantId, managerRoleId],
+    ),
   );
 
   hr = await customUser(["hr.employee.manage", "hr.employee.view"], {
@@ -245,7 +286,7 @@ beforeAll(async () => {
     `INSERT INTO role_assignments
        (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
      VALUES ($1, $2, $3, 'outlet', $4, now() - interval '1 hour', $2)`,
-    [tenantId, manager, await templateRoleId("outlet_manager"), outletA],
+    [tenantId, manager, managerRoleId, outletA],
   );
 
   worker = await createEmployee(tenantScope(), hr, {
@@ -314,31 +355,29 @@ afterAll(async () => {
       [tenantId, createdUsers],
     );
     await client.query(
-      "DELETE FROM roles WHERE tenant_id = $1 AND id = ANY($2)",
-      [tenantId, createdRoles],
+      `DELETE FROM approval_policies WHERE tenant_id = $1 AND action_type = 'overtime'`,
+      [tenantId],
     );
+    // Custom roles plus the copied outlet_manager template role.
+    await client.query("DELETE FROM roles WHERE tenant_id = $1", [tenantId]);
   });
-  await owner.query(
-    `DELETE FROM approval_policies WHERE tenant_id = $1 AND action_type = 'overtime'`,
-    [tenantId],
-  );
-  for (const row of savedPolicies)
-    await owner.query(
-      `INSERT INTO approval_policies (id, tenant_id, action_type, threshold_idr, approver_role_id, levels, requires_distinct_actor)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [
-        row.id,
-        row.tenant_id,
-        row.action_type,
-        row.threshold_idr,
-        row.approver_role_id,
-        row.levels,
-        row.requires_distinct_actor,
-      ],
-    );
-  await owner.query(`DELETE FROM "user" WHERE id = ANY($1::text[])`, [
-    createdUsers,
-  ]);
+  // Private tenant rows (children first); the tenant itself last. Best effort,
+  // like the other private-tenant tests.
+  await owner
+    .query("DELETE FROM outlets WHERE tenant_id = $1", [tenantId])
+    .catch(() => undefined);
+  await owner
+    .query("DELETE FROM legal_entities WHERE tenant_id = $1", [tenantId])
+    .catch(() => undefined);
+  await owner
+    .query("DELETE FROM brands WHERE tenant_id = $1", [tenantId])
+    .catch(() => undefined);
+  await owner
+    .query("DELETE FROM tenants WHERE id = $1", [tenantId])
+    .catch(() => undefined);
+  await owner
+    .query(`DELETE FROM "user" WHERE id = ANY($1::text[])`, [createdUsers])
+    .catch(() => undefined);
   await owner.end();
 });
 

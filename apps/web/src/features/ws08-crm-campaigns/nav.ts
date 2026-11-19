@@ -7,7 +7,7 @@ import type { AreaNavEntry } from "@/lib/areas/nav";
 const nav: AreaNavEntry[] = [
   {
     area: "kelola",
-    labelKey: "crmCampaigns.nav",
+    labelKey: "nav.management.campaigns",
     to: "/kelola/kampanye",
     icon: Megaphone,
     order: 56,

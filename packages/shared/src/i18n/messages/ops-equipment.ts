@@ -3,10 +3,6 @@
 // "Serah Terima Shift"). Own file so parallel beads never edit the same
 // catalog lines.
 export const opsEquipmentMessages = {
-  nav: {
-    equipment: "Peralatan",
-    handover: "Serah terima shift",
-  },
   offline: {
     title: "Koneksi terputus",
     hint: "Sambungkan kembali perangkat; data akan dimuat ulang setelah koneksi pulih.",

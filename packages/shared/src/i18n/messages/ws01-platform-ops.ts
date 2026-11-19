@@ -5,13 +5,6 @@
 // in id.ts. Namespace: `platformOps`.
 
 export const platformOpsMessages = {
-  nav: {
-    paket: "Paket & modul",
-    kuota: "Kuota & plafon",
-    kesehatan: "Kesehatan",
-    audit: "Audit lintas tenant",
-  },
-
   tenantPicker: "Pilih tenant",
   noTenantsTitle: "Belum ada tenant",
   noTenantsHint:

@@ -8,8 +8,6 @@ export const crm360Messages = {
   title: "CRM pelanggan",
   subtitle:
     "Profil Customer 360, segmen dinamis, dan antrean ulasan serta keluhan dalam satu tempat.",
-  nav: "Pelanggan",
-  navReviews: "Ulasan & keluhan",
   tabs: {
     customers: "Pelanggan",
     segments: "Segmen",

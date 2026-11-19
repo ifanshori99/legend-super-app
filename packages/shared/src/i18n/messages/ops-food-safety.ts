@@ -4,11 +4,6 @@
 // mirrored by the mock handlers, which call the contract state machines.
 // Own file so parallel beads never edit the same catalog lines.
 export const opsFoodSafetyMessages = {
-  nav: {
-    temperature: "Suhu chiller",
-    prepLabels: "Label prep",
-    prepList: "Daftar prep",
-  },
   common: {
     unitCelsius: "°C",
     unknownItem: "Bahan tidak dikenal",

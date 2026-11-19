@@ -7,7 +7,7 @@ import type { AreaNavEntry } from "@/lib/areas/nav";
 const nav: AreaNavEntry[] = [
   {
     area: "kelola",
-    labelKey: "reportViewer.nav",
+    labelKey: "nav.management.reports",
     to: "/reports",
     icon: ChartColumn,
     order: 30,

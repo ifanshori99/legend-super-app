@@ -9,7 +9,7 @@ const nav: AreaNavEntry[] = [
   {
     area: "kelola",
     group: "operations",
-    labelKey: "deliveryOps.nav",
+    labelKey: "nav.management.delivery",
     to: "/kelola/delivery",
     icon: Truck,
     order: 40,

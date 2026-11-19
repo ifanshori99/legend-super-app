@@ -3,7 +3,6 @@
 // in its own module so parallel WS-11 beads never edit the same lines of id.ts.
 export const reportViewerMessages = {
   title: "Laporan",
-  nav: "Laporan",
   backToCatalog: "Semua laporan",
   refresh: "Muat ulang",
   exportDenied: "Peran Anda belum boleh mengekspor laporan ini.",

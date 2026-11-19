@@ -8,7 +8,7 @@ import type { AreaNavEntry } from "@/lib/areas/nav";
 const nav: AreaNavEntry[] = [
   {
     area: "karyawan",
-    labelKey: "payslip.nav.payslips",
+    labelKey: "nav.karyawan.payslips",
     to: "/karyawan/slip-gaji",
     icon: Wallet,
     order: 30,
@@ -16,7 +16,7 @@ const nav: AreaNavEntry[] = [
   },
   {
     area: "karyawan",
-    labelKey: "payslip.nav.kasbon",
+    labelKey: "nav.karyawan.kasbon",
     to: "/karyawan/kasbon",
     icon: HandCoins,
     order: 40,
@@ -25,7 +25,7 @@ const nav: AreaNavEntry[] = [
   },
   {
     area: "karyawan",
-    labelKey: "payslip.nav.reimbursement",
+    labelKey: "nav.karyawan.reimbursement",
     to: "/karyawan/reimbursement",
     icon: ReceiptText,
     order: 50,
