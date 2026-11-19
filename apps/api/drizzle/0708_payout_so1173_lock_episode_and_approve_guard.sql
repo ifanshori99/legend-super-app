@@ -78,23 +78,6 @@ BEGIN
     RAISE EXCEPTION 'PAYOUT-86: the proposer of a reconciliation clearance cannot approve it'
       USING ERRCODE = '42501';
   END IF;
-  IF EXISTS (
-    SELECT 1
-      FROM public.payroll_payout_recon_exceptions e
-     WHERE e.tenant_id = v_tenant AND e.id = v_row.exception_id
-       AND (SELECT o.state
-              FROM public.payroll_payout_recon_evidence_observations o
-             WHERE o.tenant_id = e.tenant_id AND o.operation_id = e.operation_id
-             ORDER BY o.seq DESC
-             LIMIT 1) = 'error') THEN
-    RAISE EXCEPTION 'PAYOUT-91: the proof file of the operation could not be read; clear after a successful read'
-      USING ERRCODE = '23514';
-  END IF;
-  IF app.payout_recon_flag_fingerprint(v_tenant, v_row.exception_id)
-       IS DISTINCT FROM v_row.flag_sha256 THEN
-    RAISE EXCEPTION 'PAYOUT-91: the flagged data changed since the clearance was proposed'
-      USING ERRCODE = '23514';
-  END IF;
   PERFORM app.payout_recon_flag_see(v_tenant, v_row.exception_id);
   -- legend-1hpqt: the advisory lock of the operation is taken here, after every wait above
   -- (flag_see may queue behind another approver), and kept to the end of this transaction.
@@ -110,6 +93,25 @@ BEGIN
              'payout_recon_evidence_observe:' || e.tenant_id::text || ':' || e.operation_id::text,
              0))) THEN
     RAISE EXCEPTION 'PAYOUT-91: the proof file of the operation is still being read by a run that holds its lock; clear after that run has ended'
+      USING ERRCODE = '23514';
+  END IF;
+  -- legend-1hpqt (architect P2): the observation and fingerprint checks run after the
+  -- operation lock is held, so they cannot go stale while this approval waits.
+  IF EXISTS (
+    SELECT 1
+      FROM public.payroll_payout_recon_exceptions e
+     WHERE e.tenant_id = v_tenant AND e.id = v_row.exception_id
+       AND (SELECT o.state
+              FROM public.payroll_payout_recon_evidence_observations o
+             WHERE o.tenant_id = e.tenant_id AND o.operation_id = e.operation_id
+             ORDER BY o.seq DESC
+             LIMIT 1) = 'error') THEN
+    RAISE EXCEPTION 'PAYOUT-91: the proof file of the operation could not be read; clear after a successful read'
+      USING ERRCODE = '23514';
+  END IF;
+  IF app.payout_recon_flag_fingerprint(v_tenant, v_row.exception_id)
+       IS DISTINCT FROM v_row.flag_sha256 THEN
+    RAISE EXCEPTION 'PAYOUT-91: the flagged data changed since the clearance was proposed'
       USING ERRCODE = '23514';
   END IF;
   UPDATE public.payroll_payout_recon_clearances

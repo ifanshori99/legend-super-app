@@ -1339,8 +1339,10 @@ async function changeSubscription(
           .set({
             status: "needs_reconcile",
             // A parked failed stop keeps its marker: an unconfirmed answer is
-            // no proof that the stop happened (money rule: stay parked).
-            reconcileReason: sql`CASE WHEN ${paymentRecurringSubscriptions.reconcileReason} = ${CANCEL_PENDING} THEN ${paymentRecurringSubscriptions.reconcileReason} ELSE 'RESPONSE_MISMATCH' END`,
+            // no proof that the stop happened (money rule: stay parked). A
+            // PLAN_MISMATCH row keeps its marker too: DOIT holds another plan,
+            // and RESPONSE_MISMATCH would let resume pass (legend-x2jzq, architect P2).
+            reconcileReason: sql`CASE WHEN ${paymentRecurringSubscriptions.reconcileReason} IN (${CANCEL_PENDING}, 'PLAN_MISMATCH') THEN ${paymentRecurringSubscriptions.reconcileReason} ELSE 'RESPONSE_MISMATCH' END`,
             updatedAt: now,
           })
           .where(

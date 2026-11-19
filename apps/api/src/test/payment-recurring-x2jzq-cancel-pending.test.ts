@@ -88,6 +88,9 @@ let server: http.Server;
 let requests: { method: string; path: string }[] = [];
 // What GET (reconcile read) reports for the subscription.
 let providerStatus = "active";
+// When set, the reconcile read (GET) answers with this plan id instead of the
+// subscription's own plan (a DOIT answer for a different plan).
+let providerPlanIdOverride: string | null = null;
 // How the stub answers a cancel call: a 500, a 200 that still says `active`
 // (unconfirmed), or a normal 200 `cancelled`.
 let cancelMode: "ok" | "fail" | "active200" = "ok";
@@ -100,7 +103,6 @@ let releaseHeld: () => void = () => undefined;
 let heldSeen: Promise<void> = Promise.resolve();
 let markHeldSeen: () => void = () => undefined;
 const sockets = new Set<import("node:net").Socket>();
-const doitCalls = () => requests.filter((r) => r.path.includes("/recurring"));
 const resumeCalls = () => requests.filter((r) => /\/resume$/.test(r.path));
 
 function context(): ScopedTenantContext {
@@ -165,7 +167,7 @@ beforeAll(async () => {
           res.end(
             JSON.stringify({
               id: decodeURIComponent(one[1]!),
-              plan_id: lastPlanProviderId,
+              plan_id: providerPlanIdOverride ?? lastPlanProviderId,
               status: providerStatus,
             }),
           );
@@ -221,6 +223,7 @@ afterEach(() => {
   requests = [];
   cancelMode = "ok";
   providerStatus = "active";
+  providerPlanIdOverride = null;
 });
 
 afterAll(async () => {
@@ -562,5 +565,54 @@ describe("x2jzq CANCEL_PENDING survives until DOIT confirms cancelled", () => {
 
     // DOIT said `active` to the (older) resolve; the park must still hold.
     expect(await stateOf(subId)).toEqual(PARKED);
+  });
+
+  it("x2jzq resolve whose DOIT answer carries a different plan_id keeps a CANCEL_PENDING row parked (not PLAN_MISMATCH), no resume call", async () => {
+    flag.DOIT_RECURRING_ENABLED = true;
+    // Parked by an earlier failed stop (seeded directly).
+    const subId = await seedSubscription("needs_reconcile", "CANCEL_PENDING");
+
+    providerStatus = "active";
+    providerPlanIdOverride = `plan_other_${unique()}`;
+    requests = [];
+    await swallow(
+      resolveNeedsReconcileSubscription(context(), subId, new Date()),
+    );
+
+    expect(await stateOf(subId)).toEqual(PARKED);
+    expect(resumeCalls()).toEqual([]);
+  });
+
+  it("x2jzq resolve with a different plan_id after a failed cancel and an unconfirmed retry still keeps CANCEL_PENDING, no resume call", async () => {
+    const subId = await parkByFailedCancel();
+    cancelMode = "active200";
+    await swallow(cancelSubscription(context(), subId, new Date()));
+    expect(await stateOf(subId)).toEqual(PARKED);
+
+    providerStatus = "active";
+    providerPlanIdOverride = `plan_other_${unique()}`;
+    requests = [];
+    await swallow(
+      resolveNeedsReconcileSubscription(context(), subId, new Date()),
+    );
+
+    expect(await stateOf(subId)).toEqual(PARKED);
+    expect(resumeCalls()).toEqual([]);
+  });
+
+  it("x2jzq a PLAN_MISMATCH row stays PLAN_MISMATCH when a cancel answers 200 but still active, and resume is refused", async () => {
+    flag.DOIT_RECURRING_ENABLED = true;
+    const subId = await seedSubscription("needs_reconcile", "PLAN_MISMATCH");
+
+    cancelMode = "active200";
+    requests = [];
+    await swallow(cancelSubscription(context(), subId, new Date()));
+
+    expect(await stateOf(subId)).toEqual({
+      status: "needs_reconcile",
+      reason: "PLAN_MISMATCH",
+    });
+    await swallow(resumeSubscription(context(), subId, new Date()));
+    expect(resumeCalls()).toEqual([]);
   });
 });
