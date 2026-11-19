@@ -282,7 +282,12 @@ async function payVerifiedQr(intentId: string, amountIdr: number) {
 // (a) strict plain-line cap
 // ---------------------------------------------------------------------------
 
-type AbcOrder = { orderId: string; aLine: string; bLine: string; cLine: string };
+type AbcOrder = {
+  orderId: string;
+  aLine: string;
+  bLine: string;
+  cLine: string;
+};
 
 /** A = kopi x1, B = roti x3 (one free), C = teh x1; paid 84.315 by a verified QRIS payment. */
 async function paidAbcOrder(): Promise<AbcOrder> {
@@ -349,9 +354,7 @@ describe("1145b (a) an ORD-09 on a plain line never takes more than that line's 
       `ORD-09 of A filed ${attempt.filedIdr}; A's share is ${A_SHARE}, the promo repricing would file ${A_REPRICED}`,
     ).toBeGreaterThanOrEqual(A_SHARE);
     expect(attempt.filedIdr).toBeLessThanOrEqual(A_SHARE + 1);
-    expect(attempt.filedIdr, "total out <= paid").toBeLessThanOrEqual(
-      ABC_PAID,
-    );
+    expect(attempt.filedIdr, "total out <= paid").toBeLessThanOrEqual(ABC_PAID);
   });
 
   it("ORD-09 of C (teh, 12.000 of 91.000) is cut the same way: filed at C's share 11.118 (+1)", async () => {
@@ -377,10 +380,7 @@ describe("1145b (a) an ORD-09 on a plain line never takes more than that line's 
       `voucher on B up to B's share (${B_SHARE}): ${JSON.stringify(voucher.issued.body)}`,
     ).toBe(201);
 
-    const out = sum([
-      ord09.filedIdr,
-      await p.voucherTotal([voucher.issueId]),
-    ]);
+    const out = sum([ord09.filedIdr, await p.voucherTotal([voucher.issueId])]);
     expect(out, "ORD-09 + voucher <= paid").toBeLessThanOrEqual(ABC_PAID);
     expect(
       ABC_PAID - out,
@@ -430,10 +430,9 @@ describe("1145b (a2) a repriced ORD-09 on a plain line never passes the line's s
     ).toBe(PROMO_ROTI_SHARE);
     const out = kopi.filedIdr + roti.filedIdr;
     expect(out, "total out <= paid").toBeLessThanOrEqual(PROMO_PAID);
-    expect(
-      PROMO_PAID - out,
-      "teh's money stays paid",
-    ).toBeGreaterThanOrEqual(PROMO_TEH_SHARE - SLACK);
+    expect(PROMO_PAID - out, "teh's money stays paid").toBeGreaterThanOrEqual(
+      PROMO_TEH_SHARE - SLACK,
+    );
   });
 
   it("roti ORD-09 first (free item, nothing left), then the kopi (recompute 28.875): capped at the kopi's share 19.425; total out <= paid", async () => {
@@ -471,7 +470,12 @@ describe("1145b (a2) a repriced ORD-09 on a plain line never passes the line's s
 // ---------------------------------------------------------------------------
 
 type Channel = "cash" | "online";
-type Charge = { paid: PaidOrder; issueId: string; chargeId: string; replacementLine: string };
+type Charge = {
+  paid: PaidOrder;
+  issueId: string;
+  chargeId: string;
+  replacementLine: string;
+};
 
 /** QR order, roti swapped for the dearer kopi: the swap charge (8.085) is open. */
 async function openCharge(): Promise<Charge> {
@@ -628,10 +632,7 @@ describe("1145b (b) voiding an order whose swap chain already paid ORD-09", () =
     // decision 2 (422 REFUND_OVER_ORDER_ROOM) cannot be reached through a live ORD-09.
     // Both refusals are accepted: what matters is the money (no void, no cash out).
     expect(
-      [
-        "409 REFUND_ORD09_REFUND_EXISTS",
-        `422 ${ROOM_CODE}`,
-      ],
+      ["409 REFUND_ORD09_REFUND_EXISTS", `422 ${ROOM_CODE}`],
       errorText(voided.error),
     ).toContain(`${voided.error.status} ${voided.error.code}`);
     expect(await p.voidCount(charge.paid.orderId), "void rolled back").toBe(0);
@@ -843,7 +844,10 @@ describe("1145b (c) line shares add up exactly to what was paid", () => {
   it("caps at min(line, order) room: line room 11.550, order room 11.549 (23.102 left the order meanwhile): filed 11.549, cut audited", async () => {
     const so = await paidSoOrder();
     const prepared = await p.prepareOrd09(so.aLine, 10_000);
-    const resolved = await p.resolveOrd09(prepared.issueId, prepared.approvalId);
+    const resolved = await p.resolveOrd09(
+      prepared.issueId,
+      prepared.approvalId,
+    );
     expect(resolved.status, JSON.stringify(resolved.body)).toBe(200);
     const event = await p.ord09Event(prepared.issueId);
     expect(event).not.toBeNull();
