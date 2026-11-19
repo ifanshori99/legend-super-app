@@ -14,6 +14,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { Pool } from "pg";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { parsePreflightFile } from "../db/release-gates.ts";
 import { installLoanCashWorld, type Res } from "./helpers/cash-1118-world.ts";
 
 const owner = new Pool({
@@ -590,4 +591,58 @@ describe("1118 release gate SQL: fails closed on schema drift", () => {
       code: item.code,
     });
   });
+});
+
+describe("1118 release gate SQL: runner files (legend-gwqjp)", () => {
+  // The runner (release-gates.ts) takes exactly one read-only statement per
+  // rilis1-*.sql file, so the four statements above are also shipped as four
+  // runner files. The psql script stays for manual runs; both must say the
+  // same thing.
+  const dir = resolve(import.meta.dirname, "../../../../scripts/preflight");
+  const runnerFiles = [1, 2, 3, 4].map((n) => {
+    const file = `rilis1-legend-gwqjp${n}.sql`;
+    return { n, file, text: readFileSync(resolve(dir, file), "utf8") };
+  });
+  const original = [SHARED_ACCOUNTS, NEW_HOLDS, SELF_CASH, CASH_HISTORY];
+  // Only the SQL text: comments differ (the runner files carry a header).
+  const code = (sql: string) =>
+    sql
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("--"))
+      .join("\n")
+      .replace(/;\s*$/, "")
+      .trim();
+
+  it.each(runnerFiles)(
+    "[1118-gate-runner] $file parses, blocks, and holds the same SQL as statement $n of the psql script",
+    ({ n, file, text }) => {
+      const gate = parsePreflightFile(file, text);
+      expect(gate.gate).toBe(`legend-gwqjp${n}`);
+      expect(gate.mode).toBe("block");
+      expect(gate.before).toBeNull();
+      expect(gate.requires).toContain("public.account_mappings");
+      expect(code(gate.sql)).toBe(code(original[n - 1] as string));
+    },
+  );
+
+  it.each(runnerFiles)(
+    "[1118-gate-runner] $file runs as one extended-protocol statement in a READ ONLY transaction",
+    async ({ file, text }) => {
+      const gate = parsePreflightFile(file, text);
+      const client = await owner.connect();
+      try {
+        await client.query("BEGIN READ ONLY");
+        await client.query("SET LOCAL row_security = off");
+        const result = await client.query({
+          text: gate.sql,
+          queryMode: "extended",
+        });
+        expect(Array.isArray(result.rows)).toBe(true);
+      } finally {
+        await client.query("ROLLBACK");
+        client.release();
+      }
+    },
+    60_000,
+  );
 });

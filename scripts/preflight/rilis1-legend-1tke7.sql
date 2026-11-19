@@ -1,7 +1,7 @@
 -- gate: legend-1tke7
 -- before: none
 -- requires: public.payroll_payout_gl_postings
--- mode: block
+-- mode: info
 -- resolve: Finance menyelesaikan baris yang tercantum secara manual dulu (settle_pending: selesaikan settle-nya; settle_skipped tunai: waive resmi dengan alasan; settle_skipped bank: jalankan catch-up jurnal), lalu jalankan ulang gerbang; jangan mengisi settle_net_idr langsung di DB.
 -- Posting payout GL legacy yang belum punya settle_net_idr dan masih
 -- settle_pending atau settle_skipped: jumlah settle-nya hanya tersegel, jadi

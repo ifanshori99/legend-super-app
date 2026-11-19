@@ -10,9 +10,11 @@
 //    row and blocks (ragu = gagal). A missing table is handled by the runner
 //    through the `-- requires:` header, so the header must list
 //    public.payroll_payout_gl_postings.
-//  - A blocked result has at least one row; the resolve hint lives in the
-//    `-- resolve:` header, which the runner prints. Whether the gate returns one row per posting or
-//    one aggregate row is not fixed, so tests only assert "rows > 0".
+//  - The gate runs in info mode (CTO decision, batch96): the runner reports the
+//    row count and does not block. "Blocks" in the test names below means the
+//    gate returns at least one finding row; the resolve hint lives in the
+//    `-- resolve:` header. Whether the gate returns one row per posting or one
+//    aggregate row is not fixed, so tests only assert "rows > 0".
 //  - The gate must resolve the table through search_path (bare name), like the
 //    other rilis1 gates, so the temp shadow is the table it reads.
 import { existsSync, readFileSync } from "node:fs";
@@ -171,10 +173,10 @@ describe("[legend-1tke7] legacy payout postings gate", () => {
 });
 
 describe("[legend-1tke7] gate file shape", () => {
-  it("[legend-1tke7] passes the runner validator with block mode and the table in requires", () => {
+  it("[legend-1tke7] passes the runner validator with info mode (reports rows, does not block) and the table in requires", () => {
     const gate = parsePreflightFile(FILE, gateSql());
     expect(gate.gate).toBe("legend-1tke7");
-    expect(gate.mode).toBe("block");
+    expect(gate.mode).toBe("info");
     expect(gate.requires).toContain("public.payroll_payout_gl_postings");
     expect(gate.resolve.length).toBeGreaterThan(0);
   });

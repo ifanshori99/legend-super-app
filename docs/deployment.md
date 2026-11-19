@@ -1465,6 +1465,18 @@ PGOPTIONS='-c default_transaction_read_only=on -c row_security=off' \
 File itu berisi empat statement read-only; keempatnya wajib nol baris (atau
 dijelaskan finance).
 
+Gerbang yang sama juga dipasang di runner gerbang rilis 1 (legend-gwqjp), yang
+otomatis jalan di `predeploy-check`. Runner hanya menerima satu statement per
+berkas, jadi keempat statement dibagi menjadi
+`scripts/preflight/rilis1-legend-gwqjp1.sql` sampai `gwqjp4.sql` (statement 1
+sampai 4, `mode: block`, `before: none` karena validasi `CASH_ACCOUNT_SHARED`
+ada di kode aplikasi, bukan migrasi). Berkas `1118-shared-cash-mapping.sql`
+tetap untuk run manual lewat `psql`; test
+`apps/api/src/test/cash-1118-preflight-sql.test.ts` menjaga isi SQL keduanya
+tetap sama. Satu gerbang yang gagal menahan rilis dengan nama `legend-gwqjp<n>`
+dan jumlah barisnya; baca penjelasan tiap statement di bawah untuk
+resolusinya.
+
 Aturan gerbang: baris apa pun = **blokir**. Error query (kolom atau tabel hilang,
 skema bergeser) juga = **blokir**: `ON_ERROR_STOP=1` membuat `psql` keluar dengan
 kode bukan nol, dan itu tidak boleh dibaca sebagai "nol baris" atau "N/A". Hanya
@@ -1539,6 +1551,7 @@ Risiko yang diterima (architect, 1132):
    termasuk mengembalikan ke akun semula, harus lewat akun baru.
 3. **Cek ulang.** Jalankan file yang sama; lanjut hanya bila keempat statement
    nol baris atau barisnya sudah dijelaskan finance.
+
 ### Reset refund pra-switch DOIT (legend-d21p)
 
 A one-off repair before `DOIT_REFUNDS_ENABLED` is turned on for the first time.
