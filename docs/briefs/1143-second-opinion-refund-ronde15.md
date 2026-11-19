@@ -1,0 +1,9 @@
+# 1143 Second opinion refund ronde 15 (1135 + 1139 atas ronde 14)
+Peran: second-opinion (baca ~/.agents/team/roles/second-opinion.md). Codex xhigh. Read-only, tanpa worktree: `git diff`/`git show` dari folder utama, jangan checkout. Selesaikan dan lapor dalam SATU giliran.
+
+Fokus (sesudah `git fetch origin`, kecualikan `':!**/meta/*snapshot.json'`): `git diff origin/ws/1126-refund-unmatched-hold..origin/ws/1139-refund-ronde14-fix` (head 2c6dc862e, memuat 1135 aff345126). Konteks: `git diff origin/milestone/m1...origin/ws/1139-refund-ronde14-fix`.
+Brief: `docs/briefs/1135-refund-lanjutan-gate-dp-jurnal.md`, `docs/briefs/1139-fix-so-refund-ronde14.md`. Ronde 14: `docs/qa/second-opinion-refund-ronde14-1134.md`.
+Isi: hold dibuat saat pemrosesan pertama (tanpa menunggu jendela 15 menit), ditutup `counted_against_intent` bila fact mencatat nilainya, penutupan saat retry cocok R dibatasi payment ref yang sama, alert finance untuk hold terbuka (`announceOpenFirstPassHolds`); mapper memakai `reference` intent (tenant, integrasi penanda tangan, cek ulang di bawah kunci intent, payment id menang); gerbang `scripts/preflight/rilis1-legend-26ro5.sql`; 8 test lama diubah (1025-c, 1033-xmtih, 967-r3d).
+Diterima CTO (jangan dilaporkan): semua yang diterima di brief 1134; hold permanen dari echo lebih kecil dari R (membatasi, bead P2 dikerjakan terpisah); alert menit 0 tidak ditarik, karantina refund approved lain milik intent, reference peka huruf (P3); legend-tbygu, legend-54w7g, legend-tpbvl.
+Cari: dua P1 ronde 14 benar tertutup; hold menit 0 yang ditutup oleh fact kurang/fact milik hold lain/payment ref lain; reference yang menyentuh intent tenant lain; uang keluar lebih dari bayar di urutan webhook mana pun; test lama yang diubah melemahkan jaminan uang.
+Hasil: tulis `docs/qa/second-opinion-refund-ronde15-1143.md` di folder utama (P0-P3, berkas:baris, skenario, usul test). JANGAN commit, JANGAN edit file lain.
