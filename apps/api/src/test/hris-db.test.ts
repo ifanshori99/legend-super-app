@@ -313,6 +313,13 @@ afterAll(async () => {
         tenant,
         createdUsers,
       ]);
+      // The leave accrual job grants every active employee of a tenant, so a
+      // parallel leave file can leave ledger/balance rows on ours (FK no action).
+      for (const table of ["leave_accruals", "leave_balances"])
+        await client.query(`DELETE FROM ${table} WHERE ${owned}`, [
+          tenant,
+          createdUsers,
+        ]);
       await client.query(
         "DELETE FROM hris_idempotency WHERE tenant_id = $1 AND key LIKE 'hris-db-%'",
         [tenant],

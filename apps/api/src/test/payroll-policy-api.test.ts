@@ -7,7 +7,6 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { cafeLegendPlatformFixtures } from "@starter/shared/platform";
 import { createApp } from "../app.ts";
 import {
   createIsolatedTenant,
@@ -17,7 +16,6 @@ import {
 import { agent, originHeader, signUp } from "./helpers.ts";
 
 const app = createApp();
-const tenant = cafeLegendPlatformFixtures.tenant;
 const POLICIES = "/api/hris/payroll/policies";
 const THR = "/api/hris/payroll/thr-schedules";
 const owner = new Pool({
@@ -121,6 +119,12 @@ let adminClient: Client;
 let viewerClient: Client;
 let strangerClient: Client;
 let otherClient: Client;
+// Both tenants are created by this file. The shared seeded tenant is not used:
+// its payroll_policies are read by the other payroll files, and the [zjwa] test
+// corrupts a row on purpose, which would fail their lists (and the other way
+// round: their rows fail the list and the cursor walk here) on two workers.
+let tenant: { id: string };
+let isolatedA: IsolatedTenant;
 let isolated: IsolatedTenant;
 let otherHeaders: { Host: string };
 let legalEntityId: string;
@@ -182,15 +186,17 @@ async function createPolicy(
 }
 
 beforeAll(async () => {
+  isolatedA = await createIsolatedTenant(`pola-${runTag}`);
+  tenant = { id: isolatedA.tenantId };
   const admin = await signedInClient("Policy admin API");
   await grantRole(tenant.id, admin.userId, ["payroll.view", "payroll.run"]);
-  adminClient = admin.client;
+  adminClient = admin.client.host(isolatedA.hostname);
   const viewer = await signedInClient("Policy viewer API");
   await grantRole(tenant.id, viewer.userId, ["payroll.view"]);
-  viewerClient = viewer.client;
+  viewerClient = viewer.client.host(isolatedA.hostname);
   const stranger = await signedInClient("Policy stranger API");
   await grantRole(tenant.id, stranger.userId, ["hr.employee.view"]);
-  strangerClient = stranger.client;
+  strangerClient = stranger.client.host(isolatedA.hostname);
 
   isolated = await createIsolatedTenant(`pol-${runTag}`);
   otherHeaders = { Host: isolated.hostname };
@@ -201,24 +207,13 @@ beforeAll(async () => {
   ]);
   otherClient = other.client;
 
-  const seeded = await asTenant(tenant.id, async (db) => {
-    const entity = await db.query<{ id: string }>(
-      "SELECT id FROM legal_entities WHERE tenant_id = $1 ORDER BY id LIMIT 1",
-      [tenant.id],
-    );
-    const outlet = await db.query<{ id: string }>(
-      "SELECT id FROM outlets WHERE tenant_id = $1 ORDER BY id LIMIT 1",
-      [tenant.id],
-    );
-    return { entity: entity.rows[0]!.id, outlet: outlet.rows[0]!.id };
-  });
-  legalEntityId = seeded.entity;
-  employeeA = await seedEmployee(tenant.id, seeded.outlet);
+  legalEntityId = isolatedA.legalEntityId;
+  employeeA = await seedEmployee(tenant.id, isolatedA.outletId);
   employeeB = await seedEmployee(isolated.tenantId, isolated.outletId);
 });
 
 afterAll(async () => {
-  for (const tenantId of [tenant.id, isolated?.tenantId]) {
+  for (const tenantId of [isolatedA?.tenantId, isolated?.tenantId]) {
     if (!tenantId) continue;
     await asTenant(tenantId, async (db) => {
       await db.query(
@@ -243,6 +238,7 @@ afterAll(async () => {
     });
   }
   if (isolated) await dropIsolatedTenant(isolated);
+  if (isolatedA) await dropIsolatedTenant(isolatedA);
   await owner.query('DELETE FROM "user" WHERE id = ANY($1)', [createdUsers]);
   await owner.end();
 });
