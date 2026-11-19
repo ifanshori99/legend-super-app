@@ -8392,3 +8392,9 @@ Belum / celah:
 - Tanpa suite penuh `pnpm test`/`pnpm check` dan e2e (gate merge train).
 
 Biaya sesi (session-usage 02:07-02:39Z): total biaya* 2374k (utama sonnet 767k, subagent sonnet 1607k); 14 subagent, puncak 3 bersamaan.
+
+## 1189 Reseal kolom tersegel beku (legend-4vfmn, legend-49onu), 19 Nov 2026, cabang `ws/1189-sealed-reseal-frozen`
+- Sudah: migrasi kerja 0720 (merge train menomori ulang): grup `legend_sealed_reseal` (NOLOGIN, NOINHERIT; `legend_app` anggota INHERIT FALSE, SET TRUE), fungsi `app.reseal_frozen_sealed` (SECURITY DEFINER, EXECUTE hanya ke grup itu, whitelist 4 kolom, cek tenant, panjang envelope sama, versi tidak turun, compare-and-set), trigger `orders_final_immutable` dan `pos_order_rows_final_immutable` mengizinkan hanya kolom tersegel itu bila `current_user` = pemilik fungsi + GUC `app.sealed_reseal_column` + kolom lain identik; trigger penjaga `apology_vouchers_guard_trg`. Job: pass beku (`<kolom>#frozen`) memanggil fungsi lewat `SET LOCAL ROLE`, verifikasi plaintext sebelum kirim; job gagal bila remaining > 0 (beku ikut). Audit `provision-roles` menjaga grup baru. Runbook `docs/deployment.md` disesuaikan.
+- Bukti: test baru `sealed-secret-reseal-frozen.test.ts` (a-f) + penyesuaian test lama, 116 test hijau (5 file reseal), provision-roles-audit hijau; db:generate kosong; prettier+eslint bersih; architect xhigh: tanpa pemblokir, M1 (validasi envelope penuh) dan L1 (audit hak grup) sudah dibetulkan.
+- Sisa risiko (diterima, lapor CTO): login app yang bisa SET ROLE `legend_sealed_reseal` masih bisa menulis envelope panjang sama (palsu) ke baris beku di tenantnya sendiri; DB tidak punya kunci untuk memeriksa plaintext. L2: snapshot drizzle 0720 tidak dibuat (db:generate kosong), serahkan ke merge train bila diperlukan.
+- Biaya sesi (session-usage): total 5065k unit, subagent 9 (puncak 4 bersamaan).

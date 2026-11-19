@@ -336,6 +336,241 @@ describe("legend-qh11l audit demands legend_payout_recon to stay SET-only", () =
   }
 });
 
+// legend-4vfmn / legend-49onu (brief docs/briefs/sub-1189-sealed-reseal-frozen.md,
+// point 6): legend_sealed_reseal is the only role that may run
+// app.reseal_frozen_sealed, which re-seals the four frozen sealed columns.
+// legend_app reaches it by SET ROLE only (INHERIT FALSE, SET TRUE, drizzle/0720,
+// the same pattern as legend_payout_recon above). The audit must fail when a
+// login inherits the group, or when anything outside the group may EXECUTE the
+// function. Written from the brief, not from the implementation.
+// Assumption: a failing audit names legend_sealed_reseal (membership drift) or
+// reseal_frozen_sealed (EXECUTE drift) in its message. The membership is
+// cluster-wide, so every test restores it before it ends.
+describe("legend-4vfmn audit demands legend_sealed_reseal to stay SET-only", () => {
+  const database = `audit_seal_${hex(6)}`;
+  const bootstrap = {
+    user: new URL(adminUrl ?? "postgres://x@localhost/x").username,
+    password: new URL(adminUrl ?? "postgres://x@localhost/x").password,
+  };
+  const migratorUser = `legend_migrator_${hex(8)}`;
+  const migratorPassword = hex(24);
+  const appUser = `legend_runtime_${hex(8)}`;
+  const appPassword = hex(24);
+  const workerUser = `legend_worker_${hex(8)}`;
+  const workerPassword = hex(24);
+  const maintUser = `legend_maint_${hex(8)}`;
+  const maintPassword = hex(24);
+  let migratorUrl: string;
+  let appUrl: string;
+  let workerUrl: string;
+  let maintUrl: string;
+  let admin: Pool;
+
+  beforeAll(async () => {
+    assertDisposableServer();
+    migratorUrl = urlFor(database, migratorUser, migratorPassword);
+    appUrl = urlFor(database, appUser, appPassword);
+    workerUrl = urlFor(database, workerUser, workerPassword);
+    maintUrl = urlFor(database, maintUser, maintPassword);
+    admin = new Pool({ connectionString: adminUrl, max: 1 });
+    await admin.query(`CREATE DATABASE "${database}"`);
+    await provisionMigrator({ bootstrap, migratorUrl, appUrl, workerUrl });
+    const migrator = new Pool({ connectionString: migratorUrl, max: 2 });
+    try {
+      await migrate(drizzle(migrator), { migrationsFolder: drizzleFolder });
+    } finally {
+      await migrator.end();
+    }
+    await admin.query(
+      `GRANT legend_maintenance TO "${migratorUser}" WITH ADMIN OPTION, INHERIT FALSE, SET FALSE`,
+    );
+  }, 240_000);
+
+  afterAll(async () => {
+    if (admin) {
+      await restore();
+      await waitForNoSessions(admin, database);
+      await admin.query(`DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`);
+      await dropRoles(admin, [appUser, workerUser, maintUser, migratorUser]);
+      await admin.end();
+    }
+  });
+
+  const urls = () => ({
+    adminUrl: migratorUrl,
+    appUrl,
+    workerUrl,
+    maintenanceUrl: maintUrl,
+  });
+  const fn = "app.reseal_frozen_sealed(text,text,uuid,uuid,text,text)";
+  /** The state 0720 creates: legend_app reaches the role by SET only; the login has no direct grant. */
+  async function restore() {
+    await admin.query(`REVOKE legend_sealed_reseal FROM "${appUser}"`);
+    await admin.query(`REVOKE legend_sealed_reseal FROM "${workerUser}"`);
+    await admin.query("REVOKE legend_sealed_reseal FROM legend_app");
+    await admin.query(
+      "GRANT legend_sealed_reseal TO legend_app WITH INHERIT FALSE, SET TRUE",
+    );
+  }
+  /** Function ACLs are per database: go through a pool on the audited database. */
+  async function inAuditedDatabase(statements: string[]) {
+    const pool = new Pool({
+      connectionString: urlFor(database, bootstrap.user, bootstrap.password),
+      max: 1,
+    });
+    try {
+      for (const statement of statements) await pool.query(statement);
+    } finally {
+      await pool.end();
+    }
+  }
+
+  it("control: a freshly provisioned set passes the audit with legend_app SET-only on the re-seal role", async () => {
+    await provisionRoles(urls());
+    const { rows } = await admin.query(
+      `SELECT m.inherit_option AS inherit, m.set_option AS set, m.admin_option AS admin
+         FROM pg_auth_members m
+        WHERE m.roleid = 'legend_sealed_reseal'::regrole AND m.member = 'legend_app'::regrole`,
+    );
+    expect(rows).toEqual([{ inherit: false, set: true, admin: false }]);
+    await expect(auditRoles(urls())).resolves.not.toThrow();
+  }, 120_000);
+
+  it("fails when legend_app is granted legend_sealed_reseal WITH INHERIT TRUE", async () => {
+    try {
+      await admin.query("REVOKE legend_sealed_reseal FROM legend_app");
+      await admin.query(
+        "GRANT legend_sealed_reseal TO legend_app WITH INHERIT TRUE, SET TRUE",
+      );
+      await expect(auditRoles(urls())).rejects.toThrow(/legend_sealed_reseal/);
+    } finally {
+      await restore();
+    }
+    await expect(auditRoles(urls())).resolves.not.toThrow();
+  }, 120_000);
+
+  it("fails when the runtime login itself is granted legend_sealed_reseal WITH INHERIT TRUE", async () => {
+    try {
+      await admin.query(
+        `GRANT legend_sealed_reseal TO "${appUser}" WITH INHERIT TRUE, SET TRUE`,
+      );
+      await expect(auditRoles(urls())).rejects.toThrow(/legend_sealed_reseal/);
+    } finally {
+      await restore();
+    }
+    await expect(auditRoles(urls())).resolves.not.toThrow();
+  }, 120_000);
+
+  it("fails when the queue login (the job runs as it) is granted legend_sealed_reseal WITH INHERIT TRUE", async () => {
+    try {
+      await admin.query(
+        `GRANT legend_sealed_reseal TO "${workerUser}" WITH INHERIT TRUE, SET TRUE`,
+      );
+      await expect(auditRoles(urls())).rejects.toThrow(/legend_sealed_reseal/);
+    } finally {
+      await restore();
+    }
+    await expect(auditRoles(urls())).resolves.not.toThrow();
+  }, 120_000);
+
+  for (const grantee of ["legend_app", "PUBLIC"]) {
+    it(`fails when ${grantee} is granted EXECUTE on app.reseal_frozen_sealed`, async () => {
+      try {
+        await inAuditedDatabase([
+          `GRANT EXECUTE ON FUNCTION ${fn} TO ${grantee}`,
+        ]);
+        await expect(auditRoles(urls())).rejects.toThrow(
+          /reseal_frozen_sealed|legend_sealed_reseal/,
+        );
+      } finally {
+        await inAuditedDatabase([
+          `REVOKE EXECUTE ON FUNCTION ${fn} FROM ${grantee}`,
+        ]);
+      }
+      await expect(auditRoles(urls())).resolves.not.toThrow();
+    }, 120_000);
+  }
+
+  it("fails when the runtime login is granted EXECUTE on app.reseal_frozen_sealed directly", async () => {
+    try {
+      await inAuditedDatabase([
+        `GRANT EXECUTE ON FUNCTION ${fn} TO "${appUser}"`,
+      ]);
+      await expect(auditRoles(urls())).rejects.toThrow(
+        /reseal_frozen_sealed|legend_sealed_reseal/,
+      );
+    } finally {
+      await inAuditedDatabase([
+        `REVOKE EXECUTE ON FUNCTION ${fn} FROM "${appUser}"`,
+      ]);
+    }
+    await expect(auditRoles(urls())).resolves.not.toThrow();
+  }, 120_000);
+
+  // The group itself (review fix L1): its only power is the one function.
+  it("fails when legend_sealed_reseal itself is granted a table right", async () => {
+    try {
+      await inAuditedDatabase([
+        "GRANT SELECT ON TABLE public.orders TO legend_sealed_reseal",
+      ]);
+      await expect(auditRoles(urls())).rejects.toThrow(
+        /legend_sealed_reseal holds table or sequence rights/,
+      );
+    } finally {
+      await inAuditedDatabase([
+        "REVOKE SELECT ON TABLE public.orders FROM legend_sealed_reseal",
+      ]);
+    }
+    await expect(auditRoles(urls())).resolves.not.toThrow();
+  }, 120_000);
+
+  it("fails when legend_sealed_reseal itself is granted a sequence right", async () => {
+    const sequence = "public.audit_seal_seq";
+    try {
+      await inAuditedDatabase([
+        `CREATE SEQUENCE ${sequence}`,
+        `GRANT USAGE ON SEQUENCE ${sequence} TO legend_sealed_reseal`,
+      ]);
+      await expect(auditRoles(urls())).rejects.toThrow(
+        /legend_sealed_reseal holds table or sequence rights/,
+      );
+    } finally {
+      await inAuditedDatabase([`DROP SEQUENCE IF EXISTS ${sequence}`]);
+    }
+    await expect(auditRoles(urls())).resolves.not.toThrow();
+  }, 120_000);
+
+  it("fails when legend_sealed_reseal can run another function", async () => {
+    const other = "app.audit_seal_other()";
+    try {
+      await inAuditedDatabase([
+        `CREATE FUNCTION ${other} RETURNS integer LANGUAGE sql AS 'SELECT 1'`,
+        `REVOKE EXECUTE ON FUNCTION ${other} FROM PUBLIC`,
+        `GRANT EXECUTE ON FUNCTION ${other} TO legend_sealed_reseal`,
+      ]);
+      await expect(auditRoles(urls())).rejects.toThrow(
+        /legend_sealed_reseal can run functions other than/,
+      );
+    } finally {
+      await inAuditedDatabase([`DROP FUNCTION IF EXISTS ${other}`]);
+    }
+    await expect(auditRoles(urls())).resolves.not.toThrow();
+  }, 120_000);
+
+  it("fails when legend_app holds ADMIN OPTION on legend_sealed_reseal", async () => {
+    try {
+      await admin.query("REVOKE legend_sealed_reseal FROM legend_app");
+      await admin.query(
+        "GRANT legend_sealed_reseal TO legend_app WITH ADMIN OPTION, INHERIT FALSE, SET TRUE",
+      );
+      await expect(auditRoles(urls())).rejects.toThrow(/legend_sealed_reseal/);
+    } finally {
+      await restore();
+    }
+    await expect(auditRoles(urls())).resolves.not.toThrow();
+  }, 120_000);
+});
+
 // legend-1081 (briefs docs/briefs/1081-provisioning-db-rls-pengerasan.md): the
 // audit must reject three kinds of drift that an app/worker login can pick up
 // and that a clean provision never grants. Written from the brief, not from

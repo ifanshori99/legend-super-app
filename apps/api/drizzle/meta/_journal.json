@@ -3424,6 +3424,13 @@
       "when": 1795000012101,
       "tag": "0502_payout_jsrcs_clear_while_lock_held",
       "breakpoints": true
+    },
+    {
+      "idx": 503,
+      "version": "7",
+      "when": 1795000013101,
+      "tag": "0720_sealed_reseal_frozen",
+      "breakpoints": true
     }
   ]
 }

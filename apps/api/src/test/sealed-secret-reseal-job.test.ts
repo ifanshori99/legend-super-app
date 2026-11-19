@@ -12,8 +12,10 @@
 //   - resumable: a killed or aborted run continues after the last committed batch;
 //   - a row that will not open is counted `failed` and does not stop the column;
 //   - a tenant row is only ever handled under its own tenant;
-//   - completed/voided order rows (and their tenders) are frozen by the
-//     database: counted in `frozen` (and in `remaining`), never modified;
+//   - completed/voided order rows (and their tenders) and the append-only
+//     apology codes are frozen for the app role; since legend-4vfmn the job
+//     reseals them through app.reseal_frozen_sealed (see
+//     sealed-secret-reseal-frozen.test.ts), so they no longer stay in `remaining`;
 //   - nothing but counts and names is returned or logged.
 //
 // Assumptions:
@@ -26,7 +28,8 @@
 //     registry's `where` hook (the `columns` option), so rows other test files
 //     leave in the shared database do not change the counts.
 //   - `sealedSecretUnresolved` counts every row still below the active version,
-//     frozen rows included (the old key cannot retire while any is left).
+//     frozen rows included (the old key cannot retire while any is left); after a
+//     successful job it is 0.
 import { randomBytes, randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { Pool, type PoolClient } from "pg";
@@ -61,7 +64,6 @@ import {
 import {
   SEALED_SECRET_COLUMNS,
   runSealedSecretReseal,
-  sealedSecretFrozen,
   sealedSecretUnresolved,
   type SealedSecretColumn,
   type SealedSecretResealResult,
@@ -684,20 +686,22 @@ describe("[legend-tetyr] stale rows move to the active key", () => {
       expect(() => openSecret(after, `${row.aad}:other`)).toThrow();
     });
 
-  it("apology_vouchers.code_sealed: append-only for the app role, so it is counted frozen and left as written", async () => {
+  it("apology_vouchers.code_sealed: append-only for the app role, yet resealed through the frozen-column door (legend-4vfmn)", async () => {
     const spec = specOf("apology_vouchers", "code_sealed");
     const row = await seed(spec);
     const result = await run([keyOf(spec)]);
     expect(result).toMatchObject({ failedTenants: 0, aborted: false });
-    expect(result.tables[keyOf(spec)]).toEqual({
-      resealed: 0,
+    // `frozen` after success is not asserted: the brief does not say whether it
+    // counts stale frozen rows or every frozen row.
+    expect(result.tables[keyOf(spec)]).toMatchObject({
+      resealed: 1,
       failed: 0,
-      remaining: 1,
-      frozen: 1,
+      remaining: 0,
     });
-    expect(sealedSecretUnresolved(result)).toBe(1);
-    expect(sealedSecretFrozen(result)).toBe(1);
-    expect(await storedSealed(row)).toBe(row.sealed);
+    expect(sealedSecretUnresolved(result)).toBe(0);
+    const after = await storedSealed(row);
+    expect(sealedVersion(after)).toBe(2);
+    expect(openSecret(after, row.aad)).toBe(row.plain);
   });
 
   it("bank_accounts: the key-version label inside the AAD stays as it was", async () => {
@@ -974,12 +978,12 @@ describe("[legend-tetyr] tenant isolation", () => {
 
 // --- frozen order rows ------------------------------------------------------
 
-describe("[legend-tetyr] completed and voided orders are frozen", () => {
+describe("[legend-tetyr][legend-4vfmn] completed and voided orders are frozen, and still resealed", () => {
   const claim = specOf("orders", "claim_token_sealed");
   const link = specOf("orders", "payment_link_token_sealed");
   const tender = specOf("pos_order_tenders", "payment_link_token_sealed");
 
-  it("are counted frozen (and remaining), not modified, not failed; open orders still move", async () => {
+  it("open, completed and voided orders all move to the active key; remaining ends at 0", async () => {
     const open = await seed(claim);
     const completed = await seed(claim, { set: { status: "completed" } });
     const voided = await seed(claim, { set: { status: "voided" } });
@@ -987,29 +991,27 @@ describe("[legend-tetyr] completed and voided orders are frozen", () => {
 
     const result = await run([keyOf(claim), keyOf(link)]);
     expect(result).toMatchObject({ failedTenants: 0, aborted: false });
-    expect(result.tables[keyOf(claim)]).toEqual({
+    expect(result.tables[keyOf(claim)]).toMatchObject({
+      resealed: 3,
+      failed: 0,
+      remaining: 0,
+    });
+    expect(result.tables[keyOf(link)]).toMatchObject({
       resealed: 1,
       failed: 0,
-      remaining: 2,
-      frozen: 2,
+      remaining: 0,
     });
-    expect(result.tables[keyOf(link)]).toEqual({
-      resealed: 0,
-      failed: 0,
-      remaining: 1,
-      frozen: 1,
-    });
-    // Frozen rows cannot pass as done: they block key retirement.
-    expect(sealedSecretUnresolved(result)).toBe(3);
-    expect(sealedSecretFrozen(result)).toBe(3);
+    // No frozen leftover: the old key may retire.
+    expect(sealedSecretUnresolved(result)).toBe(0);
 
-    expect(sealedVersion(await storedSealed(open))).toBe(2);
-    expect(openSecret(await storedSealed(open), open.aad)).toBe(open.plain);
-    for (const row of [completed, voided, completedLink])
-      expect(await storedSealed(row)).toBe(row.sealed);
+    for (const row of [open, completed, voided, completedLink]) {
+      const after = await storedSealed(row);
+      expect(sealedVersion(after)).toBe(2);
+      expect(openSecret(after, row.aad)).toBe(row.plain);
+    }
   });
 
-  it("tenders of a completed or voided order are frozen; tenders of an open order move", async () => {
+  it("tenders of open, completed and voided orders all move to the active key", async () => {
     const orderOpen = await seed(claim);
     const orderDone = await seed(claim, { set: { status: "completed" } });
     const orderVoid = await seed(claim, { set: { status: "voided" } });
@@ -1018,20 +1020,17 @@ describe("[legend-tetyr] completed and voided orders are frozen", () => {
     const onVoid = await seed(tender, { set: { order_id: orderVoid.id } });
 
     const result = await run([keyOf(tender)]);
-    expect(result.tables[keyOf(tender)]).toEqual({
-      resealed: 1,
+    expect(result.tables[keyOf(tender)]).toMatchObject({
+      resealed: 3,
       failed: 0,
-      remaining: 2,
-      frozen: 2,
+      remaining: 0,
     });
-    expect(sealedSecretUnresolved(result)).toBe(2);
-    expect(sealedSecretFrozen(result)).toBe(2);
-    expect(openSecret(await storedSealed(onOpen), onOpen.aad)).toBe(
-      onOpen.plain,
-    );
-    expect(sealedVersion(await storedSealed(onOpen))).toBe(2);
-    for (const row of [onDone, onVoid])
-      expect(await storedSealed(row)).toBe(row.sealed);
+    expect(sealedSecretUnresolved(result)).toBe(0);
+    for (const row of [onOpen, onDone, onVoid]) {
+      const after = await storedSealed(row);
+      expect(sealedVersion(after)).toBe(2);
+      expect(openSecret(after, row.aad)).toBe(row.plain);
+    }
   });
 });
 

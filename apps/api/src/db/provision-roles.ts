@@ -41,6 +41,12 @@ const MAINT_FUNCTIONS = [
 // legend_app may SET ROLE to it (INHERIT FALSE, drizzle/0481): the only role that
 // may record an 'ok' observation of a proof file. Reached, never inherited.
 const RECON_GROUP = "legend_payout_recon";
+// legend_app may SET ROLE to it (INHERIT FALSE, drizzle/0720): the only role that
+// may run app.reseal_frozen_sealed, which re-seals the four frozen sealed columns
+// (legend-4vfmn, legend-49onu). Reached, never inherited; holds no table rights.
+const SEALED_RESEAL_GROUP = "legend_sealed_reseal";
+const SEALED_RESEAL_FUNCTION =
+  "app.reseal_frozen_sealed(text, text, uuid, uuid, text, text)";
 const GRANTOR_GROUP = "legend_payout_grantor";
 const PAYOUT_OWNER = "legend_payout";
 // The only routine the grantor group may run (migration 0419).
@@ -1062,6 +1068,90 @@ async function assertReconRoleReachedOnly(client: ClientBase, user: string) {
     );
 }
 
+// The frozen-column re-seal role (drizzle/0720) is reached by SET ROLE only: the
+// login must not inherit it, and neither the login, legend_app nor PUBLIC may run
+// app.reseal_frozen_sealed without the caller's door.
+async function assertSealedResealRoleReachedOnly(
+  client: ClientBase,
+  user: string,
+) {
+  const result = await client.query(
+    `SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $2::text)
+              AND pg_has_role($1::text, $2::text, 'USAGE') AS inherits,
+            ARRAY(
+              SELECT f.sig || ' for ' || g.grantee
+                FROM (VALUES ('app.reseal_frozen_sealed(text, text, uuid, uuid, text, text)')) AS f(sig)
+                CROSS JOIN (VALUES ($1::text), ('legend_app'), ('public')) AS g(grantee)
+               WHERE to_regprocedure(f.sig) IS NOT NULL
+                 AND has_function_privilege(g.grantee, to_regprocedure(f.sig), 'EXECUTE')
+               ORDER BY 1
+            ) AS executable`,
+    [user, SEALED_RESEAL_GROUP],
+  );
+  const { inherits, executable } = result.rows[0];
+  if (inherits)
+    throw new ProvisionError(
+      `The application role inherits ${SEALED_RESEAL_GROUP}; it may only reach it with SET ROLE (membership INHERIT FALSE, SET TRUE).`,
+    );
+  if (executable.length)
+    throw new ProvisionError(
+      `The application role can run the frozen-column re-seal function outside ${SEALED_RESEAL_GROUP}: ${executable.join(", ")}.`,
+    );
+
+  // The group itself: its only power is the one function. A table or sequence
+  // right, or EXECUTE on any other function, would widen what SET ROLE reaches.
+  // Functions open to PUBLIC (trigger functions, extensions) add nothing through
+  // the group; the PUBLIC check of SECURITY DEFINER functions covers those.
+  const group = await client.query(
+    `SELECT ARRAY(
+              SELECT format('%I.%I', n.nspname, c.relname)
+                FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+               WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+                 AND n.nspname NOT LIKE 'pg\\_toast%' AND n.nspname NOT LIKE 'pg\\_temp%'
+                 AND (  (c.relkind IN ('r', 'p', 'v', 'm', 'f')
+                         AND (has_table_privilege($1::text, c.oid, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER')
+                              OR has_any_column_privilege($1::text, c.oid, 'SELECT, INSERT, UPDATE, REFERENCES')))
+                     OR (c.relkind = 'S'
+                         AND has_sequence_privilege($1::text, c.oid, 'USAGE, SELECT, UPDATE')))
+               ORDER BY 1
+            ) AS relations,
+            ARRAY(
+              SELECT p.oid::regprocedure::text
+                FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+               WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+                 AND p.oid <> to_regprocedure($2::text)
+                 AND NOT EXISTS (SELECT 1 FROM pg_depend d
+                                  WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')
+                 AND has_function_privilege($1::text, p.oid, 'EXECUTE')
+                 AND NOT has_function_privilege('public', p.oid, 'EXECUTE')
+               ORDER BY 1
+            ) AS functions,
+            COALESCE((SELECT p.prosecdef AND COALESCE(p.proconfig::text[] @> ARRAY['search_path=pg_catalog, pg_temp'], false)
+                        FROM pg_proc p WHERE p.oid = to_regprocedure($2::text)), true) AS function_ok,
+            EXISTS (SELECT 1 FROM pg_auth_members m
+                     WHERE m.roleid = $1::regrole AND m.member = 'legend_app'::regrole
+                       AND m.admin_option) AS app_admin`,
+    [SEALED_RESEAL_GROUP, SEALED_RESEAL_FUNCTION],
+  );
+  const { relations, functions, function_ok, app_admin } = group.rows[0];
+  if (relations.length)
+    throw new ProvisionError(
+      `${SEALED_RESEAL_GROUP} holds table or sequence rights it must not have: ${relations.slice(0, 5).join(", ")}${relations.length > 5 ? ", ..." : ""}.`,
+    );
+  if (functions.length)
+    throw new ProvisionError(
+      `${SEALED_RESEAL_GROUP} can run functions other than ${SEALED_RESEAL_FUNCTION}: ${functions.slice(0, 5).join(", ")}${functions.length > 5 ? ", ..." : ""}.`,
+    );
+  if (!function_ok)
+    throw new ProvisionError(
+      `${SEALED_RESEAL_FUNCTION} must be SECURITY DEFINER with search_path pinned to pg_catalog, pg_temp.`,
+    );
+  if (app_admin)
+    throw new ProvisionError(
+      `legend_app holds ADMIN OPTION on ${SEALED_RESEAL_GROUP}; it may only SET ROLE to it.`,
+    );
+}
+
 /**
  * A SECURITY DEFINER function runs as its owner, so one in schema app that
  * kept PUBLIC's default EXECUTE lets every login (the application and queue
@@ -1181,10 +1271,11 @@ async function auditApp(client: ClientBase, user: string) {
     client,
     user,
     "application",
-    [APP_GROUP, RECON_GROUP],
+    [APP_GROUP, RECON_GROUP, SEALED_RESEAL_GROUP],
     [],
   );
   await assertReconRoleReachedOnly(client, user);
+  await assertSealedResealRoleReachedOnly(client, user);
   await assertTableRights(client, user, "application", [], {
     "*": APP_TABLE_RIGHTS,
   });
