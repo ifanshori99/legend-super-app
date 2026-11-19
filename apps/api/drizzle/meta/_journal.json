@@ -3326,6 +3326,13 @@
       "when": 1795000000105,
       "tag": "0488_reservation_credit_recon_flags",
       "breakpoints": true
+    },
+    {
+      "idx": 706,
+      "version": "7",
+      "when": 1795000000706,
+      "tag": "0706_payout_jsrcs_clear_while_lock_held",
+      "breakpoints": true
     }
   ]
 }

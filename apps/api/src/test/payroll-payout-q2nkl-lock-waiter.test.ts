@@ -643,7 +643,7 @@ describe("q2nkl T1b: a lock timeout after the flag was closed raises a new flag"
       const w = await freeWithOldOkWorld();
       const day1 = new Date("2031-03-10T05:00:00Z"); // 12:00 Jakarta, 10 Mar
       const day2 = new Date("2031-03-11T05:00:00Z"); // 11 Mar
-      const a = await startStuckHolder(w.key);
+      let a = await startStuckHolder(w.key);
       try {
         const first = await within(
           runRecon(makeStorage(w.key), { lockTimeoutMs: 300, now: day1 }),
@@ -655,11 +655,16 @@ describe("q2nkl T1b: a lock timeout after the flag was closed raises a new flag"
           String(firstFlags[0]!.reason),
           "the reason is marked with the Jakarta day",
         ).toContain("evidence_read_locked:2031-03-10");
+        // legend-jsrcs: a two-person clearance is refused while the holder still
+        // holds the lock, so the first holder ends before the flag is closed.
+        a.gate.end("return");
+        await a.outcome;
         await clearFlag(firstFlags[0]!.id as string);
         expect(
           await heldBySql(w.payslipId),
           "premise: the cleared flag frees the slip",
         ).toBe(false);
+        a = await startStuckHolder(w.key);
 
         const second = await within(
           runRecon(makeStorage(w.key), { lockTimeoutMs: 300, now: day2 }),
