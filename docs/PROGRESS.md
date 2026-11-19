@@ -7954,4 +7954,4 @@ Belum / keputusan untuk CTO:
 - Dilewati bila ada resolusi apa pun, termasuk replay manual yang gagal.
 - Suite penuh dan `pnpm check` tidak dijalankan (tugas merge train). Printer fisik tidak diuji.
 
-Biaya sesi (session-usage, satuan k): total 11051k. Subagent 13 (3 Explore, 4 test-writer/implementer awal, 2 implementer perbaikan, 3 test-runner, 1 architect), puncak 5 bersamaan.
+Biaya sesi (session-usage, satuan k): kartu gdjpu+j772n 11051k, subagent 13, puncak 5 bersamaan. Sesudah rh1hk dan rzt8s: total 19034k (utama sonnet 14124k, subagent opus 1484k, sonnet 3270k, haiku 155k), subagent 21 sesi ini; rh1hk+rzt8s menambah 8 subagent (1 Explore, 2 architect rh1hk dan rzt8s, 2 implementer rh1hk, 1 implementer perbaikan rh1hk, 1 implementer rzt8s resume 1), puncak 2 bersamaan. Typecheck api+shared+web+root: lulus (heavy, sekali). Kartu lanjutan: legend-ubt6n (indeks parsial sweep, konflik replay-gagal).
