@@ -1452,6 +1452,21 @@ export async function decideApprovalRequest(
         approverId,
       );
 
+    // legend-k8g62: the pre-lock caller data is stale once the call queued
+    // behind the locks. Reload role, assignments and scope after the last lock,
+    // inside this same transaction (no second pool connection). Fail closed:
+    // a revoked or moved assignment is refused below.
+    const lockedBootstrap = establishScopedTenantContext(tenant, {
+      kind: "tenant",
+    });
+    const lockedCaller = {
+      data: await loadTenantAccessInTransaction(
+        tx,
+        lockedBootstrap,
+        approverId,
+      ),
+    };
+
     // legend-ijy8u, 1151: the call may have queued behind the refund
     // scope, chain and role-assignment locks, so every time-based check below
     // uses a clock read after the LAST lock. Fail safe: the later of the
@@ -1471,7 +1486,7 @@ export async function decideApprovalRequest(
       reachContext(
         tenant,
         approverId,
-        caller.data,
+        lockedCaller.data,
         "approval.request.decide",
         checkAt,
       ) === null
@@ -1480,7 +1495,7 @@ export async function decideApprovalRequest(
     const lockedSnapshot = resolveAccessSnapshot({
       tenant,
       userId: approverId,
-      ...caller.data,
+      ...lockedCaller.data,
       mfaVerified: options.mfaVerified,
       now: checkAt,
     });
@@ -1520,14 +1535,14 @@ export async function decideApprovalRequest(
       approver: {
         tenantId: tenant.tenantId,
         userId: approverId,
-        assignments: caller.data.assignments,
+        assignments: lockedCaller.data.assignments,
       },
-      approverRoles: caller.data.roles,
+      approverRoles: lockedCaller.data.roles,
       priorSelfApprovalAllowed: isSelfApprovableRow(row),
       approverMfaVerified: options.mfaVerified,
       surface: "dashboard",
       target,
-      org: caller.data.org,
+      org: lockedCaller.data.org,
       now: checkAt,
       selfApproval,
     });
