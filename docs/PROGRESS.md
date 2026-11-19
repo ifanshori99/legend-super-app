@@ -8175,7 +8175,7 @@ Belum / keputusan untuk CTO:
 - Dilewati bila ada resolusi apa pun, termasuk replay manual yang gagal.
 - Suite penuh dan `pnpm check` tidak dijalankan (tugas merge train). Printer fisik tidak diuji.
 
-Biaya sesi (session-usage, satuan k): kartu gdjpu+j772n 11051k, subagent 13, puncak 5 bersamaan. Sesudah rh1hk dan rzt8s: total 19034k (utama sonnet 14124k, subagent opus 1484k, sonnet 3270k, haiku 155k), subagent 21 sesi ini; rh1hk+rzt8s menambah 8 subagent (1 Explore, 2 architect rh1hk dan rzt8s, 2 implementer rh1hk, 1 implementer perbaikan rh1hk, 1 implementer rzt8s resume 1), puncak 2 bersamaan. Typecheck api+shared+web+root: lulus (heavy, sekali). Kartu lanjutan: legend-ubt6n (indeks parsial sweep, konflik replay-gagal).
+Biaya sesi (session-usage, satuan k): kartu gdjpu+j772n 11051k, subagent 13, puncak 5 bersamaan. Sesudah rh1hk dan rzt8s: total 19034k (utama sonnet 14124k, subagent opus 1484k, sonnet 3270k, haiku 155k), subagent 21 sesi ini; rh1hk+rzt8s menambah 8 subagent (1 Explore, 2 architect rh1hk dan rzt8s, 2 implementer rh1hk, 1 implementer perbaikan rh1hk, 1 implementer rzt8s resume 1), puncak 2 bersamaan. Typecheck api+shared+web+root: lulus (heavy, sekali). Kartu lanjutan: legend-ubt6n (indeks parsial sweep, konflik replay-gagal). Sesudah vet9d: total 21583k (utama sonnet 15340k, subagent sonnet 4157k, opus 1930k, haiku 155k), subagent 28 sesi ini (vet9d menambah 7: 2 Explore, 1 architect desain, 4 implementer A/B/C+perbaikan, 1 architect review), puncak 2 bersamaan. Typecheck api+shared+web+root lulus (heavy, exit 0); test terarah 8 file 140 dari 140 (exit 0).
 
 ## 1113 Perbaikan second-opinion akses 1094 (19 Nov 2026)
 
