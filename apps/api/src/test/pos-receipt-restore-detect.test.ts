@@ -84,6 +84,7 @@ import {
 import { formatReceiptNumber, type PosReceipt } from "@starter/shared/pos";
 import { createApp } from "../app.ts";
 import { db } from "../db/index.ts";
+import { logger } from "../lib/logger.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
   getEdgeRuntimeState,
@@ -98,6 +99,7 @@ import {
   pullDeviceRegistry,
 } from "../services/edge-device-sync.ts";
 import { setPosReceiptPort } from "../services/pos-order-ports.ts";
+import * as receiptService from "../services/pos-receipt.service.ts";
 import {
   allocateReceipt,
   claimDeviceReceiptSequencesForEdge,
@@ -511,6 +513,8 @@ function cloudPull(
   own: Binding,
   options: {
     report?: ReceiptRunReport;
+    /** legend-rh1hk: the edge outbox cursor sent as `receiptRunsSeq`. */
+    reportSeq?: number;
     /** Cloud arrival time of the request (the report token). Default: next tick. */
     now?: Date;
     since?: string | null;
@@ -524,6 +528,9 @@ function cloudPull(
     ...(options.since ? { since: options.since } : {}),
     ...(options.report
       ? { receiptRuns: encodeReceiptRunReport(options.report) }
+      : {}),
+    ...(options.reportSeq !== undefined
+      ? { receiptRunsSeq: String(options.reportSeq) }
       : {}),
   });
   return listDeviceRecordsSince(
@@ -651,6 +658,7 @@ function claim(
   own: Binding,
   report: ReceiptRunReport,
   reportedAt?: Date,
+  reportCursor?: number,
 ) {
   return inTx((tx, context) =>
     claimDeviceReceiptSequencesForEdge(tx, context, {
@@ -658,6 +666,7 @@ function claim(
       ...own,
       report,
       ...(reportedAt ? { reportedAt } : {}),
+      ...(reportCursor !== undefined ? { reportCursor } : {}),
     }),
   );
 }
@@ -1454,6 +1463,7 @@ describe("yd0h8-10 merge stamps edge_reported_at only for a rising, live, bound 
     outletId: string,
     deviceId: string,
     orderIds: string[],
+    prefix = "P1",
   ): PosReceipt[] {
     const at = new Date().toISOString();
     return orderIds.map(
@@ -1464,7 +1474,7 @@ describe("yd0h8-10 merge stamps edge_reported_at only for a rising, live, bound 
           outletId,
           orderId,
           deviceId,
-          number: formatReceiptNumber("P1", index + 1),
+          number: formatReceiptNumber(prefix, index + 1),
           sequenceNumber: index + 1,
           status: "issued",
           issuedAt: at,
@@ -1481,10 +1491,11 @@ describe("yd0h8-10 merge stamps edge_reported_at only for a rising, live, bound 
     deviceId: string,
     lastNumber: number,
     receipts: PosReceipt[],
+    prefix = "P1",
   ) {
     return inTx((tx, context) =>
       mergeDeviceReceiptRun(tx, context, {
-        sequence: { outletId, deviceId, prefix: "P1", lastNumber },
+        sequence: { outletId, deviceId, prefix, lastNumber },
         receipts,
       }),
     );
@@ -1663,5 +1674,524 @@ describe("yd0h8-10 merge stamps edge_reported_at only for a rising, live, bound 
     const row = await stampOf(outletId);
     expect(row.last_number).toBe(3);
     expect(row.edge_reported_at?.getTime()).toBe(future);
+  });
+
+  // ---- legend-rh1hk: the report is read just before a merge lands (race) -------
+  //
+  // The edge sends its outbox link cursor `C` with the report. The cloud reads a
+  // report as behind a merge only when the first link slot above `C` (mapped
+  // by the peer offset) is younger than 30 s before the report token, the cursor
+  // row is bound to the pulling instance, and the report is not below the
+  // edge's own earlier report. Everything else keeps the full check.
+
+  /** Link cursor row (`edge_to_cloud`) and its slots of node `own`. */
+  async function seedLink(
+    outletId: string,
+    own: DeviceReceiptSequenceBinding,
+    link: {
+      instance: string | null;
+      next: number;
+      offset?: number;
+      slots: Array<[linkSeq: number, createdAt: Date]>;
+    },
+  ): Promise<void> {
+    await asOwnerTenant(tenant.tenantId, async (client) => {
+      await client.query(
+        `INSERT INTO sync_cursors (tenant_id, outlet_id, edge_node_id, direction, next_out_seq, acked_out_seq, received_in_seq, peer_instance_id, peer_seq_offset)
+         VALUES ($1, $2, $3, 'edge_to_cloud', $4, $5, $5, $6, $5)`,
+        [
+          tenant.tenantId,
+          outletId,
+          own.edgeNodeId,
+          link.next,
+          link.offset ?? 0,
+          link.instance,
+        ],
+      );
+      for (const [linkSeq, createdAt] of link.slots)
+        await client.query(
+          `INSERT INTO edge_link_slots (tenant_id, outlet_id, edge_node_id, direction, link_seq, event_id, created_at)
+           VALUES ($1, $2, $3, 'edge_to_cloud', $4, $5, $6)`,
+          [
+            tenant.tenantId,
+            outletId,
+            own.edgeNodeId,
+            linkSeq,
+            randomUUID(),
+            createdAt,
+          ],
+        );
+    });
+  }
+
+  /**
+   * Edge reported P1:`firstReport` (high-water, default 2), then a merge raised
+   * lastNumber to 3.
+   * `tau` is a report token just after the merge stamp. Slots 1..5 are old;
+   * slot 6 (the merge's event) is `slotAgeMs` before `tau`.
+   */
+  async function raceSetup(
+    slotAgeMs: number,
+    instance: "own" | "other" | null = "own",
+    offset = 0,
+    firstReport = 2,
+  ) {
+    const setup = await boundRun();
+    await claim(
+      setup.outletId,
+      setup.own,
+      new Map([["P1", firstReport]]),
+      new Date(setup.past + 10_000),
+    );
+    const stamp = await mergeThree(setup);
+    const tau = new Date(stamp.getTime() + 1000);
+    const old = new Date(tau.getTime() - 3_600_000);
+    await seedLink(setup.outletId, setup.own, {
+      instance:
+        instance === "own"
+          ? setup.own.edgeInstanceId
+          : instance === "other"
+            ? randomUUID()
+            : null,
+      next: offset + 6,
+      offset,
+      slots: [1, 2, 3, 4, 5]
+        .map((n) => [offset + n, old] as [number, Date])
+        .concat([[offset + 6, new Date(tau.getTime() - slotAgeMs)]]),
+    });
+    return { ...setup, stamp, tau };
+  }
+
+  const expectKept = async (outletId: string) => {
+    const rows = await runRows(outletId);
+    expect(rows.map((r) => r.prefix)).toEqual(["P1"]);
+    expect(rowOf(rows, "P1")).toMatchObject({
+      retired_at: null,
+      retired_reason: null,
+      last_number: 3,
+    });
+    expect(regressedCount(rows)).toBe(0);
+  };
+
+  it("rh1hk race: the report P1:2 was read before the merge to 3 (cursor 5, slot 6 made 5 s before the token): no rotation, behind 1, no alert, prefix kept", async () => {
+    const s = await raceSetup(5_000);
+    const result = await claim(
+      s.outletId,
+      s.own,
+      new Map([["P1", 2]]),
+      s.tau,
+      5,
+    );
+    expect(result).toMatchObject({
+      regressed: 0,
+      throttled: 0,
+      stale: 0,
+      behind: 1,
+      alert: false,
+    });
+    await expectKept(s.outletId);
+  });
+
+  it("rh1hk race through the page: receiptRunsSeq keeps the run handed out, no alert key", async () => {
+    const s = await raceSetup(5_000);
+    const page = await cloudPull(s.outletId, s.own, {
+      report: new Map([["P1", 2]]),
+      reportSeq: 5,
+      now: s.tau,
+    });
+    expect(page.receiptSequences?.map((q) => q.prefix)).toEqual(["P1"]);
+    expect("receiptRunAlert" in page).toBe(false);
+    await expectKept(s.outletId);
+  });
+
+  it("rh1hk race: the peer offset maps the edge cursor (slots stored at 100 + n)", async () => {
+    const s = await raceSetup(5_000, "own", 100);
+    const result = await claim(
+      s.outletId,
+      s.own,
+      new Map([["P1", 2]]),
+      s.tau,
+      5,
+    );
+    expect(result).toMatchObject({ regressed: 0, behind: 1 });
+    await expectKept(s.outletId);
+  });
+
+  it("rh1hk restore: the slot above the cursor is 10 min old (the cloud passed it before the restore): rotated as before, behind 0", async () => {
+    const s = await raceSetup(600_000);
+    const result = await claim(
+      s.outletId,
+      s.own,
+      new Map([["P1", 2]]),
+      s.tau,
+      5,
+    );
+    expect(result).toMatchObject({ regressed: 1, behind: 0, stale: 0 });
+    const rows = await runRows(s.outletId);
+    expect(rowOf(rows, "P1").retired_reason).toBe("edge_regressed");
+    expect(rowOf(rows, "P2").retired_at).toBeNull();
+  });
+
+  it("rh1hk restore within 30 s is seen one pull later: behind first, then rotated once the slot is older than the window", async () => {
+    const s = await raceSetup(5_000);
+    const first = await claim(
+      s.outletId,
+      s.own,
+      new Map([["P1", 2]]),
+      s.tau,
+      5,
+    );
+    expect(first).toMatchObject({ regressed: 0, behind: 1 });
+    const later = new Date(s.tau.getTime() + 31_000);
+    const second = await claim(
+      s.outletId,
+      s.own,
+      new Map([["P1", 2]]),
+      later,
+      5,
+    );
+    expect(second).toMatchObject({ regressed: 1, behind: 0 });
+    expect(rowOf(await runRows(s.outletId), "P1").retired_reason).toBe(
+      "edge_regressed",
+    );
+  });
+
+  it("rh1hk a report below the edge's own earlier report is a regression whatever the cursor says: rotated", async () => {
+    const s = await raceSetup(5_000);
+    const result = await claim(
+      s.outletId,
+      s.own,
+      new Map([["P1", 1]]),
+      s.tau,
+      5,
+    );
+    expect(result).toMatchObject({ regressed: 1, behind: 0 });
+    expect(rowOf(await runRows(s.outletId), "P1").retired_reason).toBe(
+      "edge_regressed",
+    );
+  });
+
+  it("rh1hk a cursor row bound to another instance is ignored: rotated", async () => {
+    const s = await raceSetup(5_000, "other");
+    const result = await claim(
+      s.outletId,
+      s.own,
+      new Map([["P1", 2]]),
+      s.tau,
+      5,
+    );
+    expect(result).toMatchObject({ regressed: 1, behind: 0 });
+  });
+
+  it("rh1hk a cursor row with no instance is ignored: rotated", async () => {
+    const s = await raceSetup(5_000, null);
+    const result = await claim(
+      s.outletId,
+      s.own,
+      new Map([["P1", 2]]),
+      s.tau,
+      5,
+    );
+    expect(result).toMatchObject({ regressed: 1, behind: 0 });
+  });
+
+  it("rh1hk no cursor (an edge without receiptRunsSeq): the old full check, rotated even with a recent slot", async () => {
+    const s = await raceSetup(5_000);
+    const result = await claim(s.outletId, s.own, new Map([["P1", 2]]), s.tau);
+    expect(result).toMatchObject({ regressed: 1, behind: 0 });
+  });
+
+  it("rh1hk a cursor at or above every slot has no slot above it: rotated", async () => {
+    const s = await raceSetup(5_000);
+    const result = await claim(
+      s.outletId,
+      s.own,
+      new Map([["P1", 2]]),
+      s.tau,
+      6,
+    );
+    expect(result).toMatchObject({ regressed: 1, behind: 0 });
+  });
+
+  it("rh1hk clone: a recent-slot report at the edge's own high-water is behind, a twin below it rotates, and a report above the frozen high-water raises the alert", async () => {
+    const s = await raceSetup(5_000);
+    // (a) P1:2 is >= edge_reported_number 2 and < lastNumber 3, slot recent.
+    const first = await claim(
+      s.outletId,
+      s.own,
+      new Map([["P1", 2]]),
+      s.tau,
+      5,
+    );
+    expect(first).toMatchObject({ regressed: 0, behind: 1, alert: false });
+    await expectKept(s.outletId);
+    // (b) the twin reports 1, below edge_reported_number 2: a real regression.
+    const twinTau = new Date(s.tau.getTime() + 2_000);
+    const second = await claim(
+      s.outletId,
+      s.own,
+      new Map([["P1", 1]]),
+      twinTau,
+      5,
+    );
+    expect(second).toMatchObject({ regressed: 1, behind: 0, alert: false });
+    expect(regressedCount(await runRows(s.outletId))).toBe(1);
+    // (c) a live database above the frozen high-water 2, with a newer token.
+    const third = await claim(
+      s.outletId,
+      s.own,
+      new Map([["P1", 3]]),
+      new Date(s.tau.getTime() + 4_000),
+      5,
+    );
+    expect(third.alert).toBe(true);
+    expect(regressedCount(await runRows(s.outletId))).toBe(1);
+  });
+
+  it("rh1hk behind stores the higher report: edge_reported_number 1 and lastNumber 3, a report of 2 is behind and stores 2 with edge_reported_at = tau", async () => {
+    const s = await raceSetup(5_000, "own", 0, 1);
+    expect(rowOf(await runRows(s.outletId), "P1")).toMatchObject({
+      edge_reported_number: 1,
+      last_number: 3,
+    });
+    const result = await claim(
+      s.outletId,
+      s.own,
+      new Map([["P1", 2]]),
+      s.tau,
+      5,
+    );
+    expect(result).toMatchObject({ regressed: 0, behind: 1, alert: false });
+    const row = rowOf(await runRows(s.outletId), "P1");
+    expect(row).toMatchObject({
+      edge_reported_number: 2,
+      last_number: 3,
+      retired_at: null,
+    });
+    expect(row.edge_reported_at?.getTime()).toBe(s.tau.getTime());
+  });
+
+  it("rh1hk boundary: a slot exactly 30 s before the token counts as behind (the code compares created_at >= tau - 30 s)", async () => {
+    const s = await raceSetup(30_000);
+    const result = await claim(
+      s.outletId,
+      s.own,
+      new Map([["P1", 2]]),
+      s.tau,
+      5,
+    );
+    expect(result).toMatchObject({ regressed: 0, behind: 1 });
+    await expectKept(s.outletId);
+  });
+
+  it("rh1hk one claim, two prefixes: the one reported at its high-water is behind, the one below its own earlier report is regressed", async () => {
+    const { outletId, devices, own } = await cloudOutlet(2);
+    const [deviceA, deviceB] = devices as [string, string];
+    const past = Date.now() - 600_000;
+    await claim(outletId, own, new Map(), new Date(past));
+    const prefixA = await currentPrefix(outletId, deviceA);
+    const prefixB = await currentPrefix(outletId, deviceB);
+    await claim(
+      outletId,
+      own,
+      new Map([
+        [prefixA, 2],
+        [prefixB, 2],
+      ]),
+      new Date(past + 10_000),
+    );
+    for (const [deviceId, prefix] of [
+      [deviceA, prefixA],
+      [deviceB, prefixB],
+    ] as const) {
+      const orders = await deviceOrders(outletId, deviceId, 3);
+      await mergeRun(
+        outletId,
+        deviceId,
+        3,
+        receiptsOf(outletId, deviceId, orders, prefix),
+        prefix,
+      );
+    }
+    const stamps = (await runRows(outletId))
+      .filter((r) => r.retired_at === null)
+      .map((r) => r.edge_reported_at!.getTime());
+    const tau = new Date(Math.max(...stamps) + 1000);
+    const old = new Date(tau.getTime() - 3_600_000);
+    await seedLink(outletId, own, {
+      instance: own.edgeInstanceId,
+      next: 6,
+      slots: [1, 2, 3, 4, 5]
+        .map((n) => [n, old] as [number, Date])
+        .concat([[6, new Date(tau.getTime() - 5_000)]]),
+    });
+    const result = await claim(
+      outletId,
+      own,
+      new Map([
+        [prefixA, 2],
+        [prefixB, 1],
+      ]),
+      tau,
+      5,
+    );
+    expect(result).toMatchObject({
+      regressed: 1,
+      behind: 1,
+      throttled: 0,
+      stale: 0,
+      alert: false,
+    });
+    const rows = await runRows(outletId);
+    expect(rowOf(rows, prefixA)).toMatchObject({
+      retired_at: null,
+      last_number: 3,
+    });
+    expect(rowOf(rows, prefixB).retired_reason).toBe("edge_regressed");
+    expect(regressedCount(rows)).toBe(1);
+  });
+
+  it("rh1hk read order: the edge reads its outbox cursor BEFORE the receipt counters (a sale in between must not raise the cursor above the counters)", async () => {
+    const { outletId, own } = await cloudOutlet(1);
+    await asOwnerTenant(tenant.tenantId, (client) =>
+      client.query(
+        `INSERT INTO sync_cursors (tenant_id, outlet_id, edge_node_id, direction, next_out_seq)
+         VALUES ($1, $2, $3, 'edge_to_cloud', 7)`,
+        [tenant.tenantId, outletId, own.edgeNodeId],
+      ),
+    );
+    const real = receiptService.localReceiptRunReport;
+    const spy = vi
+      .spyOn(receiptService, "localReceiptRunReport")
+      .mockImplementation(async (...args) => {
+        // A receipt event is queued (committed) right before the counters read.
+        await asOwnerTenant(tenant.tenantId, (client) =>
+          client.query(
+            `UPDATE sync_cursors SET next_out_seq = 99 WHERE tenant_id = $1 AND edge_node_id = $2 AND direction = 'edge_to_cloud'`,
+            [tenant.tenantId, own.edgeNodeId],
+          ),
+        );
+        return real(...args);
+      });
+    try {
+      const seen: Array<number | undefined> = [];
+      await inEdgeMode(() =>
+        pullDeviceRegistry({
+          context: edgeScope(outletId),
+          role: "primary",
+          binding: own,
+          fetchPage: async (_since, _runs, _refusals, receiptRunsSeq) => {
+            seen.push(receiptRunsSeq);
+            return {
+              data: [],
+              meta: { limit: 100, nextCursor: null, watermark: null },
+            };
+          },
+        }),
+      );
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(seen).toEqual([7]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+describe("rh1hk a failed cursor read never costs the report", () => {
+  it("the pull sends the report without a cursor (undefined) when the sync_cursors read fails, and logs only the error name", async () => {
+    const { outletId, own } = await cloudOutlet(1);
+    await asOwnerTenant(tenant.tenantId, (client) =>
+      client.query(
+        `INSERT INTO sync_cursors (tenant_id, outlet_id, edge_node_id, direction, next_out_seq)
+         VALUES ($1, $2, $3, 'edge_to_cloud', 7)`,
+        [tenant.tenantId, outletId, own.edgeNodeId],
+      ),
+    );
+    const policy = `rh1hk_fail_${randomUUID().slice(0, 8)}`;
+    // Test-only: reading this tenant's cursor rows fails (division by zero),
+    // for the app role only; dropped in `finally`.
+    await owner.query(
+      `CREATE POLICY ${policy} ON sync_cursors AS RESTRICTIVE FOR SELECT TO legend_app
+       USING (1 / (CASE WHEN tenant_id = '${tenant.tenantId}'::uuid THEN 0 ELSE 1 END) = 1)`,
+    );
+    const logged = vi.spyOn(logger, "error");
+    try {
+      const seen: Array<{
+        runs: ReceiptRunReport | undefined;
+        seq: number | undefined;
+      }> = [];
+      await inEdgeMode(() =>
+        pullDeviceRegistry({
+          context: edgeScope(outletId),
+          role: "primary",
+          binding: own,
+          fetchPage: async (_since, runs, _refusals, receiptRunsSeq) => {
+            seen.push({ runs, seq: receiptRunsSeq });
+            return {
+              data: [],
+              meta: { limit: 100, nextCursor: null, watermark: null },
+            };
+          },
+        }),
+      );
+      expect(seen).toHaveLength(1);
+      expect(seen[0]!.seq).toBeUndefined();
+      expect(seen[0]!.runs).toBeInstanceOf(Map);
+      expect(logged).toHaveBeenCalledWith(
+        expect.objectContaining({
+          edgeNodeId: own.edgeNodeId,
+          errorName: expect.any(String),
+        }),
+        expect.stringContaining("cursor read failed"),
+      );
+      for (const call of logged.mock.calls)
+        expect(JSON.stringify(call)).not.toMatch(/division by zero/i);
+    } finally {
+      logged.mockRestore();
+      await owner.query(`DROP POLICY IF EXISTS ${policy} ON sync_cursors`);
+    }
+  });
+});
+
+describe("rh1hk the receiptRunsSeq query parameter is parsed strictly", () => {
+  const parse = (receiptRunsSeq: string, withRuns = true) =>
+    deviceSyncQuerySchema.safeParse({
+      limit: 100,
+      receiptSequences: "1",
+      ...(withRuns ? { receiptRuns: "P1:1" } : {}),
+      receiptRunsSeq,
+    });
+
+  it("accepts 0 and up to 15 digits without a leading zero, keeps the string, and a second parse accepts the first output", () => {
+    for (const ok of ["0", "5", "123456789012345"])
+      expect(parse(ok).success, ok).toBe(true);
+    const first = deviceSyncQuerySchema.parse({
+      limit: 100,
+      receiptSequences: "1",
+      receiptRuns: "P1:1",
+      receiptRunsSeq: "42",
+    });
+    expect(first.receiptRunsSeq).toBe("42");
+    expect(deviceSyncQuerySchema.parse(first)).toEqual(first);
+  });
+
+  it("refuses an empty, signed, padded, fractional, exponent, too long or non-numeric value", () => {
+    expect(parse("5").success).toBe(true);
+    for (const bad of [
+      "",
+      "-1",
+      "+1",
+      "01",
+      "1.5",
+      "1e3",
+      "1234567890123456",
+      " 5",
+      "abc",
+    ])
+      expect(parse(bad).success, JSON.stringify(bad)).toBe(false);
+  });
+
+  it("refuses receiptRunsSeq without receiptRuns", () => {
+    expect(parse("5", false).success).toBe(false);
   });
 });

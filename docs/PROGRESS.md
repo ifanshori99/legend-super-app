@@ -7937,18 +7937,19 @@ heavy pnpm --filter @starter/api typecheck
 git diff --check
 ```
 
-## 1162: POS struk edge reporter (legend-gdjpu, legend-j772n; legend-rh1hk diparkir; legend-vet9d menunggu), 19 Nov 2026
-Cabang `ws/1162-pos-struk-edge` (dasar `milestone/m1` 6b3288bc2). Tanpa migrasi (`db:generate` kosong).
+## 1162: POS struk edge reporter (legend-gdjpu, legend-j772n, legend-rh1hk; legend-vet9d menunggu), 19 Nov 2026
+Cabang `ws/1162-pos-struk-edge` (dasar `milestone/m1` 6b3288bc2). Tanpa migrasi (`db:generate` kosong; nomor kerja 0704/0705 tidak terpakai).
 
 Sudah:
 - gdjpu (SO 1111 P2): ACK void dari edge bisa mendahului ingest yang sukses, sehingga run struk yang ditolak (`applier_refused`) tertinggal. Sweep `edge-order-redrive.job.ts` kini menerapkan ulang run struk yang ditolak untuk order itu, sesudah void/penjualan pulih, di transaksi sendiri per run. Semua error ditangkap dan hanya id/nama error yang dicatat, sehingga re-apply gagal tidak membatalkan void. Konflik yang sudah punya resolusi dilewati (keputusan supervisor menang), run yang pulih dicatat resolusi `replayed`/`applied`. Jalur `redrivePaid` ikut. Test: tidak ada double reversal, tidak ada nomor ganda atau lubang, `lastNumber` benar.
 - j772n: kontrak dokumen struk/invoice punya bucket DP `depositAppliedIdr`. Dokumen seimbang bila tender + DP = total, DP tidak boleh melebihi total, dokumen DP-saja boleh tanpa tender. PDF mencetak baris "Uang muka (DP)"; struk edge juga (DP bukan tender, bukan kas, tidak ada kembalian palsu).
 - Review architect (xhigh): 1 P1 dan 3 P2, semua dibetulkan di `a954fc63c`.
+- rh1hk: laporan pull restore-detect membawa kursor tautan outbox (`receiptRunsSeq`, query param opsional, hanya bersama `receiptRuns`, regex `^(0|[1-9][0-9]{0,14})$`, selain itu 400). Edge membaca `sync_cursors(edge_to_cloud).next_out_seq` lebih dulu, baru penghitung struk, dalam satu transaksi. Cloud menganggap laporan "behind merge" hanya bila instance sama dengan `peer_instance_id` dan slot `edge_link_slots` pertama di atas `C + peer_seq_offset` dibuat dalam 30 dtk dari `tau`; hanya perbandingan `lastNumber` yang dilonggarkan. Laporan di bawah `edgeReportedNumber` tetap memutar prefix, cek stale, heal, `cloneSeen`, dan throttle tidak berubah. Penghitung `behind` baru menjaga alert tidak ter-resolve. Edge lama tanpa kursor berperilaku lama; cloud lama yang menjawab 400 membuat edge mengulang tanpa kursor dan berhenti mengirim 1 jam. Tanpa migrasi: data kursor sudah ada di `sync_cursors`/`edge_link_slots`. Pembacaan kursor gagal: laporan tetap terkirim tanpa kursor. Tradeoff: restore dalam 30 dtk tertangkap satu pull kemudian; selama 30 dtk setelah kursor lewat, pelonggaran berlaku untuk semua run node itu.
+- Review architect rh1hk (xhigh): 0 P1, 2 P2 (celah test: test clone tidak menjalankan jalur longgar; alert tidak ter-resolve oleh pull `behind`), 1 P3 (kegagalan baca kursor menjatuhkan laporan). Semua dibetulkan, termasuk 3 test batas tambahan.
 
 Belum / keputusan untuk CTO:
-- legend-rh1hk (laporan restore-detect membawa kursor tautan outbox): tidak ada desain aman tanpa migrasi. Diparkir, butuh nomor migrasi dari CTO.
 - legend-vet9d (bucket DP rekap hari): menunggu CTO menyatakan batch95 mendarat, lalu `git merge milestone/m1`.
-- Re-apply yang gagal tidak diulang otomatis (alasan ledger dihapus setelah void sukses); konflik tetap terbuka untuk replay manual supervisor. Retry otomatis butuh keputusan desain.
+- Re-apply yang gagal tidak diulang otomatis (alasan ledger dihapus setelah void sukses); konflik tetap terbuka untuk replay manual supervisor (rilis 1). Retry otomatis: kartu P3 terpisah dari CTO.
 - Dilewati bila ada resolusi apa pun, termasuk replay manual yang gagal.
 - Suite penuh dan `pnpm check` tidak dijalankan (tugas merge train). Printer fisik tidak diuji.
 

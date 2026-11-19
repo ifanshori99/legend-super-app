@@ -43,6 +43,15 @@
 //   Limits, stated plainly: (1) sales between a restore and the first
 //   successful pull still reuse numbers already issued (only legend-ol6v receipt
 //   events can catch them); a backup newer than the last pull is not seen.
+//   legend-rh1hk: a report read just before a merge landed is below
+//   `lastNumber` without any restore. The pull sends the edge's outbox link
+//   cursor (`receiptRunsSeq`, read before the counters); when the first
+//   `edge_link_slots` row above it is younger than
+//   RECEIPT_REPORT_CURSOR_WINDOW_MS before the token (and the cursor row is
+//   bound to the pulling instance), only the `lastNumber` comparison is
+//   relaxed (`behind`, no rotation). A report below the edge's own earlier
+//   report (`edge_reported_number`) still rotates. A restore within the window
+//   is seen one pull later.
 //   (2) a clone is an ALARM, not prevention: both databases receive the new
 //   prefix, so numbers may collide until the manual zsdd procedure is done.
 // The database triggers in pos-receipt.custom.sql are the backstop.
@@ -828,6 +837,11 @@ export const RECEIPT_REFUSAL_ROTATIONS_MAX = 10;
  * retire reason (follow-up legend-p7gb6 replaces both markers with a reason).
  */
 const HEAL_PREFIX_USED_OFFSET_MS = 1;
+/**
+ * legend-rh1hk: how far before the report token a link slot above the edge's
+ * cursor may be and still prove a race. Twice the edge's 15 s request timeout.
+ */
+export const RECEIPT_REPORT_CURSOR_WINDOW_MS = 30_000;
 
 /**
  * Cloud (legend-zsdd): hands the outlet's device sequences to the edge
@@ -858,6 +872,13 @@ const HEAL_PREFIX_USED_OFFSET_MS = 1;
  * a prefix of this binding retired as `edge_regressed` above its frozen
  * high-water with a newer token (a second live database: clone). Report
  * entries for unknown, other retired or foreign-bound prefixes are ignored.
+ *
+ * legend-rh1hk: `reportCursor` (the edge's outbox link cursor read with the
+ * report; absent = full check) relaxes the `reported < lastNumber` rotation
+ * only, when `reported >= edge_reported_number` and the cursor proves the
+ * report was read just before a merge (`reportBehindMerge`): the row is kept,
+ * the high-water rises if `reported` is higher, and `behind` counts it. A
+ * `behind` pull proves nothing about the edge, so it never resolves the alert.
  *
  * `reportedAt` is the cloud time the request reached the cloud (default now),
  * never the edge clock: a restored box may have a clock behind or ahead, which
@@ -912,6 +933,8 @@ export async function claimDeviceReceiptSequencesForEdge(
     report?: ReceiptRunReport;
     refusals?: ReceiptRunRefusalReport;
     reportedAt?: Date;
+    /** legend-rh1hk: the edge outbox link cursor read with `report`. */
+    reportCursor?: number;
   } & DeviceReceiptSequenceBinding,
 ): Promise<{
   claimed: number;
@@ -921,6 +944,7 @@ export async function claimDeviceReceiptSequencesForEdge(
   refusedRotated: number;
   refusedThrottled: number;
   stale: number;
+  behind: number;
   alert: boolean;
 }> {
   if (isEdgeProcess())
@@ -1054,6 +1078,9 @@ export async function claimDeviceReceiptSequencesForEdge(
   let refusedRotated = 0;
   let refusedThrottled = 0;
   let stale = 0;
+  let behind = 0;
+  // legend-rh1hk: the cursor check runs at most once per claim, on demand.
+  let behindMerge: Promise<boolean> | undefined;
   let used: Map<string, string> | undefined;
   for (const { sequence } of current) {
     if (sameBinding(sequence, binding)) {
@@ -1128,7 +1155,7 @@ export async function claimDeviceReceiptSequencesForEdge(
       }
       const reported = input.report.get(sequence.prefix) ?? 0;
       const high = Math.max(sequence.edgeReportedNumber, sequence.lastNumber);
-      if (reported >= high) {
+      const raiseHighWater = async () => {
         if (reported > sequence.edgeReportedNumber)
           await tx
             .update(receiptSequences)
@@ -1145,6 +1172,26 @@ export async function claimDeviceReceiptSequencesForEdge(
                 sql`${receiptSequences.edgeReportedNumber} < ${reported}`,
               ),
             );
+      };
+      if (reported >= high) {
+        await raiseHighWater();
+        continue;
+      }
+      // legend-rh1hk: below only what a merge raised (`lastNumber`), not below
+      // anything the edge itself reported before: the report was read just
+      // before that merge landed (race), not a restored database.
+      if (
+        reported >= sequence.edgeReportedNumber &&
+        (await (behindMerge ??= reportBehindMerge(
+          tx,
+          tenantId,
+          binding,
+          input.reportCursor,
+          tau,
+        )))
+      ) {
+        await raiseHighWater();
+        behind += 1;
         continue;
       }
       // legend-yd0h8: the edge is behind what it reported or issued before.
@@ -1219,8 +1266,42 @@ export async function claimDeviceReceiptSequencesForEdge(
     refusedRotated,
     refusedThrottled,
     stale,
+    behind,
     alert,
   };
+}
+
+/**
+ * legend-rh1hk: a report is behind a merge when the edge's outbox cursor `C`,
+ * read with the report, is older than a link slot the cloud handed out within
+ * RECEIPT_REPORT_CURSOR_WINDOW_MS before `tau`. Every slot above `C` was
+ * created after the edge read its report, so a slot that young means the merge
+ * landed while the request was in flight (race). A restored database sends a
+ * `C` whose next slot is old (the cloud passed it before the restore), and a
+ * new link instance, an unbound row, a missing or pruned slot, or no cursor at
+ * all gives false: the full check applies. `peer_seq_offset` maps the edge's
+ * numbering to the stored one. One primary-key range read, run under the
+ * outlet lock of the claim.
+ */
+async function reportBehindMerge(
+  tx: Tx,
+  tenantId: string,
+  binding: DeviceReceiptSequenceBinding,
+  cursor: number | undefined,
+  tau: Date,
+): Promise<boolean> {
+  if (cursor === undefined) return false;
+  const result = await tx.execute(
+    sql`SELECT s.created_at >= ${tau.toISOString()}::timestamptz - make_interval(secs => ${RECEIPT_REPORT_CURSOR_WINDOW_MS / 1000}) AS recent
+      FROM sync_cursors c
+      JOIN edge_link_slots s
+        ON s.tenant_id = c.tenant_id AND s.edge_node_id = c.edge_node_id AND s.direction = c.direction
+      WHERE c.tenant_id = ${tenantId}::uuid AND c.edge_node_id = ${binding.edgeNodeId}::uuid AND c.direction = 'edge_to_cloud'
+        AND c.peer_instance_id = ${binding.edgeInstanceId}::uuid
+        AND s.link_seq > ${cursor}::bigint + c.peer_seq_offset
+      ORDER BY s.link_seq LIMIT 1`,
+  );
+  return result.rows[0]?.recent === true;
 }
 
 /**

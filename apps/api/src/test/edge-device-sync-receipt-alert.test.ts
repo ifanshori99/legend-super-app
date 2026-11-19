@@ -248,7 +248,12 @@ function clock(): (seconds: number) => Date {
 function cloudPull(
   outletId: string,
   own: Binding,
-  options: { report?: ReceiptRunReport; now?: Date } = {},
+  options: {
+    report?: ReceiptRunReport;
+    /** legend-rh1hk: the edge outbox link cursor (`receiptRunsSeq`). */
+    reportSeq?: number;
+    now?: Date;
+  } = {},
 ): Promise<DeviceSyncPage> {
   const query = deviceSyncQuerySchema.parse({
     limit: 100,
@@ -256,6 +261,9 @@ function cloudPull(
     edgeInstance: own.edgeInstanceId,
     ...(options.report
       ? { receiptRuns: encodeReceiptRunReport(options.report) }
+      : {}),
+    ...(options.report && options.reportSeq !== undefined
+      ? { receiptRunsSeq: String(options.reportSeq) }
       : {}),
   });
   return listDeviceRecordsSince(
@@ -412,6 +420,76 @@ describe("T23 a clean processed pull resolves the alert only after 24 h without 
       rows[0]!.raised_at.getTime(),
     );
     expect(openRows(rows)).toHaveLength(0);
+  });
+});
+
+describe("legend-rh1hk a pull whose report was behind a merge proves nothing about the edge", () => {
+  it("a behind pull leaves an old open alert open (a processed, alert-free pull would resolve it)", async () => {
+    const { outletId, own } = await cloudOutlet();
+    const at = clock();
+    await cloudPull(outletId, own, { report: new Map(), now: at(10) });
+    // The edge reported P1:2; a merge then raised the run to 3.
+    await cloudPull(outletId, own, {
+      report: new Map([["P1", 2]]),
+      now: at(20),
+    });
+    await asOwnerTenant(async (client) => {
+      await client.query(
+        `UPDATE receipt_sequences SET last_number = 3 WHERE tenant_id = $1 AND outlet_id = $2 AND prefix = 'P1'`,
+        [tenant.tenantId, outletId],
+      );
+      // The edge outbox cursor is 5; the slot above it (6) is 5 s before the token.
+      await client.query(
+        `INSERT INTO sync_cursors (tenant_id, outlet_id, edge_node_id, direction, next_out_seq, acked_out_seq, received_in_seq, peer_instance_id, peer_seq_offset)
+         VALUES ($1, $2, $3, 'edge_to_cloud', 6, 0, 0, $4, 0)`,
+        [tenant.tenantId, outletId, own.edgeNodeId, own.edgeInstanceId],
+      );
+      for (const [linkSeq, createdAt] of [
+        [1, new Date(at(30).getTime() - HOUR_MS)],
+        [6, new Date(at(30).getTime() - 5_000)],
+      ] as const)
+        await client.query(
+          `INSERT INTO edge_link_slots (tenant_id, outlet_id, edge_node_id, direction, link_seq, event_id, created_at)
+           VALUES ($1, $2, $3, 'edge_to_cloud', $4, $5, $6)`,
+          [
+            tenant.tenantId,
+            outletId,
+            own.edgeNodeId,
+            linkSeq,
+            randomUUID(),
+            createdAt,
+          ],
+        );
+    });
+    const seeded = await seedOpenAlert(outletId, own.edgeNodeId, 48);
+
+    const behind = await cloudPull(outletId, own, {
+      report: new Map([["P1", 2]]),
+      reportSeq: 5,
+      now: at(30),
+    });
+    expect("receiptRunAlert" in behind).toBe(false);
+    // The report really was read as behind: the run was kept, not rotated.
+    expect(prefixes(behind)).toEqual(["P1"]);
+    const seqs = await sequenceRows(outletId);
+    expect(seqOf(seqs, "P1")).toMatchObject({
+      retired_at: null,
+      retired_reason: null,
+    });
+    const after = await alertRows(own.edgeNodeId);
+    expect(after).toHaveLength(1);
+    expect(after[0]).toMatchObject({ id: seeded.id, resolved_at: null });
+    expect(after[0]!.last_seen_at.getTime()).toBe(
+      seeded.last_seen_at.getTime(),
+    );
+
+    // Control: a clean processed report (P1:3) resolves the same alert, so the
+    // assertion above is not vacuous.
+    await cloudPull(outletId, own, {
+      report: new Map([["P1", 3]]),
+      now: at(40),
+    });
+    expect(openRows(await alertRows(own.edgeNodeId))).toHaveLength(0);
   });
 });
 

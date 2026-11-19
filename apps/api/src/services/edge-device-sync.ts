@@ -52,6 +52,7 @@ import {
   RECEIPT_WRITEOFF_SYNC_MAX,
   receiptRunReportQuerySchema,
   receiptRunRefusalQuerySchema,
+  receiptRunSeqQuerySchema,
   type DeviceReceiptSequenceBinding,
   type DeviceReceiptSequenceSync,
   type DeviceReceiptWriteoffSync,
@@ -115,35 +116,48 @@ const NIL_UUID = "00000000-0000-0000-0000-000000000000";
 export const DEVICE_SYNC_SETTLE_MS = 5_000;
 export const DEVICE_SYNC_LIMIT_DEFAULT = PAGE_LIMIT_MAX;
 
-export const deviceSyncQuerySchema = z.strictObject({
-  since: cursorSchema.optional(),
-  limit: z.coerce
-    .number()
-    .int()
-    .min(1)
-    .max(PAGE_LIMIT_MAX)
-    .default(DEVICE_SYNC_LIMIT_DEFAULT),
-  /** S-K1 (legend-3yqy): `1` adds the outlet's device receipt sequences. */
-  receiptSequences: z.literal("1").optional(),
-  /** legend-zsdd: the edge's database id; sequences bind to (node, instance). */
-  edgeInstance: uuidSchema.optional(),
-  /**
-   * legend-yd0h8: the edge's local counter of every current local run
-   * (`P1:150,P3:7`, `""` = none). Absent = an old edge: no restore check.
-   */
-  receiptRuns: receiptRunReportQuerySchema.optional(),
-  /**
-   * legend-hfq3z: the pulled runs this edge refused for a prefix or id clash
-   * (`<id>:prefix_used,<id>:id_used`). Only meaningful with
-   * `receiptSequences=1`; absent = an old edge (no self-heal).
-   */
-  receiptRefused: receiptRunRefusalQuerySchema.optional(),
-  /**
-   * legend-jcby0: `1` adds the outlet's receipt number write-offs (to a
-   * primary edge with a binding, like the sequences). Absent = an old edge.
-   */
-  receiptWriteoffs: z.literal("1").optional(),
-});
+export const deviceSyncQuerySchema = z
+  .strictObject({
+    since: cursorSchema.optional(),
+    limit: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(PAGE_LIMIT_MAX)
+      .default(DEVICE_SYNC_LIMIT_DEFAULT),
+    /** S-K1 (legend-3yqy): `1` adds the outlet's device receipt sequences. */
+    receiptSequences: z.literal("1").optional(),
+    /** legend-zsdd: the edge's database id; sequences bind to (node, instance). */
+    edgeInstance: uuidSchema.optional(),
+    /**
+     * legend-yd0h8: the edge's local counter of every current local run
+     * (`P1:150,P3:7`, `""` = none). Absent = an old edge: no restore check.
+     */
+    receiptRuns: receiptRunReportQuerySchema.optional(),
+    /**
+     * legend-rh1hk: the edge's outbox link cursor, read before the counters of
+     * `receiptRuns` (decimal string). Lets the cloud tell a report that was read
+     * just before a merge landed from a restored database. Only with
+     * `receiptRuns`; absent = the full regression check.
+     */
+    receiptRunsSeq: receiptRunSeqQuerySchema.optional(),
+    /**
+     * legend-hfq3z: the pulled runs this edge refused for a prefix or id clash
+     * (`<id>:prefix_used,<id>:id_used`). Only meaningful with
+     * `receiptSequences=1`; absent = an old edge (no self-heal).
+     */
+    receiptRefused: receiptRunRefusalQuerySchema.optional(),
+    /**
+     * legend-jcby0: `1` adds the outlet's receipt number write-offs (to a
+     * primary edge with a binding, like the sequences). Absent = an old edge.
+     */
+    receiptWriteoffs: z.literal("1").optional(),
+  })
+  .refine(
+    (query) =>
+      query.receiptRunsSeq === undefined || query.receiptRuns !== undefined,
+    { message: "receiptRunsSeq needs receiptRuns.", path: ["receiptRunsSeq"] },
+  );
 export type DeviceSyncQuery = z.infer<typeof deviceSyncQuerySchema>;
 
 const CURSOR_TAG = "dev1";
@@ -223,6 +237,7 @@ export async function listDeviceRecordsSince(
     receiptSequences: withSequences,
     edgeInstance,
     receiptRuns,
+    receiptRunsSeq,
     receiptRefused,
     receiptWriteoffs: withWriteoffs,
   } = deviceSyncQuerySchema.parse(query);
@@ -310,6 +325,10 @@ export async function listDeviceRecordsSince(
           // Network / load balancer delay is not covered: the puller only
           // retries after its 15 s timeout.
           reportedAt: receiptRuns === undefined ? undefined : now,
+          // legend-rh1hk: the edge's outbox cursor of that same read (validated
+          // by the query schema; only ever with a report).
+          reportCursor:
+            receiptRunsSeq === undefined ? undefined : Number(receiptRunsSeq),
           // legend-hfq3z: clash refusals of the previous pull (validated by
           // the query schema, so it decodes).
           refusals:
@@ -322,8 +341,10 @@ export async function listDeviceRecordsSince(
         // (edge status screen). Savepoint: a failed write is logged and never
         // refuses the page nor rolls back the claim above. Only a decoded
         // report counts; a stale report (claim.stale > 0) was skipped, so a
-        // clean answer then proves nothing. The alert closes only after 24 h
-        // without a new alert (no flapping between a clone and the real edge).
+        // clean answer then proves nothing. The same holds for a report that
+        // was behind a merge (claim.behind > 0, legend-rh1hk): its lastNumber
+        // comparison was relaxed. The alert closes only after 24 h without a
+        // new alert (no flapping between a clone and the real edge).
         if (receiptRuns !== undefined) {
           try {
             await tx.transaction(async (savepoint) => {
@@ -340,7 +361,7 @@ export async function listDeviceRecordsSince(
                     rotated: claim.rotated,
                   },
                 });
-              } else if (claim.stale === 0) {
+              } else if (claim.stale === 0 && claim.behind === 0) {
                 await resolveEdgeNodeAlerts(savepoint, {
                   tenantId: verified.tenantId,
                   edgeNodeId: verified.edgeNodeId,
@@ -1046,6 +1067,11 @@ export type PullDeviceRegistryOptions = {
     since: string | null,
     receiptRuns?: ReceiptRunReport,
     refusals?: ReceiptRunRefusalReport,
+    /**
+     * legend-rh1hk: the edge outbox link cursor read before `receiptRuns`;
+     * sent as `receiptRunsSeq`, only ever with a report.
+     */
+    receiptRunsSeq?: number,
   ) => Promise<unknown>;
   /**
    * legend-hfq3z: the clash refusals of the previous pull
@@ -1178,19 +1204,47 @@ function splitPage(raw: unknown): {
 /**
  * legend-yd0h8: this primary edge database's report for a pull: the local
  * counter of every current local run, read in its own short transaction.
+ * legend-rh1hk: with the outbox link cursor (`next_out_seq` of this node's
+ * `edge_to_cloud` row, 0 when it has none; undefined when the read failed).
+ * The cursor is read FIRST: under
+ * READ COMMITTED a sale between the two reads then only makes the cursor
+ * older than the counters (a full check at worst, never a false rotation);
+ * the reverse order would let a receipt event land above the cursor while the
+ * counters already include it.
  */
 async function reportLocalRuns(
   context: ScopedTenantContext,
-): Promise<ReceiptRunReport> {
+  edgeNodeId: string,
+): Promise<{ report: ReceiptRunReport; cursor: number | undefined }> {
   if (
     context.outletScope.kind !== "outlets" ||
     context.outletScope.outletIds.length !== 1
   )
     refuse("Device sync needs a context of exactly one outlet.");
   const outletId = context.outletScope.outletIds[0]!.toLowerCase();
-  return withTenant(db, context, (tx) =>
-    localReceiptRunReport(tx, context, outletId),
-  );
+  return withTenant(db, context, async (tx) => {
+    // The cursor only relaxes a check: a failed read (own savepoint, so the
+    // transaction stays usable) sends no cursor and keeps the report.
+    let cursor: number | undefined;
+    try {
+      cursor = await tx.transaction(async (savepoint) => {
+        const result = await savepoint.execute(
+          sql`SELECT next_out_seq FROM sync_cursors WHERE tenant_id = ${context.tenant.tenantId}::uuid AND edge_node_id = ${edgeNodeId}::uuid AND direction = 'edge_to_cloud'`,
+        );
+        return Number(result.rows[0]?.next_out_seq ?? 0);
+      });
+    } catch (error) {
+      logger.error(
+        {
+          edgeNodeId,
+          errorName: error instanceof Error ? error.name : "unknown",
+        },
+        "edge receipt-run cursor read failed; sending the report without it",
+      );
+    }
+    const report = await localReceiptRunReport(tx, context, outletId);
+    return { report, cursor };
+  });
 }
 
 /**
@@ -1230,20 +1284,25 @@ export async function pullDeviceRegistry(
       );
     // legend-yd0h8: a primary with a binding reports its local counters before
     // each page; anything else sends no report (no check).
-    const report =
+    const local =
       options.role === "primary" && options.binding !== undefined
-        ? await reportLocalRuns(options.context).catch(() => {
+        ? await reportLocalRuns(
+            options.context,
+            options.binding.edgeNodeId,
+          ).catch(() => {
             // legend-yd0h8: a failed report never stops the pull (device
             // records, revocations); the page goes without the check.
             logger.error("Edge receipt run report failed; pulling without it");
             return undefined;
           })
         : undefined;
+    const report = local?.report;
     const raw = splitPage(
       await options.fetchPage(
         since,
         report,
         report !== undefined && pending.size > 0 ? pending : undefined,
+        local?.cursor,
       ),
     );
     if (raw.alert === true) receiptRunAlert = true;
