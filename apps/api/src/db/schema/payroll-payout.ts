@@ -415,6 +415,27 @@ export const payrollPayoutGlPostings = pgTable(
      * rows written before the migration.
      */
     feeIdr: bigint("fee_idr", { mode: "number" }),
+    /**
+     * Finance marked the fee of this posting as already held in the opening
+     * balance (legend-3xzop, migration 0715): it is never journaled by any
+     * path and leaves the recovery list. Written once together with the actor
+     * and the note; no journal is written by the mark itself.
+     */
+    feeOpeningBalanceAt: timestamp("fee_opening_balance_at", {
+      withTimezone: true,
+    }),
+    feeOpeningBalanceBy: actor("fee_opening_balance_by"),
+    feeOpeningBalanceNote: text("fee_opening_balance_note"),
+    /**
+     * Finance released `payable_account_hold` (legend-6qp12, migration 0715):
+     * hold true -> false once, with the actor and the note. A return still uses
+     * the frozen `salaries_payable_account_id`, never today's mapping.
+     */
+    payableHoldReleasedAt: timestamp("payable_hold_released_at", {
+      withTimezone: true,
+    }),
+    payableHoldReleasedBy: actor("payable_hold_released_by"),
+    payableHoldReleaseNote: text("payable_hold_release_note"),
   },
   (table) => [
     unique("payroll_payout_gl_postings_tenant_id_key").on(
@@ -471,6 +492,26 @@ export const payrollPayoutGlPostings = pgTable(
     check(
       "payroll_payout_gl_postings_fee_check",
       sql`${table.feeIdr} IS NULL OR ${table.feeIdr} >= 0`,
+    ),
+    check(
+      "payroll_payout_gl_postings_fee_opening_trio_check",
+      sql`(${table.feeOpeningBalanceAt} IS NULL) = (${table.feeOpeningBalanceBy} IS NULL) AND (${table.feeOpeningBalanceAt} IS NULL) = (${table.feeOpeningBalanceNote} IS NULL)`,
+    ),
+    check(
+      "payroll_payout_gl_postings_fee_opening_note_check",
+      sql`${table.feeOpeningBalanceNote} IS NULL OR char_length(btrim(${table.feeOpeningBalanceNote})) BETWEEN 1 AND 1000`,
+    ),
+    check(
+      "payroll_payout_gl_postings_hold_release_trio_check",
+      sql`(${table.payableHoldReleasedAt} IS NULL) = (${table.payableHoldReleasedBy} IS NULL) AND (${table.payableHoldReleasedAt} IS NULL) = (${table.payableHoldReleaseNote} IS NULL)`,
+    ),
+    check(
+      "payroll_payout_gl_postings_hold_release_note_check",
+      sql`${table.payableHoldReleaseNote} IS NULL OR char_length(btrim(${table.payableHoldReleaseNote})) BETWEEN 1 AND 1000`,
+    ),
+    check(
+      "payroll_payout_gl_postings_hold_release_hold_check",
+      sql`${table.payableHoldReleasedAt} IS NULL OR ${table.payableAccountHold} = false`,
     ),
   ],
 );

@@ -210,7 +210,7 @@ function messageHas(error: unknown, pattern: RegExp, depth = 0): boolean {
 }
 
 /** A frozen batch refuses every payout step until it is unfrozen. */
-const batchFrozen = (): HttpError =>
+export const batchFrozen = (): HttpError =>
   payoutRefuse(
     409,
     "PAYOUT_BATCH_FROZEN",

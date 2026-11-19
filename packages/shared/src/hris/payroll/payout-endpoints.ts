@@ -25,10 +25,12 @@ import {
   listPayoutBatchesQuerySchema,
   payoutBatchParamsSchema,
   payoutEvidenceReadQuerySchema,
+  payoutGlPostingParamsSchema,
   payoutLegalEntityParamsSchema,
   payoutRunParamsSchema,
   recordOverpaidItemsSchema,
   resolveManualItemsSchema,
+  resolvePayoutGlPostingInputSchema,
   returnManualItemsSchema,
   upsertPayoutConfigInputSchema,
   withdrawPayoutProposalSchema,
@@ -516,4 +518,30 @@ export const unfreezeDisbursementBatch = defineEndpoint({
   params: payoutBatchParamsSchema,
   body: unfreezePayoutBatchInputSchema,
   response: z.object({ data: z.object({ released: z.number().int() }) }),
+});
+
+const glResolveResponse = z.object({
+  data: z.object({ postingId: z.string(), resolvedAt: instant }),
+});
+
+/**
+ * payroll.payout.gl_resolve + step-up MFA; the batch requester is refused (403
+ * PAYOUT_GL_SELF_APPROVAL). Marks the bank fee of an accounting_was_off posting
+ * as already in the opening balance; writes no journal.
+ */
+export const markPayoutFeeInOpeningBalance = defineEndpoint({
+  method: "POST",
+  path: `${BASE}/payout-gl-postings/:postingId/fee-opening-balance`,
+  params: payoutGlPostingParamsSchema,
+  body: resolvePayoutGlPostingInputSchema,
+  response: glResolveResponse,
+});
+
+/** Same guards; releases payable_account_hold once, writes no journal. */
+export const releasePayoutPayableHold = defineEndpoint({
+  method: "POST",
+  path: `${BASE}/payout-gl-postings/:postingId/payable-hold-release`,
+  params: payoutGlPostingParamsSchema,
+  body: resolvePayoutGlPostingInputSchema,
+  response: glResolveResponse,
 });

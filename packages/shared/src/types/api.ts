@@ -269,6 +269,16 @@ export type PayoutReturnClaimDto = {
   } | null;
 };
 
+/**
+ * Answer of the two payout GL resolve actions (POST
+ * /payout-gl-postings/:postingId/fee-opening-balance and /payable-hold-release).
+ * `resolvedAt` is the ISO datetime the database stamped; no amount or name.
+ */
+export type PayoutGlResolveDto = {
+  postingId: string;
+  resolvedAt: string;
+};
+
 /** A disbursement batch for one payroll run. totalIdr is the sum of items. */
 export type PayrollDisbursementBatchDto = {
   id: string;

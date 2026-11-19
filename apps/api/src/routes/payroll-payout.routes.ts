@@ -19,6 +19,8 @@ import {
   createDisbursementBatchInputSchema,
   exportDisbursementBatchInputSchema,
   payoutBatchParamsSchema,
+  payoutGlPostingParamsSchema,
+  resolvePayoutGlPostingInputSchema,
   listPayoutBatchesQuerySchema,
   listPayoutRecoveryQuerySchema,
   payoutLegalEntityParamsSchema,
@@ -48,6 +50,10 @@ import {
   listPayoutRecoveryPage,
   repostSkippedFees,
 } from "../services/payroll-payout-gl.service.ts";
+import {
+  markFeeInOpeningBalance,
+  releasePayableHold,
+} from "../services/payroll-payout-gl-holds.service.ts";
 import { recordPostingSource } from "../services/payroll-payout-source.service.ts";
 import { listPayoutBatches } from "../services/payroll-payout-batch-list.service.ts";
 import {
@@ -446,6 +452,51 @@ payrollPayoutRouter.post(
     const { context, actor } = actorOf(req);
     const data = await withTenant(db, context, (tx) =>
       recordPostingSource(tx, actor, id, postingId, input.glAccountId),
+    );
+    res.json({ data });
+  },
+);
+
+// Payout GL postings held for finance (legend-3xzop, legend-6qp12): mark a bank
+// fee as already in the opening balance, or release a payable account hold.
+// Neither writes a journal. Owner and Finance only (`payroll.payout.gl_resolve`),
+// a recent second factor and the password again when needed; the batch
+// requester is refused in the service (403 PAYOUT_GL_SELF_APPROVAL).
+payrollPayoutRouter.post(
+  "/payout-gl-postings/:postingId/fee-opening-balance",
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  requireTenantPermission("payroll.payout.gl_resolve"),
+  stepUp,
+  jsonBody,
+  passwordStepUp,
+  async (req, res) => {
+    const { postingId } = payoutGlPostingParamsSchema.parse(req.params);
+    const { note } = resolvePayoutGlPostingInputSchema.parse(req.body);
+    const { context, actor } = actorOf(req);
+    const data = await withTenant(db, context, (tx) =>
+      markFeeInOpeningBalance(tx, actor, postingId, note),
+    );
+    res.json({ data });
+  },
+);
+
+payrollPayoutRouter.post(
+  "/payout-gl-postings/:postingId/payable-hold-release",
+  requireAuth,
+  requireTrustedOrigin,
+  requireTenantContext,
+  requireTenantPermission("payroll.payout.gl_resolve"),
+  stepUp,
+  jsonBody,
+  passwordStepUp,
+  async (req, res) => {
+    const { postingId } = payoutGlPostingParamsSchema.parse(req.params);
+    const { note } = resolvePayoutGlPostingInputSchema.parse(req.body);
+    const { context, actor } = actorOf(req);
+    const data = await withTenant(db, context, (tx) =>
+      releasePayableHold(tx, actor, postingId, note),
     );
     res.json({ data });
   },

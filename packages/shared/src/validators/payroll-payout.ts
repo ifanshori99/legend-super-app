@@ -86,6 +86,22 @@ export const recordPostingSourceInputSchema = z.strictObject({
   // enrollment (legend-658, L5), same as confirm-cash. Never logged.
   password: z.string().min(1).max(128).optional(),
 });
+/**
+ * Finance resolves a payout GL posting held for them (legend-3xzop fee already
+ * in the opening balance, legend-6qp12 payable account hold release). The note
+ * is the written reason (1..1000 after trimming); nothing else is accepted.
+ */
+export const PAYOUT_GL_RESOLVE_NOTE_MAX = 1000;
+export const resolvePayoutGlPostingInputSchema = z.strictObject({
+  // Asked again when the second factor only comes from enrollment, like the
+  // other payout steps. Never logged.
+  password: z.string().min(1).max(128).optional(),
+  note: text(PAYOUT_GL_RESOLVE_NOTE_MAX),
+});
+/** Params of a payout GL posting by its own id (tenant-scoped, no batch id). */
+export const payoutGlPostingParamsSchema = z.strictObject({
+  postingId: z.uuid(),
+});
 /** Page size of the payout recovery list (settlements and fees waiting). */
 export const PAYOUT_RECOVERY_LIMIT_MAX = 200;
 export const PAYOUT_RECOVERY_LIMIT_DEFAULT = 100;
@@ -390,6 +406,9 @@ export type RecordOverpaidItemsInput = z.infer<
 export type CorrectFailedItemsInput = z.infer<typeof correctFailedItemsSchema>;
 export type ConfirmCashHandoverInput = z.infer<
   typeof confirmCashHandoverInputSchema
+>;
+export type ResolvePayoutGlPostingInput = z.infer<
+  typeof resolvePayoutGlPostingInputSchema
 >;
 export type RecordPostingSourceInput = z.infer<
   typeof recordPostingSourceInputSchema
