@@ -30,6 +30,7 @@ import {
 } from "@starter/shared/platform";
 import { db } from "../db/index.ts";
 import {
+  platformAdmins,
   roleAssignments,
   roles,
   supportAccessGrants,
@@ -121,6 +122,25 @@ async function auditDenied(
   );
 }
 
+/** Same freshness rule as requestSupportAccess (TEN-04). */
+function mfaFresh(
+  mfaVerifiedAt: string | null,
+  now: Date,
+  /**
+   * Under the lock `now` is the database clock while `mfaVerifiedAt` was
+   * stamped by the app clock; the "not in the future" test already ran
+   * against the app clock in authorize(), so only the age cap is repeated.
+   */
+  ageOnly = false,
+): boolean {
+  const mfaAt = mfaVerifiedAt === null ? Number.NaN : Date.parse(mfaVerifiedAt);
+  return (
+    Number.isFinite(mfaAt) &&
+    (ageOnly || mfaAt <= now.getTime()) &&
+    now.getTime() - mfaAt <= SUPPORT_ACCESS_MFA_MAX_AGE_MS
+  );
+}
+
 /** Checks a–d of the brief, in order; returns the tenant context. */
 async function authorize(
   request: OwnerRequest,
@@ -150,16 +170,8 @@ async function authorize(
     throw new HttpError(403, "FORBIDDEN", "Akun ini bukan Super Admin.");
   await assertTenantExists(request.tenantId);
 
-  // Same freshness rule as requestSupportAccess (TEN-04).
-  const mfaAt =
-    request.mfaVerifiedAt === null
-      ? Number.NaN
-      : Date.parse(request.mfaVerifiedAt);
-  const mfaFresh =
-    Number.isFinite(mfaAt) &&
-    mfaAt <= now.getTime() &&
-    now.getTime() - mfaAt <= SUPPORT_ACCESS_MFA_MAX_AGE_MS;
-  if (!mfaFresh) {
+  // Re-checked under the lock with the database clock in changeOwner.
+  if (!mfaFresh(request.mfaVerifiedAt, now)) {
     await auditDenied(context, request.actorUserId, "mfa_not_verified", reason);
     throw new HttpError(
       403,
@@ -534,6 +546,32 @@ async function changeOwner(
     // Production reads the database clock (legend-hzdy5); `request.now` stays
     // an override for tests.
     const now = request.now ?? (await readDbClock(tx));
+    // authorize() ran before this wait: re-check the Super Admin registry and
+    // MFA freshness now that the lock is held (legend-2n5qj). The registry row
+    // is read without FOR SHARE: the app role only holds SELECT on
+    // platform_admins (drizzle/0007), and a row lock needs UPDATE as well.
+    // A revoke that commits while this call waited is therefore seen here.
+    const [registryRow] = await tx
+      .select({ id: platformAdmins.id })
+      .from(platformAdmins)
+      .where(
+        and(
+          eq(platformAdmins.userId, actorUserId),
+          isNull(platformAdmins.revokedAt),
+        ),
+      )
+      .limit(1);
+    if (!registryRow)
+      throw new HttpError(403, "FORBIDDEN", "Akun ini bukan Super Admin.");
+    if (!mfaFresh(mfaVerifiedAt, now, true)) {
+      // Separate transaction: the refused attempt must survive the rollback.
+      await auditDenied(context, actorUserId, "mfa_not_verified", input.reason);
+      throw new HttpError(
+        403,
+        "FORBIDDEN",
+        "Verifikasi MFA wajib sebelum menunjuk Owner tenant.",
+      );
+    }
     // A platform registry grant does not turn an active read-only support
     // session into write access. Check under this target tenant's RLS and the
     // owner-change lock, before resolving accounts or changing assignments.
