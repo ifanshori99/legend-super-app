@@ -790,24 +790,29 @@ describe("legend-y5q deadline and cancellation", () => {
   });
 
   it("legend-y5q a cancel racing the deadline sweep leaves one terminal outcome", async () => {
-    // Two levels, the second already due: level 1 was approved in the past.
-    const base = Date.now() - 60 * 60_000;
+    // Two levels, the second already due: level 1 is approved on the server
+    // clock (legend-1151: decide never skips it), then level 2 is made due.
     const opened = await openRequired({
       actionType: "refund",
       requestedBy: users.cashier,
       amountIdr: 750_000,
       deadlineMinutes: 10,
-      now: new Date(base),
+      now: new Date(),
     });
-    await decide(users.supervisor, opened.request.id, "approved", {
-      now: new Date(base + 5 * 60_000),
-    });
+    await decide(users.supervisor, opened.request.id, "approved");
     const rows = await chain(opened.chainId);
     expect(rows.map((row) => [row.level, row.status])).toEqual([
       [1, "approved"],
       [2, "pending"],
     ]);
     const levelTwo = rows[1]!.id;
+    await owner.query(
+      `UPDATE approval_requests
+         SET created_at = now() - interval '2 hours',
+             deadline_at = now() - interval '1 minute'
+       WHERE id = $1`,
+      [levelTwo],
+    );
 
     // The sweep holds the due row lock with "expired" uncommitted.
     const sweep = await owner.connect();

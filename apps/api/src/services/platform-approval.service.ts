@@ -1342,7 +1342,6 @@ export async function decideApprovalRequest(
   options: DecideOptions,
 ): Promise<ApprovalRequest> {
   const now = options.now ?? new Date();
-  const t0 = performance.now();
   const approverId = userIdSchema.parse(actorUserId);
   const key =
     options.idempotencyKey === null
@@ -1405,19 +1404,6 @@ export async function decideApprovalRequest(
       }
     }
     await lockChain(tx, found.chainId);
-    // legend-ijy8u: the call may have queued behind the chain lock, so every
-    // time-based check below uses a clock after the lock. An explicit
-    // options.now (production callers pass one) is advanced by the time waited.
-    const waited = Math.max(0, performance.now() - t0);
-    let lockedAt = new Date(now.getTime() + waited);
-    if (options.now === undefined && Date.now() > lockedAt.getTime())
-      lockedAt = new Date(Date.now());
-    // One time for checks and stored facts: never earlier than a refund fact
-    // time taken before the lock, and the decision is stored at the time it was
-    // judged.
-    const checkAt =
-      lockedAt.getTime() >= decisionAt.getTime() ? lockedAt : decisionAt;
-    decisionAt = checkAt;
     const rows = await chainRows(tx, found.chainId);
     const row = rows.find((candidate) => candidate.id === requestId);
     if (!row) throw notFound();
@@ -1465,6 +1451,19 @@ export async function decideApprovalRequest(
         tenant.tenantId,
         approverId,
       );
+
+    // legend-ijy8u, 1151: the call may have queued behind the refund
+    // scope, chain and role-assignment locks, so every time-based check below
+    // uses a clock read after the LAST lock. Fail safe: the later of the
+    // caller's options.now, a refund fact time taken before the lock, and the
+    // server clock wins; the server clock is never skipped, even when the
+    // caller passes an older options.now.
+    const serverAt = new Date(Date.now());
+    let checkAt = serverAt;
+    if (now.getTime() > checkAt.getTime()) checkAt = now;
+    if (decisionAt.getTime() > checkAt.getTime()) checkAt = decisionAt;
+    // The decision is stored at the time it was judged.
+    decisionAt = checkAt;
 
     // The approver's role assignment may have ended while queued: judge reach
     // and the access snapshot again at the post-lock time (fail closed).
