@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { captureScreenshot } from "./screenshots.ts";
+import { waitForHydration } from "./hydration.ts";
 
 // WS-14 FE — equipment registry, breakdown tickets (OPS-04) and shift handover
 // confirmation (OPS-05). Mock mode only: the screens read
@@ -25,6 +26,7 @@ async function openRegistry(page: Page) {
     page.getByRole("heading", { name: "Peralatan & perawatan", level: 1 }),
   ).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText("9 baris")).toBeVisible({ timeout: 30_000 });
+  await waitForHydration(page);
 }
 
 async function openHandover(page: Page) {
@@ -36,6 +38,7 @@ async function openHandover(page: Page) {
   await expect(page.locator('[data-slot="handover-card"]').first()).toBeVisible(
     { timeout: 30_000 },
   );
+  await waitForHydration(page);
 }
 
 test("OPS-04 registry shows down equipment, due service and its disabled menu items", async ({
@@ -122,7 +125,7 @@ test("OPS-04 equipment detail shows status, service history and cost history", a
     .click();
   await expect(
     page.getByRole("heading", { name: "Blender Bar Nonkopi", level: 1 }),
-  ).toBeVisible();
+  ).toBeVisible({ timeout: 30_000 });
   await expect(page.locator('[data-slot="equipment-header"]')).toContainText(
     "Rusak",
   );
@@ -146,7 +149,8 @@ test("OPS-04 equipment detail shows status, service history and cost history", a
       name: "Mesin Espresso La Marzocco Linea",
       level: 1,
     }),
-  ).toBeVisible();
+  ).toBeVisible({ timeout: 30_000 });
+  await waitForHydration(page);
   await expect(page.locator('[data-slot="cost-history"]')).toContainText(
     "Belum ada biaya servis tercatat.",
   );
@@ -239,13 +243,19 @@ test("OPS-04 empty registry and OPS-05 empty handover show honest empty states",
   await expect(
     page.getByRole("heading", { name: "Peralatan & perawatan", level: 1 }),
   ).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByText("Belum ada peralatan")).toBeVisible();
+  await expect(page.getByText("Belum ada peralatan")).toBeVisible({
+    timeout: 30_000,
+  });
+  await waitForHydration(page);
 
   await page.goto("/operasional/serah-terima?mock=empty");
   await expect(
     page.getByRole("heading", { name: "Serah terima shift", level: 1 }),
   ).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByText("Belum ada serah terima")).toBeVisible();
+  await expect(page.getByText("Belum ada serah terima")).toBeVisible({
+    timeout: 30_000,
+  });
+  await waitForHydration(page);
 });
 
 test("OPS-04 and OPS-05 error states offer a retry", async ({ page }) => {
@@ -254,14 +264,20 @@ test("OPS-04 and OPS-05 error states offer a retry", async ({ page }) => {
   await expect(
     page.getByRole("heading", { name: "Peralatan & perawatan", level: 1 }),
   ).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByText("Data tidak dapat dimuat")).toBeVisible();
+  await expect(page.getByText("Data tidak dapat dimuat")).toBeVisible({
+    timeout: 30_000,
+  });
+  await waitForHydration(page);
   await expect(page.getByRole("button", { name: "Coba lagi" })).toBeVisible();
 
   await page.goto("/operasional/serah-terima?mock=error");
   await expect(
     page.getByRole("heading", { name: "Serah terima shift", level: 1 }),
   ).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByText("Data tidak dapat dimuat")).toBeVisible();
+  await expect(page.getByText("Data tidak dapat dimuat")).toBeVisible({
+    timeout: 30_000,
+  });
+  await waitForHydration(page);
 });
 
 for (const width of [390, 1440]) {
@@ -292,6 +308,7 @@ for (const width of [390, 1440]) {
       await expect(
         page.getByRole("heading", { name: "Blender Bar Nonkopi", level: 1 }),
       ).toBeVisible({ timeout: 30_000 });
+      await waitForHydration(page);
       await captureScreenshot(
         page,
         `legend-cz9g/peralatan-detail-${width}-${theme}.png`,
@@ -320,11 +337,13 @@ test("OPS-04 registry empty and error screenshots", async ({ page }) => {
   await expect(page.getByText("Belum ada peralatan")).toBeVisible({
     timeout: 30_000,
   });
+  await waitForHydration(page);
   await captureScreenshot(page, "legend-cz9g/peralatan-390-empty.png");
 
   await page.goto("/operasional/peralatan?mock=error");
   await expect(page.getByText("Data tidak dapat dimuat")).toBeVisible({
     timeout: 30_000,
   });
+  await waitForHydration(page);
   await captureScreenshot(page, "legend-cz9g/peralatan-390-error.png");
 });
