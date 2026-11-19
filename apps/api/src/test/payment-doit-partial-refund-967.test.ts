@@ -1670,7 +1670,7 @@ describe("legend-30hfs refunds of an additional transaction and of a split trans
     );
   });
 
-  it("967-r3d the refunded payment event of an extra transaction first, then refund.succeeded with a real refund id for the same payment after the window: no new row, no extra alert", async () => {
+  it("967-r3d the refunded payment event of an extra transaction first, then refund.succeeded with a real refund id for the same payment after the window: no new row, one open hold, two alerts in total", async () => {
     const code = await paidCode();
     const extraRef = await extraTxn(code);
     const before = await refundView(code.id);
@@ -1683,14 +1683,30 @@ describe("legend-30hfs refunds of an additional transaction and of a split trans
     const counted = await refundView(code.id);
     expect(counted.refundable).toBe(before.refundable - EXTRA);
 
+    const echoRefundId = refundId();
     await deliverExtra(
-      extraPartial(extraRef, refundId(), EXTRA, "refund"),
+      extraPartial(extraRef, echoRefundId, EXTRA, "refund"),
       "refund",
     );
 
     expect(await partialAudit(code.id), "no new row").toBe(auditBefore + 1);
-    expect((await supervisorAlerts()) - alertsBefore, "no extra alert").toBe(1);
     expect(await refundView(code.id), "not counted twice").toEqual(counted);
+    // 1139 decision: a refund.succeeded that maps to a Legend payment but
+    // matches no known refund R is held on its FIRST pass (it no longer waits
+    // for the retry window). The hold only restricts: it adds no fact/refund
+    // row and pays nothing out. It is announced by one finance alert, so the
+    // total is two: one from the 'refunded' event, one from the hold.
+    const { rows: openHolds } = await owner.query<{ reason: string }>(
+      `SELECT reason FROM refund_recon_holds
+        WHERE tenant_id = $1 AND provider_refund_id = $2 AND resolved_at IS NULL`,
+      [tenantId, echoRefundId],
+    );
+    expect(openHolds, "one open hold for that refund id").toHaveLength(1);
+    expect(openHolds[0]!.reason).toBe(HOLD_TRANSACTION_CONFLICT_REASON);
+    expect(
+      (await supervisorAlerts()) - alertsBefore,
+      "refunded event alert + hold announcement",
+    ).toBe(2);
   });
 
   it("967-r3e split transaction: a small partial R1 alerts once; R2 pushing the total above what the intent kept newly flags the intent and alerts a second time", async () => {

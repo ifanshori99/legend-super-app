@@ -1679,6 +1679,115 @@ async function holdUnmatchedRefundSuccess(
   return "held";
 }
 
+/** 1139: the hold of a first pass is silent (finance is told by the pass after
+ * the retry window). A pass that ends without filing the hold again (our refund
+ * matched but did not cover it, the refund booked no fact, or the recorder asked
+ * for a retry) must still announce a hold that is STILL OPEN: one finance alert,
+ * with the id the ordinary hold path uses (refund id and amount, else the hold
+ * key), so a later pass or the ordinary path adds none. Only open conflict holds
+ * of this payment that belong to this event (its stored id) or this provider
+ * refund id. Called under the caller's transaction and intent lock. */
+async function announceOpenFirstPassHolds(
+  tx: Parameters<Parameters<typeof withTenant>[2]>[0],
+  context: ScopedTenantContext,
+  intent: { id: string; outletId: string },
+  key: {
+    eventRowId: string | null;
+    providerRefundId: string | null;
+    paymentRef: string;
+  },
+  now: Date,
+): Promise<void> {
+  const owned = [
+    ...(key.eventRowId !== null
+      ? [eq(refundReconHolds.webhookEventId, key.eventRowId)]
+      : []),
+    ...(key.providerRefundId !== null
+      ? [
+          and(
+            eq(refundReconHolds.providerRefundIdKind, "provider"),
+            eq(refundReconHolds.providerRefundId, key.providerRefundId),
+          ),
+        ]
+      : []),
+  ];
+  if (owned.length === 0) return;
+  // A payment the provider refunded in full is flagged (958) and finance was
+  // told then: that flag already stops every refund and payout of it.
+  const [flag] = await tx
+    .select({
+      providerRefundedAt: paymentIntents.providerRefundedAt,
+      providerRefundedAfterPaidAt: paymentIntents.providerRefundedAfterPaidAt,
+    })
+    .from(paymentIntents)
+    .where(
+      and(
+        eq(paymentIntents.tenantId, context.tenant.tenantId),
+        eq(paymentIntents.id, intent.id),
+      ),
+    )
+    .limit(1);
+  if (flag?.providerRefundedAt || flag?.providerRefundedAfterPaidAt) return;
+  const open = await tx
+    .select({
+      amountIdr: refundReconHolds.amountIdr,
+      providerRefundId: refundReconHolds.providerRefundId,
+      webhookEventId: refundReconHolds.webhookEventId,
+    })
+    .from(refundReconHolds)
+    .where(
+      and(
+        eq(refundReconHolds.tenantId, context.tenant.tenantId),
+        eq(refundReconHolds.paymentIntentId, intent.id),
+        isNull(refundReconHolds.resolvedAt),
+        eq(refundReconHolds.reason, HOLD_TRANSACTION_CONFLICT_REASON),
+        eq(refundReconHolds.providerPaymentRef, key.paymentRef),
+        or(...owned),
+      ),
+    );
+  for (const hold of open)
+    await alertProviderRefundUnmatched(
+      tx,
+      context,
+      {
+        intentId: intent.id,
+        outletId: intent.outletId,
+        dedupKey:
+          hold.providerRefundId !== null
+            ? `${key.paymentRef}\0unmatched\0${hold.providerRefundId}\0${Number(hold.amountIdr)}`
+            : `${key.paymentRef}\0unmatched\0${hold.webhookEventId}`,
+        amountIdr: Number(hold.amountIdr),
+      },
+      now,
+    );
+}
+
+/** 1139: the recorder asked for a retry after the window: the hold of the first
+ * pass (if still open) is announced now, not on a later pass that may never
+ * come. */
+async function announceFirstPassHoldOfRefund(
+  context: ScopedTenantContext,
+  row: GatewayWebhookEvent,
+  refund: { refundId: string; paymentId: string },
+  now: Date,
+): Promise<void> {
+  const candidate = await findRefundCandidate(context, refund.paymentId);
+  if (!candidate) return;
+  await withTenant(db, context, (tx) =>
+    announceOpenFirstPassHolds(
+      tx,
+      context,
+      candidate.intent,
+      {
+        eventRowId: row.id,
+        providerRefundId: refund.refundId,
+        paymentRef: refund.paymentId,
+      },
+      now,
+    ),
+  );
+}
+
 /** 1139 P1-1: the event was held on first processing (no refund of ours
  * matched yet) and a retry now matches our refund R, which counts the money on
  * its own. The hold of this event (its stored event id, or its provider refund
@@ -1739,6 +1848,14 @@ async function closeUnmatchedHoldOfMatchedRefund(
               ),
         ),
       );
+    // Not closed (larger than R, or another transaction): finance is told.
+    await announceOpenFirstPassHolds(
+      tx,
+      context,
+      intent,
+      { eventRowId: row.id, providerRefundId, paymentRef },
+      now,
+    );
   });
 }
 
@@ -1752,6 +1869,7 @@ async function closeUnmatchedHoldOfMatchedRefund(
  * there). */
 async function closeFirstPassHoldCoveredByFact(
   context: ScopedTenantContext,
+  row: GatewayWebhookEvent,
   refund: { refundId: string; paymentId: string },
   now: Date,
 ): Promise<void> {
@@ -1790,6 +1908,18 @@ async function closeFirstPassHoldCoveredByFact(
           holdFactCoversSql(context.tenant.tenantId, refundReconHolds.id),
         ),
       );
+    // Not covered (no fact booked, or a smaller one): still open, finance is told.
+    await announceOpenFirstPassHolds(
+      tx,
+      context,
+      intent,
+      {
+        eventRowId: row.id,
+        providerRefundId: refund.refundId,
+        paymentRef: refund.paymentId,
+      },
+      now,
+    );
   });
 }
 
@@ -2565,7 +2695,14 @@ async function processRefundEvent(
           return await ignoredWith("REFERENCE_MISMATCH");
         if (applied === "retry") {
           // Unresolved even with `force`: kept `failed` (the worker retries),
-          // never ignored.
+          // never ignored. A hold of the first pass still open is announced
+          // now (1139), not on a pass that may never come.
+          await announceFirstPassHoldOfRefund(
+            context,
+            row,
+            providerRefund,
+            now,
+          );
           await markRow(
             context,
             row.id,
@@ -2578,7 +2715,12 @@ async function processRefundEvent(
           // 1139 P2-1: the fact of X now limits the refunds of the payment, so
           // the hold of the first pass (same refund id and payment) is closed
           // when that fact covers its value.
-          await closeFirstPassHoldCoveredByFact(context, providerRefund, now);
+          await closeFirstPassHoldCoveredByFact(
+            context,
+            row,
+            providerRefund,
+            now,
+          );
           await markRow(
             context,
             row.id,

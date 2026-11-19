@@ -1166,6 +1166,22 @@ describe("legend-9s33i control: a refund naming the intent that owns the payment
       expect(h.resolution, "a hold that exists is counted, not dismissed").toBe(
         "counted_against_intent",
       );
+    // 1139 P3-1: a hold that exists is never worth more than the fact that
+    // closed it, and that fact is on record exactly once.
+    for (const held of holds)
+      expect(
+        Number(held.amount_idr),
+        "the hold is not worth more than the fact",
+      ).toBeLessThanOrEqual(s.x.amountIdr);
+    const { rows: factRows } = await owner.query<{ amount_idr: string }>(
+      `SELECT amount_idr::text FROM payment_provider_refunds
+        WHERE tenant_id = $1 AND payment_intent_id = ANY($2::uuid[])`,
+      [tenantId, [s.a.id, s.b.id]],
+    );
+    expect(
+      factRows.map((fact) => Number(fact.amount_idr)),
+      "the fact is recorded exactly once",
+    ).toEqual([s.x.amountIdr]);
     const rows = await eventRow(body.id);
     expect(rows[0]!.last_error_code).not.toBe("REFERENCE_MISMATCH");
   });
