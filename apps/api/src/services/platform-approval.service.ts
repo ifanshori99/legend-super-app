@@ -800,14 +800,17 @@ export async function resolveApprovalChainOutcome(
   },
 ): Promise<ApprovalOutcome> {
   await lockChain(tx, input.chainId);
+  // The caller's clock was read before waiting on the lock: never judge the
+  // deadline or stamp the transition with a time earlier than the lock grant.
+  const at = new Date(Math.max(input.now.getTime(), Date.now()));
   const rows = await chainRows(tx, input.chainId);
   if (rows[0]?.sourceModule !== input.sourceModule) throw notFound();
   const open = rows.find((row) => row.status === "pending");
   if (!open) return chainOutcome(rows);
-  if (open.deadlineAt.getTime() > input.now.getTime()) return "pending";
+  if (open.deadlineAt.getTime() > at.getTime()) return "pending";
   const [expired] = await tx
     .update(approvalRequests)
-    .set({ status: "expired", updatedAt: input.now })
+    .set({ status: "expired", updatedAt: at })
     .where(
       and(
         eq(approvalRequests.id, open.id),
@@ -817,7 +820,7 @@ export async function resolveApprovalChainOutcome(
     .returning();
   // The sweep won between our read and write: report what it left behind.
   if (!expired) return chainOutcome(await chainRows(tx, input.chainId));
-  await announceExpired(tx, context, expired, input.now);
+  await announceExpired(tx, context, expired, at);
   return "expired";
 }
 
@@ -838,15 +841,18 @@ export async function cancelApprovalRequest(
     readonly now?: Date;
   },
 ): Promise<ApprovalOutcome> {
-  const now = input.now ?? new Date();
   await lockChain(tx, input.chainId);
+  // Time after the lock grant, not the clock read before waiting on it.
+  const at = new Date(
+    Math.max((input.now ?? new Date()).getTime(), Date.now()),
+  );
   const rows = await chainRows(tx, input.chainId);
   if (rows[0]?.sourceModule !== input.sourceModule) throw notFound();
   const open = rows.find((row) => row.status === "pending");
   if (!open) return chainOutcome(rows);
   const [cancelled] = await tx
     .update(approvalRequests)
-    .set({ status: "cancelled", updatedAt: now })
+    .set({ status: "cancelled", updatedAt: at })
     .where(
       and(
         eq(approvalRequests.id, open.id),
@@ -865,7 +871,7 @@ export async function cancelApprovalRequest(
     input.actorUserId === null
       ? { type: "system" }
       : { type: "user", id: userIdSchema.parse(input.actorUserId) };
-  await emitResolved(tx, context, cancelled, "cancelled", actor, now);
+  await emitResolved(tx, context, cancelled, "cancelled", actor, at);
   await recordAudit(
     {
       tenantId: context.tenant.tenantId,
