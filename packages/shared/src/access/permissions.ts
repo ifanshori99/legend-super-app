@@ -252,6 +252,10 @@ const entries = [
   ["payroll.payout.configure", ["payroll"]],
   ["payroll.disburse.request", ["payroll", "employee_pii"]],
   ["payroll.disburse.approve", ["payroll", "approve"]],
+  // Resolve a payout GL posting held for finance (legend-3xzop, legend-6qp12):
+  // mark its bank fee as already in the opening balance, or release a payable
+  // account hold. Owner and Finance only; MFA step-up plus password on each call.
+  ["payroll.payout.gl_resolve", ["payroll", "finance"]],
 
   // HRIS self-service (F30)
   ["self.profile.view", ["self"]],

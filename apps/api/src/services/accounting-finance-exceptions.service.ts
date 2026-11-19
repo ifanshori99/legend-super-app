@@ -774,6 +774,7 @@ async function payoutFeeNotPosted(
             FROM payroll_payout_gl_postings
            WHERE tenant_id = ${scope.tenantId}::uuid
              AND fee_posted = false
+             AND fee_opening_balance_at IS NULL
              AND (posted_at AT TIME ZONE ${PAYOUT_TIME_ZONE})::date
                  BETWEEN ${scope.from}::date AND ${scope.to}::date
            ORDER BY posted_at DESC, id DESC`,

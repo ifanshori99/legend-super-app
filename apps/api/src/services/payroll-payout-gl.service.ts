@@ -983,7 +983,7 @@ export async function resolvePendingSettles(
 }
 
 /** True when the batch is frozen (own dispute or a sibling's), read now. */
-async function batchIsFrozen(
+export async function batchIsFrozen(
   tx: Tx,
   tenantId: TenantId,
   batchId: string,
@@ -1034,6 +1034,7 @@ async function resolveOnePosting(
   // is back. The consumer never throws and the outbox is not held.
   if (
     wasSkipped &&
+    posting.feeOpeningBalanceAt === null &&
     openPostingTotal(posting, tenantId, "feeIdr") > 0 &&
     !(await journalKeyExists(
       tx,
@@ -1141,9 +1142,12 @@ async function resolveOnePosting(
   const feeIdr = openPostingTotal(posting, tenantId, "feeIdr");
   // F5: a posting from before 0397 has no plain fee amount: no fee is posted
   // and nothing flips; finance sees `fee_amount_unverified`.
+  // A fee marked as already in the opening balance (legend-3xzop) is never
+  // journaled; the net above settles as usual.
   if (
     feeIdr > 0 &&
     posting.feeIdr !== null &&
+    posting.feeOpeningBalanceAt === null &&
     (!posting.feePosted || wasSkipped)
   ) {
     // A fee journal that already exists (earlier fee post or re-post) is
@@ -1413,6 +1417,9 @@ async function postFeeOfPosting(
 ): Promise<void> {
   const context = payoutScope(tenantId);
   const entryDate = payrollEntryDateOf(now.toISOString());
+  // The fee is already in the opening balance (legend-3xzop): never journaled,
+  // never flipped, whichever path got here.
+  if (posting.feeOpeningBalanceAt !== null) return;
   // F5: a historical NULL fee amount is never posted or flipped.
   if (posting.feeIdr === null) return;
   const feeIdr = postingFeeIdr(posting, tenantId);
@@ -1543,6 +1550,9 @@ async function unpostedFeePostings(
         // journal would double the expense. A per-posting action waits for the
         // founder's decision.
         eq(payrollPayoutGlPostings.feePosted, false),
+        // A fee marked as already in the opening balance (legend-3xzop) is
+        // never journaled.
+        isNull(payrollPayoutGlPostings.feeOpeningBalanceAt),
       ),
     )
     .orderBy(asc(payrollPayoutGlPostings.id))
@@ -1768,19 +1778,24 @@ export async function payoutRecoveryReason(
 ): Promise<PayoutRecoveryReason> {
   // Settled but the payable account is uncertain (0390): finance reconciles.
   if (posting.payableAccountHold) return "payable_account_unknown";
+  // A fee marked as already in the opening balance (legend-3xzop) is not owed:
+  // its amount and journal are no longer in question.
+  const feeMarked = posting.feeOpeningBalanceAt !== null;
   // F5: a historical posting without a plain fee amount never flips.
   if (
+    !feeMarked &&
     posting.feeIdr === null &&
     !posting.feePosted &&
     postingFeeIdr(posting, tenantId) > 0
   )
     return "fee_amount_unverified";
   // The fee journal exists but fails the amount/account check: permanent.
-  if (await feeJournalMismatched(tx, tenantId, posting))
+  if (!feeMarked && (await feeJournalMismatched(tx, tenantId, posting)))
     return "fee_journal_mismatch";
   const owed = await settleOwed(tx, tenantId, batch, posting);
   const feeIdr = postingFeeIdr(posting, tenantId);
   const feeOwed =
+    !feeMarked &&
     feeIdr > 0 &&
     // A skipped settlement owes its fee journal even with `fee_posted = true`
     // (owed: the resolver journals it; not owed: historical data, legend-qq68t).
@@ -1908,7 +1923,10 @@ function recoveryCandidateWhere(tenantId: TenantId) {
     // A waived settlement (legend-5qqb9) is terminal: never open again.
     ne(payrollPayoutGlPostings.kind, "settle_waived"),
     or(
-      eq(payrollPayoutGlPostings.feePosted, false),
+      and(
+        eq(payrollPayoutGlPostings.feePosted, false),
+        isNull(payrollPayoutGlPostings.feeOpeningBalanceAt),
+      ),
       // Settled, but the payable account is uncertain (0390): reconciliation.
       eq(payrollPayoutGlPostings.payableAccountHold, true),
       // A pending/skipped settlement is only open once the run's lock
@@ -1928,6 +1946,7 @@ function recoveryCandidateWhere(tenantId: TenantId) {
       and(
         eq(payrollPayoutGlPostings.kind, "settle_skipped"),
         ne(payrollDisbursementBatches.channel, "cash"),
+        isNull(payrollPayoutGlPostings.feeOpeningBalanceAt),
         feeJournalMissingSql,
       ),
     ),
@@ -1958,9 +1977,11 @@ async function openRecoveryReason(
   posting: FeePosting,
   batch: RecoveryBatch,
 ): Promise<PayoutRecoveryReason | null> {
+  // A marked fee (legend-3xzop) counts as posted here: the row drops off the
+  // list unless a settlement or the payable hold is still open.
   if (
     !posting.payableAccountHold &&
-    posting.feePosted &&
+    (posting.feePosted || posting.feeOpeningBalanceAt !== null) &&
     !(await settleOwed(tx, tenantId, batch, posting)) &&
     !(await historicalFeeMissing(tx, tenantId, posting))
   )
@@ -1975,6 +1996,7 @@ async function historicalFeeMissing(
 ): Promise<boolean> {
   return (
     posting.feePosted &&
+    posting.feeOpeningBalanceAt === null &&
     posting.kind === "settle_skipped" &&
     postingFeeIdr(posting, tenantId) > 0 &&
     !(await journalKeyExists(

@@ -3431,6 +3431,20 @@
       "when": 1795000013101,
       "tag": "0503_payout_attest_clock_and_lock_database",
       "breakpoints": true
+    },
+    {
+      "idx": 504,
+      "version": "7",
+      "when": 1795000014101,
+      "tag": "0504_payout_gl_holds",
+      "breakpoints": true
+    },
+    {
+      "idx": 505,
+      "version": "7",
+      "when": 1795000015101,
+      "tag": "0505_payout_gl_resolve_grants",
+      "breakpoints": true
     }
   ]
 }

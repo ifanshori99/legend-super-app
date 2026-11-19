@@ -533,6 +533,7 @@ const templates: readonly RoleTemplate[] = [
       "payroll.approve",
       "payroll.lock",
       "payroll.payout.configure",
+      "payroll.payout.gl_resolve",
       "payroll.disburse.approve",
       "approval.inbox.view",
       "approval.request.decide",
