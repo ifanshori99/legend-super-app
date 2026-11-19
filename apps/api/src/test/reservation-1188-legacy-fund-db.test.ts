@@ -798,3 +798,248 @@ describe("legend-qs2r4 doit: second code on one link, fund of code B", () => {
     }
   }
 });
+
+// Round 2 (refundableBalance rule): the consumer refunds min(held DP,
+// money received on the code - what is parked from it - what is already
+// refunded) and skips when that is zero. Scenarios 5-7 (DOIT only, same reason
+// as scenarios 3 and 4).
+//
+// Assumptions (spec silent):
+// - "Staff refunded A in full" is modelled the way reservation-deposit-db does
+//   it: the paid intent's status becomes `refunded`.
+// - "Not pending" for the reservation refund means refund_status is neither
+//   `requested` nor `pending`; no refund row exists for B and the reservation
+//   is not linked to B (deposit_payment_id stays null).
+// - Scenario 7 removes every payment_evidence row of the paid code (an intent
+//   settled without proof of what arrived). The safe outcome is no refund.
+const REFUND_OPEN = ["requested", "pending"];
+
+async function dropEvidence(intentId: string) {
+  await asOwner((client) =>
+    client.query("DELETE FROM payment_evidence WHERE payment_intent_id = $1", [
+      intentId,
+    ]),
+  );
+  const { rows } = await asOwner((client) =>
+    client.query(
+      "SELECT 1 FROM payment_evidence WHERE payment_intent_id = $1",
+      [intentId],
+    ),
+  );
+  expect(rows).toHaveLength(0);
+}
+
+// Scenario 5: code A took two transactions (200.000, 100.000 parked, legacy);
+// code B took one transaction fully parked (legacy). Only A's DP is refunded.
+describe("legend-qs2r4 doit: two legacy double_payment funds, one per code", () => {
+  let gateway: PaidTwiceGateway;
+  beforeAll(() => {
+    gateway = new PaidTwiceGateway("doit");
+    setPaymentGateway(gateway);
+  });
+  for (const timing of timings) {
+    for (const order of orders) {
+      it(`legend-qs2r4 doit ${timing}, events ${order}: A (received 200.000, 100.000 parked) gets the one DP refund, B (fully parked) none`, async () => {
+        const days = nextDays();
+        const t0 = dayAt(days.created, "10:00");
+        const created = await book(days.reserved, t0);
+        const id = created.reservation.id;
+        const intentA = await openIntent(created);
+        const intentB = await seedSecondIntent(intentA);
+        const lapsedAt = new Date(t0.getTime() + 30 * MINUTE);
+        await shapeUnanswered(intentA, lapsedAt, "doit");
+        await shapeUnanswered(intentB, lapsedAt, "doit");
+        const cap = capOf(t0);
+        let paidA = new Date(cap.getTime() + MINUTE);
+        if (timing === "after sweep") {
+          const swept = await sweepAt(new Date(cap.getTime() + MINUTE));
+          expect(swept.released).toContain(id);
+          expect((await reservationRow(id)).status).toBe("cancelled");
+          paidA = new Date(cap.getTime() + 2 * MINUTE);
+        }
+        const secondA = new Date(paidA.getTime() + 10_000);
+        gateway.answer(providerRefOf(intentA), paidA, [
+          { providerRef: `SECOND-${intentA}`, paidAt: secondA },
+        ]);
+        await pollPendingGatewayIntents(
+          tenantScope(),
+          new Date(paidA.getTime() + MINUTE),
+          1000,
+        );
+        expect(await statusOf(intentA)).toBe("paid");
+        await confirmAt(intentB, new Date(secondA.getTime() + MINUTE), "doit");
+
+        const eventsA = await paidEvents(intentA);
+        const eventsB = await paidEvents(intentB);
+        expect(eventsA).toHaveLength(1);
+        expect(eventsB).toHaveLength(1);
+        for (const intent of [intentA, intentB]) {
+          const funds = await fundsOf(intent);
+          expect(funds).toHaveLength(1);
+          expect(funds[0]).toMatchObject({
+            amount_idr: String(DP_IDR),
+            reason: "double_payment",
+          });
+          await makeLegacy(intent);
+        }
+
+        const events =
+          order === "A then B"
+            ? [...eventsA, ...eventsB]
+            : [...eventsB, ...eventsA];
+        for (const event of events)
+          await handlePaymentPaid(tenantScope(), event);
+
+        const refundsA = await refundRows(intentA);
+        expect(refundsA).toHaveLength(1);
+        expect(refundsA[0]).toMatchObject({
+          amount_idr: String(DP_IDR),
+          requested_by: RESERVATION_SYSTEM_ACTOR,
+        });
+        expect(await refundRows(intentB)).toHaveLength(0);
+        let row = await reservationRow(id);
+        expect(row).toMatchObject({
+          status: "cancelled",
+          refund_status: "requested",
+          deposit_payment_id: intentA,
+        });
+        expect(row.refund_payment_refund_id).toBe(refundsA[0]!.id);
+        expect(await liveHolds(id)).toBe(0);
+
+        // Received: A 200.000 + B 100.000.
+        const returned =
+          (await refundedSum(intentA)) +
+          (await refundedSum(intentB)) +
+          sumOf(await unallocatedOf(intentA)) +
+          sumOf(await unallocatedOf(intentB));
+        expect(returned).toBeLessThanOrEqual(3 * DP_IDR);
+
+        // Replays in both orders add nothing.
+        for (const event of [...events].reverse())
+          await handlePaymentPaid(tenantScope(), event);
+        for (const event of events)
+          await handlePaymentPaid(tenantScope(), event);
+        expect(await refundRows(intentA)).toHaveLength(1);
+        expect(await refundRows(intentB)).toHaveLength(0);
+        expect(await unallocatedOf(intentA)).toEqual([DP_IDR]);
+        expect(await unallocatedOf(intentB)).toEqual([DP_IDR]);
+        row = await reservationRow(id);
+        expect(row.deposit_payment_id).toBe(intentA);
+        expect(row.refund_payment_refund_id).toBe(refundsA[0]!.id);
+      });
+    }
+  }
+});
+
+// Scenario 6: staff refunded A in full before B's delayed event is handled.
+// B's money is parked in full, so B must neither take the reservation nor
+// request a refund (that would pay the DP out twice).
+describe("legend-qs2r4 doit: code A refunded by staff before B's event", () => {
+  beforeAll(() => {
+    setPaymentGateway(new FakeGateway("doit"));
+  });
+  for (const legacy of [true, false]) {
+    for (const timing of timings) {
+      it(`legend-qs2r4 doit ${legacy ? "legacy fund (evidence NULL)" : "fund keeps evidence"} ${timing}: B's fully parked event neither links the reservation nor refunds`, async () => {
+        const days = nextDays();
+        const t0 = dayAt(days.created, "10:00");
+        const created = await book(days.reserved, t0);
+        const id = created.reservation.id;
+        const intentA = await openIntent(created);
+        const intentB = await seedSecondIntent(intentA);
+        const lapsedAt = new Date(t0.getTime() + 30 * MINUTE);
+        await shapeUnanswered(intentA, lapsedAt, "doit");
+        await shapeUnanswered(intentB, lapsedAt, "doit");
+        const cap = capOf(t0);
+        let paidA = new Date(cap.getTime() + MINUTE);
+        if (timing === "after sweep") {
+          const swept = await sweepAt(new Date(cap.getTime() + MINUTE));
+          expect(swept.released).toContain(id);
+          expect((await reservationRow(id)).status).toBe("cancelled");
+          paidA = new Date(cap.getTime() + 2 * MINUTE);
+        }
+        await confirmAt(intentA, paidA, "doit");
+        await confirmAt(intentB, new Date(paidA.getTime() + MINUTE), "doit");
+        const eventsB = await paidEvents(intentB);
+        expect(eventsB).toHaveLength(1);
+        const fundsB = await fundsOf(intentB);
+        expect(fundsB).toHaveLength(1);
+        expect(fundsB[0]).toMatchObject({
+          amount_idr: String(DP_IDR),
+          reason: "double_payment",
+        });
+        if (legacy) await makeLegacy(intentB);
+
+        // Staff refund A in full; A's own event was never handled.
+        await asOwner((client) =>
+          client.query(
+            "UPDATE payment_intents SET status = 'refunded' WHERE id = $1",
+            [intentA],
+          ),
+        );
+        expect(await statusOf(intentA)).toBe("refunded");
+        expect((await reservationRow(id)).deposit_payment_id).toBeNull();
+
+        await handlePaymentPaid(tenantScope(), eventsB[0]!);
+
+        expect(await refundRows(intentB)).toHaveLength(0);
+        let row = await reservationRow(id);
+        expect(row.deposit_payment_id).toBeNull();
+        expect(REFUND_OPEN).not.toContain(row.refund_status);
+        expect(row.refund_payment_refund_id).toBeNull();
+        expect(await unallocatedOf(intentB)).toEqual([DP_IDR]);
+
+        // A replay changes nothing either.
+        await handlePaymentPaid(tenantScope(), eventsB[0]!);
+        expect(await refundRows(intentB)).toHaveLength(0);
+        row = await reservationRow(id);
+        expect(row.deposit_payment_id).toBeNull();
+        expect(REFUND_OPEN).not.toContain(row.refund_status);
+      });
+    }
+  }
+});
+
+// Scenario 7 (control): a paid code without any payment_evidence row. Nothing
+// proves what arrived, so the consumer refunds nothing (safe side).
+describe("legend-qs2r4 doit: paid code without any evidence row", () => {
+  beforeAll(() => {
+    setPaymentGateway(new FakeGateway("doit"));
+  });
+  for (const timing of timings) {
+    it(`legend-qs2r4 doit ${timing}: a paid code with no evidence is not refunded`, async () => {
+      const days = nextDays();
+      const t0 = dayAt(days.created, "10:00");
+      const created = await book(days.reserved, t0);
+      const id = created.reservation.id;
+      const intentId = await openIntent(created);
+      await shapeUnanswered(
+        intentId,
+        new Date(t0.getTime() + 30 * MINUTE),
+        "doit",
+      );
+      const cap = capOf(t0);
+      let paidAt = new Date(cap.getTime() + MINUTE);
+      if (timing === "after sweep") {
+        const swept = await sweepAt(new Date(cap.getTime() + MINUTE));
+        expect(swept.released).toContain(id);
+        expect((await reservationRow(id)).status).toBe("cancelled");
+        paidAt = new Date(cap.getTime() + 2 * MINUTE);
+      }
+      await confirmAt(intentId, paidAt, "doit");
+      expect(await statusOf(intentId)).toBe("paid");
+      const events = await paidEvents(intentId);
+      expect(events).toHaveLength(1);
+      await dropEvidence(intentId);
+      expect(await fundsOf(intentId)).toEqual([]);
+
+      await handlePaymentPaid(tenantScope(), events[0]!);
+      await handlePaymentPaid(tenantScope(), events[0]!);
+
+      expect(await refundRows(intentId)).toHaveLength(0);
+      const row = await reservationRow(id);
+      expect(REFUND_OPEN).not.toContain(row.refund_status);
+      expect(row.refund_payment_refund_id).toBeNull();
+    });
+  }
+});

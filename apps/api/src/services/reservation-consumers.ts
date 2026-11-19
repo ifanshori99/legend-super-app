@@ -20,7 +20,7 @@
 // is open would see `pending_deposit`, then find the row cancelled under the
 // lock. Reading the status again after the lock is what makes that payment a
 // late payment instead of a silent loss.
-import { and, eq, gte, inArray, isNull, ne, or } from "drizzle-orm";
+import { and, eq, isNull, or } from "drizzle-orm";
 import {
   idr,
   uuidSchema,
@@ -31,11 +31,7 @@ import type { EventEnvelope } from "@starter/shared/events";
 import { reservationConfirmedPayloadSchema } from "@starter/shared/reservation";
 import { z } from "zod";
 import { db } from "../db/index.ts";
-import {
-  paymentEvidence,
-  paymentIntents,
-  paymentUnallocatedFunds,
-} from "../db/schema/index.ts";
+import { paymentIntents } from "../db/schema/index.ts";
 import { reservations } from "../db/schema/reservation.ts";
 import { withTenant } from "../db/tenant.ts";
 import {
@@ -45,6 +41,7 @@ import {
 } from "./reservation-core.ts";
 import { notifyReservationConfirmed } from "./reservation-guest-notify.ts";
 import { confirmReservationDeposit } from "./reservation-lifecycle.ts";
+import { refundableBalance } from "./payment-admin.service.ts";
 import { requestDepositRefund } from "./reservation-refunds.ts";
 
 const paymentPaidPayloadSchema = z.object({
@@ -109,77 +106,33 @@ async function refundLateDeposit(
         ),
       );
     if (!intent) return null;
-    // legend-3dfri / legend-qs2r4: skip the DP refund only on PROOF that the
-    // transaction that settled this code is itself parked in full as a double
-    // payment (a second code on the DP link): that money is refunded through
-    // its fund, once, by the staff flow, and refunding it here too would
-    // return it twice (the fund refund is not counted by `loadHeldDeposit`).
-    // Proof is either (a) a `double_payment` fund tied to the evidence of the
-    // settling transaction, or (b) for rows written before evidence existed
-    // (`evidence_id` NULL): a `double_payment` fund of at least the whole code
-    // while ANOTHER code of the link holds the allocated money. Anything else
-    // never holds the refund: an `overpayment` fund, a fund of another
-    // transaction on this code (paid twice), a legacy fund that proves nothing.
-    // Idempotent per code, whatever order the events of two late codes are
-    // consumed in.
-    const [settlingEvidence] =
-      intent.providerRef === null
-        ? []
-        : await tx
-            .select({ id: paymentEvidence.id })
-            .from(paymentEvidence)
-            .where(
-              and(
-                eq(paymentEvidence.tenantId, context.tenant.tenantId),
-                eq(paymentEvidence.provider, intent.provider),
-                eq(paymentEvidence.providerRef, intent.providerRef),
-              ),
-            )
-            .limit(1);
-    const [otherPaid] = await tx
-      .select({ id: paymentIntents.id })
-      .from(paymentIntents)
-      .where(
-        and(
-          eq(paymentIntents.tenantId, context.tenant.tenantId),
-          eq(paymentIntents.paymentLinkId, locked.depositPaymentLinkId),
-          ne(paymentIntents.id, intent.id),
-          inArray(paymentIntents.status, ["paid", "partially_refunded"]),
-        ),
-      )
-      .limit(1);
-    const [parkedFund] = await tx
-      .select({ id: paymentUnallocatedFunds.id })
-      .from(paymentUnallocatedFunds)
-      .where(
-        and(
-          eq(paymentUnallocatedFunds.tenantId, context.tenant.tenantId),
-          eq(paymentUnallocatedFunds.paymentIntentId, intent.id),
-          eq(paymentUnallocatedFunds.reason, "double_payment"),
-          or(
-            settlingEvidence
-              ? eq(paymentUnallocatedFunds.evidenceId, settlingEvidence.id)
-              : undefined,
-            otherPaid
-              ? and(
-                  isNull(paymentUnallocatedFunds.evidenceId),
-                  gte(paymentUnallocatedFunds.amountIdr, intent.amountIdr),
-                )
-              : undefined,
-          ),
-        ),
-      )
-      .limit(1);
-    if (parkedFund) return null;
+    // legend-3dfri / legend-qs2r4: the DP refund is bounded by what this code
+    // really holds, measured the way the money layer measures it
+    // (`refundableBalance`): money received on the code (evidence) minus what
+    // was parked as unallocated funds, never more than the code's amount, minus
+    // refunds already reserved. A code whose settling transaction was parked in
+    // full as a double payment holds 0 and is skipped (its fund is refunded by
+    // the staff flow; refunding it here too would return it twice). A part
+    // parked as `overpayment`, a second transaction on the same code, or a
+    // legacy fund without evidence leave the allocated part refundable, and a
+    // fund never holds back the refund of ANOTHER code or transaction. No
+    // evidence of receipt at all means nothing provable to return: skipped (the
+    // money layer would refuse that refund too). Idempotent per code, whatever
+    // order the events of several late codes are consumed in.
+    const { cap, reserved } = await refundableBalance(tx, intent, {
+      lockDeposit: false,
+    });
+    const refundable = cap > reserved ? Number(cap - reserved) : 0;
     // RSV-03: a DP refund is only owed for what the intent still holds; a
     // fully refunded intent was already returned and a partly refunded one is
     // refunded only for its remainder, never twice.
-    const { heldIdr: amount } = await loadHeldDeposit(
+    const { heldIdr: held } = await loadHeldDeposit(
       tx,
       context,
       intent.id,
       intent.amountIdr,
     );
+    const amount = idr(Math.min(held, refundable));
     if (amount <= 0) return null;
     const [updated] = await tx
       .update(reservations)
