@@ -15,3 +15,10 @@ Setup mengikuti `reservation-1178-overpayment-fund-db.test.ts` (DOIT dan Duitku-
  3. Legacy kode B (double_payment, evidence NULL, 100.000, kode A paid pada link yang sama): konsumsi event A lalu B dan B lalu A: tepat satu refund DP (A), B tidak direfund konsumer, total refund + fund <= 200.000 (diterima A + B).
  4. Kontrol: fund double_payment dengan evidence = evidence settle tetap melewati refund (tes 1178 two-late-codes tetap hijau).
 Fail-first: skenario 1 dan 2 gagal pada kode sekarang (`unchanged` bukan `late_refund_requested`). Skenario 3 mungkin lolos sekarang.
+
+## Putaran 2 (architect xhigh, aturan baru)
+Guard sekarang: refund = min(loadHeldDeposit, refundableBalance.cap - reserved); lewati bila <= 0 (cap = min(evidence diterima - fund, amount) - held). Heuristik evidence/otherPaid dihapus.
+Tambah ke `reservation-1188-legacy-fund-db.test.ts` (jangan ubah sel yang ada), fail-first terhadap kode HEAD~0 sebelum perubahan source TIDAK perlu (source sudah diubah; buktikan dengan `git stash`-free cara: bandingkan terhadap commit 5ba474ea6 lewat `git show 5ba474ea6:apps/api/src/services/reservation-consumers.ts` ke berkas sementara BILA perlu; cukup jelaskan alasan gagal-dulu secara analitis bila tak praktis):
+ 5. Kode A paid (100.000) + fund transaksi kedua A `double_payment` evidence NULL 100.000 (received A 200.000); kode B paid 100.000 + fund `double_payment` evidence NULL 100.000 (received B 100.000). Konsumsi event A lalu B dan B lalu A: tepat satu refund DP (kode A, 100.000), B tidak direfund konsumer, refund + fund <= 300.000.
+ 6. A `refunded` penuh (staf) sebelum event B tertunda diproses: event B (B fund double_payment penuh) tidak menautkan reservasi ke B dan tidak membuat refund: `deposit_payment_id` tetap null, refund_status tidak pending.
+ 7. Kontrol: kode tanpa satu pun baris payment_evidence (paid tanpa bukti): tidak ada refund (aman).
