@@ -3333,6 +3333,13 @@
       "when": 1795000000706,
       "tag": "0706_payout_jsrcs_clear_while_lock_held",
       "breakpoints": true
+    },
+    {
+      "idx": 707,
+      "version": "7",
+      "when": 1795000000707,
+      "tag": "0707_payout_attest_clock_and_lock_database",
+      "breakpoints": true
     }
   ]
 }

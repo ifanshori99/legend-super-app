@@ -808,6 +808,22 @@ export async function resolveApprovalChainOutcome(
   const open = rows.find((row) => row.status === "pending");
   if (!open) return chainOutcome(rows);
   if (open.deadlineAt.getTime() > at.getTime()) return "pending";
+  return expireOpenLevel(tx, context, input.chainId, open, at);
+}
+
+/**
+ * Expires the open level of a chain whose deadline has passed (conditional on
+ * status 'pending') and announces it. When the sweep won between the caller's
+ * read and this write, reports what it left behind. The caller holds the chain
+ * head lock and has already judged the deadline against `at`.
+ */
+async function expireOpenLevel(
+  tx: Tx,
+  context: ScopedTenantContext,
+  chainId: string,
+  open: Row,
+  at: Date,
+): Promise<ApprovalOutcome> {
   const [expired] = await tx
     .update(approvalRequests)
     .set({ status: "expired", updatedAt: at })
@@ -819,7 +835,7 @@ export async function resolveApprovalChainOutcome(
     )
     .returning();
   // The sweep won between our read and write: report what it left behind.
-  if (!expired) return chainOutcome(await chainRows(tx, input.chainId));
+  if (!expired) return chainOutcome(await chainRows(tx, chainId));
   await announceExpired(tx, context, expired, at);
   return "expired";
 }
@@ -850,6 +866,13 @@ export async function cancelApprovalRequest(
   if (rows[0]?.sourceModule !== input.sourceModule) throw notFound();
   const open = rows.find((row) => row.status === "pending");
   if (!open) return chainOutcome(rows);
+  // A level past its deadline is expired, never cancelled: the module may have
+  // queued on the chain lock until after the deadline. No throw, system callers
+  // (settlement import) must not abort; every caller treats a non-approved
+  // outcome as safe.
+  if (open.deadlineAt.getTime() <= at.getTime()) {
+    return expireOpenLevel(tx, context, input.chainId, open, at);
+  }
   const [cancelled] = await tx
     .update(approvalRequests)
     .set({ status: "cancelled", updatedAt: at })
