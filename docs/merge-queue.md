@@ -288,3 +288,4 @@ Induk lebih dulu. Migrasi dinomori ulang dari ujung m1 saat batch disusun.
 - 14:17 SO 1171 reservasi DP (ws/1163) berjalan Codex #2; menahan gerbang rilis area reservasi, tidak menahan batch97.
 - 14:25 ws/1163-reservasi-slot-pickup cca06c1a6: SO 1171 2 P2 -> fix ws/1178-reservasi-so1171-fix (G02j3). 1163 boleh tetap batch97; 1178 menyusul sebelum gerbang rilis reservasi.
 - 14:31 ws/1164 + ws/1175: SO 1173 3 P1 -> fix ws/1179-payout-so1173-fix (G8u3h, migrasi kerja 0708). Gerbang rilis payout/DOIT ditahan sampai 1179 mendarat; batch96/97 tidak ditahan.
+- 14:33 ws/1162-pos-struk-edge 3498ca634 (sudah merge m1 d99aae067; tanpa migrasi): SIAP batch97. rh1hk, rzt8s, vet9d (bucket DP di rekap tutup hari, DP = liabilitas, kas laci tetap). Architect high bersih sesudah fix; 140/140; typecheck exit 0.
