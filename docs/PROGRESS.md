@@ -2284,3 +2284,4 @@ Langkah berikut CTO baru:
 - 19:27 CTO: SO 1194 akses r2 bersih (P1 1181 tertutup statis; race registry P3 diterima qdmbp). Area akses lolos SO.
 - 19:33 CTO: SO 1195 payout GL holds bersih (tanpa P0-P3). Area payout GL lolos SO.
 - 19:33 CTO: mulai SO 1197 edge catalog (Codex #2 high; 5h 60%, 7d 82%). Sesudah ini Codex #2 dihemat sampai reset 00:22.
+- 19:34 CTO: SO 1196 -> P1 (lintas tenant via GUC) + 3 P2, bead legend-qwm9r. 1189 ditarik dari SIAP sampai 1198 (G?, Sonnet) siap; batch98 bawa 1198 menggantikan 1189.
