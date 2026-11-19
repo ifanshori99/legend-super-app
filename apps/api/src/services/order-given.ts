@@ -519,9 +519,10 @@ export async function assertOrderBudget(
 
 // 1145: the rounding the pro-rata refund may carry over a floored line share:
 // each component (goods, discount, service, PBJT) is rounded half up while the
-// share is floored. Applies to a swap chain only, and never past what the
-// chain paid.
-const CHAIN_ROUNDING_IDR = 5;
+// share is floored (under 3 IDR in practice). Applies to an ORD-09 on a swap
+// chain only, never past what the chain paid; a typed charge refund gets none
+// (architect 1145 P3).
+const CHAIN_ROUNDING_IDR = 3;
 
 type ChainBalance = {
   /** Original line of the chain. */
@@ -669,7 +670,7 @@ export async function assertChargeChainBudget(
     );
   if (!issue) return;
   const chain = await chainBalanceOf(tx, tenantId, orderId, issue.itemId);
-  if (chain && chain.balanceIdr + CHAIN_ROUNDING_IDR < 0)
+  if (chain && chain.balanceIdr < 0)
     throw new HttpError(
       422,
       "REFUND_OVER_ORDER_ROOM",
