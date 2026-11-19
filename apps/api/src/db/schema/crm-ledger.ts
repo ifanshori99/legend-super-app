@@ -392,3 +392,52 @@ export const memberQrRedeemNonces = pgTable(
     check("member_qr_redeem_nonces_points_check", sql`${table.points} > 0`),
   ],
 );
+
+/**
+ * `member_qr_redeem_mints` (T+O, migration 0733, legend-0ne0z): every redeem
+ * QR the member PWA minted. The mint refuses a second token while one for the
+ * same bill is still live (unexpired, unspent, minted at the current ledger
+ * version). Written under the member's profile lock, so two mints of one bill
+ * serialize. The redeem itself still trusts only the signed token and the
+ * spent nonce (`member_qr_redeem_nonces`).
+ */
+export const memberQrRedeemMints = pgTable(
+  "member_qr_redeem_mints",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: tenantIdColumn(() => tenants.id).notNull(),
+    outletId: outletIdColumn(() => outlets.id).notNull(),
+    nonce: varchar("nonce", { length: 64 }).notNull(),
+    orderId: ulidInUuid("order_id").notNull(),
+    customerProfileId: uuid("customer_profile_id").notNull(),
+    points: bigint("points", { mode: "number" }).notNull(),
+    ledgerVersion: bigint("ledger_version", { mode: "number" }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    mintedAt: timestamp("minted_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    unique("member_qr_redeem_mints_nonce_key").on(table.tenantId, table.nonce),
+    index("member_qr_redeem_mints_order_idx").on(
+      table.tenantId,
+      table.orderId,
+      table.expiresAt,
+    ),
+    foreignKey({
+      name: "member_qr_redeem_mints_order_fk",
+      columns: [table.tenantId, table.orderId],
+      foreignColumns: [orders.tenantId, orders.id],
+    }),
+    foreignKey({
+      name: "member_qr_redeem_mints_profile_fk",
+      columns: [table.tenantId, table.customerProfileId],
+      foreignColumns: [customerProfiles.tenantId, customerProfiles.id],
+    }),
+    check("member_qr_redeem_mints_points_check", sql`${table.points} > 0`),
+    check(
+      "member_qr_redeem_mints_version_check",
+      sql`${table.ledgerVersion} >= 0`,
+    ),
+  ],
+);

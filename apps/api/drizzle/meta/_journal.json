@@ -3354,6 +3354,13 @@
       "when": 1795000000109,
       "tag": "0492_sop_document_media",
       "breakpoints": true
+    },
+    {
+      "idx": 733,
+      "version": "7",
+      "when": 1795000000110,
+      "tag": "0733_member_qr_redeem_mints",
+      "breakpoints": true
     }
   ]
 }
