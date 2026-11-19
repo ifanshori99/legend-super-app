@@ -548,7 +548,7 @@ export async function cancelBreakfastOrderTx(
  * again with `providerProven: true`.
  */
 export class BreakfastProviderProofNeeded extends Error {
-  constructor() {
+  constructor(readonly paymentLinkId: string) {
     super("Breakfast cancel needs the payment provider's word first");
     this.name = "BreakfastProviderProofNeeded";
   }
@@ -618,7 +618,8 @@ export async function fireBreakfastOrderTx(
   ) {
     // The money is gone (refunded) or the intent is missing: nothing to sell.
     // Cancel instead of throwing so the fire sweep does not retry forever.
-    if (!input.providerProven) throw new BreakfastProviderProofNeeded();
+    if (!input.providerProven)
+      throw new BreakfastProviderProofNeeded(order.paymentLinkId);
     const cancelled = await cancelBreakfastOrderTx(tx, context, locked, {
       reason: "payment_refunded",
       actorUserId: input.actorUserId,
@@ -647,7 +648,8 @@ export async function fireBreakfastOrderTx(
   const ended = !!ticket && at.getTime() >= ticket.endsAt.getTime();
   const balance = await refundableBalance(tx, intent);
   if (ticketDead || ended || balance.reserved > 0n) {
-    if (!input.providerProven) throw new BreakfastProviderProofNeeded();
+    if (!input.providerProven)
+      throw new BreakfastProviderProofNeeded(order.paymentLinkId);
     const cancelled = await cancelBreakfastOrderTx(tx, context, locked, {
       reason: ticketDead
         ? "ticket_closed"
