@@ -2188,3 +2188,4 @@ Langkah berikut CTO baru:
 - 10:29 CTO keputusan akses batch95: door-check outlet lain = B (403 ACTING_STAFF_OUTLET_MISMATCH sesudah kredensial cocok, percobaan dihitung; kredensial salah tetap DOOR_CREDENTIAL_INVALID seragam; tanpa data tiket). R2-05 ditulis ulang di int/batch95 + architect.
 - 10:31 CTO: 1151 selesai e1020c77e (G4m76 resolved). SO approval r2 mulai.
 - 10:39 CTO: 1158 selesai 840ff2eeb (G40mk resolved).
+- 10:42 CTO: 1144 d217d439d SIAP batch96, G2yc3 resolved. SO 1161 dijadwalkan 11:48.

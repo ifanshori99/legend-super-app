@@ -266,3 +266,4 @@ Induk lebih dulu. Migrasi dinomori ulang dari ujung m1 saat batch disusun.
 - 10:31 ghostex/fix-so-approval-waktu e1020c77e (1137 + fix 1151: P1+P2 SO 1148 tertutup, architect xhigh, 115 file regresi, tsc hijau) SIAP batch96 menggantikan ghostex/ai-layar-approval-waktu-1137. SO ronde 2 (1160) menahan gerbang rilis.
 - 10:33 1158 ghostex/eb4d9add: architect CTO bersih (heartbeat route + outbox superseded). Menunggu fix EDC stop() kunci tetap dipegang, lalu SIAP batch96.
 - 10:39 ghostex/eb4d9add 840ff2eeb (1158: gzcw, 1ffe EDC kunci tetap dipegang, 7z9c, 2lp.10; 86+114 test, tsc hijau, reviewer + architect CTO bersih) SIAP batch96 (S + EDC uang kecil).
+- 10:42 ws/1144-refund-hold-echo d217d439d (P3 R final, P2 SO16 dedup; 1350 regresi, tsc hijau, reviewer bersih) SIAP batch96 (memuat 1139 yang ada di batch95; landing sesudah batch95). SO ronde 17 (1161) menahan gerbang rilis. P3 sisa refund ditunda sesudah rilis 1 (keputusan CTO: semuanya arah membatasi/alert).
