@@ -249,3 +249,4 @@ Induk lebih dulu. Migrasi dinomori ulang dari ujung m1 saat batch disusun.
 - 08:59 ws/1136-p3-web-mock-e2e head ed4e373c9 (z274 warisi preferensi, tsc shared/web/api hijau) SIAP batch95.
 - 09:01 Kas ghostex/d158b041 f1f0c4987 DITAHAN, KELUARKAN dari batch95: SO kas ronde 10 (1147) P1 accounting-journal.service.ts:1130 (gaji bayar-bank -> remap rekening jadi petty cash -> reversal membuka kas semu). Fix struktural di G5kzm.
 - 09:05 ghostex/ai-layar-approval-waktu-1137 bf1567dec (b2kq3 layar AI, ijy8u waktu approval pasca-lock; architect xhigh + ui-auditor, tsc hijau, e2e mock 41/41) SIAP batch95. SO approval (1148) menahan gerbang rilis saja.
+- 09:09 ghostex/ai-layar-approval-waktu-1137 DITAHAN: SO 1148 P1 (options.now melewati jam server) + P2 (jam sebelum lock sole Owner). Keluar dari batch95. Fix 1151.
