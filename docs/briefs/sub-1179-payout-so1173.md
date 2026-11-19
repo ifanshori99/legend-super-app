@@ -28,3 +28,11 @@ Jangan sentuh: `payment-webhook*`, `order-given.ts`, `reservation-*`, `edge-*`, 
 - Test-writer: tulis test gagal-dulu (sebab yang benar, bukan setup), jalankan SEKALI lewat `LEGEND_TEST_FILES="..." heavy pnpm test` dari root worktree, catat output gagal. Satu eksekutor heavy per thread: test-writer dan implementer jangan jalankan test bersamaan; test-writer duluan, implementer menjalankan setelah test ada.
 - Implementer: baca temuan, petakan sendiri file, edit milik potongan saja, jangan commit. Lapor ringkas: file, perubahan, apa yang belum dijalankan.
 - Jangan commit/push; agent induk yang commit.
+
+## Ronde 2: legend-t1ufu (P2-1), fail-closed re-raise
+Keputusan CTO: hold batal = payout bisa keluar. Aturan: re-raise yang gagal untuk SATU baris tidak boleh membatalkan hold baru dan tidak boleh menggagalkan baris lain sechunk (savepoint per baris); baris gagal tetap tertahan + tercatat error. Counter flagged/reraised boleh berubah; perbarui test lama (`payroll-payout-990-recon-reopen.test.ts` dll). Tanpa migrasi baru (0709 hanya bila wajib).
+Kode: `payroll-payout-recon.service.ts` (`reconcileTrustedPayouts` ~2440-2510: `known`/`fresh`; `reraiseKnownFlags` ~2192; `payout-trusted-recon.job.ts` memakai counternya).
+Rancangan:
+1. Flag `evidence_read_locked:*` yang sudah `known` ikut jalur tulis pertama (bukan jalur re-raise best-effort), supaya episode baru (`#n`) pasti dibuat atau halaman gagal (kursor tidak maju).
+2. Kedua jalur memakai savepoint per baris (nested transaction): baris gagal di-rollback sendiri, dicatat (log error tanpa data pribadi), baris lain commit. Di jalur pertama, sesudah commit baris yang berhasil, halaman tetap dilempar gagal bila ada yang gagal (fail-closed, kursor tidak maju). Di jalur re-raise, gagal = dicatat + dihitung `failed`, tidak melempar.
+Test gagal-dulu: (a) satu flag gagal di chunk (induksi gagal: mis. trigger/constraint sementara atau reason yang ditolak fungsi) -> baris lain sechunk tetap diproses; (b) timeout kedua di hari sama saat re-raise chunk berisi flag gagal -> slip tetap held (episode baru terbentuk atau halaman gagal tanpa slip bebas).
