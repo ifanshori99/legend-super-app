@@ -16,6 +16,13 @@
 // refund exists -> one refund of the whole payment, no extra; the re-filed refund
 // that fails at the provider is NOT re-filed: follow-up list + alarm).
 //
+// Hold rule (CTO 19 Nov, legend-w2td5 / 1139): a refund of ours that was sent
+// and then failed at the provider files an `own_refund_failed_unverified` hold
+// on its intent. While that hold is open, approving ANY refund of the intent is
+// 409 PROVIDER_REFUNDED with no payout, until finance checks the provider and
+// closes it (`not_this_intent`: the failed refund did not pay, so no fact is
+// counted). BRK-REFILE-08/09/09b follow that rule.
+//
 // Assumptions:
 // - The brief's "bayar 100.000" is the order total computed by the server
 //   (`order.totalIdr`); the admin refund R is 10000, smaller than any total.
@@ -32,6 +39,10 @@
 //   status "failed"), which settles R to failed and must re-file the rest.
 //   Replaying that update may be refused by the service; the replay call
 //   therefore swallows an error but the state afterwards must be unchanged.
+//   R was sent (providerRef, one attempt), so its failure files ONE hold; a
+//   replay files none. Both system refunds are refused (409 PROVIDER_REFUNDED,
+//   fake gateway not called) until finance closes that hold with
+//   `not_this_intent` through the route; after that they approve (200).
 // - The re-filed refund is requested by `system:facility`, is `pending`, and is a
 //   different row from R and from the first late refund. Its approval is judged
 //   like the late refund (the pending/approved siblings do not count against it).
@@ -179,16 +190,22 @@ async function auditCount(refundId: string) {
   return rows.length;
 }
 
-/** Refund alarms (in-app notifications) the approver holds in this tenant. */
-async function alarmCount() {
+/** Refund alarms (in-app notifications) the approver holds in this tenant, optionally of one title. */
+async function alarmCount(title?: string) {
   const { rows } = await owner.query<{ id: string }>(
     `SELECT id FROM notifications
       WHERE tenant_id = $1 AND user_id = $2
-        AND (title || ' ' || body) ~* 'pengembalian|refund'`,
-    [world.tenant.tenantId, approverUserId],
+        AND (title || ' ' || body) ~* 'pengembalian|refund'
+        AND ($3::text IS NULL OR title = $3)`,
+    [world.tenant.tenantId, approverUserId, title ?? null],
   );
   return rows.length;
 }
+
+/** The follow-up alarm of a declined system refund (one per refund). */
+const FOLLOWUP_ALARM = "Refund tamu perlu ditindaklanjuti";
+/** The hold alarm of a failed refund of ours (legend-w2td5), a separate alert. */
+const HOLD_ALARM = "Refund kami gagal setelah mungkin sampai ke penyedia";
 
 const approve = (refundId: string) =>
   approver
@@ -322,6 +339,93 @@ async function approvedAdminRefund(intentId: string) {
   return { refundId: rows[0]!.id, providerRef };
 }
 
+/** An owner of the isolated tenant: finance closes refund holds through the route. */
+let holdResolver: ReturnType<typeof agent> | undefined;
+async function makeHoldResolver() {
+  if (holdResolver) return holdResolver;
+  const { rows: roles } = await owner.query<{ id: string }>(
+    `INSERT INTO roles (id, tenant_id, name, is_template, template_key, permissions, mfa_required, allowed_scope_types)
+     SELECT gen_random_uuid(), $1, name, is_template, template_key, permissions, mfa_required, allowed_scope_types
+       FROM roles WHERE tenant_id = $2 AND template_key = 'owner'
+     RETURNING id`,
+    [world.tenant.tenantId, seededTenantId],
+  );
+  const client = agent(app);
+  const email = await signUp(client, "Refile Hardening Hold Resolver");
+  const session = await client.get("/api/auth/get-session");
+  const userId = session.body.user.id as string;
+  await verifySessionMfa(email);
+  await owner.query(
+    `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by, assigned_at)
+     VALUES ($1, $2, $3, 'tenant', NULL, now() - interval '1 hour', $2, now() - interval '1 hour')`,
+    [world.tenant.tenantId, userId, roles[0]!.id],
+  );
+  holdResolver = client;
+  return client;
+}
+
+/** Open `own_refund_failed_unverified` holds of one intent. */
+async function openOwnHoldIds(intentId: string) {
+  const { rows } = await owner.query<{ id: string }>(
+    `SELECT id FROM refund_recon_holds
+      WHERE tenant_id = $1 AND payment_intent_id = $2
+        AND reason = 'own_refund_failed_unverified' AND resolved_at IS NULL`,
+    [world.tenant.tenantId, intentId],
+  );
+  return rows.map((row) => row.id);
+}
+
+/**
+ * legend-w2td5 (1139): R was sent and then failed, so the intent carries one
+ * open hold. Approving each given refund is refused (409 PROVIDER_REFUNDED),
+ * the gateway is not called and the refund rows stay as they were.
+ */
+async function expectHeldAndApproveRefused(
+  intentId: string,
+  refundIds: string[],
+  paidIdr: number,
+) {
+  const holds = await openOwnHoldIds(intentId);
+  expect(holds, "one open hold of the failed refund").toHaveLength(1);
+  const rowsBefore = await expectCapped(intentId, paidIdr);
+  const fake = new FakeRefundGateway();
+  fake.enqueue("succeeded");
+  setPaymentRefundGateway(fake);
+  try {
+    for (const refundId of refundIds) {
+      const response = await approve(refundId);
+      expect(response.status, JSON.stringify(response.body)).toBe(409);
+      expect(response.body.error.code).toBe("PROVIDER_REFUNDED");
+    }
+    expect(fake.calls, "nothing is sent while the hold is open").toHaveLength(
+      0,
+    );
+  } finally {
+    setPaymentRefundGateway(null);
+  }
+  const rowsAfter = await expectCapped(intentId, paidIdr);
+  expect(rowsAfter, "a refused approval changed the refunds").toEqual(
+    rowsBefore,
+  );
+  return holds[0]!;
+}
+
+/** Finance checked the provider: R is not refunded elsewhere, money still ours. */
+async function resolveHoldNotThisIntent(holdId: string, intentId: string) {
+  const resolver = await makeHoldResolver();
+  const response = await resolver
+    .post(`${ADMIN}/refund-recon-holds/${holdId}/resolve`)
+    .set(world.headers)
+    .set(originHeader)
+    .send({
+      idempotencyKey: `hold-${randomUUID()}`,
+      resolution: "not_this_intent",
+      note: "Dicek di dashboard penyedia: refund gagal, dana masih di kami.",
+    });
+  expect(response.status, JSON.stringify(response.body)).toBe(200);
+  expect(await openOwnHoldIds(intentId)).toHaveLength(0);
+}
+
 /** The provider reports R's payout as failed. */
 async function providerFails(providerRef: string) {
   await applyRefundProviderUpdate(world.context, {
@@ -414,8 +518,20 @@ describe("BRK-REFILE-08 late payment: an approved admin refund fails its payout"
       expect(rows.map((row) => row.id).sort()).toEqual(firstIds);
       expect(liveSum(rows)).toBe(paid);
 
-      // Both system refunds can be approved: neither is refused by the cap, and
-      // the guest gets everything back, no more.
+      // While the hold of R is open, approving either system refund is refused
+      // and no money leaves; the guest is not paid a second time.
+      const holdId = await expectHeldAndApproveRefused(
+        lateIntentId,
+        [late!.id, refiled[0]!.id],
+        paid,
+      );
+      rows = await expectCapped(lateIntentId, paid);
+      expect(rows.map((row) => row.id).sort()).toEqual(firstIds);
+
+      // Finance checked the provider and closed the hold: both system refunds
+      // can be approved, neither is refused by the cap, and the guest gets
+      // everything back, no more.
+      await resolveHoldNotThisIntent(holdId, lateIntentId);
       const fake = new FakeRefundGateway();
       setPaymentRefundGateway(fake);
       try {
@@ -465,6 +581,14 @@ describe("BRK-REFILE-09 controls", () => {
         row.requestedBy === SYSTEM && row.amount === R_IDR && isLive(row),
     );
     expect(refiled, "no re-filed refund to fail").toBeDefined();
+
+    // Open hold of R: the re-filed refund cannot be approved yet.
+    const holdId = await expectHeldAndApproveRefused(
+      lateIntentId,
+      [refiled!.id],
+      paid,
+    );
+    await resolveHoldNotThisIntent(holdId, lateIntentId);
 
     // The provider declines the re-filed refund.
     const fake = new FakeRefundGateway();
@@ -516,7 +640,16 @@ describe("BRK-REFILE-09 controls", () => {
     );
     expect(sibling, "no sibling late refund").toBeDefined();
     expect(sibling).toMatchObject({ status: "pending", amount: paid - R_IDR });
-    const alarmsBefore = await alarmCount();
+    // Open hold of R: neither the re-filed refund nor its sibling can be
+    // approved yet; finance closes the hold.
+    const holdId = await expectHeldAndApproveRefused(
+      lateIntentId,
+      [refiled!.id, sibling!.id],
+      paid,
+    );
+    await resolveHoldNotThisIntent(holdId, lateIntentId);
+    const alarmsBefore = await alarmCount(FOLLOWUP_ALARM);
+    const holdAlarmsBefore = await alarmCount(HOLD_ALARM);
 
     const fake = new FakeRefundGateway();
     fake.enqueue("failed");
@@ -540,7 +673,9 @@ describe("BRK-REFILE-09 controls", () => {
     expect(items).toHaveLength(1);
     expect(items[0]!.blockedReason).toBe("failure_needs_person");
     expect(await auditCount(refiled!.id)).toBe(1);
-    expect(await alarmCount()).toBe(alarmsBefore + 1);
+    expect(await alarmCount(FOLLOWUP_ALARM)).toBe(alarmsBefore + 1);
+    // The decline of this refund (it was sent) files its own hold, told once.
+    expect(await alarmCount(HOLD_ALARM)).toBe(holdAlarmsBefore + 1);
 
     // The sibling is exactly as before: still pending, same amount, no new
     // refund row, no alarm or audit row of its own, live total capped.
