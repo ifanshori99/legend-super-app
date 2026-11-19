@@ -291,9 +291,10 @@ describe("resolveApprovalChainOutcome", () => {
 
   it("waits for a sweep holding the open level and reports expired without a second event", async () => {
     // Two levels: level 1 approved in the past, level 2 already due.
-    const base = Date.now() - 60 * 60_000;
+    // legend-1151: decide never skips the server clock, so level 1 is approved
+    // now and level 2 is then moved past its deadline.
     const opened = await openChain({
-      now: new Date(base),
+      now: new Date(),
       actionType: TWO_LEVEL_ACTION,
     });
     await decideApprovalRequest(
@@ -301,11 +302,7 @@ describe("resolveApprovalChainOutcome", () => {
       users.supervisor,
       opened.request.id,
       { decision: "approved", reason: "Sesuai bukti transaksi." },
-      {
-        mfaVerified: true,
-        idempotencyKey: null,
-        now: new Date(base + 5 * 60_000),
-      },
+      { mfaVerified: true, idempotencyKey: null },
     );
     const { rows } = await owner.query<{ id: string; status: string }>(
       `SELECT id, status FROM approval_requests
@@ -314,6 +311,13 @@ describe("resolveApprovalChainOutcome", () => {
     );
     expect(rows.map((row) => row.status)).toEqual(["approved", "pending"]);
     const levelTwo = rows[1]!.id;
+    await owner.query(
+      `UPDATE approval_requests
+         SET created_at = now() - interval '2 hours',
+             deadline_at = now() - interval '1 minute'
+       WHERE id = $1`,
+      [levelTwo],
+    );
     const eventsBefore = (await resolvedEvents(opened.chainId)).length;
 
     // The sweep locks the due row (not the chain head) and expires it,

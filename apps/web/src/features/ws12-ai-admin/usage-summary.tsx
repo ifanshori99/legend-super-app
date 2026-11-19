@@ -330,7 +330,7 @@ function FeatureTable({ data }: { data: AiTenantUsage }) {
 function Pair({ label, value }: { label: string; value: string }) {
   return (
     <div className="min-w-0">
-      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dt className="type-eyebrow text-muted-foreground">{label}</dt>
       <dd className="tabular">{value}</dd>
     </div>
   );

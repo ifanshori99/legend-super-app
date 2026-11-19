@@ -84,10 +84,11 @@ test.describe("legend-nnufz platform lock (provider platformLocked) locks all AI
       chatgptCard(page).getByRole("status").filter({ hasText: BANNER }),
     ).toHaveCount(0);
 
-    // ChatGPT: the connection action is locked.
+    // ChatGPT: cutting the connection stays possible under the lock
+    // (legend-b2kq3, CTO decision: ending access must always work).
     await expect(
       chatgptCard(page).getByRole("button", { name: "Cabut koneksi" }),
-    ).toBeDisabled();
+    ).toBeEnabled();
 
     // Custom model: the saved values are shown, every control is disabled.
     const baseUrl = page.getByLabel(/Alamat layanan/);

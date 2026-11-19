@@ -8322,3 +8322,11 @@ Cabang `ws/1136-p3-web-mock-e2e`, dasar `origin/milestone/m1`. Tingkat S, tanpa 
 - Test baru: 6 berkas + helper `cash-1118-world.ts`. Merah di 5c06f743c: 22 dari 33 untuk empat berkas pertama; config-import 3/4, remap 1/3. Tiga test reimburse belum punya bukti merah.
 - Architect xhigh delta (sekali): 1 P1 (ukur akun kas hari ini, remap menahan cadangan selamanya) + 3 P2 (impor tanpa validasi, gerbang tanpa query dampak D3, pindai tanpa batas) dibetulkan; P2 "cadangan tertahan tanpa jalan keluar" tidak dibetulkan, risiko terdokumentasi (koreksi finance Cr1102 menurunkan GL sementara cadangan tetap menahan pokok, kas terhitung dua kali; keputusan CTO: legacy tetap tertahan, finance manual).
 - Risiko lain: pesan web `CASH_ACCOUNT_SHARED` berbahasa Inggris (`mapping-state.ts`, P3); akun bank di GL tidak terlihat oleh D1 (P3); pindai delivered membaca semua baris delivered per tenant (dibatasi aggregateType, tanpa indeks baru).
+## 1137 Layar AI tindak lanjut audit + waktu pasca-lock platform-approval (legend-b2kq3, legend-ijy8u), 19 Nov 2026
+
+Cabang `ghostex/ai-layar-approval-waktu-1137`, tanpa migrasi.
+
+- legend-ijy8u (K uang): `decideApprovalRequest` memakai waktu sesudah `lockChain` untuk cek peran, tenggat level, dan `createdAt`/`deadlineAt` level berikutnya; `options.now` eksplisit (dipakai hris-leave, attendance-correction, inventory-count) ditambah waktu tunggu lock; waktu cek sama dengan `decided_at`. Keputusan terlambat ditolak `APPROVAL_REQUEST_EXPIRED`, rollback, tidak tercatat. Review architect xhigh menemukan 2 bug (options.now produksi, waktu cek lain dari waktu simpan), keduanya dibetulkan. Sisa: peran dicabut saat menunggu lock belum terlihat, bead `legend-k8g62`.
+- legend-b2kq3 (S web): Cabut/Batalkan aktif saat kunci platform, penjelasan polling berhenti, satu tombol utama, badge `Dikunci platform` satu aturan (`lock-status.ts`) untuk badge dan baris urutan, `type-eyebrow`, teks baru di katalog. Hydration div-in-p tidak bisa direproduksi (sudah diperbaiki di `4e8347327`).
+- Bukti: test ijy8u gagal 5/5 di service lama, lulus 5/5; regresi approval 38/38 dan inventory/hris 151/151; web e2e mock gagal 5 sebelum perbaikan, 41/41 sesudah; contract test, eslint, prettier, typecheck api (heap 8 GB; 6 GB abort dua kali) dan web hijau.
+- Belum: `tsc -p tsconfig.json` root, suite penuh `pnpm test`/`pnpm check`.
