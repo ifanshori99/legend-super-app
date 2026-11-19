@@ -87,6 +87,7 @@ import {
 } from "./device-session-admission.ts";
 import { recheckKdsSockets } from "./kds-realtime.ts";
 import { appendMenuEvent } from "./menu-internals.ts";
+import { revokeReceiverSessionsOfDevice } from "./panic-receiver-session.ts";
 import { closeSessionsOfSharedDevice } from "./shared-device.service.ts";
 import type { Tx } from "./permission-resolver.ts";
 import {
@@ -596,6 +597,7 @@ export async function setDeviceSharedMode(
   assertTrustedScopedContext(context);
   const tenantId = context.tenant.tenantId;
   let turnedOff = false;
+  let turnedOn = false;
   const result = await withTenant(db, context, async (tx) => {
     const [current] = await tx
       .select()
@@ -639,6 +641,7 @@ export async function setDeviceSharedMode(
       { tx, context },
     );
     turnedOff = current.sharedMode === true && input.sharedMode === false;
+    turnedOn = current.sharedMode === false && input.sharedMode === true;
     return toDevice(updated);
   });
   // Shared mode switched off: close the login sessions used on this device and
@@ -646,6 +649,19 @@ export async function setDeviceSharedMode(
   if (turnedOff) {
     await closeSessionsOfSharedDevice(input.deviceId);
     recheckKdsSockets();
+  }
+  // Shared mode switched on: a shared tablet never holds the panic stream
+  // (founder Q29), so the receiver sessions opened while it was personal end
+  // now and their sockets close.
+  if (turnedOn) {
+    await revokeReceiverSessionsOfDevice(
+      {
+        tenantId,
+        outletId: result.outletId,
+        deviceId: input.deviceId,
+      },
+      "device_revoked",
+    );
   }
   return result;
 }

@@ -28,6 +28,7 @@ import {
   type AccessTicket,
   type DoorCheckAccessTicketBody,
 } from "@starter/shared/facility";
+import { ACTING_STAFF_ERROR_CODES } from "@starter/shared/pos/acting-staff";
 import { db } from "../db/index.ts";
 import { devices } from "../db/schema/device.ts";
 import { accessTickets } from "../db/schema/facility.ts";
@@ -157,9 +158,18 @@ export async function doorCheckTicket(
   actorUserId: string,
   input: DoorCheckAccessTicketBody,
   deviceId: string | null = null,
+  // The outlet of the acting cashier token (req.actingStaff), null for a
+  // personal login. A ticket of another outlet is refused (OUTLET_MISMATCH).
+  actingOutletId: string | null = null,
 ): Promise<{ ticket: AccessTicket }> {
   if (!("ticketId" in input))
-    return checkCredential(context, actorUserId, input, deviceId);
+    return checkCredential(
+      context,
+      actorUserId,
+      input,
+      deviceId,
+      actingOutletId,
+    );
   // One attempt is reserved BEFORE the check (so concurrent guesses cannot
   // slip past the limit) and handed back unless the credential was wrong.
   const attempt = await reservePinAttempt(context, input.ticketId);
@@ -171,7 +181,13 @@ export async function doorCheckTicket(
       "Terlalu banyak PIN salah untuk tiket ini; gunakan QR atau tunggu.",
     );
   try {
-    const result = await checkCredential(context, actorUserId, input, deviceId);
+    const result = await checkCredential(
+      context,
+      actorUserId,
+      input,
+      deviceId,
+      actingOutletId,
+    );
     // The door is already open: a failed hand-back must not turn this 200 into
     // a 500 (the slot just stays used until it ages out).
     try {
@@ -184,11 +200,14 @@ export async function doorCheckTicket(
     }
     return result;
   } catch (error) {
-    // Keep the slot only when the PIN itself was wrong.
+    // Keep the slot only when the PIN itself was wrong. A cashier of another
+    // outlet who matched the PIN keeps it too: the mismatch answer would
+    // otherwise confirm a guessed PIN without ever counting toward the lock.
     if (!(
       error instanceof HttpError &&
-      error.code === "DOOR_CREDENTIAL_INVALID" &&
-      !afterPinMatch.has(error)
+      ((error.code === "DOOR_CREDENTIAL_INVALID" &&
+        !afterPinMatch.has(error)) ||
+        error.code === ACTING_STAFF_ERROR_CODES.OUTLET_MISMATCH)
     ))
       await attempt.release();
     throw error;
@@ -200,6 +219,7 @@ async function checkCredential(
   actorUserId: string,
   input: DoorCheckAccessTicketBody,
   deviceId: string | null,
+  actingOutletId: string | null,
 ): Promise<{ ticket: AccessTicket }> {
   const tenantId = context.tenant.tenantId;
   // Same digests as the mint (facility-pos-tickets.ts): the QR token alone, or
@@ -296,6 +316,18 @@ async function checkCredential(
         presented.digest
     )
       throw invalidCredential();
+    // A cashier token (acting staff) of another outlet may not open this
+    // ticket. Checked on the locked row, before any state change; the throw
+    // rolls the transaction back. No acting staff: nothing changes.
+    if (
+      actingOutletId !== null &&
+      row.outletId.toLowerCase() !== actingOutletId.toLowerCase()
+    )
+      throw new HttpError(
+        403,
+        ACTING_STAFF_ERROR_CODES.OUTLET_MISMATCH,
+        "Kasir aktif bukan untuk outlet ini.",
+      );
     // From here the presented token or PIN IS the stored one.
     if (
       credential.revokedAt !== null ||

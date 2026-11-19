@@ -42,6 +42,8 @@ export const ACTING_STAFF_ERROR_CODES = {
   REQUIRED: "ACTING_STAFF_REQUIRED",
   /** A session or request from the shared device itself tried to unflag or revoke it. */
   SHARED_MODE_SELF_DISABLE: "SHARED_MODE_SELF_DISABLE",
+  /** A shared tablet called an API outside the POS, floor, KDS and Tanya AI allowlist (legend-iq0jz). */
+  SCREEN_CLOSED: "SHARED_DEVICE_SCREEN_CLOSED",
 } as const;
 export type ActingStaffErrorCode =
   (typeof ACTING_STAFF_ERROR_CODES)[keyof typeof ACTING_STAFF_ERROR_CODES];

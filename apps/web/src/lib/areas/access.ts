@@ -64,6 +64,12 @@ export type AreaAccess = {
    * decide again and answer 403.
    */
   readonly canManageStationConfig?: boolean;
+  /**
+   * The request comes from a shared tablet (GET /api/me/access `sharedDevice`,
+   * founder Q29): only POS, tables, KDS and Tanya AI in KDS open. Absent =
+   * false (an older API). Presentation only; the API refuses the other screens.
+   */
+  readonly sharedDevice?: boolean;
 };
 
 export const ANONYMOUS_ACCESS: AreaAccess = Object.freeze({
@@ -106,6 +112,7 @@ export function accessFromView(view: MyAccessView): AreaAccess {
     supportSession: view.supportSession,
     canChangeEmployeeManager: view.canChangeEmployeeManager,
     canManageStationConfig: view.canManageStationConfig,
+    sharedDevice: view.sharedDevice,
   };
 }
 

@@ -17,17 +17,21 @@
 import { Router } from "express";
 import { userIdSchema } from "@starter/shared/core";
 import { listOrderIssues, reportOrderIssue } from "@starter/shared/kitchen";
+import { ACTING_STAFF_ERROR_CODES } from "@starter/shared/pos/acting-staff";
+import { HttpError } from "../lib/http-error.ts";
 import {
+  actorOf,
   requireActingStaffOnSharedDevice,
   resolveActingStaff,
 } from "../middleware/acting-staff.ts";
-import { getAuth, requireAuthAllowSharedDevice } from "../middleware/auth.ts";
+import { requireAuthAllowSharedDevice } from "../middleware/auth.ts";
 import { jsonBody } from "../middleware/body.ts";
 import { requireTrustedOrigin } from "../middleware/origin.ts";
 import {
   getStationScope,
   requireStationScopePermission,
 } from "../middleware/permissions.ts";
+import { isRequestOnSharedDevice } from "../middleware/shared-device-allowlist.ts";
 import { requireTenantContext } from "../middleware/tenant.ts";
 import * as issues from "../services/order-issues.service.ts";
 
@@ -51,10 +55,24 @@ orderIssuesRouter.post(
   async (req, res) => {
     const { outletId, orderId } = reportOrderIssue.params.parse(req.params);
     const body = reportOrderIssue.body.parse(req.body);
+    // Any resolution (manual refund, voucher, swap) is money out: closed on a
+    // shared tablet (brief 1113, closed by default), refused before the service
+    // spends an approval or writes the issue. A log-only report stays open.
+    // Personal devices are unchanged.
+    if (
+      body.resolution !== null &&
+      (req.actingStaff || isRequestOnSharedDevice(req))
+    ) {
+      throw new HttpError(
+        403,
+        ACTING_STAFF_ERROR_CODES.SCREEN_CLOSED,
+        "Layar ini tidak tersedia di tablet bersama.",
+      );
+    }
     res.status(201).json({
       data: await issues.reportOrderIssue(
         getStationScope(req).context,
-        userIdSchema.parse(getAuth(req).user.id),
+        userIdSchema.parse(actorOf(req)),
         outletId,
         orderId,
         body,
@@ -70,7 +88,7 @@ orderIssuesRouter.get("/order-issues", ...guard, async (req, res) => {
   res.json(
     await issues.listOrderIssues(
       getStationScope(req).context,
-      userIdSchema.parse(getAuth(req).user.id),
+      userIdSchema.parse(actorOf(req)),
       outletId,
       query,
       new Date(),

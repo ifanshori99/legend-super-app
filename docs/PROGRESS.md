@@ -7777,6 +7777,19 @@ Cabang `ghostex/4b06e171`, dasar 1018 (f854663f9). Tingkat K (akses). Tanpa migr
 - Screenshot 1280: `docs/review/img/ui1021-kds-connected.png`, `ui1021-kds-disconnected.png`.
 - Subagent: total 12, puncak 3 bersamaan, token heavy dipegang test-runner/implementer bergantian. Biaya sesi (session-usage): 3260k.
 
+## 1094 Akses perangkat bersama, sisa (legend-13vhb, legend-tlr6p, legend-ypwsp, legend-iq0jz), 19 Nov 2026
+
+Cabang `ws/1094-akses-perangkat-bersama-sisa`, dasar a20420a6f (pin-kasir-tablet-bersama). Tingkat K (akses + uang). Tanpa migrasi.
+
+- Voucher maaf dan delivery-orders: `resolveActingStaff` + `requireActingStaffOnSharedDevice` + `actorOf`. Voucher maaf menolak kasir outlet lain (403 `ACTING_STAFF_OUTLET_MISMATCH`). Delivery tetap tertutup di tablet bersama oleh allowlist, guard PIN jadi lapisan cadangan.
+- Service-request, order-issues, expo, menu availability: aktor `actorOf(req)`; route tanpa `:outletId` menolak token kasir outlet lain. Tes: kasir outlet A tidak bisa collect charge outlet B.
+- Lintas tenant (ypwsp): sudah tertutup, dikunci `shared-device-marks.test.ts`, tanpa kode baru.
+- Allowlist layar tablet bersama Q29 diport ulang (`lib/shared-device-allowlist.ts`, `middleware/shared-device-allowlist.ts`, dipasang di `requireAuth`), default tolak, upgrade websocket ditolak, guard web. Refund dan void tunai (POS corrections/refund dan corrections/void, resolve manual_refund) ditutup di tablet bersama; Tanya AI KDS belum jalan di tablet (router /api/ai/* masih requireAuth, bead legend-f7ybx).
+- Keputusan terbuka untuk founder lewat CTO: refund di tablet bersama (kini ditolak; bisa dibuka lagi dengan menghapus entri DENY dan blokir manual_refund).
+- Bead lanjutan: legend-cq0u7, legend-f7ybx, legend-5f6is.
+- Tes: 11 berkas plus void-982 (money, pos, allowlist-1043, router-decisions, shared-device, w2-floor, marks, device-shared-mode, auth-guard, backoffice-guard, w3-recovery) 670 lulus.
+- Subagent: total 27, puncak 6 bersamaan (perkiraan), token heavy dipegang induk dan test-runner bergantian.
+
 ## Merge train batch90 (18 Nov 2026, `int/batch90` -> `milestone/m1`)
 
 Dasar `origin/milestone/m1` 0b4fe006c (batch89). Cabang masuk (urut): `ghostex/a99498c8` (nbkvh), `ghostex/1053-kas-gaji-tunai-guard-lock-order`, `ghostex/legend-tiw2h-recon-clearance-restriktif` (menggantikan 1057 dan timeout-storage-dan-lock-recon), `ws/1073-edge-sweep-race` (memuat 1061), `ws/1073-edge-digest-cancel` (memuat bawa-kai), `ws/1069-worktree-hemat`, `ws/1078-kartu-kecil`. Tidak ada yang keluar.
@@ -7936,3 +7949,22 @@ pnpm exec prettier --check --ignore-unknown apps/api/src/test/payment-doit-recur
 heavy pnpm --filter @starter/api typecheck
 git diff --check
 ```
+## 1113 Perbaikan second-opinion akses 1094 (19 Nov 2026)
+
+Cabang `ws/1094-akses-perangkat-bersama-sisa`, dasar 4f5e3cc08. Tingkat K (akses + uang). Tanpa migrasi.
+
+- P1 isu pesanan: POST pembuatan isu menolak resolusi apa pun yang bukan null (manual_refund, voucher, swap) di tablet bersama (403 `SHARED_DEVICE_SCREEN_CLOSED`) sebelum service jalan. Laporan tanpa resolusi tetap jalan.
+- Keputusan CTO: resolve di order-recovery juga menolak voucher dan swap di tablet bersama, sama seperti manual_refund. Hanya batal reservasi yang tetap buka (Q29).
+- P2 availability: GET `/api/menu/availability` dengan token kasir menolak outlet lain (403 `ACTING_STAFF_OUTLET_MISMATCH`) dan tanpa `outletId` dipersempit ke outlet token; pemulihan sold_out kedaluwarsa tidak menyentuh outlet lain.
+- P2 socket panic: perangkat bersama gagal recheck sesi receiver (`device_revoked`), dan saat shared mode menyala socket receiver perangkat itu diputus (4401). Upgrade baru dari perangkat bersama kini 401 (recheck lebih dulu), bukan 403.
+- Tes: gagal-dulu terbukti (order-issues 3/5 merah, availability 2/4, panic 2/4, resolve voucher/swap 2 merah), regresi 16 berkas 780 lulus, tsc API 0 (heap 8 GB). Review architect (xhigh) pada delta: tanpa P0-P2.
+- Subagent: total 33, puncak 3 bersamaan, token heavy dipegang induk (bukan subagent).
+
+## 1120 Outlet token kasir di order-recovery (19 Nov 2026, legend-cq0u7)
+
+Cabang `ws/1120-akses-outlet-order-recovery`, dasar f3a6ced98 (1094). Tingkat K (akses + uang). Tanpa migrasi. Landing BERSAMA 1094.
+
+- Helper `refuseActingStaffOtherOutlet` (middleware/acting-staff.ts) + resolver charge/item/issue (middleware/acting-staff-outlet.ts): token kasir outlet A ke target outlet B = 403 `ACTING_STAFF_OUTLET_MISMATCH`; target tak ditemukan = tolak; login pribadi tidak berubah. Dipasang di waive, expire, refund, manual-refund, collect-at-pos (charge), report item dan resolve (order-recovery). apology-voucher memakai helper yang sama (outlet tak diketahui tetap diserahkan ke service, 404).
+- Tambahan CTO: `POST /api/apology-vouchers` masuk DENY perangkat bersama (403 `SHARED_DEVICE_SCREEN_CLOSED`, semua bentuk). Temuan architect P1: `waive` dan `expire` charge juga ditutup di perangkat bersama (tamu pilih swap lebih mahal lewat customer-choice, kasir waive = gratis). `collect-at-pos` tetap buka.
+- Tes: gagal-dulu terbukti (28 dari 62 merah di base), akhir 260 lulus (outlet 56, apology perangkat bersama 6, 1094-money 22, allowlist 176); regresi 40 berkas 733 lulus sebelum penyesuaian 1094-money. Prettier/eslint bersih. Review architect (xhigh) sekali.
+- Celah tersisa (bukan 1120): `POST /api/facility/tickets/door-check` tidak membandingkan outlet token (bead baru). Value-out terbuka di tablet: diskon POS, void item, reservation-customer-credit/apply, cash movements, batal reservasi (Q29).

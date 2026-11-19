@@ -60,7 +60,7 @@ const DECISIONS: Record<string, Decision> = {
   "ai-insights": "backoffice",
   "ai-mcp-admin": "backoffice",
   "ai-provider": "backoffice",
-  "apology-voucher": "backoffice",
+  "apology-voucher": "pos",
   "audit-events": "backoffice",
   "core-storage": "backoffice",
   "crm-promo": "backoffice",
@@ -69,7 +69,7 @@ const DECISIONS: Record<string, Decision> = {
   customers: "backoffice",
   dashboards: "backoffice",
   "delivery-channels": "backoffice",
-  "delivery-orders": "backoffice",
+  "delivery-orders": "pos",
   "delivery-reconciliation": "backoffice",
   "delivery-webhook": "public",
   device: "backoffice",
@@ -524,6 +524,8 @@ describe("1012 login-session reads are allow-listed", () => {
       "the guard itself (requireAuth / requireAuthAllowSharedDevice).",
     "middleware/shared-device-auth.ts":
       "legend-wa9n7: /api/auth/* guard; reads the session only to refuse a shared-device session, never authorises.",
+    "middleware/shared-device-allowlist.ts":
+      "legend-iq0jz: WebSocket upgrade refusal on a marked session (no requireAuth runs on an upgrade); reads only to refuse, never authorises.",
     "middleware/support-session.ts":
       "blocks impersonated sessions on auth routes; reads, never authorises.",
     "routes/identity-auth.routes.ts":

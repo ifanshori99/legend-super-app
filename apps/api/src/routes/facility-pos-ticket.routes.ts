@@ -369,6 +369,7 @@ facilityPosTicketRouter.post(
       actorOf(req),
       body,
       doorDevices.get(req) ?? null,
+      req.actingStaff?.outletId ?? null,
     );
     res.setHeader("Cache-Control", "no-store").json({ data });
   },

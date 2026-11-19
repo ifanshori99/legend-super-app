@@ -17,9 +17,11 @@ import { userIdSchema, uuidSchema, z } from "@starter/shared/core";
 import { collectChargeAtPosInputSchema } from "@starter/shared/qr-order";
 import {
   actorOf,
+  refuseActingStaffOtherOutlet,
   requireActingStaffOnSharedDevice,
   resolveActingStaff,
 } from "../middleware/acting-staff.ts";
+import { chargeOutletOf } from "../middleware/acting-staff-outlet.ts";
 import {
   getAuth,
   requireAuth,
@@ -53,6 +55,8 @@ const staffGuard = [
   requireTenantContext,
   resolveActingStaff,
   requireActingStaffOnSharedDevice,
+  // The path carries no outlet: a token of another outlet may not touch the charge.
+  refuseActingStaffOtherOutlet(chargeOutletOf),
   requireMenuPermission("order.recovery.handle"),
 ];
 
@@ -234,6 +238,7 @@ orderRecoveryChargeRouter.post(
   requireTenantContext,
   resolveActingStaff,
   requireActingStaffOnSharedDevice,
+  refuseActingStaffOtherOutlet(chargeOutletOf),
   requireMenuPermission("pos.payment.accept"),
   jsonBody,
   async (req, res) => {
