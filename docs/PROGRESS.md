@@ -2212,3 +2212,4 @@ Langkah berikut CTO baru:
 - 11:53 CTO: SO 1160 selesai (G7r4c resolve), P2 ke G213p. SO 1166 mulai (G88cg, Codex #4).
 - 11:54 CTO: SO 1161 selesai (G4gc3 resolve); P2 legend-5nmo3 ke G7v0a.
 - 12:03 CTO: SO 1166 dan 1168 selesai (commit 1cb7a5ab6), thread G88cg/G32xs di-resolve. Kartu legend-rle3t (refund LR riwayat, brief 1169, menunggu slot Claude) dan legend-rzt8s (4 P2 redrive, ke G36xz sesudah rh1hk). Pemilih kartu Codex S berjalan untuk 3 slot Codex kosong.
+- 12:05 CTO: mulai 1170 (G2mr9, Codex #3, gpt-6.1-sol high, base milestone/m1): 3g69v, bz3hj, oqs0y, h2wvx. Slot Codex sisa 2 tidak diisi: kartu S lain bertumpuk dengan thread berjalan (vw3d edge 1162, f1981/inflf ws/1149) atau butuh keputusan kontrak/migrasi. Claude 8/8: 1169 menunggu slot.
