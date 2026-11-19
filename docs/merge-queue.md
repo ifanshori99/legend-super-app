@@ -246,3 +246,4 @@ Induk lebih dulu. Migrasi dinomori ulang dari ujung m1 saat batch disusun.
 - 08:51 ws/1095-void-refund-ganda-voucher 3bf621e86 DITAHAN, KELUARKAN dari batch95: SO refund kasir ronde 3 (1145) dua P1 (race voucher-finance Rp100.000 dari Rp90.090 di payment-admin.service.ts:309; refund replacement + refund charge mengembalikan uang item lain di order-given.ts:567). Fix di G95kw.
 - 08:55 Kas ghostex/d158b041 head f1f0c4987 (P2 SO 9 tertutup, 294/294 regresi, tsc hijau, architect bersih) SIAP batch95. SO kas ronde 10 (1147) menahan gerbang rilis saja.
 - 08:56 SO sarapan (1146): satu P2 (facility-breakfast-consumers.ts:239 pembayaran valid menunggu penyedia sambil menahan lock outbox/offset), tanpa P0/P1. ws/1130 013a20709 tetap SIAP batch95; fix P2 menyusul (G3bom).
+- 08:59 ws/1136-p3-web-mock-e2e head ed4e373c9 (z274 warisi preferensi, tsc shared/web/api hijau) SIAP batch95.
