@@ -26,6 +26,7 @@ import { RESEAL_LOGIN, auditRoles, provisionRoles } from "./provision-roles";
 import {
   dropTestDatabase,
   endTestPool,
+  waitForNoTestDatabaseSessions as waitForNoSessions,
 } from "../test/helpers/database-cleanup.ts";
 
 const drizzleFolder = resolve(

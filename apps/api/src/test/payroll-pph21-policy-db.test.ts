@@ -690,7 +690,7 @@ describe("PPh 21 policy: append-only and tenant isolation", () => {
       tx
         .select()
         .from(payrollPph21Policies)
-        .where(eq(payrollPph21Policies.tenantId, tenantId)),
+        .where(eq(payrollPph21Policies.tenantId, tenantId as never)),
     );
     expect(rows).toEqual([]);
   });
