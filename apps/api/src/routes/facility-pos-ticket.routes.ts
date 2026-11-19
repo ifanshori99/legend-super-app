@@ -76,7 +76,7 @@ const view = requireOutletPermission("order.view", outletOfRequest);
 // from the permission and the service only sees tickets inside that reach.
 const operateDoor = requireMenuPermission("facility.booth.operate");
 
-// 1059 (R2-05, g7l20): the door scope after the acting-staff cut.
+// 1059 (R2-05, g7l20): the door scope (the reach, not cut to the token outlet, 1128).
 const doorContexts = new WeakMap<Request, ScopedTenantContext>();
 // R3-02: the verified device of the request, handed to the service, which
 // re-reads its training mode under a row lock (this route read is the fast path).
