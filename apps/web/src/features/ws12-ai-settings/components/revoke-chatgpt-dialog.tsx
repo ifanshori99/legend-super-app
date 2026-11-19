@@ -17,13 +17,10 @@ import { useRevokeChatgpt } from "../hooks";
 
 export function RevokeChatgptDialog({
   open,
-  disabled,
   onClose,
   onRevoked,
 }: {
   open: boolean;
-  /** Platform kill switch: confirming is off. */
-  disabled: boolean;
   onClose: () => void;
   /** Runs once the dialog has closed after a successful revoke. */
   onRevoked: () => void;
@@ -83,7 +80,6 @@ export function RevokeChatgptDialog({
             type="button"
             variant="destructive"
             loading={revoke.isPending}
-            disabled={disabled}
             onClick={() =>
               revoke.mutate(undefined, {
                 onSuccess: () => {

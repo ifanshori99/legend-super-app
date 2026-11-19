@@ -48,6 +48,7 @@ export const aiSettingsMessages = {
     primary: "ChatGPT",
     primaryConnected: "Utama · Terhubung",
     primaryNotConnected: "Utama · Belum terhubung",
+    primaryLocked: "Utama · Dikunci platform",
     primaryUnavailable: "Utama · Status belum bisa dimuat",
     fallback: "Model kustom",
     fallbackReady: "Cadangan otomatis · Siap",

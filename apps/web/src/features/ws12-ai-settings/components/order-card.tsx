@@ -4,17 +4,24 @@ import { useT } from "@/components/i18n";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AdminCard } from "@/features/ws12-ai-admin/components/shared";
 import { useChatgptLogin, useProvider } from "../hooks";
+import { showsPlatformLock } from "./lock-status";
 
-// `locked` is accepted for symmetry with the other cards but changes nothing:
-// the mockup keeps the saved status visible while the platform lock is on, and
-// the page banner explains the lock.
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for the lock contract test
-export function OrderCard(_props: { locked?: boolean }) {
+// The mockup keeps the saved status visible while the platform lock is on. A
+// ChatGPT that is not connected reads "Dikunci platform" under the lock, in
+// step with the ChatGPT card badge and the page banner.
+export function OrderCard({ locked = false }: { locked?: boolean }) {
   const t = useT();
   const login = useChatgptLogin();
   const provider = useProvider();
   const loading = login.isPending || provider.isPending;
   const connected = login.data?.data.state === "connected";
+  const platformLocked =
+    login.data !== undefined &&
+    showsPlatformLock(
+      login.data.data.state,
+      locked,
+      login.data.data.platformDisabled,
+    );
   // A failed first load is "unknown", never "not connected / not ready".
   const loginUnknown = !login.data && login.isError;
   const providerUnknown = !provider.data && provider.isError;
@@ -41,7 +48,9 @@ export function OrderCard(_props: { locked?: boolean }) {
                   ? t("aiSettings.order.primaryUnavailable")
                   : connected
                     ? t("aiSettings.order.primaryConnected")
-                    : t("aiSettings.order.primaryNotConnected")
+                    : platformLocked
+                      ? t("aiSettings.order.primaryLocked")
+                      : t("aiSettings.order.primaryNotConnected")
               }
             />
             <OrderItem

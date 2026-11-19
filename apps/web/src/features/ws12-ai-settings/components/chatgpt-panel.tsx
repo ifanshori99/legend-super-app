@@ -1,11 +1,13 @@
 // Card 1 "Login ChatGPT": the primary AI service. Device-code login in five
 // states (disconnected, pending, connected, failed, expired). The API decides
 // who may manage (`viewerCanManage`, owner only); the UI only presents it.
-// `disabled` is the platform kill switch: every control is off. The reason is
-// explained by the page banner, never inside this card.
+// `disabled` is the platform kill switch: every control is off except the way
+// out ("Cabut koneksi", "Batalkan koneksi"), which stays open for the owner so
+// access can always be cut. The reason is explained by the page banner.
 import * as React from "react";
 import { cn } from "cn";
 import {
+  Ban,
   Check,
   CircleCheck,
   Clock,
@@ -31,6 +33,7 @@ import { ApiError } from "@/lib/api/errors";
 import { pollChatgpt } from "../api";
 import { getChatgptLogin, type ChatgptLoginStatus } from "@starter/shared/ai";
 import { useChatgptLogin, useRevokeChatgpt, useStartChatgpt } from "../hooks";
+import { showsPlatformLock } from "./lock-status";
 import { RevokeChatgptDialog } from "./revoke-chatgpt-dialog";
 
 /** Milliseconds between status checks while a code is pending (the API rate-limits). */
@@ -127,7 +130,7 @@ function PanelHeading({
 }
 
 const BADGES: Record<
-  "disconnected" | "pending" | "connected" | "retry",
+  "disconnected" | "pending" | "connected" | "retry" | "locked",
   {
     tone: React.ComponentProps<typeof Badge>["tone"];
     icon: LucideIcon;
@@ -135,7 +138,8 @@ const BADGES: Record<
       | "aiSettingsChatgpt.badge.disconnected"
       | "aiSettingsChatgpt.badge.pending"
       | "aiSettingsChatgpt.badge.connected"
-      | "aiSettingsChatgpt.badge.retry";
+      | "aiSettingsChatgpt.badge.retry"
+      | "aiSettingsChatgpt.badge.locked";
   }
 > = {
   disconnected: {
@@ -157,6 +161,11 @@ const BADGES: Record<
     tone: "danger",
     icon: TriangleAlert,
     label: "aiSettingsChatgpt.badge.retry",
+  },
+  locked: {
+    tone: "neutral",
+    icon: Ban,
+    label: "aiSettingsChatgpt.badge.locked",
   },
 };
 
@@ -198,8 +207,15 @@ function ChatgptBody({
   // `disabled` is the tenant lock; `platformDisabled` is the global ChatGPT env switch.
   const off = disabled || status.platformDisabled;
   const locked = off || !status.viewerCanManage;
-  const kind =
-    status.state === "failed" || status.state === "expired"
+  // A locked card that is not connected reads "Dikunci platform", in step with
+  // the page banner. A saved connection keeps its own status visible.
+  const kind = showsPlatformLock(
+    status.state,
+    disabled,
+    status.platformDisabled,
+  )
+    ? "locked"
+    : status.state === "failed" || status.state === "expired"
       ? "retry"
       : status.state;
   const badge = BADGES[kind];
@@ -248,7 +264,9 @@ function ChatgptBody({
           {t("aiSettingsChatgpt.platformOff.body")}
         </Notice>
       )}
-      <fieldset disabled={off} className="grid min-w-0 gap-4 border-0 p-0">
+      {/* No `disabled` on the group: every control sets its own `locked`, so
+          "Cabut" and "Batalkan" can stay open under the platform lock. */}
+      <div className="grid min-w-0 gap-4">
         {status.state === "pending" ? (
           <PendingView
             status={status}
@@ -256,7 +274,10 @@ function ChatgptBody({
             onExpired={() => setExpiredFor(status.expiresAt)}
           />
         ) : status.state === "connected" ? (
-          <ConnectedView locked={locked} onRevoke={() => setRevokeOpen(true)} />
+          <ConnectedView
+            canRevoke={status.viewerCanManage}
+            onRevoke={() => setRevokeOpen(true)}
+          />
         ) : (
           <DisconnectedView status={status} locked={locked} />
         )}
@@ -265,10 +286,9 @@ function ChatgptBody({
             {t("aiSettingsChatgpt.ownerOnly")}
           </p>
         )}
-      </fieldset>
+      </div>
       <RevokeChatgptDialog
         open={revokeOpen}
-        disabled={off}
         onClose={() => setRevokeOpen(false)}
         onRevoked={() => titleRef.current?.focus()}
       />
@@ -525,7 +545,7 @@ function PendingView({
     <>
       {status.deviceCode && (
         <div className="grid gap-2 rounded-control border-(length:--border-w) bg-surface-2 p-4">
-          <p className="text-xs leading-4 text-muted-foreground">
+          <p className="type-eyebrow text-muted-foreground">
             {t("aiSettingsChatgpt.pending.codeLabel")}
           </p>
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -567,6 +587,7 @@ function PendingView({
         <div className="grid justify-items-start gap-2 max-sm:justify-items-stretch">
           <Button
             asChild={!locked}
+            variant={locked ? "outline" : "default"}
             disabled={locked}
             className="w-full sm:w-auto"
           >
@@ -587,10 +608,20 @@ function PendingView({
           </span>
         </div>
       )}
-      <p className="flex items-center gap-2 text-sm leading-5 font-medium text-warning">
-        <Clock className="size-4 shrink-0" aria-hidden="true" />
-        {t("aiSettingsChatgpt.pending.waiting")}
-      </p>
+      {locked ? (
+        <p
+          role="status"
+          className="flex items-start gap-2 text-sm leading-5 font-medium text-warning"
+        >
+          <Clock className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          {t("aiSettingsChatgpt.pending.pausedByLock")}
+        </p>
+      ) : (
+        <p className="flex items-center gap-2 text-sm leading-5 font-medium text-warning">
+          <Clock className="size-4 shrink-0" aria-hidden="true" />
+          {t("aiSettingsChatgpt.pending.waiting")}
+        </p>
+      )}
       {problem && (
         <div className="grid justify-items-start gap-2">
           <p
@@ -625,7 +656,6 @@ function PendingView({
         <Button
           type="button"
           variant="outline"
-          disabled={locked}
           className="w-full sm:w-auto"
           loading={cancel.isPending}
           onClick={() => cancel.mutate()}
@@ -642,10 +672,11 @@ function PendingView({
 }
 
 function ConnectedView({
-  locked,
+  canRevoke,
   onRevoke,
 }: {
-  locked: boolean;
+  /** Only the owner may cut the connection; the platform lock does not matter. */
+  canRevoke: boolean;
   onRevoke: () => void;
 }) {
   const t = useT();
@@ -674,7 +705,7 @@ function ConnectedView({
         <Button
           type="button"
           variant="outline"
-          disabled={locked}
+          disabled={!canRevoke}
           onClick={onRevoke}
           className="w-full text-danger sm:w-auto"
         >

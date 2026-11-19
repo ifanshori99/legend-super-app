@@ -13,6 +13,7 @@ export const aiSettingsChatgptMessages = {
     pending: "Menunggu",
     connected: "Terhubung",
     retry: "Perlu diulang",
+    locked: "Dikunci platform",
   },
 
   error: {
@@ -68,6 +69,8 @@ export const aiSettingsChatgptMessages = {
       "Status belum bisa diperiksa setelah beberapa kali mencoba. Periksa koneksi, lalu periksa lagi.",
     pollDenied:
       "Anda tidak lagi punya izin memeriksa status ini. Muat ulang halaman atau masuk kembali.",
+    pausedByLock:
+      "Pemeriksaan status berhenti karena AI dikunci platform. Pemeriksaan lanjut sendiri setelah kunci dibuka, selama kode masih berlaku. Anda tetap bisa membatalkan koneksi.",
     checkAgain: "Periksa lagi",
     cancel: "Batalkan koneksi",
     cancelHint: "Kode sudah tidak berlaku? Batalkan, lalu buat kode baru.",
