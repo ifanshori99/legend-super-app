@@ -30,6 +30,7 @@ import {
 import { CoreError } from "@starter/shared/core";
 import { parseEdgeCredential } from "../edge/credential.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { clientIpKey } from "../lib/client-ip-key.ts";
 import {
   createFixedWindowCounter,
   PUBLIC_RATE_LIMIT_CAPACITY,
@@ -88,7 +89,7 @@ function staffPinSyncRateLimit(
     // Both buckets are charged, so one node cannot hide behind many IPs and
     // one IP cannot spend every node's budget unnoticed.
     const ipRetry = perIp.take(
-      `ip:${req.ip || req.socket.remoteAddress || "unknown"}`,
+      `ip:${clientIpKey(req.ip || req.socket.remoteAddress)}`,
       now,
     );
     const bearer = edgeCredentialFromAuthorization(req.get("Authorization"));
