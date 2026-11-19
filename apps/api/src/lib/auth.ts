@@ -205,7 +205,6 @@ async function staffLoginTenantId(
   const resolution = await resolveHostname(host);
   if (!resolution.ok) return null;
   const { tenantId } = resolution;
-  const now = new Date();
   const [assignment] = await withTenant(
     db,
     platformTenantContext(tenantId),
@@ -217,10 +216,11 @@ async function staffLoginTenantId(
           and(
             eq(schema.roleAssignments.tenantId, tenantId),
             eq(schema.roleAssignments.userId, userId),
-            lte(schema.roleAssignments.validFrom, now),
+            // The database clock stamps valid_from/valid_until (bead 1201).
+            lte(schema.roleAssignments.validFrom, sql`statement_timestamp()`),
             or(
               isNull(schema.roleAssignments.validUntil),
-              gt(schema.roleAssignments.validUntil, now),
+              gt(schema.roleAssignments.validUntil, sql`statement_timestamp()`),
             ),
           ),
         )

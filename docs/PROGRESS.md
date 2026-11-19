@@ -7936,3 +7936,9 @@ pnpm exec prettier --check --ignore-unknown apps/api/src/test/payment-doit-recur
 heavy pnpm --filter @starter/api typecheck
 git diff --check
 ```
+
+## 1201 Akses: baca izin pakai jam DB (19 Nov, engineer)
+- Sudah: baca izin dibandingkan di SQL dengan `statement_timestamp()` (jam DB yang sama dengan penulis `valid_from`/`valid_until`). `loadTenantAccessInTransaction` hanya mengembalikan assignment aktif dan `clock`; `resolveAccessSnapshot` memakai `clock ?? now`. Opsi `includeInactive` untuk evaluasi as-of-past (payment-refund `heldAt`, `refundApprovalWithinLimit` historical). Pembaca lain (auth.ts, hris-employee, platform-support, platform-tenant-directory, identity/surface access, me-outlets, device-pin-support, platform-approval, access.service, 12 route HRIS/payroll, open-bill approvers, profit-share assertTenantOwner, edge-people-snapshot) ikut jam DB. Tes `platform-tenant-owner` membandingkan dengan jam DB (bukan `Date.now()`).
+- Dipakai `statement_timestamp()` bukan `now()`: `now()` = awal transaksi dan mendahului tunggu kunci tenant (lihat `readDbClock`).
+- Tunda (bead lanjutan): accounting-bank-recon-cases, operations-checklist(+scheduler), inventory-staff-read-model, identity-invitation, platform-usage, order-issues, ai-insights-notify, report-schedule-recipients masih jam app.
+- Bukti: `access-read-db-clock.test.ts` merah di c3d5ca1bc (9 kasus: 8 gagal untuk sebab benar), hijau sesudah; 21 berkas terarah 245/245 hijau; typecheck api, prettier, eslint hijau; architect review (3 temuan A/B/C dibetulkan) + reviewer putaran 2 (1 temuan dibetulkan).

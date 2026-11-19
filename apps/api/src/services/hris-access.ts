@@ -208,7 +208,7 @@ export async function loadHrisAccess(
         },
         roles: data.roles,
         org: data.org,
-        now,
+        now: data.clock ?? now,
         permission: code,
       });
       if (scope === null) continue;

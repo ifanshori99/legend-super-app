@@ -351,10 +351,10 @@ export async function buildEdgePeopleSnapshot(
               and(
                 eq(roleAssignments.tenantId, tenantId),
                 inArray(roleAssignments.userId, sentUserIds),
-                lte(roleAssignments.validFrom, now),
+                lte(roleAssignments.validFrom, sql`statement_timestamp()`),
                 or(
                   isNull(roleAssignments.validUntil),
-                  sql`${roleAssignments.validUntil} > ${now.toISOString()}::timestamptz`,
+                  sql`${roleAssignments.validUntil} > statement_timestamp()`,
                 ),
                 or(
                   eq(roleAssignments.scopeType, "tenant"),

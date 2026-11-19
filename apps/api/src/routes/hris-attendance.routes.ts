@@ -105,7 +105,7 @@ function requireHris(codes: readonly PermissionCode[]): RequestHandler {
           },
           roles: data.roles,
           org: data.org,
-          now: new Date(),
+          now: data.clock ?? new Date(),
           permission: code,
         });
         if (reach === null) continue;

@@ -334,7 +334,11 @@ async function heldAt(
   outletId: string,
   at: Date,
 ): Promise<boolean> {
-  const data = await loadTenantAccessInTransaction(tx, context, userId);
+  // As-of-past evaluation: expired roles must still count at `at` and the
+  // caller's instant decides, so no DB-clock filtering (bead 1201).
+  const data = await loadTenantAccessInTransaction(tx, context, userId, {
+    includeInactive: true,
+  });
   return resolveAccessSnapshot({
     tenant: context.tenant,
     userId,
@@ -3293,7 +3297,7 @@ async function assertOpsActor(
     roles: access.roles,
     surface: "dashboard",
     mfaVerified: opts.mfaVerified,
-    now,
+    now: access.clock ?? now,
   });
 }
 

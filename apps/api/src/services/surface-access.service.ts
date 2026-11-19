@@ -47,6 +47,7 @@ export async function loadSurfaceAccessFacts(
       assignments: data.assignments,
     },
     roles: data.roles,
+    clock: data.clock,
   };
 }
 

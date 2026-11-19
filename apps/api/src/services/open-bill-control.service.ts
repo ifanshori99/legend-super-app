@@ -14,7 +14,20 @@
 // waiter call (`zone_waiter_assignments`, `waiter_call` category, pg_notify at
 // commit). They are never service_request rows.
 
-import { and, asc, eq, inArray, lte, ne, notInArray, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  getTableColumns,
+  gt,
+  inArray,
+  isNull,
+  lte,
+  ne,
+  notInArray,
+  or,
+  sql,
+} from "drizzle-orm";
 import { maskAuditChanges } from "@starter/shared/audit";
 import {
   assertOutletInScope,
@@ -614,7 +627,10 @@ export function listOpenBillApprovers(
       candidates[0]!.userId,
     );
     const assignmentRows = await tx
-      .select()
+      .select({
+        ...getTableColumns(roleAssignments),
+        dbClock: sql<Date | string>`statement_timestamp()`.as("db_clock"),
+      })
       .from(roleAssignments)
       .where(
         and(
@@ -623,9 +639,28 @@ export function listOpenBillApprovers(
             roleAssignments.userId,
             candidates.map((candidate) => candidate.userId),
           ),
+          // Same database clock as the tenant access loader: inactive rows
+          // are not returned.
+          lte(roleAssignments.validFrom, sql`statement_timestamp()`),
+          or(
+            isNull(roleAssignments.validUntil),
+            gt(roleAssignments.validUntil, sql`statement_timestamp()`),
+          ),
         ),
       );
-    const data = { ...shared, assignments: assignmentRows.map(toAssignment) };
+    // The clock of THIS statement, not the first candidate's load (bead 1201):
+    // with no active row nobody holds the permission, so the fallback is moot.
+    const rawClock = assignmentRows[0]?.dbClock;
+    const data = {
+      ...shared,
+      assignments: assignmentRows.map(toAssignment),
+      clock:
+        rawClock === undefined
+          ? new Date()
+          : rawClock instanceof Date
+            ? rawClock
+            : new Date(rawClock),
+    };
     const approvers: OpenBillApprover[] = [];
     for (const candidate of candidates) {
       const allowed = resolveAccessSnapshot({

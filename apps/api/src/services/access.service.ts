@@ -526,7 +526,8 @@ export async function createCustomRole(
       grantorReauthenticatedAt: options.reauthenticatedAt,
       addedPermissions: normalized.permissions,
       org: data.org,
-      now,
+      // The DB clock of the load wins over the caller's `now` (bead 1201).
+      now: data.clock ?? now,
     });
     let row: RoleRow;
     try {
@@ -690,7 +691,7 @@ export async function updateCustomRole(
         grantorReauthenticatedAt: options.reauthenticatedAt,
         addedPermissions: added,
         org: data.org,
-        now,
+        now: data.clock ?? now,
       });
       // Dropping the MFA requirement from a role the editor holds would let
       // them reach back office without the second factor; the grant rule only
@@ -701,7 +702,7 @@ export async function updateCustomRole(
         data.assignments.some(
           (row) =>
             row.roleId.toLowerCase() === roleId.toLowerCase() &&
-            isAssignmentActive(row, now),
+            isAssignmentActive(row, data.clock ?? now),
         )
       )
         throw new AccessError(
@@ -819,7 +820,7 @@ export async function listAccessUsers(
         displayName: user.name,
         banned: user.banned,
         banExpires: user.banExpires,
-        current: sql<boolean>`bool_or(${roleAssignments.validFrom} <= ${now} and (${roleAssignments.validUntil} is null or ${roleAssignments.validUntil} > ${now}))`,
+        current: sql<boolean>`bool_or(${roleAssignments.validFrom} <= statement_timestamp() and (${roleAssignments.validUntil} is null or ${roleAssignments.validUntil} > statement_timestamp()))`,
       })
       .from(roleAssignments)
       .innerJoin(user, eq(user.id, roleAssignments.userId))
@@ -880,11 +881,12 @@ export async function listRoleAssignments(
     if (query.userId) filters.push(eq(roleAssignments.userId, query.userId));
     if (query.roleId) filters.push(eq(roleAssignments.roleId, query.roleId));
     if (query.activeOnly) {
-      filters.push(lte(roleAssignments.validFrom, now));
+      // DB clock, the one that stamps valid_from/valid_until (bead 1201).
+      filters.push(lte(roleAssignments.validFrom, sql`statement_timestamp()`));
       filters.push(
         or(
           isNull(roleAssignments.validUntil),
-          gt(roleAssignments.validUntil, now),
+          gt(roleAssignments.validUntil, sql`statement_timestamp()`),
         )!,
       );
     }

@@ -48,7 +48,7 @@ export function createNotificationPushPorts(): NotificationRoutePorts {
     async resolveScope(tenant: TenantContext, userId: string) {
       const context = establishScopedTenantContext(tenant, { kind: "tenant" });
       const access = await loadTenantAccess(context, userId);
-      const now = new Date();
+      const now = access.clock ?? new Date();
       return access.assignments.some((assignment) =>
         isAssignmentActive(assignment, now),
       )

@@ -15,7 +15,7 @@ import {
   assertTrustedScopedContext,
   type ScopedTenantContext,
 } from "@starter/shared/core";
-import { and, asc, eq, gt, isNull, lte, or } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
 import { db } from "../db";
 import {
   distributionLines,
@@ -30,13 +30,12 @@ import { HttpError } from "../lib/http-error";
 import type { TenantTransaction } from "./accounting-shared";
 import { recordAudit } from "./audit-writer";
 
-/** Owner = an 'owner' role assignment at tenant scope that is valid now. */
+/** Owner = an 'owner' role assignment at tenant scope that is valid now (database clock). */
 export async function assertTenantOwner(
   tx: TenantTransaction,
   tenantId: string,
   actorUserId: string,
 ): Promise<void> {
-  const now = new Date();
   const rows = await tx
     .select({ id: roleAssignments.id })
     .from(roleAssignments)
@@ -53,10 +52,10 @@ export async function assertTenantOwner(
         eq(roleAssignments.userId, actorUserId),
         eq(roles.templateKey, "owner"),
         eq(roleAssignments.scopeType, "tenant"),
-        lte(roleAssignments.validFrom, now),
+        lte(roleAssignments.validFrom, sql`statement_timestamp()`),
         or(
           isNull(roleAssignments.validUntil),
-          gt(roleAssignments.validUntil, now),
+          gt(roleAssignments.validUntil, sql`statement_timestamp()`),
         ),
       ),
     )
@@ -177,10 +176,10 @@ export async function resolveUnverifiedRecipientService(
             eq(roleAssignments.userId, recipientUserId),
             eq(roles.templateKey, "owner"),
             eq(roleAssignments.scopeType, "tenant"),
-            lte(roleAssignments.validFrom, now),
+            lte(roleAssignments.validFrom, sql`statement_timestamp()`),
             or(
               isNull(roleAssignments.validUntil),
-              gt(roleAssignments.validUntil, now),
+              gt(roleAssignments.validUntil, sql`statement_timestamp()`),
             ),
           ),
         )

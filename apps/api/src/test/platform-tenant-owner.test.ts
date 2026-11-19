@@ -215,7 +215,7 @@ async function replace(
     .send(await payload(admin, account, patch));
 }
 
-/** Active tenant-scope Owner assignments (API clock). */
+/** Active tenant-scope Owner assignments, judged on the DATABASE clock. */
 async function activeOwners(tenantId: string) {
   const { rows } = await owner.query<{
     id: string;
@@ -227,15 +227,20 @@ async function activeOwners(tenantId: string) {
        FROM role_assignments ra JOIN roles r
          ON r.tenant_id = ra.tenant_id AND r.id = ra.role_id
       WHERE ra.tenant_id = $1 AND r.template_key = 'owner'
-        AND ra.scope_type = 'tenant'`,
+        AND ra.scope_type = 'tenant'
+        AND ra.valid_from <= clock_timestamp()
+        AND (ra.valid_until IS NULL OR ra.valid_until > clock_timestamp())`,
     [tenantId],
   );
-  const now = Date.now();
-  return rows.filter(
-    (row) =>
-      row.valid_from.getTime() <= now &&
-      (row.valid_until === null || row.valid_until.getTime() > now),
+  return rows;
+}
+
+/** The database wall clock in ms: valid_from/valid_until are stamped with it. */
+async function dbNowMs(): Promise<number> {
+  const { rows } = await owner.query<{ ms: number }>(
+    "SELECT (extract(epoch FROM clock_timestamp()) * 1000)::float8 AS ms",
   );
+  return rows[0]!.ms;
 }
 
 /** Direct insert of an Owner assignment that ends tomorrow (temporary). */
@@ -521,7 +526,7 @@ describe("legend-ktc4d platform Super Admin appoints and replaces a tenant Owner
 
     const ended = await assignmentRow(oldId);
     expect(ended?.valid_until).not.toBeNull();
-    expect(ended!.valid_until!.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(ended!.valid_until!.getTime()).toBeLessThanOrEqual(await dbNowMs());
     expect((await activeOwners(tenant.tenantId)).map((row) => row.id)).toEqual([
       newId,
     ]);
@@ -717,7 +722,7 @@ describe("legend-ktc4d platform Super Admin appoints and replaces a tenant Owner
     expect(created?.valid_until).toBeNull();
     const ended = await assignmentRow(ownerAId);
     expect(ended?.valid_until).not.toBeNull();
-    expect(ended!.valid_until!.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(ended!.valid_until!.getTime()).toBeLessThanOrEqual(await dbNowMs());
 
     // The tenant keeps a permanent Owner, and it is B's new row.
     const permanent = (await activeOwners(tenant.tenantId)).filter(
@@ -1071,7 +1076,7 @@ describe("legend-ktc4d platform Super Admin appoints and replaces a tenant Owner
     ]);
     const ended = await assignmentRow(firstId);
     expect(ended?.valid_until).not.toBeNull();
-    expect(ended!.valid_until!.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(ended!.valid_until!.getTime()).toBeLessThanOrEqual(await dbNowMs());
     expect(await changedEvents(tenant.tenantId)).toHaveLength(0);
     const failedReplace = await auditRows(
       tenant.tenantId,

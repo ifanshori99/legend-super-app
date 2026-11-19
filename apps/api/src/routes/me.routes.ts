@@ -69,7 +69,7 @@ async function accessRead(req: Request, res: Response) {
     tenant: getTenantContext(req),
     userId: getAuth(req).user.id,
     data: getRequestAccessData(req),
-    now: new Date(),
+    now: getRequestAccessData(req).clock ?? new Date(),
   });
   // "Ubah atasan" hint (HR or a brand/tenant GM). Presentation only: PATCH
   // /employees/:id/manager decides again. Under a read-only support session the
@@ -140,7 +140,7 @@ async function setActiveOutletRoute(req: Request, res: Response) {
     sessionId: getAuth(req).session.id,
     data: getRequestAccessData(req),
     outletId: input.outletId,
-    now: new Date(),
+    now: getRequestAccessData(req).clock ?? new Date(),
   });
   res.json({ data: { activeOutletId } });
 }

@@ -1237,7 +1237,7 @@ async function assertApprovalTier(
       surface: "pos",
       target: outletTarget(input.outletId),
       org: data.org,
-      now: input.now,
+      now: data.clock ?? input.now,
     });
   } catch (error) {
     if (error instanceof AccessError) throw approvalRefused();

@@ -11,6 +11,7 @@ import {
   ne,
   notExists,
   or,
+  sql,
 } from "drizzle-orm";
 import type { ScopedTenantContext } from "@starter/shared/core";
 import { maskEmail } from "@starter/shared/identity";
@@ -111,7 +112,6 @@ async function auditRead(
 async function ownerSummaries(
   tx: Tx,
   tenantId: string,
-  now: Date,
 ): Promise<TenantOwnerSummary[]> {
   const rows = await tx
     .select({
@@ -132,10 +132,11 @@ async function ownerSummaries(
         eq(roleAssignments.tenantId, tenantId),
         eq(roles.templateKey, "owner"),
         eq(roleAssignments.scopeType, "tenant"),
-        lte(roleAssignments.validFrom, now),
+        // DB clock, the one that stamps valid_from/valid_until (bead 1201).
+        lte(roleAssignments.validFrom, sql`statement_timestamp()`),
         or(
           isNull(roleAssignments.validUntil),
-          gt(roleAssignments.validUntil, now),
+          gt(roleAssignments.validUntil, sql`statement_timestamp()`),
         ),
       ),
     )
@@ -154,7 +155,7 @@ export async function listTenantOwnersAny(
 ): Promise<{ data: TenantOwnerSummary[] }> {
   const context = await authorizeAny(request);
   return withTenant(db, context, async (tx) => {
-    const data = await ownerSummaries(tx, request.tenantId, new Date());
+    const data = await ownerSummaries(tx, request.tenantId);
     await auditRead(tx, context, request, "platform.tenant_owners.read", {
       resultCount: data.length,
     });
@@ -168,7 +169,7 @@ export async function getPlatformTenantDetailAny(
   const context = await authorizeAny(request);
   const tenant = await getTenantOrThrow(request.tenantId);
   return withTenant(db, context, async (tx) => {
-    const owners = await ownerSummaries(tx, request.tenantId, new Date());
+    const owners = await ownerSummaries(tx, request.tenantId);
     await auditRead(tx, context, request, "platform.tenant_detail.read", {
       ownerCount: owners.length,
     });
@@ -207,10 +208,10 @@ export async function searchTenantAccountsAny(
       .where(
         and(
           eq(roleAssignments.tenantId, request.tenantId),
-          lte(roleAssignments.validFrom, now),
+          lte(roleAssignments.validFrom, sql`statement_timestamp()`),
           or(
             isNull(roleAssignments.validUntil),
-            gt(roleAssignments.validUntil, now),
+            gt(roleAssignments.validUntil, sql`statement_timestamp()`),
           ),
           ne(user.id, SYSTEM_ACCOUNT_ID),
           ne(user.id, request.actorUserId),

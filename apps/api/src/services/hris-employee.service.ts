@@ -889,10 +889,11 @@ export async function createEmployee(
           and(
             eq(roleAssignments.tenantId, context.tenant.tenantId),
             eq(roleAssignments.userId, candidate.userId),
-            lte(roleAssignments.validFrom, now),
+            // DB clock, the one that stamps valid_from/valid_until (bead 1201).
+            lte(roleAssignments.validFrom, sql`statement_timestamp()`),
             or(
               isNull(roleAssignments.validUntil),
-              gt(roleAssignments.validUntil, now),
+              gt(roleAssignments.validUntil, sql`statement_timestamp()`),
             ),
           ),
         )

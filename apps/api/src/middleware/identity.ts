@@ -102,7 +102,8 @@ export function requireIdentitySurface(
       (row.kind === "management" ||
         (facts !== null && hasActiveAssignment(facts, now)));
     const mfaRequired =
-      facts !== null && userRequiresMfa(facts.principal, facts.roles, now);
+      facts !== null &&
+      userRequiresMfa(facts.principal, facts.roles, facts.clock ?? now);
     const policy = sessionPolicy({ row, management, mfaRequired, now });
     if (policy.gate === "revoked" || policy.gate === "expired")
       throw unauthorized();

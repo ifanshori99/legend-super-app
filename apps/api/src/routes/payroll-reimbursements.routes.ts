@@ -95,7 +95,7 @@ const requireSelfReimbursement: RequestHandler = async (req, res, next) => {
       },
       roles: data.roles,
       org: data.org,
-      now: new Date(),
+      now: data.clock ?? new Date(),
       permission: code,
     });
     if (reach?.kind === "tenant")

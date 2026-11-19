@@ -535,7 +535,7 @@ export async function listEdcReconciliationQueueForActor(
         },
         roles: data.roles,
         org: data.org,
-        now,
+        now: data.clock ?? now,
         permission: "payment.reconcile",
       });
       if (reach === null)
