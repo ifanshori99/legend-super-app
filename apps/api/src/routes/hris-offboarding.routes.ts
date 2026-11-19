@@ -136,7 +136,10 @@ export function createHrisOffboardingRouter(): Router {
       );
       revokeOffboardingAccessEndpoint.body.parse(req.body ?? {});
       // A leaver with a tenant-scoped role also needs tenant-wide
-      // access.role.assign; the service decides once it sees the roles.
+      // access.role.assign; the service decides once it sees the roles. This
+      // snapshot is only an upper bound: the service re-checks the permission
+      // inside its transaction, after the tenant lock, with the session's
+      // second factor passed on here.
       const snapshot = await loadRequestAccess(req);
       const canAssignRoles =
         snapshot.contextFor("access.role.assign", { type: "tenant" }) !== null;
@@ -146,6 +149,7 @@ export function createHrisOffboardingRouter(): Router {
           hrisLearningActor(req),
           offboardingId,
           canAssignRoles,
+          snapshot.mfaVerified,
         ),
       });
     },

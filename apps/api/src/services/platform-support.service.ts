@@ -781,7 +781,6 @@ export async function listSupportAccessRequests(
       tx,
       context.tenant.tenantId,
       actor.userId,
-      now,
     );
     if (owner.length === 0)
       throw new HttpError(
@@ -841,7 +840,6 @@ async function activeOwnerAssignments(
   tx: Tx,
   tenantId: string,
   userId: string,
-  now: Date,
 ): Promise<{ assignedAt: Date; assignedBy: string }[]> {
   return tx
     .select({
@@ -862,10 +860,11 @@ async function activeOwnerAssignments(
         eq(roleAssignments.userId, userId),
         eq(roles.templateKey, "owner"),
         eq(roleAssignments.scopeType, "tenant"),
-        lte(roleAssignments.validFrom, now),
+        // DB clock, the one that stamps valid_from/valid_until (bead 1201).
+        lte(roleAssignments.validFrom, sql`statement_timestamp()`),
         or(
           isNull(roleAssignments.validUntil),
-          gt(roleAssignments.validUntil, now),
+          gt(roleAssignments.validUntil, sql`statement_timestamp()`),
         ),
       ),
     );
@@ -938,7 +937,6 @@ async function decideSupportAccessRequest(
           tx,
           tenantId,
           actor.userId,
-          now,
         );
         if (ownerAssignments.length === 0)
           return { kind: "owner_required" } as const;
@@ -1330,8 +1328,8 @@ async function endSupportAccessInternal(input: {
   const grant = await withTenant(db, context, async (tx) => {
     if (
       input.ownerContext &&
-      (await activeOwnerAssignments(tx, tenantId, input.actorUserId, now))
-        .length === 0
+      (await activeOwnerAssignments(tx, tenantId, input.actorUserId)).length ===
+        0
     )
       throw new HttpError(
         403,
@@ -1603,6 +1601,10 @@ export async function findImpersonationGrants(input: {
   tenantIds?: readonly string[];
 }): Promise<ImpersonationMatch[]> {
   const at = input.at ?? input.now;
+  // No `at`: the target's assignment must be live now, on the DB clock that
+  // stamps valid_from/valid_until (bead 1201). An explicit `at` is a stored
+  // instant (the end audit's session start) and stays as given.
+  const assignmentAt = input.at ?? sql`statement_timestamp()`;
   const matches: ImpersonationMatch[] = [];
   const tenantIds =
     input.tenantIds ??
@@ -1637,10 +1639,10 @@ export async function findImpersonationGrants(input: {
             and(
               eq(roleAssignments.tenantId, tenantId),
               eq(roleAssignments.userId, input.targetUserId),
-              lte(roleAssignments.validFrom, at),
+              lte(roleAssignments.validFrom, assignmentAt),
               or(
                 isNull(roleAssignments.validUntil),
-                gt(roleAssignments.validUntil, at),
+                gt(roleAssignments.validUntil, assignmentAt),
               ),
             ),
           )

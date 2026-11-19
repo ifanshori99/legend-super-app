@@ -20,6 +20,12 @@ import {
 export type SurfaceAccessFacts = {
   readonly principal: AccessPrincipal;
   readonly roles: readonly RoleGrant[];
+  /**
+   * The database clock the assignments were filtered with
+   * (`TenantAccessData.clock`). When present it replaces the caller's `now`
+   * for every assignment-validity check (bead 1201).
+   */
+  readonly clock?: Date;
 };
 
 export type SurfaceAccessFactsInput = {
@@ -42,7 +48,7 @@ export function hasActiveAssignment(
   now: Date,
 ): boolean {
   return facts.principal.assignments.some((row) =>
-    isAssignmentActive(row, now),
+    isAssignmentActive(row, facts.clock ?? now),
   );
 }
 
@@ -63,6 +69,6 @@ export function assertSurfaceFacts(input: {
     roles: input.facts.roles,
     surface: input.surface,
     mfaVerified: input.mfaVerified,
-    now: input.now,
+    now: input.facts.clock ?? input.now,
   });
 }

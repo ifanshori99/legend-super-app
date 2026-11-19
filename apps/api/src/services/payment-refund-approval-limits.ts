@@ -537,7 +537,11 @@ export async function refundApprovalWithinLimit(
     readonly historical?: boolean;
   } = {},
 ): Promise<boolean> {
-  const data = await loadTenantAccessInTransaction(tx, context, actor);
+  // Historical payout revalidation evaluates as of the recorded decision
+  // (`at`), so expired roles still count: no DB-clock filtering (bead 1201).
+  const data = await loadTenantAccessInTransaction(tx, context, actor, {
+    includeInactive: options.historical === true,
+  });
   const access = resolveAccessSnapshot({
     tenant: context.tenant,
     userId: actor,

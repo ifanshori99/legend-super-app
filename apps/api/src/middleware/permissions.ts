@@ -105,7 +105,7 @@ export async function loadRequestAccess(req: Request): Promise<AccessSnapshot> {
     mfaVerified: req.actingStaff
       ? false
       : (await sessionMfaVerifiedAt(req)) !== null,
-    now: new Date(),
+    now: data.clock ?? new Date(),
   });
   snapshots.set(req, snapshot);
   dataByRequest.set(req, data);
@@ -192,7 +192,7 @@ export function requireMenuPermission(
         },
         roles: data.roles,
         org: data.org,
-        now: new Date(),
+        now: data.clock ?? new Date(),
         permission,
       });
       // null = no outlet reach for this permission (deny by default).
@@ -238,7 +238,7 @@ export function requireStationScopePermission(
         principal,
         roles: data.roles,
         org: data.org,
-        now: new Date(),
+        now: data.clock ?? new Date(),
         permission,
       });
       if (reach?.kind === "tenant") {
@@ -253,7 +253,7 @@ export function requireStationScopePermission(
           principal,
           roles: data.roles,
           org: data.org,
-          now: new Date(),
+          now: data.clock ?? new Date(),
           permission,
         });
         const outletIds = [

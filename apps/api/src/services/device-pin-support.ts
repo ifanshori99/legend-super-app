@@ -54,13 +54,15 @@ export function isOutletMember(
   outletId: string,
   now: Date,
 ): boolean {
+  // The DB clock of the load wins over the caller's `now` (bead 1201).
+  const at = data.clock ?? now;
   const target = outletTarget(outletId);
   const wanted = outletId.toLowerCase();
   return data.assignments.some((row) => {
     if (
       row.tenantId.toLowerCase() !== tenant.tenantId.toLowerCase() ||
       row.userId.toLowerCase() !== userId.toLowerCase() ||
-      !isAssignmentActive(row, now)
+      !isAssignmentActive(row, at)
     )
       return false;
     if (row.scope.type === "station") {
@@ -86,14 +88,15 @@ export function membershipContext(
   data: TenantAccessData,
   now: Date,
 ): ScopedTenantContext | null {
+  const at = data.clock ?? now;
   const outlets = data.org.outlets.filter((outlet) =>
-    isOutletMember(tenant, userId, data, outlet.id, now),
+    isOutletMember(tenant, userId, data, outlet.id, at),
   );
   const tenantWide = data.assignments.some(
     (row) =>
       row.tenantId.toLowerCase() === tenant.tenantId.toLowerCase() &&
       row.userId.toLowerCase() === userId.toLowerCase() &&
-      isAssignmentActive(row, now) &&
+      isAssignmentActive(row, at) &&
       row.scope.type === "tenant",
   );
   if (tenantWide)

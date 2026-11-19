@@ -64,6 +64,7 @@ import {
   HRIS_AUDIT_SAFE_FIELDS,
   SYSTEM_ACTOR_ID,
   hrisAuditEntry,
+  holdsTenantRoleAssign,
   loadHrisAccess,
   type HrisAccess,
   type HrisActor,
@@ -626,21 +627,25 @@ export async function cancelOffboarding(
  * offboarding already revoked (or completed) answers as stored.
  *
  * Tenant-wide: `context` must be tenant scoped (HR pusat), else 403 once the
- * record is known to be in reach. `canAssignRoles` says the caller also holds
- * `access.role.assign` tenant-wide, needed when the leaver has a
- * tenant-scoped role assignment.
+ * record is known to be in reach. A leaver with a tenant-scoped role
+ * assignment also needs `access.role.assign` tenant-wide. That is decided
+ * inside the transaction, after the tenant lock, from the DB clock
+ * (legend-ig3dg); the request-time answer only caps it: `canAssignRoles` is
+ * the route's earlier check and `sessionMfaVerified` is the session's second
+ * factor used for the fresh check.
  */
 export async function revokeOffboardingAccess(
   context: ScopedTenantContext,
   actorUserId: string,
   offboardingId: string,
   canAssignRoles: boolean,
+  sessionMfaVerified: boolean,
 ): Promise<Offboarding> {
   return revokeOffboardingAccessAs(
     context,
     { type: "user", id: actorUserId },
     offboardingId,
-    canAssignRoles,
+    { canAssignRoles, sessionMfaVerified },
   );
 }
 
@@ -657,19 +662,23 @@ export async function revokeOffboardingAccessAsSystem(
   context: ScopedTenantContext,
   offboardingId: string,
 ): Promise<Offboarding> {
-  return revokeOffboardingAccessAs(
-    context,
-    { type: "system" },
-    offboardingId,
-    false,
-  );
+  return revokeOffboardingAccessAs(context, { type: "system" }, offboardingId, {
+    canAssignRoles: false,
+    sessionMfaVerified: false,
+  });
 }
+
+type RoleAssignAuthority = {
+  /** The route's request-time answer: an upper bound, never widened. */
+  canAssignRoles: boolean;
+  sessionMfaVerified: boolean;
+};
 
 async function revokeOffboardingAccessAs(
   context: ScopedTenantContext,
   actor: HrisActor,
   offboardingId: string,
-  canAssignRoles: boolean,
+  authority: RoleAssignAuthority,
 ): Promise<Offboarding> {
   return withTenant(db, context, async (tx) => {
     const tenantId = context.tenant.tenantId;
@@ -738,6 +747,19 @@ async function revokeOffboardingAccessAs(
     if (employee.userId) {
       // 4. Role assignments of this tenant (Owner refused; tenant-scoped
       // roles need access.role.assign; future ones become empty windows).
+      // legend-ig3dg: the permission is re-read here, after the lock, with
+      // the DB clock; a grant ended while this request waited is refused.
+      // The system job never gets it.
+      const canAssignRoles =
+        actor.type === "user" &&
+        authority.canAssignRoles &&
+        (await holdsTenantRoleAssign(
+          tx,
+          context,
+          actor.id,
+          authority.sessionMfaVerified,
+          now,
+        ));
       const ended = await endUserRoleAssignmentsForOffboardingInTx(
         tx,
         context,

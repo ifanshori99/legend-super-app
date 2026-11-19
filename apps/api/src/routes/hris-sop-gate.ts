@@ -87,7 +87,7 @@ export async function resolveHrisLearningContext(
       },
       roles: data.roles,
       org: data.org,
-      now: new Date(),
+      now: data.clock ?? new Date(),
       permission: code,
     });
     if (reach === null) continue;

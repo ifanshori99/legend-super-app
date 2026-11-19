@@ -128,6 +128,35 @@ export function mayChangeEmployeeManager(
 
 const lower = (value: string) => value.toLowerCase();
 
+/**
+ * Whether `actorUserId` holds `access.role.assign` tenant-wide right now.
+ * Read on the caller's open transaction (so after any advisory lock it took)
+ * with `now` from the DB clock, never from a snapshot taken before the lock.
+ * `mfaVerified` is the session's second factor, as the route reads it.
+ */
+export async function holdsTenantRoleAssign(
+  tx: Tx,
+  context: ScopedTenantContext,
+  actorUserId: string,
+  mfaVerified: boolean,
+  now: Date,
+): Promise<boolean> {
+  const actor = userIdSchema.parse(actorUserId);
+  const data: TenantAccessData = await loadTenantAccessInTransaction(
+    tx,
+    context,
+    actor,
+  );
+  const snapshot = resolveAccessSnapshot({
+    tenant: context.tenant,
+    userId: actor,
+    ...data,
+    mfaVerified,
+    now,
+  });
+  return snapshot.contextFor("access.role.assign", { type: "tenant" }) !== null;
+}
+
 export async function loadHrisAccess(
   tx: Tx,
   context: ScopedTenantContext,
@@ -179,7 +208,7 @@ export async function loadHrisAccess(
         },
         roles: data.roles,
         org: data.org,
-        now,
+        now: data.clock ?? now,
         permission: code,
       });
       if (scope === null) continue;

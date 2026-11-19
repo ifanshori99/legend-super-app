@@ -411,11 +411,13 @@ function membershipContext(
   data: TenantAccessData,
   now: Date,
 ): ScopedTenantContext | null {
+  // The DB clock of the load wins over the caller's `now` (bead 1201).
+  const at = data.clock ?? now;
   const active = data.assignments.filter(
     (row) =>
       row.tenantId.toLowerCase() === tenant.tenantId.toLowerCase() &&
       row.userId.toLowerCase() === userId.toLowerCase() &&
-      isAssignmentActive(row, now),
+      isAssignmentActive(row, at),
   );
   if (active.length === 0) return null;
   const org: OrgIndex = data.org;
@@ -464,7 +466,7 @@ function reachContext(
     },
     roles: data.roles,
     org: data.org,
-    now,
+    now: data.clock ?? now,
     permission,
   });
   return reach === null ? null : establishScopedTenantContext(tenant, reach);
@@ -1572,7 +1574,7 @@ export async function decideApprovalRequest(
       surface: "dashboard",
       target,
       org: lockedCaller.data.org,
-      now: checkAt,
+      now: lockedCaller.data.clock ?? checkAt,
       selfApproval,
     });
     if (!lockedSnapshot.allows("approval.request.decide", target))

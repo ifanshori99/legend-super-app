@@ -49,7 +49,17 @@ import {
   type TenantContext,
 } from "@starter/shared/core";
 import { establishScopedTenantContext } from "@starter/shared/core/server";
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import {
+  and,
+  eq,
+  getTableColumns,
+  gt,
+  inArray,
+  isNull,
+  lte,
+  or,
+  sql,
+} from "drizzle-orm";
 import { db } from "../db";
 import {
   brands,
@@ -66,7 +76,20 @@ export type RoleGrantRow = RoleGrant & {
 };
 
 export type TenantAccessData = {
+  /**
+   * By default only the assignments active at `clock`, filtered in SQL on the
+   * DB clock. With `includeInactive` every row (an as-of-past evaluation).
+   */
   readonly assignments: readonly RoleAssignment[];
+  /**
+   * The database clock (`statement_timestamp()`) the assignments above were
+   * filtered with. Every validity check on this data must use it, never the
+   * app server's `new Date()`: valid_from/valid_until are stamped with the
+   * database clock (legend-hzdy5), so a skewed app clock would activate a
+   * new grant late or keep a revoked one alive (bead 1201). Absent with
+   * `includeInactive`: the caller's own as-of instant (`now`) then decides.
+   */
+  readonly clock?: Date;
   readonly roles: readonly RoleGrantRow[];
   readonly org: OrgIndex;
 };
@@ -105,6 +128,15 @@ export function toRoleGrant(row: RoleRow): RoleGrantRow {
 
 export type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
+export type LoadAccessOptions = {
+  /**
+   * Return expired and future-dated assignments too, and no `clock`: for an
+   * evaluation AS OF a past instant (a recorded decision), where the caller
+   * passes that instant as `now`. Never for a current permission check.
+   */
+  readonly includeInactive?: boolean;
+};
+
 /**
  * Assignments, roles and the org tree for one user, read on the caller's
  * tenant transaction so the write and the authorization see one snapshot.
@@ -113,6 +145,7 @@ export async function loadTenantAccessInTransaction(
   tx: Tx,
   context: ScopedTenantContext,
   userId: string,
+  options: LoadAccessOptions = {},
 ): Promise<TenantAccessData> {
   // One query at a time on the tenant transaction: pg serialises concurrent
   // queries on a single client anyway, and its deprecation warning would
@@ -123,12 +156,27 @@ export async function loadTenantAccessInTransaction(
   const assignmentRows = !requestMayUseStaffRoles(userId)
     ? []
     : await tx
-        .select()
+        .select({
+          ...getTableColumns(roleAssignments),
+          dbClock: sql<Date | string>`statement_timestamp()`.as("db_clock"),
+        })
         .from(roleAssignments)
         .where(
           and(
             eq(roleAssignments.tenantId, context.tenant.tenantId),
             eq(roleAssignments.userId, userId),
+            // Validity is compared in SQL on one database instant (a single
+            // statement sees one statement_timestamp()), the same clock that
+            // stamps valid_from/valid_until. Revocation is immediate.
+            options.includeInactive
+              ? undefined
+              : and(
+                  lte(roleAssignments.validFrom, sql`statement_timestamp()`),
+                  or(
+                    isNull(roleAssignments.validUntil),
+                    gt(roleAssignments.validUntil, sql`statement_timestamp()`),
+                  ),
+                ),
           ),
         );
   const roleRows = await tx
@@ -179,8 +227,20 @@ export async function loadTenantAccessInTransaction(
                   ),
             ),
           );
+  const rawClock = assignmentRows[0]?.dbClock;
   return {
     assignments: assignmentRows.map(toAssignment),
+    // No active assignment means `clock` decides nothing: no grant can pass.
+    ...(options.includeInactive
+      ? {}
+      : {
+          clock:
+            rawClock === undefined
+              ? new Date()
+              : rawClock instanceof Date
+                ? rawClock
+                : new Date(rawClock),
+        }),
     roles: roleRows.map(toRoleGrant),
     org: {
       brands: brandRows.map((row) => ({ id: brandIdSchema.parse(row.id) })),
@@ -205,9 +265,10 @@ export async function loadTenantAccessInTransaction(
 export async function loadTenantAccess(
   context: ScopedTenantContext,
   userId: string,
+  options: LoadAccessOptions = {},
 ): Promise<TenantAccessData> {
   return withTenant(db, context, (tx) =>
-    loadTenantAccessInTransaction(tx, context, userId),
+    loadTenantAccessInTransaction(tx, context, userId, options),
   );
 }
 
@@ -240,6 +301,11 @@ export type AccessSnapshotInput = {
   readonly org: OrgIndex;
   readonly mfaVerified: boolean;
   readonly now: Date;
+  /**
+   * `TenantAccessData.clock`: when present it replaces `now` for every
+   * validity check, so callers that spread loaded data use the DB clock.
+   */
+  readonly clock?: Date;
 };
 
 export type AccessSnapshot = {
@@ -301,6 +367,9 @@ export function resolveAccessSnapshot(
   input: AccessSnapshotInput,
 ): AccessSnapshot {
   const userId = userIdSchema.parse(input.userId);
+  // The database clock of the load wins over the caller's `now` (see
+  // TenantAccessData.clock); as-of evaluations carry no clock.
+  const now = input.clock ?? input.now;
   const principal = {
     tenantId: input.tenant.tenantId,
     userId,
@@ -317,7 +386,7 @@ export function resolveAccessSnapshot(
       assignment.tenantId.toLowerCase() !==
         input.tenant.tenantId.toLowerCase() ||
       assignment.userId.toLowerCase() !== userId.toLowerCase() ||
-      !isAssignmentActive(assignment, input.now)
+      !isAssignmentActive(assignment, now)
     )
       continue;
     const role = roleById.get(assignment.roleId.toLowerCase());
@@ -350,7 +419,7 @@ export function resolveAccessSnapshot(
       org: input.org,
       permission,
       target,
-      now: input.now,
+      now,
       surface: "pos",
       mfaVerified: false,
     }).allowed;
@@ -373,7 +442,7 @@ export function resolveAccessSnapshot(
       org: input.org,
       permission,
       target,
-      now: input.now,
+      now,
       surface: "pos",
       mfaVerified: false,
     }).allowed;
@@ -412,7 +481,7 @@ export function resolveAccessSnapshot(
       principal,
       roles: input.roles,
       org: input.org,
-      now: input.now,
+      now,
       permission,
     });
     return reach === null
@@ -424,7 +493,7 @@ export function resolveAccessSnapshot(
       principal,
       roles: input.roles,
       org: input.org,
-      now: input.now,
+      now,
       permission,
     });
 
@@ -432,7 +501,7 @@ export function resolveAccessSnapshot(
     tenant: input.tenant,
     userId: input.userId,
     permissions: effective,
-    mfaRequired: userRequiresMfa(principal, input.roles, input.now),
+    mfaRequired: userRequiresMfa(principal, input.roles, now),
     mfaVerified: input.mfaVerified,
     templateKeys: [...templateKeys],
     allows,

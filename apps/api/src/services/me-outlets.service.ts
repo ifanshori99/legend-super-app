@@ -33,6 +33,8 @@ export function assignedOutletIds(input: {
   readonly now: Date;
 }): string[] {
   const { data } = input;
+  // The DB clock of the load wins over the caller's `now` (bead 1201).
+  const now = data.clock ?? input.now;
   const userId = userIdSchema.parse(input.userId);
   const principal = {
     tenantId: input.tenant.tenantId,
@@ -43,7 +45,7 @@ export function assignedOutletIds(input: {
     principal,
     roles: data.roles,
     org: data.org,
-    now: input.now,
+    now,
   });
   if (reach?.kind === "tenant")
     return data.org.outlets.map((outlet) => outlet.id);
@@ -57,7 +59,7 @@ export function assignedOutletIds(input: {
       assignment.tenantId.toLowerCase() !==
         input.tenant.tenantId.toLowerCase() ||
       !knownRoles.has(assignment.roleId.toLowerCase()) ||
-      !isAssignmentActive(assignment, input.now)
+      !isAssignmentActive(assignment, now)
     )
       continue;
     const station = data.org.stations.find(

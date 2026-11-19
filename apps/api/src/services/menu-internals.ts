@@ -208,7 +208,7 @@ export async function menuReadBrandScope(
     },
     roles: data.roles,
     org: data.org,
-    now,
+    now: data.clock ?? now,
     permission,
   });
   if (reach === null || reach.kind === "tenant") return "all";

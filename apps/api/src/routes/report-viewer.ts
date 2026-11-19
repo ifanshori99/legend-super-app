@@ -51,7 +51,7 @@ async function scopeOf(
     },
     roles: data.roles,
     org: data.org,
-    now: new Date(),
+    now: data.clock ?? new Date(),
     permission: permission as PermissionCode,
   });
 }
