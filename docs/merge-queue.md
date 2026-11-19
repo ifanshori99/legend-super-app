@@ -257,3 +257,4 @@ Induk lebih dulu. Migrasi dinomori ulang dari ujung m1 saat batch disusun.
 - 09:41 SO sarapan 1154 bersih (P0-P3 nihil) untuk 86ed0ec32: gerbang rilis sarapan lepas.
 - 09:42 CTO: batch93 (494228f7b) + batch94 (6b3288bc2) MENDARAT di m1 (G3w2u resolved). Batch95 brief 1155. Flake baru 911-closure-swap = legend-uwafm.
 - 09:43 ws/1149-flake-full-run a3aba228c (test saja: 5voa6/h4ary tenant audit sendiri, c2z4x barrier grant committed; 96/96 2x). Reviewer CTO berjalan; lolos -> batch95 bila merge train belum full run, selain itu batch96. inflf tetap terbuka.
+- 09:44 ws/1149 reviewer CTO OK -> batch95 (terakhir, bila full run belum mulai).
