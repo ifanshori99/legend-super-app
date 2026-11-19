@@ -7840,6 +7840,18 @@ Gerbang (per tahap): links 0s; lint 2m49; typecheck 2m28 (heap 8 GB); fast gate 
 
 Biaya sesi merge train sampai batch93: session-usage total biaya* 11728k (utama 10789k), puncak konteks 267k, compact 2, subagent 8. Subagent batch93: implementer 1 (konflik 1081), architect 1 (review 1081), implementer 1 (konflik 1096, untuk batch94); puncak 2 bersamaan, token heavy dipegang thread merge train ini.
 
+## Merge train batch94 (19 Nov 2026, `int/batch94` -> `milestone/m1`)
+
+Dasar `origin/milestone/m1` 494228f7b (batch93). Cabang masuk (6): `ws/1096-pos-kasir-tiket-struk` (92f4f2323), `ws/1104a-flake-api` (a289bc986), `ws/1104b-flake-payroll` (fa6d0aa07), `ws/1097-gerbang-payout-rekon` (b92882090), `ws/1098-gerbang-doit-duitku` (42c89cfb6), `ws/1100-gerbang-deploy` (abc71bfbb). `ws/1121-flake-tax-ord03` sudah mendarat di batch92. Urutan: 1096, 1104a, 1104b, 1097, 1098, 1100 (1100 sesudah 1097 dan 1098). Tanpa migrasi, tanpa renumber; `db:generate` kosong.
+
+Konflik: `apps/web/src/features/ws04-pos-kasir/ticket/{api,hooks}.ts` + `CONTRACT-GAPS.md` (1096 vs ghostex/45769078 yang sudah menyediakan kontrak): impor kontrak `issuePosTicketCredential`, `listPosOrderTickets` (`@starter/shared/pos/ticket`) dan `listPosTicketProducts/Slots`, `searchPosTicketCustomers` (`.../ticket-cashier`), penanda CONTRACT_PENDING dihapus. Satu implementer subagent.
+
+Gerbang (waktu mulai-selesai, WIB): links 0s; lint 05:07-05:10 (2m42); typecheck 05:10-05:16 (heap 8 GB); fast gate 05:16-05:21; build 05:21-05:49 (antre heavy); e2e produksi 05:49-06:06. Full run 06:06-09:29 (3j17m, berjalan bersamaan dengan full run batch93): root 3632 lulus, web 420 lulus, API 24529 lulus, 3 gagal: (1) `platform-access-api` TEN-03: kunci `canManageStationConfig` 1087, sudah diperbaiki di batch93 (m1 494228f7b), batch ini digabung dengan m1 itu; (2)+(3) `payroll-payout-911-closure-swap` dua tes: "Test timed out in 20000ms" saat dua full run jalan bersamaan, bukan kegagalan assertion; terarah bersama platform-access-api: 28/28 lulus (09:3x). Bukan baseline Retro 51, dicatat sebagai flake beban baru (tes 911 swap: timeout 20 s di bawah beban). Dua gagal ORD-03 dan audit-writer tidak muncul (dibetulkan 1121 dan 1104a).
+
+Setelah full run, `origin/milestone/m1` digabung (hanya batch93 test platform-access-api + PROGRESS); cek terarah di atas pada hasil gabungan. Aturan Retro 50 dan 51: kegagalan nyata diperbaiki dan terbukti, sisanya flake terdokumentasi, tidak ada re-run penuh.
+
+Biaya sesi merge train sampai batch94: session-usage total biaya* 12806k (utama 11867k), subagent 8 (sonnet 68 req, opus 14 req); puncak 2 bersamaan, token heavy dipegang thread merge train ini.
+
 ## 1020 SO recon ronde 2 (17 Nov 2026, cabang ghostex/1020-so-recon-ronde-2-fix, 88fd5d7c8)
 - F1 legend-qbsbr: refund dana parkir transaksi LAIN tidak lagi dihitung sebagai refund transaksi utama; refund dana milik transaksi sendiri dibandingkan dengan nilai transaksi (greatest evidence dan tagihan), bukan tagihan saja (temuan architect: tagihan 50k dibayar 150k).
 - F2 legend-svwdz: kredit DP pindahan dibatasi nilai bersih intent sumber (pool, alokasi created_at,id, floor 0), snapshot refund provider per remainder (migrasi 0636), flag recon tercatat `reservation_credit_recon_flags` (migrasi 0637) diperbarui saat refund provider dicatat. Guard refund tetap pandangan gross.
