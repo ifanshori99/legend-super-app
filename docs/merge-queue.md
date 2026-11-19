@@ -264,3 +264,4 @@ Induk lebih dulu. Migrasi dinomori ulang dari ujung m1 saat batch disusun.
 - 10:08 SO kas ronde 11 (1157) BERSIH (P0-P3 nihil) untuk ghostex/d158b041 14e34d887: gerbang rilis kas lepas. Saat landing batch96: daftarkan gerbang 1118 di release-gates (legend-gwqjp), 1tke7 ke mode info.
 - 10:30 ghostex/1159-web-test-hygiene 80030e1b4 (hmig6 tertutup 17/17, n64n sebagian, uwafm tidak tereproduksi): tunggu fix kecil test read-only meninggalkan baris di tenant bersama, lalu SIAP batch96.
 - 10:31 ghostex/fix-so-approval-waktu e1020c77e (1137 + fix 1151: P1+P2 SO 1148 tertutup, architect xhigh, 115 file regresi, tsc hijau) SIAP batch96 menggantikan ghostex/ai-layar-approval-waktu-1137. SO ronde 2 (1160) menahan gerbang rilis.
+- 10:33 1158 ghostex/eb4d9add: architect CTO bersih (heartbeat route + outbox superseded). Menunggu fix EDC stop() kunci tetap dipegang, lalu SIAP batch96.
