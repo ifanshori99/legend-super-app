@@ -27,6 +27,11 @@ export const MOCK_SCENARIOS = [
   "wa-verified",
   /** legend-vnvg: unverified WhatsApp and an empty point ledger. */
   "wa-unverified-empty",
+  /**
+   * legend-46vt: the QR bill's point claim is "available" but the guest has no
+   * account (`requiresLogin`), so the claim card shows its /masuk sign-in CTA.
+   */
+  "claim-login",
 ] as const;
 export type MockScenario = (typeof MOCK_SCENARIOS)[number];
 

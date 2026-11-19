@@ -4,6 +4,7 @@
 // shared contract), never a 409/410.
 // Cookie `legend-mock-guest=1` makes the point claim ask the guest to sign in;
 // `legend-mock-va=down` turns Virtual Account off in the payment options.
+// `?mock=claim-login` serves an available point claim that requires sign-in.
 // The engine snapshots itself (guest state + the shared floor state) into
 // sessionStorage after every call, so a reload (or a second tab opened at the
 // table) keeps the joined session, its cart and the floor board's view of it.
@@ -36,6 +37,7 @@ import {
   submitTableReview,
   updateCartLine,
 } from "@starter/shared/qr-order";
+import { pointClaimFixture } from "@starter/shared/qr-order/sample";
 import {
   createEngine,
   type MockEngine,
@@ -188,9 +190,22 @@ handle(getGuestPayment, ({ params }) => ({
 handle(getSplitClaim, ({ params, body }) => ({
   data: store().splitClaim(params.sessionId, params.splitId, body),
 }));
-handle(getPointClaim, ({ params }) => ({
-  data: store().pointClaim(params.sessionId, isGuest()),
-}));
+handle(getPointClaim, ({ params, scenario }) => {
+  // `?mock=claim-login` (legend-46vt): the claim is open but needs an account,
+  // whatever the table has paid so far (P1 ships split and unpaid).
+  if (scenario === "claim-login")
+    return {
+      data: {
+        ...store().pointClaim(params.sessionId, true),
+        status: "available" as const,
+        paidIdr: pointClaimFixture.paidIdr,
+        points: pointClaimFixture.points,
+        claimableUntil: new Date(Date.now() + 24 * 3_600_000).toISOString(),
+        requiresLogin: true,
+      },
+    };
+  return { data: store().pointClaim(params.sessionId, isGuest()) };
+});
 handle(claimSessionPoints, ({ params }) => ({
   data: store().claim(params.sessionId, isGuest()),
 }));

@@ -594,7 +594,7 @@ async function checklistRule(
   return {
     userIds,
     content: {
-      category: "schedule_update",
+      category: "checklist_alert",
       title:
         name === "checklist.missed" ? "Checklist terlewat" : "Checklist gagal",
       body:

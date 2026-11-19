@@ -7837,3 +7837,15 @@ Cabang `ws/1121-flake-tax-ord03`, dasar `4418628e0` (`origin/milestone/m1`). Tin
 - Bukti gagal-dulu: reproduksi dua aturan PBJT memberi kegagalan persis 409 vs 422 (12/13 lulus). Sesudah isolasi: `LEGEND_TEST_FILES="src/test/tax-api.test.ts" heavy pnpm test` lima kali berurutan, seluruhnya 13/13 lulus (10.58s, 9.81s, 9.22s, 10.14s, 11.48s). Log lokal `/tmp/1121-red.log` dan `/tmp/1121-green-{1..5}.log`.
 - Pemeriksaan: `pnpm exec eslint apps/api/src/test/tax-api.test.ts`, `pnpm exec prettier --check apps/api/src/test/tax-api.test.ts`, dan `git diff --check` hijau. Review konteks segar: tanpa temuan. Suite penuh/build/typecheck tidak dijalankan sesuai scope brief; lanjut integrasi oleh CTO.
 - Subagent: total 5, puncak 4 bersamaan, token heavy dipegang test_runner. Kerja Codex: 2 Explore, 1 test-writer, 1 test-runner, 1 reviewer. Biaya/rata-rata subagent sesi tidak tersedia: session-usage tidak menemukan transkrip Codex dan parallel-report hanya mengenali sesi Claude. Selesai verifikasi 03:27 WIB.
+
+## 1136 Bundel P3 web mock/e2e/teks (19 Nov 2026)
+
+Cabang `ws/1136-p3-web-mock-e2e`, dasar `origin/milestone/m1`. Tingkat S, tanpa migrasi, tanpa uang/akses.
+
+- legend-lw7gv: `scripts/test.mjs` menolak `LEGEND_TEST_FILES` diset tapi kosong/spasi (exit 1, pesan jelas); test root `tests/test-files-selection.test.mjs` (docker stub).
+- legend-5vcqk: mock ws04-expo `markPickupPickedUp`, `markExpoOrderDelivered`, `PICKUP_CALL_CLOSED`, `EXPO_ORDER_DELIVERED`; 11 test vitest web.
+- legend-46vt (sebagian): `?mock=claim-login` + spec claim-card (e2e lulus). consent-form dan area-frame belum terjangkau (bead tetap terbuka).
+- legend-eukn: snapshot tutup periode menampilkan `periodStatus`/`periodVersion` + penanda riwayat; 3 test vitest web (gagal-dulu terbukti di sumber HEAD).
+- legend-yf2b: preview report builder memakai angka viewer untuk family batch A/B (bukan duplikat x73li, belum di m1).
+- legend-z274: kategori notifikasi `checklist_alert` (tanpa migrasi, kolom varchar); preferensi `schedule_update` lama untuk alert checklist tidak dimigrasi.
+- Bukti: vitest web 14/14, text-contract + selection 17/17, typecheck shared+web hijau, API hijau dengan heap 8 GB (heap default ~6 GB OOM), e2e `legend-46vt` lulus, eslint+prettier hijau.

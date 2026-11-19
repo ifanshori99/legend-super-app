@@ -8,7 +8,10 @@ import * as dashboard from "../packages/shared/src/dashboard/index.ts";
 import * as builder from "../apps/web/src/features/ws11-report-builder/builder.ts";
 import "../apps/web/src/features/ws11-report-builder/mock.ts";
 // Read-only: the viewer's runs are the reference figures (DASH-02).
-import { buildSalesRuns } from "../apps/web/src/features/ws11-reports/mock.ts";
+import {
+  buildReportRuns,
+  buildSalesRuns,
+} from "../apps/web/src/features/ws11-reports/mock.ts";
 import { buildPreviewResult } from "../apps/web/src/features/ws11-report-builder/mock-preview.ts";
 import { setScenario } from "../apps/web/src/lib/mock/control.ts";
 import { dispatchMock, resetMocks } from "../apps/web/src/lib/mock/runtime.ts";
@@ -287,9 +290,65 @@ describe("builder mock · same figures as the viewer · DASH-02", () => {
     assert.ok(compared >= 10, `compared only ${compared} runs`);
   });
 
+  test("legend-yf2b: every viewer run of batch A/B previews the same cells and availability in the builder", () => {
+    const salesCodes = new Set(buildSalesRuns().map((run) => run.reportCode));
+    let compared = 0;
+    for (const run of buildReportRuns()) {
+      if (salesCodes.has(run.reportCode)) continue;
+      if (run.groupBy.includes("outlet")) continue;
+      const parsed = dashboard.reportBuilderQuerySchema.safeParse({
+        metricCodes: run.definitions.map((definition) => definition.code),
+        period: {
+          startDate: run.period.startDate,
+          endDate: run.period.endDate,
+        },
+        outletIds: run.outletFilter.outletIds,
+        groupBy: run.groupBy,
+        filters: [],
+        bucket: "total",
+        limit: 1000,
+      });
+      if (!parsed.success) continue;
+      const preview = buildPreviewResult(parsed.data);
+      const label = `${run.reportCode} ${run.groupBy.join(",")} ${run.period.startDate}..${run.period.endDate}`;
+      assert.deepEqual(preview.availability, run.availability, label);
+      assert.deepEqual(
+        preview.rows.map((row) => ({
+          dimensions: row.dimensions,
+          values: row.values.map((cell) => cell.value),
+        })),
+        run.rows.map((row) => ({
+          dimensions: row.dimensions,
+          values: row.values.map((cell) => cell.value),
+        })),
+        label,
+      );
+      compared += 1;
+    }
+    assert.ok(compared >= 30, `compared only ${compared} runs`);
+  });
+
+  test("legend-yf2b: a payments metric previews its share of the open day's net sales", () => {
+    const { rows } = buildPreviewResult({
+      metricCodes: ["tax_collected", "failed_payment_count"],
+      period: { startDate: "2026-11-01", endDate: "2026-11-01" },
+      groupBy: [],
+      filters: [],
+      bucket: "total",
+      limit: 100,
+    });
+    assert.deepEqual(
+      rows[0].values.map((cell) => cell.value),
+      [
+        { unit: "idr", valueIdr: 742_000 },
+        { unit: "count", value: 3 },
+      ],
+    );
+  });
+
   test("DASH-02: a metric the mock model has no source for is no data, never an invented number", () => {
     const code = dashboard.reportMetricDefinitions.find(
-      (metric) => metric.code === "food_cost_pct",
+      (metric) => metric.code === "shower_sessions",
     )?.code;
     if (code === undefined) return;
     const { rows } = buildPreviewResult({
