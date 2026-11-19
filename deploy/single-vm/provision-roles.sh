@@ -27,6 +27,11 @@
 # and provisioned on every run; the API refuses to start in production without
 # it.
 #
+# The optional RESEAL_DATABASE_URL (worker.env only) is the frozen-column
+# re-seal login: legend_reseal_<16 hex>, member of its own group only, it runs
+# just app.reseal_frozen_sealed. It is validated and provisioned when present;
+# without it the worker skips the frozen re-seal pass.
+#
 # The restricted URLs are read from the same api.env and worker.env the
 # services use, so the database always matches them. They travel to the job
 # through this process's environment, never on a command line, and are never
@@ -120,10 +125,11 @@ for file in "$api_env" "$web_env" "$worker_env"; do
   defines "$file" MIGRATION_DATABASE_URL &&
     fail "an application env file ($(basename "$file")) contains MIGRATION_DATABASE_URL; keep it in migrator.env only."
 done
-for key in DATABASE_URL APP_DATABASE_URL WORKER_DATABASE_URL MAINTENANCE_DATABASE_URL PAYOUT_GRANTOR_DATABASE_URL; do
+for key in DATABASE_URL APP_DATABASE_URL WORKER_DATABASE_URL MAINTENANCE_DATABASE_URL PAYOUT_GRANTOR_DATABASE_URL RESEAL_DATABASE_URL; do
   defines "$web_env" "$key" && fail "web.env must not contain $key."
 done
 defines "$api_env" MAINTENANCE_DATABASE_URL && fail "api.env must not contain MAINTENANCE_DATABASE_URL."
+defines "$api_env" RESEAL_DATABASE_URL && fail "api.env must not contain RESEAL_DATABASE_URL."
 defines "$worker_env" PAYOUT_GRANTOR_DATABASE_URL && fail "worker.env must not contain PAYOUT_GRANTOR_DATABASE_URL."
 
 app_url=$(value_of "$api_env" APP_DATABASE_URL)
@@ -152,6 +158,12 @@ grantor_url=$(value_of "$api_env" PAYOUT_GRANTOR_DATABASE_URL)
 [ -n "$grantor_url" ] || fail "api.env must set PAYOUT_GRANTOR_DATABASE_URL to the payout grantor login."
 { [ "$grantor_url" != "$app_url" ] && [ "$grantor_url" != "$worker_url" ] && [ "$grantor_url" != "$maintenance_url" ]; } ||
   fail "the payout grantor login must differ from the application, queue and maintenance logins."
+reseal_url=$(value_of "$worker_env" RESEAL_DATABASE_URL)
+if [ -z "$reseal_url" ] && defines "$worker_env" RESEAL_DATABASE_URL; then
+  fail "RESEAL_DATABASE_URL in worker.env is empty; set the re-seal login or remove the line."
+fi
+[ -z "$reseal_url" ] || { [ "$reseal_url" != "$app_url" ] && [ "$reseal_url" != "$worker_url" ] && [ "$reseal_url" != "$maintenance_url" ] && [ "$reseal_url" != "$grantor_url" ]; } ||
+  fail "the re-seal login must differ from the application, queue, maintenance and payout grantor logins."
 
 # The same format the job enforces, so a typo fails here and not after the
 # migration ran: generated login names, 48-hex passwords, no query string.
@@ -175,6 +187,13 @@ grantor_endpoint=$(endpoint_of "$grantor_url" 'legend_grant_[a-f0-9]{16}' '[a-f0
   fail "PAYOUT_GRANTOR_DATABASE_URL must look like postgresql://legend_grant_<16 hex>:<48 hex>@host:port/database, with nothing after the database name."
 [ "$grantor_endpoint" = "$app_endpoint" ] ||
   fail "PAYOUT_GRANTOR_DATABASE_URL must name the same host, port and database as APP_DATABASE_URL."
+if [ -n "$reseal_url" ]; then
+  reseal_endpoint=$(endpoint_of "$reseal_url" 'legend_reseal_[a-f0-9]{16}' '[a-f0-9]{48}' 0)
+  [ -n "$reseal_endpoint" ] ||
+    fail "RESEAL_DATABASE_URL must look like postgresql://legend_reseal_<16 hex>:<48 hex>@host:port/database, with nothing after the database name."
+  [ "$reseal_endpoint" = "$app_endpoint" ] ||
+    fail "RESEAL_DATABASE_URL must name the same host, port and database as APP_DATABASE_URL."
+fi
 migration_url=$(value_of "$migrator_env" MIGRATION_DATABASE_URL)
 if [ -n "$migration_url" ]; then
   [ "$(endpoint_of "$migration_url" '[^:@/]+' '[^@/]*' 1)" = "$app_endpoint" ] ||
@@ -243,6 +262,11 @@ compose config --format json 2>/dev/null | (
   PAYOUT_GRANTOR_DATABASE_URL=$grantor_url
   export PAYOUT_GRANTOR_DATABASE_URL
   set -- "$@" -e PAYOUT_GRANTOR_DATABASE_URL
+  if [ -n "$reseal_url" ]; then
+    RESEAL_DATABASE_URL=$reseal_url
+    export RESEAL_DATABASE_URL
+    set -- "$@" -e RESEAL_DATABASE_URL
+  fi
   docker run --rm -i --network none "$@" \
     -v "$script_dir/check-compose-env.mjs:/tmp/check-compose-env.mjs:ro" \
     --entrypoint node "$migrator_image" /tmp/check-compose-env.mjs
@@ -276,6 +300,10 @@ if [ -n "$maintenance_url" ]; then
 fi
 PAYOUT_GRANTOR_DATABASE_URL=$grantor_url
 export PAYOUT_GRANTOR_DATABASE_URL
+if [ -n "$reseal_url" ]; then
+  RESEAL_DATABASE_URL=$reseal_url
+  export RESEAL_DATABASE_URL
+fi
 if [ "$mode" = audit ]; then
   compose --profile provisioning run --rm provision-roles node dist/provision-roles.js --audit
   exit 0

@@ -15,6 +15,7 @@ import { Client, type ClientBase } from "pg";
 import {
   APP_LOGIN,
   GRANTOR_LOGIN,
+  RESEAL_LOGIN,
   PASSWORD,
   ProvisionError,
   WORKER_LOGIN,
@@ -141,6 +142,7 @@ export async function provisionMigrator(options: {
   appUrl?: string;
   workerUrl?: string;
   grantorUrl?: string;
+  resealUrl?: string;
 }): Promise<{ user: string; outcome: "created" | "updated" }> {
   const { bootstrap } = options;
   const restricted = [
@@ -156,6 +158,13 @@ export async function provisionMigrator(options: {
         options.grantorUrl,
         GRANTOR_LOGIN,
         "payout grantor",
+      ).user,
+    options.resealUrl &&
+      parseLogin(
+        options.migratorUrl,
+        options.resealUrl,
+        RESEAL_LOGIN,
+        "frozen-column re-seal",
       ).user,
   ].filter((name): name is string => !!name);
   const url = parseUrl(options.migratorUrl, "migration");
@@ -222,6 +231,10 @@ export async function provisionMigrator(options: {
         "legend_payout_grantor",
         // The proof-read role (drizzle/0481): the migrator grants it to legend_app.
         "legend_payout_recon",
+        // The frozen-column re-seal group (drizzle/0508, legend-qwm9r): created
+        // by another login or database of the cluster, the migrator still adds
+        // the re-seal login to it (INHERIT, no SET) only with ADMIN on it.
+        "legend_sealed_reseal",
         ...restricted,
       ]);
       return { outcome, database } as const;

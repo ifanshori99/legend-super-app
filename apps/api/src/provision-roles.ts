@@ -15,7 +15,8 @@
 // WORKER_DATABASE_URL and PAYOUT_GRANTOR_DATABASE_URL (the payout step grant
 // login, legend-911; required since legend-786te), plus the optional
 // MAINTENANCE_DATABASE_URL (the audit retention login, legend-usyi; skipped
-// when absent). Each may instead be given as NAME_FILE, a path to a
+// when absent) and RESEAL_DATABASE_URL (the frozen-column re-seal login,
+// legend-qwm9r; skipped when absent). Each may instead be given as NAME_FILE, a path to a
 // file holding the URL (--migrator reads MIGRATION_DATABASE_URL and the two
 // BOOTSTRAP_DATABASE_* settings only). Prints role names only, never a URL or password.
 // Deliberately does not load .env files: the operator supplies the settings.
@@ -109,6 +110,7 @@ try {
       appUrl: process.env.APP_DATABASE_URL || undefined,
       workerUrl: process.env.WORKER_DATABASE_URL || undefined,
       grantorUrl: process.env.PAYOUT_GRANTOR_DATABASE_URL || undefined,
+      resealUrl: process.env.RESEAL_DATABASE_URL || undefined,
     });
     console.log(
       `Migrator login ${result.user} ${result.outcome}: owns the database, BYPASSRLS, CREATEROLE, not superuser.`,
@@ -120,9 +122,18 @@ try {
       workerUrl: setting("WORKER_DATABASE_URL"),
       maintenanceUrl: optionalSetting("MAINTENANCE_DATABASE_URL"),
       grantorUrl: setting("PAYOUT_GRANTOR_DATABASE_URL"),
+      resealUrl: optionalSetting("RESEAL_DATABASE_URL"),
     });
     console.log(
-      `Audit passed for ${[result.app, result.worker, result.maintenance, result.grantor].filter(Boolean).join(", ")}; nothing was changed.`,
+      `Audit passed for ${[
+        result.app,
+        result.worker,
+        result.maintenance,
+        result.grantor,
+        result.reseal,
+      ]
+        .filter(Boolean)
+        .join(", ")}; nothing was changed.`,
     );
   } else {
     const result = await provisionRoles({
@@ -131,6 +142,7 @@ try {
       workerUrl: setting("WORKER_DATABASE_URL"),
       maintenanceUrl: optionalSetting("MAINTENANCE_DATABASE_URL"),
       grantorUrl: setting("PAYOUT_GRANTOR_DATABASE_URL"),
+      resealUrl: optionalSetting("RESEAL_DATABASE_URL"),
     });
     console.log(
       `Application login ${result.app.user} ${result.app.outcome}: member of legend_app only, no BYPASSRLS, owns nothing, no DDL.`,
@@ -146,6 +158,10 @@ try {
     if (result.grantor)
       console.log(
         `Payout grantor login ${result.grantor.user} ${result.grantor.outcome}: member of legend_payout_grantor only, no table rights, runs only app.payout_grant_issue.`,
+      );
+    if (result.reseal)
+      console.log(
+        `Frozen-column re-seal login ${result.reseal.user} ${result.reseal.outcome}: member of legend_sealed_reseal only (INHERIT, no SET), no table rights, runs only app.reseal_frozen_sealed.`,
       );
     console.log("Restricted database roles are ready.");
   }

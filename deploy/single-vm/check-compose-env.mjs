@@ -3,7 +3,8 @@
 // environment with the restricted URLs provision-roles.sh already validated
 // (APP_DATABASE_URL and WORKER_DATABASE_URL in this process's environment,
 // plus MAINTENANCE_DATABASE_URL when worker.env sets it and
-// PAYOUT_GRANTOR_DATABASE_URL when api.env sets it).
+// PAYOUT_GRANTOR_DATABASE_URL when api.env sets it, plus RESEAL_DATABASE_URL
+// when worker.env sets it).
 //
 // Compose's env_file parser reads more than the line starts the shell checks
 // look at: text after a closing quote is a new KEY=value, quoted values may
@@ -79,7 +80,19 @@ function checkComposeConfig(config, expected) {
     problems.push(
       "api receives a PAYOUT_GRANTOR_DATABASE_URL other than the checked one in api.env",
     );
+  // The frozen re-seal login belongs to the worker only; optional.
+  for (const name of Object.keys(services).sort())
+    if (name !== "worker" && !JOB_SERVICES.has(name))
+      if (has(env(name), "RESEAL_DATABASE_URL"))
+        problems.push(`${name} receives RESEAL_DATABASE_URL`);
   const worker = env("worker");
+  if (expected.reseal) {
+    if (worker.RESEAL_DATABASE_URL !== expected.reseal)
+      problems.push(
+        "worker receives a RESEAL_DATABASE_URL other than the checked one in worker.env",
+      );
+  } else if (has(worker, "RESEAL_DATABASE_URL"))
+    problems.push("worker receives a RESEAL_DATABASE_URL not checked");
   if (expected.maintenance) {
     if (worker.MAINTENANCE_DATABASE_URL !== expected.maintenance)
       problems.push(
@@ -107,6 +120,7 @@ async function main() {
     worker: process.env.WORKER_DATABASE_URL,
     maintenance: process.env.MAINTENANCE_DATABASE_URL || undefined,
     grantor: process.env.PAYOUT_GRANTOR_DATABASE_URL || undefined,
+    reseal: process.env.RESEAL_DATABASE_URL || undefined,
   };
   if (!expected.app || !expected.worker || !expected.grantor)
     refuse(

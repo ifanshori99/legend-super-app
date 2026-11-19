@@ -3459,6 +3459,13 @@
       "when": 1795000017101,
       "tag": "0507_payout_t1ufu_hold_unwritten",
       "breakpoints": true
+    },
+    {
+      "idx": 508,
+      "version": "7",
+      "when": 1795000018101,
+      "tag": "0508_sealed_reseal_frozen",
+      "breakpoints": true
     }
   ]
 }

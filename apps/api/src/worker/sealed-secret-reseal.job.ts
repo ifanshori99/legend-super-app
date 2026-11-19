@@ -58,9 +58,20 @@
 //
 // Some rows are frozen by the database (POS-04 triggers refuse any change to a
 // completed or voided order and to its tenders; the app login has no UPDATE on
-// apology_vouchers at all). They are never attempted; they
-// stay in `remaining` and are also counted in `frozen`, so they cannot pass as
-// done.
+// apology_vouchers at all). The normal pass never touches them. A second,
+// frozen pass (state column `<column>#frozen`) moves them through the one
+// database function `app.reseal_frozen_sealed`, called on `resealDatabase`: the
+// pool of the dedicated login `legend_reseal_<16 hex>` (RESEAL_DATABASE_URL),
+// which inherits the narrow `legend_sealed_reseal` group. There is no SET ROLE
+// and no other login can reach the group. The function rewrites only that
+// sealed column, compare-and-set, never to a lower version. The job opens the
+// new envelope with the same AAD and compares the plaintext before it sends it.
+// A row that fails is counted `failed`; the rest still run. The function answers
+// 1 = moved, 0 = compare-and-set lost or row gone, -1 = row locked by someone
+// else (skipped at once): 0 and -1 are neither `failed` nor `resealed`, and the
+// next run takes the row. Without `resealDatabase` the frozen pass is skipped
+// (one warn line per run, not a failure). Frozen rows stay in `remaining` (and
+// `frozen`) until moved, so they cannot pass as done.
 
 import { sql, type SQL } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
@@ -87,7 +98,9 @@ import { listAllTenantIds } from "./hris-pii-reseal.job.ts";
 
 type Database = NodePgDatabase<typeof schema>;
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
-type Log = Pick<Console, "error" | "info">;
+type Log = Pick<Console, "error" | "info"> & Partial<Pick<Console, "warn">>;
+/** Pool of the reseal login: it only needs to run one statement. */
+type ResealDatabase = Pick<Database, "execute">;
 
 export const SEALED_SECRET_RESEAL_QUEUE = "sealed-secret-reseal";
 export const SEALED_SECRET_RESEAL_BATCH = 200;
@@ -271,8 +284,8 @@ export const SEALED_SECRET_COLUMNS: readonly SealedSecretColumn[] = [
   {
     // apology-voucher.service.ts sealAad(tenant, voucher id). Frozen: migration
     // 0212 revokes UPDATE on this table from the app login (append-only, the
-    // voucher is money-adjacent), so the job cannot and must not rewrite it.
-    // It stays in `remaining` until an owner-approved path exists.
+    // voucher is money-adjacent), so only the frozen pass rewrites it, through
+    // app.reseal_frozen_sealed (this column only, same plaintext).
     table: "apology_vouchers",
     column: "code_sealed",
     scope: "tenant",
@@ -403,7 +416,7 @@ export type SealedSecretColumnReport = {
   failed: number;
   /** Rows still below the active version after the run (frozen included). */
   remaining: number;
-  /** Part of `remaining` that the database refuses to change. */
+  /** Part of `remaining` in the frozen set (moved by the frozen pass). */
   frozen: number;
   /** Service sweeps only: rows skipped this pass (still in `remaining`). */
   busy?: number;
@@ -421,7 +434,13 @@ export type SealedSecretResealResult = {
 
 export type SealedSecretResealOptions = {
   database?: Database;
-  log?: Pick<Console, "error">;
+  log?: Pick<Console, "error"> & Partial<Pick<Console, "warn">>;
+  /**
+   * Pool of the reseal login (`legend_reseal_<16 hex>`), the only caller of
+   * `app.reseal_frozen_sealed`. Absent: the frozen pass is skipped with one warn
+   * line, `remaining` still counts the frozen rows.
+   */
+  resealDatabase?: ResealDatabase;
   batchSize?: number;
   /** Version to move rows to; defaults to the ring's active version. */
   activeKeyVersion?: number;
@@ -505,14 +524,19 @@ async function countRows(
 
 type PassState = { lastId: string | null; failed: number };
 
+/** Cursor row of the frozen pass of a column. */
+const frozenStateColumn = (c: SealedSecretColumn): string =>
+  `${c.column}#frozen`;
+
 async function loadState(
   tx: Transaction,
   c: SealedSecretColumn,
   scope: string,
   active: number,
+  stateColumn: string = c.column,
 ): Promise<PassState> {
   const result = (await tx.execute(
-    sql`SELECT last_id::text AS last_id, key_version, failed_count FROM sealed_secret_reseal_state WHERE table_name = ${c.table} AND column_name = ${c.column} AND scope_key = ${scope}`,
+    sql`SELECT last_id::text AS last_id, key_version, failed_count FROM sealed_secret_reseal_state WHERE table_name = ${c.table} AND column_name = ${stateColumn} AND scope_key = ${scope}`,
   )) as unknown as ResultRows;
   const row = result.rows[0];
   // A cursor from another key version belongs to a finished pass.
@@ -528,11 +552,12 @@ async function saveState(
   active: number,
   state: PassState,
   resealedNow: number,
+  stateColumn: string = c.column,
 ): Promise<void> {
   await tx.execute(sql`
     INSERT INTO sealed_secret_reseal_state
       (table_name, column_name, scope_key, last_id, key_version, resealed_count, failed_count, updated_at)
-    VALUES (${c.table}, ${c.column}, ${scope}, ${state.lastId}::uuid, ${active}, ${resealedNow}, ${state.failed}, now())
+    VALUES (${c.table}, ${stateColumn}, ${scope}, ${state.lastId}::uuid, ${active}, ${resealedNow}, ${state.failed}, now())
     ON CONFLICT (table_name, column_name, scope_key) DO UPDATE SET
       last_id = EXCLUDED.last_id,
       key_version = EXCLUDED.key_version,
@@ -543,7 +568,7 @@ async function saveState(
 }
 
 /** Opens under the first AAD that authenticates and seals under the active key. */
-function resealValue(sealed: string, aads: string[]): string {
+function resealValue(sealed: string, aads: string[], verify = false): string {
   let lastError: unknown;
   for (const aad of aads) {
     let plaintext: string;
@@ -553,7 +578,12 @@ function resealValue(sealed: string, aads: string[]): string {
       lastError = error;
       continue;
     }
-    return sealSecret(plaintext, aad);
+    const next = sealSecret(plaintext, aad);
+    // Frozen rows cannot be corrected by the app afterwards: prove the new
+    // envelope opens to the very same plaintext under the same AAD first.
+    if (verify && openSecret(next, aad) !== plaintext)
+      throw new Error("Re-sealed value does not match");
+    return next;
   }
   throw lastError instanceof Error ? lastError : new Error("Cannot open");
 }
@@ -629,6 +659,62 @@ async function resealBatch(
   return { handled: result.rows.length, resealed };
 }
 
+/**
+ * One batch of the frozen pass: stale frozen rows after the cursor (no row
+ * lock here; the database function locks the row with SKIP LOCKED and does the
+ * compare-and-set), each moved by `app.reseal_frozen_sealed` on `resealDatabase`
+ * (its own login, its own connection, no SET ROLE).
+ */
+async function resealFrozenBatch(
+  tx: Transaction,
+  resealDatabase: ResealDatabase,
+  c: SealedSecretColumn,
+  scope: string,
+  active: number,
+  batchSize: number,
+  state: PassState,
+): Promise<{ handled: number; resealed: number }> {
+  const col = sql.identifier(c.column);
+  const extras = (c.extra ?? []).map(
+    (name, i) =>
+      sql`, t.${sql.identifier(name)}::text AS ${sql.identifier(`x${i}`)}`,
+  );
+  const cursor =
+    state.lastId === null ? sql`` : sql` AND t.id > ${state.lastId}::uuid`;
+  const result = (await tx.execute(
+    sql`SELECT t.id::text AS id, t.${col} AS sealed${sql.join(extras, sql``)} FROM ${tableSql(c)} t WHERE ${scopeSql(c, scope)} AND ${staleSql(c, active)} AND (${sql.raw(c.frozenWhere ?? "false")})${cursor} ORDER BY t.id LIMIT ${batchSize}`,
+  )) as unknown as ResultRows;
+
+  let resealed = 0;
+  for (const row of result.rows) {
+    const uuid = String(row.id);
+    const sealed = String(row.sealed);
+    state.lastId = uuid;
+    try {
+      // The database function only handles tenant text columns.
+      if (c.scope !== "tenant" || c.encoding !== "text" || c.versionLabel)
+        throw new Error("Frozen column not supported");
+      if (sealedVersion(sealed) >= active) continue;
+      const sealedRow: SealedRow = {
+        id: c.idIsUlid ? uuidToUlid(uuid) : uuid,
+        tenantId: scope,
+        extra: (c.extra ?? []).map((_, i) => String(row[`x${i}`])),
+      };
+      const next = resealValue(sealed, c.aad(sealedRow), true);
+      const out = (await resealDatabase.execute(
+        sql`SELECT app.reseal_frozen_sealed(${c.table}::text, ${c.column}::text, ${scope}::uuid, ${uuid}::uuid, ${sealed}::text, ${next}::text) AS n`,
+      )) as unknown as ResultRows;
+      const updated = Number(out.rows[0]?.n ?? 0);
+      // 0: the value changed under us (compare-and-set); -1: the row is locked
+      // by someone else. Neither is a failure; the next pass sees the row again.
+      if (updated > 0) resealed += 1;
+    } catch {
+      state.failed += 1;
+    }
+  }
+  return { handled: result.rows.length, resealed };
+}
+
 type ScopeRun = SealedSecretColumnReport;
 
 /** One column in one scope: batches until a pass finishes, then the counts. */
@@ -640,6 +726,7 @@ async function runScope(
   batchSize: number,
   options: SealedSecretResealOptions,
   result: { aborted: boolean },
+  skipped: { warn(): void },
 ): Promise<ScopeRun> {
   const inScope = <T>(run: (tx: Transaction) => Promise<T>): Promise<T> =>
     c.scope === "tenant"
@@ -647,27 +734,43 @@ async function runScope(
       : database.transaction(run);
   let resealedTotal = 0;
   let failedTotal = 0;
+  const { resealDatabase } = options;
 
-  // A fully frozen column is only counted: SELECT ... FOR UPDATE would already
-  // need the UPDATE privilege the app login does not have on it.
-  if (!options.reportOnly && c.frozenWhere !== "true") {
-    const state = await inScope((tx) => loadState(tx, c, scope, active));
+  // The normal pass skips frozen rows (and a fully frozen column, where even
+  // SELECT ... FOR UPDATE would need the UPDATE privilege the login lacks);
+  // the frozen pass moves those through the database function.
+  const runPass = async (frozenPass: boolean): Promise<void> => {
+    const stateColumn = frozenPass ? frozenStateColumn(c) : c.column;
+    const state = await inScope((tx) =>
+      loadState(tx, c, scope, active, stateColumn),
+    );
     for (;;) {
       if (options.signal?.aborted) {
         result.aborted = true;
         break;
       }
       const batch = await inScope(async (tx) => {
-        const outcome = await resealBatch(
+        const outcome = await (resealDatabase && frozenPass
+          ? resealFrozenBatch(
+              tx,
+              resealDatabase,
+              c,
+              scope,
+              active,
+              batchSize,
+              state,
+            )
+          : resealBatch(tx, c, scope, active, batchSize, state));
+        if (outcome.handled === 0) state.lastId = null;
+        await saveState(
           tx,
           c,
           scope,
           active,
-          batchSize,
           state,
+          outcome.resealed,
+          stateColumn,
         );
-        if (outcome.handled === 0) state.lastId = null;
-        await saveState(tx, c, scope, active, state, outcome.resealed);
         return outcome;
       });
       resealedTotal += batch.resealed;
@@ -679,7 +782,15 @@ async function runScope(
         count: batch.resealed,
       });
     }
-    failedTotal = state.failed;
+    failedTotal += state.failed;
+  };
+
+  if (!options.reportOnly) {
+    if (c.frozenWhere !== "true") await runPass(false);
+    if (c.frozenWhere && !result.aborted) {
+      if (resealDatabase) await runPass(true);
+      else skipped.warn();
+    }
   }
 
   // Counted without SKIP LOCKED: a row locked by someone else still counts.
@@ -854,6 +965,17 @@ export async function runSealedSecretReseal(
       frozen: 0,
     };
   const failedTenants = new Set<string>();
+  // One warn line per run, however many columns and tenants skip the frozen pass.
+  let warnedSkip = false;
+  const skipped = {
+    warn() {
+      if (warnedSkip) return;
+      warnedSkip = true;
+      log.warn?.(
+        "Sealed secret re-seal: frozen pass skipped, no reseal login configured (set RESEAL_DATABASE_URL); frozen rows stay in remaining",
+      );
+    },
+  };
 
   for (const c of columns) {
     const total = result.tables[keyOf(c)];
@@ -873,6 +995,7 @@ export async function runSealedSecretReseal(
           batchSize,
           options,
           result,
+          skipped,
         );
         total.resealed += run.resealed;
         total.failed += run.failed;
@@ -1014,7 +1137,7 @@ export function sealedSecretUnresolved(
   return n;
 }
 
-/** Part of `sealedSecretUnresolved` that the database refuses to change. */
+/** Part of `sealedSecretUnresolved` that sits in the frozen set (moved by the frozen pass). */
 export function sealedSecretFrozen(result: SealedSecretResealResult): number {
   let n = 0;
   for (const report of Object.values(result.tables)) n += report.frozen;
@@ -1046,6 +1169,8 @@ type SealedSecretResealBoss = {
 export async function registerSealedSecretResealJob(options: {
   boss: SealedSecretResealBoss;
   database?: Database;
+  /** Pool of the reseal login; absent: the frozen pass is skipped (warn). */
+  resealDatabase?: ResealDatabase;
   log?: Log;
   /** Test hook; defaults to every tenant. */
   listTenantIds?: () => Promise<string[]>;
@@ -1078,6 +1203,9 @@ export async function registerSealedSecretResealJob(options: {
         log,
         signal: AbortSignal.any(signals),
         ...(options.database ? { database: options.database } : {}),
+        ...(options.resealDatabase
+          ? { resealDatabase: options.resealDatabase }
+          : {}),
         ...(options.listTenantIds
           ? { listTenantIds: options.listTenantIds }
           : {}),
@@ -1093,14 +1221,12 @@ export async function registerSealedSecretResealJob(options: {
         );
       const unresolved = sealedSecretUnresolved(result);
       const frozen = sealedSecretFrozen(result);
-      // Frozen rows cannot be fixed by a retry: they are reported, not failed.
-      if (frozen > 0)
-        log.info(
-          `Sealed secret re-seal: ${frozen} frozen row(s) still on an old key version; the old key cannot retire`,
-        );
-      if (unresolved - frozen > 0)
+      // Frozen rows are moved by the frozen pass too, so any left over (frozen
+      // included) means a failed or locked row: fail the job, the next run
+      // retries.
+      if (unresolved > 0)
         throw new Error(
-          `Sealed secret re-seal incomplete: ${unresolved - frozen} row(s) still stale or failed`,
+          `Sealed secret re-seal incomplete: ${unresolved} row(s) still stale or failed (${frozen} frozen)`,
         );
     } catch (error) {
       log.error(

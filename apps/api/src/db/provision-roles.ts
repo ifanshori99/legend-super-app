@@ -11,7 +11,10 @@
 //     audit retention functions (SECURITY DEFINER, owned by the table owner), and
 //   - the optional payout grantor login (legend-911), a member of the NOLOGIN
 //     `legend_payout_grantor` group only: no table rights, it may run just
-//     app.payout_grant_issue (SECURITY DEFINER, owned by `legend_payout`).
+//     app.payout_grant_issue (SECURITY DEFINER, owned by `legend_payout`), and
+//   - the optional frozen-column re-seal login (legend-qwm9r), the only member of
+//     the NOLOGIN `legend_sealed_reseal` group (INHERIT, never SET): no table
+//     rights, it may run just app.reseal_frozen_sealed.
 // None may be a superuser, bypass RLS, own domain tables, or create objects
 // outside its own schema. Every run re-verifies that, so the job is safe to
 // repeat and doubles as an audit.
@@ -30,6 +33,7 @@ export const APP_LOGIN = /^legend_runtime_[a-f0-9]{16}$/;
 export const WORKER_LOGIN = /^legend_worker_[a-f0-9]{16}$/;
 export const MAINT_LOGIN = /^legend_maint_[a-f0-9]{16}$/;
 export const GRANTOR_LOGIN = /^legend_grant_[a-f0-9]{16}$/;
+export const RESEAL_LOGIN = /^legend_reseal_[a-f0-9]{16}$/;
 export const PASSWORD = /^[a-f0-9]{48}$/;
 const APP_GROUP = "legend_app";
 const MAINT_GROUP = "legend_maintenance";
@@ -41,6 +45,16 @@ const MAINT_FUNCTIONS = [
 // legend_app may SET ROLE to it (INHERIT FALSE, drizzle/0481): the only role that
 // may record an 'ok' observation of a proof file. Reached, never inherited.
 const RECON_GROUP = "legend_payout_recon";
+// The only role that may run app.reseal_frozen_sealed, which re-seals the four
+// frozen sealed columns (legend-4vfmn, legend-49onu, legend-qwm9r). Its one
+// member is the dedicated legend_reseal_* login (INHERIT TRUE, SET FALSE, no
+// ADMIN); legend_app and the other logins are not members and cannot SET ROLE to
+// it (drizzle/0508). It holds no table rights.
+const SEALED_RESEAL_GROUP = "legend_sealed_reseal";
+const SEALED_RESEAL_FUNCTION =
+  "app.reseal_frozen_sealed(text, text, uuid, uuid, text, text)";
+const RESEAL_FUNCTIONS = [SEALED_RESEAL_FUNCTION];
+const RESEAL_LABEL = "frozen-column re-seal";
 const GRANTOR_GROUP = "legend_payout_grantor";
 const PAYOUT_OWNER = "legend_payout";
 // The only routine the grantor group may run (migration 0419).
@@ -986,18 +1000,24 @@ async function assertGroup(client: ClientBase, name = APP_GROUP) {
 }
 
 /**
- * Normalise existing memberships of `group`: drop any grant without INHERIT or
- * with ADMIN OPTION, then grant cleanly. PostgreSQL keeps one row per grantor; a
+ * Normalise existing memberships of `group`: drop any grant without INHERIT,
+ * with ADMIN OPTION, or (when `set` is given) with a different SET option, then
+ * grant cleanly. PostgreSQL keeps one row per grantor; a
  * superuser can revoke each by name, anyone can revoke their own. Rows it
  * cannot revoke stay and make assertRestricted refuse with the grantor named.
  */
-async function grantGroup(client: ClientBase, group: string, user: string) {
+async function grantGroup(
+  client: ClientBase,
+  group: string,
+  user: string,
+  set?: boolean,
+) {
   const admin = await client.query(
     "SELECT current_user AS name, rolsuper FROM pg_roles WHERE rolname = current_user",
   );
   const rows = await client.query(
     `SELECT pg_get_userbyid(m.grantor) AS grantor, m.admin_option,
-            m.inherit_option AS inherit
+            m.inherit_option AS inherit, m.set_option AS "set"
      FROM pg_auth_members m
      WHERE m.roleid = (SELECT oid FROM pg_roles WHERE rolname = $1)
        AND m.member = (SELECT oid FROM pg_roles WHERE rolname = $2)`,
@@ -1007,8 +1027,14 @@ async function grantGroup(client: ClientBase, group: string, user: string) {
     grantor: string;
     admin_option: boolean;
     inherit: boolean;
+    set: boolean;
   }[]) {
-    if (!row.admin_option && row.inherit) continue;
+    if (
+      !row.admin_option &&
+      row.inherit &&
+      (set === undefined || row.set === set)
+    )
+      continue;
     if (row.grantor === admin.rows[0].name)
       await client.query(`REVOKE ${group} FROM "${user}"`);
     else if (admin.rows[0].rolsuper && !row.grantor.includes('"'))
@@ -1016,7 +1042,9 @@ async function grantGroup(client: ClientBase, group: string, user: string) {
         `REVOKE ${group} FROM "${user}" GRANTED BY "${row.grantor}"`,
       );
   }
-  await client.query(`GRANT ${group} TO "${user}" WITH INHERIT TRUE`);
+  await client.query(
+    `GRANT ${group} TO "${user}" WITH INHERIT TRUE${set === false ? ", SET FALSE" : ""}`,
+  );
 }
 
 async function provisionApp(client: ClientBase, login: Login) {
@@ -1060,6 +1088,165 @@ async function assertReconRoleReachedOnly(client: ClientBase, user: string) {
     throw new ProvisionError(
       `The application role can run proof observation functions outside ${RECON_GROUP}: ${executable.join(", ")}.`,
     );
+}
+
+// The frozen-column re-seal role (drizzle/0508, legend-qwm9r) is held by one
+// dedicated login only (legend_reseal_*, INHERIT TRUE, SET FALSE, no ADMIN). No
+// other role may be a member that can use it, neither legend_app nor any other
+// login (a SET-only member could choose its own tenant GUC and reach other
+// tenants' frozen rows), and nobody else may run app.reseal_frozen_sealed.
+// `logins` are the other logins of this deploy, checked for a direct EXECUTE.
+// With `resealUser` (the login of this deploy's RESEAL_DATABASE_URL) that exact
+// login must be the only reseal-shaped member: a stale legend_reseal_* left from
+// an earlier key is refused.
+async function assertSealedResealRoleReachedOnly(
+  client: ClientBase,
+  logins: string[],
+  resealUser?: string,
+) {
+  const members = await client.query<{
+    member: string;
+    superuser: boolean;
+    self: boolean;
+    admin_option: boolean;
+    inherit: boolean;
+    set: boolean;
+  }>(
+    `SELECT u.rolname AS member, u.rolsuper AS superuser, u.rolname = current_user AS self,
+            m.admin_option, m.inherit_option AS inherit, m.set_option AS "set"
+     FROM pg_auth_members m JOIN pg_roles u ON u.oid = m.member
+     WHERE m.roleid = $1::regrole
+     ORDER BY 1`,
+    [SEALED_RESEAL_GROUP],
+  );
+  // The reseal login must have exactly INHERIT. Anyone else may not use the
+  // group at all (a bare ADMIN-only row of the migration owner, which created
+  // the role, grants no power and is the one thing left alone).
+  const flawed = members.rows
+    .filter((row) =>
+      RESEAL_LOGIN.test(row.member)
+        ? (resealUser !== undefined && row.member !== resealUser) ||
+          row.admin_option ||
+          !row.inherit ||
+          row.set
+        : !row.superuser &&
+          (row.inherit ||
+            row.set ||
+            (row.admin_option &&
+              !row.self &&
+              !/^legend_migrator_[a-f0-9]{16}$/.test(row.member))),
+    )
+    .map((row) => row.member);
+  if (flawed.length)
+    throw new ProvisionError(
+      `${SEALED_RESEAL_GROUP} has members it must not have or with options it must not hold: ${flawed.slice(0, 5).join(", ")}${flawed.length > 5 ? ", ..." : ""}. Only ${RESEAL_LABEL} login (legend_reseal_<16 hex>) may be a member, with INHERIT and neither SET nor ADMIN OPTION; as a superuser run REVOKE ${SEALED_RESEAL_GROUP} FROM <role>, then re-run.`,
+    );
+
+  const result = await client.query(
+    `SELECT ARRAY(
+              SELECT f.sig || ' for ' || g.grantee
+                FROM (VALUES ('app.reseal_frozen_sealed(text, text, uuid, uuid, text, text)')) AS f(sig)
+                CROSS JOIN (SELECT unnest($1::text[]) AS grantee) AS g
+               WHERE to_regprocedure(f.sig) IS NOT NULL
+                 AND has_function_privilege(g.grantee, to_regprocedure(f.sig), 'EXECUTE')
+               ORDER BY 1
+            ) AS executable`,
+    [["legend_app", "public", ...logins]],
+  );
+  const { executable } = result.rows[0];
+  if (executable.length)
+    throw new ProvisionError(
+      `The frozen-column re-seal function can be run outside ${SEALED_RESEAL_GROUP}: ${executable.join(", ")}.`,
+    );
+
+  // The group itself: its only power is the one function. A table or sequence
+  // right (MAINTAIN included, PostgreSQL 17+), or EXECUTE on any other function,
+  // would widen what the reseal login reaches. Functions open to PUBLIC (trigger
+  // functions, extensions) add nothing through the group; the PUBLIC check of
+  // SECURITY DEFINER functions covers those.
+  const relationRights = `SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER${(await serverVersion(client)) >= 170000 ? ", MAINTAIN" : ""}`;
+  const group = await client.query(
+    `SELECT ARRAY(
+              SELECT format('%I.%I', n.nspname, c.relname)
+                FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+               WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+                 AND n.nspname NOT LIKE 'pg\\_toast%' AND n.nspname NOT LIKE 'pg\\_temp%'
+                 AND (  (c.relkind IN ('r', 'p', 'v', 'm', 'f')
+                         AND (has_table_privilege($1::text, c.oid, $3::text)
+                              OR has_any_column_privilege($1::text, c.oid, 'SELECT, INSERT, UPDATE, REFERENCES')))
+                     OR (c.relkind = 'S'
+                         AND has_sequence_privilege($1::text, c.oid, 'USAGE, SELECT, UPDATE')))
+               ORDER BY 1
+            ) AS relations,
+            ARRAY(
+              SELECT p.oid::regprocedure::text
+                FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+               WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+                 AND p.oid <> to_regprocedure($2::text)
+                 AND NOT EXISTS (SELECT 1 FROM pg_depend d
+                                  WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')
+                 AND has_function_privilege($1::text, p.oid, 'EXECUTE')
+                 AND NOT has_function_privilege('public', p.oid, 'EXECUTE')
+               ORDER BY 1
+            ) AS functions,
+            COALESCE((SELECT p.prosecdef AND COALESCE(p.proconfig::text[] @> ARRAY['search_path=pg_catalog, pg_temp'], false)
+                        FROM pg_proc p WHERE p.oid = to_regprocedure($2::text)), true) AS function_ok,
+            -- The function runs as its owner on FORCE RLS tables (orders,
+            -- pos_order_tenders): the owner must be a superuser or BYPASSRLS
+            -- role (the migration owner), or the update would match no row.
+            COALESCE((SELECT r.rolsuper OR r.rolbypassrls
+                        FROM pg_proc p JOIN pg_roles r ON r.oid = p.proowner
+                       WHERE p.oid = to_regprocedure($2::text)), true) AS owner_ok`,
+    [SEALED_RESEAL_GROUP, SEALED_RESEAL_FUNCTION, relationRights],
+  );
+  const { relations, functions, function_ok, owner_ok } = group.rows[0];
+  if (relations.length)
+    throw new ProvisionError(
+      `${SEALED_RESEAL_GROUP} holds table or sequence rights it must not have: ${relations.slice(0, 5).join(", ")}${relations.length > 5 ? ", ..." : ""}.`,
+    );
+  if (functions.length)
+    throw new ProvisionError(
+      `${SEALED_RESEAL_GROUP} can run functions other than ${SEALED_RESEAL_FUNCTION}: ${functions.slice(0, 5).join(", ")}${functions.length > 5 ? ", ..." : ""}.`,
+    );
+  if (!function_ok)
+    throw new ProvisionError(
+      `${SEALED_RESEAL_FUNCTION} must be SECURITY DEFINER with search_path pinned to pg_catalog, pg_temp.`,
+    );
+  if (!owner_ok)
+    throw new ProvisionError(
+      `${SEALED_RESEAL_FUNCTION} must be owned by a superuser or BYPASSRLS role (the migration owner): it updates FORCE ROW LEVEL SECURITY tables as its owner.`,
+    );
+  // The group's effective rights get the audit of a login (it is audited as one:
+  // system catalogs, built-in functions outside the initdb baseline, MAINTAIN,
+  // sequences, CREATE on schemas, parameter grants), because the reseal login
+  // inherits every one of them and no other check looks at the group alone.
+  await assertRestricted(
+    client,
+    SEALED_RESEAL_GROUP,
+    SEALED_RESEAL_GROUP,
+    [],
+    [],
+  );
+  await assertTableRights(
+    client,
+    SEALED_RESEAL_GROUP,
+    SEALED_RESEAL_GROUP,
+    [],
+    {},
+  );
+  await assertSequenceRights(
+    client,
+    SEALED_RESEAL_GROUP,
+    SEALED_RESEAL_GROUP,
+    [],
+    [],
+  );
+  await assertNoSensitive(client, SEALED_RESEAL_GROUP, SEALED_RESEAL_GROUP);
+  await assertNoParameterGrants(
+    client,
+    SEALED_RESEAL_GROUP,
+    SEALED_RESEAL_GROUP,
+  );
 }
 
 /**
@@ -1448,6 +1635,114 @@ async function provisionGrantor(client: ClientBase, login: Login) {
   return outcome;
 }
 
+/**
+ * The reseal group runs app.reseal_frozen_sealed and nothing else (migration
+ * 0508): SECURITY DEFINER with a pinned search_path, executable by the group
+ * (so by its login) but never by PUBLIC or legend_app.
+ */
+async function assertResealFunctions(client: ClientBase, user: string) {
+  const functions = await client.query(
+    `SELECT f.signature, p.oid IS NOT NULL AS found,
+            COALESCE(p.prosecdef, false) AS secdef,
+            COALESCE(p.proconfig::text[] @> ARRAY['search_path=pg_catalog, pg_temp'], false) AS pinned,
+            COALESCE(has_function_privilege($1, p.oid, 'EXECUTE'), false) AS login_can,
+            COALESCE(has_function_privilege('public', p.oid, 'EXECUTE'), false) AS public_can,
+            COALESCE(has_function_privilege($3, p.oid, 'EXECUTE'), false) AS app_can
+     FROM unnest($2::text[]) AS f(signature)
+     LEFT JOIN pg_proc p ON p.oid = to_regprocedure(f.signature)
+     ORDER BY 1`,
+    [user, RESEAL_FUNCTIONS, APP_GROUP],
+  );
+  type Row = {
+    signature: string;
+    found: boolean;
+    secdef: boolean;
+    pinned: boolean;
+    login_can: boolean;
+    public_can: boolean;
+    app_can: boolean;
+  };
+  const problems = (functions.rows as Row[]).flatMap((row) => {
+    if (!row.found) return [`${row.signature} does not exist`];
+    return [
+      ...(row.secdef ? [] : ["is not SECURITY DEFINER"]),
+      ...(row.pinned ? [] : ["has no pinned search_path"]),
+      ...(row.login_can ? [] : ["cannot be run by the login"]),
+      ...(row.public_can || row.app_can
+        ? ["can be run by PUBLIC or legend_app"]
+        : []),
+    ].map((problem) => `${row.signature} ${problem}`);
+  });
+  if (problems.length)
+    throw new ProvisionError(
+      `The frozen-column re-seal function is not as the migrations define it: ${problems.slice(0, 5).join("; ")}${problems.length > 5 ? "; ..." : ""}. Run the migrations, then re-run.`,
+    );
+  // Any other SECURITY DEFINER function the login can run, in any schema it can
+  // reach (PUBLIC keeps USAGE on schema public), lets it act as that owner.
+  const secdef = await client.query(
+    `SELECT ARRAY(
+       SELECT p.oid::regprocedure::text
+       FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+       WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+         AND has_schema_privilege($1, n.oid, 'USAGE')
+         AND p.prosecdef
+         AND has_function_privilege($1, p.oid, 'EXECUTE')
+         AND p.oid <> ALL(ARRAY(SELECT to_regprocedure(x)::oid FROM unnest($2::text[]) AS x))
+       ORDER BY 1
+     ) AS names`,
+    [user, RESEAL_FUNCTIONS],
+  );
+  if (secdef.rows[0].names.length)
+    throw new ProvisionError(
+      `The frozen-column re-seal role may run functions beyond reseal_frozen_sealed: ${secdef.rows[0].names.slice(0, 5).join(", ")}${secdef.rows[0].names.length > 5 ? ", ..." : ""}. Revoke EXECUTE from PUBLIC and the role, then re-run.`,
+    );
+  // Same for the rest of the app schema, SECURITY DEFINER or not.
+  const extra = await client.query(
+    `SELECT ARRAY(
+       SELECT p.oid::regprocedure::text
+       FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+       WHERE n.nspname = 'app'
+         AND has_function_privilege($1, p.oid, 'EXECUTE')
+         AND NOT has_function_privilege('public', p.oid, 'EXECUTE')
+         AND p.oid <> ALL(ARRAY(SELECT to_regprocedure(x)::oid FROM unnest($2::text[]) AS x))
+       ORDER BY 1
+     ) AS names`,
+    [user, RESEAL_FUNCTIONS],
+  );
+  if (extra.rows[0].names.length)
+    throw new ProvisionError(
+      `The frozen-column re-seal role may run functions beyond reseal_frozen_sealed: ${extra.rows[0].names.slice(0, 5).join(", ")}${extra.rows[0].names.length > 5 ? ", ..." : ""}.`,
+    );
+  const schema = await client.query(
+    "SELECT has_schema_privilege($1, 'app', 'USAGE') AS usage",
+    [user],
+  );
+  if (!schema.rows[0].usage)
+    throw new ProvisionError(
+      `The frozen-column re-seal role has no USAGE on schema app; run the migrations, then re-run.`,
+    );
+}
+
+async function auditReseal(client: ClientBase, user: string) {
+  await assertRestricted(client, user, RESEAL_LABEL, [SEALED_RESEAL_GROUP], []);
+  // No table or sequence right at all: the function does the work as its owner.
+  await assertTableRights(client, user, RESEAL_LABEL, [], {});
+  await assertSequenceRights(client, user, RESEAL_LABEL, [], []);
+  await assertDefaultPrivileges(client, user, RESEAL_LABEL, [], [], []);
+  await assertNoSensitive(client, user, RESEAL_LABEL);
+  await assertNoParameterGrants(client, user, RESEAL_LABEL);
+  await assertResealFunctions(client, user);
+}
+
+async function provisionReseal(client: ClientBase, login: Login) {
+  await assertGroup(client, SEALED_RESEAL_GROUP);
+  const outcome = await upsertLogin(client, login, RESEAL_LABEL);
+  // INHERIT so the login runs the group's one function; never SET, so it cannot
+  // SET ROLE to the group and pick its own tenant.
+  await grantGroup(client, SEALED_RESEAL_GROUP, login.user, false);
+  return outcome;
+}
+
 async function assertRegistry(client: ClientBase) {
   const registry = await client.query(
     "SELECT c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'app' AND c.relname = 'active_tenant_registry'",
@@ -1505,6 +1800,7 @@ export type ProvisionResult = {
   worker?: { user: string; outcome: "created" | "updated" };
   maintenance?: { user: string; outcome: "created" | "updated" };
   grantor?: { user: string; outcome: "created" | "updated" };
+  reseal?: { user: string; outcome: "created" | "updated" };
 };
 
 /**
@@ -1519,6 +1815,7 @@ export async function provisionRoles(options: {
   workerUrl?: string;
   maintenanceUrl?: string;
   grantorUrl?: string;
+  resealUrl?: string;
 }): Promise<ProvisionResult> {
   const app = parseLogin(
     options.adminUrl,
@@ -1545,6 +1842,14 @@ export async function provisionRoles(options: {
         "payout grantor",
       )
     : undefined;
+  const reseal = options.resealUrl
+    ? parseLogin(
+        options.adminUrl,
+        options.resealUrl,
+        RESEAL_LOGIN,
+        RESEAL_LABEL,
+      )
+    : undefined;
   const { result, database } = await withAdmin(
     options.adminUrl,
     async (client) => {
@@ -1566,6 +1871,23 @@ export async function provisionRoles(options: {
           user: grantor.user,
           outcome: await provisionGrantor(client, grantor),
         };
+      if (reseal)
+        result.reseal = {
+          user: reseal.user,
+          outcome: await provisionReseal(client, reseal),
+        };
+      await assertSealedResealRoleReachedOnly(
+        client,
+        [
+          app.user,
+          ...(worker ? [worker.user] : []),
+          ...(maintenance ? [maintenance.user] : []),
+          ...(grantor ? [grantor.user] : []),
+        ],
+        reseal?.user,
+      );
+      // After the group audit, so drift on the group alone names the group.
+      if (reseal) await auditReseal(client, reseal.user);
       return { result, database: await currentDatabase(client) };
     },
   );
@@ -1573,6 +1895,7 @@ export async function provisionRoles(options: {
   if (worker) await verifyIdentity(worker, "queue", database);
   if (maintenance) await verifyIdentity(maintenance, "maintenance", database);
   if (grantor) await verifyIdentity(grantor, "payout grantor", database);
+  if (reseal) await verifyIdentity(reseal, RESEAL_LABEL, database);
   return result;
 }
 
@@ -1595,7 +1918,11 @@ async function assertLogin(client: ClientBase, user: string, label: string) {
     client,
     user,
     label,
-    label === "maintenance" || label === "payout grantor" ? "none" : "required",
+    label === "maintenance" ||
+      label === "payout grantor" ||
+      label === RESEAL_LABEL
+      ? "none"
+      : "required",
   );
 }
 
@@ -1610,6 +1937,7 @@ export async function auditRoles(options: {
   workerUrl: string;
   maintenanceUrl?: string;
   grantorUrl?: string;
+  resealUrl?: string;
 }) {
   const app = parseLogin(
     options.adminUrl,
@@ -1639,10 +1967,19 @@ export async function auditRoles(options: {
         "payout grantor",
       )
     : undefined;
+  const reseal = options.resealUrl
+    ? parseLogin(
+        options.adminUrl,
+        options.resealUrl,
+        RESEAL_LOGIN,
+        RESEAL_LABEL,
+      )
+    : undefined;
   const database = await withAdmin(
     options.adminUrl,
     async (client) => {
       await assertGroup(client);
+      await assertGroup(client, SEALED_RESEAL_GROUP);
       await assertRegistry(client);
       await assertLogin(client, app.user, "application");
       const member = await client.query(
@@ -1694,6 +2031,28 @@ export async function auditRoles(options: {
           );
         await auditGrantor(client, grantor.user);
       }
+      await assertSealedResealRoleReachedOnly(
+        client,
+        [
+          app.user,
+          worker.user,
+          ...(maintenance ? [maintenance.user] : []),
+          ...(grantor ? [grantor.user] : []),
+        ],
+        reseal?.user,
+      );
+      if (reseal) {
+        await assertLogin(client, reseal.user, RESEAL_LABEL);
+        const member = await client.query(
+          "SELECT pg_has_role($1, $2, 'USAGE') AS member",
+          [reseal.user, SEALED_RESEAL_GROUP],
+        );
+        if (!member.rows[0].member)
+          throw new ProvisionError(
+            `The frozen-column re-seal login ${reseal.user} does not inherit ${SEALED_RESEAL_GROUP}; re-run provision-roles.sh.`,
+          );
+        await auditReseal(client, reseal.user);
+      }
       await assertSecurityDefinerNotPublic(client);
       return currentDatabase(client);
     },
@@ -1703,11 +2062,13 @@ export async function auditRoles(options: {
   await verifyIdentity(worker, "queue", database);
   if (maintenance) await verifyIdentity(maintenance, "maintenance", database);
   if (grantor) await verifyIdentity(grantor, "payout grantor", database);
+  if (reseal) await verifyIdentity(reseal, RESEAL_LABEL, database);
   return {
     app: app.user,
     worker: worker.user,
     ...(maintenance ? { maintenance: maintenance.user } : {}),
     ...(grantor ? { grantor: grantor.user } : {}),
+    ...(reseal ? { reseal: reseal.user } : {}),
   };
 }
 
@@ -1721,6 +2082,7 @@ export async function provisionAppRole(adminUrl: string, appUrl: string) {
     // Optional only for this development and test harness; the deploy job
     // (provision-roles.ts) requires it (legend-786te).
     grantorUrl: process.env.PAYOUT_GRANTOR_DATABASE_URL || undefined,
+    resealUrl: process.env.RESEAL_DATABASE_URL || undefined,
   });
 }
 

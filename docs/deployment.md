@@ -506,7 +506,7 @@ Versi lama boleh dikeluarkan dari `DATA_ENCRYPTION_KEYS` hanya jika laporan leng
 
 - `aborted` = false;
 - `failedTenants` = 0;
-- `failed` = 0 dan `remaining` = 0 untuk SETIAP entri `tables` di laporan (registry di bawah), bukan hanya tiga kolom baru. Baris `frozen` dan `busy` ikut dihitung di `remaining`: satu baris `frozen` atau `busy` di kolom mana pun menahan pensiun;
+- `failed` = 0 dan `remaining` = 0 untuk SETIAP entri `tables` di laporan (registry di bawah), bukan hanya tiga kolom baru. Baris `frozen` dan `busy` ikut dihitung di `remaining`: satu baris `frozen` atau `busy` yang tersisa di kolom mana pun menahan pensiun;
 - cek `rotate-data-key` dan `hris-pii-reseal` di bagian sebelumnya juga terpenuhi.
 
 Registry yang harus bersih (persis dari `sealed-secret-reseal.job.ts`). Kunci laporan `tables` berbentuk `<tabel>.<kolom>`:
@@ -518,7 +518,7 @@ Registry yang harus bersih (persis dari `sealed-secret-reseal.job.ts`). Kunci la
 | `SEALED_JSON_SECRETS`                | `promo_command_idempotency.response` operasi `voucher.issue` (path `code`) dan operasi `apology_voucher.issue` (path `voucher.code`, hanya `response ->> 'kind' = 'issued'`)                                                                                                                                                                                                                                                                                                                                                                                                   | Dua entri berbagi satu kunci laporan. Kunci baris `key`, bukan `id`.                                                                                           |
 | `SEALED_SERVICE_SWEEPS` (per tenant) | `ai_chatgpt_connections.tokens_encrypted`, `ai_chatgpt_connections.pending_encrypted`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Hanya di sini ada `busy` (lease operasi ChatGPT ditambah margin 10 menit).                                                                                     |
 
-Baris `frozen` (database menolak mengubahnya, jadi job tidak bisa memindahkannya): `orders.payment_link_token_sealed` dan `orders.claim_token_sealed` saat `status` `completed` atau `voided`, `pos_order_tenders.payment_link_token_sealed` saat order induknya `completed` atau `voided`, dan semua baris `apology_vouchers.code_sealed`. Contoh yang menahan pensiun: tiga kolom baru bersih, tetapi satu token order selesai masih versi lama (`remaining` 1, `frozen` 1). Job tidak bisa menyelesaikannya, jadi kunci lama tetap di ring. Keputusan mengeluarkannya tetap (menerima baris itu tidak terbuka lagi) butuh persetujuan CTO.
+Baris `frozen` (database menolak UPDATE biasa): `orders.payment_link_token_sealed` dan `orders.claim_token_sealed` saat `status` `completed` atau `voided`, `pos_order_tenders.payment_link_token_sealed` saat order induknya `completed` atau `voided`, dan semua baris `apology_vouchers.code_sealed`. Job memindahkannya sendiri lewat pass beku: tiap baris dipindah oleh fungsi database `app.reseal_frozen_sealed` setelah `SET LOCAL ROLE legend_sealed_reseal`, hanya pada kolom tersegel itu, dengan compare-and-set dan tidak pernah menurunkan versi. Sebelum dikirim, job membuka amplop baru dengan AAD yang sama dan membandingkan plaintext-nya. Kolom lain, status voucher, dan kolom uang tidak disentuh. Kursor pass beku disimpan di `sealed_secret_reseal_state` dengan `column_name` berakhiran `#frozen`. Baris beku yang gagal dihitung `failed` dan tetap di `remaining`, jadi menahan pensiun sampai run berikut memindahkannya; tidak perlu pengecualian CTO. Sesudah run sukses, `remaining` dan `frozen` bernilai 0.
 
 Job tidak pernah menghapus nilai atau memutus koneksi. Nilai yang tidak bisa dibuka tetap `failed` dan menahan pensiun. Log hanya menyebut tabel, kolom, dan id tenant (hanya untuk scope yang gagal karena galat database), tidak pernah nilainya. Laporan job hanya berisi angka: TIDAK ada daftar id baris yang gagal. Untuk tahu baris mana yang menahan pensiun, pakai query read-only di bawah.
 
@@ -528,7 +528,7 @@ Versi di dalam amplop adalah byte pertama nilai (setelah decode base64 untuk kol
 
 Aturan pakai:
 
-- Jalankan setelah run kedua job. Sebelum itu daftar masih berisi baris yang belum sempat dipindah. Setelah run kedua, sisanya adalah baris `failed`, `frozen`, atau `busy`.
+- Jalankan setelah run kedua job. Sebelum itu daftar masih berisi baris yang belum sempat dipindah. Setelah run kedua, sisanya adalah baris `failed`, `frozen` (gagal di pass beku), atau `busy`.
 - Jalankan sebagai superuser atau role dengan `BYPASSRLS` (role migrator), dalam transaksi read-only. Tabel tenant memakai row-level security, jadi role aplikasi gagal dengan 42501.
 - Ganti `N` dengan versi aktif (`activeVersion` di laporan). Jangan `SELECT` kolom ciphertext, dan jangan tempel hasil `SELECT` kolom itu di chat atau log.
 - Banyak baris hasil query harus sama dengan `remaining` kolom itu di laporan. Bila `failedTenants` > 0, hitungan tenant yang gagal itu tidak lengkap: jalankan ulang job dan baca lognya dulu.
@@ -1046,12 +1046,13 @@ They log in with two restricted roles that a one-shot job creates after the
 migrations (PRD §3 F3, TEN-02). The migration login is the `legend_migrator_<16 hex>`
 login created in the previous section, not the bootstrap superuser.
 
-| Login                     | Env key (file)                                                 | What it can do                                                                                                                                                                                |
-| ------------------------- | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `legend_runtime_<16 hex>` | `APP_DATABASE_URL` (api.env, worker.env; `DATABASE_URL` equal) | Member of `legend_app` only: read and write tenant tables through forced RLS. Not superuser, no `BYPASSRLS`, owns nothing, cannot create or alter objects.                                    |
-| `legend_worker_<16 hex>`  | `WORKER_DATABASE_URL` (worker.env only)                        | Owns only the `pgboss` queue schema and reads `app.active_tenant_registry`. No access to domain tables.                                                                                       |
-| `legend_maint_<16 hex>`   | `MAINTENANCE_DATABASE_URL` (worker.env only, optional here)    | Member of `legend_maintenance` only: no table or sequence rights, runs just `app.audit_retention_due_tenants()` and `app.purge_audit_retention_batch()` (audit retention purge, legend-usyi). |
-| `legend_grant_<16 hex>`   | `PAYOUT_GRANTOR_DATABASE_URL` (api.env only, required)         | Member of `legend_payout_grantor` only: no table or sequence rights, runs just `app.payout_grant_issue()` (one-time payout step grants, legend-911). `legend_app` cannot issue a grant.       |
+| Login                     | Env key (file)                                                 | What it can do                                                                                                                                                                                                                                                                          |
+| ------------------------- | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `legend_runtime_<16 hex>` | `APP_DATABASE_URL` (api.env, worker.env; `DATABASE_URL` equal) | Member of `legend_app` only: read and write tenant tables through forced RLS. Not superuser, no `BYPASSRLS`, owns nothing, cannot create or alter objects.                                                                                                                              |
+| `legend_worker_<16 hex>`  | `WORKER_DATABASE_URL` (worker.env only)                        | Owns only the `pgboss` queue schema and reads `app.active_tenant_registry`. No access to domain tables.                                                                                                                                                                                 |
+| `legend_maint_<16 hex>`   | `MAINTENANCE_DATABASE_URL` (worker.env only, optional here)    | Member of `legend_maintenance` only: no table or sequence rights, runs just `app.audit_retention_due_tenants()` and `app.purge_audit_retention_batch()` (audit retention purge, legend-usyi).                                                                                           |
+| `legend_grant_<16 hex>`   | `PAYOUT_GRANTOR_DATABASE_URL` (api.env only, required)         | Member of `legend_payout_grantor` only: no table or sequence rights, runs just `app.payout_grant_issue()` (one-time payout step grants, legend-911). `legend_app` cannot issue a grant.                                                                                                 |
+| `legend_reseal_<16 hex>`  | `RESEAL_DATABASE_URL` (worker.env only, optional)              | Only member of `legend_sealed_reseal` (INHERIT, no SET, no ADMIN): no table or sequence rights, runs just `app.reseal_frozen_sealed()` (re-seal of the four frozen sealed columns, legend-qwm9r). `legend_app` and the other logins are not members and cannot `SET ROLE` to the group. |
 
 Both the application login and the queue login get
 `idle_in_transaction_session_timeout = '5min'` from the job (legend-9h0kg), so
@@ -1098,6 +1099,22 @@ the job runs. See "Staff device PIN down-sync runbook", rule 3.
    for finance users who have a live session with fresh MFA. In development
    and test the API falls back to a separate small pool on `DATABASE_URL` and
    issues grants under `SET LOCAL ROLE legend_payout_grantor`.
+
+   `worker.env` may also set `RESEAL_DATABASE_URL` with the frozen-column re-seal
+   login (`legend_reseal_<16 hex>`, same host and database; never in `api.env` or
+   `web.env`, and never an application, queue, maintenance or migration login).
+   The re-seal job reads rows through the normal tenant pool but calls
+   `app.reseal_frozen_sealed` through this login only, which has no table rights
+   and no `SET` on the group. Without it the job skips the frozen pass without
+   failing, still counts the frozen rows as remaining, logs a warning, and the
+   old sealing key cannot be retired. The job provisions it only when set, and
+   `--audit` then verifies that the login is the only member of
+   `legend_sealed_reseal` (`INHERIT`, no `SET`, no `ADMIN OPTION`), that the
+   group itself has no table, sequence, `CREATE`, `MAINTAIN`, catalog
+   (`pg_authid`, `pg_shadow`) or non-baseline built-in function right, and that
+   the function is `SECURITY DEFINER` with a pinned `search_path` and not
+   executable by PUBLIC, `legend_app` or any other login. The group audit runs
+   even when the variable is unset.
 
 2. Run the job from the private network, on the VM:
 

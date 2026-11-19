@@ -42,6 +42,25 @@ afterAll(async () => {
   await w.teardown();
 });
 
+/** Backdate issued_at as the table owner without loosening the append-only guard (see the expiry test). */
+async function backdateIssuedAt(voucherId: string, age: string) {
+  const client = await owner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SET LOCAL session_replication_role = replica");
+    await client.query(
+      `UPDATE apology_vouchers SET issued_at = now() - $3::interval WHERE tenant_id = $1 AND id = $2`,
+      [w.tenant.tenantId, voucherId, age],
+    );
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 async function failedItem() {
   const paid = await w.paidOrder();
   const issueId = (await w.report(paid.roti.id)).body.data.id as string;
@@ -220,10 +239,12 @@ describe("legend-4qu voucher maaf di bawah batas matriks", () => {
       orderIssueId: issueId,
     });
     // The contract needs expiresAt > issuedAt: age the issue time as well.
-    await owner.query(
-      "UPDATE apology_vouchers SET issued_at = now() - interval '5 days' WHERE tenant_id = $1 AND id = $2",
-      [w.tenant.tenantId, issued.body.data.id],
-    );
+    // apology_vouchers is append-only (guard trigger apology_vouchers_guard_trg,
+    // migration 0508): only code_sealed may change, through the reseal function.
+    // The fixture does not loosen that guard. It backdates the row in one
+    // transaction with triggers off for that transaction only (replica role,
+    // superuser owner), so no other test file sees the guard disabled.
+    await backdateIssuedAt(issued.body.data.id, "5 days");
     await owner.query(
       `UPDATE vouchers SET valid_from = now() - interval '3 days', valid_until = now() - interval '1 day'
        WHERE tenant_id = $1 AND id = (SELECT voucher_id FROM apology_vouchers WHERE id = $2)`,
@@ -235,6 +256,21 @@ describe("legend-4qu voucher maaf di bawah batas matriks", () => {
     );
     expect(looked.status).toBe(200);
     expect(looked.body.data.status).toBe("expired");
+  });
+
+  it("guard append-only tetap berlaku: owner tidak bisa mengubah issued_at tanpa jalur reseal", async () => {
+    const { issueId } = await failedItem();
+    const issued = await issueVoucher({
+      valueIdr: BELOW,
+      reason: REASON,
+      orderIssueId: issueId,
+    });
+    await expect(
+      owner.query(
+        "UPDATE apology_vouchers SET issued_at = now() - interval '5 days' WHERE tenant_id = $1 AND id = $2",
+        [w.tenant.tenantId, issued.body.data.id],
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
   });
 
   it("GET kode yang tidak ada 404", async () => {

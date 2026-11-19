@@ -95,6 +95,11 @@ const schema = z
     // production (legend-786te, see the refine below); development and test
     // may leave it unset and fall back to SET LOCAL ROLE (db/grantor.ts).
     PAYOUT_GRANTOR_DATABASE_URL: blankToUndefined(postgresUrl).optional(),
+    // Frozen-column re-seal login (legend-qwm9r): legend_reseal_<16 hex>, the
+    // only member of legend_sealed_reseal (INHERIT, no SET), runs only
+    // app.reseal_frozen_sealed. Optional, worker only: without it the re-seal
+    // job skips the frozen pass and the retirement of the old key stays held.
+    RESEAL_DATABASE_URL: blankToUndefined(postgresUrl).optional(),
     // Only read to tell the worker process from the api (legend-786te): the
     // worker imports this schema too but never receives the grantor login.
     WORKER_DATABASE_URL: z.string().optional(),

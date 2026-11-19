@@ -65,6 +65,19 @@ const UNSAFE_GRANTOR_ROLE_SQL = `SELECT
         ${PRIVILEGED_OR_RLS_OWNER_SQL}
         AS unsafe`;
 
+// The reseal login (legend-qwm9r) may only call app.reseal_frozen_sealed
+// through `legend_sealed_reseal`, which it must INHERIT (USAGE): it is no
+// application login, holds no elevated attribute and owns no RLS table. The
+// regex mirrors RESEAL_LOGIN in provision-roles.ts.
+const UNSAFE_RESEAL_ROLE_SQL = `SELECT
+        session_user::text !~ '^legend_reseal_[a-f0-9]{16}$' OR
+        current_user::text !~ '^legend_reseal_[a-f0-9]{16}$' OR
+        pg_catalog.pg_has_role(current_user, 'legend_app', 'MEMBER') OR
+        pg_catalog.pg_has_role(session_user, 'legend_app', 'MEMBER') OR
+        NOT pg_catalog.pg_has_role(current_user, 'legend_sealed_reseal', 'USAGE') OR
+        ${PRIVILEGED_OR_RLS_OWNER_SQL}
+        AS unsafe`;
+
 // Development and test only (no PAYOUT_GRANTOR_DATABASE_URL): the pool runs on
 // DATABASE_URL, and every issue transaction starts with SET LOCAL ROLE
 // legend_payout_grantor. The check runs under that role, so what counts is the
@@ -177,6 +190,29 @@ export function verifyMaintenanceConnection(
 export async function assertGrantorRole(client: Pick<ClientBase, "query">) {
   if (!(await isSafeRole(client, UNSAFE_GRANTOR_ROLE_SQL)))
     throw new Error("Unsafe database role for payout grantor access");
+}
+
+/**
+ * Refuse any login that is not a `legend_reseal_*` login inheriting
+ * `legend_sealed_reseal`, or that is an application, privileged, bypass-capable
+ * or RLS-owning login, before the frozen re-seal pass runs. Errors never carry
+ * the connection string.
+ */
+export async function assertResealRole(client: Pick<ClientBase, "query">) {
+  if (!(await isSafeRole(client, UNSAFE_RESEAL_ROLE_SQL)))
+    throw new Error("Unsafe database role for sealed secret reseal access");
+}
+
+/** pg `verify` callback for the sealed secret reseal login pool. */
+export function verifyResealConnection(
+  client: PoolClient,
+  done: (error?: Error) => void,
+) {
+  assertResealRole(client).then(
+    () => done(),
+    (error: unknown) =>
+      done(error instanceof Error ? error : new Error(String(error))),
+  );
 }
 
 /**

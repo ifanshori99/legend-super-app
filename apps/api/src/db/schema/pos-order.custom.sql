@@ -24,10 +24,33 @@ ALTER TABLE "orders" ADD CONSTRAINT "orders_channel_check"
 
 -- 2. POS-04: a completed or voided order is history. No UPDATE, no DELETE of
 --    the order row, whatever the channel (QR never rewrites a final order).
+--    One exception (migration 0508, legend-4vfmn): the sealed-secret reseal job
+--    may rewrite orders.payment_link_token_sealed or orders.claim_token_sealed
+--    through app.reseal_frozen_sealed (sealed-reseal-frozen.custom.sql) and
+--    nothing else. See that file for why the owner and GUC checks are both needed.
 CREATE OR REPLACE FUNCTION app.orders_final_immutable() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+DECLARE
+  v_col text;
 BEGIN
   IF OLD.status IN ('completed', 'voided') THEN
+    IF TG_OP = 'UPDATE' THEN
+      v_col := CASE current_setting('app.sealed_reseal_column', true)
+        WHEN 'orders.payment_link_token_sealed' THEN 'payment_link_token_sealed'
+        WHEN 'orders.claim_token_sealed' THEN 'claim_token_sealed'
+      END;
+      IF v_col IS NOT NULL
+        AND EXISTS (
+          SELECT 1 FROM pg_catalog.pg_proc p
+          WHERE p.oid = 'app.reseal_frozen_sealed(text,text,uuid,uuid,text,text)'::pg_catalog.regprocedure
+            AND p.proowner = (SELECT r.oid FROM pg_catalog.pg_roles r WHERE r.rolname = current_user)
+        )
+        AND (to_jsonb(NEW) - v_col) = (to_jsonb(OLD) - v_col)
+        AND (to_jsonb(NEW) -> v_col) IS DISTINCT FROM (to_jsonb(OLD) -> v_col)
+      THEN
+        RETURN NEW;
+      END IF;
+    END IF;
     RAISE EXCEPTION 'POS-04: order % is final and cannot be changed or deleted', OLD.id
       USING ERRCODE = '23514';
   END IF;
@@ -75,6 +98,9 @@ CREATE TRIGGER "order_items_final_immutable_trg"
 
 -- 4. POS extension rows (attribution, holds, tenders, discounts) of a final
 --    order are frozen. Every table here carries (tenant_id, order_id).
+--    One exception (migration 0508, legend-4vfmn): the sealed-secret reseal job
+--    may rewrite pos_order_tenders.payment_link_token_sealed through
+--    app.reseal_frozen_sealed and nothing else.
 CREATE OR REPLACE FUNCTION app.pos_order_rows_final_immutable() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 BEGIN
@@ -83,6 +109,19 @@ BEGIN
     WHERE o.tenant_id = OLD.tenant_id AND o.id = OLD.order_id
       AND o.status IN ('completed', 'voided')
   ) THEN
+    IF TG_OP = 'UPDATE'
+      AND TG_TABLE_NAME = 'pos_order_tenders'
+      AND current_setting('app.sealed_reseal_column', true) = 'pos_order_tenders.payment_link_token_sealed'
+      AND EXISTS (
+        SELECT 1 FROM pg_catalog.pg_proc p
+        WHERE p.oid = 'app.reseal_frozen_sealed(text,text,uuid,uuid,text,text)'::pg_catalog.regprocedure
+          AND p.proowner = (SELECT r.oid FROM pg_catalog.pg_roles r WHERE r.rolname = current_user)
+      )
+      AND (to_jsonb(NEW) - 'payment_link_token_sealed') = (to_jsonb(OLD) - 'payment_link_token_sealed')
+      AND (to_jsonb(NEW) -> 'payment_link_token_sealed') IS DISTINCT FROM (to_jsonb(OLD) -> 'payment_link_token_sealed')
+    THEN
+      RETURN NEW;
+    END IF;
     RAISE EXCEPTION 'POS-04: % row of final order % cannot be changed or deleted', TG_TABLE_NAME, OLD.order_id
       USING ERRCODE = '23514';
   END IF;
