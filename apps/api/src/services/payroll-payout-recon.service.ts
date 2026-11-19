@@ -2256,7 +2256,7 @@ function flagWriteError(failure: FlagFailure | undefined): Error {
 
 /**
  * The flags that could not be written hold their slips anyway (legend-t1ufu round
- * 3, migration 0709): once the transaction of the flags is committed,
+ * 3, migration 0507): once the transaction of the flags is committed,
  * app.payout_recon_hold_unwritten records one hold per item, per (kind,
  * operation), in a transaction of its own. A failure here is logged (name and code
  * only). Returns true only when every hold is committed: then the slips stay held

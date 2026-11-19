@@ -1993,7 +1993,7 @@ export const payrollPayoutReconEvidenceObservations = pgTable(
 
 /**
  * A hold per item for a reconciliation flag that could not be written (legend-t1ufu
- * round 3, migration 0709): when the write of a flag or of its lock episode is
+ * round 3, migration 0507): when the write of a flag or of its lock episode is
  * refused, `app.payout_recon_hold_unwritten` records one row per item here, so the
  * slip stays held (`app.payout_payslip_held_by_recon`) although no exception row
  * exists. Not an observation, no operation lock. Taken over by an exception with the

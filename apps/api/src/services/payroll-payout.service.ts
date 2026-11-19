@@ -1031,7 +1031,7 @@ type PlannedItem = {
  * Slip ids held back by the reconciliation: an open row in
  * `payroll_payout_recon_exceptions` (migration 0410, insert-only) with no approved
  * two-person clearance bound to its LIVE fingerprint, or a hold for a flag that
- * could not be written (migration 0709). One test, the one of the insert guard:
+ * could not be written (migration 0507). One test, the one of the insert guard:
  * `app.payout_payslip_held_by_recon`, so a slip the guard would refuse never fails
  * the batch (legend-t1ufu round 3).
  */

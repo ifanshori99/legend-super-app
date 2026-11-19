@@ -48,7 +48,7 @@
 // not captured by exact text (the logger may bypass process.stdout): the sweep must
 // not reject, must not leak, and must surface `held` in its result or output.
 //
-// Round 3 REVISI (brief "Ronde 3 REVISI", migration 0709; CTO: when writing a flag
+// Round 3 REVISI (brief "Ronde 3 REVISI", migration 0507; CTO: when writing a flag
 // fails, the slip MUST stay held without depending on a row in the exceptions table).
 // Design: a HOLD PER ITEM, no observation:
 // - table payroll_payout_recon_unwritten_holds (append-only: tenant_id, id, kind,
