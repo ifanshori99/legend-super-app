@@ -1,0 +1,7 @@
+# 1166 Second opinion refund kasir ronde 5 (wpn5v, 4yez0, largest remainder)
+Peran: second-opinion (baca ~/.agents/team/roles/second-opinion.md). Codex xhigh. Read-only, tanpa worktree: `git diff`/`git show` dari folder utama, jangan checkout. Selesaikan dan lapor dalam SATU giliran.
+
+Fokus (sesudah `git fetch origin`): `git diff 7fba91ddb..origin/ws/1095-void-refund-ganda-voucher` (head 4bfae8476). Ronde 4: `docs/qa/second-opinion-refund-kasir-ronde4-1156.md`.
+Isi: ORD-09 promo baris biasa dibatasi bagian pro-rata baris (min(ruang baris, ruang order)), potongan dicatat `roomCutIdr`, ruang 0 tetap blok; consumer memotong refund yang disetujui ke ruang (bukan 0); ORD-09 lebih 1-3 IDR karena pembulatan dipotong, voucher dan nominal ketik staf +1 IDR ditolak 422; bagian per baris dibagi largest remainder (jumlah bagian = dibayar); void lewat kas memakai cek chain yang sama dengan gateway; layar finance memetakan 422 `REFUND_OVER_ORDER_ROOM` dan 5 kode 409 ke i18n.
+Cari: total keluar melebihi yang dibayar (voucher, ORD-09, refund kasir, refund finance, refund gateway, void) dalam urutan apa pun dan bersamaan; largest remainder yang membuat satu baris melebihi bagiannya atau jumlah tidak sama dengan dibayar; pemotongan 1-3 IDR yang bisa diulang menumpuk; refund sah yang kini salah ditolak; lintas tenant/outlet.
+Hasil: tulis `docs/qa/second-opinion-refund-kasir-ronde5-1166.md` di folder utama (P0-P3, berkas:baris, skenario, usul test). JANGAN commit, JANGAN edit file lain.
