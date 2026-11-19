@@ -86,6 +86,15 @@ export const recordPostingSourceInputSchema = z.strictObject({
   // enrollment (legend-658, L5), same as confirm-cash. Never logged.
   password: z.string().min(1).max(128).optional(),
 });
+/**
+ * Finance waives a `settle_skipped` cash handover that can never be journaled
+ * (legend-5qqb9): the reason is required and audited; the password is asked
+ * again like the source record. Nothing else is accepted.
+ */
+export const waiveSkippedPostingInputSchema = z.strictObject({
+  reason: text(500),
+  password: z.string().min(1).max(128).optional(),
+});
 /** Page size of the payout recovery list (settlements and fees waiting). */
 export const PAYOUT_RECOVERY_LIMIT_MAX = 200;
 export const PAYOUT_RECOVERY_LIMIT_DEFAULT = 100;
@@ -393,4 +402,7 @@ export type ConfirmCashHandoverInput = z.infer<
 >;
 export type RecordPostingSourceInput = z.infer<
   typeof recordPostingSourceInputSchema
+>;
+export type WaiveSkippedPostingInput = z.infer<
+  typeof waiveSkippedPostingInputSchema
 >;

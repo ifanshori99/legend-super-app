@@ -129,6 +129,28 @@ async function accountingEnabled(
   return isModuleEnabled(row?.featureFlags ?? null, "accounting");
 }
 
+function emittedWithAccountingOn(payload: unknown): boolean {
+  return (
+    payload !== null &&
+    typeof payload === "object" &&
+    (payload as { accountingOnAtEmit?: unknown }).accountingOnAtEmit === true
+  );
+}
+
+/**
+ * A cash kasbon or reimbursement paid while accounting was off: no coverage
+ * guard ran at emit, so it is never journaled, even if accounting is on by the
+ * time it is delivered (legend-socwi). An old event without the flag is not
+ * this case.
+ */
+function emittedWithAccountingOff(payload: unknown): boolean {
+  return (
+    payload !== null &&
+    typeof payload === "object" &&
+    (payload as { accountingOnAtEmit?: unknown }).accountingOnAtEmit === false
+  );
+}
+
 function allZero(amounts: Readonly<Record<string, number>>): boolean {
   return Object.values(amounts).every((value) => value === 0);
 }
@@ -277,13 +299,30 @@ export async function deliverPayrollGlEvent(
       return { status: "ignored" };
   }
   assertTrustedScopedContext(context);
+  // Off at emit means never journaled (legend-socwi): the 1102 coverage guard
+  // did not run for this outflow, so a later switch-on must not post it.
+  if (
+    (event.name === employeeLoanDisbursed.name ||
+      event.name === reimbursementPaid.name) &&
+    emittedWithAccountingOff(event.payload)
+  )
+    return { status: "ignored" };
   // Paid and reversed follow the locked entry, not the current flag: once the
   // run's payable is booked, switching accounting off later must not leave
   // 2103 open (paid) or the run journal standing (reversed). A locked event
   // follows a pending payout settlement the same way (legend-2aspe): the money
   // already left, so its journal is posted and the pending settle resolved.
+  //
+  // A cash kasbon or reimbursement paid while accounting was on carries
+  // `accountingOnAtEmit`: the money left under accounting, so it is journaled
+  // even if accounting was switched off before delivery, and its pending
+  // credit never disappears without a journal (legend-kt8em).
   const followsLock =
-    event.name === payrollPaid.name || event.name === payrollReversed.name;
+    event.name === payrollPaid.name ||
+    event.name === payrollReversed.name ||
+    ((event.name === employeeLoanDisbursed.name ||
+      event.name === reimbursementPaid.name) &&
+      emittedWithAccountingOn(event.payload));
   if (!followsLock && !(await accountingEnabled(tx, context))) {
     if (event.name !== payrollLocked.name) return { status: "ignored" };
     // Loaded on demand: the payout GL service imports this module.
@@ -326,6 +365,11 @@ export async function deliverPayrollGlEvent(
         ),
       )
       .for("update");
+    // Entity lock before the journal (1053 order: run, entity, period and
+    // journal): the posting inserts the month's period, and the payout
+    // resolver below takes this lock per batch. Taking it after the period
+    // insert closes a cycle with a petty cash return (legend-zfq7e). Re-entrant.
+    await entityLock(tx, context.tenant.tenantId, payload.legalEntityId);
     const entry = await postJournalFromRuleInTransaction(
       tx,
       context,

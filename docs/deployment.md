@@ -1436,6 +1436,96 @@ sekali pakai yang direview architect dan disetujui CTO dan finance, atau
 keputusan CTO mengubah gerbang ke mode `info` setelah run bersih pertama. Tes:
 `apps/api/src/test/preflight-rilis1-26ro5.test.ts`.
 
+### Gerbang rilis: akun ganda role kas (legend 1118)
+
+Sebelum rilis yang membawa validasi `CASH_ACCOUNT_SHARED`, jalankan query
+read-only berikut pada database target memakai login maintenance/migrator yang
+melihat **semua tenant** (superuser atau `BYPASSRLS`). Login aplikasi dengan RLS
+dapat menyembunyikan baris dan tidak boleh dipakai untuk bukti gerbang.
+
+```sh
+PGOPTIONS='-c default_transaction_read_only=on -c row_security=off' \
+  psql "$MIGRATION_DATABASE_URL" -X -v ON_ERROR_STOP=1 \
+  -f scripts/preflight/1118-shared-cash-mapping.sql
+```
+
+File itu berisi empat statement read-only; keempatnya wajib nol baris (atau
+dijelaskan finance).
+
+Aturan gerbang: baris apa pun = **blokir**. Error query (kolom atau tabel hilang,
+skema bergeser) juga = **blokir**: `ON_ERROR_STOP=1` membuat `psql` keluar dengan
+kode bukan nol, dan itu tidak boleh dibaca sebagai "nol baris" atau "N/A". Hanya
+keluaran nol baris dengan kode keluar 0 yang meloloskan gerbang. Perilaku ini
+diuji di `apps/api/src/test/cash-1118-preflight-sql.test.ts`.
+
+**Statement 1: akun ganda.** Satu baris per akun yang dipetakan ke role kas
+(`cash_on_hand`, `petty_cash`, `bank`) sekaligus ke role lain, misalnya
+`employee_receivable` yang diarahkan ke akun kas kecil 1102. Mapping seperti itu
+membuat kasbon tunai menjurnal Dr dan Cr pada akun yang sama, sehingga cadangan
+kas terlepas tanpa GL berkurang.
+
+**Statement 2: cadangan yang baru akan ditahan.** Satu baris per kasbon tunai
+(`employee_loan.disbursed`, bukan bank) atau reimbursement tunai non-payroll
+(`reimbursement.paid`) yang event-nya sudah delivered dan jurnalnya ada, tetapi
+kredit bersih (kredit dikurangi debit) pada akun kas jurnal itu lebih kecil
+daripada pokoknya, misalnya Dr 1102 / Cr 1102. Akun kas yang diukur adalah
+`petty_cash`, `cash_on_hand`, dan `bank` dari `posting_account_snapshot` jurnal;
+tanpa snapshot dipakai mapping `petty_cash` saat ini. Setelah rilis, jumlah
+pokok tiap baris ini ikut menahan kas kecil (`availableCash1102` berkurang).
+Kolom: tenant, entitas hukum, nama event, id kasbon/reimbursement, pokok, dan
+kredit bersih. Event delivered tanpa jurnal tidak muncul (cadangannya dilepas
+seperti sebelumnya). Entitas hukum di baris dan di penahanan adalah entitas
+jurnal itu sendiri (dicari lewat kunci idempotensi), bukan badan usaha karyawan
+saat ini: karyawan yang pindah badan usaha tidak melepas jurnal lama yang salah
+dari badan usaha lamanya.
+
+**Statement 3: satu akun kas didebit dan dikredit di entri yang sama.** Satu
+baris per entri jurnal non-reversal dan per akun kas yang punya baris debit DAN
+baris kredit di entri itu, untuk semua jenis aturan: gaji tunai
+(`salaries_payable` diarahkan ke 1102), jurnal kas kecil, pengembalian kas kecil
+ke bank, kasbon, dan reimburse. Akun kas yang diukur adalah `petty_cash`,
+`cash_on_hand`, dan `bank` dari `posting_account_snapshot` entri itu; entri tanpa
+snapshot memakai mapping role tersebut hari ini. Kolom: tenant, entitas hukum,
+id entri, kunci idempotensi, jenis sumber, akun, total debit, total kredit.
+Baris apa pun = blokir.
+
+Risiko yang diterima (architect, 1132):
+
+- **P3-2, penahanan berlipat.** Bila jurnal lama kasbon atau reimburse berupa
+  Dr 1101 / Cr 1102, kredit bersih pada gabungan akun kas nol (1101 dan 1102
+  sama-sama akun kas), jadi pokoknya ditahan, padahal saldo GL 1102 sudah turun
+  oleh kredit itu: kas kecil berkurang dua kali. Arahnya aman: kas yang bisa
+  dibayarkan berkurang, tidak pernah bertambah. Finance menjelaskan atau
+  membetulkan jurnalnya sebelum rilis.
+- **P3-3, jurnal pra-0296 tanpa snapshot.** Jurnal yang dibuat sebelum migrasi
+  0296 tidak punya `posting_account_snapshot`, jadi akun kasnya diukur dengan
+  mapping hari ini. Bila mapping sudah berpindah sejak jurnal itu dibuat, hasilnya
+  bisa menahan terlalu banyak atau terlalu sedikit untuk jurnal tersebut. Diterima
+  dan dicatat; baris yang muncul dijelaskan finance.
+
+1. **Ada baris atau query gagal: tahan rilis.** Hasil nol baris dari login yang
+   benar adalah syarat gerbang untuk keempat statement, bukan sekadar exit code
+   `psql` nol.
+2. **Resolusi.** Statement 1: pemilik akuntansi tenant memetakan ulang role
+   non-kas ke akun sendiri lewat pengaturan mapping (validasi baru menolak
+   sisanya). Jangan mengubah baris `account_mappings` langsung. Statement 2:
+   finance memeriksa tiap baris dan memutuskan koreksinya; baris yang dibiarkan
+   berarti kas kecil sebesar pokoknya tertahan sampai jurnal dikoreksi, dan
+   penahanan itu tidak punya jalan keluar otomatis. Jurnal yang sudah
+   terposting tidak dibalik otomatis; keputusan koreksinya di finance.
+   Statement 4 (legend 1147): mapping role kas yang akunnya sudah punya jurnal
+   dengan snapshot role lain. Finance memeriksa tiap baris; endpoint mapping dan
+   impor kini menolak (409 `CASH_MAPPING_ACCOUNT_HAS_HISTORY`) memindahkan role
+   kas ke akun berjurnal, jadi baris sisa berasal dari pemetaan yang sudah ada
+   sebelum aturan itu. Statement 4 membaca dua bukti: snapshot role di jurnal
+   otomatis, dan audit `accounting.account_mappings.replaced` (jurnal tanpa
+   snapshot seperti manual, berulang, kas-bank, aset tetap, dan reversal hanya
+   terlihat lewat audit). Mapping yang tidak pernah diubah lewat audit dan
+   tidak punya jurnal ber-snapshot tidak terlihat gerbang ini; finance memeriksa
+   saldo awal akun kas secara manual. Memindahkan role kas ke akun berjurnal,
+   termasuk mengembalikan ke akun semula, harus lewat akun baru.
+3. **Cek ulang.** Jalankan file yang sama; lanjut hanya bila keempat statement
+   nol baris atau barisnya sudah dijelaskan finance.
 ### Reset refund pra-switch DOIT (legend-d21p)
 
 A one-off repair before `DOIT_REFUNDS_ENABLED` is turned on for the first time.

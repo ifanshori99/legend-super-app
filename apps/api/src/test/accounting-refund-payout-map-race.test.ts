@@ -255,8 +255,16 @@ const queryText = (arg: unknown): string =>
     : typeof arg === "object" && arg !== null && "text" in arg
       ? String((arg as { text: unknown }).text)
       : "";
+// Single-role lookups (`"role" = $n ... limit`, e.g. the petty_cash read of the
+// GL 1102 poster guard that runs AFTER the posting read) are not the posting
+// read; the seam must keep targeting the full mapping read the lines are built
+// from (legend-48ft7; seam updated after 4f0d9291a added a later read).
+const isSingleRoleLookup = (text: string): boolean =>
+  /"role"\s*=\s*\$\d+/i.test(text) && /\blimit\b/i.test(text);
 const isMappingRead = (text: string): boolean =>
-  /^\s*(with\b[\s\S]*?)?select\b/i.test(text) && /account_mappings/i.test(text);
+  /^\s*(with\b[\s\S]*?)?select\b/i.test(text) &&
+  /account_mappings/i.test(text) &&
+  !isSingleRoleLookup(text);
 
 /** How many statements read account_mappings while `run` executes. */
 async function countMappingReads(run: () => Promise<unknown>): Promise<number> {

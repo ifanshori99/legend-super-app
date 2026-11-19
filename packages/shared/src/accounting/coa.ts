@@ -299,6 +299,23 @@ export const accountMappingSchema = z.strictObject({
 });
 export type AccountMapping = z.infer<typeof accountMappingSchema>;
 
+/**
+ * Roles that hold physical or bank cash. One account must never serve one of
+ * them and another role: a journal between the two roles would net to zero on
+ * that account while the cash moved (legend 1118). Clearing roles
+ * (gateway_clearing, edc_clearing) are receivables from a provider, and
+ * cash_in_clearing is a liability, so none holds cash itself. The poster also
+ * refuses a rule entry that debits and credits one cash-role account.
+ */
+export const CASH_POSTING_ROLES = [
+  "cash_on_hand",
+  "petty_cash",
+  "bank",
+] as const satisfies readonly PostingAccountRole[];
+
+/** Stable prefix of the issue for an account shared by a cash role and another role. */
+export const CASH_ACCOUNT_SHARED_CODE = "CASH_ACCOUNT_SHARED";
+
 /** Problems of one entity's role mapping against its chart (empty = valid). */
 export function accountMappingIssues(
   mappings: readonly AccountMapping[],
@@ -323,6 +340,23 @@ export function accountMappingIssues(
       );
     if (headers.has(account.id))
       issues.push(`Role ${mapping.role}: header account is not postable`);
+  }
+  const cashRoles: readonly PostingAccountRole[] = CASH_POSTING_ROLES;
+  const rolesByAccount = new Map<string, Set<PostingAccountRole>>();
+  for (const mapping of mappings) {
+    const key = `${mapping.legalEntityId}|${mapping.accountId}`;
+    const roles = rolesByAccount.get(key) ?? new Set<PostingAccountRole>();
+    roles.add(mapping.role);
+    rolesByAccount.set(key, roles);
+  }
+  for (const roles of rolesByAccount.values()) {
+    const list = [...roles];
+    for (const [index, first] of list.entries())
+      for (const second of list.slice(index + 1))
+        if (cashRoles.includes(first) || cashRoles.includes(second))
+          issues.push(
+            `${CASH_ACCOUNT_SHARED_CODE}: roles ${first} and ${second} cannot share one account`,
+          );
   }
   return issues;
 }

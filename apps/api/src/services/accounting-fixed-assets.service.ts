@@ -104,6 +104,7 @@ import {
 } from "./accounting-journal.service.ts";
 import { recordSupplierInvoicePayableInTransaction } from "./accounting-ap.service.ts";
 import { entityLock } from "./accounting-bank-matching.ts";
+import { assertJournalCredit1102Covered } from "./accounting-petty-cash.service.ts";
 import { assertPeriodOpenForPosting } from "./accounting-period.service.ts";
 import {
   advisoryLock,
@@ -497,6 +498,15 @@ async function postDepreciationJournal(
         creditIdr: line.debitIdr,
       }))
     : built;
+  // A credit to 1102 (accumulated depreciation mapped to petty cash) pays out
+  // of petty cash: refused when the cash is short (legend-5qqb9). A mirrored
+  // correction nets a debit there and is never guarded.
+  await assertJournalCredit1102Covered(
+    tx,
+    context.tenant.tenantId,
+    input.legalEntityId,
+    lines,
+  );
   const entry = await postJournalInTransaction(
     tx,
     context,
@@ -1569,6 +1579,7 @@ export async function disposeFixedAsset(
             sourceId: asset.id,
             postedBy: actorId,
             idempotencyKey: `fa-disp:${asset.id}`,
+            guardPettyCash: true,
           },
           now,
         );
@@ -1677,6 +1688,7 @@ export async function revalueFixedAsset(
             sourceId: revaluationId,
             postedBy: actorId,
             idempotencyKey: `fa-reval:${revaluationId}`,
+            guardPettyCash: true,
           },
           now,
         );

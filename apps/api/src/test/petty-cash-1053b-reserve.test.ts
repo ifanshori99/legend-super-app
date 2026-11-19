@@ -1111,11 +1111,13 @@ describe("1053b bank account on GL 1102 respects the cash payroll reserve (P2-2a
     expect(await glBalance(), "1102 untouched").toBe(gl);
   }, 90_000);
 
-  it("[1053b-cashout-1102-accounting-off] while accounting is off the 1102 check is skipped: the same oversized cash out is not refused as PETTY_CASH_GL_INSUFFICIENT", async () => {
+  it("[1053b-cashout-1102-accounting-off] the 1102 check does not depend on the accounting module: with it off the same oversized cash out is still refused as PETTY_CASH_GL_INSUFFICIENT, nothing posted (legend-socwi)", async () => {
     await drain();
     await addCash(100_000);
     await reserve(70_000); // available 30.000
     const who = await freshFinance("accounting off");
+    const journals = await journalCount();
+    const gl = await glBalance();
 
     const res = await withAccountingOff(() =>
       finEntry(who, cashOutFrom1102(50_000)),
@@ -1125,10 +1127,9 @@ describe("1053b bank account on GL 1102 respects the cash payroll reserve (P2-2a
     const gap = -(await available());
     if (gap > 0) await addCash(gap);
 
-    expect(
-      res.status,
-      `accounting off: the check is skipped and the cash out is recorded, ${JSON.stringify(res.body)}`,
-    ).toBe(201);
+    expectGlRefusal(res, { avail: 30_000, amount: 50_000 });
+    expect(await journalCount(), "no journal").toBe(journals);
+    expect(await glBalance(), "1102 untouched").toBe(gl);
   }, 90_000);
 
   it("[1053b-approve-cashout-1102-refused-by-reserve] a cash out above the approval limit is pending; once a cash payroll reserve makes it too big approval is refused (still pending, no journal); after the reserve is cancelled the same approval passes", async () => {

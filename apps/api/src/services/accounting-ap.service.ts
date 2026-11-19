@@ -29,11 +29,12 @@ import {
   z,
   type BusinessDate,
   type ScopedTenantContext,
+  type TenantId,
   type UserId,
 } from "@starter/shared/core";
 import { legalEntityIdSchema, type OpenItem } from "@starter/shared/accounting";
 import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
-import { journalEntries } from "../db/schema/accounting.ts";
+import { accountMappings, journalEntries } from "../db/schema/accounting.ts";
 import {
   accountingOpenItems,
   accountingOpenItemSettlements,
@@ -45,7 +46,9 @@ import {
   supplierInvoices,
 } from "../db/schema/purchasing.ts";
 import { HttpError } from "../lib/http-error.ts";
+import { entityLock } from "./accounting-bank-matching.ts";
 import { postJournalFromRuleInTransaction } from "./accounting-journal.service.ts";
+import { assertBankCreditCoveredBy1102 } from "./accounting-petty-cash.service.ts";
 import {
   auditApFa,
   type TenantTransaction,
@@ -253,11 +256,41 @@ export const paySupplierInvoiceInputSchema = z.strictObject({
 });
 
 /**
+ * Takes the legal entity lock of a payable open item before its row lock (lock
+ * order of legend-swn0m: entity, then row). The entity is read unlocked: it
+ * never changes after the item is recorded. Reentrant within a transaction.
+ * Returns null when the item is not found (the caller reports it under lock).
+ */
+export async function lockEntityOfPayable(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  openItemId: string,
+): Promise<string | null> {
+  const [item] = await tx
+    .select({ legalEntityId: accountingOpenItems.legalEntityId })
+    .from(accountingOpenItems)
+    .where(
+      and(
+        eq(accountingOpenItems.tenantId, tenantId),
+        eq(accountingOpenItems.kind, "payable"),
+        eq(accountingOpenItems.id, openItemId),
+      ),
+    )
+    .limit(1);
+  if (!item) return null;
+  await entityLock(tx, tenantId, item.legalEntityId);
+  return item.legalEntityId;
+}
+
+/**
  * Supplier payment approved (§3.18 "pembayaran supplier disetujui dan
  * dijurnal otomatis"): allocation + journal in one transaction. A partial
  * payment leaves the rest outstanding; an over-payment is refused (409).
  * ACC-02: a payment dated in a closed period fails PERIOD_CLOSED and nothing
  * is allocated.
+ * When the entity's `bank` account is its petty cash account (1102), the
+ * credit must be covered by the cash left in 1102, else it is refused with
+ * PETTY_CASH_GL_INSUFFICIENT and nothing is allocated (legend-swn0m).
  */
 export async function paySupplierInvoiceInTransaction(
   tx: TenantTransaction,
@@ -267,6 +300,12 @@ export async function paySupplierInvoiceInTransaction(
   now = new Date(),
 ): Promise<SettlementResult> {
   const input = paySupplierInvoiceInputSchema.parse(rawInput);
+  // Entity lock before the open item row lock taken by the settlement.
+  await lockEntityOfPayable(
+    tx,
+    context.tenant.tenantId,
+    input.supplierInvoiceId,
+  );
   return settleOpenItemInTransaction(
     tx,
     context,
@@ -282,6 +321,27 @@ export async function paySupplierInvoiceInTransaction(
     },
     actorId,
     async (item, settlementId) => {
+      // The rule credits the `bank` role: a mapping to 1102 pays out of
+      // petty cash. Under the entity lock taken above.
+      const [bank] = await tx
+        .select({ accountId: accountMappings.accountId })
+        .from(accountMappings)
+        .where(
+          and(
+            eq(accountMappings.tenantId, context.tenant.tenantId),
+            eq(accountMappings.legalEntityId, item.legalEntityId),
+            eq(accountMappings.role, "bank"),
+          ),
+        )
+        .limit(1);
+      if (bank)
+        await assertBankCreditCoveredBy1102(
+          tx,
+          context.tenant.tenantId,
+          item.legalEntityId,
+          bank.accountId,
+          input.amountIdr,
+        );
       const entry = await postJournalFromRuleInTransaction(
         tx,
         context,

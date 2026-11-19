@@ -50,6 +50,7 @@ import {
   assertReversible,
   buildJournalLinesFromRule,
   buildReversalLines,
+  CASH_POSTING_ROLES,
   defaultPostingRules,
   dropZeroLines,
   journalEntrySchema,
@@ -93,13 +94,21 @@ import {
   accountMappings,
   chartOfAccounts,
   fixedAssetDepreciationReversals,
+  employeeLoans,
   fixedAssetDepreciations,
   journalEntries,
   journalLines,
+  payrollPayoutGlPostings,
+  reimbursements,
+  supplierPayments,
 } from "../db/schema";
 import { withTenant } from "../db/tenant";
 import { HttpError } from "../lib/http-error";
 import { entityLock } from "./accounting-bank-matching";
+import {
+  assertJournalCredit1102Covered,
+  pettyCashGlAccount,
+} from "./accounting-petty-cash.service";
 import { markMatchStaleForReversedJournal } from "./accounting-bank-recon-stale.service";
 import { assertPeriodOpenForPosting } from "./accounting-period.service";
 import {
@@ -157,6 +166,8 @@ export type PostFromRuleInput = {
   readonly orderId?: string | null;
   /** Trusted internal role identities recovered from the original sale. */
   readonly accountOverrides?: Partial<Record<PostingAccountRole, string>>;
+  /** Refuse a net credit to GL 1102 above the available cash (legend-5qqb9); fixed asset posters set it. */
+  readonly guardPettyCash?: boolean;
 };
 
 type ParsedPost = PostJournalInput & {
@@ -693,6 +704,36 @@ export async function postJournalFromRuleInTransaction(
     outletId: input.outletId as OutletId | null,
     costCenter: input.costCenter ?? null,
   });
+  // Fail closed (legend 1118): a rule entry that debits and credits one cash
+  // or bank account nets to zero there. A mapping that collapses two roles
+  // onto one account (e.g. employee_receivable onto petty_cash) would
+  // otherwise post a journal that never moves the cash the source already
+  // paid out. Only cash roles: payroll rules legitimately debit and credit
+  // salary_expense in one entry (a deduction credits the expense it reduces).
+  const cashAccountIds = new Set<string>();
+  for (const role of CASH_POSTING_ROLES) {
+    const accountId = accountMap.get(role);
+    if (accountId !== undefined) cashAccountIds.add(accountId);
+  }
+  const debited = new Set<string>();
+  const credited = new Set<string>();
+  for (const line of lines) {
+    if (line.debitIdr > 0) debited.add(line.accountId);
+    if (line.creditIdr > 0) credited.add(line.accountId);
+  }
+  for (const accountId of debited)
+    if (credited.has(accountId) && cashAccountIds.has(accountId))
+      throw new AccountingError(
+        "JOURNAL_SAME_ACCOUNT_DEBIT_CREDIT",
+        `Rule ${rule.key} debits and credits the same cash account`,
+      );
+  if (input.guardPettyCash === true)
+    await assertJournalCredit1102Covered(
+      tx,
+      context.tenant.tenantId,
+      input.legalEntityId,
+      lines,
+    );
   return postJournalInTransaction(
     tx,
     context,
@@ -975,6 +1016,18 @@ export type ReverseJournalTxInput = {
   readonly lateAdjustmentFrom?: string | null;
   /** Null records a system reversal (auto-journal void). */
   readonly postedBy: UserId | null;
+  /**
+   * True only for the manual endpoint: a reversal that credits GL 1102 is
+   * refused above the available cash (legend-5qqb9). System reversals mirror
+   * cash that already moved and stay unguarded.
+   */
+  readonly guardPettyCash?: boolean;
+  /**
+   * True only for the manual endpoint: an auto cash-out journal that credits
+   * GL 1102 is refused while its source is still paid (legend-5qqb9, bead
+   * 1091). System reversals (void, refund, payroll.reversed) stay allowed.
+   */
+  readonly manualReversal?: boolean;
 };
 
 /**
@@ -995,7 +1048,13 @@ export async function reverseJournal(
       tx,
       context,
       entryId,
-      { ...request, lateAdjustmentFrom: null, postedBy: actorId },
+      {
+        ...request,
+        lateAdjustmentFrom: null,
+        postedBy: actorId,
+        guardPettyCash: true,
+        manualReversal: true,
+      },
       now,
     ),
   );
@@ -1038,6 +1097,157 @@ async function assertNotDepreciationJournal(
       409,
       "DEPRECIATION_JOURNAL_LOCKED",
       "This journal belongs to fixed-asset depreciation; correct it through the fixed asset.",
+    );
+}
+
+/**
+ * A manual reversal of a journal that credits the entity's CURRENT petty cash
+ * account (GL 1102) would reopen cash that already left the till
+ * (legend-5qqb9, bead 1091). Refused by default: only journals the finance user
+ * writes by hand (source `manual`, `recurring`) pass, and the known cash-out
+ * sources (loan, cash reimbursement, cash payroll settle posting, supplier
+ * payment) pass once their source is no longer paid. Every other journal that
+ * credits 1102 (petty purchase, petty cash return `pc:<entryId>`, old
+ * `payroll-gl:paid:<run>`) is refused: the correction goes through its own
+ * flow. A known source row that is missing or unknown is refused. Caller holds
+ * the entity lock and the journal row lock.
+ */
+async function assertAutoCashOutSourceNotPaid(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  row: EntryRow,
+  lines: readonly { accountId: string; debitIdr: number; creditIdr: number }[],
+): Promise<void> {
+  if (row.sourceType === "manual" || row.sourceType === "recurring") return;
+  // Two cash accounts are judged, each on its own net credit, never summed:
+  // the petty cash account the journal was posted on (its snapshot) and the one
+  // petty_cash maps to today. Summing lets a remap cancel a real credit: Dr C /
+  // Cr A then petty_cash A -> C nets to zero (legend 1142). Judging the snapshot
+  // alone lets a remap onto a bank account turn a bank payment into a "cash"
+  // credit nobody checks (legend 1147: salary Cr bank B, then petty_cash A -> B,
+  // reversal Dr B would raise available cash). Either side crediting is enough
+  // to check the source; when in doubt the payment stays held.
+  const snapshotPettyCashId = row.postingAccountSnapshot?.petty_cash;
+  const cashAccountIds = new Set<string>();
+  if (typeof snapshotPettyCashId === "string")
+    cashAccountIds.add(snapshotPettyCashId);
+  const currentPettyCashId = await pettyCashGlAccount(
+    tx,
+    tenantId,
+    row.legalEntityId,
+  );
+  if (currentPettyCashId !== null) cashAccountIds.add(currentPettyCashId);
+  const key = row.idempotencyKey;
+  // A journal without a snapshot (posted before the snapshot existed) has no
+  // record of its cash account, and today's mapping may have moved since. For
+  // the known cash-out sources the source row decides, not the mapping: when
+  // in doubt the cash stays held (legend 1140, CTO decision).
+  const knownCashOutSource =
+    key !== null &&
+    (key.startsWith("payroll-gl:loan:") ||
+      key.startsWith("payroll-gl:reimbursement:") ||
+      key.startsWith("ap-pay:") ||
+      key.startsWith("payroll-payout:"));
+  const judgeOnSourceOnly =
+    (row.postingAccountSnapshot === null ||
+      row.postingAccountSnapshot === undefined) &&
+    knownCashOutSource;
+  if (!judgeOnSourceOnly) {
+    if (cashAccountIds.size === 0) return;
+    const creditsCash = [...cashAccountIds].some(
+      (accountId) =>
+        lines
+          .filter((line) => line.accountId === accountId)
+          .reduce((sum, line) => sum + line.creditIdr - line.debitIdr, 0) > 0,
+    );
+    if (!creditsCash) return;
+  }
+  const uuidPart = (prefix: string): string | null | undefined => {
+    if (key === null || !key.startsWith(prefix)) return undefined;
+    const id = uuidSchema.safeParse(key.slice(prefix.length));
+    return id.success ? id.data : null;
+  };
+  const loanId = uuidPart("payroll-gl:loan:");
+  const reimbursementId = uuidPart("payroll-gl:reimbursement:");
+  const settlementId = uuidPart("ap-pay:");
+  const payoutSettle = key !== null && key.startsWith("payroll-payout:");
+  let paid: boolean;
+  if (loanId !== undefined) {
+    // Loan disbursed (or settled later): the cash left the till.
+    const [loan] =
+      loanId === null
+        ? []
+        : await tx
+            .select({ status: employeeLoans.status })
+            .from(employeeLoans)
+            .where(
+              and(
+                eq(employeeLoans.tenantId, tenantId),
+                eq(
+                  employeeLoans.id,
+                  loanId as (typeof employeeLoans.$inferSelect)["id"],
+                ),
+              ),
+            )
+            .limit(1);
+    paid = !loan || ["disbursed", "settled"].includes(loan.status);
+  } else if (reimbursementId !== undefined) {
+    // Cash reimbursement in status paid.
+    const [claim] =
+      reimbursementId === null
+        ? []
+        : await tx
+            .select({
+              status: reimbursements.status,
+              payout: reimbursements.payout,
+            })
+            .from(reimbursements)
+            .where(
+              and(
+                eq(reimbursements.tenantId, tenantId),
+                eq(
+                  reimbursements.id,
+                  reimbursementId as (typeof reimbursements.$inferSelect)["id"],
+                ),
+              ),
+            )
+            .limit(1);
+    paid = !claim || (claim.status === "paid" && claim.payout === "cash");
+  } else if (payoutSettle) {
+    // Cash payroll settle journal: its posting row (journal_key) in kind settle.
+    const [posting] = await tx
+      .select({ kind: payrollPayoutGlPostings.kind })
+      .from(payrollPayoutGlPostings)
+      .where(
+        and(
+          eq(payrollPayoutGlPostings.tenantId, tenantId),
+          eq(payrollPayoutGlPostings.journalKey, key),
+        ),
+      )
+      .limit(1);
+    paid = !posting || posting.kind === "settle";
+  } else if (settlementId !== undefined) {
+    // Supplier payment journal: the payment row that points at it, status paid.
+    const [payment] = await tx
+      .select({ status: supplierPayments.status })
+      .from(supplierPayments)
+      .where(
+        and(
+          eq(supplierPayments.tenantId, tenantId),
+          eq(supplierPayments.journalEntryId, row.id),
+        ),
+      )
+      .limit(1);
+    paid = !payment || payment.status === "paid";
+  } else {
+    // No known source says the cash came back: the default is refusal.
+    paid = true;
+  }
+  if (paid)
+    throw new HttpError(
+      409,
+      "CASH_OUT_JOURNAL_LOCKED",
+      "This journal takes cash out of petty cash and cannot be reversed by hand; correct it through its source (return flow).",
     );
 }
 
@@ -1194,6 +1404,21 @@ export async function reverseJournalInTransaction(
     )
     .limit(1);
   await assertNotDepreciationJournal(tx, context.tenant.tenantId, entryId);
+  // The correction of a waived cash handover (legend-5qqb9): reversing it would
+  // open cash that the employee already holds again.
+  if (row.idempotencyKey?.startsWith("payroll-payout-waive:"))
+    throw new HttpError(
+      409,
+      "PAYOUT_WAIVE_JOURNAL_LOCKED",
+      "This journal corrects a waived cash payroll handover and cannot be reversed.",
+    );
+  if (input.manualReversal === true)
+    await assertAutoCashOutSourceNotPaid(
+      tx,
+      context.tenant.tenantId,
+      row,
+      lines.map(toLine),
+    );
   assertReversible(row, reversal?.id ?? null);
   await assertReturnBackingNotPaidOut(tx, context.tenant.tenantId, row);
   const reversalLines = buildReversalLines(
@@ -1209,6 +1434,16 @@ export async function reverseJournalInTransaction(
     legalEntityId: row.legalEntityId,
     entryDate: input.entryDate,
   });
+  // The manual endpoint only: a reversal that mirrors a debit to 1102 credits
+  // it, pays out of petty cash and is refused when the cash is short
+  // (legend-5qqb9). Entity lock is held.
+  if (input.guardPettyCash === true)
+    await assertJournalCredit1102Covered(
+      tx,
+      context.tenant.tenantId,
+      row.legalEntityId,
+      reversalLines,
+    );
   const [reversalRow] = await tx
     .insert(journalEntries)
     .values({

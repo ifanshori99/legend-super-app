@@ -153,6 +153,14 @@ export const employeeLoanDisbursed = defineDomainEvent({
      * cash.
      */
     disbursedVia: employeeLoanDisbursedViaSchema.optional(),
+    /**
+     * True when the accounting module was on when the kasbon was paid: the GL
+     * consumer then posts the journal even if accounting was switched off
+     * before delivery (the money left under accounting, like `payroll.paid`
+     * following its locked entry; legend-kt8em). Absent or false: ignored
+     * while accounting is off.
+     */
+    accountingOnAtEmit: z.boolean().optional(),
     disbursedBy: userIdSchema,
     disbursedAt: isoDateTimeSchema,
   }),
@@ -169,6 +177,8 @@ export const reimbursementPaid = defineDomainEvent({
       amountIdr: idrSchema,
       payout: reimbursementPayoutSchema,
       payrollRunId: payrollRunIdSchema.nullable(),
+      /** As on `employee_loan.disbursed` (legend-kt8em); cash payouts only. */
+      accountingOnAtEmit: z.boolean().optional(),
       paidAt: isoDateTimeSchema,
     })
     .refine((p) => (p.payout === "payroll") === (p.payrollRunId !== null), {

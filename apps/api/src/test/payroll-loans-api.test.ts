@@ -104,6 +104,9 @@ async function grantRole(
   });
 }
 
+// Cash kasbon needs a legal entity on the employee (legend-cv00j).
+const fixtureEntityId = randomUUID();
+
 async function seedEmployee(
   tenantId: string,
   homeOutletId: string,
@@ -114,14 +117,15 @@ async function seedEmployee(
   await asTenantOf(tenantId, (db) =>
     db.query(
       `INSERT INTO employees (id, tenant_id, user_id, employee_no, full_name, home_outlet_id,
-                              employment_type, join_date, status)
-       VALUES ($1, $2, $3, $4, 'Karyawan Kasbon', $5, 'pkwtt', '2025-03-01', 'active')`,
+                              employment_type, join_date, status, legal_entity_id)
+       VALUES ($1, $2, $3, $4, 'Karyawan Kasbon', $5, 'pkwtt', '2025-03-01', 'active', $6)`,
       [
         id,
         tenantId,
         userId,
         `LN-${id.slice(0, 8).toUpperCase()}`,
         homeOutletId,
+        tenantId === tenant.id ? fixtureEntityId : null,
       ],
     ),
   );
@@ -167,12 +171,20 @@ async function request(client: Client, overrides = {}) {
   };
 }
 
-const decide = (client: Client, id: string, action: string, headers = {}) =>
+// An approved kasbon is cancelled with a reason (legend-d5n4j).
+const CANCEL = { reason: "Karyawan membatalkan kasbon" };
+const decide = (
+  client: Client,
+  id: string,
+  action: string,
+  headers = {},
+  extra = {},
+) =>
   client
     .post(`${HR}/${id}/decision`)
     .set(originHeader)
     .set(headers)
-    .send({ action, idempotencyKey: key() });
+    .send({ action, idempotencyKey: key(), ...extra });
 const disburse = (client: Client, id: string, headers = {}) =>
   client
     .post(`${HR}/${id}/disburse`)
@@ -181,6 +193,12 @@ const disburse = (client: Client, id: string, headers = {}) =>
     .send({ idempotencyKey: key() });
 
 beforeAll(async () => {
+  await asTenant((db) =>
+    db.query(
+      `INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'PT Fixture Kasbon API', false)`,
+      [fixtureEntityId, tenant.id],
+    ),
+  );
   // Kasbon limits (legend-fij0l): a request is refused without a tenant policy.
   // This suite creates many loans per employee, so it runs under a lenient one;
   // the limits themselves are tested in payroll-loans-caps.test.ts.
@@ -299,6 +317,10 @@ afterAll(async () => {
     await db.query(
       "DELETE FROM employees WHERE tenant_id = $1 AND id = ANY($2)",
       [tenant.id, createdEmployees],
+    );
+    await db.query(
+      "DELETE FROM legal_entities WHERE tenant_id = $1 AND id = $2",
+      [tenant.id, fixtureEntityId],
     );
     await db.query(
       "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = ANY($2)",
@@ -582,7 +604,7 @@ describe("kasbon API: decision and disbursement", () => {
 
     const cancelled = await request(staffClient);
     await decide(hrClient, cancelled.id, "approve");
-    const cancel = await decide(hrClient, cancelled.id, "cancel");
+    const cancel = await decide(hrClient, cancelled.id, "cancel", {}, CANCEL);
     expect(cancel.status).toBe(200);
     expect(cancel.body.data.status).toBe("cancelled");
     expect((await disburse(hrClient, cancelled.id)).status).toBe(409);
@@ -738,7 +760,7 @@ describe("kasbon API: review fixes", () => {
     const loan = await request(staffClient);
     const approved = await decide(hrClient, loan.id, "approve");
     expect(approved.status).toBe(200);
-    const cancel = await decide(second.client, loan.id, "cancel");
+    const cancel = await decide(second.client, loan.id, "cancel", {}, CANCEL);
     expect(cancel.status).toBe(200);
     expect(cancel.body.data.status).toBe("cancelled");
     expect(cancel.body.data.decidedBy).toBe(approved.body.data.decidedBy);

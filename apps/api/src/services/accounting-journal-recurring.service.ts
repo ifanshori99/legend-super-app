@@ -66,6 +66,7 @@ import {
 } from "./accounting-journal-period-gate";
 import { approverMayPostJournal } from "./accounting-journal-approver";
 import { wouldPostingBeBlockedByClosedPeriod } from "./accounting-period.service";
+import { assertJournalCredit1102Covered } from "./accounting-petty-cash.service";
 import {
   assertJournalLinesPostable,
   postJournalInTransaction,
@@ -961,6 +962,14 @@ async function generatePeriod(
     legalEntityId: template.legalEntityId,
     entryDate,
   });
+  // A credit to 1102 pays out of petty cash: a short month is not generated
+  // and is retried by the next run (legend-5qqb9).
+  await assertJournalCredit1102Covered(
+    tx,
+    tenantId,
+    template.legalEntityId,
+    template.lines,
+  );
   const entry = await postJournalInTransaction(
     tx,
     context,

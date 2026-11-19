@@ -40,6 +40,26 @@ export async function accountingEnabled(
 }
 
 /**
+ * `accountingEnabled` read once under a share lock on the tenants row. The
+ * package toggle (`setTenantPackage`) locks that row FOR UPDATE, so a cash
+ * outflow that decides on this value (1102 check, entity refusal, the
+ * `accountingOnAtEmit` flag) cannot see the toggle flip between two reads
+ * inside its own transaction (legend-kt8em). Call after `entityLock`.
+ */
+export async function accountingEnabledShared(
+  tx: Tx,
+  tenantId: TenantId,
+): Promise<boolean> {
+  const [row] = await tx
+    .select({ featureFlags: tenants.featureFlags })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId))
+    .limit(1)
+    .for("share");
+  return isModuleEnabled(row?.featureFlags ?? null, "accounting");
+}
+
+/**
  * The `bank_charges` mapping is ready only while the mapped GL account exists
  * in the same tenant and legal entity, is active and is postable (no child
  * accounts, so not a header). Approve, export, fee re-post and overpaid all

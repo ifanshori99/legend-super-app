@@ -43,6 +43,7 @@ import {
   decideEmployeeLoan as decideEmployeeLoanEndpoint,
   employeeLoanIdSchema,
   disburseEmployeeLoan as disburseEmployeeLoanEndpoint,
+  employeeLoanDisbursed,
   employeeLoanSchema,
   listEmployeeLoans as listEmployeeLoansEndpoint,
   listMyLoans as listMyLoansEndpoint,
@@ -66,6 +67,13 @@ import { employees } from "../db/schema/hris.ts";
 import { hrisOffboardings } from "../db/schema/hris-lifecycle.ts";
 import { withTenant } from "../db/tenant.ts";
 import { openPayrollAmount } from "../lib/payroll-sealed.ts";
+import { entityLock } from "./accounting-bank-matching.ts";
+import { emitPayrollEvent } from "./payroll-events.ts";
+import { accountingEnabledShared } from "./payroll-payout-setup.ts";
+import {
+  assertCash1102CoversOutflow,
+  assertLoanCashAccountsDistinct,
+} from "./accounting-petty-cash.service.ts";
 import { recordAudit } from "./core-audit.ts";
 import { cursorPair, notFound } from "./hris-access.ts";
 import { idempotentHrisWrite } from "./hris-employee.service.ts";
@@ -431,6 +439,7 @@ async function auditLoan(
     loanId: string;
     before: Record<string, unknown> | null;
     after: Record<string, unknown>;
+    reason?: string | null;
   },
 ): Promise<void> {
   await recordAudit(
@@ -446,7 +455,7 @@ async function auditLoan(
       action: entry.action,
       objectType: "employee_loan",
       objectId: entry.loanId,
-      reason: null,
+      reason: entry.reason ?? null,
       maskedChanges: { before: entry.before, after: entry.after },
       ipHash: null,
       sensitiveAccess: false,
@@ -498,6 +507,7 @@ async function applyTransition(
   row: LoanRow,
   action: EmployeeLoanAction,
   now: Date,
+  reason: string | null = null,
 ): Promise<EmployeeLoan> {
   const next = transitionEmployeeLoan(row.status as EmployeeLoanStatus, action);
   const changes =
@@ -526,6 +536,7 @@ async function applyTransition(
     loanId: loan.id,
     before: { status: row.status },
     after: { status: loan.status },
+    reason,
   });
   return loan;
 }
@@ -549,9 +560,22 @@ export async function decideEmployeeLoan(
       context,
       input.idempotencyKey,
       "payroll.loan.decide",
-      { actor, loanId, action: input.action },
+      { actor, loanId, action: input.action, reason: input.reason ?? null },
       async () => {
         const row = await lockLoanForDecision(tx, context, actor, loanId);
+        // Cancelling an approved kasbon (not paid yet) needs a reason for the
+        // audit trail; no money moves, so no journal and no event (legend-d5n4j).
+        // A disbursed or already cancelled kasbon is a plain invalid transition.
+        if (
+          input.action === "cancel" &&
+          row.status === "approved" &&
+          !input.reason
+        )
+          throw new HttpError(
+            422,
+            "PAYROLL_CANCEL_REASON_REQUIRED",
+            "Alasan pembatalan wajib diisi untuk kasbon yang sudah disetujui.",
+          );
         // Approving re-checks the limits against the policy of today and the
         // other open loans of the borrower (this loan excluded).
         // Only a pending loan is checked: any other status is a plain invalid
@@ -568,10 +592,55 @@ export async function decideEmployeeLoan(
             businessDateOf(now, DEFAULT_BUSINESS_DAY_CLOCK),
             row.id,
           );
-        return applyTransition(tx, context, actor, row, input.action, now);
+        return applyTransition(
+          tx,
+          context,
+          actor,
+          row,
+          input.action,
+          now,
+          input.reason ?? null,
+        );
       },
     );
   });
+}
+
+async function employeeEntityId(
+  tx: Tx,
+  context: ScopedTenantContext,
+  employeeId: LoanRow["employeeId"],
+): Promise<string | null> {
+  const [employee] = await tx
+    .select({ legalEntityId: employees.legalEntityId })
+    .from(employees)
+    .where(
+      and(
+        eq(employees.tenantId, context.tenant.tenantId),
+        eq(employees.id, employeeId),
+      ),
+    )
+    .limit(1);
+  return employee?.legalEntityId ?? null;
+}
+
+/** Unlocked read of the borrower's legal entity; null when unknown. */
+async function loanEntityId(
+  tx: Tx,
+  context: ScopedTenantContext,
+  loanId: string,
+): Promise<string | null> {
+  const [loan] = await tx
+    .select({ employeeId: employeeLoans.employeeId })
+    .from(employeeLoans)
+    .where(
+      and(
+        eq(employeeLoans.tenantId, context.tenant.tenantId),
+        eq(employeeLoans.id, loanId as LoanRow["id"]),
+      ),
+    )
+    .limit(1);
+  return loan ? employeeEntityId(tx, context, loan.employeeId) : null;
 }
 
 export async function disburseEmployeeLoan(
@@ -599,7 +668,28 @@ export async function disburseEmployeeLoan(
         // hris-offboarding.service.ts), then the offboarding check: no money
         // leaves to an employee whose offboarding is active (open or revoked)
         // or completed. Only cancelled or no offboarding may disburse.
+        //
+        // A cash disbursement pays out of petty cash (1102): the entity lock
+        // comes BEFORE the loan lock (1053 order: entity, then rows), so the
+        // entity is read unlocked first and re-checked under the loan lock
+        // (legend-swn0m).
+        const peekEntityId = await loanEntityId(tx, context, loanId);
+        if (peekEntityId !== null)
+          await entityLock(tx, context.tenant.tenantId, peekEntityId);
         const row = await lockLoanForDecision(tx, context, actor, loanId);
+        if (peekEntityId !== null) {
+          const lockedEntityId = await employeeEntityId(
+            tx,
+            context,
+            row.employeeId,
+          );
+          if (lockedEntityId !== peekEntityId)
+            throw new HttpError(
+              409,
+              "PAYROLL_LOAN_ENTITY_CHANGED",
+              "Badan usaha karyawan berubah saat kasbon diproses. Coba lagi.",
+            );
+        }
         const offboardings = await tx
           .select({ status: hrisOffboardings.status })
           .from(hrisOffboardings)
@@ -626,7 +716,70 @@ export async function disburseEmployeeLoan(
             "PAYROLL_LOAN_OFFBOARDING_ACTIVE",
             "Kasbon tidak bisa dicairkan: karyawan sedang dalam proses offboarding.",
           );
-        return applyTransition(tx, context, actor, row, "disburse", now);
+        // Only an approved loan pays out; any other status is a plain invalid
+        // transition (applyTransition answers it). Under the entity lock and
+        // before the disbursed event, so the amount is not counted twice.
+        const accountingOn = await accountingEnabledShared(
+          tx,
+          context.tenant.tenantId,
+        );
+        if (row.status === "approved") {
+          // No legal entity means no 1102 to check and no journal to post:
+          // with accounting on the cash would leave unrecorded, so refuse
+          // (legend-cv00j).
+          if (peekEntityId === null) {
+            if (accountingOn)
+              throw new HttpError(
+                422,
+                "PAYROLL_CASH_ENTITY_MISSING",
+                "Kasbon tunai tidak bisa dicairkan: karyawan belum punya badan usaha, padahal akuntansi aktif.",
+              );
+          } else {
+            await assertLoanCashAccountsDistinct(
+              tx,
+              context.tenant.tenantId,
+              peekEntityId,
+            );
+            await assertCash1102CoversOutflow(
+              tx,
+              context.tenant.tenantId,
+              peekEntityId,
+              Number(row.principalIdr),
+              accountingOn,
+            );
+          }
+        }
+        const disbursed = await applyTransition(
+          tx,
+          context,
+          actor,
+          row,
+          "disburse",
+          now,
+        );
+        // The cash leaves petty cash (1102): announce it in the same
+        // transaction so the GL consumer posts Dr employee receivable / Cr
+        // 1102 and the amount is a pending credit until then (legend-xf7pt).
+        // The transition above runs once per loan (status guard plus the
+        // idempotency key), so a retry never announces it twice. A borrower
+        // without a legal entity has no 1102 to credit.
+        if (peekEntityId !== null)
+          await emitPayrollEvent(tx, context, employeeLoanDisbursed, {
+            aggregateId: row.id,
+            actor: { type: "user", id: actor },
+            payload: {
+              employeeLoanId: row.id,
+              employeeId: row.employeeId,
+              legalEntityId: peekEntityId,
+              principalIdr: Number(row.principalIdr),
+              disbursedVia: "cash",
+              accountingOnAtEmit: accountingOn,
+              disbursedBy: actor,
+              disbursedAt: now.toISOString(),
+            },
+            now,
+          });
+        return disbursed;
       },
     );
   });

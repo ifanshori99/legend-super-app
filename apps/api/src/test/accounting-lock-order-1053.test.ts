@@ -39,8 +39,16 @@
 //   the threshold, so "approve" decides directly, by a different finance user.
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { createUlid } from "@starter/shared/core";
+import {
+  payrollConfigSnapshotSchema,
+  payrollLocked,
+} from "@starter/shared/hris/payroll";
 import { createApp } from "../app.ts";
+import { db } from "../db/index.ts";
+import { withTenant } from "../db/tenant.ts";
 import { runDueRecurringJournals } from "../services/accounting-journal-recurring.service.ts";
+import { deliverPayrollGlEvent } from "../services/payroll-gl-consumer.ts";
 import { originHeader } from "./helpers.ts";
 import { withLimitSharedLock } from "./helpers/cash-limit-lock.ts";
 import {
@@ -964,6 +972,128 @@ const answered = (value: unknown) => {
   return status === 200 || status === 201;
 };
 
+// ---- payroll.locked consumer (legend-zfq7e) ----------------------------------
+
+/** One locked run's totals: gross = net, so only two posting roles are used. */
+const PAYROLL_TOTALS = {
+  employeeCount: 1,
+  grossIdr: 1_000_000,
+  deductionsIdr: 0,
+  netIdr: 1_000_000,
+  bpjsEmployeeIdr: 0,
+  bpjsCompanyIdr: 0,
+  pph21Idr: 0,
+  pph21WithheldIdr: 0,
+  pph21EmployerBorneIdr: 0,
+  pph21RefundIdr: 0,
+  pph21EmployerRefundIdr: 0,
+  pph21EmployerAllowanceRefundIdr: 0,
+  loanRepaymentIdr: 0,
+  pph21ReceivableIdr: 0,
+  pph21ReceivableCollectedIdr: 0,
+  otherDeductionsIdr: 0,
+  customDeductionsIdr: 0,
+  serviceChargeIdr: 0,
+  reimbursementIdr: 0,
+  bankTransferIdr: 0,
+  cashIdr: 1_000_000,
+};
+
+/** The frozen configuration a locked run must carry (same shape as the payout fixtures). */
+function configSnapshot(policyId: string) {
+  return payrollConfigSnapshotSchema.parse({
+    statutoryVersions: [
+      {
+        type: "pph21_ter",
+        versionId: randomUUID(),
+        version: 9300,
+        effectiveFrom: "2002-01-01",
+      },
+    ],
+    policy: {
+      id: policyId,
+      cycle: {
+        frequency: "monthly",
+        cutoffDay: null,
+        payDay: null,
+        payMonthOffset: 0,
+      },
+      payDateAdjustment: "none",
+      jkkRiskClass: "low",
+      bpjsProgrammes: [],
+    },
+    components: [
+      {
+        id: randomUUID(),
+        code: "GAJI",
+        category: "base_salary",
+        taxable: true,
+        taxScheme: "gross",
+        bpjsBase: true,
+        overtimeBase: true,
+        thrBase: true,
+      },
+    ],
+    loanMaxDeductionOfNetPayBp: 0,
+    pph21Policy: null,
+    capturedAt: "2037-03-31T00:00:00.000Z",
+  });
+}
+
+/**
+ * A payroll run of the world's entity with one disbursement batch (the payout
+ * resolver takes the entity lock per batch, the step that closed the cycle),
+ * and the two posting roles the run journal needs.
+ */
+async function seedLockedRunWithBatch(period: string): Promise<string> {
+  const payable = await owner.query<{ id: string }>(
+    `INSERT INTO chart_of_accounts (tenant_id, legal_entity_id, code, name, type, report_group)
+     VALUES ($1, $2, '2103', 'Utang Gaji', 'liability', 'current_liability')
+     ON CONFLICT (tenant_id, legal_entity_id, code) DO UPDATE SET name = EXCLUDED.name
+     RETURNING id`,
+    [tenantId, world.entityId],
+  );
+  for (const [role, account] of [
+    ["salary_expense", world.gl.expense],
+    ["salaries_payable", payable.rows[0]!.id],
+  ] as const)
+    await owner.query(
+      `INSERT INTO account_mappings (tenant_id, legal_entity_id, role, account_id)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (tenant_id, legal_entity_id, role) DO NOTHING`,
+      [tenantId, world.entityId, role, account],
+    );
+  const policyId = randomUUID();
+  const code = `LO${policyId.slice(0, 8)}`;
+  await owner.query(
+    `INSERT INTO payroll_policies (id, tenant_id, legal_entity_id, name, employee_group_code,
+                                   employee_group, cycle, pay_date_adjustment, jkk_risk_class, bpjs_programmes)
+     VALUES ($1, $2, $3, 'Kebijakan urutan kunci', $4, $5, '{"kind":"monthly"}', 'none', 'low', '[]')`,
+    [policyId, tenantId, world.entityId, code, JSON.stringify({ code })],
+  );
+  const runId = randomUUID();
+  await owner.query(
+    `INSERT INTO payroll_runs (id, tenant_id, legal_entity_id, payroll_policy_id, run_type,
+                               period_start, period_end, pay_date, created_by)
+     VALUES ($1, $2, $3, $4, 'regular', $5, $6, $6, '00000000-0000-4000-8000-0000000000a4')`,
+    [runId, tenantId, world.entityId, policyId, `${period}-01`, `${period}-10`],
+  );
+  for (const step of [
+    `status = 'simulated', simulation_count = 1, last_simulated_at = now()`,
+    `status = 'hr_approved', approved_by_hr = '00000000-0000-4000-8000-0000000000a1', approved_by_hr_at = now()`,
+    `status = 'approved', approved_by_finance = '00000000-0000-4000-8000-0000000000a2', approved_by_finance_at = now()`,
+    `status = 'locked', totals = '${JSON.stringify(PAYROLL_TOTALS)}'::jsonb, config_snapshot = '${JSON.stringify(configSnapshot(policyId))}'::jsonb, locked_by = '00000000-0000-4000-8000-0000000000a3', locked_at = now()`,
+  ])
+    await owner.query(`UPDATE payroll_runs SET ${step} WHERE id = $1`, [runId]);
+  await owner.query(
+    `INSERT INTO payroll_disbursement_batches
+       (tenant_id, legal_entity_id, payroll_run_id, channel, requested_by, totals_encrypted, pii_key_version)
+     VALUES ($1, $2, $3, 'cash', 'lock-order-1053', '\\x00', 1)`,
+    [tenantId, world.entityId, runId],
+  );
+  return runId;
+}
+
 /** The books after the deterministic cases: no negative cash, nothing twice. */
 async function expectBooksSound(): Promise<void> {
   expect(await glPettyBalance(), "GL 1102 below zero").toBeGreaterThanOrEqual(
@@ -1095,4 +1225,57 @@ describe("legend-f250r the period gate takes the entity lock first (month withou
       expectNoDeadlockOutcome(`fixed asset ${action}`, outcome, answered);
       await expectBooksSound();
     });
+
+  // Legend-zfq7e (second opinion 1066, round 3, finding 3): the consumer of
+  // `payroll.locked` posted the run journal (which inserts the month's period)
+  // before the payout resolver took the entity lock. Run -> entity -> period
+  // is the one order, so the consumer takes the entity lock before it posts.
+  it("[legend-zfq7e-payroll-locked] consuming payroll.locked into a new month waits for the entity lock before it creates the period, and posts the run journal once", async () => {
+    const { second } = monthPair();
+    const runId = await seedLockedRunWithBatch(second);
+    const lockedAt = `${second}-15T05:00:00.000Z`;
+    const event = payrollLocked.envelopeSchema.parse({
+      id: createUlid(),
+      tenantId,
+      outletId: null,
+      name: "payroll.locked",
+      version: 1,
+      aggregateType: "payroll",
+      aggregateId: runId,
+      sequence: 1,
+      occurredAt: lockedAt,
+      actor: { type: "user", id: randomUUID() },
+      deviceId: null,
+      idempotencyKey: `payroll.locked-${runId}-${randomUUID()}`,
+      payloadSchemaRef: "payroll.locked.v1",
+      payload: {
+        payrollRunId: runId,
+        legalEntityId: world.entityId,
+        runType: "regular",
+        periodStart: `${second}-01`,
+        periodEnd: `${second}-10`,
+        payDate: `${second}-12`,
+        totals: PAYROLL_TOTALS,
+        lockedBy: randomUUID(),
+        lockedAt,
+      },
+    });
+    const outcome = await crossAgainstEntityLock(second, () =>
+      withTenant(db, scopeOf(), (tx) =>
+        deliverPayrollGlEvent(scopeOf(), event, tx, new Date()),
+      ),
+    );
+    expectNoDeadlockOutcome(
+      "payroll.locked consumer",
+      outcome,
+      (value) =>
+        (value as { status?: string } | undefined)?.status === "posted",
+    );
+    const journals = await owner.query<{ n: string }>(
+      "SELECT count(*)::text AS n FROM journal_entries WHERE tenant_id = $1 AND idempotency_key = $2",
+      [tenantId, `payroll-gl:locked:${runId}`],
+    );
+    expect(journals.rows[0]!.n, JSON.stringify(outcome)).toBe("1");
+    await expectBooksSound();
+  });
 });

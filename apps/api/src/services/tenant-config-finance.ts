@@ -6,6 +6,9 @@
 import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import {
   REPORT_GROUPS,
+  accountMappingIssues,
+  CASH_ACCOUNT_SHARED_CODE,
+  type AccountMapping,
   type AccountType,
   type PostingAccountRole,
   type ReportGroup,
@@ -29,6 +32,10 @@ import {
   taxRules,
   taxSettings,
 } from "../db/schema/index.ts";
+import {
+  CASH_MAPPING_ACCOUNT_HAS_HISTORY,
+  cashMappingHistoryConflicts,
+} from "./accounting-cash-mapping-history.ts";
 import { recordAudit } from "./core-audit.ts";
 import {
   TRADING_GUARD_HINT,
@@ -47,6 +54,7 @@ import {
 import {
   lockServiceChargeConfig,
   lockTaxConfig,
+  tryLockChartOfAccounts,
 } from "./tenant-config-locks.ts";
 import { loadTenantKeyMaps } from "./tenant-config-keys.ts";
 import {
@@ -411,6 +419,15 @@ async function importChartOfAccounts(
     return;
   }
 
+  // importConfig locked every entity's chart before the tenant row lock. This
+  // list is read after it, so an entity created in between is only try-locked:
+  // waiting here could deadlock with an owner writer (see tenant-config-locks).
+  for (const entity of entities)
+    if (!(await tryLockChartOfAccounts(tx, tenantId, entity.id)))
+      throw new ConfigImportError(
+        "Chart of accounts is being changed by another request; retry the import.",
+      );
+
   const byKey = new Map(accounts.map((item) => [item.key, item]));
   for (const item of accounts) {
     const what = `account "${item.code}"`;
@@ -502,7 +519,10 @@ async function importChartOfAccounts(
     first = false;
 
     const mapped = await tx
-      .select({ role: accountMappings.role })
+      .select({
+        role: accountMappings.role,
+        accountId: accountMappings.accountId,
+      })
       .from(accountMappings)
       .where(
         and(
@@ -513,22 +533,75 @@ async function importChartOfAccounts(
     const haveRole = new Set<string>(mapped.map((row) => row.role));
     const missing = mappings.filter((item) => !haveRole.has(item.role));
     if (missing.length === 0) continue;
-    await tx.insert(accountMappings).values(
-      missing.map((item) => {
-        const account = byKey.get(item.accountKey);
-        const accountId = account && idByCode.get(account.code);
-        if (!accountId)
-          throw new ConfigImportError(
-            `Unknown account reference "${item.accountKey}" in mapping "${item.role}".`,
-          );
-        return {
+    const values = missing.map((item) => {
+      const account = byKey.get(item.accountKey);
+      const accountId = account && idByCode.get(account.code);
+      if (!accountId)
+        throw new ConfigImportError(
+          `Unknown account reference "${item.accountKey}" in mapping "${item.role}".`,
+        );
+      return {
+        tenantId,
+        legalEntityId: entity.id,
+        role: item.role,
+        accountId,
+      };
+    });
+    // The merged set (existing + imported) must pass the same validation as
+    // the mapping endpoint, e.g. no cash role sharing an account (legend-1118).
+    const chart = await tx
+      .select()
+      .from(chartOfAccounts)
+      .where(
+        and(
+          eq(chartOfAccounts.tenantId, tenantId),
+          eq(chartOfAccounts.legalEntityId, entity.id),
+        ),
+      );
+    // Only the cash-sharing rule gates the import: the rest of the endpoint's
+    // validation (e.g. header accounts) is not applied to bundles today and
+    // would refuse charts the import has always accepted.
+    // The ids are branded in the shared schema; the rows here come from this
+    // tenant's own queries and bundle, so the cast only adds the brand.
+    const issues = accountMappingIssues(
+      [
+        ...mapped.map((row) => ({
+          ...row,
           tenantId,
           legalEntityId: entity.id,
-          role: item.role,
-          accountId,
-        };
-      }),
+        })),
+        ...values,
+      ] as AccountMapping[],
+      chart.map((row) => ({
+        id: row.id,
+        tenantId: row.tenantId,
+        legalEntityId: row.legalEntityId,
+        code: row.code,
+        name: row.name,
+        type: row.type,
+        reportGroup: row.reportGroup,
+        parentId: row.parentId,
+        isActive: row.isActive,
+      })) as unknown as Parameters<typeof accountMappingIssues>[1],
+    ).filter((issue) => issue.startsWith(`${CASH_ACCOUNT_SHARED_CODE}:`));
+    if (issues.length > 0)
+      throw new ConfigImportError(
+        `Account mapping of entity ${entity.id} is invalid: ${issues.join("; ")}`,
+      );
+    // legend 1147: a new cash-role mapping may not take an account that already
+    // has journal lines (same rule as the mapping endpoint).
+    const historyConflicts = await cashMappingHistoryConflicts(
+      tx,
+      tenantId,
+      entity.id,
+      values,
+      mapped,
     );
+    if (historyConflicts.length > 0)
+      throw new ConfigImportError(
+        `${CASH_MAPPING_ACCOUNT_HAS_HISTORY}: account mapping of entity ${entity.id} is refused: ${historyConflicts.join("; ")}`,
+      );
+    await tx.insert(accountMappings).values(values);
   }
 }
 

@@ -12,7 +12,7 @@
 // error rolls the whole transaction back and a separate `failed` run is stored.
 
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, lt, or, sql } from "drizzle-orm";
 import {
   configImportSchema,
   configReadinessSchema,
@@ -63,6 +63,7 @@ import { accessSectionHandlers } from "./tenant-config-access.ts";
 import { coreSectionHandlers } from "./tenant-config-core.ts";
 import { financeSectionHandlers } from "./tenant-config-finance.ts";
 import { prefillImportKeys } from "./tenant-config-keys.ts";
+import { lockChartOfAccounts } from "./tenant-config-locks.ts";
 import { outletSectionHandlers } from "./tenant-config-outlet.ts";
 import {
   ConfigImportError,
@@ -486,6 +487,20 @@ export async function importConfig(
   let applying = false;
   try {
     return await withTenant(db, ctx, async (tx) => {
+      // Chart locks first (lock order 1, tenant-config-locks.ts): owner
+      // mapping writers hold them while waiting for a tenant KEY SHARE, so
+      // taking them after the row lock below could deadlock. The finance
+      // handler re-checks the entity list after the row lock.
+      if (toRun.some((handler) => handler.section === "chart_of_accounts")) {
+        const chartEntities = await tx
+          .select({ id: legalEntities.id })
+          .from(legalEntities)
+          .where(eq(legalEntities.tenantId, targetTenantId))
+          .orderBy(asc(legalEntities.createdAt), asc(legalEntities.id));
+        for (const entity of chartEntities)
+          await lockChartOfAccounts(tx, targetTenantId, entity.id);
+      }
+
       // Serialise imports (and package/status changes) of the target.
       const [locked] = await tx
         .select({ status: tenants.status })

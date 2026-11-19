@@ -3403,6 +3403,20 @@
       "when": 1795000009101,
       "tag": "0499_refund_hold_invalid_report",
       "breakpoints": true
+    },
+    {
+      "idx": 500,
+      "version": "7",
+      "when": 1795000010101,
+      "tag": "0500_payout_settle_waived",
+      "breakpoints": true
+    },
+    {
+      "idx": 501,
+      "version": "7",
+      "when": 1795000011101,
+      "tag": "0501_payout_waive_trusted",
+      "breakpoints": true
     }
   ]
 }

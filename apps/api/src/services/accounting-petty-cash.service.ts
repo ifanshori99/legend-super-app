@@ -148,6 +148,7 @@ import {
 } from "./accounting-period.service.ts";
 import { requireLegalEntity } from "./accounting-shared.ts";
 import { loadOutletClock } from "./inventory-ops.shared.ts";
+import { payrollGlKeys } from "./payroll-gl-consumer.ts";
 import { openItemAmount } from "./payroll-payout.service.ts";
 import { accountingEnabled } from "./payroll-payout-setup.ts";
 import { EVENT_DESTINATION } from "./payment-support.ts";
@@ -303,7 +304,7 @@ const PETTY_JOURNAL_SOURCES = [
 ] as const;
 
 /** The GL account the `petty_cash` role maps to for the entity, or null. */
-async function pettyCashGlAccount(
+export async function pettyCashGlAccount(
   tx: TenantTransaction,
   tenantId: TenantId,
   legalEntityId: string,
@@ -337,7 +338,8 @@ async function pettyCashGlBalance(
     : glBalanceOf(tx, tenantId, legalEntityId, accountId);
 }
 
-async function glBalanceOf(
+/** Debit minus credit of the posted journal lines on one account of the entity. */
+export async function glBalanceOf(
   tx: TenantTransaction,
   tenantId: TenantId,
   legalEntityId: string,
@@ -467,6 +469,78 @@ async function pendingPettyPurchaseCreditsIdr(
 }
 
 /**
+ * Petty cash returns of the entity saved parked (no petty_cash mapping at the
+ * time): the fund already gave the cash back, the journal has not credited 1102
+ * yet. One return counts once, by entry id, and stops counting the moment its
+ * journal exists (`pc:<entryId>`, also when the status row is not updated yet).
+ * Unreadable amount: PETTY_CASH_GL_INSUFFICIENT (fail closed).
+ */
+async function pendingParkedReturnCreditsIdr(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  legalEntityId: string,
+): Promise<number> {
+  const rows = await tx
+    .select({ amountIdr: pettyCashEntries.amountIdr })
+    .from(pettyCashEntries)
+    .where(
+      and(
+        eq(pettyCashEntries.tenantId, tenantId),
+        eq(pettyCashEntries.legalEntityId, legalEntityId),
+        eq(pettyCashEntries.kind, "return"),
+        eq(pettyCashEntries.journalStatus, "parked"),
+        sql`NOT EXISTS (
+          SELECT 1 FROM ${journalEntries}
+           WHERE ${journalEntries.tenantId} = ${pettyCashEntries.tenantId}
+             AND ${journalEntries.legalEntityId} = ${pettyCashEntries.legalEntityId}
+             AND ${journalEntries.idempotencyKey} = 'pc:' || ${pettyCashEntries.id}::text
+        )`,
+      ),
+    );
+  let total = 0;
+  for (const row of rows)
+    total += readableIdr(row.amountIdr, "petty_cash_return");
+  return total;
+}
+
+/**
+ * Net cash of one payout posting: `settle_net_idr`, else (written before
+ * migration 0392) the net sealed in its total. The reserve and the settle_skipped
+ * waive share this, so the waived amount is exactly the reserved one. Unreadable:
+ * PETTY_CASH_GL_INSUFFICIENT (fail closed).
+ */
+export function payoutPostingNetIdr(
+  tenantId: TenantId,
+  posting: {
+    id: string;
+    settleNetIdr: number | null;
+    totalEncrypted: Buffer | Uint8Array;
+    piiKeyVersion: number;
+  },
+): number {
+  if (posting.settleNetIdr !== null)
+    return readableIdr(posting.settleNetIdr, "payout_posting");
+  try {
+    const sealed = JSON.parse(
+      openPayrollValue(
+        posting.totalEncrypted,
+        {
+          tenantId,
+          table: "payroll_payout_gl_postings",
+          rowId: posting.id,
+          field: "total",
+        },
+        posting.piiKeyVersion,
+      ),
+    ) as Record<string, unknown>;
+    return readableIdr(sealed.netIdr, "payout_posting");
+  } catch (error) {
+    if (error instanceof AccountingError) throw error;
+    throw unreadablePendingCredit("payout_posting");
+  }
+}
+
+/**
  * Cash that already left, or leaves through an event not delivered yet, and
  * will credit the entity's petty cash account (1102) once its journal posts
  * (legend-3k9qg). Sum of:
@@ -483,7 +557,9 @@ async function pendingPettyPurchaseCreditsIdr(
  * - `petty_purchase.recorded` of an outlet of the entity, undelivered in the
  *   outbox or parked in `auto_journal_parked`, whose journal (source
  *   `petty_purchase`) has not posted yet. A purchase in both places, or already
- *   posted, counts once or not at all (keyed by the petty purchase id).
+ *   posted, counts once or not at all (keyed by the petty purchase id);
+ * - petty cash returns of the entity saved parked, whose journal has not posted
+ *   (`pendingParkedReturnCreditsIdr`, keyed by the entry id, legend-srwv4).
  * Counts whatever it cannot rule out; an unreadable amount throws
  * PETTY_CASH_GL_INSUFFICIENT. Call under `entityLock`.
  */
@@ -523,31 +599,8 @@ async function pendingPettyCashCreditsIdr(
         eq(payrollDisbursementBatches.channel, "cash"),
       ),
     );
-  for (const posting of postings) {
-    if (posting.settleNetIdr !== null) {
-      total += readableIdr(posting.settleNetIdr, "payout_posting");
-      continue;
-    }
-    // Written before migration 0392: only the sealed total holds the net.
-    try {
-      const sealed = JSON.parse(
-        openPayrollValue(
-          posting.totalEncrypted,
-          {
-            tenantId,
-            table: "payroll_payout_gl_postings",
-            rowId: posting.id,
-            field: "total",
-          },
-          posting.piiKeyVersion,
-        ),
-      ) as Record<string, unknown>;
-      total += readableIdr(sealed.netIdr, "payout_posting");
-    } catch (error) {
-      if (error instanceof AccountingError) throw error;
-      throw unreadablePendingCredit("payout_posting");
-    }
-  }
+  for (const posting of postings)
+    total += payoutPostingNetIdr(tenantId, posting);
 
   const scheduled = await tx
     .select({
@@ -637,7 +690,9 @@ async function pendingPettyCashCreditsIdr(
       total += readableIdr(payload.principalIdr, row.name);
     }
   }
+  total += await heldDeliveredCashCreditsIdr(tx, tenantId, legalEntityId);
   total += await pendingPettyPurchaseCreditsIdr(tx, tenantId, legalEntityId);
+  total += await pendingParkedReturnCreditsIdr(tx, tenantId, legalEntityId);
   if (reimbursements.length > 0) {
     const inEntity = await tx
       .select({ id: employees.id })
@@ -656,6 +711,119 @@ async function pendingPettyCashCreditsIdr(
     for (const row of reimbursements)
       if (ids.has(row.employeeId)) total += row.amountIdr;
   }
+  return total;
+}
+
+function heldAmount(amount: unknown, journalDebit: unknown): number {
+  if (typeof amount === "number" && Number.isSafeInteger(amount) && amount > 0)
+    return amount;
+  // Missing, NULL or non-positive amount: the cash stays held by what the
+  // journal moved; never released and never an error (legend 1140).
+  const moved = Number(journalDebit);
+  return Number.isSafeInteger(moved) && moved > 0 ? moved : 0;
+}
+
+/**
+ * A cash kasbon or cash reimbursement whose event is delivered and whose
+ * journal exists, but whose journal did not net-reduce the entity's cash by its
+ * amount (credit minus debit below it, e.g. Dr 1102 / Cr 1102 when two roles
+ * share one account, legend-1118): the cash never left the GL, so the amount
+ * stays reserved. A delivered event WITHOUT a journal (accounting off when it
+ * was consumed) releases, as before. The cash accounts measured are the ones
+ * the journal was posted on: its `posting_account_snapshot` (petty_cash, plus
+ * cash_on_hand / bank for journals posted by an older rule), so a later remap
+ * of petty_cash does not hold every old good loan; a journal without a
+ * snapshot uses today's mapping. One bounded query per kind (the scan is
+ * narrowed by aggregate type, the leading columns of the outbox aggregate key):
+ * the net is a correlated subquery over the lines of the journal, no per-event
+ * round trip.
+ */
+async function heldDeliveredCashCreditsIdr(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  legalEntityId: string,
+): Promise<number> {
+  const pettyCashAccountId = await pettyCashGlAccount(
+    tx,
+    tenantId,
+    legalEntityId,
+  );
+  if (pettyCashAccountId === null) return 0;
+  const eventName = sql<string>`${domainEventOutbox.event}->>'name'`;
+  const payload = sql`${domainEventOutbox.event}->'payload'`;
+  const snapshot = sql`${journalEntries.postingAccountSnapshot}`;
+  const cashAccountIds = sql`COALESCE(${snapshot}->>'petty_cash', ${pettyCashAccountId}::text), ${snapshot}->>'cash_on_hand', ${snapshot}->>'bank'`;
+  // The net counts a reversal of the journal too (journal_entries.reversal_of):
+  // a reversal debits the account back on the GL without any money returning
+  // to the till, so the cash stays reserved (legend 1140).
+  const netCredit = sql`(SELECT COALESCE(SUM(${journalLines.creditIdr}) - SUM(${journalLines.debitIdr}), 0) FROM ${journalLines} WHERE ${journalLines.tenantId} = ${journalEntries.tenantId} AND (${journalLines.entryId} = ${journalEntries.id} OR ${journalLines.entryId} IN (SELECT rev.id FROM journal_entries AS rev WHERE rev.tenant_id = ${journalEntries.tenantId} AND rev.reversal_of = ${journalEntries.id})) AND ${journalLines.accountId}::text IN (${cashAccountIds}))`;
+  // What the journal moved, held when the event's amount is unreadable.
+  const journalDebit = sql`(SELECT COALESCE(SUM(${journalLines.debitIdr}), 0) FROM ${journalLines} WHERE ${journalLines.tenantId} = ${journalEntries.tenantId} AND ${journalLines.entryId} = ${journalEntries.id})`;
+  // NULL when the amount is missing or not a JSON number (checked before any
+  // cast, and before the net filter).
+  const amountOf = (key: "principalIdr" | "amountIdr") =>
+    sql`(CASE WHEN jsonb_typeof(${payload}->${sql.raw(`'${key}'`)}) = 'number' THEN (${payload}->>${sql.raw(`'${key}'`)})::numeric END)`;
+  const delivered = and(
+    eq(domainEventOutbox.tenantId, tenantId),
+    eq(domainEventOutbox.destination, EVENT_DESTINATION),
+    eq(domainEventOutbox.status, "delivered"),
+  );
+  let total = 0;
+
+  const loans = await tx
+    .select({
+      principal: sql<unknown>`${payload}->'principalIdr'`,
+      journalDebit: sql<unknown>`${journalDebit}`,
+    })
+    .from(domainEventOutbox)
+    .innerJoin(
+      journalEntries,
+      and(
+        eq(journalEntries.tenantId, domainEventOutbox.tenantId),
+        eq(journalEntries.legalEntityId, legalEntityId),
+        sql`${journalEntries.idempotencyKey} = ${payrollGlKeys.loan("")} || (${payload}->>'employeeLoanId')`,
+      ),
+    )
+    .where(
+      and(
+        delivered,
+        // The aggregate type is the event name's prefix (events/catalog.ts).
+        eq(domainEventOutbox.aggregateType, "employee_loan"),
+        sql`${eventName} = 'employee_loan.disbursed'`,
+        sql`${payload}->>'legalEntityId' = ${legalEntityId}`,
+        sql`${payload}->>'disbursedVia' IS DISTINCT FROM 'bank'`,
+        sql`(${amountOf("principalIdr")} IS NULL OR ${amountOf("principalIdr")} <= 0 OR ${netCredit} < ${amountOf("principalIdr")})`,
+      ),
+    );
+  for (const row of loans) total += heldAmount(row.principal, row.journalDebit);
+
+  const reimbursements = await tx
+    .select({
+      amount: sql<unknown>`${payload}->'amountIdr'`,
+      journalDebit: sql<unknown>`${journalDebit}`,
+    })
+    .from(domainEventOutbox)
+    .innerJoin(
+      journalEntries,
+      and(
+        eq(journalEntries.tenantId, domainEventOutbox.tenantId),
+        // The entity is the journal's own, found by its idempotency key: the
+        // employee's current entity may have changed since the payment.
+        eq(journalEntries.legalEntityId, legalEntityId),
+        sql`${journalEntries.idempotencyKey} = ${payrollGlKeys.reimbursement("")} || (${payload}->>'reimbursementId')`,
+      ),
+    )
+    .where(
+      and(
+        delivered,
+        eq(domainEventOutbox.aggregateType, "reimbursement"),
+        sql`${eventName} = 'reimbursement.paid'`,
+        sql`${payload}->>'payout' IS DISTINCT FROM 'payroll'`,
+        sql`(${amountOf("amountIdr")} IS NULL OR ${amountOf("amountIdr")} <= 0 OR ${netCredit} < ${amountOf("amountIdr")})`,
+      ),
+    );
+  for (const row of reimbursements)
+    total += heldAmount(row.amount, row.journalDebit);
   return total;
 }
 
@@ -690,8 +858,10 @@ export async function availableCash1102(
  * pays out of 1102 when it is credited. Refuses a credit of `amountIdr` that
  * exceeds the cash left after the reserve of approved cash payroll and other
  * credits not on the GL yet (PETTY_CASH_GL_INSUFFICIENT, legend-rvao9 P2-2a).
- * Skipped when accounting is off, when `glAccountId` is not the mapped
- * petty_cash account, or when the entity has no mapping. Call under
+ * Skipped when `glAccountId` is not the mapped petty_cash account, or when
+ * the entity has no mapping. Not gated by the accounting module: every caller
+ * posts a journal crediting this account right after, and that poster has no
+ * module gate (legend-socwi). Call under
  * `entityLock`, only for a movement that reduces the bank account.
  */
 export async function assertBankCreditCoveredBy1102(
@@ -701,7 +871,6 @@ export async function assertBankCreditCoveredBy1102(
   glAccountId: string,
   amountIdr: number,
 ): Promise<void> {
-  if (!(await accountingEnabled(tx, tenantId))) return;
   const pettyCashAccountId = await pettyCashGlAccount(
     tx,
     tenantId,
@@ -715,6 +884,128 @@ export async function assertBankCreditCoveredBy1102(
   throw new AccountingError(
     "PETTY_CASH_GL_INSUFFICIENT",
     `Kas kecil di pembukuan tidak cukup untuk kas keluar atau transfer ini. Saldo tersedia ${formatRupiah(Math.max(0, availableIdr))} setelah dikurangi cadangan gaji tunai dan kas keluar yang belum dijurnal, jumlah ${formatRupiah(amountIdr)}, kurang ${formatRupiah(shortIdr)}.`,
+    { glIdr, pendingCreditIdr, availableIdr, shortIdr, deltaIdr: -amountIdr },
+  );
+}
+
+/**
+ * A manual or recurring journal that CREDITS the entity's petty cash account
+ * pays out of 1102 like a cash-out (legend-5qqb9). The credit is the NET of its
+ * lines on that account (credit minus debit); a net debit or no line on 1102 is
+ * not guarded. Refuses a net credit above the cash left after the reserve
+ * (PETTY_CASH_GL_INSUFFICIENT). Takes the entity lock only when a line touches
+ * 1102, so the check and the posting that follows are one serial step. Not
+ * gated by the accounting module (same as `assertBankCreditCoveredBy1102`):
+ * the caller posts a journal crediting 1102 right after. Central posting is not
+ * guarded on purpose: other posters already reserve their own amount.
+ */
+export async function assertJournalCredit1102Covered(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  legalEntityId: string,
+  lines: readonly {
+    accountId: string;
+    debitIdr: number;
+    creditIdr: number;
+  }[],
+): Promise<void> {
+  const pettyCashAccountId = await pettyCashGlAccount(
+    tx,
+    tenantId,
+    legalEntityId,
+  );
+  if (
+    pettyCashAccountId === null ||
+    !lines.some((line) => line.accountId === pettyCashAccountId)
+  )
+    return;
+  await entityLock(tx, tenantId, legalEntityId);
+  const netCreditIdr = lines
+    .filter((line) => line.accountId === pettyCashAccountId)
+    .reduce((sum, line) => sum + line.creditIdr - line.debitIdr, 0);
+  if (netCreditIdr <= 0) return;
+  await assertBankCreditCoveredBy1102(
+    tx,
+    tenantId,
+    legalEntityId,
+    pettyCashAccountId,
+    netCreditIdr,
+  );
+}
+
+/**
+ * A cash kasbon pays Dr employee_receivable / Cr petty_cash. When the
+ * employee_receivable account is the same account as petty_cash, bank or
+ * cash_on_hand, the journal nets to zero and the cash never leaves the GL
+ * (legend-1118): refuse before any money or event is written
+ * (LOAN_CASH_ACCOUNT_SHARED). Legacy mappings only: the mapping endpoint
+ * already refuses a new one. Skipped when employee_receivable is not mapped.
+ */
+export async function assertLoanCashAccountsDistinct(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  legalEntityId: string,
+): Promise<void> {
+  const rows = await tx
+    .select({
+      role: accountMappings.role,
+      accountId: accountMappings.accountId,
+    })
+    .from(accountMappings)
+    .where(
+      and(
+        eq(accountMappings.tenantId, tenantId),
+        eq(accountMappings.legalEntityId, legalEntityId),
+        inArray(accountMappings.role, [
+          "employee_receivable",
+          "petty_cash",
+          "bank",
+          "cash_on_hand",
+        ]),
+      ),
+    );
+  const receivable = rows.find((row) => row.role === "employee_receivable");
+  if (!receivable) return;
+  if (
+    rows.some(
+      (row) =>
+        row.role !== "employee_receivable" &&
+        row.accountId === receivable.accountId,
+    )
+  )
+    throw new HttpError(
+      409,
+      "LOAN_CASH_ACCOUNT_SHARED",
+      "Kasbon tunai tidak bisa dicairkan: akun piutang karyawan sama dengan akun kas kecil, kas, atau bank di pemetaan akun. Pisahkan akunnya di pengaturan pemetaan akun, lalu coba lagi.",
+    );
+}
+
+/**
+ * Cash outflow paid out of petty cash (1102) that is not a petty purchase: an
+ * approved cash kasbon or cash reimbursement (legend-swn0m). Refuses an
+ * `amountIdr` above the cash left after the reserve of approved cash payroll
+ * and other credits not on the GL yet (PETTY_CASH_GL_INSUFFICIENT), the same
+ * rule as a petty purchase. Skipped when accounting is off or the entity has
+ * no petty_cash mapping. Call under `entityLock`, BEFORE the outbox event of
+ * the outflow is appended, so the amount is not counted twice. A caller that
+ * already read the accounting flag under a share lock passes it as
+ * `accountingOn`, so the whole outflow decides on one value (legend-kt8em).
+ */
+export async function assertCash1102CoversOutflow(
+  tx: TenantTransaction,
+  tenantId: TenantId,
+  legalEntityId: string,
+  amountIdr: number,
+  accountingOn?: boolean,
+): Promise<void> {
+  if (!(accountingOn ?? (await accountingEnabled(tx, tenantId)))) return;
+  const cash = await availableCash1102(tx, tenantId, legalEntityId);
+  if (cash === null || amountIdr <= cash.availableIdr) return;
+  const { glIdr, pendingCreditIdr, availableIdr } = cash;
+  const shortIdr = amountIdr - Math.max(0, availableIdr);
+  throw new AccountingError(
+    "PETTY_CASH_GL_INSUFFICIENT",
+    `Kas kecil di pembukuan tidak cukup untuk kas keluar ini. Saldo tersedia ${formatRupiah(Math.max(0, availableIdr))} setelah dikurangi cadangan gaji tunai dan kas keluar yang belum dijurnal, jumlah ${formatRupiah(amountIdr)}, kurang ${formatRupiah(shortIdr)}.`,
     { glIdr, pendingCreditIdr, availableIdr, shortIdr, deltaIdr: -amountIdr },
   );
 }
@@ -1456,6 +1747,30 @@ export async function postPettyCashEntry(
     )
       return pettyCashEntryDto(row);
     const bank = await loadBankAccount(tx, tenantId, row.bankAccountId);
+    // A parked return credits 1102 when it posts: 1102 must still cover it
+    // after every other credit not on the GL yet (legend-srwv4). This entry is
+    // itself counted as pending, so its own amount is covered when the cash left
+    // is not below zero. Under the entity lock taken above; nothing written yet.
+    // Not gated by the accounting module: the journal below posts either way
+    // (legend-socwi).
+    if (row.kind === "return") {
+      const cash = await availableCash1102(tx, tenantId, row.legalEntityId);
+      if (cash !== null && cash.availableIdr < 0) {
+        const { glIdr, pendingCreditIdr, availableIdr } = cash;
+        const shortIdr = -availableIdr;
+        throw new AccountingError(
+          "PETTY_CASH_GL_INSUFFICIENT",
+          `Kas kecil di pembukuan tidak cukup untuk memposting setoran ini. Saldo ${formatRupiah(glIdr)} setelah dikurangi cadangan gaji tunai dan kas keluar yang belum dijurnal ${formatRupiah(pendingCreditIdr)} (termasuk setoran ini ${formatRupiah(row.amountIdr)}), kurang ${formatRupiah(shortIdr)}.`,
+          {
+            glIdr,
+            pendingCreditIdr,
+            availableIdr,
+            shortIdr,
+            deltaIdr: -row.amountIdr,
+          },
+        );
+      }
+    }
     // Takes the entity FOR SHARE lock: close/reopen cannot race this post.
     const blocked = await wouldPostingBeBlockedByClosedPeriod(
       tx,

@@ -230,6 +230,22 @@ export const changeEmployeeManagerEndpoint = defineEndpoint({
   response: dataResponseSchema(employeeSchema),
 });
 
+/**
+ * Sets the employer legal entity of an employee that has none (legend-d5n4j).
+ * Once set it cannot change here: a different value is 409
+ * EMPLOYEE_LEGAL_ENTITY_ALREADY_SET, the same value is a no-op.
+ */
+export const setEmployeeLegalEntityEndpoint = defineEndpoint({
+  method: "PUT",
+  path: "/api/hris/employees/:employeeId/legal-entity",
+  params: employeeIdParams,
+  body: z.strictObject({
+    legalEntityId: uuidSchema,
+    idempotencyKey: idempotencyKeySchema,
+  }),
+  response: dataResponseSchema(employeeSchema),
+});
+
 export const listOrgUnits = defineEndpoint({
   method: "GET",
   path: "/api/hris/org-units",
@@ -1475,6 +1491,7 @@ export const hrisEndpoints = [
   getEmployeePii,
   updateEmployeePii,
   changeEmployeeManagerEndpoint,
+  setEmployeeLegalEntityEndpoint,
   getMyHrisProfile,
   listOrgUnits,
   listPositionGrades,

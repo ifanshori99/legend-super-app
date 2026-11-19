@@ -203,7 +203,7 @@ async function sourceBankOverride(
   return glAccountId === null ? null : { bank: glAccountId };
 }
 
-async function runHasLockedJournal(
+export async function runHasLockedJournal(
   tx: Tx,
   tenantId: TenantId,
   runId: string,
@@ -289,7 +289,7 @@ async function feeJournalMismatched(
  * yet. A delivered event that left no journal (all-zero run, accounting off at
  * that time) is not pending.
  */
-async function runLockPending(
+export async function runLockPending(
   tx: Tx,
   tenantId: TenantId,
   runId: string,
@@ -1011,6 +1011,22 @@ async function resolveOnePosting(
   // stalls the consumer.
   const wasSkipped = posting.kind === "settle_skipped";
   if (wasSkipped && netIdr === 0) return false;
+  // A legacy posting (from before 0392) has no recorded net, so the settle
+  // flip is refused by the database (app.payout_settle_journal_ok fails closed,
+  // 0691). Nothing is posted and nothing flips: it stays pending/skipped with
+  // its reserve held, and finance settles it manually outside the system.
+  if (posting.settleNetIdr === null) {
+    logger.warn(
+      {
+        tenantId,
+        batchId: batch.id,
+        postingId: posting.id,
+        reason: "settle_net_unknown",
+      },
+      "payout settlement left as is: legacy posting has no recorded net",
+    );
+    return false;
+  }
   // A skipped posting that owes a bank fee turns into a settle only while
   // the fee can be journaled with it. No bank charges mapping: it stays
   // `settle_skipped`, `fee_posted` untouched, nothing is posted, and a later
@@ -1518,6 +1534,8 @@ async function unpostedFeePostings(
       and(
         eq(payrollPayoutGlPostings.tenantId, tenantId),
         eq(payrollPayoutGlPostings.batchId, batchId),
+        // A waived settlement (legend-5qqb9) is terminal: nothing is journaled.
+        ne(payrollPayoutGlPostings.kind, "settle_waived"),
         // Only `fee_posted = false`. A historical `settle_skipped` row flagged
         // posted without a fee journal (legend-qq68t) is listed for finance
         // (`accounting_was_off`) but never journaled by the worker or by a
@@ -1887,6 +1905,8 @@ const feeJournalMissingSql = sql`NOT EXISTS (SELECT 1 FROM ${journalEntries} WHE
 function recoveryCandidateWhere(tenantId: TenantId) {
   return and(
     eq(payrollPayoutGlPostings.tenantId, tenantId),
+    // A waived settlement (legend-5qqb9) is terminal: never open again.
+    ne(payrollPayoutGlPostings.kind, "settle_waived"),
     or(
       eq(payrollPayoutGlPostings.feePosted, false),
       // Settled, but the payable account is uncertain (0390): reconciliation.

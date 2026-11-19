@@ -135,6 +135,9 @@ async function seedPosition(tenantId: string) {
   return id;
 }
 
+// Cash reimbursement needs a legal entity on the employee (legend-cv00j).
+const fixtureEntityId = randomUUID();
+
 async function seedEmployee(
   tenantId: string,
   home: string,
@@ -146,8 +149,8 @@ async function seedEmployee(
   await asTenant(tenantId, (db) =>
     db.query(
       `INSERT INTO employees (id, tenant_id, user_id, employee_no, full_name, home_outlet_id,
-                              position_id, employment_type, join_date, status)
-       VALUES ($1, $2, $3, $4, 'Karyawan Reimb', $5, $6, 'pkwtt', '2025-03-01', 'active')`,
+                              position_id, employment_type, join_date, status, legal_entity_id)
+       VALUES ($1, $2, $3, $4, 'Karyawan Reimb', $5, $6, 'pkwtt', '2025-03-01', 'active', $7)`,
       [
         id,
         tenantId,
@@ -155,6 +158,7 @@ async function seedEmployee(
         `RB${id.slice(0, 8).toUpperCase()}`,
         home,
         positionId,
+        tenantId === tenant.id ? fixtureEntityId : null,
       ],
     ),
   );
@@ -263,6 +267,12 @@ beforeAll(async () => {
       source: "session",
     }),
     { kind: "tenant" },
+  );
+  await asTenant(tenant.id, (db) =>
+    db.query(
+      `INSERT INTO legal_entities (id, tenant_id, name, is_pkp) VALUES ($1, $2, 'PT Fixture Reimb', false)`,
+      [fixtureEntityId, tenant.id],
+    ),
   );
   positionA = await seedPosition(tenant.id);
   positionBId = await seedPosition(tenantB.tenantId);
@@ -389,6 +399,10 @@ afterAll(async () => {
           await db.query(
             "DELETE FROM employees WHERE tenant_id = $1 AND id = ANY($2)",
             [tenantId, createdEmployees.map((row) => row.id)],
+          );
+          await db.query(
+            "DELETE FROM legal_entities WHERE tenant_id = $1 AND id = $2",
+            [tenantId, fixtureEntityId],
           );
           await db.query(
             "DELETE FROM positions WHERE tenant_id = $1 AND id = ANY($2)",
@@ -808,7 +822,7 @@ describe("reimbursements API: list and decide", () => {
       (await decide(approverClient, claim.id, { tenantId: tenant.id })).status,
     ).toBe(422);
     expect(
-      (await decide(approverClient, claim.id, { action: "cancel" })).status,
+      (await decide(approverClient, claim.id, { action: "pay" })).status,
     ).toBe(422);
     expect((await decide(approverClient, "not-a-uuid")).status).toBe(422);
     expect(

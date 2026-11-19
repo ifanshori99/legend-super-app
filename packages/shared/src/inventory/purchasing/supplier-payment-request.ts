@@ -30,6 +30,15 @@ export const requestSupplierInvoicePaymentInputSchema = clientInputSchema({
   idempotencyKey: idempotencyKeySchema,
 });
 
+/**
+ * Retries the settlement of a payment whose approval chain is approved but
+ * whose posting was refused because GL 1102 was short (legend-5qqb9). The
+ * payment, its amount and its approver all come from the stored row.
+ */
+export const retrySupplierPaymentSettlementInputSchema = clientInputSchema({
+  idempotencyKey: idempotencyKeySchema,
+});
+
 /** What the request answers: the payment and where it stands. */
 export const supplierInvoicePaymentRequestResultSchema = z.strictObject({
   id: supplierPaymentIdSchema,

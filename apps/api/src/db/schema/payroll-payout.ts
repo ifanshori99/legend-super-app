@@ -335,6 +335,7 @@ export const PAYOUT_POSTING_KINDS = [
   "settle",
   "settle_pending",
   "settle_skipped",
+  "settle_waived",
   "return",
   "overpaid",
 ] as const;
