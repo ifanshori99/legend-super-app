@@ -76,6 +76,7 @@ Envelope: `{ "error": { "code", "message", "details"?: [{ field, message }], "re
 | `STOCK_COUNT_APPROVAL_EXPIRED`     | 409  |
 | `PRODUCTION_INVALID_TRANSITION`    | 409  |
 | `INSUFFICIENT_STOCK`               | 409  |
+| `BLIND_COUNT_LOCKED`               | 409  |
 | `PRODUCTION_LOCATION_UNRESOLVED`   | 422  |
 
 | Purchasing code                         | HTTP |
