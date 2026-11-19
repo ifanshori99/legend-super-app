@@ -1304,26 +1304,27 @@ async function changeSubscription(
 
   // Only a resume can make DOIT charge again; pause and cancel must work even
   // when the integration is disabled or the provider left the tenant plan.
-  const client = await clientLoader(deps)(
-    context,
-    current.outletId,
-    current.gatewayIntegrationId,
-    action === "resume" ? "bill" : "stop",
-  );
   const key = `${action}:${current.id}:${current.updatedAt.toISOString()}`;
-  const call =
-    action === "pause"
-      ? client.pauseSubscription
-      : action === "resume"
-        ? client.resumeSubscription
-        : client.cancelSubscription;
-  let answer: Awaited<ReturnType<typeof call>>;
+  let answer: Awaited<ReturnType<DoitRecurringClient["pauseSubscription"]>>;
   try {
+    const client = await clientLoader(deps)(
+      context,
+      current.outletId,
+      current.gatewayIntegrationId,
+      action === "resume" ? "bill" : "stop",
+    );
+    const call =
+      action === "pause"
+        ? client.pauseSubscription
+        : action === "resume"
+          ? client.resumeSubscription
+          : client.cancelSubscription;
     answer = await call(providerSubscriptionId, key);
   } catch (error) {
-    // Kill switch off and DOIT failed to stop: park the row so it never looks
-    // healthy and cannot be resumed, and no new charge is made for it.
-    if (action !== "resume" && !env.DOIT_RECURRING_ENABLED)
+    // The stop did not reach DOIT (client unavailable, flag off or DOIT error):
+    // park the row so it never looks healthy, cannot be resumed, and no new
+    // charge is made for it.
+    if (action !== "resume")
       await parkFailedStop(context, current, action, now);
     throw error;
   }
@@ -1618,6 +1619,9 @@ export async function resolveNeedsReconcileSubscription(
 
     // Not this subscription: nothing can be said about the row.
     if (answer.id !== providerSubscriptionId) return stay;
+    // A parked failed stop keeps its reason: only a cancel leaves it.
+    if (locked.reconcileReason === CANCEL_PENDING && kind !== "cancelled")
+      return stay;
     if (answer.plan_id !== providerPlanId) {
       if (locked.reconcileReason === "PLAN_MISMATCH") return stay;
       const [marked] = await tx

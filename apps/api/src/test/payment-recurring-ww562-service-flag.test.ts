@@ -49,6 +49,7 @@ import { env } from "../config/env";
 import {
   cancelSubscription,
   pauseSubscription,
+  resolveNeedsReconcileSubscription,
   resumeSubscription,
   startSubscription,
 } from "../services/payment-recurring.service";
@@ -94,6 +95,7 @@ const profileCleanups: (() => Promise<void>)[] = [];
 
 let server: http.Server;
 let requests: { method: string; path: string }[] = [];
+let providerStatus = "active";
 let failStop = false;
 const sockets = new Set<import("node:net").Socket>();
 const doitCalls = () => requests.filter((r) => r.path.includes("/recurring"));
@@ -132,6 +134,17 @@ beforeAll(async () => {
             id: decodeURIComponent(action[1]!),
             plan_id: "plan_stub",
             status,
+          }),
+        );
+        return;
+      }
+      const one = /subscriptions\/([^/]+)$/.exec(req.url ?? "");
+      if (req.method === "GET" && one) {
+        res.end(
+          JSON.stringify({
+            id: decodeURIComponent(one[1]!),
+            plan_id: lastPlanProviderId,
+            status: providerStatus,
           }),
         );
         return;
@@ -501,4 +514,47 @@ describe("ww562 with DOIT_RECURRING_ENABLED off the service blocks create/resume
       expect(after).not.toBe("active");
     });
   }
+
+  it("ww562 flag on: DOIT fails during cancel -> the row is parked too, no new charge", async () => {
+    flag.DOIT_RECURRING_ENABLED = true;
+    failStop = true;
+    const subId = await seedSubscription("active");
+    expect(
+      await codeOf(cancelSubscription(context(), subId, new Date())),
+    ).not.toBeNull();
+    failStop = false;
+    expect(await statusOf(subId)).toBe("needs_reconcile");
+    requests = [];
+    expect(
+      await codeOf(resumeSubscription(context(), subId, new Date())),
+    ).not.toBeNull();
+    expect(doitCalls()).toEqual([]);
+  });
+
+  it("ww562 a parked failed stop is never put back to billing by reconcile; only a cancel closes it", async () => {
+    flag.DOIT_RECURRING_ENABLED = false;
+    failStop = true;
+    const subId = await seedSubscription("active");
+    await cancelSubscription(context(), subId, new Date()).catch(
+      () => undefined,
+    );
+    failStop = false;
+    expect(await statusOf(subId)).toBe("needs_reconcile");
+
+    // DOIT still bills (the stop never reached it): resolve must keep the park.
+    flag.DOIT_RECURRING_ENABLED = true;
+    providerStatus = "active";
+    await resolveNeedsReconcileSubscription(context(), subId, new Date());
+    expect(await statusOf(subId)).toBe("needs_reconcile");
+    const { rows } = await owner.query<{ reconcile_reason: string | null }>(
+      "SELECT reconcile_reason FROM payment_recurring_subscriptions WHERE id = $1",
+      [subId],
+    );
+    expect(rows[0]!.reconcile_reason).toBe("CANCEL_PENDING");
+
+    // DOIT confirms it is cancelled: the row closes as cancelled.
+    providerStatus = "cancelled";
+    await resolveNeedsReconcileSubscription(context(), subId, new Date());
+    expect(await statusOf(subId)).toBe("cancelled");
+  });
 });
