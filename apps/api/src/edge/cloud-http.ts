@@ -26,6 +26,10 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_LIMIT = 100;
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const RECEIPT_REFUSAL_RETRY_MS = 60 * 60 * 1000;
+/** legend-rh1hk: how long a cloud that refused `receiptRunsSeq` is not asked again. */
+const RECEIPT_RUNS_SEQ_RETRY_MS = 60 * 60 * 1000;
+/** legend-rh1hk: the cloud's wire bound: `^(0|[1-9][0-9]{0,14})$`. */
+const MAX_RECEIPT_RUNS_SEQ = 999_999_999_999_999;
 
 // Node's fetch honours `cache`, but the Node typings omit it from RequestInit.
 type EdgeRequestInit = RequestInit & { cache: "no-store" };
@@ -272,11 +276,13 @@ export function createDeviceRecordsFetcher(
   signal: AbortSignal,
   receiptRuns?: ReceiptRunReport,
   refusals?: ReceiptRunRefusalReport,
+  receiptRunsSeq?: number,
 ) => Promise<unknown> {
   // Fail fast on a bad URL when the fetcher is built, as before.
   cloudHttpBaseUrl(options.cloudUrl);
   const limit = options.limit ?? DEFAULT_LIMIT;
   let receiptRefusalsRetryAt = 0;
+  let receiptRunsSeqRetryAt = 0;
 
   const pathFor = (
     since: string | null,
@@ -284,6 +290,7 @@ export function createDeviceRecordsFetcher(
     receiptRuns?: ReceiptRunReport,
     refusals?: ReceiptRunRefusalReport,
     withWriteoffs = false,
+    receiptRunsSeq?: number,
   ) => {
     const query = new URLSearchParams({ limit: String(limit) });
     if (since !== null) query.set("since", since);
@@ -298,6 +305,11 @@ export function createDeviceRecordsFetcher(
       // restored or cloned database. Absent = no check (an old edge).
       if (receiptRuns !== undefined)
         query.set("receiptRuns", encodeReceiptRunReport(receiptRuns));
+      // legend-rh1hk: the outbox link cursor read in the same transaction as
+      // the report, so the cloud can tell a report that is behind a merge from
+      // a restored database. Only with `receiptRuns`; the first attempt only.
+      if (receiptRuns !== undefined && receiptRunsSeq !== undefined)
+        query.set("receiptRunsSeq", String(receiptRunsSeq));
       // legend-hfq3z: the clash refusals of the previous pull, so the cloud can
       // rotate a refused run. Only sent when there is something to report.
       if (refusals !== undefined && refusals.size > 0)
@@ -311,7 +323,7 @@ export function createDeviceRecordsFetcher(
     return `${DEVICE_RECORDS_PATH}?${query.toString()}`;
   };
 
-  return async (since, signal, receiptRuns, refusals) => {
+  return async (since, signal, receiptRuns, refusals, receiptRunsSeq) => {
     if (
       receiptRuns !== undefined &&
       !receiptRunReportQuerySchema.safeParse(
@@ -327,10 +339,30 @@ export function createDeviceRecordsFetcher(
     }
     const pendingRefusals =
       Date.now() < receiptRefusalsRetryAt ? undefined : refusals;
+    // legend-rh1hk: sent only with a report and an edge instance (the cloud
+    // ignores it for any other instance), within the wire bound, and not while
+    // a cloud that refused it is being left alone.
+    const pendingSeq =
+      receiptRuns !== undefined &&
+      options.edgeInstanceId !== undefined &&
+      receiptRunsSeq !== undefined &&
+      Number.isSafeInteger(receiptRunsSeq) &&
+      receiptRunsSeq >= 0 &&
+      receiptRunsSeq <= MAX_RECEIPT_RUNS_SEQ &&
+      Date.now() >= receiptRunsSeqRetryAt
+        ? receiptRunsSeq
+        : undefined;
     try {
       return await cloudGetJson({
         ...options,
-        path: pathFor(since, true, receiptRuns, pendingRefusals, true),
+        path: pathFor(
+          since,
+          true,
+          receiptRuns,
+          pendingRefusals,
+          true,
+          pendingSeq,
+        ),
         signal,
       });
     } catch (error) {
@@ -348,6 +380,30 @@ export function createDeviceRecordsFetcher(
         error.code !== "HTTP_400"
       )
         throw error;
+      // legend-rh1hk: a request that carried `receiptRunsSeq` first retries the
+      // same page with everything except it (writeoffs and refusals kept). If
+      // that succeeds the cloud predates the parameter: leave it alone for an
+      // hour. A second 400 means something else is refused: the chain below.
+      if (pendingSeq !== undefined) {
+        logger.warn(
+          "cloud refused the receipt run cursor; retrying the page without it",
+        );
+        try {
+          const result = await cloudGetJson({
+            ...options,
+            path: pathFor(since, true, receiptRuns, pendingRefusals, true),
+            signal,
+          });
+          receiptRunsSeqRetryAt = Date.now() + RECEIPT_RUNS_SEQ_RETRY_MS;
+          return result;
+        } catch (second) {
+          if (
+            !(second instanceof EdgeCloudHttpError) ||
+            second.code !== "HTTP_400"
+          )
+            throw second;
+        }
+      }
       // legend-jcby0: the first request also carried `receiptWriteoffs`. Retry
       // the same page with everything except it (an older cloud); only a
       // second 400 continues into the staged chain below, which never sends it.

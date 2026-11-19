@@ -1200,7 +1200,7 @@ export async function startEdgeRuntime(
             },
             since: from,
             refusals: receiptRunRefusals,
-            fetchPage: async (cursor, receiptRuns, refusals) => {
+            fetchPage: async (cursor, receiptRuns, refusals, reportSeq) => {
               const isFirst = first;
               first = false;
               try {
@@ -1209,6 +1209,7 @@ export async function startEdgeRuntime(
                   signal,
                   receiptRuns,
                   refusals,
+                  reportSeq,
                 );
               } catch (error) {
                 if (

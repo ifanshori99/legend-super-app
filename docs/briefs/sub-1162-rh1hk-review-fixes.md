@@ -1,0 +1,10 @@
+# legend-rh1hk — architect review fixes (apply exactly)
+
+Context: uncommitted rh1hk delta on ws/1162-pos-struk-edge. Design: docs/briefs/sub-1162-rh1hk-design-answer.md. Rule: a report is "behind merge" only when instance == peer_instance_id, and the first edge_link_slots row above C + peer_seq_offset was created within 30 s of tau; only the lastNumber comparison is relaxed.
+
+1. `apps/api/src/test/pos-receipt-restore-detect.test.ts` (~line 1911): the clone test reports P1:1 against edgeReportedNumber 3, so the relaxed path never runs. Rewrite: (a) report a value >= edgeReportedNumber but < lastNumber with a recent slot -> expect behind 1; (b) the twin then reports lower than edgeReportedNumber -> expect regressed 1; (c) a report above the frozen high-water -> expect alert true.
+2. Same file, add tests: (a) edgeReportedNumber 1, lastNumber 3, report 2 -> behind, stores edge_reported_number 2 with edge_reported_at = tau; (b) slot exactly 30 s old (boundary, state in the test whether 30 s counts as behind per the code); (c) one claim with one prefix behind and one prefix regressed.
+3. `apps/api/src/test/edge-device-sync-receipt-alert.test.ts`: add a test that a `behind` pull leaves `receipt_run_alert` open (does not resolve it). Fail-first: confirm it would fail if the `behind` guard at `edge-device-sync.ts:~364` were removed (temporarily revert that guard, run, restore).
+4. `apps/api/src/services/edge-device-sync.ts` (~1214-1232): isolate the cursor read: wrap only the sync_cursors read in try/catch; on failure send cursor undefined and keep the report (log only error name). Add a test for it in an existing edge-device-sync test file.
+
+Rules: do not touch other files. Run `LEGEND_TEST_FILES="src/test/pos-receipt-restore-detect.test.ts src/test/pos-1162-rh1hk-edge-cursor.test.ts src/test/edge-device-sync-receipt-alert.test.ts" heavy pnpm test` from the worktree root (single bash command per call). Then prettier + eslint on changed files. No tsc, no commit, no push. Report: files changed, test counts, anything not verified.
