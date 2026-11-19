@@ -2207,3 +2207,4 @@ Langkah berikut CTO baru:
 - 11:08 Founder jawab Q51 (marketplace/EDC/kurir rilis 1 MANUAL; integrasi sesudah rilis 1; komentar di qgdp6, w4wjv, uhs3c) dan Q52 (alur A tukar poin). bd remember founder-q51-q52-19nov. Mulai 1165 UI member tukar poin (ui-engineer Opus #4, base ghostex/member-qr-token-klien-1150, legend-0ne0z); backend sesudah gerbang UI founder.
 - 11:27 CTO: 1163 lapor 8a5e5cd70; keputusan CTO legend-m0kqn (batasi kode DP penyedia tak pernah final di payableUntil + jendela poll, batal + audit, bayar terlambat tetap diparkir) dikirim ke G88jh. ytwlo/hpze7 ditutup.
 - 11:43 CTO: 1095 SIAP batch96 (4bfae8476), G95kw resolve. 1163 lanjut m0kqn; 1162 lanjut rh1hk (migrasi kerja 0704) + vet9d sesudah batch95. SO 1166 antre.
+- 11:44 CTO: mulai 1167 P3 (f03o, tipkj, 0hzu, qi21, inflf; Sonnet #1, base ws/1144-refund-hold-echo karena payment-webhook.service.ts berubah besar di batch95/96).
