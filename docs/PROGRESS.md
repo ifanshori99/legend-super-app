@@ -2238,3 +2238,4 @@ Langkah berikut CTO baru:
 - 14:17 CTO: SO 1171 (reservasi DP, ws/1163 cca06c1a6) mulai Codex #2 xhigh (5h 0%, 7d 60%).
 - 14:19 CTO: Retro 52 selesai (G6fpq resolve). Keputusan dicatat di RETRO.md; hook pgrep + stop-wait-guard dipasang subagent; Q56 (angka RAM) ke founder.
 - 14:21 CTO: hook Retro 52 terpasang: pretool-guard tolak loop pgrep typecheck/tsc/vitest; Stop hook stop-wait-guard.sh (maks 3 blok/sesi, hanya saat job heavy/background sesi hidup; pesan <600 karakter). test-wait-guard 30 kasus + 7 test hook lama exit 0. settings.json hanya hooks.Stop berubah (cadangan .bak-retro52).
+- 14:25 CTO: SO 1173 (payout/DOIT/approval) mulai Codex #2 xhigh (G6uo2). SO 1171 selesai (G6ooi resolve): 2 P2 -> legend-3dfri (DP sesudah cap selalu batal+refund penuh sekali RSV-02) dan legend-chmz2 (legacy unresolved dikecualikan dari kandidat sweep); fix 1178 mulai Claude #5 (G02j3) base ws/1163.
