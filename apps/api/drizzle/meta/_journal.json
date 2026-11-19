@@ -3417,6 +3417,13 @@
       "when": 1795000011101,
       "tag": "0501_payout_waive_trusted",
       "breakpoints": true
+    },
+    {
+      "idx": 502,
+      "version": "7",
+      "when": 1795000012101,
+      "tag": "0502_payout_jsrcs_clear_while_lock_held",
+      "breakpoints": true
     }
   ]
 }

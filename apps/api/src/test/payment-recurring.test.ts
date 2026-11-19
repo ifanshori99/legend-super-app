@@ -2144,8 +2144,8 @@ describe("REC-17 DOIT calls use the integration the plan and subscription are bo
       clientFor,
     }).catch(() => undefined);
     expectBoundIntegration(calls);
-    // Nothing was sent to DOIT, so nothing changed.
-    expect((await subRow(fx.subId)).status).toBe("active");
+    // The stop did not reach DOIT: the row is parked (legend-ww562), not billing.
+    expect((await subRow(fx.subId)).status).toBe("needs_reconcile");
   });
 
   it("REC-17 resume builds the DOIT client for the subscription's own integration", async () => {
@@ -2175,7 +2175,7 @@ describe("REC-17 DOIT calls use the integration the plan and subscription are bo
       clientFor,
     }).catch(() => undefined);
     expectBoundIntegration(calls);
-    expect((await subRow(fx.subId)).status).toBe("active");
+    expect((await subRow(fx.subId)).status).toBe("needs_reconcile");
   });
 
   describe("start", () => {
@@ -3018,7 +3018,7 @@ describe("REC-23 a pause, resume or cancel is only a success when DOIT's answer 
       },
     );
 
-    it(`REC-23 ${action}: a provider error changes nothing`, async () => {
+    it(`REC-23 ${action}: a provider error ${action === "resume" ? "changes nothing" : "parks the row as CANCEL_PENDING (legend-ww562)"}`, async () => {
       const fx = await seed();
       const run = actions[action].run(ctxW(), fx.subId, new Date(), {
         clientFor: async () =>
@@ -3029,7 +3029,16 @@ describe("REC-23 a pause, resume or cancel is only a success when DOIT's answer 
           }) as never,
       });
       await codeOf(run);
-      expect((await subExtra(fx.subId)).status).toBe(a.from);
+      const after = await subExtra(fx.subId);
+      if (action === "resume") {
+        expect(after.status).toBe(a.from);
+      } else {
+        // A stop that did not reach DOIT is parked, never left looking healthy.
+        expect(after).toMatchObject({
+          status: "needs_reconcile",
+          reconcile_reason: "CANCEL_PENDING",
+        });
+      }
     });
   }
 });

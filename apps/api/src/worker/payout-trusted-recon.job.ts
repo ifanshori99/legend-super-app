@@ -140,7 +140,7 @@ export async function runPayoutTrustedReconSweep(
     );
     if (streak.alert)
       console.error(
-        `PAYOUT-RECON-ALERT unreadable proof: tenant ${tenantId}, ${cycle.unreadable} proof file(s) unreadable, ${streak.cycles} cycle(s) in a row, ${Math.floor(streak.sinceMs / 3_600_000)} hour(s) since the first (a read that failed or timed out, or was not tried after an earlier storage timeout in the same page, is recorded and holds the slips of its flags; a file skipped because another run held its lock keeps its last record: check the storage and that run)`,
+        `PAYOUT-RECON-ALERT unreadable proof: tenant ${tenantId}, ${cycle.unreadable} proof file(s) unreadable, ${streak.cycles} cycle(s) in a row, ${Math.floor(streak.sinceMs / 3_600_000)} hour(s) since the first (a read that failed or timed out, or was not tried after an earlier storage timeout in the same page, is recorded and holds the slips of its flags; a file skipped because another run held its lock raises a flag for that day and holds the slips until two people close it: check the storage and that run)`,
       );
   }
   if (result.flagged > 0 || result.unreadable > 0 || result.reraiseFailed > 0)

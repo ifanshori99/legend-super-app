@@ -56,6 +56,7 @@ import {
   RECURRING_GRACE_DAYS_MIN,
 } from "@starter/shared/payment/recurring";
 import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { env } from "../config/env";
 import { db } from "../db";
 import { customerProfiles } from "../db/schema/crm-member";
 import {
@@ -96,8 +97,11 @@ const JAKARTA_OFFSET_MS = 7 * 3_600_000;
  * charge: the integration must be `active`, otherwise its webhook secret is
  * not loaded and every payment event would be refused. `stop` (pause, cancel)
  * only ends billing: any integration status, and a provider withdrawn from the
- * tenant plan still works (the tenant must always be able to stop a charge). */
-export type RecurringClientPurpose = "bill" | "stop";
+ * tenant plan still works (the tenant must always be able to stop a charge),
+ * and it ignores the DOIT_RECURRING_ENABLED kill switch. `start-retry` (the
+ * retry of a stored start intent) loads like `stop` but is a create call, so
+ * the kill switch applies. */
+export type RecurringClientPurpose = "bill" | "stop" | "start-retry";
 
 /** `integrationId` set: the client of exactly that integration (an existing
  * plan or subscription stays on the account that created it). Null: the
@@ -121,12 +125,21 @@ async function defaultClientFor(
   integrationId?: string | null,
   purpose: RecurringClientPurpose = "bill",
 ): Promise<DoitRecurringClient> {
+  // Kill switch (legend-ww562): the HTTP route gates it too, but a job or
+  // consumer calls the service directly. Every DOIT call that can create or
+  // charge goes through here. A stop (pause, cancel) is never blocked: it only
+  // limits payment (founder decision, brief 1164 ronde 2, Kartu D).
+  if (purpose !== "stop" && !env.DOIT_RECURRING_ENABLED)
+    throw new CoreError(
+      "SERVICE_UNAVAILABLE",
+      "Penagihan berulang sedang dinonaktifkan.",
+    );
   const loaded = integrationId
     ? await loadIntegrationCredentialsById(
         context,
         PROVIDER,
         integrationId,
-        purpose === "stop" ? { forStoredIntent: true } : {},
+        purpose !== "bill" ? { forStoredIntent: true } : {},
       )
     : await loadActiveIntegrationCredentials(context, PROVIDER, outletId);
   const apiKey = loaded?.credentials.apiKey;
@@ -575,7 +588,7 @@ export async function startSubscription(
     context,
     plan.outletId,
     plan.gatewayIntegrationId,
-    existing ? "stop" : "bill",
+    existing ? "start-retry" : "bill",
   );
 
   const intent =
@@ -1160,6 +1173,50 @@ function unresolvedSubscription() {
 
 type SubscriptionAction = "pause" | "resume" | "cancel";
 
+/** `reconcileReason` of a row whose stop call (pause or cancel) failed while
+ * the kill switch was off. There is no `cancel_pending` status (no migration),
+ * so it is `needs_reconcile`: no access, no resume, only a cancel or the
+ * reconcile tools move it on. */
+const CANCEL_PENDING = "CANCEL_PENDING";
+
+/** Best effort: a failure here must not hide the original provider error. */
+async function parkFailedStop(
+  context: ScopedTenantContext,
+  current: PaymentRecurringSubscription,
+  action: SubscriptionAction,
+  now: Date,
+): Promise<void> {
+  try {
+    await withTenant(db, context, (tx) =>
+      tx
+        .update(paymentRecurringSubscriptions)
+        .set({
+          status: "needs_reconcile",
+          reconcileReason: CANCEL_PENDING,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(paymentRecurringSubscriptions.tenantId, context.tenant.tenantId),
+            eq(paymentRecurringSubscriptions.id, current.id),
+            ne(paymentRecurringSubscriptions.status, "cancelled"),
+          ),
+        ),
+    );
+  } catch (error) {
+    // An unresolved row already holds the (customer, plan) slot, or the write
+    // failed: the row keeps its status and the original error is thrown.
+    logger.warn(
+      {
+        subscriptionId: current.id,
+        action,
+        errName: error instanceof Error ? error.name : "unknown",
+      },
+      "Could not park a subscription whose stop call failed",
+    );
+  }
+}
+
 /** Provider call first, then ONE locked local decision (`SELECT ... FOR
  * UPDATE`, then update). A provider failure changes nothing. DOIT has already
  * paused/cancelled when the local write runs, so the local row follows, with
@@ -1190,7 +1247,9 @@ async function changeSubscription(
   const reconcilable =
     current.status === "needs_reconcile" &&
     current.providerSubscriptionId !== null &&
-    (action === "cancel" || current.reconcileReason !== "PLAN_MISMATCH");
+    (action === "cancel" ||
+      (current.reconcileReason !== "PLAN_MISMATCH" &&
+        current.reconcileReason !== CANCEL_PENDING));
   if (
     action === "pause" &&
     !reconcilable &&
@@ -1245,20 +1304,30 @@ async function changeSubscription(
 
   // Only a resume can make DOIT charge again; pause and cancel must work even
   // when the integration is disabled or the provider left the tenant plan.
-  const client = await clientLoader(deps)(
-    context,
-    current.outletId,
-    current.gatewayIntegrationId,
-    action === "resume" ? "bill" : "stop",
-  );
   const key = `${action}:${current.id}:${current.updatedAt.toISOString()}`;
-  const call =
-    action === "pause"
-      ? client.pauseSubscription
-      : action === "resume"
-        ? client.resumeSubscription
-        : client.cancelSubscription;
-  const answer = await call(providerSubscriptionId, key);
+  let answer: Awaited<ReturnType<DoitRecurringClient["pauseSubscription"]>>;
+  try {
+    const client = await clientLoader(deps)(
+      context,
+      current.outletId,
+      current.gatewayIntegrationId,
+      action === "resume" ? "bill" : "stop",
+    );
+    const call =
+      action === "pause"
+        ? client.pauseSubscription
+        : action === "resume"
+          ? client.resumeSubscription
+          : client.cancelSubscription;
+    answer = await call(providerSubscriptionId, key);
+  } catch (error) {
+    // The stop did not reach DOIT (client unavailable, flag off or DOIT error):
+    // park the row so it never looks healthy, cannot be resumed, and no new
+    // charge is made for it.
+    if (action !== "resume")
+      await parkFailedStop(context, current, action, now);
+    throw error;
+  }
 
   if (
     !doitSubscriptionActionConfirmed(action, answer, providerSubscriptionId)
@@ -1550,6 +1619,9 @@ export async function resolveNeedsReconcileSubscription(
 
     // Not this subscription: nothing can be said about the row.
     if (answer.id !== providerSubscriptionId) return stay;
+    // A parked failed stop keeps its reason: only a cancel leaves it.
+    if (locked.reconcileReason === CANCEL_PENDING && kind !== "cancelled")
+      return stay;
     if (answer.plan_id !== providerPlanId) {
       if (locked.reconcileReason === "PLAN_MISMATCH") return stay;
       const [marked] = await tx

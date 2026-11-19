@@ -800,14 +800,17 @@ export async function resolveApprovalChainOutcome(
   },
 ): Promise<ApprovalOutcome> {
   await lockChain(tx, input.chainId);
+  // The caller's clock was read before waiting on the lock: never judge the
+  // deadline or stamp the transition with a time earlier than the lock grant.
+  const at = new Date(Math.max(input.now.getTime(), Date.now()));
   const rows = await chainRows(tx, input.chainId);
   if (rows[0]?.sourceModule !== input.sourceModule) throw notFound();
   const open = rows.find((row) => row.status === "pending");
   if (!open) return chainOutcome(rows);
-  if (open.deadlineAt.getTime() > input.now.getTime()) return "pending";
+  if (open.deadlineAt.getTime() > at.getTime()) return "pending";
   const [expired] = await tx
     .update(approvalRequests)
-    .set({ status: "expired", updatedAt: input.now })
+    .set({ status: "expired", updatedAt: at })
     .where(
       and(
         eq(approvalRequests.id, open.id),
@@ -817,7 +820,7 @@ export async function resolveApprovalChainOutcome(
     .returning();
   // The sweep won between our read and write: report what it left behind.
   if (!expired) return chainOutcome(await chainRows(tx, input.chainId));
-  await announceExpired(tx, context, expired, input.now);
+  await announceExpired(tx, context, expired, at);
   return "expired";
 }
 
@@ -838,15 +841,18 @@ export async function cancelApprovalRequest(
     readonly now?: Date;
   },
 ): Promise<ApprovalOutcome> {
-  const now = input.now ?? new Date();
   await lockChain(tx, input.chainId);
+  // Time after the lock grant, not the clock read before waiting on it.
+  const at = new Date(
+    Math.max((input.now ?? new Date()).getTime(), Date.now()),
+  );
   const rows = await chainRows(tx, input.chainId);
   if (rows[0]?.sourceModule !== input.sourceModule) throw notFound();
   const open = rows.find((row) => row.status === "pending");
   if (!open) return chainOutcome(rows);
   const [cancelled] = await tx
     .update(approvalRequests)
-    .set({ status: "cancelled", updatedAt: now })
+    .set({ status: "cancelled", updatedAt: at })
     .where(
       and(
         eq(approvalRequests.id, open.id),
@@ -865,7 +871,7 @@ export async function cancelApprovalRequest(
     input.actorUserId === null
       ? { type: "system" }
       : { type: "user", id: userIdSchema.parse(input.actorUserId) };
-  await emitResolved(tx, context, cancelled, "cancelled", actor, now);
+  await emitResolved(tx, context, cancelled, "cancelled", actor, at);
   await recordAudit(
     {
       tenantId: context.tenant.tenantId,
@@ -1452,6 +1458,21 @@ export async function decideApprovalRequest(
         approverId,
       );
 
+    // legend-k8g62: the pre-lock caller data is stale once the call queued
+    // behind the locks. Reload role, assignments and scope after the last lock,
+    // inside this same transaction (no second pool connection). Fail closed:
+    // a revoked or moved assignment is refused below.
+    const lockedBootstrap = establishScopedTenantContext(tenant, {
+      kind: "tenant",
+    });
+    const lockedCaller = {
+      data: await loadTenantAccessInTransaction(
+        tx,
+        lockedBootstrap,
+        approverId,
+      ),
+    };
+
     // legend-ijy8u, 1151: the call may have queued behind the refund
     // scope, chain and role-assignment locks, so every time-based check below
     // uses a clock read after the LAST lock. Fail safe: the later of the
@@ -1471,7 +1492,7 @@ export async function decideApprovalRequest(
       reachContext(
         tenant,
         approverId,
-        caller.data,
+        lockedCaller.data,
         "approval.request.decide",
         checkAt,
       ) === null
@@ -1480,7 +1501,7 @@ export async function decideApprovalRequest(
     const lockedSnapshot = resolveAccessSnapshot({
       tenant,
       userId: approverId,
-      ...caller.data,
+      ...lockedCaller.data,
       mfaVerified: options.mfaVerified,
       now: checkAt,
     });
@@ -1520,14 +1541,14 @@ export async function decideApprovalRequest(
       approver: {
         tenantId: tenant.tenantId,
         userId: approverId,
-        assignments: caller.data.assignments,
+        assignments: lockedCaller.data.assignments,
       },
-      approverRoles: caller.data.roles,
+      approverRoles: lockedCaller.data.roles,
       priorSelfApprovalAllowed: isSelfApprovableRow(row),
       approverMfaVerified: options.mfaVerified,
       surface: "dashboard",
       target,
-      org: caller.data.org,
+      org: lockedCaller.data.org,
       now: checkAt,
       selfApproval,
     });

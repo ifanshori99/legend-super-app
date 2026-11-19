@@ -67,6 +67,19 @@ export type PayoutReconKind =
 export type PayoutReconFlagKind =
   PayoutReconKind | "closure" | "resolve" | "bank_confirm" | "batch_approve";
 
+/**
+ * The Jakarta calendar day (YYYY-MM-DD) of a recon run. The lock-timeout flag
+ * carries it in its reason, so a timeout on a later day is a new flag even when
+ * an earlier one was closed by two people (legend-q2nkl).
+ */
+const jakartaDay = (now: Date): string =>
+  new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Jakarta",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
+
 export type PayoutReconReason =
   | "attestation_count"
   | "attestation_same_person"
@@ -81,6 +94,7 @@ export type PayoutReconReason =
   | "evidence_record_missing"
   | "evidence_missing"
   | "evidence_hash_mismatch"
+  | `evidence_read_locked:${string}`
   | "posting_missing"
   | "journal_missing"
   | "journal_reversed"
@@ -1455,7 +1469,8 @@ async function loadFacts(
   };
 }
 
-type FileState = "ok" | "missing" | "mismatch" | "error";
+// "locked": a waiter gave up on the operation lock (55P03, legend-q2nkl).
+type FileState = "ok" | "missing" | "mismatch" | "error" | "locked";
 
 /**
  * A signed-out user has no live session row: that is not a mismatch. Compare
@@ -1564,6 +1579,7 @@ function evaluate(
   op: Operation,
   facts: Facts,
   fileOf: ReadonlyMap<string, FileState>, // by operation id
+  now: Date,
 ): Flag[] {
   if (op.missing)
     return op.terminalItemIds.map((itemId) => ({
@@ -1724,6 +1740,7 @@ function evaluate(
     const file = fileOf.get(op.operationId);
     if (file === "missing") addAll("evidence_missing");
     if (file === "mismatch") addAll("evidence_hash_mismatch");
+    if (file === "locked") addAll(`evidence_read_locked:${jakartaDay(now)}`);
   }
 
   // Journals against the decrypted nets.
@@ -2304,8 +2321,11 @@ export async function reconcileTrustedPayouts(
       const record = key === null ? undefined : facts?.records.get(key);
       if (key === null || !record) continue;
       // The wait for the lock is bounded (legend-89xse): on a lock timeout the
-      // operation counts as unreadable, no observation is written (it needs the same
-      // lock; the holder records its own result) and the next operation goes on.
+      // operation counts as unreadable and no observation is written (it needs the
+      // same lock). So that a stale `ok` cannot keep the slips free while the holder
+      // is stuck, the operation is marked "locked": `evaluate` flags every terminal
+      // item with `evidence_read_locked` (no advisory lock needed), which holds the
+      // slips until two people clear it (legend-q2nkl). The next operation goes on.
       let locked = false;
       try {
         await withTenant(db, context, async (tx) => {
@@ -2368,7 +2388,7 @@ export async function reconcileTrustedPayouts(
         });
       } catch (error) {
         if (locked || !isLockNotAvailable(error)) throw error;
-        fileOf.set(op.operationId, "error");
+        fileOf.set(op.operationId, "locked");
         unreadable += 1;
         logger.error(
           { errorName: error instanceof Error ? error.name : "unknown" },
@@ -2398,7 +2418,9 @@ export async function reconcileTrustedPayouts(
     facts === null
       ? []
       : operations
-          .flatMap((op) => evaluate(op, facts, fileOf))
+          .flatMap((op) =>
+            evaluate(op, facts, fileOf, options.now ?? new Date()),
+          )
           .concat(evaluateGrants(facts))
   )
     .concat(
