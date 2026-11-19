@@ -1,0 +1,8 @@
+# 1146 Second opinion sarapan 1130 (fire tanpa bukti penyedia, tolak-bayar consumer)
+Peran: second-opinion (baca ~/.agents/team/roles/second-opinion.md). Codex xhigh. Read-only, tanpa worktree: `git diff`/`git show` dari folder utama, jangan checkout. Selesaikan dan lapor dalam SATU giliran.
+
+Fokus (sesudah `git fetch origin`, kecualikan `':!**/meta/*snapshot.json'`): `git diff e2a63062e..origin/ws/1130-p2-pajak-sarapan-rekap` (head 013a20709). Brief: `docs/briefs/1130-p2-pajak-sarapan-rekap.md`.
+Isi: `facility-breakfast-money.ts` fire tidak membatalkan lokal tanpa jawaban penyedia (`BreakfastProviderProofNeeded`, rollback, `confirmBreakfastLinkUnpaid` di luar lock, ulang); consumer tolak-bayar bertanya ke penyedia sebelum lock, jawaban tidak jelas = 409 `PAYMENT_PROVIDER_UNCONFIRMED`; pembayaran yang hanya menandai order lunas tidak menunggu penyedia; `unsyncedReceiptCount` di rekap hari; peringatan template di `configBundleReferenceIssues`.
+Diterima CTO (jangan dilaporkan): dead letter ~155 detik untuk jawaban tidak jelas (uang tetap di outlet, replay manual); hitungan struk belum sinkron hanya dari sisi cloud.
+Cari: tamu bayar tapi tidak dapat makanan maupun refund; refund ganda atau refund saat penyedia sebenarnya sudah menagih; balapan bukti penyedia vs kode baru dibuka setelah bukti (tanpa cek ulang di dalam lock); I/O penyedia di dalam transaksi konsumsi yang bisa mengunci atau menggandakan event; lintas tenant/outlet.
+Hasil: tulis `docs/qa/second-opinion-sarapan-1130-1146.md` di folder utama (P0-P3, berkas:baris, skenario, usul test). JANGAN commit, JANGAN edit file lain.
