@@ -248,3 +248,4 @@ Induk lebih dulu. Migrasi dinomori ulang dari ujung m1 saat batch disusun.
 - 08:56 SO sarapan (1146): satu P2 (facility-breakfast-consumers.ts:239 pembayaran valid menunggu penyedia sambil menahan lock outbox/offset), tanpa P0/P1. ws/1130 013a20709 tetap SIAP batch95; fix P2 menyusul (G3bom).
 - 08:59 ws/1136-p3-web-mock-e2e head ed4e373c9 (z274 warisi preferensi, tsc shared/web/api hijau) SIAP batch95.
 - 09:01 Kas ghostex/d158b041 f1f0c4987 DITAHAN, KELUARKAN dari batch95: SO kas ronde 10 (1147) P1 accounting-journal.service.ts:1130 (gaji bayar-bank -> remap rekening jadi petty cash -> reversal membuka kas semu). Fix struktural di G5kzm.
+- 09:05 ghostex/ai-layar-approval-waktu-1137 bf1567dec (b2kq3 layar AI, ijy8u waktu approval pasca-lock; architect xhigh + ui-auditor, tsc hijau, e2e mock 41/41) SIAP batch95. SO approval (1148) menahan gerbang rilis saja.
