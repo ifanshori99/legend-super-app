@@ -259,3 +259,4 @@ Induk lebih dulu. Migrasi dinomori ulang dari ujung m1 saat batch disusun.
 - 09:43 ws/1149-flake-full-run a3aba228c (test saja: 5voa6/h4ary tenant audit sendiri, c2z4x barrier grant committed; 96/96 2x). Reviewer CTO berjalan; lolos -> batch95 bila merge train belum full run, selain itu batch96. inflf tetap terbuka.
 - 09:44 ws/1149 reviewer CTO OK -> batch95 (terakhir, bila full run belum mulai).
 - 09:59 ws/1095-void-refund-ganda-voucher 7fba91ddb (fix SO 1145 dua P1; 1496 regresi, tsc hijau, architect xhigh 0 P1) MASIH DITAHAN: fix lanjutan wpn5v (ORD-09 promo pro-rata, batasi ketat) + 4yez0 (void kas) di G95kw. SO ronde 4 (1156) paralel.
+- 10:04 Kas ghostex/d158b041 14e34d887 (fix struktural SO 1147: mapping kas ke akun berjurnal ditolak, guard reversal per akun, gerbang 1118 statement 4; 356/356, preflight 35/35, tsc hijau, architect xhigh tertutup) SIAP batch96. SO kas ronde 11 (1157) menahan gerbang rilis.
