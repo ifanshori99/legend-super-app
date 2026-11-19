@@ -40,7 +40,6 @@ import {
 } from "@starter/shared/edge/master-sync";
 import { parseEdgeCredential } from "../edge/credential.ts";
 import { HttpError } from "../lib/http-error.ts";
-import { clientIpKey } from "../lib/client-ip-key.ts";
 import {
   createFixedWindowCounter,
   PUBLIC_RATE_LIMIT_CAPACITY,
@@ -122,7 +121,7 @@ export function createEdgeBootstrapRateLimit(
   return (req, res, next) => {
     if (countedRequests.has(req)) return next();
     const now = clock();
-    const ip = clientIpKey(req.ip || req.socket.remoteAddress);
+    const ip = req.ip || req.socket.remoteAddress || "unknown";
     const bearer = edgeCredentialFromAuthorization(req.get("Authorization"));
     const parsed =
       typeof bearer === "string" ? parseEdgeCredential(bearer) : null;

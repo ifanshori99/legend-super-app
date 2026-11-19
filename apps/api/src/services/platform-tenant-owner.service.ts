@@ -38,7 +38,7 @@ import {
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { SYSTEM_ACCOUNT_ID } from "../lib/system-account.ts";
-import { appendAccessEvent, readDbClock } from "./access.service.ts";
+import { appendAccessEvent } from "./access.service.ts";
 import { appendOutbox } from "./core-outbox.ts";
 import { recordAudit } from "./audit-writer.ts";
 import { resolveAdminAccount } from "./platform-admin-provision.service.ts";
@@ -211,11 +211,7 @@ async function resolveAccount(
 }
 
 /** Same rule as access.service grantRoleAssignment (legend-2dnh). */
-async function assertGrantable(
-  tx: Tx,
-  userId: string,
-  now: Date,
-): Promise<void> {
+async function assertGrantable(tx: Tx, userId: string): Promise<void> {
   const [grantee] = await tx
     .select({ id: user.id, banned: user.banned, banExpires: user.banExpires })
     .from(user)
@@ -225,8 +221,7 @@ async function assertGrantable(
     throw new HttpError(422, "VALIDATION_ERROR", "Unknown user account.");
   const banActive =
     grantee.banned === true &&
-    (grantee.banExpires === null ||
-      grantee.banExpires.getTime() > now.getTime());
+    (grantee.banExpires === null || grantee.banExpires.getTime() > Date.now());
   if (grantee.id === SYSTEM_ACCOUNT_ID || banActive)
     throw new HttpError(
       422,
@@ -531,9 +526,7 @@ async function changeOwner(
     // The write instant is read AFTER the lock: a tenant-side "end Owner"
     // that committed while this call waited is then already in the past and
     // seen as ended, so both paths cannot each end the other's Owner.
-    // Production reads the database clock (legend-hzdy5); `request.now` stays
-    // an override for tests.
-    const now = request.now ?? (await readDbClock(tx));
+    const now = request.now ?? new Date();
     // A platform registry grant does not turn an active read-only support
     // session into write access. Check under this target tenant's RLS and the
     // owner-change lock, before resolving accounts or changing assignments.
@@ -596,7 +589,7 @@ async function changeOwner(
         "FORBIDDEN",
         "Akun Super Admin tidak dapat ditunjuk sebagai Owner lewat Panel Platform.",
       );
-    await assertGrantable(tx, userId, now);
+    await assertGrantable(tx, userId);
     if (replaced && sameUser(replaced.userId, userId))
       throw new HttpError(
         422,

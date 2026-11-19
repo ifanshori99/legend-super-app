@@ -55,10 +55,7 @@ import {
 import { session } from "../db/schema/session.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
-import {
-  endUserRoleAssignmentsForOffboardingInTx,
-  readDbClock,
-} from "./access.service.ts";
+import { endUserRoleAssignmentsForOffboardingInTx } from "./access.service.ts";
 import { recordAudit } from "./core-audit.ts";
 import {
   HRIS_AUDIT_SAFE_FIELDS,
@@ -678,8 +675,8 @@ async function revokeOffboardingAccessAs(
       sql`SELECT pg_advisory_xact_lock(hashtextextended(${"legend:role-assignment-end:" + tenantId}, 0))`,
     );
     // legend-qr1uv: "now" is read AFTER the lock, for the access check and
-    // every write below. legend-e3qgo: it is the DB clock, not the app clock.
-    const now = await readDbClock(tx);
+    // every write below.
+    const now = new Date();
     // 2. The offboarding row; a revoked one returns without writing. A user
     // is authorised as HR of the employee; the system job has no HR access.
     let offboarding: OffboardingRow;

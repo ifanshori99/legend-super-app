@@ -42,7 +42,6 @@ import {
 } from "./link-peer.ts";
 import { bearerToken, parseEdgeCredential } from "./credential.ts";
 import { createFixedWindowCounter } from "../lib/fixed-window-counter.ts";
-import { clientIpKey } from "../lib/client-ip-key.ts";
 import {
   LINK_CLOSE,
   LINK_INSTANCE_HEADER,
@@ -335,11 +334,9 @@ export function createEdgeLinkServer<Identity extends EdgeLinkIdentity>(
         // is capped, while someone who knows a node's id but not its secret
         // lands in another bucket and cannot lock the real node out.
         const at = now();
-        const address = clientIpKey(
-          deps.clientAddress
-            ? deps.clientAddress(request)
-            : request.socket.remoteAddress,
-        );
+        const address = deps.clientAddress
+          ? deps.clientAddress(request)
+          : (request.socket.remoteAddress ?? "unknown");
         const token = bearerToken(request.headers.authorization);
         const credentialKey =
           token && parseEdgeCredential(token)

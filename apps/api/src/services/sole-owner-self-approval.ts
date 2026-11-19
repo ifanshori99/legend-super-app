@@ -12,7 +12,6 @@ import type { SelfApprovalBasis } from "@starter/shared/access";
 import { and, eq, gt, isNull, or, sql } from "drizzle-orm";
 import { roleAssignments, roles } from "../db/schema";
 import type { TenantTransaction } from "./accounting-shared";
-import { readDbClock } from "./access.service";
 
 async function isSoleOwner(
   tx: TenantTransaction,
@@ -71,9 +70,7 @@ export async function lockAndCheckSoleOwnerSelfApproval(
   await tx.execute(
     sql`SELECT pg_advisory_xact_lock(hashtextextended(${"legend:role-assignment-end:" + tenantId}, 0))`,
   );
-  // legend-e3qgo: the database clock, read after the lock, so "ended" and
-  // "started" are judged by the same clock that stamps valid_until/valid_from.
-  const now = await readDbClock(tx);
+  const now = new Date();
   return (await isSoleOwner(tx, tenantId, actorUserId, now))
     ? "sole_owner"
     : null;

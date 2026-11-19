@@ -585,21 +585,6 @@ export async function createCustomRole(
   });
 }
 
-/**
- * legend-hzdy5: the database wall clock, read inside the transaction AFTER the
- * per-tenant advisory lock. The app server's clock can differ from the one that
- * stamped a valid_until committed by another caller, so assignment checks and
- * valid_from/valid_until use this instant, not `new Date()` or `now()` (which is
- * the transaction start and predates the lock wait).
- */
-export async function readDbClock(tx: Tx): Promise<Date> {
-  const result = await tx.execute(sql`SELECT clock_timestamp() AS now`);
-  const value = result.rows[0]?.now;
-  if (value instanceof Date) return value;
-  if (typeof value === "string") return new Date(value);
-  throw new Error("Database clock returned no timestamp.");
-}
-
 export async function updateCustomRole(
   context: ScopedTenantContext,
   roleId: string,
@@ -613,13 +598,6 @@ export async function updateCustomRole(
 ): Promise<Role> {
   const { actorUserId } = options;
   return withTenant(db, context, async (tx) => {
-    // legend-v8dfx: the same per-tenant lock as grantRoleAssignment,
-    // endRoleAssignment and the platform Owner path, taken first and before the
-    // role row lock. An editor ended or demoted while this call waited is then
-    // seen as such by the permission check below.
-    await tx.execute(
-      sql`SELECT pg_advisory_xact_lock(hashtextextended(${"legend:role-assignment-end:" + context.tenant.tenantId}, 0))`,
-    );
     const [current] = await tx
       .select()
       .from(roles)
@@ -633,9 +611,7 @@ export async function updateCustomRole(
     // look active at a clock read taken before the wait. The permission check
     // runs before the 404 so an unauthorized caller learns nothing about the
     // role.
-    // legend-hzdy5: the DB clock, so an editor ended on another API instance
-    // is judged by the same clock that stamped valid_until.
-    const now = await readDbClock(tx);
+    const now = new Date();
     await assertTenantPermission(
       tx,
       context,
@@ -942,7 +918,7 @@ export async function grantRoleAssignment(
     await tx.execute(
       sql`SELECT pg_advisory_xact_lock(hashtextextended(${"legend:role-assignment-end:" + context.tenant.tenantId}, 0))`,
     );
-    const now = await readDbClock(tx);
+    const now = new Date();
     const [roleRow] = await tx
       .select()
       .from(roles)
@@ -968,7 +944,7 @@ export async function grantRoleAssignment(
     const banActive =
       grantee.banned === true &&
       (grantee.banExpires === null ||
-        grantee.banExpires.getTime() > now.getTime());
+        grantee.banExpires.getTime() > Date.now());
     if (grantee.id === SYSTEM_ACCOUNT_ID || banActive)
       throw new HttpError(
         422,
@@ -1225,9 +1201,8 @@ export async function endRoleAssignment(
     // legend-qr1uv: "now" is read AFTER the lock. A clock read before it is
     // earlier than the valid_until the previous holder committed, so an Owner
     // ended while this call waited would still look active, and two Owners
-    // could end each other. The permission check uses the same instant, and
-    // it is the database clock (legend-hzdy5), not the app server's.
-    const now = await readDbClock(tx);
+    // could end each other. The permission check uses the same instant.
+    const now = new Date();
     await assertTenantPermission(
       tx,
       context,

@@ -14,7 +14,6 @@ import { AiError, MCP_SCOPES, mcpScopeSchema } from "@starter/shared/ai";
 import { env } from "../config/env.ts";
 import { logger } from "../lib/logger.ts";
 import { HttpError } from "../lib/http-error.ts";
-import { clientIpKey } from "../lib/client-ip-key.ts";
 import { BODY_LIMIT_BYTES, jsonBody } from "../middleware/body.ts";
 import { findTenantContext } from "../middleware/tenant.ts";
 import { db } from "../db/index.ts";
@@ -264,7 +263,7 @@ mcpOAuthRouter.post("/oauth/register", jsonBody, async (req, res, next) => {
     if (await isAiPlatformLocked(db, tenant.tenantId))
       throw new OAuthError("access_denied", "AI_PLATFORM_DISABLED", 403);
     const now = Date.now();
-    const key = clientIpKey(req.ip);
+    const key = req.ip ?? "unknown";
     for (const [ip, times] of registrations) {
       const live = times.filter((t) => now - t < 3_600_000);
       if (live.length === 0) registrations.delete(ip);

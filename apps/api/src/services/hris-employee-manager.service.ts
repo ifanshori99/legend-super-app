@@ -29,7 +29,6 @@ import { db } from "../db/index.ts";
 import { employees } from "../db/schema/hris.ts";
 import { withTenant } from "../db/tenant.ts";
 import { HttpError } from "../lib/http-error.ts";
-import { readDbClock } from "./access.service.ts";
 import { recordAudit } from "./core-audit.ts";
 import {
   HRIS_AUDIT_SAFE_FIELDS,
@@ -148,7 +147,7 @@ export async function changeEmployeeManager(
   actorUserId: string,
   employeeId: string,
   body: ChangeManagerBody,
-  now?: Date,
+  now = new Date(),
 ): Promise<Employee> {
   const { idempotencyKey, ...rest } = body;
   const input: ChangeEmployeeManagerInput =
@@ -163,14 +162,7 @@ export async function changeEmployeeManager(
     await tx.execute(
       sql`SELECT pg_advisory_xact_lock(hashtextextended(${"legend:role-assignment-end:" + tenantId}, 0))`,
     );
-    // DB clock read after the lock (not the app clock, not a default
-    // parameter read before it); `now` stays as a test override.
-    const access = await loadHrisAccess(
-      tx,
-      context,
-      actorUserId,
-      now ?? (await readDbClock(tx)),
-    );
+    const access = await loadHrisAccess(tx, context, actorUserId, now);
     const visible = await selectEmployee(tx, context, employeeId, false);
     if (!visible || access.viewerFor(visible) === null) throw notFound();
     // Nobody picks their own manager: that person would then see them as a
@@ -249,8 +241,7 @@ export async function changeEmployeeManager(
         );
         // Time is taken after the last lock: a wait may have let an assignment
         // expire. Used for access, the role rule, updated_at and the audit time.
-        // legend-e3qgo: the DB clock, like every other path under this lock.
-        const lockedNow = now ?? (await readDbClock(tx));
+        const lockedNow = new Date();
         // The pre-lock access was read before waiting on the locks: the role
         // may have been revoked or expired, and the home outlet may have moved.
         // Authorise again with the latest access, at the lock time.
