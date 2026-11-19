@@ -28,6 +28,8 @@
 //   and no journal event (the refund already reversed its revenue): a gateway
 //   charge whose intent is fully refunded (legend-v5z4h), or a cash or EDC
 //   charge fully refunded by hand.
+// - A cash charge is also refused (422 REFUND_OVER_ORDER_ROOM, void rolled back)
+//   once ORD-09 or a voucher paid on its swap chain (assertChargeChainBudget).
 // - Charge paid through an intent (gateway, QRIS at the till): the nsvu0 refund
 //   (`refundPaidChargeInTx`) of what is still refundable.
 // - EDC charge (no intent, no cash) with a part refunded by hand: the till
@@ -49,6 +51,7 @@ import { paymentRefunds } from "../db/schema/index.ts";
 import { cashMovements } from "../db/schema/pos-shift.ts";
 import { HttpError } from "../lib/http-error.ts";
 import { manualRefundedOfCharge } from "./order-charge-manual-refund-sum.ts";
+import { assertChargeChainBudget } from "./order-given.ts";
 import { auditCharge } from "./order-recovery-charge.ts";
 import {
   appendChargeRefundedEvent,
@@ -269,6 +272,16 @@ export async function returnPaidChargesOfVoidedOrder(
         movement,
       },
     });
+    // 1145 (legend-4yez0): the charge left `paid`, so its money is off the swap
+    // chain; when ORD-09 already paid on that chain the cash given back would
+    // leave the chain with more out than it paid: refuse (422, the void rolls
+    // back). Same check as the gateway charge refund; the order is locked.
+    await assertChargeChainBudget(
+      tx,
+      context.tenant.tenantId,
+      charge.orderId,
+      charge.orderIssueId,
+    );
     if (movement)
       await auditShift(
         tx,
