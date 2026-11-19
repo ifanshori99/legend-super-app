@@ -58,8 +58,12 @@ type Database = NodePgDatabase<typeof schema>;
 export const EDGE_ORDER_REDRIVE_BATCH = 200;
 export const EDGE_ORDER_REDRIVE_LOCK_TIMEOUT_MS = 5_000;
 const VOID_REFUSED_PREFIX = "void_refused:";
-/** Most refused receipt run events re-applied for one recovered void. */
-const RECEIPT_RUN_REAPPLY_LIMIT = 100;
+/** Open receipt run conflicts of one device read per page. */
+const RECEIPT_RUN_REAPPLY_PAGE = 100;
+/** Pages of one device per `reapplyDevice` call (a few sweeps drain the rest). */
+const RECEIPT_RUN_REAPPLY_MAX_PAGES = 5;
+/** Devices with open refused runs the sweep step takes up per tick. */
+const RECEIPT_RUN_SWEEP_DEVICES = 50;
 /** `resolved_by` of the resolution row the redrive writes for a healed run. */
 const REAPPLY_RESOLVED_BY = "system:edge-order-redrive";
 
@@ -177,6 +181,7 @@ async function redrivePaid(
   context: ScopedTenantContext,
   lockTimeoutMs: number,
   log: Pick<Console, "error">,
+  blocked: Set<string>,
 ): Promise<EdgeOrderRedriveResult> {
   const tenantId = context.tenant.tenantId;
   const result = emptyResult();
@@ -219,6 +224,7 @@ async function redrivePaid(
           context,
           lockTimeoutMs,
           log,
+          blocked,
           row.orderId,
         );
       }
@@ -237,28 +243,51 @@ async function redrivePaid(
 type OrderTx = Parameters<Parameters<typeof withTenant>[2]>[0];
 
 /**
+ * SQL for "this conflict is an open refused receipt run of a node still in
+ * service": no resolution row of any kind (a supervisor decision, or an earlier
+ * heal, wins) and the node is not revoked (legend-rzt8s: a revoked node's data
+ * is never applied, the same rule as `assertReplayAllowed`).
+ */
+const openRunConflict = (tenantId: string) => sql`
+  c.tenant_id = ${tenantId}::uuid
+  AND c.direction = 'edge_to_cloud'
+  AND c.reason = 'applier_refused'
+  AND c.aggregate_type = ${RECEIPT_RUN_AGGREGATE}
+  AND c.event ->> 'name' = ${RECEIPT_RUN_REPORTED_EVENT}
+  AND NOT EXISTS (
+    SELECT 1 FROM edge_sync_conflict_resolutions r
+    WHERE r.tenant_id = c.tenant_id AND r.conflict_id = c.id)
+  AND NOT EXISTS (
+    SELECT 1 FROM edge_nodes n
+    WHERE n.tenant_id = c.tenant_id AND n.id = c.edge_node_id
+      AND n.status = 'revoked')`;
+
+type RunRow = {
+  conflict_id: string;
+  outlet_id: string;
+  edge_node_id: string;
+  event_id: string;
+  seq: string;
+  event: unknown;
+};
+
+/**
  * legend-gdjpu: the edge reporter sends a receipt run once `order.voided` is
  * ACKed, and the ACK only proves the transport. A run that reached the cloud
  * before the void (or the sale) was recovered was refused and stored as an
  * `applier_refused` conflict; the sender never requeues it. Once the order is
- * recovered, the refused run events of the devices that reported this order
- * are applied again, in event order, through the receipt run applier.
+ * recovered, the open refused runs of the devices that reported this order
+ * are applied again through the receipt run applier.
  *
- * Runs AFTER the recovery committed, one transaction per run, and never
- * throws: a failed re-apply (lock timeout, a hole still open, anything) can
- * not undo or block the recovered void or sale. Its conflict stays open (no
- * resolution), so a supervisor can still replay it by hand. A
- * conflict that already has a resolution row (a supervisor decision, or an
- * earlier heal) is never touched. A healed run gets an `applied` resolution
- * in the same transaction as its apply, so it is not picked again. The merge
- * is idempotent (numbers fixed, nothing inserted twice, no journal of its
- * own), so this never double reverses or issues a number twice.
+ * Runs AFTER the recovery committed and never throws: a failed re-apply can
+ * not undo or block the recovered void or sale (see `reapplyDevice`).
  */
 async function reapplyRefusedReceiptRuns(
   database: Database,
   context: ScopedTenantContext,
   lockTimeoutMs: number,
   log: Pick<Console, "error">,
+  blocked: Set<string>,
   orderId: string,
 ): Promise<void> {
   const tenantId = context.tenant.tenantId;
@@ -268,81 +297,189 @@ async function reapplyRefusedReceiptRuns(
     const mentions = sql.join(
       forms.map(
         (form) =>
-          sql`event -> 'payload' -> 'receipts' @> ${JSON.stringify([{ receipt: { orderId: form } }])}::jsonb`,
+          sql`c.event -> 'payload' -> 'receipts' @> ${JSON.stringify([{ receipt: { orderId: form } }])}::jsonb`,
       ),
       sql` OR `,
     );
     const found = await withTenant(database, context, (tx) =>
       tx.execute(
-        sql`SELECT id::text AS conflict_id, outlet_id::text AS outlet_id, edge_node_id::text AS edge_node_id, event
-        FROM edge_sync_conflicts
-        WHERE tenant_id = ${tenantId}::uuid
-          AND direction = 'edge_to_cloud'
-          AND reason = 'applier_refused'
-          AND aggregate_type = ${RECEIPT_RUN_AGGREGATE}
-          AND event ->> 'name' = ${RECEIPT_RUN_REPORTED_EVENT}
-          AND NOT EXISTS (
-            SELECT 1 FROM edge_sync_conflict_resolutions r
-            WHERE r.tenant_id = edge_sync_conflicts.tenant_id
-              AND r.conflict_id = edge_sync_conflicts.id)
-          AND aggregate_id IN (
-            SELECT aggregate_id FROM edge_sync_conflicts
-            WHERE tenant_id = ${tenantId}::uuid
-              AND direction = 'edge_to_cloud'
-              AND reason = 'applier_refused'
-              AND aggregate_type = ${RECEIPT_RUN_AGGREGATE}
-              AND event ->> 'name' = ${RECEIPT_RUN_REPORTED_EVENT}
-              AND (${mentions}))
-        ORDER BY event_id
-        LIMIT ${RECEIPT_RUN_REAPPLY_LIMIT}`,
+        sql`SELECT DISTINCT c.aggregate_id::text AS aggregate_id
+        FROM edge_sync_conflicts c
+        WHERE ${openRunConflict(tenantId)} AND (${mentions})`,
       ),
     );
-    for (const row of found.rows as {
-      conflict_id: string;
-      outlet_id: string;
-      edge_node_id: string;
-      event: unknown;
-    }[]) {
-      const parsed = eventEnvelopeSchema.safeParse(row.event);
-      if (!parsed.success) continue;
-      const event: EventEnvelope = parsed.data;
-      try {
-        await inOrderTx(database, context, lockTimeoutMs, async (tx) => {
-          // Lock the conflict and re-check: a supervisor may have decided it
-          // since the list was read.
-          const open = await tx.execute(
-            sql`SELECT 1 FROM edge_sync_conflicts c
-                WHERE c.tenant_id = ${tenantId}::uuid
-                  AND c.id = ${row.conflict_id}::uuid
-                  AND NOT EXISTS (
-                    SELECT 1 FROM edge_sync_conflict_resolutions r
-                    WHERE r.tenant_id = c.tenant_id AND r.conflict_id = c.id)
-                FOR UPDATE OF c`,
-          );
-          if (open.rows.length === 0) return;
-          // A refusal (still a hole, ...) throws and rolls back this run only.
-          await applyReceiptRunReported(
-            tx,
-            event,
-            metaOf(context, row.edge_node_id),
-          );
-          await tx.execute(
-            sql`INSERT INTO edge_sync_conflict_resolutions (id, tenant_id, outlet_id, conflict_id, action, outcome, note, resolved_by)
-                VALUES (${ulidToUuid(createUlid())}::uuid, ${tenantId}::uuid, ${row.outlet_id}::uuid, ${row.conflict_id}::uuid, 'replayed', 'applied', ${"Receipt run applied again after the order was recovered"}, ${REAPPLY_RESOLVED_BY})`,
-          );
-        });
-      } catch (error) {
-        // Counts and ids only: a payload never reaches the log.
-        log.error(
-          `Edge receipt run re-apply failed for conflict ${row.conflict_id} of tenant ${tenantId}: ${
-            error instanceof Error ? error.name : "unknown error"
-          }`,
-        );
-      }
+    for (const row of found.rows as { aggregate_id: string }[]) {
+      // A device that failed in the paid phase is tried again once the void
+      // phase has recovered another order of the same tick.
+      blocked.delete(row.aggregate_id);
+      await reapplyDevice(
+        database,
+        context,
+        lockTimeoutMs,
+        log,
+        blocked,
+        row.aggregate_id,
+      );
     }
   } catch (error) {
     log.error(
       `Edge receipt run re-apply failed for an order of tenant ${tenantId}: ${
+        error instanceof Error ? error.name : "unknown error"
+      }`,
+    );
+  }
+}
+
+/**
+ * legend-rzt8s: sweep step after paid and void. Devices that still have open
+ * refused runs (a backlog past one call, a conflict committed after an order
+ * trigger read its list, a re-apply that failed on a lock) are picked up here
+ * without any order trigger. Up to RECEIPT_RUN_SWEEP_DEVICES devices a tick,
+ * random order so devices that keep failing cannot starve the others. A device
+ * whose run keeps failing is retried once per tick, bounded (backoff is
+ * a separate card). Never throws.
+ */
+async function reapplyOpenReceiptRuns(
+  database: Database,
+  context: ScopedTenantContext,
+  lockTimeoutMs: number,
+  log: Pick<Console, "error">,
+  blocked: Set<string>,
+): Promise<void> {
+  const tenantId = context.tenant.tenantId;
+  try {
+    const found = await withTenant(database, context, (tx) =>
+      tx.execute(
+        sql`SELECT c.aggregate_id::text AS aggregate_id
+        FROM edge_sync_conflicts c
+        WHERE ${openRunConflict(tenantId)}
+        GROUP BY c.aggregate_id
+        ORDER BY random()
+        LIMIT ${RECEIPT_RUN_SWEEP_DEVICES}`,
+      ),
+    );
+    for (const row of found.rows as { aggregate_id: string }[])
+      await reapplyDevice(
+        database,
+        context,
+        lockTimeoutMs,
+        log,
+        blocked,
+        row.aggregate_id,
+      );
+  } catch (error) {
+    log.error(
+      `Edge receipt run re-apply sweep failed for tenant ${tenantId}: ${
+        error instanceof Error ? error.name : "unknown error"
+      }`,
+    );
+  }
+}
+
+/**
+ * Applies the open refused runs of one device again, in DEVICE SEQUENCE order
+ * (`aggregate_sequence`, ties by event id, then conflict id; the event id alone
+ * is not a device order). Pages of RECEIPT_RUN_REAPPLY_PAGE, at most
+ * RECEIPT_RUN_REAPPLY_MAX_PAGES per call, and STOPS at the first failure: the
+ * later runs would only hit the hole. Never throws.
+ *
+ * One transaction per run: it locks the conflict, then (a separate statement,
+ * so Read Committed takes a new snapshot) reads its resolutions, then checks
+ * the node. A conflict with ANY resolution is never touched (supervisor wins),
+ * nor one of a revoked node. A refusal (still a hole, a lock timeout, ...)
+ * rolls back this run only; its conflict stays open (no resolution) so a later
+ * sweep or a supervisor can replay it. A healed run gets an `applied`
+ * resolution in the same transaction as its apply, so it is not picked again.
+ * The merge is idempotent (numbers fixed, nothing inserted twice, no journal of
+ * its own), so this never double reverses or issues a number twice.
+ */
+async function reapplyDevice(
+  database: Database,
+  context: ScopedTenantContext,
+  lockTimeoutMs: number,
+  log: Pick<Console, "error">,
+  blocked: Set<string>,
+  aggregateId: string,
+): Promise<void> {
+  if (blocked.has(aggregateId)) return;
+  const tenantId = context.tenant.tenantId;
+  try {
+    let after: { seq: string; eventId: string; id: string } | null = null;
+    for (let page = 0; page < RECEIPT_RUN_REAPPLY_MAX_PAGES; page += 1) {
+      const cursor: { seq: string; eventId: string; id: string } | null = after;
+      const found = await withTenant(database, context, (tx) =>
+        tx.execute(
+          sql`SELECT c.id::text AS conflict_id, c.outlet_id::text AS outlet_id, c.edge_node_id::text AS edge_node_id,
+                 c.event_id::text AS event_id, c.aggregate_sequence::text AS seq, c.event
+          FROM edge_sync_conflicts c
+          WHERE ${openRunConflict(tenantId)}
+            AND c.aggregate_id = ${aggregateId}
+            ${
+              cursor
+                ? sql`AND (c.aggregate_sequence, c.event_id, c.id) > (${cursor.seq}::bigint, ${cursor.eventId}::uuid, ${cursor.id}::uuid)`
+                : sql``
+            }
+          ORDER BY c.aggregate_sequence, c.event_id, c.id
+          LIMIT ${RECEIPT_RUN_REAPPLY_PAGE}`,
+        ),
+      );
+      const runs = found.rows as RunRow[];
+      for (const row of runs) {
+        after = { seq: row.seq, eventId: row.event_id, id: row.conflict_id };
+        const parsed = eventEnvelopeSchema.safeParse(row.event);
+        if (!parsed.success) continue;
+        const event: EventEnvelope = parsed.data;
+        try {
+          await inOrderTx(database, context, lockTimeoutMs, async (tx) => {
+            // Lock first, as its own statement ...
+            const locked = await tx.execute(
+              sql`SELECT 1 FROM edge_sync_conflicts c
+                  WHERE c.tenant_id = ${tenantId}::uuid AND c.id = ${row.conflict_id}::uuid
+                  FOR UPDATE OF c`,
+            );
+            if (locked.rows.length === 0) return;
+            // ... then read the decisions with a fresh snapshot: a supervisor
+            // may have committed one while this waited for the lock.
+            const decided = await tx.execute(
+              sql`SELECT 1 FROM edge_sync_conflict_resolutions r
+                  WHERE r.tenant_id = ${tenantId}::uuid AND r.conflict_id = ${row.conflict_id}::uuid
+                  LIMIT 1`,
+            );
+            if (decided.rows.length > 0) return;
+            const node = await tx.execute(
+              sql`SELECT status FROM edge_nodes
+                  WHERE tenant_id = ${tenantId}::uuid AND id = ${row.edge_node_id}::uuid
+                  FOR SHARE`,
+            );
+            if (node.rows[0]?.status === "revoked") return;
+            // A refusal (still a hole, ...) throws and rolls back this run only.
+            await applyReceiptRunReported(
+              tx,
+              event,
+              metaOf(context, row.edge_node_id),
+            );
+            await tx.execute(
+              sql`INSERT INTO edge_sync_conflict_resolutions (id, tenant_id, outlet_id, conflict_id, action, outcome, note, resolved_by)
+                  VALUES (${ulidToUuid(createUlid())}::uuid, ${tenantId}::uuid, ${row.outlet_id}::uuid, ${row.conflict_id}::uuid, 'replayed', 'applied', ${"Receipt run applied again after the order was recovered"}, ${REAPPLY_RESOLVED_BY})`,
+            );
+          });
+        } catch (error) {
+          // Counts and ids only: a payload never reaches the log.
+          log.error(
+            `Edge receipt run re-apply failed for conflict ${row.conflict_id} of tenant ${tenantId}: ${
+              error instanceof Error ? error.name : "unknown error"
+            }`,
+          );
+          blocked.add(aggregateId);
+          return;
+        }
+      }
+      if (runs.length < RECEIPT_RUN_REAPPLY_PAGE) return;
+    }
+  } catch (error) {
+    blocked.add(aggregateId);
+    log.error(
+      `Edge receipt run re-apply failed for a device of tenant ${tenantId}: ${
         error instanceof Error ? error.name : "unknown error"
       }`,
     );
@@ -446,6 +583,7 @@ async function redriveVoided(
   context: ScopedTenantContext,
   lockTimeoutMs: number,
   log: Pick<Console, "error">,
+  blocked: Set<string>,
 ): Promise<EdgeOrderRedriveResult> {
   const tenantId = context.tenant.tenantId;
   const result = emptyResult();
@@ -463,6 +601,7 @@ async function redriveVoided(
           context,
           lockTimeoutMs,
           log,
+          blocked,
           orderId,
         );
       }
@@ -489,8 +628,17 @@ export async function redriveEdgeOrderRefusalsForTenant(
   const lockTimeoutMs =
     deps.lockTimeoutMs ?? EDGE_ORDER_REDRIVE_LOCK_TIMEOUT_MS;
   const total = emptyResult();
-  addTo(total, await redrivePaid(database, context, lockTimeoutMs, log));
-  addTo(total, await redriveVoided(database, context, lockTimeoutMs, log));
+  // Devices whose re-apply failed during this tick: not retried again in it.
+  const blocked = new Set<string>();
+  addTo(
+    total,
+    await redrivePaid(database, context, lockTimeoutMs, log, blocked),
+  );
+  addTo(
+    total,
+    await redriveVoided(database, context, lockTimeoutMs, log, blocked),
+  );
+  await reapplyOpenReceiptRuns(database, context, lockTimeoutMs, log, blocked);
   return total;
 }
 
