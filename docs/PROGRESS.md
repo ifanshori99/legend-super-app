@@ -8404,3 +8404,12 @@ Tanpa migrasi.
 - legend-jcgbk: sudah terisolasi sejak `5c7fc0ad6`, tanpa perubahan.
 - Bukti: 4 berkas test baru + stub `edge-catalog-rewind.test.ts` diperbarui; 78 test hijau di 7 berkas; prettier dan eslint berkas berubah hijau.
 - Belum: typecheck (tertunda saat catatan ini ditulis), suite penuh `pnpm test`/`pnpm check`.
+
+## 1199 fix SO 1197 edge catalog (legend-7r7q6, cabang ws/1199-edge-catalog-so1197)
+- R1: rewind (watermark `'rewind'` atau cursor ditolak cloud) menaikkan floor receipt per edge (`catalog:receipt-floor`); receipt lama tidak menahan apply. Akar jalur cursor-ditolak: puller mengabaikan `nextCursor` di halaman kosong (diperbaiki).
+- R2: item hilang sesudah restore dinonaktifkan (soft, tanpa DELETE; promosi jadi `paused`) lewat dua pull lengkap: marker `1` -> `h:<horizon>` -> nonaktif bila `visibleBelow >= horizon`. Field `visibleBelow`/`horizon` hanya dikirim ke edge yang meminta `protocolVersion`; cloud lama tanpa field = tidak pernah menonaktifkan. Setiap rewind/reset mengulang marker ke `1`.
+- R3: dedupe alert stale tahan restart cloud (marker di notification_outbox).
+- Tanpa migrasi. docs/deployment.md langkah 4 diperbarui.
+- Bukti: 15 berkas test edge-catalog/link-heartbeat hijau (265 lulus, 1 skip by design); typecheck api exit 0; prettier + eslint hijau. Architect review ronde 2: P1/P2/P3 lama beres; P2 baru (keepsPin) diperbaiki sesuai saran architect + test; belum direview ulang.
+- Belum: bukti gagal-dulu terhadap acf1edca3 tidak dijalankan eksplisit; review architect atas perbaikan P2 terakhir; suite penuh/`pnpm check`.
+- Catatan: P3 architect diterima: baris yang masih in-flight saat replay lalu diedit lagi saat pull konfirmasi bisa tersembunyi satu pull.
