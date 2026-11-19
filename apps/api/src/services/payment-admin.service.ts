@@ -21,6 +21,7 @@ import type { z } from "zod";
 import { db } from "../db/index.ts";
 import {
   approvalRequests,
+  orders,
   outlets,
   paymentIntents,
   paymentLinks,
@@ -306,7 +307,7 @@ async function qrSaleInUseOfIntent(
  * (order-given.ts): vouchers reached through `order_issues.voucher_id` or
  * `apology_vouchers`, a cancelled (voided) one left out. A live ORD-09 refund
  * is a refund of the intent already (`reserved`), so it is not held here.
- * Read-only under the intent row lock; takes no order lock (intent-first).
+ * Read-only; `createRefund` holds the order locks (1145) before the intent lock.
  * POS sales are held by `posSaleInUseOfIntent`.
  */
 async function orderVouchersInUseOfIntent(
@@ -575,6 +576,42 @@ export async function createRefund(
 ) {
   const body = contract.createRefundInputSchema.parse(input);
   return withTenant(db, context, async (tx) => {
+    // 1145: lock order issue -> orders -> intent -> charge. The open-bill
+    // voucher path locks the order, then reads the room; this refund takes the
+    // same order locks before the intent lock, so the two never run side by
+    // side. The intent is read unlocked only for its link and outlet (both
+    // fixed once the intent exists), authorized, then the orders it pays are
+    // locked (ordered by id), and only then the intent. The cap below is read
+    // fresh under those locks (READ COMMITTED), so a voucher that committed
+    // first is counted.
+    const [probe] = await tx
+      .select({
+        outletId: paymentIntents.outletId,
+        paymentLinkId: paymentIntents.paymentLinkId,
+      })
+      .from(paymentIntents)
+      .where(
+        and(
+          eq(paymentIntents.tenantId, context.tenant.tenantId),
+          eq(paymentIntents.id, body.paymentIntentId),
+        ),
+      );
+    if (!probe) throw missing();
+    await authorize(tx, context, actor, "payment.reconcile", probe.outletId);
+    await tx
+      .select({ id: orders.id })
+      .from(orders)
+      .where(
+        and(
+          eq(orders.tenantId, context.tenant.tenantId),
+          or(
+            eq(orders.paymentIntentId, body.paymentIntentId),
+            eq(orders.paymentLinkId, probe.paymentLinkId),
+          ),
+        ),
+      )
+      .orderBy(orders.id)
+      .for("update");
     const [intent] = await tx
       .select()
       .from(paymentIntents)
@@ -586,7 +623,6 @@ export async function createRefund(
       )
       .for("update");
     if (!intent) throw missing();
-    await authorize(tx, context, actor, "payment.reconcile", intent.outletId);
     return idempotentPaymentAdminWrite(
       tx,
       context,
@@ -622,6 +658,24 @@ export async function createRefund(
           qrSaleInUse,
         } = await refundableBalance(tx, intent);
         if (reserved + BigInt(body.amountIdr) > cap) {
+          // 1145: an apology or CRM voucher of an order this intent pays
+          // already gave the guest that value (read fresh under the order
+          // lock). The refund fits the paid amount without it, so paying both
+          // would give back more than the guest paid.
+          const vouchersGiven = await orderVouchersInUseOfIntent(
+            tx,
+            intent.tenantId,
+            intent.id,
+          );
+          if (
+            vouchersGiven > 0n &&
+            reserved + BigInt(body.amountIdr) <= cap + vouchersGiven
+          )
+            throw new HttpError(
+              422,
+              "REFUND_OVER_ORDER_ROOM",
+              "This would give back more than the guest paid for the order.",
+            );
           // legend-riqu: a captured POS tender still holds this money.
           if (
             posSaleInUse > 0n &&
