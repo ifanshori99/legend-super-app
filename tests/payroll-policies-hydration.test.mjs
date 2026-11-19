@@ -19,10 +19,25 @@ const tabUrl = new URL(
   "features/ws10-payroll-config/components/policies-tab.tsx",
   webRoot,
 ).href;
+const catalogUrl = new URL(
+  "../packages/shared/src/i18n/messages/id.ts",
+  import.meta.url,
+).href;
 const stub = (source) => `data:text/javascript,${encodeURIComponent(source)}`;
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
+    // ws/1123: i18n.tsx reads its catalog from the Vite virtual modules; give
+    // it the whole catalog as core and empty area chunks (plugin split: false).
+    if (specifier.startsWith("virtual:i18n/"))
+      return {
+        url: stub(
+          specifier === "virtual:i18n/core"
+            ? `export { id as messages } from ${JSON.stringify(catalogUrl)};`
+            : "export const messages = {};",
+        ),
+        shortCircuit: true,
+      };
     if (context.parentURL === tabUrl) {
       if (specifier === "../hooks")
         return {
