@@ -32,14 +32,31 @@
 //   transaction) the settle on the second connection must wait on a Lock; where
 //   the hold is filed in a new transaction after the rollback (the 74172df44
 //   shape) the settle runs in the gap and completes: red.
+//   (r1-04 uses a second barrier mode, see the DP credit paragraph below.)
 //   Reverse order: a BEFORE UPDATE trigger on payment_refunds (this suite's tenant
 //   only, inert while the gate is not held) parks R2's settle at its first update
 //   of the refund row, with its locks held.
 //
-// DP credit apply (r1-03 of the invariant spec) is not in this file: it needs
-// reservation, session and remainder fixtures of the seeded tenant, while the
-// matched webhook door needs this harness' tenant. The recorder door against the
-// credit apply has both barrier orders in 1072-a2 (a2-07) and 1063-b.
+// DP credit apply (r1-04 of the invariant spec, legend-r7oi3): built in this
+// file's own tenant. The DP fixture (reservation, closed session with Rp80.000
+// customer credit, target bill, receipt journal) is written with plain SQL into the
+// harness tenant, so the matched `refund.succeeded` webhook door and
+// `applyReservationCustomerCredit` meet on the SAME intent. Barriers:
+//   - r1-04 (order 1, the real guarantee): the webhook is parked AFTER it took the
+//     exclusive `deposit-intent:` lock of its hold (vi.mock wraps
+//     `lockDepositIntentsExclusive` of reservation-deposit-credit; it parks only
+//     for that intent, inside the hold, and only while this test arms it). The
+//     apply takes the shared `deposit-intent:` lock, so it must WAIT behind the
+//     webhook and, once the hold is committed, be refused
+//     CUSTOMER_CREDIT_NOT_AVAILABLE. Remove the shared lock of the apply and it
+//     spends while the hold is pending: red.
+//   - r1-04c (order 1, early barrier): the webhook is parked BEFORE the hold runs
+//     (it holds row locks only, not the exclusive intent lock yet). The apply may
+//     legitimately commit first (a whole Rp40.000 spend, as in r1-04b) or be
+//     refused; the hold of Rp80.000 must still be filed afterwards.
+//   - r1-04b (order 2): BEFORE triggers on reservation_deposit_remainders (UPDATE)
+//     and reservation_customer_credit_uses (INSERT) park the apply after it took
+//     its locks (the webhook comes in).
 //
 // Dropped: a "park at the hold INSERT with a trigger" variant. Its hold
 // transaction holds the intent lock at the INSERT, so it cannot be red at the base.
@@ -54,7 +71,7 @@
 //
 // Run just this file:
 //   LEGEND_TEST_FILES="src/test/refund-1075-r1-hold-atomic-race.test.ts" heavy pnpm test
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import {
   afterAll,
@@ -65,23 +82,41 @@ import {
   it,
   vi,
 } from "vitest";
+import { idr } from "@starter/shared/core";
+import {
+  establishScopedTenantContext,
+  establishTenantContext,
+} from "@starter/shared/core/server";
 import { env } from "../config/env";
 import { resetPaymentRefundGateways } from "../services/payment-refund-gateway";
+import { applyReservationCustomerCredit } from "../services/reservation-deposit-remainder.ts";
+import { setTableSessionSettlementLookup } from "../services/table-session.service.ts";
+import { agent, signUp } from "./helpers";
 import {
   BILL_IDR,
   createRefundHarness,
   type Code,
 } from "./refund-1072-harness";
 
-// The barrier state lives in a hoisted object so the mock factory can reach it.
-const barrier = vi.hoisted(() => ({
-  active: null as null | {
-    intentId: string;
-    fired: boolean;
-    reached: () => void;
-    open: Promise<void>;
-  },
-}));
+// The barrier state lives in a hoisted object so the mock factories can reach it.
+// `beforeHold`: park before `fileOwnRefundSurplusHoldInTx` runs (the webhook holds
+// only row locks). `afterLock`: park right after the exclusive `deposit-intent:`
+// lock of that hold was taken (`lockDepositIntentsExclusive` of
+// reservation-deposit-credit, called inside the hold), the hold not yet written.
+const barrier = await vi.hoisted(async () => {
+  const { AsyncLocalStorage } = await import("node:async_hooks");
+  return {
+    /** The intent whose hold is being filed in this async context. */
+    inHold: new AsyncLocalStorage<string>(),
+    active: null as null | {
+      mode: "beforeHold" | "afterLock";
+      intentId: string;
+      fired: boolean;
+      reached: () => void;
+      open: Promise<void>;
+    },
+  };
+});
 
 vi.mock("../services/payment-provider-partial-refund", async (original) => {
   const actual =
@@ -94,12 +129,42 @@ vi.mock("../services/payment-provider-partial-refund", async (original) => {
       ...args: Parameters<typeof actual.fileOwnRefundSurplusHoldInTx>
     ) => {
       const parked = barrier.active;
-      if (parked && !parked.fired && args[2].intentId === parked.intentId) {
+      if (
+        parked?.mode === "beforeHold" &&
+        !parked.fired &&
+        args[2].intentId === parked.intentId
+      ) {
         parked.fired = true;
         parked.reached();
         await parked.open;
       }
-      return actual.fileOwnRefundSurplusHoldInTx(...args);
+      return await barrier.inHold.run(args[2].intentId, () =>
+        actual.fileOwnRefundSurplusHoldInTx(...args),
+      );
+    },
+  };
+});
+
+vi.mock("../services/reservation-deposit-credit", async (original) => {
+  const actual =
+    await original<typeof import("../services/reservation-deposit-credit")>();
+  return {
+    ...actual,
+    lockDepositIntentsExclusive: async (
+      ...args: Parameters<typeof actual.lockDepositIntentsExclusive>
+    ) => {
+      await actual.lockDepositIntentsExclusive(...args);
+      const parked = barrier.active;
+      if (
+        parked?.mode === "afterLock" &&
+        !parked.fired &&
+        barrier.inHold.getStore() === parked.intentId &&
+        args[2] === parked.intentId
+      ) {
+        parked.fired = true;
+        parked.reached();
+        await parked.open;
+      }
     },
   };
 });
@@ -156,7 +221,21 @@ afterAll(() => {
 async function world() {
   const code = await h.newCode(BILL_IDR);
   expect((await h.paid(code, BILL_IDR)).status).toBe(200);
-  const own = await h.ownCompletedRefund(code, R_IDR);
+  // The refund API refuses a DP that is applied to a bill (REFUND_DEPOSIT_IN_USE),
+  // so R is written as the end state of a refund of ours that completed with
+  // ref X (the 1072-a2 way). No refund fact of the provider exists yet.
+  const own = {
+    refundId: randomUUID(),
+    x: `rf_${randomBytes(6).toString("hex")}`,
+  };
+  await h.owner.query(
+    `INSERT INTO payment_refunds
+       (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status,
+        requested_by, approved_by, decided_at, completed_at, provider_ref, payout_attempts)
+     VALUES ($1, $2, $3, $4, $5, 'Pengembalian dana 1075-r1', 'completed',
+             'requester', 'approver', now(), now(), $6, 1)`,
+    [own.refundId, h.tenantId, h.outletId, code.id, R_IDR, own.x],
+  );
   return { code, ...own, callsBefore: h.fake.calls.length };
 }
 type World = Awaited<ReturnType<typeof world>>;
@@ -181,10 +260,15 @@ const gatePool = new Pool({
 const suffix = randomBytes(4).toString("hex");
 const K2 = Number.parseInt(randomBytes(3).toString("hex"), 16);
 const K1_REFUND_UPDATE = 1_075_102;
+const K1_CREDIT_APPLY = 1_075_104;
 const triggers: { name: string; table: string }[] = [];
 
-async function installGateTrigger(table: string, k1: number) {
-  const name = `t1075r1_${suffix}_${k1}`;
+async function installGateTrigger(
+  table: string,
+  k1: number,
+  event: "UPDATE" | "INSERT" = "UPDATE",
+) {
+  const name = `t1075r1_${suffix}_${k1}_${table.slice(0, 24)}`;
   // The tenant id is a UUID generated by the harness: safe to inline.
   await gatePool.query(
     `CREATE OR REPLACE FUNCTION ${name}() RETURNS trigger LANGUAGE plpgsql AS $$
@@ -196,7 +280,7 @@ async function installGateTrigger(table: string, k1: number) {
      END $$`,
   );
   await gatePool.query(
-    `CREATE TRIGGER ${name} BEFORE UPDATE ON ${table}
+    `CREATE TRIGGER ${name} BEFORE ${event} ON ${table}
        FOR EACH ROW EXECUTE FUNCTION ${name}('${h.tenantId}')`,
   );
   triggers.push({ name, table });
@@ -204,6 +288,17 @@ async function installGateTrigger(table: string, k1: number) {
 
 beforeAll(async () => {
   await installGateTrigger("payment_refunds", K1_REFUND_UPDATE);
+  // The credit apply moves money in these two tables, after it took its locks.
+  await installGateTrigger(
+    "reservation_deposit_remainders",
+    K1_CREDIT_APPLY,
+    "UPDATE",
+  );
+  await installGateTrigger(
+    "reservation_customer_credit_uses",
+    K1_CREDIT_APPLY,
+    "INSERT",
+  );
 });
 
 afterAll(async () => {
@@ -361,6 +456,7 @@ describe("R7-1 order 1: matched conflict parked before its hold is filed, settle
       open = accept;
     });
     barrier.active = {
+      mode: "beforeHold",
       intentId: w.code.id,
       fired: false,
       reached,
@@ -536,8 +632,692 @@ describe("R7-1 control: sequential, no race", () => {
     expect((await h.refundRow(r2)).status).toBe("completed");
     expect(await completedIdr(w)).toBe(R_IDR + R2_IDR);
   }, 90_000);
+});
 
-  it.todo(
-    "1075-r1-04 DP credit apply vs the matched conflict (not built: needs reservation, session and remainder fixtures in the DOIT-integration tenant; see header)",
+// --- r1-04: DP credit apply vs the matched conflict -----------------------------
+//
+// Assumptions (the brief does not fix them):
+//   - World: DP intent T Rp100.000 (a payment code of this tenant attached to a
+//     seated reservation), the source session consumed Rp20.000 and closed, so
+//     Rp80.000 transferable customer credit; our refund R Rp30.000 FAILED on our
+//     side but carries ref X (see dpWorld); target bill Rp40.000 of the same customer. Net credit before the
+//     hold: 100.000 - 20.000 = 80.000 >= 40.000 (R failed counts for nothing) (control r1-04-00).
+//   - The signed report X/T of Rp80.000 (bigger than R) files the hold of
+//     Rp80.000 through `fileOwnRefundSurplusHoldInTx`; after it the net is
+//     negative: nothing of the pool is spendable.
+//   - Order 1 (webhook parked before its hold): the apply must NOT spend; it waits
+//     for the lock or is refused CUSTOMER_CREDIT_NOT_AVAILABLE. A spend before the
+//     hold is committed is the bug.
+//   - Order 2 (apply parked after its locks): the apply may win (a whole
+//     Rp40.000 spend, as 1072-a2 accepts) or be refused with the credit untouched;
+//     never a partial spend. The hold of Rp80.000 must exist in the end either way.
+
+// R: the refund of ours that failed on our side (see dpWorld).
+const DP_R_IDR = 30_000;
+const CREDIT_CONSUMED = 20_000;
+const CREDIT_POOL = BILL_IDR - CREDIT_CONSUMED;
+const CREDIT_SPEND = 40_000;
+const dpScope = () =>
+  establishScopedTenantContext(
+    establishTenantContext({
+      tenantId: h.tenantId,
+      brandId: null,
+      source: "session",
+    }),
+    { kind: "tenant" },
   );
+const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+
+const dp = {
+  zoneIds: [] as string[],
+  tableIds: [] as string[],
+  sessionIds: [] as string[],
+  orderIds: [] as string[],
+  reservationIds: [] as string[],
+  profileIds: [] as string[],
+  receiptEntries: [] as string[],
+  receiptAccounts: [randomUUID(), randomUUID()],
+  settlements: new Map<string, { total: number; paid: number }>(),
+  legalEntityId: "",
+  periodId: "",
+  userId: "",
+};
+
+beforeAll(async () => {
+  const entity = await h.owner.query<{ legal_entity_id: string }>(
+    "SELECT legal_entity_id FROM outlets WHERE id = $1",
+    [h.outletId],
+  );
+  dp.legalEntityId = entity.rows[0]!.legal_entity_id;
+  for (const [i, type, group] of [
+    [0, "asset", "current_asset"],
+    [1, "liability", "current_liability"],
+  ] as const)
+    await h.owner.query(
+      `INSERT INTO chart_of_accounts(id,tenant_id,legal_entity_id,code,name,type,report_group)
+       VALUES($1,$2,$3,$4,'1075-r1 DP receipt',$5,$6)`,
+      [
+        dp.receiptAccounts[i],
+        h.tenantId,
+        dp.legalEntityId,
+        `993.${i + 1}`,
+        type,
+        group,
+      ],
+    );
+  const period = new Date().toISOString().slice(0, 7);
+  await h.owner.query(
+    `INSERT INTO fiscal_periods(tenant_id,legal_entity_id,period) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`,
+    [h.tenantId, dp.legalEntityId, period],
+  );
+  dp.periodId = (
+    await h.owner.query<{ id: string }>(
+      "SELECT id FROM fiscal_periods WHERE tenant_id=$1 AND legal_entity_id=$2 AND period=$3",
+      [h.tenantId, dp.legalEntityId, period],
+    )
+  ).rows[0]!.id;
+  setTableSessionSettlementLookup(async ({ sessionId }) => {
+    const found = dp.settlements.get(sessionId);
+    return found
+      ? { billTotalIdr: idr(found.total), paidIdr: idr(found.paid) }
+      : null;
+  });
+  const client = agent(h.app);
+  await signUp(client, "1075-r1-04 cashier");
+  const session = await client.get("/api/auth/get-session");
+  dp.userId = session.body.user.id as string;
+  // The apply is permission-checked: the user is an owner of this tenant.
+  await h.owner.query(
+    `INSERT INTO role_assignments (tenant_id, user_id, role_id, scope_type, scope_id, valid_from, assigned_by)
+     SELECT $1, $2, id, 'tenant', NULL, now() - interval '1 hour', $2
+       FROM roles WHERE tenant_id = $1 AND template_key = 'owner'`,
+    [h.tenantId, dp.userId],
+  );
+});
+
+// Registered after the harness hooks: runs before the harness removes the intents.
+afterAll(async () => {
+  setTableSessionSettlementLookup(null);
+  const client = await h.owner.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SET LOCAL session_replication_role = replica");
+    const t = [h.tenantId];
+    await client.query(
+      "DELETE FROM journal_lines WHERE tenant_id = $1 AND entry_id = ANY($2::uuid[])",
+      [h.tenantId, dp.receiptEntries],
+    );
+    await client.query(
+      "DELETE FROM journal_entries WHERE id = ANY($1::uuid[])",
+      [dp.receiptEntries],
+    );
+    await client.query(
+      "DELETE FROM chart_of_accounts WHERE id = ANY($1::uuid[])",
+      [dp.receiptAccounts],
+    );
+    for (const table of [
+      "reservation_credit_recon_flags",
+      "reservation_customer_credit_uses",
+      "reservation_deposit_remainders",
+      "reservation_deposit_allocations",
+    ])
+      await client.query(`DELETE FROM ${table} WHERE tenant_id = $1`, t);
+    await client.query("DELETE FROM orders WHERE id = ANY($1::uuid[])", [
+      dp.orderIds,
+    ]);
+    await client.query(
+      "DELETE FROM table_sessions WHERE id = ANY($1::uuid[])",
+      [dp.sessionIds],
+    );
+    await client.query("DELETE FROM tables WHERE id = ANY($1::uuid[])", [
+      dp.tableIds,
+    ]);
+    await client.query("DELETE FROM floor_zones WHERE id = ANY($1::uuid[])", [
+      dp.zoneIds,
+    ]);
+    await client.query("DELETE FROM reservations WHERE id = ANY($1::uuid[])", [
+      dp.reservationIds,
+    ]);
+    await client.query(
+      "DELETE FROM role_assignments WHERE tenant_id = $1 AND user_id = $2",
+      [h.tenantId, dp.userId],
+    );
+    await client.query(
+      "DELETE FROM customer_profiles WHERE id = ANY($1::uuid[])",
+      [dp.profileIds],
+    );
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+});
+
+async function dpSession(status: "open" | "closed") {
+  const zoneId = randomUUID();
+  const tableId = randomUUID();
+  const sessionId = randomUUID();
+  dp.zoneIds.push(zoneId);
+  dp.tableIds.push(tableId);
+  dp.sessionIds.push(sessionId);
+  await h.owner.query(
+    `INSERT INTO floor_zones (id, tenant_id, outlet_id, name, payment_mode, hours)
+     VALUES ($1,$2,$3,$4,'pay_first','[]')`,
+    [zoneId, h.tenantId, h.outletId, `DP ${zoneId.slice(0, 8)}`],
+  );
+  await h.owner.query(
+    `INSERT INTO tables (id,tenant_id,outlet_id,zone_id,code,capacity,type,layout)
+     VALUES ($1,$2,$3,$4,$5,2,'regular','{}')`,
+    [
+      tableId,
+      h.tenantId,
+      h.outletId,
+      zoneId,
+      `D${tableId.slice(0, 8).toUpperCase()}`,
+    ],
+  );
+  await h.owner.query(
+    `INSERT INTO table_sessions
+       (id,tenant_id,outlet_id,table_id,pax,payment_mode,status,session_token_hash,session_token_sealed)
+     VALUES ($1,$2,$3,$4,2,'pay_first','open',$5,'test')`,
+    [sessionId, h.tenantId, h.outletId, tableId, sha(sessionId)],
+  );
+  if (status === "closed")
+    await h.owner.query(
+      `UPDATE table_sessions SET status = 'closed', closed_at = now(), closed_reason = 'paid_and_cleaned' WHERE id = $1`,
+      [sessionId],
+    );
+  return { sessionId, zoneId };
+}
+
+async function dpOrder(
+  sessionId: string,
+  total: number,
+  deposit: number,
+  profileId: string,
+) {
+  const id = randomUUID();
+  dp.orderIds.push(id);
+  await h.owner.query(
+    `INSERT INTO orders
+       (id, tenant_id, outlet_id, number, channel, service_type, payment_mode,
+        subtotal_idr, discount_idr, service_charge_idr, tax_idr, rounding_idr,
+        total_idr, deposit_applied_idr, status, business_date, placed_at,
+        table_session_id, customer_profile_id)
+     VALUES ($1, $2, $3, $4, 'pos', 'dine_in', 'pay_first', $5, 0, 0, 0, 0,
+             $5, $6, 'sent', '2026-11-12', now(), $7, $8)`,
+    [
+      id,
+      h.tenantId,
+      h.outletId,
+      `R1-${id.slice(0, 8)}`,
+      total,
+      deposit,
+      sessionId,
+      profileId,
+    ],
+  );
+}
+
+/**
+ * The DP world: `code` (paid Rp100.000 of this tenant) becomes the deposit of a
+ * seated reservation whose session consumed Rp20.000 and closed (Rp80.000 credit).
+ */
+async function dpWorld() {
+  const code = await h.newCode(BILL_IDR);
+  expect((await h.paid(code, BILL_IDR)).status).toBe(200);
+
+  const profileId = randomUUID();
+  dp.profileIds.push(profileId);
+  await h.owner.query(
+    `INSERT INTO customer_profiles (id, tenant_id, name, membership_status, whatsapp_verified_at)
+     VALUES ($1, $2, '1075-r1-04 Customer', 'active', now())`,
+    [profileId, h.tenantId],
+  );
+  const source = await dpSession("open");
+  const reservationId = randomUUID();
+  dp.reservationIds.push(reservationId);
+  await h.owner.query(
+    `INSERT INTO reservations
+       (id, tenant_id, outlet_id, customer_profile_id, guest_name, reserved_for,
+        duration_minutes, pax, zone_id, deposit_idr, policy_snapshot, status,
+        source, seated_at, table_session_id)
+     VALUES ($1, $2, $3, $4, '1075-r1 Payer', now(), 90, 2, $5, $6, $7,
+             'seated', 'staff', now(), $8)`,
+    [
+      reservationId,
+      h.tenantId,
+      h.outletId,
+      profileId,
+      source.zoneId,
+      BILL_IDR,
+      JSON.stringify({
+        version: "t1075r1",
+        depositRequirement: "required",
+        depositAmountIdr: BILL_IDR,
+        paymentWindowMinutes: 60,
+        freeCancellationHours: 24,
+        lateCancellationRefundBp: 0,
+        noShowRefundBp: 0,
+        minimumSpendIdr: 0,
+        capturedAt: new Date().toISOString(),
+      }),
+      source.sessionId,
+    ],
+  );
+  await h.owner.query(
+    "UPDATE payment_intents SET reservation_id = $2 WHERE id = $1",
+    [code.id, reservationId],
+  );
+  await h.owner.query(
+    `UPDATE reservations SET deposit_payment_id = $2, deposit_payment_link_id = $3 WHERE id = $1`,
+    [reservationId, code.id, code.linkId],
+  );
+  await h.owner.query(
+    "UPDATE table_sessions SET reservation_id = $2 WHERE id = $1",
+    [source.sessionId, reservationId],
+  );
+  await h.owner.query(
+    `INSERT INTO reservation_deposit_allocations
+       (tenant_id, outlet_id, reservation_id, table_session_id, payment_intent_id, amount_idr)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [
+      h.tenantId,
+      h.outletId,
+      reservationId,
+      source.sessionId,
+      code.id,
+      BILL_IDR,
+    ],
+  );
+  await dpOrder(source.sessionId, CREDIT_CONSUMED, CREDIT_CONSUMED, profileId);
+  await h.owner.query(
+    `INSERT INTO reservation_deposit_remainders
+       (id, tenant_id, outlet_id, reservation_id, table_session_id, payment_intent_id,
+        customer_profile_id, amount_idr, remaining_idr, kind)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, 'customer_credit')`,
+    [
+      randomUUID(),
+      h.tenantId,
+      h.outletId,
+      reservationId,
+      source.sessionId,
+      code.id,
+      profileId,
+      CREDIT_POOL,
+    ],
+  );
+  await h.owner.query(
+    `UPDATE table_sessions SET status = 'closed', closed_at = now(), closed_reason = 'paid_and_cleaned' WHERE id = $1`,
+    [source.sessionId],
+  );
+  // The receipt journal of the original DP (as 1072-a2 seeds it).
+  const journalId = randomUUID();
+  const journal = await h.owner.connect();
+  try {
+    await journal.query("BEGIN");
+    dp.receiptEntries.push(journalId);
+    await journal.query(
+      `INSERT INTO journal_entries(id,tenant_id,legal_entity_id,outlet_id,entry_date,fiscal_period_id,source_type,source_id,description,idempotency_key,request_fingerprint)
+     VALUES($1,$2,$3,$4,$5,$6,'customer_deposit',$7,'Penerimaan DP 1075-r1',$8,$9)`,
+      [
+        journalId,
+        h.tenantId,
+        dp.legalEntityId,
+        h.outletId,
+        new Date().toISOString().slice(0, 10),
+        dp.periodId,
+        code.id,
+        `aj:receipt:${code.id}`,
+        "0".repeat(64),
+      ],
+    );
+    await journal.query(
+      `INSERT INTO journal_lines(tenant_id,entry_id,account_id,line_no,debit_idr,credit_idr,outlet_id)
+     VALUES($1,$2,$3,1,$5,0,$6),($1,$2,$4,2,0,$5,$6)`,
+      [
+        h.tenantId,
+        journalId,
+        dp.receiptAccounts[0],
+        dp.receiptAccounts[1],
+        BILL_IDR,
+        h.outletId,
+      ],
+    );
+    await journal.query("COMMIT");
+  } catch (error) {
+    await journal.query("ROLLBACK");
+    throw error;
+  } finally {
+    journal.release();
+  }
+
+  // The second visit of the same customer with an open bill.
+  const target = await dpSession("open");
+  await dpOrder(target.sessionId, CREDIT_SPEND, 0, profileId);
+  dp.settlements.set(target.sessionId, { total: CREDIT_SPEND, paid: 0 });
+
+  // The refund API refuses a DP that is applied to a bill (REFUND_DEPOSIT_IN_USE),
+  // so R is written as the end state of a refund of ours that completed with
+  // ref X (the 1072-a2 way). No refund fact of the provider exists yet.
+  // R is a refund of ours that FAILED on our side (provider_declined) but carries
+  // ref X. Any other own refund of the DP (pending, approved, completed, with or
+  // without an echo fact) makes the pool unspendable before any lock is taken
+  // (probed), so a failed R is the only shape where the pool is spendable and
+  // the signed `refund.succeeded` X/T still matches our refund by id.
+  const own = {
+    refundId: randomUUID(),
+    x: `rf_${randomBytes(6).toString("hex")}`,
+  };
+  await h.owner.query(
+    `INSERT INTO payment_refunds
+       (id, tenant_id, outlet_id, payment_intent_id, amount_idr, reason, status,
+        requested_by, approved_by, decided_at, provider_ref, payout_attempts, failure_reason)
+     VALUES ($1, $2, $3, $4, $5, 'Pengembalian dana 1075-r1', 'failed',
+             'requester', 'approver', now(), $6, 1, 'provider_declined')`,
+    [own.refundId, h.tenantId, h.outletId, code.id, DP_R_IDR, own.x],
+  );
+  return {
+    code,
+    ...own,
+    callsBefore: h.fake.calls.length,
+    reservationId,
+    profileId,
+    target: target.sessionId,
+  };
+}
+type DpWorld = Awaited<ReturnType<typeof dpWorld>>;
+
+type Attempt =
+  { outcome: "spent" } | { outcome: "refused"; code: string | undefined };
+
+/** One apply of the pool credit, settled (never throws). */
+const attemptApply = (w: DpWorld, sessionId: string, amount: number) =>
+  applyReservationCustomerCredit(
+    dpScope(),
+    dp.userId,
+    h.outletId,
+    {
+      customerProfileId: w.profileId,
+      tableSessionId: sessionId,
+      amountIdr: idr(amount),
+    },
+    randomUUID(),
+  ).then(
+    (): Attempt => ({ outcome: "spent" }),
+    (error: { code?: string }): Attempt => ({
+      outcome: "refused",
+      code: error?.code,
+    }),
+  );
+
+const dpReport = (w: DpWorld) =>
+  h.refundSucceededEvent(w.code.providerRef, w.x, REPORTED_IDR);
+const dpWebhook = (w: DpWorld) => async () => {
+  const answered = await h.deliver(dpReport(w));
+  await h.pollLater().catch(() => null);
+  await h.runWorker();
+  return answered;
+};
+
+async function remainingIdr(w: DpWorld): Promise<number> {
+  return await h.count(
+    `SELECT COALESCE(SUM(remaining_idr), 0)::text AS n FROM reservation_deposit_remainders
+      WHERE tenant_id = $1 AND reservation_id = $2`,
+    [h.tenantId, w.reservationId],
+  );
+}
+async function usedIdr(w: DpWorld): Promise<number> {
+  return await h.count(
+    `SELECT COALESCE(SUM(u.amount_idr), 0)::text AS n
+       FROM reservation_customer_credit_uses u
+       JOIN reservation_deposit_remainders r ON r.id = u.remainder_id
+      WHERE u.tenant_id = $1 AND r.reservation_id = $2`,
+    [h.tenantId, w.reservationId],
+  );
+}
+const completedOf = (w: DpWorld) =>
+  h.count(
+    `SELECT COALESCE(SUM(amount_idr), 0)::text AS n FROM payment_refunds
+      WHERE tenant_id = $1 AND payment_intent_id = $2 AND status = 'completed'`,
+    [h.tenantId, w.code.id],
+  );
+
+/** After both parties finished: no partial spend, one open hold, nothing more spendable. */
+async function expectDpEndState(
+  w: DpWorld,
+  label: string,
+  mayHaveSpent: boolean,
+) {
+  const used = await usedIdr(w);
+  const remaining = await remainingIdr(w);
+  expect(
+    mayHaveSpent ? [0, CREDIT_SPEND] : [0],
+    `${label}: the pool was spent whole or not at all (used ${used})`,
+  ).toContain(used);
+  expect(remaining, `${label}: spent + remaining = the pool`).toBe(
+    CREDIT_POOL - used,
+  );
+  await expectReportHeld(w as unknown as World, label);
+  expect(
+    await completedOf(w),
+    `${label}: no money of ours was completed (R failed)`,
+  ).toBe(0);
+  expect(h.fake.calls, `${label}: no payout`).toHaveLength(w.callsBefore);
+  const probe = await dpSession("open");
+  await dpOrder(probe.sessionId, 1_000, 0, w.profileId);
+  dp.settlements.set(probe.sessionId, { total: 1_000, paid: 0 });
+  const more = await attemptApply(w, probe.sessionId, 1_000);
+  expect(
+    more,
+    `${label}: with the hold open nothing more of the pool is spendable`,
+  ).toEqual({ outcome: "refused", code: "CUSTOMER_CREDIT_NOT_AVAILABLE" });
+}
+
+describe("R7-1 r1-04: DP credit apply vs the matched conflict, both barrier orders", () => {
+  it("1075-r1-04-00 fixture control: with no report at all the apply spends Rp40.000 of the pool", async () => {
+    const w = await dpWorld();
+    expect(await remainingIdr(w), "premise: Rp80.000 credit").toBe(CREDIT_POOL);
+    const spent = await attemptApply(w, w.target, CREDIT_SPEND);
+    expect(spent, "the racer works in this world").toEqual({
+      outcome: "spent",
+    });
+    expect(await usedIdr(w)).toBe(CREDIT_SPEND);
+    expect(await remainingIdr(w)).toBe(CREDIT_POOL - CREDIT_SPEND);
+  }, 90_000);
+
+  it("1075-r1-04 order 1: the webhook is parked after it took the exclusive intent lock of its hold, the apply comes in: it waits for the lock and is refused, never spends; then one open hold of Rp80.000, the pool untouched, replays keep one hold", async () => {
+    const label = "r1-04";
+    const w = await dpWorld();
+
+    let reached!: () => void;
+    const reachedPromise = new Promise<void>((accept) => {
+      reached = accept;
+    });
+    let open!: () => void;
+    const openPromise = new Promise<void>((accept) => {
+      open = accept;
+    });
+    barrier.active = {
+      mode: "afterLock",
+      intentId: w.code.id,
+      fired: false,
+      reached,
+      open: openPromise,
+    };
+
+    const driver = track(dpWebhook(w)());
+    let racing: ReturnType<typeof track<Attempt>> | null = null;
+    try {
+      const outcome = await Promise.race([
+        reachedPromise.then(() => "parked" as const),
+        driver.result.then(
+          () => "finished" as const,
+          () => "finished" as const,
+        ),
+      ]);
+      expect(
+        outcome,
+        "premise: the webhook takes the exclusive intent lock inside the hold of a matched bigger report of the DP",
+      ).toBe("parked");
+
+      const baseline = new Set(await waitingPids());
+      racing = track(attemptApply(w, w.target, CREDIT_SPEND));
+      await pollFor(
+        async () =>
+          racing!.state.done ||
+          (await waitingPids()).some((pid) => !baseline.has(pid)),
+        5_000,
+      );
+      if (racing.state.done) {
+        const early = await racing.result;
+        expect(
+          early,
+          `${label}: the apply ran to the end while the webhook held the exclusive intent lock and its hold of Rp${REPORTED_IDR} was not committed`,
+        ).toEqual({
+          outcome: "refused",
+          code: "CUSTOMER_CREDIT_NOT_AVAILABLE",
+        });
+      }
+    } finally {
+      open();
+    }
+    const [answered, raced] = await Promise.all([
+      driver.result,
+      racing!.result,
+    ]);
+
+    expect(
+      answered.status,
+      `${label}: signed report not rejected`,
+    ).toBeLessThan(500);
+    expect(
+      raced,
+      `${label}: once the hold is committed the apply is refused`,
+    ).toEqual({ outcome: "refused", code: "CUSTOMER_CREDIT_NOT_AVAILABLE" });
+    expect(await usedIdr(w), `${label}: nothing of the pool was used`).toBe(0);
+    await expectDpEndState(w, label, false);
+
+    await h.replayAll(() => dpReport(w), 2);
+    await expectDpEndState(w, `${label} after replays`, false);
+  }, 90_000);
+
+  it("1075-r1-04c order 1, early barrier: the webhook is parked before its hold runs (row locks only), the apply comes in: it spends Rp40.000 whole or is refused; then one open hold of Rp80.000, nothing more is spendable, replays keep one hold", async () => {
+    const label = "r1-04c";
+    const w = await dpWorld();
+
+    let reached!: () => void;
+    const reachedPromise = new Promise<void>((accept) => {
+      reached = accept;
+    });
+    let open!: () => void;
+    const openPromise = new Promise<void>((accept) => {
+      open = accept;
+    });
+    barrier.active = {
+      mode: "beforeHold",
+      intentId: w.code.id,
+      fired: false,
+      reached,
+      open: openPromise,
+    };
+
+    const driver = track(dpWebhook(w)());
+    let racing: ReturnType<typeof track<Attempt>> | null = null;
+    try {
+      const outcome = await Promise.race([
+        reachedPromise.then(() => "parked" as const),
+        driver.result.then(
+          () => "finished" as const,
+          () => "finished" as const,
+        ),
+      ]);
+      expect(
+        outcome,
+        "premise: the webhook files the hold of a matched bigger report of the DP through fileOwnRefundSurplusHoldInTx",
+      ).toBe("parked");
+
+      const baseline = new Set(await waitingPids());
+      racing = track(attemptApply(w, w.target, CREDIT_SPEND));
+      await pollFor(
+        async () =>
+          racing!.state.done ||
+          (await waitingPids()).some((pid) => !baseline.has(pid)),
+        5_000,
+      );
+    } finally {
+      open();
+    }
+    const [answered, raced] = await Promise.all([
+      driver.result,
+      racing!.result,
+    ]);
+
+    expect(
+      answered.status,
+      `${label}: signed report not rejected`,
+    ).toBeLessThan(500);
+    if (raced.outcome === "refused")
+      expect(raced.code, `${label}: a refused apply says why`).toBe(
+        "CUSTOMER_CREDIT_NOT_AVAILABLE",
+      );
+    await expectDpEndState(w, `${label} (apply ${raced.outcome})`, true);
+
+    await h.replayAll(() => dpReport(w), 2);
+    await expectDpEndState(w, `${label} after replays`, true);
+  }, 90_000);
+
+  it("1075-r1-04b order 2: the apply is parked after its locks, the webhook comes in: the webhook waits or finishes; the apply spends Rp40.000 whole or is refused; then one open hold of Rp80.000 and nothing more is spendable", async () => {
+    const label = "r1-04b";
+    const w = await dpWorld();
+
+    const gate = await openGate(K1_CREDIT_APPLY);
+    let racing: ReturnType<typeof track<Attempt>> | null = null;
+    let driver: ReturnType<
+      typeof track<Awaited<ReturnType<ReturnType<typeof dpWebhook>>>>
+    > | null = null;
+    try {
+      racing = track(attemptApply(w, w.target, CREDIT_SPEND));
+      await pollFor(
+        async () => (await gate.blocked()) || racing!.state.done,
+        15_000,
+      );
+      if (!(await gate.blocked())) {
+        const early = racing.state.done ? await racing.result : null;
+        throw new Error(
+          `premise: the apply parked at its first write of the credit rows, but it ${early ? `finished with ${JSON.stringify(early)}` : "never parked"}`,
+        );
+      }
+
+      const baseline = new Set(await waitingPids());
+      driver = track(dpWebhook(w)());
+      await pollFor(
+        async () =>
+          driver!.state.done ||
+          (await waitingPids()).some((pid) => !baseline.has(pid)),
+        5_000,
+      );
+    } finally {
+      await gate.close();
+    }
+    const [raced, answered] = await Promise.all([
+      racing!.result,
+      driver!.result,
+    ]);
+
+    expect(
+      answered.status,
+      `${label}: signed report not rejected`,
+    ).toBeLessThan(500);
+    if (raced.outcome === "refused")
+      expect(raced.code, `${label}: a refused apply says why`).toBe(
+        "CUSTOMER_CREDIT_NOT_AVAILABLE",
+      );
+    await expectDpEndState(w, `${label} (apply ${raced.outcome})`, true);
+
+    await h.replayAll(() => dpReport(w), 2);
+    await expectDpEndState(w, `${label} after replays`, true);
+  }, 90_000);
 });

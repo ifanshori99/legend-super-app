@@ -1156,12 +1156,18 @@ describe("A3 (P2) a new own-failed hold alerts the outlet supervisor, once", () 
       `the new own-failed hold alerts like the live-own hold (categories ${[...categories].join(", ")})`,
     ).toHaveLength(1);
 
-    // Repeats (a second failure notice, poller, worker) add no alert.
+    // Repeats (a second failure notice, poller, worker) add no alert. 1191
+    // (legend-rdg29): the poller 3 hours later MAY send the periodic "still
+    // open" reminder (its own title, once a day); that is not a repeat of the
+    // filing alert, so it is left out of this count (b-05 covers the reminder).
     await failOwn(ref);
     await pollLater().catch(() => null);
     await runWorker();
     const after = (await supervisorAlertRows()).filter(
-      (row) => !before.has(row.id) && categories.has(row.category),
+      (row) =>
+        !before.has(row.id) &&
+        categories.has(row.category) &&
+        row.title !== "Refund kami yang gagal masih menunggu pemeriksaan",
     );
     expect(after, "the same hold never alerts twice").toHaveLength(1);
   });

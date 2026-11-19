@@ -428,6 +428,32 @@ export async function alertOwnRefundFailedUnverified(
 }
 
 /**
+ * 1191 (legend-rdg29): the `own_refund_failed_unverified` hold is still open.
+ * Finance is reminded again, at most once per calendar day (`dayKey`, the
+ * Jakarta date): the alert id is derived from the hold and the day, so a
+ * second poller pass of the same day is swallowed by the notification dedupe.
+ * The hold itself is never touched.
+ */
+export async function alertOwnRefundFailedStillOpen(
+  tx: Tx,
+  context: ScopedTenantContext,
+  held: ReconHoldFiledAlert & { holdId: string; dayKey: string },
+  now: Date,
+): Promise<void> {
+  await alertReconHoldFiled(
+    tx,
+    context,
+    { ...held, dedupKey: `${held.holdId}:${held.dayKey}` },
+    {
+      eventName: "payment.own_refund_failed_still_open",
+      title: "Refund kami yang gagal masih menunggu pemeriksaan",
+      body: `Refund Rp ${held.amountIdr.toLocaleString("id-ID")} gagal setelah mungkin sudah sampai ke penyedia pembayaran, dan belum ditutup finance. Refund dan payout pembayaran ini tetap ditahan. Periksa di dashboard penyedia, lalu tutup penahanannya.`,
+    },
+    now,
+  );
+}
+
+/**
  * 1045 A2: the provider reports a refund larger than what is left of the
  * transaction after the refunds already booked. Nothing is booked; the intent
  * is held and finance told once (winner of the hold insert).
