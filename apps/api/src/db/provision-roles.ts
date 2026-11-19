@@ -1165,6 +1165,7 @@ async function assertSealedResealRoleReachedOnly(
   // functions, extensions) add nothing through the group; the PUBLIC check of
   // SECURITY DEFINER functions covers those.
   const relationRights = `SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER${(await serverVersion(client)) >= 170000 ? ", MAINTAIN" : ""}`;
+  const relationRightsBeyondSelect = relationRights.replace("SELECT, ", "");
   const group = await client.query(
     `SELECT ARRAY(
               SELECT format('%I.%I', n.nspname, c.relname)
@@ -1173,7 +1174,20 @@ async function assertSealedResealRoleReachedOnly(
                  AND n.nspname NOT LIKE 'pg\\_toast%' AND n.nspname NOT LIKE 'pg\\_temp%'
                  AND (  (c.relkind IN ('r', 'p', 'v', 'm', 'f')
                          AND (has_table_privilege($1::text, c.oid, $3::text)
-                              OR has_any_column_privilege($1::text, c.oid, 'SELECT, INSERT, UPDATE, REFERENCES')))
+                              OR has_any_column_privilege($1::text, c.oid, 'SELECT, INSERT, UPDATE, REFERENCES'))
+                         -- Extension views such as pg_stat_statements are
+                         -- readable by PUBLIC by design; that SELECT is not a
+                         -- right of the group. Exempt only extension-owned
+                         -- relations where the group holds SELECT alone and
+                         -- PUBLIC holds it too; any other right still fails.
+                         AND NOT (
+                           EXISTS (SELECT 1 FROM pg_depend d
+                                    WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e')
+                           AND EXISTS (SELECT 1 FROM aclexplode(c.relacl) a
+                                        WHERE a.grantee = 0 AND a.privilege_type = 'SELECT')
+                           AND NOT has_table_privilege($1::text, c.oid, $4::text)
+                           AND NOT has_any_column_privilege($1::text, c.oid, 'INSERT, UPDATE, REFERENCES')
+                         ))
                      OR (c.relkind = 'S'
                          AND has_sequence_privilege($1::text, c.oid, 'USAGE, SELECT, UPDATE')))
                ORDER BY 1
@@ -1197,7 +1211,12 @@ async function assertSealedResealRoleReachedOnly(
             COALESCE((SELECT r.rolsuper OR r.rolbypassrls
                         FROM pg_proc p JOIN pg_roles r ON r.oid = p.proowner
                        WHERE p.oid = to_regprocedure($2::text)), true) AS owner_ok`,
-    [SEALED_RESEAL_GROUP, SEALED_RESEAL_FUNCTION, relationRights],
+    [
+      SEALED_RESEAL_GROUP,
+      SEALED_RESEAL_FUNCTION,
+      relationRights,
+      relationRightsBeyondSelect,
+    ],
   );
   const { relations, functions, function_ok, owner_ok } = group.rows[0];
   if (relations.length)
