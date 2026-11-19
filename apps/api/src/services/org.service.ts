@@ -75,6 +75,7 @@ import {
 import { withTenant } from "../db/tenant";
 import { provisionStandardChart } from "./accounting-provisioning.service";
 import { recordAudit } from "./core-audit";
+import { getRequestContext } from "../lib/request-context.ts";
 import { markHppStale } from "./hpp-invalidate";
 import {
   provisionOutletStockLocations,
@@ -983,6 +984,7 @@ export async function setOutletStatus(
   context: ScopedTenantContext,
   outletId: string,
   input: SetOutletStatusInput,
+  actorUserId: string | null = getRequestContext()?.userId ?? null,
 ): Promise<Outlet> {
   assertOutletWritable(context, outletId);
   return withTenant(db, context, async (tx) => {
@@ -1009,6 +1011,34 @@ export async function setOutletStatus(
       .set({ status: input.status, ...closing })
       .where(eq(outlets.id, outletId))
       .returning();
+    // Same transaction as the update: a failed audit write rolls the status
+    // change back, and a failed change leaves no audit row.
+    const actor = userIdSchema.safeParse(actorUserId);
+    await recordAudit(
+      tx,
+      context,
+      {
+        id: createUlid(),
+        tenantId: context.tenant.tenantId,
+        outletId: row.id,
+        actorType: actor.success ? "user" : "system",
+        actorId: actor.success ? actor.data : null,
+        deviceId: null,
+        action: "outlet.status_changed",
+        objectType: "outlet",
+        objectId: row.id,
+        reason: input.reason,
+        maskedChanges: {
+          before: { status: current.status },
+          after: { status: row.status },
+        },
+        ipHash: null,
+        sensitiveAccess: false,
+        retentionClass: "audit_2y",
+        createdAt: new Date().toISOString(),
+      },
+      ["status"],
+    );
     return toOutlet(row);
   });
 }
