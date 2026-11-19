@@ -8075,6 +8075,22 @@ Gerbang (per tahap): links 0s; lint 2m49; typecheck 2m28 (heap 8 GB); fast gate 
 
 Biaya sesi merge train sampai batch93: session-usage total biaya* 11728k (utama 10789k), puncak konteks 267k, compact 2, subagent 8. Subagent batch93: implementer 1 (konflik 1081), architect 1 (review 1081), implementer 1 (konflik 1096, untuk batch94); puncak 2 bersamaan, token heavy dipegang thread merge train ini.
 
+## Merge train batch97 (19 Nov 2026, `int/batch97` -> `milestone/m1`)
+
+Basis m1 2b23b324f. Enam cabang masuk: ws/1178-reservasi-so1171-fix 15e1fa0ea (memuat ws/1163 cca06c1a6), ws/1182-webhook-malformed-so1180 9db6edfff (memuat ws/1176 4fdcaaec1 dan ws/1167 1014c8963), ws/1175-approval-payout-p3 e35d52a76. Merge hanya konflik di docs/PROGRESS.md (kedua sisi disimpan).
+
+- **Keluar dari batch (keputusan CTO, Retro 53): ws/1172-access-audit-guard (1017da431).** Full run: platform-tenant-owner (9 tes) dan platform-access-api TEN-03 gagal deterministik. Akar: 1172 menulis valid_from/valid_until dengan jam DB (`readDbClock`) tetapi izin dibaca dengan jam aplikasi (`new Date()` di middleware/permissions.ts dan routes/me.routes.ts); jam DB test 19-28 ms di depan host, jadi role baru belum aktif dan role yang dicabut masih aktif selama selisih itu. Merge 7254beba5 di-revert; 1172 kembali ke engineer (pembacaan izin konsisten dengan jam DB, review architect xhigh). Beads 1172 (hb1u9 v8dfx hzdy5 z2kaf e3qgo) tetap terbuka. 1183 (berbasis 1172) keluar dari batch98, diganti ws/1201.
+- **Migrasi:** 0707_payout_attest_clock_and_lock_database -> 0503 (when 1795000013101), registry data-import diganti. Tanpa migrasi di cabang lain. `migration-renumber check --from-idx 495` ok.
+- **Perbaikan di jalur uang (75799a6a3):** guard 1167 (tipkj) di `markRow` menolak status failed pada baris processed/ignored, sehingga jalur callback Duitku yang diulang (PAY-03 `02->00`) tidak lagi membuka baris untuk cek ulang dan callback bayar asli tertelan. Kini `reopenFinishedRowForRecheck` (hanya baris processed/ignored, WHERE tenant+id+status) dipakai Duitku; `markRow` dan guard tipkj tidak berubah. Review architect xhigh: tidak ada temuan pemblokir (evidence idempoten onConflictDoNothing, tidak ada bayar ganda). Catatan opsional: replay >24 jam bisa menimpa kode error baris lama (perilaku pra-1167), perbaikan: batas receivedAt di WHERE.
+- **Gerbang:** lint 1m, typecheck 1m28, build 33s, e2e 18 lulus 17s, fast gate 38 berkas (kecuali TEN-06 Q39, urutan paralel di set itu; lulus sendirian 12/12, di full run, dan di rerun akhir). Full run 18:03-20:48 (2j45m) di kode 431cb2c04: 7 berkas gagal.
+- **Keputusan per berkas (Retro 53), rerun terarah di kode final (revert 1172 + 75799a6a3), 74 berkas 1019 tes lulus:**
+  - payment-duitku-webhook PAY-03: bug nyata (1167 x Duitku), diperbaiki 75799a6a3, lulus.
+  - platform-tenant-owner (9 tes), platform-access-api TEN-03: bug 1172, cabang dikeluarkan; lulus tanpa 1172.
+  - hris-overtime-collective-db (kuota seat, flake bernama P3), payroll-policy-api, payroll-payout-batch-list, worker-notification-hr-settlement-recipients (flake beban batch96): lulus sendirian dan di rerun akhir.
+  - platform-org-api TEN-06 Q39 (409 LOYALTY_ENTITY_LOCKED di fast gate saja): tes lain di set menyisip order pay_first/poin ke tenant seeded; tidak muncul di full run, lulus di rerun akhir. Tidak ada kode diubah.
+- **Hanya-sisa:** typecheck, lint, build dijalankan ulang setelah revert dan perbaikan Duitku: hijau.
+- Pemakaian: session-usage sesi train: total biaya* 12.743k (utama sonnet 9.504k, subagent sonnet 1.556k, opus 943k, haiku 740k), 30 subagent, compact 3. Subagent train: puncak 3 bersamaan. Jam VM Colima sempat saya ubah saat mengukur skew; disinkron ulang (+-60 ms).
+
 ## Merge train batch96 (19 Nov 2026, `int/batch96` -> `milestone/m1`)
 
 Dasar `origin/milestone/m1` d99aae067 (batch95). Cabang masuk (7): `ghostex/d158b041` (14e34d887, K kas), `ghostex/fix-so-approval-waktu` (e1020c77e), `ws/1164-payout-recurring-approval` (d9806d79d, K uang/akses + migrasi), `ws/1144-refund-hold-echo` (d217d439d, K uang), `ws/1095-void-refund-ganda-voucher` (4bfae8476), `ws/1169-refund-lr-riwayat` (6d0a53065, memuat 1095), `ghostex/member-qr-token-klien-1150` (3ad22a061, K akses). Tidak ikut (batch97): eb4d9add, 1159, 1162, 1163, 1167, 1172, 1165.
