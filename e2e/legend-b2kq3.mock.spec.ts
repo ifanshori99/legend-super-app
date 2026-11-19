@@ -244,10 +244,13 @@ test.describe("legend-b2kq3 M6 one primary button per screen", () => {
     await expect(
       chatgptCard(page).getByRole("button", { name: "Hubungkan ChatGPT" }),
     ).toBeEnabled();
-    const found = await primaryButtons(page);
-    expect(found, `primary buttons: ${found.join(" | ")}`).toEqual([
-      "Hubungkan ChatGPT",
-    ]);
+    // The button fades in from its disabled look (transition-colors), so poll
+    // until the computed colour settles instead of reading it once.
+    await expect
+      .poll(() => primaryButtons(page), {
+        message: "the connect button becomes the only primary button",
+      })
+      .toEqual(["Hubungkan ChatGPT"]);
   });
 });
 
